@@ -1,2 +1,1 @@
-# network-services-operator
-Datum Network Services
+# Datum Network Services

@@ -60,6 +60,16 @@ type NetworkBindingStatus struct {
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 
+// NetworkBindingConditionType defines the condition of a network binding
+type NetworkBindingConditionType string
+
+const (
+	// NetworkBindingReady indicates that the network binding has been associated
+	// with a NetworkContext and the owning resource should expect functional
+	// network features.
+	NetworkBindingReady NetworkBindingConditionType = "Ready"
+)
+
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 

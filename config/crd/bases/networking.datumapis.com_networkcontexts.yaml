@@ -53,8 +53,9 @@ spec:
                   type: string
                 description: "The topology of where this context exists\n\nThis may
                   contain arbitrary topology keys. Some keys may be well known, such\nas:\n\t-
-                  topology.datum.net/cityCode\n\t- topology.datum.net/cluster\n\nThe
-                  combined keys and values MUST be unique for contexts in the same\nnetwork."
+                  topology.datum.net/city-code\n\t- topology.datum.net/cluster-name\n\t-
+                  topology.datum.net/cluster-namespace\n\nThe combined keys and values
+                  MUST be unique for contexts in the same\nnetwork."
                 type: object
             required:
             - network

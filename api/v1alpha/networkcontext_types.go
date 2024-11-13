@@ -17,8 +17,9 @@ type NetworkContextSpec struct {
 	//
 	// This may contain arbitrary topology keys. Some keys may be well known, such
 	// as:
-	//	- topology.datum.net/cityCode
-	//	- topology.datum.net/cluster
+	//	- topology.datum.net/city-code
+	//	- topology.datum.net/cluster-name
+	//	- topology.datum.net/cluster-namespace
 	//
 	// The combined keys and values MUST be unique for contexts in the same
 	// network.
@@ -32,6 +33,14 @@ type NetworkContextStatus struct {
 	// Represents the observations of a network context's current state.
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
+
+// NetworkContextConditionType defines the condition of a network context
+type NetworkContextConditionType string
+
+const (
+	// NetworkContextReady indicates that the network context is ready for use.
+	NetworkContextReady NetworkContextConditionType = "Ready"
+)
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status

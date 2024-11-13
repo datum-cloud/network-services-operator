@@ -26,7 +26,6 @@ type SubnetSpec struct {
 	// The IP family of a subnet
 	//
 	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:Enum=IPv4;IPv6
 	IPFamily IPFamily `json:"ipFamily"`
 
 	// The start address of a subnet

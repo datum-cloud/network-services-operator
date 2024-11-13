@@ -6,6 +6,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// +kubebuilder:validation:Enum=IPv4;IPv6
 type IPFamily string
 
 const (
@@ -25,7 +26,6 @@ type NetworkSpec struct {
 	//
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:default={IPv4}
-	// +kubebuilder:validation:Enum=IPv4;IPv6
 	IPFamilies []IPFamily `json:"ipFamilies,omitempty"`
 
 	// Network MTU. May be between 1300 and 8856.

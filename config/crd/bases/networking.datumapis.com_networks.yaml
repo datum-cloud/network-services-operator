@@ -43,10 +43,10 @@ spec:
                 default:
                 - IPv4
                 description: IP Families to permit on a network. Defaults to IPv4.
-                enum:
-                - IPv4
-                - IPv6
                 items:
+                  enum:
+                  - IPv4
+                  - IPv6
                   type: string
                 type: array
               ipam:

@@ -26,7 +26,6 @@ type SubnetClaimSpec struct {
 	// The IP family of a subnet claim
 	//
 	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:Enum=IPv4;IPv6
 	IPFamily IPFamily `json:"ipFamily"`
 
 	// The start address of a subnet claim

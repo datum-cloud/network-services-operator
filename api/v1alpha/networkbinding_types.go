@@ -27,7 +27,7 @@ type NetworkBindingSpec struct {
 	Topology map[string]string `json:"topology"`
 }
 
-// NetworkBindingObjectReference containts sufficient information for
+// NetworkBindingObjectReference contains sufficient information for
 // controllers to leverage unstructured or structured clients to interact with
 // the bound resources.
 type NetworkBindingObjectReference struct {

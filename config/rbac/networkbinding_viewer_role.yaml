@@ -1,0 +1,23 @@
+# permissions for end users to view networkbindings.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/name: network-services-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: networkbinding-viewer-role
+rules:
+- apiGroups:
+  - networking.datumapis.com
+  resources:
+  - networkbindings
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - networking.datumapis.com
+  resources:
+  - networkbindings/status
+  verbs:
+  - get

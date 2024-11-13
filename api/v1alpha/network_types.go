@@ -98,7 +98,7 @@ type NetworkRef struct {
 	// Defaults to the namespace for the type the reference is embedded in.
 	//
 	// +kubebuilder:validation:Optional
-	Namespace string `json:"namespace"`
+	Namespace string `json:"namespace,omitempty"`
 
 	// The network name
 	//

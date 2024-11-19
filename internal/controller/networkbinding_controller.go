@@ -149,9 +149,7 @@ func (r *NetworkBindingReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	readyCondition.Reason = "NetworkContextReady"
 	readyCondition.Message = "Network context is ready."
 
-	if err := r.Client.Status().Update(ctx, &binding); err != nil {
-		return ctrl.Result{}, fmt.Errorf("failed updating binding status: %w", err)
-	}
+	// Update is handled in the defer function above.
 
 	return ctrl.Result{}, nil
 }

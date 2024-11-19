@@ -52,7 +52,7 @@ var _ = Describe("NetworkBinding Controller", func() {
 				}
 				Expect(k8sClient.Create(ctx, network)).To(Succeed())
 			}
-			Expect(client.IgnoreNotFound(err)).To(BeNil())
+			Expect(client.IgnoreNotFound(err)).To(Succeed())
 
 			By("creating a NetworkBinding")
 			err = k8sClient.Get(ctx, bindingNamespacedName, binding)
@@ -73,7 +73,7 @@ var _ = Describe("NetworkBinding Controller", func() {
 				}
 				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 			}
-			Expect(client.IgnoreNotFound(err)).To(BeNil())
+			Expect(client.IgnoreNotFound(err)).To(Succeed())
 
 		})
 
@@ -82,7 +82,7 @@ var _ = Describe("NetworkBinding Controller", func() {
 			Expect(k8sClient.Get(ctx, bindingNamespacedName, binding)).To(Succeed())
 
 			networkContextName, err := networkContextNameForBinding(binding)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(k8sClient.Delete(ctx, binding)).To(Succeed())
 
 			networkContext := &networkingv1alpha.NetworkContext{}
@@ -91,7 +91,7 @@ var _ = Describe("NetworkBinding Controller", func() {
 				Namespace: "default",
 			}
 			Expect(k8sClient.Get(ctx, networkContextNamespacedName, networkContext)).To(Succeed())
-			Expect(k8sClient.Delete(ctx, networkContext))
+			Expect(k8sClient.Delete(ctx, networkContext)).To(Succeed())
 
 			network := &networkingv1alpha.Network{}
 			Expect(k8sClient.Get(ctx, networkNamespacedName, network)).To(Succeed())
@@ -100,13 +100,13 @@ var _ = Describe("NetworkBinding Controller", func() {
 
 		It("should successfully create a NetworkContext", func() {
 			err := k8sClient.Get(ctx, bindingNamespacedName, binding)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 
 			bindingReady := apimeta.IsStatusConditionTrue(binding.Status.Conditions, networkingv1alpha.NetworkBindingReady)
 			Expect(bindingReady).To(BeFalse())
 
 			networkContextName, err := networkContextNameForBinding(binding)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 
 			var networkContext networkingv1alpha.NetworkContext
 			networkContextObjectKey := client.ObjectKey{
@@ -116,12 +116,12 @@ var _ = Describe("NetworkBinding Controller", func() {
 
 			Eventually(ctx, func() error {
 				return k8sClient.Get(ctx, networkContextObjectKey, &networkContext)
-			}).Should(BeNil())
+			}).Should(Succeed())
 		})
 
 		It("should become Ready once the referenced NetworkContext is Ready", func() {
 			networkContextName, err := networkContextNameForBinding(binding)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 
 			var networkContext networkingv1alpha.NetworkContext
 			networkContextObjectKey := client.ObjectKey{
@@ -131,7 +131,7 @@ var _ = Describe("NetworkBinding Controller", func() {
 
 			Eventually(ctx, func() error {
 				return k8sClient.Get(ctx, networkContextObjectKey, &networkContext)
-			}).Should(BeNil())
+			}).Should(Succeed())
 
 			// We set the status manually here, as external controllers are responsible
 			// for updating Context readiness right now.
@@ -150,7 +150,7 @@ var _ = Describe("NetworkBinding Controller", func() {
 
 			Eventually(func() bool {
 				err := k8sClient.Get(ctx, bindingNamespacedName, binding)
-				Expect(err).To(BeNil())
+				Expect(err).ToNot(HaveOccurred())
 
 				return apimeta.IsStatusConditionTrue(binding.Status.Conditions, networkingv1alpha.NetworkBindingReady)
 			}).Should(BeTrue())

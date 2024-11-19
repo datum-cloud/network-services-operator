@@ -34,12 +34,9 @@ type NetworkContextStatus struct {
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 
-// NetworkContextConditionType defines the condition of a network context
-type NetworkContextConditionType string
-
 const (
 	// NetworkContextReady indicates that the network context is ready for use.
-	NetworkContextReady NetworkContextConditionType = "Ready"
+	NetworkContextReady = "Ready"
 )
 
 // +kubebuilder:object:root=true

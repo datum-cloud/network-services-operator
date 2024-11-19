@@ -32,8 +32,9 @@ type NetworkSpec struct {
 	//
 	// +kubebuilder:validation:Minimum=1300
 	// +kubebuilder:validation:Maximum=8856
+	// +kubebuilder:validation:Optional
 	// +kubebuilder:default=1460
-	MTU int32 `json:"mtu"`
+	MTU int32 `json:"mtu,omitempty"`
 }
 
 type NetworkIPAMMode string
@@ -103,14 +104,14 @@ type NetworkRef struct {
 	// The network name
 	//
 	// +kubebuilder:validation:Required
-	Name string `json:"name"`
+	Name string `json:"name,omitempty"`
 }
 
 type LocalNetworkRef struct {
 	// The network name
 	//
 	// +kubebuilder:validation:Required
-	Name string `json:"name"`
+	Name string `json:"name,omitempty"`
 }
 
 func init() {

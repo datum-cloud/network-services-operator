@@ -78,7 +78,6 @@ spec:
                 type: integer
             required:
             - ipam
-            - mtu
             type: object
           status:
             description: NetworkStatus defines the observed state of Network

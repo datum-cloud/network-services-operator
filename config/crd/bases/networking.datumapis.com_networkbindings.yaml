@@ -59,9 +59,10 @@ spec:
                   type: string
                 description: "The topology of where this binding exists\n\nThis may
                   contain arbitrary topology keys. Some keys may be well known, such\nas:\n\t-
-                  topology.datum.net/cityCode\n\t- topology.datum.net/cluster\n\nEach
-                  unique value of this field across bindings in the namespace will
-                  result\nin a NetworkAttachment to be created."
+                  topology.datum.net/city-code\n\t- topology.datum.net/cluster-name\n\t-
+                  topology.datum.net/cluster-namespace\n\nEach unique value of this
+                  field across bindings in the namespace will result\nin a NetworkAttachment
+                  to be created."
                 type: object
             required:
             - network

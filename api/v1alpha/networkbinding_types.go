@@ -11,14 +11,15 @@ type NetworkBindingSpec struct {
 	// The network that the binding is for.
 	//
 	// +kubebuilder:validation:Required
-	Network NetworkRef `json:"network"`
+	Network NetworkRef `json:"network,omitempty"`
 
 	// The topology of where this binding exists
 	//
 	// This may contain arbitrary topology keys. Some keys may be well known, such
 	// as:
-	//	- topology.datum.net/cityCode
-	//	- topology.datum.net/cluster
+	//	- topology.datum.net/city-code
+	//	- topology.datum.net/cluster-name
+	//	- topology.datum.net/cluster-namespace
 	//
 	// Each unique value of this field across bindings in the namespace will result
 	// in a NetworkAttachment to be created.
@@ -60,14 +61,11 @@ type NetworkBindingStatus struct {
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 
-// NetworkBindingConditionType defines the condition of a network binding
-type NetworkBindingConditionType string
-
 const (
 	// NetworkBindingReady indicates that the network binding has been associated
 	// with a NetworkContext and the owning resource should expect functional
 	// network features.
-	NetworkBindingReady NetworkBindingConditionType = "Ready"
+	NetworkBindingReady = "Ready"
 )
 
 // +kubebuilder:object:root=true

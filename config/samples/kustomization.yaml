@@ -1,0 +1,9 @@
+## Append samples of your project ##
+resources:
+- networking_v1alpha_network.yaml
+- networking_v1alpha_networkbinding.yaml
+- networking_v1alpha_networkcontext.yaml
+- networking_v1alpha_networkpolicy.yaml
+- networking_v1alpha_subnet.yaml
+- networking_v1alpha_subnetclaim.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples

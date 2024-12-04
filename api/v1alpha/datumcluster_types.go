@@ -89,6 +89,18 @@ type DatumClusterList struct {
 	Items           []DatumCluster `json:"items"`
 }
 
+type DatumClusterReference struct {
+	// Name of a datum cluster
+	//
+	// +kubebuilder:validation:Required
+	Name string `json:"name"`
+
+	// Namespace for the datum cluster
+	//
+	// +kubebuilder:validation:Required
+	Namespace string `json:"namespace"`
+}
+
 func init() {
 	SchemeBuilder.Register(&DatumCluster{}, &DatumClusterList{})
 }

@@ -8,6 +8,7 @@ resources:
 - bases/networking.datumapis.com_networkpolicies.yaml
 - bases/networking.datumapis.com_subnets.yaml
 - bases/networking.datumapis.com_subnetclaims.yaml
+- bases/networking.datumapis.com_datumclusters.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:

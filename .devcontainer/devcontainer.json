@@ -13,9 +13,6 @@
     },
     "ghcr.io/dhoeric/features/act": {}
   },
-  "runArgs": [
-    "--network=host"
-  ],
   "customizations": {
     "vscode": {
       "settings": {

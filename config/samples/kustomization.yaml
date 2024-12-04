@@ -6,4 +6,5 @@ resources:
 - networking_v1alpha_networkpolicy.yaml
 - networking_v1alpha_subnet.yaml
 - networking_v1alpha_subnetclaim.yaml
+- networking_v1alpha_datumcluster.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples

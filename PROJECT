@@ -62,4 +62,12 @@ resources:
   kind: SubnetClaim
   path: go.datum.net/network-services-operator/api/v1alpha
   version: v1alpha
+- api:
+    crdVersion: v1
+    namespaced: true
+  domain: datumapis.com
+  group: networking
+  kind: DatumCluster
+  path: go.datum.net/network-services-operator/api/v1alpha
+  version: v1alpha
 version: "3"

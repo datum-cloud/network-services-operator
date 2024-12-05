@@ -1,9 +1,7 @@
 apiVersion: networking.datumapis.com/v1alpha
 kind: Network
 metadata:
-  labels:
-    app.kubernetes.io/name: network-services-operator
-    app.kubernetes.io/managed-by: kustomize
-  name: network-sample
+  name: default
 spec:
-  # TODO(user): Add fields here
+  ipam:
+    mode: Auto

@@ -66,8 +66,9 @@ var _ = Describe("NetworkBinding Controller", func() {
 						Network: networkingv1alpha.NetworkRef{
 							Name: network.Name,
 						},
-						Topology: map[string]string{
-							"topo-key": "value",
+						Location: networkingv1alpha.LocationReference{
+							Namespace: "default",
+							Name:      "some-location",
 						},
 					},
 				}
@@ -81,8 +82,7 @@ var _ = Describe("NetworkBinding Controller", func() {
 			binding := &networkingv1alpha.NetworkBinding{}
 			Expect(k8sClient.Get(ctx, bindingNamespacedName, binding)).To(Succeed())
 
-			networkContextName, err := networkContextNameForBinding(binding)
-			Expect(err).ToNot(HaveOccurred())
+			networkContextName := networkContextNameForBinding(binding)
 			Expect(k8sClient.Delete(ctx, binding)).To(Succeed())
 
 			networkContext := &networkingv1alpha.NetworkContext{}
@@ -105,8 +105,7 @@ var _ = Describe("NetworkBinding Controller", func() {
 			bindingReady := apimeta.IsStatusConditionTrue(binding.Status.Conditions, networkingv1alpha.NetworkBindingReady)
 			Expect(bindingReady).To(BeFalse())
 
-			networkContextName, err := networkContextNameForBinding(binding)
-			Expect(err).ToNot(HaveOccurred())
+			networkContextName := networkContextNameForBinding(binding)
 
 			var networkContext networkingv1alpha.NetworkContext
 			networkContextObjectKey := client.ObjectKey{
@@ -120,8 +119,7 @@ var _ = Describe("NetworkBinding Controller", func() {
 		})
 
 		It("should become Ready once the referenced NetworkContext is Ready", func() {
-			networkContextName, err := networkContextNameForBinding(binding)
-			Expect(err).ToNot(HaveOccurred())
+			networkContextName := networkContextNameForBinding(binding)
 
 			var networkContext networkingv1alpha.NetworkContext
 			networkContextObjectKey := client.ObjectKey{

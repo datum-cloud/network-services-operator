@@ -13,19 +13,10 @@ type NetworkBindingSpec struct {
 	// +kubebuilder:validation:Required
 	Network NetworkRef `json:"network,omitempty"`
 
-	// The topology of where this binding exists
-	//
-	// This may contain arbitrary topology keys. Some keys may be well known, such
-	// as:
-	//	- topology.datum.net/city-code
-	//	- topology.datum.net/cluster-name
-	//	- topology.datum.net/cluster-namespace
-	//
-	// Each unique value of this field across bindings in the namespace will result
-	// in a NetworkAttachment to be created.
+	// The location of where a network binding exists.
 	//
 	// +kubebuilder:validation:Required
-	Topology map[string]string `json:"topology"`
+	Location LocationReference `json:"location,omitempty"`
 }
 
 // NetworkBindingObjectReference contains sufficient information for

@@ -68,8 +68,17 @@ func (r *SubnetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return ctrl.Result{}, fmt.Errorf("failed fetching network context: %w", err)
 	}
 
+	var location networkingv1alpha.Location
+	locationObjectKey := client.ObjectKey{
+		Namespace: networkContext.Spec.Location.Namespace,
+		Name:      networkContext.Spec.Location.Name,
+	}
+	if err := r.Client.Get(ctx, locationObjectKey, &location); err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed fetching network context location: %w", err)
+	}
+
 	// TODO(jreese) get topology key from well known package
-	cityCode, ok := networkContext.Spec.Topology["topology.datum.net/city-code"]
+	cityCode, ok := location.Spec.Topology["topology.datum.net/city-code"]
 	if !ok {
 		return ctrl.Result{}, fmt.Errorf("unable to find topology key: topology.datum.net/city-code")
 	}

@@ -4,20 +4,20 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.16.4
-  name: datumclusters.networking.datumapis.com
+  name: locations.networking.datumapis.com
 spec:
   group: networking.datumapis.com
   names:
-    kind: DatumCluster
-    listKind: DatumClusterList
-    plural: datumclusters
-    singular: datumcluster
+    kind: Location
+    listKind: LocationList
+    plural: locations
+    singular: location
   scope: Namespaced
   versions:
   - name: v1alpha
     schema:
       openAPIV3Schema:
-        description: DatumCluster is the Schema for the datumclusters API.
+        description: Location is the Schema for the locations API.
         properties:
           apiVersion:
             description: |-
@@ -37,30 +37,31 @@ spec:
           metadata:
             type: object
           spec:
-            description: DatumClusterSpec defines the desired state of DatumCluster.
+            description: LocationSpec defines the desired state of Location.
             properties:
-              clusterClassName:
-                description: "The cluster class for the cluster.\n\nValid values are:\n\t-
+              locationClassName:
+                description: "The location class that indicates control plane behavior
+                  of entities\nassociated with the location.\n\nValid values are:\n\t-
                   datum-managed\n\t- self-managed"
                 type: string
               provider:
-                description: The cluster provider
+                description: The location provider
                 properties:
                   gcp:
                     properties:
                       projectId:
                         description: |-
-                          The GCP project servicing the cluster
+                          The GCP project servicing the location
 
-                          For clusters with the class of `datum-managed`, a service account will be
-                          required for each unique GCP project ID across all clusters registered in a
+                          For locations with the class of `datum-managed`, a service account will be
+                          required for each unique GCP project ID across all locations registered in a
                           namespace.
                         type: string
                       region:
-                        description: The GCP region servicing the cluster
+                        description: The GCP region servicing the location
                         type: string
                       zone:
-                        description: The GCP zone servicing the cluster
+                        description: The GCP zone servicing the location
                         type: string
                     required:
                     - projectId
@@ -71,19 +72,19 @@ spec:
               topology:
                 additionalProperties:
                   type: string
-                description: "The topology of the cluster\n\nThis may contain arbitrary
+                description: "The topology of the location\n\nThis may contain arbitrary
                   topology keys. Some keys may be well known, such\nas:\n\t- topology.datum.net/city-code"
                 type: object
             required:
-            - clusterClassName
+            - locationClassName
             - provider
             - topology
             type: object
           status:
-            description: DatumClusterStatus defines the observed state of DatumCluster.
+            description: LocationStatus defines the observed state of Location.
             properties:
               conditions:
-                description: Represents the observations of a cluster's current state.
+                description: Represents the observations of a location's current state.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.

@@ -39,6 +39,19 @@ spec:
           spec:
             description: NetworkBindingSpec defines the desired state of NetworkBinding
             properties:
+              location:
+                description: The location of where a network binding exists.
+                properties:
+                  name:
+                    description: Name of a datum location
+                    type: string
+                  namespace:
+                    description: Namespace for the datum location
+                    type: string
+                required:
+                - name
+                - namespace
+                type: object
               network:
                 description: The network that the binding is for.
                 properties:
@@ -54,19 +67,9 @@ spec:
                 required:
                 - name
                 type: object
-              topology:
-                additionalProperties:
-                  type: string
-                description: "The topology of where this binding exists\n\nThis may
-                  contain arbitrary topology keys. Some keys may be well known, such\nas:\n\t-
-                  topology.datum.net/city-code\n\t- topology.datum.net/cluster-name\n\t-
-                  topology.datum.net/cluster-namespace\n\nEach unique value of this
-                  field across bindings in the namespace will result\nin a NetworkAttachment
-                  to be created."
-                type: object
             required:
+            - location
             - network
-            - topology
             type: object
           status:
             description: NetworkBindingStatus defines the observed state of NetworkBinding

@@ -4,15 +4,12 @@ package controller
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"hash/fnv"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/util/rand"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -92,15 +89,10 @@ func (r *NetworkBindingReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, fmt.Errorf("failed fetching network for binding: %w", err)
 	}
 
-	networkContextName, err := networkContextNameForBinding(&binding)
-	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("failed to determine network context name: %w", err)
-	}
-
 	var networkContext networkingv1alpha.NetworkContext
 	networkContextObjectKey := client.ObjectKey{
 		Namespace: networkNamespace,
-		Name:      networkContextName,
+		Name:      networkContextNameForBinding(&binding),
 	}
 	if err := r.Client.Get(ctx, networkContextObjectKey, &networkContext); client.IgnoreNotFound(err) != nil {
 		return ctrl.Result{}, fmt.Errorf("failed fetching network context: %w", err)
@@ -109,14 +101,14 @@ func (r *NetworkBindingReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	if networkContext.CreationTimestamp.IsZero() {
 		networkContext = networkingv1alpha.NetworkContext{
 			ObjectMeta: metav1.ObjectMeta{
-				Namespace: networkNamespace,
-				Name:      networkContextName,
+				Namespace: networkContextObjectKey.Namespace,
+				Name:      networkContextObjectKey.Name,
 			},
 			Spec: networkingv1alpha.NetworkContextSpec{
 				Network: networkingv1alpha.LocalNetworkRef{
 					Name: binding.Spec.Network.Name,
 				},
-				Topology: binding.Spec.Topology,
+				Location: binding.Spec.Location,
 			},
 		}
 
@@ -166,18 +158,6 @@ func (r *NetworkBindingReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-func networkContextNameForBinding(binding *networkingv1alpha.NetworkBinding) (string, error) {
-	if binding.CreationTimestamp.IsZero() {
-		return "", fmt.Errorf("binding has not been created")
-	}
-	topologyBytes, err := json.Marshal(binding.Spec.Topology)
-	if err != nil {
-		return "", fmt.Errorf("failed marshaling topology to json: %w", err)
-	}
-
-	f := fnv.New32a()
-	f.Write(topologyBytes)
-	topologyHash := rand.SafeEncodeString(fmt.Sprint(f.Sum32()))
-
-	return fmt.Sprintf("%s-%s", binding.Spec.Network.Name, topologyHash), nil
+func networkContextNameForBinding(binding *networkingv1alpha.NetworkBinding) string {
+	return fmt.Sprintf("%s-%s-%s", binding.Spec.Network.Name, binding.Spec.Location.Namespace, binding.Spec.Location.Name)
 }

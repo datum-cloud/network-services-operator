@@ -82,9 +82,10 @@ func (r *SubnetClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 				Name:      claim.Name,
 			},
 			Spec: networkingv1alpha.SubnetSpec{
+				IPFamily:       claim.Spec.IPFamily,
 				SubnetClass:    claim.Spec.SubnetClass,
 				NetworkContext: claim.Spec.NetworkContext,
-				Topology:       claim.Spec.Topology,
+				Location:       claim.Spec.Location,
 			},
 		}
 

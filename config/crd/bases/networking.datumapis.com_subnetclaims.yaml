@@ -45,6 +45,19 @@ spec:
                 - IPv4
                 - IPv6
                 type: string
+              location:
+                description: The location which a subnet claim is associated with
+                properties:
+                  name:
+                    description: Name of a datum location
+                    type: string
+                  namespace:
+                    description: Namespace for the datum location
+                    type: string
+                required:
+                - name
+                - namespace
+                type: object
               networkContext:
                 description: The network context to claim a subnet in
                 properties:
@@ -64,16 +77,11 @@ spec:
               subnetClass:
                 description: The class of subnet required
                 type: string
-              topology:
-                additionalProperties:
-                  type: string
-                description: The topology which the subnet is associated with
-                type: object
             required:
             - ipFamily
+            - location
             - networkContext
             - subnetClass
-            - topology
             type: object
           status:
             description: SubnetClaimStatus defines the observed state of SubnetClaim

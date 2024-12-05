@@ -18,10 +18,10 @@ type SubnetClaimSpec struct {
 	// +kubebuilder:validation:Required
 	NetworkContext LocalNetworkContextRef `json:"networkContext"`
 
-	// The topology which the subnet is associated with
+	// The location which a subnet claim is associated with
 	//
 	// +kubebuilder:validation:Required
-	Topology map[string]string `json:"topology"`
+	Location LocationReference `json:"location,omitempty"`
 
 	// The IP family of a subnet claim
 	//

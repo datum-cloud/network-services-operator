@@ -67,7 +67,7 @@ resources:
     namespaced: true
   domain: datumapis.com
   group: networking
-  kind: DatumCluster
+  kind: Location
   path: go.datum.net/network-services-operator/api/v1alpha
   version: v1alpha
 version: "3"

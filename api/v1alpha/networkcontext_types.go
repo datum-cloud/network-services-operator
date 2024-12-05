@@ -13,19 +13,10 @@ type NetworkContextSpec struct {
 	// +kubebuilder:validation:Required
 	Network LocalNetworkRef `json:"network"`
 
-	// The topology of where this context exists
-	//
-	// This may contain arbitrary topology keys. Some keys may be well known, such
-	// as:
-	//	- topology.datum.net/city-code
-	//	- topology.datum.net/cluster-name
-	//	- topology.datum.net/cluster-namespace
-	//
-	// The combined keys and values MUST be unique for contexts in the same
-	// network.
+	// The location of where a network context exists.
 	//
 	// +kubebuilder:validation:Required
-	Topology map[string]string `json:"topology"`
+	Location LocationReference `json:"location,omitempty"`
 }
 
 // NetworkContextStatus defines the observed state of NetworkContext

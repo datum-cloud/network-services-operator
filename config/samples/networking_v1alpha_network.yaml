@@ -1,0 +1,7 @@
+apiVersion: networking.datumapis.com/v1alpha
+kind: Network
+metadata:
+  name: default
+spec:
+  ipam:
+    mode: Auto

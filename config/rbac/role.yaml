@@ -1,0 +1,47 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: manager-role
+rules:
+- apiGroups:
+  - networking.datumapis.com
+  resources:
+  - networkbindings
+  - networkcontexts
+  - networkpolicies
+  - networks
+  - subnetclaims
+  - subnets
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - networking.datumapis.com
+  resources:
+  - networkbindings/finalizers
+  - networkcontexts/finalizers
+  - networkpolicies/finalizers
+  - networks/finalizers
+  - subnetclaims/finalizers
+  - subnets/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - networking.datumapis.com
+  resources:
+  - networkbindings/status
+  - networkcontexts/status
+  - networkpolicies/status
+  - networks/status
+  - subnetclaims/status
+  - subnets/status
+  verbs:
+  - get
+  - patch
+  - update

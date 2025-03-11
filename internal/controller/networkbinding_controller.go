@@ -6,12 +6,13 @@ import (
 	"context"
 	"fmt"
 
+	mcbuilder "github.com/multicluster-runtime/multicluster-runtime/pkg/builder"
+	mcmanager "github.com/multicluster-runtime/multicluster-runtime/pkg/manager"
+	mcreconcile "github.com/multicluster-runtime/multicluster-runtime/pkg/reconcile"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -22,22 +23,26 @@ import (
 
 // NetworkBindingReconciler reconciles a NetworkBinding object
 type NetworkBindingReconciler struct {
-	client.Client
-	Scheme *runtime.Scheme
+	mgr mcmanager.Manager
 }
 
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkbindings,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkbindings/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkbindings/finalizers,verbs=update
 
-func (r *NetworkBindingReconciler) Reconcile(ctx context.Context, req ctrl.Request) (_ ctrl.Result, err error) {
-	logger := log.FromContext(ctx)
+func (r *NetworkBindingReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (_ ctrl.Result, err error) {
+	logger := log.FromContext(ctx, "cluster", req.ClusterName)
 
 	// Each valid network binding should result in a NetworkAttachment being
 	// created for each unique `topology` that's found.
 
+	cl, err := r.mgr.GetCluster(ctx, req.ClusterName)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
 	var binding networkingv1alpha.NetworkBinding
-	if err := r.Client.Get(ctx, req.NamespacedName, &binding); err != nil {
+	if err := cl.GetClient().Get(ctx, req.NamespacedName, &binding); err != nil {
 		if apierrors.IsNotFound(err) {
 			return ctrl.Result{}, nil
 		}
@@ -67,7 +72,7 @@ func (r *NetworkBindingReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		statusChanged := apimeta.SetStatusCondition(&binding.Status.Conditions, readyCondition)
 
 		if statusChanged {
-			err = r.Client.Status().Update(ctx, &binding)
+			err = cl.GetClient().Status().Update(ctx, &binding)
 		}
 	}()
 
@@ -83,7 +88,7 @@ func (r *NetworkBindingReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		Namespace: networkNamespace,
 		Name:      binding.Spec.Network.Name,
 	}
-	if err := r.Client.Get(ctx, networkObjectKey, &network); err != nil {
+	if err := cl.GetClient().Get(ctx, networkObjectKey, &network); err != nil {
 		readyCondition.Reason = "NetworkNotFound"
 		readyCondition.Message = "The network referenced in the binding was not found."
 		return ctrl.Result{}, fmt.Errorf("failed fetching network for binding: %w", err)
@@ -94,7 +99,7 @@ func (r *NetworkBindingReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		Namespace: networkNamespace,
 		Name:      networkContextNameForBinding(&binding),
 	}
-	if err := r.Client.Get(ctx, networkContextObjectKey, &networkContext); client.IgnoreNotFound(err) != nil {
+	if err := cl.GetClient().Get(ctx, networkContextObjectKey, &networkContext); client.IgnoreNotFound(err) != nil {
 		return ctrl.Result{}, fmt.Errorf("failed fetching network context: %w", err)
 	}
 
@@ -112,11 +117,11 @@ func (r *NetworkBindingReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 			},
 		}
 
-		if err := controllerutil.SetControllerReference(&network, &networkContext, r.Scheme); err != nil {
+		if err := controllerutil.SetControllerReference(&network, &networkContext, cl.GetScheme()); err != nil {
 			return ctrl.Result{}, fmt.Errorf("failed to set controller on network context: %w", err)
 		}
 
-		if err := r.Client.Create(ctx, &networkContext); err != nil {
+		if err := cl.GetClient().Create(ctx, &networkContext); err != nil {
 			return ctrl.Result{}, fmt.Errorf("failed creating network context: %w", err)
 		}
 	}
@@ -147,9 +152,10 @@ func (r *NetworkBindingReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 }
 
 // SetupWithManager sets up the controller with the Manager.
-func (r *NetworkBindingReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).
-		For(&networkingv1alpha.NetworkBinding{}, builder.WithPredicates(
+func (r *NetworkBindingReconciler) SetupWithManager(mgr mcmanager.Manager) error {
+	r.mgr = mgr
+	return mcbuilder.ControllerManagedBy(mgr).
+		For(&networkingv1alpha.NetworkBinding{}, mcbuilder.WithPredicates(
 			predicate.NewPredicateFuncs(func(object client.Object) bool {
 				o := object.(*networkingv1alpha.NetworkBinding)
 				return o.Status.NetworkContextRef == nil

@@ -16,6 +16,8 @@ import (
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 )
 
+// TODO(jreese) replace with chainsaw
+
 var _ = Describe("NetworkBinding Controller", func() {
 	Context("When reconciling a new resource", Ordered, func() {
 		const networkName = "test-binding-network"

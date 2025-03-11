@@ -4,21 +4,26 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"runtime"
 	"testing"
 
+	mcmanager "github.com/multicluster-runtime/multicluster-runtime/pkg/manager"
+	mcsingle "github.com/multicluster-runtime/multicluster-runtime/providers/single"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"golang.org/x/sync/errgroup"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
-	"sigs.k8s.io/controller-runtime/pkg/manager"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	// +kubebuilder:scaffold:imports
@@ -29,7 +34,7 @@ import (
 
 var cfg *rest.Config
 var k8sClient client.Client
-var k8sManager manager.Manager
+var k8sManager mcmanager.Manager
 var testEnv *envtest.Environment
 var ctx context.Context
 var cancel context.CancelFunc
@@ -70,30 +75,51 @@ var _ = BeforeSuite(func() {
 	Expect(err).NotTo(HaveOccurred())
 	Expect(cfg).NotTo(BeNil())
 
+	k8sClient, err = client.New(cfg, client.Options{Scheme: scheme.Scheme})
+	Expect(err).NotTo(HaveOccurred())
+	Expect(k8sClient).NotTo(BeNil())
+
+	cl, err := cluster.New(cfg, func(o *cluster.Options) {
+		o.Scheme = scheme.Scheme
+	})
+	Expect(err).NotTo(HaveOccurred())
+	Expect(cl).NotTo(BeNil())
+
 	err = networkingv1alpha.AddToScheme(scheme.Scheme)
 	Expect(err).NotTo(HaveOccurred())
 
 	// +kubebuilder:scaffold:scheme
 
-	k8sClient, err = client.New(cfg, client.Options{Scheme: scheme.Scheme})
-	Expect(err).NotTo(HaveOccurred())
-	Expect(k8sClient).NotTo(BeNil())
+	provider := mcsingle.New("test", cl)
 
-	k8sManager, err = ctrl.NewManager(cfg, ctrl.Options{
+	k8sManager, err = mcmanager.New(cfg, provider, ctrl.Options{
 		Scheme: scheme.Scheme,
 	})
 	Expect(err).ToNot(HaveOccurred())
 
-	err = (&NetworkBindingReconciler{
-		Client: k8sManager.GetClient(),
-		Scheme: k8sManager.GetScheme(),
-	}).SetupWithManager(k8sManager)
+	err = (&NetworkBindingReconciler{}).SetupWithManager(k8sManager)
 	Expect(err).ToNot(HaveOccurred())
 
 	go func() {
 		defer GinkgoRecover()
-		err = k8sManager.Start(ctx)
-		Expect(err).ToNot(HaveOccurred(), "failed to run manager")
+		g, ctx := errgroup.WithContext(ctx)
+		g.Go(func() error {
+			if err := k8sManager.Engage(ctx, "test", cl); err != nil {
+				return err
+			}
+			return ignoreCanceled(provider.Run(ctx, k8sManager))
+		})
+		g.Go(func() error {
+			return ignoreCanceled(cl.Start(ctx))
+		})
+		g.Go(func() error {
+			return ignoreCanceled(k8sManager.Start(ctx))
+		})
+
+		if err := g.Wait(); err != nil {
+			logf.Log.Error(err, "unable to start")
+			os.Exit(1)
+		}
 	}()
 
 })
@@ -104,3 +130,10 @@ var _ = AfterSuite(func() {
 	err := testEnv.Stop()
 	Expect(err).NotTo(HaveOccurred())
 })
+
+func ignoreCanceled(err error) error {
+	if errors.Is(err, context.Canceled) {
+		return nil
+	}
+	return err
+}

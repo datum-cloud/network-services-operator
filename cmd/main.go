@@ -1,26 +1,40 @@
 package main
 
 import (
+	"context"
 	"crypto/tls"
+	"errors"
 	"flag"
+	"fmt"
 	"os"
+	"strings"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
+	"golang.org/x/sync/errgroup"
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
+	mcmanager "github.com/multicluster-runtime/multicluster-runtime/pkg/manager"
+	"github.com/multicluster-runtime/multicluster-runtime/pkg/multicluster"
+	mckind "github.com/multicluster-runtime/multicluster-runtime/providers/kind"
+	mcsingle "github.com/multicluster-runtime/multicluster-runtime/providers/single"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	"go.datum.net/network-services-operator/internal/controller"
+	"go.datum.net/network-services-operator/internal/providers"
+	mcdatum "go.datum.net/network-services-operator/internal/providers/datum"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -44,6 +58,7 @@ func main() {
 	var secureMetrics bool
 	var enableHTTP2 bool
 	var tlsOpts []func(*tls.Config)
+	var clusterDiscoveryMode string
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
@@ -55,6 +70,8 @@ func main() {
 		"If set, the metrics endpoint is served securely via HTTPS. Use --metrics-secure=false to use HTTP instead.")
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
+	flag.StringVar(&clusterDiscoveryMode, "cluster-discovery-mode", "single",
+		"Method to discover clusters. Allowed values are: "+strings.Join(providers.AllowedProviders, ","))
 	opts := zap.Options{
 		Development: true,
 	}
@@ -104,7 +121,70 @@ func main() {
 		// this setup is not recommended for production.
 	}
 
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
+	cfg := ctrl.GetConfigOrDie()
+	var localManager manager.Manager
+	var err error
+
+	var provider interface {
+		multicluster.Provider
+		// TODO(jreese) see if Run should be defined in the Provider interface
+		Run(context.Context, mcmanager.Manager) error
+	}
+	var singleCluster cluster.Cluster
+
+	switch clusterDiscoveryMode {
+	case providers.ProviderSingle:
+		singleCluster, err = cluster.New(cfg, func(o *cluster.Options) {
+			o.Scheme = scheme
+		})
+		if err != nil {
+			setupLog.Error(err, "failed creating cluster")
+			os.Exit(1)
+		}
+		provider = mcsingle.New("single", singleCluster)
+
+	case providers.ProviderDatum:
+		localManager, err = manager.New(cfg, manager.Options{
+			Client: client.Options{
+				Cache: &client.CacheOptions{
+					Unstructured: true,
+				},
+			},
+		})
+		if err != nil {
+			setupLog.Error(err, "unable to set up overall controller manager")
+			os.Exit(1)
+		}
+
+		provider, err = mcdatum.New(localManager, mcdatum.Options{
+			ClusterOptions: []cluster.Option{
+				func(o *cluster.Options) {
+					o.Scheme = scheme
+				},
+			},
+		})
+		if err != nil {
+			setupLog.Error(err, "unable to create datum project provider")
+			os.Exit(1)
+		}
+
+	case providers.ProviderKind:
+		provider = mckind.New(mckind.Options{
+			ClusterOptions: []cluster.Option{
+				func(o *cluster.Options) {
+					o.Scheme = scheme
+				},
+			},
+		})
+
+	default:
+		setupLog.Error(fmt.Errorf("unsupported cluster discovery mode. Got %q, expected one of %s", clusterDiscoveryMode, strings.Join(providers.AllowedProviders, ",")), "")
+		os.Exit(1)
+	}
+
+	setupLog.Info("cluster discovery mode", "mode", clusterDiscoveryMode)
+
+	mgr, err := mcmanager.New(cfg, provider, ctrl.Options{
 		Scheme:                  scheme,
 		Metrics:                 metricsServerOptions,
 		WebhookServer:           webhookServer,
@@ -129,45 +209,27 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err = (&controller.NetworkReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
+	if err = (&controller.NetworkReconciler{}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Network")
 		os.Exit(1)
 	}
-	if err = (&controller.NetworkBindingReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
+	if err = (&controller.NetworkBindingReconciler{}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "NetworkBinding")
 		os.Exit(1)
 	}
-	if err = (&controller.NetworkContextReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
+	if err = (&controller.NetworkContextReconciler{}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "NetworkContext")
 		os.Exit(1)
 	}
-	if err = (&controller.NetworkPolicyReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
+	if err = (&controller.NetworkPolicyReconciler{}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "NetworkPolicy")
 		os.Exit(1)
 	}
-	if err = (&controller.SubnetReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
+	if err = (&controller.SubnetReconciler{}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Subnet")
 		os.Exit(1)
 	}
-	if err = (&controller.SubnetClaimReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
+	if err = (&controller.SubnetClaimReconciler{}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "SubnetClaim")
 		os.Exit(1)
 	}
@@ -182,9 +244,52 @@ func main() {
 		os.Exit(1)
 	}
 
-	setupLog.Info("starting manager")
-	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
-		setupLog.Error(err, "problem running manager")
+	ctx := ctrl.SetupSignalHandler()
+
+	if clusterDiscoveryMode == providers.ProviderSingle {
+		setupLog.Info("engaging cluster for single cluster provider")
+		// Pending feedback on https://github.com/multicluster-runtime/multicluster-runtime/pull/17#issue-2911191237
+		// to determine if the provider's Run function should be calling Engage
+		if err := mgr.Engage(ctx, "single", singleCluster); err != nil {
+			setupLog.Error(err, "failed engaging cluster")
+			os.Exit(1)
+		}
+	}
+
+	g, ctx := errgroup.WithContext(ctx)
+	if localManager != nil {
+		setupLog.Info("starting local manager")
+		g.Go(func() error {
+			return ignoreCanceled(localManager.Start(ctx))
+		})
+	}
+
+	setupLog.Info("starting cluster discovery provider")
+	g.Go(func() error {
+		return ignoreCanceled(provider.Run(ctx, mgr))
+	})
+
+	if singleCluster != nil {
+		setupLog.Info("starting cluster for single cluster provider")
+		g.Go(func() error {
+			return ignoreCanceled(singleCluster.Start(ctx))
+		})
+	}
+
+	setupLog.Info("starting multicluster manager")
+	g.Go(func() error {
+		return ignoreCanceled(mgr.Start(ctx))
+	})
+
+	if err := g.Wait(); err != nil {
+		setupLog.Error(err, "unable to start")
 		os.Exit(1)
 	}
+}
+
+func ignoreCanceled(err error) error {
+	if errors.Is(err, context.Canceled) {
+		return nil
+	}
+	return err
 }

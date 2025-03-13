@@ -3,6 +3,7 @@ package datum
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"sync"
 	"time"
 
@@ -114,8 +115,7 @@ func (p *Provider) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result
 
 	if err := p.client.Get(ctx, req.NamespacedName, &project); err != nil {
 		if apierrors.IsNotFound(err) {
-			log.Error(err, "project not found")
-
+			log.Info("removing cluster for project")
 			p.lock.Lock()
 			defer p.lock.Unlock()
 
@@ -159,7 +159,12 @@ func (p *Provider) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result
 	// TODO(jreese) explore providing a function that can be overridden to
 	// customize project auth.
 	cfg := rest.CopyConfig(p.config)
-	cfg.APIPath = fmt.Sprintf("/apis/resourcemanager.datumapis.com/v1alpha/projects/%s/control-plane", project.GetName())
+	apiHost, err := url.Parse(cfg.Host)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to parse host from rest config: %w", err)
+	}
+	apiHost.Path = fmt.Sprintf("/apis/resourcemanager.datumapis.com/v1alpha/projects/%s/control-plane", project.GetName())
+	cfg.Host = apiHost.String()
 
 	// create cluster.
 	cl, err := cluster.New(cfg, p.opts.ClusterOptions...)

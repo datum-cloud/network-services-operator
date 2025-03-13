@@ -33,7 +33,7 @@ type NetworkPolicyReconciler struct {
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.19.1/pkg/reconcile
 func (r *NetworkPolicyReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
-	_ = log.FromContext(ctx)
+	_ = log.FromContext(ctx, "cluster", req.ClusterName)
 
 	// TODO(user): your logic here
 

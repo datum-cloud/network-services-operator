@@ -1,5 +1,5 @@
 # Image URL to use all building/pushing image targets
-IMG ?= controller:latest
+IMG ?= network-services-operator:latest
 # ENVTEST_K8S_VERSION refers to the version of kubebuilder assets to be downloaded by envtest binary.
 ENVTEST_K8S_VERSION = 1.31.0
 
@@ -70,15 +70,15 @@ test: manifests generate fmt vet envtest ## Run tests.
 # - CERT_MANAGER_INSTALL_SKIP=true
 .PHONY: test-e2e
 test-e2e: manifests generate fmt vet ## Run the e2e tests. Expected an isolated environment using Kind.
-	# @command -v kind >/dev/null 2>&1 || { \
-	# 	echo "Kind is not installed. Please install Kind manually."; \
-	# 	exit 1; \
-	# }
-	# @kind get clusters | grep -q 'kind' || { \
-	# 	echo "No Kind cluster is running. Please start a Kind cluster before running the e2e tests."; \
-	# 	exit 1; \
-	# }
-	# go test ./test/e2e/ -v -ginkgo.v
+	@command -v kind >/dev/null 2>&1 || { \
+		echo "Kind is not installed. Please install Kind manually."; \
+		exit 1; \
+	}
+	@kind get clusters | grep -q 'kind' || { \
+		echo "No Kind cluster is running. Please start a Kind cluster before running the e2e tests."; \
+		exit 1; \
+	}
+	chainsaw test ./test/e2e
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter
@@ -127,10 +127,28 @@ docker-buildx: ## Build and push docker image for the manager for cross-platform
 	rm Dockerfile.cross
 
 .PHONY: build-installer
-build-installer: manifests generate kustomize ## Generate a consolidated YAML with CRDs and deployment.
+build-installer: set-image-controller generate ## Generate a consolidated YAML with CRDs and deployment.
 	mkdir -p dist
-	cd config/manager && $(KUSTOMIZE) edit set image controller=${IMG}
 	$(KUSTOMIZE) build config/default > dist/install.yaml
+
+.PHONY: set-image-controller
+set-image-controller: manifests kustomize
+	cd config/manager && $(KUSTOMIZE) edit set image controller=${IMG}
+
+.PHONY: prepare-e2e
+prepare-e2e: chainsaw set-image-controller cert-manager load-image-all deploy
+
+.PHONY: load-image-all
+load-image-all: load-image-operator
+
+.PHONY: load-image-operator
+load-image-operator: docker-build kind
+	$(KIND) load docker-image $(IMG)
+
+.PHONY: cert-manager
+cert-manager:
+	kubectl apply --validate=false -f https://github.com/jetstack/cert-manager/releases/download/v${CERTMANAGER_VERSION}/cert-manager.yaml
+	$(CMCTL) check api --wait=5m
 
 ##@ Deployment
 
@@ -147,8 +165,7 @@ uninstall: manifests kustomize ## Uninstall CRDs from the K8s cluster specified 
 	$(KUSTOMIZE) build config/crd | $(KUBECTL) delete --ignore-not-found=$(ignore-not-found) -f -
 
 .PHONY: deploy
-deploy: manifests kustomize ## Deploy controller to the K8s cluster specified in ~/.kube/config.
-	cd config/manager && $(KUSTOMIZE) edit set image controller=${IMG}
+deploy: set-image-controller ## Deploy controller to the K8s cluster specified in ~/.kube/config.
 	$(KUSTOMIZE) build config/default | $(KUBECTL) apply -f -
 
 .PHONY: undeploy
@@ -165,9 +182,13 @@ $(LOCALBIN):
 ## Tool Binaries
 KUBECTL ?= kubectl
 KUSTOMIZE ?= $(LOCALBIN)/kustomize
+KIND ?= $(LOCALBIN)/kind
 CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
 ENVTEST ?= $(LOCALBIN)/setup-envtest
 GOLANGCI_LINT = $(LOCALBIN)/golangci-lint
+CRDOC ?= $(LOCALBIN)/crdoc
+CHAINSAW ?= $(LOCALBIN)/chainsaw
+CMCTL ?= $(LOCALBIN)/cmctl
 
 ## Tool Versions
 KUSTOMIZE_VERSION ?= v5.5.0
@@ -175,10 +196,29 @@ CONTROLLER_TOOLS_VERSION ?= v0.16.4
 ENVTEST_VERSION ?= release-0.19
 GOLANGCI_LINT_VERSION ?= v1.62.0
 
+# renovate: datasource=go depName=github.com/cert-manager/cert-manager
+CERTMANAGER_VERSION ?= 1.17.1
+
+# renovate: datasource=go depName=fybrik.io/crdoc
+CRDOC_VERSION ?= v0.6.4
+
+# renovate: datasource=go depName=sigs.k8s.io/kind
+KIND_VERSION ?= v0.27.0
+
+# renovate: datasource=go depName=github.com/kyverno/chainsaw
+CHAINSAW_VERSION ?= v0.2.12
+
+# renovate: datasource=go depName=github.com/cert-manager/cmctl/v2
+CMCTL_VERSION ?= v2.1.1
+
 .PHONY: kustomize
 kustomize: $(KUSTOMIZE) ## Download kustomize locally if necessary.
 $(KUSTOMIZE): $(LOCALBIN)
 	$(call go-install-tool,$(KUSTOMIZE),sigs.k8s.io/kustomize/kustomize/v5,$(KUSTOMIZE_VERSION))
+
+.PHONY: kind
+kind: ## Download kind locally if necessary.
+	$(call go-install-tool,$(KIND),sigs.k8s.io/kind,$(KIND_VERSION))
 
 .PHONY: controller-gen
 controller-gen: $(CONTROLLER_GEN) ## Download controller-gen locally if necessary.
@@ -195,6 +235,18 @@ golangci-lint: $(GOLANGCI_LINT) ## Download golangci-lint locally if necessary.
 $(GOLANGCI_LINT): $(LOCALBIN)
 	$(call go-install-tool,$(GOLANGCI_LINT),github.com/golangci/golangci-lint/cmd/golangci-lint,$(GOLANGCI_LINT_VERSION))
 
+.PHONY: crdoc
+crdoc: ## Download crdoc locally if necessary.
+	$(call go-install-tool,$(CRDOC),fybrik.io/crdoc,$(CRDOC_VERSION))
+
+.PHONY: chainsaw
+chainsaw: ## Find or download chainsaw
+	$(call go-install-tool,$(CHAINSAW),github.com/kyverno/chainsaw,$(CHAINSAW_VERSION))
+
+.PHONY: cmctl
+cmctl: ## Find or download cmctl
+	$(call go-install-tool,$(CMCTL),github.com/cert-manager/cmctl/v2,$(CMCTL_VERSION))
+
 # go-install-tool will 'go install' any package with custom target and name of binary, if it doesn't exist
 # $1 - target path with name of binary
 # $2 - package url which can be installed
@@ -210,3 +262,20 @@ mv $(1) $(1)-$(3) ;\
 } ;\
 ln -sf $(1)-$(3) $(1)
 endef
+
+.PHONY: api-docs
+api-docs: crdoc kustomize
+	@{ \
+	set -e ;\
+	TMP_MANIFEST_DIR=$$(mktemp -d) ; \
+	cp -r config/crd/* $$TMP_MANIFEST_DIR; \
+	$(MAKE) CRD_OPTIONS=$(CRD_OPTIONS),maxDescLen=1200 MANIFEST_DIR=$$TMP_MANIFEST_DIR/bases manifests ;\
+	TMP_DIR=$$(mktemp -d) ; \
+	$(KUSTOMIZE) build $$TMP_MANIFEST_DIR -o $$TMP_DIR ;\
+	mkdir -p docs/api ;\
+	for crdmanifest in $$TMP_DIR/*; do \
+	  filename="$$(basename -s .networking.datumapis.com.yaml $$crdmanifest)" ;\
+	  filename="$${filename#apiextensions.k8s.io_v1_customresourcedefinition_}" ;\
+	  $(CRDOC) --resources $$crdmanifest --output docs/api/$$filename.md ;\
+	done;\
+	}

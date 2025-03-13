@@ -2,6 +2,7 @@ package datum
 
 import (
 	"context"
+	"net/url"
 	"testing"
 
 	mcmanager "github.com/multicluster-runtime/multicluster-runtime/pkg/manager"
@@ -58,6 +59,12 @@ func TestReadyProject(t *testing.T) {
 	assert.Equal(t, false, result.Requeue)
 	assert.Zero(t, result.RequeueAfter)
 	assert.Len(t, provider.projects, 1)
+
+	cl, err := provider.Get(context.Background(), "/test-project")
+	assert.NoError(t, err)
+	apiHost, err := url.Parse(cl.GetConfig().Host)
+	assert.NoError(t, err)
+	assert.Equal(t, "/apis/resourcemanager.datumapis.com/v1alpha/projects/test-project/control-plane", apiHost.Path)
 }
 
 func newTestProvider(projectStatus metav1.ConditionStatus) (*Provider, client.Object, client.Client) {
@@ -80,9 +87,11 @@ func newTestProvider(projectStatus metav1.ConditionStatus) (*Provider, client.Ob
 		Build()
 
 	p := &Provider{
-		client:    fakeClient,
-		mcMgr:     &testMultiClusterManager{},
-		config:    &rest.Config{},
+		client: fakeClient,
+		mcMgr:  &testMultiClusterManager{},
+		config: &rest.Config{
+			Host: "https://localhost",
+		},
 		projects:  map[string]cluster.Cluster{},
 		cancelFns: map[string]context.CancelFunc{},
 		opts: Options{

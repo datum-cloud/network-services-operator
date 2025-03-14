@@ -1,0 +1,81 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: ready-when-context-is-ready
+spec:
+  steps:
+    - name: Create Network
+      try:
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Network
+              metadata:
+                name: test-binding-network
+                namespace: default
+              spec:
+                ipam:
+                  mode: Auto
+
+    - name: Create NetworkBinding
+      try:
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkBinding
+              metadata:
+                name: test-binding
+                namespace: default
+              spec:
+                network:
+                  name: test-binding-network
+                location:
+                  name: some-location
+                  namespace: default
+        - assert:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkContext
+              metadata:
+                name: test-binding-network-default-some-location
+                namespace: default
+                (creationTimestamp != nil): true
+        - wait:
+            apiVersion: networking.datumapis.com/v1alpha
+            kind: NetworkBinding
+            name: test-binding
+            namespace: default
+            for:
+              condition:
+                name: Ready
+                value: 'false'
+
+    - name: Set NetworkContext Ready Condition to True
+      description: |
+        Under normal operation, a plugin is expected to move the network context
+        to be ready once it has been programmed at the plugin's backend. We may
+        introduce a plugin that can be used during tests so that this won't be
+        necessary.
+
+        A direct kubectl command is used as Chainsaw purposefully does not
+        support updating subresources. See https://github.com/kyverno/chainsaw/issues/300
+        for more details.
+      try:
+        - script:
+            content: |
+                kubectl -n default patch networkcontext test-binding-network-default-some-location \
+                  --subresource=status --type=merge \
+                  -p '{"status":{"conditions":[{"type": "Ready", "status": "True", "reason": "Test", "message": "test", "lastTransitionTime": "2025-02-24T23:59:09Z"}]}}'
+
+    - name: Assert NetworkBinding is Ready
+      try:
+        - wait:
+            apiVersion: networking.datumapis.com/v1alpha
+            kind: NetworkBinding
+            name: test-binding
+            namespace: default
+            for:
+              condition:
+                name: Ready
+                value: 'true'

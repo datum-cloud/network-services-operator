@@ -6,13 +6,14 @@ import (
 	"context"
 	"fmt"
 
+	mcbuilder "github.com/multicluster-runtime/multicluster-runtime/pkg/builder"
+	mcmanager "github.com/multicluster-runtime/multicluster-runtime/pkg/manager"
+	mcreconcile "github.com/multicluster-runtime/multicluster-runtime/pkg/reconcile"
 	"google.golang.org/protobuf/proto"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
@@ -22,8 +23,7 @@ import (
 
 // SubnetReconciler reconciles a Subnet object
 type SubnetReconciler struct {
-	client.Client
-	Scheme *runtime.Scheme
+	mgr mcmanager.Manager
 }
 
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=subnets,verbs=get;list;watch;create;update;patch;delete
@@ -39,11 +39,16 @@ type SubnetReconciler struct {
 //
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.19.1/pkg/reconcile
-func (r *SubnetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	logger := log.FromContext(ctx)
+func (r *SubnetReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
+	logger := log.FromContext(ctx, "cluster", req.ClusterName)
+
+	cl, err := r.mgr.GetCluster(ctx, req.ClusterName)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
 
 	var subnet networkingv1alpha.Subnet
-	if err := r.Client.Get(ctx, req.NamespacedName, &subnet); err != nil {
+	if err := cl.GetClient().Get(ctx, req.NamespacedName, &subnet); err != nil {
 		if apierrors.IsNotFound(err) {
 			return ctrl.Result{}, nil
 		}
@@ -64,7 +69,7 @@ func (r *SubnetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		Namespace: subnet.Namespace,
 		Name:      subnet.Spec.NetworkContext.Name,
 	}
-	if err := r.Client.Get(ctx, networkContextObjectKey, &networkContext); err != nil {
+	if err := cl.GetClient().Get(ctx, networkContextObjectKey, &networkContext); err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed fetching network context: %w", err)
 	}
 
@@ -73,7 +78,7 @@ func (r *SubnetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		Namespace: networkContext.Spec.Location.Namespace,
 		Name:      networkContext.Spec.Location.Name,
 	}
-	if err := r.Client.Get(ctx, locationObjectKey, &location); err != nil {
+	if err := cl.GetClient().Get(ctx, locationObjectKey, &location); err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed fetching network context location: %w", err)
 	}
 
@@ -119,7 +124,7 @@ func (r *SubnetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		Message:            "Subnet has been allocated a prefix",
 	})
 
-	if err := r.Client.Status().Update(ctx, &subnet); err != nil {
+	if err := cl.GetClient().Status().Update(ctx, &subnet); err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed updating subnet status")
 	}
 
@@ -127,9 +132,10 @@ func (r *SubnetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 }
 
 // SetupWithManager sets up the controller with the Manager.
-func (r *SubnetReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).
-		For(&networkingv1alpha.Subnet{}, builder.WithPredicates(
+func (r *SubnetReconciler) SetupWithManager(mgr mcmanager.Manager) error {
+	r.mgr = mgr
+	return mcbuilder.ControllerManagedBy(mgr).
+		For(&networkingv1alpha.Subnet{}, mcbuilder.WithPredicates(
 			predicate.NewPredicateFuncs(func(object client.Object) bool {
 				// Don't bother processing subnets that have been allocated and are not
 				// deleting

@@ -1,0 +1,13 @@
+name: Publish Docker Image
+
+on:
+  push:
+  release:
+    types: ['published']
+
+jobs:
+  publish:
+    uses: datum-cloud/actions/.github/workflows/publish-docker.yaml@v1.0.0
+    with:
+      image-name: network-services-operator
+    secrets: inherit

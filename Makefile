@@ -146,7 +146,7 @@ load-image-operator: docker-build kind
 	$(KIND) load docker-image $(IMG)
 
 .PHONY: cert-manager
-cert-manager:
+cert-manager: cmctl
 	kubectl apply --validate=false -f https://github.com/jetstack/cert-manager/releases/download/v${CERTMANAGER_VERSION}/cert-manager.yaml
 	$(CMCTL) check api --wait=5m
 

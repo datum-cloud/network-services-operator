@@ -69,7 +69,7 @@ test: manifests generate fmt vet envtest ## Run tests.
 # - PROMETHEUS_INSTALL_SKIP=true
 # - CERT_MANAGER_INSTALL_SKIP=true
 .PHONY: test-e2e
-test-e2e: manifests generate fmt vet ## Run the e2e tests. Expected an isolated environment using Kind.
+test-e2e: chainsaw manifests generate fmt vet ## Run the e2e tests. Expected an isolated environment using Kind.
 	@command -v kind >/dev/null 2>&1 || { \
 		echo "Kind is not installed. Please install Kind manually."; \
 		exit 1; \
@@ -78,7 +78,7 @@ test-e2e: manifests generate fmt vet ## Run the e2e tests. Expected an isolated 
 		echo "No Kind cluster is running. Please start a Kind cluster before running the e2e tests."; \
 		exit 1; \
 	}
-	chainsaw test ./test/e2e
+	$(CHAINSAW) test ./test/e2e
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter
@@ -146,7 +146,7 @@ load-image-operator: docker-build kind
 	$(KIND) load docker-image $(IMG)
 
 .PHONY: cert-manager
-cert-manager:
+cert-manager: cmctl
 	kubectl apply --validate=false -f https://github.com/jetstack/cert-manager/releases/download/v${CERTMANAGER_VERSION}/cert-manager.yaml
 	$(CMCTL) check api --wait=5m
 

@@ -178,7 +178,11 @@ func main() {
 		})
 
 	default:
-		setupLog.Error(fmt.Errorf("unsupported cluster discovery mode. Got %q, expected one of %s", clusterDiscoveryMode, strings.Join(providers.AllowedProviders, ",")), "")
+		setupLog.Error(fmt.Errorf(
+			"unsupported cluster discovery mode. Got %q, expected one of %s",
+			clusterDiscoveryMode,
+			strings.Join(providers.AllowedProviders, ","),
+		), "")
 		os.Exit(1)
 	}
 

@@ -2,6 +2,7 @@ package datum
 
 import (
 	"context"
+	"fmt"
 	"net/url"
 	"testing"
 
@@ -34,7 +35,7 @@ func init() {
 }
 
 func TestNotReadyProject(t *testing.T) {
-	provider, project, _ := newTestProvider(metav1.ConditionFalse)
+	provider, project := newTestProvider(metav1.ConditionFalse)
 
 	req := ctrl.Request{
 		NamespacedName: client.ObjectKeyFromObject(project),
@@ -48,7 +49,7 @@ func TestNotReadyProject(t *testing.T) {
 }
 
 func TestReadyProject(t *testing.T) {
-	provider, project, _ := newTestProvider(metav1.ConditionTrue)
+	provider, project := newTestProvider(metav1.ConditionTrue)
 
 	req := ctrl.Request{
 		NamespacedName: client.ObjectKeyFromObject(project),
@@ -67,7 +68,7 @@ func TestReadyProject(t *testing.T) {
 	assert.Equal(t, "/apis/resourcemanager.datumapis.com/v1alpha/projects/test-project/control-plane", apiHost.Path)
 }
 
-func newTestProvider(projectStatus metav1.ConditionStatus) (*Provider, client.Object, client.Client) {
+func newTestProvider(projectStatus metav1.ConditionStatus) (*Provider, client.Object) {
 	project := &unstructured.Unstructured{}
 	project.SetGroupVersionKind(projectGVK)
 	project.SetName("test-project")
@@ -79,7 +80,9 @@ func newTestProvider(projectStatus metav1.ConditionStatus) (*Provider, client.Ob
 		},
 	}
 
-	unstructured.SetNestedSlice(project.Object, conditions, "status", "conditions")
+	if err := unstructured.SetNestedSlice(project.Object, conditions, "status", "conditions"); err != nil {
+		panic(fmt.Errorf("failed setting status conditions on test project: %w", err))
+	}
 
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(runtimeScheme).
@@ -105,5 +108,5 @@ func newTestProvider(projectStatus metav1.ConditionStatus) (*Provider, client.Ob
 		},
 	}
 
-	return p, project, fakeClient
+	return p, project
 }

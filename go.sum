@@ -79,10 +79,10 @@ github.com/inconshreveable/mousetrap v1.1.0 h1:wN+x4NVGpMsO7ErUn/mUI3vEoE6Jt13X2
 github.com/inconshreveable/mousetrap v1.1.0/go.mod h1:vpF70FUmC8bwa3OWnCshd2FqLfsEA9PFc4w1p2J65bw=
 github.com/josharian/intern v1.0.0 h1:vlS4z54oSdjm0bgjRigI+G1HpF+tI+9rE5LLzOg8HmY=
 github.com/josharian/intern v1.0.0/go.mod h1:5DoeVV0s6jJacbCEi61lwdGj/aVlrQvzHFFd8Hwg//Y=
-github.com/joshlreese/multicluster-runtime v0.0.0-20250313195449-d708b3aec896 h1:BvUevjYqMm8Tb6UNV8NoMOmkvLocutRq86gYayCjp3c=
-github.com/joshlreese/multicluster-runtime v0.0.0-20250313195449-d708b3aec896/go.mod h1:6ZuT8VoTSr8nYyToyhnhAepyZoHAaCQzzabzbSFwAKc=
-github.com/joshlreese/multicluster-runtime/providers/kind v0.0.0-20250313195449-d708b3aec896 h1:MhTw1DjB8tcgpaYmcsXS4EkpM4qEfh86oXfzHED2FgI=
-github.com/joshlreese/multicluster-runtime/providers/kind v0.0.0-20250313195449-d708b3aec896/go.mod h1:/iuOmUpYWY3+/lnl7aTKYSlLA52uGodXbHgkOzd1mIk=
+github.com/joshlreese/multicluster-runtime v0.0.0-20250314143600-b71b4666c5c1 h1:aTeTVKwC3zyqO2ifzkUgQX2+KZfUr20eOH1wx9lGmRg=
+github.com/joshlreese/multicluster-runtime v0.0.0-20250314143600-b71b4666c5c1/go.mod h1:6ZuT8VoTSr8nYyToyhnhAepyZoHAaCQzzabzbSFwAKc=
+github.com/joshlreese/multicluster-runtime/providers/kind v0.0.0-20250314143600-b71b4666c5c1 h1:GamQBTCFDqL3o9VAUDioPatZAikXn1avDl4i6JHG5Us=
+github.com/joshlreese/multicluster-runtime/providers/kind v0.0.0-20250314143600-b71b4666c5c1/go.mod h1:/iuOmUpYWY3+/lnl7aTKYSlLA52uGodXbHgkOzd1mIk=
 github.com/json-iterator/go v1.1.12 h1:PV8peI4a0ysnczrg+LtxykD8LfKY9ML6u2jnxaEnrnM=
 github.com/json-iterator/go v1.1.12/go.mod h1:e30LSqwooZae/UwlEbR2852Gd8hjQvJoHmT4TnhNGBo=
 github.com/kisielk/errcheck v1.5.0/go.mod h1:pFxgyoBC7bSaBwPgfKdkLd5X25qrDl4LWUI2bnpBCr8=

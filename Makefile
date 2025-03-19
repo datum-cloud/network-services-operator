@@ -143,7 +143,7 @@ load-image-all: load-image-operator
 
 .PHONY: load-image-operator
 load-image-operator: docker-build kind
-	$(KIND) load docker-image $(IMG)
+	$(KIND) load docker-image $(IMG) -n nso-standard
 
 .PHONY: cert-manager
 cert-manager: cmctl

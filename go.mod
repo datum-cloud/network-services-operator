@@ -17,10 +17,12 @@ require (
 	sigs.k8s.io/gateway-api v1.2.1
 )
 
-// replace (
-// 	github.com/multicluster-runtime/multicluster-runtime => github.com/joshlreese/multicluster-runtime v0.0.0-20250314143600-b71b4666c5c1
-// 	github.com/multicluster-runtime/multicluster-runtime/providers/kind => github.com/joshlreese/multicluster-runtime/providers/kind v0.0.0-20250314143600-b71b4666c5c1
-// )
+replace (
+	github.com/multicluster-runtime/multicluster-runtime => github.com/joshlreese/multicluster-runtime v0.0.0-20250314143600-b71b4666c5c1
+	github.com/multicluster-runtime/multicluster-runtime/providers/kind => github.com/joshlreese/multicluster-runtime/providers/kind v0.0.0-20250314143600-b71b4666c5c1
+)
+
+require github.com/multicluster-runtime/multicluster-runtime/providers/kind v0.0.0-00010101000000-000000000000
 
 require (
 	cel.dev/expr v0.18.0 // indirect

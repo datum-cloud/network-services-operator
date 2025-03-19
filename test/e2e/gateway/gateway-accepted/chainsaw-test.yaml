@@ -259,17 +259,29 @@ spec:
         # Unfortunately outputs don't work on `assert` or `get`.
         # See: https://github.com/kyverno/chainsaw/issues/1034
         - script:
+            skipCommandOutput: true
             skipLogOutput: true
             content: |
               kubectl -n $NAMESPACE get gateway test-gateway-7c27512b7c3eb57ce8fbbc32e99271b883da4a709df009614603725ded747145 -o json
             outputs:
               - name: downstreamGateway
                 value: (json_parse($stdout))
+              - name: downstreamGatewayV4Addresses
+                value: ($downstreamGateway.status.addresses[?contains(value, '.')].value)
+              - name: downstreamGatewayV6Addresses
+                value: ($downstreamGateway.status.addresses[?contains(value, ':')].value)
 
         # Ensure DNSEndpoint is defined and that targets match the addresses
         # provisioned to the downstream gateway.
         - assert:
             # timeout: 5s
+            bindings:
+              - name: primaryHostname
+                value: (join('.', [$upstreamGateway.metadata.uid, 'prism.global.datum-dns.net']))
+              - name: v4IPFamilyHostname
+                value: (join('.', ['v4', $primaryHostname]))
+              - name: v6IPFamilyHostname
+                value: (join('.', ['v6', $primaryHostname]))
             resource:
               apiVersion: externaldns.k8s.io/v1alpha1
               kind: DNSEndpoint
@@ -277,24 +289,20 @@ spec:
                 name: test-gateway-7c27512b7c3eb57ce8fbbc32e99271b883da4a709df009614603725ded747145
               spec:
                 endpoints:
-                  - dnsName: (join('.', [$upstreamGateway.metadata.uid, 'prism.global.datum-dns.net']))
-                    targets:
-                      - ($downstreamGateway.status.addresses[?contains(value, '.')].value | [0])
+                  - dnsName: ($primaryHostname)
+                    targets: ($downstreamGatewayV4Addresses)
                     recordType: A
                     recordTTL: 300
-                  - dnsName: (join('.', [$upstreamGateway.metadata.uid, 'prism.global.datum-dns.net']))
-                    targets:
-                      - ($downstreamGateway.status.addresses[?contains(value, ':')].value | [0])
+                  - dnsName: ($primaryHostname)
+                    targets: ($downstreamGatewayV6Addresses)
                     recordType: AAAA
                     recordTTL: 300
-                  - dnsName: (join('.', ['v4', $upstreamGateway.metadata.uid, 'prism.global.datum-dns.net']))
-                    targets:
-                      - ($downstreamGateway.status.addresses[?contains(value, '.')].value | [0])
+                  - dnsName: ($v4IPFamilyHostname)
+                    targets: ($downstreamGatewayV4Addresses)
                     recordType: A
                     recordTTL: 300
-                  - dnsName: (join('.', ['v6', $upstreamGateway.metadata.uid, 'prism.global.datum-dns.net']))
-                    targets:
-                      - ($downstreamGateway.status.addresses[?contains(value, ':')].value | [0])
+                  - dnsName: ($v6IPFamilyHostname)
+                    targets: ($downstreamGatewayV6Addresses)
                     recordType: AAAA
                     recordTTL: 300
 

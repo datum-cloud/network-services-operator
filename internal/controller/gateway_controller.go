@@ -240,7 +240,12 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 
 		return nil
 	}); err != nil {
-		return Result{Err: err}, nil
+		if apierrors.IsConflict(err) {
+			result.Requeue = true
+			return result, nil
+		}
+		result.Err = err
+		return result, nil
 	}
 
 	if c := apimeta.FindStatusCondition(downstreamGateway.Status.Conditions, string(gatewayv1.GatewayConditionAccepted)); c != nil {
@@ -275,7 +280,32 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 		result.AddStatusUpdate(upstreamClient, upstreamGateway)
 	}
 
-	var addresses []gatewayv1.GatewayStatusAddress
+	// Extract IP addresses from the downstream gateway's status
+	// Using the `any`` type due to deep copy logic requirements in the unstructured
+	// lib used to set DNSEndpoint values.
+	var v4IPs, v6IPs []any
+	for _, addr := range downstreamGateway.Status.Addresses {
+		if addr.Type == nil {
+			continue
+		}
+		switch *addr.Type {
+		case gatewayv1.IPAddressType:
+			// Check if it's an IPv4 or IPv6 address
+			if strings.Contains(addr.Value, ":") {
+				v6IPs = append(v6IPs, addr.Value)
+			} else {
+				v4IPs = append(v4IPs, addr.Value)
+			}
+		}
+	}
+
+	// Return early if no IP addresses were found
+	if len(v4IPs) == 0 || len(v6IPs) == 0 {
+		logger.Info("IP addresses not yet available on downstream gateway", "ipv4", v4IPs, "ipv6", v6IPs)
+		return result, nil
+	}
+
+	addresses := make([]gatewayv1.GatewayStatusAddress, 0, len(hostnames))
 	addressType := gatewayv1.HostnameAddressType
 
 	endpoints := []any{}
@@ -288,29 +318,6 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 	gatewayDNSEndpoint.SetNamespace(downstreamGateway.Namespace)
 	gatewayDNSEndpoint.SetName(downstreamGateway.Name)
 
-	// Extract IP addresses from the downstream gateway's status
-	var v4IP, v6IP string
-	for _, addr := range downstreamGateway.Status.Addresses {
-		if addr.Type == nil {
-			continue
-		}
-		switch *addr.Type {
-		case gatewayv1.IPAddressType:
-			// Check if it's an IPv4 or IPv6 address
-			if strings.Contains(addr.Value, ":") {
-				v6IP = addr.Value
-			} else {
-				v4IP = addr.Value
-			}
-		}
-	}
-
-	// Return early if no IP addresses were found
-	if v4IP == "" || v6IP == "" {
-		logger.Info("IP addresses not yet available on downstream gateway", "ipv4", v4IP, "ipv6", v6IP)
-		return result, nil
-	}
-
 	for _, hostname := range hostnames {
 		addresses = append(addresses, gatewayv1.GatewayStatusAddress{
 			Type:  &addressType,
@@ -318,9 +325,10 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 		})
 
 		if !strings.HasPrefix(hostname, "v6") {
+			// v4 specific hostname, or hostname that includes both v4 and v6
 			endpoints = append(endpoints, map[string]any{
 				"dnsName":    hostname,
-				"targets":    []any{v4IP},
+				"targets":    v4IPs,
 				"recordType": "A",
 				"recordTTL":  int64(300),
 			})
@@ -330,7 +338,7 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 			// v6 specific hostname, or hostname that includes both v4 and v6
 			endpoints = append(endpoints, map[string]any{
 				"dnsName":    hostname,
-				"targets":    []any{v6IP},
+				"targets":    v6IPs,
 				"recordType": "AAAA",
 				"recordTTL":  int64(300),
 			})

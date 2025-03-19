@@ -17,7 +17,7 @@ type Result struct {
 
 	// StopProcessing indicates that the caller should not continue processing and
 	// let the Reconciler go to sleep without an explicit requeue, expecting a
-	// Watch to trigger a future reconcilation call.
+	// Watch to trigger a future reconciliation call.
 	StopProcessing bool
 
 	syncStatus map[client.Object]client.Client

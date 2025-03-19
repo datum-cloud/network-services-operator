@@ -147,7 +147,7 @@ load-image-operator: docker-build kind
 
 .PHONY: cert-manager
 cert-manager: cmctl
-	$(KUSTOMIZE) build --enable-helm config/tools/cert-manager | kubectl apply --server-side=true --force-conflicts-f -
+	$(KUSTOMIZE) build --enable-helm config/tools/cert-manager | kubectl apply --server-side=true --force-conflicts -f -
 	$(CMCTL) check api --wait=5m
 
 .PHONY: envoy-gateway

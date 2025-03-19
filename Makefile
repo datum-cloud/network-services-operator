@@ -136,7 +136,7 @@ set-image-controller: manifests kustomize
 	cd config/manager && $(KUSTOMIZE) edit set image controller=${IMG}
 
 .PHONY: prepare-e2e
-prepare-e2e: chainsaw set-image-controller cert-manager envoy-gateway load-image-all deploy
+prepare-e2e: chainsaw set-image-controller cert-manager envoy-gateway external-dns load-image-all deploy
 
 .PHONY: load-image-all
 load-image-all: load-image-operator

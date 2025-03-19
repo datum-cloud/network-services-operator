@@ -253,7 +253,21 @@ spec:
                     type: ResolvedRefs
                   name: https-2
 
-        # Ensure DNSEndpoint is defined
+        # Load the downstream gateway so we can get the IP address info from its
+        # status.
+        #
+        # Unfortunately outputs don't work on `assert` or `get`.
+        # See: https://github.com/kyverno/chainsaw/issues/1034
+        - script:
+            skipLogOutput: true
+            content: |
+              kubectl -n $NAMESPACE get gateway test-gateway-7c27512b7c3eb57ce8fbbc32e99271b883da4a709df009614603725ded747145 -o json
+            outputs:
+              - name: downstreamGateway
+                value: (json_parse($stdout))
+
+        # Ensure DNSEndpoint is defined and that targets match the addresses
+        # provisioned to the downstream gateway.
         - assert:
             # timeout: 5s
             resource:
@@ -264,19 +278,23 @@ spec:
               spec:
                 endpoints:
                   - dnsName: (join('.', [$upstreamGateway.metadata.uid, 'prism.global.datum-dns.net']))
-                    (length(targets) == `1`): true
+                    targets:
+                      - ($downstreamGateway.status.addresses[?contains(value, '.')].value | [0])
                     recordType: A
                     recordTTL: 300
                   - dnsName: (join('.', [$upstreamGateway.metadata.uid, 'prism.global.datum-dns.net']))
-                    (length(targets) == `1`): true
+                    targets:
+                      - ($downstreamGateway.status.addresses[?contains(value, ':')].value | [0])
                     recordType: AAAA
                     recordTTL: 300
                   - dnsName: (join('.', ['v4', $upstreamGateway.metadata.uid, 'prism.global.datum-dns.net']))
-                    (length(targets) == `1`): true
+                    targets:
+                      - ($downstreamGateway.status.addresses[?contains(value, '.')].value | [0])
                     recordType: A
                     recordTTL: 300
                   - dnsName: (join('.', ['v6', $upstreamGateway.metadata.uid, 'prism.global.datum-dns.net']))
-                    (length(targets) == `1`): true
+                    targets:
+                      - ($downstreamGateway.status.addresses[?contains(value, ':')].value | [0])
                     recordType: AAAA
                     recordTTL: 300
 

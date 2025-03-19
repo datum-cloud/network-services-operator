@@ -95,10 +95,10 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 	//	strategy defined in https://github.com/datum-cloud/enhancements/issues/15
 
 	// The gateway spec says that tls settings must be defined on the listeners
-	// with an HTTPS protocol, but I’m going to make that optional for our end
+	// with an HTTPS protocol, but I'm going to make that optional for our end
 	// users since we can have certs issued by LE. Maybe to stick with
 	// conformance, we can inject default tls settings and have the certificateRef
-	// point at some kind of CertificateManager type that indicates it’ll be
+	// point at some kind of CertificateManager type that indicates it'll be
 	// issued from LE.
 
 	// See GatewayConditionType and GatewayConditionReason
@@ -145,6 +145,8 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 	upstreamGateway *gatewayv1.Gateway,
 	downstreamStrategy DownstreamResourceStrategy,
 ) (result Result, downstreamGateway *gatewayv1.Gateway) {
+	logger := log.FromContext(ctx)
+
 	downstreamClient := downstreamStrategy.GetClient()
 
 	downstreamGateway = &gatewayv1.Gateway{
@@ -286,6 +288,29 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 	gatewayDNSEndpoint.SetNamespace(downstreamGateway.Namespace)
 	gatewayDNSEndpoint.SetName(downstreamGateway.Name)
 
+	// Extract IP addresses from the downstream gateway's status
+	var v4IP, v6IP string
+	for _, addr := range downstreamGateway.Status.Addresses {
+		if addr.Type == nil {
+			continue
+		}
+		switch *addr.Type {
+		case gatewayv1.IPAddressType:
+			// Check if it's an IPv4 or IPv6 address
+			if strings.Contains(addr.Value, ":") {
+				v6IP = addr.Value
+			} else {
+				v4IP = addr.Value
+			}
+		}
+	}
+
+	// Return early if no IP addresses were found
+	if v4IP == "" || v6IP == "" {
+		logger.Info("IP addresses not yet available on downstream gateway", "ipv4", v4IP, "ipv6", v6IP)
+		return result, nil
+	}
+
 	for _, hostname := range hostnames {
 		addresses = append(addresses, gatewayv1.GatewayStatusAddress{
 			Type:  &addressType,
@@ -294,9 +319,8 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 
 		if !strings.HasPrefix(hostname, "v6") {
 			endpoints = append(endpoints, map[string]any{
-				"dnsName": hostname,
-				// TODO(jreese) pluck IP from downstream gateway
-				"targets":    []any{"1.1.1.1"},
+				"dnsName":    hostname,
+				"targets":    []any{v4IP},
 				"recordType": "A",
 				"recordTTL":  int64(300),
 			})
@@ -305,9 +329,8 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 		if !strings.HasPrefix(hostname, "v4") {
 			// v6 specific hostname, or hostname that includes both v4 and v6
 			endpoints = append(endpoints, map[string]any{
-				"dnsName": hostname,
-				// TODO(jreese) pluck IP from downstream gateway
-				"targets":    []any{"::1"},
+				"dnsName":    hostname,
+				"targets":    []any{v6IP},
 				"recordType": "AAAA",
 				"recordTTL":  int64(300),
 			})
@@ -340,10 +363,10 @@ func getDownstreamResourceStrategy(cl cluster.Cluster) DownstreamResourceStrateg
 	// in a way that you can target a single API server and not have conflicts.
 	// Another could return a client that aligns each source cluster with a target
 	// cluster, which could be a whole API server, or something like a KCP
-	// workspace, and doesn’t do any namespace/name rewriting.
+	// workspace, and doesn't do any namespace/name rewriting.
 	//
-	// This way, the controller can be written as if it’s putting resources into
-	// the same namespace as the upstream resource, but that doesn’t mean it’ll
+	// This way, the controller can be written as if it's putting resources into
+	// the same namespace as the upstream resource, but that doesn't mean it'll
 	// land in the same place as that resource.
 	return &SameNamespaceDownstreamResourceStrategy{
 		client: cl.GetClient(),

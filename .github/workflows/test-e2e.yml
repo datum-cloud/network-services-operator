@@ -21,7 +21,7 @@ jobs:
         run: kind version
 
       - name: Create kind cluster
-        run: kind create cluster
+        run: make kind-standard-cluster
 
       - name: Prepare e2e
         run: make prepare-e2e

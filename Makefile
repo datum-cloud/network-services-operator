@@ -136,7 +136,7 @@ set-image-controller: manifests kustomize
 	cd config/manager && $(KUSTOMIZE) edit set image controller=${IMG}
 
 .PHONY: prepare-e2e
-prepare-e2e: chainsaw set-image-controller cert-manager load-image-all deploy
+prepare-e2e: chainsaw set-image-controller cert-manager envoy-gateway load-image-all deploy
 
 .PHONY: load-image-all
 load-image-all: load-image-operator
@@ -147,8 +147,20 @@ load-image-operator: docker-build kind
 
 .PHONY: cert-manager
 cert-manager: cmctl
-	kubectl apply --validate=false -f https://github.com/jetstack/cert-manager/releases/download/v${CERTMANAGER_VERSION}/cert-manager.yaml
+	$(KUSTOMIZE) build --enable-helm config/tools/cert-manager | kubectl apply --server-side=true --force-conflicts-f -
 	$(CMCTL) check api --wait=5m
+
+.PHONY: envoy-gateway
+envoy-gateway:
+	$(KUSTOMIZE) build --enable-helm config/tools/envoy-gateway | kubectl apply --server-side=true --force-conflicts -f -
+
+.PHONY: external-dns
+external-dns:
+	$(KUSTOMIZE) build --enable-helm config/tools/external-dns | kubectl apply --server-side=true --force-conflicts -f -
+
+.PHONY: kind-standard-cluster
+kind-standard-cluster: kind
+	$(KIND) create cluster --config=config/tools/kind/standard-cluster.yaml
 
 ##@ Deployment
 

@@ -1,0 +1,305 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: gateway-accepted
+spec:
+  steps:
+    - name: Create CA
+      try:
+        - create:
+            resource:
+              apiVersion: cert-manager.io/v1
+              kind: Issuer
+              metadata:
+                name: test-gateway
+              spec:
+                selfSigned: {}
+
+    - name: Create GatewayClass for the upstream gateways
+      try:
+        - create:
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: GatewayClass
+              metadata:
+                name: datum-external-global-proxy
+              spec:
+                controllerName: gateway.datumapis.com/external-global-proxy-controller
+
+    - name: Create GatewayClass for the downstream gateways
+      try:
+        - create:
+            resource:
+              apiVersion: gateway.envoyproxy.io/v1alpha1
+              kind: EnvoyProxy
+              metadata:
+                name: custom-proxy-config
+                namespace: envoy-gateway-system
+              spec:
+                provider:
+                  type: Kubernetes
+                  kubernetes:
+                    envoyService:
+                      type: ClusterIP
+                      patch:
+                        type: StrategicMerge
+                        value:
+                          spec:
+                            ipFamilyPolicy: RequireDualStack
+                mergeGateways: true
+
+        - create:
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: GatewayClass
+              metadata:
+                name: envoy-gateway
+              spec:
+                controllerName: gateway.envoyproxy.io/gatewayclass-controller
+                parametersRef:
+                  group: gateway.envoyproxy.io
+                  kind: EnvoyProxy
+                  name: custom-proxy-config
+                  namespace: envoy-gateway-system
+
+    - name: Provision Gateway
+      try:
+        - create:
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: Gateway
+              metadata:
+                name: test-gateway
+              spec:
+                gatewayClassName: datum-external-global-proxy
+                listeners:
+                - protocol: HTTP
+                  port: 80
+                  name: http
+                  allowedRoutes:
+                    namespaces:
+                      from: Same
+                - protocol: HTTPS
+                  port: 443
+                  name: https
+                  allowedRoutes:
+                    namespaces:
+                      from: Same
+                  tls:
+                    mode: Terminate
+                    certificateRefs:
+                      - group: cert-manager.io
+                        kind: Issuer
+                        name: test-gateway
+            outputs:
+              - name: upstreamGateway
+                match:
+                  apiVersion: gateway.networking.k8s.io/v1
+                  kind: Gateway
+                  metadata:
+                    name: test-gateway
+                value: (@)
+
+        # Ensure the downstream gateway was created as expected
+        - assert:
+            # timeout: 5s
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: Gateway
+              metadata:
+                name: test-gateway-7c27512b7c3eb57ce8fbbc32e99271b883da4a709df009614603725ded747145
+              spec:
+                listeners:
+                - allowedRoutes:
+                    namespaces:
+                      from: All
+                  hostname: (join('.', [$upstreamGateway.metadata.uid, 'prism.global.datum-dns.net']))
+                  name: http-0
+                  port: 80
+                  protocol: HTTP
+                - allowedRoutes:
+                    namespaces:
+                      from: All
+                  hostname: (join('.', [$upstreamGateway.metadata.uid, 'prism.global.datum-dns.net']))
+                  name: https-0
+                  port: 443
+                  protocol: HTTPS
+                  tls:
+                    certificateRefs:
+                    - group: ""
+                      kind: Secret
+                      name: test-gateway-7c27512b7c3eb57ce8fbbc32e99271b883da4a709df009614603725ded747145
+                    mode: Terminate
+                - allowedRoutes:
+                    namespaces:
+                      from: All
+                  hostname: (join('.', ['v4', $upstreamGateway.metadata.uid, 'prism.global.datum-dns.net']))
+                  name: http-1
+                  port: 80
+                  protocol: HTTP
+                - allowedRoutes:
+                    namespaces:
+                      from: All
+                  hostname: (join('.', ['v4', $upstreamGateway.metadata.uid, 'prism.global.datum-dns.net']))
+                  name: https-1
+                  port: 443
+                  protocol: HTTPS
+                  tls:
+                    certificateRefs:
+                    - group: ""
+                      kind: Secret
+                      name: test-gateway-7c27512b7c3eb57ce8fbbc32e99271b883da4a709df009614603725ded747145
+                    mode: Terminate
+                - allowedRoutes:
+                    namespaces:
+                      from: All
+                  hostname: (join('.', ['v6', $upstreamGateway.metadata.uid, 'prism.global.datum-dns.net']))
+                  name: http-2
+                  port: 80
+                  protocol: HTTP
+                - allowedRoutes:
+                    namespaces:
+                      from: All
+                  hostname: (join('.', ['v6', $upstreamGateway.metadata.uid, 'prism.global.datum-dns.net']))
+                  name: https-2
+                  port: 443
+                  protocol: HTTPS
+                  tls:
+                    certificateRefs:
+                    - group: ""
+                      kind: Secret
+                      name: test-gateway-7c27512b7c3eb57ce8fbbc32e99271b883da4a709df009614603725ded747145
+                    mode: Terminate
+              status:
+                conditions:
+                - reason: Accepted
+                  status: "True"
+                  type: Accepted
+                - reason: Programmed
+                  status: "True"
+                  type: Programmed
+                listeners:
+                - attachedRoutes: 0
+                  conditions:
+                  - reason: Programmed
+                    status: "True"
+                    type: Programmed
+                  - reason: Accepted
+                    status: "True"
+                    type: Accepted
+                  - reason: ResolvedRefs
+                    status: "True"
+                    type: ResolvedRefs
+                  name: http-0
+                - attachedRoutes: 0
+                  conditions:
+                  - reason: Programmed
+                    status: "True"
+                    type: Programmed
+                  - reason: Accepted
+                    status: "True"
+                    type: Accepted
+                  - reason: ResolvedRefs
+                    status: "True"
+                    type: ResolvedRefs
+                  name: https-0
+                - attachedRoutes: 0
+                  conditions:
+                  - reason: Programmed
+                    status: "True"
+                    type: Programmed
+                  - reason: Accepted
+                    status: "True"
+                    type: Accepted
+                  - reason: ResolvedRefs
+                    status: "True"
+                    type: ResolvedRefs
+                  name: http-1
+                - attachedRoutes: 0
+                  conditions:
+                  - reason: Programmed
+                    status: "True"
+                    type: Programmed
+                  - reason: Accepted
+                    status: "True"
+                    type: Accepted
+                  - reason: ResolvedRefs
+                    status: "True"
+                    type: ResolvedRefs
+                  name: https-1
+                - attachedRoutes: 0
+                  conditions:
+                  - reason: Programmed
+                    status: "True"
+                    type: Programmed
+                  - reason: Accepted
+                    status: "True"
+                    type: Accepted
+                  - reason: ResolvedRefs
+                    status: "True"
+                    type: ResolvedRefs
+                  name: http-2
+                - attachedRoutes: 0
+                  conditions:
+                  - reason: Programmed
+                    status: "True"
+                    type: Programmed
+                  - reason: Accepted
+                    status: "True"
+                    type: Accepted
+                  - reason: ResolvedRefs
+                    status: "True"
+                    type: ResolvedRefs
+                  name: https-2
+
+        # Ensure DNSEndpoint is defined
+        - assert:
+            # timeout: 5s
+            resource:
+              apiVersion: externaldns.k8s.io/v1alpha1
+              kind: DNSEndpoint
+              metadata:
+                name: test-gateway-7c27512b7c3eb57ce8fbbc32e99271b883da4a709df009614603725ded747145
+              spec:
+                endpoints:
+                  - dnsName: (join('.', [$upstreamGateway.metadata.uid, 'prism.global.datum-dns.net']))
+                    (length(targets) == `1`): true
+                    recordType: A
+                    recordTTL: 300
+                  - dnsName: (join('.', [$upstreamGateway.metadata.uid, 'prism.global.datum-dns.net']))
+                    (length(targets) == `1`): true
+                    recordType: AAAA
+                    recordTTL: 300
+                  - dnsName: (join('.', ['v4', $upstreamGateway.metadata.uid, 'prism.global.datum-dns.net']))
+                    (length(targets) == `1`): true
+                    recordType: A
+                    recordTTL: 300
+                  - dnsName: (join('.', ['v6', $upstreamGateway.metadata.uid, 'prism.global.datum-dns.net']))
+                    (length(targets) == `1`): true
+                    recordType: AAAA
+                    recordTTL: 300
+
+        # Ensure the upstream gateway's status is updated as expected
+        - assert:
+            # timeout: 5s
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: Gateway
+              metadata:
+                name: test-gateway
+              status:
+                addresses:
+                  - type: Hostname
+                    value: (join('.', [$upstreamGateway.metadata.uid, 'prism.global.datum-dns.net']))
+                  - type: Hostname
+                    value: (join('.', ['v4', $upstreamGateway.metadata.uid, 'prism.global.datum-dns.net']))
+                  - type: Hostname
+                    value: (join('.', ['v6', $upstreamGateway.metadata.uid, 'prism.global.datum-dns.net']))
+                conditions:
+                - reason: Accepted
+                  status: "True"
+                  type: Accepted
+                - reason: Programmed
+                  status: "True"
+                  type: Programmed

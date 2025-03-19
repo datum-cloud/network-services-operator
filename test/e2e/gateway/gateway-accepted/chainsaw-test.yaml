@@ -329,3 +329,12 @@ spec:
                 - reason: Programmed
                   status: "True"
                   type: Programmed
+      catch:
+        # TODO(jreese) conditional based on chainsaw config? Only want to run
+        # this when in a CI build, typically.
+        - script:
+            content: |
+              kubectl -n network-services-operator-system logs -l app.kubernetes.io/name=network-services-operator
+              kubectl get gateways --all-namespaces -o yaml
+              kubectl get dnsendpoints --all-namespaces -o yaml
+              kubectl get svc -n envoy-gateway-system -l 'app.kubernetes.io/managed-by!=Helm' -o yaml

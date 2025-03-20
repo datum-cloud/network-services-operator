@@ -243,8 +243,9 @@ func main() {
 	if err = (&controller.GatewayReconciler{
 		ValidationOpts: validation.GatewayValidationOptions{
 			RoutesFromSameNamespaceOnly: true,
-			PermitCertificateRefs:       true,
-			ValidPortNumbers:            []int{80, 443},
+			// TODO(jreese) get from config
+			PermitCertificateRefs: true,
+			ValidPortNumbers:      []int{80, 443},
 			ValidProtocolTypes: []gatewayv1.ProtocolType{
 				gatewayv1.HTTPProtocolType,
 				gatewayv1.HTTPSProtocolType,

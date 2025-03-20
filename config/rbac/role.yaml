@@ -33,7 +33,9 @@ rules:
 - apiGroups:
   - gateway.networking.k8s.io
   resources:
+  - gatewayclasses
   - gateways
+  - httproutes
   verbs:
   - create
   - delete
@@ -45,13 +47,17 @@ rules:
 - apiGroups:
   - gateway.networking.k8s.io
   resources:
+  - gatewayclasses/finalizers
   - gateways/finalizers
+  - httproutes/finalizers
   verbs:
   - update
 - apiGroups:
   - gateway.networking.k8s.io
   resources:
+  - gatewayclasses/status
   - gateways/status
+  - httproutes/status
   verbs:
   - get
   - patch

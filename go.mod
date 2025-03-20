@@ -4,8 +4,9 @@ go 1.23.0
 
 require (
 	github.com/go-logr/logr v1.4.2
+	github.com/google/go-cmp v0.6.0
 	github.com/multicluster-runtime/multicluster-runtime v0.20.0-alpha.5
-	// github.com/multicluster-runtime/multicluster-runtime/providers/kind v0.0.0-00010101000000-000000000000
+	github.com/multicluster-runtime/multicluster-runtime/providers/kind v0.0.0-00010101000000-000000000000
 	github.com/onsi/ginkgo/v2 v2.22.0
 	github.com/stretchr/testify v1.9.0
 	golang.org/x/sync v0.10.0
@@ -13,6 +14,7 @@ require (
 	k8s.io/api v0.32.1
 	k8s.io/apimachinery v0.32.1
 	k8s.io/client-go v0.32.1
+	k8s.io/utils v0.0.0-20241104100929-3ea5e8cea738
 	sigs.k8s.io/controller-runtime v0.20.1
 	sigs.k8s.io/gateway-api v1.2.1
 )
@@ -21,8 +23,6 @@ replace (
 	github.com/multicluster-runtime/multicluster-runtime => github.com/joshlreese/multicluster-runtime v0.0.0-20250314143600-b71b4666c5c1
 	github.com/multicluster-runtime/multicluster-runtime/providers/kind => github.com/joshlreese/multicluster-runtime/providers/kind v0.0.0-20250314143600-b71b4666c5c1
 )
-
-require github.com/multicluster-runtime/multicluster-runtime/providers/kind v0.0.0-00010101000000-000000000000
 
 require (
 	cel.dev/expr v0.18.0 // indirect
@@ -51,7 +51,6 @@ require (
 	github.com/google/btree v1.1.3 // indirect
 	github.com/google/cel-go v0.22.0 // indirect
 	github.com/google/gnostic-models v0.6.8 // indirect
-	github.com/google/go-cmp v0.6.0 // indirect
 	github.com/google/gofuzz v1.2.0 // indirect
 	github.com/google/pprof v0.0.0-20241029153458-d1b30febd7db // indirect
 	github.com/google/safetext v0.0.0-20220905092116-b49f7bc46da2 // indirect
@@ -107,7 +106,6 @@ require (
 	k8s.io/component-base v0.32.1 // indirect
 	k8s.io/klog/v2 v2.130.1 // indirect
 	k8s.io/kube-openapi v0.0.0-20241105132330-32ad38e42d3f // indirect
-	k8s.io/utils v0.0.0-20241104100929-3ea5e8cea738 // indirect
 	sigs.k8s.io/apiserver-network-proxy/konnectivity-client v0.31.0 // indirect
 	sigs.k8s.io/json v0.0.0-20241010143419-9aa6b5e7a4b3 // indirect
 	sigs.k8s.io/kind v0.26.0 // indirect

@@ -25,7 +25,7 @@ spec:
               metadata:
                 name: datum-external-global-proxy
               spec:
-                controllerName: gateway.datumapis.com/external-global-proxy-controller
+                controllerName: gateway.networking.datumapis.com/external-global-proxy-controller
 
     - name: Create GatewayClass for the downstream gateways
       try:
@@ -88,6 +88,9 @@ spec:
                       from: Same
                   tls:
                     mode: Terminate
+                    # TODO(jreese), consider using `options` as an alternative?
+                    # options:
+                    #   gateway.networking.datumapis.com/certificate-issuer: letsencrypt
                     certificateRefs:
                       - group: cert-manager.io
                         kind: Issuer
@@ -113,14 +116,14 @@ spec:
                 listeners:
                 - allowedRoutes:
                     namespaces:
-                      from: All
+                      from: Same
                   hostname: (join('.', [$upstreamGateway.metadata.uid, 'prism.global.datum-dns.net']))
                   name: http-0
                   port: 80
                   protocol: HTTP
                 - allowedRoutes:
                     namespaces:
-                      from: All
+                      from: Same
                   hostname: (join('.', [$upstreamGateway.metadata.uid, 'prism.global.datum-dns.net']))
                   name: https-0
                   port: 443
@@ -133,14 +136,14 @@ spec:
                     mode: Terminate
                 - allowedRoutes:
                     namespaces:
-                      from: All
+                      from: Same
                   hostname: (join('.', ['v4', $upstreamGateway.metadata.uid, 'prism.global.datum-dns.net']))
                   name: http-1
                   port: 80
                   protocol: HTTP
                 - allowedRoutes:
                     namespaces:
-                      from: All
+                      from: Same
                   hostname: (join('.', ['v4', $upstreamGateway.metadata.uid, 'prism.global.datum-dns.net']))
                   name: https-1
                   port: 443
@@ -153,14 +156,14 @@ spec:
                     mode: Terminate
                 - allowedRoutes:
                     namespaces:
-                      from: All
+                      from: Same
                   hostname: (join('.', ['v6', $upstreamGateway.metadata.uid, 'prism.global.datum-dns.net']))
                   name: http-2
                   port: 80
                   protocol: HTTP
                 - allowedRoutes:
                     namespaces:
-                      from: All
+                      from: Same
                   hostname: (join('.', ['v6', $upstreamGateway.metadata.uid, 'prism.global.datum-dns.net']))
                   name: https-2
                   port: 443
@@ -322,13 +325,65 @@ spec:
                     value: (join('.', ['v4', $upstreamGateway.metadata.uid, 'prism.global.datum-dns.net']))
                   - type: Hostname
                     value: (join('.', ['v6', $upstreamGateway.metadata.uid, 'prism.global.datum-dns.net']))
-                conditions:
-                - reason: Accepted
-                  status: "True"
-                  type: Accepted
-                - reason: Programmed
-                  status: "True"
-                  type: Programmed
+                listeners:
+                  - attachedRoutes: 0
+                    (conditions[?type == 'Programmed']):
+                      - status: "True"
+                    (conditions[?type == 'Accepted']):
+                      - status: "True"
+                    (conditions[?type == 'ResolvedRefs']):
+                      - status: "True"
+                    name: http
+                  - attachedRoutes: 0
+                    (conditions[?type == 'Programmed']):
+                      - status: "True"
+                    (conditions[?type == 'Accepted']):
+                      - status: "True"
+                    (conditions[?type == 'ResolvedRefs']):
+                      - status: "True"
+                    name: https
+                (conditions[?type == 'Accepted']):
+                  - status: "True"
+                (conditions[?type == 'Programmed']):
+                 - status: "True"
+
+    - name: Provision HTTPRoute
+      try:
+        - create:
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: HTTPRoute
+              metadata:
+                name: test-route
+              spec:
+                parentRefs:
+                - name: test-gateway
+                  kind: Gateway
+                rules:
+                  - matches:
+                    - path:
+                        type: PathPrefix
+                        value: /
+        - assert:
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: HTTPRoute
+              metadata:
+                name: test-route
+              status:
+                parents:
+                - conditions:
+                  - reason: Accepted
+                    status: "True"
+                    type: Accepted
+                  - reason: ResolvedRefs
+                    status: "True"
+                    type: ResolvedRefs
+                  parentRef:
+                    name: test-gateway
+                    kind: Gateway
+                    group: gateway.networking.k8s.io
+
       catch:
         # TODO(jreese) conditional based on chainsaw config? Only want to run
         # this when in a CI build, typically.
@@ -336,5 +391,6 @@ spec:
             content: |
               kubectl -n network-services-operator-system logs -l app.kubernetes.io/name=network-services-operator
               kubectl get gateways --all-namespaces -o yaml
+              kubectl get httproutes --all-namespaces -o yaml
               kubectl get dnsendpoints --all-namespaces -o yaml
               kubectl get svc -n envoy-gateway-system -l 'app.kubernetes.io/managed-by!=Helm' -o yaml

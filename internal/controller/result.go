@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -23,6 +24,28 @@ type Result struct {
 	syncStatus map[client.Object]client.Client
 }
 
+func (r *Result) Merge(other Result) Result {
+	if other.Err != nil {
+		r.Err = errors.Join(r.Err, other.Err)
+	}
+	if other.Result != (ctrl.Result{}) {
+		r.Result = other.Result
+	}
+	if other.StopProcessing {
+		r.StopProcessing = true
+	}
+	if other.syncStatus != nil {
+		if r.syncStatus == nil {
+			r.syncStatus = make(map[client.Object]client.Client)
+		}
+		for k, v := range other.syncStatus {
+			r.syncStatus[k] = v
+		}
+	}
+
+	return *r
+}
+
 func (r *Result) AddStatusUpdate(c client.Client, obj client.Object) {
 	if r.syncStatus == nil {
 		r.syncStatus = make(map[client.Object]client.Client)
@@ -34,13 +57,16 @@ func (r Result) ShouldReturn() bool {
 	return r.Err != nil || !r.Result.IsZero() || r.StopProcessing
 }
 
-func (r Result) Finish(ctx context.Context) (ctrl.Result, error) {
+func (r Result) Complete(ctx context.Context) (ctrl.Result, error) {
 	if r.syncStatus != nil {
-
 		var errs []error
 		for obj, client := range r.syncStatus {
 			if err := client.Status().Update(ctx, obj); err != nil {
-				errs = append(errs, err)
+				if r.Err == nil && apierrors.IsConflict(err) {
+					r.Requeue = true
+				} else {
+					errs = append(errs, err)
+				}
 			}
 		}
 

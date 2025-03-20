@@ -30,11 +30,13 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
+	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	"go.datum.net/network-services-operator/internal/controller"
 	"go.datum.net/network-services-operator/internal/providers"
 	mcdatum "go.datum.net/network-services-operator/internal/providers/datum"
+	"go.datum.net/network-services-operator/internal/validation"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -47,6 +49,7 @@ func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 
 	utilruntime.Must(networkingv1alpha.AddToScheme(scheme))
+	utilruntime.Must(gatewayv1.Install(scheme))
 	// +kubebuilder:scaffold:scheme
 }
 
@@ -235,6 +238,21 @@ func main() {
 	}
 	if err = (&controller.SubnetClaimReconciler{}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "SubnetClaim")
+		os.Exit(1)
+	}
+	if err = (&controller.GatewayReconciler{
+		ValidationOpts: validation.GatewayValidationOptions{
+			RoutesFromSameNamespaceOnly: true,
+			// TODO(jreese) get from config
+			PermitCertificateRefs: true,
+			ValidPortNumbers:      []int{80, 443},
+			ValidProtocolTypes: []gatewayv1.ProtocolType{
+				gatewayv1.HTTPProtocolType,
+				gatewayv1.HTTPSProtocolType,
+			},
+		},
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "Gateway")
 		os.Exit(1)
 	}
 	// +kubebuilder:scaffold:builder

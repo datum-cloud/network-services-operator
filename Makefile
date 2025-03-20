@@ -69,12 +69,12 @@ test: manifests generate fmt vet envtest ## Run tests.
 # - PROMETHEUS_INSTALL_SKIP=true
 # - CERT_MANAGER_INSTALL_SKIP=true
 .PHONY: test-e2e
-test-e2e: chainsaw manifests generate fmt vet ## Run the e2e tests. Expected an isolated environment using Kind.
+test-e2e: chainsaw
 	@command -v kind >/dev/null 2>&1 || { \
 		echo "Kind is not installed. Please install Kind manually."; \
 		exit 1; \
 	}
-	@kind get clusters | grep -q 'kind' || { \
+	@kind get clusters | grep -q 'nso-standard' || { \
 		echo "No Kind cluster is running. Please start a Kind cluster before running the e2e tests."; \
 		exit 1; \
 	}
@@ -136,19 +136,31 @@ set-image-controller: manifests kustomize
 	cd config/manager && $(KUSTOMIZE) edit set image controller=${IMG}
 
 .PHONY: prepare-e2e
-prepare-e2e: chainsaw set-image-controller cert-manager load-image-all deploy
+prepare-e2e: chainsaw set-image-controller cert-manager envoy-gateway external-dns load-image-all deploy
 
 .PHONY: load-image-all
 load-image-all: load-image-operator
 
 .PHONY: load-image-operator
 load-image-operator: docker-build kind
-	$(KIND) load docker-image $(IMG)
+	$(KIND) load docker-image $(IMG) -n nso-standard
 
 .PHONY: cert-manager
 cert-manager: cmctl
-	kubectl apply --validate=false -f https://github.com/jetstack/cert-manager/releases/download/v${CERTMANAGER_VERSION}/cert-manager.yaml
+	$(KUSTOMIZE) build --enable-helm config/tools/cert-manager | kubectl apply --server-side=true --force-conflicts -f -
 	$(CMCTL) check api --wait=5m
+
+.PHONY: envoy-gateway
+envoy-gateway:
+	$(KUSTOMIZE) build --enable-helm config/tools/envoy-gateway | kubectl apply --server-side=true --force-conflicts -f -
+
+.PHONY: external-dns
+external-dns:
+	$(KUSTOMIZE) build --enable-helm config/tools/external-dns | kubectl apply --server-side=true --force-conflicts -f -
+
+.PHONY: kind-standard-cluster
+kind-standard-cluster: kind
+	$(KIND) create cluster --config=config/tools/kind/standard-cluster.yaml
 
 ##@ Deployment
 

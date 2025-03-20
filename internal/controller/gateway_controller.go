@@ -31,6 +31,8 @@ import (
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 )
 
+const KindGateway = "Gateway"
+
 // GatewayReconciler reconciles a Gateway object
 type GatewayReconciler struct {
 	mgr mcmanager.Manager
@@ -421,7 +423,7 @@ func (r *GatewayReconciler) ensureDownstreamGatewayHTTPRoutes(
 		if parentRefs := route.Spec.ParentRefs; parentRefs != nil {
 			for _, parentRef := range parentRefs {
 				if string(parentRef.Name) == upstreamGateway.Name {
-					if parentRef.Kind != nil && *parentRef.Kind == "Gateway" {
+					if parentRef.Kind != nil && *parentRef.Kind == KindGateway {
 						attachedRoutes = append(attachedRoutes, route)
 					}
 				}
@@ -562,7 +564,7 @@ func (r *GatewayReconciler) ensureDownstreamHTTPRoute(
 		// TODO(jreese) look for inspiration on util functions for making this easier,
 		// the envoy gateway has some.
 		if (parent.ParentRef.Group == nil || parent.ParentRef.Group != nil && string(*parent.ParentRef.Group) == gatewayv1.GroupName) &&
-			(parent.ParentRef.Kind == nil || parent.ParentRef.Kind != nil && string(*parent.ParentRef.Kind) == "Gateway") &&
+			(parent.ParentRef.Kind == nil || parent.ParentRef.Kind != nil && string(*parent.ParentRef.Kind) == KindGateway) &&
 			string(parent.ParentRef.Name) == upstreamGateway.Name {
 			parentStatus = &upstreamRoute.Status.Parents[i]
 			break
@@ -729,7 +731,7 @@ func (r *GatewayReconciler) listGatewaysAttachedByHTTPRoute(ctx context.Context,
 
 	for _, parentRef := range httpRoute.Spec.ParentRefs {
 		if (parentRef.Group == nil || parentRef.Group != nil && string(*parentRef.Group) == gatewayv1.GroupName) &&
-			(parentRef.Kind == nil || parentRef.Kind != nil && string(*parentRef.Kind) == "Gateway") {
+			(parentRef.Kind == nil || parentRef.Kind != nil && string(*parentRef.Kind) == KindGateway) {
 			reqs = append(reqs, ctrl.Request{
 				NamespacedName: types.NamespacedName{
 					Namespace: string(ptr.Deref(parentRef.Namespace, gatewayv1.Namespace(httpRoute.Namespace))),

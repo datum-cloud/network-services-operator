@@ -31,6 +31,8 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
+	gatewayv1alpha2 "sigs.k8s.io/gateway-api/apis/v1alpha2"
+	gatewayv1alpha3 "sigs.k8s.io/gateway-api/apis/v1alpha3"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	"go.datum.net/network-services-operator/internal/controller"
@@ -50,6 +52,8 @@ func init() {
 
 	utilruntime.Must(networkingv1alpha.AddToScheme(scheme))
 	utilruntime.Must(gatewayv1.Install(scheme))
+	utilruntime.Must(gatewayv1alpha2.Install(scheme))
+	utilruntime.Must(gatewayv1alpha3.Install(scheme))
 	// +kubebuilder:scaffold:scheme
 }
 

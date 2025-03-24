@@ -111,7 +111,7 @@ spec:
               apiVersion: gateway.networking.k8s.io/v1
               kind: Gateway
               metadata:
-                name: test-gateway-7c27512b7c3eb57ce8fbbc32e99271b883da4a709df009614603725ded747145
+                name: test-gateway-d8c7444f0c1b6591d78e6455496651a2
               spec:
                 listeners:
                 - allowedRoutes:
@@ -132,7 +132,7 @@ spec:
                     certificateRefs:
                     - group: ""
                       kind: Secret
-                      name: test-gateway-7c27512b7c3eb57ce8fbbc32e99271b883da4a709df009614603725ded747145
+                      name: test-gateway-d8c7444f0c1b6591d78e6455496651a2
                     mode: Terminate
                 - allowedRoutes:
                     namespaces:
@@ -152,7 +152,7 @@ spec:
                     certificateRefs:
                     - group: ""
                       kind: Secret
-                      name: test-gateway-7c27512b7c3eb57ce8fbbc32e99271b883da4a709df009614603725ded747145
+                      name: test-gateway-d8c7444f0c1b6591d78e6455496651a2
                     mode: Terminate
                 - allowedRoutes:
                     namespaces:
@@ -172,7 +172,7 @@ spec:
                     certificateRefs:
                     - group: ""
                       kind: Secret
-                      name: test-gateway-7c27512b7c3eb57ce8fbbc32e99271b883da4a709df009614603725ded747145
+                      name: test-gateway-d8c7444f0c1b6591d78e6455496651a2
                     mode: Terminate
               status:
                 conditions:
@@ -265,7 +265,7 @@ spec:
             skipCommandOutput: true
             skipLogOutput: true
             content: |
-              kubectl -n $NAMESPACE get gateway test-gateway-7c27512b7c3eb57ce8fbbc32e99271b883da4a709df009614603725ded747145 -o json
+              kubectl -n $NAMESPACE get gateway test-gateway-d8c7444f0c1b6591d78e6455496651a2 -o json
             outputs:
               - name: downstreamGateway
                 value: (json_parse($stdout))
@@ -289,7 +289,7 @@ spec:
               apiVersion: externaldns.k8s.io/v1alpha1
               kind: DNSEndpoint
               metadata:
-                name: test-gateway-7c27512b7c3eb57ce8fbbc32e99271b883da4a709df009614603725ded747145
+                name: test-gateway-d8c7444f0c1b6591d78e6455496651a2
               spec:
                 endpoints:
                   - dnsName: ($primaryHostname)
@@ -350,13 +350,42 @@ spec:
         - script:
             content: |
               kubectl -n network-services-operator-system logs -l app.kubernetes.io/name=network-services-operator
-              kubectl get gateways --all-namespaces -o yaml
-              kubectl get httproutes --all-namespaces -o yaml
-              kubectl get dnsendpoints --all-namespaces -o yaml
-              kubectl get svc -n envoy-gateway-system -l 'app.kubernetes.io/managed-by!=Helm' -o yaml
+              kubectl get gateways -n $NAMESPACE -o yaml
+              kubectl get httproutes -n $NAMESPACE -o yaml
+              kubectl get dnsendpoints -n $NAMESPACE -o yaml
+              kubectl get svc -n $NAMESPACE -o yaml
+              kubectl get endpointslices -n $NAMESPACE -o yaml
 
     - name: Provision HTTPRoute
       try:
+        - create:
+            resource:
+              kind: EndpointSlice
+              metadata:
+                name: test-slice-1
+              addressType: FQDN
+              apiVersion: discovery.k8s.io/v1
+              endpoints:
+              - addresses:
+                - example.com
+                conditions:
+                  ready: true
+                  serving: true
+                  terminating: false
+              ports:
+              - name: http
+                appProtocol: http
+                port: 80
+              - name: https
+                # TODO(jreese)If the appProtocl is https, check to make sure there's a
+                # URLRewrite filter that has a hostname value. Use that in the
+                # BackendTLSPolicy's hostname.
+                #
+                # Should we default the appProtocol to https andrequire this if
+                # the target port is 443?
+                appProtocol: https
+                port: 443
+
         - create:
             resource:
               apiVersion: gateway.networking.k8s.io/v1
@@ -372,6 +401,72 @@ spec:
                     - path:
                         type: PathPrefix
                         value: /
+                    backendRefs:
+                    - group: discovery.k8s.io
+                      kind: EndpointSlice
+                      name: test-slice-1
+                      # TODO(jreese) make sure ports are required in validation
+                      port: 80
+                    filters:
+                      - type: URLRewrite
+                        urlRewrite:
+                          path:
+                            type: ReplacePrefixMatch
+                            replacePrefixMatch: /
+                          hostname: "example.com"
+
+        - assert:
+            resource:
+              kind: EndpointSlice
+              metadata:
+                name: test-slice-1-3ed63ff91eb7ed0412b24fd014a74cd9
+                labels:
+                  kubernetes.io/service-name: test-route-4ac4abbdbcbd571860ac6f356d0b9592
+              addressType: FQDN
+              apiVersion: discovery.k8s.io/v1
+              endpoints:
+              - addresses:
+                - example.com
+              ports:
+              - name: http
+                port: 80
+              - name: https
+                port: 443
+
+        - assert:
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: HTTPRoute
+              metadata:
+                name: test-route-4ac4abbdbcbd571860ac6f356d0b9592
+              spec:
+                parentRefs:
+                - group: gateway.networking.k8s.io
+                  kind: Gateway
+                  name: test-gateway-d8c7444f0c1b6591d78e6455496651a2
+                rules:
+                - backendRefs:
+                  - kind: Service
+                    name: test-route-4ac4abbdbcbd571860ac6f356d0b9592
+                    weight: 1
+                  matches:
+                  - path:
+                      type: PathPrefix
+                      value: /
+              status:
+                parents:
+                - conditions:
+                  - reason: Accepted
+                    status: "True"
+                    type: Accepted
+                  - reason: ResolvedRefs
+                    status: "True"
+                    type: ResolvedRefs
+                  parentRef:
+                    name: test-gateway-d8c7444f0c1b6591d78e6455496651a2
+                    kind: Gateway
+                    group: gateway.networking.k8s.io
+
         - assert:
             resource:
               apiVersion: gateway.networking.k8s.io/v1
@@ -395,7 +490,66 @@ spec:
         - script:
             content: |
               kubectl -n network-services-operator-system logs -l app.kubernetes.io/name=network-services-operator
-              kubectl get gateways --all-namespaces -o yaml
-              kubectl get httproutes --all-namespaces -o yaml
-              kubectl get dnsendpoints --all-namespaces -o yaml
-              kubectl get svc -n envoy-gateway-system -l 'app.kubernetes.io/managed-by!=Helm' -o yaml
+              kubectl get gateways -n $NAMESPACE -o yaml
+              kubectl get httproutes -n $NAMESPACE -o yaml
+              kubectl get dnsendpoints -n $NAMESPACE -o yaml
+              kubectl get svc -n $NAMESPACE -o yaml
+              kubectl get endpointslices -n $NAMESPACE -o yaml
+
+
+    - name: Provision Pod to test connectivity
+      try:
+        - script:
+            skipCommandOutput: true
+            skipLogOutput: true
+            content: |
+              kubectl -n $NAMESPACE get gateway test-gateway -o json
+            outputs:
+              - name: upstreamGateway
+                value: (json_parse($stdout))
+        - script:
+            skipCommandOutput: true
+            skipLogOutput: true
+            content: |
+              kubectl get svc -n envoy-gateway-system -l gateway.envoyproxy.io/owning-gatewayclass=envoy-gateway -o json
+            outputs:
+              - name: gatewayService
+                value: (json_parse($stdout).items | [0])
+
+        - create:
+            resource:
+              apiVersion: v1
+              kind: Pod
+              metadata:
+                name: test-pod
+              spec:
+                containers:
+                - name: test-container
+                  image: alpine:3.21.3
+                  command: ["/bin/sh", "-c", "sleep infinity"]
+                  env:
+                  - name: GATEWAY_SERVICE_NAME
+                    value: ($gatewayService.metadata.name)
+                  - name: GATEWAY_SERVICE_NAMESPACE
+                    value: ($gatewayService.metadata.namespace)
+                  - name: PRIMARY_HOSTNAME
+                    value: (join('.', [$upstreamGateway.metadata.uid, 'prism.global.datum-dns.net']))
+                terminationGracePeriodSeconds: 0
+
+        - assert:
+            resource:
+                apiVersion: v1
+                kind: Pod
+                metadata:
+                  name: test-pod
+                status:
+                  phase: Running
+
+        - script:
+
+            content: |
+              kubectl -n $NAMESPACE exec -i test-pod -- sh -c " \
+                set -x; \
+                apk add curl; \
+                curl -kv -H \"Host: \${PRIMARY_HOSTNAME}\" http://\${GATEWAY_SERVICE_NAME}.\${GATEWAY_SERVICE_NAMESPACE}.svc.cluster.local; \
+              "

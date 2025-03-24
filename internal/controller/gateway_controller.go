@@ -45,6 +45,9 @@ type GatewayReconciler struct {
 	ValidationOpts validation.GatewayValidationOptions
 }
 
+// +kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=core,resources=services/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=core,resources=services/finalizers,verbs=update
 // +kubebuilder:rbac:groups=discovery.k8s.io,resources=endpointslices,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=discovery.k8s.io,resources=endpointslices/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=discovery.k8s.io,resources=endpointslices/finalizers,verbs=update

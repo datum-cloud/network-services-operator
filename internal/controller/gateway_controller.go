@@ -454,7 +454,7 @@ func (r *GatewayReconciler) ensureDownstreamGatewayHTTPRoutes(
 
 	// TODO(jreese) handle route removal
 	// - It seems that envoy gateway does a full reconcile
-	for _, routeContext := range attachedRoutes {
+	for _, route := range attachedRoutes {
 		httpRouteResult := r.ensureDownstreamHTTPRoute(
 			ctx,
 			upstreamClient,
@@ -462,7 +462,7 @@ func (r *GatewayReconciler) ensureDownstreamGatewayHTTPRoutes(
 			upstreamGatewayClassControllerName,
 			downstreamGateway,
 			downstreamStrategy,
-			routeContext,
+			route,
 		)
 		if result.Err != nil {
 			return result
@@ -530,6 +530,12 @@ func (r *GatewayReconciler) ensureDownstreamHTTPRoute(
 ) (result Result) {
 	logger := log.FromContext(ctx)
 	logger.Info("processing httproute", "name", upstreamRoute.Name)
+
+	// This validation will be redundant once the webhook is in place
+	if errs := validation.ValidateHTTPRoute(&upstreamRoute); len(errs) != 0 {
+		result.Err = errs.ToAggregate()
+		return result
+	}
 
 	downstreamClient := downstreamStrategy.GetClient()
 
@@ -704,15 +710,15 @@ func (r *GatewayReconciler) ensureDownstreamHTTPRouteRules(
 					return result, nil
 				}
 
-				// TODO(jreese) check if the endpoint slice has the port defined in the
-				// backendRef. Error if it does not.
-
 				if backendRef.BackendObjectReference.Port == nil {
 					// Should be protected by validation, but check just in case.
 					logger.Info("no port defined in backendRef", "backendRef", backendRef)
 					result.Err = fmt.Errorf("no port defined in backendRef")
 					return result, nil
 				}
+
+				// TODO(jreese) think through protecting access to internal addresses
+				// in endpoints.
 
 				targetPort := int32(*backendRef.BackendObjectReference.Port)
 
@@ -844,12 +850,7 @@ func (r *GatewayReconciler) ensureDownstreamHTTPRouteRules(
 
 			downstreamHTTPBackendRef := gatewayv1.HTTPBackendRef{
 				BackendRef: downstreamBackendRef,
-
-				// TODO(jreese) rewrite filters, particularly those that reference
-				// other backends, like the requestMirror filter.
-				// The Gateway spec has validation to prohibit multiple URLRewrite
-				// filters.
-				Filters: backendRef.Filters,
+				Filters:    backendRef.Filters,
 			}
 
 			backendRefs = append(backendRefs, downstreamHTTPBackendRef)

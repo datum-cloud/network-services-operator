@@ -367,6 +367,7 @@ spec:
               apiVersion: discovery.k8s.io/v1
               endpoints:
               - addresses:
+                # TODO(jreese) create a pod to serve as the backend for e2e tests
                 - example.com
                 conditions:
                   ready: true
@@ -492,6 +493,22 @@ spec:
                     kind: Gateway
                     group: gateway.networking.k8s.io
 
+        # Restrict DNS resolution to IPv4 addresses only.
+        # TODO(jreese) remove this once we have a pod to serve as a backend.
+        - create:
+            resource:
+              apiVersion: gateway.envoyproxy.io/v1alpha1
+              kind: BackendTrafficPolicy
+              metadata:
+                name: test-route-4ac4abbdbcbd571860ac6f356d0b9592
+              spec:
+                targetRef:
+                  group: gateway.networking.k8s.io
+                  kind: HTTPRoute
+                  name: test-route-4ac4abbdbcbd571860ac6f356d0b9592
+                dns:
+                  lookupFamily: IPv4
+
         - assert:
             resource:
               apiVersion: gateway.networking.k8s.io/v1
@@ -520,7 +537,6 @@ spec:
               kubectl get dnsendpoints -n $NAMESPACE -o yaml
               kubectl get svc -n $NAMESPACE -o yaml
               kubectl get endpointslices -n $NAMESPACE -o yaml
-
 
     - name: Provision Pod to test connectivity
       try:

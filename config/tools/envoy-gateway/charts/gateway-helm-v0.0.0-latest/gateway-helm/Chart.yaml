@@ -1,5 +1,5 @@
 apiVersion: v2
-appVersion: v1.3.1
+appVersion: latest
 description: The Helm chart for Envoy Gateway
 home: https://gateway.envoyproxy.io/
 icon: https://raw.githubusercontent.com/envoyproxy/gateway/main/site/assets/icons/logo.svg
@@ -17,4 +17,4 @@ name: gateway-helm
 sources:
 - https://github.com/envoyproxy/gateway
 type: application
-version: 1.3.1
+version: v0.0.0-latest

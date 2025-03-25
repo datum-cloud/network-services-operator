@@ -571,11 +571,10 @@ spec:
                   phase: Running
 
         - script:
-
             content: |
               kubectl -n $NAMESPACE exec -i test-pod -- sh -c " \
                 set -x; \
                 apk add curl; \
-                curl -kv -H \"Host: \${PRIMARY_HOSTNAME}\" http://\${GATEWAY_SERVICE_NAME}.\${GATEWAY_SERVICE_NAMESPACE}.svc.cluster.local/plaintext; \
-                curl -kv -H \"Host: \${PRIMARY_HOSTNAME}\" http://\${GATEWAY_SERVICE_NAME}.\${GATEWAY_SERVICE_NAMESPACE}.svc.cluster.local/tls; \
+                curl -kvf -H \"Host: \${PRIMARY_HOSTNAME}\" http://\${GATEWAY_SERVICE_NAME}.\${GATEWAY_SERVICE_NAMESPACE}.svc.cluster.local/plaintext; \
+                curl -kvf -H \"Host: \${PRIMARY_HOSTNAME}\" http://\${GATEWAY_SERVICE_NAME}.\${GATEWAY_SERVICE_NAMESPACE}.svc.cluster.local/tls; \
               "

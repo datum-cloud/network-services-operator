@@ -400,13 +400,30 @@ spec:
                   - matches:
                     - path:
                         type: PathPrefix
-                        value: /
+                        value: /plaintext
                     backendRefs:
                     - group: discovery.k8s.io
                       kind: EndpointSlice
                       name: test-slice-1
                       # TODO(jreese) make sure ports are required in validation
                       port: 80
+                    filters:
+                      - type: URLRewrite
+                        urlRewrite:
+                          path:
+                            type: ReplacePrefixMatch
+                            replacePrefixMatch: /
+                          hostname: "example.com"
+                  - matches:
+                    - path:
+                        type: PathPrefix
+                        value: /tls
+                    backendRefs:
+                    - group: discovery.k8s.io
+                      kind: EndpointSlice
+                      name: test-slice-1
+                      # TODO(jreese) make sure ports are required in validation
+                      port: 443
                     filters:
                       - type: URLRewrite
                         urlRewrite:
@@ -452,7 +469,15 @@ spec:
                   matches:
                   - path:
                       type: PathPrefix
-                      value: /
+                      value: /plaintext
+                - backendRefs:
+                  - kind: Service
+                    name: test-route-4ac4abbdbcbd571860ac6f356d0b9592
+                    weight: 1
+                  matches:
+                  - path:
+                      type: PathPrefix
+                      value: /tls
               status:
                 parents:
                 - conditions:
@@ -551,5 +576,6 @@ spec:
               kubectl -n $NAMESPACE exec -i test-pod -- sh -c " \
                 set -x; \
                 apk add curl; \
-                curl -kv -H \"Host: \${PRIMARY_HOSTNAME}\" http://\${GATEWAY_SERVICE_NAME}.\${GATEWAY_SERVICE_NAMESPACE}.svc.cluster.local; \
+                curl -kv -H \"Host: \${PRIMARY_HOSTNAME}\" http://\${GATEWAY_SERVICE_NAME}.\${GATEWAY_SERVICE_NAMESPACE}.svc.cluster.local/plaintext; \
+                curl -kv -H \"Host: \${PRIMARY_HOSTNAME}\" http://\${GATEWAY_SERVICE_NAME}.\${GATEWAY_SERVICE_NAMESPACE}.svc.cluster.local/tls; \
               "

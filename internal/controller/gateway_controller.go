@@ -718,20 +718,23 @@ func (r *GatewayReconciler) ensureDownstreamHTTPRouteRules(
 
 				var ports []corev1.ServicePort
 				var appProtocol *string
-				for _, port := range upstreamEndpointSlice.Ports {
+				var servicePort *discoveryv1.EndpointPort
+				for i, port := range upstreamEndpointSlice.Ports {
+					ports = append(ports, corev1.ServicePort{
+						Name:        ptr.Deref(port.Name, ""),
+						Protocol:    ptr.Deref(port.Protocol, corev1.ProtocolTCP),
+						AppProtocol: port.AppProtocol,
+						Port:        *port.Port,
+					})
+
 					if *port.Port == targetPort {
-						ports = append(ports, corev1.ServicePort{
-							Name:        ptr.Deref(port.Name, ""),
-							Protocol:    ptr.Deref(port.Protocol, corev1.ProtocolTCP),
-							AppProtocol: port.AppProtocol,
-							Port:        *port.Port,
-						})
 						appProtocol = port.AppProtocol
-						break
+						servicePort = &upstreamEndpointSlice.Ports[i]
 					}
 				}
 
-				// Make a Service that will point to the EndpointSlice
+				// TODO(jreese) service construction should be at the route level, not
+				// the rule level.
 				downstreamService := &corev1.Service{
 					ObjectMeta: downstreamStrategy.GetDownstreamObjectMeta(&upstreamRoute),
 				}
@@ -788,6 +791,7 @@ func (r *GatewayReconciler) ensureDownstreamHTTPRouteRules(
 										Kind: gatewayv1alpha2.Kind(KindService),
 										Name: gatewayv1.ObjectName(downstreamService.Name),
 									},
+									SectionName: (*gatewayv1alpha2.SectionName)(servicePort.Name),
 								},
 							},
 							Validation: gatewayv1alpha3.BackendTLSPolicyValidation{

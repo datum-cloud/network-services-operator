@@ -578,3 +578,7 @@ spec:
                 curl -kvf -H \"Host: \${PRIMARY_HOSTNAME}\" http://\${GATEWAY_SERVICE_NAME}.\${GATEWAY_SERVICE_NAMESPACE}.svc.cluster.local/plaintext; \
                 curl -kvf -H \"Host: \${PRIMARY_HOSTNAME}\" http://\${GATEWAY_SERVICE_NAME}.\${GATEWAY_SERVICE_NAMESPACE}.svc.cluster.local/tls; \
               "
+      catch:
+        - script:
+            content: |
+              kubectl -n envoy-gateway-system logs -l gateway.envoyproxy.io/owning-gatewayclass=envoy-gateway -c envoy

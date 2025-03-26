@@ -4,7 +4,6 @@ package controller
 
 import (
 	"context"
-	"crypto/md5"
 	"fmt"
 	"strings"
 
@@ -12,6 +11,7 @@ import (
 	mchandler "github.com/multicluster-runtime/multicluster-runtime/pkg/handler"
 	mcmanager "github.com/multicluster-runtime/multicluster-runtime/pkg/manager"
 	mcreconcile "github.com/multicluster-runtime/multicluster-runtime/pkg/reconcile"
+	downstreamclient "go.datum.net/network-services-operator/internal/downstreamclient"
 	"go.datum.net/network-services-operator/internal/validation"
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
@@ -177,7 +177,7 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 	ctx context.Context,
 	upstreamClient client.Client,
 	upstreamGateway *gatewayv1.Gateway,
-	downstreamStrategy DownstreamResourceStrategy,
+	downstreamStrategy downstreamclient.ResourceStrategy,
 ) (result Result, downstreamGateway *gatewayv1.Gateway) {
 	logger := log.FromContext(ctx)
 
@@ -205,7 +205,7 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 
 	downstreamClient := downstreamStrategy.GetClient()
 	downstreamGateway = &gatewayv1.Gateway{
-		ObjectMeta: downstreamStrategy.GetDownstreamObjectMeta(upstreamGateway),
+		ObjectMeta: downstreamStrategy.ObjectMetaFromObject(upstreamGateway),
 	}
 
 	gatewayResult, err := controllerutil.CreateOrUpdate(ctx, downstreamClient, downstreamGateway, func() error {
@@ -423,7 +423,7 @@ func (r *GatewayReconciler) ensureDownstreamGatewayHTTPRoutes(
 	upstreamGateway *gatewayv1.Gateway,
 	upstreamGatewayClassControllerName string,
 	downstreamGateway *gatewayv1.Gateway,
-	downstreamStrategy DownstreamResourceStrategy,
+	downstreamStrategy downstreamclient.ResourceStrategy,
 ) (result Result) {
 	logger := log.FromContext(ctx)
 
@@ -525,7 +525,7 @@ func (r *GatewayReconciler) ensureDownstreamHTTPRoute(
 	upstreamGateway *gatewayv1.Gateway,
 	upstreamGatewayClassControllerName string,
 	downstreamGateway *gatewayv1.Gateway,
-	downstreamStrategy DownstreamResourceStrategy,
+	downstreamStrategy downstreamclient.ResourceStrategy,
 	upstreamRoute gatewayv1.HTTPRoute,
 ) (result Result) {
 	logger := log.FromContext(ctx)
@@ -540,7 +540,7 @@ func (r *GatewayReconciler) ensureDownstreamHTTPRoute(
 	downstreamClient := downstreamStrategy.GetClient()
 
 	downstreamRoute := &gatewayv1.HTTPRoute{
-		ObjectMeta: downstreamStrategy.GetDownstreamObjectMeta(&upstreamRoute),
+		ObjectMeta: downstreamStrategy.ObjectMetaFromObject(&upstreamRoute),
 	}
 
 	routeResult, err := controllerutil.CreateOrUpdate(ctx, downstreamClient, downstreamRoute, func() error {
@@ -680,7 +680,7 @@ func (r *GatewayReconciler) ensureDownstreamHTTPRouteRules(
 	upstreamGateway *gatewayv1.Gateway,
 	upstreamRoute gatewayv1.HTTPRoute,
 	downstreamClient client.Client,
-	downstreamStrategy DownstreamResourceStrategy,
+	downstreamStrategy downstreamclient.ResourceStrategy,
 ) (result Result, rules []gatewayv1.HTTPRouteRule) {
 
 	// TODO(jreese) consider rewriting this to return resources that need to be
@@ -742,7 +742,7 @@ func (r *GatewayReconciler) ensureDownstreamHTTPRouteRules(
 				// TODO(jreese) service construction should be at the route level, not
 				// the rule level.
 				downstreamService := &corev1.Service{
-					ObjectMeta: downstreamStrategy.GetDownstreamObjectMeta(&upstreamRoute),
+					ObjectMeta: downstreamStrategy.ObjectMetaFromObject(&upstreamRoute),
 				}
 				serviceResult, err := controllerutil.CreateOrUpdate(ctx, downstreamClient, downstreamService, func() error {
 					if err := controllerutil.SetOwnerReference(downstreamService, &upstreamRoute, downstreamClient.Scheme()); err != nil {
@@ -782,7 +782,7 @@ func (r *GatewayReconciler) ensureDownstreamHTTPRouteRules(
 					}
 
 					backendTLSPolicy := &gatewayv1alpha3.BackendTLSPolicy{
-						ObjectMeta: downstreamStrategy.GetDownstreamObjectMeta(&upstreamRoute),
+						ObjectMeta: downstreamStrategy.ObjectMetaFromObject(&upstreamRoute),
 					}
 
 					backendTLSPolicyResult, err := controllerutil.CreateOrUpdate(ctx, downstreamClient, backendTLSPolicy, func() error {
@@ -874,14 +874,14 @@ func (r *GatewayReconciler) ensureDownstreamEndpointSlice(
 	upstreamGateway *gatewayv1.Gateway,
 	upstreamEndpointSlice *discoveryv1.EndpointSlice,
 	downstreamService *corev1.Service,
-	downstreamStrategy DownstreamResourceStrategy,
+	downstreamStrategy downstreamclient.ResourceStrategy,
 ) (result Result, downstreamEndpointSlice *discoveryv1.EndpointSlice) {
 	logger := log.FromContext(ctx)
 	downstreamClient := downstreamStrategy.GetClient()
 
 	// Mirror to downstream EndpointSlice
 	downstreamEndpointSlice = &discoveryv1.EndpointSlice{
-		ObjectMeta: downstreamStrategy.GetDownstreamObjectMeta(upstreamEndpointSlice),
+		ObjectMeta: downstreamStrategy.ObjectMetaFromObject(upstreamEndpointSlice),
 	}
 
 	endpointSliceResult, err := controllerutil.CreateOrUpdate(ctx, downstreamClient, downstreamEndpointSlice, func() error {
@@ -917,7 +917,7 @@ func (r *GatewayReconciler) ensureDownstreamEndpointSlice(
 	return result, downstreamEndpointSlice
 }
 
-func getDownstreamResourceStrategy(cl cluster.Cluster) DownstreamResourceStrategy {
+func getDownstreamResourceStrategy(cl cluster.Cluster) downstreamclient.ResourceStrategy {
 	// TODO(jreese) have different downstream client "providers"
 
 	// One implementation could just return the client from the cluster that was
@@ -930,9 +930,7 @@ func getDownstreamResourceStrategy(cl cluster.Cluster) DownstreamResourceStrateg
 	// This way, the controller can be written as if it's putting resources into
 	// the same namespace as the upstream resource, but that doesn't mean it'll
 	// land in the same place as that resource.
-	return &SameNamespaceDownstreamResourceStrategy{
-		client: cl.GetClient(),
-	}
+	return downstreamclient.NewSameNamespaceResourceStrategy(cl.GetClient())
 }
 
 type DownstreamResourceStrategy interface {
@@ -941,40 +939,6 @@ type DownstreamResourceStrategy interface {
 	// GetDownstreamObjectMeta returns an ObjectMeta struct with Namespace and
 	// Name fields populated.
 	GetDownstreamObjectMeta(metav1.Object) metav1.ObjectMeta
-
-	// GetDownstreamName returns a name derived from the input object's name.
-	GetDownstreamName(string) string
-}
-
-type SameNamespaceDownstreamResourceStrategy struct {
-	client client.Client
-}
-
-func (c *SameNamespaceDownstreamResourceStrategy) GetClient() client.Client {
-	return c.client
-}
-
-// GetDownstreamObjectKey returns a name derived from the input object's name, where
-// the value is the first 188 characters of the input object's name, suffixed by
-// the sha256 hash of the full input object's name.
-func (c *SameNamespaceDownstreamResourceStrategy) GetDownstreamObjectMeta(obj metav1.Object) metav1.ObjectMeta {
-	return metav1.ObjectMeta{
-		Namespace: obj.GetNamespace(),
-		Name:      c.GetDownstreamName(obj.GetName()),
-	}
-}
-
-func (c *SameNamespaceDownstreamResourceStrategy) GetDownstreamName(name string) string {
-	// MD5 produces 32 hex characters
-	hash := md5.Sum([]byte(name))
-
-	// Reserve 33 chars for hash and hyphen (32 for MD5 + 1 for hyphen)
-	// This leaves 30 chars for the prefix
-	maxPrefixLen := 30
-	if len(name) > maxPrefixLen {
-		name = name[0:maxPrefixLen]
-	}
-	return fmt.Sprintf("%s-%x", name, hash)
 }
 
 // SetupWithManager sets up the controller with the Manager.

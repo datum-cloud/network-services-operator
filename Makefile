@@ -135,6 +135,9 @@ build-installer: set-image-controller generate ## Generate a consolidated YAML w
 set-image-controller: manifests kustomize
 	cd config/manager && $(KUSTOMIZE) edit set image controller=${IMG}
 
+.PHONY: prepare-infra-cluster
+prepare-infra-cluster: cert-manager envoy-gateway external-dns
+
 .PHONY: prepare-e2e
 prepare-e2e: chainsaw set-image-controller cert-manager envoy-gateway external-dns load-image-all deploy
 

@@ -1,0 +1,257 @@
+package downstreamclient
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/davecgh/go-spew/spew"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+)
+
+var _ ResourceStrategy = &mappedNamespaceResourceStrategy{}
+
+type mappedNamespaceResourceStrategy struct {
+	upstreamClusterName string
+	upstreamClient      client.Client
+	downstreamClient    client.Client
+}
+
+func NewMappedNamespaceResourceStrategy(
+	upstreamClusterName string,
+	upstreamClient client.Client,
+	downstreamClient client.Client,
+) ResourceStrategy {
+	return &mappedNamespaceResourceStrategy{
+		upstreamClusterName: upstreamClusterName,
+		upstreamClient:      upstreamClient,
+		downstreamClient:    downstreamClient,
+	}
+}
+
+func (c *mappedNamespaceResourceStrategy) GetClient() client.Client {
+	return &mappedNamespaceClient{
+		client:           c.downstreamClient,
+		resourceStrategy: c,
+	}
+}
+
+func (c *mappedNamespaceResourceStrategy) ObjectMetaFromUpstreamObject(ctx context.Context, obj metav1.Object) (metav1.ObjectMeta, error) {
+	downstreamNamespaceName, err := c.getDownstreamNamespaceName(ctx, obj)
+	if err != nil {
+		return metav1.ObjectMeta{}, fmt.Errorf("failed to get downstream namespace name: %w", err)
+	}
+
+	return metav1.ObjectMeta{
+		Name:      obj.GetName(),
+		Namespace: downstreamNamespaceName,
+	}, nil
+}
+
+func (c *mappedNamespaceResourceStrategy) getUpstreamNamespace(ctx context.Context, obj metav1.Object) (*corev1.Namespace, error) {
+	namespace := &corev1.Namespace{}
+
+	if obj == nil {
+		return nil, fmt.Errorf("object is nil")
+	}
+	if c.upstreamClient == nil {
+		return nil, fmt.Errorf("upstream client is nil")
+	}
+	if err := c.upstreamClient.Get(ctx, client.ObjectKey{Name: obj.GetNamespace()}, namespace); err != nil {
+		return nil, fmt.Errorf("failed to get upstream namespace: %w", err)
+	}
+
+	return namespace, nil
+}
+
+func (c *mappedNamespaceResourceStrategy) getDownstreamNamespaceName(ctx context.Context, obj metav1.Object) (string, error) {
+	namespace, err := c.getUpstreamNamespace(ctx, obj)
+	if err != nil {
+		return "", fmt.Errorf("failed to get downstream namespace: %w", err)
+	}
+
+	return fmt.Sprintf("ns-%s", namespace.UID), nil
+}
+
+func (c *mappedNamespaceResourceStrategy) ensureDownstreamNamespace(ctx context.Context, obj metav1.Object) (*corev1.Namespace, error) {
+	downstreamNamespace := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: obj.GetNamespace(),
+		},
+	}
+
+	_, err := controllerutil.CreateOrUpdate(ctx, c.downstreamClient, downstreamNamespace, func() error {
+		if downstreamNamespace.Labels == nil {
+			downstreamNamespace.Labels = make(map[string]string)
+		}
+
+		// TODO(jreese) add labels to downstream namespace to more easily identify
+		// the upstream namespace it is mapped to.
+
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to ensure downstream namespace: %w", err)
+	}
+
+	return downstreamNamespace, nil
+}
+
+const (
+	UpstreamOwnerClusterNameLabel = "meta.datumapis.com/upstream-cluster-name"
+	UpstreamOwnerGroupLabel       = "meta.datumapis.com/upstream-group"
+	UpstreamOwnerKindLabel        = "meta.datumapis.com/upstream-kind"
+	UpstreamOwnerNameLabel        = "meta.datumapis.com/upstream-name"
+	UpstreamOwnerNamespaceLabel   = "meta.datumapis.com/upstream-namespace"
+)
+
+func (c *mappedNamespaceResourceStrategy) SetControllerReference(ctx context.Context, owner, controlled metav1.Object, opts ...controllerutil.OwnerReferenceOption) error {
+	// TODO(jreese) add owner validation
+
+	if owner.GetNamespace() == "" || controlled.GetNamespace() == "" {
+		return fmt.Errorf("cluster scoped resource controllers are not supported")
+	}
+
+	// For simplicity, we use a ConfigMap for an anchor. This may change to a
+	// separate type in the future if ConfigMap bloat causes an issue in caches.
+
+	gvk, err := apiutil.GVKForObject(owner.(runtime.Object), c.upstreamClient.Scheme())
+	if err != nil {
+		return err
+	}
+
+	if owner.GetUID() == "" {
+		spew.Dump(owner)
+	}
+
+	anchorName := fmt.Sprintf("anchor-%s", owner.GetUID())
+
+	anchorAnnotations := map[string]string{
+		UpstreamOwnerClusterNameLabel: c.upstreamClusterName,
+	}
+
+	anchorLabels := map[string]string{
+		UpstreamOwnerGroupLabel:     gvk.Group,
+		UpstreamOwnerKindLabel:      gvk.Kind,
+		UpstreamOwnerNameLabel:      owner.GetName(),
+		UpstreamOwnerNamespaceLabel: owner.GetNamespace(),
+	}
+
+	downstreamClient := c.GetClient()
+
+	var anchorConfigMap corev1.ConfigMap
+	if err := downstreamClient.Get(ctx, client.ObjectKey{Namespace: controlled.GetNamespace(), Name: anchorName}, &anchorConfigMap); client.IgnoreNotFound(err) != nil {
+		return fmt.Errorf("failed listing configmaps: %w", err)
+	}
+
+	if anchorConfigMap.CreationTimestamp.IsZero() {
+		anchorConfigMap.Name = anchorName
+		anchorConfigMap.Namespace = controlled.GetNamespace()
+		if err := downstreamClient.Create(ctx, &anchorConfigMap); err != nil {
+			return fmt.Errorf("failed creating anchor configmap: %w", err)
+		}
+	}
+
+	if err := controllerutil.SetOwnerReference(&anchorConfigMap, controlled, downstreamClient.Scheme(), opts...); err != nil {
+		return fmt.Errorf("failed setting anchor owner reference: %w", err)
+	}
+
+	annotations := controlled.GetAnnotations()
+	if annotations == nil {
+		annotations = map[string]string{}
+	}
+	annotations[UpstreamOwnerClusterNameLabel] = anchorAnnotations[UpstreamOwnerClusterNameLabel]
+	controlled.SetAnnotations(annotations)
+
+	labels := controlled.GetLabels()
+	if labels == nil {
+		labels = map[string]string{}
+	}
+
+	labels[UpstreamOwnerGroupLabel] = anchorLabels[UpstreamOwnerGroupLabel]
+	labels[UpstreamOwnerKindLabel] = anchorLabels[UpstreamOwnerKindLabel]
+	labels[UpstreamOwnerNameLabel] = anchorLabels[UpstreamOwnerNameLabel]
+	labels[UpstreamOwnerNamespaceLabel] = anchorLabels[UpstreamOwnerNamespaceLabel]
+	controlled.SetLabels(labels)
+
+	return nil
+}
+
+func (c *mappedNamespaceResourceStrategy) SetOwnerReference(ctx context.Context, owner, object metav1.Object, opts ...controllerutil.OwnerReferenceOption) error {
+	return controllerutil.SetOwnerReference(owner, object, c.downstreamClient.Scheme(), opts...)
+}
+
+var _ client.Client = &mappedNamespaceClient{}
+
+type mappedNamespaceClient struct {
+	client           client.Client
+	resourceStrategy *mappedNamespaceResourceStrategy
+}
+
+func (c *mappedNamespaceClient) Create(ctx context.Context, obj client.Object, opts ...client.CreateOption) error {
+	_, err := c.resourceStrategy.ensureDownstreamNamespace(ctx, obj)
+	if err != nil {
+		return fmt.Errorf("failed to ensure downstream namespace: %w", err)
+	}
+
+	return c.client.Create(ctx, obj, opts...)
+}
+
+func (c *mappedNamespaceClient) Delete(ctx context.Context, obj client.Object, opts ...client.DeleteOption) error {
+	fmt.Println("Delete", obj.GetNamespace())
+	return c.client.Delete(ctx, obj, opts...)
+}
+
+func (c *mappedNamespaceClient) DeleteAllOf(ctx context.Context, obj client.Object, opts ...client.DeleteAllOfOption) error {
+	fmt.Println("DeleteAllOf", obj.GetNamespace())
+	return c.client.DeleteAllOf(ctx, obj, opts...)
+}
+
+func (c *mappedNamespaceClient) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+	fmt.Println("Get", key.Namespace)
+	return c.client.Get(ctx, key, obj, opts...)
+}
+
+func (c *mappedNamespaceClient) List(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+	return c.client.List(ctx, list, opts...)
+}
+
+func (c *mappedNamespaceClient) Patch(ctx context.Context, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+	fmt.Println("Patch", obj.GetNamespace())
+	return c.client.Patch(ctx, obj, patch, opts...)
+}
+
+func (c *mappedNamespaceClient) Update(ctx context.Context, obj client.Object, opts ...client.UpdateOption) error {
+	fmt.Println("Update", obj.GetNamespace())
+	return c.client.Update(ctx, obj, opts...)
+}
+
+func (c *mappedNamespaceClient) GroupVersionKindFor(obj runtime.Object) (schema.GroupVersionKind, error) {
+	return c.client.GroupVersionKindFor(obj)
+}
+
+func (c *mappedNamespaceClient) IsObjectNamespaced(obj runtime.Object) (bool, error) {
+	return c.client.IsObjectNamespaced(obj)
+}
+
+func (c *mappedNamespaceClient) Scheme() *runtime.Scheme {
+	return c.client.Scheme()
+}
+
+func (c *mappedNamespaceClient) RESTMapper() meta.RESTMapper {
+	return c.client.RESTMapper()
+}
+
+func (c *mappedNamespaceClient) Status() client.SubResourceWriter {
+	return c.client.Status()
+}
+
+func (c *mappedNamespaceClient) SubResource(subResource string) client.SubResourceClient {
+	return c.client.SubResource(subResource)
+}

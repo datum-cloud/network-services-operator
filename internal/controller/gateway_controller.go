@@ -11,6 +11,7 @@ import (
 	mchandler "github.com/multicluster-runtime/multicluster-runtime/pkg/handler"
 	mcmanager "github.com/multicluster-runtime/multicluster-runtime/pkg/manager"
 	mcreconcile "github.com/multicluster-runtime/multicluster-runtime/pkg/reconcile"
+	mcsource "github.com/multicluster-runtime/multicluster-runtime/pkg/source"
 	downstreamclient "go.datum.net/network-services-operator/internal/downstreamclient"
 	"go.datum.net/network-services-operator/internal/validation"
 	corev1 "k8s.io/api/core/v1"
@@ -25,15 +26,14 @@ import (
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	gatewayv1alpha2 "sigs.k8s.io/gateway-api/apis/v1alpha2"
 	gatewayv1alpha3 "sigs.k8s.io/gateway-api/apis/v1alpha3"
 )
 
+const gatewayControllerFinalizer = "gateway.networking.datumapis.com/gateway-controller"
 const KindGateway = "Gateway"
 const KindService = "Service"
 const KindEndpointSlice = "EndpointSlice"
@@ -85,19 +85,28 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 		return ctrl.Result{}, err
 	}
 
-	// TODO(jreese) The GatewayClassName check is currently necessary because of
-	// how we enqueue requests for HTTPRoutes. In the handler, it simply places
-	// a request in the queue for every Gateway parentRef in the HTTPRoute, without
-	// checking if the parent gateway's gatewayclass.
-	if !gateway.DeletionTimestamp.IsZero() || gateway.Spec.GatewayClassName != "datum-external-global-proxy" {
+	downstreamStrategy, err := getDownstreamResourceStrategy(ctx, req.ClusterName, r.mgr)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to get downstream resource strategy: %w", err)
+	}
+
+	if !gateway.DeletionTimestamp.IsZero() {
 		// TODO(jreese) Finalizer
+		return ctrl.Result{}, nil
+	}
+
+	// Look up the GatewayClass to determine if it's applicable to this controller
+	var upstreamGatewayClass gatewayv1.GatewayClass
+	if err := cl.GetClient().Get(ctx, types.NamespacedName{Name: string(gateway.Spec.GatewayClassName)}, &upstreamGatewayClass); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	if upstreamGatewayClass.Spec.ControllerName != "gateway.networking.datumapis.com/external-global-proxy-controller" {
 		return ctrl.Result{}, nil
 	}
 
 	logger.Info("reconciling gateway")
 	defer logger.Info("reconcile complete")
-
-	downstreamStrategy := getDownstreamResourceStrategy(cl)
 
 	result, downstreamGateway := r.ensureDownstreamGateway(ctx, cl.GetClient(), &gateway, downstreamStrategy)
 	if result.ShouldReturn() {
@@ -204,12 +213,18 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 	}
 
 	downstreamClient := downstreamStrategy.GetClient()
+	downstreamGatewayObjectMeta, err := downstreamStrategy.ObjectMetaFromUpstreamObject(ctx, upstreamGateway)
+	if err != nil {
+		result.Err = fmt.Errorf("failed to get downstream gateway object metadata: %w", err)
+		return result, nil
+	}
+
 	downstreamGateway = &gatewayv1.Gateway{
-		ObjectMeta: downstreamStrategy.ObjectMetaFromObject(upstreamGateway),
+		ObjectMeta: downstreamGatewayObjectMeta,
 	}
 
 	gatewayResult, err := controllerutil.CreateOrUpdate(ctx, downstreamClient, downstreamGateway, func() error {
-		if err := controllerutil.SetControllerReference(upstreamGateway, downstreamGateway, downstreamClient.Scheme()); err != nil {
+		if err := downstreamStrategy.SetControllerReference(ctx, upstreamGateway, downstreamGateway); err != nil {
 			return fmt.Errorf("failed to set controller reference on downstream gateway: %w", err)
 		}
 
@@ -364,7 +379,7 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 	}
 
 	if _, err := controllerutil.CreateOrUpdate(ctx, downstreamClient, &gatewayDNSEndpoint, func() error {
-		if err := controllerutil.SetOwnerReference(downstreamGateway, &gatewayDNSEndpoint, downstreamClient.Scheme()); err != nil {
+		if err := downstreamStrategy.SetControllerReference(ctx, downstreamGateway, &gatewayDNSEndpoint); err != nil {
 			return err
 		}
 		return unstructured.SetNestedSlice(gatewayDNSEndpoint.Object, endpoints, "spec", "endpoints")
@@ -455,6 +470,10 @@ func (r *GatewayReconciler) ensureDownstreamGatewayHTTPRoutes(
 	// TODO(jreese) handle route removal
 	// - It seems that envoy gateway does a full reconcile
 	for _, route := range attachedRoutes {
+		if !route.DeletionTimestamp.IsZero() {
+			logger.Info("skipping httproute due to deletion timestamp", "name", route.Name)
+			continue
+		}
 		httpRouteResult := r.ensureDownstreamHTTPRoute(
 			ctx,
 			upstreamClient,
@@ -538,13 +557,18 @@ func (r *GatewayReconciler) ensureDownstreamHTTPRoute(
 	}
 
 	downstreamClient := downstreamStrategy.GetClient()
+	downstreamRouteObjectMeta, err := downstreamStrategy.ObjectMetaFromUpstreamObject(ctx, &upstreamRoute)
+	if err != nil {
+		result.Err = fmt.Errorf("failed to get downstream httproute object metadata: %w", err)
+		return result
+	}
 
 	downstreamRoute := &gatewayv1.HTTPRoute{
-		ObjectMeta: downstreamStrategy.ObjectMetaFromObject(&upstreamRoute),
+		ObjectMeta: downstreamRouteObjectMeta,
 	}
 
 	routeResult, err := controllerutil.CreateOrUpdate(ctx, downstreamClient, downstreamRoute, func() error {
-		if err := controllerutil.SetOwnerReference(downstreamRoute, &upstreamRoute, downstreamClient.Scheme()); err != nil {
+		if err := downstreamStrategy.SetControllerReference(ctx, &upstreamRoute, downstreamRoute); err != nil {
 			return fmt.Errorf("failed to set controller reference on downstream httproute: %w", err)
 		}
 
@@ -739,13 +763,19 @@ func (r *GatewayReconciler) ensureDownstreamHTTPRouteRules(
 					}
 				}
 
+				downstreamServiceObjectMeta, err := downstreamStrategy.ObjectMetaFromUpstreamObject(ctx, &upstreamRoute)
+				if err != nil {
+					result.Err = fmt.Errorf("failed to get downstream service object metadata: %w", err)
+					return result, nil
+				}
+
 				// TODO(jreese) service construction should be at the route level, not
 				// the rule level.
 				downstreamService := &corev1.Service{
-					ObjectMeta: downstreamStrategy.ObjectMetaFromObject(&upstreamRoute),
+					ObjectMeta: downstreamServiceObjectMeta,
 				}
 				serviceResult, err := controllerutil.CreateOrUpdate(ctx, downstreamClient, downstreamService, func() error {
-					if err := controllerutil.SetOwnerReference(downstreamService, &upstreamRoute, downstreamClient.Scheme()); err != nil {
+					if err := downstreamStrategy.SetControllerReference(ctx, &upstreamRoute, downstreamService); err != nil {
 						return err
 					}
 
@@ -781,12 +811,18 @@ func (r *GatewayReconciler) ensureDownstreamHTTPRouteRules(
 						return result, nil
 					}
 
+					downstreamTLSPolicyObjectMeta, err := downstreamStrategy.ObjectMetaFromUpstreamObject(ctx, &upstreamRoute)
+					if err != nil {
+						result.Err = fmt.Errorf("failed to get downstream tls policy object metadata: %w", err)
+						return result, nil
+					}
+
 					backendTLSPolicy := &gatewayv1alpha3.BackendTLSPolicy{
-						ObjectMeta: downstreamStrategy.ObjectMetaFromObject(&upstreamRoute),
+						ObjectMeta: downstreamTLSPolicyObjectMeta,
 					}
 
 					backendTLSPolicyResult, err := controllerutil.CreateOrUpdate(ctx, downstreamClient, backendTLSPolicy, func() error {
-						if err := controllerutil.SetOwnerReference(backendTLSPolicy, downstreamService, downstreamClient.Scheme()); err != nil {
+						if err := downstreamStrategy.SetControllerReference(ctx, downstreamService, backendTLSPolicy); err != nil {
 							return err
 						}
 
@@ -880,15 +916,21 @@ func (r *GatewayReconciler) ensureDownstreamEndpointSlice(
 	downstreamClient := downstreamStrategy.GetClient()
 
 	// Mirror to downstream EndpointSlice
+	downstreamEndpointSliceObjectMeta, err := downstreamStrategy.ObjectMetaFromUpstreamObject(ctx, upstreamEndpointSlice)
+	if err != nil {
+		result.Err = fmt.Errorf("failed to get downstream endpointslice object metadata: %w", err)
+		return result, nil
+	}
+
 	downstreamEndpointSlice = &discoveryv1.EndpointSlice{
-		ObjectMeta: downstreamStrategy.ObjectMetaFromObject(upstreamEndpointSlice),
+		ObjectMeta: downstreamEndpointSliceObjectMeta,
 	}
 
 	endpointSliceResult, err := controllerutil.CreateOrUpdate(ctx, downstreamClient, downstreamEndpointSlice, func() error {
-		if err := controllerutil.SetOwnerReference(downstreamEndpointSlice, upstreamEndpointSlice, downstreamClient.Scheme()); err != nil {
+		if err := downstreamStrategy.SetControllerReference(ctx, upstreamEndpointSlice, downstreamEndpointSlice); err != nil {
 			return fmt.Errorf("failed to set controller reference on downstream endpointslice: %w", err)
 		}
-		if err := controllerutil.SetOwnerReference(downstreamEndpointSlice, upstreamGateway, downstreamClient.Scheme()); err != nil {
+		if err := downstreamStrategy.SetControllerReference(ctx, upstreamGateway, downstreamEndpointSlice); err != nil {
 			return fmt.Errorf("failed to set controller reference on downstream endpointslice: %w", err)
 		}
 
@@ -917,20 +959,19 @@ func (r *GatewayReconciler) ensureDownstreamEndpointSlice(
 	return result, downstreamEndpointSlice
 }
 
-func getDownstreamResourceStrategy(cl cluster.Cluster) downstreamclient.ResourceStrategy {
-	// TODO(jreese) have different downstream client "providers"
+func getDownstreamResourceStrategy(ctx context.Context, upstreamClusterName string, mgr mcmanager.Manager) (downstreamclient.ResourceStrategy, error) {
+	// return downstreamclient.NewSameClusterAndNamespaceResourceStrategy(cl.GetClient())
+	upstreamCluster, err := mgr.GetCluster(ctx, upstreamClusterName)
+	if err != nil {
+		return nil, err
+	}
 
-	// One implementation could just return the client from the cluster that was
-	// passed in. Another could return a client that ends up rewriting namespaces
-	// in a way that you can target a single API server and not have conflicts.
-	// Another could return a client that aligns each source cluster with a target
-	// cluster, which could be a whole API server, or something like a KCP
-	// workspace, and doesn't do any namespace/name rewriting.
-	//
-	// This way, the controller can be written as if it's putting resources into
-	// the same namespace as the upstream resource, but that doesn't mean it'll
-	// land in the same place as that resource.
-	return downstreamclient.NewSameNamespaceResourceStrategy(cl.GetClient())
+	downstreamCluster, err := mgr.GetCluster(ctx, "nso-infra")
+	if err != nil {
+		return nil, err
+	}
+
+	return downstreamclient.NewMappedNamespaceResourceStrategy(upstreamClusterName, upstreamCluster.GetClient(), downstreamCluster.GetClient()), nil
 }
 
 type DownstreamResourceStrategy interface {
@@ -944,29 +985,39 @@ type DownstreamResourceStrategy interface {
 // SetupWithManager sets up the controller with the Manager.
 func (r *GatewayReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	r.mgr = mgr
+
+	src := mcsource.TypedKind(
+		&gatewayv1.Gateway{},
+		downstreamclient.TypedEnqueueRequestForUpstreamOwner[*gatewayv1.Gateway](&gatewayv1.Gateway{}, mgr),
+	)
+
+	clusterSrc, _ := src.ForCluster("", mgr.GetLocalManager())
+
 	return mcbuilder.ControllerManagedBy(mgr).
 		For(&gatewayv1.Gateway{}, mcbuilder.WithPredicates(
-			predicate.NewPredicateFuncs(func(object client.Object) bool {
-				o := object.(*gatewayv1.Gateway)
-				// TODO(jreese) get from config
-				// TODO(jreese) might be expected to look at the controllerName on
-				// the GatewayClass, instead of just the name of the GatewayClass.
-				//
-				// Example: gateway.networking.datumapis.com/external-global-proxy-controller
-				//
-				// https://github.com/envoyproxy/gateway/blob/4143f5c8eb2d468c093cca8871e6eb18262aef7e/internal/provider/kubernetes/predicates.go#L122
-				//	https://github.com/envoyproxy/gateway/blob/4143f5c8eb2d468c093cca8871e6eb18262aef7e/internal/provider/kubernetes/controller.go#L1231
-				// https://github.com/envoyproxy/gateway/blob/4143f5c8eb2d468c093cca8871e6eb18262aef7e/internal/provider/kubernetes/predicates.go#L44
-				return o.Spec.GatewayClassName == "datum-external-global-proxy"
-			}),
+		// predicate.NewPredicateFuncs(func(object client.Object) bool {
+		// 	o := object.(*gatewayv1.Gateway)
+		// 	// TODO(jreese) get from config
+		// 	// TODO(jreese) might be expected to look at the controllerName on
+		// 	// the GatewayClass, instead of just the name of the GatewayClass.
+		// 	//
+		// 	// Example: gateway.networking.datumapis.com/external-global-proxy-controller
+		// 	//
+		// 	// https://github.com/envoyproxy/gateway/blob/4143f5c8eb2d468c093cca8871e6eb18262aef7e/internal/provider/kubernetes/predicates.go#L122
+		// 	//	https://github.com/envoyproxy/gateway/blob/4143f5c8eb2d468c093cca8871e6eb18262aef7e/internal/provider/kubernetes/controller.go#L1231
+		// 	// https://github.com/envoyproxy/gateway/blob/4143f5c8eb2d468c093cca8871e6eb18262aef7e/internal/provider/kubernetes/predicates.go#L44
+		// 	return o.Spec.GatewayClassName == "datum-external-global-proxy"
+		// }),
 		)).
-		// TODO(jreese) watch other clusters
-		Owns(&gatewayv1.Gateway{}).
-		Owns(&discoveryv1.EndpointSlice{}).
 		Watches(
 			&gatewayv1.HTTPRoute{},
 			mchandler.EnqueueRequestsFromMapFunc(r.listGatewaysAttachedByHTTPRoute),
 		).
+		// TODO(jreese) watch other clusters
+		// Owns(&gatewayv1.Gateway{}).
+		// Look at https://github.com/kubernetes-sigs/multicluster-runtime/blob/a2c2311b75cbcedb52574b66bbc7499d21cb1177/pkg/builder/forked_controller_test.go#L224
+		WatchesRawSource(clusterSrc).
+		Owns(&discoveryv1.EndpointSlice{}).
 		Named("gateway").
 		Complete(r)
 }

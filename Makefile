@@ -78,7 +78,9 @@ test-e2e: chainsaw
 		echo "No Kind cluster is running. Please start a Kind cluster before running the e2e tests."; \
 		exit 1; \
 	}
-	$(CHAINSAW) test ./test/e2e
+	$(CHAINSAW) test ./test/e2e \
+		--cluster nso-standard=${KUBECONFIG}:kind-nso-standard \
+		--cluster nso-infra=${KUBECONFIG}:kind-nso-infra
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter
@@ -164,6 +166,10 @@ external-dns:
 .PHONY: kind-standard-cluster
 kind-standard-cluster: kind
 	$(KIND) create cluster --config=config/tools/kind/standard-cluster.yaml
+
+.PHONY: kind-infra-cluster
+kind-infra-cluster: kind
+	$(KIND) create cluster --config=config/tools/kind/infra-cluster.yaml
 
 ##@ Deployment
 

@@ -24,11 +24,19 @@ jobs:
       - name: Verify kind installation
         run: kind version
 
-      - name: Create kind cluster
+      - name: Create upstream kind cluster
         run: make kind-standard-cluster
 
+      - name: Create downstream kind cluster
+        run: make kind-infra-cluster
+
       - name: Prepare e2e
-        run: make prepare-e2e
+        run: |
+          kubectl config use-context kind-nso-standard
+          make prepare-e2e
+
+          kubectl config use-context kind-nso-infra
+          make prepare-infra-cluster
 
       - name: Running Test e2e
         run: make test-e2e

@@ -4,33 +4,45 @@ kind: Test
 metadata:
   name: gateway-accepted
 spec:
-  skip: true
+  bindings:
+    - name: clusterIssuerName
+      value: (join('-', ['e2e', $namespace]))
+    - name: gatewayClassName
+      value: (join('-', ['e2e', $namespace]))
+    - name: downstreamNamespaceName
+      value: tbd
+    - name: KUBECONFIG
+      value: asdf
+  cluster: nso-standard
   steps:
     - name: Create CA
       try:
         - create:
+            cluster: nso-infra
             resource:
               apiVersion: cert-manager.io/v1
-              kind: Issuer
+              kind: ClusterIssuer
               metadata:
-                name: test-gateway
+                name: ($clusterIssuerName)
               spec:
                 selfSigned: {}
 
     - name: Create GatewayClass for the upstream gateways
       try:
         - create:
+            cluster: nso-standard
             resource:
               apiVersion: gateway.networking.k8s.io/v1
               kind: GatewayClass
               metadata:
-                name: datum-external-global-proxy
+                name: ($gatewayClassName)
               spec:
                 controllerName: gateway.networking.datumapis.com/external-global-proxy-controller
 
     - name: Create GatewayClass for the downstream gateways
       try:
         - create:
+            cluster: nso-infra
             resource:
               apiVersion: gateway.envoyproxy.io/v1alpha1
               kind: EnvoyProxy
@@ -51,6 +63,7 @@ spec:
                 mergeGateways: true
 
         - create:
+            cluster: nso-infra
             resource:
               apiVersion: gateway.networking.k8s.io/v1
               kind: GatewayClass
@@ -66,14 +79,25 @@ spec:
 
     - name: Provision Gateway
       try:
+        # Get the target namespace UID
+        - script:
+            skipCommandOutput: true
+            skipLogOutput: true
+            content: |
+              kubectl get ns $NAMESPACE -o json
+            outputs:
+              - name: downstreamNamespaceName
+                value: (join('-', ['ns', json_parse($stdout).metadata.uid]))
+
         - create:
+            cluster: nso-standard
             resource:
               apiVersion: gateway.networking.k8s.io/v1
               kind: Gateway
               metadata:
                 name: test-gateway
               spec:
-                gatewayClassName: datum-external-global-proxy
+                gatewayClassName: ($gatewayClassName)
                 listeners:
                 - protocol: HTTP
                   port: 80
@@ -94,8 +118,8 @@ spec:
                     #   gateway.networking.datumapis.com/certificate-issuer: letsencrypt
                     certificateRefs:
                       - group: cert-manager.io
-                        kind: Issuer
-                        name: test-gateway
+                        kind: ClusterIssuer
+                        name: ($clusterIssuerName)
             outputs:
               - name: upstreamGateway
                 match:
@@ -108,11 +132,13 @@ spec:
         # Ensure the downstream gateway was created as expected
         - assert:
             # timeout: 5s
+            cluster: nso-infra
             resource:
               apiVersion: gateway.networking.k8s.io/v1
               kind: Gateway
               metadata:
-                name: test-gateway-d8c7444f0c1b6591d78e6455496651a2
+                name: test-gateway
+                namespace: ($downstreamNamespaceName)
               spec:
                 listeners:
                 - allowedRoutes:
@@ -133,7 +159,7 @@ spec:
                     certificateRefs:
                     - group: ""
                       kind: Secret
-                      name: test-gateway-d8c7444f0c1b6591d78e6455496651a2
+                      name: test-gateway
                     mode: Terminate
                 - allowedRoutes:
                     namespaces:
@@ -153,7 +179,7 @@ spec:
                     certificateRefs:
                     - group: ""
                       kind: Secret
-                      name: test-gateway-d8c7444f0c1b6591d78e6455496651a2
+                      name: test-gateway
                     mode: Terminate
                 - allowedRoutes:
                     namespaces:
@@ -173,7 +199,7 @@ spec:
                     certificateRefs:
                     - group: ""
                       kind: Secret
-                      name: test-gateway-d8c7444f0c1b6591d78e6455496651a2
+                      name: test-gateway
                     mode: Terminate
               status:
                 conditions:
@@ -265,8 +291,12 @@ spec:
         - script:
             skipCommandOutput: true
             skipLogOutput: true
+            cluster: nso-infra
+            env:
+              - name: DOWNSTREAM_NAMESPACE
+                value: ($downstreamNamespaceName)
             content: |
-              kubectl -n $NAMESPACE get gateway test-gateway-d8c7444f0c1b6591d78e6455496651a2 -o json
+              kubectl -n $DOWNSTREAM_NAMESPACE get gateway test-gateway -o json
             outputs:
               - name: downstreamGateway
                 value: (json_parse($stdout))
@@ -279,6 +309,7 @@ spec:
         # provisioned to the downstream gateway.
         - assert:
             # timeout: 5s
+            cluster: nso-infra
             bindings:
               - name: primaryHostname
                 value: (join('.', [$upstreamGateway.metadata.uid, 'prism.global.datum-dns.net']))
@@ -290,7 +321,8 @@ spec:
               apiVersion: externaldns.k8s.io/v1alpha1
               kind: DNSEndpoint
               metadata:
-                name: test-gateway-d8c7444f0c1b6591d78e6455496651a2
+                name: test-gateway
+                namespace: ($downstreamNamespaceName)
               spec:
                 endpoints:
                   - dnsName: ($primaryHostname)
@@ -313,6 +345,7 @@ spec:
         # Ensure the upstream gateway's status is updated as expected
         - assert:
             # timeout: 5s
+            cluster: nso-standard
             resource:
               apiVersion: gateway.networking.k8s.io/v1
               kind: Gateway
@@ -349,17 +382,36 @@ spec:
                  - status: "True"
       catch:
         - script:
+            cluster: nso-standard
             content: |
               kubectl -n network-services-operator-system logs -l app.kubernetes.io/name=network-services-operator
               kubectl get gateways -n $NAMESPACE -o yaml
+              kubectl httproutes -n $NAMESPACE -o yaml
+              kubectl get endpointslices -n $NAMESPACE -o yaml
+        - script:
+            cluster: nso-infra
+            content: |
+              kubectl get gateways -n $NAMESPACE -o yaml
               kubectl get httproutes -n $NAMESPACE -o yaml
+              kubectl get endpointslices -n $NAMESPACE -o yaml
               kubectl get dnsendpoints -n $NAMESPACE -o yaml
               kubectl get svc -n $NAMESPACE -o yaml
-              kubectl get endpointslices -n $NAMESPACE -o yaml
 
     - name: Provision HTTPRoute
       try:
+        # Get the target namespace UID
+        - script:
+            skipCommandOutput: true
+            skipLogOutput: true
+            cluster: nso-standard
+            content: |
+              kubectl get ns $NAMESPACE -o json
+            outputs:
+              - name: downstreamNamespaceName
+                value: (join('-', ['ns', json_parse($stdout).metadata.uid]))
+
         - create:
+            cluster: nso-standard
             resource:
               kind: EndpointSlice
               metadata:
@@ -389,6 +441,7 @@ spec:
                 port: 443
 
         - create:
+            cluster: nso-standard
             resource:
               apiVersion: gateway.networking.k8s.io/v1
               kind: HTTPRoute
@@ -435,12 +488,14 @@ spec:
                           hostname: "example.com"
 
         - assert:
+            cluster: nso-infra
             resource:
               kind: EndpointSlice
               metadata:
-                name: test-slice-1-3ed63ff91eb7ed0412b24fd014a74cd9
+                name: test-slice-1
+                namespace: ($downstreamNamespaceName)
                 labels:
-                  kubernetes.io/service-name: test-route-4ac4abbdbcbd571860ac6f356d0b9592
+                  kubernetes.io/service-name: test-route
               addressType: FQDN
               apiVersion: discovery.k8s.io/v1
               endpoints:
@@ -453,20 +508,22 @@ spec:
                 port: 443
 
         - assert:
+            cluster: nso-infra
             resource:
               apiVersion: gateway.networking.k8s.io/v1
               kind: HTTPRoute
               metadata:
-                name: test-route-4ac4abbdbcbd571860ac6f356d0b9592
+                name: test-route
+                namespace: ($downstreamNamespaceName)
               spec:
                 parentRefs:
                 - group: gateway.networking.k8s.io
                   kind: Gateway
-                  name: test-gateway-d8c7444f0c1b6591d78e6455496651a2
+                  name: test-gateway
                 rules:
                 - backendRefs:
                   - kind: Service
-                    name: test-route-4ac4abbdbcbd571860ac6f356d0b9592
+                    name: test-route
                     weight: 1
                   matches:
                   - path:
@@ -474,7 +531,7 @@ spec:
                       value: /plaintext
                 - backendRefs:
                   - kind: Service
-                    name: test-route-4ac4abbdbcbd571860ac6f356d0b9592
+                    name: test-route
                     weight: 1
                   matches:
                   - path:
@@ -490,32 +547,45 @@ spec:
                     status: "True"
                     type: ResolvedRefs
                   parentRef:
-                    name: test-gateway-d8c7444f0c1b6591d78e6455496651a2
+                    name: test-gateway
                     kind: Gateway
                     group: gateway.networking.k8s.io
 
         # Restrict DNS resolution to IPv4 addresses only.
+        # Using the script here since create won't allow us to provide a namespace
+        # via a binding, and throws a validation error.
         # TODO(jreese) remove this once we have a pod to serve as a backend.
-        - create:
-            resource:
+        - script:
+            skipCommandOutput: true
+            skipLogOutput: true
+            cluster: nso-infra
+            env:
+              - name: DOWNSTREAM_NAMESPACE
+                value: ($downstreamNamespaceName)
+            content: |
+              cat <<EOF | kubectl apply -f -
               apiVersion: gateway.envoyproxy.io/v1alpha1
               kind: BackendTrafficPolicy
               metadata:
-                name: test-route-4ac4abbdbcbd571860ac6f356d0b9592
+                name: test-route
+                namespace: $DOWNSTREAM_NAMESPACE
               spec:
                 targetRef:
                   group: gateway.networking.k8s.io
                   kind: HTTPRoute
-                  name: test-route-4ac4abbdbcbd571860ac6f356d0b9592
+                  name: test-route
                 dns:
                   lookupFamily: IPv4
+              EOF
 
         - assert:
+            cluster: nso-infra
             resource:
               apiVersion: gateway.networking.k8s.io/v1
               kind: HTTPRoute
               metadata:
                 name: test-route
+                namespace: ($downstreamNamespaceName)
               status:
                 parents:
                 - conditions:
@@ -531,19 +601,28 @@ spec:
                     group: gateway.networking.k8s.io
       catch:
         - script:
+            cluster: nso-standard
             content: |
+              kubectl config get-contexts
               kubectl -n network-services-operator-system logs -l app.kubernetes.io/name=network-services-operator
               kubectl get gateways -n $NAMESPACE -o yaml
+              kubectl httproutes -n $NAMESPACE -o yaml
+              kubectl get endpointslices -n $NAMESPACE -o yaml
+        - script:
+            cluster: nso-infra
+            content: |
+              kubectl get gateways -n $NAMESPACE -o yaml
               kubectl get httproutes -n $NAMESPACE -o yaml
+              kubectl get endpointslices -n $NAMESPACE -o yaml
               kubectl get dnsendpoints -n $NAMESPACE -o yaml
               kubectl get svc -n $NAMESPACE -o yaml
-              kubectl get endpointslices -n $NAMESPACE -o yaml
 
     - name: Provision Pod to test connectivity
       try:
         - script:
             skipCommandOutput: true
             skipLogOutput: true
+            cluster: nso-standard
             content: |
               kubectl -n $NAMESPACE get gateway test-gateway -o json
             outputs:
@@ -552,6 +631,7 @@ spec:
         - script:
             skipCommandOutput: true
             skipLogOutput: true
+            cluster: nso-infra
             content: |
               kubectl get svc -n envoy-gateway-system -l gateway.envoyproxy.io/owning-gatewayclass=envoy-gateway -o json
             outputs:
@@ -559,16 +639,22 @@ spec:
                 value: (json_parse($stdout).items | [0])
 
         - create:
+            cluster: nso-infra
             resource:
               apiVersion: v1
               kind: Pod
               metadata:
                 name: test-pod
+                namespace: default
               spec:
                 containers:
                 - name: test-container
                   image: alpine:3.21.3
                   command: ["/bin/sh", "-c", "sleep infinity"]
+                  resources:
+                    requests:
+                      cpu: 100m
+                      memory: 10Mi
                   env:
                   - name: GATEWAY_SERVICE_NAME
                     value: ($gatewayService.metadata.name)
@@ -579,17 +665,20 @@ spec:
                 terminationGracePeriodSeconds: 0
 
         - assert:
+            cluster: nso-infra
             resource:
                 apiVersion: v1
                 kind: Pod
                 metadata:
                   name: test-pod
+                  namespace: default
                 status:
                   phase: Running
 
         - script:
+            cluster: nso-infra
             content: |
-              kubectl -n $NAMESPACE exec -i test-pod -- sh -c " \
+              kubectl -n default exec -i test-pod -- sh -c " \
                 set -x; \
                 apk add curl; \
                 curl -kvf -H \"Host: \${PRIMARY_HOSTNAME}\" http://\${GATEWAY_SERVICE_NAME}.\${GATEWAY_SERVICE_NAMESPACE}.svc.cluster.local/plaintext; \
@@ -597,5 +686,6 @@ spec:
               "
       catch:
         - script:
+            cluster: nso-infra
             content: |
               kubectl -n envoy-gateway-system logs -l gateway.envoyproxy.io/owning-gatewayclass=envoy-gateway -c envoy

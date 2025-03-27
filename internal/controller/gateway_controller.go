@@ -230,7 +230,9 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 
 		// TODO(jreese) validate tls certificateRefs
 		// TODO(jreese) we could use TLS options instead of certificateRefs
-		downstreamGateway.Annotations = map[string]string{}
+		if downstreamGateway.Annotations == nil {
+			downstreamGateway.Annotations = map[string]string{}
+		}
 		for _, l := range upstreamGateway.Spec.Listeners {
 			if l.TLS != nil && len(l.TLS.CertificateRefs) == 1 && l.TLS.CertificateRefs[0].Kind != nil {
 				switch *l.TLS.CertificateRefs[0].Kind {

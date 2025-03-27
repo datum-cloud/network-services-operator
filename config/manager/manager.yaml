@@ -65,6 +65,8 @@ spec:
         args:
           - --leader-elect
           - --health-probe-bind-address=:8081
+          # TODO(jreese) move this into a layer specific to e2e
+          - --cluster-discovery-mode=kind
         image: controller:latest
         imagePullPolicy: IfNotPresent
         name: manager

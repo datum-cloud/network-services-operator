@@ -9,7 +9,7 @@ patches:
   - patch: |
       - op: add
         path: /spec/template/spec/containers/0/args/-
-        value: --downstream-kubeconfig=/etc/downstream-cluster/.kind-nso-infra.yaml
+        value: --downstream-kubeconfig=/etc/downstream-cluster/kubeconfig
       - op: add
         path: /spec/template/spec/containers/0/volumeMounts
         value:
@@ -19,9 +19,8 @@ patches:
         path: /spec/template/spec/volumes
         value:
           - name: downstream-cluster-kubeconfig
-            hostPath:
-              path: /tmp
-              type: Directory
+            secret:
+              secretName: downstream-cluster-kubeconfig
     target:
       kind: Deployment
       name: controller-manager

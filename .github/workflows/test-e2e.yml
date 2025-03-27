@@ -30,7 +30,14 @@ jobs:
         run: make kind-standard-cluster
 
       - name: Create downstream kind cluster
-        run: make kind-infra-cluster
+        run: |
+          make kind-infra-cluster
+          kubectl config use-context kind-nso-standard
+          kind get kubeconfig --name nso-infra --internal > $(TMPDIR)/.kind-nso-infra-internal.yaml
+
+          kubectl create secret -n network-services-operator-system \
+            generic downstream-cluster-kubeconfig \
+            --from-file=kubeconfig=${TMPDIR}/.kind-nso-infra-internal.yaml
 
       - name: Prepare e2e
         run: |

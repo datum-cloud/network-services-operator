@@ -112,8 +112,6 @@ func (e *enqueueRequestForOwner[object]) getOwnerReconcileRequest(obj metav1.Obj
 	labels := obj.GetLabels()
 	if labels[UpstreamOwnerKindLabel] == e.groupKind.Kind && labels[UpstreamOwnerGroupLabel] == e.groupKind.Group {
 		annotations := obj.GetAnnotations()
-
-		fmt.Printf("object cluster: %q namespace: %q name: %q\n", annotations[UpstreamOwnerClusterNameLabel], obj.GetNamespace(), obj.GetName())
 		request := mcreconcile.Request{
 			Request: reconcile.Request{
 				NamespacedName: types.NamespacedName{

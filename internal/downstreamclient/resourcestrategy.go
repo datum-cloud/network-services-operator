@@ -32,4 +32,5 @@ type ResourceStrategy interface {
 
 	SetControllerReference(context.Context, metav1.Object, metav1.Object, ...controllerutil.OwnerReferenceOption) error
 	SetOwnerReference(context.Context, metav1.Object, metav1.Object, ...controllerutil.OwnerReferenceOption) error
+	DeleteAnchorForObject(ctx context.Context, owner client.Object) error
 }

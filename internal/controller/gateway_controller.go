@@ -91,7 +91,24 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 	}
 
 	if !gateway.DeletionTimestamp.IsZero() {
-		// TODO(jreese) Finalizer
+		if result := r.finalizeDownstreamGateway(ctx, &gateway, downstreamStrategy); result.ShouldReturn() {
+			return result.Complete(ctx)
+		}
+
+		controllerutil.RemoveFinalizer(&gateway, gatewayControllerFinalizer)
+		if err := cl.GetClient().Update(ctx, &gateway); err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed to remove finalizer from gateway: %w", err)
+		}
+
+		return ctrl.Result{}, nil
+	}
+
+	if !controllerutil.ContainsFinalizer(&gateway, gatewayControllerFinalizer) {
+		controllerutil.AddFinalizer(&gateway, gatewayControllerFinalizer)
+		if err := cl.GetClient().Update(ctx, &gateway); err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed to add finalizer to gateway: %w", err)
+		}
+
 		return ctrl.Result{}, nil
 	}
 
@@ -432,6 +449,20 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 	)
 
 	return httpRouteResult.Merge(result), downstreamGateway
+}
+
+func (r *GatewayReconciler) finalizeDownstreamGateway(
+	ctx context.Context,
+	upstreamGateway *gatewayv1.Gateway,
+	downstreamStrategy downstreamclient.ResourceStrategy,
+) (result Result) {
+
+	if err := downstreamStrategy.DeleteAnchorForObject(ctx, upstreamGateway); err != nil {
+		result.Err = err
+		return result
+	}
+
+	return result
 }
 
 func (r *GatewayReconciler) ensureDownstreamGatewayHTTPRoutes(

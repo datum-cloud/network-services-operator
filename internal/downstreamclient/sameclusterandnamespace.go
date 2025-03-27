@@ -55,3 +55,7 @@ func (c *sameClusterAndNamespaceResourceStrategy) SetControllerReference(ctx con
 func (c *sameClusterAndNamespaceResourceStrategy) SetOwnerReference(ctx context.Context, owner, object metav1.Object, opts ...controllerutil.OwnerReferenceOption) error {
 	return controllerutil.SetOwnerReference(owner, object, c.GetClient().Scheme(), opts...)
 }
+
+func (c *sameClusterAndNamespaceResourceStrategy) DeleteAnchorForObject(ctx context.Context, owner client.Object) error {
+	return nil
+}

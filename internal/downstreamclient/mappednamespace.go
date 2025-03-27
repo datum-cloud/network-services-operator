@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/davecgh/go-spew/spew"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -126,10 +126,6 @@ func (c *mappedNamespaceResourceStrategy) SetControllerReference(ctx context.Con
 		return err
 	}
 
-	if owner.GetUID() == "" {
-		spew.Dump(owner)
-	}
-
 	anchorName := fmt.Sprintf("anchor-%s", owner.GetUID())
 
 	anchorAnnotations := map[string]string{
@@ -187,6 +183,33 @@ func (c *mappedNamespaceResourceStrategy) SetOwnerReference(ctx context.Context,
 	return controllerutil.SetOwnerReference(owner, object, c.downstreamClient.Scheme(), opts...)
 }
 
+// DeleteAnchorForObject will delete the anchor configmap associated with the
+// provided owner, which will help drive GC of other entities.
+func (c *mappedNamespaceResourceStrategy) DeleteAnchorForObject(
+	ctx context.Context,
+	owner client.Object,
+) error {
+
+	anchorName := fmt.Sprintf("anchor-%s", owner.GetUID())
+
+	downstreamObjectMeta, err := c.ObjectMetaFromUpstreamObject(ctx, owner)
+	if err != nil {
+		return fmt.Errorf("failed to get downstream object metadata: %w", err)
+	}
+
+	downstreamClient := c.GetClient()
+
+	var configMap corev1.ConfigMap
+	if err := downstreamClient.Get(ctx, client.ObjectKey{Namespace: downstreamObjectMeta.Namespace, Name: anchorName}, &configMap); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("failed listing configmaps: %w", err)
+	}
+
+	return downstreamClient.Delete(ctx, &configMap)
+}
+
 var _ client.Client = &mappedNamespaceClient{}
 
 type mappedNamespaceClient struct {
@@ -204,17 +227,14 @@ func (c *mappedNamespaceClient) Create(ctx context.Context, obj client.Object, o
 }
 
 func (c *mappedNamespaceClient) Delete(ctx context.Context, obj client.Object, opts ...client.DeleteOption) error {
-	fmt.Println("Delete", obj.GetNamespace())
 	return c.client.Delete(ctx, obj, opts...)
 }
 
 func (c *mappedNamespaceClient) DeleteAllOf(ctx context.Context, obj client.Object, opts ...client.DeleteAllOfOption) error {
-	fmt.Println("DeleteAllOf", obj.GetNamespace())
 	return c.client.DeleteAllOf(ctx, obj, opts...)
 }
 
 func (c *mappedNamespaceClient) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
-	fmt.Println("Get", key.Namespace)
 	return c.client.Get(ctx, key, obj, opts...)
 }
 
@@ -223,12 +243,10 @@ func (c *mappedNamespaceClient) List(ctx context.Context, list client.ObjectList
 }
 
 func (c *mappedNamespaceClient) Patch(ctx context.Context, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
-	fmt.Println("Patch", obj.GetNamespace())
 	return c.client.Patch(ctx, obj, patch, opts...)
 }
 
 func (c *mappedNamespaceClient) Update(ctx context.Context, obj client.Object, opts ...client.UpdateOption) error {
-	fmt.Println("Update", obj.GetNamespace())
 	return c.client.Update(ctx, obj, opts...)
 }
 

@@ -12,6 +12,8 @@ jobs:
   test-e2e:
     name: Run on Ubuntu
     runs-on: ubuntu-latest
+    env:
+      TMPDIR: /tmp
     steps:
       - name: Clone the code
         uses: actions/checkout@v4

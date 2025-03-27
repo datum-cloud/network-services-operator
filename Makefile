@@ -79,8 +79,8 @@ test-e2e: chainsaw
 		exit 1; \
 	}
 	$(CHAINSAW) test ./test/e2e \
-		--cluster nso-standard=$(TMP_DIR)/.kind-nso-standard.yaml \
-		--cluster nso-infra=$(TMP_DIR)/.kind-nso-infra.yaml
+		--cluster nso-standard=$(TMPDIR)/.kind-nso-standard.yaml \
+		--cluster nso-infra=$(TMPDIR)/.kind-nso-infra.yaml
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter

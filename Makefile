@@ -79,8 +79,8 @@ test-e2e: chainsaw
 		exit 1; \
 	}
 	$(CHAINSAW) test ./test/e2e \
-		--cluster nso-standard=.kind-nso-standard.yaml \
-		--cluster nso-infra=.kind-nso-infra.yaml
+		--cluster nso-standard=$(TMP_DIR)/.kind-nso-standard.yaml \
+		--cluster nso-infra=$(TMP_DIR)/.kind-nso-infra.yaml
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter
@@ -141,7 +141,7 @@ set-image-controller: manifests kustomize
 prepare-infra-cluster: cert-manager envoy-gateway external-dns
 
 .PHONY: prepare-e2e
-prepare-e2e: chainsaw set-image-controller cert-manager envoy-gateway external-dns load-image-all deploy
+prepare-e2e: chainsaw set-image-controller cert-manager envoy-gateway external-dns load-image-all deploy-e2e
 
 .PHONY: load-image-all
 load-image-all: load-image-operator
@@ -166,12 +166,12 @@ external-dns:
 .PHONY: kind-standard-cluster
 kind-standard-cluster: kind
 	$(KIND) create cluster --config=config/tools/kind/standard-cluster.yaml
-	$(KIND) get kubeconfig --name nso-standard > .kind-nso-standard.yaml
+	$(KIND) get kubeconfig --name nso-standard > $(TMPDIR)/.kind-nso-standard.yaml
 
 .PHONY: kind-infra-cluster
 kind-infra-cluster: kind
 	$(KIND) create cluster --config=config/tools/kind/infra-cluster.yaml
-	$(KIND) get kubeconfig --name nso-infra > .kind-nso-infra.yaml
+	$(KIND) get kubeconfig --name nso-infra > $(TMPDIR)/.kind-nso-infra.yaml
 
 ##@ Deployment
 
@@ -190,6 +190,10 @@ uninstall: manifests kustomize ## Uninstall CRDs from the K8s cluster specified 
 .PHONY: deploy
 deploy: set-image-controller ## Deploy controller to the K8s cluster specified in ~/.kube/config.
 	$(KUSTOMIZE) build config/default | $(KUBECTL) apply -f -
+
+.PHONY: deploy-e2e
+deploy-e2e: set-image-controller
+	$(KUSTOMIZE) build config/e2e | $(KUBECTL) apply -f -
 
 .PHONY: undeploy
 undeploy: kustomize ## Undeploy controller from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.

@@ -1,0 +1,29 @@
+namespace: network-services-operator-system
+namePrefix: network-services-operator-
+
+resources:
+  - ../crd
+  - ../rbac
+  - ../manager
+patches:
+  - patch: |
+      - op: add
+        path: /spec/template/spec/containers/0/args/-
+        value: --downstream-kubeconfig=/etc/downstream-cluster/.kind-nso-infra.yaml
+      - op: add
+        path: /spec/template/spec/containers/0
+        value:
+          volumeMounts:
+            - name: downstream-cluster-kubeconfig
+              mountPath: /etc/downstream-cluster
+      - op: add
+        path: /spec/template/spec/
+        value:
+          volumes:
+            - name: downstream-cluster-kubeconfig
+              hostPath:
+                path: /tmp
+                type: Directory
+    target:
+      kind: Deployment
+      name: controller-manager

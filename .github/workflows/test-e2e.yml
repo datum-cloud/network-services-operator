@@ -33,7 +33,7 @@ jobs:
         run: |
           make kind-infra-cluster
           kubectl config use-context kind-nso-standard
-          kind get kubeconfig --name nso-infra --internal > $(TMPDIR)/.kind-nso-infra-internal.yaml
+          kind get kubeconfig --name nso-infra --internal > ${TMPDIR}/.kind-nso-infra-internal.yaml
 
           kubectl create secret -n network-services-operator-system \
             generic downstream-cluster-kubeconfig \

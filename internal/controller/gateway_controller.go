@@ -91,7 +91,7 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 	}
 
 	if !gateway.DeletionTimestamp.IsZero() {
-		if result := r.finalizeDownstreamGateway(ctx, &gateway, downstreamStrategy); result.ShouldReturn() {
+		if result := r.finalizeGateway(ctx, cl.GetClient(), &gateway, downstreamStrategy); result.ShouldReturn() {
 			return result.Complete(ctx)
 		}
 
@@ -125,67 +125,10 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 	logger.Info("reconciling gateway")
 	defer logger.Info("reconcile complete")
 
-	result, downstreamGateway := r.ensureDownstreamGateway(ctx, cl.GetClient(), &gateway, downstreamStrategy)
+	result, _ := r.ensureDownstreamGateway(ctx, cl.GetClient(), &gateway, downstreamStrategy)
 	if result.ShouldReturn() {
 		return result.Complete(ctx)
 	}
-
-	// Do we want a GatewayAttachment to exist so that we can make a single
-	// scheduling decision here? - Nope, depend on the gateway impl supporting
-	// shared infra.
-	//
-	// See Envoy Gateway: https://gateway.envoyproxy.io/docs/tasks/operations/deployment-mode/#merged-gateways-onto-a-single-envoyproxy-fleet
-
-	// Hostnames - Think about a type that can reference a listener to add
-	// more hostnames to it.
-
-	_ = downstreamGateway
-
-	// https://github.com/kubernetes-sigs/gateway-api/issues/1485
-
-	// 1. Identify downstream gateway to attach to based on upstream gateway
-	//	- Put settings into config file to help with this.
-	//	- Support hostnames on listeners defined for datum gateways, propagate
-	//		those to the underlying HTTPRoutes.
-	//	- Generate a hostname based on the uid of the gateway, insert into attached
-	//		HTTPRoutes
-	// - Default listeners for :80 and :443, named http and https
-	// - May have multiple listeners in the downstream gateway, attached to different
-	//	IP blocks, which we should schedule upstream gateways across based on
-	//	strategy defined in https://github.com/datum-cloud/enhancements/issues/15
-
-	// The gateway spec says that tls settings must be defined on the listeners
-	// with an HTTPS protocol, but I'm going to make that optional for our end
-	// users since we can have certs issued by LE. Maybe to stick with
-	// conformance, we can inject default tls settings and have the certificateRef
-	// point at some kind of CertificateManager type that indicates it'll be
-	// issued from LE.
-
-	// See GatewayConditionType and GatewayConditionReason
-	// https://github.com/envoyproxy/gateway/blob/292894057fd4083b1c4dce691d510c1a6bc53073/internal/provider/kubernetes/status.go#L552
-
-	// Gateway Status
-	//	- addresses
-	//		- type: Hostname
-	//		  value: <uid>.prism.global.datum-dns.net
-	//		- type: Hostname
-	//		  value: v4.<uid>.prism.global.datum-dns.net
-	//		- type: Hostname
-	//		  value: v6.<uid>.prism.global.datum-dns.net
-	//	- conditions:
-	//		- type: Accepted
-	//		- type: Programmed
-
-	// Listener Status:
-	//	- attachedRoutes: N
-	//		conditions:
-	//			- type: Programmed
-	//			- type: Accepted
-	//			- type: ResolvedRefs
-	//		name:
-	//		supportedKinds:
-	//			- group: gateway.networking.k8s.io
-	//			  kind: HTTPRoute
 
 	// HTTPRoute can define a hostname - how do we validate it's theirs, and not
 	// in use? An "Accounting" control plane client may make sense. k8s resources
@@ -327,6 +270,72 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 
 	logger.Info("downstream gateway processed", "operation_result", gatewayResult)
 
+	dnsResult := r.ensureDownstreamGatewayDNSEndpoints(
+		ctx,
+		upstreamClient,
+		upstreamGateway,
+		downstreamGateway,
+		downstreamStrategy,
+		hostnames,
+	)
+	if dnsResult.ShouldReturn() {
+		return dnsResult.Merge(result), nil
+	}
+
+	if c := apimeta.FindStatusCondition(downstreamGateway.Status.Conditions, string(gatewayv1.GatewayConditionAccepted)); c != nil {
+		message := "The Gateway has not been scheduled by Datum Gateway"
+		if c.Status == metav1.ConditionTrue {
+			message = "The Gateway has been scheduled by Datum Gateway"
+		}
+
+		apimeta.SetStatusCondition(&upstreamGateway.Status.Conditions, metav1.Condition{
+			Message: message,
+			Type:    string(gatewayv1.GatewayConditionAccepted),
+			Reason:  c.Reason,
+			Status:  c.Status,
+		})
+
+		result.AddStatusUpdate(upstreamClient, upstreamGateway)
+	}
+
+	if c := apimeta.FindStatusCondition(downstreamGateway.Status.Conditions, string(gatewayv1.GatewayConditionProgrammed)); c != nil {
+		message := "The Gateway has not been programmed"
+		if c.Status == metav1.ConditionTrue {
+			message = "The Gateway has been programmed"
+		}
+
+		apimeta.SetStatusCondition(&upstreamGateway.Status.Conditions, metav1.Condition{
+			Message: message,
+			Type:    string(gatewayv1.GatewayConditionProgrammed),
+			Reason:  c.Reason,
+			Status:  c.Status,
+		})
+
+		result.AddStatusUpdate(upstreamClient, upstreamGateway)
+	}
+
+	httpRouteResult := r.ensureDownstreamGatewayHTTPRoutes(
+		ctx,
+		upstreamClient,
+		upstreamGateway,
+		upstreamGatewayClassControllerName,
+		downstreamGateway,
+		downstreamStrategy,
+	)
+
+	return httpRouteResult.Merge(result), downstreamGateway
+}
+
+func (r *GatewayReconciler) ensureDownstreamGatewayDNSEndpoints(
+	ctx context.Context,
+	upstreamClient client.Client,
+	upstreamGateway *gatewayv1.Gateway,
+	downstreamGateway *gatewayv1.Gateway,
+	downstreamStrategy downstreamclient.ResourceStrategy,
+	hostnames []string,
+) (result Result) {
+	logger := log.FromContext(ctx)
+
 	// Extract IP addresses from the downstream gateway's status
 	// Using the `any`` type due to deep copy logic requirements in the unstructured
 	// lib used to set DNSEndpoint values.
@@ -349,7 +358,7 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 	// Return early if no IP addresses were found
 	if len(v4IPs) == 0 || len(v6IPs) == 0 {
 		logger.Info("IP addresses not yet available on downstream gateway", "ipv4", v4IPs, "ipv6", v6IPs)
-		return result, nil
+		return result
 	}
 
 	addresses := make([]gatewayv1.GatewayStatusAddress, 0, len(hostnames))
@@ -397,71 +406,117 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 		result.AddStatusUpdate(upstreamClient, upstreamGateway)
 	}
 
-	if _, err := controllerutil.CreateOrUpdate(ctx, downstreamClient, &gatewayDNSEndpoint, func() error {
+	if _, err := controllerutil.CreateOrUpdate(ctx, downstreamStrategy.GetClient(), &gatewayDNSEndpoint, func() error {
 		if err := downstreamStrategy.SetControllerReference(ctx, downstreamGateway, &gatewayDNSEndpoint); err != nil {
 			return err
 		}
 		return unstructured.SetNestedSlice(gatewayDNSEndpoint.Object, endpoints, "spec", "endpoints")
 	}); err != nil {
 		result.Err = err
-		return result, nil
+		return result
 	}
 
-	if c := apimeta.FindStatusCondition(downstreamGateway.Status.Conditions, string(gatewayv1.GatewayConditionAccepted)); c != nil {
-		message := "The Gateway has not been scheduled by Datum Gateway"
-		if c.Status == metav1.ConditionTrue {
-			message = "The Gateway has been scheduled by Datum Gateway"
-		}
-
-		apimeta.SetStatusCondition(&upstreamGateway.Status.Conditions, metav1.Condition{
-			Message: message,
-			Type:    string(gatewayv1.GatewayConditionAccepted),
-			Reason:  c.Reason,
-			Status:  c.Status,
-		})
-
-		result.AddStatusUpdate(upstreamClient, upstreamGateway)
-	}
-
-	if c := apimeta.FindStatusCondition(downstreamGateway.Status.Conditions, string(gatewayv1.GatewayConditionProgrammed)); c != nil {
-		message := "The Gateway has not been programmed"
-		if c.Status == metav1.ConditionTrue {
-			message = "The Gateway has been programmed"
-		}
-
-		apimeta.SetStatusCondition(&upstreamGateway.Status.Conditions, metav1.Condition{
-			Message: message,
-			Type:    string(gatewayv1.GatewayConditionProgrammed),
-			Reason:  c.Reason,
-			Status:  c.Status,
-		})
-
-		result.AddStatusUpdate(upstreamClient, upstreamGateway)
-	}
-
-	httpRouteResult := r.ensureDownstreamGatewayHTTPRoutes(
-		ctx,
-		upstreamClient,
-		upstreamGateway,
-		upstreamGatewayClassControllerName,
-		downstreamGateway,
-		downstreamStrategy,
-	)
-
-	return httpRouteResult.Merge(result), downstreamGateway
+	return result
 }
 
-func (r *GatewayReconciler) finalizeDownstreamGateway(
+func (r *GatewayReconciler) finalizeGateway(
 	ctx context.Context,
+	upstreamClient client.Client,
 	upstreamGateway *gatewayv1.Gateway,
 	downstreamStrategy downstreamclient.ResourceStrategy,
 ) (result Result) {
+	logger := log.FromContext(ctx)
+	logger.Info("finalizing gateway")
+	// Go through downstream http routes that are attached to the downstream
+	// gateway and remove the parentRef from the status. If it's the last parent
+	// ref, delete the downstream route. If there's a race condition on delete/create,
+	// it'll be reconciled again in the next cycle and fighting is not expected.
 
+	downstreamClient := downstreamStrategy.GetClient()
+
+	downstreamGatewayObjectMeta, err := downstreamStrategy.ObjectMetaFromUpstreamObject(ctx, upstreamGateway)
+	if err != nil {
+		result.Err = err
+		return result
+	}
+	downstreamGateway := &gatewayv1.Gateway{
+		ObjectMeta: downstreamGatewayObjectMeta,
+	}
+
+	if err := downstreamClient.Get(ctx, client.ObjectKeyFromObject(downstreamGateway), downstreamGateway); err != nil {
+		if apierrors.IsNotFound(err) {
+			return result
+		}
+		result.Err = err
+		return result
+	}
+
+	// Detach HTTPRoutes from the upstream gateway
+	logger.Info("detaching httproutes from upstream gateway")
+	detachResult := r.detachHTTPRoutes(ctx, upstreamClient, upstreamGateway, false)
+	if detachResult.ShouldReturn() {
+		return detachResult
+	}
+
+	// Detach HTTPRoutes from the downstream gateway
+	logger.Info("detaching httproutes from downstream gateway")
+	detachResult = r.detachHTTPRoutes(ctx, downstreamClient, downstreamGateway, true)
+	if detachResult.ShouldReturn() {
+		return detachResult
+	}
+
+	logger.Info("deleting anchor for upstream gateway")
 	if err := downstreamStrategy.DeleteAnchorForObject(ctx, upstreamGateway); err != nil {
 		result.Err = err
 		return result
 	}
 
+	return result
+}
+
+func (r *GatewayReconciler) detachHTTPRoutes(
+	ctx context.Context,
+	gatewayClient client.Client,
+	gateway *gatewayv1.Gateway,
+	deleteWhenNoParents bool,
+) (result Result) {
+	logger := log.FromContext(ctx)
+
+	var httpRoutes gatewayv1.HTTPRouteList
+	if err := gatewayClient.List(ctx, &httpRoutes, client.InNamespace(gateway.Namespace)); err != nil {
+		result.Err = err
+		return result
+	}
+
+	logger.Info("found httproutes", "count", len(httpRoutes.Items))
+
+	for _, route := range httpRoutes.Items {
+		if !route.DeletionTimestamp.IsZero() {
+			continue
+		}
+
+		var parents []gatewayv1.RouteParentStatus
+		for _, parent := range route.Status.Parents {
+			if (parent.ParentRef.Group == nil || parent.ParentRef.Group != nil && string(*parent.ParentRef.Group) == gatewayv1.GroupName) &&
+				(parent.ParentRef.Kind == nil || parent.ParentRef.Kind != nil && string(*parent.ParentRef.Kind) == KindGateway) &&
+				string(parent.ParentRef.Name) == gateway.Name {
+				logger.Info("removing parent ref from httproute", "name", route.Name, "parent", parent.ParentRef.Name)
+				continue
+			}
+			parents = append(parents, parent)
+		}
+
+		if len(parents) == 0 && deleteWhenNoParents {
+			logger.Info("deleting httproute due to no parents", "name", route.Name)
+			if err := gatewayClient.Delete(ctx, &route); err != nil {
+				result.Err = err
+				return result
+			}
+		} else if !equality.Semantic.DeepEqual(route.Status.Parents, parents) {
+			route.Status.Parents = parents
+			result.AddStatusUpdate(gatewayClient, &route)
+		}
+	}
 	return result
 }
 

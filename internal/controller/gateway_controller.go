@@ -26,6 +26,7 @@ import (
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
@@ -41,6 +42,8 @@ const KindEndpointSlice = "EndpointSlice"
 // GatewayReconciler reconciles a Gateway object
 type GatewayReconciler struct {
 	mgr mcmanager.Manager
+
+	DownstreamCluster cluster.Cluster
 
 	ValidationOpts validation.GatewayValidationOptions
 }
@@ -85,10 +88,13 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 		return ctrl.Result{}, err
 	}
 
-	downstreamStrategy, err := getDownstreamResourceStrategy(ctx, req.ClusterName, r.mgr)
+	// return downstreamclient.NewSameClusterAndNamespaceResourceStrategy(cl.GetClient())
+	upstreamCluster, err := r.mgr.GetCluster(ctx, req.ClusterName)
 	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("failed to get downstream resource strategy: %w", err)
+		return ctrl.Result{}, err
 	}
+
+	downstreamStrategy := downstreamclient.NewMappedNamespaceResourceStrategy(req.ClusterName, upstreamCluster.GetClient(), r.DownstreamCluster.GetClient())
 
 	if !gateway.DeletionTimestamp.IsZero() {
 		if result := r.finalizeGateway(ctx, cl.GetClient(), &gateway, downstreamStrategy); result.ShouldReturn() {
@@ -1047,21 +1053,6 @@ func (r *GatewayReconciler) ensureDownstreamEndpointSlice(
 	return result, downstreamEndpointSlice
 }
 
-func getDownstreamResourceStrategy(ctx context.Context, upstreamClusterName string, mgr mcmanager.Manager) (downstreamclient.ResourceStrategy, error) {
-	// return downstreamclient.NewSameClusterAndNamespaceResourceStrategy(cl.GetClient())
-	upstreamCluster, err := mgr.GetCluster(ctx, upstreamClusterName)
-	if err != nil {
-		return nil, err
-	}
-
-	downstreamCluster, err := mgr.GetCluster(ctx, "nso-infra")
-	if err != nil {
-		return nil, err
-	}
-
-	return downstreamclient.NewMappedNamespaceResourceStrategy(upstreamClusterName, upstreamCluster.GetClient(), downstreamCluster.GetClient()), nil
-}
-
 type DownstreamResourceStrategy interface {
 	GetClient() client.Client
 
@@ -1076,10 +1067,10 @@ func (r *GatewayReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 
 	src := mcsource.TypedKind(
 		&gatewayv1.Gateway{},
-		downstreamclient.TypedEnqueueRequestForUpstreamOwner[*gatewayv1.Gateway](&gatewayv1.Gateway{}, mgr),
+		downstreamclient.TypedEnqueueRequestForUpstreamOwner[*gatewayv1.Gateway](&gatewayv1.Gateway{}),
 	)
 
-	clusterSrc, _ := src.ForCluster("", mgr.GetLocalManager())
+	clusterSrc, _ := src.ForCluster("", r.DownstreamCluster)
 
 	return mcbuilder.ControllerManagedBy(mgr).
 		For(&gatewayv1.Gateway{}, mcbuilder.WithPredicates(

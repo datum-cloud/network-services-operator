@@ -13,6 +13,7 @@ import (
 	// to ensure that exec-entrypoint and run can make use of them.
 	"golang.org/x/sync/errgroup"
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
+	"k8s.io/client-go/tools/clientcmd"
 
 	mcmanager "github.com/multicluster-runtime/multicluster-runtime/pkg/manager"
 	"github.com/multicluster-runtime/multicluster-runtime/pkg/multicluster"
@@ -66,6 +67,7 @@ func main() {
 	var enableHTTP2 bool
 	var tlsOpts []func(*tls.Config)
 	var clusterDiscoveryMode string
+	var downstreamKubeconfig string
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
@@ -82,6 +84,9 @@ func main() {
 	opts := zap.Options{
 		Development: true,
 	}
+	flag.StringVar(&downstreamKubeconfig, "downstream-kubeconfig", "", "absolute path to the kubeconfig "+
+		"file for the control plane that downstream resources should be created in")
+
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
 
@@ -128,9 +133,10 @@ func main() {
 		// this setup is not recommended for production.
 	}
 
+	var err error
+
 	cfg := ctrl.GetConfigOrDie()
 	var localManager manager.Manager
-	var err error
 
 	var provider interface {
 		multicluster.Provider
@@ -220,6 +226,25 @@ func main() {
 		os.Exit(1)
 	}
 
+	if len(downstreamKubeconfig) == 0 {
+		setupLog.Info("must provide --downstream-kubeconfig")
+		os.Exit(1)
+	}
+
+	downstreamClusterConfig, err := clientcmd.BuildConfigFromFlags("", downstreamKubeconfig)
+	if err != nil {
+		setupLog.Error(err, "unable to load control plane kubeconfig")
+		os.Exit(1)
+	}
+
+	downstreamCluster, err := cluster.New(downstreamClusterConfig, func(o *cluster.Options) {
+		o.Scheme = scheme
+	})
+	if err != nil {
+		setupLog.Error(err, "failed to construct cluster")
+		os.Exit(1)
+	}
+
 	if err = (&controller.NetworkReconciler{}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Network")
 		os.Exit(1)
@@ -245,6 +270,7 @@ func main() {
 		os.Exit(1)
 	}
 	if err = (&controller.GatewayReconciler{
+		DownstreamCluster: downstreamCluster,
 		ValidationOpts: validation.GatewayValidationOptions{
 			RoutesFromSameNamespaceOnly: true,
 			// TODO(jreese) get from config
@@ -301,6 +327,10 @@ func main() {
 			return ignoreCanceled(singleCluster.Start(ctx))
 		})
 	}
+
+	g.Go(func() error {
+		return ignoreCanceled(downstreamCluster.Start(ctx))
+	})
 
 	setupLog.Info("starting multicluster manager")
 	g.Go(func() error {

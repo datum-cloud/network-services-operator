@@ -5,7 +5,6 @@ import (
 	"fmt"
 
 	mchandler "github.com/multicluster-runtime/multicluster-runtime/pkg/handler"
-	mcmanager "github.com/multicluster-runtime/multicluster-runtime/pkg/manager"
 	mcreconcile "github.com/multicluster-runtime/multicluster-runtime/pkg/reconcile"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -27,12 +26,11 @@ type empty struct{}
 //
 // This handler depends on the `compute.datumapis.com/upstream-namespace` label
 // to exist on the resource for the event.
-func TypedEnqueueRequestForUpstreamOwner[object client.Object](ownerType client.Object, mgr mcmanager.Manager) mchandler.TypedEventHandlerFunc[object, mcreconcile.Request] {
+func TypedEnqueueRequestForUpstreamOwner[object client.Object](ownerType client.Object) mchandler.TypedEventHandlerFunc[object, mcreconcile.Request] {
 
 	return func(clusterName string, cl cluster.Cluster) handler.TypedEventHandler[object, mcreconcile.Request] {
 		e := &enqueueRequestForOwner[object]{
 			ownerType: ownerType,
-			mgr:       mgr,
 		}
 		if err := e.parseOwnerTypeGroupKind(cl.GetScheme()); err != nil {
 			panic(err)
@@ -48,8 +46,6 @@ type enqueueRequestForOwner[object client.Object] struct {
 
 	// groupKind is the cached Group and Kind from OwnerType
 	groupKind schema.GroupKind
-
-	mgr mcmanager.Manager
 }
 
 // Create implements EventHandler.

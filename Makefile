@@ -79,8 +79,8 @@ test-e2e: chainsaw
 		exit 1; \
 	}
 	$(CHAINSAW) test ./test/e2e \
-		--cluster nso-standard=${KUBECONFIG}:kind-nso-standard \
-		--cluster nso-infra=${KUBECONFIG}:kind-nso-infra
+		--cluster nso-standard=.kind-nso-standard.yaml \
+		--cluster nso-infra=.kind-nso-infra.yaml
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter
@@ -166,10 +166,12 @@ external-dns:
 .PHONY: kind-standard-cluster
 kind-standard-cluster: kind
 	$(KIND) create cluster --config=config/tools/kind/standard-cluster.yaml
+	$(KIND) get kubeconfig --name nso-standard > .kind-nso-standard.yaml
 
 .PHONY: kind-infra-cluster
 kind-infra-cluster: kind
 	$(KIND) create cluster --config=config/tools/kind/infra-cluster.yaml
+	$(KIND) get kubeconfig --name nso-infra > .kind-nso-infra.yaml
 
 ##@ Deployment
 

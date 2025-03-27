@@ -33,11 +33,6 @@ jobs:
         run: |
           make kind-infra-cluster
           kubectl config use-context kind-nso-standard
-          kind get kubeconfig --name nso-infra --internal > ${TMPDIR}/.kind-nso-infra-internal.yaml
-
-          kubectl create secret -n network-services-operator-system \
-            generic downstream-cluster-kubeconfig \
-            --from-file=kubeconfig=${TMPDIR}/.kind-nso-infra-internal.yaml
 
       - name: Prepare e2e
         run: |
@@ -46,6 +41,12 @@ jobs:
 
           kubectl config use-context kind-nso-infra
           make prepare-infra-cluster
+
+          kind get kubeconfig --name nso-infra --internal > ${TMPDIR}/.kind-nso-infra-internal.yaml
+
+          kubectl create secret -n network-services-operator-system \
+            generic downstream-cluster-kubeconfig \
+            --from-file=kubeconfig=${TMPDIR}/.kind-nso-infra-internal.yaml
 
       - name: Running Test e2e
         run: make test-e2e

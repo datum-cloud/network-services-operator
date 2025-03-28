@@ -15,6 +15,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
 
+// +kubebuilder:rbac:groups=core,resources=namespaces,verbs=get;list;watch
+
 var _ ResourceStrategy = &mappedNamespaceResourceStrategy{}
 
 type mappedNamespaceResourceStrategy struct {

@@ -129,6 +129,16 @@ spec:
                     name: test-gateway
                 value: (@)
 
+        # Wait for envoy to be deployed and ready
+        - script:
+            skipCommandOutput: true
+            skipLogOutput: true
+            cluster: nso-infra
+            content: |
+              kubectl -n envoy-gateway-system wait pods \
+                -l gateway.envoyproxy.io/owning-gatewayclass=envoy-gateway \
+                --for=condition=Ready
+
         # Ensure the downstream gateway was created as expected
         - assert:
             # timeout: 5s
@@ -628,6 +638,7 @@ spec:
             outputs:
               - name: upstreamGateway
                 value: (json_parse($stdout))
+
         - script:
             skipCommandOutput: true
             skipLogOutput: true

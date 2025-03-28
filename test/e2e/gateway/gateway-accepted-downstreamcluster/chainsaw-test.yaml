@@ -131,13 +131,13 @@ spec:
 
         # Wait for envoy to be deployed and ready
         - script:
-            skipCommandOutput: true
-            skipLogOutput: true
+            # skipCommandOutput: true
+            # skipLogOutput: true
             cluster: nso-infra
             content: |
               kubectl -n envoy-gateway-system wait pods \
                 -l gateway.envoyproxy.io/owning-gatewayclass=envoy-gateway \
-                --for=condition=Ready
+                --for=condition=Ready --timeout=120s
 
         # Ensure the downstream gateway was created as expected
         - assert:

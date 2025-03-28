@@ -1,0 +1,9 @@
+resources:
+  - namespace.yaml
+helmCharts:
+  - name: gateway-helm
+    includeCRDs: true
+    namespace: envoy-gateway-system
+    releaseName: envoy-gateway
+    version: v0.0.0-latest
+    repo: oci://docker.io/envoyproxy

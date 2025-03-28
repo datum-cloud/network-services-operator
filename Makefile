@@ -69,16 +69,18 @@ test: manifests generate fmt vet envtest ## Run tests.
 # - PROMETHEUS_INSTALL_SKIP=true
 # - CERT_MANAGER_INSTALL_SKIP=true
 .PHONY: test-e2e
-test-e2e: chainsaw manifests generate fmt vet ## Run the e2e tests. Expected an isolated environment using Kind.
+test-e2e: chainsaw
 	@command -v kind >/dev/null 2>&1 || { \
 		echo "Kind is not installed. Please install Kind manually."; \
 		exit 1; \
 	}
-	@kind get clusters | grep -q 'kind' || { \
+	@kind get clusters | grep -q 'nso-standard' || { \
 		echo "No Kind cluster is running. Please start a Kind cluster before running the e2e tests."; \
 		exit 1; \
 	}
-	$(CHAINSAW) test ./test/e2e
+	$(CHAINSAW) test ./test/e2e \
+		--cluster nso-standard=$(TMPDIR)/.kind-nso-standard.yaml \
+		--cluster nso-infra=$(TMPDIR)/.kind-nso-infra.yaml
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter
@@ -135,20 +137,41 @@ build-installer: set-image-controller generate ## Generate a consolidated YAML w
 set-image-controller: manifests kustomize
 	cd config/manager && $(KUSTOMIZE) edit set image controller=${IMG}
 
+.PHONY: prepare-infra-cluster
+prepare-infra-cluster: cert-manager envoy-gateway external-dns
+
 .PHONY: prepare-e2e
-prepare-e2e: chainsaw set-image-controller cert-manager load-image-all deploy
+prepare-e2e: chainsaw set-image-controller cert-manager envoy-gateway external-dns load-image-all deploy-e2e
 
 .PHONY: load-image-all
 load-image-all: load-image-operator
 
 .PHONY: load-image-operator
 load-image-operator: docker-build kind
-	$(KIND) load docker-image $(IMG)
+	$(KIND) load docker-image $(IMG) -n nso-standard
 
 .PHONY: cert-manager
 cert-manager: cmctl
-	kubectl apply --validate=false -f https://github.com/jetstack/cert-manager/releases/download/v${CERTMANAGER_VERSION}/cert-manager.yaml
+	$(KUSTOMIZE) build --enable-helm config/tools/cert-manager | kubectl apply --server-side=true --force-conflicts -f -
 	$(CMCTL) check api --wait=5m
+
+.PHONY: envoy-gateway
+envoy-gateway:
+	$(KUSTOMIZE) build --enable-helm config/tools/envoy-gateway | kubectl apply --server-side=true --force-conflicts -f -
+
+.PHONY: external-dns
+external-dns:
+	$(KUSTOMIZE) build --enable-helm config/tools/external-dns | kubectl apply --server-side=true --force-conflicts -f -
+
+.PHONY: kind-standard-cluster
+kind-standard-cluster: kind
+	$(KIND) create cluster --config=config/tools/kind/standard-cluster.yaml
+	$(KIND) get kubeconfig --name nso-standard > $(TMPDIR)/.kind-nso-standard.yaml
+
+.PHONY: kind-infra-cluster
+kind-infra-cluster: kind
+	$(KIND) create cluster --config=config/tools/kind/infra-cluster.yaml
+	$(KIND) get kubeconfig --name nso-infra > $(TMPDIR)/.kind-nso-infra.yaml
 
 ##@ Deployment
 
@@ -167,6 +190,10 @@ uninstall: manifests kustomize ## Uninstall CRDs from the K8s cluster specified 
 .PHONY: deploy
 deploy: set-image-controller ## Deploy controller to the K8s cluster specified in ~/.kube/config.
 	$(KUSTOMIZE) build config/default | $(KUBECTL) apply -f -
+
+.PHONY: deploy-e2e
+deploy-e2e: set-image-controller
+	$(KUSTOMIZE) build config/e2e | $(KUBECTL) apply -f -
 
 .PHONY: undeploy
 undeploy: kustomize ## Undeploy controller from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.

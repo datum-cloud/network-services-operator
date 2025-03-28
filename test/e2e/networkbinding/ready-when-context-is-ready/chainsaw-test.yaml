@@ -4,6 +4,7 @@ kind: Test
 metadata:
   name: ready-when-context-is-ready
 spec:
+  cluster: nso-standard
   steps:
     - name: Create Network
       try:

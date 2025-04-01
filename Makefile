@@ -48,8 +48,9 @@ manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and Cust
 	$(CONTROLLER_GEN) rbac:roleName=manager-role crd:generateEmbeddedObjectMeta=true webhook paths="./..." output:crd:artifacts:config=config/crd/bases
 
 .PHONY: generate
-generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
+generate: controller-gen defaulter-gen
 	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./..."
+	$(DEFAULTER_GEN) ./internal/config --output-file=zz_generated.defaults.go
 
 .PHONY: fmt
 fmt: ## Run go fmt against code.
@@ -211,6 +212,7 @@ KUBECTL ?= kubectl
 KUSTOMIZE ?= $(LOCALBIN)/kustomize
 KIND ?= $(LOCALBIN)/kind
 CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
+DEFAULTER_GEN ?= $(LOCALBIN)/defaulter-gen
 ENVTEST ?= $(LOCALBIN)/setup-envtest
 GOLANGCI_LINT = $(LOCALBIN)/golangci-lint
 CRDOC ?= $(LOCALBIN)/crdoc
@@ -220,6 +222,7 @@ CMCTL ?= $(LOCALBIN)/cmctl
 ## Tool Versions
 KUSTOMIZE_VERSION ?= v5.5.0
 CONTROLLER_TOOLS_VERSION ?= v0.16.4
+DEFAULTER_GEN_VERSION ?= v0.32.3
 ENVTEST_VERSION ?= release-0.19
 GOLANGCI_LINT_VERSION ?= v1.62.0
 
@@ -251,6 +254,11 @@ kind: ## Download kind locally if necessary.
 controller-gen: $(CONTROLLER_GEN) ## Download controller-gen locally if necessary.
 $(CONTROLLER_GEN): $(LOCALBIN)
 	$(call go-install-tool,$(CONTROLLER_GEN),sigs.k8s.io/controller-tools/cmd/controller-gen,$(CONTROLLER_TOOLS_VERSION))
+
+.PHONY: defaulter-gen
+defaulter-gen: $(DEFAULTER_GEN) ## Download defaulter-gen locally if necessary.
+$(DEFAULTER_GEN): $(LOCALBIN)
+	$(call go-install-tool,$(DEFAULTER_GEN),k8s.io/code-generator/cmd/defaulter-gen,$(DEFAULTER_GEN_VERSION))
 
 .PHONY: envtest
 envtest: $(ENVTEST) ## Download setup-envtest locally if necessary.

@@ -56,6 +56,7 @@ func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 
 	utilruntime.Must(config.AddToScheme(scheme))
+	utilruntime.Must(config.RegisterDefaults(scheme))
 	utilruntime.Must(networkingv1alpha.AddToScheme(scheme))
 	utilruntime.Must(gatewayv1.Install(scheme))
 	utilruntime.Must(gatewayv1alpha2.Install(scheme))

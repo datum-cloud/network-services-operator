@@ -176,8 +176,14 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 	// TODO(jreese) handle hostnames defined on upstream listeners
 	hostnames := []string{
 		fmt.Sprintf("%s.%s", upstreamGateway.UID, r.Config.Gateway.TargetDomain),
-		fmt.Sprintf("v4.%s.%s", upstreamGateway.UID, r.Config.Gateway.TargetDomain),
-		fmt.Sprintf("v6.%s.%s", upstreamGateway.UID, r.Config.Gateway.TargetDomain),
+	}
+
+	if r.Config.Gateway.IPv4Enabled() {
+		hostnames = append(hostnames, fmt.Sprintf("v4.%s.%s", upstreamGateway.UID, r.Config.Gateway.TargetDomain))
+	}
+
+	if r.Config.Gateway.IPv6Enabled() {
+		hostnames = append(hostnames, fmt.Sprintf("v6.%s.%s", upstreamGateway.UID, r.Config.Gateway.TargetDomain))
 	}
 
 	downstreamClient := downstreamStrategy.GetClient()
@@ -366,8 +372,12 @@ func (r *GatewayReconciler) ensureDownstreamGatewayDNSEndpoints(
 	}
 
 	// Return early if no IP addresses were found
-	if len(v4IPs) == 0 || len(v6IPs) == 0 {
-		logger.Info("IP addresses not yet available on downstream gateway", "ipv4", v4IPs, "ipv6", v6IPs)
+	if (r.Config.Gateway.IPv4Enabled() && len(v4IPs) == 0) || (r.Config.Gateway.IPv6Enabled() && len(v6IPs) == 0) {
+		logger.Info(
+			"IP addresses not yet available on downstream gateway",
+			"ipv4", v4IPs, "ipv4_enabled", r.Config.Gateway.IPv4Enabled(),
+			"ipv6", v6IPs, "ipv6_enabled", r.Config.Gateway.IPv6Enabled(),
+		)
 		return result
 	}
 
@@ -425,8 +435,6 @@ func (r *GatewayReconciler) ensureDownstreamGatewayDNSEndpoints(
 		result.Err = err
 		return result
 	}
-
-	// TODO(jreese) check status.observedGeneration on DNSEndpoint
 
 	return result
 }

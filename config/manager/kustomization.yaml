@@ -6,3 +6,5 @@ images:
 - name: controller
   newName: network-services-operator
   newTag: latest
+configMapGenerator:
+- name: config

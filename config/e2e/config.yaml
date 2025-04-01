@@ -1,0 +1,5 @@
+apiVersion: apiserver.config.datumapis.com/v1alpha1
+kind: NetworkServicesOperator
+gateway:
+  targetDomain: prism.e2e.env.datum.net
+  permitCertificateRefs: true

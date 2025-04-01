@@ -19,7 +19,9 @@ import (
 	"github.com/multicluster-runtime/multicluster-runtime/pkg/multicluster"
 	mckind "github.com/multicluster-runtime/multicluster-runtime/providers/kind"
 	mcsingle "github.com/multicluster-runtime/multicluster-runtime/providers/single"
+
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/serializer"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -36,6 +38,7 @@ import (
 	gatewayv1alpha3 "sigs.k8s.io/gateway-api/apis/v1alpha3"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
+	"go.datum.net/network-services-operator/internal/config"
 	"go.datum.net/network-services-operator/internal/controller"
 	"go.datum.net/network-services-operator/internal/providers"
 	mcdatum "go.datum.net/network-services-operator/internal/providers/datum"
@@ -46,15 +49,18 @@ import (
 var (
 	scheme   = runtime.NewScheme()
 	setupLog = ctrl.Log.WithName("setup")
+	codecs   = serializer.NewCodecFactory(scheme, serializer.EnableStrict)
 )
 
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 
+	utilruntime.Must(config.AddToScheme(scheme))
 	utilruntime.Must(networkingv1alpha.AddToScheme(scheme))
 	utilruntime.Must(gatewayv1.Install(scheme))
 	utilruntime.Must(gatewayv1alpha2.Install(scheme))
 	utilruntime.Must(gatewayv1alpha3.Install(scheme))
+
 	// +kubebuilder:scaffold:scheme
 }
 
@@ -68,6 +74,8 @@ func main() {
 	var tlsOpts []func(*tls.Config)
 	var clusterDiscoveryMode string
 	var downstreamKubeconfig string
+	var serverConfigFile string
+
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
@@ -87,10 +95,33 @@ func main() {
 	flag.StringVar(&downstreamKubeconfig, "downstream-kubeconfig", "", "absolute path to the kubeconfig "+
 		"file for the control plane that downstream resources should be created in")
 
+	flag.StringVar(&serverConfigFile, "server-config", "", "path to the server config file")
+
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+
+	if len(serverConfigFile) == 0 {
+		setupLog.Error(fmt.Errorf("must provide --server-config"), "")
+		os.Exit(1)
+	}
+
+	var serverConfig config.NetworkServicesOperator
+	data, err := os.ReadFile(serverConfigFile)
+	if err != nil {
+		setupLog.Error(fmt.Errorf("unable to read server config from %q", serverConfigFile), "")
+		os.Exit(1)
+	}
+
+	if err := runtime.DecodeInto(codecs.UniversalDecoder(), data, &serverConfig); err != nil {
+		setupLog.Error(err, "unable to decode server config")
+		os.Exit(1)
+	}
+
+	setupLog.Info("server config", "config", serverConfig)
+
+	// TODO(jreese) validate the config
 
 	// if the enable-http2 flag is false (the default), http/2 should be disabled
 	// due to its vulnerabilities. More specifically, disabling http/2 will
@@ -132,8 +163,6 @@ func main() {
 		// generate self-signed certificates for the metrics server. While convenient for development and testing,
 		// this setup is not recommended for production.
 	}
-
-	var err error
 
 	cfg := ctrl.GetConfigOrDie()
 	var localManager manager.Manager
@@ -270,6 +299,7 @@ func main() {
 		os.Exit(1)
 	}
 	if err = (&controller.GatewayReconciler{
+		Config:            serverConfig,
 		DownstreamCluster: downstreamCluster,
 		ValidationOpts: validation.GatewayValidationOptions{
 			RoutesFromSameNamespaceOnly: true,

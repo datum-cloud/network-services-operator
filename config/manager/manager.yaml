@@ -65,6 +65,7 @@ spec:
         args:
           - --leader-elect
           - --health-probe-bind-address=:8081
+          - --server-config=/config/config.yaml
         image: controller:latest
         imagePullPolicy: IfNotPresent
         name: manager
@@ -94,5 +95,12 @@ spec:
           requests:
             cpu: 10m
             memory: 64Mi
+        volumeMounts:
+        - name: config
+          mountPath: /config
       serviceAccountName: controller-manager
       terminationGracePeriodSeconds: 10
+      volumes:
+      - name: config
+        configMap:
+          name: config

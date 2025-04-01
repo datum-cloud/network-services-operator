@@ -12,6 +12,7 @@ import (
 	mcmanager "github.com/multicluster-runtime/multicluster-runtime/pkg/manager"
 	mcreconcile "github.com/multicluster-runtime/multicluster-runtime/pkg/reconcile"
 	mcsource "github.com/multicluster-runtime/multicluster-runtime/pkg/source"
+	"go.datum.net/network-services-operator/internal/config"
 	downstreamclient "go.datum.net/network-services-operator/internal/downstreamclient"
 	"go.datum.net/network-services-operator/internal/validation"
 	corev1 "k8s.io/api/core/v1"
@@ -41,7 +42,8 @@ const KindEndpointSlice = "EndpointSlice"
 
 // GatewayReconciler reconciles a Gateway object
 type GatewayReconciler struct {
-	mgr mcmanager.Manager
+	mgr    mcmanager.Manager
+	Config config.NetworkServicesOperator
 
 	DownstreamCluster cluster.Cluster
 
@@ -173,9 +175,9 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 
 	// TODO(jreese) handle hostnames defined on upstream listeners
 	hostnames := []string{
-		fmt.Sprintf("%s.prism.global.datum-dns.net", upstreamGateway.UID),
-		fmt.Sprintf("v4.%s.prism.global.datum-dns.net", upstreamGateway.UID),
-		fmt.Sprintf("v6.%s.prism.global.datum-dns.net", upstreamGateway.UID),
+		fmt.Sprintf("%s.%s", upstreamGateway.UID, r.Config.Gateway.TargetDomain),
+		fmt.Sprintf("v4.%s.%s", upstreamGateway.UID, r.Config.Gateway.TargetDomain),
+		fmt.Sprintf("v6.%s.%s", upstreamGateway.UID, r.Config.Gateway.TargetDomain),
 	}
 
 	downstreamClient := downstreamStrategy.GetClient()
@@ -245,6 +247,8 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 				tlsMode := gatewayv1.TLSModeTerminate
 				listener.TLS = &gatewayv1.GatewayTLSConfig{
 					Mode: &tlsMode,
+					// TODO(jreese) investigate secret deletion when Cert (gateway) is deleted
+					// See: https://cert-manager.io/docs/usage/certificate/#cleaning-up-secrets-when-certificates-are-deleted
 					CertificateRefs: []gatewayv1.SecretObjectReference{
 						{
 							Name: gatewayv1.ObjectName(downstreamGateway.Name),
@@ -413,7 +417,7 @@ func (r *GatewayReconciler) ensureDownstreamGatewayDNSEndpoints(
 	}
 
 	if _, err := controllerutil.CreateOrUpdate(ctx, downstreamStrategy.GetClient(), &gatewayDNSEndpoint, func() error {
-		if err := downstreamStrategy.SetControllerReference(ctx, downstreamGateway, &gatewayDNSEndpoint); err != nil {
+		if err := controllerutil.SetControllerReference(downstreamGateway, &gatewayDNSEndpoint, downstreamStrategy.GetClient().Scheme()); err != nil {
 			return err
 		}
 		return unstructured.SetNestedSlice(gatewayDNSEndpoint.Object, endpoints, "spec", "endpoints")
@@ -421,6 +425,8 @@ func (r *GatewayReconciler) ensureDownstreamGatewayDNSEndpoints(
 		result.Err = err
 		return result
 	}
+
+	// TODO(jreese) check status.observedGeneration on DNSEndpoint
 
 	return result
 }
@@ -459,14 +465,14 @@ func (r *GatewayReconciler) finalizeGateway(
 
 	// Detach HTTPRoutes from the upstream gateway
 	logger.Info("detaching httproutes from upstream gateway")
-	detachResult := r.detachHTTPRoutes(ctx, upstreamClient, upstreamGateway, false)
+	detachResult := r.detachHTTPRoutes(ctx, upstreamClient, upstreamGateway, true)
 	if detachResult.ShouldReturn() {
 		return detachResult
 	}
 
 	// Detach HTTPRoutes from the downstream gateway
 	logger.Info("detaching httproutes from downstream gateway")
-	detachResult = r.detachHTTPRoutes(ctx, downstreamClient, downstreamGateway, true)
+	detachResult = r.detachHTTPRoutes(ctx, downstreamClient, downstreamGateway, false)
 	if detachResult.ShouldReturn() {
 		return detachResult
 	}
@@ -480,6 +486,8 @@ func (r *GatewayReconciler) finalizeGateway(
 	return result
 }
 
+// TODO(jreese) revisit the parameters here to clean them up. It's a bit messy
+// as this function is used against both the upstream and downstream resources.
 func (r *GatewayReconciler) detachHTTPRoutes(
 	ctx context.Context,
 	gatewayClient client.Client,
@@ -662,16 +670,13 @@ func (r *GatewayReconciler) ensureDownstreamHTTPRoute(
 	}
 
 	routeResult, err := controllerutil.CreateOrUpdate(ctx, downstreamClient, downstreamRoute, func() error {
-		if err := downstreamStrategy.SetControllerReference(ctx, &upstreamRoute, downstreamRoute); err != nil {
-			return fmt.Errorf("failed to set controller reference on downstream httproute: %w", err)
-		}
-
 		result, rules := r.ensureDownstreamHTTPRouteRules(
 			ctx,
 			upstreamClient,
 			upstreamGateway,
 			upstreamRoute,
 			downstreamClient,
+			downstreamGateway,
 			downstreamStrategy,
 		)
 		if result.ShouldReturn() {
@@ -798,6 +803,7 @@ func (r *GatewayReconciler) ensureDownstreamHTTPRouteRules(
 	upstreamGateway *gatewayv1.Gateway,
 	upstreamRoute gatewayv1.HTTPRoute,
 	downstreamClient client.Client,
+	downstreamGateway *gatewayv1.Gateway,
 	downstreamStrategy downstreamclient.ResourceStrategy,
 ) (result Result, rules []gatewayv1.HTTPRouteRule) {
 
@@ -869,7 +875,7 @@ func (r *GatewayReconciler) ensureDownstreamHTTPRouteRules(
 					ObjectMeta: downstreamServiceObjectMeta,
 				}
 				serviceResult, err := controllerutil.CreateOrUpdate(ctx, downstreamClient, downstreamService, func() error {
-					if err := downstreamStrategy.SetControllerReference(ctx, &upstreamRoute, downstreamService); err != nil {
+					if err := controllerutil.SetControllerReference(downstreamGateway, downstreamService, downstreamClient.Scheme()); err != nil {
 						return err
 					}
 
@@ -916,7 +922,7 @@ func (r *GatewayReconciler) ensureDownstreamHTTPRouteRules(
 					}
 
 					backendTLSPolicyResult, err := controllerutil.CreateOrUpdate(ctx, downstreamClient, backendTLSPolicy, func() error {
-						if err := downstreamStrategy.SetControllerReference(ctx, downstreamService, backendTLSPolicy); err != nil {
+						if err := controllerutil.SetControllerReference(downstreamService, backendTLSPolicy, downstreamClient.Scheme()); err != nil {
 							return err
 						}
 
@@ -952,7 +958,6 @@ func (r *GatewayReconciler) ensureDownstreamHTTPRouteRules(
 
 				endpointSliceResult, downstreamEndpointSlice := r.ensureDownstreamEndpointSlice(
 					ctx,
-					upstreamGateway,
 					&upstreamEndpointSlice,
 					downstreamService,
 					downstreamStrategy,
@@ -1001,7 +1006,6 @@ func (r *GatewayReconciler) ensureDownstreamHTTPRouteRules(
 
 func (r *GatewayReconciler) ensureDownstreamEndpointSlice(
 	ctx context.Context,
-	upstreamGateway *gatewayv1.Gateway,
 	upstreamEndpointSlice *discoveryv1.EndpointSlice,
 	downstreamService *corev1.Service,
 	downstreamStrategy downstreamclient.ResourceStrategy,
@@ -1021,10 +1025,7 @@ func (r *GatewayReconciler) ensureDownstreamEndpointSlice(
 	}
 
 	endpointSliceResult, err := controllerutil.CreateOrUpdate(ctx, downstreamClient, downstreamEndpointSlice, func() error {
-		if err := downstreamStrategy.SetControllerReference(ctx, upstreamEndpointSlice, downstreamEndpointSlice); err != nil {
-			return fmt.Errorf("failed to set controller reference on downstream endpointslice: %w", err)
-		}
-		if err := downstreamStrategy.SetControllerReference(ctx, upstreamGateway, downstreamEndpointSlice); err != nil {
+		if err := controllerutil.SetControllerReference(downstreamService, downstreamEndpointSlice, downstreamClient.Scheme()); err != nil {
 			return fmt.Errorf("failed to set controller reference on downstream endpointslice: %w", err)
 		}
 

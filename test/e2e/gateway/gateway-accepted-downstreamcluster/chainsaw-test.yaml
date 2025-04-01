@@ -144,14 +144,14 @@ spec:
                 - allowedRoutes:
                     namespaces:
                       from: Same
-                  hostname: (join('.', [$upstreamGateway.metadata.uid, 'prism.global.datum-dns.net']))
+                  hostname: (join('.', [$upstreamGateway.metadata.uid, 'prism.e2e.env.datum.net']))
                   name: http-0
                   port: 80
                   protocol: HTTP
                 - allowedRoutes:
                     namespaces:
                       from: Same
-                  hostname: (join('.', [$upstreamGateway.metadata.uid, 'prism.global.datum-dns.net']))
+                  hostname: (join('.', [$upstreamGateway.metadata.uid, 'prism.e2e.env.datum.net']))
                   name: https-0
                   port: 443
                   protocol: HTTPS
@@ -164,14 +164,14 @@ spec:
                 - allowedRoutes:
                     namespaces:
                       from: Same
-                  hostname: (join('.', ['v4', $upstreamGateway.metadata.uid, 'prism.global.datum-dns.net']))
+                  hostname: (join('.', ['v4', $upstreamGateway.metadata.uid, 'prism.e2e.env.datum.net']))
                   name: http-1
                   port: 80
                   protocol: HTTP
                 - allowedRoutes:
                     namespaces:
                       from: Same
-                  hostname: (join('.', ['v4', $upstreamGateway.metadata.uid, 'prism.global.datum-dns.net']))
+                  hostname: (join('.', ['v4', $upstreamGateway.metadata.uid, 'prism.e2e.env.datum.net']))
                   name: https-1
                   port: 443
                   protocol: HTTPS
@@ -184,14 +184,14 @@ spec:
                 - allowedRoutes:
                     namespaces:
                       from: Same
-                  hostname: (join('.', ['v6', $upstreamGateway.metadata.uid, 'prism.global.datum-dns.net']))
+                  hostname: (join('.', ['v6', $upstreamGateway.metadata.uid, 'prism.e2e.env.datum.net']))
                   name: http-2
                   port: 80
                   protocol: HTTP
                 - allowedRoutes:
                     namespaces:
                       from: Same
-                  hostname: (join('.', ['v6', $upstreamGateway.metadata.uid, 'prism.global.datum-dns.net']))
+                  hostname: (join('.', ['v6', $upstreamGateway.metadata.uid, 'prism.e2e.env.datum.net']))
                   name: https-2
                   port: 443
                   protocol: HTTPS
@@ -312,7 +312,7 @@ spec:
             cluster: nso-infra
             bindings:
               - name: primaryHostname
-                value: (join('.', [$upstreamGateway.metadata.uid, 'prism.global.datum-dns.net']))
+                value: (join('.', [$upstreamGateway.metadata.uid, 'prism.e2e.env.datum.net']))
               - name: v4IPFamilyHostname
                 value: (join('.', ['v4', $primaryHostname]))
               - name: v6IPFamilyHostname
@@ -354,11 +354,11 @@ spec:
               status:
                 addresses:
                   - type: Hostname
-                    value: (join('.', [$upstreamGateway.metadata.uid, 'prism.global.datum-dns.net']))
+                    value: (join('.', [$upstreamGateway.metadata.uid, 'prism.e2e.env.datum.net']))
                   - type: Hostname
-                    value: (join('.', ['v4', $upstreamGateway.metadata.uid, 'prism.global.datum-dns.net']))
+                    value: (join('.', ['v4', $upstreamGateway.metadata.uid, 'prism.e2e.env.datum.net']))
                   - type: Hostname
-                    value: (join('.', ['v6', $upstreamGateway.metadata.uid, 'prism.global.datum-dns.net']))
+                    value: (join('.', ['v6', $upstreamGateway.metadata.uid, 'prism.e2e.env.datum.net']))
                 listeners:
                   - attachedRoutes: 0
                     (conditions[?type == 'Programmed']):
@@ -386,7 +386,7 @@ spec:
             content: |
               kubectl -n network-services-operator-system logs -l app.kubernetes.io/name=network-services-operator
               kubectl get gateways -n $NAMESPACE -o yaml
-              kubectl httproutes -n $NAMESPACE -o yaml
+              kubectl get httproutes -n $NAMESPACE -o yaml
               kubectl get endpointslices -n $NAMESPACE -o yaml
         - script:
             cluster: nso-infra
@@ -606,7 +606,7 @@ spec:
               kubectl config get-contexts
               kubectl -n network-services-operator-system logs -l app.kubernetes.io/name=network-services-operator
               kubectl get gateways -n $NAMESPACE -o yaml
-              kubectl httproutes -n $NAMESPACE -o yaml
+              kubectl get httproutes -n $NAMESPACE -o yaml
               kubectl get endpointslices -n $NAMESPACE -o yaml
         - script:
             cluster: nso-infra
@@ -662,7 +662,7 @@ spec:
                   - name: GATEWAY_SERVICE_NAMESPACE
                     value: ($gatewayService.metadata.namespace)
                   - name: PRIMARY_HOSTNAME
-                    value: (join('.', [$upstreamGateway.metadata.uid, 'prism.global.datum-dns.net']))
+                    value: (join('.', [$upstreamGateway.metadata.uid, 'prism.e2e.env.datum.net']))
                 terminationGracePeriodSeconds: 0
 
         - assert:

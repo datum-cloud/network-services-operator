@@ -4,7 +4,6 @@ import (
 	"slices"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -29,15 +28,15 @@ type NetworkServicesOperator struct {
 // +k8s:deepcopy-gen=true
 
 type DownstreamResourceManagementConfig struct {
-	// KubeconfigPath is the path to the kubeconfig file to use when
-	// managing downstream resources.
+	// KubeconfigPath is the path to the kubeconfig file to use when managing
+	// downstream resources. When not provided, the operator will use the
+	// in-cluster config.
 	KubeconfigPath string `json:"kubeconfigPath"`
 }
 
 func (c *DownstreamResourceManagementConfig) RestConfig() (*rest.Config, error) {
 	if c.KubeconfigPath == "" {
-		// TODO(jreese) move to validation
-		return nil, field.Required(field.NewPath("downstreamResourceManagement", "kubeconfigPath"), "")
+		return ctrl.GetConfig()
 	}
 
 	return clientcmd.BuildConfigFromFlags("", c.KubeconfigPath)

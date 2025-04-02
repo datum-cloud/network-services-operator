@@ -4,7 +4,7 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.16.4
-    api-approved.kubernetes.io: "network-services-operator"
+    api-approved.kubernetes.io: "https://github.com/datum-cloud/network-services-operator"
   name: endpointslices.discovery.k8s.io
 spec:
   group: discovery.k8s.io

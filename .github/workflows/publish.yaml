@@ -6,8 +6,8 @@ on:
     types: ['published']
 
 jobs:
-  publish:
-    uses: datum-cloud/actions/.github/workflows/publish-docker.yaml@v1.0.0
+  publish-container-image:
+    uses: datum-cloud/actions/.github/workflows/publish-docker.yaml@v1.2.0
     with:
       image-name: network-services-operator
     secrets: inherit
@@ -17,15 +17,8 @@ jobs:
       id-token: write
       contents: read
       packages: write
-    strategy:
-      matrix:
-        bundles:
-          - name: ghcr.io/datum-cloud/network-services-operator/network-services-crds
-            path: config/crd
-          - name: ghcr.io/datum-cloud/network-services-operator/network-services-operator
-            path: config/network-services-operator
-    uses: datum-cloud/actions/.github/workflows/publish-kustomize-bundle.yaml@v1.1.0
+    uses: datum-cloud/actions/.github/workflows/publish-kustomize-bundle.yaml@v1.2.0
     with:
-      bundle-name: ${{ matrix.bundles.name }}
-      bundle-path: ${{ matrix.bundles.path }}
+      bundle-name: ghcr.io/datum-cloud/network-services-operator-kustomize
+      bundle-path: config
     secrets: inherit

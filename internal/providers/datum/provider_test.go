@@ -31,7 +31,7 @@ func (m *testMultiClusterManager) Engage(context.Context, string, cluster.Cluste
 var runtimeScheme = runtime.NewScheme()
 
 func init() {
-	utilruntime.Must((&scheme.Builder{GroupVersion: projectGV}).AddToScheme(runtimeScheme))
+	utilruntime.Must((&scheme.Builder{GroupVersion: resourceManagerGV}).AddToScheme(runtimeScheme))
 }
 
 func TestNotReadyProject(t *testing.T) {
@@ -92,7 +92,7 @@ func newTestProvider(projectStatus metav1.ConditionStatus) (*Provider, client.Ob
 	p := &Provider{
 		client: fakeClient,
 		mcMgr:  &testMultiClusterManager{},
-		config: &rest.Config{
+		projectRestConfig: &rest.Config{
 			Host: "https://localhost",
 		},
 		projects:  map[string]cluster.Cluster{},

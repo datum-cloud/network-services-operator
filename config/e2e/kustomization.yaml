@@ -14,21 +14,23 @@ configMapGenerator:
       - config.yaml
 
 patches:
-  - patch: |
-      - op: add
-        path: /spec/template/spec/containers/0/args/-
-        value: --downstream-kubeconfig=/etc/downstream-cluster/kubeconfig
-      - op: add
-        path: /spec/template/spec/containers/0/volumeMounts/-
-        value:
-          name: downstream-cluster-kubeconfig
-          mountPath: /etc/downstream-cluster
-      - op: add
-        path: /spec/template/spec/volumes/-
-        value:
-          name: downstream-cluster-kubeconfig
-          secret:
-            secretName: downstream-cluster-kubeconfig
-    target:
+  - target:
       kind: Deployment
       name: controller-manager
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: controller-manager
+      spec:
+        template:
+          spec:
+            containers:
+              - name: manager
+                volumeMounts:
+                - name: downstream-cluster-kubeconfig
+                  mountPath: /etc/downstream-cluster
+            volumes:
+              - name: downstream-cluster-kubeconfig
+                secret:
+                  secretName: downstream-cluster-kubeconfig

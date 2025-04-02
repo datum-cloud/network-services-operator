@@ -3,3 +3,5 @@ kind: NetworkServicesOperator
 gateway:
   targetDomain: prism.e2e.env.datum.net
   permitCertificateRefs: true
+downstreamResourceManagement:
+  kubeconfigPath: /etc/downstream-cluster/kubeconfig

@@ -33,30 +33,49 @@ import (
 
 var _ multicluster.Provider = &Provider{}
 
-var projectGV = schema.GroupVersion{Group: "resourcemanager.datumapis.com", Version: "v1alpha"}
-var projectGVK = projectGV.WithKind("Project")
+var resourceManagerGV = schema.GroupVersion{Group: "resourcemanager.datumapis.com", Version: "v1alpha"}
+var projectGVK = resourceManagerGV.WithKind("Project")
+var projectControlPlaneGVK = resourceManagerGV.WithKind("ProjectControlPlane")
 
 // Options are the options for the Datum cluster Provider.
 type Options struct {
 	// ClusterOptions are the options passed to the cluster constructor.
 	ClusterOptions []cluster.Option
+
+	// InternalServiceDiscovery will result in the provider to look for
+	// ProjectControlPlane resources in the local manager's cluster, and establish
+	// a connection via the internal service address. Otherwise, the provider will
+	// look for Project resources in the cluster and expect to connect to the
+	// external Datum API endpoint.
+	InternalServiceDiscovery bool
+
+	// ProjectRestConfig is the rest config to use when connecting to project
+	// API endpoints. If not provided, the provider will use the rest config
+	// from the local manager.
+	ProjectRestConfig *rest.Config
 }
 
 // New creates a new Datum cluster Provider.
 func New(localMgr manager.Manager, opts Options) (*Provider, error) {
 	p := &Provider{
-		opts:      opts,
-		log:       log.Log.WithName("datum-cluster-provider"),
-		config:    localMgr.GetConfig(),
-		client:    localMgr.GetClient(),
-		projects:  map[string]cluster.Cluster{},
-		cancelFns: map[string]context.CancelFunc{},
+		opts:              opts,
+		log:               log.Log.WithName("datum-cluster-provider"),
+		client:            localMgr.GetClient(),
+		projectRestConfig: opts.ProjectRestConfig,
+		projects:          map[string]cluster.Cluster{},
+		cancelFns:         map[string]context.CancelFunc{},
 	}
 
-	// TODO(jreese) replace unstructured type with Project API type once that
-	// library is made available.
+	if p.projectRestConfig == nil {
+		p.projectRestConfig = localMgr.GetConfig()
+	}
+
 	var project unstructured.Unstructured
-	project.SetGroupVersionKind(projectGVK)
+	if p.opts.InternalServiceDiscovery {
+		project.SetGroupVersionKind(projectControlPlaneGVK)
+	} else {
+		project.SetGroupVersionKind(projectGVK)
+	}
 
 	if err := builder.ControllerManagedBy(localMgr).
 		For(&project).
@@ -70,10 +89,10 @@ func New(localMgr manager.Manager, opts Options) (*Provider, error) {
 
 // Provider is a cluster Provider that works with Datum
 type Provider struct {
-	opts   Options
-	log    logr.Logger
-	config *rest.Config
-	client client.Client
+	opts              Options
+	log               logr.Logger
+	projectRestConfig *rest.Config
+	client            client.Client
 
 	lock      sync.Mutex
 	mcMgr     mcmanager.Manager
@@ -111,7 +130,12 @@ func (p *Provider) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result
 
 	key := req.NamespacedName.String()
 	var project unstructured.Unstructured
-	project.SetGroupVersionKind((schema.GroupVersion{Group: "resourcemanager.datumapis.com", Version: "v1alpha"}).WithKind("Project"))
+
+	if p.opts.InternalServiceDiscovery {
+		project.SetGroupVersionKind(projectControlPlaneGVK)
+	} else {
+		project.SetGroupVersionKind(projectGVK)
+	}
 
 	if err := p.client.Get(ctx, req.NamespacedName, &project); err != nil {
 		if apierrors.IsNotFound(err) {
@@ -151,19 +175,30 @@ func (p *Provider) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result
 		return ctrl.Result{}, err
 	}
 
-	if !apimeta.IsStatusConditionTrue(conditions, "Ready") {
-		log.Info("Project is not ready")
-		return ctrl.Result{}, nil
+	if p.opts.InternalServiceDiscovery {
+		if !apimeta.IsStatusConditionTrue(conditions, "ControlPlaneReady") {
+			log.Info("ProjectControlPlane is not ready")
+			return ctrl.Result{}, nil
+		}
+	} else {
+		if !apimeta.IsStatusConditionTrue(conditions, "Ready") {
+			log.Info("Project is not ready")
+			return ctrl.Result{}, nil
+		}
 	}
 
-	// TODO(jreese) explore providing a function that can be overridden to
-	// customize project auth.
-	cfg := rest.CopyConfig(p.config)
+	cfg := rest.CopyConfig(p.projectRestConfig)
 	apiHost, err := url.Parse(cfg.Host)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to parse host from rest config: %w", err)
 	}
-	apiHost.Path = fmt.Sprintf("/apis/resourcemanager.datumapis.com/v1alpha/projects/%s/control-plane", project.GetName())
+
+	if p.opts.InternalServiceDiscovery {
+		apiHost.Path = ""
+		apiHost.Host = fmt.Sprintf("datum-apiserver.project-%s.svc.cluster.local:6443", project.GetUID())
+	} else {
+		apiHost.Path = fmt.Sprintf("/apis/resourcemanager.datumapis.com/v1alpha/projects/%s/control-plane", project.GetName())
+	}
 	cfg.Host = apiHost.String()
 
 	// create cluster.

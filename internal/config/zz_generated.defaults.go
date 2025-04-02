@@ -19,4 +19,5 @@ func RegisterDefaults(scheme *runtime.Scheme) error {
 
 func SetObjectDefaults_NetworkServicesOperator(in *NetworkServicesOperator) {
 	SetDefaults_GatewayConfig(&in.Gateway)
+	SetDefaults_DiscoveryConfig(&in.Discovery)
 }

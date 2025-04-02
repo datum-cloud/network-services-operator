@@ -8,3 +8,5 @@ images:
   newTag: latest
 configMapGenerator:
 - name: config
+  files:
+    - config.yaml

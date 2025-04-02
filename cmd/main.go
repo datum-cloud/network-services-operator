@@ -7,13 +7,11 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"strings"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
 	"golang.org/x/sync/errgroup"
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
-	"k8s.io/client-go/tools/clientcmd"
 
 	mcmanager "github.com/multicluster-runtime/multicluster-runtime/pkg/manager"
 	"github.com/multicluster-runtime/multicluster-runtime/pkg/multicluster"
@@ -73,8 +71,7 @@ func main() {
 	var secureMetrics bool
 	var enableHTTP2 bool
 	var tlsOpts []func(*tls.Config)
-	var clusterDiscoveryMode string
-	var downstreamKubeconfig string
+
 	var serverConfigFile string
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
@@ -88,13 +85,9 @@ func main() {
 		"If set, the metrics endpoint is served securely via HTTPS. Use --metrics-secure=false to use HTTP instead.")
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
-	flag.StringVar(&clusterDiscoveryMode, "cluster-discovery-mode", "single",
-		"Method to discover clusters. Allowed values are: "+strings.Join(providers.AllowedProviders, ","))
 	opts := zap.Options{
 		Development: true,
 	}
-	flag.StringVar(&downstreamKubeconfig, "downstream-kubeconfig", "", "absolute path to the kubeconfig "+
-		"file for the control plane that downstream resources should be created in")
 
 	flag.StringVar(&serverConfigFile, "server-config", "", "path to the server config file")
 
@@ -166,7 +159,7 @@ func main() {
 	}
 
 	cfg := ctrl.GetConfigOrDie()
-	var localManager manager.Manager
+	var discoveryManager manager.Manager
 
 	var provider interface {
 		multicluster.Provider
@@ -175,7 +168,7 @@ func main() {
 	}
 	var singleCluster cluster.Cluster
 
-	switch clusterDiscoveryMode {
+	switch serverConfig.Discovery.Mode {
 	case providers.ProviderSingle:
 		singleCluster, err = cluster.New(cfg, func(o *cluster.Options) {
 			o.Scheme = scheme
@@ -187,7 +180,19 @@ func main() {
 		provider = mcsingle.New("single", singleCluster)
 
 	case providers.ProviderDatum:
-		localManager, err = manager.New(cfg, manager.Options{
+		discoveryRestConfig, err := serverConfig.Discovery.DiscoveryRestConfig()
+		if err != nil {
+			setupLog.Error(err, "unable to get discovery rest config")
+			os.Exit(1)
+		}
+
+		projectRestConfig, err := serverConfig.Discovery.ProjectRestConfig()
+		if err != nil {
+			setupLog.Error(err, "unable to get project rest config")
+			os.Exit(1)
+		}
+
+		discoveryManager, err = manager.New(discoveryRestConfig, manager.Options{
 			Client: client.Options{
 				Cache: &client.CacheOptions{
 					Unstructured: true,
@@ -199,12 +204,14 @@ func main() {
 			os.Exit(1)
 		}
 
-		provider, err = mcdatum.New(localManager, mcdatum.Options{
+		provider, err = mcdatum.New(discoveryManager, mcdatum.Options{
 			ClusterOptions: []cluster.Option{
 				func(o *cluster.Options) {
 					o.Scheme = scheme
 				},
 			},
+			InternalServiceDiscovery: serverConfig.Discovery.InternalServiceDiscovery,
+			ProjectRestConfig:        projectRestConfig,
 		})
 		if err != nil {
 			setupLog.Error(err, "unable to create datum project provider")
@@ -222,14 +229,13 @@ func main() {
 
 	default:
 		setupLog.Error(fmt.Errorf(
-			"unsupported cluster discovery mode. Got %q, expected one of %s",
-			clusterDiscoveryMode,
-			strings.Join(providers.AllowedProviders, ","),
+			"unsupported cluster discovery mode %s",
+			serverConfig.Discovery.Mode,
 		), "")
 		os.Exit(1)
 	}
 
-	setupLog.Info("cluster discovery mode", "mode", clusterDiscoveryMode)
+	setupLog.Info("cluster discovery mode", "mode", serverConfig.Discovery.Mode)
 
 	mgr, err := mcmanager.New(cfg, provider, ctrl.Options{
 		Scheme:                  scheme,
@@ -256,18 +262,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	if len(downstreamKubeconfig) == 0 {
-		setupLog.Info("must provide --downstream-kubeconfig")
-		os.Exit(1)
-	}
-
-	downstreamClusterConfig, err := clientcmd.BuildConfigFromFlags("", downstreamKubeconfig)
+	downstreamRestConfig, err := serverConfig.DownstreamResourceManagement.RestConfig()
 	if err != nil {
 		setupLog.Error(err, "unable to load control plane kubeconfig")
 		os.Exit(1)
 	}
 
-	downstreamCluster, err := cluster.New(downstreamClusterConfig, func(o *cluster.Options) {
+	downstreamCluster, err := cluster.New(downstreamRestConfig, func(o *cluster.Options) {
 		o.Scheme = scheme
 	})
 	if err != nil {
@@ -329,7 +330,7 @@ func main() {
 
 	ctx := ctrl.SetupSignalHandler()
 
-	if clusterDiscoveryMode == providers.ProviderSingle {
+	if serverConfig.Discovery.Mode == providers.ProviderSingle {
 		setupLog.Info("engaging cluster for single cluster provider")
 		// Pending feedback on https://github.com/multicluster-runtime/multicluster-runtime/pull/17#issue-2911191237
 		// to determine if the provider's Run function should be calling Engage
@@ -340,10 +341,10 @@ func main() {
 	}
 
 	g, ctx := errgroup.WithContext(ctx)
-	if localManager != nil {
-		setupLog.Info("starting local manager")
+	if discoveryManager != nil {
+		setupLog.Info("starting discovery manager")
 		g.Go(func() error {
-			return ignoreCanceled(localManager.Start(ctx))
+			return ignoreCanceled(discoveryManager.Start(ctx))
 		})
 	}
 

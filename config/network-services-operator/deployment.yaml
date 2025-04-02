@@ -62,20 +62,6 @@ spec:
         terminationMessagePath: /dev/termination-log
         terminationMessagePolicy: File
       dnsPolicy: ClusterFirst
-      initContainers:
-      - args:
-        - apply
-        - --kubeconfig=/etc/kubernetes/auth/network-services-operator.kubeconfig
-        - -f
-        - /crd
-        image: us-east4-docker.pkg.dev/datum-cloud-prod/datum-internal-images/network-services-operator-crds:v0.0.1-v1alpha1-amd64
-        imagePullPolicy: IfNotPresent
-        name: install-crds
-        resources: {}
-        securityContext:
-          runAsGroup: 65532
-        terminationMessagePath: /dev/termination-log
-        terminationMessagePolicy: File
       restartPolicy: Always
       schedulerName: default-scheduler
       securityContext: {}

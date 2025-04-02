@@ -4,6 +4,13 @@ resources:
   - github.com/kubernetes-sigs/gateway-api/config/crd/?ref=v1.2.1
 
 patches:
+  # Drop GRPCRoutes for now
+  - patch: |
+      $patch: delete
+      apiVersion: apiextensions.k8s.io/v1
+      kind: CustomResourceDefinition
+      metadata:
+        name: grpcroutes.gateway.networking.k8s.io
   # Drop ReferenceGrants for now
   - patch: |
       $patch: delete

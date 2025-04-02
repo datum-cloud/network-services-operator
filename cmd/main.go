@@ -305,9 +305,7 @@ func (p *wrappedSingleClusterProvider) Run(ctx context.Context, mgr mcmanager.Ma
 	if err := mgr.Engage(ctx, "single", p.cluster); err != nil {
 		return err
 	}
-	return p.Provider.(interface {
-		Run(context.Context, mcmanager.Manager) error
-	}).Run(ctx, mgr)
+	return p.Provider.(runnableProvider).Run(ctx, mgr)
 }
 
 func initializeClusterDiscovery(

@@ -1082,30 +1082,34 @@ func (r *GatewayReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	clusterSrc, _ := src.ForCluster("", r.DownstreamCluster)
 
 	return mcbuilder.ControllerManagedBy(mgr).
-		For(&gatewayv1.Gateway{}, mcbuilder.WithPredicates(
-		// predicate.NewPredicateFuncs(func(object client.Object) bool {
-		// 	o := object.(*gatewayv1.Gateway)
-		// 	// TODO(jreese) get from config
-		// 	// TODO(jreese) might be expected to look at the controllerName on
-		// 	// the GatewayClass, instead of just the name of the GatewayClass.
-		// 	//
-		// 	// Example: gateway.networking.datumapis.com/external-global-proxy-controller
-		// 	//
-		// 	// https://github.com/envoyproxy/gateway/blob/4143f5c8eb2d468c093cca8871e6eb18262aef7e/internal/provider/kubernetes/predicates.go#L122
-		// 	//	https://github.com/envoyproxy/gateway/blob/4143f5c8eb2d468c093cca8871e6eb18262aef7e/internal/provider/kubernetes/controller.go#L1231
-		// 	// https://github.com/envoyproxy/gateway/blob/4143f5c8eb2d468c093cca8871e6eb18262aef7e/internal/provider/kubernetes/predicates.go#L44
-		// 	return o.Spec.GatewayClassName == "datum-external-global-proxy"
-		// }),
-		)).
+		For(&gatewayv1.Gateway{},
+			mcbuilder.WithPredicates(
+			// predicate.NewPredicateFuncs(func(object client.Object) bool {
+			// 	o := object.(*gatewayv1.Gateway)
+			// 	// TODO(jreese) get from config
+			// 	// TODO(jreese) might be expected to look at the controllerName on
+			// 	// the GatewayClass, instead of just the name of the GatewayClass.
+			// 	//
+			// 	// Example: gateway.networking.datumapis.com/external-global-proxy-controller
+			// 	//
+			// 	// https://github.com/envoyproxy/gateway/blob/4143f5c8eb2d468c093cca8871e6eb18262aef7e/internal/provider/kubernetes/predicates.go#L122
+			// 	//	https://github.com/envoyproxy/gateway/blob/4143f5c8eb2d468c093cca8871e6eb18262aef7e/internal/provider/kubernetes/controller.go#L1231
+			// 	// https://github.com/envoyproxy/gateway/blob/4143f5c8eb2d468c093cca8871e6eb18262aef7e/internal/provider/kubernetes/predicates.go#L44
+			// 	return o.Spec.GatewayClassName == "datum-external-global-proxy"
+			// }),
+			),
+			mcbuilder.WithEngageWithLocalCluster(false),
+		).
 		Watches(
 			&gatewayv1.HTTPRoute{},
 			mchandler.EnqueueRequestsFromMapFunc(r.listGatewaysAttachedByHTTPRoute),
+			mcbuilder.WithEngageWithLocalCluster(false),
 		).
 		// TODO(jreese) watch other clusters
 		// Owns(&gatewayv1.Gateway{}).
 		// Look at https://github.com/kubernetes-sigs/multicluster-runtime/blob/a2c2311b75cbcedb52574b66bbc7499d21cb1177/pkg/builder/forked_controller_test.go#L224
 		WatchesRawSource(clusterSrc).
-		Owns(&discoveryv1.EndpointSlice{}).
+		Owns(&discoveryv1.EndpointSlice{}, mcbuilder.WithEngageWithLocalCluster(false)).
 		Named("gateway").
 		Complete(r)
 }

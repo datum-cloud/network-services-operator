@@ -145,13 +145,16 @@ func (r *SubnetClaimReconciler) Reconcile(ctx context.Context, req mcreconcile.R
 func (r *SubnetClaimReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	r.mgr = mgr
 	return mcbuilder.ControllerManagedBy(mgr).
-		For(&networkingv1alpha.SubnetClaim{}, mcbuilder.WithPredicates(
-			predicate.NewPredicateFuncs(func(object client.Object) bool {
-				// Don't bother processing deployments that have been scheduled
-				o := object.(*networkingv1alpha.SubnetClaim)
-				return o.Status.SubnetRef == nil
-			}),
-		)).
+		For(&networkingv1alpha.SubnetClaim{},
+			mcbuilder.WithPredicates(
+				predicate.NewPredicateFuncs(func(object client.Object) bool {
+					// Don't bother processing deployments that have been scheduled
+					o := object.(*networkingv1alpha.SubnetClaim)
+					return o.Status.SubnetRef == nil
+				}),
+			),
+			mcbuilder.WithEngageWithLocalCluster(false),
+		).
 		// TODO(jreese) change when we don't have claims 1:1 with subnets
 		Watches(&networkingv1alpha.Subnet{}, mchandler.EnqueueRequestForObject).
 		Named("subnetclaim").

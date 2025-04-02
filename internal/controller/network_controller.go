@@ -45,7 +45,7 @@ func (r *NetworkReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 func (r *NetworkReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	r.mgr = mgr
 	return mcbuilder.ControllerManagedBy(mgr).
-		For(&networkingv1alpha.Network{}).
+		For(&networkingv1alpha.Network{}, mcbuilder.WithEngageWithLocalCluster(false)).
 		Named("network").
 		Complete(r)
 }

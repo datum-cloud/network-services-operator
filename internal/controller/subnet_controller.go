@@ -135,14 +135,17 @@ func (r *SubnetReconciler) Reconcile(ctx context.Context, req mcreconcile.Reques
 func (r *SubnetReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	r.mgr = mgr
 	return mcbuilder.ControllerManagedBy(mgr).
-		For(&networkingv1alpha.Subnet{}, mcbuilder.WithPredicates(
-			predicate.NewPredicateFuncs(func(object client.Object) bool {
-				// Don't bother processing subnets that have been allocated and are not
-				// deleting
-				o := object.(*networkingv1alpha.Subnet)
-				return o.Status.StartAddress == nil || !o.DeletionTimestamp.IsZero()
-			}),
-		)).
+		For(&networkingv1alpha.Subnet{},
+			mcbuilder.WithPredicates(
+				predicate.NewPredicateFuncs(func(object client.Object) bool {
+					// Don't bother processing subnets that have been allocated and are not
+					// deleting
+					o := object.(*networkingv1alpha.Subnet)
+					return o.Status.StartAddress == nil || !o.DeletionTimestamp.IsZero()
+				}),
+			),
+			mcbuilder.WithEngageWithLocalCluster(false),
+		).
 		Named("subnet").
 		Complete(r)
 }

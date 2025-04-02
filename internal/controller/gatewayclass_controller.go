@@ -90,7 +90,7 @@ func (r *GatewayClassReconciler) Reconcile(ctx context.Context, req mcreconcile.
 func (r *GatewayClassReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	r.mgr = mgr
 	return mcbuilder.ControllerManagedBy(mgr).
-		For(&gatewayv1.GatewayClass{}).
+		For(&gatewayv1.GatewayClass{}, mcbuilder.WithEngageWithLocalCluster(false)).
 		Named("gatewayclass").
 		Complete(r)
 }

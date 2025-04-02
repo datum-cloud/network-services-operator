@@ -155,12 +155,15 @@ func (r *NetworkBindingReconciler) Reconcile(ctx context.Context, req mcreconcil
 func (r *NetworkBindingReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	r.mgr = mgr
 	return mcbuilder.ControllerManagedBy(mgr).
-		For(&networkingv1alpha.NetworkBinding{}, mcbuilder.WithPredicates(
-			predicate.NewPredicateFuncs(func(object client.Object) bool {
-				o := object.(*networkingv1alpha.NetworkBinding)
-				return o.Status.NetworkContextRef == nil
-			}),
-		)).
+		For(&networkingv1alpha.NetworkBinding{},
+			mcbuilder.WithPredicates(
+				predicate.NewPredicateFuncs(func(object client.Object) bool {
+					o := object.(*networkingv1alpha.NetworkBinding)
+					return o.Status.NetworkContextRef == nil
+				}),
+			),
+			mcbuilder.WithEngageWithLocalCluster(false),
+		).
 		Complete(r)
 }
 

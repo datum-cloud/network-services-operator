@@ -1,0 +1,35 @@
+kind: CustomResourceStateMetrics
+spec:
+  resources:
+    - groupVersionKind:
+        group: networking.datumapis.com
+        kind: SubnetClaim
+        version: v1alpha
+      metricNamePrefix: "subnet_claim"
+      labelsFromPath:
+        namespace: [metadata, namespace]
+        name: [metadata, name]
+        network_name: [spec, network, name]
+        network_namespace: [spec, network, namespace]
+      metrics:
+        - name: "info"
+          help: "Information about subnet claim"
+          each:
+            type: Info
+            info:
+              labelsFromPath:
+                uid: [metadata, uid]
+                cloud_datum_net_network_context: [metadata, labels, cloud_datum_net_network_context]
+                gcp_topology_datum_net_project: [metadata, labels, gcp_topology_datum_net_project]
+                gcp_topology_datum_net_region: [metadata, labels, gcp_topology_datum_net_region]
+        - name: "status_condition"
+          help: "The current status conditions of the subnet claim"
+          each:
+            type: Gauge
+            gauge:
+              path: [status, conditions]
+              labelsFromPath:
+                condition: [type]
+                reason: [reason]
+                status: [status]
+              valueFrom: [status]

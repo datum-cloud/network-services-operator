@@ -17,5 +17,4 @@ const (
 var AllowedProviders = []Provider{
 	ProviderSingle,
 	ProviderDatum,
-	ProviderKind,
 }

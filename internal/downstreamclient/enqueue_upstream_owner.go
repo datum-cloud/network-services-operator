@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 
-	mchandler "github.com/multicluster-runtime/multicluster-runtime/pkg/handler"
-	mcreconcile "github.com/multicluster-runtime/multicluster-runtime/pkg/reconcile"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -16,6 +14,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	mchandler "sigs.k8s.io/multicluster-runtime/pkg/handler"
+	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 )
 
 var _ mchandler.EventHandler = &enqueueRequestForOwner[client.Object]{}

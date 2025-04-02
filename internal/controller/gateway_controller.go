@@ -7,11 +7,6 @@ import (
 	"fmt"
 	"strings"
 
-	mcbuilder "github.com/multicluster-runtime/multicluster-runtime/pkg/builder"
-	mchandler "github.com/multicluster-runtime/multicluster-runtime/pkg/handler"
-	mcmanager "github.com/multicluster-runtime/multicluster-runtime/pkg/manager"
-	mcreconcile "github.com/multicluster-runtime/multicluster-runtime/pkg/reconcile"
-	mcsource "github.com/multicluster-runtime/multicluster-runtime/pkg/source"
 	"go.datum.net/network-services-operator/internal/config"
 	downstreamclient "go.datum.net/network-services-operator/internal/downstreamclient"
 	"go.datum.net/network-services-operator/internal/validation"
@@ -33,6 +28,11 @@ import (
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	gatewayv1alpha2 "sigs.k8s.io/gateway-api/apis/v1alpha2"
 	gatewayv1alpha3 "sigs.k8s.io/gateway-api/apis/v1alpha3"
+	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
+	mchandler "sigs.k8s.io/multicluster-runtime/pkg/handler"
+	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
+	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
+	mcsource "sigs.k8s.io/multicluster-runtime/pkg/source"
 )
 
 const gatewayControllerFinalizer = "gateway.networking.datumapis.com/gateway-controller"

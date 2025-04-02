@@ -12,11 +12,11 @@ import (
 	// to ensure that exec-entrypoint and run can make use of them.
 	"golang.org/x/sync/errgroup"
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
+	"k8s.io/client-go/rest"
 
-	mcmanager "github.com/multicluster-runtime/multicluster-runtime/pkg/manager"
-	"github.com/multicluster-runtime/multicluster-runtime/pkg/multicluster"
-	mckind "github.com/multicluster-runtime/multicluster-runtime/providers/kind"
-	mcsingle "github.com/multicluster-runtime/multicluster-runtime/providers/single"
+	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
+	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
+	mcsingle "sigs.k8s.io/multicluster-runtime/providers/single"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
@@ -159,79 +159,10 @@ func main() {
 	}
 
 	cfg := ctrl.GetConfigOrDie()
-	var discoveryManager manager.Manager
 
-	var provider interface {
-		multicluster.Provider
-		// TODO(jreese) see if Run should be defined in the Provider interface
-		Run(context.Context, mcmanager.Manager) error
-	}
-	var singleCluster cluster.Cluster
-
-	switch serverConfig.Discovery.Mode {
-	case providers.ProviderSingle:
-		singleCluster, err = cluster.New(cfg, func(o *cluster.Options) {
-			o.Scheme = scheme
-		})
-		if err != nil {
-			setupLog.Error(err, "failed creating cluster")
-			os.Exit(1)
-		}
-		provider = mcsingle.New("single", singleCluster)
-
-	case providers.ProviderDatum:
-		discoveryRestConfig, err := serverConfig.Discovery.DiscoveryRestConfig()
-		if err != nil {
-			setupLog.Error(err, "unable to get discovery rest config")
-			os.Exit(1)
-		}
-
-		projectRestConfig, err := serverConfig.Discovery.ProjectRestConfig()
-		if err != nil {
-			setupLog.Error(err, "unable to get project rest config")
-			os.Exit(1)
-		}
-
-		discoveryManager, err = manager.New(discoveryRestConfig, manager.Options{
-			Client: client.Options{
-				Cache: &client.CacheOptions{
-					Unstructured: true,
-				},
-			},
-		})
-		if err != nil {
-			setupLog.Error(err, "unable to set up overall controller manager")
-			os.Exit(1)
-		}
-
-		provider, err = mcdatum.New(discoveryManager, mcdatum.Options{
-			ClusterOptions: []cluster.Option{
-				func(o *cluster.Options) {
-					o.Scheme = scheme
-				},
-			},
-			InternalServiceDiscovery: serverConfig.Discovery.InternalServiceDiscovery,
-			ProjectRestConfig:        projectRestConfig,
-		})
-		if err != nil {
-			setupLog.Error(err, "unable to create datum project provider")
-			os.Exit(1)
-		}
-
-	case providers.ProviderKind:
-		provider = mckind.New(mckind.Options{
-			ClusterOptions: []cluster.Option{
-				func(o *cluster.Options) {
-					o.Scheme = scheme
-				},
-			},
-		})
-
-	default:
-		setupLog.Error(fmt.Errorf(
-			"unsupported cluster discovery mode %s",
-			serverConfig.Discovery.Mode,
-		), "")
+	runnables, provider, err := initializeClusterDiscovery(serverConfig, cfg, scheme)
+	if err != nil {
+		setupLog.Error(err, "unable to initialize cluster discovery")
 		os.Exit(1)
 	}
 
@@ -330,21 +261,10 @@ func main() {
 
 	ctx := ctrl.SetupSignalHandler()
 
-	if serverConfig.Discovery.Mode == providers.ProviderSingle {
-		setupLog.Info("engaging cluster for single cluster provider")
-		// Pending feedback on https://github.com/multicluster-runtime/multicluster-runtime/pull/17#issue-2911191237
-		// to determine if the provider's Run function should be calling Engage
-		if err := mgr.Engage(ctx, "single", singleCluster); err != nil {
-			setupLog.Error(err, "failed engaging cluster")
-			os.Exit(1)
-		}
-	}
-
 	g, ctx := errgroup.WithContext(ctx)
-	if discoveryManager != nil {
-		setupLog.Info("starting discovery manager")
+	for _, runnable := range runnables {
 		g.Go(func() error {
-			return ignoreCanceled(discoveryManager.Start(ctx))
+			return ignoreCanceled(runnable.Start(ctx))
 		})
 	}
 
@@ -352,13 +272,6 @@ func main() {
 	g.Go(func() error {
 		return ignoreCanceled(provider.Run(ctx, mgr))
 	})
-
-	if singleCluster != nil {
-		setupLog.Info("starting cluster for single cluster provider")
-		g.Go(func() error {
-			return ignoreCanceled(singleCluster.Start(ctx))
-		})
-	}
 
 	g.Go(func() error {
 		return ignoreCanceled(downstreamCluster.Start(ctx))
@@ -373,6 +286,103 @@ func main() {
 		setupLog.Error(err, "unable to start")
 		os.Exit(1)
 	}
+}
+
+type runnableProvider interface {
+	multicluster.Provider
+	Run(context.Context, mcmanager.Manager) error
+}
+
+// Needed until we contribute the patch in the following PR again (need to sign CLA):
+//
+//	See: https://github.com/kubernetes-sigs/multicluster-runtime/pull/18
+type wrappedSingleClusterProvider struct {
+	multicluster.Provider
+	cluster cluster.Cluster
+}
+
+func (p *wrappedSingleClusterProvider) Run(ctx context.Context, mgr mcmanager.Manager) error {
+	if err := mgr.Engage(ctx, "single", p.cluster); err != nil {
+		return err
+	}
+	return p.Provider.(interface {
+		Run(context.Context, mcmanager.Manager) error
+	}).Run(ctx, mgr)
+}
+
+func initializeClusterDiscovery(
+	serverConfig config.NetworkServicesOperator,
+	cfg *rest.Config,
+	scheme *runtime.Scheme,
+) (runnables []manager.Runnable, provider runnableProvider, err error) {
+	switch serverConfig.Discovery.Mode {
+	case providers.ProviderSingle:
+		singleCluster, err := cluster.New(cfg, func(o *cluster.Options) {
+			o.Scheme = scheme
+		})
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed creating cluster: %w", err)
+		}
+		provider = &wrappedSingleClusterProvider{
+			Provider: mcsingle.New("single", singleCluster),
+			cluster:  singleCluster,
+		}
+		runnables = []manager.Runnable{singleCluster}
+
+	case providers.ProviderDatum:
+		discoveryRestConfig, err := serverConfig.Discovery.DiscoveryRestConfig()
+		if err != nil {
+			return nil, nil, fmt.Errorf("unable to get discovery rest config: %w", err)
+		}
+
+		projectRestConfig, err := serverConfig.Discovery.ProjectRestConfig()
+		if err != nil {
+			return nil, nil, fmt.Errorf("unable to get project rest config: %w", err)
+		}
+
+		discoveryManager, err := manager.New(discoveryRestConfig, manager.Options{
+			Client: client.Options{
+				Cache: &client.CacheOptions{
+					Unstructured: true,
+				},
+			},
+		})
+		if err != nil {
+			return nil, nil, fmt.Errorf("unable to set up overall controller manager: %w", err)
+		}
+
+		provider, err = mcdatum.New(discoveryManager, mcdatum.Options{
+			ClusterOptions: []cluster.Option{
+				func(o *cluster.Options) {
+					o.Scheme = scheme
+				},
+			},
+			InternalServiceDiscovery: serverConfig.Discovery.InternalServiceDiscovery,
+			ProjectRestConfig:        projectRestConfig,
+		})
+		if err != nil {
+			return nil, nil, fmt.Errorf("unable to create datum project provider: %w", err)
+		}
+
+		runnables = []manager.Runnable{discoveryManager}
+
+	// case providers.ProviderKind:
+	// 	provider = mckind.New(mckind.Options{
+	// 		ClusterOptions: []cluster.Option{
+	// 			func(o *cluster.Options) {
+	// 				o.Scheme = scheme
+	// 			},
+	// 		},
+	// 	})
+
+	default:
+		return nil, nil, fmt.Errorf(
+			"unsupported cluster discovery mode %s",
+			serverConfig.Discovery.Mode,
+		)
+	}
+
+	return runnables, provider, nil
 }
 
 func ignoreCanceled(err error) error {

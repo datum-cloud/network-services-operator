@@ -6,7 +6,6 @@ import (
 	"net/url"
 	"testing"
 
-	mcmanager "github.com/multicluster-runtime/multicluster-runtime/pkg/manager"
 	"github.com/stretchr/testify/assert"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -18,6 +17,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/scheme"
+	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 )
 
 type testMultiClusterManager struct {

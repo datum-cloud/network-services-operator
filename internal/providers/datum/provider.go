@@ -24,12 +24,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	mcmanager "github.com/multicluster-runtime/multicluster-runtime/pkg/manager"
-	"github.com/multicluster-runtime/multicluster-runtime/pkg/multicluster"
+	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
+	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 )
 
 // Built following the cluster-api provider as an example.
-// See: https://github.com/multicluster-runtime/multicluster-runtime/blob/7abad14c6d65fdaf9b83a2b1d9a2c99140d18e7d/providers/cluster-api/provider.go
+// See: https://sigs.k8s.io/multicluster-runtime/blob/7abad14c6d65fdaf9b83a2b1d9a2c99140d18e7d/providers/cluster-api/provider.go
 
 var _ multicluster.Provider = &Provider{}
 

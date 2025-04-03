@@ -400,7 +400,7 @@ func (r *GatewayReconciler) ensureDownstreamGatewayDNSEndpoints(
 			Value: hostname,
 		})
 
-		if !strings.HasPrefix(hostname, "v6") {
+		if len(v4IPs) > 0 && !strings.HasPrefix(hostname, "v6") {
 			// v4 specific hostname, or hostname that includes both v4 and v6
 			endpoints = append(endpoints, map[string]any{
 				"dnsName":    hostname,
@@ -410,7 +410,7 @@ func (r *GatewayReconciler) ensureDownstreamGatewayDNSEndpoints(
 			})
 		}
 
-		if !strings.HasPrefix(hostname, "v4") {
+		if len(v6IPs) > 0 && !strings.HasPrefix(hostname, "v4") {
 			// v6 specific hostname, or hostname that includes both v4 and v6
 			endpoints = append(endpoints, map[string]any{
 				"dnsName":    hostname,

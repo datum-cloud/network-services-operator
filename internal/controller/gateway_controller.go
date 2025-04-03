@@ -473,14 +473,14 @@ func (r *GatewayReconciler) finalizeGateway(
 
 	// Detach HTTPRoutes from the upstream gateway
 	logger.Info("detaching httproutes from upstream gateway")
-	detachResult := r.detachHTTPRoutes(ctx, upstreamClient, upstreamGateway, true)
+	detachResult := r.detachHTTPRoutes(ctx, upstreamClient, upstreamGateway, false)
 	if detachResult.ShouldReturn() {
 		return detachResult
 	}
 
 	// Detach HTTPRoutes from the downstream gateway
 	logger.Info("detaching httproutes from downstream gateway")
-	detachResult = r.detachHTTPRoutes(ctx, downstreamClient, downstreamGateway, false)
+	detachResult = r.detachHTTPRoutes(ctx, downstreamClient, downstreamGateway, true)
 	if detachResult.ShouldReturn() {
 		return detachResult
 	}

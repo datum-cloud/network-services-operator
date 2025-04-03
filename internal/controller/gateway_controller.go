@@ -220,7 +220,7 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 
 		downstreamGateway.Spec = gatewayv1.GatewaySpec{
 			// TODO(jreese) get from "scheduler"
-			GatewayClassName: "envoy-gateway",
+			GatewayClassName: gatewayv1.ObjectName(r.Config.Gateway.DownstreamGatewayClassName),
 
 			// TODO(jreese) get from "scheduler"
 			Addresses: []gatewayv1.GatewayAddress{},

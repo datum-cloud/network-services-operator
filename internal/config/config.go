@@ -54,6 +54,10 @@ type GatewayConfig struct {
 	//
 	// Defaults to [IPv4, IPv6]
 	IPFamilies []networkingv1alpha.IPFamily `json:"ipFamilies,omitempty"`
+
+	// DownstreamGatewayClassName is the name of the GatewayClass that should be
+	// used when programming gateways in the downstream cluster.
+	DownstreamGatewayClassName string `json:"downstreamGatewayClassName"`
 }
 
 func SetDefaults_GatewayConfig(obj *GatewayConfig) {

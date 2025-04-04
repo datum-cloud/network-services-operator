@@ -71,6 +71,17 @@ type GatewayConfig struct {
 	// issuer name, the operator will use the value as is.
 	ClusterIssuerMap map[string]string `json:"clusterIssuerMap,omitempty"`
 
+	// PerGatewayCertificateIssuer will result in the operator to expect a
+	// cert-manager Issuer to exist with the same name as the gateway. Any value
+	// provided for the "gateway.networking.datumapis.com/certificate-issuer"
+	// option will be replaced with the gateway's name. The Issuer resources will
+	// be managed by Kyverno policies, and not by this operator.
+	//
+	// TODO(jreese) Remove this once we've either implemented DNS validation,
+	// found a path to attach cert-manager generated routes to the gateway they're
+	// needed for, or implement our own ACME integration.
+	PerGatewayCertificateIssuer bool `json:"perGatewayCertificateIssuer,omitempty"`
+
 	// ValidPortNumbers is a list of port numbers that are permitted on gateway
 	// listeners.
 	//

@@ -42,9 +42,8 @@ func TestValidateGateway(t *testing.T) {
 				},
 			},
 			opts: GatewayValidationOptions{
-				PermitListenerHostnames: false,
-				ValidPortNumbers:        []int{80, 443},
-				ValidProtocolTypes:      []gatewayv1.ProtocolType{gatewayv1.HTTPProtocolType, gatewayv1.HTTPSProtocolType},
+				ValidPortNumbers:   []int{80, 443},
+				ValidProtocolTypes: []gatewayv1.ProtocolType{gatewayv1.HTTPProtocolType, gatewayv1.HTTPSProtocolType},
 			},
 			expectedErrors: field.ErrorList{
 				field.Invalid(field.NewPath("spec", "listeners").Index(0).Child("hostname"), "example.com", "hostnames are not permitted"),
@@ -138,12 +137,11 @@ func TestValidateGateway(t *testing.T) {
 				},
 			},
 			opts: GatewayValidationOptions{
-				ValidPortNumbers:      []int{80, 443},
-				ValidProtocolTypes:    []gatewayv1.ProtocolType{gatewayv1.HTTPProtocolType, gatewayv1.HTTPSProtocolType},
-				PermitCertificateRefs: false,
+				ValidPortNumbers:   []int{80, 443},
+				ValidProtocolTypes: []gatewayv1.ProtocolType{gatewayv1.HTTPProtocolType, gatewayv1.HTTPSProtocolType},
 			},
 			expectedErrors: field.ErrorList{
-				field.TooMany(field.NewPath("spec", "listeners").Index(0).Child("tls", "certificateRefs"), 1, 0),
+				field.Forbidden(field.NewPath("spec", "listeners").Index(0).Child("tls", "certificateRefs"), ""),
 			},
 		},
 		"routes from all namespaces not permitted": {
@@ -165,9 +163,8 @@ func TestValidateGateway(t *testing.T) {
 				},
 			},
 			opts: GatewayValidationOptions{
-				RoutesFromSameNamespaceOnly: true,
-				ValidPortNumbers:            []int{80, 443},
-				ValidProtocolTypes:          []gatewayv1.ProtocolType{gatewayv1.HTTPProtocolType, gatewayv1.HTTPSProtocolType},
+				ValidPortNumbers:   []int{80, 443},
+				ValidProtocolTypes: []gatewayv1.ProtocolType{gatewayv1.HTTPProtocolType, gatewayv1.HTTPSProtocolType},
 			},
 			expectedErrors: field.ErrorList{
 				field.Invalid(field.NewPath("spec", "listeners").Index(0).Child("allowedRoutes", "namespaces", "from"), gatewayv1.NamespacesFromAll, "allowedRoutes.namespaces.from must be set to NamespacesFromAll"),
@@ -279,6 +276,90 @@ func TestValidateGateway(t *testing.T) {
 			expectedErrors: field.ErrorList{
 				field.Forbidden(field.NewPath("spec", "backendTLS"), "backendTLS is not permitted"),
 			},
+		},
+		"invalid tls settings": {
+			gateway: &gatewayv1.Gateway{
+				Spec: gatewayv1.GatewaySpec{
+					GatewayClassName: "test-gateway-class",
+					Listeners: []gatewayv1.Listener{
+						{
+							Name:     "http",
+							Protocol: gatewayv1.HTTPProtocolType,
+							Port:     80,
+							TLS: &gatewayv1.GatewayTLSConfig{
+								Options: map[gatewayv1.AnnotationKey]gatewayv1.AnnotationValue{
+									"test-option": "test-value",
+								},
+								FrontendValidation: &gatewayv1.FrontendTLSValidation{},
+							},
+						},
+					},
+				},
+			},
+			opts: GatewayValidationOptions{
+				ValidPortNumbers:   []int{80, 443},
+				ValidProtocolTypes: []gatewayv1.ProtocolType{gatewayv1.HTTPProtocolType, gatewayv1.HTTPSProtocolType},
+			},
+			expectedErrors: field.ErrorList{
+				field.Forbidden(field.NewPath("spec", "listeners").Index(0).Child("tls", "frontendValidation"), ""),
+				field.Forbidden(field.NewPath("spec", "listeners").Index(0).Child("tls", "options").Key("test-option"), ""),
+			},
+		},
+		"tls option value not permitted": {
+			gateway: &gatewayv1.Gateway{
+				Spec: gatewayv1.GatewaySpec{
+					GatewayClassName: "test-gateway-class",
+					Listeners: []gatewayv1.Listener{
+						{
+							Name:     "http",
+							Protocol: gatewayv1.HTTPProtocolType,
+							Port:     80,
+							TLS: &gatewayv1.GatewayTLSConfig{
+								Options: map[gatewayv1.AnnotationKey]gatewayv1.AnnotationValue{
+									"test-option": "invalid-value",
+								},
+							},
+						},
+					},
+				},
+			},
+			opts: GatewayValidationOptions{
+				ValidPortNumbers:   []int{80, 443},
+				ValidProtocolTypes: []gatewayv1.ProtocolType{gatewayv1.HTTPProtocolType, gatewayv1.HTTPSProtocolType},
+				PermittedTLSOptions: map[string][]string{
+					"test-option": {"test-value"},
+				},
+			},
+			expectedErrors: field.ErrorList{
+				field.NotSupported(field.NewPath("spec", "listeners").Index(0).Child("tls", "options").Key("test-option"), "invalid-value", []string{}),
+			},
+		},
+		"valid tls options": {
+			gateway: &gatewayv1.Gateway{
+				Spec: gatewayv1.GatewaySpec{
+					GatewayClassName: "test-gateway-class",
+					Listeners: []gatewayv1.Listener{
+						{
+							Name:     "http",
+							Protocol: gatewayv1.HTTPProtocolType,
+							Port:     80,
+							TLS: &gatewayv1.GatewayTLSConfig{
+								Options: map[gatewayv1.AnnotationKey]gatewayv1.AnnotationValue{
+									"test-option": "valid-value",
+								},
+							},
+						},
+					},
+				},
+			},
+			opts: GatewayValidationOptions{
+				ValidPortNumbers:   []int{80, 443},
+				ValidProtocolTypes: []gatewayv1.ProtocolType{gatewayv1.HTTPProtocolType, gatewayv1.HTTPSProtocolType},
+				PermittedTLSOptions: map[string][]string{
+					"test-option": {"valid-value"},
+				},
+			},
+			expectedErrors: field.ErrorList{},
 		},
 	}
 

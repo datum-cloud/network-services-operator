@@ -7,6 +7,7 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	ctrl "sigs.k8s.io/controller-runtime"
+	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	"go.datum.net/network-services-operator/internal/providers"
@@ -45,9 +46,9 @@ func (c *DownstreamResourceManagementConfig) RestConfig() (*rest.Config, error) 
 // +k8s:deepcopy-gen=true
 
 type GatewayConfig struct {
+	// TargetDomain is the domain that the operator should use when creating
+	// DNS endpoints for gateways.
 	TargetDomain string `json:"targetDomain"`
-
-	PermitCertificateRefs bool `json:"permitCertificateRefs"`
 
 	// IPFamilies defines the IP families that should be enabled on gateways
 	// created by the operator.
@@ -58,6 +59,26 @@ type GatewayConfig struct {
 	// DownstreamGatewayClassName is the name of the GatewayClass that should be
 	// used when programming gateways in the downstream cluster.
 	DownstreamGatewayClassName string `json:"downstreamGatewayClassName"`
+
+	// PermittedTLSOptions is a map of TLS options that are permitted on gateway
+	// listeners. The key is the option name and the value is a list of permitted
+	// option values. An empty list of values means that any value is permitted for
+	// that option.
+	//
+	// Defaults to an empty map.
+	PermittedTLSOptions map[string][]string `json:"permittedTLSOptions,omitempty"`
+
+	// ValidPortNumbers is a list of port numbers that are permitted on gateway
+	// listeners.
+	//
+	// Defaults to [80, 443]
+	ValidPortNumbers []int `json:"validPortNumbers,omitempty"`
+
+	// ValidProtocolTypes is a list of protocol types that are permitted on
+	// gateway listeners.
+	//
+	// Defaults to [HTTP, HTTPS]
+	ValidProtocolTypes []gatewayv1.ProtocolType `json:"validProtocolTypes,omitempty"`
 }
 
 func SetDefaults_GatewayConfig(obj *GatewayConfig) {
@@ -65,6 +86,17 @@ func SetDefaults_GatewayConfig(obj *GatewayConfig) {
 		obj.IPFamilies = []networkingv1alpha.IPFamily{
 			networkingv1alpha.IPv4Protocol,
 			networkingv1alpha.IPv6Protocol,
+		}
+	}
+
+	if len(obj.ValidPortNumbers) == 0 {
+		obj.ValidPortNumbers = []int{80, 443}
+	}
+
+	if len(obj.ValidProtocolTypes) == 0 {
+		obj.ValidProtocolTypes = []gatewayv1.ProtocolType{
+			gatewayv1.HTTPProtocolType,
+			gatewayv1.HTTPSProtocolType,
 		}
 	}
 }

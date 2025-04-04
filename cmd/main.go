@@ -235,14 +235,9 @@ func main() {
 		Config:            serverConfig,
 		DownstreamCluster: downstreamCluster,
 		ValidationOpts: validation.GatewayValidationOptions{
-			RoutesFromSameNamespaceOnly: true,
-			// TODO(jreese) get from config
-			PermitCertificateRefs: true,
-			ValidPortNumbers:      []int{80, 443},
-			ValidProtocolTypes: []gatewayv1.ProtocolType{
-				gatewayv1.HTTPProtocolType,
-				gatewayv1.HTTPSProtocolType,
-			},
+			PermittedTLSOptions: serverConfig.Gateway.PermittedTLSOptions,
+			ValidPortNumbers:    serverConfig.Gateway.ValidPortNumbers,
+			ValidProtocolTypes:  serverConfig.Gateway.ValidProtocolTypes,
 		},
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Gateway")

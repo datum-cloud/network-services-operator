@@ -9,8 +9,6 @@ spec:
       value: (join('-', ['e2e', $namespace]))
     - name: gatewayClassName
       value: (join('-', ['e2e', $namespace]))
-    - name: downstreamNamespaceName
-      value: tbd
     - name: KUBECONFIG
       value: asdf
   cluster: nso-standard
@@ -68,7 +66,7 @@ spec:
               apiVersion: gateway.networking.k8s.io/v1
               kind: GatewayClass
               metadata:
-                name: envoy-gateway
+                name: datum-downstream-gateway-e2e
               spec:
                 controllerName: gateway.envoyproxy.io/gatewayclass-controller
                 parametersRef:
@@ -113,13 +111,8 @@ spec:
                       from: Same
                   tls:
                     mode: Terminate
-                    # TODO(jreese), consider using `options` as an alternative?
-                    # options:
-                    #   gateway.networking.datumapis.com/certificate-issuer: letsencrypt
-                    certificateRefs:
-                      - group: cert-manager.io
-                        kind: ClusterIssuer
-                        name: ($clusterIssuerName)
+                    options:
+                      gateway.networking.datumapis.com/certificate-issuer: ($clusterIssuerName)
             outputs:
               - name: upstreamGateway
                 match:
@@ -634,7 +627,7 @@ spec:
             skipLogOutput: true
             cluster: nso-infra
             content: |
-              kubectl get svc -n envoy-gateway-system -l gateway.envoyproxy.io/owning-gatewayclass=envoy-gateway -o json
+              kubectl get svc -n envoy-gateway-system -l gateway.envoyproxy.io/owning-gatewayclass=datum-downstream-gateway-e2e -o json
             outputs:
               - name: gatewayService
                 value: (json_parse($stdout).items | [0])

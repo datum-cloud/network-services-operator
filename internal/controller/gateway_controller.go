@@ -36,6 +36,7 @@ import (
 )
 
 const gatewayControllerFinalizer = "gateway.networking.datumapis.com/gateway-controller"
+const certificateIssuerTLSOption = "gateway.networking.datumapis.com/certificate-issuer"
 const KindGateway = "Gateway"
 const KindService = "Service"
 const KindEndpointSlice = "EndpointSlice"
@@ -202,19 +203,12 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 			return fmt.Errorf("failed to set controller reference on downstream gateway: %w", err)
 		}
 
-		// TODO(jreese) validate tls certificateRefs
-		// TODO(jreese) we could use TLS options instead of certificateRefs
 		if downstreamGateway.Annotations == nil {
 			downstreamGateway.Annotations = map[string]string{}
 		}
 		for _, l := range upstreamGateway.Spec.Listeners {
-			if l.TLS != nil && len(l.TLS.CertificateRefs) == 1 && l.TLS.CertificateRefs[0].Kind != nil {
-				switch *l.TLS.CertificateRefs[0].Kind {
-				case "ClusterIssuer":
-					downstreamGateway.Annotations["cert-manager.io/cluster-issuer"] = string(l.TLS.CertificateRefs[0].Name)
-				case "Issuer":
-					downstreamGateway.Annotations["cert-manager.io/issuer"] = string(l.TLS.CertificateRefs[0].Name)
-				}
+			if l.TLS != nil && l.TLS.Options[certificateIssuerTLSOption] != "" {
+				downstreamGateway.Annotations["cert-manager.io/cluster-issuer"] = string(l.TLS.Options[certificateIssuerTLSOption])
 			}
 		}
 

@@ -38,7 +38,7 @@ func validateListeners(listeners []gatewayv1.Listener, fldPath *field.Path, opts
 	for i, l := range listeners {
 		listenerPath := fldPath.Index(i)
 
-		if !opts.PermitListenerHostnames && l.Hostname != nil {
+		if l.Hostname != nil {
 			allErrs = append(allErrs, field.Invalid(listenerPath.Child("hostname"), l.Hostname, "hostnames are not permitted"))
 		}
 
@@ -52,24 +52,22 @@ func validateListeners(listeners []gatewayv1.Listener, fldPath *field.Path, opts
 
 		allErrs = append(allErrs, validateGatewayTLSConfig(l.TLS, listenerPath.Child("tls"), opts)...)
 
-		allErrs = append(allErrs, validateAllowedRoutes(l.AllowedRoutes, listenerPath.Child("allowedRoutes"), opts)...)
+		allErrs = append(allErrs, validateAllowedRoutes(l.AllowedRoutes, listenerPath.Child("allowedRoutes"))...)
 	}
 
 	return allErrs
 }
 
-func validateAllowedRoutes(allowedRoutes *gatewayv1.AllowedRoutes, fldPath *field.Path, opts GatewayValidationOptions) field.ErrorList {
+func validateAllowedRoutes(allowedRoutes *gatewayv1.AllowedRoutes, fldPath *field.Path) field.ErrorList {
 	if allowedRoutes == nil {
 		return nil
 	}
 
 	allErrs := field.ErrorList{}
 
-	if opts.RoutesFromSameNamespaceOnly {
-		if allowedRoutes.Namespaces != nil && allowedRoutes.Namespaces.From != nil {
-			if *allowedRoutes.Namespaces.From == gatewayv1.NamespacesFromAll {
-				allErrs = append(allErrs, field.Invalid(fldPath.Child("namespaces", "from"), allowedRoutes.Namespaces.From, "allowedRoutes.namespaces.from must be set to NamespacesFromAll"))
-			}
+	if allowedRoutes.Namespaces != nil && allowedRoutes.Namespaces.From != nil {
+		if *allowedRoutes.Namespaces.From == gatewayv1.NamespacesFromAll {
+			allErrs = append(allErrs, field.Invalid(fldPath.Child("namespaces", "from"), allowedRoutes.Namespaces.From, "allowedRoutes.namespaces.from must be set to NamespacesFromAll"))
 		}
 	}
 
@@ -91,8 +89,8 @@ func validateGatewayTLSConfig(tls *gatewayv1.GatewayTLSConfig, fldPath *field.Pa
 		allErrs = append(allErrs, field.Invalid(fldPath.Child("mode"), tls.Mode, "mode must be set to Terminate"))
 	}
 
-	if len(tls.CertificateRefs) > 0 && !opts.PermitCertificateRefs {
-		allErrs = append(allErrs, field.TooMany(fldPath.Child("certificateRefs"), len(tls.CertificateRefs), 0))
+	if len(tls.CertificateRefs) > 0 {
+		allErrs = append(allErrs, field.Forbidden(fldPath.Child("certificateRefs"), "certificateRefs are not permitted"))
 	}
 
 	if tls.FrontendValidation != nil {
@@ -100,18 +98,26 @@ func validateGatewayTLSConfig(tls *gatewayv1.GatewayTLSConfig, fldPath *field.Pa
 	}
 
 	if len(tls.Options) > 0 {
-		allErrs = append(allErrs, field.Forbidden(fldPath.Child("options"), "options are not permitted"))
+		for k, v := range tls.Options {
+			optionPath := fldPath.Child("options").Key(string(k))
+
+			if optValues, ok := opts.PermittedTLSOptions[string(k)]; !ok {
+				allErrs = append(allErrs, field.Forbidden(optionPath, "option is not permitted"))
+			} else {
+				if len(optValues) > 0 && !slices.Contains(optValues, string(v)) {
+					allErrs = append(allErrs, field.NotSupported(optionPath, string(v), optValues))
+				}
+			}
+		}
 	}
 
 	return allErrs
 }
 
 type GatewayValidationOptions struct {
-	RoutesFromSameNamespaceOnly bool
-	PermitListenerHostnames     bool
-	PermitCertificateRefs       bool
-	ValidPortNumbers            validPortNumbers
-	ValidProtocolTypes          []gatewayv1.ProtocolType
+	PermittedTLSOptions map[string][]string
+	ValidPortNumbers    validPortNumbers
+	ValidProtocolTypes  []gatewayv1.ProtocolType
 }
 
 type validPortNumbers []int

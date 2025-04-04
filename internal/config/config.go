@@ -62,11 +62,14 @@ type GatewayConfig struct {
 
 	// PermittedTLSOptions is a map of TLS options that are permitted on gateway
 	// listeners. The key is the option name and the value is a list of permitted
-	// option values. An empty list of values means that any value is permitted for
-	// that option.
-	//
+	// option values. An empty list of values means that any value is permitted for	//
 	// Defaults to an empty map.
 	PermittedTLSOptions map[string][]string `json:"permittedTLSOptions,omitempty"`
+
+	// ClusterIssuerMap is a map of external cluster issuer names to internal
+	// ClusterIssuer resource names. If no entry is found for a given external
+	// issuer name, the operator will use the value as is.
+	ClusterIssuerMap map[string]string `json:"clusterIssuerMap,omitempty"`
 
 	// ValidPortNumbers is a list of port numbers that are permitted on gateway
 	// listeners.

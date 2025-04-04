@@ -208,7 +208,11 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 		}
 		for _, l := range upstreamGateway.Spec.Listeners {
 			if l.TLS != nil && l.TLS.Options[certificateIssuerTLSOption] != "" {
-				downstreamGateway.Annotations["cert-manager.io/cluster-issuer"] = string(l.TLS.Options[certificateIssuerTLSOption])
+				clusterIssuerName := string(l.TLS.Options[certificateIssuerTLSOption])
+				if r.Config.Gateway.ClusterIssuerMap[clusterIssuerName] != "" {
+					clusterIssuerName = r.Config.Gateway.ClusterIssuerMap[clusterIssuerName]
+				}
+				downstreamGateway.Annotations["cert-manager.io/cluster-issuer"] = clusterIssuerName
 			}
 		}
 

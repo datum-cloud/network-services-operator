@@ -215,8 +215,8 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 					clusterIssuerName := string(l.TLS.Options[certificateIssuerTLSOption])
 					if r.Config.Gateway.ClusterIssuerMap[clusterIssuerName] != "" {
 						clusterIssuerName = r.Config.Gateway.ClusterIssuerMap[clusterIssuerName]
-						downstreamGateway.Annotations["cert-manager.io/cluster-issuer"] = clusterIssuerName
 					}
+					downstreamGateway.Annotations["cert-manager.io/cluster-issuer"] = clusterIssuerName
 				}
 			}
 		}

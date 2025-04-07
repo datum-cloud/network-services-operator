@@ -3,6 +3,7 @@ package downstreamclient
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -93,8 +94,7 @@ func (c *mappedNamespaceResourceStrategy) ensureDownstreamNamespace(ctx context.
 			downstreamNamespace.Labels = make(map[string]string)
 		}
 
-		// TODO(jreese) add labels to downstream namespace to more easily identify
-		// the upstream namespace it is mapped to.
+		downstreamNamespace.Labels[UpstreamOwnerClusterNameLabel] = strings.ReplaceAll(c.upstreamClusterName, "/", "_")
 
 		return nil
 	})
@@ -130,15 +130,12 @@ func (c *mappedNamespaceResourceStrategy) SetControllerReference(ctx context.Con
 
 	anchorName := fmt.Sprintf("anchor-%s", owner.GetUID())
 
-	anchorAnnotations := map[string]string{
-		UpstreamOwnerClusterNameLabel: c.upstreamClusterName,
-	}
-
 	anchorLabels := map[string]string{
-		UpstreamOwnerGroupLabel:     gvk.Group,
-		UpstreamOwnerKindLabel:      gvk.Kind,
-		UpstreamOwnerNameLabel:      owner.GetName(),
-		UpstreamOwnerNamespaceLabel: owner.GetNamespace(),
+		UpstreamOwnerClusterNameLabel: strings.ReplaceAll(c.upstreamClusterName, "/", "_"),
+		UpstreamOwnerGroupLabel:       gvk.Group,
+		UpstreamOwnerKindLabel:        gvk.Kind,
+		UpstreamOwnerNameLabel:        owner.GetName(),
+		UpstreamOwnerNamespaceLabel:   owner.GetNamespace(),
 	}
 
 	downstreamClient := c.GetClient()
@@ -150,6 +147,7 @@ func (c *mappedNamespaceResourceStrategy) SetControllerReference(ctx context.Con
 
 	if anchorConfigMap.CreationTimestamp.IsZero() {
 		anchorConfigMap.Name = anchorName
+		anchorConfigMap.Labels = anchorLabels
 		anchorConfigMap.Namespace = controlled.GetNamespace()
 		if err := downstreamClient.Create(ctx, &anchorConfigMap); err != nil {
 			return fmt.Errorf("failed creating anchor configmap: %w", err)
@@ -160,18 +158,12 @@ func (c *mappedNamespaceResourceStrategy) SetControllerReference(ctx context.Con
 		return fmt.Errorf("failed setting anchor owner reference: %w", err)
 	}
 
-	annotations := controlled.GetAnnotations()
-	if annotations == nil {
-		annotations = map[string]string{}
-	}
-	annotations[UpstreamOwnerClusterNameLabel] = anchorAnnotations[UpstreamOwnerClusterNameLabel]
-	controlled.SetAnnotations(annotations)
-
 	labels := controlled.GetLabels()
 	if labels == nil {
 		labels = map[string]string{}
 	}
 
+	labels[UpstreamOwnerClusterNameLabel] = anchorLabels[UpstreamOwnerClusterNameLabel]
 	labels[UpstreamOwnerGroupLabel] = anchorLabels[UpstreamOwnerGroupLabel]
 	labels[UpstreamOwnerKindLabel] = anchorLabels[UpstreamOwnerKindLabel]
 	labels[UpstreamOwnerNameLabel] = anchorLabels[UpstreamOwnerNameLabel]

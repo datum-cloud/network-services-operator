@@ -3,6 +3,7 @@ package downstreamclient
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -107,7 +108,6 @@ func (e *enqueueRequestForOwner[object]) parseOwnerTypeGroupKind(scheme *runtime
 func (e *enqueueRequestForOwner[object]) getOwnerReconcileRequest(obj metav1.Object, result map[mcreconcile.Request]empty) {
 	labels := obj.GetLabels()
 	if labels[UpstreamOwnerKindLabel] == e.groupKind.Kind && labels[UpstreamOwnerGroupLabel] == e.groupKind.Group {
-		annotations := obj.GetAnnotations()
 		request := mcreconcile.Request{
 			Request: reconcile.Request{
 				NamespacedName: types.NamespacedName{
@@ -115,7 +115,7 @@ func (e *enqueueRequestForOwner[object]) getOwnerReconcileRequest(obj metav1.Obj
 					Namespace: labels[UpstreamOwnerNamespaceLabel],
 				},
 			},
-			ClusterName: annotations[UpstreamOwnerClusterNameLabel],
+			ClusterName: strings.ReplaceAll(labels[UpstreamOwnerClusterNameLabel], "_", "/"),
 		}
 		result[request] = empty{}
 	}

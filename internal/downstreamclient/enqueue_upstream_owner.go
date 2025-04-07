@@ -115,7 +115,7 @@ func (e *enqueueRequestForOwner[object]) getOwnerReconcileRequest(obj metav1.Obj
 					Namespace: labels[UpstreamOwnerNamespaceLabel],
 				},
 			},
-			ClusterName: strings.ReplaceAll(labels[UpstreamOwnerClusterNameLabel], "_", "/"),
+			ClusterName: strings.TrimPrefix(strings.ReplaceAll(labels[UpstreamOwnerClusterNameLabel], "_", "/"), "cluster-"),
 		}
 		result[request] = empty{}
 	}

@@ -94,7 +94,7 @@ func (c *mappedNamespaceResourceStrategy) ensureDownstreamNamespace(ctx context.
 			downstreamNamespace.Labels = make(map[string]string)
 		}
 
-		downstreamNamespace.Labels[UpstreamOwnerClusterNameLabel] = strings.ReplaceAll(c.upstreamClusterName, "/", "_")
+		downstreamNamespace.Labels[UpstreamOwnerClusterNameLabel] = fmt.Sprintf("cluster-%s", strings.ReplaceAll(c.upstreamClusterName, "/", "_"))
 
 		return nil
 	})
@@ -131,7 +131,7 @@ func (c *mappedNamespaceResourceStrategy) SetControllerReference(ctx context.Con
 	anchorName := fmt.Sprintf("anchor-%s", owner.GetUID())
 
 	anchorLabels := map[string]string{
-		UpstreamOwnerClusterNameLabel: strings.ReplaceAll(c.upstreamClusterName, "/", "_"),
+		UpstreamOwnerClusterNameLabel: fmt.Sprintf("cluster-%s", strings.ReplaceAll(c.upstreamClusterName, "/", "_")),
 		UpstreamOwnerGroupLabel:       gvk.Group,
 		UpstreamOwnerKindLabel:        gvk.Kind,
 		UpstreamOwnerNameLabel:        owner.GetName(),

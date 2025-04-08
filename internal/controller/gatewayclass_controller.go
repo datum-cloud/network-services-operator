@@ -19,8 +19,6 @@ import (
 // GatewayClassReconciler reconciles a Network object
 type GatewayClassReconciler struct {
 	mgr mcmanager.Manager
-	// controllerName is the domain-prefixed string that identifies this implementation
-	controllerName gatewayv1.GatewayController
 }
 
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gatewayclasses,verbs=get;list;watch;create;update;patch;delete
@@ -48,7 +46,7 @@ func (r *GatewayClassReconciler) Reconcile(ctx context.Context, req mcreconcile.
 	defer logger.Info("reconcile complete")
 
 	// Check if this GatewayClass should be handled by this controller
-	if gatewayClass.Spec.ControllerName != r.controllerName {
+	if gatewayClass.Spec.ControllerName != "gateway.networking.datumapis.com/external-global-proxy-controller" {
 		return ctrl.Result{}, nil
 	}
 

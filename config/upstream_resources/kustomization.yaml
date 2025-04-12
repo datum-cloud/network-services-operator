@@ -3,5 +3,4 @@ kind: Kustomization
 resources:
   - ../crd
   - ../crd/gateway
-  - ../crd/discovery/
   - gatewayclass.yaml

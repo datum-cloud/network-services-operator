@@ -91,7 +91,6 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 		return ctrl.Result{}, err
 	}
 
-	// return downstreamclient.NewSameClusterAndNamespaceResourceStrategy(cl.GetClient())
 	upstreamCluster, err := r.mgr.GetCluster(ctx, req.ClusterName)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -891,9 +890,11 @@ func (r *GatewayReconciler) ensureDownstreamHTTPRouteRules(
 					}
 
 					downstreamService.Spec = corev1.ServiceSpec{
-						Type:      corev1.ServiceTypeClusterIP,
-						ClusterIP: "None",
-						Ports:     ports,
+						Type:                  corev1.ServiceTypeClusterIP,
+						ClusterIP:             "None",
+						Ports:                 ports,
+						InternalTrafficPolicy: ptr.To(corev1.ServiceInternalTrafficPolicyCluster),
+						TrafficDistribution:   ptr.To(corev1.ServiceTrafficDistributionPreferClose),
 					}
 
 					return nil

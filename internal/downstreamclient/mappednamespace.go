@@ -95,7 +95,6 @@ func (c *mappedNamespaceResourceStrategy) ensureDownstreamNamespace(ctx context.
 		}
 
 		downstreamNamespace.Labels[UpstreamOwnerClusterNameLabel] = fmt.Sprintf("cluster-%s", strings.ReplaceAll(c.upstreamClusterName, "/", "_"))
-		downstreamNamespace.Labels[UpstreamOwnerNamespaceLabel] = obj.GetNamespace()
 
 		return nil
 	})

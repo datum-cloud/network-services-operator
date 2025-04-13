@@ -143,6 +143,10 @@ prepare-infra-cluster: cert-manager envoy-gateway external-dns
 
 .PHONY: prepare-e2e
 prepare-e2e: chainsaw set-image-controller cert-manager envoy-gateway external-dns load-image-all deploy-e2e
+	kubectl -n network-services-operator-system \
+		wait deploy network-services-operator-controller-manager \
+		--for=condition=Available \
+		--timeout=120s
 
 .PHONY: load-image-all
 load-image-all: load-image-operator

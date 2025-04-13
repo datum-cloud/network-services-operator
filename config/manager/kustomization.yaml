@@ -1,7 +1,8 @@
-resources:
-- manager.yaml
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
+resources:
+- manager.yaml
+- service_account.yaml
 images:
 - name: controller
   newName: network-services-operator
@@ -10,3 +11,11 @@ configMapGenerator:
 - name: config
   files:
     - config.yaml
+buildMetadata:
+  - managedByLabel
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: network-services-operator
+    includeSelectors: true
+    includeTemplates: true

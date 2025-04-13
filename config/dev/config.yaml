@@ -1,14 +1,21 @@
 apiVersion: apiserver.config.datumapis.com/v1alpha1
 kind: NetworkServicesOperator
 metricsServer:
-  bindAddress: ":8443"
+  bindAddress: "0"
+
 webhookServer:
   tls:
-    certDir: /k8s-webhook-server
+    secretRef:
+      name: network-services-operator-webhook-server-cert
+      namespace: kube-system
+
 gateway:
   targetDomain: prism.e2e.env.datum.net
   downstreamGatewayClassName: datum-downstream-gateway-e2e
   permittedTLSOptions:
     gateway.networking.datumapis.com/certificate-issuer: []
+
 downstreamResourceManagement:
-  kubeconfigPath: /etc/downstream-cluster/kubeconfig
+  # TODO(jreese) remove this when we make the downstream resource strategy
+  # configurable
+  kubeconfigPath: ./infra.kubeconfig

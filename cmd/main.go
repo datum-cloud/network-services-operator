@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/tls"
 	"errors"
 	"flag"
 	"fmt"
@@ -12,7 +11,6 @@ import (
 	// to ensure that exec-entrypoint and run can make use of them.
 	"golang.org/x/sync/errgroup"
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
-	"k8s.io/client-go/rest"
 
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
@@ -22,14 +20,13 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/serializer"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	_ "k8s.io/client-go/plugin/pkg/client/auth"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
-	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
-	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	gatewayv1alpha2 "sigs.k8s.io/gateway-api/apis/v1alpha2"
@@ -41,6 +38,7 @@ import (
 	"go.datum.net/network-services-operator/internal/providers"
 	mcdatum "go.datum.net/network-services-operator/internal/providers/datum"
 	"go.datum.net/network-services-operator/internal/validation"
+	networkinggatewayv1webhooks "go.datum.net/network-services-operator/internal/webhook/v1"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -59,32 +57,22 @@ func init() {
 	utilruntime.Must(gatewayv1.Install(scheme))
 	utilruntime.Must(gatewayv1alpha2.Install(scheme))
 	utilruntime.Must(gatewayv1alpha3.Install(scheme))
-
 	// +kubebuilder:scaffold:scheme
 }
 
 func main() {
-	var metricsAddr string
 	var enableLeaderElection bool
 	var leaderElectionNamespace string
 	var probeAddr string
-	var secureMetrics bool
-	var enableHTTP2 bool
-	var tlsOpts []func(*tls.Config)
 
 	var serverConfigFile string
 
-	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
-		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. "+
 			"Enabling this will ensure there is only one active controller manager.")
 	flag.StringVar(&leaderElectionNamespace, "leader-elect-namespace", "", "The namespace to use for leader election.")
-	flag.BoolVar(&secureMetrics, "metrics-secure", true,
-		"If set, the metrics endpoint is served securely via HTTPS. Use --metrics-secure=false to use HTTP instead.")
-	flag.BoolVar(&enableHTTP2, "enable-http2", false,
-		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
+
 	opts := zap.Options{
 		Development: true,
 	}
@@ -96,19 +84,18 @@ func main() {
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 
-	if len(serverConfigFile) == 0 {
-		setupLog.Error(fmt.Errorf("must provide --server-config"), "")
-		os.Exit(1)
-	}
-
 	var serverConfig config.NetworkServicesOperator
-	data, err := os.ReadFile(serverConfigFile)
-	if err != nil {
-		setupLog.Error(fmt.Errorf("unable to read server config from %q", serverConfigFile), "")
-		os.Exit(1)
+	var configData []byte
+	if len(serverConfigFile) > 0 {
+		var err error
+		configData, err = os.ReadFile(serverConfigFile)
+		if err != nil {
+			setupLog.Error(fmt.Errorf("unable to read server config from %q", serverConfigFile), "")
+			os.Exit(1)
+		}
 	}
 
-	if err := runtime.DecodeInto(codecs.UniversalDecoder(), data, &serverConfig); err != nil {
+	if err := runtime.DecodeInto(codecs.UniversalDecoder(), configData, &serverConfig); err != nil {
 		setupLog.Error(err, "unable to decode server config")
 		os.Exit(1)
 	}
@@ -117,56 +104,30 @@ func main() {
 
 	// TODO(jreese) validate the config
 
-	// if the enable-http2 flag is false (the default), http/2 should be disabled
-	// due to its vulnerabilities. More specifically, disabling http/2 will
-	// prevent from being vulnerable to the HTTP/2 Stream Cancellation and
-	// Rapid Reset CVEs. For more information see:
-	// - https://github.com/advisories/GHSA-qppj-fm5r-hxr3
-	// - https://github.com/advisories/GHSA-4374-p667-p6c8
-	disableHTTP2 := func(c *tls.Config) {
-		setupLog.Info("disabling http/2")
-		c.NextProtos = []string{"http/1.1"}
-	}
-
-	if !enableHTTP2 {
-		tlsOpts = append(tlsOpts, disableHTTP2)
-	}
-
-	webhookServer := webhook.NewServer(webhook.Options{
-		TLSOpts: tlsOpts,
-	})
-
-	// Metrics endpoint is enabled in 'config/default/kustomization.yaml'. The Metrics options configure the server.
-	// More info:
-	// - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.19.1/pkg/metrics/server
-	// - https://book.kubebuilder.io/reference/metrics.html
-	metricsServerOptions := metricsserver.Options{
-		BindAddress:   metricsAddr,
-		SecureServing: secureMetrics,
-		TLSOpts:       tlsOpts,
-	}
-
-	if secureMetrics {
-		// FilterProvider is used to protect the metrics endpoint with authn/authz.
-		// These configurations ensure that only authorized users and service accounts
-		// can access the metrics endpoint. The RBAC are configured in 'config/rbac/kustomization.yaml'. More info:
-		// https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.19.1/pkg/metrics/filters#WithAuthenticationAndAuthorization
-		metricsServerOptions.FilterProvider = filters.WithAuthenticationAndAuthorization
-
-		// TODO(user): If CertDir, CertName, and KeyName are not specified, controller-runtime will automatically
-		// generate self-signed certificates for the metrics server. While convenient for development and testing,
-		// this setup is not recommended for production.
-	}
-
 	cfg := ctrl.GetConfigOrDie()
 
-	runnables, provider, err := initializeClusterDiscovery(serverConfig, cfg, scheme)
+	deploymentCluster, err := cluster.New(cfg, func(o *cluster.Options) {
+		o.Scheme = scheme
+	})
+	if err != nil {
+		setupLog.Error(err, "failed creating local cluster")
+		os.Exit(1)
+	}
+
+	runnables, provider, err := initializeClusterDiscovery(serverConfig, deploymentCluster, scheme)
 	if err != nil {
 		setupLog.Error(err, "unable to initialize cluster discovery")
 		os.Exit(1)
 	}
 
 	setupLog.Info("cluster discovery mode", "mode", serverConfig.Discovery.Mode)
+
+	ctx := ctrl.SetupSignalHandler()
+
+	deploymentClusterClient := deploymentCluster.GetClient()
+
+	metricsServerOptions := serverConfig.MetricsServer.Options(ctx, deploymentClusterClient)
+	webhookServer := webhook.NewServer(serverConfig.WebhookServer.Options(ctx, deploymentClusterClient))
 
 	mgr, err := mcmanager.New(cfg, provider, ctrl.Options{
 		Scheme:                  scheme,
@@ -234,19 +195,34 @@ func main() {
 	if err = (&controller.GatewayReconciler{
 		Config:            serverConfig,
 		DownstreamCluster: downstreamCluster,
-		ValidationOpts: validation.GatewayValidationOptions{
-			PermittedTLSOptions: serverConfig.Gateway.PermittedTLSOptions,
-			ValidPortNumbers:    serverConfig.Gateway.ValidPortNumbers,
-			ValidProtocolTypes:  serverConfig.Gateway.ValidProtocolTypes,
-		},
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Gateway")
 		os.Exit(1)
 	}
-	if err = (&controller.GatewayClassReconciler{}).SetupWithManager(mgr); err != nil {
+	if err = (&controller.GatewayClassReconciler{
+		Config: serverConfig,
+	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "GatewayClass")
 		os.Exit(1)
 	}
+
+	validationOpts := validation.GatewayValidationOptions{
+		ControllerName:      serverConfig.Gateway.ControllerName,
+		PermittedTLSOptions: serverConfig.Gateway.PermittedTLSOptions,
+		ValidPortNumbers:    serverConfig.Gateway.ValidPortNumbers,
+		ValidProtocolTypes:  serverConfig.Gateway.ValidProtocolTypes,
+	}
+
+	if err = networkinggatewayv1webhooks.SetupGatewayWebhookWithManager(mgr, validationOpts); err != nil {
+		setupLog.Error(err, "unable to create webhook", "webhook", "Gateway")
+		os.Exit(1)
+	}
+
+	if err = networkinggatewayv1webhooks.SetupHTTPRouteWebhookWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create webhook", "webhook", "HTTPRoute")
+		os.Exit(1)
+	}
+
 	// +kubebuilder:scaffold:builder
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
@@ -257,8 +233,6 @@ func main() {
 		setupLog.Error(err, "unable to set up ready check")
 		os.Exit(1)
 	}
-
-	ctx := ctrl.SetupSignalHandler()
 
 	g, ctx := errgroup.WithContext(ctx)
 	for _, runnable := range runnables {
@@ -309,22 +283,16 @@ func (p *wrappedSingleClusterProvider) Run(ctx context.Context, mgr mcmanager.Ma
 
 func initializeClusterDiscovery(
 	serverConfig config.NetworkServicesOperator,
-	cfg *rest.Config,
+	deploymentCluster cluster.Cluster,
 	scheme *runtime.Scheme,
 ) (runnables []manager.Runnable, provider runnableProvider, err error) {
 	switch serverConfig.Discovery.Mode {
 	case providers.ProviderSingle:
-		singleCluster, err := cluster.New(cfg, func(o *cluster.Options) {
-			o.Scheme = scheme
-		})
-		if err != nil {
-			return nil, nil, fmt.Errorf("failed creating cluster: %w", err)
-		}
 		provider = &wrappedSingleClusterProvider{
-			Provider: mcsingle.New("single", singleCluster),
-			cluster:  singleCluster,
+			Provider: mcsingle.New("single", deploymentCluster),
+			cluster:  deploymentCluster,
 		}
-		runnables = []manager.Runnable{singleCluster}
+		runnables = []manager.Runnable{deploymentCluster}
 
 	case providers.ProviderDatum:
 		discoveryRestConfig, err := serverConfig.Discovery.DiscoveryRestConfig()

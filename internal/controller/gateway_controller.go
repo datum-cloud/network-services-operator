@@ -9,7 +9,6 @@ import (
 
 	"go.datum.net/network-services-operator/internal/config"
 	downstreamclient "go.datum.net/network-services-operator/internal/downstreamclient"
-	"go.datum.net/network-services-operator/internal/validation"
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
@@ -47,8 +46,6 @@ type GatewayReconciler struct {
 	Config config.NetworkServicesOperator
 
 	DownstreamCluster cluster.Cluster
-
-	ValidationOpts validation.GatewayValidationOptions
 }
 
 // +kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;update;patch;delete
@@ -126,7 +123,7 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 		return ctrl.Result{}, err
 	}
 
-	if upstreamGatewayClass.Spec.ControllerName != "gateway.networking.datumapis.com/external-global-proxy-controller" {
+	if upstreamGatewayClass.Spec.ControllerName != r.Config.Gateway.ControllerName {
 		return ctrl.Result{}, nil
 	}
 
@@ -157,12 +154,6 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 	downstreamStrategy downstreamclient.ResourceStrategy,
 ) (result Result, downstreamGateway *gatewayv1.Gateway) {
 	logger := log.FromContext(ctx)
-
-	// This validation will be redundant once the webhook is in place
-	if errs := validation.ValidateGateway(upstreamGateway, r.ValidationOpts); len(errs) != 0 {
-		result.Err = errs.ToAggregate()
-		return result, nil
-	}
 
 	// Get the upstream gateway class so that we can pull the controller name out
 	// of it and use it in route status updates.
@@ -307,10 +298,11 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 		}
 
 		apimeta.SetStatusCondition(&upstreamGateway.Status.Conditions, metav1.Condition{
-			Message: message,
-			Type:    string(gatewayv1.GatewayConditionAccepted),
-			Reason:  c.Reason,
-			Status:  c.Status,
+			Message:            message,
+			Type:               string(gatewayv1.GatewayConditionAccepted),
+			Reason:             c.Reason,
+			Status:             c.Status,
+			ObservedGeneration: upstreamGateway.Generation,
 		})
 
 		result.AddStatusUpdate(upstreamClient, upstreamGateway)
@@ -323,10 +315,11 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 		}
 
 		apimeta.SetStatusCondition(&upstreamGateway.Status.Conditions, metav1.Condition{
-			Message: message,
-			Type:    string(gatewayv1.GatewayConditionProgrammed),
-			Reason:  c.Reason,
-			Status:  c.Status,
+			Message:            message,
+			Type:               string(gatewayv1.GatewayConditionProgrammed),
+			Reason:             c.Reason,
+			Status:             c.Status,
+			ObservedGeneration: upstreamGateway.Generation,
 		})
 
 		result.AddStatusUpdate(upstreamClient, upstreamGateway)
@@ -618,25 +611,28 @@ func (r *GatewayReconciler) ensureDownstreamGatewayHTTPRoutes(
 		// Add Accepted, Programmed ResolvedRefs conditions
 		// See: https://gateway-api.sigs.k8s.io/guides/implementers/#standard-status-fields-and-conditions
 		apimeta.SetStatusCondition(&status.Conditions, metav1.Condition{
-			Type:    string(gatewayv1.ListenerConditionAccepted),
-			Status:  metav1.ConditionTrue,
-			Reason:  "Accepted",
-			Message: "The listener has been accepted by the Datum Gateway",
+			Type:               string(gatewayv1.ListenerConditionAccepted),
+			Status:             metav1.ConditionTrue,
+			Reason:             "Accepted",
+			Message:            "The listener has been accepted by the Datum Gateway",
+			ObservedGeneration: upstreamGateway.Generation,
 		})
 
 		// TODO(jreese) update this based on the downstream gateway's status
 		apimeta.SetStatusCondition(&status.Conditions, metav1.Condition{
-			Type:    string(gatewayv1.ListenerConditionProgrammed),
-			Status:  metav1.ConditionTrue,
-			Reason:  "Programmed",
-			Message: "The listener has been programmed by the Datum Gateway",
+			Type:               string(gatewayv1.ListenerConditionProgrammed),
+			Status:             metav1.ConditionTrue,
+			Reason:             "Programmed",
+			Message:            "The listener has been programmed by the Datum Gateway",
+			ObservedGeneration: upstreamGateway.Generation,
 		})
 
 		apimeta.SetStatusCondition(&status.Conditions, metav1.Condition{
-			Type:    string(gatewayv1.ListenerConditionResolvedRefs),
-			Status:  metav1.ConditionTrue,
-			Reason:  "ResolvedRefs",
-			Message: "The listener has been resolved by the Datum Gateway",
+			Type:               string(gatewayv1.ListenerConditionResolvedRefs),
+			Status:             metav1.ConditionTrue,
+			Reason:             "ResolvedRefs",
+			Message:            "The listener has been resolved by the Datum Gateway",
+			ObservedGeneration: upstreamGateway.Generation,
 		})
 
 		listenerStatus = append(listenerStatus, status)
@@ -661,12 +657,6 @@ func (r *GatewayReconciler) ensureDownstreamHTTPRoute(
 ) (result Result) {
 	logger := log.FromContext(ctx)
 	logger.Info("processing httproute", "name", upstreamRoute.Name)
-
-	// This validation will be redundant once the webhook is in place
-	if errs := validation.ValidateHTTPRoute(&upstreamRoute); len(errs) != 0 {
-		result.Err = errs.ToAggregate()
-		return result
-	}
 
 	downstreamClient := downstreamStrategy.GetClient()
 	downstreamRouteObjectMeta, err := downstreamStrategy.ObjectMetaFromUpstreamObject(ctx, &upstreamRoute)
@@ -772,10 +762,11 @@ func (r *GatewayReconciler) ensureDownstreamHTTPRoute(
 			}
 
 			apimeta.SetStatusCondition(&parentStatus.Conditions, metav1.Condition{
-				Message: message,
-				Type:    string(gatewayv1.RouteConditionAccepted),
-				Reason:  c.Reason,
-				Status:  c.Status,
+				Message:            message,
+				Type:               string(gatewayv1.RouteConditionAccepted),
+				Reason:             c.Reason,
+				Status:             c.Status,
+				ObservedGeneration: upstreamRoute.Generation,
 			})
 		}
 
@@ -786,10 +777,11 @@ func (r *GatewayReconciler) ensureDownstreamHTTPRoute(
 			}
 
 			apimeta.SetStatusCondition(&parentStatus.Conditions, metav1.Condition{
-				Message: message,
-				Type:    string(gatewayv1.RouteConditionResolvedRefs),
-				Reason:  c.Reason,
-				Status:  c.Status,
+				Message:            message,
+				Type:               string(gatewayv1.RouteConditionResolvedRefs),
+				Reason:             c.Reason,
+				Status:             c.Status,
+				ObservedGeneration: upstreamRoute.Generation,
 			})
 		}
 	} else {
@@ -1087,21 +1079,6 @@ func (r *GatewayReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 
 	return mcbuilder.ControllerManagedBy(mgr).
 		For(&gatewayv1.Gateway{},
-			mcbuilder.WithPredicates(
-			// predicate.NewPredicateFuncs(func(object client.Object) bool {
-			// 	o := object.(*gatewayv1.Gateway)
-			// 	// TODO(jreese) get from config
-			// 	// TODO(jreese) might be expected to look at the controllerName on
-			// 	// the GatewayClass, instead of just the name of the GatewayClass.
-			// 	//
-			// 	// Example: gateway.networking.datumapis.com/external-global-proxy-controller
-			// 	//
-			// 	// https://github.com/envoyproxy/gateway/blob/4143f5c8eb2d468c093cca8871e6eb18262aef7e/internal/provider/kubernetes/predicates.go#L122
-			// 	//	https://github.com/envoyproxy/gateway/blob/4143f5c8eb2d468c093cca8871e6eb18262aef7e/internal/provider/kubernetes/controller.go#L1231
-			// 	// https://github.com/envoyproxy/gateway/blob/4143f5c8eb2d468c093cca8871e6eb18262aef7e/internal/provider/kubernetes/predicates.go#L44
-			// 	return o.Spec.GatewayClassName == "datum-external-global-proxy"
-			// }),
-			),
 			mcbuilder.WithEngageWithLocalCluster(false),
 		).
 		Watches(

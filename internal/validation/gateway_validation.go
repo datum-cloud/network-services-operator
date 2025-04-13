@@ -115,6 +115,7 @@ func validateGatewayTLSConfig(tls *gatewayv1.GatewayTLSConfig, fldPath *field.Pa
 }
 
 type GatewayValidationOptions struct {
+	ControllerName      gatewayv1.GatewayController
 	PermittedTLSOptions map[string][]string
 	ValidPortNumbers    validPortNumbers
 	ValidProtocolTypes  []gatewayv1.ProtocolType

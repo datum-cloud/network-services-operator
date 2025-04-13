@@ -8,14 +8,14 @@ images:
   newName: network-services-operator
   newTag: latest
 configMapGenerator:
-- name: config
-  files:
-    - config.yaml
+- files:
+  - config.yaml
+  name: config
 buildMetadata:
-  - managedByLabel
+- managedByLabel
 
 labels:
-  - pairs:
-      app.kubernetes.io/part-of: network-services-operator
-    includeSelectors: true
-    includeTemplates: true
+- includeSelectors: true
+  includeTemplates: true
+  pairs:
+    app.kubernetes.io/part-of: network-services-operator

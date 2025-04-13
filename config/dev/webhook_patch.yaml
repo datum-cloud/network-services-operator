@@ -1,0 +1,67 @@
+---
+apiVersion: builtin
+kind: PatchTransformer
+metadata:
+  name: webhook-cert-patch
+patch: |-
+  - op: replace
+    path: /spec/dnsNames
+    value: ["host.docker.internal"]
+  - op: replace
+    path: /spec/secretName
+    value: network-services-operator-webhook-server-cert
+target:
+  kind: Certificate
+  group: cert-manager.io
+  version: v1
+  name: serving-cert
+---
+apiVersion: builtin
+kind: PatchTransformer
+metadata:
+  name: mutatingwebhook-url-patch
+patch: |-
+  - op: move
+    from: /webhooks/0/clientConfig/service/path
+    path: /webhooks/0/clientConfig/url
+  - op: remove
+    path: /webhooks/0/clientConfig/service
+
+  - op: move
+    from: /webhooks/1/clientConfig/service/path
+    path: /webhooks/1/clientConfig/url
+  - op: remove
+    path: /webhooks/1/clientConfig/service
+
+target:
+  kind: MutatingWebhookConfiguration
+---
+apiVersion: builtin
+kind: PatchTransformer
+metadata:
+  name: validatingwebhook-url-patch
+patch: |-
+  - op: move
+    from: /webhooks/0/clientConfig/service/path
+    path: /webhooks/0/clientConfig/url
+  - op: remove
+    path: /webhooks/0/clientConfig/service
+
+  - op: move
+    from: /webhooks/1/clientConfig/service/path
+    path: /webhooks/1/clientConfig/url
+  - op: remove
+    path: /webhooks/1/clientConfig/service
+target:
+  kind: ValidatingWebhookConfiguration
+---
+apiVersion: builtin
+kind: PrefixSuffixTransformer
+metadata:
+  name: hostPrefix
+prefix: "https://host.docker.internal:9443"
+fieldSpecs:
+  - kind: ValidatingWebhookConfiguration
+    path: webhooks/clientConfig/url
+  - kind: MutatingWebhookConfiguration
+    path: webhooks/clientConfig/url

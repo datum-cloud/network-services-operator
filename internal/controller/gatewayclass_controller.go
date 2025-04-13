@@ -5,6 +5,7 @@ package controller
 import (
 	"context"
 
+	"go.datum.net/network-services-operator/internal/config"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -18,7 +19,8 @@ import (
 
 // GatewayClassReconciler reconciles a Network object
 type GatewayClassReconciler struct {
-	mgr mcmanager.Manager
+	mgr    mcmanager.Manager
+	Config config.NetworkServicesOperator
 }
 
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gatewayclasses,verbs=get;list;watch;create;update;patch;delete
@@ -46,7 +48,7 @@ func (r *GatewayClassReconciler) Reconcile(ctx context.Context, req mcreconcile.
 	defer logger.Info("reconcile complete")
 
 	// Check if this GatewayClass should be handled by this controller
-	if gatewayClass.Spec.ControllerName != "gateway.networking.datumapis.com/external-global-proxy-controller" {
+	if gatewayClass.Spec.ControllerName != r.Config.Gateway.ControllerName {
 		return ctrl.Result{}, nil
 	}
 

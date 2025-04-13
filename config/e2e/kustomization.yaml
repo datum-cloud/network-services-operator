@@ -5,7 +5,6 @@ resources:
   - ../crd
   - ../rbac
   - ../rbac_deployment
-  - ../rbac_upstream
   - ../manager
 
 

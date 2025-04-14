@@ -49,5 +49,13 @@ jobs:
             generic downstream-cluster-kubeconfig \
             --from-file=kubeconfig=${TMPDIR}/.kind-nso-infra-internal.yaml
 
+          # Wait for the operator to be ready
+          kubectl -n network-services-operator-system \
+            wait deploy network-services-operator-controller-manager \
+            --for=condition=Available \
+            --timeout=120s || \
+              kubectl -n network-services-operator-system describe pod && \
+              kubectl -n network-services-operator-system logs -l app.kubernetes.io/name=network-services-operator --tail=-1
+
       - name: Running Test e2e
         run: make test-e2e

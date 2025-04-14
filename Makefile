@@ -146,7 +146,8 @@ prepare-e2e: chainsaw set-image-controller cert-manager envoy-gateway external-d
 	kubectl -n network-services-operator-system \
 		wait deploy network-services-operator-controller-manager \
 		--for=condition=Available \
-		--timeout=120s
+		--timeout=120s || kubectl -n network-services-operator describe pod \
+		kubectl -n network-services-operator-system logs -l app.kubernetes.io/name=network-services-operator --tail=-1
 
 .PHONY: load-image-all
 load-image-all: load-image-operator

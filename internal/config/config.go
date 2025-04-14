@@ -86,7 +86,9 @@ type MetricsServerConfig struct {
 	SecureServing *bool `json:"secureServing,omitempty"`
 
 	// BindAddress is the bind address for the metrics server.
-	// It will be defaulted to ":8080" if unspecified.
+	// It will be defaulted to "0" if unspecified.
+	// Use :8443 for HTTPS or :8080 for HTTP
+	//
 	// Set this to "0" to disable the metrics server.
 	BindAddress string `json:"bindAddress"`
 
@@ -101,7 +103,7 @@ func SetDefaults_MetricsServerConfig(obj *MetricsServerConfig) {
 	}
 
 	if obj.BindAddress == "" {
-		obj.BindAddress = ":8080"
+		obj.BindAddress = "0"
 	}
 }
 

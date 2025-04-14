@@ -38,6 +38,7 @@ import (
 	"go.datum.net/network-services-operator/internal/providers"
 	mcdatum "go.datum.net/network-services-operator/internal/providers/datum"
 	"go.datum.net/network-services-operator/internal/validation"
+	networkingwebhook "go.datum.net/network-services-operator/internal/webhook"
 	networkinggatewayv1webhooks "go.datum.net/network-services-operator/internal/webhook/v1"
 	// +kubebuilder:scaffold:imports
 )
@@ -127,7 +128,14 @@ func main() {
 	deploymentClusterClient := deploymentCluster.GetClient()
 
 	metricsServerOptions := serverConfig.MetricsServer.Options(ctx, deploymentClusterClient)
-	webhookServer := webhook.NewServer(serverConfig.WebhookServer.Options(ctx, deploymentClusterClient))
+
+	webhookServer := webhook.NewServer(
+		serverConfig.WebhookServer.Options(ctx, deploymentClusterClient),
+	)
+
+	if serverConfig.Discovery.Mode != providers.ProviderSingle {
+		webhookServer = networkingwebhook.NewClusterAwareWebhookServer(webhookServer)
+	}
 
 	mgr, err := mcmanager.New(cfg, provider, ctrl.Options{
 		Scheme:                  scheme,
@@ -286,13 +294,13 @@ func initializeClusterDiscovery(
 	deploymentCluster cluster.Cluster,
 	scheme *runtime.Scheme,
 ) (runnables []manager.Runnable, provider runnableProvider, err error) {
+	runnables = append(runnables, deploymentCluster)
 	switch serverConfig.Discovery.Mode {
 	case providers.ProviderSingle:
 		provider = &wrappedSingleClusterProvider{
 			Provider: mcsingle.New("single", deploymentCluster),
 			cluster:  deploymentCluster,
 		}
-		runnables = []manager.Runnable{deploymentCluster}
 
 	case providers.ProviderDatum:
 		discoveryRestConfig, err := serverConfig.Discovery.DiscoveryRestConfig()
@@ -329,7 +337,7 @@ func initializeClusterDiscovery(
 			return nil, nil, fmt.Errorf("unable to create datum project provider: %w", err)
 		}
 
-		runnables = []manager.Runnable{discoveryManager}
+		runnables = append(runnables, discoveryManager)
 
 	// case providers.ProviderKind:
 	// 	provider = mckind.New(mckind.Options{

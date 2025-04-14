@@ -6,6 +6,8 @@ import (
 	"context"
 	"fmt"
 
+	"go.datum.net/network-services-operator/internal/validation"
+	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -16,8 +18,6 @@ import (
 )
 
 // nolint:unused
-// log is for logging in this package.
-var httproutelog = logf.Log.WithName("httproute-resource")
 
 // SetupHTTPRouteWebhookWithManager registers the webhook for HTTPRoute in the manager.
 func SetupHTTPRouteWebhookWithManager(mgr mcmanager.Manager) error {
@@ -40,7 +40,19 @@ func (v *HTTPRouteCustomValidator) ValidateCreate(ctx context.Context, obj runti
 	if !ok {
 		return nil, fmt.Errorf("expected a HTTPRoute object but got %T", obj)
 	}
-	httproutelog.Info("Validation for HTTPRoute upon creation", "name", httproute.GetName())
+	logf.FromContext(ctx).Info("Validation for HTTPRoute upon creation", "name", httproute.GetName())
+
+	// TODO(jreese) only validate httproutes attached to gateways with gateway classes
+	// that this operator manages.
+	//
+	// This introduces an interesting problem, in that an HTTPRoute can and should
+	// be something that can be created in the cluster before a Gateway is created.
+	//
+	// For now, validate any HTTPRoute based on this operator's validation rules.
+
+	if errs := validation.ValidateHTTPRoute(httproute); len(errs) > 0 {
+		return nil, errors.NewInvalid(obj.GetObjectKind().GroupVersionKind().GroupKind(), httproute.GetName(), errs)
+	}
 
 	// TODO(user): fill in your validation logic upon object creation.
 
@@ -53,7 +65,11 @@ func (v *HTTPRouteCustomValidator) ValidateUpdate(ctx context.Context, oldObj, n
 	if !ok {
 		return nil, fmt.Errorf("expected a HTTPRoute object for the newObj but got %T", newObj)
 	}
-	httproutelog.Info("Validation for HTTPRoute upon update", "name", httproute.GetName())
+	logf.FromContext(ctx).Info("Validation for HTTPRoute upon update", "name", httproute.GetName())
+
+	if errs := validation.ValidateHTTPRoute(httproute); len(errs) > 0 {
+		return nil, errors.NewInvalid(oldObj.GetObjectKind().GroupVersionKind().GroupKind(), httproute.GetName(), errs)
+	}
 
 	// TODO(user): fill in your validation logic upon object update.
 
@@ -66,7 +82,7 @@ func (v *HTTPRouteCustomValidator) ValidateDelete(ctx context.Context, obj runti
 	if !ok {
 		return nil, fmt.Errorf("expected a HTTPRoute object but got %T", obj)
 	}
-	httproutelog.Info("Validation for HTTPRoute upon deletion", "name", httproute.GetName())
+	logf.FromContext(ctx).Info("Validation for HTTPRoute upon deletion", "name", httproute.GetName())
 
 	// TODO(user): fill in your validation logic upon object deletion.
 

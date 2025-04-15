@@ -572,8 +572,6 @@ func (r *GatewayReconciler) ensureDownstreamGatewayHTTPRoutes(
 
 	logger.Info("attached routes", "count", len(attachedRoutes))
 
-	// TODO(jreese) handle route removal
-	// - It seems that envoy gateway does a full reconcile
 	for _, route := range attachedRoutes {
 		if !route.DeletionTimestamp.IsZero() {
 			logger.Info("skipping httproute due to deletion timestamp", "name", route.Name)
@@ -594,19 +592,28 @@ func (r *GatewayReconciler) ensureDownstreamGatewayHTTPRoutes(
 		result = result.Merge(httpRouteResult)
 	}
 
+	currentListenerStatus := map[gatewayv1.SectionName]gatewayv1.ListenerStatus{}
+	for _, listener := range upstreamGateway.Status.Listeners {
+		currentListenerStatus[listener.Name] = listener
+	}
+
 	// Update listener status for the upstream gateway
 	listenerStatus := make([]gatewayv1.ListenerStatus, 0, len(upstreamGateway.Spec.Listeners))
 	for _, listener := range upstreamGateway.Spec.Listeners {
-		status := gatewayv1.ListenerStatus{
-			Name: listener.Name,
-			SupportedKinds: []gatewayv1.RouteGroupKind{
-				{
-					Group: ptr.To(gatewayv1.Group(gatewayv1.GroupName)),
-					Kind:  "HTTPRoute",
+
+		status, ok := currentListenerStatus[listener.Name]
+		if !ok {
+			status = gatewayv1.ListenerStatus{
+				Name: listener.Name,
+				SupportedKinds: []gatewayv1.RouteGroupKind{
+					{
+						Group: ptr.To(gatewayv1.Group(gatewayv1.GroupName)),
+						Kind:  "HTTPRoute",
+					},
 				},
-			},
-			AttachedRoutes: int32(len(attachedRoutes)),
+			}
 		}
+		status.AttachedRoutes = int32(len(attachedRoutes))
 
 		// Add Accepted, Programmed ResolvedRefs conditions
 		// See: https://gateway-api.sigs.k8s.io/guides/implementers/#standard-status-fields-and-conditions
@@ -843,9 +850,6 @@ func (r *GatewayReconciler) ensureDownstreamHTTPRouteRules(
 					return result, nil
 				}
 
-				// TODO(jreese) think through protecting access to internal addresses
-				// in endpoints.
-
 				targetPort := int32(*backendRef.BackendObjectReference.Port)
 
 				var ports []corev1.ServicePort
@@ -896,8 +900,6 @@ func (r *GatewayReconciler) ensureDownstreamHTTPRouteRules(
 					return result, nil
 				}
 
-				// TODO(jreese) should we default the appProtocol to https and require
-				// this if the target port is 443?
 				if appProtocol != nil && *appProtocol == "https" {
 					// Extract the hostname from the URLRewrite filter.
 					var hostname *gatewayv1.PreciseHostname
@@ -1086,9 +1088,6 @@ func (r *GatewayReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 			mchandler.EnqueueRequestsFromMapFunc(r.listGatewaysAttachedByHTTPRoute),
 			mcbuilder.WithEngageWithLocalCluster(false),
 		).
-		// TODO(jreese) watch other clusters
-		// Owns(&gatewayv1.Gateway{}).
-		// Look at https://github.com/kubernetes-sigs/multicluster-runtime/blob/a2c2311b75cbcedb52574b66bbc7499d21cb1177/pkg/builder/forked_controller_test.go#L224
 		WatchesRawSource(clusterSrc).
 		Owns(&discoveryv1.EndpointSlice{}, mcbuilder.WithEngageWithLocalCluster(false)).
 		Named("gateway").

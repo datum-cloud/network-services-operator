@@ -479,16 +479,25 @@ spec:
                             type: ReplacePrefixMatch
                             replacePrefixMatch: /
                           hostname: "example.com"
+            outputs:
+            - name: downstreamHTTPRoute
+              match:
+                apiVersion: gateway.networking.k8s.io/v1
+                kind: HTTPRoute
+                metadata:
+                  name: test-route
+              value: (@)
 
+        # Ensure that two downstream endpoint slices were created
         - assert:
             cluster: nso-infra
             resource:
               kind: EndpointSlice
               metadata:
-                name: test-slice-1
+                name: (join('-', ['route', $downstreamHTTPRoute.metadata.uid, 'rule-0-backendref-0']))
                 namespace: ($downstreamNamespaceName)
                 labels:
-                  kubernetes.io/service-name: test-route
+                  kubernetes.io/service-name: (join('-', ['route', $downstreamHTTPRoute.metadata.uid, 'rule-0-backendref-0']))
               addressType: FQDN
               apiVersion: discovery.k8s.io/v1
               endpoints:
@@ -516,7 +525,7 @@ spec:
                 rules:
                 - backendRefs:
                   - kind: Service
-                    name: test-route
+                    name: (join('-', ['route', $downstreamHTTPRoute.metadata.uid, 'rule-0-backendref-0']))
                     weight: 1
                   matches:
                   - path:
@@ -524,7 +533,7 @@ spec:
                       value: /plaintext
                 - backendRefs:
                   - kind: Service
-                    name: test-route
+                    name: (join('-', ['route', $downstreamHTTPRoute.metadata.uid, 'rule-1-backendref-0']))
                     weight: 1
                   matches:
                   - path:

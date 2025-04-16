@@ -21,6 +21,7 @@ import (
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -676,21 +677,19 @@ func (r *GatewayReconciler) ensureDownstreamHTTPRoute(
 		ObjectMeta: downstreamRouteObjectMeta,
 	}
 
-	routeResult, err := controllerutil.CreateOrUpdate(ctx, downstreamClient, downstreamRoute, func() error {
-		result, rules := r.ensureDownstreamHTTPRouteRules(
-			ctx,
-			upstreamClient,
-			upstreamGateway,
-			upstreamRoute,
-			downstreamClient,
-			downstreamGateway,
-			downstreamStrategy,
-		)
-		if result.ShouldReturn() {
-			_, err := result.Complete(ctx)
-			return err
-		}
+	rules, downstreamResources, err := r.processDownstreamHTTPRouteRules(
+		ctx,
+		upstreamClient,
+		upstreamGateway,
+		upstreamRoute,
+		downstreamGateway,
+	)
+	if err != nil {
+		result.Err = err
+		return result
+	}
 
+	routeResult, err := controllerutil.CreateOrUpdate(ctx, downstreamClient, downstreamRoute, func() error {
 		downstreamRoute.Spec = gatewayv1.HTTPRouteSpec{
 			Hostnames: upstreamRoute.Spec.Hostnames,
 			Rules:     rules,
@@ -726,6 +725,37 @@ func (r *GatewayReconciler) ensureDownstreamHTTPRoute(
 		}
 		result.Err = err
 		return result
+	}
+
+	// Create required downstream resources. Currently they're all specific to
+	// the HTTPRoute resource, so we set it as the owner and let them get
+	// cleaned up when the HTTPRoute is deleted.
+	for _, resource := range downstreamResources {
+		if err := controllerutil.SetControllerReference(downstreamRoute, resource, downstreamClient.Scheme()); err != nil {
+			result.Err = err
+			return result
+		}
+
+		resourceResult, err := controllerutil.CreateOrUpdate(ctx, downstreamClient, resource, func() error {
+			return nil
+		})
+		if err != nil {
+			result.Err = err
+			return result
+		}
+
+		gvk, err := apiutil.GVKForObject(resource, downstreamClient.Scheme())
+		if err != nil {
+			result.Err = err
+			return result
+		}
+
+		logger.Info("downstream resource processed",
+			"operation_result", resourceResult,
+			"kind", gvk.Kind,
+			"namespace", resource.GetNamespace(),
+			"name", resource.GetName(),
+		)
 	}
 
 	// Update the upstream route's parent status information
@@ -806,56 +836,63 @@ func (r *GatewayReconciler) ensureDownstreamHTTPRoute(
 	return result
 }
 
-func (r *GatewayReconciler) ensureDownstreamHTTPRouteRules(
+// processDownstreamHTTPRouteRules is a helper function that processes the
+// rules of an HTTPRoute and returns the rules and the downstream resources
+// that need to be created.
+func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 	ctx context.Context,
 	upstreamClient client.Client,
 	upstreamGateway *gatewayv1.Gateway,
 	upstreamRoute gatewayv1.HTTPRoute,
-	downstreamClient client.Client,
 	downstreamGateway *gatewayv1.Gateway,
-	downstreamStrategy downstreamclient.ResourceStrategy,
-) (result Result, rules []gatewayv1.HTTPRouteRule) {
+) (rules []gatewayv1.HTTPRouteRule, downstreamResources []client.Object, err error) {
 
-	// TODO(jreese) consider rewriting this to return resources that need to be
-	// created and tracked, versus creating them here.
+	// We need to create a Service for each (BackendRef, EndpointSlice)
+	// combination as different backendRefs may use different hostnames in URL
+	// rewrite filters which are used to drive the creation of BackendTLSPolicies.
+	// A BackendTLSPolicy is associated with either an entire service, or a
+	// specific port of a service, and we cannot build port aliases in the
+	// downstream service, as TargetPort is ignored for headless services.
+	//
+	// As a result of this, we also need to create an EndpointSlice for each
+	// downstream service, because an EndpointSlice may only be associated with
+	// a single service.
+
 	logger := log.FromContext(ctx)
-	for _, rule := range upstreamRoute.Spec.Rules {
+
+	// First, collect all unique upstream (BackendRef, EndpointSlice) combinations
+	// referenced by the route.
+	for ruleIdx, rule := range upstreamRoute.Spec.Rules {
 		var backendRefs []gatewayv1.HTTPBackendRef
-		for _, backendRef := range rule.BackendRefs {
+		for backendRefIdx, backendRef := range rule.BackendRefs {
 
 			if backendRef.BackendObjectReference.Kind == nil {
 				// Should not happen, as the default kind is Service
 				continue
 			}
 
-			backendObjectReference := gatewayv1.BackendObjectReference{}
-
 			switch *backendRef.BackendObjectReference.Kind {
+			// Transform EndpointSlice references into Service references.
 			case KindEndpointSlice:
-
 				// Fetch the upstream EndpointSlice
 				var upstreamEndpointSlice discoveryv1.EndpointSlice
 				if err := upstreamClient.Get(ctx, types.NamespacedName{
 					Namespace: string(ptr.Deref(backendRef.Namespace, gatewayv1.Namespace(upstreamGateway.Namespace))),
 					Name:      string(backendRef.Name),
 				}, &upstreamEndpointSlice); err != nil {
-					result.Err = err
-					return result, nil
+					return nil, nil, err
 				}
 
 				if backendRef.BackendObjectReference.Port == nil {
 					// Should be protected by validation, but check just in case.
 					logger.Info("no port defined in backendRef", "backendRef", backendRef)
-					result.Err = fmt.Errorf("no port defined in backendRef")
-					return result, nil
+					return nil, nil, fmt.Errorf("no port defined in backendRef")
 				}
-
-				targetPort := int32(*backendRef.BackendObjectReference.Port)
 
 				var ports []corev1.ServicePort
 				var appProtocol *string
-				var servicePort *discoveryv1.EndpointPort
-				for i, port := range upstreamEndpointSlice.Ports {
+				var endpointPort *discoveryv1.EndpointPort
+				for _, port := range upstreamEndpointSlice.Ports {
 					ports = append(ports, corev1.ServicePort{
 						Name:        ptr.Deref(port.Name, ""),
 						Protocol:    ptr.Deref(port.Protocol, corev1.ProtocolTCP),
@@ -863,47 +900,80 @@ func (r *GatewayReconciler) ensureDownstreamHTTPRouteRules(
 						Port:        *port.Port,
 					})
 
-					if *port.Port == targetPort {
+					if int32(*backendRef.BackendObjectReference.Port) == *port.Port {
+						if port.Name == nil {
+							// This should be protected by validation, but check just in case.
+							logger.Info("no port name defined in upstream endpointslice", "endpointslice", upstreamEndpointSlice.Name, "port", port)
+							return nil, nil, fmt.Errorf("no port name defined in upstream endpointslice")
+						}
 						appProtocol = port.AppProtocol
-						servicePort = &upstreamEndpointSlice.Ports[i]
+						endpointPort = ptr.To(port)
 					}
 				}
 
-				downstreamServiceObjectMeta, err := downstreamStrategy.ObjectMetaFromUpstreamObject(ctx, &upstreamRoute)
-				if err != nil {
-					result.Err = fmt.Errorf("failed to get downstream service object metadata: %w", err)
-					return result, nil
+				if endpointPort == nil {
+					logger.Info("port not found in upstream endpointslice", "endpointslice", upstreamEndpointSlice.Name, "port", *backendRef.BackendObjectReference.Port)
+					return nil, nil, fmt.Errorf("port not found in upstream endpointslice")
 				}
 
-				// TODO(jreese) service construction should be at the route level, not
-				// the rule level.
+				// Construct a name to use for the service and endpointslice that the
+				// downstream backendRef will reference.
+				resourceName := fmt.Sprintf("route-%s-rule-%d-backendref-%d", upstreamRoute.UID, ruleIdx, backendRefIdx)
+
 				downstreamService := &corev1.Service{
-					ObjectMeta: downstreamServiceObjectMeta,
-				}
-				serviceResult, err := controllerutil.CreateOrUpdate(ctx, downstreamClient, downstreamService, func() error {
-					if err := controllerutil.SetControllerReference(downstreamGateway, downstreamService, downstreamClient.Scheme()); err != nil {
-						return err
-					}
-
-					downstreamService.Spec = corev1.ServiceSpec{
+					ObjectMeta: metav1.ObjectMeta{
+						Namespace: downstreamGateway.Namespace,
+						Name:      resourceName,
+					},
+					Spec: corev1.ServiceSpec{
 						Type:                  corev1.ServiceTypeClusterIP,
 						ClusterIP:             "None",
 						Ports:                 ports,
 						InternalTrafficPolicy: ptr.To(corev1.ServiceInternalTrafficPolicyCluster),
 						TrafficDistribution:   ptr.To(corev1.ServiceTrafficDistributionPreferClose),
-					}
-
-					return nil
-				})
-				if err != nil {
-					result.Err = err
-					return result, nil
+					},
 				}
+				downstreamResources = append(downstreamResources, downstreamService)
+
+				// TODO(jreese) build another controller to sync endpointslice updates
+				// to the downstream endpointslices.
+				downstreamEndpointSlice := &discoveryv1.EndpointSlice{
+					ObjectMeta: metav1.ObjectMeta{
+						Namespace: downstreamGateway.Namespace,
+						Name:      resourceName,
+						Labels: map[string]string{
+							downstreamclient.UpstreamOwnerNameLabel: upstreamEndpointSlice.Name,
+							discoveryv1.LabelServiceName:            downstreamService.Name,
+						},
+					},
+					AddressType: upstreamEndpointSlice.AddressType,
+					Endpoints:   upstreamEndpointSlice.Endpoints,
+					Ports:       upstreamEndpointSlice.Ports,
+				}
+
+				downstreamResources = append(downstreamResources, downstreamEndpointSlice)
+
+				backendObjectReference := gatewayv1.BackendObjectReference{
+					Namespace: ptr.To(gatewayv1.Namespace(downstreamGateway.Namespace)),
+					Kind:      ptr.To(gatewayv1.Kind(KindService)),
+					Name:      gatewayv1.ObjectName(downstreamService.Name),
+					Port:      backendRef.BackendObjectReference.Port,
+				}
+
+				downstreamHTTPBackendRef := gatewayv1.HTTPBackendRef{
+					BackendRef: gatewayv1.BackendRef{
+						Weight:                 backendRef.Weight,
+						BackendObjectReference: backendObjectReference,
+					},
+					Filters: backendRef.Filters,
+				}
+
+				backendRefs = append(backendRefs, downstreamHTTPBackendRef)
 
 				if appProtocol != nil && *appProtocol == "https" {
 					// Extract the hostname from the URLRewrite filter.
 					var hostname *gatewayv1.PreciseHostname
-					for _, filter := range rule.Filters {
+					for _, filter := range backendRef.Filters {
 						if filter.URLRewrite != nil {
 							hostname = filter.URLRewrite.Hostname
 							break
@@ -911,90 +981,53 @@ func (r *GatewayReconciler) ensureDownstreamHTTPRouteRules(
 					}
 
 					if hostname == nil {
-						// TODO(jreese) set the RouteConditionResolvedRefs condition to
-						// False, as the hostname is not present.
-						result.Err = fmt.Errorf("no hostname found in URLRewrite filter of route %q", upstreamRoute.Name)
-						return result, nil
-					}
+						// Fall back to looking at rule filters for a hostname.
+						for _, filter := range rule.Filters {
+							if filter.URLRewrite != nil {
+								hostname = filter.URLRewrite.Hostname
+								break
+							}
+						}
 
-					downstreamTLSPolicyObjectMeta, err := downstreamStrategy.ObjectMetaFromUpstreamObject(ctx, &upstreamRoute)
-					if err != nil {
-						result.Err = fmt.Errorf("failed to get downstream tls policy object metadata: %w", err)
-						return result, nil
+						if hostname == nil {
+							// TODO(jreese) set the RouteConditionResolvedRefs condition to
+							// False, as the hostname is not present.
+							return nil, nil, fmt.Errorf("no hostname found in URLRewrite filters on backendRef or Route %q", upstreamRoute.Name)
+						}
 					}
 
 					backendTLSPolicy := &gatewayv1alpha3.BackendTLSPolicy{
-						ObjectMeta: downstreamTLSPolicyObjectMeta,
-					}
-
-					backendTLSPolicyResult, err := controllerutil.CreateOrUpdate(ctx, downstreamClient, backendTLSPolicy, func() error {
-						if err := controllerutil.SetControllerReference(downstreamService, backendTLSPolicy, downstreamClient.Scheme()); err != nil {
-							return err
-						}
-
-						backendTLSPolicy.Spec = gatewayv1alpha3.BackendTLSPolicySpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Namespace: downstreamGateway.Namespace,
+							Name:      resourceName,
+						},
+						Spec: gatewayv1alpha3.BackendTLSPolicySpec{
 							TargetRefs: []gatewayv1alpha2.LocalPolicyTargetReferenceWithSectionName{
+								// TODO(jreese): We may have multiple ports that we need to set
+								// the policy on.
 								{
 									LocalPolicyTargetReference: gatewayv1alpha2.LocalPolicyTargetReference{
-										Kind: gatewayv1alpha2.Kind(KindService),
+										Kind: gatewayv1.Kind(KindService),
 										Name: gatewayv1.ObjectName(downstreamService.Name),
 									},
-									SectionName: (*gatewayv1alpha2.SectionName)(servicePort.Name),
+									SectionName: ptr.To(gatewayv1.SectionName(*endpointPort.Name)),
 								},
 							},
 							Validation: gatewayv1alpha3.BackendTLSPolicyValidation{
 								WellKnownCACertificates: ptr.To(gatewayv1alpha3.WellKnownCACertificatesSystem),
 								Hostname:                *hostname,
 							},
-						}
-
-						return nil
-					})
-					if err != nil {
-						result.Err = err
-						return result, nil
+						},
 					}
 
-					logger.Info("downstream backendtlspolicy processed", "operation_result", backendTLSPolicyResult)
+					downstreamResources = append(downstreamResources, backendTLSPolicy)
 				}
 
-				logger.Info("downstream service processed", "operation_result", serviceResult)
-
-				// Mirror to downstream EndpointSlice
-
-				endpointSliceResult, downstreamEndpointSlice := r.ensureDownstreamEndpointSlice(
-					ctx,
-					&upstreamEndpointSlice,
-					downstreamService,
-					downstreamStrategy,
-				)
-				if endpointSliceResult.Err != nil {
-					result = result.Merge(endpointSliceResult)
-					return result, nil
-				}
-
-				result = result.Merge(endpointSliceResult)
-
-				backendObjectReference.Namespace = (*gatewayv1.Namespace)(&downstreamEndpointSlice.Namespace)
-				backendObjectReference.Kind = (*gatewayv1.Kind)(ptr.To("Service"))
-				backendObjectReference.Name = gatewayv1.ObjectName(downstreamService.Name)
-				backendObjectReference.Port = backendRef.BackendObjectReference.Port
+			// Other types of backend refs will be handled in the future.
 			default:
 				logger.Info("unknown backend ref kind", "kind", *backendRef.BackendObjectReference.Kind)
 				continue
 			}
-
-			downstreamBackendRef := gatewayv1.BackendRef{
-				Weight:                 backendRef.Weight,
-				BackendObjectReference: backendObjectReference,
-			}
-
-			downstreamHTTPBackendRef := gatewayv1.HTTPBackendRef{
-				BackendRef: downstreamBackendRef,
-				Filters:    backendRef.Filters,
-			}
-
-			backendRefs = append(backendRefs, downstreamHTTPBackendRef)
 		}
 
 		rules = append(rules, gatewayv1.HTTPRouteRule{
@@ -1007,57 +1040,7 @@ func (r *GatewayReconciler) ensureDownstreamHTTPRouteRules(
 		})
 	}
 
-	return result, rules
-}
-
-func (r *GatewayReconciler) ensureDownstreamEndpointSlice(
-	ctx context.Context,
-	upstreamEndpointSlice *discoveryv1.EndpointSlice,
-	downstreamService *corev1.Service,
-	downstreamStrategy downstreamclient.ResourceStrategy,
-) (result Result, downstreamEndpointSlice *discoveryv1.EndpointSlice) {
-	logger := log.FromContext(ctx)
-	downstreamClient := downstreamStrategy.GetClient()
-
-	// Mirror to downstream EndpointSlice
-	downstreamEndpointSliceObjectMeta, err := downstreamStrategy.ObjectMetaFromUpstreamObject(ctx, upstreamEndpointSlice)
-	if err != nil {
-		result.Err = fmt.Errorf("failed to get downstream endpointslice object metadata: %w", err)
-		return result, nil
-	}
-
-	downstreamEndpointSlice = &discoveryv1.EndpointSlice{
-		ObjectMeta: downstreamEndpointSliceObjectMeta,
-	}
-
-	endpointSliceResult, err := controllerutil.CreateOrUpdate(ctx, downstreamClient, downstreamEndpointSlice, func() error {
-		if err := controllerutil.SetControllerReference(downstreamService, downstreamEndpointSlice, downstreamClient.Scheme()); err != nil {
-			return fmt.Errorf("failed to set controller reference on downstream endpointslice: %w", err)
-		}
-
-		if downstreamEndpointSlice.Labels == nil {
-			downstreamEndpointSlice.Labels = make(map[string]string)
-		}
-		downstreamEndpointSlice.Labels[discoveryv1.LabelServiceName] = downstreamService.Name
-
-		downstreamEndpointSlice.AddressType = upstreamEndpointSlice.AddressType
-		downstreamEndpointSlice.Endpoints = upstreamEndpointSlice.Endpoints
-		downstreamEndpointSlice.Ports = upstreamEndpointSlice.Ports
-		return nil
-	})
-
-	if err != nil {
-		if apierrors.IsConflict(err) {
-			result.Requeue = true
-			return result, nil
-		}
-		result.Err = err
-		return result, nil
-	}
-
-	logger.Info("downstream endpointslice processed", "operation_result", endpointSliceResult)
-
-	return result, downstreamEndpointSlice
+	return rules, downstreamResources, nil
 }
 
 type DownstreamResourceStrategy interface {

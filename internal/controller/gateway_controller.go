@@ -860,8 +860,6 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 
 	logger := log.FromContext(ctx)
 
-	// First, collect all unique upstream (BackendRef, EndpointSlice) combinations
-	// referenced by the route.
 	for ruleIdx, rule := range upstreamRoute.Spec.Rules {
 		var backendRefs []gatewayv1.HTTPBackendRef
 		for backendRefIdx, backendRef := range rule.BackendRefs {

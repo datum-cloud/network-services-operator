@@ -512,6 +512,26 @@ spec:
         - assert:
             cluster: nso-infra
             resource:
+              kind: EndpointSlice
+              metadata:
+                name: (join('-', ['route', $downstreamHTTPRoute.metadata.uid, 'rule-1-backendref-0']))
+                namespace: ($downstreamNamespaceName)
+                labels:
+                  kubernetes.io/service-name: (join('-', ['route', $downstreamHTTPRoute.metadata.uid, 'rule-1-backendref-0']))
+              addressType: FQDN
+              apiVersion: discovery.k8s.io/v1
+              endpoints:
+              - addresses:
+                - example.com
+              ports:
+              - name: http
+                port: 80
+              - name: https
+                port: 443
+
+        - assert:
+            cluster: nso-infra
+            resource:
               apiVersion: gateway.networking.k8s.io/v1
               kind: HTTPRoute
               metadata:

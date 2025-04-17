@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/url"
 
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
@@ -18,7 +19,11 @@ var _ webhook.Server = &clusterAwareWebhookServer{}
 func (s *clusterAwareWebhookServer) Register(path string, hook http.Handler) {
 	if h, ok := hook.(*admission.Webhook); ok {
 		h.WithContextFunc = func(ctx context.Context, req *http.Request) context.Context {
-			return WithClusterName(ctx, req.PathValue("cluster_name"))
+			clusterName, err := url.QueryUnescape(req.PathValue("cluster_name"))
+			if err != nil {
+				return ctx
+			}
+			return WithClusterName(ctx, clusterName)
 		}
 	}
 

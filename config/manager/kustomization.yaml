@@ -11,7 +11,8 @@ configMapGenerator:
 - files:
   - config.yaml
   name: config
-
+  options:
+    disableNameSuffixHash: true
 labels:
 - includeSelectors: true
   includeTemplates: true

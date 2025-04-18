@@ -11,8 +11,6 @@ configMapGenerator:
 - files:
   - config.yaml
   name: config
-buildMetadata:
-- managedByLabel
 
 labels:
 - includeSelectors: true

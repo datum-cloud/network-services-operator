@@ -79,8 +79,6 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 		return ctrl.Result{}, err
 	}
 
-	// https://github.com/envoyproxy/gateway/blob/292894057fd4083b1c4dce691d510c1a6bc53073/internal/gatewayapi/validate.go#L558
-
 	var gateway gatewayv1.Gateway
 	if err := cl.GetClient().Get(ctx, req.NamespacedName, &gateway); err != nil {
 		if apierrors.IsNotFound(err) {
@@ -89,12 +87,7 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 		return ctrl.Result{}, err
 	}
 
-	upstreamCluster, err := r.mgr.GetCluster(ctx, req.ClusterName)
-	if err != nil {
-		return ctrl.Result{}, err
-	}
-
-	downstreamStrategy := downstreamclient.NewMappedNamespaceResourceStrategy(req.ClusterName, upstreamCluster.GetClient(), r.DownstreamCluster.GetClient())
+	downstreamStrategy := downstreamclient.NewMappedNamespaceResourceStrategy(req.ClusterName, cl.GetClient(), r.DownstreamCluster.GetClient())
 
 	if !gateway.DeletionTimestamp.IsZero() {
 		if result := r.finalizeGateway(ctx, cl.GetClient(), &gateway, downstreamStrategy); result.ShouldReturn() {
@@ -1070,7 +1063,6 @@ func (r *GatewayReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 			mcbuilder.WithEngageWithLocalCluster(false),
 		).
 		WatchesRawSource(clusterSrc).
-		Owns(&discoveryv1.EndpointSlice{}, mcbuilder.WithEngageWithLocalCluster(false)).
 		Named("gateway").
 		Complete(r)
 }

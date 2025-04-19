@@ -214,6 +214,13 @@ func main() {
 		os.Exit(1)
 	}
 
+	if err = (&controller.EndpointSliceReconciler{
+		DownstreamCluster: downstreamCluster,
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "EndpointSlice")
+		os.Exit(1)
+	}
+
 	validationOpts := validation.GatewayValidationOptions{
 		ControllerName:      serverConfig.Gateway.ControllerName,
 		PermittedTLSOptions: serverConfig.Gateway.PermittedTLSOptions,

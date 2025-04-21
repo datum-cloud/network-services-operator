@@ -424,12 +424,6 @@ spec:
                 appProtocol: http
                 port: 80
               - name: https
-                # TODO(jreese)If the appProtocl is https, check to make sure there's a
-                # URLRewrite filter that has a hostname value. Use that in the
-                # BackendTLSPolicy's hostname.
-                #
-                # Should we default the appProtocol to https andrequire this if
-                # the target port is 443?
                 appProtocol: https
                 port: 443
 
@@ -453,7 +447,6 @@ spec:
                     - group: discovery.k8s.io
                       kind: EndpointSlice
                       name: test-slice-1
-                      # TODO(jreese) make sure ports are required in validation
                       port: 80
                     filters:
                       - type: URLRewrite
@@ -470,7 +463,6 @@ spec:
                     - group: discovery.k8s.io
                       kind: EndpointSlice
                       name: test-slice-1
-                      # TODO(jreese) make sure ports are required in validation
                       port: 443
                     filters:
                       - type: URLRewrite
@@ -480,7 +472,7 @@ spec:
                             replacePrefixMatch: /
                           hostname: "example.com"
             outputs:
-            - name: downstreamHTTPRoute
+            - name: upstreamHTTPRoute
               match:
                 apiVersion: gateway.networking.k8s.io/v1
                 kind: HTTPRoute
@@ -494,10 +486,10 @@ spec:
             resource:
               kind: EndpointSlice
               metadata:
-                name: (join('-', ['route', $downstreamHTTPRoute.metadata.uid, 'rule-0-backendref-0']))
+                name: (join('-', ['route', $upstreamHTTPRoute.metadata.uid, 'rule-0-backendref-0']))
                 namespace: ($downstreamNamespaceName)
                 labels:
-                  kubernetes.io/service-name: (join('-', ['route', $downstreamHTTPRoute.metadata.uid, 'rule-0-backendref-0']))
+                  kubernetes.io/service-name: (join('-', ['route', $upstreamHTTPRoute.metadata.uid, 'rule-0-backendref-0']))
               addressType: FQDN
               apiVersion: discovery.k8s.io/v1
               endpoints:
@@ -514,10 +506,10 @@ spec:
             resource:
               kind: EndpointSlice
               metadata:
-                name: (join('-', ['route', $downstreamHTTPRoute.metadata.uid, 'rule-1-backendref-0']))
+                name: (join('-', ['route', $upstreamHTTPRoute.metadata.uid, 'rule-1-backendref-0']))
                 namespace: ($downstreamNamespaceName)
                 labels:
-                  kubernetes.io/service-name: (join('-', ['route', $downstreamHTTPRoute.metadata.uid, 'rule-1-backendref-0']))
+                  kubernetes.io/service-name: (join('-', ['route', $upstreamHTTPRoute.metadata.uid, 'rule-1-backendref-0']))
               addressType: FQDN
               apiVersion: discovery.k8s.io/v1
               endpoints:
@@ -545,7 +537,7 @@ spec:
                 rules:
                 - backendRefs:
                   - kind: Service
-                    name: (join('-', ['route', $downstreamHTTPRoute.metadata.uid, 'rule-0-backendref-0']))
+                    name: (join('-', ['route', $upstreamHTTPRoute.metadata.uid, 'rule-0-backendref-0']))
                     weight: 1
                   matches:
                   - path:
@@ -553,7 +545,7 @@ spec:
                       value: /plaintext
                 - backendRefs:
                   - kind: Service
-                    name: (join('-', ['route', $downstreamHTTPRoute.metadata.uid, 'rule-1-backendref-0']))
+                    name: (join('-', ['route', $upstreamHTTPRoute.metadata.uid, 'rule-1-backendref-0']))
                     weight: 1
                   matches:
                   - path:
@@ -704,6 +696,7 @@ spec:
               kubectl -n default exec -i test-pod -- sh -c " \
                 set -x; \
                 apk add curl; \
+                sleep 10; \
                 curl -kvf -H \"Host: \${PRIMARY_HOSTNAME}\" http://\${GATEWAY_SERVICE_NAME}.\${GATEWAY_SERVICE_NAMESPACE}.svc.cluster.local/plaintext; \
                 curl -kvf -H \"Host: \${PRIMARY_HOSTNAME}\" http://\${GATEWAY_SERVICE_NAME}.\${GATEWAY_SERVICE_NAMESPACE}.svc.cluster.local/tls; \
               "
@@ -712,3 +705,4 @@ spec:
             cluster: nso-infra
             content: |
               kubectl -n envoy-gateway-system logs -l gateway.envoyproxy.io/owning-gatewayclass=datum-downstream-gateway-e2e -c envoy
+              kubectl -n envoy-gateway-system logs -l app.kubernetes.io/instance=envoy-gateway

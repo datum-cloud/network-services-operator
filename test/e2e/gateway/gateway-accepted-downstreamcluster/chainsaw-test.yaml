@@ -690,13 +690,18 @@ spec:
                 status:
                   phase: Running
 
+        # Sleep for a while to ensure that the Envoy replicas have received the
+        # latest xDS config. We should remove this once we find a reliable method
+        # to determine if the Envoy replicas have the latest xDS config.
+        - sleep:
+            duration: 10s
+
         - script:
             cluster: nso-infra
             content: |
               kubectl -n default exec -i test-pod -- sh -c " \
                 set -x; \
                 apk add curl; \
-                sleep 10; \
                 curl -kvf -H \"Host: \${PRIMARY_HOSTNAME}\" http://\${GATEWAY_SERVICE_NAME}.\${GATEWAY_SERVICE_NAMESPACE}.svc.cluster.local/plaintext; \
                 curl -kvf -H \"Host: \${PRIMARY_HOSTNAME}\" http://\${GATEWAY_SERVICE_NAME}.\${GATEWAY_SERVICE_NAMESPACE}.svc.cluster.local/tls; \
               "

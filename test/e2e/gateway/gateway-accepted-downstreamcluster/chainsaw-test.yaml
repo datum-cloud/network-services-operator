@@ -711,4 +711,4 @@ spec:
         - script:
             cluster: nso-infra
             content: |
-              kubectl -n envoy-gateway-system logs -l gateway.envoyproxy.io/owning-gatewayclass=envoy-gateway -c envoy
+              kubectl -n envoy-gateway-system logs -l gateway.envoyproxy.io/owning-gatewayclass=datum-downstream-gateway-e2e -c envoy

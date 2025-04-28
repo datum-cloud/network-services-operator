@@ -11,6 +11,7 @@ configMapGenerator:
       - subnet-claims.yaml
       - subnets.yaml
       - locations.yaml
+      - gateways.yaml
     options:
       labels:
         telemetry.datumapis.com/resource-metrics-config: "true"

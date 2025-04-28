@@ -4,7 +4,6 @@ kind: Kustomization
 configMapGenerator:
   - name: network-services-metrics
     files:
-      - general.yaml
       - network-bindings.yaml
       - network-contexts.yaml
       - network-policies.yaml

@@ -1,0 +1,17 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+configMapGenerator:
+  - name: network-services-metrics
+    files:
+      - general.yaml
+      - network-bindings.yaml
+      - network-contexts.yaml
+      - network-policies.yaml
+      - networks.yaml
+      - subnet-claims.yaml
+      - subnets.yaml
+      - locations.yaml
+    options:
+      labels:
+        telemetry.datumapis.com/resource-metrics-config: "true"

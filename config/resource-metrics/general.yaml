@@ -1,0 +1,20 @@
+kind: CustomResourceStateMetrics
+spec:
+  resources:
+    # Creates a generic metric for all resources
+    - groupVersionKind:
+        group: networking.datumapis.com
+        kind: "*"
+        version: "*"
+      metricNamePrefix: "datum_cloud_resource"
+      labelsFromPath:
+        namespace: [metadata, namespace]
+        name: [metadata, name]
+      metrics:
+        - name: "info"
+          help: "Information about the resource"
+          each:
+            type: Info
+            info:
+              labelsFromPath:
+                uid: [metadata, uid]

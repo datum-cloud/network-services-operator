@@ -5,7 +5,7 @@ spec:
         group: networking.datumapis.com
         kind: Location
         version: v1alpha
-      metricNamePrefix: "location"
+      metricNamePrefix: "datum_cloud_location"
       labelsFromPath:
         namespace: [metadata, namespace]
         name: [metadata, name]

@@ -5,7 +5,7 @@ spec:
         group: networking.datumapis.com
         kind: SubnetClaim
         version: v1alpha
-      metricNamePrefix: "subnet_claim"
+      metricNamePrefix: "datum_cloud_subnet_claim"
       labelsFromPath:
         namespace: [metadata, namespace]
         name: [metadata, name]

@@ -2,12 +2,18 @@ name: E2E Tests
 
 on:
   push:
+    branches:
+    - main
   pull_request:
+    branches:
+    - main
 
 jobs:
   test-e2e:
     name: Run on Ubuntu
     runs-on: ubuntu-latest
+    env:
+      TMPDIR: /tmp
     steps:
       - name: Clone the code
         uses: actions/checkout@v4
@@ -20,11 +26,36 @@ jobs:
       - name: Verify kind installation
         run: kind version
 
-      - name: Create kind cluster
-        run: kind create cluster
+      - name: Create upstream kind cluster
+        run: make kind-standard-cluster
+
+      - name: Create downstream kind cluster
+        run: |
+          make kind-infra-cluster
+          kubectl config use-context kind-nso-standard
 
       - name: Prepare e2e
-        run: make prepare-e2e
+        run: |
+          kubectl config use-context kind-nso-standard
+          make prepare-e2e
+
+          kubectl config use-context kind-nso-infra
+          make prepare-infra-cluster
+
+          kind get kubeconfig --name nso-infra --internal > ${TMPDIR}/.kind-nso-infra-internal.yaml
+
+          kubectl config use-context kind-nso-standard
+          kubectl create secret -n network-services-operator-system \
+            generic downstream-cluster-kubeconfig \
+            --from-file=kubeconfig=${TMPDIR}/.kind-nso-infra-internal.yaml
+
+          # Wait for the operator to be ready
+          kubectl -n network-services-operator-system \
+            wait deploy network-services-operator-controller-manager \
+            --for=condition=Available \
+            --timeout=120s || \
+              kubectl -n network-services-operator-system describe pod && \
+              kubectl -n network-services-operator-system logs -l app.kubernetes.io/name=network-services-operator --tail=-1
 
       - name: Running Test e2e
         run: make test-e2e

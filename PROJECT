@@ -70,4 +70,22 @@ resources:
   kind: Location
   path: go.datum.net/network-services-operator/api/v1alpha
   version: v1alpha
+- domain: k8s.io
+  external: true
+  group: gateway.networking
+  kind: Gateway
+  path: sigs.k8s.io/gateway-api/apis/v1
+  version: v1
+  webhooks:
+    validation: true
+    webhookVersion: v1
+- domain: k8s.io
+  external: true
+  group: gateway.networking
+  kind: HTTPRoute
+  path: sigs.k8s.io/gateway-api/apis/v1
+  version: v1
+  webhooks:
+    validation: true
+    webhookVersion: v1
 version: "3"

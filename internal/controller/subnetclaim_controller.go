@@ -6,10 +6,6 @@ import (
 	"context"
 	"fmt"
 
-	mcbuilder "github.com/multicluster-runtime/multicluster-runtime/pkg/builder"
-	mchandler "github.com/multicluster-runtime/multicluster-runtime/pkg/handler"
-	mcmanager "github.com/multicluster-runtime/multicluster-runtime/pkg/manager"
-	mcreconcile "github.com/multicluster-runtime/multicluster-runtime/pkg/reconcile"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -18,6 +14,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
+	mchandler "sigs.k8s.io/multicluster-runtime/pkg/handler"
+	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
+	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 )
@@ -145,13 +145,16 @@ func (r *SubnetClaimReconciler) Reconcile(ctx context.Context, req mcreconcile.R
 func (r *SubnetClaimReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	r.mgr = mgr
 	return mcbuilder.ControllerManagedBy(mgr).
-		For(&networkingv1alpha.SubnetClaim{}, mcbuilder.WithPredicates(
-			predicate.NewPredicateFuncs(func(object client.Object) bool {
-				// Don't bother processing deployments that have been scheduled
-				o := object.(*networkingv1alpha.SubnetClaim)
-				return o.Status.SubnetRef == nil
-			}),
-		)).
+		For(&networkingv1alpha.SubnetClaim{},
+			mcbuilder.WithPredicates(
+				predicate.NewPredicateFuncs(func(object client.Object) bool {
+					// Don't bother processing deployments that have been scheduled
+					o := object.(*networkingv1alpha.SubnetClaim)
+					return o.Status.SubnetRef == nil
+				}),
+			),
+			mcbuilder.WithEngageWithLocalCluster(false),
+		).
 		// TODO(jreese) change when we don't have claims 1:1 with subnets
 		Watches(&networkingv1alpha.Subnet{}, mchandler.EnqueueRequestForObject).
 		Named("subnetclaim").

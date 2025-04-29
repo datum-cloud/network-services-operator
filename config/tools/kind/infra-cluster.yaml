@@ -1,0 +1,7 @@
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: nso-infra
+networking:
+  ipFamily: dual
+nodes:
+- role: control-plane

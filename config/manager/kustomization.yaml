@@ -1,8 +1,20 @@
-resources:
-- manager.yaml
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
+resources:
+- manager.yaml
+- service_account.yaml
 images:
 - name: controller
   newName: network-services-operator
   newTag: latest
+configMapGenerator:
+- files:
+  - config.yaml
+  name: config
+  options:
+    disableNameSuffixHash: true
+labels:
+- includeSelectors: true
+  includeTemplates: true
+  pairs:
+    app.kubernetes.io/part-of: network-services-operator

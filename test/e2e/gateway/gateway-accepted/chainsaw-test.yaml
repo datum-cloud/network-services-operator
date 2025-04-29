@@ -1,0 +1,596 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: gateway-accepted
+spec:
+  skip: true
+  steps:
+    - name: Create CA
+      try:
+        - create:
+            resource:
+              apiVersion: cert-manager.io/v1
+              kind: Issuer
+              metadata:
+                name: test-gateway
+              spec:
+                selfSigned: {}
+
+    - name: Create GatewayClass for the upstream gateways
+      try:
+        - create:
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: GatewayClass
+              metadata:
+                name: datum-external-global-proxy
+              spec:
+                controllerName: gateway.networking.datumapis.com/external-global-proxy-controller
+
+    - name: Create GatewayClass for the downstream gateways
+      try:
+        - create:
+            resource:
+              apiVersion: gateway.envoyproxy.io/v1alpha1
+              kind: EnvoyProxy
+              metadata:
+                name: custom-proxy-config
+                namespace: envoy-gateway-system
+              spec:
+                provider:
+                  type: Kubernetes
+                  kubernetes:
+                    envoyService:
+                      type: ClusterIP
+                      patch:
+                        type: StrategicMerge
+                        value:
+                          spec:
+                            ipFamilyPolicy: RequireDualStack
+                mergeGateways: true
+
+        - create:
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: GatewayClass
+              metadata:
+                name: datum-downstream-gateway-e2e
+              spec:
+                controllerName: gateway.envoyproxy.io/gatewayclass-controller
+                parametersRef:
+                  group: gateway.envoyproxy.io
+                  kind: EnvoyProxy
+                  name: custom-proxy-config
+                  namespace: envoy-gateway-system
+
+    - name: Provision Gateway
+      try:
+        - create:
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: Gateway
+              metadata:
+                name: test-gateway
+              spec:
+                gatewayClassName: datum-external-global-proxy
+                listeners:
+                - protocol: HTTP
+                  port: 80
+                  name: http
+                  allowedRoutes:
+                    namespaces:
+                      from: Same
+                - protocol: HTTPS
+                  port: 443
+                  name: https
+                  allowedRoutes:
+                    namespaces:
+                      from: Same
+                  tls:
+                    mode: Terminate
+                    options:
+                      gateway.networking.datumapis.com/certificate-issuer: test-gateway
+            outputs:
+              - name: upstreamGateway
+                match:
+                  apiVersion: gateway.networking.k8s.io/v1
+                  kind: Gateway
+                  metadata:
+                    name: test-gateway
+                value: (@)
+
+        # Ensure the downstream gateway was created as expected
+        - assert:
+            # timeout: 5s
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: Gateway
+              metadata:
+                name: test-gateway-d8c7444f0c1b6591d78e6455496651a2
+              spec:
+                listeners:
+                - allowedRoutes:
+                    namespaces:
+                      from: Same
+                  hostname: (join('.', [$upstreamGateway.metadata.uid, 'prism.e2e.datum-dns.net']))
+                  name: http-0
+                  port: 80
+                  protocol: HTTP
+                - allowedRoutes:
+                    namespaces:
+                      from: Same
+                  hostname: (join('.', [$upstreamGateway.metadata.uid, 'prism.e2e.datum-dns.net']))
+                  name: https-0
+                  port: 443
+                  protocol: HTTPS
+                  tls:
+                    certificateRefs:
+                    - group: ""
+                      kind: Secret
+                      name: test-gateway-d8c7444f0c1b6591d78e6455496651a2
+                    mode: Terminate
+                - allowedRoutes:
+                    namespaces:
+                      from: Same
+                  hostname: (join('.', ['v4', $upstreamGateway.metadata.uid, 'prism.e2e.datum-dns.net']))
+                  name: http-1
+                  port: 80
+                  protocol: HTTP
+                - allowedRoutes:
+                    namespaces:
+                      from: Same
+                  hostname: (join('.', ['v4', $upstreamGateway.metadata.uid, 'prism.e2e.datum-dns.net']))
+                  name: https-1
+                  port: 443
+                  protocol: HTTPS
+                  tls:
+                    certificateRefs:
+                    - group: ""
+                      kind: Secret
+                      name: test-gateway-d8c7444f0c1b6591d78e6455496651a2
+                    mode: Terminate
+                - allowedRoutes:
+                    namespaces:
+                      from: Same
+                  hostname: (join('.', ['v6', $upstreamGateway.metadata.uid, 'prism.e2e.datum-dns.net']))
+                  name: http-2
+                  port: 80
+                  protocol: HTTP
+                - allowedRoutes:
+                    namespaces:
+                      from: Same
+                  hostname: (join('.', ['v6', $upstreamGateway.metadata.uid, 'prism.e2e.datum-dns.net']))
+                  name: https-2
+                  port: 443
+                  protocol: HTTPS
+                  tls:
+                    certificateRefs:
+                    - group: ""
+                      kind: Secret
+                      name: test-gateway-d8c7444f0c1b6591d78e6455496651a2
+                    mode: Terminate
+              status:
+                conditions:
+                - reason: Accepted
+                  status: "True"
+                  type: Accepted
+                - reason: Programmed
+                  status: "True"
+                  type: Programmed
+                listeners:
+                - attachedRoutes: 0
+                  conditions:
+                  - reason: Programmed
+                    status: "True"
+                    type: Programmed
+                  - reason: Accepted
+                    status: "True"
+                    type: Accepted
+                  - reason: ResolvedRefs
+                    status: "True"
+                    type: ResolvedRefs
+                  name: http-0
+                - attachedRoutes: 0
+                  conditions:
+                  - reason: Programmed
+                    status: "True"
+                    type: Programmed
+                  - reason: Accepted
+                    status: "True"
+                    type: Accepted
+                  - reason: ResolvedRefs
+                    status: "True"
+                    type: ResolvedRefs
+                  name: https-0
+                - attachedRoutes: 0
+                  conditions:
+                  - reason: Programmed
+                    status: "True"
+                    type: Programmed
+                  - reason: Accepted
+                    status: "True"
+                    type: Accepted
+                  - reason: ResolvedRefs
+                    status: "True"
+                    type: ResolvedRefs
+                  name: http-1
+                - attachedRoutes: 0
+                  conditions:
+                  - reason: Programmed
+                    status: "True"
+                    type: Programmed
+                  - reason: Accepted
+                    status: "True"
+                    type: Accepted
+                  - reason: ResolvedRefs
+                    status: "True"
+                    type: ResolvedRefs
+                  name: https-1
+                - attachedRoutes: 0
+                  conditions:
+                  - reason: Programmed
+                    status: "True"
+                    type: Programmed
+                  - reason: Accepted
+                    status: "True"
+                    type: Accepted
+                  - reason: ResolvedRefs
+                    status: "True"
+                    type: ResolvedRefs
+                  name: http-2
+                - attachedRoutes: 0
+                  conditions:
+                  - reason: Programmed
+                    status: "True"
+                    type: Programmed
+                  - reason: Accepted
+                    status: "True"
+                    type: Accepted
+                  - reason: ResolvedRefs
+                    status: "True"
+                    type: ResolvedRefs
+                  name: https-2
+
+        # Load the downstream gateway so we can get the IP address info from its
+        # status.
+        #
+        # Unfortunately outputs don't work on `assert` or `get`.
+        # See: https://github.com/kyverno/chainsaw/issues/1034
+        - script:
+            skipCommandOutput: true
+            skipLogOutput: true
+            content: |
+              kubectl -n $NAMESPACE get gateway test-gateway-d8c7444f0c1b6591d78e6455496651a2 -o json
+            outputs:
+              - name: downstreamGateway
+                value: (json_parse($stdout))
+              - name: downstreamGatewayV4Addresses
+                value: ($downstreamGateway.status.addresses[?contains(value, '.')].value)
+              - name: downstreamGatewayV6Addresses
+                value: ($downstreamGateway.status.addresses[?contains(value, ':')].value)
+
+        # Ensure DNSEndpoint is defined and that targets match the addresses
+        # provisioned to the downstream gateway.
+        - assert:
+            # timeout: 5s
+            bindings:
+              - name: primaryHostname
+                value: (join('.', [$upstreamGateway.metadata.uid, 'prism.e2e.datum-dns.net']))
+              - name: v4IPFamilyHostname
+                value: (join('.', ['v4', $primaryHostname]))
+              - name: v6IPFamilyHostname
+                value: (join('.', ['v6', $primaryHostname]))
+            resource:
+              apiVersion: externaldns.k8s.io/v1alpha1
+              kind: DNSEndpoint
+              metadata:
+                name: test-gateway-d8c7444f0c1b6591d78e6455496651a2
+              spec:
+                endpoints:
+                  - dnsName: ($primaryHostname)
+                    targets: ($downstreamGatewayV4Addresses)
+                    recordType: A
+                    recordTTL: 300
+                  - dnsName: ($primaryHostname)
+                    targets: ($downstreamGatewayV6Addresses)
+                    recordType: AAAA
+                    recordTTL: 300
+                  - dnsName: ($v4IPFamilyHostname)
+                    targets: ($downstreamGatewayV4Addresses)
+                    recordType: A
+                    recordTTL: 300
+                  - dnsName: ($v6IPFamilyHostname)
+                    targets: ($downstreamGatewayV6Addresses)
+                    recordType: AAAA
+                    recordTTL: 300
+
+        # Ensure the upstream gateway's status is updated as expected
+        - assert:
+            # timeout: 5s
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: Gateway
+              metadata:
+                name: test-gateway
+              status:
+                addresses:
+                  - type: Hostname
+                    value: (join('.', [$upstreamGateway.metadata.uid, 'prism.e2e.datum-dns.net']))
+                  - type: Hostname
+                    value: (join('.', ['v4', $upstreamGateway.metadata.uid, 'prism.e2e.datum-dns.net']))
+                  - type: Hostname
+                    value: (join('.', ['v6', $upstreamGateway.metadata.uid, 'prism.e2e.datum-dns.net']))
+                listeners:
+                  - attachedRoutes: 0
+                    (conditions[?type == 'Programmed']):
+                      - status: "True"
+                    (conditions[?type == 'Accepted']):
+                      - status: "True"
+                    (conditions[?type == 'ResolvedRefs']):
+                      - status: "True"
+                    name: http
+                  - attachedRoutes: 0
+                    (conditions[?type == 'Programmed']):
+                      - status: "True"
+                    (conditions[?type == 'Accepted']):
+                      - status: "True"
+                    (conditions[?type == 'ResolvedRefs']):
+                      - status: "True"
+                    name: https
+                (conditions[?type == 'Accepted']):
+                  - status: "True"
+                (conditions[?type == 'Programmed']):
+                 - status: "True"
+      catch:
+        - script:
+            content: |
+              kubectl -n network-services-operator-system logs -l app.kubernetes.io/name=network-services-operator
+              kubectl get gateways -n $NAMESPACE -o yaml
+              kubectl get httproutes -n $NAMESPACE -o yaml
+              kubectl get dnsendpoints -n $NAMESPACE -o yaml
+              kubectl get svc -n $NAMESPACE -o yaml
+              kubectl get endpointslices -n $NAMESPACE -o yaml
+
+    - name: Provision HTTPRoute
+      try:
+        - create:
+            resource:
+              kind: EndpointSlice
+              metadata:
+                name: test-slice-1
+              addressType: FQDN
+              apiVersion: discovery.k8s.io/v1
+              endpoints:
+              - addresses:
+                # TODO(jreese) create a pod to serve as the backend for e2e tests
+                - example.com
+                conditions:
+                  ready: true
+                  serving: true
+                  terminating: false
+              ports:
+              - name: http
+                appProtocol: http
+                port: 80
+              - name: https
+                # TODO(jreese)If the appProtocl is https, check to make sure there's a
+                # URLRewrite filter that has a hostname value. Use that in the
+                # BackendTLSPolicy's hostname.
+                #
+                # Should we default the appProtocol to https andrequire this if
+                # the target port is 443?
+                appProtocol: https
+                port: 443
+
+        - create:
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: HTTPRoute
+              metadata:
+                name: test-route
+              spec:
+                parentRefs:
+                - name: test-gateway
+                  kind: Gateway
+                rules:
+                  - matches:
+                    - path:
+                        type: PathPrefix
+                        value: /plaintext
+                    backendRefs:
+                    - group: discovery.k8s.io
+                      kind: EndpointSlice
+                      name: test-slice-1
+                      # TODO(jreese) make sure ports are required in validation
+                      port: 80
+                    filters:
+                      - type: URLRewrite
+                        urlRewrite:
+                          path:
+                            type: ReplacePrefixMatch
+                            replacePrefixMatch: /
+                          hostname: "example.com"
+                  - matches:
+                    - path:
+                        type: PathPrefix
+                        value: /tls
+                    backendRefs:
+                    - group: discovery.k8s.io
+                      kind: EndpointSlice
+                      name: test-slice-1
+                      # TODO(jreese) make sure ports are required in validation
+                      port: 443
+                    filters:
+                      - type: URLRewrite
+                        urlRewrite:
+                          path:
+                            type: ReplacePrefixMatch
+                            replacePrefixMatch: /
+                          hostname: "example.com"
+
+        - assert:
+            resource:
+              kind: EndpointSlice
+              metadata:
+                name: test-slice-1-3ed63ff91eb7ed0412b24fd014a74cd9
+                labels:
+                  kubernetes.io/service-name: test-route-4ac4abbdbcbd571860ac6f356d0b9592
+              addressType: FQDN
+              apiVersion: discovery.k8s.io/v1
+              endpoints:
+              - addresses:
+                - example.com
+              ports:
+              - name: http
+                port: 80
+              - name: https
+                port: 443
+
+        - assert:
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: HTTPRoute
+              metadata:
+                name: test-route-4ac4abbdbcbd571860ac6f356d0b9592
+              spec:
+                parentRefs:
+                - group: gateway.networking.k8s.io
+                  kind: Gateway
+                  name: test-gateway-d8c7444f0c1b6591d78e6455496651a2
+                rules:
+                - backendRefs:
+                  - kind: Service
+                    name: test-route-4ac4abbdbcbd571860ac6f356d0b9592
+                    weight: 1
+                  matches:
+                  - path:
+                      type: PathPrefix
+                      value: /plaintext
+                - backendRefs:
+                  - kind: Service
+                    name: test-route-4ac4abbdbcbd571860ac6f356d0b9592
+                    weight: 1
+                  matches:
+                  - path:
+                      type: PathPrefix
+                      value: /tls
+              status:
+                parents:
+                - conditions:
+                  - reason: Accepted
+                    status: "True"
+                    type: Accepted
+                  - reason: ResolvedRefs
+                    status: "True"
+                    type: ResolvedRefs
+                  parentRef:
+                    name: test-gateway-d8c7444f0c1b6591d78e6455496651a2
+                    kind: Gateway
+                    group: gateway.networking.k8s.io
+
+        # Restrict DNS resolution to IPv4 addresses only.
+        # TODO(jreese) remove this once we have a pod to serve as a backend.
+        - create:
+            resource:
+              apiVersion: gateway.envoyproxy.io/v1alpha1
+              kind: BackendTrafficPolicy
+              metadata:
+                name: test-route-4ac4abbdbcbd571860ac6f356d0b9592
+              spec:
+                targetRef:
+                  group: gateway.networking.k8s.io
+                  kind: HTTPRoute
+                  name: test-route-4ac4abbdbcbd571860ac6f356d0b9592
+                dns:
+                  lookupFamily: IPv4
+
+        - assert:
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: HTTPRoute
+              metadata:
+                name: test-route
+              status:
+                parents:
+                - conditions:
+                  - reason: Accepted
+                    status: "True"
+                    type: Accepted
+                  - reason: ResolvedRefs
+                    status: "True"
+                    type: ResolvedRefs
+                  parentRef:
+                    name: test-gateway
+                    kind: Gateway
+                    group: gateway.networking.k8s.io
+      catch:
+        - script:
+            content: |
+              kubectl -n network-services-operator-system logs -l app.kubernetes.io/name=network-services-operator
+              kubectl get gateways -n $NAMESPACE -o yaml
+              kubectl get httproutes -n $NAMESPACE -o yaml
+              kubectl get dnsendpoints -n $NAMESPACE -o yaml
+              kubectl get svc -n $NAMESPACE -o yaml
+              kubectl get endpointslices -n $NAMESPACE -o yaml
+
+    - name: Provision Pod to test connectivity
+      try:
+        - script:
+            skipCommandOutput: true
+            skipLogOutput: true
+            content: |
+              kubectl -n $NAMESPACE get gateway test-gateway -o json
+            outputs:
+              - name: upstreamGateway
+                value: (json_parse($stdout))
+        - script:
+            skipCommandOutput: true
+            skipLogOutput: true
+            content: |
+              kubectl get svc -n envoy-gateway-system -l gateway.envoyproxy.io/owning-gatewayclass=datum-downstream-gateway-e2e -o json
+            outputs:
+              - name: gatewayService
+                value: (json_parse($stdout).items | [0])
+
+        - create:
+            resource:
+              apiVersion: v1
+              kind: Pod
+              metadata:
+                name: test-pod
+              spec:
+                containers:
+                - name: test-container
+                  image: alpine:3.21.3
+                  command: ["/bin/sh", "-c", "sleep infinity"]
+                  env:
+                  - name: GATEWAY_SERVICE_NAME
+                    value: ($gatewayService.metadata.name)
+                  - name: GATEWAY_SERVICE_NAMESPACE
+                    value: ($gatewayService.metadata.namespace)
+                  - name: PRIMARY_HOSTNAME
+                    value: (join('.', [$upstreamGateway.metadata.uid, 'prism.e2e.datum-dns.net']))
+                terminationGracePeriodSeconds: 0
+
+        - assert:
+            resource:
+                apiVersion: v1
+                kind: Pod
+                metadata:
+                  name: test-pod
+                status:
+                  phase: Running
+
+        - script:
+            content: |
+              kubectl -n $NAMESPACE exec -i test-pod -- sh -c " \
+                set -x; \
+                apk add curl; \
+                curl -kvf -H \"Host: \${PRIMARY_HOSTNAME}\" http://\${GATEWAY_SERVICE_NAME}.\${GATEWAY_SERVICE_NAMESPACE}.svc.cluster.local/plaintext; \
+                curl -kvf -H \"Host: \${PRIMARY_HOSTNAME}\" http://\${GATEWAY_SERVICE_NAME}.\${GATEWAY_SERVICE_NAMESPACE}.svc.cluster.local/tls; \
+              "
+      catch:
+        - script:
+            content: |
+              kubectl -n envoy-gateway-system logs -l gateway.envoyproxy.io/owning-gatewayclass=envoy-gateway -c envoy

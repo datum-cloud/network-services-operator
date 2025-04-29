@@ -1,0 +1,5 @@
+apiVersion: apiserver.config.datumapis.com/v1alpha1
+kind: NetworkServicesOperator
+gateway:
+  targetDomain: example.com
+  permitCertificateRefs: true

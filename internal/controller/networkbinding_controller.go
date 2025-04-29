@@ -6,9 +6,6 @@ import (
 	"context"
 	"fmt"
 
-	mcbuilder "github.com/multicluster-runtime/multicluster-runtime/pkg/builder"
-	mcmanager "github.com/multicluster-runtime/multicluster-runtime/pkg/manager"
-	mcreconcile "github.com/multicluster-runtime/multicluster-runtime/pkg/reconcile"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -17,6 +14,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
+	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
+	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 )
@@ -155,12 +155,15 @@ func (r *NetworkBindingReconciler) Reconcile(ctx context.Context, req mcreconcil
 func (r *NetworkBindingReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	r.mgr = mgr
 	return mcbuilder.ControllerManagedBy(mgr).
-		For(&networkingv1alpha.NetworkBinding{}, mcbuilder.WithPredicates(
-			predicate.NewPredicateFuncs(func(object client.Object) bool {
-				o := object.(*networkingv1alpha.NetworkBinding)
-				return o.Status.NetworkContextRef == nil
-			}),
-		)).
+		For(&networkingv1alpha.NetworkBinding{},
+			mcbuilder.WithPredicates(
+				predicate.NewPredicateFuncs(func(object client.Object) bool {
+					o := object.(*networkingv1alpha.NetworkBinding)
+					return o.Status.NetworkContextRef == nil
+				}),
+			),
+			mcbuilder.WithEngageWithLocalCluster(false),
+		).
 		Complete(r)
 }
 

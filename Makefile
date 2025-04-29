@@ -48,8 +48,9 @@ manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and Cust
 	$(CONTROLLER_GEN) rbac:roleName=manager-role crd:generateEmbeddedObjectMeta=true webhook paths="./..." output:crd:artifacts:config=config/crd/bases
 
 .PHONY: generate
-generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
+generate: controller-gen defaulter-gen
 	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./..."
+	$(DEFAULTER_GEN) ./internal/config --output-file=zz_generated.defaults.go
 
 .PHONY: fmt
 fmt: ## Run go fmt against code.
@@ -69,16 +70,18 @@ test: manifests generate fmt vet envtest ## Run tests.
 # - PROMETHEUS_INSTALL_SKIP=true
 # - CERT_MANAGER_INSTALL_SKIP=true
 .PHONY: test-e2e
-test-e2e: chainsaw manifests generate fmt vet ## Run the e2e tests. Expected an isolated environment using Kind.
+test-e2e: chainsaw
 	@command -v kind >/dev/null 2>&1 || { \
 		echo "Kind is not installed. Please install Kind manually."; \
 		exit 1; \
 	}
-	@kind get clusters | grep -q 'kind' || { \
+	@kind get clusters | grep -q 'nso-standard' || { \
 		echo "No Kind cluster is running. Please start a Kind cluster before running the e2e tests."; \
 		exit 1; \
 	}
-	$(CHAINSAW) test ./test/e2e
+	$(CHAINSAW) test ./test/e2e \
+		--cluster nso-standard=$(TMPDIR)/.kind-nso-standard.yaml \
+		--cluster nso-infra=$(TMPDIR)/.kind-nso-infra.yaml
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter
@@ -96,7 +99,7 @@ build: manifests generate fmt vet ## Build manager binary.
 
 .PHONY: run
 run: manifests generate fmt vet ## Run a controller from your host.
-	go run ./cmd/main.go -health-probe-bind-address 0
+	go run ./cmd/main.go -health-probe-bind-address 0 --server-config ./config/dev/config.yaml
 
 # If you wish to build the manager image targeting other platforms you can use the --platform flag.
 # (i.e. docker build --platform linux/arm64). However, you must enable docker buildKit for it.
@@ -135,20 +138,41 @@ build-installer: set-image-controller generate ## Generate a consolidated YAML w
 set-image-controller: manifests kustomize
 	cd config/manager && $(KUSTOMIZE) edit set image controller=${IMG}
 
+.PHONY: prepare-infra-cluster
+prepare-infra-cluster: cert-manager envoy-gateway external-dns
+
 .PHONY: prepare-e2e
-prepare-e2e: chainsaw set-image-controller cert-manager load-image-all deploy
+prepare-e2e: chainsaw set-image-controller cert-manager envoy-gateway external-dns load-image-all deploy-e2e
 
 .PHONY: load-image-all
 load-image-all: load-image-operator
 
 .PHONY: load-image-operator
 load-image-operator: docker-build kind
-	$(KIND) load docker-image $(IMG)
+	$(KIND) load docker-image $(IMG) -n nso-standard
 
 .PHONY: cert-manager
 cert-manager: cmctl
-	kubectl apply --validate=false -f https://github.com/jetstack/cert-manager/releases/download/v${CERTMANAGER_VERSION}/cert-manager.yaml
+	$(KUSTOMIZE) build --enable-helm config/tools/cert-manager | kubectl apply --server-side=true --force-conflicts -f -
 	$(CMCTL) check api --wait=5m
+
+.PHONY: envoy-gateway
+envoy-gateway:
+	$(KUSTOMIZE) build --enable-helm config/tools/envoy-gateway | kubectl apply --server-side=true --force-conflicts -f -
+
+.PHONY: external-dns
+external-dns:
+	$(KUSTOMIZE) build --enable-helm config/tools/external-dns | kubectl apply --server-side=true --force-conflicts -f -
+
+.PHONY: kind-standard-cluster
+kind-standard-cluster: kind
+	$(KIND) create cluster --config=config/tools/kind/standard-cluster.yaml
+	$(KIND) get kubeconfig --name nso-standard > $(TMPDIR)/.kind-nso-standard.yaml
+
+.PHONY: kind-infra-cluster
+kind-infra-cluster: kind
+	$(KIND) create cluster --config=config/tools/kind/infra-cluster.yaml
+	$(KIND) get kubeconfig --name nso-infra > $(TMPDIR)/.kind-nso-infra.yaml
 
 ##@ Deployment
 
@@ -158,7 +182,7 @@ endif
 
 .PHONY: install
 install: manifests kustomize ## Install CRDs into the K8s cluster specified in ~/.kube/config.
-	$(KUSTOMIZE) build config/crd | $(KUBECTL) apply -f -
+	$(KUSTOMIZE) build config/dev | $(KUBECTL) apply -f -
 
 .PHONY: uninstall
 uninstall: manifests kustomize ## Uninstall CRDs from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
@@ -168,9 +192,15 @@ uninstall: manifests kustomize ## Uninstall CRDs from the K8s cluster specified 
 deploy: set-image-controller ## Deploy controller to the K8s cluster specified in ~/.kube/config.
 	$(KUSTOMIZE) build config/default | $(KUBECTL) apply -f -
 
+.PHONY: deploy-e2e
+deploy-e2e: set-image-controller
+	$(KUSTOMIZE) build config/e2e | $(KUBECTL) apply -f -
+
 .PHONY: undeploy
 undeploy: kustomize ## Undeploy controller from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
 	$(KUSTOMIZE) build config/default | $(KUBECTL) delete --ignore-not-found=$(ignore-not-found) -f -
+
+
 
 ##@ Dependencies
 
@@ -184,6 +214,7 @@ KUBECTL ?= kubectl
 KUSTOMIZE ?= $(LOCALBIN)/kustomize
 KIND ?= $(LOCALBIN)/kind
 CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
+DEFAULTER_GEN ?= $(LOCALBIN)/defaulter-gen
 ENVTEST ?= $(LOCALBIN)/setup-envtest
 GOLANGCI_LINT = $(LOCALBIN)/golangci-lint
 CRDOC ?= $(LOCALBIN)/crdoc
@@ -193,6 +224,7 @@ CMCTL ?= $(LOCALBIN)/cmctl
 ## Tool Versions
 KUSTOMIZE_VERSION ?= v5.5.0
 CONTROLLER_TOOLS_VERSION ?= v0.16.4
+DEFAULTER_GEN_VERSION ?= v0.32.3
 ENVTEST_VERSION ?= release-0.19
 GOLANGCI_LINT_VERSION ?= v1.62.0
 
@@ -224,6 +256,11 @@ kind: ## Download kind locally if necessary.
 controller-gen: $(CONTROLLER_GEN) ## Download controller-gen locally if necessary.
 $(CONTROLLER_GEN): $(LOCALBIN)
 	$(call go-install-tool,$(CONTROLLER_GEN),sigs.k8s.io/controller-tools/cmd/controller-gen,$(CONTROLLER_TOOLS_VERSION))
+
+.PHONY: defaulter-gen
+defaulter-gen: $(DEFAULTER_GEN) ## Download defaulter-gen locally if necessary.
+$(DEFAULTER_GEN): $(LOCALBIN)
+	$(call go-install-tool,$(DEFAULTER_GEN),k8s.io/code-generator/cmd/defaulter-gen,$(DEFAULTER_GEN_VERSION))
 
 .PHONY: envtest
 envtest: $(ENVTEST) ## Download setup-envtest locally if necessary.

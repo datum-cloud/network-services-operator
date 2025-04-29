@@ -6,9 +6,6 @@ import (
 	"context"
 	"fmt"
 
-	mcbuilder "github.com/multicluster-runtime/multicluster-runtime/pkg/builder"
-	mcmanager "github.com/multicluster-runtime/multicluster-runtime/pkg/manager"
-	mcreconcile "github.com/multicluster-runtime/multicluster-runtime/pkg/reconcile"
 	"google.golang.org/protobuf/proto"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
@@ -17,6 +14,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
+	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
+	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 )
@@ -135,14 +135,17 @@ func (r *SubnetReconciler) Reconcile(ctx context.Context, req mcreconcile.Reques
 func (r *SubnetReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	r.mgr = mgr
 	return mcbuilder.ControllerManagedBy(mgr).
-		For(&networkingv1alpha.Subnet{}, mcbuilder.WithPredicates(
-			predicate.NewPredicateFuncs(func(object client.Object) bool {
-				// Don't bother processing subnets that have been allocated and are not
-				// deleting
-				o := object.(*networkingv1alpha.Subnet)
-				return o.Status.StartAddress == nil || !o.DeletionTimestamp.IsZero()
-			}),
-		)).
+		For(&networkingv1alpha.Subnet{},
+			mcbuilder.WithPredicates(
+				predicate.NewPredicateFuncs(func(object client.Object) bool {
+					// Don't bother processing subnets that have been allocated and are not
+					// deleting
+					o := object.(*networkingv1alpha.Subnet)
+					return o.Status.StartAddress == nil || !o.DeletionTimestamp.IsZero()
+				}),
+			),
+			mcbuilder.WithEngageWithLocalCluster(false),
+		).
 		Named("subnet").
 		Complete(r)
 }

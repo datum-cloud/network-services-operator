@@ -1,0 +1,96 @@
+kind: CustomResourceStateMetrics
+spec:
+  resources:
+    - groupVersionKind:
+        group: gateway.networking.k8s.io
+        kind: "Gateway"
+        version: "v1beta1"
+      metricNamePrefix: datum_cloud_networking_gateway
+      labelsFromPath:
+        name: [metadata, name]
+        namespace: [metadata, namespace]
+      metrics:
+      - name: "info"
+        help: "Gateway information"
+        each:
+          type: Info
+          info:
+            labelsFromPath:
+              gatewayclass_name: [spec, gatewayClassName]
+              uid: [metadata, uid]
+      - name: "created"
+        help: "created timestamp"
+        each:
+          type: Gauge
+          gauge:
+            path: [metadata, creationTimestamp]
+      - name: "deleted"
+        help: "deletion timestamp"
+        each:
+          type: Gauge
+          gauge:
+            path: [metadata, deletionTimestamp]
+      - name: "status"
+        help: "status condition"
+        each:
+          type: Gauge
+          gauge:
+            path: [status, conditions]
+            labelsFromPath:
+              type: ["type"]
+            valueFrom: ["status"]
+    - groupVersionKind:
+        group: gateway.networking.k8s.io
+        kind: "HTTPRoute"
+        version: "*"
+      metricNamePrefix: datum_cloud_networking_http_route
+      labelsFromPath:
+        name: [metadata, name]
+        namespace: [metadata, namespace]
+      metrics:
+      - name: "info"
+        help: "HTTPRoute information"
+        each:
+          type: Info
+          info:
+            labelsFromPath:
+              uid: [metadata, uid]
+      - name: "created"
+        help: "created timestamp"
+        each:
+          type: Gauge
+          gauge:
+            path: [metadata, creationTimestamp]
+      - name: "deleted"
+        help: "deletion timestamp"
+        each:
+          type: Gauge
+          gauge:
+            path: [metadata, deletionTimestamp]
+      - name: "parent_info"
+        help: "Parent references that the httproute wants to be attached to"
+        each:
+          type: Info
+          info:
+            path: [spec, parentRefs]
+            labelsFromPath:
+              parent_group: ["group"]
+              parent_kind: ["kind"]
+              parent_name: ["name"]
+              parent_namespace: ["namespace"]
+              parent_section_name: ["sectionName"]
+              parent_port: ["port"]
+      - name: "status_parent_info"
+        help: "Parent references that the httproute is attached to"
+        each:
+          type: Info
+          info:
+            path: [status, parents]
+            labelsFromPath:
+              controller_name: ["controllerName"]
+              parent_group: ["parentRef", "group"]
+              parent_kind: ["parentRef", "kind"]
+              parent_name: ["parentRef", "name"]
+              parent_namespace: ["parentRef", "namespace"]
+              parent_section_name: ["parentRef", "sectionName"]
+              parent_port: ["parentRef", "port"]

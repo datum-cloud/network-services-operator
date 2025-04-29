@@ -6,7 +6,6 @@ import (
 	"net/url"
 	"testing"
 
-	mcmanager "github.com/multicluster-runtime/multicluster-runtime/pkg/manager"
 	"github.com/stretchr/testify/assert"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -18,6 +17,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/scheme"
+	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 )
 
 type testMultiClusterManager struct {
@@ -31,7 +31,7 @@ func (m *testMultiClusterManager) Engage(context.Context, string, cluster.Cluste
 var runtimeScheme = runtime.NewScheme()
 
 func init() {
-	utilruntime.Must((&scheme.Builder{GroupVersion: projectGV}).AddToScheme(runtimeScheme))
+	utilruntime.Must((&scheme.Builder{GroupVersion: resourceManagerGV}).AddToScheme(runtimeScheme))
 }
 
 func TestNotReadyProject(t *testing.T) {
@@ -92,7 +92,7 @@ func newTestProvider(projectStatus metav1.ConditionStatus) (*Provider, client.Ob
 	p := &Provider{
 		client: fakeClient,
 		mcMgr:  &testMultiClusterManager{},
-		config: &rest.Config{
+		projectRestConfig: &rest.Config{
 			Host: "https://localhost",
 		},
 		projects:  map[string]cluster.Cluster{},

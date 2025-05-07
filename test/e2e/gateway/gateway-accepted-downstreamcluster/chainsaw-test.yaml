@@ -152,7 +152,9 @@ spec:
                 secretName: backend-pod-tls
                 usages:
                 - server auth
-                commonName: "backend-service.default.svc.cluster.local"
+                commonName: backend-service.default.svc.cluster.local
+                dnsNames:
+                  - backend-service.default.svc.cluster.local
                 issuerRef:
                   kind: ClusterIssuer
                   name: ($clusterIssuerName)
@@ -222,8 +224,12 @@ spec:
                 namespace: default
               spec:
                 ports:
-                - port: 8080
+                - name: http
+                  port: 8080
                   targetPort: 8080
+                - name: https
+                  port: 8443
+                  targetPort: 8443
                 selector:
                   purpose: backend-pod
 
@@ -814,7 +820,7 @@ spec:
                 namespace: default
               spec:
                 containers:
-                - name: test-container
+                - name: connectivity-test
                   image: alpine:3.21.3
                   command: ["/bin/sh", "-c", "sleep infinity"]
                   resources:
@@ -831,6 +837,10 @@ spec:
                     value: ($gatewayService.metadata.namespace)
                   - name: PRIMARY_HOSTNAME
                     value: (join('.', [$upstreamGateway.metadata.uid, 'prism.e2e.env.datum.net']))
+                  lifecycle:
+                    postStart:
+                      exec:
+                        command: ["apk", "add", "curl"]
                 terminationGracePeriodSeconds: 0
 
         - assert:
@@ -866,7 +876,6 @@ spec:
             content: |
               kubectl -n default exec -i test-pod -- sh -c " \
                 set -x; \
-                apk add curl; \
                 curl -kvf -H \"Host: \${PRIMARY_HOSTNAME}\" http://\${GATEWAY_SERVICE_NAME}.\${GATEWAY_SERVICE_NAMESPACE}.svc.cluster.local/plaintext/status/200; \
                 curl -kvf -H \"Host: \${PRIMARY_HOSTNAME}\" http://\${GATEWAY_SERVICE_NAME}.\${GATEWAY_SERVICE_NAMESPACE}.svc.cluster.local/tls/status/200; \
               "

@@ -66,7 +66,7 @@ func (v *GatewayCustomValidator) ValidateCreate(ctx context.Context, obj runtime
 	gatewaylog.Info("Validating Gateway", "name", gateway.GetName(), "cluster", clusterName)
 
 	clusterValidationOpts := v.validationOpts
-	clusterValidationOpts.ClusterName = string(clusterName)
+	clusterValidationOpts.ClusterName = clusterName
 
 	if errs := validation.ValidateGateway(gateway, clusterValidationOpts); len(errs) > 0 {
 		return nil, errors.NewInvalid(obj.GetObjectKind().GroupVersionKind().GroupKind(), gateway.GetName(), errs)
@@ -101,7 +101,7 @@ func (v *GatewayCustomValidator) ValidateUpdate(ctx context.Context, oldObj, new
 	gatewaylog.Info("Validating Gateway", "name", gateway.GetName())
 
 	clusterValidationOpts := v.validationOpts
-	clusterValidationOpts.ClusterName = string(clusterName)
+	clusterValidationOpts.ClusterName = clusterName
 
 	if errs := validation.ValidateGateway(gateway, clusterValidationOpts); len(errs) > 0 {
 		return nil, errors.NewInvalid(oldObj.GetObjectKind().GroupVersionKind().GroupKind(), gateway.GetName(), errs)

@@ -21,9 +21,52 @@ spec:
               apiVersion: cert-manager.io/v1
               kind: ClusterIssuer
               metadata:
-                name: ($clusterIssuerName)
+                name: (join('-', [$clusterIssuerName, 'issuer']))
               spec:
                 selfSigned: {}
+
+        - create:
+            cluster: nso-infra
+            resource:
+              apiVersion: cert-manager.io/v1
+              kind: Certificate
+              metadata:
+                name: (join('-', [$clusterIssuerName, 'ca']))
+                namespace: cert-manager
+              spec:
+                isCA: true
+                commonName: (join('-', [$clusterIssuerName, 'ca']))
+                secretName: ($clusterIssuerName)
+                privateKey:
+                  algorithm: ECDSA
+                  size: 256
+                issuerRef:
+                  name: (join('-', [$clusterIssuerName, 'issuer']))
+                  kind: ClusterIssuer
+                  group: cert-manager.io
+
+        - create:
+            cluster: nso-infra
+            resource:
+              apiVersion: cert-manager.io/v1
+              kind: ClusterIssuer
+              metadata:
+                name: ($clusterIssuerName)
+              spec:
+                ca:
+                  secretName: ($clusterIssuerName)
+
+        - script:
+            # skipCommandOutput: true
+            # skipLogOutput: true
+            cluster: nso-infra
+            env:
+              - name: CLUSTER_ISSUER_NAME
+                value: ($clusterIssuerName)
+            content: |
+              kubectl get secret -n cert-manager $CLUSTER_ISSUER_NAME -o yaml | \
+                sed 's/namespace: .*/namespace: envoy-gateway-system/' | \
+                kubectl apply -n envoy-gateway-system -f -
 
     - name: Create GatewayClass for the upstream gateways
       try:
@@ -58,6 +101,26 @@ spec:
                         value:
                           spec:
                             ipFamilyPolicy: RequireDualStack
+                    envoyDeployment:
+                      patch:
+                        type: StrategicMerge
+                        value:
+                          spec:
+                            template:
+                              spec:
+                                containers:
+                                  - name: envoy
+                                    volumeMounts:
+                                      - mountPath: /etc/ssl/certs/
+                                        name: selfsigned-ca
+                                        readOnly: true
+                                volumes:
+                                  - name: selfsigned-ca
+                                    secret:
+                                      secretName: ($clusterIssuerName)
+                                      items:
+                                        - key: ca.crt
+                                          path: ca-certificates.crt
                 mergeGateways: true
 
         - create:
@@ -75,10 +138,100 @@ spec:
                   name: custom-proxy-config
                   namespace: envoy-gateway-system
 
+    - name: Create pod and service to serve as a backend for the HTTPRoute
+      try:
+        - create:
+            cluster: nso-infra
+            resource:
+              apiVersion: cert-manager.io/v1
+              kind: Certificate
+              metadata:
+                name: backend-pod
+                namespace: default
+              spec:
+                secretName: backend-pod-tls
+                usages:
+                - server auth
+                commonName: "backend-service.default.svc.cluster.local"
+                issuerRef:
+                  kind: ClusterIssuer
+                  name: ($clusterIssuerName)
+
+        - create:
+            cluster: nso-infra
+            resource:
+              apiVersion: v1
+              kind: Pod
+              metadata:
+                name: backend-pod
+                namespace: default
+                labels:
+                  purpose: backend-pod
+              spec:
+                containers:
+                  - name: test-plaintext
+                    image: ghcr.io/mccutchen/go-httpbin:2.18.1
+                    command: ["/bin/go-httpbin"]
+                    args:
+                      - -host
+                      - "0.0.0.0"
+                      - -port
+                      - "8080"
+                    resources:
+                      requests:
+                        cpu: 100m
+                        memory: 128Mi
+                      limits:
+                        cpu: 100m
+                        memory: 128Mi
+                  - name: test-tls
+                    image: ghcr.io/mccutchen/go-httpbin:2.18.1
+                    command: ["/bin/go-httpbin"]
+                    args:
+                      - -host
+                      - "0.0.0.0"
+                      - -port
+                      - "8443"
+                    resources:
+                      requests:
+                        cpu: 100m
+                        memory: 128Mi
+                      limits:
+                        cpu: 100m
+                        memory: 128Mi
+                    env:
+                      - name: HTTPS_CERT_FILE
+                        value: /certs/tls.crt
+                      - name: HTTPS_KEY_FILE
+                        value: /certs/tls.key
+                    volumeMounts:
+                      - name: cert
+                        mountPath: /certs
+                volumes:
+                  - name: cert
+                    secret:
+                      secretName: backend-pod-tls
+
+        - create:
+            cluster: nso-infra
+            resource:
+              apiVersion: v1
+              kind: Service
+              metadata:
+                name: backend-service
+                namespace: default
+              spec:
+                ports:
+                - port: 8080
+                  targetPort: 8080
+                selector:
+                  purpose: backend-pod
+
     - name: Provision Gateway
       try:
         # Get the target namespace UID
         - script:
+            cluster: nso-standard
             skipCommandOutput: true
             skipLogOutput: true
             content: |
@@ -103,6 +256,13 @@ spec:
                   allowedRoutes:
                     namespaces:
                       from: Same
+                - protocol: HTTP
+                  port: 80
+                  name: http-test-e2e
+                  allowedRoutes:
+                    namespaces:
+                      from: Same
+                  hostname: test.e2e.env.datum.net
                 - protocol: HTTPS
                   port: 443
                   name: https
@@ -134,6 +294,13 @@ spec:
                 namespace: ($downstreamNamespaceName)
               spec:
                 listeners:
+                - allowedRoutes:
+                    namespaces:
+                      from: Same
+                  hostname: test.e2e.env.datum.net
+                  name: http-test-e2e
+                  port: 80
+                  protocol: HTTP
                 - allowedRoutes:
                     namespaces:
                       from: Same
@@ -203,6 +370,18 @@ spec:
                   status: "True"
                   type: Programmed
                 listeners:
+                - attachedRoutes: 0
+                  conditions:
+                  - reason: Programmed
+                    status: "True"
+                    type: Programmed
+                  - reason: Accepted
+                    status: "True"
+                    type: Accepted
+                  - reason: ResolvedRefs
+                    status: "True"
+                    type: ResolvedRefs
+                  name: http-test-e2e
                 - attachedRoutes: 0
                   conditions:
                   - reason: Programmed
@@ -346,6 +525,7 @@ spec:
                 name: test-gateway
               status:
                 addresses:
+                  # TODO(jreese) add assertion for custom hostname
                   - type: Hostname
                     value: (join('.', [$upstreamGateway.metadata.uid, 'prism.e2e.env.datum.net']))
                   - type: Hostname
@@ -361,6 +541,14 @@ spec:
                     (conditions[?type == 'ResolvedRefs']):
                       - status: "True"
                     name: http
+                  - attachedRoutes: 0
+                    (conditions[?type == 'Programmed']):
+                      - status: "True"
+                    (conditions[?type == 'Accepted']):
+                      - status: "True"
+                    (conditions[?type == 'ResolvedRefs']):
+                      - status: "True"
+                    name: http-test-e2e
                   - attachedRoutes: 0
                     (conditions[?type == 'Programmed']):
                       - status: "True"
@@ -413,8 +601,7 @@ spec:
               apiVersion: discovery.k8s.io/v1
               endpoints:
               - addresses:
-                # TODO(jreese) create a pod to serve as the backend for e2e tests
-                - example.com
+                - backend-service.default.svc.cluster.local
                 conditions:
                   ready: true
                   serving: true
@@ -422,10 +609,10 @@ spec:
               ports:
               - name: http
                 appProtocol: http
-                port: 80
+                port: 8080
               - name: https
                 appProtocol: https
-                port: 443
+                port: 8443
 
         - create:
             cluster: nso-standard
@@ -447,14 +634,13 @@ spec:
                     - group: discovery.k8s.io
                       kind: EndpointSlice
                       name: test-slice-1
-                      port: 80
+                      port: 8080
                     filters:
                       - type: URLRewrite
                         urlRewrite:
                           path:
                             type: ReplacePrefixMatch
                             replacePrefixMatch: /
-                          hostname: "example.com"
                   - matches:
                     - path:
                         type: PathPrefix
@@ -463,14 +649,14 @@ spec:
                     - group: discovery.k8s.io
                       kind: EndpointSlice
                       name: test-slice-1
-                      port: 443
+                      port: 8443
                     filters:
                       - type: URLRewrite
                         urlRewrite:
                           path:
                             type: ReplacePrefixMatch
                             replacePrefixMatch: /
-                          hostname: "example.com"
+                          hostname: "backend-service.default.svc.cluster.local"
             outputs:
             - name: upstreamHTTPRoute
               match:
@@ -494,12 +680,12 @@ spec:
               apiVersion: discovery.k8s.io/v1
               endpoints:
               - addresses:
-                - example.com
+                - backend-service.default.svc.cluster.local
               ports:
               - name: http
-                port: 80
+                port: 8080
               - name: https
-                port: 443
+                port: 8443
 
         - assert:
             cluster: nso-infra
@@ -514,12 +700,12 @@ spec:
               apiVersion: discovery.k8s.io/v1
               endpoints:
               - addresses:
-                - example.com
+                - backend-service.default.svc.cluster.local
               ports:
               - name: http
-                port: 80
+                port: 8080
               - name: https
-                port: 443
+                port: 8443
 
         - assert:
             cluster: nso-infra
@@ -539,18 +725,10 @@ spec:
                   - kind: Service
                     name: (join('-', ['route', $upstreamHTTPRoute.metadata.uid, 'rule-0-backendref-0']))
                     weight: 1
-                  matches:
-                  - path:
-                      type: PathPrefix
-                      value: /plaintext
                 - backendRefs:
                   - kind: Service
                     name: (join('-', ['route', $upstreamHTTPRoute.metadata.uid, 'rule-1-backendref-0']))
                     weight: 1
-                  matches:
-                  - path:
-                      type: PathPrefix
-                      value: /tls
               status:
                 parents:
                 - conditions:
@@ -564,33 +742,6 @@ spec:
                     name: test-gateway
                     kind: Gateway
                     group: gateway.networking.k8s.io
-
-        # Restrict DNS resolution to IPv4 addresses only.
-        # Using the script here since create won't allow us to provide a namespace
-        # via a binding, and throws a validation error.
-        # TODO(jreese) remove this once we have a pod to serve as a backend.
-        - script:
-            skipCommandOutput: true
-            skipLogOutput: true
-            cluster: nso-infra
-            env:
-              - name: DOWNSTREAM_NAMESPACE
-                value: ($downstreamNamespaceName)
-            content: |
-              cat <<EOF | kubectl apply -f -
-              apiVersion: gateway.envoyproxy.io/v1alpha1
-              kind: BackendTrafficPolicy
-              metadata:
-                name: test-route
-                namespace: $DOWNSTREAM_NAMESPACE
-              spec:
-                targetRef:
-                  group: gateway.networking.k8s.io
-                  kind: HTTPRoute
-                  name: test-route
-                dns:
-                  lookupFamily: IPv4
-              EOF
 
         - assert:
             cluster: nso-infra
@@ -669,7 +820,10 @@ spec:
                   resources:
                     requests:
                       cpu: 100m
-                      memory: 10Mi
+                      memory: 128Mi
+                    limits:
+                      cpu: 100m
+                      memory: 1Gi
                   env:
                   - name: GATEWAY_SERVICE_NAME
                     value: ($gatewayService.metadata.name)
@@ -678,6 +832,17 @@ spec:
                   - name: PRIMARY_HOSTNAME
                     value: (join('.', [$upstreamGateway.metadata.uid, 'prism.e2e.env.datum.net']))
                 terminationGracePeriodSeconds: 0
+
+        - assert:
+            cluster: nso-infra
+            resource:
+                apiVersion: v1
+                kind: Pod
+                metadata:
+                  name: backend-pod
+                  namespace: default
+                status:
+                  phase: Running
 
         - assert:
             cluster: nso-infra
@@ -702,8 +867,8 @@ spec:
               kubectl -n default exec -i test-pod -- sh -c " \
                 set -x; \
                 apk add curl; \
-                curl -kvf -H \"Host: \${PRIMARY_HOSTNAME}\" http://\${GATEWAY_SERVICE_NAME}.\${GATEWAY_SERVICE_NAMESPACE}.svc.cluster.local/plaintext; \
-                curl -kvf -H \"Host: \${PRIMARY_HOSTNAME}\" http://\${GATEWAY_SERVICE_NAME}.\${GATEWAY_SERVICE_NAMESPACE}.svc.cluster.local/tls; \
+                curl -kvf -H \"Host: \${PRIMARY_HOSTNAME}\" http://\${GATEWAY_SERVICE_NAME}.\${GATEWAY_SERVICE_NAMESPACE}.svc.cluster.local/plaintext/status/200; \
+                curl -kvf -H \"Host: \${PRIMARY_HOSTNAME}\" http://\${GATEWAY_SERVICE_NAME}.\${GATEWAY_SERVICE_NAMESPACE}.svc.cluster.local/tls/status/200; \
               "
       catch:
         - script:

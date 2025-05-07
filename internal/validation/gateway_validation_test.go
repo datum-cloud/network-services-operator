@@ -191,7 +191,7 @@ func TestValidateGateway(t *testing.T) {
 				ClusterName: "cluster-a",
 			},
 			expectedErrors: field.ErrorList{
-				field.Invalid(field.NewPath("spec", "listeners").Index(0).Child("hostname"), "foo.bar.com", "hostname does not match any allowed suffixes for cluster \"cluster-a\": [example.com]"),
+				field.Invalid(field.NewPath("spec", "listeners").Index(0).Child("hostname"), "foo.bar.com", "hostname does not match any allowed suffixes: [example.com]"),
 			},
 		},
 		"custom hostname: invalid, superdomain": {
@@ -220,7 +220,7 @@ func TestValidateGateway(t *testing.T) {
 				ClusterName: "cluster-a",
 			},
 			expectedErrors: field.ErrorList{
-				field.Invalid(field.NewPath("spec", "listeners").Index(0).Child("hostname"), "com", "hostname does not match any allowed suffixes for cluster \"cluster-a\": [example.com]"),
+				field.Invalid(field.NewPath("spec", "listeners").Index(0).Child("hostname"), "com", "hostname does not match any allowed suffixes: [example.com]"),
 			},
 		},
 		"custom hostname: valid, matches second suffix in list": {
@@ -276,7 +276,7 @@ func TestValidateGateway(t *testing.T) {
 				ClusterName: "cluster-a",
 			},
 			expectedErrors: field.ErrorList{
-				field.Invalid(field.NewPath("spec", "listeners").Index(0).Child("hostname"), "foo.EXAMPLE.COM", "hostname does not match any allowed suffixes for cluster \"cluster-a\": [example.com]"),
+				field.Invalid(field.NewPath("spec", "listeners").Index(0).Child("hostname"), "foo.EXAMPLE.COM", "hostname does not match any allowed suffixes: [example.com]"),
 			},
 		},
 		"custom hostname: nil hostname (should not error on hostname validation)": {

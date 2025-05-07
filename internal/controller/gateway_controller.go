@@ -162,16 +162,19 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 	}
 	upstreamGatewayClassControllerName := string(upstreamGatewayClass.Spec.ControllerName)
 
-	hostnames := []string{
+	// addressHostnames are default hostnames that are unique to each gateway, and
+	// will have DNS records created for them. Any custom hostnames provided in
+	// listeners WILL NOT be added to the addresses list in the gateway status.
+	addressHostnames := []string{
 		fmt.Sprintf("%s.%s", upstreamGateway.UID, r.Config.Gateway.TargetDomain),
 	}
 
 	if r.Config.Gateway.IPv4Enabled() {
-		hostnames = append(hostnames, fmt.Sprintf("v4.%s.%s", upstreamGateway.UID, r.Config.Gateway.TargetDomain))
+		addressHostnames = append(addressHostnames, fmt.Sprintf("v4.%s.%s", upstreamGateway.UID, r.Config.Gateway.TargetDomain))
 	}
 
 	if r.Config.Gateway.IPv6Enabled() {
-		hostnames = append(hostnames, fmt.Sprintf("v6.%s.%s", upstreamGateway.UID, r.Config.Gateway.TargetDomain))
+		addressHostnames = append(addressHostnames, fmt.Sprintf("v6.%s.%s", upstreamGateway.UID, r.Config.Gateway.TargetDomain))
 	}
 
 	downstreamClient := downstreamStrategy.GetClient()
@@ -255,7 +258,7 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 			return listener
 		}
 
-		for i, hostname := range hostnames {
+		for i, hostname := range addressHostnames {
 			listeners = append(listeners,
 				listenerFactory(fmt.Sprintf("http-%d", i), hostname, gatewayv1.HTTPProtocolType, gatewayv1.PortNumber(80)),
 				listenerFactory(fmt.Sprintf("https-%d", i), hostname, gatewayv1.HTTPSProtocolType, gatewayv1.PortNumber(443)),
@@ -279,11 +282,9 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 
 	dnsResult := r.ensureDownstreamGatewayDNSEndpoints(
 		ctx,
-		upstreamClient,
-		upstreamGateway,
 		downstreamGateway,
 		downstreamStrategy,
-		hostnames,
+		addressHostnames,
 	)
 	if dnsResult.ShouldReturn() {
 		return dnsResult.Merge(result), nil
@@ -332,13 +333,26 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 		downstreamStrategy,
 	)
 
+	addresses := make([]gatewayv1.GatewayStatusAddress, 0, len(addressHostnames))
+	addressType := gatewayv1.HostnameAddressType
+
+	for _, hostname := range addressHostnames {
+		addresses = append(addresses, gatewayv1.GatewayStatusAddress{
+			Type:  &addressType,
+			Value: hostname,
+		})
+	}
+
+	if !equality.Semantic.DeepEqual(upstreamGateway.Status.Addresses, addresses) {
+		upstreamGateway.Status.Addresses = addresses
+		result.AddStatusUpdate(upstreamClient, upstreamGateway)
+	}
+
 	return httpRouteResult.Merge(result), downstreamGateway
 }
 
 func (r *GatewayReconciler) ensureDownstreamGatewayDNSEndpoints(
 	ctx context.Context,
-	upstreamClient client.Client,
-	upstreamGateway *gatewayv1.Gateway,
 	downstreamGateway *gatewayv1.Gateway,
 	downstreamStrategy downstreamclient.ResourceStrategy,
 	hostnames []string,
@@ -374,9 +388,6 @@ func (r *GatewayReconciler) ensureDownstreamGatewayDNSEndpoints(
 		return result
 	}
 
-	addresses := make([]gatewayv1.GatewayStatusAddress, 0, len(hostnames))
-	addressType := gatewayv1.HostnameAddressType
-
 	endpoints := []any{}
 	var gatewayDNSEndpoint unstructured.Unstructured
 	gatewayDNSEndpoint.SetGroupVersionKind(schema.GroupVersionKind{
@@ -388,11 +399,6 @@ func (r *GatewayReconciler) ensureDownstreamGatewayDNSEndpoints(
 	gatewayDNSEndpoint.SetName(downstreamGateway.Name)
 
 	for _, hostname := range hostnames {
-		addresses = append(addresses, gatewayv1.GatewayStatusAddress{
-			Type:  &addressType,
-			Value: hostname,
-		})
-
 		if len(v4IPs) > 0 && !strings.HasPrefix(hostname, "v6") {
 			// v4 specific hostname, or hostname that includes both v4 and v6
 			endpoints = append(endpoints, map[string]any{
@@ -412,12 +418,6 @@ func (r *GatewayReconciler) ensureDownstreamGatewayDNSEndpoints(
 				"recordTTL":  int64(300),
 			})
 		}
-	}
-
-	// TODO(jreese) move this out of DNSEndpoints function
-	if !equality.Semantic.DeepEqual(upstreamGateway.Status.Addresses, addresses) {
-		upstreamGateway.Status.Addresses = addresses
-		result.AddStatusUpdate(upstreamClient, upstreamGateway)
 	}
 
 	if _, err := controllerutil.CreateOrUpdate(ctx, downstreamStrategy.GetClient(), &gatewayDNSEndpoint, func() error {

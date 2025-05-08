@@ -90,8 +90,8 @@ func validateAllowedRoutes(allowedRoutes *gatewayv1.AllowedRoutes, fldPath *fiel
 	allErrs := field.ErrorList{}
 
 	if allowedRoutes.Namespaces != nil && allowedRoutes.Namespaces.From != nil {
-		if *allowedRoutes.Namespaces.From == gatewayv1.NamespacesFromAll {
-			allErrs = append(allErrs, field.Invalid(fldPath.Child("namespaces", "from"), allowedRoutes.Namespaces.From, "allowedRoutes.namespaces.from must be set to NamespacesFromAll"))
+		if *allowedRoutes.Namespaces.From != gatewayv1.NamespacesFromSame {
+			allErrs = append(allErrs, field.NotSupported(fldPath.Child("namespaces", "from"), allowedRoutes.Namespaces.From, []gatewayv1.FromNamespaces{gatewayv1.NamespacesFromSame}))
 		}
 	}
 

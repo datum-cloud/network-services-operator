@@ -424,7 +424,7 @@ func TestValidateGateway(t *testing.T) {
 				ValidProtocolTypes: []gatewayv1.ProtocolType{gatewayv1.HTTPProtocolType, gatewayv1.HTTPSProtocolType},
 			},
 			expectedErrors: field.ErrorList{
-				field.Invalid(field.NewPath("spec", "listeners").Index(0).Child("allowedRoutes", "namespaces", "from"), gatewayv1.NamespacesFromAll, "allowedRoutes.namespaces.from must be set to NamespacesFromAll"),
+				field.NotSupported(field.NewPath("spec", "listeners").Index(0).Child("allowedRoutes", "namespaces", "from"), gatewayv1.NamespacesFromAll, []gatewayv1.FromNamespaces{gatewayv1.NamespacesFromSame}),
 			},
 		},
 		"kinds not permitted": {

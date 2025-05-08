@@ -279,6 +279,17 @@ spec:
                     mode: Terminate
                     options:
                       gateway.networking.datumapis.com/certificate-issuer: ($clusterIssuerName)
+                - protocol: HTTPS
+                  port: 443
+                  name: https-test-e2e
+                  allowedRoutes:
+                    namespaces:
+                      from: Same
+                  hostname: test.e2e.env.datum.net
+                  tls:
+                    mode: Terminate
+                    options:
+                      gateway.networking.datumapis.com/certificate-issuer: ($clusterIssuerName)
             outputs:
               - name: upstreamGateway
                 match:
@@ -307,6 +318,19 @@ spec:
                   name: http-test-e2e
                   port: 80
                   protocol: HTTP
+                - allowedRoutes:
+                    namespaces:
+                      from: Same
+                  hostname: test.e2e.env.datum.net
+                  name: https-test-e2e
+                  port: 443
+                  protocol: HTTPS
+                  tls:
+                    certificateRefs:
+                    - group: ""
+                      kind: Secret
+                      name: test-gateway
+                    mode: Terminate
                 - allowedRoutes:
                     namespaces:
                       from: Same
@@ -388,6 +412,18 @@ spec:
                     status: "True"
                     type: ResolvedRefs
                   name: http-test-e2e
+                - attachedRoutes: 0
+                  conditions:
+                  - reason: Programmed
+                    status: "True"
+                    type: Programmed
+                  - reason: Accepted
+                    status: "True"
+                    type: Accepted
+                  - reason: ResolvedRefs
+                    status: "True"
+                    type: ResolvedRefs
+                  name: https-test-e2e
                 - attachedRoutes: 0
                   conditions:
                   - reason: Programmed
@@ -562,6 +598,14 @@ spec:
                     (conditions[?type == 'ResolvedRefs']):
                       - status: "True"
                     name: https
+                  - attachedRoutes: 0
+                    (conditions[?type == 'Programmed']):
+                      - status: "True"
+                    (conditions[?type == 'Accepted']):
+                      - status: "True"
+                    (conditions[?type == 'ResolvedRefs']):
+                      - status: "True"
+                    name: https-test-e2e
                 (conditions[?type == 'Accepted']):
                   - status: "True"
                 (conditions[?type == 'Programmed']):

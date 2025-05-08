@@ -214,11 +214,29 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 					}
 					downstreamGateway.Annotations["cert-manager.io/cluster-issuer"] = clusterIssuerName
 				}
+
 			}
 
 			if l.Hostname != nil {
-				// Custom hostname, add a listener for it.
-				listeners = append(listeners, l)
+				listenerCopy := l.DeepCopy()
+				if l.TLS != nil && l.TLS.Options[certificateIssuerTLSOption] != "" {
+					// Translate upstream TLS settings to downstream TLS settings
+					delete(listenerCopy.TLS.Options, certificateIssuerTLSOption)
+
+					tlsMode := gatewayv1.TLSModeTerminate
+					listenerCopy.TLS = &gatewayv1.GatewayTLSConfig{
+						Mode: &tlsMode,
+						// TODO(jreese) investigate secret deletion when Cert (gateway) is deleted
+						// See: https://cert-manager.io/docs/usage/certificate/#cleaning-up-secrets-when-certificates-are-deleted
+						CertificateRefs: []gatewayv1.SecretObjectReference{
+							{
+								Name: gatewayv1.ObjectName(downstreamGateway.Name),
+							},
+						},
+					}
+				}
+
+				listeners = append(listeners, *listenerCopy)
 			}
 		}
 

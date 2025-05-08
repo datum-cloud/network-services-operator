@@ -6,8 +6,6 @@ import (
 	"context"
 	"fmt"
 
-	"go.datum.net/network-services-operator/internal/validation"
-	networkingwebhook "go.datum.net/network-services-operator/internal/webhook"
 	"k8s.io/apimachinery/pkg/api/errors"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -18,7 +16,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
+	mccontext "sigs.k8s.io/multicluster-runtime/pkg/context"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
+
+	"go.datum.net/network-services-operator/internal/validation"
 )
 
 // nolint:unused
@@ -46,7 +47,10 @@ func (v *GatewayCustomValidator) ValidateCreate(ctx context.Context, obj runtime
 		return nil, fmt.Errorf("expected a Gateway object but got %T", obj)
 	}
 
-	clusterName := networkingwebhook.ClusterNameFromContext(ctx)
+	clusterName, ok := mccontext.ClusterFrom(ctx)
+	if !ok {
+		return nil, fmt.Errorf("expected a cluster name in the context")
+	}
 
 	cluster, err := v.mgr.GetCluster(ctx, clusterName)
 	if err != nil {
@@ -61,7 +65,10 @@ func (v *GatewayCustomValidator) ValidateCreate(ctx context.Context, obj runtime
 	gatewaylog := logf.FromContext(ctx).WithValues("cluster", clusterName)
 	gatewaylog.Info("Validating Gateway", "name", gateway.GetName(), "cluster", clusterName)
 
-	if errs := validation.ValidateGateway(gateway, v.validationOpts); len(errs) > 0 {
+	clusterValidationOpts := v.validationOpts
+	clusterValidationOpts.ClusterName = clusterName
+
+	if errs := validation.ValidateGateway(gateway, clusterValidationOpts); len(errs) > 0 {
 		return nil, errors.NewInvalid(obj.GetObjectKind().GroupVersionKind().GroupKind(), gateway.GetName(), errs)
 	}
 
@@ -75,7 +82,10 @@ func (v *GatewayCustomValidator) ValidateUpdate(ctx context.Context, oldObj, new
 		return nil, fmt.Errorf("expected a Gateway object for the newObj but got %T", newObj)
 	}
 
-	clusterName := networkingwebhook.ClusterNameFromContext(ctx)
+	clusterName, ok := mccontext.ClusterFrom(ctx)
+	if !ok {
+		return nil, fmt.Errorf("expected a cluster name in the context")
+	}
 
 	cluster, err := v.mgr.GetCluster(ctx, clusterName)
 	if err != nil {
@@ -90,7 +100,10 @@ func (v *GatewayCustomValidator) ValidateUpdate(ctx context.Context, oldObj, new
 	gatewaylog := logf.FromContext(ctx).WithValues("cluster", clusterName)
 	gatewaylog.Info("Validating Gateway", "name", gateway.GetName())
 
-	if errs := validation.ValidateGateway(gateway, v.validationOpts); len(errs) > 0 {
+	clusterValidationOpts := v.validationOpts
+	clusterValidationOpts.ClusterName = clusterName
+
+	if errs := validation.ValidateGateway(gateway, clusterValidationOpts); len(errs) > 0 {
 		return nil, errors.NewInvalid(oldObj.GetObjectKind().GroupVersionKind().GroupKind(), gateway.GetName(), errs)
 	}
 

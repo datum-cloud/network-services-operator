@@ -8,6 +8,8 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/utils/ptr"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
+
+	"go.datum.net/network-services-operator/internal/config"
 )
 
 func TestValidateGateway(t *testing.T) {
@@ -48,6 +50,261 @@ func TestValidateGateway(t *testing.T) {
 			expectedErrors: field.ErrorList{
 				field.Invalid(field.NewPath("spec", "listeners").Index(0).Child("hostname"), "example.com", "hostnames are not permitted"),
 			},
+		},
+		"custom hostname: cluster not in allow list": {
+			gateway: &gatewayv1.Gateway{
+				Spec: gatewayv1.GatewaySpec{
+					GatewayClassName: "test-gateway-class",
+					Listeners: []gatewayv1.Listener{
+						{
+							Name:     "http",
+							Protocol: gatewayv1.HTTPProtocolType,
+							Port:     80,
+							Hostname: ptr.To(gatewayv1.Hostname("custom.example.com")),
+						},
+					},
+				},
+			},
+			opts: GatewayValidationOptions{
+				ValidPortNumbers:   []int{80, 443},
+				ValidProtocolTypes: []gatewayv1.ProtocolType{gatewayv1.HTTPProtocolType, gatewayv1.HTTPSProtocolType},
+				CustomHostnameAllowList: []config.CustomHostnameAllowListEntry{
+					{
+						ClusterName: "other-cluster",
+						Suffixes:    []string{"example.com"},
+					},
+				},
+				ClusterName: "cluster-a",
+			},
+			expectedErrors: field.ErrorList{
+				field.Invalid(field.NewPath("spec", "listeners").Index(0).Child("hostname"), gatewayv1.Hostname("custom.example.com"), "hostnames are not permitted"),
+			},
+		},
+		"custom hostname: empty suffix list for cluster": {
+			gateway: &gatewayv1.Gateway{
+				Spec: gatewayv1.GatewaySpec{
+					GatewayClassName: "test-gateway-class",
+					Listeners: []gatewayv1.Listener{
+						{
+							Name:     "http",
+							Protocol: gatewayv1.HTTPProtocolType,
+							Port:     80,
+							Hostname: ptr.To(gatewayv1.Hostname("custom.example.com")),
+						},
+					},
+				},
+			},
+			opts: GatewayValidationOptions{
+				ValidPortNumbers:   []int{80, 443},
+				ValidProtocolTypes: []gatewayv1.ProtocolType{gatewayv1.HTTPProtocolType, gatewayv1.HTTPSProtocolType},
+				CustomHostnameAllowList: []config.CustomHostnameAllowListEntry{
+					{
+						ClusterName: "cluster-a",
+						Suffixes:    []string{},
+					},
+				},
+				ClusterName: "cluster-a",
+			},
+			expectedErrors: field.ErrorList{
+				field.Invalid(field.NewPath("spec", "listeners").Index(0).Child("hostname"), "custom.example.com", "hostname does not match any allowed suffixes: []"),
+			},
+		},
+		"custom hostname: valid subdomain": {
+			gateway: &gatewayv1.Gateway{
+				Spec: gatewayv1.GatewaySpec{
+					GatewayClassName: "test-gateway-class",
+					Listeners: []gatewayv1.Listener{
+						{
+							Name:     "http",
+							Protocol: gatewayv1.HTTPProtocolType,
+							Port:     80,
+							Hostname: ptr.To(gatewayv1.Hostname("foo.example.com")),
+						},
+					},
+				},
+			},
+			opts: GatewayValidationOptions{
+				ValidPortNumbers:   []int{80, 443},
+				ValidProtocolTypes: []gatewayv1.ProtocolType{gatewayv1.HTTPProtocolType, gatewayv1.HTTPSProtocolType},
+				CustomHostnameAllowList: []config.CustomHostnameAllowListEntry{
+					{
+						ClusterName: "cluster-a",
+						Suffixes:    []string{"example.com", "another.org"},
+					},
+				},
+				ClusterName: "cluster-a",
+			},
+			expectedErrors: field.ErrorList{},
+		},
+		"custom hostname: exact match": {
+			gateway: &gatewayv1.Gateway{
+				Spec: gatewayv1.GatewaySpec{
+					GatewayClassName: "test-gateway-class",
+					Listeners: []gatewayv1.Listener{
+						{
+							Name:     "http",
+							Protocol: gatewayv1.HTTPProtocolType,
+							Port:     80,
+							Hostname: ptr.To(gatewayv1.Hostname("example.com")),
+						},
+					},
+				},
+			},
+			opts: GatewayValidationOptions{
+				ValidPortNumbers:   []int{80, 443},
+				ValidProtocolTypes: []gatewayv1.ProtocolType{gatewayv1.HTTPProtocolType, gatewayv1.HTTPSProtocolType},
+				CustomHostnameAllowList: []config.CustomHostnameAllowListEntry{
+					{
+						ClusterName: "cluster-a",
+						Suffixes:    []string{"example.com", "another.org"},
+					},
+				},
+				ClusterName: "cluster-a",
+			},
+			expectedErrors: field.ErrorList{
+				field.Invalid(field.NewPath("spec", "listeners").Index(0).Child("hostname"), "example.com", "hostname does not match any allowed suffixes: [example.com another.org]"),
+			},
+		},
+		"custom hostname: invalid, not a subdomain": {
+			gateway: &gatewayv1.Gateway{
+				Spec: gatewayv1.GatewaySpec{
+					GatewayClassName: "test-gateway-class",
+					Listeners: []gatewayv1.Listener{
+						{
+							Name:     "http",
+							Protocol: gatewayv1.HTTPProtocolType,
+							Port:     80,
+							Hostname: ptr.To(gatewayv1.Hostname("foo.bar.com")),
+						},
+					},
+				},
+			},
+			opts: GatewayValidationOptions{
+				ValidPortNumbers:   []int{80, 443},
+				ValidProtocolTypes: []gatewayv1.ProtocolType{gatewayv1.HTTPProtocolType, gatewayv1.HTTPSProtocolType},
+				CustomHostnameAllowList: []config.CustomHostnameAllowListEntry{
+					{
+						ClusterName: "cluster-a",
+						Suffixes:    []string{"example.com"},
+					},
+				},
+				ClusterName: "cluster-a",
+			},
+			expectedErrors: field.ErrorList{
+				field.Invalid(field.NewPath("spec", "listeners").Index(0).Child("hostname"), "foo.bar.com", "hostname does not match any allowed suffixes: [example.com]"),
+			},
+		},
+		"custom hostname: invalid, superdomain": {
+			gateway: &gatewayv1.Gateway{
+				Spec: gatewayv1.GatewaySpec{
+					GatewayClassName: "test-gateway-class",
+					Listeners: []gatewayv1.Listener{
+						{
+							Name:     "http",
+							Protocol: gatewayv1.HTTPProtocolType,
+							Port:     80,
+							Hostname: ptr.To(gatewayv1.Hostname("com")),
+						},
+					},
+				},
+			},
+			opts: GatewayValidationOptions{
+				ValidPortNumbers:   []int{80, 443},
+				ValidProtocolTypes: []gatewayv1.ProtocolType{gatewayv1.HTTPProtocolType, gatewayv1.HTTPSProtocolType},
+				CustomHostnameAllowList: []config.CustomHostnameAllowListEntry{
+					{
+						ClusterName: "cluster-a",
+						Suffixes:    []string{"example.com"},
+					},
+				},
+				ClusterName: "cluster-a",
+			},
+			expectedErrors: field.ErrorList{
+				field.Invalid(field.NewPath("spec", "listeners").Index(0).Child("hostname"), "com", "hostname does not match any allowed suffixes: [example.com]"),
+			},
+		},
+		"custom hostname: valid, matches second suffix in list": {
+			gateway: &gatewayv1.Gateway{
+				Spec: gatewayv1.GatewaySpec{
+					GatewayClassName: "test-gateway-class",
+					Listeners: []gatewayv1.Listener{
+						{
+							Name:     "http",
+							Protocol: gatewayv1.HTTPProtocolType,
+							Port:     80,
+							Hostname: ptr.To(gatewayv1.Hostname("web.another.org")),
+						},
+					},
+				},
+			},
+			opts: GatewayValidationOptions{
+				ValidPortNumbers:   []int{80, 443},
+				ValidProtocolTypes: []gatewayv1.ProtocolType{gatewayv1.HTTPProtocolType, gatewayv1.HTTPSProtocolType},
+				CustomHostnameAllowList: []config.CustomHostnameAllowListEntry{
+					{
+						ClusterName: "cluster-a",
+						Suffixes:    []string{"example.com", "another.org"},
+					},
+				},
+				ClusterName: "cluster-a",
+			},
+			expectedErrors: field.ErrorList{},
+		},
+		"custom hostname: case-sensitive mismatch (current behavior)": {
+			gateway: &gatewayv1.Gateway{
+				Spec: gatewayv1.GatewaySpec{
+					GatewayClassName: "test-gateway-class",
+					Listeners: []gatewayv1.Listener{
+						{
+							Name:     "http",
+							Protocol: gatewayv1.HTTPProtocolType,
+							Port:     80,
+							Hostname: ptr.To(gatewayv1.Hostname("foo.EXAMPLE.COM")),
+						},
+					},
+				},
+			},
+			opts: GatewayValidationOptions{
+				ValidPortNumbers:   []int{80, 443},
+				ValidProtocolTypes: []gatewayv1.ProtocolType{gatewayv1.HTTPProtocolType, gatewayv1.HTTPSProtocolType},
+				CustomHostnameAllowList: []config.CustomHostnameAllowListEntry{
+					{
+						ClusterName: "cluster-a",
+						Suffixes:    []string{"example.com"},
+					},
+				},
+				ClusterName: "cluster-a",
+			},
+			expectedErrors: field.ErrorList{
+				field.Invalid(field.NewPath("spec", "listeners").Index(0).Child("hostname"), "foo.EXAMPLE.COM", "hostname does not match any allowed suffixes: [example.com]"),
+			},
+		},
+		"custom hostname: nil hostname (should not error on hostname validation)": {
+			gateway: &gatewayv1.Gateway{
+				Spec: gatewayv1.GatewaySpec{
+					GatewayClassName: "test-gateway-class",
+					Listeners: []gatewayv1.Listener{
+						{
+							Name:     "http",
+							Protocol: gatewayv1.HTTPProtocolType,
+							Port:     80,
+							Hostname: nil, // Explicitly nil
+						},
+					},
+				},
+			},
+			opts: GatewayValidationOptions{
+				ValidPortNumbers:   []int{80, 443},
+				ValidProtocolTypes: []gatewayv1.ProtocolType{gatewayv1.HTTPProtocolType, gatewayv1.HTTPSProtocolType},
+				CustomHostnameAllowList: []config.CustomHostnameAllowListEntry{
+					{
+						ClusterName: "cluster-a",
+						Suffixes:    []string{"example.com"},
+					},
+				},
+				ClusterName: "cluster-a",
+			},
+			expectedErrors: field.ErrorList{},
 		},
 		"invalid port number": {
 			gateway: &gatewayv1.Gateway{
@@ -167,7 +424,7 @@ func TestValidateGateway(t *testing.T) {
 				ValidProtocolTypes: []gatewayv1.ProtocolType{gatewayv1.HTTPProtocolType, gatewayv1.HTTPSProtocolType},
 			},
 			expectedErrors: field.ErrorList{
-				field.Invalid(field.NewPath("spec", "listeners").Index(0).Child("allowedRoutes", "namespaces", "from"), gatewayv1.NamespacesFromAll, "allowedRoutes.namespaces.from must be set to NamespacesFromAll"),
+				field.NotSupported(field.NewPath("spec", "listeners").Index(0).Child("allowedRoutes", "namespaces", "from"), gatewayv1.NamespacesFromAll, []gatewayv1.FromNamespaces{gatewayv1.NamespacesFromSame}),
 			},
 		},
 		"kinds not permitted": {

@@ -133,9 +133,7 @@ func main() {
 		serverConfig.WebhookServer.Options(ctx, deploymentClusterClient),
 	)
 
-	if serverConfig.Discovery.Mode != providers.ProviderSingle {
-		webhookServer = networkingwebhook.NewClusterAwareWebhookServer(webhookServer)
-	}
+	webhookServer = networkingwebhook.NewClusterAwareWebhookServer(webhookServer, serverConfig.Discovery.Mode)
 
 	mgr, err := mcmanager.New(cfg, provider, ctrl.Options{
 		Scheme:                  scheme,
@@ -222,10 +220,11 @@ func main() {
 	}
 
 	validationOpts := validation.GatewayValidationOptions{
-		ControllerName:      serverConfig.Gateway.ControllerName,
-		PermittedTLSOptions: serverConfig.Gateway.PermittedTLSOptions,
-		ValidPortNumbers:    serverConfig.Gateway.ValidPortNumbers,
-		ValidProtocolTypes:  serverConfig.Gateway.ValidProtocolTypes,
+		ControllerName:          serverConfig.Gateway.ControllerName,
+		PermittedTLSOptions:     serverConfig.Gateway.PermittedTLSOptions,
+		ValidPortNumbers:        serverConfig.Gateway.ValidPortNumbers,
+		ValidProtocolTypes:      serverConfig.Gateway.ValidProtocolTypes,
+		CustomHostnameAllowList: serverConfig.Gateway.CustomHostnameAllowList,
 	}
 
 	if err = networkinggatewayv1webhooks.SetupGatewayWebhookWithManager(mgr, validationOpts); err != nil {

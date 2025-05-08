@@ -66,10 +66,11 @@ func (r *GatewayClassReconciler) Reconcile(ctx context.Context, req mcreconcile.
 
 	// Update the Accepted condition
 	acceptedCondition := metav1.Condition{
-		Type:    string(gatewayv1.GatewayClassConditionStatusAccepted),
-		Status:  metav1.ConditionTrue,
-		Reason:  string(reason),
-		Message: message,
+		Type:               string(gatewayv1.GatewayClassConditionStatusAccepted),
+		Status:             metav1.ConditionTrue,
+		Reason:             string(reason),
+		Message:            message,
+		ObservedGeneration: gatewayClass.Generation,
 	}
 
 	if !accepted {

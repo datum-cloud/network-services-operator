@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"strings"
 
-	"go.datum.net/network-services-operator/internal/config"
-	downstreamclient "go.datum.net/network-services-operator/internal/downstreamclient"
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
@@ -33,6 +31,9 @@ import (
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 	mcsource "sigs.k8s.io/multicluster-runtime/pkg/source"
+
+	"go.datum.net/network-services-operator/internal/config"
+	downstreamclient "go.datum.net/network-services-operator/internal/downstreamclient"
 )
 
 const gatewayControllerFinalizer = "gateway.networking.datumapis.com/gateway-controller"
@@ -87,6 +88,19 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 		return ctrl.Result{}, err
 	}
 
+	// Look up the GatewayClass to determine if it's applicable to this controller
+	var upstreamGatewayClass gatewayv1.GatewayClass
+	if err := cl.GetClient().Get(ctx, types.NamespacedName{Name: string(gateway.Spec.GatewayClassName)}, &upstreamGatewayClass); err != nil {
+		if apierrors.IsNotFound(err) {
+			return ctrl.Result{}, nil
+		}
+		return ctrl.Result{}, err
+	}
+
+	if upstreamGatewayClass.Spec.ControllerName != r.Config.Gateway.ControllerName {
+		return ctrl.Result{}, nil
+	}
+
 	downstreamStrategy := downstreamclient.NewMappedNamespaceResourceStrategy(req.ClusterName, cl.GetClient(), r.DownstreamCluster.GetClient())
 
 	if !gateway.DeletionTimestamp.IsZero() {
@@ -108,16 +122,6 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 			return ctrl.Result{}, fmt.Errorf("failed to add finalizer to gateway: %w", err)
 		}
 
-		return ctrl.Result{}, nil
-	}
-
-	// Look up the GatewayClass to determine if it's applicable to this controller
-	var upstreamGatewayClass gatewayv1.GatewayClass
-	if err := cl.GetClient().Get(ctx, types.NamespacedName{Name: string(gateway.Spec.GatewayClassName)}, &upstreamGatewayClass); err != nil {
-		return ctrl.Result{}, err
-	}
-
-	if upstreamGatewayClass.Spec.ControllerName != r.Config.Gateway.ControllerName {
 		return ctrl.Result{}, nil
 	}
 
@@ -158,17 +162,19 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 	}
 	upstreamGatewayClassControllerName := string(upstreamGatewayClass.Spec.ControllerName)
 
-	// TODO(jreese) handle hostnames defined on upstream listeners
-	hostnames := []string{
+	// addressHostnames are default hostnames that are unique to each gateway, and
+	// will have DNS records created for them. Any custom hostnames provided in
+	// listeners WILL NOT be added to the addresses list in the gateway status.
+	addressHostnames := []string{
 		fmt.Sprintf("%s.%s", upstreamGateway.UID, r.Config.Gateway.TargetDomain),
 	}
 
 	if r.Config.Gateway.IPv4Enabled() {
-		hostnames = append(hostnames, fmt.Sprintf("v4.%s.%s", upstreamGateway.UID, r.Config.Gateway.TargetDomain))
+		addressHostnames = append(addressHostnames, fmt.Sprintf("v4.%s.%s", upstreamGateway.UID, r.Config.Gateway.TargetDomain))
 	}
 
 	if r.Config.Gateway.IPv6Enabled() {
-		hostnames = append(hostnames, fmt.Sprintf("v6.%s.%s", upstreamGateway.UID, r.Config.Gateway.TargetDomain))
+		addressHostnames = append(addressHostnames, fmt.Sprintf("v6.%s.%s", upstreamGateway.UID, r.Config.Gateway.TargetDomain))
 	}
 
 	downstreamClient := downstreamStrategy.GetClient()
@@ -190,9 +196,15 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 		if downstreamGateway.Annotations == nil {
 			downstreamGateway.Annotations = map[string]string{}
 		}
+		var listeners []gatewayv1.Listener
 		for _, l := range upstreamGateway.Spec.Listeners {
-			if l.TLS != nil && l.TLS.Options[certificateIssuerTLSOption] != "" {
 
+			// TODO(jreese) this approach actually leads to request coalescing, resulting
+			// in the `OverlappingTLSConfig` condition being set to true on the downstream
+			// gateway, and HTTP2 disabled. We may need to either handle our own
+			// certificate requests for each listener, or create a gateway for each
+			// unique hostname that needs TLS.
+			if l.TLS != nil && l.TLS.Options[certificateIssuerTLSOption] != "" {
 				if r.Config.Gateway.PerGatewayCertificateIssuer {
 					downstreamGateway.Annotations["cert-manager.io/issuer"] = downstreamGateway.Name
 				} else {
@@ -202,23 +214,34 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 					}
 					downstreamGateway.Annotations["cert-manager.io/cluster-issuer"] = clusterIssuerName
 				}
+
+			}
+
+			if l.Hostname != nil {
+				listenerCopy := l.DeepCopy()
+				if l.TLS != nil && l.TLS.Options[certificateIssuerTLSOption] != "" {
+					// Translate upstream TLS settings to downstream TLS settings
+					delete(listenerCopy.TLS.Options, certificateIssuerTLSOption)
+
+					tlsMode := gatewayv1.TLSModeTerminate
+					listenerCopy.TLS = &gatewayv1.GatewayTLSConfig{
+						Mode: &tlsMode,
+						// TODO(jreese) investigate secret deletion when Cert (gateway) is deleted
+						// See: https://cert-manager.io/docs/usage/certificate/#cleaning-up-secrets-when-certificates-are-deleted
+						CertificateRefs: []gatewayv1.SecretObjectReference{
+							{
+								Name: gatewayv1.ObjectName(downstreamGateway.Name),
+							},
+						},
+					}
+				}
+
+				listeners = append(listeners, *listenerCopy)
 			}
 		}
 
-		downstreamGateway.Spec = gatewayv1.GatewaySpec{
-			// TODO(jreese) get from "scheduler"
-			GatewayClassName: gatewayv1.ObjectName(r.Config.Gateway.DownstreamGatewayClassName),
-
-			// TODO(jreese) get from "scheduler"
-			Addresses: []gatewayv1.GatewayAddress{},
-
-			Listeners: []gatewayv1.Listener{},
-
-			// Ignored fields - placed here to be clear about intent
-			//
-			// Infrastructure: &gatewayv1.GatewayInfrastructure{},
-			// BackendTLS: &gatewayv1.GatewayBackendTLS{},
-		}
+		// TODO(jreese) get from "scheduler"
+		downstreamGateway.Spec.GatewayClassName = gatewayv1.ObjectName(r.Config.Gateway.DownstreamGatewayClassName)
 
 		listenerFactory := func(name, hostname string, protocol gatewayv1.ProtocolType, port gatewayv1.PortNumber) gatewayv1.Listener {
 			h := gatewayv1.Hostname(hostname)
@@ -253,12 +276,14 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 			return listener
 		}
 
-		for i, hostname := range hostnames {
-			downstreamGateway.Spec.Listeners = append(downstreamGateway.Spec.Listeners,
+		for i, hostname := range addressHostnames {
+			listeners = append(listeners,
 				listenerFactory(fmt.Sprintf("http-%d", i), hostname, gatewayv1.HTTPProtocolType, gatewayv1.PortNumber(80)),
 				listenerFactory(fmt.Sprintf("https-%d", i), hostname, gatewayv1.HTTPSProtocolType, gatewayv1.PortNumber(443)),
 			)
 		}
+
+		downstreamGateway.Spec.Listeners = listeners
 
 		return nil
 	})
@@ -275,11 +300,9 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 
 	dnsResult := r.ensureDownstreamGatewayDNSEndpoints(
 		ctx,
-		upstreamClient,
-		upstreamGateway,
 		downstreamGateway,
 		downstreamStrategy,
-		hostnames,
+		addressHostnames,
 	)
 	if dnsResult.ShouldReturn() {
 		return dnsResult.Merge(result), nil
@@ -328,13 +351,26 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 		downstreamStrategy,
 	)
 
+	addresses := make([]gatewayv1.GatewayStatusAddress, 0, len(addressHostnames))
+	addressType := gatewayv1.HostnameAddressType
+
+	for _, hostname := range addressHostnames {
+		addresses = append(addresses, gatewayv1.GatewayStatusAddress{
+			Type:  &addressType,
+			Value: hostname,
+		})
+	}
+
+	if !equality.Semantic.DeepEqual(upstreamGateway.Status.Addresses, addresses) {
+		upstreamGateway.Status.Addresses = addresses
+		result.AddStatusUpdate(upstreamClient, upstreamGateway)
+	}
+
 	return httpRouteResult.Merge(result), downstreamGateway
 }
 
 func (r *GatewayReconciler) ensureDownstreamGatewayDNSEndpoints(
 	ctx context.Context,
-	upstreamClient client.Client,
-	upstreamGateway *gatewayv1.Gateway,
 	downstreamGateway *gatewayv1.Gateway,
 	downstreamStrategy downstreamclient.ResourceStrategy,
 	hostnames []string,
@@ -370,9 +406,6 @@ func (r *GatewayReconciler) ensureDownstreamGatewayDNSEndpoints(
 		return result
 	}
 
-	addresses := make([]gatewayv1.GatewayStatusAddress, 0, len(hostnames))
-	addressType := gatewayv1.HostnameAddressType
-
 	endpoints := []any{}
 	var gatewayDNSEndpoint unstructured.Unstructured
 	gatewayDNSEndpoint.SetGroupVersionKind(schema.GroupVersionKind{
@@ -384,11 +417,6 @@ func (r *GatewayReconciler) ensureDownstreamGatewayDNSEndpoints(
 	gatewayDNSEndpoint.SetName(downstreamGateway.Name)
 
 	for _, hostname := range hostnames {
-		addresses = append(addresses, gatewayv1.GatewayStatusAddress{
-			Type:  &addressType,
-			Value: hostname,
-		})
-
 		if len(v4IPs) > 0 && !strings.HasPrefix(hostname, "v6") {
 			// v4 specific hostname, or hostname that includes both v4 and v6
 			endpoints = append(endpoints, map[string]any{
@@ -408,11 +436,6 @@ func (r *GatewayReconciler) ensureDownstreamGatewayDNSEndpoints(
 				"recordTTL":  int64(300),
 			})
 		}
-	}
-
-	if !equality.Semantic.DeepEqual(upstreamGateway.Status.Addresses, addresses) {
-		upstreamGateway.Status.Addresses = addresses
-		result.AddStatusUpdate(upstreamClient, upstreamGateway)
 	}
 
 	if _, err := controllerutil.CreateOrUpdate(ctx, downstreamStrategy.GetClient(), &gatewayDNSEndpoint, func() error {

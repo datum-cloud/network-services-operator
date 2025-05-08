@@ -10,5 +10,9 @@ gateway:
   downstreamGatewayClassName: datum-downstream-gateway-e2e
   permittedTLSOptions:
     gateway.networking.datumapis.com/certificate-issuer: []
+  customHostnameAllowList:
+    - clusterName: ""
+      suffixes:
+        - e2e.env.datum.net
 downstreamResourceManagement:
   kubeconfigPath: /etc/downstream-cluster/kubeconfig

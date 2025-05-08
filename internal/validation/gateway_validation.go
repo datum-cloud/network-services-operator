@@ -3,9 +3,12 @@ package validation
 import (
 	"fmt"
 	"slices"
+	"strings"
 
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
+
+	"go.datum.net/network-services-operator/internal/config"
 )
 
 func ValidateGateway(gateway *gatewayv1.Gateway, opts GatewayValidationOptions) field.ErrorList {
@@ -39,7 +42,28 @@ func validateListeners(listeners []gatewayv1.Listener, fldPath *field.Path, opts
 		listenerPath := fldPath.Index(i)
 
 		if l.Hostname != nil {
-			allErrs = append(allErrs, field.Invalid(listenerPath.Child("hostname"), l.Hostname, "hostnames are not permitted"))
+			var allowedSuffixes []string
+			for _, allowListEntry := range opts.CustomHostnameAllowList {
+				if allowListEntry.ClusterName == opts.ClusterName {
+					allowedSuffixes = allowListEntry.Suffixes
+				}
+			}
+
+			if len(allowedSuffixes) == 0 {
+				allErrs = append(allErrs, field.Invalid(listenerPath.Child("hostname"), l.Hostname, "hostnames are not permitted"))
+			} else {
+				hostnameStr := string(*l.Hostname)
+				validHostname := false
+				for _, suffix := range allowedSuffixes {
+					if strings.HasSuffix(hostnameStr, "."+suffix) {
+						validHostname = true
+						break
+					}
+				}
+				if !validHostname {
+					allErrs = append(allErrs, field.Invalid(listenerPath.Child("hostname"), hostnameStr, fmt.Sprintf("hostname does not match any allowed suffixes: %v", allowedSuffixes)))
+				}
+			}
 		}
 
 		if !slices.Contains(opts.ValidPortNumbers, int(l.Port)) {
@@ -66,8 +90,8 @@ func validateAllowedRoutes(allowedRoutes *gatewayv1.AllowedRoutes, fldPath *fiel
 	allErrs := field.ErrorList{}
 
 	if allowedRoutes.Namespaces != nil && allowedRoutes.Namespaces.From != nil {
-		if *allowedRoutes.Namespaces.From == gatewayv1.NamespacesFromAll {
-			allErrs = append(allErrs, field.Invalid(fldPath.Child("namespaces", "from"), allowedRoutes.Namespaces.From, "allowedRoutes.namespaces.from must be set to NamespacesFromAll"))
+		if *allowedRoutes.Namespaces.From != gatewayv1.NamespacesFromSame {
+			allErrs = append(allErrs, field.NotSupported(fldPath.Child("namespaces", "from"), allowedRoutes.Namespaces.From, []gatewayv1.FromNamespaces{gatewayv1.NamespacesFromSame}))
 		}
 	}
 
@@ -115,10 +139,12 @@ func validateGatewayTLSConfig(tls *gatewayv1.GatewayTLSConfig, fldPath *field.Pa
 }
 
 type GatewayValidationOptions struct {
-	ControllerName      gatewayv1.GatewayController
-	PermittedTLSOptions map[string][]string
-	ValidPortNumbers    validPortNumbers
-	ValidProtocolTypes  []gatewayv1.ProtocolType
+	ControllerName          gatewayv1.GatewayController
+	PermittedTLSOptions     map[string][]string
+	ValidPortNumbers        validPortNumbers
+	ValidProtocolTypes      []gatewayv1.ProtocolType
+	ClusterName             string
+	CustomHostnameAllowList []config.CustomHostnameAllowListEntry
 }
 
 type validPortNumbers []int

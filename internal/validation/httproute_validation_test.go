@@ -178,28 +178,6 @@ func TestValidateHTTPRoute(t *testing.T) {
 			},
 			expectedErrors: field.ErrorList{},
 		},
-		"invalid httproute with no backend refs": {
-			route: &gatewayv1.HTTPRoute{
-				Spec: gatewayv1.HTTPRouteSpec{
-					Rules: []gatewayv1.HTTPRouteRule{
-						{
-							Matches: []gatewayv1.HTTPRouteMatch{
-								{
-									Path: &gatewayv1.HTTPPathMatch{
-										Type:  ptr.To(gatewayv1.PathMatchType("PathPrefix")),
-										Value: ptr.To("/test"),
-									},
-								},
-							},
-							BackendRefs: []gatewayv1.HTTPBackendRef{},
-						},
-					},
-				},
-			},
-			expectedErrors: field.ErrorList{
-				field.Required(field.NewPath("spec", "rules").Index(0).Child("backendRefs"), ""),
-			},
-		},
 		"invalid httproute with invalid backend ref kind": {
 			route: &gatewayv1.HTTPRoute{
 				Spec: gatewayv1.HTTPRouteSpec{

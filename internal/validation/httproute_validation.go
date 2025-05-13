@@ -123,10 +123,6 @@ func validateHTTPRouteFilter(filter gatewayv1.HTTPRouteFilter, fldPath *field.Pa
 func validateHTTPRouteRuleBackendRefs(route *gatewayv1.HTTPRoute, rule gatewayv1.HTTPRouteRule, fldPath *field.Path) field.ErrorList {
 	allErrs := field.ErrorList{}
 
-	if len(rule.BackendRefs) == 0 {
-		allErrs = append(allErrs, field.Required(fldPath, "HTTPRoute rule must have at least one backend ref"))
-	}
-
 	for i, backendRef := range rule.BackendRefs {
 		allErrs = append(allErrs, validateHTTPBackendRef(route, backendRef, fldPath.Index(i))...)
 	}

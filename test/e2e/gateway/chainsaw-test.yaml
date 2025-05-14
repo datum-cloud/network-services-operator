@@ -329,7 +329,7 @@ spec:
                     certificateRefs:
                     - group: ""
                       kind: Secret
-                      name: test-gateway
+                      name: test-gateway-https-test-e2e
                     mode: Terminate
                 - allowedRoutes:
                     namespaces:
@@ -349,7 +349,7 @@ spec:
                     certificateRefs:
                     - group: ""
                       kind: Secret
-                      name: test-gateway
+                      name: test-gateway-https-0
                     mode: Terminate
                 - allowedRoutes:
                     namespaces:
@@ -369,7 +369,7 @@ spec:
                     certificateRefs:
                     - group: ""
                       kind: Secret
-                      name: test-gateway
+                      name: test-gateway-https-1
                     mode: Terminate
                 - allowedRoutes:
                     namespaces:
@@ -389,7 +389,7 @@ spec:
                     certificateRefs:
                     - group: ""
                       kind: Secret
-                      name: test-gateway
+                      name: test-gateway-https-2
                     mode: Terminate
               status:
                 conditions:

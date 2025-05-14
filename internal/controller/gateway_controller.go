@@ -34,6 +34,7 @@ import (
 
 	"go.datum.net/network-services-operator/internal/config"
 	downstreamclient "go.datum.net/network-services-operator/internal/downstreamclient"
+	"go.datum.net/network-services-operator/internal/util/resourcename"
 )
 
 const gatewayControllerFinalizer = "gateway.networking.datumapis.com/gateway-controller"
@@ -104,13 +105,15 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 	downstreamStrategy := downstreamclient.NewMappedNamespaceResourceStrategy(req.ClusterName, cl.GetClient(), r.DownstreamCluster.GetClient())
 
 	if !gateway.DeletionTimestamp.IsZero() {
-		if result := r.finalizeGateway(ctx, cl.GetClient(), &gateway, downstreamStrategy); result.ShouldReturn() {
-			return result.Complete(ctx)
-		}
+		if controllerutil.ContainsFinalizer(&gateway, gatewayControllerFinalizer) {
+			if result := r.finalizeGateway(ctx, cl.GetClient(), &gateway, downstreamStrategy); result.ShouldReturn() {
+				return result.Complete(ctx)
+			}
 
-		controllerutil.RemoveFinalizer(&gateway, gatewayControllerFinalizer)
-		if err := cl.GetClient().Update(ctx, &gateway); err != nil {
-			return ctrl.Result{}, fmt.Errorf("failed to remove finalizer from gateway: %w", err)
+			controllerutil.RemoveFinalizer(&gateway, gatewayControllerFinalizer)
+			if err := cl.GetClient().Update(ctx, &gateway); err != nil {
+				return ctrl.Result{}, fmt.Errorf("failed to remove finalizer from gateway: %w", err)
+			}
 		}
 
 		return ctrl.Result{}, nil
@@ -198,12 +201,6 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 		}
 		var listeners []gatewayv1.Listener
 		for _, l := range upstreamGateway.Spec.Listeners {
-
-			// TODO(jreese) this approach actually leads to request coalescing, resulting
-			// in the `OverlappingTLSConfig` condition being set to true on the downstream
-			// gateway, and HTTP2 disabled. We may need to either handle our own
-			// certificate requests for each listener, or create a gateway for each
-			// unique hostname that needs TLS.
 			if l.TLS != nil && l.TLS.Options[certificateIssuerTLSOption] != "" {
 				if r.Config.Gateway.PerGatewayCertificateIssuer {
 					downstreamGateway.Annotations["cert-manager.io/issuer"] = downstreamGateway.Name
@@ -230,7 +227,7 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 						// See: https://cert-manager.io/docs/usage/certificate/#cleaning-up-secrets-when-certificates-are-deleted
 						CertificateRefs: []gatewayv1.SecretObjectReference{
 							{
-								Name: gatewayv1.ObjectName(downstreamGateway.Name),
+								Name: gatewayv1.ObjectName(resourcename.GetValidDNS1123Name(fmt.Sprintf("%s-%s", downstreamGateway.Name, l.Name))),
 							},
 						},
 					}
@@ -267,7 +264,7 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 					// See: https://cert-manager.io/docs/usage/certificate/#cleaning-up-secrets-when-certificates-are-deleted
 					CertificateRefs: []gatewayv1.SecretObjectReference{
 						{
-							Name: gatewayv1.ObjectName(downstreamGateway.Name),
+							Name: gatewayv1.ObjectName(resourcename.GetValidDNS1123Name(fmt.Sprintf("%s-%s", downstreamGateway.Name, name))),
 						},
 					},
 				}

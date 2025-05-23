@@ -4,7 +4,9 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
@@ -65,14 +67,8 @@ func (r *NetworkBindingReconciler) Reconcile(ctx context.Context, req mcreconcil
 	}
 
 	defer func() {
-		if err != nil {
-			// Don't update the status if errors are encountered
-			return
-		}
-		statusChanged := apimeta.SetStatusCondition(&binding.Status.Conditions, readyCondition)
-
-		if statusChanged {
-			err = cl.GetClient().Status().Update(ctx, &binding)
+		if apimeta.SetStatusCondition(&binding.Status.Conditions, readyCondition) {
+			err = errors.Join(err, cl.GetClient().Status().Update(ctx, &binding))
 		}
 	}()
 
@@ -131,10 +127,16 @@ func (r *NetworkBindingReconciler) Reconcile(ctx context.Context, req mcreconcil
 		readyCondition.Reason = "NetworkContextNotReady"
 		readyCondition.Message = "Network context is not ready."
 
+		condition := apimeta.FindStatusCondition(networkContext.Status.Conditions, networkingv1alpha.NetworkContextProgrammed)
+		if condition != nil && condition.Status == metav1.ConditionFalse && condition.Reason == "NetworkFailedToCreate" {
+			readyCondition.Reason = "NetworkFailedToCreate"
+			readyCondition.Message = condition.Message
+		}
+
 		// Choosing to requeue here instead of establishing a watch on contexts, as
 		// once the context is created an ready, future bindings will immediately
 		// become ready.
-		return ctrl.Result{Requeue: true}, nil
+		return ctrl.Result{RequeueAfter: time.Second * 5}, nil
 	}
 
 	binding.Status.NetworkContextRef = &networkingv1alpha.NetworkContextRef{

@@ -63,12 +63,17 @@ const (
 // +kubebuilder:subresource:status
 
 // NetworkBinding is the Schema for the networkbindings API
+// +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
+// +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
+// +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].reason`
 type NetworkBinding struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
 	// +kubebuilder:validation:Required
-	Spec   NetworkBindingSpec   `json:"spec,omitempty"`
+	Spec NetworkBindingSpec `json:"spec,omitempty"`
+
+	// +kubebuilder:default={conditions:{{type:"Ready",status:"Unknown",reason:"Pending", message:"Waiting for controller", lastTransitionTime: "1970-01-01T00:00:00Z"}}}
 	Status NetworkBindingStatus `json:"status,omitempty"`
 }
 

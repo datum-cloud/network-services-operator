@@ -51,15 +51,47 @@ type SubnetStatus struct {
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 
+const (
+	// SubnetAllocated indicates that the subnet has been allocated a prefix
+	SubnetAllocated = "Allocated"
+
+	// SubnetProgrammed indicates that the subnet has been programmed
+	SubnetProgrammed = "Programmed"
+
+	// SubnetReady indicates that the subnet is ready to use
+	SubnetReady = "Ready"
+)
+
+const (
+	// SubnetProgrammedReasonNotProgrammed indicates that the subnet has not been programmed
+	SubnetProgrammedReasonNotProgrammed = "NotProgrammed"
+
+	// SubnetProgrammedReasonProgrammingInProgress indicates that the subnet is being programmed.
+	SubnetProgrammedReasonProgrammingInProgress = "ProgrammingInProgress"
+
+	// SubnetProgrammedReasonProgrammed indicates that the subnet has been programmed
+	SubnetProgrammedReasonProgrammed = "Programmed"
+
+	// SubnetReadyReasonReady indicates that the subnet is ready to use
+	SubnetReadyReasonReady = "Ready"
+)
+
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 
 // Subnet is the Schema for the subnets API
+// +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
+// +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
+// +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].reason`
+// +kubebuilder:printcolumn:name="Start Address",type=string,JSONPath=`.status.startAddress`
+// +kubebuilder:printcolumn:name="Prefix Length",type=string,JSONPath=`.status.prefixLength`
 type Subnet struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   SubnetSpec   `json:"spec,omitempty"`
+	Spec SubnetSpec `json:"spec,omitempty"`
+
+	// +kubebuilder:default={conditions:{{type:"Allocated",status:"Unknown",reason:"Pending", message:"Waiting for controller", lastTransitionTime: "1970-01-01T00:00:00Z"},{type:"Programmed",status:"Unknown",reason:"Pending", message:"Waiting for controller", lastTransitionTime: "1970-01-01T00:00:00Z"},{type:"Ready",status:"Unknown",reason:"Pending", message:"Waiting for controller", lastTransitionTime: "1970-01-01T00:00:00Z"}}}
 	Status SubnetStatus `json:"status,omitempty"`
 }
 

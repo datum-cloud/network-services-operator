@@ -5,6 +5,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
@@ -134,7 +135,7 @@ func (r *NetworkBindingReconciler) Reconcile(ctx context.Context, req mcreconcil
 		// Choosing to requeue here instead of establishing a watch on contexts, as
 		// once the context is created an ready, future bindings will immediately
 		// become ready.
-		return ctrl.Result{Requeue: true}, nil
+		return ctrl.Result{RequeueAfter: time.Second * 5}, nil
 	}
 
 	binding.Status.NetworkContextRef = &networkingv1alpha.NetworkContextRef{

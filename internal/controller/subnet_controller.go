@@ -64,68 +64,102 @@ func (r *SubnetReconciler) Reconcile(ctx context.Context, req mcreconcile.Reques
 
 	// TODO(jreese) finalizer work
 
-	var networkContext networkingv1alpha.NetworkContext
-	networkContextObjectKey := client.ObjectKey{
-		Namespace: subnet.Namespace,
-		Name:      subnet.Spec.NetworkContext.Name,
-	}
-	if err := cl.GetClient().Get(ctx, networkContextObjectKey, &networkContext); err != nil {
-		return ctrl.Result{}, fmt.Errorf("failed fetching network context: %w", err)
+	needsStatusUpdate := false
+	if subnet.Status.StartAddress == nil {
+		needsStatusUpdate = true
+		var networkContext networkingv1alpha.NetworkContext
+		networkContextObjectKey := client.ObjectKey{
+			Namespace: subnet.Namespace,
+			Name:      subnet.Spec.NetworkContext.Name,
+		}
+		if err := cl.GetClient().Get(ctx, networkContextObjectKey, &networkContext); err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed fetching network context: %w", err)
+		}
+
+		if !apimeta.IsStatusConditionTrue(networkContext.Status.Conditions, networkingv1alpha.NetworkContextReady) {
+			return ctrl.Result{}, fmt.Errorf("network context is not ready")
+		}
+
+		var location networkingv1alpha.Location
+		locationObjectKey := client.ObjectKey{
+			Namespace: networkContext.Spec.Location.Namespace,
+			Name:      networkContext.Spec.Location.Name,
+		}
+		if err := cl.GetClient().Get(ctx, locationObjectKey, &location); err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed fetching network context location: %w", err)
+		}
+
+		// TODO(jreese) get topology key from well known package
+		cityCode, ok := location.Spec.Topology["topology.datum.net/city-code"]
+		if !ok {
+			return ctrl.Result{}, fmt.Errorf("unable to find topology key: topology.datum.net/city-code")
+		}
+
+		// TODO(jreese) move to proper higher level subnet allocation logic, this is
+		// for the rough POC! Pay attention to the subnet class, etc.
+		//
+		// GCP allocates a /20 per region. Distribution seems to be as new regions
+		// come online, a /20 is allocated, but there appears to be at least a /15
+		// between each region's /20. For example:
+		//
+		// 	europe-west9      10.200.0.0/20
+		// 	us-east5          10.202.0.0/20
+		// 	europe-southwest1 10.204.0.0/20
+		// 	us-south1         10.206.0.0/20
+		// 	me-west1          10.208.0.0/20
+		//
+		// There's a few scenarios where this isn't the case.
+
+		var startAddress string
+		switch cityCode {
+		case "DFW":
+			startAddress = "10.128.0.0"
+		case "DLS":
+			startAddress = "10.130.0.0"
+		case "LHR":
+			startAddress = "10.132.0.0"
+		}
+
+		subnet.Status.StartAddress = proto.String(startAddress)
+		subnet.Status.PrefixLength = proto.Int32(20)
+
 	}
 
-	var location networkingv1alpha.Location
-	locationObjectKey := client.ObjectKey{
-		Namespace: networkContext.Spec.Location.Namespace,
-		Name:      networkContext.Spec.Location.Name,
-	}
-	if err := cl.GetClient().Get(ctx, locationObjectKey, &location); err != nil {
-		return ctrl.Result{}, fmt.Errorf("failed fetching network context location: %w", err)
-	}
-
-	// TODO(jreese) get topology key from well known package
-	cityCode, ok := location.Spec.Topology["topology.datum.net/city-code"]
-	if !ok {
-		return ctrl.Result{}, fmt.Errorf("unable to find topology key: topology.datum.net/city-code")
-	}
-
-	// TODO(jreese) move to proper higher level subnet allocation logic, this is
-	// for the rough POC! Pay attention to the subnet class, etc.
-	//
-	// GCP allocates a /20 per region. Distribution seems to be as new regions
-	// come online, a /20 is allocated, but there appears to be at least a /15
-	// between each region's /20. For example:
-	//
-	// 	europe-west9      10.200.0.0/20
-	// 	us-east5          10.202.0.0/20
-	// 	europe-southwest1 10.204.0.0/20
-	// 	us-south1         10.206.0.0/20
-	// 	me-west1          10.208.0.0/20
-	//
-	// There's a few scenarios where this isn't the case.
-
-	var startAddress string
-	switch cityCode {
-	case "DFW":
-		startAddress = "10.128.0.0"
-	case "DLS":
-		startAddress = "10.130.0.0"
-	case "LHR":
-		startAddress = "10.132.0.0"
-	}
-
-	subnet.Status.StartAddress = proto.String(startAddress)
-	subnet.Status.PrefixLength = proto.Int32(20)
-
-	apimeta.SetStatusCondition(&subnet.Status.Conditions, metav1.Condition{
-		Type:               "Ready",
+	if apimeta.SetStatusCondition(&subnet.Status.Conditions, metav1.Condition{
+		Type:               networkingv1alpha.SubnetAllocated,
 		Status:             metav1.ConditionTrue,
 		Reason:             "PrefixAllocated",
 		ObservedGeneration: subnet.Generation,
 		Message:            "Subnet has been allocated a prefix",
-	})
+	}) {
+		needsStatusUpdate = true
+	}
 
-	if err := cl.GetClient().Status().Update(ctx, &subnet); err != nil {
-		return ctrl.Result{}, fmt.Errorf("failed updating subnet status")
+	subnetProgrammed := apimeta.IsStatusConditionTrue(subnet.Status.Conditions, networkingv1alpha.SubnetProgrammed)
+
+	readyMessage := "Subnet is not yet programmed"
+	readyStatus := metav1.ConditionFalse
+	readyReason := networkingv1alpha.SubnetProgrammedReasonNotProgrammed
+	if subnetProgrammed {
+		readyStatus = metav1.ConditionTrue
+		readyReason = networkingv1alpha.SubnetReadyReasonReady
+		readyMessage = "Subnet is ready to use"
+	}
+
+	if apimeta.SetStatusCondition(&subnet.Status.Conditions, metav1.Condition{
+		Type:               networkingv1alpha.SubnetReady,
+		Status:             readyStatus,
+		Reason:             readyReason,
+		ObservedGeneration: subnet.Generation,
+		Message:            readyMessage,
+	}) {
+		needsStatusUpdate = true
+	}
+
+	if needsStatusUpdate {
+		if err := cl.GetClient().Status().Update(ctx, &subnet); err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed updating subnet status")
+		}
 	}
 
 	return ctrl.Result{}, nil
@@ -138,10 +172,9 @@ func (r *SubnetReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 		For(&networkingv1alpha.Subnet{},
 			mcbuilder.WithPredicates(
 				predicate.NewPredicateFuncs(func(object client.Object) bool {
-					// Don't bother processing subnets that have been allocated and are not
-					// deleting
+					// Don't bother processing subnets that are ready
 					o := object.(*networkingv1alpha.Subnet)
-					return o.Status.StartAddress == nil || !o.DeletionTimestamp.IsZero()
+					return !apimeta.IsStatusConditionTrue(o.Status.Conditions, networkingv1alpha.SubnetReady)
 				}),
 			),
 			mcbuilder.WithEngageWithLocalCluster(false),

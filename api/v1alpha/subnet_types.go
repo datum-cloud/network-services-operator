@@ -63,8 +63,17 @@ const (
 )
 
 const (
-	SubnetReadyReasonNotProgrammed = "NotProgrammed"
-	SubnetReadyReasonReady         = "Ready"
+	// SubnetProgrammedReasonNotProgrammed indicates that the subnet has not been programmed
+	SubnetProgrammedReasonNotProgrammed = "NotProgrammed"
+
+	// SubnetProgrammedReasonProgrammingInProgress indicates that the subnet is being programmed.
+	SubnetProgrammedReasonProgrammingInProgress = "ProgrammingInProgress"
+
+	// SubnetProgrammedReasonProgrammed indicates that the subnet has been programmed
+	SubnetProgrammedReasonProgrammed = "Programmed"
+
+	// SubnetReadyReasonReady indicates that the subnet is ready to use
+	SubnetReadyReasonReady = "Ready"
 )
 
 // +kubebuilder:object:root=true

@@ -37,6 +37,9 @@ const (
 	// NetworkContextProgrammedReasonNotProgrammed indicates that the network context is not ready because it has not been programmed.
 	NetworkContextProgrammedReasonNotProgrammed = "NotProgrammed"
 
+	// NetworkContextProgrammedReasonProgramming indicates that the network context is being programmed.
+	NetworkContextProgrammedReasonProgrammingInProgress = "ProgrammingInProgress"
+
 	// NetworkContextProgrammedReasonProgrammed indicates that the network context has been programmed.
 	NetworkContextProgrammedReasonProgrammed = "Programmed"
 

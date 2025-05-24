@@ -139,7 +139,7 @@ func (r *SubnetReconciler) Reconcile(ctx context.Context, req mcreconcile.Reques
 
 	readyMessage := "Subnet is not yet programmed"
 	readyStatus := metav1.ConditionFalse
-	readyReason := networkingv1alpha.SubnetReadyReasonNotProgrammed
+	readyReason := networkingv1alpha.SubnetProgrammedReasonNotProgrammed
 	if subnetProgrammed {
 		readyStatus = metav1.ConditionTrue
 		readyReason = networkingv1alpha.SubnetReadyReasonReady

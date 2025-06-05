@@ -219,6 +219,11 @@ func main() {
 		os.Exit(1)
 	}
 
+	if err = controller.AddIndexers(ctx, mgr); err != nil {
+		setupLog.Error(err, "unable to add indexers")
+		os.Exit(1)
+	}
+
 	validationOpts := validation.GatewayValidationOptions{
 		ControllerName:          serverConfig.Gateway.ControllerName,
 		PermittedTLSOptions:     serverConfig.Gateway.PermittedTLSOptions,

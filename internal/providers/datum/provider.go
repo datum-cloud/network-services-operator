@@ -87,6 +87,12 @@ func New(localMgr manager.Manager, opts Options) (*Provider, error) {
 	return p, nil
 }
 
+type index struct {
+	object       client.Object
+	field        string
+	extractValue client.IndexerFunc
+}
+
 // Provider is a cluster Provider that works with Datum
 type Provider struct {
 	opts              Options
@@ -98,6 +104,7 @@ type Provider struct {
 	mcMgr     mcmanager.Manager
 	projects  map[string]cluster.Cluster
 	cancelFns map[string]context.CancelFunc
+	indexers  []index
 }
 
 // Get returns the cluster with the given name, if it is known.
@@ -206,11 +213,11 @@ func (p *Provider) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to create cluster: %w", err)
 	}
-	// for _, idx := range p.indexers {
-	// 	if err := cl.GetCache().IndexField(ctx, idx.object, idx.field, idx.extractValue); err != nil {
-	// 		return ctrl.Result{}, fmt.Errorf("failed to index field %q: %w", idx.field, err)
-	// 	}
-	// }
+	for _, idx := range p.indexers {
+		if err := cl.GetCache().IndexField(ctx, idx.object, idx.field, idx.extractValue); err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed to index field %q: %w", idx.field, err)
+		}
+	}
 
 	clusterCtx, cancel := context.WithCancel(ctx)
 	go func() {
@@ -243,7 +250,22 @@ func (p *Provider) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result
 }
 
 func (p *Provider) IndexField(ctx context.Context, obj client.Object, field string, extractValue client.IndexerFunc) error {
-	// TODO(jreese)
+	p.lock.Lock()
+	defer p.lock.Unlock()
+
+	// save for future projects.
+	p.indexers = append(p.indexers, index{
+		object:       obj,
+		field:        field,
+		extractValue: extractValue,
+	})
+
+	// apply to existing projects.
+	for name, cl := range p.projects {
+		if err := cl.GetCache().IndexField(ctx, obj, field, extractValue); err != nil {
+			return fmt.Errorf("failed to index field %q on project %q: %w", field, name, err)
+		}
+	}
 	return nil
 }
 

@@ -4,6 +4,7 @@ metricsServer:
   bindAddress: "0"
 
 webhookServer:
+  port: 9444
   tls:
     secretRef:
       name: network-services-operator-webhook-server-cert

@@ -58,11 +58,16 @@ type SubnetClaimStatus struct {
 // +kubebuilder:subresource:status
 
 // SubnetClaim is the Schema for the subnetclaims API
+// +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
+// +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
+// +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].reason`
 type SubnetClaim struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   SubnetClaimSpec   `json:"spec,omitempty"`
+	Spec SubnetClaimSpec `json:"spec,omitempty"`
+
+	// +kubebuilder:default={conditions:{{type:"Allocated",status:"Unknown",reason:"Pending", message:"Waiting for controller", lastTransitionTime: "1970-01-01T00:00:00Z"},{type:"Programmed",status:"Unknown",reason:"Pending", message:"Waiting for controller", lastTransitionTime: "1970-01-01T00:00:00Z"},{type:"Ready",status:"Unknown",reason:"Pending", message:"Waiting for controller", lastTransitionTime: "1970-01-01T00:00:00Z"}}}
 	Status SubnetClaimStatus `json:"status,omitempty"`
 }
 

@@ -39,6 +39,32 @@ rules:
   - patch
   - update
 - apiGroups:
+  - datumapis.com
+  resources:
+  - domains
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - datumapis.com
+  resources:
+  - domains/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - datumapis.com
+  resources:
+  - domains/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
   - discovery.k8s.io
   resources:
   - endpointslices

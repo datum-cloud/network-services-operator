@@ -4,8 +4,8 @@ resources:
 - manager.yaml
 - service_account.yaml
 images:
-- name: controller
-  newName: network-services-operator
+- name: ghcr.io/datum-cloud/network-services-operator
+  newName: ghcr.io/datum-cloud/network-services-operator
   newTag: latest
 configMapGenerator:
 - files:

@@ -10,12 +10,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 	mccontext "sigs.k8s.io/multicluster-runtime/pkg/context"
 
-	"go.datum.net/network-services-operator/internal/providers"
+	multiclusterproviders "go.miloapis.com/milo/pkg/multicluster-runtime"
 )
 
 type clusterAwareWebhookServer struct {
 	webhook.Server
-	discoveryMode providers.Provider
+	discoveryMode multiclusterproviders.Provider
 }
 
 var _ webhook.Server = &clusterAwareWebhookServer{}
@@ -31,14 +31,14 @@ func (s *clusterAwareWebhookServer) Register(path string, hook http.Handler) {
 		}
 	}
 
-	if s.discoveryMode != providers.ProviderSingle {
+	if s.discoveryMode != multiclusterproviders.ProviderSingle {
 		path = fmt.Sprintf("/clusters/{cluster_name}%s", path)
 	}
 
 	s.Server.Register(path, hook)
 }
 
-func NewClusterAwareWebhookServer(server webhook.Server, mode providers.Provider) webhook.Server {
+func NewClusterAwareWebhookServer(server webhook.Server, mode multiclusterproviders.Provider) webhook.Server {
 	return &clusterAwareWebhookServer{
 		Server:        server,
 		discoveryMode: mode,

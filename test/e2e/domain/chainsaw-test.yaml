@@ -1,0 +1,88 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: domain-validation
+spec:
+  cluster: nso-standard
+  steps:
+    - name: Create Domain with valid domain name
+      try:
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Domain
+              metadata:
+                name: test-domain
+              spec:
+                domainName: example.com
+
+        - assert:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Domain
+              metadata:
+                name: test-domain
+              spec:
+                domainName: example.com
+
+    - name: Create Domain with invalid domain name
+      try:
+        - error:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Domain
+              metadata:
+                name: test-domain-invalid
+              spec:
+                domainName: "invalid domain"
+
+    - name: Create Domain without domain name
+      try:
+        - error:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Domain
+              metadata:
+                name: test-domain-empty
+              spec: {}
+
+    # - name: Verify domain verification status
+    #   try:
+    #     - create:
+    #         resource:
+    #           apiVersion: networking.datumapis.com/v1alpha
+    #           kind: Domain
+    #           metadata:
+    #             name: test-domain-verification
+    #           spec:
+    #             domainName: example.com
+    #     - assert:
+    #         resource:
+    #           apiVersion: networking.datumapis.com/v1alpha
+    #           kind: Domain
+    #           metadata:
+    #             name: test-domain-verification
+    #           spec:
+    #             domainName: example.com
+
+    #     - assert:
+    #         timeout: 60s
+    #         resource:
+    #           apiVersion: networking.datumapis.com/v1alpha
+    #           kind: Domain
+    #           metadata:
+    #             name: test-domain-verification
+    #           spec:
+    #             domainName: example.com
+    #           status:
+    #             verification:
+    #               requiredDNSRecords:
+    #                 - name: _datum-cloud-challenge_.example.com
+    #                   type: TXT
+    #                   content: .*
+    # catch:
+    #   - script:
+    #       content: |
+    #         kubectl get domain test-domain-verification -o yaml
+    #         kubectl -n network-services-operator logs -l app.kubernetes.io/name=network-services-operator

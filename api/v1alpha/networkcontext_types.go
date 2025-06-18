@@ -26,19 +26,41 @@ type NetworkContextStatus struct {
 }
 
 const (
-	// NetworkContextReady indicates that the network context is ready for use.
+	// NetworkContextReady indicates whether or not the network context is ready for use.
 	NetworkContextReady = "Ready"
+
+	// NetworkContextProgrammed indicates whether or not the network context has been programmed.
+	NetworkContextProgrammed = "Programmed"
+)
+
+const (
+	// NetworkContextProgrammedReasonNotProgrammed indicates that the network context is not ready because it has not been programmed.
+	NetworkContextProgrammedReasonNotProgrammed = "NotProgrammed"
+
+	// NetworkContextProgrammedReasonProgramming indicates that the network context is being programmed.
+	NetworkContextProgrammedReasonProgrammingInProgress = "ProgrammingInProgress"
+
+	// NetworkContextProgrammedReasonProgrammed indicates that the network context has been programmed.
+	NetworkContextProgrammedReasonProgrammed = "Programmed"
+
+	// NetworkContextReadyReasonReady indicates that the network context is ready for use.
+	NetworkContextReadyReasonReady = "Ready"
 )
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 
 // NetworkContext is the Schema for the networkcontexts API
+// +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
+// +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
+// +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].reason`
 type NetworkContext struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   NetworkContextSpec   `json:"spec,omitempty"`
+	Spec NetworkContextSpec `json:"spec,omitempty"`
+
+	// +kubebuilder:default={conditions:{{type:"Programmed",status:"Unknown",reason:"Pending", message:"Waiting for controller", lastTransitionTime: "1970-01-01T00:00:00Z"},{type:"Ready",status:"Unknown",reason:"Pending", message:"Waiting for controller", lastTransitionTime: "1970-01-01T00:00:00Z"}}}
 	Status NetworkContextStatus `json:"status,omitempty"`
 }
 

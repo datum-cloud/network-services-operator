@@ -69,17 +69,18 @@ shortly.
 
 #### Development Setup
 
-When running the operator locally with `make run`, you need to provide a kubeconfig file for the downstream cluster. The operator expects this file at `./infra.kubeconfig` by default. You can either:
+When running the operator locally with `make run`, you need to provide a kubeconfig file for the downstream cluster. The operator supports multiple approaches:
 
-1. Create a symbolic link to your kubeconfig:
+1. **Use KUBECONFIG environment variable (recommended):**
 ```sh
-ln -s ~/.kube/config ./infra.kubeconfig
+export KUBECONFIG="${TMPDIR}/.kind-nso-infra.yaml"
+make run
 ```
 
-2. Or modify the configuration in `config/dev/config.yaml` to point to your kubeconfig file:
+2. **Or use environment variable expansion in the config:**
 ```yaml
 downstreamResourceManagement:
-  kubeconfigPath: /path/to/your/kubeconfig
+  kubeconfigPath: ${TMPDIR}/.kind-nso-infra.yaml
 ```
 
 #### Using k9s with Kind Clusters

@@ -224,6 +224,11 @@ func main() {
 		os.Exit(1)
 	}
 
+	if err = (&controller.DomainReconciler{}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "Domain")
+		os.Exit(1)
+	}
+
 	validationOpts := validation.GatewayValidationOptions{
 		ControllerName:          serverConfig.Gateway.ControllerName,
 		PermittedTLSOptions:     serverConfig.Gateway.PermittedTLSOptions,

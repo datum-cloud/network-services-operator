@@ -8,6 +8,13 @@ import (
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:printcolumn:name="Domain",type="string",JSONPath=".spec.domainName"
+// +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
+// +kubebuilder:printcolumn:name="Ready",type="string",JSONPath=`.status.conditions[?(@.type=="Ready")].status`
+// +kubebuilder:printcolumn:name="Reason",type="string",JSONPath=`.status.conditions[?(@.type=="Ready")].reason`
+// +kubebuilder:printcolumn:name="Registrar",type="string",JSONPath=".status.registrar.ianaName"
+// +kubebuilder:printcolumn:name="DNSSEC",type="boolean",JSONPath=".status.registrar.dnssec.signed"
+// +kubebuilder:printcolumn:name="Expires",type="date",JSONPath=".status.registrar.expirationDate"
 
 // Domain represents a domain name in the Datum system
 type Domain struct {

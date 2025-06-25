@@ -14,7 +14,29 @@ spec:
     singular: location
   scope: Namespaced
   versions:
-  - name: v1alpha
+  - additionalPrinterColumns:
+    - jsonPath: .spec.locationClassName
+      name: Class
+      type: string
+    - jsonPath: .spec.provider.gcp.projectId
+      name: Provider
+      type: string
+    - jsonPath: .spec.provider.gcp.region
+      name: Region
+      type: string
+    - jsonPath: .spec.provider.gcp.zone
+      name: Zone
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    - jsonPath: .status.conditions[?(@.type==\"Ready\")].status
+      name: Ready
+      type: string
+    - jsonPath: .status.conditions[?(@.type==\"Ready\")].reason
+      name: Reason
+      type: string
+    name: v1alpha
     schema:
       openAPIV3Schema:
         description: Location is the Schema for the locations API.

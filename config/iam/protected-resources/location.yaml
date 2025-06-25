@@ -1,0 +1,21 @@
+apiVersion: iam.miloapis.com/v1alpha1
+kind: ProtectedResource
+metadata:
+  name: networking.datumapis.com-location
+spec:
+  serviceRef:
+    name: "networking.datumapis.com"
+  kind: Location
+  plural: locations
+  singular: location
+  permissions:
+    - list
+    - get
+    - create
+    - update
+    - patch
+    - watch
+    - delete
+  parentResources:
+    - apiGroup: resourcemanager.miloapis.com
+      kind: Project

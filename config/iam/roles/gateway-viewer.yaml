@@ -1,0 +1,22 @@
+apiVersion: iam.miloapis.com/v1alpha1
+kind: Role
+metadata:
+  name: networking.datumapis.com-gateway-viewer
+  annotations:
+    kubernetes.io/display-name: Gateway Viewer
+    kubernetes.io/description: "View access to gateway resources"
+spec:
+  launchStage: Beta
+  includedPermissions:
+    - gateway.networking.k8s.io/gatewayclasses.list
+    - gateway.networking.k8s.io/gatewayclasses.get
+    - gateway.networking.k8s.io/gatewayclasses.watch
+    - gateway.networking.k8s.io/gateways.list
+    - gateway.networking.k8s.io/gateways.get
+    - gateway.networking.k8s.io/gateways.watch
+    - gateway.networking.k8s.io/httproutes.list
+    - gateway.networking.k8s.io/httproutes.get
+    - gateway.networking.k8s.io/httproutes.watch
+    - discovery.k8s.io/endpointslices.list
+    - discovery.k8s.io/endpointslices.get
+    - discovery.k8s.io/endpointslices.watch

@@ -1,0 +1,21 @@
+apiVersion: iam.miloapis.com/v1alpha1
+kind: ProtectedResource
+metadata:
+  name: networking.datumapis.com-networkbinding
+spec:
+  serviceRef:
+    name: "networking.datumapis.com"
+  kind: NetworkBinding
+  plural: networkbindings
+  singular: networkbinding
+  permissions:
+    - list
+    - get
+    - create
+    - update
+    - delete
+    - patch
+    - watch
+  parentResources:
+    - apiGroup: networking.datumapis.com
+      kind: Network

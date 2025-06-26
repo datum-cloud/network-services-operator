@@ -36,6 +36,9 @@ spec:
     - jsonPath: .status.registrar.expirationDate
       name: Expires
       type: date
+    - jsonPath: .status.verification.requiredDNSRecords[0].content
+      name: DNS-Verify
+      type: string
     name: v1alpha
     schema:
       openAPIV3Schema:

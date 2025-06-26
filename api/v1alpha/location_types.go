@@ -71,9 +71,7 @@ type LocationStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Class",type="string",JSONPath=".spec.locationClassName"
-// +kubebuilder:printcolumn:name="Provider",type="string",JSONPath=".spec.provider.gcp.projectId"
-// +kubebuilder:printcolumn:name="Region",type="string",JSONPath=".spec.provider.gcp.region"
-// +kubebuilder:printcolumn:name="Zone",type="string",JSONPath=".spec.provider.gcp.zone"
+// +kubebuilder:printcolumn:name="City",type="string",JSONPath=".spec.topology['topology.datum.net/city-code']"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 // +kubebuilder:printcolumn:name="Ready",type="string",JSONPath=`.status.conditions[?(@.type==\"Ready\")].status`
 // +kubebuilder:printcolumn:name="Reason",type="string",JSONPath=`.status.conditions[?(@.type==\"Ready\")].reason`

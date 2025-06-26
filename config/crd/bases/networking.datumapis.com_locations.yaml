@@ -18,14 +18,8 @@ spec:
     - jsonPath: .spec.locationClassName
       name: Class
       type: string
-    - jsonPath: .spec.provider.gcp.projectId
-      name: Provider
-      type: string
-    - jsonPath: .spec.provider.gcp.region
-      name: Region
-      type: string
-    - jsonPath: .spec.provider.gcp.zone
-      name: Zone
+    - jsonPath: .spec.topology['topology.datum.net/city-code']
+      name: City
       type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age

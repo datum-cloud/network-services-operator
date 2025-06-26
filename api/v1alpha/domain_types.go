@@ -15,6 +15,7 @@ import (
 // +kubebuilder:printcolumn:name="Registrar",type="string",JSONPath=".status.registrar.ianaName"
 // +kubebuilder:printcolumn:name="DNSSEC",type="boolean",JSONPath=".status.registrar.dnssec.signed"
 // +kubebuilder:printcolumn:name="Expires",type="date",JSONPath=".status.registrar.expirationDate"
+// +kubebuilder:printcolumn:name="DNS-Verify",type="string",JSONPath=".status.verification.requiredDNSRecords[0].content"
 
 // Domain represents a domain name in the Datum system
 type Domain struct {

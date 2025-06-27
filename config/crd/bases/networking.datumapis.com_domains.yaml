@@ -14,7 +14,32 @@ spec:
     singular: domain
   scope: Namespaced
   versions:
-  - name: v1alpha
+  - additionalPrinterColumns:
+    - jsonPath: .spec.domainName
+      name: Domain
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Ready")].reason
+      name: Reason
+      type: string
+    - jsonPath: .status.registrar.ianaName
+      name: Registrar
+      type: string
+    - jsonPath: .status.registrar.dnssec.signed
+      name: DNSSEC
+      type: boolean
+    - jsonPath: .status.registrar.expirationDate
+      name: Expires
+      type: date
+    - jsonPath: .status.verification.requiredDNSRecords[0].content
+      name: DNS-Verify
+      type: string
+    name: v1alpha
     schema:
       openAPIV3Schema:
         description: Domain represents a domain name in the Datum system
@@ -119,7 +144,13 @@ spec:
                   createdDate:
                     type: string
                   dnssec:
-                    type: string
+                    description: DNSSECStatus represents the DNSSEC status of a domain
+                    properties:
+                      signed:
+                        type: boolean
+                    required:
+                    - signed
+                    type: object
                   expirationDate:
                     type: string
                   ianaID:
@@ -143,8 +174,8 @@ spec:
                 properties:
                   requiredDNSRecords:
                     items:
-                      description: DNSRecord represents a DNS record required for
-                        verification
+                      description: DNSVerificationExpectedRecord represents a DNS
+                        record required for verification
                       properties:
                         content:
                           type: string

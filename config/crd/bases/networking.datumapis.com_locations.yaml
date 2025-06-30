@@ -18,7 +18,7 @@ spec:
     - jsonPath: .spec.locationClassName
       name: Class
       type: string
-    - jsonPath: .spec.topology['topology.datum.net/city-code']
+    - jsonPath: .spec.topology.topology\.datum\.net/city-code
       name: City
       type: string
     - jsonPath: .metadata.creationTimestamp

@@ -4,17 +4,20 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.16.4
-  name: networkbindings.networking.datumapis.com
+  name: domains.networking.datumapis.com
 spec:
   group: networking.datumapis.com
   names:
-    kind: NetworkBinding
-    listKind: NetworkBindingList
-    plural: networkbindings
-    singular: networkbinding
+    kind: Domain
+    listKind: DomainList
+    plural: domains
+    singular: domain
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
+    - jsonPath: .spec.domainName
+      name: Domain
+      type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -24,10 +27,22 @@ spec:
     - jsonPath: .status.conditions[?(@.type=="Ready")].reason
       name: Reason
       type: string
+    - jsonPath: .status.registrar.ianaName
+      name: Registrar
+      type: string
+    - jsonPath: .status.registrar.dnssec.signed
+      name: DNSSEC
+      type: boolean
+    - jsonPath: .status.registrar.expirationDate
+      name: Expires
+      type: date
+    - jsonPath: .status.verification.requiredDNSRecords[0].content
+      name: DNS-Verify
+      type: string
     name: v1alpha
     schema:
       openAPIV3Schema:
-        description: NetworkBinding is the Schema for the networkbindings API
+        description: Domain represents a domain name in the Datum system
         properties:
           apiVersion:
             description: |-
@@ -47,53 +62,22 @@ spec:
           metadata:
             type: object
           spec:
-            description: NetworkBindingSpec defines the desired state of NetworkBinding
+            description: DomainSpec defines the desired state of Domain
             properties:
-              location:
-                description: The location of where a network binding exists.
-                properties:
-                  name:
-                    description: Name of a datum location
-                    type: string
-                  namespace:
-                    description: Namespace for the datum location
-                    type: string
-                required:
-                - name
-                - namespace
-                type: object
-              network:
-                description: The network that the binding is for.
-                properties:
-                  name:
-                    description: The network name
-                    type: string
-                  namespace:
-                    description: |-
-                      The network namespace.
-
-                      Defaults to the namespace for the type the reference is embedded in.
-                    type: string
-                required:
-                - name
-                type: object
+              domainName:
+                description: DomainName is the fully qualified domain name (FQDN)
+                  to be managed
+                maxLength: 253
+                minLength: 1
+                pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                type: string
             required:
-            - location
-            - network
+            - domainName
             type: object
           status:
-            default:
-              conditions:
-              - lastTransitionTime: "1970-01-01T00:00:00Z"
-                message: Waiting for controller
-                reason: Pending
-                status: Unknown
-                type: Ready
-            description: NetworkBindingStatus defines the observed state of NetworkBinding
+            description: DomainStatus defines the observed state of Domain
             properties:
               conditions:
-                description: Represents the observations of a network binding's current
-                  state.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -149,21 +133,64 @@ spec:
                   - type
                   type: object
                 type: array
-              networkContextRef:
+              registrar:
+                description: DomainRegistrarStatus represents the registrar information
+                  for a domain
                 properties:
-                  name:
-                    description: The network context name
+                  clientStatusCodes:
+                    items:
+                      type: string
+                    type: array
+                  createdDate:
                     type: string
-                  namespace:
-                    description: The network context namespace
+                  dnssec:
+                    description: DNSSECStatus represents the DNSSEC status of a domain
+                    properties:
+                      signed:
+                        type: boolean
+                    required:
+                    - signed
+                    type: object
+                  expirationDate:
                     type: string
-                required:
-                - name
-                - namespace
+                  ianaID:
+                    type: string
+                  ianaName:
+                    type: string
+                  modifiedDate:
+                    type: string
+                  nameservers:
+                    items:
+                      type: string
+                    type: array
+                  serverStatusCodes:
+                    items:
+                      type: string
+                    type: array
+                type: object
+              verification:
+                description: DomainVerificationStatus represents the verification
+                  status of a domain
+                properties:
+                  requiredDNSRecords:
+                    items:
+                      description: DNSVerificationExpectedRecord represents a DNS
+                        record required for verification
+                      properties:
+                        content:
+                          type: string
+                        name:
+                          type: string
+                        type:
+                          type: string
+                      required:
+                      - content
+                      - name
+                      - type
+                      type: object
+                    type: array
                 type: object
             type: object
-        required:
-        - spec
         type: object
     served: true
     storage: true

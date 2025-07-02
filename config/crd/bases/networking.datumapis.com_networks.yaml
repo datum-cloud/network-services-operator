@@ -14,7 +14,29 @@ spec:
     singular: network
   scope: Namespaced
   versions:
-  - name: v1alpha
+  - additionalPrinterColumns:
+    - jsonPath: .metadata.name
+      name: Name
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    - jsonPath: .status.conditions[?(@.type==\"Ready\")].status
+      name: Ready
+      type: string
+    - jsonPath: .status.conditions[?(@.type==\"Ready\")].reason
+      name: Reason
+      type: string
+    - jsonPath: .spec.ipam.mode
+      name: IPAM
+      type: string
+    - jsonPath: .spec.ipFamilies
+      name: IPFamilies
+      type: string
+    - jsonPath: .spec.mtu
+      name: MTU
+      type: integer
+    name: v1alpha
     schema:
       openAPIV3Schema:
         description: Network is the Schema for the networks API

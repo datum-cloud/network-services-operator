@@ -1,0 +1,21 @@
+apiVersion: iam.miloapis.com/v1alpha1
+kind: ProtectedResource
+metadata:
+  name: networking.datumapis.com-networkpolicy
+spec:
+  serviceRef:
+    name: "networking.datumapis.com"
+  kind: NetworkPolicy
+  plural: networkpolicies
+  singular: networkpolicy
+  permissions:
+    - list
+    - get
+    - create
+    - update
+    - patch
+    - watch
+    - delete
+  parentResources:
+    - apiGroup: resourcemanager.miloapis.com
+      kind: Project

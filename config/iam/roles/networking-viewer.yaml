@@ -1,0 +1,30 @@
+apiVersion: iam.miloapis.com/v1alpha1
+kind: Role
+metadata:
+  name: networking.datumapis.com-viewer
+  annotations:
+    kubernetes.io/display-name: Network Viewer
+    kubernetes.io/description: "View access to all networking resources"
+spec:
+  launchStage: Beta
+  inheritedRoles:
+    - name: networking.datumapis.com-gateway-viewer
+  includedPermissions:
+    - networking.datumapis.com/networks.list
+    - networking.datumapis.com/networks.get
+    - networking.datumapis.com/networks.watch
+    - networking.datumapis.com/networkbindings.list
+    - networking.datumapis.com/networkbindings.get
+    - networking.datumapis.com/networkbindings.watch
+    - networking.datumapis.com/networkcontexts.list
+    - networking.datumapis.com/networkcontexts.get
+    - networking.datumapis.com/networkcontexts.watch
+    - networking.datumapis.com/subnets.list
+    - networking.datumapis.com/subnets.get
+    - networking.datumapis.com/subnets.watch
+    - networking.datumapis.com/subnetclaims.list
+    - networking.datumapis.com/subnetclaims.get
+    - networking.datumapis.com/subnetclaims.watch
+    - networking.datumapis.com/networkpolicies.list
+    - networking.datumapis.com/networkpolicies.get
+    - networking.datumapis.com/networkpolicies.watch

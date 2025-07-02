@@ -1,0 +1,17 @@
+apiVersion: iam.miloapis.com/v1alpha1
+kind: Role
+metadata:
+  name: networking.datumapis.com-location-admin
+  annotations:
+    kubernetes.io/display-name: Location Admin
+    kubernetes.io/description: "Full access to location resources"
+spec:
+  launchStage: Beta
+  includedPermissions:
+    - networking.datumapis.com/locations.list
+    - networking.datumapis.com/locations.get
+    - networking.datumapis.com/locations.watch
+    - networking.datumapis.com/locations.create
+    - networking.datumapis.com/locations.update
+    - networking.datumapis.com/locations.patch
+    - networking.datumapis.com/locations.delete

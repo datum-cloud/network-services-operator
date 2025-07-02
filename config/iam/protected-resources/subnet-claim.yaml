@@ -1,0 +1,21 @@
+apiVersion: iam.miloapis.com/v1alpha1
+kind: ProtectedResource
+metadata:
+  name: networking.datumapis.com-subnetclaim
+spec:
+  serviceRef:
+    name: "networking.datumapis.com"
+  kind: SubnetClaim
+  plural: subnetclaims
+  singular: subnetclaim
+  permissions:
+    - list
+    - get
+    - create
+    - update
+    - patch
+    - watch
+    - delete
+  parentResources:
+    - apiGroup: networking.datumapis.com
+      kind: NetworkContext

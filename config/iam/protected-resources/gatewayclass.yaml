@@ -1,0 +1,18 @@
+---
+apiVersion: iam.miloapis.com/v1alpha1
+kind: ProtectedResource
+metadata:
+  name: gateway.networking.k8s.io-gatewayclass
+spec:
+  serviceRef:
+    name: "gateway.networking.k8s.io"
+  kind: GatewayClass
+  plural: gatewayclasses
+  singular: gatewayclass
+  permissions:
+    - list
+    - get
+    - watch
+  parentResources:
+    - apiGroup: resourcemanager.miloapis.com
+      kind: Project

@@ -1,0 +1,19 @@
+apiVersion: iam.miloapis.com/v1alpha1
+kind: Role
+metadata:
+  name: networking.datumapis.com-admin
+  annotations:
+    kubernetes.io/display-name: Network Admin
+    kubernetes.io/description: "Full access to all networking resources"
+spec:
+  launchStage: Beta
+  inheritedRoles:
+    - name: networking.datumapis.com-viewer
+    - name: networking.datumapis.com-gateway-admin
+    - name: networking.datumapis.com-location-admin
+  includedPermissions:
+    - networking.datumapis.com/networks.create
+    - networking.datumapis.com/networks.update
+    - networking.datumapis.com/networks.delete
+    - networking.datumapis.com/networks.patch
+    - networking.datumapis.com/networks.use

@@ -1,0 +1,24 @@
+apiVersion: iam.miloapis.com/v1alpha1
+kind: Role
+metadata:
+  name: networking.datumapis.com-gateway-admin
+  annotations:
+    kubernetes.io/display-name: Gateway Admin
+    kubernetes.io/description: "Full access to gateway resources"
+spec:
+  launchStage: Beta
+  inheritedRoles:
+    - name: networking.datumapis.com-gateway-viewer
+  includedPermissions:
+    - gateway.networking.k8s.io/gateways.create
+    - gateway.networking.k8s.io/gateways.update
+    - gateway.networking.k8s.io/gateways.patch
+    - gateway.networking.k8s.io/gateways.delete
+    - gateway.networking.k8s.io/httproutes.create
+    - gateway.networking.k8s.io/httproutes.update
+    - gateway.networking.k8s.io/httproutes.patch
+    - gateway.networking.k8s.io/httproutes.delete
+    - discovery.k8s.io/endpointslices.create
+    - discovery.k8s.io/endpointslices.update
+    - discovery.k8s.io/endpointslices.patch
+    - discovery.k8s.io/endpointslices.delete

@@ -4,7 +4,11 @@ package controller
 
 import (
 	"context"
+	"fmt"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
@@ -33,9 +37,41 @@ type NetworkContextReconciler struct {
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.19.1/pkg/reconcile
 func (r *NetworkContextReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
-	_ = log.FromContext(ctx, "cluster", req.ClusterName)
+	logger := log.FromContext(ctx, "cluster", req.ClusterName)
 
-	// TODO(user): your logic here
+	cl, err := r.mgr.GetCluster(ctx, req.ClusterName)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
+	var networkContext networkingv1alpha.NetworkContext
+	if err := cl.GetClient().Get(ctx, req.NamespacedName, &networkContext); err != nil {
+		if apierrors.IsNotFound(err) {
+			return ctrl.Result{}, nil
+		}
+		return ctrl.Result{}, err
+	}
+
+	if !networkContext.DeletionTimestamp.IsZero() {
+		return ctrl.Result{}, nil
+	}
+
+	logger.Info("reconciling network context")
+	defer logger.Info("reconcile complete")
+
+	if apimeta.IsStatusConditionTrue(networkContext.Status.Conditions, networkingv1alpha.NetworkContextProgrammed) {
+		if apimeta.SetStatusCondition(&networkContext.Status.Conditions, metav1.Condition{
+			Type:               networkingv1alpha.NetworkContextReady,
+			Status:             metav1.ConditionTrue,
+			Reason:             networkingv1alpha.NetworkContextReadyReasonReady,
+			ObservedGeneration: networkContext.Generation,
+			Message:            "Network context is ready",
+		}) {
+			if err := cl.GetClient().Status().Update(ctx, &networkContext); err != nil {
+				return ctrl.Result{}, fmt.Errorf("failed updating network context status")
+			}
+		}
+	}
 
 	return ctrl.Result{}, nil
 }

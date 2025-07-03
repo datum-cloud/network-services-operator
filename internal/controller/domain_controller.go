@@ -17,7 +17,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
@@ -38,6 +40,12 @@ type DomainReconciler struct {
 // move the current state of the cluster closer to the desired state.
 func (r *DomainReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx, "cluster", req.ClusterName)
+
+	// Only process events from the local cluster to avoid duplicate reconciliations
+	if req.ClusterName != "" && req.ClusterName != "single" {
+		logger.Info("Skipping reconciliation for non-local cluster", "cluster", req.ClusterName)
+		return ctrl.Result{}, nil
+	}
 
 	// Get the cluster client
 	cl, err := r.mgr.GetCluster(ctx, req.ClusterName)
@@ -62,13 +70,35 @@ func (r *DomainReconciler) Reconcile(ctx context.Context, req mcreconcile.Reques
 			return ctrl.Result{}, err
 		}
 
+		// Update last verification attempt timestamp
+		now := metav1.Now()
+		if domain.Status.Verification == nil {
+			domain.Status.Verification = &datumapisv1alpha.DomainVerificationStatus{}
+		}
+		domain.Status.Verification.LastVerificationAttempt = &now
+
 		// Check DNS for verification record
 		if r.checkDNSVerification(domain) {
 			// Update domain status with verification results
 			r.updateDomainVerificationStatus(domain, true)
 		} else {
-			// Verification failed, requeue after a delay
+			// Verification failed, update status and requeue after a delay
 			logger.Info("Domain verification pending", "domain", domain.Spec.DomainName)
+
+			// Update domain conditions to show verification pending state
+			r.updateDomainConditions(domain)
+
+			logger.Info("Domain conditions updated", "domain", domain.Name, "conditions", len(domain.Status.Conditions))
+
+			// Try to update the domain status directly
+			if err := cl.GetClient().Status().Update(ctx, domain); err != nil {
+				logger.Error(err, "Failed to update domain status")
+				// Don't return error, just log it and continue with requeue
+				// This prevents the controller from getting stuck
+			} else {
+				logger.Info("Domain status updated successfully", "domain", domain.Name)
+			}
+
 			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 		}
 	}
@@ -81,14 +111,18 @@ func (r *DomainReconciler) Reconcile(ctx context.Context, req mcreconcile.Reques
 		}
 	}
 
+	// Update all domain conditions
+	r.updateDomainConditions(domain)
+
+	logger.Info("Domain conditions updated", "domain", domain.Name, "conditions", len(domain.Status.Conditions))
+
 	// Update the domain status
 	if err := cl.GetClient().Status().Update(ctx, domain); err != nil {
 		logger.Error(err, "Failed to update domain status")
 		return ctrl.Result{}, err
 	}
 
-	// Update Ready condition
-	r.updateReadyCondition(domain)
+	logger.Info("Domain status updated successfully", "domain", domain.Name)
 
 	return ctrl.Result{}, nil
 }
@@ -375,6 +409,8 @@ func (r *DomainReconciler) updateReadyCondition(domain *datumapisv1alpha.Domain)
 		readyCondition = &metav1.Condition{
 			Type:               "Ready",
 			Status:             metav1.ConditionFalse,
+			Reason:             "DomainNotReady",
+			Message:            "Domain verification pending",
 			LastTransitionTime: metav1.Now(),
 		}
 		domain.Status.Conditions = append(domain.Status.Conditions, *readyCondition)
@@ -400,11 +436,125 @@ func (r *DomainReconciler) updateReadyCondition(domain *datumapisv1alpha.Domain)
 	}
 }
 
+// updateDomainConditions updates all conditions for the domain
+func (r *DomainReconciler) updateDomainConditions(domain *datumapisv1alpha.Domain) {
+	// Ensure status is initialized
+	if domain.Status.Conditions == nil {
+		domain.Status.Conditions = []metav1.Condition{}
+	}
+
+	// Update verification condition
+	r.updateVerificationCondition(domain)
+
+	// Update WHOIS condition
+	r.updateWHOISCondition(domain)
+
+	// Update Ready condition (depends on verification and WHOIS)
+	r.updateReadyCondition(domain)
+}
+
+// updateVerificationCondition updates the verification condition
+func (r *DomainReconciler) updateVerificationCondition(domain *datumapisv1alpha.Domain) {
+	verified := r.isDomainVerified(domain)
+
+	// Find existing Verification condition
+	var verificationCondition *metav1.Condition
+	for i := range domain.Status.Conditions {
+		if domain.Status.Conditions[i].Type == "Verification" {
+			verificationCondition = &domain.Status.Conditions[i]
+			break
+		}
+	}
+
+	// Create new condition if it doesn't exist
+	if verificationCondition == nil {
+		verificationCondition = &metav1.Condition{
+			Type:               "Verification",
+			Status:             metav1.ConditionFalse,
+			Reason:             "VerificationPending",
+			Message:            "Waiting for DNS verification record",
+			LastTransitionTime: metav1.Now(),
+		}
+		domain.Status.Conditions = append(domain.Status.Conditions, *verificationCondition)
+	}
+
+	// Update condition status
+	status := metav1.ConditionFalse
+	reason := "VerificationPending"
+	message := "Waiting for DNS verification record"
+
+	if verified {
+		status = metav1.ConditionTrue
+		reason = "VerificationComplete"
+		message = "Domain ownership verified via DNS"
+	}
+
+	// Only update if status changed
+	if verificationCondition.Status != status {
+		verificationCondition.Status = status
+		verificationCondition.Reason = reason
+		verificationCondition.Message = message
+		verificationCondition.LastTransitionTime = metav1.Now()
+	}
+}
+
+// updateWHOISCondition updates the WHOIS condition
+func (r *DomainReconciler) updateWHOISCondition(domain *datumapisv1alpha.Domain) {
+	hasWHOISData := domain.Status.Registrar != nil
+
+	// Find existing WHOIS condition
+	var whoisCondition *metav1.Condition
+	for i := range domain.Status.Conditions {
+		if domain.Status.Conditions[i].Type == "WHOIS" {
+			whoisCondition = &domain.Status.Conditions[i]
+			break
+		}
+	}
+
+	// Create new condition if it doesn't exist
+	if whoisCondition == nil {
+		whoisCondition = &metav1.Condition{
+			Type:               "WHOIS",
+			Status:             metav1.ConditionFalse,
+			Reason:             "WHOISPending",
+			Message:            "Waiting for domain verification before fetching WHOIS data",
+			LastTransitionTime: metav1.Now(),
+		}
+		domain.Status.Conditions = append(domain.Status.Conditions, *whoisCondition)
+	}
+
+	// Update condition status
+	status := metav1.ConditionFalse
+	reason := "WHOISPending"
+	message := "Waiting for domain verification before fetching WHOIS data"
+
+	if hasWHOISData {
+		status = metav1.ConditionTrue
+		reason = "WHOISComplete"
+		message = "WHOIS data fetched successfully"
+	}
+
+	// Only update if status changed
+	if whoisCondition.Status != status {
+		whoisCondition.Status = status
+		whoisCondition.Reason = reason
+		whoisCondition.Message = message
+		whoisCondition.LastTransitionTime = metav1.Now()
+	}
+}
+
 // SetupWithManager sets up the controller with the Manager.
 func (r *DomainReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	r.mgr = mgr
 	return mcbuilder.ControllerManagedBy(mgr).
-		For(&datumapisv1alpha.Domain{}, mcbuilder.WithEngageWithLocalCluster(false)).
+		For(&datumapisv1alpha.Domain{}, mcbuilder.WithEngageWithLocalCluster(true)).
 		Named("domain").
+		WithEventFilter(predicate.Funcs{
+			// Only process spec changes, not status changes
+			UpdateFunc: func(e event.UpdateEvent) bool {
+				// Skip if only status changed
+				return e.ObjectOld.GetGeneration() != e.ObjectNew.GetGeneration()
+			},
+		}).
 		Complete(r)
 }

@@ -64,10 +64,15 @@ func (r *DomainReconciler) Reconcile(ctx context.Context, req mcreconcile.Reques
 
 	// Check if domain ownership is verified
 	if !r.isDomainVerified(domain) {
-		// If not verified, generate and set verification TXT record
-		if err := r.generateVerificationRecord(domain); err != nil {
-			logger.Error(err, "Failed to generate verification record")
-			return ctrl.Result{}, err
+		// If not verified, generate and set verification TXT record (only if not already generated)
+		if domain.Status.Verification == nil || len(domain.Status.Verification.RequiredDNSRecords) == 0 {
+			if err := r.generateVerificationRecord(domain); err != nil {
+				logger.Error(err, "Failed to generate verification record")
+				return ctrl.Result{}, err
+			}
+			logger.Info("Generated new verification record", "domain", domain.Spec.DomainName)
+		} else {
+			logger.Info("Using existing verification record", "domain", domain.Spec.DomainName)
 		}
 
 		// Update last verification attempt timestamp
@@ -78,7 +83,9 @@ func (r *DomainReconciler) Reconcile(ctx context.Context, req mcreconcile.Reques
 		domain.Status.Verification.LastVerificationAttempt = &now
 
 		// Check DNS for verification record
+		logger.Info("About to check DNS verification", "domain", domain.Spec.DomainName)
 		if r.checkDNSVerification(domain) {
+			logger.Info("DNS verification successful!", "domain", domain.Spec.DomainName)
 			// Update domain status with verification results
 			r.updateDomainVerificationStatus(domain, true)
 		} else {
@@ -129,15 +136,20 @@ func (r *DomainReconciler) Reconcile(ctx context.Context, req mcreconcile.Reques
 
 // isDomainVerified checks if the domain has been verified
 func (r *DomainReconciler) isDomainVerified(domain *datumapisv1alpha.Domain) bool {
+	logger := log.Log.WithName("isDomainVerified")
+
 	// If we have registrar data, which indicates successful verification and WHOIS lookup
 	if domain.Status.Registrar != nil {
+		logger.Info("Domain verified via registrar data", "domain", domain.Spec.DomainName)
 		return true
 	}
 	// Check if verification records exist and have been verified
 	if domain.Status.Verification == nil || len(domain.Status.Verification.RequiredDNSRecords) == 0 {
+		logger.Info("No verification records found", "domain", domain.Spec.DomainName)
 		return false
 	}
 	// If we have verification records but no registrar data, we need to verify DNS
+	logger.Info("Checking DNS verification for domain", "domain", domain.Spec.DomainName)
 	return r.checkDNSVerification(domain)
 }
 
@@ -171,11 +183,15 @@ func (r *DomainReconciler) generateVerificationRecord(domain *datumapisv1alpha.D
 
 // checkDNSVerification checks if the verification TXT record exists in DNS
 func (r *DomainReconciler) checkDNSVerification(domain *datumapisv1alpha.Domain) bool {
+	logger := log.Log.WithName("checkDNSVerification")
+
 	if domain.Status.Verification == nil || len(domain.Status.Verification.RequiredDNSRecords) == 0 {
+		logger.Info("No verification records found", "domain", domain.Spec.DomainName)
 		return false
 	}
 
 	record := domain.Status.Verification.RequiredDNSRecords[0]
+	logger.Info("Checking DNS verification", "domain", domain.Spec.DomainName, "recordName", record.Name, "expectedContent", record.Content)
 
 	// Perform DNS lookup for the TXT record with timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -192,18 +208,29 @@ func (r *DomainReconciler) checkDNSVerification(domain *datumapisv1alpha.Domain)
 		},
 	}
 
+	logger.Info("Performing DNS lookup", "recordName", record.Name)
 	txtRecords, err := resolver.LookupTXT(ctx, record.Name)
 	if err != nil {
+		logger.Error(err, "DNS lookup failed", "recordName", record.Name)
 		return false
 	}
 
+	logger.Info("DNS lookup completed", "recordName", record.Name, "foundRecords", len(txtRecords))
+
+	// Log all found TXT records for debugging
+	for i, txt := range txtRecords {
+		logger.Info("Found TXT record", "recordName", record.Name, "index", i, "content", txt)
+	}
+
 	// Check if our verification record exists
-	for _, txt := range txtRecords {
+	for i, txt := range txtRecords {
 		if strings.Contains(txt, record.Content) {
+			logger.Info("Verification record found!", "recordName", record.Name, "index", i, "content", txt)
 			return true
 		}
 	}
 
+	logger.Info("Verification record not found", "recordName", record.Name, "expectedContent", record.Content, "foundRecords", txtRecords)
 	return false
 }
 

@@ -11,11 +11,13 @@ import (
 // +kubebuilder:printcolumn:name="Domain",type="string",JSONPath=".spec.domainName"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 // +kubebuilder:printcolumn:name="Ready",type="string",JSONPath=`.status.conditions[?(@.type=="Ready")].status`
-// +kubebuilder:printcolumn:name="Reason",type="string",JSONPath=`.status.conditions[?(@.type=="Ready")].reason`
+// +kubebuilder:printcolumn:name="Status",type="string",JSONPath=`.status.conditions[?(@.type=="Verification")].message`
 // +kubebuilder:printcolumn:name="Registrar",type="string",JSONPath=".status.registrar.ianaName"
 // +kubebuilder:printcolumn:name="DNSSEC",type="boolean",JSONPath=".status.registrar.dnssec.signed"
 // +kubebuilder:printcolumn:name="Expires",type="date",JSONPath=".status.registrar.expirationDate"
-// +kubebuilder:printcolumn:name="DNS-Verify",type="string",JSONPath=".status.verification.requiredDNSRecords[0].content"
+// +kubebuilder:printcolumn:name="DNS-Record",type="string",JSONPath=".status.verification.requiredDNSRecords[0].name"
+// +kubebuilder:printcolumn:name="DNS-Value",type="string",JSONPath=".status.verification.requiredDNSRecords[0].content"
+// +kubebuilder:printcolumn:name="Last-Check",type="date",JSONPath=".status.verification.lastVerificationAttempt"
 
 // Domain represents a domain name in the Datum system
 type Domain struct {
@@ -45,7 +47,8 @@ type DomainStatus struct {
 
 // DomainVerificationStatus represents the verification status of a domain
 type DomainVerificationStatus struct {
-	RequiredDNSRecords []DNSVerificationExpectedRecord `json:"requiredDNSRecords,omitempty"`
+	RequiredDNSRecords      []DNSVerificationExpectedRecord `json:"requiredDNSRecords,omitempty"`
+	LastVerificationAttempt *metav1.Time                    `json:"lastVerificationAttempt,omitempty"`
 }
 
 // DomainRegistrarStatus represents the registrar information for a domain

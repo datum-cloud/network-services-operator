@@ -24,8 +24,8 @@ spec:
     - jsonPath: .status.conditions[?(@.type=="Ready")].status
       name: Ready
       type: string
-    - jsonPath: .status.conditions[?(@.type=="Ready")].reason
-      name: Reason
+    - jsonPath: .status.conditions[?(@.type=="Verification")].message
+      name: Status
       type: string
     - jsonPath: .status.registrar.ianaName
       name: Registrar
@@ -36,9 +36,15 @@ spec:
     - jsonPath: .status.registrar.expirationDate
       name: Expires
       type: date
-    - jsonPath: .status.verification.requiredDNSRecords[0].content
-      name: DNS-Verify
+    - jsonPath: .status.verification.requiredDNSRecords[0].name
+      name: DNS-Record
       type: string
+    - jsonPath: .status.verification.requiredDNSRecords[0].content
+      name: DNS-Value
+      type: string
+    - jsonPath: .status.verification.lastVerificationAttempt
+      name: Last-Check
+      type: date
     name: v1alpha
     schema:
       openAPIV3Schema:
@@ -172,6 +178,9 @@ spec:
                 description: DomainVerificationStatus represents the verification
                   status of a domain
                 properties:
+                  lastVerificationAttempt:
+                    format: date-time
+                    type: string
                   requiredDNSRecords:
                     items:
                       description: DNSVerificationExpectedRecord represents a DNS

@@ -4,10 +4,22 @@ package controller
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"fmt"
+	"net"
+	"regexp"
+	"strings"
+	"time"
 
+	"github.com/likexian/whois"
+	whoisparser "github.com/likexian/whois-parser"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
@@ -29,6 +41,12 @@ type DomainReconciler struct {
 func (r *DomainReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx, "cluster", req.ClusterName)
 
+	// Only process events from the local cluster to avoid duplicate reconciliations
+	if req.ClusterName != "" && req.ClusterName != "single" {
+		logger.Info("Skipping reconciliation for non-local cluster", "cluster", req.ClusterName)
+		return ctrl.Result{}, nil
+	}
+
 	// Get the cluster client
 	cl, err := r.mgr.GetCluster(ctx, req.ClusterName)
 	if err != nil {
@@ -42,22 +60,528 @@ func (r *DomainReconciler) Reconcile(ctx context.Context, req mcreconcile.Reques
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	// TODO: Implement domain verification logic
-	// 1. Check if domain ownership is verified
-	// 2. If not verified, generate and set verification TXT record
-	// 3. Check DNS for verification record
-	// 4. Update domain status with verification results
-	// 5. If verified, fetch WHOIS data and update status
+	logger.Info("Reconciling Domain", "domain", domain.Name, "domainName", domain.Spec.DomainName)
 
-	logger.Info("Reconciling Domain", "domain", domain.Name)
+	// Check if domain ownership is verified
+	if !r.isDomainVerified(domain) {
+		// If not verified, generate and set verification TXT record (only if not already generated)
+		if domain.Status.Verification == nil || len(domain.Status.Verification.RequiredDNSRecords) == 0 {
+			if err := r.generateVerificationRecord(domain); err != nil {
+				logger.Error(err, "Failed to generate verification record")
+				return ctrl.Result{}, err
+			}
+			logger.Info("Generated new verification record", "domain", domain.Spec.DomainName)
+		} else {
+			logger.Info("Using existing verification record", "domain", domain.Spec.DomainName)
+		}
+
+		// Update last verification attempt timestamp
+		now := metav1.Now()
+		if domain.Status.Verification == nil {
+			domain.Status.Verification = &datumapisv1alpha.DomainVerificationStatus{}
+		}
+		domain.Status.Verification.LastVerificationAttempt = &now
+
+		// Check DNS for verification record
+		logger.Info("About to check DNS verification", "domain", domain.Spec.DomainName)
+		if r.checkDNSVerification(domain) {
+			logger.Info("DNS verification successful!", "domain", domain.Spec.DomainName)
+			// Update domain status with verification results
+			r.updateDomainVerificationStatus(domain, true)
+		} else {
+			// Verification failed, update status and requeue after a delay
+			logger.Info("Domain verification pending", "domain", domain.Spec.DomainName)
+
+			// Update domain conditions to show verification pending state
+			r.updateDomainConditions(domain)
+
+			logger.Info("Domain conditions updated", "domain", domain.Name, "conditions", len(domain.Status.Conditions))
+
+			// Try to update the domain status directly
+			if err := cl.GetClient().Status().Update(ctx, domain); err != nil {
+				logger.Error(err, "Failed to update domain status")
+				// Don't return error, just log it and continue with requeue
+				// This prevents the controller from getting stuck
+			} else {
+				logger.Info("Domain status updated successfully", "domain", domain.Name)
+			}
+
+			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+		}
+	}
+
+	// If verified, fetch WHOIS data and update status
+	if r.isDomainVerified(domain) && domain.Status.Registrar == nil {
+		if err := r.fetchWHOISData(domain); err != nil {
+			logger.Error(err, "Failed to fetch WHOIS data")
+			return ctrl.Result{}, err
+		}
+	}
+
+	// Update all domain conditions
+	r.updateDomainConditions(domain)
+
+	logger.Info("Domain conditions updated", "domain", domain.Name, "conditions", len(domain.Status.Conditions))
+
+	// Update the domain status
+	if err := cl.GetClient().Status().Update(ctx, domain); err != nil {
+		logger.Error(err, "Failed to update domain status")
+		return ctrl.Result{}, err
+	}
+
+	logger.Info("Domain status updated successfully", "domain", domain.Name)
+
 	return ctrl.Result{}, nil
+}
+
+// isDomainVerified checks if the domain has been verified
+func (r *DomainReconciler) isDomainVerified(domain *datumapisv1alpha.Domain) bool {
+	logger := log.Log.WithName("isDomainVerified")
+
+	// If we have registrar data, which indicates successful verification and WHOIS lookup
+	if domain.Status.Registrar != nil {
+		logger.Info("Domain verified via registrar data", "domain", domain.Spec.DomainName)
+		return true
+	}
+	// Check if verification records exist and have been verified
+	if domain.Status.Verification == nil || len(domain.Status.Verification.RequiredDNSRecords) == 0 {
+		logger.Info("No verification records found", "domain", domain.Spec.DomainName)
+		return false
+	}
+	// If we have verification records but no registrar data, we need to verify DNS
+	logger.Info("Checking DNS verification for domain", "domain", domain.Spec.DomainName)
+	return r.checkDNSVerification(domain)
+}
+
+// generateVerificationRecord generates a verification TXT record for domain ownership
+func (r *DomainReconciler) generateVerificationRecord(domain *datumapisv1alpha.Domain) error {
+	// Generate a random verification token
+	token := make([]byte, 16)
+	if _, err := rand.Read(token); err != nil {
+		return fmt.Errorf("failed to generate verification token: %w", err)
+	}
+
+	verificationToken := hex.EncodeToString(token)
+	verificationRecord := fmt.Sprintf("datum-verification=%s", verificationToken)
+
+	// Create verification status if it doesn't exist
+	if domain.Status.Verification == nil {
+		domain.Status.Verification = &datumapisv1alpha.DomainVerificationStatus{}
+	}
+
+	// Set the required DNS record
+	domain.Status.Verification.RequiredDNSRecords = []datumapisv1alpha.DNSVerificationExpectedRecord{
+		{
+			Name:    fmt.Sprintf("_datum-verification.%s", domain.Spec.DomainName),
+			Type:    "TXT",
+			Content: verificationRecord,
+		},
+	}
+
+	return nil
+}
+
+// checkDNSVerification checks if the verification TXT record exists in DNS
+func (r *DomainReconciler) checkDNSVerification(domain *datumapisv1alpha.Domain) bool {
+	logger := log.Log.WithName("checkDNSVerification")
+
+	if domain.Status.Verification == nil || len(domain.Status.Verification.RequiredDNSRecords) == 0 {
+		logger.Info("No verification records found", "domain", domain.Spec.DomainName)
+		return false
+	}
+
+	record := domain.Status.Verification.RequiredDNSRecords[0]
+	logger.Info("Checking DNS verification", "domain", domain.Spec.DomainName, "recordName", record.Name, "expectedContent", record.Content)
+
+	// Perform DNS lookup for the TXT record with timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Use a custom resolver to avoid blocking
+	resolver := &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+			d := net.Dialer{
+				Timeout: 5 * time.Second,
+			}
+			return d.DialContext(ctx, network, address)
+		},
+	}
+
+	logger.Info("Performing DNS lookup", "recordName", record.Name)
+	txtRecords, err := resolver.LookupTXT(ctx, record.Name)
+	if err != nil {
+		logger.Error(err, "DNS lookup failed", "recordName", record.Name)
+		return false
+	}
+
+	logger.Info("DNS lookup completed", "recordName", record.Name, "foundRecords", len(txtRecords))
+
+	// Log all found TXT records for debugging
+	for i, txt := range txtRecords {
+		logger.Info("Found TXT record", "recordName", record.Name, "index", i, "content", txt)
+	}
+
+	// Check if our verification record exists
+	for i, txt := range txtRecords {
+		if strings.Contains(txt, record.Content) {
+			logger.Info("Verification record found!", "recordName", record.Name, "index", i, "content", txt)
+			return true
+		}
+	}
+
+	logger.Info("Verification record not found", "recordName", record.Name, "expectedContent", record.Content, "foundRecords", txtRecords)
+	return false
+}
+
+// updateDomainVerificationStatus updates the domain verification status
+func (r *DomainReconciler) updateDomainVerificationStatus(domain *datumapisv1alpha.Domain, verified bool) {
+	if verified && domain.Status.Verification != nil {
+		// Mark verification as successful by ensuring we have the required records
+		// The actual verification happens in checkDNSVerification
+		return
+	}
+
+	// If verification failed, we might want to clear the verification records
+	// or mark them as failed. For now, we keep them for retry.
+}
+
+// fetchWHOISData fetches WHOIS information for the domain
+func (r *DomainReconciler) fetchWHOISData(domain *datumapisv1alpha.Domain) error {
+	// Perform WHOIS lookup with timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Use a goroutine to perform the WHOIS lookup with timeout
+	type result struct {
+		data string
+		err  error
+	}
+
+	resultChan := make(chan result, 1)
+
+	go func() {
+		data, err := whois.Whois(domain.Spec.DomainName)
+		resultChan <- result{data: data, err: err}
+	}()
+
+	select {
+	case res := <-resultChan:
+		if res.err != nil {
+			return fmt.Errorf("failed to perform WHOIS lookup: %w", res.err)
+		}
+
+		// Parse WHOIS data using the proper parser
+		registrarInfo := r.parseWHOISData(res.data)
+		domain.Status.Registrar = registrarInfo
+
+	case <-ctx.Done():
+		return fmt.Errorf("WHOIS lookup timed out after 30 seconds")
+	}
+
+	return nil
+}
+
+// parseWHOISData parses WHOIS response using the whois-parser library
+func (r *DomainReconciler) parseWHOISData(whoisData string) *datumapisv1alpha.DomainRegistrarStatus {
+	registrar := &datumapisv1alpha.DomainRegistrarStatus{}
+
+	// Parse the WHOIS data using the proper parser
+	result, err := whoisparser.Parse(whoisData)
+	if err != nil {
+		// If parsing fails, fall back to basic extraction
+		return r.parseWHOISDataFallback(whoisData)
+	}
+
+	// Extract registrar information from the parsed result
+	if result.Registrar != nil {
+		registrar.IANAName = result.Registrar.Name
+		if result.Registrar.ID != "" {
+			registrar.IANAID = result.Registrar.ID
+		}
+	}
+
+	// Extract domain information
+	if result.Domain != nil {
+		registrar.CreatedDate = result.Domain.CreatedDate
+		registrar.ModifiedDate = result.Domain.UpdatedDate
+		registrar.ExpirationDate = result.Domain.ExpirationDate
+		registrar.Nameservers = result.Domain.NameServers
+
+		// Check DNSSEC status
+		registrar.DNSSEC.Signed = result.Domain.DNSSec
+
+		// Extract status codes
+		for _, status := range result.Domain.Status {
+			if strings.Contains(strings.ToLower(status), "client") {
+				registrar.ClientStatusCodes = append(registrar.ClientStatusCodes, status)
+			} else if strings.Contains(strings.ToLower(status), "server") {
+				registrar.ServerStatusCodes = append(registrar.ServerStatusCodes, status)
+			}
+		}
+	}
+
+	// Set defaults if no data found
+	if registrar.IANAName == "" {
+		registrar.IANAName = "Unknown Registrar"
+	}
+	if registrar.IANAID == "" {
+		registrar.IANAID = "0"
+	}
+
+	return registrar
+}
+
+// parseWHOISDataFallback provides a fallback parsing method if the main parser fails
+func (r *DomainReconciler) parseWHOISDataFallback(whoisData string) *datumapisv1alpha.DomainRegistrarStatus {
+	registrar := &datumapisv1alpha.DomainRegistrarStatus{}
+
+	// Common WHOIS field patterns for fallback
+	patterns := map[string]*regexp.Regexp{
+		"registrar":       regexp.MustCompile(`(?i)registrar:\s*(.+)`),
+		"iana_id":         regexp.MustCompile(`(?i)iana id:\s*(\d+)`),
+		"created_date":    regexp.MustCompile(`(?i)(?:created|creation) date:\s*(.+)`),
+		"updated_date":    regexp.MustCompile(`(?i)(?:updated|modified) date:\s*(.+)`),
+		"expiration_date": regexp.MustCompile(`(?i)(?:expiration|expires|expiry) date:\s*(.+)`),
+		"nameservers":     regexp.MustCompile(`(?i)name server:\s*(.+)`),
+		"dnssec":          regexp.MustCompile(`(?i)dnssec:\s*(.+)`),
+		"status":          regexp.MustCompile(`(?i)status:\s*(.+)`),
+	}
+
+	// Extract registrar name
+	if match := patterns["registrar"].FindStringSubmatch(whoisData); len(match) > 1 {
+		registrar.IANAName = strings.TrimSpace(match[1])
+	}
+
+	// Extract IANA ID
+	if match := patterns["iana_id"].FindStringSubmatch(whoisData); len(match) > 1 {
+		registrar.IANAID = strings.TrimSpace(match[1])
+	}
+
+	// Extract dates
+	if match := patterns["created_date"].FindStringSubmatch(whoisData); len(match) > 1 {
+		registrar.CreatedDate = strings.TrimSpace(match[1])
+	}
+
+	if match := patterns["updated_date"].FindStringSubmatch(whoisData); len(match) > 1 {
+		registrar.ModifiedDate = strings.TrimSpace(match[1])
+	}
+
+	if match := patterns["expiration_date"].FindStringSubmatch(whoisData); len(match) > 1 {
+		registrar.ExpirationDate = strings.TrimSpace(match[1])
+	}
+
+	// Extract nameservers
+	nameserverMatches := patterns["nameservers"].FindAllStringSubmatch(whoisData, -1)
+	for _, match := range nameserverMatches {
+		if len(match) > 1 {
+			ns := strings.TrimSpace(match[1])
+			if ns != "" {
+				registrar.Nameservers = append(registrar.Nameservers, ns)
+			}
+		}
+	}
+
+	// Extract DNSSEC status
+	if match := patterns["dnssec"].FindStringSubmatch(whoisData); len(match) > 1 {
+		dnssecStatus := strings.ToLower(strings.TrimSpace(match[1]))
+		registrar.DNSSEC.Signed = strings.Contains(dnssecStatus, "signed") ||
+			strings.Contains(dnssecStatus, "yes") ||
+			strings.Contains(dnssecStatus, "enabled")
+	}
+
+	// Extract status codes
+	statusMatches := patterns["status"].FindAllStringSubmatch(whoisData, -1)
+	for _, match := range statusMatches {
+		if len(match) > 1 {
+			status := strings.TrimSpace(match[1])
+			if status != "" {
+				// Categorize status codes
+				if strings.Contains(strings.ToLower(status), "client") {
+					registrar.ClientStatusCodes = append(registrar.ClientStatusCodes, status)
+				} else if strings.Contains(strings.ToLower(status), "server") {
+					registrar.ServerStatusCodes = append(registrar.ServerStatusCodes, status)
+				}
+			}
+		}
+	}
+
+	// Set defaults if no data found
+	if registrar.IANAName == "" {
+		registrar.IANAName = "Unknown Registrar"
+	}
+	if registrar.IANAID == "" {
+		registrar.IANAID = "0"
+	}
+
+	return registrar
+}
+
+// updateReadyCondition updates the Ready condition for the domain
+func (r *DomainReconciler) updateReadyCondition(domain *datumapisv1alpha.Domain) {
+	// Check if domain is ready
+	ready := r.isDomainVerified(domain) && domain.Status.Registrar != nil
+
+	// Find existing Ready condition
+	var readyCondition *metav1.Condition
+	for i := range domain.Status.Conditions {
+		if domain.Status.Conditions[i].Type == "Ready" {
+			readyCondition = &domain.Status.Conditions[i]
+			break
+		}
+	}
+
+	// Create new condition if it doesn't exist
+	if readyCondition == nil {
+		readyCondition = &metav1.Condition{
+			Type:               "Ready",
+			Status:             metav1.ConditionFalse,
+			Reason:             "DomainNotReady",
+			Message:            "Domain verification pending",
+			LastTransitionTime: metav1.Now(),
+		}
+		domain.Status.Conditions = append(domain.Status.Conditions, *readyCondition)
+	}
+
+	// Update condition status
+	status := metav1.ConditionFalse
+	reason := "DomainNotReady"
+	message := "Domain verification pending"
+
+	if ready {
+		status = metav1.ConditionTrue
+		reason = "DomainReady"
+		message = "Domain verified and WHOIS data fetched"
+	}
+
+	// Only update if status changed
+	if readyCondition.Status != status {
+		readyCondition.Status = status
+		readyCondition.Reason = reason
+		readyCondition.Message = message
+		readyCondition.LastTransitionTime = metav1.Now()
+	}
+}
+
+// updateDomainConditions updates all conditions for the domain
+func (r *DomainReconciler) updateDomainConditions(domain *datumapisv1alpha.Domain) {
+	// Ensure status is initialized
+	if domain.Status.Conditions == nil {
+		domain.Status.Conditions = []metav1.Condition{}
+	}
+
+	// Update verification condition
+	r.updateVerificationCondition(domain)
+
+	// Update WHOIS condition
+	r.updateWHOISCondition(domain)
+
+	// Update Ready condition (depends on verification and WHOIS)
+	r.updateReadyCondition(domain)
+}
+
+// updateVerificationCondition updates the verification condition
+func (r *DomainReconciler) updateVerificationCondition(domain *datumapisv1alpha.Domain) {
+	verified := r.isDomainVerified(domain)
+
+	// Find existing Verification condition
+	var verificationCondition *metav1.Condition
+	for i := range domain.Status.Conditions {
+		if domain.Status.Conditions[i].Type == "Verification" {
+			verificationCondition = &domain.Status.Conditions[i]
+			break
+		}
+	}
+
+	// Create new condition if it doesn't exist
+	if verificationCondition == nil {
+		verificationCondition = &metav1.Condition{
+			Type:               "Verification",
+			Status:             metav1.ConditionFalse,
+			Reason:             "VerificationPending",
+			Message:            "Waiting for DNS verification record",
+			LastTransitionTime: metav1.Now(),
+		}
+		domain.Status.Conditions = append(domain.Status.Conditions, *verificationCondition)
+	}
+
+	// Update condition status
+	status := metav1.ConditionFalse
+	reason := "VerificationPending"
+	message := "Waiting for DNS verification record"
+
+	if verified {
+		status = metav1.ConditionTrue
+		reason = "VerificationComplete"
+		message = "Domain ownership verified via DNS"
+	}
+
+	// Only update if status changed
+	if verificationCondition.Status != status {
+		verificationCondition.Status = status
+		verificationCondition.Reason = reason
+		verificationCondition.Message = message
+		verificationCondition.LastTransitionTime = metav1.Now()
+	}
+}
+
+// updateWHOISCondition updates the WHOIS condition
+func (r *DomainReconciler) updateWHOISCondition(domain *datumapisv1alpha.Domain) {
+	hasWHOISData := domain.Status.Registrar != nil
+
+	// Find existing WHOIS condition
+	var whoisCondition *metav1.Condition
+	for i := range domain.Status.Conditions {
+		if domain.Status.Conditions[i].Type == "WHOIS" {
+			whoisCondition = &domain.Status.Conditions[i]
+			break
+		}
+	}
+
+	// Create new condition if it doesn't exist
+	if whoisCondition == nil {
+		whoisCondition = &metav1.Condition{
+			Type:               "WHOIS",
+			Status:             metav1.ConditionFalse,
+			Reason:             "WHOISPending",
+			Message:            "Waiting for domain verification before fetching WHOIS data",
+			LastTransitionTime: metav1.Now(),
+		}
+		domain.Status.Conditions = append(domain.Status.Conditions, *whoisCondition)
+	}
+
+	// Update condition status
+	status := metav1.ConditionFalse
+	reason := "WHOISPending"
+	message := "Waiting for domain verification before fetching WHOIS data"
+
+	if hasWHOISData {
+		status = metav1.ConditionTrue
+		reason = "WHOISComplete"
+		message = "WHOIS data fetched successfully"
+	}
+
+	// Only update if status changed
+	if whoisCondition.Status != status {
+		whoisCondition.Status = status
+		whoisCondition.Reason = reason
+		whoisCondition.Message = message
+		whoisCondition.LastTransitionTime = metav1.Now()
+	}
 }
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *DomainReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	r.mgr = mgr
 	return mcbuilder.ControllerManagedBy(mgr).
-		For(&datumapisv1alpha.Domain{}, mcbuilder.WithEngageWithLocalCluster(false)).
+		For(&datumapisv1alpha.Domain{}, mcbuilder.WithEngageWithLocalCluster(true)).
 		Named("domain").
+		WithEventFilter(predicate.Funcs{
+			// Only process spec changes, not status changes
+			UpdateFunc: func(e event.UpdateEvent) bool {
+				// Skip if only status changed
+				return e.ObjectOld.GetGeneration() != e.ObjectNew.GetGeneration()
+			},
+		}).
 		Complete(r)
 }

@@ -220,7 +220,10 @@ func (c *DownstreamResourceManagementConfig) RestConfig() (*rest.Config, error) 
 		return ctrl.GetConfig()
 	}
 
-	return clientcmd.BuildConfigFromFlags("", c.KubeconfigPath)
+	// Expand environment variables in the kubeconfig path
+	expandedPath := os.ExpandEnv(c.KubeconfigPath)
+
+	return clientcmd.BuildConfigFromFlags("", expandedPath)
 }
 
 // +k8s:deepcopy-gen=true
@@ -362,7 +365,10 @@ func (c *DiscoveryConfig) DiscoveryRestConfig() (*rest.Config, error) {
 		return ctrl.GetConfig()
 	}
 
-	return clientcmd.BuildConfigFromFlags("", c.DiscoveryKubeconfigPath)
+	// Expand environment variables in the kubeconfig path
+	expandedPath := os.ExpandEnv(c.DiscoveryKubeconfigPath)
+
+	return clientcmd.BuildConfigFromFlags("", expandedPath)
 }
 
 func (c *DiscoveryConfig) ProjectRestConfig() (*rest.Config, error) {
@@ -370,7 +376,10 @@ func (c *DiscoveryConfig) ProjectRestConfig() (*rest.Config, error) {
 		return ctrl.GetConfig()
 	}
 
-	return clientcmd.BuildConfigFromFlags("", c.ProjectKubeconfigPath)
+	// Expand environment variables in the kubeconfig path
+	expandedPath := os.ExpandEnv(c.ProjectKubeconfigPath)
+
+	return clientcmd.BuildConfigFromFlags("", expandedPath)
 }
 
 func init() {

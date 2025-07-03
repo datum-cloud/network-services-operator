@@ -22,4 +22,4 @@ gateway:
 downstreamResourceManagement:
   # TODO(jreese) remove this when we make the downstream resource strategy
   # configurable
-  kubeconfigPath: ./infra.kubeconfig
+  kubeconfigPath: ${TMPDIR}/.kind-nso-infra.yaml

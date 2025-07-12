@@ -154,6 +154,7 @@ rules:
 - apiGroups:
   - networking.datumapis.com
   resources:
+  - httpproxies
   - networkbindings
   - networkcontexts
   - networkpolicies
@@ -171,6 +172,7 @@ rules:
 - apiGroups:
   - networking.datumapis.com
   resources:
+  - httpproxies/finalizers
   - networkbindings/finalizers
   - networkcontexts/finalizers
   - networkpolicies/finalizers
@@ -182,6 +184,7 @@ rules:
 - apiGroups:
   - networking.datumapis.com
   resources:
+  - httpproxies/status
   - networkbindings/status
   - networkcontexts/status
   - networkpolicies/status

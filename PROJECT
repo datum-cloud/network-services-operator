@@ -88,4 +88,13 @@ resources:
   webhooks:
     validation: true
     webhookVersion: v1
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: datumapis.com
+  group: networking
+  kind: HTTPProxy
+  path: go.datum.net/network-services-operator/api/v1alpha
+  version: v1alpha
 version: "3"

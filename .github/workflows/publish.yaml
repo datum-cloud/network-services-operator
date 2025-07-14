@@ -1,13 +1,24 @@
 name: Publish Docker Image
 
 on:
+  # Trigger on push to main
   push:
+    branches:
+      - main
+  # Trigger on all pull requests
+  pull_request:
+  # Trigger when a release is published
   release:
     types: ['published']
 
 jobs:
   publish-container-image:
-    uses: datum-cloud/actions/.github/workflows/publish-docker.yaml@v1.3.0
+    permissions:
+      id-token: write
+      contents: read
+      packages: write
+      attestations: write
+    uses: datum-cloud/actions/.github/workflows/publish-docker.yaml@v1.5.1
     with:
       image-name: network-services-operator
     secrets: inherit
@@ -17,7 +28,7 @@ jobs:
       id-token: write
       contents: read
       packages: write
-    uses: datum-cloud/actions/.github/workflows/publish-kustomize-bundle.yaml@v1.3.0
+    uses: datum-cloud/actions/.github/workflows/publish-kustomize-bundle.yaml@v1.5.1
     with:
       bundle-name: ghcr.io/datum-cloud/network-services-operator-kustomize
       bundle-path: config

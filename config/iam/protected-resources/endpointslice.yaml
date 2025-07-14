@@ -1,0 +1,22 @@
+---
+apiVersion: iam.miloapis.com/v1alpha1
+kind: ProtectedResource
+metadata:
+  name: discovery.k8s.io-endpointslice
+spec:
+  serviceRef:
+    name: "discovery.k8s.io"
+  kind: EndpointSlice
+  plural: endpointslices
+  singular: endpointslice
+  permissions:
+    - list
+    - get
+    - watch
+    - create
+    - update
+    - patch
+    - delete
+  parentResources:
+    - apiGroup: resourcemanager.miloapis.com
+      kind: Project

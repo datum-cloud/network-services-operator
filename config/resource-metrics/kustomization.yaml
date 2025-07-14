@@ -14,4 +14,4 @@ configMapGenerator:
       - gateways.yaml
     options:
       labels:
-        telemetry.datumapis.com/resource-metrics-config: "true"
+        telemetry.miloapis.com/resource-metrics-config: "true"

@@ -1,10 +1,8 @@
 name: Publish Docker Image
 
 on:
-  # Trigger on push to main
+  # Trigger on push
   push:
-    branches:
-      - main
   # Trigger on all pull requests
   pull_request:
   # Trigger when a release is published

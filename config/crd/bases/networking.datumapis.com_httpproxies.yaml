@@ -878,7 +878,7 @@ spec:
                         required:
                         - endpoint
                         type: object
-                      maxItems: 16
+                      maxItems: 1
                       minItems: 1
                       type: array
                     filters:

@@ -63,7 +63,7 @@ type HTTPProxyRule struct {
 	// sent.
 	//
 	// +kubebuilder:validation:MinItems=1
-	// +kubebuilder:validation:MaxItems=16
+	// +kubebuilder:validation:MaxItems=1
 	Backends []HTTPRouteBackend `json:"backends,omitempty"`
 }
 

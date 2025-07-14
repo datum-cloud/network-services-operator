@@ -6,7 +6,6 @@ import (
 	"context"
 	"fmt"
 
-	"k8s.io/apimachinery/pkg/api/errors"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -69,7 +68,7 @@ func (v *GatewayCustomValidator) ValidateCreate(ctx context.Context, obj runtime
 	clusterValidationOpts.ClusterName = clusterName
 
 	if errs := validation.ValidateGateway(gateway, clusterValidationOpts); len(errs) > 0 {
-		return nil, errors.NewInvalid(obj.GetObjectKind().GroupVersionKind().GroupKind(), gateway.GetName(), errs)
+		return nil, apierrors.NewInvalid(obj.GetObjectKind().GroupVersionKind().GroupKind(), gateway.GetName(), errs)
 	}
 
 	return nil, nil
@@ -104,7 +103,7 @@ func (v *GatewayCustomValidator) ValidateUpdate(ctx context.Context, oldObj, new
 	clusterValidationOpts.ClusterName = clusterName
 
 	if errs := validation.ValidateGateway(gateway, clusterValidationOpts); len(errs) > 0 {
-		return nil, errors.NewInvalid(oldObj.GetObjectKind().GroupVersionKind().GroupKind(), gateway.GetName(), errs)
+		return nil, apierrors.NewInvalid(oldObj.GetObjectKind().GroupVersionKind().GroupKind(), gateway.GetName(), errs)
 	}
 
 	return nil, nil

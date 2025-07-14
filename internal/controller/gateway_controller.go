@@ -878,12 +878,12 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 		var backendRefs []gatewayv1.HTTPBackendRef
 		for backendRefIdx, backendRef := range rule.BackendRefs {
 
-			if backendRef.BackendObjectReference.Kind == nil {
+			if backendRef.Kind == nil {
 				// Should not happen, as the default kind is Service
 				continue
 			}
 
-			switch *backendRef.BackendObjectReference.Kind {
+			switch *backendRef.Kind {
 			// Transform EndpointSlice references into Service references.
 			case KindEndpointSlice:
 				// Fetch the upstream EndpointSlice
@@ -895,7 +895,7 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 					return nil, nil, err
 				}
 
-				if backendRef.BackendObjectReference.Port == nil {
+				if backendRef.Port == nil {
 					// Should be protected by validation, but check just in case.
 					logger.Info("no port defined in backendRef", "backendRef", backendRef)
 					return nil, nil, fmt.Errorf("no port defined in backendRef")
@@ -912,7 +912,7 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 						Port:        *port.Port,
 					})
 
-					if int32(*backendRef.BackendObjectReference.Port) == *port.Port {
+					if int32(*backendRef.Port) == *port.Port {
 						if port.Name == nil {
 							// This should be protected by validation, but check just in case.
 							logger.Info("no port name defined in upstream endpointslice", "endpointslice", upstreamEndpointSlice.Name, "port", port)
@@ -924,7 +924,7 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 				}
 
 				if endpointPort == nil {
-					logger.Info("port not found in upstream endpointslice", "endpointslice", upstreamEndpointSlice.Name, "port", *backendRef.BackendObjectReference.Port)
+					logger.Info("port not found in upstream endpointslice", "endpointslice", upstreamEndpointSlice.Name, "port", *backendRef.Port)
 					return nil, nil, fmt.Errorf("port not found in upstream endpointslice")
 				}
 
@@ -969,7 +969,7 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 					Namespace: ptr.To(gatewayv1.Namespace(downstreamGateway.Namespace)),
 					Kind:      ptr.To(gatewayv1.Kind(KindService)),
 					Name:      gatewayv1.ObjectName(downstreamService.Name),
-					Port:      backendRef.BackendObjectReference.Port,
+					Port:      backendRef.Port,
 				}
 
 				downstreamHTTPBackendRef := gatewayv1.HTTPBackendRef{
@@ -1037,7 +1037,7 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 
 			// Other types of backend refs will be handled in the future.
 			default:
-				logger.Info("unknown backend ref kind", "kind", *backendRef.BackendObjectReference.Kind)
+				logger.Info("unknown backend ref kind", "kind", *backendRef.Kind)
 				continue
 			}
 		}

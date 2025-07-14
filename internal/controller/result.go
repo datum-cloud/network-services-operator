@@ -55,7 +55,7 @@ func (r *Result) AddStatusUpdate(c client.Client, obj client.Object) {
 }
 
 func (r Result) ShouldReturn() bool {
-	return r.Err != nil || !r.Result.IsZero() || r.StopProcessing
+	return r.Err != nil || !r.IsZero() || r.StopProcessing
 }
 
 func (r Result) Complete(ctx context.Context) (ctrl.Result, error) {

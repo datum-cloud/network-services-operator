@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
@@ -286,7 +287,7 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 	})
 	if err != nil {
 		if apierrors.IsConflict(err) {
-			result.Requeue = true
+			result.RequeueAfter = 1 * time.Second
 			return result, nil
 		}
 		result.Err = err
@@ -733,7 +734,7 @@ func (r *GatewayReconciler) ensureDownstreamHTTPRoute(
 	})
 	if err != nil {
 		if apierrors.IsConflict(err) {
-			result.Requeue = true
+			result.RequeueAfter = 1 * time.Second
 			return result
 		}
 		result.Err = err

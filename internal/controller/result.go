@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -63,7 +64,7 @@ func (r Result) Complete(ctx context.Context) (ctrl.Result, error) {
 		for obj, client := range r.syncStatus {
 			if err := client.Status().Update(ctx, obj); err != nil {
 				if r.Err == nil && apierrors.IsConflict(err) {
-					r.Requeue = true
+					r.RequeueAfter = 1 * time.Second
 				} else {
 					errs = append(errs, err)
 				}

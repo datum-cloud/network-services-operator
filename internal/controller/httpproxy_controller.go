@@ -4,6 +4,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -54,8 +55,6 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 		return ctrl.Result{}, err
 	}
 
-	// TODO(jreese) handle conditions
-
 	var httpProxy networkingv1alpha.HTTPProxy
 	if err := cl.GetClient().Get(ctx, req.NamespacedName, &httpProxy); err != nil {
 		if apierrors.IsNotFound(err) {
@@ -63,6 +62,34 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 		}
 		return ctrl.Result{}, err
 	}
+
+	acceptedCondition := &metav1.Condition{
+		Type:               networkingv1alpha.HTTPProxyConditionAccepted,
+		Status:             metav1.ConditionFalse,
+		Reason:             networkingv1alpha.HTTPProxyReasonPending,
+		ObservedGeneration: httpProxy.Generation,
+		Message:            "Waiting for controller",
+	}
+
+	programmedCondition := &metav1.Condition{
+		Type:               networkingv1alpha.HTTPProxyConditionProgrammed,
+		Status:             metav1.ConditionFalse,
+		Reason:             networkingv1alpha.HTTPProxyReasonPending,
+		ObservedGeneration: httpProxy.Generation,
+		Message:            "Waiting for controller",
+	}
+
+	defer func() {
+		var changed bool
+		changed = apimeta.SetStatusCondition(&httpProxy.Status.Conditions, *acceptedCondition) || changed
+		changed = apimeta.SetStatusCondition(&httpProxy.Status.Conditions, *programmedCondition) || changed
+
+		if changed {
+			if updateErr := cl.GetClient().Status().Update(ctx, &httpProxy); updateErr != nil {
+				err = errors.Join(err, fmt.Errorf("failed to update httpproxy status in defer: %w", updateErr))
+			}
+		}
+	}()
 
 	desiredResources, err := r.collectDesiredResources(&httpProxy)
 	if err != nil {
@@ -75,7 +102,7 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 	gateway := desiredResources.gateway.DeepCopy()
 
 	result, err := controllerutil.CreateOrUpdate(ctx, cl.GetClient(), gateway, func() error {
-		if controllerutil.HasControllerReference(gateway) && !metav1.IsControlledBy(gateway, &httpProxy) {
+		if hasControllerConflict(gateway, &httpProxy) {
 			// return already exists error - a gateway exists with the name we want to
 			// use, but it's owned by a different resource.
 			return apierrors.NewAlreadyExists(gatewayv1.Resource("Gateway"), gateway.Name)
@@ -91,10 +118,9 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 	})
 	if err != nil {
 		if apierrors.IsAlreadyExists(err) {
-			// TODO(jreese) update programmed condition with info
-
-			// Don't enqueue a retry, as it'll just fail again. If any updates are made
-			// by the user to correct the situation, it'll trigger another reconcile.
+			programmedCondition.Status = metav1.ConditionFalse
+			programmedCondition.Reason = networkingv1alpha.HTTPProxyReasonConflict
+			programmedCondition.Message = fmt.Sprintf("Underlying Gateway with the name %q already exists and is owned by a different resource.", gateway.Name)
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, fmt.Errorf("failed updating gateway resource: %w", err)
@@ -107,7 +133,7 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 	httpRoute := desiredResources.httpRoute.DeepCopy()
 
 	result, err = controllerutil.CreateOrUpdate(ctx, cl.GetClient(), httpRoute, func() error {
-		if controllerutil.HasControllerReference(httpRoute) && !metav1.IsControlledBy(httpRoute, &httpProxy) {
+		if hasControllerConflict(httpRoute, &httpProxy) {
 			// return already exists error - an httproute exists with the name we want to
 			// use, but it's owned by a different resource.
 			return apierrors.NewAlreadyExists(gatewayv1.Resource("HTTPRoute"), httpRoute.Name)
@@ -123,10 +149,9 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 	})
 	if err != nil {
 		if apierrors.IsAlreadyExists(err) {
-			// TODO(jreese) update programmed condition with info
-
-			// Don't enqueue a retry, as it'll just fail again. If any updates are made
-			// by the user to correct the situation, it'll trigger another reconcile.
+			programmedCondition.Status = metav1.ConditionFalse
+			programmedCondition.Reason = networkingv1alpha.HTTPProxyReasonConflict
+			programmedCondition.Message = fmt.Sprintf("Underlying HTTPRoute with the name %q already exists and is owned by a different resource.", httpRoute.Name)
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, fmt.Errorf("failed updating httproute resource: %w", err)
@@ -138,7 +163,7 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 		endpointSlice := desiredEndpointSlice.DeepCopy()
 
 		result, err := controllerutil.CreateOrUpdate(ctx, cl.GetClient(), endpointSlice, func() error {
-			if controllerutil.HasControllerReference(httpRoute) && !metav1.IsControlledBy(httpRoute, &httpProxy) {
+			if hasControllerConflict(endpointSlice, &httpProxy) {
 				// return already exists error - an endpointslice exists with the name we want to
 				// use, but it's owned by a different resource.
 				return apierrors.NewAlreadyExists(discoveryv1.Resource("EndpointSlice"), endpointSlice.Name)
@@ -155,6 +180,13 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 		})
 
 		if err != nil {
+			if apierrors.IsAlreadyExists(err) {
+				programmedCondition.Status = metav1.ConditionFalse
+				programmedCondition.Reason = networkingv1alpha.HTTPProxyReasonConflict
+				programmedCondition.Message = fmt.Sprintf("Underlying EndpointSlice with the name %q already exists and is owned by a different resource.", endpointSlice.Name)
+				return ctrl.Result{}, nil
+			}
+
 			return ctrl.Result{}, fmt.Errorf("failed to create or update endpointslice: %w", err)
 		}
 
@@ -178,24 +210,19 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 
 	httpProxyCopy.Status.Hostnames = hostnames
 
-	// TODO(jreese) maintain these conditions at a higher level, so we mark why
-	// an httpproxy may not have been accepted or programmed, such as invalid settings,
-	// or other programming errors such as TLS problems.
-	apimeta.SetStatusCondition(&httpProxyCopy.Status.Conditions, metav1.Condition{
-		Type:               string(gatewayv1.GatewayConditionAccepted),
-		Status:             metav1.ConditionTrue,
-		ObservedGeneration: httpProxy.Generation,
-		Reason:             string(gatewayv1.GatewayReasonAccepted),
-		Message:            "The HTTPProxy has been scheduled by Datum Gateway",
-	})
+	acceptedCondition.Status = metav1.ConditionTrue
+	acceptedCondition.Reason = networkingv1alpha.HTTPProxyReasonAccepted
+	acceptedCondition.Message = "The HTTPProxy has been scheduled by Datum Gateway"
 
-	apimeta.SetStatusCondition(&httpProxyCopy.Status.Conditions, metav1.Condition{
-		Type:               string(gatewayv1.GatewayConditionProgrammed),
-		Status:             metav1.ConditionTrue,
-		ObservedGeneration: httpProxy.Generation,
-		Reason:             string(gatewayv1.GatewayReasonProgrammed),
-		Message:            "The HTTPProxy has been programmed",
-	})
+	apimeta.SetStatusCondition(&httpProxyCopy.Status.Conditions, *acceptedCondition)
+
+	if apimeta.IsStatusConditionTrue(gateway.Status.Conditions, string(gatewayv1.GatewayConditionProgrammed)) {
+		programmedCondition.Status = metav1.ConditionTrue
+		programmedCondition.Reason = networkingv1alpha.HTTPProxyReasonProgrammed
+		programmedCondition.Message = "The HTTPProxy has been programmed"
+	}
+
+	apimeta.SetStatusCondition(&httpProxyCopy.Status.Conditions, *programmedCondition)
 
 	if !equality.Semantic.DeepEqual(httpProxy.Status, httpProxyCopy.Status) {
 		httpProxy.Status = httpProxyCopy.Status
@@ -230,8 +257,7 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 			Name:      httpProxy.Name,
 		},
 		Spec: gatewayv1.GatewaySpec{
-			// TODO(jreese): get from config
-			GatewayClassName: "datum-external-global-proxy",
+			GatewayClassName: r.Config.HTTPProxy.GatewayClassName,
 			Listeners: []gatewayv1.Listener{
 				{
 					Name:     "http",
@@ -253,11 +279,8 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 						},
 					},
 					TLS: &gatewayv1.GatewayTLSConfig{
-						Mode: ptr.To(gatewayv1.TLSModeTerminate),
-						Options: map[gatewayv1.AnnotationKey]gatewayv1.AnnotationValue{
-							// TODO(jreese) get from config
-							gatewayv1.AnnotationKey("gateway.networking.datumapis.com/certificate-issuer"): "true",
-						},
+						Mode:    ptr.To(gatewayv1.TLSModeTerminate),
+						Options: r.Config.HTTPProxy.GatewayTLSOptions,
 					},
 				},
 			},
@@ -370,7 +393,7 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 				},
 				Ports: []discoveryv1.EndpointPort{
 					{
-						Name:        ptr.To(fmt.Sprintf("%s-%d-%d", httpProxy.Name, ruleIndex, backendIndex)),
+						Name:        ptr.To(fmt.Sprintf("httpproxy-%d-%d", ruleIndex, backendIndex)),
 						Protocol:    ptr.To(v1.ProtocolTCP),
 						AppProtocol: ptr.To(appProtocol),
 						Port:        ptr.To(int32(backendPort)),
@@ -408,4 +431,12 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 		httpRoute:      httpRoute,
 		endpointSlices: desiredEndpointSlices,
 	}, nil
+}
+
+func hasControllerConflict(obj, owner metav1.Object) bool {
+	if t := obj.GetCreationTimestamp(); t.IsZero() {
+		return false
+	}
+
+	return controllerutil.HasControllerReference(obj) && !metav1.IsControlledBy(obj, owner)
 }

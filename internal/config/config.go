@@ -21,8 +21,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
-	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	multiclusterproviders "go.miloapis.com/milo/pkg/multicluster-runtime"
+
+	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 )
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
@@ -36,6 +37,8 @@ type NetworkServicesOperator struct {
 	WebhookServer WebhookServerConfig `json:"webhookServer"`
 
 	Gateway GatewayConfig `json:"gateway"`
+
+	HTTPProxy HTTPProxyConfig `json:"httpProxy"`
 
 	Discovery DiscoveryConfig `json:"discovery"`
 
@@ -284,6 +287,20 @@ type GatewayConfig struct {
 	// clusters. Hostnames on gateways in a cluster must be a subdomain of one of
 	// the suffixes in this list for that cluster.
 	CustomHostnameAllowList []CustomHostnameAllowListEntry `json:"customHostnameAllowList,omitempty"`
+}
+
+// +k8s:deepcopy-gen=true
+
+type HTTPProxyConfig struct {
+	// GatewayClassName specifies which GatewayClass to use when programming the
+	// underlying Gateway for an HTTPProxy.
+	// +default="datum-external-global-proxy"
+	GatewayClassName gatewayv1.ObjectName `json:"gatewayClassName"`
+
+	// GatewayTLSOptions specifies the TLS options to program on the underlying
+	// Gateway for an HTTPProxy.
+	// +default={"gateway.networking.datumapis.com/certificate-issuer": "auto"}
+	GatewayTLSOptions map[gatewayv1.AnnotationKey]gatewayv1.AnnotationValue `json:"tlsOptions"`
 }
 
 // +k8s:deepcopy-gen=true

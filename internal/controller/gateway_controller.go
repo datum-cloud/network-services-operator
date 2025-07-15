@@ -531,8 +531,8 @@ func (r *GatewayReconciler) detachHTTPRoutes(
 
 		var parents []gatewayv1.RouteParentStatus
 		for _, parent := range route.Status.Parents {
-			if (parent.ParentRef.Group == nil || parent.ParentRef.Group != nil && string(*parent.ParentRef.Group) == gatewayv1.GroupName) &&
-				(parent.ParentRef.Kind == nil || parent.ParentRef.Kind != nil && string(*parent.ParentRef.Kind) == KindGateway) &&
+			if ptr.Deref(parent.ParentRef.Group, "") == gatewayv1.GroupName &&
+				ptr.Deref(parent.ParentRef.Kind, "") == KindGateway &&
 				string(parent.ParentRef.Name) == gateway.Name {
 				logger.Info("removing parent ref from httproute", "name", route.Name, "parent", parent.ParentRef.Name)
 				continue
@@ -752,7 +752,19 @@ func (r *GatewayReconciler) ensureDownstreamHTTPRoute(
 			return result
 		}
 
+		desiredDownstreamResource := resource.DeepCopyObject()
 		resourceResult, err := controllerutil.CreateOrUpdate(ctx, downstreamClient, resource, func() error {
+			switch obj := resource.(type) {
+			case *corev1.Service:
+				obj.Spec = desiredDownstreamResource.(*corev1.Service).Spec
+			case *discoveryv1.EndpointSlice:
+				desiredEndpointSlice := desiredDownstreamResource.(*discoveryv1.EndpointSlice)
+				obj.AddressType = desiredEndpointSlice.AddressType
+				obj.Endpoints = desiredEndpointSlice.Endpoints
+				obj.Ports = desiredEndpointSlice.Ports
+			case *gatewayv1alpha3.BackendTLSPolicy:
+				obj.Spec = desiredDownstreamResource.(*gatewayv1alpha3.BackendTLSPolicy).Spec
+			}
 			return nil
 		})
 		if err != nil {

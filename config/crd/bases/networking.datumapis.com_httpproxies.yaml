@@ -869,8 +869,8 @@ spec:
                             maxItems: 16
                             type: array
                             x-kubernetes-validations:
-                            - message: May specify either httpRouteFilterRequestRedirect
-                                or httpRouteFilterRequestRewrite, but not both
+                            - message: May specify either requestRedirect or urlRewrite,
+                                but not both
                               rule: '!(self.exists(f, f.type == ''RequestRedirect'')
                                 && self.exists(f, f.type == ''URLRewrite''))'
                             - message: RequestHeaderModifier filter cannot be repeated
@@ -1684,8 +1684,8 @@ spec:
                       maxItems: 16
                       type: array
                       x-kubernetes-validations:
-                      - message: May specify either httpRouteFilterRequestRedirect
-                          or httpRouteFilterRequestRewrite, but not both
+                      - message: May specify either requestRedirect or urlRewrite,
+                          but not both
                         rule: '!(self.exists(f, f.type == ''RequestRedirect'') &&
                           self.exists(f, f.type == ''URLRewrite''))'
                       - message: RequestHeaderModifier filter cannot be repeated
@@ -1953,6 +1953,8 @@ spec:
                       minLength: 1
                       pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
                       type: string
+                  required:
+                  - backends
                   type: object
                   x-kubernetes-validations:
                   - message: RequestRedirect filter must not be used together with
@@ -2012,6 +2014,8 @@ spec:
                     : 0) + (self.size() > 12 ? self[12].matches.size() : 0) + (self.size()
                     > 13 ? self[13].matches.size() : 0) + (self.size() > 14 ? self[14].matches.size()
                     : 0) + (self.size() > 15 ? self[15].matches.size() : 0) <= 128'
+            required:
+            - rules
             type: object
           status:
             default:
@@ -2153,6 +2157,8 @@ spec:
                   type: string
                 type: array
             type: object
+        required:
+        - spec
         type: object
     served: true
     storage: true

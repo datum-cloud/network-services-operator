@@ -12,6 +12,7 @@ import (
 type HTTPProxySpec struct {
 	// Rules are a list of HTTP matchers, filters and actions.
 	//
+	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinItems=1
 	// +kubebuilder:validation:MaxItems=16
 	// +kubebuilder:validation:XValidation:message="Rule name must be unique within the route",rule="self.all(l1, !has(l1.name) || self.exists_one(l2, has(l2.name) && l1.name == l2.name))"
@@ -52,7 +53,7 @@ type HTTPProxyRule struct {
 	// https://gateway-api.sigs.k8s.io/reference/spec/#httprouterule
 	//
 	// +kubebuilder:validation:MaxItems=16
-	// +kubebuilder:validation:XValidation:message="May specify either httpRouteFilterRequestRedirect or httpRouteFilterRequestRewrite, but not both",rule="!(self.exists(f, f.type == 'RequestRedirect') && self.exists(f, f.type == 'URLRewrite'))"
+	// +kubebuilder:validation:XValidation:message="May specify either requestRedirect or urlRewrite, but not both",rule="!(self.exists(f, f.type == 'RequestRedirect') && self.exists(f, f.type == 'URLRewrite'))"
 	// +kubebuilder:validation:XValidation:message="RequestHeaderModifier filter cannot be repeated",rule="self.filter(f, f.type == 'RequestHeaderModifier').size() <= 1"
 	// +kubebuilder:validation:XValidation:message="ResponseHeaderModifier filter cannot be repeated",rule="self.filter(f, f.type == 'ResponseHeaderModifier').size() <= 1"
 	// +kubebuilder:validation:XValidation:message="RequestRedirect filter cannot be repeated",rule="self.filter(f, f.type == 'RequestRedirect').size() <= 1"
@@ -62,12 +63,13 @@ type HTTPProxyRule struct {
 	// Backends defines the backend(s) where matching requests should be
 	// sent.
 	//
+	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinItems=1
 	// +kubebuilder:validation:MaxItems=1
-	Backends []HTTPRouteBackend `json:"backends,omitempty"`
+	Backends []HTTPProxyRuleBackend `json:"backends,omitempty"`
 }
 
-type HTTPRouteBackend struct {
+type HTTPProxyRuleBackend struct {
 	// Endpoint for the backend. Must be a valid URL.
 	//
 	// Supports http and https protocols, IPs or DNS addresses in the host, custom
@@ -80,7 +82,7 @@ type HTTPRouteBackend struct {
 	// request is being forwarded to the backend defined here.
 	//
 	// +kubebuilder:validation:MaxItems=16
-	// +kubebuilder:validation:XValidation:message="May specify either httpRouteFilterRequestRedirect or httpRouteFilterRequestRewrite, but not both",rule="!(self.exists(f, f.type == 'RequestRedirect') && self.exists(f, f.type == 'URLRewrite'))"
+	// +kubebuilder:validation:XValidation:message="May specify either requestRedirect or urlRewrite, but not both",rule="!(self.exists(f, f.type == 'RequestRedirect') && self.exists(f, f.type == 'URLRewrite'))"
 	// +kubebuilder:validation:XValidation:message="RequestHeaderModifier filter cannot be repeated",rule="self.filter(f, f.type == 'RequestHeaderModifier').size() <= 1"
 	// +kubebuilder:validation:XValidation:message="ResponseHeaderModifier filter cannot be repeated",rule="self.filter(f, f.type == 'ResponseHeaderModifier').size() <= 1"
 	// +kubebuilder:validation:XValidation:message="RequestRedirect filter cannot be repeated",rule="self.filter(f, f.type == 'RequestRedirect').size() <= 1"
@@ -112,6 +114,35 @@ type HTTPProxyStatus struct {
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 
+const (
+	// This condition is true when the HTTPProxy configuration has been determined
+	// to be valid, and can be programmed into the underlying Gateway resources.
+	HTTPProxyConditionAccepted = "Accepted"
+
+	// This condition is true when the HTTPProxy configuration has been successfully
+	// programmed into underlying Gateway resources, and those resources have also
+	// been programmed.
+	HTTPProxyConditionProgrammed = "Programmed"
+)
+
+const (
+
+	// HTTPProxyReasonAccepted indicates that the HTTP proxy has been accepted.
+	HTTPProxyReasonAccepted = "Accepted"
+
+	// HTTPProxyReasonProgrammed indicates that the HTTP proxy has been programmed.
+	HTTPProxyReasonProgrammed = "Programmed"
+
+	// HTTPProxyReasonConflict indicates that the HTTP proxy encountered a conflict
+	// when being programmed.
+	HTTPProxyReasonConflict = "Conflict"
+
+	// This reason is used with the "Accepted" and "Programmed"
+	// conditions when the status is "Unknown" and no controller has reconciled
+	// the HTTPProxy.
+	HTTPProxyReasonPending = "Pending"
+)
+
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 
@@ -126,6 +157,7 @@ type HTTPProxy struct {
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
 	// Spec defines the desired state of an HTTPProxy.
+	// +kubebuilder:validation:Required
 	Spec HTTPProxySpec `json:"spec,omitempty"`
 
 	// Status defines the current state of an HTTPProxy.

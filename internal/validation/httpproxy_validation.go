@@ -1,6 +1,10 @@
 package validation
 
 import (
+	"fmt"
+	"net/url"
+
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
@@ -10,10 +14,73 @@ func ValidateHTTPProxy(route *networkingv1alpha.HTTPProxy) field.ErrorList {
 
 	allErrs := field.ErrorList{}
 
-	// TODO(jreese)
-	// - [ ] implement validation, specifically for endpoints.
-	// - [ ] leverage existing validation function for rules / etc.
-	// - [ ] Prohibit paths in backend endpoints
+	allErrs = append(allErrs, validateHTTPProxyRules(route, field.NewPath("spec", "rules"))...)
 
+	return allErrs
+}
+
+func validateHTTPProxyRules(route *networkingv1alpha.HTTPProxy, fldPath *field.Path) field.ErrorList {
+	allErrs := field.ErrorList{}
+
+	for i, rule := range route.Spec.Rules {
+		allErrs = append(allErrs, validateHTTPProxyRule(rule, fldPath.Index(i))...)
+	}
+
+	return allErrs
+}
+
+func validateHTTPProxyRule(rule networkingv1alpha.HTTPProxyRule, fldPath *field.Path) field.ErrorList {
+	allErrs := field.ErrorList{}
+
+	allErrs = append(allErrs, validateFilters(rule.Filters, supportedHTTPRouteRuleFilters, fldPath.Child("filters"))...)
+	allErrs = append(allErrs, validateHTTPProxyRuleBackends(rule, fldPath.Child("backends"))...)
+
+	return allErrs
+}
+
+func validateHTTPProxyRuleBackends(rule networkingv1alpha.HTTPProxyRule, fldPath *field.Path) field.ErrorList {
+	allErrs := field.ErrorList{}
+
+	for i, backend := range rule.Backends {
+		allErrs = append(allErrs, validateHTTPProxyRuleBackend(backend, fldPath.Index(i))...)
+	}
+
+	return allErrs
+}
+
+func validateHTTPProxyRuleBackend(backend networkingv1alpha.HTTPProxyRuleBackend, fldPath *field.Path) field.ErrorList {
+	allErrs := field.ErrorList{}
+
+	endpointFieldPath := fldPath.Child("endpoint")
+	u, err := url.Parse(backend.Endpoint)
+	if err != nil {
+		allErrs = append(allErrs, field.Invalid(endpointFieldPath, backend.Endpoint, fmt.Sprintf("invalid endpoint: %s", err)))
+	} else {
+		if u.Scheme != "http" && u.Scheme != "https" {
+			allErrs = append(allErrs, field.NotSupported(endpointFieldPath.Key("scheme"), u.Scheme, []string{"http", "https"}))
+		}
+
+		if u.User != nil {
+			allErrs = append(allErrs, field.Invalid(endpointFieldPath.Key("userinfo"), fmt.Sprintf("%s:redacted", u.User.Username()), "endpoint must not have a userinfo component"))
+		}
+
+		for _, msg := range validation.IsDNS1123SubdomainWithUnderscore(u.Host) {
+			allErrs = append(allErrs, field.Invalid(endpointFieldPath.Key("host"), u.Host, msg))
+		}
+
+		if u.Path != "" {
+			allErrs = append(allErrs, field.Invalid(endpointFieldPath.Key("path"), u.Path, "endpoint must not have a path component"))
+		}
+
+		if u.RawQuery != "" {
+			allErrs = append(allErrs, field.Invalid(endpointFieldPath.Key("query"), u.RawQuery, "endpoint must not have a query component"))
+		}
+
+		if u.Fragment != "" {
+			allErrs = append(allErrs, field.Invalid(endpointFieldPath.Key("fragment"), u.Fragment, "endpoint must not have a fragment component"))
+		}
+	}
+
+	allErrs = append(allErrs, validateFilters(backend.Filters, supportedHTTPBackendRefFilters, fldPath.Child("filters"))...)
 	return allErrs
 }

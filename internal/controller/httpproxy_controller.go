@@ -42,6 +42,11 @@ type desiredHTTPProxyResources struct {
 	endpointSlices []*discoveryv1.EndpointSlice
 }
 
+const (
+	SchemeHTTP  = "http"
+	SchemeHTTPS = "https"
+)
+
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=httpproxies,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=httpproxies/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=httpproxies/finalizers,verbs=update
@@ -260,7 +265,7 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 			GatewayClassName: r.Config.HTTPProxy.GatewayClassName,
 			Listeners: []gatewayv1.Listener{
 				{
-					Name:     "http",
+					Name:     SchemeHTTP,
 					Protocol: gatewayv1.HTTPProtocolType,
 					Port:     gatewayv1.PortNumber(80),
 					AllowedRoutes: &gatewayv1.AllowedRoutes{
@@ -270,7 +275,7 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 					},
 				},
 				{
-					Name:     "https",
+					Name:     SchemeHTTPS,
 					Protocol: gatewayv1.HTTPSProtocolType,
 					Port:     gatewayv1.PortNumber(443),
 					AllowedRoutes: &gatewayv1.AllowedRoutes{
@@ -309,7 +314,7 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 	for ruleIndex, rule := range httpProxy.Spec.Rules {
 		backendRefs := make([]gatewayv1.HTTPBackendRef, len(rule.Backends))
 
-		// Validation will prevent this from occuring, unless the maximum items for
+		// Validation will prevent this from occurring, unless the maximum items for
 		// backends is adjusted. The following error has been placed here so that
 		// if/when that occurs, we're sure to address obvious programming changes
 		// required (which should happen anyways, but just to be safe...).
@@ -318,7 +323,7 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 		}
 
 		for backendIndex, backend := range rule.Backends {
-			appProtocol := "http"
+			appProtocol := SchemeHTTP
 			backendPort := 80
 
 			u, err := url.Parse(backend.Endpoint)
@@ -326,9 +331,9 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 				return nil, fmt.Errorf("failed parsing endpoint for backend %d in rule %d: %w", backendIndex, ruleIndex, err)
 			}
 
-			if u.Scheme == "https" {
+			if u.Scheme == SchemeHTTPS {
 				backendPort = 443
-				appProtocol = "https"
+				appProtocol = SchemeHTTPS
 			}
 
 			if endpointPort := u.Port(); endpointPort != "" {

@@ -789,10 +789,8 @@ func (r *GatewayReconciler) ensureDownstreamHTTPRoute(
 	// Update the upstream route's parent status information
 	var parentStatus *gatewayv1.RouteParentStatus
 	for i, parent := range upstreamRoute.Status.Parents {
-		// TODO(jreese) look for inspiration on util functions for making this easier,
-		// the envoy gateway has some.
-		if (parent.ParentRef.Group == nil || parent.ParentRef.Group != nil && string(*parent.ParentRef.Group) == gatewayv1.GroupName) &&
-			(parent.ParentRef.Kind == nil || parent.ParentRef.Kind != nil && string(*parent.ParentRef.Kind) == KindGateway) &&
+		if ptr.Deref(parent.ParentRef.Group, "") == gatewayv1.GroupName &&
+			ptr.Deref(parent.ParentRef.Kind, "") == KindGateway &&
 			string(parent.ParentRef.Name) == upstreamGateway.Name {
 			parentStatus = &upstreamRoute.Status.Parents[i]
 			break

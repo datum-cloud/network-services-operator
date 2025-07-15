@@ -23,7 +23,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	gatewayv1alpha2 "sigs.k8s.io/gateway-api/apis/v1alpha2"
 	gatewayv1alpha3 "sigs.k8s.io/gateway-api/apis/v1alpha3"
@@ -983,9 +985,9 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 				backendRefs = append(backendRefs, downstreamHTTPBackendRef)
 
 				if appProtocol != nil && *appProtocol == "https" {
-					// Extract the hostname from the URLRewrite filter.
 					var hostname *gatewayv1.PreciseHostname
-					for _, filter := range backendRef.Filters {
+					// Fall back to looking at rule filters for a hostname.
+					for _, filter := range rule.Filters {
 						if filter.URLRewrite != nil {
 							hostname = filter.URLRewrite.Hostname
 							break
@@ -993,19 +995,9 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 					}
 
 					if hostname == nil {
-						// Fall back to looking at rule filters for a hostname.
-						for _, filter := range rule.Filters {
-							if filter.URLRewrite != nil {
-								hostname = filter.URLRewrite.Hostname
-								break
-							}
-						}
-
-						if hostname == nil {
-							// TODO(jreese) set the RouteConditionResolvedRefs condition to
-							// False, as the hostname is not present.
-							return nil, nil, fmt.Errorf("no hostname found in URLRewrite filters on backendRef or Route %q", upstreamRoute.Name)
-						}
+						// TODO(jreese) set the RouteConditionResolvedRefs condition to
+						// False, as the hostname is not present.
+						return nil, nil, fmt.Errorf("no hostname found in URLRewrite filters on backendRef or Route %q", upstreamRoute.Name)
 					}
 
 					backendTLSPolicy := &gatewayv1alpha3.BackendTLSPolicy{
@@ -1075,13 +1067,14 @@ func (r *GatewayReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	clusterSrc, _ := src.ForCluster("", r.DownstreamCluster)
 
 	return mcbuilder.ControllerManagedBy(mgr).
-		For(&gatewayv1.Gateway{},
-			mcbuilder.WithEngageWithLocalCluster(false),
-		).
+		For(&gatewayv1.Gateway{}).
 		Watches(
 			&gatewayv1.HTTPRoute{},
 			mchandler.EnqueueRequestsFromMapFunc(r.listGatewaysAttachedByHTTPRoute),
-			mcbuilder.WithEngageWithLocalCluster(false),
+		).
+		Watches(
+			&discoveryv1.EndpointSlice{},
+			r.listGatewaysForEndpointSliceFunc,
 		).
 		WatchesRawSource(clusterSrc).
 		Named("gateway").
@@ -1106,8 +1099,8 @@ func (r *GatewayReconciler) listGatewaysAttachedByHTTPRoute(ctx context.Context,
 	var reqs []ctrl.Request
 
 	for _, parentRef := range httpRoute.Spec.ParentRefs {
-		if (parentRef.Group == nil || parentRef.Group != nil && string(*parentRef.Group) == gatewayv1.GroupName) &&
-			(parentRef.Kind == nil || parentRef.Kind != nil && string(*parentRef.Kind) == KindGateway) {
+		if ptr.Deref(parentRef.Group, gatewayv1.GroupName) == gatewayv1.GroupName &&
+			ptr.Deref(parentRef.Kind, KindGateway) == KindGateway {
 			reqs = append(reqs, ctrl.Request{
 				NamespacedName: types.NamespacedName{
 					Namespace: string(ptr.Deref(parentRef.Namespace, gatewayv1.Namespace(httpRoute.Namespace))),
@@ -1118,4 +1111,63 @@ func (r *GatewayReconciler) listGatewaysAttachedByHTTPRoute(ctx context.Context,
 	}
 
 	return reqs
+}
+
+// listGatewaysForEndpointSliceFunc creates an event handler that watches EndpointSlice changes
+// and determines which Gateways need to be reconciled as a result of those changes.
+//
+// This function implements the watch pattern for EndpointSlice resources in multi-cluster scenarios.
+// When an EndpointSlice changes (created, updated, or deleted), this handler:
+//
+//  1. Examines all HTTPRoutes in the cluster to find those that reference the changed EndpointSlice
+//     as a backend (via BackendRefs with Kind=EndpointSlice)
+//  2. For each matching HTTPRoute, identifies the parent Gateways referenced in ParentRefs
+//  3. Returns reconcile requests for those Gateways so they can update their configuration
+//
+// This ensures that Gateway resources are automatically updated when their backend EndpointSlices
+// change, maintaining proper traffic routing and load balancing.
+func (r *GatewayReconciler) listGatewaysForEndpointSliceFunc(clusterName string, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
+	return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []mcreconcile.Request {
+		endpointSlice := obj.(*discoveryv1.EndpointSlice)
+		logger := log.FromContext(ctx)
+
+		var httpRoutes gatewayv1.HTTPRouteList
+		if err := cl.GetClient().List(ctx, &httpRoutes); err != nil {
+			logger.Error(err, "failed to list HTTPRoutes")
+			return nil
+		}
+
+		var requests []mcreconcile.Request
+
+		for _, route := range httpRoutes.Items {
+			for _, rule := range route.Spec.Rules {
+				for _, backendRef := range rule.BackendRefs {
+					if ptr.Deref(backendRef.Kind, "") == KindEndpointSlice {
+						backendNamespace := string(ptr.Deref(backendRef.Namespace, gatewayv1.Namespace(route.Namespace)))
+
+						if backendNamespace == endpointSlice.Namespace && string(backendRef.Name) == endpointSlice.Name {
+							for _, parentRef := range route.Spec.ParentRefs {
+								if ptr.Deref(parentRef.Group, gatewayv1.GroupName) == gatewayv1.GroupName &&
+									ptr.Deref(parentRef.Kind, KindGateway) == KindGateway {
+									gatewayNamespace := string(ptr.Deref(parentRef.Namespace, gatewayv1.Namespace(route.Namespace)))
+
+									requests = append(requests, mcreconcile.Request{
+										ClusterName: clusterName,
+										Request: reconcile.Request{
+											NamespacedName: types.NamespacedName{
+												Namespace: gatewayNamespace,
+												Name:      string(parentRef.Name),
+											},
+										},
+									})
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+
+		return requests
+	})
 }

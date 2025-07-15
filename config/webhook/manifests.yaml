@@ -44,3 +44,23 @@ webhooks:
     resources:
     - httproutes
   sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-networking-datumapis-com-v1alpha-httpproxy
+  failurePolicy: Fail
+  name: vhttpproxy-v1alpha.kb.io
+  rules:
+  - apiGroups:
+    - networking.datumapis.com
+    apiVersions:
+    - v1alpha
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - httpproxies
+  sideEffects: None

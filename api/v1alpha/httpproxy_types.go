@@ -109,7 +109,6 @@ type HTTPProxyStatus struct {
 	//
 	// +listType=map
 	// +listMapKey=type
-	// +kubebuilder:default={{type: "Accepted", status: "Unknown", reason:"Pending", message:"Waiting for controller", lastTransitionTime: "1970-01-01T00:00:00Z"},{type: "Programmed", status: "Unknown", reason:"Pending", message:"Waiting for controller", lastTransitionTime: "1970-01-01T00:00:00Z"}}
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 
@@ -118,11 +117,20 @@ type HTTPProxyStatus struct {
 
 // An HTTPProxy builds on top of Gateway API resources to provide a more convenient
 // method to manage simple reverse proxy use cases.
+//
+// +kubebuilder:printcolumn:name="Hostname",type=string,JSONPath=`.status.hostnames[*]`
+// +kubebuilder:printcolumn:name="Programmed",type=string,JSONPath=`.status.conditions[?(@.type=="Programmed")].status`
+// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 type HTTPProxy struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   HTTPProxySpec   `json:"spec,omitempty"`
+	// Spec defines the desired state of an HTTPProxy.
+	Spec HTTPProxySpec `json:"spec,omitempty"`
+
+	// Status defines the current state of an HTTPProxy.
+	//
+	// +kubebuilder:default={conditions: {{type: "Accepted", status: "Unknown", reason:"Pending", message:"Waiting for controller", lastTransitionTime: "1970-01-01T00:00:00Z"},{type: "Programmed", status: "Unknown", reason:"Pending", message:"Waiting for controller", lastTransitionTime: "1970-01-01T00:00:00Z"}}}
 	Status HTTPProxyStatus `json:"status,omitempty"`
 }
 

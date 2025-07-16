@@ -20,3 +20,6 @@ spec:
     - discovery.k8s.io/endpointslices.list
     - discovery.k8s.io/endpointslices.get
     - discovery.k8s.io/endpointslices.watch
+    - networking.datumapis.com/httpproxies.list
+    - networking.datumapis.com/httpproxies.get
+    - networking.datumapis.com/httpproxies.watch

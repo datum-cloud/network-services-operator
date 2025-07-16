@@ -51,7 +51,7 @@ const (
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=httpproxies/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=httpproxies/finalizers,verbs=update
 
-func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
+func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (_ ctrl.Result, err error) {
 	logger := log.FromContext(ctx, "cluster", req.ClusterName)
 	ctx = log.IntoContext(ctx, logger)
 
@@ -67,6 +67,9 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 		}
 		return ctrl.Result{}, err
 	}
+
+	logger.Info("reconciling httpproxy")
+	defer logger.Info("reconcile complete")
 
 	httpProxyCopy := httpProxy.DeepCopy()
 
@@ -95,6 +98,7 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 			if statusErr := cl.GetClient().Status().Update(ctx, &httpProxy); statusErr != nil {
 				err = errors.Join(err, fmt.Errorf("failed updating httpproxy status: %w", statusErr))
 			}
+			logger.Info("httpproxy status updated")
 		}
 	}()
 
@@ -217,6 +221,7 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 	httpProxyCopy.Status.Hostnames = hostnames
 
 	if c := apimeta.FindStatusCondition(gateway.Status.Conditions, string(gatewayv1.GatewayConditionAccepted)); c != nil {
+		logger.Info("gateway accepted status", "status", c.Status)
 		if c.Status == metav1.ConditionTrue {
 			acceptedCondition.Status = metav1.ConditionTrue
 			acceptedCondition.Reason = networkingv1alpha.HTTPProxyReasonAccepted

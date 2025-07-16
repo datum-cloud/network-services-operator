@@ -63,6 +63,10 @@ type HTTPProxyRule struct {
 	// Backends defines the backend(s) where matching requests should be
 	// sent.
 	//
+	// Note: While this field is a list, only a single element is permitted at
+	// this time due to underlying Gateway limitations. Once addressed, MaxItems
+	// will be increased to allow for multiple backends on any given route.
+	//
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinItems=1
 	// +kubebuilder:validation:MaxItems=1

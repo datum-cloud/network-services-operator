@@ -68,12 +68,14 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 		return ctrl.Result{}, err
 	}
 
+	httpProxyCopy := httpProxy.DeepCopy()
+
 	acceptedCondition := &metav1.Condition{
 		Type:               networkingv1alpha.HTTPProxyConditionAccepted,
 		Status:             metav1.ConditionFalse,
 		Reason:             networkingv1alpha.HTTPProxyReasonPending,
 		ObservedGeneration: httpProxy.Generation,
-		Message:            "Waiting for controller",
+		Message:            "The HTTPProxy has not been scheduled",
 	}
 
 	programmedCondition := &metav1.Condition{
@@ -81,17 +83,17 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 		Status:             metav1.ConditionFalse,
 		Reason:             networkingv1alpha.HTTPProxyReasonPending,
 		ObservedGeneration: httpProxy.Generation,
-		Message:            "Waiting for controller",
+		Message:            "The HTTPProxy has not been programmed",
 	}
 
 	defer func() {
-		var changed bool
-		changed = apimeta.SetStatusCondition(&httpProxy.Status.Conditions, *acceptedCondition) || changed
-		changed = apimeta.SetStatusCondition(&httpProxy.Status.Conditions, *programmedCondition) || changed
+		apimeta.SetStatusCondition(&httpProxyCopy.Status.Conditions, *acceptedCondition)
+		apimeta.SetStatusCondition(&httpProxyCopy.Status.Conditions, *programmedCondition)
 
-		if changed {
-			if updateErr := cl.GetClient().Status().Update(ctx, &httpProxy); updateErr != nil {
-				err = errors.Join(err, fmt.Errorf("failed to update httpproxy status in defer: %w", updateErr))
+		if !equality.Semantic.DeepEqual(httpProxy.Status, httpProxyCopy.Status) {
+			httpProxy.Status = httpProxyCopy.Status
+			if statusErr := cl.GetClient().Status().Update(ctx, &httpProxy); statusErr != nil {
+				err = errors.Join(err, fmt.Errorf("failed updating httpproxy status: %w", statusErr))
 			}
 		}
 	}()
@@ -198,7 +200,6 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 		logger.Info("processed endpointslice", "result", result, "name", desiredEndpointSlice.Name)
 	}
 
-	httpProxyCopy := httpProxy.DeepCopy()
 	httpProxyCopy.Status.Addresses = gateway.Status.Addresses
 
 	var hostnames []gatewayv1.Hostname
@@ -215,24 +216,23 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 
 	httpProxyCopy.Status.Hostnames = hostnames
 
-	acceptedCondition.Status = metav1.ConditionTrue
-	acceptedCondition.Reason = networkingv1alpha.HTTPProxyReasonAccepted
-	acceptedCondition.Message = "The HTTPProxy has been scheduled by Datum Gateway"
-
-	apimeta.SetStatusCondition(&httpProxyCopy.Status.Conditions, *acceptedCondition)
-
-	if apimeta.IsStatusConditionTrue(gateway.Status.Conditions, string(gatewayv1.GatewayConditionProgrammed)) {
-		programmedCondition.Status = metav1.ConditionTrue
-		programmedCondition.Reason = networkingv1alpha.HTTPProxyReasonProgrammed
-		programmedCondition.Message = "The HTTPProxy has been programmed"
+	if c := apimeta.FindStatusCondition(gateway.Status.Conditions, string(gatewayv1.GatewayConditionAccepted)); c != nil {
+		if c.Status == metav1.ConditionTrue {
+			acceptedCondition.Status = metav1.ConditionTrue
+			acceptedCondition.Reason = networkingv1alpha.HTTPProxyReasonAccepted
+			acceptedCondition.Message = "The HTTPProxy has been scheduled"
+		} else {
+			acceptedCondition.Reason = c.Reason
+		}
 	}
 
-	apimeta.SetStatusCondition(&httpProxyCopy.Status.Conditions, *programmedCondition)
-
-	if !equality.Semantic.DeepEqual(httpProxy.Status, httpProxyCopy.Status) {
-		httpProxy.Status = httpProxyCopy.Status
-		if err := cl.GetClient().Status().Update(ctx, &httpProxy); err != nil {
-			return ctrl.Result{}, fmt.Errorf("failed updating httpproxy status: %w", err)
+	if c := apimeta.FindStatusCondition(gateway.Status.Conditions, string(gatewayv1.GatewayConditionProgrammed)); c != nil {
+		if c.Status == metav1.ConditionTrue {
+			programmedCondition.Status = metav1.ConditionTrue
+			programmedCondition.Reason = networkingv1alpha.HTTPProxyReasonProgrammed
+			programmedCondition.Message = "The HTTPProxy has been programmed"
+		} else {
+			programmedCondition.Reason = c.Reason
 		}
 	}
 

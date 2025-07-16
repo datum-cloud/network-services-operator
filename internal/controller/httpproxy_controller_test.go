@@ -411,7 +411,7 @@ func TestHTTPProxyReconcile(t *testing.T) {
 	}
 }
 
-func newHTTPProxy(opts ...func(*networkingv1alpha.HTTPProxy)) *networkingv1alpha.HTTPProxy {
+func newHTTPProxy() *networkingv1alpha.HTTPProxy {
 	p := &networkingv1alpha.HTTPProxy{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace:         "test",
@@ -501,10 +501,6 @@ func newHTTPProxy(opts ...func(*networkingv1alpha.HTTPProxy)) *networkingv1alpha
 				},
 			},
 		},
-	}
-
-	for _, opt := range opts {
-		opt(p)
 	}
 
 	return p

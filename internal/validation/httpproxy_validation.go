@@ -6,6 +6,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/validation/field"
+	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 )
@@ -40,6 +41,21 @@ func validateHTTPProxyRule(rule networkingv1alpha.HTTPProxyRule, fldPath *field.
 
 func validateHTTPProxyRuleBackends(rule networkingv1alpha.HTTPProxyRule, fldPath *field.Path) field.ErrorList {
 	allErrs := field.ErrorList{}
+
+	if len(rule.Backends) == 0 {
+		// If no backends are provided, require that a RequestRedirect filter exists
+		redirectFilterFound := false
+		for _, filter := range rule.Filters {
+			if filter.Type == gatewayv1.HTTPRouteFilterRequestRedirect {
+				redirectFilterFound = true
+				break
+			}
+		}
+
+		if !redirectFilterFound {
+			allErrs = append(allErrs, field.Required(fldPath, "a backend is required unless a RequestRedirect filter is present on the rule"))
+		}
+	}
 
 	for i, backend := range rule.Backends {
 		allErrs = append(allErrs, validateHTTPProxyRuleBackend(backend, fldPath.Index(i))...)

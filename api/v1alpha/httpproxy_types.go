@@ -67,8 +67,7 @@ type HTTPProxyRule struct {
 	// this time due to underlying Gateway limitations. Once addressed, MaxItems
 	// will be increased to allow for multiple backends on any given route.
 	//
-	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MinItems=0
 	// +kubebuilder:validation:MaxItems=1
 	Backends []HTTPProxyRuleBackend `json:"backends,omitempty"`
 }

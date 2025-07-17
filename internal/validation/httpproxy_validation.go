@@ -11,19 +11,23 @@ import (
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 )
 
-func ValidateHTTPProxy(route *networkingv1alpha.HTTPProxy) field.ErrorList {
+func ValidateHTTPProxy(httpProxy *networkingv1alpha.HTTPProxy) field.ErrorList {
 
 	allErrs := field.ErrorList{}
 
-	allErrs = append(allErrs, validateHTTPProxyRules(route, field.NewPath("spec", "rules"))...)
+	for _, msg := range validation.IsDNS1123Label(httpProxy.Name) {
+		allErrs = append(allErrs, field.Invalid(field.NewPath("metadata", "name"), httpProxy.Name, msg))
+	}
+
+	allErrs = append(allErrs, validateHTTPProxyRules(httpProxy, field.NewPath("spec", "rules"))...)
 
 	return allErrs
 }
 
-func validateHTTPProxyRules(route *networkingv1alpha.HTTPProxy, fldPath *field.Path) field.ErrorList {
+func validateHTTPProxyRules(httpProxy *networkingv1alpha.HTTPProxy, fldPath *field.Path) field.ErrorList {
 	allErrs := field.ErrorList{}
 
-	for i, rule := range route.Spec.Rules {
+	for i, rule := range httpProxy.Spec.Rules {
 		allErrs = append(allErrs, validateHTTPProxyRule(rule, fldPath.Index(i))...)
 	}
 

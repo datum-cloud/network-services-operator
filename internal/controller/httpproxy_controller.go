@@ -45,6 +45,9 @@ type desiredHTTPProxyResources struct {
 const (
 	SchemeHTTP  = "http"
 	SchemeHTTPS = "https"
+
+	DefaultHTTPPort  = 80
+	DefaultHTTPSPort = 443
 )
 
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=httpproxies,verbs=get;list;watch;create;update;patch;delete
@@ -272,7 +275,7 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 				{
 					Name:     SchemeHTTP,
 					Protocol: gatewayv1.HTTPProtocolType,
-					Port:     gatewayv1.PortNumber(80),
+					Port:     DefaultHTTPPort,
 					AllowedRoutes: &gatewayv1.AllowedRoutes{
 						Namespaces: &gatewayv1.RouteNamespaces{
 							From: ptr.To(gatewayv1.NamespacesFromSame),
@@ -282,7 +285,7 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 				{
 					Name:     SchemeHTTPS,
 					Protocol: gatewayv1.HTTPSProtocolType,
-					Port:     gatewayv1.PortNumber(443),
+					Port:     DefaultHTTPSPort,
 					AllowedRoutes: &gatewayv1.AllowedRoutes{
 						Namespaces: &gatewayv1.RouteNamespaces{
 							From: ptr.To(gatewayv1.NamespacesFromSame),
@@ -329,7 +332,7 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 
 		for backendIndex, backend := range rule.Backends {
 			appProtocol := SchemeHTTP
-			backendPort := 80
+			backendPort := DefaultHTTPPort
 
 			u, err := url.Parse(backend.Endpoint)
 			if err != nil {
@@ -337,7 +340,7 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 			}
 
 			if u.Scheme == SchemeHTTPS {
-				backendPort = 443
+				backendPort = DefaultHTTPSPort
 				appProtocol = SchemeHTTPS
 			}
 
@@ -357,7 +360,7 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 
 			host := u.Hostname()
 			if ip := net.ParseIP(host); ip != nil {
-				if len(ip) == net.IPv4len {
+				if i := ip.To4(); i != nil && len(i) == net.IPv4len {
 					addressType = discoveryv1.AddressTypeIPv4
 				} else {
 					addressType = discoveryv1.AddressTypeIPv6
@@ -374,7 +377,7 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 				}
 
 				if !hostnameRewriteFound {
-					rule.Filters = append(backend.Filters, gatewayv1.HTTPRouteFilter{
+					rule.Filters = append(rule.Filters, gatewayv1.HTTPRouteFilter{
 						Type: gatewayv1.HTTPRouteFilterURLRewrite,
 						URLRewrite: &gatewayv1.HTTPURLRewriteFilter{
 							Hostname: ptr.To(gatewayv1.PreciseHostname(host)),

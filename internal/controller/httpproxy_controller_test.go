@@ -28,7 +28,6 @@ import (
 )
 
 func TestHTTPPRoxyCollectDesiredResources(t *testing.T) {
-	httpProxy := newHTTPProxy()
 
 	operatorConfig := config.NetworkServicesOperator{
 		HTTPProxy: config.HTTPProxyConfig{
@@ -39,64 +38,216 @@ func TestHTTPPRoxyCollectDesiredResources(t *testing.T) {
 		},
 	}
 
-	reconciler := &HTTPProxyReconciler{Config: operatorConfig}
-	desiredResources, err := reconciler.collectDesiredResources(httpProxy)
-	assert.NoError(t, err)
+	tests := []struct {
+		name      string
+		httpProxy *networkingv1alpha.HTTPProxy
+		assert    func(t *testing.T, httpProxy *networkingv1alpha.HTTPProxy, desiredResources *desiredHTTPProxyResources)
+	}{
+		{
+			name:      "existing URLRewrite filter in rule with hostname in endpoint",
+			httpProxy: newHTTPProxy(),
+			assert: func(t *testing.T, httpProxy *networkingv1alpha.HTTPProxy, desiredResources *desiredHTTPProxyResources) {
+				httpRoute := desiredResources.httpRoute
 
-	gateway := desiredResources.gateway
-	httpRoute := desiredResources.httpRoute
-	endpointSlices := desiredResources.endpointSlices
+				for ruleIndex, proxyRule := range httpProxy.Spec.Rules {
+					routeRule := httpRoute.Spec.Rules[ruleIndex]
+					assert.Len(t, routeRule.Filters, len(proxyRule.Filters))
+					assert.Equal(t, "www.example.com", string(ptr.Deref(routeRule.Filters[0].URLRewrite.Hostname, "")))
+				}
+			},
+		},
+		{
+			name: "no URLRewrite filter in rule with hostname in endpoint",
+			httpProxy: newHTTPProxy(func(h *networkingv1alpha.HTTPProxy) {
+				h.Spec.Rules[0].Filters = nil
+			}),
+			assert: func(t *testing.T, httpProxy *networkingv1alpha.HTTPProxy, desiredResources *desiredHTTPProxyResources) {
+				httpRoute := desiredResources.httpRoute
 
-	assert.NotNil(t, gateway)
-	assert.NotNil(t, httpRoute)
-	assert.Len(t, endpointSlices, 2)
+				for ruleIndex := range httpProxy.Spec.Rules {
+					routeRule := httpRoute.Spec.Rules[ruleIndex]
+					if assert.Len(t, routeRule.Filters, 1) {
+						urlRewriteFilter := routeRule.Filters[0]
+						assert.Equal(t, gatewayv1.HTTPRouteFilterURLRewrite, urlRewriteFilter.Type)
+						assert.Equal(t, "www.example.com", urlRewriteFilter.URLRewrite.Hostname)
+					}
+				}
+			},
+		},
+		{
+			name: "https scheme",
+			httpProxy: newHTTPProxy(func(h *networkingv1alpha.HTTPProxy) {
+				for ruleIndex, proxyRule := range h.Spec.Rules {
+					for backendIndex := range proxyRule.Backends {
+						h.Spec.Rules[ruleIndex].Backends[backendIndex].Endpoint = "https://www.example.com"
+					}
+				}
+			}),
+			assert: func(t *testing.T, httpProxy *networkingv1alpha.HTTPProxy, desiredResources *desiredHTTPProxyResources) {
+				httpRoute := desiredResources.httpRoute
+				endpointSlices := desiredResources.endpointSlices
 
-	// Gateway assertions on items that are not hard coded
-	assert.Equal(t, httpProxy.Namespace, gateway.Namespace)
-	assert.Equal(t, httpProxy.Name, gateway.Name)
-	assert.Equal(t, operatorConfig.HTTPProxy.GatewayClassName, gateway.Spec.GatewayClassName)
+				for ruleIndex := range httpProxy.Spec.Rules {
+					routeRule := httpRoute.Spec.Rules[ruleIndex]
+					for backendRefIndex := range routeRule.BackendRefs {
+						backendRefIndexMsg := fmt.Sprintf("backendRef index %d", backendRefIndex)
 
-	assert.Len(t, gateway.Spec.Listeners, 2)
-	assert.Equal(t, operatorConfig.HTTPProxy.GatewayTLSOptions, gateway.Spec.Listeners[1].TLS.Options)
+						endpointSlice := endpointSlices[ruleIndex+backendRefIndex]
+						assert.Equal(t, SchemeHTTPS, ptr.Deref(endpointSlice.Ports[0].AppProtocol, ""), backendRefIndexMsg)
+						assert.Equal(t, DefaultHTTPSPort, ptr.Deref(endpointSlice.Ports[0].Port, 0), backendRefIndexMsg)
+					}
+				}
+			},
+		},
+		{
+			name: "http scheme",
+			httpProxy: newHTTPProxy(func(h *networkingv1alpha.HTTPProxy) {
+				for ruleIndex, proxyRule := range h.Spec.Rules {
+					for backendIndex := range proxyRule.Backends {
+						h.Spec.Rules[ruleIndex].Backends[backendIndex].Endpoint = "http://www.example.com"
+					}
+				}
+			}),
+			assert: func(t *testing.T, httpProxy *networkingv1alpha.HTTPProxy, desiredResources *desiredHTTPProxyResources) {
+				httpRoute := desiredResources.httpRoute
+				endpointSlices := desiredResources.endpointSlices
 
-	// HTTPRoute assertions on items that are not hard coded
-	assert.Equal(t, httpProxy.Namespace, httpRoute.Namespace)
-	assert.Equal(t, httpProxy.Name, httpRoute.Name)
-	assert.Len(t, httpRoute.Spec.ParentRefs, 1)
-	assert.Equal(t, gateway.Name, string(httpRoute.Spec.ParentRefs[0].Name))
-	assert.Len(t, httpRoute.Spec.Rules, len(httpProxy.Spec.Rules))
+				for ruleIndex := range httpProxy.Spec.Rules {
+					routeRule := httpRoute.Spec.Rules[ruleIndex]
+					for backendRefIndex := range routeRule.BackendRefs {
+						backendRefIndexMsg := fmt.Sprintf("backendRef index %d", backendRefIndex)
 
-	for ruleIndex, proxyRule := range httpProxy.Spec.Rules {
-		routeRule := httpRoute.Spec.Rules[ruleIndex]
+						endpointSlice := endpointSlices[ruleIndex+backendRefIndex]
+						assert.Equal(t, SchemeHTTP, ptr.Deref(endpointSlice.Ports[0].AppProtocol, ""), backendRefIndexMsg)
+						assert.Equal(t, DefaultHTTPPort, ptr.Deref(endpointSlice.Ports[0].Port, 0), backendRefIndexMsg)
+					}
+				}
+			},
+		},
+		{
+			name: "custom port",
+			httpProxy: newHTTPProxy(func(h *networkingv1alpha.HTTPProxy) {
+				for ruleIndex, proxyRule := range h.Spec.Rules {
+					for backendIndex := range proxyRule.Backends {
+						h.Spec.Rules[ruleIndex].Backends[backendIndex].Endpoint = "http://www.example.com:8080"
+					}
+				}
+			}),
+			assert: func(t *testing.T, httpProxy *networkingv1alpha.HTTPProxy, desiredResources *desiredHTTPProxyResources) {
+				httpRoute := desiredResources.httpRoute
+				endpointSlices := desiredResources.endpointSlices
 
-		ruleIndexMsg := fmt.Sprintf("rule index %d", ruleIndex)
-		assert.Len(t, routeRule.Matches, len(proxyRule.Matches), ruleIndexMsg)
-		assert.Len(t, routeRule.Filters, len(proxyRule.Filters), ruleIndexMsg)
-		assert.Len(t, routeRule.BackendRefs, len(proxyRule.Backends), ruleIndexMsg)
+				for ruleIndex := range httpProxy.Spec.Rules {
+					routeRule := httpRoute.Spec.Rules[ruleIndex]
+					for backendRefIndex := range routeRule.BackendRefs {
+						backendRefIndexMsg := fmt.Sprintf("backendRef index %d", backendRefIndex)
 
-		assert.Equal(t, "www.example.com", string(ptr.Deref(routeRule.Filters[0].URLRewrite.Hostname, "")))
+						endpointSlice := endpointSlices[ruleIndex+backendRefIndex]
+						assert.Equal(t, 8080, ptr.Deref(endpointSlice.Ports[0].Port, 0), backendRefIndexMsg)
+					}
+				}
+			},
+		},
+		{
+			name: "IPv4 Address in host",
+			httpProxy: newHTTPProxy(func(h *networkingv1alpha.HTTPProxy) {
+				for ruleIndex, proxyRule := range h.Spec.Rules {
+					for backendIndex := range proxyRule.Backends {
+						h.Spec.Rules[ruleIndex].Backends[backendIndex].Endpoint = "http://127.0.0.1"
+					}
+				}
+			}),
+			assert: func(t *testing.T, httpProxy *networkingv1alpha.HTTPProxy, desiredResources *desiredHTTPProxyResources) {
+				httpRoute := desiredResources.httpRoute
+				endpointSlices := desiredResources.endpointSlices
 
-		for backendRefIndex, backendRef := range routeRule.BackendRefs {
-			backendRefIndexMsg := fmt.Sprintf("%s backendRef index %d", ruleIndexMsg, backendRefIndex)
+				for ruleIndex := range httpProxy.Spec.Rules {
+					routeRule := httpRoute.Spec.Rules[ruleIndex]
+					for backendRefIndex := range routeRule.BackendRefs {
+						backendRefIndexMsg := fmt.Sprintf("backendRef index %d", backendRefIndex)
 
-			assert.Equal(t, "EndpointSlice", string(ptr.Deref(backendRef.Kind, "")), backendRefIndexMsg)
+						endpointSlice := endpointSlices[ruleIndex+backendRefIndex]
+						assert.Equal(t, discoveryv1.AddressTypeIPv4, endpointSlice.AddressType, backendRefIndexMsg)
+						assert.Equal(t, "127.0.0.1", endpointSlice.Endpoints[0].Addresses[0])
+					}
+				}
+			},
+		},
+		{
+			name: "IPv6 Address in host",
+			httpProxy: newHTTPProxy(func(h *networkingv1alpha.HTTPProxy) {
+				for ruleIndex, proxyRule := range h.Spec.Rules {
+					for backendIndex := range proxyRule.Backends {
+						h.Spec.Rules[ruleIndex].Backends[backendIndex].Endpoint = "http://[::1]"
+					}
+				}
+			}),
+			assert: func(t *testing.T, httpProxy *networkingv1alpha.HTTPProxy, desiredResources *desiredHTTPProxyResources) {
+				httpRoute := desiredResources.httpRoute
+				endpointSlices := desiredResources.endpointSlices
 
-			endpointSlice := endpointSlices[ruleIndex+backendRefIndex]
-			assert.Equal(t, httpProxy.Namespace, endpointSlice.Namespace, backendRefIndexMsg)
+				for ruleIndex := range httpProxy.Spec.Rules {
+					routeRule := httpRoute.Spec.Rules[ruleIndex]
+					for backendRefIndex := range routeRule.BackendRefs {
+						backendRefIndexMsg := fmt.Sprintf("backendRef index %d", backendRefIndex)
 
-			switch ruleIndex {
-			case 0:
-				assert.Equal(t, "http", ptr.Deref(endpointSlice.Ports[0].AppProtocol, ""))
-				assert.Equal(t, 80, int(ptr.Deref(endpointSlice.Ports[0].Port, 0)))
-				assert.Equal(t, 80, int(ptr.Deref(backendRef.Port, 0)))
-			case 1:
-				assert.Equal(t, "https", ptr.Deref(endpointSlice.Ports[0].AppProtocol, ""))
-				assert.Equal(t, 8443, int(ptr.Deref(endpointSlice.Ports[0].Port, 0)))
-				assert.Equal(t, 8443, int(ptr.Deref(backendRef.Port, 0)))
-			}
-		}
+						endpointSlice := endpointSlices[ruleIndex+backendRefIndex]
+						assert.Equal(t, discoveryv1.AddressTypeIPv6, endpointSlice.AddressType, backendRefIndexMsg)
+						assert.Equal(t, "::1", endpointSlice.Endpoints[0].Addresses[0])
+					}
+				}
+			},
+		},
 	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
 
+			reconciler := &HTTPProxyReconciler{Config: operatorConfig}
+			desiredResources, err := reconciler.collectDesiredResources(tt.httpProxy)
+			assert.NoError(t, err)
+
+			gateway := desiredResources.gateway
+			httpRoute := desiredResources.httpRoute
+			endpointSlices := desiredResources.endpointSlices
+
+			assert.NotNil(t, gateway)
+			assert.NotNil(t, httpRoute)
+			assert.Len(t, endpointSlices, 1)
+
+			// Gateway assertions on items that are not hard coded
+			assert.Equal(t, tt.httpProxy.Namespace, gateway.Namespace)
+			assert.Equal(t, tt.httpProxy.Name, gateway.Name)
+			assert.Equal(t, operatorConfig.HTTPProxy.GatewayClassName, gateway.Spec.GatewayClassName)
+
+			assert.Len(t, gateway.Spec.Listeners, 2)
+			assert.Equal(t, operatorConfig.HTTPProxy.GatewayTLSOptions, gateway.Spec.Listeners[1].TLS.Options)
+
+			// HTTPRoute assertions on items that are not hard coded
+			assert.Equal(t, tt.httpProxy.Namespace, httpRoute.Namespace)
+			assert.Equal(t, tt.httpProxy.Name, httpRoute.Name)
+			assert.Len(t, httpRoute.Spec.ParentRefs, 1)
+			assert.Equal(t, gateway.Name, string(httpRoute.Spec.ParentRefs[0].Name))
+			assert.Len(t, httpRoute.Spec.Rules, len(tt.httpProxy.Spec.Rules))
+
+			for ruleIndex, proxyRule := range tt.httpProxy.Spec.Rules {
+				routeRule := httpRoute.Spec.Rules[ruleIndex]
+
+				ruleIndexMsg := fmt.Sprintf("rule index %d", ruleIndex)
+				assert.Len(t, routeRule.Matches, len(proxyRule.Matches), ruleIndexMsg)
+
+				assert.Len(t, routeRule.BackendRefs, len(proxyRule.Backends), ruleIndexMsg)
+
+				for backendRefIndex, backendRef := range routeRule.BackendRefs {
+					backendRefIndexMsg := fmt.Sprintf("%s backendRef index %d", ruleIndexMsg, backendRefIndex)
+
+					assert.Equal(t, "EndpointSlice", string(ptr.Deref(backendRef.Kind, "")), backendRefIndexMsg)
+
+					endpointSlice := endpointSlices[ruleIndex+backendRefIndex]
+					assert.Equal(t, tt.httpProxy.Namespace, endpointSlice.Namespace, backendRefIndexMsg)
+				}
+			}
+		})
+	}
 }
 
 func TestHTTPProxyReconcile(t *testing.T) {
@@ -157,12 +308,12 @@ func TestHTTPProxyReconcile(t *testing.T) {
 				var httpRoute gatewayv1.HTTPRoute
 				err = cl.Get(ctx, objectKey, &httpRoute)
 				assert.NoError(t, err)
-				assert.Len(t, httpRoute.Spec.Rules, 2)
+				assert.Len(t, httpRoute.Spec.Rules, 1)
 
 				var endpointSliceList discoveryv1.EndpointSliceList
 				err = cl.List(ctx, &endpointSliceList, client.InNamespace(httpProxy.Namespace))
 				assert.NoError(t, err)
-				assert.Len(t, endpointSliceList.Items, 2)
+				assert.Len(t, endpointSliceList.Items, 1)
 			},
 		},
 		{
@@ -411,7 +562,7 @@ func TestHTTPProxyReconcile(t *testing.T) {
 	}
 }
 
-func newHTTPProxy() *networkingv1alpha.HTTPProxy {
+func newHTTPProxy(opts ...func(*networkingv1alpha.HTTPProxy)) *networkingv1alpha.HTTPProxy {
 	p := &networkingv1alpha.HTTPProxy{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace:         "test",
@@ -460,47 +611,12 @@ func newHTTPProxy() *networkingv1alpha.HTTPProxy {
 						},
 					},
 				},
-				{
-					Matches: []gatewayv1.HTTPRouteMatch{
-						{
-							Path: &gatewayv1.HTTPPathMatch{
-								Type:  ptr.To(gatewayv1.PathMatchPathPrefix),
-								Value: ptr.To("/test2"),
-							},
-						},
-					},
-					Filters: []gatewayv1.HTTPRouteFilter{
-						{
-							Type: gatewayv1.HTTPRouteFilterURLRewrite,
-							URLRewrite: &gatewayv1.HTTPURLRewriteFilter{
-								Path: &gatewayv1.HTTPPathModifier{
-									Type:               gatewayv1.PrefixMatchHTTPPathModifier,
-									ReplacePrefixMatch: ptr.To("/test"),
-								},
-							},
-						},
-					},
-					Backends: []networkingv1alpha.HTTPProxyRuleBackend{
-						{
-							Endpoint: "https://www.example.com:8443",
-							Filters: []gatewayv1.HTTPRouteFilter{
-								{
-									Type: gatewayv1.HTTPRouteFilterRequestHeaderModifier,
-									RequestHeaderModifier: &gatewayv1.HTTPHeaderFilter{
-										Set: []gatewayv1.HTTPHeader{
-											{
-												Name:  gatewayv1.HTTPHeaderName("x-test"),
-												Value: "test",
-											},
-										},
-									},
-								},
-							},
-						},
-					},
-				},
 			},
 		},
+	}
+
+	for _, opt := range opts {
+		opt(p)
 	}
 
 	return p

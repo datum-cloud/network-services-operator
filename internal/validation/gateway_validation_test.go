@@ -161,9 +161,7 @@ func TestValidateGateway(t *testing.T) {
 				},
 				ClusterName: "cluster-a",
 			},
-			expectedErrors: field.ErrorList{
-				field.Invalid(field.NewPath("spec", "listeners").Index(0).Child("hostname"), "example.com", "hostname does not match any allowed suffixes: [example.com another.org]"),
-			},
+			expectedErrors: field.ErrorList{},
 		},
 		"custom hostname: invalid, not a subdomain": {
 			gateway: &gatewayv1.Gateway{

@@ -1,10 +1,12 @@
 package validation
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/utils/ptr"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
@@ -109,10 +111,37 @@ func TestValidateHTTPProxy(t *testing.T) {
 			},
 			expectedErrors: field.ErrorList{},
 		},
+		"HTTPProxy name too long": {
+			proxy: &networkingv1alpha.HTTPProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: strings.Repeat("a", 64),
+				},
+				Spec: networkingv1alpha.HTTPProxySpec{
+					Rules: []networkingv1alpha.HTTPProxyRule{
+						{
+							Filters: []gatewayv1.HTTPRouteFilter{
+								{
+									Type: gatewayv1.HTTPRouteFilterRequestRedirect,
+									RequestRedirect: &gatewayv1.HTTPRequestRedirectFilter{
+										Hostname: ptr.To(gatewayv1.PreciseHostname("example.com")),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			expectedErrors: field.ErrorList{
+				field.Invalid(field.NewPath("metadata.name"), "", ""),
+			},
+		},
 	}
 
 	for name, scenario := range scenarios {
 		t.Run(name, func(t *testing.T) {
+			if scenario.proxy.Name == "" {
+				scenario.proxy.Name = "test"
+			}
 			errs := ValidateHTTPProxy(scenario.proxy)
 			delta := cmp.Diff(scenario.expectedErrors, errs, cmpopts.IgnoreFields(field.Error{}, "BadValue", "Detail"))
 			if delta != "" {

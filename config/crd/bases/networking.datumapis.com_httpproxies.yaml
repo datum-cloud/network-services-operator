@@ -14,7 +14,17 @@ spec:
     singular: httpproxy
   scope: Namespaced
   versions:
-  - name: v1alpha
+  - additionalPrinterColumns:
+    - jsonPath: .status.hostnames[*]
+      name: Hostname
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Programmed")].status
+      name: Programmed
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha
     schema:
       openAPIV3Schema:
         description: |-
@@ -39,7 +49,7 @@ spec:
           metadata:
             type: object
           spec:
-            description: HTTPProxySpec defines the desired state of HTTPProxy.
+            description: Spec defines the desired state of an HTTPProxy.
             properties:
               rules:
                 description: Rules are a list of HTTP matchers, filters and actions.
@@ -53,6 +63,10 @@ spec:
                       description: |-
                         Backends defines the backend(s) where matching requests should be
                         sent.
+
+                        Note: While this field is a list, only a single element is permitted at
+                        this time due to underlying Gateway limitations. Once addressed, MaxItems
+                        will be increased to allow for multiple backends on any given route.
                       items:
                         properties:
                           endpoint:
@@ -859,8 +873,8 @@ spec:
                             maxItems: 16
                             type: array
                             x-kubernetes-validations:
-                            - message: May specify either httpRouteFilterRequestRedirect
-                                or httpRouteFilterRequestRewrite, but not both
+                            - message: May specify either requestRedirect or urlRewrite,
+                                but not both
                               rule: '!(self.exists(f, f.type == ''RequestRedirect'')
                                 && self.exists(f, f.type == ''URLRewrite''))'
                             - message: RequestHeaderModifier filter cannot be repeated
@@ -879,7 +893,7 @@ spec:
                         - endpoint
                         type: object
                       maxItems: 1
-                      minItems: 1
+                      minItems: 0
                       type: array
                     filters:
                       description: |-
@@ -1674,8 +1688,8 @@ spec:
                       maxItems: 16
                       type: array
                       x-kubernetes-validations:
-                      - message: May specify either httpRouteFilterRequestRedirect
-                          or httpRouteFilterRequestRewrite, but not both
+                      - message: May specify either requestRedirect or urlRewrite,
+                          but not both
                         rule: '!(self.exists(f, f.type == ''RequestRedirect'') &&
                           self.exists(f, f.type == ''URLRewrite''))'
                       - message: RequestHeaderModifier filter cannot be repeated
@@ -2002,9 +2016,23 @@ spec:
                     : 0) + (self.size() > 12 ? self[12].matches.size() : 0) + (self.size()
                     > 13 ? self[13].matches.size() : 0) + (self.size() > 14 ? self[14].matches.size()
                     : 0) + (self.size() > 15 ? self[15].matches.size() : 0) <= 128'
+            required:
+            - rules
             type: object
           status:
-            description: HTTPProxyStatus defines the observed state of HTTPProxy.
+            default:
+              conditions:
+              - lastTransitionTime: "1970-01-01T00:00:00Z"
+                message: Waiting for controller
+                reason: Pending
+                status: Unknown
+                type: Accepted
+              - lastTransitionTime: "1970-01-01T00:00:00Z"
+                message: Waiting for controller
+                reason: Pending
+                status: Unknown
+                type: Programmed
+            description: Status defines the current state of an HTTPProxy.
             properties:
               addresses:
                 description: |-
@@ -2044,17 +2072,6 @@ spec:
                 maxItems: 16
                 type: array
               conditions:
-                default:
-                - lastTransitionTime: "1970-01-01T00:00:00Z"
-                  message: Waiting for controller
-                  reason: Pending
-                  status: Unknown
-                  type: Accepted
-                - lastTransitionTime: "1970-01-01T00:00:00Z"
-                  message: Waiting for controller
-                  reason: Pending
-                  status: Unknown
-                  type: Programmed
                 description: Conditions describe the current conditions of the HTTPProxy.
                 items:
                   description: Condition contains details for one aspect of the current
@@ -2142,6 +2159,8 @@ spec:
                   type: string
                 type: array
             type: object
+        required:
+        - spec
         type: object
     served: true
     storage: true

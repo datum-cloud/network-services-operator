@@ -11,11 +11,9 @@ import (
 	// to ensure that exec-entrypoint and run can make use of them.
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
+	multiclusterproviders "go.miloapis.com/milo/pkg/multicluster-runtime"
+	milomulticluster "go.miloapis.com/milo/pkg/multicluster-runtime/milo"
 	"golang.org/x/sync/errgroup"
-	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
-	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
-	mcsingle "sigs.k8s.io/multicluster-runtime/providers/single"
-
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -30,6 +28,9 @@ import (
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	gatewayv1alpha2 "sigs.k8s.io/gateway-api/apis/v1alpha2"
 	gatewayv1alpha3 "sigs.k8s.io/gateway-api/apis/v1alpha3"
+	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
+	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
+	mcsingle "sigs.k8s.io/multicluster-runtime/providers/single"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	"go.datum.net/network-services-operator/internal/config"
@@ -37,8 +38,7 @@ import (
 	"go.datum.net/network-services-operator/internal/validation"
 	networkingwebhook "go.datum.net/network-services-operator/internal/webhook"
 	networkinggatewayv1webhooks "go.datum.net/network-services-operator/internal/webhook/v1"
-	multiclusterproviders "go.miloapis.com/milo/pkg/multicluster-runtime"
-	milomulticluster "go.miloapis.com/milo/pkg/multicluster-runtime/milo"
+	networkingv1alphawebhooks "go.datum.net/network-services-operator/internal/webhook/v1alpha"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -173,57 +173,58 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err = (&controller.NetworkReconciler{}).SetupWithManager(mgr); err != nil {
+	if err := (&controller.NetworkReconciler{}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Network")
 		os.Exit(1)
 	}
-	if err = (&controller.NetworkBindingReconciler{}).SetupWithManager(mgr); err != nil {
+	if err := (&controller.NetworkBindingReconciler{}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "NetworkBinding")
 		os.Exit(1)
 	}
-	if err = (&controller.NetworkContextReconciler{}).SetupWithManager(mgr); err != nil {
+	if err := (&controller.NetworkContextReconciler{}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "NetworkContext")
 		os.Exit(1)
 	}
-	if err = (&controller.NetworkPolicyReconciler{}).SetupWithManager(mgr); err != nil {
+	if err := (&controller.NetworkPolicyReconciler{}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "NetworkPolicy")
 		os.Exit(1)
 	}
-	if err = (&controller.SubnetReconciler{}).SetupWithManager(mgr); err != nil {
+	if err := (&controller.SubnetReconciler{}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Subnet")
 		os.Exit(1)
 	}
-	if err = (&controller.SubnetClaimReconciler{}).SetupWithManager(mgr); err != nil {
+	if err := (&controller.SubnetClaimReconciler{}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "SubnetClaim")
 		os.Exit(1)
 	}
-	if err = (&controller.GatewayReconciler{
+
+	if err := (&controller.HTTPProxyReconciler{
+		Config: serverConfig,
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "HTTPProxy")
+		os.Exit(1)
+	}
+
+	if err := (&controller.GatewayReconciler{
 		Config:            serverConfig,
 		DownstreamCluster: downstreamCluster,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Gateway")
 		os.Exit(1)
 	}
-	if err = (&controller.GatewayClassReconciler{
+	if err := (&controller.GatewayClassReconciler{
 		Config: serverConfig,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "GatewayClass")
 		os.Exit(1)
 	}
 
-	if err = (&controller.EndpointSliceReconciler{
-		DownstreamCluster: downstreamCluster,
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "EndpointSlice")
-		os.Exit(1)
-	}
-
-	if err = controller.AddIndexers(ctx, mgr); err != nil {
+	if err := controller.AddIndexers(ctx, mgr); err != nil {
 		setupLog.Error(err, "unable to add indexers")
 		os.Exit(1)
 	}
 
-	if err = (&controller.DomainReconciler{}).SetupWithManager(mgr); err != nil {
+	if err := (&controller.DomainReconciler{}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Domain")
 		os.Exit(1)
 	}
@@ -236,13 +237,18 @@ func main() {
 		CustomHostnameAllowList: serverConfig.Gateway.CustomHostnameAllowList,
 	}
 
-	if err = networkinggatewayv1webhooks.SetupGatewayWebhookWithManager(mgr, validationOpts); err != nil {
+	if err := networkinggatewayv1webhooks.SetupGatewayWebhookWithManager(mgr, validationOpts); err != nil {
 		setupLog.Error(err, "unable to create webhook", "webhook", "Gateway")
 		os.Exit(1)
 	}
 
-	if err = networkinggatewayv1webhooks.SetupHTTPRouteWebhookWithManager(mgr); err != nil {
+	if err := networkinggatewayv1webhooks.SetupHTTPRouteWebhookWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create webhook", "webhook", "HTTPRoute")
+		os.Exit(1)
+	}
+
+	if err := networkingv1alphawebhooks.SetupHTTPProxyWebhookWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create webhook", "webhook", "HTTPProxy")
 		os.Exit(1)
 	}
 

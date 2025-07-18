@@ -55,7 +55,8 @@ func validateListeners(listeners []gatewayv1.Listener, fldPath *field.Path, opts
 				hostnameStr := string(*l.Hostname)
 				validHostname := false
 				for _, suffix := range allowedSuffixes {
-					if strings.HasSuffix(hostnameStr, "."+suffix) {
+					// Allow exact matches or suffix matches
+					if suffix == hostnameStr || strings.HasSuffix(hostnameStr, "."+suffix) {
 						validHostname = true
 						break
 					}

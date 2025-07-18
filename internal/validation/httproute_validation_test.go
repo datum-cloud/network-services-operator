@@ -252,11 +252,10 @@ func TestValidateHTTPRoute(t *testing.T) {
 					CommonRouteSpec: gatewayv1.CommonRouteSpec{
 						ParentRefs: []gatewayv1.ParentReference{
 							{
-								Group:       ptr.To(gatewayv1.Group("invalid.group")),
-								Kind:        ptr.To(gatewayv1.Kind("InvalidKind")),
-								Namespace:   ptr.To(gatewayv1.Namespace("invalid-namespace")),
-								SectionName: ptr.To(gatewayv1.SectionName("invalid-section-name")),
-								Port:        ptr.To(gatewayv1.PortNumber(80)),
+								Group:     ptr.To(gatewayv1.Group("invalid.group")),
+								Kind:      ptr.To(gatewayv1.Kind("InvalidKind")),
+								Namespace: ptr.To(gatewayv1.Namespace("invalid-namespace")),
+								Port:      ptr.To(gatewayv1.PortNumber(80)),
 							},
 						},
 					},
@@ -266,7 +265,6 @@ func TestValidateHTTPRoute(t *testing.T) {
 				field.Invalid(field.NewPath("spec", "parentRefs").Index(0).Child("group"), "invalid.group", ""),
 				field.Invalid(field.NewPath("spec", "parentRefs").Index(0).Child("kind"), "InvalidKind", ""),
 				field.Invalid(field.NewPath("spec", "parentRefs").Index(0).Child("namespace"), "invalid-namespace", ""),
-				field.Forbidden(field.NewPath("spec", "parentRefs").Index(0).Child("sectionName"), ""),
 				field.Forbidden(field.NewPath("spec", "parentRefs").Index(0).Child("port"), ""),
 			},
 		},

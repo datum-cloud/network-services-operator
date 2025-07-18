@@ -41,6 +41,7 @@ import (
 )
 
 const gatewayControllerFinalizer = "gateway.networking.datumapis.com/gateway-controller"
+const gatewayControllerGCFinalizer = "gateway.networking.datumapis.com/gateway-controller-gc"
 const certificateIssuerTLSOption = "gateway.networking.datumapis.com/certificate-issuer"
 const KindGateway = "Gateway"
 const KindService = "Service"
@@ -531,8 +532,8 @@ func (r *GatewayReconciler) detachHTTPRoutes(
 
 		var parents []gatewayv1.RouteParentStatus
 		for _, parent := range route.Status.Parents {
-			if ptr.Deref(parent.ParentRef.Group, "") == gatewayv1.GroupName &&
-				ptr.Deref(parent.ParentRef.Kind, "") == KindGateway &&
+			if ptr.Deref(parent.ParentRef.Group, gatewayv1.GroupName) == gatewayv1.GroupName &&
+				ptr.Deref(parent.ParentRef.Kind, KindGateway) == KindGateway &&
 				string(parent.ParentRef.Name) == gateway.Name {
 				logger.Info("removing parent ref from httproute", "name", route.Name, "parent", parent.ParentRef.Name)
 				continue
@@ -572,16 +573,38 @@ func (r *GatewayReconciler) ensureDownstreamGatewayHTTPRoutes(
 	}
 
 	// Collect routes attached to the gateway.
-	// Currently, we only support routes that are attached directly to the gateway,
-	// not sections in it.
 	var attachedRoutes []gatewayv1.HTTPRoute
 	for _, route := range httpRoutes.Items {
 		if parentRefs := route.Spec.ParentRefs; parentRefs != nil {
 			for _, parentRef := range parentRefs {
-				if string(parentRef.Name) == upstreamGateway.Name {
-					if parentRef.Kind != nil && *parentRef.Kind == KindGateway {
-						attachedRoutes = append(attachedRoutes, route)
+				if parentRef.Namespace != nil {
+					// At the time of this writing, validation prohibits namespaces to be
+					// set on parent refs. This check is here as a safety for when that
+					// limitation is removed, as additional programming logic will need
+					// to exist to translate downstream namespace names.
+					result.Err = fmt.Errorf("unexpected namespace in parent ref: %s", *parentRef.Namespace)
+					return result
+				}
+				if ptr.Deref(parentRef.Group, gatewayv1.GroupName) == gatewayv1.GroupName &&
+					ptr.Deref(parentRef.Kind, KindGateway) == KindGateway &&
+					string(parentRef.Name) == upstreamGateway.Name {
+					// If the parentRef has a section name, only attach the route if the
+					// listener exists in the gateway.
+					if parentRef.SectionName != nil {
+						foundSectionName := false
+						for _, listener := range upstreamGateway.Spec.Listeners {
+							if listener.Name == *parentRef.SectionName {
+								foundSectionName = true
+								break
+							}
+						}
+						if !foundSectionName {
+							logger.Info("section name not found in gateway", "section_name", *parentRef.SectionName)
+							continue
+						}
 					}
+
+					attachedRoutes = append(attachedRoutes, route)
 				}
 			}
 		}
@@ -594,6 +617,15 @@ func (r *GatewayReconciler) ensureDownstreamGatewayHTTPRoutes(
 			logger.Info("skipping httproute due to deletion timestamp", "name", route.Name)
 			continue
 		}
+
+		if !controllerutil.ContainsFinalizer(&route, gatewayControllerGCFinalizer) {
+			controllerutil.AddFinalizer(&route, gatewayControllerGCFinalizer)
+			if err := upstreamClient.Update(ctx, &route); err != nil {
+				result.Err = fmt.Errorf("failed to add finalizer to httproute: %w", err)
+				return result
+			}
+		}
+
 		httpRouteResult := r.ensureDownstreamHTTPRoute(
 			ctx,
 			upstreamClient,
@@ -699,6 +731,7 @@ func (r *GatewayReconciler) ensureDownstreamHTTPRoute(
 		upstreamGateway,
 		upstreamRoute,
 		downstreamGateway,
+		downstreamStrategy,
 	)
 	if err != nil {
 		result.Err = err
@@ -706,32 +739,19 @@ func (r *GatewayReconciler) ensureDownstreamHTTPRoute(
 	}
 
 	routeResult, err := controllerutil.CreateOrUpdate(ctx, downstreamClient, downstreamRoute, func() error {
+		if err := downstreamStrategy.SetControllerReference(ctx, &upstreamRoute, downstreamRoute); err != nil {
+			return fmt.Errorf("failed to set controller reference on downstream httproute: %w", err)
+		}
+
 		downstreamRoute.Spec = gatewayv1.HTTPRouteSpec{
+			CommonRouteSpec: gatewayv1.CommonRouteSpec{
+				// We currently only support same-namespace references, so just copy over
+				// parentRefs from the upstream route.
+				ParentRefs: upstreamRoute.Spec.ParentRefs,
+			},
 			Hostnames: upstreamRoute.Spec.Hostnames,
 			Rules:     rules,
 		}
-
-		// Insert a parentRef for the downstream gateway. If a route is attached to
-		// multiple gateways, a reconcile invocation for the other gateways will
-		// insert a parentRef here. We do this due to potential name and namespace
-		// rewriting that could be Gateway specific.
-
-		// First, look to see if there is already a parentRef for the downstream
-		// gateway.
-		var parentRefFound bool
-		for _, parentRef := range downstreamRoute.Spec.ParentRefs {
-			if string(parentRef.Name) == downstreamGateway.Name {
-				parentRefFound = true
-				break
-			}
-		}
-
-		if !parentRefFound {
-			downstreamRoute.Spec.ParentRefs = append(downstreamRoute.Spec.ParentRefs, gatewayv1.ParentReference{
-				Name: gatewayv1.ObjectName(downstreamGateway.Name),
-			})
-		}
-
 		return nil
 	})
 	if err != nil {
@@ -759,6 +779,11 @@ func (r *GatewayReconciler) ensureDownstreamHTTPRoute(
 				obj.Spec = desiredDownstreamResource.(*corev1.Service).Spec
 			case *discoveryv1.EndpointSlice:
 				desiredEndpointSlice := desiredDownstreamResource.(*discoveryv1.EndpointSlice)
+				// Since endpointslices get duplicated for routes, add them as a controller
+				// owner in the downstream control plane.
+				if err := controllerutil.SetControllerReference(downstreamRoute, obj, downstreamClient.Scheme()); err != nil {
+					return fmt.Errorf("failed setting owner on endpointslice: %w", err)
+				}
 				obj.AddressType = desiredEndpointSlice.AddressType
 				obj.Endpoints = desiredEndpointSlice.Endpoints
 				obj.Ports = desiredEndpointSlice.Ports
@@ -789,8 +814,8 @@ func (r *GatewayReconciler) ensureDownstreamHTTPRoute(
 	// Update the upstream route's parent status information
 	var parentStatus *gatewayv1.RouteParentStatus
 	for i, parent := range upstreamRoute.Status.Parents {
-		if ptr.Deref(parent.ParentRef.Group, "") == gatewayv1.GroupName &&
-			ptr.Deref(parent.ParentRef.Kind, "") == KindGateway &&
+		if ptr.Deref(parent.ParentRef.Group, gatewayv1.GroupName) == gatewayv1.GroupName &&
+			ptr.Deref(parent.ParentRef.Kind, KindGateway) == KindGateway &&
 			string(parent.ParentRef.Name) == upstreamGateway.Name {
 			parentStatus = &upstreamRoute.Status.Parents[i]
 			break
@@ -871,6 +896,7 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 	upstreamGateway *gatewayv1.Gateway,
 	upstreamRoute gatewayv1.HTTPRoute,
 	downstreamGateway *gatewayv1.Gateway,
+	downstreamStrategy downstreamclient.ResourceStrategy,
 ) (rules []gatewayv1.HTTPRouteRule, downstreamResources []client.Object, err error) {
 
 	// We need to create a Service for each (BackendRef, EndpointSlice)
@@ -911,6 +937,13 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 					// Should be protected by validation, but check just in case.
 					logger.Info("no port defined in backendRef", "backendRef", backendRef)
 					return nil, nil, fmt.Errorf("no port defined in backendRef")
+				}
+
+				if !controllerutil.ContainsFinalizer(&upstreamEndpointSlice, gatewayControllerGCFinalizer) {
+					controllerutil.AddFinalizer(&upstreamEndpointSlice, gatewayControllerGCFinalizer)
+					if err := upstreamClient.Update(ctx, &upstreamEndpointSlice); err != nil {
+						return nil, nil, fmt.Errorf("failed to add finalizer to endpointslice: %w", err)
+					}
 				}
 
 				var ports []corev1.ServicePort
@@ -959,8 +992,6 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 				}
 				downstreamResources = append(downstreamResources, downstreamService)
 
-				// TODO(jreese) build another controller to sync endpointslice updates
-				// to the downstream endpointslices.
 				downstreamEndpointSlice := &discoveryv1.EndpointSlice{
 					ObjectMeta: metav1.ObjectMeta{
 						Namespace: downstreamGateway.Namespace,
@@ -973,6 +1004,10 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 					AddressType: upstreamEndpointSlice.AddressType,
 					Endpoints:   upstreamEndpointSlice.Endpoints,
 					Ports:       upstreamEndpointSlice.Ports,
+				}
+
+				if err := downstreamStrategy.SetControllerReference(ctx, &upstreamEndpointSlice, downstreamEndpointSlice); err != nil {
+					return nil, nil, fmt.Errorf("failed to set controller reference on downstream endpointslice: %w", err)
 				}
 
 				downstreamResources = append(downstreamResources, downstreamEndpointSlice)
@@ -1055,14 +1090,6 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 	}
 
 	return rules, downstreamResources, nil
-}
-
-type DownstreamResourceStrategy interface {
-	GetClient() client.Client
-
-	// GetDownstreamObjectMeta returns an ObjectMeta struct with Namespace and
-	// Name fields populated.
-	GetDownstreamObjectMeta(metav1.Object) metav1.ObjectMeta
 }
 
 // SetupWithManager sets up the controller with the Manager.

@@ -573,7 +573,8 @@ func (r *GatewayReconciler) ensureDownstreamGatewayHTTPRoutes(
 	}
 
 	// Collect routes attached to the gateway.
-	var attachedRoutes []gatewayv1.HTTPRoute
+	attachedRoutes := map[client.ObjectKey]gatewayv1.HTTPRoute{}
+	attachedRouteCount := make(map[gatewayv1.SectionName]int32, len(upstreamGateway.Spec.Listeners))
 	for _, route := range httpRoutes.Items {
 		if parentRefs := route.Spec.ParentRefs; parentRefs != nil {
 			for _, parentRef := range parentRefs {
@@ -585,6 +586,7 @@ func (r *GatewayReconciler) ensureDownstreamGatewayHTTPRoutes(
 					result.Err = fmt.Errorf("unexpected namespace in parent ref: %s", *parentRef.Namespace)
 					return result
 				}
+
 				if ptr.Deref(parentRef.Group, gatewayv1.GroupName) == gatewayv1.GroupName &&
 					ptr.Deref(parentRef.Kind, KindGateway) == KindGateway &&
 					string(parentRef.Name) == upstreamGateway.Name {
@@ -602,9 +604,16 @@ func (r *GatewayReconciler) ensureDownstreamGatewayHTTPRoutes(
 							logger.Info("section name not found in gateway", "section_name", *parentRef.SectionName)
 							continue
 						}
+
+						attachedRouteCount[*parentRef.SectionName]++
+					} else {
+						// Attached to all sections, update all counts
+						for _, l := range upstreamGateway.Spec.Listeners {
+							attachedRouteCount[l.Name]++
+						}
 					}
 
-					attachedRoutes = append(attachedRoutes, route)
+					attachedRoutes[client.ObjectKeyFromObject(&route)] = route
 				}
 			}
 		}
@@ -662,7 +671,8 @@ func (r *GatewayReconciler) ensureDownstreamGatewayHTTPRoutes(
 				},
 			}
 		}
-		status.AttachedRoutes = int32(len(attachedRoutes))
+
+		status.AttachedRoutes = attachedRouteCount[listener.Name]
 
 		// Add Accepted, Programmed ResolvedRefs conditions
 		// See: https://gateway-api.sigs.k8s.io/guides/implementers/#standard-status-fields-and-conditions

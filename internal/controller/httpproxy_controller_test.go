@@ -27,7 +27,7 @@ import (
 	"go.datum.net/network-services-operator/internal/config"
 )
 
-func TestHTTPPRoxyCollectDesiredResources(t *testing.T) {
+func TestHTTPProxyCollectDesiredResources(t *testing.T) {
 
 	operatorConfig := config.NetworkServicesOperator{
 		HTTPProxy: config.HTTPProxyConfig{

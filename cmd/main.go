@@ -219,13 +219,21 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := controller.AddIndexers(ctx, mgr); err != nil {
-		setupLog.Error(err, "unable to add indexers")
+	if err := (&controller.GatewayDownstreamGCReconciler{
+		Config:            serverConfig,
+		DownstreamCluster: downstreamCluster,
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "GatewayDownstreamGC")
 		os.Exit(1)
 	}
 
 	if err := (&controller.DomainReconciler{}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Domain")
+		os.Exit(1)
+	}
+
+	if err := controller.AddIndexers(ctx, mgr); err != nil {
+		setupLog.Error(err, "unable to add indexers")
 		os.Exit(1)
 	}
 

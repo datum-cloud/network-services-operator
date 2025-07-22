@@ -20,6 +20,150 @@ import (
 	downstreamclient "go.datum.net/network-services-operator/internal/downstreamclient"
 )
 
+func TestEnsureDownstreamGateway(t *testing.T) {
+	testScheme := runtime.NewScheme()
+	assert.NoError(t, scheme.AddToScheme(testScheme))
+	assert.NoError(t, gatewayv1.Install(testScheme))
+	assert.NoError(t, discoveryv1.AddToScheme(testScheme))
+
+	upstreamNamespace := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test",
+			UID:  uuid.NewUUID(),
+		},
+	}
+
+	tests := []struct {
+		name                    string
+		upstreamGateway         *gatewayv1.Gateway
+		existingUpstreamObjects []client.Object
+		assert                  func(t *testing.T, upstreamGateway, downstreamGateway *gatewayv1.Gateway)
+	}{
+		{
+			name: "http listener only",
+			upstreamGateway: newGateway(upstreamNamespace.Name, "test", func(g *gatewayv1.Gateway) {
+				g.Spec.Listeners = []gatewayv1.Listener{
+					{
+						Name:     gatewayv1.SectionName(SchemeHTTP),
+						Port:     DefaultHTTPPort,
+						Protocol: gatewayv1.HTTPProtocolType,
+					},
+				}
+			}),
+			assert: func(t *testing.T, upstreamGateway, downstreamGateway *gatewayv1.Gateway) {
+				assert.Len(t, downstreamGateway.Spec.Listeners, 1)
+				assert.Equal(t, gatewayv1.PortNumber(DefaultHTTPPort), downstreamGateway.Spec.Listeners[0].Port)
+				assert.Equal(t, gatewayv1.HTTPProtocolType, downstreamGateway.Spec.Listeners[0].Protocol)
+			},
+		},
+		{
+			name: "https listener only",
+			upstreamGateway: newGateway(upstreamNamespace.Name, "test", func(g *gatewayv1.Gateway) {
+				g.Spec.Listeners = []gatewayv1.Listener{
+					{
+						Name:     gatewayv1.SectionName(SchemeHTTPS),
+						Port:     DefaultHTTPSPort,
+						Protocol: gatewayv1.HTTPSProtocolType,
+					},
+				}
+			}),
+			assert: func(t *testing.T, upstreamGateway, downstreamGateway *gatewayv1.Gateway) {
+				assert.Len(t, downstreamGateway.Spec.Listeners, 1)
+				assert.Equal(t, gatewayv1.PortNumber(DefaultHTTPSPort), downstreamGateway.Spec.Listeners[0].Port)
+				assert.Equal(t, gatewayv1.HTTPSProtocolType, downstreamGateway.Spec.Listeners[0].Protocol)
+			},
+		},
+		{
+			name: "http and https listeners",
+			upstreamGateway: newGateway(upstreamNamespace.Name, "test", func(g *gatewayv1.Gateway) {
+				g.Spec.Listeners = []gatewayv1.Listener{
+					{
+						Name:     gatewayv1.SectionName(SchemeHTTP),
+						Port:     DefaultHTTPPort,
+						Protocol: gatewayv1.HTTPProtocolType,
+					},
+					{
+						Name:     gatewayv1.SectionName(SchemeHTTPS),
+						Port:     DefaultHTTPSPort,
+						Protocol: gatewayv1.HTTPSProtocolType,
+					},
+				}
+			}),
+			assert: func(t *testing.T, upstreamGateway, downstreamGateway *gatewayv1.Gateway) {
+				assert.Len(t, downstreamGateway.Spec.Listeners, 2)
+
+				assert.Equal(t, gatewayv1.PortNumber(DefaultHTTPPort), downstreamGateway.Spec.Listeners[0].Port)
+				assert.Equal(t, gatewayv1.HTTPProtocolType, downstreamGateway.Spec.Listeners[0].Protocol)
+
+				assert.Equal(t, gatewayv1.PortNumber(DefaultHTTPSPort), downstreamGateway.Spec.Listeners[1].Port)
+				assert.Equal(t, gatewayv1.HTTPSProtocolType, downstreamGateway.Spec.Listeners[1].Protocol)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+
+			tt.existingUpstreamObjects = append(tt.existingUpstreamObjects, &gatewayv1.GatewayClass{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test",
+				},
+				Spec: gatewayv1.GatewayClassSpec{
+					ControllerName: gatewayv1.GatewayController("test"),
+				},
+			})
+
+			for _, obj := range tt.existingUpstreamObjects {
+				obj.SetUID(uuid.NewUUID())
+				obj.SetCreationTimestamp(metav1.Now())
+			}
+
+			fakeUpstreamClient := fake.NewClientBuilder().
+				WithScheme(testScheme).
+				WithObjects(tt.upstreamGateway, upstreamNamespace).
+				WithObjects(tt.existingUpstreamObjects...).
+				WithStatusSubresource(tt.upstreamGateway).
+				WithStatusSubresource(tt.existingUpstreamObjects...).
+				Build()
+
+			fakeDownstreamClient := fake.NewClientBuilder().
+				WithScheme(testScheme).
+				WithStatusSubresource(&gatewayv1.Gateway{}).
+				Build()
+
+			ctx := context.Background()
+
+			mgr := &fakeMockManager{cl: fakeUpstreamClient}
+
+			reconciler := &GatewayReconciler{
+				mgr:               mgr,
+				DownstreamCluster: &fakeCluster{cl: fakeDownstreamClient},
+			}
+
+			downstreamStrategy := downstreamclient.NewMappedNamespaceResourceStrategy("test", fakeUpstreamClient, fakeDownstreamClient)
+
+			result, downstreamGateway := reconciler.ensureDownstreamGateway(
+				ctx,
+				fakeUpstreamClient,
+				tt.upstreamGateway,
+				downstreamStrategy,
+			)
+			assert.NoError(t, result.Err, "failed ensuring downstream gateway HTTPRoutes")
+
+			_, err := result.Complete(ctx)
+			assert.NoError(t, err, "failed completing result")
+
+			if tt.assert != nil {
+				updatedUpstreamGateway := &gatewayv1.Gateway{}
+
+				assert.NoError(t, fakeUpstreamClient.Get(ctx, client.ObjectKeyFromObject(tt.upstreamGateway), updatedUpstreamGateway))
+
+				tt.assert(t, updatedUpstreamGateway, downstreamGateway)
+			}
+		})
+	}
+}
+
 func TestEnsureDownstreamGatewayHTTPRoutes(t *testing.T) {
 	testScheme := runtime.NewScheme()
 	assert.NoError(t, scheme.AddToScheme(testScheme))

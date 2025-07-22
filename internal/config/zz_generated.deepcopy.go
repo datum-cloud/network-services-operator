@@ -101,8 +101,19 @@ func (in *GatewayConfig) DeepCopyInto(out *GatewayConfig) {
 	}
 	if in.ValidProtocolTypes != nil {
 		in, out := &in.ValidProtocolTypes, &out.ValidProtocolTypes
-		*out = make([]apisv1.ProtocolType, len(*in))
-		copy(*out, *in)
+		*out = make(map[int][]apisv1.ProtocolType, len(*in))
+		for key, val := range *in {
+			var outVal []apisv1.ProtocolType
+			if val == nil {
+				(*out)[key] = nil
+			} else {
+				inVal := (*in)[key]
+				in, out := &inVal, &outVal
+				*out = make([]apisv1.ProtocolType, len(*in))
+				copy(*out, *in)
+			}
+			(*out)[key] = outVal
+		}
 	}
 	if in.CustomHostnameAllowList != nil {
 		in, out := &in.CustomHostnameAllowList, &out.CustomHostnameAllowList

@@ -24,6 +24,16 @@ func SetObjectDefaults_NetworkServicesOperator(in *NetworkServicesOperator) {
 	SetDefaults_TLSConfig(&in.MetricsServer.TLS)
 	SetDefaults_TLSConfig(&in.WebhookServer.TLS)
 	SetDefaults_GatewayConfig(&in.Gateway)
+	if in.Gateway.ValidPortNumbers == nil {
+		if err := json.Unmarshal([]byte(`[80,443]`), &in.Gateway.ValidPortNumbers); err != nil {
+			panic(err)
+		}
+	}
+	if in.Gateway.ValidProtocolTypes == nil {
+		if err := json.Unmarshal([]byte(`{"80": ["HTTP"], "443": ["HTTPS"]}`), &in.Gateway.ValidProtocolTypes); err != nil {
+			panic(err)
+		}
+	}
 	if in.HTTPProxy.GatewayClassName == "" {
 		in.HTTPProxy.GatewayClassName = "datum-external-global-proxy"
 	}

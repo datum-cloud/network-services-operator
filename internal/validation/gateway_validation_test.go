@@ -15,8 +15,8 @@ import (
 func TestValidateGateway(t *testing.T) {
 
 	defaultValidProtocolTypes := map[int][]gatewayv1.ProtocolType{
-		HTTPPort:  []gatewayv1.ProtocolType{gatewayv1.HTTPProtocolType},
-		HTTPSPort: []gatewayv1.ProtocolType{gatewayv1.HTTPSProtocolType},
+		HTTPPort:  {gatewayv1.HTTPProtocolType},
+		HTTPSPort: {gatewayv1.HTTPSProtocolType},
 	}
 
 	scenarios := map[string]struct {

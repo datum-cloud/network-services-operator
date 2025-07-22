@@ -274,14 +274,14 @@ type GatewayConfig struct {
 	// ValidPortNumbers is a list of port numbers that are permitted on gateway
 	// listeners.
 	//
-	// Defaults to [80, 443]
+	// +default=[80,443]
 	ValidPortNumbers []int `json:"validPortNumbers,omitempty"`
 
 	// ValidProtocolTypes is a list of protocol types that are permitted on
 	// gateway listeners.
 	//
-	// Defaults to [HTTP, HTTPS]
-	ValidProtocolTypes []gatewayv1.ProtocolType `json:"validProtocolTypes,omitempty"`
+	// +default={"80": ["HTTP"], "443": ["HTTPS"]}
+	ValidProtocolTypes map[int][]gatewayv1.ProtocolType `json:"validProtocolTypes,omitempty"`
 
 	// CustomHostnameAllowList is a list of allowed hostname suffixes for specific
 	// clusters. Hostnames on gateways in a cluster must be a subdomain of one of
@@ -322,17 +322,6 @@ func SetDefaults_GatewayConfig(obj *GatewayConfig) {
 		obj.IPFamilies = []networkingv1alpha.IPFamily{
 			networkingv1alpha.IPv4Protocol,
 			networkingv1alpha.IPv6Protocol,
-		}
-	}
-
-	if len(obj.ValidPortNumbers) == 0 {
-		obj.ValidPortNumbers = []int{80, 443}
-	}
-
-	if len(obj.ValidProtocolTypes) == 0 {
-		obj.ValidProtocolTypes = []gatewayv1.ProtocolType{
-			gatewayv1.HTTPProtocolType,
-			gatewayv1.HTTPSProtocolType,
 		}
 	}
 }

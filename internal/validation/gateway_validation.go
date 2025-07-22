@@ -6,9 +6,15 @@ import (
 	"strings"
 
 	"k8s.io/apimachinery/pkg/util/validation/field"
+	"k8s.io/utils/ptr"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	"go.datum.net/network-services-operator/internal/config"
+)
+
+const (
+	HTTPPort  = 80
+	HTTPSPort = 443
 )
 
 func ValidateGateway(gateway *gatewayv1.Gateway, opts GatewayValidationOptions) field.ErrorList {
@@ -69,13 +75,13 @@ func validateListeners(listeners []gatewayv1.Listener, fldPath *field.Path, opts
 
 		if !slices.Contains(opts.ValidPortNumbers, int(l.Port)) {
 			allErrs = append(allErrs, field.NotSupported(listenerPath.Child("port"), l.Port, opts.ValidPortNumbers.StringSlice()))
+		} else if protocols := opts.ValidProtocolTypes[int(l.Port)]; !slices.Contains(protocols, l.Protocol) {
+			allErrs = append(allErrs, field.NotSupported(listenerPath.Child("protocol"), l.Protocol, protocols))
 		}
 
-		if !slices.Contains(opts.ValidProtocolTypes, l.Protocol) {
-			allErrs = append(allErrs, field.NotSupported(listenerPath.Child("protocol"), l.Protocol, opts.ValidProtocolTypes))
+		if l.Protocol == gatewayv1.HTTPSProtocolType {
+			allErrs = append(allErrs, validateGatewayTLSConfig(l.TLS, listenerPath.Child("tls"), opts)...)
 		}
-
-		allErrs = append(allErrs, validateGatewayTLSConfig(l.TLS, listenerPath.Child("tls"), opts)...)
 
 		allErrs = append(allErrs, validateAllowedRoutes(l.AllowedRoutes, listenerPath.Child("allowedRoutes"))...)
 	}
@@ -104,13 +110,20 @@ func validateAllowedRoutes(allowedRoutes *gatewayv1.AllowedRoutes, fldPath *fiel
 }
 
 func validateGatewayTLSConfig(tls *gatewayv1.GatewayTLSConfig, fldPath *field.Path, opts GatewayValidationOptions) field.ErrorList {
-	if tls == nil {
-		return nil
-	}
-
 	allErrs := field.ErrorList{}
 
-	if tls.Mode != nil && *tls.Mode != gatewayv1.TLSModeTerminate {
+	optionsFieldPath := fldPath.Child("options")
+
+	if tls == nil || len(tls.Options) == 0 {
+		// Require the TLS option for cert issuance until there's support for
+		// providing certs.
+		allErrs = append(allErrs, field.Required(optionsFieldPath, "must provide TLS options"))
+		if tls == nil {
+			return allErrs
+		}
+	}
+
+	if ptr.Deref(tls.Mode, gatewayv1.TLSModeTerminate) != gatewayv1.TLSModeTerminate {
 		allErrs = append(allErrs, field.Invalid(fldPath.Child("mode"), tls.Mode, "mode must be set to Terminate"))
 	}
 
@@ -122,16 +135,14 @@ func validateGatewayTLSConfig(tls *gatewayv1.GatewayTLSConfig, fldPath *field.Pa
 		allErrs = append(allErrs, field.Forbidden(fldPath.Child("frontendValidation"), "frontendValidation is not permitted"))
 	}
 
-	if len(tls.Options) > 0 {
-		for k, v := range tls.Options {
-			optionPath := fldPath.Child("options").Key(string(k))
+	for k, v := range tls.Options {
+		optionPath := optionsFieldPath.Key(string(k))
 
-			if optValues, ok := opts.PermittedTLSOptions[string(k)]; !ok {
-				allErrs = append(allErrs, field.Forbidden(optionPath, "option is not permitted"))
-			} else {
-				if len(optValues) > 0 && !slices.Contains(optValues, string(v)) {
-					allErrs = append(allErrs, field.NotSupported(optionPath, string(v), optValues))
-				}
+		if optValues, ok := opts.PermittedTLSOptions[string(k)]; !ok {
+			allErrs = append(allErrs, field.Forbidden(optionPath, "option is not permitted"))
+		} else {
+			if len(optValues) > 0 && !slices.Contains(optValues, string(v)) {
+				allErrs = append(allErrs, field.NotSupported(optionPath, string(v), optValues))
 			}
 		}
 	}
@@ -143,7 +154,7 @@ type GatewayValidationOptions struct {
 	ControllerName          gatewayv1.GatewayController
 	PermittedTLSOptions     map[string][]string
 	ValidPortNumbers        validPortNumbers
-	ValidProtocolTypes      []gatewayv1.ProtocolType
+	ValidProtocolTypes      map[int][]gatewayv1.ProtocolType
 	ClusterName             string
 	CustomHostnameAllowList []config.CustomHostnameAllowListEntry
 }

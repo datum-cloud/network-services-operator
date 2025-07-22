@@ -204,7 +204,16 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 			downstreamGateway.Annotations = map[string]string{}
 		}
 		var listeners []gatewayv1.Listener
+		foundHTTPListener := false
+		foundHTTPSListener := false
 		for _, l := range upstreamGateway.Spec.Listeners {
+			switch l.Protocol {
+			case gatewayv1.HTTPProtocolType:
+				foundHTTPListener = true
+			case gatewayv1.HTTPSProtocolType:
+				foundHTTPSListener = true
+			}
+
 			if l.TLS != nil && l.TLS.Options[certificateIssuerTLSOption] != "" {
 				if r.Config.Gateway.PerGatewayCertificateIssuer {
 					downstreamGateway.Annotations["cert-manager.io/issuer"] = downstreamGateway.Name
@@ -278,10 +287,16 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 		}
 
 		for i, hostname := range addressHostnames {
-			listeners = append(listeners,
-				listenerFactory(fmt.Sprintf("http-%d", i), hostname, gatewayv1.HTTPProtocolType, gatewayv1.PortNumber(80)),
-				listenerFactory(fmt.Sprintf("https-%d", i), hostname, gatewayv1.HTTPSProtocolType, gatewayv1.PortNumber(443)),
-			)
+			if foundHTTPListener {
+				listeners = append(listeners,
+					listenerFactory(fmt.Sprintf("http-%d", i), hostname, gatewayv1.HTTPProtocolType, gatewayv1.PortNumber(DefaultHTTPPort)),
+				)
+			}
+			if foundHTTPSListener {
+				listeners = append(listeners,
+					listenerFactory(fmt.Sprintf("https-%d", i), hostname, gatewayv1.HTTPSProtocolType, gatewayv1.PortNumber(DefaultHTTPSPort)),
+				)
+			}
 		}
 
 		downstreamGateway.Spec.Listeners = listeners

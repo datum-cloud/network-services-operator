@@ -123,7 +123,7 @@ func (r *GatewayDownstreamGCReconciler) Reconcile(ctx context.Context, req GVKRe
 					Name:      resourceName,
 				}, endpointSlice); err != nil {
 					if apierrors.IsNotFound(err) {
-						logger.Info("endpointslice not found", "namespace", downstreamObjectMeta.Namespace, resourceName)
+						logger.Info("endpointslice not found", "namespace", downstreamObjectMeta.Namespace, "name", resourceName)
 						// Nothing to do
 						continue
 					}

@@ -1,0 +1,31 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: nso-slo
+  namespace: nso-slo
+spec:
+  groups:
+  - name: nso-slo
+    rules:
+    - alert: GatewayStuckNotReadySLOViolation
+      expr: |
+        (time() - datum_cloud_networking_gateway_created) > 60
+        unless ignoring(type) (datum_cloud_networking_gateway_status{type="Ready"} == 1)
+      for: 0s
+      labels:
+        severity: critical
+        slo_violation: "true"
+      annotations:
+        summary: "Gateway {{ $labels.name }} is stuck for over 60 seconds without reaching Ready status"
+        description: "Gateway {{ $labels.name }} in namespace {{ $labels.namespace }} has been in creation/transition state for {{ $value }} seconds without reaching Ready status, which exceeds the 60-second SLO threshold."
+
+    - alert: GatewayNotReadySLOViolation
+      expr: |
+        (time() - datum_cloud_networking_gateway_status_condition_last_transition_time{type="Ready", status="False"}) > 60
+      for: 0s
+      labels:
+        severity: critical
+        slo_violation: "true"
+      annotations:
+        summary: "Gateway {{ $labels.name }} has been not Ready for over 60 seconds"
+        description: "Gateway {{ $labels.name }} in namespace {{ $labels.namespace }} has been in not Ready state for {{ $value }} seconds, which exceeds the 60-second SLO threshold."

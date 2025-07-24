@@ -42,18 +42,61 @@ func TestValidateHTTPProxy(t *testing.T) {
 				Spec: networkingv1alpha.HTTPProxySpec{
 					Rules: []networkingv1alpha.HTTPProxyRule{
 						{
+							// Note: The CRD currently restricts the number of backends to
+							// one item, but that is enforced in the API server and not in
+							// this validation logic. The list of endpoints below may be valid
+							// in the future, but right now it's written like this for brevity.
 							Backends: []networkingv1alpha.HTTPProxyRuleBackend{
 								{
 									Endpoint: "http://__invalid.com",
+								},
+								{
+									Endpoint: "http://www",
+								},
+								{
+									Endpoint: "http://0.0.0.0",
+								},
+								{
+									Endpoint: "http://[::]",
+								},
+								{
+									Endpoint: "http://127.0.0.1",
+								},
+								{
+									Endpoint: "http://[::1]",
+								},
+								{
+									Endpoint: "http://169.254.0.1",
+								},
+								{
+									Endpoint: "http://[fe80::1]",
+								},
+								{
+									Endpoint: "http://224.0.0.1",
+								},
+								{
+									Endpoint: "http://[ff02::1]",
 								},
 							},
 						},
 					},
 				},
 			},
-			expectedErrors: field.ErrorList{
-				field.Invalid(field.NewPath("spec", "rules").Index(0).Child("backends").Index(0).Child("endpoint").Key("host"), "Invalid", ""),
-			},
+			expectedErrors: func() field.ErrorList {
+				backendsField := field.NewPath("spec", "rules").Index(0).Child("backends")
+				return field.ErrorList{
+					field.Invalid(backendsField.Index(0).Child("endpoint").Key("host"), "Invalid", ""),
+					field.Invalid(backendsField.Index(1).Child("endpoint").Key("host"), "Invalid", ""),
+					field.Invalid(backendsField.Index(2).Child("endpoint").Key("host"), "Invalid", ""),
+					field.Invalid(backendsField.Index(3).Child("endpoint").Key("host"), "Invalid", ""),
+					field.Invalid(backendsField.Index(4).Child("endpoint").Key("host"), "Invalid", ""),
+					field.Invalid(backendsField.Index(5).Child("endpoint").Key("host"), "Invalid", ""),
+					field.Invalid(backendsField.Index(6).Child("endpoint").Key("host"), "Invalid", ""),
+					field.Invalid(backendsField.Index(7).Child("endpoint").Key("host"), "Invalid", ""),
+					field.Invalid(backendsField.Index(8).Child("endpoint").Key("host"), "Invalid", ""),
+					field.Invalid(backendsField.Index(9).Child("endpoint").Key("host"), "Invalid", ""),
+				}
+			}(),
 		},
 		"unsupported endpoint": {
 			proxy: &networkingv1alpha.HTTPProxy{

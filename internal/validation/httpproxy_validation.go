@@ -2,6 +2,7 @@ package validation
 
 import (
 	"fmt"
+	"net"
 	"net/url"
 
 	"k8s.io/apimachinery/pkg/util/validation"
@@ -84,8 +85,26 @@ func validateHTTPProxyRuleBackend(backend networkingv1alpha.HTTPProxyRuleBackend
 			allErrs = append(allErrs, field.Invalid(endpointFieldPath.Key("userinfo"), fmt.Sprintf("%s:redacted", u.User.Username()), "endpoint must not have a userinfo component"))
 		}
 
-		for _, msg := range validation.IsDNS1123SubdomainWithUnderscore(u.Host) {
-			allErrs = append(allErrs, field.Invalid(endpointFieldPath.Key("host"), u.Host, msg))
+		// Align with EndpointSlice validation of addresses.
+		// See: https://github.com/kubernetes/kubernetes/blob/d21da29c9ec486956b204050cdfaa46c686e29cc/pkg/apis/discovery/validation/validation.go#L115
+		hostFieldPath := endpointFieldPath.Key("host")
+		host := u.Hostname()
+		if ip := net.ParseIP(host); ip != nil {
+			// Adapted from https://github.com/kubernetes/kubernetes/blob/d21da29c9ec486956b204050cdfaa46c686e29cc/pkg/apis/core/validation/validation.go#L7797
+			if ip.IsUnspecified() {
+				allErrs = append(allErrs, field.Invalid(hostFieldPath, host, fmt.Sprintf("may not be unspecified (%v)", host)))
+			}
+			if ip.IsLoopback() {
+				allErrs = append(allErrs, field.Invalid(hostFieldPath, host, "may not be in the loopback range (127.0.0.0/8, ::1/128)"))
+			}
+			if ip.IsLinkLocalUnicast() {
+				allErrs = append(allErrs, field.Invalid(hostFieldPath, host, "may not be in the link-local range (169.254.0.0/16, fe80::/10)"))
+			}
+			if ip.IsLinkLocalMulticast() {
+				allErrs = append(allErrs, field.Invalid(hostFieldPath, host, "may not be in the link-local multicast range (224.0.0.0/24, ff02::/10)"))
+			}
+		} else {
+			allErrs = append(allErrs, validation.IsFullyQualifiedDomainName(hostFieldPath, host)...)
 		}
 
 		if u.Path != "" {

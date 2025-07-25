@@ -6,14 +6,15 @@
 # resource configuration file in this directory.
 
 resources:
-  - endpointslice.yaml
-  - gateway.yaml
-  - gatewayclass.yaml
-  - httproute.yaml
-  - location.yaml
-  - network.yaml
-  - network-binding.yaml
-  - network-contex.yaml
-  - network-policy.yaml
-  - subnet.yaml
-  - subnet-claim.yaml
+  - endpointslices.yaml
+  - gatewayclasses.yaml
+  - gateways.yaml
+  - httpproxies.yaml
+  - httproutes.yaml
+  - locations.yaml
+  - networkbindings.yaml
+  - networkcontexts.yaml
+  - networkpolicies.yaml
+  - networks.yaml
+  - subnetclaims.yaml
+  - subnets.yaml

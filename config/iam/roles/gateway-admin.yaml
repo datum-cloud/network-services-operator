@@ -22,3 +22,7 @@ spec:
     - discovery.k8s.io/endpointslices.update
     - discovery.k8s.io/endpointslices.patch
     - discovery.k8s.io/endpointslices.delete
+    - networking.datumapis.com/httpproxies.create
+    - networking.datumapis.com/httpproxies.update
+    - networking.datumapis.com/httpproxies.patch
+    - networking.datumapis.com/httpproxies.delete

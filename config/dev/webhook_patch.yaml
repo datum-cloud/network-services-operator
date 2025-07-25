@@ -33,6 +33,12 @@ patch: |-
   - op: remove
     path: /webhooks/1/clientConfig/service
 
+  - op: move
+    from: /webhooks/2/clientConfig/service/path
+    path: /webhooks/2/clientConfig/url
+  - op: remove
+    path: /webhooks/2/clientConfig/service
+
 target:
   kind: MutatingWebhookConfiguration
 ---
@@ -52,6 +58,12 @@ patch: |-
     path: /webhooks/1/clientConfig/url
   - op: remove
     path: /webhooks/1/clientConfig/service
+
+  - op: move
+    from: /webhooks/2/clientConfig/service/path
+    path: /webhooks/2/clientConfig/url
+  - op: remove
+    path: /webhooks/2/clientConfig/service
 target:
   kind: ValidatingWebhookConfiguration
 ---

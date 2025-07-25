@@ -14,6 +14,11 @@ import (
 
 func TestValidateGateway(t *testing.T) {
 
+	defaultValidProtocolTypes := map[int][]gatewayv1.ProtocolType{
+		HTTPPort:  {gatewayv1.HTTPProtocolType},
+		HTTPSPort: {gatewayv1.HTTPSProtocolType},
+	}
+
 	scenarios := map[string]struct {
 		gateway        *gatewayv1.Gateway
 		opts           GatewayValidationOptions
@@ -45,7 +50,7 @@ func TestValidateGateway(t *testing.T) {
 			},
 			opts: GatewayValidationOptions{
 				ValidPortNumbers:   []int{80, 443},
-				ValidProtocolTypes: []gatewayv1.ProtocolType{gatewayv1.HTTPProtocolType, gatewayv1.HTTPSProtocolType},
+				ValidProtocolTypes: defaultValidProtocolTypes,
 			},
 			expectedErrors: field.ErrorList{
 				field.Invalid(field.NewPath("spec", "listeners").Index(0).Child("hostname"), "example.com", "hostnames are not permitted"),
@@ -67,7 +72,7 @@ func TestValidateGateway(t *testing.T) {
 			},
 			opts: GatewayValidationOptions{
 				ValidPortNumbers:   []int{80, 443},
-				ValidProtocolTypes: []gatewayv1.ProtocolType{gatewayv1.HTTPProtocolType, gatewayv1.HTTPSProtocolType},
+				ValidProtocolTypes: defaultValidProtocolTypes,
 				CustomHostnameAllowList: []config.CustomHostnameAllowListEntry{
 					{
 						ClusterName: "other-cluster",
@@ -96,7 +101,7 @@ func TestValidateGateway(t *testing.T) {
 			},
 			opts: GatewayValidationOptions{
 				ValidPortNumbers:   []int{80, 443},
-				ValidProtocolTypes: []gatewayv1.ProtocolType{gatewayv1.HTTPProtocolType, gatewayv1.HTTPSProtocolType},
+				ValidProtocolTypes: defaultValidProtocolTypes,
 				CustomHostnameAllowList: []config.CustomHostnameAllowListEntry{
 					{
 						ClusterName: "cluster-a",
@@ -125,7 +130,7 @@ func TestValidateGateway(t *testing.T) {
 			},
 			opts: GatewayValidationOptions{
 				ValidPortNumbers:   []int{80, 443},
-				ValidProtocolTypes: []gatewayv1.ProtocolType{gatewayv1.HTTPProtocolType, gatewayv1.HTTPSProtocolType},
+				ValidProtocolTypes: defaultValidProtocolTypes,
 				CustomHostnameAllowList: []config.CustomHostnameAllowListEntry{
 					{
 						ClusterName: "cluster-a",
@@ -152,7 +157,7 @@ func TestValidateGateway(t *testing.T) {
 			},
 			opts: GatewayValidationOptions{
 				ValidPortNumbers:   []int{80, 443},
-				ValidProtocolTypes: []gatewayv1.ProtocolType{gatewayv1.HTTPProtocolType, gatewayv1.HTTPSProtocolType},
+				ValidProtocolTypes: defaultValidProtocolTypes,
 				CustomHostnameAllowList: []config.CustomHostnameAllowListEntry{
 					{
 						ClusterName: "cluster-a",
@@ -161,9 +166,7 @@ func TestValidateGateway(t *testing.T) {
 				},
 				ClusterName: "cluster-a",
 			},
-			expectedErrors: field.ErrorList{
-				field.Invalid(field.NewPath("spec", "listeners").Index(0).Child("hostname"), "example.com", "hostname does not match any allowed suffixes: [example.com another.org]"),
-			},
+			expectedErrors: field.ErrorList{},
 		},
 		"custom hostname: invalid, not a subdomain": {
 			gateway: &gatewayv1.Gateway{
@@ -181,7 +184,7 @@ func TestValidateGateway(t *testing.T) {
 			},
 			opts: GatewayValidationOptions{
 				ValidPortNumbers:   []int{80, 443},
-				ValidProtocolTypes: []gatewayv1.ProtocolType{gatewayv1.HTTPProtocolType, gatewayv1.HTTPSProtocolType},
+				ValidProtocolTypes: defaultValidProtocolTypes,
 				CustomHostnameAllowList: []config.CustomHostnameAllowListEntry{
 					{
 						ClusterName: "cluster-a",
@@ -210,7 +213,7 @@ func TestValidateGateway(t *testing.T) {
 			},
 			opts: GatewayValidationOptions{
 				ValidPortNumbers:   []int{80, 443},
-				ValidProtocolTypes: []gatewayv1.ProtocolType{gatewayv1.HTTPProtocolType, gatewayv1.HTTPSProtocolType},
+				ValidProtocolTypes: defaultValidProtocolTypes,
 				CustomHostnameAllowList: []config.CustomHostnameAllowListEntry{
 					{
 						ClusterName: "cluster-a",
@@ -239,7 +242,7 @@ func TestValidateGateway(t *testing.T) {
 			},
 			opts: GatewayValidationOptions{
 				ValidPortNumbers:   []int{80, 443},
-				ValidProtocolTypes: []gatewayv1.ProtocolType{gatewayv1.HTTPProtocolType, gatewayv1.HTTPSProtocolType},
+				ValidProtocolTypes: defaultValidProtocolTypes,
 				CustomHostnameAllowList: []config.CustomHostnameAllowListEntry{
 					{
 						ClusterName: "cluster-a",
@@ -266,7 +269,7 @@ func TestValidateGateway(t *testing.T) {
 			},
 			opts: GatewayValidationOptions{
 				ValidPortNumbers:   []int{80, 443},
-				ValidProtocolTypes: []gatewayv1.ProtocolType{gatewayv1.HTTPProtocolType, gatewayv1.HTTPSProtocolType},
+				ValidProtocolTypes: defaultValidProtocolTypes,
 				CustomHostnameAllowList: []config.CustomHostnameAllowListEntry{
 					{
 						ClusterName: "cluster-a",
@@ -295,7 +298,7 @@ func TestValidateGateway(t *testing.T) {
 			},
 			opts: GatewayValidationOptions{
 				ValidPortNumbers:   []int{80, 443},
-				ValidProtocolTypes: []gatewayv1.ProtocolType{gatewayv1.HTTPProtocolType, gatewayv1.HTTPSProtocolType},
+				ValidProtocolTypes: defaultValidProtocolTypes,
 				CustomHostnameAllowList: []config.CustomHostnameAllowListEntry{
 					{
 						ClusterName: "cluster-a",
@@ -321,7 +324,7 @@ func TestValidateGateway(t *testing.T) {
 			},
 			opts: GatewayValidationOptions{
 				ValidPortNumbers:   []int{80, 443},
-				ValidProtocolTypes: []gatewayv1.ProtocolType{gatewayv1.HTTPProtocolType, gatewayv1.HTTPSProtocolType},
+				ValidProtocolTypes: defaultValidProtocolTypes,
 			},
 			expectedErrors: field.ErrorList{
 				field.NotSupported(field.NewPath("spec", "listeners").Index(0).Child("port"), 8080, []string{"80", "443"}),
@@ -342,7 +345,7 @@ func TestValidateGateway(t *testing.T) {
 			},
 			opts: GatewayValidationOptions{
 				ValidPortNumbers:   []int{80, 443},
-				ValidProtocolTypes: []gatewayv1.ProtocolType{gatewayv1.HTTPProtocolType, gatewayv1.HTTPSProtocolType},
+				ValidProtocolTypes: defaultValidProtocolTypes,
 			},
 			expectedErrors: field.ErrorList{
 				field.NotSupported(field.NewPath("spec", "listeners").Index(0).Child("protocol"), gatewayv1.TCPProtocolType, []gatewayv1.ProtocolType{gatewayv1.HTTPProtocolType, gatewayv1.HTTPSProtocolType}),
@@ -366,9 +369,10 @@ func TestValidateGateway(t *testing.T) {
 			},
 			opts: GatewayValidationOptions{
 				ValidPortNumbers:   []int{80, 443},
-				ValidProtocolTypes: []gatewayv1.ProtocolType{gatewayv1.HTTPProtocolType, gatewayv1.HTTPSProtocolType},
+				ValidProtocolTypes: defaultValidProtocolTypes,
 			},
 			expectedErrors: field.ErrorList{
+				field.Required(field.NewPath("spec", "listeners").Index(0).Child("tls", "options"), ""),
 				field.Invalid(field.NewPath("spec", "listeners").Index(0).Child("tls", "mode"), gatewayv1.TLSModePassthrough, "mode must be set to Terminate"),
 			},
 		},
@@ -395,9 +399,10 @@ func TestValidateGateway(t *testing.T) {
 			},
 			opts: GatewayValidationOptions{
 				ValidPortNumbers:   []int{80, 443},
-				ValidProtocolTypes: []gatewayv1.ProtocolType{gatewayv1.HTTPProtocolType, gatewayv1.HTTPSProtocolType},
+				ValidProtocolTypes: defaultValidProtocolTypes,
 			},
 			expectedErrors: field.ErrorList{
+				field.Required(field.NewPath("spec", "listeners").Index(0).Child("tls", "options"), ""),
 				field.Forbidden(field.NewPath("spec", "listeners").Index(0).Child("tls", "certificateRefs"), ""),
 			},
 		},
@@ -421,7 +426,7 @@ func TestValidateGateway(t *testing.T) {
 			},
 			opts: GatewayValidationOptions{
 				ValidPortNumbers:   []int{80, 443},
-				ValidProtocolTypes: []gatewayv1.ProtocolType{gatewayv1.HTTPProtocolType, gatewayv1.HTTPSProtocolType},
+				ValidProtocolTypes: defaultValidProtocolTypes,
 			},
 			expectedErrors: field.ErrorList{
 				field.NotSupported(field.NewPath("spec", "listeners").Index(0).Child("allowedRoutes", "namespaces", "from"), gatewayv1.NamespacesFromAll, []gatewayv1.FromNamespaces{gatewayv1.NamespacesFromSame}),
@@ -449,7 +454,7 @@ func TestValidateGateway(t *testing.T) {
 			},
 			opts: GatewayValidationOptions{
 				ValidPortNumbers:   []int{80, 443},
-				ValidProtocolTypes: []gatewayv1.ProtocolType{gatewayv1.HTTPProtocolType, gatewayv1.HTTPSProtocolType},
+				ValidProtocolTypes: defaultValidProtocolTypes,
 			},
 			expectedErrors: field.ErrorList{
 				field.TooMany(field.NewPath("spec", "listeners").Index(0).Child("allowedRoutes", "kinds"), 1, 0),
@@ -476,7 +481,7 @@ func TestValidateGateway(t *testing.T) {
 			},
 			opts: GatewayValidationOptions{
 				ValidPortNumbers:   []int{80, 443},
-				ValidProtocolTypes: []gatewayv1.ProtocolType{gatewayv1.HTTPProtocolType, gatewayv1.HTTPSProtocolType},
+				ValidProtocolTypes: defaultValidProtocolTypes,
 			},
 			expectedErrors: field.ErrorList{
 				field.TooMany(field.NewPath("spec", "addresses"), 1, 0),
@@ -502,7 +507,7 @@ func TestValidateGateway(t *testing.T) {
 			},
 			opts: GatewayValidationOptions{
 				ValidPortNumbers:   []int{80, 443},
-				ValidProtocolTypes: []gatewayv1.ProtocolType{gatewayv1.HTTPProtocolType, gatewayv1.HTTPSProtocolType},
+				ValidProtocolTypes: defaultValidProtocolTypes,
 			},
 			expectedErrors: field.ErrorList{
 				field.Forbidden(field.NewPath("spec", "infrastructure"), "infrastructure is not permitted"),
@@ -528,7 +533,7 @@ func TestValidateGateway(t *testing.T) {
 			},
 			opts: GatewayValidationOptions{
 				ValidPortNumbers:   []int{80, 443},
-				ValidProtocolTypes: []gatewayv1.ProtocolType{gatewayv1.HTTPProtocolType, gatewayv1.HTTPSProtocolType},
+				ValidProtocolTypes: defaultValidProtocolTypes,
 			},
 			expectedErrors: field.ErrorList{
 				field.Forbidden(field.NewPath("spec", "backendTLS"), "backendTLS is not permitted"),
@@ -540,9 +545,9 @@ func TestValidateGateway(t *testing.T) {
 					GatewayClassName: "test-gateway-class",
 					Listeners: []gatewayv1.Listener{
 						{
-							Name:     "http",
-							Protocol: gatewayv1.HTTPProtocolType,
-							Port:     80,
+							Name:     "https",
+							Protocol: gatewayv1.HTTPSProtocolType,
+							Port:     443,
 							TLS: &gatewayv1.GatewayTLSConfig{
 								Options: map[gatewayv1.AnnotationKey]gatewayv1.AnnotationValue{
 									"test-option": "test-value",
@@ -555,7 +560,7 @@ func TestValidateGateway(t *testing.T) {
 			},
 			opts: GatewayValidationOptions{
 				ValidPortNumbers:   []int{80, 443},
-				ValidProtocolTypes: []gatewayv1.ProtocolType{gatewayv1.HTTPProtocolType, gatewayv1.HTTPSProtocolType},
+				ValidProtocolTypes: defaultValidProtocolTypes,
 			},
 			expectedErrors: field.ErrorList{
 				field.Forbidden(field.NewPath("spec", "listeners").Index(0).Child("tls", "frontendValidation"), ""),
@@ -568,9 +573,9 @@ func TestValidateGateway(t *testing.T) {
 					GatewayClassName: "test-gateway-class",
 					Listeners: []gatewayv1.Listener{
 						{
-							Name:     "http",
-							Protocol: gatewayv1.HTTPProtocolType,
-							Port:     80,
+							Name:     "https",
+							Protocol: gatewayv1.HTTPSProtocolType,
+							Port:     443,
 							TLS: &gatewayv1.GatewayTLSConfig{
 								Options: map[gatewayv1.AnnotationKey]gatewayv1.AnnotationValue{
 									"test-option": "invalid-value",
@@ -582,7 +587,7 @@ func TestValidateGateway(t *testing.T) {
 			},
 			opts: GatewayValidationOptions{
 				ValidPortNumbers:   []int{80, 443},
-				ValidProtocolTypes: []gatewayv1.ProtocolType{gatewayv1.HTTPProtocolType, gatewayv1.HTTPSProtocolType},
+				ValidProtocolTypes: defaultValidProtocolTypes,
 				PermittedTLSOptions: map[string][]string{
 					"test-option": {"test-value"},
 				},
@@ -611,7 +616,7 @@ func TestValidateGateway(t *testing.T) {
 			},
 			opts: GatewayValidationOptions{
 				ValidPortNumbers:   []int{80, 443},
-				ValidProtocolTypes: []gatewayv1.ProtocolType{gatewayv1.HTTPProtocolType, gatewayv1.HTTPSProtocolType},
+				ValidProtocolTypes: defaultValidProtocolTypes,
 				PermittedTLSOptions: map[string][]string{
 					"test-option": {"valid-value"},
 				},

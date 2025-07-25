@@ -19,6 +19,11 @@ gateway:
     - clusterName: ""
       suffixes:
         - e2e.env.datum.net
+
+httpProxy:
+  tlsOptions:
+    gateway.networking.datumapis.com/certificate-issuer: gateway-clusterissuer-selfsigned-ca
+
 downstreamResourceManagement:
   # TODO(jreese) remove this when we make the downstream resource strategy
   # configurable

@@ -61,6 +61,8 @@ NetworkContext is the Schema for the networkcontexts API
         <td>object</td>
         <td>
           NetworkContextStatus defines the observed state of NetworkContext<br/>
+          <br/>
+            <i>Default</i>: map[conditions:[map[lastTransitionTime:1970-01-01T00:00:00Z message:Waiting for controller reason:Pending status:Unknown type:Programmed] map[lastTransitionTime:1970-01-01T00:00:00Z message:Waiting for controller reason:Pending status:Unknown type:Ready]]]<br/>
         </td>
         <td>false</td>
       </tr></tbody>

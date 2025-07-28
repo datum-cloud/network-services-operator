@@ -128,7 +128,7 @@ func (r *SubnetReconciler) Reconcile(ctx context.Context, req mcreconcile.Reques
 	if apimeta.SetStatusCondition(&subnet.Status.Conditions, metav1.Condition{
 		Type:               networkingv1alpha.SubnetAllocated,
 		Status:             metav1.ConditionTrue,
-		Reason:             "PrefixAllocated",
+		Reason:             networkingv1alpha.SubnetAllocatedReasonPrefixAllocated,
 		ObservedGeneration: subnet.Generation,
 		Message:            "Subnet has been allocated a prefix",
 	}) {

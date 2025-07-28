@@ -74,6 +74,9 @@ const (
 
 	// SubnetReadyReasonReady indicates that the subnet is ready to use
 	SubnetReadyReasonReady = "Ready"
+
+	// SubnetAllocatedReasonAllocated indicates that the subnet has been allocated a prefix
+	SubnetAllocatedReasonPrefixAllocated = "PrefixAllocated"
 )
 
 // +kubebuilder:object:root=true

@@ -54,6 +54,22 @@ type SubnetClaimStatus struct {
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 
+const (
+	// SubnetClaimAllocated indicates that the subnet claim has been allocated a prefix
+	SubnetClaimAllocated = "Allocated"
+
+	// SubnetClaimReady indicates that the subnet claim is ready to use
+	SubnetClaimReady = "Ready"
+)
+
+const (
+	// SubnetClaimReadyReasonReady indicates that the subnet claim is ready to use
+	SubnetClaimReadyReasonReady = "Ready"
+
+	// SubnetClaimAllocatedReasonPrefixAllocated indicates that the subnet claim has been allocated a prefix
+	SubnetClaimAllocatedReasonPrefixAllocated = "PrefixAllocated"
+)
+
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 

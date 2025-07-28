@@ -13,7 +13,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mchandler "sigs.k8s.io/multicluster-runtime/pkg/handler"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
@@ -117,7 +116,9 @@ func (r *SubnetClaimReconciler) Reconcile(ctx context.Context, req mcreconcile.R
 		return ctrl.Result{}, nil
 	}
 
-	if !apimeta.IsStatusConditionTrue(subnet.Status.Conditions, "Ready") {
+	// CHANGED(jreese) Move away from Ready condition to Allocated condition for
+	// both subnets and claims.
+	if !apimeta.IsStatusConditionTrue(subnet.Status.Conditions, networkingv1alpha.SubnetAllocated) {
 		logger.Info("subnet is not ready")
 		return ctrl.Result{}, nil
 	}
@@ -126,13 +127,26 @@ func (r *SubnetClaimReconciler) Reconcile(ctx context.Context, req mcreconcile.R
 		Name: subnet.Name,
 	}
 
+	claim.Status.StartAddress = subnet.Status.StartAddress
+	claim.Status.PrefixLength = subnet.Status.PrefixLength
+
 	apimeta.SetStatusCondition(&claim.Status.Conditions, metav1.Condition{
-		Type:               "Ready",
+		Type:               networkingv1alpha.SubnetClaimAllocated,
 		Status:             metav1.ConditionTrue,
-		Reason:             "SubnetReady",
+		Reason:             networkingv1alpha.SubnetClaimAllocatedReasonPrefixAllocated,
 		ObservedGeneration: claim.Generation,
-		Message:            "Subnet ready",
+		Message:            "Subnet claim has been allocated a prefix",
 	})
+
+	if apimeta.IsStatusConditionTrue(subnet.Status.Conditions, networkingv1alpha.SubnetReady) {
+		apimeta.SetStatusCondition(&claim.Status.Conditions, metav1.Condition{
+			Type:               networkingv1alpha.SubnetClaimReady,
+			Status:             metav1.ConditionTrue,
+			Reason:             networkingv1alpha.SubnetClaimReadyReasonReady,
+			ObservedGeneration: claim.Generation,
+			Message:            "Subnet claim is ready to use",
+		})
+	}
 
 	if err := cl.GetClient().Status().Update(ctx, &claim); err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed updating claim status")
@@ -145,17 +159,7 @@ func (r *SubnetClaimReconciler) Reconcile(ctx context.Context, req mcreconcile.R
 func (r *SubnetClaimReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	r.mgr = mgr
 	return mcbuilder.ControllerManagedBy(mgr).
-		For(&networkingv1alpha.SubnetClaim{},
-			mcbuilder.WithPredicates(
-				predicate.NewPredicateFuncs(func(object client.Object) bool {
-					// Don't bother processing deployments that have been scheduled
-					o := object.(*networkingv1alpha.SubnetClaim)
-					return o.Status.SubnetRef == nil
-				}),
-			),
-			mcbuilder.WithEngageWithLocalCluster(false),
-		).
-		// TODO(jreese) change when we don't have claims 1:1 with subnets
+		For(&networkingv1alpha.SubnetClaim{}, mcbuilder.WithEngageWithLocalCluster(false)).
 		Watches(&networkingv1alpha.Subnet{}, mchandler.EnqueueRequestForObject).
 		Named("subnetclaim").
 		Complete(r)

@@ -38,15 +38,15 @@ type LocationSpec struct {
 }
 
 type LocationProvider struct {
+	// AWS provider settings
+	AWS *AWSLocationProvider `json:"aws,omitempty"`
+
+	// GCP provider settings
 	GCP *GCPLocationProvider `json:"gcp,omitempty"`
 }
 
 type GCPLocationProvider struct {
 	// The GCP project servicing the location
-	//
-	// For locations with the class of `datum-managed`, a service account will be
-	// required for each unique GCP project ID across all locations registered in a
-	// namespace.
 	//
 	// +kubebuilder:validation:Required
 	ProjectID string `json:"projectId,omitempty"`
@@ -57,6 +57,27 @@ type GCPLocationProvider struct {
 	Region string `json:"region,omitempty"`
 
 	// The GCP zone servicing the location
+	//
+	// +kubebuilder:validation:Required
+	Zone string `json:"zone,omitempty"`
+}
+
+type AWSLocationProvider struct {
+	// AWS IAM role ARN
+	//
+	// Datum will assume this role to perform actions required for resources
+	// associated with the location.
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Pattern=`^arn:aws:iam::\d{12}:role/[a-zA-Z0-9+=,.@_/-]{1,576}$`
+	RoleARN string `json:"roleArn,omitempty"`
+
+	// The AWS region servicing the location
+	//
+	// +kubebuilder:validation:Required
+	Region string `json:"region,omitempty"`
+
+	// The AWS zone servicing the location
 	//
 	// +kubebuilder:validation:Required
 	Zone string `json:"zone,omitempty"`
@@ -77,6 +98,8 @@ type LocationStatus struct {
 // +kubebuilder:printcolumn:name="Reason",type="string",JSONPath=`.status.conditions[?(@.type==\"Ready\")].reason`
 
 // Location is the Schema for the locations API.
+// +kubebuilder:printcolumn:name="Class",type="string",JSONPath=`.spec.locationClassName`
+// +kubebuilder:printcolumn:name="CityCode",type="string",JSONPath=`.spec.topology.topology\.datum\.net/city-code`
 type Location struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

@@ -10,10 +10,9 @@ spec:
     rules:  
     - alert: GatewayNotReadySLOViolation
       expr: |
-        (time() - datum_cloud_networking_gateway_created) > 60
-        unless ignoring(type) (
-          (datum_cloud_networking_gateway_status{type="Accepted"} == 1) and 
-          (datum_cloud_networking_gateway_status{type="Programmed"} == 1)
+        sum(time() - datum_cloud_networking_gateway_created) by (infrastructure_namespace, resource_namespace, resource_name) > 60
+        unless (
+          sum(datum_cloud_networking_gateway_status{type=~"Accepted|Programmed"} == 1) by (infrastructure_namespace, resource_namespace, resource_name) == 2
         )
       for: 0s
       labels:
@@ -26,14 +25,17 @@ spec:
     - alert: GatewayDegradedSLOViolation
       expr: |
         (
-          (time() - datum_cloud_networking_gateway_status_condition_last_transition_time{type="Accepted", status="False"}) > 60
-        ) or (
-          (time() - datum_cloud_networking_gateway_status_condition_last_transition_time{type="Programmed", status="False"}) > 60
+          sum(time() - datum_cloud_networking_gateway_status_condition_last_transition_time{type=~"Accepted|Programmed", status="False"}) 
+          by (infrastructure_namespace, resource_namespace, resource_name)
+        ) > 60
+        and (
+          sum(datum_cloud_networking_gateway_status{type=~"Accepted|Programmed"} == 1) 
+          by (infrastructure_namespace, resource_namespace, resource_name) < 2
         )
       for: 0s
       labels:
         severity: critical
         slo_violation: "true"
       annotations:
-        summary: "Gateway {{ $labels.name }} has been degraded for over 60 seconds"
-        description: "Gateway {{ $labels.name }} in namespace {{ $labels.namespace }} has been in a degraded state (Accepted=False or Programmed=False) for {{ $value }} seconds without recovering, which exceeds the 60-second SLO threshold."
+        summary: "Gateway {{ $labels.resource_name }} has been degraded for over 60 seconds"
+        description: "Gateway {{ $labels.resource_name }} in namespace {{ $labels.resource_namespace }} has been in a degraded state for over 60 seconds without recovering, which exceeds the 60-second SLO threshold."

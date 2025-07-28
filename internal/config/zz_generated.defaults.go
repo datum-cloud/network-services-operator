@@ -6,6 +6,8 @@
 package config
 
 import (
+	json "encoding/json"
+
 	runtime "k8s.io/apimachinery/pkg/runtime"
 )
 
@@ -22,5 +24,23 @@ func SetObjectDefaults_NetworkServicesOperator(in *NetworkServicesOperator) {
 	SetDefaults_TLSConfig(&in.MetricsServer.TLS)
 	SetDefaults_TLSConfig(&in.WebhookServer.TLS)
 	SetDefaults_GatewayConfig(&in.Gateway)
+	if in.Gateway.ValidPortNumbers == nil {
+		if err := json.Unmarshal([]byte(`[80,443]`), &in.Gateway.ValidPortNumbers); err != nil {
+			panic(err)
+		}
+	}
+	if in.Gateway.ValidProtocolTypes == nil {
+		if err := json.Unmarshal([]byte(`{"80": ["HTTP"], "443": ["HTTPS"]}`), &in.Gateway.ValidProtocolTypes); err != nil {
+			panic(err)
+		}
+	}
+	if in.HTTPProxy.GatewayClassName == "" {
+		in.HTTPProxy.GatewayClassName = "datum-external-global-proxy"
+	}
+	if in.HTTPProxy.GatewayTLSOptions == nil {
+		if err := json.Unmarshal([]byte(`{"gateway.networking.datumapis.com/certificate-issuer": "auto"}`), &in.HTTPProxy.GatewayTLSOptions); err != nil {
+			panic(err)
+		}
+	}
 	SetDefaults_DiscoveryConfig(&in.Discovery)
 }

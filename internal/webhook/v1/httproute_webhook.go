@@ -6,7 +6,6 @@ import (
 	"context"
 	"fmt"
 
-	"go.datum.net/network-services-operator/internal/validation"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -15,6 +14,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 	gatewaynetworkingk8siov1 "sigs.k8s.io/gateway-api/apis/v1"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
+
+	"go.datum.net/network-services-operator/internal/validation"
 )
 
 // nolint:unused
@@ -54,8 +55,6 @@ func (v *HTTPRouteCustomValidator) ValidateCreate(ctx context.Context, obj runti
 		return nil, errors.NewInvalid(obj.GetObjectKind().GroupVersionKind().GroupKind(), httproute.GetName(), errs)
 	}
 
-	// TODO(user): fill in your validation logic upon object creation.
-
 	return nil, nil
 }
 
@@ -70,8 +69,6 @@ func (v *HTTPRouteCustomValidator) ValidateUpdate(ctx context.Context, oldObj, n
 	if errs := validation.ValidateHTTPRoute(httproute); len(errs) > 0 {
 		return nil, errors.NewInvalid(oldObj.GetObjectKind().GroupVersionKind().GroupKind(), httproute.GetName(), errs)
 	}
-
-	// TODO(user): fill in your validation logic upon object update.
 
 	return nil, nil
 }

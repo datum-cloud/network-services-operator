@@ -3,6 +3,7 @@ package validation
 import (
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/validation/field"
+	"k8s.io/utils/ptr"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 )
 
@@ -32,24 +33,19 @@ func validateParentRefs(route *gatewayv1.HTTPRoute, fldPath *field.Path) field.E
 func validateParentRef(route *gatewayv1.HTTPRoute, parentRef gatewayv1.ParentReference, fldPath *field.Path) field.ErrorList {
 	allErrs := field.ErrorList{}
 
-	// Only allow Group to be nil, or "gateway.networking.k8s.io"
-	if parentRef.Group != nil && *parentRef.Group != "gateway.networking.k8s.io" {
+	// Only allow Group to be "gateway.networking.k8s.io"
+	if ptr.Deref(parentRef.Group, gatewayv1.GroupName) != gatewayv1.GroupName {
 		allErrs = append(allErrs, field.Invalid(fldPath.Child("group"), parentRef.Group, `group must be unspecified or equal "gateway.networking.k8s.io"`))
 	}
 
 	// Only allow Kind to be "Gateway"
-	if parentRef.Kind != nil && *parentRef.Kind != "Gateway" {
+	if ptr.Deref(parentRef.Kind, "Gateway") != "Gateway" {
 		allErrs = append(allErrs, field.Invalid(fldPath.Child("kind"), parentRef.Kind, `kind must unspecified or equal "Gateway"`))
 	}
 
 	// Only allow Namespace to be nil, or the same as the HTTPRoute's namespace
-	if parentRef.Namespace != nil && *parentRef.Namespace != gatewayv1.Namespace(route.Namespace) {
+	if ptr.Deref(parentRef.Namespace, gatewayv1.Namespace(route.Namespace)) != gatewayv1.Namespace(route.Namespace) {
 		allErrs = append(allErrs, field.Invalid(fldPath.Child("namespace"), parentRef.Namespace, "namespace must be unspecified or the same as the HTTPRoute's namespace"))
-	}
-
-	// Do not allow SectionName to be set
-	if parentRef.SectionName != nil {
-		allErrs = append(allErrs, field.Forbidden(fldPath.Child("sectionName"), "sectionName is not permitted"))
 	}
 
 	// Do not allow Port to be set
@@ -84,30 +80,35 @@ func validateHTTPRouteRules(route *gatewayv1.HTTPRoute, fldPath *field.Path) fie
 func validateHTTPRouteRule(route *gatewayv1.HTTPRoute, rule gatewayv1.HTTPRouteRule, fldPath *field.Path) field.ErrorList {
 	allErrs := field.ErrorList{}
 
-	allErrs = append(allErrs, validateHTTPRouteFilters(rule.Filters, fldPath.Child("filters"))...)
+	allErrs = append(allErrs, validateFilters(rule.Filters, supportedHTTPRouteRuleFilters, fldPath.Child("filters"))...)
 	allErrs = append(allErrs, validateHTTPRouteRuleBackendRefs(route, rule, fldPath.Child("backendRefs"))...)
 
 	return allErrs
 }
 
-var supportedFilters = sets.New(
+var supportedHTTPRouteRuleFilters = sets.New(
 	gatewayv1.HTTPRouteFilterRequestHeaderModifier,
 	gatewayv1.HTTPRouteFilterResponseHeaderModifier,
 	gatewayv1.HTTPRouteFilterRequestRedirect,
 	gatewayv1.HTTPRouteFilterURLRewrite,
 )
 
-func validateHTTPRouteFilters(filters []gatewayv1.HTTPRouteFilter, fldPath *field.Path) field.ErrorList {
+var supportedHTTPBackendRefFilters = sets.New(
+	gatewayv1.HTTPRouteFilterRequestHeaderModifier,
+	gatewayv1.HTTPRouteFilterResponseHeaderModifier,
+)
+
+func validateFilters(filters []gatewayv1.HTTPRouteFilter, supportedFilters sets.Set[gatewayv1.HTTPRouteFilterType], fldPath *field.Path) field.ErrorList {
 	allErrs := field.ErrorList{}
 
 	for i, filter := range filters {
-		allErrs = append(allErrs, validateHTTPRouteFilter(filter, fldPath.Index(i))...)
+		allErrs = append(allErrs, validateHTTPRouteFilter(filter, supportedFilters, fldPath.Index(i))...)
 	}
 
 	return allErrs
 }
 
-func validateHTTPRouteFilter(filter gatewayv1.HTTPRouteFilter, fldPath *field.Path) field.ErrorList {
+func validateHTTPRouteFilter(filter gatewayv1.HTTPRouteFilter, supportedFilters sets.Set[gatewayv1.HTTPRouteFilterType], fldPath *field.Path) field.ErrorList {
 	allErrs := field.ErrorList{}
 	if !supportedFilters.Has(filter.Type) {
 		allErrs = append(allErrs, field.NotSupported(fldPath.Child("type"), filter.Type, sets.List(supportedFilters)))
@@ -136,7 +137,7 @@ func validateHTTPBackendRef(route *gatewayv1.HTTPRoute, backendRef gatewayv1.HTT
 	// Do I need to validate the name?
 
 	allErrs = append(allErrs, validateBackendObjectReference(route, backendRef.BackendObjectReference, fldPath)...)
-	allErrs = append(allErrs, validateHTTPRouteFilters(backendRef.Filters, fldPath.Child("filters"))...)
+	allErrs = append(allErrs, validateFilters(backendRef.Filters, supportedHTTPBackendRefFilters, fldPath.Child("filters"))...)
 	return allErrs
 }
 

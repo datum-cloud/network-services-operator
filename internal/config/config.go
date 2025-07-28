@@ -21,8 +21,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
-	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	multiclusterproviders "go.miloapis.com/milo/pkg/multicluster-runtime"
+
+	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 )
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
@@ -36,6 +37,8 @@ type NetworkServicesOperator struct {
 	WebhookServer WebhookServerConfig `json:"webhookServer"`
 
 	Gateway GatewayConfig `json:"gateway"`
+
+	HTTPProxy HTTPProxyConfig `json:"httpProxy"`
 
 	Discovery DiscoveryConfig `json:"discovery"`
 
@@ -271,19 +274,33 @@ type GatewayConfig struct {
 	// ValidPortNumbers is a list of port numbers that are permitted on gateway
 	// listeners.
 	//
-	// Defaults to [80, 443]
+	// +default=[80,443]
 	ValidPortNumbers []int `json:"validPortNumbers,omitempty"`
 
 	// ValidProtocolTypes is a list of protocol types that are permitted on
 	// gateway listeners.
 	//
-	// Defaults to [HTTP, HTTPS]
-	ValidProtocolTypes []gatewayv1.ProtocolType `json:"validProtocolTypes,omitempty"`
+	// +default={"80": ["HTTP"], "443": ["HTTPS"]}
+	ValidProtocolTypes map[int][]gatewayv1.ProtocolType `json:"validProtocolTypes,omitempty"`
 
 	// CustomHostnameAllowList is a list of allowed hostname suffixes for specific
 	// clusters. Hostnames on gateways in a cluster must be a subdomain of one of
 	// the suffixes in this list for that cluster.
 	CustomHostnameAllowList []CustomHostnameAllowListEntry `json:"customHostnameAllowList,omitempty"`
+}
+
+// +k8s:deepcopy-gen=true
+
+type HTTPProxyConfig struct {
+	// GatewayClassName specifies which GatewayClass to use when programming the
+	// underlying Gateway for an HTTPProxy.
+	// +default="datum-external-global-proxy"
+	GatewayClassName gatewayv1.ObjectName `json:"gatewayClassName"`
+
+	// GatewayTLSOptions specifies the TLS options to program on the underlying
+	// Gateway for an HTTPProxy.
+	// +default={"gateway.networking.datumapis.com/certificate-issuer": "auto"}
+	GatewayTLSOptions map[gatewayv1.AnnotationKey]gatewayv1.AnnotationValue `json:"tlsOptions"`
 }
 
 // +k8s:deepcopy-gen=true
@@ -305,17 +322,6 @@ func SetDefaults_GatewayConfig(obj *GatewayConfig) {
 		obj.IPFamilies = []networkingv1alpha.IPFamily{
 			networkingv1alpha.IPv4Protocol,
 			networkingv1alpha.IPv6Protocol,
-		}
-	}
-
-	if len(obj.ValidPortNumbers) == 0 {
-		obj.ValidPortNumbers = []int{80, 443}
-	}
-
-	if len(obj.ValidProtocolTypes) == 0 {
-		obj.ValidProtocolTypes = []gatewayv1.ProtocolType{
-			gatewayv1.HTTPProtocolType,
-			gatewayv1.HTTPSProtocolType,
 		}
 	}
 }

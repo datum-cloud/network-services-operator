@@ -43,4 +43,21 @@ func SetObjectDefaults_NetworkServicesOperator(in *NetworkServicesOperator) {
 		}
 	}
 	SetDefaults_DiscoveryConfig(&in.Discovery)
+	if in.DomainVerification.RetryIntervals == nil {
+		if err := json.Unmarshal([]byte(`[{"interval": "5s", "maxElapsed": "5m"}, {"interval": "1m", "maxElapsed": "15m"}, {"interval": "5m"}]`), &in.DomainVerification.RetryIntervals); err != nil {
+			panic(err)
+		}
+	}
+	if in.DomainVerification.RetryJitterMaxFactor == 0 {
+		in.DomainVerification.RetryJitterMaxFactor = 0.25
+	}
+	if in.DomainVerification.MaxConcurrentVerifications == 0 {
+		in.DomainVerification.MaxConcurrentVerifications = 20
+	}
+	if in.DomainVerification.DNSVerificationRecordPrefix == "" {
+		in.DomainVerification.DNSVerificationRecordPrefix = "_datum-custom-hostname"
+	}
+	if in.DomainVerification.HTTPVerificationTokenPath == "" {
+		in.DomainVerification.HTTPVerificationTokenPath = ".well-known/datum-custom-hostname-challenge"
+	}
 }

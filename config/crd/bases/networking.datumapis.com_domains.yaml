@@ -16,28 +16,17 @@ spec:
   versions:
   - additionalPrinterColumns:
     - jsonPath: .spec.domainName
-      name: Domain
+      name: Domain Name
       type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
-    - jsonPath: .status.conditions[?(@.type=="Ready")].status
-      name: Ready
+    - jsonPath: .status.conditions[?(@.type=="Verified")].status
+      name: Verified
       type: string
-    - jsonPath: .status.conditions[?(@.type=="Ready")].reason
-      name: Reason
-      type: string
-    - jsonPath: .status.registrar.ianaName
-      name: Registrar
-      type: string
-    - jsonPath: .status.registrar.dnssec.signed
-      name: DNSSEC
-      type: boolean
-    - jsonPath: .status.registrar.expirationDate
-      name: Expires
-      type: date
-    - jsonPath: .status.verification.requiredDNSRecords[0].content
-      name: DNS-Verify
+    - jsonPath: .status.conditions[?(@.type=="Verified")].message
+      name: Verification Message
+      priority: 1
       type: string
     name: v1alpha
     schema:
@@ -71,10 +60,33 @@ spec:
                 minLength: 1
                 pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
                 type: string
+                x-kubernetes-validations:
+                - message: A domain name is immutable and cannot be changed after
+                    creation
+                  rule: oldSelf == '' || self == oldSelf
+                - message: Must have at least two segments separated by dots
+                  rule: self.indexOf('.') != -1
             required:
             - domainName
             type: object
           status:
+            default:
+              conditions:
+              - lastTransitionTime: "1970-01-01T00:00:00Z"
+                message: Waiting for controller
+                reason: Pending
+                status: Unknown
+                type: Verified
+              - lastTransitionTime: "1970-01-01T00:00:00Z"
+                message: Waiting for controller
+                reason: Pending
+                status: Unknown
+                type: VerifiedDNS
+              - lastTransitionTime: "1970-01-01T00:00:00Z"
+                message: Waiting for controller
+                reason: Pending
+                status: Unknown
+                type: VerifiedHTTP
             description: DomainStatus defines the observed state of Domain
             properties:
               conditions:
@@ -172,25 +184,38 @@ spec:
                 description: DomainVerificationStatus represents the verification
                   status of a domain
                 properties:
-                  requiredDNSRecords:
-                    items:
-                      description: DNSVerificationExpectedRecord represents a DNS
-                        record required for verification
-                      properties:
-                        content:
-                          type: string
-                        name:
-                          type: string
-                        type:
-                          type: string
-                      required:
-                      - content
-                      - name
-                      - type
-                      type: object
-                    type: array
+                  dnsRecord:
+                    description: DNSVerificationRecord represents a DNS record required
+                      for verification
+                    properties:
+                      content:
+                        type: string
+                      name:
+                        type: string
+                      type:
+                        type: string
+                    required:
+                    - content
+                    - name
+                    - type
+                    type: object
+                  httpToken:
+                    properties:
+                      body:
+                        type: string
+                      url:
+                        type: string
+                    required:
+                    - body
+                    - url
+                    type: object
+                  nextVerificationAttempt:
+                    format: date-time
+                    type: string
                 type: object
             type: object
+        required:
+        - spec
         type: object
     served: true
     storage: true

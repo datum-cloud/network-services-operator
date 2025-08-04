@@ -1,0 +1,16 @@
+apiVersion: iam.miloapis.com/v1alpha1
+kind: Role
+metadata:
+  name: networking.datumapis.com-domain-admin
+  annotations:
+    kubernetes.io/display-name: Domain Admin
+    kubernetes.io/description: "Full access to domain resources"
+spec:
+  launchStage: Beta
+  inheritedRoles:
+    - name: networking.datumapis.com-domain-viewer
+  includedPermissions:
+    - networking.datumapis.com/domains.create
+    - networking.datumapis.com/domains.update
+    - networking.datumapis.com/domains.patch
+    - networking.datumapis.com/domains.delete

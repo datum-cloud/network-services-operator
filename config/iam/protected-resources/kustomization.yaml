@@ -18,3 +18,4 @@ resources:
   - networks.yaml
   - subnetclaims.yaml
   - subnets.yaml
+  - domains.yaml

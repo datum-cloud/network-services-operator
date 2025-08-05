@@ -17,6 +17,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
+	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	downstreamclient "go.datum.net/network-services-operator/internal/downstreamclient"
 )
 
@@ -25,6 +26,7 @@ func TestEnsureDownstreamGateway(t *testing.T) {
 	assert.NoError(t, scheme.AddToScheme(testScheme))
 	assert.NoError(t, gatewayv1.Install(testScheme))
 	assert.NoError(t, discoveryv1.AddToScheme(testScheme))
+	assert.NoError(t, networkingv1alpha.AddToScheme(testScheme))
 
 	upstreamNamespace := &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{

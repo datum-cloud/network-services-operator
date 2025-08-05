@@ -51,6 +51,64 @@ spec:
           spec:
             description: Spec defines the desired state of an HTTPProxy.
             properties:
+              hostnames:
+                description: |-
+                  Hostnames defines a set of hostnames that should match against the HTTP
+                  Host header to select a HTTPProxy used to process the request.
+
+                  Valid values for Hostnames are determined by RFC 1123 definition of a
+                  hostname with 1 notable exception:
+
+                  1. IPs are not allowed.
+
+                  Hostnames must be verified before being programmed. This is accomplished
+                  via the use of `Domain` resources. A hostname is considered verified if any
+                  verified `Domain` resource exists in the same namespace where the
+                  `spec.domainName` of the resource either exactly matches the hostname, or
+                  is a suffix match of the hostname. That means that a Domain with a
+                  `spec.domainName` of `example.com` will match a hostname of
+                  `test.example.com`, `foo.test.example.com`, and exactly `example.com`, but
+                  not a hostname of `test-example.com`. If a `Domain` resource does not exist
+                  that matches a hostname, one will automatically be created when the system
+                  attempts to program the HTTPProxy.
+
+                  In addition to verifying ownership, hostnames must be unique across the
+                  platform. If a hostname is already programmed on another resource, a
+                  conflict will be encountered and communicated in the `HostnamesReady`
+                  condition.
+
+                  Hostnames which have been programmed will be listed in the
+                  `status.hostnames` field. Any hostname which has not been programmed will
+                  be listed in the `message` field of the `HostnamesReady` condition with
+                  an indication as to why it was not programmed.
+
+                  The system may automatically generate and associate hostnames with the
+                  HTTPProxy. In such cases, these will be listed in the `status.hostnames`
+                  field and do not require additional configuration by the user.
+
+                  Wildcard hostnames are not supported at this time.
+                items:
+                  description: |-
+                    Hostname is the fully qualified domain name of a network host. This matches
+                    the RFC 1123 definition of a hostname with 2 notable exceptions:
+
+                     1. IPs are not allowed.
+                     2. A hostname may be prefixed with a wildcard label (`*.`). The wildcard
+                        label must appear by itself as the first label.
+
+                    Hostname can be "precise" which is a domain name without the terminating
+                    dot of a network host (e.g. "foo.example.com") or "wildcard", which is a
+                    domain name prefixed with a single wildcard label (e.g. `*.example.com`).
+
+                    Note that as per RFC1035 and RFC1123, a *label* must consist of lower case
+                    alphanumeric characters or '-', and must start and end with an alphanumeric
+                    character. No other punctuation is allowed.
+                  maxLength: 253
+                  minLength: 1
+                  pattern: ^(\*\.)?[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                  type: string
+                maxItems: 16
+                type: array
               rules:
                 description: Rules are a list of HTTP matchers, filters and actions.
                 items:
@@ -2136,7 +2194,7 @@ spec:
                   Hostnames lists the hostnames that have been bound to the HTTPProxy.
 
                   If this list does not match that defined in the HTTPProxy, see the
-                  `Programmed` condition message for details.
+                  `HostnamesReady` condition message for details.
                 items:
                   description: |-
                     Hostname is the fully qualified domain name of a network host. This matches

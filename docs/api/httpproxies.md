@@ -95,6 +95,46 @@ Spec defines the desired state of an HTTPProxy.
             <i>Validations</i>:<li>self.all(l1, !has(l1.name) || self.exists_one(l2, has(l2.name) && l1.name == l2.name)): Rule name must be unique within the route</li><li>(self.size() > 0 ? self[0].matches.size() : 0) + (self.size() > 1 ? self[1].matches.size() : 0) + (self.size() > 2 ? self[2].matches.size() : 0) + (self.size() > 3 ? self[3].matches.size() : 0) + (self.size() > 4 ? self[4].matches.size() : 0) + (self.size() > 5 ? self[5].matches.size() : 0) + (self.size() > 6 ? self[6].matches.size() : 0) + (self.size() > 7 ? self[7].matches.size() : 0) + (self.size() > 8 ? self[8].matches.size() : 0) + (self.size() > 9 ? self[9].matches.size() : 0) + (self.size() > 10 ? self[10].matches.size() : 0) + (self.size() > 11 ? self[11].matches.size() : 0) + (self.size() > 12 ? self[12].matches.size() : 0) + (self.size() > 13 ? self[13].matches.size() : 0) + (self.size() > 14 ? self[14].matches.size() : 0) + (self.size() > 15 ? self[15].matches.size() : 0) <= 128: While 16 rules and 64 matches per rule are allowed, the total number of matches across all rules in a route must be less than 128</li>
         </td>
         <td>true</td>
+      </tr><tr>
+        <td><b>hostnames</b></td>
+        <td>[]string</td>
+        <td>
+          Hostnames defines a set of hostnames that should match against the HTTP
+Host header to select a HTTPProxy used to process the request.
+
+Valid values for Hostnames are determined by RFC 1123 definition of a
+hostname with 1 notable exception:
+
+1. IPs are not allowed.
+
+Hostnames must be verified before being programmed. This is accomplished
+via the use of `Domain` resources. A hostname is considered verified if any
+verified `Domain` resource exists in the same namespace where the
+`spec.domainName` of the resource either exactly matches the hostname, or
+is a suffix match of the hostname. That means that a Domain with a
+`spec.domainName` of `example.com` will match a hostname of
+`test.example.com`, `foo.test.example.com`, and exactly `example.com`, but
+not a hostname of `test-example.com`. If a `Domain` resource does not exist
+that matches a hostname, one will automatically be created when the system
+attempts to program the HTTPProxy.
+
+In addition to verifying ownership, hostnames must be unique across the
+platform. If a hostname is already programmed on another resource, a
+conflict will be encountered and communicated in the `HostnamesReady`
+condition.
+
+Hostnames which have been programmed will be listed in the
+`status.hostnames` field. Any hostname which has not been programmed will
+be listed in the `message` field of the `HostnamesReady` condition with
+an indication as to why it was not programmed.
+
+The system may automatically generate and associate hostnames with the
+HTTPProxy. In such cases, these will be listed in the `status.hostnames`
+field and do not require additional configuration by the user.
+
+Wildcard hostnames are not supported at this time.<br/>
+        </td>
+        <td>false</td>
       </tr></tbody>
 </table>
 
@@ -2672,7 +2712,7 @@ the `hostnames` field<br/>
           Hostnames lists the hostnames that have been bound to the HTTPProxy.
 
 If this list does not match that defined in the HTTPProxy, see the
-`Programmed` condition message for details.<br/>
+`HostnamesReady` condition message for details.<br/>
         </td>
         <td>false</td>
       </tr></tbody>

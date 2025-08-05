@@ -5,6 +5,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -35,6 +37,7 @@ import (
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 	mcsource "sigs.k8s.io/multicluster-runtime/pkg/source"
 
+	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	"go.datum.net/network-services-operator/internal/config"
 	downstreamclient "go.datum.net/network-services-operator/internal/downstreamclient"
 	"go.datum.net/network-services-operator/internal/util/resourcename"
@@ -195,6 +198,12 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 		ObjectMeta: downstreamGatewayObjectMeta,
 	}
 
+	verifiedHostnames, err := r.ensureHostnameVerification(ctx, upstreamClient, upstreamGateway)
+	if err != nil {
+		result.Err = err
+		return result, nil
+	}
+
 	gatewayResult, err := controllerutil.CreateOrUpdate(ctx, downstreamClient, downstreamGateway, func() error {
 		if err := downstreamStrategy.SetControllerReference(ctx, upstreamGateway, downstreamGateway); err != nil {
 			return fmt.Errorf("failed to set controller reference on downstream gateway: %w", err)
@@ -206,7 +215,7 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 		var listeners []gatewayv1.Listener
 		foundHTTPListener := false
 		foundHTTPSListener := false
-		for _, l := range upstreamGateway.Spec.Listeners {
+		for listenerIndex, l := range upstreamGateway.Spec.Listeners {
 			switch l.Protocol {
 			case gatewayv1.HTTPProtocolType:
 				foundHTTPListener = true
@@ -224,10 +233,14 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 					}
 					downstreamGateway.Annotations["cert-manager.io/cluster-issuer"] = clusterIssuerName
 				}
-
 			}
 
+			// Add custom hostnames if they are verified
 			if l.Hostname != nil {
+				if !slices.Contains(verifiedHostnames, string(*l.Hostname)) {
+					logger.Info("skipping downstream gateway listener with unverified hostname", "upstream_listener_index", listenerIndex, "hostname", *l.Hostname)
+					continue
+				}
 				listenerCopy := l.DeepCopy()
 				if l.TLS != nil && l.TLS.Options[certificateIssuerTLSOption] != "" {
 					// Translate upstream TLS settings to downstream TLS settings
@@ -365,6 +378,7 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 		upstreamGatewayClassControllerName,
 		downstreamGateway,
 		downstreamStrategy,
+		verifiedHostnames,
 	)
 
 	addresses := make([]gatewayv1.GatewayStatusAddress, 0, len(addressHostnames))
@@ -383,6 +397,98 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 	}
 
 	return httpRouteResult.Merge(result), downstreamGateway
+}
+
+// isHostnameVerified returns hostnames found on listeners that are verified. A
+// hostname is considered verified if any verified Domain is found in the same
+// namespace with a `spec.domainName` value that matches the hostname exactly,
+// or the hostname is a sub domain. If no matching Domain is found, one will be
+// created.
+func (r *GatewayReconciler) ensureHostnameVerification(
+	ctx context.Context,
+	upstreamClient client.Client,
+	upstreamGateway *gatewayv1.Gateway,
+) ([]string, error) {
+	logger := log.FromContext(ctx)
+
+	// TODO(jreese) Allow hostnames which have been successfully configured on
+	// the gateway stay on the gateway, regardless of whether or not there is
+	// a matching Domain that's verified.
+
+	// TODO(jreese) add accounting control plane. Use configmaps to track
+	// hostnames?
+
+	// Get a unique set of hostnames
+	hostnames := sets.New[string]()
+	for _, l := range upstreamGateway.Spec.Listeners {
+		if l.Hostname != nil {
+			hostnames.Insert(string(*l.Hostname))
+		}
+	}
+
+	// List all Domains in the same namespace as the upstream gateway. A field
+	// selector will not work here, as set based operations are not supported, and
+	// there's not way to check for a suffix match.
+
+	var domainList networkingv1alpha.DomainList
+	if err := upstreamClient.List(ctx, &domainList, client.InNamespace(upstreamGateway.Namespace)); err != nil {
+		return nil, fmt.Errorf("failed listing domains: %w", err)
+	}
+
+	var verifiedHostnames []string
+	domainsToCreate := sets.New[string]()
+
+	for _, hostname := range hostnames.UnsortedList() {
+		foundMatchingDomain := false
+		for _, domain := range domainList.Items {
+			if hostname == domain.Spec.DomainName || strings.HasSuffix(hostname, "."+domain.Spec.DomainName) {
+				foundMatchingDomain = true
+				if !apimeta.IsStatusConditionTrue(domain.Status.Conditions, networkingv1alpha.DomainConditionVerified) {
+					logger.Info("domain is not verified", "domain", domain.Name)
+					continue
+				}
+				verifiedHostnames = append(verifiedHostnames, hostname)
+				break
+			}
+		}
+
+		if !foundMatchingDomain {
+			parts := strings.Split(hostname, ".")
+			if len(parts) < 2 {
+				logger.Info("malformed hostname, expected at least two parts", "hostname", hostname)
+				continue
+			}
+
+			domainsToCreate.Insert(strings.Join(parts[len(parts)-2:], "."))
+		}
+	}
+
+	if len(domainsToCreate) > 0 {
+		logger.Info("creating domain records for hostnames with no matching domain", "domains", domainsToCreate)
+
+		// Create a Domain resource with the same name as the value that will be
+		// placed in spec.domainName. This is done to avoid duplication upon cache
+		// sync delays. AlreadyExists errors will be ignored.
+		for _, domainName := range domainsToCreate.UnsortedList() {
+			domain := &networkingv1alpha.Domain{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: upstreamGateway.Namespace,
+					Name:      domainName,
+				},
+				Spec: networkingv1alpha.DomainSpec{
+					DomainName: domainName,
+				},
+			}
+
+			if err := upstreamClient.Create(ctx, domain); client.IgnoreAlreadyExists(err) != nil {
+				return nil, fmt.Errorf("failed creating domain: %w", err)
+			}
+
+			logger.Info("domain created", "domain", domain.Name)
+		}
+	}
+
+	return verifiedHostnames, nil
 }
 
 func (r *GatewayReconciler) ensureDownstreamGatewayDNSEndpoints(
@@ -577,6 +683,7 @@ func (r *GatewayReconciler) ensureDownstreamGatewayHTTPRoutes(
 	upstreamGatewayClassControllerName string,
 	downstreamGateway *gatewayv1.Gateway,
 	downstreamStrategy downstreamclient.ResourceStrategy,
+	verifiedHostnames []string,
 ) (result Result) {
 	logger := log.FromContext(ctx)
 
@@ -689,24 +796,36 @@ func (r *GatewayReconciler) ensureDownstreamGatewayHTTPRoutes(
 
 		status.AttachedRoutes = attachedRouteCount[listener.Name]
 
-		// Add Accepted, Programmed ResolvedRefs conditions
-		// See: https://gateway-api.sigs.k8s.io/guides/implementers/#standard-status-fields-and-conditions
-		apimeta.SetStatusCondition(&status.Conditions, metav1.Condition{
+		acceptedCondition := metav1.Condition{
 			Type:               string(gatewayv1.ListenerConditionAccepted),
 			Status:             metav1.ConditionTrue,
 			Reason:             "Accepted",
 			Message:            "The listener has been accepted by the Datum Gateway",
 			ObservedGeneration: upstreamGateway.Generation,
-		})
+		}
 
-		// TODO(jreese) update this based on the downstream gateway's status
-		apimeta.SetStatusCondition(&status.Conditions, metav1.Condition{
+		programmedCondition := metav1.Condition{
 			Type:               string(gatewayv1.ListenerConditionProgrammed),
 			Status:             metav1.ConditionTrue,
 			Reason:             "Programmed",
 			Message:            "The listener has been programmed by the Datum Gateway",
 			ObservedGeneration: upstreamGateway.Generation,
-		})
+		}
+
+		if listener.Hostname != nil && !slices.Contains(verifiedHostnames, string(*listener.Hostname)) {
+			acceptedCondition.Status = metav1.ConditionFalse
+			acceptedCondition.Reason = "UnverifiedHostname"
+			acceptedCondition.Message = "The hostname defined on the listener has not been verified. Check status of Domains in the same namespace."
+
+			programmedCondition.Status = metav1.ConditionFalse
+			programmedCondition.Reason = acceptedCondition.Reason
+			programmedCondition.Message = acceptedCondition.Message
+		}
+
+		apimeta.SetStatusCondition(&status.Conditions, acceptedCondition)
+
+		// TODO(jreese) update this based on the downstream gateway's status
+		apimeta.SetStatusCondition(&status.Conditions, programmedCondition)
 
 		apimeta.SetStatusCondition(&status.Conditions, metav1.Condition{
 			Type:               string(gatewayv1.ListenerConditionResolvedRefs),
@@ -1138,6 +1257,10 @@ func (r *GatewayReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 			&discoveryv1.EndpointSlice{},
 			r.listGatewaysForEndpointSliceFunc,
 		).
+		Watches(
+			&networkingv1alpha.Domain{},
+			r.listGatewaysForDomainFunc,
+		).
 		WatchesRawSource(clusterSrc).
 		Named("gateway").
 		Complete(r)
@@ -1226,6 +1349,48 @@ func (r *GatewayReconciler) listGatewaysForEndpointSliceFunc(clusterName string,
 							}
 						}
 					}
+				}
+			}
+		}
+
+		return requests
+	})
+}
+
+func (r *GatewayReconciler) listGatewaysForDomainFunc(clusterName string, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
+	return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []mcreconcile.Request {
+		domain := obj.(*networkingv1alpha.Domain)
+
+		// Only enqueue if the domain is verified
+		if !apimeta.IsStatusConditionTrue(domain.Status.Conditions, networkingv1alpha.DomainConditionVerified) {
+			return nil
+		}
+
+		logger := log.FromContext(ctx)
+
+		var gatewayList gatewayv1.GatewayList
+		if err := cl.GetClient().List(ctx, &gatewayList, client.InNamespace(domain.Namespace)); err != nil {
+			logger.Error(err, "failed to list Gateways")
+			return nil
+		}
+
+		var requests []mcreconcile.Request
+
+		for _, gateway := range gatewayList.Items {
+			for _, l := range gateway.Spec.Listeners {
+				if l.Hostname == nil {
+					continue
+				}
+				hostname := string(*l.Hostname)
+
+				if hostname == domain.Spec.DomainName || strings.HasSuffix(hostname, "."+domain.Spec.DomainName) {
+					requests = append(requests, mcreconcile.Request{
+						ClusterName: clusterName,
+						Request: reconcile.Request{
+							NamespacedName: client.ObjectKeyFromObject(&gateway),
+						},
+					})
+					continue
 				}
 			}
 		}

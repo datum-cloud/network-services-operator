@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -17,6 +18,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -28,6 +30,7 @@ import (
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	"go.datum.net/network-services-operator/internal/config"
+	conditionutil "go.datum.net/network-services-operator/internal/util/condition"
 )
 
 // HTTPProxyReconciler reconciles a HTTPProxy object
@@ -221,7 +224,27 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 		}
 	}
 
-	httpProxyCopy.Status.Hostnames = hostnames
+	acceptedHostnames := sets.New[gatewayv1.Hostname]()
+	nonAcceptedHostnames := sets.New[string]()
+	for _, hostname := range httpProxy.Spec.Hostnames {
+		for listenerIndex, listener := range gateway.Spec.Listeners {
+			if listener.Hostname == nil {
+				continue
+			}
+
+			listenerStatus := gateway.Status.Listeners[listenerIndex]
+
+			if apimeta.IsStatusConditionTrue(listenerStatus.Conditions, "Accepted") {
+				acceptedHostnames.Insert(hostname)
+			} else {
+				nonAcceptedHostnames.Insert(string(hostname))
+			}
+		}
+	}
+
+	acceptedHostnamesSlice := acceptedHostnames.UnsortedList()
+	slices.Sort(acceptedHostnamesSlice)
+	httpProxyCopy.Status.Hostnames = append(hostnames, acceptedHostnamesSlice...)
 
 	if c := apimeta.FindStatusCondition(gateway.Status.Conditions, string(gatewayv1.GatewayConditionAccepted)); c != nil {
 		logger.Info("gateway accepted status", "status", c.Status)
@@ -242,6 +265,30 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 		} else {
 			programmedCondition.Reason = c.Reason
 		}
+	}
+
+	if len(httpProxy.Spec.Hostnames) > 0 {
+		hostnamesReadyCondition := conditionutil.FindStatusConditionOrDefault(httpProxyCopy.Status.Conditions, &metav1.Condition{
+			Type:   networkingv1alpha.HTTPProxyConditionHostnamesReady,
+			Status: metav1.ConditionFalse,
+		})
+		hostnamesReadyCondition.ObservedGeneration = httpProxy.Generation
+
+		if nonAcceptedHostnames.Len() > 0 {
+			nonAcceptedHostnamesSlice := nonAcceptedHostnames.UnsortedList()
+			slices.Sort(nonAcceptedHostnamesSlice)
+			hostnamesReadyCondition.Status = metav1.ConditionFalse
+			hostnamesReadyCondition.Reason = networkingv1alpha.HTTPProxyReasonHostnameUnverifiedHostnamesPresent
+			hostnamesReadyCondition.Message = fmt.Sprintf("unverified hostnames present, check status of Domain records in namespace: %s", strings.Join(nonAcceptedHostnamesSlice, ","))
+		} else {
+			hostnamesReadyCondition.Status = metav1.ConditionTrue
+			hostnamesReadyCondition.Reason = networkingv1alpha.HTTPProxyReasonHostnamesAccepted
+			hostnamesReadyCondition.Message = "All hostnames have been accepted and programmed"
+		}
+
+		apimeta.SetStatusCondition(&httpProxyCopy.Status.Conditions, *hostnamesReadyCondition)
+	} else {
+		apimeta.RemoveStatusCondition(&httpProxyCopy.Status.Conditions, networkingv1alpha.HTTPProxyConditionHostnamesReady)
 	}
 
 	return ctrl.Result{}, nil
@@ -298,6 +345,37 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 				},
 			},
 		},
+	}
+
+	// Add listeners for each hostname
+	for i, hostname := range httpProxy.Spec.Hostnames {
+		gateway.Spec.Listeners = append(gateway.Spec.Listeners, gatewayv1.Listener{
+			Name:     gatewayv1.SectionName(fmt.Sprintf("%s-hostname-%d", SchemeHTTP, i)),
+			Protocol: gatewayv1.HTTPProtocolType,
+			Port:     DefaultHTTPPort,
+			Hostname: ptr.To(hostname),
+			AllowedRoutes: &gatewayv1.AllowedRoutes{
+				Namespaces: &gatewayv1.RouteNamespaces{
+					From: ptr.To(gatewayv1.NamespacesFromSame),
+				},
+			},
+		})
+
+		gateway.Spec.Listeners = append(gateway.Spec.Listeners, gatewayv1.Listener{
+			Name:     gatewayv1.SectionName(fmt.Sprintf("%s-hostname-%d", SchemeHTTPS, i)),
+			Protocol: gatewayv1.HTTPSProtocolType,
+			Port:     DefaultHTTPSPort,
+			Hostname: ptr.To(hostname),
+			AllowedRoutes: &gatewayv1.AllowedRoutes{
+				Namespaces: &gatewayv1.RouteNamespaces{
+					From: ptr.To(gatewayv1.NamespacesFromSame),
+				},
+			},
+			TLS: &gatewayv1.GatewayTLSConfig{
+				Mode:    ptr.To(gatewayv1.TLSModeTerminate),
+				Options: r.Config.HTTPProxy.GatewayTLSOptions,
+			},
+		})
 	}
 
 	httpRoute := &gatewayv1.HTTPRoute{

@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/url"
 
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
@@ -15,6 +16,18 @@ import (
 func ValidateHTTPProxy(httpProxy *networkingv1alpha.HTTPProxy) field.ErrorList {
 
 	allErrs := field.ErrorList{}
+
+	hostnamesPath := field.NewPath("spec", "hostnames")
+	hostnames := sets.New[gatewayv1.Hostname]()
+	for i, hostname := range httpProxy.Spec.Hostnames {
+		hostnamePath := hostnamesPath.Index(i).Child("hostname")
+		allErrs = append(allErrs, validation.IsFullyQualifiedDomainName(hostnamePath, string(hostname))...)
+		if hostnames.Has(hostname) {
+			allErrs = append(allErrs, field.Duplicate(hostnamePath, hostname))
+		} else {
+			hostnames.Insert(hostname)
+		}
+	}
 
 	for _, msg := range validation.IsDNS1123Label(httpProxy.Name) {
 		allErrs = append(allErrs, field.Invalid(field.NewPath("metadata", "name"), httpProxy.Name, msg))

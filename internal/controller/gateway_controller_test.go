@@ -351,6 +351,8 @@ func TestEnsureDownstreamGatewayHTTPRoutes(t *testing.T) {
 				"test",
 				downstreamGateway,
 				downstreamStrategy,
+				// TODO(jreese) add tests to cover custom hostnames
+				nil,
 			)
 			assert.NoError(t, result.Err, "failed ensuring downstream gateway HTTPRoutes")
 

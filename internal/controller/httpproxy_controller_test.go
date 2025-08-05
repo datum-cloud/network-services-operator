@@ -69,7 +69,7 @@ func TestHTTPProxyCollectDesiredResources(t *testing.T) {
 					if assert.Len(t, routeRule.Filters, 1) {
 						urlRewriteFilter := routeRule.Filters[0]
 						assert.Equal(t, gatewayv1.HTTPRouteFilterURLRewrite, urlRewriteFilter.Type)
-						assert.Equal(t, "www.example.com", urlRewriteFilter.URLRewrite.Hostname)
+						assert.Equal(t, "www.example.com", string(ptr.Deref(routeRule.Filters[0].URLRewrite.Hostname, "")))
 					}
 				}
 			},
@@ -94,7 +94,7 @@ func TestHTTPProxyCollectDesiredResources(t *testing.T) {
 
 						endpointSlice := endpointSlices[ruleIndex+backendRefIndex]
 						assert.Equal(t, SchemeHTTPS, ptr.Deref(endpointSlice.Ports[0].AppProtocol, ""), backendRefIndexMsg)
-						assert.Equal(t, DefaultHTTPSPort, ptr.Deref(endpointSlice.Ports[0].Port, 0), backendRefIndexMsg)
+						assert.EqualValues(t, DefaultHTTPSPort, ptr.Deref(endpointSlice.Ports[0].Port, 0), backendRefIndexMsg)
 					}
 				}
 			},
@@ -119,7 +119,7 @@ func TestHTTPProxyCollectDesiredResources(t *testing.T) {
 
 						endpointSlice := endpointSlices[ruleIndex+backendRefIndex]
 						assert.Equal(t, SchemeHTTP, ptr.Deref(endpointSlice.Ports[0].AppProtocol, ""), backendRefIndexMsg)
-						assert.Equal(t, DefaultHTTPPort, ptr.Deref(endpointSlice.Ports[0].Port, 0), backendRefIndexMsg)
+						assert.EqualValues(t, DefaultHTTPPort, ptr.Deref(endpointSlice.Ports[0].Port, 0), backendRefIndexMsg)
 					}
 				}
 			},
@@ -143,7 +143,7 @@ func TestHTTPProxyCollectDesiredResources(t *testing.T) {
 						backendRefIndexMsg := fmt.Sprintf("backendRef index %d", backendRefIndex)
 
 						endpointSlice := endpointSlices[ruleIndex+backendRefIndex]
-						assert.Equal(t, 8080, ptr.Deref(endpointSlice.Ports[0].Port, 0), backendRefIndexMsg)
+						assert.EqualValues(t, 8080, ptr.Deref(endpointSlice.Ports[0].Port, 0), backendRefIndexMsg)
 					}
 				}
 			},
@@ -198,6 +198,37 @@ func TestHTTPProxyCollectDesiredResources(t *testing.T) {
 				}
 			},
 		},
+		{
+			name: "custom hostnames",
+			httpProxy: newHTTPProxy(func(h *networkingv1alpha.HTTPProxy) {
+				h.Spec.Hostnames = []gatewayv1.Hostname{
+					gatewayv1.Hostname("test.example.com"),
+					gatewayv1.Hostname("test2.example.com"),
+				}
+			}),
+			assert: func(t *testing.T, httpProxy *networkingv1alpha.HTTPProxy, desiredResources *desiredHTTPProxyResources) {
+				gateway := desiredResources.gateway
+
+				for i, hostname := range httpProxy.Spec.Hostnames {
+					hostnameHTTPListenerFound := false
+					hostnameHTTPSListenerFound := false
+
+					for _, listener := range gateway.Spec.Listeners {
+						if ptr.Deref(listener.Hostname, "") == hostname {
+							switch listener.Protocol {
+							case gatewayv1.HTTPProtocolType:
+								hostnameHTTPListenerFound = true
+							case gatewayv1.HTTPSProtocolType:
+								hostnameHTTPSListenerFound = true
+							}
+						}
+					}
+
+					assert.True(t, hostnameHTTPListenerFound, "http listener not found for hostname %q at index %d", hostname, i)
+					assert.True(t, hostnameHTTPSListenerFound, "https listener not found for hostname %q at index %d", hostname, i)
+				}
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -219,7 +250,7 @@ func TestHTTPProxyCollectDesiredResources(t *testing.T) {
 			assert.Equal(t, tt.httpProxy.Name, gateway.Name)
 			assert.Equal(t, operatorConfig.HTTPProxy.GatewayClassName, gateway.Spec.GatewayClassName)
 
-			assert.Len(t, gateway.Spec.Listeners, 2)
+			assert.Len(t, gateway.Spec.Listeners, 2+(len(tt.httpProxy.Spec.Hostnames)*2))
 			assert.Equal(t, operatorConfig.HTTPProxy.GatewayTLSOptions, gateway.Spec.Listeners[1].TLS.Options)
 
 			// HTTPRoute assertions on items that are not hard coded
@@ -245,6 +276,10 @@ func TestHTTPProxyCollectDesiredResources(t *testing.T) {
 					endpointSlice := endpointSlices[ruleIndex+backendRefIndex]
 					assert.Equal(t, tt.httpProxy.Namespace, endpointSlice.Namespace, backendRefIndexMsg)
 				}
+			}
+
+			if tt.assert != nil {
+				tt.assert(t, tt.httpProxy, desiredResources)
 			}
 		})
 	}

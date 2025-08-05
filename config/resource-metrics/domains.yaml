@@ -1,0 +1,63 @@
+kind: CustomResourceStateMetrics
+spec:
+  resources:
+    - groupVersionKind:
+        group: networking.datumapis.com
+        kind: "Domain"
+        version: "v1alpha"
+      metricNamePrefix: datum_cloud_networking_domain
+      labelsFromPath:
+        name: [metadata, name]
+        namespace: [metadata, namespace]
+      metrics:
+      - name: "info"
+        help: "Domain information"
+        each:
+          type: Info
+          info:
+            labelsFromPath:
+              uid: [metadata, uid]
+              domain_name: [spec, domainName]
+      - name: "created"
+        help: "created timestamp"
+        each:
+          type: Gauge
+          gauge:
+            path: [metadata, creationTimestamp]
+      - name: "deleted"
+        help: "deletion timestamp"
+        errorLogV: 10
+        each:
+          type: Gauge
+          gauge:
+            path: [metadata, deletionTimestamp]
+      - name: "status_condition"
+        help: "The current status conditions of the Domains"
+        each:
+          type: Gauge
+          gauge:
+            path: [status, conditions]
+            labelsFromPath:
+              condition: [type]
+              reason: [reason]
+              status: [status]
+            valueFrom: [status]
+      - name: "status_condition_last_transition_time"
+        help: "last transition time for status conditions"
+        each:
+          type: Gauge
+          gauge:
+            path: [status, conditions]
+            labelsFromPath:
+              type: [type]
+              reason: [reason]
+              status: [status]
+            valueFrom: [lastTransitionTime]
+      - name: "status_next_verification_attempt"
+        help: "The next time a verification attempt will be made"
+        errorLogV: 10
+        each:
+          type: Gauge
+          gauge:
+            path: [status, verification]
+            valueFrom: [nextVerificationAttempt]

@@ -13,6 +13,7 @@ configMapGenerator:
       - locations.yaml
       - gateways.yaml
       - httpproxies.yaml
+      - domains.yaml
     options:
       labels:
         telemetry.miloapis.com/resource-metrics-config: "true"

@@ -464,7 +464,7 @@ func (r *GatewayReconciler) ensureHostnameVerification(
 	}
 
 	if len(domainsToCreate) > 0 {
-		logger.Info("creating domain records for hostnames with no matching domain", "domains", domainsToCreate)
+		logger.Info("creating domain resources for hostnames with no matching domain", "domains", domainsToCreate)
 
 		// Create a Domain resource with the same name as the value that will be
 		// placed in spec.domainName. This is done to avoid duplication upon cache

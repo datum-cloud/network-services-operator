@@ -279,7 +279,7 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 			slices.Sort(nonAcceptedHostnamesSlice)
 			hostnamesReadyCondition.Status = metav1.ConditionFalse
 			hostnamesReadyCondition.Reason = networkingv1alpha.HTTPProxyReasonHostnameUnverifiedHostnamesPresent
-			hostnamesReadyCondition.Message = fmt.Sprintf("unverified hostnames present, check status of Domain records in namespace: %s", strings.Join(nonAcceptedHostnamesSlice, ","))
+			hostnamesReadyCondition.Message = fmt.Sprintf("unverified hostnames present, check status of Domains in the same namespace: %s", strings.Join(nonAcceptedHostnamesSlice, ","))
 		} else {
 			hostnamesReadyCondition.Status = metav1.ConditionTrue
 			hostnamesReadyCondition.Reason = networkingv1alpha.HTTPProxyReasonHostnamesAccepted

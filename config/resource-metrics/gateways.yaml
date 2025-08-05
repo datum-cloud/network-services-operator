@@ -39,6 +39,17 @@ spec:
             labelsFromPath:
               type: ["type"]
             valueFrom: ["status"]
+      - name: "status_condition_last_transition_time"
+        help: "last transition time for status conditions"
+        each:
+          type: Gauge
+          gauge:
+            path: [status, conditions]
+            labelsFromPath:
+              type: ["type"]
+              reason: ["reason"]
+              status: ["status"]
+            valueFrom: ["lastTransitionTime"]
     - groupVersionKind:
         group: gateway.networking.k8s.io
         kind: "HTTPRoute"

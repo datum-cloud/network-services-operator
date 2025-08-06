@@ -32,12 +32,12 @@ type HTTPProxySpec struct {
 	//
 	// In addition to verifying ownership, hostnames must be unique across the
 	// platform. If a hostname is already programmed on another resource, a
-	// conflict will be encountered and communicated in the `HostnamesReady`
+	// conflict will be encountered and communicated in the `HostnamesVerified`
 	// condition.
 	//
 	// Hostnames which have been programmed will be listed in the
 	// `status.hostnames` field. Any hostname which has not been programmed will
-	// be listed in the `message` field of the `HostnamesReady` condition with
+	// be listed in the `message` field of the `HostnamesVerified` condition with
 	// an indication as to why it was not programmed.
 	//
 	// The system may automatically generate and associate hostnames with the
@@ -147,7 +147,7 @@ type HTTPProxyStatus struct {
 	// Hostnames lists the hostnames that have been bound to the HTTPProxy.
 	//
 	// If this list does not match that defined in the HTTPProxy, see the
-	// `HostnamesReady` condition message for details.
+	// `HostnamesVerified` condition message for details.
 	Hostnames []gatewayv1.Hostname `json:"hostnames,omitempty"`
 
 	// Conditions describe the current conditions of the HTTPProxy.
@@ -167,9 +167,9 @@ const (
 	// been programmed.
 	HTTPProxyConditionProgrammed = "Programmed"
 
-	// This condition is true when all hostnames defined in an HTTPProxy are have
-	// been programmed.
-	HTTPProxyConditionHostnamesReady = "HostnamesReady"
+	// This condition is true when all hostnames defined in an HTTPProxy or a
+	// Gateway listener have been verified.
+	HTTPProxyConditionHostnamesVerified = "HostnamesVerified"
 )
 
 const (
@@ -189,9 +189,9 @@ const (
 	// the HTTPProxy.
 	HTTPProxyReasonPending = "Pending"
 
-	// This reason is used with the "HostnamesReady" condition when all hostnames
-	// defined in an HTTPProxy have been verified and programmed.
-	HTTPProxyReasonHostnamesAccepted = "HostnamesAccepted"
+	// This reason is used with the "HostnamesVerified" condition when all hostnames
+	// defined in an HTTPProxy or Gateway listener have been verified.
+	HTTPProxyReasonHostnamesVerified = "HostnamesVerified"
 
 	// This reason is used with the a hostname defined in an HTTPProxy or Gateway
 	// has not been verified.

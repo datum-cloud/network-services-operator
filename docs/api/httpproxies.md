@@ -120,12 +120,12 @@ attempts to program the HTTPProxy.
 
 In addition to verifying ownership, hostnames must be unique across the
 platform. If a hostname is already programmed on another resource, a
-conflict will be encountered and communicated in the `HostnamesReady`
+conflict will be encountered and communicated in the `HostnamesVerified`
 condition.
 
 Hostnames which have been programmed will be listed in the
 `status.hostnames` field. Any hostname which has not been programmed will
-be listed in the `message` field of the `HostnamesReady` condition with
+be listed in the `message` field of the `HostnamesVerified` condition with
 an indication as to why it was not programmed.
 
 The system may automatically generate and associate hostnames with the
@@ -2712,7 +2712,7 @@ the `hostnames` field<br/>
           Hostnames lists the hostnames that have been bound to the HTTPProxy.
 
 If this list does not match that defined in the HTTPProxy, see the
-`HostnamesReady` condition message for details.<br/>
+`HostnamesVerified` condition message for details.<br/>
         </td>
         <td>false</td>
       </tr></tbody>

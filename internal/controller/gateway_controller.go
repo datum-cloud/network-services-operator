@@ -189,16 +189,19 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 		ObjectMeta: downstreamGatewayObjectMeta,
 	}
 
-	verifiedHostnames, err := r.ensureHostnameVerification(ctx, upstreamClient, upstreamGateway)
-	if err != nil {
-		result.Err = err
-		return result, nil
-	}
-
+	// TODO(jreese) refactor this to the collect + apply approach taken in other
+	// controllers.
+	var verifiedHostnames []string
 	gatewayResult, err := controllerutil.CreateOrUpdate(ctx, downstreamClient, downstreamGateway, func() error {
 		if err := downstreamStrategy.SetControllerReference(ctx, upstreamGateway, downstreamGateway); err != nil {
 			return fmt.Errorf("failed to set controller reference on downstream gateway: %w", err)
 		}
+
+		hostnames, err := r.ensureHostnameVerification(ctx, upstreamClient, upstreamGateway, downstreamGateway)
+		if err != nil {
+			return err
+		}
+		verifiedHostnames = hostnames
 
 		if downstreamGateway.Annotations == nil {
 			downstreamGateway.Annotations = map[string]string{}
@@ -397,15 +400,32 @@ func (r *GatewayReconciler) ensureHostnameVerification(
 	ctx context.Context,
 	upstreamClient client.Client,
 	upstreamGateway *gatewayv1.Gateway,
+	downstreamGateway *gatewayv1.Gateway,
 ) ([]string, error) {
 	logger := log.FromContext(ctx)
 
-	// TODO(jreese) Allow hostnames which have been successfully configured on
-	// the gateway stay on the gateway, regardless of whether or not there is
-	// a matching Domain that's verified.
-
 	// TODO(jreese) add accounting control plane. Use configmaps to track
 	// hostnames?
+
+	// Allow hostnames which have been successfully configured on the downstream
+	// gateway stay on the gateway, regardless of whether or not there is a
+	// matching Domain that's verified. This is done in case the user deletes the
+	// Domain record after verification has completed. In the future, it would be
+	// better to place a lien on the Domain via a ValidatingAdmissionPolicyBinding
+	// or higher level abstraction. A finalizer is undesirable as many resources
+	// could leverage the Domain, and we'd want to prohibit deletion, not just
+	// keep a deleted item from going away.
+	//
+	// For more thoughts on liens, the following issue provides good context:
+	// https://github.com/kubernetes/kubernetes/issues/10179#issuecomment-2889238042
+	verifiedHostnames := sets.New[string]()
+	for _, listener := range downstreamGateway.Spec.Listeners {
+		if listener.Hostname != nil && !strings.HasSuffix(string(*listener.Hostname), r.Config.Gateway.TargetDomain) {
+			verifiedHostnames.Insert(string(*listener.Hostname))
+		}
+	}
+
+	logger.Info("collected verified hostnames from listener conditions", "hostnames", verifiedHostnames.UnsortedList())
 
 	// Get a unique set of hostnames
 	hostnames := sets.New[string]()
@@ -424,9 +444,9 @@ func (r *GatewayReconciler) ensureHostnameVerification(
 		return nil, fmt.Errorf("failed listing domains: %w", err)
 	}
 
-	var verifiedHostnames []string
-	domainsToCreate := sets.New[string]()
+	logger.Info("processing domains in same namespace", "domain_count", len(domainList.Items))
 
+	domainsToCreate := sets.New[string]()
 	for _, hostname := range hostnames.UnsortedList() {
 		foundMatchingDomain := false
 		for _, domain := range domainList.Items {
@@ -436,7 +456,7 @@ func (r *GatewayReconciler) ensureHostnameVerification(
 					logger.Info("domain is not verified", "domain", domain.Name)
 					continue
 				}
-				verifiedHostnames = append(verifiedHostnames, hostname)
+				verifiedHostnames.Insert(hostname)
 				break
 			}
 		}
@@ -477,7 +497,10 @@ func (r *GatewayReconciler) ensureHostnameVerification(
 		}
 	}
 
-	return verifiedHostnames, nil
+	verifiedHostnamesSlice := verifiedHostnames.UnsortedList()
+	slices.Sort(verifiedHostnamesSlice)
+
+	return verifiedHostnamesSlice, nil
 }
 
 func (r *GatewayReconciler) ensureDownstreamGatewayDNSEndpoints(
@@ -761,15 +784,16 @@ func (r *GatewayReconciler) ensureDownstreamGatewayHTTPRoutes(
 		result = result.Merge(httpRouteResult)
 	}
 
+	logger.Info("updating listener status", "verified_hostnames", verifiedHostnames)
+
 	currentListenerStatus := map[gatewayv1.SectionName]gatewayv1.ListenerStatus{}
 	for _, listener := range upstreamGateway.Status.Listeners {
-		currentListenerStatus[listener.Name] = listener
+		currentListenerStatus[listener.Name] = *listener.DeepCopy()
 	}
 
 	// Update listener status for the upstream gateway
 	listenerStatus := make([]gatewayv1.ListenerStatus, 0, len(upstreamGateway.Spec.Listeners))
 	for _, listener := range upstreamGateway.Spec.Listeners {
-
 		status, ok := currentListenerStatus[listener.Name]
 		if !ok {
 			status = gatewayv1.ListenerStatus{
@@ -801,14 +825,17 @@ func (r *GatewayReconciler) ensureDownstreamGatewayHTTPRoutes(
 			ObservedGeneration: upstreamGateway.Generation,
 		}
 
-		if listener.Hostname != nil && !slices.Contains(verifiedHostnames, string(*listener.Hostname)) {
-			acceptedCondition.Status = metav1.ConditionFalse
-			acceptedCondition.Reason = networkingv1alpha.UnverifiedHostnamesPresent
-			acceptedCondition.Message = "The hostname defined on the listener has not been verified. Check status of Domains in the same namespace."
+		if listener.Hostname != nil {
 
-			programmedCondition.Status = metav1.ConditionFalse
-			programmedCondition.Reason = acceptedCondition.Reason
-			programmedCondition.Message = acceptedCondition.Message
+			if !slices.Contains(verifiedHostnames, string(*listener.Hostname)) {
+				acceptedCondition.Status = metav1.ConditionFalse
+				acceptedCondition.Reason = networkingv1alpha.UnverifiedHostnamesPresent
+				acceptedCondition.Message = fmt.Sprintf("The hostname %q has not been verified. Check status of Domains in the same namespace.", *listener.Hostname)
+
+				programmedCondition.Status = metav1.ConditionFalse
+				programmedCondition.Reason = acceptedCondition.Reason
+				programmedCondition.Message = acceptedCondition.Message
+			}
 		}
 
 		apimeta.SetStatusCondition(&status.Conditions, acceptedCondition)
@@ -828,8 +855,11 @@ func (r *GatewayReconciler) ensureDownstreamGatewayHTTPRoutes(
 	}
 
 	if !equality.Semantic.DeepEqual(upstreamGateway.Status.Listeners, listenerStatus) {
+		logger.Info("listener status changes present")
 		upstreamGateway.Status.Listeners = listenerStatus
 		result.AddStatusUpdate(upstreamClient, upstreamGateway)
+	} else {
+		logger.Info("listener status unchanged")
 	}
 
 	return result

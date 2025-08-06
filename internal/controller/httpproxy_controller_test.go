@@ -327,8 +327,8 @@ func TestHTTPProxyReconcile(t *testing.T) {
 			expectedConditions: []metav1.Condition{
 				{
 					Type:   networkingv1alpha.HTTPProxyConditionAccepted,
-					Status: metav1.ConditionFalse,
-					Reason: networkingv1alpha.HTTPProxyReasonPending,
+					Status: metav1.ConditionTrue,
+					Reason: networkingv1alpha.HTTPProxyReasonAccepted,
 				},
 				{
 					Type:   networkingv1alpha.HTTPProxyConditionProgrammed,
@@ -543,9 +543,9 @@ func TestHTTPProxyReconcile(t *testing.T) {
 					}
 				}
 
-				hostnamesReadyCondition := apimeta.FindStatusCondition(httpProxy.Status.Conditions, networkingv1alpha.HTTPProxyConditionHostnamesReady)
-				if assert.NotNil(t, hostnamesReadyCondition, "did not find HostnamesReady condition on HTTPProxy") {
-					assert.Equal(t, networkingv1alpha.HTTPProxyReasonPending, hostnamesReadyCondition.Reason)
+				hostnamesVerifiedCondition := apimeta.FindStatusCondition(httpProxy.Status.Conditions, networkingv1alpha.HTTPProxyConditionHostnamesVerified)
+				if assert.NotNil(t, hostnamesVerifiedCondition, "did not find HostnamesVerified condition on HTTPProxy") {
+					assert.Equal(t, networkingv1alpha.HTTPProxyReasonPending, hostnamesVerifiedCondition.Reason)
 				}
 
 			},
@@ -592,9 +592,9 @@ func TestHTTPProxyReconcile(t *testing.T) {
 
 							if assert.NoError(t, cl.Get(ctx, objectKey, updatedHttpProxy), "error fetching HTTPProxy") {
 
-								hostnamesReadyCondition := apimeta.FindStatusCondition(updatedHttpProxy.Status.Conditions, networkingv1alpha.HTTPProxyConditionHostnamesReady)
-								if assert.NotNil(t, hostnamesReadyCondition, "did not find HostnamesReady condition on HTTPProxy") {
-									assert.Equal(t, networkingv1alpha.UnverifiedHostnamesPresent, hostnamesReadyCondition.Reason)
+								hostnamesVerifiedCondition := apimeta.FindStatusCondition(updatedHttpProxy.Status.Conditions, networkingv1alpha.HTTPProxyConditionHostnamesVerified)
+								if assert.NotNil(t, hostnamesVerifiedCondition, "did not find HostnamesVerified condition on HTTPProxy") {
+									assert.Equal(t, networkingv1alpha.UnverifiedHostnamesPresent, hostnamesVerifiedCondition.Reason)
 								}
 							}
 						}
@@ -644,9 +644,9 @@ func TestHTTPProxyReconcile(t *testing.T) {
 
 							if assert.NoError(t, cl.Get(ctx, objectKey, updatedHttpProxy), "error fetching HTTPProxy") {
 
-								hostnamesReadyCondition := apimeta.FindStatusCondition(updatedHttpProxy.Status.Conditions, networkingv1alpha.HTTPProxyConditionHostnamesReady)
-								if assert.NotNil(t, hostnamesReadyCondition, "did not find HostnamesReady condition on HTTPProxy") {
-									assert.Equal(t, networkingv1alpha.HTTPProxyReasonHostnamesAccepted, hostnamesReadyCondition.Reason)
+								hostnamesVerifiedCondition := apimeta.FindStatusCondition(updatedHttpProxy.Status.Conditions, networkingv1alpha.HTTPProxyConditionHostnamesVerified)
+								if assert.NotNil(t, hostnamesVerifiedCondition, "did not find HostnamesVerified condition on HTTPProxy") {
+									assert.Equal(t, networkingv1alpha.HTTPProxyReasonHostnamesVerified, hostnamesVerifiedCondition.Reason)
 								}
 							}
 						}
@@ -709,20 +709,29 @@ func TestHTTPProxyReconcile(t *testing.T) {
 			err = fakeClient.Get(ctx, client.ObjectKeyFromObject(tt.httpProxy), &updatedProxy)
 			assert.NoError(t, err)
 
-			if tt.postCreateGatewayStatus != nil {
-				var gateway gatewayv1.Gateway
-				err = fakeClient.Get(ctx, client.ObjectKeyFromObject(tt.httpProxy), &gateway)
-				if assert.NoError(t, err) {
-					gateway.Status = tt.postCreateGatewayStatus.Status
-					err = fakeClient.Status().Update(ctx, &gateway)
-					assert.NoError(t, err)
+			var gateway gatewayv1.Gateway
+			err = fakeClient.Get(ctx, client.ObjectKeyFromObject(tt.httpProxy), &gateway)
+			if assert.NoError(t, err) {
+
+				apimeta.SetStatusCondition(&gateway.Status.Conditions, metav1.Condition{
+					Type:               string(gatewayv1.GatewayConditionAccepted),
+					Status:             metav1.ConditionTrue,
+					ObservedGeneration: gateway.Generation,
+					Reason:             "TestSuite",
+					Message:            "set by test suite",
+				})
+
+				if assert.NoError(t, fakeClient.Status().Update(ctx, &gateway), "unexpected error while updating gateway status") {
+					if tt.postCreateGatewayStatus != nil {
+
+						gateway.Status = tt.postCreateGatewayStatus.Status
+						err = fakeClient.Status().Update(ctx, &gateway)
+						assert.NoError(t, err)
+
+					}
 
 					_, err = reconciler.Reconcile(ctx, req)
-					if tt.expectedError {
-						assert.Error(t, err)
-					} else {
-						assert.NoError(t, err)
-					}
+					assert.NoError(t, err)
 
 					err = fakeClient.Get(ctx, client.ObjectKeyFromObject(tt.httpProxy), &updatedProxy)
 					assert.NoError(t, err)

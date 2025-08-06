@@ -152,7 +152,6 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 	upstreamGateway *gatewayv1.Gateway,
 	downstreamStrategy downstreamclient.ResourceStrategy,
 ) (result Result, downstreamGateway *gatewayv1.Gateway) {
-	logger := log.FromContext(ctx)
 
 	// Get the upstream gateway class so that we can pull the controller name out
 	// of it and use it in route status updates.
@@ -163,19 +162,19 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 	}
 	upstreamGatewayClassControllerName := string(upstreamGatewayClass.Spec.ControllerName)
 
-	// addressHostnames are default hostnames that are unique to each gateway, and
+	// targetDomainHostnames are default hostnames that are unique to each gateway, and
 	// will have DNS records created for them. Any custom hostnames provided in
 	// listeners WILL NOT be added to the addresses list in the gateway status.
-	addressHostnames := []string{
+	targetDomainHostnames := []string{
 		fmt.Sprintf("%s.%s", upstreamGateway.UID, r.Config.Gateway.TargetDomain),
 	}
 
 	if r.Config.Gateway.IPv4Enabled() {
-		addressHostnames = append(addressHostnames, fmt.Sprintf("v4.%s.%s", upstreamGateway.UID, r.Config.Gateway.TargetDomain))
+		targetDomainHostnames = append(targetDomainHostnames, fmt.Sprintf("v4.%s.%s", upstreamGateway.UID, r.Config.Gateway.TargetDomain))
 	}
 
 	if r.Config.Gateway.IPv6Enabled() {
-		addressHostnames = append(addressHostnames, fmt.Sprintf("v6.%s.%s", upstreamGateway.UID, r.Config.Gateway.TargetDomain))
+		targetDomainHostnames = append(targetDomainHostnames, fmt.Sprintf("v6.%s.%s", upstreamGateway.UID, r.Config.Gateway.TargetDomain))
 	}
 
 	downstreamClient := downstreamStrategy.GetClient()
@@ -189,124 +188,53 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 		ObjectMeta: downstreamGatewayObjectMeta,
 	}
 
-	// TODO(jreese) refactor this to the collect + apply approach taken in other
-	// controllers.
-	var verifiedHostnames []string
-	gatewayResult, err := controllerutil.CreateOrUpdate(ctx, downstreamClient, downstreamGateway, func() error {
-		if err := downstreamStrategy.SetControllerReference(ctx, upstreamGateway, downstreamGateway); err != nil {
-			return fmt.Errorf("failed to set controller reference on downstream gateway: %w", err)
-		}
+	if err := downstreamClient.Get(ctx, client.ObjectKeyFromObject(downstreamGateway), downstreamGateway); client.IgnoreNotFound(err) != nil {
+		result.Err = fmt.Errorf("failed to get downstream gateway: %w", err)
+	}
 
-		hostnames, err := r.ensureHostnameVerification(ctx, upstreamClient, upstreamGateway, downstreamGateway)
-		if err != nil {
-			return err
-		}
-		verifiedHostnames = hostnames
-
-		if downstreamGateway.Annotations == nil {
-			downstreamGateway.Annotations = map[string]string{}
-		}
-		var listeners []gatewayv1.Listener
-		foundHTTPListener := false
-		foundHTTPSListener := false
-		for listenerIndex, l := range upstreamGateway.Spec.Listeners {
-			switch l.Protocol {
-			case gatewayv1.HTTPProtocolType:
-				foundHTTPListener = true
-			case gatewayv1.HTTPSProtocolType:
-				foundHTTPSListener = true
-			}
-
-			if l.TLS != nil && l.TLS.Options[certificateIssuerTLSOption] != "" {
-				if r.Config.Gateway.PerGatewayCertificateIssuer {
-					downstreamGateway.Annotations["cert-manager.io/issuer"] = downstreamGateway.Name
-				} else {
-					clusterIssuerName := string(l.TLS.Options[certificateIssuerTLSOption])
-					if r.Config.Gateway.ClusterIssuerMap[clusterIssuerName] != "" {
-						clusterIssuerName = r.Config.Gateway.ClusterIssuerMap[clusterIssuerName]
-					}
-					downstreamGateway.Annotations["cert-manager.io/cluster-issuer"] = clusterIssuerName
-				}
-			}
-
-			// Add custom hostnames if they are verified
-			if l.Hostname != nil {
-				if !slices.Contains(verifiedHostnames, string(*l.Hostname)) {
-					logger.Info("skipping downstream gateway listener with unverified hostname", "upstream_listener_index", listenerIndex, "hostname", *l.Hostname)
-					continue
-				}
-				listenerCopy := l.DeepCopy()
-				if l.TLS != nil && l.TLS.Options[certificateIssuerTLSOption] != "" {
-					// Translate upstream TLS settings to downstream TLS settings
-					delete(listenerCopy.TLS.Options, certificateIssuerTLSOption)
-
-					tlsMode := gatewayv1.TLSModeTerminate
-					listenerCopy.TLS = &gatewayv1.GatewayTLSConfig{
-						Mode: &tlsMode,
-						// TODO(jreese) investigate secret deletion when Cert (gateway) is deleted
-						// See: https://cert-manager.io/docs/usage/certificate/#cleaning-up-secrets-when-certificates-are-deleted
-						CertificateRefs: []gatewayv1.SecretObjectReference{
-							{
-								Name: gatewayv1.ObjectName(resourcename.GetValidDNS1123Name(fmt.Sprintf("%s-%s", downstreamGateway.Name, l.Name))),
-							},
-						},
-					}
-				}
-
-				listeners = append(listeners, *listenerCopy)
-			}
-		}
-
-		// TODO(jreese) get from "scheduler"
-		downstreamGateway.Spec.GatewayClassName = gatewayv1.ObjectName(r.Config.Gateway.DownstreamGatewayClassName)
-
-		for i, hostname := range addressHostnames {
-			if foundHTTPListener {
-				listenerName := fmt.Sprintf("http-%d", i)
-				listeners = append(listeners,
-					listenerFactory(
-						listenerName,
-						hostname,
-						gatewayv1.HTTPProtocolType,
-						gatewayv1.PortNumber(DefaultHTTPPort),
-						"",
-					),
-				)
-			}
-			if foundHTTPSListener {
-				listenerName := fmt.Sprintf("https-%d", i)
-				listeners = append(listeners,
-					listenerFactory(
-						listenerName,
-						hostname,
-						gatewayv1.HTTPSProtocolType,
-						gatewayv1.PortNumber(DefaultHTTPSPort),
-						fmt.Sprintf("%s-%s", downstreamGateway.Name, listenerName),
-					),
-				)
-			}
-		}
-
-		downstreamGateway.Spec.Listeners = listeners
-
-		return nil
-	})
+	verifiedHostnames, err := r.ensureHostnameVerification(ctx, upstreamClient, upstreamGateway, downstreamGateway)
 	if err != nil {
-		if apierrors.IsConflict(err) {
-			result.RequeueAfter = 1 * time.Second
-			return result, nil
-		}
 		result.Err = err
 		return result, nil
 	}
 
-	logger.Info("downstream gateway processed", "operation_result", gatewayResult)
+	desiredDownstreamGateway := r.getDesiredDownstreamGateway(
+		ctx,
+		upstreamGateway,
+		targetDomainHostnames,
+		verifiedHostnames, // TODO(jreese) adjust to permittedHostnames after accounting is implemented
+	)
+
+	if downstreamGateway.CreationTimestamp.IsZero() {
+		if err := downstreamStrategy.SetControllerReference(ctx, upstreamGateway, downstreamGateway); err != nil {
+			result.Err = fmt.Errorf("failed to set controller reference on downstream gateway: %w", err)
+			return result, nil
+		}
+
+		downstreamGateway.Annotations = desiredDownstreamGateway.Annotations
+		downstreamGateway.Spec = desiredDownstreamGateway.Spec
+
+		if err := downstreamClient.Create(ctx, downstreamGateway); err != nil {
+			result.Err = fmt.Errorf("failed creating downstream gateway: %w", err)
+			return result, nil
+		}
+	} else {
+		if !equality.Semantic.DeepEqual(downstreamGateway.Spec, desiredDownstreamGateway.Spec) {
+			downstreamGateway.Spec = desiredDownstreamGateway.Spec
+			if err := downstreamClient.Update(ctx, downstreamGateway); err != nil {
+				result.Err = fmt.Errorf("failed updating downstream gateway: %w", err)
+				return result, nil
+			}
+		}
+
+		return result, downstreamGateway
+	}
 
 	dnsResult := r.ensureDownstreamGatewayDNSEndpoints(
 		ctx,
 		downstreamGateway,
 		downstreamStrategy,
-		addressHostnames,
+		targetDomainHostnames,
 	)
 	if dnsResult.ShouldReturn() {
 		return dnsResult.Merge(result), nil
@@ -331,10 +259,10 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 		verifiedHostnames,
 	)
 
-	addresses := make([]gatewayv1.GatewayStatusAddress, 0, len(addressHostnames))
+	addresses := make([]gatewayv1.GatewayStatusAddress, 0, len(targetDomainHostnames))
 	addressType := gatewayv1.HostnameAddressType
 
-	for _, hostname := range addressHostnames {
+	for _, hostname := range targetDomainHostnames {
 		addresses = append(addresses, gatewayv1.GatewayStatusAddress{
 			Type:  &addressType,
 			Value: hostname,
@@ -347,6 +275,101 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 	}
 
 	return httpRouteResult.Merge(result), downstreamGateway
+}
+
+func (r *GatewayReconciler) getDesiredDownstreamGateway(
+	ctx context.Context,
+	upstreamGateway *gatewayv1.Gateway,
+	targetDomainHostnames []string,
+	permittedHostnames []string,
+) *gatewayv1.Gateway {
+	logger := log.FromContext(ctx)
+	var downstreamGateway gatewayv1.Gateway
+
+	var listeners []gatewayv1.Listener
+	foundHTTPListener := false
+	foundHTTPSListener := false
+	for listenerIndex, l := range upstreamGateway.Spec.Listeners {
+		switch l.Protocol {
+		case gatewayv1.HTTPProtocolType:
+			foundHTTPListener = true
+		case gatewayv1.HTTPSProtocolType:
+			foundHTTPSListener = true
+		}
+
+		if l.TLS != nil && l.TLS.Options[certificateIssuerTLSOption] != "" {
+			if r.Config.Gateway.PerGatewayCertificateIssuer {
+				metav1.SetMetaDataAnnotation(&downstreamGateway.ObjectMeta, "cert-manager.io/issuer", downstreamGateway.Name)
+			} else {
+				clusterIssuerName := string(l.TLS.Options[certificateIssuerTLSOption])
+				if r.Config.Gateway.ClusterIssuerMap[clusterIssuerName] != "" {
+					clusterIssuerName = r.Config.Gateway.ClusterIssuerMap[clusterIssuerName]
+				}
+				metav1.SetMetaDataAnnotation(&downstreamGateway.ObjectMeta, "cert-manager.io/cluster-issuer", clusterIssuerName)
+			}
+		}
+
+		// Add custom hostnames if they are verified
+		if l.Hostname != nil {
+			if !slices.Contains(permittedHostnames, string(*l.Hostname)) {
+				logger.Info("skipping downstream gateway listener with unpermitted hostname", "upstream_listener_index", listenerIndex, "hostname", *l.Hostname)
+				continue
+			}
+			listenerCopy := l.DeepCopy()
+			if l.TLS != nil && l.TLS.Options[certificateIssuerTLSOption] != "" {
+				// Translate upstream TLS settings to downstream TLS settings
+				delete(listenerCopy.TLS.Options, certificateIssuerTLSOption)
+
+				tlsMode := gatewayv1.TLSModeTerminate
+				listenerCopy.TLS = &gatewayv1.GatewayTLSConfig{
+					Mode: &tlsMode,
+					// TODO(jreese) investigate secret deletion when Cert (gateway) is deleted
+					// See: https://cert-manager.io/docs/usage/certificate/#cleaning-up-secrets-when-certificates-are-deleted
+					CertificateRefs: []gatewayv1.SecretObjectReference{
+						{
+							Name: gatewayv1.ObjectName(resourcename.GetValidDNS1123Name(fmt.Sprintf("%s-%s", downstreamGateway.Name, l.Name))),
+						},
+					},
+				}
+			}
+
+			listeners = append(listeners, *listenerCopy)
+		}
+	}
+
+	// TODO(jreese) get from "scheduler"
+	downstreamGateway.Spec.GatewayClassName = gatewayv1.ObjectName(r.Config.Gateway.DownstreamGatewayClassName)
+
+	for i, hostname := range targetDomainHostnames {
+		if foundHTTPListener {
+			listenerName := fmt.Sprintf("http-%d", i)
+			listeners = append(listeners,
+				listenerFactory(
+					listenerName,
+					hostname,
+					gatewayv1.HTTPProtocolType,
+					gatewayv1.PortNumber(DefaultHTTPPort),
+					"",
+				),
+			)
+		}
+		if foundHTTPSListener {
+			listenerName := fmt.Sprintf("https-%d", i)
+			listeners = append(listeners,
+				listenerFactory(
+					listenerName,
+					hostname,
+					gatewayv1.HTTPSProtocolType,
+					gatewayv1.PortNumber(DefaultHTTPSPort),
+					fmt.Sprintf("%s-%s", downstreamGateway.Name, listenerName),
+				),
+			)
+		}
+	}
+
+	downstreamGateway.Spec.Listeners = listeners
+
+	return &downstreamGateway
 }
 
 func (r *GatewayReconciler) reconcileGatewayStatus(
@@ -404,9 +427,6 @@ func (r *GatewayReconciler) ensureHostnameVerification(
 ) ([]string, error) {
 	logger := log.FromContext(ctx)
 
-	// TODO(jreese) add accounting control plane. Use configmaps to track
-	// hostnames?
-
 	// Allow hostnames which have been successfully configured on the downstream
 	// gateway stay on the gateway, regardless of whether or not there is a
 	// matching Domain that's verified. This is done in case the user deletes the
@@ -419,9 +439,11 @@ func (r *GatewayReconciler) ensureHostnameVerification(
 	// For more thoughts on liens, the following issue provides good context:
 	// https://github.com/kubernetes/kubernetes/issues/10179#issuecomment-2889238042
 	verifiedHostnames := sets.New[string]()
-	for _, listener := range downstreamGateway.Spec.Listeners {
-		if listener.Hostname != nil && !strings.HasSuffix(string(*listener.Hostname), r.Config.Gateway.TargetDomain) {
-			verifiedHostnames.Insert(string(*listener.Hostname))
+	if dt := downstreamGateway.DeletionTimestamp; dt.IsZero() {
+		for _, listener := range downstreamGateway.Spec.Listeners {
+			if listener.Hostname != nil && !strings.HasSuffix(string(*listener.Hostname), r.Config.Gateway.TargetDomain) {
+				verifiedHostnames.Insert(string(*listener.Hostname))
+			}
 		}
 	}
 

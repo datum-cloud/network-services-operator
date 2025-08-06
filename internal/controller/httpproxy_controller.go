@@ -273,7 +273,7 @@ func (r *HTTPProxyReconciler) reconcileHTTPProxyHostnameStatus(
 
 			listenerStatus := gateway.Status.Listeners[listenerIndex]
 
-			if apimeta.IsStatusConditionTrue(listenerStatus.Conditions, "Accepted") {
+			if apimeta.IsStatusConditionTrue(listenerStatus.Conditions, string(gatewayv1.ListenerConditionAccepted)) {
 				acceptedHostnames.Insert(hostname)
 			} else {
 				nonAcceptedHostnames.Insert(string(hostname))
@@ -296,12 +296,16 @@ func (r *HTTPProxyReconciler) reconcileHTTPProxyHostnameStatus(
 			nonAcceptedHostnamesSlice := nonAcceptedHostnames.UnsortedList()
 			slices.Sort(nonAcceptedHostnamesSlice)
 			hostnamesReadyCondition.Status = metav1.ConditionFalse
-			hostnamesReadyCondition.Reason = networkingv1alpha.HTTPProxyReasonHostnameUnverifiedHostnamesPresent
+			hostnamesReadyCondition.Reason = networkingv1alpha.UnverifiedHostnamesPresent
 			hostnamesReadyCondition.Message = fmt.Sprintf("unverified hostnames present, check status of Domains in the same namespace: %s", strings.Join(nonAcceptedHostnamesSlice, ","))
-		} else {
+		} else if acceptedHostnames.Len() == len(httpProxyCopy.Spec.Hostnames) {
 			hostnamesReadyCondition.Status = metav1.ConditionTrue
 			hostnamesReadyCondition.Reason = networkingv1alpha.HTTPProxyReasonHostnamesAccepted
 			hostnamesReadyCondition.Message = "All hostnames have been accepted and programmed"
+		} else {
+			hostnamesReadyCondition.Status = metav1.ConditionFalse
+			hostnamesReadyCondition.Reason = networkingv1alpha.HTTPProxyReasonPending
+			hostnamesReadyCondition.Message = "Pending downstream Gateway status updates"
 		}
 
 		apimeta.SetStatusCondition(&httpProxyCopy.Status.Conditions, *hostnamesReadyCondition)

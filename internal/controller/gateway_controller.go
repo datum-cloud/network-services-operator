@@ -788,7 +788,7 @@ func (r *GatewayReconciler) ensureDownstreamGatewayHTTPRoutes(
 		acceptedCondition := metav1.Condition{
 			Type:               string(gatewayv1.ListenerConditionAccepted),
 			Status:             metav1.ConditionTrue,
-			Reason:             "Accepted",
+			Reason:             string(gatewayv1.ListenerReasonAccepted),
 			Message:            "The listener has been accepted by the Datum Gateway",
 			ObservedGeneration: upstreamGateway.Generation,
 		}
@@ -796,14 +796,14 @@ func (r *GatewayReconciler) ensureDownstreamGatewayHTTPRoutes(
 		programmedCondition := metav1.Condition{
 			Type:               string(gatewayv1.ListenerConditionProgrammed),
 			Status:             metav1.ConditionTrue,
-			Reason:             "Programmed",
+			Reason:             string(gatewayv1.ListenerReasonProgrammed),
 			Message:            "The listener has been programmed by the Datum Gateway",
 			ObservedGeneration: upstreamGateway.Generation,
 		}
 
 		if listener.Hostname != nil && !slices.Contains(verifiedHostnames, string(*listener.Hostname)) {
 			acceptedCondition.Status = metav1.ConditionFalse
-			acceptedCondition.Reason = "UnverifiedHostname"
+			acceptedCondition.Reason = networkingv1alpha.UnverifiedHostnamesPresent
 			acceptedCondition.Message = "The hostname defined on the listener has not been verified. Check status of Domains in the same namespace."
 
 			programmedCondition.Status = metav1.ConditionFalse
@@ -819,7 +819,7 @@ func (r *GatewayReconciler) ensureDownstreamGatewayHTTPRoutes(
 		apimeta.SetStatusCondition(&status.Conditions, metav1.Condition{
 			Type:               string(gatewayv1.ListenerConditionResolvedRefs),
 			Status:             metav1.ConditionTrue,
-			Reason:             "ResolvedRefs",
+			Reason:             string(gatewayv1.ListenerReasonResolvedRefs),
 			Message:            "The listener has been resolved by the Datum Gateway",
 			ObservedGeneration: upstreamGateway.Generation,
 		})

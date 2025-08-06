@@ -286,6 +286,7 @@ func TestHTTPProxyCollectDesiredResources(t *testing.T) {
 	}
 }
 
+//nolint:gocyclo
 func TestHTTPProxyReconcile(t *testing.T) {
 	testScheme := runtime.NewScheme()
 	assert.NoError(t, scheme.AddToScheme(testScheme))
@@ -305,6 +306,11 @@ func TestHTTPProxyReconcile(t *testing.T) {
 		},
 	}
 
+	type testContext struct {
+		*testing.T
+		reconciler *HTTPProxyReconciler
+	}
+
 	tests := []struct {
 		name                    string
 		httpProxy               *networkingv1alpha.HTTPProxy
@@ -312,7 +318,7 @@ func TestHTTPProxyReconcile(t *testing.T) {
 		postCreateGatewayStatus *gatewayv1.Gateway
 		expectedError           bool
 		expectedConditions      []metav1.Condition
-		assert                  func(t *testing.T, cl client.Client, httpProxy *networkingv1alpha.HTTPProxy)
+		assert                  func(t *testContext, cl client.Client, httpProxy *networkingv1alpha.HTTPProxy)
 	}{
 		{
 			name:          "basic reconcile - creates resources",
@@ -330,7 +336,7 @@ func TestHTTPProxyReconcile(t *testing.T) {
 					Reason: networkingv1alpha.HTTPProxyReasonPending,
 				},
 			},
-			assert: func(t *testing.T, cl client.Client, httpProxy *networkingv1alpha.HTTPProxy) {
+			assert: func(t *testContext, cl client.Client, httpProxy *networkingv1alpha.HTTPProxy) {
 				ctx := context.Background()
 
 				objectKey := client.ObjectKeyFromObject(httpProxy)
@@ -497,7 +503,7 @@ func TestHTTPProxyReconcile(t *testing.T) {
 					Reason: networkingv1alpha.HTTPProxyReasonProgrammed,
 				},
 			},
-			assert: func(t *testing.T, cl client.Client, httpProxy *networkingv1alpha.HTTPProxy) {
+			assert: func(t *testContext, cl client.Client, httpProxy *networkingv1alpha.HTTPProxy) {
 				if assert.Len(t, httpProxy.Status.Addresses, 1) {
 					assert.Equal(t, "test.example.com", httpProxy.Status.Addresses[0].Value)
 				}
@@ -512,7 +518,7 @@ func TestHTTPProxyReconcile(t *testing.T) {
 			httpProxy: newHTTPProxy(func(h *networkingv1alpha.HTTPProxy) {
 				h.Spec.Hostnames = []gatewayv1.Hostname{"example.com"}
 			}),
-			assert: func(t *testing.T, cl client.Client, httpProxy *networkingv1alpha.HTTPProxy) {
+			assert: func(t *testContext, cl client.Client, httpProxy *networkingv1alpha.HTTPProxy) {
 				ctx := context.Background()
 
 				objectKey := client.ObjectKeyFromObject(httpProxy)
@@ -537,6 +543,115 @@ func TestHTTPProxyReconcile(t *testing.T) {
 					}
 				}
 
+				hostnamesReadyCondition := apimeta.FindStatusCondition(httpProxy.Status.Conditions, networkingv1alpha.HTTPProxyConditionHostnamesReady)
+				if assert.NotNil(t, hostnamesReadyCondition, "did not find HostnamesReady condition on HTTPProxy") {
+					assert.Equal(t, networkingv1alpha.HTTPProxyReasonPending, hostnamesReadyCondition.Reason)
+				}
+
+			},
+		},
+		{
+			name: "custom hostnames unverified",
+			httpProxy: newHTTPProxy(func(h *networkingv1alpha.HTTPProxy) {
+				h.Spec.Hostnames = []gatewayv1.Hostname{"example.com"}
+			}),
+			assert: func(t *testContext, cl client.Client, httpProxy *networkingv1alpha.HTTPProxy) {
+				ctx := context.Background()
+
+				objectKey := client.ObjectKeyFromObject(httpProxy)
+
+				var gateway gatewayv1.Gateway
+				if assert.NoError(t, cl.Get(ctx, objectKey, &gateway), "unexpected error fetching gateway") {
+					gateway.Status.Listeners = make([]gatewayv1.ListenerStatus, len(gateway.Spec.Listeners))
+					for listenerIndex, listener := range gateway.Spec.Listeners {
+						listenerStatus := gatewayv1.ListenerStatus{
+							Name: listener.Name,
+						}
+
+						apimeta.SetStatusCondition(&listenerStatus.Conditions, metav1.Condition{
+							Type:   string(gatewayv1.ListenerConditionAccepted),
+							Status: metav1.ConditionFalse,
+							Reason: networkingv1alpha.UnverifiedHostnamesPresent,
+						})
+
+						gateway.Status.Listeners[listenerIndex] = listenerStatus
+					}
+
+					if assert.NoError(t, cl.Status().Update(ctx, &gateway), "unexpected error updating gateway status") {
+						// Run reconcile again to get the HTTPProxy status updated
+						req := mcreconcile.Request{
+							Request: reconcile.Request{
+								NamespacedName: objectKey,
+							},
+							ClusterName: "test-cluster",
+						}
+						_, err := t.reconciler.Reconcile(ctx, req)
+						if assert.NoError(t, err, "unexpected error reconciling HTTPProxy") {
+
+							updatedHttpProxy := &networkingv1alpha.HTTPProxy{}
+
+							if assert.NoError(t, cl.Get(ctx, objectKey, updatedHttpProxy), "error fetching HTTPProxy") {
+
+								hostnamesReadyCondition := apimeta.FindStatusCondition(updatedHttpProxy.Status.Conditions, networkingv1alpha.HTTPProxyConditionHostnamesReady)
+								if assert.NotNil(t, hostnamesReadyCondition, "did not find HostnamesReady condition on HTTPProxy") {
+									assert.Equal(t, networkingv1alpha.UnverifiedHostnamesPresent, hostnamesReadyCondition.Reason)
+								}
+							}
+						}
+					}
+				}
+			},
+		},
+		{
+			name: "custom hostnames verified",
+			httpProxy: newHTTPProxy(func(h *networkingv1alpha.HTTPProxy) {
+				h.Spec.Hostnames = []gatewayv1.Hostname{"example.com"}
+			}),
+			assert: func(t *testContext, cl client.Client, httpProxy *networkingv1alpha.HTTPProxy) {
+				ctx := context.Background()
+
+				objectKey := client.ObjectKeyFromObject(httpProxy)
+
+				var gateway gatewayv1.Gateway
+				if assert.NoError(t, cl.Get(ctx, objectKey, &gateway), "unexpected error fetching gateway") {
+					gateway.Status.Listeners = make([]gatewayv1.ListenerStatus, len(gateway.Spec.Listeners))
+					for listenerIndex, listener := range gateway.Spec.Listeners {
+						listenerStatus := gatewayv1.ListenerStatus{
+							Name: listener.Name,
+						}
+
+						apimeta.SetStatusCondition(&listenerStatus.Conditions, metav1.Condition{
+							Type:   string(gatewayv1.ListenerConditionAccepted),
+							Status: metav1.ConditionTrue,
+							Reason: string(gatewayv1.ListenerReasonAccepted),
+						})
+
+						gateway.Status.Listeners[listenerIndex] = listenerStatus
+					}
+
+					if assert.NoError(t, cl.Status().Update(ctx, &gateway), "unexpected error updating gateway status") {
+						// Run reconcile again to get the HTTPProxy status updated
+						req := mcreconcile.Request{
+							Request: reconcile.Request{
+								NamespacedName: objectKey,
+							},
+							ClusterName: "test-cluster",
+						}
+						_, err := t.reconciler.Reconcile(ctx, req)
+						if assert.NoError(t, err, "unexpected error reconciling HTTPProxy") {
+
+							updatedHttpProxy := &networkingv1alpha.HTTPProxy{}
+
+							if assert.NoError(t, cl.Get(ctx, objectKey, updatedHttpProxy), "error fetching HTTPProxy") {
+
+								hostnamesReadyCondition := apimeta.FindStatusCondition(updatedHttpProxy.Status.Conditions, networkingv1alpha.HTTPProxyConditionHostnamesReady)
+								if assert.NotNil(t, hostnamesReadyCondition, "did not find HostnamesReady condition on HTTPProxy") {
+									assert.Equal(t, networkingv1alpha.HTTPProxyReasonHostnamesAccepted, hostnamesReadyCondition.Reason)
+								}
+							}
+						}
+					}
+				}
 			},
 		},
 	}
@@ -557,7 +672,8 @@ func TestHTTPProxyReconcile(t *testing.T) {
 			fakeClientBuilder := fake.NewClientBuilder().
 				WithScheme(testScheme).
 				WithObjects(initialObjects...).
-				WithStatusSubresource(initialObjects...)
+				WithStatusSubresource(initialObjects...).
+				WithStatusSubresource(&gatewayv1.Gateway{})
 
 			if tt.postCreateGatewayStatus != nil {
 				fakeClientBuilder.WithStatusSubresource(tt.postCreateGatewayStatus)
@@ -623,7 +739,7 @@ func TestHTTPProxyReconcile(t *testing.T) {
 			}
 
 			if tt.assert != nil {
-				tt.assert(t, fakeClient, &updatedProxy)
+				tt.assert(&testContext{T: t, reconciler: reconciler}, fakeClient, &updatedProxy)
 			}
 
 		})

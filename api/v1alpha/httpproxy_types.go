@@ -193,9 +193,9 @@ const (
 	// defined in an HTTPProxy have been verified and programmed.
 	HTTPProxyReasonHostnamesAccepted = "HostnamesAccepted"
 
-	// This reason is used with the "HostnamesReady" condition when a hostname
-	// defined in an HTTPProxy has not been verified.
-	HTTPProxyReasonHostnameUnverifiedHostnamesPresent = "UnverifiedHostnamesPresent"
+	// This reason is used with the a hostname defined in an HTTPProxy or Gateway
+	// has not been verified.
+	UnverifiedHostnamesPresent = "UnverifiedHostnamesPresent"
 )
 
 // +kubebuilder:object:root=true

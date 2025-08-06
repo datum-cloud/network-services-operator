@@ -212,40 +212,6 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 
 	httpProxyCopy.Status.Addresses = gateway.Status.Addresses
 
-	var hostnames []gatewayv1.Hostname
-	// Copy over addresses for the TargetDomain, as they are also configured
-	// as hostnames. Eventually we will also copy over hostnames which have been
-	// successfully programmed on the HTTPProxy (custom domains need to be added,
-	// along with validation for them)
-	for _, address := range gateway.Status.Addresses {
-		if ptr.Deref(address.Type, gatewayv1.IPAddressType) == gatewayv1.HostnameAddressType &&
-			strings.HasSuffix(address.Value, r.Config.Gateway.TargetDomain) {
-			hostnames = append(hostnames, gatewayv1.Hostname(address.Value))
-		}
-	}
-
-	acceptedHostnames := sets.New[gatewayv1.Hostname]()
-	nonAcceptedHostnames := sets.New[string]()
-	for _, hostname := range httpProxy.Spec.Hostnames {
-		for listenerIndex, listener := range gateway.Spec.Listeners {
-			if listener.Hostname == nil {
-				continue
-			}
-
-			listenerStatus := gateway.Status.Listeners[listenerIndex]
-
-			if apimeta.IsStatusConditionTrue(listenerStatus.Conditions, "Accepted") {
-				acceptedHostnames.Insert(hostname)
-			} else {
-				nonAcceptedHostnames.Insert(string(hostname))
-			}
-		}
-	}
-
-	acceptedHostnamesSlice := acceptedHostnames.UnsortedList()
-	slices.Sort(acceptedHostnamesSlice)
-	httpProxyCopy.Status.Hostnames = append(hostnames, acceptedHostnamesSlice...)
-
 	if c := apimeta.FindStatusCondition(gateway.Status.Conditions, string(gatewayv1.GatewayConditionAccepted)); c != nil {
 		logger.Info("gateway accepted status", "status", c.Status)
 		if c.Status == metav1.ConditionTrue {
@@ -267,12 +233,64 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 		}
 	}
 
-	if len(httpProxy.Spec.Hostnames) > 0 {
+	r.reconcileHTTPProxyHostnameStatus(ctx, gateway, httpProxyCopy)
+
+	return ctrl.Result{}, nil
+}
+
+func (r *HTTPProxyReconciler) reconcileHTTPProxyHostnameStatus(
+	ctx context.Context,
+	gateway *gatewayv1.Gateway,
+	httpProxyCopy *networkingv1alpha.HTTPProxy,
+) {
+	logger := log.FromContext(ctx)
+
+	var hostnames []gatewayv1.Hostname
+	// Copy over addresses for the TargetDomain, as they are also configured
+	// as hostnames. Eventually we will also copy over hostnames which have been
+	// successfully programmed on the HTTPProxy (custom domains need to be added,
+	// along with validation for them)
+	for _, address := range gateway.Status.Addresses {
+		if ptr.Deref(address.Type, gatewayv1.IPAddressType) == gatewayv1.HostnameAddressType &&
+			strings.HasSuffix(address.Value, r.Config.Gateway.TargetDomain) {
+			hostnames = append(hostnames, gatewayv1.Hostname(address.Value))
+		}
+	}
+
+	acceptedHostnames := sets.New[gatewayv1.Hostname]()
+	nonAcceptedHostnames := sets.New[string]()
+	for _, hostname := range httpProxyCopy.Spec.Hostnames {
+		for listenerIndex, listener := range gateway.Spec.Listeners {
+			if listener.Hostname == nil || *listener.Hostname != hostname {
+				continue
+			}
+
+			// Shouldn't happen unless a separate bug is introduced, but just in case.
+			if len(gateway.Status.Listeners) < listenerIndex {
+				logger.Info("listenerIndex out of range", "index", listenerIndex, "len", len(gateway.Status.Listeners))
+				continue
+			}
+
+			listenerStatus := gateway.Status.Listeners[listenerIndex]
+
+			if apimeta.IsStatusConditionTrue(listenerStatus.Conditions, "Accepted") {
+				acceptedHostnames.Insert(hostname)
+			} else {
+				nonAcceptedHostnames.Insert(string(hostname))
+			}
+		}
+	}
+
+	acceptedHostnamesSlice := acceptedHostnames.UnsortedList()
+	slices.Sort(acceptedHostnamesSlice)
+	httpProxyCopy.Status.Hostnames = append(hostnames, acceptedHostnamesSlice...)
+
+	if len(httpProxyCopy.Spec.Hostnames) > 0 {
 		hostnamesReadyCondition := conditionutil.FindStatusConditionOrDefault(httpProxyCopy.Status.Conditions, &metav1.Condition{
 			Type:   networkingv1alpha.HTTPProxyConditionHostnamesReady,
 			Status: metav1.ConditionFalse,
 		})
-		hostnamesReadyCondition.ObservedGeneration = httpProxy.Generation
+		hostnamesReadyCondition.ObservedGeneration = httpProxyCopy.Generation
 
 		if nonAcceptedHostnames.Len() > 0 {
 			nonAcceptedHostnamesSlice := nonAcceptedHostnames.UnsortedList()
@@ -290,8 +308,6 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 	} else {
 		apimeta.RemoveStatusCondition(&httpProxyCopy.Status.Conditions, networkingv1alpha.HTTPProxyConditionHostnamesReady)
 	}
-
-	return ctrl.Result{}, nil
 }
 
 // SetupWithManager sets up the controller with the Manager.

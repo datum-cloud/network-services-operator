@@ -143,15 +143,6 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 		return result.Complete(ctx)
 	}
 
-	// HTTPRoute can define a hostname - how do we validate it's theirs, and not
-	// in use? An "Accounting" control plane client may make sense. k8s resources
-	// can be created with dots in them, so a fqdn in the name of a configmap
-	// would technically work (though would likely reach scaling issues).
-	//
-	// TLS Certs - Will need to leverage EnvoyPatchPolicy resources to insert
-	// certificates into the Envoy config, as single Gateway Listener's TLS
-	// configuration only allows up to 64 references to certs.
-
 	return result.Complete(ctx)
 }
 
@@ -266,48 +257,29 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 		// TODO(jreese) get from "scheduler"
 		downstreamGateway.Spec.GatewayClassName = gatewayv1.ObjectName(r.Config.Gateway.DownstreamGatewayClassName)
 
-		listenerFactory := func(name, hostname string, protocol gatewayv1.ProtocolType, port gatewayv1.PortNumber) gatewayv1.Listener {
-			h := gatewayv1.Hostname(hostname)
-
-			fromSelector := gatewayv1.NamespacesFromSame
-			listener := gatewayv1.Listener{
-				Protocol: protocol,
-				Port:     port,
-				Name:     gatewayv1.SectionName(name),
-				Hostname: &h,
-				AllowedRoutes: &gatewayv1.AllowedRoutes{
-					Namespaces: &gatewayv1.RouteNamespaces{
-						From: &fromSelector,
-					},
-				},
-			}
-
-			if protocol == gatewayv1.HTTPSProtocolType {
-				tlsMode := gatewayv1.TLSModeTerminate
-				listener.TLS = &gatewayv1.GatewayTLSConfig{
-					Mode: &tlsMode,
-					// TODO(jreese) investigate secret deletion when Cert (gateway) is deleted
-					// See: https://cert-manager.io/docs/usage/certificate/#cleaning-up-secrets-when-certificates-are-deleted
-					CertificateRefs: []gatewayv1.SecretObjectReference{
-						{
-							Name: gatewayv1.ObjectName(resourcename.GetValidDNS1123Name(fmt.Sprintf("%s-%s", downstreamGateway.Name, name))),
-						},
-					},
-				}
-			}
-
-			return listener
-		}
-
 		for i, hostname := range addressHostnames {
 			if foundHTTPListener {
+				listenerName := fmt.Sprintf("http-%d", i)
 				listeners = append(listeners,
-					listenerFactory(fmt.Sprintf("http-%d", i), hostname, gatewayv1.HTTPProtocolType, gatewayv1.PortNumber(DefaultHTTPPort)),
+					listenerFactory(
+						listenerName,
+						hostname,
+						gatewayv1.HTTPProtocolType,
+						gatewayv1.PortNumber(DefaultHTTPPort),
+						"",
+					),
 				)
 			}
 			if foundHTTPSListener {
+				listenerName := fmt.Sprintf("https-%d", i)
 				listeners = append(listeners,
-					listenerFactory(fmt.Sprintf("https-%d", i), hostname, gatewayv1.HTTPSProtocolType, gatewayv1.PortNumber(DefaultHTTPSPort)),
+					listenerFactory(
+						listenerName,
+						hostname,
+						gatewayv1.HTTPSProtocolType,
+						gatewayv1.PortNumber(DefaultHTTPSPort),
+						fmt.Sprintf("%s-%s", downstreamGateway.Name, listenerName),
+					),
 				)
 			}
 		}
@@ -337,6 +309,48 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 		return dnsResult.Merge(result), nil
 	}
 
+	gatewayStatusResult := r.reconcileGatewayStatus(
+		upstreamClient,
+		upstreamGateway,
+		downstreamGateway,
+	)
+	if gatewayStatusResult.ShouldReturn() {
+		return gatewayStatusResult.Merge(result), nil
+	}
+
+	httpRouteResult := r.ensureDownstreamGatewayHTTPRoutes(
+		ctx,
+		upstreamClient,
+		upstreamGateway,
+		upstreamGatewayClassControllerName,
+		downstreamGateway,
+		downstreamStrategy,
+		verifiedHostnames,
+	)
+
+	addresses := make([]gatewayv1.GatewayStatusAddress, 0, len(addressHostnames))
+	addressType := gatewayv1.HostnameAddressType
+
+	for _, hostname := range addressHostnames {
+		addresses = append(addresses, gatewayv1.GatewayStatusAddress{
+			Type:  &addressType,
+			Value: hostname,
+		})
+	}
+
+	if !equality.Semantic.DeepEqual(upstreamGateway.Status.Addresses, addresses) {
+		upstreamGateway.Status.Addresses = addresses
+		result.AddStatusUpdate(upstreamClient, upstreamGateway)
+	}
+
+	return httpRouteResult.Merge(result), downstreamGateway
+}
+
+func (r *GatewayReconciler) reconcileGatewayStatus(
+	upstreamClient client.Client,
+	upstreamGateway *gatewayv1.Gateway,
+	downstreamGateway *gatewayv1.Gateway,
+) (result Result) {
 	if c := apimeta.FindStatusCondition(downstreamGateway.Status.Conditions, string(gatewayv1.GatewayConditionAccepted)); c != nil {
 		message := "The Gateway has not been scheduled by Datum Gateway"
 		if c.Status == metav1.ConditionTrue {
@@ -371,32 +385,7 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 		result.AddStatusUpdate(upstreamClient, upstreamGateway)
 	}
 
-	httpRouteResult := r.ensureDownstreamGatewayHTTPRoutes(
-		ctx,
-		upstreamClient,
-		upstreamGateway,
-		upstreamGatewayClassControllerName,
-		downstreamGateway,
-		downstreamStrategy,
-		verifiedHostnames,
-	)
-
-	addresses := make([]gatewayv1.GatewayStatusAddress, 0, len(addressHostnames))
-	addressType := gatewayv1.HostnameAddressType
-
-	for _, hostname := range addressHostnames {
-		addresses = append(addresses, gatewayv1.GatewayStatusAddress{
-			Type:  &addressType,
-			Value: hostname,
-		})
-	}
-
-	if !equality.Semantic.DeepEqual(upstreamGateway.Status.Addresses, addresses) {
-		upstreamGateway.Status.Addresses = addresses
-		result.AddStatusUpdate(upstreamClient, upstreamGateway)
-	}
-
-	return httpRouteResult.Merge(result), downstreamGateway
+	return result
 }
 
 // isHostnameVerified returns hostnames found on listeners that are verified. A
@@ -1397,4 +1386,43 @@ func (r *GatewayReconciler) listGatewaysForDomainFunc(clusterName string, cl clu
 
 		return requests
 	})
+}
+
+func listenerFactory(
+	name,
+	hostname string,
+	protocol gatewayv1.ProtocolType,
+	port gatewayv1.PortNumber,
+	tlsSecretName string,
+) gatewayv1.Listener {
+	h := gatewayv1.Hostname(hostname)
+
+	fromSelector := gatewayv1.NamespacesFromSame
+	listener := gatewayv1.Listener{
+		Protocol: protocol,
+		Port:     port,
+		Name:     gatewayv1.SectionName(name),
+		Hostname: &h,
+		AllowedRoutes: &gatewayv1.AllowedRoutes{
+			Namespaces: &gatewayv1.RouteNamespaces{
+				From: &fromSelector,
+			},
+		},
+	}
+
+	if protocol == gatewayv1.HTTPSProtocolType {
+		tlsMode := gatewayv1.TLSModeTerminate
+		listener.TLS = &gatewayv1.GatewayTLSConfig{
+			Mode: &tlsMode,
+			// TODO(jreese) investigate secret deletion when Cert (gateway) is deleted
+			// See: https://cert-manager.io/docs/usage/certificate/#cleaning-up-secrets-when-certificates-are-deleted
+			CertificateRefs: []gatewayv1.SecretObjectReference{
+				{
+					Name: gatewayv1.ObjectName(resourcename.GetValidDNS1123Name(tlsSecretName)),
+				},
+			},
+		}
+	}
+
+	return listener
 }

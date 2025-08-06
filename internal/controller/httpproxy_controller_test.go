@@ -27,6 +27,7 @@ import (
 	"go.datum.net/network-services-operator/internal/config"
 )
 
+//nolint:gocyclo
 func TestHTTPProxyCollectDesiredResources(t *testing.T) {
 
 	operatorConfig := config.NetworkServicesOperator{
@@ -504,6 +505,38 @@ func TestHTTPProxyReconcile(t *testing.T) {
 				if assert.Len(t, httpProxy.Status.Hostnames, 1) {
 					assert.Equal(t, gatewayv1.Hostname("test.example.com"), httpProxy.Status.Hostnames[0])
 				}
+			},
+		},
+		{
+			name: "custom hostnames programmed",
+			httpProxy: newHTTPProxy(func(h *networkingv1alpha.HTTPProxy) {
+				h.Spec.Hostnames = []gatewayv1.Hostname{"example.com"}
+			}),
+			assert: func(t *testing.T, cl client.Client, httpProxy *networkingv1alpha.HTTPProxy) {
+				ctx := context.Background()
+
+				objectKey := client.ObjectKeyFromObject(httpProxy)
+
+				var gateway gatewayv1.Gateway
+				err := cl.Get(ctx, objectKey, &gateway)
+				assert.NoError(t, err)
+
+				// Assert that an HTTP and HTTPS listener were programmed
+				for _, hostname := range httpProxy.Spec.Hostnames {
+					for _, protocol := range []gatewayv1.ProtocolType{gatewayv1.HTTPProtocolType, gatewayv1.HTTPSProtocolType} {
+						found := false
+						for _, listener := range gateway.Spec.Listeners {
+							if listener.Protocol == protocol && ptr.Equal(listener.Hostname, &hostname) {
+								found = true
+								break
+							}
+						}
+						if !found {
+							assert.Fail(t, "did not find listener for hostname %q in protocol %q", hostname, protocol)
+						}
+					}
+				}
+
 			},
 		},
 	}

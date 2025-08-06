@@ -8,8 +8,6 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/utils/ptr"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
-
-	"go.datum.net/network-services-operator/internal/config"
 )
 
 const (
@@ -129,12 +127,11 @@ func validateGatewayTLSConfig(tls *gatewayv1.GatewayTLSConfig, fldPath *field.Pa
 }
 
 type GatewayValidationOptions struct {
-	ControllerName          gatewayv1.GatewayController
-	PermittedTLSOptions     map[string][]string
-	ValidPortNumbers        validPortNumbers
-	ValidProtocolTypes      map[int][]gatewayv1.ProtocolType
-	ClusterName             string
-	CustomHostnameAllowList []config.CustomHostnameAllowListEntry
+	ControllerName      gatewayv1.GatewayController
+	PermittedTLSOptions map[string][]string
+	ValidPortNumbers    validPortNumbers
+	ValidProtocolTypes  map[int][]gatewayv1.ProtocolType
+	ClusterName         string
 }
 
 type validPortNumbers []int

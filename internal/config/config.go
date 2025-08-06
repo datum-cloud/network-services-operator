@@ -343,11 +343,6 @@ type GatewayConfig struct {
 	//
 	// +default={"80": ["HTTP"], "443": ["HTTPS"]}
 	ValidProtocolTypes map[int][]gatewayv1.ProtocolType `json:"validProtocolTypes,omitempty"`
-
-	// CustomHostnameAllowList is a list of allowed hostname suffixes for specific
-	// clusters. Hostnames on gateways in a cluster must be a subdomain of one of
-	// the suffixes in this list for that cluster.
-	CustomHostnameAllowList []CustomHostnameAllowListEntry `json:"customHostnameAllowList,omitempty"`
 }
 
 // +k8s:deepcopy-gen=true

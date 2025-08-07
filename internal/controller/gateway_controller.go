@@ -461,7 +461,7 @@ func (r *GatewayReconciler) ensureHostnamesClaimed(
 					Namespace: objectKey.Namespace,
 					Name:      objectKey.Name,
 					Labels: map[string]string{
-						downstreamclient.UpstreamOwnerClusterNameLabel: upstreamClusterName,
+						downstreamclient.UpstreamOwnerClusterNameLabel: strings.ReplaceAll(upstreamClusterName, "/", "_"),
 						downstreamclient.UpstreamOwnerNamespaceLabel:   upstreamGateway.Namespace,
 						downstreamclient.UpstreamOwnerNameLabel:        upstreamGateway.Name,
 					},
@@ -492,7 +492,7 @@ func (r *GatewayReconciler) ensureHostnamesClaimed(
 	listOpts := []client.ListOption{
 		client.InNamespace(r.Config.Gateway.DownstreamHostnameAccountingNamespace),
 		client.MatchingLabels{
-			downstreamclient.UpstreamOwnerClusterNameLabel: upstreamClusterName,
+			downstreamclient.UpstreamOwnerClusterNameLabel: strings.ReplaceAll(upstreamClusterName, "/", "_"),
 			downstreamclient.UpstreamOwnerNamespaceLabel:   upstreamGateway.Namespace,
 			downstreamclient.UpstreamOwnerNameLabel:        upstreamGateway.Name,
 		},
@@ -769,7 +769,7 @@ func (r *GatewayReconciler) finalizeGateway(
 	listOpts := []client.ListOption{
 		client.InNamespace(r.Config.Gateway.DownstreamHostnameAccountingNamespace),
 		client.MatchingLabels{
-			downstreamclient.UpstreamOwnerClusterNameLabel: upstreamClusterName,
+			downstreamclient.UpstreamOwnerClusterNameLabel: strings.ReplaceAll(upstreamClusterName, "/", "_"),
 			downstreamclient.UpstreamOwnerNamespaceLabel:   upstreamGateway.Namespace,
 			downstreamclient.UpstreamOwnerNameLabel:        upstreamGateway.Name,
 		},

@@ -37,11 +37,20 @@ func TestEnsureDownstreamGateway(t *testing.T) {
 		},
 	}
 
+	testConfig := config.NetworkServicesOperator{
+		Gateway: config.GatewayConfig{
+			DownstreamGatewayClassName:            "test-suite",
+			DownstreamHostnameAccountingNamespace: "default",
+			TargetDomain:                          "test-suite.com",
+		},
+	}
+
 	tests := []struct {
-		name                    string
-		upstreamGateway         *gatewayv1.Gateway
-		existingUpstreamObjects []client.Object
-		assert                  func(t *testing.T, upstreamGateway, downstreamGateway *gatewayv1.Gateway)
+		name                      string
+		upstreamGateway           *gatewayv1.Gateway
+		existingUpstreamObjects   []client.Object
+		existingDownstreamObjects []client.Object
+		assert                    func(t *testing.T, upstreamGateway, downstreamGateway *gatewayv1.Gateway)
 	}{
 		{
 			name: "http listener only",
@@ -103,6 +112,72 @@ func TestEnsureDownstreamGateway(t *testing.T) {
 				assert.Equal(t, gatewayv1.HTTPSProtocolType, downstreamGateway.Spec.Listeners[1].Protocol)
 			},
 		},
+		{
+			name: "hostname claimed by different gateway",
+			upstreamGateway: newGateway(upstreamNamespace.Name, "test", func(g *gatewayv1.Gateway) {
+				g.Spec.Listeners = []gatewayv1.Listener{
+					{
+						Name:     gatewayv1.SectionName(SchemeHTTP),
+						Port:     DefaultHTTPPort,
+						Protocol: gatewayv1.HTTPProtocolType,
+						Hostname: ptr.To(gatewayv1.Hostname("example.com")),
+					},
+					{
+						Name:     gatewayv1.SectionName(SchemeHTTPS),
+						Port:     DefaultHTTPPort,
+						Protocol: gatewayv1.HTTPProtocolType,
+						Hostname: ptr.To(gatewayv1.Hostname("test.example.com")),
+					},
+				}
+			}),
+			existingUpstreamObjects: []client.Object{
+				newDomain(upstreamNamespace.Name, "example.com", func(d *networkingv1alpha.Domain) {
+					apimeta.SetStatusCondition(&d.Status.Conditions, metav1.Condition{
+						Type:   networkingv1alpha.DomainConditionVerified,
+						Status: metav1.ConditionTrue,
+					})
+				}),
+			},
+			existingDownstreamObjects: []client.Object{
+				&corev1.ConfigMap{
+					ObjectMeta: metav1.ObjectMeta{
+						Namespace: testConfig.Gateway.DownstreamHostnameAccountingNamespace,
+						Name:      "example.com",
+					},
+					Data: map[string]string{
+						"owner": "some/other/gateway",
+					},
+				},
+			},
+			assert: func(t *testing.T, upstreamGateway, downstreamGateway *gatewayv1.Gateway) {
+
+				currentListenerStatus := map[gatewayv1.SectionName]gatewayv1.ListenerStatus{}
+				for _, listener := range upstreamGateway.Status.Listeners {
+					currentListenerStatus[listener.Name] = *listener.DeepCopy()
+				}
+
+				for _, listener := range upstreamGateway.Spec.Listeners {
+					if listener.Hostname == nil || *listener.Hostname != "example.com" {
+						continue
+					}
+
+					listenerStatus := currentListenerStatus[listener.Name]
+
+					acceptedCondition := apimeta.FindStatusCondition(listenerStatus.Conditions, string(gatewayv1.ListenerConditionAccepted))
+					programmedCondition := apimeta.FindStatusCondition(listenerStatus.Conditions, string(gatewayv1.ListenerConditionProgrammed))
+
+					if assert.NotNil(t, acceptedCondition, "did not find accepted condition on listener") {
+						assert.Equal(t, metav1.ConditionFalse, acceptedCondition.Status)
+						assert.Equal(t, networkingv1alpha.HostnameInUseReason, acceptedCondition.Reason)
+					}
+
+					if assert.NotNil(t, programmedCondition, "did not find programmed condition on listener") {
+						assert.Equal(t, metav1.ConditionFalse, programmedCondition.Status)
+						assert.Equal(t, networkingv1alpha.HostnameInUseReason, programmedCondition.Reason)
+					}
+				}
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -117,7 +192,7 @@ func TestEnsureDownstreamGateway(t *testing.T) {
 				},
 			})
 
-			for _, obj := range tt.existingUpstreamObjects {
+			for _, obj := range append(tt.existingUpstreamObjects, tt.existingDownstreamObjects...) {
 				obj.SetUID(uuid.NewUUID())
 				obj.SetCreationTimestamp(metav1.Now())
 			}
@@ -132,7 +207,9 @@ func TestEnsureDownstreamGateway(t *testing.T) {
 
 			fakeDownstreamClient := fake.NewClientBuilder().
 				WithScheme(testScheme).
+				WithObjects(tt.existingDownstreamObjects...).
 				WithStatusSubresource(&gatewayv1.Gateway{}).
+				WithStatusSubresource(tt.existingDownstreamObjects...).
 				Build()
 
 			ctx := context.Background()
@@ -141,6 +218,7 @@ func TestEnsureDownstreamGateway(t *testing.T) {
 
 			reconciler := &GatewayReconciler{
 				mgr:               mgr,
+				Config:            testConfig,
 				DownstreamCluster: &fakeCluster{cl: fakeDownstreamClient},
 			}
 
@@ -148,6 +226,7 @@ func TestEnsureDownstreamGateway(t *testing.T) {
 
 			result, downstreamGateway := reconciler.ensureDownstreamGateway(
 				ctx,
+				"test-suite",
 				fakeUpstreamClient,
 				tt.upstreamGateway,
 				downstreamStrategy,
@@ -355,7 +434,7 @@ func TestEnsureDownstreamGatewayHTTPRoutes(t *testing.T) {
 				"test",
 				downstreamGateway,
 				downstreamStrategy,
-				// TODO(jreese) add tests to cover custom hostnames
+				nil,
 				nil,
 			)
 			assert.NoError(t, result.Err, "failed ensuring downstream gateway HTTPRoutes")
@@ -375,7 +454,7 @@ func TestEnsureDownstreamGatewayHTTPRoutes(t *testing.T) {
 
 }
 
-func TestEnsureHostnameVerification(t *testing.T) {
+func TestEnsureHostnamesClaimed(t *testing.T) {
 	testScheme := runtime.NewScheme()
 	assert.NoError(t, scheme.AddToScheme(testScheme))
 	assert.NoError(t, gatewayv1.Install(testScheme))
@@ -392,36 +471,41 @@ func TestEnsureHostnameVerification(t *testing.T) {
 
 	testConfig := config.NetworkServicesOperator{
 		Gateway: config.GatewayConfig{
-			TargetDomain: "test-suite.com",
+			DownstreamGatewayClassName:            "test-suite",
+			DownstreamHostnameAccountingNamespace: "default",
+			TargetDomain:                          "test-suite.com",
 		},
 	}
 
 	tests := []struct {
-		name                      string
-		upstreamGateway           *gatewayv1.Gateway
-		downstreamGateway         *gatewayv1.Gateway
-		existingUpstreamObjects   []client.Object
-		expectedVerifiedHostnames []string
-		assert                    func(ctx context.Context, t *testing.T, cl client.Client, gateway *gatewayv1.Gateway)
+		name                        string
+		upstreamGateway             *gatewayv1.Gateway
+		downstreamGateway           *gatewayv1.Gateway
+		existingUpstreamObjects     []client.Object
+		existingDownstreamObjects   []client.Object
+		expectedVerifiedHostnames   []string
+		expectedClaimedHostnames    []string
+		expectedNotClaimedHostnames []string
+		assert                      func(ctx context.Context, t *testing.T, cl client.Client, gateway *gatewayv1.Gateway)
 	}{
 		{
 			name: "domains created for custom hostnames on HTTP listeners",
 			upstreamGateway: newGateway(upstreamNamespace.Name, "test", func(g *gatewayv1.Gateway) {
 				g.Spec.Listeners = []gatewayv1.Listener{
 					{
-						Name:     gatewayv1.SectionName(SchemeHTTP),
+						Name:     "listener-1",
 						Port:     DefaultHTTPPort,
 						Protocol: gatewayv1.HTTPProtocolType,
 						Hostname: ptr.To(gatewayv1.Hostname("example.com")),
 					},
 					{
-						Name:     gatewayv1.SectionName(SchemeHTTP),
+						Name:     "listener-2",
 						Port:     DefaultHTTPPort,
 						Protocol: gatewayv1.HTTPProtocolType,
 						Hostname: ptr.To(gatewayv1.Hostname("test.example.com")),
 					},
 					{
-						Name:     gatewayv1.SectionName(SchemeHTTP),
+						Name:     "listener-3",
 						Port:     DefaultHTTPPort,
 						Protocol: gatewayv1.HTTPProtocolType,
 						Hostname: ptr.To(gatewayv1.Hostname("test.example")),
@@ -468,13 +552,13 @@ func TestEnsureHostnameVerification(t *testing.T) {
 			upstreamGateway: newGateway(upstreamNamespace.Name, "test", func(g *gatewayv1.Gateway) {
 				g.Spec.Listeners = []gatewayv1.Listener{
 					{
-						Name:     gatewayv1.SectionName(SchemeHTTP),
+						Name:     "listener-1",
 						Port:     DefaultHTTPPort,
 						Protocol: gatewayv1.HTTPProtocolType,
 						Hostname: ptr.To(gatewayv1.Hostname("example.com")),
 					},
 					{
-						Name:     gatewayv1.SectionName(SchemeHTTP),
+						Name:     "listener-2",
 						Port:     DefaultHTTPPort,
 						Protocol: gatewayv1.HTTPProtocolType,
 						Hostname: ptr.To(gatewayv1.Hostname("test.example.com")),
@@ -490,6 +574,48 @@ func TestEnsureHostnameVerification(t *testing.T) {
 				}),
 			},
 			expectedVerifiedHostnames: []string{"example.com", "test.example.com"},
+			expectedClaimedHostnames:  []string{"example.com", "test.example.com"},
+		},
+		{
+			name: "verified domain exists but hostname is claimed by different gateway",
+			upstreamGateway: newGateway(upstreamNamespace.Name, "test", func(g *gatewayv1.Gateway) {
+				g.Spec.Listeners = []gatewayv1.Listener{
+					{
+						Name:     "listener-1",
+						Port:     DefaultHTTPPort,
+						Protocol: gatewayv1.HTTPProtocolType,
+						Hostname: ptr.To(gatewayv1.Hostname("example.com")),
+					},
+					{
+						Name:     "listener-2",
+						Port:     DefaultHTTPPort,
+						Protocol: gatewayv1.HTTPProtocolType,
+						Hostname: ptr.To(gatewayv1.Hostname("test.example.com")),
+					},
+				}
+			}),
+			existingUpstreamObjects: []client.Object{
+				newDomain(upstreamNamespace.Name, "example.com", func(d *networkingv1alpha.Domain) {
+					apimeta.SetStatusCondition(&d.Status.Conditions, metav1.Condition{
+						Type:   networkingv1alpha.DomainConditionVerified,
+						Status: metav1.ConditionTrue,
+					})
+				}),
+			},
+			existingDownstreamObjects: []client.Object{
+				&corev1.ConfigMap{
+					ObjectMeta: metav1.ObjectMeta{
+						Namespace: testConfig.Gateway.DownstreamHostnameAccountingNamespace,
+						Name:      "example.com",
+					},
+					Data: map[string]string{
+						"owner": "some/other/gateway",
+					},
+				},
+			},
+			expectedVerifiedHostnames:   []string{"example.com", "test.example.com"},
+			expectedClaimedHostnames:    []string{"test.example.com"},
+			expectedNotClaimedHostnames: []string{"example.com"},
 		},
 		{
 			name: "hostname verified by being programmed on downstream gateway",
@@ -514,19 +640,20 @@ func TestEnsureHostnameVerification(t *testing.T) {
 				}
 			}),
 			expectedVerifiedHostnames: []string{"example.com"},
+			expectedClaimedHostnames:  []string{"example.com"},
 		},
 		{
 			name: "exact or subdomain match only",
 			upstreamGateway: newGateway(upstreamNamespace.Name, "test", func(g *gatewayv1.Gateway) {
 				g.Spec.Listeners = []gatewayv1.Listener{
 					{
-						Name:     gatewayv1.SectionName(SchemeHTTP),
+						Name:     "listener-1",
 						Port:     DefaultHTTPPort,
 						Protocol: gatewayv1.HTTPProtocolType,
 						Hostname: ptr.To(gatewayv1.Hostname("example.com")),
 					},
 					{
-						Name:     gatewayv1.SectionName(SchemeHTTP),
+						Name:     "listener-2",
 						Port:     DefaultHTTPPort,
 						Protocol: gatewayv1.HTTPProtocolType,
 						Hostname: ptr.To(gatewayv1.Hostname("test.example.com")),
@@ -534,7 +661,7 @@ func TestEnsureHostnameVerification(t *testing.T) {
 					// The following hostname will not be considered verified, and a
 					// Domain will be created for it.
 					{
-						Name:     gatewayv1.SectionName(SchemeHTTP),
+						Name:     "listener-3",
 						Port:     DefaultHTTPPort,
 						Protocol: gatewayv1.HTTPProtocolType,
 						Hostname: ptr.To(gatewayv1.Hostname("testexample.com")),
@@ -550,6 +677,7 @@ func TestEnsureHostnameVerification(t *testing.T) {
 				}),
 			},
 			expectedVerifiedHostnames: []string{"example.com", "test.example.com"},
+			expectedClaimedHostnames:  []string{"example.com", "test.example.com"},
 			assert: func(ctx context.Context, t *testing.T, cl client.Client, gateway *gatewayv1.Gateway) {
 				domainObjectKey := client.ObjectKey{
 					Namespace: gateway.Namespace,
@@ -563,7 +691,7 @@ func TestEnsureHostnameVerification(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 
-			for _, obj := range tt.existingUpstreamObjects {
+			for _, obj := range append(tt.existingUpstreamObjects, tt.existingDownstreamObjects...) {
 				obj.SetUID(uuid.NewUUID())
 				obj.SetCreationTimestamp(metav1.Now())
 			}
@@ -583,7 +711,9 @@ func TestEnsureHostnameVerification(t *testing.T) {
 			fakeDownstreamClient := fake.NewClientBuilder().
 				WithScheme(testScheme).
 				WithObjects(tt.downstreamGateway).
+				WithObjects(tt.existingDownstreamObjects...).
 				WithStatusSubresource(&gatewayv1.Gateway{}).
+				WithStatusSubresource(tt.existingDownstreamObjects...).
 				Build()
 
 			ctx := context.Background()
@@ -596,15 +726,18 @@ func TestEnsureHostnameVerification(t *testing.T) {
 				DownstreamCluster: &fakeCluster{cl: fakeDownstreamClient},
 			}
 
-			verifiedHostnames, err := reconciler.ensureHostnameVerification(
+			verifiedHostnames, claimedHostnames, notClaimedHostnames, err := reconciler.ensureHostnamesClaimed(
 				ctx,
+				"test-suite",
 				fakeUpstreamClient,
 				tt.upstreamGateway,
 				tt.downstreamGateway,
 			)
 
 			if assert.NoError(t, err, "unexpected error calling ensureHostnameVerification") {
-				assert.EqualValues(t, tt.expectedVerifiedHostnames, verifiedHostnames)
+				assert.EqualValues(t, tt.expectedVerifiedHostnames, verifiedHostnames, "expected verified hostnames mismatch")
+				assert.EqualValues(t, tt.expectedClaimedHostnames, claimedHostnames, "expected claimed hostnames mistmatch")
+				assert.EqualValues(t, tt.expectedNotClaimedHostnames, notClaimedHostnames, "expected not claimed hostnames mismatch")
 			}
 
 			updatedUpstreamGateway := &gatewayv1.Gateway{}

@@ -113,7 +113,7 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 
 	if !gateway.DeletionTimestamp.IsZero() {
 		if controllerutil.ContainsFinalizer(&gateway, gatewayControllerFinalizer) {
-			if result := r.finalizeGateway(ctx, cl.GetClient(), &gateway, downstreamStrategy); result.ShouldReturn() {
+			if result := r.finalizeGateway(ctx, req.ClusterName, cl.GetClient(), &gateway, downstreamStrategy); result.ShouldReturn() {
 				return result.Complete(ctx)
 			}
 
@@ -138,7 +138,7 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 	logger.Info("reconciling gateway")
 	defer logger.Info("reconcile complete")
 
-	result, _ := r.ensureDownstreamGateway(ctx, cl.GetClient(), &gateway, downstreamStrategy)
+	result, _ := r.ensureDownstreamGateway(ctx, req.ClusterName, cl.GetClient(), &gateway, downstreamStrategy)
 	if result.ShouldReturn() {
 		return result.Complete(ctx)
 	}
@@ -148,6 +148,7 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 
 func (r *GatewayReconciler) ensureDownstreamGateway(
 	ctx context.Context,
+	upstreamClusterName string,
 	upstreamClient client.Client,
 	upstreamGateway *gatewayv1.Gateway,
 	downstreamStrategy downstreamclient.ResourceStrategy,
@@ -192,7 +193,13 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 		result.Err = fmt.Errorf("failed to get downstream gateway: %w", err)
 	}
 
-	verifiedHostnames, err := r.ensureHostnameVerification(ctx, upstreamClient, upstreamGateway, downstreamGateway)
+	verifiedHostnames, claimedHostnames, notClaimedHostnames, err := r.ensureHostnamesClaimed(
+		ctx,
+		upstreamClusterName,
+		upstreamClient,
+		upstreamGateway,
+		downstreamGateway,
+	)
 	if err != nil {
 		result.Err = err
 		return result, nil
@@ -202,7 +209,7 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 		ctx,
 		upstreamGateway,
 		targetDomainHostnames,
-		verifiedHostnames, // TODO(jreese) adjust to permittedHostnames after accounting is implemented
+		claimedHostnames,
 	)
 
 	if downstreamGateway.CreationTimestamp.IsZero() {
@@ -226,8 +233,6 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 				return result, nil
 			}
 		}
-
-		return result, downstreamGateway
 	}
 
 	dnsResult := r.ensureDownstreamGatewayDNSEndpoints(
@@ -248,6 +253,7 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 	if gatewayStatusResult.ShouldReturn() {
 		return gatewayStatusResult.Merge(result), nil
 	}
+	result = result.Merge(gatewayStatusResult)
 
 	httpRouteResult := r.ensureDownstreamGatewayHTTPRoutes(
 		ctx,
@@ -257,6 +263,7 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 		downstreamGateway,
 		downstreamStrategy,
 		verifiedHostnames,
+		notClaimedHostnames,
 	)
 
 	addresses := make([]gatewayv1.GatewayStatusAddress, 0, len(targetDomainHostnames))
@@ -281,7 +288,7 @@ func (r *GatewayReconciler) getDesiredDownstreamGateway(
 	ctx context.Context,
 	upstreamGateway *gatewayv1.Gateway,
 	targetDomainHostnames []string,
-	permittedHostnames []string,
+	claimedHostnames []string,
 ) *gatewayv1.Gateway {
 	logger := log.FromContext(ctx)
 	var downstreamGateway gatewayv1.Gateway
@@ -299,7 +306,7 @@ func (r *GatewayReconciler) getDesiredDownstreamGateway(
 
 		if l.TLS != nil && l.TLS.Options[certificateIssuerTLSOption] != "" {
 			if r.Config.Gateway.PerGatewayCertificateIssuer {
-				metav1.SetMetaDataAnnotation(&downstreamGateway.ObjectMeta, "cert-manager.io/issuer", downstreamGateway.Name)
+				metav1.SetMetaDataAnnotation(&downstreamGateway.ObjectMeta, "cert-manager.io/issuer", upstreamGateway.Name)
 			} else {
 				clusterIssuerName := string(l.TLS.Options[certificateIssuerTLSOption])
 				if r.Config.Gateway.ClusterIssuerMap[clusterIssuerName] != "" {
@@ -311,8 +318,8 @@ func (r *GatewayReconciler) getDesiredDownstreamGateway(
 
 		// Add custom hostnames if they are verified
 		if l.Hostname != nil {
-			if !slices.Contains(permittedHostnames, string(*l.Hostname)) {
-				logger.Info("skipping downstream gateway listener with unpermitted hostname", "upstream_listener_index", listenerIndex, "hostname", *l.Hostname)
+			if !slices.Contains(claimedHostnames, string(*l.Hostname)) {
+				logger.Info("skipping downstream gateway listener with unclaimed hostname", "upstream_listener_index", listenerIndex, "hostname", *l.Hostname)
 				continue
 			}
 			listenerCopy := l.DeepCopy()
@@ -327,7 +334,9 @@ func (r *GatewayReconciler) getDesiredDownstreamGateway(
 					// See: https://cert-manager.io/docs/usage/certificate/#cleaning-up-secrets-when-certificates-are-deleted
 					CertificateRefs: []gatewayv1.SecretObjectReference{
 						{
-							Name: gatewayv1.ObjectName(resourcename.GetValidDNS1123Name(fmt.Sprintf("%s-%s", downstreamGateway.Name, l.Name))),
+							Group: ptr.To(gatewayv1.Group("")),
+							Kind:  ptr.To(gatewayv1.Kind("Secret")),
+							Name:  gatewayv1.ObjectName(resourcename.GetValidDNS1123Name(fmt.Sprintf("%s-%s", upstreamGateway.Name, l.Name))),
 						},
 					},
 				}
@@ -361,7 +370,7 @@ func (r *GatewayReconciler) getDesiredDownstreamGateway(
 					hostname,
 					gatewayv1.HTTPSProtocolType,
 					gatewayv1.PortNumber(DefaultHTTPSPort),
-					fmt.Sprintf("%s-%s", downstreamGateway.Name, listenerName),
+					fmt.Sprintf("%s-%s", upstreamGateway.Name, listenerName),
 				),
 			)
 		}
@@ -412,6 +421,101 @@ func (r *GatewayReconciler) reconcileGatewayStatus(
 	}
 
 	return result
+}
+
+func (r *GatewayReconciler) ensureHostnamesClaimed(
+	ctx context.Context,
+	upstreamClusterName string,
+	upstreamClient client.Client,
+	upstreamGateway *gatewayv1.Gateway,
+	downstreamGateway *gatewayv1.Gateway,
+) (verifiedHostnames, claimedHostnames, notClaimedHostnames []string, err error) {
+
+	verifiedHostnames, err = r.ensureHostnameVerification(ctx, upstreamClient, upstreamGateway, downstreamGateway)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	downstreamClient := r.DownstreamCluster.GetClient()
+
+	upstreamGatewayReferenceName := fmt.Sprintf("%s/%s/%s", upstreamClusterName, upstreamGateway.Namespace, upstreamGateway.Name)
+
+	// Track each hostname in a ConfigMap in the downstream control plane.
+	// This will need to be adjusted as the number of hostnames grows to be large,
+	// but is considered sufficient for now.
+
+	for _, hostname := range verifiedHostnames {
+		objectKey := client.ObjectKey{
+			Namespace: r.Config.Gateway.DownstreamHostnameAccountingNamespace,
+			Name:      hostname,
+		}
+
+		var hostnameConfigMap corev1.ConfigMap
+		if err := downstreamClient.Get(ctx, objectKey, &hostnameConfigMap); client.IgnoreNotFound(err) != nil {
+			return nil, nil, nil, err
+		}
+
+		if hostnameConfigMap.CreationTimestamp.IsZero() {
+			hostnameConfigMap = corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: objectKey.Namespace,
+					Name:      objectKey.Name,
+					Labels: map[string]string{
+						downstreamclient.UpstreamOwnerClusterNameLabel: upstreamClusterName,
+						downstreamclient.UpstreamOwnerNamespaceLabel:   upstreamGateway.Namespace,
+						downstreamclient.UpstreamOwnerNameLabel:        upstreamGateway.Name,
+					},
+				},
+				Data: map[string]string{
+					"owner": upstreamGatewayReferenceName,
+				},
+			}
+
+			if err := downstreamClient.Create(ctx, &hostnameConfigMap); err != nil {
+				if apierrors.IsConflict(err) {
+					notClaimedHostnames = append(notClaimedHostnames, hostname)
+					continue
+				}
+				return nil, nil, nil, err
+			}
+		} else if hostnameConfigMap.Data["owner"] != upstreamGatewayReferenceName {
+			notClaimedHostnames = append(notClaimedHostnames, hostname)
+			continue
+		}
+
+		claimedHostnames = append(claimedHostnames, hostname)
+	}
+
+	// Delete any claimed hostnames that are no longer in use
+	// Delete all configmaps that are claiming hostnames
+	downstreamClusterClient := r.DownstreamCluster.GetClient()
+	listOpts := []client.ListOption{
+		client.InNamespace(r.Config.Gateway.DownstreamHostnameAccountingNamespace),
+		client.MatchingLabels{
+			downstreamclient.UpstreamOwnerClusterNameLabel: upstreamClusterName,
+			downstreamclient.UpstreamOwnerNamespaceLabel:   upstreamGateway.Namespace,
+			downstreamclient.UpstreamOwnerNameLabel:        upstreamGateway.Name,
+		},
+	}
+
+	var hostnameConfigMapList corev1.ConfigMapList
+	if err := downstreamClusterClient.List(ctx, &hostnameConfigMapList, listOpts...); err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to list hostname claim configmaps: %w", err)
+	}
+
+	if len(hostnameConfigMapList.Items) > 0 {
+		for _, configMap := range hostnameConfigMapList.Items {
+			if slices.Contains(claimedHostnames, configMap.Name) {
+				// Still in use
+				continue
+			}
+			if err := downstreamClusterClient.Delete(ctx, &configMap); err != nil {
+				return nil, nil, nil, fmt.Errorf("failed to delete hostname claim configmap: %w", err)
+			}
+		}
+	}
+
+	return verifiedHostnames, claimedHostnames, notClaimedHostnames, nil
 }
 
 // isHostnameVerified returns hostnames found on listeners that are verified. A
@@ -609,6 +713,7 @@ func (r *GatewayReconciler) ensureDownstreamGatewayDNSEndpoints(
 
 func (r *GatewayReconciler) finalizeGateway(
 	ctx context.Context,
+	upstreamClusterName string,
 	upstreamClient client.Client,
 	upstreamGateway *gatewayv1.Gateway,
 	downstreamStrategy downstreamclient.ResourceStrategy,
@@ -657,6 +762,32 @@ func (r *GatewayReconciler) finalizeGateway(
 	if err := downstreamStrategy.DeleteAnchorForObject(ctx, upstreamGateway); err != nil {
 		result.Err = err
 		return result
+	}
+
+	// Delete all configmaps that are claiming hostnames
+	downstreamClusterClient := r.DownstreamCluster.GetClient()
+	listOpts := []client.ListOption{
+		client.InNamespace(r.Config.Gateway.DownstreamHostnameAccountingNamespace),
+		client.MatchingLabels{
+			downstreamclient.UpstreamOwnerClusterNameLabel: upstreamClusterName,
+			downstreamclient.UpstreamOwnerNamespaceLabel:   upstreamGateway.Namespace,
+			downstreamclient.UpstreamOwnerNameLabel:        upstreamGateway.Name,
+		},
+	}
+
+	var hostnameConfigMapList corev1.ConfigMapList
+	if err := downstreamClusterClient.List(ctx, &hostnameConfigMapList, listOpts...); err != nil {
+		result.Err = err
+		return result
+	}
+
+	if len(hostnameConfigMapList.Items) > 0 {
+		for _, configMap := range hostnameConfigMapList.Items {
+			if err := downstreamClusterClient.Delete(ctx, &configMap); err != nil {
+				result.Err = fmt.Errorf("failed to delete hostname claim configmap: %w", err)
+				return result
+			}
+		}
 	}
 
 	return result
@@ -718,6 +849,7 @@ func (r *GatewayReconciler) ensureDownstreamGatewayHTTPRoutes(
 	downstreamGateway *gatewayv1.Gateway,
 	downstreamStrategy downstreamclient.ResourceStrategy,
 	verifiedHostnames []string,
+	notClaimedHostnames []string,
 ) (result Result) {
 	logger := log.FromContext(ctx)
 
@@ -806,7 +938,7 @@ func (r *GatewayReconciler) ensureDownstreamGatewayHTTPRoutes(
 		result = result.Merge(httpRouteResult)
 	}
 
-	logger.Info("updating listener status", "verified_hostnames", verifiedHostnames)
+	logger.Info("updating listener status", "verified_hostnames", verifiedHostnames, "not_claimed_hostnames", notClaimedHostnames)
 
 	currentListenerStatus := map[gatewayv1.SectionName]gatewayv1.ListenerStatus{}
 	for _, listener := range upstreamGateway.Status.Listeners {
@@ -853,6 +985,14 @@ func (r *GatewayReconciler) ensureDownstreamGatewayHTTPRoutes(
 				acceptedCondition.Status = metav1.ConditionFalse
 				acceptedCondition.Reason = networkingv1alpha.UnverifiedHostnamesPresent
 				acceptedCondition.Message = fmt.Sprintf("The hostname %q has not been verified. Check status of Domains in the same namespace.", *listener.Hostname)
+
+				programmedCondition.Status = metav1.ConditionFalse
+				programmedCondition.Reason = acceptedCondition.Reason
+				programmedCondition.Message = acceptedCondition.Message
+			} else if slices.Contains(notClaimedHostnames, string(*listener.Hostname)) {
+				acceptedCondition.Status = metav1.ConditionFalse
+				acceptedCondition.Reason = networkingv1alpha.HostnameInUseReason
+				acceptedCondition.Message = fmt.Sprintf("The hostname %q is already attached to a resource.", *listener.Hostname)
 
 				programmedCondition.Status = metav1.ConditionFalse
 				programmedCondition.Reason = acceptedCondition.Reason
@@ -1470,7 +1610,9 @@ func listenerFactory(
 			// See: https://cert-manager.io/docs/usage/certificate/#cleaning-up-secrets-when-certificates-are-deleted
 			CertificateRefs: []gatewayv1.SecretObjectReference{
 				{
-					Name: gatewayv1.ObjectName(resourcename.GetValidDNS1123Name(tlsSecretName)),
+					Group: ptr.To(gatewayv1.Group("")),
+					Kind:  ptr.To(gatewayv1.Kind("Secret")),
+					Name:  gatewayv1.ObjectName(resourcename.GetValidDNS1123Name(tlsSecretName)),
 				},
 			},
 		}

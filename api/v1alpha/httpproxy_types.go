@@ -170,6 +170,10 @@ const (
 	// This condition is true when all hostnames defined in an HTTPProxy or a
 	// Gateway listener have been verified.
 	HTTPProxyConditionHostnamesVerified = "HostnamesVerified"
+
+	// This condition is present and true when a hostname defined in an HTTPProxy
+	// is in use by another resource.
+	HTTPProxyConditionHostnamesInUse = "HostnamesInUse"
 )
 
 const (
@@ -196,6 +200,10 @@ const (
 	// This reason is used with the a hostname defined in an HTTPProxy or Gateway
 	// has not been verified.
 	UnverifiedHostnamesPresent = "UnverifiedHostnamesPresent"
+
+	// This reason is used with the a hostname defined in an HTTPProxy or Gateway
+	// is in use by another resource.
+	HostnameInUseReason = "HostnameInUse"
 )
 
 // +kubebuilder:object:root=true

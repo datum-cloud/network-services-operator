@@ -279,6 +279,7 @@ func (r *HTTPProxyReconciler) reconcileHTTPProxyHostnameStatus(
 
 	acceptedHostnames := sets.New[gatewayv1.Hostname]()
 	nonAcceptedHostnames := sets.New[string]()
+	inUseHostnames := sets.New[string]()
 	for _, hostname := range httpProxyCopy.Spec.Hostnames {
 		for _, listener := range gateway.Spec.Listeners {
 			if listener.Hostname == nil || *listener.Hostname != hostname {
@@ -291,8 +292,16 @@ func (r *HTTPProxyReconciler) reconcileHTTPProxyHostnameStatus(
 				continue
 			}
 
-			if apimeta.IsStatusConditionTrue(listenerStatus.Conditions, string(gatewayv1.ListenerConditionAccepted)) {
-				acceptedHostnames.Insert(hostname)
+			listenerAcceptedCondition := apimeta.FindStatusCondition(listenerStatus.Conditions, string(gatewayv1.ListenerConditionAccepted))
+			if listenerAcceptedCondition != nil {
+
+				if listenerAcceptedCondition.Status == metav1.ConditionTrue {
+					acceptedHostnames.Insert(hostname)
+				} else if listenerAcceptedCondition.Reason == networkingv1alpha.HostnameInUseReason {
+					inUseHostnames.Insert(string(hostname))
+				} else {
+					nonAcceptedHostnames.Insert(string(hostname))
+				}
 			} else {
 				nonAcceptedHostnames.Insert(string(hostname))
 			}
@@ -327,8 +336,23 @@ func (r *HTTPProxyReconciler) reconcileHTTPProxyHostnameStatus(
 		}
 
 		apimeta.SetStatusCondition(&httpProxyCopy.Status.Conditions, *hostnamesVerifiedCondition)
+
+		if inUseHostnames.Len() > 0 {
+			inUseHostnamesSlice := inUseHostnames.UnsortedList()
+			slices.Sort(inUseHostnamesSlice)
+			apimeta.SetStatusCondition(&httpProxyCopy.Status.Conditions, metav1.Condition{
+				Type:               networkingv1alpha.HTTPProxyConditionHostnamesInUse,
+				Status:             metav1.ConditionTrue,
+				ObservedGeneration: httpProxyCopy.Generation,
+				Reason:             networkingv1alpha.HostnameInUseReason,
+				Message:            fmt.Sprintf("Hostnames are already attached to another resource: %s", strings.Join(inUseHostnamesSlice, ",")),
+			})
+		} else {
+			apimeta.RemoveStatusCondition(&httpProxyCopy.Status.Conditions, networkingv1alpha.HTTPProxyConditionHostnamesInUse)
+		}
 	} else {
 		apimeta.RemoveStatusCondition(&httpProxyCopy.Status.Conditions, networkingv1alpha.HTTPProxyConditionHostnamesVerified)
+		apimeta.RemoveStatusCondition(&httpProxyCopy.Status.Conditions, networkingv1alpha.HTTPProxyConditionHostnamesInUse)
 	}
 }
 

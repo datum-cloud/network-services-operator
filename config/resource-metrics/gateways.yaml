@@ -10,6 +10,18 @@ spec:
         name: [metadata, name]
         namespace: [metadata, namespace]
       metrics:
+      - name: "owner"
+        help: "Owner information"
+        errorLogV: 10
+        each:
+          type: Info
+          info:
+            path: [metadata,ownerReferences]
+            labelsFromPath:
+              owner_kind: [kind]
+              owner_name: [name]
+              owner_uid: [uid]
+              controller: [controller]
       - name: "info"
         help: "Gateway information"
         each:
@@ -48,6 +60,18 @@ spec:
         name: [metadata, name]
         namespace: [metadata, namespace]
       metrics:
+      - name: "owner"
+        help: "Owner information"
+        errorLogV: 10
+        each:
+          type: Info
+          info:
+            path: [metadata,ownerReferences]
+            labelsFromPath:
+              owner_kind: [kind]
+              owner_name: [name]
+              owner_uid: [uid]
+              controller: [controller]
       - name: "info"
         help: "HTTPRoute information"
         each:

@@ -12,6 +12,18 @@ spec:
         network_name: [spec, network, name]
         network_namespace: [spec, network, namespace]
       metrics:
+        - name: "owner"
+          help: "Owner information"
+          errorLogV: 10
+          each:
+            type: Info
+            info:
+              path: [metadata,ownerReferences]
+              labelsFromPath:
+                owner_kind: [kind]
+                owner_name: [name]
+                owner_uid: [uid]
+                controller: [controller]
         - name: "info"
           help: "Information about subnet claim"
           each:

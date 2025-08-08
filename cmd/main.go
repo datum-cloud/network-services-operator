@@ -240,11 +240,10 @@ func main() {
 	}
 
 	validationOpts := validation.GatewayValidationOptions{
-		ControllerName:          serverConfig.Gateway.ControllerName,
-		PermittedTLSOptions:     serverConfig.Gateway.PermittedTLSOptions,
-		ValidPortNumbers:        serverConfig.Gateway.ValidPortNumbers,
-		ValidProtocolTypes:      serverConfig.Gateway.ValidProtocolTypes,
-		CustomHostnameAllowList: serverConfig.Gateway.CustomHostnameAllowList,
+		ControllerName:      serverConfig.Gateway.ControllerName,
+		PermittedTLSOptions: serverConfig.Gateway.PermittedTLSOptions,
+		ValidPortNumbers:    serverConfig.Gateway.ValidPortNumbers,
+		ValidProtocolTypes:  serverConfig.Gateway.ValidProtocolTypes,
 	}
 
 	if err := networkinggatewayv1webhooks.SetupGatewayWebhookWithManager(mgr, validationOpts); err != nil {

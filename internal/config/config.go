@@ -310,6 +310,13 @@ type GatewayConfig struct {
 	// used when programming gateways in the downstream cluster.
 	DownstreamGatewayClassName string `json:"downstreamGatewayClassName"`
 
+	// DownstreamHostnameAccountingNamespace is the name of the namespace which
+	// will be used to track which hostnames have been programmed across gateway
+	// resources.
+	//
+	// +default="datum-downstream-gateway-hostnames"
+	DownstreamHostnameAccountingNamespace string `json:"downstreamHostnameAccountingNamespace"`
+
 	// PermittedTLSOptions is a map of TLS options that are permitted on gateway
 	// listeners. The key is the option name and the value is a list of permitted
 	// option values. An empty list of values means that any value is permitted for	//
@@ -343,11 +350,6 @@ type GatewayConfig struct {
 	//
 	// +default={"80": ["HTTP"], "443": ["HTTPS"]}
 	ValidProtocolTypes map[int][]gatewayv1.ProtocolType `json:"validProtocolTypes,omitempty"`
-
-	// CustomHostnameAllowList is a list of allowed hostname suffixes for specific
-	// clusters. Hostnames on gateways in a cluster must be a subdomain of one of
-	// the suffixes in this list for that cluster.
-	CustomHostnameAllowList []CustomHostnameAllowListEntry `json:"customHostnameAllowList,omitempty"`
 }
 
 // +k8s:deepcopy-gen=true

@@ -10,6 +10,18 @@ spec:
         namespace: [metadata, namespace]
         name: [metadata, name]
       metrics:
+        - name: "owner"
+          help: "Owner information"
+          errorLogV: 10
+          each:
+            type: Info
+            info:
+              path: [metadata,ownerReferences]
+              labelsFromPath:
+                owner_kind: [kind]
+                owner_name: [name]
+                owner_uid: [uid]
+                controller: [controller]
         - name: "info"
           help: "Information about network context"
           each:

@@ -3,13 +3,11 @@ package validation
 import (
 	"fmt"
 	"slices"
-	"strings"
 
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/utils/ptr"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
-
-	"go.datum.net/network-services-operator/internal/config"
 )
 
 const (
@@ -48,29 +46,7 @@ func validateListeners(listeners []gatewayv1.Listener, fldPath *field.Path, opts
 		listenerPath := fldPath.Index(i)
 
 		if l.Hostname != nil {
-			var allowedSuffixes []string
-			for _, allowListEntry := range opts.CustomHostnameAllowList {
-				if allowListEntry.ClusterName == opts.ClusterName {
-					allowedSuffixes = allowListEntry.Suffixes
-				}
-			}
-
-			if len(allowedSuffixes) == 0 {
-				allErrs = append(allErrs, field.Invalid(listenerPath.Child("hostname"), l.Hostname, "hostnames are not permitted"))
-			} else {
-				hostnameStr := string(*l.Hostname)
-				validHostname := false
-				for _, suffix := range allowedSuffixes {
-					// Allow exact matches or suffix matches
-					if suffix == hostnameStr || strings.HasSuffix(hostnameStr, "."+suffix) {
-						validHostname = true
-						break
-					}
-				}
-				if !validHostname {
-					allErrs = append(allErrs, field.Invalid(listenerPath.Child("hostname"), hostnameStr, fmt.Sprintf("hostname does not match any allowed suffixes: %v", allowedSuffixes)))
-				}
-			}
+			allErrs = append(allErrs, validation.IsFullyQualifiedDomainName(listenerPath.Child("hostname"), string(*l.Hostname))...)
 		}
 
 		if !slices.Contains(opts.ValidPortNumbers, int(l.Port)) {
@@ -151,12 +127,11 @@ func validateGatewayTLSConfig(tls *gatewayv1.GatewayTLSConfig, fldPath *field.Pa
 }
 
 type GatewayValidationOptions struct {
-	ControllerName          gatewayv1.GatewayController
-	PermittedTLSOptions     map[string][]string
-	ValidPortNumbers        validPortNumbers
-	ValidProtocolTypes      map[int][]gatewayv1.ProtocolType
-	ClusterName             string
-	CustomHostnameAllowList []config.CustomHostnameAllowListEntry
+	ControllerName      gatewayv1.GatewayController
+	PermittedTLSOptions map[string][]string
+	ValidPortNumbers    validPortNumbers
+	ValidProtocolTypes  map[int][]gatewayv1.ProtocolType
+	ClusterName         string
 }
 
 type validPortNumbers []int

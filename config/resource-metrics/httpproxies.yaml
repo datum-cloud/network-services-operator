@@ -5,11 +5,23 @@ spec:
         group: networking.datumapis.com
         kind: "HTTPProxy"
         version: "v1alpha"
-      metricNamePrefix: datum_cloud_networking_httpproxy
+      metricNamePrefix: datum_cloud_networking_http_proxy
       labelsFromPath:
         name: [metadata, name]
         namespace: [metadata, namespace]
       metrics:
+      - name: "owner"
+        help: "Owner information"
+        errorLogV: 10
+        each:
+          type: Info
+          info:
+            path: [metadata,ownerReferences]
+            labelsFromPath:
+              owner_kind: [kind]
+              owner_name: [name]
+              owner_uid: [uid]
+              controller: [controller]
       - name: "info"
         help: "HTTPProxy information"
         each:

@@ -138,6 +138,15 @@ spec:
                   name: custom-proxy-config
                   namespace: envoy-gateway-system
 
+        - description: Create namespace for hostname tracking
+          apply:
+            cluster: nso-infra
+            resource:
+              apiVersion: v1
+              kind: Namespace
+              metadata:
+                name: datum-downstream-gateway-hostnames
+
     - name: Create pod and service to serve as a backend for the HTTPRoute
       try:
         - create:

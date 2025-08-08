@@ -138,6 +138,15 @@ spec:
                   name: custom-proxy-config
                   namespace: envoy-gateway-system
 
+        - description: Create namespace for hostname tracking
+          apply:
+            cluster: nso-infra
+            resource:
+              apiVersion: v1
+              kind: Namespace
+              metadata:
+                name: datum-downstream-gateway-hostnames
+
     - name: Create pod and service to serve as a backend for the HTTPRoute
       try:
         - create:
@@ -232,6 +241,27 @@ spec:
                   targetPort: 8443
                 selector:
                   purpose: backend-pod
+
+    - name: Provision Domain
+      try:
+        - create:
+            cluster: nso-standard
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Domain
+              metadata:
+                name: test-domain
+              spec:
+                domainName: e2e.env.datum.net
+
+        - description: |
+            Under normal operation, the Domain controller will perform verification
+            via HTTP or DNS, and update the Domain's status.
+          script:
+            content: |
+                kubectl -n $NAMESPACE patch domain test-domain \
+                  --subresource=status --type=merge \
+                  -p '{"status":{"conditions":[{"type": "Verified", "status": "True", "reason": "Test", "message": "test", "lastTransitionTime": "2025-02-24T23:59:09Z"}]}}'
 
     - name: Provision Gateway
       try:

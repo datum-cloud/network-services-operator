@@ -39,32 +39,6 @@ rules:
   - patch
   - update
 - apiGroups:
-  - datumapis.com
-  resources:
-  - domains
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - datumapis.com
-  resources:
-  - domains/finalizers
-  verbs:
-  - update
-- apiGroups:
-  - datumapis.com
-  resources:
-  - domains/status
-  verbs:
-  - get
-  - patch
-  - update
-- apiGroups:
   - discovery.k8s.io
   resources:
   - endpointslices
@@ -154,6 +128,7 @@ rules:
 - apiGroups:
   - networking.datumapis.com
   resources:
+  - domains
   - httpproxies
   - networkbindings
   - networkcontexts
@@ -172,6 +147,7 @@ rules:
 - apiGroups:
   - networking.datumapis.com
   resources:
+  - domains/finalizers
   - httpproxies/finalizers
   - networkbindings/finalizers
   - networkcontexts/finalizers
@@ -184,6 +160,7 @@ rules:
 - apiGroups:
   - networking.datumapis.com
   resources:
+  - domains/status
   - httpproxies/status
   - networkbindings/status
   - networkcontexts/status

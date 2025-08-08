@@ -41,9 +41,9 @@ type DomainReconciler struct {
 	lookupTXT func(ctx context.Context, name string) ([]string, error)
 }
 
-// +kubebuilder:rbac:groups=datumapis.com,resources=domains,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=datumapis.com,resources=domains/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=datumapis.com,resources=domains/finalizers,verbs=update
+// +kubebuilder:rbac:groups=networking.datumapis.com,resources=domains,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=networking.datumapis.com,resources=domains/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=networking.datumapis.com,resources=domains/finalizers,verbs=update
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.

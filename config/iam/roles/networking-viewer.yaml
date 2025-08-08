@@ -9,6 +9,7 @@ spec:
   launchStage: Beta
   inheritedRoles:
     - name: networking.datumapis.com-gateway-viewer
+    - name: networking.datumapis.com-domain-viewer
   includedPermissions:
     - networking.datumapis.com/networks.list
     - networking.datumapis.com/networks.get

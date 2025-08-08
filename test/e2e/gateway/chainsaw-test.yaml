@@ -233,6 +233,27 @@ spec:
                 selector:
                   purpose: backend-pod
 
+    - name: Provision Domain
+      try:
+        - create:
+            cluster: nso-standard
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Domain
+              metadata:
+                name: test-domain
+              spec:
+                domainName: e2e.env.datum.net
+
+        - description: |
+            Under normal operation, the Domain controller will perform verification
+            via HTTP or DNS, and update the Domain's status.
+          script:
+            content: |
+                kubectl -n $NAMESPACE patch domain test-domain \
+                  --subresource=status --type=merge \
+                  -p '{"status":{"conditions":[{"type": "Verified", "status": "True", "reason": "Test", "message": "test", "lastTransitionTime": "2025-02-24T23:59:09Z"}]}}'
+
     - name: Provision Gateway
       try:
         # Get the target namespace UID

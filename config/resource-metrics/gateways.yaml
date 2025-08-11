@@ -51,6 +51,16 @@ spec:
             labelsFromPath:
               type: ["type"]
             valueFrom: ["status"]
+      - name: "custom_hostname"
+        help: "Custom hostname defined on the gateway"
+        errorLogV: 10
+        each:
+          type: Info
+          info:
+            path: [spec,listeners]
+            labelsFromPath:
+              hostname: [hostname]
+
     - groupVersionKind:
         group: gateway.networking.k8s.io
         kind: "HTTPRoute"

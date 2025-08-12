@@ -11,6 +11,7 @@ spec:
     - name: networking.datumapis.com-viewer
     - name: networking.datumapis.com-gateway-admin
     - name: networking.datumapis.com-location-admin
+    - name: networking.datumapis.com-domain-admin
   includedPermissions:
     - networking.datumapis.com/networks.create
     - networking.datumapis.com/networks.update

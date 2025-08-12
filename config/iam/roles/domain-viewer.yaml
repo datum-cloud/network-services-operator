@@ -1,0 +1,13 @@
+apiVersion: iam.miloapis.com/v1alpha1
+kind: Role
+metadata:
+  name: networking.datumapis.com-domain-viewer
+  annotations:
+    kubernetes.io/display-name: Domain Viewer
+    kubernetes.io/description: "View access to domain resources"
+spec:
+  launchStage: Beta
+  includedPermissions:
+    - networking.datumapis.com/domains.list
+    - networking.datumapis.com/domains.get
+    - networking.datumapis.com/domains.watch

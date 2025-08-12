@@ -54,6 +54,9 @@ func (c *mappedNamespaceResourceStrategy) ObjectMetaFromUpstreamObject(ctx conte
 	return metav1.ObjectMeta{
 		Name:      obj.GetName(),
 		Namespace: downstreamNamespaceName,
+		Labels: map[string]string{
+			UpstreamOwnerNamespaceLabel: obj.GetNamespace(),
+		},
 	}, nil
 }
 
@@ -95,6 +98,11 @@ func (c *mappedNamespaceResourceStrategy) ensureDownstreamNamespace(ctx context.
 		}
 
 		downstreamNamespace.Labels[UpstreamOwnerClusterNameLabel] = fmt.Sprintf("cluster-%s", strings.ReplaceAll(c.upstreamClusterName, "/", "_"))
+
+		labels := obj.GetLabels()
+		if v, ok := labels[UpstreamOwnerNamespaceLabel]; ok {
+			downstreamNamespace.Labels[UpstreamOwnerNamespaceLabel] = v
+		}
 
 		return nil
 	})

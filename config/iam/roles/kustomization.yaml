@@ -9,3 +9,5 @@ resources:
   - location-admin.yaml
   - networking-admin.yaml
   - networking-viewer.yaml
+  - domain-admin.yaml
+  - domain-viewer.yaml

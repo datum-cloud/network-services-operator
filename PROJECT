@@ -97,4 +97,13 @@ resources:
   kind: HTTPProxy
   path: go.datum.net/network-services-operator/api/v1alpha
   version: v1alpha
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: datumapis.com
+  group: networking
+  kind: Domain
+  path: go.datum.net/network-services-operator/api/v1alpha
+  version: v1alpha
 version: "3"

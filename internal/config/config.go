@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -43,6 +44,8 @@ type NetworkServicesOperator struct {
 	Discovery DiscoveryConfig `json:"discovery"`
 
 	DownstreamResourceManagement DownstreamResourceManagementConfig `json:"downstreamResourceManagement"`
+
+	DomainVerification DomainVerificationConfig `json:"domainVerificationConfig"`
 }
 
 // +k8s:deepcopy-gen=true
@@ -228,6 +231,64 @@ func (c *DownstreamResourceManagementConfig) RestConfig() (*rest.Config, error) 
 
 // +k8s:deepcopy-gen=true
 
+type DomainVerificationConfig struct {
+	// Intervals to retry verification attempts, processed in the order they are
+	// defined.
+	//
+	// If maxElapsed is not set on an interval, any amount of elapsed time will
+	// fall into that interval.
+	//
+	// +default=[{"interval": "5s", "maxElapsed": "5m"}, {"interval": "1m", "maxElapsed": "15m"}, {"interval": "5m"}]
+	RetryIntervals []RetryInterval `json:"retryIntervals"`
+
+	// Maximum jitter factor to apply to retry intervals
+	//
+	// +default=0.25
+	RetryJitterMaxFactor float64 `json:"retryJitterMaxFactor"`
+
+	// Maximum number of domain verifications that can be processed concurrently.
+	//
+	// +default=20
+	MaxConcurrentVerifications int `json:"maxConcurrentVerifications"`
+
+	// Prefix to the DNS record used for verification. Will be suffixed by the
+	// value in `spec.domainName` of a Domain resource.
+	//
+	// +default="_datum-custom-hostname"
+	DNSVerificationRecordPrefix string `json:"dnsVerificationRecordPrefix"`
+
+	// Path for the HTTP token used for verification. Will be suffixed by the
+	// UID of a Domain resource.
+	//
+	// +default=".well-known/datum-custom-hostname-challenge"
+	HTTPVerificationTokenPath string `json:"httpVerificationTokenPath"`
+}
+
+// GetRetryInterval returns the interval to retry for a given amount of elapsed
+// time. Returns 5 minutes if no matching retry interval was found.
+func (c *DomainVerificationConfig) GetRetryInterval(elapsed time.Duration) time.Duration {
+	for _, interval := range c.RetryIntervals {
+		if interval.MaxElapsed == nil || elapsed <= interval.MaxElapsed.Duration {
+			return interval.Interval.Duration
+		}
+	}
+
+	return 5 * time.Minute
+}
+
+// +k8s:deepcopy-gen=true
+
+type RetryInterval struct {
+	// Interval is how often verification attempts should occur.
+	Interval metav1.Duration `json:"interval"`
+
+	// MaxElapsed is the maximum amount of time that has elapsed since the previous
+	// verification attempt for this interval to apply. If left empty
+	MaxElapsed *metav1.Duration `json:"maxElapsed,omitempty"`
+}
+
+// +k8s:deepcopy-gen=true
+
 type GatewayConfig struct {
 	// ControllerName is the value that must be present in a GatewayClass for
 	// the operator to manage gateways for that class.
@@ -248,6 +309,13 @@ type GatewayConfig struct {
 	// DownstreamGatewayClassName is the name of the GatewayClass that should be
 	// used when programming gateways in the downstream cluster.
 	DownstreamGatewayClassName string `json:"downstreamGatewayClassName"`
+
+	// DownstreamHostnameAccountingNamespace is the name of the namespace which
+	// will be used to track which hostnames have been programmed across gateway
+	// resources.
+	//
+	// +default="datum-downstream-gateway-hostnames"
+	DownstreamHostnameAccountingNamespace string `json:"downstreamHostnameAccountingNamespace"`
 
 	// PermittedTLSOptions is a map of TLS options that are permitted on gateway
 	// listeners. The key is the option name and the value is a list of permitted
@@ -282,11 +350,6 @@ type GatewayConfig struct {
 	//
 	// +default={"80": ["HTTP"], "443": ["HTTPS"]}
 	ValidProtocolTypes map[int][]gatewayv1.ProtocolType `json:"validProtocolTypes,omitempty"`
-
-	// CustomHostnameAllowList is a list of allowed hostname suffixes for specific
-	// clusters. Hostnames on gateways in a cluster must be a subdomain of one of
-	// the suffixes in this list for that cluster.
-	CustomHostnameAllowList []CustomHostnameAllowListEntry `json:"customHostnameAllowList,omitempty"`
 }
 
 // +k8s:deepcopy-gen=true

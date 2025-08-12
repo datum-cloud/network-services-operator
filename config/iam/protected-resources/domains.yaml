@@ -1,0 +1,22 @@
+---
+apiVersion: iam.miloapis.com/v1alpha1
+kind: ProtectedResource
+metadata:
+  name: networking.datumapis.com-domain
+spec:
+  serviceRef:
+    name: "networking.datumapis.com"
+  kind: Domain
+  plural: domains
+  singular: domain
+  permissions:
+    - list
+    - get
+    - watch
+    - create
+    - update
+    - patch
+    - delete
+  parentResources:
+    - apiGroup: resourcemanager.miloapis.com
+      kind: Project

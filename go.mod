@@ -8,7 +8,7 @@ require (
 	github.com/google/go-cmp v0.7.0
 	github.com/onsi/ginkgo/v2 v2.23.4
 	github.com/stretchr/testify v1.10.0
-	go.miloapis.com/milo v0.0.0-20250625230108-ec23f7d5c3f5
+	go.miloapis.com/milo v0.1.0
 	golang.org/x/sync v0.15.0
 	google.golang.org/protobuf v1.36.6
 	k8s.io/api v0.33.1
@@ -63,7 +63,7 @@ require (
 	github.com/prometheus/common v0.64.0 // indirect
 	github.com/prometheus/procfs v0.16.1 // indirect
 	github.com/spf13/cobra v1.9.1 // indirect
-	github.com/spf13/pflag v1.0.6 // indirect
+	github.com/spf13/pflag v1.0.7 // indirect
 	github.com/stoewer/go-strcase v1.3.0 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
 	go.opentelemetry.io/auto/sdk v1.1.0 // indirect

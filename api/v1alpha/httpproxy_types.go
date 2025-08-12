@@ -10,6 +10,46 @@ import (
 
 // HTTPProxySpec defines the desired state of HTTPProxy.
 type HTTPProxySpec struct {
+
+	// Hostnames defines a set of hostnames that should match against the HTTP
+	// Host header to select a HTTPProxy used to process the request.
+	//
+	// Valid values for Hostnames are determined by RFC 1123 definition of a
+	// hostname with 1 notable exception:
+	//
+	// 1. IPs are not allowed.
+	//
+	// Hostnames must be verified before being programmed. This is accomplished
+	// via the use of `Domain` resources. A hostname is considered verified if any
+	// verified `Domain` resource exists in the same namespace where the
+	// `spec.domainName` of the resource either exactly matches the hostname, or
+	// is a suffix match of the hostname. That means that a Domain with a
+	// `spec.domainName` of `example.com` will match a hostname of
+	// `test.example.com`, `foo.test.example.com`, and exactly `example.com`, but
+	// not a hostname of `test-example.com`. If a `Domain` resource does not exist
+	// that matches a hostname, one will automatically be created when the system
+	// attempts to program the HTTPProxy.
+	//
+	// In addition to verifying ownership, hostnames must be unique across the
+	// platform. If a hostname is already programmed on another resource, a
+	// conflict will be encountered and communicated in the `HostnamesVerified`
+	// condition.
+	//
+	// Hostnames which have been programmed will be listed in the
+	// `status.hostnames` field. Any hostname which has not been programmed will
+	// be listed in the `message` field of the `HostnamesVerified` condition with
+	// an indication as to why it was not programmed.
+	//
+	// The system may automatically generate and associate hostnames with the
+	// HTTPProxy. In such cases, these will be listed in the `status.hostnames`
+	// field and do not require additional configuration by the user.
+	//
+	// Wildcard hostnames are not supported at this time.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MaxItems=16
+	Hostnames []gatewayv1.Hostname `json:"hostnames,omitempty"`
+
 	// Rules are a list of HTTP matchers, filters and actions.
 	//
 	// +kubebuilder:validation:Required
@@ -107,7 +147,7 @@ type HTTPProxyStatus struct {
 	// Hostnames lists the hostnames that have been bound to the HTTPProxy.
 	//
 	// If this list does not match that defined in the HTTPProxy, see the
-	// `Programmed` condition message for details.
+	// `HostnamesVerified` condition message for details.
 	Hostnames []gatewayv1.Hostname `json:"hostnames,omitempty"`
 
 	// Conditions describe the current conditions of the HTTPProxy.
@@ -126,6 +166,14 @@ const (
 	// programmed into underlying Gateway resources, and those resources have also
 	// been programmed.
 	HTTPProxyConditionProgrammed = "Programmed"
+
+	// This condition is true when all hostnames defined in an HTTPProxy or a
+	// Gateway listener have been verified.
+	HTTPProxyConditionHostnamesVerified = "HostnamesVerified"
+
+	// This condition is present and true when a hostname defined in an HTTPProxy
+	// is in use by another resource.
+	HTTPProxyConditionHostnamesInUse = "HostnamesInUse"
 )
 
 const (
@@ -144,6 +192,18 @@ const (
 	// conditions when the status is "Unknown" and no controller has reconciled
 	// the HTTPProxy.
 	HTTPProxyReasonPending = "Pending"
+
+	// This reason is used with the "HostnamesVerified" condition when all hostnames
+	// defined in an HTTPProxy or Gateway listener have been verified.
+	HTTPProxyReasonHostnamesVerified = "HostnamesVerified"
+
+	// This reason is used with the a hostname defined in an HTTPProxy or Gateway
+	// has not been verified.
+	UnverifiedHostnamesPresent = "UnverifiedHostnamesPresent"
+
+	// This reason is used with the a hostname defined in an HTTPProxy or Gateway
+	// is in use by another resource.
+	HostnameInUseReason = "HostnameInUse"
 )
 
 // +kubebuilder:object:root=true

@@ -19,8 +19,8 @@ spec:
         severity: critical
         slo_violation: "true"
       annotations:
-        summary: "Gateway {{ $labels.name }} is taking longer than 60 seconds to reach Ready status"
-        description: "Gateway {{ $labels.name }} in namespace {{ $labels.namespace }} has been in creation state for {{ $value }} seconds without reaching Ready status (Accepted=True AND Programmed=True), which exceeds the 60-second SLO threshold."
+        summary: "Gateway {{ $labels.resource_name }} is taking longer than 60 seconds to reach Ready status"
+        description: "Gateway {{ $labels.resource_name }} in namespace {{ $labels.resource_namespace }} has been in creation state for {{ $value }} seconds without reaching Ready status (Accepted=True AND Programmed=True), which exceeds the 60-second SLO threshold."
 
     - alert: GatewayDegradedSLOViolation
       expr: |

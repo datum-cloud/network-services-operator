@@ -2,7 +2,6 @@ package webhook
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
@@ -28,10 +27,6 @@ func (s *clusterAwareWebhookServer) Register(path string, hook http.Handler) {
 			}
 			return orig.Handle(ctx, req)
 		})
-	}
-
-	if s.discoveryMode != multiclusterproviders.ProviderSingle {
-		path = fmt.Sprintf("/clusters/{cluster_name}%s", path)
 	}
 
 	s.Server.Register(path, hook)

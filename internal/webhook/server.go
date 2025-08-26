@@ -22,9 +22,8 @@ func (s *clusterAwareWebhookServer) Register(path string, hook http.Handler) {
 	if h, ok := hook.(*admission.Webhook); ok {
 		orig := h.Handler
 		h.Handler = admission.HandlerFunc(func(ctx context.Context, req admission.Request) admission.Response {
-			if c := clusterFromExtra(req.UserInfo.Extra); c != "" {
-				ctx = mccontext.WithCluster(ctx, c)
-			}
+			c := clusterFromExtra(req.UserInfo.Extra)
+			ctx = mccontext.WithCluster(ctx, c)
 			return orig.Handle(ctx, req)
 		})
 	}

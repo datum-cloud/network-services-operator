@@ -7,12 +7,12 @@ spec:
   groups:
   - name: nso-slo
     interval: 30s
-    rules:  
+    rules:
     - alert: GatewayNotReadySLOViolation
       expr: |
-        sum(time() - datum_cloud_networking_gateway_created) by (infrastructure_namespace, resource_namespace, resource_name) > 60
+        sum(time() - datum_cloud_networking_gateway_created) by (resourcemanager_datumapis_com_project_name, resource_namespace, resource_name) > 60
         unless (
-          sum(datum_cloud_networking_gateway_status{type=~"Accepted|Programmed"} == 1) by (infrastructure_namespace, resource_namespace, resource_name) == 2
+          sum(datum_cloud_networking_gateway_status{type=~"Accepted|Programmed"} == 1) by (resourcemanager_datumapis_com_project_name, resource_namespace, resource_name) == 2
         )
       for: 0s
       labels:
@@ -25,12 +25,12 @@ spec:
     - alert: GatewayDegradedSLOViolation
       expr: |
         (
-          sum(time() - datum_cloud_networking_gateway_status_condition_last_transition_time{type=~"Accepted|Programmed", status="False"}) 
-          by (infrastructure_namespace, resource_namespace, resource_name)
+          sum(time() - datum_cloud_networking_gateway_status_condition_last_transition_time{type=~"Accepted|Programmed", status="False"})
+          by (resourcemanager_datumapis_com_project_name, resource_namespace, resource_name)
         ) > 60
         and (
-          sum(datum_cloud_networking_gateway_status{type=~"Accepted|Programmed"} == 1) 
-          by (infrastructure_namespace, resource_namespace, resource_name) < 2
+          sum(datum_cloud_networking_gateway_status{type=~"Accepted|Programmed"} == 1)
+          by (resourcemanager_datumapis_com_project_name, resource_namespace, resource_name) < 2
         )
       for: 0s
       labels:

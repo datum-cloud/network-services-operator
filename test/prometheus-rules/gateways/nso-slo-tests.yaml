@@ -1,0 +1,101 @@
+rule_files:
+  - nso-slo-rules.yaml
+
+evaluation_interval: 30s
+
+tests:
+  # Test for GatewayNotReadySLOViolation - Gateway created more than 60s ago but not ready
+  - interval: 1m
+    input_series:
+      # Gateway created 120 seconds ago (eval_time 60s - 120s = timestamp -60)
+      - series: 'datum_cloud_networking_gateway_created{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="test-gateway"}'
+        values: '-60+0x3'
+      # Only has Accepted=1 status, missing Programmed
+      - series: 'datum_cloud_networking_gateway_status{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="test-gateway", type="Accepted"}'
+        values: '1+0x3'
+      - series: 'datum_cloud_networking_gateway_status{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="test-gateway", type="Programmed"}'
+        values: '0+0x3'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: GatewayNotReadySLOViolation
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              slo_violation: "true"
+              resourcemanager_datumapis_com_project_name: test-project
+              resource_namespace: test-ns
+              resource_name: test-gateway
+            exp_annotations:
+              summary: "Gateway test-gateway is taking longer than 60 seconds to reach Ready status"
+              description: "Gateway test-gateway in namespace test-ns has been in creation state for 120 seconds without reaching Ready status (Accepted=True AND Programmed=True), which exceeds the 60-second SLO threshold."
+
+  # Test for GatewayNotReadySLOViolation - Gateway ready (should NOT alert)
+  - interval: 1m
+    input_series:
+      # Gateway created 120 seconds ago
+      - series: 'datum_cloud_networking_gateway_created{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="ready-gateway"}'
+        values: '-60+0x3'
+      # Both statuses are 1 (Ready)
+      - series: 'datum_cloud_networking_gateway_status{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="ready-gateway", type="Accepted"}'
+        values: '1+0x3'
+      - series: 'datum_cloud_networking_gateway_status{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="ready-gateway", type="Programmed"}'
+        values: '1+0x3'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: GatewayNotReadySLOViolation
+        exp_alerts: []
+
+  # Test for GatewayDegradedSLOViolation - Gateway degraded for more than 60s
+  - interval: 1m
+    input_series:
+      # Transition to False 120 seconds ago (eval_time 60s - 120s = timestamp -60)
+      - series: 'datum_cloud_networking_gateway_status_condition_last_transition_time{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="degraded-gateway", type="Accepted", status="False"}'
+        values: '-60+0x3'
+      # Current status is False (0)
+      - series: 'datum_cloud_networking_gateway_status{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="degraded-gateway", type="Accepted"}'
+        values: '0+0x3'
+      - series: 'datum_cloud_networking_gateway_status{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="degraded-gateway", type="Programmed"}'
+        values: '1+0x3'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: GatewayDegradedSLOViolation
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              slo_violation: "true"
+              resourcemanager_datumapis_com_project_name: test-project
+              resource_namespace: test-ns
+              resource_name: degraded-gateway
+            exp_annotations:
+              summary: "Gateway degraded-gateway has been degraded for over 60 seconds"
+              description: "Gateway degraded-gateway in namespace test-ns has been in a degraded state for over 60 seconds without recovering, which exceeds the 60-second SLO threshold."
+
+  # Test for GatewayDegradedSLOViolation - Gateway functional (should NOT alert)
+  - interval: 1m
+    input_series:
+      # Both statuses are 1 (functional)
+      - series: 'datum_cloud_networking_gateway_status{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="healthy-gateway", type="Accepted"}'
+        values: '1+0x3'
+      - series: 'datum_cloud_networking_gateway_status{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="healthy-gateway", type="Programmed"}'
+        values: '1+0x3'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: GatewayDegradedSLOViolation
+        exp_alerts: []
+
+  # Edge case test - Gateway created exactly 60s ago (should NOT alert)
+  - interval: 1m
+    input_series:
+      # Gateway created exactly 60 seconds ago (time() - created = 60)
+      # If eval_time is 1m (60s), then created should be 0
+      - series: 'datum_cloud_networking_gateway_created{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="edge-case-gateway"}'
+        values: '0+0x3'
+      # Only has Accepted
+      - series: 'datum_cloud_networking_gateway_status{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="edge-case-gateway", type="Accepted"}'
+        values: '1+0x3'
+      - series: 'datum_cloud_networking_gateway_status{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="edge-case-gateway", type="Programmed"}'
+        values: '0+0x3'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: GatewayNotReadySLOViolation
+        exp_alerts: []

@@ -3,8 +3,10 @@ package controller
 import (
 	"context"
 	"fmt"
+	"slices"
 	"testing"
 
+	"github.com/davecgh/go-spew/spew"
 	"github.com/stretchr/testify/assert"
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
@@ -16,11 +18,14 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	"go.datum.net/network-services-operator/internal/config"
 	downstreamclient "go.datum.net/network-services-operator/internal/downstreamclient"
+	gatewayutil "go.datum.net/network-services-operator/internal/util/gateway"
 )
 
 func TestEnsureDownstreamGateway(t *testing.T) {
@@ -53,77 +58,34 @@ func TestEnsureDownstreamGateway(t *testing.T) {
 		assert                    func(t *testing.T, upstreamGateway, downstreamGateway *gatewayv1.Gateway)
 	}{
 		{
-			name: "http listener only",
-			upstreamGateway: newGateway(upstreamNamespace.Name, "test", func(g *gatewayv1.Gateway) {
-				g.Spec.Listeners = []gatewayv1.Listener{
-					{
-						Name:     gatewayv1.SectionName(SchemeHTTP),
-						Port:     DefaultHTTPPort,
-						Protocol: gatewayv1.HTTPProtocolType,
-					},
-				}
-			}),
-			assert: func(t *testing.T, upstreamGateway, downstreamGateway *gatewayv1.Gateway) {
-				assert.Len(t, downstreamGateway.Spec.Listeners, 1)
-				assert.Equal(t, gatewayv1.PortNumber(DefaultHTTPPort), downstreamGateway.Spec.Listeners[0].Port)
-				assert.Equal(t, gatewayv1.HTTPProtocolType, downstreamGateway.Spec.Listeners[0].Protocol)
-			},
-		},
-		{
-			name: "https listener only",
-			upstreamGateway: newGateway(upstreamNamespace.Name, "test", func(g *gatewayv1.Gateway) {
-				g.Spec.Listeners = []gatewayv1.Listener{
-					{
-						Name:     gatewayv1.SectionName(SchemeHTTPS),
-						Port:     DefaultHTTPSPort,
-						Protocol: gatewayv1.HTTPSProtocolType,
-					},
-				}
-			}),
-			assert: func(t *testing.T, upstreamGateway, downstreamGateway *gatewayv1.Gateway) {
-				assert.Len(t, downstreamGateway.Spec.Listeners, 1)
-				assert.Equal(t, gatewayv1.PortNumber(DefaultHTTPSPort), downstreamGateway.Spec.Listeners[0].Port)
-				assert.Equal(t, gatewayv1.HTTPSProtocolType, downstreamGateway.Spec.Listeners[0].Protocol)
-			},
-		},
-		{
 			name: "http and https listeners",
-			upstreamGateway: newGateway(upstreamNamespace.Name, "test", func(g *gatewayv1.Gateway) {
-				g.Spec.Listeners = []gatewayv1.Listener{
-					{
-						Name:     gatewayv1.SectionName(SchemeHTTP),
-						Port:     DefaultHTTPPort,
-						Protocol: gatewayv1.HTTPProtocolType,
-					},
-					{
-						Name:     gatewayv1.SectionName(SchemeHTTPS),
-						Port:     DefaultHTTPSPort,
-						Protocol: gatewayv1.HTTPSProtocolType,
-					},
-				}
+			upstreamGateway: newGateway(testConfig, upstreamNamespace.Name, "test", func(g *gatewayv1.Gateway) {
+
 			}),
 			assert: func(t *testing.T, upstreamGateway, downstreamGateway *gatewayv1.Gateway) {
-				assert.Len(t, downstreamGateway.Spec.Listeners, 2)
+				spew.Dump(downstreamGateway)
+				if assert.Len(t, downstreamGateway.Spec.Listeners, 2) {
 
-				assert.Equal(t, gatewayv1.PortNumber(DefaultHTTPPort), downstreamGateway.Spec.Listeners[0].Port)
-				assert.Equal(t, gatewayv1.HTTPProtocolType, downstreamGateway.Spec.Listeners[0].Protocol)
+					assert.Equal(t, gatewayv1.PortNumber(DefaultHTTPPort), downstreamGateway.Spec.Listeners[0].Port)
+					assert.Equal(t, gatewayv1.HTTPProtocolType, downstreamGateway.Spec.Listeners[0].Protocol)
 
-				assert.Equal(t, gatewayv1.PortNumber(DefaultHTTPSPort), downstreamGateway.Spec.Listeners[1].Port)
-				assert.Equal(t, gatewayv1.HTTPSProtocolType, downstreamGateway.Spec.Listeners[1].Protocol)
+					assert.Equal(t, gatewayv1.PortNumber(DefaultHTTPSPort), downstreamGateway.Spec.Listeners[1].Port)
+					assert.Equal(t, gatewayv1.HTTPSProtocolType, downstreamGateway.Spec.Listeners[1].Protocol)
+				}
 			},
 		},
 		{
 			name: "hostname claimed by different gateway",
-			upstreamGateway: newGateway(upstreamNamespace.Name, "test", func(g *gatewayv1.Gateway) {
+			upstreamGateway: newGateway(testConfig, upstreamNamespace.Name, "test", func(g *gatewayv1.Gateway) {
 				g.Spec.Listeners = []gatewayv1.Listener{
 					{
-						Name:     gatewayv1.SectionName(SchemeHTTP),
+						Name:     "custom-hostname-0",
 						Port:     DefaultHTTPPort,
 						Protocol: gatewayv1.HTTPProtocolType,
 						Hostname: ptr.To(gatewayv1.Hostname("example.com")),
 					},
 					{
-						Name:     gatewayv1.SectionName(SchemeHTTPS),
+						Name:     "custom-hostname-1",
 						Port:     DefaultHTTPPort,
 						Protocol: gatewayv1.HTTPProtocolType,
 						Hostname: ptr.To(gatewayv1.Hostname("test.example.com")),
@@ -180,6 +142,8 @@ func TestEnsureDownstreamGateway(t *testing.T) {
 		},
 	}
 
+	logger := zap.New(zap.UseFlagOptions(&zap.Options{Development: true}))
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 
@@ -213,6 +177,7 @@ func TestEnsureDownstreamGateway(t *testing.T) {
 				Build()
 
 			ctx := context.Background()
+			ctx = log.IntoContext(ctx, logger)
 
 			mgr := &fakeMockManager{cl: fakeUpstreamClient}
 
@@ -224,6 +189,7 @@ func TestEnsureDownstreamGateway(t *testing.T) {
 
 			downstreamStrategy := downstreamclient.NewMappedNamespaceResourceStrategy("test", fakeUpstreamClient, fakeDownstreamClient)
 
+			reconciler.prepareUpstreamGateway(tt.upstreamGateway)
 			result, downstreamGateway := reconciler.ensureDownstreamGateway(
 				ctx,
 				"test-suite",
@@ -253,6 +219,14 @@ func TestEnsureDownstreamGatewayHTTPRoutes(t *testing.T) {
 	assert.NoError(t, gatewayv1.Install(testScheme))
 	assert.NoError(t, discoveryv1.AddToScheme(testScheme))
 
+	testConfig := config.NetworkServicesOperator{
+		Gateway: config.GatewayConfig{
+			DownstreamGatewayClassName:            "test-suite",
+			DownstreamHostnameAccountingNamespace: "default",
+			TargetDomain:                          "test-suite.com",
+		},
+	}
+
 	upstreamNamespace := &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "test",
@@ -269,7 +243,7 @@ func TestEnsureDownstreamGatewayHTTPRoutes(t *testing.T) {
 	}{
 		{
 			name:            "no routes",
-			upstreamGateway: newGateway(upstreamNamespace.Name, "test"),
+			upstreamGateway: newGateway(testConfig, upstreamNamespace.Name, "test"),
 			assert: func(t *testing.T, gateway *gatewayv1.Gateway) {
 				assert.Len(t, gateway.Status.Listeners, len(gateway.Spec.Listeners), "number of listeners in status does not match spec")
 
@@ -280,7 +254,7 @@ func TestEnsureDownstreamGatewayHTTPRoutes(t *testing.T) {
 		},
 		{
 			name:            "single route, all listeners",
-			upstreamGateway: newGateway(upstreamNamespace.Name, "test"),
+			upstreamGateway: newGateway(testConfig, upstreamNamespace.Name, "test"),
 			existingUpstreamObjects: []client.Object{
 				newHTTPRoute(upstreamNamespace.Name, "route-1", func(route *gatewayv1.HTTPRoute) {
 					route.Spec.ParentRefs = []gatewayv1.ParentReference{
@@ -300,7 +274,7 @@ func TestEnsureDownstreamGatewayHTTPRoutes(t *testing.T) {
 		},
 		{
 			name: "multiple routes, varied listener attachments",
-			upstreamGateway: newGateway(
+			upstreamGateway: newGateway(testConfig,
 				upstreamNamespace.Name,
 				"test",
 				func(g *gatewayv1.Gateway) {
@@ -408,7 +382,7 @@ func TestEnsureDownstreamGatewayHTTPRoutes(t *testing.T) {
 				WithStatusSubresource(tt.existingUpstreamObjects...).
 				Build()
 
-			downstreamGateway := newGateway(downstreamNamespaceName, tt.upstreamGateway.Name)
+			downstreamGateway := newGateway(testConfig, downstreamNamespaceName, tt.upstreamGateway.Name)
 
 			fakeDownstreamClient := fake.NewClientBuilder().
 				WithScheme(testScheme).
@@ -490,7 +464,7 @@ func TestEnsureHostnamesClaimed(t *testing.T) {
 	}{
 		{
 			name: "domains created for custom hostnames on HTTP listeners",
-			upstreamGateway: newGateway(upstreamNamespace.Name, "test", func(g *gatewayv1.Gateway) {
+			upstreamGateway: newGateway(testConfig, upstreamNamespace.Name, "test", func(g *gatewayv1.Gateway) {
 				g.Spec.Listeners = []gatewayv1.Listener{
 					{
 						Name:     "listener-1",
@@ -532,7 +506,7 @@ func TestEnsureHostnamesClaimed(t *testing.T) {
 		},
 		{
 			name: "domain exists but is not verified",
-			upstreamGateway: newGateway(upstreamNamespace.Name, "test", func(g *gatewayv1.Gateway) {
+			upstreamGateway: newGateway(testConfig, upstreamNamespace.Name, "test", func(g *gatewayv1.Gateway) {
 				g.Spec.Listeners = []gatewayv1.Listener{
 					{
 						Name:     gatewayv1.SectionName(SchemeHTTP),
@@ -549,7 +523,7 @@ func TestEnsureHostnamesClaimed(t *testing.T) {
 		},
 		{
 			name: "verified domain exists",
-			upstreamGateway: newGateway(upstreamNamespace.Name, "test", func(g *gatewayv1.Gateway) {
+			upstreamGateway: newGateway(testConfig, upstreamNamespace.Name, "test", func(g *gatewayv1.Gateway) {
 				g.Spec.Listeners = []gatewayv1.Listener{
 					{
 						Name:     "listener-1",
@@ -578,7 +552,7 @@ func TestEnsureHostnamesClaimed(t *testing.T) {
 		},
 		{
 			name: "verified domain exists but hostname is claimed by different gateway",
-			upstreamGateway: newGateway(upstreamNamespace.Name, "test", func(g *gatewayv1.Gateway) {
+			upstreamGateway: newGateway(testConfig, upstreamNamespace.Name, "test", func(g *gatewayv1.Gateway) {
 				g.Spec.Listeners = []gatewayv1.Listener{
 					{
 						Name:     "listener-1",
@@ -619,7 +593,7 @@ func TestEnsureHostnamesClaimed(t *testing.T) {
 		},
 		{
 			name: "hostname verified by being programmed on downstream gateway",
-			upstreamGateway: newGateway(upstreamNamespace.Name, "test", func(g *gatewayv1.Gateway) {
+			upstreamGateway: newGateway(testConfig, upstreamNamespace.Name, "test", func(g *gatewayv1.Gateway) {
 				g.Spec.Listeners = []gatewayv1.Listener{
 					{
 						Name:     gatewayv1.SectionName(SchemeHTTP),
@@ -629,7 +603,7 @@ func TestEnsureHostnamesClaimed(t *testing.T) {
 					},
 				}
 			}),
-			downstreamGateway: newGateway(downstreamNamespaceName, "test", func(g *gatewayv1.Gateway) {
+			downstreamGateway: newGateway(testConfig, downstreamNamespaceName, "test", func(g *gatewayv1.Gateway) {
 				g.Spec.Listeners = []gatewayv1.Listener{
 					{
 						Name:     gatewayv1.SectionName(SchemeHTTP),
@@ -644,7 +618,7 @@ func TestEnsureHostnamesClaimed(t *testing.T) {
 		},
 		{
 			name: "exact or subdomain match only",
-			upstreamGateway: newGateway(upstreamNamespace.Name, "test", func(g *gatewayv1.Gateway) {
+			upstreamGateway: newGateway(testConfig, upstreamNamespace.Name, "test", func(g *gatewayv1.Gateway) {
 				g.Spec.Listeners = []gatewayv1.Listener{
 					{
 						Name:     "listener-1",
@@ -735,8 +709,18 @@ func TestEnsureHostnamesClaimed(t *testing.T) {
 			)
 
 			if assert.NoError(t, err, "unexpected error calling ensureHostnameVerification") {
-				assert.EqualValues(t, tt.expectedVerifiedHostnames, verifiedHostnames, "expected verified hostnames mismatch")
-				assert.EqualValues(t, tt.expectedClaimedHostnames, claimedHostnames, "expected claimed hostnames mistmatch")
+				expectedVerifiedHostnames := append(
+					tt.expectedVerifiedHostnames,
+					testConfig.Gateway.GatewayDNSAddress(tt.upstreamGateway),
+				)
+				expectedClaimedHostnames := append(
+					tt.expectedClaimedHostnames,
+					testConfig.Gateway.GatewayDNSAddress(tt.upstreamGateway),
+				)
+				slices.Sort(expectedVerifiedHostnames)
+				slices.Sort(expectedClaimedHostnames)
+				assert.EqualValues(t, expectedVerifiedHostnames, verifiedHostnames, "expected verified hostnames mismatch")
+				assert.EqualValues(t, expectedClaimedHostnames, claimedHostnames, "expected claimed hostnames mistmatch")
 				assert.EqualValues(t, tt.expectedNotClaimedHostnames, notClaimedHostnames, "expected not claimed hostnames mismatch")
 			}
 
@@ -751,28 +735,19 @@ func TestEnsureHostnamesClaimed(t *testing.T) {
 	}
 }
 
-func newGateway(namespace, name string, opts ...func(*gatewayv1.Gateway)) *gatewayv1.Gateway {
+func newGateway(testConfig config.NetworkServicesOperator, namespace, name string, opts ...func(*gatewayv1.Gateway)) *gatewayv1.Gateway {
 	gw := &gatewayv1.Gateway{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: namespace,
 			Name:      name,
+			UID:       uuid.NewUUID(),
 		},
 		Spec: gatewayv1.GatewaySpec{
 			GatewayClassName: "test",
-			Listeners: []gatewayv1.Listener{
-				{
-					Name:     gatewayv1.SectionName(SchemeHTTP),
-					Port:     DefaultHTTPPort,
-					Protocol: gatewayv1.HTTPProtocolType,
-				},
-				{
-					Name:     gatewayv1.SectionName(SchemeHTTPS),
-					Port:     DefaultHTTPSPort,
-					Protocol: gatewayv1.HTTPSProtocolType,
-				},
-			},
 		},
 	}
+
+	gatewayutil.SetDefaultListeners(gw, testConfig.Gateway)
 
 	for _, opt := range opts {
 		opt(gw)
@@ -786,6 +761,7 @@ func newHTTPRoute(namespace, name string, opts ...func(*gatewayv1.HTTPRoute)) *g
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: namespace,
 			Name:      name,
+			UID:       uuid.NewUUID(),
 		},
 		Spec: gatewayv1.HTTPRouteSpec{},
 	}

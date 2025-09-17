@@ -35,7 +35,6 @@ import (
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	"go.datum.net/network-services-operator/internal/config"
 	"go.datum.net/network-services-operator/internal/controller"
-	"go.datum.net/network-services-operator/internal/validation"
 	networkingwebhook "go.datum.net/network-services-operator/internal/webhook"
 	networkinggatewayv1webhooks "go.datum.net/network-services-operator/internal/webhook/v1"
 	networkingv1alphawebhooks "go.datum.net/network-services-operator/internal/webhook/v1alpha"
@@ -239,14 +238,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	validationOpts := validation.GatewayValidationOptions{
-		ControllerName:      serverConfig.Gateway.ControllerName,
-		PermittedTLSOptions: serverConfig.Gateway.PermittedTLSOptions,
-		ValidPortNumbers:    serverConfig.Gateway.ValidPortNumbers,
-		ValidProtocolTypes:  serverConfig.Gateway.ValidProtocolTypes,
-	}
-
-	if err := networkinggatewayv1webhooks.SetupGatewayWebhookWithManager(mgr, validationOpts); err != nil {
+	if err := networkinggatewayv1webhooks.SetupGatewayWebhookWithManager(mgr, serverConfig); err != nil {
 		setupLog.Error(err, "unable to create webhook", "webhook", "Gateway")
 		os.Exit(1)
 	}

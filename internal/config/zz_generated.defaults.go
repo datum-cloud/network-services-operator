@@ -27,6 +27,11 @@ func SetObjectDefaults_NetworkServicesOperator(in *NetworkServicesOperator) {
 	if in.Gateway.DownstreamHostnameAccountingNamespace == "" {
 		in.Gateway.DownstreamHostnameAccountingNamespace = "datum-downstream-gateway-hostnames"
 	}
+	if in.Gateway.ListenerTLSOptions == nil {
+		if err := json.Unmarshal([]byte(`{"gateway.networking.datumapis.com/certificate-issuer": "auto"}`), &in.Gateway.ListenerTLSOptions); err != nil {
+			panic(err)
+		}
+	}
 	if in.Gateway.ValidPortNumbers == nil {
 		if err := json.Unmarshal([]byte(`[80,443]`), &in.Gateway.ValidPortNumbers); err != nil {
 			panic(err)
@@ -39,11 +44,6 @@ func SetObjectDefaults_NetworkServicesOperator(in *NetworkServicesOperator) {
 	}
 	if in.HTTPProxy.GatewayClassName == "" {
 		in.HTTPProxy.GatewayClassName = "datum-external-global-proxy"
-	}
-	if in.HTTPProxy.GatewayTLSOptions == nil {
-		if err := json.Unmarshal([]byte(`{"gateway.networking.datumapis.com/certificate-issuer": "auto"}`), &in.HTTPProxy.GatewayTLSOptions); err != nil {
-			panic(err)
-		}
 	}
 	SetDefaults_DiscoveryConfig(&in.Discovery)
 	if in.DomainVerification.RetryIntervals == nil {

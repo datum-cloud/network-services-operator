@@ -31,6 +31,7 @@ import (
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	"go.datum.net/network-services-operator/internal/config"
 	conditionutil "go.datum.net/network-services-operator/internal/util/condition"
+	gatewayutil "go.datum.net/network-services-operator/internal/util/gateway"
 )
 
 // HTTPProxyReconciler reconciles a HTTPProxy object
@@ -127,6 +128,20 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 
 		if err := controllerutil.SetControllerReference(&httpProxy, gateway, cl.GetScheme()); err != nil {
 			return fmt.Errorf("failed to set controller on gateway: %w", err)
+		}
+
+		// Special handling for default gateway listeners, as the hostnames will be
+		// updated by the controller. Only required on updates.
+		if !gateway.CreationTimestamp.IsZero() {
+			defaultHTTPListener := gatewayutil.GetListenerByName(gateway.Spec.Listeners, gatewayutil.DefaultHTTPListenerName)
+			if defaultHTTPListener != nil {
+				desiredResources.gateway.Spec.Listeners = append(desiredResources.gateway.Spec.Listeners, *defaultHTTPListener)
+			}
+
+			defaultHTTPSListener := gatewayutil.GetListenerByName(gateway.Spec.Listeners, gatewayutil.DefaultHTTPSListenerName)
+			if defaultHTTPSListener != nil {
+				desiredResources.gateway.Spec.Listeners = append(desiredResources.gateway.Spec.Listeners, *defaultHTTPSListener)
+			}
 		}
 
 		gateway.Spec = desiredResources.gateway.Spec
@@ -380,34 +395,13 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 		},
 		Spec: gatewayv1.GatewaySpec{
 			GatewayClassName: r.Config.HTTPProxy.GatewayClassName,
-			Listeners: []gatewayv1.Listener{
-				{
-					Name:     SchemeHTTP,
-					Protocol: gatewayv1.HTTPProtocolType,
-					Port:     DefaultHTTPPort,
-					AllowedRoutes: &gatewayv1.AllowedRoutes{
-						Namespaces: &gatewayv1.RouteNamespaces{
-							From: ptr.To(gatewayv1.NamespacesFromSame),
-						},
-					},
-				},
-				{
-					Name:     SchemeHTTPS,
-					Protocol: gatewayv1.HTTPSProtocolType,
-					Port:     DefaultHTTPSPort,
-					AllowedRoutes: &gatewayv1.AllowedRoutes{
-						Namespaces: &gatewayv1.RouteNamespaces{
-							From: ptr.To(gatewayv1.NamespacesFromSame),
-						},
-					},
-					TLS: &gatewayv1.GatewayTLSConfig{
-						Mode:    ptr.To(gatewayv1.TLSModeTerminate),
-						Options: r.Config.HTTPProxy.GatewayTLSOptions,
-					},
-				},
-			},
 		},
 	}
+
+	// Hostname fields will be nil on the default listeners until the gateway
+	// controller updates them. There's special handling for this in the
+	// CreateOrUpdate logic for maintaining the gateway.
+	gatewayutil.SetDefaultListeners(gateway, r.Config.Gateway)
 
 	// Add listeners for each hostname
 	for i, hostname := range httpProxy.Spec.Hostnames {
@@ -435,7 +429,7 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 			},
 			TLS: &gatewayv1.GatewayTLSConfig{
 				Mode:    ptr.To(gatewayv1.TLSModeTerminate),
-				Options: r.Config.HTTPProxy.GatewayTLSOptions,
+				Options: r.Config.Gateway.ListenerTLSOptions,
 			},
 		})
 	}

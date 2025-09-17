@@ -15,10 +15,9 @@ gateway:
   downstreamGatewayClassName: datum-downstream-gateway-e2e
   permittedTLSOptions:
     gateway.networking.datumapis.com/certificate-issuer: []
-
-httpProxy:
-  tlsOptions:
+  listenerTLSOptions:
     gateway.networking.datumapis.com/certificate-issuer: gateway-clusterissuer-selfsigned-ca
+
 
 downstreamResourceManagement:
   # TODO(jreese) remove this when we make the downstream resource strategy

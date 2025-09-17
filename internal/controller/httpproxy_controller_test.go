@@ -31,11 +31,14 @@ import (
 func TestHTTPProxyCollectDesiredResources(t *testing.T) {
 
 	operatorConfig := config.NetworkServicesOperator{
-		HTTPProxy: config.HTTPProxyConfig{
-			GatewayClassName: "test",
-			GatewayTLSOptions: map[gatewayv1.AnnotationKey]gatewayv1.AnnotationValue{
+		Gateway: config.GatewayConfig{
+			TargetDomain: "example.com",
+			ListenerTLSOptions: map[gatewayv1.AnnotationKey]gatewayv1.AnnotationValue{
 				gatewayv1.AnnotationKey("gateway.networking.datumapis.com/certificate-issuer"): gatewayv1.AnnotationValue("test"),
 			},
+		},
+		HTTPProxy: config.HTTPProxyConfig{
+			GatewayClassName: "test",
 		},
 	}
 
@@ -252,7 +255,7 @@ func TestHTTPProxyCollectDesiredResources(t *testing.T) {
 			assert.Equal(t, operatorConfig.HTTPProxy.GatewayClassName, gateway.Spec.GatewayClassName)
 
 			assert.Len(t, gateway.Spec.Listeners, 2+(len(tt.httpProxy.Spec.Hostnames)*2))
-			assert.Equal(t, operatorConfig.HTTPProxy.GatewayTLSOptions, gateway.Spec.Listeners[1].TLS.Options)
+			assert.Equal(t, operatorConfig.Gateway.ListenerTLSOptions, gateway.Spec.Listeners[1].TLS.Options)
 
 			// HTTPRoute assertions on items that are not hard coded
 			assert.Equal(t, tt.httpProxy.Namespace, httpRoute.Namespace)
@@ -297,12 +300,12 @@ func TestHTTPProxyReconcile(t *testing.T) {
 	testConfig := config.NetworkServicesOperator{
 		HTTPProxy: config.HTTPProxyConfig{
 			GatewayClassName: "test-gateway-class",
-			GatewayTLSOptions: map[gatewayv1.AnnotationKey]gatewayv1.AnnotationValue{
-				gatewayv1.AnnotationKey("gateway.networking.datumapis.com/certificate-issuer"): gatewayv1.AnnotationValue("test-issuer"),
-			},
 		},
 		Gateway: config.GatewayConfig{
 			TargetDomain: "example.com",
+			ListenerTLSOptions: map[gatewayv1.AnnotationKey]gatewayv1.AnnotationValue{
+				gatewayv1.AnnotationKey("gateway.networking.datumapis.com/certificate-issuer"): gatewayv1.AnnotationValue("test-issuer"),
+			},
 		},
 	}
 

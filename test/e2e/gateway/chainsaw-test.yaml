@@ -430,101 +430,45 @@ spec:
                   status: "True"
                   type: Programmed
                 listeners:
-                - attachedRoutes: 0
-                  conditions:
-                  - reason: Programmed
-                    status: "True"
-                    type: Programmed
-                  - reason: Accepted
-                    status: "True"
-                    type: Accepted
-                  - reason: ResolvedRefs
-                    status: "True"
-                    type: ResolvedRefs
+                - (conditions[?contains(['Programmed', 'Accepted', 'ResolvedRefs'], type)]):
+                  - status: "True"
+                  - status: "True"
+                  - status: "True"
                   name: http-test-e2e
-                - attachedRoutes: 0
-                  conditions:
-                  - reason: Programmed
-                    status: "True"
-                    type: Programmed
-                  - reason: Accepted
-                    status: "True"
-                    type: Accepted
-                  - reason: ResolvedRefs
-                    status: "True"
-                    type: ResolvedRefs
+                - (conditions[?contains(['Programmed', 'Accepted', 'ResolvedRefs'], type)]):
+                  - status: "True"
+                  - status: "True"
+                  - status: "True"
                   name: https-test-e2e
-                - attachedRoutes: 0
-                  conditions:
-                  - reason: Programmed
-                    status: "True"
-                    type: Programmed
-                  - reason: Accepted
-                    status: "True"
-                    type: Accepted
-                  - reason: ResolvedRefs
-                    status: "True"
-                    type: ResolvedRefs
+                - (conditions[?contains(['Programmed', 'Accepted', 'ResolvedRefs'], type)]):
+                  - status: "True"
+                  - status: "True"
+                  - status: "True"
                   name: http-0
-                - attachedRoutes: 0
-                  conditions:
-                  - reason: Programmed
-                    status: "True"
-                    type: Programmed
-                  - reason: Accepted
-                    status: "True"
-                    type: Accepted
-                  - reason: ResolvedRefs
-                    status: "True"
-                    type: ResolvedRefs
+                - (conditions[?contains(['Programmed', 'Accepted', 'ResolvedRefs'], type)]):
+                  - status: "True"
+                  - status: "True"
+                  - status: "True"
                   name: https-0
-                - attachedRoutes: 0
-                  conditions:
-                  - reason: Programmed
-                    status: "True"
-                    type: Programmed
-                  - reason: Accepted
-                    status: "True"
-                    type: Accepted
-                  - reason: ResolvedRefs
-                    status: "True"
-                    type: ResolvedRefs
+                - (conditions[?contains(['Programmed', 'Accepted', 'ResolvedRefs'], type)]):
+                  - status: "True"
+                  - status: "True"
+                  - status: "True"
                   name: http-1
-                - attachedRoutes: 0
-                  conditions:
-                  - reason: Programmed
-                    status: "True"
-                    type: Programmed
-                  - reason: Accepted
-                    status: "True"
-                    type: Accepted
-                  - reason: ResolvedRefs
-                    status: "True"
-                    type: ResolvedRefs
+                - (conditions[?contains(['Programmed', 'Accepted', 'ResolvedRefs'], type)]):
+                  - status: "True"
+                  - status: "True"
+                  - status: "True"
                   name: https-1
-                - attachedRoutes: 0
-                  conditions:
-                  - reason: Programmed
-                    status: "True"
-                    type: Programmed
-                  - reason: Accepted
-                    status: "True"
-                    type: Accepted
-                  - reason: ResolvedRefs
-                    status: "True"
-                    type: ResolvedRefs
+                - (conditions[?contains(['Programmed', 'Accepted', 'ResolvedRefs'], type)]):
+                  - status: "True"
+                  - status: "True"
+                  - status: "True"
                   name: http-2
-                - attachedRoutes: 0
-                  conditions:
-                  - reason: Programmed
-                    status: "True"
-                    type: Programmed
-                  - reason: Accepted
-                    status: "True"
-                    type: Accepted
-                  - reason: ResolvedRefs
-                    status: "True"
-                    type: ResolvedRefs
+                - (conditions[?contains(['Programmed', 'Accepted', 'ResolvedRefs'], type)]):
+                  - status: "True"
+                  - status: "True"
+                  - status: "True"
                   name: https-2
 
         # Load the downstream gateway so we can get the IP address info from its

@@ -1,20 +1,53 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
-resources:
-  - github.com/kubernetes-sigs/gateway-api/config/crd/?ref=v1.2.1
+
+helmCharts:
+- name: gateway-crds-helm
+  repo: oci://docker.io/envoyproxy
+  # IMPORTANT - When upgrading the helm chart, ensure there's no undesired CRDs
+  # added in the new version. If there are, remove them in the patches below.
+  version: v1.5.0
+  releaseName: gateway
+  namespace: kube-system
+  valuesInline:
+    crds:
+      gatewayAPI:
+        enabled: true
+        channel: standard
+      envoyGateway:
+        enabled: true
 
 patches:
-  # Drop GRPCRoutes for now
+  # Drop resources that shouldn't be added to upstream control planes yet
+  # Gateway API resources
   - patch: |
       $patch: delete
       apiVersion: apiextensions.k8s.io/v1
       kind: CustomResourceDefinition
       metadata:
         name: grpcroutes.gateway.networking.k8s.io
-  # Drop ReferenceGrants for now
   - patch: |
       $patch: delete
       apiVersion: apiextensions.k8s.io/v1
       kind: CustomResourceDefinition
       metadata:
         name: referencegrants.gateway.networking.k8s.io
+  # Envoy gateway resources
+  - patch: |
+      $patch: delete
+      apiVersion: apiextensions.k8s.io/v1
+      kind: CustomResourceDefinition
+      metadata:
+        name: envoyextensionpolicies.gateway.envoyproxy.io
+  - patch: |
+      $patch: delete
+      apiVersion: apiextensions.k8s.io/v1
+      kind: CustomResourceDefinition
+      metadata:
+        name: envoypatchpolicies.gateway.envoyproxy.io
+  - patch: |
+      $patch: delete
+      apiVersion: apiextensions.k8s.io/v1
+      kind: CustomResourceDefinition
+      metadata:
+        name: envoyproxies.gateway.envoyproxy.io

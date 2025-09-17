@@ -3,6 +3,7 @@ namePrefix: network-services-operator-
 
 resources:
   - ../crd
+  - ../crd/gateway
   - ../webhook
   - ../certmanager
 

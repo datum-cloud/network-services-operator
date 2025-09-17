@@ -197,7 +197,7 @@ func TestValidateGateway(t *testing.T) {
 							Port:     80,
 						},
 					},
-					Addresses: []gatewayv1.GatewayAddress{
+					Addresses: []gatewayv1.GatewaySpecAddress{
 						{
 							Type:  ptr.To(gatewayv1.IPAddressType),
 							Value: "192.168.1.1",

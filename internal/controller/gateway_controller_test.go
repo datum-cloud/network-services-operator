@@ -6,7 +6,6 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/davecgh/go-spew/spew"
 	"github.com/stretchr/testify/assert"
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
@@ -63,7 +62,6 @@ func TestEnsureDownstreamGateway(t *testing.T) {
 
 			}),
 			assert: func(t *testing.T, upstreamGateway, downstreamGateway *gatewayv1.Gateway) {
-				spew.Dump(downstreamGateway)
 				if assert.Len(t, downstreamGateway.Spec.Listeners, 2) {
 
 					assert.Equal(t, gatewayv1.PortNumber(DefaultHTTPPort), downstreamGateway.Spec.Listeners[0].Port)

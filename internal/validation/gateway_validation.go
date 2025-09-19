@@ -8,11 +8,8 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/utils/ptr"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
-)
 
-const (
-	HTTPPort  = 80
-	HTTPSPort = 443
+	gatewayutil "go.datum.net/network-services-operator/internal/util/gateway"
 )
 
 func ValidateGateway(gateway *gatewayv1.Gateway, opts GatewayValidationOptions) field.ErrorList {
@@ -22,7 +19,7 @@ func ValidateGateway(gateway *gatewayv1.Gateway, opts GatewayValidationOptions) 
 		allErrs = append(allErrs, field.Required(field.NewPath("spec", "gatewayClassName"), "gatewayClassName is required"))
 	}
 
-	allErrs = append(allErrs, validateListeners(gateway.Spec.Listeners, field.NewPath("spec", "listeners"), opts)...)
+	allErrs = append(allErrs, validateListeners(gateway, field.NewPath("spec", "listeners"), opts)...)
 
 	if len(gateway.Spec.Addresses) > 0 {
 		allErrs = append(allErrs, field.TooMany(field.NewPath("spec", "addresses"), len(gateway.Spec.Addresses), 0))
@@ -39,13 +36,23 @@ func ValidateGateway(gateway *gatewayv1.Gateway, opts GatewayValidationOptions) 
 	return allErrs
 }
 
-func validateListeners(listeners []gatewayv1.Listener, fldPath *field.Path, opts GatewayValidationOptions) field.ErrorList {
+func validateListeners(gateway *gatewayv1.Gateway, fldPath *field.Path, opts GatewayValidationOptions) field.ErrorList {
 	allErrs := field.ErrorList{}
 
-	for i, l := range listeners {
+	for i, l := range gateway.Spec.Listeners {
 		listenerPath := fldPath.Index(i)
 
-		if l.Hostname != nil {
+		if gatewayutil.IsDefaultListener(l) {
+			expectedHostname := opts.GatewayDNSAddressFunc(gateway)
+
+			// Require expected hostname on default listeners if set. Note that these
+			// listeners will not have the hostname set at time of creation.
+			if l.Hostname != nil && *l.Hostname != gatewayv1.Hostname(expectedHostname) {
+				allErrs = append(allErrs, field.NotSupported(listenerPath.Child("hostname"), l.Hostname, []string{expectedHostname}))
+			}
+		} else if l.Hostname == nil {
+			allErrs = append(allErrs, field.Required(listenerPath.Child("hostname"), fmt.Sprintf("must be set to %q or a custom hostname", opts.GatewayDNSAddressFunc(gateway))))
+		} else {
 			allErrs = append(allErrs, validation.IsFullyQualifiedDomainName(listenerPath.Child("hostname"), string(*l.Hostname))...)
 		}
 
@@ -127,11 +134,12 @@ func validateGatewayTLSConfig(tls *gatewayv1.GatewayTLSConfig, fldPath *field.Pa
 }
 
 type GatewayValidationOptions struct {
-	ControllerName      gatewayv1.GatewayController
-	PermittedTLSOptions map[string][]string
-	ValidPortNumbers    validPortNumbers
-	ValidProtocolTypes  map[int][]gatewayv1.ProtocolType
-	ClusterName         string
+	ControllerName        gatewayv1.GatewayController
+	PermittedTLSOptions   map[string][]string
+	ValidPortNumbers      validPortNumbers
+	ValidProtocolTypes    map[int][]gatewayv1.ProtocolType
+	GatewayDNSAddressFunc func(gateway *gatewayv1.Gateway) string
+	ClusterName           string
 }
 
 type validPortNumbers []int

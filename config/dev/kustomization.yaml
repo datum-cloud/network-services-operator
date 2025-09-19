@@ -2,8 +2,7 @@ namespace: kube-system
 namePrefix: network-services-operator-
 
 resources:
-  - ../crd
-  - ../crd/gateway
+  - ../upstream_resources
   - ../webhook
   - ../certmanager
 

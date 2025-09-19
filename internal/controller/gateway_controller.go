@@ -40,6 +40,7 @@ import (
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	"go.datum.net/network-services-operator/internal/config"
 	downstreamclient "go.datum.net/network-services-operator/internal/downstreamclient"
+	gatewayutil "go.datum.net/network-services-operator/internal/util/gateway"
 	"go.datum.net/network-services-operator/internal/util/resourcename"
 )
 
@@ -126,10 +127,9 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 		return ctrl.Result{}, nil
 	}
 
-	if !controllerutil.ContainsFinalizer(&gateway, gatewayControllerFinalizer) {
-		controllerutil.AddFinalizer(&gateway, gatewayControllerFinalizer)
+	if r.prepareUpstreamGateway(&gateway) {
 		if err := cl.GetClient().Update(ctx, &gateway); err != nil {
-			return ctrl.Result{}, fmt.Errorf("failed to add finalizer to gateway: %w", err)
+			return ctrl.Result{}, fmt.Errorf("failed preparing upstream gateway: %w", err)
 		}
 
 		return ctrl.Result{}, nil
@@ -144,6 +144,35 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 	}
 
 	return result.Complete(ctx)
+}
+
+// prepareUpstreamGateway adds a finalizer to the upstream gateway and ensures
+// that default listeners have their hostname fields set.
+func (r *GatewayReconciler) prepareUpstreamGateway(gateway *gatewayv1.Gateway) (needsUpdate bool) {
+	if !controllerutil.ContainsFinalizer(gateway, gatewayControllerFinalizer) {
+		controllerutil.AddFinalizer(gateway, gatewayControllerFinalizer)
+		needsUpdate = true
+	}
+
+	// Ensure that the default listeners have hostnames set. This is not done in
+	// the defaulting webhook as the UID is not available, but we still want to
+	// let users create gateways without listeners and receive sane defaults.
+
+	gatewayDefaultHostname := ptr.To(gatewayv1.Hostname(r.Config.Gateway.GatewayDNSAddress(gateway)))
+
+	defaultHTTPListener := gatewayutil.GetListenerByName(gateway.Spec.Listeners, gatewayutil.DefaultHTTPListenerName)
+	if defaultHTTPListener != nil && defaultHTTPListener.Hostname == nil {
+		needsUpdate = true
+		defaultHTTPListener.Hostname = gatewayDefaultHostname
+	}
+
+	defaultHTTPSListener := gatewayutil.GetListenerByName(gateway.Spec.Listeners, gatewayutil.DefaultHTTPSListenerName)
+	if defaultHTTPSListener != nil && defaultHTTPSListener.Hostname == nil {
+		needsUpdate = true
+		defaultHTTPSListener.Hostname = gatewayDefaultHostname
+	}
+
+	return needsUpdate
 }
 
 func (r *GatewayReconciler) ensureDownstreamGateway(
@@ -163,19 +192,21 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 	}
 	upstreamGatewayClassControllerName := string(upstreamGatewayClass.Spec.ControllerName)
 
+	gatewayDNSAddress := r.Config.Gateway.GatewayDNSAddress(upstreamGateway)
+
 	// targetDomainHostnames are default hostnames that are unique to each gateway, and
 	// will have DNS records created for them. Any custom hostnames provided in
 	// listeners WILL NOT be added to the addresses list in the gateway status.
 	targetDomainHostnames := []string{
-		fmt.Sprintf("%s.%s", upstreamGateway.UID, r.Config.Gateway.TargetDomain),
+		gatewayDNSAddress,
 	}
 
 	if r.Config.Gateway.IPv4Enabled() {
-		targetDomainHostnames = append(targetDomainHostnames, fmt.Sprintf("v4.%s.%s", upstreamGateway.UID, r.Config.Gateway.TargetDomain))
+		targetDomainHostnames = append(targetDomainHostnames, fmt.Sprintf("v4.%s", gatewayDNSAddress))
 	}
 
 	if r.Config.Gateway.IPv6Enabled() {
-		targetDomainHostnames = append(targetDomainHostnames, fmt.Sprintf("v6.%s.%s", upstreamGateway.UID, r.Config.Gateway.TargetDomain))
+		targetDomainHostnames = append(targetDomainHostnames, fmt.Sprintf("v6.%s", gatewayDNSAddress))
 	}
 
 	downstreamClient := downstreamStrategy.GetClient()
@@ -208,7 +239,6 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 	desiredDownstreamGateway := r.getDesiredDownstreamGateway(
 		ctx,
 		upstreamGateway,
-		targetDomainHostnames,
 		claimedHostnames,
 	)
 
@@ -287,32 +317,27 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 func (r *GatewayReconciler) getDesiredDownstreamGateway(
 	ctx context.Context,
 	upstreamGateway *gatewayv1.Gateway,
-	targetDomainHostnames []string,
 	claimedHostnames []string,
 ) *gatewayv1.Gateway {
 	logger := log.FromContext(ctx)
 	var downstreamGateway gatewayv1.Gateway
 
 	var listeners []gatewayv1.Listener
-	foundHTTPListener := false
-	foundHTTPSListener := false
-	for listenerIndex, l := range upstreamGateway.Spec.Listeners {
-		switch l.Protocol {
-		case gatewayv1.HTTPProtocolType:
-			foundHTTPListener = true
-		case gatewayv1.HTTPSProtocolType:
-			foundHTTPSListener = true
-		}
 
+	for listenerIndex, l := range upstreamGateway.Spec.Listeners {
 		if l.TLS != nil && l.TLS.Options[certificateIssuerTLSOption] != "" {
 			if r.Config.Gateway.PerGatewayCertificateIssuer {
-				metav1.SetMetaDataAnnotation(&downstreamGateway.ObjectMeta, "cert-manager.io/issuer", upstreamGateway.Name)
+				if !metav1.HasAnnotation(downstreamGateway.ObjectMeta, "cert-manager.io/issuer") {
+					metav1.SetMetaDataAnnotation(&downstreamGateway.ObjectMeta, "cert-manager.io/issuer", upstreamGateway.Name)
+				}
 			} else {
 				clusterIssuerName := string(l.TLS.Options[certificateIssuerTLSOption])
 				if r.Config.Gateway.ClusterIssuerMap[clusterIssuerName] != "" {
 					clusterIssuerName = r.Config.Gateway.ClusterIssuerMap[clusterIssuerName]
 				}
-				metav1.SetMetaDataAnnotation(&downstreamGateway.ObjectMeta, "cert-manager.io/cluster-issuer", clusterIssuerName)
+				if !metav1.HasAnnotation(downstreamGateway.ObjectMeta, "cert-manager.io/cluster-issuer") {
+					metav1.SetMetaDataAnnotation(&downstreamGateway.ObjectMeta, "cert-manager.io/cluster-issuer", clusterIssuerName)
+				}
 			}
 		}
 
@@ -348,33 +373,6 @@ func (r *GatewayReconciler) getDesiredDownstreamGateway(
 
 	// TODO(jreese) get from "scheduler"
 	downstreamGateway.Spec.GatewayClassName = gatewayv1.ObjectName(r.Config.Gateway.DownstreamGatewayClassName)
-
-	for i, hostname := range targetDomainHostnames {
-		if foundHTTPListener {
-			listenerName := fmt.Sprintf("http-%d", i)
-			listeners = append(listeners,
-				listenerFactory(
-					listenerName,
-					hostname,
-					gatewayv1.HTTPProtocolType,
-					gatewayv1.PortNumber(DefaultHTTPPort),
-					"",
-				),
-			)
-		}
-		if foundHTTPSListener {
-			listenerName := fmt.Sprintf("https-%d", i)
-			listeners = append(listeners,
-				listenerFactory(
-					listenerName,
-					hostname,
-					gatewayv1.HTTPSProtocolType,
-					gatewayv1.PortNumber(DefaultHTTPSPort),
-					fmt.Sprintf("%s-%s", upstreamGateway.Name, listenerName),
-				),
-			)
-		}
-	}
 
 	downstreamGateway.Spec.Listeners = listeners
 
@@ -445,6 +443,12 @@ func (r *GatewayReconciler) ensureHostnamesClaimed(
 	// but is considered sufficient for now.
 
 	for _, hostname := range verifiedHostnames {
+		// No accounting for the gateway DNS address hostname
+		if hostname == r.Config.Gateway.GatewayDNSAddress(upstreamGateway) {
+			claimedHostnames = append(claimedHostnames, hostname)
+			continue
+		}
+
 		objectKey := client.ObjectKey{
 			Namespace: r.Config.Gateway.DownstreamHostnameAccountingNamespace,
 			Name:      hostname,
@@ -515,6 +519,8 @@ func (r *GatewayReconciler) ensureHostnamesClaimed(
 		}
 	}
 
+	slices.Sort(claimedHostnames)
+
 	return verifiedHostnames, claimedHostnames, notClaimedHostnames, nil
 }
 
@@ -531,6 +537,8 @@ func (r *GatewayReconciler) ensureHostnameVerification(
 ) ([]string, error) {
 	logger := log.FromContext(ctx)
 
+	gatewayDefaultHostname := r.Config.Gateway.GatewayDNSAddress(upstreamGateway)
+
 	// Allow hostnames which have been successfully configured on the downstream
 	// gateway stay on the gateway, regardless of whether or not there is a
 	// matching Domain that's verified. This is done in case the user deletes the
@@ -543,6 +551,7 @@ func (r *GatewayReconciler) ensureHostnameVerification(
 	// For more thoughts on liens, the following issue provides good context:
 	// https://github.com/kubernetes/kubernetes/issues/10179#issuecomment-2889238042
 	verifiedHostnames := sets.New[string]()
+	verifiedHostnames.Insert(gatewayDefaultHostname)
 	if dt := downstreamGateway.DeletionTimestamp; dt.IsZero() {
 		for _, listener := range downstreamGateway.Spec.Listeners {
 			if listener.Hostname != nil && !strings.HasSuffix(string(*listener.Hostname), r.Config.Gateway.TargetDomain) {
@@ -574,6 +583,10 @@ func (r *GatewayReconciler) ensureHostnameVerification(
 
 	domainsToCreate := sets.New[string]()
 	for _, hostname := range hostnames.UnsortedList() {
+		// Gateway DNS address hostname is exempt from verification
+		if hostname == gatewayDefaultHostname {
+			continue
+		}
 		foundMatchingDomain := false
 		for _, domain := range domainList.Items {
 			if hostname == domain.Spec.DomainName || strings.HasSuffix(hostname, "."+domain.Spec.DomainName) {
@@ -1578,45 +1591,4 @@ func (r *GatewayReconciler) listGatewaysForDomainFunc(clusterName string, cl clu
 
 		return requests
 	})
-}
-
-func listenerFactory(
-	name,
-	hostname string,
-	protocol gatewayv1.ProtocolType,
-	port gatewayv1.PortNumber,
-	tlsSecretName string,
-) gatewayv1.Listener {
-	h := gatewayv1.Hostname(hostname)
-
-	fromSelector := gatewayv1.NamespacesFromSame
-	listener := gatewayv1.Listener{
-		Protocol: protocol,
-		Port:     port,
-		Name:     gatewayv1.SectionName(name),
-		Hostname: &h,
-		AllowedRoutes: &gatewayv1.AllowedRoutes{
-			Namespaces: &gatewayv1.RouteNamespaces{
-				From: &fromSelector,
-			},
-		},
-	}
-
-	if protocol == gatewayv1.HTTPSProtocolType {
-		tlsMode := gatewayv1.TLSModeTerminate
-		listener.TLS = &gatewayv1.GatewayTLSConfig{
-			Mode: &tlsMode,
-			// TODO(jreese) investigate secret deletion when Cert (gateway) is deleted
-			// See: https://cert-manager.io/docs/usage/certificate/#cleaning-up-secrets-when-certificates-are-deleted
-			CertificateRefs: []gatewayv1.SecretObjectReference{
-				{
-					Group: ptr.To(gatewayv1.Group("")),
-					Kind:  ptr.To(gatewayv1.Kind("Secret")),
-					Name:  gatewayv1.ObjectName(resourcename.GetValidDNS1123Name(tlsSecretName)),
-				},
-			},
-		}
-	}
-
-	return listener
 }

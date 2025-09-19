@@ -78,6 +78,7 @@ resources:
   version: v1
   webhooks:
     validation: true
+    defaulting: true
     webhookVersion: v1
 - domain: k8s.io
   external: true

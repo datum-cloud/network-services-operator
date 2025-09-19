@@ -339,6 +339,11 @@ type GatewayConfig struct {
 	// needed for, or implement our own ACME integration.
 	PerGatewayCertificateIssuer bool `json:"perGatewayCertificateIssuer,omitempty"`
 
+	// ListenerTLSOptions specifies the TLS options to program on generated
+	// TLS listeners.
+	// +default={"gateway.networking.datumapis.com/certificate-issuer": "auto"}
+	ListenerTLSOptions map[gatewayv1.AnnotationKey]gatewayv1.AnnotationValue `json:"listenerTLSOptions"`
+
 	// ValidPortNumbers is a list of port numbers that are permitted on gateway
 	// listeners.
 	//
@@ -352,6 +357,10 @@ type GatewayConfig struct {
 	ValidProtocolTypes map[int][]gatewayv1.ProtocolType `json:"validProtocolTypes,omitempty"`
 }
 
+func (c *GatewayConfig) GatewayDNSAddress(gateway *gatewayv1.Gateway) string {
+	return fmt.Sprintf("%s.%s", gateway.UID, c.TargetDomain)
+}
+
 // +k8s:deepcopy-gen=true
 
 type HTTPProxyConfig struct {
@@ -359,11 +368,6 @@ type HTTPProxyConfig struct {
 	// underlying Gateway for an HTTPProxy.
 	// +default="datum-external-global-proxy"
 	GatewayClassName gatewayv1.ObjectName `json:"gatewayClassName"`
-
-	// GatewayTLSOptions specifies the TLS options to program on the underlying
-	// Gateway for an HTTPProxy.
-	// +default={"gateway.networking.datumapis.com/certificate-issuer": "auto"}
-	GatewayTLSOptions map[gatewayv1.AnnotationKey]gatewayv1.AnnotationValue `json:"tlsOptions"`
 }
 
 // +k8s:deepcopy-gen=true

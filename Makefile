@@ -79,6 +79,8 @@ test-e2e: chainsaw
 		echo "No Kind cluster is running. Please start a Kind cluster before running the e2e tests."; \
 		exit 1; \
 	}
+	$(KIND) get kubeconfig --name nso-standard > $(TMPDIR)/.kind-nso-standard.yaml
+	$(KIND) get kubeconfig --name nso-infra > $(TMPDIR)/.kind-nso-infra.yaml
 	$(CHAINSAW) test ./test/e2e \
 		--cluster nso-standard=$(TMPDIR)/.kind-nso-standard.yaml \
 		--cluster nso-infra=$(TMPDIR)/.kind-nso-infra.yaml
@@ -142,7 +144,10 @@ set-image-controller: manifests kustomize
 prepare-infra-cluster: cert-manager envoy-gateway external-dns
 
 .PHONY: prepare-e2e
-prepare-e2e: chainsaw set-image-controller cert-manager envoy-gateway external-dns load-image-all deploy-e2e
+prepare-e2e: chainsaw set-image-controller cert-manager load-image-all deploy-e2e
+
+.PHONY: prepare-dev
+prepare-dev: chainsaw set-image-controller cert-manager install
 
 .PHONY: load-image-all
 load-image-all: load-image-operator
@@ -167,12 +172,10 @@ external-dns:
 .PHONY: kind-standard-cluster
 kind-standard-cluster: kind
 	$(KIND) create cluster --config=config/tools/kind/standard-cluster.yaml
-	$(KIND) get kubeconfig --name nso-standard > $(TMPDIR)/.kind-nso-standard.yaml
 
 .PHONY: kind-infra-cluster
 kind-infra-cluster: kind
 	$(KIND) create cluster --config=config/tools/kind/infra-cluster.yaml
-	$(KIND) get kubeconfig --name nso-infra > $(TMPDIR)/.kind-nso-infra.yaml
 
 ##@ Deployment
 
@@ -182,23 +185,23 @@ endif
 
 .PHONY: install
 install: manifests kustomize ## Install CRDs into the K8s cluster specified in ~/.kube/config.
-	$(KUSTOMIZE) build config/dev | $(KUBECTL) apply -f -
+	$(KUSTOMIZE) build --enable-helm config/dev | $(KUBECTL) apply -f -
 
 .PHONY: uninstall
 uninstall: manifests kustomize ## Uninstall CRDs from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
-	$(KUSTOMIZE) build config/crd | $(KUBECTL) delete --ignore-not-found=$(ignore-not-found) -f -
+	$(KUSTOMIZE) build --enable-helm config/crd | $(KUBECTL) delete --ignore-not-found=$(ignore-not-found) -f -
 
 .PHONY: deploy
 deploy: set-image-controller ## Deploy controller to the K8s cluster specified in ~/.kube/config.
-	$(KUSTOMIZE) build config/default | $(KUBECTL) apply -f -
+	$(KUSTOMIZE) build --enable-helm config/default | $(KUBECTL) apply -f -
 
 .PHONY: deploy-e2e
 deploy-e2e: set-image-controller
-	$(KUSTOMIZE) build config/e2e | $(KUBECTL) apply -f -
+	$(KUSTOMIZE) build --enable-helm config/e2e | $(KUBECTL) apply -f -
 
 .PHONY: undeploy
 undeploy: kustomize ## Undeploy controller from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
-	$(KUSTOMIZE) build config/default | $(KUBECTL) delete --ignore-not-found=$(ignore-not-found) -f -
+	$(KUSTOMIZE) build --enable-helm config/default | $(KUBECTL) delete --ignore-not-found=$(ignore-not-found) -f -
 
 
 
@@ -238,7 +241,7 @@ CRDOC_VERSION ?= v0.6.4
 KIND_VERSION ?= v0.27.0
 
 # renovate: datasource=go depName=github.com/kyverno/chainsaw
-CHAINSAW_VERSION ?= v0.2.12
+CHAINSAW_VERSION ?= v0.2.13
 
 # renovate: datasource=go depName=github.com/cert-manager/cmctl/v2
 CMCTL_VERSION ?= v2.1.1

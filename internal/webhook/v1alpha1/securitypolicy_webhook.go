@@ -21,15 +21,23 @@ import (
 
 // SetupSecurityPolicyWebhookWithManager registers the webhook for SecurityPolicy in the manager.
 func SetupSecurityPolicyWebhookWithManager(mgr mcmanager.Manager) error {
+	validationOpts := validation.SecurityPolicyValidationOptions{
+		APIKeyAuth: validation.APIKeyAuthValidationOptions{
+			MaxCredentialRefs:         5,
+			MaxExtractFrom:            5,
+			MaxExtractFromFieldLength: 5,
+		},
+	}
 	return ctrl.NewWebhookManagedBy(mgr.GetLocalManager()).For(&gatewayv1alpha1.SecurityPolicy{}).
-		WithValidator(&SecurityPolicyCustomValidator{mgr: mgr}).
+		WithValidator(&SecurityPolicyCustomValidator{mgr: mgr, validationOpts: validationOpts}).
 		Complete()
 }
 
 // +kubebuilder:webhook:path=/validate-gateway-envoyproxy-io-v1alpha1-securitypolicy,mutating=false,failurePolicy=fail,sideEffects=None,groups=gateway.envoyproxy.io,resources=securitypolicies,verbs=create;update,versions=v1alpha1,name=vsecuritypolicy-v1alpha1.kb.io,admissionReviewVersions=v1
 
 type SecurityPolicyCustomValidator struct {
-	mgr mcmanager.Manager
+	mgr            mcmanager.Manager
+	validationOpts validation.SecurityPolicyValidationOptions
 }
 
 var _ webhook.CustomValidator = &SecurityPolicyCustomValidator{}
@@ -49,7 +57,7 @@ func (v *SecurityPolicyCustomValidator) ValidateCreate(ctx context.Context, obj 
 	log := logf.FromContext(ctx).WithValues("cluster", clusterName)
 	log.Info("Validating SecurityPolicy", "name", securityPolicy.GetName(), "cluster", clusterName)
 
-	if errs := validation.ValidateSecurityPolicy(securityPolicy); len(errs) > 0 {
+	if errs := validation.ValidateSecurityPolicy(securityPolicy, v.validationOpts); len(errs) > 0 {
 		return nil, apierrors.NewInvalid(obj.GetObjectKind().GroupVersionKind().GroupKind(), securityPolicy.GetName(), errs)
 	}
 
@@ -71,7 +79,7 @@ func (v *SecurityPolicyCustomValidator) ValidateUpdate(ctx context.Context, oldO
 	log := logf.FromContext(ctx).WithValues("cluster", clusterName)
 	log.Info("Validating SecurityPolicy", "name", securityPolicy.GetName(), "cluster", clusterName)
 
-	if errs := validation.ValidateSecurityPolicy(securityPolicy); len(errs) > 0 {
+	if errs := validation.ValidateSecurityPolicy(securityPolicy, v.validationOpts); len(errs) > 0 {
 		return nil, apierrors.NewInvalid(oldObj.GetObjectKind().GroupVersionKind().GroupKind(), securityPolicy.GetName(), errs)
 	}
 

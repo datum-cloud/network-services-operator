@@ -2,6 +2,7 @@ package validation
 
 import (
 	"fmt"
+	"strconv"
 	"time"
 
 	envoygatewayv1alpha1 "github.com/envoyproxy/gateway/api/v1alpha1"
@@ -22,25 +23,33 @@ func ValidateBackendTrafficPolicy(backendTrafficPolicy *envoygatewayv1alpha1.Bac
 		allErrs = append(allErrs, field.Forbidden(specPath.Child("targetRef"), "deprecated field, use spec.targetRefs or spec.targetSelectors instead"))
 	}
 
-	allErrs = append(allErrs, validateBackendTrafficPolicyLoadBalancer(backendTrafficPolicy.Spec.LoadBalancer, specPath.Child("loadBalancer"))...)
-
-	if backendTrafficPolicy.Spec.Retry != nil {
-		allErrs = append(allErrs, field.Forbidden(specPath.Child("retry"), "retry settings are not permitted"))
-	}
-
-	allErrs = append(allErrs, validateBackendTrafficPolicyTCPKeepalive(backendTrafficPolicy.Spec.TCPKeepalive, specPath.Child("tcpKeepalive"))...)
-	allErrs = append(allErrs, validateBackendTrafficPolicyHealthCheck(backendTrafficPolicy.Spec.HealthCheck, specPath.Child("healthCheck"))...)
-	allErrs = append(allErrs, validateBackendTrafficPolicyTimeout(backendTrafficPolicy.Spec.Timeout, specPath.Child("timeout"))...)
-	allErrs = append(allErrs, validateBackendTrafficPolicyConnection(backendTrafficPolicy.Spec.Connection, specPath.Child("connection"))...)
-	allErrs = append(allErrs, validateBackendTrafficPolicyDNS(backendTrafficPolicy.Spec.DNS, specPath.Child("dns"))...)
-	allErrs = append(allErrs, validateBackendTrafficPolicyHTTP2(backendTrafficPolicy.Spec.HTTP2, specPath.Child("http2"))...)
+	allErrs = append(allErrs, validateGatewayClusterSettings(backendTrafficPolicy.Spec.ClusterSettings, specPath)...)
 	allErrs = append(allErrs, validateBackendTrafficPolicyRateLimit(backendTrafficPolicy.Spec.RateLimit, specPath.Child("rateLimit"))...)
 	allErrs = append(allErrs, validateBackendTrafficPolicyFaultInjection(backendTrafficPolicy.Spec.FaultInjection, specPath.Child("faultInjection"))...)
 
 	return allErrs
 }
 
-func validateBackendTrafficPolicyLoadBalancer(loadBalancer *envoygatewayv1alpha1.LoadBalancer, fldPath *field.Path) field.ErrorList {
+func validateGatewayClusterSettings(clusterSettings envoygatewayv1alpha1.ClusterSettings, fldPath *field.Path) field.ErrorList {
+	allErrs := field.ErrorList{}
+
+	allErrs = append(allErrs, validateGatewayBackendLoadBalancer(clusterSettings.LoadBalancer, fldPath.Child("loadBalancer"))...)
+
+	if clusterSettings.Retry != nil {
+		allErrs = append(allErrs, field.Forbidden(fldPath.Child("retry"), "retry settings are not permitted"))
+	}
+
+	allErrs = append(allErrs, validateGatewayClusterSettingsTCPKeepalive(clusterSettings.TCPKeepalive, fldPath.Child("tcpKeepalive"))...)
+	allErrs = append(allErrs, validateGatewayClusterSettingsHealthCheck(clusterSettings.HealthCheck, fldPath.Child("healthCheck"))...)
+	allErrs = append(allErrs, validateGatewayClusterSettingsTimeout(clusterSettings.Timeout, fldPath.Child("timeout"))...)
+	allErrs = append(allErrs, validateGatewayClusterSettingsConnection(clusterSettings.Connection, fldPath.Child("connection"))...)
+	allErrs = append(allErrs, validateGatewayClusterSettingsDNS(clusterSettings.DNS, fldPath.Child("dns"))...)
+	allErrs = append(allErrs, validateGatewayClusterSettingsHTTP2(clusterSettings.HTTP2, fldPath.Child("http2"))...)
+
+	return allErrs
+}
+
+func validateGatewayBackendLoadBalancer(loadBalancer *envoygatewayv1alpha1.LoadBalancer, fldPath *field.Path) field.ErrorList {
 	if loadBalancer == nil {
 		return nil
 	}
@@ -54,7 +63,7 @@ func validateBackendTrafficPolicyLoadBalancer(loadBalancer *envoygatewayv1alpha1
 	return allErrs
 }
 
-func validateBackendTrafficPolicyTCPKeepalive(tcpKeepalive *envoygatewayv1alpha1.TCPKeepalive, fldPath *field.Path) field.ErrorList {
+func validateGatewayClusterSettingsTCPKeepalive(tcpKeepalive *envoygatewayv1alpha1.TCPKeepalive, fldPath *field.Path) field.ErrorList {
 	if tcpKeepalive == nil {
 		return nil
 	}
@@ -62,7 +71,7 @@ func validateBackendTrafficPolicyTCPKeepalive(tcpKeepalive *envoygatewayv1alpha1
 	allErrs := field.ErrorList{}
 
 	if tcpKeepalive.Probes != nil && *tcpKeepalive.Probes < 9 {
-		allErrs = append(allErrs, field.Invalid(fldPath.Child("probe"), *tcpKeepalive.Probes, "must be greater than or equal to 9"))
+		allErrs = append(allErrs, field.Invalid(fldPath.Child("probes"), strconv.FormatUint(uint64(*tcpKeepalive.Probes), 10), "must be greater than or equal to 9"))
 	}
 
 	if v := tcpKeepalive.IdleTime; v != nil {
@@ -78,7 +87,7 @@ func validateBackendTrafficPolicyTCPKeepalive(tcpKeepalive *envoygatewayv1alpha1
 	return allErrs
 }
 
-func validateBackendTrafficPolicyHealthCheck(healthCheck *envoygatewayv1alpha1.HealthCheck, fldPath *field.Path) field.ErrorList {
+func validateGatewayClusterSettingsHealthCheck(healthCheck *envoygatewayv1alpha1.HealthCheck, fldPath *field.Path) field.ErrorList {
 	if healthCheck == nil {
 		return nil
 	}
@@ -92,7 +101,7 @@ func validateBackendTrafficPolicyHealthCheck(healthCheck *envoygatewayv1alpha1.H
 	return allErrs
 }
 
-func validateBackendTrafficPolicyTimeout(timeout *envoygatewayv1alpha1.Timeout, fldPath *field.Path) field.ErrorList {
+func validateGatewayClusterSettingsTimeout(timeout *envoygatewayv1alpha1.Timeout, fldPath *field.Path) field.ErrorList {
 	if timeout == nil {
 		return nil
 	}
@@ -102,7 +111,7 @@ func validateBackendTrafficPolicyTimeout(timeout *envoygatewayv1alpha1.Timeout, 
 	if timeout.TCP != nil {
 		if v := timeout.TCP.ConnectTimeout; v != nil {
 			connectTimeoutFieldPath := fldPath.Child("tcp").Child("connectTimeout")
-			allErrs = append(allErrs, validateGatewayDuration(connectTimeoutFieldPath, v, nil, ptr.To(1*time.Hour))...)
+			allErrs = append(allErrs, validateGatewayDuration(connectTimeoutFieldPath, v, nil, ptr.To(10*time.Second))...)
 		}
 	}
 
@@ -129,7 +138,7 @@ func validateBackendTrafficPolicyTimeout(timeout *envoygatewayv1alpha1.Timeout, 
 	return allErrs
 }
 
-func validateBackendTrafficPolicyConnection(connection *envoygatewayv1alpha1.BackendConnection, fldPath *field.Path) field.ErrorList {
+func validateGatewayClusterSettingsConnection(connection *envoygatewayv1alpha1.BackendConnection, fldPath *field.Path) field.ErrorList {
 	if connection == nil {
 		return nil
 	}
@@ -144,7 +153,7 @@ func validateBackendTrafficPolicyConnection(connection *envoygatewayv1alpha1.Bac
 	return nil
 }
 
-func validateBackendTrafficPolicyDNS(dns *envoygatewayv1alpha1.DNS, fldPath *field.Path) field.ErrorList {
+func validateGatewayClusterSettingsDNS(dns *envoygatewayv1alpha1.DNS, fldPath *field.Path) field.ErrorList {
 	if dns == nil {
 		return nil
 	}
@@ -163,7 +172,7 @@ func validateBackendTrafficPolicyDNS(dns *envoygatewayv1alpha1.DNS, fldPath *fie
 	return allErrs
 }
 
-func validateBackendTrafficPolicyHTTP2(http2 *envoygatewayv1alpha1.HTTP2Settings, fldPath *field.Path) field.ErrorList {
+func validateGatewayClusterSettingsHTTP2(http2 *envoygatewayv1alpha1.HTTP2Settings, fldPath *field.Path) field.ErrorList {
 	if http2 == nil {
 		return nil
 	}

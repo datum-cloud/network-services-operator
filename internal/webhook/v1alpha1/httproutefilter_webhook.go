@@ -16,16 +16,14 @@ import (
 	mccontext "sigs.k8s.io/multicluster-runtime/pkg/context"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 
+	"go.datum.net/network-services-operator/internal/config"
 	"go.datum.net/network-services-operator/internal/validation"
 )
 
 // SetupHTTPRouteFilterWebhookWithManager registers the webhook for HTTPRouteFilter in the manager.
-func SetupHTTPRouteFilterWebhookWithManager(mgr mcmanager.Manager) error {
-	validationOpts := validation.HTTPRouteFilterValidationOptions{
-		MaxInlineBodySize: 1024,
-	}
+func SetupHTTPRouteFilterWebhookWithManager(mgr mcmanager.Manager, cfg config.NetworkServicesOperator) error {
 	return ctrl.NewWebhookManagedBy(mgr.GetLocalManager()).For(&gatewayv1alpha1.HTTPRouteFilter{}).
-		WithValidator(&HTTPRouteFilterCustomValidator{mgr: mgr, validationOpts: validationOpts}).
+		WithValidator(&HTTPRouteFilterCustomValidator{mgr: mgr, validationOpts: cfg.Gateway.ExtensionAPIValidationOptions.HTTPRouteFilters}).
 		Complete()
 }
 
@@ -33,7 +31,7 @@ func SetupHTTPRouteFilterWebhookWithManager(mgr mcmanager.Manager) error {
 
 type HTTPRouteFilterCustomValidator struct {
 	mgr            mcmanager.Manager
-	validationOpts validation.HTTPRouteFilterValidationOptions
+	validationOpts config.HTTPRouteFilterValidationOptions
 }
 
 var _ webhook.CustomValidator = &HTTPRouteFilterCustomValidator{}

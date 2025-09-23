@@ -11,12 +11,14 @@ import (
 	"k8s.io/utils/ptr"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	gatewayv1alpha2 "sigs.k8s.io/gateway-api/apis/v1alpha2"
+
+	"go.datum.net/network-services-operator/internal/config"
 )
 
 func TestValidateSecurityPolicy(t *testing.T) {
 	scenarios := map[string]struct {
 		securityPolicy *envoygatewayv1alpha1.SecurityPolicy
-		opts           SecurityPolicyValidationOptions
+		opts           config.SecurityPolicyValidationOptions
 		expectedErrors field.ErrorList
 	}{
 		"spec.targetRef forbidden": {
@@ -49,8 +51,8 @@ func TestValidateSecurityPolicy(t *testing.T) {
 					},
 				},
 			},
-			opts: SecurityPolicyValidationOptions{
-				APIKeyAuth: APIKeyAuthValidationOptions{
+			opts: config.SecurityPolicyValidationOptions{
+				APIKeyAuth: config.APIKeyAuthValidationOptions{
 					MaxCredentialRefs: 1,
 				},
 			},
@@ -70,8 +72,8 @@ func TestValidateSecurityPolicy(t *testing.T) {
 					},
 				},
 			},
-			opts: SecurityPolicyValidationOptions{
-				APIKeyAuth: APIKeyAuthValidationOptions{
+			opts: config.SecurityPolicyValidationOptions{
+				APIKeyAuth: config.APIKeyAuthValidationOptions{
 					MaxExtractFrom: 1,
 				},
 			},
@@ -93,8 +95,8 @@ func TestValidateSecurityPolicy(t *testing.T) {
 					},
 				},
 			},
-			opts: SecurityPolicyValidationOptions{
-				APIKeyAuth: APIKeyAuthValidationOptions{
+			opts: config.SecurityPolicyValidationOptions{
+				APIKeyAuth: config.APIKeyAuthValidationOptions{
 					MaxExtractFrom:            1,
 					MaxExtractFromFieldLength: 1,
 				},
@@ -113,8 +115,8 @@ func TestValidateSecurityPolicy(t *testing.T) {
 					},
 				},
 			},
-			opts: SecurityPolicyValidationOptions{
-				APIKeyAuth: APIKeyAuthValidationOptions{
+			opts: config.SecurityPolicyValidationOptions{
+				APIKeyAuth: config.APIKeyAuthValidationOptions{
 					MaxForwardClientIDHeaderLength: 1,
 				},
 			},
@@ -133,8 +135,8 @@ func TestValidateSecurityPolicy(t *testing.T) {
 					},
 				},
 			},
-			opts: SecurityPolicyValidationOptions{
-				CORS: CORSValidationOptions{
+			opts: config.SecurityPolicyValidationOptions{
+				CORS: config.CORSValidationOptions{
 					MaxFieldLength: 1,
 				},
 			},
@@ -246,8 +248,8 @@ func TestValidateSecurityPolicy(t *testing.T) {
 					},
 				},
 			},
-			opts: SecurityPolicyValidationOptions{
-				JWTProvider: JWTProviderValidationOptions{
+			opts: config.SecurityPolicyValidationOptions{
+				JWTProvider: config.JWTProviderValidationOptions{
 					MaxClaimToHeaders:  1,
 					MaxExtractorLength: 2,
 				},
@@ -307,8 +309,8 @@ func TestValidateSecurityPolicy(t *testing.T) {
 					},
 				},
 			},
-			opts: SecurityPolicyValidationOptions{
-				OIDC: OIDCValidationOptions{
+			opts: config.SecurityPolicyValidationOptions{
+				OIDC: config.OIDCValidationOptions{
 					MaxScopes:          2,
 					MaxResources:       2,
 					MinRefreshTokenTTL: 1 * time.Minute,
@@ -331,8 +333,8 @@ func TestValidateSecurityPolicy(t *testing.T) {
 					},
 				},
 			},
-			opts: SecurityPolicyValidationOptions{
-				Authorization: AuthorizationValidationOptions{
+			opts: config.SecurityPolicyValidationOptions{
+				Authorization: config.AuthorizationValidationOptions{
 					MaxRules: 1,
 				},
 			},
@@ -358,8 +360,8 @@ func TestValidateSecurityPolicy(t *testing.T) {
 					},
 				},
 			},
-			opts: SecurityPolicyValidationOptions{
-				Authorization: AuthorizationValidationOptions{
+			opts: config.SecurityPolicyValidationOptions{
+				Authorization: config.AuthorizationValidationOptions{
 					MaxRules:       1,
 					MaxClientCIDRs: 2,
 				},

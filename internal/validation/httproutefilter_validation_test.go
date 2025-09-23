@@ -8,12 +8,14 @@ import (
 	"github.com/google/go-cmp/cmp/cmpopts"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/utils/ptr"
+
+	"go.datum.net/network-services-operator/internal/config"
 )
 
 func TestValidateHTTPRouteFilter(t *testing.T) {
 	scenarios := map[string]struct {
 		httpRouteFilter *envoygatewayv1alpha1.HTTPRouteFilter
-		opts            HTTPRouteFilterValidationOptions
+		opts            config.HTTPRouteFilterValidationOptions
 		expectedErrors  field.ErrorList
 	}{
 		"direct response - inline body too large": {
@@ -26,7 +28,7 @@ func TestValidateHTTPRouteFilter(t *testing.T) {
 					},
 				},
 			},
-			opts: HTTPRouteFilterValidationOptions{
+			opts: config.HTTPRouteFilterValidationOptions{
 				MaxInlineBodySize: 1,
 			},
 			expectedErrors: field.ErrorList{

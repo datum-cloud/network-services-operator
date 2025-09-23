@@ -2,6 +2,7 @@ package validation
 
 import (
 	"testing"
+	"time"
 
 	envoygatewayv1alpha1 "github.com/envoyproxy/gateway/api/v1alpha1"
 	"github.com/google/go-cmp/cmp"
@@ -11,11 +12,14 @@ import (
 	"k8s.io/utils/ptr"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	gatewayv1alpha2 "sigs.k8s.io/gateway-api/apis/v1alpha2"
+
+	"go.datum.net/network-services-operator/internal/config"
 )
 
 func TestValidateBackendTrafficPolicy(t *testing.T) {
 	scenarios := map[string]struct {
 		backendTrafficPolicy *envoygatewayv1alpha1.BackendTrafficPolicy
+		opts                 config.BackendTrafficPolicyValidationOptions
 		expectedErrors       field.ErrorList
 	}{
 		"spec.targetRef forbidden": {
@@ -72,6 +76,11 @@ func TestValidateBackendTrafficPolicy(t *testing.T) {
 					},
 				},
 			},
+			opts: config.BackendTrafficPolicyValidationOptions{
+				ClusterSettings: config.ClusterSettingsValidationOptions{
+					TCPKeepaliveMinProbes: 2,
+				},
+			},
 			expectedErrors: field.ErrorList{
 				field.Invalid(field.NewPath("spec", "tcpKeepalive", "probes"), int32(0), ""),
 			},
@@ -86,6 +95,11 @@ func TestValidateBackendTrafficPolicy(t *testing.T) {
 					},
 				},
 			},
+			opts: config.BackendTrafficPolicyValidationOptions{
+				ClusterSettings: config.ClusterSettingsValidationOptions{
+					TCPKeepaliveMinIdleTime: 1 * time.Minute,
+				},
+			},
 			expectedErrors: field.ErrorList{
 				field.Invalid(field.NewPath("spec", "tcpKeepalive", "idleTime"), "4m0s", ""),
 			},
@@ -98,6 +112,11 @@ func TestValidateBackendTrafficPolicy(t *testing.T) {
 							Interval: ptr.To(gatewayv1.Duration("5s")),
 						},
 					},
+				},
+			},
+			opts: config.BackendTrafficPolicyValidationOptions{
+				ClusterSettings: config.ClusterSettingsValidationOptions{
+					TCPKeepaliveMinInterval: 1 * time.Minute,
 				},
 			},
 			expectedErrors: field.ErrorList{
@@ -146,6 +165,11 @@ func TestValidateBackendTrafficPolicy(t *testing.T) {
 					},
 				},
 			},
+			opts: config.BackendTrafficPolicyValidationOptions{
+				ClusterSettings: config.ClusterSettingsValidationOptions{
+					HTTPMaxConnectionIdleTimeout: 1 * time.Hour,
+				},
+			},
 			expectedErrors: field.ErrorList{
 				field.Invalid(field.NewPath("spec", "timeout", "http", "connectionIdleTimeout"), "", ""),
 			},
@@ -160,6 +184,11 @@ func TestValidateBackendTrafficPolicy(t *testing.T) {
 							},
 						},
 					},
+				},
+			},
+			opts: config.BackendTrafficPolicyValidationOptions{
+				ClusterSettings: config.ClusterSettingsValidationOptions{
+					HTTPMaxConnectionDuration: 1 * time.Hour,
 				},
 			},
 			expectedErrors: field.ErrorList{
@@ -178,6 +207,11 @@ func TestValidateBackendTrafficPolicy(t *testing.T) {
 					},
 				},
 			},
+			opts: config.BackendTrafficPolicyValidationOptions{
+				ClusterSettings: config.ClusterSettingsValidationOptions{
+					HTTPMaxRequestTimeout: 1 * time.Hour,
+				},
+			},
 			expectedErrors: field.ErrorList{
 				field.Invalid(field.NewPath("spec", "timeout", "http", "requestTimeout"), "", ""),
 			},
@@ -192,6 +226,11 @@ func TestValidateBackendTrafficPolicy(t *testing.T) {
 					},
 				},
 			},
+			opts: config.BackendTrafficPolicyValidationOptions{
+				ClusterSettings: config.ClusterSettingsValidationOptions{
+					ConnectionMaxBufferLimit: resource.MustParse("512Ki"),
+				},
+			},
 			expectedErrors: field.ErrorList{
 				field.Invalid(field.NewPath("spec", "connection", "bufferLimit"), "", ""),
 			},
@@ -204,6 +243,11 @@ func TestValidateBackendTrafficPolicy(t *testing.T) {
 							DNSRefreshRate: ptr.To(gatewayv1.Duration("500ms")),
 						},
 					},
+				},
+			},
+			opts: config.BackendTrafficPolicyValidationOptions{
+				ClusterSettings: config.ClusterSettingsValidationOptions{
+					DNSMinRefreshRate: 1 * time.Second,
 				},
 			},
 			expectedErrors: field.ErrorList{
@@ -294,7 +338,7 @@ func TestValidateBackendTrafficPolicy(t *testing.T) {
 
 	for name, scenario := range scenarios {
 		t.Run(name, func(t *testing.T) {
-			errs := ValidateBackendTrafficPolicy(scenario.backendTrafficPolicy)
+			errs := ValidateBackendTrafficPolicy(scenario.backendTrafficPolicy, scenario.opts)
 			delta := cmp.Diff(scenario.expectedErrors, errs, cmpopts.IgnoreFields(field.Error{}, "BadValue", "Detail"))
 			if delta != "" {
 				t.Errorf("Testcase %s - expected errors '%v', got '%v', diff: '%v'", name, scenario.expectedErrors, errs, delta)

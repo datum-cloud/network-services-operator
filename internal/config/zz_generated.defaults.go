@@ -42,6 +42,45 @@ func SetObjectDefaults_NetworkServicesOperator(in *NetworkServicesOperator) {
 			panic(err)
 		}
 	}
+	SetDefaults_ClusterSettingsValidationOptions(&in.Gateway.ExtensionAPIValidationOptions.BackendTrafficPolicies.ClusterSettings)
+	if in.Gateway.ExtensionAPIValidationOptions.HTTPRouteFilters.MaxInlineBodySize == 0 {
+		in.Gateway.ExtensionAPIValidationOptions.HTTPRouteFilters.MaxInlineBodySize = 1024
+	}
+	if in.Gateway.ExtensionAPIValidationOptions.SecurityPolicies.APIKeyAuth.MaxCredentialRefs == 0 {
+		in.Gateway.ExtensionAPIValidationOptions.SecurityPolicies.APIKeyAuth.MaxCredentialRefs = 5
+	}
+	if in.Gateway.ExtensionAPIValidationOptions.SecurityPolicies.APIKeyAuth.MaxExtractFrom == 0 {
+		in.Gateway.ExtensionAPIValidationOptions.SecurityPolicies.APIKeyAuth.MaxExtractFrom = 5
+	}
+	if in.Gateway.ExtensionAPIValidationOptions.SecurityPolicies.APIKeyAuth.MaxExtractFromFieldLength == 0 {
+		in.Gateway.ExtensionAPIValidationOptions.SecurityPolicies.APIKeyAuth.MaxExtractFromFieldLength = 10
+	}
+	if in.Gateway.ExtensionAPIValidationOptions.SecurityPolicies.APIKeyAuth.MaxForwardClientIDHeaderLength == 0 {
+		in.Gateway.ExtensionAPIValidationOptions.SecurityPolicies.APIKeyAuth.MaxForwardClientIDHeaderLength = 256
+	}
+	if in.Gateway.ExtensionAPIValidationOptions.SecurityPolicies.CORS.MaxFieldLength == 0 {
+		in.Gateway.ExtensionAPIValidationOptions.SecurityPolicies.CORS.MaxFieldLength = 10
+	}
+	if in.Gateway.ExtensionAPIValidationOptions.SecurityPolicies.JWTProvider.MaxClaimToHeaders == 0 {
+		in.Gateway.ExtensionAPIValidationOptions.SecurityPolicies.JWTProvider.MaxClaimToHeaders = 5
+	}
+	if in.Gateway.ExtensionAPIValidationOptions.SecurityPolicies.JWTProvider.MaxExtractorLength == 0 {
+		in.Gateway.ExtensionAPIValidationOptions.SecurityPolicies.JWTProvider.MaxExtractorLength = 5
+	}
+	SetDefaults_OIDCValidationOptions(&in.Gateway.ExtensionAPIValidationOptions.SecurityPolicies.OIDC)
+	if in.Gateway.ExtensionAPIValidationOptions.SecurityPolicies.OIDC.MaxScopes == 0 {
+		in.Gateway.ExtensionAPIValidationOptions.SecurityPolicies.OIDC.MaxScopes = 5
+	}
+	if in.Gateway.ExtensionAPIValidationOptions.SecurityPolicies.OIDC.MaxResources == 0 {
+		in.Gateway.ExtensionAPIValidationOptions.SecurityPolicies.OIDC.MaxResources = 5
+	}
+	if in.Gateway.ExtensionAPIValidationOptions.SecurityPolicies.Authorization.MaxRules == 0 {
+		in.Gateway.ExtensionAPIValidationOptions.SecurityPolicies.Authorization.MaxRules = 20
+	}
+	if in.Gateway.ExtensionAPIValidationOptions.SecurityPolicies.Authorization.MaxClientCIDRs == 0 {
+		in.Gateway.ExtensionAPIValidationOptions.SecurityPolicies.Authorization.MaxClientCIDRs = 5
+	}
+	SetDefaults_ClusterSettingsValidationOptions(&in.Gateway.ExtensionAPIValidationOptions.SecurityPolicies.ClusterSettings)
 	SetDefaults_GatewayResourceReplicatorConfig(&in.GatewayResourceReplicator)
 	if in.HTTPProxy.GatewayClassName == "" {
 		in.HTTPProxy.GatewayClassName = "datum-external-global-proxy"

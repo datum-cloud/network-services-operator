@@ -1,49 +1,14 @@
 package validation
 
 import (
-	"time"
-
 	envoygatewayv1alpha1 "github.com/envoyproxy/gateway/api/v1alpha1"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
+
+	"go.datum.net/network-services-operator/internal/config"
 )
 
-type SecurityPolicyValidationOptions struct {
-	APIKeyAuth    APIKeyAuthValidationOptions
-	CORS          CORSValidationOptions
-	JWTProvider   JWTProviderValidationOptions
-	OIDC          OIDCValidationOptions
-	Authorization AuthorizationValidationOptions
-}
-
-type APIKeyAuthValidationOptions struct {
-	MaxCredentialRefs              int
-	MaxExtractFrom                 int
-	MaxExtractFromFieldLength      int
-	MaxForwardClientIDHeaderLength int
-}
-
-type CORSValidationOptions struct {
-	MaxFieldLength int
-}
-
-type JWTProviderValidationOptions struct {
-	MaxClaimToHeaders  int
-	MaxExtractorLength int
-}
-
-type OIDCValidationOptions struct {
-	MaxScopes          int
-	MaxResources       int
-	MinRefreshTokenTTL time.Duration
-}
-
-type AuthorizationValidationOptions struct {
-	MaxRules       int
-	MaxClientCIDRs int
-}
-
-func ValidateSecurityPolicy(securityPolicy *envoygatewayv1alpha1.SecurityPolicy, opts SecurityPolicyValidationOptions) field.ErrorList {
+func ValidateSecurityPolicy(securityPolicy *envoygatewayv1alpha1.SecurityPolicy, opts config.SecurityPolicyValidationOptions) field.ErrorList {
 	allErrs := field.ErrorList{}
 
 	specPath := field.NewPath("spec")
@@ -68,7 +33,7 @@ func ValidateSecurityPolicy(securityPolicy *envoygatewayv1alpha1.SecurityPolicy,
 	return allErrs
 }
 
-func validateSecurityPolicyAPIKeyAuth(apiKeyAuth *envoygatewayv1alpha1.APIKeyAuth, fldPath *field.Path, opts SecurityPolicyValidationOptions) field.ErrorList {
+func validateSecurityPolicyAPIKeyAuth(apiKeyAuth *envoygatewayv1alpha1.APIKeyAuth, fldPath *field.Path, opts config.SecurityPolicyValidationOptions) field.ErrorList {
 	if apiKeyAuth == nil {
 		return nil
 	}
@@ -93,7 +58,7 @@ func validateSecurityPolicyAPIKeyAuth(apiKeyAuth *envoygatewayv1alpha1.APIKeyAut
 	return allErrs
 }
 
-func validateSecurityPolicyCORS(cors *envoygatewayv1alpha1.CORS, fldPath *field.Path, opts SecurityPolicyValidationOptions) field.ErrorList {
+func validateSecurityPolicyCORS(cors *envoygatewayv1alpha1.CORS, fldPath *field.Path, opts config.SecurityPolicyValidationOptions) field.ErrorList {
 	if cors == nil {
 		return nil
 	}
@@ -131,7 +96,7 @@ func validateSecurityPolicyBasicAuth(basicAuth *envoygatewayv1alpha1.BasicAuth, 
 	return allErrs
 }
 
-func validateSecurityPolicyJWT(jwt *envoygatewayv1alpha1.JWT, fldPath *field.Path, opts SecurityPolicyValidationOptions) field.ErrorList {
+func validateSecurityPolicyJWT(jwt *envoygatewayv1alpha1.JWT, fldPath *field.Path, opts config.SecurityPolicyValidationOptions) field.ErrorList {
 	if jwt == nil {
 		return nil
 	}
@@ -148,13 +113,13 @@ func validateSecurityPolicyJWT(jwt *envoygatewayv1alpha1.JWT, fldPath *field.Pat
 	return allErrs
 }
 
-func validateSecurityPolicyOIDC(oidc *envoygatewayv1alpha1.OIDC, fldPath *field.Path, opts SecurityPolicyValidationOptions) field.ErrorList {
+func validateSecurityPolicyOIDC(oidc *envoygatewayv1alpha1.OIDC, fldPath *field.Path, opts config.SecurityPolicyValidationOptions) field.ErrorList {
 	if oidc == nil {
 		return nil
 	}
 
 	allErrs := field.ErrorList{}
-	allErrs = append(allErrs, validateSecurityPolicyOIDCProvider(oidc.Provider, fldPath.Child("provider"))...)
+	allErrs = append(allErrs, validateSecurityPolicyOIDCProvider(oidc.Provider, fldPath.Child("provider"), opts)...)
 	allErrs = append(allErrs, validateGatewaySecretObjectReference(oidc.ClientIDRef, fldPath.Child("clientIDRef"))...)
 	allErrs = append(allErrs, validateGatewaySecretObjectReference(&oidc.ClientSecret, fldPath.Child("clientSecret"))...)
 
@@ -173,7 +138,7 @@ func validateSecurityPolicyOIDC(oidc *envoygatewayv1alpha1.OIDC, fldPath *field.
 	return allErrs
 }
 
-func validateSecurityPolicyAuthorization(authorization *envoygatewayv1alpha1.Authorization, fldPath *field.Path, opts SecurityPolicyValidationOptions) field.ErrorList {
+func validateSecurityPolicyAuthorization(authorization *envoygatewayv1alpha1.Authorization, fldPath *field.Path, opts config.SecurityPolicyValidationOptions) field.ErrorList {
 	if authorization == nil {
 		return nil
 	}
@@ -194,7 +159,7 @@ func validateSecurityPolicyAuthorization(authorization *envoygatewayv1alpha1.Aut
 	return allErrs
 }
 
-func validateAuthorizationPrincipal(principal envoygatewayv1alpha1.Principal, fldPath *field.Path, opts SecurityPolicyValidationOptions) field.ErrorList {
+func validateAuthorizationPrincipal(principal envoygatewayv1alpha1.Principal, fldPath *field.Path, opts config.SecurityPolicyValidationOptions) field.ErrorList {
 
 	allErrs := field.ErrorList{}
 
@@ -205,18 +170,18 @@ func validateAuthorizationPrincipal(principal envoygatewayv1alpha1.Principal, fl
 	return allErrs
 }
 
-func validateSecurityPolicyOIDCProvider(provider envoygatewayv1alpha1.OIDCProvider, fldPath *field.Path) field.ErrorList {
+func validateSecurityPolicyOIDCProvider(provider envoygatewayv1alpha1.OIDCProvider, fldPath *field.Path, opts config.SecurityPolicyValidationOptions) field.ErrorList {
 	allErrs := field.ErrorList{}
 
-	allErrs = append(allErrs, validateGatewayBackendCluster(provider.BackendCluster, fldPath)...)
+	allErrs = append(allErrs, validateGatewayBackendCluster(provider.BackendCluster, fldPath, opts)...)
 
 	return allErrs
 }
 
-func validateGatewayJWTProvider(provider envoygatewayv1alpha1.JWTProvider, fldPath *field.Path, opts SecurityPolicyValidationOptions) field.ErrorList {
+func validateGatewayJWTProvider(provider envoygatewayv1alpha1.JWTProvider, fldPath *field.Path, opts config.SecurityPolicyValidationOptions) field.ErrorList {
 	allErrs := field.ErrorList{}
 
-	allErrs = append(allErrs, validateRemoteJWKS(provider.RemoteJWKS, fldPath.Child("remoteJWKS"))...)
+	allErrs = append(allErrs, validateRemoteJWKS(provider.RemoteJWKS, fldPath.Child("remoteJWKS"), opts)...)
 
 	if len(provider.ClaimToHeaders) > opts.JWTProvider.MaxClaimToHeaders {
 		allErrs = append(allErrs, field.TooMany(fldPath.Child("claimToHeaders"), len(provider.ClaimToHeaders), opts.JWTProvider.MaxClaimToHeaders))
@@ -239,19 +204,19 @@ func validateGatewayJWTProvider(provider envoygatewayv1alpha1.JWTProvider, fldPa
 	return allErrs
 }
 
-func validateRemoteJWKS(remoteJWKS *envoygatewayv1alpha1.RemoteJWKS, fldPath *field.Path) field.ErrorList {
+func validateRemoteJWKS(remoteJWKS *envoygatewayv1alpha1.RemoteJWKS, fldPath *field.Path, opts config.SecurityPolicyValidationOptions) field.ErrorList {
 	if remoteJWKS == nil {
 		return nil
 	}
 
 	allErrs := field.ErrorList{}
 
-	allErrs = append(allErrs, validateGatewayBackendCluster(remoteJWKS.BackendCluster, fldPath)...)
+	allErrs = append(allErrs, validateGatewayBackendCluster(remoteJWKS.BackendCluster, fldPath, opts)...)
 
 	return allErrs
 }
 
-func validateGatewayBackendCluster(backendCluster envoygatewayv1alpha1.BackendCluster, fldPath *field.Path) field.ErrorList {
+func validateGatewayBackendCluster(backendCluster envoygatewayv1alpha1.BackendCluster, fldPath *field.Path, opts config.SecurityPolicyValidationOptions) field.ErrorList {
 	allErrs := field.ErrorList{}
 
 	// nolint:staticcheck
@@ -264,7 +229,7 @@ func validateGatewayBackendCluster(backendCluster envoygatewayv1alpha1.BackendCl
 	}
 
 	if backendCluster.BackendSettings != nil {
-		allErrs = append(allErrs, validateGatewayClusterSettings(*backendCluster.BackendSettings, fldPath.Child("backendSettings"))...)
+		allErrs = append(allErrs, validateGatewayClusterSettings(*backendCluster.BackendSettings, fldPath.Child("backendSettings"), opts.ClusterSettings)...)
 	}
 
 	return allErrs
@@ -280,7 +245,7 @@ func validateBackendClusterBackendObjectReference(backendObjectRef gatewayv1.Bac
 	return allErrs
 }
 
-func validateSecurityPolicyExtractFrom(extractFrom *envoygatewayv1alpha1.ExtractFrom, fldPath *field.Path, opts SecurityPolicyValidationOptions) field.ErrorList {
+func validateSecurityPolicyExtractFrom(extractFrom *envoygatewayv1alpha1.ExtractFrom, fldPath *field.Path, opts config.SecurityPolicyValidationOptions) field.ErrorList {
 	if extractFrom == nil {
 		return nil
 	}
@@ -302,7 +267,7 @@ func validateSecurityPolicyExtractFrom(extractFrom *envoygatewayv1alpha1.Extract
 	return allErrs
 }
 
-func validateSecurityPolicyCredentialRefs(refs []gatewayv1.SecretObjectReference, fldPath *field.Path, opts SecurityPolicyValidationOptions) field.ErrorList {
+func validateSecurityPolicyCredentialRefs(refs []gatewayv1.SecretObjectReference, fldPath *field.Path, opts config.SecurityPolicyValidationOptions) field.ErrorList {
 	allErrs := field.ErrorList{}
 
 	if len(refs) > opts.APIKeyAuth.MaxCredentialRefs {

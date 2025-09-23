@@ -3,14 +3,11 @@ package validation
 import (
 	envoygatewayv1alpha1 "github.com/envoyproxy/gateway/api/v1alpha1"
 	"k8s.io/apimachinery/pkg/util/validation/field"
+
+	"go.datum.net/network-services-operator/internal/config"
 )
 
-type HTTPRouteFilterValidationOptions struct {
-	// MaxInlineBodySize is the maximum allowed size for an inline body in a direct response filter.
-	MaxInlineBodySize int
-}
-
-func ValidateHTTPRouteFilter(httpRouteFilter *envoygatewayv1alpha1.HTTPRouteFilter, opts HTTPRouteFilterValidationOptions) field.ErrorList {
+func ValidateHTTPRouteFilter(httpRouteFilter *envoygatewayv1alpha1.HTTPRouteFilter, opts config.HTTPRouteFilterValidationOptions) field.ErrorList {
 	allErrs := field.ErrorList{}
 
 	specPath := field.NewPath("spec")

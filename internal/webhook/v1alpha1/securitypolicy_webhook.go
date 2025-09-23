@@ -16,20 +16,14 @@ import (
 	mccontext "sigs.k8s.io/multicluster-runtime/pkg/context"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 
+	"go.datum.net/network-services-operator/internal/config"
 	"go.datum.net/network-services-operator/internal/validation"
 )
 
 // SetupSecurityPolicyWebhookWithManager registers the webhook for SecurityPolicy in the manager.
-func SetupSecurityPolicyWebhookWithManager(mgr mcmanager.Manager) error {
-	validationOpts := validation.SecurityPolicyValidationOptions{
-		APIKeyAuth: validation.APIKeyAuthValidationOptions{
-			MaxCredentialRefs:         5,
-			MaxExtractFrom:            5,
-			MaxExtractFromFieldLength: 5,
-		},
-	}
+func SetupSecurityPolicyWebhookWithManager(mgr mcmanager.Manager, cfg config.NetworkServicesOperator) error {
 	return ctrl.NewWebhookManagedBy(mgr.GetLocalManager()).For(&gatewayv1alpha1.SecurityPolicy{}).
-		WithValidator(&SecurityPolicyCustomValidator{mgr: mgr, validationOpts: validationOpts}).
+		WithValidator(&SecurityPolicyCustomValidator{mgr: mgr, validationOpts: cfg.Gateway.ExtensionAPIValidationOptions.SecurityPolicies}).
 		Complete()
 }
 
@@ -37,7 +31,7 @@ func SetupSecurityPolicyWebhookWithManager(mgr mcmanager.Manager) error {
 
 type SecurityPolicyCustomValidator struct {
 	mgr            mcmanager.Manager
-	validationOpts validation.SecurityPolicyValidationOptions
+	validationOpts config.SecurityPolicyValidationOptions
 }
 
 var _ webhook.CustomValidator = &SecurityPolicyCustomValidator{}

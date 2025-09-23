@@ -265,17 +265,17 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err = webhookgatewayv1alpha1.SetupBackendTrafficPolicyWebhookWithManager(mgr); err != nil {
+	if err = webhookgatewayv1alpha1.SetupBackendTrafficPolicyWebhookWithManager(mgr, serverConfig); err != nil {
 		setupLog.Error(err, "unable to create webhook", "webhook", "BackendTrafficPolicy")
 		os.Exit(1)
 	}
 
-	if err = webhookgatewayv1alpha1.SetupSecurityPolicyWebhookWithManager(mgr); err != nil {
+	if err = webhookgatewayv1alpha1.SetupSecurityPolicyWebhookWithManager(mgr, serverConfig); err != nil {
 		setupLog.Error(err, "unable to create webhook", "webhook", "SecurityPolicy")
 		os.Exit(1)
 	}
 
-	if err = webhookgatewayv1alpha1.SetupHTTPRouteFilterWebhookWithManager(mgr); err != nil {
+	if err = webhookgatewayv1alpha1.SetupHTTPRouteFilterWebhookWithManager(mgr, serverConfig); err != nil {
 		setupLog.Error(err, "unable to create webhook", "webhook", "HTTPRouteFilter")
 		os.Exit(1)
 	}

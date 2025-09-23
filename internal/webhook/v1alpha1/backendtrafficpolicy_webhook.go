@@ -16,20 +16,22 @@ import (
 	mccontext "sigs.k8s.io/multicluster-runtime/pkg/context"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 
+	"go.datum.net/network-services-operator/internal/config"
 	"go.datum.net/network-services-operator/internal/validation"
 )
 
 // SetupBackendTrafficPolicyWebhookWithManager registers the webhook for BackendTrafficPolicy in the manager.
-func SetupBackendTrafficPolicyWebhookWithManager(mgr mcmanager.Manager) error {
+func SetupBackendTrafficPolicyWebhookWithManager(mgr mcmanager.Manager, cfg config.NetworkServicesOperator) error {
 	return ctrl.NewWebhookManagedBy(mgr.GetLocalManager()).For(&gatewayv1alpha1.BackendTrafficPolicy{}).
-		WithValidator(&BackendTrafficPolicyCustomValidator{mgr: mgr}).
+		WithValidator(&BackendTrafficPolicyCustomValidator{mgr: mgr, validationOpts: cfg.Gateway.ExtensionAPIValidationOptions.BackendTrafficPolicies}).
 		Complete()
 }
 
 // +kubebuilder:webhook:path=/validate-gateway-envoyproxy-io-v1alpha1-backendtrafficpolicy,mutating=false,failurePolicy=fail,sideEffects=None,groups=gateway.envoyproxy.io,resources=backendtrafficpolicies,verbs=create;update,versions=v1alpha1,name=vbackendtrafficpolicy-v1alpha1.kb.io,admissionReviewVersions=v1
 
 type BackendTrafficPolicyCustomValidator struct {
-	mgr mcmanager.Manager
+	mgr            mcmanager.Manager
+	validationOpts config.BackendTrafficPolicyValidationOptions
 }
 
 var _ webhook.CustomValidator = &BackendTrafficPolicyCustomValidator{}
@@ -49,7 +51,7 @@ func (v *BackendTrafficPolicyCustomValidator) ValidateCreate(ctx context.Context
 	log := logf.FromContext(ctx).WithValues("cluster", clusterName)
 	log.Info("Validating BackendTrafficPolicy", "name", backendTrafficPolicy.GetName(), "cluster", clusterName)
 
-	if errs := validation.ValidateBackendTrafficPolicy(backendTrafficPolicy); len(errs) > 0 {
+	if errs := validation.ValidateBackendTrafficPolicy(backendTrafficPolicy, v.validationOpts); len(errs) > 0 {
 		return nil, apierrors.NewInvalid(obj.GetObjectKind().GroupVersionKind().GroupKind(), backendTrafficPolicy.GetName(), errs)
 	}
 
@@ -71,7 +73,7 @@ func (v *BackendTrafficPolicyCustomValidator) ValidateUpdate(ctx context.Context
 	log := logf.FromContext(ctx).WithValues("cluster", clusterName)
 	log.Info("Validating BackendTrafficPolicy", "name", backendTrafficPolicy.GetName(), "cluster", clusterName)
 
-	if errs := validation.ValidateBackendTrafficPolicy(backendTrafficPolicy); len(errs) > 0 {
+	if errs := validation.ValidateBackendTrafficPolicy(backendTrafficPolicy, v.validationOpts); len(errs) > 0 {
 		return nil, apierrors.NewInvalid(oldObj.GetObjectKind().GroupVersionKind().GroupKind(), backendTrafficPolicy.GetName(), errs)
 	}
 	return nil, nil

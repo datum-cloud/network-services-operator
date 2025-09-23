@@ -16,20 +16,22 @@ import (
 	mccontext "sigs.k8s.io/multicluster-runtime/pkg/context"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 
+	"go.datum.net/network-services-operator/internal/config"
 	"go.datum.net/network-services-operator/internal/validation"
 )
 
 // SetupHTTPRouteFilterWebhookWithManager registers the webhook for HTTPRouteFilter in the manager.
-func SetupHTTPRouteFilterWebhookWithManager(mgr mcmanager.Manager) error {
+func SetupHTTPRouteFilterWebhookWithManager(mgr mcmanager.Manager, cfg config.NetworkServicesOperator) error {
 	return ctrl.NewWebhookManagedBy(mgr.GetLocalManager()).For(&gatewayv1alpha1.HTTPRouteFilter{}).
-		WithValidator(&HTTPRouteFilterCustomValidator{mgr: mgr}).
+		WithValidator(&HTTPRouteFilterCustomValidator{mgr: mgr, validationOpts: cfg.Gateway.ExtensionAPIValidationOptions.HTTPRouteFilters}).
 		Complete()
 }
 
 // +kubebuilder:webhook:path=/validate-gateway-envoyproxy-io-v1alpha1-httproutefilter,mutating=false,failurePolicy=fail,sideEffects=None,groups=gateway.envoyproxy.io,resources=httproutefilters,verbs=create;update,versions=v1alpha1,name=vhttproutefilter-v1alpha1.kb.io,admissionReviewVersions=v1
 
 type HTTPRouteFilterCustomValidator struct {
-	mgr mcmanager.Manager
+	mgr            mcmanager.Manager
+	validationOpts config.HTTPRouteFilterValidationOptions
 }
 
 var _ webhook.CustomValidator = &HTTPRouteFilterCustomValidator{}
@@ -49,7 +51,7 @@ func (v *HTTPRouteFilterCustomValidator) ValidateCreate(ctx context.Context, obj
 	log := logf.FromContext(ctx).WithValues("cluster", clusterName)
 	log.Info("Validating HTTPRouteFilter", "name", httpRouteFilter.GetName(), "cluster", clusterName)
 
-	if errs := validation.ValidateHTTPRouteFilter(httpRouteFilter); len(errs) > 0 {
+	if errs := validation.ValidateHTTPRouteFilter(httpRouteFilter, v.validationOpts); len(errs) > 0 {
 		return nil, apierrors.NewInvalid(obj.GetObjectKind().GroupVersionKind().GroupKind(), httpRouteFilter.GetName(), errs)
 	}
 
@@ -71,7 +73,7 @@ func (v *HTTPRouteFilterCustomValidator) ValidateUpdate(ctx context.Context, old
 	log := logf.FromContext(ctx).WithValues("cluster", clusterName)
 	log.Info("Validating HTTPRouteFilter", "name", httpRouteFilter.GetName(), "cluster", clusterName)
 
-	if errs := validation.ValidateHTTPRouteFilter(httpRouteFilter); len(errs) > 0 {
+	if errs := validation.ValidateHTTPRouteFilter(httpRouteFilter, v.validationOpts); len(errs) > 0 {
 		return nil, apierrors.NewInvalid(oldObj.GetObjectKind().GroupVersionKind().GroupKind(), httpRouteFilter.GetName(), errs)
 	}
 

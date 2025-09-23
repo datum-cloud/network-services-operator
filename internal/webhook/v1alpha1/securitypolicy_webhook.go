@@ -16,20 +16,22 @@ import (
 	mccontext "sigs.k8s.io/multicluster-runtime/pkg/context"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 
+	"go.datum.net/network-services-operator/internal/config"
 	"go.datum.net/network-services-operator/internal/validation"
 )
 
 // SetupSecurityPolicyWebhookWithManager registers the webhook for SecurityPolicy in the manager.
-func SetupSecurityPolicyWebhookWithManager(mgr mcmanager.Manager) error {
+func SetupSecurityPolicyWebhookWithManager(mgr mcmanager.Manager, cfg config.NetworkServicesOperator) error {
 	return ctrl.NewWebhookManagedBy(mgr.GetLocalManager()).For(&gatewayv1alpha1.SecurityPolicy{}).
-		WithValidator(&SecurityPolicyCustomValidator{mgr: mgr}).
+		WithValidator(&SecurityPolicyCustomValidator{mgr: mgr, validationOpts: cfg.Gateway.ExtensionAPIValidationOptions.SecurityPolicies}).
 		Complete()
 }
 
 // +kubebuilder:webhook:path=/validate-gateway-envoyproxy-io-v1alpha1-securitypolicy,mutating=false,failurePolicy=fail,sideEffects=None,groups=gateway.envoyproxy.io,resources=securitypolicies,verbs=create;update,versions=v1alpha1,name=vsecuritypolicy-v1alpha1.kb.io,admissionReviewVersions=v1
 
 type SecurityPolicyCustomValidator struct {
-	mgr mcmanager.Manager
+	mgr            mcmanager.Manager
+	validationOpts config.SecurityPolicyValidationOptions
 }
 
 var _ webhook.CustomValidator = &SecurityPolicyCustomValidator{}
@@ -49,7 +51,7 @@ func (v *SecurityPolicyCustomValidator) ValidateCreate(ctx context.Context, obj 
 	log := logf.FromContext(ctx).WithValues("cluster", clusterName)
 	log.Info("Validating SecurityPolicy", "name", securityPolicy.GetName(), "cluster", clusterName)
 
-	if errs := validation.ValidateSecurityPolicy(securityPolicy); len(errs) > 0 {
+	if errs := validation.ValidateSecurityPolicy(securityPolicy, v.validationOpts); len(errs) > 0 {
 		return nil, apierrors.NewInvalid(obj.GetObjectKind().GroupVersionKind().GroupKind(), securityPolicy.GetName(), errs)
 	}
 
@@ -71,7 +73,7 @@ func (v *SecurityPolicyCustomValidator) ValidateUpdate(ctx context.Context, oldO
 	log := logf.FromContext(ctx).WithValues("cluster", clusterName)
 	log.Info("Validating SecurityPolicy", "name", securityPolicy.GetName(), "cluster", clusterName)
 
-	if errs := validation.ValidateSecurityPolicy(securityPolicy); len(errs) > 0 {
+	if errs := validation.ValidateSecurityPolicy(securityPolicy, v.validationOpts); len(errs) > 0 {
 		return nil, apierrors.NewInvalid(oldObj.GetObjectKind().GroupVersionKind().GroupKind(), securityPolicy.GetName(), errs)
 	}
 

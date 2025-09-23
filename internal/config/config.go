@@ -10,6 +10,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/rest"
@@ -357,10 +358,207 @@ type GatewayConfig struct {
 	//
 	// +default={"80": ["HTTP"], "443": ["HTTPS"]}
 	ValidProtocolTypes map[int][]gatewayv1.ProtocolType `json:"validProtocolTypes,omitempty"`
+
+	// ExtensionAPIValidationOptions provides configuration for validation of
+	// extension APIs used by the Gateway.
+	ExtensionAPIValidationOptions ExtensionAPIValidationOptions `json:"extensionAPIValidationOptions,omitempty"`
 }
 
 func (c *GatewayConfig) GatewayDNSAddress(gateway *gatewayv1.Gateway) string {
 	return fmt.Sprintf("%s.%s", gateway.UID, c.TargetDomain)
+}
+
+// +k8s:deepcopy-gen=true
+
+type ExtensionAPIValidationOptions struct {
+	// BackendTrafficPolicies specifies validation options for BackendTrafficPolicy resources.
+	BackendTrafficPolicies BackendTrafficPolicyValidationOptions `json:"backendTrafficPolicies"`
+
+	// HTTPRouteFilters specifies validation options for HTTPRouteFilter resources.
+	HTTPRouteFilters HTTPRouteFilterValidationOptions `json:"httpRouteFilters"`
+
+	// SecurityPolicies specifies validation options for SecurityPolicy resources.
+	SecurityPolicies SecurityPolicyValidationOptions `json:"securityPolicies"`
+}
+
+// +k8s:deepcopy-gen=true
+
+type BackendTrafficPolicyValidationOptions struct {
+	ClusterSettings ClusterSettingsValidationOptions
+}
+
+// +k8s:deepcopy-gen=true
+
+type ClusterSettingsValidationOptions struct {
+	// Minimum amount for the total number of unacknowledged probes to send before
+	// deciding the connection is dead.
+	//
+	// +default=9
+	TCPKeepaliveMinProbes uint32
+
+	// Minimum amount for the duration a connection needs to be idle before
+	// keep-alive probes start being sent.
+	//
+	// +default="5m"
+	TCPKeepaliveMinIdleTime *metav1.Duration
+
+	// Minimum amount for the duration between keep-alive probes.
+	//
+	// +default="30s"
+	TCPKeepaliveMinInterval *metav1.Duration
+
+	// Maximum time allowed for a connection timeout
+	//
+	// +default="10s"
+	TCPMaxConnectionTimeout *metav1.Duration
+
+	// Maximum amount for the duration a connection can be idle.
+	//
+	// +default="1h"
+	HTTPMaxConnectionIdleTimeout *metav1.Duration
+
+	// Maximum amount for the duration of a connection.
+	//
+	// +default="1h"
+	HTTPMaxConnectionDuration *metav1.Duration
+
+	// Maximum amount for the duration until an entire request is received by the
+	// upstream.
+	//
+	// +default="1h"
+	HTTPMaxRequestTimeout *metav1.Duration
+
+	// Maximum size for upstream connection buffers
+	//
+	// +default="512Ki"
+	ConnectionMaxBufferLimit *resource.Quantity
+
+	// Minimum amount for the duration between DNS refreshes.
+	//
+	// +default="30s"
+	DNSMinRefreshRate *metav1.Duration
+
+	// Maximum size for the initial stream window size for HTTP/2 connections.
+	//
+	// +default="64Ki"
+	HTTP2MaxInitialStreamWindowSize *resource.Quantity
+
+	// Maximum size for the initial connection window size for HTTP/2 connections.
+	//
+	// +default="1Mi"
+	HTTP2MaxInitialConnectionWindowSize *resource.Quantity
+
+	// Maximum number of concurrent streams for HTTP/2 connections.
+	//
+	// +default=1024
+	HTTP2MaxConcurrentStreams uint32
+}
+
+type HTTPRouteFilterValidationOptions struct {
+	// MaxInlineBodySize is the maximum allowed size for an inline body in a
+	// direct response filter.
+	//
+	// +default=1024
+	MaxInlineBodySize int
+}
+
+// +k8s:deepcopy-gen=true
+
+type SecurityPolicyValidationOptions struct {
+	// APIKeyAuth specifies validation options for API key authentication
+	APIKeyAuth APIKeyAuthValidationOptions
+
+	// CORS specifies validation options for CORS
+	CORS CORSValidationOptions
+
+	// JWTProvider specifies validation options for JWT providers
+	JWTProvider JWTProviderValidationOptions
+
+	// OIDC specifies validation options for OIDC
+	OIDC OIDCValidationOptions
+
+	// Authorization specifies validation options for authorization
+	Authorization AuthorizationValidationOptions
+
+	// ClusterSettings specifies validation options for cluster settings used
+	// within security policies.
+	ClusterSettings ClusterSettingsValidationOptions
+}
+
+type APIKeyAuthValidationOptions struct {
+	// MaxCredentialRefs is the maximum number of credential references per
+	// SecurityPolicy.
+	//
+	// +default=5
+	MaxCredentialRefs int
+
+	// MaxExtractFrom is the maximum number of extractFrom entries per SecurityPolicy
+	//
+	// +default=5
+	MaxExtractFrom int
+
+	// MaxExtractFromFieldLength is the maximum length of each field in an
+	// extractFrom entry.
+	//
+	// +default=10
+	MaxExtractFromFieldLength int
+
+	// MaxForwardClientIDHeaderLength is the maximum length for the name of the
+	// header to use when forwarding the client identity to the upstream service.
+	//
+	// +default=256
+	MaxForwardClientIDHeaderLength int
+}
+
+type CORSValidationOptions struct {
+	// MaxFieldLength is the maximum length for each field in a CORS policy.
+	//
+	// +default=10
+	MaxFieldLength int
+}
+
+type JWTProviderValidationOptions struct {
+	// MaxClaimToHeaders is the maximum number of claim to header mappings per
+	// JWT provider.
+	//
+	// +default=5
+	MaxClaimToHeaders int
+
+	// MaxExtractorLength is the maximum length of each extractor field.
+	//
+	// +default=5
+	MaxExtractorLength int
+}
+
+// +k8s:deepcopy-gen=true
+
+type OIDCValidationOptions struct {
+	// MaxScopes is the maximum number of scopes per OIDC configuration.
+	//
+	// +default=5
+	MaxScopes int
+
+	// MaxResources is the maximum number of resources per OIDC configuration.
+	//
+	// +default=5
+	MaxResources int
+
+	// MinRefreshTokenTTL is the minimum allowed TTL for refresh tokens.
+	//
+	// +default="5m"
+	MinRefreshTokenTTL *metav1.Duration
+}
+
+type AuthorizationValidationOptions struct {
+	// MaxRules is the maximum number of authorization rules per SecurityPolicy.
+	//
+	// +default=20
+	MaxRules int
+
+	// MaxClientCIDRs is the maximum number of client CIDRs per authorization rule.
+	//
+	// +default=5
+	MaxClientCIDRs int
 }
 
 // +k8s:deepcopy-gen=true

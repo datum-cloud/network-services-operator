@@ -7,6 +7,7 @@ import (
 	envoygatewayv1alpha1 "github.com/envoyproxy/gateway/api/v1alpha1"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/utils/ptr"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
@@ -18,7 +19,7 @@ import (
 func TestValidateSecurityPolicy(t *testing.T) {
 	scenarios := map[string]struct {
 		securityPolicy *envoygatewayv1alpha1.SecurityPolicy
-		opts           config.SecurityPolicyValidationOptions
+		opts           func(*config.SecurityPolicyValidationOptions)
 		expectedErrors field.ErrorList
 	}{
 		"spec.targetRef forbidden": {
@@ -51,10 +52,8 @@ func TestValidateSecurityPolicy(t *testing.T) {
 					},
 				},
 			},
-			opts: config.SecurityPolicyValidationOptions{
-				APIKeyAuth: config.APIKeyAuthValidationOptions{
-					MaxCredentialRefs: 1,
-				},
+			opts: func(cfg *config.SecurityPolicyValidationOptions) {
+				cfg.APIKeyAuth.MaxCredentialRefs = 1
 			},
 			expectedErrors: field.ErrorList{
 				field.TooMany(field.NewPath("spec", "apiKeyAuth", "credentialRefs"), 2, 1),
@@ -72,10 +71,8 @@ func TestValidateSecurityPolicy(t *testing.T) {
 					},
 				},
 			},
-			opts: config.SecurityPolicyValidationOptions{
-				APIKeyAuth: config.APIKeyAuthValidationOptions{
-					MaxExtractFrom: 1,
-				},
+			opts: func(cfg *config.SecurityPolicyValidationOptions) {
+				cfg.APIKeyAuth.MaxExtractFrom = 1
 			},
 			expectedErrors: field.ErrorList{
 				field.TooMany(field.NewPath("spec", "apiKeyAuth", "extractFrom"), 2, 1),
@@ -95,11 +92,9 @@ func TestValidateSecurityPolicy(t *testing.T) {
 					},
 				},
 			},
-			opts: config.SecurityPolicyValidationOptions{
-				APIKeyAuth: config.APIKeyAuthValidationOptions{
-					MaxExtractFrom:            1,
-					MaxExtractFromFieldLength: 1,
-				},
+			opts: func(cfg *config.SecurityPolicyValidationOptions) {
+				cfg.APIKeyAuth.MaxExtractFrom = 1
+				cfg.APIKeyAuth.MaxExtractFromFieldLength = 1
 			},
 			expectedErrors: field.ErrorList{
 				field.TooMany(field.NewPath("spec", "apiKeyAuth", "extractFrom").Index(0).Child("headers"), 0, 0),
@@ -115,10 +110,8 @@ func TestValidateSecurityPolicy(t *testing.T) {
 					},
 				},
 			},
-			opts: config.SecurityPolicyValidationOptions{
-				APIKeyAuth: config.APIKeyAuthValidationOptions{
-					MaxForwardClientIDHeaderLength: 1,
-				},
+			opts: func(cfg *config.SecurityPolicyValidationOptions) {
+				cfg.APIKeyAuth.MaxForwardClientIDHeaderLength = 1
 			},
 			expectedErrors: field.ErrorList{
 				field.TooLong(field.NewPath("spec", "apiKeyAuth", "forwardClientIDHeader"), 0, 0),
@@ -135,10 +128,8 @@ func TestValidateSecurityPolicy(t *testing.T) {
 					},
 				},
 			},
-			opts: config.SecurityPolicyValidationOptions{
-				CORS: config.CORSValidationOptions{
-					MaxFieldLength: 1,
-				},
+			opts: func(cfg *config.SecurityPolicyValidationOptions) {
+				cfg.CORS.MaxFieldLength = 1
 			},
 			expectedErrors: field.ErrorList{
 				field.TooMany(field.NewPath("spec", "cors", "allowOrigins"), 3, 2),
@@ -248,11 +239,9 @@ func TestValidateSecurityPolicy(t *testing.T) {
 					},
 				},
 			},
-			opts: config.SecurityPolicyValidationOptions{
-				JWTProvider: config.JWTProviderValidationOptions{
-					MaxClaimToHeaders:  1,
-					MaxExtractorLength: 2,
-				},
+			opts: func(cfg *config.SecurityPolicyValidationOptions) {
+				cfg.JWTProvider.MaxClaimToHeaders = 1
+				cfg.JWTProvider.MaxExtractorLength = 2
 			},
 			expectedErrors: field.ErrorList{
 				field.TooMany(field.NewPath("spec", "jwt", "providers").Index(0).Child("claimToHeaders"), 2, 1),
@@ -309,12 +298,10 @@ func TestValidateSecurityPolicy(t *testing.T) {
 					},
 				},
 			},
-			opts: config.SecurityPolicyValidationOptions{
-				OIDC: config.OIDCValidationOptions{
-					MaxScopes:          2,
-					MaxResources:       2,
-					MinRefreshTokenTTL: 1 * time.Minute,
-				},
+			opts: func(cfg *config.SecurityPolicyValidationOptions) {
+				cfg.OIDC.MaxScopes = 2
+				cfg.OIDC.MaxResources = 2
+				cfg.OIDC.MinRefreshTokenTTL = &metav1.Duration{Duration: 1 * time.Minute}
 			},
 			expectedErrors: field.ErrorList{
 				field.TooMany(field.NewPath("spec", "oidc", "scopes"), 0, 0),
@@ -333,10 +320,8 @@ func TestValidateSecurityPolicy(t *testing.T) {
 					},
 				},
 			},
-			opts: config.SecurityPolicyValidationOptions{
-				Authorization: config.AuthorizationValidationOptions{
-					MaxRules: 1,
-				},
+			opts: func(cfg *config.SecurityPolicyValidationOptions) {
+				cfg.Authorization.MaxRules = 1
 			},
 			expectedErrors: field.ErrorList{
 				field.TooMany(field.NewPath("spec", "authorization", "rules"), 2, 1),
@@ -360,11 +345,9 @@ func TestValidateSecurityPolicy(t *testing.T) {
 					},
 				},
 			},
-			opts: config.SecurityPolicyValidationOptions{
-				Authorization: config.AuthorizationValidationOptions{
-					MaxRules:       1,
-					MaxClientCIDRs: 2,
-				},
+			opts: func(cfg *config.SecurityPolicyValidationOptions) {
+				cfg.Authorization.MaxRules = 1
+				cfg.Authorization.MaxClientCIDRs = 2
 			},
 			expectedErrors: field.ErrorList{
 				field.TooMany(field.NewPath("spec", "authorization", "rules").Index(0).Child("principal", "clientCIDRs"), 3, 2),
@@ -374,7 +357,15 @@ func TestValidateSecurityPolicy(t *testing.T) {
 
 	for name, scenario := range scenarios {
 		t.Run(name, func(t *testing.T) {
-			errs := ValidateSecurityPolicy(scenario.securityPolicy, scenario.opts)
+			opts := &config.NetworkServicesOperator{}
+			config.SetObjectDefaults_NetworkServicesOperator(opts)
+			securityPolicyOpts := opts.Gateway.ExtensionAPIValidationOptions.SecurityPolicies
+
+			if scenario.opts != nil {
+				scenario.opts(&securityPolicyOpts)
+			}
+
+			errs := ValidateSecurityPolicy(scenario.securityPolicy, securityPolicyOpts)
 			delta := cmp.Diff(scenario.expectedErrors, errs, cmpopts.IgnoreFields(field.Error{}, "BadValue", "Detail"))
 			if delta != "" {
 				t.Errorf("Testcase %s - expected errors '%v', got '%v', diff: '%v'", name, scenario.expectedErrors, errs, delta)

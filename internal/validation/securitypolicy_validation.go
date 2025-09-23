@@ -132,7 +132,7 @@ func validateSecurityPolicyOIDC(oidc *envoygatewayv1alpha1.OIDC, fldPath *field.
 	}
 
 	if oidc.DefaultRefreshTokenTTL != nil {
-		allErrs = append(allErrs, validateGatewayDuration(fldPath.Child("defaultRefreshTokenTTL"), oidc.DefaultRefreshTokenTTL, &opts.OIDC.MinRefreshTokenTTL, nil)...)
+		allErrs = append(allErrs, validateGatewayDuration(fldPath.Child("defaultRefreshTokenTTL"), oidc.DefaultRefreshTokenTTL, &opts.OIDC.MinRefreshTokenTTL.Duration, nil)...)
 	}
 
 	return allErrs

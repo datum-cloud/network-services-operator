@@ -8,6 +8,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/utils/ptr"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
@@ -19,7 +20,7 @@ import (
 func TestValidateBackendTrafficPolicy(t *testing.T) {
 	scenarios := map[string]struct {
 		backendTrafficPolicy *envoygatewayv1alpha1.BackendTrafficPolicy
-		opts                 config.BackendTrafficPolicyValidationOptions
+		opts                 func(*config.BackendTrafficPolicyValidationOptions)
 		expectedErrors       field.ErrorList
 	}{
 		"spec.targetRef forbidden": {
@@ -76,10 +77,8 @@ func TestValidateBackendTrafficPolicy(t *testing.T) {
 					},
 				},
 			},
-			opts: config.BackendTrafficPolicyValidationOptions{
-				ClusterSettings: config.ClusterSettingsValidationOptions{
-					TCPKeepaliveMinProbes: 2,
-				},
+			opts: func(cfg *config.BackendTrafficPolicyValidationOptions) {
+				cfg.ClusterSettings.TCPKeepaliveMinProbes = 2
 			},
 			expectedErrors: field.ErrorList{
 				field.Invalid(field.NewPath("spec", "tcpKeepalive", "probes"), int32(0), ""),
@@ -95,10 +94,8 @@ func TestValidateBackendTrafficPolicy(t *testing.T) {
 					},
 				},
 			},
-			opts: config.BackendTrafficPolicyValidationOptions{
-				ClusterSettings: config.ClusterSettingsValidationOptions{
-					TCPKeepaliveMinIdleTime: 1 * time.Minute,
-				},
+			opts: func(cfg *config.BackendTrafficPolicyValidationOptions) {
+				cfg.ClusterSettings.TCPKeepaliveMinIdleTime = &metav1.Duration{Duration: 1 * time.Minute}
 			},
 			expectedErrors: field.ErrorList{
 				field.Invalid(field.NewPath("spec", "tcpKeepalive", "idleTime"), "4m0s", ""),
@@ -114,10 +111,8 @@ func TestValidateBackendTrafficPolicy(t *testing.T) {
 					},
 				},
 			},
-			opts: config.BackendTrafficPolicyValidationOptions{
-				ClusterSettings: config.ClusterSettingsValidationOptions{
-					TCPKeepaliveMinInterval: 1 * time.Minute,
-				},
+			opts: func(cfg *config.BackendTrafficPolicyValidationOptions) {
+				cfg.ClusterSettings.TCPKeepaliveMinInterval = &metav1.Duration{Duration: 1 * time.Minute}
 			},
 			expectedErrors: field.ErrorList{
 				field.Invalid(field.NewPath("spec", "tcpKeepalive", "interval"), "4m0s", ""),
@@ -165,10 +160,8 @@ func TestValidateBackendTrafficPolicy(t *testing.T) {
 					},
 				},
 			},
-			opts: config.BackendTrafficPolicyValidationOptions{
-				ClusterSettings: config.ClusterSettingsValidationOptions{
-					HTTPMaxConnectionIdleTimeout: 1 * time.Hour,
-				},
+			opts: func(cfg *config.BackendTrafficPolicyValidationOptions) {
+				cfg.ClusterSettings.HTTPMaxConnectionIdleTimeout = &metav1.Duration{Duration: 1 * time.Hour}
 			},
 			expectedErrors: field.ErrorList{
 				field.Invalid(field.NewPath("spec", "timeout", "http", "connectionIdleTimeout"), "", ""),
@@ -186,10 +179,8 @@ func TestValidateBackendTrafficPolicy(t *testing.T) {
 					},
 				},
 			},
-			opts: config.BackendTrafficPolicyValidationOptions{
-				ClusterSettings: config.ClusterSettingsValidationOptions{
-					HTTPMaxConnectionDuration: 1 * time.Hour,
-				},
+			opts: func(cfg *config.BackendTrafficPolicyValidationOptions) {
+				cfg.ClusterSettings.HTTPMaxConnectionDuration = &metav1.Duration{Duration: 1 * time.Hour}
 			},
 			expectedErrors: field.ErrorList{
 				field.Invalid(field.NewPath("spec", "timeout", "http", "maxConnectionDuration"), "", ""),
@@ -207,10 +198,8 @@ func TestValidateBackendTrafficPolicy(t *testing.T) {
 					},
 				},
 			},
-			opts: config.BackendTrafficPolicyValidationOptions{
-				ClusterSettings: config.ClusterSettingsValidationOptions{
-					HTTPMaxRequestTimeout: 1 * time.Hour,
-				},
+			opts: func(cfg *config.BackendTrafficPolicyValidationOptions) {
+				cfg.ClusterSettings.HTTPMaxRequestTimeout = &metav1.Duration{Duration: 1 * time.Hour}
 			},
 			expectedErrors: field.ErrorList{
 				field.Invalid(field.NewPath("spec", "timeout", "http", "requestTimeout"), "", ""),
@@ -226,10 +215,8 @@ func TestValidateBackendTrafficPolicy(t *testing.T) {
 					},
 				},
 			},
-			opts: config.BackendTrafficPolicyValidationOptions{
-				ClusterSettings: config.ClusterSettingsValidationOptions{
-					ConnectionMaxBufferLimit: resource.MustParse("512Ki"),
-				},
+			opts: func(cfg *config.BackendTrafficPolicyValidationOptions) {
+				cfg.ClusterSettings.ConnectionMaxBufferLimit = ptr.To(resource.MustParse("512Ki"))
 			},
 			expectedErrors: field.ErrorList{
 				field.Invalid(field.NewPath("spec", "connection", "bufferLimit"), "", ""),
@@ -245,10 +232,8 @@ func TestValidateBackendTrafficPolicy(t *testing.T) {
 					},
 				},
 			},
-			opts: config.BackendTrafficPolicyValidationOptions{
-				ClusterSettings: config.ClusterSettingsValidationOptions{
-					DNSMinRefreshRate: 1 * time.Second,
-				},
+			opts: func(cfg *config.BackendTrafficPolicyValidationOptions) {
+				cfg.ClusterSettings.DNSMinRefreshRate = &metav1.Duration{Duration: 1 * time.Second}
 			},
 			expectedErrors: field.ErrorList{
 				field.Invalid(field.NewPath("spec", "dns", "dnsRefreshRate"), "", ""),
@@ -338,7 +323,15 @@ func TestValidateBackendTrafficPolicy(t *testing.T) {
 
 	for name, scenario := range scenarios {
 		t.Run(name, func(t *testing.T) {
-			errs := ValidateBackendTrafficPolicy(scenario.backendTrafficPolicy, scenario.opts)
+			opts := &config.NetworkServicesOperator{}
+			config.SetObjectDefaults_NetworkServicesOperator(opts)
+			backendTrafficPolicyOpts := opts.Gateway.ExtensionAPIValidationOptions.BackendTrafficPolicies
+
+			if scenario.opts != nil {
+				scenario.opts(&backendTrafficPolicyOpts)
+			}
+
+			errs := ValidateBackendTrafficPolicy(scenario.backendTrafficPolicy, backendTrafficPolicyOpts)
 			delta := cmp.Diff(scenario.expectedErrors, errs, cmpopts.IgnoreFields(field.Error{}, "BadValue", "Detail"))
 			if delta != "" {
 				t.Errorf("Testcase %s - expected errors '%v', got '%v', diff: '%v'", name, scenario.expectedErrors, errs, delta)

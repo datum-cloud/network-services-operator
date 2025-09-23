@@ -42,7 +42,62 @@ func SetObjectDefaults_NetworkServicesOperator(in *NetworkServicesOperator) {
 			panic(err)
 		}
 	}
-	SetDefaults_ClusterSettingsValidationOptions(&in.Gateway.ExtensionAPIValidationOptions.BackendTrafficPolicies.ClusterSettings)
+	if in.Gateway.ExtensionAPIValidationOptions.BackendTrafficPolicies.ClusterSettings.TCPKeepaliveMinProbes == 0 {
+		in.Gateway.ExtensionAPIValidationOptions.BackendTrafficPolicies.ClusterSettings.TCPKeepaliveMinProbes = 9
+	}
+	if in.Gateway.ExtensionAPIValidationOptions.BackendTrafficPolicies.ClusterSettings.TCPKeepaliveMinIdleTime == nil {
+		if err := json.Unmarshal([]byte(`"5m"`), &in.Gateway.ExtensionAPIValidationOptions.BackendTrafficPolicies.ClusterSettings.TCPKeepaliveMinIdleTime); err != nil {
+			panic(err)
+		}
+	}
+	if in.Gateway.ExtensionAPIValidationOptions.BackendTrafficPolicies.ClusterSettings.TCPKeepaliveMinInterval == nil {
+		if err := json.Unmarshal([]byte(`"30s"`), &in.Gateway.ExtensionAPIValidationOptions.BackendTrafficPolicies.ClusterSettings.TCPKeepaliveMinInterval); err != nil {
+			panic(err)
+		}
+	}
+	if in.Gateway.ExtensionAPIValidationOptions.BackendTrafficPolicies.ClusterSettings.TCPMaxConnectionTimeout == nil {
+		if err := json.Unmarshal([]byte(`"10s"`), &in.Gateway.ExtensionAPIValidationOptions.BackendTrafficPolicies.ClusterSettings.TCPMaxConnectionTimeout); err != nil {
+			panic(err)
+		}
+	}
+	if in.Gateway.ExtensionAPIValidationOptions.BackendTrafficPolicies.ClusterSettings.HTTPMaxConnectionIdleTimeout == nil {
+		if err := json.Unmarshal([]byte(`"1h"`), &in.Gateway.ExtensionAPIValidationOptions.BackendTrafficPolicies.ClusterSettings.HTTPMaxConnectionIdleTimeout); err != nil {
+			panic(err)
+		}
+	}
+	if in.Gateway.ExtensionAPIValidationOptions.BackendTrafficPolicies.ClusterSettings.HTTPMaxConnectionDuration == nil {
+		if err := json.Unmarshal([]byte(`"1h"`), &in.Gateway.ExtensionAPIValidationOptions.BackendTrafficPolicies.ClusterSettings.HTTPMaxConnectionDuration); err != nil {
+			panic(err)
+		}
+	}
+	if in.Gateway.ExtensionAPIValidationOptions.BackendTrafficPolicies.ClusterSettings.HTTPMaxRequestTimeout == nil {
+		if err := json.Unmarshal([]byte(`"1h"`), &in.Gateway.ExtensionAPIValidationOptions.BackendTrafficPolicies.ClusterSettings.HTTPMaxRequestTimeout); err != nil {
+			panic(err)
+		}
+	}
+	if in.Gateway.ExtensionAPIValidationOptions.BackendTrafficPolicies.ClusterSettings.ConnectionMaxBufferLimit == nil {
+		if err := json.Unmarshal([]byte(`"512Ki"`), &in.Gateway.ExtensionAPIValidationOptions.BackendTrafficPolicies.ClusterSettings.ConnectionMaxBufferLimit); err != nil {
+			panic(err)
+		}
+	}
+	if in.Gateway.ExtensionAPIValidationOptions.BackendTrafficPolicies.ClusterSettings.DNSMinRefreshRate == nil {
+		if err := json.Unmarshal([]byte(`"30s"`), &in.Gateway.ExtensionAPIValidationOptions.BackendTrafficPolicies.ClusterSettings.DNSMinRefreshRate); err != nil {
+			panic(err)
+		}
+	}
+	if in.Gateway.ExtensionAPIValidationOptions.BackendTrafficPolicies.ClusterSettings.HTTP2MaxInitialStreamWindowSize == nil {
+		if err := json.Unmarshal([]byte(`"64Ki"`), &in.Gateway.ExtensionAPIValidationOptions.BackendTrafficPolicies.ClusterSettings.HTTP2MaxInitialStreamWindowSize); err != nil {
+			panic(err)
+		}
+	}
+	if in.Gateway.ExtensionAPIValidationOptions.BackendTrafficPolicies.ClusterSettings.HTTP2MaxInitialConnectionWindowSize == nil {
+		if err := json.Unmarshal([]byte(`"1Mi"`), &in.Gateway.ExtensionAPIValidationOptions.BackendTrafficPolicies.ClusterSettings.HTTP2MaxInitialConnectionWindowSize); err != nil {
+			panic(err)
+		}
+	}
+	if in.Gateway.ExtensionAPIValidationOptions.BackendTrafficPolicies.ClusterSettings.HTTP2MaxConcurrentStreams == 0 {
+		in.Gateway.ExtensionAPIValidationOptions.BackendTrafficPolicies.ClusterSettings.HTTP2MaxConcurrentStreams = 1024
+	}
 	if in.Gateway.ExtensionAPIValidationOptions.HTTPRouteFilters.MaxInlineBodySize == 0 {
 		in.Gateway.ExtensionAPIValidationOptions.HTTPRouteFilters.MaxInlineBodySize = 1024
 	}
@@ -67,12 +122,16 @@ func SetObjectDefaults_NetworkServicesOperator(in *NetworkServicesOperator) {
 	if in.Gateway.ExtensionAPIValidationOptions.SecurityPolicies.JWTProvider.MaxExtractorLength == 0 {
 		in.Gateway.ExtensionAPIValidationOptions.SecurityPolicies.JWTProvider.MaxExtractorLength = 5
 	}
-	SetDefaults_OIDCValidationOptions(&in.Gateway.ExtensionAPIValidationOptions.SecurityPolicies.OIDC)
 	if in.Gateway.ExtensionAPIValidationOptions.SecurityPolicies.OIDC.MaxScopes == 0 {
 		in.Gateway.ExtensionAPIValidationOptions.SecurityPolicies.OIDC.MaxScopes = 5
 	}
 	if in.Gateway.ExtensionAPIValidationOptions.SecurityPolicies.OIDC.MaxResources == 0 {
 		in.Gateway.ExtensionAPIValidationOptions.SecurityPolicies.OIDC.MaxResources = 5
+	}
+	if in.Gateway.ExtensionAPIValidationOptions.SecurityPolicies.OIDC.MinRefreshTokenTTL == nil {
+		if err := json.Unmarshal([]byte(`"5m"`), &in.Gateway.ExtensionAPIValidationOptions.SecurityPolicies.OIDC.MinRefreshTokenTTL); err != nil {
+			panic(err)
+		}
 	}
 	if in.Gateway.ExtensionAPIValidationOptions.SecurityPolicies.Authorization.MaxRules == 0 {
 		in.Gateway.ExtensionAPIValidationOptions.SecurityPolicies.Authorization.MaxRules = 20
@@ -80,7 +139,62 @@ func SetObjectDefaults_NetworkServicesOperator(in *NetworkServicesOperator) {
 	if in.Gateway.ExtensionAPIValidationOptions.SecurityPolicies.Authorization.MaxClientCIDRs == 0 {
 		in.Gateway.ExtensionAPIValidationOptions.SecurityPolicies.Authorization.MaxClientCIDRs = 5
 	}
-	SetDefaults_ClusterSettingsValidationOptions(&in.Gateway.ExtensionAPIValidationOptions.SecurityPolicies.ClusterSettings)
+	if in.Gateway.ExtensionAPIValidationOptions.SecurityPolicies.ClusterSettings.TCPKeepaliveMinProbes == 0 {
+		in.Gateway.ExtensionAPIValidationOptions.SecurityPolicies.ClusterSettings.TCPKeepaliveMinProbes = 9
+	}
+	if in.Gateway.ExtensionAPIValidationOptions.SecurityPolicies.ClusterSettings.TCPKeepaliveMinIdleTime == nil {
+		if err := json.Unmarshal([]byte(`"5m"`), &in.Gateway.ExtensionAPIValidationOptions.SecurityPolicies.ClusterSettings.TCPKeepaliveMinIdleTime); err != nil {
+			panic(err)
+		}
+	}
+	if in.Gateway.ExtensionAPIValidationOptions.SecurityPolicies.ClusterSettings.TCPKeepaliveMinInterval == nil {
+		if err := json.Unmarshal([]byte(`"30s"`), &in.Gateway.ExtensionAPIValidationOptions.SecurityPolicies.ClusterSettings.TCPKeepaliveMinInterval); err != nil {
+			panic(err)
+		}
+	}
+	if in.Gateway.ExtensionAPIValidationOptions.SecurityPolicies.ClusterSettings.TCPMaxConnectionTimeout == nil {
+		if err := json.Unmarshal([]byte(`"10s"`), &in.Gateway.ExtensionAPIValidationOptions.SecurityPolicies.ClusterSettings.TCPMaxConnectionTimeout); err != nil {
+			panic(err)
+		}
+	}
+	if in.Gateway.ExtensionAPIValidationOptions.SecurityPolicies.ClusterSettings.HTTPMaxConnectionIdleTimeout == nil {
+		if err := json.Unmarshal([]byte(`"1h"`), &in.Gateway.ExtensionAPIValidationOptions.SecurityPolicies.ClusterSettings.HTTPMaxConnectionIdleTimeout); err != nil {
+			panic(err)
+		}
+	}
+	if in.Gateway.ExtensionAPIValidationOptions.SecurityPolicies.ClusterSettings.HTTPMaxConnectionDuration == nil {
+		if err := json.Unmarshal([]byte(`"1h"`), &in.Gateway.ExtensionAPIValidationOptions.SecurityPolicies.ClusterSettings.HTTPMaxConnectionDuration); err != nil {
+			panic(err)
+		}
+	}
+	if in.Gateway.ExtensionAPIValidationOptions.SecurityPolicies.ClusterSettings.HTTPMaxRequestTimeout == nil {
+		if err := json.Unmarshal([]byte(`"1h"`), &in.Gateway.ExtensionAPIValidationOptions.SecurityPolicies.ClusterSettings.HTTPMaxRequestTimeout); err != nil {
+			panic(err)
+		}
+	}
+	if in.Gateway.ExtensionAPIValidationOptions.SecurityPolicies.ClusterSettings.ConnectionMaxBufferLimit == nil {
+		if err := json.Unmarshal([]byte(`"512Ki"`), &in.Gateway.ExtensionAPIValidationOptions.SecurityPolicies.ClusterSettings.ConnectionMaxBufferLimit); err != nil {
+			panic(err)
+		}
+	}
+	if in.Gateway.ExtensionAPIValidationOptions.SecurityPolicies.ClusterSettings.DNSMinRefreshRate == nil {
+		if err := json.Unmarshal([]byte(`"30s"`), &in.Gateway.ExtensionAPIValidationOptions.SecurityPolicies.ClusterSettings.DNSMinRefreshRate); err != nil {
+			panic(err)
+		}
+	}
+	if in.Gateway.ExtensionAPIValidationOptions.SecurityPolicies.ClusterSettings.HTTP2MaxInitialStreamWindowSize == nil {
+		if err := json.Unmarshal([]byte(`"64Ki"`), &in.Gateway.ExtensionAPIValidationOptions.SecurityPolicies.ClusterSettings.HTTP2MaxInitialStreamWindowSize); err != nil {
+			panic(err)
+		}
+	}
+	if in.Gateway.ExtensionAPIValidationOptions.SecurityPolicies.ClusterSettings.HTTP2MaxInitialConnectionWindowSize == nil {
+		if err := json.Unmarshal([]byte(`"1Mi"`), &in.Gateway.ExtensionAPIValidationOptions.SecurityPolicies.ClusterSettings.HTTP2MaxInitialConnectionWindowSize); err != nil {
+			panic(err)
+		}
+	}
+	if in.Gateway.ExtensionAPIValidationOptions.SecurityPolicies.ClusterSettings.HTTP2MaxConcurrentStreams == 0 {
+		in.Gateway.ExtensionAPIValidationOptions.SecurityPolicies.ClusterSettings.HTTP2MaxConcurrentStreams = 1024
+	}
 	SetDefaults_GatewayResourceReplicatorConfig(&in.GatewayResourceReplicator)
 	if in.HTTPProxy.GatewayClassName == "" {
 		in.HTTPProxy.GatewayClassName = "datum-external-global-proxy"

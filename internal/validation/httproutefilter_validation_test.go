@@ -15,7 +15,7 @@ import (
 func TestValidateHTTPRouteFilter(t *testing.T) {
 	scenarios := map[string]struct {
 		httpRouteFilter *envoygatewayv1alpha1.HTTPRouteFilter
-		opts            config.HTTPRouteFilterValidationOptions
+		opts            func(*config.HTTPRouteFilterValidationOptions)
 		expectedErrors  field.ErrorList
 	}{
 		"direct response - inline body too large": {
@@ -28,8 +28,8 @@ func TestValidateHTTPRouteFilter(t *testing.T) {
 					},
 				},
 			},
-			opts: config.HTTPRouteFilterValidationOptions{
-				MaxInlineBodySize: 1,
+			opts: func(cfg *config.HTTPRouteFilterValidationOptions) {
+				cfg.MaxInlineBodySize = 1
 			},
 			expectedErrors: field.ErrorList{
 				field.TooLong(field.NewPath("spec", "directResponse", "body", "inline"), 0, 0),
@@ -39,7 +39,15 @@ func TestValidateHTTPRouteFilter(t *testing.T) {
 
 	for name, scenario := range scenarios {
 		t.Run(name, func(t *testing.T) {
-			errs := ValidateHTTPRouteFilter(scenario.httpRouteFilter, scenario.opts)
+			opts := &config.NetworkServicesOperator{}
+			config.SetObjectDefaults_NetworkServicesOperator(opts)
+			httpRouteFilterOpts := opts.Gateway.ExtensionAPIValidationOptions.HTTPRouteFilters
+
+			if scenario.opts != nil {
+				scenario.opts(&httpRouteFilterOpts)
+			}
+
+			errs := ValidateHTTPRouteFilter(scenario.httpRouteFilter, httpRouteFilterOpts)
 			delta := cmp.Diff(scenario.expectedErrors, errs, cmpopts.IgnoreFields(field.Error{}, "BadValue", "Detail"))
 			if delta != "" {
 				t.Errorf("Testcase %s - expected errors '%v', got '%v', diff: '%v'", name, scenario.expectedErrors, errs, delta)

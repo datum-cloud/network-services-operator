@@ -393,115 +393,65 @@ type ClusterSettingsValidationOptions struct {
 	// Minimum amount for the total number of unacknowledged probes to send before
 	// deciding the connection is dead.
 	//
-	// Default: 9
+	// +default=9
 	TCPKeepaliveMinProbes uint32
 
 	// Minimum amount for the duration a connection needs to be idle before
 	// keep-alive probes start being sent.
 	//
-	// Default: 5m
-	TCPKeepaliveMinIdleTime time.Duration
+	// +default="5m"
+	TCPKeepaliveMinIdleTime *metav1.Duration
 
 	// Minimum amount for the duration between keep-alive probes.
 	//
-	// Default: 30s
-	TCPKeepaliveMinInterval time.Duration
+	// +default="30s"
+	TCPKeepaliveMinInterval *metav1.Duration
 
 	// Maximum time allowed for a connection timeout
 	//
-	// Default: 10s
-	TCPMaxConnectionTimeout time.Duration
+	// +default="10s"
+	TCPMaxConnectionTimeout *metav1.Duration
 
 	// Maximum amount for the duration a connection can be idle.
 	//
-	// Default: 1h
-	HTTPMaxConnectionIdleTimeout time.Duration
+	// +default="1h"
+	HTTPMaxConnectionIdleTimeout *metav1.Duration
 
 	// Maximum amount for the duration of a connection.
 	//
-	// Default: 1h
-	HTTPMaxConnectionDuration time.Duration
+	// +default="1h"
+	HTTPMaxConnectionDuration *metav1.Duration
 
 	// Maximum amount for the duration until an entire request is received by the
 	// upstream.
 	//
-	// Default: 1h
-	HTTPMaxRequestTimeout time.Duration
+	// +default="1h"
+	HTTPMaxRequestTimeout *metav1.Duration
 
 	// Maximum size for upstream connection buffers
 	//
-	// Default: 512Ki
-	ConnectionMaxBufferLimit resource.Quantity
+	// +default="512Ki"
+	ConnectionMaxBufferLimit *resource.Quantity
 
 	// Minimum amount for the duration between DNS refreshes.
 	//
-	// Default: 30s
-	DNSMinRefreshRate time.Duration
+	// +default="30s"
+	DNSMinRefreshRate *metav1.Duration
 
 	// Maximum size for the initial stream window size for HTTP/2 connections.
 	//
-	// Default: 64Ki
-	HTTP2MaxInitialStreamWindowSize resource.Quantity
+	// +default="64Ki"
+	HTTP2MaxInitialStreamWindowSize *resource.Quantity
 
 	// Maximum size for the initial connection window size for HTTP/2 connections.
 	//
-	// Default: 1Mi
-	HTTP2MaxInitialConnectionWindowSize resource.Quantity
+	// +default="1Mi"
+	HTTP2MaxInitialConnectionWindowSize *resource.Quantity
 
 	// Maximum number of concurrent streams for HTTP/2 connections.
 	//
-	// Default: 1024
+	// +default=1024
 	HTTP2MaxConcurrentStreams uint32
-}
-
-func SetDefaults_ClusterSettingsValidationOptions(obj *ClusterSettingsValidationOptions) {
-	if obj.TCPKeepaliveMinProbes == 0 {
-		obj.TCPKeepaliveMinProbes = 9
-	}
-
-	if obj.TCPKeepaliveMinIdleTime == 0 {
-		obj.TCPKeepaliveMinIdleTime = 5 * time.Minute
-	}
-
-	if obj.TCPKeepaliveMinInterval == 0 {
-		obj.TCPKeepaliveMinInterval = 30 * time.Second
-	}
-
-	if obj.TCPMaxConnectionTimeout == 0 {
-		obj.TCPMaxConnectionTimeout = 10 * time.Second
-	}
-
-	if obj.HTTPMaxConnectionIdleTimeout == 0 {
-		obj.HTTPMaxConnectionIdleTimeout = 1 * time.Hour
-	}
-
-	if obj.HTTPMaxConnectionDuration == 0 {
-		obj.HTTPMaxConnectionDuration = 1 * time.Hour
-	}
-
-	if obj.HTTPMaxRequestTimeout == 0 {
-		obj.HTTPMaxRequestTimeout = 1 * time.Hour
-	}
-
-	if obj.ConnectionMaxBufferLimit.IsZero() {
-		obj.ConnectionMaxBufferLimit = resource.MustParse("512Ki")
-	}
-
-	if obj.DNSMinRefreshRate == 0 {
-		obj.DNSMinRefreshRate = 30 * time.Second
-	}
-
-	if obj.HTTP2MaxInitialStreamWindowSize.IsZero() {
-		obj.HTTP2MaxInitialStreamWindowSize = resource.MustParse("64Ki")
-	}
-
-	if obj.HTTP2MaxInitialConnectionWindowSize.IsZero() {
-		obj.HTTP2MaxInitialConnectionWindowSize = resource.MustParse("1Mi")
-	}
-
-	if obj.HTTP2MaxConcurrentStreams == 0 {
-		obj.HTTP2MaxConcurrentStreams = 1024
-	}
 }
 
 type HTTPRouteFilterValidationOptions struct {
@@ -580,6 +530,8 @@ type JWTProviderValidationOptions struct {
 	MaxExtractorLength int
 }
 
+// +k8s:deepcopy-gen=true
+
 type OIDCValidationOptions struct {
 	// MaxScopes is the maximum number of scopes per OIDC configuration.
 	//
@@ -593,14 +545,8 @@ type OIDCValidationOptions struct {
 
 	// MinRefreshTokenTTL is the minimum allowed TTL for refresh tokens.
 	//
-	// Default: 1m
-	MinRefreshTokenTTL time.Duration
-}
-
-func SetDefaults_OIDCValidationOptions(obj *OIDCValidationOptions) {
-	if obj.MinRefreshTokenTTL == 0 {
-		obj.MinRefreshTokenTTL = 1 * time.Minute
-	}
+	// +default="5m"
+	MinRefreshTokenTTL *metav1.Duration
 }
 
 type AuthorizationValidationOptions struct {

@@ -76,12 +76,12 @@ func validateGatewayClusterSettingsTCPKeepalive(tcpKeepalive *envoygatewayv1alph
 
 	if v := tcpKeepalive.IdleTime; v != nil {
 		idleTimeFieldPath := fldPath.Child("idleTime")
-		allErrs = append(allErrs, validateGatewayDuration(idleTimeFieldPath, v, ptr.To(opts.TCPKeepaliveMinIdleTime), nil)...)
+		allErrs = append(allErrs, validateGatewayDuration(idleTimeFieldPath, v, ptr.To(opts.TCPKeepaliveMinIdleTime.Duration), nil)...)
 	}
 
 	if v := tcpKeepalive.Interval; v != nil {
 		intervalFieldPath := fldPath.Child("interval")
-		allErrs = append(allErrs, validateGatewayDuration(intervalFieldPath, v, ptr.To(opts.TCPKeepaliveMinInterval), nil)...)
+		allErrs = append(allErrs, validateGatewayDuration(intervalFieldPath, v, ptr.To(opts.TCPKeepaliveMinInterval.Duration), nil)...)
 	}
 
 	return allErrs
@@ -111,7 +111,7 @@ func validateGatewayClusterSettingsTimeout(timeout *envoygatewayv1alpha1.Timeout
 	if timeout.TCP != nil {
 		if v := timeout.TCP.ConnectTimeout; v != nil {
 			connectTimeoutFieldPath := fldPath.Child("tcp").Child("connectTimeout")
-			allErrs = append(allErrs, validateGatewayDuration(connectTimeoutFieldPath, v, nil, ptr.To(opts.TCPMaxConnectionTimeout))...)
+			allErrs = append(allErrs, validateGatewayDuration(connectTimeoutFieldPath, v, nil, ptr.To(opts.TCPMaxConnectionTimeout.Duration))...)
 		}
 	}
 
@@ -120,17 +120,17 @@ func validateGatewayClusterSettingsTimeout(timeout *envoygatewayv1alpha1.Timeout
 
 		if v := timeout.HTTP.ConnectionIdleTimeout; v != nil {
 			connectionIdleTimeoutFieldPath := httpTimeoutFieldPath.Child("connectionIdleTimeout")
-			allErrs = append(allErrs, validateGatewayDuration(connectionIdleTimeoutFieldPath, v, nil, ptr.To(opts.HTTPMaxConnectionIdleTimeout))...)
+			allErrs = append(allErrs, validateGatewayDuration(connectionIdleTimeoutFieldPath, v, nil, ptr.To(opts.HTTPMaxConnectionIdleTimeout.Duration))...)
 		}
 
 		if v := timeout.HTTP.MaxConnectionDuration; v != nil {
 			maxConnectionDurationFieldPath := httpTimeoutFieldPath.Child("maxConnectionDuration")
-			allErrs = append(allErrs, validateGatewayDuration(maxConnectionDurationFieldPath, v, nil, ptr.To(opts.HTTPMaxConnectionDuration))...)
+			allErrs = append(allErrs, validateGatewayDuration(maxConnectionDurationFieldPath, v, nil, ptr.To(opts.HTTPMaxConnectionDuration.Duration))...)
 		}
 
 		if v := timeout.HTTP.RequestTimeout; v != nil {
 			requestTimeoutFieldPath := httpTimeoutFieldPath.Child("requestTimeout")
-			allErrs = append(allErrs, validateGatewayDuration(requestTimeoutFieldPath, v, nil, ptr.To(opts.HTTPMaxRequestTimeout))...)
+			allErrs = append(allErrs, validateGatewayDuration(requestTimeoutFieldPath, v, nil, ptr.To(opts.HTTPMaxRequestTimeout.Duration))...)
 		}
 
 	}
@@ -143,7 +143,7 @@ func validateGatewayClusterSettingsConnection(connection *envoygatewayv1alpha1.B
 		return nil
 	}
 
-	if connection.BufferLimit != nil && connection.BufferLimit.Cmp(opts.ConnectionMaxBufferLimit) == 1 {
+	if connection.BufferLimit != nil && connection.BufferLimit.Cmp(*opts.ConnectionMaxBufferLimit) == 1 {
 		return field.ErrorList{
 			field.Invalid(fldPath.Child("bufferLimit"), connection.BufferLimit.String(), fmt.Sprintf("must be less than or equal to %s", opts.ConnectionMaxBufferLimit.String())),
 		}
@@ -161,7 +161,7 @@ func validateGatewayClusterSettingsDNS(dns *envoygatewayv1alpha1.DNS, fldPath *f
 
 	if v := dns.DNSRefreshRate; v != nil {
 		dnsRefreshRateFieldPath := fldPath.Child("dnsRefreshRate")
-		allErrs = append(allErrs, validateGatewayDuration(dnsRefreshRateFieldPath, v, ptr.To(opts.DNSMinRefreshRate), nil)...)
+		allErrs = append(allErrs, validateGatewayDuration(dnsRefreshRateFieldPath, v, ptr.To(opts.DNSMinRefreshRate.Duration), nil)...)
 	}
 
 	if dns.RespectDNSTTL != nil && !*dns.RespectDNSTTL {
@@ -178,13 +178,13 @@ func validateGatewayClusterSettingsHTTP2(http2 *envoygatewayv1alpha1.HTTP2Settin
 
 	allErrs := field.ErrorList{}
 	if http2.InitialStreamWindowSize != nil {
-		if http2.InitialStreamWindowSize.Cmp(opts.HTTP2MaxInitialStreamWindowSize) == 1 {
+		if http2.InitialStreamWindowSize.Cmp(*opts.HTTP2MaxInitialStreamWindowSize) == 1 {
 			allErrs = append(allErrs, field.Invalid(fldPath.Child("initialStreamWindowSize"), http2.InitialStreamWindowSize.String(), fmt.Sprintf("must be less than or equal to %s", opts.HTTP2MaxInitialStreamWindowSize.String())))
 		}
 	}
 
 	if http2.InitialConnectionWindowSize != nil {
-		if http2.InitialConnectionWindowSize.Cmp(opts.HTTP2MaxInitialConnectionWindowSize) == 1 {
+		if http2.InitialConnectionWindowSize.Cmp(*opts.HTTP2MaxInitialConnectionWindowSize) == 1 {
 			allErrs = append(allErrs, field.Invalid(fldPath.Child("initialConnectionWindowSize"), http2.InitialConnectionWindowSize.String(), fmt.Sprintf("must be less than or equal to %s", opts.HTTP2MaxInitialConnectionWindowSize.String())))
 		}
 	}

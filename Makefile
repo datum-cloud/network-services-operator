@@ -138,7 +138,7 @@ build-installer: set-image-controller generate ## Generate a consolidated YAML w
 
 .PHONY: set-image-controller
 set-image-controller: manifests kustomize
-	cd config/manager && $(KUSTOMIZE) edit set image controller=${IMG}
+	cd config/manager && $(KUSTOMIZE) edit set image ghcr.io/datum-cloud/network-services-operator=${IMG}
 
 .PHONY: prepare-infra-cluster
 prepare-infra-cluster: cert-manager envoy-gateway external-dns

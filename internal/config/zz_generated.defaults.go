@@ -42,6 +42,7 @@ func SetObjectDefaults_NetworkServicesOperator(in *NetworkServicesOperator) {
 			panic(err)
 		}
 	}
+	SetDefaults_GatewayResourceReplicatorConfig(&in.GatewayResourceReplicator)
 	if in.HTTPProxy.GatewayClassName == "" {
 		in.HTTPProxy.GatewayClassName = "datum-external-global-proxy"
 	}

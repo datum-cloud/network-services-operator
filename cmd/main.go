@@ -11,6 +11,7 @@ import (
 	// to ensure that exec-entrypoint and run can make use of them.
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
+	envoygatewayv1alpha1 "github.com/envoyproxy/gateway/api/v1alpha1"
 	multiclusterproviders "go.miloapis.com/milo/pkg/multicluster-runtime"
 	milomulticluster "go.miloapis.com/milo/pkg/multicluster-runtime/milo"
 	"golang.org/x/sync/errgroup"
@@ -38,6 +39,7 @@ import (
 	networkingwebhook "go.datum.net/network-services-operator/internal/webhook"
 	networkinggatewayv1webhooks "go.datum.net/network-services-operator/internal/webhook/v1"
 	networkingv1alphawebhooks "go.datum.net/network-services-operator/internal/webhook/v1alpha"
+	webhookgatewayv1alpha1 "go.datum.net/network-services-operator/internal/webhook/v1alpha1"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -56,9 +58,11 @@ func init() {
 	utilruntime.Must(gatewayv1.Install(scheme))
 	utilruntime.Must(gatewayv1alpha2.Install(scheme))
 	utilruntime.Must(gatewayv1alpha3.Install(scheme))
+	utilruntime.Must(envoygatewayv1alpha1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
 
+// nolint:gocyclo
 func main() {
 	var enableLeaderElection bool
 	var leaderElectionNamespace string
@@ -226,6 +230,14 @@ func main() {
 		os.Exit(1)
 	}
 
+	if err := (&controller.GatewayResourceReplicatorReconciler{
+		Config:            serverConfig,
+		DownstreamCluster: downstreamCluster,
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "GatewayResourceReplicator")
+		os.Exit(1)
+	}
+
 	if err := (&controller.DomainReconciler{
 		Config: serverConfig,
 	}).SetupWithManager(mgr); err != nil {
@@ -250,6 +262,26 @@ func main() {
 
 	if err := networkingv1alphawebhooks.SetupHTTPProxyWebhookWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create webhook", "webhook", "HTTPProxy")
+		os.Exit(1)
+	}
+
+	if err = webhookgatewayv1alpha1.SetupBackendTrafficPolicyWebhookWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create webhook", "webhook", "BackendTrafficPolicy")
+		os.Exit(1)
+	}
+
+	if err = webhookgatewayv1alpha1.SetupSecurityPolicyWebhookWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create webhook", "webhook", "SecurityPolicy")
+		os.Exit(1)
+	}
+
+	if err = webhookgatewayv1alpha1.SetupHTTPRouteFilterWebhookWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create webhook", "webhook", "HTTPRouteFilter")
+		os.Exit(1)
+	}
+
+	if err = webhookgatewayv1alpha1.SetupBackendWebhookWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create webhook", "webhook", "Backend")
 		os.Exit(1)
 	}
 

@@ -39,6 +39,8 @@ type NetworkServicesOperator struct {
 
 	Gateway GatewayConfig `json:"gateway"`
 
+	GatewayResourceReplicator GatewayResourceReplicatorConfig `json:"gatewayResourceReplicator"`
+
 	HTTPProxy HTTPProxyConfig `json:"httpProxy"`
 
 	Discovery DiscoveryConfig `json:"discovery"`
@@ -363,6 +365,31 @@ func (c *GatewayConfig) GatewayDNSAddress(gateway *gatewayv1.Gateway) string {
 
 // +k8s:deepcopy-gen=true
 
+type GatewayResourceReplicatorConfig struct {
+	// Resources lists the upstream resource types that should be mirrored into
+	// the downstream control plane.
+	Resources []ReplicatedResourceConfig `json:"resources"`
+}
+
+// +k8s:deepcopy-gen=true
+
+type ReplicatedResourceConfig struct {
+	// Group is the API group of the upstream resource to replicate.
+	Group string `json:"group"`
+
+	// Version is the API version of the upstream resource to replicate.
+	Version string `json:"version"`
+
+	// Kind is the API kind of the upstream resource to replicate.
+	Kind string `json:"kind"`
+
+	// LabelSelector limits which upstream objects are replicated in the
+	// downstream control plane.
+	LabelSelector *metav1.LabelSelector `json:"labelSelector,omitempty"`
+}
+
+// +k8s:deepcopy-gen=true
+
 type HTTPProxyConfig struct {
 	// GatewayClassName specifies which GatewayClass to use when programming the
 	// underlying Gateway for an HTTPProxy.
@@ -390,6 +417,35 @@ func SetDefaults_GatewayConfig(obj *GatewayConfig) {
 			networkingv1alpha.IPv4Protocol,
 			networkingv1alpha.IPv6Protocol,
 		}
+	}
+}
+
+func SetDefaults_GatewayResourceReplicatorConfig(obj *GatewayResourceReplicatorConfig) {
+	if len(obj.Resources) > 0 {
+		return
+	}
+
+	obj.Resources = []ReplicatedResourceConfig{
+		{Group: "", Version: "v1", Kind: "ConfigMap", LabelSelector: &metav1.LabelSelector{
+			MatchExpressions: []metav1.LabelSelectorRequirement{
+				{
+					Key:      "networking.datumapis.com/gateway-configmap",
+					Operator: metav1.LabelSelectorOpExists,
+				},
+			},
+		}},
+		{Group: "", Version: "v1", Kind: "Secret", LabelSelector: &metav1.LabelSelector{
+			MatchExpressions: []metav1.LabelSelectorRequirement{
+				{
+					Key:      "networking.datumapis.com/gateway-secret",
+					Operator: metav1.LabelSelectorOpExists,
+				},
+			},
+		}},
+		{Group: "gateway.envoyproxy.io", Version: "v1alpha1", Kind: "Backend"},
+		{Group: "gateway.envoyproxy.io", Version: "v1alpha1", Kind: "BackendTrafficPolicy"},
+		{Group: "gateway.envoyproxy.io", Version: "v1alpha1", Kind: "SecurityPolicy"},
+		{Group: "gateway.envoyproxy.io", Version: "v1alpha1", Kind: "HTTPRouteFilter"},
 	}
 }
 

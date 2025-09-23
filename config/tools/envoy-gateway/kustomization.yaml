@@ -7,3 +7,12 @@ helmCharts:
     releaseName: envoy-gateway
     version: v1.5.0
     repo: oci://docker.io/envoyproxy
+    valuesInline:
+      config:
+        envoyGateway:
+          extensionApis:
+            enableBackend: true
+            enableEnvoyPatchPolicy: true
+          runtimeFlags:
+            enabled:
+              - XDSNameSchemeV2

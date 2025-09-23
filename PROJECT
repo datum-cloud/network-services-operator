@@ -77,8 +77,8 @@ resources:
   path: sigs.k8s.io/gateway-api/apis/v1
   version: v1
   webhooks:
-    validation: true
     defaulting: true
+    validation: true
     webhookVersion: v1
 - domain: k8s.io
   external: true
@@ -107,4 +107,40 @@ resources:
   kind: Domain
   path: go.datum.net/network-services-operator/api/v1alpha
   version: v1alpha
+- domain: envoyproxy.io
+  external: true
+  group: gateway
+  kind: BackendTrafficPolicy
+  path: github.com/envoyproxy/gateway/api/v1alpha1
+  version: v1alpha1
+  webhooks:
+    validation: true
+    webhookVersion: v1
+- domain: envoyproxy.io
+  external: true
+  group: gateway
+  kind: SecurityPolicy
+  path: github.com/envoyproxy/gateway/api/v1alpha1
+  version: v1alpha1
+  webhooks:
+    validation: true
+    webhookVersion: v1
+- domain: envoyproxy.io
+  external: true
+  group: gateway
+  kind: HTTPRouteFilter
+  path: github.com/envoyproxy/gateway/api/v1alpha1
+  version: v1alpha1
+  webhooks:
+    validation: true
+    webhookVersion: v1
+- domain: envoyproxy.io
+  external: true
+  group: gateway
+  kind: Backend
+  path: github.com/envoyproxy/gateway/api/v1alpha1
+  version: v1alpha1
+  webhooks:
+    validation: true
+    webhookVersion: v1
 version: "3"

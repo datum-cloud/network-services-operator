@@ -133,3 +133,39 @@ rules:
   - httproutes/status
   verbs:
   - get
+- apiGroups:
+  - gateway.envoyproxy.io
+  resources:
+  - backends
+  - backendtrafficpolicies
+  - httproutefilters
+  - securitypolicies
+  - envoypatchpolicies
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - gateway.envoyproxy.io
+  resources:
+  - backends/finalizers
+  - backendtrafficpolicies/finalizers
+  - httproutefilters/finalizers
+  - securitypolicies/finalizers
+  - envoypatchpolicies/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - gateway.envoyproxy.io
+  resources:
+  - backends/status
+  - backendtrafficpolicies/status
+  - httproutefilters/status
+  - securitypolicies/status
+  - envoypatchpolicies/status
+  verbs:
+  - get

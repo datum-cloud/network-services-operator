@@ -1,0 +1,22 @@
+---
+apiVersion: iam.miloapis.com/v1alpha1
+kind: ProtectedResource
+metadata:
+  name: gateway.envoyproxy.io-backends
+spec:
+  serviceRef:
+    name: "gateway.envoyproxy.io"
+  kind: Backend
+  plural: backends
+  singular: backend
+  permissions:
+    - list
+    - get
+    - watch
+    - create
+    - update
+    - patch
+    - delete
+  parentResources:
+    - apiGroup: resourcemanager.miloapis.com
+      kind: Project

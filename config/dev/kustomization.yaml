@@ -3,8 +3,10 @@ namePrefix: network-services-operator-
 
 resources:
   - ../upstream_resources
-  - ../webhook
   - ../certmanager
+
+components:
+  - ../webhook
 
 replacements:
   - source: # Add cert-manager annotation to ValidatingWebhookConfiguration, MutatingWebhookConfiguration and CRDs

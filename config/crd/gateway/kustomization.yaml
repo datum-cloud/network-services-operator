@@ -1,21 +1,8 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
-
-helmCharts:
-- name: gateway-crds-helm
-  repo: oci://docker.io/envoyproxy
-  # IMPORTANT - When upgrading the helm chart, ensure there's no undesired CRDs
-  # added in the new version. If there are, remove them in the patches below.
-  version: v1.5.0
-  releaseName: gateway
-  namespace: kube-system
-  valuesInline:
-    crds:
-      gatewayAPI:
-        enabled: true
-        channel: standard
-      envoyGateway:
-        enabled: true
+resources:
+  - github.com/kubernetes-sigs/gateway-api/config/crd/?ref=v1.3.0
+  - https://github.com/envoyproxy/gateway/releases/download/v1.5.1/envoy-gateway-crds.yaml
 
 patches:
   # Drop resources that shouldn't be added to upstream control planes yet

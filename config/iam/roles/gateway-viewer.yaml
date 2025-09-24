@@ -17,6 +17,18 @@ spec:
     - gateway.networking.k8s.io/httproutes.list
     - gateway.networking.k8s.io/httproutes.get
     - gateway.networking.k8s.io/httproutes.watch
+    - gateway.envoyproxy.io/backends.list
+    - gateway.envoyproxy.io/backends.get
+    - gateway.envoyproxy.io/backends.watch
+    - gateway.envoyproxy.io/backendtrafficpolicies.list
+    - gateway.envoyproxy.io/backendtrafficpolicies.get
+    - gateway.envoyproxy.io/backendtrafficpolicies.watch
+    - gateway.envoyproxy.io/httproutefilters.list
+    - gateway.envoyproxy.io/httproutefilters.get
+    - gateway.envoyproxy.io/httproutefilters.watch
+    - gateway.envoyproxy.io/securitypolicies.list
+    - gateway.envoyproxy.io/securitypolicies.get
+    - gateway.envoyproxy.io/securitypolicies.watch
     - discovery.k8s.io/endpointslices.list
     - discovery.k8s.io/endpointslices.get
     - discovery.k8s.io/endpointslices.watch

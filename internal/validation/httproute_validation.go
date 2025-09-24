@@ -1,6 +1,11 @@
 package validation
 
 import (
+	"fmt"
+	"sort"
+	"strings"
+
+	envoygatewayv1alpha1 "github.com/envoyproxy/gateway/api/v1alpha1"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/utils/ptr"
@@ -144,24 +149,61 @@ func validateHTTPBackendRef(route *gatewayv1.HTTPRoute, backendRef gatewayv1.HTT
 func validateBackendObjectReference(route *gatewayv1.HTTPRoute, backendRef gatewayv1.BackendObjectReference, fldPath *field.Path) field.ErrorList {
 	allErrs := field.ErrorList{}
 
-	// Group must be specified as "discovery.k8s.io"
-	if backendRef.Group == nil || *backendRef.Group != "discovery.k8s.io" {
-		allErrs = append(allErrs, field.Invalid(fldPath.Child("group"), backendRef.Group, `group must be equal "discovery.k8s.io"`))
+	allowedKindsByGroup := map[string]sets.Set[string]{
+		"discovery.k8s.io":             sets.New("EndpointSlice"),
+		envoygatewayv1alpha1.GroupName: sets.New(envoygatewayv1alpha1.KindBackend),
 	}
 
-	// Kind must be specified as "EndpointSlice"
-	if backendRef.Kind == nil || *backendRef.Kind != "EndpointSlice" {
-		allErrs = append(allErrs, field.Invalid(fldPath.Child("kind"), backendRef.Kind, `kind must be equal "EndpointSlice"`))
+	allowedGroups := make([]string, 0, len(allowedKindsByGroup))
+	for group := range allowedKindsByGroup {
+		allowedGroups = append(allowedGroups, group)
+	}
+	sort.Strings(allowedGroups)
+
+	group := string(ptr.Deref(backendRef.Group, gatewayv1.Group("")))
+	kind := string(ptr.Deref(backendRef.Kind, gatewayv1.Kind("")))
+
+	var groupAllowed bool
+	if backendRef.Group == nil {
+		allErrs = append(allErrs, field.Required(fldPath.Child("group"), "group is required"))
+	} else if _, ok := allowedKindsByGroup[group]; !ok {
+		allErrs = append(allErrs, field.Invalid(
+			fldPath.Child("group"),
+			backendRef.Group,
+			fmt.Sprintf("group must be one of [%s]", strings.Join(allowedGroups, ", ")),
+		))
+	} else {
+		groupAllowed = true
 	}
 
-	// Only allow Namespace to be nil, or the same as the HTTPRoute's namespace
+	var kindAllowed bool
+	if backendRef.Kind == nil {
+		allErrs = append(allErrs, field.Required(fldPath.Child("kind"), "kind is required"))
+	} else if groupAllowed {
+		allowedKinds := allowedKindsByGroup[group]
+		if !allowedKinds.Has(kind) {
+			allowedKindList := allowedKinds.UnsortedList()
+			sort.Strings(allowedKindList)
+			allErrs = append(allErrs, field.Invalid(
+				fldPath.Child("kind"),
+				backendRef.Kind,
+				fmt.Sprintf("kind must be one of [%s] for group %q", strings.Join(allowedKindList, ", "), group),
+			))
+		} else {
+			kindAllowed = true
+		}
+	}
+
 	if backendRef.Namespace != nil && *backendRef.Namespace != gatewayv1.Namespace(route.Namespace) {
 		allErrs = append(allErrs, field.Invalid(fldPath.Child("namespace"), backendRef.Namespace, "namespace must be unspecified or the same as the Route's namespace"))
 	}
 
-	// Port must be set
-	if backendRef.Port == nil {
-		allErrs = append(allErrs, field.Required(fldPath.Child("port"), "port is required"))
+	if groupAllowed && kindAllowed {
+		if group == "discovery.k8s.io" && kind == "EndpointSlice" {
+			if backendRef.Port == nil {
+				allErrs = append(allErrs, field.Required(fldPath.Child("port"), "port is required"))
+			}
+		}
 	}
 
 	return allErrs

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	envoygatewayv1alpha1 "github.com/envoyproxy/gateway/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
@@ -1409,6 +1410,9 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 
 					downstreamResources = append(downstreamResources, backendTLSPolicy)
 				}
+
+			case envoygatewayv1alpha1.KindBackend:
+				backendRefs = append(backendRefs, backendRef)
 
 			// Other types of backend refs will be handled in the future.
 			default:

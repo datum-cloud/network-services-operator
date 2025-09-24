@@ -324,3 +324,30 @@ func TestValidateHTTPRoute(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateHTTPRouteWithGatewayBackend(t *testing.T) {
+	route := &gatewayv1.HTTPRoute{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "test-namespace"},
+	}
+
+	route.Spec.Rules = []gatewayv1.HTTPRouteRule{
+		{
+			BackendRefs: []gatewayv1.HTTPBackendRef{
+				{
+					BackendRef: gatewayv1.BackendRef{
+						BackendObjectReference: gatewayv1.BackendObjectReference{
+							Group: ptr.To(gatewayv1.Group("gateway.envoyproxy.io")),
+							Kind:  ptr.To(gatewayv1.Kind("Backend")),
+							Name:  "test-backend",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	errs := ValidateHTTPRoute(route)
+	if diff := cmp.Diff(field.ErrorList{}, errs, cmpopts.IgnoreFields(field.Error{}, "BadValue", "Detail")); diff != "" {
+		t.Fatalf("expected no validation errors, diff: %s", diff)
+	}
+}

@@ -64,7 +64,6 @@ func initReplicationResourceConfigs() map[string]replicationResourceConfig {
 	configs := make(map[string]replicationResourceConfig)
 
 	gatewayEnvoyGVKs := []schema.GroupVersionKind{
-		{Group: "gateway.envoyproxy.io", Version: "v1alpha1", Kind: "Backend"},
 		{Group: "gateway.envoyproxy.io", Version: "v1alpha1", Kind: "BackendTrafficPolicy"},
 		{Group: "gateway.envoyproxy.io", Version: "v1alpha1", Kind: "SecurityPolicy"},
 		{Group: "gateway.envoyproxy.io", Version: "v1alpha1", Kind: "HTTPRouteFilter"},
@@ -75,6 +74,15 @@ func initReplicationResourceConfigs() map[string]replicationResourceConfig {
 			statusTransform:   transformGatewayEnvoyPolicyStatus,
 			conditionHandlers: defaultGatewayEnvoyReasonHandlers(),
 		}
+	}
+
+	backendGVK := schema.GroupVersionKind{Group: "gateway.envoyproxy.io", Version: "v1alpha1", Kind: "Backend"}
+
+	configs[gvkKey(backendGVK)] = replicationResourceConfig{
+		statusTransform: func(ctx context.Context, upstreamNamespace, controllerName string, status map[string]any) (map[string]any, error) {
+			return status, nil
+		},
+		conditionHandlers: defaultGatewayEnvoyReasonHandlers(),
 	}
 
 	return configs

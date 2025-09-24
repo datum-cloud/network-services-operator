@@ -6,10 +6,10 @@ resources:
   - ../rbac
   - ../manager
   - ../certmanager
-  - ../webhook
 
 components:
   - ../rbac_deployment
+  - ../webhook
 
 configMapGenerator:
   - name: config

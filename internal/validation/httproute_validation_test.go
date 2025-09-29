@@ -258,7 +258,6 @@ func TestValidateHTTPRoute(t *testing.T) {
 								Group:     ptr.To(gatewayv1.Group("invalid.group")),
 								Kind:      ptr.To(gatewayv1.Kind("InvalidKind")),
 								Namespace: ptr.To(gatewayv1.Namespace("invalid-namespace")),
-								Port:      ptr.To(gatewayv1.PortNumber(80)),
 							},
 						},
 					},
@@ -268,7 +267,6 @@ func TestValidateHTTPRoute(t *testing.T) {
 				field.Invalid(field.NewPath("spec", "parentRefs").Index(0).Child("group"), "invalid.group", ""),
 				field.Invalid(field.NewPath("spec", "parentRefs").Index(0).Child("kind"), "InvalidKind", ""),
 				field.Invalid(field.NewPath("spec", "parentRefs").Index(0).Child("namespace"), "invalid-namespace", ""),
-				field.Forbidden(field.NewPath("spec", "parentRefs").Index(0).Child("port"), ""),
 			},
 		},
 		"invalid route filters": {

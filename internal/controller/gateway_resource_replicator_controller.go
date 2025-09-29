@@ -506,7 +506,7 @@ func (r *GatewayResourceReplicatorReconciler) SetupWithManager(mgr mcmanager.Man
 
 	builder := mcbuilder.TypedControllerManagedBy[GVKRequest](mgr)
 
-	for _, resourceCfg := range r.Config.GatewayResourceReplicator.Resources {
+	for _, resourceCfg := range r.Config.Gateway.ResourceReplicator.Resources {
 		if resourceCfg.Version == "" || resourceCfg.Kind == "" {
 			return fmt.Errorf("invalid gateway resource replicator config entry: %+v", resourceCfg)
 		}

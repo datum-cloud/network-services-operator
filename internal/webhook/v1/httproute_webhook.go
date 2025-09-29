@@ -15,22 +15,24 @@ import (
 	gatewaynetworkingk8siov1 "sigs.k8s.io/gateway-api/apis/v1"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 
+	"go.datum.net/network-services-operator/internal/config"
 	"go.datum.net/network-services-operator/internal/validation"
 )
 
 // nolint:unused
 
 // SetupHTTPRouteWebhookWithManager registers the webhook for HTTPRoute in the manager.
-func SetupHTTPRouteWebhookWithManager(mgr mcmanager.Manager) error {
+func SetupHTTPRouteWebhookWithManager(mgr mcmanager.Manager, cfg config.NetworkServicesOperator) error {
 	return ctrl.NewWebhookManagedBy(mgr.GetLocalManager()).For(&gatewaynetworkingk8siov1.HTTPRoute{}).
-		WithValidator(&HTTPRouteCustomValidator{mgr: mgr}).
+		WithValidator(&HTTPRouteCustomValidator{mgr: mgr, validationOpts: cfg.Gateway.HTTPRoutes}).
 		Complete()
 }
 
 // +kubebuilder:webhook:path=/validate-gateway-networking-k8s-io-v1-httproute,mutating=false,failurePolicy=fail,sideEffects=None,groups=gateway.networking.k8s.io,resources=httproutes,verbs=create;update,versions=v1,name=vhttproute-v1.kb.io,admissionReviewVersions=v1
 
 type HTTPRouteCustomValidator struct {
-	mgr mcmanager.Manager
+	mgr            mcmanager.Manager
+	validationOpts config.HTTPRouteValidationOptions
 }
 
 var _ webhook.CustomValidator = &HTTPRouteCustomValidator{}
@@ -51,7 +53,7 @@ func (v *HTTPRouteCustomValidator) ValidateCreate(ctx context.Context, obj runti
 	//
 	// For now, validate any HTTPRoute based on this operator's validation rules.
 
-	if errs := validation.ValidateHTTPRoute(httproute); len(errs) > 0 {
+	if errs := validation.ValidateHTTPRoute(httproute, v.validationOpts); len(errs) > 0 {
 		return nil, errors.NewInvalid(obj.GetObjectKind().GroupVersionKind().GroupKind(), httproute.GetName(), errs)
 	}
 
@@ -66,7 +68,7 @@ func (v *HTTPRouteCustomValidator) ValidateUpdate(ctx context.Context, oldObj, n
 	}
 	logf.FromContext(ctx).Info("Validation for HTTPRoute upon update", "name", httproute.GetName())
 
-	if errs := validation.ValidateHTTPRoute(httproute); len(errs) > 0 {
+	if errs := validation.ValidateHTTPRoute(httproute, v.validationOpts); len(errs) > 0 {
 		return nil, errors.NewInvalid(oldObj.GetObjectKind().GroupVersionKind().GroupKind(), httproute.GetName(), errs)
 	}
 

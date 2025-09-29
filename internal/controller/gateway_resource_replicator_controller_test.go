@@ -363,10 +363,10 @@ func newReplicatorForTest(upstream client.Client, downstream client.Client, sche
 		Config: config.NetworkServicesOperator{
 			Gateway: config.GatewayConfig{
 				ControllerName: gwapiv1.GatewayController(testControllerName),
-			},
-			GatewayResourceReplicator: config.GatewayResourceReplicatorConfig{
-				Resources: []config.ReplicatedResourceConfig{
-					{Group: testGVK.Group, Version: testGVK.Version, Kind: testGVK.Kind},
+				ResourceReplicator: config.GatewayResourceReplicatorConfig{
+					Resources: []config.ReplicatedResourceConfig{
+						{Group: testGVK.Group, Version: testGVK.Version, Kind: testGVK.Kind},
+					},
 				},
 			},
 		},

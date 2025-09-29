@@ -255,7 +255,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := networkinggatewayv1webhooks.SetupHTTPRouteWebhookWithManager(mgr); err != nil {
+	if err := networkinggatewayv1webhooks.SetupHTTPRouteWebhookWithManager(mgr, serverConfig); err != nil {
 		setupLog.Error(err, "unable to create webhook", "webhook", "HTTPRoute")
 		os.Exit(1)
 	}

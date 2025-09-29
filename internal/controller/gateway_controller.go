@@ -874,19 +874,24 @@ func (r *GatewayReconciler) ensureDownstreamGatewayHTTPRoutes(
 		return result
 	}
 
+	upstreamNS := gatewayv1.Namespace(upstreamGateway.Namespace)
+
 	// Collect routes attached to the gateway.
 	attachedRoutes := map[client.ObjectKey]gatewayv1.HTTPRoute{}
 	attachedRouteCount := make(map[gatewayv1.SectionName]int32, len(upstreamGateway.Spec.Listeners))
 	for _, route := range httpRoutes.Items {
 		if parentRefs := route.Spec.ParentRefs; parentRefs != nil {
 			for _, parentRef := range parentRefs {
-				if parentRef.Namespace != nil {
+				if ptr.Deref(parentRef.Namespace, upstreamNS) != upstreamNS {
 					// At the time of this writing, validation prohibits namespaces to be
 					// set on parent refs. This check is here as a safety for when that
 					// limitation is removed, as additional programming logic will need
 					// to exist to translate downstream namespace names.
 					result.Err = fmt.Errorf("unexpected namespace in parent ref: %s", *parentRef.Namespace)
 					return result
+				} else if parentRef.Namespace != nil {
+					// Translate the namespace to the downstream namespace
+					parentRef.Namespace = ptr.To(gatewayv1.Namespace(downstreamGateway.Namespace))
 				}
 
 				if ptr.Deref(parentRef.Group, gatewayv1.GroupName) == gatewayv1.GroupName &&
@@ -1411,6 +1416,8 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 					downstreamResources = append(downstreamResources, backendTLSPolicy)
 				}
 
+			case "Service":
+				fallthrough
 			case envoygatewayv1alpha1.KindBackend:
 				backendRefs = append(backendRefs, backendRef)
 
@@ -1438,12 +1445,19 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 func (r *GatewayReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	r.mgr = mgr
 
-	src := mcsource.TypedKind(
+	downstreamGatewaySource := mcsource.TypedKind(
 		&gatewayv1.Gateway{},
 		downstreamclient.TypedEnqueueRequestForUpstreamOwner[*gatewayv1.Gateway](&gatewayv1.Gateway{}),
 	)
 
-	clusterSrc, _ := src.ForCluster("", r.DownstreamCluster)
+	downstreamGatewayClusterSource, _ := downstreamGatewaySource.ForCluster("", r.DownstreamCluster)
+
+	downstreamHTTPRouteSource := mcsource.Kind(
+		&gatewayv1.HTTPRoute{},
+		mchandler.TypedEnqueueRequestsFromMapFunc(r.listGatewaysAttachedByDownstreamHTTPRoute),
+	)
+
+	downstreamHTTPRouteClusterSource, _ := downstreamHTTPRouteSource.ForCluster("", r.DownstreamCluster)
 
 	return mcbuilder.ControllerManagedBy(mgr).
 		For(&gatewayv1.Gateway{}).
@@ -1459,7 +1473,8 @@ func (r *GatewayReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 			&networkingv1alpha.Domain{},
 			r.listGatewaysForDomainFunc,
 		).
-		WatchesRawSource(clusterSrc).
+		WatchesRawSource(downstreamGatewayClusterSource).
+		WatchesRawSource(downstreamHTTPRouteClusterSource).
 		Named("gateway").
 		Complete(r)
 }
@@ -1493,6 +1508,29 @@ func (r *GatewayReconciler) listGatewaysAttachedByHTTPRoute(ctx context.Context,
 		}
 	}
 
+	return reqs
+}
+
+// listGatewaysAttachedByDownstreamHTTPRoute enqueues reconciliation requests for Gateways
+// referenced by a downstream HTTPRoute's ParentRefs.
+func (r *GatewayReconciler) listGatewaysAttachedByDownstreamHTTPRoute(ctx context.Context, httpRoute *gatewayv1.HTTPRoute) []mcreconcile.Request {
+	logger := log.FromContext(ctx)
+	logger.Info("enqueueing upstream gateway for downstream httproute", "name", httpRoute.Name)
+	var reqs []mcreconcile.Request
+	if _, ok := httpRoute.Labels[downstreamclient.UpstreamOwnerClusterNameLabel]; ok {
+		for _, parentRef := range httpRoute.Spec.ParentRefs {
+			reqs = append(reqs, mcreconcile.Request{
+				Request: ctrl.Request{
+					NamespacedName: types.NamespacedName{
+						Namespace: httpRoute.Labels[downstreamclient.UpstreamOwnerNamespaceLabel],
+						Name:      string(parentRef.Name),
+					},
+				},
+				ClusterName: strings.TrimPrefix(strings.ReplaceAll(httpRoute.Labels[downstreamclient.UpstreamOwnerClusterNameLabel], "_", "/"), "cluster-"),
+			})
+
+		}
+	}
 	return reqs
 }
 

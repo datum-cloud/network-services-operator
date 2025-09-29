@@ -9,11 +9,14 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/utils/ptr"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
+
+	"go.datum.net/network-services-operator/internal/config"
 )
 
 func TestValidateHTTPRoute(t *testing.T) {
 	scenarios := map[string]struct {
 		route          *gatewayv1.HTTPRoute
+		opts           config.HTTPRouteValidationOptions
 		expectedErrors field.ErrorList
 	}{
 		"valid httproute with single rule": {
@@ -312,11 +315,28 @@ func TestValidateHTTPRoute(t *testing.T) {
 				field.NotSupported(field.NewPath("spec", "rules").Index(0).Child("backendRefs").Index(0).Child("filters").Index(0).Child("type"), "RequestMirror", []string{}),
 			},
 		},
+		"service backend requires opt-in": {
+			route: &gatewayv1.HTTPRoute{
+				Spec: gatewayv1.HTTPRouteSpec{
+					Rules: []gatewayv1.HTTPRouteRule{{
+						BackendRefs: []gatewayv1.HTTPBackendRef{{
+							BackendRef: gatewayv1.BackendRef{BackendObjectReference: gatewayv1.BackendObjectReference{
+								Kind: ptr.To(gatewayv1.Kind("Service")),
+								Name: "svc",
+							}},
+						}},
+					}},
+				},
+			},
+			expectedErrors: field.ErrorList{
+				field.Required(field.NewPath("spec", "rules").Index(0).Child("backendRefs").Index(0).Child("group"), "group is required"),
+			},
+		},
 	}
 
 	for name, scenario := range scenarios {
 		t.Run(name, func(t *testing.T) {
-			errs := ValidateHTTPRoute(scenario.route)
+			errs := ValidateHTTPRoute(scenario.route, scenario.opts)
 			delta := cmp.Diff(scenario.expectedErrors, errs, cmpopts.IgnoreFields(field.Error{}, "BadValue", "Detail"))
 			if delta != "" {
 				t.Errorf("Testcase %s - expected errors '%v', got '%v', diff: '%v'", name, scenario.expectedErrors, errs, delta)
@@ -346,8 +366,28 @@ func TestValidateHTTPRouteWithGatewayBackend(t *testing.T) {
 		},
 	}
 
-	errs := ValidateHTTPRoute(route)
+	errs := ValidateHTTPRoute(route, config.HTTPRouteValidationOptions{})
 	if diff := cmp.Diff(field.ErrorList{}, errs, cmpopts.IgnoreFields(field.Error{}, "BadValue", "Detail")); diff != "" {
 		t.Fatalf("expected no validation errors, diff: %s", diff)
+	}
+}
+
+func TestValidateHTTPRouteWithServiceBackendOptIn(t *testing.T) {
+
+	route := &gatewayv1.HTTPRoute{
+		Spec: gatewayv1.HTTPRouteSpec{
+			Rules: []gatewayv1.HTTPRouteRule{{
+				BackendRefs: []gatewayv1.HTTPBackendRef{{
+					BackendRef: gatewayv1.BackendRef{BackendObjectReference: gatewayv1.BackendObjectReference{
+						Kind: ptr.To(gatewayv1.Kind("Service")),
+						Name: "svc",
+					}},
+				}},
+			}},
+		},
+	}
+
+	if errs := ValidateHTTPRoute(route, config.HTTPRouteValidationOptions{AllowServiceBackends: true}); len(errs) > 0 {
+		t.Fatalf("expected no validation errors, got %v", errs)
 	}
 }

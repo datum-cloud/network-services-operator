@@ -40,8 +40,6 @@ type NetworkServicesOperator struct {
 
 	Gateway GatewayConfig `json:"gateway"`
 
-	GatewayResourceReplicator GatewayResourceReplicatorConfig `json:"gatewayResourceReplicator"`
-
 	HTTPProxy HTTPProxyConfig `json:"httpProxy"`
 
 	Discovery DiscoveryConfig `json:"discovery"`
@@ -362,6 +360,14 @@ type GatewayConfig struct {
 	// ExtensionAPIValidationOptions provides configuration for validation of
 	// extension APIs used by the Gateway.
 	ExtensionAPIValidationOptions ExtensionAPIValidationOptions `json:"extensionAPIValidationOptions,omitempty"`
+
+	// HTTPRoutes provides validation configuration for core Gateway API
+	// HTTPRoute resources.
+	HTTPRoutes HTTPRouteValidationOptions `json:"httpRoutes,omitempty"`
+
+	// ResourceReplicator provides configuration for the Gateway resource
+	// replicator.
+	ResourceReplicator GatewayResourceReplicatorConfig `json:"resourceReplicator"`
 }
 
 func (c *GatewayConfig) GatewayDNSAddress(gateway *gatewayv1.Gateway) string {
@@ -379,6 +385,17 @@ type ExtensionAPIValidationOptions struct {
 
 	// SecurityPolicies specifies validation options for SecurityPolicy resources.
 	SecurityPolicies SecurityPolicyValidationOptions `json:"securityPolicies"`
+}
+
+// +k8s:deepcopy-gen=true
+
+type HTTPRouteValidationOptions struct {
+	// AllowServiceBackends enables referencing core/v1 Services directly from
+	// HTTPRoute backendRefs. This is disabled by default as the operator is
+	// typically deployed against a Datum control plane, which does not have the
+	// Service type registered. Primarily useful for conformance-style testing
+	// where upstream manifests rely on Services.
+	AllowServiceBackends bool `json:"allowServiceBackends,omitempty"`
 }
 
 // +k8s:deepcopy-gen=true
@@ -627,7 +644,7 @@ func SetDefaults_GatewayResourceReplicatorConfig(obj *GatewayResourceReplicatorC
 		{Group: "", Version: "v1", Kind: "ConfigMap", LabelSelector: &metav1.LabelSelector{
 			MatchExpressions: []metav1.LabelSelectorRequirement{
 				{
-					Key:      "networking.datumapis.com/gateway-configmap",
+					Key:      "networking.datumapis.com/gateway-sync",
 					Operator: metav1.LabelSelectorOpExists,
 				},
 			},
@@ -635,7 +652,7 @@ func SetDefaults_GatewayResourceReplicatorConfig(obj *GatewayResourceReplicatorC
 		{Group: "", Version: "v1", Kind: "Secret", LabelSelector: &metav1.LabelSelector{
 			MatchExpressions: []metav1.LabelSelectorRequirement{
 				{
-					Key:      "networking.datumapis.com/gateway-secret",
+					Key:      "networking.datumapis.com/gateway-sync",
 					Operator: metav1.LabelSelectorOpExists,
 				},
 			},

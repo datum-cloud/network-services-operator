@@ -74,7 +74,7 @@ func (f *TweakedFS) Open(name string) (fs.File, error) {
 		return nil, err
 	}
 
-	tweaks, _ := f.tweaks[wildcard]
+	tweaks := f.tweaks[wildcard]
 	if specificTweaks, ok := f.tweaks[name]; ok {
 		maps.Insert(tweaks, maps.All(specificTweaks))
 	}

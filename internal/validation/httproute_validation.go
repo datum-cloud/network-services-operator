@@ -93,11 +93,14 @@ var supportedHTTPRouteRuleFilters = sets.New(
 	gatewayv1.HTTPRouteFilterResponseHeaderModifier,
 	gatewayv1.HTTPRouteFilterRequestRedirect,
 	gatewayv1.HTTPRouteFilterURLRewrite,
+	gatewayv1.HTTPRouteFilterCORS,
+	gatewayv1.HTTPRouteFilterExtensionRef,
 )
 
 var supportedHTTPBackendRefFilters = sets.New(
 	gatewayv1.HTTPRouteFilterRequestHeaderModifier,
 	gatewayv1.HTTPRouteFilterResponseHeaderModifier,
+	gatewayv1.HTTPRouteFilterExtensionRef,
 )
 
 func validateFilters(filters []gatewayv1.HTTPRouteFilter, supportedFilters sets.Set[gatewayv1.HTTPRouteFilterType], fldPath *field.Path) field.ErrorList {
@@ -117,7 +120,13 @@ func validateHTTPRouteFilter(filter gatewayv1.HTTPRouteFilter, supportedFilters 
 	}
 
 	if filter.ExtensionRef != nil {
-		allErrs = append(allErrs, field.Forbidden(fldPath.Child("extensionRef"), "extensionRef is not permitted"))
+		extentionRefFieldPath := fldPath.Child("extensionRef")
+		if filter.ExtensionRef.Group != envoygatewayv1alpha1.GroupName {
+			allErrs = append(allErrs, field.NotSupported(extentionRefFieldPath.Child("group"), filter.ExtensionRef.Group, []string{envoygatewayv1alpha1.GroupName}))
+		}
+		if filter.ExtensionRef.Kind != envoygatewayv1alpha1.KindHTTPRouteFilter {
+			allErrs = append(allErrs, field.NotSupported(extentionRefFieldPath.Child("kind"), filter.ExtensionRef.Kind, []string{envoygatewayv1alpha1.KindHTTPRouteFilter}))
+		}
 	}
 
 	return allErrs

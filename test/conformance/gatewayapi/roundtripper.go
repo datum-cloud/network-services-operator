@@ -24,22 +24,12 @@ import (
 type NodePortRoundTripper struct {
 	Debug         bool
 	TimeoutConfig config.TimeoutConfig
-	NodeAddress   string
-	HTTPPort      int
-	HTTPSPort     int
+	DialContext   func(ctx context.Context, network, addr string) (net.Conn, error)
 }
 
 func (d *NodePortRoundTripper) httpTransport(request roundtripper.Request) (http.RoundTripper, error) {
 	transport := &http.Transport{
-		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			var localAddr string
-			if request.URL.Scheme == "https" {
-				localAddr = fmt.Sprintf("%s:%d", d.NodeAddress, d.HTTPSPort)
-			} else {
-				localAddr = fmt.Sprintf("%s:%d", d.NodeAddress, d.HTTPPort)
-			}
-			return (&net.Dialer{}).DialContext(ctx, network, localAddr)
-		},
+		DialContext: d.DialContext,
 		// We disable keep-alives so that we don't leak established TCP connections.
 		// Leaking TCP connections is bad because we could eventually hit the
 		// threshold of maximum number of open TCP connections to a specific
@@ -68,13 +58,7 @@ func (d *NodePortRoundTripper) h2cPriorKnowledgeTransport(request roundtripper.R
 	transport := &http2.Transport{
 		AllowHTTP: true,
 		DialTLSContext: func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
-			var localAddr string
-			if request.URL.Scheme == "https" {
-				localAddr = fmt.Sprintf("%s:%d", d.NodeAddress, d.HTTPSPort)
-			} else {
-				localAddr = fmt.Sprintf("%s:%d", d.NodeAddress, d.HTTPPort)
-			}
-			return (&net.Dialer{}).DialContext(ctx, network, localAddr)
+			return d.DialContext(ctx, network, addr)
 		},
 	}
 

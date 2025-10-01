@@ -88,9 +88,12 @@ test-e2e: chainsaw
 GATEWAY_CONFORMANCE_CLASS ?= gateway-conformance
 GATEWAY_CONFORMANCE_FLAGS ?=
 
+## TODO(jreese) add a recipe to clone the envoy gateway repo so we can use
+## `make kube-install-examples-image CLUSTER_NAME=nso-infra` to build and load
+## images into the infra cluster for the e2e tests
 .PHONY: test-conformance
 test-conformance:
-	go test ./test/conformance/gatewayapi -tags=conformance -count=1 -v \
+	go test ./test/conformance/gatewayapi -tags=conformance,e2e -count=1 -v \
 		--infra-kubeconfig $(TMPDIR)/.kind-nso-infra.yaml \
 		--gateway-class=$(GATEWAY_CONFORMANCE_CLASS) $(GATEWAY_CONFORMANCE_FLAGS)
 

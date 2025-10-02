@@ -1,0 +1,22 @@
+---
+apiVersion: iam.miloapis.com/v1alpha1
+kind: ProtectedResource
+metadata:
+  name: gateway.networking.k8s.io-backendtlspolicies
+spec:
+  serviceRef:
+    name: "gateway.networking.k8s.io"
+  kind: BackendTLSPolicy
+  plural: backendtlspolicies
+  singular: backendtlspolicy
+  permissions:
+    - list
+    - get
+    - watch
+    - create
+    - update
+    - patch
+    - delete
+  parentResources:
+    - apiGroup: resourcemanager.miloapis.com
+      kind: Project

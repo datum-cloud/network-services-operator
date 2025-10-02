@@ -18,6 +18,10 @@ spec:
     - gateway.networking.k8s.io/httproutes.update
     - gateway.networking.k8s.io/httproutes.patch
     - gateway.networking.k8s.io/httproutes.delete
+    - gateway.networking.k8s.io/backendtlspolicies.create
+    - gateway.networking.k8s.io/backendtlspolicies.update
+    - gateway.networking.k8s.io/backendtlspolicies.patch
+    - gateway.networking.k8s.io/backendtlspolicies.delete
     - gateway.envoyproxy.io/backends.create
     - gateway.envoyproxy.io/backends.update
     - gateway.envoyproxy.io/backends.patch

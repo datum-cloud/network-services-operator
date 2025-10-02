@@ -661,6 +661,8 @@ func SetDefaults_GatewayResourceReplicatorConfig(obj *GatewayResourceReplicatorC
 		{Group: "gateway.envoyproxy.io", Version: "v1alpha1", Kind: "BackendTrafficPolicy"},
 		{Group: "gateway.envoyproxy.io", Version: "v1alpha1", Kind: "SecurityPolicy"},
 		{Group: "gateway.envoyproxy.io", Version: "v1alpha1", Kind: "HTTPRouteFilter"},
+		// Propagate v1alpha3 until v1 is supported by Envoy Gateway
+		{Group: "gateway.networking.k8s.io", Version: "v1alpha3", Kind: "BackendTLSPolicy"},
 	}
 }
 

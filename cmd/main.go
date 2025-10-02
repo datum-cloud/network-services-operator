@@ -260,6 +260,11 @@ func main() {
 		os.Exit(1)
 	}
 
+	if err := networkinggatewayv1webhooks.SetupBackendTLSPolicyWebhookWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create webhook", "webhook", "HTTPRoute")
+		os.Exit(1)
+	}
+
 	if err := networkingv1alphawebhooks.SetupHTTPProxyWebhookWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create webhook", "webhook", "HTTPProxy")
 		os.Exit(1)

@@ -89,6 +89,15 @@ resources:
   webhooks:
     validation: true
     webhookVersion: v1
+- domain: k8s.io
+  external: true
+  group: gateway.networking
+  kind: BackendTLSPolicy
+  path: sigs.k8s.io/gateway-api/apis/v1
+  version: v1
+  webhooks:
+    validation: true
+    webhookVersion: v1
 - api:
     crdVersion: v1
     namespaced: true

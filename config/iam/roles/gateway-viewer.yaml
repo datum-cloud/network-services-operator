@@ -17,6 +17,9 @@ spec:
     - gateway.networking.k8s.io/httproutes.list
     - gateway.networking.k8s.io/httproutes.get
     - gateway.networking.k8s.io/httproutes.watch
+    - gateway.networking.k8s.io/backendtlspolicies.list
+    - gateway.networking.k8s.io/backendtlspolicies.get
+    - gateway.networking.k8s.io/backendtlspolicies.watch
     - gateway.envoyproxy.io/backends.list
     - gateway.envoyproxy.io/backends.get
     - gateway.envoyproxy.io/backends.watch

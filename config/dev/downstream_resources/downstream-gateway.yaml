@@ -1,0 +1,110 @@
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: auto-issuer
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: auto-ca
+  namespace: cert-manager
+spec:
+  isCA: true
+  commonName: auto-ca
+  secretName: auto
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    name: auto-issuer
+    kind: ClusterIssuer
+    group: cert-manager.io
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: auto
+spec:
+  ca:
+    secretName: auto
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyProxy
+metadata:
+  name: datum-downstream-gateway
+  namespace: datum-downstream-gateway
+spec:
+  provider:
+    type: Kubernetes
+    kubernetes:
+      envoyService:
+        externalTrafficPolicy: Cluster
+        type: NodePort
+        patch:
+          type: StrategicMerge
+          value:
+            spec:
+              trafficDistribution: PreferClose
+              ipFamilyPolicy: RequireDualStack
+              ports:
+                - name: http-80
+                  nodePort: 30080
+                  port: 80
+                - name: https-443
+                  nodePort: 30443
+                  port: 443
+  mergeGateways: true
+  ipFamily: DualStack
+  telemetry:
+    metrics:
+      prometheus:
+        disable: false
+      enableVirtualHostStats: true
+      enablePerEndpointStats: true
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: datum-downstream-gateway
+spec:
+  controllerName: gateway.envoyproxy.io/gatewayclass-controller
+  parametersRef:
+    group: gateway.envoyproxy.io
+    kind: EnvoyProxy
+    name: datum-downstream-gateway
+    namespace: datum-downstream-gateway
+---
+# If not Gateway is associated with a GatewayClass, the Envoy Gateway controller
+# will not provision the gateway infrastructure. This may become the canary /
+# monitoring endpoint in the future.
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: anchor-gateway
+  namespace: datum-downstream-gateway
+spec:
+  gatewayClassName: datum-downstream-gateway
+  listeners:
+  - protocol: HTTP
+    port: 80
+    name: default-http
+    hostname: canary.prism.e2e.env.datum.net
+    allowedRoutes:
+      namespaces:
+        from: All
+  - protocol: HTTPS
+    port: 443
+    name: default-https
+    hostname: canary.prism.e2e.env.datum.net
+    allowedRoutes:
+      namespaces:
+        from: All
+    tls:
+      certificateRefs:
+      - group: ""
+        kind: Secret
+        name: anchor-gateway-default-https
+      mode: Terminate

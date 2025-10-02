@@ -195,7 +195,7 @@ func SetObjectDefaults_NetworkServicesOperator(in *NetworkServicesOperator) {
 	if in.Gateway.ExtensionAPIValidationOptions.SecurityPolicies.ClusterSettings.HTTP2MaxConcurrentStreams == 0 {
 		in.Gateway.ExtensionAPIValidationOptions.SecurityPolicies.ClusterSettings.HTTP2MaxConcurrentStreams = 1024
 	}
-	SetDefaults_GatewayResourceReplicatorConfig(&in.GatewayResourceReplicator)
+	SetDefaults_GatewayResourceReplicatorConfig(&in.Gateway.ResourceReplicator)
 	if in.HTTPProxy.GatewayClassName == "" {
 		in.HTTPProxy.GatewayClassName = "datum-external-global-proxy"
 	}

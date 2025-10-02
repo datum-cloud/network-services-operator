@@ -1,0 +1,333 @@
+# Modification of https://github.com/kubernetes-sigs/gateway-api/blob/530c1ee46e0d851d369810e4500f0339c40d8aa1/conformance/base/manifests.yaml
+# Necessary to allow for provisioning of these resources into the generated downstream namespace
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: infra-backend-v1
+spec:
+  selector:
+    app: infra-backend-v1
+  ports:
+  - name: first-port
+    protocol: TCP
+    port: 8080
+    targetPort: 3000
+  - name: second-port
+    protocol: TCP
+    appProtocol: kubernetes.io/h2c
+    port: 8081
+    targetPort: 3001
+  - name: third-port
+    protocol: TCP
+    appProtocol: kubernetes.io/ws
+    port: 8082
+    targetPort: 3000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: infra-backend-v1
+  labels:
+    app: infra-backend-v1
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: infra-backend-v1
+  template:
+    metadata:
+      labels:
+        app: infra-backend-v1
+    spec:
+      containers:
+      - name: infra-backend-v1
+        # From https://github.com/kubernetes-sigs/ingress-controller-conformance/tree/master/images/echoserver
+        image: gcr.io/k8s-staging-gateway-api/echo-basic:v20240412-v1.0.0-394-g40c666fd
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: NAMESPACE
+          value: gateway-conformance-infra
+        resources:
+          requests:
+            cpu: 10m
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: infra-backend-v2
+spec:
+  selector:
+    app: infra-backend-v2
+  ports:
+  - protocol: TCP
+    port: 8080
+    targetPort: 3000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: infra-backend-v2
+  labels:
+    app: infra-backend-v2
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: infra-backend-v2
+  template:
+    metadata:
+      labels:
+        app: infra-backend-v2
+    spec:
+      containers:
+      - name: infra-backend-v2
+        image: gcr.io/k8s-staging-gateway-api/echo-basic:v20240412-v1.0.0-394-g40c666fd
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: NAMESPACE
+          value: gateway-conformance-infra
+        resources:
+          requests:
+            cpu: 10m
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: infra-backend-v3
+spec:
+  selector:
+    app: infra-backend-v3
+  ports:
+  - protocol: TCP
+    port: 8080
+    targetPort: 3000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: infra-backend-v3
+  labels:
+    app: infra-backend-v3
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: infra-backend-v3
+  template:
+    metadata:
+      labels:
+        app: infra-backend-v3
+    spec:
+      containers:
+      - name: infra-backend-v3
+        image: gcr.io/k8s-staging-gateway-api/echo-basic:v20240412-v1.0.0-394-g40c666fd
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: NAMESPACE
+          value: gateway-conformance-infra
+        resources:
+          requests:
+            cpu: 10m
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: tls-backend
+spec:
+  selector:
+    app: tls-backend
+  ports:
+  - protocol: TCP
+    port: 443
+    targetPort: 8443
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tls-backend
+  labels:
+    app: tls-backend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: tls-backend
+  template:
+    metadata:
+      labels:
+        app: tls-backend
+    spec:
+      containers:
+      - name: tls-backend
+        image: gcr.io/k8s-staging-gateway-api/echo-basic:v20240412-v1.0.0-394-g40c666fd
+        volumeMounts:
+        - name: secret-volume
+          mountPath: /etc/secret-volume
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: NAMESPACE
+          value: gateway-conformance-infra
+        - name: TLS_SERVER_CERT
+          value: /etc/secret-volume/crt
+        - name: TLS_SERVER_PRIVKEY
+          value: /etc/secret-volume/key
+        resources:
+          requests:
+            cpu: 10m
+      volumes:
+      - name: secret-volume
+        secret:
+          secretName: tls-passthrough-checks-certificate
+          items:
+          - key: tls.crt
+            path: crt
+          - key: tls.key
+            path: key
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grpc-infra-backend-v1
+spec:
+  selector:
+    app: grpc-infra-backend-v1
+  ports:
+  - protocol: TCP
+    port: 8080
+    targetPort: 3000
+    appProtocol: kubernetes.io/h2c
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grpc-infra-backend-v1
+  labels:
+    app: grpc-infra-backend-v1
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: grpc-infra-backend-v1
+  template:
+    metadata:
+      labels:
+        app: grpc-infra-backend-v1
+    spec:
+      containers:
+      - name: grpc-infra-backend-v1
+        image: gcr.io/k8s-staging-gateway-api/echo-basic:v20240412-v1.0.0-394-g40c666fd
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: NAMESPACE
+          value: gateway-conformance-infra
+        - name: GRPC_ECHO_SERVER
+          value: "1"
+        resources:
+          requests:
+            cpu: 10m
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grpc-infra-backend-v2
+spec:
+  selector:
+    app: grpc-infra-backend-v2
+  ports:
+  - protocol: TCP
+    port: 8080
+    targetPort: 3000
+    appProtocol: kubernetes.io/h2c
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grpc-infra-backend-v2
+  labels:
+    app: grpc-infra-backend-v2
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: grpc-infra-backend-v2
+  template:
+    metadata:
+      labels:
+        app: grpc-infra-backend-v2
+    spec:
+      containers:
+      - name: grpc-infra-backend-v2
+        image: gcr.io/k8s-staging-gateway-api/echo-basic:v20240412-v1.0.0-394-g40c666fd
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: NAMESPACE
+          value: gateway-conformance-infra
+        - name: GRPC_ECHO_SERVER
+          value: "1"
+        resources:
+          requests:
+            cpu: 10m
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grpc-infra-backend-v3
+spec:
+  selector:
+    app: grpc-infra-backend-v3
+  ports:
+  - protocol: TCP
+    port: 8080
+    targetPort: 3000
+    appProtocol: kubernetes.io/h2c
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grpc-infra-backend-v3
+  labels:
+    app: grpc-infra-backend-v3
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: grpc-infra-backend-v3
+  template:
+    metadata:
+      labels:
+        app: grpc-infra-backend-v3
+    spec:
+      containers:
+      - name: grpc-infra-backend-v3
+        image: gcr.io/k8s-staging-gateway-api/echo-basic:v20240412-v1.0.0-394-g40c666fd
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: NAMESPACE
+          value: gateway-conformance-infra
+        - name: GRPC_ECHO_SERVER
+          value: "1"
+        resources:
+          requests:
+            cpu: 10m

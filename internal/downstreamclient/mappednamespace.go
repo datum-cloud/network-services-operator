@@ -219,6 +219,10 @@ type mappedNamespaceClient struct {
 	resourceStrategy *mappedNamespaceResourceStrategy
 }
 
+func (c *mappedNamespaceClient) Apply(ctx context.Context, obj runtime.ApplyConfiguration, opts ...client.ApplyOption) error {
+	return c.client.Apply(ctx, obj, opts...)
+}
+
 func (c *mappedNamespaceClient) Create(ctx context.Context, obj client.Object, opts ...client.CreateOption) error {
 	_, err := c.resourceStrategy.ensureDownstreamNamespace(ctx, obj)
 	if err != nil {

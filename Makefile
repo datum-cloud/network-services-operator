@@ -85,6 +85,18 @@ test-e2e: chainsaw
 		--cluster nso-standard=$(TMPDIR)/.kind-nso-standard.yaml \
 		--cluster nso-infra=$(TMPDIR)/.kind-nso-infra.yaml
 
+GATEWAY_CONFORMANCE_CLASS ?= gateway-conformance
+GATEWAY_CONFORMANCE_FLAGS ?=
+
+## TODO(jreese) add a recipe to clone the envoy gateway repo so we can use
+## `make kube-install-examples-image CLUSTER_NAME=nso-infra` to build and load
+## images into the infra cluster for the e2e tests
+.PHONY: test-conformance
+test-conformance:
+	go test ./test/conformance/gatewayapi -tags=conformance,e2e -count=1 -v \
+		--infra-kubeconfig $(TMPDIR)/.kind-nso-infra.yaml \
+		--gateway-class=$(GATEWAY_CONFORMANCE_CLASS) $(GATEWAY_CONFORMANCE_FLAGS)
+
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter
 	$(GOLANGCI_LINT) run

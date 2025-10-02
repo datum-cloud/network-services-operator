@@ -355,8 +355,7 @@ func newReplicatorForTest(upstream client.Client, downstream client.Client, sche
 
 	resource := replicationResource{gvk: testGVK, controllerName: testControllerName}
 	if cfg, ok := defaultReplicationResourceConfigs[gvkKey(testGVK)]; ok {
-		resource.statusTransform = cfg.statusTransform
-		resource.conditionHandlers = cfg.conditionHandlers
+		resource.replicationResourceConfig = cfg
 	}
 
 	reconciler := &GatewayResourceReplicatorReconciler{

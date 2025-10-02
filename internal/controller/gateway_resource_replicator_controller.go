@@ -47,15 +47,15 @@ type reasonHandler struct {
 type conditionReasonHandlers map[string]map[string]reasonHandler
 
 type replicationResourceConfig struct {
+	statusGVK         *schema.GroupVersionKind
 	statusTransform   statusTransformFunc
 	conditionHandlers conditionReasonHandlers
 }
 
 type replicationResource struct {
-	gvk               schema.GroupVersionKind
-	statusTransform   statusTransformFunc
-	conditionHandlers conditionReasonHandlers
-	controllerName    string
+	gvk                       schema.GroupVersionKind
+	replicationResourceConfig replicationResourceConfig
+	controllerName            string
 }
 
 var defaultReplicationResourceConfigs = initReplicationResourceConfigs()
@@ -67,13 +67,25 @@ func initReplicationResourceConfigs() map[string]replicationResourceConfig {
 		{Group: "gateway.envoyproxy.io", Version: "v1alpha1", Kind: "BackendTrafficPolicy"},
 		{Group: "gateway.envoyproxy.io", Version: "v1alpha1", Kind: "SecurityPolicy"},
 		{Group: "gateway.envoyproxy.io", Version: "v1alpha1", Kind: "HTTPRouteFilter"},
+		{Group: "gateway.networking.k8s.io", Version: "v1alpha3", Kind: "BackendTLSPolicy"},
 	}
 
 	for _, gvk := range gatewayEnvoyGVKs {
-		configs[gvkKey(gvk)] = replicationResourceConfig{
+		cfg := replicationResourceConfig{
 			statusTransform:   transformGatewayEnvoyPolicyStatus,
 			conditionHandlers: defaultGatewayEnvoyReasonHandlers(),
 		}
+
+		// Status updates have to go to the storage version of a resource
+		if gvk.Group == "gateway.networking.k8s.io" && gvk.Kind == "BackendTLSPolicy" {
+			cfg.statusGVK = &schema.GroupVersionKind{
+				Group:   "gateway.networking.k8s.io",
+				Version: "v1",
+				Kind:    "BackendTLSPolicy",
+			}
+		}
+
+		configs[gvkKey(gvk)] = cfg
 	}
 
 	backendGVK := schema.GroupVersionKind{Group: "gateway.envoyproxy.io", Version: "v1alpha1", Kind: "Backend"}
@@ -130,6 +142,9 @@ func (r *GatewayResourceReplicatorReconciler) Reconcile(ctx context.Context, req
 		return ctrl.Result{}, err
 	}
 
+	logger.Info("reconciling resource")
+	defer logger.Info("reconcile complete")
+
 	downstreamStrategy := downstreamclient.NewMappedNamespaceResourceStrategy(req.ClusterName, upstreamClient, r.DownstreamCluster.GetClient())
 
 	if !upstreamObj.GetDeletionTimestamp().IsZero() {
@@ -154,6 +169,7 @@ func (r *GatewayResourceReplicatorReconciler) Reconcile(ctx context.Context, req
 	return ctrl.Result{}, nil
 }
 
+// nolint:unparam
 func (r *GatewayResourceReplicatorReconciler) finalizeResource(
 	ctx context.Context,
 	upstreamClient client.Client,
@@ -247,14 +263,14 @@ func (r *GatewayResourceReplicatorReconciler) syncUpstreamStatus(
 
 	if err := downstreamStrategy.GetClient().Get(ctx, client.ObjectKey{Name: downstreamMeta.Name, Namespace: downstreamMeta.Namespace}, downstreamObj); err != nil {
 		if apierrors.IsNotFound(err) {
-			return r.clearUpstreamStatusIfNeeded(ctx, upstreamClient, upstreamObj)
+			return r.clearUpstreamStatusIfNeeded(ctx, resource, upstreamClient, upstreamObj)
 		}
 		return fmt.Errorf("failed to fetch downstream resource %s/%s for status sync: %w", downstreamMeta.Namespace, downstreamMeta.Name, err)
 	}
 
 	downstreamStatus, ok := downstreamObj.Object["status"]
 	if !ok {
-		return r.clearUpstreamStatusIfNeeded(ctx, upstreamClient, upstreamObj)
+		return r.clearUpstreamStatusIfNeeded(ctx, resource, upstreamClient, upstreamObj)
 	}
 
 	statusMap, ok := runtime.DeepCopyJSONValue(downstreamStatus).(map[string]any)
@@ -262,15 +278,15 @@ func (r *GatewayResourceReplicatorReconciler) syncUpstreamStatus(
 		return fmt.Errorf("downstream status for %s/%s is not an object", downstreamMeta.Namespace, downstreamMeta.Name)
 	}
 
-	if resource.statusTransform != nil {
-		transformed, err := resource.statusTransform(ctx, upstreamObj.GetNamespace(), resource.controllerName, statusMap)
+	if resource.replicationResourceConfig.statusTransform != nil {
+		transformed, err := resource.replicationResourceConfig.statusTransform(ctx, upstreamObj.GetNamespace(), resource.controllerName, statusMap)
 		if err != nil {
 			return fmt.Errorf("failed to transform status for %s %s/%s: %w", upstreamObj.GroupVersionKind(), upstreamObj.GetNamespace(), upstreamObj.GetName(), err)
 		}
 		statusMap = transformed
 	}
 
-	filterConditionMessagesInStatus(statusMap, resource.conditionHandlers)
+	filterConditionMessagesInStatus(statusMap, resource.replicationResourceConfig.conditionHandlers)
 
 	existingStatus, existingHas := upstreamObj.Object["status"]
 	if existingHas {
@@ -293,6 +309,10 @@ func (r *GatewayResourceReplicatorReconciler) syncUpstreamStatus(
 		upstreamCopy.Object["status"] = statusMap
 	}
 
+	if resource.replicationResourceConfig.statusGVK != nil {
+		upstreamCopy.SetGroupVersionKind(*resource.replicationResourceConfig.statusGVK)
+	}
+
 	if err := upstreamClient.Status().Update(ctx, upstreamCopy); err != nil {
 		if apierrors.IsNotFound(err) {
 			return nil
@@ -312,6 +332,7 @@ func (r *GatewayResourceReplicatorReconciler) syncUpstreamStatus(
 
 func (r *GatewayResourceReplicatorReconciler) clearUpstreamStatusIfNeeded(
 	ctx context.Context,
+	resource replicationResource,
 	upstreamClient client.Client,
 	upstreamObj *unstructured.Unstructured,
 ) error {
@@ -327,6 +348,9 @@ func (r *GatewayResourceReplicatorReconciler) clearUpstreamStatusIfNeeded(
 
 	upstreamCopy := upstreamObj.DeepCopy()
 	delete(upstreamCopy.Object, "status")
+	if resource.replicationResourceConfig.statusGVK != nil {
+		upstreamCopy.SetGroupVersionKind(*resource.replicationResourceConfig.statusGVK)
+	}
 
 	if err := upstreamClient.Status().Update(ctx, upstreamCopy); err != nil {
 		if apierrors.IsNotFound(err) {
@@ -526,10 +550,12 @@ func (r *GatewayResourceReplicatorReconciler) SetupWithManager(mgr mcmanager.Man
 			selector = parsedSelector
 		}
 
-		resource := replicationResource{gvk: gvk, controllerName: string(r.Config.Gateway.ControllerName)}
+		resource := replicationResource{
+			gvk:            gvk,
+			controllerName: string(r.Config.Gateway.ControllerName),
+		}
 		if cfg, ok := defaultReplicationResourceConfigs[gvkKey(gvk)]; ok {
-			resource.statusTransform = cfg.statusTransform
-			resource.conditionHandlers = cfg.conditionHandlers
+			resource.replicationResourceConfig = cfg
 		}
 
 		resources[gvkKey(gvk)] = resource

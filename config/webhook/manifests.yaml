@@ -38,7 +38,7 @@ webhooks:
       namespace: system
       path: /validate-gateway-networking-k8s-io-v1-backendtlspolicy
   failurePolicy: Fail
-  name: vgateway-v1.kb.io
+  name: vbackendtlspolicy-v1.kb.io
   rules:
   - apiGroups:
     - gateway.networking.k8s.io

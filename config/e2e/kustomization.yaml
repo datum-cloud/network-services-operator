@@ -2,7 +2,7 @@ namespace: network-services-operator-system
 namePrefix: network-services-operator-
 
 resources:
-  - ../crd
+  - ../upstream_resources
   - ../rbac
   - ../manager
   - ../certmanager

@@ -2,9 +2,11 @@ namespace: kube-system
 namePrefix: network-services-operator-
 
 resources:
-  - ../crd
-  - ../webhook
+  - ../upstream_resources
   - ../certmanager
+
+components:
+  - ../webhook
 
 replacements:
   - source: # Add cert-manager annotation to ValidatingWebhookConfiguration, MutatingWebhookConfiguration and CRDs

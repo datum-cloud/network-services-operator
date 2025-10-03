@@ -19,3 +19,8 @@ resources:
   - subnetclaims.yaml
   - subnets.yaml
   - domains.yaml
+  - backends.yaml
+  - backendtrafficpolicies.yaml
+  - backendtlspolicies.yaml
+  - httproutefilters.yaml
+  - securitypolicies.yaml

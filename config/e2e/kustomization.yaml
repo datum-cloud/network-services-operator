@@ -3,13 +3,14 @@ namePrefix: network-services-operator-
 
 resources:
   - ../crd
+  - ../crd/gateway
   - ../rbac
   - ../manager
   - ../certmanager
-  - ../webhook
 
 components:
   - ../rbac_deployment
+  - ../webhook
 
 configMapGenerator:
   - name: config

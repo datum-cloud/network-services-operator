@@ -1,0 +1,49 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: gateway-conformance-web-backend
+  labels:
+    gateway-conformance: backend
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-backend
+spec:
+  selector:
+    app: web-backend
+  ports:
+  - protocol: TCP
+    port: 8080
+    targetPort: 3000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-backend
+  labels:
+    app: web-backend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: web-backend
+  template:
+    metadata:
+      labels:
+        app: web-backend
+    spec:
+      containers:
+      - name: web-backend
+        image: gcr.io/k8s-staging-gateway-api/echo-basic:v20240412-v1.0.0-394-g40c666fd
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: NAMESPACE
+          value: gateway-conformance-web-backend
+        resources:
+          requests:
+            cpu: 10m

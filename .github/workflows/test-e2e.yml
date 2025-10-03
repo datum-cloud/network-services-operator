@@ -54,6 +54,11 @@ jobs:
             wait deploy network-services-operator-controller-manager \
             --for=condition=Available \
             --timeout=120s || \
+              kubectl -n cert-manager describe pods && \
+              kubectl logs -n cert-manager -l app.kubernetes.io/name=cert-manager --tail=-1 && \
+              kubectl -n network-services-operator-system describe issuer && \
+              kubectl -n network-services-operator-system describe certificates && \
+              kubectl -n network-services-operator-system describe secrets && \
               kubectl -n network-services-operator-system describe pod && \
               kubectl -n network-services-operator-system logs -l app.kubernetes.io/name=network-services-operator --tail=-1
 

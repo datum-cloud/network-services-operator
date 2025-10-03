@@ -5,16 +5,28 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
+	"k8s.io/apimachinery/pkg/util/uuid"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/utils/ptr"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
+
+	"go.datum.net/network-services-operator/internal/config"
+	gatewayutil "go.datum.net/network-services-operator/internal/util/gateway"
 )
 
 func TestValidateGateway(t *testing.T) {
 
 	defaultValidProtocolTypes := map[int][]gatewayv1.ProtocolType{
-		HTTPPort:  {gatewayv1.HTTPProtocolType},
-		HTTPSPort: {gatewayv1.HTTPSProtocolType},
+		gatewayutil.DefaultHTTPPort:  {gatewayv1.HTTPProtocolType},
+		gatewayutil.DefaultHTTPSPort: {gatewayv1.HTTPSProtocolType},
+	}
+
+	testConfig := config.NetworkServicesOperator{
+		Gateway: config.GatewayConfig{
+			DownstreamGatewayClassName:            "test-suite",
+			DownstreamHostnameAccountingNamespace: "default",
+			TargetDomain:                          "test-suite.com",
+		},
 	}
 
 	scenarios := map[string]struct {
@@ -32,9 +44,6 @@ func TestValidateGateway(t *testing.T) {
 				field.Required(field.NewPath("spec", "gatewayClassName"), "gatewayClassName is required"),
 			},
 		},
-		// "invalid hostname": {
-
-		// },
 		"invalid port number": {
 			gateway: &gatewayv1.Gateway{
 				Spec: gatewayv1.GatewaySpec{
@@ -197,7 +206,7 @@ func TestValidateGateway(t *testing.T) {
 							Port:     80,
 						},
 					},
-					Addresses: []gatewayv1.GatewayAddress{
+					Addresses: []gatewayv1.GatewaySpecAddress{
 						{
 							Type:  ptr.To(gatewayv1.IPAddressType),
 							Value: "192.168.1.1",
@@ -353,6 +362,15 @@ func TestValidateGateway(t *testing.T) {
 
 	for name, scenario := range scenarios {
 		t.Run(name, func(t *testing.T) {
+			scenario.opts.GatewayDNSAddressFunc = testConfig.Gateway.GatewayDNSAddress
+			scenario.gateway.UID = uuid.NewUUID()
+
+			for i, l := range scenario.gateway.Spec.Listeners {
+				if l.Hostname == nil {
+					scenario.gateway.Spec.Listeners[i].Hostname = ptr.To(gatewayv1.Hostname(testConfig.Gateway.GatewayDNSAddress(scenario.gateway)))
+				}
+			}
+
 			errs := ValidateGateway(scenario.gateway, scenario.opts)
 			delta := cmp.Diff(scenario.expectedErrors, errs, cmpopts.IgnoreFields(field.Error{}, "BadValue", "Detail"))
 			if delta != "" {

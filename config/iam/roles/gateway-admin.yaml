@@ -18,6 +18,26 @@ spec:
     - gateway.networking.k8s.io/httproutes.update
     - gateway.networking.k8s.io/httproutes.patch
     - gateway.networking.k8s.io/httproutes.delete
+    - gateway.networking.k8s.io/backendtlspolicies.create
+    - gateway.networking.k8s.io/backendtlspolicies.update
+    - gateway.networking.k8s.io/backendtlspolicies.patch
+    - gateway.networking.k8s.io/backendtlspolicies.delete
+    - gateway.envoyproxy.io/backends.create
+    - gateway.envoyproxy.io/backends.update
+    - gateway.envoyproxy.io/backends.patch
+    - gateway.envoyproxy.io/backends.delete
+    - gateway.envoyproxy.io/backendtrafficpolicies.create
+    - gateway.envoyproxy.io/backendtrafficpolicies.update
+    - gateway.envoyproxy.io/backendtrafficpolicies.patch
+    - gateway.envoyproxy.io/backendtrafficpolicies.delete
+    - gateway.envoyproxy.io/httproutefilters.create
+    - gateway.envoyproxy.io/httproutefilters.update
+    - gateway.envoyproxy.io/httproutefilters.patch
+    - gateway.envoyproxy.io/httproutefilters.delete
+    - gateway.envoyproxy.io/securitypolicies.create
+    - gateway.envoyproxy.io/securitypolicies.update
+    - gateway.envoyproxy.io/securitypolicies.patch
+    - gateway.envoyproxy.io/securitypolicies.delete
     - discovery.k8s.io/endpointslices.create
     - discovery.k8s.io/endpointslices.update
     - discovery.k8s.io/endpointslices.patch

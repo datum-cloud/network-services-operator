@@ -288,27 +288,11 @@ spec:
                 listeners:
                 - protocol: HTTP
                   port: 80
-                  name: http
-                  allowedRoutes:
-                    namespaces:
-                      from: Same
-                - protocol: HTTP
-                  port: 80
                   name: http-test-e2e
                   allowedRoutes:
                     namespaces:
                       from: Same
                   hostname: test.e2e.env.datum.net
-                - protocol: HTTPS
-                  port: 443
-                  name: https
-                  allowedRoutes:
-                    namespaces:
-                      from: Same
-                  tls:
-                    mode: Terminate
-                    options:
-                      gateway.networking.datumapis.com/certificate-issuer: ($clusterIssuerName)
                 - protocol: HTTPS
                   port: 443
                   name: https-test-e2e
@@ -365,61 +349,21 @@ spec:
                     namespaces:
                       from: Same
                   hostname: (join('.', [$upstreamGateway.metadata.uid, 'prism.e2e.env.datum.net']))
-                  name: http-0
+                  name: default-http
                   port: 80
                   protocol: HTTP
                 - allowedRoutes:
                     namespaces:
                       from: Same
                   hostname: (join('.', [$upstreamGateway.metadata.uid, 'prism.e2e.env.datum.net']))
-                  name: https-0
+                  name: default-https
                   port: 443
                   protocol: HTTPS
                   tls:
                     certificateRefs:
                     - group: ""
                       kind: Secret
-                      name: test-gateway-https-0
-                    mode: Terminate
-                - allowedRoutes:
-                    namespaces:
-                      from: Same
-                  hostname: (join('.', ['v4', $upstreamGateway.metadata.uid, 'prism.e2e.env.datum.net']))
-                  name: http-1
-                  port: 80
-                  protocol: HTTP
-                - allowedRoutes:
-                    namespaces:
-                      from: Same
-                  hostname: (join('.', ['v4', $upstreamGateway.metadata.uid, 'prism.e2e.env.datum.net']))
-                  name: https-1
-                  port: 443
-                  protocol: HTTPS
-                  tls:
-                    certificateRefs:
-                    - group: ""
-                      kind: Secret
-                      name: test-gateway-https-1
-                    mode: Terminate
-                - allowedRoutes:
-                    namespaces:
-                      from: Same
-                  hostname: (join('.', ['v6', $upstreamGateway.metadata.uid, 'prism.e2e.env.datum.net']))
-                  name: http-2
-                  port: 80
-                  protocol: HTTP
-                - allowedRoutes:
-                    namespaces:
-                      from: Same
-                  hostname: (join('.', ['v6', $upstreamGateway.metadata.uid, 'prism.e2e.env.datum.net']))
-                  name: https-2
-                  port: 443
-                  protocol: HTTPS
-                  tls:
-                    certificateRefs:
-                    - group: ""
-                      kind: Secret
-                      name: test-gateway-https-2
+                      name: test-gateway-default-https
                     mode: Terminate
               status:
                 conditions:
@@ -430,102 +374,26 @@ spec:
                   status: "True"
                   type: Programmed
                 listeners:
-                - attachedRoutes: 0
-                  conditions:
-                  - reason: Programmed
-                    status: "True"
-                    type: Programmed
-                  - reason: Accepted
-                    status: "True"
-                    type: Accepted
-                  - reason: ResolvedRefs
-                    status: "True"
-                    type: ResolvedRefs
+                - (conditions[?contains(['Programmed', 'Accepted', 'ResolvedRefs'], type)]):
+                  - status: "True"
+                  - status: "True"
+                  - status: "True"
                   name: http-test-e2e
-                - attachedRoutes: 0
-                  conditions:
-                  - reason: Programmed
-                    status: "True"
-                    type: Programmed
-                  - reason: Accepted
-                    status: "True"
-                    type: Accepted
-                  - reason: ResolvedRefs
-                    status: "True"
-                    type: ResolvedRefs
+                - (conditions[?contains(['Programmed', 'Accepted', 'ResolvedRefs'], type)]):
+                  - status: "True"
+                  - status: "True"
+                  - status: "True"
                   name: https-test-e2e
-                - attachedRoutes: 0
-                  conditions:
-                  - reason: Programmed
-                    status: "True"
-                    type: Programmed
-                  - reason: Accepted
-                    status: "True"
-                    type: Accepted
-                  - reason: ResolvedRefs
-                    status: "True"
-                    type: ResolvedRefs
-                  name: http-0
-                - attachedRoutes: 0
-                  conditions:
-                  - reason: Programmed
-                    status: "True"
-                    type: Programmed
-                  - reason: Accepted
-                    status: "True"
-                    type: Accepted
-                  - reason: ResolvedRefs
-                    status: "True"
-                    type: ResolvedRefs
-                  name: https-0
-                - attachedRoutes: 0
-                  conditions:
-                  - reason: Programmed
-                    status: "True"
-                    type: Programmed
-                  - reason: Accepted
-                    status: "True"
-                    type: Accepted
-                  - reason: ResolvedRefs
-                    status: "True"
-                    type: ResolvedRefs
-                  name: http-1
-                - attachedRoutes: 0
-                  conditions:
-                  - reason: Programmed
-                    status: "True"
-                    type: Programmed
-                  - reason: Accepted
-                    status: "True"
-                    type: Accepted
-                  - reason: ResolvedRefs
-                    status: "True"
-                    type: ResolvedRefs
-                  name: https-1
-                - attachedRoutes: 0
-                  conditions:
-                  - reason: Programmed
-                    status: "True"
-                    type: Programmed
-                  - reason: Accepted
-                    status: "True"
-                    type: Accepted
-                  - reason: ResolvedRefs
-                    status: "True"
-                    type: ResolvedRefs
-                  name: http-2
-                - attachedRoutes: 0
-                  conditions:
-                  - reason: Programmed
-                    status: "True"
-                    type: Programmed
-                  - reason: Accepted
-                    status: "True"
-                    type: Accepted
-                  - reason: ResolvedRefs
-                    status: "True"
-                    type: ResolvedRefs
-                  name: https-2
+                - (conditions[?contains(['Programmed', 'Accepted', 'ResolvedRefs'], type)]):
+                  - status: "True"
+                  - status: "True"
+                  - status: "True"
+                  name: default-http
+                - (conditions[?contains(['Programmed', 'Accepted', 'ResolvedRefs'], type)]):
+                  - status: "True"
+                  - status: "True"
+                  - status: "True"
+                  name: default-https
 
         # Load the downstream gateway so we can get the IP address info from its
         # status.
@@ -611,14 +479,6 @@ spec:
                       - status: "True"
                     (conditions[?type == 'ResolvedRefs']):
                       - status: "True"
-                    name: http
-                  - attachedRoutes: 0
-                    (conditions[?type == 'Programmed']):
-                      - status: "True"
-                    (conditions[?type == 'Accepted']):
-                      - status: "True"
-                    (conditions[?type == 'ResolvedRefs']):
-                      - status: "True"
                     name: http-test-e2e
                   - attachedRoutes: 0
                     (conditions[?type == 'Programmed']):
@@ -627,7 +487,7 @@ spec:
                       - status: "True"
                     (conditions[?type == 'ResolvedRefs']):
                       - status: "True"
-                    name: https
+                    name: https-test-e2e
                   - attachedRoutes: 0
                     (conditions[?type == 'Programmed']):
                       - status: "True"
@@ -635,7 +495,15 @@ spec:
                       - status: "True"
                     (conditions[?type == 'ResolvedRefs']):
                       - status: "True"
-                    name: https-test-e2e
+                    name: default-http
+                  - attachedRoutes: 0
+                    (conditions[?type == 'Programmed']):
+                      - status: "True"
+                    (conditions[?type == 'Accepted']):
+                      - status: "True"
+                    (conditions[?type == 'ResolvedRefs']):
+                      - status: "True"
+                    name: default-https
                 (conditions[?type == 'Accepted']):
                   - status: "True"
                 (conditions[?type == 'Programmed']):
@@ -650,12 +518,15 @@ spec:
               kubectl get endpointslices -n $NAMESPACE -o yaml
         - script:
             cluster: nso-infra
+            env:
+              - name: DOWNSTREAM_NAMESPACE
+                value: ($downstreamNamespaceName)
             content: |
-              kubectl get gateways -n $NAMESPACE -o yaml
-              kubectl get httproutes -n $NAMESPACE -o yaml
-              kubectl get endpointslices -n $NAMESPACE -o yaml
-              kubectl get dnsendpoints -n $NAMESPACE -o yaml
-              kubectl get svc -n $NAMESPACE -o yaml
+              kubectl get gateways -n $DOWNSTREAM_NAMESPACE -o yaml
+              kubectl get httproutes -n $DOWNSTREAM_NAMESPACE -o yaml
+              kubectl get endpointslices -n $DOWNSTREAM_NAMESPACE -o yaml
+              kubectl get dnsendpoints -n $DOWNSTREAM_NAMESPACE -o yaml
+              kubectl get svc -n $DOWNSTREAM_NAMESPACE -o yaml
 
     - name: Provision HTTPRoute
       try:

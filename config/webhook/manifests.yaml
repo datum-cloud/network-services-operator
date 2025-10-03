@@ -1,9 +1,55 @@
 ---
 apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: mutating-webhook-configuration
+webhooks:
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /mutate-gateway-networking-k8s-io-v1-gateway
+  failurePolicy: Fail
+  name: mgateway-v1.kb.io
+  rules:
+  - apiGroups:
+    - gateway.networking.k8s.io
+    apiVersions:
+    - v1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - gateways
+  sideEffects: None
+---
+apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingWebhookConfiguration
 metadata:
   name: validating-webhook-configuration
 webhooks:
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-gateway-networking-k8s-io-v1-backendtlspolicy
+  failurePolicy: Fail
+  name: vbackendtlspolicy-v1.kb.io
+  rules:
+  - apiGroups:
+    - gateway.networking.k8s.io
+    apiVersions:
+    - v1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - backendtlspolicies
+  sideEffects: None
 - admissionReviewVersions:
   - v1
   clientConfig:
@@ -63,4 +109,84 @@ webhooks:
     - UPDATE
     resources:
     - httpproxies
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-gateway-envoyproxy-io-v1alpha1-backend
+  failurePolicy: Fail
+  name: vbackend-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - gateway.envoyproxy.io
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - backends
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-gateway-envoyproxy-io-v1alpha1-backendtrafficpolicy
+  failurePolicy: Fail
+  name: vbackendtrafficpolicy-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - gateway.envoyproxy.io
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - backendtrafficpolicies
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-gateway-envoyproxy-io-v1alpha1-httproutefilter
+  failurePolicy: Fail
+  name: vhttproutefilter-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - gateway.envoyproxy.io
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - httproutefilters
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-gateway-envoyproxy-io-v1alpha1-securitypolicy
+  failurePolicy: Fail
+  name: vsecuritypolicy-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - gateway.envoyproxy.io
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - securitypolicies
   sideEffects: None

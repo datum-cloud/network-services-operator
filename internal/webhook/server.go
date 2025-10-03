@@ -23,6 +23,16 @@ func (s *clusterAwareWebhookServer) Register(path string, hook http.Handler) {
 		orig := h.Handler
 		h.Handler = admission.HandlerFunc(func(ctx context.Context, req admission.Request) admission.Response {
 			c := clusterFromExtra(req.UserInfo.Extra)
+			if len(c) > 0 {
+				// The cluster names are `<namespace>/<name>` format, but Milo project
+				// discovery resources do not have namespaces and return a cluster name
+				// with a leading `/`.
+				//
+				// In the future, this should be improved to allow the multicluster-provider
+				// discovery mechanism to handle this somehow.
+
+				c = "/" + c
+			}
 			ctx = mccontext.WithCluster(ctx, c)
 			return orig.Handle(ctx, req)
 		})

@@ -79,9 +79,23 @@ test-e2e: chainsaw
 		echo "No Kind cluster is running. Please start a Kind cluster before running the e2e tests."; \
 		exit 1; \
 	}
+	$(KIND) get kubeconfig --name nso-standard > $(TMPDIR)/.kind-nso-standard.yaml
+	$(KIND) get kubeconfig --name nso-infra > $(TMPDIR)/.kind-nso-infra.yaml
 	$(CHAINSAW) test ./test/e2e \
 		--cluster nso-standard=$(TMPDIR)/.kind-nso-standard.yaml \
 		--cluster nso-infra=$(TMPDIR)/.kind-nso-infra.yaml
+
+GATEWAY_CONFORMANCE_CLASS ?= gateway-conformance
+GATEWAY_CONFORMANCE_FLAGS ?=
+
+## TODO(jreese) add a recipe to clone the envoy gateway repo so we can use
+## `make kube-install-examples-image CLUSTER_NAME=nso-infra` to build and load
+## images into the infra cluster for the e2e tests
+.PHONY: test-conformance
+test-conformance:
+	go test ./test/conformance/gatewayapi -tags=conformance,e2e -count=1 -v \
+		--infra-kubeconfig $(TMPDIR)/.kind-nso-infra.yaml \
+		--gateway-class=$(GATEWAY_CONFORMANCE_CLASS) $(GATEWAY_CONFORMANCE_FLAGS)
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter
@@ -136,13 +150,16 @@ build-installer: set-image-controller generate ## Generate a consolidated YAML w
 
 .PHONY: set-image-controller
 set-image-controller: manifests kustomize
-	cd config/manager && $(KUSTOMIZE) edit set image controller=${IMG}
+	cd config/manager && $(KUSTOMIZE) edit set image ghcr.io/datum-cloud/network-services-operator=${IMG}
 
 .PHONY: prepare-infra-cluster
 prepare-infra-cluster: cert-manager envoy-gateway external-dns
 
 .PHONY: prepare-e2e
-prepare-e2e: chainsaw set-image-controller cert-manager envoy-gateway external-dns load-image-all deploy-e2e
+prepare-e2e: chainsaw set-image-controller cert-manager load-image-all deploy-e2e
+
+.PHONY: prepare-dev
+prepare-dev: chainsaw set-image-controller cert-manager install
 
 .PHONY: load-image-all
 load-image-all: load-image-operator
@@ -167,12 +184,10 @@ external-dns:
 .PHONY: kind-standard-cluster
 kind-standard-cluster: kind
 	$(KIND) create cluster --config=config/tools/kind/standard-cluster.yaml
-	$(KIND) get kubeconfig --name nso-standard > $(TMPDIR)/.kind-nso-standard.yaml
 
 .PHONY: kind-infra-cluster
 kind-infra-cluster: kind
 	$(KIND) create cluster --config=config/tools/kind/infra-cluster.yaml
-	$(KIND) get kubeconfig --name nso-infra > $(TMPDIR)/.kind-nso-infra.yaml
 
 ##@ Deployment
 
@@ -238,7 +253,7 @@ CRDOC_VERSION ?= v0.6.4
 KIND_VERSION ?= v0.27.0
 
 # renovate: datasource=go depName=github.com/kyverno/chainsaw
-CHAINSAW_VERSION ?= v0.2.12
+CHAINSAW_VERSION ?= v0.2.13
 
 # renovate: datasource=go depName=github.com/cert-manager/cmctl/v2
 CMCTL_VERSION ?= v2.1.1

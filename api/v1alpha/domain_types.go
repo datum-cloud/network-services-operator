@@ -112,7 +112,7 @@ type Registration struct {
 	Source           string `json:"source,omitempty"`           // "rdap" | "whois"
 
 	Registrar *RegistrarInfo `json:"registrar,omitempty"`
-	Registry  *RegistryInfo  `json:"registry,omitempty"` // optional (operator of the TLD)
+	Registry  *RegistryInfo  `json:"registry,omitempty"`
 
 	// Lifecycle
 	CreatedAt *metav1.Time `json:"createdAt,omitempty"`
@@ -122,8 +122,8 @@ type Registration struct {
 	// Raw statuses that will either be rdap rfc8056 or whois EPP status strings
 	Statuses []string `json:"statuses,omitempty"` // e.g., clientTransferProhibited (EPP) or client transfer prohibited (RDAP)
 
-	// Delegation (what the parent currently delegates to)
-	Nameservers []string `json:"nameservers,omitempty"` // normalized: lowercase, no trailing dot
+	// Nameservers is a list of nameservers for the domain and their registrant name
+	Nameservers []Nameserver `json:"nameservers,omitempty"`
 
 	// DNSSEC (from RDAP secureDNS, with WHOIS fallback when parsable)
 	DNSSEC *DNSSECInfo `json:"dnssec,omitempty"`
@@ -146,9 +146,14 @@ type RegistryInfo struct {
 	URL  string `json:"url,omitempty"`
 }
 
+type Nameserver struct {
+	Hostname       string `json:"hostname"`                 // e.g., "erin.ns.cloudflare.com" (lowercase, no trailing dot)
+	RegistrantName string `json:"registrantName,omitempty"` // e.g., "Cloudflare, Inc."
+}
+
 type DNSSECInfo struct {
 	Enabled *bool      `json:"enabled,omitempty"` // true if RDAP secureDNS/WHOIS indicates DNSSEC
-	DS      []DSRecord `json:"ds,omitempty"`      // optional if RDAP provides dsData; WHOIS rarely reliable
+	DS      []DSRecord `json:"ds,omitempty"`      // optional if RDAP provides dsData
 }
 
 type DSRecord struct {

@@ -42,7 +42,7 @@ type DomainSpec struct {
 // DomainStatus defines the observed state of Domain
 type DomainStatus struct {
 	Verification *DomainVerificationStatus `json:"verification,omitempty"`
-	Registrar    *DomainRegistrarStatus    `json:"registrar,omitempty"`
+	Registration *Registration             `json:"registration,omitempty"`
 	Conditions   []metav1.Condition        `json:"conditions,omitempty"`
 }
 
@@ -91,24 +91,6 @@ type DomainVerificationStatus struct {
 	NextVerificationAttempt metav1.Time           `json:"nextVerificationAttempt,omitempty"`
 }
 
-// DomainRegistrarStatus represents the registrar information for a domain
-type DomainRegistrarStatus struct {
-	IANAID            string       `json:"ianaID,omitempty"`
-	IANAName          string       `json:"ianaName,omitempty"`
-	CreatedDate       string       `json:"createdDate,omitempty"`
-	ModifiedDate      string       `json:"modifiedDate,omitempty"`
-	ExpirationDate    string       `json:"expirationDate,omitempty"`
-	Nameservers       []string     `json:"nameservers,omitempty"`
-	DNSSEC            DNSSECStatus `json:"dnssec,omitempty"`
-	ClientStatusCodes []string     `json:"clientStatusCodes,omitempty"`
-	ServerStatusCodes []string     `json:"serverStatusCodes,omitempty"`
-}
-
-// DNSSECStatus represents the DNSSEC status of a domain
-type DNSSECStatus struct {
-	Signed bool `json:"signed"`
-}
-
 // DNSVerificationRecord represents a DNS record required for verification
 type DNSVerificationRecord struct {
 	Name    string `json:"name"`
@@ -119,6 +101,78 @@ type DNSVerificationRecord struct {
 type HTTPVerificationToken struct {
 	URL  string `json:"url"`
 	Body string `json:"body"`
+}
+
+// Registration represents the registration information for a domain
+type Registration struct {
+	// Identity & provenance
+	Domain           string `json:"domain,omitempty"`           // FQDN as observed (punycode)
+	RegistryDomainID string `json:"registryDomainID,omitempty"` // e.g., "12345-EXAMPLE"
+	Handle           string `json:"handle,omitempty"`           // RDAP handle if present
+	Source           string `json:"source,omitempty"`           // "rdap" | "whois"
+
+	Registrar *RegistrarInfo `json:"registrar,omitempty"`
+	Registry  *RegistryInfo  `json:"registry,omitempty"` // optional (operator of the TLD)
+
+	// Lifecycle
+	CreatedAt *metav1.Time `json:"createdAt,omitempty"`
+	UpdatedAt *metav1.Time `json:"updatedAt,omitempty"`
+	ExpiresAt *metav1.Time `json:"expiresAt,omitempty"`
+
+	// Raw statuses that will either be rdap rfc8056 or whois EPP status strings
+	Statuses []string `json:"statuses,omitempty"` // e.g., clientTransferProhibited (EPP) or client transfer prohibited (RDAP)
+
+	// Delegation (what the parent currently delegates to)
+	Nameservers []string `json:"nameservers,omitempty"` // normalized: lowercase, no trailing dot
+
+	// DNSSEC (from RDAP secureDNS, with WHOIS fallback when parsable)
+	DNSSEC *DNSSECInfo `json:"dnssec,omitempty"`
+
+	// Contacts (minimal, non-PII summary if available)
+	Contacts *ContactSet `json:"contacts,omitempty"`
+
+	// Abuse / support contacts (registrar/registry)
+	Abuse *AbuseContact `json:"abuse,omitempty"`
+}
+
+type RegistrarInfo struct {
+	IANAID string `json:"ianaID,omitempty"` // registrar IANA ID if known
+	Name   string `json:"name,omitempty"`
+	URL    string `json:"url,omitempty"`
+}
+
+type RegistryInfo struct {
+	Name string `json:"name,omitempty"` // e.g., Verisign, PIR
+	URL  string `json:"url,omitempty"`
+}
+
+type DNSSECInfo struct {
+	Enabled *bool      `json:"enabled,omitempty"` // true if RDAP secureDNS/WHOIS indicates DNSSEC
+	DS      []DSRecord `json:"ds,omitempty"`      // optional if RDAP provides dsData; WHOIS rarely reliable
+}
+
+type DSRecord struct {
+	KeyTag     uint16 `json:"keyTag"`
+	Algorithm  uint8  `json:"algorithm"`
+	DigestType uint8  `json:"digestType"`
+	Digest     string `json:"digest"`
+}
+
+type ContactSet struct {
+	Registrant *Contact `json:"registrant,omitempty"`
+	Admin      *Contact `json:"admin,omitempty"`
+	Tech       *Contact `json:"tech,omitempty"`
+}
+
+type Contact struct {
+	Organization string `json:"organization,omitempty"`
+	Email        string `json:"email,omitempty"` // may be redacted
+	Phone        string `json:"phone,omitempty"` // may be redacted
+}
+
+type AbuseContact struct {
+	Email string `json:"email,omitempty"`
+	Phone string `json:"phone,omitempty"`
 }
 
 // +kubebuilder:object:root=true

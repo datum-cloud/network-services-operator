@@ -142,13 +142,13 @@ type RegistrarInfo struct {
 }
 
 type RegistryInfo struct {
-	Name string `json:"name,omitempty"` // e.g., Verisign, PIR
+	Name string `json:"name,omitempty"`
 	URL  string `json:"url,omitempty"`
 }
 
 type Nameserver struct {
-	Hostname       string `json:"hostname"`                 // e.g., "erin.ns.cloudflare.com" (lowercase, no trailing dot)
-	RegistrantName string `json:"registrantName,omitempty"` // e.g., "Cloudflare, Inc."
+	Hostname       string `json:"hostname"`
+	RegistrantName string `json:"registrantName,omitempty"`
 }
 
 type DNSSECInfo struct {

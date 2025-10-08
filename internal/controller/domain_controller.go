@@ -63,6 +63,36 @@ func (r *DomainReconciler) Reconcile(ctx context.Context, req mcreconcile.Reques
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
+	logger.Info("reconciling domain")
+	defer logger.Info("reconcile complete")
+
+	origStatus := domain.Status.DeepCopy()
+
+	// Delegate all verification work (including timers/backoff)
+	nextVerification := r.reconcileVerification(ctx, domain)
+
+	// Persist status if changed
+	if !equality.Semantic.DeepEqual(*origStatus, domain.Status) {
+		if err := cl.GetClient().Status().Update(ctx, domain); err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed updating domain status: %w", err)
+		}
+	}
+
+	// If we have a future attempt scheduled, requeue for that time
+	if !nextVerification.IsZero() {
+		if remaining := nextVerification.Sub(r.timeNow()).Truncate(time.Second); remaining > 0 {
+			return ctrl.Result{RequeueAfter: remaining}, nil
+		}
+	}
+
+	return ctrl.Result{}, nil
+}
+
+// reconcileVerification contains the verification logic.
+// It mutates domain.Status and returns the next verification attempt time (if any).
+func (r *DomainReconciler) reconcileVerification(ctx context.Context, domain *networkingv1alpha.Domain) time.Time {
+	logger := log.FromContext(ctx)
+
 	domainStatus := domain.Status.DeepCopy()
 
 	verifiedCondition := conditionutil.FindStatusConditionOrDefault(domainStatus.Conditions, &metav1.Condition{
@@ -92,8 +122,7 @@ func (r *DomainReconciler) Reconcile(ctx context.Context, req mcreconcile.Reques
 	})
 	verifiedHTTPCondition.ObservedGeneration = domain.Generation
 
-	logger.Info("reconciling domain")
-	defer logger.Info("reconcile complete")
+	var nextAttempt time.Time
 
 	if verifiedCondition.Status != metav1.ConditionTrue {
 		logger.Info("domain ownership has not been verified.")
@@ -120,69 +149,62 @@ func (r *DomainReconciler) Reconcile(ctx context.Context, req mcreconcile.Reques
 			verifiedDNSCondition.Message = "Update your DNS provider with record defined in `status.verification.dnsRecord`."
 			verifiedHTTPCondition.Message = "Update your HTTP server with token defined in `status.verification.httpToken`."
 		} else {
+			// If we're not yet due, short-circuit
 			if remaining := domainStatus.Verification.NextVerificationAttempt.Sub(r.timeNow()).Truncate(time.Second); remaining > 0 {
 				logger.Info("not attempting another validation until remaining time elapsed", "remaining", remaining)
-				// This exists because we want to communicate timing expectations to
-				// users, but by doing so we update the status information which triggers
-				// a reconcile, and without this check it could lead to many sequential
-				// updates to the resource.
-				//
-				// We can't have this logic in a predicate, because we couldn't schedule a
-				// future reconcile.
-				return ctrl.Result{RequeueAfter: remaining}, nil
-			}
+				nextAttempt = r.timeNow().Add(remaining)
+			} else {
+				// Compute next backoff based on elapsed since last transition time
+				initialAttempt := verifiedCondition.LastTransitionTime.Time
+				elapsed := r.timeNow().Sub(initialAttempt)
+				logger.Info("time elapsed since last transition time", "duration", elapsed)
 
-			initialAttempt := verifiedCondition.LastTransitionTime.Time
-			elapsed := r.timeNow().Sub(initialAttempt)
-			logger.Info("time elapsed since last transition time", "duration", elapsed)
+				requeueAfter := wait.Jitter(
+					r.Config.DomainVerification.GetRetryInterval(elapsed),
+					r.Config.DomainVerification.RetryJitterMaxFactor,
+				)
 
-			requeueAfter := wait.Jitter(
-				r.Config.DomainVerification.GetRetryInterval(elapsed),
-				r.Config.DomainVerification.RetryJitterMaxFactor,
-			)
+				// Set the next attempt on status (this intentionally triggers an immediate reconcile via status update)
+				domainStatus.Verification.NextVerificationAttempt = metav1.NewTime(r.timeNow().Add(requeueAfter))
+				nextAttempt = domainStatus.Verification.NextVerificationAttempt.Time
 
-			// Note that this will result in a reconcile to be enqueued immediately
-			// upon updating the status. The delayed requeue for attempting lookups
-			// is enforced above.
-			domainStatus.Verification.NextVerificationAttempt = metav1.NewTime(r.timeNow().Add(requeueAfter))
+				// Perform verification attempts now
+				attemptCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+				defer cancel()
 
-			ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-			defer cancel()
+				r.attemptDNSVerification(attemptCtx, domainStatus, verifiedDNSCondition)
 
-			r.attemptDNSVerification(ctx, domainStatus, verifiedDNSCondition)
+				if verifiedDNSCondition.Status != metav1.ConditionTrue {
+					r.attemptHTTPVerification(attemptCtx, domainStatus, verifiedHTTPCondition)
+				}
 
-			if verifiedDNSCondition.Status != metav1.ConditionTrue {
-				r.attemptHTTPVerification(ctx, domainStatus, verifiedHTTPCondition)
-			}
+				if verifiedDNSCondition.Status == metav1.ConditionTrue || verifiedHTTPCondition.Status == metav1.ConditionTrue {
+					verifiedCondition.Status = metav1.ConditionTrue
+					verifiedCondition.Reason = networkingv1alpha.DomainReasonVerified
+					verifiedCondition.Message = "Domain verification successful"
 
-			if verifiedDNSCondition.Status == metav1.ConditionTrue || verifiedHTTPCondition.Status == metav1.ConditionTrue {
-				verifiedCondition.Status = metav1.ConditionTrue
-				verifiedCondition.Reason = networkingv1alpha.DomainReasonVerified
-				verifiedCondition.Message = "Domain verification successful"
-
-				// Clear out verification info and unnecessary conditions
-				domainStatus.Verification = nil
-				apimeta.RemoveStatusCondition(&domainStatus.Conditions, networkingv1alpha.DomainConditionVerifiedDNS)
-				apimeta.RemoveStatusCondition(&domainStatus.Conditions, networkingv1alpha.DomainConditionVerifiedHTTP)
+					// Clear verification scaffolding and sub-conditions
+					domainStatus.Verification = nil
+					apimeta.RemoveStatusCondition(&domainStatus.Conditions, networkingv1alpha.DomainConditionVerifiedDNS)
+					apimeta.RemoveStatusCondition(&domainStatus.Conditions, networkingv1alpha.DomainConditionVerifiedHTTP)
+					// When verified, no future verification timer is needed
+					nextAttempt = time.Time{}
+				}
 			}
 		}
 	}
 
+	// Update conditions
 	apimeta.SetStatusCondition(&domainStatus.Conditions, *verifiedCondition)
-
 	if verifiedCondition.Status == metav1.ConditionFalse {
 		apimeta.SetStatusCondition(&domainStatus.Conditions, *verifiedDNSCondition)
 		apimeta.SetStatusCondition(&domainStatus.Conditions, *verifiedHTTPCondition)
 	}
 
-	if !equality.Semantic.DeepEqual(domain.Status, domainStatus) {
-		domain.Status = *domainStatus
-		if statusErr := cl.GetClient().Status().Update(ctx, domain); statusErr != nil {
-			return ctrl.Result{}, fmt.Errorf("failed updating domain status: %w", statusErr)
-		}
-	}
+	// Commit the staged status back
+	domain.Status = *domainStatus
 
-	return ctrl.Result{}, nil
+	return nextAttempt
 }
 
 func (r *DomainReconciler) attemptDNSVerification(
@@ -271,7 +293,6 @@ func (r *DomainReconciler) attemptHTTPVerification(
 		verifiedHTTPCondition.Reason = networkingv1alpha.DomainReasonVerificationUnexpectedResponse
 		verifiedHTTPCondition.Message = fmt.Sprintf("unexpected status code from HTTP token endpoint. HTTP %d", httpResponse.StatusCode)
 	}
-
 }
 
 // defaultHTTPGet is the default HTTP GET implementation for verification

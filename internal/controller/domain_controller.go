@@ -474,136 +474,173 @@ func (r *DomainReconciler) reconcileRegistration(ctx context.Context, d *network
 	return next
 }
 
+// mapRDAPDomainToRegistration maps a raw RDAP domain into our Registration model.
 func (r *DomainReconciler) mapRDAPDomainToRegistration(ctx context.Context, d *rdap.Domain) *networkingv1alpha.Registration {
 	reg := &networkingv1alpha.Registration{}
 	if d == nil {
 		return reg
 	}
+
 	reg.Domain = d.LDHName
 	reg.Handle = d.Handle
 
-	// RegistryDomainID from publicIds when available (best-effort)
-	for _, pid := range d.PublicIDs {
+	// IDs & statuses
+	reg.RegistryDomainID = pickRegistryDomainID(d.PublicIDs)
+	copyStatuses(reg, d.Status)
+
+	// Lifecycle timestamps
+	applyLifecycleFromEvents(reg, d.Events)
+
+	// DNSSEC
+	if d.SecureDNS != nil {
+		reg.DNSSEC = buildDNSSEC(d.SecureDNS)
+	}
+
+	// Contacts & abuse
+	if contacts, abuse := buildContacts(d.Entities); contacts != nil || abuse != nil {
+		reg.Contacts = contacts
+		reg.Abuse = abuse
+	}
+
+	// Registrar
+	if ri := buildRegistrarInfo(d.Entities); ri != nil {
+		reg.Registrar = ri
+	}
+
+	return reg
+}
+
+func pickRegistryDomainID(publicIDs []rdap.PublicID) string {
+	for _, pid := range publicIDs {
 		if pid.Identifier == "" {
 			continue
 		}
 		pt := strings.ToLower(pid.Type)
+		// Skip registrar/iana IDs
 		if strings.Contains(pt, "iana") || strings.Contains(pt, "registrar") {
 			continue
 		}
+		// Prefer domain/roid-ish types
 		if strings.Contains(pt, "roid") || strings.Contains(pt, "domain") {
-			reg.RegistryDomainID = pid.Identifier
-			break
+			return pid.Identifier
 		}
 	}
+	return ""
+}
 
-	// statuses
-	if len(d.Status) > 0 {
-		reg.Statuses = append(reg.Statuses, d.Status...)
+func copyStatuses(reg *networkingv1alpha.Registration, st []string) {
+	if len(st) > 0 {
+		reg.Statuses = append(reg.Statuses, st...)
 	}
+}
 
-	// lifecycle from events
-	for _, ev := range d.Events {
+func applyLifecycleFromEvents(reg *networkingv1alpha.Registration, events []rdap.Event) {
+	for _, ev := range events {
+		date := parseRFC3339Ptr(ev.Date)
+		if date == nil {
+			continue
+		}
 		switch strings.ToLower(ev.Action) {
 		case "registration":
-			if ev.Date != "" {
-				if tt, err := time.Parse(time.RFC3339, ev.Date); err == nil {
-					t := metav1.NewTime(tt)
-					reg.CreatedAt = &t
-				}
-			}
+			reg.CreatedAt = date
 		case "last changed":
-			if ev.Date != "" {
-				if tt, err := time.Parse(time.RFC3339, ev.Date); err == nil {
-					t := metav1.NewTime(tt)
-					reg.UpdatedAt = &t
-				}
-			}
+			reg.UpdatedAt = date
 		case "expiration":
-			if ev.Date != "" {
-				if tt, err := time.Parse(time.RFC3339, ev.Date); err == nil {
-					t := metav1.NewTime(tt)
-					reg.ExpiresAt = &t
-				}
-			}
+			reg.ExpiresAt = date
 		}
 	}
+}
 
-	// DNSSEC
-	if d.SecureDNS != nil {
-		reg.DNSSEC = &networkingv1alpha.DNSSECInfo{}
-		if d.SecureDNS.DelegationSigned != nil {
-			enabled := *d.SecureDNS.DelegationSigned
-			reg.DNSSEC.Enabled = &enabled
-		}
-		for _, ds := range d.SecureDNS.DS {
-			var keyTag uint16
-			if ds.KeyTag != nil {
-				keyTag = uint16(*ds.KeyTag)
-			}
-			var alg uint8
-			if ds.Algorithm != nil {
-				alg = *ds.Algorithm
-			}
-			var dt uint8
-			if ds.DigestType != nil {
-				dt = *ds.DigestType
-			}
-			reg.DNSSEC.DS = append(reg.DNSSEC.DS, networkingv1alpha.DSRecord{
-				KeyTag: keyTag, Algorithm: alg, DigestType: dt, Digest: ds.Digest,
-			})
-		}
+func parseRFC3339Ptr(s string) *metav1.Time {
+	if s == "" {
+		return nil
 	}
+	tt, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return nil
+	}
+	t := metav1.NewTime(tt)
+	return &t
+}
 
-	// contacts & abuse
-	contacts := &networkingv1alpha.ContactSet{}
+func buildDNSSEC(sd *rdap.SecureDNS) *networkingv1alpha.DNSSECInfo {
+	out := &networkingv1alpha.DNSSECInfo{}
+	if sd.DelegationSigned != nil {
+		enabled := *sd.DelegationSigned
+		out.Enabled = &enabled
+	}
+	for _, ds := range sd.DS {
+		var keyTag uint16
+		if ds.KeyTag != nil {
+			keyTag = uint16(*ds.KeyTag)
+		}
+		var alg, dt uint8
+		if ds.Algorithm != nil {
+			alg = *ds.Algorithm
+		}
+		if ds.DigestType != nil {
+			dt = *ds.DigestType
+		}
+		out.DS = append(out.DS, networkingv1alpha.DSRecord{
+			KeyTag:     keyTag,
+			Algorithm:  alg,
+			DigestType: dt,
+			Digest:     ds.Digest,
+		})
+	}
+	return out
+}
+
+func buildContacts(entities []rdap.Entity) (*networkingv1alpha.ContactSet, *networkingv1alpha.AbuseContact) {
+	cs := &networkingv1alpha.ContactSet{}
 	var abuse *networkingv1alpha.AbuseContact
-	for _, e := range d.Entities {
+
+	for _, e := range entities {
 		name, email, phone := extractVCard(e.VCard)
 		for _, role := range e.Roles {
 			switch strings.ToLower(role) {
 			case "registrant":
-				contacts.Registrant = &networkingv1alpha.Contact{Organization: name, Email: email, Phone: phone}
+				cs.Registrant = &networkingv1alpha.Contact{Organization: name, Email: email, Phone: phone}
 			case "administrative":
-				contacts.Admin = &networkingv1alpha.Contact{Organization: name, Email: email, Phone: phone}
+				cs.Admin = &networkingv1alpha.Contact{Organization: name, Email: email, Phone: phone}
 			case "technical":
-				contacts.Tech = &networkingv1alpha.Contact{Organization: name, Email: email, Phone: phone}
+				cs.Tech = &networkingv1alpha.Contact{Organization: name, Email: email, Phone: phone}
 			case "abuse":
 				abuse = &networkingv1alpha.AbuseContact{Email: email, Phone: phone}
 			}
 		}
 	}
-	if contacts.Registrant != nil || contacts.Admin != nil || contacts.Tech != nil {
-		reg.Contacts = contacts
-	}
-	if abuse != nil {
-		reg.Abuse = abuse
-	}
 
-	// registrar
-	for _, e := range d.Entities {
-		if hasRole(e.Roles, "registrar") {
-			name, _, _ := extractVCard(e.VCard)
-			ri := &networkingv1alpha.RegistrarInfo{Name: name}
-			for _, pid := range e.PublicIDs {
-				pt := strings.ToLower(pid.Type)
-				if strings.Contains(pt, "iana") && pid.Identifier != "" {
-					ri.IANAID = pid.Identifier
-					break
-				}
-			}
-			for _, l := range e.Links {
-				if l.Href != "" {
-					ri.URL = l.Href
-					break
-				}
-			}
-			reg.Registrar = ri
-			break
+	// normalize nil when empty
+	if cs.Registrant == nil && cs.Admin == nil && cs.Tech == nil {
+		cs = nil
+	}
+	return cs, abuse
+}
+
+func buildRegistrarInfo(entities []rdap.Entity) *networkingv1alpha.RegistrarInfo {
+	for _, e := range entities {
+		if !hasRole(e.Roles, "registrar") {
+			continue
 		}
-	}
+		name, _, _ := extractVCard(e.VCard)
+		ri := &networkingv1alpha.RegistrarInfo{Name: name}
 
-	return reg
+		for _, pid := range e.PublicIDs {
+			if strings.Contains(strings.ToLower(pid.Type), "iana") && pid.Identifier != "" {
+				ri.IANAID = pid.Identifier
+				break
+			}
+		}
+		for _, l := range e.Links {
+			if l.Href != "" {
+				ri.URL = l.Href
+				break
+			}
+		}
+		return ri
+	}
+	return nil
 }
 
 func (r *DomainReconciler) lookupRegistrantNameForIP(ctx context.Context, ip string) string {

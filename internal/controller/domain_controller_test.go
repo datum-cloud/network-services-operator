@@ -766,7 +766,6 @@ func vcardWithFN(fullname string) *rdap.VCard {
 				Name:  "fn",     // property name
 				Type:  "text",   // value type
 				Value: fullname, // single value
-				// if your version uses Values: []string{fullname}, set that instead
 			},
 		},
 	}

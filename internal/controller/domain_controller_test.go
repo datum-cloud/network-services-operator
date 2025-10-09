@@ -29,6 +29,10 @@ import (
 	"go.datum.net/network-services-operator/internal/config"
 )
 
+const (
+	exampleDomain = "example.com"
+)
+
 func TestDomainVerification(t *testing.T) {
 	testScheme := runtime.NewScheme()
 	assert.NoError(t, scheme.AddToScheme(testScheme))
@@ -441,7 +445,7 @@ func TestRegistration_Apex_UsesRDAPNameservers(t *testing.T) {
 	_ = networkingv1alpha.AddToScheme(s)
 
 	dom := newDomain("default", "apex")
-	dom.Spec.DomainName = "example.com" // apex
+	dom.Spec.DomainName = exampleDomain // apex
 
 	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(dom).WithStatusSubresource(dom).Build()
 	mgr := &fakeMockManager{cl: cl}
@@ -662,7 +666,7 @@ func TestRegistration_RetryBackoffOnError(t *testing.T) {
 	_ = networkingv1alpha.AddToScheme(s)
 
 	dom := newDomain("default", "err")
-	dom.Spec.DomainName = "example.com"
+	dom.Spec.DomainName = exampleDomain
 
 	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(dom).WithStatusSubresource(dom).Build()
 	mgr := &fakeMockManager{cl: cl}
@@ -700,7 +704,7 @@ func TestRegistration_EnrichesNameserverIPs(t *testing.T) {
 	_ = networkingv1alpha.AddToScheme(s)
 
 	dom := newDomain("default", "enrich")
-	dom.Spec.DomainName = "example.com"
+	dom.Spec.DomainName = exampleDomain
 
 	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(dom).WithStatusSubresource(dom).Build()
 	mgr := &fakeMockManager{cl: cl}

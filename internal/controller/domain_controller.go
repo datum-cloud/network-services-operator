@@ -400,7 +400,7 @@ func (r *DomainReconciler) reconcileRegistration(ctx context.Context, d *network
 		st.Registration.NextRegistrationAttempt = metav1.NewTime(now.Add(r.Config.DomainRegistration.RetryBackoff.Duration))
 		return st.Registration.NextRegistrationAttempt.Time
 	}
-	reg := r.mapRDAPDomainToRegistration(ctxLookup, rdapDomain)
+	reg := r.mapRDAPDomainToRegistration(rdapDomain)
 
 	// Registry from bootstrap (authoritative)
 	if resp.BootstrapAnswer != nil && len(resp.BootstrapAnswer.URLs) > 0 {
@@ -475,7 +475,7 @@ func (r *DomainReconciler) reconcileRegistration(ctx context.Context, d *network
 }
 
 // mapRDAPDomainToRegistration maps a raw RDAP domain into our Registration model.
-func (r *DomainReconciler) mapRDAPDomainToRegistration(ctx context.Context, d *rdap.Domain) *networkingv1alpha.Registration {
+func (r *DomainReconciler) mapRDAPDomainToRegistration(d *rdap.Domain) *networkingv1alpha.Registration {
 	reg := &networkingv1alpha.Registration{}
 	if d == nil {
 		return reg

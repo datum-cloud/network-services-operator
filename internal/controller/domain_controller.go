@@ -8,11 +8,15 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"slices"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/openrdap/rdap"
+	"github.com/openrdap/rdap/bootstrap"
+	"golang.org/x/net/publicsuffix"
 	"k8s.io/apimachinery/pkg/api/equality"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -21,7 +25,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
@@ -36,9 +39,16 @@ type DomainReconciler struct {
 	mgr    mcmanager.Manager
 	Config config.NetworkServicesOperator
 
-	timeNow   func() time.Time
-	httpGet   func(ctx context.Context, url string) ([]byte, *http.Response, error)
-	lookupTXT func(ctx context.Context, name string) ([]string, error)
+	timeNow     func() time.Time
+	httpGet     func(ctx context.Context, url string) ([]byte, *http.Response, error)
+	lookupTXT   func(ctx context.Context, name string) ([]string, error)
+	lookupNS    func(ctx context.Context, name string) ([]*net.NS, error)
+	lookupIP    func(ctx context.Context, name string) ([]net.IPAddr, error)
+	rdapDo      func(ctx context.Context, req *rdap.Request) (*rdap.Response, error)
+	rdapQueryIP func(ctx context.Context, ip string) (*rdap.IPNetwork, error)
+
+	// external clients
+	rdapClient *rdap.Client
 }
 
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=domains,verbs=get;list;watch;create;update;patch;delete
@@ -71,6 +81,9 @@ func (r *DomainReconciler) Reconcile(ctx context.Context, req mcreconcile.Reques
 	// Delegate all verification work (including timers/backoff)
 	nextVerification := r.reconcileVerification(ctx, domain)
 
+	// Delegate all registration work (including timers/backoff)
+	nextRegistration := r.reconcileRegistration(ctx, domain)
+
 	// Persist status if changed
 	if !equality.Semantic.DeepEqual(*origStatus, domain.Status) {
 		if err := cl.GetClient().Status().Update(ctx, domain); err != nil {
@@ -78,11 +91,22 @@ func (r *DomainReconciler) Reconcile(ctx context.Context, req mcreconcile.Reques
 		}
 	}
 
-	// If we have a future attempt scheduled, requeue for that time
+	// Compute earliest independent timer
+	now := r.timeNow()
+	var wake *time.Time
 	if !nextVerification.IsZero() {
-		if remaining := nextVerification.Sub(r.timeNow()).Truncate(time.Second); remaining > 0 {
-			return ctrl.Result{RequeueAfter: remaining}, nil
+		w := nextVerification
+		wake = &w
+	}
+	if !nextRegistration.IsZero() {
+		if wake == nil || nextRegistration.Before(*wake) {
+			w := nextRegistration
+			wake = &w
 		}
+	}
+
+	if wake != nil && wake.After(now) {
+		return ctrl.Result{RequeueAfter: wake.Sub(now).Truncate(time.Second)}, nil
 	}
 
 	return ctrl.Result{}, nil
@@ -329,6 +353,349 @@ func defaultHTTPGet(ctx context.Context, url string) ([]byte, *http.Response, er
 	return body, resp, nil
 }
 
+// reconcileRegistration keeps Status.Registration fresh and schedules independent timers.
+// Returns the next registration attempt time (zero if none).
+func (r *DomainReconciler) reconcileRegistration(ctx context.Context, d *networkingv1alpha.Domain) time.Time {
+	logger := log.FromContext(ctx)
+
+	st := &d.Status
+	now := r.timeNow()
+
+	if st.Registration == nil {
+		st.Registration = &networkingv1alpha.Registration{}
+	}
+
+	if !st.Registration.NextRegistrationAttempt.IsZero() &&
+		st.Registration.NextRegistrationAttempt.After(now) {
+		return st.Registration.NextRegistrationAttempt.Time
+	}
+
+	apex, err := registeredApex(d.Spec.DomainName)
+	if err != nil || apex == "" {
+		// if we cannot compute apex, short backoff
+		st.Registration.NextRegistrationAttempt = metav1.NewTime(now.Add(r.Config.DomainRegistration.RetryBackoff.Duration))
+		return st.Registration.NextRegistrationAttempt.Time
+	}
+	st.Apex = strings.EqualFold(strings.TrimSuffix(d.Spec.DomainName, "."), apex)
+
+	ctxLookup, cancel := context.WithTimeout(ctx, r.Config.DomainRegistration.LookupTimeout.Duration)
+	defer cancel()
+
+	logger.Info("fetching RDAP registration", "apex", apex, "domain", d.Spec.DomainName)
+	req := &rdap.Request{
+		Type:    rdap.DomainRequest,
+		Query:   apex,
+		Timeout: r.Config.DomainRegistration.LookupTimeout.Duration,
+	}
+	resp, err := r.rdapDo(ctxLookup, req)
+	if err != nil {
+		logger.Error(err, "rdap lookup failed")
+		st.Registration.NextRegistrationAttempt = metav1.NewTime(now.Add(r.Config.DomainRegistration.RetryBackoff.Duration))
+		return st.Registration.NextRegistrationAttempt.Time
+	}
+
+	rdapDomain, _ := resp.Object.(*rdap.Domain)
+	if rdapDomain == nil {
+		// transient parse or server quirk; retry sooner
+		st.Registration.NextRegistrationAttempt = metav1.NewTime(now.Add(r.Config.DomainRegistration.RetryBackoff.Duration))
+		return st.Registration.NextRegistrationAttempt.Time
+	}
+	reg := r.mapRDAPDomainToRegistration(ctxLookup, rdapDomain)
+
+	// Registry from bootstrap (authoritative)
+	if resp.BootstrapAnswer != nil && len(resp.BootstrapAnswer.URLs) > 0 {
+		var base *url.URL
+		for _, u := range resp.BootstrapAnswer.URLs {
+			if u != nil && strings.EqualFold(u.Scheme, "https") {
+				base = u
+				break
+			}
+		}
+		if base == nil {
+			base = resp.BootstrapAnswer.URLs[0]
+		}
+		if base != nil && base.Host != "" {
+			hostBase := base.Scheme + "://" + base.Host
+			reg.Registry = &networkingv1alpha.RegistryInfo{Name: base.Host, URL: hostBase}
+		}
+	}
+
+	// populate top-level Nameservers based on apex/non-apex
+	st.Nameservers = st.Nameservers[:0]
+
+	if st.Apex {
+		// Apex: use RDAP-reported NS from the apex object
+		for _, ns := range rdapDomain.Nameservers {
+			st.Nameservers = append(st.Nameservers, networkingv1alpha.Nameserver{Hostname: ns.LDHName})
+		}
+	} else {
+		// Non-apex: find delegated NS for the exact name; if none, fall back to apex NS
+		if _, nsHosts, delegated := r.delegatedZoneNS(ctxLookup, d.Spec.DomainName, apex); delegated && len(nsHosts) > 0 {
+			logger.Info("subdomain delegation detected; using delegated nameservers",
+				"zoneApex", d.Spec.DomainName, "nsCount", len(nsHosts))
+			for _, h := range nsHosts {
+				st.Nameservers = append(st.Nameservers, networkingv1alpha.Nameserver{Hostname: h})
+			}
+		} else {
+			// fallback to apex NS from RDAP
+			for _, ns := range rdapDomain.Nameservers {
+				st.Nameservers = append(st.Nameservers, networkingv1alpha.Nameserver{Hostname: ns.LDHName})
+			}
+		}
+	}
+
+	// Enrich top-level Nameservers with per-IP registrant
+	for i := range st.Nameservers {
+		host := st.Nameservers[i].Hostname
+		ipAddrs, err := r.lookupIP(ctxLookup, host)
+		if err != nil {
+			logger.Error(err, "error looking up IP addresses for nameserver", "host", host)
+			continue
+		}
+		st.Nameservers[i].IPs = nil
+		for _, ipAddr := range ipAddrs {
+			ip := ipAddr.IP.String()
+			nsIP := networkingv1alpha.NameserverIP{Address: ip}
+			if who := r.lookupRegistrantNameForIP(ctxLookup, ip); who != "" {
+				nsIP.RegistrantName = who
+			}
+			st.Nameservers[i].IPs = append(st.Nameservers[i].IPs, nsIP)
+		}
+	}
+
+	reg.Source = "rdap"
+	st.Registration = reg
+
+	// Schedule next refresh (with jitter)
+	interval := r.Config.DomainRegistration.RefreshInterval.Duration
+	next := now.Add(wait.Jitter(interval, r.Config.DomainRegistration.JitterMaxFactor))
+	st.Registration.NextRegistrationAttempt = metav1.NewTime(next)
+
+	return next
+}
+
+func (r *DomainReconciler) mapRDAPDomainToRegistration(ctx context.Context, d *rdap.Domain) *networkingv1alpha.Registration {
+	reg := &networkingv1alpha.Registration{}
+	if d == nil {
+		return reg
+	}
+	reg.Domain = d.LDHName
+	reg.Handle = d.Handle
+
+	// RegistryDomainID from publicIds when available (best-effort)
+	for _, pid := range d.PublicIDs {
+		if pid.Identifier == "" {
+			continue
+		}
+		pt := strings.ToLower(pid.Type)
+		if strings.Contains(pt, "iana") || strings.Contains(pt, "registrar") {
+			continue
+		}
+		if strings.Contains(pt, "roid") || strings.Contains(pt, "domain") {
+			reg.RegistryDomainID = pid.Identifier
+			break
+		}
+	}
+
+	// statuses
+	if len(d.Status) > 0 {
+		reg.Statuses = append(reg.Statuses, d.Status...)
+	}
+
+	// lifecycle from events
+	for _, ev := range d.Events {
+		switch strings.ToLower(ev.Action) {
+		case "registration":
+			if ev.Date != "" {
+				if tt, err := time.Parse(time.RFC3339, ev.Date); err == nil {
+					t := metav1.NewTime(tt)
+					reg.CreatedAt = &t
+				}
+			}
+		case "last changed":
+			if ev.Date != "" {
+				if tt, err := time.Parse(time.RFC3339, ev.Date); err == nil {
+					t := metav1.NewTime(tt)
+					reg.UpdatedAt = &t
+				}
+			}
+		case "expiration":
+			if ev.Date != "" {
+				if tt, err := time.Parse(time.RFC3339, ev.Date); err == nil {
+					t := metav1.NewTime(tt)
+					reg.ExpiresAt = &t
+				}
+			}
+		}
+	}
+
+	// DNSSEC
+	if d.SecureDNS != nil {
+		reg.DNSSEC = &networkingv1alpha.DNSSECInfo{}
+		if d.SecureDNS.DelegationSigned != nil {
+			enabled := *d.SecureDNS.DelegationSigned
+			reg.DNSSEC.Enabled = &enabled
+		}
+		for _, ds := range d.SecureDNS.DS {
+			var keyTag uint16
+			if ds.KeyTag != nil {
+				keyTag = uint16(*ds.KeyTag)
+			}
+			var alg uint8
+			if ds.Algorithm != nil {
+				alg = *ds.Algorithm
+			}
+			var dt uint8
+			if ds.DigestType != nil {
+				dt = *ds.DigestType
+			}
+			reg.DNSSEC.DS = append(reg.DNSSEC.DS, networkingv1alpha.DSRecord{
+				KeyTag: keyTag, Algorithm: alg, DigestType: dt, Digest: ds.Digest,
+			})
+		}
+	}
+
+	// contacts & abuse
+	contacts := &networkingv1alpha.ContactSet{}
+	var abuse *networkingv1alpha.AbuseContact
+	for _, e := range d.Entities {
+		name, email, phone := extractVCard(e.VCard)
+		for _, role := range e.Roles {
+			switch strings.ToLower(role) {
+			case "registrant":
+				contacts.Registrant = &networkingv1alpha.Contact{Organization: name, Email: email, Phone: phone}
+			case "administrative":
+				contacts.Admin = &networkingv1alpha.Contact{Organization: name, Email: email, Phone: phone}
+			case "technical":
+				contacts.Tech = &networkingv1alpha.Contact{Organization: name, Email: email, Phone: phone}
+			case "abuse":
+				abuse = &networkingv1alpha.AbuseContact{Email: email, Phone: phone}
+			}
+		}
+	}
+	if contacts.Registrant != nil || contacts.Admin != nil || contacts.Tech != nil {
+		reg.Contacts = contacts
+	}
+	if abuse != nil {
+		reg.Abuse = abuse
+	}
+
+	// registrar
+	for _, e := range d.Entities {
+		if hasRole(e.Roles, "registrar") {
+			name, _, _ := extractVCard(e.VCard)
+			ri := &networkingv1alpha.RegistrarInfo{Name: name}
+			for _, pid := range e.PublicIDs {
+				pt := strings.ToLower(pid.Type)
+				if strings.Contains(pt, "iana") && pid.Identifier != "" {
+					ri.IANAID = pid.Identifier
+					break
+				}
+			}
+			for _, l := range e.Links {
+				if l.Href != "" {
+					ri.URL = l.Href
+					break
+				}
+			}
+			reg.Registrar = ri
+			break
+		}
+	}
+
+	return reg
+}
+
+func (r *DomainReconciler) lookupRegistrantNameForIP(ctx context.Context, ip string) string {
+	ipNet, err := r.rdapQueryIP(ctx, ip)
+	if err != nil || ipNet == nil {
+		return ""
+	}
+	for _, e := range ipNet.Entities {
+		if hasRole(e.Roles, "registrant") {
+			name, _, _ := extractVCard(e.VCard)
+			if name != "" {
+				return name
+			}
+		}
+	}
+	return ""
+}
+
+func hasRole(roles []string, want string) bool {
+	for _, r := range roles {
+		if strings.EqualFold(r, want) {
+			return true
+		}
+	}
+	return false
+}
+
+func extractVCard(vc *rdap.VCard) (name, email, phone string) {
+	if vc == nil {
+		return "", "", ""
+	}
+	if n := vc.Name(); n != "" {
+		name = n
+	}
+	if e := vc.Email(); e != "" {
+		email = e
+	}
+	if t := vc.Tel(); t != "" {
+		phone = t
+	}
+	if p := vc.GetFirst("org"); p != nil {
+		vals := p.Values()
+		if len(vals) > 0 && vals[0] != "" {
+			name = vals[0]
+		}
+	}
+	return
+}
+
+func registeredApex(name string) (string, error) {
+	n := strings.TrimSuffix(strings.ToLower(name), ".")
+	return publicsuffix.EffectiveTLDPlusOne(n)
+}
+
+// delegatedZoneNS finds the deepest node at/under apex that has NS records.
+// Returns (zoneApex, nsHostnames, delegated).
+func (r *DomainReconciler) delegatedZoneNS(ctx context.Context, fqdn, apex string) (string, []string, bool) {
+	trimDot := func(s string) string { return strings.TrimSuffix(s, ".") }
+	addDot := func(s string) string {
+		if s == "" || strings.HasSuffix(s, ".") {
+			return s
+		}
+		return s + "."
+	}
+
+	cur := strings.ToLower(trimDot(fqdn))
+	apex = strings.ToLower(trimDot(apex))
+
+	for {
+		// Presence of NS at this node means a zone cut (authoritative for this subtree)
+		recs, err := r.lookupNS(ctx, addDot(cur))
+		if err == nil && len(recs) > 0 {
+			hosts := make([]string, 0, len(recs))
+			for _, rr := range recs {
+				if rr != nil && rr.Host != "" {
+					hosts = append(hosts, trimDot(rr.Host))
+				}
+			}
+			return cur, hosts, cur != apex
+		}
+		if cur == apex {
+			break
+		}
+		if i := strings.IndexByte(cur, '.'); i > 0 {
+			cur = cur[i+1:]
+		} else {
+			break
+		}
+	}
+	return "", nil, false
+}
+
 // SetupWithManager sets up the controller with the Manager.
 func (r *DomainReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	r.mgr = mgr
@@ -337,15 +704,33 @@ func (r *DomainReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	r.httpGet = defaultHTTPGet
 	r.lookupTXT = net.DefaultResolver.LookupTXT
 
+	r.rdapClient = &rdap.Client{
+		HTTP:      &http.Client{Timeout: r.Config.DomainRegistration.LookupTimeout.Duration},
+		Bootstrap: &bootstrap.Client{}, // enable IANA dns.json auto-discovery
+	}
+
+	r.lookupNS = net.DefaultResolver.LookupNS
+	r.lookupIP = net.DefaultResolver.LookupIPAddr
+	r.rdapDo = func(ctx context.Context, req *rdap.Request) (*rdap.Response, error) {
+		return r.rdapClient.Do(req.WithContext(ctx))
+	}
+	r.rdapQueryIP = func(ctx context.Context, ip string) (*rdap.IPNetwork, error) {
+		req := &rdap.Request{
+			Type:    rdap.IPRequest,
+			Query:   ip,
+			Timeout: r.Config.DomainRegistration.LookupTimeout.Duration,
+		}
+		resp, err := r.rdapClient.Do(req.WithContext(ctx))
+		if err != nil {
+			return nil, err
+		}
+		ipNet, _ := resp.Object.(*rdap.IPNetwork)
+		return ipNet, nil
+	}
+
 	return mcbuilder.ControllerManagedBy(mgr).
-		For(&networkingv1alpha.Domain{}, mcbuilder.WithPredicates(
-			predicate.NewTypedPredicateFuncs(func(domain client.Object) bool {
-				return !apimeta.IsStatusConditionTrue(
-					domain.(*networkingv1alpha.Domain).Status.Conditions,
-					networkingv1alpha.DomainConditionVerified,
-				)
-			}),
-		)).
+		// Watch all Domains so registration continues after verification
+		For(&networkingv1alpha.Domain{}).
 		WithOptions(controller.TypedOptions[mcreconcile.Request]{
 			MaxConcurrentReconciles: r.Config.DomainVerification.MaxConcurrentVerifications,
 		}).

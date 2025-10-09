@@ -47,6 +47,9 @@ type NetworkServicesOperator struct {
 	DownstreamResourceManagement DownstreamResourceManagementConfig `json:"downstreamResourceManagement"`
 
 	DomainVerification DomainVerificationConfig `json:"domainVerificationConfig"`
+
+	// DomainRegistration controls RDAP/WHOIS refresh behavior for Domain status.registration
+	DomainRegistration DomainRegistrationConfig `json:"domainRegistration"`
 }
 
 // +k8s:deepcopy-gen=true
@@ -275,6 +278,26 @@ func (c *DomainVerificationConfig) GetRetryInterval(elapsed time.Duration) time.
 	}
 
 	return 5 * time.Minute
+}
+
+// +k8s:deepcopy-gen=true
+
+type DomainRegistrationConfig struct {
+	// RefreshInterval controls how often to refresh registration data
+	// +default="24h"
+	RefreshInterval *metav1.Duration `json:"refreshInterval"`
+
+	// RetryBackoff controls retry delay after failures
+	// +default="1h"
+	RetryBackoff *metav1.Duration `json:"retryBackoff"`
+
+	// JitterMaxFactor is max jitter factor when scheduling refreshes
+	// +default=0.2
+	JitterMaxFactor float64 `json:"jitterMaxFactor"`
+
+	// LookupTimeout bounds RDAP/WHOIS single lookup time
+	// +default="15s"
+	LookupTimeout *metav1.Duration `json:"lookupTimeout"`
 }
 
 // +k8s:deepcopy-gen=true

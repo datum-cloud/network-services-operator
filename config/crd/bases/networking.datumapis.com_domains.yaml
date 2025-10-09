@@ -89,6 +89,10 @@ spec:
                 type: VerifiedHTTP
             description: DomainStatus defines the observed state of Domain
             properties:
+              apex:
+                description: Apex is true when spec.domainName is the registered domain
+                  (eTLD+1).
+                type: boolean
               conditions:
                 items:
                   description: Condition contains details for one aspect of the current
@@ -145,40 +149,144 @@ spec:
                   - type
                   type: object
                 type: array
-              registrar:
-                description: DomainRegistrarStatus represents the registrar information
+              nameservers:
+                description: |-
+                  Nameservers lists the authoritative NS for the *effective* domain name:
+                  - If Apex == true: taken from RDAP for the registered domain (eTLD+1)
+                  - If Apex == false: taken from DNS delegation for the subdomain; falls back to apex NS if no cut
+                items:
+                  properties:
+                    hostname:
+                      type: string
+                    ips:
+                      items:
+                        description: NameserverIP captures per-address provenance
+                          for a nameserver.
+                        properties:
+                          address:
+                            type: string
+                          registrantName:
+                            type: string
+                        required:
+                        - address
+                        type: object
+                      type: array
+                  required:
+                  - hostname
+                  type: object
+                type: array
+              registration:
+                description: Registration represents the registration information
                   for a domain
                 properties:
-                  clientStatusCodes:
-                    items:
-                      type: string
-                    type: array
-                  createdDate:
+                  abuse:
+                    description: Abuse / support contacts (registrar/registry)
+                    properties:
+                      email:
+                        type: string
+                      phone:
+                        type: string
+                    type: object
+                  contacts:
+                    description: Contacts (minimal, non-PII summary if available)
+                    properties:
+                      admin:
+                        properties:
+                          email:
+                            type: string
+                          organization:
+                            type: string
+                          phone:
+                            type: string
+                        type: object
+                      registrant:
+                        properties:
+                          email:
+                            type: string
+                          organization:
+                            type: string
+                          phone:
+                            type: string
+                        type: object
+                      tech:
+                        properties:
+                          email:
+                            type: string
+                          organization:
+                            type: string
+                          phone:
+                            type: string
+                        type: object
+                    type: object
+                  createdAt:
+                    description: Lifecycle
+                    format: date-time
                     type: string
                   dnssec:
-                    description: DNSSECStatus represents the DNSSEC status of a domain
+                    description: DNSSEC (from RDAP secureDNS, with WHOIS fallback
+                      when parsable)
                     properties:
-                      signed:
+                      ds:
+                        items:
+                          properties:
+                            algorithm:
+                              type: integer
+                            digest:
+                              type: string
+                            digestType:
+                              type: integer
+                            keyTag:
+                              type: integer
+                          required:
+                          - algorithm
+                          - digest
+                          - digestType
+                          - keyTag
+                          type: object
+                        type: array
+                      enabled:
                         type: boolean
-                    required:
-                    - signed
                     type: object
-                  expirationDate:
+                  domain:
+                    description: Identity & provenance
                     type: string
-                  ianaID:
+                  expiresAt:
+                    format: date-time
                     type: string
-                  ianaName:
+                  handle:
                     type: string
-                  modifiedDate:
+                  nextRegistrationAttempt:
+                    format: date-time
                     type: string
-                  nameservers:
+                  registrar:
+                    properties:
+                      ianaID:
+                        type: string
+                      name:
+                        type: string
+                      url:
+                        type: string
+                    type: object
+                  registry:
+                    properties:
+                      name:
+                        type: string
+                      url:
+                        type: string
+                    type: object
+                  registryDomainID:
+                    type: string
+                  source:
+                    type: string
+                  statuses:
+                    description: Raw statuses that will either be rdap rfc8056 or
+                      whois EPP status strings
                     items:
                       type: string
                     type: array
-                  serverStatusCodes:
-                    items:
-                      type: string
-                    type: array
+                  updatedAt:
+                    format: date-time
+                    type: string
                 type: object
               verification:
                 description: DomainVerificationStatus represents the verification

@@ -29,6 +29,7 @@ type ResourceStrategy interface {
 	// ObjectMetaFromUpstreamObject returns an ObjectMeta struct with Namespace and
 	// Name fields populated for the downstream resource.
 	ObjectMetaFromUpstreamObject(context.Context, metav1.Object) (metav1.ObjectMeta, error)
+	GetDownstreamNamespaceNameForUpstreamNamespace(ctx context.Context, name string) (string, error)
 
 	SetControllerReference(context.Context, metav1.Object, metav1.Object, ...controllerutil.OwnerReferenceOption) error
 	SetOwnerReference(context.Context, metav1.Object, metav1.Object, ...controllerutil.OwnerReferenceOption) error

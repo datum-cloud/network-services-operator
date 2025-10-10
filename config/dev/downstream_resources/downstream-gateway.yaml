@@ -40,6 +40,38 @@ spec:
   provider:
     type: Kubernetes
     kubernetes:
+      envoyDeployment:
+        patch:
+          type: StrategicMerge
+          value:
+            spec:
+              selector:
+                matchLabels:
+                  gateway.datum.net/role: core-deployment
+              template:
+                metadata:
+                  labels:
+                    gateway.datum.net/role: core-deployment
+        pod:
+          volumes:
+            - name: coraza-waf
+              emptyDir: {}
+        container:
+          image: envoyproxy/envoy:contrib-v1.35.0
+          volumeMounts:
+            - name: coraza-waf
+              mountPath: /opt/coraza-waf
+        initContainers:
+          - name: coraza-waf
+            image: coraza-waf:v1.1.1-dev2
+            imagePullPolicy: IfNotPresent
+            command:
+              - cp
+              - /app/coraza-waf.so
+              - /opt/coraza-waf/
+            volumeMounts:
+              - name: coraza-waf
+                mountPath: /opt/coraza-waf
       envoyService:
         externalTrafficPolicy: Cluster
         type: NodePort

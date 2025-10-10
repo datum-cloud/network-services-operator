@@ -2,15 +2,16 @@
 # since it depends on service name and namespace that are out of this kustomize package.
 # It should be run by config/default
 resources:
-  - bases/networking.datumapis.com_networks.yaml
-  - bases/networking.datumapis.com_networkbindings.yaml
-  - bases/networking.datumapis.com_networkcontexts.yaml
-  - bases/networking.datumapis.com_networkpolicies.yaml
-  - bases/networking.datumapis.com_subnets.yaml
-  - bases/networking.datumapis.com_subnetclaims.yaml
-  - bases/networking.datumapis.com_locations.yaml
-  - bases/networking.datumapis.com_domains.yaml
-  - bases/networking.datumapis.com_httpproxies.yaml
+- bases/networking.datumapis.com_networks.yaml
+- bases/networking.datumapis.com_networkbindings.yaml
+- bases/networking.datumapis.com_networkcontexts.yaml
+- bases/networking.datumapis.com_networkpolicies.yaml
+- bases/networking.datumapis.com_subnets.yaml
+- bases/networking.datumapis.com_subnetclaims.yaml
+- bases/networking.datumapis.com_locations.yaml
+- bases/networking.datumapis.com_domains.yaml
+- bases/networking.datumapis.com_httpproxies.yaml
+- bases/networking.datumapis.com_trafficprotectionpolicies.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:

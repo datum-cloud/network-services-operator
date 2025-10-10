@@ -12,12 +12,17 @@ webhookServer:
 
 gateway:
   targetDomain: prism.e2e.env.datum.net
-  downstreamGatewayClassName: datum-downstream-gateway-e2e
+  downstreamGatewayClassName: datum-downstream-gateway
+  downstreamGatewayNamespace: datum-downstream-gateway
   permittedTLSOptions:
     gateway.networking.datumapis.com/certificate-issuer: []
   listenerTLSOptions:
-    gateway.networking.datumapis.com/certificate-issuer: gateway-clusterissuer-selfsigned-ca
+    gateway.networking.datumapis.com/certificate-issuer: auto
+  httpRoutes:
+    allowServiceBackends: true
 
+httpProxy:
+  gatewayClassName: network-services-operator-datum-external-global-proxy
 
 downstreamResourceManagement:
   # TODO(jreese) remove this when we make the downstream resource strategy

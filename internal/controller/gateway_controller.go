@@ -49,6 +49,7 @@ const gatewayControllerFinalizer = "gateway.networking.datumapis.com/gateway-con
 const gatewayControllerGCFinalizer = "gateway.networking.datumapis.com/gateway-controller-gc"
 const certificateIssuerTLSOption = "gateway.networking.datumapis.com/certificate-issuer"
 const KindGateway = "Gateway"
+const KindHTTPRoute = "HTTPRoute"
 const KindService = "Service"
 const KindEndpointSlice = "EndpointSlice"
 

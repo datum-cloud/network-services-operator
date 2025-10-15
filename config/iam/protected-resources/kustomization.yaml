@@ -24,3 +24,4 @@ resources:
   - backendtlspolicies.yaml
   - httproutefilters.yaml
   - securitypolicies.yaml
+  - trafficprotectionpolicies.yaml

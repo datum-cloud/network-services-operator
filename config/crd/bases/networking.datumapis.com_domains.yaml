@@ -255,7 +255,7 @@ spec:
                     type: string
                   handle:
                     type: string
-                  nextRegistrationAttempt:
+                  nextRefreshAttempt:
                     format: date-time
                     type: string
                   registrar:

@@ -103,7 +103,7 @@ func (r *DomainReconciler) Reconcile(ctx context.Context, req mcreconcile.Reques
 			domain.Status.Verification.NextVerificationAttempt = metav1.Time{}
 		}
 		if domain.Status.Registration != nil {
-			domain.Status.Registration.NextRegistrationAttempt = metav1.Time{}
+			domain.Status.Registration.NextRefreshAttempt = metav1.Time{}
 		}
 	}
 	apimeta.SetStatusCondition(&domain.Status.Conditions, *validCond)
@@ -394,7 +394,7 @@ func defaultHTTPGet(ctx context.Context, url string) ([]byte, *http.Response, er
 }
 
 // reconcileRegistration keeps Status.Registration fresh and schedules independent timers.
-// Returns the next registration attempt time (zero if none).
+// Returns the next registration refresh time (zero if none).
 func (r *DomainReconciler) reconcileRegistration(ctx context.Context, d *networkingv1alpha.Domain, apex string) time.Time {
 	logger := log.FromContext(ctx)
 
@@ -405,9 +405,9 @@ func (r *DomainReconciler) reconcileRegistration(ctx context.Context, d *network
 		st.Registration = &networkingv1alpha.Registration{}
 	}
 
-	if !st.Registration.NextRegistrationAttempt.IsZero() &&
-		st.Registration.NextRegistrationAttempt.After(now) {
-		return st.Registration.NextRegistrationAttempt.Time
+	if !st.Registration.NextRefreshAttempt.IsZero() &&
+		st.Registration.NextRefreshAttempt.After(now) {
+		return st.Registration.NextRefreshAttempt.Time
 	}
 
 	// apex is guaranteed valid by the ValidDomain gate
@@ -425,15 +425,15 @@ func (r *DomainReconciler) reconcileRegistration(ctx context.Context, d *network
 	resp, err := r.rdapDo(ctxLookup, req)
 	if err != nil {
 		logger.Error(err, "rdap lookup failed")
-		st.Registration.NextRegistrationAttempt = metav1.NewTime(now.Add(r.Config.DomainRegistration.RetryBackoff.Duration))
-		return st.Registration.NextRegistrationAttempt.Time
+		st.Registration.NextRefreshAttempt = metav1.NewTime(now.Add(r.Config.DomainRegistration.RetryBackoff.Duration))
+		return st.Registration.NextRefreshAttempt.Time
 	}
 
 	rdapDomain, _ := resp.Object.(*rdap.Domain)
 	if rdapDomain == nil {
 		// transient parse or server quirk; retry sooner
-		st.Registration.NextRegistrationAttempt = metav1.NewTime(now.Add(r.Config.DomainRegistration.RetryBackoff.Duration))
-		return st.Registration.NextRegistrationAttempt.Time
+		st.Registration.NextRefreshAttempt = metav1.NewTime(now.Add(r.Config.DomainRegistration.RetryBackoff.Duration))
+		return st.Registration.NextRefreshAttempt.Time
 	}
 	reg := r.mapRDAPDomainToRegistration(*rdapDomain)
 
@@ -504,7 +504,7 @@ func (r *DomainReconciler) reconcileRegistration(ctx context.Context, d *network
 	// Schedule next refresh (with jitter)
 	interval := r.Config.DomainRegistration.RefreshInterval.Duration
 	next := now.Add(wait.Jitter(interval, r.Config.DomainRegistration.JitterMaxFactor))
-	st.Registration.NextRegistrationAttempt = metav1.NewTime(next)
+	st.Registration.NextRefreshAttempt = metav1.NewTime(next)
 
 	return next
 }

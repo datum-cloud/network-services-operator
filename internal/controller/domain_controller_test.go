@@ -476,7 +476,7 @@ func TestValidDomainGate_InvalidApex_SetsConditionAndSkipsFlows(t *testing.T) {
 		assert.True(t, got.Status.Verification.NextVerificationAttempt.IsZero())
 	}
 	if got.Status.Registration != nil {
-		assert.True(t, got.Status.Registration.NextRegistrationAttempt.IsZero())
+		assert.True(t, got.Status.Registration.NextRefreshAttempt.IsZero())
 	}
 }
 
@@ -753,7 +753,7 @@ func TestRegistration_RetryBackoffOnError(t *testing.T) {
 	_ = cl.Get(context.Background(), client.ObjectKeyFromObject(dom), got)
 
 	// should schedule retry in 2m
-	assert.Equal(t, 2*time.Minute, got.Status.Registration.NextRegistrationAttempt.Sub(now))
+	assert.Equal(t, 2*time.Minute, got.Status.Registration.NextRefreshAttempt.Sub(now))
 	assert.True(t, res.RequeueAfter == 0 || res.RequeueAfter > 0) // depending on verification timer
 }
 

@@ -148,7 +148,7 @@ type Registration struct {
 	// Abuse / support contacts (registrar/registry)
 	Abuse *AbuseContact `json:"abuse,omitempty"`
 
-	NextRegistrationAttempt metav1.Time `json:"nextRegistrationAttempt,omitempty"`
+	NextRefreshAttempt metav1.Time `json:"nextRefreshAttempt,omitempty"`
 }
 
 type RegistrarInfo struct {

@@ -78,11 +78,51 @@ func (r *DomainReconciler) Reconcile(ctx context.Context, req mcreconcile.Reques
 
 	origStatus := domain.Status.DeepCopy()
 
+	// Validate domain is registrable (eTLD+1 present and not a public suffix only)
+	validCond := conditionutil.FindStatusConditionOrDefault(domain.Status.Conditions, &metav1.Condition{
+		Type:               networkingv1alpha.DomainConditionValidDomain,
+		Status:             metav1.ConditionUnknown,
+		Reason:             networkingv1alpha.DomainReasonValid,
+		Message:            "",
+		LastTransitionTime: metav1.Now(),
+	})
+	validCond.ObservedGeneration = domain.Generation
+
+	apex, apexErr := registeredApex(domain.Spec.DomainName)
+	registrable := (apexErr == nil && apex != "")
+	if registrable {
+		validCond.Status = metav1.ConditionTrue
+		validCond.Reason = networkingv1alpha.DomainReasonValid
+		validCond.Message = "Domain is registrable"
+	} else {
+		validCond.Status = metav1.ConditionFalse
+		validCond.Reason = networkingv1alpha.DomainReasonInvalidDomain
+		validCond.Message = "Domain is not registrable (public-suffix only or invalid)"
+		// Clear timers to avoid auto-retries
+		if domain.Status.Verification != nil {
+			domain.Status.Verification.NextVerificationAttempt = metav1.Time{}
+		}
+		if domain.Status.Registration != nil {
+			domain.Status.Registration.NextRegistrationAttempt = metav1.Time{}
+		}
+	}
+	apimeta.SetStatusCondition(&domain.Status.Conditions, *validCond)
+
+	// Persist and short-circuit if invalid
+	if validCond.Status == metav1.ConditionFalse {
+		if !equality.Semantic.DeepEqual(*origStatus, domain.Status) {
+			if err := cl.GetClient().Status().Update(ctx, domain); err != nil {
+				return ctrl.Result{}, fmt.Errorf("failed updating domain status: %w", err)
+			}
+		}
+		return ctrl.Result{}, nil
+	}
+
 	// Delegate all verification work (including timers/backoff)
 	nextVerification := r.reconcileVerification(ctx, domain)
 
 	// Delegate all registration work (including timers/backoff)
-	nextRegistration := r.reconcileRegistration(ctx, domain)
+	nextRegistration := r.reconcileRegistration(ctx, domain, apex)
 
 	// Persist status if changed
 	if !equality.Semantic.DeepEqual(*origStatus, domain.Status) {
@@ -355,7 +395,7 @@ func defaultHTTPGet(ctx context.Context, url string) ([]byte, *http.Response, er
 
 // reconcileRegistration keeps Status.Registration fresh and schedules independent timers.
 // Returns the next registration attempt time (zero if none).
-func (r *DomainReconciler) reconcileRegistration(ctx context.Context, d *networkingv1alpha.Domain) time.Time {
+func (r *DomainReconciler) reconcileRegistration(ctx context.Context, d *networkingv1alpha.Domain, apex string) time.Time {
 	logger := log.FromContext(ctx)
 
 	st := &d.Status
@@ -370,12 +410,7 @@ func (r *DomainReconciler) reconcileRegistration(ctx context.Context, d *network
 		return st.Registration.NextRegistrationAttempt.Time
 	}
 
-	apex, err := registeredApex(d.Spec.DomainName)
-	if err != nil || apex == "" {
-		// if we cannot compute apex, short backoff
-		st.Registration.NextRegistrationAttempt = metav1.NewTime(now.Add(r.Config.DomainRegistration.RetryBackoff.Duration))
-		return st.Registration.NextRegistrationAttempt.Time
-	}
+	// apex is guaranteed valid by the ValidDomain gate
 	st.Apex = strings.EqualFold(strings.TrimSuffix(d.Spec.DomainName, "."), apex)
 
 	ctxLookup, cancel := context.WithTimeout(ctx, r.Config.DomainRegistration.LookupTimeout.Duration)
@@ -400,7 +435,7 @@ func (r *DomainReconciler) reconcileRegistration(ctx context.Context, d *network
 		st.Registration.NextRegistrationAttempt = metav1.NewTime(now.Add(r.Config.DomainRegistration.RetryBackoff.Duration))
 		return st.Registration.NextRegistrationAttempt.Time
 	}
-	reg := r.mapRDAPDomainToRegistration(rdapDomain)
+	reg := r.mapRDAPDomainToRegistration(*rdapDomain)
 
 	// Registry from bootstrap (authoritative)
 	if resp.BootstrapAnswer != nil && len(resp.BootstrapAnswer.URLs) > 0 {
@@ -464,7 +499,7 @@ func (r *DomainReconciler) reconcileRegistration(ctx context.Context, d *network
 	}
 
 	reg.Source = "rdap"
-	st.Registration = reg
+	st.Registration = &reg
 
 	// Schedule next refresh (with jitter)
 	interval := r.Config.DomainRegistration.RefreshInterval.Duration
@@ -475,21 +510,18 @@ func (r *DomainReconciler) reconcileRegistration(ctx context.Context, d *network
 }
 
 // mapRDAPDomainToRegistration maps a raw RDAP domain into our Registration model.
-func (r *DomainReconciler) mapRDAPDomainToRegistration(d *rdap.Domain) *networkingv1alpha.Registration {
-	reg := &networkingv1alpha.Registration{}
-	if d == nil {
-		return reg
-	}
+func (r *DomainReconciler) mapRDAPDomainToRegistration(d rdap.Domain) networkingv1alpha.Registration {
+	reg := networkingv1alpha.Registration{}
 
 	reg.Domain = d.LDHName
 	reg.Handle = d.Handle
 
 	// IDs & statuses
 	reg.RegistryDomainID = pickRegistryDomainID(d.PublicIDs)
-	copyStatuses(reg, d.Status)
+	copyStatuses(&reg, d.Status)
 
 	// Lifecycle timestamps
-	applyLifecycleFromEvents(reg, d.Events)
+	applyLifecycleFromEvents(&reg, d.Events)
 
 	// DNSSEC
 	if d.SecureDNS != nil {

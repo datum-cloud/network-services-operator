@@ -421,6 +421,65 @@ func TestDomainVerification(t *testing.T) {
 	}
 }
 
+func TestValidDomainGate_InvalidApex_SetsConditionAndSkipsFlows(t *testing.T) {
+	testScheme := runtime.NewScheme()
+	assert.NoError(t, scheme.AddToScheme(testScheme))
+	assert.NoError(t, networkingv1alpha.AddToScheme(testScheme))
+
+	operatorConfig := config.NetworkServicesOperator{}
+	config.SetObjectDefaults_NetworkServicesOperator(&operatorConfig)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "test", UID: uuid.NewUUID()}}
+
+	// Domain with non-registrable name (public suffix only)
+	dom := &networkingv1alpha.Domain{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: ns.Name,
+			Name:      "invalid",
+		},
+		Spec: networkingv1alpha.DomainSpec{DomainName: "com"},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(testScheme).
+		WithObjects(dom, ns).
+		WithStatusSubresource(dom).
+		Build()
+
+	reconciler := &DomainReconciler{
+		mgr:         &fakeMockManager{cl: fakeClient},
+		Config:      operatorConfig,
+		timeNow:     time.Now,
+		httpGet:     func(ctx context.Context, url string) ([]byte, *http.Response, error) { return nil, nil, nil },
+		lookupTXT:   func(ctx context.Context, name string) ([]string, error) { return nil, nil },
+		lookupNS:    func(ctx context.Context, name string) ([]*net.NS, error) { return nil, &net.DNSError{IsNotFound: true} },
+		lookupIP:    func(ctx context.Context, name string) ([]net.IPAddr, error) { return nil, nil },
+		rdapDo:      func(ctx context.Context, req *rdap.Request) (*rdap.Response, error) { return &rdap.Response{}, nil },
+		rdapQueryIP: func(ctx context.Context, ip string) (*rdap.IPNetwork, error) { return nil, nil },
+	}
+
+	req := mcreconcile.Request{Request: reconcile.Request{NamespacedName: client.ObjectKey{Namespace: ns.Name, Name: dom.Name}}}
+	_, err := reconciler.Reconcile(context.Background(), req)
+	assert.NoError(t, err)
+
+	// Fetch and assert conditions were set and flows skipped
+	got := &networkingv1alpha.Domain{}
+	assert.NoError(t, fakeClient.Get(context.Background(), client.ObjectKey{Namespace: ns.Name, Name: dom.Name}, got))
+
+	cond := apimeta.FindStatusCondition(got.Status.Conditions, networkingv1alpha.DomainConditionValidDomain)
+	if assert.NotNil(t, cond, "ValidDomain condition missing") {
+		assert.Equal(t, metav1.ConditionFalse, cond.Status)
+		assert.Equal(t, networkingv1alpha.DomainReasonInvalidDomain, cond.Reason)
+	}
+	// Timers should be zeroed so no automatic retries
+	if got.Status.Verification != nil {
+		assert.True(t, got.Status.Verification.NextVerificationAttempt.IsZero())
+	}
+	if got.Status.Registration != nil {
+		assert.True(t, got.Status.Registration.NextRegistrationAttempt.IsZero())
+	}
+}
+
 func newDomain(namespace, name string, opts ...func(*networkingv1alpha.Domain)) *networkingv1alpha.Domain {
 	domain := &networkingv1alpha.Domain{
 		ObjectMeta: metav1.ObjectMeta{

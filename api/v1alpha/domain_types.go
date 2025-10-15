@@ -43,13 +43,23 @@ type DomainSpec struct {
 type DomainStatus struct {
 	Verification *DomainVerificationStatus `json:"verification,omitempty"`
 	Registration *Registration             `json:"registration,omitempty"`
-	Conditions   []metav1.Condition        `json:"conditions,omitempty"`
+	// Nameservers lists the authoritative NS for the *effective* domain name:
+	// - If Apex == true: taken from RDAP for the registered domain (eTLD+1)
+	// - If Apex == false: taken from DNS delegation for the subdomain; falls back to apex NS if no cut
+	Nameservers []Nameserver `json:"nameservers,omitempty"`
+	// Apex is true when spec.domainName is the registered domain (eTLD+1).
+	Apex       bool               `json:"apex,omitempty"`
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 
 const (
 	// This condition is true when Domain ownership has been verified via either
 	// DNS or HTTP.
 	DomainConditionVerified = "Verified"
+
+	// DomainConditionValidDomain indicates whether the provided domain name is
+	// registrable (i.e., a valid eTLD+1) and suitable for verification/registration.
+	DomainConditionValidDomain = "ValidDomain"
 
 	// This condition tracks verification attempts via DNS.
 	DomainConditionVerifiedDNS = "VerifiedDNS"
@@ -82,6 +92,13 @@ const (
 	// DomainReasonVerified indicates domain ownership has been successfully
 	// verified
 	DomainReasonVerified = "Verified"
+
+	// DomainReasonInvalidDomain indicates the provided domain name is not
+	// registrable (e.g., only a public suffix like "com"), and flows are paused.
+	DomainReasonInvalidDomain = "InvalidApex"
+
+	// DomainReasonValid indicates the provided domain name is registrable.
+	DomainReasonValid = "Valid"
 )
 
 // DomainVerificationStatus represents the verification status of a domain
@@ -122,9 +139,6 @@ type Registration struct {
 	// Raw statuses that will either be rdap rfc8056 or whois EPP status strings
 	Statuses []string `json:"statuses,omitempty"` // e.g., clientTransferProhibited (EPP) or client transfer prohibited (RDAP)
 
-	// Nameservers is a list of nameservers for the domain and their registrant name
-	Nameservers []Nameserver `json:"nameservers,omitempty"`
-
 	// DNSSEC (from RDAP secureDNS, with WHOIS fallback when parsable)
 	DNSSEC *DNSSECInfo `json:"dnssec,omitempty"`
 
@@ -133,6 +147,8 @@ type Registration struct {
 
 	// Abuse / support contacts (registrar/registry)
 	Abuse *AbuseContact `json:"abuse,omitempty"`
+
+	NextRefreshAttempt metav1.Time `json:"nextRefreshAttempt,omitempty"`
 }
 
 type RegistrarInfo struct {
@@ -147,8 +163,14 @@ type RegistryInfo struct {
 }
 
 type Nameserver struct {
-	Hostname       string `json:"hostname"`
-	RegistrantName string `json:"registrantName,omitempty"`
+	Hostname string         `json:"hostname"`
+	IPs      []NameserverIP `json:"ips,omitempty"`
+}
+
+// NameserverIP captures per-address provenance for a nameserver.
+type NameserverIP struct {
+	Address        string `json:"address"`                  // e.g., "192.0.2.10" or "2001:db8::1"
+	RegistrantName string `json:"registrantName,omitempty"` // org/name from IP RDAP if available
 }
 
 type DNSSECInfo struct {

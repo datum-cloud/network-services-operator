@@ -1,0 +1,43 @@
+kind: CustomResourceStateMetrics
+spec:
+  resources:
+    - groupVersionKind:
+        group: networking.datumapis.com
+        kind: "TrafficProtectionPolicy"
+        version: "v1alpha"
+      metricNamePrefix: datum_cloud_networking_trafficprotectionpolicy
+      labelsFromPath:
+        name: [metadata, name]
+        namespace: [metadata, namespace]
+      metrics:
+      - name: "owner"
+        help: "Owner information"
+        errorLogV: 10
+        each:
+          type: Info
+          info:
+            path: [metadata,ownerReferences]
+            labelsFromPath:
+              owner_kind: [kind]
+              owner_name: [name]
+              owner_uid: [uid]
+              controller: [controller]
+      - name: "info"
+        help: "TrafficProtectionPolicy information"
+        each:
+          type: Info
+          info:
+            labelsFromPath:
+              uid: [metadata, uid]
+      - name: "created"
+        help: "created timestamp"
+        each:
+          type: Gauge
+          gauge:
+            path: [metadata, creationTimestamp]
+      - name: "deleted"
+        help: "deletion timestamp"
+        each:
+          type: Gauge
+          gauge:
+            path: [metadata, deletionTimestamp]

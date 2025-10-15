@@ -57,6 +57,10 @@ const (
 	// DNS or HTTP.
 	DomainConditionVerified = "Verified"
 
+	// DomainConditionValidDomain indicates whether the provided domain name is
+	// registrable (i.e., a valid eTLD+1) and suitable for verification/registration.
+	DomainConditionValidDomain = "ValidDomain"
+
 	// This condition tracks verification attempts via DNS.
 	DomainConditionVerifiedDNS = "VerifiedDNS"
 
@@ -88,6 +92,13 @@ const (
 	// DomainReasonVerified indicates domain ownership has been successfully
 	// verified
 	DomainReasonVerified = "Verified"
+
+	// DomainReasonInvalidDomain indicates the provided domain name is not
+	// registrable (e.g., only a public suffix like "com"), and flows are paused.
+	DomainReasonInvalidDomain = "InvalidApex"
+
+	// DomainReasonValid indicates the provided domain name is registrable.
+	DomainReasonValid = "Valid"
 )
 
 // DomainVerificationStatus represents the verification status of a domain

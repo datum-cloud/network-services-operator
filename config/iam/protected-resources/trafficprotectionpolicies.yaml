@@ -1,0 +1,22 @@
+---
+apiVersion: iam.miloapis.com/v1alpha1
+kind: ProtectedResource
+metadata:
+  name: networking.datumapis.com-trafficprotectionpolicy
+spec:
+  serviceRef:
+    name: "networking.datumapis.com"
+  kind: TrafficProtectionPolicy
+  plural: trafficprotectionpolicies
+  singular: trafficprotectionpolicy
+  permissions:
+    - list
+    - get
+    - watch
+    - create
+    - update
+    - patch
+    - delete
+  parentResources:
+    - apiGroup: resourcemanager.miloapis.com
+      kind: Project

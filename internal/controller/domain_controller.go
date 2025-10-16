@@ -494,7 +494,7 @@ func (r *DomainReconciler) reconcileRegistration(ctx context.Context, d *network
 			}
 		} else {
 			// WHOIS mode (or no RDAP object): resolve NS via DNS
-			if _, nsHosts, _ := r.delegatedZoneNS(ctxLookup, apex, apex); len(nsHosts) > 0 {
+			if nsHosts, _ := r.delegatedZoneNS(ctxLookup, apex, apex); len(nsHosts) > 0 {
 				for _, h := range nsHosts {
 					st.Nameservers = append(st.Nameservers, networkingv1alpha.Nameserver{Hostname: h})
 				}
@@ -502,7 +502,7 @@ func (r *DomainReconciler) reconcileRegistration(ctx context.Context, d *network
 		}
 	} else {
 		// Non-apex: find delegated NS for the exact name; if none, fall back to apex NS
-		if _, nsHosts, delegated := r.delegatedZoneNS(ctxLookup, d.Spec.DomainName, apex); delegated && len(nsHosts) > 0 {
+		if nsHosts, delegated := r.delegatedZoneNS(ctxLookup, d.Spec.DomainName, apex); delegated && len(nsHosts) > 0 {
 			logger.Info("subdomain delegation detected; using delegated nameservers",
 				"zoneApex", d.Spec.DomainName, "nsCount", len(nsHosts))
 			for _, h := range nsHosts {
@@ -516,7 +516,7 @@ func (r *DomainReconciler) reconcileRegistration(ctx context.Context, d *network
 				}
 			} else {
 				// WHOIS mode: fallback to apex NS via DNS
-				if _, nsHosts, _ := r.delegatedZoneNS(ctxLookup, apex, apex); len(nsHosts) > 0 {
+				if nsHosts, _ := r.delegatedZoneNS(ctxLookup, apex, apex); len(nsHosts) > 0 {
 					for _, h := range nsHosts {
 						st.Nameservers = append(st.Nameservers, networkingv1alpha.Nameserver{Hostname: h})
 					}
@@ -832,8 +832,8 @@ func registeredApex(name string) (string, error) {
 }
 
 // delegatedZoneNS finds the deepest node at/under apex that has NS records.
-// Returns (zoneApex, nsHostnames, delegated).
-func (r *DomainReconciler) delegatedZoneNS(ctx context.Context, fqdn, apex string) (string, []string, bool) {
+// Returns (nsHostnames, delegated).
+func (r *DomainReconciler) delegatedZoneNS(ctx context.Context, fqdn, apex string) ([]string, bool) {
 	trimDot := func(s string) string { return strings.TrimSuffix(s, ".") }
 	addDot := func(s string) string {
 		if s == "" || strings.HasSuffix(s, ".") {
@@ -855,7 +855,7 @@ func (r *DomainReconciler) delegatedZoneNS(ctx context.Context, fqdn, apex strin
 					hosts = append(hosts, trimDot(rr.Host))
 				}
 			}
-			return cur, hosts, cur != apex
+			return hosts, cur != apex
 		}
 		if cur == apex {
 			break
@@ -866,7 +866,7 @@ func (r *DomainReconciler) delegatedZoneNS(ctx context.Context, fqdn, apex strin
 			break
 		}
 	}
-	return "", nil, false
+	return nil, false
 }
 
 // fetchRegistrationWhois attempts WHOIS-based mapping for a domain apex
@@ -983,7 +983,7 @@ func (r *DomainReconciler) fetchRegistrationWhois(ctx context.Context, apex stri
 	// DNSSEC
 	if v := findWhoisValue(body, []string{"DNSSEC"}); v != "" {
 		vv := strings.ToLower(strings.TrimSpace(v))
-		enabled := !(vv == "unsigned" || vv == "no")
+		enabled := vv != "unsigned" && vv != "no"
 		reg.DNSSEC = &networkingv1alpha.DNSSECInfo{Enabled: &enabled}
 	}
 	// Contacts (Registrant/Admin/Tech) — organization/email/phone when available and not redacted

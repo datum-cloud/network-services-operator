@@ -25,6 +25,8 @@ linters:
     revive:
       rules:
         - name: comment-spacings
+    gocyclo:
+      min-complexity: 45
   exclusions:
     generated: lax
     rules:

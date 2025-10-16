@@ -298,6 +298,10 @@ type DomainRegistrationConfig struct {
 	// LookupTimeout bounds RDAP/WHOIS single lookup time
 	// +default="15s"
 	LookupTimeout *metav1.Duration `json:"lookupTimeout"`
+
+	// WhoisBootstrapHost is the WHOIS server used to bootstrap TLD refer hosts
+	// +default="whois.iana.org"
+	WhoisBootstrapHost string `json:"whoisBootstrapHost"`
 }
 
 // +k8s:deepcopy-gen=true

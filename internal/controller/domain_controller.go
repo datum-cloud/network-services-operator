@@ -657,6 +657,7 @@ func whoisFetchAtHost(ctx context.Context, query, host string) (string, error) {
 // findWhoisValue scans WHOIS body for a key (case-insensitive) of the form
 // "Key: value" and returns the trimmed value. It tolerates variable spacing/tabs
 // around the colon and ignores inline content after the first colon.
+// Note: keys are checked in order; the first key that yields a value is returned.
 func findWhoisValue(body string, keys []string) string {
 	keySet := make(map[string]struct{}, len(keys))
 	for _, k := range keys {
@@ -874,7 +875,7 @@ func (r *DomainReconciler) fetchRegistrationWhois(ctx context.Context, apex stri
 	// Bootstrap via IANA to find the authoritative WHOIS server
 	tld, _ := publicsuffix.PublicSuffix(apex)
 	// query IANA WHOIS for the TLD
-	bodyIANA, _ := r.whoisFetch(ctx, tld, "whois.iana.org")
+	bodyIANA, _ := r.whoisFetch(ctx, tld, r.Config.DomainRegistration.WhoisBootstrapHost)
 	referHost := strings.TrimSpace(findWhoisValue(bodyIANA, []string{"refer", "whois"}))
 
 	// Try registry WHOIS host from IANA, with fallbacks
@@ -887,9 +888,6 @@ func (r *DomainReconciler) fetchRegistrationWhois(ctx context.Context, apex stri
 	tryHosts = append(tryHosts, "whois.registry."+strings.ToLower(tld))
 	tryHosts = append(tryHosts, "whois.nic."+strings.ToLower(tld))
 	for _, h := range tryHosts {
-		if h == "" {
-			continue
-		}
 		if b, e := r.whoisFetch(ctx, apex, h); e == nil && strings.TrimSpace(b) != "" {
 			registryBody = b
 			break

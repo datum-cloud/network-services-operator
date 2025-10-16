@@ -12,9 +12,11 @@ import (
 	envoygatewayv1alpha1 "github.com/envoyproxy/gateway/api/v1alpha1"
 
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
+
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -30,6 +32,7 @@ import (
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	"go.datum.net/network-services-operator/internal/config"
 	downstreamclient "go.datum.net/network-services-operator/internal/downstreamclient"
+	gatewaystatus "go.datum.net/network-services-operator/internal/gatewayapi/status"
 )
 
 // TrafficProtectionPolicyReconciler reconciles a TrafficProtectionPolicy object
@@ -70,9 +73,22 @@ func (r *TrafficProtectionPolicyReconciler) Reconcile(ctx context.Context, req N
 
 	// Collect all traffic protection policies, gateways, and routes in the same namespace as the TPP
 
-	var trafficProtectionPolicies networkingv1alpha.TrafficProtectionPolicyList
-	if err := cl.GetClient().List(ctx, &trafficProtectionPolicies, client.InNamespace(req.Namespace)); err != nil {
+	var trafficProtectionPolicyList networkingv1alpha.TrafficProtectionPolicyList
+	if err := cl.GetClient().List(ctx, &trafficProtectionPolicyList, client.InNamespace(req.Namespace)); err != nil {
 		return ctrl.Result{}, err
+	}
+
+	originalTrafficProtectionPolicies := make(map[string]networkingv1alpha.TrafficProtectionPolicy, len(trafficProtectionPolicyList.Items))
+	for i := range trafficProtectionPolicyList.Items {
+		originalTrafficProtectionPolicies[client.ObjectKeyFromObject(&trafficProtectionPolicyList.Items[i]).String()] = trafficProtectionPolicyList.Items[i]
+	}
+
+	trafficProtectionPolicies := make([]*policyContext, 0, len(trafficProtectionPolicyList.Items))
+	for i := range trafficProtectionPolicyList.Items {
+		trafficProtectionPolicies = append(trafficProtectionPolicies, &policyContext{
+			TrafficProtectionPolicy: trafficProtectionPolicyList.Items[i].DeepCopy(),
+			attachedTargets:         sets.New[string](),
+		})
 	}
 
 	var upstreamGateways gatewayv1.GatewayList
@@ -131,7 +147,53 @@ func (r *TrafficProtectionPolicyReconciler) Reconcile(ctx context.Context, req N
 		logger.Info("deleted stale envoypatchpolicy from downstream cluster", "namespace", existing.Namespace, "name", existing.Name)
 	}
 
+	if err := r.updateTPPAncestorsStatus(ctx, cl.GetClient(), trafficProtectionPolicies, originalTrafficProtectionPolicies); err != nil {
+		return ctrl.Result{}, err
+	}
+
 	return ctrl.Result{}, nil
+}
+
+func (r *TrafficProtectionPolicyReconciler) updateTPPAncestorsStatus(
+	ctx context.Context,
+	upstreamClient client.Client,
+	processedTrafficProtectionPolicies []*policyContext,
+	trafficProtectionPolicies map[string]networkingv1alpha.TrafficProtectionPolicy,
+) error {
+	logger := log.FromContext(ctx)
+
+	for _, policy := range processedTrafficProtectionPolicies {
+		originalPolicy, ok := trafficProtectionPolicies[client.ObjectKeyFromObject(policy).String()]
+		if !ok {
+			// This should never happen
+			logger.Error(fmt.Errorf("original policy not found for %s/%s", policy.Namespace, policy.Name), "skipping status update")
+			continue
+		}
+
+		// Remove any ancestorRefs owned by this controller that are no longer targeted
+		for i, ancestor := range policy.Status.PolicyStatus.Ancestors {
+			if ancestor.ControllerName != r.Config.Gateway.ControllerName {
+				continue
+			}
+
+			if !policy.attachedTargets.Has(getParentReferenceString(&ancestor.AncestorRef)) {
+				policy.Status.PolicyStatus.Ancestors = append(policy.Status.PolicyStatus.Ancestors[:i], policy.Status.PolicyStatus.Ancestors[i+1:]...)
+			}
+		}
+
+		if !equality.Semantic.DeepEqual(originalPolicy.Status, policy.Status) {
+			originalPolicy.Status = policy.Status
+			if err := upstreamClient.Status().Update(ctx, &originalPolicy); err != nil {
+				return fmt.Errorf("failed to update status for trafficprotectionpolicy %s/%s: %w", policy.Namespace, policy.Name, err)
+			}
+		} else {
+			logger.Info("status unchanged, skipping update", "trafficprotectionpolicy", fmt.Sprintf("%s/%s", policy.Namespace, policy.Name))
+		}
+
+	}
+
+	return nil
+
 }
 
 func (r *TrafficProtectionPolicyReconciler) ensureHTTPCorazaListenerFilter(ctx context.Context) error {
@@ -215,9 +277,26 @@ func (r TrafficProtectionPolicyReconciler) getCorazaListenerFilterConfig() ([]by
 	return corazaConfigBytes, nil
 }
 
+type policyContext struct {
+	*networkingv1alpha.TrafficProtectionPolicy
+	attachedTargets sets.Set[string]
+}
+
+type policyGatewayTargetContext struct {
+	*gatewayv1.Gateway
+	attached            bool
+	attachedToListeners sets.Set[string]
+}
+
+type policyRouteTargetContext struct {
+	*gatewayv1.HTTPRoute
+	attached             bool
+	attachedToRouteRules sets.Set[string]
+}
+
 func (r *TrafficProtectionPolicyReconciler) collectTrafficProtectionPolicyAttachments(
 	ctx context.Context,
-	trafficProtectionPolicies networkingv1alpha.TrafficProtectionPolicyList,
+	trafficProtectionPolicies []*policyContext,
 	upstreamGateways gatewayv1.GatewayList,
 	upstreamHTTPRoutes gatewayv1.HTTPRouteList,
 ) []policyAttachment {
@@ -225,7 +304,7 @@ func (r *TrafficProtectionPolicyReconciler) collectTrafficProtectionPolicyAttach
 
 	logger.Info(
 		"processing traffic protection policies",
-		"totalPolicies", len(trafficProtectionPolicies.Items),
+		"totalPolicies", len(trafficProtectionPolicies),
 		"totalGateways", len(upstreamGateways.Items),
 		"totalRoutes", len(upstreamHTTPRoutes.Items),
 	)
@@ -233,14 +312,18 @@ func (r *TrafficProtectionPolicyReconciler) collectTrafficProtectionPolicyAttach
 	routeMapSize := len(upstreamHTTPRoutes.Items)
 	gatewayMapSize := len(upstreamGateways.Items)
 
-	routeMap := make(map[client.ObjectKey]*gatewayv1.HTTPRoute, routeMapSize)
+	routeMap := make(map[client.ObjectKey]*policyRouteTargetContext, routeMapSize)
 	for i, route := range upstreamHTTPRoutes.Items {
-		routeMap[client.ObjectKeyFromObject(&route)] = &upstreamHTTPRoutes.Items[i]
+		routeMap[client.ObjectKeyFromObject(&route)] = &policyRouteTargetContext{
+			HTTPRoute: &upstreamHTTPRoutes.Items[i],
+		}
 	}
 
-	gatewayMap := make(map[client.ObjectKey]*gatewayv1.Gateway, gatewayMapSize)
+	gatewayMap := make(map[client.ObjectKey]*policyGatewayTargetContext, gatewayMapSize)
 	for i, gw := range upstreamGateways.Items {
-		gatewayMap[client.ObjectKeyFromObject(&gw)] = &upstreamGateways.Items[i]
+		gatewayMap[client.ObjectKeyFromObject(&gw)] = &policyGatewayTargetContext{
+			Gateway: &upstreamGateways.Items[i],
+		}
 	}
 
 	var policyAttachments []policyAttachment
@@ -249,14 +332,14 @@ func (r *TrafficProtectionPolicyReconciler) collectTrafficProtectionPolicyAttach
 	// operations can override properly.
 
 	// Process the policies targeting Gateways
-	for _, currPolicy := range trafficProtectionPolicies.Items {
+	for _, currPolicy := range trafficProtectionPolicies {
 		for _, currTarget := range currPolicy.Spec.TargetRefs {
 			if currTarget.Kind == KindGateway && currTarget.SectionName == nil {
 				policyAttachments = r.processTrafficProtectionPolicyForGateway(
 					ctx,
 					gatewayMap,
 					policyAttachments,
-					&currPolicy,
+					currPolicy,
 					currTarget,
 				)
 			}
@@ -264,14 +347,14 @@ func (r *TrafficProtectionPolicyReconciler) collectTrafficProtectionPolicyAttach
 	}
 
 	// Process the policies targeting Gateway Listeners
-	for _, currPolicy := range trafficProtectionPolicies.Items {
+	for _, currPolicy := range trafficProtectionPolicies {
 		for _, currTarget := range currPolicy.Spec.TargetRefs {
 			if currTarget.Kind == KindGateway && currTarget.SectionName != nil {
 				policyAttachments = r.processTrafficProtectionPolicyForGateway(
 					ctx,
 					gatewayMap,
 					policyAttachments,
-					&currPolicy,
+					currPolicy,
 					currTarget,
 				)
 			}
@@ -279,7 +362,7 @@ func (r *TrafficProtectionPolicyReconciler) collectTrafficProtectionPolicyAttach
 	}
 
 	// Process the policies targeting xRoutes
-	for _, currPolicy := range trafficProtectionPolicies.Items {
+	for _, currPolicy := range trafficProtectionPolicies {
 		for _, currTarget := range currPolicy.Spec.TargetRefs {
 			if currTarget.Kind != KindGateway && currTarget.SectionName == nil {
 				policyAttachments = r.processTrafficProtectionPolicyForHTTPRoute(
@@ -287,7 +370,7 @@ func (r *TrafficProtectionPolicyReconciler) collectTrafficProtectionPolicyAttach
 					routeMap,
 					gatewayMap,
 					policyAttachments,
-					&currPolicy,
+					currPolicy,
 					currTarget,
 				)
 			}
@@ -295,7 +378,7 @@ func (r *TrafficProtectionPolicyReconciler) collectTrafficProtectionPolicyAttach
 	}
 
 	// Process the policies targeting RouteRules
-	for _, currPolicy := range trafficProtectionPolicies.Items {
+	for _, currPolicy := range trafficProtectionPolicies {
 		for _, currTarget := range currPolicy.Spec.TargetRefs {
 			if currTarget.Kind != KindGateway && currTarget.SectionName != nil {
 				policyAttachments = r.processTrafficProtectionPolicyForHTTPRoute(
@@ -303,7 +386,7 @@ func (r *TrafficProtectionPolicyReconciler) collectTrafficProtectionPolicyAttach
 					routeMap,
 					gatewayMap,
 					policyAttachments,
-					&currPolicy,
+					currPolicy,
 					currTarget,
 				)
 			}
@@ -325,10 +408,10 @@ type policyAttachment struct {
 
 func (r *TrafficProtectionPolicyReconciler) processTrafficProtectionPolicyForHTTPRoute(
 	ctx context.Context,
-	routeMap map[client.ObjectKey]*gatewayv1.HTTPRoute,
-	gatewayMap map[client.ObjectKey]*gatewayv1.Gateway,
+	routeMap map[client.ObjectKey]*policyRouteTargetContext,
+	gatewayMap map[client.ObjectKey]*policyGatewayTargetContext,
 	policyAttachments []policyAttachment,
-	policy *networkingv1alpha.TrafficProtectionPolicy,
+	policy *policyContext,
 	targetRef gatewayv1alpha2.LocalPolicyTargetReferenceWithSectionName,
 ) []policyAttachment {
 	logger := log.FromContext(ctx)
@@ -341,6 +424,81 @@ func (r *TrafficProtectionPolicyReconciler) processTrafficProtectionPolicyForHTT
 	if !ok {
 		return policyAttachments
 	}
+
+	ancestorRef := getAncestorRefForTarget(route.Namespace, targetRef)
+
+	// If targeting a specific rule, ensure that the rule exists and that no other
+	// policy has already attached to it.
+	if targetRef.SectionName == nil {
+		// Check if another policy targeting the same xRoute exists
+		if route.attached {
+			gatewaystatus.SetResolveErrorForPolicyAncestor(
+				&policy.Status.PolicyStatus,
+				ancestorRef,
+				string(r.Config.Gateway.ControllerName),
+				policy.Generation,
+				&gatewaystatus.PolicyResolveError{
+					Reason: gatewayv1alpha2.PolicyReasonConflicted,
+					Message: fmt.Sprintf("Unable to target %s %s, another TrafficProtectionPolicy has already attached to it",
+						string(targetRef.Kind), string(targetRef.Name)),
+				},
+			)
+			return policyAttachments
+		}
+		route.attached = true
+	} else {
+		found := false
+		for _, r := range route.HTTPRoute.Spec.Rules {
+			if r.Name != nil && *r.Name == *targetRef.SectionName {
+				found = true
+				break
+			}
+		}
+
+		if !found {
+			gatewaystatus.SetResolveErrorForPolicyAncestor(
+				&policy.Status.PolicyStatus,
+				ancestorRef,
+				string(r.Config.Gateway.ControllerName),
+				policy.Generation,
+				&gatewaystatus.PolicyResolveError{
+					Reason: gatewayv1alpha2.PolicyReasonTargetNotFound,
+					Message: fmt.Sprintf("No section name %s found for %s %s/%s",
+						string(*targetRef.SectionName), string(targetRef.Kind), policy.Namespace, string(targetRef.Name)),
+				},
+			)
+			return policyAttachments
+		}
+
+		routeRuleName := string(*targetRef.SectionName)
+		if route.attachedToRouteRules != nil && route.attachedToRouteRules.Has(routeRuleName) {
+			gatewaystatus.SetResolveErrorForPolicyAncestor(
+				&policy.Status.PolicyStatus,
+				ancestorRef,
+				string(r.Config.Gateway.ControllerName),
+				policy.Generation,
+				&gatewaystatus.PolicyResolveError{
+					Reason: gatewayv1alpha2.PolicyReasonConflicted,
+					Message: fmt.Sprintf("Unable to target RouteRule %s/%s, another TrafficProtectionPolicy has already attached to it",
+						string(targetRef.Name), routeRuleName),
+				},
+			)
+			return policyAttachments
+		}
+		if route.attachedToRouteRules == nil {
+			route.attachedToRouteRules = make(sets.Set[string])
+		}
+		route.attachedToRouteRules.Insert(routeRuleName)
+	}
+
+	gatewaystatus.SetAcceptedForPolicyAncestor(
+		&policy.Status.PolicyStatus,
+		ancestorRef,
+		string(r.Config.Gateway.ControllerName),
+		policy.Generation,
+	)
+
+	policy.attachedTargets.Insert(getParentReferenceString(ancestorRef))
 
 	directives := r.getCorazaDirectivesForTrafficProtectionPolicy(policy)
 	if len(directives) == 0 {
@@ -366,21 +524,41 @@ func (r *TrafficProtectionPolicyReconciler) processTrafficProtectionPolicyForHTT
 
 		// Attach policy to gateway with rule context.
 		policyAttachments = append(policyAttachments, policyAttachment{
-			Gateway:          gateway,
+			Gateway:          gateway.Gateway,
 			Listener:         parentRef.SectionName,
 			RuleSectionName:  targetRef.SectionName,
-			Route:            route,
+			Route:            route.HTTPRoute,
 			CorazaDirectives: directives,
 		})
 	}
 	return policyAttachments
 }
 
+func getAncestorRefForTarget(namespace string, targetRef gatewayv1alpha2.LocalPolicyTargetReferenceWithSectionName) *gatewayv1alpha2.ParentReference {
+	return &gatewayv1alpha2.ParentReference{
+		Group:       ptr.To(targetRef.Group),
+		Kind:        ptr.To(targetRef.Kind),
+		Name:        gatewayv1.ObjectName(targetRef.Name),
+		Namespace:   ptr.To(gatewayv1.Namespace(namespace)),
+		SectionName: targetRef.SectionName,
+	}
+}
+
+func getParentReferenceString(ref *gatewayv1alpha2.ParentReference) string {
+	return fmt.Sprintf("%s/%s/%s/%s/%s",
+		ptr.Deref(ref.Group, ""),
+		ptr.Deref(ref.Kind, ""),
+		ptr.Deref(ref.Namespace, ""),
+		ref.Name,
+		ptr.Deref(ref.SectionName, ""),
+	)
+}
+
 func (r *TrafficProtectionPolicyReconciler) processTrafficProtectionPolicyForGateway(
 	ctx context.Context,
-	gatewayMap map[client.ObjectKey]*gatewayv1.Gateway,
+	gatewayMap map[client.ObjectKey]*policyGatewayTargetContext,
 	policyAttachments []policyAttachment,
-	policy *networkingv1alpha.TrafficProtectionPolicy,
+	policy *policyContext,
 	targetRef gatewayv1alpha2.LocalPolicyTargetReferenceWithSectionName,
 ) []policyAttachment {
 	logger := log.FromContext(ctx)
@@ -396,6 +574,77 @@ func (r *TrafficProtectionPolicyReconciler) processTrafficProtectionPolicyForGat
 		return policyAttachments
 	}
 
+	ancestorRef := getAncestorRefForTarget(gateway.Namespace, targetRef)
+
+	if targetRef.SectionName == nil {
+		if gateway.attached {
+			gatewaystatus.SetResolveErrorForPolicyAncestor(
+				&policy.Status.PolicyStatus,
+				ancestorRef,
+				string(r.Config.Gateway.ControllerName),
+				policy.Generation,
+				&gatewaystatus.PolicyResolveError{
+					Reason:  gatewayv1alpha2.PolicyReasonConflicted,
+					Message: fmt.Sprintf("Unable to target Gateway %s, another TrafficProtectionPolicy has already attached to it", string(targetRef.Name)),
+				},
+			)
+			return policyAttachments
+		}
+
+		gateway.attached = true
+	} else {
+		listenerName := string(*targetRef.SectionName)
+		if gateway.attachedToListeners != nil && gateway.attachedToListeners.Has(listenerName) {
+			gatewaystatus.SetResolveErrorForPolicyAncestor(
+				&policy.Status.PolicyStatus,
+				ancestorRef,
+				string(r.Config.Gateway.ControllerName),
+				policy.Generation,
+				&gatewaystatus.PolicyResolveError{
+					Reason:  gatewayv1alpha2.PolicyReasonConflicted,
+					Message: fmt.Sprintf("Unable to target Listener %s/%s, another TrafficProtectionPolicy has already attached to it", string(targetRef.Name), listenerName),
+				},
+			)
+			return policyAttachments
+		}
+
+		found := false
+		for _, listener := range gateway.Spec.Listeners {
+			if listener.Name == *targetRef.SectionName {
+				found = true
+				break
+			}
+		}
+
+		if !found {
+			gatewaystatus.SetResolveErrorForPolicyAncestor(
+				&policy.Status.PolicyStatus,
+				ancestorRef,
+				string(r.Config.Gateway.ControllerName),
+				policy.Generation,
+				&gatewaystatus.PolicyResolveError{
+					Reason:  gatewayv1alpha2.PolicyReasonTargetNotFound,
+					Message: fmt.Sprintf("No section name %s found for Gateway %s", listenerName, string(targetRef.Name)),
+				},
+			)
+			return policyAttachments
+		}
+
+		if gateway.attachedToListeners == nil {
+			gateway.attachedToListeners = make(sets.Set[string])
+		}
+		gateway.attachedToListeners.Insert(listenerName)
+	}
+
+	gatewaystatus.SetAcceptedForPolicyAncestor(
+		&policy.Status.PolicyStatus,
+		ancestorRef,
+		string(r.Config.Gateway.ControllerName),
+		policy.Generation,
+	)
+
+	policy.attachedTargets.Insert(getParentReferenceString(ancestorRef))
+
 	directives := r.getCorazaDirectivesForTrafficProtectionPolicy(policy)
 	if len(directives) == 0 {
 		return policyAttachments
@@ -403,7 +652,7 @@ func (r *TrafficProtectionPolicyReconciler) processTrafficProtectionPolicyForGat
 
 	// Attach policy to gateway with rule context.
 	policyAttachments = append(policyAttachments, policyAttachment{
-		Gateway:          gateway,
+		Gateway:          gateway.Gateway,
 		Listener:         targetRef.SectionName,
 		CorazaDirectives: directives,
 	})
@@ -611,7 +860,7 @@ func (r *TrafficProtectionPolicyReconciler) getDesiredEnvoyPatchPolicies(
 }
 
 func (r *TrafficProtectionPolicyReconciler) getCorazaDirectivesForTrafficProtectionPolicy(
-	policy *networkingv1alpha.TrafficProtectionPolicy,
+	policy *policyContext,
 ) []string {
 	var owaspCRS *networkingv1alpha.OWASPCRS
 	for _, ruleSet := range policy.Spec.RuleSets {

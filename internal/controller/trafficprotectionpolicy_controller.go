@@ -84,12 +84,26 @@ func (r *TrafficProtectionPolicyReconciler) Reconcile(ctx context.Context, req N
 	}
 
 	trafficProtectionPolicies := make([]*policyContext, 0, len(trafficProtectionPolicyList.Items))
-	for i := range trafficProtectionPolicyList.Items {
+	for i, tpp := range trafficProtectionPolicyList.Items {
+		if dt := tpp.DeletionTimestamp; dt != nil {
+			continue
+		}
 		trafficProtectionPolicies = append(trafficProtectionPolicies, &policyContext{
 			TrafficProtectionPolicy: trafficProtectionPolicyList.Items[i].DeepCopy(),
-			attachedTargets:         sets.New[string](),
 		})
 	}
+
+	// Sort TrafficProtectionPolicies by creation timestamp, then namespace/name
+	// Precedence aligns with Envoy Gateway's policy sorting.
+	sort.Slice(trafficProtectionPolicies, func(i, j int) bool {
+		if trafficProtectionPolicies[i].CreationTimestamp.Equal(&(trafficProtectionPolicies[j].CreationTimestamp)) {
+			if trafficProtectionPolicies[i].Namespace != trafficProtectionPolicies[j].Namespace {
+				return trafficProtectionPolicies[i].Namespace < trafficProtectionPolicies[j].Namespace
+			}
+			return trafficProtectionPolicies[i].Name < trafficProtectionPolicies[j].Name
+		}
+		return trafficProtectionPolicies[i].CreationTimestamp.Before(&(trafficProtectionPolicies[j].CreationTimestamp))
+	})
 
 	var upstreamGateways gatewayv1.GatewayList
 	if err := cl.GetClient().List(ctx, &upstreamGateways, client.InNamespace(req.Namespace)); err != nil {
@@ -176,7 +190,15 @@ func (r *TrafficProtectionPolicyReconciler) updateTPPAncestorsStatus(
 				continue
 			}
 
-			if !policy.attachedTargets.Has(getParentReferenceString(&ancestor.AncestorRef)) {
+			found := false
+			for _, targetRef := range policy.Spec.TargetRefs {
+				ancestorRef := getAncestorRefForTarget(policy.Namespace, targetRef)
+				if equality.Semantic.DeepEqual(ancestor.AncestorRef, *ancestorRef) {
+					found = true
+				}
+			}
+
+			if !found {
 				policy.Status.PolicyStatus.Ancestors = append(policy.Status.PolicyStatus.Ancestors[:i], policy.Status.PolicyStatus.Ancestors[i+1:]...)
 			}
 		}
@@ -279,7 +301,6 @@ func (r TrafficProtectionPolicyReconciler) getCorazaListenerFilterConfig() ([]by
 
 type policyContext struct {
 	*networkingv1alpha.TrafficProtectionPolicy
-	attachedTargets sets.Set[string]
 }
 
 type policyGatewayTargetContext struct {
@@ -432,6 +453,7 @@ func (r *TrafficProtectionPolicyReconciler) processTrafficProtectionPolicyForHTT
 	if targetRef.SectionName == nil {
 		// Check if another policy targeting the same xRoute exists
 		if route.attached {
+			logger.Info("conflict: another policy has already attached to this route", "route", fmt.Sprintf("%s/%s", route.Namespace, route.Name))
 			gatewaystatus.SetResolveErrorForPolicyAncestor(
 				&policy.Status.PolicyStatus,
 				ancestorRef,
@@ -491,14 +513,15 @@ func (r *TrafficProtectionPolicyReconciler) processTrafficProtectionPolicyForHTT
 		route.attachedToRouteRules.Insert(routeRuleName)
 	}
 
-	gatewaystatus.SetAcceptedForPolicyAncestor(
-		&policy.Status.PolicyStatus,
+	gatewaystatus.SetConditionForPolicyAncestor(&policy.Status.PolicyStatus,
 		ancestorRef,
 		string(r.Config.Gateway.ControllerName),
+		gatewayv1alpha2.PolicyConditionAccepted,
+		metav1.ConditionTrue,
+		gatewayv1alpha2.PolicyReasonAccepted,
+		"Policy has been accepted.",
 		policy.Generation,
 	)
-
-	policy.attachedTargets.Insert(getParentReferenceString(ancestorRef))
 
 	directives := r.getCorazaDirectivesForTrafficProtectionPolicy(policy)
 	if len(directives) == 0 {
@@ -636,14 +659,15 @@ func (r *TrafficProtectionPolicyReconciler) processTrafficProtectionPolicyForGat
 		gateway.attachedToListeners.Insert(listenerName)
 	}
 
-	gatewaystatus.SetAcceptedForPolicyAncestor(
-		&policy.Status.PolicyStatus,
+	gatewaystatus.SetConditionForPolicyAncestor(&policy.Status.PolicyStatus,
 		ancestorRef,
 		string(r.Config.Gateway.ControllerName),
+		gatewayv1alpha2.PolicyConditionAccepted,
+		metav1.ConditionTrue,
+		gatewayv1alpha2.PolicyReasonAccepted,
+		"Policy has been accepted.",
 		policy.Generation,
 	)
-
-	policy.attachedTargets.Insert(getParentReferenceString(ancestorRef))
 
 	directives := r.getCorazaDirectivesForTrafficProtectionPolicy(policy)
 	if len(directives) == 0 {

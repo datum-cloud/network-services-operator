@@ -217,4 +217,25 @@ func SetObjectDefaults_NetworkServicesOperator(in *NetworkServicesOperator) {
 	if in.DomainVerification.HTTPVerificationTokenPath == "" {
 		in.DomainVerification.HTTPVerificationTokenPath = ".well-known/datum-custom-hostname-challenge"
 	}
+	if in.DomainRegistration.RefreshInterval == nil {
+		if err := json.Unmarshal([]byte(`"24h"`), &in.DomainRegistration.RefreshInterval); err != nil {
+			panic(err)
+		}
+	}
+	if in.DomainRegistration.RetryBackoff == nil {
+		if err := json.Unmarshal([]byte(`"1h"`), &in.DomainRegistration.RetryBackoff); err != nil {
+			panic(err)
+		}
+	}
+	if in.DomainRegistration.JitterMaxFactor == 0 {
+		in.DomainRegistration.JitterMaxFactor = 0.2
+	}
+	if in.DomainRegistration.LookupTimeout == nil {
+		if err := json.Unmarshal([]byte(`"15s"`), &in.DomainRegistration.LookupTimeout); err != nil {
+			panic(err)
+		}
+	}
+	if in.DomainRegistration.WhoisBootstrapHost == "" {
+		in.DomainRegistration.WhoisBootstrapHost = "whois.iana.org"
+	}
 }

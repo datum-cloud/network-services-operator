@@ -185,7 +185,7 @@ func (r *TrafficProtectionPolicyReconciler) updateTPPAncestorsStatus(
 		}
 
 		// Remove any ancestorRefs owned by this controller that are no longer targeted
-		for i, ancestor := range policy.Status.PolicyStatus.Ancestors {
+		for i, ancestor := range policy.Status.Ancestors {
 			if ancestor.ControllerName != r.Config.Gateway.ControllerName {
 				continue
 			}
@@ -199,7 +199,7 @@ func (r *TrafficProtectionPolicyReconciler) updateTPPAncestorsStatus(
 			}
 
 			if !found {
-				policy.Status.PolicyStatus.Ancestors = append(policy.Status.PolicyStatus.Ancestors[:i], policy.Status.PolicyStatus.Ancestors[i+1:]...)
+				policy.Status.Ancestors = append(policy.Status.Ancestors[:i], policy.Status.Ancestors[i+1:]...)
 			}
 		}
 
@@ -470,7 +470,7 @@ func (r *TrafficProtectionPolicyReconciler) processTrafficProtectionPolicyForHTT
 		route.attached = true
 	} else {
 		found := false
-		for _, r := range route.HTTPRoute.Spec.Rules {
+		for _, r := range route.Spec.Rules {
 			if r.Name != nil && *r.Name == *targetRef.SectionName {
 				found = true
 				break
@@ -561,20 +561,10 @@ func getAncestorRefForTarget(namespace string, targetRef gatewayv1alpha2.LocalPo
 	return &gatewayv1alpha2.ParentReference{
 		Group:       ptr.To(targetRef.Group),
 		Kind:        ptr.To(targetRef.Kind),
-		Name:        gatewayv1.ObjectName(targetRef.Name),
+		Name:        targetRef.Name,
 		Namespace:   ptr.To(gatewayv1.Namespace(namespace)),
 		SectionName: targetRef.SectionName,
 	}
-}
-
-func getParentReferenceString(ref *gatewayv1alpha2.ParentReference) string {
-	return fmt.Sprintf("%s/%s/%s/%s/%s",
-		ptr.Deref(ref.Group, ""),
-		ptr.Deref(ref.Kind, ""),
-		ptr.Deref(ref.Namespace, ""),
-		ref.Name,
-		ptr.Deref(ref.SectionName, ""),
-	)
 }
 
 func (r *TrafficProtectionPolicyReconciler) processTrafficProtectionPolicyForGateway(

@@ -833,3 +833,144 @@ func vcardWithFN(fullname string) *rdap.VCard {
 		},
 	}
 }
+
+func TestFetchRegistrationWhois_BootstrapAndReferrals(t *testing.T) {
+	r := &DomainReconciler{}
+
+	apex := "example.co"
+
+	// Stub WHOIS responses: IANA → registry → registrar
+	ianaBody := "refer: whois.registry.co\nwhois: whois.registry.co\n"
+	registryBody := "Registrar WHOIS Server: whois.godaddy.com\n"
+	registrarBody := strings.Join([]string{
+		"Registry Domain ID: D24111695-CNIC",
+		"Registrar: GoDaddy.com, LLC",
+		"Registrar IANA ID: 146",
+		"Registrar URL: http://whois.godaddy.com",
+		"Registrar Abuse Contact Email: abuse@godaddy.com",
+		"+ extra: line",
+		"Registrar Abuse Contact Phone: +1.4806242505",
+		"Domain Status: clientTransferProhibited https://icann.org/epp#clientTransferProhibited",
+		"Creation Date: 2025-03-20T00:38:18Z",
+		"Updated Date: 2025-10-08T00:22:13Z",
+		"Registry Expiry Date: 2026-03-20T23:59:59Z",
+		"DNSSEC: unsigned",
+		"Registrant Organization: Example Org",
+		"Registrant Email: admin@example.org",
+		"Registrant Phone: +1.1111111111",
+		"Admin Organization: Admin Org",
+		"Admin Email: admin@example.org",
+		"Admin Phone: +1.2222222222",
+		"Tech Organization: Tech Org",
+		"Tech Email: tech@example.org",
+		"Tech Phone: +1.3333333333",
+		"",
+	}, "\n")
+
+	r.whoisFetch = func(ctx context.Context, query, host string) (string, error) {
+		switch host {
+		case "whois.iana.org":
+			return ianaBody, nil
+		case "whois.registry.co":
+			return registryBody, nil
+		case "whois.godaddy.com":
+			return registrarBody, nil
+		default:
+			return "", fmt.Errorf("unexpected host: %s", host)
+		}
+	}
+
+	got, err := r.fetchRegistrationWhois(context.Background(), apex)
+	assert.NoError(t, err)
+	if assert.NotNil(t, got) {
+		assert.Equal(t, apex, got.Domain)
+		assert.Equal(t, "D24111695-CNIC", got.RegistryDomainID)
+		if assert.NotNil(t, got.Registrar) {
+			assert.Equal(t, "GoDaddy.com, LLC", got.Registrar.Name)
+			assert.Equal(t, "146", got.Registrar.IANAID)
+			assert.Equal(t, "http://whois.godaddy.com", got.Registrar.URL)
+		}
+		if assert.NotNil(t, got.Abuse) {
+			assert.Equal(t, "abuse@godaddy.com", got.Abuse.Email)
+			assert.Equal(t, "+1.4806242505", got.Abuse.Phone)
+		}
+		assert.Contains(t, got.Statuses, "clientTransferProhibited")
+		if assert.NotNil(t, got.DNSSEC) && assert.NotNil(t, got.DNSSEC.Enabled) {
+			assert.False(t, *got.DNSSEC.Enabled)
+		}
+		if assert.NotNil(t, got.Contacts) {
+			assert.Equal(t, "Example Org", got.Contacts.Registrant.Organization)
+			assert.Equal(t, "Admin Org", got.Contacts.Admin.Organization)
+			assert.Equal(t, "Tech Org", got.Contacts.Tech.Organization)
+		}
+	}
+}
+
+func TestRegistration_WHOIS_BootstrapAndReferrals(t *testing.T) {
+	s := runtime.NewScheme()
+	_ = scheme.AddToScheme(s)
+	_ = networkingv1alpha.AddToScheme(s)
+
+	dom := newDomain("default", "whois-co")
+	dom.Spec.DomainName = "example.co"
+
+	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(dom).WithStatusSubresource(dom).Build()
+	mgr := &fakeMockManager{cl: cl}
+
+	// Force RDAP to report BootstrapNoMatch to select WHOIS path
+	r := &DomainReconciler{
+		mgr: mgr,
+		Config: config.NetworkServicesOperator{DomainRegistration: config.DomainRegistrationConfig{
+			LookupTimeout:   &metav1.Duration{Duration: 3 * time.Second},
+			RefreshInterval: &metav1.Duration{Duration: time.Hour},
+			JitterMaxFactor: 0.0,
+			RetryBackoff:    &metav1.Duration{Duration: time.Minute},
+		}},
+		timeNow: time.Now,
+		rdapDo: func(ctx context.Context, req *rdap.Request) (*rdap.Response, error) {
+			return nil, &rdap.ClientError{Type: rdap.BootstrapNoMatch}
+		},
+		lookupNS: func(ctx context.Context, name string) ([]*net.NS, error) { return nil, &net.DNSError{IsNotFound: true} },
+		lookupIP: func(ctx context.Context, name string) ([]net.IPAddr, error) { return nil, nil },
+	}
+
+	// Stub WHOIS fetches: IANA (refer), registry, then registrar
+	ianaBody := "refer: whois.registry.co\nwhois: whois.registry.co\n"
+	registryBody := "Registrar WHOIS Server: whois.godaddy.com\nRegistrar: GoDaddy.com, LLC\nRegistrar IANA ID: 146\nRegistrar Abuse Contact Email: abuse@godaddy.com\nRegistrar Abuse Contact Phone: +1.4806242505\nDomain Status: clientTransferProhibited\nDNSSEC: unsigned\n"
+	registrarBody := "Registrar: GoDaddy.com, LLC\nRegistrar IANA ID: 146\nRegistrar Abuse Contact Email: abuse@godaddy.com\nRegistrar Abuse Contact Phone: +1.4806242505\nDomain Status: clientTransferProhibited\nDNSSEC: unsigned\n"
+
+	// Swap the helper to return our stub bodies
+	origFetch := r.whoisFetch
+	r.whoisFetch = func(ctx context.Context, query, host string) (string, error) {
+		switch host {
+		case "whois.iana.org":
+			return ianaBody, nil
+		case "whois.registry.co":
+			return registryBody, nil
+		case "whois.godaddy.com":
+			return registrarBody, nil
+		default:
+			return "", fmt.Errorf("unexpected host: %s", host)
+		}
+	}
+	defer func() { r.whoisFetch = origFetch }()
+
+	_, err := r.Reconcile(context.Background(), mcreconcile.Request{ClusterName: "test", Request: reconcile.Request{NamespacedName: client.ObjectKeyFromObject(dom)}})
+	assert.NoError(t, err)
+
+	got := &networkingv1alpha.Domain{}
+	_ = cl.Get(context.Background(), client.ObjectKeyFromObject(dom), got)
+	if assert.NotNil(t, got.Status.Registration) {
+		assert.Equal(t, "whois", got.Status.Registration.Source)
+		if assert.NotNil(t, got.Status.Registration.Registrar) {
+			assert.Equal(t, "GoDaddy.com, LLC", got.Status.Registration.Registrar.Name)
+			assert.Equal(t, "146", got.Status.Registration.Registrar.IANAID)
+		}
+		if assert.NotNil(t, got.Status.Registration.Abuse) {
+			assert.Equal(t, "+1.4806242505", got.Status.Registration.Abuse.Phone)
+		}
+		if assert.NotNil(t, got.Status.Registration.DNSSEC) && assert.NotNil(t, got.Status.Registration.DNSSEC.Enabled) {
+			assert.False(t, *got.Status.Registration.DNSSEC.Enabled)
+		}
+	}
+}

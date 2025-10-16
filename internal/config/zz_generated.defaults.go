@@ -235,4 +235,7 @@ func SetObjectDefaults_NetworkServicesOperator(in *NetworkServicesOperator) {
 			panic(err)
 		}
 	}
+	if in.DomainRegistration.WhoisBootstrapHost == "" {
+		in.DomainRegistration.WhoisBootstrapHost = "whois.iana.org"
+	}
 }

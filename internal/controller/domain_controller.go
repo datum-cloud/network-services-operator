@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	whois "github.com/domainr/whois"
 	"github.com/google/uuid"
 	"github.com/openrdap/rdap"
 	"github.com/openrdap/rdap/bootstrap"
@@ -46,6 +47,7 @@ type DomainReconciler struct {
 	lookupIP    func(ctx context.Context, name string) ([]net.IPAddr, error)
 	rdapDo      func(ctx context.Context, req *rdap.Request) (*rdap.Response, error)
 	rdapQueryIP func(ctx context.Context, ip string) (*rdap.IPNetwork, error)
+	whoisFetch  func(ctx context.Context, query, host string) (string, error)
 
 	// external clients
 	rdapClient *rdap.Client
@@ -416,29 +418,55 @@ func (r *DomainReconciler) reconcileRegistration(ctx context.Context, d *network
 	ctxLookup, cancel := context.WithTimeout(ctx, r.Config.DomainRegistration.LookupTimeout.Duration)
 	defer cancel()
 
-	logger.Info("fetching RDAP registration", "apex", apex, "domain", d.Spec.DomainName)
-	req := &rdap.Request{
-		Type:    rdap.DomainRequest,
-		Query:   apex,
-		Timeout: r.Config.DomainRegistration.LookupTimeout.Duration,
-	}
+	logger.Info("selecting registration protocol", "apex", apex, "domain", d.Spec.DomainName)
+	// Try RDAP; if bootstrap says no match, prefer WHOIS; otherwise RDAP only
+	useWHOIS := false
+	req := &rdap.Request{Type: rdap.DomainRequest, Query: apex, Timeout: r.Config.DomainRegistration.LookupTimeout.Duration}
 	resp, err := r.rdapDo(ctxLookup, req)
 	if err != nil {
-		logger.Error(err, "rdap lookup failed")
-		st.Registration.NextRefreshAttempt = metav1.NewTime(now.Add(r.Config.DomainRegistration.RetryBackoff.Duration))
-		return st.Registration.NextRefreshAttempt.Time
+		if ce, ok := err.(*rdap.ClientError); ok && ce.Type == rdap.BootstrapNoMatch {
+			logger.Info("rdap bootstrap reported no match; falling back to whois", "apex", apex)
+			useWHOIS = true
+		} else {
+			logger.Error(err, "rdap lookup failed")
+			st.Registration.NextRefreshAttempt = metav1.NewTime(now.Add(r.Config.DomainRegistration.RetryBackoff.Duration))
+			return st.Registration.NextRefreshAttempt.Time
+		}
+	} else {
+		if resp == nil {
+			logger.Info("rdap returned nil response; falling back to whois", "apex", apex)
+			useWHOIS = true
+		} else if resp.Object == nil {
+			logger.Info("rdap response has nil object; falling back to whois", "apex", apex)
+			useWHOIS = true
+		}
 	}
 
-	rdapDomain, _ := resp.Object.(*rdap.Domain)
-	if rdapDomain == nil {
-		// transient parse or server quirk; retry sooner
-		st.Registration.NextRefreshAttempt = metav1.NewTime(now.Add(r.Config.DomainRegistration.RetryBackoff.Duration))
-		return st.Registration.NextRefreshAttempt.Time
+	var reg networkingv1alpha.Registration
+	var rdapDomain *rdap.Domain
+	if !useWHOIS {
+		rdapDomain, _ = resp.Object.(*rdap.Domain)
+		if rdapDomain == nil {
+			logger.Info("rdap response object is not a domain or is nil; retrying later", "apex", apex)
+			st.Registration.NextRefreshAttempt = metav1.NewTime(now.Add(r.Config.DomainRegistration.RetryBackoff.Duration))
+			return st.Registration.NextRefreshAttempt.Time
+		}
+		reg = r.mapRDAPDomainToRegistration(*rdapDomain)
+		reg.Source = "rdap"
+	} else {
+		// WHOIS path
+		wreg, werr := r.fetchRegistrationWhois(ctxLookup, apex)
+		if werr != nil {
+			logger.Error(werr, "whois lookup failed")
+			st.Registration.NextRefreshAttempt = metav1.NewTime(now.Add(r.Config.DomainRegistration.RetryBackoff.Duration))
+			return st.Registration.NextRefreshAttempt.Time
+		}
+		reg = *wreg
+		reg.Source = "whois"
 	}
-	reg := r.mapRDAPDomainToRegistration(*rdapDomain)
 
 	// Registry from bootstrap (authoritative)
-	if resp.BootstrapAnswer != nil && len(resp.BootstrapAnswer.URLs) > 0 {
+	if !useWHOIS && resp.BootstrapAnswer != nil && len(resp.BootstrapAnswer.URLs) > 0 {
 		var base *url.URL
 		for _, u := range resp.BootstrapAnswer.URLs {
 			if u != nil && strings.EqualFold(u.Scheme, "https") {
@@ -459,22 +487,40 @@ func (r *DomainReconciler) reconcileRegistration(ctx context.Context, d *network
 	st.Nameservers = st.Nameservers[:0]
 
 	if st.Apex {
-		// Apex: use RDAP-reported NS from the apex object
-		for _, ns := range rdapDomain.Nameservers {
-			st.Nameservers = append(st.Nameservers, networkingv1alpha.Nameserver{Hostname: ns.LDHName})
+		if !useWHOIS && rdapDomain != nil {
+			// Apex: use RDAP-reported NS from the apex object
+			for _, ns := range rdapDomain.Nameservers {
+				st.Nameservers = append(st.Nameservers, networkingv1alpha.Nameserver{Hostname: ns.LDHName})
+			}
+		} else {
+			// WHOIS mode (or no RDAP object): resolve NS via DNS
+			if nsHosts, _ := r.delegatedZoneNS(ctxLookup, apex, apex); len(nsHosts) > 0 {
+				for _, h := range nsHosts {
+					st.Nameservers = append(st.Nameservers, networkingv1alpha.Nameserver{Hostname: h})
+				}
+			}
 		}
 	} else {
 		// Non-apex: find delegated NS for the exact name; if none, fall back to apex NS
-		if _, nsHosts, delegated := r.delegatedZoneNS(ctxLookup, d.Spec.DomainName, apex); delegated && len(nsHosts) > 0 {
+		if nsHosts, delegated := r.delegatedZoneNS(ctxLookup, d.Spec.DomainName, apex); delegated && len(nsHosts) > 0 {
 			logger.Info("subdomain delegation detected; using delegated nameservers",
 				"zoneApex", d.Spec.DomainName, "nsCount", len(nsHosts))
 			for _, h := range nsHosts {
 				st.Nameservers = append(st.Nameservers, networkingv1alpha.Nameserver{Hostname: h})
 			}
 		} else {
-			// fallback to apex NS from RDAP
-			for _, ns := range rdapDomain.Nameservers {
-				st.Nameservers = append(st.Nameservers, networkingv1alpha.Nameserver{Hostname: ns.LDHName})
+			if !useWHOIS && rdapDomain != nil {
+				// fallback to apex NS from RDAP
+				for _, ns := range rdapDomain.Nameservers {
+					st.Nameservers = append(st.Nameservers, networkingv1alpha.Nameserver{Hostname: ns.LDHName})
+				}
+			} else {
+				// WHOIS mode: fallback to apex NS via DNS
+				if nsHosts, _ := r.delegatedZoneNS(ctxLookup, apex, apex); len(nsHosts) > 0 {
+					for _, h := range nsHosts {
+						st.Nameservers = append(st.Nameservers, networkingv1alpha.Nameserver{Hostname: h})
+					}
+				}
 			}
 		}
 	}
@@ -498,7 +544,6 @@ func (r *DomainReconciler) reconcileRegistration(ctx context.Context, d *network
 		}
 	}
 
-	reg.Source = "rdap"
 	st.Registration = &reg
 
 	// Schedule next refresh (with jitter)
@@ -593,6 +638,66 @@ func parseRFC3339Ptr(s string) *metav1.Time {
 	}
 	t := metav1.NewTime(tt)
 	return &t
+}
+
+// whoisFetchAtHost performs a WHOIS query at a specific host for a query label and returns the body as string
+func whoisFetchAtHost(ctx context.Context, query, host string) (string, error) {
+	req, err := whois.NewRequest(query)
+	if err != nil {
+		return "", err
+	}
+	req.Host = host
+	resp, err := whois.DefaultClient.FetchContext(ctx, req)
+	if err != nil {
+		return "", err
+	}
+	return string(resp.Body), nil
+}
+
+// findWhoisValue scans WHOIS body for a key (case-insensitive) of the form
+// "Key: value" and returns the trimmed value. It tolerates variable spacing/tabs
+// around the colon and ignores inline content after the first colon.
+// Note: keys are checked in order; the first key that yields a value is returned.
+func findWhoisValue(body string, keys []string) string {
+	keySet := make(map[string]struct{}, len(keys))
+	for _, k := range keys {
+		keySet[strings.ToLower(strings.TrimSpace(k))] = struct{}{}
+	}
+	for _, line := range strings.Split(body, "\n") {
+		l := strings.TrimSpace(line)
+		if l == "" {
+			continue
+		}
+		// Split on first ':' only
+		idx := strings.IndexByte(l, ':')
+		if idx <= 0 {
+			continue
+		}
+		left := strings.ToLower(strings.TrimSpace(l[:idx]))
+		right := strings.TrimSpace(l[idx+1:])
+		if _, ok := keySet[left]; ok {
+			return right
+		}
+	}
+	return ""
+}
+
+// parseTimeFlex tries several common WHOIS time formats
+func parseTimeFlex(s string) (time.Time, bool) {
+	s = strings.TrimSpace(s)
+	layouts := []string{
+		time.RFC3339,
+		"2006-01-02T15:04:05Z07:00",
+		"2006-01-02 15:04:05-0700",
+		"2006-01-02 15:04:05",
+		"2006-01-02",
+	}
+	for _, layout := range layouts {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t, true
+		}
+	}
+	return time.Time{}, false
 }
 
 func buildDNSSEC(sd *rdap.SecureDNS) *networkingv1alpha.DNSSECInfo {
@@ -728,8 +833,8 @@ func registeredApex(name string) (string, error) {
 }
 
 // delegatedZoneNS finds the deepest node at/under apex that has NS records.
-// Returns (zoneApex, nsHostnames, delegated).
-func (r *DomainReconciler) delegatedZoneNS(ctx context.Context, fqdn, apex string) (string, []string, bool) {
+// Returns (nsHostnames, delegated).
+func (r *DomainReconciler) delegatedZoneNS(ctx context.Context, fqdn, apex string) ([]string, bool) {
 	trimDot := func(s string) string { return strings.TrimSuffix(s, ".") }
 	addDot := func(s string) string {
 		if s == "" || strings.HasSuffix(s, ".") {
@@ -751,7 +856,7 @@ func (r *DomainReconciler) delegatedZoneNS(ctx context.Context, fqdn, apex strin
 					hosts = append(hosts, trimDot(rr.Host))
 				}
 			}
-			return cur, hosts, cur != apex
+			return hosts, cur != apex
 		}
 		if cur == apex {
 			break
@@ -762,7 +867,151 @@ func (r *DomainReconciler) delegatedZoneNS(ctx context.Context, fqdn, apex strin
 			break
 		}
 	}
-	return "", nil, false
+	return nil, false
+}
+
+// fetchRegistrationWhois attempts WHOIS-based mapping for a domain apex
+func (r *DomainReconciler) fetchRegistrationWhois(ctx context.Context, apex string) (*networkingv1alpha.Registration, error) {
+	// Bootstrap via IANA to find the authoritative WHOIS server
+	tld, _ := publicsuffix.PublicSuffix(apex)
+	// query IANA WHOIS for the TLD
+	bodyIANA, _ := r.whoisFetch(ctx, tld, r.Config.DomainRegistration.WhoisBootstrapHost)
+	referHost := strings.TrimSpace(findWhoisValue(bodyIANA, []string{"refer", "whois"}))
+
+	// Try registry WHOIS host from IANA, with fallbacks
+	var registryBody string
+	var err error
+	tryHosts := []string{}
+	if referHost != "" {
+		tryHosts = append(tryHosts, referHost)
+	}
+	tryHosts = append(tryHosts, "whois.registry."+strings.ToLower(tld))
+	tryHosts = append(tryHosts, "whois.nic."+strings.ToLower(tld))
+	for _, h := range tryHosts {
+		if b, e := r.whoisFetch(ctx, apex, h); e == nil && strings.TrimSpace(b) != "" {
+			registryBody = b
+			break
+		} else {
+			err = e
+		}
+	}
+	if registryBody == "" {
+		if err == nil {
+			err = fmt.Errorf("no WHOIS registry body for %s", apex)
+		}
+		return nil, err
+	}
+
+	// Follow registrar WHOIS referral once if present
+	bodyToParse := registryBody
+	if registrarHost := strings.TrimSpace(findWhoisValue(registryBody, []string{"Registrar WHOIS Server"})); registrarHost != "" {
+		if b, e := r.whoisFetch(ctx, apex, registrarHost); e == nil && strings.TrimSpace(b) != "" {
+			bodyToParse = b
+		}
+	}
+
+	body := bodyToParse
+	reg := &networkingv1alpha.Registration{Domain: apex}
+	// Registry Domain ID
+	if v := findWhoisValue(body, []string{"Registry Domain ID", "Domain ID", "roid"}); v != "" {
+		reg.RegistryDomainID = strings.TrimSpace(v)
+	}
+	// Registrar name and IANA ID
+	if v := findWhoisValue(body, []string{"Registrar", "Sponsoring Registrar"}); v != "" {
+		name := strings.TrimSpace(v)
+		if name != "" {
+			reg.Registrar = &networkingv1alpha.RegistrarInfo{Name: name}
+		}
+	}
+	if v := findWhoisValue(body, []string{"Registrar IANA ID"}); v != "" {
+		if reg.Registrar == nil {
+			reg.Registrar = &networkingv1alpha.RegistrarInfo{}
+		}
+		reg.Registrar.IANAID = strings.TrimSpace(v)
+	}
+	if v := findWhoisValue(body, []string{"Registrar URL"}); v != "" {
+		if reg.Registrar == nil {
+			reg.Registrar = &networkingv1alpha.RegistrarInfo{}
+		}
+		reg.Registrar.URL = strings.TrimSpace(v)
+	}
+	// Dates
+	if v := findWhoisValue(body, []string{"Creation Date", "Created On"}); v != "" {
+		if t, ok := parseTimeFlex(v); ok {
+			mt := metav1.NewTime(t)
+			reg.CreatedAt = &mt
+		}
+	}
+	if v := findWhoisValue(body, []string{"Updated Date", "Last Updated On"}); v != "" {
+		if t, ok := parseTimeFlex(v); ok {
+			mt := metav1.NewTime(t)
+			reg.UpdatedAt = &mt
+		}
+	}
+	if v := findWhoisValue(body, []string{"Registry Expiry Date", "Expiration Date", "Expiry Date"}); v != "" {
+		if t, ok := parseTimeFlex(v); ok {
+			mt := metav1.NewTime(t)
+			reg.ExpiresAt = &mt
+		}
+	}
+	// Abuse (registrar)
+	if email := strings.TrimSpace(findWhoisValue(body, []string{"Registrar Abuse Contact Email"})); email != "" {
+		if reg.Abuse == nil {
+			reg.Abuse = &networkingv1alpha.AbuseContact{}
+		}
+		reg.Abuse.Email = email
+	}
+	if phone := strings.TrimSpace(findWhoisValue(body, []string{"Registrar Abuse Contact Phone"})); phone != "" {
+		if reg.Abuse == nil {
+			reg.Abuse = &networkingv1alpha.AbuseContact{}
+		}
+		reg.Abuse.Phone = phone
+	}
+	// Statuses
+	for _, line := range strings.Split(body, "\n") {
+		l := strings.TrimSpace(line)
+		ll := strings.ToLower(l)
+		if strings.HasPrefix(ll, strings.ToLower("Domain Status:")) {
+			val := strings.TrimSpace(strings.TrimPrefix(l, "Domain Status:"))
+			if val != "" {
+				reg.Statuses = append(reg.Statuses, strings.Fields(val)[0])
+			}
+		}
+	}
+	// DNSSEC
+	if v := findWhoisValue(body, []string{"DNSSEC"}); v != "" {
+		vv := strings.ToLower(strings.TrimSpace(v))
+		enabled := vv != "unsigned" && vv != "no"
+		reg.DNSSEC = &networkingv1alpha.DNSSECInfo{Enabled: &enabled}
+	}
+	// Contacts (Registrant/Admin/Tech) — organization/email/phone when available and not redacted
+	redact := func(s string) string {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			return ""
+		}
+		up := strings.ToUpper(s)
+		if up == "REDACTED" || strings.Contains(up, "REDACTED") {
+			return ""
+		}
+		return s
+	}
+	setContact := func(orgKey, emailKey, phoneKey string) *networkingv1alpha.Contact {
+		org := redact(findWhoisValue(body, []string{orgKey}))
+		email := redact(findWhoisValue(body, []string{emailKey}))
+		phone := redact(findWhoisValue(body, []string{phoneKey}))
+		if org == "" && email == "" && phone == "" {
+			return nil
+		}
+		return &networkingv1alpha.Contact{Organization: org, Email: email, Phone: phone}
+	}
+	registrant := setContact("Registrant Organization", "Registrant Email", "Registrant Phone")
+	admin := setContact("Admin Organization", "Admin Email", "Admin Phone")
+	tech := setContact("Tech Organization", "Tech Email", "Tech Phone")
+	if registrant != nil || admin != nil || tech != nil {
+		reg.Contacts = &networkingv1alpha.ContactSet{Registrant: registrant, Admin: admin, Tech: tech}
+	}
+	return reg, nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
@@ -789,6 +1038,8 @@ func (r *DomainReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 			Query:   ip,
 			Timeout: r.Config.DomainRegistration.LookupTimeout.Duration,
 		}
+
+		r.whoisFetch = whoisFetchAtHost
 		resp, err := r.rdapClient.Do(req.WithContext(ctx))
 		if err != nil {
 			return nil, err

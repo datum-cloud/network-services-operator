@@ -41,3 +41,14 @@ spec:
           type: Gauge
           gauge:
             path: [metadata, deletionTimestamp]
+      - name: "status_ancestor"
+        help: "Ancestor references from status"
+        each:
+          type: Info
+          info:
+            path: [status, ancestors]
+            labelsFromPath:
+              ancestor_group: [ancestorRef, group]
+              ancestor_kind: [ancestorRef, kind]
+              ancestor_name: [ancestorRef, name]
+              ancestor_namespace: [ancestorRef, namespace]

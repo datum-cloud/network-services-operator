@@ -15,6 +15,7 @@ configMapGenerator:
       - httpproxies.yaml
       - domains.yaml
       - trafficprotectionpolicies.yaml
+      - envoygatewayextensionapis.yaml
     options:
       labels:
         telemetry.miloapis.com/resource-metrics-config: "true"

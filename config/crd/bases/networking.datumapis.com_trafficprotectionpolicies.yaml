@@ -108,14 +108,6 @@ spec:
                               maxItems: 100
                               type: array
                           type: object
-                        samplingPercentage:
-                          default: 100
-                          description: |-
-                            SamplingPercentage makes it possible to run the OWASP ModSecurity
-                            Core Rule Set (CRS) on a subset of traffic. When not set, defaults to 100.
-                          maximum: 100
-                          minimum: 1
-                          type: integer
                         scoreThresholds:
                           default: {}
                           description: |-
@@ -158,6 +150,14 @@ spec:
                 x-kubernetes-validations:
                 - message: OWASPCoreRuleSet filter cannot be repeated
                   rule: self.filter(f, f.type == 'OWASPCoreRuleSet').size() <= 1
+              samplingPercentage:
+                default: 100
+                description: |-
+                  SamplingPercentage controls the percentage of traffic that will be processed
+                  by the TrafficProtectionPolicy.
+                maximum: 100
+                minimum: 1
+                type: integer
               targetRefs:
                 description: |-
                   TargetRefs are the names of the Gateway resources this policy

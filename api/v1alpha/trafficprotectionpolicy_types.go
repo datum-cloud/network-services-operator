@@ -13,7 +13,7 @@ import (
 // +kubebuilder:validation:Enum=Observe;Enforce;Disabled
 type TrafficProtectionPolicyMode string
 
-// HeaderMatchType constants.
+// TrafficProtectionPolicyMode constants.
 const (
 	// Observe will log violations but not block traffic.
 	TrafficProtectionPolicyObserve TrafficProtectionPolicyMode = "Observe"
@@ -43,6 +43,14 @@ type TrafficProtectionPolicySpec struct {
 	//
 	// +kubebuilder:default=Observe
 	Mode TrafficProtectionPolicyMode `json:"mode,omitempty"`
+
+	// SamplingPercentage controls the percentage of traffic that will be processed
+	// by the TrafficProtectionPolicy.
+	//
+	// +kubebuilder:default=100
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=100
+	SamplingPercentage int `json:"samplingPercentage,omitempty"`
 
 	// RuleSets specifies the TrafficProtectionPolicy rulesets to apply.
 	//
@@ -95,23 +103,15 @@ type OWASPCRS struct {
 	// +kubebuilder:default={}
 	ScoreThresholds OWASPScoreThresholds `json:"scoreThresholds,omitempty"`
 
-	// SamplingPercentage makes it possible to run the OWASP ModSecurity
-	// Core Rule Set (CRS) on a subset of traffic. When not set, defaults to 100.
-	//
-	// +kubebuilder:default=100
-	// +kubebuilder:validation:Minimum=1
-	// +kubebuilder:validation:Maximum=100
-	SamplingPercentage int `json:"samplingPercentage,omitempty"`
-
 	// RuleExclusions can be used to disable specific OWASP ModSecurity Rules.
 	// This allows operators to disable specific rules that may be causing false
 	// positives.
 	//
 	// +kubebuilder:validation:Optional
-	RuleExclusions *OSWASPRuleExclusions `json:"ruleExclusions,omitempty"`
+	RuleExclusions *OWASPRuleExclusions `json:"ruleExclusions,omitempty"`
 }
 
-type OSWASPRuleExclusions struct {
+type OWASPRuleExclusions struct {
 	// Tags is a list of rule tags to disable.
 	//
 	// +kubebuilder:validation:MaxItems=100

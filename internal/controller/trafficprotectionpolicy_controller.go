@@ -915,12 +915,12 @@ func (r *TrafficProtectionPolicyReconciler) getCorazaDirectivesForTrafficProtect
 		),
 	)
 
-	if owaspCRS.SamplingPercentage < 100 {
+	if policy.Spec.SamplingPercentage < 100 {
 		directives = append(
 			directives,
 			fmt.Sprintf(
 				`SecAction "id:900400,phase:1,pass,nolog,setvar:tx.sampling_percentage=%d"`,
-				owaspCRS.SamplingPercentage,
+				policy.Spec.SamplingPercentage,
 			),
 		)
 	}

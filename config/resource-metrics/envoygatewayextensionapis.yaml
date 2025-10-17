@@ -1,0 +1,183 @@
+kind: CustomResourceStateMetrics
+spec:
+  resources:
+    - groupVersionKind:
+        group: gateway.envoyproxy.io
+        kind: Backend
+        version: v1alpha1
+      metricNamePrefix: datum_cloud_networking_envoygateway_backend
+      labelsFromPath:
+        name: [metadata, name]
+        namespace: [metadata, namespace]
+      metrics:
+      - name: "owner"
+        help: "Owner information"
+        errorLogV: 10
+        each:
+          type: Info
+          info:
+            path: [metadata, ownerReferences]
+            labelsFromPath:
+              owner_kind: [kind]
+              owner_name: [name]
+              owner_uid: [uid]
+              controller: [controller]
+      - name: "info"
+        help: "Backend information"
+        each:
+          type: Info
+          info:
+            labelsFromPath:
+              uid: [metadata, uid]
+              type: [spec, type]
+              fallback: [spec, fallback]
+      - name: "created"
+        help: "created timestamp"
+        each:
+          type: Gauge
+          gauge:
+            path: [metadata, creationTimestamp]
+      - name: "status_condition"
+        help: "status condition"
+        each:
+          type: Gauge
+          gauge:
+            path: [status, conditions]
+            labelsFromPath:
+              type: ["type"]
+            valueFrom: ["status"]
+      - name: "status_condition_last_transition_time"
+        help: "last transition time for status conditions"
+        each:
+          type: Gauge
+          gauge:
+            path: [status, conditions]
+            labelsFromPath:
+              type: ["type"]
+              reason: ["reason"]
+              status: ["status"]
+            valueFrom: ["lastTransitionTime"]
+    - groupVersionKind:
+        group: gateway.envoyproxy.io
+        kind: HTTPRouteFilter
+        version: v1alpha1
+      metricNamePrefix: datum_cloud_networking_envoygateway_httproutefilter
+      labelsFromPath:
+        name: [metadata, name]
+        namespace: [metadata, namespace]
+      metrics:
+      - name: "owner"
+        help: "Owner information"
+        errorLogV: 10
+        each:
+          type: Info
+          info:
+            path: [metadata, ownerReferences]
+            labelsFromPath:
+              owner_kind: [kind]
+              owner_name: [name]
+              owner_uid: [uid]
+              controller: [controller]
+      - name: "info"
+        help: "HTTPRouteFilter information"
+        each:
+          type: Info
+          info:
+            labelsFromPath:
+              uid: [metadata, uid]
+      - name: "created"
+        help: "created timestamp"
+        each:
+          type: Gauge
+          gauge:
+            path: [metadata, creationTimestamp]
+    - groupVersionKind:
+        group: gateway.envoyproxy.io
+        kind: BackendTrafficPolicy
+        version: v1alpha1
+      metricNamePrefix: datum_cloud_networking_envoygateway_backendtrafficpolicy
+      labelsFromPath:
+        name: [metadata, name]
+        namespace: [metadata, namespace]
+      metrics:
+      - name: "owner"
+        help: "Owner information"
+        errorLogV: 10
+        each:
+          type: Info
+          info:
+            path: [metadata, ownerReferences]
+            labelsFromPath:
+              owner_kind: [kind]
+              owner_name: [name]
+              owner_uid: [uid]
+              controller: [controller]
+      - name: "info"
+        help: "BackendTrafficPolicy information"
+        each:
+          type: Info
+          info:
+            labelsFromPath:
+              uid: [metadata, uid]
+      - name: "created"
+        help: "created timestamp"
+        each:
+          type: Gauge
+          gauge:
+            path: [metadata, creationTimestamp]
+      - name: "status_ancestor"
+        help: "Ancestor references from status"
+        each:
+          type: Info
+          info:
+            path: [status, ancestors]
+            labelsFromPath:
+              ancestor_group: [ancestorRef, group]
+              ancestor_kind: [ancestorRef, kind]
+              ancestor_name: [ancestorRef, name]
+              ancestor_namespace: [ancestorRef, namespace]
+    - groupVersionKind:
+        group: gateway.envoyproxy.io
+        kind: SecurityPolicy
+        version: v1alpha1
+      metricNamePrefix: datum_cloud_networking_envoygateway_securitypolicy
+      labelsFromPath:
+        name: [metadata, name]
+        namespace: [metadata, namespace]
+      metrics:
+      - name: "owner"
+        help: "Owner information"
+        errorLogV: 10
+        each:
+          type: Info
+          info:
+            path: [metadata, ownerReferences]
+            labelsFromPath:
+              owner_kind: [kind]
+              owner_name: [name]
+              owner_uid: [uid]
+              controller: [controller]
+      - name: "info"
+        help: "SecurityPolicy information"
+        each:
+          type: Info
+          info:
+            labelsFromPath:
+              uid: [metadata, uid]
+      - name: "created"
+        help: "created timestamp"
+        each:
+          type: Gauge
+          gauge:
+            path: [metadata, creationTimestamp]
+      - name: "status_ancestor"
+        help: "Ancestor references from status"
+        each:
+          type: Info
+          info:
+            path: [status, ancestors]
+            labelsFromPath:
+              ancestor_group: [ancestorRef, group]
+              ancestor_kind: [ancestorRef, kind]
+              ancestor_name: [ancestorRef, name]
+              ancestor_namespace: [ancestorRef, namespace]

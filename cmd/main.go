@@ -238,6 +238,16 @@ func main() {
 		os.Exit(1)
 	}
 
+	if !serverConfig.Gateway.Coraza.Disabled {
+		if err = (&controller.TrafficProtectionPolicyReconciler{
+			Config:            serverConfig,
+			DownstreamCluster: downstreamCluster,
+		}).SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "WAFSecurityPolicy")
+			os.Exit(1)
+		}
+	}
+
 	if err := (&controller.DomainReconciler{
 		Config: serverConfig,
 	}).SetupWithManager(mgr); err != nil {

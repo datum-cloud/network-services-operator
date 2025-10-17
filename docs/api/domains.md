@@ -115,6 +115,13 @@ DomainStatus defines the observed state of Domain
         </tr>
     </thead>
     <tbody><tr>
+        <td><b>apex</b></td>
+        <td>boolean</td>
+        <td>
+          Apex is true when spec.domainName is the registered domain (eTLD+1).<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
         <td><b><a href="#domainstatusconditionsindex">conditions</a></b></td>
         <td>[]object</td>
         <td>
@@ -122,10 +129,19 @@ DomainStatus defines the observed state of Domain
         </td>
         <td>false</td>
       </tr><tr>
-        <td><b><a href="#domainstatusregistrar">registrar</a></b></td>
+        <td><b><a href="#domainstatusnameserversindex">nameservers</a></b></td>
+        <td>[]object</td>
+        <td>
+          Nameservers lists the authoritative NS for the *effective* domain name:
+- If Apex == true: taken from RDAP for the registered domain (eTLD+1)
+- If Apex == false: taken from DNS delegation for the subdomain; falls back to apex NS if no cut<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b><a href="#domainstatusregistration">registration</a></b></td>
         <td>object</td>
         <td>
-          DomainRegistrarStatus represents the registrar information for a domain<br/>
+          Registration represents the registration information for a domain<br/>
         </td>
         <td>false</td>
       </tr><tr>
@@ -216,12 +232,12 @@ with respect to the current state of the instance.<br/>
 </table>
 
 
-### Domain.status.registrar
+### Domain.status.nameservers[index]
 <sup><sup>[↩ Parent](#domainstatus)</sup></sup>
 
 
 
-DomainRegistrarStatus represents the registrar information for a domain
+
 
 <table>
     <thead>
@@ -233,64 +249,15 @@ DomainRegistrarStatus represents the registrar information for a domain
         </tr>
     </thead>
     <tbody><tr>
-        <td><b>clientStatusCodes</b></td>
-        <td>[]string</td>
-        <td>
-          <br/>
-        </td>
-        <td>false</td>
-      </tr><tr>
-        <td><b>createdDate</b></td>
+        <td><b>hostname</b></td>
         <td>string</td>
         <td>
           <br/>
         </td>
-        <td>false</td>
+        <td>true</td>
       </tr><tr>
-        <td><b><a href="#domainstatusregistrardnssec">dnssec</a></b></td>
-        <td>object</td>
-        <td>
-          DNSSECStatus represents the DNSSEC status of a domain<br/>
-        </td>
-        <td>false</td>
-      </tr><tr>
-        <td><b>expirationDate</b></td>
-        <td>string</td>
-        <td>
-          <br/>
-        </td>
-        <td>false</td>
-      </tr><tr>
-        <td><b>ianaID</b></td>
-        <td>string</td>
-        <td>
-          <br/>
-        </td>
-        <td>false</td>
-      </tr><tr>
-        <td><b>ianaName</b></td>
-        <td>string</td>
-        <td>
-          <br/>
-        </td>
-        <td>false</td>
-      </tr><tr>
-        <td><b>modifiedDate</b></td>
-        <td>string</td>
-        <td>
-          <br/>
-        </td>
-        <td>false</td>
-      </tr><tr>
-        <td><b>nameservers</b></td>
-        <td>[]string</td>
-        <td>
-          <br/>
-        </td>
-        <td>false</td>
-      </tr><tr>
-        <td><b>serverStatusCodes</b></td>
-        <td>[]string</td>
+        <td><b><a href="#domainstatusnameserversindexipsindex">ips</a></b></td>
+        <td>[]object</td>
         <td>
           <br/>
         </td>
@@ -299,12 +266,12 @@ DomainRegistrarStatus represents the registrar information for a domain
 </table>
 
 
-### Domain.status.registrar.dnssec
-<sup><sup>[↩ Parent](#domainstatusregistrar)</sup></sup>
+### Domain.status.nameservers[index].ips[index]
+<sup><sup>[↩ Parent](#domainstatusnameserversindex)</sup></sup>
 
 
 
-DNSSECStatus represents the DNSSEC status of a domain
+NameserverIP captures per-address provenance for a nameserver.
 
 <table>
     <thead>
@@ -316,12 +283,500 @@ DNSSECStatus represents the DNSSEC status of a domain
         </tr>
     </thead>
     <tbody><tr>
-        <td><b>signed</b></td>
-        <td>boolean</td>
+        <td><b>address</b></td>
+        <td>string</td>
         <td>
           <br/>
         </td>
         <td>true</td>
+      </tr><tr>
+        <td><b>registrantName</b></td>
+        <td>string</td>
+        <td>
+          <br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### Domain.status.registration
+<sup><sup>[↩ Parent](#domainstatus)</sup></sup>
+
+
+
+Registration represents the registration information for a domain
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b><a href="#domainstatusregistrationabuse">abuse</a></b></td>
+        <td>object</td>
+        <td>
+          Abuse / support contacts (registrar/registry)<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b><a href="#domainstatusregistrationcontacts">contacts</a></b></td>
+        <td>object</td>
+        <td>
+          Contacts (minimal, non-PII summary if available)<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>createdAt</b></td>
+        <td>string</td>
+        <td>
+          Lifecycle<br/>
+          <br/>
+            <i>Format</i>: date-time<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b><a href="#domainstatusregistrationdnssec">dnssec</a></b></td>
+        <td>object</td>
+        <td>
+          DNSSEC (from RDAP secureDNS, with WHOIS fallback when parsable)<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>domain</b></td>
+        <td>string</td>
+        <td>
+          Identity & provenance<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>expiresAt</b></td>
+        <td>string</td>
+        <td>
+          <br/>
+          <br/>
+            <i>Format</i>: date-time<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>handle</b></td>
+        <td>string</td>
+        <td>
+          <br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>nextRefreshAttempt</b></td>
+        <td>string</td>
+        <td>
+          <br/>
+          <br/>
+            <i>Format</i>: date-time<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b><a href="#domainstatusregistrationregistrar">registrar</a></b></td>
+        <td>object</td>
+        <td>
+          <br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b><a href="#domainstatusregistrationregistry">registry</a></b></td>
+        <td>object</td>
+        <td>
+          <br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>registryDomainID</b></td>
+        <td>string</td>
+        <td>
+          <br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>source</b></td>
+        <td>string</td>
+        <td>
+          <br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>statuses</b></td>
+        <td>[]string</td>
+        <td>
+          Raw statuses that will either be rdap rfc8056 or whois EPP status strings<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>updatedAt</b></td>
+        <td>string</td>
+        <td>
+          <br/>
+          <br/>
+            <i>Format</i>: date-time<br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### Domain.status.registration.abuse
+<sup><sup>[↩ Parent](#domainstatusregistration)</sup></sup>
+
+
+
+Abuse / support contacts (registrar/registry)
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>email</b></td>
+        <td>string</td>
+        <td>
+          <br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>phone</b></td>
+        <td>string</td>
+        <td>
+          <br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### Domain.status.registration.contacts
+<sup><sup>[↩ Parent](#domainstatusregistration)</sup></sup>
+
+
+
+Contacts (minimal, non-PII summary if available)
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b><a href="#domainstatusregistrationcontactsadmin">admin</a></b></td>
+        <td>object</td>
+        <td>
+          <br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b><a href="#domainstatusregistrationcontactsregistrant">registrant</a></b></td>
+        <td>object</td>
+        <td>
+          <br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b><a href="#domainstatusregistrationcontactstech">tech</a></b></td>
+        <td>object</td>
+        <td>
+          <br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### Domain.status.registration.contacts.admin
+<sup><sup>[↩ Parent](#domainstatusregistrationcontacts)</sup></sup>
+
+
+
+
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>email</b></td>
+        <td>string</td>
+        <td>
+          <br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>organization</b></td>
+        <td>string</td>
+        <td>
+          <br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>phone</b></td>
+        <td>string</td>
+        <td>
+          <br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### Domain.status.registration.contacts.registrant
+<sup><sup>[↩ Parent](#domainstatusregistrationcontacts)</sup></sup>
+
+
+
+
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>email</b></td>
+        <td>string</td>
+        <td>
+          <br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>organization</b></td>
+        <td>string</td>
+        <td>
+          <br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>phone</b></td>
+        <td>string</td>
+        <td>
+          <br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### Domain.status.registration.contacts.tech
+<sup><sup>[↩ Parent](#domainstatusregistrationcontacts)</sup></sup>
+
+
+
+
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>email</b></td>
+        <td>string</td>
+        <td>
+          <br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>organization</b></td>
+        <td>string</td>
+        <td>
+          <br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>phone</b></td>
+        <td>string</td>
+        <td>
+          <br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### Domain.status.registration.dnssec
+<sup><sup>[↩ Parent](#domainstatusregistration)</sup></sup>
+
+
+
+DNSSEC (from RDAP secureDNS, with WHOIS fallback when parsable)
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b><a href="#domainstatusregistrationdnssecdsindex">ds</a></b></td>
+        <td>[]object</td>
+        <td>
+          <br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>enabled</b></td>
+        <td>boolean</td>
+        <td>
+          <br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### Domain.status.registration.dnssec.ds[index]
+<sup><sup>[↩ Parent](#domainstatusregistrationdnssec)</sup></sup>
+
+
+
+
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>algorithm</b></td>
+        <td>integer</td>
+        <td>
+          <br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>digest</b></td>
+        <td>string</td>
+        <td>
+          <br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>digestType</b></td>
+        <td>integer</td>
+        <td>
+          <br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>keyTag</b></td>
+        <td>integer</td>
+        <td>
+          <br/>
+        </td>
+        <td>true</td>
+      </tr></tbody>
+</table>
+
+
+### Domain.status.registration.registrar
+<sup><sup>[↩ Parent](#domainstatusregistration)</sup></sup>
+
+
+
+
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>ianaID</b></td>
+        <td>string</td>
+        <td>
+          <br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>name</b></td>
+        <td>string</td>
+        <td>
+          <br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>url</b></td>
+        <td>string</td>
+        <td>
+          <br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### Domain.status.registration.registry
+<sup><sup>[↩ Parent](#domainstatusregistration)</sup></sup>
+
+
+
+
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>name</b></td>
+        <td>string</td>
+        <td>
+          <br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>url</b></td>
+        <td>string</td>
+        <td>
+          <br/>
+        </td>
+        <td>false</td>
       </tr></tbody>
 </table>
 

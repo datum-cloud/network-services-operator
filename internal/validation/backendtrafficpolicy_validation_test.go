@@ -319,6 +319,20 @@ func TestValidateBackendTrafficPolicy(t *testing.T) {
 				field.Forbidden(field.NewPath("spec", "faultInjection"), "fault injection is not permitted"),
 			},
 		},
+		"response override redirect not permitted": {
+			backendTrafficPolicy: &envoygatewayv1alpha1.BackendTrafficPolicy{
+				Spec: envoygatewayv1alpha1.BackendTrafficPolicySpec{
+					ResponseOverride: []*envoygatewayv1alpha1.ResponseOverride{
+						{
+							Redirect: &envoygatewayv1alpha1.CustomRedirect{},
+						},
+					},
+				},
+			},
+			expectedErrors: field.ErrorList{
+				field.Forbidden(field.NewPath("spec", "responseOverride").Index(0).Child("redirect"), "fault injection is not permitted"),
+			},
+		},
 	}
 
 	for name, scenario := range scenarios {

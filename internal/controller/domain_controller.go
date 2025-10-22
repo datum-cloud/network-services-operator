@@ -147,8 +147,14 @@ func (r *DomainReconciler) Reconcile(ctx context.Context, req mcreconcile.Reques
 		}
 	}
 
-	if wake != nil && wake.After(now) {
-		return ctrl.Result{RequeueAfter: wake.Sub(now).Truncate(time.Second)}, nil
+	if wake != nil {
+		// If the wake time is in the future, schedule a requeue after the remaining duration.
+		if wake.After(now) {
+			return ctrl.Result{RequeueAfter: wake.Sub(now).Truncate(time.Second)}, nil
+		}
+		// If the wake time is now or already in the past, use a minimal positive RequeueAfter
+		// to avoid the deprecated Requeue flag.
+		return ctrl.Result{RequeueAfter: 1 * time.Second}, nil
 	}
 
 	return ctrl.Result{}, nil

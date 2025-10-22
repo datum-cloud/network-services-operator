@@ -614,7 +614,7 @@ func TestVerification_RequeueImmediate_WhenWakeDueOrPast(t *testing.T) {
 	assert.NoError(t, err)
 
 	// With the fix, we should requeue immediately when wake time is now/past
-	assert.Equal(t, time.Duration(1*time.Second), res.RequeueAfter)
+	assert.Equal(t, 1*time.Second, res.RequeueAfter)
 }
 
 func TestVerification_RequeueImmediate_WhenWakeInPast(t *testing.T) {
@@ -674,7 +674,7 @@ func TestVerification_RequeueImmediate_WhenWakeInPast(t *testing.T) {
 	assert.NoError(t, err)
 
 	// With the fix, we should requeue immediately when wake time is past
-	assert.Equal(t, time.Duration(1*time.Second), res.RequeueAfter)
+	assert.Equal(t, 1*time.Second, res.RequeueAfter)
 }
 
 func TestRegistration_Subdomain_DelegationOverridesApexNS(t *testing.T) {

@@ -150,7 +150,12 @@ func (r *DomainReconciler) Reconcile(ctx context.Context, req mcreconcile.Reques
 	if wake != nil {
 		// If the wake time is in the future, schedule a requeue after the remaining duration.
 		if wake.After(now) {
-			return ctrl.Result{RequeueAfter: wake.Sub(now).Truncate(time.Second)}, nil
+			remaining := wake.Sub(now)
+			// Floor sub-second values to a minimum of 1s to avoid a zero requeue
+			if remaining < time.Second {
+				return ctrl.Result{RequeueAfter: 1 * time.Second}, nil
+			}
+			return ctrl.Result{RequeueAfter: remaining.Truncate(time.Second)}, nil
 		}
 		// If the wake time is now or already in the past, use a minimal positive RequeueAfter
 		// to avoid the deprecated Requeue flag.
@@ -216,13 +221,18 @@ func (r *DomainReconciler) reconcileVerification(ctx context.Context, domain *ne
 				},
 			}
 
+			// Schedule the first verification attempt immediately so the controller
+			// will requeue and begin verification without waiting for an external trigger.
+			domainStatus.Verification.NextVerificationAttempt = metav1.NewTime(r.timeNow())
+			nextAttempt = domainStatus.Verification.NextVerificationAttempt.Time
+
 			verifiedCondition.Message = "Update your DNS provider with record defined in `status.verification.dnsRecord`, " +
 				"or HTTP server with token defined in `status.verification.httpToken`."
 			verifiedDNSCondition.Message = "Update your DNS provider with record defined in `status.verification.dnsRecord`."
 			verifiedHTTPCondition.Message = "Update your HTTP server with token defined in `status.verification.httpToken`."
 		} else {
 			// If we're not yet due, short-circuit
-			if remaining := domainStatus.Verification.NextVerificationAttempt.Sub(r.timeNow()).Truncate(time.Second); remaining > 0 {
+			if remaining := domainStatus.Verification.NextVerificationAttempt.Sub(r.timeNow()); remaining > 0 {
 				logger.Info("not attempting another validation until remaining time elapsed", "remaining", remaining)
 				nextAttempt = r.timeNow().Add(remaining)
 			} else {

@@ -677,6 +677,66 @@ func TestVerification_RequeueImmediate_WhenWakeInPast(t *testing.T) {
 	assert.Equal(t, 1*time.Second, res.RequeueAfter)
 }
 
+func TestVerification_RequeueFloorsSubSecondToOneSecond(t *testing.T) {
+	s := runtime.NewScheme()
+	_ = scheme.AddToScheme(s)
+	_ = networkingv1alpha.AddToScheme(s)
+
+	// Fixed reference time
+	now := time.Date(2025, 10, 22, 15, 40, 14, 0, time.UTC)
+
+	// Domain has verification with next attempt 500ms in the future
+	dom := newDomain("default", "due-subsecond", func(d *networkingv1alpha.Domain) {
+		d.Status.Verification = &networkingv1alpha.DomainVerificationStatus{
+			DNSRecord: networkingv1alpha.DNSVerificationRecord{
+				Name:    "_dnsverify.example.com",
+				Type:    "TXT",
+				Content: "token",
+			},
+			NextVerificationAttempt: metav1.Time{Time: now.Add(500 * time.Millisecond)},
+		}
+	})
+
+	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(dom).WithStatusSubresource(dom).Build()
+	mgr := &fakeMockManager{cl: cl}
+
+	operatorConfig := config.NetworkServicesOperator{
+		DomainVerification: config.DomainVerificationConfig{
+			RetryIntervals:       []config.RetryInterval{{Interval: metav1.Duration{Duration: time.Second}}},
+			RetryJitterMaxFactor: 0,
+		},
+		DomainRegistration: config.DomainRegistrationConfig{
+			LookupTimeout:   &metav1.Duration{Duration: 3 * time.Second},
+			RefreshInterval: &metav1.Duration{Duration: time.Hour},
+			JitterMaxFactor: 0.1,
+			RetryBackoff:    &metav1.Duration{Duration: time.Minute},
+		},
+	}
+
+	r := &DomainReconciler{
+		mgr:     mgr,
+		Config:  operatorConfig,
+		timeNow: func() time.Time { return now },
+		// Stubs to avoid real I/O
+		httpGet: func(ctx context.Context, url string) ([]byte, *http.Response, error) {
+			return nil, nil, fmt.Errorf("not implemented")
+		},
+		lookupTXT: func(ctx context.Context, name string) ([]string, error) { return nil, &net.DNSError{IsNotFound: true} },
+		rdapDo: func(ctx context.Context, req *rdap.Request) (*rdap.Response, error) {
+			return &rdap.Response{Object: &rdap.Domain{LDHName: "example.com"}}, nil
+		},
+		lookupNS:    func(ctx context.Context, name string) ([]*net.NS, error) { return nil, &net.DNSError{IsNotFound: true} },
+		lookupIP:    func(ctx context.Context, name string) ([]net.IPAddr, error) { return nil, nil },
+		rdapQueryIP: func(ctx context.Context, ip string) (*rdap.IPNetwork, error) { return nil, nil },
+	}
+
+	res, err := r.Reconcile(context.Background(), mcreconcile.Request{ClusterName: "test", Request: reconcile.Request{NamespacedName: client.ObjectKeyFromObject(dom)}})
+	assert.NoError(t, err)
+
+	// We should schedule a 1s requeue minimum for sub-second remaining
+	assert.Equal(t, 1*time.Second, res.RequeueAfter)
+}
+
 func TestRegistration_Subdomain_DelegationOverridesApexNS(t *testing.T) {
 	s := runtime.NewScheme()
 	_ = scheme.AddToScheme(s)

@@ -281,6 +281,7 @@ func (r TrafficProtectionPolicyReconciler) getCorazaListenerFilterConfig() ([]by
 			"plugin_config": map[string]any{
 				"@type": "type.googleapis.com/xds.type.v3.TypedStruct",
 				"value": map[string]any{
+					"log_format": "json",
 					"directives": sanitizeJSONPath(fmt.Sprintf(`{
 						"coraza": {
 							"simple_directives": %s
@@ -756,6 +757,7 @@ func (r *TrafficProtectionPolicyReconciler) getDesiredEnvoyPatchPolicies(
 							"config": map[string]any{
 								"@type": "type.googleapis.com/xds.type.v3.TypedStruct",
 								"value": map[string]any{
+									"log_format": "json",
 									"directives": sanitizeJSONPath(fmt.Sprintf(`{
 										"coraza": {
 											"simple_directives": %s

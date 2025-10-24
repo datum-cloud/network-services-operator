@@ -66,14 +66,29 @@ spec:
                         OWASPCoreRuleSet defines configuration options for the OWASP ModSecurity
                         Core Rule Set (CRS).
                       properties:
-                        paranoiaLevel:
-                          default: 1
+                        paranoiaLevels:
+                          default: {}
                           description: |-
-                            ParanoiaLevel specifies the OWASP ModSecurity Core Rule Set (CRS)
-                            paranoia level to apply.
-                          maximum: 4
-                          minimum: 1
-                          type: integer
+                            ParanoiaLevels specifies the OWASP ModSecurity Core Rule Set (CRS)
+                            paranoia levels to use.
+                          properties:
+                            blocking:
+                              default: 1
+                              description: Blocking specifies the paranoia level for
+                                blocking requests or responses.
+                              maximum: 4
+                              minimum: 1
+                              type: integer
+                            detection:
+                              default: 1
+                              description: |-
+                                Detection specifies the paranoia level for detection only. This allows
+                                setting a higher paranoia level for detection while keeping blocking at a
+                                lower level.
+                              maximum: 4
+                              minimum: 1
+                              type: integer
+                          type: object
                         ruleExclusions:
                           description: |-
                             RuleExclusions can be used to disable specific OWASP ModSecurity Rules.

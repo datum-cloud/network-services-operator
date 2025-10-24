@@ -349,6 +349,9 @@ type GatewayConfig struct {
 	// +default="datum-downstream-gateway-hostnames"
 	DownstreamHostnameAccountingNamespace string `json:"downstreamHostnameAccountingNamespace"`
 
+	// Disable verification processing. Only intended for supporting ftw tests.
+	DisableHostnameVerification bool `json:"disableHostnameVerification,omitempty"`
+
 	// PermittedTLSOptions is a map of TLS options that are permitted on gateway
 	// listeners. The key is the option name and the value is a list of permitted
 	// option values. An empty list of values means that any value is permitted for	//
@@ -442,7 +445,7 @@ type CorazaConfig struct {
 	// Base directives to define on route filter configs.
 	//
 	// +default=["Include @crs-setup-conf", "Include @recommended-conf"]
-	RouteBaseDirectives []string `json:"pluginBaseDirectives,omitempty"`
+	RouteBaseDirectives []string `json:"routeBaseDirectives,omitempty"`
 }
 
 // +k8s:deepcopy-gen=true

@@ -87,13 +87,12 @@ type TrafficProtectionPolicyRuleSet struct {
 
 // OWASPCRS defines configuration options for the OWASP ModSecurity Core Rule Set (CRS).
 type OWASPCRS struct {
-	// ParanoiaLevel specifies the OWASP ModSecurity Core Rule Set (CRS)
-	// paranoia level to apply.
+
+	// ParanoiaLevels specifies the OWASP ModSecurity Core Rule Set (CRS)
+	// paranoia levels to use.
 	//
-	// +kubebuilder:default=1
-	// +kubebuilder:validation:Minimum=1
-	// +kubebuilder:validation:Maximum=4
-	ParanoiaLevel int `json:"paranoiaLevel,omitempty"`
+	// +kubebuilder:default={}
+	ParanoiaLevels ParanoiaLevels `json:"paranoiaLevels,omitempty"`
 
 	// ScoreThresholds specifies the OWASP ModSecurity Core Rule Set (CRS)
 	// score thresholds to block a request or response.
@@ -109,6 +108,24 @@ type OWASPCRS struct {
 	//
 	// +kubebuilder:validation:Optional
 	RuleExclusions *OWASPRuleExclusions `json:"ruleExclusions,omitempty"`
+}
+
+type ParanoiaLevels struct {
+	// Blocking specifies the paranoia level for blocking requests or responses.
+	//
+	// +kubebuilder:default=1
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=4
+	Blocking int `json:"blocking,omitempty"`
+
+	// Detection specifies the paranoia level for detection only. This allows
+	// setting a higher paranoia level for detection while keeping blocking at a
+	// lower level.
+	//
+	// +kubebuilder:default=1
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=4
+	Detection int `json:"detection,omitempty"`
 }
 
 type OWASPRuleExclusions struct {

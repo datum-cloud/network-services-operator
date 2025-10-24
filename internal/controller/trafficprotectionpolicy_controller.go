@@ -913,7 +913,11 @@ func (r *TrafficProtectionPolicyReconciler) getCorazaDirectivesForTrafficProtect
 		directives,
 		fmt.Sprintf(
 			`SecAction "id:900000,phase:1,pass,t:none,nolog,tag:'OWASP_CRS',setvar:tx.blocking_paranoia_level=%d"`,
-			owaspCRS.ParanoiaLevel,
+			owaspCRS.ParanoiaLevels.Blocking,
+		),
+		fmt.Sprintf(
+			`SecAction "id:900001,phase:1,pass,t:none,nolog,tag:'OWASP_CRS',setvar:tx.detection_paranoia_level=%d"`,
+			owaspCRS.ParanoiaLevels.Detection,
 		),
 	)
 

@@ -572,6 +572,12 @@ func (r *GatewayReconciler) ensureHostnameVerification(
 		}
 	}
 
+	if r.Config.Gateway.DisableHostnameVerification {
+		verifiedHostnamesSlice := hostnames.UnsortedList()
+		slices.Sort(verifiedHostnamesSlice)
+		return verifiedHostnamesSlice, nil
+	}
+
 	// List all Domains in the same namespace as the upstream gateway. A field
 	// selector will not work here, as set based operations are not supported, and
 	// there's not way to check for a suffix match.

@@ -32,6 +32,28 @@ func SetObjectDefaults_NetworkServicesOperator(in *NetworkServicesOperator) {
 			panic(err)
 		}
 	}
+	if in.Gateway.Coraza.LibraryID == "" {
+		in.Gateway.Coraza.LibraryID = "coraza-waf"
+	}
+	if in.Gateway.Coraza.LibraryPath == "" {
+		in.Gateway.Coraza.LibraryPath = "/opt/coraza-waf/coraza-waf.so"
+	}
+	if in.Gateway.Coraza.FilterName == "" {
+		in.Gateway.Coraza.FilterName = "coraza-waf"
+	}
+	if in.Gateway.Coraza.PluginName == "" {
+		in.Gateway.Coraza.PluginName = "coraza-waf"
+	}
+	if in.Gateway.Coraza.ListenerDirectives == nil {
+		if err := json.Unmarshal([]byte(`[]`), &in.Gateway.Coraza.ListenerDirectives); err != nil {
+			panic(err)
+		}
+	}
+	if in.Gateway.Coraza.RouteBaseDirectives == nil {
+		if err := json.Unmarshal([]byte(`["Include @crs-setup-conf", "Include @recommended-conf"]`), &in.Gateway.Coraza.RouteBaseDirectives); err != nil {
+			panic(err)
+		}
+	}
 	if in.Gateway.ValidPortNumbers == nil {
 		if err := json.Unmarshal([]byte(`[80,443]`), &in.Gateway.ValidPortNumbers); err != nil {
 			panic(err)

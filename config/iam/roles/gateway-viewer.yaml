@@ -38,3 +38,6 @@ spec:
     - networking.datumapis.com/httpproxies.list
     - networking.datumapis.com/httpproxies.get
     - networking.datumapis.com/httpproxies.watch
+    - networking.datumapis.com/trafficprotectionpolicies.list
+    - networking.datumapis.com/trafficprotectionpolicies.get
+    - networking.datumapis.com/trafficprotectionpolicies.watch

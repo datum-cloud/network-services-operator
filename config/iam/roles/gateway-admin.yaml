@@ -46,3 +46,7 @@ spec:
     - networking.datumapis.com/httpproxies.update
     - networking.datumapis.com/httpproxies.patch
     - networking.datumapis.com/httpproxies.delete
+    - networking.datumapis.com/trafficprotectionpolicies.create
+    - networking.datumapis.com/trafficprotectionpolicies.update
+    - networking.datumapis.com/trafficprotectionpolicies.patch
+    - networking.datumapis.com/trafficprotectionpolicies.delete

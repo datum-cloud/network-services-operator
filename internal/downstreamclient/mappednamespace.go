@@ -46,7 +46,7 @@ func (c *mappedNamespaceResourceStrategy) GetClient() client.Client {
 }
 
 func (c *mappedNamespaceResourceStrategy) ObjectMetaFromUpstreamObject(ctx context.Context, obj metav1.Object) (metav1.ObjectMeta, error) {
-	downstreamNamespaceName, err := c.getDownstreamNamespaceName(ctx, obj)
+	downstreamNamespaceName, err := c.GetDownstreamNamespaceNameForUpstreamNamespace(ctx, obj.GetNamespace())
 	if err != nil {
 		return metav1.ObjectMeta{}, fmt.Errorf("failed to get downstream namespace name: %w", err)
 	}
@@ -60,24 +60,21 @@ func (c *mappedNamespaceResourceStrategy) ObjectMetaFromUpstreamObject(ctx conte
 	}, nil
 }
 
-func (c *mappedNamespaceResourceStrategy) getUpstreamNamespace(ctx context.Context, obj metav1.Object) (*corev1.Namespace, error) {
+func (c *mappedNamespaceResourceStrategy) getUpstreamNamespace(ctx context.Context, name string) (*corev1.Namespace, error) {
 	namespace := &corev1.Namespace{}
 
-	if obj == nil {
-		return nil, fmt.Errorf("object is nil")
-	}
 	if c.upstreamClient == nil {
 		return nil, fmt.Errorf("upstream client is nil")
 	}
-	if err := c.upstreamClient.Get(ctx, client.ObjectKey{Name: obj.GetNamespace()}, namespace); err != nil {
+	if err := c.upstreamClient.Get(ctx, client.ObjectKey{Name: name}, namespace); err != nil {
 		return nil, fmt.Errorf("failed to get upstream namespace: %w", err)
 	}
 
 	return namespace, nil
 }
 
-func (c *mappedNamespaceResourceStrategy) getDownstreamNamespaceName(ctx context.Context, obj metav1.Object) (string, error) {
-	namespace, err := c.getUpstreamNamespace(ctx, obj)
+func (c *mappedNamespaceResourceStrategy) GetDownstreamNamespaceNameForUpstreamNamespace(ctx context.Context, name string) (string, error) {
+	namespace, err := c.getUpstreamNamespace(ctx, name)
 	if err != nil {
 		return "", fmt.Errorf("failed to get downstream namespace: %w", err)
 	}

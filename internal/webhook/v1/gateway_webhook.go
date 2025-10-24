@@ -28,11 +28,12 @@ import (
 // SetupGatewayWebhookWithManager registers the webhook for Gateway in the manager.
 func SetupGatewayWebhookWithManager(mgr mcmanager.Manager, config config.NetworkServicesOperator) error {
 	validationOpts := validation.GatewayValidationOptions{
-		ControllerName:        config.Gateway.ControllerName,
-		PermittedTLSOptions:   config.Gateway.PermittedTLSOptions,
-		ValidPortNumbers:      config.Gateway.ValidPortNumbers,
-		ValidProtocolTypes:    config.Gateway.ValidProtocolTypes,
-		GatewayDNSAddressFunc: config.Gateway.GatewayDNSAddress,
+		ControllerName:             config.Gateway.ControllerName,
+		PermittedTLSOptions:        config.Gateway.PermittedTLSOptions,
+		ValidPortNumbers:           config.Gateway.ValidPortNumbers,
+		ValidProtocolTypes:         config.Gateway.ValidProtocolTypes,
+		GatewayDNSAddressFunc:      config.Gateway.GatewayDNSAddress,
+		SkipHostnameFQDNValidation: config.Gateway.DisableHostnameVerification,
 	}
 
 	return ctrl.NewWebhookManagedBy(mgr.GetLocalManager()).For(&gatewayv1.Gateway{}).

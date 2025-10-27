@@ -1,8 +1,12 @@
 package controller
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 
+	"github.com/davecgh/go-spew/spew"
+	envoygatewayv1alpha1 "github.com/envoyproxy/gateway/api/v1alpha1"
 	"github.com/stretchr/testify/assert"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
@@ -660,6 +664,286 @@ func TestProcessTrafficProtectionPolicyForGateway(t *testing.T) {
 
 			tt.assert(testCtx, attachments)
 
+		})
+	}
+}
+
+func TestGetDesiredEnvoyPatchPolicies(t *testing.T) {
+
+	operatorConfig := config.NetworkServicesOperator{
+		Gateway: config.GatewayConfig{
+			TargetDomain: "example.com",
+			ListenerTLSOptions: map[gatewayv1.AnnotationKey]gatewayv1.AnnotationValue{
+				gatewayv1.AnnotationKey("gateway.networking.datumapis.com/certificate-issuer"): gatewayv1.AnnotationValue("test"),
+			},
+			DownstreamGatewayClassName: "test-gateway-class",
+		},
+	}
+
+	reconciler := &TrafficProtectionPolicyReconciler{Config: operatorConfig}
+
+	gateway1 := newGateway(operatorConfig, "default", "gateway-1")
+	gateway2 := newGateway(operatorConfig, "default", "gateway-2")
+
+	policyAttachments := []policyAttachment{
+		{
+			Gateway: gateway1,
+			CorazaDirectives: []string{
+				"SecRuleEngine On",
+			},
+			// attach to every listener on the gateway, for all routes
+			Listener: nil,
+		},
+		{
+			Gateway: gateway1,
+			CorazaDirectives: []string{
+				"SecRuleEngine On",
+			},
+			// attach to every listener on the gateway, but only for the route below.
+			// This will serve as an override to the previous attachment.
+			Listener: nil,
+			Route:    newHTTPRoute("default", "route-1"),
+		},
+		{
+			Gateway: gateway1,
+			CorazaDirectives: []string{
+				"SecRuleEngine On",
+			},
+			Listener: nil, // attach to every listener on the gateway
+			Route:    newHTTPRoute("default", "route-2"),
+		},
+		{
+			Gateway: gateway2,
+			CorazaDirectives: []string{
+				"SecRuleEngine On",
+			},
+			Listener:        ptr.To(gatewayv1.SectionName(gatewayutil.DefaultHTTPListenerName)),
+			Route:           newHTTPRoute("default", "route-2"),
+			RuleSectionName: ptr.To(gatewayv1.SectionName("rule-1")),
+		},
+		{
+			Gateway: gateway2,
+			CorazaDirectives: []string{
+				"SecRuleEngine On",
+			},
+			Listener:        ptr.To(gatewayv1.SectionName(gatewayutil.DefaultHTTPSListenerName)),
+			Route:           newHTTPRoute("default", "route-2"),
+			RuleSectionName: ptr.To(gatewayv1.SectionName("rule-1")),
+		},
+	}
+
+	testNamespace := "test-namespace"
+
+	patchPolicies, err := reconciler.getDesiredEnvoyPatchPolicies(
+		testNamespace,
+		policyAttachments,
+	)
+
+	if assert.NoError(t, err) {
+		assert.Len(t, patchPolicies, 2)
+
+		for _, attachment := range policyAttachments {
+
+			var patchPolicy *envoygatewayv1alpha1.EnvoyPatchPolicy
+			for _, p := range patchPolicies {
+				if p.ObjectMeta.Name == fmt.Sprintf("tpp-%s", attachment.Gateway.Name) {
+					patchPolicy = p
+					break
+				}
+			}
+
+			if assert.NotNilf(t, patchPolicy, "expected to find EnvoyPatchPolicy for %s", attachment.Gateway.Name) {
+
+				// Confirm that each plaintext listener has a patch. Note that there's
+				// a single http-80 RouteConfiguration, and patches target virtual hosts,
+				// followed by routes.
+
+				for _, l := range attachment.Gateway.Spec.Listeners {
+					if l.Protocol != gatewayv1.HTTPProtocolType {
+						continue
+					}
+					if attachment.Listener != nil && *attachment.Listener != l.Name {
+						continue
+					}
+
+					patchFound := false
+
+					vhostConstraints := getVHostConstraintForGateway(testNamespace, attachment.Gateway)
+					var listenerConstraint, routeConstraint string
+					for _, patch := range patchPolicy.Spec.JSONPatches {
+						if patch.Name != fmt.Sprintf("http-%d", DefaultHTTPPort) {
+							continue
+						}
+
+						if strings.Contains(ptr.Deref(patch.Operation.JSONPath, ""), vhostConstraints) {
+
+							if attachment.Listener != nil {
+								listenerConstraint = fmt.Sprintf(" && @.sectionName==\"%s\"", *attachment.Listener)
+								if !strings.Contains(ptr.Deref(patch.Operation.JSONPath, ""), listenerConstraint) {
+									continue
+								}
+							}
+
+							if attachment.Route != nil {
+								routeConstraint = fmt.Sprintf(`@.kind=="HTTPRoute" && @.namespace=="%s" && @.name=="%s"`, testNamespace, attachment.Route.Name)
+								if !strings.Contains(ptr.Deref(patch.Operation.JSONPath, ""), routeConstraint) {
+									continue
+								}
+							}
+
+							patchFound = true
+							break
+						}
+					}
+
+					if !assert.Truef(t, patchFound, "did not find patch with vhost constraints %q, listener constraints %q, and route constraints %q", vhostConstraints, listenerConstraint, routeConstraint) {
+						spew.Dump(patchPolicy.Spec.JSONPatches)
+					}
+				}
+
+				// Confirm there's a patch for the TLS filter chain for each HTTPS listener
+				for _, l := range attachment.Gateway.Spec.Listeners {
+					if l.Protocol != gatewayv1.HTTPSProtocolType {
+						continue
+					}
+					if attachment.Listener != nil && *attachment.Listener != l.Name {
+						continue
+					}
+
+					patchFound := false
+					filterChainName := fmt.Sprintf("%s/%s/%s", testNamespace, attachment.Gateway.Name, l.Name)
+					for _, patch := range patchPolicy.Spec.JSONPatches {
+						if patch.Name != fmt.Sprintf("tcp-%d", DefaultHTTPSPort) {
+							continue
+						}
+
+						jsonPath := fmt.Sprintf(`..filter_chains[?(@.name=="%s")]`, filterChainName)
+						if ptr.Deref(patch.Operation.JSONPath, "") == jsonPath {
+							patchFound = true
+							break
+						}
+					}
+
+					if !assert.Truef(t, patchFound, "expected to find patch for HTTPS filter chain %s", filterChainName) {
+						spew.Dump(patchPolicy.Spec.JSONPatches)
+					}
+				}
+			}
+		}
+	}
+}
+
+func TestGetCorazaDirectivesForTrafficProtectionPolicy(t *testing.T) {
+	operatorConfig := config.NetworkServicesOperator{
+		Gateway: config.GatewayConfig{
+			TargetDomain: "example.com",
+			ListenerTLSOptions: map[gatewayv1.AnnotationKey]gatewayv1.AnnotationValue{
+				gatewayv1.AnnotationKey("gateway.networking.datumapis.com/certificate-issuer"): gatewayv1.AnnotationValue("test"),
+			},
+			DownstreamGatewayClassName: "test-gateway-class",
+			Coraza: config.CorazaConfig{
+				ListenerDirectives: []string{
+					"SecRuleEngine On",
+				},
+				RouteBaseDirectives: []string{
+					"Include @crs-setup-conf", "Include @recommended-conf",
+				},
+			},
+		},
+	}
+
+	tests := []struct {
+		name                     string
+		policy                   networkingv1alpha.TrafficProtectionPolicy
+		expectedCorazaDirectives []string
+	}{
+		{
+			name:   "default OWASP CRS settings - Observe",
+			policy: newTrafficProtectionPolicy("default", "tpp-1"),
+			expectedCorazaDirectives: []string{
+				"Include @crs-setup-conf",
+				"Include @recommended-conf",
+				"SecRuleEngine DetectionOnly",
+				"SecAction \"id:900110,phase:1,nolog,pass,t:none,setvar:tx.inbound_anomaly_score_threshold=5,setvar:tx.outbound_anomaly_score_threshold=4\"",
+				"SecAction \"id:900000,phase:1,pass,t:none,nolog,tag:'OWASP_CRS',setvar:tx.blocking_paranoia_level=1\"",
+				"SecAction \"id:900001,phase:1,pass,t:none,nolog,tag:'OWASP_CRS',setvar:tx.detection_paranoia_level=1\"",
+				"Include @owasp_crs/*.conf",
+			},
+		},
+		{
+			name: "default OWASP CRS settings - Enforce",
+			policy: newTrafficProtectionPolicy("default", "tpp-1", func(tpp *networkingv1alpha.TrafficProtectionPolicy) {
+				tpp.Spec.Mode = networkingv1alpha.TrafficProtectionPolicyEnforce
+			}),
+			expectedCorazaDirectives: []string{
+				"Include @crs-setup-conf",
+				"Include @recommended-conf",
+				"SecRuleEngine On",
+				"SecAction \"id:900110,phase:1,nolog,pass,t:none,setvar:tx.inbound_anomaly_score_threshold=5,setvar:tx.outbound_anomaly_score_threshold=4\"",
+				"SecAction \"id:900000,phase:1,pass,t:none,nolog,tag:'OWASP_CRS',setvar:tx.blocking_paranoia_level=1\"",
+				"SecAction \"id:900001,phase:1,pass,t:none,nolog,tag:'OWASP_CRS',setvar:tx.detection_paranoia_level=1\"",
+				"Include @owasp_crs/*.conf",
+			},
+		},
+		{
+			name: "default OWASP CRS settings - Disabled",
+			policy: newTrafficProtectionPolicy("default", "tpp-1", func(tpp *networkingv1alpha.TrafficProtectionPolicy) {
+				tpp.Spec.Mode = networkingv1alpha.TrafficProtectionPolicyDisabled
+			}),
+			expectedCorazaDirectives: []string{
+				"Include @crs-setup-conf",
+				"Include @recommended-conf",
+				"SecRuleEngine Off",
+				"SecAction \"id:900110,phase:1,nolog,pass,t:none,setvar:tx.inbound_anomaly_score_threshold=5,setvar:tx.outbound_anomaly_score_threshold=4\"",
+				"SecAction \"id:900000,phase:1,pass,t:none,nolog,tag:'OWASP_CRS',setvar:tx.blocking_paranoia_level=1\"",
+				"SecAction \"id:900001,phase:1,pass,t:none,nolog,tag:'OWASP_CRS',setvar:tx.detection_paranoia_level=1\"",
+				"Include @owasp_crs/*.conf",
+			},
+		},
+		{
+			name: "customized OWASP CRS settings",
+			policy: newTrafficProtectionPolicy("default", "tpp-1", func(tpp *networkingv1alpha.TrafficProtectionPolicy) {
+				tpp.Spec.Mode = networkingv1alpha.TrafficProtectionPolicyEnforce
+				tpp.Spec.SamplingPercentage = 50
+				owaspCRS := &tpp.Spec.RuleSets[0].OWASPCoreRuleSet
+
+				owaspCRS.ScoreThresholds.Inbound = 1000
+				owaspCRS.ScoreThresholds.Outbound = 1000
+
+				owaspCRS.ParanoiaLevels.Blocking = 4
+				owaspCRS.ParanoiaLevels.Detection = 4
+
+				owaspCRS.RuleExclusions = &networkingv1alpha.OWASPRuleExclusions{
+					Tags: []networkingv1alpha.OWASPTag{"tag1", "tag2"},
+					IDs:  []int{9999},
+					IDRanges: []networkingv1alpha.OWASPIDRange{
+						"1000-2000",
+					},
+				}
+			}),
+			expectedCorazaDirectives: []string{
+				"Include @crs-setup-conf",
+				"Include @recommended-conf",
+				"SecRuleEngine On",
+				"SecAction \"id:900110,phase:1,nolog,pass,t:none,setvar:tx.inbound_anomaly_score_threshold=1000,setvar:tx.outbound_anomaly_score_threshold=1000\"",
+				"SecAction \"id:900000,phase:1,pass,t:none,nolog,tag:'OWASP_CRS',setvar:tx.blocking_paranoia_level=4\"",
+				"SecAction \"id:900001,phase:1,pass,t:none,nolog,tag:'OWASP_CRS',setvar:tx.detection_paranoia_level=4\"",
+				"SecAction \"id:900400,phase:1,pass,nolog,setvar:tx.sampling_percentage=50\"",
+				"Include @owasp_crs/*.conf",
+				"SecRuleRemoveByTag \"tag1\"",
+				"SecRuleRemoveByTag \"tag2\"",
+				"SecRuleRemoveById 9999",
+				"SecRuleRemoveById \"1000-2000\"",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+
+			reconciler := &TrafficProtectionPolicyReconciler{Config: operatorConfig}
+			corazaDirectives := reconciler.getCorazaDirectivesForTrafficProtectionPolicy(&policyContext{ptr.To(tt.policy)})
+			assert.EqualValues(t, tt.expectedCorazaDirectives, corazaDirectives)
 		})
 	}
 }

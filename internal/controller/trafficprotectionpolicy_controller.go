@@ -713,11 +713,7 @@ func (r *TrafficProtectionPolicyReconciler) getDesiredEnvoyPatchPolicies(
 				// Shouldn't happen until other types of rulesets are added
 				continue
 			}
-			vhostConstraints := fmt.Sprintf(`@.kind=="%s" && @.namespace=="%s" && @.name=="%s"`,
-				KindGateway,
-				downstreamNamespaceName,
-				policyAttachment.Gateway.Name,
-			)
+			vhostConstraints := getVHostConstraintForGateway(downstreamNamespaceName, policyAttachment.Gateway)
 
 			if policyAttachment.Listener != nil {
 				vhostConstraints += fmt.Sprintf(" && @.sectionName==\"%s\"", *policyAttachment.Listener)
@@ -821,8 +817,20 @@ func (r *TrafficProtectionPolicyReconciler) getDesiredEnvoyPatchPolicies(
 				}
 			} else {
 
-				listenerRouteConfigName := fmt.Sprintf("%s/%s/%s", downstreamNamespaceName, policyAttachment.Gateway.Name, *policyAttachment.Listener)
-				tlsFilterChainsWithAttachments.Insert(listenerRouteConfigName)
+				var listener gatewayv1.Listener
+				for _, l := range policyAttachment.Gateway.Spec.Listeners {
+					if l.Name == *policyAttachment.Listener {
+						listener = l
+						break
+					}
+				}
+
+				listenerRouteConfigName := fmt.Sprintf("http-%d", DefaultHTTPPort)
+				if listener.Protocol == gatewayv1.HTTPSProtocolType {
+					listenerRouteConfigName = fmt.Sprintf("%s/%s/%s", downstreamNamespaceName, policyAttachment.Gateway.Name, *policyAttachment.Listener)
+					listenerRouteConfigName := fmt.Sprintf("%s/%s/%s", downstreamNamespaceName, policyAttachment.Gateway.Name, *policyAttachment.Listener)
+					tlsFilterChainsWithAttachments.Insert(listenerRouteConfigName)
+				}
 
 				jsonPatches = append(jsonPatches, envoygatewayv1alpha1.EnvoyJSONPatchConfig{
 					Type: "type.googleapis.com/envoy.config.route.v3.RouteConfiguration",
@@ -881,6 +889,14 @@ func (r *TrafficProtectionPolicyReconciler) getDesiredEnvoyPatchPolicies(
 	}
 
 	return desiredPolicies, nil
+}
+
+func getVHostConstraintForGateway(namespace string, gateway *gatewayv1.Gateway) string {
+	return fmt.Sprintf(`@.kind=="%s" && @.namespace=="%s" && @.name=="%s"`,
+		KindGateway,
+		namespace,
+		gateway.Name,
+	)
 }
 
 func (r *TrafficProtectionPolicyReconciler) getCorazaDirectivesForTrafficProtectionPolicy(

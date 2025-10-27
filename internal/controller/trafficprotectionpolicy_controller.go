@@ -83,27 +83,7 @@ func (r *TrafficProtectionPolicyReconciler) Reconcile(ctx context.Context, req N
 		originalTrafficProtectionPolicies[client.ObjectKeyFromObject(&trafficProtectionPolicyList.Items[i]).String()] = trafficProtectionPolicyList.Items[i]
 	}
 
-	trafficProtectionPolicies := make([]*policyContext, 0, len(trafficProtectionPolicyList.Items))
-	for i, tpp := range trafficProtectionPolicyList.Items {
-		if dt := tpp.DeletionTimestamp; dt != nil {
-			continue
-		}
-		trafficProtectionPolicies = append(trafficProtectionPolicies, &policyContext{
-			TrafficProtectionPolicy: trafficProtectionPolicyList.Items[i].DeepCopy(),
-		})
-	}
-
-	// Sort TrafficProtectionPolicies by creation timestamp, then namespace/name
-	// Precedence aligns with Envoy Gateway's policy sorting.
-	sort.Slice(trafficProtectionPolicies, func(i, j int) bool {
-		if trafficProtectionPolicies[i].CreationTimestamp.Equal(&(trafficProtectionPolicies[j].CreationTimestamp)) {
-			if trafficProtectionPolicies[i].Namespace != trafficProtectionPolicies[j].Namespace {
-				return trafficProtectionPolicies[i].Namespace < trafficProtectionPolicies[j].Namespace
-			}
-			return trafficProtectionPolicies[i].Name < trafficProtectionPolicies[j].Name
-		}
-		return trafficProtectionPolicies[i].CreationTimestamp.Before(&(trafficProtectionPolicies[j].CreationTimestamp))
-	})
+	trafficProtectionPolicies := r.getTrafficProtectionPolicyContexts(trafficProtectionPolicyList.Items)
 
 	var upstreamGateways gatewayv1.GatewayList
 	if err := cl.GetClient().List(ctx, &upstreamGateways, client.InNamespace(req.Namespace)); err != nil {
@@ -115,7 +95,7 @@ func (r *TrafficProtectionPolicyReconciler) Reconcile(ctx context.Context, req N
 		return ctrl.Result{}, err
 	}
 
-	attachments := r.collectTrafficProtectionPolicyAttachments(ctx, trafficProtectionPolicies, upstreamGateways, upstreamHTTPRoutes)
+	attachments := r.collectTrafficProtectionPolicyAttachments(ctx, trafficProtectionPolicies, upstreamGateways.Items, upstreamHTTPRoutes.Items)
 	desiredPolicies, err := r.getDesiredEnvoyPatchPolicies(downstreamNamespaceName, attachments)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -166,6 +146,34 @@ func (r *TrafficProtectionPolicyReconciler) Reconcile(ctx context.Context, req N
 	}
 
 	return ctrl.Result{}, nil
+}
+
+func (r *TrafficProtectionPolicyReconciler) getTrafficProtectionPolicyContexts(
+	policies []networkingv1alpha.TrafficProtectionPolicy,
+) []*policyContext {
+	trafficProtectionPolicies := make([]*policyContext, 0, len(policies))
+	for i, tpp := range policies {
+		if dt := tpp.DeletionTimestamp; dt != nil {
+			continue
+		}
+		trafficProtectionPolicies = append(trafficProtectionPolicies, &policyContext{
+			TrafficProtectionPolicy: policies[i].DeepCopy(),
+		})
+	}
+
+	// Sort TrafficProtectionPolicies by creation timestamp, then namespace/name
+	// Precedence aligns with Envoy Gateway's policy sorting.
+	sort.Slice(trafficProtectionPolicies, func(i, j int) bool {
+		if trafficProtectionPolicies[i].CreationTimestamp.Equal(&(trafficProtectionPolicies[j].CreationTimestamp)) {
+			if trafficProtectionPolicies[i].Namespace != trafficProtectionPolicies[j].Namespace {
+				return trafficProtectionPolicies[i].Namespace < trafficProtectionPolicies[j].Namespace
+			}
+			return trafficProtectionPolicies[i].Name < trafficProtectionPolicies[j].Name
+		}
+		return trafficProtectionPolicies[i].CreationTimestamp.Before(&(trafficProtectionPolicies[j].CreationTimestamp))
+	})
+
+	return trafficProtectionPolicies
 }
 
 func (r *TrafficProtectionPolicyReconciler) updateTPPAncestorsStatus(
@@ -319,32 +327,32 @@ type policyRouteTargetContext struct {
 func (r *TrafficProtectionPolicyReconciler) collectTrafficProtectionPolicyAttachments(
 	ctx context.Context,
 	trafficProtectionPolicies []*policyContext,
-	upstreamGateways gatewayv1.GatewayList,
-	upstreamHTTPRoutes gatewayv1.HTTPRouteList,
+	upstreamGateways []gatewayv1.Gateway,
+	upstreamHTTPRoutes []gatewayv1.HTTPRoute,
 ) []policyAttachment {
 	logger := log.FromContext(ctx)
 
 	logger.Info(
 		"processing traffic protection policies",
 		"totalPolicies", len(trafficProtectionPolicies),
-		"totalGateways", len(upstreamGateways.Items),
-		"totalRoutes", len(upstreamHTTPRoutes.Items),
+		"totalGateways", len(upstreamGateways),
+		"totalRoutes", len(upstreamHTTPRoutes),
 	)
 
-	routeMapSize := len(upstreamHTTPRoutes.Items)
-	gatewayMapSize := len(upstreamGateways.Items)
+	routeMapSize := len(upstreamHTTPRoutes)
+	gatewayMapSize := len(upstreamGateways)
 
 	routeMap := make(map[client.ObjectKey]*policyRouteTargetContext, routeMapSize)
-	for i, route := range upstreamHTTPRoutes.Items {
+	for i, route := range upstreamHTTPRoutes {
 		routeMap[client.ObjectKeyFromObject(&route)] = &policyRouteTargetContext{
-			HTTPRoute: &upstreamHTTPRoutes.Items[i],
+			HTTPRoute: &upstreamHTTPRoutes[i],
 		}
 	}
 
 	gatewayMap := make(map[client.ObjectKey]*policyGatewayTargetContext, gatewayMapSize)
-	for i, gw := range upstreamGateways.Items {
+	for i, gw := range upstreamGateways {
 		gatewayMap[client.ObjectKeyFromObject(&gw)] = &policyGatewayTargetContext{
-			Gateway: &upstreamGateways.Items[i],
+			Gateway: &upstreamGateways[i],
 		}
 	}
 

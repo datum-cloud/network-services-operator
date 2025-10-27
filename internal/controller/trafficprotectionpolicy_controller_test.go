@@ -746,7 +746,7 @@ func TestGetDesiredEnvoyPatchPolicies(t *testing.T) {
 
 			var patchPolicy *envoygatewayv1alpha1.EnvoyPatchPolicy
 			for _, p := range patchPolicies {
-				if p.ObjectMeta.Name == fmt.Sprintf("tpp-%s", attachment.Gateway.Name) {
+				if p.Name == fmt.Sprintf("tpp-%s", attachment.Gateway.Name) {
 					patchPolicy = p
 					break
 				}

@@ -49,6 +49,7 @@ const gatewayControllerFinalizer = "gateway.networking.datumapis.com/gateway-con
 const gatewayControllerGCFinalizer = "gateway.networking.datumapis.com/gateway-controller-gc"
 const certificateIssuerTLSOption = "gateway.networking.datumapis.com/certificate-issuer"
 const KindGateway = "Gateway"
+const KindHTTPRoute = "HTTPRoute"
 const KindService = "Service"
 const KindEndpointSlice = "EndpointSlice"
 
@@ -569,6 +570,12 @@ func (r *GatewayReconciler) ensureHostnameVerification(
 		if l.Hostname != nil {
 			hostnames.Insert(string(*l.Hostname))
 		}
+	}
+
+	if r.Config.Gateway.DisableHostnameVerification {
+		verifiedHostnamesSlice := hostnames.UnsortedList()
+		slices.Sort(verifiedHostnamesSlice)
+		return verifiedHostnamesSlice, nil
 	}
 
 	// List all Domains in the same namespace as the upstream gateway. A field

@@ -338,12 +338,19 @@ type GatewayConfig struct {
 	// used when programming gateways in the downstream cluster.
 	DownstreamGatewayClassName string `json:"downstreamGatewayClassName"`
 
+	// DownstreamGatewayNamespace is the namespace in the downstream cluster
+	// where resources applicable to Gateways or GatewayClasses should be created.
+	DownstreamGatewayNamespace string `json:"downstreamGatewayNamespace"`
+
 	// DownstreamHostnameAccountingNamespace is the name of the namespace which
 	// will be used to track which hostnames have been programmed across gateway
 	// resources.
 	//
 	// +default="datum-downstream-gateway-hostnames"
 	DownstreamHostnameAccountingNamespace string `json:"downstreamHostnameAccountingNamespace"`
+
+	// Disable verification processing. Only intended for supporting ftw tests.
+	DisableHostnameVerification bool `json:"disableHostnameVerification,omitempty"`
 
 	// PermittedTLSOptions is a map of TLS options that are permitted on gateway
 	// listeners. The key is the option name and the value is a list of permitted
@@ -372,6 +379,9 @@ type GatewayConfig struct {
 	// +default={"gateway.networking.datumapis.com/certificate-issuer": "auto"}
 	ListenerTLSOptions map[gatewayv1.AnnotationKey]gatewayv1.AnnotationValue `json:"listenerTLSOptions"`
 
+	// Coraza specifies configuration for the Coraza WAF.
+	Coraza CorazaConfig `json:"coraza,omitempty"`
+
 	// ValidPortNumbers is a list of port numbers that are permitted on gateway
 	// listeners.
 	//
@@ -399,6 +409,43 @@ type GatewayConfig struct {
 
 func (c *GatewayConfig) GatewayDNSAddress(gateway *gatewayv1.Gateway) string {
 	return fmt.Sprintf("%s.%s", gateway.UID, c.TargetDomain)
+}
+
+// +k8s:deepcopy-gen=true
+
+type CorazaConfig struct {
+	// Disable TrafficProtectionPolicy programming for Coraza.
+	Disabled bool `json:"disabled"`
+
+	// Globally unique ID for a dynamic library file.
+	//
+	// +default="coraza-waf"
+	LibraryID string `json:"libraryID,omitempty"`
+
+	// Path to the Coraza dynamic library file.
+	//
+	// +default="/opt/coraza-waf/coraza-waf.so"
+	LibraryPath string `json:"libraryPath,omitempty"`
+
+	// Name of the filter to use in Envoy listener configurations
+	//
+	// +default="coraza-waf"
+	FilterName string `json:"filterName,omitempty"`
+
+	// Globally unique name of the Coraza plugin.
+	//
+	// +default="coraza-waf"
+	PluginName string `json:"pluginName,omitempty"`
+
+	// Directives to define on listener filters.
+	//
+	// +default=[]
+	ListenerDirectives []string `json:"listenerDirectives,omitempty"`
+
+	// Base directives to define on route filter configs.
+	//
+	// +default=["Include @crs-setup-conf", "Include @recommended-conf"]
+	RouteBaseDirectives []string `json:"routeBaseDirectives,omitempty"`
 }
 
 // +k8s:deepcopy-gen=true

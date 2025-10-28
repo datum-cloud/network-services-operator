@@ -52,7 +52,7 @@ func validateListeners(gateway *gatewayv1.Gateway, fldPath *field.Path, opts Gat
 			}
 		} else if l.Hostname == nil {
 			allErrs = append(allErrs, field.Required(listenerPath.Child("hostname"), fmt.Sprintf("must be set to %q or a custom hostname", opts.GatewayDNSAddressFunc(gateway))))
-		} else {
+		} else if !opts.SkipHostnameFQDNValidation {
 			allErrs = append(allErrs, validation.IsFullyQualifiedDomainName(listenerPath.Child("hostname"), string(*l.Hostname))...)
 		}
 
@@ -134,12 +134,13 @@ func validateGatewayTLSConfig(tls *gatewayv1.GatewayTLSConfig, fldPath *field.Pa
 }
 
 type GatewayValidationOptions struct {
-	ControllerName        gatewayv1.GatewayController
-	PermittedTLSOptions   map[string][]string
-	ValidPortNumbers      validPortNumbers
-	ValidProtocolTypes    map[int][]gatewayv1.ProtocolType
-	GatewayDNSAddressFunc func(gateway *gatewayv1.Gateway) string
-	ClusterName           string
+	ControllerName             gatewayv1.GatewayController
+	PermittedTLSOptions        map[string][]string
+	ValidPortNumbers           validPortNumbers
+	ValidProtocolTypes         map[int][]gatewayv1.ProtocolType
+	GatewayDNSAddressFunc      func(gateway *gatewayv1.Gateway) string
+	ClusterName                string
+	SkipHostnameFQDNValidation bool
 }
 
 type validPortNumbers []int

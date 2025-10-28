@@ -26,6 +26,24 @@ func ValidateBackendTrafficPolicy(backendTrafficPolicy *envoygatewayv1alpha1.Bac
 	allErrs = append(allErrs, validateGatewayClusterSettings(backendTrafficPolicy.Spec.ClusterSettings, specPath, opts.ClusterSettings)...)
 	allErrs = append(allErrs, validateBackendTrafficPolicyRateLimit(backendTrafficPolicy.Spec.RateLimit, specPath.Child("rateLimit"))...)
 	allErrs = append(allErrs, validateBackendTrafficPolicyFaultInjection(backendTrafficPolicy.Spec.FaultInjection, specPath.Child("faultInjection"))...)
+	allErrs = append(allErrs, validateBackendTrafficPolicyResponseOverride(backendTrafficPolicy.Spec.ResponseOverride, specPath.Child("responseOverride"))...)
+
+	return allErrs
+}
+
+func validateBackendTrafficPolicyResponseOverride(responseOverrides []*envoygatewayv1alpha1.ResponseOverride, fldPath *field.Path) field.ErrorList {
+	if len(responseOverrides) == 0 {
+		return nil
+	}
+
+	allErrs := field.ErrorList{}
+
+	for i, responseOverride := range responseOverrides {
+		responseOverridePath := fldPath.Index(i)
+		if responseOverride.Redirect != nil {
+			allErrs = append(allErrs, field.Forbidden(responseOverridePath.Child("redirect"), "response redirects are not permitted"))
+		}
+	}
 
 	return allErrs
 }

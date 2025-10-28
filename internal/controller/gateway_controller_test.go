@@ -733,7 +733,12 @@ func TestEnsureHostnamesClaimed(t *testing.T) {
 	}
 }
 
-func newGateway(testConfig config.NetworkServicesOperator, namespace, name string, opts ...func(*gatewayv1.Gateway)) *gatewayv1.Gateway {
+func newGateway(
+	testConfig config.NetworkServicesOperator,
+	namespace,
+	name string,
+	opts ...func(*gatewayv1.Gateway),
+) *gatewayv1.Gateway {
 	gw := &gatewayv1.Gateway{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: namespace,

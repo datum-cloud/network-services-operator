@@ -136,6 +136,7 @@ rules:
   - networks
   - subnetclaims
   - subnets
+  - trafficprotectionpolicies
   verbs:
   - create
   - delete
@@ -155,6 +156,7 @@ rules:
   - networks/finalizers
   - subnetclaims/finalizers
   - subnets/finalizers
+  - trafficprotectionpolicies/finalizers
   verbs:
   - update
 - apiGroups:
@@ -168,6 +170,7 @@ rules:
   - networks/status
   - subnetclaims/status
   - subnets/status
+  - trafficprotectionpolicies/status
   verbs:
   - get
   - patch

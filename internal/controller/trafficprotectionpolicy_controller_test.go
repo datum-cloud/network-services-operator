@@ -685,8 +685,13 @@ func TestGetDesiredEnvoyPatchPolicies(t *testing.T) {
 	gateway1 := newGateway(operatorConfig, "default", "gateway-1")
 	gateway2 := newGateway(operatorConfig, "default", "gateway-2")
 
+	policy := &policyContext{
+		TrafficProtectionPolicy: ptr.To(newTrafficProtectionPolicy("default", "tpp-1")),
+	}
+
 	policyAttachments := []policyAttachment{
 		{
+			Policy:  policy,
 			Gateway: gateway1,
 			CorazaDirectives: []string{
 				"SecRuleEngine On",
@@ -695,6 +700,7 @@ func TestGetDesiredEnvoyPatchPolicies(t *testing.T) {
 			Listener: nil,
 		},
 		{
+			Policy:  policy,
 			Gateway: gateway1,
 			CorazaDirectives: []string{
 				"SecRuleEngine On",
@@ -705,6 +711,7 @@ func TestGetDesiredEnvoyPatchPolicies(t *testing.T) {
 			Route:    newHTTPRoute("default", "route-1"),
 		},
 		{
+			Policy:  policy,
 			Gateway: gateway1,
 			CorazaDirectives: []string{
 				"SecRuleEngine On",
@@ -713,6 +720,7 @@ func TestGetDesiredEnvoyPatchPolicies(t *testing.T) {
 			Route:    newHTTPRoute("default", "route-2"),
 		},
 		{
+			Policy:  policy,
 			Gateway: gateway2,
 			CorazaDirectives: []string{
 				"SecRuleEngine On",
@@ -722,6 +730,7 @@ func TestGetDesiredEnvoyPatchPolicies(t *testing.T) {
 			RuleSectionName: ptr.To(gatewayv1.SectionName("rule-1")),
 		},
 		{
+			Policy:  policy,
 			Gateway: gateway2,
 			CorazaDirectives: []string{
 				"SecRuleEngine On",
@@ -827,6 +836,7 @@ func TestGetDesiredEnvoyPatchPolicies(t *testing.T) {
 					if !assert.Truef(t, patchFound, "expected to find patch for HTTPS filter chain %s", filterChainName) {
 						spew.Dump(patchPolicy.Spec.JSONPatches)
 					}
+
 				}
 			}
 		}

@@ -185,15 +185,13 @@ Core Rule Set (CRS).
         </tr>
     </thead>
     <tbody><tr>
-        <td><b>paranoiaLevel</b></td>
-        <td>integer</td>
+        <td><b><a href="#trafficprotectionpolicyspecrulesetsindexowaspcorerulesetparanoialevels">paranoiaLevels</a></b></td>
+        <td>object</td>
         <td>
-          ParanoiaLevel specifies the OWASP ModSecurity Core Rule Set (CRS)
-paranoia level to apply.<br/>
+          ParanoiaLevels specifies the OWASP ModSecurity Core Rule Set (CRS)
+paranoia levels to use.<br/>
           <br/>
-            <i>Default</i>: 1<br/>
-            <i>Minimum</i>: 1<br/>
-            <i>Maximum</i>: 4<br/>
+            <i>Default</i>: map[]<br/>
         </td>
         <td>false</td>
       </tr><tr>
@@ -215,6 +213,51 @@ score thresholds to block a request or response.
 See: https://coreruleset.org/docs/2-how-crs-works/2-1-anomaly_scoring/<br/>
           <br/>
             <i>Default</i>: map[]<br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### TrafficProtectionPolicy.spec.ruleSets[index].owaspCoreRuleSet.paranoiaLevels
+<sup><sup>[↩ Parent](#trafficprotectionpolicyspecrulesetsindexowaspcoreruleset)</sup></sup>
+
+
+
+ParanoiaLevels specifies the OWASP ModSecurity Core Rule Set (CRS)
+paranoia levels to use.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>blocking</b></td>
+        <td>integer</td>
+        <td>
+          Blocking specifies the paranoia level for blocking requests or responses.<br/>
+          <br/>
+            <i>Default</i>: 1<br/>
+            <i>Minimum</i>: 1<br/>
+            <i>Maximum</i>: 4<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>detection</b></td>
+        <td>integer</td>
+        <td>
+          Detection specifies the paranoia level for detection only. This allows
+setting a higher paranoia level for detection while keeping blocking at a
+lower level.<br/>
+          <br/>
+            <i>Default</i>: 1<br/>
+            <i>Minimum</i>: 1<br/>
+            <i>Maximum</i>: 4<br/>
         </td>
         <td>false</td>
       </tr></tbody>

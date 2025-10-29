@@ -446,6 +446,11 @@ type CorazaConfig struct {
 	//
 	// +default=["Include @crs-setup-conf", "Include @recommended-conf"]
 	RouteBaseDirectives []string `json:"routeBaseDirectives,omitempty"`
+
+	// TraceRouteMetadataExtractor is a CEL expression used to extract metadata
+	// stored in Envoy routes to inject into trace span attributes. MUST return
+	// a map of string keys to values.
+	TraceRouteMetadataExtractor string `json:"traceRouteMetadataExtractor,omitempty"`
 }
 
 // +k8s:deepcopy-gen=true

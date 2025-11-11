@@ -962,13 +962,12 @@ func TestRegistration_RDAP429_WithRetryAfter_SchedulesRetryAfter(t *testing.T) {
 		}},
 		timeNow: func() time.Time { return now },
 		rdapDo: func(ctx context.Context, req *rdap.Request) (*rdap.Response, error) {
-			// Simulate HTTP transport populating Retry-After via context pointer
-			if v := ctx.Value(retryAfterCtxKey{}); v != nil {
-				if p, ok := v.(*time.Duration); ok && p != nil {
-					*p = retryAfter
-				}
-			}
-			return nil, fmt.Errorf("HTTP 429 Too Many Requests")
+			// Simulate RDAP client returning HTTP 429 with Retry-After header
+			return &rdap.Response{
+				HTTP: []*rdap.HTTPResponse{
+					{Response: &http.Response{StatusCode: http.StatusTooManyRequests, Header: http.Header{"Retry-After": []string{fmt.Sprintf("%d", int(retryAfter.Seconds()))}}}},
+				},
+			}, &rdap.ClientError{Type: rdap.NoWorkingServers}
 		},
 		lookupNS: func(ctx context.Context, name string) ([]*net.NS, error) { return nil, &net.DNSError{IsNotFound: true} },
 		lookupIP: func(ctx context.Context, name string) ([]net.IPAddr, error) { return nil, nil },
@@ -1010,8 +1009,12 @@ func TestRegistration_RDAP429_NoRetryAfter_Uses2xBackoff(t *testing.T) {
 		}},
 		timeNow: func() time.Time { return now },
 		rdapDo: func(ctx context.Context, req *rdap.Request) (*rdap.Response, error) {
-			// No Retry-After set; error string contains 429
-			return nil, fmt.Errorf("429 too many requests")
+			// No Retry-After header; still a 429
+			return &rdap.Response{
+				HTTP: []*rdap.HTTPResponse{
+					{Response: &http.Response{StatusCode: http.StatusTooManyRequests, Header: http.Header{}}},
+				},
+			}, &rdap.ClientError{Type: rdap.NoWorkingServers}
 		},
 		lookupNS: func(ctx context.Context, name string) ([]*net.NS, error) { return nil, &net.DNSError{IsNotFound: true} },
 		lookupIP: func(ctx context.Context, name string) ([]net.IPAddr, error) { return nil, nil },

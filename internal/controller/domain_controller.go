@@ -412,34 +412,6 @@ func defaultHTTPGet(ctx context.Context, url string) ([]byte, *http.Response, er
 	return body, resp, nil
 }
 
-// retryAfterCtxKey is used to pass a pointer to a time.Duration via context so the HTTP transport
-// can populate it when a 429 Too Many Requests response with Retry-After is observed.
-type retryAfterCtxKey struct{}
-
-// rateLimitTransport wraps an http.RoundTripper to capture Retry-After on 429 responses.
-type rateLimitTransport struct {
-	base http.RoundTripper
-}
-
-func (t *rateLimitTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	rt := t.base
-	if rt == nil {
-		rt = http.DefaultTransport
-	}
-	resp, err := rt.RoundTrip(req)
-	if resp != nil && resp.StatusCode == http.StatusTooManyRequests {
-		// If caller provided a pointer in context, populate it with parsed Retry-After.
-		if v := req.Context().Value(retryAfterCtxKey{}); v != nil {
-			if p, ok := v.(*time.Duration); ok && p != nil {
-				if ra := parseRetryAfterHeader(resp.Header.Get("Retry-After")); ra > 0 {
-					*p = ra
-				}
-			}
-		}
-	}
-	return resp, err
-}
-
 // parseRetryAfterHeader parses Retry-After per RFC: either delta-seconds or HTTP-date.
 func parseRetryAfterHeader(val string) time.Duration {
 	val = strings.TrimSpace(val)
@@ -486,19 +458,34 @@ func (r *DomainReconciler) reconcileRegistration(ctx context.Context, d *network
 	// Try RDAP; if bootstrap says no match, prefer WHOIS; otherwise RDAP only
 	useWHOIS := false
 	req := &rdap.Request{Type: rdap.DomainRequest, Query: apex, Timeout: r.Config.DomainRegistration.LookupTimeout.Duration}
-	// Allow transport to communicate Retry-After back via context.
-	var retryAfterDur time.Duration
-	ctxLookup = context.WithValue(ctxLookup, retryAfterCtxKey{}, &retryAfterDur)
 	resp, err := r.rdapDo(ctxLookup, req)
 	if err != nil {
 		if ce, ok := err.(*rdap.ClientError); ok && ce.Type == rdap.BootstrapNoMatch {
 			logger.Info("rdap bootstrap reported no match; falling back to whois", "apex", apex)
 			useWHOIS = true
 		} else {
-			// Respect 429 Retry-After when available; otherwise, use an exponential step over the base backoff.
-			errMsg := strings.ToLower(err.Error())
-			if retryAfterDur > 0 || strings.Contains(errMsg, "429") || strings.Contains(errMsg, "too many requests") {
-				delay := retryAfterDur
+			// Inspect RDAP HTTP responses for rate-limit signals (429/503 with Retry-After)
+			var delay time.Duration
+			saw429 := false
+			if resp != nil && len(resp.HTTP) > 0 {
+				for _, hr := range resp.HTTP {
+					if hr == nil || hr.Response == nil {
+						continue
+					}
+					code := hr.Response.StatusCode
+					if code == http.StatusTooManyRequests || code == http.StatusServiceUnavailable {
+						if code == http.StatusTooManyRequests {
+							saw429 = true
+						}
+						if ra := parseRetryAfterHeader(hr.Response.Header.Get("Retry-After")); ra > 0 {
+							if delay == 0 || ra < delay {
+								delay = ra
+							}
+						}
+					}
+				}
+			}
+			if delay > 0 || saw429 {
 				if delay <= 0 {
 					delay = r.Config.DomainRegistration.RetryBackoff.Duration * 2
 				}
@@ -1100,10 +1087,7 @@ func (r *DomainReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	r.lookupTXT = net.DefaultResolver.LookupTXT
 
 	r.rdapClient = &rdap.Client{
-		HTTP: &http.Client{
-			Timeout:   r.Config.DomainRegistration.LookupTimeout.Duration,
-			Transport: &rateLimitTransport{base: http.DefaultTransport},
-		},
+		HTTP:      &http.Client{Timeout: r.Config.DomainRegistration.LookupTimeout.Duration},
 		Bootstrap: &bootstrap.Client{}, // enable IANA dns.json auto-discovery
 	}
 

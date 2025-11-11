@@ -405,6 +405,13 @@ type GatewayConfig struct {
 	// ResourceReplicator provides configuration for the Gateway resource
 	// replicator.
 	ResourceReplicator GatewayResourceReplicatorConfig `json:"resourceReplicator"`
+
+	// EnableDownstreamCertificateSolver enables the downstream certificate
+	// solver controller, which inspects certificates and challenges in order to
+	// attach routes for HTTP challenges to downstream gateways. This is only
+	// needed when the downstream cluster is a federation control plane such as
+	// Karmada.
+	EnableDownstreamCertificateSolver bool `json:"enableDownstreamCertificateSolver,omitempty"`
 }
 
 func (c *GatewayConfig) GatewayDNSAddress(gateway *gatewayv1.Gateway) string {

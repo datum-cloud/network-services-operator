@@ -83,7 +83,7 @@ func addCertManagerChallengeIndexers(ctx context.Context, cl cluster.Cluster) er
 
 func certManagerChallengeOwnerIndexFunc(o client.Object) []string {
 	owners := o.GetOwnerReferences()
-	var result []string
+	result := make([]string, 0, len(owners))
 	for _, owner := range owners {
 		result = append(result, ownerIndexValue(owner.Kind, owner.Name))
 	}

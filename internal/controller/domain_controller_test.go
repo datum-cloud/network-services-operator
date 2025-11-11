@@ -396,9 +396,7 @@ func TestDomainVerification(t *testing.T) {
 					},
 				}, nil
 			}
-			reconciler.rdapQueryIP = func(ctx context.Context, ip string) (*rdap.IPNetwork, error) {
-				return nil, nil
-			}
+			// IP RDAP not used in these verification-only tests
 
 			result, err := reconciler.Reconcile(
 				ctx,
@@ -447,15 +445,14 @@ func TestValidDomainGate_InvalidApex_SetsConditionAndSkipsFlows(t *testing.T) {
 		Build()
 
 	reconciler := &DomainReconciler{
-		mgr:         &fakeMockManager{cl: fakeClient},
-		Config:      operatorConfig,
-		timeNow:     time.Now,
-		httpGet:     func(ctx context.Context, url string) ([]byte, *http.Response, error) { return nil, nil, nil },
-		lookupTXT:   func(ctx context.Context, name string) ([]string, error) { return nil, nil },
-		lookupNS:    func(ctx context.Context, name string) ([]*net.NS, error) { return nil, &net.DNSError{IsNotFound: true} },
-		lookupIP:    func(ctx context.Context, name string) ([]net.IPAddr, error) { return nil, nil },
-		rdapDo:      func(ctx context.Context, req *rdap.Request) (*rdap.Response, error) { return &rdap.Response{}, nil },
-		rdapQueryIP: func(ctx context.Context, ip string) (*rdap.IPNetwork, error) { return nil, nil },
+		mgr:       &fakeMockManager{cl: fakeClient},
+		Config:    operatorConfig,
+		timeNow:   time.Now,
+		httpGet:   func(ctx context.Context, url string) ([]byte, *http.Response, error) { return nil, nil, nil },
+		lookupTXT: func(ctx context.Context, name string) ([]string, error) { return nil, nil },
+		lookupNS:  func(ctx context.Context, name string) ([]*net.NS, error) { return nil, &net.DNSError{IsNotFound: true} },
+		lookupIP:  func(ctx context.Context, name string) ([]net.IPAddr, error) { return nil, nil },
+		rdapDo:    func(ctx context.Context, req *rdap.Request) (*rdap.Response, error) { return &rdap.Response{}, nil },
 	}
 
 	req := mcreconcile.Request{Request: reconcile.Request{NamespacedName: client.ObjectKey{Namespace: ns.Name, Name: dom.Name}}}
@@ -605,9 +602,8 @@ func TestVerification_RequeueImmediate_WhenWakeDueOrPast(t *testing.T) {
 		rdapDo: func(ctx context.Context, req *rdap.Request) (*rdap.Response, error) {
 			return &rdap.Response{Object: &rdap.Domain{LDHName: "example.com"}}, nil
 		},
-		lookupNS:    func(ctx context.Context, name string) ([]*net.NS, error) { return nil, &net.DNSError{IsNotFound: true} },
-		lookupIP:    func(ctx context.Context, name string) ([]net.IPAddr, error) { return nil, nil },
-		rdapQueryIP: func(ctx context.Context, ip string) (*rdap.IPNetwork, error) { return nil, nil },
+		lookupNS: func(ctx context.Context, name string) ([]*net.NS, error) { return nil, &net.DNSError{IsNotFound: true} },
+		lookupIP: func(ctx context.Context, name string) ([]net.IPAddr, error) { return nil, nil },
 	}
 
 	res, err := r.Reconcile(context.Background(), mcreconcile.Request{ClusterName: "test", Request: reconcile.Request{NamespacedName: client.ObjectKeyFromObject(dom)}})
@@ -665,9 +661,8 @@ func TestVerification_RequeueImmediate_WhenWakeInPast(t *testing.T) {
 		rdapDo: func(ctx context.Context, req *rdap.Request) (*rdap.Response, error) {
 			return &rdap.Response{Object: &rdap.Domain{LDHName: "example.com"}}, nil
 		},
-		lookupNS:    func(ctx context.Context, name string) ([]*net.NS, error) { return nil, &net.DNSError{IsNotFound: true} },
-		lookupIP:    func(ctx context.Context, name string) ([]net.IPAddr, error) { return nil, nil },
-		rdapQueryIP: func(ctx context.Context, ip string) (*rdap.IPNetwork, error) { return nil, nil },
+		lookupNS: func(ctx context.Context, name string) ([]*net.NS, error) { return nil, &net.DNSError{IsNotFound: true} },
+		lookupIP: func(ctx context.Context, name string) ([]net.IPAddr, error) { return nil, nil },
 	}
 
 	res, err := r.Reconcile(context.Background(), mcreconcile.Request{ClusterName: "test", Request: reconcile.Request{NamespacedName: client.ObjectKeyFromObject(dom)}})
@@ -725,9 +720,8 @@ func TestVerification_RequeueFloorsSubSecondToOneSecond(t *testing.T) {
 		rdapDo: func(ctx context.Context, req *rdap.Request) (*rdap.Response, error) {
 			return &rdap.Response{Object: &rdap.Domain{LDHName: "example.com"}}, nil
 		},
-		lookupNS:    func(ctx context.Context, name string) ([]*net.NS, error) { return nil, &net.DNSError{IsNotFound: true} },
-		lookupIP:    func(ctx context.Context, name string) ([]net.IPAddr, error) { return nil, nil },
-		rdapQueryIP: func(ctx context.Context, ip string) (*rdap.IPNetwork, error) { return nil, nil },
+		lookupNS: func(ctx context.Context, name string) ([]*net.NS, error) { return nil, &net.DNSError{IsNotFound: true} },
+		lookupIP: func(ctx context.Context, name string) ([]net.IPAddr, error) { return nil, nil },
 	}
 
 	res, err := r.Reconcile(context.Background(), mcreconcile.Request{ClusterName: "test", Request: reconcile.Request{NamespacedName: client.ObjectKeyFromObject(dom)}})
@@ -1066,7 +1060,20 @@ func TestRegistration_EnrichesNameserverIPs(t *testing.T) {
 			RetryBackoff:    &metav1.Duration{Duration: time.Minute},
 		}},
 		timeNow: time.Now,
-		rdapDo:  func(ctx context.Context, req *rdap.Request) (*rdap.Response, error) { return resp, nil },
+		rdapDo: func(ctx context.Context, req *rdap.Request) (*rdap.Response, error) {
+			if req != nil && req.Type == rdap.IPRequest {
+				// return a network object with a registrant entity
+				return &rdap.Response{
+					Object: &rdap.IPNetwork{
+						Entities: []rdap.Entity{{
+							Roles: []string{"registrant"},
+							VCard: vcardWithFN("Example Net Ops"),
+						}},
+					},
+				}, nil
+			}
+			return resp, nil
+		},
 		lookupNS: func(ctx context.Context, name string) ([]*net.NS, error) {
 			return nil, &net.DNSError{IsNotFound: true}
 		},
@@ -1075,15 +1082,6 @@ func TestRegistration_EnrichesNameserverIPs(t *testing.T) {
 				return []net.IPAddr{{IP: net.ParseIP("192.0.2.10")}}, nil
 			}
 			return nil, nil
-		},
-		rdapQueryIP: func(ctx context.Context, ip string) (*rdap.IPNetwork, error) {
-			// return a network object with a registrant entity
-			return &rdap.IPNetwork{
-				Entities: []rdap.Entity{{
-					Roles: []string{"registrant"},
-					VCard: vcardWithFN("Example Net Ops"),
-				}},
-			}, nil
 		},
 	}
 

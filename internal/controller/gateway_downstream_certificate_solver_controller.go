@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/davecgh/go-spew/spew"
 	envoygatewayv1alpha1 "github.com/envoyproxy/gateway/api/v1alpha1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -153,7 +152,6 @@ func (r *GatewayDownstreamCertificateSolverReconciler) Reconcile(ctx context.Con
 	var challenge *unstructured.Unstructured
 	for i, c := range challenges.Items {
 		owner := metav1.GetControllerOf(&c)
-		spew.Dump(owner)
 		if owner != nil && owner.UID == order.GetUID() {
 			challenge = &challenges.Items[i]
 			break

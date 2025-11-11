@@ -938,6 +938,102 @@ func TestRegistration_RetryBackoffOnError(t *testing.T) {
 	assert.True(t, res.RequeueAfter == 0 || res.RequeueAfter > 0) // depending on verification timer
 }
 
+func TestRegistration_RDAP429_WithRetryAfter_SchedulesRetryAfter(t *testing.T) {
+	s := runtime.NewScheme()
+	_ = scheme.AddToScheme(s)
+	_ = networkingv1alpha.AddToScheme(s)
+
+	dom := newDomain("default", "rate-limited")
+	dom.Spec.DomainName = exampleDomain
+
+	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(dom).WithStatusSubresource(dom).Build()
+	mgr := &fakeMockManager{cl: cl}
+
+	now := time.Date(2025, 10, 9, 1, 0, 0, 0, time.UTC)
+	retryAfter := 7 * time.Second
+
+	r := &DomainReconciler{
+		mgr: mgr,
+		Config: config.NetworkServicesOperator{DomainRegistration: config.DomainRegistrationConfig{
+			LookupTimeout:   &metav1.Duration{Duration: 3 * time.Second},
+			RefreshInterval: &metav1.Duration{Duration: time.Hour},
+			JitterMaxFactor: 0.0, // deterministic
+			RetryBackoff:    &metav1.Duration{Duration: 2 * time.Minute},
+		}},
+		timeNow: func() time.Time { return now },
+		rdapDo: func(ctx context.Context, req *rdap.Request) (*rdap.Response, error) {
+			// Simulate RDAP client returning HTTP 429 with Retry-After header
+			return &rdap.Response{
+				HTTP: []*rdap.HTTPResponse{
+					{Response: &http.Response{StatusCode: http.StatusTooManyRequests, Header: http.Header{"Retry-After": []string{fmt.Sprintf("%d", int(retryAfter.Seconds()))}}}},
+				},
+			}, &rdap.ClientError{Type: rdap.NoWorkingServers}
+		},
+		lookupNS: func(ctx context.Context, name string) ([]*net.NS, error) { return nil, &net.DNSError{IsNotFound: true} },
+		lookupIP: func(ctx context.Context, name string) ([]net.IPAddr, error) { return nil, nil },
+	}
+
+	_, err := r.Reconcile(context.Background(), mcreconcile.Request{ClusterName: "test", Request: reconcile.Request{NamespacedName: client.ObjectKeyFromObject(dom)}})
+	assert.NoError(t, err)
+
+	got := &networkingv1alpha.Domain{}
+	_ = cl.Get(context.Background(), client.ObjectKeyFromObject(dom), got)
+
+	gotDelay := got.Status.Registration.NextRefreshAttempt.Sub(now)
+	// Should honor Retry-After; allow small slack in case of internal delays
+	assert.GreaterOrEqual(t, gotDelay, retryAfter)
+	assert.LessOrEqual(t, gotDelay, retryAfter+10*time.Second)
+}
+
+func TestRegistration_RDAP429_NoRetryAfter_Uses2xBackoff(t *testing.T) {
+	s := runtime.NewScheme()
+	_ = scheme.AddToScheme(s)
+	_ = networkingv1alpha.AddToScheme(s)
+
+	dom := newDomain("default", "rate-limited-no-header")
+	dom.Spec.DomainName = exampleDomain
+
+	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(dom).WithStatusSubresource(dom).Build()
+	mgr := &fakeMockManager{cl: cl}
+
+	now := time.Date(2025, 10, 9, 1, 0, 0, 0, time.UTC)
+	backoff := 2 * time.Minute
+
+	r := &DomainReconciler{
+		mgr: mgr,
+		Config: config.NetworkServicesOperator{DomainRegistration: config.DomainRegistrationConfig{
+			LookupTimeout:   &metav1.Duration{Duration: 3 * time.Second},
+			RefreshInterval: &metav1.Duration{Duration: time.Hour},
+			JitterMaxFactor: 0.0, // deterministic
+			RetryBackoff:    &metav1.Duration{Duration: backoff},
+		}},
+		timeNow: func() time.Time { return now },
+		rdapDo: func(ctx context.Context, req *rdap.Request) (*rdap.Response, error) {
+			// No Retry-After header; still a 429
+			return &rdap.Response{
+				HTTP: []*rdap.HTTPResponse{
+					{Response: &http.Response{StatusCode: http.StatusTooManyRequests, Header: http.Header{}}},
+				},
+			}, &rdap.ClientError{Type: rdap.NoWorkingServers}
+		},
+		lookupNS: func(ctx context.Context, name string) ([]*net.NS, error) { return nil, &net.DNSError{IsNotFound: true} },
+		lookupIP: func(ctx context.Context, name string) ([]net.IPAddr, error) { return nil, nil },
+	}
+
+	_, err := r.Reconcile(context.Background(), mcreconcile.Request{ClusterName: "test", Request: reconcile.Request{NamespacedName: client.ObjectKeyFromObject(dom)}})
+	assert.NoError(t, err)
+
+	got := &networkingv1alpha.Domain{}
+	_ = cl.Get(context.Background(), client.ObjectKeyFromObject(dom), got)
+
+	// Should use 2x backoff when no Retry-After header value is known
+	want := 2 * backoff
+	gotDelay := got.Status.Registration.NextRefreshAttempt.Sub(now)
+	// Allow slack since providers may impose additional quiet-periods we can't read without headers
+	assert.GreaterOrEqual(t, gotDelay, want)
+	assert.LessOrEqual(t, gotDelay, 4*backoff)
+}
+
 func TestRegistration_EnrichesNameserverIPs(t *testing.T) {
 	s := runtime.NewScheme()
 	_ = scheme.AddToScheme(s)

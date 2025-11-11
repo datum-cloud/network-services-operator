@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -411,6 +412,25 @@ func defaultHTTPGet(ctx context.Context, url string) ([]byte, *http.Response, er
 	return body, resp, nil
 }
 
+// parseRetryAfterHeader parses Retry-After per RFC: either delta-seconds or HTTP-date.
+func parseRetryAfterHeader(val string) time.Duration {
+	val = strings.TrimSpace(val)
+	if val == "" {
+		return 0
+	}
+	if secs, err := strconv.Atoi(val); err == nil && secs >= 0 {
+		return time.Duration(secs) * time.Second
+	}
+	if when, err := http.ParseTime(val); err == nil {
+		d := time.Until(when)
+		if d < 0 {
+			return 0
+		}
+		return d
+	}
+	return 0
+}
+
 // reconcileRegistration keeps Status.Registration fresh and schedules independent timers.
 // Returns the next registration refresh time (zero if none).
 func (r *DomainReconciler) reconcileRegistration(ctx context.Context, d *networkingv1alpha.Domain, apex string) time.Time {
@@ -444,8 +464,36 @@ func (r *DomainReconciler) reconcileRegistration(ctx context.Context, d *network
 			logger.Info("rdap bootstrap reported no match; falling back to whois", "apex", apex)
 			useWHOIS = true
 		} else {
-			logger.Error(err, "rdap lookup failed")
-			st.Registration.NextRefreshAttempt = metav1.NewTime(now.Add(r.Config.DomainRegistration.RetryBackoff.Duration))
+			// Inspect RDAP HTTP responses for rate-limit signals (429/503 with Retry-After)
+			var delay time.Duration
+			saw429 := false
+			if resp != nil && len(resp.HTTP) > 0 {
+				for _, hr := range resp.HTTP {
+					if hr == nil || hr.Response == nil {
+						continue
+					}
+					code := hr.Response.StatusCode
+					if code == http.StatusTooManyRequests || code == http.StatusServiceUnavailable {
+						if code == http.StatusTooManyRequests {
+							saw429 = true
+						}
+						if ra := parseRetryAfterHeader(hr.Response.Header.Get("Retry-After")); ra > 0 {
+							if delay == 0 || ra < delay {
+								delay = ra
+							}
+						}
+					}
+				}
+			}
+			if delay > 0 || saw429 {
+				if delay <= 0 {
+					delay = r.Config.DomainRegistration.RetryBackoff.Duration * 2
+				}
+				st.Registration.NextRefreshAttempt = metav1.NewTime(now.Add(wait.Jitter(delay, r.Config.DomainRegistration.JitterMaxFactor)))
+			} else {
+				logger.Error(err, "rdap lookup failed")
+				st.Registration.NextRefreshAttempt = metav1.NewTime(now.Add(r.Config.DomainRegistration.RetryBackoff.Duration))
+			}
 			return st.Registration.NextRefreshAttempt.Time
 		}
 	} else {

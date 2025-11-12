@@ -5,6 +5,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -240,6 +241,7 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 
 	desiredDownstreamGateway := r.getDesiredDownstreamGateway(
 		ctx,
+		upstreamClusterName,
 		upstreamGateway,
 		claimedHostnames,
 	)
@@ -258,7 +260,10 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 			return result, nil
 		}
 	} else {
-		if !equality.Semantic.DeepEqual(downstreamGateway.Spec, desiredDownstreamGateway.Spec) {
+		if !equality.Semantic.DeepEqual(downstreamGateway.Annotations, desiredDownstreamGateway.Annotations) ||
+			!equality.Semantic.DeepEqual(downstreamGateway.Spec, desiredDownstreamGateway.Spec) {
+			// Take care not to clobber other annotations
+			maps.Copy(downstreamGateway.Annotations, desiredDownstreamGateway.Annotations)
 			downstreamGateway.Spec = desiredDownstreamGateway.Spec
 			if err := downstreamClient.Update(ctx, downstreamGateway); err != nil {
 				result.Err = fmt.Errorf("failed updating downstream gateway: %w", err)
@@ -318,6 +323,7 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 
 func (r *GatewayReconciler) getDesiredDownstreamGateway(
 	ctx context.Context,
+	upstreamClusterName string,
 	upstreamGateway *gatewayv1.Gateway,
 	claimedHostnames []string,
 ) *gatewayv1.Gateway {
@@ -339,6 +345,20 @@ func (r *GatewayReconciler) getDesiredDownstreamGateway(
 				}
 				if !metav1.HasAnnotation(downstreamGateway.ObjectMeta, "cert-manager.io/cluster-issuer") {
 					metav1.SetMetaDataAnnotation(&downstreamGateway.ObjectMeta, "cert-manager.io/cluster-issuer", clusterIssuerName)
+				}
+
+				// Add labels so that secrets created by cert-manager can be propagated
+				// See: https://cert-manager.io/docs/reference/annotations/#cert-manageriosecret-template
+				if !metav1.HasAnnotation(downstreamGateway.ObjectMeta, "cert-manager.io/secret-template") {
+					metav1.SetMetaDataAnnotation(
+						&downstreamGateway.ObjectMeta,
+						"cert-manager.io/secret-template",
+						fmt.Sprintf(
+							`{"labels": {"%s": "%s"}}`,
+							downstreamclient.UpstreamOwnerClusterNameLabel,
+							fmt.Sprintf("cluster-%s", strings.ReplaceAll(upstreamClusterName, "/", "_")),
+						),
+					)
 				}
 			}
 		}

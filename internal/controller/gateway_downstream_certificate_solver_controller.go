@@ -67,12 +67,6 @@ func (r *GatewayDownstreamCertificateSolverReconciler) Reconcile(ctx context.Con
 		return ctrl.Result{}, nil
 	}
 
-	owningGatewayRef := metav1.GetControllerOf(certificate)
-	if owningGatewayRef == nil {
-		// Nothing to do - not a certificate we care about
-		return ctrl.Result{}, nil
-	}
-
 	// Make sure the issuer ref is one we care about
 	issuerRef, found, err := unstructured.NestedMap(certificate.Object, "spec", "issuerRef")
 	if err != nil || !found {
@@ -101,6 +95,12 @@ func (r *GatewayDownstreamCertificateSolverReconciler) Reconcile(ctx context.Con
 
 	if !foundIssuer {
 		// Not an issuer we care about
+		return ctrl.Result{}, nil
+	}
+
+	owningGatewayRef := metav1.GetControllerOf(certificate)
+	if owningGatewayRef == nil {
+		// Nothing to do - not a certificate we care about
 		return ctrl.Result{}, nil
 	}
 
@@ -168,8 +168,7 @@ func (r *GatewayDownstreamCertificateSolverReconciler) Reconcile(ctx context.Con
 	// Read spec.key and spec.token from the challenge
 	key, found, err := unstructured.NestedString(challenge.Object, "spec", "key")
 	if err != nil || !found {
-		logger.Error(err, "spec.key not found in cert-manager Challenge")
-		return ctrl.Result{}, err
+		return ctrl.Result{}, fmt.Errorf("spec.key not found in cert-manager Challenge")
 	}
 	token, found, err := unstructured.NestedString(challenge.Object, "spec", "token")
 	if err != nil || !found {

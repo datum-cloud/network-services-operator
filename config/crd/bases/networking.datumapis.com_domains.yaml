@@ -53,6 +53,16 @@ spec:
           spec:
             description: DomainSpec defines the desired state of Domain
             properties:
+              desiredRegistrationRefreshAttempt:
+                description: DesiredRegistrationRefreshAttempt is the desired time
+                  of the next registration refresh attempt.
+                format: date-time
+                type: string
+                x-kubernetes-validations:
+                - message: must be at least 5m after the previous desiredRegistrationRefreshAttempt
+                    when changed
+                  rule: oldSelf == null || self == null || self == oldSelf || self
+                    >= oldSelf + duration('5m')
               domainName:
                 description: DomainName is the fully qualified domain name (FQDN)
                   to be managed
@@ -254,6 +264,9 @@ spec:
                     format: date-time
                     type: string
                   handle:
+                    type: string
+                  lastRefreshAttempt:
+                    format: date-time
                     type: string
                   nextRefreshAttempt:
                     format: date-time

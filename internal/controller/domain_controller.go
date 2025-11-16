@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -40,14 +41,13 @@ type DomainReconciler struct {
 	mgr    mcmanager.Manager
 	Config config.NetworkServicesOperator
 
-	timeNow     func() time.Time
-	httpGet     func(ctx context.Context, url string) ([]byte, *http.Response, error)
-	lookupTXT   func(ctx context.Context, name string) ([]string, error)
-	lookupNS    func(ctx context.Context, name string) ([]*net.NS, error)
-	lookupIP    func(ctx context.Context, name string) ([]net.IPAddr, error)
-	rdapDo      func(ctx context.Context, req *rdap.Request) (*rdap.Response, error)
-	rdapQueryIP func(ctx context.Context, ip string) (*rdap.IPNetwork, error)
-	whoisFetch  func(ctx context.Context, query, host string) (string, error)
+	timeNow    func() time.Time
+	httpGet    func(ctx context.Context, url string) ([]byte, *http.Response, error)
+	lookupTXT  func(ctx context.Context, name string) ([]string, error)
+	lookupNS   func(ctx context.Context, name string) ([]*net.NS, error)
+	lookupIP   func(ctx context.Context, name string) ([]net.IPAddr, error)
+	rdapDo     func(ctx context.Context, req *rdap.Request) (*rdap.Response, error)
+	whoisFetch func(ctx context.Context, query, host string) (string, error)
 
 	// external clients
 	rdapClient *rdap.Client
@@ -411,6 +411,52 @@ func defaultHTTPGet(ctx context.Context, url string) ([]byte, *http.Response, er
 	return body, resp, nil
 }
 
+// parseRetryAfterHeader parses Retry-After per RFC: either delta-seconds or HTTP-date.
+func parseRetryAfterHeader(val string) time.Duration {
+	val = strings.TrimSpace(val)
+	if val == "" {
+		return 0
+	}
+	if secs, err := strconv.Atoi(val); err == nil && secs >= 0 {
+		return time.Duration(secs) * time.Second
+	}
+	if when, err := http.ParseTime(val); err == nil {
+		d := time.Until(when)
+		if d < 0 {
+			return 0
+		}
+		return d
+	}
+	return 0
+}
+
+// rdapSuggestedDelay inspects an RDAP response's HTTP details and returns:
+// - the minimal parsed Retry-After duration across 429/503 responses (zero if none present)
+// - a boolean indicating whether any 429 (Too Many Requests) was observed
+func rdapSuggestedDelay(resp *rdap.Response) (time.Duration, bool) {
+	var delay time.Duration
+	limited := false
+	if resp != nil && len(resp.HTTP) > 0 {
+		for _, hr := range resp.HTTP {
+			if hr == nil || hr.Response == nil {
+				continue
+			}
+			code := hr.Response.StatusCode
+			if code == http.StatusTooManyRequests || code == http.StatusServiceUnavailable {
+				if code == http.StatusTooManyRequests {
+					limited = true
+				}
+				if ra := parseRetryAfterHeader(hr.Response.Header.Get("Retry-After")); ra > 0 {
+					if delay == 0 || ra < delay {
+						delay = ra
+					}
+				}
+			}
+		}
+	}
+	return delay, limited
+}
+
 // reconcileRegistration keeps Status.Registration fresh and schedules independent timers.
 // Returns the next registration refresh time (zero if none).
 func (r *DomainReconciler) reconcileRegistration(ctx context.Context, d *networkingv1alpha.Domain, apex string) time.Time {
@@ -444,8 +490,17 @@ func (r *DomainReconciler) reconcileRegistration(ctx context.Context, d *network
 			logger.Info("rdap bootstrap reported no match; falling back to whois", "apex", apex)
 			useWHOIS = true
 		} else {
-			logger.Error(err, "rdap lookup failed")
-			st.Registration.NextRefreshAttempt = metav1.NewTime(now.Add(r.Config.DomainRegistration.RetryBackoff.Duration))
+			// Inspect RDAP HTTP responses for rate-limit signals (429/503 with Retry-After)
+			delay, limited := rdapSuggestedDelay(resp)
+			if delay > 0 || limited {
+				if delay <= 0 {
+					delay = r.Config.DomainRegistration.RetryBackoff.Duration * 2
+				}
+				st.Registration.NextRefreshAttempt = metav1.NewTime(now.Add(wait.Jitter(delay, r.Config.DomainRegistration.JitterMaxFactor)))
+			} else {
+				logger.Error(err, "rdap lookup failed")
+				st.Registration.NextRefreshAttempt = metav1.NewTime(now.Add(r.Config.DomainRegistration.RetryBackoff.Duration))
+			}
 			return st.Registration.NextRefreshAttempt.Time
 		}
 	} else {
@@ -553,8 +608,21 @@ func (r *DomainReconciler) reconcileRegistration(ctx context.Context, d *network
 		for _, ipAddr := range ipAddrs {
 			ip := ipAddr.IP.String()
 			nsIP := networkingv1alpha.NameserverIP{Address: ip}
-			if who := r.lookupRegistrantNameForIP(ctxLookup, ip); who != "" {
-				nsIP.RegistrantName = who
+			name, ok, tryAfter := r.lookupRegistrantNameForIP(ctxLookup, ip)
+			if !ok {
+				// This means something went wrong but not necessarily rate-limited, so we should retry.
+				if tryAfter <= 0 {
+					tryAfter = r.Config.DomainRegistration.RetryBackoff.Duration * 2
+				}
+				// Commit current registration snapshot and schedule next attempt based on IP RDAP suggestion.
+				st.Registration = &reg
+				next := now.Add(wait.Jitter(tryAfter, r.Config.DomainRegistration.JitterMaxFactor))
+				st.Registration.NextRefreshAttempt = metav1.NewTime(next)
+				return next
+			}
+			// If we got a name, set it.
+			if name != "" {
+				nsIP.RegistrantName = name
 			}
 			st.Nameservers[i].IPs = append(st.Nameservers[i].IPs, nsIP)
 		}
@@ -796,20 +864,40 @@ func buildRegistrarInfo(entities []rdap.Entity) *networkingv1alpha.RegistrarInfo
 	return nil
 }
 
-func (r *DomainReconciler) lookupRegistrantNameForIP(ctx context.Context, ip string) string {
-	ipNet, err := r.rdapQueryIP(ctx, ip)
-	if err != nil || ipNet == nil {
-		return ""
+func (r *DomainReconciler) lookupRegistrantNameForIP(ctx context.Context, ip string) (string, bool, time.Duration) {
+	req := &rdap.Request{
+		Type:    rdap.IPRequest,
+		Query:   ip,
+		Timeout: r.Config.DomainRegistration.LookupTimeout.Duration,
+	}
+	resp, err := r.rdapDo(ctx, req)
+	if err != nil {
+		// Inspect HTTP responses for 429/503 Retry-After.
+		delay, limited := rdapSuggestedDelay(resp)
+		if delay > 0 || limited {
+			if delay <= 0 {
+				delay = r.Config.DomainRegistration.RetryBackoff.Duration * 2
+			}
+			return "", false, delay
+		}
+		return "", false, 0
+	}
+	if resp == nil {
+		return "", false, 0
+	}
+	ipNet, _ := resp.Object.(*rdap.IPNetwork)
+	if ipNet == nil {
+		return "", false, 0
 	}
 	for _, e := range ipNet.Entities {
 		if hasRole(e.Roles, "registrant") {
 			name, _, _ := extractVCard(e.VCard)
 			if name != "" {
-				return name
+				return name, true, 0
 			}
 		}
 	}
-	return ""
+	return "", true, 0
 }
 
 func hasRole(roles []string, want string) bool {
@@ -1045,25 +1133,10 @@ func (r *DomainReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 
 	r.lookupNS = net.DefaultResolver.LookupNS
 	r.lookupIP = net.DefaultResolver.LookupIPAddr
+	r.whoisFetch = whoisFetchAtHost
 	r.rdapDo = func(ctx context.Context, req *rdap.Request) (*rdap.Response, error) {
 		return r.rdapClient.Do(req.WithContext(ctx))
 	}
-	r.rdapQueryIP = func(ctx context.Context, ip string) (*rdap.IPNetwork, error) {
-		req := &rdap.Request{
-			Type:    rdap.IPRequest,
-			Query:   ip,
-			Timeout: r.Config.DomainRegistration.LookupTimeout.Duration,
-		}
-
-		r.whoisFetch = whoisFetchAtHost
-		resp, err := r.rdapClient.Do(req.WithContext(ctx))
-		if err != nil {
-			return nil, err
-		}
-		ipNet, _ := resp.Object.(*rdap.IPNetwork)
-		return ipNet, nil
-	}
-
 	return mcbuilder.ControllerManagedBy(mgr).
 		// Watch all Domains so registration continues after verification
 		For(&networkingv1alpha.Domain{}).

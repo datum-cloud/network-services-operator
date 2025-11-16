@@ -256,6 +256,7 @@ func main() {
 	if serverConfig.Gateway.EnableDownstreamCertificateSolver {
 		setupLog.Info("enabling GatewayDownstreamCertificateSolver controller")
 		if err := (&controller.GatewayDownstreamCertificateSolverReconciler{
+			Config:            serverConfig,
 			DownstreamCluster: downstreamCluster,
 		}).SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "GatewayDownstreamCertificateSolver")

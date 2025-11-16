@@ -202,6 +202,9 @@ func (r *GatewayDownstreamCertificateSolverReconciler) Reconcile(ctx context.Con
 	}
 
 	result, err := controllerutil.CreateOrUpdate(ctx, cl, httpRouteFilter, func() error {
+		httpRouteFilter.Labels = map[string]string{
+			"meta.datumapis.com/http01-solver": "true",
+		}
 		httpRouteFilter.Spec = envoygatewayv1alpha1.HTTPRouteFilterSpec{
 			DirectResponse: &envoygatewayv1alpha1.HTTPDirectResponseFilter{
 				ContentType: ptr.To("text/plain"),
@@ -233,6 +236,9 @@ func (r *GatewayDownstreamCertificateSolverReconciler) Reconcile(ctx context.Con
 	}
 
 	result, err = controllerutil.CreateOrUpdate(ctx, cl, httpRoute, func() error {
+		httpRoute.Labels = map[string]string{
+			"meta.datumapis.com/http01-solver": "true",
+		}
 		httpRoute.Spec = gatewayv1.HTTPRouteSpec{
 			CommonRouteSpec: gatewayv1.CommonRouteSpec{
 				ParentRefs: []gatewayv1.ParentReference{

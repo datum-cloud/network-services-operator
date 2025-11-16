@@ -40,13 +40,16 @@ func (r *GatewayDownstreamCertificateSolverReconciler) Reconcile(ctx context.Con
 	certificate := newUnstructuredForGVK(certificateGVK)
 	if err := cl.Get(ctx, req.NamespacedName, certificate); err != nil {
 		if apierrors.IsNotFound(err) {
+			logger.Info("Downstream certificate not found, might have been deleted")
 			return ctrl.Result{}, nil
 		}
+		logger.Error(err, "Failed to get downstream certificate")
 		return ctrl.Result{}, err
 	}
 
 	conditions, found, err := unstructured.NestedSlice(certificate.Object, "status", "conditions")
 	if err != nil || !found {
+		logger.Error(err, "Failed to get conditions from downstream certificate")
 		return ctrl.Result{}, err
 	}
 
@@ -63,6 +66,7 @@ func (r *GatewayDownstreamCertificateSolverReconciler) Reconcile(ctx context.Con
 	}
 
 	if isReady {
+		logger.Info("Downstream certificate is already ready")
 		// Nothing to do - certificate is already ready
 		return ctrl.Result{}, nil
 	}
@@ -70,17 +74,20 @@ func (r *GatewayDownstreamCertificateSolverReconciler) Reconcile(ctx context.Con
 	// Make sure the issuer ref is one we care about
 	issuerRef, found, err := unstructured.NestedMap(certificate.Object, "spec", "issuerRef")
 	if err != nil || !found {
+		logger.Error(err, "Failed to get issuerRef from downstream certificate")
 		return ctrl.Result{}, fmt.Errorf("failed to get issuerRef from certificate")
 	}
 
 	// Skip any non cluster issuers
 	issuerKind, found, err := unstructured.NestedString(issuerRef, "kind")
 	if err != nil || !found || issuerKind != "ClusterIssuer" {
+		logger.Info("Issuer kind is not ClusterIssuer, skipping")
 		return ctrl.Result{}, nil
 	}
 
 	issuerName, found, err := unstructured.NestedString(issuerRef, "name")
 	if err != nil || !found {
+		logger.Error(err, "Failed to get issuer name from downstream certificate")
 		return ctrl.Result{}, fmt.Errorf("failed to get issuer name from certificate")
 	}
 
@@ -94,12 +101,14 @@ func (r *GatewayDownstreamCertificateSolverReconciler) Reconcile(ctx context.Con
 	}
 
 	if !foundIssuer {
+		logger.Info("Issuer name not in configured list, skipping", "issuerName", issuerName)
 		// Not an issuer we care about
 		return ctrl.Result{}, nil
 	}
 
 	owningGatewayRef := metav1.GetControllerOf(certificate)
 	if owningGatewayRef == nil {
+		logger.Info("Downstream certificate has no owning Gateway, skipping")
 		// Nothing to do - not a certificate we care about
 		return ctrl.Result{}, nil
 	}

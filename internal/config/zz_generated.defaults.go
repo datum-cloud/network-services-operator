@@ -234,7 +234,7 @@ func SetObjectDefaults_NetworkServicesOperator(in *NetworkServicesOperator) {
 		in.DomainVerification.MaxConcurrentVerifications = 20
 	}
 	if in.DomainVerification.DNSVerificationRecordPrefix == "" {
-		in.DomainVerification.DNSVerificationRecordPrefix = "_datum-custom-hostname"
+		in.DomainVerification.DNSVerificationRecordPrefix = "datum-custom-hostname"
 	}
 	if in.DomainVerification.HTTPVerificationTokenPath == "" {
 		in.DomainVerification.HTTPVerificationTokenPath = ".well-known/datum-custom-hostname-challenge"

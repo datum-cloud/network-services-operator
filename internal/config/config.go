@@ -258,7 +258,7 @@ type DomainVerificationConfig struct {
 	// Prefix to the DNS record used for verification. Will be suffixed by the
 	// value in `spec.domainName` of a Domain resource.
 	//
-	// +default="_datum-custom-hostname"
+	// +default="datum-custom-hostname"
 	DNSVerificationRecordPrefix string `json:"dnsVerificationRecordPrefix"`
 
 	// Path for the HTTP token used for verification. Will be suffixed by the

@@ -469,22 +469,32 @@ func (r *DomainReconciler) reconcileRegistration(ctx context.Context, d *network
 		st.Registration = &networkingv1alpha.Registration{}
 	}
 
-	// If it's not time to refresh the registration, return the next refresh attempt time,
-	// unless the user requested an expedited attempt via spec.desiredRegistrationRefreshAttempt.
+	// Compute desired-based behavior and candidate wake
+	var candidateWake time.Time
 	expedite := false
 	if d.Spec.DesiredRegistrationRefreshAttempt != nil {
 		desired := d.Spec.DesiredRegistrationRefreshAttempt.Time
-		// Expedite when desired time is now or in the past AND we haven't attempted since then.
-		if !desired.IsZero() && !desired.After(now) &&
-			(st.Registration.LastRefreshAttempt.IsZero() || st.Registration.LastRefreshAttempt.Time.Before(desired)) {
+		// Pending desired if we haven't attempted since desired
+		desiredPending := (st.Registration.LastRefreshAttempt.IsZero() || st.Registration.LastRefreshAttempt.Time.Before(desired))
+		// Expedite when desired time is now or in the past AND it's still pending.
+		if !desired.IsZero() && !desired.After(now) && desiredPending {
 			expedite = true
 			logger.Info("expediting registration refresh per spec.desiredRegistrationRefreshAttempt", "desired", desired)
+		} else if desiredPending && desired.After(now) {
+			// Use desired future time as a wake candidate.
+			candidateWake = desired
 		}
 	}
-	if !st.Registration.NextRefreshAttempt.IsZero() &&
-		st.Registration.NextRefreshAttempt.After(now) &&
-		!expedite {
-		return st.Registration.NextRefreshAttempt.Time
+	// Consider NextRefreshAttempt as another wake candidate when in the future
+	if !st.Registration.NextRefreshAttempt.IsZero() && st.Registration.NextRefreshAttempt.After(now) && !expedite {
+		nra := st.Registration.NextRefreshAttempt.Time
+		if candidateWake.IsZero() || nra.Before(candidateWake) {
+			candidateWake = nra
+		}
+	}
+	// If we have a future candidate wake and we're not expediting, return the soonest wake without attempting now.
+	if !candidateWake.IsZero() && candidateWake.After(now) && !expedite {
+		return candidateWake
 	}
 
 	// Indicate the time of the last refresh attempt (which is now)

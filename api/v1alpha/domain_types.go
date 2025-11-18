@@ -37,6 +37,11 @@ type DomainSpec struct {
 	// +kubebuilder:validation:XValidation:message="A domain name is immutable and cannot be changed after creation",rule="oldSelf == '' || self == oldSelf"
 	// +kubebuilder:validation:XValidation:message="Must have at least two segments separated by dots",rule="self.indexOf('.') != -1"
 	DomainName string `json:"domainName"`
+
+	// DesiredRegistrationRefreshAttempt is the desired time of the next registration refresh attempt.
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:XValidation:message="must be at least 5m after the previous desiredRegistrationRefreshAttempt when changed",rule="oldSelf == null || self == null || self == oldSelf || self >= oldSelf + duration('5m')"
+	DesiredRegistrationRefreshAttempt *metav1.Time `json:"desiredRegistrationRefreshAttempt,omitempty"`
 }
 
 // DomainStatus defines the observed state of Domain
@@ -149,6 +154,7 @@ type Registration struct {
 	Abuse *AbuseContact `json:"abuse,omitempty"`
 
 	NextRefreshAttempt metav1.Time `json:"nextRefreshAttempt,omitempty"`
+	LastRefreshAttempt metav1.Time `json:"lastRefreshAttempt,omitempty"`
 }
 
 type RegistrarInfo struct {

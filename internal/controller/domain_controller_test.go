@@ -1028,6 +1028,270 @@ func TestRegistration_RDAP429_NoRetryAfter_Uses2xBackoff(t *testing.T) {
 	assert.LessOrEqual(t, gotDelay, 4*backoff)
 }
 
+func TestRegistration_DesiredRefreshAttempt_ExpediteBehavior(t *testing.T) {
+	s := runtime.NewScheme()
+	_ = scheme.AddToScheme(s)
+	_ = networkingv1alpha.AddToScheme(s)
+
+	now := time.Date(2025, 11, 14, 12, 0, 0, 0, time.UTC)
+	refreshInterval := 30 * time.Minute
+
+	newReconciler := func(cl client.Client, rdapCalled *bool) *DomainReconciler {
+		return &DomainReconciler{
+			mgr: &fakeMockManager{cl: cl},
+			Config: config.NetworkServicesOperator{
+				DomainRegistration: config.DomainRegistrationConfig{
+					LookupTimeout:   &metav1.Duration{Duration: 3 * time.Second},
+					RefreshInterval: &metav1.Duration{Duration: refreshInterval},
+					JitterMaxFactor: 0.0, // deterministic next schedule
+					RetryBackoff:    &metav1.Duration{Duration: time.Minute},
+				},
+			},
+			timeNow: func() time.Time { return now },
+			rdapDo: func(ctx context.Context, req *rdap.Request) (*rdap.Response, error) {
+				*rdapCalled = true
+				// Minimal valid RDAP response with Domain object
+				return &rdap.Response{Object: &rdap.Domain{LDHName: "example.com"}}, nil
+			},
+			lookupNS: func(ctx context.Context, name string) ([]*net.NS, error) { return nil, &net.DNSError{IsNotFound: true} },
+			lookupIP: func(ctx context.Context, name string) ([]net.IPAddr, error) { return nil, nil },
+		}
+	}
+
+	t.Run("skips when next refresh in future and no desired override", func(t *testing.T) {
+		dom := newDomain("default", "no-desired")
+		dom.Spec.DomainName = exampleDomain
+		future := now.Add(10 * time.Minute)
+		dom.Status.Registration = &networkingv1alpha.Registration{
+			NextRefreshAttempt: metav1.Time{Time: future},
+		}
+
+		cl := fake.NewClientBuilder().WithScheme(s).WithObjects(dom).WithStatusSubresource(dom).Build()
+		rdapCalled := false
+		r := newReconciler(cl, &rdapCalled)
+
+		_, err := r.Reconcile(context.Background(), mcreconcile.Request{ClusterName: "test", Request: reconcile.Request{NamespacedName: client.ObjectKeyFromObject(dom)}})
+		assert.NoError(t, err)
+
+		got := &networkingv1alpha.Domain{}
+		_ = cl.Get(context.Background(), client.ObjectKeyFromObject(dom), got)
+
+		assert.False(t, rdapCalled, "rdap should not be called when skipping")
+		assert.True(t, got.Status.Registration.LastRefreshAttempt.IsZero(), "last attempt should remain zero when skipping")
+		assert.True(t, got.Status.Registration.NextRefreshAttempt.Time.Equal(future), "next attempt should be unchanged")
+	})
+
+	t.Run("expedites when desired in past and last attempt before desired", func(t *testing.T) {
+		dom := newDomain("default", "expedite")
+		dom.Spec.DomainName = exampleDomain
+		future := now.Add(10 * time.Minute)
+		desired := metav1.NewTime(now.Add(-1 * time.Minute))
+		dom.Spec.DesiredRegistrationRefreshAttempt = &desired
+		dom.Status.Registration = &networkingv1alpha.Registration{
+			NextRefreshAttempt: metav1.Time{Time: future},
+			// LastRefreshAttempt zero (never attempted)
+		}
+
+		cl := fake.NewClientBuilder().WithScheme(s).WithObjects(dom).WithStatusSubresource(dom).Build()
+		rdapCalled := false
+		r := newReconciler(cl, &rdapCalled)
+
+		_, err := r.Reconcile(context.Background(), mcreconcile.Request{ClusterName: "test", Request: reconcile.Request{NamespacedName: client.ObjectKeyFromObject(dom)}})
+		assert.NoError(t, err)
+
+		got := &networkingv1alpha.Domain{}
+		_ = cl.Get(context.Background(), client.ObjectKeyFromObject(dom), got)
+
+		assert.True(t, rdapCalled, "rdap should be called due to expedite")
+		assert.False(t, got.Status.Registration.LastRefreshAttempt.IsZero(), "last attempt should be stamped to now")
+		assert.WithinDuration(t, now, got.Status.Registration.LastRefreshAttempt.Time, 2*time.Second, "last attempt should be stamped to now")
+		// NextRefreshAttempt should be scheduled at/after last attempt + configured interval.
+		// We assert lower bound to avoid flakiness from internal clock sources.
+		minNext := got.Status.Registration.LastRefreshAttempt.Add(refreshInterval)
+		assert.True(t, !got.Status.Registration.NextRefreshAttempt.Time.Before(minNext), "next attempt should be >= last+interval")
+	})
+
+	t.Run("does not expedite when last attempt already after desired and next is in future", func(t *testing.T) {
+		dom := newDomain("default", "no-expedite")
+		dom.Spec.DomainName = exampleDomain
+		future := now.Add(10 * time.Minute)
+		desired := metav1.NewTime(now.Add(-2 * time.Minute))
+		dom.Spec.DesiredRegistrationRefreshAttempt = &desired
+		last := metav1.NewTime(now.Add(-1 * time.Minute)) // after desired
+		dom.Status.Registration = &networkingv1alpha.Registration{
+			NextRefreshAttempt: metav1.Time{Time: future},
+			LastRefreshAttempt: last,
+		}
+
+		cl := fake.NewClientBuilder().WithScheme(s).WithObjects(dom).WithStatusSubresource(dom).Build()
+		rdapCalled := false
+		r := newReconciler(cl, &rdapCalled)
+
+		_, err := r.Reconcile(context.Background(), mcreconcile.Request{ClusterName: "test", Request: reconcile.Request{NamespacedName: client.ObjectKeyFromObject(dom)}})
+		assert.NoError(t, err)
+
+		got := &networkingv1alpha.Domain{}
+		_ = cl.Get(context.Background(), client.ObjectKeyFromObject(dom), got)
+
+		assert.False(t, rdapCalled, "rdap should not be called when not expediting")
+		assert.True(t, got.Status.Registration.LastRefreshAttempt.Time.Equal(last.Time), "last attempt should remain unchanged")
+		assert.True(t, got.Status.Registration.NextRefreshAttempt.Time.Equal(future), "next attempt should be unchanged")
+	})
+
+	t.Run("attempts when next refresh due regardless of desired/last", func(t *testing.T) {
+		dom := newDomain("default", "due-now")
+		dom.Spec.DomainName = exampleDomain
+		due := now.Add(-1 * time.Second)
+		desired := metav1.NewTime(now.Add(-2 * time.Minute))
+		dom.Spec.DesiredRegistrationRefreshAttempt = &desired
+		last := metav1.NewTime(now.Add(-1 * time.Minute)) // after desired
+		dom.Status.Registration = &networkingv1alpha.Registration{
+			NextRefreshAttempt: metav1.Time{Time: due},
+			LastRefreshAttempt: last,
+		}
+
+		cl := fake.NewClientBuilder().WithScheme(s).WithObjects(dom).WithStatusSubresource(dom).Build()
+		rdapCalled := false
+		r := newReconciler(cl, &rdapCalled)
+
+		_, err := r.Reconcile(context.Background(), mcreconcile.Request{ClusterName: "test", Request: reconcile.Request{NamespacedName: client.ObjectKeyFromObject(dom)}})
+		assert.NoError(t, err)
+
+		got := &networkingv1alpha.Domain{}
+		_ = cl.Get(context.Background(), client.ObjectKeyFromObject(dom), got)
+
+		assert.True(t, rdapCalled, "rdap should be called when next is due")
+		assert.WithinDuration(t, now, got.Status.Registration.LastRefreshAttempt.Time, 2*time.Second, "last attempt should be updated to now")
+	})
+
+	t.Run("schedules wake to desired when desired sooner than next and not satisfied", func(t *testing.T) {
+		dom := newDomain("default", "schedule-desired")
+		dom.Spec.DomainName = exampleDomain
+		next := now.Add(20 * time.Minute)
+		desired := metav1.NewTime(now.Add(5 * time.Minute)) // earlier than next
+		dom.Spec.DesiredRegistrationRefreshAttempt = &desired
+		// Never attempted; pending desired
+		dom.Status.Registration = &networkingv1alpha.Registration{
+			NextRefreshAttempt: metav1.Time{Time: next},
+			// LastRefreshAttempt zero
+		}
+		// Disable verification influence so registration scheduling is the only wake source.
+		dom.Status.Conditions = append(dom.Status.Conditions, metav1.Condition{
+			Type:               networkingv1alpha.DomainConditionVerified,
+			Status:             metav1.ConditionTrue,
+			Reason:             networkingv1alpha.DomainReasonVerified,
+			Message:            "verified for test",
+			LastTransitionTime: metav1.Now(),
+		})
+
+		cl := fake.NewClientBuilder().WithScheme(s).WithObjects(dom).WithStatusSubresource(dom).Build()
+		rdapCalled := false
+		r := newReconciler(cl, &rdapCalled)
+
+		res, err := r.Reconcile(context.Background(), mcreconcile.Request{ClusterName: "test", Request: reconcile.Request{NamespacedName: client.ObjectKeyFromObject(dom)}})
+		assert.NoError(t, err)
+
+		// Expect we scheduled a requeue close to 5 minutes (earliest desired), not 20 minutes.
+		assert.GreaterOrEqual(t, res.RequeueAfter, 4*time.Minute)
+		assert.LessOrEqual(t, res.RequeueAfter, 6*time.Minute)
+
+		got := &networkingv1alpha.Domain{}
+		_ = cl.Get(context.Background(), client.ObjectKeyFromObject(dom), got)
+		assert.False(t, rdapCalled, "rdap should not be called when only scheduling to desired")
+		// Status should remain largely unchanged (no stamp of last attempt)
+		assert.True(t, got.Status.Registration.LastRefreshAttempt.IsZero())
+		assert.True(t, got.Status.Registration.NextRefreshAttempt.Time.Equal(next))
+	})
+
+	t.Run("after desired satisfied, subsequent wake uses NextRefreshAttempt", func(t *testing.T) {
+		dom := newDomain("default", "desired-then-next")
+		dom.Spec.DomainName = exampleDomain
+		next := now.Add(20 * time.Minute)
+		desired := metav1.NewTime(now.Add(5 * time.Minute))
+		dom.Spec.DesiredRegistrationRefreshAttempt = &desired
+		dom.Status.Registration = &networkingv1alpha.Registration{
+			NextRefreshAttempt: metav1.Time{Time: next},
+			// LastRefreshAttempt zero initially
+		}
+		// Mark verified so only registration scheduling influences wakes
+		dom.Status.Conditions = append(dom.Status.Conditions, metav1.Condition{
+			Type:               networkingv1alpha.DomainConditionVerified,
+			Status:             metav1.ConditionTrue,
+			Reason:             networkingv1alpha.DomainReasonVerified,
+			Message:            "verified for test",
+			LastTransitionTime: metav1.Now(),
+		})
+
+		cl := fake.NewClientBuilder().WithScheme(s).WithObjects(dom).WithStatusSubresource(dom).Build()
+
+		// Step 1: before desired time — should schedule to desired without attempting
+		rdapCalled1 := false
+		r1 := newReconciler(cl, &rdapCalled1)
+		res1, err := r1.Reconcile(context.Background(), mcreconcile.Request{ClusterName: "test", Request: reconcile.Request{NamespacedName: client.ObjectKeyFromObject(dom)}})
+		assert.NoError(t, err)
+		assert.False(t, rdapCalled1, "should not attempt before desired")
+		assert.GreaterOrEqual(t, res1.RequeueAfter, 4*time.Minute)
+		assert.LessOrEqual(t, res1.RequeueAfter, 6*time.Minute)
+
+		// Step 2: at desired time — should attempt, stamp last, and schedule next = last + interval
+		now2 := desired.Add(1 * time.Second)
+		rdapCalled2 := false
+		r2 := &DomainReconciler{
+			mgr: &fakeMockManager{cl: cl},
+			Config: config.NetworkServicesOperator{
+				DomainRegistration: config.DomainRegistrationConfig{
+					LookupTimeout:   &metav1.Duration{Duration: 3 * time.Second},
+					RefreshInterval: &metav1.Duration{Duration: refreshInterval},
+					JitterMaxFactor: 0.0,
+					RetryBackoff:    &metav1.Duration{Duration: time.Minute},
+				},
+			},
+			timeNow: func() time.Time { return now2 },
+			rdapDo: func(ctx context.Context, req *rdap.Request) (*rdap.Response, error) {
+				rdapCalled2 = true
+				return &rdap.Response{Object: &rdap.Domain{LDHName: "example.com"}}, nil
+			},
+			lookupNS: func(ctx context.Context, name string) ([]*net.NS, error) { return nil, &net.DNSError{IsNotFound: true} },
+			lookupIP: func(ctx context.Context, name string) ([]net.IPAddr, error) { return nil, nil },
+		}
+		_, err = r2.Reconcile(context.Background(), mcreconcile.Request{ClusterName: "test", Request: reconcile.Request{NamespacedName: client.ObjectKeyFromObject(dom)}})
+		assert.NoError(t, err)
+
+		got2 := &networkingv1alpha.Domain{}
+		_ = cl.Get(context.Background(), client.ObjectKeyFromObject(dom), got2)
+		assert.True(t, rdapCalled2, "should attempt at/after desired")
+		assert.WithinDuration(t, now2, got2.Status.Registration.LastRefreshAttempt.Time, 2*time.Second)
+		minNext := got2.Status.Registration.LastRefreshAttempt.Add(refreshInterval)
+		assert.True(t, !got2.Status.Registration.NextRefreshAttempt.Time.Before(minNext), "next should be >= last+interval")
+
+		// Step 3: between last and next — desired should be ignored (already satisfied), wake should be to next
+		now3 := now2.Add(1 * time.Minute)
+		rdapCalled3 := false
+		r3 := &DomainReconciler{
+			mgr:     &fakeMockManager{cl: cl},
+			Config:  r2.Config,
+			timeNow: func() time.Time { return now3 },
+			rdapDo: func(ctx context.Context, req *rdap.Request) (*rdap.Response, error) {
+				rdapCalled3 = true
+				return &rdap.Response{Object: &rdap.Domain{LDHName: "example.com"}}, nil
+			},
+			lookupNS: r2.lookupNS,
+			lookupIP: r2.lookupIP,
+		}
+		res3, err := r3.Reconcile(context.Background(), mcreconcile.Request{ClusterName: "test", Request: reconcile.Request{NamespacedName: client.ObjectKeyFromObject(dom)}})
+		assert.NoError(t, err)
+		assert.False(t, rdapCalled3, "should not attempt again before next")
+
+		remaining := got2.Status.Registration.NextRefreshAttempt.Sub(now3)
+		if remaining < time.Second {
+			remaining = time.Second
+		}
+		// RequeueAfter is truncated to seconds; allow a small delta
+		assert.GreaterOrEqual(t, res3.RequeueAfter, remaining-1*time.Second)
+		assert.LessOrEqual(t, res3.RequeueAfter, remaining+1*time.Second)
+	})
+}
+
 func TestRegistration_EnrichesNameserverIPs(t *testing.T) {
 	s := runtime.NewScheme()
 	_ = scheme.AddToScheme(s)

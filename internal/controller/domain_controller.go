@@ -469,10 +469,36 @@ func (r *DomainReconciler) reconcileRegistration(ctx context.Context, d *network
 		st.Registration = &networkingv1alpha.Registration{}
 	}
 
-	if !st.Registration.NextRefreshAttempt.IsZero() &&
-		st.Registration.NextRefreshAttempt.After(now) {
-		return st.Registration.NextRefreshAttempt.Time
+	// Compute desired-based behavior and candidate wake
+	var candidateWake time.Time
+	expedite := false
+	if d.Spec.DesiredRegistrationRefreshAttempt != nil {
+		desired := d.Spec.DesiredRegistrationRefreshAttempt.Time
+		// Pending desired if we haven't attempted since desired
+		desiredPending := (st.Registration.LastRefreshAttempt.IsZero() || st.Registration.LastRefreshAttempt.Time.Before(desired))
+		// Expedite when desired time is now or in the past AND it's still pending.
+		if !desired.IsZero() && !desired.After(now) && desiredPending {
+			expedite = true
+			logger.Info("expediting registration refresh per spec.desiredRegistrationRefreshAttempt", "desired", desired)
+		} else if desiredPending && desired.After(now) {
+			// Use desired future time as a wake candidate.
+			candidateWake = desired
+		}
 	}
+	// Consider NextRefreshAttempt as another wake candidate when in the future
+	if !st.Registration.NextRefreshAttempt.IsZero() && st.Registration.NextRefreshAttempt.After(now) && !expedite {
+		nra := st.Registration.NextRefreshAttempt.Time
+		if candidateWake.IsZero() || nra.Before(candidateWake) {
+			candidateWake = nra
+		}
+	}
+	// If we have a future candidate wake and we're not expediting, return the soonest wake without attempting now.
+	if !candidateWake.IsZero() && candidateWake.After(now) && !expedite {
+		return candidateWake
+	}
+
+	// Indicate the time of the last refresh attempt (which is now)
+	st.Registration.LastRefreshAttempt = metav1.NewTime(now)
 
 	// apex is guaranteed valid by the ValidDomain gate
 	st.Apex = strings.EqualFold(strings.TrimSuffix(d.Spec.DomainName, "."), apex)
@@ -616,6 +642,8 @@ func (r *DomainReconciler) reconcileRegistration(ctx context.Context, d *network
 				}
 				// Commit current registration snapshot and schedule next attempt based on IP RDAP suggestion.
 				st.Registration = &reg
+				// Preserve that we attempted a refresh now even if enrichment failed partway through.
+				st.Registration.LastRefreshAttempt = metav1.NewTime(now)
 				next := now.Add(wait.Jitter(tryAfter, r.Config.DomainRegistration.JitterMaxFactor))
 				st.Registration.NextRefreshAttempt = metav1.NewTime(next)
 				return next
@@ -629,6 +657,8 @@ func (r *DomainReconciler) reconcileRegistration(ctx context.Context, d *network
 	}
 
 	st.Registration = &reg
+	// Stamp the time we attempted a refresh now that we've built the new snapshot.
+	st.Registration.LastRefreshAttempt = metav1.NewTime(now)
 
 	// Schedule next refresh (with jitter)
 	interval := r.Config.DomainRegistration.RefreshInterval.Duration

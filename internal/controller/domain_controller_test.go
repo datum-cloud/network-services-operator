@@ -1234,7 +1234,7 @@ func TestRegistration_DesiredRefreshAttempt_ExpediteBehavior(t *testing.T) {
 		assert.LessOrEqual(t, res1.RequeueAfter, 6*time.Minute)
 
 		// Step 2: at desired time — should attempt, stamp last, and schedule next = last + interval
-		now2 := desired.Time.Add(1 * time.Second)
+		now2 := desired.Add(1 * time.Second)
 		rdapCalled2 := false
 		r2 := &DomainReconciler{
 			mgr: &fakeMockManager{cl: cl},
@@ -1261,7 +1261,7 @@ func TestRegistration_DesiredRefreshAttempt_ExpediteBehavior(t *testing.T) {
 		_ = cl.Get(context.Background(), client.ObjectKeyFromObject(dom), got2)
 		assert.True(t, rdapCalled2, "should attempt at/after desired")
 		assert.WithinDuration(t, now2, got2.Status.Registration.LastRefreshAttempt.Time, 2*time.Second)
-		minNext := got2.Status.Registration.LastRefreshAttempt.Time.Add(refreshInterval)
+		minNext := got2.Status.Registration.LastRefreshAttempt.Add(refreshInterval)
 		assert.True(t, !got2.Status.Registration.NextRefreshAttempt.Time.Before(minNext), "next should be >= last+interval")
 
 		// Step 3: between last and next — desired should be ignored (already satisfied), wake should be to next

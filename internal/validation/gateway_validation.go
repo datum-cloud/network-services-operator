@@ -47,8 +47,22 @@ func validateListeners(gateway *gatewayv1.Gateway, fldPath *field.Path, opts Gat
 
 			// Require expected hostname on default listeners if set. Note that these
 			// listeners will not have the hostname set at time of creation.
-			if l.Hostname != nil && *l.Hostname != gatewayv1.Hostname(expectedHostname) {
-				allErrs = append(allErrs, field.NotSupported(listenerPath.Child("hostname"), l.Hostname, []string{expectedHostname}))
+			if hostname := l.Hostname; hostname != nil && *hostname != gatewayv1.Hostname(expectedHostname) {
+
+				// Allow the hostname if it's already been programmed in the status
+				// address list, as this means a configuration change was made.
+				foundInStatus := false
+				for _, addr := range gateway.Status.Addresses {
+					if ptr.Deref(addr.Type, "") == gatewayv1.HostnameAddressType &&
+						addr.Value == string(*hostname) {
+						foundInStatus = true
+						break
+					}
+				}
+
+				if !foundInStatus {
+					allErrs = append(allErrs, field.NotSupported(listenerPath.Child("hostname"), l.Hostname, []string{expectedHostname}))
+				}
 			}
 		} else if l.Hostname == nil {
 			allErrs = append(allErrs, field.Required(listenerPath.Child("hostname"), fmt.Sprintf("must be set to %q or a custom hostname", opts.GatewayDNSAddressFunc(gateway))))

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -415,7 +416,7 @@ type GatewayConfig struct {
 }
 
 func (c *GatewayConfig) GatewayDNSAddress(gateway *gatewayv1.Gateway) string {
-	return fmt.Sprintf("%s.%s", gateway.UID, c.TargetDomain)
+	return fmt.Sprintf("%s.%s", strings.ReplaceAll(string(gateway.UID), "-", ""), c.TargetDomain)
 }
 
 // +k8s:deepcopy-gen=true

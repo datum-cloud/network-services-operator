@@ -111,6 +111,11 @@ func (v *GatewayCustomValidator) ValidateUpdate(ctx context.Context, oldObj, new
 	gatewaylog := logf.FromContext(ctx).WithValues("cluster", clusterName)
 	gatewaylog.Info("Validating Gateway", "name", gateway.GetName())
 
+	if dt := gateway.DeletionTimestamp; !dt.IsZero() {
+		// Gateway is deleting, let it go through
+		return nil, nil
+	}
+
 	clusterValidationOpts := v.validationOpts
 	clusterValidationOpts.ClusterName = clusterName
 

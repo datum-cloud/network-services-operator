@@ -195,21 +195,29 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 	}
 	upstreamGatewayClassControllerName := string(upstreamGatewayClass.Spec.ControllerName)
 
-	gatewayDNSAddress := r.Config.Gateway.GatewayDNSAddress(upstreamGateway)
+	var targetDomainHostnames []string
+	// Keep existing addresses in the status if present.
+	if len(upstreamGateway.Status.Addresses) > 0 {
+		for _, addr := range upstreamGateway.Status.Addresses {
+			if ptr.Deref(addr.Type, "") == gatewayv1.HostnameAddressType {
+				targetDomainHostnames = append(targetDomainHostnames, addr.Value)
+			}
+		}
+	} else {
+		gatewayDNSAddress := r.Config.Gateway.GatewayDNSAddress(upstreamGateway)
 
-	// targetDomainHostnames are default hostnames that are unique to each gateway, and
-	// will have DNS records created for them. Any custom hostnames provided in
-	// listeners WILL NOT be added to the addresses list in the gateway status.
-	targetDomainHostnames := []string{
-		gatewayDNSAddress,
-	}
+		// targetDomainHostnames are default hostnames that are unique to each gateway, and
+		// will have DNS records created for them. Any custom hostnames provided in
+		// listeners WILL NOT be added to the addresses list in the gateway status.
+		targetDomainHostnames = append(targetDomainHostnames, gatewayDNSAddress)
 
-	if r.Config.Gateway.IPv4Enabled() {
-		targetDomainHostnames = append(targetDomainHostnames, fmt.Sprintf("v4.%s", gatewayDNSAddress))
-	}
+		if r.Config.Gateway.IPv4Enabled() {
+			targetDomainHostnames = append(targetDomainHostnames, fmt.Sprintf("v4.%s", gatewayDNSAddress))
+		}
 
-	if r.Config.Gateway.IPv6Enabled() {
-		targetDomainHostnames = append(targetDomainHostnames, fmt.Sprintf("v6.%s", gatewayDNSAddress))
+		if r.Config.Gateway.IPv6Enabled() {
+			targetDomainHostnames = append(targetDomainHostnames, fmt.Sprintf("v6.%s", gatewayDNSAddress))
+		}
 	}
 
 	downstreamClient := downstreamStrategy.GetClient()
@@ -304,11 +312,10 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 	)
 
 	addresses := make([]gatewayv1.GatewayStatusAddress, 0, len(targetDomainHostnames))
-	addressType := gatewayv1.HostnameAddressType
 
 	for _, hostname := range targetDomainHostnames {
 		addresses = append(addresses, gatewayv1.GatewayStatusAddress{
-			Type:  &addressType,
+			Type:  ptr.To(gatewayv1.HostnameAddressType),
 			Value: hostname,
 		})
 	}

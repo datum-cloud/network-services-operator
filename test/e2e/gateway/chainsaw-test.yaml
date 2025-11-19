@@ -348,14 +348,14 @@ spec:
                 - allowedRoutes:
                     namespaces:
                       from: Same
-                  hostname: (join('.', [$upstreamGateway.metadata.uid, 'prism.e2e.env.datum.net']))
+                  hostname: (join('.', [replace_all($upstreamGateway.metadata.uid, '-', ''), 'prism.e2e.env.datum.net']))
                   name: default-http
                   port: 80
                   protocol: HTTP
                 - allowedRoutes:
                     namespaces:
                       from: Same
-                  hostname: (join('.', [$upstreamGateway.metadata.uid, 'prism.e2e.env.datum.net']))
+                  hostname: (join('.', [replace_all($upstreamGateway.metadata.uid, '-', ''), 'prism.e2e.env.datum.net']))
                   name: default-https
                   port: 443
                   protocol: HTTPS
@@ -424,7 +424,7 @@ spec:
             cluster: nso-infra
             bindings:
               - name: primaryHostname
-                value: (join('.', [$upstreamGateway.metadata.uid, 'prism.e2e.env.datum.net']))
+                value: (join('.', [replace_all($upstreamGateway.metadata.uid, '-', ''), 'prism.e2e.env.datum.net']))
               - name: v4IPFamilyHostname
                 value: (join('.', ['v4', $primaryHostname]))
               - name: v6IPFamilyHostname
@@ -466,11 +466,11 @@ spec:
               status:
                 addresses:
                   - type: Hostname
-                    value: (join('.', [$upstreamGateway.metadata.uid, 'prism.e2e.env.datum.net']))
+                    value: (join('.', [replace_all($upstreamGateway.metadata.uid, '-', ''), 'prism.e2e.env.datum.net']))
                   - type: Hostname
-                    value: (join('.', ['v4', $upstreamGateway.metadata.uid, 'prism.e2e.env.datum.net']))
+                    value: (join('.', ['v4', replace_all($upstreamGateway.metadata.uid, '-', ''), 'prism.e2e.env.datum.net']))
                   - type: Hostname
-                    value: (join('.', ['v6', $upstreamGateway.metadata.uid, 'prism.e2e.env.datum.net']))
+                    value: (join('.', ['v6', replace_all($upstreamGateway.metadata.uid, '-', ''), 'prism.e2e.env.datum.net']))
                 listeners:
                   - attachedRoutes: 0
                     (conditions[?type == 'Programmed']):
@@ -780,7 +780,7 @@ spec:
                   - name: GATEWAY_SERVICE_NAMESPACE
                     value: ($gatewayService.metadata.namespace)
                   - name: PRIMARY_HOSTNAME
-                    value: (join('.', [$upstreamGateway.metadata.uid, 'prism.e2e.env.datum.net']))
+                    value: (join('.', [replace_all($upstreamGateway.metadata.uid, '-', ''), 'prism.e2e.env.datum.net']))
                   lifecycle:
                     postStart:
                       exec:

@@ -170,6 +170,11 @@ func main() {
 
 	downstreamCluster, err := cluster.New(downstreamRestConfig, func(o *cluster.Options) {
 		o.Scheme = scheme
+		o.Client = client.Options{
+			Cache: &client.CacheOptions{
+				Unstructured: true,
+			},
+		}
 	})
 	if err != nil {
 		setupLog.Error(err, "failed to construct cluster")
@@ -244,6 +249,17 @@ func main() {
 			DownstreamCluster: downstreamCluster,
 		}).SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "WAFSecurityPolicy")
+			os.Exit(1)
+		}
+	}
+
+	if serverConfig.Gateway.EnableDownstreamCertificateSolver {
+		setupLog.Info("enabling GatewayDownstreamCertificateSolver controller")
+		if err := (&controller.GatewayDownstreamCertificateSolverReconciler{
+			Config:            serverConfig,
+			DownstreamCluster: downstreamCluster,
+		}).SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "GatewayDownstreamCertificateSolver")
 			os.Exit(1)
 		}
 	}

@@ -1,10 +1,13 @@
 package validation
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
+	"github.com/stretchr/testify/assert"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/uuid"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/utils/ptr"
@@ -378,4 +381,55 @@ func TestValidateGateway(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestValidateListenersAllowsExistingHostnameInStatus(t *testing.T) {
+	testConfig := config.NetworkServicesOperator{
+		Gateway: config.GatewayConfig{
+			DownstreamGatewayClassName:            "test-suite",
+			DownstreamHostnameAccountingNamespace: "default",
+			TargetDomain:                          "test-suite.com",
+		},
+	}
+
+	gateway := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{
+			UID: uuid.NewUUID(),
+		},
+		Spec: gatewayv1.GatewaySpec{
+			GatewayClassName: "test-gateway-class",
+			Listeners: []gatewayv1.Listener{
+				{
+					Name:     gatewayutil.DefaultHTTPListenerName,
+					Protocol: gatewayv1.HTTPProtocolType,
+					Port:     gatewayutil.DefaultHTTPPort,
+				},
+			},
+		},
+	}
+
+	// "old" format includes dashes from the UID
+	oldStyleHostname := fmt.Sprintf("%s.%s", string(gateway.UID), testConfig.Gateway.TargetDomain)
+
+	gateway.Spec.Listeners[0].Hostname = ptr.To(gatewayv1.Hostname(oldStyleHostname))
+
+	gateway.Status.Addresses = []gatewayv1.GatewayStatusAddress{
+		{
+			Type:  ptr.To(gatewayv1.HostnameAddressType),
+			Value: oldStyleHostname,
+		},
+	}
+
+	opts := GatewayValidationOptions{
+		GatewayDNSAddressFunc: testConfig.Gateway.GatewayDNSAddress,
+		ValidPortNumbers:      []int{gatewayutil.DefaultHTTPPort},
+		ValidProtocolTypes: map[int][]gatewayv1.ProtocolType{
+			gatewayutil.DefaultHTTPPort:  {gatewayv1.HTTPProtocolType},
+			gatewayutil.DefaultHTTPSPort: {gatewayv1.HTTPSProtocolType},
+		},
+	}
+
+	errs := validateListeners(gateway, field.NewPath("spec", "listeners"), opts)
+	assert.Len(t, errs, 0, "expected validateListeners to permit a hostname on a default listener that matches an existing status address")
+
 }

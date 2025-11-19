@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -258,7 +259,7 @@ type DomainVerificationConfig struct {
 	// Prefix to the DNS record used for verification. Will be suffixed by the
 	// value in `spec.domainName` of a Domain resource.
 	//
-	// +default="_datum-custom-hostname"
+	// +default="datum-custom-hostname"
 	DNSVerificationRecordPrefix string `json:"dnsVerificationRecordPrefix"`
 
 	// Path for the HTTP token used for verification. Will be suffixed by the
@@ -405,10 +406,17 @@ type GatewayConfig struct {
 	// ResourceReplicator provides configuration for the Gateway resource
 	// replicator.
 	ResourceReplicator GatewayResourceReplicatorConfig `json:"resourceReplicator"`
+
+	// EnableDownstreamCertificateSolver enables the downstream certificate
+	// solver controller, which inspects certificates and challenges in order to
+	// attach routes for HTTP challenges to downstream gateways. This is only
+	// needed when the downstream cluster is a federation control plane such as
+	// Karmada.
+	EnableDownstreamCertificateSolver bool `json:"enableDownstreamCertificateSolver,omitempty"`
 }
 
 func (c *GatewayConfig) GatewayDNSAddress(gateway *gatewayv1.Gateway) string {
-	return fmt.Sprintf("%s.%s", gateway.UID, c.TargetDomain)
+	return fmt.Sprintf("%s.%s", strings.ReplaceAll(string(gateway.UID), "-", ""), c.TargetDomain)
 }
 
 // +k8s:deepcopy-gen=true

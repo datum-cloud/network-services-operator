@@ -5,6 +5,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -194,21 +195,29 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 	}
 	upstreamGatewayClassControllerName := string(upstreamGatewayClass.Spec.ControllerName)
 
-	gatewayDNSAddress := r.Config.Gateway.GatewayDNSAddress(upstreamGateway)
+	var targetDomainHostnames []string
+	// Keep existing addresses in the status if present.
+	if len(upstreamGateway.Status.Addresses) > 0 {
+		for _, addr := range upstreamGateway.Status.Addresses {
+			if ptr.Deref(addr.Type, "") == gatewayv1.HostnameAddressType {
+				targetDomainHostnames = append(targetDomainHostnames, addr.Value)
+			}
+		}
+	} else {
+		gatewayDNSAddress := r.Config.Gateway.GatewayDNSAddress(upstreamGateway)
 
-	// targetDomainHostnames are default hostnames that are unique to each gateway, and
-	// will have DNS records created for them. Any custom hostnames provided in
-	// listeners WILL NOT be added to the addresses list in the gateway status.
-	targetDomainHostnames := []string{
-		gatewayDNSAddress,
-	}
+		// targetDomainHostnames are default hostnames that are unique to each gateway, and
+		// will have DNS records created for them. Any custom hostnames provided in
+		// listeners WILL NOT be added to the addresses list in the gateway status.
+		targetDomainHostnames = append(targetDomainHostnames, gatewayDNSAddress)
 
-	if r.Config.Gateway.IPv4Enabled() {
-		targetDomainHostnames = append(targetDomainHostnames, fmt.Sprintf("v4.%s", gatewayDNSAddress))
-	}
+		if r.Config.Gateway.IPv4Enabled() {
+			targetDomainHostnames = append(targetDomainHostnames, fmt.Sprintf("v4.%s", gatewayDNSAddress))
+		}
 
-	if r.Config.Gateway.IPv6Enabled() {
-		targetDomainHostnames = append(targetDomainHostnames, fmt.Sprintf("v6.%s", gatewayDNSAddress))
+		if r.Config.Gateway.IPv6Enabled() {
+			targetDomainHostnames = append(targetDomainHostnames, fmt.Sprintf("v6.%s", gatewayDNSAddress))
+		}
 	}
 
 	downstreamClient := downstreamStrategy.GetClient()
@@ -240,6 +249,7 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 
 	desiredDownstreamGateway := r.getDesiredDownstreamGateway(
 		ctx,
+		upstreamClusterName,
 		upstreamGateway,
 		claimedHostnames,
 	)
@@ -258,7 +268,10 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 			return result, nil
 		}
 	} else {
-		if !equality.Semantic.DeepEqual(downstreamGateway.Spec, desiredDownstreamGateway.Spec) {
+		if !equality.Semantic.DeepEqual(downstreamGateway.Annotations, desiredDownstreamGateway.Annotations) ||
+			!equality.Semantic.DeepEqual(downstreamGateway.Spec, desiredDownstreamGateway.Spec) {
+			// Take care not to clobber other annotations
+			maps.Copy(downstreamGateway.Annotations, desiredDownstreamGateway.Annotations)
 			downstreamGateway.Spec = desiredDownstreamGateway.Spec
 			if err := downstreamClient.Update(ctx, downstreamGateway); err != nil {
 				result.Err = fmt.Errorf("failed updating downstream gateway: %w", err)
@@ -299,11 +312,10 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 	)
 
 	addresses := make([]gatewayv1.GatewayStatusAddress, 0, len(targetDomainHostnames))
-	addressType := gatewayv1.HostnameAddressType
 
 	for _, hostname := range targetDomainHostnames {
 		addresses = append(addresses, gatewayv1.GatewayStatusAddress{
-			Type:  &addressType,
+			Type:  ptr.To(gatewayv1.HostnameAddressType),
 			Value: hostname,
 		})
 	}
@@ -318,6 +330,7 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 
 func (r *GatewayReconciler) getDesiredDownstreamGateway(
 	ctx context.Context,
+	upstreamClusterName string,
 	upstreamGateway *gatewayv1.Gateway,
 	claimedHostnames []string,
 ) *gatewayv1.Gateway {
@@ -339,6 +352,20 @@ func (r *GatewayReconciler) getDesiredDownstreamGateway(
 				}
 				if !metav1.HasAnnotation(downstreamGateway.ObjectMeta, "cert-manager.io/cluster-issuer") {
 					metav1.SetMetaDataAnnotation(&downstreamGateway.ObjectMeta, "cert-manager.io/cluster-issuer", clusterIssuerName)
+				}
+
+				// Add labels so that secrets created by cert-manager can be propagated
+				// See: https://cert-manager.io/docs/reference/annotations/#cert-manageriosecret-template
+				if !metav1.HasAnnotation(downstreamGateway.ObjectMeta, "cert-manager.io/secret-template") {
+					metav1.SetMetaDataAnnotation(
+						&downstreamGateway.ObjectMeta,
+						"cert-manager.io/secret-template",
+						fmt.Sprintf(
+							`{"labels": {"%s": "%s"}}`,
+							downstreamclient.UpstreamOwnerClusterNameLabel,
+							fmt.Sprintf("cluster-%s", strings.ReplaceAll(upstreamClusterName, "/", "_")),
+						),
+					)
 				}
 			}
 		}

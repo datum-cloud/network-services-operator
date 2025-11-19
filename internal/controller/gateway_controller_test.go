@@ -46,6 +46,10 @@ func TestEnsureDownstreamGateway(t *testing.T) {
 			DownstreamGatewayClassName:            "test-suite",
 			DownstreamHostnameAccountingNamespace: "default",
 			TargetDomain:                          "test-suite.com",
+			IPFamilies: []networkingv1alpha.IPFamily{
+				networkingv1alpha.IPv4Protocol,
+				networkingv1alpha.IPv6Protocol,
+			},
 		},
 	}
 
@@ -69,6 +73,29 @@ func TestEnsureDownstreamGateway(t *testing.T) {
 
 					assert.Equal(t, gatewayv1.PortNumber(DefaultHTTPSPort), downstreamGateway.Spec.Listeners[1].Port)
 					assert.Equal(t, gatewayv1.HTTPSProtocolType, downstreamGateway.Spec.Listeners[1].Protocol)
+				}
+
+				assert.Len(t, upstreamGateway.Status.Addresses, 3)
+			},
+		},
+		{
+			name: "existing addresses are preserved",
+			upstreamGateway: newGateway(testConfig, upstreamNamespace.Name, "test", func(g *gatewayv1.Gateway) {
+				g.Status.Addresses = []gatewayv1.GatewayStatusAddress{
+					{
+						Type:  ptr.To(gatewayv1.HostnameAddressType),
+						Value: "existing-address-1.example.com",
+					},
+					{
+						Type:  ptr.To(gatewayv1.HostnameAddressType),
+						Value: "existing-address-2.example.com",
+					},
+				}
+			}),
+			assert: func(t *testing.T, upstreamGateway, downstreamGateway *gatewayv1.Gateway) {
+				if assert.Len(t, upstreamGateway.Status.Addresses, 2) {
+					assert.Equal(t, "existing-address-1.example.com", upstreamGateway.Status.Addresses[0].Value)
+					assert.Equal(t, "existing-address-2.example.com", upstreamGateway.Status.Addresses[1].Value)
 				}
 			},
 		},

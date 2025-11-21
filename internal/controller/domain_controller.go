@@ -1006,11 +1006,13 @@ func (r *DomainReconciler) delegatedZoneNS(ctx context.Context, fqdn, apex strin
 
 // fetchRegistrationWhois attempts WHOIS-based mapping for a domain apex
 func (r *DomainReconciler) fetchRegistrationWhois(ctx context.Context, apex string) (*networkingv1alpha.Registration, error) {
+	logger := log.FromContext(ctx)
 	// Bootstrap via IANA to find the authoritative WHOIS server
 	tld, _ := publicsuffix.PublicSuffix(apex)
 	// query IANA WHOIS for the TLD
 	bodyIANA, _ := r.whoisFetch(ctx, tld, r.Config.DomainRegistration.WhoisBootstrapHost)
 	referHost := strings.TrimSpace(findWhoisValue(bodyIANA, []string{"refer", "whois"}))
+	logger.Info("whois bootstrap", "tld", tld, "referHost", referHost, "ianaBodyLen", len(bodyIANA))
 
 	// Try registry WHOIS host from IANA, with fallbacks
 	var registryBody string
@@ -1024,15 +1026,22 @@ func (r *DomainReconciler) fetchRegistrationWhois(ctx context.Context, apex stri
 	for _, h := range tryHosts {
 		if b, e := r.whoisFetch(ctx, apex, h); e == nil && strings.TrimSpace(b) != "" {
 			registryBody = b
+			logger.Info("whois registry host selected", "host", h, "bodyLen", len(registryBody))
 			break
 		} else {
 			err = e
+			if e != nil {
+				logger.Info("whois registry host attempt failed", "host", h, "error", e.Error())
+			} else {
+				logger.Info("whois registry host returned empty body", "host", h)
+			}
 		}
 	}
 	if registryBody == "" {
 		if err == nil {
 			err = fmt.Errorf("no WHOIS registry body for %s", apex)
 		}
+		logger.Error(err, "whois registry lookup failed", "apex", apex, "tryHosts", strings.Join(tryHosts, ","))
 		return nil, err
 	}
 
@@ -1041,6 +1050,11 @@ func (r *DomainReconciler) fetchRegistrationWhois(ctx context.Context, apex stri
 	if registrarHost := strings.TrimSpace(findWhoisValue(registryBody, []string{"Registrar WHOIS Server"})); registrarHost != "" {
 		if b, e := r.whoisFetch(ctx, apex, registrarHost); e == nil && strings.TrimSpace(b) != "" {
 			bodyToParse = b
+			logger.Info("whois registrar referral followed", "host", registrarHost, "bodyLen", len(bodyToParse))
+		} else if e != nil {
+			logger.Info("whois registrar referral failed", "host", registrarHost, "error", e.Error())
+		} else {
+			logger.Info("whois registrar referral returned empty body", "host", registrarHost)
 		}
 	}
 
@@ -1070,7 +1084,7 @@ func (r *DomainReconciler) fetchRegistrationWhois(ctx context.Context, apex stri
 		reg.Registrar.URL = strings.TrimSpace(v)
 	}
 	// Dates
-	if v := findWhoisValue(body, []string{"Creation Date", "Created On"}); v != "" {
+	if v := findWhoisValue(body, []string{"Creation Date", "Created On", "Registered"}); v != "" {
 		if t, ok := parseTimeFlex(v); ok {
 			mt := metav1.NewTime(t)
 			reg.CreatedAt = &mt
@@ -1082,7 +1096,7 @@ func (r *DomainReconciler) fetchRegistrationWhois(ctx context.Context, apex stri
 			reg.UpdatedAt = &mt
 		}
 	}
-	if v := findWhoisValue(body, []string{"Registry Expiry Date", "Expiration Date", "Expiry Date"}); v != "" {
+	if v := findWhoisValue(body, []string{"Registry Expiry Date", "Expiration Date", "Expiry Date", "Expires"}); v != "" {
 		if t, ok := parseTimeFlex(v); ok {
 			mt := metav1.NewTime(t)
 			reg.ExpiresAt = &mt
@@ -1110,12 +1124,18 @@ func (r *DomainReconciler) fetchRegistrationWhois(ctx context.Context, apex stri
 			if val != "" {
 				reg.Statuses = append(reg.Statuses, strings.Fields(val)[0])
 			}
+		} else if strings.HasPrefix(ll, strings.ToLower("Status:")) {
+			val := strings.TrimSpace(strings.TrimPrefix(l, "Status:"))
+			if val != "" {
+				reg.Statuses = append(reg.Statuses, strings.Fields(val)[0])
+			}
 		}
 	}
 	// DNSSEC
 	if v := findWhoisValue(body, []string{"DNSSEC"}); v != "" {
 		vv := strings.ToLower(strings.TrimSpace(v))
-		enabled := vv != "unsigned" && vv != "no"
+		// Treat any mention of "unsigned" as disabled, as some registries use phrases like "Unsigned delegation"
+		enabled := !(vv == "unsigned" || vv == "no" || strings.Contains(vv, "unsigned"))
 		reg.DNSSEC = &networkingv1alpha.DNSSECInfo{Enabled: &enabled}
 	}
 	// Contacts (Registrant/Admin/Tech) — organization/email/phone when available and not redacted

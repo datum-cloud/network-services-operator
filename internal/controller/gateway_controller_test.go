@@ -685,6 +685,27 @@ func TestEnsureHostnamesClaimed(t *testing.T) {
 				assert.NoError(t, cl.Get(ctx, domainObjectKey, &networkingv1alpha.Domain{}), "expected to find a domain, but encountered an errro")
 			},
 		},
+		{
+			name: "hostname matches address",
+			upstreamGateway: newGateway(testConfig, upstreamNamespace.Name, "test", func(g *gatewayv1.Gateway) {
+				g.Spec.Listeners = []gatewayv1.Listener{
+					{
+						Name:     gatewayv1.SectionName(SchemeHTTP),
+						Port:     DefaultHTTPPort,
+						Protocol: gatewayv1.HTTPProtocolType,
+						Hostname: ptr.To(gatewayv1.Hostname("example.com")),
+					},
+				}
+				g.Status.Addresses = []gatewayv1.GatewayStatusAddress{
+					{
+						Type:  ptr.To(gatewayv1.HostnameAddressType),
+						Value: "example.com",
+					},
+				}
+			}),
+			expectedVerifiedHostnames: []string{"example.com"},
+			expectedClaimedHostnames:  []string{"example.com"},
+		},
 	}
 
 	for _, tt := range tests {

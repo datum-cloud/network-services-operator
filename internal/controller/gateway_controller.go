@@ -580,7 +580,8 @@ func (r *GatewayReconciler) ensureHostnameVerification(
 	// For more thoughts on liens, the following issue provides good context:
 	// https://github.com/kubernetes/kubernetes/issues/10179#issuecomment-2889238042
 	verifiedHostnames := sets.New[string]()
-	verifiedHostnames.Insert(gatewayDefaultHostname)
+	addressHostnames := sets.New[string]()
+	addressHostnames.Insert(gatewayDefaultHostname)
 	if dt := downstreamGateway.DeletionTimestamp; dt.IsZero() {
 		for _, listener := range downstreamGateway.Spec.Listeners {
 			if listener.Hostname != nil && !strings.HasSuffix(string(*listener.Hostname), r.Config.Gateway.TargetDomain) {
@@ -588,6 +589,17 @@ func (r *GatewayReconciler) ensureHostnameVerification(
 			}
 		}
 	}
+
+	// Consider any addresses programmed to be verified - this is necessary for
+	// transitioning default proxy hostnames.
+
+	for _, address := range upstreamGateway.Status.Addresses {
+		if ptr.Deref(address.Type, "") == gatewayv1.HostnameAddressType {
+			addressHostnames.Insert(address.Value)
+		}
+	}
+
+	verifiedHostnames.Insert(addressHostnames.UnsortedList()...)
 
 	logger.Info("collected verified hostnames from listener conditions", "hostnames", verifiedHostnames.UnsortedList())
 
@@ -619,7 +631,7 @@ func (r *GatewayReconciler) ensureHostnameVerification(
 	domainsToCreate := sets.New[string]()
 	for _, hostname := range hostnames.UnsortedList() {
 		// Gateway DNS address hostname is exempt from verification
-		if hostname == gatewayDefaultHostname {
+		if addressHostnames.Has(hostname) {
 			continue
 		}
 		foundMatchingDomain := false

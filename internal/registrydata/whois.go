@@ -106,7 +106,9 @@ func parseWhoisRegistration(apex, body string) *networkingv1alpha.Registration {
 			reg.UpdatedAt = &mt
 		}
 	}
-	if v := findWhoisValue(body, []string{"Registry Expiry Date",
+	if v := findWhoisValue(body, []string{
+		"Registry Expiry Date",
+		"Registrar Expiration Date",
 		"Expiration Date",
 		"Expiry Date",
 		"Expires",

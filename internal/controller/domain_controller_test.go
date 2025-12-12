@@ -5,13 +5,9 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"net/url"
-	"strings"
 	"testing"
 	"time"
 
-	"github.com/openrdap/rdap"
-	"github.com/openrdap/rdap/bootstrap"
 	"github.com/stretchr/testify/assert"
 	corev1 "k8s.io/api/core/v1"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
@@ -27,7 +23,35 @@ import (
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	"go.datum.net/network-services-operator/internal/config"
+	"go.datum.net/network-services-operator/pkg/registrydata"
 )
+
+type fakeRegistryClient struct {
+	lookupDomain       func(ctx context.Context, domain string, opts registrydata.LookupOptions) (*registrydata.DomainResult, error)
+	lookupNameserver   func(ctx context.Context, hostname string, opts registrydata.LookupOptions) (*registrydata.NameserverResult, error)
+	lookupIPRegistrant func(ctx context.Context, ip net.IP, opts registrydata.LookupOptions) (*registrydata.IPRegistrantResult, error)
+}
+
+func (f *fakeRegistryClient) LookupDomain(ctx context.Context, domain string, opts registrydata.LookupOptions) (*registrydata.DomainResult, error) {
+	if f.lookupDomain != nil {
+		return f.lookupDomain(ctx, domain, opts)
+	}
+	return &registrydata.DomainResult{Registration: &networkingv1alpha.Registration{}}, nil
+}
+
+func (f *fakeRegistryClient) LookupNameserver(ctx context.Context, hostname string, opts registrydata.LookupOptions) (*registrydata.NameserverResult, error) {
+	if f.lookupNameserver != nil {
+		return f.lookupNameserver(ctx, hostname, opts)
+	}
+	return &registrydata.NameserverResult{Hostname: hostname}, nil
+}
+
+func (f *fakeRegistryClient) LookupIPRegistrant(ctx context.Context, ip net.IP, opts registrydata.LookupOptions) (*registrydata.IPRegistrantResult, error) {
+	if f.lookupIPRegistrant != nil {
+		return f.lookupIPRegistrant(ctx, ip, opts)
+	}
+	return &registrydata.IPRegistrantResult{IP: ip}, nil
+}
 
 const (
 	exampleDomain = "example.com"
@@ -377,26 +401,12 @@ func TestDomainVerification(t *testing.T) {
 				mgr:    mgr,
 				Config: operatorConfig,
 
-				timeNow:   tt.timeNow,
-				httpGet:   tt.httpGet,
-				lookupTXT: tt.lookupTXT,
+				timeNow:        tt.timeNow,
+				httpGet:        tt.httpGet,
+				lookupTXT:      tt.lookupTXT,
+				registryClient: &fakeRegistryClient{},
 			}
-			// --- Prevent registration from doing real I/O during verification-only tests ---
-			reconciler.lookupNS = func(ctx context.Context, name string) ([]*net.NS, error) {
-				return nil, &net.DNSError{IsNotFound: true}
-			}
-			reconciler.lookupIP = func(ctx context.Context, name string) ([]net.IPAddr, error) {
-				return nil, nil
-			}
-			reconciler.rdapDo = func(ctx context.Context, req *rdap.Request) (*rdap.Response, error) {
-				return &rdap.Response{
-					Object: &rdap.Domain{LDHName: "example.com"},
-					BootstrapAnswer: &bootstrap.Answer{ // optional; can be nil
-						Entry: "com",
-					},
-				}, nil
-			}
-			// IP RDAP not used in these verification-only tests
+			// Prevent registration from doing any real I/O during verification-only tests.
 
 			result, err := reconciler.Reconcile(
 				ctx,
@@ -445,14 +455,12 @@ func TestValidDomainGate_InvalidApex_SetsConditionAndSkipsFlows(t *testing.T) {
 		Build()
 
 	reconciler := &DomainReconciler{
-		mgr:       &fakeMockManager{cl: fakeClient},
-		Config:    operatorConfig,
-		timeNow:   time.Now,
-		httpGet:   func(ctx context.Context, url string) ([]byte, *http.Response, error) { return nil, nil, nil },
-		lookupTXT: func(ctx context.Context, name string) ([]string, error) { return nil, nil },
-		lookupNS:  func(ctx context.Context, name string) ([]*net.NS, error) { return nil, &net.DNSError{IsNotFound: true} },
-		lookupIP:  func(ctx context.Context, name string) ([]net.IPAddr, error) { return nil, nil },
-		rdapDo:    func(ctx context.Context, req *rdap.Request) (*rdap.Response, error) { return &rdap.Response{}, nil },
+		mgr:            &fakeMockManager{cl: fakeClient},
+		Config:         operatorConfig,
+		timeNow:        time.Now,
+		httpGet:        func(ctx context.Context, url string) ([]byte, *http.Response, error) { return nil, nil, nil },
+		lookupTXT:      func(ctx context.Context, name string) ([]string, error) { return nil, nil },
+		registryClient: &fakeRegistryClient{},
 	}
 
 	req := mcreconcile.Request{Request: reconcile.Request{NamespacedName: client.ObjectKey{Namespace: ns.Name, Name: dom.Name}}}
@@ -506,19 +514,18 @@ func TestRegistration_Apex_UsesRDAPNameservers(t *testing.T) {
 	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(dom).WithStatusSubresource(dom).Build()
 	mgr := &fakeMockManager{cl: cl}
 
-	// Fake RDAP domain with 2 NS from registry
-	rdapDomain := &rdap.Domain{
-		LDHName: "example.com",
-		Nameservers: []rdap.Nameserver{
-			{LDHName: "ns1.example.net"},
-			{LDHName: "ns2.example.net"},
-		},
-	}
-	resp := &rdap.Response{
-		Object: rdapDomain,
-		BootstrapAnswer: &bootstrap.Answer{
-			Entry: "com",
-			URLs:  []*url.URL{{Scheme: "https", Host: "rdap.verisign.com"}},
+	reg := &networkingv1alpha.Registration{Domain: "example.com", Source: "rdap"}
+	fakeReg := &fakeRegistryClient{
+		lookupDomain: func(ctx context.Context, domain string, opts registrydata.LookupOptions) (*registrydata.DomainResult, error) {
+			return &registrydata.DomainResult{
+				Registration: reg,
+				Nameservers: []networkingv1alpha.Nameserver{
+					{Hostname: "ns1.example.net"},
+					{Hostname: "ns2.example.net"},
+				},
+				Source:      "rdap",
+				ProviderKey: "rdap.verisign.com",
+			}, nil
 		},
 	}
 
@@ -530,11 +537,8 @@ func TestRegistration_Apex_UsesRDAPNameservers(t *testing.T) {
 			JitterMaxFactor: 0.1,
 			RetryBackoff:    &metav1.Duration{Duration: time.Minute},
 		}},
-		timeNow: time.Now,
-		// test stubs
-		rdapDo:   func(ctx context.Context, req *rdap.Request) (*rdap.Response, error) { return resp, nil },
-		lookupNS: func(ctx context.Context, name string) ([]*net.NS, error) { return nil, &net.DNSError{IsNotFound: true} },
-		lookupIP: func(ctx context.Context, name string) ([]net.IPAddr, error) { return nil, nil }, // skip enrichment
+		timeNow:        time.Now,
+		registryClient: fakeReg,
 	}
 
 	res, err := r.Reconcile(context.Background(), mcreconcile.Request{ClusterName: "test", Request: reconcile.Request{NamespacedName: client.ObjectKeyFromObject(dom)}})
@@ -598,12 +602,8 @@ func TestVerification_RequeueImmediate_WhenWakeDueOrPast(t *testing.T) {
 		httpGet: func(ctx context.Context, url string) ([]byte, *http.Response, error) {
 			return nil, nil, fmt.Errorf("not implemented")
 		},
-		lookupTXT: func(ctx context.Context, name string) ([]string, error) { return nil, &net.DNSError{IsNotFound: true} },
-		rdapDo: func(ctx context.Context, req *rdap.Request) (*rdap.Response, error) {
-			return &rdap.Response{Object: &rdap.Domain{LDHName: "example.com"}}, nil
-		},
-		lookupNS: func(ctx context.Context, name string) ([]*net.NS, error) { return nil, &net.DNSError{IsNotFound: true} },
-		lookupIP: func(ctx context.Context, name string) ([]net.IPAddr, error) { return nil, nil },
+		lookupTXT:      func(ctx context.Context, name string) ([]string, error) { return nil, &net.DNSError{IsNotFound: true} },
+		registryClient: &fakeRegistryClient{},
 	}
 
 	res, err := r.Reconcile(context.Background(), mcreconcile.Request{ClusterName: "test", Request: reconcile.Request{NamespacedName: client.ObjectKeyFromObject(dom)}})
@@ -657,12 +657,8 @@ func TestVerification_RequeueImmediate_WhenWakeInPast(t *testing.T) {
 		httpGet: func(ctx context.Context, url string) ([]byte, *http.Response, error) {
 			return nil, nil, fmt.Errorf("not implemented")
 		},
-		lookupTXT: func(ctx context.Context, name string) ([]string, error) { return nil, &net.DNSError{IsNotFound: true} },
-		rdapDo: func(ctx context.Context, req *rdap.Request) (*rdap.Response, error) {
-			return &rdap.Response{Object: &rdap.Domain{LDHName: "example.com"}}, nil
-		},
-		lookupNS: func(ctx context.Context, name string) ([]*net.NS, error) { return nil, &net.DNSError{IsNotFound: true} },
-		lookupIP: func(ctx context.Context, name string) ([]net.IPAddr, error) { return nil, nil },
+		lookupTXT:      func(ctx context.Context, name string) ([]string, error) { return nil, &net.DNSError{IsNotFound: true} },
+		registryClient: &fakeRegistryClient{},
 	}
 
 	res, err := r.Reconcile(context.Background(), mcreconcile.Request{ClusterName: "test", Request: reconcile.Request{NamespacedName: client.ObjectKeyFromObject(dom)}})
@@ -716,12 +712,8 @@ func TestVerification_RequeueFloorsSubSecondToOneSecond(t *testing.T) {
 		httpGet: func(ctx context.Context, url string) ([]byte, *http.Response, error) {
 			return nil, nil, fmt.Errorf("not implemented")
 		},
-		lookupTXT: func(ctx context.Context, name string) ([]string, error) { return nil, &net.DNSError{IsNotFound: true} },
-		rdapDo: func(ctx context.Context, req *rdap.Request) (*rdap.Response, error) {
-			return &rdap.Response{Object: &rdap.Domain{LDHName: "example.com"}}, nil
-		},
-		lookupNS: func(ctx context.Context, name string) ([]*net.NS, error) { return nil, &net.DNSError{IsNotFound: true} },
-		lookupIP: func(ctx context.Context, name string) ([]net.IPAddr, error) { return nil, nil },
+		lookupTXT:      func(ctx context.Context, name string) ([]string, error) { return nil, &net.DNSError{IsNotFound: true} },
+		registryClient: &fakeRegistryClient{},
 	}
 
 	res, err := r.Reconcile(context.Background(), mcreconcile.Request{ClusterName: "test", Request: reconcile.Request{NamespacedName: client.ObjectKeyFromObject(dom)}})
@@ -742,19 +734,15 @@ func TestRegistration_Subdomain_DelegationOverridesApexNS(t *testing.T) {
 	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(dom).WithStatusSubresource(dom).Build()
 	mgr := &fakeMockManager{cl: cl}
 
-	// RDAP for apex returns registrar NS, which should be overridden by delegated NS of subdomain
-	rdapDomain := &rdap.Domain{
-		LDHName: "example.com",
-		Nameservers: []rdap.Nameserver{
-			{LDHName: "ns-apex-1.example.com"},
-			{LDHName: "ns-apex-2.example.com"},
-		},
-	}
-	resp := &rdap.Response{
-		Object: rdapDomain,
-		BootstrapAnswer: &bootstrap.Answer{
-			Entry: "com",
-			URLs:  []*url.URL{{Scheme: "https", Host: "rdap.verisign.com"}},
+	fakeReg := &fakeRegistryClient{
+		lookupDomain: func(ctx context.Context, domain string, opts registrydata.LookupOptions) (*registrydata.DomainResult, error) {
+			return &registrydata.DomainResult{
+				Registration: &networkingv1alpha.Registration{Domain: "example.com", Source: "rdap"},
+				Nameservers: []networkingv1alpha.Nameserver{
+					{Hostname: "ns-deleg-1.example.net"},
+					{Hostname: "ns-deleg-2.example.net"},
+				},
+			}, nil
 		},
 	}
 
@@ -766,19 +754,8 @@ func TestRegistration_Subdomain_DelegationOverridesApexNS(t *testing.T) {
 			JitterMaxFactor: 0.1,
 			RetryBackoff:    &metav1.Duration{Duration: time.Minute},
 		}},
-		timeNow: time.Now,
-		rdapDo:  func(ctx context.Context, req *rdap.Request) (*rdap.Response, error) { return resp, nil },
-		// Return NS at subdomain (zone-cut)
-		lookupNS: func(ctx context.Context, name string) ([]*net.NS, error) {
-			name = strings.TrimSuffix(strings.ToLower(name), ".")
-			switch name {
-			case "app.example.com":
-				return []*net.NS{{Host: "ns-deleg-1.example.net."}, {Host: "ns-deleg-2.example.net."}}, nil
-			default:
-				return nil, &net.DNSError{IsNotFound: true}
-			}
-		},
-		lookupIP: func(ctx context.Context, name string) ([]net.IPAddr, error) { return nil, nil },
+		timeNow:        time.Now,
+		registryClient: fakeReg,
 	}
 
 	_, err := r.Reconcile(context.Background(), mcreconcile.Request{ClusterName: "test", Request: reconcile.Request{NamespacedName: client.ObjectKeyFromObject(dom)}})
@@ -806,18 +783,15 @@ func TestRegistration_Subdomain_NoDelegation_FallsBackToApexNS(t *testing.T) {
 	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(dom).WithStatusSubresource(dom).Build()
 	mgr := &fakeMockManager{cl: cl}
 
-	rdapDomain := &rdap.Domain{
-		LDHName: "example.com",
-		Nameservers: []rdap.Nameserver{
-			{LDHName: "ns1.example.net"},
-			{LDHName: "ns2.example.net"},
-		},
-	}
-	resp := &rdap.Response{
-		Object: rdapDomain,
-		BootstrapAnswer: &bootstrap.Answer{
-			Entry: "com",
-			URLs:  []*url.URL{{Scheme: "https", Host: "rdap.verisign.com"}},
+	fakeReg := &fakeRegistryClient{
+		lookupDomain: func(ctx context.Context, domain string, opts registrydata.LookupOptions) (*registrydata.DomainResult, error) {
+			return &registrydata.DomainResult{
+				Registration: &networkingv1alpha.Registration{Domain: "example.com", Source: "rdap"},
+				Nameservers: []networkingv1alpha.Nameserver{
+					{Hostname: "ns1.example.net"},
+					{Hostname: "ns2.example.net"},
+				},
+			}, nil
 		},
 	}
 
@@ -829,10 +803,8 @@ func TestRegistration_Subdomain_NoDelegation_FallsBackToApexNS(t *testing.T) {
 			JitterMaxFactor: 0.1,
 			RetryBackoff:    &metav1.Duration{Duration: time.Minute},
 		}},
-		timeNow:  time.Now,
-		rdapDo:   func(ctx context.Context, req *rdap.Request) (*rdap.Response, error) { return resp, nil },
-		lookupNS: func(ctx context.Context, name string) ([]*net.NS, error) { return nil, &net.DNSError{IsNotFound: true} },
-		lookupIP: func(ctx context.Context, name string) ([]net.IPAddr, error) { return nil, nil },
+		timeNow:        time.Now,
+		registryClient: fakeReg,
 	}
 
 	_, err := r.Reconcile(context.Background(), mcreconcile.Request{ClusterName: "test", Request: reconcile.Request{NamespacedName: client.ObjectKeyFromObject(dom)}})
@@ -860,12 +832,16 @@ func TestRegistration_RegistryStampedFromBootstrap(t *testing.T) {
 	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(dom).WithStatusSubresource(dom).Build()
 	mgr := &fakeMockManager{cl: cl}
 
-	rdapDomain := &rdap.Domain{LDHName: "example.ai"}
-	resp := &rdap.Response{
-		Object: rdapDomain,
-		BootstrapAnswer: &bootstrap.Answer{
-			Entry: "ai",
-			URLs:  []*url.URL{{Scheme: "https", Host: "rdap.identitydigital.services"}},
+	fakeReg := &fakeRegistryClient{
+		lookupDomain: func(ctx context.Context, domain string, opts registrydata.LookupOptions) (*registrydata.DomainResult, error) {
+			return &registrydata.DomainResult{
+				Registration: &networkingv1alpha.Registration{
+					Domain:   "example.ai",
+					Source:   "rdap",
+					Registry: &networkingv1alpha.RegistryInfo{Name: "rdap.identitydigital.services", URL: "https://rdap.identitydigital.services"},
+				},
+				Nameservers: []networkingv1alpha.Nameserver{},
+			}, nil
 		},
 	}
 
@@ -877,10 +853,8 @@ func TestRegistration_RegistryStampedFromBootstrap(t *testing.T) {
 			JitterMaxFactor: 0.1,
 			RetryBackoff:    &metav1.Duration{Duration: time.Minute},
 		}},
-		timeNow:  time.Now,
-		rdapDo:   func(ctx context.Context, req *rdap.Request) (*rdap.Response, error) { return resp, nil },
-		lookupNS: func(ctx context.Context, name string) ([]*net.NS, error) { return nil, &net.DNSError{IsNotFound: true} },
-		lookupIP: func(ctx context.Context, name string) ([]net.IPAddr, error) { return nil, nil },
+		timeNow:        time.Now,
+		registryClient: fakeReg,
 	}
 
 	_, err := r.Reconcile(context.Background(), mcreconcile.Request{ClusterName: "test", Request: reconcile.Request{NamespacedName: client.ObjectKeyFromObject(dom)}})
@@ -915,10 +889,12 @@ func TestRegistration_RetryBackoffOnError(t *testing.T) {
 			JitterMaxFactor: 0.0,
 			RetryBackoff:    &metav1.Duration{Duration: 2 * time.Minute},
 		}},
-		timeNow:  func() time.Time { return now },
-		rdapDo:   func(ctx context.Context, req *rdap.Request) (*rdap.Response, error) { return nil, fmt.Errorf("boom") },
-		lookupNS: func(ctx context.Context, name string) ([]*net.NS, error) { return nil, &net.DNSError{IsNotFound: true} },
-		lookupIP: func(ctx context.Context, name string) ([]net.IPAddr, error) { return nil, nil },
+		timeNow: func() time.Time { return now },
+		registryClient: &fakeRegistryClient{
+			lookupDomain: func(ctx context.Context, domain string, opts registrydata.LookupOptions) (*registrydata.DomainResult, error) {
+				return nil, fmt.Errorf("boom")
+			},
+		},
 	}
 
 	res, err := r.Reconcile(context.Background(), mcreconcile.Request{ClusterName: "test", Request: reconcile.Request{NamespacedName: client.ObjectKeyFromObject(dom)}})
@@ -955,16 +931,11 @@ func TestRegistration_RDAP429_WithRetryAfter_SchedulesRetryAfter(t *testing.T) {
 			RetryBackoff:    &metav1.Duration{Duration: 2 * time.Minute},
 		}},
 		timeNow: func() time.Time { return now },
-		rdapDo: func(ctx context.Context, req *rdap.Request) (*rdap.Response, error) {
-			// Simulate RDAP client returning HTTP 429 with Retry-After header
-			return &rdap.Response{
-				HTTP: []*rdap.HTTPResponse{
-					{Response: &http.Response{StatusCode: http.StatusTooManyRequests, Header: http.Header{"Retry-After": []string{fmt.Sprintf("%d", int(retryAfter.Seconds()))}}}},
-				},
-			}, &rdap.ClientError{Type: rdap.NoWorkingServers}
+		registryClient: &fakeRegistryClient{
+			lookupDomain: func(ctx context.Context, domain string, opts registrydata.LookupOptions) (*registrydata.DomainResult, error) {
+				return nil, &registrydata.RateLimitedError{Provider: "rdap.verisign.com", RetryAfter: retryAfter}
+			},
 		},
-		lookupNS: func(ctx context.Context, name string) ([]*net.NS, error) { return nil, &net.DNSError{IsNotFound: true} },
-		lookupIP: func(ctx context.Context, name string) ([]net.IPAddr, error) { return nil, nil },
 	}
 
 	_, err := r.Reconcile(context.Background(), mcreconcile.Request{ClusterName: "test", Request: reconcile.Request{NamespacedName: client.ObjectKeyFromObject(dom)}})
@@ -1002,16 +973,12 @@ func TestRegistration_RDAP429_NoRetryAfter_Uses2xBackoff(t *testing.T) {
 			RetryBackoff:    &metav1.Duration{Duration: backoff},
 		}},
 		timeNow: func() time.Time { return now },
-		rdapDo: func(ctx context.Context, req *rdap.Request) (*rdap.Response, error) {
-			// No Retry-After header; still a 429
-			return &rdap.Response{
-				HTTP: []*rdap.HTTPResponse{
-					{Response: &http.Response{StatusCode: http.StatusTooManyRequests, Header: http.Header{}}},
-				},
-			}, &rdap.ClientError{Type: rdap.NoWorkingServers}
+		registryClient: &fakeRegistryClient{
+			lookupDomain: func(ctx context.Context, domain string, opts registrydata.LookupOptions) (*registrydata.DomainResult, error) {
+				// Simulate a provider signaling backoff but no explicit Retry-After; library can surface SuggestedDelay.
+				return &registrydata.DomainResult{SuggestedDelay: 2 * backoff}, &registrydata.RateLimitedError{Provider: "rdap.verisign.com"}
+			},
 		},
-		lookupNS: func(ctx context.Context, name string) ([]*net.NS, error) { return nil, &net.DNSError{IsNotFound: true} },
-		lookupIP: func(ctx context.Context, name string) ([]net.IPAddr, error) { return nil, nil },
 	}
 
 	_, err := r.Reconcile(context.Background(), mcreconcile.Request{ClusterName: "test", Request: reconcile.Request{NamespacedName: client.ObjectKeyFromObject(dom)}})
@@ -1048,13 +1015,12 @@ func TestRegistration_DesiredRefreshAttempt_ExpediteBehavior(t *testing.T) {
 				},
 			},
 			timeNow: func() time.Time { return now },
-			rdapDo: func(ctx context.Context, req *rdap.Request) (*rdap.Response, error) {
-				*rdapCalled = true
-				// Minimal valid RDAP response with Domain object
-				return &rdap.Response{Object: &rdap.Domain{LDHName: "example.com"}}, nil
+			registryClient: &fakeRegistryClient{
+				lookupDomain: func(ctx context.Context, domain string, opts registrydata.LookupOptions) (*registrydata.DomainResult, error) {
+					*rdapCalled = true
+					return &registrydata.DomainResult{Registration: &networkingv1alpha.Registration{Domain: "example.com"}}, nil
+				},
 			},
-			lookupNS: func(ctx context.Context, name string) ([]*net.NS, error) { return nil, &net.DNSError{IsNotFound: true} },
-			lookupIP: func(ctx context.Context, name string) ([]net.IPAddr, error) { return nil, nil },
 		}
 	}
 
@@ -1247,12 +1213,12 @@ func TestRegistration_DesiredRefreshAttempt_ExpediteBehavior(t *testing.T) {
 				},
 			},
 			timeNow: func() time.Time { return now2 },
-			rdapDo: func(ctx context.Context, req *rdap.Request) (*rdap.Response, error) {
-				rdapCalled2 = true
-				return &rdap.Response{Object: &rdap.Domain{LDHName: "example.com"}}, nil
+			registryClient: &fakeRegistryClient{
+				lookupDomain: func(ctx context.Context, domain string, opts registrydata.LookupOptions) (*registrydata.DomainResult, error) {
+					rdapCalled2 = true
+					return &registrydata.DomainResult{Registration: &networkingv1alpha.Registration{Domain: "example.com"}}, nil
+				},
 			},
-			lookupNS: func(ctx context.Context, name string) ([]*net.NS, error) { return nil, &net.DNSError{IsNotFound: true} },
-			lookupIP: func(ctx context.Context, name string) ([]net.IPAddr, error) { return nil, nil },
 		}
 		_, err = r2.Reconcile(context.Background(), mcreconcile.Request{ClusterName: "test", Request: reconcile.Request{NamespacedName: client.ObjectKeyFromObject(dom)}})
 		assert.NoError(t, err)
@@ -1271,12 +1237,12 @@ func TestRegistration_DesiredRefreshAttempt_ExpediteBehavior(t *testing.T) {
 			mgr:     &fakeMockManager{cl: cl},
 			Config:  r2.Config,
 			timeNow: func() time.Time { return now3 },
-			rdapDo: func(ctx context.Context, req *rdap.Request) (*rdap.Response, error) {
-				rdapCalled3 = true
-				return &rdap.Response{Object: &rdap.Domain{LDHName: "example.com"}}, nil
+			registryClient: &fakeRegistryClient{
+				lookupDomain: func(ctx context.Context, domain string, opts registrydata.LookupOptions) (*registrydata.DomainResult, error) {
+					rdapCalled3 = true
+					return &registrydata.DomainResult{Registration: &networkingv1alpha.Registration{Domain: "example.com"}}, nil
+				},
 			},
-			lookupNS: r2.lookupNS,
-			lookupIP: r2.lookupIP,
 		}
 		res3, err := r3.Reconcile(context.Background(), mcreconcile.Request{ClusterName: "test", Request: reconcile.Request{NamespacedName: client.ObjectKeyFromObject(dom)}})
 		assert.NoError(t, err)
@@ -1303,18 +1269,6 @@ func TestRegistration_EnrichesNameserverIPs(t *testing.T) {
 	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(dom).WithStatusSubresource(dom).Build()
 	mgr := &fakeMockManager{cl: cl}
 
-	rdapDomain := &rdap.Domain{
-		LDHName:     "example.com",
-		Nameservers: []rdap.Nameserver{{LDHName: "ns1.example.net"}},
-	}
-	resp := &rdap.Response{
-		Object: rdapDomain,
-		BootstrapAnswer: &bootstrap.Answer{
-			Entry: "com",
-			URLs:  []*url.URL{{Scheme: "https", Host: "rdap.verisign.com"}},
-		},
-	}
-
 	r := &DomainReconciler{
 		mgr: mgr,
 		Config: config.NetworkServicesOperator{DomainRegistration: config.DomainRegistrationConfig{
@@ -1324,28 +1278,21 @@ func TestRegistration_EnrichesNameserverIPs(t *testing.T) {
 			RetryBackoff:    &metav1.Duration{Duration: time.Minute},
 		}},
 		timeNow: time.Now,
-		rdapDo: func(ctx context.Context, req *rdap.Request) (*rdap.Response, error) {
-			if req != nil && req.Type == rdap.IPRequest {
-				// return a network object with a registrant entity
-				return &rdap.Response{
-					Object: &rdap.IPNetwork{
-						Entities: []rdap.Entity{{
-							Roles: []string{"registrant"},
-							VCard: vcardWithFN("Example Net Ops"),
-						}},
+		registryClient: &fakeRegistryClient{
+			lookupDomain: func(ctx context.Context, domain string, opts registrydata.LookupOptions) (*registrydata.DomainResult, error) {
+				return &registrydata.DomainResult{
+					Registration: &networkingv1alpha.Registration{Domain: "example.com", Source: "rdap"},
+					Nameservers: []networkingv1alpha.Nameserver{
+						{
+							Hostname: "ns1.example.net",
+							IPs: []networkingv1alpha.NameserverIP{{
+								Address:        "192.0.2.10",
+								RegistrantName: "Example Net Ops",
+							}},
+						},
 					},
 				}, nil
-			}
-			return resp, nil
-		},
-		lookupNS: func(ctx context.Context, name string) ([]*net.NS, error) {
-			return nil, &net.DNSError{IsNotFound: true}
-		},
-		lookupIP: func(ctx context.Context, name string) ([]net.IPAddr, error) {
-			if name == "ns1.example.net" {
-				return []net.IPAddr{{IP: net.ParseIP("192.0.2.10")}}, nil
-			}
-			return nil, nil
+			},
 		},
 	}
 
@@ -1361,90 +1308,6 @@ func TestRegistration_EnrichesNameserverIPs(t *testing.T) {
 	}
 }
 
-func vcardWithFN(fullname string) *rdap.VCard {
-	return &rdap.VCard{
-		Properties: []*rdap.VCardProperty{
-			{
-				Name:  "fn",     // property name
-				Type:  "text",   // value type
-				Value: fullname, // single value
-			},
-		},
-	}
-}
-
-func TestFetchRegistrationWhois_BootstrapAndReferrals(t *testing.T) {
-	r := &DomainReconciler{}
-
-	apex := "example.co"
-
-	// Stub WHOIS responses: IANA → registry → registrar
-	ianaBody := "refer: whois.registry.co\nwhois: whois.registry.co\n"
-	registryBody := "Registrar WHOIS Server: whois.godaddy.com\n"
-	registrarBody := strings.Join([]string{
-		"Registry Domain ID: D24111695-CNIC",
-		"Registrar: GoDaddy.com, LLC",
-		"Registrar IANA ID: 146",
-		"Registrar URL: http://whois.godaddy.com",
-		"Registrar Abuse Contact Email: abuse@godaddy.com",
-		"+ extra: line",
-		"Registrar Abuse Contact Phone: +1.4806242505",
-		"Domain Status: clientTransferProhibited https://icann.org/epp#clientTransferProhibited",
-		"Creation Date: 2025-03-20T00:38:18Z",
-		"Updated Date: 2025-10-08T00:22:13Z",
-		"Registry Expiry Date: 2026-03-20T23:59:59Z",
-		"DNSSEC: unsigned",
-		"Registrant Organization: Example Org",
-		"Registrant Email: admin@example.org",
-		"Registrant Phone: +1.1111111111",
-		"Admin Organization: Admin Org",
-		"Admin Email: admin@example.org",
-		"Admin Phone: +1.2222222222",
-		"Tech Organization: Tech Org",
-		"Tech Email: tech@example.org",
-		"Tech Phone: +1.3333333333",
-		"",
-	}, "\n")
-
-	r.whoisFetch = func(ctx context.Context, query, host string) (string, error) {
-		switch host {
-		case "whois.iana.org":
-			return ianaBody, nil
-		case "whois.registry.co":
-			return registryBody, nil
-		case "whois.godaddy.com":
-			return registrarBody, nil
-		default:
-			return "", fmt.Errorf("unexpected host: %s", host)
-		}
-	}
-
-	got, err := r.fetchRegistrationWhois(context.Background(), apex)
-	assert.NoError(t, err)
-	if assert.NotNil(t, got) {
-		assert.Equal(t, apex, got.Domain)
-		assert.Equal(t, "D24111695-CNIC", got.RegistryDomainID)
-		if assert.NotNil(t, got.Registrar) {
-			assert.Equal(t, "GoDaddy.com, LLC", got.Registrar.Name)
-			assert.Equal(t, "146", got.Registrar.IANAID)
-			assert.Equal(t, "http://whois.godaddy.com", got.Registrar.URL)
-		}
-		if assert.NotNil(t, got.Abuse) {
-			assert.Equal(t, "abuse@godaddy.com", got.Abuse.Email)
-			assert.Equal(t, "+1.4806242505", got.Abuse.Phone)
-		}
-		assert.Contains(t, got.Statuses, "clientTransferProhibited")
-		if assert.NotNil(t, got.DNSSEC) && assert.NotNil(t, got.DNSSEC.Enabled) {
-			assert.False(t, *got.DNSSEC.Enabled)
-		}
-		if assert.NotNil(t, got.Contacts) {
-			assert.Equal(t, "Example Org", got.Contacts.Registrant.Organization)
-			assert.Equal(t, "Admin Org", got.Contacts.Admin.Organization)
-			assert.Equal(t, "Tech Org", got.Contacts.Tech.Organization)
-		}
-	}
-}
-
 func TestRegistration_WHOIS_BootstrapAndReferrals(t *testing.T) {
 	s := runtime.NewScheme()
 	_ = scheme.AddToScheme(s)
@@ -1456,7 +1319,7 @@ func TestRegistration_WHOIS_BootstrapAndReferrals(t *testing.T) {
 	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(dom).WithStatusSubresource(dom).Build()
 	mgr := &fakeMockManager{cl: cl}
 
-	// Force RDAP to report BootstrapNoMatch to select WHOIS path
+	// Registry client returns WHOIS-mapped data (WHOIS bootstrap/referrals are handled inside registrydata).
 	r := &DomainReconciler{
 		mgr: mgr,
 		Config: config.NetworkServicesOperator{DomainRegistration: config.DomainRegistrationConfig{
@@ -1466,33 +1329,21 @@ func TestRegistration_WHOIS_BootstrapAndReferrals(t *testing.T) {
 			RetryBackoff:    &metav1.Duration{Duration: time.Minute},
 		}},
 		timeNow: time.Now,
-		rdapDo: func(ctx context.Context, req *rdap.Request) (*rdap.Response, error) {
-			return nil, &rdap.ClientError{Type: rdap.BootstrapNoMatch}
+		registryClient: &fakeRegistryClient{
+			lookupDomain: func(ctx context.Context, domain string, opts registrydata.LookupOptions) (*registrydata.DomainResult, error) {
+				return &registrydata.DomainResult{
+					Registration: &networkingv1alpha.Registration{
+						Domain:           "example.co",
+						Source:           "whois",
+						RegistryDomainID: "D24111695-CNIC",
+						Registrar:        &networkingv1alpha.RegistrarInfo{Name: "GoDaddy.com, LLC", IANAID: "146"},
+						Abuse:            &networkingv1alpha.AbuseContact{Phone: "+1.4806242505"},
+						DNSSEC:           &networkingv1alpha.DNSSECInfo{Enabled: ptrBool(false)},
+					},
+				}, nil
+			},
 		},
-		lookupNS: func(ctx context.Context, name string) ([]*net.NS, error) { return nil, &net.DNSError{IsNotFound: true} },
-		lookupIP: func(ctx context.Context, name string) ([]net.IPAddr, error) { return nil, nil },
 	}
-
-	// Stub WHOIS fetches: IANA (refer), registry, then registrar
-	ianaBody := "refer: whois.registry.co\nwhois: whois.registry.co\n"
-	registryBody := "Registrar WHOIS Server: whois.godaddy.com\nRegistrar: GoDaddy.com, LLC\nRegistrar IANA ID: 146\nRegistrar Abuse Contact Email: abuse@godaddy.com\nRegistrar Abuse Contact Phone: +1.4806242505\nDomain Status: clientTransferProhibited\nDNSSEC: unsigned\n"
-	registrarBody := "Registrar: GoDaddy.com, LLC\nRegistrar IANA ID: 146\nRegistrar Abuse Contact Email: abuse@godaddy.com\nRegistrar Abuse Contact Phone: +1.4806242505\nDomain Status: clientTransferProhibited\nDNSSEC: unsigned\n"
-
-	// Swap the helper to return our stub bodies
-	origFetch := r.whoisFetch
-	r.whoisFetch = func(ctx context.Context, query, host string) (string, error) {
-		switch host {
-		case "whois.iana.org":
-			return ianaBody, nil
-		case "whois.registry.co":
-			return registryBody, nil
-		case "whois.godaddy.com":
-			return registrarBody, nil
-		default:
-			return "", fmt.Errorf("unexpected host: %s", host)
-		}
-	}
-	defer func() { r.whoisFetch = origFetch }()
 
 	_, err := r.Reconcile(context.Background(), mcreconcile.Request{ClusterName: "test", Request: reconcile.Request{NamespacedName: client.ObjectKeyFromObject(dom)}})
 	assert.NoError(t, err)
@@ -1513,3 +1364,5 @@ func TestRegistration_WHOIS_BootstrapAndReferrals(t *testing.T) {
 		}
 	}
 }
+
+func ptrBool(b bool) *bool { return &b }

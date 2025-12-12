@@ -2,12 +2,10 @@ package registrydata
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"time"
 
 	whois "github.com/domainr/whois"
-	"golang.org/x/net/publicsuffix"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
@@ -108,7 +106,11 @@ func parseWhoisRegistration(apex, body string) *networkingv1alpha.Registration {
 			reg.UpdatedAt = &mt
 		}
 	}
-	if v := findWhoisValue(body, []string{"Registry Expiry Date", "Expiration Date", "Expiry Date", "Expires", "Registrar Registration Expiration Date"}); v != "" {
+	if v := findWhoisValue(body, []string{"Registry Expiry Date",
+		"Expiration Date",
+		"Expiry Date",
+		"Expires",
+		"Registrar Registration Expiration Date"}); v != "" {
 		if t, ok := parseTimeFlex(v); ok {
 			mt := metav1.NewTime(t)
 			reg.ExpiresAt = &mt
@@ -177,13 +179,4 @@ func parseWhoisRegistration(apex, body string) *networkingv1alpha.Registration {
 		reg.Contacts = &networkingv1alpha.ContactSet{Registrant: registrant, Admin: admin, Tech: tech}
 	}
 	return reg
-}
-
-// A small helper used by tests and future callers.
-func apexForDomain(domain string) (string, error) {
-	n := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(domain)), ".")
-	if n == "" {
-		return "", fmt.Errorf("empty domain")
-	}
-	return publicsuffix.EffectiveTLDPlusOne(n)
 }

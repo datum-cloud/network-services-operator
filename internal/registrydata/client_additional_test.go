@@ -341,7 +341,10 @@ func TestClient_ErrorDoesNotPopulateCache(t *testing.T) {
 	_, err = c.LookupDomain(context.Background(), "example.com", LookupOptions{})
 	require.NoError(t, err)
 
-	require.GreaterOrEqual(t, atomic.LoadInt64(&calls), int64(4), "expected two whois fetches per attempt (IANA + registry)")
+	require.GreaterOrEqual(t,
+		atomic.LoadInt64(&calls),
+		int64(4),
+		"expected two whois fetches per attempt (IANA + registry)")
 }
 
 func TestRedisProviderLimiter_StateTTLEvictionResetsBucket(t *testing.T) {

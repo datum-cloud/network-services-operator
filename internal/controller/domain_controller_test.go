@@ -23,7 +23,7 @@ import (
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	"go.datum.net/network-services-operator/internal/config"
-	"go.datum.net/network-services-operator/pkg/registrydata"
+	"go.datum.net/network-services-operator/internal/registrydata"
 )
 
 type fakeRegistryClient struct {

@@ -13,7 +13,10 @@ func TestRedisProviderLimiter_KeyPrefixing(t *testing.T) {
 	t.Parallel()
 
 	_, client := newTestRedis(t)
-	l := newRedisProviderLimiter(client, "pfx:", RateLimits{DefaultRatePerSec: 1, DefaultBurst: 1, DefaultBlock: 1 * time.Second})
+	l := newRedisProviderLimiter(client, "pfx:",
+		RateLimits{DefaultRatePerSec: 1,
+			DefaultBurst: 1,
+			DefaultBlock: 1 * time.Second})
 	require.Equal(t, "pfx:rl:rdap.example", l.key("rdap.example"))
 	require.Equal(t, "pfx:rl:default", l.key(""))
 }
@@ -22,7 +25,10 @@ func TestRedisProviderLimiter_Script_AcquireBlockAndRefill(t *testing.T) {
 	t.Parallel()
 
 	_, client := newTestRedis(t)
-	l := newRedisProviderLimiter(client, "pfx:", RateLimits{DefaultRatePerSec: 1.0, DefaultBurst: 2, DefaultBlock: 2 * time.Second})
+	l := newRedisProviderLimiter(client, "pfx:",
+		RateLimits{DefaultRatePerSec: 1.0,
+			DefaultBurst: 2,
+			DefaultBlock: 2 * time.Second})
 	l.stateTTL = 10 * time.Minute
 
 	stateTTLms := l.stateTTL.Milliseconds()
@@ -80,7 +86,10 @@ func TestRedisProviderLimiter_Script_BlockUntil(t *testing.T) {
 	t.Parallel()
 
 	_, client := newTestRedis(t)
-	l := newRedisProviderLimiter(client, "pfx:", RateLimits{DefaultRatePerSec: 10.0, DefaultBurst: 1, DefaultBlock: 250 * time.Millisecond})
+	l := newRedisProviderLimiter(client, "pfx:",
+		RateLimits{DefaultRatePerSec: 10.0,
+			DefaultBurst: 1,
+			DefaultBlock: 250 * time.Millisecond})
 	l.stateTTL = 10 * time.Minute
 
 	stateTTLms := l.stateTTL.Milliseconds()
@@ -110,7 +119,10 @@ func TestRedisProviderLimiter_AcquireWrapper_Smoke(t *testing.T) {
 	t.Parallel()
 
 	_, client := newTestRedis(t)
-	l := newRedisProviderLimiter(client, "", RateLimits{DefaultRatePerSec: 100.0, DefaultBurst: 2, DefaultBlock: 50 * time.Millisecond})
+	l := newRedisProviderLimiter(client, "",
+		RateLimits{DefaultRatePerSec: 100.0,
+			DefaultBurst: 2,
+			DefaultBlock: 50 * time.Millisecond})
 
 	ok, retry, err := l.Acquire(context.Background(), "rdap.example")
 	require.NoError(t, err)

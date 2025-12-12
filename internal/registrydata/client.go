@@ -366,10 +366,9 @@ func (c *client) lookupDomainFresh(ctx context.Context, domainNorm, apex string)
 }
 
 type rdapDomainResponse struct {
-	domain       *rdap.Domain
-	providerKey  string
-	baseURL      *url.URL
-	suggestedDel time.Duration
+	domain      *rdap.Domain
+	providerKey string
+	baseURL     *url.URL
 }
 
 func (c *client) lookupDomainRDAP(ctx context.Context, apex string) (*rdapDomainResponse, error) {

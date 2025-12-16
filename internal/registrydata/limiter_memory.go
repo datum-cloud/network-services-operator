@@ -6,6 +6,8 @@ import (
 	"time"
 )
 
+const defaultProvider = "default"
+
 type memoryProviderLimiter struct {
 	mu       sync.Mutex
 	now      func() time.Time
@@ -32,7 +34,7 @@ func newMemoryProviderLimiter(limits RateLimits) *memoryProviderLimiter {
 
 func (l *memoryProviderLimiter) Acquire(_ context.Context, provider string) (bool, time.Duration, error) {
 	if provider == "" {
-		provider = "default"
+		provider = defaultProvider
 	}
 	now := l.now()
 	l.mu.Lock()
@@ -79,7 +81,7 @@ func (l *memoryProviderLimiter) Acquire(_ context.Context, provider string) (boo
 
 func (l *memoryProviderLimiter) BlockUntil(_ context.Context, provider string, until time.Time) error {
 	if provider == "" {
-		provider = "default"
+		provider = defaultProvider
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()

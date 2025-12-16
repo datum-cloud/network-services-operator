@@ -18,6 +18,8 @@ import (
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 )
 
+const rdapSource = "rdap"
+
 type client struct {
 	cfg Config
 
@@ -288,10 +290,10 @@ func (c *client) lookupDomainFresh(ctx context.Context, domainNorm, apex string)
 
 	if !useWHOIS {
 		r := mapRDAPDomainToRegistration(*rdapRes.domain)
-		r.Source = "rdap"
+		r.Source = rdapSource
 		reg = &r
 		providerKey = rdapRes.providerKey
-		source = "rdap"
+		source = rdapSource
 		// Registry from bootstrap URL host.
 		if providerKey != "" {
 			reg.Registry = &networkingv1alpha.RegistryInfo{Name: providerKey, URL: "https://" + providerKey}
@@ -315,7 +317,7 @@ func (c *client) lookupDomainFresh(ctx context.Context, domainNorm, apex string)
 	// Nameserver selection (apex vs delegated subdomain).
 	var nsHosts []string
 	if isApex {
-		if source == "rdap" && len(apexNS) > 0 {
+		if source == rdapSource && len(apexNS) > 0 {
 			nsHosts = apexNS
 		} else {
 			_, nsHosts = c.delegatedZoneNS(ctx, apex, apex)
@@ -324,7 +326,7 @@ func (c *client) lookupDomainFresh(ctx context.Context, domainNorm, apex string)
 		if delegated, delegatedNS := c.delegatedZoneNS(ctx, domainNorm, apex); delegated && len(delegatedNS) > 0 {
 			nsHosts = delegatedNS
 		} else {
-			if source == "rdap" && len(apexNS) > 0 {
+			if source == rdapSource && len(apexNS) > 0 {
 				nsHosts = apexNS
 			} else {
 				_, nsHosts = c.delegatedZoneNS(ctx, apex, apex)

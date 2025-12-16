@@ -28,8 +28,8 @@ import (
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	"go.datum.net/network-services-operator/internal/config"
-	conditionutil "go.datum.net/network-services-operator/internal/util/condition"
 	"go.datum.net/network-services-operator/internal/registrydata"
+	conditionutil "go.datum.net/network-services-operator/internal/util/condition"
 )
 
 // DomainReconciler reconciles a Domain object

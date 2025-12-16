@@ -21,6 +21,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+const (
+	IAMABootstrapResponse = "refer: whois.registry.test\n"
+	testRegistrarResponse = "Registrar: Test Registrar\n"
+)
+
 type spyLimiter struct {
 	acquireFn    func(ctx context.Context, provider string) (bool, time.Duration, error)
 	blockUntilFn func(ctx context.Context, provider string, until time.Time) error
@@ -247,10 +252,10 @@ func TestClient_Singleflight_PreventsWHOISStampede(t *testing.T) {
 
 		if host == c.cfg.WhoisBootstrapHost {
 			// IANA bootstrap response: refer to a registry host.
-			return "refer: whois.registry.test\n", nil
+			return IAMABootstrapResponse, nil
 		}
 		// Registry response body must be non-empty.
-		return "Registrar: Test Registrar\n", nil
+		return testRegistrarResponse, nil
 	}
 
 	const n = 20
@@ -283,9 +288,9 @@ func TestClient_WHOISRateLimitPropagates(t *testing.T) {
 
 	c.whoisFetch = func(ctx context.Context, query, host string) (string, error) {
 		if host == c.cfg.WhoisBootstrapHost {
-			return "refer: whois.registry.test\n", nil
+			return IAMABootstrapResponse, nil
 		}
-		return "Registrar: Test Registrar\n", nil
+		return testRegistrarResponse, nil
 	}
 
 	// Deny the bootstrap host.
@@ -324,13 +329,13 @@ func TestClient_ErrorDoesNotPopulateCache(t *testing.T) {
 	c.whoisFetch = func(ctx context.Context, query, host string) (string, error) {
 		atomic.AddInt64(&calls, 1)
 		if host == c.cfg.WhoisBootstrapHost {
-			return "refer: whois.registry.test\n", nil
+			return IAMABootstrapResponse, nil
 		}
 		if mode.Load() == 0 {
 			// empty body -> causes "no WHOIS registry body" error
 			return "", nil
 		}
-		return "Registrar: Test Registrar\n", nil
+		return testRegistrarResponse, nil
 	}
 
 	_, err := c.LookupDomain(context.Background(), "example.com", LookupOptions{ForceRefresh: true})

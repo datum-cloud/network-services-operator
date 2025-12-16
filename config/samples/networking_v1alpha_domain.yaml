@@ -1,0 +1,6 @@
+apiVersion: networking.datumapis.com/v1alpha
+kind: Domain
+metadata:
+  name: hoti.vc
+spec:
+  domainName: hoti.vc

@@ -3,10 +3,12 @@ module go.datum.net/network-services-operator
 go 1.24.7
 
 require (
+	github.com/alicebob/miniredis/v2 v2.35.0
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc
 	github.com/domainr/whois v0.1.0
 	github.com/envoyproxy/gateway v1.5.1
 	github.com/go-logr/logr v1.4.3
+	github.com/go-redis/redis/v7 v7.4.1
 	github.com/google/go-cmp v0.7.0
 	github.com/google/uuid v1.6.0
 	github.com/onsi/ginkgo/v2 v2.23.4
@@ -119,7 +121,6 @@ require (
 	github.com/go-openapi/strfmt v0.23.0 // indirect
 	github.com/go-openapi/swag v0.23.1 // indirect
 	github.com/go-openapi/validate v0.24.0 // indirect
-	github.com/go-redis/redis/v7 v7.4.1 // indirect
 	github.com/go-sql-driver/mysql v1.9.3 // indirect
 	github.com/go-task/slim-sprig/v3 v3.0.0 // indirect
 	github.com/go-viper/mapstructure/v2 v2.4.0 // indirect

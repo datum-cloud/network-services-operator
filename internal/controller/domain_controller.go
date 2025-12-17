@@ -406,6 +406,7 @@ func (r *DomainReconciler) attemptDNSZoneVerification(
 		// Must be Accepted=True and Programmed=True
 		accepted := false
 		programmed := false
+		conditionStatusTrue := "True"
 		if conds, found, _ := unstructured.NestedSlice(z.Object, "status", "conditions"); found {
 			for _, c := range conds {
 				cm, ok := c.(map[string]any)
@@ -414,15 +415,15 @@ func (r *DomainReconciler) attemptDNSZoneVerification(
 				}
 				ct, _ := cm["type"].(string)
 				cs, _ := cm["status"].(string)
-				if ct == "Accepted" && cs == "True" {
+				if ct == "Accepted" && cs == conditionStatusTrue {
 					accepted = true
 				}
-				if ct == "Programmed" && cs == "True" {
+				if ct == "Programmed" && cs == conditionStatusTrue {
 					programmed = true
 				}
 			}
 		}
-		if !(accepted && programmed) {
+		if !accepted || !programmed {
 			sawNotReady = true
 			// Keep evaluating other zones in case one is ready.
 			continue

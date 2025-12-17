@@ -892,6 +892,11 @@ func (c *fakeCluster) GetClient() client.Client {
 	return c.cl
 }
 
+func (c *fakeCluster) GetAPIReader() client.Reader {
+	// In unit tests we use the same fake client as both cached and uncached readers.
+	return c.cl
+}
+
 func (c *fakeCluster) GetScheme() *runtime.Scheme {
 	return c.cl.Scheme()
 }

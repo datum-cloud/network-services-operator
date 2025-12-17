@@ -17,6 +17,8 @@ import (
 	"k8s.io/apimachinery/pkg/api/equality"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/wait"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -47,6 +49,7 @@ type DomainReconciler struct {
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=domains,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=domains/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=domains/finalizers,verbs=update
+// +kubebuilder:rbac:groups=dns.networking.miloapis.com,resources=dnszones,verbs=get;list;watch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -112,7 +115,7 @@ func (r *DomainReconciler) Reconcile(ctx context.Context, req mcreconcile.Reques
 	}
 
 	// Delegate all verification work (including timers/backoff)
-	nextVerification := r.reconcileVerification(ctx, domain)
+	nextVerification := r.reconcileVerification(ctx, cl.GetAPIReader(), domain)
 
 	// Delegate all registration work (including timers/backoff)
 	nextRegistration := r.reconcileRegistration(ctx, domain, apex)
@@ -158,7 +161,7 @@ func (r *DomainReconciler) Reconcile(ctx context.Context, req mcreconcile.Reques
 
 // reconcileVerification contains the verification logic.
 // It mutates domain.Status and returns the next verification attempt time (if any).
-func (r *DomainReconciler) reconcileVerification(ctx context.Context, domain *networkingv1alpha.Domain) time.Time {
+func (r *DomainReconciler) reconcileVerification(ctx context.Context, reader client.Reader, domain *networkingv1alpha.Domain) time.Time {
 	logger := log.FromContext(ctx)
 
 	domainStatus := domain.Status.DeepCopy()
@@ -190,12 +193,36 @@ func (r *DomainReconciler) reconcileVerification(ctx context.Context, domain *ne
 	})
 	verifiedHTTPCondition.ObservedGeneration = domain.Generation
 
+	verifiedDNSZoneCondition := conditionutil.FindStatusConditionOrDefault(domainStatus.Conditions, &metav1.Condition{
+		Type:               networkingv1alpha.DomainConditionVerifiedDNSZone,
+		Status:             metav1.ConditionFalse,
+		Reason:             networkingv1alpha.DomainReasonPendingVerification,
+		Message:            "The Domain has not been verified via DNSZone",
+		LastTransitionTime: metav1.Now(),
+	})
+	verifiedDNSZoneCondition.ObservedGeneration = domain.Generation
+
 	var nextAttempt time.Time
 
 	if verifiedCondition.Status != metav1.ConditionTrue {
 		logger.Info("domain ownership has not been verified.")
 
-		if domainStatus.Verification == nil {
+		// Attempt managed DNS (DNSZone) verification first; if it succeeds we can skip
+		// generating TXT/HTTP verification scaffolding entirely.
+		r.attemptDNSZoneVerification(ctx, reader, domain, domainStatus, verifiedDNSZoneCondition)
+		if verifiedDNSZoneCondition.Status == metav1.ConditionTrue {
+			verifiedCondition.Status = metav1.ConditionTrue
+			verifiedCondition.Reason = networkingv1alpha.DomainReasonVerified
+			verifiedCondition.Message = "Domain verification successful"
+
+			// Clear verification scaffolding and sub-conditions
+			domainStatus.Verification = nil
+			apimeta.RemoveStatusCondition(&domainStatus.Conditions, networkingv1alpha.DomainConditionVerifiedDNS)
+			apimeta.RemoveStatusCondition(&domainStatus.Conditions, networkingv1alpha.DomainConditionVerifiedHTTP)
+			apimeta.RemoveStatusCondition(&domainStatus.Conditions, networkingv1alpha.DomainConditionVerifiedDNSZone)
+			// When verified, no future verification timer is needed
+			nextAttempt = time.Time{}
+		} else if domainStatus.Verification == nil {
 			// Update the domain with content the user can leverage to update DNS or
 			// HTTP endpoints for verification.
 			logger.Info("updating domain with verification requirements")
@@ -260,6 +287,7 @@ func (r *DomainReconciler) reconcileVerification(ctx context.Context, domain *ne
 					domainStatus.Verification = nil
 					apimeta.RemoveStatusCondition(&domainStatus.Conditions, networkingv1alpha.DomainConditionVerifiedDNS)
 					apimeta.RemoveStatusCondition(&domainStatus.Conditions, networkingv1alpha.DomainConditionVerifiedHTTP)
+					apimeta.RemoveStatusCondition(&domainStatus.Conditions, networkingv1alpha.DomainConditionVerifiedDNSZone)
 					// When verified, no future verification timer is needed
 					nextAttempt = time.Time{}
 				}
@@ -272,12 +300,159 @@ func (r *DomainReconciler) reconcileVerification(ctx context.Context, domain *ne
 	if verifiedCondition.Status == metav1.ConditionFalse {
 		apimeta.SetStatusCondition(&domainStatus.Conditions, *verifiedDNSCondition)
 		apimeta.SetStatusCondition(&domainStatus.Conditions, *verifiedHTTPCondition)
+		apimeta.SetStatusCondition(&domainStatus.Conditions, *verifiedDNSZoneCondition)
+	} else {
+		apimeta.RemoveStatusCondition(&domainStatus.Conditions, networkingv1alpha.DomainConditionVerifiedDNSZone)
 	}
 
 	// Commit the staged status back
 	domain.Status = *domainStatus
 
 	return nextAttempt
+}
+
+var dnsZoneListGVK = schema.GroupVersionKind{
+	Group:   "dns.networking.miloapis.com",
+	Version: "v1alpha1",
+	Kind:    "DNSZoneList",
+}
+
+func normalizeNameserverHostname(s string) string {
+	return strings.ToLower(strings.TrimSuffix(strings.TrimSpace(s), "."))
+}
+
+func hasStringOverlapNormalized(a, b []string) bool {
+	if len(a) == 0 || len(b) == 0 {
+		return false
+	}
+	set := make(map[string]struct{}, len(a))
+	for _, v := range a {
+		n := normalizeNameserverHostname(v)
+		if n == "" {
+			continue
+		}
+		set[n] = struct{}{}
+	}
+	for _, v := range b {
+		n := normalizeNameserverHostname(v)
+		if n == "" {
+			continue
+		}
+		if _, ok := set[n]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *DomainReconciler) attemptDNSZoneVerification(
+	ctx context.Context,
+	reader client.Reader,
+	domain *networkingv1alpha.Domain,
+	domainStatus *networkingv1alpha.DomainStatus,
+	verifiedDNSZoneCondition *metav1.Condition,
+) {
+	logger := log.FromContext(ctx)
+
+	zoneList := &unstructured.UnstructuredList{}
+	zoneList.SetGroupVersionKind(dnsZoneListGVK)
+
+	// Use a server-side field selector using the DNSZone CRD selectable field
+	// `status.domainRef.name`. This is intentionally done via the API reader
+	// (uncached) so the API server evaluates the field selector. Unit tests that
+	// use the controller-runtime fake client must install a corresponding index
+	// for `status.domainRef.name` to support MatchingFields.
+	if err := reader.List(
+		ctx,
+		zoneList,
+		client.InNamespace(domain.Namespace),
+		client.MatchingFields{"status.domainRef.name": domain.Name},
+	); err != nil {
+		logger.Error(err, "failed listing DNSZones for managed DNS verification")
+		verifiedDNSZoneCondition.Reason = networkingv1alpha.DomainReasonVerificationInternalError
+		verifiedDNSZoneCondition.Message = "Internal error encountered during DNSZone lookup"
+		return
+	}
+
+	zones := zoneList.Items
+
+	if len(zones) == 0 {
+		verifiedDNSZoneCondition.Reason = networkingv1alpha.DomainReasonDNSZoneNotFound
+		verifiedDNSZoneCondition.Message = "No DNSZone found referencing this Domain; managed DNS verification not applicable"
+		return
+	}
+
+	// Domain provisioned nameservers (from registry lookup)
+	var domainNS []string
+	for _, ns := range domainStatus.Nameservers {
+		if ns.Hostname != "" {
+			domainNS = append(domainNS, ns.Hostname)
+		}
+	}
+
+	// Evaluate zones; any one matching is sufficient
+	sawNotReady := false
+	sawReady := false
+	for _, z := range zones {
+		zoneName := z.GetName()
+
+		// Must be Accepted=True and Programmed=True
+		accepted := false
+		programmed := false
+		conditionStatusTrue := "True"
+		if conds, found, _ := unstructured.NestedSlice(z.Object, "status", "conditions"); found {
+			for _, c := range conds {
+				cm, ok := c.(map[string]any)
+				if !ok {
+					continue
+				}
+				ct, _ := cm["type"].(string)
+				cs, _ := cm["status"].(string)
+				if ct == "Accepted" && cs == conditionStatusTrue {
+					accepted = true
+				}
+				if ct == "Programmed" && cs == conditionStatusTrue {
+					programmed = true
+				}
+			}
+		}
+		if !accepted || !programmed {
+			sawNotReady = true
+			// Keep evaluating other zones in case one is ready.
+			continue
+		}
+		sawReady = true
+
+		zoneNS, _, _ := unstructured.NestedStringSlice(z.Object, "status", "nameservers")
+		if len(zoneNS) == 0 {
+			verifiedDNSZoneCondition.Reason = networkingv1alpha.DomainReasonPendingVerification
+			verifiedDNSZoneCondition.Message = fmt.Sprintf("DNSZone %q is ready but has no status.nameservers yet", zoneName)
+			continue
+		}
+
+		// Verify via managed DNS once Domain.status.nameservers includes at least one of DNSZone.status.nameservers.
+		if len(domainNS) == 0 {
+			verifiedDNSZoneCondition.Reason = networkingv1alpha.DomainReasonPendingVerification
+			verifiedDNSZoneCondition.Message = fmt.Sprintf("Waiting for Domain status.nameservers before verifying via DNSZone %q", zoneName)
+			continue
+		}
+		if !hasStringOverlapNormalized(domainNS, zoneNS) {
+			verifiedDNSZoneCondition.Reason = networkingv1alpha.DomainReasonDNSZoneNameserverMismatch
+			verifiedDNSZoneCondition.Message = fmt.Sprintf("Domain nameservers do not match DNSZone %q nameservers yet", zoneName)
+			continue
+		}
+
+		verifiedDNSZoneCondition.Status = metav1.ConditionTrue
+		verifiedDNSZoneCondition.Reason = networkingv1alpha.DomainReasonVerified
+		verifiedDNSZoneCondition.Message = fmt.Sprintf("DNSZone %q verification successful", zoneName)
+		return
+	}
+
+	// If we saw a DNSZone referencing the Domain but none are ready, report that.
+	if sawNotReady && !sawReady {
+		verifiedDNSZoneCondition.Reason = networkingv1alpha.DomainReasonDNSZoneNotReady
+		verifiedDNSZoneCondition.Message = "DNSZone exists but is not yet Accepted and Programmed"
+	}
 }
 
 func (r *DomainReconciler) attemptDNSVerification(

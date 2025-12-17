@@ -71,6 +71,9 @@ const (
 
 	// This condition tracks verification attempts via HTTP.
 	DomainConditionVerifiedHTTP = "VerifiedHTTP"
+
+	// This condition tracks verification attempts via managed DNS (DNSZone).
+	DomainConditionVerifiedDNSZone = "VerifiedDNSZone"
 )
 
 const (
@@ -97,6 +100,16 @@ const (
 	// DomainReasonVerified indicates domain ownership has been successfully
 	// verified
 	DomainReasonVerified = "Verified"
+
+	// DomainReasonDNSZoneNotFound indicates there is no DNSZone referencing this Domain.
+	DomainReasonDNSZoneNotFound = "DNSZoneNotFound"
+
+	// DomainReasonDNSZoneNotReady indicates the DNSZone exists but is not Accepted/Programmed yet.
+	DomainReasonDNSZoneNotReady = "DNSZoneNotReady"
+
+	// DomainReasonDNSZoneNameserverMismatch indicates no overlap between the Domain's
+	// provisioned nameservers and the DNSZone nameservers.
+	DomainReasonDNSZoneNameserverMismatch = "DNSZoneNameserverMismatch"
 
 	// DomainReasonInvalidDomain indicates the provided domain name is not
 	// registrable (e.g., only a public suffix like "com"), and flows are paused.

@@ -374,14 +374,7 @@ func (r *DomainReconciler) attemptDNSZoneVerification(
 		return
 	}
 
-	// Collect zones referencing this Domain
-	var zones []unstructured.Unstructured
-	for _, z := range zoneList.Items {
-		refName, _, _ := unstructured.NestedString(z.Object, "status", "domainRef", "name")
-		if refName == domain.Name {
-			zones = append(zones, z)
-		}
-	}
+	zones := zoneList.Items
 
 	if len(zones) == 0 {
 		verifiedDNSZoneCondition.Reason = networkingv1alpha.DomainReasonDNSZoneNotFound

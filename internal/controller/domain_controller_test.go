@@ -12,7 +12,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/uuid"
 	"k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -57,6 +59,24 @@ const (
 	exampleDomain = "example.com"
 )
 
+var dnsZoneGVK = schema.GroupVersionKind{
+	Group:   "dns.networking.miloapis.com",
+	Version: "v1alpha1",
+	Kind:    "DNSZone",
+}
+
+func dnsZoneDomainRefNameIndex(o client.Object) []string {
+	u, ok := o.(*unstructured.Unstructured)
+	if !ok {
+		return nil
+	}
+	refName, _, _ := unstructured.NestedString(u.Object, "status", "domainRef", "name")
+	if refName == "" {
+		return nil
+	}
+	return []string{refName}
+}
+
 func TestDomainVerification(t *testing.T) {
 	testScheme := runtime.NewScheme()
 	assert.NoError(t, scheme.AddToScheme(testScheme))
@@ -90,7 +110,13 @@ func TestDomainVerification(t *testing.T) {
 		timeNow   func() time.Time
 		httpGet   func(ctx context.Context, url string) ([]byte, *http.Response, error)
 		lookupTXT func(ctx context.Context, name string) ([]string, error)
-		assert    func(t *testing.T, domain *networkingv1alpha.Domain, result ctrl.Result)
+		objects   []client.Object
+		// reconcileCount allows a test to run multiple reconciles back-to-back.
+		// This is useful when one reconcile populates status that is required by a later reconcile.
+		reconcileCount int
+		// registryLookupDomain allows a test to control Domain.status.nameservers via reconcileRegistration.
+		registryLookupDomain func(ctx context.Context, domain string, opts registrydata.LookupOptions) (*registrydata.DomainResult, error)
+		assert               func(t *testing.T, domain *networkingv1alpha.Domain, result ctrl.Result)
 	}{
 		{
 			name:   "verification details added to status",
@@ -273,6 +299,58 @@ func TestDomainVerification(t *testing.T) {
 				assert.True(t, apimeta.IsStatusConditionTrue(domain.Status.Conditions, networkingv1alpha.DomainConditionVerified))
 				assert.Nil(t, apimeta.FindStatusCondition(domain.Status.Conditions, networkingv1alpha.DomainConditionVerifiedDNS), "expected VerifiedDNS condition to not be present")
 				assert.Nil(t, apimeta.FindStatusCondition(domain.Status.Conditions, networkingv1alpha.DomainConditionVerifiedHTTP), "expected VerifiedHTTP condition to not be present")
+				assert.Nil(t, apimeta.FindStatusCondition(domain.Status.Conditions, networkingv1alpha.DomainConditionVerifiedDNSZone), "expected VerifiedDNSZone condition to not be present")
+			},
+		},
+		{
+			name:           "dnszone verification successful",
+			reconcileCount: 2,
+			domain: newDomain(upstreamNamespace.Name, "dnszone-verify", func(domain *networkingv1alpha.Domain) {
+				// Ensure we attempt verification immediately in this reconcile.
+				domain.Status.Verification = &networkingv1alpha.DomainVerificationStatus{
+					NextVerificationAttempt: metav1.Time{Time: time.Unix(0, 0)},
+				}
+			}),
+			objects: []client.Object{
+				&unstructured.Unstructured{
+					Object: map[string]any{
+						"apiVersion": "dns.networking.miloapis.com/v1alpha1",
+						"kind":       "DNSZone",
+						"metadata": map[string]any{
+							"name":      "zone1",
+							"namespace": upstreamNamespace.Name,
+						},
+						"status": map[string]any{
+							"nameservers": []any{"ns1.provider.net.", "ns2.provider.net."},
+							"conditions": []any{
+								map[string]any{"type": "Accepted", "status": "True"},
+								map[string]any{"type": "Programmed", "status": "True"},
+							},
+							"domainRef": map[string]any{
+								"name": "dnszone-verify",
+								"status": map[string]any{
+									"nameservers": []any{
+										map[string]any{"hostname": "ns1.provider.net."},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			registryLookupDomain: func(ctx context.Context, domain string, opts registrydata.LookupOptions) (*registrydata.DomainResult, error) {
+				return &registrydata.DomainResult{
+					Registration: &networkingv1alpha.Registration{},
+					Nameservers: []networkingv1alpha.Nameserver{
+						{Hostname: "ns1.provider.net."},
+					},
+				}, nil
+			},
+			assert: func(t *testing.T, domain *networkingv1alpha.Domain, _ ctrl.Result) {
+				assert.True(t, apimeta.IsStatusConditionTrue(domain.Status.Conditions, networkingv1alpha.DomainConditionVerified))
+				assert.Nil(t, apimeta.FindStatusCondition(domain.Status.Conditions, networkingv1alpha.DomainConditionVerifiedDNS), "expected VerifiedDNS condition to not be present")
+				assert.Nil(t, apimeta.FindStatusCondition(domain.Status.Conditions, networkingv1alpha.DomainConditionVerifiedHTTP), "expected VerifiedHTTP condition to not be present")
+				assert.Nil(t, apimeta.FindStatusCondition(domain.Status.Conditions, networkingv1alpha.DomainConditionVerifiedDNSZone), "expected VerifiedDNSZone condition to not be present")
 			},
 		},
 		{
@@ -364,6 +442,7 @@ func TestDomainVerification(t *testing.T) {
 				assert.True(t, apimeta.IsStatusConditionTrue(domain.Status.Conditions, networkingv1alpha.DomainConditionVerified))
 				assert.Nil(t, apimeta.FindStatusCondition(domain.Status.Conditions, networkingv1alpha.DomainConditionVerifiedDNS), "expected VerifiedDNS condition to not be present")
 				assert.Nil(t, apimeta.FindStatusCondition(domain.Status.Conditions, networkingv1alpha.DomainConditionVerifiedHTTP), "expected VerifiedHTTP condition to not be present")
+				assert.Nil(t, apimeta.FindStatusCondition(domain.Status.Conditions, networkingv1alpha.DomainConditionVerifiedDNSZone), "expected VerifiedDNSZone condition to not be present")
 			},
 		},
 	}
@@ -373,6 +452,9 @@ func TestDomainVerification(t *testing.T) {
 
 			if tt.timeNow == nil {
 				tt.timeNow = time.Now
+			}
+			if tt.reconcileCount == 0 {
+				tt.reconcileCount = 1
 			}
 
 			if tt.httpGet == nil {
@@ -387,9 +469,14 @@ func TestDomainVerification(t *testing.T) {
 				}
 			}
 
+			objs := []client.Object{tt.domain, upstreamNamespace}
+			if len(tt.objects) > 0 {
+				objs = append(objs, tt.objects...)
+			}
 			fakeUpstreamClient := fake.NewClientBuilder().
 				WithScheme(testScheme).
-				WithObjects(tt.domain, upstreamNamespace).
+				WithIndex(newUnstructuredForGVK(dnsZoneGVK), "status.domainRef.name", dnsZoneDomainRefNameIndex).
+				WithObjects(objs...).
 				WithStatusSubresource(tt.domain).
 				Build()
 
@@ -404,19 +491,28 @@ func TestDomainVerification(t *testing.T) {
 				timeNow:        tt.timeNow,
 				httpGet:        tt.httpGet,
 				lookupTXT:      tt.lookupTXT,
-				registryClient: &fakeRegistryClient{},
+				registryClient: &fakeRegistryClient{lookupDomain: tt.registryLookupDomain},
 			}
 			// Prevent registration from doing any real I/O during verification-only tests.
 
-			result, err := reconciler.Reconcile(
-				ctx,
-				mcreconcile.Request{
-					ClusterName: "test",
-					Request: reconcile.Request{
-						NamespacedName: client.ObjectKeyFromObject(tt.domain),
-					},
-				},
+			var (
+				result ctrl.Result
+				err    error
 			)
+			for i := 0; i < tt.reconcileCount; i++ {
+				result, err = reconciler.Reconcile(
+					ctx,
+					mcreconcile.Request{
+						ClusterName: "test",
+						Request: reconcile.Request{
+							NamespacedName: client.ObjectKeyFromObject(tt.domain),
+						},
+					},
+				)
+				if err != nil {
+					break
+				}
+			}
 
 			if assert.NoError(t, err, "unexpected error during reconcile") {
 				updatedDomain := &networkingv1alpha.Domain{}
@@ -450,6 +546,7 @@ func TestValidDomainGate_InvalidApex_SetsConditionAndSkipsFlows(t *testing.T) {
 
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(testScheme).
+		WithIndex(newUnstructuredForGVK(dnsZoneGVK), "status.domainRef.name", dnsZoneDomainRefNameIndex).
 		WithObjects(dom, ns).
 		WithStatusSubresource(dom).
 		Build()
@@ -511,7 +608,12 @@ func TestRegistration_Apex_UsesRDAPNameservers(t *testing.T) {
 	dom := newDomain("default", "apex")
 	dom.Spec.DomainName = exampleDomain // apex
 
-	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(dom).WithStatusSubresource(dom).Build()
+	cl := fake.NewClientBuilder().
+		WithScheme(s).
+		WithIndex(newUnstructuredForGVK(dnsZoneGVK), "status.domainRef.name", dnsZoneDomainRefNameIndex).
+		WithObjects(dom).
+		WithStatusSubresource(dom).
+		Build()
 	mgr := &fakeMockManager{cl: cl}
 
 	reg := &networkingv1alpha.Registration{Domain: "example.com", Source: "rdap"}
@@ -577,7 +679,12 @@ func TestVerification_RequeueImmediate_WhenWakeDueOrPast(t *testing.T) {
 		}
 	})
 
-	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(dom).WithStatusSubresource(dom).Build()
+	cl := fake.NewClientBuilder().
+		WithScheme(s).
+		WithIndex(newUnstructuredForGVK(dnsZoneGVK), "status.domainRef.name", dnsZoneDomainRefNameIndex).
+		WithObjects(dom).
+		WithStatusSubresource(dom).
+		Build()
 	mgr := &fakeMockManager{cl: cl}
 
 	// Configure zero retry interval and zero jitter to force nextAttempt == now
@@ -633,7 +740,12 @@ func TestVerification_RequeueImmediate_WhenWakeInPast(t *testing.T) {
 		}
 	})
 
-	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(dom).WithStatusSubresource(dom).Build()
+	cl := fake.NewClientBuilder().
+		WithScheme(s).
+		WithIndex(newUnstructuredForGVK(dnsZoneGVK), "status.domainRef.name", dnsZoneDomainRefNameIndex).
+		WithObjects(dom).
+		WithStatusSubresource(dom).
+		Build()
 	mgr := &fakeMockManager{cl: cl}
 
 	operatorConfig := config.NetworkServicesOperator{
@@ -688,7 +800,12 @@ func TestVerification_RequeueFloorsSubSecondToOneSecond(t *testing.T) {
 		}
 	})
 
-	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(dom).WithStatusSubresource(dom).Build()
+	cl := fake.NewClientBuilder().
+		WithScheme(s).
+		WithIndex(newUnstructuredForGVK(dnsZoneGVK), "status.domainRef.name", dnsZoneDomainRefNameIndex).
+		WithObjects(dom).
+		WithStatusSubresource(dom).
+		Build()
 	mgr := &fakeMockManager{cl: cl}
 
 	operatorConfig := config.NetworkServicesOperator{
@@ -731,7 +848,12 @@ func TestRegistration_Subdomain_DelegationOverridesApexNS(t *testing.T) {
 	dom := newDomain("default", "sub")
 	dom.Spec.DomainName = "app.example.com" // non-apex
 
-	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(dom).WithStatusSubresource(dom).Build()
+	cl := fake.NewClientBuilder().
+		WithScheme(s).
+		WithIndex(newUnstructuredForGVK(dnsZoneGVK), "status.domainRef.name", dnsZoneDomainRefNameIndex).
+		WithObjects(dom).
+		WithStatusSubresource(dom).
+		Build()
 	mgr := &fakeMockManager{cl: cl}
 
 	fakeReg := &fakeRegistryClient{
@@ -780,7 +902,12 @@ func TestRegistration_Subdomain_NoDelegation_FallsBackToApexNS(t *testing.T) {
 	dom := newDomain("default", "sub")
 	dom.Spec.DomainName = "www.example.com"
 
-	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(dom).WithStatusSubresource(dom).Build()
+	cl := fake.NewClientBuilder().
+		WithScheme(s).
+		WithIndex(newUnstructuredForGVK(dnsZoneGVK), "status.domainRef.name", dnsZoneDomainRefNameIndex).
+		WithObjects(dom).
+		WithStatusSubresource(dom).
+		Build()
 	mgr := &fakeMockManager{cl: cl}
 
 	fakeReg := &fakeRegistryClient{
@@ -829,7 +956,12 @@ func TestRegistration_RegistryStampedFromBootstrap(t *testing.T) {
 	dom := newDomain("default", "host")
 	dom.Spec.DomainName = "example.ai" // .ai → Identity Digital
 
-	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(dom).WithStatusSubresource(dom).Build()
+	cl := fake.NewClientBuilder().
+		WithScheme(s).
+		WithIndex(newUnstructuredForGVK(dnsZoneGVK), "status.domainRef.name", dnsZoneDomainRefNameIndex).
+		WithObjects(dom).
+		WithStatusSubresource(dom).
+		Build()
 	mgr := &fakeMockManager{cl: cl}
 
 	fakeReg := &fakeRegistryClient{
@@ -876,7 +1008,12 @@ func TestRegistration_RetryBackoffOnError(t *testing.T) {
 	dom := newDomain("default", "err")
 	dom.Spec.DomainName = exampleDomain
 
-	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(dom).WithStatusSubresource(dom).Build()
+	cl := fake.NewClientBuilder().
+		WithScheme(s).
+		WithIndex(newUnstructuredForGVK(dnsZoneGVK), "status.domainRef.name", dnsZoneDomainRefNameIndex).
+		WithObjects(dom).
+		WithStatusSubresource(dom).
+		Build()
 	mgr := &fakeMockManager{cl: cl}
 
 	now := time.Date(2025, 10, 9, 1, 0, 0, 0, time.UTC)
@@ -916,7 +1053,12 @@ func TestRegistration_RDAP429_WithRetryAfter_SchedulesRetryAfter(t *testing.T) {
 	dom := newDomain("default", "rate-limited")
 	dom.Spec.DomainName = exampleDomain
 
-	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(dom).WithStatusSubresource(dom).Build()
+	cl := fake.NewClientBuilder().
+		WithScheme(s).
+		WithIndex(newUnstructuredForGVK(dnsZoneGVK), "status.domainRef.name", dnsZoneDomainRefNameIndex).
+		WithObjects(dom).
+		WithStatusSubresource(dom).
+		Build()
 	mgr := &fakeMockManager{cl: cl}
 
 	now := time.Date(2025, 10, 9, 1, 0, 0, 0, time.UTC)
@@ -958,7 +1100,12 @@ func TestRegistration_RDAP429_NoRetryAfter_Uses2xBackoff(t *testing.T) {
 	dom := newDomain("default", "rate-limited-no-header")
 	dom.Spec.DomainName = exampleDomain
 
-	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(dom).WithStatusSubresource(dom).Build()
+	cl := fake.NewClientBuilder().
+		WithScheme(s).
+		WithIndex(newUnstructuredForGVK(dnsZoneGVK), "status.domainRef.name", dnsZoneDomainRefNameIndex).
+		WithObjects(dom).
+		WithStatusSubresource(dom).
+		Build()
 	mgr := &fakeMockManager{cl: cl}
 
 	now := time.Date(2025, 10, 9, 1, 0, 0, 0, time.UTC)
@@ -1032,7 +1179,12 @@ func TestRegistration_DesiredRefreshAttempt_ExpediteBehavior(t *testing.T) {
 			NextRefreshAttempt: metav1.Time{Time: future},
 		}
 
-		cl := fake.NewClientBuilder().WithScheme(s).WithObjects(dom).WithStatusSubresource(dom).Build()
+		cl := fake.NewClientBuilder().
+			WithScheme(s).
+			WithIndex(newUnstructuredForGVK(dnsZoneGVK), "status.domainRef.name", dnsZoneDomainRefNameIndex).
+			WithObjects(dom).
+			WithStatusSubresource(dom).
+			Build()
 		rdapCalled := false
 		r := newReconciler(cl, &rdapCalled)
 
@@ -1058,7 +1210,12 @@ func TestRegistration_DesiredRefreshAttempt_ExpediteBehavior(t *testing.T) {
 			// LastRefreshAttempt zero (never attempted)
 		}
 
-		cl := fake.NewClientBuilder().WithScheme(s).WithObjects(dom).WithStatusSubresource(dom).Build()
+		cl := fake.NewClientBuilder().
+			WithScheme(s).
+			WithIndex(newUnstructuredForGVK(dnsZoneGVK), "status.domainRef.name", dnsZoneDomainRefNameIndex).
+			WithObjects(dom).
+			WithStatusSubresource(dom).
+			Build()
 		rdapCalled := false
 		r := newReconciler(cl, &rdapCalled)
 
@@ -1089,7 +1246,12 @@ func TestRegistration_DesiredRefreshAttempt_ExpediteBehavior(t *testing.T) {
 			LastRefreshAttempt: last,
 		}
 
-		cl := fake.NewClientBuilder().WithScheme(s).WithObjects(dom).WithStatusSubresource(dom).Build()
+		cl := fake.NewClientBuilder().
+			WithScheme(s).
+			WithIndex(newUnstructuredForGVK(dnsZoneGVK), "status.domainRef.name", dnsZoneDomainRefNameIndex).
+			WithObjects(dom).
+			WithStatusSubresource(dom).
+			Build()
 		rdapCalled := false
 		r := newReconciler(cl, &rdapCalled)
 
@@ -1116,7 +1278,12 @@ func TestRegistration_DesiredRefreshAttempt_ExpediteBehavior(t *testing.T) {
 			LastRefreshAttempt: last,
 		}
 
-		cl := fake.NewClientBuilder().WithScheme(s).WithObjects(dom).WithStatusSubresource(dom).Build()
+		cl := fake.NewClientBuilder().
+			WithScheme(s).
+			WithIndex(newUnstructuredForGVK(dnsZoneGVK), "status.domainRef.name", dnsZoneDomainRefNameIndex).
+			WithObjects(dom).
+			WithStatusSubresource(dom).
+			Build()
 		rdapCalled := false
 		r := newReconciler(cl, &rdapCalled)
 
@@ -1150,7 +1317,12 @@ func TestRegistration_DesiredRefreshAttempt_ExpediteBehavior(t *testing.T) {
 			LastTransitionTime: metav1.Now(),
 		})
 
-		cl := fake.NewClientBuilder().WithScheme(s).WithObjects(dom).WithStatusSubresource(dom).Build()
+		cl := fake.NewClientBuilder().
+			WithScheme(s).
+			WithIndex(newUnstructuredForGVK(dnsZoneGVK), "status.domainRef.name", dnsZoneDomainRefNameIndex).
+			WithObjects(dom).
+			WithStatusSubresource(dom).
+			Build()
 		rdapCalled := false
 		r := newReconciler(cl, &rdapCalled)
 
@@ -1188,7 +1360,12 @@ func TestRegistration_DesiredRefreshAttempt_ExpediteBehavior(t *testing.T) {
 			LastTransitionTime: metav1.Now(),
 		})
 
-		cl := fake.NewClientBuilder().WithScheme(s).WithObjects(dom).WithStatusSubresource(dom).Build()
+		cl := fake.NewClientBuilder().
+			WithScheme(s).
+			WithIndex(newUnstructuredForGVK(dnsZoneGVK), "status.domainRef.name", dnsZoneDomainRefNameIndex).
+			WithObjects(dom).
+			WithStatusSubresource(dom).
+			Build()
 
 		// Step 1: before desired time — should schedule to desired without attempting
 		rdapCalled1 := false
@@ -1266,7 +1443,12 @@ func TestRegistration_EnrichesNameserverIPs(t *testing.T) {
 	dom := newDomain("default", "enrich")
 	dom.Spec.DomainName = exampleDomain
 
-	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(dom).WithStatusSubresource(dom).Build()
+	cl := fake.NewClientBuilder().
+		WithScheme(s).
+		WithIndex(newUnstructuredForGVK(dnsZoneGVK), "status.domainRef.name", dnsZoneDomainRefNameIndex).
+		WithObjects(dom).
+		WithStatusSubresource(dom).
+		Build()
 	mgr := &fakeMockManager{cl: cl}
 
 	r := &DomainReconciler{
@@ -1316,7 +1498,12 @@ func TestRegistration_WHOIS_BootstrapAndReferrals(t *testing.T) {
 	dom := newDomain("default", "whois-co")
 	dom.Spec.DomainName = "example.co"
 
-	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(dom).WithStatusSubresource(dom).Build()
+	cl := fake.NewClientBuilder().
+		WithScheme(s).
+		WithIndex(newUnstructuredForGVK(dnsZoneGVK), "status.domainRef.name", dnsZoneDomainRefNameIndex).
+		WithObjects(dom).
+		WithStatusSubresource(dom).
+		Build()
 	mgr := &fakeMockManager{cl: cl}
 
 	// Registry client returns WHOIS-mapped data (WHOIS bootstrap/referrals are handled inside registrydata).

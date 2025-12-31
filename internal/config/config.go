@@ -27,6 +27,7 @@ import (
 	multiclusterproviders "go.miloapis.com/milo/pkg/multicluster-runtime"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
+	"go.datum.net/network-services-operator/internal/registrydata"
 )
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
@@ -46,6 +47,9 @@ type NetworkServicesOperator struct {
 	Discovery DiscoveryConfig `json:"discovery"`
 
 	DownstreamResourceManagement DownstreamResourceManagementConfig `json:"downstreamResourceManagement"`
+
+	// Redis provides shared Redis connection settings.
+	Redis RedisConfig `json:"redis"`
 
 	DomainVerification DomainVerificationConfig `json:"domainVerificationConfig"`
 
@@ -303,6 +307,81 @@ type DomainRegistrationConfig struct {
 	// WhoisBootstrapHost is the WHOIS server used to bootstrap TLD refer hosts
 	// +default="whois.iana.org"
 	WhoisBootstrapHost string `json:"whoisBootstrapHost"`
+
+	// RegistryData configures caching and rate limiting used by registry lookups.
+	RegistryData RegistryDataConfig `json:"registryData"`
+}
+
+// +k8s:deepcopy-gen=true
+type RedisConfig struct {
+	// URL is a full redis connection URL, e.g.:
+	// "redis://:password@network-services-operator-redis.datum-system.svc.cluster.local:6379/0"
+	//
+	// NOTE: This may contain credentials. Prefer referencing a Secret in your deployment
+	// and injecting it via an env var instead of embedding secrets in config files.
+	//
+	// If the env var REDIS_URL is set, it will override this value at runtime.
+	URL string `json:"url,omitempty"`
+
+	// DialTimeout controls how long we wait when establishing a Redis connection.
+	// +default="5s"
+	DialTimeout *metav1.Duration `json:"dialTimeout,omitempty"`
+
+	// ReadTimeout controls how long we wait for Redis reads.
+	// +default="3s"
+	ReadTimeout *metav1.Duration `json:"readTimeout,omitempty"`
+
+	// WriteTimeout controls how long we wait for Redis writes.
+	// +default="3s"
+	WriteTimeout *metav1.Duration `json:"writeTimeout,omitempty"`
+}
+
+// +k8s:deepcopy-gen=true
+type RegistryDataConfig struct {
+	Cache      RegistryDataCacheConfig      `json:"cache"`
+	CacheTTLs  RegistryDataCacheTTLsConfig  `json:"cacheTTLs"`
+	RateLimits RegistryDataRateLimitsConfig `json:"rateLimits"`
+}
+
+// +k8s:deepcopy-gen=true
+type RegistryDataCacheConfig struct {
+	// Backend selects the cache backend for registrydata.
+	// +default="memory"
+	Backend registrydata.CacheBackend `json:"backend,omitempty"`
+
+	// RedisKeyPrefix is used for keys when backend is "redis".
+	// +default="network-services-operator:"
+	RedisKeyPrefix string `json:"redisKeyPrefix,omitempty"`
+}
+
+// +k8s:deepcopy-gen=true
+type RegistryDataCacheTTLsConfig struct {
+	// Domain controls how long we cache domain registration results.
+	// +default="15m"
+	Domain *metav1.Duration `json:"domain,omitempty"`
+
+	// Nameserver controls how long we cache nameserver IP results.
+	// +default="5m"
+	Nameserver *metav1.Duration `json:"nameserver,omitempty"`
+
+	// IPRegistrant controls how long we cache IP registrant results.
+	// +default="6h"
+	IPRegistrant *metav1.Duration `json:"ipRegistrant,omitempty"`
+}
+
+// +k8s:deepcopy-gen=true
+type RegistryDataRateLimitsConfig struct {
+	// DefaultRatePerSec controls the default provider token rate.
+	// +default=1.0
+	DefaultRatePerSec float64 `json:"defaultRatePerSec,omitempty"`
+
+	// DefaultBurst controls the default provider burst size.
+	// +default=5
+	DefaultBurst float64 `json:"defaultBurst,omitempty"`
+
+	// DefaultBlock is how long we block a provider after a rate limit response.
+	// +default="2s"
+	DefaultBlock *metav1.Duration `json:"defaultBlock,omitempty"`
 }
 
 // +k8s:deepcopy-gen=true

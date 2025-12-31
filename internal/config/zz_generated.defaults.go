@@ -222,6 +222,21 @@ func SetObjectDefaults_NetworkServicesOperator(in *NetworkServicesOperator) {
 		in.HTTPProxy.GatewayClassName = "datum-external-global-proxy"
 	}
 	SetDefaults_DiscoveryConfig(&in.Discovery)
+	if in.Redis.DialTimeout == nil {
+		if err := json.Unmarshal([]byte(`"5s"`), &in.Redis.DialTimeout); err != nil {
+			panic(err)
+		}
+	}
+	if in.Redis.ReadTimeout == nil {
+		if err := json.Unmarshal([]byte(`"3s"`), &in.Redis.ReadTimeout); err != nil {
+			panic(err)
+		}
+	}
+	if in.Redis.WriteTimeout == nil {
+		if err := json.Unmarshal([]byte(`"3s"`), &in.Redis.WriteTimeout); err != nil {
+			panic(err)
+		}
+	}
 	if in.DomainVerification.RetryIntervals == nil {
 		if err := json.Unmarshal([]byte(`[{"interval": "5s", "maxElapsed": "5m"}, {"interval": "1m", "maxElapsed": "15m"}, {"interval": "5m"}]`), &in.DomainVerification.RetryIntervals); err != nil {
 			panic(err)
@@ -259,5 +274,37 @@ func SetObjectDefaults_NetworkServicesOperator(in *NetworkServicesOperator) {
 	}
 	if in.DomainRegistration.WhoisBootstrapHost == "" {
 		in.DomainRegistration.WhoisBootstrapHost = "whois.iana.org"
+	}
+	if in.DomainRegistration.RegistryData.Cache.Backend == "" {
+		in.DomainRegistration.RegistryData.Cache.Backend = "memory"
+	}
+	if in.DomainRegistration.RegistryData.Cache.RedisKeyPrefix == "" {
+		in.DomainRegistration.RegistryData.Cache.RedisKeyPrefix = "network-services-operator:"
+	}
+	if in.DomainRegistration.RegistryData.CacheTTLs.Domain == nil {
+		if err := json.Unmarshal([]byte(`"15m"`), &in.DomainRegistration.RegistryData.CacheTTLs.Domain); err != nil {
+			panic(err)
+		}
+	}
+	if in.DomainRegistration.RegistryData.CacheTTLs.Nameserver == nil {
+		if err := json.Unmarshal([]byte(`"5m"`), &in.DomainRegistration.RegistryData.CacheTTLs.Nameserver); err != nil {
+			panic(err)
+		}
+	}
+	if in.DomainRegistration.RegistryData.CacheTTLs.IPRegistrant == nil {
+		if err := json.Unmarshal([]byte(`"6h"`), &in.DomainRegistration.RegistryData.CacheTTLs.IPRegistrant); err != nil {
+			panic(err)
+		}
+	}
+	if in.DomainRegistration.RegistryData.RateLimits.DefaultRatePerSec == 0 {
+		in.DomainRegistration.RegistryData.RateLimits.DefaultRatePerSec = 1.0
+	}
+	if in.DomainRegistration.RegistryData.RateLimits.DefaultBurst == 0 {
+		in.DomainRegistration.RegistryData.RateLimits.DefaultBurst = 5
+	}
+	if in.DomainRegistration.RegistryData.RateLimits.DefaultBlock == nil {
+		if err := json.Unmarshal([]byte(`"2s"`), &in.DomainRegistration.RegistryData.RateLimits.DefaultBlock); err != nil {
+			panic(err)
+		}
 	}
 }

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	redis "github.com/go-redis/redis/v7"
 	"github.com/google/uuid"
 	"golang.org/x/net/publicsuffix"
 	"k8s.io/apimachinery/pkg/api/equality"
@@ -682,20 +683,63 @@ func (r *DomainReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	r.httpGet = defaultHTTPGet
 	r.lookupTXT = net.DefaultResolver.LookupTXT
 
+	registryCfg := r.Config.DomainRegistration.RegistryData
+	cacheCfg := registryCfg.Cache
+	cacheBackend := cacheCfg.Backend
+	// cacheBackend and redisKeyPrefix will be defaulted by config.
+
+	var redisClient redis.UniversalClient
+
+	// If redis is requested, try to build a client from config.
+	if cacheBackend == registrydata.CacheBackendRedis {
+		logger := ctrl.Log.WithName("domain")
+		redisCfg := r.Config.Redis
+		if strings.TrimSpace(redisCfg.URL) == "" {
+			logger.Info("registrydata cache backend is redis but redis.url is empty; falling back to memory")
+			cacheBackend = registrydata.CacheBackendMemory
+		} else {
+			opts, err := redis.ParseURL(strings.TrimSpace(redisCfg.URL))
+			if err != nil {
+				logger.Error(err, "failed parsing registrydata redis.url; falling back to memory")
+				cacheBackend = registrydata.CacheBackendMemory
+			} else {
+				// Conservative defaults; we don't want a degraded Redis to stall reconciles.
+				if redisCfg.DialTimeout != nil {
+					opts.DialTimeout = redisCfg.DialTimeout.Duration
+				}
+				if redisCfg.ReadTimeout != nil {
+					opts.ReadTimeout = redisCfg.ReadTimeout.Duration
+				}
+				if redisCfg.WriteTimeout != nil {
+					opts.WriteTimeout = redisCfg.WriteTimeout.Duration
+				}
+				rdb := redis.NewClient(opts)
+				if _, err := rdb.Ping().Result(); err != nil {
+					logger.Error(err, "failed connecting to redis; falling back to memory")
+					_ = rdb.Close()
+					cacheBackend = registrydata.CacheBackendMemory
+				} else {
+					redisClient = rdb
+				}
+			}
+		}
+	}
+
 	regClient, err := registrydata.NewClient(registrydata.Config{
 		Cache: registrydata.CacheConfig{
-			Backend: registrydata.CacheBackendMemory,
+			Backend:        cacheBackend,
+			RedisKeyPrefix: cacheCfg.RedisKeyPrefix,
 		},
-		// Keep these relatively short; status is the long-term store.
+		RedisClient: redisClient,
 		CacheTTLs: registrydata.CacheTTLs{
-			Domain:       15 * time.Minute,
-			Nameserver:   5 * time.Minute,
-			IPRegistrant: 6 * time.Hour,
+			Domain:       registryCfg.CacheTTLs.Domain.Duration,
+			Nameserver:   registryCfg.CacheTTLs.Nameserver.Duration,
+			IPRegistrant: registryCfg.CacheTTLs.IPRegistrant.Duration,
 		},
 		RateLimits: registrydata.RateLimits{
-			DefaultRatePerSec: 1.0,
-			DefaultBurst:      5,
-			DefaultBlock:      2 * time.Second,
+			DefaultRatePerSec: registryCfg.RateLimits.DefaultRatePerSec,
+			DefaultBurst:      registryCfg.RateLimits.DefaultBurst,
+			DefaultBlock:      registryCfg.RateLimits.DefaultBlock.Duration,
 		},
 		HTTPClient:         &http.Client{Timeout: r.Config.DomainRegistration.LookupTimeout.Duration},
 		WhoisBootstrapHost: r.Config.DomainRegistration.WhoisBootstrapHost,

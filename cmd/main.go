@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -101,6 +102,12 @@ func main() {
 	if err := runtime.DecodeInto(codecs.UniversalDecoder(), configData, &serverConfig); err != nil {
 		setupLog.Error(err, "unable to decode server config")
 		os.Exit(1)
+	}
+
+	// Allow overriding Redis URL at runtime via env var.
+	if redisURL := strings.TrimSpace(os.Getenv("REDIS_URL")); redisURL != "" {
+		serverConfig.Redis.URL = redisURL
+		setupLog.Info("overriding redis.url from REDIS_URL")
 	}
 
 	setupLog.Info("server config", "config", serverConfig)

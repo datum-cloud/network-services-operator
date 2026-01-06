@@ -12,6 +12,9 @@ resources:
 - bases/networking.datumapis.com_domains.yaml
 - bases/networking.datumapis.com_httpproxies.yaml
 - bases/networking.datumapis.com_trafficprotectionpolicies.yaml
+- bases/networking.datumapis.com_connectors.yaml
+- bases/networking.datumapis.com_connectoradvertisements.yaml
+- bases/networking.datumapis.com_connectorclasses.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:

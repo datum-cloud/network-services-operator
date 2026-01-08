@@ -142,15 +142,6 @@ func (v *DomainCustomValidator) ValidateDelete(ctx context.Context, obj runtime.
 		}
 	}
 
-	if len(zoneList.Items) > 0 {
-		gr := schema.GroupResource{Group: networkingv1alpha.GroupVersion.Group, Resource: "domains"}
-		return nil, apierrors.NewForbidden(
-			gr,
-			domain.GetName(),
-			fmt.Errorf("cannot delete Domain while in use by a DNSZone"),
-		)
-	}
-
 	return nil, nil
 }
 

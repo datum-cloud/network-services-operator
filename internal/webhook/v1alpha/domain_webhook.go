@@ -9,7 +9,6 @@ import (
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -97,15 +96,21 @@ func (v *DomainCustomValidator) ValidateDelete(ctx context.Context, obj runtime.
 
 	domainName := normalizeHostname(domain.Spec.DomainName)
 	for _, p := range downstreamHTTPProxies.Items {
-		if !isConditionTrue(p.Status.Conditions, networkingv1alpha.HTTPProxyConditionAccepted) {
-			continue
-		}
-		if !isConditionTrue(p.Status.Conditions, networkingv1alpha.HTTPProxyConditionProgrammed) {
-			continue
+		// "In use" means any HTTPProxy references the hostname, regardless of whether it has
+		// been Accepted/Programmed yet.
+		for _, h := range p.Spec.Hostnames {
+			if hostnameCoveredByDomain(domainName, string(h)) {
+				gr := schema.GroupResource{Group: networkingv1alpha.GroupVersion.Group, Resource: "domains"}
+				return nil, apierrors.NewForbidden(
+					gr,
+					domain.GetName(),
+					fmt.Errorf("cannot delete Domain while in use by an HTTPProxy"),
+				)
+			}
 		}
 
 		for _, h := range p.Status.Hostnames {
-			if normalizeHostname(string(h)) == domainName {
+			if hostnameCoveredByDomain(domainName, string(h)) {
 				gr := schema.GroupResource{Group: networkingv1alpha.GroupVersion.Group, Resource: "domains"}
 				return nil, apierrors.NewForbidden(
 					gr,
@@ -119,7 +124,7 @@ func (v *DomainCustomValidator) ValidateDelete(ctx context.Context, obj runtime.
 	}
 
 	// Prevent deletion if a DNSZone references this Domain.
-	// Check the downstream mapped namespace (project namespace), since DNSZones are translated.
+	// Check the downstream mapped namespace (project namespace).
 	// If the DNSZone CRD is not installed in the downstream cluster, skip this check.
 	zoneList := &unstructured.UnstructuredList{}
 	zoneList.SetGroupVersionKind(dnsZoneListGVK)
@@ -162,11 +167,20 @@ func (v *DomainCustomValidator) ValidateDelete(ctx context.Context, obj runtime.
 	return nil, nil
 }
 
-func isConditionTrue(conditions []metav1.Condition, conditionType string) bool {
-	c := apimeta.FindStatusCondition(conditions, conditionType)
-	return c != nil && c.Status == metav1.ConditionTrue
+func normalizeHostname(h string) string {
+	return strings.ToLower(strings.TrimSuffix(strings.TrimSpace(h), "."))
 }
 
-func normalizeHostname(h string) string {
-	return strings.TrimSuffix(strings.TrimSpace(h), ".")
+// hostnameCoveredByDomain returns true if domainName matches hostname exactly, or
+// if hostname is a subdomain of domainName (suffix match with dot boundary).
+func hostnameCoveredByDomain(domainName, hostname string) bool {
+	d := normalizeHostname(domainName)
+	h := normalizeHostname(hostname)
+	if d == "" || h == "" {
+		return false
+	}
+	if h == d {
+		return true
+	}
+	return strings.HasSuffix(h, "."+d)
 }

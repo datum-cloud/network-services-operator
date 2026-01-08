@@ -303,7 +303,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := networkingv1alphawebhooks.SetupDomainWebhookWithManager(mgr, downstreamCluster.GetClient()); err != nil {
+	if err := networkingv1alphawebhooks.SetupDomainWebhookWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create webhook", "webhook", "Domain")
 		os.Exit(1)
 	}

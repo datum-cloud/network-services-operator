@@ -21,23 +21,21 @@ import (
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
-	"go.datum.net/network-services-operator/internal/downstreamclient"
 )
 
 // nolint:unused
 
 // SetupDomainWebhookWithManager registers the webhook for Domain in the manager.
-func SetupDomainWebhookWithManager(mgr mcmanager.Manager, downstreamClient client.Client) error {
+func SetupDomainWebhookWithManager(mgr mcmanager.Manager) error {
 	return ctrl.NewWebhookManagedBy(mgr.GetLocalManager()).For(&networkingv1alpha.Domain{}).
-		WithValidator(&DomainCustomValidator{mgr: mgr, downstreamClient: downstreamClient}).
+		WithValidator(&DomainCustomValidator{mgr: mgr}).
 		Complete()
 }
 
 // +kubebuilder:webhook:path=/validate-networking-datumapis-com-v1alpha-domain,mutating=false,failurePolicy=fail,sideEffects=None,groups=networking.datumapis.com,resources=domains,verbs=delete,versions=v1alpha,name=vdomain-v1alpha.kb.io,admissionReviewVersions=v1
 
 type DomainCustomValidator struct {
-	mgr              mcmanager.Manager
-	downstreamClient client.Client
+	mgr mcmanager.Manager
 }
 
 var _ webhook.CustomValidator = &DomainCustomValidator{}
@@ -70,10 +68,6 @@ func (v *DomainCustomValidator) ValidateDelete(ctx context.Context, obj runtime.
 		return nil, fmt.Errorf("expected a cluster name in the context")
 	}
 
-	if v.downstreamClient == nil {
-		return nil, fmt.Errorf("downstream client is nil")
-	}
-
 	logger := logf.FromContext(ctx).WithValues("cluster", clusterName)
 	logger.Info("Validating Domain deletion", "name", domain.GetName(), "namespace", domain.GetNamespace())
 
@@ -83,19 +77,13 @@ func (v *DomainCustomValidator) ValidateDelete(ctx context.Context, obj runtime.
 	}
 	upstreamClient := upstreamCluster.GetClient()
 
-	downstreamStrategy := downstreamclient.NewMappedNamespaceResourceStrategy(clusterName, upstreamClient, v.downstreamClient)
-	downstreamNamespace, err := downstreamStrategy.GetDownstreamNamespaceNameForUpstreamNamespace(ctx, domain.GetNamespace())
-	if err != nil {
-		return nil, fmt.Errorf("failed to derive downstream namespace for upstream namespace %q: %w", domain.GetNamespace(), err)
-	}
-
-	var downstreamHTTPProxies networkingv1alpha.HTTPProxyList
-	if err := v.downstreamClient.List(ctx, &downstreamHTTPProxies, client.InNamespace(downstreamNamespace)); err != nil {
-		return nil, fmt.Errorf("failed to list downstream HTTPProxies in namespace %q: %w", downstreamNamespace, err)
+	var httpProxies networkingv1alpha.HTTPProxyList
+	if err := upstreamClient.List(ctx, &httpProxies, client.InNamespace(domain.GetNamespace())); err != nil {
+		return nil, fmt.Errorf("failed to list HTTPProxies in namespace %q: %w", domain.GetNamespace(), err)
 	}
 
 	domainName := normalizeHostname(domain.Spec.DomainName)
-	for _, p := range downstreamHTTPProxies.Items {
+	for _, p := range httpProxies.Items {
 		// "In use" means any HTTPProxy references the hostname, regardless of whether it has
 		// been Accepted/Programmed yet.
 		for _, h := range p.Spec.Hostnames {
@@ -124,20 +112,19 @@ func (v *DomainCustomValidator) ValidateDelete(ctx context.Context, obj runtime.
 	}
 
 	// Prevent deletion if a DNSZone references this Domain.
-	// Check the downstream mapped namespace (project namespace).
-	// If the DNSZone CRD is not installed in the downstream cluster, skip this check.
+	// If the DNSZone CRD is not installed in the upstream cluster, skip this check.
 	zoneList := &unstructured.UnstructuredList{}
 	zoneList.SetGroupVersionKind(dnsZoneListGVK)
-	if err := v.downstreamClient.List(
+	if err := upstreamClient.List(
 		ctx,
 		zoneList,
-		client.InNamespace(downstreamNamespace),
+		client.InNamespace(domain.GetNamespace()),
 	); err != nil {
 		// "No match" indicates the GVK isn't served by the API server (schema/CRD not installed).
 		if apimeta.IsNoMatchError(err) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("failed listing downstream DNSZones referencing Domain: %w", err)
+		return nil, fmt.Errorf("failed listing DNSZones referencing Domain: %w", err)
 	}
 
 	for _, z := range zoneList.Items {

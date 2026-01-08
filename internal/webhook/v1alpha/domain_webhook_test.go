@@ -47,5 +47,3 @@ func TestHostnameCoveredByDomain(t *testing.T) {
 		}
 	}
 }
-
-

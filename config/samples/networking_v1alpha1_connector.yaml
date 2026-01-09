@@ -1,0 +1,9 @@
+apiVersion: networking.datumapis.com/v1alpha1
+kind: Connector
+metadata:
+  labels:
+    app.kubernetes.io/name: network-services-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: connector-sample
+spec:
+  connectorClassName: datum-connect

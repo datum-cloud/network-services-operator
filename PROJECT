@@ -161,4 +161,28 @@ resources:
   kind: TrafficProtectionPolicy
   path: go.datum.net/network-services-operator/api/v1alpha
   version: v1alpha
+- api:
+    crdVersion: v1
+    namespaced: true
+  domain: datumapis.com
+  group: networking
+  kind: Connector
+  path: go.datum.net/network-services-operator/api/v1alpha1
+  version: v1alpha1
+- api:
+    crdVersion: v1
+    namespaced: true
+  domain: datumapis.com
+  group: networking
+  kind: ConnectorAdvertisement
+  path: go.datum.net/network-services-operator/api/v1alpha1
+  version: v1alpha1
+- api:
+    crdVersion: v1
+    namespaced: true
+  domain: datumapis.com
+  group: networking
+  kind: ConnectorClass
+  path: go.datum.net/network-services-operator/api/v1alpha1
+  version: v1alpha1
 version: "3"

@@ -138,6 +138,19 @@ type ConnectorStatus struct {
 	ConnectionDetails *ConnectorConnectionDetails `json:"connectionDetails,omitempty"`
 }
 
+const (
+	// ConnectorConditionAccepted indicates whether the ConnectorClass is resolved.
+	ConnectorConditionAccepted = "Accepted"
+	// ConnectorReasonAccepted indicates the Connector is accepted by the controller.
+	ConnectorReasonAccepted = "Accepted"
+	// ConnectorReasonPending indicates the Connector has not been processed yet.
+	ConnectorReasonPending = "Pending"
+	// ConnectorReasonConnectorClassNotFound indicates the referenced class is missing.
+	ConnectorReasonConnectorClassNotFound = "ConnectorClassNotFound"
+	// ConnectorReasonConnectorClassNotSpecified indicates the class name is empty.
+	ConnectorReasonConnectorClassNotSpecified = "ConnectorClassNotSpecified"
+)
+
 const ConnectorNameAnnotation = "networking.datum.org/connector-name"
 
 // +kubebuilder:object:root=true
@@ -154,6 +167,8 @@ type Connector struct {
 	Spec ConnectorSpec `json:"spec,omitempty"`
 
 	// Status defines the observed state of a Connector
+	//
+	// +kubebuilder:default={conditions: {{type: "Accepted", status: "Unknown", reason:"Pending", message:"Waiting for controller", lastTransitionTime: "1970-01-01T00:00:00Z"}}}
 	Status ConnectorStatus `json:"status,omitempty"`
 }
 

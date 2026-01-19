@@ -136,6 +136,8 @@ rules:
 - apiGroups:
   - networking.datumapis.com
   resources:
+  - connectoradvertisements
+  - connectors
   - domains
   - httpproxies
   - networkbindings
@@ -156,6 +158,8 @@ rules:
 - apiGroups:
   - networking.datumapis.com
   resources:
+  - connectoradvertisements/finalizers
+  - connectors/finalizers
   - domains/finalizers
   - httpproxies/finalizers
   - networkbindings/finalizers
@@ -170,6 +174,8 @@ rules:
 - apiGroups:
   - networking.datumapis.com
   resources:
+  - connectoradvertisements/status
+  - connectors/status
   - domains/status
   - httpproxies/status
   - networkbindings/status
@@ -183,3 +189,11 @@ rules:
   - get
   - patch
   - update
+- apiGroups:
+  - networking.datumapis.com
+  resources:
+  - connectorclasses
+  verbs:
+  - get
+  - list
+  - watch

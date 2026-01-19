@@ -84,7 +84,7 @@ type ConnectorAdvertisementSpec struct {
 	// ConnectorRef references the Connector being advertised.
 	//
 	// +kubebuilder:validation:Required
-	ConnectorRef *LocalConnectorReference `json:"connectorRef"`
+	ConnectorRef LocalConnectorReference `json:"connectorRef"`
 
 	// Layer 4 services being advertised.
 	//
@@ -97,7 +97,25 @@ type ConnectorAdvertisementSpec struct {
 
 // ConnectorAdvertisementStatus defines the observed state of ConnectorAdvertisement.
 type ConnectorAdvertisementStatus struct {
+	// Conditions describe the current conditions of the ConnectorAdvertisement.
+	//
+	// +listType=map
+	// +listMapKey=type
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
+
+const (
+	// ConnectorAdvertisementConditionAccepted indicates the connector reference is resolved.
+	ConnectorAdvertisementConditionAccepted = "Accepted"
+	// ConnectorAdvertisementReasonAccepted indicates the advertisement is accepted.
+	ConnectorAdvertisementReasonAccepted = "Accepted"
+	// ConnectorAdvertisementReasonPending indicates the advertisement has not been processed yet.
+	ConnectorAdvertisementReasonPending = "Pending"
+	// ConnectorAdvertisementReasonConnectorNotFound indicates the referenced connector is missing.
+	ConnectorAdvertisementReasonConnectorNotFound = "ConnectorNotFound"
+	// ConnectorAdvertisementReasonConnectorRefMissing indicates the connectorRef is missing or empty.
+	ConnectorAdvertisementReasonConnectorRefMissing = "ConnectorRefMissing"
+)
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
@@ -113,6 +131,8 @@ type ConnectorAdvertisement struct {
 	Spec ConnectorAdvertisementSpec `json:"spec,omitempty"`
 
 	// Status defines the observed state of a ConnectorAdvertisement
+	//
+	// +kubebuilder:default={conditions: {{type: "Accepted", status: "Unknown", reason:"Pending", message:"Waiting for controller", lastTransitionTime: "1970-01-01T00:00:00Z"}}}
 	Status ConnectorAdvertisementStatus `json:"status,omitempty"`
 }
 

@@ -65,6 +65,14 @@ rules:
   - patch
   - update
 - apiGroups:
+  - dns.networking.miloapis.com
+  resources:
+  - dnszones
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
   - externaldns.k8s.io
   resources:
   - dnsendpoints

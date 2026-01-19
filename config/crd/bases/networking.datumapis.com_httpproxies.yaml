@@ -127,6 +127,19 @@ spec:
                         will be increased to allow for multiple backends on any given route.
                       items:
                         properties:
+                          connector:
+                            description: |-
+                              Connector references the Connector that should be used for this backend.
+
+                              For now, only a name reference is supported. In the future this can be
+                              extended to selector-based matching to allow multiple connectors.
+                            properties:
+                              name:
+                                description: Name of the referenced Connector.
+                                type: string
+                            required:
+                            - name
+                            type: object
                           endpoint:
                             description: |-
                               Endpoint for the backend. Must be a valid URL.

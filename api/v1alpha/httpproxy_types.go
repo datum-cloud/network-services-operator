@@ -121,6 +121,14 @@ type HTTPProxyRuleBackend struct {
 	// +kubebuilder:validation:Required
 	Endpoint string `json:"endpoint,omitempty"`
 
+	// Connector references the Connector that should be used for this backend.
+	//
+	// For now, only a name reference is supported. In the future this can be
+	// extended to selector-based matching to allow multiple connectors.
+	//
+	// +kubebuilder:validation:Optional
+	Connector *ConnectorReference `json:"connector,omitempty"`
+
 	// Filters defined at this level should be executed if and only if the
 	// request is being forwarded to the backend defined here.
 	//
@@ -131,6 +139,14 @@ type HTTPProxyRuleBackend struct {
 	// +kubebuilder:validation:XValidation:message="RequestRedirect filter cannot be repeated",rule="self.filter(f, f.type == 'RequestRedirect').size() <= 1"
 	// +kubebuilder:validation:XValidation:message="URLRewrite filter cannot be repeated",rule="self.filter(f, f.type == 'URLRewrite').size() <= 1"
 	Filters []gatewayv1.HTTPRouteFilter `json:"filters,omitempty"`
+}
+
+// ConnectorReference references a Connector by name.
+type ConnectorReference struct {
+	// Name of the referenced Connector.
+	//
+	// +kubebuilder:validation:Required
+	Name string `json:"name"`
 }
 
 // HTTPProxyStatus defines the observed state of HTTPProxy.

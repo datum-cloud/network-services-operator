@@ -19,6 +19,48 @@ func TestValidateHTTPProxy(t *testing.T) {
 		proxy          *networkingv1alpha.HTTPProxy
 		expectedErrors field.ErrorList
 	}{
+		"connector name required": {
+			proxy: &networkingv1alpha.HTTPProxy{
+				Spec: networkingv1alpha.HTTPProxySpec{
+					Rules: []networkingv1alpha.HTTPProxyRule{
+						{
+							Backends: []networkingv1alpha.HTTPProxyRuleBackend{
+								{
+									Endpoint: "http://example.com",
+									Connector: &networkingv1alpha.ConnectorReference{
+										Name: "",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			expectedErrors: field.ErrorList{
+				field.Required(field.NewPath("spec", "rules").Index(0).Child("backends").Index(0).Child("connector", "name"), ""),
+			},
+		},
+		"connector name invalid": {
+			proxy: &networkingv1alpha.HTTPProxy{
+				Spec: networkingv1alpha.HTTPProxySpec{
+					Rules: []networkingv1alpha.HTTPProxyRule{
+						{
+							Backends: []networkingv1alpha.HTTPProxyRuleBackend{
+								{
+									Endpoint: "http://example.com",
+									Connector: &networkingv1alpha.ConnectorReference{
+										Name: "Invalid.Name",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			expectedErrors: field.ErrorList{
+				field.Invalid(field.NewPath("spec", "rules").Index(0).Child("backends").Index(0).Child("connector", "name"), "Invalid", ""),
+			},
+		},
 		"invalid endpoint URL format": {
 			proxy: &networkingv1alpha.HTTPProxy{
 				Spec: networkingv1alpha.HTTPProxySpec{

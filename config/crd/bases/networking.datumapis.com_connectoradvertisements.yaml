@@ -39,6 +39,88 @@ spec:
             type: object
           spec:
             description: Spec defines the desired state of a ConnectorAdvertisement
+            properties:
+              connectorRef:
+                description: ConnectorRef references the Connector being advertised.
+                properties:
+                  name:
+                    description: Name of the referenced Connector.
+                    type: string
+                required:
+                - name
+                type: object
+              layer4:
+                description: Layer 4 services being advertised.
+                items:
+                  properties:
+                    name:
+                      description: Name of the advertisement.
+                      type: string
+                    services:
+                      description: Layer 4 services being advertised.
+                      items:
+                        properties:
+                          address:
+                            description: |-
+                              Address of the service.
+
+                              Can be an IPv4, IPv6, or a DNS address. A DNS address may contain
+                              wildcards. A DNS address acts as an allow list for what addresses the
+                              connector will allow to be requested through it.
+
+                              DNS resolution is the responsibility of the connector.
+                            maxLength: 253
+                            minLength: 1
+                            type: string
+                          ports:
+                            description: Ports of the service.
+                            items:
+                              description: Layer4ServicePort represents a port for
+                                a Layer 4 service.
+                              properties:
+                                name:
+                                  description: Named port for the service.
+                                  type: string
+                                port:
+                                  description: Port number for the service.
+                                  format: int32
+                                  maximum: 65535
+                                  minimum: 1
+                                  type: integer
+                                protocol:
+                                  default: TCP
+                                  description: Protocol for port. Must be TCP or UDP,
+                                    defaults to "TCP".
+                                  type: string
+                              required:
+                              - name
+                              - port
+                              - protocol
+                              type: object
+                            maxItems: 16
+                            minItems: 1
+                            type: array
+                            x-kubernetes-list-map-keys:
+                            - name
+                            x-kubernetes-list-type: map
+                        required:
+                        - address
+                        - ports
+                        type: object
+                      maxItems: 16
+                      minItems: 1
+                      type: array
+                  required:
+                  - name
+                  - services
+                  type: object
+                maxItems: 16
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
+            required:
+            - connectorRef
             type: object
           status:
             description: Status defines the observed state of a ConnectorAdvertisement

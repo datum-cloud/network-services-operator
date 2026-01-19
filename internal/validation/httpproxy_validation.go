@@ -133,6 +133,17 @@ func validateHTTPProxyRuleBackend(backend networkingv1alpha.HTTPProxyRuleBackend
 		}
 	}
 
+	if backend.Connector != nil {
+		connectorFieldPath := fldPath.Child("connector", "name")
+		if backend.Connector.Name == "" {
+			allErrs = append(allErrs, field.Required(connectorFieldPath, "connector name is required"))
+		} else {
+			for _, msg := range validation.IsDNS1123Label(backend.Connector.Name) {
+				allErrs = append(allErrs, field.Invalid(connectorFieldPath, backend.Connector.Name, msg))
+			}
+		}
+	}
+
 	allErrs = append(allErrs, validateFilters(backend.Filters, supportedHTTPBackendRefFilters, fldPath.Child("filters"))...)
 	return allErrs
 }

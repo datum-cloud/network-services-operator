@@ -221,6 +221,9 @@ func SetObjectDefaults_NetworkServicesOperator(in *NetworkServicesOperator) {
 	if in.HTTPProxy.GatewayClassName == "" {
 		in.HTTPProxy.GatewayClassName = "datum-external-global-proxy"
 	}
+	if in.Connector.LeaseDurationSeconds == 0 {
+		in.Connector.LeaseDurationSeconds = 30
+	}
 	SetDefaults_DiscoveryConfig(&in.Discovery)
 	if in.Redis.DialTimeout == nil {
 		if err := json.Unmarshal([]byte(`"5s"`), &in.Redis.DialTimeout); err != nil {

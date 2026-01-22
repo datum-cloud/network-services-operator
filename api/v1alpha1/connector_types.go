@@ -3,6 +3,7 @@
 package v1alpha1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -136,13 +137,24 @@ type ConnectorStatus struct {
 	//
 	// +kubebuilder:validation:Optional
 	ConnectionDetails *ConnectorConnectionDetails `json:"connectionDetails,omitempty"`
+
+	// LeaseRef references the Lease used to report connector liveness.
+	//
+	// +kubebuilder:validation:Optional
+	LeaseRef *corev1.LocalObjectReference `json:"leaseRef,omitempty"`
 }
 
 const (
 	// ConnectorConditionAccepted indicates whether the ConnectorClass is resolved.
 	ConnectorConditionAccepted = "Accepted"
+	// ConnectorConditionReady indicates whether the Connector is ready to tunnel traffic.
+	ConnectorConditionReady = "Ready"
 	// ConnectorReasonAccepted indicates the Connector is accepted by the controller.
 	ConnectorReasonAccepted = "Accepted"
+	// ConnectorReasonReady indicates the Connector is ready to tunnel traffic.
+	ConnectorReasonReady = "ConnectorReady"
+	// ConnectorReasonNotReady indicates the Connector is not ready to tunnel traffic.
+	ConnectorReasonNotReady = "ConnectorNotReady"
 	// ConnectorReasonPending indicates the Connector has not been processed yet.
 	ConnectorReasonPending = "Pending"
 	// ConnectorReasonConnectorClassNotFound indicates the referenced class is missing.

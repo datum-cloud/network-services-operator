@@ -22,6 +22,10 @@ resources:
   - backends.yaml
   - backendtrafficpolicies.yaml
   - backendtlspolicies.yaml
+  - connectoradvertisements.yaml
+  - connectorclasses.yaml
+  - connectors.yaml
   - httproutefilters.yaml
+  - leases.yaml
   - securitypolicies.yaml
   - trafficprotectionpolicies.yaml

@@ -8,6 +8,11 @@ import (
 
 // ConnectorClassSpec defines the desired state of ConnectorClass.
 type ConnectorClassSpec struct {
+	// ControllerName is the name of the controller responsible for this ConnectorClass.
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Enum=datum-connect
+	ControllerName string `json:"controllerName"`
 }
 
 // ConnectorClassStatus defines the observed state of ConnectorClass.

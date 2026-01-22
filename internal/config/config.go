@@ -44,6 +44,8 @@ type NetworkServicesOperator struct {
 
 	HTTPProxy HTTPProxyConfig `json:"httpProxy"`
 
+	Connector ConnectorConfig `json:"connector"`
+
 	Discovery DiscoveryConfig `json:"discovery"`
 
 	DownstreamResourceManagement DownstreamResourceManagementConfig `json:"downstreamResourceManagement"`
@@ -55,6 +57,15 @@ type NetworkServicesOperator struct {
 
 	// DomainRegistration controls RDAP/WHOIS refresh behavior for Domain status.registration
 	DomainRegistration DomainRegistrationConfig `json:"domainRegistration"`
+}
+
+// +k8s:deepcopy-gen=true
+type ConnectorConfig struct {
+	// LeaseDurationSeconds is the number of seconds the connector lease is valid for.
+	//
+	// Defaults to 30 seconds.
+	// +default=30
+	LeaseDurationSeconds int32 `json:"leaseDurationSeconds,omitempty"`
 }
 
 // +k8s:deepcopy-gen=true

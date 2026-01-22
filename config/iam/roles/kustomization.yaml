@@ -4,6 +4,8 @@
 # Each role should have a corresponding configuration file in this directory.
 
 resources:
+  - connector-admin.yaml
+  - connector-viewer.yaml
   - gateway-admin.yaml
   - gateway-viewer.yaml
   - location-admin.yaml

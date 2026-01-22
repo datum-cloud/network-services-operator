@@ -8,6 +8,7 @@ metadata:
 spec:
   launchStage: Beta
   inheritedRoles:
+    - name: networking.datumapis.com-connector-viewer
     - name: networking.datumapis.com-gateway-viewer
     - name: networking.datumapis.com-domain-viewer
   includedPermissions:

@@ -7,6 +7,7 @@
 package v1alpha1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 )
@@ -461,6 +462,11 @@ func (in *ConnectorStatus) DeepCopyInto(out *ConnectorStatus) {
 		in, out := &in.ConnectionDetails, &out.ConnectionDetails
 		*out = new(ConnectorConnectionDetails)
 		(*in).DeepCopyInto(*out)
+	}
+	if in.LeaseRef != nil {
+		in, out := &in.LeaseRef, &out.LeaseRef
+		*out = new(corev1.LocalObjectReference)
+		**out = **in
 	}
 }
 

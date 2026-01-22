@@ -179,12 +179,12 @@ func (r *ConnectorReconciler) connectorLeaseReady(ctx context.Context, cl client
 	}
 
 	expiryDuration := time.Duration(*lease.Spec.LeaseDurationSeconds) * time.Second
-	expiresAt := lease.Spec.RenewTime.Time.Add(expiryDuration)
+	expiresAt := lease.Spec.RenewTime.Add(expiryDuration)
 	if time.Now().After(expiresAt) {
 		return false, "Connector lease has expired. Agent may be offline.", nil
 	}
 
-	requeueAfter := expiresAt.Sub(time.Now()) + leaseJitter(expiryDuration)
+	requeueAfter := time.Until(expiresAt) + leaseJitter(expiryDuration)
 	return true, "", &requeueAfter
 }
 

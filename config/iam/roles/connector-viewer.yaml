@@ -1,0 +1,19 @@
+apiVersion: iam.miloapis.com/v1alpha1
+kind: Role
+metadata:
+  name: networking.datumapis.com-connector-viewer
+  annotations:
+    kubernetes.io/display-name: Connector Viewer
+    kubernetes.io/description: "View access to connector resources"
+spec:
+  launchStage: Beta
+  includedPermissions:
+    - networking.datumapis.com/connectors.list
+    - networking.datumapis.com/connectors.get
+    - networking.datumapis.com/connectors.watch
+    - networking.datumapis.com/connectoradvertisements.list
+    - networking.datumapis.com/connectoradvertisements.get
+    - networking.datumapis.com/connectoradvertisements.watch
+    - networking.datumapis.com/connectorclasses.list
+    - networking.datumapis.com/connectorclasses.get
+    - networking.datumapis.com/connectorclasses.watch

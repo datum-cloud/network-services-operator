@@ -280,6 +280,17 @@ func main() {
 		os.Exit(1)
 	}
 
+	if err := (&controller.ConnectorReconciler{
+		Config: serverConfig,
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "Connector")
+		os.Exit(1)
+	}
+	if err := (&controller.ConnectorAdvertisementReconciler{}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "ConnectorAdvertisement")
+		os.Exit(1)
+	}
+
 	if err := controller.AddIndexers(ctx, mgr); err != nil {
 		setupLog.Error(err, "unable to add indexers")
 		os.Exit(1)

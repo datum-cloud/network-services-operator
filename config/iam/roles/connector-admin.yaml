@@ -1,0 +1,23 @@
+apiVersion: iam.miloapis.com/v1alpha1
+kind: Role
+metadata:
+  name: networking.datumapis.com-connector-admin
+  annotations:
+    kubernetes.io/display-name: Connector Admin
+    kubernetes.io/description: "Full access to connector resources"
+spec:
+  launchStage: Beta
+  inheritedRoles:
+    - name: networking.datumapis.com-connector-viewer
+  includedPermissions:
+    - networking.datumapis.com/connectors.create
+    - networking.datumapis.com/connectors.update
+    - networking.datumapis.com/connectors.patch
+    - networking.datumapis.com/connectors.delete
+    - networking.datumapis.com/connectoradvertisements.create
+    - networking.datumapis.com/connectoradvertisements.update
+    - networking.datumapis.com/connectoradvertisements.patch
+    - networking.datumapis.com/connectoradvertisements.delete
+    - coordination.k8s.io/leases.update
+    - coordination.k8s.io/leases.patch
+    - coordination.k8s.io/leases.get

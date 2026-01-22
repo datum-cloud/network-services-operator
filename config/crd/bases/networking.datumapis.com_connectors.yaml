@@ -68,9 +68,19 @@ spec:
                 - type
                 x-kubernetes-list-type: map
               connectorClassName:
+                minLength: 1
                 type: string
+            required:
+            - connectorClassName
             type: object
           status:
+            default:
+              conditions:
+              - lastTransitionTime: "1970-01-01T00:00:00Z"
+                message: Waiting for controller
+                reason: Pending
+                status: Unknown
+                type: Accepted
             description: Status defines the observed state of a Connector
             properties:
               capabilities:
@@ -265,6 +275,25 @@ spec:
                   rule: '!(self.type != ''PublicKey'' && has(self.publicKey))'
                 - message: publicKey field must be specified if the type is PublicKey
                   rule: self.type == 'PublicKey' && has(self.publicKey)
+              leaseRef:
+                description: |-
+                  LeaseRef references the Lease used to report connector liveness.
+
+                  The connector controller creates the Lease when a Connector is created
+                  and records it here. Connector implementations (agents) are expected to
+                  periodically renew the Lease to indicate liveness.
+                properties:
+                  name:
+                    default: ""
+                    description: |-
+                      Name of the referent.
+                      This field is effectively required, but due to backwards compatibility is
+                      allowed to be empty. Instances of this type with an empty value here are
+                      almost certainly wrong.
+                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                    type: string
+                type: object
+                x-kubernetes-map-type: atomic
             type: object
         required:
         - spec

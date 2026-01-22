@@ -1,0 +1,18 @@
+---
+apiVersion: iam.miloapis.com/v1alpha1
+kind: ProtectedResource
+metadata:
+  name: coordination.k8s.io-lease
+spec:
+  serviceRef:
+    name: "coordination.k8s.io"
+  kind: Lease
+  plural: leases
+  singular: lease
+  permissions:
+    - get
+    - update
+    - patch
+  parentResources:
+    - apiGroup: resourcemanager.miloapis.com
+      kind: Project

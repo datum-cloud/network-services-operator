@@ -3,6 +3,7 @@
 package v1alpha1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -33,7 +34,9 @@ type ConnectorCapability struct {
 
 // ConnectorSpec defines the desired state of Connector.
 type ConnectorSpec struct {
-	ConnectorClassName string `json:"connectorClassName,omitempty"`
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	ConnectorClassName string `json:"connectorClassName"`
 
 	// Capabilities desired to be supported by the connector.
 	//
@@ -136,7 +139,33 @@ type ConnectorStatus struct {
 	//
 	// +kubebuilder:validation:Optional
 	ConnectionDetails *ConnectorConnectionDetails `json:"connectionDetails,omitempty"`
+
+	// LeaseRef references the Lease used to report connector liveness.
+	//
+	// The connector controller creates the Lease when a Connector is created
+	// and records it here. Connector implementations (agents) are expected to
+	// periodically renew the Lease to indicate liveness.
+	//
+	// +kubebuilder:validation:Optional
+	LeaseRef *corev1.LocalObjectReference `json:"leaseRef,omitempty"`
 }
+
+const (
+	// ConnectorConditionAccepted indicates whether the ConnectorClass is resolved.
+	ConnectorConditionAccepted = "Accepted"
+	// ConnectorConditionReady indicates whether the Connector is ready to tunnel traffic.
+	ConnectorConditionReady = "Ready"
+	// ConnectorReasonAccepted indicates the Connector is accepted by the controller.
+	ConnectorReasonAccepted = "Accepted"
+	// ConnectorReasonReady indicates the Connector is ready to tunnel traffic.
+	ConnectorReasonReady = "ConnectorReady"
+	// ConnectorReasonNotReady indicates the Connector is not ready to tunnel traffic.
+	ConnectorReasonNotReady = "ConnectorNotReady"
+	// ConnectorReasonPending indicates the Connector has not been processed yet.
+	ConnectorReasonPending = "Pending"
+	// ConnectorReasonConnectorClassNotFound indicates the referenced class is missing.
+	ConnectorReasonConnectorClassNotFound = "ConnectorClassNotFound"
+)
 
 const ConnectorNameAnnotation = "networking.datum.org/connector-name"
 
@@ -154,6 +183,8 @@ type Connector struct {
 	Spec ConnectorSpec `json:"spec,omitempty"`
 
 	// Status defines the observed state of a Connector
+	//
+	// +kubebuilder:default={conditions: {{type: "Accepted", status: "Unknown", reason:"Pending", message:"Waiting for controller", lastTransitionTime: "1970-01-01T00:00:00Z"}}}
 	Status ConnectorStatus `json:"status,omitempty"`
 }
 

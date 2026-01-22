@@ -276,8 +276,12 @@ spec:
                 - message: publicKey field must be specified if the type is PublicKey
                   rule: self.type == 'PublicKey' && has(self.publicKey)
               leaseRef:
-                description: LeaseRef references the Lease used to report connector
-                  liveness.
+                description: |-
+                  LeaseRef references the Lease used to report connector liveness.
+
+                  The connector controller creates the Lease when a Connector is created
+                  and records it here. Connector implementations (agents) are expected to
+                  periodically renew the Lease to indicate liveness.
                 properties:
                   name:
                     default: ""

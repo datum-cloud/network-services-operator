@@ -20,3 +20,4 @@ spec:
     - networking.datumapis.com/connectoradvertisements.delete
     - coordination.k8s.io/leases.update
     - coordination.k8s.io/leases.patch
+    - coordination.k8s.io/leases.get

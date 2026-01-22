@@ -142,6 +142,10 @@ type ConnectorStatus struct {
 
 	// LeaseRef references the Lease used to report connector liveness.
 	//
+	// The connector controller creates the Lease when a Connector is created
+	// and records it here. Connector implementations (agents) are expected to
+	// periodically renew the Lease to indicate liveness.
+	//
 	// +kubebuilder:validation:Optional
 	LeaseRef *corev1.LocalObjectReference `json:"leaseRef,omitempty"`
 }

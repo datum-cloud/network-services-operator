@@ -10,13 +10,9 @@ spec:
   plural: leases
   singular: lease
   permissions:
-    - list
     - get
-    - watch
-    - create
     - update
     - patch
-    - delete
   parentResources:
     - apiGroup: resourcemanager.miloapis.com
       kind: Project

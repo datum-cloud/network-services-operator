@@ -18,7 +18,5 @@ spec:
     - networking.datumapis.com/connectoradvertisements.update
     - networking.datumapis.com/connectoradvertisements.patch
     - networking.datumapis.com/connectoradvertisements.delete
-    - coordination.k8s.io/leases.create
     - coordination.k8s.io/leases.update
     - coordination.k8s.io/leases.patch
-    - coordination.k8s.io/leases.delete

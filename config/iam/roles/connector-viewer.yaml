@@ -17,6 +17,4 @@ spec:
     - networking.datumapis.com/connectorclasses.list
     - networking.datumapis.com/connectorclasses.get
     - networking.datumapis.com/connectorclasses.watch
-    - coordination.k8s.io/leases.list
     - coordination.k8s.io/leases.get
-    - coordination.k8s.io/leases.watch

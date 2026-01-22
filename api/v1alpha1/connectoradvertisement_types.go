@@ -99,6 +99,11 @@ type ConnectorAdvertisementSpec struct {
 type ConnectorAdvertisementStatus struct {
 	// Conditions describe the current conditions of the ConnectorAdvertisement.
 	//
+	// Known conditions:
+	// - Accepted: indicates whether the referenced Connector has been resolved.
+	//   When Accepted is False, the reason will explain why the reference
+	//   could not be resolved (for example, ConnectorNotFound).
+	//
 	// +listType=map
 	// +listMapKey=type
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
@@ -117,6 +122,7 @@ const (
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:selectablefield:JSONPath=".spec.connectorRef.name"
 
 // ConnectorAdvertisement is the Schema for the connectoradvertisements API.
 type ConnectorAdvertisement struct {

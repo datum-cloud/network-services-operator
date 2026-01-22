@@ -11,7 +11,9 @@ type ConnectorClassSpec struct {
 	// ControllerName is the name of the controller responsible for this ConnectorClass.
 	//
 	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:Enum=datum-connect
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:default=networking.datumapis.com/datum-connect
 	ControllerName string `json:"controllerName"`
 }
 

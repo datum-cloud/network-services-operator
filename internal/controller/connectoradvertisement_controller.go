@@ -12,7 +12,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
@@ -25,6 +27,8 @@ import (
 type ConnectorAdvertisementReconciler struct {
 	mgr mcmanager.Manager
 }
+
+const connectorAdvertisementConnectorRefIndex = "spec.connectorRef.name"
 
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=connectoradvertisements,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=connectoradvertisements/status,verbs=get;update;patch
@@ -110,8 +114,57 @@ func (r *ConnectorAdvertisementReconciler) Reconcile(ctx context.Context, req mc
 // SetupWithManager sets up the controller with the Manager.
 func (r *ConnectorAdvertisementReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	r.mgr = mgr
+	if err := mgr.GetFieldIndexer().IndexField(
+		context.Background(),
+		&networkingv1alpha1.ConnectorAdvertisement{},
+		connectorAdvertisementConnectorRefIndex,
+		func(obj client.Object) []string {
+			advertisement, ok := obj.(*networkingv1alpha1.ConnectorAdvertisement)
+			if !ok || advertisement.Spec.ConnectorRef.Name == "" {
+				return nil
+			}
+			return []string{advertisement.Spec.ConnectorRef.Name}
+		},
+	); err != nil {
+		return err
+	}
 	return mcbuilder.ControllerManagedBy(mgr).
 		For(&networkingv1alpha1.ConnectorAdvertisement{}).
+		Watches(
+			&networkingv1alpha1.Connector{},
+			func(clusterName string, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
+				return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []mcreconcile.Request {
+					logger := log.FromContext(ctx)
+					connector, ok := obj.(*networkingv1alpha1.Connector)
+					if !ok {
+						return nil
+					}
+
+					var ads networkingv1alpha1.ConnectorAdvertisementList
+					if err := cl.GetClient().List(
+						ctx,
+						&ads,
+						client.InNamespace(connector.Namespace),
+						client.MatchingFields{connectorAdvertisementConnectorRefIndex: connector.Name},
+					); err != nil {
+						logger.Error(err, "failed to list connectoradvertisements", "connector", connector.Name)
+						return nil
+					}
+
+					requests := make([]mcreconcile.Request, 0, len(ads.Items))
+					for i := range ads.Items {
+						requests = append(requests, mcreconcile.Request{
+							ClusterName: clusterName,
+							Request: ctrl.Request{
+								NamespacedName: client.ObjectKeyFromObject(&ads.Items[i]),
+							},
+						})
+					}
+
+					return requests
+				})
+			},
+		).
 		Named("connectoradvertisement").
 		Complete(r)
 }

@@ -40,10 +40,11 @@ spec:
             description: Spec defines the desired state of a ConnectorClass
             properties:
               controllerName:
+                default: networking.datumapis.com/datum-connect
                 description: ControllerName is the name of the controller responsible
                   for this ConnectorClass.
-                enum:
-                - datum-connect
+                maxLength: 253
+                minLength: 1
                 type: string
             required:
             - controllerName

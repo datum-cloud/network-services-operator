@@ -45,6 +45,7 @@ spec:
                 properties:
                   name:
                     description: Name of the referenced Connector.
+                    maxLength: 253
                     minLength: 1
                     type: string
                 required:
@@ -134,7 +135,13 @@ spec:
             description: Status defines the observed state of a ConnectorAdvertisement
             properties:
               conditions:
-                description: Conditions describe the current conditions of the ConnectorAdvertisement.
+                description: |-
+                  Conditions describe the current conditions of the ConnectorAdvertisement.
+
+                  Known conditions:
+                  - Accepted: indicates whether the referenced Connector has been resolved.
+                    When Accepted is False, the reason will explain why the reference
+                    could not be resolved (for example, ConnectorNotFound).
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -197,6 +204,8 @@ spec:
         required:
         - spec
         type: object
+    selectableFields:
+    - jsonPath: .spec.connectorRef.name
     served: true
     storage: true
     subresources:

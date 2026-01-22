@@ -129,15 +129,18 @@ func (r *ConnectorReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 		connector.Status.LeaseRef = &corev1.LocalObjectReference{Name: lease.Name}
 	}
 
-	leaseReady, leaseMessage, requeueAfter := r.connectorLeaseReady(ctx, cl.GetClient(), &connector)
-	if leaseReady {
+	leaseStatus, err := r.connectorLeaseReady(ctx, cl.GetClient(), &connector)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if leaseStatus.ready {
 		readyCondition.Status = metav1.ConditionTrue
 		readyCondition.Reason = networkingv1alpha1.ConnectorReasonReady
 		readyCondition.Message = "The connector is ready to tunnel traffic."
 	} else {
 		readyCondition.Status = metav1.ConditionFalse
 		readyCondition.Reason = networkingv1alpha1.ConnectorReasonNotReady
-		readyCondition.Message = leaseMessage
+		readyCondition.Message = leaseStatus.message
 	}
 
 	apimeta.SetStatusCondition(&connector.Status.Conditions, *readyCondition)
@@ -148,8 +151,8 @@ func (r *ConnectorReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 		}
 	}
 
-	if requeueAfter != nil {
-		return ctrl.Result{RequeueAfter: *requeueAfter}, nil
+	if leaseStatus.requeueAfter != nil {
+		return ctrl.Result{RequeueAfter: *leaseStatus.requeueAfter}, nil
 	}
 	return ctrl.Result{}, nil
 }
@@ -161,31 +164,37 @@ func (r *ConnectorReconciler) connectorLeaseDurationSeconds() int32 {
 	return 30
 }
 
-func (r *ConnectorReconciler) connectorLeaseReady(ctx context.Context, cl client.Client, connector *networkingv1alpha1.Connector) (bool, string, *time.Duration) {
+type connectorLeaseStatus struct {
+	ready        bool
+	requeueAfter *time.Duration
+	message      string
+}
+
+func (r *ConnectorReconciler) connectorLeaseReady(ctx context.Context, cl client.Client, connector *networkingv1alpha1.Connector) (connectorLeaseStatus, error) {
 	if connector.Status.LeaseRef == nil || connector.Status.LeaseRef.Name == "" {
-		return false, "Connector lease has not been created yet.", nil
+		return connectorLeaseStatus{message: "Connector lease has not been created yet."}, nil
 	}
 
 	var lease coordinationv1.Lease
 	if err := cl.Get(ctx, client.ObjectKey{Namespace: connector.Namespace, Name: connector.Status.LeaseRef.Name}, &lease); err != nil {
 		if apierrors.IsNotFound(err) {
-			return false, "Connector lease not found. Agent may be offline.", nil
+			return connectorLeaseStatus{message: "Connector lease not found. Agent may be offline."}, nil
 		}
-		return false, fmt.Sprintf("Failed to load connector lease: %v", err), nil
+		return connectorLeaseStatus{}, fmt.Errorf("failed to load connector lease: %w", err)
 	}
 
 	if lease.Spec.RenewTime == nil || lease.Spec.LeaseDurationSeconds == nil {
-		return false, "Connector lease has not been renewed yet.", nil
+		return connectorLeaseStatus{message: "Connector lease has not been renewed yet."}, nil
 	}
 
 	expiryDuration := time.Duration(*lease.Spec.LeaseDurationSeconds) * time.Second
 	expiresAt := lease.Spec.RenewTime.Add(expiryDuration)
 	if time.Now().After(expiresAt) {
-		return false, "Connector lease has expired. Agent may be offline.", nil
+		return connectorLeaseStatus{message: "Connector lease has expired. Agent may be offline."}, nil
 	}
 
 	requeueAfter := time.Until(expiresAt) + leaseJitter(expiryDuration)
-	return true, "", &requeueAfter
+	return connectorLeaseStatus{ready: true, requeueAfter: &requeueAfter}, nil
 }
 
 func leaseJitter(base time.Duration) time.Duration {

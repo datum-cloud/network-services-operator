@@ -113,8 +113,6 @@ const (
 	ConnectorAdvertisementReasonPending = "Pending"
 	// ConnectorAdvertisementReasonConnectorNotFound indicates the referenced connector is missing.
 	ConnectorAdvertisementReasonConnectorNotFound = "ConnectorNotFound"
-	// ConnectorAdvertisementReasonConnectorRefMissing indicates the connectorRef is missing or empty.
-	ConnectorAdvertisementReasonConnectorRefMissing = "ConnectorRefMissing"
 )
 
 // +kubebuilder:object:root=true

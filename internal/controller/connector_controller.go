@@ -83,7 +83,7 @@ func (r *ConnectorReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 
 	if connector.Spec.ConnectorClassName == "" {
 		acceptedCondition.Status = metav1.ConditionFalse
-		acceptedCondition.Reason = networkingv1alpha1.ConnectorReasonConnectorClassNotSpecified
+		acceptedCondition.Reason = networkingv1alpha1.ConnectorReasonPending
 		acceptedCondition.Message = "connectorClassName is required"
 	} else {
 		var connectorClass networkingv1alpha1.ConnectorClass

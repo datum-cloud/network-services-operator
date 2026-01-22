@@ -68,7 +68,10 @@ spec:
                 - type
                 x-kubernetes-list-type: map
               connectorClassName:
+                minLength: 1
                 type: string
+            required:
+            - connectorClassName
             type: object
           status:
             default:

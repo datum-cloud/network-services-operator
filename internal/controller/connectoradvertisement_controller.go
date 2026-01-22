@@ -67,7 +67,7 @@ func (r *ConnectorAdvertisementReconciler) Reconcile(ctx context.Context, req mc
 
 	if advertisement.Spec.ConnectorRef.Name == "" {
 		acceptedCondition.Status = metav1.ConditionFalse
-		acceptedCondition.Reason = networkingv1alpha1.ConnectorAdvertisementReasonConnectorRefMissing
+		acceptedCondition.Reason = networkingv1alpha1.ConnectorAdvertisementReasonPending
 		acceptedCondition.Message = "connectorRef.name is required"
 		apimeta.SetStatusCondition(&advertisement.Status.Conditions, *acceptedCondition)
 	} else {

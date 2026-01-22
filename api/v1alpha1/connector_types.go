@@ -34,7 +34,9 @@ type ConnectorCapability struct {
 
 // ConnectorSpec defines the desired state of Connector.
 type ConnectorSpec struct {
-	ConnectorClassName string `json:"connectorClassName,omitempty"`
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	ConnectorClassName string `json:"connectorClassName"`
 
 	// Capabilities desired to be supported by the connector.
 	//
@@ -159,8 +161,6 @@ const (
 	ConnectorReasonPending = "Pending"
 	// ConnectorReasonConnectorClassNotFound indicates the referenced class is missing.
 	ConnectorReasonConnectorClassNotFound = "ConnectorClassNotFound"
-	// ConnectorReasonConnectorClassNotSpecified indicates the class name is empty.
-	ConnectorReasonConnectorClassNotSpecified = "ConnectorClassNotSpecified"
 )
 
 const ConnectorNameAnnotation = "networking.datum.org/connector-name"

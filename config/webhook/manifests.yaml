@@ -96,6 +96,25 @@ webhooks:
     service:
       name: webhook-service
       namespace: system
+      path: /validate-networking-datumapis-com-v1alpha-domain
+  failurePolicy: Fail
+  name: vdomain-v1alpha.kb.io
+  rules:
+  - apiGroups:
+    - networking.datumapis.com
+    apiVersions:
+    - v1alpha
+    operations:
+    - DELETE
+    resources:
+    - domains
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
       path: /validate-networking-datumapis-com-v1alpha-httpproxy
   failurePolicy: Fail
   name: vhttpproxy-v1alpha.kb.io
@@ -109,25 +128,6 @@ webhooks:
     - UPDATE
     resources:
     - httpproxies
-  sideEffects: None
-- admissionReviewVersions:
-  - v1
-  clientConfig:
-    service:
-      name: webhook-service
-      namespace: system
-      path: /validate-networking-datumapis-com-v1alpha-domain
-  failurePolicy: Fail
-  name: vdomain-v1alpha.kb.io
-  rules:
-  - apiGroups:
-    - networking.datumapis.com
-    apiVersions:
-    - v1alpha
-    operations:
-    - DELETE
-    resources:
-    - domains
   sideEffects: None
 - admissionReviewVersions:
   - v1

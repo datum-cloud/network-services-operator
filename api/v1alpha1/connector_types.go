@@ -171,6 +171,7 @@ const ConnectorNameAnnotation = "networking.datum.org/connector-name"
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:selectablefield:JSONPath=".status.connectionDetails.publicKey.id"
 
 // Connector is the Schema for the connectors API.
 type Connector struct {

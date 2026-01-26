@@ -4,6 +4,7 @@ go 1.24.7
 
 require (
 	github.com/alicebob/miniredis/v2 v2.35.0
+	github.com/cert-manager/cert-manager v1.17.2
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc
 	github.com/domainr/whois v0.1.0
 	github.com/envoyproxy/gateway v1.5.1

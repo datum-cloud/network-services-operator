@@ -12,6 +12,7 @@ import (
 	// to ensure that exec-entrypoint and run can make use of them.
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
+	cmacmev1 "github.com/cert-manager/cert-manager/pkg/apis/acme/v1"
 	envoygatewayv1alpha1 "github.com/envoyproxy/gateway/api/v1alpha1"
 	multiclusterproviders "go.miloapis.com/milo/pkg/multicluster-runtime"
 	milomulticluster "go.miloapis.com/milo/pkg/multicluster-runtime/milo"
@@ -62,6 +63,7 @@ func init() {
 	utilruntime.Must(gatewayv1alpha3.Install(scheme))
 	utilruntime.Must(envoygatewayv1alpha1.AddToScheme(scheme))
 	utilruntime.Must(networkingv1alpha1.AddToScheme(scheme))
+	utilruntime.Must(cmacmev1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
 
@@ -289,6 +291,15 @@ func main() {
 	if err := (&controller.ConnectorAdvertisementReconciler{}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "ConnectorAdvertisement")
 		os.Exit(1)
+	}
+
+	if serverConfig.Gateway.ShouldDeleteErroredChallenges() {
+		if err := (&controller.ChallengeReconciler{
+			Config: serverConfig,
+		}).SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "Challenge")
+			os.Exit(1)
+		}
 	}
 
 	if err := controller.AddIndexers(ctx, mgr); err != nil {

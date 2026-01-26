@@ -39,6 +39,15 @@ rules:
   - patch
   - update
 - apiGroups:
+  - acme.cert-manager.io
+  resources:
+  - challenges
+  verbs:
+  - delete
+  - get
+  - list
+  - watch
+- apiGroups:
   - coordination.k8s.io
   resources:
   - leases

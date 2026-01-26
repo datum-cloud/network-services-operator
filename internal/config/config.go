@@ -503,6 +503,24 @@ type GatewayConfig struct {
 	// needed when the downstream cluster is a federation control plane such as
 	// Karmada.
 	EnableDownstreamCertificateSolver bool `json:"enableDownstreamCertificateSolver,omitempty"`
+
+	// DeleteErroredChallenges enables automatic deletion of errored ACME challenges
+	// for certificates managed by this operator. When enabled, the operator will
+	// watch cert-manager Challenge resources and delete any challenge that enters
+	// an "errored" state for Gateway-related certificates. This triggers cert-manager
+	// to create a new challenge and retry the ACME verification.
+	//
+	// Defaults to true.
+	DeleteErroredChallenges *bool `json:"deleteErroredChallenges,omitempty"`
+}
+
+// ShouldDeleteErroredChallenges returns whether the operator should automatically
+// delete errored ACME challenges. Defaults to true if not explicitly set.
+func (c *GatewayConfig) ShouldDeleteErroredChallenges() bool {
+	if c.DeleteErroredChallenges == nil {
+		return true // default enabled
+	}
+	return *c.DeleteErroredChallenges
 }
 
 func (c *GatewayConfig) GatewayDNSAddress(gateway *gatewayv1.Gateway) string {

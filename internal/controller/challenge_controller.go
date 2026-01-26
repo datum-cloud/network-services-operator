@@ -10,6 +10,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
@@ -30,6 +31,10 @@ type ChallengeReconciler struct {
 // Reconcile handles the reconciliation of Challenge resources.
 // If a challenge is in an "errored" state and is related to a Gateway-managed issuer,
 // it will be deleted to trigger cert-manager to retry.
+//
+// The watch predicate filters challenges to only those matching configured issuers,
+// reducing unnecessary reconciliations. The issuer check here serves as a defensive
+// measure in case the predicate is bypassed.
 func (r *ChallengeReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx, "cluster", req.ClusterName)
 
@@ -45,12 +50,12 @@ func (r *ChallengeReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	// Only process challenges that are in the "errored" state
+	// Only delete challenges that are in the "errored" state
 	if challenge.Status.State != cmacmev1.Errored {
 		return ctrl.Result{}, nil
 	}
 
-	// Check if this challenge is for a Gateway-related issuer
+	// Verify the challenge is for a Gateway-related issuer (defensive check)
 	if !r.isGatewayRelatedIssuer(challenge.Spec.IssuerRef) {
 		logger.V(1).Info("ignoring errored challenge for non-Gateway issuer",
 			"challenge", challenge.Name,
@@ -105,7 +110,14 @@ func (r *ChallengeReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	r.mgr = mgr
 
 	return mcbuilder.ControllerManagedBy(mgr).
-		For(&cmacmev1.Challenge{}).
+		For(&cmacmev1.Challenge{},
+			mcbuilder.WithPredicates(
+				predicate.NewPredicateFuncs(func(object client.Object) bool {
+					challenge := object.(*cmacmev1.Challenge)
+					return r.isGatewayRelatedIssuer(challenge.Spec.IssuerRef)
+				}),
+			),
+		).
 		Named("challenge").
 		Complete(r)
 }

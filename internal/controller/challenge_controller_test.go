@@ -21,7 +21,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	"go.datum.net/network-services-operator/internal/config"
 )
@@ -286,20 +285,15 @@ func TestChallengeReconciler(t *testing.T) {
 				WithObjects(objects...).
 				Build()
 
-			mgr := &fakeMockManager{cl: fakeClient}
-
 			reconciler := &ChallengeReconciler{
-				mgr:    mgr,
-				Config: tt.config,
+				DownstreamCluster: &fakeCluster{cl: fakeClient},
+				Config:            tt.config,
 			}
 
 			result, err := reconciler.Reconcile(
 				ctx,
-				mcreconcile.Request{
-					ClusterName: "test",
-					Request: reconcile.Request{
-						NamespacedName: client.ObjectKeyFromObject(tt.challenge),
-					},
+				reconcile.Request{
+					NamespacedName: client.ObjectKeyFromObject(tt.challenge),
 				},
 			)
 

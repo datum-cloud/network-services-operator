@@ -232,12 +232,26 @@ spec:
                       addresses:
                         description: Addresses where the connector can be reached
                         items:
-                          description: IPv4 or IPv6 address
-                          maxLength: 39
-                          type: string
-                          x-kubernetes-validations:
-                          - message: Must be an IP address.
-                            rule: isIP(self)
+                          description: PublicKeyConnectorAddress defines an address
+                            and port for a connector.
+                          properties:
+                            address:
+                              description: IPv4 or IPv6 address.
+                              maxLength: 39
+                              type: string
+                              x-kubernetes-validations:
+                              - message: Must be an IP address.
+                                rule: isIP(self)
+                            port:
+                              description: Port where the connector can be reached.
+                              format: int32
+                              maximum: 65535
+                              minimum: 1
+                              type: integer
+                          required:
+                          - address
+                          - port
+                          type: object
                         maxItems: 16
                         type: array
                       discoveryMode:

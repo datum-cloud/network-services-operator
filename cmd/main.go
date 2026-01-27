@@ -295,7 +295,8 @@ func main() {
 
 	if serverConfig.Gateway.ShouldDeleteErroredChallenges() {
 		if err := (&controller.ChallengeReconciler{
-			Config: serverConfig,
+			Config:            serverConfig,
+			DownstreamCluster: downstreamCluster,
 		}).SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "Challenge")
 			os.Exit(1)

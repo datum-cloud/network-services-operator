@@ -57,10 +57,22 @@ const (
 	DNSPublicKeyDiscoveryMode PublicKeyDiscoveryMode = "DNS"
 )
 
-// IPv4 or IPv6 address
-// +kubebuilder:validation:MaxLength=39
-// +kubebuilder:validation:XValidation:message="Must be an IP address.",rule="isIP(self)"
-type PublicKeyConnectorAddress string
+// PublicKeyConnectorAddress defines an address and port for a connector.
+type PublicKeyConnectorAddress struct {
+	// IPv4 or IPv6 address.
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MaxLength=39
+	// +kubebuilder:validation:XValidation:message="Must be an IP address.",rule="isIP(self)"
+	Address string `json:"address,omitempty"`
+
+	// Port where the connector can be reached.
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=65535
+	Port int32 `json:"port,omitempty"`
+}
 
 type ConnectorConnectionDetailsPublicKey struct {
 	// The public key to dial and connect to

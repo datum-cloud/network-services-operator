@@ -171,24 +171,41 @@ type connectorLeaseStatus struct {
 }
 
 func (r *ConnectorReconciler) connectorLeaseReady(ctx context.Context, cl client.Client, connector *networkingv1alpha1.Connector) (connectorLeaseStatus, error) {
+	logger := log.FromContext(ctx)
+
 	if connector.Status.LeaseRef == nil || connector.Status.LeaseRef.Name == "" {
+		logger.V(1).Info("connector lease reference missing")
 		return connectorLeaseStatus{message: "Connector lease has not been created yet."}, nil
 	}
 
 	var lease coordinationv1.Lease
 	if err := cl.Get(ctx, client.ObjectKey{Namespace: connector.Namespace, Name: connector.Status.LeaseRef.Name}, &lease); err != nil {
 		if apierrors.IsNotFound(err) {
+			logger.V(1).Info("connector lease not found", "lease", connector.Status.LeaseRef.Name)
 			return connectorLeaseStatus{message: "Connector lease not found. Agent may be offline."}, nil
 		}
 		return connectorLeaseStatus{}, fmt.Errorf("failed to load connector lease: %w", err)
 	}
 
 	if lease.Spec.RenewTime == nil || lease.Spec.LeaseDurationSeconds == nil {
+		logger.V(1).Info(
+			"connector lease missing renew time or duration",
+			"lease", lease.Name,
+			"renewTime", lease.Spec.RenewTime,
+			"leaseDurationSeconds", lease.Spec.LeaseDurationSeconds,
+		)
 		return connectorLeaseStatus{message: "Connector lease has not been renewed yet."}, nil
 	}
 
 	expiryDuration := time.Duration(*lease.Spec.LeaseDurationSeconds) * time.Second
 	expiresAt := lease.Spec.RenewTime.Add(expiryDuration)
+	logger.V(1).Info(
+		"connector lease observed",
+		"lease", lease.Name,
+		"renewTime", lease.Spec.RenewTime,
+		"leaseDurationSeconds", lease.Spec.LeaseDurationSeconds,
+		"expiresAt", expiresAt,
+	)
 	if time.Now().After(expiresAt) {
 		return connectorLeaseStatus{message: "Connector lease has expired. Agent may be offline."}, nil
 	}

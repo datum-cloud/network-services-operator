@@ -118,7 +118,7 @@ func validateHTTPProxyRuleBackend(backend networkingv1alpha.HTTPProxyRuleBackend
 				allErrs = append(allErrs, field.Invalid(hostFieldPath, host, "may not be in the link-local multicast range (224.0.0.0/24, ff02::/10)"))
 			}
 		} else {
-			if !(hasConnector && host == "localhost") {
+			if !hasConnector || host != "localhost" {
 				allErrs = append(allErrs, validation.IsFullyQualifiedDomainName(hostFieldPath, host)...)
 			}
 		}

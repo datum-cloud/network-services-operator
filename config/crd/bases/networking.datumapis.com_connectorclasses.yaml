@@ -12,7 +12,7 @@ spec:
     listKind: ConnectorClassList
     plural: connectorclasses
     singular: connectorclass
-  scope: Namespaced
+  scope: Cluster
   versions:
   - name: v1alpha1
     schema:

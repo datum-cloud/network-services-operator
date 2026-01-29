@@ -102,12 +102,13 @@ func validateHTTPProxyRuleBackend(backend networkingv1alpha.HTTPProxyRuleBackend
 		// See: https://github.com/kubernetes/kubernetes/blob/d21da29c9ec486956b204050cdfaa46c686e29cc/pkg/apis/discovery/validation/validation.go#L115
 		hostFieldPath := endpointFieldPath.Key("host")
 		host := u.Hostname()
+		hasConnector := backend.Connector != nil
 		if ip := net.ParseIP(host); ip != nil {
 			// Adapted from https://github.com/kubernetes/kubernetes/blob/d21da29c9ec486956b204050cdfaa46c686e29cc/pkg/apis/core/validation/validation.go#L7797
 			if ip.IsUnspecified() {
 				allErrs = append(allErrs, field.Invalid(hostFieldPath, host, fmt.Sprintf("may not be unspecified (%v)", host)))
 			}
-			if ip.IsLoopback() {
+			if ip.IsLoopback() && !hasConnector {
 				allErrs = append(allErrs, field.Invalid(hostFieldPath, host, "may not be in the loopback range (127.0.0.0/8, ::1/128)"))
 			}
 			if ip.IsLinkLocalUnicast() {
@@ -117,7 +118,9 @@ func validateHTTPProxyRuleBackend(backend networkingv1alpha.HTTPProxyRuleBackend
 				allErrs = append(allErrs, field.Invalid(hostFieldPath, host, "may not be in the link-local multicast range (224.0.0.0/24, ff02::/10)"))
 			}
 		} else {
-			allErrs = append(allErrs, validation.IsFullyQualifiedDomainName(hostFieldPath, host)...)
+			if !hasConnector || host != "localhost" {
+				allErrs = append(allErrs, validation.IsFullyQualifiedDomainName(hostFieldPath, host)...)
+			}
 		}
 
 		if u.Path != "" {

@@ -606,19 +606,23 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 			// once we have one. This is in an effort to not block MVP goals.
 			addressType := discoveryv1.AddressTypeFQDN
 
-			host := u.Hostname()
-			if ip := net.ParseIP(host); ip != nil {
+			targetHost := u.Hostname()
+			endpointHost := targetHost
+			if backend.Connector != nil {
+				// Connector backends don't rely on EndpointSlice addresses; use a safe placeholder.
+				endpointHost = "connector.invalid"
+				addressType = discoveryv1.AddressTypeFQDN
+			} else if ip := net.ParseIP(targetHost); ip != nil {
 				if i := ip.To4(); i != nil && len(i) == net.IPv4len {
 					addressType = discoveryv1.AddressTypeIPv4
 				} else {
 					addressType = discoveryv1.AddressTypeIPv6
 				}
 			} else {
-
 				hostnameRewriteFound := false
 				for _, filter := range rule.Filters {
 					if filter.Type == gatewayv1.HTTPRouteFilterURLRewrite {
-						filter.URLRewrite.Hostname = ptr.To(gatewayv1.PreciseHostname(host))
+						filter.URLRewrite.Hostname = ptr.To(gatewayv1.PreciseHostname(targetHost))
 						hostnameRewriteFound = true
 						break
 					}
@@ -628,7 +632,7 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 					rule.Filters = append(rule.Filters, gatewayv1.HTTPRouteFilter{
 						Type: gatewayv1.HTTPRouteFilterURLRewrite,
 						URLRewrite: &gatewayv1.HTTPURLRewriteFilter{
-							Hostname: ptr.To(gatewayv1.PreciseHostname(host)),
+							Hostname: ptr.To(gatewayv1.PreciseHostname(targetHost)),
 						},
 					})
 				}
@@ -643,7 +647,7 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 				Endpoints: []discoveryv1.Endpoint{
 					{
 						Addresses: []string{
-							host,
+							endpointHost,
 						},
 						Conditions: discoveryv1.EndpointConditions{
 							Ready:       ptr.To(true),

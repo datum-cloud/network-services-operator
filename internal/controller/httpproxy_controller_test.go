@@ -474,8 +474,10 @@ func TestHTTPProxyReconcile(t *testing.T) {
 					},
 					ClusterName: "test-cluster",
 				}
-				_, err = t.reconciler.Reconcile(ctx, req)
-				assert.NoError(t, err)
+				for i := 0; i < 2; i++ {
+					_, err = t.reconciler.Reconcile(ctx, req)
+					assert.NoError(t, err)
+				}
 
 				patchList = envoygatewayv1alpha1.EnvoyPatchPolicyList{}
 				err = t.downstreamClient.List(ctx, &patchList)
@@ -917,14 +919,18 @@ func TestHTTPProxyReconcile(t *testing.T) {
 			ctx := context.Background()
 			ctx = log.IntoContext(ctx, logger)
 
-			_, err := reconciler.Reconcile(ctx, req)
-			assert.NoError(t, err)
-
-			_, err = reconciler.Reconcile(ctx, req)
-			if tt.expectedError {
-				assert.Error(t, err)
-			} else {
-				assert.NoError(t, err)
+			var err error
+			for i := 0; i < 3; i++ {
+				_, err = reconciler.Reconcile(ctx, req)
+				if i < 2 {
+					assert.NoError(t, err)
+					continue
+				}
+				if tt.expectedError {
+					assert.Error(t, err)
+				} else {
+					assert.NoError(t, err)
+				}
 			}
 
 			_, err = gatewayReconciler.Reconcile(ctx, req)

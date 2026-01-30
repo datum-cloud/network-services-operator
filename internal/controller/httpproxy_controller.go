@@ -483,18 +483,38 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 			addressType := discoveryv1.AddressTypeFQDN
 
 			host := u.Hostname()
+			isIPAddress := false
 			if ip := net.ParseIP(host); ip != nil {
+				isIPAddress = true
 				if i := ip.To4(); i != nil && len(i) == net.IPv4len {
 					addressType = discoveryv1.AddressTypeIPv4
 				} else {
 					addressType = discoveryv1.AddressTypeIPv6
 				}
-			} else {
+			}
 
+			// Determine the hostname to use for TLS validation and URL rewriting.
+			// For HTTPS backends, we need a hostname for certificate validation.
+			var tlsHostname string
+			if backend.TLS != nil && backend.TLS.Hostname != nil {
+				// Use explicitly configured TLS hostname
+				tlsHostname = *backend.TLS.Hostname
+			} else if !isIPAddress {
+				// Use hostname from the endpoint URL
+				tlsHostname = host
+			}
+
+			// For HTTPS backends, we must have a hostname for TLS validation
+			if appProtocol == SchemeHTTPS && tlsHostname == "" {
+				return nil, fmt.Errorf("backend %d in rule %d: HTTPS endpoint with IP address requires tls.hostname to be specified for certificate validation", backendIndex, ruleIndex)
+			}
+
+			// Add URLRewrite filter with hostname for TLS validation if we have one
+			if tlsHostname != "" {
 				hostnameRewriteFound := false
 				for _, filter := range rule.Filters {
 					if filter.Type == gatewayv1.HTTPRouteFilterURLRewrite {
-						filter.URLRewrite.Hostname = ptr.To(gatewayv1.PreciseHostname(host))
+						filter.URLRewrite.Hostname = ptr.To(gatewayv1.PreciseHostname(tlsHostname))
 						hostnameRewriteFound = true
 						break
 					}
@@ -504,7 +524,7 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 					rule.Filters = append(rule.Filters, gatewayv1.HTTPRouteFilter{
 						Type: gatewayv1.HTTPRouteFilterURLRewrite,
 						URLRewrite: &gatewayv1.HTTPURLRewriteFilter{
-							Hostname: ptr.To(gatewayv1.PreciseHostname(host)),
+							Hostname: ptr.To(gatewayv1.PreciseHostname(tlsHostname)),
 						},
 					})
 				}

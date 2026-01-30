@@ -129,6 +129,14 @@ type HTTPProxyRuleBackend struct {
 	// +kubebuilder:validation:Optional
 	Connector *ConnectorReference `json:"connector,omitempty"`
 
+	// TLS contains backend TLS configuration.
+	//
+	// When the backend endpoint uses HTTPS with an IP address, the Hostname field
+	// must be specified for TLS certificate validation.
+	//
+	// +kubebuilder:validation:Optional
+	TLS *HTTPProxyBackendTLS `json:"tls,omitempty"`
+
 	// Filters defined at this level should be executed if and only if the
 	// request is being forwarded to the backend defined here.
 	//
@@ -139,6 +147,26 @@ type HTTPProxyRuleBackend struct {
 	// +kubebuilder:validation:XValidation:message="RequestRedirect filter cannot be repeated",rule="self.filter(f, f.type == 'RequestRedirect').size() <= 1"
 	// +kubebuilder:validation:XValidation:message="URLRewrite filter cannot be repeated",rule="self.filter(f, f.type == 'URLRewrite').size() <= 1"
 	Filters []gatewayv1.HTTPRouteFilter `json:"filters,omitempty"`
+}
+
+// HTTPProxyBackendTLS contains TLS configuration for a backend.
+type HTTPProxyBackendTLS struct {
+	// Hostname is used for TLS certificate validation when connecting to an
+	// HTTPS backend. This hostname is used for:
+	//
+	// 1. SNI (Server Name Indication) during the TLS handshake
+	// 2. Certificate validation - the certificate must be valid for this hostname
+	//
+	// This field is required when the backend endpoint uses HTTPS with an IP
+	// address, as there is no hostname to extract from the endpoint URL.
+	//
+	// When the backend endpoint uses HTTPS with a DNS hostname, this field is
+	// optional and defaults to the hostname from the endpoint URL.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	Hostname *string `json:"hostname,omitempty"`
 }
 
 // ConnectorReference references a Connector by name.

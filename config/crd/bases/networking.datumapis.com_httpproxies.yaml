@@ -1249,6 +1249,30 @@ spec:
                             - message: URLRewrite filter cannot be repeated
                               rule: self.filter(f, f.type == 'URLRewrite').size()
                                 <= 1
+                          tls:
+                            description: |-
+                              TLS contains backend TLS configuration.
+
+                              When the backend endpoint uses HTTPS with an IP address, the Hostname field
+                              must be specified for TLS certificate validation.
+                            properties:
+                              hostname:
+                                description: |-
+                                  Hostname is used for TLS certificate validation when connecting to an
+                                  HTTPS backend. This hostname is used for:
+
+                                  1. SNI (Server Name Indication) during the TLS handshake
+                                  2. Certificate validation - the certificate must be valid for this hostname
+
+                                  This field is required when the backend endpoint uses HTTPS with an IP
+                                  address, as there is no hostname to extract from the endpoint URL.
+
+                                  When the backend endpoint uses HTTPS with a DNS hostname, this field is
+                                  optional and defaults to the hostname from the endpoint URL.
+                                maxLength: 253
+                                minLength: 1
+                                type: string
+                            type: object
                         required:
                         - endpoint
                         type: object

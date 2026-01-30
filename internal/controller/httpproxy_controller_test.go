@@ -392,6 +392,15 @@ func TestHTTPProxyReconcile(t *testing.T) {
 					},
 				},
 			},
+			postCreateGatewayStatus: func(g *gatewayv1.Gateway) {
+				// EnvoyPatchPolicy is only created after Gateway is Programmed
+				apimeta.SetStatusCondition(&g.Status.Conditions, metav1.Condition{
+					Type:               string(gatewayv1.GatewayConditionProgrammed),
+					Status:             metav1.ConditionTrue,
+					ObservedGeneration: g.Generation,
+					Reason:             string(gatewayv1.GatewayReasonProgrammed),
+				})
+			},
 			expectedError: false,
 			expectedConditions: []metav1.Condition{
 				{
@@ -441,6 +450,15 @@ func TestHTTPProxyReconcile(t *testing.T) {
 						},
 					},
 				},
+			},
+			postCreateGatewayStatus: func(g *gatewayv1.Gateway) {
+				// EnvoyPatchPolicy is only created after Gateway is Programmed
+				apimeta.SetStatusCondition(&g.Status.Conditions, metav1.Condition{
+					Type:               string(gatewayv1.GatewayConditionProgrammed),
+					Status:             metav1.ConditionTrue,
+					ObservedGeneration: g.Generation,
+					Reason:             string(gatewayv1.GatewayReasonProgrammed),
+				})
 			},
 			expectedError: false,
 			expectedConditions: []metav1.Condition{

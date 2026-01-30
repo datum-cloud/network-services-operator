@@ -286,7 +286,7 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 		cl.GetClient(),
 		req.ClusterName,
 		&httpProxy,
-		desiredResources.gateway,
+		gateway,
 	)
 	if err != nil {
 		programmedCondition.Status = metav1.ConditionFalse
@@ -792,6 +792,18 @@ func (r *HTTPProxyReconciler) reconcileConnectorEnvoyPatchPolicy(
 			return nil, false, err
 		}
 		return nil, false, nil
+	}
+
+	// Wait for the Gateway to be Programmed before creating the EnvoyPatchPolicy.
+	// This ensures the RouteConfiguration exists in Envoy's xDS, so the patch
+	// can be applied immediately rather than waiting for Envoy Gateway to retry.
+	gatewayProgrammed := apimeta.IsStatusConditionTrue(
+		gateway.Status.Conditions,
+		string(gatewayv1.GatewayConditionProgrammed),
+	)
+	if !gatewayProgrammed {
+		// Gateway not yet programmed; requeue will happen when Gateway status changes.
+		return nil, true, nil
 	}
 
 	if r.Config.Gateway.DownstreamGatewayClassName == "" {

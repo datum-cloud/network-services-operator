@@ -220,6 +220,75 @@ func TestValidateHTTPProxy(t *testing.T) {
 				field.Invalid(field.NewPath("metadata.name"), "", ""),
 			},
 		},
+		"HTTPS with IP address requires tls.hostname": {
+			proxy: &networkingv1alpha.HTTPProxy{
+				Spec: networkingv1alpha.HTTPProxySpec{
+					Rules: []networkingv1alpha.HTTPProxyRule{
+						{
+							Backends: []networkingv1alpha.HTTPProxyRuleBackend{
+								{
+									Endpoint: "https://192.168.1.1",
+								},
+							},
+						},
+					},
+				},
+			},
+			expectedErrors: field.ErrorList{
+				field.Required(field.NewPath("spec", "rules").Index(0).Child("backends").Index(0).Child("tls", "hostname"), ""),
+			},
+		},
+		"HTTPS with IP address and tls.hostname is valid": {
+			proxy: &networkingv1alpha.HTTPProxy{
+				Spec: networkingv1alpha.HTTPProxySpec{
+					Rules: []networkingv1alpha.HTTPProxyRule{
+						{
+							Backends: []networkingv1alpha.HTTPProxyRuleBackend{
+								{
+									Endpoint: "https://192.168.1.1",
+									TLS: &networkingv1alpha.HTTPProxyBackendTLS{
+										Hostname: ptr.To("api.example.com"),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			expectedErrors: field.ErrorList{},
+		},
+		"HTTPS with FQDN does not require tls.hostname": {
+			proxy: &networkingv1alpha.HTTPProxy{
+				Spec: networkingv1alpha.HTTPProxySpec{
+					Rules: []networkingv1alpha.HTTPProxyRule{
+						{
+							Backends: []networkingv1alpha.HTTPProxyRuleBackend{
+								{
+									Endpoint: "https://api.example.com",
+								},
+							},
+						},
+					},
+				},
+			},
+			expectedErrors: field.ErrorList{},
+		},
+		"HTTP with IP address does not require tls.hostname": {
+			proxy: &networkingv1alpha.HTTPProxy{
+				Spec: networkingv1alpha.HTTPProxySpec{
+					Rules: []networkingv1alpha.HTTPProxyRule{
+						{
+							Backends: []networkingv1alpha.HTTPProxyRuleBackend{
+								{
+									Endpoint: "http://192.168.1.1",
+								},
+							},
+						},
+					},
+				},
+			},
+			expectedErrors: field.ErrorList{},
+		},
 	}
 
 	for name, scenario := range scenarios {

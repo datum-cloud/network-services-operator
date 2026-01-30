@@ -45,9 +45,10 @@ func TestHTTPProxyCollectDesiredResources(t *testing.T) {
 	}
 
 	tests := []struct {
-		name      string
-		httpProxy *networkingv1alpha.HTTPProxy
-		assert    func(t *testing.T, httpProxy *networkingv1alpha.HTTPProxy, desiredResources *desiredHTTPProxyResources)
+		name        string
+		httpProxy   *networkingv1alpha.HTTPProxy
+		expectError string
+		assert      func(t *testing.T, httpProxy *networkingv1alpha.HTTPProxy, desiredResources *desiredHTTPProxyResources)
 	}{
 		{
 			name:      "existing URLRewrite filter in rule with hostname in endpoint",
@@ -205,6 +206,54 @@ func TestHTTPProxyCollectDesiredResources(t *testing.T) {
 			},
 		},
 		{
+			name: "HTTPS with IPv4 address without tls.hostname returns error",
+			httpProxy: newHTTPProxy(func(h *networkingv1alpha.HTTPProxy) {
+				for ruleIndex, proxyRule := range h.Spec.Rules {
+					for backendIndex := range proxyRule.Backends {
+						h.Spec.Rules[ruleIndex].Backends[backendIndex].Endpoint = "https://192.168.1.1"
+					}
+				}
+			}),
+			expectError: "HTTPS endpoint with IP address requires tls.hostname",
+		},
+		{
+			name: "HTTPS with IPv4 address and tls.hostname",
+			httpProxy: newHTTPProxy(func(h *networkingv1alpha.HTTPProxy) {
+				for ruleIndex, proxyRule := range h.Spec.Rules {
+					for backendIndex := range proxyRule.Backends {
+						h.Spec.Rules[ruleIndex].Backends[backendIndex].Endpoint = "https://192.168.1.1"
+						h.Spec.Rules[ruleIndex].Backends[backendIndex].TLS = &networkingv1alpha.HTTPProxyBackendTLS{
+							Hostname: ptr.To("api.example.com"),
+						}
+					}
+				}
+			}),
+			assert: func(t *testing.T, httpProxy *networkingv1alpha.HTTPProxy, desiredResources *desiredHTTPProxyResources) {
+				httpRoute := desiredResources.httpRoute
+				endpointSlices := desiredResources.endpointSlices
+
+				for ruleIndex := range httpProxy.Spec.Rules {
+					routeRule := httpRoute.Spec.Rules[ruleIndex]
+
+					// Verify URLRewrite filter has the TLS hostname
+					if assert.Len(t, routeRule.Filters, 1) {
+						urlRewriteFilter := routeRule.Filters[0]
+						assert.Equal(t, gatewayv1.HTTPRouteFilterURLRewrite, urlRewriteFilter.Type)
+						assert.Equal(t, "api.example.com", string(ptr.Deref(urlRewriteFilter.URLRewrite.Hostname, "")))
+					}
+
+					for backendRefIndex := range routeRule.BackendRefs {
+						backendRefIndexMsg := fmt.Sprintf("backendRef index %d", backendRefIndex)
+
+						endpointSlice := endpointSlices[ruleIndex+backendRefIndex]
+						assert.Equal(t, discoveryv1.AddressTypeIPv4, endpointSlice.AddressType, backendRefIndexMsg)
+						assert.Equal(t, "192.168.1.1", endpointSlice.Endpoints[0].Addresses[0])
+						assert.Equal(t, "https", *endpointSlice.Ports[0].AppProtocol, backendRefIndexMsg)
+					}
+				}
+			},
+		},
+		{
 			name: "custom hostnames",
 			httpProxy: newHTTPProxy(func(h *networkingv1alpha.HTTPProxy) {
 				h.Spec.Hostnames = []gatewayv1.Hostname{
@@ -241,6 +290,12 @@ func TestHTTPProxyCollectDesiredResources(t *testing.T) {
 
 			reconciler := &HTTPProxyReconciler{Config: operatorConfig}
 			desiredResources, err := reconciler.collectDesiredResources(tt.httpProxy)
+
+			if tt.expectError != "" {
+				assert.Error(t, err)
+				assert.Contains(t, err.Error(), tt.expectError)
+				return
+			}
 			assert.NoError(t, err)
 
 			gateway := desiredResources.gateway

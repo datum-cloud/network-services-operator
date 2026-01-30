@@ -631,23 +631,51 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 			// once we have one. This is in an effort to not block MVP goals.
 			addressType := discoveryv1.AddressTypeFQDN
 
-			targetHost := u.Hostname()
-			endpointHost := targetHost
+			host := u.Hostname()
+			endpointHost := host
+			isIPAddress := false
 			if backend.Connector != nil {
 				// Connector backends don't rely on EndpointSlice addresses; use a safe placeholder.
 				endpointHost = "connector.invalid"
 				addressType = discoveryv1.AddressTypeFQDN
-			} else if ip := net.ParseIP(targetHost); ip != nil {
+			} else if ip := net.ParseIP(host); ip != nil {
+				isIPAddress = true
 				if i := ip.To4(); i != nil && len(i) == net.IPv4len {
 					addressType = discoveryv1.AddressTypeIPv4
 				} else {
 					addressType = discoveryv1.AddressTypeIPv6
 				}
-			} else {
+			}
+
+			// For HTTPS endpoints with IP addresses, require tls.hostname for certificate validation
+			// and use it as the Host header for the upstream request.
+			if u.Scheme == "https" && isIPAddress {
+				if backend.TLS == nil || backend.TLS.Hostname == nil || *backend.TLS.Hostname == "" {
+					return nil, fmt.Errorf("HTTPS endpoint with IP address requires tls.hostname for backend %d in rule %d", backendIndex, ruleIndex)
+				}
+				// Use tls.hostname for the Host header rewrite
 				hostnameRewriteFound := false
-				for _, filter := range rule.Filters {
+				for i, filter := range rule.Filters {
 					if filter.Type == gatewayv1.HTTPRouteFilterURLRewrite {
-						filter.URLRewrite.Hostname = ptr.To(gatewayv1.PreciseHostname(targetHost))
+						rule.Filters[i].URLRewrite.Hostname = ptr.To(gatewayv1.PreciseHostname(*backend.TLS.Hostname))
+						hostnameRewriteFound = true
+						break
+					}
+				}
+				if !hostnameRewriteFound {
+					rule.Filters = append(rule.Filters, gatewayv1.HTTPRouteFilter{
+						Type: gatewayv1.HTTPRouteFilterURLRewrite,
+						URLRewrite: &gatewayv1.HTTPURLRewriteFilter{
+							Hostname: ptr.To(gatewayv1.PreciseHostname(*backend.TLS.Hostname)),
+						},
+					})
+				}
+			} else if !isIPAddress && backend.Connector == nil {
+				// For FQDN endpoints, rewrite the Host header to match the backend hostname
+				hostnameRewriteFound := false
+				for i, filter := range rule.Filters {
+					if filter.Type == gatewayv1.HTTPRouteFilterURLRewrite {
+						rule.Filters[i].URLRewrite.Hostname = ptr.To(gatewayv1.PreciseHostname(host))
 						hostnameRewriteFound = true
 						break
 					}
@@ -657,7 +685,7 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 					rule.Filters = append(rule.Filters, gatewayv1.HTTPRouteFilter{
 						Type: gatewayv1.HTTPRouteFilterURLRewrite,
 						URLRewrite: &gatewayv1.HTTPURLRewriteFilter{
-							Hostname: ptr.To(gatewayv1.PreciseHostname(targetHost)),
+							Hostname: ptr.To(gatewayv1.PreciseHostname(host)),
 						},
 					})
 				}

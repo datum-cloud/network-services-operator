@@ -103,7 +103,9 @@ func validateHTTPProxyRuleBackend(backend networkingv1alpha.HTTPProxyRuleBackend
 		hostFieldPath := endpointFieldPath.Key("host")
 		host := u.Hostname()
 		hasConnector := backend.Connector != nil
+		isIPAddress := false
 		if ip := net.ParseIP(host); ip != nil {
+			isIPAddress = true
 			// Adapted from https://github.com/kubernetes/kubernetes/blob/d21da29c9ec486956b204050cdfaa46c686e29cc/pkg/apis/core/validation/validation.go#L7797
 			if ip.IsUnspecified() {
 				allErrs = append(allErrs, field.Invalid(hostFieldPath, host, fmt.Sprintf("may not be unspecified (%v)", host)))
@@ -120,6 +122,13 @@ func validateHTTPProxyRuleBackend(backend networkingv1alpha.HTTPProxyRuleBackend
 		} else {
 			if !hasConnector || host != "localhost" {
 				allErrs = append(allErrs, validation.IsFullyQualifiedDomainName(hostFieldPath, host)...)
+			}
+		}
+
+		// HTTPS endpoints with IP addresses require tls.hostname for certificate validation
+		if u.Scheme == "https" && isIPAddress {
+			if backend.TLS == nil || backend.TLS.Hostname == nil || *backend.TLS.Hostname == "" {
+				allErrs = append(allErrs, field.Required(fldPath.Child("tls", "hostname"), "tls.hostname is required for HTTPS endpoints with IP addresses"))
 			}
 		}
 

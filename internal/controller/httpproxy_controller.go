@@ -1005,9 +1005,11 @@ func buildConnectorEnvoyPatches(
 	patches := make([]envoygatewayv1alpha1.EnvoyJSONPatchConfig, 0)
 	// TODO: Make this idempotent
 	headersOp := envoygatewayv1alpha1.JSONPatchOperationType("add")
-	metadataOp := envoygatewayv1alpha1.JSONPatchOperationType("add")
 
-	clusterJSON, err := json.Marshal("internal-tunnel-cluster")
+	// Connector traffic is routed to the local iroh-gateway instance (sidecar)
+	// via a bootstrap-defined cluster. The connector-specific tunnel destination
+	// is selected per request via headers injected below.
+	clusterJSON, err := json.Marshal("iroh-gateway")
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal cluster name: %w", err)
 	}
@@ -1026,14 +1028,14 @@ func buildConnectorEnvoyPatches(
 			headersJSON, err := json.Marshal([]map[string]any{
 				{
 					"header": map[string]any{
-						"key":   "x-tunnel-host",
+						"key":   "x-datum-target-host",
 						"value": backend.targetHost,
 					},
 					"append_action": "OVERWRITE_IF_EXISTS_OR_ADD",
 				},
 				{
 					"header": map[string]any{
-						"key":   "x-tunnel-port",
+						"key":   "x-datum-target-port",
 						"value": strconv.Itoa(backend.targetPort),
 					},
 					"append_action": "OVERWRITE_IF_EXISTS_OR_ADD",
@@ -1050,30 +1052,8 @@ func buildConnectorEnvoyPatches(
 				return nil, fmt.Errorf("failed to marshal request headers: %w", err)
 			}
 
-			// Per-route metadata used later by tcp_proxy tunneling_config via %DYNAMIC_METADATA(tunnel:...)%.
-			tunnelMetaJSON, err := json.Marshal(map[string]any{
-				"host":        backend.targetHost,
-				"port":        backend.targetPort,
-				"endpoint_id": backend.nodeID,
-			})
-			if err != nil {
-				return nil, fmt.Errorf("failed to marshal tunnel metadata: %w", err)
-			}
-
 			patches = append(patches,
-				// 1) Write per-route metadata under metadata.filter_metadata.tunnel
-				// (do NOT replace /metadata as a whole, Envoy Gateway uses it too).
-				envoygatewayv1alpha1.EnvoyJSONPatchConfig{
-					Type: "type.googleapis.com/envoy.config.route.v3.RouteConfiguration",
-					Name: routeConfigName,
-					Operation: envoygatewayv1alpha1.JSONPatchOperation{
-						Op:       metadataOp,
-						JSONPath: ptr.To(jsonPath),
-						Path:     ptr.To("/metadata/filter_metadata/tunnel"),
-						Value:    &apiextensionsv1.JSON{Raw: tunnelMetaJSON},
-					},
-				},
-				// 2) Send matched requests to the internal tunnel listener.
+				// 1) Send matched requests to the iroh-gateway cluster.
 				envoygatewayv1alpha1.EnvoyJSONPatchConfig{
 					Type: "type.googleapis.com/envoy.config.route.v3.RouteConfiguration",
 					Name: routeConfigName,
@@ -1084,7 +1064,7 @@ func buildConnectorEnvoyPatches(
 						Value:    &apiextensionsv1.JSON{Raw: clusterJSON},
 					},
 				},
-				// 3) Inject internal control headers based on the selected route/backend.
+				// 2) Inject internal control headers based on the selected route/backend.
 				//    The client does not send these.
 				envoygatewayv1alpha1.EnvoyJSONPatchConfig{
 					Type: "type.googleapis.com/envoy.config.route.v3.RouteConfiguration",

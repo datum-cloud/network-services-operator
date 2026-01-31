@@ -27,6 +27,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	gatewayv1alpha2 "sigs.k8s.io/gateway-api/apis/v1alpha2"
@@ -508,7 +509,52 @@ func (r *HTTPProxyReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 		For(&networkingv1alpha.HTTPProxy{}).
 		Owns(&gatewayv1.Gateway{}).
 		Owns(&gatewayv1.HTTPRoute{}).
-		Owns(&discoveryv1.EndpointSlice{})
+		Owns(&discoveryv1.EndpointSlice{}).
+		// Watch Connectors and reconcile HTTPProxies that reference them.
+		// This ensures EnvoyPatchPolicy headers are updated when a Connector's
+		// publicKey.id changes (e.g., after connector restart/reconnect).
+		Watches(
+			&networkingv1alpha1.Connector{},
+			func(clusterName string, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
+				return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []mcreconcile.Request {
+					logger := log.FromContext(ctx)
+
+					connector, ok := obj.(*networkingv1alpha1.Connector)
+					if !ok {
+						return nil
+					}
+
+					// List all HTTPProxies in the same namespace
+					var httpProxies networkingv1alpha.HTTPProxyList
+					if err := cl.GetClient().List(ctx, &httpProxies, client.InNamespace(connector.Namespace)); err != nil {
+						logger.Error(err, "failed to list HTTPProxies for Connector watch", "connector", connector.Name)
+						return nil
+					}
+
+					var requests []mcreconcile.Request
+					for i := range httpProxies.Items {
+						httpProxy := &httpProxies.Items[i]
+						// Check if this HTTPProxy references the changed Connector
+						if httpProxyReferencesConnector(httpProxy, connector.Name) {
+							requests = append(requests, mcreconcile.Request{
+								ClusterName: clusterName,
+								Request: ctrl.Request{
+									NamespacedName: client.ObjectKeyFromObject(httpProxy),
+								},
+							})
+						}
+					}
+
+					if len(requests) > 0 {
+						logger.Info("Connector changed, requeueing HTTPProxies",
+							"connector", connector.Name,
+							"httpProxyCount", len(requests))
+					}
+
+					return requests
+				})
+			},
+		)
 
 	if r.DownstreamCluster != nil {
 		downstreamPolicySource := mcsource.TypedKind(
@@ -521,6 +567,19 @@ func (r *HTTPProxyReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	}
 
 	return builder.Named("httpproxy").Complete(r)
+}
+
+// httpProxyReferencesConnector checks if an HTTPProxy has any backends
+// that reference the given Connector name.
+func httpProxyReferencesConnector(httpProxy *networkingv1alpha.HTTPProxy, connectorName string) bool {
+	for _, rule := range httpProxy.Spec.Rules {
+		for _, backend := range rule.Backends {
+			if backend.Connector != nil && backend.Connector.Name == connectorName {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (r *HTTPProxyReconciler) collectDesiredResources(

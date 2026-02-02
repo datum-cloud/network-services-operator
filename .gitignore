@@ -21,8 +21,16 @@
 go.work
 go.work.sum
 
-# env file
+# env files
 .env
+.env.local
+.env*.local
 
 bin/
 config/**/charts
+
+ui/node_modules
+ui/.next
+
+.task/
+.test-infra/

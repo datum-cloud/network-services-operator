@@ -1,0 +1,284 @@
+version: '3'
+
+includes:
+  infra:
+    taskfile: https://raw.githubusercontent.com/datum-cloud/test-infra/main/Taskfile.yml
+    optional: true
+  ui:
+    taskfile: ui/Taskfile.yml
+    dir: ui
+
+vars:
+  NAMESPACE: network-services-operator-system
+  OPERATOR_IMAGE: '{{.OPERATOR_IMAGE | default "ghcr.io/datum-cloud/network-services-operator:latest"}}'
+  UI_IMAGE: '{{.UI_IMAGE | default "ghcr.io/datum-cloud/network-services-operator-ui:latest"}}'
+
+tasks:
+  default:
+    desc: Show available tasks
+    cmds:
+      - task --list
+
+  build:
+    desc: Build the operator docker image
+    cmds:
+      - docker build -t {{.OPERATOR_IMAGE}} .
+
+  build:ui:
+    desc: Build the UI docker image
+    dir: ui
+    cmds:
+      - docker build -t {{.UI_IMAGE}} .
+
+  load:
+    desc: Load operator image into KIND cluster
+    cmds:
+      - task: infra:kind-load-image
+        vars:
+          IMAGES: '{{.OPERATOR_IMAGE}}'
+
+  load:ui:
+    desc: Load UI image into KIND cluster
+    cmds:
+      - task: infra:kind-load-image
+        vars:
+          IMAGES: '{{.UI_IMAGE}}'
+
+  deploy:
+    desc: Deploy network-services-operator to the cluster
+    cmds:
+      - task: deploy:deps
+      - task: deploy:operator
+      - task: deploy:ui
+      - task: wait
+
+  deploy:deps:
+    desc: Install operator dependencies (cert-manager, envoy-gateway)
+    cmds:
+      - task: infra:install-cert-manager
+      - task: infra:install-envoy-gateway-operator
+
+  deploy:operator:
+    desc: Deploy the network-services-operator
+    cmds:
+      - kubectl apply -k config/default --server-side
+      - kubectl wait --for=condition=Available deployment/network-services-operator-controller-manager -n {{.NAMESPACE}} --timeout=300s
+
+  deploy:ui:
+    desc: Deploy the Edge Gateway UI
+    cmds:
+      - kubectl apply -k config/ui --server-side
+      - kubectl wait --for=condition=Available deployment/edge-gateway-ui -n {{.NAMESPACE}} --timeout=300s
+
+  undeploy:
+    desc: Remove operator and UI from the cluster
+    cmds:
+      - kubectl delete -k config/ui --ignore-not-found
+      - kubectl delete -k config/default --ignore-not-found
+
+  undeploy:deps:
+    desc: Remove dependencies (prefer 'task infra:cluster-down' for full teardown)
+    cmds:
+      - helm uninstall eg -n envoy-gateway-system --ignore-not-found || true
+      - kubectl delete namespace envoy-gateway-system --ignore-not-found
+      - kubectl delete namespace cert-manager --ignore-not-found
+
+  status:
+    desc: Check deployment status
+    cmds:
+      - echo "=== Operator Status ==="
+      - kubectl get deployments -n {{.NAMESPACE}}
+      - echo ""
+      - echo "=== Pods ==="
+      - kubectl get pods -n {{.NAMESPACE}}
+      - echo ""
+      - echo "=== CRDs ==="
+      - kubectl get crds | grep datumapis || echo "No CRDs found"
+
+  wait:
+    desc: Wait for all deployments to be ready
+    cmds:
+      - kubectl wait --for=condition=Available deployment --all -n {{.NAMESPACE}} --timeout=300s
+
+  logs:
+    desc: View operator logs
+    cmds:
+      - kubectl logs -f deployment/network-services-operator-controller-manager -n {{.NAMESPACE}} -c manager
+
+  logs:ui:
+    desc: View UI logs
+    cmds:
+      - kubectl logs -f deployment/edge-gateway-ui -n {{.NAMESPACE}}
+
+  port-forward:ui:
+    desc: Port-forward the UI to localhost:8080
+    cmds:
+      - kubectl port-forward svc/edge-gateway-ui 8080:3000 -n {{.NAMESPACE}}
+
+  # Test environment setup tasks
+  setup:
+    desc: Create a new KIND cluster and deploy everything from scratch
+    cmds:
+      - task: infra:cluster-up
+      - task: build
+      - task: build:ui
+      - task: load
+      - task: load:ui
+      - task: deploy:operator
+      - task: deploy:ui
+      - task: wait
+      - cmd: echo "Environment ready!"
+      - cmd: 'echo "Access UI: task port-forward:ui"'
+
+  teardown:
+    desc: Tear down the entire environment (cluster and all)
+    cmds:
+      - task: infra:cluster-down
+
+  test:setup:
+    desc: Deploy operator and UI to an existing cluster
+    cmds:
+      - task: deploy:deps
+      - task: deploy:operator
+      - task: deploy:ui
+      - task: wait
+      - cmd: echo "Test environment ready!"
+      - cmd: 'echo "Access UI at: kubectl port-forward svc/network-services-operator-edge-gateway-ui 8080:80 -n {{.NAMESPACE}}"'
+
+  test:teardown:
+    desc: Remove operator and UI (keeps cluster running)
+    cmds:
+      - task: undeploy
+      - task: undeploy:deps
+
+  # kubectl-proxies plugin tasks
+  build:kubectl-proxies:
+    desc: Build the kubectl-proxies plugin
+    cmds:
+      - go build -o bin/kubectl-proxies ./cmd/kubectl-proxies
+
+  install:kubectl-proxies:
+    desc: Install kubectl-proxies plugin to GOBIN
+    deps:
+      - build:kubectl-proxies
+    cmds:
+      - cp bin/kubectl-proxies {{.GOBIN}}/kubectl-proxies
+    vars:
+      GOBIN:
+        sh: go env GOBIN || echo "$(go env GOPATH)/bin"
+
+  # Federation testing tasks
+  federation:setup:
+    desc: Setup KIND cluster with Karmada federation
+    cmds:
+      - .test-infra/federation/setup.sh
+
+  federation:teardown:
+    desc: Delete federation test cluster
+    cmds:
+      - .test-infra/federation/teardown.sh
+
+  federation:deploy:
+    desc: Deploy federation component to Karmada
+    cmds:
+      - kubectl apply -k config/components/federation --server-side
+
+  federation:status:
+    desc: Check federation status
+    cmds:
+      - echo "=== Karmada Clusters ==="
+      - kubectl get clusters -A 2>/dev/null || echo "Karmada not installed or no clusters registered"
+      - echo ""
+      - echo "=== Propagation Policies ==="
+      - kubectl get clusterpropagationpolicies 2>/dev/null || echo "No propagation policies found"
+      - echo ""
+      - echo "=== Resource Interpreters ==="
+      - kubectl get resourceinterpretercustomizations 2>/dev/null || echo "No resource interpreters found"
+
+  e2e:federation:
+    desc: Run E2E tests with federation
+    cmds:
+      - task: federation:setup
+      - task: build
+      - task: load
+        vars:
+          CLUSTER_NAME: federation-test
+      - cmd: kubectl apply -k config/overlays/e2e-federation --server-side
+      - cmd: kubectl wait --for=condition=Available deployment/network-services-operator-controller-manager -n {{.NAMESPACE}} --timeout=300s
+      - cmd: echo "Federation E2E environment ready!"
+      - cmd: 'echo "Run tests with: go test ./test/e2e/... -tags=federation"'
+
+  # Validation tasks
+  validate-kustomizations:
+    desc: Validate all kustomization.yaml files using kustomize build
+    cmds:
+      - echo "# Kustomize Validation Results"
+      - echo ""
+      - |
+        HAS_ERRORS=0
+        KUSTOMIZATION_DIRS=$(find . -name "kustomization.yaml" -exec dirname {} \;)
+        for dir in $KUSTOMIZATION_DIRS; do
+          echo "🔍 Validating: $dir"
+          if ! OUTPUT=$(kustomize build "$dir" --enable-helm 2>&1); then
+            echo ""
+            echo "❌ Error in '$dir':"
+            echo "----------------------------------------"
+            echo "$OUTPUT"
+            echo "----------------------------------------"
+            echo ""
+            HAS_ERRORS=1
+          else
+            echo "✅ $dir is valid"
+          fi
+        done
+        if [ "$HAS_ERRORS" -eq 1 ]; then
+          echo ""
+          echo "🚨 One or more kustomizations failed validation."
+          exit 1
+        else
+          echo ""
+          echo "🎉 All kustomizations are valid."
+        fi
+    silent: false
+
+  test-prometheus-rules:
+    desc: Run unit tests for Prometheus alerting rules
+    cmds:
+      - echo "# Prometheus Rules Test Results"
+      - echo ""
+      - |
+        HAS_ERRORS=0
+        TEST_FILES=$(find test/prometheus-rules -name "*-tests.yaml" 2>/dev/null)
+
+        if [ -z "$TEST_FILES" ]; then
+          echo "⚠️  No Prometheus test files found in test/prometheus-rules/"
+          exit 0
+        fi
+
+        for test_file in $TEST_FILES; do
+          test_dir=$(dirname "$test_file")
+          test_name=$(basename "$test_file")
+          echo "🔍 Testing: $test_file"
+
+          if ! OUTPUT=$(cd "$test_dir" && promtool test rules "$test_name" 2>&1); then
+            echo ""
+            echo "❌ Test failed for '$test_file':"
+            echo "----------------------------------------"
+            echo "$OUTPUT"
+            echo "----------------------------------------"
+            echo ""
+            HAS_ERRORS=1
+          else
+            echo "✅ $test_file passed"
+          fi
+        done
+
+        if [ "$HAS_ERRORS" -eq 1 ]; then
+          echo ""
+          echo "🚨 One or more Prometheus rule tests failed."
+          exit 1
+        else
+          echo ""
+          echo "🎉 All Prometheus rule tests passed."
+        fi
+    silent: false

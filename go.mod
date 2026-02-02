@@ -14,6 +14,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/onsi/ginkgo/v2 v2.23.4
 	github.com/openrdap/rdap v0.9.1
+	github.com/spf13/cobra v1.9.1
 	github.com/stretchr/testify v1.10.0
 	go.miloapis.com/milo v0.1.0
 	golang.org/x/net v0.42.0
@@ -22,11 +23,13 @@ require (
 	k8s.io/api v0.34.1
 	k8s.io/apiextensions-apiserver v0.34.1
 	k8s.io/apimachinery v0.34.1
+	k8s.io/cli-runtime v0.34.1
 	k8s.io/client-go v0.34.1
 	k8s.io/utils v0.0.0-20250604170112-4c0f3b243397
 	sigs.k8s.io/controller-runtime v0.22.1
 	sigs.k8s.io/gateway-api v1.3.1-0.20250527223622-54df0a899c1c
 	sigs.k8s.io/multicluster-runtime v0.21.0-alpha.8
+	sigs.k8s.io/yaml v1.6.0
 )
 
 require (
@@ -227,7 +230,6 @@ require (
 	github.com/sourcegraph/conc v0.3.0 // indirect
 	github.com/spf13/afero v1.14.0 // indirect
 	github.com/spf13/cast v1.7.1 // indirect
-	github.com/spf13/cobra v1.9.1 // indirect
 	github.com/spf13/pflag v1.0.7 // indirect
 	github.com/spf13/viper v1.20.1 // indirect
 	github.com/stoewer/go-strcase v1.3.1 // indirect
@@ -294,7 +296,6 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	helm.sh/helm/v3 v3.18.4 // indirect
 	k8s.io/apiserver v0.34.1 // indirect
-	k8s.io/cli-runtime v0.34.1 // indirect
 	k8s.io/component-base v0.34.1 // indirect
 	k8s.io/klog/v2 v2.130.1 // indirect
 	k8s.io/kube-openapi v0.0.0-20250710124328-f3f2b991d03b // indirect
@@ -310,5 +311,4 @@ require (
 	sigs.k8s.io/mcs-api v0.2.0 // indirect
 	sigs.k8s.io/randfill v1.0.0 // indirect
 	sigs.k8s.io/structured-merge-diff/v6 v6.3.0 // indirect
-	sigs.k8s.io/yaml v1.6.0 // indirect
 )

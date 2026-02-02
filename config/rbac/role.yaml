@@ -7,10 +7,55 @@ rules:
 - apiGroups:
   - ""
   resources:
-  - namespaces
+  - configmaps
+  - secrets
   verbs:
+  - create
+  - delete
   - get
   - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - gateway.envoyproxy.io
+  resources:
+  - backends
+  - backendtrafficpolicies
+  - securitypolicies
+  - httproutefilters
+  - envoypatchpolicies
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - gateway.envoyproxy.io
+  resources:
+  - backends/status
+  - backendtrafficpolicies/status
+  - securitypolicies/status
+  - httproutefilters/status
+  - envoypatchpolicies/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - ""
+  resources:
+  - namespaces
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
   - watch
 - apiGroups:
   - ""

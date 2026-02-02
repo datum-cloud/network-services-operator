@@ -1,0 +1,80 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/name: edge-gateway-ui
+    app.kubernetes.io/component: ui
+    app.kubernetes.io/part-of: network-services-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: edge-gateway-ui
+rules:
+# Read access to namespaces
+- apiGroups:
+  - ""
+  resources:
+  - namespaces
+  verbs:
+  - get
+  - list
+# Full access to user-managed CRDs
+- apiGroups:
+  - networking.datumapis.com
+  resources:
+  - httpproxies
+  - domains
+  - trafficprotectionpolicies
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - update
+  - delete
+# Read-only access to connector resources
+- apiGroups:
+  - networking.datumapis.com
+  resources:
+  - connectors
+  - connectoradvertisements
+  verbs:
+  - get
+  - list
+  - watch
+# Read-only access to Gateway API resources (derived from HTTPProxy)
+- apiGroups:
+  - gateway.networking.k8s.io
+  resources:
+  - gateways
+  - httproutes
+  verbs:
+  - get
+  - list
+  - watch
+# Read-only access to EndpointSlices (derived from HTTPProxy)
+- apiGroups:
+  - discovery.k8s.io
+  resources:
+  - endpointslices
+  verbs:
+  - get
+  - list
+  - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  labels:
+    app.kubernetes.io/name: edge-gateway-ui
+    app.kubernetes.io/component: ui
+    app.kubernetes.io/part-of: network-services-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: edge-gateway-ui
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: edge-gateway-ui
+subjects:
+- kind: ServiceAccount
+  name: edge-gateway-ui
+  namespace: network-services-operator-system

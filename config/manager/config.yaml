@@ -2,4 +2,15 @@ apiVersion: apiserver.config.datumapis.com/v1alpha1
 kind: NetworkServicesOperator
 gateway:
   targetDomain: example.com
-  permitCertificateRefs: true
+  downstreamGatewayClassName: merged-gateway
+  downstreamGatewayNamespace: envoy-gateway-system
+  # Disable challenge deletion since it's causing cache sync issues
+  deleteErroredChallenges: false
+  # Permit the certificate-issuer TLS option used for auto-certificate management
+  permittedTLSOptions:
+    gateway.networking.datumapis.com/certificate-issuer: []
+  # Empty resource list to disable replicator
+  resourceReplicator:
+    resources: []
+  httpRoutes:
+    allowServiceBackends: true

@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"testing"
@@ -475,6 +476,67 @@ func TestHTTPProxyReconcile(t *testing.T) {
 				assert.NoError(t, err)
 				assert.Len(t, patchList.Items, 1)
 				assert.Equal(t, fmt.Sprintf("connector-%s", httpProxy.Name), patchList.Items[0].Name)
+			},
+		},
+		{
+			name:              "connector not ready uses direct response",
+			httpProxy:         connectorHTTPProxy,
+			downstreamObjects: connectorDownstreamObjects(connectorHTTPProxy),
+			namespaceUID:      string(connectorNamespaceUID),
+			existingObjects: []client.Object{
+				&networkingv1alpha1.Connector{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "connector-1",
+						Namespace: "test",
+					},
+					Status: networkingv1alpha1.ConnectorStatus{
+						Conditions: []metav1.Condition{
+							{
+								Type:   networkingv1alpha1.ConnectorConditionReady,
+								Status: metav1.ConditionFalse,
+								Reason: networkingv1alpha1.ConnectorReasonNotReady,
+							},
+						},
+					},
+				},
+			},
+			postCreateGatewayStatus: func(g *gatewayv1.Gateway) {
+				apimeta.SetStatusCondition(&g.Status.Conditions, metav1.Condition{
+					Type:               string(gatewayv1.GatewayConditionProgrammed),
+					Status:             metav1.ConditionTrue,
+					ObservedGeneration: g.Generation,
+					Reason:             string(gatewayv1.GatewayReasonProgrammed),
+				})
+			},
+			expectedError: false,
+			expectedConditions: []metav1.Condition{
+				{
+					Type:   networkingv1alpha.HTTPProxyConditionAccepted,
+					Status: metav1.ConditionTrue,
+					Reason: networkingv1alpha.HTTPProxyReasonAccepted,
+				},
+				{
+					Type:   networkingv1alpha.HTTPProxyConditionProgrammed,
+					Status: metav1.ConditionFalse,
+					Reason: networkingv1alpha.HTTPProxyReasonPending,
+				},
+			},
+			assert: func(t *testContext, cl client.Client, httpProxy *networkingv1alpha.HTTPProxy) {
+				var patchList envoygatewayv1alpha1.EnvoyPatchPolicyList
+				err := t.downstreamClient.List(context.Background(), &patchList)
+				assert.NoError(t, err)
+				if assert.Len(t, patchList.Items, 1) {
+					found := false
+					for _, patch := range patchList.Items[0].Spec.JSONPatches {
+						if ptr.Deref(patch.Operation.Path, "") == "/direct_response" &&
+							patch.Operation.Value != nil &&
+							bytes.Contains(patch.Operation.Value.Raw, []byte("Tunnel not online")) {
+							found = true
+							break
+						}
+					}
+					assert.True(t, found, "expected direct response patch for connector not ready")
+				}
 			},
 		},
 		{

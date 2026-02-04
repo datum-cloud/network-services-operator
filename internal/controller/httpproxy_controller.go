@@ -829,6 +829,9 @@ type connectorBackendPatch struct {
 	targetHost string
 	targetPort int
 	nodeID     string
+
+	// Whether the referenced Connector is ready to accept traffic.
+	connectorReady bool
 }
 
 func (r *HTTPProxyReconciler) reconcileConnectorEnvoyPatchPolicy(
@@ -1034,18 +1037,19 @@ func collectConnectorBackends(
 					return nil, err
 				}
 
-				nodeID, err := connectorNodeID(ctx, cl, httpProxy.Namespace, backend.Connector.Name)
+				connectorReady, nodeID, err := connectorPatchDetails(ctx, cl, httpProxy.Namespace, backend.Connector.Name)
 				if err != nil {
 					return nil, err
 				}
 
 				connectorBackends = append(connectorBackends, connectorBackendPatch{
-					sectionName: nil,
-					ruleIndex:   ruleIndex,
-					matchIndex:  matchIndex,
-					targetHost:  targetHost,
-					targetPort:  targetPort,
-					nodeID:      nodeID,
+					sectionName:    nil,
+					ruleIndex:      ruleIndex,
+					matchIndex:     matchIndex,
+					targetHost:     targetHost,
+					targetPort:     targetPort,
+					nodeID:         nodeID,
+					connectorReady: connectorReady,
 				})
 			}
 		}
@@ -1078,20 +1082,25 @@ func backendEndpointTarget(backend networkingv1alpha.HTTPProxyRuleBackend) (stri
 	return targetHost, targetPort, nil
 }
 
-func connectorNodeID(ctx context.Context, cl client.Client, namespace, name string) (string, error) {
+func connectorPatchDetails(ctx context.Context, cl client.Client, namespace, name string) (bool, string, error) {
 	var connector networkingv1alpha1.Connector
 	if err := cl.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, &connector); err != nil {
-		return "", err
+		return false, "", err
+	}
+
+	ready := apimeta.IsStatusConditionTrue(connector.Status.Conditions, networkingv1alpha1.ConnectorConditionReady)
+	if !ready {
+		return false, "", nil
 	}
 
 	details := connector.Status.ConnectionDetails
 	if details == nil || details.Type != networkingv1alpha1.PublicKeyConnectorConnectionType || details.PublicKey == nil {
-		return "", fmt.Errorf("connector %q does not have public key connection details", name)
+		return false, "", fmt.Errorf("connector %q does not have public key connection details", name)
 	}
 	if details.PublicKey.Id == "" {
-		return "", fmt.Errorf("connector %q public key id is empty", name)
+		return false, "", fmt.Errorf("connector %q public key id is empty", name)
 	}
-	return details.PublicKey.Id, nil
+	return true, details.PublicKey.Id, nil
 }
 
 func buildConnectorEnvoyPatches(
@@ -1113,6 +1122,29 @@ func buildConnectorEnvoyPatches(
 		return nil, fmt.Errorf("failed to marshal cluster name: %w", err)
 	}
 
+	directResponseJSON, err := json.Marshal(map[string]any{
+		"status": 503,
+		"body": map[string]any{
+			"inline_string": "Tunnel not online",
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal direct response body: %w", err)
+	}
+
+	responseHeadersJSON, err := json.Marshal([]map[string]any{
+		{
+			"header": map[string]any{
+				"key":   "content-type",
+				"value": "text/plain; charset=utf-8",
+			},
+			"append_action": "OVERWRITE_IF_EXISTS_OR_ADD",
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal response headers: %w", err)
+	}
+
 	for _, routeConfigName := range routeConfigNames {
 		for _, backend := range backends {
 			jsonPath := connectorRouteJSONPath(
@@ -1123,6 +1155,42 @@ func buildConnectorEnvoyPatches(
 				backend.ruleIndex,
 				backend.matchIndex,
 			)
+
+			if !backend.connectorReady {
+				patches = append(patches,
+					// Replace routing with a direct response when the connector is offline.
+					envoygatewayv1alpha1.EnvoyJSONPatchConfig{
+						Type: "type.googleapis.com/envoy.config.route.v3.RouteConfiguration",
+						Name: routeConfigName,
+						Operation: envoygatewayv1alpha1.JSONPatchOperation{
+							Op:       envoygatewayv1alpha1.JSONPatchOperationType("remove"),
+							JSONPath: ptr.To(jsonPath),
+							Path:     ptr.To("/route"),
+						},
+					},
+					envoygatewayv1alpha1.EnvoyJSONPatchConfig{
+						Type: "type.googleapis.com/envoy.config.route.v3.RouteConfiguration",
+						Name: routeConfigName,
+						Operation: envoygatewayv1alpha1.JSONPatchOperation{
+							Op:       headersOp,
+							JSONPath: ptr.To(jsonPath),
+							Path:     ptr.To("/direct_response"),
+							Value:    &apiextensionsv1.JSON{Raw: directResponseJSON},
+						},
+					},
+					envoygatewayv1alpha1.EnvoyJSONPatchConfig{
+						Type: "type.googleapis.com/envoy.config.route.v3.RouteConfiguration",
+						Name: routeConfigName,
+						Operation: envoygatewayv1alpha1.JSONPatchOperation{
+							Op:       headersOp,
+							JSONPath: ptr.To(jsonPath),
+							Path:     ptr.To("/response_headers_to_add"),
+							Value:    &apiextensionsv1.JSON{Raw: responseHeadersJSON},
+						},
+					},
+				)
+				continue
+			}
 
 			headersJSON, err := json.Marshal([]map[string]any{
 				{

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"net/url"
 	"slices"
 	"strconv"
@@ -53,12 +54,14 @@ type HTTPProxyReconciler struct {
 }
 
 type desiredHTTPProxyResources struct {
-	gateway        *gatewayv1.Gateway
-	httpRoute      *gatewayv1.HTTPRoute
-	endpointSlices []*discoveryv1.EndpointSlice
+	gateway          *gatewayv1.Gateway
+	httpRoute        *gatewayv1.HTTPRoute
+	endpointSlices   []*discoveryv1.EndpointSlice
+	httpRouteFilters []*envoygatewayv1alpha1.HTTPRouteFilter
 }
 
 const httpProxyFinalizer = "networking.datumapis.com/httpproxy-cleanup"
+const connectorOfflineFilterPrefix = "connector-offline"
 
 const (
 	SchemeHTTP  = "http"
@@ -72,6 +75,7 @@ const (
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=httpproxies/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=httpproxies/finalizers,verbs=update
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=connectors,verbs=get;list;watch
+// +kubebuilder:rbac:groups=gateway.envoyproxy.io,resources=httproutefilters,verbs=get;list;watch;create;update;patch;delete
 
 func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (_ ctrl.Result, err error) {
 	logger := log.FromContext(ctx, "cluster", req.ClusterName)
@@ -166,7 +170,7 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 		}
 	}()
 
-	desiredResources, err := r.collectDesiredResources(&httpProxy)
+	desiredResources, err := r.collectDesiredResources(ctx, cl.GetClient(), &httpProxy)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to collect desired resources: %w", err)
 	}
@@ -218,6 +222,27 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 	logger.Info("processed gateway", "name", gateway.Name, "result", result)
 
 	// Maintain an HTTPRoute for all rules in the HTTPProxy
+
+	if len(desiredResources.httpRouteFilters) == 0 {
+		if err := cleanupConnectorOfflineHTTPRouteFilter(ctx, cl.GetClient(), &httpProxy); err != nil {
+			return ctrl.Result{}, err
+		}
+	} else {
+		for _, desiredFilter := range desiredResources.httpRouteFilters {
+			httpRouteFilter := desiredFilter.DeepCopy()
+			result, err := controllerutil.CreateOrUpdate(ctx, cl.GetClient(), httpRouteFilter, func() error {
+				if err := controllerutil.SetControllerReference(&httpProxy, httpRouteFilter, cl.GetScheme()); err != nil {
+					return fmt.Errorf("failed to set controller on HTTPRouteFilter: %w", err)
+				}
+				httpRouteFilter.Spec = desiredFilter.Spec
+				return nil
+			})
+			if err != nil {
+				return ctrl.Result{}, fmt.Errorf("failed updating httproutefilter resource: %w", err)
+			}
+			logger.Info("processed httproutefilter", "name", httpRouteFilter.Name, "result", result)
+		}
+	}
 
 	httpRoute := desiredResources.httpRoute.DeepCopy()
 
@@ -583,6 +608,8 @@ func httpProxyReferencesConnector(httpProxy *networkingv1alpha.HTTPProxy, connec
 }
 
 func (r *HTTPProxyReconciler) collectDesiredResources(
+	ctx context.Context,
+	cl client.Client,
 	httpProxy *networkingv1alpha.HTTPProxy,
 ) (*desiredHTTPProxyResources, error) {
 
@@ -649,10 +676,13 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 	}
 
 	var desiredEndpointSlices []*discoveryv1.EndpointSlice
+	var desiredRouteFilters []*envoygatewayv1alpha1.HTTPRouteFilter
 
 	desiredRouteRules := make([]gatewayv1.HTTPRouteRule, len(httpProxy.Spec.Rules))
 	for ruleIndex, rule := range httpProxy.Spec.Rules {
+		ruleFilters := slices.Clone(rule.Filters)
 		backendRefs := make([]gatewayv1.HTTPBackendRef, len(rule.Backends))
+		offlineRuleSet := false
 
 		// Validation will prevent this from occurring, unless the maximum items for
 		// backends is adjusted. The following error has been placed here so that
@@ -663,6 +693,35 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 		}
 
 		for backendIndex, backend := range rule.Backends {
+			if backend.Connector != nil {
+				ready, err := connectorReady(ctx, cl, httpProxy.Namespace, backend.Connector.Name)
+				if err != nil {
+					return nil, err
+				}
+				if !ready {
+					filterName := connectorOfflineFilterName(httpProxy)
+					ruleFilters = append(ruleFilters, gatewayv1.HTTPRouteFilter{
+						Type: gatewayv1.HTTPRouteFilterExtensionRef,
+						ExtensionRef: &gatewayv1.LocalObjectReference{
+							Group: envoygatewayv1alpha1.GroupName,
+							Kind:  envoygatewayv1alpha1.KindHTTPRouteFilter,
+							Name:  gatewayv1.ObjectName(filterName),
+						},
+					})
+					desiredRouteRules[ruleIndex] = gatewayv1.HTTPRouteRule{
+						Name:        rule.Name,
+						Matches:     rule.Matches,
+						Filters:     ruleFilters,
+						BackendRefs: nil,
+					}
+					if len(desiredRouteFilters) == 0 {
+						desiredRouteFilters = append(desiredRouteFilters, buildConnectorOfflineHTTPRouteFilter(httpProxy))
+					}
+					offlineRuleSet = true
+					break
+				}
+			}
+
 			appProtocol := SchemeHTTP
 			backendPort := DefaultHTTPPort
 
@@ -714,15 +773,15 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 				}
 				// Use tls.hostname for the Host header rewrite
 				hostnameRewriteFound := false
-				for i, filter := range rule.Filters {
+				for i, filter := range ruleFilters {
 					if filter.Type == gatewayv1.HTTPRouteFilterURLRewrite {
-						rule.Filters[i].URLRewrite.Hostname = ptr.To(gatewayv1.PreciseHostname(*backend.TLS.Hostname))
+						ruleFilters[i].URLRewrite.Hostname = ptr.To(gatewayv1.PreciseHostname(*backend.TLS.Hostname))
 						hostnameRewriteFound = true
 						break
 					}
 				}
 				if !hostnameRewriteFound {
-					rule.Filters = append(rule.Filters, gatewayv1.HTTPRouteFilter{
+					ruleFilters = append(ruleFilters, gatewayv1.HTTPRouteFilter{
 						Type: gatewayv1.HTTPRouteFilterURLRewrite,
 						URLRewrite: &gatewayv1.HTTPURLRewriteFilter{
 							Hostname: ptr.To(gatewayv1.PreciseHostname(*backend.TLS.Hostname)),
@@ -732,16 +791,16 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 			} else if !isIPAddress && backend.Connector == nil {
 				// For FQDN endpoints, rewrite the Host header to match the backend hostname
 				hostnameRewriteFound := false
-				for i, filter := range rule.Filters {
+				for i, filter := range ruleFilters {
 					if filter.Type == gatewayv1.HTTPRouteFilterURLRewrite {
-						rule.Filters[i].URLRewrite.Hostname = ptr.To(gatewayv1.PreciseHostname(host))
+						ruleFilters[i].URLRewrite.Hostname = ptr.To(gatewayv1.PreciseHostname(host))
 						hostnameRewriteFound = true
 						break
 					}
 				}
 
 				if !hostnameRewriteFound {
-					rule.Filters = append(rule.Filters, gatewayv1.HTTPRouteFilter{
+					ruleFilters = append(ruleFilters, gatewayv1.HTTPRouteFilter{
 						Type: gatewayv1.HTTPRouteFilterURLRewrite,
 						URLRewrite: &gatewayv1.HTTPURLRewriteFilter{
 							Hostname: ptr.To(gatewayv1.PreciseHostname(host)),
@@ -793,10 +852,14 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 			}
 		}
 
+		if offlineRuleSet {
+			continue
+		}
+
 		desiredRouteRules[ruleIndex] = gatewayv1.HTTPRouteRule{
 			Name:        rule.Name,
 			Matches:     rule.Matches,
-			Filters:     rule.Filters,
+			Filters:     ruleFilters,
 			BackendRefs: backendRefs,
 		}
 	}
@@ -804,9 +867,10 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 	httpRoute.Spec.Rules = desiredRouteRules
 
 	return &desiredHTTPProxyResources{
-		gateway:        gateway,
-		httpRoute:      httpRoute,
-		endpointSlices: desiredEndpointSlices,
+		gateway:          gateway,
+		httpRoute:        httpRoute,
+		endpointSlices:   desiredEndpointSlices,
+		httpRouteFilters: desiredRouteFilters,
 	}, nil
 }
 
@@ -829,9 +893,6 @@ type connectorBackendPatch struct {
 	targetHost string
 	targetPort int
 	nodeID     string
-
-	// Whether the referenced Connector is ready to accept traffic.
-	connectorReady bool
 }
 
 func (r *HTTPProxyReconciler) reconcileConnectorEnvoyPatchPolicy(
@@ -974,6 +1035,18 @@ func (r *HTTPProxyReconciler) cleanupConnectorEnvoyPatchPolicy(
 	return downstreamStrategy.DeleteAnchorForObject(ctx, httpProxy)
 }
 
+func cleanupConnectorOfflineHTTPRouteFilter(ctx context.Context, cl client.Client, httpProxy *networkingv1alpha.HTTPProxy) error {
+	filterKey := client.ObjectKey{Namespace: httpProxy.Namespace, Name: connectorOfflineFilterName(httpProxy)}
+	var filter envoygatewayv1alpha1.HTTPRouteFilter
+	if err := cl.Get(ctx, filterKey, &filter); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		return err
+	}
+	return cl.Delete(ctx, &filter)
+}
+
 func downstreamPatchPolicyReady(policy *envoygatewayv1alpha1.EnvoyPatchPolicy, gatewayClassName string) (bool, string) {
 	if policy == nil {
 		return false, "Downstream EnvoyPatchPolicy not found"
@@ -1041,15 +1114,17 @@ func collectConnectorBackends(
 				if err != nil {
 					return nil, err
 				}
+				if !connectorReady {
+					continue
+				}
 
 				connectorBackends = append(connectorBackends, connectorBackendPatch{
-					sectionName:    nil,
-					ruleIndex:      ruleIndex,
-					matchIndex:     matchIndex,
-					targetHost:     targetHost,
-					targetPort:     targetPort,
-					nodeID:         nodeID,
-					connectorReady: connectorReady,
+					sectionName: nil,
+					ruleIndex:   ruleIndex,
+					matchIndex:  matchIndex,
+					targetHost:  targetHost,
+					targetPort:  targetPort,
+					nodeID:      nodeID,
 				})
 			}
 		}
@@ -1080,6 +1155,37 @@ func backendEndpointTarget(backend networkingv1alpha.HTTPProxyRuleBackend) (stri
 	}
 
 	return targetHost, targetPort, nil
+}
+
+func connectorOfflineFilterName(httpProxy *networkingv1alpha.HTTPProxy) string {
+	return fmt.Sprintf("%s-%s", connectorOfflineFilterPrefix, httpProxy.Name)
+}
+
+func buildConnectorOfflineHTTPRouteFilter(httpProxy *networkingv1alpha.HTTPProxy) *envoygatewayv1alpha1.HTTPRouteFilter {
+	return &envoygatewayv1alpha1.HTTPRouteFilter{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: httpProxy.Namespace,
+			Name:      connectorOfflineFilterName(httpProxy),
+		},
+		Spec: envoygatewayv1alpha1.HTTPRouteFilterSpec{
+			DirectResponse: &envoygatewayv1alpha1.HTTPDirectResponseFilter{
+				ContentType: ptr.To("text/plain; charset=utf-8"),
+				StatusCode:  ptr.To(http.StatusServiceUnavailable),
+				Body: &envoygatewayv1alpha1.CustomResponseBody{
+					Type:   ptr.To(envoygatewayv1alpha1.ResponseValueTypeInline),
+					Inline: ptr.To("Tunnel not online"),
+				},
+			},
+		},
+	}
+}
+
+func connectorReady(ctx context.Context, cl client.Client, namespace, name string) (bool, error) {
+	var connector networkingv1alpha1.Connector
+	if err := cl.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, &connector); err != nil {
+		return false, err
+	}
+	return apimeta.IsStatusConditionTrue(connector.Status.Conditions, networkingv1alpha1.ConnectorConditionReady), nil
 }
 
 func connectorPatchDetails(ctx context.Context, cl client.Client, namespace, name string) (bool, string, error) {
@@ -1122,29 +1228,6 @@ func buildConnectorEnvoyPatches(
 		return nil, fmt.Errorf("failed to marshal cluster name: %w", err)
 	}
 
-	directResponseJSON, err := json.Marshal(map[string]any{
-		"status": 503,
-		"body": map[string]any{
-			"inline_string": "Tunnel not online",
-		},
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal direct response body: %w", err)
-	}
-
-	responseHeadersJSON, err := json.Marshal([]map[string]any{
-		{
-			"header": map[string]any{
-				"key":   "content-type",
-				"value": "text/plain; charset=utf-8",
-			},
-			"append_action": "OVERWRITE_IF_EXISTS_OR_ADD",
-		},
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal response headers: %w", err)
-	}
-
 	for _, routeConfigName := range routeConfigNames {
 		for _, backend := range backends {
 			jsonPath := connectorRouteJSONPath(
@@ -1155,42 +1238,6 @@ func buildConnectorEnvoyPatches(
 				backend.ruleIndex,
 				backend.matchIndex,
 			)
-
-			if !backend.connectorReady {
-				patches = append(patches,
-					// Replace routing with a direct response when the connector is offline.
-					envoygatewayv1alpha1.EnvoyJSONPatchConfig{
-						Type: "type.googleapis.com/envoy.config.route.v3.RouteConfiguration",
-						Name: routeConfigName,
-						Operation: envoygatewayv1alpha1.JSONPatchOperation{
-							Op:       envoygatewayv1alpha1.JSONPatchOperationType("remove"),
-							JSONPath: ptr.To(jsonPath),
-							Path:     ptr.To("/route"),
-						},
-					},
-					envoygatewayv1alpha1.EnvoyJSONPatchConfig{
-						Type: "type.googleapis.com/envoy.config.route.v3.RouteConfiguration",
-						Name: routeConfigName,
-						Operation: envoygatewayv1alpha1.JSONPatchOperation{
-							Op:       headersOp,
-							JSONPath: ptr.To(jsonPath),
-							Path:     ptr.To("/direct_response"),
-							Value:    &apiextensionsv1.JSON{Raw: directResponseJSON},
-						},
-					},
-					envoygatewayv1alpha1.EnvoyJSONPatchConfig{
-						Type: "type.googleapis.com/envoy.config.route.v3.RouteConfiguration",
-						Name: routeConfigName,
-						Operation: envoygatewayv1alpha1.JSONPatchOperation{
-							Op:       headersOp,
-							JSONPath: ptr.To(jsonPath),
-							Path:     ptr.To("/response_headers_to_add"),
-							Value:    &apiextensionsv1.JSON{Raw: responseHeadersJSON},
-						},
-					},
-				)
-				continue
-			}
 
 			headersJSON, err := json.Marshal([]map[string]any{
 				{

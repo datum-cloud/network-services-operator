@@ -1,7 +1,6 @@
 package controller
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"testing"
@@ -296,7 +295,8 @@ func TestHTTPProxyCollectDesiredResources(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 
 			reconciler := &HTTPProxyReconciler{Config: operatorConfig}
-			desiredResources, err := reconciler.collectDesiredResources(tt.httpProxy)
+			cl := fake.NewClientBuilder().WithScheme(scheme.Scheme).Build()
+			desiredResources, err := reconciler.collectDesiredResources(context.Background(), cl, tt.httpProxy)
 
 			if tt.expectError != "" {
 				assert.Error(t, err)
@@ -431,6 +431,13 @@ func TestHTTPProxyReconcile(t *testing.T) {
 						Namespace: "test",
 					},
 					Status: networkingv1alpha1.ConnectorStatus{
+						Conditions: []metav1.Condition{
+							{
+								Type:   networkingv1alpha1.ConnectorConditionReady,
+								Status: metav1.ConditionTrue,
+								Reason: networkingv1alpha1.ConnectorReasonReady,
+							},
+						},
 						ConnectionDetails: &networkingv1alpha1.ConnectorConnectionDetails{
 							Type: networkingv1alpha1.PublicKeyConnectorConnectionType,
 							PublicKey: &networkingv1alpha1.ConnectorConnectionDetailsPublicKey{
@@ -517,25 +524,38 @@ func TestHTTPProxyReconcile(t *testing.T) {
 				},
 				{
 					Type:   networkingv1alpha.HTTPProxyConditionProgrammed,
-					Status: metav1.ConditionFalse,
-					Reason: networkingv1alpha.HTTPProxyReasonPending,
+					Status: metav1.ConditionTrue,
+					Reason: networkingv1alpha.HTTPProxyReasonProgrammed,
 				},
 			},
 			assert: func(t *testContext, cl client.Client, httpProxy *networkingv1alpha.HTTPProxy) {
+				ctx := context.Background()
+
 				var patchList envoygatewayv1alpha1.EnvoyPatchPolicyList
-				err := t.downstreamClient.List(context.Background(), &patchList)
+				err := t.downstreamClient.List(ctx, &patchList)
 				assert.NoError(t, err)
-				if assert.Len(t, patchList.Items, 1) {
+				assert.Len(t, patchList.Items, 0)
+
+				httpRouteFilter := &envoygatewayv1alpha1.HTTPRouteFilter{}
+				filterKey := client.ObjectKey{Namespace: httpProxy.Namespace, Name: connectorOfflineFilterName(httpProxy)}
+				assert.NoError(t, cl.Get(ctx, filterKey, httpRouteFilter))
+				assert.Equal(t, "Tunnel not online", ptr.Deref(httpRouteFilter.Spec.DirectResponse.Body.Inline, ""))
+
+				httpRoute := &gatewayv1.HTTPRoute{}
+				assert.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(httpProxy), httpRoute))
+				if assert.Len(t, httpRoute.Spec.Rules, 1) {
+					assert.Empty(t, httpRoute.Spec.Rules[0].BackendRefs)
 					found := false
-					for _, patch := range patchList.Items[0].Spec.JSONPatches {
-						if ptr.Deref(patch.Operation.Path, "") == "/direct_response" &&
-							patch.Operation.Value != nil &&
-							bytes.Contains(patch.Operation.Value.Raw, []byte("Tunnel not online")) {
+					for _, filter := range httpRoute.Spec.Rules[0].Filters {
+						if filter.Type == gatewayv1.HTTPRouteFilterExtensionRef &&
+							filter.ExtensionRef != nil &&
+							filter.ExtensionRef.Kind == envoygatewayv1alpha1.KindHTTPRouteFilter &&
+							filter.ExtensionRef.Name == gatewayv1.ObjectName(httpRouteFilter.Name) {
 							found = true
 							break
 						}
 					}
-					assert.True(t, found, "expected direct response patch for connector not ready")
+					assert.True(t, found, "expected HTTPRouteFilter extension ref on rule")
 				}
 			},
 		},
@@ -551,6 +571,13 @@ func TestHTTPProxyReconcile(t *testing.T) {
 						Namespace: "test",
 					},
 					Status: networkingv1alpha1.ConnectorStatus{
+						Conditions: []metav1.Condition{
+							{
+								Type:   networkingv1alpha1.ConnectorConditionReady,
+								Status: metav1.ConditionTrue,
+								Reason: networkingv1alpha1.ConnectorReasonReady,
+							},
+						},
 						ConnectionDetails: &networkingv1alpha1.ConnectorConnectionDetails{
 							Type: networkingv1alpha1.PublicKeyConnectorConnectionType,
 							PublicKey: &networkingv1alpha1.ConnectorConnectionDetailsPublicKey{

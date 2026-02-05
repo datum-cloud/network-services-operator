@@ -23,6 +23,7 @@ type ConnectorClassStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:resource:scope=Cluster
 
 // ConnectorClass is the Schema for the connectorclasses API.
 type ConnectorClass struct {

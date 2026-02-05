@@ -9,10 +9,14 @@ import (
 	envoygatewayv1alpha1 "github.com/envoyproxy/gateway/api/v1alpha1"
 	"github.com/stretchr/testify/assert"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/uuid"
+	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	gatewayv1alpha2 "sigs.k8s.io/gateway-api/apis/v1alpha2"
 
@@ -996,4 +1000,265 @@ func newTrafficProtectionPolicy(
 	}
 
 	return tpp
+}
+
+func TestCheckHTTPSListenerCertificatesReady(t *testing.T) {
+	operatorConfig := config.NetworkServicesOperator{
+		Gateway: config.GatewayConfig{
+			TargetDomain: "example.com",
+			ListenerTLSOptions: map[gatewayv1.AnnotationKey]gatewayv1.AnnotationValue{
+				gatewayv1.AnnotationKey("gateway.networking.datumapis.com/certificate-issuer"): gatewayv1.AnnotationValue("test"),
+			},
+		},
+	}
+
+	newGatewayFunc := func(namespace, name string, opts ...func(*gatewayv1.Gateway)) *gatewayv1.Gateway {
+		return newGateway(operatorConfig, namespace, name, opts...)
+	}
+
+	downstreamNamespace := "ns-test-downstream"
+
+	tests := []struct {
+		name                        string
+		attachments                 []policyAttachment
+		existingDownstreamObjects   []client.Object
+		expectedAllReady            bool
+		expectedPendingListenersLen int
+	}{
+		{
+			name:                        "no HTTPS listeners - all ready",
+			attachments:                 []policyAttachment{},
+			expectedAllReady:            true,
+			expectedPendingListenersLen: 0,
+		},
+		{
+			name: "HTTP only listener - all ready",
+			attachments: []policyAttachment{
+				{
+					Gateway: newGatewayFunc("default", "gateway-1", func(g *gatewayv1.Gateway) {
+						g.Spec.Listeners = []gatewayv1.Listener{
+							{
+								Name:     "http",
+								Port:     80,
+								Protocol: gatewayv1.HTTPProtocolType,
+							},
+						}
+					}),
+					Listener: ptr.To(gatewayv1.SectionName("http")),
+				},
+			},
+			expectedAllReady:            true,
+			expectedPendingListenersLen: 0,
+		},
+		{
+			name: "HTTPS listener with ready certificate",
+			attachments: []policyAttachment{
+				{
+					Gateway: newGatewayFunc("default", "gateway-1", func(g *gatewayv1.Gateway) {
+						g.Spec.Listeners = []gatewayv1.Listener{
+							{
+								Name:     "https",
+								Port:     443,
+								Protocol: gatewayv1.HTTPSProtocolType,
+							},
+						}
+					}),
+					Listener: ptr.To(gatewayv1.SectionName("https")),
+				},
+			},
+			existingDownstreamObjects: []client.Object{
+				newCertificateUnstructured(downstreamNamespace, "gateway-1-https", true),
+			},
+			expectedAllReady:            true,
+			expectedPendingListenersLen: 0,
+		},
+		{
+			name: "HTTPS listener with not-ready certificate",
+			attachments: []policyAttachment{
+				{
+					Gateway: newGatewayFunc("default", "gateway-1", func(g *gatewayv1.Gateway) {
+						g.Spec.Listeners = []gatewayv1.Listener{
+							{
+								Name:     "https",
+								Port:     443,
+								Protocol: gatewayv1.HTTPSProtocolType,
+							},
+						}
+					}),
+					Listener: ptr.To(gatewayv1.SectionName("https")),
+				},
+			},
+			existingDownstreamObjects: []client.Object{
+				newCertificateUnstructured(downstreamNamespace, "gateway-1-https", false),
+			},
+			expectedAllReady:            false,
+			expectedPendingListenersLen: 1,
+		},
+		{
+			name: "HTTPS listener with missing certificate",
+			attachments: []policyAttachment{
+				{
+					Gateway: newGatewayFunc("default", "gateway-1", func(g *gatewayv1.Gateway) {
+						g.Spec.Listeners = []gatewayv1.Listener{
+							{
+								Name:     "https",
+								Port:     443,
+								Protocol: gatewayv1.HTTPSProtocolType,
+							},
+						}
+					}),
+					Listener: ptr.To(gatewayv1.SectionName("https")),
+				},
+			},
+			existingDownstreamObjects:   []client.Object{},
+			expectedAllReady:            false,
+			expectedPendingListenersLen: 1,
+		},
+		{
+			name: "mixed HTTP/HTTPS listeners - only checks HTTPS",
+			attachments: []policyAttachment{
+				{
+					Gateway: newGatewayFunc("default", "gateway-1", func(g *gatewayv1.Gateway) {
+						g.Spec.Listeners = []gatewayv1.Listener{
+							{
+								Name:     "http",
+								Port:     80,
+								Protocol: gatewayv1.HTTPProtocolType,
+							},
+							{
+								Name:     "https",
+								Port:     443,
+								Protocol: gatewayv1.HTTPSProtocolType,
+							},
+						}
+					}),
+					Listener: nil, // targets all listeners
+				},
+			},
+			existingDownstreamObjects: []client.Object{
+				newCertificateUnstructured(downstreamNamespace, "gateway-1-https", true),
+			},
+			expectedAllReady:            true,
+			expectedPendingListenersLen: 0,
+		},
+		{
+			name: "multiple HTTPS listeners - one ready, one not ready",
+			attachments: []policyAttachment{
+				{
+					Gateway: newGatewayFunc("default", "gateway-1", func(g *gatewayv1.Gateway) {
+						g.Spec.Listeners = []gatewayv1.Listener{
+							{
+								Name:     "https-1",
+								Port:     443,
+								Protocol: gatewayv1.HTTPSProtocolType,
+							},
+							{
+								Name:     "https-2",
+								Port:     8443,
+								Protocol: gatewayv1.HTTPSProtocolType,
+							},
+						}
+					}),
+					Listener: nil, // targets all listeners
+				},
+			},
+			existingDownstreamObjects: []client.Object{
+				newCertificateUnstructured(downstreamNamespace, "gateway-1-https-1", true),
+				newCertificateUnstructured(downstreamNamespace, "gateway-1-https-2", false),
+			},
+			expectedAllReady:            false,
+			expectedPendingListenersLen: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			testScheme := newTestScheme()
+
+			fakeDownstreamClient := fake.NewClientBuilder().
+				WithScheme(testScheme).
+				WithObjects(tt.existingDownstreamObjects...).
+				Build()
+
+			reconciler := &TrafficProtectionPolicyReconciler{
+				Config:            operatorConfig,
+				DownstreamCluster: &fakeCluster{cl: fakeDownstreamClient},
+			}
+
+			ctx := t.Context()
+			result, err := reconciler.checkHTTPSListenerCertificatesReady(ctx, downstreamNamespace, tt.attachments)
+
+			assert.NoError(t, err)
+			assert.Equal(t, tt.expectedAllReady, result.AllReady)
+			assert.Len(t, result.PendingListeners, tt.expectedPendingListenersLen)
+		})
+	}
+}
+
+func TestSetWaitingForCertificatesConditions(t *testing.T) {
+	operatorConfig := config.NetworkServicesOperator{
+		Gateway: config.GatewayConfig{
+			ControllerName: gatewayv1.GatewayController("datumapis.com/network-services-gateway"),
+		},
+	}
+
+	reconciler := &TrafficProtectionPolicyReconciler{Config: operatorConfig}
+
+	policy := &policyContext{
+		TrafficProtectionPolicy: ptr.To(newTrafficProtectionPolicy("default", "tpp-1", func(tpp *networkingv1alpha.TrafficProtectionPolicy) {
+			tpp.Spec.TargetRefs = []gatewayv1alpha2.LocalPolicyTargetReferenceWithSectionName{
+				{
+					LocalPolicyTargetReference: gatewayv1alpha2.LocalPolicyTargetReference{
+						Kind: "Gateway",
+						Name: "gateway-1",
+					},
+				},
+			}
+		})),
+	}
+
+	pendingListeners := []string{"gateway-1-https", "gateway-1-https-2"}
+
+	reconciler.setWaitingForCertificatesConditions([]*policyContext{policy}, pendingListeners)
+
+	if assert.Len(t, policy.Status.Ancestors, 1) {
+		ancestor := policy.Status.Ancestors[0]
+		if assert.Len(t, ancestor.Conditions, 1) {
+			cond := ancestor.Conditions[0]
+			assert.Equal(t, string(gatewayv1alpha2.PolicyConditionAccepted), cond.Type)
+			assert.Equal(t, metav1.ConditionFalse, cond.Status)
+			assert.Equal(t, string(PolicyReasonWaitingForCertificates), cond.Reason)
+			assert.Contains(t, cond.Message, "gateway-1-https")
+			assert.Contains(t, cond.Message, "gateway-1-https-2")
+		}
+	}
+}
+
+func newCertificateUnstructured(namespace, name string, isReady bool) *unstructured.Unstructured {
+	cert := &unstructured.Unstructured{}
+	cert.SetGroupVersionKind(certificateGVK)
+	cert.SetNamespace(namespace)
+	cert.SetName(name)
+
+	status := "False"
+	if isReady {
+		status = "True"
+	}
+
+	_ = unstructured.SetNestedSlice(cert.Object, []interface{}{
+		map[string]interface{}{
+			"type":   "Ready",
+			"status": status,
+		},
+	}, "status", "conditions")
+
+	return cert
+}
+
+func newTestScheme() *runtime.Scheme {
+	testScheme := runtime.NewScheme()
+	_ = scheme.AddToScheme(testScheme)
+	_ = gatewayv1.Install(testScheme)
+	_ = networkingv1alpha.AddToScheme(testScheme)
+	return testScheme
 }

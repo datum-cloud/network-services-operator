@@ -11,9 +11,12 @@ import (
 
 	envoygatewayv1alpha1 "github.com/envoyproxy/gateway/api/v1alpha1"
 
+	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
 
@@ -22,7 +25,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/source"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	gatewayv1alpha2 "sigs.k8s.io/gateway-api/apis/v1alpha2"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
@@ -33,6 +38,7 @@ import (
 	"go.datum.net/network-services-operator/internal/config"
 	downstreamclient "go.datum.net/network-services-operator/internal/downstreamclient"
 	gatewaystatus "go.datum.net/network-services-operator/internal/gatewayapi/status"
+	"go.datum.net/network-services-operator/internal/util/resourcename"
 )
 
 // TrafficProtectionPolicyReconciler reconciles a TrafficProtectionPolicy object
@@ -43,9 +49,25 @@ type TrafficProtectionPolicyReconciler struct {
 	DownstreamCluster cluster.Cluster
 }
 
+const (
+	// PolicyReasonWaitingForCertificates indicates that the policy is waiting
+	// for TLS certificates to become ready before EnvoyPatchPolicies can be created.
+	PolicyReasonWaitingForCertificates gatewayv1alpha2.PolicyConditionReason = "WaitingForCertificates"
+)
+
+// certificateReadinessResult contains the result of checking certificate readiness
+// for HTTPS listeners.
+type certificateReadinessResult struct {
+	// AllReady indicates whether all required certificates are ready.
+	AllReady bool
+	// PendingListeners contains the names of listeners whose certificates are not ready.
+	PendingListeners []string
+}
+
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=trafficprotectionpolicies,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=trafficprotectionpolicies/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=trafficprotectionpolicies/finalizers,verbs=update
+// +kubebuilder:rbac:groups=cert-manager.io,resources=certificates,verbs=get;list;watch
 
 func (r *TrafficProtectionPolicyReconciler) Reconcile(ctx context.Context, req NamespaceReconcileRequest) (ctrl.Result, error) {
 	logger := log.FromContext(ctx, "cluster", req.ClusterName)
@@ -96,6 +118,26 @@ func (r *TrafficProtectionPolicyReconciler) Reconcile(ctx context.Context, req N
 	}
 
 	attachments := r.collectTrafficProtectionPolicyAttachments(ctx, trafficProtectionPolicies, upstreamGateways.Items, upstreamHTTPRoutes.Items)
+
+	// Check if all HTTPS listener certificates are ready before creating EnvoyPatchPolicies.
+	// This prevents JSONPath selector failures when Envoy Gateway hasn't materialized filter_chains.
+	certReadiness, err := r.checkHTTPSListenerCertificatesReady(ctx, downstreamNamespaceName, attachments)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to check certificate readiness: %w", err)
+	}
+
+	if !certReadiness.AllReady {
+		logger.Info("waiting for TLS certificates to become ready", "pendingListeners", certReadiness.PendingListeners)
+		r.setWaitingForCertificatesConditions(trafficProtectionPolicies, certReadiness.PendingListeners)
+
+		if err := r.updateTPPAncestorsStatus(ctx, cl.GetClient(), trafficProtectionPolicies, originalTrafficProtectionPolicies); err != nil {
+			return ctrl.Result{}, err
+		}
+
+		// Certificate watch will trigger reconciliation when certificates become ready
+		return ctrl.Result{}, nil
+	}
+
 	desiredPolicies, err := r.getDesiredEnvoyPatchPolicies(downstreamNamespaceName, attachments)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -224,6 +266,105 @@ func (r *TrafficProtectionPolicyReconciler) updateTPPAncestorsStatus(
 
 	return nil
 
+}
+
+// checkHTTPSListenerCertificatesReady checks if all TLS certificates for HTTPS listeners
+// referenced by the policy attachments are ready. This ensures that EnvoyPatchPolicies
+// are not created until the filter_chains are materialized by Envoy Gateway.
+func (r *TrafficProtectionPolicyReconciler) checkHTTPSListenerCertificatesReady(
+	ctx context.Context,
+	downstreamNamespaceName string,
+	attachments []policyAttachment,
+) (*certificateReadinessResult, error) {
+	logger := log.FromContext(ctx)
+
+	// Collect unique HTTPS listeners from attachments
+	httpsListeners := make(map[string]struct{})
+	for _, attachment := range attachments {
+		if attachment.Listener != nil {
+			// Check if this specific listener is HTTPS
+			for _, l := range attachment.Gateway.Spec.Listeners {
+				if l.Name == *attachment.Listener && l.Protocol == gatewayv1.HTTPSProtocolType {
+					certName := resourcename.GetValidDNS1123Name(fmt.Sprintf("%s-%s", attachment.Gateway.Name, l.Name))
+					httpsListeners[certName] = struct{}{}
+				}
+			}
+		} else {
+			// Policy targets all listeners on the gateway
+			for _, l := range attachment.Gateway.Spec.Listeners {
+				if l.Protocol == gatewayv1.HTTPSProtocolType {
+					certName := resourcename.GetValidDNS1123Name(fmt.Sprintf("%s-%s", attachment.Gateway.Name, l.Name))
+					httpsListeners[certName] = struct{}{}
+				}
+			}
+		}
+	}
+
+	if len(httpsListeners) == 0 {
+		return &certificateReadinessResult{AllReady: true}, nil
+	}
+
+	var pendingListeners []string
+	downstreamClient := r.DownstreamCluster.GetClient()
+
+	for certName := range httpsListeners {
+		certificate := newUnstructuredForGVK(certificateGVK)
+		certKey := client.ObjectKey{
+			Namespace: downstreamNamespaceName,
+			Name:      certName,
+		}
+
+		if err := downstreamClient.Get(ctx, certKey, certificate); err != nil {
+			if apierrors.IsNotFound(err) {
+				logger.Info("certificate not found, waiting for it to be created", "certificate", certName)
+				pendingListeners = append(pendingListeners, certName)
+				continue
+			}
+			return nil, fmt.Errorf("failed to get certificate %s: %w", certName, err)
+		}
+
+		// Check if the certificate is ready
+		isReady, err := isCertificateReady(certificate)
+		if err != nil {
+			return nil, fmt.Errorf("failed to check if certificate %s is ready: %w", certName, err)
+		}
+
+		if !isReady {
+			logger.Info("certificate is not ready, waiting", "certificate", certName)
+			pendingListeners = append(pendingListeners, certName)
+		}
+	}
+
+	return &certificateReadinessResult{
+		AllReady:         len(pendingListeners) == 0,
+		PendingListeners: pendingListeners,
+	}, nil
+}
+
+// setWaitingForCertificatesConditions sets the Accepted=False condition with reason
+// WaitingForCertificates on all policies that have attachments to HTTPS listeners
+// that are waiting for certificates.
+func (r *TrafficProtectionPolicyReconciler) setWaitingForCertificatesConditions(
+	policies []*policyContext,
+	pendingListeners []string,
+) {
+	message := fmt.Sprintf("Waiting for TLS certificates to become ready: %s", strings.Join(pendingListeners, ", "))
+
+	for _, policy := range policies {
+		for _, targetRef := range policy.Spec.TargetRefs {
+			ancestorRef := getAncestorRefForTarget(policy.Namespace, targetRef)
+			gatewaystatus.SetConditionForPolicyAncestor(
+				&policy.Status.PolicyStatus,
+				ancestorRef,
+				string(r.Config.Gateway.ControllerName),
+				gatewayv1alpha2.PolicyConditionAccepted,
+				metav1.ConditionFalse,
+				PolicyReasonWaitingForCertificates,
+				message,
+				policy.Generation,
+			)
+		}
+	}
 }
 
 func (r *TrafficProtectionPolicyReconciler) ensureHTTPCorazaListenerFilter(ctx context.Context) error {
@@ -1025,12 +1166,54 @@ func sanitizeJSONPath(jsonPath string) string {
 func (r *TrafficProtectionPolicyReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	r.mgr = mgr
 
+	// Watch downstream Certificates for readiness changes
+	downstreamCertificateSource := source.TypedKind(
+		r.DownstreamCluster.GetCache(),
+		newUnstructuredForGVK(certificateGVK),
+		r.enqueuePoliciesForCertificate(),
+	)
+
 	return mcbuilder.TypedControllerManagedBy[NamespaceReconcileRequest](mgr).
 		Watches(&networkingv1alpha.TrafficProtectionPolicy{}, EnqueueRequestForObjectNamespace).
 		Watches(&gatewayv1.Gateway{}, EnqueueRequestForObjectNamespace).
 		Watches(&gatewayv1.HTTPRoute{}, EnqueueRequestForObjectNamespace).
+		WatchesRawSource(downstreamCertificateSource).
 		Named("trafficprotectionpolicy").
 		Complete(r)
+}
+
+// enqueuePoliciesForCertificate returns an event handler that enqueues a reconcile
+// request for the upstream namespace when a certificate becomes ready.
+func (r *TrafficProtectionPolicyReconciler) enqueuePoliciesForCertificate() handler.TypedEventHandler[*unstructured.Unstructured, NamespaceReconcileRequest] {
+	return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, cert *unstructured.Unstructured) []NamespaceReconcileRequest {
+		logger := log.FromContext(ctx)
+
+		// Check if certificate is ready - only enqueue when it becomes ready
+		isReady, err := isCertificateReady(cert)
+		if err != nil || !isReady {
+			return nil
+		}
+
+		// Get the downstream namespace to find upstream owner labels
+		downstreamNamespaceName := cert.GetNamespace()
+		var downstreamNamespace corev1.Namespace
+		if err := r.DownstreamCluster.GetClient().Get(ctx, client.ObjectKey{Name: downstreamNamespaceName}, &downstreamNamespace); err != nil {
+			logger.Error(err, "failed to get downstream namespace for certificate", "certificate", cert.GetName(), "namespace", downstreamNamespaceName)
+			return nil
+		}
+
+		// Extract upstream namespace from labels
+		upstreamNamespace := downstreamNamespace.Labels[downstreamclient.UpstreamOwnerNamespaceLabel]
+		if upstreamNamespace == "" {
+			return nil
+		}
+
+		logger.Info("certificate became ready, enqueueing reconcile", "certificate", cert.GetName(), "upstreamNamespace", upstreamNamespace)
+
+		return []NamespaceReconcileRequest{{
+			Namespace: upstreamNamespace,
+		}}
+	})
 }
 
 var EnqueueRequestForObjectNamespace = mchandler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []NamespaceReconcileRequest {

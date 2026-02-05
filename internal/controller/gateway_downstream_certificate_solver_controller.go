@@ -49,22 +49,10 @@ func (r *GatewayDownstreamCertificateSolverReconciler) Reconcile(ctx context.Con
 		return ctrl.Result{}, err
 	}
 
-	conditions, found, err := unstructured.NestedSlice(certificate.Object, "status", "conditions")
-	if err != nil || !found {
-		logger.Error(err, "Failed to get conditions from downstream certificate")
+	isReady, err := isCertificateReady(certificate)
+	if err != nil {
+		logger.Error(err, "Failed to check if downstream certificate is ready")
 		return ctrl.Result{}, err
-	}
-
-	isReady := false
-	for _, cond := range conditions {
-		condMap, ok := cond.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		if condMap["type"] == "Ready" && condMap["status"] == "True" {
-			isReady = true
-			break
-		}
 	}
 
 	if isReady {
@@ -310,3 +298,25 @@ var (
 	orderGVK       = acmeCertManagerGV.WithKind("Order")
 	challengeGVK   = acmeCertManagerGV.WithKind("Challenge")
 )
+
+// isCertificateReady checks if a cert-manager Certificate has Ready=True condition.
+func isCertificateReady(certificate *unstructured.Unstructured) (bool, error) {
+	conditions, found, err := unstructured.NestedSlice(certificate.Object, "status", "conditions")
+	if err != nil {
+		return false, err
+	}
+	if !found {
+		return false, nil
+	}
+
+	for _, cond := range conditions {
+		condMap, ok := cond.(map[string]any)
+		if !ok {
+			continue
+		}
+		if condMap["type"] == "Ready" && condMap["status"] == string(metav1.ConditionTrue) {
+			return true, nil
+		}
+	}
+	return false, nil
+}

@@ -32,7 +32,7 @@ func SetupDomainWebhookWithManager(mgr mcmanager.Manager) error {
 		Complete()
 }
 
-// +kubebuilder:webhook:path=/validate-networking-datumapis-com-v1alpha-domain,mutating=false,failurePolicy=fail,sideEffects=None,groups=networking.datumapis.com,resources=domains,verbs=delete,versions=v1alpha,name=vdomain-v1alpha.kb.io,admissionReviewVersions=v1
+// +kubebuilder:webhook:path=/validate-networking-datumapis-com-v1alpha-domain,mutating=false,failurePolicy=fail,sideEffects=None,groups=networking.datumapis.com,resources=domains,verbs=create;delete,versions=v1alpha,name=vdomain-v1alpha.kb.io,admissionReviewVersions=v1
 
 type DomainCustomValidator struct {
 	mgr mcmanager.Manager
@@ -48,10 +48,44 @@ var dnsZoneListGVK = schema.GroupVersionKind{
 
 // ValidateCreate implements webhook.CustomValidator so a webhook will be registered for the type Domain.
 func (v *DomainCustomValidator) ValidateCreate(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
+	domain, ok := obj.(*networkingv1alpha.Domain)
+	if !ok {
+		return nil, fmt.Errorf("expected a Domain object but got %T", obj)
+	}
+
+	clusterName, ok := mccontext.ClusterFrom(ctx)
+	if !ok {
+		return nil, fmt.Errorf("expected a cluster name in the context")
+	}
+
+	upstreamCluster, err := v.mgr.GetCluster(ctx, clusterName)
+	if err != nil {
+		return nil, err
+	}
+	upstreamClient := upstreamCluster.GetClient()
+
+	var domains networkingv1alpha.DomainList
+	if err := upstreamClient.List(ctx, &domains, client.InNamespace(domain.GetNamespace())); err != nil {
+		return nil, fmt.Errorf("failed to list Domains in namespace %q: %w", domain.GetNamespace(), err)
+	}
+
+	target := normalizeHostname(domain.Spec.DomainName)
+	for _, d := range domains.Items {
+		if normalizeHostname(d.Spec.DomainName) == target {
+			gr := schema.GroupResource{Group: networkingv1alpha.GroupVersion.Group, Resource: "domains"}
+			return nil, apierrors.NewForbidden(
+				gr,
+				domain.GetName(),
+				fmt.Errorf("domain name %q already exists", domain.Spec.DomainName),
+			)
+		}
+	}
+
 	return nil, nil
 }
 
 // ValidateUpdate implements webhook.CustomValidator so a webhook will be registered for the type Domain.
+// Domain spec.domainName is immutable, so no additional update validation is required.
 func (v *DomainCustomValidator) ValidateUpdate(ctx context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
 	return nil, nil
 }

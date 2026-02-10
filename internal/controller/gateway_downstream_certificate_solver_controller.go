@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"time"
 
 	envoygatewayv1alpha1 "github.com/envoyproxy/gateway/api/v1alpha1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -25,6 +24,10 @@ import (
 	"go.datum.net/network-services-operator/internal/config"
 )
 
+// GatewayDownstreamCertificateSolverReconciler watches cert-manager Challenge resources
+// and creates HTTP Routes to serve ACME HTTP-01 challenge responses for Gateway-owned
+// certificates. By watching Challenges directly (rather than Certificates), this
+// controller correctly handles both initial certificate issuance and renewals.
 type GatewayDownstreamCertificateSolverReconciler struct {
 	Config config.NetworkServicesOperator
 
@@ -32,33 +35,57 @@ type GatewayDownstreamCertificateSolverReconciler struct {
 }
 
 func (r *GatewayDownstreamCertificateSolverReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	logger := log.FromContext(ctx, "namespace", req.Namespace, "name", req.Name)
+	logger := log.FromContext(ctx, "namespace", req.Namespace, "challenge", req.Name)
 	ctx = log.IntoContext(ctx, logger)
 
-	logger.Info("Reconciling downstream certificate solver")
+	logger.Info("Reconciling ACME challenge solver")
 
 	cl := r.DownstreamCluster.GetClient()
 
-	certificate := newUnstructuredForGVK(certificateGVK)
-	if err := cl.Get(ctx, req.NamespacedName, certificate); err != nil {
+	// Get the Challenge that triggered this reconciliation
+	challenge := newUnstructuredForGVK(challengeGVK)
+	if err := cl.Get(ctx, req.NamespacedName, challenge); err != nil {
 		if apierrors.IsNotFound(err) {
-			logger.Info("Downstream certificate not found, might have been deleted")
+			logger.Info("Challenge not found, might have been deleted after successful validation")
 			return ctrl.Result{}, nil
 		}
-		logger.Error(err, "Failed to get downstream certificate")
+		logger.Error(err, "Failed to get downstream challenge")
 		return ctrl.Result{}, err
 	}
 
-	isReady, err := isCertificateReady(certificate)
-	if err != nil {
-		logger.Error(err, "Failed to check if downstream certificate is ready")
-		return ctrl.Result{}, err
-	}
-
-	if isReady {
-		logger.Info("Downstream certificate is already ready")
-		// Nothing to do - certificate is already ready
+	// Find the owning Order from the Challenge's controller reference
+	orderRef := metav1.GetControllerOf(challenge)
+	if orderRef == nil {
+		logger.Info("Challenge has no owning Order, skipping")
 		return ctrl.Result{}, nil
+	}
+
+	order := newUnstructuredForGVK(orderGVK)
+	orderKey := client.ObjectKey{Namespace: req.Namespace, Name: orderRef.Name}
+	if err := cl.Get(ctx, orderKey, order); err != nil {
+		if apierrors.IsNotFound(err) {
+			logger.Info("Owning Order not found", "order", orderRef.Name)
+			return ctrl.Result{}, nil
+		}
+		return ctrl.Result{}, err
+	}
+
+	// Get the Certificate name from the Order's annotation
+	certName, found := order.GetAnnotations()[certManagerCertificateNameAnnotation]
+	if !found || certName == "" {
+		logger.Info("Order does not have certificate name annotation", "order", order.GetName())
+		return ctrl.Result{}, nil
+	}
+
+	// Get the Certificate
+	certificate := newUnstructuredForGVK(certificateGVK)
+	certKey := client.ObjectKey{Namespace: req.Namespace, Name: certName}
+	if err := cl.Get(ctx, certKey, certificate); err != nil {
+		if apierrors.IsNotFound(err) {
+			logger.Info("Certificate not found", "certificate", certName)
+			return ctrl.Result{}, nil
+		}
+		return ctrl.Result{}, err
 	}
 
 	// Make sure the issuer ref is one we care about
@@ -96,6 +123,7 @@ func (r *GatewayDownstreamCertificateSolverReconciler) Reconcile(ctx context.Con
 		return ctrl.Result{}, nil
 	}
 
+	// Verify the Certificate is owned by a Gateway
 	owningGatewayRef := metav1.GetControllerOf(certificate)
 	if owningGatewayRef == nil {
 		logger.Info("Downstream certificate has no owning Gateway, skipping")
@@ -103,66 +131,21 @@ func (r *GatewayDownstreamCertificateSolverReconciler) Reconcile(ctx context.Con
 		return ctrl.Result{}, nil
 	}
 
-	logger.Info("Found non-ready downstream certificate owned by Gateway", "gateway", owningGatewayRef.Name)
-
+	// Get the Gateway
 	var gateway gatewayv1.Gateway
-	gatewayNamespacedName := client.ObjectKey{
-		Namespace: req.Namespace,
-		Name:      owningGatewayRef.Name,
-	}
-	if err := cl.Get(ctx, gatewayNamespacedName, &gateway); err != nil {
+	gatewayKey := client.ObjectKey{Namespace: req.Namespace, Name: owningGatewayRef.Name}
+	if err := cl.Get(ctx, gatewayKey, &gateway); err != nil {
 		if apierrors.IsNotFound(err) {
-			// Gateway was deleted. A certificate is driven from a Gateway, so we
-			// wouldn't get here unless the Gateway was deleted.
+			logger.Info("Owning Gateway not found", "gateway", owningGatewayRef.Name)
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, err
 	}
 
-	var orders unstructured.UnstructuredList
-	orders.SetGroupVersionKind(orderGVK)
-	if err := cl.List(ctx, &orders, client.InNamespace(req.Namespace)); err != nil {
-		return ctrl.Result{}, err
-	}
-
-	// Find the Order associated with the certificate
-	var order *unstructured.Unstructured
-	for i, o := range orders.Items {
-		annotations := o.GetAnnotations()
-		if annotations[certManagerCertificateNameAnnotation] == certificate.GetName() {
-			order = &orders.Items[i]
-			break
-		}
-	}
-
-	if order == nil {
-		logger.Info("No cert-manager Order found for downstream certificate")
-		return ctrl.Result{RequeueAfter: 1 * time.Second}, nil
-	}
-
-	logger.Info("Found cert-manager Order for downstream certificate", "order", orders.Items[0].GetName())
-
-	var challenges unstructured.UnstructuredList
-	challenges.SetGroupVersionKind(challengeGVK)
-	if err := cl.List(ctx, &challenges, client.InNamespace(req.Namespace)); err != nil {
-		return ctrl.Result{}, err
-	}
-
-	var challenge *unstructured.Unstructured
-	for i, c := range challenges.Items {
-		owner := metav1.GetControllerOf(&c)
-		if owner != nil && owner.UID == order.GetUID() {
-			challenge = &challenges.Items[i]
-			break
-		}
-	}
-
-	if challenge == nil {
-		logger.Info("No cert-manager Challenge found for cert-manager Order", "order", order.GetName())
-		return ctrl.Result{RequeueAfter: 1 * time.Second}, nil
-	}
-
-	logger.Info("Found cert-manager Challenge for cert-manager Order", "challenge", challenge.GetName())
+	logger.Info("Processing challenge for Gateway-owned certificate",
+		"certificate", certName,
+		"gateway", gateway.Name,
+		"order", order.GetName())
 
 	// Read spec.key and spec.token from the challenge
 	key, found, err := unstructured.NestedString(challenge.Object, "spec", "key")
@@ -271,15 +254,17 @@ func (r *GatewayDownstreamCertificateSolverReconciler) Reconcile(ctx context.Con
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *GatewayDownstreamCertificateSolverReconciler) SetupWithManager(mgr mcmanager.Manager) error {
-
-	downstreamCertificateSource := source.TypedKind(
+	// Watch Challenge resources directly - this ensures we handle both initial
+	// certificate issuance and renewals, since cert-manager creates new Challenges
+	// for renewals even when the Certificate is still marked as Ready.
+	downstreamChallengeSource := source.TypedKind(
 		r.DownstreamCluster.GetCache(),
-		newUnstructuredForGVK(certificateGVK),
+		newUnstructuredForGVK(challengeGVK),
 		&handler.TypedEnqueueRequestForObject[*unstructured.Unstructured]{},
 	)
 
 	return ctrl.NewControllerManagedBy(mgr.GetLocalManager()).
-		WatchesRawSource(downstreamCertificateSource).
+		WatchesRawSource(downstreamChallengeSource).
 		Named("downstream-certificate-solver").
 		Complete(r)
 }

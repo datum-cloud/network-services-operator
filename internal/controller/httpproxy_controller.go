@@ -1228,6 +1228,28 @@ func buildConnectorEnvoyPatches(
 		return nil, fmt.Errorf("failed to marshal cluster name: %w", err)
 	}
 
+	// Enable CONNECT (and thus Extended CONNECT / WebSocket) on HTTPS listeners by
+	// patching the HCM upgrade_configs. Doing this via EnvoyPatchPolicy avoids
+	// gateway-level BackendTrafficPolicy, which can break route matching and cause
+	// 404s when combined with connector route patches (iroh-gateway cluster).
+	for _, listenerName := range routeConfigNames {
+		upgradeConfigsJSON, err := json.Marshal([]map[string]any{
+			{"upgrade_type": "CONNECT"},
+		})
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal upgrade_configs: %w", err)
+		}
+		patches = append(patches, envoygatewayv1alpha1.EnvoyJSONPatchConfig{
+			Type: "type.googleapis.com/envoy.config.listener.v3.Listener",
+			Name: listenerName,
+			Operation: envoygatewayv1alpha1.JSONPatchOperation{
+				Op:   envoygatewayv1alpha1.JSONPatchOperationType("add"),
+				Path: ptr.To("/default_filter_chain/filters/0/typed_config/upgrade_configs"),
+				Value: &apiextensionsv1.JSON{Raw: upgradeConfigsJSON},
+			},
+		})
+	}
+
 	for _, routeConfigName := range routeConfigNames {
 		for _, backend := range backends {
 			jsonPath := connectorRouteJSONPath(

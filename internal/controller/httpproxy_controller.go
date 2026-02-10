@@ -1243,8 +1243,8 @@ func buildConnectorEnvoyPatches(
 			Type: "type.googleapis.com/envoy.config.listener.v3.Listener",
 			Name: listenerName,
 			Operation: envoygatewayv1alpha1.JSONPatchOperation{
-				Op:   envoygatewayv1alpha1.JSONPatchOperationType("add"),
-				Path: ptr.To("/default_filter_chain/filters/0/typed_config/upgrade_configs"),
+				Op:    envoygatewayv1alpha1.JSONPatchOperationType("add"),
+				Path:  ptr.To("/default_filter_chain/filters/0/typed_config/upgrade_configs"),
 				Value: &apiextensionsv1.JSON{Raw: upgradeConfigsJSON},
 			},
 		})

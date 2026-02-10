@@ -73,10 +73,10 @@ func (v *DomainCustomValidator) ValidateCreate(ctx context.Context, obj runtime.
 	for _, d := range domains.Items {
 		if normalizeHostname(d.Spec.DomainName) == target {
 			gr := schema.GroupResource{Group: networkingv1alpha.GroupVersion.Group, Resource: "domains"}
-			return nil, apierrors.NewForbidden(
+			return nil, apierrors.NewConflict(
 				gr,
 				domain.GetName(),
-				fmt.Errorf("domain name %q already exists", domain.Spec.DomainName),
+				fmt.Errorf("domain resource with .spec.domainName %q already exists", domain.Spec.DomainName),
 			)
 		}
 	}

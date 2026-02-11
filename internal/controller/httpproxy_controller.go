@@ -1308,6 +1308,32 @@ func buildConnectorEnvoyPatches(
 		})
 	}
 
+	// Add each unique tunnel target (host:port) to the RouteConfiguration's first vhost
+	// domains so CONNECT requests with :authority set to that target match the vhost.
+	// This is needed so CONNECT requests with :authority set to the tunnel target match the vhost.
+	routeConfigName := fmt.Sprintf("%s/%s/default-https", downstreamNamespace, gateway.Name)
+	seenDomains := make(map[string]struct{})
+	for _, backend := range backends {
+		domain := fmt.Sprintf("%s:%d", backend.targetHost, backend.targetPort)
+		if _, ok := seenDomains[domain]; ok {
+			continue
+		}
+		seenDomains[domain] = struct{}{}
+		domainValue, err := json.Marshal(domain)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal tunnel domain %q: %w", domain, err)
+		}
+		patches = append(patches, envoygatewayv1alpha1.EnvoyJSONPatchConfig{
+			Type: "type.googleapis.com/envoy.config.route.v3.RouteConfiguration",
+			Name: routeConfigName,
+			Operation: envoygatewayv1alpha1.JSONPatchOperation{
+				Op:    envoygatewayv1alpha1.JSONPatchOperationType("add"),
+				Path:  ptr.To("/virtual_hosts/0/domains/-"),
+				Value: &apiextensionsv1.JSON{Raw: domainValue},
+			},
+		})
+	}
+
 	return patches, nil
 }
 

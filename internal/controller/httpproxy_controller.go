@@ -1306,12 +1306,12 @@ func buildConnectorEnvoyPatches(
 		})
 	}
 
-	// Add each unique tunnel target (host:port) to the RouteConfiguration's first vhost
+	// Add each unique tunnel target (host only) to the RouteConfiguration's first vhost
 	// domains so CONNECT requests with :authority set to that target match the vhost.
 	routeConfigName := fmt.Sprintf("%s/%s/default-https", downstreamNamespace, gateway.Name)
 	seenDomains := make(map[string]struct{})
 	for _, backend := range backends {
-		domain := fmt.Sprintf("%s:%d", backend.targetHost, backend.targetPort)
+		domain := backend.targetHost
 		if _, ok := seenDomains[domain]; ok {
 			continue
 		}

@@ -1286,30 +1286,8 @@ func buildConnectorEnvoyPatches(
 	httpProxy *networkingv1alpha.HTTPProxy,
 	backends []connectorBackendPatch,
 ) ([]envoygatewayv1alpha1.EnvoyJSONPatchConfig, error) {
-	routeConfigNames := connectorRouteConfigNames(downstreamNamespace, gateway)
 	patches := make([]envoygatewayv1alpha1.EnvoyJSONPatchConfig, 0)
-	// TODO: Make this idempotent
-
-	// 1) Listener patch: enable CONNECT (and Extended CONNECT / WebSocket) on HTTPS listeners.
-	for _, listenerName := range routeConfigNames {
-		upgradeConfigsJSON, err := json.Marshal([]map[string]any{
-			{"upgrade_type": "CONNECT"},
-		})
-		if err != nil {
-			return nil, fmt.Errorf("failed to marshal upgrade_configs: %w", err)
-		}
-		patches = append(patches, envoygatewayv1alpha1.EnvoyJSONPatchConfig{
-			Type: "type.googleapis.com/envoy.config.listener.v3.Listener",
-			Name: listenerName,
-			Operation: envoygatewayv1alpha1.JSONPatchOperation{
-				Op:    envoygatewayv1alpha1.JSONPatchOperationType("add"),
-				Path:  ptr.To("/default_filter_chain/filters/0/typed_config/upgrade_configs"),
-				Value: &apiextensionsv1.JSON{Raw: upgradeConfigsJSON},
-			},
-		})
-	}
-
-	// 2) Cluster patch (per connector backend): point the route's cluster at the internal
+	// Cluster patch (per connector backend): point the route's cluster at the internal
 	// listener with endpoint metadata. Bootstrap must define the "connector-tunnel" internal
 	// listener (TcpProxy → iroh-gateway) and iroh-gateway cluster; InternalUpstreamTransport
 	// passes endpoint metadata so TcpProxy can send CONNECT with the right hostname and headers.
@@ -1331,17 +1309,6 @@ func buildConnectorEnvoyPatches(
 	}
 
 	return patches, nil
-}
-
-func connectorRouteConfigNames(downstreamNamespace string, gateway *gatewayv1.Gateway) []string {
-	routeConfigNames := []string{}
-	for _, listener := range gateway.Spec.Listeners {
-		if listener.Protocol != gatewayv1.HTTPSProtocolType {
-			continue
-		}
-		routeConfigNames = append(routeConfigNames, fmt.Sprintf("%s/%s/%s", downstreamNamespace, gateway.Name, listener.Name))
-	}
-	return routeConfigNames
 }
 
 func connectorRouteJSONPath(

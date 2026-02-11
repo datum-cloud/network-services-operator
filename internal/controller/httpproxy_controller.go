@@ -1209,6 +1209,77 @@ func connectorPatchDetails(ctx context.Context, cl client.Client, namespace, nam
 	return true, details.PublicKey.Id, nil
 }
 
+// connectorInternalListenerName is the name of the static internal listener
+// (added via EnvoyProxy bootstrap) that runs TcpProxy and sends CONNECT to
+// iroh-gateway using dynamic metadata for hostname and x-iroh-endpoint-id.
+const connectorInternalListenerName = "connector-tunnel"
+
+// connectorClusterName returns the cluster name Envoy Gateway assigns to the
+// HTTPRoute backend for the given rule. Must match Envoy Gateway's naming so we
+// can patch that cluster to point at the internal listener.
+func connectorClusterName(downstreamNamespace, httpRouteName string, ruleIndex int) string {
+	return fmt.Sprintf("httproute/%s/%s/rule/%d", downstreamNamespace, httpRouteName, ruleIndex)
+}
+
+// buildConnectorInternalListenerClusterJSON returns the Envoy cluster config
+// JSON that points at the internal listener "connector-tunnel" with endpoint
+// metadata (tunnel.address, tunnel.endpoint_id). InternalUpstreamTransport
+// copies that metadata to the internal connection so TcpProxy can use
+// %DYNAMIC_METADATA(tunnel:address)% and tunnel:endpoint_id for CONNECT.
+func buildConnectorInternalListenerClusterJSON(clusterName string, backend connectorBackendPatch) ([]byte, error) {
+	tunnelAddress := fmt.Sprintf("%s:%d", backend.targetHost, backend.targetPort)
+	cluster := map[string]any{
+		"name":            clusterName,
+		"type":            "STATIC",
+		"connect_timeout": "5s",
+		"load_assignment": map[string]any{
+			"cluster_name": clusterName,
+			"endpoints": []map[string]any{
+				{
+					"lb_endpoints": []map[string]any{
+						{
+							"endpoint": map[string]any{
+								"address": map[string]any{
+									"envoy_internal_address": map[string]any{
+										"server_listener_name": connectorInternalListenerName,
+									},
+								},
+							},
+							"metadata": map[string]any{
+								"filter_metadata": map[string]any{
+									"tunnel": map[string]any{
+										"address":     tunnelAddress,
+										"endpoint_id": backend.nodeID,
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		"transport_socket": map[string]any{
+			"name": "envoy.transport_sockets.internal_upstream",
+			"typed_config": map[string]any{
+				"@type": "type.googleapis.com/envoy.extensions.transport_sockets.internal_upstream.v3.InternalUpstreamTransport",
+				"passthrough_metadata": []map[string]any{
+					{
+						"kind": map[string]any{"host": map[string]any{}},
+						"name": "tunnel",
+					},
+				},
+				"transport_socket": map[string]any{
+					"name": "envoy.transport_sockets.raw_buffer",
+					"typed_config": map[string]any{
+						"@type": "type.googleapis.com/envoy.extensions.transport_sockets.raw_buffer.v3.RawBuffer",
+					},
+				},
+			},
+		},
+	}
+	return json.Marshal(cluster)
+}
+
 func buildConnectorEnvoyPatches(
 	downstreamNamespace string,
 	gateway *gatewayv1.Gateway,
@@ -1218,20 +1289,8 @@ func buildConnectorEnvoyPatches(
 	routeConfigNames := connectorRouteConfigNames(downstreamNamespace, gateway)
 	patches := make([]envoygatewayv1alpha1.EnvoyJSONPatchConfig, 0)
 	// TODO: Make this idempotent
-	headersOp := envoygatewayv1alpha1.JSONPatchOperationType("add")
 
-	// Connector traffic is routed to the local iroh-gateway instance (sidecar)
-	// via a bootstrap-defined cluster. The connector-specific tunnel destination
-	// is selected per request via headers injected below.
-	clusterJSON, err := json.Marshal("iroh-gateway")
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal cluster name: %w", err)
-	}
-
-	// Enable CONNECT (and thus Extended CONNECT / WebSocket) on HTTPS listeners by
-	// patching the HCM upgrade_configs. Doing this via EnvoyPatchPolicy avoids
-	// gateway-level BackendTrafficPolicy, which can break route matching and cause
-	// 404s when combined with connector route patches (iroh-gateway cluster).
+	// 1) Listener patch: enable CONNECT (and Extended CONNECT / WebSocket) on HTTPS listeners.
 	for _, listenerName := range routeConfigNames {
 		upgradeConfigsJSON, err := json.Marshal([]map[string]any{
 			{"upgrade_type": "CONNECT"},
@@ -1250,70 +1309,25 @@ func buildConnectorEnvoyPatches(
 		})
 	}
 
-	for _, routeConfigName := range routeConfigNames {
-		for _, backend := range backends {
-			jsonPath := connectorRouteJSONPath(
-				downstreamNamespace,
-				gateway,
-				httpProxy.Name,
-				backend.sectionName,
-				backend.ruleIndex,
-				backend.matchIndex,
-			)
-
-			headersJSON, err := json.Marshal([]map[string]any{
-				{
-					"header": map[string]any{
-						"key":   "x-datum-target-host",
-						"value": backend.targetHost,
-					},
-					"append_action": "OVERWRITE_IF_EXISTS_OR_ADD",
-				},
-				{
-					"header": map[string]any{
-						"key":   "x-datum-target-port",
-						"value": strconv.Itoa(backend.targetPort),
-					},
-					"append_action": "OVERWRITE_IF_EXISTS_OR_ADD",
-				},
-				{
-					"header": map[string]any{
-						"key":   "x-iroh-endpoint-id",
-						"value": backend.nodeID,
-					},
-					"append_action": "OVERWRITE_IF_EXISTS_OR_ADD",
-				},
-			})
-			if err != nil {
-				return nil, fmt.Errorf("failed to marshal request headers: %w", err)
-			}
-
-			patches = append(patches,
-				// 1) Send matched requests to the iroh-gateway cluster.
-				envoygatewayv1alpha1.EnvoyJSONPatchConfig{
-					Type: "type.googleapis.com/envoy.config.route.v3.RouteConfiguration",
-					Name: routeConfigName,
-					Operation: envoygatewayv1alpha1.JSONPatchOperation{
-						Op:       envoygatewayv1alpha1.JSONPatchOperationType("replace"),
-						JSONPath: ptr.To(jsonPath),
-						Path:     ptr.To("/route/cluster"),
-						Value:    &apiextensionsv1.JSON{Raw: clusterJSON},
-					},
-				},
-				// 2) Inject internal control headers based on the selected route/backend.
-				//    The client does not send these.
-				envoygatewayv1alpha1.EnvoyJSONPatchConfig{
-					Type: "type.googleapis.com/envoy.config.route.v3.RouteConfiguration",
-					Name: routeConfigName,
-					Operation: envoygatewayv1alpha1.JSONPatchOperation{
-						Op:       headersOp,
-						JSONPath: ptr.To(jsonPath),
-						Path:     ptr.To("/request_headers_to_add"),
-						Value:    &apiextensionsv1.JSON{Raw: headersJSON},
-					},
-				},
-			)
+	// 2) Cluster patch (per connector backend): point the route's cluster at the internal
+	// listener with endpoint metadata. Bootstrap must define the "connector-tunnel" internal
+	// listener (TcpProxy → iroh-gateway) and iroh-gateway cluster; InternalUpstreamTransport
+	// passes endpoint metadata so TcpProxy can send CONNECT with the right hostname and headers.
+	for _, backend := range backends {
+		clusterName := connectorClusterName(downstreamNamespace, httpProxy.Name, backend.ruleIndex)
+		clusterJSON, err := buildConnectorInternalListenerClusterJSON(clusterName, backend)
+		if err != nil {
+			return nil, fmt.Errorf("failed to build connector cluster JSON: %w", err)
 		}
+		patches = append(patches, envoygatewayv1alpha1.EnvoyJSONPatchConfig{
+			Type: "type.googleapis.com/envoy.config.cluster.v3.Cluster",
+			Name: clusterName,
+			Operation: envoygatewayv1alpha1.JSONPatchOperation{
+				Op:    envoygatewayv1alpha1.JSONPatchOperationType("replace"),
+				Path:  ptr.To(""),
+				Value: &apiextensionsv1.JSON{Raw: clusterJSON},
+			},
+		})
 	}
 
 	return patches, nil

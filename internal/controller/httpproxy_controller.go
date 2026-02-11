@@ -1288,7 +1288,7 @@ func buildConnectorEnvoyPatches(
 ) ([]envoygatewayv1alpha1.EnvoyJSONPatchConfig, error) {
 	patches := make([]envoygatewayv1alpha1.EnvoyJSONPatchConfig, 0)
 	// Cluster patch (per connector backend): point the route's cluster at the internal
-	// listener with endpoint metadata. 
+	// listener with endpoint metadata.
 	for _, backend := range backends {
 		clusterName := connectorClusterName(downstreamNamespace, httpProxy.Name, backend.ruleIndex)
 		clusterJSON, err := buildConnectorInternalListenerClusterJSON(clusterName, backend)

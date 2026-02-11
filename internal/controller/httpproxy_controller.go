@@ -1288,9 +1288,7 @@ func buildConnectorEnvoyPatches(
 ) ([]envoygatewayv1alpha1.EnvoyJSONPatchConfig, error) {
 	patches := make([]envoygatewayv1alpha1.EnvoyJSONPatchConfig, 0)
 	// Cluster patch (per connector backend): point the route's cluster at the internal
-	// listener with endpoint metadata. Bootstrap must define the "connector-tunnel" internal
-	// listener (TcpProxy → iroh-gateway) and iroh-gateway cluster; InternalUpstreamTransport
-	// passes endpoint metadata so TcpProxy can send CONNECT with the right hostname and headers.
+	// listener with endpoint metadata. 
 	for _, backend := range backends {
 		clusterName := connectorClusterName(downstreamNamespace, httpProxy.Name, backend.ruleIndex)
 		clusterJSON, err := buildConnectorInternalListenerClusterJSON(clusterName, backend)
@@ -1329,6 +1327,39 @@ func buildConnectorEnvoyPatches(
 				Op:    envoygatewayv1alpha1.JSONPatchOperationType("add"),
 				Path:  ptr.To("/virtual_hosts/0/domains/-"),
 				Value: &apiextensionsv1.JSON{Raw: domainValue},
+			},
+		})
+	}
+
+	// Add a CONNECT route (connect_matcher + route to connector cluster) so CONNECT requests
+	// are routed to the connector tunnel instead of 404. Insert at index 0 so CONNECT is
+	// matched before path-based routes.
+	if len(backends) > 0 {
+		first := backends[0]
+		connectorCluster := connectorClusterName(downstreamNamespace, httpProxy.Name, first.ruleIndex)
+		connectRoute := map[string]any{
+			"name": fmt.Sprintf("connector-connect-%s", httpProxy.Name),
+			"match": map[string]any{
+				"connect_matcher": map[string]any{},
+			},
+			"route": map[string]any{
+				"cluster": connectorCluster,
+				"upgrade_configs": []map[string]any{
+					{"upgrade_type": "CONNECT"},
+				},
+			},
+		}
+		routeValue, err := json.Marshal(connectRoute)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal CONNECT route: %w", err)
+		}
+		patches = append(patches, envoygatewayv1alpha1.EnvoyJSONPatchConfig{
+			Type: "type.googleapis.com/envoy.config.route.v3.RouteConfiguration",
+			Name: routeConfigName,
+			Operation: envoygatewayv1alpha1.JSONPatchOperation{
+				Op:    envoygatewayv1alpha1.JSONPatchOperationType("add"),
+				Path:  ptr.To("/virtual_hosts/0/routes/0"),
+				Value: &apiextensionsv1.JSON{Raw: routeValue},
 			},
 		})
 	}

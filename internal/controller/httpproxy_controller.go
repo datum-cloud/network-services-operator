@@ -100,6 +100,7 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 				return ctrl.Result{}, err
 			}
 			controllerutil.RemoveFinalizer(&httpProxy, httpProxyFinalizer)
+			normalizeHTTPProxyBackendEndpoints(&httpProxy)
 			if err := cl.GetClient().Update(ctx, &httpProxy); err != nil {
 				return ctrl.Result{}, err
 			}
@@ -111,6 +112,7 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 	defer logger.Info("reconcile complete")
 
 	if updated := ensureConnectorNameAnnotation(&httpProxy); updated {
+		normalizeHTTPProxyBackendEndpoints(&httpProxy)
 		if err := cl.GetClient().Update(ctx, &httpProxy); err != nil {
 			return ctrl.Result{}, fmt.Errorf("failed updating httpproxy connector annotation: %w", err)
 		}
@@ -119,6 +121,7 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 
 	if !controllerutil.ContainsFinalizer(&httpProxy, httpProxyFinalizer) {
 		controllerutil.AddFinalizer(&httpProxy, httpProxyFinalizer)
+		normalizeHTTPProxyBackendEndpoints(&httpProxy)
 		if err := cl.GetClient().Update(ctx, &httpProxy); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -1132,6 +1135,29 @@ func collectConnectorBackends(
 	return connectorBackends, nil
 }
 
+// normalizeHTTPProxyBackendEndpoints strips path, query, and fragment from each
+// rule backend endpoint URL so that specs like "http://example.com/" pass
+// validation (endpoint must not have a path component). Mutates proxy in place.
+func normalizeHTTPProxyBackendEndpoints(proxy *networkingv1alpha.HTTPProxy) {
+	for i := range proxy.Spec.Rules {
+		for j := range proxy.Spec.Rules[i].Backends {
+			ep := proxy.Spec.Rules[i].Backends[j].Endpoint
+			if ep == "" {
+				continue
+			}
+			u, err := url.Parse(ep)
+			if err != nil {
+				continue
+			}
+			u.Path = ""
+			u.RawPath = ""
+			u.RawQuery = ""
+			u.Fragment = ""
+			proxy.Spec.Rules[i].Backends[j].Endpoint = u.String()
+		}
+	}
+}
+
 func backendEndpointTarget(backend networkingv1alpha.HTTPProxyRuleBackend) (string, int, error) {
 	u, err := url.Parse(backend.Endpoint)
 	if err != nil {
@@ -1345,7 +1371,10 @@ func buildConnectorEnvoyPatches(
 			"route": map[string]any{
 				"cluster": connectorCluster,
 				"upgrade_configs": []map[string]any{
-					{"upgrade_type": "CONNECT"},
+					{
+						"upgrade_type":   "CONNECT",
+						"connect_config": map[string]any{},
+					},
 				},
 			},
 		}

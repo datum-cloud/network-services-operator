@@ -755,7 +755,7 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 			isIPAddress := false
 			if backend.Connector != nil {
 				// Connector backends don't rely on EndpointSlice addresses; use a safe placeholder.
-				endpointHost = "connector.invalid"
+				endpointHost = "connector.local"
 				addressType = discoveryv1.AddressTypeFQDN
 			} else if ip := net.ParseIP(host); ip != nil {
 				isIPAddress = true

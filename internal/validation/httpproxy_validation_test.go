@@ -19,6 +19,83 @@ func TestValidateHTTPProxy(t *testing.T) {
 		proxy          *networkingv1alpha.HTTPProxy
 		expectedErrors field.ErrorList
 	}{
+		"loopback allowed with connector": {
+			proxy: &networkingv1alpha.HTTPProxy{
+				Spec: networkingv1alpha.HTTPProxySpec{
+					Rules: []networkingv1alpha.HTTPProxyRule{
+						{
+							Backends: []networkingv1alpha.HTTPProxyRuleBackend{
+								{
+									Endpoint: "http://127.0.0.1",
+									Connector: &networkingv1alpha.ConnectorReference{
+										Name: "connector-1",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			expectedErrors: field.ErrorList{},
+		},
+		"localhost allowed with connector": {
+			proxy: &networkingv1alpha.HTTPProxy{
+				Spec: networkingv1alpha.HTTPProxySpec{
+					Rules: []networkingv1alpha.HTTPProxyRule{
+						{
+							Backends: []networkingv1alpha.HTTPProxyRuleBackend{
+								{
+									Endpoint: "http://localhost",
+									Connector: &networkingv1alpha.ConnectorReference{
+										Name: "connector-1",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			expectedErrors: field.ErrorList{},
+		},
+		"localhost without connector invalid": {
+			proxy: &networkingv1alpha.HTTPProxy{
+				Spec: networkingv1alpha.HTTPProxySpec{
+					Rules: []networkingv1alpha.HTTPProxyRule{
+						{
+							Backends: []networkingv1alpha.HTTPProxyRuleBackend{
+								{
+									Endpoint: "http://localhost",
+								},
+							},
+						},
+					},
+				},
+			},
+			expectedErrors: field.ErrorList{
+				field.Invalid(field.NewPath("spec", "rules").Index(0).Child("backends").Index(0).Child("endpoint").Key("host"), "Invalid", ""),
+			},
+		},
+		"loopback with empty connector name invalid": {
+			proxy: &networkingv1alpha.HTTPProxy{
+				Spec: networkingv1alpha.HTTPProxySpec{
+					Rules: []networkingv1alpha.HTTPProxyRule{
+						{
+							Backends: []networkingv1alpha.HTTPProxyRuleBackend{
+								{
+									Endpoint: "http://127.0.0.1",
+									Connector: &networkingv1alpha.ConnectorReference{
+										Name: "",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			expectedErrors: field.ErrorList{
+				field.Required(field.NewPath("spec", "rules").Index(0).Child("backends").Index(0).Child("connector", "name"), ""),
+			},
+		},
 		"connector name required": {
 			proxy: &networkingv1alpha.HTTPProxy{
 				Spec: networkingv1alpha.HTTPProxySpec{

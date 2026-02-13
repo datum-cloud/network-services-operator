@@ -16,6 +16,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -104,6 +105,19 @@ func (r *ConnectorReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 
 	apimeta.SetStatusCondition(&connector.Status.Conditions, *acceptedCondition)
 	apimeta.SetStatusCondition(&connector.Status.Conditions, *readyCondition)
+
+	if acceptedCondition.Status != metav1.ConditionTrue {
+		readyCondition.Status = metav1.ConditionFalse
+		readyCondition.Reason = networkingv1alpha1.ConnectorReasonNotReady
+		readyCondition.Message = "Waiting for ConnectorClass to be resolved."
+		apimeta.SetStatusCondition(&connector.Status.Conditions, *readyCondition)
+		if !equality.Semantic.DeepEqual(*originalStatus, connector.Status) {
+			if statusErr := cl.GetClient().Status().Update(ctx, &connector); statusErr != nil {
+				return ctrl.Result{}, fmt.Errorf("failed updating connector status: %w", statusErr)
+			}
+		}
+		return ctrl.Result{}, nil
+	}
 
 	leaseDurationSeconds := r.connectorLeaseDurationSeconds()
 	if connector.Status.LeaseRef == nil || connector.Status.LeaseRef.Name == "" {
@@ -214,6 +228,41 @@ func (r *ConnectorReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 
 	return mcbuilder.ControllerManagedBy(mgr).
 		For(&networkingv1alpha1.Connector{}).
+		Watches(
+			&networkingv1alpha1.ConnectorClass{},
+			func(clusterName string, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
+				return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []mcreconcile.Request {
+					logger := log.FromContext(ctx)
+
+					connectorClass, ok := obj.(*networkingv1alpha1.ConnectorClass)
+					if !ok {
+						return nil
+					}
+
+					var connectors networkingv1alpha1.ConnectorList
+					if err := cl.GetClient().List(ctx, &connectors); err != nil {
+						logger.Error(err, "failed to list Connectors for ConnectorClass watch", "connectorClass", connectorClass.Name)
+						return nil
+					}
+
+					var requests []mcreconcile.Request
+					for i := range connectors.Items {
+						connector := &connectors.Items[i]
+						if connector.Spec.ConnectorClassName != connectorClass.Name {
+							continue
+						}
+						requests = append(requests, mcreconcile.Request{
+							ClusterName: clusterName,
+							Request: ctrl.Request{
+								NamespacedName: client.ObjectKeyFromObject(connector),
+							},
+						})
+					}
+
+					return requests
+				})
+			},
+		).
 		Watches(
 			&coordinationv1.Lease{},
 			mchandler.EnqueueRequestForOwner(&networkingv1alpha1.Connector{}, handler.OnlyControllerOwner()),

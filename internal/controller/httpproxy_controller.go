@@ -145,7 +145,7 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 	}
 
 	tunnelMetadataCondition := &metav1.Condition{
-		Type:               networkingv1alpha.HTTPProxyConditionTunnelMetadataProgrammed,
+		Type:               networkingv1alpha.HTTPProxyConditionConnectorMetadataProgrammed,
 		Status:             metav1.ConditionFalse,
 		Reason:             networkingv1alpha.HTTPProxyReasonPending,
 		ObservedGeneration: httpProxy.Generation,
@@ -159,7 +159,7 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 		if setTunnelMetadataCondition {
 			apimeta.SetStatusCondition(&httpProxyCopy.Status.Conditions, *tunnelMetadataCondition)
 		} else {
-			apimeta.RemoveStatusCondition(&httpProxyCopy.Status.Conditions, networkingv1alpha.HTTPProxyConditionTunnelMetadataProgrammed)
+			apimeta.RemoveStatusCondition(&httpProxyCopy.Status.Conditions, networkingv1alpha.HTTPProxyConditionConnectorMetadataProgrammed)
 		}
 
 		if !equality.Semantic.DeepEqual(httpProxy.Status, httpProxyCopy.Status) {
@@ -363,12 +363,12 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 			tunnelMetadataCondition.Message = connectorPolicyMessage
 		} else {
 			tunnelMetadataCondition.Status = metav1.ConditionTrue
-			tunnelMetadataCondition.Reason = networkingv1alpha.HTTPProxyReasonTunnelMetadataApplied
+			tunnelMetadataCondition.Reason = networkingv1alpha.HTTPProxyReasonConnectorMetadataApplied
 			tunnelMetadataCondition.Message = "Connector tunnel metadata applied"
 		}
 		setTunnelMetadataCondition = true
 	} else {
-		apimeta.RemoveStatusCondition(&httpProxyCopy.Status.Conditions, networkingv1alpha.HTTPProxyConditionTunnelMetadataProgrammed)
+		apimeta.RemoveStatusCondition(&httpProxyCopy.Status.Conditions, networkingv1alpha.HTTPProxyConditionConnectorMetadataProgrammed)
 	}
 
 	r.reconcileHTTPProxyHostnameStatus(ctx, gateway, httpProxyCopy)

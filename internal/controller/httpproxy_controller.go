@@ -4,7 +4,6 @@ package controller
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -17,7 +16,6 @@ import (
 	envoygatewayv1alpha1 "github.com/envoyproxy/gateway/api/v1alpha1"
 	v1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
-	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
@@ -885,19 +883,6 @@ func hasControllerConflict(obj, owner metav1.Object) bool {
 	return controllerutil.HasControllerReference(obj) && !metav1.IsControlledBy(obj, owner)
 }
 
-type connectorBackendPatch struct {
-	// Gateway listener section name (default-https, etc.).
-	sectionName *gatewayv1.SectionName
-
-	// Identify the HTTPRoute rule/match this backend applies to.
-	ruleIndex  int
-	matchIndex int
-
-	targetHost string
-	targetPort int
-	nodeID     string
-}
-
 func (r *HTTPProxyReconciler) reconcileConnectorEnvoyPatchPolicy(
 	ctx context.Context,
 	upstreamClient client.Client,
@@ -966,6 +951,7 @@ func (r *HTTPProxyReconciler) reconcileConnectorEnvoyPatchPolicy(
 
 	jsonPatches, err := buildConnectorEnvoyPatches(
 		downstreamNamespaceName,
+		r.Config.Gateway.ConnectorTunnelListenerName(),
 		gateway,
 		httpProxy,
 		connectorBackends,
@@ -1233,205 +1219,4 @@ func connectorPatchDetails(ctx context.Context, cl client.Client, namespace, nam
 		return false, "", fmt.Errorf("connector %q public key id is empty", name)
 	}
 	return true, details.PublicKey.Id, nil
-}
-
-// connectorInternalListenerName is the name of the static internal listener
-// (added via EnvoyProxy bootstrap) that runs TcpProxy and sends CONNECT to
-// iroh-gateway using dynamic metadata for hostname and x-iroh-endpoint-id.
-const connectorInternalListenerName = "connector-tunnel"
-
-// connectorClusterName returns the cluster name Envoy Gateway assigns to the
-// HTTPRoute backend for the given rule. Must match Envoy Gateway's naming so we
-// can patch that cluster to point at the internal listener.
-func connectorClusterName(downstreamNamespace, httpRouteName string, ruleIndex int) string {
-	return fmt.Sprintf("httproute/%s/%s/rule/%d", downstreamNamespace, httpRouteName, ruleIndex)
-}
-
-// buildConnectorInternalListenerClusterJSON returns the Envoy cluster config
-// JSON that points at the internal listener "connector-tunnel" with endpoint
-// metadata (tunnel.address, tunnel.endpoint_id). InternalUpstreamTransport
-// copies that metadata to the internal connection so TcpProxy can use
-// %DYNAMIC_METADATA(tunnel:address)% and tunnel:endpoint_id for CONNECT.
-func buildConnectorInternalListenerClusterJSON(clusterName string, backend connectorBackendPatch) ([]byte, error) {
-	tunnelAddress := fmt.Sprintf("%s:%d", backend.targetHost, backend.targetPort)
-	cluster := map[string]any{
-		"name":            clusterName,
-		"type":            "STATIC",
-		"connect_timeout": "5s",
-		"load_assignment": map[string]any{
-			"cluster_name": clusterName,
-			"endpoints": []map[string]any{
-				{
-					"lb_endpoints": []map[string]any{
-						{
-							"endpoint": map[string]any{
-								"address": map[string]any{
-									"envoy_internal_address": map[string]any{
-										"server_listener_name": connectorInternalListenerName,
-									},
-								},
-							},
-							"metadata": map[string]any{
-								"filter_metadata": map[string]any{
-									"tunnel": map[string]any{
-										"address":     tunnelAddress,
-										"endpoint_id": backend.nodeID,
-									},
-								},
-							},
-						},
-					},
-				},
-			},
-		},
-		"transport_socket": map[string]any{
-			"name": "envoy.transport_sockets.internal_upstream",
-			"typed_config": map[string]any{
-				"@type": "type.googleapis.com/envoy.extensions.transport_sockets.internal_upstream.v3.InternalUpstreamTransport",
-				"passthrough_metadata": []map[string]any{
-					{
-						"kind": map[string]any{"host": map[string]any{}},
-						"name": "tunnel",
-					},
-				},
-				"transport_socket": map[string]any{
-					"name": "envoy.transport_sockets.raw_buffer",
-					"typed_config": map[string]any{
-						"@type": "type.googleapis.com/envoy.extensions.transport_sockets.raw_buffer.v3.RawBuffer",
-					},
-				},
-			},
-		},
-	}
-	return json.Marshal(cluster)
-}
-
-func buildConnectorEnvoyPatches(
-	downstreamNamespace string,
-	gateway *gatewayv1.Gateway,
-	httpProxy *networkingv1alpha.HTTPProxy,
-	backends []connectorBackendPatch,
-) ([]envoygatewayv1alpha1.EnvoyJSONPatchConfig, error) {
-	patches := make([]envoygatewayv1alpha1.EnvoyJSONPatchConfig, 0)
-	// Cluster patch (per connector backend): point the route's cluster at the internal
-	// listener with endpoint metadata.
-	for _, backend := range backends {
-		clusterName := connectorClusterName(downstreamNamespace, httpProxy.Name, backend.ruleIndex)
-		clusterJSON, err := buildConnectorInternalListenerClusterJSON(clusterName, backend)
-		if err != nil {
-			return nil, fmt.Errorf("failed to build connector cluster JSON: %w", err)
-		}
-		patches = append(patches, envoygatewayv1alpha1.EnvoyJSONPatchConfig{
-			Type: "type.googleapis.com/envoy.config.cluster.v3.Cluster",
-			Name: clusterName,
-			Operation: envoygatewayv1alpha1.JSONPatchOperation{
-				Op:    envoygatewayv1alpha1.JSONPatchOperationType("replace"),
-				Path:  ptr.To(""),
-				Value: &apiextensionsv1.JSON{Raw: clusterJSON},
-			},
-		})
-	}
-
-	// Add each unique tunnel target (host only) to the RouteConfiguration's first vhost
-	// domains so CONNECT requests with :authority set to that target match the vhost.
-	routeConfigName := fmt.Sprintf("%s/%s/default-https", downstreamNamespace, gateway.Name)
-	seenDomains := make(map[string]struct{})
-	for _, backend := range backends {
-		domain := backend.targetHost
-		if _, ok := seenDomains[domain]; ok {
-			continue
-		}
-		seenDomains[domain] = struct{}{}
-		domainValue, err := json.Marshal(domain)
-		if err != nil {
-			return nil, fmt.Errorf("failed to marshal tunnel domain %q: %w", domain, err)
-		}
-		patches = append(patches, envoygatewayv1alpha1.EnvoyJSONPatchConfig{
-			Type: "type.googleapis.com/envoy.config.route.v3.RouteConfiguration",
-			Name: routeConfigName,
-			Operation: envoygatewayv1alpha1.JSONPatchOperation{
-				Op:    envoygatewayv1alpha1.JSONPatchOperationType("add"),
-				Path:  ptr.To("/virtual_hosts/0/domains/-"),
-				Value: &apiextensionsv1.JSON{Raw: domainValue},
-			},
-		})
-	}
-
-	// Add a CONNECT route (connect_matcher + route to connector cluster) so CONNECT requests
-	// are routed to the connector tunnel instead of 404. Insert at index 0 so CONNECT is
-	// matched before path-based routes.
-	if len(backends) > 0 {
-		first := backends[0]
-		connectorCluster := connectorClusterName(downstreamNamespace, httpProxy.Name, first.ruleIndex)
-		connectRoute := map[string]any{
-			"name": fmt.Sprintf("connector-connect-%s", httpProxy.Name),
-			"match": map[string]any{
-				"connect_matcher": map[string]any{},
-			},
-			"route": map[string]any{
-				"cluster": connectorCluster,
-				"upgrade_configs": []map[string]any{
-					{
-						"upgrade_type":   "CONNECT",
-						"connect_config": map[string]any{},
-					},
-				},
-			},
-		}
-		routeValue, err := json.Marshal(connectRoute)
-		if err != nil {
-			return nil, fmt.Errorf("failed to marshal CONNECT route: %w", err)
-		}
-		patches = append(patches, envoygatewayv1alpha1.EnvoyJSONPatchConfig{
-			Type: "type.googleapis.com/envoy.config.route.v3.RouteConfiguration",
-			Name: routeConfigName,
-			Operation: envoygatewayv1alpha1.JSONPatchOperation{
-				Op:    envoygatewayv1alpha1.JSONPatchOperationType("add"),
-				Path:  ptr.To("/virtual_hosts/0/routes/0"),
-				Value: &apiextensionsv1.JSON{Raw: routeValue},
-			},
-		})
-	}
-
-	return patches, nil
-}
-
-func connectorRouteJSONPath(
-	downstreamNamespace string,
-	gateway *gatewayv1.Gateway,
-	httpRouteName string,
-	sectionName *gatewayv1.SectionName,
-	ruleIndex int,
-	matchIndex int,
-) string {
-	// vhost matches the Gateway + optional sectionName
-	vhostConstraints := fmt.Sprintf(
-		`@.metadata.filter_metadata["envoy-gateway"].resources[0].kind=="%s" && @.metadata.filter_metadata["envoy-gateway"].resources[0].namespace=="%s" && @.metadata.filter_metadata["envoy-gateway"].resources[0].name=="%s"`,
-		KindGateway,
-		downstreamNamespace,
-		gateway.Name,
-	)
-
-	if sectionName != nil {
-		vhostConstraints += fmt.Sprintf(
-			` && @.metadata.filter_metadata["envoy-gateway"].resources[0].sectionName=="%s"`,
-			string(*sectionName),
-		)
-	}
-
-	// routes match the HTTPRoute + rule/match
-	routeConstraints := fmt.Sprintf(
-		`@.metadata.filter_metadata["envoy-gateway"].resources[0].kind=="%s" && @.metadata.filter_metadata["envoy-gateway"].resources[0].namespace=="%s" && @.metadata.filter_metadata["envoy-gateway"].resources[0].name=="%s" && @.name =~ ".*?/rule/%d/match/%d/.*"`,
-		KindHTTPRoute,
-		downstreamNamespace,
-		httpRouteName,
-		ruleIndex,
-		matchIndex,
-	)
-
-	return sanitizeJSONPath(fmt.Sprintf(
-		`..virtual_hosts[?(%s)]..routes[?(!@.bogus && %s)]`,
-		vhostConstraints,
-		routeConstraints,
-	))
 }

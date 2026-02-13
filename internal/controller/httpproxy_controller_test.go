@@ -2,7 +2,9 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"testing"
 
 	envoygatewayv1alpha1 "github.com/envoyproxy/gateway/api/v1alpha1"
@@ -1189,6 +1191,239 @@ func TestConnectorRouteJSONPathDistinctPerRuleMatch(t *testing.T) {
 	assert.NotEqual(t, pathA, pathB)
 	assert.Contains(t, pathA, `/rule/0/match/0/`)
 	assert.Contains(t, pathB, `/rule/1/match/0/`)
+}
+
+func TestBuildConnectorEnvoyPatchesTargetsAllHTTPSListeners(t *testing.T) {
+	gateway := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{Name: "gw"},
+		Spec: gatewayv1.GatewaySpec{
+			Listeners: []gatewayv1.Listener{
+				{
+					Name:     gatewayv1.SectionName("default-http"),
+					Protocol: gatewayv1.HTTPProtocolType,
+				},
+				{
+					Name:     gatewayv1.SectionName("default-https"),
+					Protocol: gatewayv1.HTTPSProtocolType,
+				},
+				{
+					Name:     gatewayv1.SectionName("https-hostname-0"),
+					Protocol: gatewayv1.HTTPSProtocolType,
+				},
+			},
+		},
+	}
+
+	backends := []connectorBackendPatch{
+		{
+			ruleIndex:  0,
+			matchIndex: 0,
+			targetHost: "127.0.0.1",
+			targetPort: 5432,
+			nodeID:     "node-123",
+		},
+	}
+
+	patches, err := buildConnectorEnvoyPatches(
+		"ns-test",
+		"connector-tunnel",
+		gateway,
+		newHTTPProxy(),
+		backends,
+	)
+	assert.NoError(t, err)
+
+	routeConfigPatchCounts := map[string]int{}
+	for _, patch := range patches {
+		if patch.Type != "type.googleapis.com/envoy.config.route.v3.RouteConfiguration" {
+			continue
+		}
+		routeConfigPatchCounts[patch.Name]++
+	}
+
+	assert.Equal(t, 2, routeConfigPatchCounts["ns-test/gw/default-https"])
+	assert.Equal(t, 2, routeConfigPatchCounts["ns-test/gw/https-hostname-0"])
+	assert.NotContains(t, routeConfigPatchCounts, "ns-test/gw/default-http")
+}
+
+func TestBuildConnectorEnvoyPatchesAddsExtendedConnectPathRouteAndFallback(t *testing.T) {
+	gateway := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{Name: "gw"},
+		Spec: gatewayv1.GatewaySpec{
+			Listeners: []gatewayv1.Listener{
+				{
+					Name:     gatewayv1.SectionName("default-https"),
+					Protocol: gatewayv1.HTTPSProtocolType,
+				},
+			},
+		},
+	}
+
+	httpProxy := newHTTPProxy(func(h *networkingv1alpha.HTTPProxy) {
+		h.Spec.Rules = []networkingv1alpha.HTTPProxyRule{
+			{
+				Matches: []gatewayv1.HTTPRouteMatch{
+					{
+						Method: ptr.To(gatewayv1.HTTPMethod(http.MethodConnect)),
+						Path: &gatewayv1.HTTPPathMatch{
+							Type:  ptr.To(gatewayv1.PathMatchPathPrefix),
+							Value: ptr.To("/"),
+						},
+					},
+				},
+				Backends: []networkingv1alpha.HTTPProxyRuleBackend{
+					{
+						Endpoint: "http://www.example.com",
+						Connector: &networkingv1alpha.ConnectorReference{
+							Name: "connector-a",
+						},
+					},
+				},
+			},
+			{
+				Matches: []gatewayv1.HTTPRouteMatch{
+					{
+						Method: ptr.To(gatewayv1.HTTPMethod(http.MethodConnect)),
+						Path: &gatewayv1.HTTPPathMatch{
+							Type:  ptr.To(gatewayv1.PathMatchPathPrefix),
+							Value: ptr.To("/ws"),
+						},
+					},
+				},
+				Backends: []networkingv1alpha.HTTPProxyRuleBackend{
+					{
+						Endpoint: "http://www.example.com",
+						Connector: &networkingv1alpha.ConnectorReference{
+							Name: "connector-b",
+						},
+					},
+				},
+			},
+		}
+	})
+
+	backends := []connectorBackendPatch{
+		{
+			ruleIndex:  0,
+			matchIndex: 0,
+			targetHost: "127.0.0.1",
+			targetPort: 5432,
+			nodeID:     "node-1",
+		},
+		{
+			ruleIndex:  1,
+			matchIndex: 0,
+			targetHost: "127.0.0.2",
+			targetPort: 8443,
+			nodeID:     "node-2",
+		},
+	}
+
+	patches, err := buildConnectorEnvoyPatches(
+		"ns-test",
+		"connector-tunnel",
+		gateway,
+		httpProxy,
+		backends,
+	)
+	assert.NoError(t, err)
+
+	type routeDoc struct {
+		Name  string                 `json:"name"`
+		Match map[string]interface{} `json:"match"`
+		Route struct {
+			Cluster string `json:"cluster"`
+		} `json:"route"`
+	}
+
+	var routes []routeDoc
+	for _, patch := range patches {
+		if patch.Type != "type.googleapis.com/envoy.config.route.v3.RouteConfiguration" {
+			continue
+		}
+		if ptr.Deref(patch.Operation.Path, "") != "/virtual_hosts/0/routes/0" {
+			continue
+		}
+		var parsed routeDoc
+		assert.NoError(t, json.Unmarshal(patch.Operation.Value.Raw, &parsed))
+		routes = append(routes, parsed)
+	}
+
+	assert.Len(t, routes, 2)
+
+	// One path-aware extended CONNECT route should target rule 1 cluster (/ws).
+	foundExtended := false
+	for _, r := range routes {
+		if r.Name != "connector-connect-test-rule-1" {
+			continue
+		}
+		foundExtended = true
+		assert.Equal(t, "httproute/ns-test/test/rule/1", r.Route.Cluster)
+		assert.Equal(t, "/ws", r.Match["prefix"])
+	}
+	assert.True(t, foundExtended, "expected extended CONNECT path-aware route")
+
+	// One pure CONNECT fallback route should target fallback (rule 0, path "/").
+	foundFallback := false
+	for _, r := range routes {
+		if r.Name != "connector-connect-test" {
+			continue
+		}
+		foundFallback = true
+		assert.Equal(t, "httproute/ns-test/test/rule/0", r.Route.Cluster)
+		_, hasConnectMatcher := r.Match["connect_matcher"]
+		assert.True(t, hasConnectMatcher)
+	}
+	assert.True(t, foundFallback, "expected pure CONNECT fallback route")
+}
+
+func TestBuildConnectorEnvoyPatchesScopesRouteConfigBySectionName(t *testing.T) {
+	gateway := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{Name: "gw"},
+		Spec: gatewayv1.GatewaySpec{
+			Listeners: []gatewayv1.Listener{
+				{
+					Name:     gatewayv1.SectionName("default-https"),
+					Protocol: gatewayv1.HTTPSProtocolType,
+				},
+				{
+					Name:     gatewayv1.SectionName("https-hostname-0"),
+					Protocol: gatewayv1.HTTPSProtocolType,
+				},
+			},
+		},
+	}
+
+	backends := []connectorBackendPatch{
+		{
+			sectionName: ptr.To(gatewayv1.SectionName("https-hostname-0")),
+			ruleIndex:   0,
+			matchIndex:  0,
+			targetHost:  "127.0.0.1",
+			targetPort:  5432,
+			nodeID:      "node-123",
+		},
+	}
+
+	patches, err := buildConnectorEnvoyPatches(
+		"ns-test",
+		"connector-tunnel",
+		gateway,
+		newHTTPProxy(),
+		backends,
+	)
+	assert.NoError(t, err)
+
+	routeConfigPatchCounts := map[string]int{}
+	for _, patch := range patches {
+		if patch.Type != "type.googleapis.com/envoy.config.route.v3.RouteConfiguration" {
+			continue
+		}
+		routeConfigPatchCounts[patch.Name]++
+	}
+
+	assert.Equal(t, 2, routeConfigPatchCounts["ns-test/gw/https-hostname-0"])
+	assert.NotContains(t, routeConfigPatchCounts, "ns-test/gw/default-https")
 }
 
 func TestHTTPProxyFinalizerCleanup(t *testing.T) {

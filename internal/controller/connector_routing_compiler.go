@@ -170,10 +170,7 @@ func buildConnectorEnvoyPatches(
 	//   matches method CONNECT with a non-root path.
 	//
 	// Insert at index 0 so CONNECT routes are matched before path-based routes.
-	connectRoutes, err := buildConnectorConnectRoutes(downstreamNamespace, httpProxy, backends)
-	if err != nil {
-		return nil, err
-	}
+	connectRoutes := buildConnectorConnectRoutes(downstreamNamespace, httpProxy, backends)
 	for _, connectRoute := range connectRoutes {
 		routeValue, err := json.Marshal(connectRoute.route)
 		if err != nil {
@@ -250,9 +247,9 @@ func buildConnectorConnectRoutes(
 	downstreamNamespace string,
 	httpProxy *networkingv1alpha.HTTPProxy,
 	backends []connectorBackendPatch,
-) ([]connectorConnectRoute, error) {
+) []connectorConnectRoute {
 	if len(backends) == 0 {
-		return nil, nil
+		return nil
 	}
 
 	clusterByRule := map[int]string{}
@@ -356,7 +353,7 @@ func buildConnectorConnectRoutes(
 		},
 	})
 
-	return connectRoutes, nil
+	return connectRoutes
 }
 
 func connectorRouteJSONPath(

@@ -37,6 +37,8 @@ import (
 	gatewayutil "go.datum.net/network-services-operator/internal/util/gateway"
 )
 
+const routeConfigurationTypeURL = "type.googleapis.com/envoy.config.route.v3.RouteConfiguration"
+
 //nolint:gocyclo
 func TestHTTPProxyCollectDesiredResources(t *testing.T) {
 
@@ -1235,7 +1237,7 @@ func TestBuildConnectorEnvoyPatchesTargetsAllHTTPSListeners(t *testing.T) {
 
 	routeConfigPatchCounts := map[string]int{}
 	for _, patch := range patches {
-		if patch.Type != "type.googleapis.com/envoy.config.route.v3.RouteConfiguration" {
+		if patch.Type != routeConfigurationTypeURL {
 			continue
 		}
 		routeConfigPatchCounts[patch.Name]++
@@ -1336,9 +1338,9 @@ func TestBuildConnectorEnvoyPatchesAddsExtendedConnectPathRouteAndFallback(t *te
 		} `json:"route"`
 	}
 
-	var routes []routeDoc
+	routes := make([]routeDoc, 0, len(patches))
 	for _, patch := range patches {
-		if patch.Type != "type.googleapis.com/envoy.config.route.v3.RouteConfiguration" {
+		if patch.Type != routeConfigurationTypeURL {
 			continue
 		}
 		if ptr.Deref(patch.Operation.Path, "") != "/virtual_hosts/0/routes/0" {
@@ -1416,7 +1418,7 @@ func TestBuildConnectorEnvoyPatchesScopesRouteConfigBySectionName(t *testing.T) 
 
 	routeConfigPatchCounts := map[string]int{}
 	for _, patch := range patches {
-		if patch.Type != "type.googleapis.com/envoy.config.route.v3.RouteConfiguration" {
+		if patch.Type != routeConfigurationTypeURL {
 			continue
 		}
 		routeConfigPatchCounts[patch.Name]++

@@ -218,6 +218,10 @@ const (
 	// This condition is present and true when a hostname defined in an HTTPProxy
 	// is in use by another resource.
 	HTTPProxyConditionHostnamesInUse = "HostnamesInUse"
+
+	// This condition is true when connector metadata has been programmed
+	// via the downstream EnvoyPatchPolicy.
+	HTTPProxyConditionConnectorMetadataProgrammed = "ConnectorMetadataProgrammed"
 )
 
 const (
@@ -227,6 +231,9 @@ const (
 
 	// HTTPProxyReasonProgrammed indicates that the HTTP proxy has been programmed.
 	HTTPProxyReasonProgrammed = "Programmed"
+
+	// HTTPProxyReasonConnectorMetadataApplied indicates connector metadata has been applied.
+	HTTPProxyReasonConnectorMetadataApplied = "ConnectorMetadataApplied"
 
 	// HTTPProxyReasonConflict indicates that the HTTP proxy encountered a conflict
 	// when being programmed.

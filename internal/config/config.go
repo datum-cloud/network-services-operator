@@ -512,6 +512,14 @@ type GatewayConfig struct {
 	//
 	// Defaults to true.
 	DeleteErroredChallenges *bool `json:"deleteErroredChallenges,omitempty"`
+
+	// EnableDNSIntegration enables automatic DNS record management for Gateway
+	// hostnames via the Datum DNS operator (dns.datumapis.com/v1alpha1). When
+	// enabled, the Gateway controller will create DNSRecordSet resources for
+	// each hostname whose Domain has VerifiedDNSZone=True.
+	//
+	// Defaults to false.
+	EnableDNSIntegration bool `json:"enableDNSIntegration,omitempty"`
 }
 
 // ShouldDeleteErroredChallenges returns whether the operator should automatically

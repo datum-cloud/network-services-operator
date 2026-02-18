@@ -313,6 +313,7 @@ func (r *HTTPProxyReconciler) reconcileHTTPProxyHostnameStatus(
 
 	acceptedHostnamesSlice := acceptedHostnames.UnsortedList()
 	slices.Sort(acceptedHostnamesSlice)
+	//nolint:staticcheck // SA1019: Hostnames is deprecated but still populated for backwards compatibility
 	httpProxyCopy.Status.Hostnames = append(hostnames, acceptedHostnamesSlice...)
 
 	if len(httpProxyCopy.Spec.Hostnames) > 0 {

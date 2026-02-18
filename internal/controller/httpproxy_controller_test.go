@@ -592,7 +592,9 @@ func TestHTTPProxyReconcile(t *testing.T) {
 					assert.Equal(t, t.gateway.Status.Addresses[0].Value, httpProxy.Status.Addresses[0].Value)
 				}
 
+				//nolint:staticcheck // SA1019: testing deprecated Hostnames field for backwards compatibility
 				if assert.Len(t, httpProxy.Status.Hostnames, 1) {
+					//nolint:staticcheck // SA1019: testing deprecated Hostnames field for backwards compatibility
 					assert.Equal(t, ptr.Deref(t.gateway.Spec.Listeners[0].Hostname, ""), httpProxy.Status.Hostnames[0])
 				}
 			},

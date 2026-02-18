@@ -177,6 +177,25 @@ type ConnectorReference struct {
 	Name string `json:"name"`
 }
 
+// HostnameStatus captures the per-hostname verification and DNS programming status.
+// Each hostname configured on an HTTPProxy has a corresponding entry tracking
+// its lifecycle from domain ownership verification through DNS record creation.
+type HostnameStatus struct {
+	// Hostname is the fully qualified domain name being tracked.
+	// Must be a valid RFC 1123 hostname without a trailing dot.
+	//
+	// +kubebuilder:validation:Required
+	Hostname string `json:"hostname"`
+
+	// Conditions contains the current status conditions for this hostname.
+	// Standard condition types include Verified and DNSRecordProgrammed.
+	//
+	// +listType=map
+	// +listMapKey=type
+	// +optional
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
+}
+
 // HTTPProxyStatus defines the observed state of HTTPProxy.
 type HTTPProxyStatus struct {
 	// Addresses lists the network addresses that have been bound to the
@@ -192,7 +211,27 @@ type HTTPProxyStatus struct {
 	//
 	// If this list does not match that defined in the HTTPProxy, see the
 	// `HostnamesVerified` condition message for details.
+	//
+	// Deprecated: Use HostnameStatuses for detailed per-hostname status.
+	// This field will be removed in a future API version.
 	Hostnames []gatewayv1.Hostname `json:"hostnames,omitempty"`
+
+	// CanonicalHostname is the platform-managed stable hostname assigned to this
+	// HTTPProxy (e.g., "<uid>.datumproxy.net"). Users may create external CNAME
+	// or ALIAS records pointing to this hostname to route traffic through the
+	// platform. The platform manages A/AAAA records for this hostname in the
+	// datumproxy.net zone.
+	//
+	// +optional
+	CanonicalHostname string `json:"canonicalHostname,omitempty"`
+
+	// HostnameStatuses lists the per-hostname status for each hostname configured
+	// on this HTTPProxy. Each entry includes verification and DNS record
+	// programming conditions. Use this field instead of the deprecated Hostnames
+	// field for detailed per-hostname lifecycle information.
+	//
+	// +optional
+	HostnameStatuses []HostnameStatus `json:"hostnameStatuses,omitempty"`
 
 	// Conditions describe the current conditions of the HTTPProxy.
 	//
@@ -218,6 +257,79 @@ const (
 	// This condition is present and true when a hostname defined in an HTTPProxy
 	// is in use by another resource.
 	HTTPProxyConditionHostnamesInUse = "HostnamesInUse"
+)
+
+const (
+	// HTTPProxyConditionDNSRecordsProgrammed is an aggregate condition that is
+	// True when all hostnames using Datum-managed DNS have records programmed,
+	// False when one or more hostnames failed DNS record creation, and omitted
+	// when no hostnames use Datum-managed DNS.
+	HTTPProxyConditionDNSRecordsProgrammed = "DNSRecordsProgrammed"
+)
+
+// Per-hostname condition types (used in HostnameStatus.Conditions).
+const (
+	// HostnameConditionVerified tracks domain ownership verification.
+	HostnameConditionVerified = "Verified"
+
+	// HostnameConditionDNSRecordProgrammed tracks whether a DNS record was
+	// created in the DNSZone for this hostname.
+	HostnameConditionDNSRecordProgrammed = "DNSRecordProgrammed"
+)
+
+// Reasons for HostnameConditionDNSRecordProgrammed.
+const (
+	// DNSRecordReasonCreated indicates a DNS record was successfully created.
+	DNSRecordReasonCreated = "RecordCreated"
+
+	// DNSRecordReasonUpdated indicates an existing platform-managed DNS record
+	// was successfully updated.
+	DNSRecordReasonUpdated = "RecordUpdated"
+
+	// DNSRecordReasonZoneNotFound indicates no DNSZone manages this hostname's
+	// apex domain. This is not an error; the condition is set to True.
+	DNSRecordReasonZoneNotFound = "DNSZoneNotFound"
+
+	// DNSRecordReasonZoneNotReady indicates a DNSZone exists but is not yet
+	// accepted and programmed.
+	DNSRecordReasonZoneNotReady = "DNSZoneNotReady"
+
+	// DNSRecordReasonDomainNotVerified indicates the Domain resource for this
+	// hostname has not been verified via a DNSZone.
+	DNSRecordReasonDomainNotVerified = "DomainNotVerified"
+
+	// DNSRecordReasonConflict indicates an existing DNSRecordSet for this
+	// hostname is managed by a different actor.
+	DNSRecordReasonConflict = "ConflictWithUserRecord"
+
+	// DNSRecordReasonFailed indicates an API error when creating or updating
+	// the DNSRecordSet.
+	DNSRecordReasonFailed = "RecordCreationFailed"
+
+	// DNSRecordReasonRetryPending indicates a transient error; the controller
+	// will retry.
+	DNSRecordReasonRetryPending = "RetryPending"
+
+	// DNSRecordReasonNotApplicable indicates the domain is not managed by
+	// Datum DNS. No record is created; the condition is set to True.
+	DNSRecordReasonNotApplicable = "NotApplicable"
+)
+
+// Reasons for HTTPProxyConditionDNSRecordsProgrammed.
+const (
+	// DNSRecordsProgrammedReasonAllCreated indicates that every hostname
+	// requiring a DNS record has had its record successfully created or updated.
+	DNSRecordsProgrammedReasonAllCreated = "AllRecordsCreated"
+
+	// DNSRecordsProgrammedReasonAllApplicableCreated indicates that all
+	// hostnames that use Datum-managed DNS have had records successfully created
+	// or updated. Hostnames not using Datum DNS are not counted.
+	DNSRecordsProgrammedReasonAllApplicableCreated = "AllApplicableRecordsCreated"
+
+	// DNSRecordsProgrammedReasonPartialFailure indicates that one or more
+	// hostnames that require DNS records could not have their records created or
+	// updated. See per-hostname conditions for details.
+	DNSRecordsProgrammedReasonPartialFailure = "PartialFailure"
 )
 
 const (

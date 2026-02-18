@@ -96,6 +96,24 @@ rules:
 - apiGroups:
   - dns.networking.miloapis.com
   resources:
+  - dnsrecordsets
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - dns.networking.miloapis.com
+  resources:
+  - dnsrecordsets/status
+  verbs:
+  - get
+- apiGroups:
+  - dns.networking.miloapis.com
+  resources:
   - dnszones
   verbs:
   - get

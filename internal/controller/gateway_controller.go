@@ -44,6 +44,7 @@ import (
 	downstreamclient "go.datum.net/network-services-operator/internal/downstreamclient"
 	gatewayutil "go.datum.net/network-services-operator/internal/util/gateway"
 	"go.datum.net/network-services-operator/internal/util/resourcename"
+	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 )
 
 const gatewayControllerFinalizer = "gateway.networking.datumapis.com/gateway-controller"
@@ -288,6 +289,22 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 	)
 	if dnsResult.ShouldReturn() {
 		return dnsResult.Merge(result), nil
+	}
+
+	hostnameStatuses, dnsProgramResult := r.ensureDNSRecordSets(
+		ctx,
+		upstreamClient,
+		upstreamGateway,
+		claimedHostnames,
+	)
+	if dnsProgramResult.ShouldReturn() {
+		return dnsProgramResult.Merge(result), nil
+	}
+	result = result.Merge(dnsProgramResult)
+
+	if len(hostnameStatuses) > 0 {
+		dnsStatusResult := r.reconcileDNSStatus(upstreamClient, upstreamGateway, hostnameStatuses)
+		result = result.Merge(dnsStatusResult)
 	}
 
 	gatewayStatusResult := r.reconcileGatewayStatus(
@@ -1507,7 +1524,7 @@ func (r *GatewayReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 
 	downstreamHTTPRouteClusterSource, _ := downstreamHTTPRouteSource.ForCluster("", r.DownstreamCluster)
 
-	return mcbuilder.ControllerManagedBy(mgr).
+	builder := mcbuilder.ControllerManagedBy(mgr).
 		For(&gatewayv1.Gateway{}).
 		Watches(
 			&gatewayv1.HTTPRoute{},
@@ -1526,9 +1543,21 @@ func (r *GatewayReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 			r.listGatewaysForHTTPRouteFilterFunc,
 		).
 		WatchesRawSource(downstreamGatewayClusterSource).
-		WatchesRawSource(downstreamHTTPRouteClusterSource).
-		Named("gateway").
-		Complete(r)
+		WatchesRawSource(downstreamHTTPRouteClusterSource)
+
+	if r.Config.Gateway.EnableDNSIntegration {
+		builder = builder.
+			Watches(
+				&dnsv1alpha1.DNSZone{},
+				r.listGatewaysForDNSZoneFunc,
+			).
+			Watches(
+				&dnsv1alpha1.DNSRecordSet{},
+				r.listGatewaysForDNSRecordSetFunc,
+			)
+	}
+
+	return builder.Named("gateway").Complete(r)
 }
 
 // listGatewaysAttachedByHTTPRoute is a watch predicate which finds all Gateways mentioned

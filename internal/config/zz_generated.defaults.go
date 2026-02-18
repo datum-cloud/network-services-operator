@@ -32,6 +32,9 @@ func SetObjectDefaults_NetworkServicesOperator(in *NetworkServicesOperator) {
 			panic(err)
 		}
 	}
+	if in.Gateway.ConnectorInternalListenerName == "" {
+		in.Gateway.ConnectorInternalListenerName = "connector-tunnel"
+	}
 	if in.Gateway.Coraza.LibraryID == "" {
 		in.Gateway.Coraza.LibraryID = "coraza-waf"
 	}

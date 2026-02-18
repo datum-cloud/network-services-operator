@@ -220,7 +220,8 @@ func main() {
 	}
 
 	if err := (&controller.HTTPProxyReconciler{
-		Config: serverConfig,
+		Config:            serverConfig,
+		DownstreamCluster: downstreamCluster,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "HTTPProxy")
 		os.Exit(1)

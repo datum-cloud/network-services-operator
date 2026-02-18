@@ -470,6 +470,12 @@ type GatewayConfig struct {
 	// +default={"gateway.networking.datumapis.com/certificate-issuer": "auto"}
 	ListenerTLSOptions map[gatewayv1.AnnotationKey]gatewayv1.AnnotationValue `json:"listenerTLSOptions"`
 
+	// ConnectorInternalListenerName is the Envoy internal listener name used by
+	// connector tunnel routing patches.
+	//
+	// +default="connector-tunnel"
+	ConnectorInternalListenerName string `json:"connectorInternalListenerName,omitempty"`
+
 	// Coraza specifies configuration for the Coraza WAF.
 	Coraza CorazaConfig `json:"coraza,omitempty"`
 
@@ -533,6 +539,13 @@ func (c *GatewayConfig) ShouldDeleteErroredChallenges() bool {
 
 func (c *GatewayConfig) GatewayDNSAddress(gateway *gatewayv1.Gateway) string {
 	return fmt.Sprintf("%s.%s", strings.ReplaceAll(string(gateway.UID), "-", ""), c.TargetDomain)
+}
+
+func (c *GatewayConfig) ConnectorTunnelListenerName() string {
+	if c.ConnectorInternalListenerName == "" {
+		return "connector-tunnel"
+	}
+	return c.ConnectorInternalListenerName
 }
 
 // +k8s:deepcopy-gen=true

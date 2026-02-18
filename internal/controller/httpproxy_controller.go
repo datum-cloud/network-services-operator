@@ -108,13 +108,6 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 	logger.Info("reconciling httpproxy")
 	defer logger.Info("reconcile complete")
 
-	if updated := ensureConnectorNameAnnotation(&httpProxy); updated {
-		if err := cl.GetClient().Update(ctx, &httpProxy); err != nil {
-			return ctrl.Result{}, fmt.Errorf("failed updating httpproxy connector annotation: %w", err)
-		}
-		return ctrl.Result{}, nil
-	}
-
 	if !controllerutil.ContainsFinalizer(&httpProxy, httpProxyFinalizer) {
 		controllerutil.AddFinalizer(&httpProxy, httpProxyFinalizer)
 		if err := cl.GetClient().Update(ctx, &httpProxy); err != nil {
@@ -479,52 +472,6 @@ func (r *HTTPProxyReconciler) reconcileHTTPProxyHostnameStatus(
 		apimeta.RemoveStatusCondition(&httpProxyCopy.Status.Conditions, networkingv1alpha.HTTPProxyConditionHostnamesVerified)
 		apimeta.RemoveStatusCondition(&httpProxyCopy.Status.Conditions, networkingv1alpha.HTTPProxyConditionHostnamesInUse)
 	}
-}
-
-// Today we store only a single connector name for filtering stability
-// because selector fields on nested arrays (rules[].backends[].connector) are
-// not supported in a way that lets us index and watch those references directly.
-func ensureConnectorNameAnnotation(httpProxy *networkingv1alpha.HTTPProxy) bool {
-	var connectorName string
-	for _, rule := range httpProxy.Spec.Rules {
-		for _, backend := range rule.Backends {
-			if backend.Connector != nil && backend.Connector.Name != "" {
-				if connectorName == "" {
-					connectorName = backend.Connector.Name
-				} else if connectorName != backend.Connector.Name {
-					// Prefer first connector for annotation stability if multiple are present.
-					break
-				}
-			}
-		}
-	}
-
-	annotations := httpProxy.GetAnnotations()
-	if connectorName == "" {
-		if annotations == nil {
-			return false
-		}
-		if _, ok := annotations[networkingv1alpha1.ConnectorNameAnnotation]; !ok {
-			return false
-		}
-		delete(annotations, networkingv1alpha1.ConnectorNameAnnotation)
-		if len(annotations) == 0 {
-			httpProxy.SetAnnotations(nil)
-		} else {
-			httpProxy.SetAnnotations(annotations)
-		}
-		return true
-	}
-
-	if annotations == nil {
-		annotations = map[string]string{}
-	}
-	if annotations[networkingv1alpha1.ConnectorNameAnnotation] == connectorName {
-		return false
-	}
-	annotations[networkingv1alpha1.ConnectorNameAnnotation] = connectorName
-	httpProxy.SetAnnotations(annotations)
-	return true
 }
 
 // SetupWithManager sets up the controller with the Manager.

@@ -53,6 +53,9 @@ const (
 	// PolicyReasonWaitingForCertificates indicates that the policy is waiting
 	// for TLS certificates to become ready before EnvoyPatchPolicies can be created.
 	PolicyReasonWaitingForCertificates gatewayv1alpha2.PolicyConditionReason = "WaitingForCertificates"
+	// PolicyReasonWaitingForListenersProgrammed indicates that the policy is waiting
+	// for HTTPS listeners to be Programmed=True before EnvoyPatchPolicies can be created.
+	PolicyReasonWaitingForListenersProgrammed gatewayv1alpha2.PolicyConditionReason = "WaitingForListenersProgrammed"
 )
 
 // certificateReadinessResult contains the result of checking certificate readiness
@@ -135,6 +138,19 @@ func (r *TrafficProtectionPolicyReconciler) Reconcile(ctx context.Context, req N
 		}
 
 		// Certificate watch will trigger reconciliation when certificates become ready
+		return ctrl.Result{}, nil
+	}
+
+	listenerReadiness := r.checkHTTPSListenersProgrammed(attachments)
+	if !listenerReadiness.AllReady {
+		logger.Info("waiting for HTTPS listeners to become programmed", "pendingListeners", listenerReadiness.PendingListeners)
+		r.setWaitingForListenersProgrammedConditions(trafficProtectionPolicies, listenerReadiness.PendingListeners)
+
+		if err := r.updateTPPAncestorsStatus(ctx, cl.GetClient(), trafficProtectionPolicies, originalTrafficProtectionPolicies); err != nil {
+			return ctrl.Result{}, err
+		}
+
+		// Gateway/HTTPRoute watches will trigger reconciliation when listener status changes.
 		return ctrl.Result{}, nil
 	}
 
@@ -360,6 +376,70 @@ func (r *TrafficProtectionPolicyReconciler) setWaitingForCertificatesConditions(
 				gatewayv1alpha2.PolicyConditionAccepted,
 				metav1.ConditionFalse,
 				PolicyReasonWaitingForCertificates,
+				message,
+				policy.Generation,
+			)
+		}
+	}
+}
+
+// checkHTTPSListenersProgrammed checks if all referenced HTTPS listeners are
+// Programmed=True on the upstream Gateway status.
+func (r *TrafficProtectionPolicyReconciler) checkHTTPSListenersProgrammed(
+	attachments []policyAttachment,
+) *certificateReadinessResult {
+	pendingListenersSet := sets.New[string]()
+
+	for _, attachment := range attachments {
+		if attachment.Listener != nil {
+			for _, l := range attachment.Gateway.Spec.Listeners {
+				if l.Name != *attachment.Listener || l.Protocol != gatewayv1.HTTPSProtocolType {
+					continue
+				}
+				if !gatewayListenerProgrammed(attachment.Gateway.Status.Listeners, l.Name) {
+					pendingListenersSet.Insert(fmt.Sprintf("%s/%s", attachment.Gateway.Name, l.Name))
+				}
+			}
+			continue
+		}
+
+		for _, l := range attachment.Gateway.Spec.Listeners {
+			if l.Protocol != gatewayv1.HTTPSProtocolType {
+				continue
+			}
+			if !gatewayListenerProgrammed(attachment.Gateway.Status.Listeners, l.Name) {
+				pendingListenersSet.Insert(fmt.Sprintf("%s/%s", attachment.Gateway.Name, l.Name))
+			}
+		}
+	}
+
+	pendingListeners := sets.List(pendingListenersSet)
+	sort.Strings(pendingListeners)
+
+	return &certificateReadinessResult{
+		AllReady:         len(pendingListeners) == 0,
+		PendingListeners: pendingListeners,
+	}
+}
+
+// setWaitingForListenersProgrammedConditions sets Accepted=False with reason
+// WaitingForListenersProgrammed while HTTPS listeners are not yet Programmed=True.
+func (r *TrafficProtectionPolicyReconciler) setWaitingForListenersProgrammedConditions(
+	policies []*policyContext,
+	pendingListeners []string,
+) {
+	message := fmt.Sprintf("Waiting for HTTPS listeners to become Programmed=True: %s", strings.Join(pendingListeners, ", "))
+
+	for _, policy := range policies {
+		for _, targetRef := range policy.Spec.TargetRefs {
+			ancestorRef := getAncestorRefForTarget(policy.Namespace, targetRef)
+			gatewaystatus.SetConditionForPolicyAncestor(
+				&policy.Status.PolicyStatus,
+				ancestorRef,
+				string(r.Config.Gateway.ControllerName),
+				gatewayv1alpha2.PolicyConditionAccepted,
+				metav1.ConditionFalse,
+				PolicyReasonWaitingForListenersProgrammed,
 				message,
 				policy.Generation,
 			)

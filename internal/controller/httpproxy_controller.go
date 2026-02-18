@@ -146,7 +146,7 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 		Status:             metav1.ConditionFalse,
 		Reason:             networkingv1alpha.HTTPProxyReasonPending,
 		ObservedGeneration: httpProxy.Generation,
-		Message:            "Waiting for downstream EnvoyPatchPolicy to be accepted and programmed",
+		Message:            "Waiting for envoy to be configured",
 	}
 	setTunnelMetadataCondition := false
 

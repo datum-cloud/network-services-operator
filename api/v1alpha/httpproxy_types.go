@@ -275,12 +275,29 @@ const (
 	// HostnameConditionDNSRecordProgrammed tracks whether a DNS record was
 	// created in the DNSZone for this hostname.
 	HostnameConditionDNSRecordProgrammed = "DNSRecordProgrammed"
+
+	// HostnameConditionAvailable indicates whether the hostname was successfully
+	// claimed by this resource or is already in use by another resource.
+	HostnameConditionAvailable = "Available"
+)
+
+// Reasons for HostnameConditionAvailable.
+const (
+	// HostnameAvailableReasonClaimed indicates the hostname was successfully claimed.
+	HostnameAvailableReasonClaimed = "Claimed"
+
+	// HostnameAvailableReasonInUse indicates the hostname is already claimed by
+	// another Gateway or HTTPProxy.
+	HostnameAvailableReasonInUse = "InUse"
 )
 
 // Reasons for HostnameConditionDNSRecordProgrammed.
 const (
 	// DNSRecordReasonCreated indicates a DNS record was successfully created.
 	DNSRecordReasonCreated = "RecordCreated"
+
+	// DNSRecordReasonPending indicates a DNS record is pending programming.
+	DNSRecordReasonPending = "Pending"
 
 	// DNSRecordReasonUpdated indicates an existing platform-managed DNS record
 	// was successfully updated.

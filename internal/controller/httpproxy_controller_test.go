@@ -6,10 +6,12 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	discoveryv1 "k8s.io/api/discovery/v1"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/uuid"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/utils/ptr"
@@ -956,4 +958,342 @@ func (c *fakeCluster) GetAPIReader() client.Reader {
 
 func (c *fakeCluster) GetScheme() *runtime.Scheme {
 	return c.cl.Scheme()
+}
+
+func TestBuildAvailabilityStatuses(t *testing.T) {
+	t.Parallel()
+
+	const generation int64 = 5
+
+	tests := []struct {
+		name              string
+		acceptedHostnames sets.Set[gatewayv1.Hostname]
+		inUseHostnames    sets.Set[string]
+		wantHostnames     []string
+		wantConditions    map[string]metav1.Condition
+	}{
+		{
+			name:              "empty sets return no statuses",
+			acceptedHostnames: sets.New[gatewayv1.Hostname](),
+			inUseHostnames:    sets.New[string](),
+			wantHostnames:     nil,
+			wantConditions:    map[string]metav1.Condition{},
+		},
+		{
+			name: "accepted hostname gets Available=True with Claimed reason",
+			acceptedHostnames: sets.New[gatewayv1.Hostname](
+				gatewayv1.Hostname("claimed.example.com"),
+			),
+			inUseHostnames: sets.New[string](),
+			wantHostnames:  []string{"claimed.example.com"},
+			wantConditions: map[string]metav1.Condition{
+				"claimed.example.com": {
+					Type:               networkingv1alpha.HostnameConditionAvailable,
+					Status:             metav1.ConditionTrue,
+					Reason:             networkingv1alpha.HostnameAvailableReasonClaimed,
+					ObservedGeneration: generation,
+				},
+			},
+		},
+		{
+			name:              "in-use hostname gets Available=False with InUse reason",
+			acceptedHostnames: sets.New[gatewayv1.Hostname](),
+			inUseHostnames: sets.New[string](
+				"inuse.example.com",
+			),
+			wantHostnames: []string{"inuse.example.com"},
+			wantConditions: map[string]metav1.Condition{
+				"inuse.example.com": {
+					Type:               networkingv1alpha.HostnameConditionAvailable,
+					Status:             metav1.ConditionFalse,
+					Reason:             networkingv1alpha.HostnameAvailableReasonInUse,
+					ObservedGeneration: generation,
+				},
+			},
+		},
+		{
+			name: "mix of accepted and in-use hostnames",
+			acceptedHostnames: sets.New[gatewayv1.Hostname](
+				gatewayv1.Hostname("accepted.example.com"),
+			),
+			inUseHostnames: sets.New[string](
+				"taken.example.com",
+			),
+			wantHostnames: []string{"accepted.example.com", "taken.example.com"},
+			wantConditions: map[string]metav1.Condition{
+				"accepted.example.com": {
+					Type:               networkingv1alpha.HostnameConditionAvailable,
+					Status:             metav1.ConditionTrue,
+					Reason:             networkingv1alpha.HostnameAvailableReasonClaimed,
+					ObservedGeneration: generation,
+				},
+				"taken.example.com": {
+					Type:               networkingv1alpha.HostnameConditionAvailable,
+					Status:             metav1.ConditionFalse,
+					Reason:             networkingv1alpha.HostnameAvailableReasonInUse,
+					ObservedGeneration: generation,
+				},
+			},
+		},
+		{
+			name: "multiple accepted hostnames each get their own status entry",
+			acceptedHostnames: sets.New[gatewayv1.Hostname](
+				gatewayv1.Hostname("a.example.com"),
+				gatewayv1.Hostname("b.example.com"),
+			),
+			inUseHostnames: sets.New[string](),
+			wantHostnames:  []string{"a.example.com", "b.example.com"},
+			wantConditions: map[string]metav1.Condition{
+				"a.example.com": {
+					Type:               networkingv1alpha.HostnameConditionAvailable,
+					Status:             metav1.ConditionTrue,
+					Reason:             networkingv1alpha.HostnameAvailableReasonClaimed,
+					ObservedGeneration: generation,
+				},
+				"b.example.com": {
+					Type:               networkingv1alpha.HostnameConditionAvailable,
+					Status:             metav1.ConditionTrue,
+					Reason:             networkingv1alpha.HostnameAvailableReasonClaimed,
+					ObservedGeneration: generation,
+				},
+			},
+		},
+		{
+			name: "ObservedGeneration is set from the generation argument",
+			acceptedHostnames: sets.New[gatewayv1.Hostname](
+				gatewayv1.Hostname("gen.example.com"),
+			),
+			inUseHostnames: sets.New[string](),
+			wantHostnames:  []string{"gen.example.com"},
+			wantConditions: map[string]metav1.Condition{
+				"gen.example.com": {
+					Type:               networkingv1alpha.HostnameConditionAvailable,
+					Status:             metav1.ConditionTrue,
+					Reason:             networkingv1alpha.HostnameAvailableReasonClaimed,
+					ObservedGeneration: generation,
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			statuses := buildAvailabilityStatuses(tt.acceptedHostnames, tt.inUseHostnames, generation)
+
+			// Verify each expected hostname appears exactly once.
+			gotHostnames := make([]string, 0, len(statuses))
+			for _, hs := range statuses {
+				gotHostnames = append(gotHostnames, hs.Hostname)
+			}
+			assert.ElementsMatch(t, tt.wantHostnames, gotHostnames)
+
+			// Verify the Available condition on each status entry.
+			for _, hs := range statuses {
+				want, ok := tt.wantConditions[hs.Hostname]
+				if !ok {
+					// No expected condition for this hostname — fail loudly.
+					assert.Failf(t, "unexpected hostname in statuses", "hostname %q was not expected", hs.Hostname)
+					continue
+				}
+
+				cond := apimeta.FindStatusCondition(hs.Conditions, networkingv1alpha.HostnameConditionAvailable)
+				require.NotNilf(t, cond, "Available condition missing for hostname %q", hs.Hostname)
+				assert.Equal(t, want.Status, cond.Status, "hostname %q: Available condition status", hs.Hostname)
+				assert.Equal(t, want.Reason, cond.Reason, "hostname %q: Available condition reason", hs.Hostname)
+				assert.Equal(t, want.ObservedGeneration, cond.ObservedGeneration, "hostname %q: Available condition ObservedGeneration", hs.Hostname)
+			}
+		})
+	}
+}
+
+func TestMergeHostnameStatuses(t *testing.T) {
+	t.Parallel()
+
+	makeStatus := func(hostname string, conditions ...metav1.Condition) networkingv1alpha.HostnameStatus {
+		hs := networkingv1alpha.HostnameStatus{Hostname: hostname}
+		for _, c := range conditions {
+			apimeta.SetStatusCondition(&hs.Conditions, c)
+		}
+		return hs
+	}
+
+	availableCond := func(hostname string, status metav1.ConditionStatus, reason string) networkingv1alpha.HostnameStatus {
+		return makeStatus(hostname, metav1.Condition{
+			Type:   networkingv1alpha.HostnameConditionAvailable,
+			Status: status,
+			Reason: reason,
+		})
+	}
+
+	dnsCond := func(hostname string, status metav1.ConditionStatus, reason string) networkingv1alpha.HostnameStatus {
+		return makeStatus(hostname, metav1.Condition{
+			Type:   networkingv1alpha.HostnameConditionDNSRecordProgrammed,
+			Status: status,
+			Reason: reason,
+		})
+	}
+
+	tests := []struct {
+		name       string
+		inputSets  [][]networkingv1alpha.HostnameStatus
+		wantLen    int
+		assertFunc func(t *testing.T, got []networkingv1alpha.HostnameStatus)
+	}{
+		{
+			name:      "empty input returns nil",
+			inputSets: nil,
+			wantLen:   0,
+		},
+		{
+			name: "single set with one entry is returned unchanged",
+			inputSets: [][]networkingv1alpha.HostnameStatus{
+				{
+					availableCond("a.example.com", metav1.ConditionTrue, networkingv1alpha.HostnameAvailableReasonClaimed),
+				},
+			},
+			wantLen: 1,
+			assertFunc: func(t *testing.T, got []networkingv1alpha.HostnameStatus) {
+				require.Len(t, got, 1)
+				assert.Equal(t, "a.example.com", got[0].Hostname)
+				cond := apimeta.FindStatusCondition(got[0].Conditions, networkingv1alpha.HostnameConditionAvailable)
+				require.NotNil(t, cond)
+				assert.Equal(t, metav1.ConditionTrue, cond.Status)
+			},
+		},
+		{
+			name: "availability and DNS conditions for the same hostname are merged",
+			inputSets: [][]networkingv1alpha.HostnameStatus{
+				{
+					availableCond("shared.example.com", metav1.ConditionTrue, networkingv1alpha.HostnameAvailableReasonClaimed),
+				},
+				{
+					dnsCond("shared.example.com", metav1.ConditionTrue, networkingv1alpha.DNSRecordReasonCreated),
+				},
+			},
+			wantLen: 1,
+			assertFunc: func(t *testing.T, got []networkingv1alpha.HostnameStatus) {
+				require.Len(t, got, 1)
+				assert.Equal(t, "shared.example.com", got[0].Hostname)
+
+				availCond := apimeta.FindStatusCondition(got[0].Conditions, networkingv1alpha.HostnameConditionAvailable)
+				require.NotNil(t, availCond, "Available condition should be present after merge")
+				assert.Equal(t, metav1.ConditionTrue, availCond.Status)
+				assert.Equal(t, networkingv1alpha.HostnameAvailableReasonClaimed, availCond.Reason)
+
+				dnsProgrammedCond := apimeta.FindStatusCondition(got[0].Conditions, networkingv1alpha.HostnameConditionDNSRecordProgrammed)
+				require.NotNil(t, dnsProgrammedCond, "DNSRecordProgrammed condition should be present after merge")
+				assert.Equal(t, metav1.ConditionTrue, dnsProgrammedCond.Status)
+				assert.Equal(t, networkingv1alpha.DNSRecordReasonCreated, dnsProgrammedCond.Reason)
+			},
+		},
+		{
+			name: "non-overlapping hostnames each appear in the output",
+			inputSets: [][]networkingv1alpha.HostnameStatus{
+				{
+					availableCond("first.example.com", metav1.ConditionTrue, networkingv1alpha.HostnameAvailableReasonClaimed),
+				},
+				{
+					availableCond("second.example.com", metav1.ConditionFalse, networkingv1alpha.HostnameAvailableReasonInUse),
+				},
+			},
+			wantLen: 2,
+			assertFunc: func(t *testing.T, got []networkingv1alpha.HostnameStatus) {
+				require.Len(t, got, 2)
+
+				// Result must be sorted alphabetically.
+				assert.Equal(t, "first.example.com", got[0].Hostname)
+				assert.Equal(t, "second.example.com", got[1].Hostname)
+			},
+		},
+		{
+			name: "output is sorted alphabetically by hostname",
+			inputSets: [][]networkingv1alpha.HostnameStatus{
+				{
+					availableCond("zebra.example.com", metav1.ConditionTrue, networkingv1alpha.HostnameAvailableReasonClaimed),
+					availableCond("apple.example.com", metav1.ConditionTrue, networkingv1alpha.HostnameAvailableReasonClaimed),
+					availableCond("mango.example.com", metav1.ConditionTrue, networkingv1alpha.HostnameAvailableReasonClaimed),
+				},
+			},
+			wantLen: 3,
+			assertFunc: func(t *testing.T, got []networkingv1alpha.HostnameStatus) {
+				require.Len(t, got, 3)
+				assert.Equal(t, "apple.example.com", got[0].Hostname)
+				assert.Equal(t, "mango.example.com", got[1].Hostname)
+				assert.Equal(t, "zebra.example.com", got[2].Hostname)
+			},
+		},
+		{
+			name: "later condition overwrites earlier condition of the same type for the same hostname",
+			inputSets: [][]networkingv1alpha.HostnameStatus{
+				{
+					availableCond("host.example.com", metav1.ConditionTrue, networkingv1alpha.HostnameAvailableReasonClaimed),
+				},
+				{
+					// A second set provides a conflicting Available condition — the
+					// second write should win (SetStatusCondition semantics).
+					availableCond("host.example.com", metav1.ConditionFalse, networkingv1alpha.HostnameAvailableReasonInUse),
+				},
+			},
+			wantLen: 1,
+			assertFunc: func(t *testing.T, got []networkingv1alpha.HostnameStatus) {
+				require.Len(t, got, 1)
+				cond := apimeta.FindStatusCondition(got[0].Conditions, networkingv1alpha.HostnameConditionAvailable)
+				require.NotNil(t, cond)
+				assert.Equal(t, metav1.ConditionFalse, cond.Status)
+				assert.Equal(t, networkingv1alpha.HostnameAvailableReasonInUse, cond.Reason)
+			},
+		},
+		{
+			name: "multiple input sets with overlapping and non-overlapping hostnames",
+			inputSets: [][]networkingv1alpha.HostnameStatus{
+				{
+					availableCond("shared.example.com", metav1.ConditionTrue, networkingv1alpha.HostnameAvailableReasonClaimed),
+					availableCond("only-in-first.example.com", metav1.ConditionTrue, networkingv1alpha.HostnameAvailableReasonClaimed),
+				},
+				{
+					dnsCond("shared.example.com", metav1.ConditionFalse, networkingv1alpha.DNSRecordReasonPending),
+					dnsCond("only-in-second.example.com", metav1.ConditionTrue, networkingv1alpha.DNSRecordReasonCreated),
+				},
+			},
+			wantLen: 3,
+			assertFunc: func(t *testing.T, got []networkingv1alpha.HostnameStatus) {
+				require.Len(t, got, 3)
+
+				// Find the shared hostname and verify it has both condition types.
+				var sharedStatus *networkingv1alpha.HostnameStatus
+				for i := range got {
+					if got[i].Hostname == "shared.example.com" {
+						sharedStatus = &got[i]
+						break
+					}
+				}
+				require.NotNil(t, sharedStatus, "shared.example.com should be in the output")
+				assert.Len(t, sharedStatus.Conditions, 2, "shared hostname should have both Available and DNSRecordProgrammed conditions")
+
+				availCond := apimeta.FindStatusCondition(sharedStatus.Conditions, networkingv1alpha.HostnameConditionAvailable)
+				require.NotNil(t, availCond)
+				assert.Equal(t, metav1.ConditionTrue, availCond.Status)
+
+				dnsProgrammedCond := apimeta.FindStatusCondition(sharedStatus.Conditions, networkingv1alpha.HostnameConditionDNSRecordProgrammed)
+				require.NotNil(t, dnsProgrammedCond)
+				assert.Equal(t, metav1.ConditionFalse, dnsProgrammedCond.Status)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := mergeHostnameStatuses(tt.inputSets...)
+
+			assert.Len(t, got, tt.wantLen)
+
+			if tt.assertFunc != nil {
+				tt.assertFunc(t, got)
+			}
+		})
+	}
 }

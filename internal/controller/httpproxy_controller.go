@@ -21,6 +21,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
@@ -32,6 +33,7 @@ import (
 	"go.datum.net/network-services-operator/internal/config"
 	conditionutil "go.datum.net/network-services-operator/internal/util/condition"
 	gatewayutil "go.datum.net/network-services-operator/internal/util/gateway"
+	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 )
 
 // HTTPProxyReconciler reconciles a HTTPProxy object
@@ -248,13 +250,14 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 		}
 	}
 
-	r.reconcileHTTPProxyHostnameStatus(ctx, gateway, httpProxyCopy)
+	r.reconcileHTTPProxyHostnameStatus(ctx, cl.GetClient(), gateway, httpProxyCopy)
 
 	return ctrl.Result{}, nil
 }
 
 func (r *HTTPProxyReconciler) reconcileHTTPProxyHostnameStatus(
 	ctx context.Context,
+	cl client.Client,
 	gateway *gatewayv1.Gateway,
 	httpProxyCopy *networkingv1alpha.HTTPProxy,
 ) {
@@ -360,6 +363,11 @@ func (r *HTTPProxyReconciler) reconcileHTTPProxyHostnameStatus(
 		apimeta.RemoveStatusCondition(&httpProxyCopy.Status.Conditions, networkingv1alpha.HTTPProxyConditionHostnamesVerified)
 		apimeta.RemoveStatusCondition(&httpProxyCopy.Status.Conditions, networkingv1alpha.HTTPProxyConditionHostnamesInUse)
 	}
+
+	// Build per-hostname statuses
+	availabilityStatuses := buildAvailabilityStatuses(acceptedHostnames, inUseHostnames, httpProxyCopy.Generation)
+	dnsStatuses := r.buildDNSStatuses(ctx, cl, gateway, httpProxyCopy.Generation)
+	httpProxyCopy.Status.HostnameStatuses = mergeHostnameStatuses(availabilityStatuses, dnsStatuses)
 }
 
 // SetupWithManager sets up the controller with the Manager.
@@ -597,4 +605,140 @@ func hasControllerConflict(obj, owner metav1.Object) bool {
 	}
 
 	return controllerutil.HasControllerReference(obj) && !metav1.IsControlledBy(obj, owner)
+}
+
+// buildAvailabilityStatuses builds HostnameStatus entries with the Available
+// condition based on which hostnames were accepted vs in-use.
+func buildAvailabilityStatuses(
+	acceptedHostnames sets.Set[gatewayv1.Hostname],
+	inUseHostnames sets.Set[string],
+	generation int64,
+) []networkingv1alpha.HostnameStatus {
+	statuses := make([]networkingv1alpha.HostnameStatus, 0, acceptedHostnames.Len()+inUseHostnames.Len())
+
+	for hostname := range acceptedHostnames {
+		hs := networkingv1alpha.HostnameStatus{Hostname: string(hostname)}
+		apimeta.SetStatusCondition(&hs.Conditions, metav1.Condition{
+			Type:               networkingv1alpha.HostnameConditionAvailable,
+			Status:             metav1.ConditionTrue,
+			Reason:             networkingv1alpha.HostnameAvailableReasonClaimed,
+			Message:            "Hostname successfully claimed",
+			ObservedGeneration: generation,
+		})
+		statuses = append(statuses, hs)
+	}
+
+	for hostname := range inUseHostnames {
+		hs := networkingv1alpha.HostnameStatus{Hostname: hostname}
+		apimeta.SetStatusCondition(&hs.Conditions, metav1.Condition{
+			Type:               networkingv1alpha.HostnameConditionAvailable,
+			Status:             metav1.ConditionFalse,
+			Reason:             networkingv1alpha.HostnameAvailableReasonInUse,
+			Message:            "Hostname is already in use by another resource",
+			ObservedGeneration: generation,
+		})
+		statuses = append(statuses, hs)
+	}
+
+	return statuses
+}
+
+// buildDNSStatuses queries DNSRecordSets owned by the Gateway and builds
+// HostnameStatus entries with the DNSRecordProgrammed condition.
+func (r *HTTPProxyReconciler) buildDNSStatuses(
+	ctx context.Context,
+	cl client.Client,
+	gateway *gatewayv1.Gateway,
+	generation int64,
+) []networkingv1alpha.HostnameStatus {
+	if !r.Config.Gateway.EnableDNSIntegration {
+		return nil
+	}
+
+	logger := log.FromContext(ctx)
+
+	var recordSets dnsv1alpha1.DNSRecordSetList
+	if err := cl.List(ctx, &recordSets,
+		client.InNamespace(gateway.Namespace),
+		client.MatchingLabels{
+			labelDNSManaged:    "true",
+			labelDNSSourceKind: "Gateway",
+			labelDNSSourceName: gateway.Name,
+		},
+	); err != nil {
+		// Log error but don't fail - DNS statuses are supplementary
+		logger.Error(err, "failed to list DNSRecordSets for hostname status")
+		return nil
+	}
+
+	statuses := make([]networkingv1alpha.HostnameStatus, 0, len(recordSets.Items))
+	for _, rs := range recordSets.Items {
+		hostname := rs.Annotations[annotationDNSHostname]
+		if hostname == "" {
+			continue
+		}
+
+		hs := networkingv1alpha.HostnameStatus{Hostname: hostname}
+
+		// Check DNSRecordSet's Programmed condition
+		programmedCond := apimeta.FindStatusCondition(rs.Status.Conditions, "Programmed")
+		if programmedCond != nil && programmedCond.Status == metav1.ConditionTrue {
+			apimeta.SetStatusCondition(&hs.Conditions, metav1.Condition{
+				Type:               networkingv1alpha.HostnameConditionDNSRecordProgrammed,
+				Status:             metav1.ConditionTrue,
+				Reason:             networkingv1alpha.DNSRecordReasonCreated,
+				Message:            "DNS record is programmed",
+				ObservedGeneration: generation,
+			})
+		} else {
+			reason := networkingv1alpha.DNSRecordReasonPending
+			message := "DNS record is pending"
+			if programmedCond != nil {
+				reason = programmedCond.Reason
+				message = programmedCond.Message
+			}
+			apimeta.SetStatusCondition(&hs.Conditions, metav1.Condition{
+				Type:               networkingv1alpha.HostnameConditionDNSRecordProgrammed,
+				Status:             metav1.ConditionFalse,
+				Reason:             reason,
+				Message:            message,
+				ObservedGeneration: generation,
+			})
+		}
+
+		statuses = append(statuses, hs)
+	}
+
+	return statuses
+}
+
+// mergeHostnameStatuses merges multiple slices of HostnameStatus, combining
+// conditions for the same hostname. Returns a sorted slice for deterministic output.
+func mergeHostnameStatuses(statusSets ...[]networkingv1alpha.HostnameStatus) []networkingv1alpha.HostnameStatus {
+	byHostname := make(map[string]*networkingv1alpha.HostnameStatus)
+
+	for _, statuses := range statusSets {
+		for _, hs := range statuses {
+			if existing, ok := byHostname[hs.Hostname]; ok {
+				for _, c := range hs.Conditions {
+					apimeta.SetStatusCondition(&existing.Conditions, c)
+				}
+			} else {
+				copy := hs
+				byHostname[hs.Hostname] = &copy
+			}
+		}
+	}
+
+	result := make([]networkingv1alpha.HostnameStatus, 0, len(byHostname))
+	for _, hs := range byHostname {
+		result = append(result, *hs)
+	}
+
+	// Sort for deterministic output
+	slices.SortFunc(result, func(a, b networkingv1alpha.HostnameStatus) int {
+		return strings.Compare(a.Hostname, b.Hostname)
+	})
+
+	return result
 }

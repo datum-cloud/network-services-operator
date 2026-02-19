@@ -53,10 +53,42 @@ type NetworkServicesOperator struct {
 	// Redis provides shared Redis connection settings.
 	Redis RedisConfig `json:"redis"`
 
+	// LeaderElection configures controller-runtime leader election timings.
+	LeaderElection LeaderElectionConfig `json:"leaderElection,omitempty"`
+
 	DomainVerification DomainVerificationConfig `json:"domainVerificationConfig"`
 
 	// DomainRegistration controls RDAP/WHOIS refresh behavior for Domain status.registration
 	DomainRegistration DomainRegistrationConfig `json:"domainRegistration"`
+}
+
+// +k8s:deepcopy-gen=true
+type LeaderElectionConfig struct {
+	// LeaseDuration is the duration that non-leader candidates wait to force
+	// acquire leadership.
+	//
+	LeaseDuration metav1.Duration `json:"leaseDuration,omitempty"`
+
+	// RenewDeadline is the duration that the acting leader will retry renewing
+	// leadership before giving up.
+	//
+	RenewDeadline metav1.Duration `json:"renewDeadline,omitempty"`
+
+	// RetryPeriod is the duration between leader election retries.
+	//
+	RetryPeriod metav1.Duration `json:"retryPeriod,omitempty"`
+}
+
+func SetDefaults_LeaderElectionConfig(obj *LeaderElectionConfig) {
+	if obj.LeaseDuration.Duration == 0 {
+		obj.LeaseDuration = metav1.Duration{Duration: 15 * time.Second}
+	}
+	if obj.RenewDeadline.Duration == 0 {
+		obj.RenewDeadline = metav1.Duration{Duration: 10 * time.Second}
+	}
+	if obj.RetryPeriod.Duration == 0 {
+		obj.RetryPeriod = metav1.Duration{Duration: 2 * time.Second}
+	}
 }
 
 // +k8s:deepcopy-gen=true

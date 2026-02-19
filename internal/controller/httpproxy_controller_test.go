@@ -462,7 +462,67 @@ func TestHTTPProxyReconcile(t *testing.T) {
 				},
 			},
 			postCreateGatewayStatus: func(g *gatewayv1.Gateway) {
-				// EnvoyPatchPolicy is only created after Gateway is Programmed
+				setGatewayProgrammedWithDefaultHTTPSListener(g)
+			},
+			expectedError: false,
+			expectedConditions: []metav1.Condition{
+				{
+					Type:   networkingv1alpha.HTTPProxyConditionAccepted,
+					Status: metav1.ConditionTrue,
+					Reason: networkingv1alpha.HTTPProxyReasonAccepted,
+				},
+				{
+					Type:   networkingv1alpha.HTTPProxyConditionProgrammed,
+					Status: metav1.ConditionFalse,
+					Reason: networkingv1alpha.HTTPProxyReasonPending,
+				},
+			},
+			assert: func(t *testContext, cl client.Client, httpProxy *networkingv1alpha.HTTPProxy) {
+				var patchList envoygatewayv1alpha1.EnvoyPatchPolicyList
+				err := t.downstreamClient.List(context.Background(), &patchList)
+				assert.NoError(t, err)
+				assert.Len(t, patchList.Items, 1)
+				assert.Equal(t, fmt.Sprintf("connector-%s", httpProxy.Name), patchList.Items[0].Name)
+			},
+		},
+		{
+			name:              "connector backend waits for default-https listener programmed",
+			httpProxy:         connectorHTTPProxy,
+			downstreamObjects: connectorDownstreamObjects(connectorHTTPProxy),
+			namespaceUID:      string(connectorNamespaceUID),
+			existingObjects: []client.Object{
+				&networkingv1alpha1.Connector{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "connector-1",
+						Namespace: "test",
+					},
+					Status: networkingv1alpha1.ConnectorStatus{
+						Conditions: []metav1.Condition{
+							{
+								Type:   networkingv1alpha1.ConnectorConditionReady,
+								Status: metav1.ConditionTrue,
+								Reason: networkingv1alpha1.ConnectorReasonReady,
+							},
+						},
+						ConnectionDetails: &networkingv1alpha1.ConnectorConnectionDetails{
+							Type: networkingv1alpha1.PublicKeyConnectorConnectionType,
+							PublicKey: &networkingv1alpha1.ConnectorConnectionDetailsPublicKey{
+								Id:            "node-123",
+								DiscoveryMode: networkingv1alpha1.DNSPublicKeyDiscoveryMode,
+								HomeRelay:     "https://relay.example.test",
+								Addresses: []networkingv1alpha1.PublicKeyConnectorAddress{
+									{
+										Address: "127.0.0.1",
+										Port:    80,
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			postCreateGatewayStatus: func(g *gatewayv1.Gateway) {
+				// Gateway-level Programmed is not enough without default-https listener Programmed.
 				apimeta.SetStatusCondition(&g.Status.Conditions, metav1.Condition{
 					Type:               string(gatewayv1.GatewayConditionProgrammed),
 					Status:             metav1.ConditionTrue,
@@ -487,8 +547,7 @@ func TestHTTPProxyReconcile(t *testing.T) {
 				var patchList envoygatewayv1alpha1.EnvoyPatchPolicyList
 				err := t.downstreamClient.List(context.Background(), &patchList)
 				assert.NoError(t, err)
-				assert.Len(t, patchList.Items, 1)
-				assert.Equal(t, fmt.Sprintf("connector-%s", httpProxy.Name), patchList.Items[0].Name)
+				assert.Len(t, patchList.Items, 0)
 			},
 		},
 		{
@@ -514,12 +573,7 @@ func TestHTTPProxyReconcile(t *testing.T) {
 				},
 			},
 			postCreateGatewayStatus: func(g *gatewayv1.Gateway) {
-				apimeta.SetStatusCondition(&g.Status.Conditions, metav1.Condition{
-					Type:               string(gatewayv1.GatewayConditionProgrammed),
-					Status:             metav1.ConditionTrue,
-					ObservedGeneration: g.Generation,
-					Reason:             string(gatewayv1.GatewayReasonProgrammed),
-				})
+				setGatewayProgrammedWithDefaultHTTPSListener(g)
 			},
 			expectedError: false,
 			expectedConditions: []metav1.Condition{
@@ -602,13 +656,7 @@ func TestHTTPProxyReconcile(t *testing.T) {
 				},
 			},
 			postCreateGatewayStatus: func(g *gatewayv1.Gateway) {
-				// EnvoyPatchPolicy is only created after Gateway is Programmed
-				apimeta.SetStatusCondition(&g.Status.Conditions, metav1.Condition{
-					Type:               string(gatewayv1.GatewayConditionProgrammed),
-					Status:             metav1.ConditionTrue,
-					ObservedGeneration: g.Generation,
-					Reason:             string(gatewayv1.GatewayReasonProgrammed),
-				})
+				setGatewayProgrammedWithDefaultHTTPSListener(g)
 			},
 			expectedError: false,
 			expectedConditions: []metav1.Condition{
@@ -1510,6 +1558,35 @@ func TestHTTPProxyFinalizerCleanup(t *testing.T) {
 	} else {
 		assert.True(t, apierrors.IsNotFound(err))
 	}
+}
+
+func setGatewayProgrammedWithDefaultHTTPSListener(g *gatewayv1.Gateway) {
+	apimeta.SetStatusCondition(&g.Status.Conditions, metav1.Condition{
+		Type:               string(gatewayv1.GatewayConditionProgrammed),
+		Status:             metav1.ConditionTrue,
+		ObservedGeneration: g.Generation,
+		Reason:             string(gatewayv1.GatewayReasonProgrammed),
+	})
+
+	defaultHTTPSListenerStatus := gatewayv1.ListenerStatus{
+		Name: gatewayutil.DefaultHTTPSListenerName,
+		Conditions: []metav1.Condition{
+			{
+				Type:               string(gatewayv1.ListenerConditionProgrammed),
+				Status:             metav1.ConditionTrue,
+				ObservedGeneration: g.Generation,
+				Reason:             string(gatewayv1.ListenerReasonProgrammed),
+			},
+		},
+	}
+
+	for i := range g.Status.Listeners {
+		if g.Status.Listeners[i].Name == gatewayutil.DefaultHTTPSListenerName {
+			g.Status.Listeners[i] = defaultHTTPSListenerStatus
+			return
+		}
+	}
+	g.Status.Listeners = append(g.Status.Listeners, defaultHTTPSListenerStatus)
 }
 
 func newHTTPProxy(opts ...func(*networkingv1alpha.HTTPProxy)) *networkingv1alpha.HTTPProxy {

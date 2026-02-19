@@ -1024,15 +1024,20 @@ func (r *HTTPProxyReconciler) reconcileConnectorEnvoyPatchPolicy(
 		return nil, false, nil
 	}
 
-	// Wait for the Gateway to be Programmed before creating the EnvoyPatchPolicy.
-	// This ensures the RouteConfiguration exists in Envoy's xDS, so the patch
-	// can be applied immediately rather than waiting for Envoy Gateway to retry.
+	// Wait for the Gateway and default HTTPS listener to be Programmed before
+	// creating the EnvoyPatchPolicy. This ensures the target RouteConfiguration
+	// exists in Envoy's xDS, so the patch can be applied immediately rather than
+	// waiting for Envoy Gateway to retry.
 	gatewayProgrammed := apimeta.IsStatusConditionTrue(
 		gateway.Status.Conditions,
 		string(gatewayv1.GatewayConditionProgrammed),
 	)
-	if !gatewayProgrammed {
-		// Gateway not yet programmed; requeue will happen when Gateway status changes.
+	defaultHTTPSListenerProgrammed := gatewayListenerProgrammed(
+		gateway.Status.Listeners,
+		gatewayutil.DefaultHTTPSListenerName,
+	)
+	if !gatewayProgrammed || !defaultHTTPSListenerProgrammed {
+		// Gateway/listener not yet programmed; requeue will happen when status changes.
 		return nil, true, nil
 	}
 
@@ -1125,6 +1130,16 @@ func cleanupConnectorOfflineHTTPRouteFilter(ctx context.Context, cl client.Clien
 		return err
 	}
 	return cl.Delete(ctx, &filter)
+}
+
+func gatewayListenerProgrammed(listeners []gatewayv1.ListenerStatus, listenerName gatewayv1.SectionName) bool {
+	for _, listener := range listeners {
+		if listener.Name != listenerName {
+			continue
+		}
+		return apimeta.IsStatusConditionTrue(listener.Conditions, string(gatewayv1.ListenerConditionProgrammed))
+	}
+	return false
 }
 
 func downstreamPatchPolicyReady(policy *envoygatewayv1alpha1.EnvoyPatchPolicy, gatewayClassName string) (bool, string) {

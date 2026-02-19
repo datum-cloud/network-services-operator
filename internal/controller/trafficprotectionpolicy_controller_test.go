@@ -1234,6 +1234,203 @@ func TestSetWaitingForCertificatesConditions(t *testing.T) {
 	}
 }
 
+func TestCheckHTTPSListenersProgrammed(t *testing.T) {
+	operatorConfig := config.NetworkServicesOperator{
+		Gateway: config.GatewayConfig{
+			TargetDomain: "example.com",
+			ListenerTLSOptions: map[gatewayv1.AnnotationKey]gatewayv1.AnnotationValue{
+				gatewayv1.AnnotationKey("gateway.networking.datumapis.com/certificate-issuer"): gatewayv1.AnnotationValue("test"),
+			},
+		},
+	}
+
+	newGatewayFunc := func(namespace, name string, opts ...func(*gatewayv1.Gateway)) *gatewayv1.Gateway {
+		return newGateway(operatorConfig, namespace, name, opts...)
+	}
+
+	tests := []struct {
+		name                        string
+		attachments                 []policyAttachment
+		expectedAllReady            bool
+		expectedPendingListenersLen int
+	}{
+		{
+			name:                        "no HTTPS listeners - all ready",
+			attachments:                 []policyAttachment{},
+			expectedAllReady:            true,
+			expectedPendingListenersLen: 0,
+		},
+		{
+			name: "HTTP listener only - all ready",
+			attachments: []policyAttachment{
+				{
+					Gateway: newGatewayFunc("default", "gateway-1", func(g *gatewayv1.Gateway) {
+						g.Spec.Listeners = []gatewayv1.Listener{
+							{
+								Name:     "http",
+								Port:     80,
+								Protocol: gatewayv1.HTTPProtocolType,
+							},
+						}
+					}),
+					Listener: ptr.To(gatewayv1.SectionName("http")),
+				},
+			},
+			expectedAllReady:            true,
+			expectedPendingListenersLen: 0,
+		},
+		{
+			name: "default-https listener programmed",
+			attachments: []policyAttachment{
+				{
+					Gateway: newGatewayFunc("default", "gateway-1", func(g *gatewayv1.Gateway) {
+						g.Spec.Listeners = []gatewayv1.Listener{
+							{
+								Name:     gatewayutil.DefaultHTTPSListenerName,
+								Port:     443,
+								Protocol: gatewayv1.HTTPSProtocolType,
+							},
+						}
+						g.Status.Listeners = []gatewayv1.ListenerStatus{
+							{
+								Name: gatewayutil.DefaultHTTPSListenerName,
+								Conditions: []metav1.Condition{
+									{
+										Type:   string(gatewayv1.ListenerConditionProgrammed),
+										Status: metav1.ConditionTrue,
+										Reason: string(gatewayv1.ListenerReasonProgrammed),
+									},
+								},
+							},
+						}
+					}),
+					Listener: ptr.To(gatewayv1.SectionName(gatewayutil.DefaultHTTPSListenerName)),
+				},
+			},
+			expectedAllReady:            true,
+			expectedPendingListenersLen: 0,
+		},
+		{
+			name: "default-https listener not programmed",
+			attachments: []policyAttachment{
+				{
+					Gateway: newGatewayFunc("default", "gateway-1", func(g *gatewayv1.Gateway) {
+						g.Spec.Listeners = []gatewayv1.Listener{
+							{
+								Name:     gatewayutil.DefaultHTTPSListenerName,
+								Port:     443,
+								Protocol: gatewayv1.HTTPSProtocolType,
+							},
+						}
+						g.Status.Listeners = []gatewayv1.ListenerStatus{
+							{
+								Name: gatewayutil.DefaultHTTPSListenerName,
+								Conditions: []metav1.Condition{
+									{
+										Type:   string(gatewayv1.ListenerConditionProgrammed),
+										Status: metav1.ConditionFalse,
+										Reason: string(gatewayv1.ListenerReasonInvalid),
+									},
+								},
+							},
+						}
+					}),
+					Listener: ptr.To(gatewayv1.SectionName(gatewayutil.DefaultHTTPSListenerName)),
+				},
+			},
+			expectedAllReady:            false,
+			expectedPendingListenersLen: 1,
+		},
+		{
+			name: "targets all listeners and one HTTPS listener not programmed",
+			attachments: []policyAttachment{
+				{
+					Gateway: newGatewayFunc("default", "gateway-1", func(g *gatewayv1.Gateway) {
+						g.Spec.Listeners = []gatewayv1.Listener{
+							{
+								Name:     gatewayutil.DefaultHTTPListenerName,
+								Port:     80,
+								Protocol: gatewayv1.HTTPProtocolType,
+							},
+							{
+								Name:     gatewayutil.DefaultHTTPSListenerName,
+								Port:     443,
+								Protocol: gatewayv1.HTTPSProtocolType,
+							},
+						}
+						g.Status.Listeners = []gatewayv1.ListenerStatus{
+							{
+								Name: gatewayutil.DefaultHTTPSListenerName,
+								Conditions: []metav1.Condition{
+									{
+										Type:   string(gatewayv1.ListenerConditionProgrammed),
+										Status: metav1.ConditionFalse,
+										Reason: string(gatewayv1.ListenerReasonInvalid),
+									},
+								},
+							},
+						}
+					}),
+					Listener: nil,
+				},
+			},
+			expectedAllReady:            false,
+			expectedPendingListenersLen: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reconciler := &TrafficProtectionPolicyReconciler{
+				Config: operatorConfig,
+			}
+
+			result := reconciler.checkHTTPSListenersProgrammed(tt.attachments)
+
+			assert.Equal(t, tt.expectedAllReady, result.AllReady)
+			assert.Len(t, result.PendingListeners, tt.expectedPendingListenersLen)
+		})
+	}
+}
+
+func TestSetWaitingForListenersProgrammedConditions(t *testing.T) {
+	operatorConfig := config.NetworkServicesOperator{
+		Gateway: config.GatewayConfig{
+			ControllerName: gatewayv1.GatewayController("datumapis.com/network-services-gateway"),
+		},
+	}
+
+	reconciler := &TrafficProtectionPolicyReconciler{Config: operatorConfig}
+
+	policy := &policyContext{
+		TrafficProtectionPolicy: ptr.To(newTrafficProtectionPolicy("default", "tpp-1", func(tpp *networkingv1alpha.TrafficProtectionPolicy) {
+			tpp.Spec.TargetRefs = []gatewayv1alpha2.LocalPolicyTargetReferenceWithSectionName{
+				{
+					LocalPolicyTargetReference: gatewayv1alpha2.LocalPolicyTargetReference{
+						Kind: "Gateway",
+						Name: "gateway-1",
+					},
+				},
+			}
+		})),
+	}
+
+	pendingListeners := []string{"gateway-1/default-https"}
+
+	reconciler.setWaitingForListenersProgrammedConditions([]*policyContext{policy}, pendingListeners)
+
+	if assert.Len(t, policy.Status.Ancestors, 1) {
+		ancestor := policy.Status.Ancestors[0]
+		if assert.Len(t, ancestor.Conditions, 1) {
+			cond := ancestor.Conditions[0]
+			assert.Equal(t, string(gatewayv1alpha2.PolicyConditionAccepted), cond.Type)
+			assert.Equal(t, metav1.ConditionFalse, cond.Status)
+			assert.Equal(t, string(PolicyReasonWaitingForListenersProgrammed), cond.Reason)
+			assert.Contains(t, cond.Message, "default-https")
+		}
+	}
+}
+
 func newCertificateUnstructured(namespace, name string, isReady bool) *unstructured.Unstructured {
 	cert := &unstructured.Unstructured{}
 	cert.SetGroupVersionKind(certificateGVK)

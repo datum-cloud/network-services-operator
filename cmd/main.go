@@ -150,6 +150,10 @@ func main() {
 
 	webhookServer = networkingwebhook.NewClusterAwareWebhookServer(webhookServer, serverConfig.Discovery.Mode)
 
+	leaseDuration := serverConfig.LeaderElection.LeaseDuration.Duration
+	renewDeadline := serverConfig.LeaderElection.RenewDeadline.Duration
+	retryPeriod := serverConfig.LeaderElection.RetryPeriod.Duration
+
 	mgr, err := mcmanager.New(cfg, provider, ctrl.Options{
 		Scheme:                  scheme,
 		Metrics:                 metricsServerOptions,
@@ -158,6 +162,9 @@ func main() {
 		LeaderElection:          enableLeaderElection,
 		LeaderElectionID:        "6a7d51cc.datumapis.com",
 		LeaderElectionNamespace: leaderElectionNamespace,
+		LeaseDuration:           &leaseDuration,
+		RenewDeadline:           &renewDeadline,
+		RetryPeriod:             &retryPeriod,
 		// LeaderElectionReleaseOnCancel defines if the leader should step down voluntarily
 		// when the Manager ends. This requires the binary to immediately end when the
 		// Manager is stopped, otherwise, this setting is unsafe. Setting this significantly

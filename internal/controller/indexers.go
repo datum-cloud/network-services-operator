@@ -11,15 +11,20 @@ import (
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
+	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 )
 
 const (
 	networkContextControllerNetworkUIDIndex = "networkContextControllerNetworkUIDIndex"
+
+	// dnsZoneDomainNameIndex is the field index name for DNSZone.spec.domainName.
+	dnsZoneDomainNameIndex = "spec.domainName"
 )
 
 func AddIndexers(ctx context.Context, mgr mcmanager.Manager) error {
 	return errors.Join(
 		addNetworkContextControllerIndexers(ctx, mgr),
+		addDNSZoneDomainNameIndexer(ctx, mgr),
 	)
 }
 
@@ -92,4 +97,18 @@ func certManagerChallengeOwnerIndexFunc(o client.Object) []string {
 
 func ownerIndexValue(kind, name string) string {
 	return fmt.Sprintf("%s:%s", kind, name)
+}
+
+func addDNSZoneDomainNameIndexer(ctx context.Context, mgr mcmanager.Manager) error {
+	if err := mgr.GetFieldIndexer().IndexField(ctx, &dnsv1alpha1.DNSZone{}, dnsZoneDomainNameIndex, func(o client.Object) []string {
+		zone := o.(*dnsv1alpha1.DNSZone)
+		if zone.Spec.DomainName == "" {
+			return nil
+		}
+		return []string{zone.Spec.DomainName}
+	}); err != nil {
+		return fmt.Errorf("failed to add DNSZone domain name indexer %q: %w", dnsZoneDomainNameIndex, err)
+	}
+
+	return nil
 }

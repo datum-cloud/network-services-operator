@@ -216,11 +216,13 @@ func (r *DomainReconciler) reconcileVerification(ctx context.Context, reader cli
 			verifiedCondition.Reason = networkingv1alpha.DomainReasonVerified
 			verifiedCondition.Message = "Domain verification successful"
 
-			// Clear verification scaffolding and sub-conditions
+			// Clear verification scaffolding and sub-conditions (except VerifiedDNSZone
+			// which is needed by downstream consumers like the Gateway DNS controller).
 			domainStatus.Verification = nil
 			apimeta.RemoveStatusCondition(&domainStatus.Conditions, networkingv1alpha.DomainConditionVerifiedDNS)
 			apimeta.RemoveStatusCondition(&domainStatus.Conditions, networkingv1alpha.DomainConditionVerifiedHTTP)
-			apimeta.RemoveStatusCondition(&domainStatus.Conditions, networkingv1alpha.DomainConditionVerifiedDNSZone)
+			// Keep VerifiedDNSZone=True so the Gateway DNS controller can detect it
+			apimeta.SetStatusCondition(&domainStatus.Conditions, *verifiedDNSZoneCondition)
 			// When verified, no future verification timer is needed
 			nextAttempt = time.Time{}
 		} else if domainStatus.Verification == nil {
@@ -302,9 +304,9 @@ func (r *DomainReconciler) reconcileVerification(ctx context.Context, reader cli
 		apimeta.SetStatusCondition(&domainStatus.Conditions, *verifiedDNSCondition)
 		apimeta.SetStatusCondition(&domainStatus.Conditions, *verifiedHTTPCondition)
 		apimeta.SetStatusCondition(&domainStatus.Conditions, *verifiedDNSZoneCondition)
-	} else {
-		apimeta.RemoveStatusCondition(&domainStatus.Conditions, networkingv1alpha.DomainConditionVerifiedDNSZone)
 	}
+	// Note: When verified via DNSZone, the VerifiedDNSZone condition is already
+	// set (with status=True) above and must be preserved for downstream consumers.
 
 	// Commit the staged status back
 	domain.Status = *domainStatus

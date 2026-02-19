@@ -43,6 +43,7 @@ import (
 	networkinggatewayv1webhooks "go.datum.net/network-services-operator/internal/webhook/v1"
 	networkingv1alphawebhooks "go.datum.net/network-services-operator/internal/webhook/v1alpha"
 	webhookgatewayv1alpha1 "go.datum.net/network-services-operator/internal/webhook/v1alpha1"
+	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -64,6 +65,7 @@ func init() {
 	utilruntime.Must(envoygatewayv1alpha1.AddToScheme(scheme))
 	utilruntime.Must(networkingv1alpha1.AddToScheme(scheme))
 	utilruntime.Must(cmacmev1.AddToScheme(scheme))
+	utilruntime.Must(dnsv1alpha1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
 

@@ -3,3 +3,13 @@ kind: NetworkServicesOperator
 gateway:
   targetDomain: example.com
   permitCertificateRefs: true
+  # enableDNSIntegration controls automatic DNSRecordSet creation for Gateway
+  # hostnames whose Domain has VerifiedDNSZone=True. When true, the Gateway
+  # controller creates dns.networking.miloapis.com/v1alpha1 DNSRecordSet
+  # resources in the same namespace as the upstream Gateway.
+  #
+  # Requires the dns-operator CRDs (dns.networking.miloapis.com) to be
+  # installed in the cluster before this operator starts.
+  #
+  # Default: false. Set to true in environments where dns-operator is deployed.
+  enableDNSIntegration: false

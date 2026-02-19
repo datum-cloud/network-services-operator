@@ -131,6 +131,7 @@ func (v *DomainCustomValidator) ValidateDelete(ctx context.Context, obj runtime.
 			}
 		}
 
+		//nolint:staticcheck // SA1019: Hostnames is deprecated but still checked for backwards compatibility
 		for _, h := range p.Status.Hostnames {
 			if hostnameCoveredByDomain(domainName, string(h)) {
 				gr := schema.GroupResource{Group: networkingv1alpha.GroupVersion.Group, Resource: "domains"}

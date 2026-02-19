@@ -245,8 +245,11 @@ func (r *GatewayReconciler) ensureDNSRecordSets(
 					return fmt.Errorf("conflict: existing DNSRecordSet %q is managed by %q", desired.Name, existingManagedBy)
 				}
 
-				// Ensure owner reference is always set.
-				if err := controllerutil.SetControllerReference(upstreamGateway, desired, upstreamClient.Scheme()); err != nil {
+				// Set owner reference for garbage collection, but NOT as controller.
+				// The dns-operator's dnsrecordset-replicator expects to be the controller
+				// of DNSRecordSets it manages. Using SetOwnerReference (not SetControllerReference)
+				// allows the Gateway to own the record for GC while letting dns-operator manage it.
+				if err := controllerutil.SetOwnerReference(upstreamGateway, desired, upstreamClient.Scheme()); err != nil {
 					return fmt.Errorf("failed to set owner reference on DNSRecordSet: %w", err)
 				}
 

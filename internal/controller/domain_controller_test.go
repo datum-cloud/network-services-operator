@@ -350,7 +350,9 @@ func TestDomainVerification(t *testing.T) {
 				assert.True(t, apimeta.IsStatusConditionTrue(domain.Status.Conditions, networkingv1alpha.DomainConditionVerified))
 				assert.Nil(t, apimeta.FindStatusCondition(domain.Status.Conditions, networkingv1alpha.DomainConditionVerifiedDNS), "expected VerifiedDNS condition to not be present")
 				assert.Nil(t, apimeta.FindStatusCondition(domain.Status.Conditions, networkingv1alpha.DomainConditionVerifiedHTTP), "expected VerifiedHTTP condition to not be present")
-				assert.Nil(t, apimeta.FindStatusCondition(domain.Status.Conditions, networkingv1alpha.DomainConditionVerifiedDNSZone), "expected VerifiedDNSZone condition to not be present")
+				// VerifiedDNSZone should be present with status=True so downstream consumers
+				// (like the Gateway DNS controller) can detect DNSZone-based verification.
+				assert.True(t, apimeta.IsStatusConditionTrue(domain.Status.Conditions, networkingv1alpha.DomainConditionVerifiedDNSZone), "expected VerifiedDNSZone=True to be present")
 			},
 		},
 		{

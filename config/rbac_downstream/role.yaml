@@ -135,6 +135,14 @@ rules:
   verbs:
   - get
 - apiGroups:
+  - cert-manager.io
+  resources:
+  - certificates
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
   - gateway.envoyproxy.io
   resources:
   - backends

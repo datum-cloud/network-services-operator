@@ -977,7 +977,13 @@ func (r *HTTPProxyReconciler) buildCertificateStatuses(
 	}
 
 	downstreamClient := downstreamStrategy.GetClient()
-	var statuses []networkingv1alpha.HostnameStatus
+	httpsListenerCount := 0
+	for _, l := range gateway.Spec.Listeners {
+		if l.Protocol == gatewayv1.HTTPSProtocolType && l.Hostname != nil {
+			httpsListenerCount++
+		}
+	}
+	statuses := make([]networkingv1alpha.HostnameStatus, 0, httpsListenerCount)
 
 	for _, l := range gateway.Spec.Listeners {
 		if l.Protocol != gatewayv1.HTTPSProtocolType || l.Hostname == nil {
@@ -1062,7 +1068,7 @@ func getCertificateReadyConditionReason(certificate *unstructured.Unstructured) 
 		if !ok {
 			continue
 		}
-		if condMap["type"] != "Ready" {
+		if condMap["type"] != certManagerConditionTypeReady {
 			continue
 		}
 		if condMap["status"] == string(metav1.ConditionTrue) {

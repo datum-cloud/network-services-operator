@@ -22,6 +22,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/uuid"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -32,7 +33,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-	"k8s.io/client-go/tools/record"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
@@ -44,6 +44,12 @@ import (
 )
 
 const routeConfigurationTypeURL = "type.googleapis.com/envoy.config.route.v3.RouteConfiguration"
+
+// cert-manager condition status values for tests that build Certificate unstructured objects.
+const (
+	certManagerConditionStatusTrue  = "True"
+	certManagerConditionStatusFalse = "False"
+)
 
 //nolint:gocyclo
 func TestHTTPProxyCollectDesiredResources(t *testing.T) {
@@ -2055,19 +2061,19 @@ func TestBuildCertificateStatuses(t *testing.T) {
 		cert.SetGroupVersionKind(certificateGVK)
 		cert.SetNamespace(downstreamNamespaceName)
 		cert.SetName("my-proxy-https-hostname-0")
-		status := "False"
+		status := certManagerConditionStatusFalse
 		if ready {
-			status = "True"
-			reason = "Ready"
+			status = certManagerConditionStatusTrue
+			reason = certManagerConditionTypeReady
 		}
 		if reason == "" {
 			reason = "Pending"
 		}
 		_ = unstructured.SetNestedSlice(cert.Object, []interface{}{
 			map[string]interface{}{
-				"type":   "Ready",
-				"status": status,
-				"reason": reason,
+				"type":    certManagerConditionTypeReady,
+				"status":  status,
+				"reason":  reason,
 				"message": "test message",
 			},
 		}, "status", "conditions")
@@ -2151,7 +2157,7 @@ func TestBuildCertificateStatuses(t *testing.T) {
 			}
 
 			r := &HTTPProxyReconciler{
-				Config:           config.NetworkServicesOperator{},
+				Config:            config.NetworkServicesOperator{},
 				DownstreamCluster: downstreamCluster,
 			}
 
@@ -2180,11 +2186,11 @@ type clusterWithClient struct {
 	scheme *runtime.Scheme
 }
 
-func (c *clusterWithClient) GetHTTPClient() *http.Client       { return &http.Client{} }
-func (c *clusterWithClient) GetConfig() *rest.Config            { return &rest.Config{} }
-func (c *clusterWithClient) GetCache() cache.Cache              { return nil }
-func (c *clusterWithClient) GetScheme() *runtime.Scheme         { return c.scheme }
-func (c *clusterWithClient) GetClient() client.Client           { return c.c }
+func (c *clusterWithClient) GetHTTPClient() *http.Client          { return &http.Client{} }
+func (c *clusterWithClient) GetConfig() *rest.Config              { return &rest.Config{} }
+func (c *clusterWithClient) GetCache() cache.Cache                { return nil }
+func (c *clusterWithClient) GetScheme() *runtime.Scheme           { return c.scheme }
+func (c *clusterWithClient) GetClient() client.Client             { return c.c }
 func (c *clusterWithClient) GetFieldIndexer() client.FieldIndexer { return nil }
 func (c *clusterWithClient) GetEventRecorderFor(string) record.EventRecorder {
 	return record.NewFakeRecorder(10)

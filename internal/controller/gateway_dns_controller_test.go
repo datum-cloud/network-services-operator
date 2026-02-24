@@ -59,7 +59,13 @@ func newTestGatewayForDNS(namespace, name string, opts ...func(*gatewayv1.Gatewa
 	return gw
 }
 
-// newVerifiedDNSZoneDomain builds a Domain with VerifiedDNSZone=True set.
+// testNameservers are the nameservers used in tests to simulate matching
+// nameservers between Domain and DNSZone.
+var testNameservers = []string{"ns1.datumcloud.net", "ns2.datumcloud.net"}
+
+// newVerifiedDNSZoneDomain builds a Domain with Verified=True and nameservers
+// that match the test DNSZone nameservers. This simulates a domain where Datum
+// DNS has authority.
 //
 //nolint:unparam // namespace is always "test-ns" in tests but kept for clarity
 func newVerifiedDNSZoneDomain(namespace, domainName string, apex bool) *networkingv1alpha.Domain {
@@ -74,17 +80,21 @@ func newVerifiedDNSZoneDomain(namespace, domainName string, apex bool) *networki
 		},
 		Status: networkingv1alpha.DomainStatus{
 			Apex: apex,
+			Nameservers: []networkingv1alpha.Nameserver{
+				{Hostname: testNameservers[0]},
+				{Hostname: testNameservers[1]},
+			},
 		},
 	}
 	apimeta.SetStatusCondition(&d.Status.Conditions, metav1.Condition{
-		Type:   networkingv1alpha.DomainConditionVerifiedDNSZone,
+		Type:   networkingv1alpha.DomainConditionVerified,
 		Status: metav1.ConditionTrue,
 		Reason: "Verified",
 	})
 	return d
 }
 
-// newUnverifiedDomain builds a Domain without VerifiedDNSZone=True.
+// newUnverifiedDomain builds a Domain without Verified=True.
 func newUnverifiedDomain(namespace, domainName string) *networkingv1alpha.Domain {
 	return &networkingv1alpha.Domain{
 		ObjectMeta: metav1.ObjectMeta{
@@ -98,9 +108,10 @@ func newUnverifiedDomain(namespace, domainName string) *networkingv1alpha.Domain
 	}
 }
 
-// newDNSZone builds a DNSZone for the given apex domain.
+// newDNSZone builds a DNSZone for the given apex domain with Accepted=True,
+// Programmed=True conditions and matching nameservers.
 func newDNSZone(namespace, name, domainName string) *dnsv1alpha1.DNSZone {
-	return &dnsv1alpha1.DNSZone{
+	z := &dnsv1alpha1.DNSZone{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: namespace,
 			Name:      name,
@@ -110,7 +121,21 @@ func newDNSZone(namespace, name, domainName string) *dnsv1alpha1.DNSZone {
 			DomainName:       domainName,
 			DNSZoneClassName: "default",
 		},
+		Status: dnsv1alpha1.DNSZoneStatus{
+			Nameservers: testNameservers,
+		},
 	}
+	apimeta.SetStatusCondition(&z.Status.Conditions, metav1.Condition{
+		Type:   "Accepted",
+		Status: metav1.ConditionTrue,
+		Reason: "Accepted",
+	})
+	apimeta.SetStatusCondition(&z.Status.Conditions, metav1.Condition{
+		Type:   "Programmed",
+		Status: metav1.ConditionTrue,
+		Reason: "Programmed",
+	})
+	return z
 }
 
 // buildFakeUpstreamClientForDNS creates a fake upstream client seeded with the
@@ -308,7 +333,7 @@ func TestEnsureDNSRecordSets(t *testing.T) {
 			},
 		},
 		{
-			name:             "domain exists but VerifiedDNSZone=False yields DomainNotVerified",
+			name:             "domain exists but not verified yields DomainNotVerified",
 			claimedHostnames: []string{"api.example.com"},
 			upstreamObjects: []client.Object{
 				newUnverifiedDomain(ns, "example.com"),
@@ -344,6 +369,32 @@ func TestEnsureDNSRecordSets(t *testing.T) {
 				var list dnsv1alpha1.DNSRecordSetList
 				require.NoError(t, cl.List(context.Background(), &list, client.InNamespace(ns)))
 				assert.Empty(t, list.Items)
+			},
+		},
+		{
+			name:             "verified domain with DNSZone but mismatched nameservers yields DNSAuthorityMissing",
+			claimedHostnames: []string{"api.example.com"},
+			upstreamObjects: func() []client.Object {
+				// Domain with different nameservers than the DNSZone
+				d := newVerifiedDNSZoneDomain(ns, "example.com", false)
+				d.Status.Nameservers = []networkingv1alpha.Nameserver{
+					{Hostname: "ns1.otherprovider.com"},
+					{Hostname: "ns2.otherprovider.com"},
+				}
+				return []client.Object{d, newDNSZone(ns, "example-com", "example.com")}
+			}(),
+			assertStatuses: func(t *testing.T, statuses []networkingv1alpha.HostnameStatus) {
+				require.Len(t, statuses, 1)
+				c := apimeta.FindStatusCondition(statuses[0].Conditions, networkingv1alpha.HostnameConditionDNSRecordProgrammed)
+				require.NotNil(t, c)
+				assert.Equal(t, metav1.ConditionFalse, c.Status)
+				assert.Equal(t, networkingv1alpha.DNSRecordReasonDNSAuthorityMissing, c.Reason)
+				assert.Contains(t, c.Message, "nameservers do not include")
+			},
+			assertRecords: func(t *testing.T, cl client.Client) {
+				var list dnsv1alpha1.DNSRecordSetList
+				require.NoError(t, cl.List(context.Background(), &list, client.InNamespace(ns)))
+				assert.Empty(t, list.Items, "no DNSRecordSet should be created when DNS authority is missing")
 			},
 		},
 		{

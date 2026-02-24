@@ -338,8 +338,15 @@ const (
 	DNSRecordReasonZoneNotReady = "DNSZoneNotReady"
 
 	// DNSRecordReasonDomainNotVerified indicates the Domain resource for this
-	// hostname has not been verified via a DNSZone.
+	// hostname has not been verified.
 	DNSRecordReasonDomainNotVerified = "DomainNotVerified"
+
+	// DNSRecordReasonDNSAuthorityMissing indicates the Domain is verified but
+	// Datum DNS does not have authority over the domain. This happens when:
+	// - The DNSZone is not ready (Accepted/Programmed conditions not True)
+	// - The DNSZone has no nameservers assigned yet
+	// - The domain's nameservers don't include the DNSZone's nameservers
+	DNSRecordReasonDNSAuthorityMissing = "DNSAuthorityMissing"
 
 	// DNSRecordReasonConflict indicates an existing DNSRecordSet for this
 	// hostname is managed by a different actor.

@@ -25,6 +25,7 @@ import (
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
+	dnsutil "go.datum.net/network-services-operator/internal/util/dns"
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 )
 
@@ -102,7 +103,7 @@ func (r *GatewayReconciler) ensureDNSRecordSets(
 			continue
 		}
 
-		// Find the most specific Domain + DNSZone combination.
+		// Find the most specific Domain + DNSZone combination where Datum DNS has authority.
 		var domain *networkingv1alpha.Domain
 		var dnsZone *dnsv1alpha1.DNSZone
 		var matchedZoneName string
@@ -114,10 +115,9 @@ func (r *GatewayReconciler) ensureDNSRecordSets(
 				continue
 			}
 
-			// Check if the Domain has VerifiedDNSZone=True.
-			if !apimeta.IsStatusConditionTrue(d.Status.Conditions, networkingv1alpha.DomainConditionVerifiedDNSZone) {
-				// Domain exists but isn't verified; record this for potential error message
-				// but keep looking for a more specific verified domain.
+			// Check if the Domain is verified (ownership proven via any method).
+			if !apimeta.IsStatusConditionTrue(d.Status.Conditions, networkingv1alpha.DomainConditionVerified) {
+				// Domain exists but isn't verified; keep looking.
 				continue
 			}
 
@@ -135,9 +135,16 @@ func (r *GatewayReconciler) ensureDNSRecordSets(
 				continue
 			}
 
-			// Found a matching Domain + DNSZone.
+			// Check if Datum DNS has authority (DNSZone ready + nameservers match).
+			zone := &dnsZoneList.Items[0]
+			if !dnsutil.HasDNSAuthority(&d, zone) {
+				// Domain verified but Datum DNS doesn't have authority yet.
+				continue
+			}
+
+			// Found a matching Domain + DNSZone where Datum DNS has authority.
 			domain = &d
-			dnsZone = &dnsZoneList.Items[0]
+			dnsZone = zone
 			matchedZoneName = zoneName
 			break
 		}
@@ -145,26 +152,70 @@ func (r *GatewayReconciler) ensureDNSRecordSets(
 		// If no matching Domain + DNSZone found, check why and set appropriate status.
 		if domain == nil || dnsZone == nil {
 			// Try to provide a helpful message by checking what we found.
-			var unverifiedDomain *networkingv1alpha.Domain
+			var (
+				unverifiedDomain  *networkingv1alpha.Domain
+				noAuthorityDomain *networkingv1alpha.Domain
+				noAuthorityZone   *dnsv1alpha1.DNSZone
+			)
 			for _, zoneName := range zoneNames {
 				d, found := findDomainByName(domainList.Items, zoneName)
-				if found {
-					if !apimeta.IsStatusConditionTrue(d.Status.Conditions, networkingv1alpha.DomainConditionVerifiedDNSZone) {
-						unverifiedDomain = &d
-						break
-					}
+				if !found {
+					continue
 				}
+
+				// Check if domain is verified
+				if !apimeta.IsStatusConditionTrue(d.Status.Conditions, networkingv1alpha.DomainConditionVerified) {
+					unverifiedDomain = &d
+					break
+				}
+
+				// Domain is verified; check if there's a DNSZone
+				var dnsZoneList dnsv1alpha1.DNSZoneList
+				if err := upstreamClient.List(ctx, &dnsZoneList,
+					client.InNamespace(upstreamGateway.Namespace),
+					client.MatchingFields{dnsZoneDomainNameIndex: zoneName},
+				); err != nil {
+					continue
+				}
+				if len(dnsZoneList.Items) == 0 {
+					continue
+				}
+
+				// DNSZone exists but Datum DNS doesn't have authority
+				noAuthorityDomain = &d
+				noAuthorityZone = &dnsZoneList.Items[0]
+				break
 			}
 
-			if unverifiedDomain != nil {
+			switch {
+			case unverifiedDomain != nil:
 				apimeta.SetStatusCondition(&hs.Conditions, metav1.Condition{
 					Type:               networkingv1alpha.HostnameConditionDNSRecordProgrammed,
 					Status:             metav1.ConditionFalse,
 					Reason:             networkingv1alpha.DNSRecordReasonDomainNotVerified,
-					Message:            fmt.Sprintf("Domain %q has not been verified via a DNSZone (VerifiedDNSZone condition is not True)", unverifiedDomain.Name),
+					Message:            fmt.Sprintf("Domain %q ownership has not been verified", unverifiedDomain.Name),
 					ObservedGeneration: upstreamGateway.Generation,
 				})
-			} else {
+			case noAuthorityDomain != nil:
+				msg := fmt.Sprintf("Domain %q is verified but Datum DNS does not have authority", noAuthorityDomain.Name)
+				if noAuthorityZone != nil {
+					if !apimeta.IsStatusConditionTrue(noAuthorityZone.Status.Conditions, "Accepted") ||
+						!apimeta.IsStatusConditionTrue(noAuthorityZone.Status.Conditions, "Programmed") {
+						msg = fmt.Sprintf("DNSZone %q is not ready (waiting for Accepted and Programmed conditions)", noAuthorityZone.Name)
+					} else if len(noAuthorityZone.Status.Nameservers) == 0 {
+						msg = fmt.Sprintf("DNSZone %q has no nameservers assigned yet", noAuthorityZone.Name)
+					} else {
+						msg = fmt.Sprintf("Domain %q nameservers do not include DNSZone %q nameservers; update your registrar's NS records", noAuthorityDomain.Name, noAuthorityZone.Name)
+					}
+				}
+				apimeta.SetStatusCondition(&hs.Conditions, metav1.Condition{
+					Type:               networkingv1alpha.HostnameConditionDNSRecordProgrammed,
+					Status:             metav1.ConditionFalse,
+					Reason:             networkingv1alpha.DNSRecordReasonDNSAuthorityMissing,
+					Message:            msg,
+					ObservedGeneration: upstreamGateway.Generation,
+				})
+			default:
 				apimeta.SetStatusCondition(&hs.Conditions, metav1.Condition{
 					Type:               networkingv1alpha.HostnameConditionDNSRecordProgrammed,
 					Status:             metav1.ConditionTrue,

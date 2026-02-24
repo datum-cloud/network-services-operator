@@ -117,15 +117,6 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 		return ctrl.Result{}, nil
 	}
 
-	if updated, err := enrichConnectorDeviceInfo(ctx, cl.GetClient(), &httpProxy); err != nil {
-		return ctrl.Result{}, fmt.Errorf("failed to enrich connector device info: %w", err)
-	} else if updated {
-		if err := cl.GetClient().Update(ctx, &httpProxy); err != nil {
-			return ctrl.Result{}, err
-		}
-		return ctrl.Result{}, nil
-	}
-
 	httpProxyCopy := httpProxy.DeepCopy()
 
 	acceptedCondition := &metav1.Condition{
@@ -1282,41 +1273,6 @@ func buildConnectorOfflineHTTPRouteFilter(httpProxy *networkingv1alpha.HTTPProxy
 			},
 		},
 	}
-}
-
-func enrichConnectorDeviceInfo(ctx context.Context, cl client.Client, httpProxy *networkingv1alpha.HTTPProxy) (bool, error) {
-	updated := false
-	for i, rule := range httpProxy.Spec.Rules {
-		for j, backend := range rule.Backends {
-			if backend.Connector == nil {
-				continue
-			}
-
-			var connector networkingv1alpha1.Connector
-			if err := cl.Get(ctx, client.ObjectKey{
-				Namespace: httpProxy.Namespace,
-				Name:      backend.Connector.Name,
-			}, &connector); err != nil {
-				return false, err
-			}
-
-			ref := &httpProxy.Spec.Rules[i].Backends[j].Connector
-			if connector.Status.Device != nil {
-				if (*ref).DeviceName != connector.Status.Device.Name || (*ref).DeviceOS != connector.Status.Device.OS {
-					(*ref).DeviceName = connector.Status.Device.Name
-					(*ref).DeviceOS = connector.Status.Device.OS
-					updated = true
-				}
-			} else {
-				if (*ref).DeviceName != "" || (*ref).DeviceOS != "" {
-					(*ref).DeviceName = ""
-					(*ref).DeviceOS = ""
-					updated = true
-				}
-			}
-		}
-	}
-	return updated, nil
 }
 
 func connectorReady(ctx context.Context, cl client.Client, namespace, name string) (bool, error) {

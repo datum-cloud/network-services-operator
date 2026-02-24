@@ -175,20 +175,6 @@ type ConnectorReference struct {
 	//
 	// +kubebuilder:validation:Required
 	Name string `json:"name"`
-
-	// DeviceName is the human-readable name of the device running the
-	// referenced connector (e.g. "Matt's Macbook Pro").
-	//
-	// +kubebuilder:validation:Optional
-	// +kubebuilder:validation:MaxLength=253
-	DeviceName string `json:"deviceName,omitempty"`
-
-	// DeviceOS is the operating system of the device running the referenced
-	// connector (e.g. "macOS").
-	//
-	// +kubebuilder:validation:Optional
-	// +kubebuilder:validation:MaxLength=253
-	DeviceOS string `json:"deviceOS,omitempty"`
 }
 
 // HostnameStatus captures the per-hostname verification and DNS programming status.

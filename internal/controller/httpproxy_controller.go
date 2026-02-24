@@ -21,6 +21,7 @@ import (
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -552,9 +553,57 @@ func (r *HTTPProxyReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 
 		downstreamPolicyClusterSource, _ := downstreamPolicySource.ForCluster("", r.DownstreamCluster)
 		builder = builder.WatchesRawSource(downstreamPolicyClusterSource)
+
+		// Watch downstream cert-manager Certificates so HTTPProxy certificate status
+		// is updated when certificates become ready or fail.
+		downstreamCertificateSource := mcsource.TypedKind(
+			newUnstructuredForGVK(certificateGVK),
+			r.enqueueHTTPProxyForDownstreamCertificate(),
+		)
+		downstreamCertificateClusterSource, _ := downstreamCertificateSource.ForCluster("", r.DownstreamCluster)
+		builder = builder.WatchesRawSource(downstreamCertificateClusterSource)
 	}
 
 	return builder.Named("httpproxy").Complete(r)
+}
+
+// enqueueHTTPProxyForDownstreamCertificate returns a watch handler that enqueues
+// the HTTPProxy (same name/namespace as the owning Gateway) when a downstream
+// cert-manager Certificate changes, so certificate status is updated.
+func (r *HTTPProxyReconciler) enqueueHTTPProxyForDownstreamCertificate() func(clusterName string, cl cluster.Cluster) handler.TypedEventHandler[*unstructured.Unstructured, mcreconcile.Request] {
+	return func(_ string, cl cluster.Cluster) handler.TypedEventHandler[*unstructured.Unstructured, mcreconcile.Request] {
+		return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, cert *unstructured.Unstructured) []mcreconcile.Request {
+			logger := log.FromContext(ctx)
+			ownerRef := metav1.GetControllerOf(cert)
+			if ownerRef == nil {
+				return nil
+			}
+			if ownerRef.Kind != "Gateway" {
+				return nil
+			}
+			gatewayKey := client.ObjectKey{Namespace: cert.GetNamespace(), Name: ownerRef.Name}
+			var gateway gatewayv1.Gateway
+			if err := cl.GetClient().Get(ctx, gatewayKey, &gateway); err != nil {
+				if apierrors.IsNotFound(err) {
+					return nil
+				}
+				logger.Error(err, "failed to get Gateway owner of Certificate", "certificate", cert.GetName(), "gateway", gatewayKey)
+				return nil
+			}
+			labels := gateway.GetLabels()
+			upstreamNs := labels[downstreamclient.UpstreamOwnerNamespaceLabel]
+			upstreamName := labels[downstreamclient.UpstreamOwnerNameLabel]
+			upstreamCluster := labels[downstreamclient.UpstreamOwnerClusterNameLabel]
+			if upstreamNs == "" || upstreamName == "" || upstreamCluster == "" {
+				return nil
+			}
+			clusterName := strings.TrimPrefix(strings.ReplaceAll(upstreamCluster, "_", "/"), "cluster-")
+			return []mcreconcile.Request{{
+				ClusterName: clusterName,
+				Request:     ctrl.Request{NamespacedName: types.NamespacedName{Namespace: upstreamNs, Name: upstreamName}},
+			}}
+		})
+	}
 }
 
 // httpProxyReferencesConnector checks if an HTTPProxy has any backends

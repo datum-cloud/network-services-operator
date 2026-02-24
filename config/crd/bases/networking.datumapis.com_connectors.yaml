@@ -70,23 +70,6 @@ spec:
               connectorClassName:
                 minLength: 1
                 type: string
-              device:
-                description: Device describes the device running the connector.
-                properties:
-                  name:
-                    description: Human-readable name of the device running the connector.
-                    maxLength: 253
-                    minLength: 1
-                    type: string
-                  os:
-                    description: Operating system of the device running the connector.
-                    maxLength: 253
-                    minLength: 1
-                    type: string
-                required:
-                - name
-                - os
-                type: object
             required:
             - connectorClassName
             type: object
@@ -306,6 +289,25 @@ spec:
                   rule: '!(self.type != ''PublicKey'' && has(self.publicKey))'
                 - message: publicKey field must be specified if the type is PublicKey
                   rule: self.type == 'PublicKey' && has(self.publicKey)
+              device:
+                description: |-
+                  Device describes the device running the connector, as reported by the
+                  connector agent.
+                properties:
+                  name:
+                    description: Human-readable name of the device running the connector.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                  os:
+                    description: Operating system of the device running the connector.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                - os
+                type: object
               leaseRef:
                 description: |-
                   LeaseRef references the Lease used to report connector liveness.

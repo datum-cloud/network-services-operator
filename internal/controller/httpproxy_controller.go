@@ -1301,10 +1301,10 @@ func enrichConnectorDeviceInfo(ctx context.Context, cl client.Client, httpProxy 
 			}
 
 			ref := &httpProxy.Spec.Rules[i].Backends[j].Connector
-			if connector.Spec.Device != nil {
-				if (*ref).DeviceName != connector.Spec.Device.Name || (*ref).DeviceOS != connector.Spec.Device.OS {
-					(*ref).DeviceName = connector.Spec.Device.Name
-					(*ref).DeviceOS = connector.Spec.Device.OS
+			if connector.Status.Device != nil {
+				if (*ref).DeviceName != connector.Status.Device.Name || (*ref).DeviceOS != connector.Status.Device.OS {
+					(*ref).DeviceName = connector.Status.Device.Name
+					(*ref).DeviceOS = connector.Status.Device.OS
 					updated = true
 				}
 			} else {

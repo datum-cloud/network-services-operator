@@ -436,12 +436,6 @@ func TestHTTPProxyReconcile(t *testing.T) {
 						Name:      "connector-1",
 						Namespace: "test",
 					},
-					Spec: networkingv1alpha1.ConnectorSpec{
-						Device: &networkingv1alpha1.ConnectorDeviceInfo{
-							Name: "Matt's Macbook Pro",
-							OS:   "macOS",
-						},
-					},
 					Status: networkingv1alpha1.ConnectorStatus{
 						Conditions: []metav1.Condition{
 							{
@@ -463,6 +457,10 @@ func TestHTTPProxyReconcile(t *testing.T) {
 									},
 								},
 							},
+						},
+						Device: &networkingv1alpha1.ConnectorDeviceInfo{
+							Name: "Matt's Macbook Pro",
+							OS:   "macOS",
 						},
 					},
 				},
@@ -492,8 +490,8 @@ func TestHTTPProxyReconcile(t *testing.T) {
 
 				connRef := httpProxy.Spec.Rules[0].Backends[0].Connector
 				if assert.NotNil(t, connRef, "connector reference should be present") {
-					assert.Equal(t, "Matt's Macbook Pro", connRef.DeviceName, "device name should be enriched from connector spec")
-					assert.Equal(t, "macOS", connRef.DeviceOS, "device OS should be enriched from connector spec")
+					assert.Equal(t, "Matt's Macbook Pro", connRef.DeviceName, "device name should be enriched from connector status")
+					assert.Equal(t, "macOS", connRef.DeviceOS, "device OS should be enriched from connector status")
 				}
 			},
 		},
@@ -1507,7 +1505,7 @@ func TestEnrichConnectorDeviceInfo(t *testing.T) {
 		expectDeviceOS   string
 	}{
 		{
-			name: "populates device info from connector spec",
+			name: "populates device info from connector status",
 			httpProxy: newHTTPProxy(func(h *networkingv1alpha.HTTPProxy) {
 				h.Spec.Rules[0].Backends[0].Connector = &networkingv1alpha.ConnectorReference{
 					Name: "connector-1",
@@ -1518,7 +1516,7 @@ func TestEnrichConnectorDeviceInfo(t *testing.T) {
 					Name:      "connector-1",
 					Namespace: "test",
 				},
-				Spec: networkingv1alpha1.ConnectorSpec{
+				Status: networkingv1alpha1.ConnectorStatus{
 					Device: &networkingv1alpha1.ConnectorDeviceInfo{
 						Name: "Matt's Macbook Pro",
 						OS:   "macOS",
@@ -1530,7 +1528,7 @@ func TestEnrichConnectorDeviceInfo(t *testing.T) {
 			expectDeviceOS:   "macOS",
 		},
 		{
-			name: "clears device info when connector has no device",
+			name: "clears device info when connector status has no device",
 			httpProxy: newHTTPProxy(func(h *networkingv1alpha.HTTPProxy) {
 				h.Spec.Rules[0].Backends[0].Connector = &networkingv1alpha.ConnectorReference{
 					Name:       "connector-1",
@@ -1562,7 +1560,7 @@ func TestEnrichConnectorDeviceInfo(t *testing.T) {
 					Name:      "connector-1",
 					Namespace: "test",
 				},
-				Spec: networkingv1alpha1.ConnectorSpec{
+				Status: networkingv1alpha1.ConnectorStatus{
 					Device: &networkingv1alpha1.ConnectorDeviceInfo{
 						Name: "Matt's Macbook Pro",
 						OS:   "macOS",

@@ -49,11 +49,6 @@ type ConnectorSpec struct {
 	// +listMapKey=type
 	// +kubebuilder:validation:MaxItems=16
 	Capabilities []ConnectorCapability `json:"capabilities,omitempty"`
-
-	// Device describes the device running the connector.
-	//
-	// +kubebuilder:validation:Optional
-	Device *ConnectorDeviceInfo `json:"device,omitempty"`
 }
 
 type PublicKeyDiscoveryMode string
@@ -181,6 +176,12 @@ type ConnectorStatus struct {
 	//
 	// +kubebuilder:validation:Optional
 	LeaseRef *corev1.LocalObjectReference `json:"leaseRef,omitempty"`
+
+	// Device describes the device running the connector, as reported by the
+	// connector agent.
+	//
+	// +kubebuilder:validation:Optional
+	Device *ConnectorDeviceInfo `json:"device,omitempty"`
 }
 
 const (

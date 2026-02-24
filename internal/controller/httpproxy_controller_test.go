@@ -436,6 +436,12 @@ func TestHTTPProxyReconcile(t *testing.T) {
 						Name:      "connector-1",
 						Namespace: "test",
 					},
+					Spec: networkingv1alpha1.ConnectorSpec{
+						Device: &networkingv1alpha1.ConnectorDeviceInfo{
+							Name: "Matt's Macbook Pro",
+							OS:   "macOS",
+						},
+					},
 					Status: networkingv1alpha1.ConnectorStatus{
 						Conditions: []metav1.Condition{
 							{
@@ -483,6 +489,12 @@ func TestHTTPProxyReconcile(t *testing.T) {
 				assert.NoError(t, err)
 				assert.Len(t, patchList.Items, 1)
 				assert.Equal(t, fmt.Sprintf("connector-%s", httpProxy.Name), patchList.Items[0].Name)
+
+				connRef := httpProxy.Spec.Rules[0].Backends[0].Connector
+				if assert.NotNil(t, connRef, "connector reference should be present") {
+					assert.Equal(t, "Matt's Macbook Pro", connRef.DeviceName, "device name should be enriched from connector spec")
+					assert.Equal(t, "macOS", connRef.DeviceOS, "device OS should be enriched from connector spec")
+				}
 			},
 		},
 		{
@@ -1478,6 +1490,123 @@ func TestBuildConnectorEnvoyPatchesScopesRouteConfigBySectionName(t *testing.T) 
 
 	assert.Equal(t, 2, routeConfigPatchCounts["ns-test/gw/https-hostname-0"])
 	assert.NotContains(t, routeConfigPatchCounts, "ns-test/gw/default-https")
+}
+
+func TestEnrichConnectorDeviceInfo(t *testing.T) {
+	testScheme := runtime.NewScheme()
+	assert.NoError(t, scheme.AddToScheme(testScheme))
+	assert.NoError(t, networkingv1alpha.AddToScheme(testScheme))
+	assert.NoError(t, networkingv1alpha1.AddToScheme(testScheme))
+
+	tests := []struct {
+		name             string
+		httpProxy        *networkingv1alpha.HTTPProxy
+		connector        *networkingv1alpha1.Connector
+		expectUpdated    bool
+		expectDeviceName string
+		expectDeviceOS   string
+	}{
+		{
+			name: "populates device info from connector spec",
+			httpProxy: newHTTPProxy(func(h *networkingv1alpha.HTTPProxy) {
+				h.Spec.Rules[0].Backends[0].Connector = &networkingv1alpha.ConnectorReference{
+					Name: "connector-1",
+				}
+			}),
+			connector: &networkingv1alpha1.Connector{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "connector-1",
+					Namespace: "test",
+				},
+				Spec: networkingv1alpha1.ConnectorSpec{
+					Device: &networkingv1alpha1.ConnectorDeviceInfo{
+						Name: "Matt's Macbook Pro",
+						OS:   "macOS",
+					},
+				},
+			},
+			expectUpdated:    true,
+			expectDeviceName: "Matt's Macbook Pro",
+			expectDeviceOS:   "macOS",
+		},
+		{
+			name: "clears device info when connector has no device",
+			httpProxy: newHTTPProxy(func(h *networkingv1alpha.HTTPProxy) {
+				h.Spec.Rules[0].Backends[0].Connector = &networkingv1alpha.ConnectorReference{
+					Name:       "connector-1",
+					DeviceName: "old-device",
+					DeviceOS:   "old-os",
+				}
+			}),
+			connector: &networkingv1alpha1.Connector{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "connector-1",
+					Namespace: "test",
+				},
+			},
+			expectUpdated:    true,
+			expectDeviceName: "",
+			expectDeviceOS:   "",
+		},
+		{
+			name: "no update when device info already matches",
+			httpProxy: newHTTPProxy(func(h *networkingv1alpha.HTTPProxy) {
+				h.Spec.Rules[0].Backends[0].Connector = &networkingv1alpha.ConnectorReference{
+					Name:       "connector-1",
+					DeviceName: "Matt's Macbook Pro",
+					DeviceOS:   "macOS",
+				}
+			}),
+			connector: &networkingv1alpha1.Connector{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "connector-1",
+					Namespace: "test",
+				},
+				Spec: networkingv1alpha1.ConnectorSpec{
+					Device: &networkingv1alpha1.ConnectorDeviceInfo{
+						Name: "Matt's Macbook Pro",
+						OS:   "macOS",
+					},
+				},
+			},
+			expectUpdated:    false,
+			expectDeviceName: "Matt's Macbook Pro",
+			expectDeviceOS:   "macOS",
+		},
+		{
+			name:      "no connector reference is a no-op",
+			httpProxy: newHTTPProxy(),
+			connector: &networkingv1alpha1.Connector{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "connector-1",
+					Namespace: "test",
+				},
+			},
+			expectUpdated: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cl := fake.NewClientBuilder().
+				WithScheme(testScheme).
+				WithObjects(tt.connector).
+				Build()
+
+			updated, err := enrichConnectorDeviceInfo(context.Background(), cl, tt.httpProxy)
+			assert.NoError(t, err)
+			assert.Equal(t, tt.expectUpdated, updated)
+
+			for _, rule := range tt.httpProxy.Spec.Rules {
+				for _, backend := range rule.Backends {
+					if backend.Connector != nil {
+						assert.Equal(t, tt.expectDeviceName, backend.Connector.DeviceName)
+						assert.Equal(t, tt.expectDeviceOS, backend.Connector.DeviceOS)
+					}
+				}
+			}
+		})
+	}
 }
 
 func TestHTTPProxyFinalizerCleanup(t *testing.T) {

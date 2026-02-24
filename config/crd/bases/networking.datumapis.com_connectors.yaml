@@ -70,6 +70,23 @@ spec:
               connectorClassName:
                 minLength: 1
                 type: string
+              device:
+                description: Device describes the device running the connector.
+                properties:
+                  name:
+                    description: Human-readable name of the device running the connector.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                  os:
+                    description: Operating system of the device running the connector.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                - os
+                type: object
             required:
             - connectorClassName
             type: object

@@ -49,6 +49,11 @@ type ConnectorSpec struct {
 	// +listMapKey=type
 	// +kubebuilder:validation:MaxItems=16
 	Capabilities []ConnectorCapability `json:"capabilities,omitempty"`
+
+	// Device describes the device running the connector.
+	//
+	// +kubebuilder:validation:Optional
+	Device *ConnectorDeviceInfo `json:"device,omitempty"`
 }
 
 type PublicKeyDiscoveryMode string
@@ -104,6 +109,22 @@ type ConnectorConnectionType string
 const (
 	PublicKeyConnectorConnectionType ConnectorConnectionType = "PublicKey"
 )
+
+type ConnectorDeviceInfo struct {
+	// Human-readable name of the device running the connector.
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	Name string `json:"name"`
+
+	// Operating system of the device running the connector.
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	OS string `json:"os"`
+}
 
 // ConnectorConnectionDetails provides details on how to connect to the connector.
 //

@@ -134,6 +134,18 @@ spec:
                               For now, only a name reference is supported. In the future this can be
                               extended to selector-based matching to allow multiple connectors.
                             properties:
+                              deviceName:
+                                description: |-
+                                  DeviceName is the human-readable name of the device running the
+                                  referenced connector (e.g. "Matt's Macbook Pro").
+                                maxLength: 253
+                                type: string
+                              deviceOS:
+                                description: |-
+                                  DeviceOS is the operating system of the device running the referenced
+                                  connector (e.g. "macOS").
+                                maxLength: 253
+                                type: string
                               name:
                                 description: Name of the referenced Connector.
                                 type: string

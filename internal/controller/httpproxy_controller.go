@@ -1133,7 +1133,14 @@ func getCertificateReadyConditionReason(certificate *unstructured.Unstructured) 
 		switch reason {
 		case "InvalidCertificate", "CertificateRequestFailed":
 			return networkingv1alpha.CertificateReadyReasonProvisioningFailed, message
+		case "DoesNotExist":
+			// cert-manager: "Issuing certificate as Secret does not exist" — normal during first issuance
+			return networkingv1alpha.CertificateReadyReasonPending, "We're provisioning and applying a certificate to this hostname - it may take a few minutes"
 		default:
+			// Translate raw cert-manager message when it's the "Secret does not exist" issuance message
+			if strings.Contains(message, "Issuing certificate as Secret does not exist") {
+				return networkingv1alpha.CertificateReadyReasonPending, "We're provisioning and applying a certificate to this hostname - it may take a few minutes"
+			}
 			return networkingv1alpha.CertificateReadyReasonPending, message
 		}
 	}

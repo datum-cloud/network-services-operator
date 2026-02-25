@@ -42,7 +42,6 @@ const (
 	labelDNSSourceName    = "dns.datumapis.com/source-name"
 	labelDNSSourceNS      = "dns.datumapis.com/source-namespace"
 	annotationDNSHostname = "dns.datumapis.com/hostname"
-	annotationDNSRetain   = "dns.datumapis.com/retain"
 	annotationSyncStart   = "dns.datumapis.com/sync-started-at"
 )
 

@@ -908,19 +908,43 @@ func (r *GatewayReconciler) cleanupDNSRecordSets(
 		return result
 	}
 
-	for _, rs := range recordSetList.Items {
+	deletedCount := 0
+	for i := range recordSetList.Items {
+		rs := &recordSetList.Items[i]
+		hostname := rs.Annotations[annotationDNSHostname]
+		if rs.Annotations[annotationDNSRetain] == "true" {
+			logger.Info("retaining DNSRecordSet during gateway finalization, removing managed-by labels",
+				"name", rs.Name,
+				"hostname", hostname,
+			)
+			if rs.Labels != nil {
+				labels := maps.Clone(rs.Labels)
+				delete(labels, labelDNSManaged)
+				delete(labels, labelManagedBy)
+				delete(labels, labelDNSSourceKind)
+				delete(labels, labelDNSSourceName)
+				delete(labels, labelDNSSourceNS)
+				rs.Labels = labels
+				if err := upstreamClient.Update(ctx, rs); err != nil {
+					result.Err = fmt.Errorf("failed to update DNSRecordSet %q (retain): %w", rs.Name, err)
+					return result
+				}
+			}
+			continue
+		}
 		logger.Info("deleting DNSRecordSet during gateway finalization",
 			"name", rs.Name,
-			"hostname", rs.Annotations[annotationDNSHostname],
+			"hostname", hostname,
 		)
-		if err := upstreamClient.Delete(ctx, &rs); err != nil && !apierrors.IsNotFound(err) {
+		if err := upstreamClient.Delete(ctx, rs); err != nil && !apierrors.IsNotFound(err) {
 			result.Err = fmt.Errorf("failed to delete DNSRecordSet %q: %w", rs.Name, err)
 			return result
 		}
+		deletedCount++
 	}
 
-	if len(recordSetList.Items) > 0 {
-		logger.Info("deleted DNSRecordSets during gateway finalization", "count", len(recordSetList.Items))
+	if deletedCount > 0 {
+		logger.Info("deleted DNSRecordSets during gateway finalization", "count", deletedCount)
 	}
 
 	return result

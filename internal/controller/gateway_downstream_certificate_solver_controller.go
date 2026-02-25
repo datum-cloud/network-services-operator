@@ -284,6 +284,9 @@ var (
 	challengeGVK   = acmeCertManagerGV.WithKind("Challenge")
 )
 
+// certManagerConditionTypeReady is the type value for cert-manager Certificate Ready condition.
+const certManagerConditionTypeReady = "Ready"
+
 // isCertificateReady checks if a cert-manager Certificate has Ready=True condition.
 func isCertificateReady(certificate *unstructured.Unstructured) (bool, error) {
 	conditions, found, err := unstructured.NestedSlice(certificate.Object, "status", "conditions")
@@ -299,7 +302,7 @@ func isCertificateReady(certificate *unstructured.Unstructured) (bool, error) {
 		if !ok {
 			continue
 		}
-		if condMap["type"] == "Ready" && condMap["status"] == string(metav1.ConditionTrue) {
+		if condMap["type"] == certManagerConditionTypeReady && condMap["status"] == string(metav1.ConditionTrue) {
 			return true, nil
 		}
 	}

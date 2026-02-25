@@ -797,6 +797,14 @@ func (r *GatewayReconciler) finalizeGateway(
 ) (result Result) {
 	logger := log.FromContext(ctx)
 	logger.Info("finalizing gateway")
+
+	// Clean up DNS records created by this gateway
+	if r.Config.Gateway.EnableDNSIntegration {
+		if cleanupResult := r.cleanupDNSRecordSets(ctx, upstreamClient, upstreamGateway); cleanupResult.ShouldReturn() {
+			return cleanupResult
+		}
+	}
+
 	// Go through downstream http routes that are attached to the downstream
 	// gateway and remove the parentRef from the status. If it's the last parent
 	// ref, delete the downstream route. If there's a race condition on delete/create,
@@ -865,6 +873,54 @@ func (r *GatewayReconciler) finalizeGateway(
 				return result
 			}
 		}
+	}
+
+	return result
+}
+
+// cleanupDNSRecordSets deletes all DNSRecordSet resources that were created by
+// this gateway. This is called during gateway finalization to ensure DNS records
+// are cleaned up when the gateway is deleted, since owner reference-based garbage
+// collection doesn't work (the dns-operator sets itself as the controller owner).
+func (r *GatewayReconciler) cleanupDNSRecordSets(
+	ctx context.Context,
+	upstreamClient client.Client,
+	upstreamGateway *gatewayv1.Gateway,
+) (result Result) {
+	logger := log.FromContext(ctx)
+
+	var recordSetList dnsv1alpha1.DNSRecordSetList
+	if err := upstreamClient.List(ctx, &recordSetList,
+		client.InNamespace(upstreamGateway.Namespace),
+		client.MatchingLabels{
+			labelDNSManaged:    "true",
+			labelManagedBy:     labelManagedByValue,
+			labelDNSSourceKind: KindGateway,
+			labelDNSSourceName: upstreamGateway.Name,
+			labelDNSSourceNS:   upstreamGateway.Namespace,
+		},
+	); err != nil {
+		// If the CRD doesn't exist, there's nothing to clean up
+		if apimeta.IsNoMatchError(err) {
+			return result
+		}
+		result.Err = fmt.Errorf("failed listing DNSRecordSets for cleanup: %w", err)
+		return result
+	}
+
+	for _, rs := range recordSetList.Items {
+		logger.Info("deleting DNSRecordSet during gateway finalization",
+			"name", rs.Name,
+			"hostname", rs.Annotations[annotationDNSHostname],
+		)
+		if err := upstreamClient.Delete(ctx, &rs); err != nil && !apierrors.IsNotFound(err) {
+			result.Err = fmt.Errorf("failed to delete DNSRecordSet %q: %w", rs.Name, err)
+			return result
+		}
+	}
+
+	if len(recordSetList.Items) > 0 {
+		logger.Info("deleted DNSRecordSets during gateway finalization", "count", len(recordSetList.Items))
 	}
 
 	return result

@@ -15,12 +15,16 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/uuid"
 	"k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
@@ -40,6 +44,12 @@ import (
 )
 
 const routeConfigurationTypeURL = "type.googleapis.com/envoy.config.route.v3.RouteConfiguration"
+
+// cert-manager condition status values for tests that build Certificate unstructured objects.
+const (
+	certManagerConditionStatusTrue  = "True"
+	certManagerConditionStatusFalse = "False"
+)
 
 //nolint:gocyclo
 func TestHTTPProxyCollectDesiredResources(t *testing.T) {
@@ -2010,6 +2020,289 @@ func TestMergeHostnameStatuses(t *testing.T) {
 			if tt.assertFunc != nil {
 				tt.assertFunc(t, got)
 			}
+		})
+	}
+}
+
+func TestBuildCertificateStatuses(t *testing.T) {
+	t.Parallel()
+
+	ns := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-ns",
+			UID:  types.UID("test-namespace-uid-123"),
+		},
+	}
+	downstreamNamespaceName := "ns-" + string(ns.UID)
+
+	gatewayWithHTTPS := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{Name: "my-proxy", Namespace: "test-ns"},
+		Spec: gatewayv1.GatewaySpec{
+			Listeners: []gatewayv1.Listener{
+				{
+					Name:     "https-hostname-0",
+					Protocol: gatewayv1.HTTPSProtocolType,
+					Hostname: ptr.To(gatewayv1.Hostname("app.example.com")),
+				},
+			},
+		},
+	}
+	httpProxy := &networkingv1alpha.HTTPProxy{
+		ObjectMeta: metav1.ObjectMeta{Name: "my-proxy", Namespace: "test-ns"},
+		Spec: networkingv1alpha.HTTPProxySpec{
+			Hostnames: []gatewayv1.Hostname{"app.example.com"},
+			Rules:     []networkingv1alpha.HTTPProxyRule{{}},
+		},
+	}
+	httpProxy.Generation = 2
+
+	makeCert := func(ready bool, reason string) *unstructured.Unstructured {
+		cert := &unstructured.Unstructured{}
+		cert.SetGroupVersionKind(certificateGVK)
+		cert.SetNamespace(downstreamNamespaceName)
+		cert.SetName("my-proxy-https-hostname-0")
+		status := certManagerConditionStatusFalse
+		if ready {
+			status = certManagerConditionStatusTrue
+			reason = certManagerConditionTypeReady
+		}
+		if reason == "" {
+			reason = "Pending"
+		}
+		_ = unstructured.SetNestedSlice(cert.Object, []interface{}{
+			map[string]interface{}{
+				"type":    certManagerConditionTypeReady,
+				"status":  status,
+				"reason":  reason,
+				"message": "test message",
+			},
+		}, "status", "conditions")
+		return cert
+	}
+
+	tests := []struct {
+		name              string
+		downstreamCluster bool
+		downstreamObjects []client.Object
+		wantNil           bool
+		wantLen           int
+		wantReason        string
+		wantStatus        metav1.ConditionStatus
+	}{
+		{
+			name:              "DownstreamCluster nil returns nil",
+			downstreamCluster: false,
+			wantNil:           true,
+		},
+		{
+			name:              "certificate not found returns Pending",
+			downstreamCluster: true,
+			downstreamObjects: []client.Object{}, // no certificate
+			wantNil:           false,
+			wantLen:           1,
+			wantReason:        networkingv1alpha.CertificateReadyReasonPending,
+			wantStatus:        metav1.ConditionFalse,
+		},
+		{
+			name:              "certificate ready returns CertificateIssued",
+			downstreamCluster: true,
+			downstreamObjects: []client.Object{makeCert(true, "")},
+			wantNil:           false,
+			wantLen:           1,
+			wantReason:        networkingv1alpha.CertificateReadyReasonCertificateIssued,
+			wantStatus:        metav1.ConditionTrue,
+		},
+		{
+			name:              "certificate not ready returns Pending",
+			downstreamCluster: true,
+			downstreamObjects: []client.Object{makeCert(false, "Pending")},
+			wantNil:           false,
+			wantLen:           1,
+			wantReason:        networkingv1alpha.CertificateReadyReasonPending,
+			wantStatus:        metav1.ConditionFalse,
+		},
+		{
+			name:              "certificate InvalidCertificate returns ProvisioningFailed",
+			downstreamCluster: true,
+			downstreamObjects: []client.Object{makeCert(false, "InvalidCertificate")},
+			wantNil:           false,
+			wantLen:           1,
+			wantReason:        networkingv1alpha.CertificateReadyReasonProvisioningFailed,
+			wantStatus:        metav1.ConditionFalse,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			scheme := runtime.NewScheme()
+			_ = corev1.AddToScheme(scheme)
+			_ = gatewayv1.Install(scheme)
+			_ = networkingv1alpha.AddToScheme(scheme)
+
+			upstreamObjs := []client.Object{ns}
+			upstreamClient := fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithObjects(upstreamObjs...).
+				Build()
+
+			var downstreamCluster cluster.Cluster
+			if tt.downstreamCluster {
+				downstreamClient := fake.NewClientBuilder().
+					WithScheme(scheme).
+					WithObjects(tt.downstreamObjects...).
+					Build()
+				downstreamCluster = &clusterWithClient{c: downstreamClient, scheme: scheme}
+			}
+
+			r := &HTTPProxyReconciler{
+				Config:            config.NetworkServicesOperator{},
+				DownstreamCluster: downstreamCluster,
+			}
+
+			ctx := context.Background()
+			got := r.buildCertificateStatuses(ctx, upstreamClient, "local", gatewayWithHTTPS, httpProxy)
+
+			if tt.wantNil {
+				assert.Nil(t, got)
+				return
+			}
+			require.NotNil(t, got)
+			assert.Len(t, got, tt.wantLen)
+			if tt.wantLen > 0 && tt.wantReason != "" {
+				cond := apimeta.FindStatusCondition(got[0].Conditions, networkingv1alpha.HostnameConditionCertificateReady)
+				require.NotNil(t, cond)
+				assert.Equal(t, tt.wantStatus, cond.Status)
+				assert.Equal(t, tt.wantReason, cond.Reason)
+			}
+		})
+	}
+}
+
+// clusterWithClient implements cluster.Cluster for tests.
+type clusterWithClient struct {
+	c      client.Client
+	scheme *runtime.Scheme
+}
+
+func (c *clusterWithClient) GetHTTPClient() *http.Client          { return &http.Client{} }
+func (c *clusterWithClient) GetConfig() *rest.Config              { return &rest.Config{} }
+func (c *clusterWithClient) GetCache() cache.Cache                { return nil }
+func (c *clusterWithClient) GetScheme() *runtime.Scheme           { return c.scheme }
+func (c *clusterWithClient) GetClient() client.Client             { return c.c }
+func (c *clusterWithClient) GetFieldIndexer() client.FieldIndexer { return nil }
+func (c *clusterWithClient) GetEventRecorderFor(string) record.EventRecorder {
+	return record.NewFakeRecorder(10)
+}
+func (c *clusterWithClient) GetRESTMapper() apimeta.RESTMapper { return nil }
+func (c *clusterWithClient) GetAPIReader() client.Reader       { return c.c }
+func (c *clusterWithClient) Start(context.Context) error       { return nil }
+
+func TestSetCertificatesReadyCondition(t *testing.T) {
+	t.Parallel()
+
+	gatewayWithHTTPS := &gatewayv1.Gateway{
+		Spec: gatewayv1.GatewaySpec{
+			Listeners: []gatewayv1.Listener{
+				{Protocol: gatewayv1.HTTPSProtocolType, Hostname: ptr.To(gatewayv1.Hostname("app.example.com"))},
+			},
+		},
+	}
+	gatewayNoHTTPS := &gatewayv1.Gateway{
+		Spec: gatewayv1.GatewaySpec{
+			Listeners: []gatewayv1.Listener{
+				{Protocol: gatewayv1.HTTPProtocolType, Hostname: ptr.To(gatewayv1.Hostname("app.example.com"))},
+			},
+		},
+	}
+
+	makeCertStatus := func(hostname string, reason string, status metav1.ConditionStatus) networkingv1alpha.HostnameStatus {
+		hs := networkingv1alpha.HostnameStatus{Hostname: hostname}
+		apimeta.SetStatusCondition(&hs.Conditions, metav1.Condition{
+			Type:   networkingv1alpha.HostnameConditionCertificateReady,
+			Status: status,
+			Reason: reason,
+		})
+		return hs
+	}
+
+	tests := []struct {
+		name                string
+		certificateStatuses []networkingv1alpha.HostnameStatus
+		gateway             *gatewayv1.Gateway
+		httpProxy           *networkingv1alpha.HTTPProxy
+		wantCondition       bool
+		wantReason          string
+		wantStatus          metav1.ConditionStatus
+	}{
+		{
+			name:                "certificateStatuses nil and no HTTPS listeners removes condition",
+			certificateStatuses: nil,
+			gateway:             gatewayNoHTTPS,
+			httpProxy:           &networkingv1alpha.HTTPProxy{ObjectMeta: metav1.ObjectMeta{Generation: 1}},
+			wantCondition:       false,
+		},
+		{
+			name:                "certificateStatuses nil with HTTPS listeners sets Unknown",
+			certificateStatuses: nil,
+			gateway:             gatewayWithHTTPS,
+			httpProxy:           &networkingv1alpha.HTTPProxy{ObjectMeta: metav1.ObjectMeta{Generation: 1}},
+			wantCondition:       true,
+			wantStatus:          metav1.ConditionUnknown,
+			wantReason:          networkingv1alpha.CertificatesReadyReasonCertificatesPending,
+		},
+		{
+			name:                "empty certificateStatuses removes condition",
+			certificateStatuses: []networkingv1alpha.HostnameStatus{},
+			gateway:             gatewayWithHTTPS,
+			httpProxy:           &networkingv1alpha.HTTPProxy{ObjectMeta: metav1.ObjectMeta{Generation: 1}, Status: networkingv1alpha.HTTPProxyStatus{HostnameStatuses: []networkingv1alpha.HostnameStatus{}}},
+			wantCondition:       false,
+		},
+		{
+			name:                "all certificates ready sets AllCertificatesReady",
+			certificateStatuses: []networkingv1alpha.HostnameStatus{makeCertStatus("app.example.com", networkingv1alpha.CertificateReadyReasonCertificateIssued, metav1.ConditionTrue)},
+			gateway:             gatewayWithHTTPS,
+			httpProxy:           &networkingv1alpha.HTTPProxy{ObjectMeta: metav1.ObjectMeta{Generation: 1}, Status: networkingv1alpha.HTTPProxyStatus{HostnameStatuses: []networkingv1alpha.HostnameStatus{makeCertStatus("app.example.com", networkingv1alpha.CertificateReadyReasonCertificateIssued, metav1.ConditionTrue)}}},
+			wantCondition:       true,
+			wantStatus:          metav1.ConditionTrue,
+			wantReason:          networkingv1alpha.CertificatesReadyReasonAllCertificatesReady,
+		},
+		{
+			name:                "any certificate pending sets CertificatesPending",
+			certificateStatuses: []networkingv1alpha.HostnameStatus{makeCertStatus("app.example.com", networkingv1alpha.CertificateReadyReasonPending, metav1.ConditionFalse)},
+			gateway:             gatewayWithHTTPS,
+			httpProxy:           &networkingv1alpha.HTTPProxy{ObjectMeta: metav1.ObjectMeta{Generation: 1}, Status: networkingv1alpha.HTTPProxyStatus{HostnameStatuses: []networkingv1alpha.HostnameStatus{makeCertStatus("app.example.com", networkingv1alpha.CertificateReadyReasonPending, metav1.ConditionFalse)}}},
+			wantCondition:       true,
+			wantStatus:          metav1.ConditionFalse,
+			wantReason:          networkingv1alpha.CertificatesReadyReasonCertificatesPending,
+		},
+		{
+			name:                "any certificate failed sets CertificatesFailed",
+			certificateStatuses: []networkingv1alpha.HostnameStatus{makeCertStatus("app.example.com", networkingv1alpha.CertificateReadyReasonProvisioningFailed, metav1.ConditionFalse)},
+			gateway:             gatewayWithHTTPS,
+			httpProxy:           &networkingv1alpha.HTTPProxy{ObjectMeta: metav1.ObjectMeta{Generation: 1}, Status: networkingv1alpha.HTTPProxyStatus{HostnameStatuses: []networkingv1alpha.HostnameStatus{makeCertStatus("app.example.com", networkingv1alpha.CertificateReadyReasonProvisioningFailed, metav1.ConditionFalse)}}},
+			wantCondition:       true,
+			wantStatus:          metav1.ConditionFalse,
+			wantReason:          networkingv1alpha.CertificatesReadyReasonCertificatesFailed,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			r := &HTTPProxyReconciler{}
+			r.setCertificatesReadyCondition(tt.httpProxy, tt.certificateStatuses, tt.gateway)
+
+			cond := apimeta.FindStatusCondition(tt.httpProxy.Status.Conditions, networkingv1alpha.HTTPProxyConditionCertificatesReady)
+			if !tt.wantCondition {
+				assert.Nil(t, cond)
+				return
+			}
+			require.NotNil(t, cond)
+			assert.Equal(t, tt.wantStatus, cond.Status)
+			assert.Equal(t, tt.wantReason, cond.Reason)
 		})
 	}
 }

@@ -357,7 +357,12 @@ func (r *GatewayReconciler) getDesiredDownstreamGateway(
 	var listeners []gatewayv1.Listener
 
 	for listenerIndex, l := range upstreamGateway.Spec.Listeners {
-		if l.TLS != nil && l.TLS.Options[certificateIssuerTLSOption] != "" {
+		useSharedTLS := gatewayutil.IsDefaultListener(l) && r.Config.Gateway.HasDefaultListenerTLSSecret()
+
+		// Only configure cert-manager annotations for listeners that need
+		// individual certificates (i.e. not default listeners using a shared
+		// wildcard certificate).
+		if l.TLS != nil && l.TLS.Options[certificateIssuerTLSOption] != "" && !useSharedTLS {
 			if r.Config.Gateway.PerGatewayCertificateIssuer {
 				if !metav1.HasAnnotation(downstreamGateway.ObjectMeta, "cert-manager.io/issuer") {
 					metav1.SetMetaDataAnnotation(&downstreamGateway.ObjectMeta, "cert-manager.io/issuer", upstreamGateway.Name)
@@ -387,7 +392,10 @@ func (r *GatewayReconciler) getDesiredDownstreamGateway(
 			}
 		}
 
-		// Add custom hostnames if they are verified
+		// Only include listeners whose hostname has been claimed. The default
+		// listener's UID-based hostname is always auto-claimed; custom hostnames
+		// must pass Domain verification first. The useSharedTLS flag only applies
+		// to the default listener.
 		if l.Hostname != nil {
 			if !slices.Contains(claimedHostnames, string(*l.Hostname)) {
 				logger.Info("skipping downstream gateway listener with unclaimed hostname", "upstream_listener_index", listenerIndex, "hostname", *l.Hostname)
@@ -399,17 +407,30 @@ func (r *GatewayReconciler) getDesiredDownstreamGateway(
 				delete(listenerCopy.TLS.Options, certificateIssuerTLSOption)
 
 				tlsMode := gatewayv1.TLSModeTerminate
-				listenerCopy.TLS = &gatewayv1.GatewayTLSConfig{
-					Mode: &tlsMode,
-					// TODO(jreese) investigate secret deletion when Cert (gateway) is deleted
-					// See: https://cert-manager.io/docs/usage/certificate/#cleaning-up-secrets-when-certificates-are-deleted
-					CertificateRefs: []gatewayv1.SecretObjectReference{
-						{
-							Group: ptr.To(gatewayv1.Group("")),
-							Kind:  ptr.To(gatewayv1.Kind("Secret")),
-							Name:  gatewayv1.ObjectName(resourcename.GetValidDNS1123Name(fmt.Sprintf("%s-%s", upstreamGateway.Name, l.Name))),
+				if useSharedTLS {
+					listenerCopy.TLS = &gatewayv1.GatewayTLSConfig{
+						Mode: &tlsMode,
+						CertificateRefs: []gatewayv1.SecretObjectReference{
+							{
+								Group: ptr.To(gatewayv1.Group("")),
+								Kind:  ptr.To(gatewayv1.Kind("Secret")),
+								Name:  gatewayv1.ObjectName(r.Config.Gateway.DefaultListenerTLSSecretName),
+							},
 						},
-					},
+					}
+				} else {
+					listenerCopy.TLS = &gatewayv1.GatewayTLSConfig{
+						Mode: &tlsMode,
+						// TODO(jreese) investigate secret deletion when Cert (gateway) is deleted
+						// See: https://cert-manager.io/docs/usage/certificate/#cleaning-up-secrets-when-certificates-are-deleted
+						CertificateRefs: []gatewayv1.SecretObjectReference{
+							{
+								Group: ptr.To(gatewayv1.Group("")),
+								Kind:  ptr.To(gatewayv1.Kind("Secret")),
+								Name:  gatewayv1.ObjectName(resourcename.GetValidDNS1123Name(fmt.Sprintf("%s-%s", upstreamGateway.Name, l.Name))),
+							},
+						},
+					}
 				}
 			}
 

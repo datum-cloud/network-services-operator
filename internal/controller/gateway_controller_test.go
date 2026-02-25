@@ -238,6 +238,249 @@ func TestEnsureDownstreamGateway(t *testing.T) {
 	}
 }
 
+func TestEnsureDownstreamGatewayWildcardCert(t *testing.T) {
+	testScheme := runtime.NewScheme()
+	assert.NoError(t, scheme.AddToScheme(testScheme))
+	assert.NoError(t, gatewayv1.Install(testScheme))
+	assert.NoError(t, discoveryv1.AddToScheme(testScheme))
+	assert.NoError(t, networkingv1alpha.AddToScheme(testScheme))
+
+	upstreamNamespace := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test",
+			UID:  uuid.NewUUID(),
+		},
+	}
+
+	defaultTLSSecretName := "wildcard-test-suite-tls"
+
+	baseConfig := config.GatewayConfig{
+		DownstreamGatewayClassName:            "test-suite",
+		DownstreamHostnameAccountingNamespace: "default",
+		TargetDomain:                          "test-suite.com",
+		IPFamilies: []networkingv1alpha.IPFamily{
+			networkingv1alpha.IPv4Protocol,
+			networkingv1alpha.IPv6Protocol,
+		},
+		ListenerTLSOptions: map[gatewayv1.AnnotationKey]gatewayv1.AnnotationValue{
+			gatewayv1.AnnotationKey(certificateIssuerTLSOption): "test-issuer",
+		},
+	}
+
+	tests := []struct {
+		name                      string
+		defaultTLSSecretName      string
+		upstreamGateway           *gatewayv1.Gateway
+		existingUpstreamObjects   []client.Object
+		existingDownstreamObjects []client.Object
+		assert                    func(t *testing.T, upstreamGateway, downstreamGateway *gatewayv1.Gateway)
+	}{
+		{
+			name:                 "default https listener uses shared TLS secret",
+			defaultTLSSecretName: defaultTLSSecretName,
+			upstreamGateway: newGateway(config.NetworkServicesOperator{Gateway: baseConfig}, upstreamNamespace.Name, "test-gw", func(g *gatewayv1.Gateway) {
+			}),
+			assert: func(t *testing.T, upstreamGateway, downstreamGateway *gatewayv1.Gateway) {
+				httpsListener := gatewayutil.GetListenerByName(
+					downstreamGateway.Spec.Listeners,
+					gatewayutil.DefaultHTTPSListenerName,
+				)
+				if assert.NotNil(t, httpsListener, "default HTTPS listener should exist on downstream gateway") {
+					if assert.NotNil(t, httpsListener.TLS, "TLS config should be set") {
+						if assert.Len(t, httpsListener.TLS.CertificateRefs, 1) {
+							assert.Equal(t,
+								gatewayv1.ObjectName(defaultTLSSecretName),
+								httpsListener.TLS.CertificateRefs[0].Name,
+								"default listener should reference the shared TLS secret",
+							)
+						}
+					}
+				}
+
+				assert.Empty(t, downstreamGateway.Annotations["cert-manager.io/cluster-issuer"],
+					"cert-manager cluster-issuer annotation should not be set when only default listeners exist",
+				)
+			},
+		},
+		{
+			name:                 "custom hostname gets individual cert with shared TLS secret enabled",
+			defaultTLSSecretName: defaultTLSSecretName,
+			upstreamGateway: newGateway(config.NetworkServicesOperator{Gateway: baseConfig}, upstreamNamespace.Name, "test-gw", func(g *gatewayv1.Gateway) {
+				g.Spec.Listeners = append(g.Spec.Listeners,
+					gatewayv1.Listener{
+						Name:     "https-hostname-0",
+						Protocol: gatewayv1.HTTPSProtocolType,
+						Port:     DefaultHTTPSPort,
+						Hostname: ptr.To(gatewayv1.Hostname("custom.example.com")),
+						AllowedRoutes: &gatewayv1.AllowedRoutes{
+							Namespaces: &gatewayv1.RouteNamespaces{
+								From: ptr.To(gatewayv1.NamespacesFromSame),
+							},
+						},
+						TLS: &gatewayv1.GatewayTLSConfig{
+							Mode: ptr.To(gatewayv1.TLSModeTerminate),
+							Options: map[gatewayv1.AnnotationKey]gatewayv1.AnnotationValue{
+								gatewayv1.AnnotationKey(certificateIssuerTLSOption): "test-issuer",
+							},
+						},
+					},
+				)
+			}),
+			existingUpstreamObjects: []client.Object{
+				newDomain(upstreamNamespace.Name, "custom.example.com", func(d *networkingv1alpha.Domain) {
+					d.Spec.DomainName = "custom.example.com"
+					apimeta.SetStatusCondition(&d.Status.Conditions, metav1.Condition{
+						Type:   networkingv1alpha.DomainConditionVerified,
+						Status: metav1.ConditionTrue,
+					})
+				}),
+			},
+			assert: func(t *testing.T, upstreamGateway, downstreamGateway *gatewayv1.Gateway) {
+				// Default HTTPS listener should use shared TLS secret
+				httpsListener := gatewayutil.GetListenerByName(
+					downstreamGateway.Spec.Listeners,
+					gatewayutil.DefaultHTTPSListenerName,
+				)
+				if assert.NotNil(t, httpsListener, "default HTTPS listener should exist") {
+					if assert.NotNil(t, httpsListener.TLS) {
+						if assert.Len(t, httpsListener.TLS.CertificateRefs, 1) {
+							assert.Equal(t,
+								gatewayv1.ObjectName(defaultTLSSecretName),
+								httpsListener.TLS.CertificateRefs[0].Name,
+								"default listener should reference the shared TLS secret",
+							)
+						}
+					}
+				}
+
+				// Custom hostname listener should get its own per-listener cert
+				customListener := gatewayutil.GetListenerByName(
+					downstreamGateway.Spec.Listeners,
+					"https-hostname-0",
+				)
+				if assert.NotNil(t, customListener, "custom HTTPS listener should exist") {
+					if assert.NotNil(t, customListener.TLS) {
+						if assert.Len(t, customListener.TLS.CertificateRefs, 1) {
+							assert.Equal(t,
+								gatewayv1.ObjectName("test-gw-https-hostname-0"),
+								customListener.TLS.CertificateRefs[0].Name,
+								"custom listener should reference a per-listener cert secret",
+							)
+							assert.NotEqual(t,
+								gatewayv1.ObjectName(defaultTLSSecretName),
+								customListener.TLS.CertificateRefs[0].Name,
+								"custom listener should NOT use the shared TLS secret",
+							)
+						}
+					}
+				}
+
+				// cert-manager annotations should be present for the custom hostname
+				assert.NotEmpty(t, downstreamGateway.Annotations["cert-manager.io/cluster-issuer"],
+					"cert-manager annotation should be set for custom hostname listener",
+				)
+			},
+		},
+		{
+			name:                 "without shared TLS secret all listeners get individual certs",
+			defaultTLSSecretName: "",
+			upstreamGateway: newGateway(config.NetworkServicesOperator{Gateway: baseConfig}, upstreamNamespace.Name, "test-gw", func(g *gatewayv1.Gateway) {
+			}),
+			assert: func(t *testing.T, upstreamGateway, downstreamGateway *gatewayv1.Gateway) {
+				httpsListener := gatewayutil.GetListenerByName(
+					downstreamGateway.Spec.Listeners,
+					gatewayutil.DefaultHTTPSListenerName,
+				)
+				if assert.NotNil(t, httpsListener, "default HTTPS listener should exist") {
+					if assert.NotNil(t, httpsListener.TLS) {
+						if assert.Len(t, httpsListener.TLS.CertificateRefs, 1) {
+							assert.Equal(t,
+								gatewayv1.ObjectName("test-gw-default-https"),
+								httpsListener.TLS.CertificateRefs[0].Name,
+								"without wildcard config, default listener should get a per-listener cert",
+							)
+						}
+					}
+				}
+
+				assert.NotEmpty(t, downstreamGateway.Annotations["cert-manager.io/cluster-issuer"],
+					"cert-manager annotation should be set when wildcard is not configured",
+				)
+			},
+		},
+	}
+
+	logger := zap.New(zap.UseFlagOptions(&zap.Options{Development: true}))
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			testCfg := config.NetworkServicesOperator{Gateway: *baseConfig.DeepCopy()}
+			testCfg.Gateway.DefaultListenerTLSSecretName = tt.defaultTLSSecretName
+
+			tt.existingUpstreamObjects = append(tt.existingUpstreamObjects, &gatewayv1.GatewayClass{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test",
+				},
+				Spec: gatewayv1.GatewayClassSpec{
+					ControllerName: gatewayv1.GatewayController("test"),
+				},
+			})
+
+			for _, obj := range append(tt.existingUpstreamObjects, tt.existingDownstreamObjects...) {
+				obj.SetUID(uuid.NewUUID())
+				obj.SetCreationTimestamp(metav1.Now())
+			}
+
+			fakeUpstreamClient := fake.NewClientBuilder().
+				WithScheme(testScheme).
+				WithObjects(tt.upstreamGateway, upstreamNamespace).
+				WithObjects(tt.existingUpstreamObjects...).
+				WithStatusSubresource(tt.upstreamGateway).
+				WithStatusSubresource(tt.existingUpstreamObjects...).
+				Build()
+
+			fakeDownstreamClient := fake.NewClientBuilder().
+				WithScheme(testScheme).
+				WithObjects(tt.existingDownstreamObjects...).
+				WithStatusSubresource(&gatewayv1.Gateway{}).
+				WithStatusSubresource(tt.existingDownstreamObjects...).
+				Build()
+
+			ctx := context.Background()
+			ctx = log.IntoContext(ctx, logger)
+
+			mgr := &fakeMockManager{cl: fakeUpstreamClient}
+
+			reconciler := &GatewayReconciler{
+				mgr:               mgr,
+				Config:            testCfg,
+				DownstreamCluster: &fakeCluster{cl: fakeDownstreamClient},
+			}
+
+			downstreamStrategy := downstreamclient.NewMappedNamespaceResourceStrategy("test", fakeUpstreamClient, fakeDownstreamClient)
+
+			reconciler.prepareUpstreamGateway(tt.upstreamGateway)
+			result, downstreamGateway := reconciler.ensureDownstreamGateway(
+				ctx,
+				"test-suite",
+				fakeUpstreamClient,
+				tt.upstreamGateway,
+				downstreamStrategy,
+			)
+			assert.NoError(t, result.Err, "failed ensuring downstream gateway")
+
+			_, err := result.Complete(ctx)
+			assert.NoError(t, err, "failed completing result")
+
+			if tt.assert != nil {
+				updatedUpstreamGateway := &gatewayv1.Gateway{}
+				assert.NoError(t, fakeUpstreamClient.Get(ctx, client.ObjectKeyFromObject(tt.upstreamGateway), updatedUpstreamGateway))
+				tt.assert(t, updatedUpstreamGateway, downstreamGateway)
+			}
+		})
+	}
+}
+
 func TestEnsureDownstreamGatewayHTTPRoutes(t *testing.T) {
 	testScheme := runtime.NewScheme()
 	assert.NoError(t, scheme.AddToScheme(testScheme))

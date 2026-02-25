@@ -526,6 +526,21 @@ type GatewayConfig struct {
 	//
 	// Defaults to false.
 	EnableDNSIntegration bool `json:"enableDNSIntegration,omitempty"`
+
+	// DefaultListenerTLSSecretName, if provided, is the name of a
+	// pre-provisioned TLS certificate secret to use for the default HTTPS
+	// listener (named "default-https"). When set, this listener references
+	// the shared secret instead of requesting an individual certificate
+	// via cert-manager.
+	//
+	// The secret must exist in every downstream gateway namespace.
+	DefaultListenerTLSSecretName string `json:"defaultListenerTLSSecretName,omitempty"`
+}
+
+// HasDefaultListenerTLSSecret returns true when a shared TLS certificate
+// secret has been configured for default HTTPS listeners.
+func (c *GatewayConfig) HasDefaultListenerTLSSecret() bool {
+	return c.DefaultListenerTLSSecretName != ""
 }
 
 // ShouldDeleteErroredChallenges returns whether the operator should automatically

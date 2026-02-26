@@ -243,6 +243,7 @@ func SetObjectDefaults_NetworkServicesOperator(in *NetworkServicesOperator) {
 			panic(err)
 		}
 	}
+	SetDefaults_LeaderElectionConfig(&in.LeaderElection)
 	if in.DomainVerification.RetryIntervals == nil {
 		if err := json.Unmarshal([]byte(`[{"interval": "5s", "maxElapsed": "5m"}, {"interval": "1m", "maxElapsed": "15m"}, {"interval": "5m"}]`), &in.DomainVerification.RetryIntervals); err != nil {
 			panic(err)

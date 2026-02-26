@@ -121,8 +121,8 @@ func main() {
 	// TODO(jreese) validate the config
 
 	cfg := ctrl.GetConfigOrDie()
-	cfg.QPS = 10
-	cfg.Burst = 20
+	cfg.QPS = 50
+	cfg.Burst = 100
 
 	deploymentCluster, err := cluster.New(cfg, func(o *cluster.Options) {
 		o.Scheme = scheme
@@ -189,8 +189,8 @@ func main() {
 		setupLog.Error(err, "unable to load control plane kubeconfig")
 		os.Exit(1)
 	}
-	downstreamRestConfig.QPS = 10
-	downstreamRestConfig.Burst = 20
+	downstreamRestConfig.QPS = 50
+	downstreamRestConfig.Burst = 100
 
 	downstreamCluster, err := cluster.New(downstreamRestConfig, func(o *cluster.Options) {
 		o.Scheme = scheme
@@ -443,15 +443,15 @@ func initializeClusterDiscovery(
 		if err != nil {
 			return nil, nil, fmt.Errorf("unable to get discovery rest config: %w", err)
 		}
-		discoveryRestConfig.QPS = 10
-		discoveryRestConfig.Burst = 20
+		discoveryRestConfig.QPS = 50
+		discoveryRestConfig.Burst = 100
 
 		projectRestConfig, err := serverConfig.Discovery.ProjectRestConfig()
 		if err != nil {
 			return nil, nil, fmt.Errorf("unable to get project rest config: %w", err)
 		}
-		projectRestConfig.QPS = 10
-		projectRestConfig.Burst = 20
+		projectRestConfig.QPS = 50
+		projectRestConfig.Burst = 100
 
 		discoveryManager, err := manager.New(discoveryRestConfig, manager.Options{
 			Client: client.Options{

@@ -443,8 +443,8 @@ func initializeClusterDiscovery(
 		if err != nil {
 			return nil, nil, fmt.Errorf("unable to get discovery rest config: %w", err)
 		}
-		discoveryRestConfig.QPS = 50
-		discoveryRestConfig.Burst = 100
+		discoveryRestConfig.QPS = 10
+		discoveryRestConfig.Burst = 20
 
 		projectRestConfig, err := serverConfig.Discovery.ProjectRestConfig()
 		if err != nil {

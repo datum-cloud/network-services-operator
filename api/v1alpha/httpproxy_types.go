@@ -261,6 +261,9 @@ const (
 	// This condition is true when connector metadata has been programmed
 	// via the downstream EnvoyPatchPolicy.
 	HTTPProxyConditionConnectorMetadataProgrammed = "ConnectorMetadataProgrammed"
+
+	// This condition is true when all HTTPS hostnames have ready TLS certificates.
+	HTTPProxyConditionCertificatesReady = "CertificatesReady"
 )
 
 const (
@@ -283,6 +286,25 @@ const (
 	// HostnameConditionAvailable indicates whether the hostname was successfully
 	// claimed by this resource or is already in use by another resource.
 	HostnameConditionAvailable = "Available"
+
+	// HostnameConditionCertificateReady tracks whether a TLS certificate has been
+	// provisioned for this hostname (cert-manager Certificate in the downstream cluster).
+	HostnameConditionCertificateReady = "CertificateReady"
+)
+
+// Reasons for HostnameConditionCertificateReady.
+const (
+	// CertificateReadyReasonCertificateIssued indicates the certificate has been issued and is ready.
+	CertificateReadyReasonCertificateIssued = "CertificateIssued"
+
+	// CertificateReadyReasonPending indicates the certificate is not yet ready (e.g. not found or provisioning).
+	CertificateReadyReasonPending = "Pending"
+
+	// CertificateReadyReasonProvisioningFailed indicates certificate provisioning failed.
+	CertificateReadyReasonProvisioningFailed = "ProvisioningFailed"
+
+	// CertificateReadyReasonChallengeInProgress indicates an ACME challenge is in progress.
+	CertificateReadyReasonChallengeInProgress = "ChallengeInProgress"
 )
 
 // Reasons for HostnameConditionAvailable.
@@ -316,8 +338,15 @@ const (
 	DNSRecordReasonZoneNotReady = "DNSZoneNotReady"
 
 	// DNSRecordReasonDomainNotVerified indicates the Domain resource for this
-	// hostname has not been verified via a DNSZone.
+	// hostname has not been verified.
 	DNSRecordReasonDomainNotVerified = "DomainNotVerified"
+
+	// DNSRecordReasonDNSAuthorityMissing indicates the Domain is verified but
+	// Datum DNS does not have authority over the domain. This happens when:
+	// - The DNSZone is not ready (Accepted/Programmed conditions not True)
+	// - The DNSZone has no nameservers assigned yet
+	// - The domain's nameservers don't include the DNSZone's nameservers
+	DNSRecordReasonDNSAuthorityMissing = "DNSAuthorityMissing"
 
 	// DNSRecordReasonConflict indicates an existing DNSRecordSet for this
 	// hostname is managed by a different actor.
@@ -351,6 +380,18 @@ const (
 	// hostnames that require DNS records could not have their records created or
 	// updated. See per-hostname conditions for details.
 	DNSRecordsProgrammedReasonPartialFailure = "PartialFailure"
+)
+
+// Reasons for HTTPProxyConditionCertificatesReady.
+const (
+	// CertificatesReadyReasonAllCertificatesReady indicates all HTTPS hostnames have ready certificates.
+	CertificatesReadyReasonAllCertificatesReady = "AllCertificatesReady"
+
+	// CertificatesReadyReasonCertificatesPending indicates one or more certificates are pending or in progress.
+	CertificatesReadyReasonCertificatesPending = "CertificatesPending"
+
+	// CertificatesReadyReasonCertificatesFailed indicates one or more certificate provisioning attempts failed.
+	CertificatesReadyReasonCertificatesFailed = "CertificatesFailed"
 )
 
 const (
@@ -394,6 +435,7 @@ const (
 //
 // +kubebuilder:printcolumn:name="Hostname",type=string,JSONPath=`.status.hostnames[*]`
 // +kubebuilder:printcolumn:name="Programmed",type=string,JSONPath=`.status.conditions[?(@.type=="Programmed")].status`
+// +kubebuilder:printcolumn:name="Certificates",type=string,JSONPath=`.status.conditions[?(@.type=="CertificatesReady")].status`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 type HTTPProxy struct {
 	metav1.TypeMeta   `json:",inline"`

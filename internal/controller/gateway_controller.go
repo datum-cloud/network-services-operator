@@ -5,7 +5,6 @@ package controller
 import (
 	"context"
 	"fmt"
-	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -287,34 +286,23 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 			return result, nil
 		}
 	} else {
-		// Run the two-phase cert-manager annotation migration before diffing.
-		// This mutates downstreamGateway.Annotations in place, which the diff
-		// check below will pick up and persist via Update.
-		migrationRequeue := migrateLegacyCertManagerAnnotations(downstreamGateway)
-
 		if !equality.Semantic.DeepEqual(downstreamGateway.Annotations, desiredDownstreamGateway.Annotations) ||
 			!equality.Semantic.DeepEqual(downstreamGateway.Spec, desiredDownstreamGateway.Spec) {
-			// maps.Copy merges desired over existing; migration-added keys
-			// (like the phase marker) survive because they aren't in desired.
-			maps.Copy(downstreamGateway.Annotations, desiredDownstreamGateway.Annotations)
+			downstreamGateway.Annotations = desiredDownstreamGateway.Annotations
 			downstreamGateway.Spec = desiredDownstreamGateway.Spec
 			if err := downstreamClient.Update(ctx, downstreamGateway); err != nil {
 				result.Err = fmt.Errorf("failed updating downstream gateway: %w", err)
 				return result, nil
 			}
 		}
-
-		if migrationRequeue > 0 {
-			result.RequeueAfter = migrationRequeue
-		}
 	}
 
 	certResult := r.ensureListenerCertificates(
 		ctx,
-		upstreamClusterName,
 		upstreamGateway,
 		downstreamGateway,
 		downstreamClient,
+		downstreamStrategy,
 		claimedHostnames,
 	)
 	if certResult.ShouldReturn() {
@@ -460,67 +448,6 @@ func (r *GatewayReconciler) getDesiredDownstreamGateway(
 	return &downstreamGateway
 }
 
-// legacyCertManagerAnnotations are annotations previously set by NSO on
-// downstream gateways for cert-manager's gateway-shim. NSO now creates
-// Certificate resources directly, so these must be stripped from existing
-// gateways to prevent gateway-shim from creating conflicting Certificates.
-var legacyCertManagerAnnotations = []string{
-	"cert-manager.io/issuer",
-	"cert-manager.io/cluster-issuer",
-	"cert-manager.io/secret-template",
-}
-
-const certManagerMigrationAnnotation = "networking.datumapis.com/cert-manager-annotation-migration"
-
-// migrateLegacyCertManagerAnnotations runs a two-phase migration to ensure
-// Karmada propagates the removal of legacy cert-manager annotations to member
-// clusters.
-//
-// Background: Karmada only removes an annotation from a member cluster object
-// if that annotation key was previously recorded in the Work object's
-// resourcetemplate.karmada.io/managed-annotations. For gateways that were
-// adopted by Karmada after being created on the member cluster, the
-// cert-manager annotations were never tracked. This migration forces tracking
-// by temporarily seeding the annotation keys (phase 1), giving Karmada time to
-// record them, then removing them (phase 2) so Karmada propagates the deletion.
-//
-// Returns a non-zero duration if a requeue is needed to complete the migration.
-func migrateLegacyCertManagerAnnotations(gw *gatewayv1.Gateway) time.Duration {
-	if gw.Annotations == nil {
-		gw.Annotations = make(map[string]string)
-	}
-
-	switch gw.Annotations[certManagerMigrationAnnotation] {
-	case "":
-		// Phase 1: Seed cert-manager annotation keys with empty values so
-		// Karmada's RecordManagedAnnotations includes them when building the
-		// Work object. Empty values prevent gateway-shim from issuing real
-		// certificates during the migration window.
-		for _, key := range legacyCertManagerAnnotations {
-			gw.Annotations[key] = ""
-		}
-		gw.Annotations[certManagerMigrationAnnotation] = "seeded"
-		return 60 * time.Second
-
-	case "seeded":
-		// Phase 2: Remove the seeded annotations. Karmada has recorded them in
-		// managed-annotations, so getDeletedAnnotationKeys will detect the
-		// removal and propagate it to member clusters.
-		for _, key := range legacyCertManagerAnnotations {
-			delete(gw.Annotations, key)
-		}
-		gw.Annotations[certManagerMigrationAnnotation] = "complete"
-		return 0
-
-	default:
-		// Migration complete. Strip any lingering cert-manager annotations as a
-		// safety net (e.g., if the gateway was updated externally).
-		for _, key := range legacyCertManagerAnnotations {
-			delete(gw.Annotations, key)
-		}
-		return 0
-	}
-}
 
 // listenerCertificateSecretName returns the deterministic Secret name that a
 // Certificate resource will populate for a given gateway listener.
@@ -540,10 +467,10 @@ func listenerCertificateName(gatewayName string, listenerName gatewayv1.SectionN
 // use the shared TLS secret and do not get a Certificate.
 func (r *GatewayReconciler) ensureListenerCertificates(
 	ctx context.Context,
-	upstreamClusterName string,
 	upstreamGateway *gatewayv1.Gateway,
 	downstreamGateway *gatewayv1.Gateway,
 	downstreamClient client.Client,
+	downstreamStrategy downstreamclient.ResourceStrategy,
 	claimedHostnames []string,
 ) (result Result) {
 	logger := log.FromContext(ctx)
@@ -583,43 +510,58 @@ func (r *GatewayReconciler) ensureListenerCertificates(
 			},
 		}
 
-		opResult, err := controllerutil.CreateOrUpdate(ctx, downstreamClient, cert, func() error {
-			// Owner reference gives us Kubernetes GC: when the downstream
-			// gateway is deleted, its Certificates are cleaned up automatically.
-			if err := controllerutil.SetControllerReference(downstreamGateway, cert, downstreamClient.Scheme()); err != nil {
-				return err
-			}
+		if err := downstreamClient.Get(ctx, client.ObjectKeyFromObject(cert), cert); client.IgnoreNotFound(err) != nil {
+			result.Err = fmt.Errorf("failed to get Certificate %s: %w", certName, err)
+			return result
+		}
 
-			cert.Spec = cmv1.CertificateSpec{
-				SecretName: secretName,
-				// Propagation label on the issued Secret so Karmada can
-				// distribute it to member clusters.
-				SecretTemplate: &cmv1.CertificateSecretTemplate{
-					Labels: map[string]string{
-						downstreamclient.UpstreamOwnerClusterNameLabel: fmt.Sprintf("cluster-%s", strings.ReplaceAll(upstreamClusterName, "/", "_")),
-					},
-				},
-				DNSNames: []string{hostname},
-				IssuerRef: cmmeta.ObjectReference{
-					Name: clusterIssuerName,
-					Kind: "ClusterIssuer",
-				},
+		isNew := cert.CreationTimestamp.IsZero()
+		if isNew {
+			if err := downstreamStrategy.SetControllerReference(ctx, upstreamGateway, cert); err != nil {
+				result.Err = fmt.Errorf("failed to set controller reference on Certificate %s: %w", certName, err)
+				return result
 			}
+		}
 
-			return nil
-		})
+		desiredSpec := cmv1.CertificateSpec{
+			SecretName: secretName,
+			SecretTemplate: &cmv1.CertificateSecretTemplate{
+				Labels: map[string]string{
+					downstreamclient.UpstreamOwnerClusterNameLabel: cert.Labels[downstreamclient.UpstreamOwnerClusterNameLabel],
+				},
+			},
+			DNSNames: []string{hostname},
+			IssuerRef: cmmeta.ObjectReference{
+				Name: clusterIssuerName,
+				Kind: "ClusterIssuer",
+			},
+		}
+
+		var opResult string
+		var err error
+		if isNew {
+			cert.Spec = desiredSpec
+			err = downstreamClient.Create(ctx, cert)
+			opResult = "created"
+		} else if !equality.Semantic.DeepEqual(cert.Spec, desiredSpec) {
+			cert.Spec = desiredSpec
+			err = downstreamClient.Update(ctx, cert)
+			opResult = "updated"
+		}
 		if err != nil {
 			result.Err = fmt.Errorf("failed to ensure Certificate %s: %w", certName, err)
 			return result
 		}
-		if opResult != controllerutil.OperationResultNone {
+		if opResult != "" {
 			logger.Info("Certificate reconciled", "certificate", certName, "operation", opResult)
 		}
 	}
 
 	// Clean up Certificate resources for listeners that no longer need them.
-	// Certificates owned by this gateway are identified via ownerReferences
-	// set by controllerutil.SetControllerReference above.
+	// Two ownership patterns are checked:
+	//  1. Certificates created by NSO via the downstream strategy (upstream-owner labels)
+	//  2. Legacy Certificates created by cert-manager's gateway-shim (controller ownerRef
+	//     to the downstream gateway, no upstream-owner labels)
 	var certList cmv1.CertificateList
 	if err := downstreamClient.List(ctx, &certList,
 		client.InNamespace(downstreamGateway.Namespace),
@@ -630,12 +572,19 @@ func (r *GatewayReconciler) ensureListenerCertificates(
 
 	for i := range certList.Items {
 		cert := &certList.Items[i]
-		if !metav1.IsControlledBy(cert, downstreamGateway) {
-			continue
-		}
 		if desiredCerts[cert.Name] {
 			continue
 		}
+
+		ownedByStrategy := cert.Labels[downstreamclient.UpstreamOwnerKindLabel] == "Gateway" &&
+			cert.Labels[downstreamclient.UpstreamOwnerNameLabel] == upstreamGateway.Name &&
+			cert.Labels[downstreamclient.UpstreamOwnerNamespaceLabel] == upstreamGateway.Namespace
+		ownedByGatewayShim := metav1.IsControlledBy(cert, downstreamGateway)
+
+		if !ownedByStrategy && !ownedByGatewayShim {
+			continue
+		}
+
 		logger.Info("deleting stale Certificate", "certificate", cert.Name)
 		if err := downstreamClient.Delete(ctx, cert); client.IgnoreNotFound(err) != nil {
 			result.Err = fmt.Errorf("failed to delete stale Certificate %s: %w", cert.Name, err)
@@ -1822,6 +1771,13 @@ func (r *GatewayReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 
 	downstreamHTTPRouteClusterSource, _ := downstreamHTTPRouteSource.ForCluster("", r.DownstreamCluster)
 
+	downstreamCertificateSource := mcsource.TypedKind(
+		&cmv1.Certificate{},
+		downstreamclient.TypedEnqueueRequestForUpstreamOwner[*cmv1.Certificate](&gatewayv1.Gateway{}),
+	)
+
+	downstreamCertificateClusterSource, _ := downstreamCertificateSource.ForCluster("", r.DownstreamCluster)
+
 	builder := mcbuilder.ControllerManagedBy(mgr).
 		For(&gatewayv1.Gateway{}).
 		Watches(
@@ -1841,7 +1797,8 @@ func (r *GatewayReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 			r.listGatewaysForHTTPRouteFilterFunc,
 		).
 		WatchesRawSource(downstreamGatewayClusterSource).
-		WatchesRawSource(downstreamHTTPRouteClusterSource)
+		WatchesRawSource(downstreamHTTPRouteClusterSource).
+		WatchesRawSource(downstreamCertificateClusterSource)
 
 	if r.Config.Gateway.EnableDNSIntegration {
 		builder = builder.

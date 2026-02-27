@@ -45,7 +45,7 @@ func TestNoCollisions(t *testing.T) {
 		set[hostname] = true
 
 		if i%100_000 == 0 {
-			os.Stdout.WriteString(".")
+			_, _ = os.Stdout.WriteString(".")
 		}
 	}
 

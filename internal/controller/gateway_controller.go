@@ -235,6 +235,7 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 
 	if err := downstreamClient.Get(ctx, client.ObjectKeyFromObject(downstreamGateway), downstreamGateway); client.IgnoreNotFound(err) != nil {
 		result.Err = fmt.Errorf("failed to get downstream gateway: %w", err)
+		return result, nil
 	}
 
 	verifiedHostnames, claimedHostnames, notClaimedHostnames, err := r.ensureHostnamesClaimed(
@@ -270,6 +271,9 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 			return result, nil
 		}
 	} else {
+		// Sync cert-manager annotations: add desired, remove stale
+		syncCertManagerAnnotations(downstreamGateway, desiredDownstreamGateway)
+
 		if !equality.Semantic.DeepEqual(downstreamGateway.Annotations, desiredDownstreamGateway.Annotations) ||
 			!equality.Semantic.DeepEqual(downstreamGateway.Spec, desiredDownstreamGateway.Spec) {
 			// Take care not to clobber other annotations
@@ -358,6 +362,14 @@ func (r *GatewayReconciler) getDesiredDownstreamGateway(
 	var listeners []gatewayv1.Listener
 
 	for listenerIndex, l := range upstreamGateway.Spec.Listeners {
+		// Only process listeners with verified custom hostnames; unclaimed
+		// hostnames must not influence cert-manager annotations or downstream
+		// listener configuration.
+		if l.Hostname != nil && !slices.Contains(claimedHostnames, string(*l.Hostname)) {
+			logger.Info("skipping downstream gateway listener with unclaimed hostname", "upstream_listener_index", listenerIndex, "hostname", *l.Hostname)
+			continue
+		}
+
 		if l.TLS != nil && l.TLS.Options[certificateIssuerTLSOption] != "" {
 			if r.Config.Gateway.PerGatewayCertificateIssuer {
 				if !metav1.HasAnnotation(downstreamGateway.ObjectMeta, "cert-manager.io/issuer") {
@@ -388,12 +400,7 @@ func (r *GatewayReconciler) getDesiredDownstreamGateway(
 			}
 		}
 
-		// Add custom hostnames if they are verified
 		if l.Hostname != nil {
-			if !slices.Contains(claimedHostnames, string(*l.Hostname)) {
-				logger.Info("skipping downstream gateway listener with unclaimed hostname", "upstream_listener_index", listenerIndex, "hostname", *l.Hostname)
-				continue
-			}
 			listenerCopy := l.DeepCopy()
 			if l.TLS != nil && l.TLS.Options[certificateIssuerTLSOption] != "" {
 				// Translate upstream TLS settings to downstream TLS settings
@@ -424,6 +431,28 @@ func (r *GatewayReconciler) getDesiredDownstreamGateway(
 	downstreamGateway.Spec.Listeners = listeners
 
 	return &downstreamGateway
+}
+
+// certManagerAnnotationKeys are the annotations managed by the gateway controller
+// for cert-manager integration. These are synced from the desired state and stale
+// entries are removed when custom hostnames become unclaimed.
+var certManagerAnnotationKeys = []string{
+	"cert-manager.io/issuer",
+	"cert-manager.io/cluster-issuer",
+	"cert-manager.io/secret-template",
+}
+
+// syncCertManagerAnnotations ensures the downstream gateway's cert-manager
+// annotations match the desired state: desired keys are set, and keys that
+// are no longer needed are removed.
+func syncCertManagerAnnotations(downstream, desired *gatewayv1.Gateway) {
+	for _, key := range certManagerAnnotationKeys {
+		if v, ok := desired.Annotations[key]; ok {
+			metav1.SetMetaDataAnnotation(&downstream.ObjectMeta, key, v)
+		} else {
+			delete(downstream.Annotations, key)
+		}
+	}
 }
 
 func (r *GatewayReconciler) reconcileGatewayStatus(

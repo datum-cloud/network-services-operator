@@ -376,21 +376,40 @@ func (r *GatewayReconciler) getDesiredDownstreamGateway(
 
 	var listeners []gatewayv1.Listener
 
-	// When any listener requires an individual certificate (custom hostname),
-	// the gateway-level cert-manager annotation must be set. Since cert-manager
-	// processes ALL HTTPS listeners on an annotated gateway, the default listener
-	// must fall back to a per-listener cert ref to prevent cert-manager from
-	// overwriting the shared wildcard secret.
-	hasCustomTLSListeners := false
+	// Determine whether any listener on this gateway requires an individual
+	// certificate that cert-manager must issue. A listener needs its own cert
+	// only when its hostname falls outside the wildcard's scope (i.e. it's not
+	// a subdomain of the target domain). Hostnames covered by the wildcard
+	// (*.targetDomain) can share the pre-provisioned secret.
+	//
+	// When any listener requires cert-manager, the gateway-level annotation
+	// must be set. Since cert-manager processes ALL HTTPS listeners on an
+	// annotated gateway, every listener that would otherwise use the shared
+	// secret must fall back to a per-listener cert ref to prevent cert-manager
+	// from overwriting the wildcard secret.
+	wildcardSuffix := "." + r.Config.Gateway.TargetDomain
+	hasExternalTLSListeners := false
 	for _, l := range upstreamGateway.Spec.Listeners {
-		if !gatewayutil.IsDefaultListener(l) && l.TLS != nil && l.TLS.Options[certificateIssuerTLSOption] != "" {
-			hasCustomTLSListeners = true
-			break
+		if l.TLS != nil && l.TLS.Options[certificateIssuerTLSOption] != "" && l.Hostname != nil {
+			hostname := string(*l.Hostname)
+			if !strings.HasSuffix(hostname, wildcardSuffix) && hostname != r.Config.Gateway.TargetDomain {
+				hasExternalTLSListeners = true
+				break
+			}
 		}
 	}
 
 	for listenerIndex, l := range upstreamGateway.Spec.Listeners {
-		useSharedTLS := gatewayutil.IsDefaultListener(l) && r.Config.Gateway.HasDefaultListenerTLSSecret() && !hasCustomTLSListeners
+		// A listener can use the shared wildcard when:
+		// 1. Its hostname is under the target domain (covered by the wildcard)
+		// 2. The shared TLS secret is configured
+		// 3. No external hostname on this gateway forces cert-manager annotations
+		hostnameUnderWildcard := false
+		if l.Hostname != nil {
+			h := string(*l.Hostname)
+			hostnameUnderWildcard = strings.HasSuffix(h, wildcardSuffix) || h == r.Config.Gateway.TargetDomain
+		}
+		useSharedTLS := hostnameUnderWildcard && r.Config.Gateway.HasDefaultListenerTLSSecret() && !hasExternalTLSListeners
 
 		// Only configure cert-manager annotations for listeners that need
 		// individual certificates (i.e. not default listeners using a shared
@@ -1294,7 +1313,12 @@ func (r *GatewayReconciler) ensureDownstreamHTTPRoute(
 		resourceResult, err := controllerutil.CreateOrUpdate(ctx, downstreamClient, resource, func() error {
 			switch obj := resource.(type) {
 			case *corev1.Service:
-				obj.Spec = desiredDownstreamResource.(*corev1.Service).Spec
+				desired := desiredDownstreamResource.(*corev1.Service)
+				obj.Spec.Type = desired.Spec.Type
+				obj.Spec.ClusterIP = desired.Spec.ClusterIP
+				obj.Spec.Ports = desired.Spec.Ports
+				obj.Spec.InternalTrafficPolicy = desired.Spec.InternalTrafficPolicy
+				obj.Spec.TrafficDistribution = desired.Spec.TrafficDistribution
 			case *discoveryv1.EndpointSlice:
 				desiredEndpointSlice := desiredDownstreamResource.(*discoveryv1.EndpointSlice)
 				// Since endpointslices get duplicated for routes, add them as a controller

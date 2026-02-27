@@ -377,6 +377,79 @@ func TestEnsureDownstreamGatewayWildcardCert(t *testing.T) {
 			},
 		},
 		{
+			name:                 "subdomain of target domain uses shared wildcard cert",
+			defaultTLSSecretName: defaultTLSSecretName,
+			upstreamGateway: newGateway(config.NetworkServicesOperator{Gateway: baseConfig}, upstreamNamespace.Name, "test-gw", func(g *gatewayv1.Gateway) {
+				g.Spec.Listeners = append(g.Spec.Listeners,
+					gatewayv1.Listener{
+						Name:     "https-hostname-0",
+						Protocol: gatewayv1.HTTPSProtocolType,
+						Port:     DefaultHTTPSPort,
+						Hostname: ptr.To(gatewayv1.Hostname("canary.test-suite.com")),
+						AllowedRoutes: &gatewayv1.AllowedRoutes{
+							Namespaces: &gatewayv1.RouteNamespaces{
+								From: ptr.To(gatewayv1.NamespacesFromSame),
+							},
+						},
+						TLS: &gatewayv1.GatewayTLSConfig{
+							Mode: ptr.To(gatewayv1.TLSModeTerminate),
+							Options: map[gatewayv1.AnnotationKey]gatewayv1.AnnotationValue{
+								gatewayv1.AnnotationKey(certificateIssuerTLSOption): "test-issuer",
+							},
+						},
+					},
+				)
+			}),
+			existingUpstreamObjects: []client.Object{
+				newDomain(upstreamNamespace.Name, "canary.test-suite.com", func(d *networkingv1alpha.Domain) {
+					d.Spec.DomainName = "canary.test-suite.com"
+					apimeta.SetStatusCondition(&d.Status.Conditions, metav1.Condition{
+						Type:   networkingv1alpha.DomainConditionVerified,
+						Status: metav1.ConditionTrue,
+					})
+				}),
+			},
+			assert: func(t *testing.T, upstreamGateway, downstreamGateway *gatewayv1.Gateway) {
+				// Both default and subdomain listeners are covered by the wildcard,
+				// so both should reference the shared TLS secret.
+				httpsListener := gatewayutil.GetListenerByName(
+					downstreamGateway.Spec.Listeners,
+					gatewayutil.DefaultHTTPSListenerName,
+				)
+				if assert.NotNil(t, httpsListener, "default HTTPS listener should exist") {
+					if assert.NotNil(t, httpsListener.TLS) {
+						if assert.Len(t, httpsListener.TLS.CertificateRefs, 1) {
+							assert.Equal(t,
+								gatewayv1.ObjectName(defaultTLSSecretName),
+								httpsListener.TLS.CertificateRefs[0].Name,
+								"default listener should use shared wildcard cert",
+							)
+						}
+					}
+				}
+
+				customListener := gatewayutil.GetListenerByName(
+					downstreamGateway.Spec.Listeners,
+					"https-hostname-0",
+				)
+				if assert.NotNil(t, customListener, "subdomain listener should exist") {
+					if assert.NotNil(t, customListener.TLS) {
+						if assert.Len(t, customListener.TLS.CertificateRefs, 1) {
+							assert.Equal(t,
+								gatewayv1.ObjectName(defaultTLSSecretName),
+								customListener.TLS.CertificateRefs[0].Name,
+								"subdomain listener covered by wildcard should use shared cert",
+							)
+						}
+					}
+				}
+
+				assert.Empty(t, downstreamGateway.Annotations["cert-manager.io/cluster-issuer"],
+					"cert-manager annotation should NOT be set when all hostnames are under the wildcard",
+				)
+			},
+		},
+		{
 			name:                 "without shared TLS secret all listeners get individual certs",
 			defaultTLSSecretName: "",
 			upstreamGateway: newGateway(config.NetworkServicesOperator{Gateway: baseConfig}, upstreamNamespace.Name, "test-gw", func(g *gatewayv1.Gateway) {

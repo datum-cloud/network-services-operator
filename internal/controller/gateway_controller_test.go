@@ -7,16 +7,19 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/uuid"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
@@ -1133,4 +1136,156 @@ func newHTTPRoute(namespace, name string, opts ...func(*gatewayv1.HTTPRoute)) *g
 	}
 
 	return route
+}
+
+// TestServiceSpecClobberingCausesReconciliationStorm proves that overwriting the
+// entire Service.Spec during CreateOrUpdate causes spurious updates when the
+// existing Service contains server-defaulted fields that the desired spec omits.
+// This is the root cause of the gateway controller reconciliation storm: every
+// reconciliation produces an "updated" result, which re-enqueues the gateway,
+// creating an infinite loop.
+func TestServiceSpecClobberingCausesReconciliationStorm(t *testing.T) {
+	testScheme := runtime.NewScheme()
+	require.NoError(t, scheme.AddToScheme(testScheme))
+
+	// This is what the NSO controller builds as the desired Service — it only
+	// sets the fields it cares about.
+	desiredService := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-svc",
+			Namespace: "default",
+		},
+		Spec: corev1.ServiceSpec{
+			Type:      corev1.ServiceTypeClusterIP,
+			ClusterIP: "None",
+			Ports: []corev1.ServicePort{
+				{
+					Name:     "http",
+					Port:     80,
+					Protocol: corev1.ProtocolTCP,
+				},
+			},
+			InternalTrafficPolicy: ptr.To(corev1.ServiceInternalTrafficPolicyCluster),
+		},
+	}
+
+	// This is what the API server returns after creating the Service — it has
+	// server-defaulted fields like sessionAffinity, ipFamilyPolicy, ipFamilies,
+	// clusterIPs, and port targetPort that the controller never explicitly sets.
+	existingService := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            "test-svc",
+			Namespace:       "default",
+			ResourceVersion: "1",
+		},
+		Spec: corev1.ServiceSpec{
+			Type:      corev1.ServiceTypeClusterIP,
+			ClusterIP: "None",
+			ClusterIPs: []string{
+				"None",
+			},
+			Ports: []corev1.ServicePort{
+				{
+					Name:       "http",
+					Port:       80,
+					Protocol:   corev1.ProtocolTCP,
+					TargetPort: intstr.FromInt32(80),
+				},
+			},
+			InternalTrafficPolicy: ptr.To(corev1.ServiceInternalTrafficPolicyCluster),
+			SessionAffinity:       corev1.ServiceAffinityNone,
+			IPFamilies:            []corev1.IPFamily{corev1.IPv4Protocol},
+			IPFamilyPolicy:        ptr.To(corev1.IPFamilyPolicySingleStack),
+		},
+	}
+
+	t.Run("whole_spec_overwrite_causes_perpetual_updates", func(t *testing.T) {
+		cl := fake.NewClientBuilder().
+			WithScheme(testScheme).
+			WithObjects(existingService.DeepCopy()).
+			Build()
+
+		svc := desiredService.DeepCopy()
+		result, err := controllerutil.CreateOrUpdate(context.Background(), cl, svc, func() error {
+			svc.Spec = desiredService.Spec
+			return nil
+		})
+		require.NoError(t, err)
+		assert.Equal(t, controllerutil.OperationResultUpdated, result,
+			"BUG: whole-spec overwrite returns 'updated' even when intent is unchanged, "+
+				"because server-defaulted fields (sessionAffinity, ipFamilies, clusterIPs, "+
+				"targetPort, ipFamilyPolicy) are stripped")
+
+		// On a real API server, the server re-defaults these fields on every
+		// write, so the next GET returns the full spec again and the cycle
+		// repeats forever — creating an infinite reconciliation storm.
+	})
+
+	t.Run("field_level_patching_preserves_server_defaults", func(t *testing.T) {
+		cl := fake.NewClientBuilder().
+			WithScheme(testScheme).
+			WithObjects(existingService.DeepCopy()).
+			Build()
+
+		svc := desiredService.DeepCopy()
+		result, err := controllerutil.CreateOrUpdate(context.Background(), cl, svc, func() error {
+			desired := desiredService
+			svc.Spec.Type = desired.Spec.Type
+			svc.Spec.ClusterIP = desired.Spec.ClusterIP
+			svc.Spec.InternalTrafficPolicy = desired.Spec.InternalTrafficPolicy
+			svc.Spec.TrafficDistribution = desired.Spec.TrafficDistribution
+
+			// Merge ports: update matching ports by name, preserving
+			// server-defaulted fields like TargetPort.
+			for _, dp := range desired.Spec.Ports {
+				found := false
+				for i, ep := range svc.Spec.Ports {
+					if ep.Name == dp.Name {
+						svc.Spec.Ports[i].Port = dp.Port
+						svc.Spec.Ports[i].Protocol = dp.Protocol
+						found = true
+						break
+					}
+				}
+				if !found {
+					svc.Spec.Ports = append(svc.Spec.Ports, dp)
+				}
+			}
+
+			return nil
+		})
+		require.NoError(t, err)
+		assert.Equal(t, controllerutil.OperationResultNone, result,
+			"FIX: field-level patching returns 'unchanged' because server-defaulted "+
+				"fields (sessionAffinity, ipFamilies, clusterIPs, targetPort, ipFamilyPolicy) are preserved")
+
+		// Run it a second time to prove idempotency.
+		result, err = controllerutil.CreateOrUpdate(context.Background(), cl, svc, func() error {
+			desired := desiredService
+			svc.Spec.Type = desired.Spec.Type
+			svc.Spec.ClusterIP = desired.Spec.ClusterIP
+			svc.Spec.InternalTrafficPolicy = desired.Spec.InternalTrafficPolicy
+			svc.Spec.TrafficDistribution = desired.Spec.TrafficDistribution
+
+			for _, dp := range desired.Spec.Ports {
+				found := false
+				for i, ep := range svc.Spec.Ports {
+					if ep.Name == dp.Name {
+						svc.Spec.Ports[i].Port = dp.Port
+						svc.Spec.Ports[i].Protocol = dp.Protocol
+						found = true
+						break
+					}
+				}
+				if !found {
+					svc.Spec.Ports = append(svc.Spec.Ports, dp)
+				}
+			}
+
+			return nil
+		})
+		require.NoError(t, err)
+		assert.Equal(t, controllerutil.OperationResultNone, result,
+			"idempotent: second call also returns 'unchanged'")
+	})
 }

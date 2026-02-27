@@ -1317,9 +1317,25 @@ func (r *GatewayReconciler) ensureDownstreamHTTPRoute(
 				desired := desiredDownstreamResource.(*corev1.Service)
 				obj.Spec.Type = desired.Spec.Type
 				obj.Spec.ClusterIP = desired.Spec.ClusterIP
-				obj.Spec.Ports = desired.Spec.Ports
 				obj.Spec.InternalTrafficPolicy = desired.Spec.InternalTrafficPolicy
 				obj.Spec.TrafficDistribution = desired.Spec.TrafficDistribution
+
+				// Merge ports by name rather than overwriting the slice, so
+				// server-defaulted fields like TargetPort are preserved.
+				for _, dp := range desired.Spec.Ports {
+					found := false
+					for i, ep := range obj.Spec.Ports {
+						if ep.Name == dp.Name {
+							obj.Spec.Ports[i].Port = dp.Port
+							obj.Spec.Ports[i].Protocol = dp.Protocol
+							found = true
+							break
+						}
+					}
+					if !found {
+						obj.Spec.Ports = append(obj.Spec.Ports, dp)
+					}
+				}
 			case *discoveryv1.EndpointSlice:
 				desiredEndpointSlice := desiredDownstreamResource.(*discoveryv1.EndpointSlice)
 				// Since endpointslices get duplicated for routes, add them as a controller

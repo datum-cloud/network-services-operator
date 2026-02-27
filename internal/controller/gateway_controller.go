@@ -89,16 +89,23 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 	logger := log.FromContext(ctx, "cluster", req.ClusterName, "namespace", req.Namespace, "name", req.Name)
 	ctx = log.IntoContext(ctx, logger)
 
+	logger.Info("gateway reconcile dequeued")
+
 	cl, err := r.mgr.GetCluster(ctx, req.ClusterName)
 	if err != nil {
+		logger.Error(err, "failed to get cluster")
 		return ctrl.Result{}, err
 	}
+
+	logger.Info("got cluster, fetching gateway")
 
 	var gateway gatewayv1.Gateway
 	if err := cl.GetClient().Get(ctx, req.NamespacedName, &gateway); err != nil {
 		if apierrors.IsNotFound(err) {
+			logger.Info("gateway not found, skipping")
 			return ctrl.Result{}, nil
 		}
+		logger.Error(err, "failed to get gateway")
 		return ctrl.Result{}, err
 	}
 
@@ -106,12 +113,15 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 	var upstreamGatewayClass gatewayv1.GatewayClass
 	if err := cl.GetClient().Get(ctx, types.NamespacedName{Name: string(gateway.Spec.GatewayClassName)}, &upstreamGatewayClass); err != nil {
 		if apierrors.IsNotFound(err) {
+			logger.Info("gateway class not found, skipping")
 			return ctrl.Result{}, nil
 		}
+		logger.Error(err, "failed to get gateway class")
 		return ctrl.Result{}, err
 	}
 
 	if upstreamGatewayClass.Spec.ControllerName != r.Config.Gateway.ControllerName {
+		logger.Info("gateway class controller name mismatch, skipping", "expected", r.Config.Gateway.ControllerName, "actual", upstreamGatewayClass.Spec.ControllerName)
 		return ctrl.Result{}, nil
 	}
 
@@ -133,7 +143,9 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 	}
 
 	if r.prepareUpstreamGateway(&gateway) {
+		logger.Info("preparing upstream gateway (adding finalizer/defaults)")
 		if err := cl.GetClient().Update(ctx, &gateway); err != nil {
+			logger.Error(err, "failed preparing upstream gateway")
 			return ctrl.Result{}, fmt.Errorf("failed preparing upstream gateway: %w", err)
 		}
 

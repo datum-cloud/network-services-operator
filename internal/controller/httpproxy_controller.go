@@ -485,7 +485,9 @@ func (r *HTTPProxyReconciler) reconcileHTTPProxyHostnameStatus(
 	availabilityStatuses := buildAvailabilityStatuses(acceptedHostnames, inUseHostnames, httpProxyCopy.Generation)
 	dnsStatuses := r.buildDNSStatuses(ctx, cl, gateway, httpProxyCopy.Generation)
 	certificateStatuses := r.buildCertificateStatuses(ctx, cl, clusterName, gateway, httpProxyCopy)
+	previousHostnameStatuses := httpProxyCopy.Status.HostnameStatuses
 	httpProxyCopy.Status.HostnameStatuses = mergeHostnameStatuses(availabilityStatuses, dnsStatuses, certificateStatuses)
+	preserveHostnameConditionTransitions(httpProxyCopy.Status.HostnameStatuses, previousHostnameStatuses)
 
 	r.setCertificatesReadyCondition(httpProxyCopy, certificateStatuses, gateway)
 }
@@ -1271,6 +1273,32 @@ func mergeHostnameStatuses(statusSets ...[]networkingv1alpha.HostnameStatus) []n
 	})
 
 	return result
+}
+
+// preserveHostnameConditionTransitions retains the original LastTransitionTime
+// for hostname conditions whose Status has not changed. Without this, freshly-
+// built HostnameStatus objects always get LastTransitionTime=now, which causes
+// a spurious status diff on every reconcile and drives an infinite loop.
+func preserveHostnameConditionTransitions(
+	newStatuses, oldStatuses []networkingv1alpha.HostnameStatus,
+) {
+	oldByHostname := make(map[string]networkingv1alpha.HostnameStatus, len(oldStatuses))
+	for _, hs := range oldStatuses {
+		oldByHostname[hs.Hostname] = hs
+	}
+
+	for i, newHS := range newStatuses {
+		oldHS, ok := oldByHostname[newHS.Hostname]
+		if !ok {
+			continue
+		}
+		for j, newCond := range newHS.Conditions {
+			oldCond := apimeta.FindStatusCondition(oldHS.Conditions, newCond.Type)
+			if oldCond != nil && oldCond.Status == newCond.Status {
+				newStatuses[i].Conditions[j].LastTransitionTime = oldCond.LastTransitionTime
+			}
+		}
+	}
 }
 
 func (r *HTTPProxyReconciler) reconcileConnectorEnvoyPatchPolicy(

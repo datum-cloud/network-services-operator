@@ -247,6 +247,7 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 
 	if err := downstreamClient.Get(ctx, client.ObjectKeyFromObject(downstreamGateway), downstreamGateway); client.IgnoreNotFound(err) != nil {
 		result.Err = fmt.Errorf("failed to get downstream gateway: %w", err)
+		return result, nil
 	}
 
 	verifiedHostnames, claimedHostnames, notClaimedHostnames, err := r.ensureHostnamesClaimed(
@@ -282,27 +283,10 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 			return result, nil
 		}
 	} else {
-		// Remove cert-manager annotations when the desired state no longer
-		// includes them (e.g. all listeners switched to a shared TLS secret).
-		// maps.Copy is additive, so stale annotations must be pruned explicitly
-		// to prevent cert-manager from overwriting the shared secret with a
-		// per-listener certificate.
-		annotationsChanged := false
-		for _, key := range []string{
-			"cert-manager.io/issuer",
-			"cert-manager.io/cluster-issuer",
-			"cert-manager.io/secret-template",
-		} {
-			if _, existsOnCurrent := downstreamGateway.Annotations[key]; existsOnCurrent {
-				if _, existsOnDesired := desiredDownstreamGateway.Annotations[key]; !existsOnDesired {
-					delete(downstreamGateway.Annotations, key)
-					annotationsChanged = true
-				}
-			}
-		}
+		// Sync cert-manager annotations: add desired, remove stale
+		syncCertManagerAnnotations(downstreamGateway, desiredDownstreamGateway)
 
-		if annotationsChanged ||
-			!equality.Semantic.DeepEqual(downstreamGateway.Annotations, desiredDownstreamGateway.Annotations) ||
+		if !equality.Semantic.DeepEqual(downstreamGateway.Annotations, desiredDownstreamGateway.Annotations) ||
 			!equality.Semantic.DeepEqual(downstreamGateway.Spec, desiredDownstreamGateway.Spec) {
 			// Take care not to clobber other annotations
 			maps.Copy(downstreamGateway.Annotations, desiredDownstreamGateway.Annotations)
@@ -405,6 +389,9 @@ func (r *GatewayReconciler) getDesiredDownstreamGateway(
 	for _, l := range upstreamGateway.Spec.Listeners {
 		if l.TLS != nil && l.TLS.Options[certificateIssuerTLSOption] != "" && l.Hostname != nil {
 			hostname := string(*l.Hostname)
+			if !slices.Contains(claimedHostnames, hostname) {
+				continue
+			}
 			if !strings.HasSuffix(hostname, wildcardSuffix) && hostname != r.Config.Gateway.TargetDomain {
 				hasExternalTLSListeners = true
 				break
@@ -413,10 +400,17 @@ func (r *GatewayReconciler) getDesiredDownstreamGateway(
 	}
 
 	for listenerIndex, l := range upstreamGateway.Spec.Listeners {
+		// Skip unclaimed custom hostnames — they must not influence cert-manager
+		// annotations or downstream listener configuration.
+		if l.Hostname != nil && !slices.Contains(claimedHostnames, string(*l.Hostname)) {
+			logger.Info("skipping downstream gateway listener with unclaimed hostname", "upstream_listener_index", listenerIndex, "hostname", *l.Hostname)
+			continue
+		}
+
 		// A listener can use the shared wildcard when:
 		// 1. Its hostname is under the target domain (covered by the wildcard)
 		// 2. The shared TLS secret is configured
-		// 3. No external hostname on this gateway forces cert-manager annotations
+		// 3. No claimed external hostname on this gateway forces cert-manager annotations
 		hostnameUnderWildcard := false
 		if l.Hostname != nil {
 			h := string(*l.Hostname)
@@ -424,9 +418,6 @@ func (r *GatewayReconciler) getDesiredDownstreamGateway(
 		}
 		useSharedTLS := hostnameUnderWildcard && r.Config.Gateway.HasDefaultListenerTLSSecret() && !hasExternalTLSListeners
 
-		// Only configure cert-manager annotations for listeners that need
-		// individual certificates (i.e. not default listeners using a shared
-		// wildcard certificate).
 		if l.TLS != nil && l.TLS.Options[certificateIssuerTLSOption] != "" && !useSharedTLS {
 			if r.Config.Gateway.PerGatewayCertificateIssuer {
 				if !metav1.HasAnnotation(downstreamGateway.ObjectMeta, "cert-manager.io/issuer") {
@@ -457,15 +448,7 @@ func (r *GatewayReconciler) getDesiredDownstreamGateway(
 			}
 		}
 
-		// Only include listeners whose hostname has been claimed. The default
-		// listener's UID-based hostname is always auto-claimed; custom hostnames
-		// must pass Domain verification first. The useSharedTLS flag only applies
-		// to the default listener.
 		if l.Hostname != nil {
-			if !slices.Contains(claimedHostnames, string(*l.Hostname)) {
-				logger.Info("skipping downstream gateway listener with unclaimed hostname", "upstream_listener_index", listenerIndex, "hostname", *l.Hostname)
-				continue
-			}
 			listenerCopy := l.DeepCopy()
 			if l.TLS != nil && l.TLS.Options[certificateIssuerTLSOption] != "" {
 				// Translate upstream TLS settings to downstream TLS settings
@@ -509,6 +492,28 @@ func (r *GatewayReconciler) getDesiredDownstreamGateway(
 	downstreamGateway.Spec.Listeners = listeners
 
 	return &downstreamGateway
+}
+
+// certManagerAnnotationKeys are the annotations managed by the gateway controller
+// for cert-manager integration. These are synced from the desired state and stale
+// entries are removed when custom hostnames become unclaimed.
+var certManagerAnnotationKeys = []string{
+	"cert-manager.io/issuer",
+	"cert-manager.io/cluster-issuer",
+	"cert-manager.io/secret-template",
+}
+
+// syncCertManagerAnnotations ensures the downstream gateway's cert-manager
+// annotations match the desired state: desired keys are set, and keys that
+// are no longer needed are removed.
+func syncCertManagerAnnotations(downstream, desired *gatewayv1.Gateway) {
+	for _, key := range certManagerAnnotationKeys {
+		if v, ok := desired.Annotations[key]; ok {
+			metav1.SetMetaDataAnnotation(&downstream.ObjectMeta, key, v)
+		} else {
+			delete(downstream.Annotations, key)
+		}
+	}
 }
 
 func (r *GatewayReconciler) reconcileGatewayStatus(

@@ -274,6 +274,7 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 		// maps.Copy is additive, so stale annotations must be pruned explicitly
 		// to prevent cert-manager from overwriting the shared secret with a
 		// per-listener certificate.
+		annotationsChanged := false
 		for _, key := range []string{
 			"cert-manager.io/cluster-issuer",
 			"cert-manager.io/secret-template",
@@ -281,11 +282,13 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 			if _, existsOnCurrent := downstreamGateway.Annotations[key]; existsOnCurrent {
 				if _, existsOnDesired := desiredDownstreamGateway.Annotations[key]; !existsOnDesired {
 					delete(downstreamGateway.Annotations, key)
+					annotationsChanged = true
 				}
 			}
 		}
 
-		if !equality.Semantic.DeepEqual(downstreamGateway.Annotations, desiredDownstreamGateway.Annotations) ||
+		if annotationsChanged ||
+			!equality.Semantic.DeepEqual(downstreamGateway.Annotations, desiredDownstreamGateway.Annotations) ||
 			!equality.Semantic.DeepEqual(downstreamGateway.Spec, desiredDownstreamGateway.Spec) {
 			// Take care not to clobber other annotations
 			maps.Copy(downstreamGateway.Annotations, desiredDownstreamGateway.Annotations)

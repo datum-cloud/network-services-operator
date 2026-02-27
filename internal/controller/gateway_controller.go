@@ -372,8 +372,21 @@ func (r *GatewayReconciler) getDesiredDownstreamGateway(
 
 	var listeners []gatewayv1.Listener
 
+	// When any listener requires an individual certificate (custom hostname),
+	// the gateway-level cert-manager annotation must be set. Since cert-manager
+	// processes ALL HTTPS listeners on an annotated gateway, the default listener
+	// must fall back to a per-listener cert ref to prevent cert-manager from
+	// overwriting the shared wildcard secret.
+	hasCustomTLSListeners := false
+	for _, l := range upstreamGateway.Spec.Listeners {
+		if !gatewayutil.IsDefaultListener(l) && l.TLS != nil && l.TLS.Options[certificateIssuerTLSOption] != "" {
+			hasCustomTLSListeners = true
+			break
+		}
+	}
+
 	for listenerIndex, l := range upstreamGateway.Spec.Listeners {
-		useSharedTLS := gatewayutil.IsDefaultListener(l) && r.Config.Gateway.HasDefaultListenerTLSSecret()
+		useSharedTLS := gatewayutil.IsDefaultListener(l) && r.Config.Gateway.HasDefaultListenerTLSSecret() && !hasCustomTLSListeners
 
 		// Only configure cert-manager annotations for listeners that need
 		// individual certificates (i.e. not default listeners using a shared

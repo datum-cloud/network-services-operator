@@ -373,8 +373,8 @@ func (r *GatewayReconciler) getDesiredDownstreamGateway(
 
 	var listeners []gatewayv1.Listener
 
-	// Determine whether any listener on this gateway requires an individual
-	// certificate that cert-manager must issue. A listener needs its own cert
+	// Determine whether any claimed listener on this gateway requires an
+	// individual certificate from cert-manager. A listener needs its own cert
 	// only when its hostname falls outside the wildcard's scope (i.e. it's not
 	// a subdomain of the target domain). Hostnames covered by the wildcard
 	// (*.targetDomain) can share the pre-provisioned secret.

@@ -567,6 +567,13 @@ type GatewayConfig struct {
 	//
 	// The secret must exist in every downstream gateway namespace.
 	DefaultListenerTLSSecretName string `json:"defaultListenerTLSSecretName,omitempty"`
+
+	// MaxConcurrentReconciles is the maximum number of concurrent gateway
+	// reconciliations. Higher values allow the controller to process gateways
+	// across multiple projects in parallel.
+	//
+	// +default=5
+	MaxConcurrentReconciles int `json:"maxConcurrentReconciles,omitempty"`
 }
 
 // HasDefaultListenerTLSSecret returns true when a shared TLS certificate

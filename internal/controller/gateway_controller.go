@@ -26,6 +26,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -1691,7 +1692,11 @@ func (r *GatewayReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 			)
 	}
 
-	return builder.Named("gateway").Complete(r)
+	return builder.
+		WithOptions(controller.TypedOptions[mcreconcile.Request]{
+			MaxConcurrentReconciles: r.Config.Gateway.MaxConcurrentReconciles,
+		}).
+		Named("gateway").Complete(r)
 }
 
 // listGatewaysAttachedByHTTPRoute is a watch predicate which finds all Gateways mentioned

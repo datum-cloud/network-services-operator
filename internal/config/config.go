@@ -539,7 +539,7 @@ func (c *GatewayConfig) ShouldDeleteErroredChallenges() bool {
 }
 
 func (c *GatewayConfig) GatewayDNSAddress(gateway *gatewayv1.Gateway) string {
-	seed := fmt.Sprintf("%s/%s/%d", gateway.Namespace, gateway.Name, time.Now().UnixNano())
+	seed := string(gateway.UID)
 	suffix := fmt.Sprintf(".%s", c.TargetDomain)
 	return words.WordsAndEntropy(suffix, seed)
 }

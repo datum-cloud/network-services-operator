@@ -7,8 +7,9 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 	"time"
+
+	words "go.datum.net/network-services-operator/internal/words"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -577,7 +578,9 @@ func (c *GatewayConfig) ShouldDeleteErroredChallenges() bool {
 }
 
 func (c *GatewayConfig) GatewayDNSAddress(gateway *gatewayv1.Gateway) string {
-	return fmt.Sprintf("%s.%s", strings.ReplaceAll(string(gateway.UID), "-", ""), c.TargetDomain)
+	seed := string(gateway.UID)
+	suffix := fmt.Sprintf(".%s", c.TargetDomain)
+	return words.WordsAndEntropy(suffix, seed)
 }
 
 func (c *GatewayConfig) ConnectorTunnelListenerName() string {

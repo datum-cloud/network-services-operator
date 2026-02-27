@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	cmv1 "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
+	cmmeta "github.com/cert-manager/cert-manager/pkg/apis/meta/v1"
 	envoygatewayv1alpha1 "github.com/envoyproxy/gateway/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
@@ -80,6 +82,8 @@ type GatewayReconciler struct {
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=backendtlspolicies,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=backendtlspolicies/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=backendtlspolicies/finalizers,verbs=update
+
+// +kubebuilder:rbac:groups=cert-manager.io,resources=certificates,verbs=get;list;watch;create;update;patch;delete
 
 // +kubebuilder:rbac:groups=externaldns.k8s.io,resources=dnsendpoints,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=externaldns.k8s.io,resources=dnsendpoints/status,verbs=get;update;patch
@@ -283,12 +287,15 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 			return result, nil
 		}
 	} else {
-		// Sync cert-manager annotations: add desired, remove stale
-		syncCertManagerAnnotations(downstreamGateway, desiredDownstreamGateway)
+		// Run the two-phase cert-manager annotation migration before diffing.
+		// This mutates downstreamGateway.Annotations in place, which the diff
+		// check below will pick up and persist via Update.
+		migrationRequeue := migrateLegacyCertManagerAnnotations(downstreamGateway)
 
 		if !equality.Semantic.DeepEqual(downstreamGateway.Annotations, desiredDownstreamGateway.Annotations) ||
 			!equality.Semantic.DeepEqual(downstreamGateway.Spec, desiredDownstreamGateway.Spec) {
-			// Take care not to clobber other annotations
+			// maps.Copy merges desired over existing; migration-added keys
+			// (like the phase marker) survive because they aren't in desired.
 			maps.Copy(downstreamGateway.Annotations, desiredDownstreamGateway.Annotations)
 			downstreamGateway.Spec = desiredDownstreamGateway.Spec
 			if err := downstreamClient.Update(ctx, downstreamGateway); err != nil {
@@ -296,6 +303,22 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 				return result, nil
 			}
 		}
+
+		if migrationRequeue > 0 {
+			result.RequeueAfter = migrationRequeue
+		}
+	}
+
+	certResult := r.ensureListenerCertificates(
+		ctx,
+		upstreamClusterName,
+		upstreamGateway,
+		downstreamGateway,
+		downstreamClient,
+		claimedHostnames,
+	)
+	if certResult.ShouldReturn() {
+		return certResult.Merge(result), nil
 	}
 
 	dnsResult := r.ensureDownstreamGatewayDNSEndpoints(
@@ -373,85 +396,28 @@ func (r *GatewayReconciler) getDesiredDownstreamGateway(
 
 	var listeners []gatewayv1.Listener
 
-	// Determine whether any claimed listener on this gateway requires an
-	// individual certificate from cert-manager. A listener needs its own cert
-	// only when its hostname falls outside the wildcard's scope (i.e. it's not
-	// a subdomain of the target domain). Hostnames covered by the wildcard
-	// (*.targetDomain) can share the pre-provisioned secret.
-	//
-	// When any listener requires cert-manager, the gateway-level annotation
-	// must be set. Since cert-manager processes ALL HTTPS listeners on an
-	// annotated gateway, every listener that would otherwise use the shared
-	// secret must fall back to a per-listener cert ref to prevent cert-manager
-	// from overwriting the wildcard secret.
 	wildcardSuffix := "." + r.Config.Gateway.TargetDomain
-	hasExternalTLSListeners := false
-	for _, l := range upstreamGateway.Spec.Listeners {
-		if l.TLS != nil && l.TLS.Options[certificateIssuerTLSOption] != "" && l.Hostname != nil {
-			hostname := string(*l.Hostname)
-			if !slices.Contains(claimedHostnames, hostname) {
-				continue
-			}
-			if !strings.HasSuffix(hostname, wildcardSuffix) && hostname != r.Config.Gateway.TargetDomain {
-				hasExternalTLSListeners = true
-				break
-			}
-		}
-	}
 
 	for listenerIndex, l := range upstreamGateway.Spec.Listeners {
-		// Skip unclaimed custom hostnames — they must not influence cert-manager
-		// annotations or downstream listener configuration.
 		if l.Hostname != nil && !slices.Contains(claimedHostnames, string(*l.Hostname)) {
 			logger.Info("skipping downstream gateway listener with unclaimed hostname", "upstream_listener_index", listenerIndex, "hostname", *l.Hostname)
 			continue
 		}
 
-		// A listener can use the shared wildcard when:
-		// 1. Its hostname is under the target domain (covered by the wildcard)
-		// 2. The shared TLS secret is configured
-		// 3. No claimed external hostname on this gateway forces cert-manager annotations
+		// Per-listener TLS decision: hostnames covered by the wildcard
+		// (*.targetDomain) reference the pre-provisioned shared secret;
+		// all others reference a per-listener secret populated by a
+		// Certificate resource created in ensureListenerCertificates.
 		hostnameUnderWildcard := false
 		if l.Hostname != nil {
 			h := string(*l.Hostname)
 			hostnameUnderWildcard = strings.HasSuffix(h, wildcardSuffix) || h == r.Config.Gateway.TargetDomain
 		}
-		useSharedTLS := hostnameUnderWildcard && r.Config.Gateway.HasDefaultListenerTLSSecret() && !hasExternalTLSListeners
-
-		if l.TLS != nil && l.TLS.Options[certificateIssuerTLSOption] != "" && !useSharedTLS {
-			if r.Config.Gateway.PerGatewayCertificateIssuer {
-				if !metav1.HasAnnotation(downstreamGateway.ObjectMeta, "cert-manager.io/issuer") {
-					metav1.SetMetaDataAnnotation(&downstreamGateway.ObjectMeta, "cert-manager.io/issuer", upstreamGateway.Name)
-				}
-			} else {
-				clusterIssuerName := string(l.TLS.Options[certificateIssuerTLSOption])
-				if r.Config.Gateway.ClusterIssuerMap[clusterIssuerName] != "" {
-					clusterIssuerName = r.Config.Gateway.ClusterIssuerMap[clusterIssuerName]
-				}
-				if !metav1.HasAnnotation(downstreamGateway.ObjectMeta, "cert-manager.io/cluster-issuer") {
-					metav1.SetMetaDataAnnotation(&downstreamGateway.ObjectMeta, "cert-manager.io/cluster-issuer", clusterIssuerName)
-				}
-
-				// Add labels so that secrets created by cert-manager can be propagated
-				// See: https://cert-manager.io/docs/reference/annotations/#cert-manageriosecret-template
-				if !metav1.HasAnnotation(downstreamGateway.ObjectMeta, "cert-manager.io/secret-template") {
-					metav1.SetMetaDataAnnotation(
-						&downstreamGateway.ObjectMeta,
-						"cert-manager.io/secret-template",
-						fmt.Sprintf(
-							`{"labels": {"%s": "%s"}}`,
-							downstreamclient.UpstreamOwnerClusterNameLabel,
-							fmt.Sprintf("cluster-%s", strings.ReplaceAll(upstreamClusterName, "/", "_")),
-						),
-					)
-				}
-			}
-		}
+		useSharedTLS := hostnameUnderWildcard && r.Config.Gateway.HasDefaultListenerTLSSecret()
 
 		if l.Hostname != nil {
 			listenerCopy := l.DeepCopy()
 			if l.TLS != nil && l.TLS.Options[certificateIssuerTLSOption] != "" {
-				// Translate upstream TLS settings to downstream TLS settings
 				delete(listenerCopy.TLS.Options, certificateIssuerTLSOption)
 
 				tlsMode := gatewayv1.TLSModeTerminate
@@ -467,15 +433,15 @@ func (r *GatewayReconciler) getDesiredDownstreamGateway(
 						},
 					}
 				} else {
+					// Secret name must match the Certificate created by
+					// ensureListenerCertificates for this listener.
 					listenerCopy.TLS = &gatewayv1.GatewayTLSConfig{
 						Mode: &tlsMode,
-						// TODO(jreese) investigate secret deletion when Cert (gateway) is deleted
-						// See: https://cert-manager.io/docs/usage/certificate/#cleaning-up-secrets-when-certificates-are-deleted
 						CertificateRefs: []gatewayv1.SecretObjectReference{
 							{
 								Group: ptr.To(gatewayv1.Group("")),
 								Kind:  ptr.To(gatewayv1.Kind("Secret")),
-								Name:  gatewayv1.ObjectName(resourcename.GetValidDNS1123Name(fmt.Sprintf("%s-%s", upstreamGateway.Name, l.Name))),
+								Name:  gatewayv1.ObjectName(listenerCertificateSecretName(upstreamGateway.Name, l.Name)),
 							},
 						},
 					}
@@ -494,26 +460,190 @@ func (r *GatewayReconciler) getDesiredDownstreamGateway(
 	return &downstreamGateway
 }
 
-// certManagerAnnotationKeys are the annotations managed by the gateway controller
-// for cert-manager integration. These are synced from the desired state and stale
-// entries are removed when custom hostnames become unclaimed.
-var certManagerAnnotationKeys = []string{
+// legacyCertManagerAnnotations are annotations previously set by NSO on
+// downstream gateways for cert-manager's gateway-shim. NSO now creates
+// Certificate resources directly, so these must be stripped from existing
+// gateways to prevent gateway-shim from creating conflicting Certificates.
+var legacyCertManagerAnnotations = []string{
 	"cert-manager.io/issuer",
 	"cert-manager.io/cluster-issuer",
 	"cert-manager.io/secret-template",
 }
 
-// syncCertManagerAnnotations ensures the downstream gateway's cert-manager
-// annotations match the desired state: desired keys are set, and keys that
-// are no longer needed are removed.
-func syncCertManagerAnnotations(downstream, desired *gatewayv1.Gateway) {
-	for _, key := range certManagerAnnotationKeys {
-		if v, ok := desired.Annotations[key]; ok {
-			metav1.SetMetaDataAnnotation(&downstream.ObjectMeta, key, v)
-		} else {
-			delete(downstream.Annotations, key)
+const certManagerMigrationAnnotation = "networking.datumapis.com/cert-manager-annotation-migration"
+
+// migrateLegacyCertManagerAnnotations runs a two-phase migration to ensure
+// Karmada propagates the removal of legacy cert-manager annotations to member
+// clusters.
+//
+// Background: Karmada only removes an annotation from a member cluster object
+// if that annotation key was previously recorded in the Work object's
+// resourcetemplate.karmada.io/managed-annotations. For gateways that were
+// adopted by Karmada after being created on the member cluster, the
+// cert-manager annotations were never tracked. This migration forces tracking
+// by temporarily seeding the annotation keys (phase 1), giving Karmada time to
+// record them, then removing them (phase 2) so Karmada propagates the deletion.
+//
+// Returns a non-zero duration if a requeue is needed to complete the migration.
+func migrateLegacyCertManagerAnnotations(gw *gatewayv1.Gateway) time.Duration {
+	if gw.Annotations == nil {
+		gw.Annotations = make(map[string]string)
+	}
+
+	switch gw.Annotations[certManagerMigrationAnnotation] {
+	case "":
+		// Phase 1: Seed cert-manager annotation keys with empty values so
+		// Karmada's RecordManagedAnnotations includes them when building the
+		// Work object. Empty values prevent gateway-shim from issuing real
+		// certificates during the migration window.
+		for _, key := range legacyCertManagerAnnotations {
+			gw.Annotations[key] = ""
+		}
+		gw.Annotations[certManagerMigrationAnnotation] = "seeded"
+		return 60 * time.Second
+
+	case "seeded":
+		// Phase 2: Remove the seeded annotations. Karmada has recorded them in
+		// managed-annotations, so getDeletedAnnotationKeys will detect the
+		// removal and propagate it to member clusters.
+		for _, key := range legacyCertManagerAnnotations {
+			delete(gw.Annotations, key)
+		}
+		gw.Annotations[certManagerMigrationAnnotation] = "complete"
+		return 0
+
+	default:
+		// Migration complete. Strip any lingering cert-manager annotations as a
+		// safety net (e.g., if the gateway was updated externally).
+		for _, key := range legacyCertManagerAnnotations {
+			delete(gw.Annotations, key)
+		}
+		return 0
+	}
+}
+
+// listenerCertificateSecretName returns the deterministic Secret name that a
+// Certificate resource will populate for a given gateway listener.
+func listenerCertificateSecretName(gatewayName string, listenerName gatewayv1.SectionName) string {
+	return resourcename.GetValidDNS1123Name(fmt.Sprintf("%s-%s", gatewayName, listenerName))
+}
+
+// listenerCertificateName returns the deterministic Certificate resource name
+// for a given gateway listener.
+func listenerCertificateName(gatewayName string, listenerName gatewayv1.SectionName) string {
+	return resourcename.GetValidDNS1123Name(fmt.Sprintf("%s-%s", gatewayName, listenerName))
+}
+
+// ensureListenerCertificates creates, updates, or deletes cert-manager
+// Certificate resources for each listener that requires an individual TLS
+// certificate. Listeners whose hostnames fall under the wildcard target domain
+// use the shared TLS secret and do not get a Certificate.
+func (r *GatewayReconciler) ensureListenerCertificates(
+	ctx context.Context,
+	upstreamClusterName string,
+	upstreamGateway *gatewayv1.Gateway,
+	downstreamGateway *gatewayv1.Gateway,
+	downstreamClient client.Client,
+	claimedHostnames []string,
+) (result Result) {
+	logger := log.FromContext(ctx)
+	wildcardSuffix := "." + r.Config.Gateway.TargetDomain
+
+	desiredCerts := make(map[string]bool)
+
+	// Only create Certificates for listeners with custom hostnames outside the
+	// wildcard scope. Wildcard-covered listeners use the shared TLS secret and
+	// don't need individual Certificates.
+	for _, l := range upstreamGateway.Spec.Listeners {
+		if l.TLS == nil || l.TLS.Options[certificateIssuerTLSOption] == "" || l.Hostname == nil {
+			continue
+		}
+		hostname := string(*l.Hostname)
+		if !slices.Contains(claimedHostnames, hostname) {
+			continue
+		}
+		// Skip hostnames covered by the wildcard — they use the shared secret.
+		if strings.HasSuffix(hostname, wildcardSuffix) || hostname == r.Config.Gateway.TargetDomain {
+			continue
+		}
+
+		clusterIssuerName := string(l.TLS.Options[certificateIssuerTLSOption])
+		if mapped := r.Config.Gateway.ClusterIssuerMap[clusterIssuerName]; mapped != "" {
+			clusterIssuerName = mapped
+		}
+
+		certName := listenerCertificateName(upstreamGateway.Name, l.Name)
+		secretName := listenerCertificateSecretName(upstreamGateway.Name, l.Name)
+		desiredCerts[certName] = true
+
+		cert := &cmv1.Certificate{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      certName,
+				Namespace: downstreamGateway.Namespace,
+			},
+		}
+
+		opResult, err := controllerutil.CreateOrUpdate(ctx, downstreamClient, cert, func() error {
+			// Owner reference gives us Kubernetes GC: when the downstream
+			// gateway is deleted, its Certificates are cleaned up automatically.
+			if err := controllerutil.SetControllerReference(downstreamGateway, cert, downstreamClient.Scheme()); err != nil {
+				return err
+			}
+
+			cert.Spec = cmv1.CertificateSpec{
+				SecretName: secretName,
+				// Propagation label on the issued Secret so Karmada can
+				// distribute it to member clusters.
+				SecretTemplate: &cmv1.CertificateSecretTemplate{
+					Labels: map[string]string{
+						downstreamclient.UpstreamOwnerClusterNameLabel: fmt.Sprintf("cluster-%s", strings.ReplaceAll(upstreamClusterName, "/", "_")),
+					},
+				},
+				DNSNames: []string{hostname},
+				IssuerRef: cmmeta.ObjectReference{
+					Name: clusterIssuerName,
+					Kind: "ClusterIssuer",
+				},
+			}
+
+			return nil
+		})
+		if err != nil {
+			result.Err = fmt.Errorf("failed to ensure Certificate %s: %w", certName, err)
+			return result
+		}
+		if opResult != controllerutil.OperationResultNone {
+			logger.Info("Certificate reconciled", "certificate", certName, "operation", opResult)
 		}
 	}
+
+	// Clean up Certificate resources for listeners that no longer need them.
+	// Certificates owned by this gateway are identified via ownerReferences
+	// set by controllerutil.SetControllerReference above.
+	var certList cmv1.CertificateList
+	if err := downstreamClient.List(ctx, &certList,
+		client.InNamespace(downstreamGateway.Namespace),
+	); err != nil {
+		result.Err = fmt.Errorf("failed to list Certificates: %w", err)
+		return result
+	}
+
+	for i := range certList.Items {
+		cert := &certList.Items[i]
+		if !metav1.IsControlledBy(cert, downstreamGateway) {
+			continue
+		}
+		if desiredCerts[cert.Name] {
+			continue
+		}
+		logger.Info("deleting stale Certificate", "certificate", cert.Name)
+		if err := downstreamClient.Delete(ctx, cert); client.IgnoreNotFound(err) != nil {
+			result.Err = fmt.Errorf("failed to delete stale Certificate %s: %w", cert.Name, err)
+			return result
+		}
+	}
+
+	return result
 }
 
 func (r *GatewayReconciler) reconcileGatewayStatus(

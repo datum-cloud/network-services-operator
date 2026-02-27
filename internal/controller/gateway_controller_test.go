@@ -6,6 +6,7 @@ import (
 	"slices"
 	"testing"
 
+	cmv1 "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
@@ -36,6 +37,7 @@ func TestEnsureDownstreamGateway(t *testing.T) {
 	assert.NoError(t, gatewayv1.Install(testScheme))
 	assert.NoError(t, discoveryv1.AddToScheme(testScheme))
 	assert.NoError(t, networkingv1alpha.AddToScheme(testScheme))
+	assert.NoError(t, cmv1.AddToScheme(testScheme))
 
 	upstreamNamespace := &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
@@ -247,6 +249,7 @@ func TestEnsureDownstreamGatewayWildcardCert(t *testing.T) {
 	assert.NoError(t, gatewayv1.Install(testScheme))
 	assert.NoError(t, discoveryv1.AddToScheme(testScheme))
 	assert.NoError(t, networkingv1alpha.AddToScheme(testScheme))
+	assert.NoError(t, cmv1.AddToScheme(testScheme))
 
 	upstreamNamespace := &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
@@ -301,7 +304,7 @@ func TestEnsureDownstreamGatewayWildcardCert(t *testing.T) {
 				}
 
 				assert.Empty(t, downstreamGateway.Annotations["cert-manager.io/cluster-issuer"],
-					"cert-manager cluster-issuer annotation should not be set when only default listeners exist",
+					"cert-manager annotation should not be set; Certificates are created directly",
 				)
 			},
 		},
@@ -339,9 +342,6 @@ func TestEnsureDownstreamGatewayWildcardCert(t *testing.T) {
 				}),
 			},
 			assert: func(t *testing.T, upstreamGateway, downstreamGateway *gatewayv1.Gateway) {
-				// When custom HTTPS listeners exist, all listeners fall back to
-				// per-listener certs to prevent cert-manager from overwriting
-				// the shared wildcard secret.
 				httpsListener := gatewayutil.GetListenerByName(
 					downstreamGateway.Spec.Listeners,
 					gatewayutil.DefaultHTTPSListenerName,
@@ -350,9 +350,9 @@ func TestEnsureDownstreamGatewayWildcardCert(t *testing.T) {
 					if assert.NotNil(t, httpsListener.TLS) {
 						if assert.Len(t, httpsListener.TLS.CertificateRefs, 1) {
 							assert.Equal(t,
-								gatewayv1.ObjectName("test-gw-default-https"),
+								gatewayv1.ObjectName(defaultTLSSecretName),
 								httpsListener.TLS.CertificateRefs[0].Name,
-								"default listener should fall back to per-listener cert when custom listeners exist",
+								"default listener under wildcard should still use shared TLS even with custom listeners",
 							)
 						}
 					}
@@ -374,8 +374,8 @@ func TestEnsureDownstreamGatewayWildcardCert(t *testing.T) {
 					}
 				}
 
-				assert.NotEmpty(t, downstreamGateway.Annotations["cert-manager.io/cluster-issuer"],
-					"cert-manager annotation should be set when custom hostname listeners exist",
+				assert.Empty(t, downstreamGateway.Annotations["cert-manager.io/cluster-issuer"],
+					"cert-manager annotation should not be set; Certificates are created directly",
 				)
 			},
 		},
@@ -448,7 +448,7 @@ func TestEnsureDownstreamGatewayWildcardCert(t *testing.T) {
 				}
 
 				assert.Empty(t, downstreamGateway.Annotations["cert-manager.io/cluster-issuer"],
-					"cert-manager annotation should NOT be set when all hostnames are under the wildcard",
+					"cert-manager annotation should not be set; Certificates are created directly",
 				)
 			},
 		},
@@ -474,8 +474,8 @@ func TestEnsureDownstreamGatewayWildcardCert(t *testing.T) {
 					}
 				}
 
-				assert.NotEmpty(t, downstreamGateway.Annotations["cert-manager.io/cluster-issuer"],
-					"cert-manager annotation should be set when wildcard is not configured",
+				assert.Empty(t, downstreamGateway.Annotations["cert-manager.io/cluster-issuer"],
+					"cert-manager annotation should not be set; Certificates are created directly",
 				)
 			},
 		},
@@ -1121,22 +1121,18 @@ func newGateway(
 	return gw
 }
 
-func TestGetDesiredDownstreamGateway_UnclaimedHostnameNoAnnotations(t *testing.T) {
+func TestGetDesiredDownstreamGateway_UnclaimedHostnameSkipped(t *testing.T) {
 	logger := zap.New(zap.UseFlagOptions(&zap.Options{Development: true}))
 	ctx := log.IntoContext(context.Background(), logger)
 
 	tests := []struct {
-		name                    string
-		perGatewayCertIssuer    bool
-		listeners               []gatewayv1.Listener
-		claimedHostnames        []string
-		expectIssuerAnnotation  bool
-		expectClusterAnnotation bool
-		expectListeners         int
+		name             string
+		listeners        []gatewayv1.Listener
+		claimedHostnames []string
+		expectListeners  int
 	}{
 		{
-			name:                 "unclaimed hostname with TLS option does not produce annotations",
-			perGatewayCertIssuer: true,
+			name: "unclaimed hostname is skipped",
 			listeners: []gatewayv1.Listener{
 				{
 					Name:     "custom-https",
@@ -1150,14 +1146,11 @@ func TestGetDesiredDownstreamGateway_UnclaimedHostnameNoAnnotations(t *testing.T
 					},
 				},
 			},
-			claimedHostnames:        nil,
-			expectIssuerAnnotation:  false,
-			expectClusterAnnotation: false,
-			expectListeners:         0,
+			claimedHostnames: nil,
+			expectListeners:  0,
 		},
 		{
-			name:                 "claimed hostname with TLS option produces issuer annotation (per-gateway mode)",
-			perGatewayCertIssuer: true,
+			name: "claimed hostname produces listener",
 			listeners: []gatewayv1.Listener{
 				{
 					Name:     "custom-https",
@@ -1171,35 +1164,11 @@ func TestGetDesiredDownstreamGateway_UnclaimedHostnameNoAnnotations(t *testing.T
 					},
 				},
 			},
-			claimedHostnames:        []string{"claimed.example.com"},
-			expectIssuerAnnotation:  true,
-			expectClusterAnnotation: false,
-			expectListeners:         1,
+			claimedHostnames: []string{"claimed.example.com"},
+			expectListeners:  1,
 		},
 		{
-			name:                 "claimed hostname with TLS option produces cluster-issuer annotation (cluster mode)",
-			perGatewayCertIssuer: false,
-			listeners: []gatewayv1.Listener{
-				{
-					Name:     "custom-https",
-					Port:     443,
-					Protocol: gatewayv1.HTTPSProtocolType,
-					Hostname: ptr.To(gatewayv1.Hostname("claimed.example.com")),
-					TLS: &gatewayv1.GatewayTLSConfig{
-						Options: map[gatewayv1.AnnotationKey]gatewayv1.AnnotationValue{
-							certificateIssuerTLSOption: "letsencrypt",
-						},
-					},
-				},
-			},
-			claimedHostnames:        []string{"claimed.example.com"},
-			expectIssuerAnnotation:  false,
-			expectClusterAnnotation: true,
-			expectListeners:         1,
-		},
-		{
-			name:                 "mix: only claimed hostname contributes annotations",
-			perGatewayCertIssuer: true,
+			name: "mix: only claimed hostname produces listener",
 			listeners: []gatewayv1.Listener{
 				{
 					Name:     "unclaimed-https",
@@ -1224,10 +1193,8 @@ func TestGetDesiredDownstreamGateway_UnclaimedHostnameNoAnnotations(t *testing.T
 					},
 				},
 			},
-			claimedHostnames:        []string{"claimed.example.com"},
-			expectIssuerAnnotation:  true,
-			expectClusterAnnotation: false,
-			expectListeners:         1,
+			claimedHostnames: []string{"claimed.example.com"},
+			expectListeners:  1,
 		},
 	}
 
@@ -1236,8 +1203,7 @@ func TestGetDesiredDownstreamGateway_UnclaimedHostnameNoAnnotations(t *testing.T
 			reconciler := &GatewayReconciler{
 				Config: config.NetworkServicesOperator{
 					Gateway: config.GatewayConfig{
-						DownstreamGatewayClassName:  "envoy",
-						PerGatewayCertificateIssuer: tt.perGatewayCertIssuer,
+						DownstreamGatewayClassName: "envoy",
 					},
 				},
 			}
@@ -1249,83 +1215,8 @@ func TestGetDesiredDownstreamGateway_UnclaimedHostnameNoAnnotations(t *testing.T
 
 			desired := reconciler.getDesiredDownstreamGateway(ctx, "test-cluster", upstream, tt.claimedHostnames)
 
-			_, hasIssuer := desired.Annotations["cert-manager.io/issuer"]
-			_, hasClusterIssuer := desired.Annotations["cert-manager.io/cluster-issuer"]
-
-			assert.Equal(t, tt.expectIssuerAnnotation, hasIssuer, "cert-manager.io/issuer annotation presence")
-			assert.Equal(t, tt.expectClusterAnnotation, hasClusterIssuer, "cert-manager.io/cluster-issuer annotation presence")
+			assert.Empty(t, desired.Annotations, "desired gateway should have no cert-manager annotations")
 			assert.Len(t, desired.Spec.Listeners, tt.expectListeners, "downstream listener count")
-		})
-	}
-}
-
-func TestSyncCertManagerAnnotations(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name                string
-		existingAnnotations map[string]string
-		desiredAnnotations  map[string]string
-		wantAnnotations     map[string]string
-	}{
-		{
-			name: "stale issuer annotation removed",
-			existingAnnotations: map[string]string{
-				"cert-manager.io/issuer": "old-issuer",
-				"other-annotation":       "keep-me",
-			},
-			desiredAnnotations: map[string]string{},
-			wantAnnotations: map[string]string{
-				"other-annotation": "keep-me",
-			},
-		},
-		{
-			name: "issuer annotation updated to cluster-issuer",
-			existingAnnotations: map[string]string{
-				"cert-manager.io/issuer": "old-issuer",
-			},
-			desiredAnnotations: map[string]string{
-				"cert-manager.io/cluster-issuer": "new-cluster-issuer",
-			},
-			wantAnnotations: map[string]string{
-				"cert-manager.io/cluster-issuer": "new-cluster-issuer",
-			},
-		},
-		{
-			name:                "no-op when annotations match",
-			existingAnnotations: map[string]string{"cert-manager.io/issuer": "my-issuer"},
-			desiredAnnotations:  map[string]string{"cert-manager.io/issuer": "my-issuer"},
-			wantAnnotations:     map[string]string{"cert-manager.io/issuer": "my-issuer"},
-		},
-		{
-			name: "all three cert-manager annotations cleaned up",
-			existingAnnotations: map[string]string{
-				"cert-manager.io/issuer":          "old",
-				"cert-manager.io/cluster-issuer":  "old",
-				"cert-manager.io/secret-template": "old",
-				"unrelated":                       "preserved",
-			},
-			desiredAnnotations: map[string]string{},
-			wantAnnotations: map[string]string{
-				"unrelated": "preserved",
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			existing := &gatewayv1.Gateway{
-				ObjectMeta: metav1.ObjectMeta{Annotations: tt.existingAnnotations},
-			}
-			desired := &gatewayv1.Gateway{
-				ObjectMeta: metav1.ObjectMeta{Annotations: tt.desiredAnnotations},
-			}
-
-			syncCertManagerAnnotations(existing, desired)
-
-			assert.Equal(t, tt.wantAnnotations, existing.Annotations)
 		})
 	}
 }

@@ -13,6 +13,7 @@ import (
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
 	cmacmev1 "github.com/cert-manager/cert-manager/pkg/apis/acme/v1"
+	cmv1 "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
 	envoygatewayv1alpha1 "github.com/envoyproxy/gateway/api/v1alpha1"
 	multiclusterproviders "go.miloapis.com/milo/pkg/multicluster-runtime"
 	milomulticluster "go.miloapis.com/milo/pkg/multicluster-runtime/milo"
@@ -65,6 +66,7 @@ func init() {
 	utilruntime.Must(envoygatewayv1alpha1.AddToScheme(scheme))
 	utilruntime.Must(networkingv1alpha1.AddToScheme(scheme))
 	utilruntime.Must(cmacmev1.AddToScheme(scheme))
+	utilruntime.Must(cmv1.AddToScheme(scheme))
 	utilruntime.Must(dnsv1alpha1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }

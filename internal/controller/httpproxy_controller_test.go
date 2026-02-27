@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"testing"
+	"time"
 
 	envoygatewayv1alpha1 "github.com/envoyproxy/gateway/api/v1alpha1"
 	"github.com/stretchr/testify/assert"
@@ -2304,5 +2305,134 @@ func TestSetCertificatesReadyCondition(t *testing.T) {
 			assert.Equal(t, tt.wantStatus, cond.Status)
 			assert.Equal(t, tt.wantReason, cond.Reason)
 		})
+	}
+}
+
+func TestPreserveHostnameConditionTransitions(t *testing.T) {
+	t.Parallel()
+
+	oldTime := metav1.NewTime(metav1.Now().Add(-1 * time.Hour))
+	freshTime := metav1.Now()
+
+	tests := []struct {
+		name        string
+		oldStatuses []networkingv1alpha.HostnameStatus
+		newStatuses []networkingv1alpha.HostnameStatus
+		wantTimes   map[string]metav1.Time // hostname -> expected LastTransitionTime for Available condition
+	}{
+		{
+			name:        "no old statuses — fresh timestamps kept",
+			oldStatuses: nil,
+			newStatuses: []networkingv1alpha.HostnameStatus{
+				makeHostnameStatus("a.example.com", metav1.ConditionTrue, freshTime),
+			},
+			wantTimes: map[string]metav1.Time{
+				"a.example.com": freshTime,
+			},
+		},
+		{
+			name: "status unchanged — old timestamp preserved",
+			oldStatuses: []networkingv1alpha.HostnameStatus{
+				makeHostnameStatus("a.example.com", metav1.ConditionTrue, oldTime),
+			},
+			newStatuses: []networkingv1alpha.HostnameStatus{
+				makeHostnameStatus("a.example.com", metav1.ConditionTrue, freshTime),
+			},
+			wantTimes: map[string]metav1.Time{
+				"a.example.com": oldTime,
+			},
+		},
+		{
+			name: "status transitioned — fresh timestamp used",
+			oldStatuses: []networkingv1alpha.HostnameStatus{
+				makeHostnameStatus("a.example.com", metav1.ConditionFalse, oldTime),
+			},
+			newStatuses: []networkingv1alpha.HostnameStatus{
+				makeHostnameStatus("a.example.com", metav1.ConditionTrue, freshTime),
+			},
+			wantTimes: map[string]metav1.Time{
+				"a.example.com": freshTime,
+			},
+		},
+		{
+			name: "new hostname not in old — fresh timestamp kept",
+			oldStatuses: []networkingv1alpha.HostnameStatus{
+				makeHostnameStatus("a.example.com", metav1.ConditionTrue, oldTime),
+			},
+			newStatuses: []networkingv1alpha.HostnameStatus{
+				makeHostnameStatus("a.example.com", metav1.ConditionTrue, freshTime),
+				makeHostnameStatus("b.example.com", metav1.ConditionTrue, freshTime),
+			},
+			wantTimes: map[string]metav1.Time{
+				"a.example.com": oldTime,
+				"b.example.com": freshTime,
+			},
+		},
+		{
+			name: "multiple conditions — each preserved independently",
+			oldStatuses: []networkingv1alpha.HostnameStatus{
+				{
+					Hostname: "a.example.com",
+					Conditions: []metav1.Condition{
+						{Type: networkingv1alpha.HostnameConditionAvailable, Status: metav1.ConditionTrue, LastTransitionTime: oldTime},
+						{Type: networkingv1alpha.HostnameConditionCertificateReady, Status: metav1.ConditionFalse, LastTransitionTime: oldTime},
+					},
+				},
+			},
+			newStatuses: []networkingv1alpha.HostnameStatus{
+				{
+					Hostname: "a.example.com",
+					Conditions: []metav1.Condition{
+						{Type: networkingv1alpha.HostnameConditionAvailable, Status: metav1.ConditionTrue, LastTransitionTime: freshTime},
+						{Type: networkingv1alpha.HostnameConditionCertificateReady, Status: metav1.ConditionTrue, LastTransitionTime: freshTime},
+					},
+				},
+			},
+			wantTimes: map[string]metav1.Time{
+				"a.example.com/Available":        oldTime,
+				"a.example.com/CertificateReady": freshTime,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			preserveHostnameConditionTransitions(tt.newStatuses, tt.oldStatuses)
+
+			for _, hs := range tt.newStatuses {
+				for _, cond := range hs.Conditions {
+					key := hs.Hostname
+					if len(tt.wantTimes) > 0 {
+						// Check for compound key first (hostname/condType)
+						if _, ok := tt.wantTimes[hs.Hostname+"/"+cond.Type]; ok {
+							key = hs.Hostname + "/" + cond.Type
+						}
+					}
+					wantTime, ok := tt.wantTimes[key]
+					if !ok {
+						continue
+					}
+					assert.Equal(t, wantTime, cond.LastTransitionTime,
+						"hostname %q condition %q: expected LastTransitionTime to be preserved/updated correctly",
+						hs.Hostname, cond.Type)
+				}
+			}
+		})
+	}
+}
+
+func makeHostnameStatus(hostname string, status metav1.ConditionStatus, transitionTime metav1.Time) networkingv1alpha.HostnameStatus {
+	return networkingv1alpha.HostnameStatus{
+		Hostname: hostname,
+		Conditions: []metav1.Condition{
+			{
+				Type:               networkingv1alpha.HostnameConditionAvailable,
+				Status:             status,
+				Reason:             "TestReason",
+				LastTransitionTime: transitionTime,
+			},
+		},
 	}
 }

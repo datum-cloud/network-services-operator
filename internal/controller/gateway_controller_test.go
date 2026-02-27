@@ -807,6 +807,215 @@ func newGateway(
 	return gw
 }
 
+func TestGetDesiredDownstreamGateway_UnclaimedHostnameNoAnnotations(t *testing.T) {
+	logger := zap.New(zap.UseFlagOptions(&zap.Options{Development: true}))
+	ctx := log.IntoContext(context.Background(), logger)
+
+	tests := []struct {
+		name                    string
+		perGatewayCertIssuer    bool
+		listeners               []gatewayv1.Listener
+		claimedHostnames        []string
+		expectIssuerAnnotation  bool
+		expectClusterAnnotation bool
+		expectListeners         int
+	}{
+		{
+			name:                 "unclaimed hostname with TLS option does not produce annotations",
+			perGatewayCertIssuer: true,
+			listeners: []gatewayv1.Listener{
+				{
+					Name:     "custom-https",
+					Port:     443,
+					Protocol: gatewayv1.HTTPSProtocolType,
+					Hostname: ptr.To(gatewayv1.Hostname("unclaimed.example.com")),
+					TLS: &gatewayv1.GatewayTLSConfig{
+						Options: map[gatewayv1.AnnotationKey]gatewayv1.AnnotationValue{
+							certificateIssuerTLSOption: "letsencrypt",
+						},
+					},
+				},
+			},
+			claimedHostnames:        nil,
+			expectIssuerAnnotation:  false,
+			expectClusterAnnotation: false,
+			expectListeners:         0,
+		},
+		{
+			name:                 "claimed hostname with TLS option produces issuer annotation (per-gateway mode)",
+			perGatewayCertIssuer: true,
+			listeners: []gatewayv1.Listener{
+				{
+					Name:     "custom-https",
+					Port:     443,
+					Protocol: gatewayv1.HTTPSProtocolType,
+					Hostname: ptr.To(gatewayv1.Hostname("claimed.example.com")),
+					TLS: &gatewayv1.GatewayTLSConfig{
+						Options: map[gatewayv1.AnnotationKey]gatewayv1.AnnotationValue{
+							certificateIssuerTLSOption: "letsencrypt",
+						},
+					},
+				},
+			},
+			claimedHostnames:        []string{"claimed.example.com"},
+			expectIssuerAnnotation:  true,
+			expectClusterAnnotation: false,
+			expectListeners:         1,
+		},
+		{
+			name:                 "claimed hostname with TLS option produces cluster-issuer annotation (cluster mode)",
+			perGatewayCertIssuer: false,
+			listeners: []gatewayv1.Listener{
+				{
+					Name:     "custom-https",
+					Port:     443,
+					Protocol: gatewayv1.HTTPSProtocolType,
+					Hostname: ptr.To(gatewayv1.Hostname("claimed.example.com")),
+					TLS: &gatewayv1.GatewayTLSConfig{
+						Options: map[gatewayv1.AnnotationKey]gatewayv1.AnnotationValue{
+							certificateIssuerTLSOption: "letsencrypt",
+						},
+					},
+				},
+			},
+			claimedHostnames:        []string{"claimed.example.com"},
+			expectIssuerAnnotation:  false,
+			expectClusterAnnotation: true,
+			expectListeners:         1,
+		},
+		{
+			name:                 "mix: only claimed hostname contributes annotations",
+			perGatewayCertIssuer: true,
+			listeners: []gatewayv1.Listener{
+				{
+					Name:     "unclaimed-https",
+					Port:     443,
+					Protocol: gatewayv1.HTTPSProtocolType,
+					Hostname: ptr.To(gatewayv1.Hostname("unclaimed.example.com")),
+					TLS: &gatewayv1.GatewayTLSConfig{
+						Options: map[gatewayv1.AnnotationKey]gatewayv1.AnnotationValue{
+							certificateIssuerTLSOption: "letsencrypt",
+						},
+					},
+				},
+				{
+					Name:     "claimed-https",
+					Port:     443,
+					Protocol: gatewayv1.HTTPSProtocolType,
+					Hostname: ptr.To(gatewayv1.Hostname("claimed.example.com")),
+					TLS: &gatewayv1.GatewayTLSConfig{
+						Options: map[gatewayv1.AnnotationKey]gatewayv1.AnnotationValue{
+							certificateIssuerTLSOption: "letsencrypt",
+						},
+					},
+				},
+			},
+			claimedHostnames:        []string{"claimed.example.com"},
+			expectIssuerAnnotation:  true,
+			expectClusterAnnotation: false,
+			expectListeners:         1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reconciler := &GatewayReconciler{
+				Config: config.NetworkServicesOperator{
+					Gateway: config.GatewayConfig{
+						DownstreamGatewayClassName:  "envoy",
+						PerGatewayCertificateIssuer: tt.perGatewayCertIssuer,
+					},
+				},
+			}
+
+			upstream := &gatewayv1.Gateway{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-gw", Namespace: "default"},
+				Spec:       gatewayv1.GatewaySpec{Listeners: tt.listeners},
+			}
+
+			desired := reconciler.getDesiredDownstreamGateway(ctx, "test-cluster", upstream, tt.claimedHostnames)
+
+			_, hasIssuer := desired.Annotations["cert-manager.io/issuer"]
+			_, hasClusterIssuer := desired.Annotations["cert-manager.io/cluster-issuer"]
+
+			assert.Equal(t, tt.expectIssuerAnnotation, hasIssuer, "cert-manager.io/issuer annotation presence")
+			assert.Equal(t, tt.expectClusterAnnotation, hasClusterIssuer, "cert-manager.io/cluster-issuer annotation presence")
+			assert.Len(t, desired.Spec.Listeners, tt.expectListeners, "downstream listener count")
+		})
+	}
+}
+
+func TestSyncCertManagerAnnotations(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name                string
+		existingAnnotations map[string]string
+		desiredAnnotations  map[string]string
+		wantAnnotations     map[string]string
+	}{
+		{
+			name: "stale issuer annotation removed",
+			existingAnnotations: map[string]string{
+				"cert-manager.io/issuer": "old-issuer",
+				"other-annotation":       "keep-me",
+			},
+			desiredAnnotations: map[string]string{},
+			wantAnnotations: map[string]string{
+				"other-annotation": "keep-me",
+			},
+		},
+		{
+			name: "issuer annotation updated to cluster-issuer",
+			existingAnnotations: map[string]string{
+				"cert-manager.io/issuer": "old-issuer",
+			},
+			desiredAnnotations: map[string]string{
+				"cert-manager.io/cluster-issuer": "new-cluster-issuer",
+			},
+			wantAnnotations: map[string]string{
+				"cert-manager.io/cluster-issuer": "new-cluster-issuer",
+			},
+		},
+		{
+			name:                "no-op when annotations match",
+			existingAnnotations: map[string]string{"cert-manager.io/issuer": "my-issuer"},
+			desiredAnnotations:  map[string]string{"cert-manager.io/issuer": "my-issuer"},
+			wantAnnotations:     map[string]string{"cert-manager.io/issuer": "my-issuer"},
+		},
+		{
+			name: "all three cert-manager annotations cleaned up",
+			existingAnnotations: map[string]string{
+				"cert-manager.io/issuer":          "old",
+				"cert-manager.io/cluster-issuer":  "old",
+				"cert-manager.io/secret-template": "old",
+				"unrelated":                       "preserved",
+			},
+			desiredAnnotations: map[string]string{},
+			wantAnnotations: map[string]string{
+				"unrelated": "preserved",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			existing := &gatewayv1.Gateway{
+				ObjectMeta: metav1.ObjectMeta{Annotations: tt.existingAnnotations},
+			}
+			desired := &gatewayv1.Gateway{
+				ObjectMeta: metav1.ObjectMeta{Annotations: tt.desiredAnnotations},
+			}
+
+			syncCertManagerAnnotations(existing, desired)
+
+			assert.Equal(t, tt.wantAnnotations, existing.Annotations)
+		})
+	}
+}
+
 func newHTTPRoute(namespace, name string, opts ...func(*gatewayv1.HTTPRoute)) *gatewayv1.HTTPRoute {
 	route := &gatewayv1.HTTPRoute{
 		ObjectMeta: metav1.ObjectMeta{

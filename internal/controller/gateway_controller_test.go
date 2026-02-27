@@ -336,7 +336,9 @@ func TestEnsureDownstreamGatewayWildcardCert(t *testing.T) {
 				}),
 			},
 			assert: func(t *testing.T, upstreamGateway, downstreamGateway *gatewayv1.Gateway) {
-				// Default HTTPS listener should use shared TLS secret
+				// When custom HTTPS listeners exist, all listeners fall back to
+				// per-listener certs to prevent cert-manager from overwriting
+				// the shared wildcard secret.
 				httpsListener := gatewayutil.GetListenerByName(
 					downstreamGateway.Spec.Listeners,
 					gatewayutil.DefaultHTTPSListenerName,
@@ -345,15 +347,14 @@ func TestEnsureDownstreamGatewayWildcardCert(t *testing.T) {
 					if assert.NotNil(t, httpsListener.TLS) {
 						if assert.Len(t, httpsListener.TLS.CertificateRefs, 1) {
 							assert.Equal(t,
-								gatewayv1.ObjectName(defaultTLSSecretName),
+								gatewayv1.ObjectName("test-gw-default-https"),
 								httpsListener.TLS.CertificateRefs[0].Name,
-								"default listener should reference the shared TLS secret",
+								"default listener should fall back to per-listener cert when custom listeners exist",
 							)
 						}
 					}
 				}
 
-				// Custom hostname listener should get its own per-listener cert
 				customListener := gatewayutil.GetListenerByName(
 					downstreamGateway.Spec.Listeners,
 					"https-hostname-0",
@@ -366,18 +367,12 @@ func TestEnsureDownstreamGatewayWildcardCert(t *testing.T) {
 								customListener.TLS.CertificateRefs[0].Name,
 								"custom listener should reference a per-listener cert secret",
 							)
-							assert.NotEqual(t,
-								gatewayv1.ObjectName(defaultTLSSecretName),
-								customListener.TLS.CertificateRefs[0].Name,
-								"custom listener should NOT use the shared TLS secret",
-							)
 						}
 					}
 				}
 
-				// cert-manager annotations should be present for the custom hostname
 				assert.NotEmpty(t, downstreamGateway.Annotations["cert-manager.io/cluster-issuer"],
-					"cert-manager annotation should be set for custom hostname listener",
+					"cert-manager annotation should be set when custom hostname listeners exist",
 				)
 			},
 		},

@@ -276,6 +276,7 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 		// per-listener certificate.
 		annotationsChanged := false
 		for _, key := range []string{
+			"cert-manager.io/issuer",
 			"cert-manager.io/cluster-issuer",
 			"cert-manager.io/secret-template",
 		} {

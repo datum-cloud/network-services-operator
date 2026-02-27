@@ -558,6 +558,13 @@ type GatewayConfig struct {
 	//
 	// Defaults to false.
 	EnableDNSIntegration bool `json:"enableDNSIntegration,omitempty"`
+
+	// MaxConcurrentReconciles is the maximum number of concurrent gateway
+	// reconciliations. Higher values allow the controller to process gateways
+	// across multiple projects in parallel.
+	//
+	// +default=5
+	MaxConcurrentReconciles int `json:"maxConcurrentReconciles,omitempty"`
 }
 
 // ShouldDeleteErroredChallenges returns whether the operator should automatically

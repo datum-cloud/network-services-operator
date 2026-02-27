@@ -21,6 +21,9 @@ spec:
     - jsonPath: .status.conditions[?(@.type=="Programmed")].status
       name: Programmed
       type: string
+    - jsonPath: .status.conditions[?(@.type=="CertificatesReady")].status
+      name: Certificates
+      type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date

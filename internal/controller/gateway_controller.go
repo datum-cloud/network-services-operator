@@ -269,6 +269,22 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 			return result, nil
 		}
 	} else {
+		// Remove cert-manager annotations when the desired state no longer
+		// includes them (e.g. all listeners switched to a shared TLS secret).
+		// maps.Copy is additive, so stale annotations must be pruned explicitly
+		// to prevent cert-manager from overwriting the shared secret with a
+		// per-listener certificate.
+		for _, key := range []string{
+			"cert-manager.io/cluster-issuer",
+			"cert-manager.io/secret-template",
+		} {
+			if _, existsOnCurrent := downstreamGateway.Annotations[key]; existsOnCurrent {
+				if _, existsOnDesired := desiredDownstreamGateway.Annotations[key]; !existsOnDesired {
+					delete(downstreamGateway.Annotations, key)
+				}
+			}
+		}
+
 		if !equality.Semantic.DeepEqual(downstreamGateway.Annotations, desiredDownstreamGateway.Annotations) ||
 			!equality.Semantic.DeepEqual(downstreamGateway.Spec, desiredDownstreamGateway.Spec) {
 			// Take care not to clobber other annotations

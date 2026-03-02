@@ -1213,7 +1213,7 @@ func TestGetDesiredDownstreamGateway_UnclaimedHostnameSkipped(t *testing.T) {
 				Spec:       gatewayv1.GatewaySpec{Listeners: tt.listeners},
 			}
 
-			desired := reconciler.getDesiredDownstreamGateway(ctx, "test-cluster", upstream, tt.claimedHostnames)
+			desired := reconciler.getDesiredDownstreamGateway(ctx, upstream, tt.claimedHostnames)
 
 			assert.Empty(t, desired.Annotations, "desired gateway should have no cert-manager annotations")
 			assert.Len(t, desired.Spec.Listeners, tt.expectListeners, "downstream listener count")

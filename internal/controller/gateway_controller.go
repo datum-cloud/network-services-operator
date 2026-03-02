@@ -267,7 +267,6 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 
 	desiredDownstreamGateway := r.getDesiredDownstreamGateway(
 		ctx,
-		upstreamClusterName,
 		upstreamGateway,
 		claimedHostnames,
 	)
@@ -375,7 +374,6 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 
 func (r *GatewayReconciler) getDesiredDownstreamGateway(
 	ctx context.Context,
-	upstreamClusterName string,
 	upstreamGateway *gatewayv1.Gateway,
 	claimedHostnames []string,
 ) *gatewayv1.Gateway {
@@ -447,7 +445,6 @@ func (r *GatewayReconciler) getDesiredDownstreamGateway(
 
 	return &downstreamGateway
 }
-
 
 // listenerCertificateSecretName returns the deterministic Secret name that a
 // Certificate resource will populate for a given gateway listener.
@@ -576,7 +573,7 @@ func (r *GatewayReconciler) ensureListenerCertificates(
 			continue
 		}
 
-		ownedByStrategy := cert.Labels[downstreamclient.UpstreamOwnerKindLabel] == "Gateway" &&
+		ownedByStrategy := cert.Labels[downstreamclient.UpstreamOwnerKindLabel] == KindGateway &&
 			cert.Labels[downstreamclient.UpstreamOwnerNameLabel] == upstreamGateway.Name &&
 			cert.Labels[downstreamclient.UpstreamOwnerNamespaceLabel] == upstreamGateway.Namespace
 		ownedByGatewayShim := metav1.IsControlledBy(cert, downstreamGateway)

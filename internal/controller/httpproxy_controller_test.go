@@ -2101,20 +2101,17 @@ func TestBuildCertificateStatuses(t *testing.T) {
 		},
 	}
 
-	makeSharedTLSSecret := func(hasTLSData bool) *corev1.Secret {
-		s := &corev1.Secret{
-			ObjectMeta: metav1.ObjectMeta{
-				Namespace: downstreamNamespaceName,
-				Name:      "wildcard-tls",
+	gatewayWithCustomHostname := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{Name: "my-proxy", Namespace: "test-ns"},
+		Spec: gatewayv1.GatewaySpec{
+			Listeners: []gatewayv1.Listener{
+				{
+					Name:     "https-hostname-0",
+					Protocol: gatewayv1.HTTPSProtocolType,
+					Hostname: ptr.To(gatewayv1.Hostname("custom.otherdomain.com")),
+				},
 			},
-		}
-		if hasTLSData {
-			s.Data = map[string][]byte{
-				"tls.crt": []byte("cert-data"),
-				"tls.key": []byte("key-data"),
-			}
-		}
-		return s
+		},
 	}
 
 	tests := []struct {
@@ -2171,41 +2168,20 @@ func TestBuildCertificateStatuses(t *testing.T) {
 			wantStatus:        metav1.ConditionFalse,
 		},
 		{
-			name:              "shared TLS secret found and valid returns CertificateIssued",
-			config:            &sharedTLSConfig,
-			gateway:           gatewayWithWildcardHostname,
-			downstreamCluster: true,
-			downstreamObjects: []client.Object{makeSharedTLSSecret(true)},
-			wantLen:           1,
-			wantReason:        networkingv1alpha.CertificateReadyReasonCertificateIssued,
-			wantStatus:        metav1.ConditionTrue,
-			wantMessage:       "Shared wildcard TLS certificate is ready",
-		},
-		{
-			name:              "shared TLS secret not found returns Pending",
+			name:              "shared TLS marks certificate ready immediately",
 			config:            &sharedTLSConfig,
 			gateway:           gatewayWithWildcardHostname,
 			downstreamCluster: true,
 			downstreamObjects: []client.Object{},
 			wantLen:           1,
-			wantReason:        networkingv1alpha.CertificateReadyReasonPending,
-			wantStatus:        metav1.ConditionFalse,
-			wantMessage:       "Shared TLS secret not found in downstream cluster",
-		},
-		{
-			name:              "shared TLS secret missing tls data returns Pending",
-			config:            &sharedTLSConfig,
-			gateway:           gatewayWithWildcardHostname,
-			downstreamCluster: true,
-			downstreamObjects: []client.Object{makeSharedTLSSecret(false)},
-			wantLen:           1,
-			wantReason:        networkingv1alpha.CertificateReadyReasonPending,
-			wantStatus:        metav1.ConditionFalse,
-			wantMessage:       "Shared TLS secret is missing tls.crt or tls.key data",
+			wantReason:        networkingv1alpha.CertificateReadyReasonCertificateIssued,
+			wantStatus:        metav1.ConditionTrue,
+			wantMessage:       "Using shared wildcard TLS certificate",
 		},
 		{
 			name:              "custom hostname still checks certificate even with shared TLS enabled",
 			config:            &sharedTLSConfig,
+			gateway:           gatewayWithCustomHostname,
 			downstreamCluster: true,
 			downstreamObjects: []client.Object{},
 			wantLen:           1,

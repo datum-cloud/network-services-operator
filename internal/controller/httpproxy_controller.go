@@ -1050,50 +1050,13 @@ func (r *HTTPProxyReconciler) buildCertificateStatuses(
 		useSharedTLS := hostnameUnderWildcard && r.Config.Gateway.HasDefaultListenerTLSSecret()
 
 		if useSharedTLS {
-			secret := &v1.Secret{}
-			secretKey := client.ObjectKey{
-				Namespace: downstreamNamespaceName,
-				Name:      r.Config.Gateway.DefaultListenerTLSSecretName,
-			}
-			if err := downstreamClient.Get(ctx, secretKey, secret); err != nil {
-				if apierrors.IsNotFound(err) {
-					apimeta.SetStatusCondition(&hs.Conditions, metav1.Condition{
-						Type:               networkingv1alpha.HostnameConditionCertificateReady,
-						Status:             metav1.ConditionFalse,
-						Reason:             networkingv1alpha.CertificateReadyReasonPending,
-						Message:            "Shared TLS secret not found in downstream cluster",
-						ObservedGeneration: httpProxy.Generation,
-					})
-				} else {
-					apimeta.SetStatusCondition(&hs.Conditions, metav1.Condition{
-						Type:               networkingv1alpha.HostnameConditionCertificateReady,
-						Status:             metav1.ConditionUnknown,
-						Reason:             networkingv1alpha.CertificateReadyReasonPending,
-						Message:            fmt.Sprintf("Failed to get shared TLS secret: %v", err),
-						ObservedGeneration: httpProxy.Generation,
-					})
-				}
-				statuses = append(statuses, hs)
-				continue
-			}
-
-			if len(secret.Data["tls.crt"]) > 0 && len(secret.Data["tls.key"]) > 0 {
-				apimeta.SetStatusCondition(&hs.Conditions, metav1.Condition{
-					Type:               networkingv1alpha.HostnameConditionCertificateReady,
-					Status:             metav1.ConditionTrue,
-					Reason:             networkingv1alpha.CertificateReadyReasonCertificateIssued,
-					Message:            "Shared wildcard TLS certificate is ready",
-					ObservedGeneration: httpProxy.Generation,
-				})
-			} else {
-				apimeta.SetStatusCondition(&hs.Conditions, metav1.Condition{
-					Type:               networkingv1alpha.HostnameConditionCertificateReady,
-					Status:             metav1.ConditionFalse,
-					Reason:             networkingv1alpha.CertificateReadyReasonPending,
-					Message:            "Shared TLS secret is missing tls.crt or tls.key data",
-					ObservedGeneration: httpProxy.Generation,
-				})
-			}
+			apimeta.SetStatusCondition(&hs.Conditions, metav1.Condition{
+				Type:               networkingv1alpha.HostnameConditionCertificateReady,
+				Status:             metav1.ConditionTrue,
+				Reason:             networkingv1alpha.CertificateReadyReasonCertificateIssued,
+				Message:            "Using shared wildcard TLS certificate",
+				ObservedGeneration: httpProxy.Generation,
+			})
 			statuses = append(statuses, hs)
 			continue
 		}

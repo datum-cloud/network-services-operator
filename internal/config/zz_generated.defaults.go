@@ -317,4 +317,25 @@ func SetObjectDefaults_NetworkServicesOperator(in *NetworkServicesOperator) {
 			panic(err)
 		}
 	}
+	SetDefaults_ClientConnectionConfig(&in.ControlPlaneClient)
+	if in.ControlPlaneClient.QPS == 0 {
+		in.ControlPlaneClient.QPS = 50
+	}
+	if in.ControlPlaneClient.Burst == 0 {
+		in.ControlPlaneClient.Burst = 100
+	}
+	SetDefaults_ClientConnectionConfig(&in.DownstreamClient)
+	if in.DownstreamClient.QPS == 0 {
+		in.DownstreamClient.QPS = 50
+	}
+	if in.DownstreamClient.Burst == 0 {
+		in.DownstreamClient.Burst = 100
+	}
+	SetDefaults_ClientConnectionConfig(&in.ProjectClient)
+	if in.ProjectClient.QPS == 0 {
+		in.ProjectClient.QPS = 50
+	}
+	if in.ProjectClient.Burst == 0 {
+		in.ProjectClient.Burst = 100
+	}
 }

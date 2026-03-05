@@ -60,6 +60,57 @@ type NetworkServicesOperator struct {
 
 	// DomainRegistration controls RDAP/WHOIS refresh behavior for Domain status.registration
 	DomainRegistration DomainRegistrationConfig `json:"domainRegistration"`
+
+	// ControlPlaneClient configures the Kubernetes client connection to the
+	// control plane where the operator runs (leader election, multicluster
+	// coordination).
+	ControlPlaneClient ClientConnectionConfig `json:"controlPlaneClient,omitempty"`
+
+	// DownstreamClient configures the Kubernetes client connection to the
+	// downstream cluster where Gateways, HTTPRoutes, Certificates, and other
+	// data-plane resources are materialized.
+	DownstreamClient ClientConnectionConfig `json:"downstreamClient,omitempty"`
+
+	// ProjectClient configures the Kubernetes client connection used for both
+	// project discovery and per-project cluster connections.
+	ProjectClient ClientConnectionConfig `json:"projectClient,omitempty"`
+}
+
+// +k8s:deepcopy-gen=true
+
+// ClientConnectionConfig holds settings that control how the operator connects
+// to a Kubernetes API server.
+type ClientConnectionConfig struct {
+	// QPS is the maximum sustained queries per second before client-side
+	// throttling kicks in.
+	//
+	// +default=50
+	QPS float32 `json:"qps,omitempty"`
+
+	// Burst is the maximum burst size for throttle. Requests above QPS but
+	// below Burst are allowed immediately.
+	//
+	// +default=100
+	Burst int `json:"burst,omitempty"`
+}
+
+// ApplyTo applies the client connection settings to a rest.Config.
+func (c *ClientConnectionConfig) ApplyTo(cfg *rest.Config) {
+	if c.QPS > 0 {
+		cfg.QPS = c.QPS
+	}
+	if c.Burst > 0 {
+		cfg.Burst = c.Burst
+	}
+}
+
+func SetDefaults_ClientConnectionConfig(obj *ClientConnectionConfig) {
+	if obj.QPS == 0 {
+		obj.QPS = 50
+	}
+	if obj.Burst == 0 {
+		obj.Burst = 100
+	}
 }
 
 // +k8s:deepcopy-gen=true
@@ -486,17 +537,6 @@ type GatewayConfig struct {
 	// issuer name, the operator will use the value as is.
 	ClusterIssuerMap map[string]string `json:"clusterIssuerMap,omitempty"`
 
-	// PerGatewayCertificateIssuer will result in the operator to expect a
-	// cert-manager Issuer to exist with the same name as the gateway. Any value
-	// provided for the "gateway.networking.datumapis.com/certificate-issuer"
-	// option will be replaced with the gateway's name. The Issuer resources will
-	// be managed by Kyverno policies, and not by this operator.
-	//
-	// TODO(jreese) Remove this once we've either implemented DNS validation,
-	// found a path to attach cert-manager generated routes to the gateway they're
-	// needed for, or implement our own ACME integration.
-	PerGatewayCertificateIssuer bool `json:"perGatewayCertificateIssuer,omitempty"`
-
 	// ListenerTLSOptions specifies the TLS options to program on generated
 	// TLS listeners.
 	// +default={"gateway.networking.datumapis.com/certificate-issuer": "auto"}
@@ -559,12 +599,27 @@ type GatewayConfig struct {
 	// Defaults to false.
 	EnableDNSIntegration bool `json:"enableDNSIntegration,omitempty"`
 
+	// DefaultListenerTLSSecretName, if provided, is the name of a
+	// pre-provisioned TLS certificate secret to use for the default HTTPS
+	// listener (named "default-https"). When set, this listener references
+	// the shared secret instead of requesting an individual certificate
+	// via cert-manager.
+	//
+	// The secret must exist in every downstream gateway namespace.
+	DefaultListenerTLSSecretName string `json:"defaultListenerTLSSecretName,omitempty"`
+
 	// MaxConcurrentReconciles is the maximum number of concurrent gateway
 	// reconciliations. Higher values allow the controller to process gateways
 	// across multiple projects in parallel.
 	//
 	// +default=5
 	MaxConcurrentReconciles int `json:"maxConcurrentReconciles,omitempty"`
+}
+
+// HasDefaultListenerTLSSecret returns true when a shared TLS certificate
+// secret has been configured for default HTTPS listeners.
+func (c *GatewayConfig) HasDefaultListenerTLSSecret() bool {
+	return c.DefaultListenerTLSSecretName != ""
 }
 
 // ShouldDeleteErroredChallenges returns whether the operator should automatically

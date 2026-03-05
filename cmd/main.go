@@ -13,6 +13,7 @@ import (
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
 	cmacmev1 "github.com/cert-manager/cert-manager/pkg/apis/acme/v1"
+	cmv1 "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
 	envoygatewayv1alpha1 "github.com/envoyproxy/gateway/api/v1alpha1"
 	multiclusterproviders "go.miloapis.com/milo/pkg/multicluster-runtime"
 	milomulticluster "go.miloapis.com/milo/pkg/multicluster-runtime/milo"
@@ -65,6 +66,7 @@ func init() {
 	utilruntime.Must(envoygatewayv1alpha1.AddToScheme(scheme))
 	utilruntime.Must(networkingv1alpha1.AddToScheme(scheme))
 	utilruntime.Must(cmacmev1.AddToScheme(scheme))
+	utilruntime.Must(cmv1.AddToScheme(scheme))
 	utilruntime.Must(dnsv1alpha1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
@@ -121,6 +123,7 @@ func main() {
 	// TODO(jreese) validate the config
 
 	cfg := ctrl.GetConfigOrDie()
+	serverConfig.ControlPlaneClient.ApplyTo(cfg)
 
 	deploymentCluster, err := cluster.New(cfg, func(o *cluster.Options) {
 		o.Scheme = scheme
@@ -187,6 +190,7 @@ func main() {
 		setupLog.Error(err, "unable to load control plane kubeconfig")
 		os.Exit(1)
 	}
+	serverConfig.DownstreamClient.ApplyTo(downstreamRestConfig)
 
 	downstreamCluster, err := cluster.New(downstreamRestConfig, func(o *cluster.Options) {
 		o.Scheme = scheme
@@ -439,11 +443,13 @@ func initializeClusterDiscovery(
 		if err != nil {
 			return nil, nil, fmt.Errorf("unable to get discovery rest config: %w", err)
 		}
+		serverConfig.ProjectClient.ApplyTo(discoveryRestConfig)
 
 		projectRestConfig, err := serverConfig.Discovery.ProjectRestConfig()
 		if err != nil {
 			return nil, nil, fmt.Errorf("unable to get project rest config: %w", err)
 		}
+		serverConfig.ProjectClient.ApplyTo(projectRestConfig)
 
 		discoveryManager, err := manager.New(discoveryRestConfig, manager.Options{
 			Client: client.Options{

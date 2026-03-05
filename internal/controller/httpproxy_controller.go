@@ -1036,16 +1036,34 @@ func (r *HTTPProxyReconciler) buildCertificateStatuses(
 	}
 	statuses := make([]networkingv1alpha.HostnameStatus, 0, httpsListenerCount)
 
+	wildcardSuffix := "." + r.Config.Gateway.TargetDomain
+
 	for _, l := range gateway.Spec.Listeners {
 		if l.Protocol != gatewayv1.HTTPSProtocolType || l.Hostname == nil {
+			continue
+		}
+
+		hs := networkingv1alpha.HostnameStatus{Hostname: string(*l.Hostname)}
+
+		hostname := string(*l.Hostname)
+		hostnameUnderWildcard := strings.HasSuffix(hostname, wildcardSuffix) || hostname == r.Config.Gateway.TargetDomain
+		useSharedTLS := hostnameUnderWildcard && r.Config.Gateway.HasDefaultListenerTLSSecret()
+
+		if useSharedTLS {
+			apimeta.SetStatusCondition(&hs.Conditions, metav1.Condition{
+				Type:               networkingv1alpha.HostnameConditionCertificateReady,
+				Status:             metav1.ConditionTrue,
+				Reason:             networkingv1alpha.CertificateReadyReasonCertificateIssued,
+				Message:            "Using shared wildcard TLS certificate",
+				ObservedGeneration: httpProxy.Generation,
+			})
+			statuses = append(statuses, hs)
 			continue
 		}
 
 		certName := resourcename.GetValidDNS1123Name(fmt.Sprintf("%s-%s", gateway.Name, l.Name))
 		certificate := newUnstructuredForGVK(certificateGVK)
 		certKey := client.ObjectKey{Namespace: downstreamNamespaceName, Name: certName}
-
-		hs := networkingv1alpha.HostnameStatus{Hostname: string(*l.Hostname)}
 
 		if err := downstreamClient.Get(ctx, certKey, certificate); err != nil {
 			if apierrors.IsNotFound(err) {

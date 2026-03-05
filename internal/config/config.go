@@ -60,6 +60,57 @@ type NetworkServicesOperator struct {
 
 	// DomainRegistration controls RDAP/WHOIS refresh behavior for Domain status.registration
 	DomainRegistration DomainRegistrationConfig `json:"domainRegistration"`
+
+	// ControlPlaneClient configures the Kubernetes client connection to the
+	// control plane where the operator runs (leader election, multicluster
+	// coordination).
+	ControlPlaneClient ClientConnectionConfig `json:"controlPlaneClient,omitempty"`
+
+	// DownstreamClient configures the Kubernetes client connection to the
+	// downstream cluster where Gateways, HTTPRoutes, Certificates, and other
+	// data-plane resources are materialized.
+	DownstreamClient ClientConnectionConfig `json:"downstreamClient,omitempty"`
+
+	// ProjectClient configures the Kubernetes client connection used for both
+	// project discovery and per-project cluster connections.
+	ProjectClient ClientConnectionConfig `json:"projectClient,omitempty"`
+}
+
+// +k8s:deepcopy-gen=true
+
+// ClientConnectionConfig holds settings that control how the operator connects
+// to a Kubernetes API server.
+type ClientConnectionConfig struct {
+	// QPS is the maximum sustained queries per second before client-side
+	// throttling kicks in.
+	//
+	// +default=50
+	QPS float32 `json:"qps,omitempty"`
+
+	// Burst is the maximum burst size for throttle. Requests above QPS but
+	// below Burst are allowed immediately.
+	//
+	// +default=100
+	Burst int `json:"burst,omitempty"`
+}
+
+// ApplyTo applies the client connection settings to a rest.Config.
+func (c *ClientConnectionConfig) ApplyTo(cfg *rest.Config) {
+	if c.QPS > 0 {
+		cfg.QPS = c.QPS
+	}
+	if c.Burst > 0 {
+		cfg.Burst = c.Burst
+	}
+}
+
+func SetDefaults_ClientConnectionConfig(obj *ClientConnectionConfig) {
+	if obj.QPS == 0 {
+		obj.QPS = 50
+	}
+	if obj.Burst == 0 {
+		obj.Burst = 100
+	}
 }
 
 // +k8s:deepcopy-gen=true

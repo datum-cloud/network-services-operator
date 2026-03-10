@@ -5,11 +5,12 @@ package controller
 import (
 	"context"
 	"fmt"
-	"maps"
 	"slices"
 	"strings"
 	"time"
 
+	cmv1 "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
+	cmmeta "github.com/cert-manager/cert-manager/pkg/apis/meta/v1"
 	envoygatewayv1alpha1 "github.com/envoyproxy/gateway/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
@@ -26,6 +27,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -80,6 +82,8 @@ type GatewayReconciler struct {
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=backendtlspolicies/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=backendtlspolicies/finalizers,verbs=update
 
+// +kubebuilder:rbac:groups=cert-manager.io,resources=certificates,verbs=get;list;watch;create;update;patch;delete
+
 // +kubebuilder:rbac:groups=externaldns.k8s.io,resources=dnsendpoints,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=externaldns.k8s.io,resources=dnsendpoints/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=externaldns.k8s.io,resources=dnsendpoints/finalizers,verbs=update
@@ -88,16 +92,23 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 	logger := log.FromContext(ctx, "cluster", req.ClusterName, "namespace", req.Namespace, "name", req.Name)
 	ctx = log.IntoContext(ctx, logger)
 
+	logger.Info("gateway reconcile dequeued")
+
 	cl, err := r.mgr.GetCluster(ctx, req.ClusterName)
 	if err != nil {
+		logger.Error(err, "failed to get cluster")
 		return ctrl.Result{}, err
 	}
+
+	logger.Info("got cluster, fetching gateway")
 
 	var gateway gatewayv1.Gateway
 	if err := cl.GetClient().Get(ctx, req.NamespacedName, &gateway); err != nil {
 		if apierrors.IsNotFound(err) {
+			logger.Info("gateway not found, skipping")
 			return ctrl.Result{}, nil
 		}
+		logger.Error(err, "failed to get gateway")
 		return ctrl.Result{}, err
 	}
 
@@ -105,12 +116,15 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 	var upstreamGatewayClass gatewayv1.GatewayClass
 	if err := cl.GetClient().Get(ctx, types.NamespacedName{Name: string(gateway.Spec.GatewayClassName)}, &upstreamGatewayClass); err != nil {
 		if apierrors.IsNotFound(err) {
+			logger.Info("gateway class not found, skipping")
 			return ctrl.Result{}, nil
 		}
+		logger.Error(err, "failed to get gateway class")
 		return ctrl.Result{}, err
 	}
 
 	if upstreamGatewayClass.Spec.ControllerName != r.Config.Gateway.ControllerName {
+		logger.Info("gateway class controller name mismatch, skipping", "expected", r.Config.Gateway.ControllerName, "actual", upstreamGatewayClass.Spec.ControllerName)
 		return ctrl.Result{}, nil
 	}
 
@@ -132,7 +146,9 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 	}
 
 	if r.prepareUpstreamGateway(&gateway) {
+		logger.Info("preparing upstream gateway (adding finalizer/defaults)")
 		if err := cl.GetClient().Update(ctx, &gateway); err != nil {
+			logger.Error(err, "failed preparing upstream gateway")
 			return ctrl.Result{}, fmt.Errorf("failed preparing upstream gateway: %w", err)
 		}
 
@@ -234,6 +250,7 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 
 	if err := downstreamClient.Get(ctx, client.ObjectKeyFromObject(downstreamGateway), downstreamGateway); client.IgnoreNotFound(err) != nil {
 		result.Err = fmt.Errorf("failed to get downstream gateway: %w", err)
+		return result, nil
 	}
 
 	verifiedHostnames, claimedHostnames, notClaimedHostnames, err := r.ensureHostnamesClaimed(
@@ -250,7 +267,6 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 
 	desiredDownstreamGateway := r.getDesiredDownstreamGateway(
 		ctx,
-		upstreamClusterName,
 		upstreamGateway,
 		claimedHostnames,
 	)
@@ -271,14 +287,25 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 	} else {
 		if !equality.Semantic.DeepEqual(downstreamGateway.Annotations, desiredDownstreamGateway.Annotations) ||
 			!equality.Semantic.DeepEqual(downstreamGateway.Spec, desiredDownstreamGateway.Spec) {
-			// Take care not to clobber other annotations
-			maps.Copy(downstreamGateway.Annotations, desiredDownstreamGateway.Annotations)
+			downstreamGateway.Annotations = desiredDownstreamGateway.Annotations
 			downstreamGateway.Spec = desiredDownstreamGateway.Spec
 			if err := downstreamClient.Update(ctx, downstreamGateway); err != nil {
 				result.Err = fmt.Errorf("failed updating downstream gateway: %w", err)
 				return result, nil
 			}
 		}
+	}
+
+	certResult := r.ensureListenerCertificates(
+		ctx,
+		upstreamGateway,
+		downstreamGateway,
+		downstreamClient,
+		downstreamStrategy,
+		claimedHostnames,
+	)
+	if certResult.ShouldReturn() {
+		return certResult.Merge(result), nil
 	}
 
 	dnsResult := r.ensureDownstreamGatewayDNSEndpoints(
@@ -347,7 +374,6 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 
 func (r *GatewayReconciler) getDesiredDownstreamGateway(
 	ctx context.Context,
-	upstreamClusterName string,
 	upstreamGateway *gatewayv1.Gateway,
 	claimedHostnames []string,
 ) *gatewayv1.Gateway {
@@ -356,60 +382,55 @@ func (r *GatewayReconciler) getDesiredDownstreamGateway(
 
 	var listeners []gatewayv1.Listener
 
-	for listenerIndex, l := range upstreamGateway.Spec.Listeners {
-		if l.TLS != nil && l.TLS.Options[certificateIssuerTLSOption] != "" {
-			if r.Config.Gateway.PerGatewayCertificateIssuer {
-				if !metav1.HasAnnotation(downstreamGateway.ObjectMeta, "cert-manager.io/issuer") {
-					metav1.SetMetaDataAnnotation(&downstreamGateway.ObjectMeta, "cert-manager.io/issuer", upstreamGateway.Name)
-				}
-			} else {
-				clusterIssuerName := string(l.TLS.Options[certificateIssuerTLSOption])
-				if r.Config.Gateway.ClusterIssuerMap[clusterIssuerName] != "" {
-					clusterIssuerName = r.Config.Gateway.ClusterIssuerMap[clusterIssuerName]
-				}
-				if !metav1.HasAnnotation(downstreamGateway.ObjectMeta, "cert-manager.io/cluster-issuer") {
-					metav1.SetMetaDataAnnotation(&downstreamGateway.ObjectMeta, "cert-manager.io/cluster-issuer", clusterIssuerName)
-				}
+	wildcardSuffix := "." + r.Config.Gateway.TargetDomain
 
-				// Add labels so that secrets created by cert-manager can be propagated
-				// See: https://cert-manager.io/docs/reference/annotations/#cert-manageriosecret-template
-				if !metav1.HasAnnotation(downstreamGateway.ObjectMeta, "cert-manager.io/secret-template") {
-					metav1.SetMetaDataAnnotation(
-						&downstreamGateway.ObjectMeta,
-						"cert-manager.io/secret-template",
-						fmt.Sprintf(
-							`{"labels": {"%s": "%s"}}`,
-							downstreamclient.UpstreamOwnerClusterNameLabel,
-							fmt.Sprintf("cluster-%s", strings.ReplaceAll(upstreamClusterName, "/", "_")),
-						),
-					)
-				}
-			}
+	for listenerIndex, l := range upstreamGateway.Spec.Listeners {
+		if l.Hostname != nil && !slices.Contains(claimedHostnames, string(*l.Hostname)) {
+			logger.Info("skipping downstream gateway listener with unclaimed hostname", "upstream_listener_index", listenerIndex, "hostname", *l.Hostname)
+			continue
 		}
 
-		// Add custom hostnames if they are verified
+		// Per-listener TLS decision: hostnames covered by the wildcard
+		// (*.targetDomain) reference the pre-provisioned shared secret;
+		// all others reference a per-listener secret populated by a
+		// Certificate resource created in ensureListenerCertificates.
+		hostnameUnderWildcard := false
 		if l.Hostname != nil {
-			if !slices.Contains(claimedHostnames, string(*l.Hostname)) {
-				logger.Info("skipping downstream gateway listener with unclaimed hostname", "upstream_listener_index", listenerIndex, "hostname", *l.Hostname)
-				continue
-			}
+			h := string(*l.Hostname)
+			hostnameUnderWildcard = strings.HasSuffix(h, wildcardSuffix) || h == r.Config.Gateway.TargetDomain
+		}
+		useSharedTLS := hostnameUnderWildcard && r.Config.Gateway.HasDefaultListenerTLSSecret()
+
+		if l.Hostname != nil {
 			listenerCopy := l.DeepCopy()
 			if l.TLS != nil && l.TLS.Options[certificateIssuerTLSOption] != "" {
-				// Translate upstream TLS settings to downstream TLS settings
 				delete(listenerCopy.TLS.Options, certificateIssuerTLSOption)
 
 				tlsMode := gatewayv1.TLSModeTerminate
-				listenerCopy.TLS = &gatewayv1.GatewayTLSConfig{
-					Mode: &tlsMode,
-					// TODO(jreese) investigate secret deletion when Cert (gateway) is deleted
-					// See: https://cert-manager.io/docs/usage/certificate/#cleaning-up-secrets-when-certificates-are-deleted
-					CertificateRefs: []gatewayv1.SecretObjectReference{
-						{
-							Group: ptr.To(gatewayv1.Group("")),
-							Kind:  ptr.To(gatewayv1.Kind("Secret")),
-							Name:  gatewayv1.ObjectName(resourcename.GetValidDNS1123Name(fmt.Sprintf("%s-%s", upstreamGateway.Name, l.Name))),
+				if useSharedTLS {
+					listenerCopy.TLS = &gatewayv1.GatewayTLSConfig{
+						Mode: &tlsMode,
+						CertificateRefs: []gatewayv1.SecretObjectReference{
+							{
+								Group: ptr.To(gatewayv1.Group("")),
+								Kind:  ptr.To(gatewayv1.Kind("Secret")),
+								Name:  gatewayv1.ObjectName(r.Config.Gateway.DefaultListenerTLSSecretName),
+							},
 						},
-					},
+					}
+				} else {
+					// Secret name must match the Certificate created by
+					// ensureListenerCertificates for this listener.
+					listenerCopy.TLS = &gatewayv1.GatewayTLSConfig{
+						Mode: &tlsMode,
+						CertificateRefs: []gatewayv1.SecretObjectReference{
+							{
+								Group: ptr.To(gatewayv1.Group("")),
+								Kind:  ptr.To(gatewayv1.Kind("Secret")),
+								Name:  gatewayv1.ObjectName(listenerCertificateSecretName(upstreamGateway.Name, l.Name)),
+							},
+						},
+					}
 				}
 			}
 
@@ -423,6 +444,165 @@ func (r *GatewayReconciler) getDesiredDownstreamGateway(
 	downstreamGateway.Spec.Listeners = listeners
 
 	return &downstreamGateway
+}
+
+// listenerCertificateSecretName returns the deterministic Secret name that a
+// Certificate resource will populate for a given gateway listener.
+func listenerCertificateSecretName(gatewayName string, listenerName gatewayv1.SectionName) string {
+	return resourcename.GetValidDNS1123Name(fmt.Sprintf("%s-%s", gatewayName, listenerName))
+}
+
+// listenerCertificateName returns the deterministic Certificate resource name
+// for a given gateway listener.
+func listenerCertificateName(gatewayName string, listenerName gatewayv1.SectionName) string {
+	return resourcename.GetValidDNS1123Name(fmt.Sprintf("%s-%s", gatewayName, listenerName))
+}
+
+// ensureListenerCertificates creates, updates, or deletes cert-manager
+// Certificate resources for each listener that requires an individual TLS
+// certificate. Listeners whose hostnames fall under the wildcard target domain
+// use the shared TLS secret and do not get a Certificate.
+func (r *GatewayReconciler) ensureListenerCertificates(
+	ctx context.Context,
+	upstreamGateway *gatewayv1.Gateway,
+	downstreamGateway *gatewayv1.Gateway,
+	downstreamClient client.Client,
+	downstreamStrategy downstreamclient.ResourceStrategy,
+	claimedHostnames []string,
+) (result Result) {
+	logger := log.FromContext(ctx)
+	wildcardSuffix := "." + r.Config.Gateway.TargetDomain
+
+	desiredCerts := make(map[string]bool)
+
+	// Only create Certificates for listeners with custom hostnames outside the
+	// wildcard scope. Wildcard-covered listeners use the shared TLS secret and
+	// don't need individual Certificates.
+	for _, l := range upstreamGateway.Spec.Listeners {
+		if l.TLS == nil || l.TLS.Options[certificateIssuerTLSOption] == "" || l.Hostname == nil {
+			continue
+		}
+		hostname := string(*l.Hostname)
+		if !slices.Contains(claimedHostnames, hostname) {
+			continue
+		}
+		// Skip hostnames covered by the wildcard — they use the shared secret.
+		if strings.HasSuffix(hostname, wildcardSuffix) || hostname == r.Config.Gateway.TargetDomain {
+			continue
+		}
+
+		clusterIssuerName := string(l.TLS.Options[certificateIssuerTLSOption])
+		if mapped := r.Config.Gateway.ClusterIssuerMap[clusterIssuerName]; mapped != "" {
+			clusterIssuerName = mapped
+		}
+
+		certName := listenerCertificateName(upstreamGateway.Name, l.Name)
+		secretName := listenerCertificateSecretName(upstreamGateway.Name, l.Name)
+		desiredCerts[certName] = true
+
+		cert := &cmv1.Certificate{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      certName,
+				Namespace: downstreamGateway.Namespace,
+			},
+		}
+
+		if err := downstreamClient.Get(ctx, client.ObjectKeyFromObject(cert), cert); client.IgnoreNotFound(err) != nil {
+			result.Err = fmt.Errorf("failed to get Certificate %s: %w", certName, err)
+			return result
+		}
+
+		isNew := cert.CreationTimestamp.IsZero()
+		if isNew {
+			if err := downstreamStrategy.SetControllerReference(ctx, upstreamGateway, cert); err != nil {
+				result.Err = fmt.Errorf("failed to set strategy reference on Certificate %s: %w", certName, err)
+				return result
+			}
+		}
+
+		// Ensure the downstream Gateway is the controller owner. The
+		// downstream certificate solver controller walks the ownership
+		// chain (Challenge → Order → Certificate → Gateway) to locate
+		// the Gateway when creating solver HTTPRoutes for HTTP-01
+		// challenges.
+		ownerRefChanged := !metav1.IsControlledBy(cert, downstreamGateway)
+		if ownerRefChanged {
+			if err := controllerutil.SetControllerReference(downstreamGateway, cert, downstreamClient.Scheme()); err != nil {
+				result.Err = fmt.Errorf("failed to set controller reference on Certificate %s: %w", certName, err)
+				return result
+			}
+		}
+
+		desiredSpec := cmv1.CertificateSpec{
+			SecretName: secretName,
+			SecretTemplate: &cmv1.CertificateSecretTemplate{
+				Labels: map[string]string{
+					downstreamclient.UpstreamOwnerClusterNameLabel: cert.Labels[downstreamclient.UpstreamOwnerClusterNameLabel],
+				},
+			},
+			DNSNames: []string{hostname},
+			IssuerRef: cmmeta.ObjectReference{
+				Name: clusterIssuerName,
+				Kind: "ClusterIssuer",
+			},
+		}
+
+		var opResult string
+		var err error
+		if isNew {
+			cert.Spec = desiredSpec
+			err = downstreamClient.Create(ctx, cert)
+			opResult = "created"
+		} else if !equality.Semantic.DeepEqual(cert.Spec, desiredSpec) || ownerRefChanged {
+			cert.Spec = desiredSpec
+			err = downstreamClient.Update(ctx, cert)
+			opResult = "updated"
+		}
+		if err != nil {
+			result.Err = fmt.Errorf("failed to ensure Certificate %s: %w", certName, err)
+			return result
+		}
+		if opResult != "" {
+			logger.Info("Certificate reconciled", "certificate", certName, "operation", opResult)
+		}
+	}
+
+	// Clean up Certificate resources for listeners that no longer need them.
+	// Two ownership patterns are checked:
+	//  1. Certificates created by NSO via the downstream strategy (upstream-owner labels)
+	//  2. Legacy Certificates created by cert-manager's gateway-shim (controller ownerRef
+	//     to the downstream gateway, no upstream-owner labels)
+	var certList cmv1.CertificateList
+	if err := downstreamClient.List(ctx, &certList,
+		client.InNamespace(downstreamGateway.Namespace),
+	); err != nil {
+		result.Err = fmt.Errorf("failed to list Certificates: %w", err)
+		return result
+	}
+
+	for i := range certList.Items {
+		cert := &certList.Items[i]
+		if desiredCerts[cert.Name] {
+			continue
+		}
+
+		ownedByStrategy := cert.Labels[downstreamclient.UpstreamOwnerKindLabel] == KindGateway &&
+			cert.Labels[downstreamclient.UpstreamOwnerNameLabel] == upstreamGateway.Name &&
+			cert.Labels[downstreamclient.UpstreamOwnerNamespaceLabel] == upstreamGateway.Namespace
+		ownedByGatewayShim := metav1.IsControlledBy(cert, downstreamGateway)
+
+		if !ownedByStrategy && !ownedByGatewayShim {
+			continue
+		}
+
+		logger.Info("deleting stale Certificate", "certificate", cert.Name)
+		if err := downstreamClient.Delete(ctx, cert); client.IgnoreNotFound(err) != nil {
+			result.Err = fmt.Errorf("failed to delete stale Certificate %s: %w", cert.Name, err)
+			return result
+		}
+	}
+
+	return result
 }
 
 func (r *GatewayReconciler) reconcileGatewayStatus(
@@ -819,6 +999,14 @@ func (r *GatewayReconciler) finalizeGateway(
 ) (result Result) {
 	logger := log.FromContext(ctx)
 	logger.Info("finalizing gateway")
+
+	// Clean up DNS records created by this gateway
+	if r.Config.Gateway.EnableDNSIntegration {
+		if cleanupResult := r.cleanupDNSRecordSets(ctx, upstreamClient, upstreamGateway); cleanupResult.ShouldReturn() {
+			return cleanupResult
+		}
+	}
+
 	// Go through downstream http routes that are attached to the downstream
 	// gateway and remove the parentRef from the status. If it's the last parent
 	// ref, delete the downstream route. If there's a race condition on delete/create,
@@ -887,6 +1075,54 @@ func (r *GatewayReconciler) finalizeGateway(
 				return result
 			}
 		}
+	}
+
+	return result
+}
+
+// cleanupDNSRecordSets deletes all DNSRecordSet resources that were created by
+// this gateway. This is called during gateway finalization to ensure DNS records
+// are cleaned up when the gateway is deleted, since owner reference-based garbage
+// collection doesn't work (the dns-operator sets itself as the controller owner).
+func (r *GatewayReconciler) cleanupDNSRecordSets(
+	ctx context.Context,
+	upstreamClient client.Client,
+	upstreamGateway *gatewayv1.Gateway,
+) (result Result) {
+	logger := log.FromContext(ctx)
+
+	var recordSetList dnsv1alpha1.DNSRecordSetList
+	if err := upstreamClient.List(ctx, &recordSetList,
+		client.InNamespace(upstreamGateway.Namespace),
+		client.MatchingLabels{
+			labelDNSManaged:    "true",
+			labelManagedBy:     labelManagedByValue,
+			labelDNSSourceKind: KindGateway,
+			labelDNSSourceName: upstreamGateway.Name,
+			labelDNSSourceNS:   upstreamGateway.Namespace,
+		},
+	); err != nil {
+		// If the CRD doesn't exist, there's nothing to clean up
+		if apimeta.IsNoMatchError(err) {
+			return result
+		}
+		result.Err = fmt.Errorf("failed listing DNSRecordSets for cleanup: %w", err)
+		return result
+	}
+
+	for _, rs := range recordSetList.Items {
+		logger.Info("deleting DNSRecordSet during gateway finalization",
+			"name", rs.Name,
+			"hostname", rs.Annotations[annotationDNSHostname],
+		)
+		if err := upstreamClient.Delete(ctx, &rs); err != nil && !apierrors.IsNotFound(err) {
+			result.Err = fmt.Errorf("failed to delete DNSRecordSet %q: %w", rs.Name, err)
+			return result
+		}
+	}
+
+	if len(recordSetList.Items) > 0 {
+		logger.Info("deleted DNSRecordSets during gateway finalization", "count", len(recordSetList.Items))
 	}
 
 	return result
@@ -1206,7 +1442,28 @@ func (r *GatewayReconciler) ensureDownstreamHTTPRoute(
 		resourceResult, err := controllerutil.CreateOrUpdate(ctx, downstreamClient, resource, func() error {
 			switch obj := resource.(type) {
 			case *corev1.Service:
-				obj.Spec = desiredDownstreamResource.(*corev1.Service).Spec
+				desired := desiredDownstreamResource.(*corev1.Service)
+				obj.Spec.Type = desired.Spec.Type
+				obj.Spec.ClusterIP = desired.Spec.ClusterIP
+				obj.Spec.InternalTrafficPolicy = desired.Spec.InternalTrafficPolicy
+				obj.Spec.TrafficDistribution = desired.Spec.TrafficDistribution
+
+				// Merge ports by name rather than overwriting the slice, so
+				// server-defaulted fields like TargetPort are preserved.
+				for _, dp := range desired.Spec.Ports {
+					found := false
+					for i, ep := range obj.Spec.Ports {
+						if ep.Name == dp.Name {
+							obj.Spec.Ports[i].Port = dp.Port
+							obj.Spec.Ports[i].Protocol = dp.Protocol
+							found = true
+							break
+						}
+					}
+					if !found {
+						obj.Spec.Ports = append(obj.Spec.Ports, dp)
+					}
+				}
 			case *discoveryv1.EndpointSlice:
 				desiredEndpointSlice := desiredDownstreamResource.(*discoveryv1.EndpointSlice)
 				// Since endpointslices get duplicated for routes, add them as a controller
@@ -1546,6 +1803,13 @@ func (r *GatewayReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 
 	downstreamHTTPRouteClusterSource, _ := downstreamHTTPRouteSource.ForCluster("", r.DownstreamCluster)
 
+	downstreamCertificateSource := mcsource.TypedKind(
+		&cmv1.Certificate{},
+		downstreamclient.TypedEnqueueRequestForUpstreamOwner[*cmv1.Certificate](&gatewayv1.Gateway{}),
+	)
+
+	downstreamCertificateClusterSource, _ := downstreamCertificateSource.ForCluster("", r.DownstreamCluster)
+
 	builder := mcbuilder.ControllerManagedBy(mgr).
 		For(&gatewayv1.Gateway{}).
 		Watches(
@@ -1565,7 +1829,8 @@ func (r *GatewayReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 			r.listGatewaysForHTTPRouteFilterFunc,
 		).
 		WatchesRawSource(downstreamGatewayClusterSource).
-		WatchesRawSource(downstreamHTTPRouteClusterSource)
+		WatchesRawSource(downstreamHTTPRouteClusterSource).
+		WatchesRawSource(downstreamCertificateClusterSource)
 
 	if r.Config.Gateway.EnableDNSIntegration {
 		builder = builder.
@@ -1579,7 +1844,11 @@ func (r *GatewayReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 			)
 	}
 
-	return builder.Named("gateway").Complete(r)
+	return builder.
+		WithOptions(controller.TypedOptions[mcreconcile.Request]{
+			MaxConcurrentReconciles: r.Config.Gateway.MaxConcurrentReconciles,
+		}).
+		Named("gateway").Complete(r)
 }
 
 // listGatewaysAttachedByHTTPRoute is a watch predicate which finds all Gateways mentioned

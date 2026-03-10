@@ -81,23 +81,14 @@ func (r *ChallengeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 }
 
 // isGatewayRelatedIssuer checks if the given issuer reference is for a Gateway-managed
-// certificate issuer. This includes:
-// - ClusterIssuers that are mapped in the ClusterIssuerMap configuration
-// - Issuers (namespace-scoped) when PerGatewayCertificateIssuer mode is enabled
+// certificate issuer (ClusterIssuers that are mapped in the ClusterIssuerMap configuration).
 func (r *ChallengeReconciler) isGatewayRelatedIssuer(ref cmmeta.ObjectReference) bool {
-	// Check if ClusterIssuer is in the configured map
 	if ref.Kind == "ClusterIssuer" || ref.Kind == "" {
-		// Default kind is ClusterIssuer for cert-manager
 		for _, mappedIssuer := range r.Config.Gateway.ClusterIssuerMap {
 			if mappedIssuer == ref.Name {
 				return true
 			}
 		}
-	}
-
-	// In per-gateway mode, any namespace-scoped Issuer is gateway-related
-	if r.Config.Gateway.PerGatewayCertificateIssuer && ref.Kind == "Issuer" {
-		return true
 	}
 
 	return false

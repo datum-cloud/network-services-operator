@@ -75,7 +75,7 @@ func TestChallengeReconciler(t *testing.T) {
 			expectDeleted: true,
 		},
 		{
-			name: "errored challenge with Issuer in per-gateway mode is deleted",
+			name: "errored challenge with namespace-scoped Issuer is not deleted",
 			challenge: &cmacmev1.Challenge{
 				ObjectMeta: metav1.ObjectMeta{
 					Namespace: upstreamNamespace.Name,
@@ -95,11 +95,9 @@ func TestChallengeReconciler(t *testing.T) {
 				},
 			},
 			config: config.NetworkServicesOperator{
-				Gateway: config.GatewayConfig{
-					PerGatewayCertificateIssuer: true,
-				},
+				Gateway: config.GatewayConfig{},
 			},
-			expectDeleted: true,
+			expectDeleted: false,
 		},
 		{
 			name: "errored challenge with non-gateway ClusterIssuer is not deleted",
@@ -258,7 +256,6 @@ func TestChallengeReconciler(t *testing.T) {
 			},
 			config: config.NetworkServicesOperator{
 				Gateway: config.GatewayConfig{
-					PerGatewayCertificateIssuer: false,
 					ClusterIssuerMap: map[string]string{
 						"letsencrypt": "letsencrypt-prod",
 					},
@@ -368,25 +365,12 @@ func TestIsGatewayRelatedIssuer(t *testing.T) {
 			expected: true,
 		},
 		{
-			name: "Issuer in per-gateway mode returns true",
+			name: "namespace-scoped Issuer returns false",
 			ref: cmmeta.ObjectReference{
 				Kind: "Issuer",
 				Name: "gateway-issuer",
 			},
-			config: config.GatewayConfig{
-				PerGatewayCertificateIssuer: true,
-			},
-			expected: true,
-		},
-		{
-			name: "Issuer not in per-gateway mode returns false",
-			ref: cmmeta.ObjectReference{
-				Kind: "Issuer",
-				Name: "gateway-issuer",
-			},
-			config: config.GatewayConfig{
-				PerGatewayCertificateIssuer: false,
-			},
+			config:   config.GatewayConfig{},
 			expected: false,
 		},
 		{

@@ -38,6 +38,7 @@ import (
 	"go.datum.net/network-services-operator/internal/config"
 	downstreamclient "go.datum.net/network-services-operator/internal/downstreamclient"
 	gatewaystatus "go.datum.net/network-services-operator/internal/gatewayapi/status"
+	gatewayutil "go.datum.net/network-services-operator/internal/util/gateway"
 	"go.datum.net/network-services-operator/internal/util/resourcename"
 )
 
@@ -294,13 +295,18 @@ func (r *TrafficProtectionPolicyReconciler) checkHTTPSListenerCertificatesReady(
 ) (*certificateReadinessResult, error) {
 	logger := log.FromContext(ctx)
 
-	// Collect unique HTTPS listeners from attachments
+	// Collect unique HTTPS listeners from attachments, skipping default
+	// listeners that use a shared TLS secret (which is pre-provisioned and
+	// doesn't have a per-listener Certificate resource).
 	httpsListeners := make(map[string]struct{})
 	for _, attachment := range attachments {
 		if attachment.Listener != nil {
 			// Check if this specific listener is HTTPS
 			for _, l := range attachment.Gateway.Spec.Listeners {
 				if l.Name == *attachment.Listener && l.Protocol == gatewayv1.HTTPSProtocolType {
+					if gatewayutil.IsDefaultListener(l) && r.Config.Gateway.HasDefaultListenerTLSSecret() {
+						continue
+					}
 					certName := resourcename.GetValidDNS1123Name(fmt.Sprintf("%s-%s", attachment.Gateway.Name, l.Name))
 					httpsListeners[certName] = struct{}{}
 				}
@@ -309,6 +315,9 @@ func (r *TrafficProtectionPolicyReconciler) checkHTTPSListenerCertificatesReady(
 			// Policy targets all listeners on the gateway
 			for _, l := range attachment.Gateway.Spec.Listeners {
 				if l.Protocol == gatewayv1.HTTPSProtocolType {
+					if gatewayutil.IsDefaultListener(l) && r.Config.Gateway.HasDefaultListenerTLSSecret() {
+						continue
+					}
 					certName := resourcename.GetValidDNS1123Name(fmt.Sprintf("%s-%s", attachment.Gateway.Name, l.Name))
 					httpsListeners[certName] = struct{}{}
 				}

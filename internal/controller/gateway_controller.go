@@ -514,7 +514,19 @@ func (r *GatewayReconciler) ensureListenerCertificates(
 
 		isNew := cert.CreationTimestamp.IsZero()
 		if isNew {
+			// Use the downstream strategy for anchor-based ownership tracking
+			// (labels + anchor ConfigMap) so cleanup logic can find these Certs.
 			if err := downstreamStrategy.SetControllerReference(ctx, upstreamGateway, cert); err != nil {
+				result.Err = fmt.Errorf("failed to set strategy reference on Certificate %s: %w", certName, err)
+				return result
+			}
+			// Also set the downstream Gateway as the controller owner. The
+			// downstream certificate solver controller walks the ownership
+			// chain (Challenge → Order → Certificate → Gateway) to locate
+			// the Gateway when creating solver HTTPRoutes for HTTP-01
+			// challenges. Without this, the solver skips the Certificate
+			// because it cannot resolve the anchor ConfigMap to a Gateway.
+			if err := controllerutil.SetControllerReference(downstreamGateway, cert, downstreamClient.Scheme()); err != nil {
 				result.Err = fmt.Errorf("failed to set controller reference on Certificate %s: %w", certName, err)
 				return result
 			}

@@ -13,6 +13,10 @@ import (
 // - 5-char alphabet component: 45M
 // - ~2800 words, picking 2 at a time (ordered, permutation): 7.5M
 // - 45M * 7.5M ~= 340T
+//
+// NB: A seed will generate the same return value each time. However,
+// if the word list or charset is changed below, then strings
+// generated after that will likely be different given that same seed.
 func WordsAndEntropy(suffix, seedString string) string {
 	digest := sha256.Sum256([]byte(seedString))
 	charset := "bcdfghjkmnpqrstvwxyz23456789"

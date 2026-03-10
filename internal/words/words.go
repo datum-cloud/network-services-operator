@@ -6,11 +6,11 @@ import (
 	"fmt"
 )
 
-// Create a deterministic string using a mixture of two english words and 5
-// bytes of entropy (no vowels, no ambiguous chars) derived from a seed.
+// Create a deterministic string using two english words and 5 hash-derived
+// characters (no vowels, no ambiguous chars) from a seed string.
 //
-// This provides 340 trillion possible strings:
-// - 5 char hash: 45M
+// This yields an output space of roughly 340 trillion strings:
+// - 5-char alphabet component: 45M
 // - ~2800 words, picking 2 at a time (ordered, permutation): 7.5M
 // - 45M * 7.5M ~= 340T
 func WordsAndEntropy(suffix, seedString string) string {

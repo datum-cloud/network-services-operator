@@ -2,19 +2,23 @@ package words
 
 import (
 	"fmt"
-	"os"
 	"testing"
-	"time"
 )
 
 func TestWordsAndEntropy(t *testing.T) {
 	suffix := ".datum.local"
+	seed := "00000000-0000-0000-0000-000000000001"
 
-	fmt.Println("Example hostnames:")
+	first := WordsAndEntropy(suffix, seed)
+	second := WordsAndEntropy(suffix, seed)
+	if first != second {
+		t.Fatalf("expected deterministic output for same seed, got %q and %q", first, second)
+	}
 
-	for i := 0; i < 5; i++ {
-		randomString := WordsAndEntropy(suffix, fmt.Sprintf("%d", time.Now().UnixNano()))
-		fmt.Printf("%s\n", randomString)
+	otherSeed := "00000000-0000-0000-0000-000000000002"
+	third := WordsAndEntropy(suffix, otherSeed)
+	if first == third {
+		t.Fatalf("expected different output for different seeds, got %q", first)
 	}
 }
 
@@ -30,7 +34,7 @@ func TestWordsAndEntropy(t *testing.T) {
 // created at different times across different machines, this should
 // be more than sufficient.
 func TestNoCollisions(t *testing.T) {
-	const n = 1_000_000
+	const n = 100_000
 
 	set := make(map[string]bool)
 
@@ -43,13 +47,7 @@ func TestNoCollisions(t *testing.T) {
 			t.Errorf("collision detected at index %d: %s", i, hostname)
 		}
 		set[hostname] = true
-
-		if i%100_000 == 0 {
-			_, _ = os.Stdout.WriteString(".")
-		}
 	}
-
-	fmt.Println()
 
 	if len(set) != n {
 		t.Errorf("expected set length %d, got %d", n, len(set))

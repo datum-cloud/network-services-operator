@@ -1,37 +1,31 @@
 package words
 
 import (
+	"crypto/sha256"
+	"encoding/binary"
 	"fmt"
-	"math/rand"
 )
 
-// Generate a number out of a string
-func stringInt64(s string) int64 {
-	var n int64
-	for _, b := range []byte(s) {
-		n = n*31 + int64(b)
-	}
-	return n
-}
-
-// Create a random string using a mixture of two english words and 5
-// bytes of entropy (no vowels, no ambiguous chars).
+// Create a deterministic string using a mixture of two english words and 5
+// bytes of entropy (no vowels, no ambiguous chars) derived from a seed.
 //
 // This provides 340 trillion possible strings:
 // - 5 char hash: 45M
 // - ~2800 words, picking 2 at a time (ordered, permutation): 7.5M
 // - 45M * 7.5M ~= 340T
 func WordsAndEntropy(suffix, seedString string) string {
-	r := rand.New(rand.NewSource(stringInt64(seedString)))
+	digest := sha256.Sum256([]byte(seedString))
+	charset := "bcdfghjkmnpqrstvwxyz23456789"
 
 	hashChars := make([]byte, 5)
-	charset := "bcdfghjkmnpqrstvwxyz23456789"
 	for i := range hashChars {
-		hashChars[i] = charset[r.Intn(len(charset))]
+		hashChars[i] = charset[int(digest[i])%len(charset)]
 	}
 
-	word1 := DictionaryWords[r.Intn(len(DictionaryWords))]
-	word2 := DictionaryWords[r.Intn(len(DictionaryWords))]
+	word1Index := int(binary.BigEndian.Uint16(digest[5:7])) % len(DictionaryWords)
+	word2Index := int(binary.BigEndian.Uint16(digest[7:9])) % len(DictionaryWords)
+	word1 := DictionaryWords[word1Index]
+	word2 := DictionaryWords[word2Index]
 
 	return fmt.Sprintf("%s-%s-%s%s", word1, word2, string(hashChars), suffix)
 }

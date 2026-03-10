@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -577,7 +578,7 @@ func (r *GatewayReconciler) ensureListenerCertificates(
 
 		// Check if an existing Certificate is stuck in a failed state and
 		// should be deleted so we can recreate it fresh on the next reconcile.
-		if !isNew && opResult != "created" {
+		if !isNew {
 			requeueAfter, gwChanged := r.reissueFailedCertificate(ctx, cert, certName, downstreamGateway, downstreamClient)
 			if gwChanged {
 				gatewayNeedsUpdate = true
@@ -717,8 +718,10 @@ func getReissuanceCount(gw *gatewayv1.Gateway, certName string) int {
 	if gw.Annotations == nil {
 		return 0
 	}
-	var count int
-	fmt.Sscanf(gw.Annotations[reissuanceAnnotationKey(certName)], "%d", &count)
+	count, err := strconv.Atoi(gw.Annotations[reissuanceAnnotationKey(certName)])
+	if err != nil {
+		return 0
+	}
 	return count
 }
 

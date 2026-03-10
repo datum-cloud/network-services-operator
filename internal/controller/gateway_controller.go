@@ -669,8 +669,8 @@ func (r *GatewayReconciler) ensureHostnamesClaimed(
 	// but is considered sufficient for now.
 
 	for _, hostname := range verifiedHostnames {
-		// No accounting for the gateway DNS address hostname
-		if hostname == r.Config.Gateway.GatewayDNSAddress(upstreamGateway) {
+		// No accounting for platform-managed gateway hostnames.
+		if r.isDatumManagedGatewayHostname(upstreamGateway, hostname) {
 			claimedHostnames = append(claimedHostnames, hostname)
 			continue
 		}
@@ -748,6 +748,28 @@ func (r *GatewayReconciler) ensureHostnamesClaimed(
 	slices.Sort(claimedHostnames)
 
 	return verifiedHostnames, claimedHostnames, notClaimedHostnames, nil
+}
+
+func (r *GatewayReconciler) isDatumManagedGatewayHostname(upstreamGateway *gatewayv1.Gateway, hostname string) bool {
+	targetDomain := r.Config.Gateway.TargetDomain
+	gatewayUID := string(upstreamGateway.UID)
+	legacyUIDWithoutDashes := strings.ReplaceAll(gatewayUID, "-", "")
+
+	managedBaseHostnames := []string{
+		r.Config.Gateway.GatewayDNSAddress(upstreamGateway),
+		fmt.Sprintf("%s.%s", legacyUIDWithoutDashes, targetDomain),
+		fmt.Sprintf("%s.%s", gatewayUID, targetDomain),
+	}
+
+	for _, managedHostname := range managedBaseHostnames {
+		if hostname == managedHostname ||
+			hostname == fmt.Sprintf("v4.%s", managedHostname) ||
+			hostname == fmt.Sprintf("v6.%s", managedHostname) {
+			return true
+		}
+	}
+
+	return false
 }
 
 // isHostnameVerified returns hostnames found on listeners that are verified. A

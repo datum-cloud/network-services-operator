@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strings"
 	"testing"
 
 	cmv1 "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
@@ -14,6 +15,7 @@ import (
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/uuid"
 	"k8s.io/client-go/kubernetes/scheme"
@@ -1016,6 +1018,44 @@ func TestEnsureHostnamesClaimed(t *testing.T) {
 				}
 				assert.NoError(t, cl.Get(ctx, domainObjectKey, &networkingv1alpha.Domain{}), "expected to find a domain, but encountered an errro")
 			},
+		},
+		{
+			name: "legacy and current datum-managed hostnames bypass claiming",
+			upstreamGateway: func() *gatewayv1.Gateway {
+				legacyUID := types.UID("11111111-1111-1111-1111-111111111111")
+				legacyHostname := fmt.Sprintf("%s.%s", strings.ReplaceAll(string(legacyUID), "-", ""), testConfig.Gateway.TargetDomain)
+				gateway := newGateway(testConfig, upstreamNamespace.Name, "test", func(g *gatewayv1.Gateway) {
+					g.UID = legacyUID
+					g.Spec.Listeners = []gatewayv1.Listener{
+						{
+							Name:     gatewayutil.DefaultHTTPListenerName,
+							Port:     DefaultHTTPPort,
+							Protocol: gatewayv1.HTTPProtocolType,
+							Hostname: ptr.To(gatewayv1.Hostname(legacyHostname)),
+						},
+					}
+				})
+				gateway.Status.Addresses = []gatewayv1.GatewayStatusAddress{
+					{
+						Type:  ptr.To(gatewayv1.HostnameAddressType),
+						Value: legacyHostname,
+					},
+				}
+				return gateway
+			}(),
+			existingDownstreamObjects: []client.Object{
+				&corev1.ConfigMap{
+					ObjectMeta: metav1.ObjectMeta{
+						Namespace: testConfig.Gateway.DownstreamHostnameAccountingNamespace,
+						Name:      "11111111111111111111111111111111.test-suite.com",
+					},
+					Data: map[string]string{
+						"owner": "some/other/gateway",
+					},
+				},
+			},
+			expectedVerifiedHostnames: []string{"11111111111111111111111111111111.test-suite.com"},
+			expectedClaimedHostnames:  []string{"11111111111111111111111111111111.test-suite.com"},
 		},
 		{
 			name: "hostname matches address",

@@ -280,6 +280,7 @@ func TestEnsureDownstreamGatewayWildcardCert(t *testing.T) {
 		existingUpstreamObjects   []client.Object
 		existingDownstreamObjects []client.Object
 		assert                    func(t *testing.T, upstreamGateway, downstreamGateway *gatewayv1.Gateway)
+		assertDownstream          func(t *testing.T, downstreamClient client.Client, downstreamGateway *gatewayv1.Gateway)
 	}{
 		{
 			name:                 "default https listener uses shared TLS secret",
@@ -377,6 +378,19 @@ func TestEnsureDownstreamGatewayWildcardCert(t *testing.T) {
 				assert.Empty(t, downstreamGateway.Annotations["cert-manager.io/cluster-issuer"],
 					"cert-manager annotation should not be set; Certificates are created directly",
 				)
+			},
+			assertDownstream: func(t *testing.T, downstreamClient client.Client, downstreamGateway *gatewayv1.Gateway) {
+				var cert cmv1.Certificate
+				certKey := client.ObjectKey{
+					Namespace: downstreamGateway.Namespace,
+					Name:      listenerCertificateName("test-gw", "https-hostname-0"),
+				}
+				if assert.NoError(t, downstreamClient.Get(context.Background(), certKey, &cert), "Certificate should exist") {
+					assert.True(t,
+						metav1.IsControlledBy(&cert, downstreamGateway),
+						"Certificate should have downstream Gateway as controller owner so the solver controller can find it",
+					)
+				}
 			},
 		},
 		{
@@ -547,6 +561,10 @@ func TestEnsureDownstreamGatewayWildcardCert(t *testing.T) {
 				updatedUpstreamGateway := &gatewayv1.Gateway{}
 				assert.NoError(t, fakeUpstreamClient.Get(ctx, client.ObjectKeyFromObject(tt.upstreamGateway), updatedUpstreamGateway))
 				tt.assert(t, updatedUpstreamGateway, downstreamGateway)
+			}
+
+			if tt.assertDownstream != nil {
+				tt.assertDownstream(t, fakeDownstreamClient, downstreamGateway)
 			}
 		})
 	}

@@ -934,7 +934,7 @@ func managedGatewayHostnameFromStatus(
 		if ptr.Deref(addr.Type, "") != gatewayv1.HostnameAddressType {
 			continue
 		}
-		if !(addr.Value == targetDomain || strings.HasSuffix(addr.Value, suffix)) {
+		if addr.Value != targetDomain && !strings.HasSuffix(addr.Value, suffix) {
 			continue
 		}
 		if strings.HasPrefix(addr.Value, "v4.") || strings.HasPrefix(addr.Value, "v6.") {

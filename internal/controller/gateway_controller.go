@@ -178,7 +178,7 @@ func (r *GatewayReconciler) prepareUpstreamGateway(gateway *gatewayv1.Gateway) (
 	// the defaulting webhook as the UID is not available, but we still want to
 	// let users create gateways without listeners and receive sane defaults.
 
-	gatewayDefaultHostname := ptr.To(gatewayv1.Hostname(r.Config.Gateway.GatewayDNSAddress(gateway)))
+	gatewayDefaultHostname := ptr.To(gatewayv1.Hostname(r.gatewayCanonicalHostname(gateway)))
 
 	defaultHTTPListener := gatewayutil.GetListenerByName(gateway.Spec.Listeners, gatewayutil.DefaultHTTPListenerName)
 	if defaultHTTPListener != nil && defaultHTTPListener.Hostname == nil {
@@ -221,7 +221,7 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 			}
 		}
 	} else {
-		gatewayDNSAddress := r.Config.Gateway.GatewayDNSAddress(upstreamGateway)
+		gatewayDNSAddress := r.gatewayCanonicalHostname(upstreamGateway)
 
 		// targetDomainHostnames are default hostnames that are unique to each gateway, and
 		// will have DNS records created for them. Any custom hostnames provided in
@@ -756,6 +756,7 @@ func (r *GatewayReconciler) isDatumManagedGatewayHostname(upstreamGateway *gatew
 	legacyUIDWithoutDashes := strings.ReplaceAll(gatewayUID, "-", "")
 
 	managedBaseHostnames := []string{
+		r.gatewayCanonicalHostname(upstreamGateway),
 		r.Config.Gateway.GatewayDNSAddress(upstreamGateway),
 		fmt.Sprintf("%s.%s", legacyUIDWithoutDashes, targetDomain),
 		fmt.Sprintf("%s.%s", gatewayUID, targetDomain),
@@ -785,7 +786,7 @@ func (r *GatewayReconciler) ensureHostnameVerification(
 ) ([]string, error) {
 	logger := log.FromContext(ctx)
 
-	gatewayDefaultHostname := r.Config.Gateway.GatewayDNSAddress(upstreamGateway)
+	gatewayDefaultHostname := r.gatewayCanonicalHostname(upstreamGateway)
 
 	// Allow hostnames which have been successfully configured on the downstream
 	// gateway stay on the gateway, regardless of whether or not there is a
@@ -906,6 +907,43 @@ func (r *GatewayReconciler) ensureHostnameVerification(
 	slices.Sort(verifiedHostnamesSlice)
 
 	return verifiedHostnamesSlice, nil
+}
+
+// gatewayCanonicalHostname returns the managed canonical hostname for a gateway.
+// It prefers an existing status address in the configured target domain to avoid
+// renaming already-programmed gateways during hostname format transitions.
+func (r *GatewayReconciler) gatewayCanonicalHostname(upstreamGateway *gatewayv1.Gateway) string {
+	if existing := managedGatewayHostnameFromStatus(
+		upstreamGateway.Status.Addresses,
+		r.Config.Gateway.TargetDomain,
+	); existing != "" {
+		return existing
+	}
+	return r.Config.Gateway.GatewayDNSAddress(upstreamGateway)
+}
+
+// managedGatewayHostnameFromStatus returns the base hostname address (not v4/v6
+// variants) in the target domain from gateway status, if present.
+func managedGatewayHostnameFromStatus(
+	addresses []gatewayv1.GatewayStatusAddress,
+	targetDomain string,
+) string {
+	suffix := "." + targetDomain
+
+	for _, addr := range addresses {
+		if ptr.Deref(addr.Type, "") != gatewayv1.HostnameAddressType {
+			continue
+		}
+		if !(addr.Value == targetDomain || strings.HasSuffix(addr.Value, suffix)) {
+			continue
+		}
+		if strings.HasPrefix(addr.Value, "v4.") || strings.HasPrefix(addr.Value, "v6.") {
+			continue
+		}
+		return addr.Value
+	}
+
+	return ""
 }
 
 func (r *GatewayReconciler) ensureDownstreamGatewayDNSEndpoints(

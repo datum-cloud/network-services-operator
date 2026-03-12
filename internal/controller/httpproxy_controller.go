@@ -553,7 +553,7 @@ func (r *HTTPProxyReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 			downstreamclient.TypedEnqueueRequestForUpstreamOwner[*envoygatewayv1alpha1.EnvoyPatchPolicy](&networkingv1alpha.HTTPProxy{}),
 		)
 
-		downstreamPolicyClusterSource, _ := downstreamPolicySource.ForCluster("", r.DownstreamCluster)
+		downstreamPolicyClusterSource, _, _ := downstreamPolicySource.ForCluster("", r.DownstreamCluster)
 		builder = builder.WatchesRawSource(downstreamPolicyClusterSource)
 
 		// Watch downstream cert-manager Certificates so HTTPProxy certificate status
@@ -562,7 +562,7 @@ func (r *HTTPProxyReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 			newUnstructuredForGVK(certificateGVK),
 			r.enqueueHTTPProxyForDownstreamCertificate(),
 		)
-		downstreamCertificateClusterSource, _ := downstreamCertificateSource.ForCluster("", r.DownstreamCluster)
+		downstreamCertificateClusterSource, _, _ := downstreamCertificateSource.ForCluster("", r.DownstreamCluster)
 		builder = builder.WatchesRawSource(downstreamCertificateClusterSource)
 	}
 

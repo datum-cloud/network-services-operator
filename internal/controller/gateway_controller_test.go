@@ -245,6 +245,47 @@ func TestEnsureDownstreamGateway(t *testing.T) {
 	}
 }
 
+func TestPrepareUpstreamGateway_UsesExistingCanonicalHostname(t *testing.T) {
+	testConfig := config.NetworkServicesOperator{
+		Gateway: config.GatewayConfig{
+			TargetDomain: "test-suite.com",
+		},
+	}
+
+	legacyUID := types.UID("11111111-1111-1111-1111-111111111111")
+	legacyHostname := "11111111111111111111111111111111.test-suite.com"
+	gateway := newGateway(testConfig, "test", "test", func(g *gatewayv1.Gateway) {
+		g.UID = legacyUID
+		g.Status.Addresses = []gatewayv1.GatewayStatusAddress{
+			{
+				Type:  ptr.To(gatewayv1.HostnameAddressType),
+				Value: legacyHostname,
+			},
+		}
+		// Simulate an object where listener hostnames are still nil and need defaulting.
+		for i := range g.Spec.Listeners {
+			g.Spec.Listeners[i].Hostname = nil
+		}
+	})
+
+	reconciler := &GatewayReconciler{
+		Config: testConfig,
+	}
+
+	needsUpdate := reconciler.prepareUpstreamGateway(gateway)
+	assert.True(t, needsUpdate, "gateway should be updated to assign listener hostnames")
+
+	defaultHTTPListener := gatewayutil.GetListenerByName(gateway.Spec.Listeners, gatewayutil.DefaultHTTPListenerName)
+	require.NotNil(t, defaultHTTPListener)
+	require.NotNil(t, defaultHTTPListener.Hostname)
+	assert.Equal(t, gatewayv1.Hostname(legacyHostname), *defaultHTTPListener.Hostname)
+
+	defaultHTTPSListener := gatewayutil.GetListenerByName(gateway.Spec.Listeners, gatewayutil.DefaultHTTPSListenerName)
+	require.NotNil(t, defaultHTTPSListener)
+	require.NotNil(t, defaultHTTPSListener.Hostname)
+	assert.Equal(t, gatewayv1.Hostname(legacyHostname), *defaultHTTPSListener.Hostname)
+}
+
 func TestEnsureDownstreamGatewayWildcardCert(t *testing.T) {
 	testScheme := runtime.NewScheme()
 	assert.NoError(t, scheme.AddToScheme(testScheme))
@@ -1127,14 +1168,15 @@ func TestEnsureHostnamesClaimed(t *testing.T) {
 			)
 
 			if assert.NoError(t, err, "unexpected error calling ensureHostnameVerification") {
-				expectedVerifiedHostnames := append(
-					tt.expectedVerifiedHostnames,
-					testConfig.Gateway.GatewayDNSAddress(tt.upstreamGateway),
-				)
-				expectedClaimedHostnames := append(
-					tt.expectedClaimedHostnames,
-					testConfig.Gateway.GatewayDNSAddress(tt.upstreamGateway),
-				)
+				canonicalHostname := reconciler.gatewayCanonicalHostname(tt.upstreamGateway)
+				expectedVerifiedHostnames := slices.Clone(tt.expectedVerifiedHostnames)
+				if !slices.Contains(expectedVerifiedHostnames, canonicalHostname) {
+					expectedVerifiedHostnames = append(expectedVerifiedHostnames, canonicalHostname)
+				}
+				expectedClaimedHostnames := slices.Clone(tt.expectedClaimedHostnames)
+				if !slices.Contains(expectedClaimedHostnames, canonicalHostname) {
+					expectedClaimedHostnames = append(expectedClaimedHostnames, canonicalHostname)
+				}
 				slices.Sort(expectedVerifiedHostnames)
 				slices.Sort(expectedClaimedHostnames)
 				assert.EqualValues(t, expectedVerifiedHostnames, verifiedHostnames, "expected verified hostnames mismatch")

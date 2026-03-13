@@ -395,6 +395,9 @@ func (r *HTTPProxyReconciler) reconcileHTTPProxyHostnameStatus(
 	}
 	logger.Info("updating hostname status")
 
+	// CanonicalHostname is the platform-managed hostname we create for the HTTPProxy.
+	httpProxyCopy.Status.CanonicalHostname = r.Config.Gateway.GatewayDNSAddress(gateway)
+
 	var hostnames []gatewayv1.Hostname
 	currentListenerStatus := map[gatewayv1.SectionName]gatewayv1.ListenerStatus{}
 	for _, listener := range gateway.Status.Listeners {

@@ -1,0 +1,26 @@
+apiVersion: quota.miloapis.com/v1alpha1
+kind: ClaimCreationPolicy
+metadata:
+  name: project-backendtlspolicy-claim-policy
+  labels:
+    app.kubernetes.io/name: network-services-operator
+    app.kubernetes.io/component: quota-system
+spec:
+  trigger:
+    resource:
+      apiVersion: gateway.networking.k8s.io/v1
+      kind: BackendTLSPolicy
+  target:
+    resourceClaimTemplate:
+      metadata:
+        name: "backendtlspolicy-{{ trigger.metadata.name }}"
+        namespace: "{{requestInfo.namespace}}"
+        labels:
+          app.kubernetes.io/name: network-services-operator
+          app.kubernetes.io/component: quota-system
+        annotations:
+          kubernetes.io/description: "Automatic quota claim for BackendTLSPolicy creation"
+      spec:
+        requests:
+          - resourceType: gateway.networking.k8s.io/backendtlspolicies
+            amount: 1

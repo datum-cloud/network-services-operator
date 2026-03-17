@@ -1,0 +1,25 @@
+apiVersion: quota.miloapis.com/v1alpha1
+kind: ResourceRegistration
+metadata:
+  name: networks-per-project
+  labels:
+    app.kubernetes.io/name: network-services-operator
+    app.kubernetes.io/component: quota-system
+spec:
+  consumerType:
+    apiGroup: resourcemanager.miloapis.com
+    kind: Project
+
+  type: Entity
+
+  resourceType: networking.datumapis.com/networks
+
+  description: "Maximum number of networks that can be created within a project"
+
+  baseUnit: network
+  displayUnit: networks
+  unitConversionFactor: 1
+
+  claimingResources:
+    - apiGroup: networking.datumapis.com
+      kind: Network

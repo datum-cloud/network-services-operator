@@ -1,0 +1,25 @@
+apiVersion: quota.miloapis.com/v1alpha1
+kind: ResourceRegistration
+metadata:
+  name: connectors-per-project
+  labels:
+    app.kubernetes.io/name: network-services-operator
+    app.kubernetes.io/component: quota-system
+spec:
+  consumerType:
+    apiGroup: resourcemanager.miloapis.com
+    kind: Project
+
+  type: Entity
+
+  resourceType: networking.datumapis.com/connectors
+
+  description: "Maximum number of connectors that can be created within a project"
+
+  baseUnit: connector
+  displayUnit: connectors
+  unitConversionFactor: 1
+
+  claimingResources:
+    - apiGroup: networking.datumapis.com
+      kind: Connector

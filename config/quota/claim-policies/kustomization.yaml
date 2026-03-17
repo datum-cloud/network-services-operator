@@ -1,0 +1,22 @@
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+sortOptions:
+  order: fifo
+
+resources:
+  - backend-claim-policy.yaml
+  - backendtlspolicy-claim-policy.yaml
+  - backendtrafficpolicy-claim-policy.yaml
+  - connector-claim-policy.yaml
+  - connectoradvertisement-claim-policy.yaml
+  - domain-claim-policy.yaml
+  - endpointslice-claim-policy.yaml
+  - gateway-claim-policy.yaml
+  - httpproxy-claim-policy.yaml
+  - httproute-claim-policy.yaml
+  - httproutefilter-claim-policy.yaml
+  - network-claim-policy.yaml
+  - networkpolicy-claim-policy.yaml
+  - securitypolicy-claim-policy.yaml
+  - trafficprotectionpolicy-claim-policy.yaml

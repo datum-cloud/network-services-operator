@@ -1,0 +1,26 @@
+apiVersion: quota.miloapis.com/v1alpha1
+kind: ClaimCreationPolicy
+metadata:
+  name: project-backend-claim-policy
+  labels:
+    app.kubernetes.io/name: network-services-operator
+    app.kubernetes.io/component: quota-system
+spec:
+  trigger:
+    resource:
+      apiVersion: gateway.envoyproxy.io/v1alpha1
+      kind: Backend
+  target:
+    resourceClaimTemplate:
+      metadata:
+        name: "backend-{{ trigger.metadata.name }}"
+        namespace: "{{requestInfo.namespace}}"
+        labels:
+          app.kubernetes.io/name: network-services-operator
+          app.kubernetes.io/component: quota-system
+        annotations:
+          kubernetes.io/description: "Automatic quota claim for Backend creation"
+      spec:
+        requests:
+          - resourceType: gateway.envoyproxy.io/backends
+            amount: 1

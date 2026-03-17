@@ -1,0 +1,26 @@
+apiVersion: quota.miloapis.com/v1alpha1
+kind: ClaimCreationPolicy
+metadata:
+  name: project-backendtrafficpolicy-claim-policy
+  labels:
+    app.kubernetes.io/name: network-services-operator
+    app.kubernetes.io/component: quota-system
+spec:
+  trigger:
+    resource:
+      apiVersion: gateway.envoyproxy.io/v1alpha1
+      kind: BackendTrafficPolicy
+  target:
+    resourceClaimTemplate:
+      metadata:
+        name: "backendtrafficpolicy-{{ trigger.metadata.name }}"
+        namespace: "{{requestInfo.namespace}}"
+        labels:
+          app.kubernetes.io/name: network-services-operator
+          app.kubernetes.io/component: quota-system
+        annotations:
+          kubernetes.io/description: "Automatic quota claim for BackendTrafficPolicy creation"
+      spec:
+        requests:
+          - resourceType: gateway.envoyproxy.io/backendtrafficpolicies
+            amount: 1

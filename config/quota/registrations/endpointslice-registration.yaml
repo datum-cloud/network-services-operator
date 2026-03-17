@@ -1,0 +1,25 @@
+apiVersion: quota.miloapis.com/v1alpha1
+kind: ResourceRegistration
+metadata:
+  name: endpointslices-per-project
+  labels:
+    app.kubernetes.io/name: network-services-operator
+    app.kubernetes.io/component: quota-system
+spec:
+  consumerType:
+    apiGroup: resourcemanager.miloapis.com
+    kind: Project
+
+  type: Entity
+
+  resourceType: discovery.k8s.io/endpointslices
+
+  description: "Maximum number of endpoint slices that can be created within a project"
+
+  baseUnit: slice
+  displayUnit: slices
+  unitConversionFactor: 1
+
+  claimingResources:
+    - apiGroup: discovery.k8s.io
+      kind: EndpointSlice

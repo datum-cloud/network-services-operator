@@ -16,6 +16,5 @@ resources:
   - httpproxy-claim-policy.yaml
   - httproute-claim-policy.yaml
   - httproutefilter-claim-policy.yaml
-  - network-claim-policy.yaml
   - securitypolicy-claim-policy.yaml
   - trafficprotectionpolicy-claim-policy.yaml

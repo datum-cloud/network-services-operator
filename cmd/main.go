@@ -28,11 +28,13 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	gatewayv1alpha2 "sigs.k8s.io/gateway-api/apis/v1alpha2"
 	gatewayv1alpha3 "sigs.k8s.io/gateway-api/apis/v1alpha3"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
+	"sigs.k8s.io/multicluster-runtime/pkg/manager/coordinator/sharded"
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcsingle "sigs.k8s.io/multicluster-runtime/providers/single"
 
@@ -76,6 +78,12 @@ func main() {
 	var enableLeaderElection bool
 	var leaderElectionNamespace string
 	var probeAddr string
+	var enableClusterSharding bool
+	var clusterShardingLeaseNamespace string
+	var clusterShardingLeasePrefix string
+	var clusterShardingPeerWeight uint
+	var singletonControllersLeaderElection bool
+	var singletonControllersLeaderElectionID string
 
 	var serverConfigFile string
 
@@ -84,6 +92,42 @@ func main() {
 		"Enable leader election for controller manager. "+
 			"Enabling this will ensure there is only one active controller manager.")
 	flag.StringVar(&leaderElectionNamespace, "leader-elect-namespace", "", "The namespace to use for leader election.")
+	flag.BoolVar(
+		&enableClusterSharding,
+		"cluster-sharding-enabled",
+		false,
+		"Enable multicluster controller sharding via per-cluster coordination leases.",
+	)
+	flag.StringVar(
+		&clusterShardingLeaseNamespace,
+		"cluster-sharding-lease-namespace",
+		"kube-system",
+		"Namespace for controller cluster sharding leases.",
+	)
+	flag.StringVar(
+		&clusterShardingLeasePrefix,
+		"cluster-sharding-lease-prefix",
+		"mcr-shard",
+		"Lease name prefix for controller cluster sharding.",
+	)
+	flag.UintVar(
+		&clusterShardingPeerWeight,
+		"cluster-sharding-peer-weight",
+		1,
+		"Relative shard weight for this controller instance.",
+	)
+	flag.BoolVar(
+		&singletonControllersLeaderElection,
+		"singleton-controllers-leader-elect",
+		true,
+		"Enable leader election for singleton downstream controllers (Challenge and GatewayDownstreamCertificateSolver).",
+	)
+	flag.StringVar(
+		&singletonControllersLeaderElectionID,
+		"singleton-controllers-leader-election-id",
+		"6a7d51cc.datumapis.com-singleton",
+		"Leader election ID for singleton downstream controllers.",
+	)
 
 	opts := zap.Options{
 		Development: true,
@@ -157,12 +201,57 @@ func main() {
 	renewDeadline := serverConfig.LeaderElection.RenewDeadline.Duration
 	retryPeriod := serverConfig.LeaderElection.RetryPeriod.Duration
 
+	mcManagerOptions := []mcmanager.Option{}
+	if enableClusterSharding {
+		setupLog.Info(
+			"enabling cluster sharding coordinator",
+			"leaseNamespace",
+			clusterShardingLeaseNamespace,
+			"leasePrefix",
+			clusterShardingLeasePrefix,
+			"peerWeight",
+			clusterShardingPeerWeight,
+		)
+
+		clusterShardingOptions := []sharded.Option{
+			sharded.WithShardLease(clusterShardingLeaseNamespace, clusterShardingLeasePrefix),
+			sharded.WithPerClusterLease(true),
+		}
+		if clusterShardingPeerWeight > 0 {
+			clusterShardingOptions = append(
+				clusterShardingOptions,
+				sharded.WithPeerWeight(uint32(clusterShardingPeerWeight)),
+			)
+		}
+
+		mcManagerOptions = append(
+			mcManagerOptions,
+			mcmanager.WithCoordinator(
+				sharded.New(
+					deploymentCluster.GetClient(),
+					ctrl.Log.WithName("cluster-sharding-coordinator"),
+					clusterShardingOptions...,
+				),
+			),
+		)
+	}
+
+	primaryManagerLeaderElection := enableLeaderElection
+	if enableClusterSharding && enableLeaderElection {
+		setupLog.Info(
+			"disabling primary manager leader election while cluster sharding is enabled",
+			"singletonControllersLeaderElection",
+			singletonControllersLeaderElection,
+		)
+		primaryManagerLeaderElection = false
+	}
+
 	mgr, err := mcmanager.New(cfg, provider, ctrl.Options{
 		Scheme:                  scheme,
 		Metrics:                 metricsServerOptions,
 		WebhookServer:           webhookServer,
 		HealthProbeBindAddress:  probeAddr,
-		LeaderElection:          enableLeaderElection,
+		LeaderElection:          primaryManagerLeaderElection,
 		LeaderElectionID:        "6a7d51cc.datumapis.com",
 		LeaderElectionNamespace: leaderElectionNamespace,
 		LeaseDuration:           &leaseDuration,
@@ -179,7 +268,7 @@ func main() {
 		// if you are doing or is intended to do any operation such as perform cleanups
 		// after the manager stops then its usage might be unsafe.
 		// LeaderElectionReleaseOnCancel: true,
-	})
+	}, mcManagerOptions...)
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
 		os.Exit(1)
@@ -203,6 +292,28 @@ func main() {
 	if err != nil {
 		setupLog.Error(err, "failed to construct cluster")
 		os.Exit(1)
+	}
+
+	var singletonMgr manager.Manager
+	singletonControllerMgr := mgr.GetLocalManager()
+	if enableClusterSharding {
+		singletonMgr, err = manager.New(cfg, manager.Options{
+			Scheme:                  scheme,
+			Metrics:                 metricsserver.Options{BindAddress: "0"},
+			WebhookServer:           webhook.NewServer(webhook.Options{Port: 0}),
+			HealthProbeBindAddress:  "0",
+			LeaderElection:          singletonControllersLeaderElection,
+			LeaderElectionID:        singletonControllersLeaderElectionID,
+			LeaderElectionNamespace: leaderElectionNamespace,
+			LeaseDuration:           &leaseDuration,
+			RenewDeadline:           &renewDeadline,
+			RetryPeriod:             &retryPeriod,
+		})
+		if err != nil {
+			setupLog.Error(err, "unable to create singleton controller manager")
+			os.Exit(1)
+		}
+		singletonControllerMgr = singletonMgr
 	}
 
 	if err := (&controller.NetworkReconciler{}).SetupWithManager(mgr); err != nil {
@@ -283,7 +394,7 @@ func main() {
 		if err := (&controller.GatewayDownstreamCertificateSolverReconciler{
 			Config:            serverConfig,
 			DownstreamCluster: downstreamCluster,
-		}).SetupWithManager(mgr); err != nil {
+		}).SetupWithManager(singletonControllerMgr); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "GatewayDownstreamCertificateSolver")
 			os.Exit(1)
 		}
@@ -311,7 +422,7 @@ func main() {
 		if err := (&controller.ChallengeReconciler{
 			Config:            serverConfig,
 			DownstreamCluster: downstreamCluster,
-		}).SetupWithManager(mgr); err != nil {
+		}).SetupWithManager(singletonControllerMgr); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "Challenge")
 			os.Exit(1)
 		}
@@ -398,6 +509,13 @@ func main() {
 	g.Go(func() error {
 		return ignoreCanceled(mgr.Start(ctx))
 	})
+
+	if singletonMgr != nil {
+		setupLog.Info("starting singleton controller manager")
+		g.Go(func() error {
+			return ignoreCanceled(singletonMgr.Start(ctx))
+		})
+	}
 
 	if err := g.Wait(); err != nil {
 		setupLog.Error(err, "unable to start")

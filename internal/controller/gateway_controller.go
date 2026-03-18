@@ -1832,21 +1832,21 @@ func (r *GatewayReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 		downstreamclient.TypedEnqueueRequestForUpstreamOwner[*gatewayv1.Gateway](&gatewayv1.Gateway{}),
 	)
 
-	downstreamGatewayClusterSource, _ := downstreamGatewaySource.ForCluster("", r.DownstreamCluster)
+	downstreamGatewayClusterSource, _, _ := downstreamGatewaySource.ForCluster("", r.DownstreamCluster)
 
 	downstreamHTTPRouteSource := mcsource.Kind(
 		&gatewayv1.HTTPRoute{},
 		r.listGatewaysAttachedByDownstreamHTTPRoute,
 	)
 
-	downstreamHTTPRouteClusterSource, _ := downstreamHTTPRouteSource.ForCluster("", r.DownstreamCluster)
+	downstreamHTTPRouteClusterSource, _, _ := downstreamHTTPRouteSource.ForCluster("", r.DownstreamCluster)
 
 	downstreamCertificateSource := mcsource.TypedKind(
 		&cmv1.Certificate{},
 		downstreamclient.TypedEnqueueRequestForUpstreamOwner[*cmv1.Certificate](&gatewayv1.Gateway{}),
 	)
 
-	downstreamCertificateClusterSource, _ := downstreamCertificateSource.ForCluster("", r.DownstreamCluster)
+	downstreamCertificateClusterSource, _, _ := downstreamCertificateSource.ForCluster("", r.DownstreamCluster)
 
 	builder := mcbuilder.ControllerManagedBy(mgr).
 		For(&gatewayv1.Gateway{}).

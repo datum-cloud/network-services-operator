@@ -6,6 +6,7 @@ metadata:
     app.kubernetes.io/name: network-services-operator
     app.kubernetes.io/component: quota-system
 spec:
+  disabled: true
   trigger:
     resource:
       apiVersion: discovery.k8s.io/v1

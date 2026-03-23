@@ -234,9 +234,11 @@ func (r *GatewayReconciler) ensureDNSRecordSets(
 			"domain", domain.Name,
 		)
 
-		// Determine the record type based on whether this hostname is an apex domain.
+		// Use ALIAS for apex records (hostname equals the zone root), CNAME for subdomains.
+		// domain.Status.Apex indicates the Domain resource is a registered apex (eTLD+1),
+		// not that this specific hostname is the zone apex — so we compare directly.
 		rrType := dnsv1alpha1.RRTypeCNAME
-		if domain.Status.Apex {
+		if strings.EqualFold(strings.TrimSuffix(hostname, "."), matchedZoneName) {
 			rrType = dnsv1alpha1.RRTypeALIAS
 		}
 
@@ -547,27 +549,23 @@ func buildDesiredDNSRecordSet(
 }
 
 // buildDesiredDNSRecordSetSpec constructs the DNSRecordSetSpec that points
-// hostname at canonicalHostname. Both values are normalized to absolute FQDNs
-// (trailing dot) before being written into the record entry. The record type
-// is CNAME for non-apex hostnames and ALIAS for apex domains, as determined
-// by the caller.
+// hostname at canonicalHostname. The record name is stored as a relative label
+// within the zone (e.g. "www" for "www.example.com" in zone "example.com", or
+// "@" for the zone apex). The canonical hostname target is written as an
+// absolute FQDN with trailing dot. The record type is CNAME for subdomains and
+// ALIAS for the zone apex, as determined by the caller.
 func buildDesiredDNSRecordSetSpec(
 	hostname, canonicalHostname string,
 	dnsZone dnsv1alpha1.DNSZone,
 	rrType dnsv1alpha1.RRType,
 ) dnsv1alpha1.DNSRecordSetSpec {
-	fqdnHostname := hostname
-	if !strings.HasSuffix(fqdnHostname, ".") {
-		fqdnHostname = fqdnHostname + "."
-	}
-
 	fqdnTarget := canonicalHostname
 	if !strings.HasSuffix(fqdnTarget, ".") {
 		fqdnTarget = fqdnTarget + "."
 	}
 
 	var entry dnsv1alpha1.RecordEntry
-	entry.Name = fqdnHostname
+	entry.Name = dnsRelativeLabel(hostname, dnsZone.Spec.DomainName)
 	entry.TTL = ptr.To(int64(300))
 
 	switch rrType {
@@ -582,6 +580,24 @@ func buildDesiredDNSRecordSetSpec(
 		RecordType: rrType,
 		Records:    []dnsv1alpha1.RecordEntry{entry},
 	}
+}
+
+// dnsRelativeLabel returns the relative DNS label for hostname within zoneDomain.
+// For example, "www.example.com" in zone "example.com" returns "www".
+// The zone apex (hostname == zoneDomain) returns "@".
+// Comparisons are case-insensitive and trailing dots are ignored.
+func dnsRelativeLabel(hostname, zoneDomain string) string {
+	h := strings.TrimSuffix(strings.ToLower(hostname), ".")
+	z := strings.TrimSuffix(strings.ToLower(zoneDomain), ".")
+	if h == z {
+		return "@"
+	}
+	if label, ok := strings.CutSuffix(h, "."+z); ok {
+		return label
+	}
+	// Fallback: return the hostname as-is (should not occur in normal operation
+	// since the zone was matched from the hostname's possible zone names).
+	return hostname
 }
 
 // operationResultVerb converts a controllerutil.OperationResult to a past-tense

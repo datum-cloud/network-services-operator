@@ -422,7 +422,7 @@ func TestEnsureDNSRecordSets(t *testing.T) {
 				assert.Equal(t, dnsv1alpha1.RRTypeCNAME, rs.Spec.RecordType)
 				assert.Equal(t, "example-com", rs.Spec.DNSZoneRef.Name)
 				require.Len(t, rs.Spec.Records, 1)
-				assert.Equal(t, "api.example.com.", rs.Spec.Records[0].Name)
+				assert.Equal(t, "api", rs.Spec.Records[0].Name)
 				require.NotNil(t, rs.Spec.Records[0].CNAME)
 				// canonical hostname target should end with a dot
 				assert.True(t, len(rs.Spec.Records[0].CNAME.Content) > 0)
@@ -480,7 +480,7 @@ func TestEnsureDNSRecordSets(t *testing.T) {
 				// Should use the more specific subdomain zone.
 				assert.Equal(t, "api-example-com", rs.Spec.DNSZoneRef.Name)
 				require.Len(t, rs.Spec.Records, 1)
-				assert.Equal(t, "v1.api.example.com.", rs.Spec.Records[0].Name)
+				assert.Equal(t, "v1", rs.Spec.Records[0].Name)
 			},
 		},
 		{
@@ -1077,38 +1077,38 @@ func TestBuildDesiredDNSRecordSetSpec(t *testing.T) {
 		canonicalHostname string
 		rrType            dnsv1alpha1.RRType
 		wantRecordType    dnsv1alpha1.RRType
-		wantFQDNName      string
+		wantName          string // relative label stored in the record entry
 		wantFQDNContent   string
 		wantNilCNAME      bool
 		wantNilALIAS      bool
 	}{
 		{
-			name:              "CNAME record gets trailing dots on both name and content",
+			name:              "subdomain CNAME record uses relative label",
 			hostname:          "api.example.com",
 			canonicalHostname: "gw.gateways.test.local",
 			rrType:            dnsv1alpha1.RRTypeCNAME,
 			wantRecordType:    dnsv1alpha1.RRTypeCNAME,
-			wantFQDNName:      "api.example.com.",
+			wantName:          "api",
 			wantFQDNContent:   "gw.gateways.test.local.",
 			wantNilALIAS:      true,
 		},
 		{
-			name:              "ALIAS record gets trailing dots on both name and content",
+			name:              "apex ALIAS record uses @ as relative label",
 			hostname:          "example.com",
 			canonicalHostname: "gw.gateways.test.local",
 			rrType:            dnsv1alpha1.RRTypeALIAS,
 			wantRecordType:    dnsv1alpha1.RRTypeALIAS,
-			wantFQDNName:      "example.com.",
+			wantName:          "@",
 			wantFQDNContent:   "gw.gateways.test.local.",
 			wantNilCNAME:      true,
 		},
 		{
-			name:              "already FQDN inputs do not get double dots",
+			name:              "trailing dot on hostname inputs stripped before label extraction",
 			hostname:          "api.example.com.",
 			canonicalHostname: "gw.gateways.test.local.",
 			rrType:            dnsv1alpha1.RRTypeCNAME,
 			wantRecordType:    dnsv1alpha1.RRTypeCNAME,
-			wantFQDNName:      "api.example.com.",
+			wantName:          "api",
 			wantFQDNContent:   "gw.gateways.test.local.",
 			wantNilALIAS:      true,
 		},
@@ -1124,7 +1124,7 @@ func TestBuildDesiredDNSRecordSetSpec(t *testing.T) {
 			require.Len(t, spec.Records, 1)
 
 			entry := spec.Records[0]
-			assert.Equal(t, tt.wantFQDNName, entry.Name)
+			assert.Equal(t, tt.wantName, entry.Name)
 			require.NotNil(t, entry.TTL)
 			assert.Equal(t, int64(300), *entry.TTL)
 

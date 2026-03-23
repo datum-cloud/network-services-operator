@@ -15,8 +15,10 @@ import (
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/uuid"
 	"k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -539,6 +541,31 @@ func TestEnsureDNSRecordSets(t *testing.T) {
 			},
 		},
 		{
+			name:             "legacy canonical hostname remains canonical when status already set",
+			claimedHostnames: []string{"11111111111111111111111111111111.gateways.test.local", "api.example.com"},
+			upstreamObjects: []client.Object{
+				newVerifiedDNSZoneDomain(ns, "example.com", false),
+				newDNSZone(ns, "example-com", "example.com"),
+			},
+			assertStatuses: func(t *testing.T, statuses []networkingv1alpha.HostnameStatus) {
+				require.Len(t, statuses, 1)
+				assert.Equal(t, "api.example.com", statuses[0].Hostname)
+				c := apimeta.FindStatusCondition(statuses[0].Conditions, networkingv1alpha.HostnameConditionDNSRecordProgrammed)
+				require.NotNil(t, c)
+				assert.Equal(t, metav1.ConditionTrue, c.Status)
+				assert.Equal(t, networkingv1alpha.DNSRecordReasonCreated, c.Reason)
+			},
+			assertRecords: func(t *testing.T, cl client.Client) {
+				var list dnsv1alpha1.DNSRecordSetList
+				require.NoError(t, cl.List(context.Background(), &list, client.InNamespace(ns)))
+				require.Len(t, list.Items, 1)
+				rs := list.Items[0]
+				require.Len(t, rs.Spec.Records, 1)
+				require.NotNil(t, rs.Spec.Records[0].CNAME)
+				assert.Equal(t, "11111111111111111111111111111111.gateways.test.local.", rs.Spec.Records[0].CNAME.Content)
+			},
+		},
+		{
 			name:             "single-label hostname gets NotApplicable",
 			claimedHostnames: []string{"localhost"},
 			upstreamObjects:  nil,
@@ -580,6 +607,23 @@ func TestEnsureDNSRecordSets(t *testing.T) {
 			s := newDNSTestScheme(t)
 
 			gw := newTestGatewayForDNS(ns, "test-gw")
+			if tt.name == "legacy canonical hostname remains canonical when status already set" {
+				gw.UID = types.UID("11111111-1111-1111-1111-111111111111")
+				gw.Status.Addresses = []gatewayv1.GatewayStatusAddress{
+					{
+						Type:  ptr.To(gatewayv1.HostnameAddressType),
+						Value: "11111111111111111111111111111111.gateways.test.local",
+					},
+					{
+						Type:  ptr.To(gatewayv1.HostnameAddressType),
+						Value: "v4.11111111111111111111111111111111.gateways.test.local",
+					},
+					{
+						Type:  ptr.To(gatewayv1.HostnameAddressType),
+						Value: "v6.11111111111111111111111111111111.gateways.test.local",
+					},
+				}
+			}
 
 			// Seed the gateway itself so owner reference can be set.
 			allObjects := append([]client.Object{gw}, tt.upstreamObjects...)

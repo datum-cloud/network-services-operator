@@ -12,9 +12,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/source"
-	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 
 	"go.datum.net/network-services-operator/internal/config"
 )
@@ -95,7 +95,7 @@ func (r *ChallengeReconciler) isGatewayRelatedIssuer(ref cmmeta.ObjectReference)
 }
 
 // SetupWithManager sets up the controller with the Manager.
-func (r *ChallengeReconciler) SetupWithManager(mgr mcmanager.Manager) error {
+func (r *ChallengeReconciler) SetupWithManager(mgr manager.Manager) error {
 	// Watch Challenge resources in the downstream cluster, filtering to only
 	// those matching configured issuers to reduce unnecessary reconciliations.
 	downstreamChallengeSource := source.TypedKind(
@@ -104,7 +104,7 @@ func (r *ChallengeReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 		&handler.TypedEnqueueRequestForObject[*cmacmev1.Challenge]{},
 	)
 
-	return ctrl.NewControllerManagedBy(mgr.GetLocalManager()).
+	return ctrl.NewControllerManagedBy(mgr).
 		WatchesRawSource(downstreamChallengeSource).
 		WithEventFilter(predicate.NewPredicateFuncs(func(object client.Object) bool {
 			challenge := object.(*cmacmev1.Challenge)

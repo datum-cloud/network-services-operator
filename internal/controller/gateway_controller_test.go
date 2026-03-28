@@ -6,12 +6,14 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	cmv1 "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -1487,5 +1489,231 @@ func TestServiceSpecClobberingCausesReconciliationStorm(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, controllerutil.OperationResultNone, result,
 			"idempotent: second call also returns 'unchanged'")
+	})
+}
+
+func TestReissueFailedCertificate(t *testing.T) {
+	testScheme := runtime.NewScheme()
+	require.NoError(t, scheme.AddToScheme(testScheme))
+	require.NoError(t, gatewayv1.Install(testScheme))
+	require.NoError(t, cmv1.AddToScheme(testScheme))
+
+	logger := zap.New(zap.UseFlagOptions(&zap.Options{Development: true}))
+
+	newCert := func(name string, opts ...func(*cmv1.Certificate)) *cmv1.Certificate {
+		cert := &cmv1.Certificate{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:              name,
+				Namespace:         "ns-test",
+				UID:               uuid.NewUUID(),
+				CreationTimestamp: metav1.Now(),
+			},
+		}
+		for _, o := range opts {
+			o(cert)
+		}
+		return cert
+	}
+
+	newGW := func(annotations map[string]string) *gatewayv1.Gateway {
+		return &gatewayv1.Gateway{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:        "test-gw",
+				Namespace:   "ns-test",
+				UID:         uuid.NewUUID(),
+				Annotations: annotations,
+			},
+		}
+	}
+
+	failedAt := func(ago time.Duration) *metav1.Time {
+		t := metav1.NewTime(time.Now().Add(-ago))
+		return &t
+	}
+
+	tests := []struct {
+		name            string
+		cert            *cmv1.Certificate
+		gateway         *gatewayv1.Gateway
+		retryInterval   time.Duration
+		maxRetries      int
+		expectDeleted   bool
+		expectRequeue   bool
+		expectGWChanged bool
+		expectGWCount   int
+	}{
+		{
+			name:          "healthy certificate — no action",
+			cert:          newCert("my-cert"),
+			gateway:       newGW(nil),
+			expectDeleted: false,
+			expectRequeue: false,
+		},
+		{
+			name: "failed cert within retry interval — requeue",
+			cert: newCert("my-cert", func(c *cmv1.Certificate) {
+				c.Status.LastFailureTime = failedAt(2 * time.Minute)
+			}),
+			gateway:       newGW(nil),
+			retryInterval: 5 * time.Minute,
+			expectDeleted: false,
+			expectRequeue: true,
+		},
+		{
+			name: "failed cert past retry interval — delete and reissue",
+			cert: newCert("my-cert", func(c *cmv1.Certificate) {
+				c.Status.LastFailureTime = failedAt(10 * time.Minute)
+			}),
+			gateway:         newGW(nil),
+			retryInterval:   5 * time.Minute,
+			maxRetries:      3,
+			expectDeleted:   true,
+			expectGWChanged: true,
+			expectGWCount:   1,
+		},
+		{
+			name: "second re-issuance increments count",
+			cert: newCert("my-cert", func(c *cmv1.Certificate) {
+				c.Status.LastFailureTime = failedAt(10 * time.Minute)
+			}),
+			gateway: newGW(map[string]string{
+				reissuanceAnnotationKey("my-cert"): "1",
+			}),
+			retryInterval:   5 * time.Minute,
+			maxRetries:      3,
+			expectDeleted:   true,
+			expectGWChanged: true,
+			expectGWCount:   2,
+		},
+		{
+			name: "max retries exhausted — no action",
+			cert: newCert("my-cert", func(c *cmv1.Certificate) {
+				c.Status.LastFailureTime = failedAt(10 * time.Minute)
+			}),
+			gateway: newGW(map[string]string{
+				reissuanceAnnotationKey("my-cert"): "3",
+			}),
+			retryInterval: 5 * time.Minute,
+			maxRetries:    3,
+			expectDeleted: false,
+			expectRequeue: false,
+			expectGWCount: 3,
+		},
+		{
+			name: "previously failed cert now healthy — clears count",
+			cert: newCert("my-cert"),
+			gateway: newGW(map[string]string{
+				reissuanceAnnotationKey("my-cert"): "2",
+			}),
+			expectDeleted:   false,
+			expectGWChanged: true,
+			expectGWCount:   0,
+		},
+		{
+			name: "healthy cert with no history — no gateway mutation",
+			cert: newCert("my-cert"),
+			gateway: newGW(map[string]string{
+				"some-other-annotation": "keep-me",
+			}),
+			expectDeleted:   false,
+			expectGWChanged: false,
+			expectGWCount:   0,
+		},
+		{
+			name: "default config values — uses 5m interval and 3 max retries",
+			cert: newCert("my-cert", func(c *cmv1.Certificate) {
+				c.Status.LastFailureTime = failedAt(6 * time.Minute)
+			}),
+			gateway:         newGW(nil),
+			expectDeleted:   true,
+			expectGWChanged: true,
+			expectGWCount:   1,
+		},
+		{
+			name: "default config — failure at 4m does not trigger delete",
+			cert: newCert("my-cert", func(c *cmv1.Certificate) {
+				c.Status.LastFailureTime = failedAt(4 * time.Minute)
+			}),
+			gateway:       newGW(nil),
+			expectDeleted: false,
+			expectRequeue: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := log.IntoContext(context.Background(), logger)
+
+			fakeClient := fake.NewClientBuilder().
+				WithScheme(testScheme).
+				WithObjects(tt.cert).
+				Build()
+
+			cfg := config.CertificateReissuanceConfig{}
+			if tt.retryInterval > 0 {
+				cfg.RetryInterval = metav1.Duration{Duration: tt.retryInterval}
+			}
+			if tt.maxRetries > 0 {
+				cfg.MaxRetries = tt.maxRetries
+			}
+
+			reconciler := &GatewayReconciler{
+				Config: config.NetworkServicesOperator{
+					Gateway: config.GatewayConfig{
+						CertificateReissuance: cfg,
+					},
+				},
+			}
+
+			requeueAfter, gwChanged := reconciler.reissueFailedCertificate(
+				ctx, tt.cert, tt.cert.Name, tt.gateway, fakeClient,
+			)
+
+			assert.Equal(t, tt.expectGWChanged, gwChanged, "gatewayChanged")
+
+			if tt.expectRequeue {
+				assert.Greater(t, requeueAfter, time.Duration(0), "should requeue")
+			} else {
+				assert.Equal(t, time.Duration(0), requeueAfter, "should not requeue")
+			}
+
+			if tt.expectDeleted {
+				err := fakeClient.Get(ctx, client.ObjectKeyFromObject(tt.cert), &cmv1.Certificate{})
+				assert.True(t, apierrors.IsNotFound(err), "Certificate should be deleted")
+			} else if tt.cert.Status.LastFailureTime != nil || tt.expectGWCount == 0 {
+				err := fakeClient.Get(ctx, client.ObjectKeyFromObject(tt.cert), &cmv1.Certificate{})
+				assert.NoError(t, err, "Certificate should still exist")
+			}
+
+			gotCount := getReissuanceCount(tt.gateway, tt.cert.Name)
+			assert.Equal(t, tt.expectGWCount, gotCount, "reissuance count on gateway")
+		})
+	}
+
+	// Verify that calling twice on the same healthy cert never mutates the
+	// gateway — prevents over-reconciliation from spurious gateway updates.
+	t.Run("idempotent on healthy cert", func(t *testing.T) {
+		ctx := log.IntoContext(context.Background(), logger)
+		cert := newCert("stable-cert")
+		gw := newGW(nil)
+
+		fakeClient := fake.NewClientBuilder().
+			WithScheme(testScheme).
+			WithObjects(cert).
+			Build()
+
+		reconciler := &GatewayReconciler{
+			Config: config.NetworkServicesOperator{
+				Gateway: config.GatewayConfig{},
+			},
+		}
+
+		for i := 0; i < 3; i++ {
+			requeueAfter, gwChanged := reconciler.reissueFailedCertificate(
+				ctx, cert, cert.Name, gw, fakeClient,
+			)
+			assert.False(t, gwChanged, "call %d: should not mutate gateway", i)
+			assert.Equal(t, time.Duration(0), requeueAfter, "call %d: should not requeue", i)
+		}
 	})
 }

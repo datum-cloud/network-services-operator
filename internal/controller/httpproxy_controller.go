@@ -396,16 +396,7 @@ func (r *HTTPProxyReconciler) reconcileHTTPProxyHostnameStatus(
 	logger.Info("updating hostname status")
 
 	// CanonicalHostname is the platform-managed hostname we create for the HTTPProxy.
-	// Prefer an existing status address in the target domain to avoid renaming
-	// already-programmed gateways during hostname format transitions.
-	canonicalHostname := managedGatewayHostnameFromStatus(
-		gateway.Status.Addresses,
-		r.Config.Gateway.TargetDomain,
-	)
-	if canonicalHostname == "" {
-		canonicalHostname = r.Config.Gateway.GatewayDNSAddress(gateway)
-	}
-	httpProxyCopy.Status.CanonicalHostname = canonicalHostname
+	httpProxyCopy.Status.CanonicalHostname = gatewayCanonicalHostnameForConfig(r.Config.Gateway, gateway)
 
 	var hostnames []gatewayv1.Hostname
 	currentListenerStatus := map[gatewayv1.SectionName]gatewayv1.ListenerStatus{}

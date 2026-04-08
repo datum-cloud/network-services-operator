@@ -913,13 +913,19 @@ func (r *GatewayReconciler) ensureHostnameVerification(
 // It prefers an existing status address in the configured target domain to avoid
 // renaming already-programmed gateways during hostname format transitions.
 func (r *GatewayReconciler) gatewayCanonicalHostname(upstreamGateway *gatewayv1.Gateway) string {
+	return gatewayCanonicalHostnameForConfig(r.Config.Gateway, upstreamGateway)
+}
+
+// gatewayCanonicalHostnameForConfig is the shared implementation of
+// gatewayCanonicalHostname, usable by any reconciler that has a GatewayConfig.
+func gatewayCanonicalHostnameForConfig(gatewayCfg config.GatewayConfig, gw *gatewayv1.Gateway) string {
 	if existing := managedGatewayHostnameFromStatus(
-		upstreamGateway.Status.Addresses,
-		r.Config.Gateway.TargetDomain,
+		gw.Status.Addresses,
+		gatewayCfg.TargetDomain,
 	); existing != "" {
 		return existing
 	}
-	return r.Config.Gateway.GatewayDNSAddress(upstreamGateway)
+	return gatewayCfg.GatewayDNSAddress(gw)
 }
 
 // managedGatewayHostnameFromStatus returns the base hostname address (not v4/v6

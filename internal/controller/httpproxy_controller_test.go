@@ -927,6 +927,8 @@ func TestHTTPProxyReconcile(t *testing.T) {
 					//nolint:staticcheck // SA1019: testing deprecated Hostnames field for backwards compatibility
 					assert.Equal(t, ptr.Deref(t.gateway.Spec.Listeners[0].Hostname, ""), httpProxy.Status.Hostnames[0])
 				}
+
+				assert.Equal(t, testConfig.Gateway.GatewayDNSAddress(t.gateway), httpProxy.Status.CanonicalHostname)
 			},
 		},
 		{
@@ -963,7 +965,6 @@ func TestHTTPProxyReconcile(t *testing.T) {
 				if assert.NotNil(t, hostnamesVerifiedCondition, "did not find HostnamesVerified condition on HTTPProxy") {
 					assert.Equal(t, networkingv1alpha.HTTPProxyReasonPending, hostnamesVerifiedCondition.Reason)
 				}
-
 			},
 		},
 		{

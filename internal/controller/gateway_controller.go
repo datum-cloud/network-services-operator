@@ -1434,7 +1434,7 @@ func (r *GatewayReconciler) ensureDownstreamHTTPRoute(
 		ObjectMeta: downstreamRouteObjectMeta,
 	}
 
-	rules, downstreamResources, err := r.processDownstreamHTTPRouteRules(
+	rules, downstreamResources, downstreamResourcesToDelete, err := r.processDownstreamHTTPRouteRules(
 		ctx,
 		upstreamClient,
 		upstreamGateway,
@@ -1493,13 +1493,18 @@ func (r *GatewayReconciler) ensureDownstreamHTTPRoute(
 				obj.Spec.TrafficDistribution = desired.Spec.TrafficDistribution
 
 				// Merge ports by name rather than overwriting the slice, so
-				// server-defaulted fields like TargetPort are preserved.
+				// server-defaulted fields like TargetPort are preserved. All other
+				// user-controlled fields (Port, Protocol, AppProtocol) must be copied
+				// from desired so changes to the upstream HTTPProxy backend (e.g.
+				// flipping the origin scheme from https to http) propagate to the
+				// downstream Service.
 				for _, dp := range desired.Spec.Ports {
 					found := false
 					for i, ep := range obj.Spec.Ports {
 						if ep.Name == dp.Name {
 							obj.Spec.Ports[i].Port = dp.Port
 							obj.Spec.Ports[i].Protocol = dp.Protocol
+							obj.Spec.Ports[i].AppProtocol = dp.AppProtocol
 							found = true
 							break
 						}
@@ -1536,6 +1541,32 @@ func (r *GatewayReconciler) ensureDownstreamHTTPRoute(
 
 		logger.Info("downstream resource processed",
 			"operation_result", resourceResult,
+			"kind", gvk.Kind,
+			"namespace", resource.GetNamespace(),
+			"name", resource.GetName(),
+		)
+	}
+
+	// Delete downstream resources that were previously desired but no longer
+	// are. This catches cases like an HTTPProxy backend flipping from https to
+	// http, which should remove the BackendTLSPolicy that had been created for
+	// the previous state. Resources owned by the downstream HTTPRoute are
+	// garbage collected when the route is deleted, but that does not cover
+	// in-place transitions, so orphans must be cleaned up explicitly here.
+	for _, resource := range downstreamResourcesToDelete {
+		gvk, err := apiutil.GVKForObject(resource, downstreamClient.Scheme())
+		if err != nil {
+			result.Err = err
+			return result
+		}
+
+		if err := downstreamClient.Delete(ctx, resource); err != nil && !apierrors.IsNotFound(err) {
+			result.Err = fmt.Errorf("failed deleting stale downstream resource %s/%s: %w",
+				resource.GetNamespace(), resource.GetName(), err)
+			return result
+		}
+
+		logger.Info("stale downstream resource removed",
 			"kind", gvk.Kind,
 			"namespace", resource.GetNamespace(),
 			"name", resource.GetName(),
@@ -1619,8 +1650,11 @@ func (r *GatewayReconciler) ensureDownstreamHTTPRoute(
 }
 
 // processDownstreamHTTPRouteRules is a helper function that processes the
-// rules of an HTTPRoute and returns the rules and the downstream resources
-// that need to be created.
+// rules of an HTTPRoute and returns the rules, the downstream resources that
+// need to be created or updated, and the downstream resources that must be
+// deleted because they were created by a previous reconcile but are no longer
+// desired (for example a BackendTLSPolicy left over from when the backend was
+// https before the user switched it to http).
 func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 	ctx context.Context,
 	upstreamClient client.Client,
@@ -1628,7 +1662,7 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 	upstreamRoute gatewayv1.HTTPRoute,
 	downstreamGateway *gatewayv1.Gateway,
 	downstreamStrategy downstreamclient.ResourceStrategy,
-) (rules []gatewayv1.HTTPRouteRule, downstreamResources []client.Object, err error) {
+) (rules []gatewayv1.HTTPRouteRule, downstreamResources []client.Object, downstreamResourcesToDelete []client.Object, err error) {
 
 	// We need to create a Service for each (BackendRef, EndpointSlice)
 	// combination as different backendRefs may use different hostnames in URL
@@ -1661,19 +1695,19 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 					Namespace: string(ptr.Deref(backendRef.Namespace, gatewayv1.Namespace(upstreamGateway.Namespace))),
 					Name:      string(backendRef.Name),
 				}, &upstreamEndpointSlice); err != nil {
-					return nil, nil, err
+					return nil, nil, nil, err
 				}
 
 				if backendRef.Port == nil {
 					// Should be protected by validation, but check just in case.
 					logger.Info("no port defined in backendRef", "backendRef", backendRef)
-					return nil, nil, fmt.Errorf("no port defined in backendRef")
+					return nil, nil, nil, fmt.Errorf("no port defined in backendRef")
 				}
 
 				if !controllerutil.ContainsFinalizer(&upstreamEndpointSlice, gatewayControllerGCFinalizer) {
 					controllerutil.AddFinalizer(&upstreamEndpointSlice, gatewayControllerGCFinalizer)
 					if err := upstreamClient.Update(ctx, &upstreamEndpointSlice); err != nil {
-						return nil, nil, fmt.Errorf("failed to add finalizer to endpointslice: %w", err)
+						return nil, nil, nil, fmt.Errorf("failed to add finalizer to endpointslice: %w", err)
 					}
 				}
 
@@ -1692,7 +1726,7 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 						if port.Name == nil {
 							// This should be protected by validation, but check just in case.
 							logger.Info("no port name defined in upstream endpointslice", "endpointslice", upstreamEndpointSlice.Name, "port", port)
-							return nil, nil, fmt.Errorf("no port name defined in upstream endpointslice")
+							return nil, nil, nil, fmt.Errorf("no port name defined in upstream endpointslice")
 						}
 						appProtocol = port.AppProtocol
 						endpointPort = ptr.To(port)
@@ -1701,7 +1735,7 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 
 				if endpointPort == nil {
 					logger.Info("port not found in upstream endpointslice", "endpointslice", upstreamEndpointSlice.Name, "port", *backendRef.Port)
-					return nil, nil, fmt.Errorf("port not found in upstream endpointslice")
+					return nil, nil, nil, fmt.Errorf("port not found in upstream endpointslice")
 				}
 
 				// Construct a name to use for the service and endpointslice that the
@@ -1738,7 +1772,7 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 				}
 
 				if err := downstreamStrategy.SetControllerReference(ctx, &upstreamEndpointSlice, downstreamEndpointSlice); err != nil {
-					return nil, nil, fmt.Errorf("failed to set controller reference on downstream endpointslice: %w", err)
+					return nil, nil, nil, fmt.Errorf("failed to set controller reference on downstream endpointslice: %w", err)
 				}
 
 				downstreamResources = append(downstreamResources, downstreamEndpointSlice)
@@ -1773,7 +1807,7 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 					if hostname == nil {
 						// TODO(jreese) set the RouteConditionResolvedRefs condition to
 						// False, as the hostname is not present.
-						return nil, nil, fmt.Errorf("no hostname found in URLRewrite filters on backendRef or Route %q", upstreamRoute.Name)
+						return nil, nil, nil, fmt.Errorf("no hostname found in URLRewrite filters on backendRef or Route %q", upstreamRoute.Name)
 					}
 
 					backendTLSPolicy := &gatewayv1alpha3.BackendTLSPolicy{
@@ -1801,6 +1835,18 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 					}
 
 					downstreamResources = append(downstreamResources, backendTLSPolicy)
+				} else {
+					// The backend is not https, so any BackendTLSPolicy that may
+					// have been created by a previous reconcile (when the backend
+					// was https) must be removed. The policy name is deterministic
+					// from the route UID and backend indices, so we can target it
+					// directly without listing.
+					downstreamResourcesToDelete = append(downstreamResourcesToDelete, &gatewayv1alpha3.BackendTLSPolicy{
+						ObjectMeta: metav1.ObjectMeta{
+							Namespace: downstreamGateway.Namespace,
+							Name:      resourceName,
+						},
+					})
 				}
 
 			case "Service":
@@ -1826,7 +1872,7 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 		})
 	}
 
-	return rules, downstreamResources, nil
+	return rules, downstreamResources, downstreamResourcesToDelete, nil
 }
 
 // SetupWithManager sets up the controller with the Manager.

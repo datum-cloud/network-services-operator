@@ -1,0 +1,23 @@
+apiVersion: networking.datumapis.com/v1alpha
+kind: Location
+metadata:
+  name: us-central1-a
+  namespace: default
+spec:
+  # The location class that indicates control plane behavior
+  # Valid values are: datum-managed, self-managed
+  locationClassName: datum-managed
+  
+  # The topology of the location
+  topology:
+    topology.datum.net/city-code: "DFW"
+  
+  # The location provider configuration
+  provider:
+    gcp:
+      # The GCP project servicing the location
+      projectId: "your-gcp-project-id"
+      # The GCP region servicing the location
+      region: "asia-east1"
+      # The GCP zone servicing the location
+      zone: "asia-east1-a"

@@ -1343,39 +1343,9 @@ func (r *HTTPProxyReconciler) reconcileConnectorEnvoyPatchPolicy(
 		return nil, false, err
 	}
 
-	connectorBackends, err := collectConnectorBackends(ctx, upstreamClient, httpProxy)
-	if err != nil {
-		return nil, false, err
-	}
-
-	policyName := fmt.Sprintf("connector-%s", httpProxy.Name)
-	policyKey := client.ObjectKey{Namespace: downstreamNamespaceName, Name: policyName}
-	downstreamClient := downstreamStrategy.GetClient()
-
-	if len(connectorBackends) == 0 {
-		var existing envoygatewayv1alpha1.EnvoyPatchPolicy
-		if err := downstreamClient.Get(ctx, policyKey, &existing); err != nil {
-			if apierrors.IsNotFound(err) {
-				if err := downstreamStrategy.DeleteAnchorForObject(ctx, httpProxy); err != nil {
-					return nil, false, err
-				}
-				return nil, false, nil
-			}
-			return nil, false, err
-		}
-		if err := downstreamClient.Delete(ctx, &existing); err != nil {
-			return nil, false, err
-		}
-		if err := downstreamStrategy.DeleteAnchorForObject(ctx, httpProxy); err != nil {
-			return nil, false, err
-		}
-		return nil, false, nil
-	}
-
 	// Wait for the Gateway and default HTTPS listener to be Programmed before
-	// creating the EnvoyPatchPolicy. This ensures the target RouteConfiguration
-	// exists in Envoy's xDS, so the patch can be applied immediately rather than
-	// waiting for Envoy Gateway to retry.
+	// creating or updating the EnvoyPatchPolicy. This ensures the target
+	// RouteConfiguration exists in Envoy's xDS so patches apply immediately.
 	gatewayProgrammed := apimeta.IsStatusConditionTrue(
 		gateway.Status.Conditions,
 		string(gatewayv1.GatewayConditionProgrammed),
@@ -1393,15 +1363,35 @@ func (r *HTTPProxyReconciler) reconcileConnectorEnvoyPatchPolicy(
 		return nil, true, fmt.Errorf("downstreamGatewayClassName is required for connector patching")
 	}
 
-	jsonPatches, err := buildConnectorEnvoyPatches(
-		downstreamNamespaceName,
-		r.Config.Gateway.ConnectorTunnelListenerName(),
-		gateway,
-		httpProxy,
-		connectorBackends,
-	)
+	connectorBackends, err := collectConnectorBackends(ctx, upstreamClient, httpProxy)
 	if err != nil {
-		return nil, true, err
+		return nil, false, err
+	}
+
+	policyName := fmt.Sprintf("connector-%s", httpProxy.Name)
+	downstreamClient := downstreamStrategy.GetClient()
+
+	// Build patches for either the online or offline state. The EPP is always
+	// kept alive (never deleted when the connector is offline) so that EG never
+	// hits a delete+create cycle that can leave EPP status permanently null due
+	// to the watchable deduplication race in Envoy Gateway.
+	var jsonPatches []envoygatewayv1alpha1.EnvoyJSONPatchConfig
+	connectorOnline := len(connectorBackends) > 0
+	if !connectorOnline {
+		// Connector offline: insert a direct_response CONNECT route so clients
+		// receive a clean 503 "Tunnel not ready" instead of a connection error.
+		jsonPatches, err = buildConnectorOfflineEnvoyPatches(downstreamNamespaceName, gateway, httpProxy)
+	} else {
+		jsonPatches, err = buildConnectorEnvoyPatches(
+			downstreamNamespaceName,
+			r.Config.Gateway.ConnectorTunnelListenerName(),
+			gateway,
+			httpProxy,
+			connectorBackends,
+		)
+	}
+	if err != nil {
+		return nil, connectorOnline, err
 	}
 
 	policy := envoygatewayv1alpha1.EnvoyPatchPolicy{
@@ -1426,9 +1416,9 @@ func (r *HTTPProxyReconciler) reconcileConnectorEnvoyPatchPolicy(
 		return nil
 	})
 	if err != nil {
-		return nil, true, err
+		return nil, connectorOnline, err
 	}
-	return &policy, true, nil
+	return &policy, connectorOnline, nil
 }
 
 func (r *HTTPProxyReconciler) cleanupConnectorEnvoyPatchPolicy(

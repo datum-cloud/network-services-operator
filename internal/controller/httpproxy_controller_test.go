@@ -602,10 +602,22 @@ func TestHTTPProxyReconcile(t *testing.T) {
 			assert: func(t *testContext, cl client.Client, httpProxy *networkingv1alpha.HTTPProxy) {
 				ctx := context.Background()
 
+				// Connector is offline but still in the spec: EPP should exist with
+				// an offline direct_response CONNECT route rather than being deleted.
 				var patchList envoygatewayv1alpha1.EnvoyPatchPolicyList
 				err := t.downstreamClient.List(ctx, &patchList)
 				assert.NoError(t, err)
-				assert.Len(t, patchList.Items, 0)
+				if assert.Len(t, patchList.Items, 1) {
+					patches := patchList.Items[0].Spec.JSONPatches
+					if assert.Len(t, patches, 1) {
+						assert.Equal(t, "type.googleapis.com/envoy.config.route.v3.RouteConfiguration", string(patches[0].Type))
+						assert.Equal(t, "add", string(patches[0].Operation.Op))
+						raw := string(patches[0].Operation.Value.Raw)
+						assert.Contains(t, raw, "direct_response")
+						assert.Contains(t, raw, "connect_matcher")
+						assert.Contains(t, raw, "Tunnel not online")
+					}
+				}
 
 				httpRouteFilter := &envoygatewayv1alpha1.HTTPRouteFilter{}
 				filterKey := client.ObjectKey{Namespace: httpProxy.Namespace, Name: connectorOfflineFilterName(httpProxy)}

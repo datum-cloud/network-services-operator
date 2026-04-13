@@ -1343,6 +1343,31 @@ func (r *HTTPProxyReconciler) reconcileConnectorEnvoyPatchPolicy(
 		return nil, false, err
 	}
 
+	policyName := fmt.Sprintf("connector-%s", httpProxy.Name)
+	policyKey := client.ObjectKey{Namespace: downstreamNamespaceName, Name: policyName}
+	downstreamClient := downstreamStrategy.GetClient()
+
+	// If the HTTPProxy has no connector backends in its spec at all (i.e. the
+	// connector was removed, not just temporarily offline), delete the EPP and
+	// return. This is distinct from the connector being defined but not-ready,
+	// where we keep the EPP alive with offline patches.
+	//
+	// The anchor ConfigMap is intentionally NOT deleted here — it is tied to the
+	// HTTPProxy lifetime, not to whether a connector backend is configured. It
+	// will be cleaned up in cleanupConnectorEnvoyPatchPolicy when the HTTPProxy
+	// is deleted. Deleting the anchor here would cascade-GC any other downstream
+	// resources that share the same anchor as an owner.
+	if !httpProxyHasConnectorBackends(httpProxy) {
+		var existing envoygatewayv1alpha1.EnvoyPatchPolicy
+		if err := downstreamClient.Get(ctx, policyKey, &existing); err != nil {
+			if apierrors.IsNotFound(err) {
+				return nil, false, nil
+			}
+			return nil, false, err
+		}
+		return nil, false, downstreamClient.Delete(ctx, &existing)
+	}
+
 	// Wait for the Gateway and default HTTPS listener to be Programmed before
 	// creating or updating the EnvoyPatchPolicy. This ensures the target
 	// RouteConfiguration exists in Envoy's xDS so patches apply immediately.
@@ -1363,23 +1388,20 @@ func (r *HTTPProxyReconciler) reconcileConnectorEnvoyPatchPolicy(
 		return nil, true, fmt.Errorf("downstreamGatewayClassName is required for connector patching")
 	}
 
+	// Collect connector backends that are currently ready. If none are ready the
+	// connector is offline and we keep the EPP alive with a direct_response route
+	// so EG never hits a delete+create cycle (which causes the watchable
+	// deduplication race that leaves EPP status permanently null).
 	connectorBackends, err := collectConnectorBackends(ctx, upstreamClient, httpProxy)
 	if err != nil {
 		return nil, false, err
 	}
 
-	policyName := fmt.Sprintf("connector-%s", httpProxy.Name)
-	downstreamClient := downstreamStrategy.GetClient()
-
-	// Build patches for either the online or offline state. The EPP is always
-	// kept alive (never deleted when the connector is offline) so that EG never
-	// hits a delete+create cycle that can leave EPP status permanently null due
-	// to the watchable deduplication race in Envoy Gateway.
 	var jsonPatches []envoygatewayv1alpha1.EnvoyJSONPatchConfig
 	connectorOnline := len(connectorBackends) > 0
 	if !connectorOnline {
 		// Connector offline: insert a direct_response CONNECT route so clients
-		// receive a clean 503 "Tunnel not ready" instead of a connection error.
+		// receive a clean 503 "Tunnel not online" instead of a connection error.
 		jsonPatches, err = buildConnectorOfflineEnvoyPatches(downstreamNamespaceName, gateway, httpProxy)
 	} else {
 		jsonPatches, err = buildConnectorEnvoyPatches(
@@ -1611,6 +1633,21 @@ func buildConnectorOfflineHTTPRouteFilter(httpProxy *networkingv1alpha.HTTPProxy
 			},
 		},
 	}
+}
+
+// httpProxyHasConnectorBackends returns true if any backend in the HTTPProxy
+// spec references a connector, regardless of the connector's readiness state.
+// Used to distinguish "connector removed from spec" (→ delete EPP) from
+// "connector defined but offline" (→ update EPP with offline patches).
+func httpProxyHasConnectorBackends(httpProxy *networkingv1alpha.HTTPProxy) bool {
+	for _, rule := range httpProxy.Spec.Rules {
+		for _, backend := range rule.Backends {
+			if backend.Connector != nil {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func connectorReady(ctx context.Context, cl client.Client, namespace, name string) (bool, error) {

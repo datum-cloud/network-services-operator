@@ -57,6 +57,12 @@ const (
 	// PolicyReasonWaitingForListenersProgrammed indicates that the policy is waiting
 	// for HTTPS listeners to be Programmed=True before EnvoyPatchPolicies can be created.
 	PolicyReasonWaitingForListenersProgrammed gatewayv1alpha2.PolicyConditionReason = "WaitingForListenersProgrammed"
+
+	// tppEnvoyPatchPolicyPrefix is the name prefix for all EnvoyPatchPolicies
+	// written by the TrafficProtectionPolicy controller ("tpp-<gateway-name>").
+	// The stale-cleanup loop uses this prefix to skip EPPs owned by other
+	// controllers (e.g. the HTTPProxy connector controller uses "connector-<name>").
+	tppEnvoyPatchPolicyPrefix = "tpp-"
 )
 
 // certificateReadinessResult contains the result of checking certificate readiness
@@ -179,21 +185,28 @@ func (r *TrafficProtectionPolicyReconciler) Reconcile(ctx context.Context, req N
 		logger.Info("applied envoypatchpolicy to downstream cluster", "namespace", policy.Namespace, "name", policy.Name, "result", result)
 	}
 
+	// Clean up stale EPPs. All EPPs written by this controller are named
+	// "tpp-<gateway-name>"; other controllers use different prefixes (e.g.
+	// "connector-<name>" from the HTTPProxy controller). Filtering by prefix
+	// avoids a label dependency and correctly handles deleted gateways whose EPP
+	// would be missed if we only iterated upstreamGateways.
 	var existingPolicies envoygatewayv1alpha1.EnvoyPatchPolicyList
 	if err := downstreamStrategy.GetClient().List(
 		ctx,
 		&existingPolicies,
 		client.InNamespace(downstreamNamespaceName),
 	); err != nil {
-		return ctrl.Result{}, fmt.Errorf("failed to list managed envoypatchpolicies: %w", err)
+		return ctrl.Result{}, fmt.Errorf("failed to list envoypatchpolicies: %w", err)
 	}
 
 	for i := range existingPolicies.Items {
 		existing := &existingPolicies.Items[i]
+		if !strings.HasPrefix(existing.Name, tppEnvoyPatchPolicyPrefix) {
+			continue
+		}
 		if _, ok := desiredPolicyNames[existing.Name]; ok {
 			continue
 		}
-
 		if err := downstreamStrategy.GetClient().Delete(ctx, existing); err != nil {
 			return ctrl.Result{}, fmt.Errorf("failed to delete stale envoypatchpolicy %s/%s: %w", existing.Namespace, existing.Name, err)
 		}
@@ -1142,7 +1155,7 @@ func (r *TrafficProtectionPolicyReconciler) getDesiredEnvoyPatchPolicies(
 			continue
 		}
 
-		policyName := fmt.Sprintf("tpp-%s", attachmentsForGateway[0].Gateway.Name)
+		policyName := tppEnvoyPatchPolicyPrefix + attachmentsForGateway[0].Gateway.Name
 		desiredPolicies = append(desiredPolicies, &envoygatewayv1alpha1.EnvoyPatchPolicy{
 			ObjectMeta: metav1.ObjectMeta{
 				Namespace: downstreamNamespaceName,

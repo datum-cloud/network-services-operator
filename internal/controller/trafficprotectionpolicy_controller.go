@@ -63,6 +63,13 @@ const (
 	// The stale-cleanup loop uses this prefix to skip EPPs owned by other
 	// controllers (e.g. the HTTPProxy connector controller uses "connector-<name>").
 	tppEnvoyPatchPolicyPrefix = "tpp-"
+
+	// tppManagedLabel is stamped onto every EnvoyPatchPolicy created or updated
+	// by this controller. Once all existing EPPs have been reconciled and carry
+	// this label, the stale-cleanup loop can switch to a label-selector List
+	// instead of the current prefix check, removing the naming-convention
+	// dependency entirely.
+	tppManagedLabel = "networking.datumapis.com/managed-by-tpp-controller"
 )
 
 // certificateReadinessResult contains the result of checking certificate readiness
@@ -176,6 +183,10 @@ func (r *TrafficProtectionPolicyReconciler) Reconcile(ctx context.Context, req N
 		}}
 
 		result, err := controllerutil.CreateOrUpdate(ctx, downstreamStrategy.GetClient(), &policy, func() error {
+			if policy.Labels == nil {
+				policy.Labels = make(map[string]string)
+			}
+			policy.Labels[tppManagedLabel] = "true"
 			policy.Spec = desiredPolicy.Spec
 			return nil
 		})
@@ -190,6 +201,9 @@ func (r *TrafficProtectionPolicyReconciler) Reconcile(ctx context.Context, req N
 	// "connector-<name>" from the HTTPProxy controller). Filtering by prefix
 	// avoids a label dependency and correctly handles deleted gateways whose EPP
 	// would be missed if we only iterated upstreamGateways.
+	// TODO: once all existing EPPs carry tppManagedLabel (stamped above on every
+	// CreateOrUpdate), switch this List to use a label selector and drop the
+	// prefix check.
 	var existingPolicies envoygatewayv1alpha1.EnvoyPatchPolicyList
 	if err := downstreamStrategy.GetClient().List(
 		ctx,

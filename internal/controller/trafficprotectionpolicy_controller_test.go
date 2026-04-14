@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -8,6 +9,8 @@ import (
 	"github.com/davecgh/go-spew/spew"
 	envoygatewayv1alpha1 "github.com/envoyproxy/gateway/api/v1alpha1"
 	"github.com/stretchr/testify/assert"
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -759,7 +762,7 @@ func TestGetDesiredEnvoyPatchPolicies(t *testing.T) {
 
 			var patchPolicy *envoygatewayv1alpha1.EnvoyPatchPolicy
 			for _, p := range patchPolicies {
-				if p.Name == fmt.Sprintf("tpp-%s", attachment.Gateway.Name) {
+				if p.Name == tppEnvoyPatchPolicyPrefix+attachment.Gateway.Name {
 					patchPolicy = p
 					break
 				}
@@ -1458,4 +1461,84 @@ func newTestScheme() *runtime.Scheme {
 	_ = gatewayv1.Install(testScheme)
 	_ = networkingv1alpha.AddToScheme(testScheme)
 	return testScheme
+}
+
+// TestTPPReconcileStaleCleanupPreservesConnectorEPPs is a regression test for the
+// bug where the TPP stale-cleanup loop deleted connector-* EnvoyPatchPolicies that
+// belong to the HTTPProxy controller. The stale cleanup must only delete EPPs whose
+// names carry the "tpp-" prefix (written by this controller); it must leave EPPs
+// with any other prefix untouched.
+func TestTPPReconcileStaleCleanupPreservesConnectorEPPs(t *testing.T) {
+	// Upstream scheme: core (Namespace) + Gateway API + networking CRDs
+	upstreamScheme := runtime.NewScheme()
+	assert.NoError(t, scheme.AddToScheme(upstreamScheme))
+	assert.NoError(t, gatewayv1.Install(upstreamScheme))
+	assert.NoError(t, networkingv1alpha.AddToScheme(upstreamScheme))
+
+	// Downstream scheme: only needs EnvoyPatchPolicy for this test
+	downstreamScheme := runtime.NewScheme()
+	assert.NoError(t, envoygatewayv1alpha1.AddToScheme(downstreamScheme))
+
+	const (
+		upstreamNS   = "default"
+		nsUID        = "test-ns-uid"
+		downstreamNS = "ns-" + nsUID
+	)
+
+	// The upstream namespace must exist so that GetDownstreamNamespaceNameForUpstreamNamespace
+	// can derive "ns-<uid>" from its UID.
+	upstreamNamespace := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: upstreamNS,
+			UID:  nsUID,
+		},
+	}
+	fakeUpstreamClient := fake.NewClientBuilder().
+		WithScheme(upstreamScheme).
+		WithObjects(upstreamNamespace).
+		Build()
+
+	// Pre-populate the downstream cluster with two EPPs:
+	//   connector-tunnel-foo – owned by the HTTPProxy controller (must survive)
+	//   tpp-stale-gw         – an orphaned TPP EPP (must be deleted)
+	connectorEPP := &envoygatewayv1alpha1.EnvoyPatchPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "connector-tunnel-foo", Namespace: downstreamNS},
+	}
+	staleTppEPP := &envoygatewayv1alpha1.EnvoyPatchPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "tpp-stale-gw", Namespace: downstreamNS},
+	}
+	fakeDownstreamClient := fake.NewClientBuilder().
+		WithScheme(downstreamScheme).
+		WithObjects(connectorEPP, staleTppEPP).
+		Build()
+
+	reconciler := &TrafficProtectionPolicyReconciler{
+		mgr:               &fakeMockManager{cl: fakeUpstreamClient},
+		DownstreamCluster: &fakeCluster{cl: fakeDownstreamClient},
+		Config: config.NetworkServicesOperator{
+			Gateway: config.GatewayConfig{
+				// Required by ensureHTTPCorazaListenerFilter; value doesn't matter here.
+				DownstreamGatewayNamespace: "envoy-gateway-system",
+			},
+		},
+	}
+
+	ctx := context.Background()
+	_, err := reconciler.Reconcile(ctx, NamespaceReconcileRequest{
+		Namespace:   upstreamNS,
+		ClusterName: "test-cluster",
+	})
+	assert.NoError(t, err)
+
+	// connector-tunnel-foo must still exist – the stale cleanup must skip it.
+	got := &envoygatewayv1alpha1.EnvoyPatchPolicy{}
+	assert.NoError(t,
+		fakeDownstreamClient.Get(ctx, client.ObjectKey{Name: "connector-tunnel-foo", Namespace: downstreamNS}, got),
+		"connector EPP must not be deleted by TPP stale cleanup",
+	)
+
+	// tpp-stale-gw must have been removed – the stale cleanup must delete it.
+	stale := &envoygatewayv1alpha1.EnvoyPatchPolicy{}
+	err = fakeDownstreamClient.Get(ctx, client.ObjectKey{Name: "tpp-stale-gw", Namespace: downstreamNS}, stale)
+	assert.True(t, apierrors.IsNotFound(err), "stale tpp EPP must be deleted by stale cleanup")
 }

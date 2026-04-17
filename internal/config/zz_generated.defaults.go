@@ -224,6 +224,9 @@ func SetObjectDefaults_NetworkServicesOperator(in *NetworkServicesOperator) {
 	if in.Gateway.MaxConcurrentReconciles == 0 {
 		in.Gateway.MaxConcurrentReconciles = 5
 	}
+	if in.Gateway.CertificateReissuance.MaxRetries == 0 {
+		in.Gateway.CertificateReissuance.MaxRetries = 3
+	}
 	if in.HTTPProxy.GatewayClassName == "" {
 		in.HTTPProxy.GatewayClassName = "datum-external-global-proxy"
 	}

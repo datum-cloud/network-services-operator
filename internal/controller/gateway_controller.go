@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -52,6 +53,7 @@ import (
 const gatewayControllerFinalizer = "gateway.networking.datumapis.com/gateway-controller"
 const gatewayControllerGCFinalizer = "gateway.networking.datumapis.com/gateway-controller-gc"
 const certificateIssuerTLSOption = "gateway.networking.datumapis.com/certificate-issuer"
+const annotationReissuanceCount = "networking.datumapis.com/reissuance-count"
 const KindGateway = "Gateway"
 const KindHTTPRoute = "HTTPRoute"
 const KindService = "Service"
@@ -474,6 +476,7 @@ func (r *GatewayReconciler) ensureListenerCertificates(
 	wildcardSuffix := "." + r.Config.Gateway.TargetDomain
 
 	desiredCerts := make(map[string]bool)
+	gatewayNeedsUpdate := false
 
 	// Only create Certificates for listeners with custom hostnames outside the
 	// wildcard scope. Wildcard-covered listeners use the shared TLS secret and
@@ -550,6 +553,13 @@ func (r *GatewayReconciler) ensureListenerCertificates(
 		var opResult string
 		var err error
 		if isNew {
+			reissuanceCount := getReissuanceCount(downstreamGateway, certName)
+			if reissuanceCount > 0 {
+				if cert.Annotations == nil {
+					cert.Annotations = make(map[string]string)
+				}
+				cert.Annotations[annotationReissuanceCount] = fmt.Sprintf("%d", reissuanceCount)
+			}
 			cert.Spec = desiredSpec
 			err = downstreamClient.Create(ctx, cert)
 			opResult = "created"
@@ -564,6 +574,27 @@ func (r *GatewayReconciler) ensureListenerCertificates(
 		}
 		if opResult != "" {
 			logger.Info("Certificate reconciled", "certificate", certName, "operation", opResult)
+		}
+
+		// Check if an existing Certificate is stuck in a failed state and
+		// should be deleted so we can recreate it fresh on the next reconcile.
+		if !isNew {
+			requeueAfter, gwChanged := r.reissueFailedCertificate(ctx, cert, certName, downstreamGateway, downstreamClient)
+			if gwChanged {
+				gatewayNeedsUpdate = true
+			}
+			if requeueAfter > 0 && (result.RequeueAfter == 0 || requeueAfter < result.RequeueAfter) {
+				result.RequeueAfter = requeueAfter
+			}
+		}
+	}
+
+	// Persist reissuance tracking annotations on the downstream Gateway if
+	// any Certificates were deleted for re-issuance.
+	if gatewayNeedsUpdate {
+		if err := downstreamClient.Update(ctx, downstreamGateway); err != nil {
+			result.Err = fmt.Errorf("failed to update downstream gateway reissuance annotations: %w", err)
+			return result
 		}
 	}
 
@@ -603,6 +634,113 @@ func (r *GatewayReconciler) ensureListenerCertificates(
 	}
 
 	return result
+}
+
+// reissueFailedCertificate checks whether a Certificate is stuck in a failed
+// state and should be deleted so the gateway controller recreates it fresh on
+// the next reconcile (bypassing cert-manager's exponential backoff).
+//
+// The reissuance count is tracked as an annotation on the downstream Gateway
+// (keyed by certificate name) so it survives Certificate deletion.
+//
+// Returns:
+//   - requeueAfter: non-zero if the caller should requeue after this duration
+//   - gatewayChanged: true if the downstream gateway annotations were modified
+//     and the caller must persist the change
+func (r *GatewayReconciler) reissueFailedCertificate(
+	ctx context.Context,
+	cert *cmv1.Certificate,
+	certName string,
+	downstreamGateway *gatewayv1.Gateway,
+	downstreamClient client.Client,
+) (requeueAfter time.Duration, gatewayChanged bool) {
+	logger := log.FromContext(ctx)
+	reissuanceCfg := &r.Config.Gateway.CertificateReissuance
+
+	if cert.Status.LastFailureTime == nil {
+		if clearReissuanceCount(downstreamGateway, certName) {
+			logger.V(1).Info("cleared reissuance count for healthy Certificate", "certificate", certName)
+			gatewayChanged = true
+		}
+		return 0, gatewayChanged
+	}
+
+	retryCount := getReissuanceCount(downstreamGateway, certName)
+	maxRetries := reissuanceCfg.GetMaxRetries()
+	if retryCount >= maxRetries {
+		logger.V(1).Info("Certificate has exhausted fast-track re-issuance attempts, deferring to cert-manager backoff",
+			"certificate", certName,
+			"reissuanceCount", retryCount,
+			"maxRetries", maxRetries,
+		)
+		return 0, false
+	}
+
+	retryInterval := reissuanceCfg.GetRetryInterval()
+	sinceFailure := time.Since(cert.Status.LastFailureTime.Time)
+	if sinceFailure < retryInterval {
+		remaining := retryInterval - sinceFailure
+		logger.V(1).Info("Certificate failed but retry interval has not elapsed",
+			"certificate", certName,
+			"sinceFailure", sinceFailure,
+			"retryInterval", retryInterval,
+			"requeueAfter", remaining,
+		)
+		return remaining, false
+	}
+
+	setReissuanceCount(downstreamGateway, certName, retryCount+1)
+
+	logger.Info("deleting failed Certificate for re-issuance",
+		"certificate", certName,
+		"lastFailureTime", cert.Status.LastFailureTime.Time,
+		"reissuanceCount", retryCount+1,
+		"maxRetries", maxRetries,
+	)
+
+	if err := downstreamClient.Delete(ctx, cert); err != nil {
+		if !apierrors.IsNotFound(err) {
+			logger.Error(err, "failed to delete Certificate for re-issuance", "certificate", certName)
+		}
+		return 0, true
+	}
+
+	return 0, true
+}
+
+// reissuanceAnnotationKey returns the gateway annotation key used to track
+// reissuance count for a given certificate name.
+func reissuanceAnnotationKey(certName string) string {
+	return annotationReissuanceCount + "/" + certName
+}
+
+func getReissuanceCount(gw *gatewayv1.Gateway, certName string) int {
+	if gw.Annotations == nil {
+		return 0
+	}
+	count, err := strconv.Atoi(gw.Annotations[reissuanceAnnotationKey(certName)])
+	if err != nil {
+		return 0
+	}
+	return count
+}
+
+func setReissuanceCount(gw *gatewayv1.Gateway, certName string, count int) {
+	if gw.Annotations == nil {
+		gw.Annotations = make(map[string]string)
+	}
+	gw.Annotations[reissuanceAnnotationKey(certName)] = fmt.Sprintf("%d", count)
+}
+
+// clearReissuanceCount removes the reissuance tracking annotation for a
+// certificate that has recovered. Returns true if the annotation was present.
+func clearReissuanceCount(gw *gatewayv1.Gateway, certName string) bool {
+	key := reissuanceAnnotationKey(certName)
+	if _, ok := gw.Annotations[key]; ok {
+		delete(gw.Annotations, key)
+		return true
+	}
+	return false
 }
 
 func (r *GatewayReconciler) reconcileGatewayStatus(

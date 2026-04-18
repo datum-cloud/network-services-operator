@@ -24,6 +24,7 @@ type ConnectorClassStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Cluster
+// +kubebuilder:metadata:annotations="discovery.miloapis.com/parent-contexts=Project"
 
 // ConnectorClass is the Schema for the connectorclasses API.
 type ConnectorClass struct {

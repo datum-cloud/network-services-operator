@@ -429,6 +429,7 @@ const (
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:metadata:annotations="discovery.miloapis.com/parent-contexts=Project"
 
 // An HTTPProxy builds on top of Gateway API resources to provide a more convenient
 // method to manage simple reverse proxy use cases.

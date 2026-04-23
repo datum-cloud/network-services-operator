@@ -71,6 +71,9 @@ const (
 	// instead of the current prefix check, removing the naming-convention
 	// dependency entirely.
 	tppManagedLabel = "networking.datumapis.com/managed-by-tpp-controller"
+
+	// tppManagedLabelValue is the value stamped on tppManagedLabel.
+	tppManagedLabelValue = "true"
 )
 
 // tegESPGVK is the GroupVersionKind for TEG's ExtendedSecurityPolicy CRD.
@@ -94,6 +97,7 @@ type certificateReadinessResult struct {
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=trafficprotectionpolicies/finalizers,verbs=update
 // +kubebuilder:rbac:groups=cert-manager.io,resources=certificates,verbs=get;list;watch
 
+// isTEGMode reports whether the WAF backend is TEG ExtendedSecurityPolicy.
 func (r *TrafficProtectionPolicyReconciler) isTEGMode() bool {
 	return r.Config.Gateway.Coraza.Backend == config.WAFBackendTEGESP
 }
@@ -168,7 +172,7 @@ func (r *TrafficProtectionPolicyReconciler) Reconcile(ctx context.Context, req N
 					existing.SetLabels(make(map[string]string))
 				}
 				labels := existing.GetLabels()
-				labels[tppManagedLabel] = "true"
+				labels[tppManagedLabel] = tppManagedLabelValue
 				existing.SetLabels(labels)
 				existing.Object["spec"] = esp.Object["spec"]
 				return nil
@@ -190,8 +194,8 @@ func (r *TrafficProtectionPolicyReconciler) Reconcile(ctx context.Context, req N
 			ctx,
 			existingESPList,
 			client.InNamespace(downstreamNamespaceName),
-			client.MatchingLabels{tppManagedLabel: "true"},
-		); err != nil && !apierrors.IsNotFound(err) {
+			client.MatchingLabels{tppManagedLabel: tppManagedLabelValue},
+		); err != nil {
 			return ctrl.Result{}, fmt.Errorf("failed to list extendedsecuritypolicies: %w", err)
 		}
 		for i := range existingESPList.Items {
@@ -203,6 +207,27 @@ func (r *TrafficProtectionPolicyReconciler) Reconcile(ctx context.Context, req N
 				return ctrl.Result{}, fmt.Errorf("failed to delete stale extendedsecuritypolicy %s/%s: %w", existing.GetNamespace(), existing.GetName(), err)
 			}
 			logger.Info("deleted stale extendedsecuritypolicy from downstream cluster", "namespace", existing.GetNamespace(), "name", existing.GetName())
+		}
+
+		// Clean up any tpp-* EnvoyPatchPolicies left over from a previous coraza-epp
+		// deployment. This handles migration from coraza-epp to teg-esp.
+		var legacyEPPs envoygatewayv1alpha1.EnvoyPatchPolicyList
+		if err := downstreamStrategy.GetClient().List(
+			ctx,
+			&legacyEPPs,
+			client.InNamespace(downstreamNamespaceName),
+		); err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed to list legacy envoypatchpolicies: %w", err)
+		}
+		for i := range legacyEPPs.Items {
+			epp := &legacyEPPs.Items[i]
+			if !strings.HasPrefix(epp.Name, tppEnvoyPatchPolicyPrefix) {
+				continue
+			}
+			if err := downstreamStrategy.GetClient().Delete(ctx, epp); err != nil && !apierrors.IsNotFound(err) {
+				return ctrl.Result{}, fmt.Errorf("failed to delete legacy envoypatchpolicy %s/%s: %w", epp.Namespace, epp.Name, err)
+			}
+			logger.Info("deleted legacy envoypatchpolicy during teg-esp migration", "namespace", epp.Namespace, "name", epp.Name)
 		}
 	} else {
 		// Coraza EPP mode (default): check cert and listener readiness before writing EPPs.
@@ -257,7 +282,7 @@ func (r *TrafficProtectionPolicyReconciler) Reconcile(ctx context.Context, req N
 				if policy.Labels == nil {
 					policy.Labels = make(map[string]string)
 				}
-				policy.Labels[tppManagedLabel] = "true"
+				policy.Labels[tppManagedLabel] = tppManagedLabelValue
 				policy.Spec = desiredPolicy.Spec
 				return nil
 			})
@@ -1287,13 +1312,8 @@ func (r *TrafficProtectionPolicyReconciler) getDesiredExtendedSecurityPolicies(
 
 	for _, key := range gatewayKeys {
 		attachmentsForGateway := attachmentsByGateway[key]
-		if len(attachmentsForGateway) == 0 {
-			continue
-		}
 
-		// Use the first (highest-priority) attachment's directives.
-		// Gateway-level attachments are already deduplicated (one per gateway) by
-		// collectTrafficProtectionPolicyAttachments.
+		// Use the first (highest-priority) attachment's directives for this gateway.
 		attachment := attachmentsForGateway[0]
 		if len(attachment.CorazaDirectives) == 0 {
 			continue

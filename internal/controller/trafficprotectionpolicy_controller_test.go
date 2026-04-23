@@ -762,7 +762,7 @@ func TestGetDesiredEnvoyPatchPolicies(t *testing.T) {
 
 			var patchPolicy *envoygatewayv1alpha1.EnvoyPatchPolicy
 			for _, p := range patchPolicies {
-				if p.Name == fmt.Sprintf("tpp-%s", attachment.Gateway.Name) {
+				if p.Name == tppEnvoyPatchPolicyPrefix+attachment.Gateway.Name {
 					patchPolicy = p
 					break
 				}
@@ -1844,15 +1844,20 @@ func TestTPPReconcileStaleCleanupTEGMode(t *testing.T) {
 	staleESP.SetGroupVersionKind(tegESPGVK)
 	staleESP.SetName("tpp-stale-gw")
 	staleESP.SetNamespace(downstreamNS)
-	staleESP.SetLabels(map[string]string{tppManagedLabel: "true"})
+	staleESP.SetLabels(map[string]string{tppManagedLabel: tppManagedLabelValue})
 
 	unmanagedESP := &unstructured.Unstructured{}
 	unmanagedESP.SetGroupVersionKind(tegESPGVK)
 	unmanagedESP.SetName("unmanaged-esp")
 	unmanagedESP.SetNamespace(downstreamNS)
 
-	// The downstream fake client needs no typed scheme for unstructured resources.
+	// The downstream client needs envoygateway scheme because TEG mode also runs
+	// the EPP migration cleanup which lists EnvoyPatchPolicies.
+	downstreamScheme := runtime.NewScheme()
+	assert.NoError(t, envoygatewayv1alpha1.AddToScheme(downstreamScheme))
+
 	fakeDownstreamClient := fake.NewClientBuilder().
+		WithScheme(downstreamScheme).
 		WithObjects(staleESP, unmanagedESP).
 		Build()
 
@@ -1887,5 +1892,83 @@ func TestTPPReconcileStaleCleanupTEGMode(t *testing.T) {
 	assert.NoError(t,
 		fakeDownstreamClient.Get(ctx, client.ObjectKey{Name: "unmanaged-esp", Namespace: downstreamNS}, gotUnmanaged),
 		"unmanaged ESP must not be deleted",
+	)
+}
+
+// TestTPPReconcileEPPToESPMigration verifies that switching from coraza-epp to teg-esp
+// causes any existing tpp-* EnvoyPatchPolicies to be deleted, while non-tpp EPPs
+// (e.g. connector-*) are left untouched.
+func TestTPPReconcileEPPToESPMigration(t *testing.T) {
+	upstreamScheme := runtime.NewScheme()
+	assert.NoError(t, scheme.AddToScheme(upstreamScheme))
+	assert.NoError(t, gatewayv1.Install(upstreamScheme))
+	assert.NoError(t, networkingv1alpha.AddToScheme(upstreamScheme))
+
+	downstreamScheme := runtime.NewScheme()
+	assert.NoError(t, envoygatewayv1alpha1.AddToScheme(downstreamScheme))
+
+	const (
+		upstreamNS   = "default"
+		nsUID        = "test-ns-uid-migration"
+		downstreamNS = "ns-" + nsUID
+	)
+
+	upstreamNamespace := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: upstreamNS,
+			UID:  nsUID,
+		},
+	}
+	fakeUpstreamClient := fake.NewClientBuilder().
+		WithScheme(upstreamScheme).
+		WithObjects(upstreamNamespace).
+		Build()
+
+	// Legacy tpp-* EPP created by the coraza-epp backend.
+	legacyEPP := &envoygatewayv1alpha1.EnvoyPatchPolicy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "tpp-gateway-1",
+			Namespace: downstreamNS,
+			Labels:    map[string]string{tppManagedLabel: tppManagedLabelValue},
+		},
+	}
+	// connector-* EPP that must NOT be deleted.
+	connectorEPP := &envoygatewayv1alpha1.EnvoyPatchPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "connector-tunnel-bar", Namespace: downstreamNS},
+	}
+	fakeDownstreamClient := fake.NewClientBuilder().
+		WithScheme(downstreamScheme).
+		WithObjects(legacyEPP, connectorEPP).
+		Build()
+
+	reconciler := &TrafficProtectionPolicyReconciler{
+		mgr:               &fakeMockManager{cl: fakeUpstreamClient},
+		DownstreamCluster: &fakeCluster{cl: fakeDownstreamClient},
+		Config: config.NetworkServicesOperator{
+			Gateway: config.GatewayConfig{
+				Coraza: config.CorazaConfig{
+					Backend: config.WAFBackendTEGESP,
+				},
+			},
+		},
+	}
+
+	ctx := context.Background()
+	_, err := reconciler.Reconcile(ctx, NamespaceReconcileRequest{
+		Namespace:   upstreamNS,
+		ClusterName: "test-cluster",
+	})
+	assert.NoError(t, err)
+
+	// Legacy tpp-* EPP must have been deleted during migration.
+	got := &envoygatewayv1alpha1.EnvoyPatchPolicy{}
+	err = fakeDownstreamClient.Get(ctx, client.ObjectKey{Name: "tpp-gateway-1", Namespace: downstreamNS}, got)
+	assert.True(t, apierrors.IsNotFound(err), "legacy tpp EPP must be deleted when migrating to teg-esp mode")
+
+	// connector-* EPP must survive.
+	connector := &envoygatewayv1alpha1.EnvoyPatchPolicy{}
+	assert.NoError(t,
+		fakeDownstreamClient.Get(ctx, client.ObjectKey{Name: "connector-tunnel-bar", Namespace: downstreamNS}, connector),
+		"connector EPP must not be deleted by teg-esp migration cleanup",
 	)
 }

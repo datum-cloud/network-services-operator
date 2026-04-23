@@ -645,6 +645,16 @@ func (c *GatewayConfig) ConnectorTunnelListenerName() string {
 	return c.ConnectorInternalListenerName
 }
 
+// WAFBackend identifies which downstream WAF resource the operator emits.
+type WAFBackend string
+
+const (
+	// WAFBackendCorazaEPP uses EnvoyPatchPolicy with the Coraza Go filter.
+	WAFBackendCorazaEPP WAFBackend = "coraza-epp"
+	// WAFBackendTEGESP uses ExtendedSecurityPolicy from Tetrate Enterprise Gateway.
+	WAFBackendTEGESP WAFBackend = "teg-esp"
+)
+
 // +k8s:deepcopy-gen=true
 
 type CorazaConfig struct {
@@ -685,6 +695,15 @@ type CorazaConfig struct {
 	// stored in Envoy routes to inject into trace span attributes. MUST return
 	// a map of string keys to values.
 	TraceRouteMetadataExtractor string `json:"traceRouteMetadataExtractor,omitempty"`
+
+	// WAFBackend selects which downstream resource the TrafficProtectionPolicy
+	// controller emits. "coraza-epp" (default) writes EnvoyPatchPolicy resources
+	// using the Coraza Go filter. "teg-esp" writes ExtendedSecurityPolicy resources
+	// for the Tetrate Enterprise Gateway WAF.
+	//
+	// +kubebuilder:validation:Enum=coraza-epp;teg-esp
+	// +default="coraza-epp"
+	Backend WAFBackend `json:"backend,omitempty"`
 }
 
 // +k8s:deepcopy-gen=true

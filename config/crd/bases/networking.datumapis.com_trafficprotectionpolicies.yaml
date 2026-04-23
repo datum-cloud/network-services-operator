@@ -237,9 +237,9 @@ spec:
             - message: this policy can only have a targetRefs[*].group of gateway.networking.k8s.io
               rule: 'has(self.targetRefs) ? self.targetRefs.all(ref, ref.group ==
                 ''gateway.networking.k8s.io'') : true '
-            - message: this policy can only have a targetRefs[*].kind of Gateway/HTTPRoute
-              rule: 'has(self.targetRefs) ? self.targetRefs.all(ref, ref.kind in [''Gateway'',
-                ''HTTPRoute'']) : true '
+            - message: this policy can only have a targetRefs[*].kind of Gateway
+              rule: 'has(self.targetRefs) ? self.targetRefs.all(ref, ref.kind == ''Gateway'')
+                : true'
           status:
             description: TrafficProtectionPolicyStatus defines the observed state
               of TrafficProtectionPolicy.

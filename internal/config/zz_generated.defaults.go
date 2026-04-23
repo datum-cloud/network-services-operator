@@ -57,6 +57,9 @@ func SetObjectDefaults_NetworkServicesOperator(in *NetworkServicesOperator) {
 			panic(err)
 		}
 	}
+	if in.Gateway.Coraza.Backend == "" {
+		in.Gateway.Coraza.Backend = WAFBackendCorazaEPP
+	}
 	if in.Gateway.ValidPortNumbers == nil {
 		if err := json.Unmarshal([]byte(`[80,443]`), &in.Gateway.ValidPortNumbers); err != nil {
 			panic(err)

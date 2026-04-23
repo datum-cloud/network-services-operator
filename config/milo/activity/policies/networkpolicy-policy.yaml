@@ -1,0 +1,46 @@
+# ActivityPolicy for NetworkPolicy resources (networking.datumapis.com).
+# Defines how NetworkPolicy CRUD operations appear in activity timelines.
+#
+# Note: This covers networking.datumapis.com/NetworkPolicy, not networking.k8s.io/NetworkPolicy.
+# NetworkPolicy resources define ingress/egress rules and have no user-facing display
+# name — audit.objectRef.name is used as the display string.
+# All rules exclude system users to suppress controller reconciliation noise.
+apiVersion: activity.miloapis.com/v1alpha1
+kind: ActivityPolicy
+metadata:
+  name: networking.datumapis.com-networkpolicy
+spec:
+  resource:
+    apiGroup: networking.datumapis.com
+    kind: NetworkPolicy
+
+  auditRules:
+    # NetworkPolicy creation with spec available
+    - name: create
+      match: "!audit.user.username.startsWith('system:') && audit.verb == 'create' && has(audit.requestObject.spec)"
+      summary: "{{ actor }} created network policy {{ link(audit.objectRef.name, audit.objectRef) }}"
+
+    # NetworkPolicy creation fallback (no spec)
+    - name: create-fallback
+      match: "!audit.user.username.startsWith('system:') && audit.verb == 'create'"
+      summary: "{{ actor }} created {{ link('a network policy', audit.objectRef) }}"
+
+    # NetworkPolicy deletion with responseObject.spec available (response contains the deleted resource)
+    - name: delete
+      match: "!audit.user.username.startsWith('system:') && audit.verb == 'delete' && has(audit.responseObject.spec)"
+      summary: "{{ actor }} deleted network policy {{ audit.objectRef.name }}"
+
+    # NetworkPolicy deletion fallback (no spec on response)
+    - name: delete-fallback
+      match: "!audit.user.username.startsWith('system:') && audit.verb == 'delete'"
+      summary: "{{ actor }} deleted a network policy"
+
+    # NetworkPolicy update with spec available - excludes status subresource
+    - name: update
+      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && has(audit.requestObject.spec)"
+      summary: "{{ actor }} updated network policy {{ link(audit.objectRef.name, audit.objectRef) }}"
+
+    # NetworkPolicy update fallback (no spec)
+    - name: update-fallback
+      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource)"
+      summary: "{{ actor }} updated {{ link('a network policy', audit.objectRef) }}"

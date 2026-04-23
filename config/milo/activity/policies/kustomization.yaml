@@ -1,0 +1,25 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  # networking.datumapis.com kinds
+  - network-policy.yaml
+  - networkbinding-policy.yaml
+  - networkcontext-policy.yaml
+  - networkpolicy-policy.yaml
+  - subnet-policy.yaml
+  - subnetclaim-policy.yaml
+  - httpproxy-policy.yaml
+  - domain-policy.yaml
+  - location-policy.yaml
+  - connector-policy.yaml
+  - connectorclass-policy.yaml
+  - connectoradvertisement-policy.yaml
+  - trafficprotectionpolicy-policy.yaml
+  # gateway.networking.k8s.io kinds
+  - gateway-policy.yaml
+  - httproute-policy.yaml
+  - tcproute-policy.yaml
+  - udproute-policy.yaml
+  - tlsroute-policy.yaml
+  - backendtlspolicy-policy.yaml

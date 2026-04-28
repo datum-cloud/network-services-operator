@@ -540,7 +540,15 @@ func (r *GatewayReconciler) ensureListenerCertificates(
 			continue
 		}
 
+		// Apply ClusterIssuerMap translation first — this is the admin-level
+		// override (e.g. mapping the `auto` sentinel to a real ClusterIssuer
+		// name). Only fall back to the gateway-shim era inter-listener
+		// resolution when the sentinel survives mapping unchanged, i.e. when
+		// the admin hasn't provided a translation.
 		clusterIssuerName := string(l.TLS.Options[certificateIssuerTLSOption])
+		if mapped := r.Config.Gateway.ClusterIssuerMap[clusterIssuerName]; mapped != "" {
+			clusterIssuerName = mapped
+		}
 		if clusterIssuerName == autoIssuerSentinel {
 			if autoResolved == "" {
 				// No real issuer on this gateway to inherit from — match the
@@ -550,8 +558,6 @@ func (r *GatewayReconciler) ensureListenerCertificates(
 				continue
 			}
 			clusterIssuerName = autoResolved
-		} else if mapped := r.Config.Gateway.ClusterIssuerMap[clusterIssuerName]; mapped != "" {
-			clusterIssuerName = mapped
 		}
 
 		certName := listenerCertificateName(upstreamGateway.Name, l.Name)

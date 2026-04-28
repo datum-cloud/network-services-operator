@@ -7,38 +7,6 @@ spec:
     # -------------------------------------------------------------------------
     # Network
     # -------------------------------------------------------------------------
-    - name: network-owner
-      resource:
-        group: networking.datumapis.com
-        version: v1alpha
-        resource: networks
-      families:
-        - name: datum_cloud_network_owner
-          help: "Owner information"
-          type: gauge
-          metrics:
-            - labels:
-                - name: name
-                  value: "object.metadata.name"
-                - name: namespace
-                  value: "object.metadata.namespace"
-                - name: owner_kind
-                  value: |
-                    has(object.metadata.ownerReferences) && object.metadata.ownerReferences.size() > 0 ?
-                      object.metadata.ownerReferences[0].kind : ''
-                - name: owner_name
-                  value: |
-                    has(object.metadata.ownerReferences) && object.metadata.ownerReferences.size() > 0 ?
-                      object.metadata.ownerReferences[0].name : ''
-                - name: owner_uid
-                  value: |
-                    has(object.metadata.ownerReferences) && object.metadata.ownerReferences.size() > 0 ?
-                      object.metadata.ownerReferences[0].uid : ''
-                - name: controller
-                  value: |
-                    has(object.metadata.ownerReferences) && object.metadata.ownerReferences.size() > 0 && has(object.metadata.ownerReferences[0].controller) ?
-                      string(object.metadata.ownerReferences[0].controller) : ''
-
     - name: network-info
       resource:
         group: networking.datumapis.com
@@ -57,6 +25,31 @@ spec:
                 - name: uid
                   value: "object.metadata.uid"
 
+    - name: network-owner
+      resource:
+        group: networking.datumapis.com
+        version: v1alpha
+        resource: networks
+      families:
+        - name: datum_cloud_network_owner
+          help: "Owner information"
+          type: gauge
+          metrics:
+            - forEach: "has(object.metadata.ownerReferences) ? object.metadata.ownerReferences : []"
+              labels:
+                - name: name
+                  value: "object.metadata.name"
+                - name: namespace
+                  value: "object.metadata.namespace"
+                - name: owner_kind
+                  value: "item.kind"
+                - name: owner_name
+                  value: "item.name"
+                - name: owner_uid
+                  value: "item.uid"
+                - name: controller
+                  value: "has(item.controller) ? string(item.controller) : ''"
+
     - name: network-status-condition
       resource:
         group: networking.datumapis.com
@@ -67,61 +60,23 @@ spec:
           help: "The current status conditions of the network"
           type: gauge
           metrics:
-            - value: |
-                object.status.conditions.exists(c, c.type == 'Ready') ?
-                  (object.status.conditions.filter(c, c.type == 'Ready')[0].status == 'True' ? 1.0 : 0.0) :
-                  0.0
+            - forEach: "has(object.status) && has(object.status.conditions) ? object.status.conditions : []"
+              value: "item.status == 'True' ? 1.0 : 0.0"
               labels:
                 - name: name
                   value: "object.metadata.name"
                 - name: namespace
                   value: "object.metadata.namespace"
                 - name: condition
-                  value: "'Ready'"
+                  value: "item.type"
                 - name: reason
-                  value: |
-                    object.status.conditions.exists(c, c.type == 'Ready') ?
-                      object.status.conditions.filter(c, c.type == 'Ready')[0].reason : ''
+                  value: "item.reason"
                 - name: status
-                  value: |
-                    object.status.conditions.exists(c, c.type == 'Ready') ?
-                      object.status.conditions.filter(c, c.type == 'Ready')[0].status : ''
+                  value: "item.status"
 
     # -------------------------------------------------------------------------
     # NetworkBinding
     # -------------------------------------------------------------------------
-    - name: network-binding-owner
-      resource:
-        group: networking.datumapis.com
-        version: v1alpha
-        resource: networkbindings
-      families:
-        - name: datum_cloud_network_binding_owner
-          help: "Owner information"
-          type: gauge
-          metrics:
-            - labels:
-                - name: name
-                  value: "object.metadata.name"
-                - name: namespace
-                  value: "object.metadata.namespace"
-                - name: owner_kind
-                  value: |
-                    has(object.metadata.ownerReferences) && object.metadata.ownerReferences.size() > 0 ?
-                      object.metadata.ownerReferences[0].kind : ''
-                - name: owner_name
-                  value: |
-                    has(object.metadata.ownerReferences) && object.metadata.ownerReferences.size() > 0 ?
-                      object.metadata.ownerReferences[0].name : ''
-                - name: owner_uid
-                  value: |
-                    has(object.metadata.ownerReferences) && object.metadata.ownerReferences.size() > 0 ?
-                      object.metadata.ownerReferences[0].uid : ''
-                - name: controller
-                  value: |
-                    has(object.metadata.ownerReferences) && object.metadata.ownerReferences.size() > 0 && has(object.metadata.ownerReferences[0].controller) ?
-                      string(object.metadata.ownerReferences[0].controller) : ''
-
     - name: network-binding-info
       resource:
         group: networking.datumapis.com
@@ -144,6 +99,35 @@ spec:
                 - name: network_namespace
                   value: "object.spec.network.namespace"
 
+    - name: network-binding-owner
+      resource:
+        group: networking.datumapis.com
+        version: v1alpha
+        resource: networkbindings
+      families:
+        - name: datum_cloud_network_binding_owner
+          help: "Owner information"
+          type: gauge
+          metrics:
+            - forEach: "has(object.metadata.ownerReferences) ? object.metadata.ownerReferences : []"
+              labels:
+                - name: name
+                  value: "object.metadata.name"
+                - name: namespace
+                  value: "object.metadata.namespace"
+                - name: network_name
+                  value: "object.spec.network.name"
+                - name: network_namespace
+                  value: "object.spec.network.namespace"
+                - name: owner_kind
+                  value: "item.kind"
+                - name: owner_name
+                  value: "item.name"
+                - name: owner_uid
+                  value: "item.uid"
+                - name: controller
+                  value: "has(item.controller) ? string(item.controller) : ''"
+
     - name: network-binding-status-condition
       resource:
         group: networking.datumapis.com
@@ -154,61 +138,27 @@ spec:
           help: "The current status conditions of the network binding"
           type: gauge
           metrics:
-            - value: |
-                object.status.conditions.exists(c, c.type == 'Ready') ?
-                  (object.status.conditions.filter(c, c.type == 'Ready')[0].status == 'True' ? 1.0 : 0.0) :
-                  0.0
+            - forEach: "has(object.status) && has(object.status.conditions) ? object.status.conditions : []"
+              value: "item.status == 'True' ? 1.0 : 0.0"
               labels:
                 - name: name
                   value: "object.metadata.name"
                 - name: namespace
                   value: "object.metadata.namespace"
+                - name: network_name
+                  value: "object.spec.network.name"
+                - name: network_namespace
+                  value: "object.spec.network.namespace"
                 - name: condition
-                  value: "'Ready'"
+                  value: "item.type"
                 - name: reason
-                  value: |
-                    object.status.conditions.exists(c, c.type == 'Ready') ?
-                      object.status.conditions.filter(c, c.type == 'Ready')[0].reason : ''
+                  value: "item.reason"
                 - name: status
-                  value: |
-                    object.status.conditions.exists(c, c.type == 'Ready') ?
-                      object.status.conditions.filter(c, c.type == 'Ready')[0].status : ''
+                  value: "item.status"
 
     # -------------------------------------------------------------------------
     # NetworkContext
     # -------------------------------------------------------------------------
-    - name: network-context-owner
-      resource:
-        group: networking.datumapis.com
-        version: v1alpha
-        resource: networkcontexts
-      families:
-        - name: datum_cloud_network_context_owner
-          help: "Owner information"
-          type: gauge
-          metrics:
-            - labels:
-                - name: name
-                  value: "object.metadata.name"
-                - name: namespace
-                  value: "object.metadata.namespace"
-                - name: owner_kind
-                  value: |
-                    has(object.metadata.ownerReferences) && object.metadata.ownerReferences.size() > 0 ?
-                      object.metadata.ownerReferences[0].kind : ''
-                - name: owner_name
-                  value: |
-                    has(object.metadata.ownerReferences) && object.metadata.ownerReferences.size() > 0 ?
-                      object.metadata.ownerReferences[0].name : ''
-                - name: owner_uid
-                  value: |
-                    has(object.metadata.ownerReferences) && object.metadata.ownerReferences.size() > 0 ?
-                      object.metadata.ownerReferences[0].uid : ''
-                - name: controller
-                  value: |
-                    has(object.metadata.ownerReferences) && object.metadata.ownerReferences.size() > 0 && has(object.metadata.ownerReferences[0].controller) ?
-                      string(object.metadata.ownerReferences[0].controller) : ''
-
     - name: network-context-info
       resource:
         group: networking.datumapis.com
@@ -227,6 +177,31 @@ spec:
                 - name: uid
                   value: "object.metadata.uid"
 
+    - name: network-context-owner
+      resource:
+        group: networking.datumapis.com
+        version: v1alpha
+        resource: networkcontexts
+      families:
+        - name: datum_cloud_network_context_owner
+          help: "Owner information"
+          type: gauge
+          metrics:
+            - forEach: "has(object.metadata.ownerReferences) ? object.metadata.ownerReferences : []"
+              labels:
+                - name: name
+                  value: "object.metadata.name"
+                - name: namespace
+                  value: "object.metadata.namespace"
+                - name: owner_kind
+                  value: "item.kind"
+                - name: owner_name
+                  value: "item.name"
+                - name: owner_uid
+                  value: "item.uid"
+                - name: controller
+                  value: "has(item.controller) ? string(item.controller) : ''"
+
     - name: network-context-status-condition
       resource:
         group: networking.datumapis.com
@@ -237,80 +212,23 @@ spec:
           help: "The current status conditions of the network context"
           type: gauge
           metrics:
-            - value: |
-                object.status.conditions.exists(c, c.type == 'Programmed') ?
-                  (object.status.conditions.filter(c, c.type == 'Programmed')[0].status == 'True' ? 1.0 : 0.0) :
-                  0.0
+            - forEach: "has(object.status) && has(object.status.conditions) ? object.status.conditions : []"
+              value: "item.status == 'True' ? 1.0 : 0.0"
               labels:
                 - name: name
                   value: "object.metadata.name"
                 - name: namespace
                   value: "object.metadata.namespace"
                 - name: condition
-                  value: "'Programmed'"
+                  value: "item.type"
                 - name: reason
-                  value: |
-                    object.status.conditions.exists(c, c.type == 'Programmed') ?
-                      object.status.conditions.filter(c, c.type == 'Programmed')[0].reason : ''
+                  value: "item.reason"
                 - name: status
-                  value: |
-                    object.status.conditions.exists(c, c.type == 'Programmed') ?
-                      object.status.conditions.filter(c, c.type == 'Programmed')[0].status : ''
-            - value: |
-                object.status.conditions.exists(c, c.type == 'Ready') ?
-                  (object.status.conditions.filter(c, c.type == 'Ready')[0].status == 'True' ? 1.0 : 0.0) :
-                  0.0
-              labels:
-                - name: name
-                  value: "object.metadata.name"
-                - name: namespace
-                  value: "object.metadata.namespace"
-                - name: condition
-                  value: "'Ready'"
-                - name: reason
-                  value: |
-                    object.status.conditions.exists(c, c.type == 'Ready') ?
-                      object.status.conditions.filter(c, c.type == 'Ready')[0].reason : ''
-                - name: status
-                  value: |
-                    object.status.conditions.exists(c, c.type == 'Ready') ?
-                      object.status.conditions.filter(c, c.type == 'Ready')[0].status : ''
+                  value: "item.status"
 
     # -------------------------------------------------------------------------
     # NetworkPolicy
     # -------------------------------------------------------------------------
-    - name: network-policy-owner
-      resource:
-        group: networking.datumapis.com
-        version: v1alpha
-        resource: networkpolicies
-      families:
-        - name: datum_cloud_network_policy_owner
-          help: "Owner information"
-          type: gauge
-          metrics:
-            - labels:
-                - name: name
-                  value: "object.metadata.name"
-                - name: namespace
-                  value: "object.metadata.namespace"
-                - name: owner_kind
-                  value: |
-                    has(object.metadata.ownerReferences) && object.metadata.ownerReferences.size() > 0 ?
-                      object.metadata.ownerReferences[0].kind : ''
-                - name: owner_name
-                  value: |
-                    has(object.metadata.ownerReferences) && object.metadata.ownerReferences.size() > 0 ?
-                      object.metadata.ownerReferences[0].name : ''
-                - name: owner_uid
-                  value: |
-                    has(object.metadata.ownerReferences) && object.metadata.ownerReferences.size() > 0 ?
-                      object.metadata.ownerReferences[0].uid : ''
-                - name: controller
-                  value: |
-                    has(object.metadata.ownerReferences) && object.metadata.ownerReferences.size() > 0 && has(object.metadata.ownerReferences[0].controller) ?
-                      string(object.metadata.ownerReferences[0].controller) : ''
-
     - name: network-policy-info
       resource:
         group: networking.datumapis.com
@@ -329,41 +247,58 @@ spec:
                 - name: uid
                   value: "object.metadata.uid"
 
-    # -------------------------------------------------------------------------
-    # Subnet
-    # -------------------------------------------------------------------------
-    - name: subnet-owner
+    - name: network-policy-owner
       resource:
         group: networking.datumapis.com
         version: v1alpha
-        resource: subnets
+        resource: networkpolicies
       families:
-        - name: datum_cloud_subnet_owner
+        - name: datum_cloud_network_policy_owner
           help: "Owner information"
           type: gauge
           metrics:
-            - labels:
+            - forEach: "has(object.metadata.ownerReferences) ? object.metadata.ownerReferences : []"
+              labels:
                 - name: name
                   value: "object.metadata.name"
                 - name: namespace
                   value: "object.metadata.namespace"
                 - name: owner_kind
-                  value: |
-                    has(object.metadata.ownerReferences) && object.metadata.ownerReferences.size() > 0 ?
-                      object.metadata.ownerReferences[0].kind : ''
+                  value: "item.kind"
                 - name: owner_name
-                  value: |
-                    has(object.metadata.ownerReferences) && object.metadata.ownerReferences.size() > 0 ?
-                      object.metadata.ownerReferences[0].name : ''
+                  value: "item.name"
                 - name: owner_uid
-                  value: |
-                    has(object.metadata.ownerReferences) && object.metadata.ownerReferences.size() > 0 ?
-                      object.metadata.ownerReferences[0].uid : ''
+                  value: "item.uid"
                 - name: controller
-                  value: |
-                    has(object.metadata.ownerReferences) && object.metadata.ownerReferences.size() > 0 && has(object.metadata.ownerReferences[0].controller) ?
-                      string(object.metadata.ownerReferences[0].controller) : ''
+                  value: "has(item.controller) ? string(item.controller) : ''"
 
+    - name: network-policy-status-condition
+      resource:
+        group: networking.datumapis.com
+        version: v1alpha
+        resource: networkpolicies
+      families:
+        - name: datum_cloud_network_policy_status_condition
+          help: "The current status conditions of the network policy"
+          type: gauge
+          metrics:
+            - forEach: "has(object.status) && has(object.status.conditions) ? object.status.conditions : []"
+              value: "item.status == 'True' ? 1.0 : 0.0"
+              labels:
+                - name: name
+                  value: "object.metadata.name"
+                - name: namespace
+                  value: "object.metadata.namespace"
+                - name: condition
+                  value: "item.type"
+                - name: reason
+                  value: "item.reason"
+                - name: status
+                  value: "item.status"
+
+    # -------------------------------------------------------------------------
+    # Subnet
+    # -------------------------------------------------------------------------
     - name: subnet-info
       resource:
         group: networking.datumapis.com
@@ -386,6 +321,35 @@ spec:
                 - name: network_namespace
                   value: "object.spec.network.namespace"
 
+    - name: subnet-owner
+      resource:
+        group: networking.datumapis.com
+        version: v1alpha
+        resource: subnets
+      families:
+        - name: datum_cloud_subnet_owner
+          help: "Owner information"
+          type: gauge
+          metrics:
+            - forEach: "has(object.metadata.ownerReferences) ? object.metadata.ownerReferences : []"
+              labels:
+                - name: name
+                  value: "object.metadata.name"
+                - name: namespace
+                  value: "object.metadata.namespace"
+                - name: network_name
+                  value: "object.spec.network.name"
+                - name: network_namespace
+                  value: "object.spec.network.namespace"
+                - name: owner_kind
+                  value: "item.kind"
+                - name: owner_name
+                  value: "item.name"
+                - name: owner_uid
+                  value: "item.uid"
+                - name: controller
+                  value: "has(item.controller) ? string(item.controller) : ''"
+
     - name: subnet-status-condition
       resource:
         group: networking.datumapis.com
@@ -396,99 +360,27 @@ spec:
           help: "The current status conditions of the subnet"
           type: gauge
           metrics:
-            - value: |
-                object.status.conditions.exists(c, c.type == 'Allocated') ?
-                  (object.status.conditions.filter(c, c.type == 'Allocated')[0].status == 'True' ? 1.0 : 0.0) :
-                  0.0
+            - forEach: "has(object.status) && has(object.status.conditions) ? object.status.conditions : []"
+              value: "item.status == 'True' ? 1.0 : 0.0"
               labels:
                 - name: name
                   value: "object.metadata.name"
                 - name: namespace
                   value: "object.metadata.namespace"
+                - name: network_name
+                  value: "object.spec.network.name"
+                - name: network_namespace
+                  value: "object.spec.network.namespace"
                 - name: condition
-                  value: "'Allocated'"
+                  value: "item.type"
                 - name: reason
-                  value: |
-                    object.status.conditions.exists(c, c.type == 'Allocated') ?
-                      object.status.conditions.filter(c, c.type == 'Allocated')[0].reason : ''
+                  value: "item.reason"
                 - name: status
-                  value: |
-                    object.status.conditions.exists(c, c.type == 'Allocated') ?
-                      object.status.conditions.filter(c, c.type == 'Allocated')[0].status : ''
-            - value: |
-                object.status.conditions.exists(c, c.type == 'Programmed') ?
-                  (object.status.conditions.filter(c, c.type == 'Programmed')[0].status == 'True' ? 1.0 : 0.0) :
-                  0.0
-              labels:
-                - name: name
-                  value: "object.metadata.name"
-                - name: namespace
-                  value: "object.metadata.namespace"
-                - name: condition
-                  value: "'Programmed'"
-                - name: reason
-                  value: |
-                    object.status.conditions.exists(c, c.type == 'Programmed') ?
-                      object.status.conditions.filter(c, c.type == 'Programmed')[0].reason : ''
-                - name: status
-                  value: |
-                    object.status.conditions.exists(c, c.type == 'Programmed') ?
-                      object.status.conditions.filter(c, c.type == 'Programmed')[0].status : ''
-            - value: |
-                object.status.conditions.exists(c, c.type == 'Ready') ?
-                  (object.status.conditions.filter(c, c.type == 'Ready')[0].status == 'True' ? 1.0 : 0.0) :
-                  0.0
-              labels:
-                - name: name
-                  value: "object.metadata.name"
-                - name: namespace
-                  value: "object.metadata.namespace"
-                - name: condition
-                  value: "'Ready'"
-                - name: reason
-                  value: |
-                    object.status.conditions.exists(c, c.type == 'Ready') ?
-                      object.status.conditions.filter(c, c.type == 'Ready')[0].reason : ''
-                - name: status
-                  value: |
-                    object.status.conditions.exists(c, c.type == 'Ready') ?
-                      object.status.conditions.filter(c, c.type == 'Ready')[0].status : ''
+                  value: "item.status"
 
     # -------------------------------------------------------------------------
     # SubnetClaim
     # -------------------------------------------------------------------------
-    - name: subnet-claim-owner
-      resource:
-        group: networking.datumapis.com
-        version: v1alpha
-        resource: subnetclaims
-      families:
-        - name: datum_cloud_subnet_claim_owner
-          help: "Owner information"
-          type: gauge
-          metrics:
-            - labels:
-                - name: name
-                  value: "object.metadata.name"
-                - name: namespace
-                  value: "object.metadata.namespace"
-                - name: owner_kind
-                  value: |
-                    has(object.metadata.ownerReferences) && object.metadata.ownerReferences.size() > 0 ?
-                      object.metadata.ownerReferences[0].kind : ''
-                - name: owner_name
-                  value: |
-                    has(object.metadata.ownerReferences) && object.metadata.ownerReferences.size() > 0 ?
-                      object.metadata.ownerReferences[0].name : ''
-                - name: owner_uid
-                  value: |
-                    has(object.metadata.ownerReferences) && object.metadata.ownerReferences.size() > 0 ?
-                      object.metadata.ownerReferences[0].uid : ''
-                - name: controller
-                  value: |
-                    has(object.metadata.ownerReferences) && object.metadata.ownerReferences.size() > 0 && has(object.metadata.ownerReferences[0].controller) ?
-                      string(object.metadata.ownerReferences[0].controller) : ''
-
     - name: subnet-claim-info
       resource:
         group: networking.datumapis.com
@@ -523,6 +415,35 @@ spec:
                     has(object.metadata.labels) && 'gcp_topology_datum_net_region' in object.metadata.labels ?
                       object.metadata.labels['gcp_topology_datum_net_region'] : ''
 
+    - name: subnet-claim-owner
+      resource:
+        group: networking.datumapis.com
+        version: v1alpha
+        resource: subnetclaims
+      families:
+        - name: datum_cloud_subnet_claim_owner
+          help: "Owner information"
+          type: gauge
+          metrics:
+            - forEach: "has(object.metadata.ownerReferences) ? object.metadata.ownerReferences : []"
+              labels:
+                - name: name
+                  value: "object.metadata.name"
+                - name: namespace
+                  value: "object.metadata.namespace"
+                - name: network_name
+                  value: "object.spec.network.name"
+                - name: network_namespace
+                  value: "object.spec.network.namespace"
+                - name: owner_kind
+                  value: "item.kind"
+                - name: owner_name
+                  value: "item.name"
+                - name: owner_uid
+                  value: "item.uid"
+                - name: controller
+                  value: "has(item.controller) ? string(item.controller) : ''"
+
     - name: subnet-claim-status-condition
       resource:
         group: networking.datumapis.com
@@ -533,99 +454,27 @@ spec:
           help: "The current status conditions of the subnet claim"
           type: gauge
           metrics:
-            - value: |
-                object.status.conditions.exists(c, c.type == 'Allocated') ?
-                  (object.status.conditions.filter(c, c.type == 'Allocated')[0].status == 'True' ? 1.0 : 0.0) :
-                  0.0
+            - forEach: "has(object.status) && has(object.status.conditions) ? object.status.conditions : []"
+              value: "item.status == 'True' ? 1.0 : 0.0"
               labels:
                 - name: name
                   value: "object.metadata.name"
                 - name: namespace
                   value: "object.metadata.namespace"
+                - name: network_name
+                  value: "object.spec.network.name"
+                - name: network_namespace
+                  value: "object.spec.network.namespace"
                 - name: condition
-                  value: "'Allocated'"
+                  value: "item.type"
                 - name: reason
-                  value: |
-                    object.status.conditions.exists(c, c.type == 'Allocated') ?
-                      object.status.conditions.filter(c, c.type == 'Allocated')[0].reason : ''
+                  value: "item.reason"
                 - name: status
-                  value: |
-                    object.status.conditions.exists(c, c.type == 'Allocated') ?
-                      object.status.conditions.filter(c, c.type == 'Allocated')[0].status : ''
-            - value: |
-                object.status.conditions.exists(c, c.type == 'Programmed') ?
-                  (object.status.conditions.filter(c, c.type == 'Programmed')[0].status == 'True' ? 1.0 : 0.0) :
-                  0.0
-              labels:
-                - name: name
-                  value: "object.metadata.name"
-                - name: namespace
-                  value: "object.metadata.namespace"
-                - name: condition
-                  value: "'Programmed'"
-                - name: reason
-                  value: |
-                    object.status.conditions.exists(c, c.type == 'Programmed') ?
-                      object.status.conditions.filter(c, c.type == 'Programmed')[0].reason : ''
-                - name: status
-                  value: |
-                    object.status.conditions.exists(c, c.type == 'Programmed') ?
-                      object.status.conditions.filter(c, c.type == 'Programmed')[0].status : ''
-            - value: |
-                object.status.conditions.exists(c, c.type == 'Ready') ?
-                  (object.status.conditions.filter(c, c.type == 'Ready')[0].status == 'True' ? 1.0 : 0.0) :
-                  0.0
-              labels:
-                - name: name
-                  value: "object.metadata.name"
-                - name: namespace
-                  value: "object.metadata.namespace"
-                - name: condition
-                  value: "'Ready'"
-                - name: reason
-                  value: |
-                    object.status.conditions.exists(c, c.type == 'Ready') ?
-                      object.status.conditions.filter(c, c.type == 'Ready')[0].reason : ''
-                - name: status
-                  value: |
-                    object.status.conditions.exists(c, c.type == 'Ready') ?
-                      object.status.conditions.filter(c, c.type == 'Ready')[0].status : ''
+                  value: "item.status"
 
     # -------------------------------------------------------------------------
     # Location
     # -------------------------------------------------------------------------
-    - name: location-owner
-      resource:
-        group: networking.datumapis.com
-        version: v1alpha
-        resource: locations
-      families:
-        - name: datum_cloud_location_owner
-          help: "Owner information"
-          type: gauge
-          metrics:
-            - labels:
-                - name: name
-                  value: "object.metadata.name"
-                - name: namespace
-                  value: "object.metadata.namespace"
-                - name: owner_kind
-                  value: |
-                    has(object.metadata.ownerReferences) && object.metadata.ownerReferences.size() > 0 ?
-                      object.metadata.ownerReferences[0].kind : ''
-                - name: owner_name
-                  value: |
-                    has(object.metadata.ownerReferences) && object.metadata.ownerReferences.size() > 0 ?
-                      object.metadata.ownerReferences[0].name : ''
-                - name: owner_uid
-                  value: |
-                    has(object.metadata.ownerReferences) && object.metadata.ownerReferences.size() > 0 ?
-                      object.metadata.ownerReferences[0].uid : ''
-                - name: controller
-                  value: |
-                    has(object.metadata.ownerReferences) && object.metadata.ownerReferences.size() > 0 && has(object.metadata.ownerReferences[0].controller) ?
-                      string(object.metadata.ownerReferences[0].controller) : ''
-
     - name: location-info
       resource:
         group: networking.datumapis.com
@@ -644,6 +493,31 @@ spec:
                 - name: uid
                   value: "object.metadata.uid"
 
+    - name: location-owner
+      resource:
+        group: networking.datumapis.com
+        version: v1alpha
+        resource: locations
+      families:
+        - name: datum_cloud_location_owner
+          help: "Owner information"
+          type: gauge
+          metrics:
+            - forEach: "has(object.metadata.ownerReferences) ? object.metadata.ownerReferences : []"
+              labels:
+                - name: name
+                  value: "object.metadata.name"
+                - name: namespace
+                  value: "object.metadata.namespace"
+                - name: owner_kind
+                  value: "item.kind"
+                - name: owner_name
+                  value: "item.name"
+                - name: owner_uid
+                  value: "item.uid"
+                - name: controller
+                  value: "has(item.controller) ? string(item.controller) : ''"
+
     - name: location-status-condition
       resource:
         group: networking.datumapis.com
@@ -654,61 +528,23 @@ spec:
           help: "The current status conditions of the location"
           type: gauge
           metrics:
-            - value: |
-                object.status.conditions.exists(c, c.type == 'Ready') ?
-                  (object.status.conditions.filter(c, c.type == 'Ready')[0].status == 'True' ? 1.0 : 0.0) :
-                  0.0
+            - forEach: "has(object.status) && has(object.status.conditions) ? object.status.conditions : []"
+              value: "item.status == 'True' ? 1.0 : 0.0"
               labels:
                 - name: name
                   value: "object.metadata.name"
                 - name: namespace
                   value: "object.metadata.namespace"
                 - name: condition
-                  value: "'Ready'"
+                  value: "item.type"
                 - name: reason
-                  value: |
-                    object.status.conditions.exists(c, c.type == 'Ready') ?
-                      object.status.conditions.filter(c, c.type == 'Ready')[0].reason : ''
+                  value: "item.reason"
                 - name: status
-                  value: |
-                    object.status.conditions.exists(c, c.type == 'Ready') ?
-                      object.status.conditions.filter(c, c.type == 'Ready')[0].status : ''
+                  value: "item.status"
 
     # -------------------------------------------------------------------------
     # Domain
     # -------------------------------------------------------------------------
-    - name: domain-owner
-      resource:
-        group: networking.datumapis.com
-        version: v1alpha
-        resource: domains
-      families:
-        - name: datum_cloud_networking_domain_owner
-          help: "Owner information"
-          type: gauge
-          metrics:
-            - labels:
-                - name: name
-                  value: "object.metadata.name"
-                - name: namespace
-                  value: "object.metadata.namespace"
-                - name: owner_kind
-                  value: |
-                    has(object.metadata.ownerReferences) && object.metadata.ownerReferences.size() > 0 ?
-                      object.metadata.ownerReferences[0].kind : ''
-                - name: owner_name
-                  value: |
-                    has(object.metadata.ownerReferences) && object.metadata.ownerReferences.size() > 0 ?
-                      object.metadata.ownerReferences[0].name : ''
-                - name: owner_uid
-                  value: |
-                    has(object.metadata.ownerReferences) && object.metadata.ownerReferences.size() > 0 ?
-                      object.metadata.ownerReferences[0].uid : ''
-                - name: controller
-                  value: |
-                    has(object.metadata.ownerReferences) && object.metadata.ownerReferences.size() > 0 && has(object.metadata.ownerReferences[0].controller) ?
-                      string(object.metadata.ownerReferences[0].controller) : ''
-
     - name: domain-info
       resource:
         group: networking.datumapis.com
@@ -728,6 +564,31 @@ spec:
                   value: "object.metadata.uid"
                 - name: domain_name
                   value: "object.spec.domainName"
+
+    - name: domain-owner
+      resource:
+        group: networking.datumapis.com
+        version: v1alpha
+        resource: domains
+      families:
+        - name: datum_cloud_networking_domain_owner
+          help: "Owner information"
+          type: gauge
+          metrics:
+            - forEach: "has(object.metadata.ownerReferences) ? object.metadata.ownerReferences : []"
+              labels:
+                - name: name
+                  value: "object.metadata.name"
+                - name: namespace
+                  value: "object.metadata.namespace"
+                - name: owner_kind
+                  value: "item.kind"
+                - name: owner_name
+                  value: "item.name"
+                - name: owner_uid
+                  value: "item.uid"
+                - name: controller
+                  value: "has(item.controller) ? string(item.controller) : ''"
 
     - name: domain-created
       resource:
@@ -775,137 +636,66 @@ spec:
           help: "The current status conditions of the Domains"
           type: gauge
           metrics:
-            - value: |
-                object.status.conditions.exists(c, c.type == 'Verified') ?
-                  (object.status.conditions.filter(c, c.type == 'Verified')[0].status == 'True' ? 1.0 : 0.0) :
-                  0.0
+            - forEach: "has(object.status) && has(object.status.conditions) ? object.status.conditions : []"
+              value: "item.status == 'True' ? 1.0 : 0.0"
               labels:
                 - name: name
                   value: "object.metadata.name"
                 - name: namespace
                   value: "object.metadata.namespace"
                 - name: condition
-                  value: "'Verified'"
+                  value: "item.type"
                 - name: reason
-                  value: |
-                    object.status.conditions.exists(c, c.type == 'Verified') ?
-                      object.status.conditions.filter(c, c.type == 'Verified')[0].reason : ''
+                  value: "item.reason"
                 - name: status
-                  value: |
-                    object.status.conditions.exists(c, c.type == 'Verified') ?
-                      object.status.conditions.filter(c, c.type == 'Verified')[0].status : ''
-            - value: |
-                object.status.conditions.exists(c, c.type == 'ValidDomain') ?
-                  (object.status.conditions.filter(c, c.type == 'ValidDomain')[0].status == 'True' ? 1.0 : 0.0) :
-                  0.0
+                  value: "item.status"
+
+    - name: domain-status-condition-last-transition-time
+      resource:
+        group: networking.datumapis.com
+        version: v1alpha
+        resource: domains
+      families:
+        - name: datum_cloud_networking_domain_status_condition_last_transition_time
+          help: "last transition time for status conditions"
+          type: gauge
+          metrics:
+            - forEach: "has(object.status) && has(object.status.conditions) ? object.status.conditions : []"
+              value: "double(timestamp(item.lastTransitionTime).getSeconds())"
               labels:
                 - name: name
                   value: "object.metadata.name"
                 - name: namespace
                   value: "object.metadata.namespace"
                 - name: condition
-                  value: "'ValidDomain'"
+                  value: "item.type"
                 - name: reason
-                  value: |
-                    object.status.conditions.exists(c, c.type == 'ValidDomain') ?
-                      object.status.conditions.filter(c, c.type == 'ValidDomain')[0].reason : ''
+                  value: "item.reason"
                 - name: status
-                  value: |
-                    object.status.conditions.exists(c, c.type == 'ValidDomain') ?
-                      object.status.conditions.filter(c, c.type == 'ValidDomain')[0].status : ''
+                  value: "item.status"
+
+    - name: domain-status-next-verification-attempt
+      resource:
+        group: networking.datumapis.com
+        version: v1alpha
+        resource: domains
+      families:
+        - name: datum_cloud_networking_domain_status_next_verification_attempt
+          help: "The next time a verification attempt will be made"
+          type: gauge
+          metrics:
             - value: |
-                object.status.conditions.exists(c, c.type == 'VerifiedDNS') ?
-                  (object.status.conditions.filter(c, c.type == 'VerifiedDNS')[0].status == 'True' ? 1.0 : 0.0) :
-                  0.0
+                has(object.status) && has(object.status.verification) && has(object.status.verification.nextVerificationAttempt) ?
+                  double(timestamp(object.status.verification.nextVerificationAttempt).getSeconds()) : 0.0
               labels:
                 - name: name
                   value: "object.metadata.name"
                 - name: namespace
                   value: "object.metadata.namespace"
-                - name: condition
-                  value: "'VerifiedDNS'"
-                - name: reason
-                  value: |
-                    object.status.conditions.exists(c, c.type == 'VerifiedDNS') ?
-                      object.status.conditions.filter(c, c.type == 'VerifiedDNS')[0].reason : ''
-                - name: status
-                  value: |
-                    object.status.conditions.exists(c, c.type == 'VerifiedDNS') ?
-                      object.status.conditions.filter(c, c.type == 'VerifiedDNS')[0].status : ''
-            - value: |
-                object.status.conditions.exists(c, c.type == 'VerifiedHTTP') ?
-                  (object.status.conditions.filter(c, c.type == 'VerifiedHTTP')[0].status == 'True' ? 1.0 : 0.0) :
-                  0.0
-              labels:
-                - name: name
-                  value: "object.metadata.name"
-                - name: namespace
-                  value: "object.metadata.namespace"
-                - name: condition
-                  value: "'VerifiedHTTP'"
-                - name: reason
-                  value: |
-                    object.status.conditions.exists(c, c.type == 'VerifiedHTTP') ?
-                      object.status.conditions.filter(c, c.type == 'VerifiedHTTP')[0].reason : ''
-                - name: status
-                  value: |
-                    object.status.conditions.exists(c, c.type == 'VerifiedHTTP') ?
-                      object.status.conditions.filter(c, c.type == 'VerifiedHTTP')[0].status : ''
-            - value: |
-                object.status.conditions.exists(c, c.type == 'VerifiedDNSZone') ?
-                  (object.status.conditions.filter(c, c.type == 'VerifiedDNSZone')[0].status == 'True' ? 1.0 : 0.0) :
-                  0.0
-              labels:
-                - name: name
-                  value: "object.metadata.name"
-                - name: namespace
-                  value: "object.metadata.namespace"
-                - name: condition
-                  value: "'VerifiedDNSZone'"
-                - name: reason
-                  value: |
-                    object.status.conditions.exists(c, c.type == 'VerifiedDNSZone') ?
-                      object.status.conditions.filter(c, c.type == 'VerifiedDNSZone')[0].reason : ''
-                - name: status
-                  value: |
-                    object.status.conditions.exists(c, c.type == 'VerifiedDNSZone') ?
-                      object.status.conditions.filter(c, c.type == 'VerifiedDNSZone')[0].status : ''
 
     # -------------------------------------------------------------------------
     # HTTPProxy
     # -------------------------------------------------------------------------
-    - name: http-proxy-owner
-      resource:
-        group: networking.datumapis.com
-        version: v1alpha
-        resource: httpproxies
-      families:
-        - name: datum_cloud_networking_http_proxy_owner
-          help: "Owner information"
-          type: gauge
-          metrics:
-            - labels:
-                - name: name
-                  value: "object.metadata.name"
-                - name: namespace
-                  value: "object.metadata.namespace"
-                - name: owner_kind
-                  value: |
-                    has(object.metadata.ownerReferences) && object.metadata.ownerReferences.size() > 0 ?
-                      object.metadata.ownerReferences[0].kind : ''
-                - name: owner_name
-                  value: |
-                    has(object.metadata.ownerReferences) && object.metadata.ownerReferences.size() > 0 ?
-                      object.metadata.ownerReferences[0].name : ''
-                - name: owner_uid
-                  value: |
-                    has(object.metadata.ownerReferences) && object.metadata.ownerReferences.size() > 0 ?
-                      object.metadata.ownerReferences[0].uid : ''
-                - name: controller
-                  value: |
-                    has(object.metadata.ownerReferences) && object.metadata.ownerReferences.size() > 0 && has(object.metadata.ownerReferences[0].controller) ?
-                      string(object.metadata.ownerReferences[0].controller) : ''
-
     - name: http-proxy-info
       resource:
         group: networking.datumapis.com
@@ -923,6 +713,31 @@ spec:
                   value: "object.metadata.namespace"
                 - name: uid
                   value: "object.metadata.uid"
+
+    - name: http-proxy-owner
+      resource:
+        group: networking.datumapis.com
+        version: v1alpha
+        resource: httpproxies
+      families:
+        - name: datum_cloud_networking_http_proxy_owner
+          help: "Owner information"
+          type: gauge
+          metrics:
+            - forEach: "has(object.metadata.ownerReferences) ? object.metadata.ownerReferences : []"
+              labels:
+                - name: name
+                  value: "object.metadata.name"
+                - name: namespace
+                  value: "object.metadata.namespace"
+                - name: owner_kind
+                  value: "item.kind"
+                - name: owner_name
+                  value: "item.name"
+                - name: owner_uid
+                  value: "item.uid"
+                - name: controller
+                  value: "has(item.controller) ? string(item.controller) : ''"
 
     - name: http-proxy-created
       resource:
@@ -970,80 +785,42 @@ spec:
           help: "The current status conditions of the HTTP Proxy"
           type: gauge
           metrics:
-            - value: |
-                object.status.conditions.exists(c, c.type == 'Accepted') ?
-                  (object.status.conditions.filter(c, c.type == 'Accepted')[0].status == 'True' ? 1.0 : 0.0) :
-                  0.0
+            - forEach: "has(object.status) && has(object.status.conditions) ? object.status.conditions : []"
+              value: "item.status == 'True' ? 1.0 : 0.0"
               labels:
                 - name: name
                   value: "object.metadata.name"
                 - name: namespace
                   value: "object.metadata.namespace"
                 - name: condition
-                  value: "'Accepted'"
+                  value: "item.type"
                 - name: reason
-                  value: |
-                    object.status.conditions.exists(c, c.type == 'Accepted') ?
-                      object.status.conditions.filter(c, c.type == 'Accepted')[0].reason : ''
+                  value: "item.reason"
                 - name: status
-                  value: |
-                    object.status.conditions.exists(c, c.type == 'Accepted') ?
-                      object.status.conditions.filter(c, c.type == 'Accepted')[0].status : ''
-            - value: |
-                object.status.conditions.exists(c, c.type == 'Programmed') ?
-                  (object.status.conditions.filter(c, c.type == 'Programmed')[0].status == 'True' ? 1.0 : 0.0) :
-                  0.0
+                  value: "item.status"
+
+    - name: http-proxy-custom-hostname
+      resource:
+        group: networking.datumapis.com
+        version: v1alpha
+        resource: httpproxies
+      families:
+        - name: datum_cloud_networking_http_proxy_custom_hostname
+          help: "Custom hostname defined on the proxy"
+          type: gauge
+          metrics:
+            - forEach: "has(object.spec.hostnames) ? object.spec.hostnames : []"
               labels:
                 - name: name
                   value: "object.metadata.name"
                 - name: namespace
                   value: "object.metadata.namespace"
-                - name: condition
-                  value: "'Programmed'"
-                - name: reason
-                  value: |
-                    object.status.conditions.exists(c, c.type == 'Programmed') ?
-                      object.status.conditions.filter(c, c.type == 'Programmed')[0].reason : ''
-                - name: status
-                  value: |
-                    object.status.conditions.exists(c, c.type == 'Programmed') ?
-                      object.status.conditions.filter(c, c.type == 'Programmed')[0].status : ''
+                - name: hostname
+                  value: "item"
 
     # -------------------------------------------------------------------------
     # Gateway (gateway.networking.k8s.io)
     # -------------------------------------------------------------------------
-    - name: gateway-owner
-      resource:
-        group: gateway.networking.k8s.io
-        version: v1beta1
-        resource: gateways
-      families:
-        - name: datum_cloud_networking_gateway_owner
-          help: "Owner information"
-          type: gauge
-          metrics:
-            - labels:
-                - name: name
-                  value: "object.metadata.name"
-                - name: namespace
-                  value: "object.metadata.namespace"
-                - name: owner_kind
-                  value: |
-                    has(object.metadata.ownerReferences) && object.metadata.ownerReferences.size() > 0 ?
-                      object.metadata.ownerReferences[0].kind : ''
-                - name: owner_name
-                  value: |
-                    has(object.metadata.ownerReferences) && object.metadata.ownerReferences.size() > 0 ?
-                      object.metadata.ownerReferences[0].name : ''
-                - name: owner_uid
-                  value: |
-                    has(object.metadata.ownerReferences) && object.metadata.ownerReferences.size() > 0 ?
-                      object.metadata.ownerReferences[0].uid : ''
-                - name: controller
-                  value: |
-                    has(object.metadata.ownerReferences) && object.metadata.ownerReferences.size() > 0 && has(object.metadata.ownerReferences[0].controller) ?
-                      string(object.metadata.ownerReferences[0].controller) : ''
-
     - name: gateway-info
       resource:
         group: gateway.networking.k8s.io
@@ -1063,6 +840,31 @@ spec:
                   value: "object.metadata.uid"
                 - name: gatewayclass_name
                   value: "object.spec.gatewayClassName"
+
+    - name: gateway-owner
+      resource:
+        group: gateway.networking.k8s.io
+        version: v1beta1
+        resource: gateways
+      families:
+        - name: datum_cloud_networking_gateway_owner
+          help: "Owner information"
+          type: gauge
+          metrics:
+            - forEach: "has(object.metadata.ownerReferences) ? object.metadata.ownerReferences : []"
+              labels:
+                - name: name
+                  value: "object.metadata.name"
+                - name: namespace
+                  value: "object.metadata.namespace"
+                - name: owner_kind
+                  value: "item.kind"
+                - name: owner_name
+                  value: "item.name"
+                - name: owner_uid
+                  value: "item.uid"
+                - name: controller
+                  value: "has(item.controller) ? string(item.controller) : ''"
 
     - name: gateway-created
       resource:
@@ -1100,67 +902,84 @@ spec:
                 - name: namespace
                   value: "object.metadata.namespace"
 
-    - name: gateway-status-condition
+    - name: gateway-status
       resource:
         group: gateway.networking.k8s.io
         version: v1beta1
         resource: gateways
       families:
-        - name: datum_cloud_networking_gateway_status_condition
+        - name: datum_cloud_networking_gateway_status
           help: "The current status conditions of the Gateway"
           type: gauge
           metrics:
-            - value: |
-                object.status.conditions.exists(c, c.type == 'Accepted') ?
-                  (object.status.conditions.filter(c, c.type == 'Accepted')[0].status == 'True' ? 1.0 : 0.0) :
-                  0.0
+            - forEach: "has(object.status) && has(object.status.conditions) ? object.status.conditions : []"
+              value: "item.status == 'True' ? 1.0 : 0.0"
               labels:
                 - name: name
                   value: "object.metadata.name"
                 - name: namespace
                   value: "object.metadata.namespace"
                 - name: condition
-                  value: "'Accepted'"
+                  value: "item.type"
                 - name: reason
-                  value: |
-                    object.status.conditions.exists(c, c.type == 'Accepted') ?
-                      object.status.conditions.filter(c, c.type == 'Accepted')[0].reason : ''
+                  value: "item.reason"
                 - name: status
-                  value: |
-                    object.status.conditions.exists(c, c.type == 'Accepted') ?
-                      object.status.conditions.filter(c, c.type == 'Accepted')[0].status : ''
-            - value: |
-                object.status.conditions.exists(c, c.type == 'Programmed') ?
-                  (object.status.conditions.filter(c, c.type == 'Programmed')[0].status == 'True' ? 1.0 : 0.0) :
-                  0.0
+                  value: "item.status"
+
+    - name: gateway-status-condition-last-transition-time
+      resource:
+        group: gateway.networking.k8s.io
+        version: v1beta1
+        resource: gateways
+      families:
+        - name: datum_cloud_networking_gateway_status_condition_last_transition_time
+          help: "last transition time for status conditions"
+          type: gauge
+          metrics:
+            - forEach: "has(object.status) && has(object.status.conditions) ? object.status.conditions : []"
+              value: "double(timestamp(item.lastTransitionTime).getSeconds())"
               labels:
                 - name: name
                   value: "object.metadata.name"
                 - name: namespace
                   value: "object.metadata.namespace"
                 - name: condition
-                  value: "'Programmed'"
+                  value: "item.type"
                 - name: reason
-                  value: |
-                    object.status.conditions.exists(c, c.type == 'Programmed') ?
-                      object.status.conditions.filter(c, c.type == 'Programmed')[0].reason : ''
+                  value: "item.reason"
                 - name: status
-                  value: |
-                    object.status.conditions.exists(c, c.type == 'Programmed') ?
-                      object.status.conditions.filter(c, c.type == 'Programmed')[0].status : ''
+                  value: "item.status"
+
+    - name: gateway-custom-hostname
+      resource:
+        group: gateway.networking.k8s.io
+        version: v1beta1
+        resource: gateways
+      families:
+        - name: datum_cloud_networking_gateway_custom_hostname
+          help: "Custom hostname defined on the gateway listener"
+          type: gauge
+          metrics:
+            - forEach: "has(object.spec.listeners) ? object.spec.listeners : []"
+              labels:
+                - name: name
+                  value: "object.metadata.name"
+                - name: namespace
+                  value: "object.metadata.namespace"
+                - name: hostname
+                  value: "has(item.hostname) ? item.hostname : ''"
 
     # -------------------------------------------------------------------------
-    # TrafficProtectionPolicy (networking.datumapis.com)
-    # Status uses gatewayv1alpha2.PolicyStatus (ancestors, no top-level conditions)
+    # HTTPRoute (gateway.networking.k8s.io)
     # -------------------------------------------------------------------------
-    - name: traffic-protection-policy-owner
+    - name: http-route-info
       resource:
-        group: networking.datumapis.com
-        version: v1alpha
-        resource: trafficprotectionpolicies
+        group: gateway.networking.k8s.io
+        version: v1beta1
+        resource: httproutes
       families:
-        - name: datum_cloud_networking_trafficprotectionpolicy_owner
-          help: "Owner information"
+        - name: datum_cloud_networking_http_route_info
+          help: "HTTPRoute information"
           type: gauge
           metrics:
             - labels:
@@ -1168,23 +987,134 @@ spec:
                   value: "object.metadata.name"
                 - name: namespace
                   value: "object.metadata.namespace"
-                - name: owner_kind
-                  value: |
-                    has(object.metadata.ownerReferences) && object.metadata.ownerReferences.size() > 0 ?
-                      object.metadata.ownerReferences[0].kind : ''
-                - name: owner_name
-                  value: |
-                    has(object.metadata.ownerReferences) && object.metadata.ownerReferences.size() > 0 ?
-                      object.metadata.ownerReferences[0].name : ''
-                - name: owner_uid
-                  value: |
-                    has(object.metadata.ownerReferences) && object.metadata.ownerReferences.size() > 0 ?
-                      object.metadata.ownerReferences[0].uid : ''
-                - name: controller
-                  value: |
-                    has(object.metadata.ownerReferences) && object.metadata.ownerReferences.size() > 0 && has(object.metadata.ownerReferences[0].controller) ?
-                      string(object.metadata.ownerReferences[0].controller) : ''
+                - name: uid
+                  value: "object.metadata.uid"
 
+    - name: http-route-owner
+      resource:
+        group: gateway.networking.k8s.io
+        version: v1beta1
+        resource: httproutes
+      families:
+        - name: datum_cloud_networking_http_route_owner
+          help: "Owner information"
+          type: gauge
+          metrics:
+            - forEach: "has(object.metadata.ownerReferences) ? object.metadata.ownerReferences : []"
+              labels:
+                - name: name
+                  value: "object.metadata.name"
+                - name: namespace
+                  value: "object.metadata.namespace"
+                - name: owner_kind
+                  value: "item.kind"
+                - name: owner_name
+                  value: "item.name"
+                - name: owner_uid
+                  value: "item.uid"
+                - name: controller
+                  value: "has(item.controller) ? string(item.controller) : ''"
+
+    - name: http-route-created
+      resource:
+        group: gateway.networking.k8s.io
+        version: v1beta1
+        resource: httproutes
+      families:
+        - name: datum_cloud_networking_http_route_created
+          help: "created timestamp"
+          type: gauge
+          metrics:
+            - value: "double(timestamp(object.metadata.creationTimestamp).getSeconds())"
+              labels:
+                - name: name
+                  value: "object.metadata.name"
+                - name: namespace
+                  value: "object.metadata.namespace"
+
+    - name: http-route-deleted
+      resource:
+        group: gateway.networking.k8s.io
+        version: v1beta1
+        resource: httproutes
+      families:
+        - name: datum_cloud_networking_http_route_deleted
+          help: "deletion timestamp"
+          type: gauge
+          metrics:
+            - value: |
+                has(object.metadata.deletionTimestamp) ?
+                  double(timestamp(object.metadata.deletionTimestamp).getSeconds()) : 0.0
+              labels:
+                - name: name
+                  value: "object.metadata.name"
+                - name: namespace
+                  value: "object.metadata.namespace"
+
+    - name: http-route-parent-info
+      resource:
+        group: gateway.networking.k8s.io
+        version: v1beta1
+        resource: httproutes
+      families:
+        - name: datum_cloud_networking_http_route_parent_info
+          help: "Parent references that the httproute wants to be attached to"
+          type: gauge
+          metrics:
+            - forEach: "has(object.spec.parentRefs) ? object.spec.parentRefs : []"
+              labels:
+                - name: name
+                  value: "object.metadata.name"
+                - name: namespace
+                  value: "object.metadata.namespace"
+                - name: parent_group
+                  value: "has(item.group) ? item.group : ''"
+                - name: parent_kind
+                  value: "has(item.kind) ? item.kind : ''"
+                - name: parent_name
+                  value: "item.name"
+                - name: parent_namespace
+                  value: "has(item.namespace) ? item.namespace : ''"
+                - name: parent_section_name
+                  value: "has(item.sectionName) ? item.sectionName : ''"
+                - name: parent_port
+                  value: "has(item.port) ? string(item.port) : ''"
+
+    - name: http-route-status-parent-info
+      resource:
+        group: gateway.networking.k8s.io
+        version: v1beta1
+        resource: httproutes
+      families:
+        - name: datum_cloud_networking_http_route_status_parent_info
+          help: "Parent references that the httproute is attached to"
+          type: gauge
+          metrics:
+            - forEach: "has(object.status) && has(object.status.parents) ? object.status.parents : []"
+              labels:
+                - name: name
+                  value: "object.metadata.name"
+                - name: namespace
+                  value: "object.metadata.namespace"
+                - name: controller_name
+                  value: "item.controllerName"
+                - name: parent_group
+                  value: "has(item.parentRef) && has(item.parentRef.group) ? item.parentRef.group : ''"
+                - name: parent_kind
+                  value: "has(item.parentRef) && has(item.parentRef.kind) ? item.parentRef.kind : ''"
+                - name: parent_name
+                  value: "has(item.parentRef) ? item.parentRef.name : ''"
+                - name: parent_namespace
+                  value: "has(item.parentRef) && has(item.parentRef.namespace) ? item.parentRef.namespace : ''"
+                - name: parent_section_name
+                  value: "has(item.parentRef) && has(item.parentRef.sectionName) ? item.parentRef.sectionName : ''"
+                - name: parent_port
+                  value: "has(item.parentRef) && has(item.parentRef.port) ? string(item.parentRef.port) : ''"
+
+    # -------------------------------------------------------------------------
+    # TrafficProtectionPolicy (networking.datumapis.com)
+    # Status uses gatewayv1alpha2.PolicyStatus (ancestors, no top-level conditions)
+    # -------------------------------------------------------------------------
     - name: traffic-protection-policy-info
       resource:
         group: networking.datumapis.com
@@ -1202,6 +1132,31 @@ spec:
                   value: "object.metadata.namespace"
                 - name: uid
                   value: "object.metadata.uid"
+
+    - name: traffic-protection-policy-owner
+      resource:
+        group: networking.datumapis.com
+        version: v1alpha
+        resource: trafficprotectionpolicies
+      families:
+        - name: datum_cloud_networking_trafficprotectionpolicy_owner
+          help: "Owner information"
+          type: gauge
+          metrics:
+            - forEach: "has(object.metadata.ownerReferences) ? object.metadata.ownerReferences : []"
+              labels:
+                - name: name
+                  value: "object.metadata.name"
+                - name: namespace
+                  value: "object.metadata.namespace"
+                - name: owner_kind
+                  value: "item.kind"
+                - name: owner_name
+                  value: "item.name"
+                - name: owner_uid
+                  value: "item.uid"
+                - name: controller
+                  value: "has(item.controller) ? string(item.controller) : ''"
 
     - name: traffic-protection-policy-created
       resource:
@@ -1239,41 +1194,34 @@ spec:
                 - name: namespace
                   value: "object.metadata.namespace"
 
-    # -------------------------------------------------------------------------
-    # Backend (gateway.envoyproxy.io)
-    # -------------------------------------------------------------------------
-    - name: envoygateway-backend-owner
+    - name: traffic-protection-policy-status-ancestor
       resource:
-        group: gateway.envoyproxy.io
-        version: v1alpha1
-        resource: backends
+        group: networking.datumapis.com
+        version: v1alpha
+        resource: trafficprotectionpolicies
       families:
-        - name: datum_cloud_networking_envoygateway_backend_owner
-          help: "Owner information"
+        - name: datum_cloud_networking_trafficprotectionpolicy_status_ancestor
+          help: "Ancestor references from status"
           type: gauge
           metrics:
-            - labels:
+            - forEach: "has(object.status) && has(object.status.ancestors) ? object.status.ancestors : []"
+              labels:
                 - name: name
                   value: "object.metadata.name"
                 - name: namespace
                   value: "object.metadata.namespace"
-                - name: owner_kind
-                  value: |
-                    has(object.metadata.ownerReferences) && object.metadata.ownerReferences.size() > 0 ?
-                      object.metadata.ownerReferences[0].kind : ''
-                - name: owner_name
-                  value: |
-                    has(object.metadata.ownerReferences) && object.metadata.ownerReferences.size() > 0 ?
-                      object.metadata.ownerReferences[0].name : ''
-                - name: owner_uid
-                  value: |
-                    has(object.metadata.ownerReferences) && object.metadata.ownerReferences.size() > 0 ?
-                      object.metadata.ownerReferences[0].uid : ''
-                - name: controller
-                  value: |
-                    has(object.metadata.ownerReferences) && object.metadata.ownerReferences.size() > 0 && has(object.metadata.ownerReferences[0].controller) ?
-                      string(object.metadata.ownerReferences[0].controller) : ''
+                - name: ancestor_group
+                  value: "has(item.ancestorRef) && has(item.ancestorRef.group) ? item.ancestorRef.group : ''"
+                - name: ancestor_kind
+                  value: "has(item.ancestorRef) && has(item.ancestorRef.kind) ? item.ancestorRef.kind : ''"
+                - name: ancestor_name
+                  value: "has(item.ancestorRef) ? item.ancestorRef.name : ''"
+                - name: ancestor_namespace
+                  value: "has(item.ancestorRef) && has(item.ancestorRef.namespace) ? item.ancestorRef.namespace : ''"
 
+    # -------------------------------------------------------------------------
+    # Backend (gateway.envoyproxy.io)
+    # -------------------------------------------------------------------------
     - name: envoygateway-backend-info
       resource:
         group: gateway.envoyproxy.io
@@ -1292,11 +1240,34 @@ spec:
                 - name: uid
                   value: "object.metadata.uid"
                 - name: type
-                  value: |
-                    has(object.spec.type) ? object.spec.type : ''
+                  value: "has(object.spec.type) ? object.spec.type : ''"
                 - name: fallback
-                  value: |
-                    has(object.spec.fallback) ? string(object.spec.fallback) : ''
+                  value: "has(object.spec.fallback) ? string(object.spec.fallback) : ''"
+
+    - name: envoygateway-backend-owner
+      resource:
+        group: gateway.envoyproxy.io
+        version: v1alpha1
+        resource: backends
+      families:
+        - name: datum_cloud_networking_envoygateway_backend_owner
+          help: "Owner information"
+          type: gauge
+          metrics:
+            - forEach: "has(object.metadata.ownerReferences) ? object.metadata.ownerReferences : []"
+              labels:
+                - name: name
+                  value: "object.metadata.name"
+                - name: namespace
+                  value: "object.metadata.namespace"
+                - name: owner_kind
+                  value: "item.kind"
+                - name: owner_name
+                  value: "item.name"
+                - name: owner_uid
+                  value: "item.uid"
+                - name: controller
+                  value: "has(item.controller) ? string(item.controller) : ''"
 
     - name: envoygateway-backend-created
       resource:
@@ -1325,61 +1296,47 @@ spec:
           help: "status condition"
           type: gauge
           metrics:
-            - value: |
-                object.status.conditions.exists(c, c.type == 'Invalid') ?
-                  (object.status.conditions.filter(c, c.type == 'Invalid')[0].status == 'True' ? 1.0 : 0.0) :
-                  0.0
+            - forEach: "has(object.status) && has(object.status.conditions) ? object.status.conditions : []"
+              value: "item.status == 'True' ? 1.0 : 0.0"
               labels:
                 - name: name
                   value: "object.metadata.name"
                 - name: namespace
                   value: "object.metadata.namespace"
                 - name: condition
-                  value: "'Invalid'"
+                  value: "item.type"
                 - name: reason
-                  value: |
-                    object.status.conditions.exists(c, c.type == 'Invalid') ?
-                      object.status.conditions.filter(c, c.type == 'Invalid')[0].reason : ''
+                  value: "item.reason"
                 - name: status
-                  value: |
-                    object.status.conditions.exists(c, c.type == 'Invalid') ?
-                      object.status.conditions.filter(c, c.type == 'Invalid')[0].status : ''
+                  value: "item.status"
 
-    # -------------------------------------------------------------------------
-    # HTTPRouteFilter (gateway.envoyproxy.io)
-    # -------------------------------------------------------------------------
-    - name: envoygateway-httproutefilter-owner
+    - name: envoygateway-backend-status-condition-last-transition-time
       resource:
         group: gateway.envoyproxy.io
         version: v1alpha1
-        resource: httproutefilters
+        resource: backends
       families:
-        - name: datum_cloud_networking_envoygateway_httproutefilter_owner
-          help: "Owner information"
+        - name: datum_cloud_networking_envoygateway_backend_status_condition_last_transition_time
+          help: "last transition time for status conditions"
           type: gauge
           metrics:
-            - labels:
+            - forEach: "has(object.status) && has(object.status.conditions) ? object.status.conditions : []"
+              value: "double(timestamp(item.lastTransitionTime).getSeconds())"
+              labels:
                 - name: name
                   value: "object.metadata.name"
                 - name: namespace
                   value: "object.metadata.namespace"
-                - name: owner_kind
-                  value: |
-                    has(object.metadata.ownerReferences) && object.metadata.ownerReferences.size() > 0 ?
-                      object.metadata.ownerReferences[0].kind : ''
-                - name: owner_name
-                  value: |
-                    has(object.metadata.ownerReferences) && object.metadata.ownerReferences.size() > 0 ?
-                      object.metadata.ownerReferences[0].name : ''
-                - name: owner_uid
-                  value: |
-                    has(object.metadata.ownerReferences) && object.metadata.ownerReferences.size() > 0 ?
-                      object.metadata.ownerReferences[0].uid : ''
-                - name: controller
-                  value: |
-                    has(object.metadata.ownerReferences) && object.metadata.ownerReferences.size() > 0 && has(object.metadata.ownerReferences[0].controller) ?
-                      string(object.metadata.ownerReferences[0].controller) : ''
+                - name: condition
+                  value: "item.type"
+                - name: reason
+                  value: "item.reason"
+                - name: status
+                  value: "item.status"
 
+    # -------------------------------------------------------------------------
+    # HTTPRouteFilter (gateway.envoyproxy.io)
+    # -------------------------------------------------------------------------
     - name: envoygateway-httproutefilter-info
       resource:
         group: gateway.envoyproxy.io
@@ -1397,6 +1354,31 @@ spec:
                   value: "object.metadata.namespace"
                 - name: uid
                   value: "object.metadata.uid"
+
+    - name: envoygateway-httproutefilter-owner
+      resource:
+        group: gateway.envoyproxy.io
+        version: v1alpha1
+        resource: httproutefilters
+      families:
+        - name: datum_cloud_networking_envoygateway_httproutefilter_owner
+          help: "Owner information"
+          type: gauge
+          metrics:
+            - forEach: "has(object.metadata.ownerReferences) ? object.metadata.ownerReferences : []"
+              labels:
+                - name: name
+                  value: "object.metadata.name"
+                - name: namespace
+                  value: "object.metadata.namespace"
+                - name: owner_kind
+                  value: "item.kind"
+                - name: owner_name
+                  value: "item.name"
+                - name: owner_uid
+                  value: "item.uid"
+                - name: controller
+                  value: "has(item.controller) ? string(item.controller) : ''"
 
     - name: envoygateway-httproutefilter-created
       resource:
@@ -1418,38 +1400,6 @@ spec:
     # -------------------------------------------------------------------------
     # BackendTrafficPolicy (gateway.envoyproxy.io)
     # -------------------------------------------------------------------------
-    - name: envoygateway-backendtrafficpolicy-owner
-      resource:
-        group: gateway.envoyproxy.io
-        version: v1alpha1
-        resource: backendtrafficpolicies
-      families:
-        - name: datum_cloud_networking_envoygateway_backendtrafficpolicy_owner
-          help: "Owner information"
-          type: gauge
-          metrics:
-            - labels:
-                - name: name
-                  value: "object.metadata.name"
-                - name: namespace
-                  value: "object.metadata.namespace"
-                - name: owner_kind
-                  value: |
-                    has(object.metadata.ownerReferences) && object.metadata.ownerReferences.size() > 0 ?
-                      object.metadata.ownerReferences[0].kind : ''
-                - name: owner_name
-                  value: |
-                    has(object.metadata.ownerReferences) && object.metadata.ownerReferences.size() > 0 ?
-                      object.metadata.ownerReferences[0].name : ''
-                - name: owner_uid
-                  value: |
-                    has(object.metadata.ownerReferences) && object.metadata.ownerReferences.size() > 0 ?
-                      object.metadata.ownerReferences[0].uid : ''
-                - name: controller
-                  value: |
-                    has(object.metadata.ownerReferences) && object.metadata.ownerReferences.size() > 0 && has(object.metadata.ownerReferences[0].controller) ?
-                      string(object.metadata.ownerReferences[0].controller) : ''
-
     - name: envoygateway-backendtrafficpolicy-info
       resource:
         group: gateway.envoyproxy.io
@@ -1468,6 +1418,31 @@ spec:
                 - name: uid
                   value: "object.metadata.uid"
 
+    - name: envoygateway-backendtrafficpolicy-owner
+      resource:
+        group: gateway.envoyproxy.io
+        version: v1alpha1
+        resource: backendtrafficpolicies
+      families:
+        - name: datum_cloud_networking_envoygateway_backendtrafficpolicy_owner
+          help: "Owner information"
+          type: gauge
+          metrics:
+            - forEach: "has(object.metadata.ownerReferences) ? object.metadata.ownerReferences : []"
+              labels:
+                - name: name
+                  value: "object.metadata.name"
+                - name: namespace
+                  value: "object.metadata.namespace"
+                - name: owner_kind
+                  value: "item.kind"
+                - name: owner_name
+                  value: "item.name"
+                - name: owner_uid
+                  value: "item.uid"
+                - name: controller
+                  value: "has(item.controller) ? string(item.controller) : ''"
+
     - name: envoygateway-backendtrafficpolicy-created
       resource:
         group: gateway.envoyproxy.io
@@ -1485,41 +1460,34 @@ spec:
                 - name: namespace
                   value: "object.metadata.namespace"
 
-    # -------------------------------------------------------------------------
-    # SecurityPolicy (gateway.envoyproxy.io)
-    # -------------------------------------------------------------------------
-    - name: envoygateway-securitypolicy-owner
+    - name: envoygateway-backendtrafficpolicy-status-ancestor
       resource:
         group: gateway.envoyproxy.io
         version: v1alpha1
-        resource: securitypolicies
+        resource: backendtrafficpolicies
       families:
-        - name: datum_cloud_networking_envoygateway_securitypolicy_owner
-          help: "Owner information"
+        - name: datum_cloud_networking_envoygateway_backendtrafficpolicy_status_ancestor
+          help: "Ancestor references from status"
           type: gauge
           metrics:
-            - labels:
+            - forEach: "has(object.status) && has(object.status.ancestors) ? object.status.ancestors : []"
+              labels:
                 - name: name
                   value: "object.metadata.name"
                 - name: namespace
                   value: "object.metadata.namespace"
-                - name: owner_kind
-                  value: |
-                    has(object.metadata.ownerReferences) && object.metadata.ownerReferences.size() > 0 ?
-                      object.metadata.ownerReferences[0].kind : ''
-                - name: owner_name
-                  value: |
-                    has(object.metadata.ownerReferences) && object.metadata.ownerReferences.size() > 0 ?
-                      object.metadata.ownerReferences[0].name : ''
-                - name: owner_uid
-                  value: |
-                    has(object.metadata.ownerReferences) && object.metadata.ownerReferences.size() > 0 ?
-                      object.metadata.ownerReferences[0].uid : ''
-                - name: controller
-                  value: |
-                    has(object.metadata.ownerReferences) && object.metadata.ownerReferences.size() > 0 && has(object.metadata.ownerReferences[0].controller) ?
-                      string(object.metadata.ownerReferences[0].controller) : ''
+                - name: ancestor_group
+                  value: "has(item.ancestorRef) && has(item.ancestorRef.group) ? item.ancestorRef.group : ''"
+                - name: ancestor_kind
+                  value: "has(item.ancestorRef) && has(item.ancestorRef.kind) ? item.ancestorRef.kind : ''"
+                - name: ancestor_name
+                  value: "has(item.ancestorRef) ? item.ancestorRef.name : ''"
+                - name: ancestor_namespace
+                  value: "has(item.ancestorRef) && has(item.ancestorRef.namespace) ? item.ancestorRef.namespace : ''"
 
+    # -------------------------------------------------------------------------
+    # SecurityPolicy (gateway.envoyproxy.io)
+    # -------------------------------------------------------------------------
     - name: envoygateway-securitypolicy-info
       resource:
         group: gateway.envoyproxy.io
@@ -1538,6 +1506,31 @@ spec:
                 - name: uid
                   value: "object.metadata.uid"
 
+    - name: envoygateway-securitypolicy-owner
+      resource:
+        group: gateway.envoyproxy.io
+        version: v1alpha1
+        resource: securitypolicies
+      families:
+        - name: datum_cloud_networking_envoygateway_securitypolicy_owner
+          help: "Owner information"
+          type: gauge
+          metrics:
+            - forEach: "has(object.metadata.ownerReferences) ? object.metadata.ownerReferences : []"
+              labels:
+                - name: name
+                  value: "object.metadata.name"
+                - name: namespace
+                  value: "object.metadata.namespace"
+                - name: owner_kind
+                  value: "item.kind"
+                - name: owner_name
+                  value: "item.name"
+                - name: owner_uid
+                  value: "item.uid"
+                - name: controller
+                  value: "has(item.controller) ? string(item.controller) : ''"
+
     - name: envoygateway-securitypolicy-created
       resource:
         group: gateway.envoyproxy.io
@@ -1554,3 +1547,28 @@ spec:
                   value: "object.metadata.name"
                 - name: namespace
                   value: "object.metadata.namespace"
+
+    - name: envoygateway-securitypolicy-status-ancestor
+      resource:
+        group: gateway.envoyproxy.io
+        version: v1alpha1
+        resource: securitypolicies
+      families:
+        - name: datum_cloud_networking_envoygateway_securitypolicy_status_ancestor
+          help: "Ancestor references from status"
+          type: gauge
+          metrics:
+            - forEach: "has(object.status) && has(object.status.ancestors) ? object.status.ancestors : []"
+              labels:
+                - name: name
+                  value: "object.metadata.name"
+                - name: namespace
+                  value: "object.metadata.namespace"
+                - name: ancestor_group
+                  value: "has(item.ancestorRef) && has(item.ancestorRef.group) ? item.ancestorRef.group : ''"
+                - name: ancestor_kind
+                  value: "has(item.ancestorRef) && has(item.ancestorRef.kind) ? item.ancestorRef.kind : ''"
+                - name: ancestor_name
+                  value: "has(item.ancestorRef) ? item.ancestorRef.name : ''"
+                - name: ancestor_namespace
+                  value: "has(item.ancestorRef) && has(item.ancestorRef.namespace) ? item.ancestorRef.namespace : ''"

@@ -775,6 +775,12 @@ spec:
             outputs:
               - name: upstreamGateway
                 value: (json_parse($stdout))
+              # Re-derive in this step's scope; chainsaw bindings don't carry
+              # across steps, and the operator-published canonical hostname is
+              # word-derived from the gateway UID and can't be reconstructed
+              # inline.
+              - name: primaryHostname
+                value: ($upstreamGateway.status.addresses[?type == 'Hostname'].value | [0])
 
         - script:
             skipCommandOutput: true

@@ -475,9 +475,12 @@ func (r *GatewayReconciler) ensureListenerCertificates(
 
 	desiredCerts := make(map[string]bool)
 
-	// Only create Certificates for listeners with custom hostnames outside the
-	// wildcard scope. Wildcard-covered listeners use the shared TLS secret and
-	// don't need individual Certificates.
+	// Wildcard-covered listeners are covered by the shared TLS secret only when
+	// one is configured (DefaultListenerTLSSecretName). Otherwise they need a
+	// per-listener Certificate just like any other listener — the downstream
+	// listener already references a per-listener secret name via
+	// ensureDownstreamGateway, and nothing else creates that secret.
+	hasSharedSecret := r.Config.Gateway.HasDefaultListenerTLSSecret()
 	for _, l := range upstreamGateway.Spec.Listeners {
 		if l.TLS == nil || l.TLS.Options[certificateIssuerTLSOption] == "" || l.Hostname == nil {
 			continue
@@ -486,8 +489,7 @@ func (r *GatewayReconciler) ensureListenerCertificates(
 		if !slices.Contains(claimedHostnames, hostname) {
 			continue
 		}
-		// Skip hostnames covered by the wildcard — they use the shared secret.
-		if strings.HasSuffix(hostname, wildcardSuffix) || hostname == r.Config.Gateway.TargetDomain {
+		if hasSharedSecret && (strings.HasSuffix(hostname, wildcardSuffix) || hostname == r.Config.Gateway.TargetDomain) {
 			continue
 		}
 

@@ -339,7 +339,7 @@ spec:
             skipLogOutput: true
             cluster: nso-standard
             content: |
-              kubectl get gateway test-gateway -o json
+              kubectl -n $NAMESPACE get gateway test-gateway -o json
             outputs:
               - name: upstreamGatewayPostStatus
                 value: (json_parse($stdout))

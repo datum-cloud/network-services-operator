@@ -503,10 +503,16 @@ func main() {
 		})
 	}
 
-	setupLog.Info("starting cluster discovery provider")
-	g.Go(func() error {
-		return ignoreCanceled(provider.Run(ctx, mgr))
-	})
+	// Providers that still implement the legacy Run(ctx, mgr) shape (e.g. the
+	// Milo provider) must be started by us. Providers that implement upstream's
+	// multicluster.ProviderRunnable interface (e.g. mcsingle) are started
+	// automatically by mgr.Start, so we skip them here.
+	if runner, ok := provider.(legacyRunnableProvider); ok {
+		setupLog.Info("starting cluster discovery provider")
+		g.Go(func() error {
+			return ignoreCanceled(runner.Run(ctx, mgr))
+		})
+	}
 
 	g.Go(func() error {
 		return ignoreCanceled(downstreamCluster.Start(ctx))
@@ -530,38 +536,27 @@ func main() {
 	}
 }
 
-type runnableProvider interface {
+// legacyRunnableProvider matches providers that still expose the pre-upstream
+// Run(ctx, mgr) shape (notably the Milo provider). Upstream multicluster-runtime
+// has moved to multicluster.ProviderRunnable (Start(ctx, Aware)), which the
+// manager starts automatically. Once Milo migrates this interface can be
+// removed along with the manual goroutine that drives it.
+type legacyRunnableProvider interface {
 	multicluster.Provider
 	Run(context.Context, mcmanager.Manager) error
-}
-
-// Needed until we contribute the patch in the following PR again (need to sign CLA):
-//
-//	See: https://github.com/kubernetes-sigs/multicluster-runtime/pull/18
-type wrappedSingleClusterProvider struct {
-	multicluster.Provider
-	cluster cluster.Cluster
-}
-
-func (p *wrappedSingleClusterProvider) Run(ctx context.Context, mgr mcmanager.Manager) error {
-	if err := mgr.Engage(ctx, "single", p.cluster); err != nil {
-		return err
-	}
-	return p.Provider.(runnableProvider).Run(ctx, mgr)
 }
 
 func initializeClusterDiscovery(
 	serverConfig config.NetworkServicesOperator,
 	deploymentCluster cluster.Cluster,
 	scheme *runtime.Scheme,
-) (runnables []manager.Runnable, provider runnableProvider, err error) {
+) (runnables []manager.Runnable, provider multicluster.Provider, err error) {
 	runnables = append(runnables, deploymentCluster)
 	switch serverConfig.Discovery.Mode {
 	case multiclusterproviders.ProviderSingle:
-		provider = &wrappedSingleClusterProvider{
-			Provider: mcsingle.New("single", deploymentCluster),
-			cluster:  deploymentCluster,
-		}
+		// mcsingle implements multicluster.ProviderRunnable; mgr.Start engages
+		// the cluster and blocks for us — no wrapper needed.
+		provider = mcsingle.New("single", deploymentCluster)
 
 	case multiclusterproviders.ProviderMilo:
 		discoveryRestConfig, err := serverConfig.Discovery.DiscoveryRestConfig()

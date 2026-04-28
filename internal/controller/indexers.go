@@ -24,7 +24,6 @@ const (
 func AddIndexers(ctx context.Context, mgr mcmanager.Manager) error {
 	return errors.Join(
 		addNetworkContextControllerIndexers(ctx, mgr),
-		addDNSZoneDomainNameIndexer(ctx, mgr),
 	)
 }
 
@@ -99,7 +98,13 @@ func ownerIndexValue(kind, name string) string {
 	return fmt.Sprintf("%s:%s", kind, name)
 }
 
-func addDNSZoneDomainNameIndexer(ctx context.Context, mgr mcmanager.Manager) error {
+// AddDNSZoneDomainNameIndexer registers the DNSZone spec.domainName field
+// indexer used by the Gateway DNS controller. The DNSZone CRD lives in the
+// dns-operator project (dns.networking.miloapis.com/v1alpha1) and is only
+// installed in environments where DNS integration is enabled, so callers
+// must gate this on Gateway.EnableDNSIntegration to avoid a startup failure
+// when the CRD is absent.
+func AddDNSZoneDomainNameIndexer(ctx context.Context, mgr mcmanager.Manager) error {
 	if err := mgr.GetFieldIndexer().IndexField(ctx, &dnsv1alpha1.DNSZone{}, dnsZoneDomainNameIndex, func(o client.Object) []string {
 		zone := o.(*dnsv1alpha1.DNSZone)
 		if zone.Spec.DomainName == "" {

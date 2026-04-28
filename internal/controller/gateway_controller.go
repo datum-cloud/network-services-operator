@@ -52,6 +52,12 @@ import (
 const gatewayControllerFinalizer = "gateway.networking.datumapis.com/gateway-controller"
 const gatewayControllerGCFinalizer = "gateway.networking.datumapis.com/gateway-controller-gc"
 const certificateIssuerTLSOption = "gateway.networking.datumapis.com/certificate-issuer"
+
+// autoIssuerSentinel is the placeholder value the defaulting webhook stamps
+// onto the operator-injected default-https listener via
+// listenerTLSOptions. It means "use whichever real issuer the user's other
+// TLS listener on this gateway specified" — see resolveAutoIssuer.
+const autoIssuerSentinel = "auto"
 const KindGateway = "Gateway"
 const KindHTTPRoute = "HTTPRoute"
 const KindService = "Service"
@@ -458,6 +464,33 @@ func listenerCertificateName(gatewayName string, listenerName gatewayv1.SectionN
 	return resourcename.GetValidDNS1123Name(fmt.Sprintf("%s-%s", gatewayName, listenerName))
 }
 
+// resolveAutoIssuer returns the first non-`auto` certificate-issuer value
+// found on any TLS listener of the gateway, mapped through ClusterIssuerMap.
+// Returns "" when no listener carries a real issuer.
+//
+// This restores the gateway-shim era semantic where the operator set a single
+// cert-manager.io/cluster-issuer annotation on the downstream Gateway from
+// the first TLS listener with an issuer (see the `if !HasAnnotation` guard
+// in pre-`feat: gateway controller certificates` code) and gateway-shim
+// minted Certificates for every TLS listener — including the auto-injected
+// default-https — using that one annotation.
+func (r *GatewayReconciler) resolveAutoIssuer(gateway *gatewayv1.Gateway) string {
+	for _, l := range gateway.Spec.Listeners {
+		if l.TLS == nil {
+			continue
+		}
+		issuer := string(l.TLS.Options[certificateIssuerTLSOption])
+		if issuer == "" || issuer == autoIssuerSentinel {
+			continue
+		}
+		if mapped := r.Config.Gateway.ClusterIssuerMap[issuer]; mapped != "" {
+			return mapped
+		}
+		return issuer
+	}
+	return ""
+}
+
 // ensureListenerCertificates creates, updates, or deletes cert-manager
 // Certificate resources for each listener that requires an individual TLS
 // certificate. Listeners whose hostnames fall under the wildcard target domain
@@ -475,9 +508,26 @@ func (r *GatewayReconciler) ensureListenerCertificates(
 
 	desiredCerts := make(map[string]bool)
 
-	// Only create Certificates for listeners with custom hostnames outside the
-	// wildcard scope. Wildcard-covered listeners use the shared TLS secret and
-	// don't need individual Certificates.
+	// Wildcard-covered listeners are covered by the shared TLS secret only when
+	// one is configured (DefaultListenerTLSSecretName). Otherwise they need a
+	// per-listener Certificate just like any other listener — the downstream
+	// listener already references a per-listener secret name via
+	// ensureDownstreamGateway, and nothing else creates that secret.
+	hasSharedSecret := r.Config.Gateway.HasDefaultListenerTLSSecret()
+
+	// The defaulting webhook stamps the operator-injected default-https
+	// listener with `certificate-issuer: auto` (the listenerTLSOptions
+	// default). Pre-`feat: gateway controller certificates`, the operator set
+	// a single cert-manager.io/cluster-issuer annotation on the downstream
+	// Gateway from the first listener with a real issuer, and gateway-shim
+	// minted Certificates for every TLS listener from that one annotation —
+	// so `auto` was implicitly resolved to whatever the user's other listener
+	// specified. With per-listener Certificate creation, that implicit
+	// resolution disappeared. Restore it: when a listener's issuer is `auto`,
+	// fall back to the first real issuer found on any TLS listener of this
+	// gateway, mapped through ClusterIssuerMap.
+	autoResolved := r.resolveAutoIssuer(upstreamGateway)
+
 	for _, l := range upstreamGateway.Spec.Listeners {
 		if l.TLS == nil || l.TLS.Options[certificateIssuerTLSOption] == "" || l.Hostname == nil {
 			continue
@@ -486,13 +536,21 @@ func (r *GatewayReconciler) ensureListenerCertificates(
 		if !slices.Contains(claimedHostnames, hostname) {
 			continue
 		}
-		// Skip hostnames covered by the wildcard — they use the shared secret.
-		if strings.HasSuffix(hostname, wildcardSuffix) || hostname == r.Config.Gateway.TargetDomain {
+		if hasSharedSecret && (strings.HasSuffix(hostname, wildcardSuffix) || hostname == r.Config.Gateway.TargetDomain) {
 			continue
 		}
 
 		clusterIssuerName := string(l.TLS.Options[certificateIssuerTLSOption])
-		if mapped := r.Config.Gateway.ClusterIssuerMap[clusterIssuerName]; mapped != "" {
+		if clusterIssuerName == autoIssuerSentinel {
+			if autoResolved == "" {
+				// No real issuer on this gateway to inherit from — match the
+				// pre-migration behavior of leaving the listener un-programmed
+				// rather than creating a Certificate with an unresolvable
+				// IssuerRef.
+				continue
+			}
+			clusterIssuerName = autoResolved
+		} else if mapped := r.Config.Gateway.ClusterIssuerMap[clusterIssuerName]; mapped != "" {
 			clusterIssuerName = mapped
 		}
 

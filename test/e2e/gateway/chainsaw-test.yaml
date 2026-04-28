@@ -326,7 +326,9 @@ spec:
               kind: Gateway
               metadata:
                 name: test-gateway
-              (status.addresses[?type == 'Hostname'] | length(@) >= `1`): true
+              status:
+                addresses:
+                  - type: Hostname
 
         - script:
             skipCommandOutput: true

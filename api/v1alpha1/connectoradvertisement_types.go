@@ -123,6 +123,7 @@ const (
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:selectablefield:JSONPath=".spec.connectorRef.name"
+// +kubebuilder:metadata:annotations="discovery.miloapis.com/parent-contexts=Project"
 
 // ConnectorAdvertisement is the Schema for the connectoradvertisements API.
 type ConnectorAdvertisement struct {

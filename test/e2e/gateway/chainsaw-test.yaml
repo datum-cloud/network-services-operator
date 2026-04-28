@@ -327,8 +327,12 @@ spec:
               metadata:
                 name: test-gateway
               status:
-                addresses:
-                  - type: Hostname
+                # JMESPath filter form: returns a list, length-matched against
+                # the expected; bare key + literal list would length-match the
+                # whole addresses slice and fail until the operator populates
+                # all 3 entries even though we already have what we need.
+                (addresses[?type == 'Hostname'] | [0]):
+                  type: Hostname
 
         - script:
             skipCommandOutput: true

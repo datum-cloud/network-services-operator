@@ -3,17 +3,9 @@ kind: Kustomization
 
 resources:
   # networking.datumapis.com kinds
-  - network-policy.yaml
-  - networkbinding-policy.yaml
-  - networkcontext-policy.yaml
-  - networkpolicy-policy.yaml
-  - subnet-policy.yaml
-  - subnetclaim-policy.yaml
   - httpproxy-policy.yaml
   - domain-policy.yaml
-  - location-policy.yaml
   - connector-policy.yaml
-  - connectorclass-policy.yaml
   - connectoradvertisement-policy.yaml
   - trafficprotectionpolicy-policy.yaml
   # gateway.networking.k8s.io kinds

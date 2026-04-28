@@ -433,6 +433,13 @@ func main() {
 		os.Exit(1)
 	}
 
+	if serverConfig.Gateway.EnableDNSIntegration {
+		if err := controller.AddDNSZoneDomainNameIndexer(ctx, mgr); err != nil {
+			setupLog.Error(err, "unable to add DNSZone indexer")
+			os.Exit(1)
+		}
+	}
+
 	if err := networkinggatewayv1webhooks.SetupGatewayWebhookWithManager(mgr, serverConfig); err != nil {
 		setupLog.Error(err, "unable to create webhook", "webhook", "Gateway")
 		os.Exit(1)

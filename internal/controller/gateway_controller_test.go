@@ -319,6 +319,7 @@ func TestEnsureDownstreamGatewayWildcardCert(t *testing.T) {
 	tests := []struct {
 		name                      string
 		defaultTLSSecretName      string
+		configMutator             func(*config.GatewayConfig)
 		upstreamGateway           *gatewayv1.Gateway
 		existingUpstreamObjects   []client.Object
 		existingDownstreamObjects []client.Object
@@ -536,6 +537,69 @@ func TestEnsureDownstreamGatewayWildcardCert(t *testing.T) {
 				)
 			},
 		},
+		{
+			// Regression: ClusterIssuerMap[auto] must be applied before the
+			// inter-listener `auto` fallback. In deployments where every TLS
+			// listener carries `certificate-issuer: auto` (e.g. staging maps
+			// auto -> datum-gateway-http), the cert reconciler must still
+			// create a per-listener Certificate referencing the mapped issuer.
+			// Skipping the listener under those conditions surfaced as
+			// "Certificate not found in downstream cluster" on HTTPProxy.
+			name:                 "auto issuer translated via ClusterIssuerMap creates per-listener cert",
+			defaultTLSSecretName: defaultTLSSecretName,
+			configMutator: func(g *config.GatewayConfig) {
+				g.ClusterIssuerMap = map[string]string{
+					autoIssuerSentinel: "real-issuer",
+				}
+				g.ListenerTLSOptions = map[gatewayv1.AnnotationKey]gatewayv1.AnnotationValue{
+					gatewayv1.AnnotationKey(certificateIssuerTLSOption): autoIssuerSentinel,
+				}
+			},
+			upstreamGateway: newGateway(config.NetworkServicesOperator{Gateway: baseConfig}, upstreamNamespace.Name, "test-gw", func(g *gatewayv1.Gateway) {
+				g.Spec.Listeners = append(g.Spec.Listeners,
+					gatewayv1.Listener{
+						Name:     "https-hostname-0",
+						Protocol: gatewayv1.HTTPSProtocolType,
+						Port:     DefaultHTTPSPort,
+						Hostname: ptr.To(gatewayv1.Hostname("custom.example.com")),
+						AllowedRoutes: &gatewayv1.AllowedRoutes{
+							Namespaces: &gatewayv1.RouteNamespaces{
+								From: ptr.To(gatewayv1.NamespacesFromSame),
+							},
+						},
+						TLS: &gatewayv1.GatewayTLSConfig{
+							Mode: ptr.To(gatewayv1.TLSModeTerminate),
+							Options: map[gatewayv1.AnnotationKey]gatewayv1.AnnotationValue{
+								gatewayv1.AnnotationKey(certificateIssuerTLSOption): autoIssuerSentinel,
+							},
+						},
+					},
+				)
+			}),
+			existingUpstreamObjects: []client.Object{
+				newDomain(upstreamNamespace.Name, "custom.example.com", func(d *networkingv1alpha.Domain) {
+					d.Spec.DomainName = "custom.example.com"
+					apimeta.SetStatusCondition(&d.Status.Conditions, metav1.Condition{
+						Type:   networkingv1alpha.DomainConditionVerified,
+						Status: metav1.ConditionTrue,
+					})
+				}),
+			},
+			assertDownstream: func(t *testing.T, downstreamClient client.Client, downstreamGateway *gatewayv1.Gateway) {
+				var cert cmv1.Certificate
+				certKey := client.ObjectKey{
+					Namespace: downstreamGateway.Namespace,
+					Name:      listenerCertificateName("test-gw", "https-hostname-0"),
+				}
+				if assert.NoError(t, downstreamClient.Get(context.Background(), certKey, &cert),
+					"Certificate must be created when ClusterIssuerMap maps auto to a real issuer",
+				) {
+					assert.Equal(t, "real-issuer", cert.Spec.IssuerRef.Name,
+						"Certificate IssuerRef must use the ClusterIssuerMap-translated value, not the literal `auto` sentinel",
+					)
+				}
+			},
+		},
 	}
 
 	logger := zap.New(zap.UseFlagOptions(&zap.Options{Development: true}))
@@ -544,6 +608,9 @@ func TestEnsureDownstreamGatewayWildcardCert(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			testCfg := config.NetworkServicesOperator{Gateway: *baseConfig.DeepCopy()}
 			testCfg.Gateway.DefaultListenerTLSSecretName = tt.defaultTLSSecretName
+			if tt.configMutator != nil {
+				tt.configMutator(&testCfg.Gateway)
+			}
 
 			tt.existingUpstreamObjects = append(tt.existingUpstreamObjects, &gatewayv1.GatewayClass{
 				ObjectMeta: metav1.ObjectMeta{

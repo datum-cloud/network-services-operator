@@ -421,6 +421,26 @@ func main() {
 		os.Exit(1)
 	}
 
+	if serverConfig.Connector.Iroh.DNSEnabled {
+		irohRestCfg, err := serverConfig.Connector.Iroh.DownstreamRestConfig()
+		if err != nil {
+			setupLog.Error(err, "unable to load iroh dns downstream kubeconfig")
+			os.Exit(1)
+		}
+		irohDownstream, err := client.New(irohRestCfg, client.Options{Scheme: scheme})
+		if err != nil {
+			setupLog.Error(err, "unable to build iroh dns downstream client")
+			os.Exit(1)
+		}
+		if err := (&controller.IrohDNSReconciler{
+			Config:     serverConfig,
+			Downstream: irohDownstream,
+		}).SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "IrohDNS")
+			os.Exit(1)
+		}
+	}
+
 	if serverConfig.Gateway.ShouldDeleteErroredChallenges() {
 		if err := (&controller.ChallengeReconciler{
 			Config:            serverConfig,

@@ -230,6 +230,15 @@ func SetObjectDefaults_NetworkServicesOperator(in *NetworkServicesOperator) {
 	if in.Connector.LeaseDurationSeconds == 0 {
 		in.Connector.LeaseDurationSeconds = 30
 	}
+	if in.Connector.Iroh.DownstreamCluster.KubeconfigSecretRef.Key == "" {
+		in.Connector.Iroh.DownstreamCluster.KubeconfigSecretRef.Key = "kubeconfig"
+	}
+	if in.Connector.Iroh.RecordPrefix == "" {
+		in.Connector.Iroh.RecordPrefix = "_iroh"
+	}
+	if in.Connector.Iroh.TTLSeconds == 0 {
+		in.Connector.Iroh.TTLSeconds = 30
+	}
 	SetDefaults_DiscoveryConfig(&in.Discovery)
 	if in.Redis.DialTimeout == nil {
 		if err := json.Unmarshal([]byte(`"5s"`), &in.Redis.DialTimeout); err != nil {

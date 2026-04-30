@@ -164,7 +164,10 @@ func main() {
 
 	setupLog.Info("server config", "config", serverConfig)
 
-	// TODO(jreese) validate the config
+	if err := serverConfig.Validate(); err != nil {
+		setupLog.Error(err, "invalid server config")
+		os.Exit(1)
+	}
 
 	cfg := ctrl.GetConfigOrDie()
 	serverConfig.ControlPlaneClient.ApplyTo(cfg)

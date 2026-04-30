@@ -3,6 +3,7 @@ package config
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -150,6 +151,66 @@ type ConnectorConfig struct {
 	// Defaults to 30 seconds.
 	// +default=30
 	LeaseDurationSeconds int32 `json:"leaseDurationSeconds,omitempty"`
+
+	// Iroh contains configuration specific to iroh-tunneled connectors.
+	Iroh IrohConnectorConfig `json:"iroh,omitempty"`
+}
+
+// +k8s:deepcopy-gen=true
+
+// IrohConnectorConfig configures the iroh DNS discovery controller, which
+// publishes "<recordPrefix>.<z32-endpoint-id>.<baseDomain>" TXT records
+// into a downstream DNS cluster for every Connector whose ConnectorClass
+// is routed to iroh.
+type IrohConnectorConfig struct {
+	// DNSEnabled toggles the iroh DNS discovery controller. When false the
+	// controller is not registered and the rest of these fields may be
+	// omitted.
+	//
+	// +default=false
+	DNSEnabled bool `json:"dnsEnabled,omitempty"`
+
+	// DownstreamKubeconfigPath is the path to a kubeconfig file pointing
+	// at the cluster where DNSRecordSet resources are written. When empty,
+	// the operator's own in-cluster config is used (single-cluster
+	// deployment).
+	DownstreamKubeconfigPath string `json:"downstreamKubeconfigPath,omitempty"`
+
+	// DNSZoneRef references the DNSZone (in the downstream cluster) that
+	// owns the names this controller manages.
+	DNSZoneRef IrohDNSZoneRef `json:"dnsZoneRef,omitempty"`
+
+	// RecordPrefix is the leading DNS label of the discovery name.
+	// iroh uses "_iroh" by convention.
+	//
+	// +default="_iroh"
+	RecordPrefix string `json:"recordPrefix,omitempty"`
+
+	// BaseDomain is the suffix appended to the prefix and z32 EndpointId
+	// to form the full lookup name "<recordPrefix>.<z32>.<baseDomain>".
+	BaseDomain string `json:"baseDomain,omitempty"`
+
+	// TTLSeconds is the TTL written on each TXT record.
+	//
+	// +default=30
+	TTLSeconds int32 `json:"ttlSeconds,omitempty"`
+}
+
+// DownstreamRestConfig builds a rest.Config for the downstream cluster.
+// An empty DownstreamKubeconfigPath falls back to the operator's own
+// in-cluster config — same convention as DiscoveryConfig.
+func (c *IrohConnectorConfig) DownstreamRestConfig() (*rest.Config, error) {
+	if c.DownstreamKubeconfigPath == "" {
+		return ctrl.GetConfig()
+	}
+	return clientcmd.BuildConfigFromFlags("", c.DownstreamKubeconfigPath)
+}
+
+// +k8s:deepcopy-gen=true
+
+type IrohDNSZoneRef struct {
+	Namespace string `json:"namespace,omitempty"`
+	Name      string `json:"name,omitempty"`
 }
 
 // +k8s:deepcopy-gen=true
@@ -1030,6 +1091,33 @@ func (c *DiscoveryConfig) ProjectRestConfig() (*rest.Config, error) {
 	}
 
 	return clientcmd.BuildConfigFromFlags("", c.ProjectKubeconfigPath)
+}
+
+// Validate returns a non-nil error if the loaded configuration violates a
+// known invariant. New cross-field rules should land here as the
+// codebase grows; today only Connector.Iroh is checked.
+func (c *NetworkServicesOperator) Validate() error {
+	if err := c.Connector.Iroh.validate(); err != nil {
+		return fmt.Errorf("connector.iroh: %w", err)
+	}
+	return nil
+}
+
+func (c *IrohConnectorConfig) validate() error {
+	if !c.DNSEnabled {
+		return nil
+	}
+	var errs []error
+	if c.BaseDomain == "" {
+		errs = append(errs, errors.New("baseDomain is required when dnsEnabled is true"))
+	}
+	if c.DNSZoneRef.Name == "" {
+		errs = append(errs, errors.New("dnsZoneRef.name is required when dnsEnabled is true"))
+	}
+	if c.DNSZoneRef.Namespace == "" {
+		errs = append(errs, errors.New("dnsZoneRef.namespace is required when dnsEnabled is true"))
+	}
+	return errors.Join(errs...)
 }
 
 func init() {

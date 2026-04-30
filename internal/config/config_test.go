@@ -16,16 +16,9 @@ func TestNetworkServicesOperator_Validate_IrohDisabled(t *testing.T) {
 
 func TestNetworkServicesOperator_Validate_IrohEnabled(t *testing.T) {
 	full := IrohConnectorConfig{
-		DNSEnabled:    true,
-		BaseDomain:    "datumconnect.net",
-		DNSZoneRef:    IrohDNSZoneRef{Namespace: "datum-dns", Name: "datumconnect-net"},
-		DownstreamCluster: IrohDownstreamClusterConfig{
-			KubeconfigSecretRef: IrohKubeconfigSecretRef{
-				Namespace: "datum-system",
-				Name:      "downstream-kubeconfig",
-				Key:       "kubeconfig",
-			},
-		},
+		DNSEnabled: true,
+		BaseDomain: "datumconnect.net",
+		DNSZoneRef: IrohDNSZoneRef{Namespace: "datum-dns", Name: "datumconnect-net"},
 	}
 
 	tests := []struct {
@@ -50,14 +43,10 @@ func TestNetworkServicesOperator_Validate_IrohEnabled(t *testing.T) {
 			wantSub: "dnsZoneRef.namespace is required",
 		},
 		{
-			name:    "missing kubeconfigSecretRef.name",
-			mutate:  func(c *IrohConnectorConfig) { c.DownstreamCluster.KubeconfigSecretRef.Name = "" },
-			wantSub: "downstreamCluster.kubeconfigSecretRef.name is required",
-		},
-		{
-			name:    "missing kubeconfigSecretRef.namespace",
-			mutate:  func(c *IrohConnectorConfig) { c.DownstreamCluster.KubeconfigSecretRef.Namespace = "" },
-			wantSub: "downstreamCluster.kubeconfigSecretRef.namespace is required",
+			name: "downstream kubeconfig path is optional (in-cluster fallback)",
+			mutate: func(c *IrohConnectorConfig) {
+				c.DownstreamKubeconfigPath = ""
+			},
 		},
 	}
 
@@ -99,8 +88,6 @@ func TestNetworkServicesOperator_Validate_IrohEnabledAggregatesErrors(t *testing
 		"baseDomain is required",
 		"dnsZoneRef.name is required",
 		"dnsZoneRef.namespace is required",
-		"downstreamCluster.kubeconfigSecretRef.name is required",
-		"downstreamCluster.kubeconfigSecretRef.namespace is required",
 	} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("expected error to mention %q, got %q", want, err.Error())
@@ -119,8 +106,8 @@ func TestSetObjectDefaults_IrohConnectorConfig(t *testing.T) {
 	if got, want := iroh.TTLSeconds, int32(30); got != want {
 		t.Errorf("TTLSeconds = %d, want %d", got, want)
 	}
-	if got, want := iroh.DownstreamCluster.KubeconfigSecretRef.Key, "kubeconfig"; got != want {
-		t.Errorf("KubeconfigSecretRef.Key = %q, want %q", got, want)
+	if iroh.DownstreamKubeconfigPath != "" {
+		t.Errorf("DownstreamKubeconfigPath should default to empty (in-cluster), got %q", iroh.DownstreamKubeconfigPath)
 	}
 	if iroh.DNSEnabled {
 		t.Error("DNSEnabled should default to false")

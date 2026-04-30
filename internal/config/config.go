@@ -170,9 +170,11 @@ type IrohConnectorConfig struct {
 	// +default=false
 	DNSEnabled bool `json:"dnsEnabled,omitempty"`
 
-	// DownstreamCluster identifies the cluster where iroh DNSRecordSet
-	// resources are written.
-	DownstreamCluster IrohDownstreamClusterConfig `json:"downstreamCluster,omitempty"`
+	// DownstreamKubeconfigPath is the path to a kubeconfig file pointing
+	// at the cluster where DNSRecordSet resources are written. When empty,
+	// the operator's own in-cluster config is used (single-cluster
+	// deployment).
+	DownstreamKubeconfigPath string `json:"downstreamKubeconfigPath,omitempty"`
 
 	// DNSZoneRef references the DNSZone (in the downstream cluster) that
 	// owns the names this controller manages.
@@ -194,24 +196,14 @@ type IrohConnectorConfig struct {
 	TTLSeconds int32 `json:"ttlSeconds,omitempty"`
 }
 
-// +k8s:deepcopy-gen=true
-
-type IrohDownstreamClusterConfig struct {
-	// KubeconfigSecretRef references a Secret in the upstream cluster that
-	// holds a kubeconfig pointing at the downstream cluster.
-	KubeconfigSecretRef IrohKubeconfigSecretRef `json:"kubeconfigSecretRef,omitempty"`
-}
-
-// +k8s:deepcopy-gen=true
-
-type IrohKubeconfigSecretRef struct {
-	Namespace string `json:"namespace,omitempty"`
-	Name      string `json:"name,omitempty"`
-
-	// Key is the secret data key holding the kubeconfig bytes.
-	//
-	// +default="kubeconfig"
-	Key string `json:"key,omitempty"`
+// DownstreamRestConfig builds a rest.Config for the downstream cluster.
+// An empty DownstreamKubeconfigPath falls back to the operator's own
+// in-cluster config — same convention as DiscoveryConfig.
+func (c *IrohConnectorConfig) DownstreamRestConfig() (*rest.Config, error) {
+	if c.DownstreamKubeconfigPath == "" {
+		return ctrl.GetConfig()
+	}
+	return clientcmd.BuildConfigFromFlags("", c.DownstreamKubeconfigPath)
 }
 
 // +k8s:deepcopy-gen=true
@@ -1124,12 +1116,6 @@ func (c *IrohConnectorConfig) validate() error {
 	}
 	if c.DNSZoneRef.Namespace == "" {
 		errs = append(errs, errors.New("dnsZoneRef.namespace is required when dnsEnabled is true"))
-	}
-	if c.DownstreamCluster.KubeconfigSecretRef.Name == "" {
-		errs = append(errs, errors.New("downstreamCluster.kubeconfigSecretRef.name is required when dnsEnabled is true"))
-	}
-	if c.DownstreamCluster.KubeconfigSecretRef.Namespace == "" {
-		errs = append(errs, errors.New("downstreamCluster.kubeconfigSecretRef.namespace is required when dnsEnabled is true"))
 	}
 	return errors.Join(errs...)
 }

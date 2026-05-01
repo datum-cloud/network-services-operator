@@ -17,7 +17,6 @@ func TestNetworkServicesOperator_Validate_IrohDisabled(t *testing.T) {
 func TestNetworkServicesOperator_Validate_IrohEnabled(t *testing.T) {
 	full := IrohConnectorConfig{
 		DNSEnabled: true,
-		BaseDomain: "datumconnect.net",
 		DNSZoneRef: IrohDNSZoneRef{Namespace: "datum-dns", Name: "datumconnect-net"},
 	}
 
@@ -27,11 +26,6 @@ func TestNetworkServicesOperator_Validate_IrohEnabled(t *testing.T) {
 		wantSub string
 	}{
 		{name: "all required fields set"},
-		{
-			name:    "missing baseDomain",
-			mutate:  func(c *IrohConnectorConfig) { c.BaseDomain = "" },
-			wantSub: "baseDomain is required",
-		},
 		{
 			name:    "missing dnsZoneRef.name",
 			mutate:  func(c *IrohConnectorConfig) { c.DNSZoneRef.Name = "" },
@@ -47,6 +41,10 @@ func TestNetworkServicesOperator_Validate_IrohEnabled(t *testing.T) {
 			mutate: func(c *IrohConnectorConfig) {
 				c.DownstreamKubeconfigPath = ""
 			},
+		},
+		{
+			name:   "recordSuffix is optional (records sit under zone root)",
+			mutate: func(c *IrohConnectorConfig) { c.RecordSuffix = "" },
 		},
 	}
 
@@ -82,10 +80,9 @@ func TestNetworkServicesOperator_Validate_IrohEnabledAggregatesErrors(t *testing
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	// errors.Join joins distinct messages with newlines; all five required
+	// errors.Join joins distinct messages with newlines; both required
 	// fields should be surfaced.
 	for _, want := range []string{
-		"baseDomain is required",
 		"dnsZoneRef.name is required",
 		"dnsZoneRef.namespace is required",
 	} {

@@ -177,18 +177,23 @@ type IrohConnectorConfig struct {
 	DownstreamKubeconfigPath string `json:"downstreamKubeconfigPath,omitempty"`
 
 	// DNSZoneRef references the DNSZone (in the downstream cluster) that
-	// owns the names this controller manages.
+	// owns the names this controller manages. The actual DNS origin used
+	// for the FQDN is the zone's spec.domainName, not its metadata.name —
+	// the two need not agree.
 	DNSZoneRef IrohDNSZoneRef `json:"dnsZoneRef,omitempty"`
 
-	// RecordPrefix is the leading DNS label of the discovery name.
-	// iroh uses "_iroh" by convention.
+	// RecordPrefix is the leading DNS label of the discovery name. iroh
+	// requires "_iroh" by convention.
 	//
 	// +default="_iroh"
 	RecordPrefix string `json:"recordPrefix,omitempty"`
 
-	// BaseDomain is the suffix appended to the prefix and z32 EndpointId
-	// to form the full lookup name "<recordPrefix>.<z32>.<baseDomain>".
-	BaseDomain string `json:"baseDomain,omitempty"`
+	// RecordSuffix is appended after the z32 EndpointId, before the zone
+	// origin. Use it to nest discovery records under additional labels
+	// (e.g. set "connectors" with a zone for "example.com" to publish at
+	// "_iroh.<z32>.connectors.example.com"). Empty means the records sit
+	// directly under the zone root.
+	RecordSuffix string `json:"recordSuffix,omitempty"`
 
 	// TTLSeconds is the TTL written on each TXT record.
 	//
@@ -1108,9 +1113,6 @@ func (c *IrohConnectorConfig) validate() error {
 		return nil
 	}
 	var errs []error
-	if c.BaseDomain == "" {
-		errs = append(errs, errors.New("baseDomain is required when dnsEnabled is true"))
-	}
 	if c.DNSZoneRef.Name == "" {
 		errs = append(errs, errors.New("dnsZoneRef.name is required when dnsEnabled is true"))
 	}

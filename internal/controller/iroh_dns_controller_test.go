@@ -157,13 +157,22 @@ func TestBuildDesiredRecordSet_RecordContents(t *testing.T) {
 	}
 
 	wantRecordName := "_iroh." + testEndpointZ32 + ".connectors"
-	if len(drs.Spec.Records) != 2 {
-		t.Fatalf("Records count = %d, want 2 (relay + addr)", len(drs.Spec.Records))
+	// One TXT entry per attribute: relay + one addr per direct address.
+	// iroh's parser SocketAddr::from_str(value) drops anything that isn't
+	// exactly one socket address, so we cannot pack multiple addrs into
+	// one space-separated value.
+	if len(drs.Spec.Records) != 3 {
+		t.Fatalf("Records count = %d, want 3 (relay + 2× addr)", len(drs.Spec.Records))
 	}
-	gotContents := []string{drs.Spec.Records[0].TXT.Content, drs.Spec.Records[1].TXT.Content}
+	gotContents := []string{
+		drs.Spec.Records[0].TXT.Content,
+		drs.Spec.Records[1].TXT.Content,
+		drs.Spec.Records[2].TXT.Content,
+	}
 	wantContents := []string{
 		"relay=https://relay.example.com",
-		"addr=192.0.2.1:8080 [2001:db8::1]:9090",
+		"addr=192.0.2.1:8080",
+		"addr=[2001:db8::1]:9090",
 	}
 	for i := range gotContents {
 		if gotContents[i] != wantContents[i] {
@@ -299,30 +308,17 @@ func TestBuildDesiredRecordSet_TwoConnectorsSameKeyProduceSameName(t *testing.T)
 	}
 }
 
-func TestJoinIrohAddresses(t *testing.T) {
+func TestSortIrohAddresses(t *testing.T) {
 	tests := []struct {
 		name  string
 		addrs []networkingv1alpha1.PublicKeyConnectorAddress
-		want  string
+		want  []networkingv1alpha1.PublicKeyConnectorAddress
 	}{
-		{name: "empty", addrs: nil, want: ""},
+		{name: "empty", addrs: nil, want: []networkingv1alpha1.PublicKeyConnectorAddress{}},
 		{
 			name:  "single ipv4",
 			addrs: []networkingv1alpha1.PublicKeyConnectorAddress{{Address: testIPv4, Port: 8080}},
-			want:  "192.0.2.1:8080",
-		},
-		{
-			name:  "single ipv6 — bracketed",
-			addrs: []networkingv1alpha1.PublicKeyConnectorAddress{{Address: testIPv6, Port: 9090}},
-			want:  "[2001:db8::1]:9090",
-		},
-		{
-			name: "mixed ipv4 + ipv6",
-			addrs: []networkingv1alpha1.PublicKeyConnectorAddress{
-				{Address: testIPv4, Port: 8080},
-				{Address: testIPv6, Port: 9090},
-			},
-			want: "192.0.2.1:8080 [2001:db8::1]:9090",
+			want:  []networkingv1alpha1.PublicKeyConnectorAddress{{Address: testIPv4, Port: 8080}},
 		},
 		{
 			name: "input order is normalized — agent may report in any order",
@@ -330,7 +326,10 @@ func TestJoinIrohAddresses(t *testing.T) {
 				{Address: testIPv6, Port: 9090},
 				{Address: testIPv4, Port: 8080},
 			},
-			want: "192.0.2.1:8080 [2001:db8::1]:9090",
+			want: []networkingv1alpha1.PublicKeyConnectorAddress{
+				{Address: testIPv4, Port: 8080},
+				{Address: testIPv6, Port: 9090},
+			},
 		},
 		{
 			name: "same address different ports — sorted by port",
@@ -338,22 +337,31 @@ func TestJoinIrohAddresses(t *testing.T) {
 				{Address: testIPv4, Port: 9090},
 				{Address: testIPv4, Port: 8080},
 			},
-			want: "192.0.2.1:8080 192.0.2.1:9090",
+			want: []networkingv1alpha1.PublicKeyConnectorAddress{
+				{Address: testIPv4, Port: 8080},
+				{Address: testIPv4, Port: 9090},
+			},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := joinIrohAddresses(tt.addrs); got != tt.want {
-				t.Errorf("joinIrohAddresses = %q, want %q", got, tt.want)
+			got := sortIrohAddresses(tt.addrs)
+			if len(got) != len(tt.want) {
+				t.Fatalf("len = %d, want %d", len(got), len(tt.want))
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Errorf("sortIrohAddresses[%d] = %+v, want %+v", i, got[i], tt.want[i])
+				}
 			}
 		})
 	}
 }
 
-// TestJoinIrohAddresses_DoesNotMutateInput ensures we don't reorder the
+// TestSortIrohAddresses_DoesNotMutateInput ensures we don't reorder the
 // caller's slice — Connector.Status fields are shared with watchers and
 // other reconciler passes.
-func TestJoinIrohAddresses_DoesNotMutateInput(t *testing.T) {
+func TestSortIrohAddresses_DoesNotMutateInput(t *testing.T) {
 	original := []networkingv1alpha1.PublicKeyConnectorAddress{
 		{Address: testIPv6, Port: 9090},
 		{Address: testIPv4, Port: 8080},
@@ -362,7 +370,7 @@ func TestJoinIrohAddresses_DoesNotMutateInput(t *testing.T) {
 		{Address: testIPv6, Port: 9090},
 		{Address: testIPv4, Port: 8080},
 	}
-	_ = joinIrohAddresses(original)
+	_ = sortIrohAddresses(original)
 	for i := range want {
 		if original[i] != want[i] {
 			t.Fatalf("input was mutated at index %d: got %+v, want %+v", i, original[i], want[i])

@@ -309,11 +309,17 @@ func (r *IrohDNSReconciler) buildDesiredRecordSet(clusterName string, connector 
 			TXT:  &dnsv1alpha1.TXTRecordSpec{Content: "relay=" + pk.HomeRelay},
 		})
 	}
-	if len(pk.Addresses) > 0 {
+	// One TXT entry per direct address. iroh's parser expects every
+	// IrohAttr::Addr value to be exactly one socket address — it calls
+	// SocketAddr::from_str on the value as-is and silently drops failures
+	// (iroh-relay-0.95.1/src/endpoint_info.rs:307-312). Joining multiple
+	// addrs with whitespace into a single TXT line makes the whole line
+	// fail to parse, so iroh sees no direct addresses.
+	for _, a := range sortIrohAddresses(pk.Addresses) {
 		entries = append(entries, dnsv1alpha1.RecordEntry{
 			Name: recordName,
 			TTL:  &ttl,
-			TXT:  &dnsv1alpha1.TXTRecordSpec{Content: "addr=" + joinIrohAddresses(pk.Addresses)},
+			TXT:  &dnsv1alpha1.TXTRecordSpec{Content: "addr=" + net.JoinHostPort(a.Address, strconv.Itoa(int(a.Port)))},
 		})
 	}
 
@@ -342,14 +348,13 @@ func (r *IrohDNSReconciler) buildDesiredRecordSet(clusterName string, connector 
 	return drs, true, nil
 }
 
-// joinIrohAddresses formats a list of (address, port) tuples for the
-// `addr=` TXT value iroh expects: socket addresses separated by single
-// spaces, IPv6 addresses in bracketed form (RFC 3986). The input is
-// sorted by (address, port) before joining so that an agent reporting
-// the same set of endpoints in different orders across heartbeats —
-// iroh-base's iter-over-set is not stable — produces the same TXT
-// content and avoids spurious server-side-apply writes.
-func joinIrohAddresses(addrs []networkingv1alpha1.PublicKeyConnectorAddress) string {
+// sortIrohAddresses returns a deterministically-ordered copy of the
+// input — by (address, port) lexicographic. The agent's
+// iroh::Endpoint::endpoint_addr().ip_addrs() iterator is iter-over-set
+// and not order-stable, so sorting here means the same set of
+// endpoints produces the same DNS content across heartbeats and SSA
+// stays a no-op when nothing actually changed.
+func sortIrohAddresses(addrs []networkingv1alpha1.PublicKeyConnectorAddress) []networkingv1alpha1.PublicKeyConnectorAddress {
 	sorted := slices.Clone(addrs)
 	slices.SortFunc(sorted, func(a, b networkingv1alpha1.PublicKeyConnectorAddress) int {
 		return cmp.Or(
@@ -357,11 +362,7 @@ func joinIrohAddresses(addrs []networkingv1alpha1.PublicKeyConnectorAddress) str
 			cmp.Compare(a.Port, b.Port),
 		)
 	})
-	parts := make([]string, 0, len(sorted))
-	for _, a := range sorted {
-		parts = append(parts, net.JoinHostPort(a.Address, strconv.Itoa(int(a.Port))))
-	}
-	return strings.Join(parts, " ")
+	return sorted
 }
 
 func (r *IrohDNSReconciler) setPublishedCondition(ctx context.Context, cl cluster.Cluster, connector *networkingv1alpha1.Connector, status metav1.ConditionStatus, reason, message string) error {

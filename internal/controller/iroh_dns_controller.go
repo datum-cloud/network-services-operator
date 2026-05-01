@@ -43,7 +43,7 @@ const (
 	// labels stamped on every DNSRecordSet we manage. Used both for
 	// observability and (more importantly) so the downstream watch
 	// can route an event back to the owning Connector across clusters.
-	irohDNSManagedByLabelValue     = "network-services-operator-iroh-dns"
+	irohDNSManagedByLabelValue     = "networking.datumapis.com"
 	irohDNSClaimedByUIDLabel       = "networking.datumapis.com/iroh-dns-claimed-by-uid"
 	irohDNSConnectorClusterLabel   = "networking.datumapis.com/iroh-dns-connector-cluster"
 	irohDNSConnectorNamespaceLabel = "networking.datumapis.com/iroh-dns-connector-namespace"

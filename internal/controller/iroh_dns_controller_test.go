@@ -25,6 +25,10 @@ const (
 	testClusterName        = "/test-project-staging"
 	testClusterNameEncoded = "cluster-_test-project-staging"
 	testConnectorUID       = "00000000-0000-0000-0000-000000000abc"
+
+	testRelayURL = "https://relay.example.com"
+	testIPv4     = "192.0.2.1"
+	testIPv6     = "2001:db8::1"
 )
 
 func newReconciler() *IrohDNSReconciler {
@@ -83,7 +87,7 @@ func TestBuildDesiredRecordSet_StatusGating(t *testing.T) {
 			name: "id with relay only — publishes",
 			pk: &networkingv1alpha1.ConnectorConnectionDetailsPublicKey{
 				Id:        testEndpointHex,
-				HomeRelay: "https://relay.example.com",
+				HomeRelay: testRelayURL,
 			},
 			want: true,
 		},
@@ -91,7 +95,7 @@ func TestBuildDesiredRecordSet_StatusGating(t *testing.T) {
 			name: "id with addresses only — publishes",
 			pk: &networkingv1alpha1.ConnectorConnectionDetailsPublicKey{
 				Id:        testEndpointHex,
-				Addresses: []networkingv1alpha1.PublicKeyConnectorAddress{{Address: "192.0.2.1", Port: 8080}},
+				Addresses: []networkingv1alpha1.PublicKeyConnectorAddress{{Address: testIPv4, Port: 8080}},
 			},
 			want: true,
 		},
@@ -99,8 +103,8 @@ func TestBuildDesiredRecordSet_StatusGating(t *testing.T) {
 			name: "id with both — publishes",
 			pk: &networkingv1alpha1.ConnectorConnectionDetailsPublicKey{
 				Id:        testEndpointHex,
-				HomeRelay: "https://relay.example.com",
-				Addresses: []networkingv1alpha1.PublicKeyConnectorAddress{{Address: "192.0.2.1", Port: 8080}},
+				HomeRelay: testRelayURL,
+				Addresses: []networkingv1alpha1.PublicKeyConnectorAddress{{Address: testIPv4, Port: 8080}},
 			},
 			want: true,
 		},
@@ -124,10 +128,10 @@ func TestBuildDesiredRecordSet_RecordContents(t *testing.T) {
 	r := newReconciler()
 	conn := newConnector(&networkingv1alpha1.ConnectorConnectionDetailsPublicKey{
 		Id:        testEndpointHex,
-		HomeRelay: "https://relay.example.com",
+		HomeRelay: testRelayURL,
 		Addresses: []networkingv1alpha1.PublicKeyConnectorAddress{
-			{Address: "192.0.2.1", Port: 8080},
-			{Address: "2001:db8::1", Port: 9090},
+			{Address: testIPv4, Port: 8080},
+			{Address: testIPv6, Port: 9090},
 		},
 	})
 
@@ -210,7 +214,7 @@ func TestBuildDesiredRecordSet_RelayOnlyOmitsAddrEntry(t *testing.T) {
 	r := newReconciler()
 	conn := newConnector(&networkingv1alpha1.ConnectorConnectionDetailsPublicKey{
 		Id:        testEndpointHex,
-		HomeRelay: "https://relay.example.com",
+		HomeRelay: testRelayURL,
 	})
 
 	drs, _, err := r.buildDesiredRecordSet(testClusterName, conn)
@@ -230,7 +234,7 @@ func TestBuildDesiredRecordSet_EmptySuffixPutsRecordsUnderZoneRoot(t *testing.T)
 	r.Config.Connector.Iroh.RecordSuffix = ""
 	conn := newConnector(&networkingv1alpha1.ConnectorConnectionDetailsPublicKey{
 		Id:        testEndpointHex,
-		HomeRelay: "https://relay.example.com",
+		HomeRelay: testRelayURL,
 	})
 
 	drs, _, err := r.buildDesiredRecordSet(testClusterName, conn)
@@ -247,7 +251,7 @@ func TestBuildDesiredRecordSet_InvalidEndpointId(t *testing.T) {
 	r := newReconciler()
 	conn := newConnector(&networkingv1alpha1.ConnectorConnectionDetailsPublicKey{
 		Id:        "not-hex",
-		HomeRelay: "https://relay.example.com",
+		HomeRelay: testRelayURL,
 	})
 	if _, _, err := r.buildDesiredRecordSet(testClusterName, conn); err == nil {
 		t.Fatal("expected error for non-hex endpoint id, got nil")
@@ -262,7 +266,7 @@ func TestBuildDesiredRecordSet_TwoConnectorsSameKeyProduceSameName(t *testing.T)
 	r := newReconciler()
 	pk := &networkingv1alpha1.ConnectorConnectionDetailsPublicKey{
 		Id:        testEndpointHex,
-		HomeRelay: "https://relay.example.com",
+		HomeRelay: testRelayURL,
 	}
 
 	a := newConnector(pk)
@@ -304,35 +308,35 @@ func TestJoinIrohAddresses(t *testing.T) {
 		{name: "empty", addrs: nil, want: ""},
 		{
 			name:  "single ipv4",
-			addrs: []networkingv1alpha1.PublicKeyConnectorAddress{{Address: "192.0.2.1", Port: 8080}},
+			addrs: []networkingv1alpha1.PublicKeyConnectorAddress{{Address: testIPv4, Port: 8080}},
 			want:  "192.0.2.1:8080",
 		},
 		{
 			name:  "single ipv6 — bracketed",
-			addrs: []networkingv1alpha1.PublicKeyConnectorAddress{{Address: "2001:db8::1", Port: 9090}},
+			addrs: []networkingv1alpha1.PublicKeyConnectorAddress{{Address: testIPv6, Port: 9090}},
 			want:  "[2001:db8::1]:9090",
 		},
 		{
 			name: "mixed ipv4 + ipv6",
 			addrs: []networkingv1alpha1.PublicKeyConnectorAddress{
-				{Address: "192.0.2.1", Port: 8080},
-				{Address: "2001:db8::1", Port: 9090},
+				{Address: testIPv4, Port: 8080},
+				{Address: testIPv6, Port: 9090},
 			},
 			want: "192.0.2.1:8080 [2001:db8::1]:9090",
 		},
 		{
 			name: "input order is normalized — agent may report in any order",
 			addrs: []networkingv1alpha1.PublicKeyConnectorAddress{
-				{Address: "2001:db8::1", Port: 9090},
-				{Address: "192.0.2.1", Port: 8080},
+				{Address: testIPv6, Port: 9090},
+				{Address: testIPv4, Port: 8080},
 			},
 			want: "192.0.2.1:8080 [2001:db8::1]:9090",
 		},
 		{
 			name: "same address different ports — sorted by port",
 			addrs: []networkingv1alpha1.PublicKeyConnectorAddress{
-				{Address: "192.0.2.1", Port: 9090},
-				{Address: "192.0.2.1", Port: 8080},
+				{Address: testIPv4, Port: 9090},
+				{Address: testIPv4, Port: 8080},
 			},
 			want: "192.0.2.1:8080 192.0.2.1:9090",
 		},
@@ -351,12 +355,12 @@ func TestJoinIrohAddresses(t *testing.T) {
 // other reconciler passes.
 func TestJoinIrohAddresses_DoesNotMutateInput(t *testing.T) {
 	original := []networkingv1alpha1.PublicKeyConnectorAddress{
-		{Address: "2001:db8::1", Port: 9090},
-		{Address: "192.0.2.1", Port: 8080},
+		{Address: testIPv6, Port: 9090},
+		{Address: testIPv4, Port: 8080},
 	}
 	want := []networkingv1alpha1.PublicKeyConnectorAddress{
-		{Address: "2001:db8::1", Port: 9090},
-		{Address: "192.0.2.1", Port: 8080},
+		{Address: testIPv6, Port: 9090},
+		{Address: testIPv4, Port: 8080},
 	}
 	_ = joinIrohAddresses(original)
 	for i := range want {

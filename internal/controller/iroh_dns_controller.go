@@ -112,7 +112,7 @@ func (r *IrohDNSReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 	}
 	if !matches {
 		// Class doesn't route here. If we previously held a claim, release it.
-		return ctrl.Result{}, r.releaseIfOwner(ctx, cl, &connector)
+		return ctrl.Result{}, r.releaseIfOwner(ctx, &connector)
 	}
 
 	if !controllerutil.ContainsFinalizer(&connector, irohDNSFinalizer) {
@@ -130,7 +130,7 @@ func (r *IrohDNSReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 	if !ok {
 		// Status not yet populated by the agent. If we previously claimed
 		// this endpoint id, release so a sibling can take over.
-		if err := r.releaseIfOwner(ctx, cl, &connector); err != nil {
+		if err := r.releaseIfOwner(ctx, &connector); err != nil {
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{}, r.setPublishedCondition(ctx, cl, &connector, metav1.ConditionFalse, connectorReasonIrohPending, "Connector status does not yet carry connection details.")
@@ -187,7 +187,7 @@ func (r *IrohDNSReconciler) handleDeletion(ctx context.Context, cl cluster.Clust
 	if !controllerutil.ContainsFinalizer(connector, irohDNSFinalizer) {
 		return ctrl.Result{}, nil
 	}
-	if err := r.releaseIfOwner(ctx, cl, connector); err != nil {
+	if err := r.releaseIfOwner(ctx, connector); err != nil {
 		return ctrl.Result{}, err
 	}
 	controllerutil.RemoveFinalizer(connector, irohDNSFinalizer)
@@ -204,7 +204,7 @@ func (r *IrohDNSReconciler) handleDeletion(ctx context.Context, cl cluster.Clust
 // We compute the DNSRecordSet name from the Connector's status — if the
 // status is empty we have no z32 to derive, which means we never could
 // have created a record in the first place, so there's nothing to release.
-func (r *IrohDNSReconciler) releaseIfOwner(ctx context.Context, cl cluster.Cluster, connector *networkingv1alpha1.Connector) error {
+func (r *IrohDNSReconciler) releaseIfOwner(ctx context.Context, connector *networkingv1alpha1.Connector) error {
 	z32, err := connectorEndpointZ32(connector)
 	if err != nil || z32 == "" {
 		return nil

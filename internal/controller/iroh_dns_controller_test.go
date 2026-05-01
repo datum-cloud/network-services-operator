@@ -232,6 +232,22 @@ func TestJoinIrohAddresses(t *testing.T) {
 			},
 			want: "192.0.2.1:8080 [2001:db8::1]:9090",
 		},
+		{
+			name: "input order is normalized — agent may report in any order",
+			addrs: []networkingv1alpha1.PublicKeyConnectorAddress{
+				{Address: "2001:db8::1", Port: 9090},
+				{Address: "192.0.2.1", Port: 8080},
+			},
+			want: "192.0.2.1:8080 [2001:db8::1]:9090",
+		},
+		{
+			name: "same address different ports — sorted by port",
+			addrs: []networkingv1alpha1.PublicKeyConnectorAddress{
+				{Address: "192.0.2.1", Port: 9090},
+				{Address: "192.0.2.1", Port: 8080},
+			},
+			want: "192.0.2.1:8080 192.0.2.1:9090",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -239,5 +255,25 @@ func TestJoinIrohAddresses(t *testing.T) {
 				t.Errorf("joinIrohAddresses = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+// TestJoinIrohAddresses_DoesNotMutateInput ensures we don't reorder the
+// caller's slice — Connector.Status fields are shared with watchers and
+// other reconciler passes.
+func TestJoinIrohAddresses_DoesNotMutateInput(t *testing.T) {
+	original := []networkingv1alpha1.PublicKeyConnectorAddress{
+		{Address: "2001:db8::1", Port: 9090},
+		{Address: "192.0.2.1", Port: 8080},
+	}
+	want := []networkingv1alpha1.PublicKeyConnectorAddress{
+		{Address: "2001:db8::1", Port: 9090},
+		{Address: "192.0.2.1", Port: 8080},
+	}
+	_ = joinIrohAddresses(original)
+	for i := range want {
+		if original[i] != want[i] {
+			t.Fatalf("input was mutated at index %d: got %+v, want %+v", i, original[i], want[i])
+		}
 	}
 }

@@ -3,9 +3,11 @@
 package controller
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"net"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -227,10 +229,21 @@ func (r *IrohDNSReconciler) buildDesiredRecordSet(connector *networkingv1alpha1.
 
 // joinIrohAddresses formats a list of (address, port) tuples for the
 // `addr=` TXT value iroh expects: socket addresses separated by single
-// spaces, IPv6 addresses in bracketed form (RFC 3986).
+// spaces, IPv6 addresses in bracketed form (RFC 3986). The input is
+// sorted by (address, port) before joining so that an agent reporting
+// the same set of endpoints in different orders across heartbeats —
+// iroh-base's iter-over-set is not stable — produces the same TXT
+// content and avoids spurious server-side-apply writes.
 func joinIrohAddresses(addrs []networkingv1alpha1.PublicKeyConnectorAddress) string {
-	parts := make([]string, 0, len(addrs))
-	for _, a := range addrs {
+	sorted := slices.Clone(addrs)
+	slices.SortFunc(sorted, func(a, b networkingv1alpha1.PublicKeyConnectorAddress) int {
+		return cmp.Or(
+			cmp.Compare(a.Address, b.Address),
+			cmp.Compare(a.Port, b.Port),
+		)
+	})
+	parts := make([]string, 0, len(sorted))
+	for _, a := range sorted {
 		parts = append(parts, net.JoinHostPort(a.Address, strconv.Itoa(int(a.Port))))
 	}
 	return strings.Join(parts, " ")

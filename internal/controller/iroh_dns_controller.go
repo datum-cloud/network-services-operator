@@ -301,7 +301,7 @@ func (r *IrohDNSReconciler) buildDesiredRecordSet(clusterName string, connector 
 	}
 	ttl := int64(cfg.TTLSeconds)
 
-	var entries []dnsv1alpha1.RecordEntry
+	entries := make([]dnsv1alpha1.RecordEntry, 0, 1+len(pk.Addresses))
 	if pk.HomeRelay != "" {
 		entries = append(entries, dnsv1alpha1.RecordEntry{
 			Name: recordName,

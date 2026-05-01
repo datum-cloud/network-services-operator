@@ -13,7 +13,9 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
@@ -23,6 +25,7 @@ import (
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
+	mcsource "sigs.k8s.io/multicluster-runtime/pkg/source"
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 
@@ -34,6 +37,23 @@ import (
 const (
 	irohDNSFinalizer    = "networking.datumapis.com/iroh-dns-cleanup"
 	irohDNSFieldManager = "network-services-operator/iroh-dns"
+
+	// labels stamped on every DNSRecordSet we manage. Used both for
+	// observability and (more importantly) so the downstream watch
+	// can route an event back to the owning Connector across clusters.
+	irohDNSManagedByLabelValue     = "network-services-operator-iroh-dns"
+	irohDNSClaimedByUIDLabel       = "networking.datumapis.com/iroh-dns-claimed-by-uid"
+	irohDNSConnectorClusterLabel   = "networking.datumapis.com/iroh-dns-connector-cluster"
+	irohDNSConnectorNamespaceLabel = "networking.datumapis.com/iroh-dns-connector-namespace"
+	irohDNSConnectorNameLabel      = "networking.datumapis.com/iroh-dns-connector-name"
+
+	// Connector status condition surfacing whether *this* Connector is the
+	// one publishing the iroh DNS record for its endpoint id.
+	connectorConditionIrohDNSPublished = "IrohDNSPublished"
+
+	connectorReasonIrohOwner           = "Owner"
+	connectorReasonIrohDeferredToOwner = "DeferredToOwner"
+	connectorReasonIrohPending         = "Pending"
 )
 
 // allowedIrohControllerNames is the set of ConnectorClass.spec.controllerName
@@ -46,16 +66,20 @@ var allowedIrohControllerNames = map[string]struct{}{
 }
 
 // IrohDNSReconciler watches Connectors backed by an iroh-routed
-// ConnectorClass and maintains a 1-1 DNSRecordSet in the configured
-// downstream cluster carrying the iroh-format TXT record at
-// "<recordPrefix>.<z32-endpoint-id>.<baseDomain>".
+// ConnectorClass and maintains a single downstream DNSRecordSet per iroh
+// endpoint id (z32-encoded public key) carrying the iroh DNS-discovery
+// TXT records. Multiple Connectors that share the same iroh keypair (e.g.
+// the same agent registered against two projects) collapse to one
+// DNSRecordSet — the first to claim wins, and the loser surfaces a
+// DeferredToOwner condition rather than fighting at the DNS layer.
 type IrohDNSReconciler struct {
 	mgr        mcmanager.Manager
 	Config     config.NetworkServicesOperator
-	Downstream client.Client
+	Downstream cluster.Cluster
 }
 
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=connectors,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=networking.datumapis.com,resources=connectors/status,verbs=update;patch
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=connectors/finalizers,verbs=update
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=connectorclasses,verbs=get;list;watch
 
@@ -76,20 +100,8 @@ func (r *IrohDNSReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 		return ctrl.Result{}, err
 	}
 
-	dnsName := r.dnsRecordSetName(&connector)
-
 	if !connector.DeletionTimestamp.IsZero() {
-		if !controllerutil.ContainsFinalizer(&connector, irohDNSFinalizer) {
-			return ctrl.Result{}, nil
-		}
-		if err := r.deleteRecordSet(ctx, dnsName); err != nil {
-			return ctrl.Result{}, err
-		}
-		controllerutil.RemoveFinalizer(&connector, irohDNSFinalizer)
-		if err := cl.GetClient().Update(ctx, &connector); err != nil {
-			return ctrl.Result{}, fmt.Errorf("remove finalizer: %w", err)
-		}
-		return ctrl.Result{}, nil
+		return r.handleDeletion(ctx, cl, &connector)
 	}
 
 	matches, err := r.classRoutesToIroh(ctx, cl, &connector)
@@ -97,18 +109,8 @@ func (r *IrohDNSReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 		return ctrl.Result{}, err
 	}
 	if !matches {
-		// Class doesn't route here. If we previously owned a record (finalizer
-		// present), tear it down and release the Connector.
-		if controllerutil.ContainsFinalizer(&connector, irohDNSFinalizer) {
-			if err := r.deleteRecordSet(ctx, dnsName); err != nil {
-				return ctrl.Result{}, err
-			}
-			controllerutil.RemoveFinalizer(&connector, irohDNSFinalizer)
-			if err := cl.GetClient().Update(ctx, &connector); err != nil {
-				return ctrl.Result{}, fmt.Errorf("release finalizer: %w", err)
-			}
-		}
-		return ctrl.Result{}, nil
+		// Class doesn't route here. If we previously held a claim, release it.
+		return ctrl.Result{}, r.releaseIfOwner(ctx, cl, &connector)
 	}
 
 	if !controllerutil.ContainsFinalizer(&connector, irohDNSFinalizer) {
@@ -116,27 +118,112 @@ func (r *IrohDNSReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 		if err := cl.GetClient().Update(ctx, &connector); err != nil {
 			return ctrl.Result{}, fmt.Errorf("add finalizer: %w", err)
 		}
-		// Requeue via the inevitable update event; nothing more to do this pass.
 		return ctrl.Result{}, nil
 	}
 
-	desired, ok, err := r.buildDesiredRecordSet(&connector)
+	desired, ok, err := r.buildDesiredRecordSet(req.ClusterName, &connector)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 	if !ok {
-		// Status not yet populated by the agent. Tear down any prior record so
-		// stale entries don't linger; reconcile fires again on status update.
-		if err := r.deleteRecordSet(ctx, dnsName); err != nil {
+		// Status not yet populated by the agent. If we previously claimed
+		// this endpoint id, release so a sibling can take over.
+		if err := r.releaseIfOwner(ctx, cl, &connector); err != nil {
 			return ctrl.Result{}, err
 		}
-		return ctrl.Result{}, nil
+		return ctrl.Result{}, r.setPublishedCondition(ctx, cl, &connector, metav1.ConditionFalse, connectorReasonIrohPending, "Connector status does not yet carry connection details.")
 	}
 
-	if err := r.applyRecordSet(ctx, desired); err != nil {
+	return ctrl.Result{}, r.applyClaim(ctx, cl, &connector, desired)
+}
+
+// applyClaim implements the claim-then-write loop:
+//   - Get the DNSRecordSet at the deterministic z32-derived name.
+//   - Not found → Create with our claim. AlreadyExists means a sibling beat
+//     us; we re-fetch and continue.
+//   - Found, our claim → SSA refresh content.
+//   - Found, foreign claim → defer (no write) and surface a status
+//     condition naming the owner.
+func (r *IrohDNSReconciler) applyClaim(ctx context.Context, cl cluster.Cluster, connector *networkingv1alpha1.Connector, desired *dnsv1alpha1.DNSRecordSet) error {
+	key := client.ObjectKeyFromObject(desired)
+	var existing dnsv1alpha1.DNSRecordSet
+	err := r.Downstream.GetClient().Get(ctx, key, &existing)
+
+	switch {
+	case apierrors.IsNotFound(err):
+		if err := r.Downstream.GetClient().Create(ctx, desired); err != nil {
+			if !apierrors.IsAlreadyExists(err) {
+				return fmt.Errorf("create DNSRecordSet: %w", err)
+			}
+			// Sibling raced us. Refetch and fall through to the foreign-claim
+			// branch on next reconcile.
+			return nil
+		}
+		return r.setPublishedCondition(ctx, cl, connector, metav1.ConditionTrue, connectorReasonIrohOwner, "Owns iroh DNS record.")
+
+	case err != nil:
+		return fmt.Errorf("get DNSRecordSet: %w", err)
+	}
+
+	currentClaim := existing.Labels[irohDNSClaimedByUIDLabel]
+	if currentClaim != string(connector.UID) {
+		ownerRef := existing.Labels[irohDNSConnectorClusterLabel] + "/" + existing.Labels[irohDNSConnectorNamespaceLabel] + "/" + existing.Labels[irohDNSConnectorNameLabel]
+		return r.setPublishedCondition(ctx, cl, connector, metav1.ConditionFalse, connectorReasonIrohDeferredToOwner,
+			fmt.Sprintf("iroh DNS record is owned by Connector %s (uid %s).", ownerRef, currentClaim))
+	}
+
+	// We own it. SSA the desired content.
+	if err := r.Downstream.GetClient().Patch(ctx, desired, client.Apply, client.FieldOwner(irohDNSFieldManager), client.ForceOwnership); err != nil {
+		return fmt.Errorf("apply DNSRecordSet: %w", err)
+	}
+	return r.setPublishedCondition(ctx, cl, connector, metav1.ConditionTrue, connectorReasonIrohOwner, "Owns iroh DNS record.")
+}
+
+// handleDeletion releases the claim (if held) and removes the finalizer.
+func (r *IrohDNSReconciler) handleDeletion(ctx context.Context, cl cluster.Cluster, connector *networkingv1alpha1.Connector) (ctrl.Result, error) {
+	if !controllerutil.ContainsFinalizer(connector, irohDNSFinalizer) {
+		return ctrl.Result{}, nil
+	}
+	if err := r.releaseIfOwner(ctx, cl, connector); err != nil {
 		return ctrl.Result{}, err
 	}
+	controllerutil.RemoveFinalizer(connector, irohDNSFinalizer)
+	if err := cl.GetClient().Update(ctx, connector); err != nil {
+		return ctrl.Result{}, fmt.Errorf("remove finalizer: %w", err)
+	}
 	return ctrl.Result{}, nil
+}
+
+// releaseIfOwner deletes the DNSRecordSet for this Connector's endpoint id
+// only if we currently hold the claim. Otherwise it's a no-op (the foreign
+// owner manages the record's lifecycle).
+//
+// We compute the DNSRecordSet name from the Connector's status — if the
+// status is empty we have no z32 to derive, which means we never could
+// have created a record in the first place, so there's nothing to release.
+func (r *IrohDNSReconciler) releaseIfOwner(ctx context.Context, cl cluster.Cluster, connector *networkingv1alpha1.Connector) error {
+	z32, err := connectorEndpointZ32(connector)
+	if err != nil || z32 == "" {
+		return nil
+	}
+	key := client.ObjectKey{
+		Namespace: r.Config.Connector.Iroh.DNSZoneRef.Namespace,
+		Name:      irohDNSRecordSetName(z32),
+	}
+	var existing dnsv1alpha1.DNSRecordSet
+	if err := r.Downstream.GetClient().Get(ctx, key, &existing); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("get DNSRecordSet for release: %w", err)
+	}
+	if existing.Labels[irohDNSClaimedByUIDLabel] != string(connector.UID) {
+		return nil
+	}
+	if err := r.Downstream.GetClient().Delete(ctx, &existing); err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("delete DNSRecordSet: %w", err)
+	}
+	return nil
 }
 
 func (r *IrohDNSReconciler) classRoutesToIroh(ctx context.Context, cl cluster.Cluster, connector *networkingv1alpha1.Connector) (bool, error) {
@@ -154,32 +241,38 @@ func (r *IrohDNSReconciler) classRoutesToIroh(ctx context.Context, cl cluster.Cl
 	return ok, nil
 }
 
-func (r *IrohDNSReconciler) dnsRecordSetName(connector *networkingv1alpha1.Connector) client.ObjectKey {
-	return client.ObjectKey{
-		Namespace: r.Config.Connector.Iroh.DNSZoneRef.Namespace,
-		Name:      "iroh-" + string(connector.UID),
+// irohDNSRecordSetName returns the deterministic DNSRecordSet name for an
+// iroh endpoint id. One name per endpoint id means multiple Connectors
+// reusing the same key collapse onto a single record.
+func irohDNSRecordSetName(z32 string) string {
+	return "iroh-" + z32
+}
+
+func connectorEndpointZ32(connector *networkingv1alpha1.Connector) (string, error) {
+	if connector.Status.ConnectionDetails == nil || connector.Status.ConnectionDetails.PublicKey == nil {
+		return "", nil
 	}
+	pk := connector.Status.ConnectionDetails.PublicKey
+	if pk.Id == "" {
+		return "", nil
+	}
+	return iroh.EndpointHexToZ32(pk.Id)
 }
 
 // buildDesiredRecordSet builds the DNSRecordSet we want present in the
 // downstream cluster. The second return value is false when the Connector
-// status doesn't yet carry enough data to publish a useful record (no
-// endpoint id at all, or neither relay nor any addresses).
-func (r *IrohDNSReconciler) buildDesiredRecordSet(connector *networkingv1alpha1.Connector) (*dnsv1alpha1.DNSRecordSet, bool, error) {
-	if connector.Status.ConnectionDetails == nil || connector.Status.ConnectionDetails.PublicKey == nil {
+// status doesn't yet carry enough data to publish a useful record.
+func (r *IrohDNSReconciler) buildDesiredRecordSet(clusterName string, connector *networkingv1alpha1.Connector) (*dnsv1alpha1.DNSRecordSet, bool, error) {
+	z32, err := connectorEndpointZ32(connector)
+	if err != nil {
+		return nil, false, fmt.Errorf("encode endpoint id: %w", err)
+	}
+	if z32 == "" {
 		return nil, false, nil
 	}
 	pk := connector.Status.ConnectionDetails.PublicKey
-	if pk.Id == "" {
-		return nil, false, nil
-	}
 	if pk.HomeRelay == "" && len(pk.Addresses) == 0 {
 		return nil, false, nil
-	}
-
-	z32, err := iroh.EndpointHexToZ32(pk.Id)
-	if err != nil {
-		return nil, false, fmt.Errorf("encode endpoint id: %w", err)
 	}
 
 	cfg := r.Config.Connector.Iroh
@@ -192,7 +285,6 @@ func (r *IrohDNSReconciler) buildDesiredRecordSet(connector *networkingv1alpha1.
 		recordName = recordName + "." + cfg.RecordSuffix
 	}
 	ttl := int64(cfg.TTLSeconds)
-	key := r.dnsRecordSetName(connector)
 
 	var entries []dnsv1alpha1.RecordEntry
 	if pk.HomeRelay != "" {
@@ -216,13 +308,14 @@ func (r *IrohDNSReconciler) buildDesiredRecordSet(connector *networkingv1alpha1.
 			Kind:       "DNSRecordSet",
 		},
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      key.Name,
-			Namespace: key.Namespace,
+			Name:      irohDNSRecordSetName(z32),
+			Namespace: cfg.DNSZoneRef.Namespace,
 			Labels: map[string]string{
-				"app.kubernetes.io/managed-by":                 "network-services-operator",
-				"networking.datumapis.com/connector-uid":       string(connector.UID),
-				"networking.datumapis.com/connector-namespace": connector.Namespace,
-				"networking.datumapis.com/connector-name":      connector.Name,
+				"app.kubernetes.io/managed-by": irohDNSManagedByLabelValue,
+				irohDNSClaimedByUIDLabel:       string(connector.UID),
+				irohDNSConnectorClusterLabel:   clusterName,
+				irohDNSConnectorNamespaceLabel: connector.Namespace,
+				irohDNSConnectorNameLabel:      connector.Name,
 			},
 		},
 		Spec: dnsv1alpha1.DNSRecordSetSpec{
@@ -256,27 +349,58 @@ func joinIrohAddresses(addrs []networkingv1alpha1.PublicKeyConnectorAddress) str
 	return strings.Join(parts, " ")
 }
 
-func (r *IrohDNSReconciler) applyRecordSet(ctx context.Context, desired *dnsv1alpha1.DNSRecordSet) error {
-	if err := r.Downstream.Patch(ctx, desired, client.Apply, client.FieldOwner(irohDNSFieldManager), client.ForceOwnership); err != nil {
-		return fmt.Errorf("apply DNSRecordSet: %w", err)
+func (r *IrohDNSReconciler) setPublishedCondition(ctx context.Context, cl cluster.Cluster, connector *networkingv1alpha1.Connector, status metav1.ConditionStatus, reason, message string) error {
+	cond := metav1.Condition{
+		Type:               connectorConditionIrohDNSPublished,
+		Status:             status,
+		Reason:             reason,
+		Message:            message,
+		ObservedGeneration: connector.Generation,
+	}
+	if !apimeta.SetStatusCondition(&connector.Status.Conditions, cond) {
+		return nil
+	}
+	if err := cl.GetClient().Status().Update(ctx, connector); err != nil {
+		return fmt.Errorf("update connector status: %w", err)
 	}
 	return nil
 }
 
-func (r *IrohDNSReconciler) deleteRecordSet(ctx context.Context, key client.ObjectKey) error {
-	drs := &dnsv1alpha1.DNSRecordSet{ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace}}
-	if err := r.Downstream.Delete(ctx, drs); err != nil && !apierrors.IsNotFound(err) {
-		return fmt.Errorf("delete DNSRecordSet: %w", err)
-	}
-	return nil
-}
-
-// SetupWithManager wires the reconciler into the multicluster manager. Watches
-// the upstream Connector and ConnectorClass; the downstream DNSRecordSet
-// client is held directly on the reconciler since it lives in a different
-// cluster than the manager.
+// SetupWithManager wires the reconciler. Watches:
+//
+//   - Connector (For) and ConnectorClass (Watches) — the primary multicluster
+//     event sources. Connector activity (status updates from agent lease
+//     renewals, generation bumps) drives reconciles often enough that sibling
+//     handover after an owner releases happens within seconds.
+//
+//   - DNSRecordSet on the downstream cluster — fires on changes to records we
+//     manage. The mapper enqueues the *current owner* Connector identified by
+//     the labels on the DNSRecordSet; this catches drift (e.g. external
+//     deletion) for the owner. Sibling handover does not flow through this
+//     watch — multicluster-runtime's manager exposes GetCluster(name) but no
+//     enumeration, so a downstream event can't fan out to siblings across
+//     project clusters. The Connector watch is what catches them.
 func (r *IrohDNSReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	r.mgr = mgr
+
+	downstreamSource := mcsource.Kind(
+		&dnsv1alpha1.DNSRecordSet{},
+		func(_ string, _ cluster.Cluster) handler.TypedEventHandler[*dnsv1alpha1.DNSRecordSet, mcreconcile.Request] {
+			return handler.TypedEnqueueRequestsFromMapFunc(func(_ context.Context, drs *dnsv1alpha1.DNSRecordSet) []mcreconcile.Request {
+				clusterName := drs.Labels[irohDNSConnectorClusterLabel]
+				name := drs.Labels[irohDNSConnectorNameLabel]
+				ns := drs.Labels[irohDNSConnectorNamespaceLabel]
+				if name == "" || ns == "" {
+					return nil
+				}
+				return []mcreconcile.Request{{
+					ClusterName: clusterName,
+					Request:     ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: name}},
+				}}
+			})
+		},
+	)
+	downstreamClusterSource, _, _ := downstreamSource.ForCluster("", r.Downstream)
 
 	return mcbuilder.ControllerManagedBy(mgr).
 		For(&networkingv1alpha1.Connector{}).
@@ -309,6 +433,7 @@ func (r *IrohDNSReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 				})
 			},
 		).
+		WatchesRawSource(downstreamClusterSource).
 		Named("iroh-dns").
 		Complete(r)
 }

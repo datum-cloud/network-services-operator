@@ -19,6 +19,9 @@ import (
 const (
 	testEndpointHex = "f120d52e42bfcee750508baf28900acac85ad3f397ab4bb653b32be505c32d39"
 	testEndpointZ32 = "6ropkm1nz98qqwnotqz1tryk3mrfiw9u16iwzp1usci6kbqdfwho"
+
+	testClusterName  = "test-cluster"
+	testConnectorUID = "00000000-0000-0000-0000-000000000abc"
 )
 
 func newReconciler() *IrohDNSReconciler {
@@ -45,7 +48,7 @@ func newConnector(pk *networkingv1alpha1.ConnectorConnectionDetailsPublicKey) *n
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "edge-1",
 			Namespace: "default",
-			UID:       types.UID("00000000-0000-0000-0000-000000000abc"),
+			UID:       types.UID(testConnectorUID),
 		},
 		Spec: networkingv1alpha1.ConnectorSpec{
 			ConnectorClassName: "datum-connect",
@@ -103,7 +106,7 @@ func TestBuildDesiredRecordSet_StatusGating(t *testing.T) {
 	r := newReconciler()
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, ok, err := r.buildDesiredRecordSet(newConnector(tt.pk))
+			_, ok, err := r.buildDesiredRecordSet(testClusterName, newConnector(tt.pk))
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -125,12 +128,14 @@ func TestBuildDesiredRecordSet_RecordContents(t *testing.T) {
 		},
 	})
 
-	drs, ok, err := r.buildDesiredRecordSet(conn)
+	drs, ok, err := r.buildDesiredRecordSet(testClusterName, conn)
 	if err != nil || !ok {
 		t.Fatalf("buildDesiredRecordSet failed: ok=%v err=%v", ok, err)
 	}
 
-	wantName := "iroh-" + string(conn.UID)
+	// DNSRecordSet name is keyed by z32 endpoint id (one record per
+	// endpoint, not per Connector UID) — see claim-based ownership design.
+	wantName := "iroh-" + testEndpointZ32
 	if drs.Name != wantName {
 		t.Errorf("Name = %q, want %q", drs.Name, wantName)
 	}
@@ -165,11 +170,14 @@ func TestBuildDesiredRecordSet_RecordContents(t *testing.T) {
 		}
 	}
 
+	// Labels track the claim and the owner Connector identity. The watch
+	// on downstream DNSRecordSet uses these to enqueue the owner on changes.
 	for k, v := range map[string]string{
-		"app.kubernetes.io/managed-by":                 "network-services-operator",
-		"networking.datumapis.com/connector-uid":       string(conn.UID),
-		"networking.datumapis.com/connector-namespace": conn.Namespace,
-		"networking.datumapis.com/connector-name":      conn.Name,
+		"app.kubernetes.io/managed-by": irohDNSManagedByLabelValue,
+		irohDNSClaimedByUIDLabel:       testConnectorUID,
+		irohDNSConnectorClusterLabel:   testClusterName,
+		irohDNSConnectorNamespaceLabel: conn.Namespace,
+		irohDNSConnectorNameLabel:      conn.Name,
 	} {
 		if drs.Labels[k] != v {
 			t.Errorf("label %q = %q, want %q", k, drs.Labels[k], v)
@@ -184,7 +192,7 @@ func TestBuildDesiredRecordSet_RelayOnlyOmitsAddrEntry(t *testing.T) {
 		HomeRelay: "https://relay.example.com",
 	})
 
-	drs, _, err := r.buildDesiredRecordSet(conn)
+	drs, _, err := r.buildDesiredRecordSet(testClusterName, conn)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -204,7 +212,7 @@ func TestBuildDesiredRecordSet_EmptySuffixPutsRecordsUnderZoneRoot(t *testing.T)
 		HomeRelay: "https://relay.example.com",
 	})
 
-	drs, _, err := r.buildDesiredRecordSet(conn)
+	drs, _, err := r.buildDesiredRecordSet(testClusterName, conn)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -220,8 +228,49 @@ func TestBuildDesiredRecordSet_InvalidEndpointId(t *testing.T) {
 		Id:        "not-hex",
 		HomeRelay: "https://relay.example.com",
 	})
-	if _, _, err := r.buildDesiredRecordSet(conn); err == nil {
+	if _, _, err := r.buildDesiredRecordSet(testClusterName, conn); err == nil {
 		t.Fatal("expected error for non-hex endpoint id, got nil")
+	}
+}
+
+// TestBuildDesiredRecordSet_TwoConnectorsSameKeyProduceSameName verifies the
+// load-bearing claim-based property: two distinct Connectors that share an
+// iroh keypair compute the same DNSRecordSet name. This is what lets the
+// claim-based reconciler dedupe them.
+func TestBuildDesiredRecordSet_TwoConnectorsSameKeyProduceSameName(t *testing.T) {
+	r := newReconciler()
+	pk := &networkingv1alpha1.ConnectorConnectionDetailsPublicKey{
+		Id:        testEndpointHex,
+		HomeRelay: "https://relay.example.com",
+	}
+
+	a := newConnector(pk)
+	a.UID = types.UID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	a.Name = "edge-a"
+
+	b := newConnector(pk)
+	b.UID = types.UID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+	b.Name = "edge-b"
+
+	drsA, _, err := r.buildDesiredRecordSet("cluster-a", a)
+	if err != nil {
+		t.Fatalf("buildDesiredRecordSet(a): %v", err)
+	}
+	drsB, _, err := r.buildDesiredRecordSet("cluster-b", b)
+	if err != nil {
+		t.Fatalf("buildDesiredRecordSet(b): %v", err)
+	}
+
+	if drsA.Name != drsB.Name {
+		t.Errorf("expected matching DNSRecordSet name, got A=%q B=%q", drsA.Name, drsB.Name)
+	}
+	// Each Connector still stamps its own claim and identity labels — the
+	// reconciler uses these to detect "is this DNSRecordSet mine".
+	if drsA.Labels[irohDNSClaimedByUIDLabel] == drsB.Labels[irohDNSClaimedByUIDLabel] {
+		t.Errorf("expected distinct claim labels, got both = %q", drsA.Labels[irohDNSClaimedByUIDLabel])
+	}
+	if drsA.Labels[irohDNSConnectorClusterLabel] == drsB.Labels[irohDNSConnectorClusterLabel] {
+		t.Errorf("expected distinct cluster labels, got both = %q", drsA.Labels[irohDNSConnectorClusterLabel])
 	}
 }
 

@@ -421,15 +421,18 @@ func main() {
 		os.Exit(1)
 	}
 
+	var irohDownstream cluster.Cluster
 	if serverConfig.Connector.Iroh.DNSEnabled {
 		irohRestCfg, err := serverConfig.Connector.Iroh.DownstreamRestConfig()
 		if err != nil {
 			setupLog.Error(err, "unable to load iroh dns downstream kubeconfig")
 			os.Exit(1)
 		}
-		irohDownstream, err := client.New(irohRestCfg, client.Options{Scheme: scheme})
+		irohDownstream, err = cluster.New(irohRestCfg, func(o *cluster.Options) {
+			o.Scheme = scheme
+		})
 		if err != nil {
-			setupLog.Error(err, "unable to build iroh dns downstream client")
+			setupLog.Error(err, "unable to build iroh dns downstream cluster")
 			os.Exit(1)
 		}
 		if err := (&controller.IrohDNSReconciler{
@@ -540,6 +543,12 @@ func main() {
 	g.Go(func() error {
 		return ignoreCanceled(downstreamCluster.Start(ctx))
 	})
+
+	if irohDownstream != nil {
+		g.Go(func() error {
+			return ignoreCanceled(irohDownstream.Start(ctx))
+		})
+	}
 
 	setupLog.Info("starting multicluster manager")
 	g.Go(func() error {

@@ -183,7 +183,14 @@ func (r *IrohDNSReconciler) buildDesiredRecordSet(connector *networkingv1alpha1.
 	}
 
 	cfg := r.Config.Connector.Iroh
+	// RecordEntry.Name is relative to the DNSZone — dns-operator
+	// qualifies it with the zone's spec.domainName at apply time. So
+	// we never include the zone origin here; we only express the labels
+	// that should sit between iroh's "_iroh" prefix and the zone root.
 	recordName := cfg.RecordPrefix + "." + z32
+	if cfg.RecordSuffix != "" {
+		recordName = recordName + "." + cfg.RecordSuffix
+	}
 	ttl := int64(cfg.TTLSeconds)
 	key := r.dnsRecordSetName(connector)
 

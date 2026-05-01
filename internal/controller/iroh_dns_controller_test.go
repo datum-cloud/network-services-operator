@@ -28,7 +28,7 @@ func newReconciler() *IrohDNSReconciler {
 				Iroh: config.IrohConnectorConfig{
 					DNSEnabled:   true,
 					RecordPrefix: "_iroh",
-					BaseDomain:   "datumconnect.net",
+					RecordSuffix: "connectors",
 					TTLSeconds:   30,
 					DNSZoneRef: config.IrohDNSZoneRef{
 						Namespace: "datum-dns",
@@ -144,7 +144,7 @@ func TestBuildDesiredRecordSet_RecordContents(t *testing.T) {
 		t.Errorf("DNSZoneRef.Name = %q, want %q", drs.Spec.DNSZoneRef.Name, "datumconnect-net")
 	}
 
-	wantRecordName := "_iroh." + testEndpointZ32
+	wantRecordName := "_iroh." + testEndpointZ32 + ".connectors"
 	if len(drs.Spec.Records) != 2 {
 		t.Fatalf("Records count = %d, want 2 (relay + addr)", len(drs.Spec.Records))
 	}
@@ -193,6 +193,24 @@ func TestBuildDesiredRecordSet_RelayOnlyOmitsAddrEntry(t *testing.T) {
 	}
 	if drs.Spec.Records[0].TXT.Content != "relay=https://relay.example.com" {
 		t.Errorf("Content = %q", drs.Spec.Records[0].TXT.Content)
+	}
+}
+
+func TestBuildDesiredRecordSet_EmptySuffixPutsRecordsUnderZoneRoot(t *testing.T) {
+	r := newReconciler()
+	r.Config.Connector.Iroh.RecordSuffix = ""
+	conn := newConnector(&networkingv1alpha1.ConnectorConnectionDetailsPublicKey{
+		Id:        testEndpointHex,
+		HomeRelay: "https://relay.example.com",
+	})
+
+	drs, _, err := r.buildDesiredRecordSet(conn)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := "_iroh." + testEndpointZ32
+	if drs.Spec.Records[0].Name != want {
+		t.Errorf("record name = %q, want %q (no trailing suffix)", drs.Spec.Records[0].Name, want)
 	}
 }
 

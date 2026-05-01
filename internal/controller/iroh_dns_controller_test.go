@@ -20,8 +20,11 @@ const (
 	testEndpointHex = "f120d52e42bfcee750508baf28900acac85ad3f397ab4bb653b32be505c32d39"
 	testEndpointZ32 = "6ropkm1nz98qqwnotqz1tryk3mrfiw9u16iwzp1usci6kbqdfwho"
 
-	testClusterName  = "test-cluster"
-	testConnectorUID = "00000000-0000-0000-0000-000000000abc"
+	// multicluster-runtime cluster names start with "/" — set the test
+	// vector that way so the label encoding is exercised.
+	testClusterName        = "/test-project-staging"
+	testClusterNameEncoded = "cluster-_test-project-staging"
+	testConnectorUID       = "00000000-0000-0000-0000-000000000abc"
 )
 
 func newReconciler() *IrohDNSReconciler {
@@ -175,13 +178,31 @@ func TestBuildDesiredRecordSet_RecordContents(t *testing.T) {
 	for k, v := range map[string]string{
 		"app.kubernetes.io/managed-by": irohDNSManagedByLabelValue,
 		irohDNSClaimedByUIDLabel:       testConnectorUID,
-		irohDNSConnectorClusterLabel:   testClusterName,
+		irohDNSConnectorClusterLabel:   testClusterNameEncoded,
 		irohDNSConnectorNamespaceLabel: conn.Namespace,
 		irohDNSConnectorNameLabel:      conn.Name,
 	} {
 		if drs.Labels[k] != v {
 			t.Errorf("label %q = %q, want %q", k, drs.Labels[k], v)
 		}
+	}
+}
+
+func TestEncodeDecodeIrohClusterLabel(t *testing.T) {
+	tests := []string{
+		"",
+		"/test-project-staging",
+		"/zachs-project-z5pegw",
+		"plain-no-slashes",
+		"/with/multiple/slashes",
+	}
+	for _, want := range tests {
+		t.Run(want, func(t *testing.T) {
+			got := decodeIrohClusterLabel(encodeIrohClusterLabel(want))
+			if got != want {
+				t.Errorf("round-trip mismatch: encode(%q) -> decode = %q", want, got)
+			}
+		})
 	}
 }
 

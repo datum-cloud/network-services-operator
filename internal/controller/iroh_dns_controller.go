@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
@@ -23,6 +24,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
+	mchandler "sigs.k8s.io/multicluster-runtime/pkg/handler"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 	mcsource "sigs.k8s.io/multicluster-runtime/pkg/source"
@@ -167,7 +169,8 @@ func (r *IrohDNSReconciler) applyClaim(ctx context.Context, cl cluster.Cluster, 
 
 	currentClaim := existing.Labels[irohDNSClaimedByUIDLabel]
 	if currentClaim != string(connector.UID) {
-		ownerRef := existing.Labels[irohDNSConnectorClusterLabel] + "/" + existing.Labels[irohDNSConnectorNamespaceLabel] + "/" + existing.Labels[irohDNSConnectorNameLabel]
+		ownerCluster := decodeIrohClusterLabel(existing.Labels[irohDNSConnectorClusterLabel])
+		ownerRef := ownerCluster + "/" + existing.Labels[irohDNSConnectorNamespaceLabel] + "/" + existing.Labels[irohDNSConnectorNameLabel]
 		return r.setPublishedCondition(ctx, cl, connector, metav1.ConditionFalse, connectorReasonIrohDeferredToOwner,
 			fmt.Sprintf("iroh DNS record is owned by Connector %s (uid %s).", ownerRef, currentClaim))
 	}
@@ -248,6 +251,18 @@ func irohDNSRecordSetName(z32 string) string {
 	return "iroh-" + z32
 }
 
+// encodeIrohClusterLabel mirrors the inline pattern in
+// downstreamclient/mappednamespace.go: multicluster-runtime cluster
+// names start with "/" (invalid as a k8s label value), so we map "/"
+// to "_" and prefix "cluster-" to produce a label-safe form.
+func encodeIrohClusterLabel(clusterName string) string {
+	return "cluster-" + strings.ReplaceAll(clusterName, "/", "_")
+}
+
+func decodeIrohClusterLabel(label string) string {
+	return strings.TrimPrefix(strings.ReplaceAll(label, "_", "/"), "cluster-")
+}
+
 func connectorEndpointZ32(connector *networkingv1alpha1.Connector) (string, error) {
 	if connector.Status.ConnectionDetails == nil || connector.Status.ConnectionDetails.PublicKey == nil {
 		return "", nil
@@ -313,7 +328,7 @@ func (r *IrohDNSReconciler) buildDesiredRecordSet(clusterName string, connector 
 			Labels: map[string]string{
 				"app.kubernetes.io/managed-by": irohDNSManagedByLabelValue,
 				irohDNSClaimedByUIDLabel:       string(connector.UID),
-				irohDNSConnectorClusterLabel:   clusterName,
+				irohDNSConnectorClusterLabel:   encodeIrohClusterLabel(clusterName),
 				irohDNSConnectorNamespaceLabel: connector.Namespace,
 				irohDNSConnectorNameLabel:      connector.Name,
 			},
@@ -369,17 +384,23 @@ func (r *IrohDNSReconciler) setPublishedCondition(ctx context.Context, cl cluste
 // SetupWithManager wires the reconciler. Watches:
 //
 //   - Connector (For) and ConnectorClass (Watches) — the primary multicluster
-//     event sources. Connector activity (status updates from agent lease
-//     renewals, generation bumps) drives reconciles often enough that sibling
-//     handover after an owner releases happens within seconds.
+//     event sources.
 //
-//   - DNSRecordSet on the downstream cluster — fires on changes to records we
-//     manage. The mapper enqueues the *current owner* Connector identified by
-//     the labels on the DNSRecordSet; this catches drift (e.g. external
-//     deletion) for the owner. Sibling handover does not flow through this
-//     watch — multicluster-runtime's manager exposes GetCluster(name) but no
+//   - Lease (Watches with EnqueueRequestForOwner) — agent heartbeats renew the
+//     Connector's Lease on every interval; that update fires our reconcile
+//     even when the Connector itself hasn't changed. This is the load-bearing
+//     trigger for sibling handover: when an owner Connector is deleted and
+//     its DNSRecordSet is GC'd, every sibling's next lease renewal drives its
+//     reconcile, and one of them wins the Create race for the now-empty z32.
+//     Bound on handover ≈ leaseDurationSeconds.
+//
+//   - DNSRecordSet on the downstream cluster — drift detection. Mapper
+//     enqueues the *current owner* Connector identified by the labels on the
+//     DNSRecordSet, catching cases like a manual external delete of the
+//     record. Sibling handover does NOT flow through this watch:
+//     multicluster-runtime's manager exposes GetCluster(name) but no
 //     enumeration, so a downstream event can't fan out to siblings across
-//     project clusters. The Connector watch is what catches them.
+//     project clusters. That's the Lease watch's job.
 func (r *IrohDNSReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	r.mgr = mgr
 
@@ -387,12 +408,12 @@ func (r *IrohDNSReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 		&dnsv1alpha1.DNSRecordSet{},
 		func(_ string, _ cluster.Cluster) handler.TypedEventHandler[*dnsv1alpha1.DNSRecordSet, mcreconcile.Request] {
 			return handler.TypedEnqueueRequestsFromMapFunc(func(_ context.Context, drs *dnsv1alpha1.DNSRecordSet) []mcreconcile.Request {
-				clusterName := drs.Labels[irohDNSConnectorClusterLabel]
 				name := drs.Labels[irohDNSConnectorNameLabel]
 				ns := drs.Labels[irohDNSConnectorNamespaceLabel]
 				if name == "" || ns == "" {
 					return nil
 				}
+				clusterName := decodeIrohClusterLabel(drs.Labels[irohDNSConnectorClusterLabel])
 				return []mcreconcile.Request{{
 					ClusterName: clusterName,
 					Request:     ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: name}},
@@ -432,6 +453,10 @@ func (r *IrohDNSReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 					return requests
 				})
 			},
+		).
+		Watches(
+			&coordinationv1.Lease{},
+			mchandler.EnqueueRequestForOwner(&networkingv1alpha1.Connector{}, handler.OnlyControllerOwner()),
 		).
 		WatchesRawSource(downstreamClusterSource).
 		Named("iroh-dns").

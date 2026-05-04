@@ -28,7 +28,7 @@ const (
 // TrafficProtectionPolicySpec defines the desired state of TrafficProtectionPolicy.
 //
 // +kubebuilder:validation:XValidation:rule="has(self.targetRefs) ? self.targetRefs.all(ref, ref.group == 'gateway.networking.k8s.io') : true ", message="this policy can only have a targetRefs[*].group of gateway.networking.k8s.io"
-// +kubebuilder:validation:XValidation:rule="has(self.targetRefs) ? self.targetRefs.all(ref, ref.kind in ['Gateway', 'HTTPRoute']) : true ", message="this policy can only have a targetRefs[*].kind of Gateway/HTTPRoute"
+// +kubebuilder:validation:XValidation:rule="has(self.targetRefs) ? self.targetRefs.all(ref, ref.kind == 'Gateway') : true", message="this policy can only have a targetRefs[*].kind of Gateway"
 type TrafficProtectionPolicySpec struct {
 
 	// TargetRefs are the names of the Gateway resources this policy

@@ -1463,6 +1463,273 @@ func newTestScheme() *runtime.Scheme {
 	return testScheme
 }
 
+func TestGetDesiredExtendedSecurityPolicies(t *testing.T) {
+	operatorConfig := config.NetworkServicesOperator{
+		Gateway: config.GatewayConfig{
+			TargetDomain: "example.com",
+			ListenerTLSOptions: map[gatewayv1.AnnotationKey]gatewayv1.AnnotationValue{
+				gatewayv1.AnnotationKey("gateway.networking.datumapis.com/certificate-issuer"): gatewayv1.AnnotationValue("test"),
+			},
+			Coraza: config.CorazaConfig{
+				RouteBaseDirectives: []string{
+					"Include @crs-setup-conf", "Include @recommended-conf",
+				},
+			},
+		},
+	}
+
+	reconciler := &TrafficProtectionPolicyReconciler{Config: operatorConfig}
+
+	gateway1 := newGateway(operatorConfig, "default", "gateway-1")
+	gateway2 := newGateway(operatorConfig, "default", "gateway-2")
+
+	downstreamNS := "test-downstream-ns"
+
+	t.Run("basic gateway attachment produces one ESP", func(t *testing.T) {
+		policy := &policyContext{
+			TrafficProtectionPolicy: ptr.To(newTrafficProtectionPolicy("default", "tpp-1")),
+		}
+		attachments := []policyAttachment{
+			{
+				Policy:           policy,
+				Gateway:          gateway1,
+				CorazaDirectives: []string{"SecRuleEngine DetectionOnly"},
+			},
+		}
+
+		esps := reconciler.getDesiredExtendedSecurityPolicies(downstreamNS, attachments)
+
+		if assert.Len(t, esps, 1) {
+			esp := esps[0]
+			assert.Equal(t, tppEnvoyPatchPolicyPrefix+"gateway-1", esp.GetName())
+			assert.Equal(t, downstreamNS, esp.GetNamespace())
+
+			spec, ok := esp.Object["spec"].(map[string]any)
+			if assert.True(t, ok, "spec must be a map") {
+				targetRefs, ok := spec["targetRefs"].([]any)
+				if assert.True(t, ok, "targetRefs must be a slice") && assert.Len(t, targetRefs, 1) {
+					ref, ok := targetRefs[0].(map[string]any)
+					if assert.True(t, ok) {
+						assert.Equal(t, "gateway-1", ref["name"])
+						assert.Equal(t, string(KindGateway), ref["kind"])
+					}
+				}
+				waf, ok := spec["waf"].(map[string]any)
+				if assert.True(t, ok) {
+					assert.Equal(t, "SecRuleEngine DetectionOnly", waf["directives"])
+				}
+			}
+		}
+	})
+
+	t.Run("multiple gateways produce multiple ESPs", func(t *testing.T) {
+		policy := &policyContext{
+			TrafficProtectionPolicy: ptr.To(newTrafficProtectionPolicy("default", "tpp-1")),
+		}
+		attachments := []policyAttachment{
+			{
+				Policy:           policy,
+				Gateway:          gateway1,
+				CorazaDirectives: []string{"SecRuleEngine On"},
+			},
+			{
+				Policy:           policy,
+				Gateway:          gateway2,
+				CorazaDirectives: []string{"SecRuleEngine DetectionOnly"},
+			},
+		}
+
+		esps := reconciler.getDesiredExtendedSecurityPolicies(downstreamNS, attachments)
+		assert.Len(t, esps, 2)
+	})
+
+	t.Run("mode Enforce yields SecRuleEngine On in directives", func(t *testing.T) {
+		policy := &policyContext{
+			TrafficProtectionPolicy: ptr.To(newTrafficProtectionPolicy("default", "tpp-1", func(tpp *networkingv1alpha.TrafficProtectionPolicy) {
+				tpp.Spec.Mode = networkingv1alpha.TrafficProtectionPolicyEnforce
+			})),
+		}
+		directives := reconciler.getCorazaDirectivesForTrafficProtectionPolicy(policy)
+		attachments := []policyAttachment{
+			{Policy: policy, Gateway: gateway1, CorazaDirectives: directives},
+		}
+		esps := reconciler.getDesiredExtendedSecurityPolicies(downstreamNS, attachments)
+
+		if assert.Len(t, esps, 1) {
+			spec := esps[0].Object["spec"].(map[string]any)
+			waf := spec["waf"].(map[string]any)
+			assert.Contains(t, waf["directives"], "SecRuleEngine On")
+		}
+	})
+
+	t.Run("mode Observe yields SecRuleEngine DetectionOnly in directives", func(t *testing.T) {
+		policy := &policyContext{
+			TrafficProtectionPolicy: ptr.To(newTrafficProtectionPolicy("default", "tpp-1")),
+		}
+		directives := reconciler.getCorazaDirectivesForTrafficProtectionPolicy(policy)
+		attachments := []policyAttachment{
+			{Policy: policy, Gateway: gateway1, CorazaDirectives: directives},
+		}
+		esps := reconciler.getDesiredExtendedSecurityPolicies(downstreamNS, attachments)
+
+		if assert.Len(t, esps, 1) {
+			spec := esps[0].Object["spec"].(map[string]any)
+			waf := spec["waf"].(map[string]any)
+			assert.Contains(t, waf["directives"], "SecRuleEngine DetectionOnly")
+		}
+	})
+
+	t.Run("mode Disabled yields SecRuleEngine Off in directives", func(t *testing.T) {
+		policy := &policyContext{
+			TrafficProtectionPolicy: ptr.To(newTrafficProtectionPolicy("default", "tpp-1", func(tpp *networkingv1alpha.TrafficProtectionPolicy) {
+				tpp.Spec.Mode = networkingv1alpha.TrafficProtectionPolicyDisabled
+			})),
+		}
+		directives := reconciler.getCorazaDirectivesForTrafficProtectionPolicy(policy)
+		attachments := []policyAttachment{
+			{Policy: policy, Gateway: gateway1, CorazaDirectives: directives},
+		}
+		esps := reconciler.getDesiredExtendedSecurityPolicies(downstreamNS, attachments)
+
+		if assert.Len(t, esps, 1) {
+			spec := esps[0].Object["spec"].(map[string]any)
+			waf := spec["waf"].(map[string]any)
+			assert.Contains(t, waf["directives"], "SecRuleEngine Off")
+		}
+	})
+
+	t.Run("paranoia levels and score thresholds appear in directives", func(t *testing.T) {
+		policy := &policyContext{
+			TrafficProtectionPolicy: ptr.To(newTrafficProtectionPolicy("default", "tpp-1", func(tpp *networkingv1alpha.TrafficProtectionPolicy) {
+				owaspCRS := &tpp.Spec.RuleSets[0].OWASPCoreRuleSet
+				owaspCRS.ParanoiaLevels.Blocking = 3
+				owaspCRS.ParanoiaLevels.Detection = 4
+				owaspCRS.ScoreThresholds.Inbound = 100
+				owaspCRS.ScoreThresholds.Outbound = 50
+			})),
+		}
+		directives := reconciler.getCorazaDirectivesForTrafficProtectionPolicy(policy)
+		attachments := []policyAttachment{
+			{Policy: policy, Gateway: gateway1, CorazaDirectives: directives},
+		}
+		esps := reconciler.getDesiredExtendedSecurityPolicies(downstreamNS, attachments)
+
+		if assert.Len(t, esps, 1) {
+			spec := esps[0].Object["spec"].(map[string]any)
+			waf := spec["waf"].(map[string]any)
+			directivesStr := waf["directives"].(string)
+			assert.Contains(t, directivesStr, "blocking_paranoia_level=3")
+			assert.Contains(t, directivesStr, "detection_paranoia_level=4")
+			assert.Contains(t, directivesStr, "inbound_anomaly_score_threshold=100")
+			assert.Contains(t, directivesStr, "outbound_anomaly_score_threshold=50")
+		}
+	})
+
+	t.Run("rule exclusions appear in directives", func(t *testing.T) {
+		policy := &policyContext{
+			TrafficProtectionPolicy: ptr.To(newTrafficProtectionPolicy("default", "tpp-1", func(tpp *networkingv1alpha.TrafficProtectionPolicy) {
+				owaspCRS := &tpp.Spec.RuleSets[0].OWASPCoreRuleSet
+				owaspCRS.RuleExclusions = &networkingv1alpha.OWASPRuleExclusions{
+					Tags: []networkingv1alpha.OWASPTag{"test-tag"},
+					IDs:  []int{12345},
+				}
+			})),
+		}
+		directives := reconciler.getCorazaDirectivesForTrafficProtectionPolicy(policy)
+		attachments := []policyAttachment{
+			{Policy: policy, Gateway: gateway1, CorazaDirectives: directives},
+		}
+		esps := reconciler.getDesiredExtendedSecurityPolicies(downstreamNS, attachments)
+
+		if assert.Len(t, esps, 1) {
+			spec := esps[0].Object["spec"].(map[string]any)
+			waf := spec["waf"].(map[string]any)
+			directivesStr := waf["directives"].(string)
+			assert.Contains(t, directivesStr, "SecRuleRemoveByTag")
+			assert.Contains(t, directivesStr, "test-tag")
+			assert.Contains(t, directivesStr, "SecRuleRemoveById 12345")
+		}
+	})
+
+	t.Run("route-level attachments are skipped", func(t *testing.T) {
+		policy := &policyContext{
+			TrafficProtectionPolicy: ptr.To(newTrafficProtectionPolicy("default", "tpp-1")),
+		}
+		attachments := []policyAttachment{
+			{
+				Policy:           policy,
+				Gateway:          gateway1,
+				Route:            newHTTPRoute("default", "route-1"),
+				CorazaDirectives: []string{"SecRuleEngine DetectionOnly"},
+			},
+		}
+
+		esps := reconciler.getDesiredExtendedSecurityPolicies(downstreamNS, attachments)
+		assert.Len(t, esps, 0, "route-level attachments must be skipped in TEG mode")
+	})
+
+	t.Run("ESP name is tpp-<gateway-name>", func(t *testing.T) {
+		policy := &policyContext{
+			TrafficProtectionPolicy: ptr.To(newTrafficProtectionPolicy("default", "tpp-1")),
+		}
+		attachments := []policyAttachment{
+			{
+				Policy:           policy,
+				Gateway:          gateway1,
+				CorazaDirectives: []string{"SecRuleEngine On"},
+			},
+		}
+
+		esps := reconciler.getDesiredExtendedSecurityPolicies(downstreamNS, attachments)
+		if assert.Len(t, esps, 1) {
+			assert.Equal(t, "tpp-gateway-1", esps[0].GetName())
+		}
+	})
+
+	t.Run("ESP namespace is the downstream namespace", func(t *testing.T) {
+		policy := &policyContext{
+			TrafficProtectionPolicy: ptr.To(newTrafficProtectionPolicy("default", "tpp-1")),
+		}
+		attachments := []policyAttachment{
+			{
+				Policy:           policy,
+				Gateway:          gateway1,
+				CorazaDirectives: []string{"SecRuleEngine On"},
+			},
+		}
+
+		esps := reconciler.getDesiredExtendedSecurityPolicies("my-downstream-ns", attachments)
+		if assert.Len(t, esps, 1) {
+			assert.Equal(t, "my-downstream-ns", esps[0].GetNamespace())
+		}
+	})
+
+	t.Run("ESP targetRef points to the gateway by name", func(t *testing.T) {
+		policy := &policyContext{
+			TrafficProtectionPolicy: ptr.To(newTrafficProtectionPolicy("default", "tpp-1")),
+		}
+		attachments := []policyAttachment{
+			{
+				Policy:           policy,
+				Gateway:          gateway1,
+				CorazaDirectives: []string{"SecRuleEngine On"},
+			},
+		}
+
+		esps := reconciler.getDesiredExtendedSecurityPolicies(downstreamNS, attachments)
+		if assert.Len(t, esps, 1) {
+			spec, ok := esps[0].Object["spec"].(map[string]any)
+			if assert.True(t, ok) {
+				targetRefs, ok := spec["targetRefs"].([]any)
+				if assert.True(t, ok) && assert.Len(t, targetRefs, 1) {
+					ref := targetRefs[0].(map[string]any)
+					assert.Equal(t, "gateway-1", ref["name"])
+				}
+			}
+		}
+	})
+}
+
 // TestTPPReconcileStaleCleanupPreservesConnectorEPPs is a regression test for the
 // bug where the TPP stale-cleanup loop deleted connector-* EnvoyPatchPolicies that
 // belong to the HTTPProxy controller. The stale cleanup must only delete EPPs whose
@@ -1541,4 +1808,167 @@ func TestTPPReconcileStaleCleanupPreservesConnectorEPPs(t *testing.T) {
 	stale := &envoygatewayv1alpha1.EnvoyPatchPolicy{}
 	err = fakeDownstreamClient.Get(ctx, client.ObjectKey{Name: "tpp-stale-gw", Namespace: downstreamNS}, stale)
 	assert.True(t, apierrors.IsNotFound(err), "stale tpp EPP must be deleted by stale cleanup")
+}
+
+// TestTPPReconcileStaleCleanupTEGMode verifies that in TEG mode the stale-cleanup
+// loop deletes ExtendedSecurityPolicy resources that carry tppManagedLabel but are
+// no longer desired, while leaving ESPs that do not carry the label untouched.
+func TestTPPReconcileStaleCleanupTEGMode(t *testing.T) {
+	// Upstream scheme: core (Namespace) + Gateway API + networking CRDs
+	upstreamScheme := runtime.NewScheme()
+	assert.NoError(t, scheme.AddToScheme(upstreamScheme))
+	assert.NoError(t, gatewayv1.Install(upstreamScheme))
+	assert.NoError(t, networkingv1alpha.AddToScheme(upstreamScheme))
+
+	const (
+		upstreamNS   = "default"
+		nsUID        = "test-ns-uid-teg"
+		downstreamNS = "ns-" + nsUID
+	)
+
+	upstreamNamespace := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: upstreamNS,
+			UID:  nsUID,
+		},
+	}
+	fakeUpstreamClient := fake.NewClientBuilder().
+		WithScheme(upstreamScheme).
+		WithObjects(upstreamNamespace).
+		Build()
+
+	// Pre-populate downstream with two ESPs:
+	//   tpp-stale-gw      – managed by this controller (carries tppManagedLabel, must be deleted)
+	//   unmanaged-esp     – not managed by this controller (no label, must survive)
+	staleESP := &unstructured.Unstructured{}
+	staleESP.SetGroupVersionKind(tegESPGVK)
+	staleESP.SetName("tpp-stale-gw")
+	staleESP.SetNamespace(downstreamNS)
+	staleESP.SetLabels(map[string]string{tppManagedLabel: tppManagedLabelValue})
+
+	unmanagedESP := &unstructured.Unstructured{}
+	unmanagedESP.SetGroupVersionKind(tegESPGVK)
+	unmanagedESP.SetName("unmanaged-esp")
+	unmanagedESP.SetNamespace(downstreamNS)
+
+	// The downstream client needs envoygateway scheme because TEG mode also runs
+	// the EPP migration cleanup which lists EnvoyPatchPolicies.
+	downstreamScheme := runtime.NewScheme()
+	assert.NoError(t, envoygatewayv1alpha1.AddToScheme(downstreamScheme))
+
+	fakeDownstreamClient := fake.NewClientBuilder().
+		WithScheme(downstreamScheme).
+		WithObjects(staleESP, unmanagedESP).
+		Build()
+
+	reconciler := &TrafficProtectionPolicyReconciler{
+		mgr:               &fakeMockManager{cl: fakeUpstreamClient},
+		DownstreamCluster: &fakeCluster{cl: fakeDownstreamClient},
+		Config: config.NetworkServicesOperator{
+			Gateway: config.GatewayConfig{
+				Coraza: config.CorazaConfig{
+					Backend: config.WAFBackendTEGESP,
+				},
+			},
+		},
+	}
+
+	ctx := context.Background()
+	_, err := reconciler.Reconcile(ctx, NamespaceReconcileRequest{
+		Namespace:   upstreamNS,
+		ClusterName: "test-cluster",
+	})
+	assert.NoError(t, err)
+
+	// tpp-stale-gw must have been deleted.
+	gotStale := &unstructured.Unstructured{}
+	gotStale.SetGroupVersionKind(tegESPGVK)
+	err = fakeDownstreamClient.Get(ctx, client.ObjectKey{Name: "tpp-stale-gw", Namespace: downstreamNS}, gotStale)
+	assert.True(t, apierrors.IsNotFound(err), "stale managed ESP must be deleted by stale cleanup")
+
+	// unmanaged-esp must survive — it has no tppManagedLabel.
+	gotUnmanaged := &unstructured.Unstructured{}
+	gotUnmanaged.SetGroupVersionKind(tegESPGVK)
+	assert.NoError(t,
+		fakeDownstreamClient.Get(ctx, client.ObjectKey{Name: "unmanaged-esp", Namespace: downstreamNS}, gotUnmanaged),
+		"unmanaged ESP must not be deleted",
+	)
+}
+
+// TestTPPReconcileEPPToESPMigration verifies that switching from coraza-epp to teg-esp
+// causes any existing tpp-* EnvoyPatchPolicies to be deleted, while non-tpp EPPs
+// (e.g. connector-*) are left untouched.
+func TestTPPReconcileEPPToESPMigration(t *testing.T) {
+	upstreamScheme := runtime.NewScheme()
+	assert.NoError(t, scheme.AddToScheme(upstreamScheme))
+	assert.NoError(t, gatewayv1.Install(upstreamScheme))
+	assert.NoError(t, networkingv1alpha.AddToScheme(upstreamScheme))
+
+	downstreamScheme := runtime.NewScheme()
+	assert.NoError(t, envoygatewayv1alpha1.AddToScheme(downstreamScheme))
+
+	const (
+		upstreamNS   = "default"
+		nsUID        = "test-ns-uid-migration"
+		downstreamNS = "ns-" + nsUID
+	)
+
+	upstreamNamespace := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: upstreamNS,
+			UID:  nsUID,
+		},
+	}
+	fakeUpstreamClient := fake.NewClientBuilder().
+		WithScheme(upstreamScheme).
+		WithObjects(upstreamNamespace).
+		Build()
+
+	// Legacy tpp-* EPP created by the coraza-epp backend.
+	legacyEPP := &envoygatewayv1alpha1.EnvoyPatchPolicy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "tpp-gateway-1",
+			Namespace: downstreamNS,
+			Labels:    map[string]string{tppManagedLabel: tppManagedLabelValue},
+		},
+	}
+	// connector-* EPP that must NOT be deleted.
+	connectorEPP := &envoygatewayv1alpha1.EnvoyPatchPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "connector-tunnel-bar", Namespace: downstreamNS},
+	}
+	fakeDownstreamClient := fake.NewClientBuilder().
+		WithScheme(downstreamScheme).
+		WithObjects(legacyEPP, connectorEPP).
+		Build()
+
+	reconciler := &TrafficProtectionPolicyReconciler{
+		mgr:               &fakeMockManager{cl: fakeUpstreamClient},
+		DownstreamCluster: &fakeCluster{cl: fakeDownstreamClient},
+		Config: config.NetworkServicesOperator{
+			Gateway: config.GatewayConfig{
+				Coraza: config.CorazaConfig{
+					Backend: config.WAFBackendTEGESP,
+				},
+			},
+		},
+	}
+
+	ctx := context.Background()
+	_, err := reconciler.Reconcile(ctx, NamespaceReconcileRequest{
+		Namespace:   upstreamNS,
+		ClusterName: "test-cluster",
+	})
+	assert.NoError(t, err)
+
+	// Legacy tpp-* EPP must have been deleted during migration.
+	got := &envoygatewayv1alpha1.EnvoyPatchPolicy{}
+	err = fakeDownstreamClient.Get(ctx, client.ObjectKey{Name: "tpp-gateway-1", Namespace: downstreamNS}, got)
+	assert.True(t, apierrors.IsNotFound(err), "legacy tpp EPP must be deleted when migrating to teg-esp mode")
+
+	// connector-* EPP must survive.
+	connector := &envoygatewayv1alpha1.EnvoyPatchPolicy{}
+	assert.NoError(t,
+		fakeDownstreamClient.Get(ctx, client.ObjectKey{Name: "connector-tunnel-bar", Namespace: downstreamNS}, connector),
+		"connector EPP must not be deleted by teg-esp migration cleanup",
+	)
 }

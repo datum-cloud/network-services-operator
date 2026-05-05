@@ -11,7 +11,4 @@ resources:
   # gateway.networking.k8s.io kinds
   - gateway-policy.yaml
   - httproute-policy.yaml
-  - tcproute-policy.yaml
-  - udproute-policy.yaml
-  - tlsroute-policy.yaml
   - backendtlspolicy-policy.yaml

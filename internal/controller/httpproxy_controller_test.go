@@ -602,10 +602,22 @@ func TestHTTPProxyReconcile(t *testing.T) {
 			assert: func(t *testContext, cl client.Client, httpProxy *networkingv1alpha.HTTPProxy) {
 				ctx := context.Background()
 
+				// Connector is offline but still in the spec: EPP should exist with
+				// an offline direct_response CONNECT route rather than being deleted.
 				var patchList envoygatewayv1alpha1.EnvoyPatchPolicyList
 				err := t.downstreamClient.List(ctx, &patchList)
 				assert.NoError(t, err)
-				assert.Len(t, patchList.Items, 0)
+				if assert.Len(t, patchList.Items, 1) {
+					patches := patchList.Items[0].Spec.JSONPatches
+					if assert.Len(t, patches, 1) {
+						assert.Equal(t, "type.googleapis.com/envoy.config.route.v3.RouteConfiguration", string(patches[0].Type))
+						assert.Equal(t, "add", string(patches[0].Operation.Op))
+						raw := string(patches[0].Operation.Value.Raw)
+						assert.Contains(t, raw, "direct_response")
+						assert.Contains(t, raw, "connect_matcher")
+						assert.Contains(t, raw, "Tunnel not online")
+					}
+				}
 
 				httpRouteFilter := &envoygatewayv1alpha1.HTTPRouteFilter{}
 				filterKey := client.ObjectKey{Namespace: httpProxy.Namespace, Name: connectorOfflineFilterName(httpProxy)}
@@ -927,6 +939,8 @@ func TestHTTPProxyReconcile(t *testing.T) {
 					//nolint:staticcheck // SA1019: testing deprecated Hostnames field for backwards compatibility
 					assert.Equal(t, ptr.Deref(t.gateway.Spec.Listeners[0].Hostname, ""), httpProxy.Status.Hostnames[0])
 				}
+
+				assert.Equal(t, testConfig.Gateway.GatewayDNSAddress(t.gateway), httpProxy.Status.CanonicalHostname)
 			},
 		},
 		{
@@ -963,7 +977,6 @@ func TestHTTPProxyReconcile(t *testing.T) {
 				if assert.NotNil(t, hostnamesVerifiedCondition, "did not find HostnamesVerified condition on HTTPProxy") {
 					assert.Equal(t, networkingv1alpha.HTTPProxyReasonPending, hostnamesVerifiedCondition.Reason)
 				}
-
 			},
 		},
 		{
@@ -2081,14 +2094,50 @@ func TestBuildCertificateStatuses(t *testing.T) {
 		return cert
 	}
 
+	sharedTLSConfig := config.NetworkServicesOperator{
+		Gateway: config.GatewayConfig{
+			TargetDomain:                 "example.com",
+			DefaultListenerTLSSecretName: "wildcard-tls",
+		},
+	}
+
+	gatewayWithWildcardHostname := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{Name: "my-proxy", Namespace: "test-ns"},
+		Spec: gatewayv1.GatewaySpec{
+			Listeners: []gatewayv1.Listener{
+				{
+					Name:     "default-https",
+					Protocol: gatewayv1.HTTPSProtocolType,
+					Hostname: ptr.To(gatewayv1.Hostname("app.example.com")),
+				},
+			},
+		},
+	}
+
+	gatewayWithCustomHostname := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{Name: "my-proxy", Namespace: "test-ns"},
+		Spec: gatewayv1.GatewaySpec{
+			Listeners: []gatewayv1.Listener{
+				{
+					Name:     "https-hostname-0",
+					Protocol: gatewayv1.HTTPSProtocolType,
+					Hostname: ptr.To(gatewayv1.Hostname("custom.otherdomain.com")),
+				},
+			},
+		},
+	}
+
 	tests := []struct {
 		name              string
+		config            *config.NetworkServicesOperator
+		gateway           *gatewayv1.Gateway
 		downstreamCluster bool
 		downstreamObjects []client.Object
 		wantNil           bool
 		wantLen           int
 		wantReason        string
 		wantStatus        metav1.ConditionStatus
+		wantMessage       string
 	}{
 		{
 			name:              "DownstreamCluster nil returns nil",
@@ -2098,7 +2147,7 @@ func TestBuildCertificateStatuses(t *testing.T) {
 		{
 			name:              "certificate not found returns Pending",
 			downstreamCluster: true,
-			downstreamObjects: []client.Object{}, // no certificate
+			downstreamObjects: []client.Object{},
 			wantNil:           false,
 			wantLen:           1,
 			wantReason:        networkingv1alpha.CertificateReadyReasonPending,
@@ -2131,6 +2180,27 @@ func TestBuildCertificateStatuses(t *testing.T) {
 			wantReason:        networkingv1alpha.CertificateReadyReasonProvisioningFailed,
 			wantStatus:        metav1.ConditionFalse,
 		},
+		{
+			name:              "shared TLS marks certificate ready immediately",
+			config:            &sharedTLSConfig,
+			gateway:           gatewayWithWildcardHostname,
+			downstreamCluster: true,
+			downstreamObjects: []client.Object{},
+			wantLen:           1,
+			wantReason:        networkingv1alpha.CertificateReadyReasonCertificateIssued,
+			wantStatus:        metav1.ConditionTrue,
+			wantMessage:       "Using shared wildcard TLS certificate",
+		},
+		{
+			name:              "custom hostname still checks certificate even with shared TLS enabled",
+			config:            &sharedTLSConfig,
+			gateway:           gatewayWithCustomHostname,
+			downstreamCluster: true,
+			downstreamObjects: []client.Object{},
+			wantLen:           1,
+			wantReason:        networkingv1alpha.CertificateReadyReasonPending,
+			wantStatus:        metav1.ConditionFalse,
+		},
 	}
 
 	for _, tt := range tests {
@@ -2157,13 +2227,23 @@ func TestBuildCertificateStatuses(t *testing.T) {
 				downstreamCluster = &clusterWithClient{c: downstreamClient, scheme: scheme}
 			}
 
+			cfg := config.NetworkServicesOperator{}
+			if tt.config != nil {
+				cfg = *tt.config
+			}
+
+			gw := gatewayWithHTTPS
+			if tt.gateway != nil {
+				gw = tt.gateway
+			}
+
 			r := &HTTPProxyReconciler{
-				Config:            config.NetworkServicesOperator{},
+				Config:            cfg,
 				DownstreamCluster: downstreamCluster,
 			}
 
 			ctx := context.Background()
-			got := r.buildCertificateStatuses(ctx, upstreamClient, "local", gatewayWithHTTPS, httpProxy)
+			got := r.buildCertificateStatuses(ctx, upstreamClient, "local", gw, httpProxy)
 
 			if tt.wantNil {
 				assert.Nil(t, got)
@@ -2176,6 +2256,9 @@ func TestBuildCertificateStatuses(t *testing.T) {
 				require.NotNil(t, cond)
 				assert.Equal(t, tt.wantStatus, cond.Status)
 				assert.Equal(t, tt.wantReason, cond.Reason)
+				if tt.wantMessage != "" {
+					assert.Equal(t, tt.wantMessage, cond.Message)
+				}
 			}
 		})
 	}

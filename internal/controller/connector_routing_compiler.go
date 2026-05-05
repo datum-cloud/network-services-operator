@@ -356,6 +356,50 @@ func buildConnectorConnectRoutes(
 	return connectRoutes
 }
 
+// buildConnectorOfflineEnvoyPatches returns xDS patches for when a connector is
+// not ready. A direct_response CONNECT route is inserted at the front of each
+// HTTPS RouteConfiguration so that in-flight tunnel requests receive a clean
+// 503 instead of a connection error. Using patches instead of deleting the EPP
+// avoids the EG watchable-deduplication race that leaves EPP status null after
+// a delete+create cycle.
+func buildConnectorOfflineEnvoyPatches(
+	downstreamNamespace string,
+	gateway *gatewayv1.Gateway,
+	httpProxy *networkingv1alpha.HTTPProxy,
+) ([]envoygatewayv1alpha1.EnvoyJSONPatchConfig, error) {
+	route := map[string]any{
+		"name": fmt.Sprintf("connector-offline-%s", httpProxy.Name),
+		"match": map[string]any{
+			"connect_matcher": map[string]any{},
+		},
+		"direct_response": map[string]any{
+			"status": 503,
+			"body": map[string]any{
+				"inline_string": "Tunnel not online",
+			},
+		},
+	}
+
+	routeValue, err := json.Marshal(route)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal offline CONNECT route: %w", err)
+	}
+
+	patches := make([]envoygatewayv1alpha1.EnvoyJSONPatchConfig, 0)
+	for _, routeConfigName := range gatewayHTTPSRouteConfigNames(downstreamNamespace, gateway) {
+		patches = append(patches, envoygatewayv1alpha1.EnvoyJSONPatchConfig{
+			Type: "type.googleapis.com/envoy.config.route.v3.RouteConfiguration",
+			Name: routeConfigName,
+			Operation: envoygatewayv1alpha1.JSONPatchOperation{
+				Op:    envoygatewayv1alpha1.JSONPatchOperationType("add"),
+				Path:  ptr.To("/virtual_hosts/0/routes/0"),
+				Value: &apiextensionsv1.JSON{Raw: routeValue},
+			},
+		})
+	}
+	return patches, nil
+}
+
 func connectorRouteJSONPath(
 	downstreamNamespace string,
 	gateway *gatewayv1.Gateway,

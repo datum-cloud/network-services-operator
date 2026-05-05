@@ -146,17 +146,20 @@ func (c *mappedNamespaceResourceStrategy) SetControllerReference(ctx context.Con
 	downstreamClient := c.GetClient()
 
 	var anchorConfigMap corev1.ConfigMap
-	if err := downstreamClient.Get(ctx, client.ObjectKey{Namespace: controlled.GetNamespace(), Name: anchorName}, &anchorConfigMap); client.IgnoreNotFound(err) != nil {
-		return fmt.Errorf("failed listing configmaps: %w", err)
-	}
-
-	if anchorConfigMap.CreationTimestamp.IsZero() {
-		anchorConfigMap.Name = anchorName
-		anchorConfigMap.Labels = anchorLabels
-		anchorConfigMap.Namespace = controlled.GetNamespace()
+	err = downstreamClient.Get(ctx, client.ObjectKey{Namespace: controlled.GetNamespace(), Name: anchorName}, &anchorConfigMap)
+	if apierrors.IsNotFound(err) {
+		anchorConfigMap = corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      anchorName,
+				Namespace: controlled.GetNamespace(),
+				Labels:    anchorLabels,
+			},
+		}
 		if err := downstreamClient.Create(ctx, &anchorConfigMap); err != nil {
 			return fmt.Errorf("failed creating anchor configmap: %w", err)
 		}
+	} else if err != nil {
+		return fmt.Errorf("failed getting anchor configmap: %w", err)
 	}
 
 	if err := controllerutil.SetOwnerReference(&anchorConfigMap, controlled, downstreamClient.Scheme(), opts...); err != nil {

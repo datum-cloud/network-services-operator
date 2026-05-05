@@ -313,6 +313,45 @@ spec:
                     name: test-gateway
                 value: (@)
 
+        # The operator now derives the gateway's canonical hostname from a word
+        # dictionary + entropy seeded by the gateway UID (see internal/words),
+        # so the hostname can't be reconstructed inline by the test. Wait for
+        # the operator to publish the hostname on the upstream gateway's
+        # status.addresses, then capture it for use in the asserts below.
+        - assert:
+            timeout: 120s
+            cluster: nso-standard
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: Gateway
+              metadata:
+                name: test-gateway
+              status:
+                # JMESPath filter form: returns a list, length-matched against
+                # the expected; bare key + literal list would length-match the
+                # whole addresses slice and fail until the operator populates
+                # all 3 entries even though we already have what we need.
+                (addresses[?type == 'Hostname'] | [0]):
+                  type: Hostname
+
+        - script:
+            skipCommandOutput: true
+            skipLogOutput: true
+            cluster: nso-standard
+            content: |
+              kubectl -n $NAMESPACE get gateway test-gateway -o json
+            outputs:
+              - name: upstreamGatewayPostStatus
+                value: (json_parse($stdout))
+              # Operator emits the bare canonical hostname first, followed by
+              # v4. and v6. variants — see internal/controller/gateway_controller.go.
+              - name: primaryHostname
+                value: ($upstreamGatewayPostStatus.status.addresses[?type == 'Hostname'].value | [0])
+              - name: v4IPFamilyHostname
+                value: (join('.', ['v4', $primaryHostname]))
+              - name: v6IPFamilyHostname
+                value: (join('.', ['v6', $primaryHostname]))
+
         # Ensure the downstream gateway was created as expected
         - assert:
             timeout: 120s
@@ -348,14 +387,14 @@ spec:
                 - allowedRoutes:
                     namespaces:
                       from: Same
-                  hostname: (join('.', [replace_all($upstreamGateway.metadata.uid, '-', ''), 'prism.e2e.env.datum.net']))
+                  hostname: ($primaryHostname)
                   name: default-http
                   port: 80
                   protocol: HTTP
                 - allowedRoutes:
                     namespaces:
                       from: Same
-                  hostname: (join('.', [replace_all($upstreamGateway.metadata.uid, '-', ''), 'prism.e2e.env.datum.net']))
+                  hostname: ($primaryHostname)
                   name: default-https
                   port: 443
                   protocol: HTTPS
@@ -422,13 +461,6 @@ spec:
         - assert:
             # timeout: 5s
             cluster: nso-infra
-            bindings:
-              - name: primaryHostname
-                value: (join('.', [replace_all($upstreamGateway.metadata.uid, '-', ''), 'prism.e2e.env.datum.net']))
-              - name: v4IPFamilyHostname
-                value: (join('.', ['v4', $primaryHostname]))
-              - name: v6IPFamilyHostname
-                value: (join('.', ['v6', $primaryHostname]))
             resource:
               apiVersion: externaldns.k8s.io/v1alpha1
               kind: DNSEndpoint
@@ -466,11 +498,11 @@ spec:
               status:
                 addresses:
                   - type: Hostname
-                    value: (join('.', [replace_all($upstreamGateway.metadata.uid, '-', ''), 'prism.e2e.env.datum.net']))
+                    value: ($primaryHostname)
                   - type: Hostname
-                    value: (join('.', ['v4', replace_all($upstreamGateway.metadata.uid, '-', ''), 'prism.e2e.env.datum.net']))
+                    value: ($v4IPFamilyHostname)
                   - type: Hostname
-                    value: (join('.', ['v6', replace_all($upstreamGateway.metadata.uid, '-', ''), 'prism.e2e.env.datum.net']))
+                    value: ($v6IPFamilyHostname)
                 listeners:
                   - attachedRoutes: 0
                     (conditions[?type == 'Programmed']):
@@ -743,6 +775,12 @@ spec:
             outputs:
               - name: upstreamGateway
                 value: (json_parse($stdout))
+              # Re-derive in this step's scope; chainsaw bindings don't carry
+              # across steps, and the operator-published canonical hostname is
+              # word-derived from the gateway UID and can't be reconstructed
+              # inline.
+              - name: primaryHostname
+                value: ($upstreamGateway.status.addresses[?type == 'Hostname'].value | [0])
 
         - script:
             skipCommandOutput: true
@@ -780,7 +818,7 @@ spec:
                   - name: GATEWAY_SERVICE_NAMESPACE
                     value: ($gatewayService.metadata.namespace)
                   - name: PRIMARY_HOSTNAME
-                    value: (join('.', [replace_all($upstreamGateway.metadata.uid, '-', ''), 'prism.e2e.env.datum.net']))
+                    value: ($primaryHostname)
                   lifecycle:
                     postStart:
                       exec:

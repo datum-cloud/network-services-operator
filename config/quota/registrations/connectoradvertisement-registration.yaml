@@ -1,0 +1,25 @@
+apiVersion: quota.miloapis.com/v1alpha1
+kind: ResourceRegistration
+metadata:
+  name: connectoradvertisements-per-project
+  labels:
+    app.kubernetes.io/name: network-services-operator
+    app.kubernetes.io/component: quota-system
+spec:
+  consumerType:
+    apiGroup: resourcemanager.miloapis.com
+    kind: Project
+
+  type: Entity
+
+  resourceType: networking.datumapis.com/connectoradvertisements
+
+  description: "Maximum number of connector advertisements that can be created within a project"
+
+  baseUnit: advertisement
+  displayUnit: advertisements
+  unitConversionFactor: 1
+
+  claimingResources:
+    - apiGroup: networking.datumapis.com
+      kind: ConnectorAdvertisement

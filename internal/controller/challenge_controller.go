@@ -12,9 +12,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/source"
-	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 
 	"go.datum.net/network-services-operator/internal/config"
 )
@@ -81,13 +81,9 @@ func (r *ChallengeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 }
 
 // isGatewayRelatedIssuer checks if the given issuer reference is for a Gateway-managed
-// certificate issuer. This includes:
-// - ClusterIssuers that are mapped in the ClusterIssuerMap configuration
-// - Issuers (namespace-scoped) when PerGatewayCertificateIssuer mode is enabled
+// certificate issuer (ClusterIssuers that are mapped in the ClusterIssuerMap configuration).
 func (r *ChallengeReconciler) isGatewayRelatedIssuer(ref cmmeta.ObjectReference) bool {
-	// Check if ClusterIssuer is in the configured map
 	if ref.Kind == "ClusterIssuer" || ref.Kind == "" {
-		// Default kind is ClusterIssuer for cert-manager
 		for _, mappedIssuer := range r.Config.Gateway.ClusterIssuerMap {
 			if mappedIssuer == ref.Name {
 				return true
@@ -95,16 +91,11 @@ func (r *ChallengeReconciler) isGatewayRelatedIssuer(ref cmmeta.ObjectReference)
 		}
 	}
 
-	// In per-gateway mode, any namespace-scoped Issuer is gateway-related
-	if r.Config.Gateway.PerGatewayCertificateIssuer && ref.Kind == "Issuer" {
-		return true
-	}
-
 	return false
 }
 
 // SetupWithManager sets up the controller with the Manager.
-func (r *ChallengeReconciler) SetupWithManager(mgr mcmanager.Manager) error {
+func (r *ChallengeReconciler) SetupWithManager(mgr manager.Manager) error {
 	// Watch Challenge resources in the downstream cluster, filtering to only
 	// those matching configured issuers to reduce unnecessary reconciliations.
 	downstreamChallengeSource := source.TypedKind(
@@ -113,7 +104,7 @@ func (r *ChallengeReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 		&handler.TypedEnqueueRequestForObject[*cmacmev1.Challenge]{},
 	)
 
-	return ctrl.NewControllerManagedBy(mgr.GetLocalManager()).
+	return ctrl.NewControllerManagedBy(mgr).
 		WatchesRawSource(downstreamChallengeSource).
 		WithEventFilter(predicate.NewPredicateFuncs(func(object client.Object) bool {
 			challenge := object.(*cmacmev1.Challenge)

@@ -1,0 +1,25 @@
+apiVersion: quota.miloapis.com/v1alpha1
+kind: ResourceRegistration
+metadata:
+  name: backendtlspolicies-per-project
+  labels:
+    app.kubernetes.io/name: network-services-operator
+    app.kubernetes.io/component: quota-system
+spec:
+  consumerType:
+    apiGroup: resourcemanager.miloapis.com
+    kind: Project
+
+  type: Entity
+
+  resourceType: gateway.networking.k8s.io/backendtlspolicies
+
+  description: "Maximum number of backend TLS policies that can be created within a project"
+
+  baseUnit: policy
+  displayUnit: policies
+  unitConversionFactor: 1
+
+  claimingResources:
+    - apiGroup: gateway.networking.k8s.io
+      kind: BackendTLSPolicy

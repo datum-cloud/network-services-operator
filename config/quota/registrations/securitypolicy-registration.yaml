@@ -1,0 +1,25 @@
+apiVersion: quota.miloapis.com/v1alpha1
+kind: ResourceRegistration
+metadata:
+  name: securitypolicies-per-project
+  labels:
+    app.kubernetes.io/name: network-services-operator
+    app.kubernetes.io/component: quota-system
+spec:
+  consumerType:
+    apiGroup: resourcemanager.miloapis.com
+    kind: Project
+
+  type: Entity
+
+  resourceType: gateway.envoyproxy.io/securitypolicies
+
+  description: "Maximum number of security policies that can be created within a project"
+
+  baseUnit: policy
+  displayUnit: policies
+  unitConversionFactor: 1
+
+  claimingResources:
+    - apiGroup: gateway.envoyproxy.io
+      kind: SecurityPolicy

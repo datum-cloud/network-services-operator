@@ -68,7 +68,7 @@ func (r *GatewayReconciler) ensureDNSRecordSets(
 	logger := log.FromContext(ctx)
 	logger.Info("ensuring DNS record sets", "claimed_hostname_count", len(claimedHostnames))
 
-	canonicalHostname := r.Config.Gateway.GatewayDNSAddress(upstreamGateway)
+	canonicalHostname := r.gatewayCanonicalHostname(upstreamGateway)
 
 	// List all Domains in the gateway namespace once; we query them per hostname below.
 	var domainList networkingv1alpha.DomainList

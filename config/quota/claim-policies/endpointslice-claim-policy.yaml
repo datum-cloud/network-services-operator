@@ -1,0 +1,26 @@
+apiVersion: quota.miloapis.com/v1alpha1
+kind: ClaimCreationPolicy
+metadata:
+  name: project-endpointslice-claim-policy
+  labels:
+    app.kubernetes.io/name: network-services-operator
+    app.kubernetes.io/component: quota-system
+spec:
+  trigger:
+    resource:
+      apiVersion: discovery.k8s.io/v1
+      kind: EndpointSlice
+  target:
+    resourceClaimTemplate:
+      metadata:
+        name: "endpointslice-{{ trigger.metadata.name }}"
+        namespace: "{{requestInfo.namespace}}"
+        labels:
+          app.kubernetes.io/name: network-services-operator
+          app.kubernetes.io/component: quota-system
+        annotations:
+          kubernetes.io/description: "Automatic quota claim for EndpointSlice creation"
+      spec:
+        requests:
+          - resourceType: discovery.k8s.io/endpointslices
+            amount: 1

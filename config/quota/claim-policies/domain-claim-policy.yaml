@@ -1,0 +1,26 @@
+apiVersion: quota.miloapis.com/v1alpha1
+kind: ClaimCreationPolicy
+metadata:
+  name: project-domain-claim-policy
+  labels:
+    app.kubernetes.io/name: network-services-operator
+    app.kubernetes.io/component: quota-system
+spec:
+  trigger:
+    resource:
+      apiVersion: networking.datumapis.com/v1alpha
+      kind: Domain
+  target:
+    resourceClaimTemplate:
+      metadata:
+        name: "domain-{{ trigger.metadata.name }}"
+        namespace: "{{requestInfo.namespace}}"
+        labels:
+          app.kubernetes.io/name: network-services-operator
+          app.kubernetes.io/component: quota-system
+        annotations:
+          kubernetes.io/description: "Automatic quota claim for Domain creation"
+      spec:
+        requests:
+          - resourceType: networking.datumapis.com/domains
+            amount: 1

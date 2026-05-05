@@ -1,0 +1,26 @@
+apiVersion: quota.miloapis.com/v1alpha1
+kind: ClaimCreationPolicy
+metadata:
+  name: project-connectoradvertisement-claim-policy
+  labels:
+    app.kubernetes.io/name: network-services-operator
+    app.kubernetes.io/component: quota-system
+spec:
+  trigger:
+    resource:
+      apiVersion: networking.datumapis.com/v1alpha1
+      kind: ConnectorAdvertisement
+  target:
+    resourceClaimTemplate:
+      metadata:
+        name: "connectoradvertisement-{{ trigger.metadata.name }}"
+        namespace: "{{requestInfo.namespace}}"
+        labels:
+          app.kubernetes.io/name: network-services-operator
+          app.kubernetes.io/component: quota-system
+        annotations:
+          kubernetes.io/description: "Automatic quota claim for ConnectorAdvertisement creation"
+      spec:
+        requests:
+          - resourceType: networking.datumapis.com/connectoradvertisements
+            amount: 1

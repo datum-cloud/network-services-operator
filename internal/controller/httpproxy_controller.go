@@ -20,6 +20,8 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -41,6 +43,7 @@ import (
 	downstreamclient "go.datum.net/network-services-operator/internal/downstreamclient"
 	conditionutil "go.datum.net/network-services-operator/internal/util/condition"
 	gatewayutil "go.datum.net/network-services-operator/internal/util/gateway"
+	"go.datum.net/network-services-operator/internal/util/resourcename"
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 )
 
@@ -75,6 +78,7 @@ const (
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=httpproxies/finalizers,verbs=update
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=connectors,verbs=get;list;watch
 // +kubebuilder:rbac:groups=gateway.envoyproxy.io,resources=httproutefilters,verbs=get;list;watch;create;update;patch;delete
+// HTTPProxy controller reads cert-manager Certificate resources in the downstream cluster for status; ensure downstream role has cert-manager.io/certificates get;list;watch.
 
 func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (_ ctrl.Result, err error) {
 	logger := log.FromContext(ctx, "cluster", req.ClusterName)
@@ -362,7 +366,7 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 		apimeta.RemoveStatusCondition(&httpProxyCopy.Status.Conditions, networkingv1alpha.HTTPProxyConditionConnectorMetadataProgrammed)
 	}
 
-	r.reconcileHTTPProxyHostnameStatus(ctx, cl.GetClient(), gateway, httpProxyCopy)
+	r.reconcileHTTPProxyHostnameStatus(ctx, cl.GetClient(), gateway, httpProxyCopy, req.ClusterName)
 
 	return ctrl.Result{}, nil
 }
@@ -372,6 +376,7 @@ func (r *HTTPProxyReconciler) reconcileHTTPProxyHostnameStatus(
 	cl client.Client,
 	gateway *gatewayv1.Gateway,
 	httpProxyCopy *networkingv1alpha.HTTPProxy,
+	clusterName string,
 ) {
 	logger := log.FromContext(ctx)
 
@@ -389,6 +394,9 @@ func (r *HTTPProxyReconciler) reconcileHTTPProxyHostnameStatus(
 		return
 	}
 	logger.Info("updating hostname status")
+
+	// CanonicalHostname is the platform-managed hostname we create for the HTTPProxy.
+	httpProxyCopy.Status.CanonicalHostname = gatewayCanonicalHostnameForConfig(r.Config.Gateway, gateway)
 
 	var hostnames []gatewayv1.Hostname
 	currentListenerStatus := map[gatewayv1.SectionName]gatewayv1.ListenerStatus{}
@@ -479,7 +487,12 @@ func (r *HTTPProxyReconciler) reconcileHTTPProxyHostnameStatus(
 	// Build per-hostname statuses
 	availabilityStatuses := buildAvailabilityStatuses(acceptedHostnames, inUseHostnames, httpProxyCopy.Generation)
 	dnsStatuses := r.buildDNSStatuses(ctx, cl, gateway, httpProxyCopy.Generation)
-	httpProxyCopy.Status.HostnameStatuses = mergeHostnameStatuses(availabilityStatuses, dnsStatuses)
+	certificateStatuses := r.buildCertificateStatuses(ctx, cl, clusterName, gateway, httpProxyCopy)
+	previousHostnameStatuses := httpProxyCopy.Status.HostnameStatuses
+	httpProxyCopy.Status.HostnameStatuses = mergeHostnameStatuses(availabilityStatuses, dnsStatuses, certificateStatuses)
+	preserveHostnameConditionTransitions(httpProxyCopy.Status.HostnameStatuses, previousHostnameStatuses)
+
+	r.setCertificatesReadyCondition(httpProxyCopy, certificateStatuses, gateway)
 }
 
 // SetupWithManager sets up the controller with the Manager.
@@ -543,11 +556,59 @@ func (r *HTTPProxyReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 			downstreamclient.TypedEnqueueRequestForUpstreamOwner[*envoygatewayv1alpha1.EnvoyPatchPolicy](&networkingv1alpha.HTTPProxy{}),
 		)
 
-		downstreamPolicyClusterSource, _ := downstreamPolicySource.ForCluster("", r.DownstreamCluster)
+		downstreamPolicyClusterSource, _, _ := downstreamPolicySource.ForCluster("", r.DownstreamCluster)
 		builder = builder.WatchesRawSource(downstreamPolicyClusterSource)
+
+		// Watch downstream cert-manager Certificates so HTTPProxy certificate status
+		// is updated when certificates become ready or fail.
+		downstreamCertificateSource := mcsource.TypedKind(
+			newUnstructuredForGVK(certificateGVK),
+			r.enqueueHTTPProxyForDownstreamCertificate(),
+		)
+		downstreamCertificateClusterSource, _, _ := downstreamCertificateSource.ForCluster("", r.DownstreamCluster)
+		builder = builder.WatchesRawSource(downstreamCertificateClusterSource)
 	}
 
 	return builder.Named("httpproxy").Complete(r)
+}
+
+// enqueueHTTPProxyForDownstreamCertificate returns a watch handler that enqueues
+// the HTTPProxy (same name/namespace as the owning Gateway) when a downstream
+// cert-manager Certificate changes, so certificate status is updated.
+func (r *HTTPProxyReconciler) enqueueHTTPProxyForDownstreamCertificate() func(clusterName string, cl cluster.Cluster) handler.TypedEventHandler[*unstructured.Unstructured, mcreconcile.Request] {
+	return func(_ string, cl cluster.Cluster) handler.TypedEventHandler[*unstructured.Unstructured, mcreconcile.Request] {
+		return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, cert *unstructured.Unstructured) []mcreconcile.Request {
+			logger := log.FromContext(ctx)
+			ownerRef := metav1.GetControllerOf(cert)
+			if ownerRef == nil {
+				return nil
+			}
+			if ownerRef.Kind != "Gateway" {
+				return nil
+			}
+			gatewayKey := client.ObjectKey{Namespace: cert.GetNamespace(), Name: ownerRef.Name}
+			var gateway gatewayv1.Gateway
+			if err := cl.GetClient().Get(ctx, gatewayKey, &gateway); err != nil {
+				if apierrors.IsNotFound(err) {
+					return nil
+				}
+				logger.Error(err, "failed to get Gateway owner of Certificate", "certificate", cert.GetName(), "gateway", gatewayKey)
+				return nil
+			}
+			labels := gateway.GetLabels()
+			upstreamNs := labels[downstreamclient.UpstreamOwnerNamespaceLabel]
+			upstreamName := labels[downstreamclient.UpstreamOwnerNameLabel]
+			upstreamCluster := labels[downstreamclient.UpstreamOwnerClusterNameLabel]
+			if upstreamNs == "" || upstreamName == "" || upstreamCluster == "" {
+				return nil
+			}
+			clusterName := strings.TrimPrefix(strings.ReplaceAll(upstreamCluster, "_", "/"), "cluster-")
+			return []mcreconcile.Request{{
+				ClusterName: clusterName,
+				Request:     ctrl.Request{NamespacedName: types.NamespacedName{Namespace: upstreamNs, Name: upstreamName}},
+			}}
+		})
+	}
 }
 
 // httpProxyReferencesConnector checks if an HTTPProxy has any backends
@@ -943,6 +1004,267 @@ func (r *HTTPProxyReconciler) buildDNSStatuses(
 	return statuses
 }
 
+// buildCertificateStatuses reads cert-manager Certificate resources from the
+// downstream cluster for each HTTPS listener and returns HostnameStatus entries
+// with the CertificateReady condition set. Returns nil when DownstreamCluster is
+// nil (downstream unavailable).
+func (r *HTTPProxyReconciler) buildCertificateStatuses(
+	ctx context.Context,
+	upstreamClient client.Client,
+	clusterName string,
+	gateway *gatewayv1.Gateway,
+	httpProxy *networkingv1alpha.HTTPProxy,
+) []networkingv1alpha.HostnameStatus {
+	if r.DownstreamCluster == nil {
+		return nil
+	}
+
+	downstreamStrategy := downstreamclient.NewMappedNamespaceResourceStrategy(
+		clusterName,
+		upstreamClient,
+		r.DownstreamCluster.GetClient(),
+	)
+	downstreamNamespaceName, err := downstreamStrategy.GetDownstreamNamespaceNameForUpstreamNamespace(ctx, httpProxy.Namespace)
+	if err != nil {
+		log.FromContext(ctx).Error(err, "failed to get downstream namespace for certificate status")
+		return nil
+	}
+
+	downstreamClient := downstreamStrategy.GetClient()
+	httpsListenerCount := 0
+	for _, l := range gateway.Spec.Listeners {
+		if l.Protocol == gatewayv1.HTTPSProtocolType && l.Hostname != nil {
+			httpsListenerCount++
+		}
+	}
+	statuses := make([]networkingv1alpha.HostnameStatus, 0, httpsListenerCount)
+
+	wildcardSuffix := "." + r.Config.Gateway.TargetDomain
+
+	for _, l := range gateway.Spec.Listeners {
+		if l.Protocol != gatewayv1.HTTPSProtocolType || l.Hostname == nil {
+			continue
+		}
+
+		hs := networkingv1alpha.HostnameStatus{Hostname: string(*l.Hostname)}
+
+		hostname := string(*l.Hostname)
+		hostnameUnderWildcard := strings.HasSuffix(hostname, wildcardSuffix) || hostname == r.Config.Gateway.TargetDomain
+		useSharedTLS := hostnameUnderWildcard && r.Config.Gateway.HasDefaultListenerTLSSecret()
+
+		if useSharedTLS {
+			apimeta.SetStatusCondition(&hs.Conditions, metav1.Condition{
+				Type:               networkingv1alpha.HostnameConditionCertificateReady,
+				Status:             metav1.ConditionTrue,
+				Reason:             networkingv1alpha.CertificateReadyReasonCertificateIssued,
+				Message:            "Using shared wildcard TLS certificate",
+				ObservedGeneration: httpProxy.Generation,
+			})
+			statuses = append(statuses, hs)
+			continue
+		}
+
+		certName := resourcename.GetValidDNS1123Name(fmt.Sprintf("%s-%s", gateway.Name, l.Name))
+		certificate := newUnstructuredForGVK(certificateGVK)
+		certKey := client.ObjectKey{Namespace: downstreamNamespaceName, Name: certName}
+
+		if err := downstreamClient.Get(ctx, certKey, certificate); err != nil {
+			if apierrors.IsNotFound(err) {
+				apimeta.SetStatusCondition(&hs.Conditions, metav1.Condition{
+					Type:               networkingv1alpha.HostnameConditionCertificateReady,
+					Status:             metav1.ConditionFalse,
+					Reason:             networkingv1alpha.CertificateReadyReasonPending,
+					Message:            "Certificate not found in downstream cluster",
+					ObservedGeneration: httpProxy.Generation,
+				})
+			} else {
+				apimeta.SetStatusCondition(&hs.Conditions, metav1.Condition{
+					Type:               networkingv1alpha.HostnameConditionCertificateReady,
+					Status:             metav1.ConditionUnknown,
+					Reason:             networkingv1alpha.CertificateReadyReasonPending,
+					Message:            fmt.Sprintf("Failed to get certificate: %v", err),
+					ObservedGeneration: httpProxy.Generation,
+				})
+			}
+			statuses = append(statuses, hs)
+			continue
+		}
+
+		ready, err := isCertificateReady(certificate)
+		if err != nil {
+			apimeta.SetStatusCondition(&hs.Conditions, metav1.Condition{
+				Type:               networkingv1alpha.HostnameConditionCertificateReady,
+				Status:             metav1.ConditionUnknown,
+				Reason:             networkingv1alpha.CertificateReadyReasonPending,
+				Message:            fmt.Sprintf("Failed to check certificate status: %v", err),
+				ObservedGeneration: httpProxy.Generation,
+			})
+			statuses = append(statuses, hs)
+			continue
+		}
+
+		if ready {
+			apimeta.SetStatusCondition(&hs.Conditions, metav1.Condition{
+				Type:               networkingv1alpha.HostnameConditionCertificateReady,
+				Status:             metav1.ConditionTrue,
+				Reason:             networkingv1alpha.CertificateReadyReasonCertificateIssued,
+				Message:            "Certificate is ready",
+				ObservedGeneration: httpProxy.Generation,
+			})
+		} else {
+			reason, message := getCertificateReadyConditionReason(certificate)
+			apimeta.SetStatusCondition(&hs.Conditions, metav1.Condition{
+				Type:               networkingv1alpha.HostnameConditionCertificateReady,
+				Status:             metav1.ConditionFalse,
+				Reason:             reason,
+				Message:            message,
+				ObservedGeneration: httpProxy.Generation,
+			})
+		}
+		statuses = append(statuses, hs)
+	}
+
+	return statuses
+}
+
+// getCertificateReadyConditionReason returns the reason and message for the
+// CertificateReady condition based on the cert-manager Certificate's Ready condition.
+func getCertificateReadyConditionReason(certificate *unstructured.Unstructured) (string, string) {
+	conditions, found, err := unstructured.NestedSlice(certificate.Object, "status", "conditions")
+	if err != nil || !found {
+		return networkingv1alpha.CertificateReadyReasonPending, "Certificate status not yet available"
+	}
+
+	for _, cond := range conditions {
+		condMap, ok := cond.(map[string]any)
+		if !ok {
+			continue
+		}
+		if condMap["type"] != certManagerConditionTypeReady {
+			continue
+		}
+		if condMap["status"] == string(metav1.ConditionTrue) {
+			return networkingv1alpha.CertificateReadyReasonCertificateIssued, "Certificate is ready"
+		}
+		// Ready=False
+		reason, _ := condMap["reason"].(string)
+		message, _ := condMap["message"].(string)
+		if message == "" {
+			message = "Certificate is not ready"
+		}
+		// Treat known failure reasons as ProvisioningFailed
+		switch reason {
+		case "InvalidCertificate", "CertificateRequestFailed":
+			return networkingv1alpha.CertificateReadyReasonProvisioningFailed, message
+		case "DoesNotExist":
+			// cert-manager: "Issuing certificate as Secret does not exist" — normal during first issuance
+			return networkingv1alpha.CertificateReadyReasonPending, "We're provisioning and applying a certificate to this hostname - it may take a few minutes"
+		default:
+			// Translate raw cert-manager message when it's the "Secret does not exist" issuance message
+			if strings.Contains(message, "Issuing certificate as Secret does not exist") {
+				return networkingv1alpha.CertificateReadyReasonPending, "We're provisioning and applying a certificate to this hostname - it may take a few minutes"
+			}
+			return networkingv1alpha.CertificateReadyReasonPending, message
+		}
+	}
+
+	return networkingv1alpha.CertificateReadyReasonPending, "Certificate status not yet available"
+}
+
+// setCertificatesReadyCondition sets or removes the CertificatesReady aggregate
+// condition on HTTPProxy status based on per-hostname certificate statuses.
+func (r *HTTPProxyReconciler) setCertificatesReadyCondition(
+	httpProxy *networkingv1alpha.HTTPProxy,
+	certificateStatuses []networkingv1alpha.HostnameStatus,
+	gateway *gatewayv1.Gateway,
+) {
+	hasHTTPSListeners := false
+	for _, l := range gateway.Spec.Listeners {
+		if l.Protocol == gatewayv1.HTTPSProtocolType && l.Hostname != nil {
+			hasHTTPSListeners = true
+			break
+		}
+	}
+
+	if certificateStatuses == nil {
+		if hasHTTPSListeners {
+			apimeta.SetStatusCondition(&httpProxy.Status.Conditions, metav1.Condition{
+				Type:               networkingv1alpha.HTTPProxyConditionCertificatesReady,
+				Status:             metav1.ConditionUnknown,
+				Reason:             networkingv1alpha.CertificatesReadyReasonCertificatesPending,
+				Message:            "Downstream cluster unavailable; certificate status unknown",
+				ObservedGeneration: httpProxy.Generation,
+			})
+		} else {
+			apimeta.RemoveStatusCondition(&httpProxy.Status.Conditions, networkingv1alpha.HTTPProxyConditionCertificatesReady)
+		}
+		return
+	}
+
+	if len(certificateStatuses) == 0 {
+		apimeta.RemoveStatusCondition(&httpProxy.Status.Conditions, networkingv1alpha.HTTPProxyConditionCertificatesReady)
+		return
+	}
+
+	byHostname := make(map[string]networkingv1alpha.HostnameStatus)
+	for _, hs := range httpProxy.Status.HostnameStatuses {
+		byHostname[hs.Hostname] = hs
+	}
+
+	anyFailed := false
+	anyPending := false
+	allReady := true
+
+	for _, hs := range certificateStatuses {
+		merged, ok := byHostname[hs.Hostname]
+		if !ok {
+			anyPending = true
+			allReady = false
+			continue
+		}
+		cond := apimeta.FindStatusCondition(merged.Conditions, networkingv1alpha.HostnameConditionCertificateReady)
+		if cond == nil {
+			anyPending = true
+			allReady = false
+			continue
+		}
+		if cond.Status != metav1.ConditionTrue {
+			allReady = false
+			if cond.Reason == networkingv1alpha.CertificateReadyReasonProvisioningFailed {
+				anyFailed = true
+			} else {
+				anyPending = true
+			}
+		}
+	}
+
+	if anyFailed {
+		apimeta.SetStatusCondition(&httpProxy.Status.Conditions, metav1.Condition{
+			Type:               networkingv1alpha.HTTPProxyConditionCertificatesReady,
+			Status:             metav1.ConditionFalse,
+			Reason:             networkingv1alpha.CertificatesReadyReasonCertificatesFailed,
+			Message:            "One or more certificates failed to provision",
+			ObservedGeneration: httpProxy.Generation,
+		})
+	} else if anyPending || !allReady {
+		apimeta.SetStatusCondition(&httpProxy.Status.Conditions, metav1.Condition{
+			Type:               networkingv1alpha.HTTPProxyConditionCertificatesReady,
+			Status:             metav1.ConditionFalse,
+			Reason:             networkingv1alpha.CertificatesReadyReasonCertificatesPending,
+			Message:            "One or more certificates are pending or in progress",
+			ObservedGeneration: httpProxy.Generation,
+		})
+	} else {
+		apimeta.SetStatusCondition(&httpProxy.Status.Conditions, metav1.Condition{
+			Type:               networkingv1alpha.HTTPProxyConditionCertificatesReady,
+			Status:             metav1.ConditionTrue,
+			Reason:             networkingv1alpha.CertificatesReadyReasonAllCertificatesReady,
+			Message:            "All certificates are ready",
+			ObservedGeneration: httpProxy.Generation,
+		})
+	}
+}
+
 // mergeHostnameStatuses merges multiple slices of HostnameStatus, combining
 // conditions for the same hostname. Returns a sorted slice for deterministic output.
 func mergeHostnameStatuses(statusSets ...[]networkingv1alpha.HostnameStatus) []networkingv1alpha.HostnameStatus {
@@ -974,6 +1296,32 @@ func mergeHostnameStatuses(statusSets ...[]networkingv1alpha.HostnameStatus) []n
 	return result
 }
 
+// preserveHostnameConditionTransitions retains the original LastTransitionTime
+// for hostname conditions whose Status has not changed. Without this, freshly-
+// built HostnameStatus objects always get LastTransitionTime=now, which causes
+// a spurious status diff on every reconcile and drives an infinite loop.
+func preserveHostnameConditionTransitions(
+	newStatuses, oldStatuses []networkingv1alpha.HostnameStatus,
+) {
+	oldByHostname := make(map[string]networkingv1alpha.HostnameStatus, len(oldStatuses))
+	for _, hs := range oldStatuses {
+		oldByHostname[hs.Hostname] = hs
+	}
+
+	for i, newHS := range newStatuses {
+		oldHS, ok := oldByHostname[newHS.Hostname]
+		if !ok {
+			continue
+		}
+		for j, newCond := range newHS.Conditions {
+			oldCond := apimeta.FindStatusCondition(oldHS.Conditions, newCond.Type)
+			if oldCond != nil && oldCond.Status == newCond.Status {
+				newStatuses[i].Conditions[j].LastTransitionTime = oldCond.LastTransitionTime
+			}
+		}
+	}
+}
+
 func (r *HTTPProxyReconciler) reconcileConnectorEnvoyPatchPolicy(
 	ctx context.Context,
 	upstreamClient client.Client,
@@ -995,39 +1343,34 @@ func (r *HTTPProxyReconciler) reconcileConnectorEnvoyPatchPolicy(
 		return nil, false, err
 	}
 
-	connectorBackends, err := collectConnectorBackends(ctx, upstreamClient, httpProxy)
-	if err != nil {
-		return nil, false, err
-	}
-
 	policyName := fmt.Sprintf("connector-%s", httpProxy.Name)
 	policyKey := client.ObjectKey{Namespace: downstreamNamespaceName, Name: policyName}
 	downstreamClient := downstreamStrategy.GetClient()
 
-	if len(connectorBackends) == 0 {
+	// If the HTTPProxy has no connector backends in its spec at all (i.e. the
+	// connector was removed, not just temporarily offline), delete the EPP and
+	// return. This is distinct from the connector being defined but not-ready,
+	// where we keep the EPP alive with offline patches.
+	//
+	// The anchor ConfigMap is intentionally NOT deleted here — it is tied to the
+	// HTTPProxy lifetime, not to whether a connector backend is configured. It
+	// will be cleaned up in cleanupConnectorEnvoyPatchPolicy when the HTTPProxy
+	// is deleted. Deleting the anchor here would cascade-GC any other downstream
+	// resources that share the same anchor as an owner.
+	if !httpProxyHasConnectorBackends(httpProxy) {
 		var existing envoygatewayv1alpha1.EnvoyPatchPolicy
 		if err := downstreamClient.Get(ctx, policyKey, &existing); err != nil {
 			if apierrors.IsNotFound(err) {
-				if err := downstreamStrategy.DeleteAnchorForObject(ctx, httpProxy); err != nil {
-					return nil, false, err
-				}
 				return nil, false, nil
 			}
 			return nil, false, err
 		}
-		if err := downstreamClient.Delete(ctx, &existing); err != nil {
-			return nil, false, err
-		}
-		if err := downstreamStrategy.DeleteAnchorForObject(ctx, httpProxy); err != nil {
-			return nil, false, err
-		}
-		return nil, false, nil
+		return nil, false, downstreamClient.Delete(ctx, &existing)
 	}
 
 	// Wait for the Gateway and default HTTPS listener to be Programmed before
-	// creating the EnvoyPatchPolicy. This ensures the target RouteConfiguration
-	// exists in Envoy's xDS, so the patch can be applied immediately rather than
-	// waiting for Envoy Gateway to retry.
+	// creating or updating the EnvoyPatchPolicy. This ensures the target
+	// RouteConfiguration exists in Envoy's xDS so patches apply immediately.
 	gatewayProgrammed := apimeta.IsStatusConditionTrue(
 		gateway.Status.Conditions,
 		string(gatewayv1.GatewayConditionProgrammed),
@@ -1045,15 +1388,32 @@ func (r *HTTPProxyReconciler) reconcileConnectorEnvoyPatchPolicy(
 		return nil, true, fmt.Errorf("downstreamGatewayClassName is required for connector patching")
 	}
 
-	jsonPatches, err := buildConnectorEnvoyPatches(
-		downstreamNamespaceName,
-		r.Config.Gateway.ConnectorTunnelListenerName(),
-		gateway,
-		httpProxy,
-		connectorBackends,
-	)
+	// Collect connector backends that are currently ready. If none are ready the
+	// connector is offline and we keep the EPP alive with a direct_response route
+	// so EG never hits a delete+create cycle (which causes the watchable
+	// deduplication race that leaves EPP status permanently null).
+	connectorBackends, err := collectConnectorBackends(ctx, upstreamClient, httpProxy)
 	if err != nil {
-		return nil, true, err
+		return nil, false, err
+	}
+
+	var jsonPatches []envoygatewayv1alpha1.EnvoyJSONPatchConfig
+	connectorOnline := len(connectorBackends) > 0
+	if !connectorOnline {
+		// Connector offline: insert a direct_response CONNECT route so clients
+		// receive a clean 503 "Tunnel not online" instead of a connection error.
+		jsonPatches, err = buildConnectorOfflineEnvoyPatches(downstreamNamespaceName, gateway, httpProxy)
+	} else {
+		jsonPatches, err = buildConnectorEnvoyPatches(
+			downstreamNamespaceName,
+			r.Config.Gateway.ConnectorTunnelListenerName(),
+			gateway,
+			httpProxy,
+			connectorBackends,
+		)
+	}
+	if err != nil {
+		return nil, connectorOnline, err
 	}
 
 	policy := envoygatewayv1alpha1.EnvoyPatchPolicy{
@@ -1078,9 +1438,9 @@ func (r *HTTPProxyReconciler) reconcileConnectorEnvoyPatchPolicy(
 		return nil
 	})
 	if err != nil {
-		return nil, true, err
+		return nil, connectorOnline, err
 	}
-	return &policy, true, nil
+	return &policy, connectorOnline, nil
 }
 
 func (r *HTTPProxyReconciler) cleanupConnectorEnvoyPatchPolicy(
@@ -1273,6 +1633,21 @@ func buildConnectorOfflineHTTPRouteFilter(httpProxy *networkingv1alpha.HTTPProxy
 			},
 		},
 	}
+}
+
+// httpProxyHasConnectorBackends returns true if any backend in the HTTPProxy
+// spec references a connector, regardless of the connector's readiness state.
+// Used to distinguish "connector removed from spec" (→ delete EPP) from
+// "connector defined but offline" (→ update EPP with offline patches).
+func httpProxyHasConnectorBackends(httpProxy *networkingv1alpha.HTTPProxy) bool {
+	for _, rule := range httpProxy.Spec.Rules {
+		for _, backend := range rule.Backends {
+			if backend.Connector != nil {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func connectorReady(ctx context.Context, cl client.Client, namespace, name string) (bool, error) {

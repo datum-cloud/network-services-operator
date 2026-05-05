@@ -221,11 +221,20 @@ func SetObjectDefaults_NetworkServicesOperator(in *NetworkServicesOperator) {
 		in.Gateway.ExtensionAPIValidationOptions.SecurityPolicies.ClusterSettings.HTTP2MaxConcurrentStreams = 1024
 	}
 	SetDefaults_GatewayResourceReplicatorConfig(&in.Gateway.ResourceReplicator)
+	if in.Gateway.MaxConcurrentReconciles == 0 {
+		in.Gateway.MaxConcurrentReconciles = 5
+	}
 	if in.HTTPProxy.GatewayClassName == "" {
 		in.HTTPProxy.GatewayClassName = "datum-external-global-proxy"
 	}
 	if in.Connector.LeaseDurationSeconds == 0 {
 		in.Connector.LeaseDurationSeconds = 30
+	}
+	if in.Connector.Iroh.RecordPrefix == "" {
+		in.Connector.Iroh.RecordPrefix = "_iroh"
+	}
+	if in.Connector.Iroh.TTLSeconds == 0 {
+		in.Connector.Iroh.TTLSeconds = 30
 	}
 	SetDefaults_DiscoveryConfig(&in.Discovery)
 	if in.Redis.DialTimeout == nil {
@@ -243,6 +252,7 @@ func SetObjectDefaults_NetworkServicesOperator(in *NetworkServicesOperator) {
 			panic(err)
 		}
 	}
+	SetDefaults_LeaderElectionConfig(&in.LeaderElection)
 	if in.DomainVerification.RetryIntervals == nil {
 		if err := json.Unmarshal([]byte(`[{"interval": "5s", "maxElapsed": "5m"}, {"interval": "1m", "maxElapsed": "15m"}, {"interval": "5m"}]`), &in.DomainVerification.RetryIntervals); err != nil {
 			panic(err)
@@ -312,5 +322,26 @@ func SetObjectDefaults_NetworkServicesOperator(in *NetworkServicesOperator) {
 		if err := json.Unmarshal([]byte(`"2s"`), &in.DomainRegistration.RegistryData.RateLimits.DefaultBlock); err != nil {
 			panic(err)
 		}
+	}
+	SetDefaults_ClientConnectionConfig(&in.ControlPlaneClient)
+	if in.ControlPlaneClient.QPS == 0 {
+		in.ControlPlaneClient.QPS = 50
+	}
+	if in.ControlPlaneClient.Burst == 0 {
+		in.ControlPlaneClient.Burst = 100
+	}
+	SetDefaults_ClientConnectionConfig(&in.DownstreamClient)
+	if in.DownstreamClient.QPS == 0 {
+		in.DownstreamClient.QPS = 50
+	}
+	if in.DownstreamClient.Burst == 0 {
+		in.DownstreamClient.Burst = 100
+	}
+	SetDefaults_ClientConnectionConfig(&in.ProjectClient)
+	if in.ProjectClient.QPS == 0 {
+		in.ProjectClient.QPS = 50
+	}
+	if in.ProjectClient.Burst == 0 {
+		in.ProjectClient.Burst = 100
 	}
 }

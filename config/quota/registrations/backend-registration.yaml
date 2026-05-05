@@ -1,0 +1,25 @@
+apiVersion: quota.miloapis.com/v1alpha1
+kind: ResourceRegistration
+metadata:
+  name: backends-per-project
+  labels:
+    app.kubernetes.io/name: network-services-operator
+    app.kubernetes.io/component: quota-system
+spec:
+  consumerType:
+    apiGroup: resourcemanager.miloapis.com
+    kind: Project
+
+  type: Entity
+
+  resourceType: gateway.envoyproxy.io/backends
+
+  description: "Maximum number of backends that can be created within a project"
+
+  baseUnit: backend
+  displayUnit: backends
+  unitConversionFactor: 1
+
+  claimingResources:
+    - apiGroup: gateway.envoyproxy.io
+      kind: Backend

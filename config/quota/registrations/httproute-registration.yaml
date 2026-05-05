@@ -1,0 +1,25 @@
+apiVersion: quota.miloapis.com/v1alpha1
+kind: ResourceRegistration
+metadata:
+  name: httproutes-per-project
+  labels:
+    app.kubernetes.io/name: network-services-operator
+    app.kubernetes.io/component: quota-system
+spec:
+  consumerType:
+    apiGroup: resourcemanager.miloapis.com
+    kind: Project
+
+  type: Entity
+
+  resourceType: gateway.networking.k8s.io/httproutes
+
+  description: "Maximum number of HTTP routes that can be created within a project"
+
+  baseUnit: route
+  displayUnit: routes
+  unitConversionFactor: 1
+
+  claimingResources:
+    - apiGroup: gateway.networking.k8s.io
+      kind: HTTPRoute

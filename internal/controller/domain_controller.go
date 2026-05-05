@@ -33,6 +33,7 @@ import (
 	"go.datum.net/network-services-operator/internal/config"
 	"go.datum.net/network-services-operator/internal/registrydata"
 	conditionutil "go.datum.net/network-services-operator/internal/util/condition"
+	dnsutil "go.datum.net/network-services-operator/internal/util/dns"
 )
 
 // DomainReconciler reconciles a Domain object
@@ -320,34 +321,6 @@ var dnsZoneListGVK = schema.GroupVersionKind{
 	Kind:    "DNSZoneList",
 }
 
-func normalizeNameserverHostname(s string) string {
-	return strings.ToLower(strings.TrimSuffix(strings.TrimSpace(s), "."))
-}
-
-func hasStringOverlapNormalized(a, b []string) bool {
-	if len(a) == 0 || len(b) == 0 {
-		return false
-	}
-	set := make(map[string]struct{}, len(a))
-	for _, v := range a {
-		n := normalizeNameserverHostname(v)
-		if n == "" {
-			continue
-		}
-		set[n] = struct{}{}
-	}
-	for _, v := range b {
-		n := normalizeNameserverHostname(v)
-		if n == "" {
-			continue
-		}
-		if _, ok := set[n]; ok {
-			return true
-		}
-	}
-	return false
-}
-
 func (r *DomainReconciler) attemptDNSZoneVerification(
 	ctx context.Context,
 	reader client.Reader,
@@ -439,7 +412,7 @@ func (r *DomainReconciler) attemptDNSZoneVerification(
 			verifiedDNSZoneCondition.Message = fmt.Sprintf("Waiting for Domain status.nameservers before verifying via DNSZone %q", zoneName)
 			continue
 		}
-		if !hasStringOverlapNormalized(domainNS, zoneNS) {
+		if !dnsutil.HasNameserverOverlap(domainNS, zoneNS) {
 			verifiedDNSZoneCondition.Reason = networkingv1alpha.DomainReasonDNSZoneNameserverMismatch
 			verifiedDNSZoneCondition.Message = fmt.Sprintf("Domain nameservers do not match DNSZone %q nameservers yet", zoneName)
 			continue

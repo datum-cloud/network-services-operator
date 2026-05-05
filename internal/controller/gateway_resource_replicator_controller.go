@@ -571,7 +571,7 @@ func (r *GatewayResourceReplicatorReconciler) SetupWithManager(mgr mcmanager.Man
 			typedEnqueueDownstreamGVKRequest(gvk),
 		)
 
-		clusterSrc, err := src.ForCluster("", r.DownstreamCluster)
+		clusterSrc, _, err := src.ForCluster("", r.DownstreamCluster)
 		if err != nil {
 			return fmt.Errorf("failed to build downstream watch for %s: %w", gvk.String(), err)
 		}

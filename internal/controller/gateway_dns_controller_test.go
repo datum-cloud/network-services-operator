@@ -15,8 +15,10 @@ import (
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/uuid"
 	"k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -59,7 +61,13 @@ func newTestGatewayForDNS(namespace, name string, opts ...func(*gatewayv1.Gatewa
 	return gw
 }
 
-// newVerifiedDNSZoneDomain builds a Domain with VerifiedDNSZone=True set.
+// testNameservers are the nameservers used in tests to simulate matching
+// nameservers between Domain and DNSZone.
+var testNameservers = []string{"ns1.datumcloud.net", "ns2.datumcloud.net"}
+
+// newVerifiedDNSZoneDomain builds a Domain with Verified=True and nameservers
+// that match the test DNSZone nameservers. This simulates a domain where Datum
+// DNS has authority.
 //
 //nolint:unparam // namespace is always "test-ns" in tests but kept for clarity
 func newVerifiedDNSZoneDomain(namespace, domainName string, apex bool) *networkingv1alpha.Domain {
@@ -74,17 +82,21 @@ func newVerifiedDNSZoneDomain(namespace, domainName string, apex bool) *networki
 		},
 		Status: networkingv1alpha.DomainStatus{
 			Apex: apex,
+			Nameservers: []networkingv1alpha.Nameserver{
+				{Hostname: testNameservers[0]},
+				{Hostname: testNameservers[1]},
+			},
 		},
 	}
 	apimeta.SetStatusCondition(&d.Status.Conditions, metav1.Condition{
-		Type:   networkingv1alpha.DomainConditionVerifiedDNSZone,
+		Type:   networkingv1alpha.DomainConditionVerified,
 		Status: metav1.ConditionTrue,
 		Reason: "Verified",
 	})
 	return d
 }
 
-// newUnverifiedDomain builds a Domain without VerifiedDNSZone=True.
+// newUnverifiedDomain builds a Domain without Verified=True.
 func newUnverifiedDomain(namespace, domainName string) *networkingv1alpha.Domain {
 	return &networkingv1alpha.Domain{
 		ObjectMeta: metav1.ObjectMeta{
@@ -98,9 +110,10 @@ func newUnverifiedDomain(namespace, domainName string) *networkingv1alpha.Domain
 	}
 }
 
-// newDNSZone builds a DNSZone for the given apex domain.
+// newDNSZone builds a DNSZone for the given apex domain with Accepted=True,
+// Programmed=True conditions and matching nameservers.
 func newDNSZone(namespace, name, domainName string) *dnsv1alpha1.DNSZone {
-	return &dnsv1alpha1.DNSZone{
+	z := &dnsv1alpha1.DNSZone{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: namespace,
 			Name:      name,
@@ -110,7 +123,21 @@ func newDNSZone(namespace, name, domainName string) *dnsv1alpha1.DNSZone {
 			DomainName:       domainName,
 			DNSZoneClassName: "default",
 		},
+		Status: dnsv1alpha1.DNSZoneStatus{
+			Nameservers: testNameservers,
+		},
 	}
+	apimeta.SetStatusCondition(&z.Status.Conditions, metav1.Condition{
+		Type:   "Accepted",
+		Status: metav1.ConditionTrue,
+		Reason: "Accepted",
+	})
+	apimeta.SetStatusCondition(&z.Status.Conditions, metav1.Condition{
+		Type:   "Programmed",
+		Status: metav1.ConditionTrue,
+		Reason: "Programmed",
+	})
+	return z
 }
 
 // buildFakeUpstreamClientForDNS creates a fake upstream client seeded with the
@@ -308,7 +335,7 @@ func TestEnsureDNSRecordSets(t *testing.T) {
 			},
 		},
 		{
-			name:             "domain exists but VerifiedDNSZone=False yields DomainNotVerified",
+			name:             "domain exists but not verified yields DomainNotVerified",
 			claimedHostnames: []string{"api.example.com"},
 			upstreamObjects: []client.Object{
 				newUnverifiedDomain(ns, "example.com"),
@@ -344,6 +371,32 @@ func TestEnsureDNSRecordSets(t *testing.T) {
 				var list dnsv1alpha1.DNSRecordSetList
 				require.NoError(t, cl.List(context.Background(), &list, client.InNamespace(ns)))
 				assert.Empty(t, list.Items)
+			},
+		},
+		{
+			name:             "verified domain with DNSZone but mismatched nameservers yields DNSAuthorityMissing",
+			claimedHostnames: []string{"api.example.com"},
+			upstreamObjects: func() []client.Object {
+				// Domain with different nameservers than the DNSZone
+				d := newVerifiedDNSZoneDomain(ns, "example.com", false)
+				d.Status.Nameservers = []networkingv1alpha.Nameserver{
+					{Hostname: "ns1.otherprovider.com"},
+					{Hostname: "ns2.otherprovider.com"},
+				}
+				return []client.Object{d, newDNSZone(ns, "example-com", "example.com")}
+			}(),
+			assertStatuses: func(t *testing.T, statuses []networkingv1alpha.HostnameStatus) {
+				require.Len(t, statuses, 1)
+				c := apimeta.FindStatusCondition(statuses[0].Conditions, networkingv1alpha.HostnameConditionDNSRecordProgrammed)
+				require.NotNil(t, c)
+				assert.Equal(t, metav1.ConditionFalse, c.Status)
+				assert.Equal(t, networkingv1alpha.DNSRecordReasonDNSAuthorityMissing, c.Reason)
+				assert.Contains(t, c.Message, "nameservers do not include")
+			},
+			assertRecords: func(t *testing.T, cl client.Client) {
+				var list dnsv1alpha1.DNSRecordSetList
+				require.NoError(t, cl.List(context.Background(), &list, client.InNamespace(ns)))
+				assert.Empty(t, list.Items, "no DNSRecordSet should be created when DNS authority is missing")
 			},
 		},
 		{
@@ -488,6 +541,31 @@ func TestEnsureDNSRecordSets(t *testing.T) {
 			},
 		},
 		{
+			name:             "legacy canonical hostname remains canonical when status already set",
+			claimedHostnames: []string{"11111111111111111111111111111111.gateways.test.local", "api.example.com"},
+			upstreamObjects: []client.Object{
+				newVerifiedDNSZoneDomain(ns, "example.com", false),
+				newDNSZone(ns, "example-com", "example.com"),
+			},
+			assertStatuses: func(t *testing.T, statuses []networkingv1alpha.HostnameStatus) {
+				require.Len(t, statuses, 1)
+				assert.Equal(t, "api.example.com", statuses[0].Hostname)
+				c := apimeta.FindStatusCondition(statuses[0].Conditions, networkingv1alpha.HostnameConditionDNSRecordProgrammed)
+				require.NotNil(t, c)
+				assert.Equal(t, metav1.ConditionTrue, c.Status)
+				assert.Equal(t, networkingv1alpha.DNSRecordReasonCreated, c.Reason)
+			},
+			assertRecords: func(t *testing.T, cl client.Client) {
+				var list dnsv1alpha1.DNSRecordSetList
+				require.NoError(t, cl.List(context.Background(), &list, client.InNamespace(ns)))
+				require.Len(t, list.Items, 1)
+				rs := list.Items[0]
+				require.Len(t, rs.Spec.Records, 1)
+				require.NotNil(t, rs.Spec.Records[0].CNAME)
+				assert.Equal(t, "11111111111111111111111111111111.gateways.test.local.", rs.Spec.Records[0].CNAME.Content)
+			},
+		},
+		{
 			name:             "single-label hostname gets NotApplicable",
 			claimedHostnames: []string{"localhost"},
 			upstreamObjects:  nil,
@@ -529,6 +607,23 @@ func TestEnsureDNSRecordSets(t *testing.T) {
 			s := newDNSTestScheme(t)
 
 			gw := newTestGatewayForDNS(ns, "test-gw")
+			if tt.name == "legacy canonical hostname remains canonical when status already set" {
+				gw.UID = types.UID("11111111-1111-1111-1111-111111111111")
+				gw.Status.Addresses = []gatewayv1.GatewayStatusAddress{
+					{
+						Type:  ptr.To(gatewayv1.HostnameAddressType),
+						Value: "11111111111111111111111111111111.gateways.test.local",
+					},
+					{
+						Type:  ptr.To(gatewayv1.HostnameAddressType),
+						Value: "v4.11111111111111111111111111111111.gateways.test.local",
+					},
+					{
+						Type:  ptr.To(gatewayv1.HostnameAddressType),
+						Value: "v6.11111111111111111111111111111111.gateways.test.local",
+					},
+				}
+			}
 
 			// Seed the gateway itself so owner reference can be set.
 			allObjects := append([]client.Object{gw}, tt.upstreamObjects...)

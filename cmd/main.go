@@ -13,6 +13,7 @@ import (
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
 	cmacmev1 "github.com/cert-manager/cert-manager/pkg/apis/acme/v1"
+	cmv1 "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
 	envoygatewayv1alpha1 "github.com/envoyproxy/gateway/api/v1alpha1"
 	multiclusterproviders "go.miloapis.com/milo/pkg/multicluster-runtime"
 	milomulticluster "go.miloapis.com/milo/pkg/multicluster-runtime/milo"
@@ -27,11 +28,13 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	gatewayv1alpha2 "sigs.k8s.io/gateway-api/apis/v1alpha2"
 	gatewayv1alpha3 "sigs.k8s.io/gateway-api/apis/v1alpha3"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
+	"sigs.k8s.io/multicluster-runtime/pkg/manager/coordinator/sharded"
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcsingle "sigs.k8s.io/multicluster-runtime/providers/single"
 
@@ -65,6 +68,7 @@ func init() {
 	utilruntime.Must(envoygatewayv1alpha1.AddToScheme(scheme))
 	utilruntime.Must(networkingv1alpha1.AddToScheme(scheme))
 	utilruntime.Must(cmacmev1.AddToScheme(scheme))
+	utilruntime.Must(cmv1.AddToScheme(scheme))
 	utilruntime.Must(dnsv1alpha1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
@@ -74,6 +78,12 @@ func main() {
 	var enableLeaderElection bool
 	var leaderElectionNamespace string
 	var probeAddr string
+	var enableClusterSharding bool
+	var clusterShardingLeaseNamespace string
+	var clusterShardingLeasePrefix string
+	var clusterShardingPeerWeight uint
+	var singletonControllersLeaderElection bool
+	var singletonControllersLeaderElectionID string
 
 	var serverConfigFile string
 
@@ -82,6 +92,42 @@ func main() {
 		"Enable leader election for controller manager. "+
 			"Enabling this will ensure there is only one active controller manager.")
 	flag.StringVar(&leaderElectionNamespace, "leader-elect-namespace", "", "The namespace to use for leader election.")
+	flag.BoolVar(
+		&enableClusterSharding,
+		"cluster-sharding-enabled",
+		false,
+		"Enable multicluster controller sharding via per-cluster coordination leases.",
+	)
+	flag.StringVar(
+		&clusterShardingLeaseNamespace,
+		"cluster-sharding-lease-namespace",
+		"kube-system",
+		"Namespace for controller cluster sharding leases.",
+	)
+	flag.StringVar(
+		&clusterShardingLeasePrefix,
+		"cluster-sharding-lease-prefix",
+		"mcr-shard",
+		"Lease name prefix for controller cluster sharding.",
+	)
+	flag.UintVar(
+		&clusterShardingPeerWeight,
+		"cluster-sharding-peer-weight",
+		1,
+		"Relative shard weight for this controller instance.",
+	)
+	flag.BoolVar(
+		&singletonControllersLeaderElection,
+		"singleton-controllers-leader-elect",
+		true,
+		"Enable leader election for singleton downstream controllers (Challenge and GatewayDownstreamCertificateSolver).",
+	)
+	flag.StringVar(
+		&singletonControllersLeaderElectionID,
+		"singleton-controllers-leader-election-id",
+		"6a7d51cc.datumapis.com-singleton",
+		"Leader election ID for singleton downstream controllers.",
+	)
 
 	opts := zap.Options{
 		Development: true,
@@ -118,9 +164,13 @@ func main() {
 
 	setupLog.Info("server config", "config", serverConfig)
 
-	// TODO(jreese) validate the config
+	if err := serverConfig.Validate(); err != nil {
+		setupLog.Error(err, "invalid server config")
+		os.Exit(1)
+	}
 
 	cfg := ctrl.GetConfigOrDie()
+	serverConfig.ControlPlaneClient.ApplyTo(cfg)
 
 	deploymentCluster, err := cluster.New(cfg, func(o *cluster.Options) {
 		o.Scheme = scheme
@@ -150,14 +200,66 @@ func main() {
 
 	webhookServer = networkingwebhook.NewClusterAwareWebhookServer(webhookServer, serverConfig.Discovery.Mode)
 
+	leaseDuration := serverConfig.LeaderElection.LeaseDuration.Duration
+	renewDeadline := serverConfig.LeaderElection.RenewDeadline.Duration
+	retryPeriod := serverConfig.LeaderElection.RetryPeriod.Duration
+
+	mcManagerOptions := []mcmanager.Option{}
+	if enableClusterSharding {
+		setupLog.Info(
+			"enabling cluster sharding coordinator",
+			"leaseNamespace",
+			clusterShardingLeaseNamespace,
+			"leasePrefix",
+			clusterShardingLeasePrefix,
+			"peerWeight",
+			clusterShardingPeerWeight,
+		)
+
+		clusterShardingOptions := []sharded.Option{
+			sharded.WithShardLease(clusterShardingLeaseNamespace, clusterShardingLeasePrefix),
+			sharded.WithPerClusterLease(true),
+		}
+		if clusterShardingPeerWeight > 0 {
+			clusterShardingOptions = append(
+				clusterShardingOptions,
+				sharded.WithPeerWeight(uint32(clusterShardingPeerWeight)),
+			)
+		}
+
+		mcManagerOptions = append(
+			mcManagerOptions,
+			mcmanager.WithCoordinator(
+				sharded.New(
+					deploymentCluster.GetClient(),
+					ctrl.Log.WithName("cluster-sharding-coordinator"),
+					clusterShardingOptions...,
+				),
+			),
+		)
+	}
+
+	primaryManagerLeaderElection := enableLeaderElection
+	if enableClusterSharding && enableLeaderElection {
+		setupLog.Info(
+			"disabling primary manager leader election while cluster sharding is enabled",
+			"singletonControllersLeaderElection",
+			singletonControllersLeaderElection,
+		)
+		primaryManagerLeaderElection = false
+	}
+
 	mgr, err := mcmanager.New(cfg, provider, ctrl.Options{
 		Scheme:                  scheme,
 		Metrics:                 metricsServerOptions,
 		WebhookServer:           webhookServer,
 		HealthProbeBindAddress:  probeAddr,
-		LeaderElection:          enableLeaderElection,
+		LeaderElection:          primaryManagerLeaderElection,
 		LeaderElectionID:        "6a7d51cc.datumapis.com",
 		LeaderElectionNamespace: leaderElectionNamespace,
+		LeaseDuration:           &leaseDuration,
+		RenewDeadline:           &renewDeadline,
+		RetryPeriod:             &retryPeriod,
 		// LeaderElectionReleaseOnCancel defines if the leader should step down voluntarily
 		// when the Manager ends. This requires the binary to immediately end when the
 		// Manager is stopped, otherwise, this setting is unsafe. Setting this significantly
@@ -169,7 +271,7 @@ func main() {
 		// if you are doing or is intended to do any operation such as perform cleanups
 		// after the manager stops then its usage might be unsafe.
 		// LeaderElectionReleaseOnCancel: true,
-	})
+	}, mcManagerOptions...)
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
 		os.Exit(1)
@@ -180,6 +282,7 @@ func main() {
 		setupLog.Error(err, "unable to load control plane kubeconfig")
 		os.Exit(1)
 	}
+	serverConfig.DownstreamClient.ApplyTo(downstreamRestConfig)
 
 	downstreamCluster, err := cluster.New(downstreamRestConfig, func(o *cluster.Options) {
 		o.Scheme = scheme
@@ -192,6 +295,28 @@ func main() {
 	if err != nil {
 		setupLog.Error(err, "failed to construct cluster")
 		os.Exit(1)
+	}
+
+	var singletonMgr manager.Manager
+	singletonControllerMgr := mgr.GetLocalManager()
+	if enableClusterSharding {
+		singletonMgr, err = manager.New(cfg, manager.Options{
+			Scheme:                  scheme,
+			Metrics:                 metricsserver.Options{BindAddress: "0"},
+			WebhookServer:           webhook.NewServer(webhook.Options{Port: 0}),
+			HealthProbeBindAddress:  "0",
+			LeaderElection:          singletonControllersLeaderElection,
+			LeaderElectionID:        singletonControllersLeaderElectionID,
+			LeaderElectionNamespace: leaderElectionNamespace,
+			LeaseDuration:           &leaseDuration,
+			RenewDeadline:           &renewDeadline,
+			RetryPeriod:             &retryPeriod,
+		})
+		if err != nil {
+			setupLog.Error(err, "unable to create singleton controller manager")
+			os.Exit(1)
+		}
+		singletonControllerMgr = singletonMgr
 	}
 
 	if err := (&controller.NetworkReconciler{}).SetupWithManager(mgr); err != nil {
@@ -272,7 +397,7 @@ func main() {
 		if err := (&controller.GatewayDownstreamCertificateSolverReconciler{
 			Config:            serverConfig,
 			DownstreamCluster: downstreamCluster,
-		}).SetupWithManager(mgr); err != nil {
+		}).SetupWithManager(singletonControllerMgr); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "GatewayDownstreamCertificateSolver")
 			os.Exit(1)
 		}
@@ -296,11 +421,34 @@ func main() {
 		os.Exit(1)
 	}
 
+	var irohDownstream cluster.Cluster
+	if serverConfig.Connector.Iroh.DNSEnabled {
+		irohRestCfg, err := serverConfig.Connector.Iroh.DownstreamRestConfig()
+		if err != nil {
+			setupLog.Error(err, "unable to load iroh dns downstream kubeconfig")
+			os.Exit(1)
+		}
+		irohDownstream, err = cluster.New(irohRestCfg, func(o *cluster.Options) {
+			o.Scheme = scheme
+		})
+		if err != nil {
+			setupLog.Error(err, "unable to build iroh dns downstream cluster")
+			os.Exit(1)
+		}
+		if err := (&controller.IrohDNSReconciler{
+			Config:     serverConfig,
+			Downstream: irohDownstream,
+		}).SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "IrohDNS")
+			os.Exit(1)
+		}
+	}
+
 	if serverConfig.Gateway.ShouldDeleteErroredChallenges() {
 		if err := (&controller.ChallengeReconciler{
 			Config:            serverConfig,
 			DownstreamCluster: downstreamCluster,
-		}).SetupWithManager(mgr); err != nil {
+		}).SetupWithManager(singletonControllerMgr); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "Challenge")
 			os.Exit(1)
 		}
@@ -309,6 +457,13 @@ func main() {
 	if err := controller.AddIndexers(ctx, mgr); err != nil {
 		setupLog.Error(err, "unable to add indexers")
 		os.Exit(1)
+	}
+
+	if serverConfig.Gateway.EnableDNSIntegration {
+		if err := controller.AddDNSZoneDomainNameIndexer(ctx, mgr); err != nil {
+			setupLog.Error(err, "unable to add DNSZone indexer")
+			os.Exit(1)
+		}
 	}
 
 	if err := networkinggatewayv1webhooks.SetupGatewayWebhookWithManager(mgr, serverConfig); err != nil {
@@ -374,19 +529,38 @@ func main() {
 		})
 	}
 
-	setupLog.Info("starting cluster discovery provider")
-	g.Go(func() error {
-		return ignoreCanceled(provider.Run(ctx, mgr))
-	})
+	// Providers that still implement the legacy Run(ctx, mgr) shape (e.g. the
+	// Milo provider) must be started by us. Providers that implement upstream's
+	// multicluster.ProviderRunnable interface (e.g. mcsingle) are started
+	// automatically by mgr.Start, so we skip them here.
+	if runner, ok := provider.(legacyRunnableProvider); ok {
+		setupLog.Info("starting cluster discovery provider")
+		g.Go(func() error {
+			return ignoreCanceled(runner.Run(ctx, mgr))
+		})
+	}
 
 	g.Go(func() error {
 		return ignoreCanceled(downstreamCluster.Start(ctx))
 	})
 
+	if irohDownstream != nil {
+		g.Go(func() error {
+			return ignoreCanceled(irohDownstream.Start(ctx))
+		})
+	}
+
 	setupLog.Info("starting multicluster manager")
 	g.Go(func() error {
 		return ignoreCanceled(mgr.Start(ctx))
 	})
+
+	if singletonMgr != nil {
+		setupLog.Info("starting singleton controller manager")
+		g.Go(func() error {
+			return ignoreCanceled(singletonMgr.Start(ctx))
+		})
+	}
 
 	if err := g.Wait(); err != nil {
 		setupLog.Error(err, "unable to start")
@@ -394,49 +568,40 @@ func main() {
 	}
 }
 
-type runnableProvider interface {
+// legacyRunnableProvider matches providers that still expose the pre-upstream
+// Run(ctx, mgr) shape (notably the Milo provider). Upstream multicluster-runtime
+// has moved to multicluster.ProviderRunnable (Start(ctx, Aware)), which the
+// manager starts automatically. Once Milo migrates this interface can be
+// removed along with the manual goroutine that drives it.
+type legacyRunnableProvider interface {
 	multicluster.Provider
 	Run(context.Context, mcmanager.Manager) error
-}
-
-// Needed until we contribute the patch in the following PR again (need to sign CLA):
-//
-//	See: https://github.com/kubernetes-sigs/multicluster-runtime/pull/18
-type wrappedSingleClusterProvider struct {
-	multicluster.Provider
-	cluster cluster.Cluster
-}
-
-func (p *wrappedSingleClusterProvider) Run(ctx context.Context, mgr mcmanager.Manager) error {
-	if err := mgr.Engage(ctx, "single", p.cluster); err != nil {
-		return err
-	}
-	return p.Provider.(runnableProvider).Run(ctx, mgr)
 }
 
 func initializeClusterDiscovery(
 	serverConfig config.NetworkServicesOperator,
 	deploymentCluster cluster.Cluster,
 	scheme *runtime.Scheme,
-) (runnables []manager.Runnable, provider runnableProvider, err error) {
+) (runnables []manager.Runnable, provider multicluster.Provider, err error) {
 	runnables = append(runnables, deploymentCluster)
 	switch serverConfig.Discovery.Mode {
 	case multiclusterproviders.ProviderSingle:
-		provider = &wrappedSingleClusterProvider{
-			Provider: mcsingle.New("single", deploymentCluster),
-			cluster:  deploymentCluster,
-		}
+		// mcsingle implements multicluster.ProviderRunnable; mgr.Start engages
+		// the cluster and blocks for us — no wrapper needed.
+		provider = mcsingle.New("single", deploymentCluster)
 
 	case multiclusterproviders.ProviderMilo:
 		discoveryRestConfig, err := serverConfig.Discovery.DiscoveryRestConfig()
 		if err != nil {
 			return nil, nil, fmt.Errorf("unable to get discovery rest config: %w", err)
 		}
+		serverConfig.ProjectClient.ApplyTo(discoveryRestConfig)
 
 		projectRestConfig, err := serverConfig.Discovery.ProjectRestConfig()
 		if err != nil {
 			return nil, nil, fmt.Errorf("unable to get project rest config: %w", err)
 		}
+		serverConfig.ProjectClient.ApplyTo(projectRestConfig)
 
 		discoveryManager, err := manager.New(discoveryRestConfig, manager.Options{
 			Client: client.Options{

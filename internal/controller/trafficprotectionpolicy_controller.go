@@ -38,6 +38,7 @@ import (
 	"go.datum.net/network-services-operator/internal/config"
 	downstreamclient "go.datum.net/network-services-operator/internal/downstreamclient"
 	gatewaystatus "go.datum.net/network-services-operator/internal/gatewayapi/status"
+	gatewayutil "go.datum.net/network-services-operator/internal/util/gateway"
 	"go.datum.net/network-services-operator/internal/util/resourcename"
 )
 
@@ -56,6 +57,19 @@ const (
 	// PolicyReasonWaitingForListenersProgrammed indicates that the policy is waiting
 	// for HTTPS listeners to be Programmed=True before EnvoyPatchPolicies can be created.
 	PolicyReasonWaitingForListenersProgrammed gatewayv1alpha2.PolicyConditionReason = "WaitingForListenersProgrammed"
+
+	// tppEnvoyPatchPolicyPrefix is the name prefix for all EnvoyPatchPolicies
+	// written by the TrafficProtectionPolicy controller ("tpp-<gateway-name>").
+	// The stale-cleanup loop uses this prefix to skip EPPs owned by other
+	// controllers (e.g. the HTTPProxy connector controller uses "connector-<name>").
+	tppEnvoyPatchPolicyPrefix = "tpp-"
+
+	// tppManagedLabel is stamped onto every EnvoyPatchPolicy created or updated
+	// by this controller. Once all existing EPPs have been reconciled and carry
+	// this label, the stale-cleanup loop can switch to a label-selector List
+	// instead of the current prefix check, removing the naming-convention
+	// dependency entirely.
+	tppManagedLabel = "networking.datumapis.com/managed-by-tpp-controller"
 )
 
 // certificateReadinessResult contains the result of checking certificate readiness
@@ -169,6 +183,10 @@ func (r *TrafficProtectionPolicyReconciler) Reconcile(ctx context.Context, req N
 		}}
 
 		result, err := controllerutil.CreateOrUpdate(ctx, downstreamStrategy.GetClient(), &policy, func() error {
+			if policy.Labels == nil {
+				policy.Labels = make(map[string]string)
+			}
+			policy.Labels[tppManagedLabel] = "true"
 			policy.Spec = desiredPolicy.Spec
 			return nil
 		})
@@ -178,21 +196,31 @@ func (r *TrafficProtectionPolicyReconciler) Reconcile(ctx context.Context, req N
 		logger.Info("applied envoypatchpolicy to downstream cluster", "namespace", policy.Namespace, "name", policy.Name, "result", result)
 	}
 
+	// Clean up stale EPPs. All EPPs written by this controller are named
+	// "tpp-<gateway-name>"; other controllers use different prefixes (e.g.
+	// "connector-<name>" from the HTTPProxy controller). Filtering by prefix
+	// avoids a label dependency and correctly handles deleted gateways whose EPP
+	// would be missed if we only iterated upstreamGateways.
+	// TODO: once all existing EPPs carry tppManagedLabel (stamped above on every
+	// CreateOrUpdate), switch this List to use a label selector and drop the
+	// prefix check.
 	var existingPolicies envoygatewayv1alpha1.EnvoyPatchPolicyList
 	if err := downstreamStrategy.GetClient().List(
 		ctx,
 		&existingPolicies,
 		client.InNamespace(downstreamNamespaceName),
 	); err != nil {
-		return ctrl.Result{}, fmt.Errorf("failed to list managed envoypatchpolicies: %w", err)
+		return ctrl.Result{}, fmt.Errorf("failed to list envoypatchpolicies: %w", err)
 	}
 
 	for i := range existingPolicies.Items {
 		existing := &existingPolicies.Items[i]
+		if !strings.HasPrefix(existing.Name, tppEnvoyPatchPolicyPrefix) {
+			continue
+		}
 		if _, ok := desiredPolicyNames[existing.Name]; ok {
 			continue
 		}
-
 		if err := downstreamStrategy.GetClient().Delete(ctx, existing); err != nil {
 			return ctrl.Result{}, fmt.Errorf("failed to delete stale envoypatchpolicy %s/%s: %w", existing.Namespace, existing.Name, err)
 		}
@@ -294,13 +322,18 @@ func (r *TrafficProtectionPolicyReconciler) checkHTTPSListenerCertificatesReady(
 ) (*certificateReadinessResult, error) {
 	logger := log.FromContext(ctx)
 
-	// Collect unique HTTPS listeners from attachments
+	// Collect unique HTTPS listeners from attachments, skipping default
+	// listeners that use a shared TLS secret (which is pre-provisioned and
+	// doesn't have a per-listener Certificate resource).
 	httpsListeners := make(map[string]struct{})
 	for _, attachment := range attachments {
 		if attachment.Listener != nil {
 			// Check if this specific listener is HTTPS
 			for _, l := range attachment.Gateway.Spec.Listeners {
 				if l.Name == *attachment.Listener && l.Protocol == gatewayv1.HTTPSProtocolType {
+					if gatewayutil.IsDefaultListener(l) && r.Config.Gateway.HasDefaultListenerTLSSecret() {
+						continue
+					}
 					certName := resourcename.GetValidDNS1123Name(fmt.Sprintf("%s-%s", attachment.Gateway.Name, l.Name))
 					httpsListeners[certName] = struct{}{}
 				}
@@ -309,6 +342,9 @@ func (r *TrafficProtectionPolicyReconciler) checkHTTPSListenerCertificatesReady(
 			// Policy targets all listeners on the gateway
 			for _, l := range attachment.Gateway.Spec.Listeners {
 				if l.Protocol == gatewayv1.HTTPSProtocolType {
+					if gatewayutil.IsDefaultListener(l) && r.Config.Gateway.HasDefaultListenerTLSSecret() {
+						continue
+					}
 					certName := resourcename.GetValidDNS1123Name(fmt.Sprintf("%s-%s", attachment.Gateway.Name, l.Name))
 					httpsListeners[certName] = struct{}{}
 				}
@@ -1133,7 +1169,7 @@ func (r *TrafficProtectionPolicyReconciler) getDesiredEnvoyPatchPolicies(
 			continue
 		}
 
-		policyName := fmt.Sprintf("tpp-%s", attachmentsForGateway[0].Gateway.Name)
+		policyName := tppEnvoyPatchPolicyPrefix + attachmentsForGateway[0].Gateway.Name
 		desiredPolicies = append(desiredPolicies, &envoygatewayv1alpha1.EnvoyPatchPolicy{
 			ObjectMeta: metav1.ObjectMeta{
 				Namespace: downstreamNamespaceName,

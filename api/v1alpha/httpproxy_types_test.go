@@ -216,6 +216,7 @@ func TestConditionConstants(t *testing.T) {
 	assert.Equal(t, "DNSZoneNotFound", networkingv1alpha.DNSRecordReasonZoneNotFound)
 	assert.Equal(t, "DNSZoneNotReady", networkingv1alpha.DNSRecordReasonZoneNotReady)
 	assert.Equal(t, "DomainNotVerified", networkingv1alpha.DNSRecordReasonDomainNotVerified)
+	assert.Equal(t, "DNSAuthorityMissing", networkingv1alpha.DNSRecordReasonDNSAuthorityMissing)
 	assert.Equal(t, "ConflictWithUserRecord", networkingv1alpha.DNSRecordReasonConflict)
 	assert.Equal(t, "RecordCreationFailed", networkingv1alpha.DNSRecordReasonFailed)
 	assert.Equal(t, "RetryPending", networkingv1alpha.DNSRecordReasonRetryPending)

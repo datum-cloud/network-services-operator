@@ -17,9 +17,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/source"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
-	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 
 	"go.datum.net/network-services-operator/internal/config"
 )
@@ -253,7 +253,7 @@ func (r *GatewayDownstreamCertificateSolverReconciler) Reconcile(ctx context.Con
 }
 
 // SetupWithManager sets up the controller with the Manager.
-func (r *GatewayDownstreamCertificateSolverReconciler) SetupWithManager(mgr mcmanager.Manager) error {
+func (r *GatewayDownstreamCertificateSolverReconciler) SetupWithManager(mgr manager.Manager) error {
 	// Watch Challenge resources directly - this ensures we handle both initial
 	// certificate issuance and renewals, since cert-manager creates new Challenges
 	// for renewals even when the Certificate is still marked as Ready.
@@ -263,7 +263,7 @@ func (r *GatewayDownstreamCertificateSolverReconciler) SetupWithManager(mgr mcma
 		&handler.TypedEnqueueRequestForObject[*unstructured.Unstructured]{},
 	)
 
-	return ctrl.NewControllerManagedBy(mgr.GetLocalManager()).
+	return ctrl.NewControllerManagedBy(mgr).
 		WatchesRawSource(downstreamChallengeSource).
 		Named("downstream-certificate-solver").
 		Complete(r)
@@ -284,6 +284,9 @@ var (
 	challengeGVK   = acmeCertManagerGV.WithKind("Challenge")
 )
 
+// certManagerConditionTypeReady is the type value for cert-manager Certificate Ready condition.
+const certManagerConditionTypeReady = "Ready"
+
 // isCertificateReady checks if a cert-manager Certificate has Ready=True condition.
 func isCertificateReady(certificate *unstructured.Unstructured) (bool, error) {
 	conditions, found, err := unstructured.NestedSlice(certificate.Object, "status", "conditions")
@@ -299,7 +302,7 @@ func isCertificateReady(certificate *unstructured.Unstructured) (bool, error) {
 		if !ok {
 			continue
 		}
-		if condMap["type"] == "Ready" && condMap["status"] == string(metav1.ConditionTrue) {
+		if condMap["type"] == certManagerConditionTypeReady && condMap["status"] == string(metav1.ConditionTrue) {
 			return true, nil
 		}
 	}

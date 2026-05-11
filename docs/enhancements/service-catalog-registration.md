@@ -343,9 +343,11 @@ Following the per-service-domain layout established in
 ```
 config/services/
   kustomization.yaml
-  services_v1alpha1_service_networking.yaml
-  services_v1alpha1_serviceconfiguration_networking.yaml
-  README.md
+  networking.datumapis.com/
+    kustomization.yaml
+    service.yaml
+    serviceconfiguration.yaml
+    README.md
 ```
 
 No `config/billing/` bundle is needed. Both `MonitoredResourceType` and
@@ -357,11 +359,11 @@ are control-plane resources deployed independently via Flux into the services
 namespace. Wiring them into `datum-cloud/infra` Flux kustomizations is a
 separate step handled by the platform/infra team after sign-off.
 
-**Open decision OD-4** (blocking Phase 1): Confirm bundle layout. The issue
-mentions packaging as a Kustomize component under `config/components/`. The
-existing pattern in `datum-cloud/datum/config/services/<service-domain>/` uses
-a per-service directory. Either is valid; the per-service-directory approach
-aligns with the existing platform layout and is recommended.
+**OD-4 resolved.** Bundle layout is a per-service-domain directory under
+`config/services/`, matching the existing pattern in
+`datum-cloud/datum/config/services/<service-domain>/`. Concretely:
+`config/services/networking.datumapis.com/` containing the `Service`,
+`ServiceConfiguration`, `kustomization.yaml`, and `README.md`.
 
 ---
 
@@ -515,13 +517,13 @@ The following decisions are required before work can begin on each phase.
 | OD-1 | ~~How does the service catalog express the monitored resource?~~ — resolved: via `services.miloapis.com/v1alpha1/ServiceConfiguration` carrying `spec.monitoredResourceTypes[]` and `spec.meters[]` inline. Fan-out controller produces the `MonitoredResourceType` and meter resources in the billing namespace. | — | — |
 | OD-2 | ~~Canonical `serviceName`~~ — resolved: `networking.datumapis.com`. | — | — |
 | OD-3 | ~~`producerProjectRef.name`~~ — resolved: `datum-cloud`. | — | — |
-| OD-4 | Bundle layout: per-service-domain directory under `config/services/` (recommended) vs Kustomize component under `config/components/`? | Kevin | Phase 1 |
+| OD-4 | ~~Bundle layout~~ — resolved: per-service-domain directory under `config/services/networking.datumapis.com/`, matching `datum-cloud/datum/config/services/<service-domain>/`. | — | — |
 | OD-5 | Is the Vector Agent DaemonSet planned to run on the edge cluster nodes that host Envoy Gateway pods? | Platform / infra | Phase 2 |
 | OD-6 | Can the network-services-operator patch the `EnvoyProxy` CR to inject access log configuration? | Kevin | Phase 2 |
 | OD-7 | Is the billing SDK published as a consumable Go module? | Billing team | Phase 2 |
 | OD-8 | Enrichment-sidecar placement: per-node alongside Vector, or central in front of the Ingestion Gateway? | Billing team / platform | Phase 2 |
 
-Phase 1 can begin once OD-4 is resolved. Phase 2 is additionally
+All Phase 1 decisions are resolved; implementation can begin. Phase 2 is
 blocked on OD-5 through OD-8.
 
 ---
@@ -535,8 +537,8 @@ From issue [#155](https://github.com/datum-cloud/network-services-operator/issue
   separate sign-off step gated on the billing team.)
 - [ ] Metering configuration covers request count, egress bytes, ingress bytes,
   and connection seconds, all shipped in `Draft` phase initially.
-- [ ] Resources are packaged as a Kustomize bundle under `config/services/`
-  (or an agreed alternative per OD-4).
+- [ ] Resources are packaged as a Kustomize bundle under
+  `config/services/networking.datumapis.com/`.
 - [ ] Investigation is complete with a clear confirmed approach for collecting
   and emitting usage events from the proxy to the billing pipeline.
 
@@ -546,12 +548,13 @@ From issue [#155](https://github.com/datum-cloud/network-services-operator/issue
 
 ### Phase 1 — Catalog registration (no Go changes, ~1–2 days)
 
-1. Resolve OD-4.
-2. Author `config/services/` YAML bundle:
-   - `Service` resource (identity).
-   - `ServiceConfiguration` resource carrying `monitoredResourceTypes[]` and
-     `meters[]` inline.
+1. Author `config/services/networking.datumapis.com/`:
+   - `service.yaml` — `Service` resource (identity).
+   - `serviceconfiguration.yaml` — `ServiceConfiguration` carrying
+     `monitoredResourceTypes[]` and `meters[]` inline.
    - `kustomization.yaml` and `README.md`.
+2. Add a root `config/services/kustomization.yaml` referencing the
+   per-service-domain directory.
 3. Open PR against `network-services-operator`. No Go code changes. No
    `config/billing/` bundle — fan-out controller produces those resources.
 4. Platform/infra team separately wires the bundle into `datum-cloud/infra`

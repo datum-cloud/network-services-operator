@@ -36,13 +36,13 @@ usage-based billing.
 
 The work splits cleanly into two independently deliverable phases:
 
-- **Phase 1 (catalog):** Declare the `Service` resource (which carries the
-  monitored-resource configuration for the catalog) and the `MeterDefinition`
-  resources. No Go code changes — pure YAML, packaged in `config/billing/` and
-  `config/services/`. Deployable as soon as the billing and services CRDs are
-  present in the control plane. The `MonitoredResourceType` is created
-  transitively by the service catalog from the `Service` configuration; it is
-  not shipped as a standalone YAML in this bundle.
+- **Phase 1 (catalog):** Declare a `Service` resource and a companion
+  `ServiceConfiguration` resource (`services.miloapis.com/v1alpha1`) that
+  carries the monitored-resource and meter declarations inline. No Go code
+  changes — pure YAML, packaged in `config/services/`. The
+  `MonitoredResourceType` and meter resources are produced by the catalog
+  fan-out controller from `ServiceConfiguration`; we do not author them
+  directly.
 - **Phase 2 (emission):** Wire the edge proxy's telemetry into the billing SDK
   and emit usage events to the Vector Agent. Requires the investigation findings
   below to be confirmed before implementation begins.
@@ -72,10 +72,10 @@ new meter family, an updated SDK, and a customer migration.
 ### In scope
 
 - `services.miloapis.com/v1alpha1` `Service` resource for Network Services.
-- `billing.miloapis.com/v1alpha1` `MonitoredResourceType` and `MeterDefinition`
-  resources for the four billing signals described below.
-- `config/billing/` and `config/services/` Kustomize bundles in this repo,
-  following the pattern established in `datum-cloud/cloud-portal`.
+- `services.miloapis.com/v1alpha1` `ServiceConfiguration` resource declaring
+  the monitored resource (`HTTPRoute`) and the four meters inline.
+- `config/services/` Kustomize bundle in this repo, following the pattern
+  established in `datum-cloud/datum/config/services/<service-domain>/`.
 - An investigation document (this brief) covering how to extract the four
   billing signals from the Envoy Gateway proxy and emit them via the billing SDK.
 
@@ -197,58 +197,106 @@ pricing, Azure Application Gateway and Standard LB pricing, Azure Front Door
 billing, Fastly pricing.
 
 **The `MonitoredResourceType` is not shipped as a standalone YAML in this
-bundle.** The service catalog's service configuration resource (the `services.miloapis.com/Service` spec, in its current form, or a
-dedicated sub-resource if one is introduced) is the source of truth, and the
-catalog/controller materializes the `MonitoredResourceType` from it. Phase 1
-ships only the `Service` and `MeterDefinition` resources; the
-`MonitoredResourceType` shown below is illustrative of the eventual
-controller-produced shape, not a file we author.
+bundle.** The service catalog's `ServiceConfiguration` resource
+(`services.miloapis.com/v1alpha1`) is the source of truth — it carries both
+the monitored-resource declarations and the meter declarations inline. A
+controller fans out from `ServiceConfiguration` to the corresponding
+`billing.miloapis.com/v1alpha1/MonitoredResourceType` (and to meter resources)
+in the billing namespace.
 
-Illustrative shape (controller-produced, not authored YAML):
+This pattern is already in production for the `compute` service. Its
+`ServiceConfiguration` carries `spec.monitoredResourceTypes[]` and
+`spec.meters[]` inline, and the fan-out creates `MonitoredResourceType`s like
+`compute-datumapis-com-instance`. We follow the same pattern for Network
+Services.
+
+Proposed `ServiceConfiguration` shape:
 
 ```yaml
-apiVersion: billing.miloapis.com/v1alpha1
-kind: MonitoredResourceType
+apiVersion: services.miloapis.com/v1alpha1
+kind: ServiceConfiguration
 metadata:
-  name: networking-datumapis-com-httproute
-  labels:
-    services.miloapis.com/owner-service: networking.datumapis.com
+  name: networking-datumapis-com
 spec:
-  resourceTypeName: networking.datumapis.com/HTTPRoute
   phase: Draft
-  displayName: HTTP Route
-  description: |
-    A customer-defined HTTP routing configuration attached to a managed
-    Gateway. One HTTPRoute represents a single HTTP service surface on
-    the Datum Cloud edge. Usage events cover proxied request count,
-    egress bytes, ingress bytes, and active connection seconds.
-  gvk:
-    group: gateway.networking.k8s.io
-    kind: HTTPRoute
-  labels:
-    - name: region
-      required: false
-    - name: gateway
-      required: false
-    - name: gateway_class
-      required: false
+  serviceRef:
+    name: networking-datumapis-com
+  monitoredResourceTypes:
+    - type: networking.datumapis.com/HTTPRoute
+      displayName: HTTP Route
+      description: |
+        A customer-defined HTTP routing configuration attached to a managed
+        Gateway. One HTTPRoute represents a single HTTP service surface on
+        the Datum Cloud edge. Usage events cover proxied request count,
+        egress bytes, ingress bytes, and active connection seconds.
+      gvk:
+        group: gateway.networking.k8s.io
+        kind: HTTPRoute
+      labels:
+        - name: region
+          description: Datum deployment region serving the requests.
+        - name: gateway
+          description: Name of the underlying Gateway resource.
+        - name: gateway_class
+          description: GatewayClass of the underlying Gateway.
+  meters:
+    - name: networking.datumapis.com/gateway/requests
+      displayName: HTTP Route Requests
+      description: HTTP requests proxied through the route.
+      measurement:
+        aggregation: Sum
+        unit: "{request}"
+      billing:
+        consumedUnit: "{request}"
+        pricingUnit: "{request}"
+      monitoredResourceTypes:
+        - networking.datumapis.com/HTTPRoute
+    - name: networking.datumapis.com/gateway/egress-bytes
+      displayName: HTTP Route Egress Bytes
+      description: Bytes sent downstream by the route.
+      measurement:
+        aggregation: Sum
+        unit: By
+      billing:
+        consumedUnit: By
+        pricingUnit: GiBy
+      monitoredResourceTypes:
+        - networking.datumapis.com/HTTPRoute
+    - name: networking.datumapis.com/gateway/ingress-bytes
+      displayName: HTTP Route Ingress Bytes
+      description: Bytes received from clients by the route.
+      measurement:
+        aggregation: Sum
+        unit: By
+      billing:
+        consumedUnit: By
+        pricingUnit: GiBy
+      monitoredResourceTypes:
+        - networking.datumapis.com/HTTPRoute
+    - name: networking.datumapis.com/gateway/connection-seconds
+      displayName: HTTP Route Connection Seconds
+      description: Seconds long-lived connections (e.g. WebSocket) are held open.
+      measurement:
+        aggregation: Sum
+        unit: s
+      billing:
+        consumedUnit: s
+        pricingUnit: h
+      monitoredResourceTypes:
+        - networking.datumapis.com/HTTPRoute
 ```
 
-**Open decision OD-1** (now reframed, still blocking Phase 1): How does the
-service catalog's service configuration resource express the monitored
-resource? Specifically:
+**OD-1 resolved.** The `ServiceConfiguration` resource exists today and is the
+correct shape. Phase 1 ships one `Service` and one `ServiceConfiguration` in
+`config/services/`. No `config/billing/` bundle is needed — `MeterDefinition`
+and `MonitoredResourceType` resources are produced by the fan-out controller
+from `ServiceConfiguration.spec`.
 
-- Does the existing `services.miloapis.com/Service` spec already carry
-  monitored-resource fields, or is a new sub-resource (e.g.
-  `ServiceConfiguration`) being introduced?
-- What field on that resource declares the `gvk`, `displayName`,
-  `description`, and dimension labels?
-- Will Phase 1 ship before that field/resource exists? If yes, we either (a)
-  hold Phase 1, or (b) ship a temporary standalone `MonitoredResourceType`
-  with a clear deletion plan.
-
-Needs confirmation from Scot / services API owner before authoring Phase 1
-YAML.
+Note (operational, not blocking): at the time of this brief the `compute`
+ServiceConfiguration on staging is reporting `BillingFanOutFailed` because of
+a DNS lookup error to `billing-webhook.milo-system.svc`. This is an
+environment issue, not a shape issue — it confirms that the fan-out
+controller is real and is the intended mechanism.
 
 ---
 
@@ -279,57 +327,41 @@ spec:
   owner:
     producerProjectRef:
       name: datum-cloud
-  # Monitored-resource declaration goes here once the service
-  # configuration shape is confirmed (see OD-1). The catalog will
-  # materialize the MonitoredResourceType from this spec.
 ```
 
-Meter names also move under the resolved service domain:
-
-| Signal | meterName |
-|--------|-----------|
-| Request count | `networking.datumapis.com/gateway/requests` |
-| Egress bytes | `networking.datumapis.com/gateway/egress-bytes` |
-| Ingress bytes | `networking.datumapis.com/gateway/ingress-bytes` |
-| Active connection seconds | `networking.datumapis.com/gateway/connection-seconds` |
+The monitored-resource declarations and meter definitions live in the
+companion `ServiceConfiguration` resource (see [Monitored Resource](#monitored-resource)),
+not in the `Service` spec itself.
 
 ---
 
 ## Kustomize Bundle Layout
 
-Following `datum-cloud/cloud-portal`'s `config/billing/` and `config/services/`
-pattern:
+Following the per-service-domain layout established in
+`datum-cloud/datum/config/services/`:
 
 ```
-config/billing/
-  kustomization.yaml
-  meterdefinition-requests.yaml
-  meterdefinition-egress-bytes.yaml
-  meterdefinition-ingress-bytes.yaml
-  meterdefinition-connection-seconds.yaml
-  README.md
-
 config/services/
   kustomization.yaml
   services_v1alpha1_service_networking.yaml
+  services_v1alpha1_serviceconfiguration_networking.yaml
   README.md
 ```
 
-Note: no `monitoredresourcetype-*.yaml` files. The `MonitoredResourceType` is
-produced by the service catalog from the `Service` spec, not authored directly
-here.
+No `config/billing/` bundle is needed. Both `MonitoredResourceType` and
+`MeterDefinition` resources are produced by the catalog's fan-out controller
+from `ServiceConfiguration.spec`.
 
-These bundles are **not** wired into the operator's Deployment overlay. They are
-control-plane resources deployed independently via Flux into the billing and
-services namespaces, as established by the cloud-portal pattern. Wiring them
-into `datum-cloud/infra` Flux kustomizations is a separate step handled by the
-platform/infra team after sign-off.
+These resources are **not** wired into the operator's Deployment overlay. They
+are control-plane resources deployed independently via Flux into the services
+namespace. Wiring them into `datum-cloud/infra` Flux kustomizations is a
+separate step handled by the platform/infra team after sign-off.
 
 **Open decision OD-4** (blocking Phase 1): Confirm bundle layout. The issue
 mentions packaging as a Kustomize component under `config/components/`. The
-cloud-portal pattern uses top-level `config/billing/` and `config/services/`
-directories instead. Both are valid. The top-level approach is recommended for
-consistency with cloud-portal, but this needs confirmation.
+existing pattern in `datum-cloud/datum/config/services/<service-domain>/` uses
+a per-service directory. Either is valid; the per-service-directory approach
+aligns with the existing platform layout and is recommended.
 
 ---
 
@@ -480,16 +512,16 @@ The following decisions are required before work can begin on each phase.
 
 | ID | Question | Owner | Blocking |
 |----|----------|-------|---------|
-| OD-1 | How does the service catalog's service configuration resource express the monitored resource (existing `Service` spec fields, or a new sub-resource)? Does it exist yet? | Services API owner | Phase 1 |
+| OD-1 | ~~How does the service catalog express the monitored resource?~~ — resolved: via `services.miloapis.com/v1alpha1/ServiceConfiguration` carrying `spec.monitoredResourceTypes[]` and `spec.meters[]` inline. Fan-out controller produces the `MonitoredResourceType` and meter resources in the billing namespace. | — | — |
 | OD-2 | ~~Canonical `serviceName`~~ — resolved: `networking.datumapis.com`. | — | — |
 | OD-3 | ~~`producerProjectRef.name`~~ — resolved: `datum-cloud`. | — | — |
-| OD-4 | Bundle layout: `config/billing/` + `config/services/` (recommended) vs `config/components/`? | Kevin | Phase 1 |
+| OD-4 | Bundle layout: per-service-domain directory under `config/services/` (recommended) vs Kustomize component under `config/components/`? | Kevin | Phase 1 |
 | OD-5 | Is the Vector Agent DaemonSet planned to run on the edge cluster nodes that host Envoy Gateway pods? | Platform / infra | Phase 2 |
 | OD-6 | Can the network-services-operator patch the `EnvoyProxy` CR to inject access log configuration? | Kevin | Phase 2 |
 | OD-7 | Is the billing SDK published as a consumable Go module? | Billing team | Phase 2 |
 | OD-8 | Enrichment-sidecar placement: per-node alongside Vector, or central in front of the Ingestion Gateway? | Billing team / platform | Phase 2 |
 
-Phase 1 can begin once OD-1 and OD-4 are resolved. Phase 2 is additionally
+Phase 1 can begin once OD-4 is resolved. Phase 2 is additionally
 blocked on OD-5 through OD-8.
 
 ---
@@ -503,8 +535,8 @@ From issue [#155](https://github.com/datum-cloud/network-services-operator/issue
   separate sign-off step gated on the billing team.)
 - [ ] Metering configuration covers request count, egress bytes, ingress bytes,
   and connection seconds, all shipped in `Draft` phase initially.
-- [ ] Resources are packaged as a Kustomize bundle under `config/billing/` and
-  `config/services/` (or an agreed alternative per OD-4).
+- [ ] Resources are packaged as a Kustomize bundle under `config/services/`
+  (or an agreed alternative per OD-4).
 - [ ] Investigation is complete with a clear confirmed approach for collecting
   and emitting usage events from the proxy to the billing pipeline.
 
@@ -514,18 +546,15 @@ From issue [#155](https://github.com/datum-cloud/network-services-operator/issue
 
 ### Phase 1 — Catalog registration (no Go changes, ~1–2 days)
 
-1. Resolve OD-1 and OD-4.
-2. Author `config/billing/` YAML bundle:
-   - `MeterDefinition` for each of the four signals.
+1. Resolve OD-4.
+2. Author `config/services/` YAML bundle:
+   - `Service` resource (identity).
+   - `ServiceConfiguration` resource carrying `monitoredResourceTypes[]` and
+     `meters[]` inline.
    - `kustomization.yaml` and `README.md`.
-   - No `MonitoredResourceType` YAML — produced by the service catalog from
-     the `Service` resource.
-3. Author `config/services/` YAML bundle:
-   - `Service` resource carrying the monitored-resource configuration
-     (shape per OD-1).
-   - `kustomization.yaml` and `README.md`.
-4. Open PR against `network-services-operator`. No Go code changes.
-5. Platform/infra team separately wires the bundles into `datum-cloud/infra`
+3. Open PR against `network-services-operator`. No Go code changes. No
+   `config/billing/` bundle — fan-out controller produces those resources.
+4. Platform/infra team separately wires the bundle into `datum-cloud/infra`
    Flux kustomizations (out of scope for this repo).
 
 ### Phase 2 — Emission integration (~1–2 weeks)
@@ -549,6 +578,6 @@ From issue [#155](https://github.com/datum-cloud/network-services-operator/issue
 - Billing usage pipeline design: `datum-cloud/billing/docs/enhancements/usage-pipeline.md`
 - `MeterDefinition` API type: `datum-cloud/billing/api/v1alpha1/meterdefinition_types.go`
 - `MonitoredResourceType` API type: `datum-cloud/billing/api/v1alpha1/monitoredresourcetype_types.go`
-- Cloud-portal billing bundle (reference pattern): `datum-cloud/cloud-portal/config/billing/`
-- Cloud-portal service registration (reference pattern): `datum-cloud/cloud-portal/config/services/`
-- Billing `MeterDefinition` sample: `datum-cloud/billing/config/samples/billing_v1alpha1_meterdefinition.yaml`
+- Live reference: `kubectl get serviceconfiguration compute -o yaml` against
+  the platform-wide control plane — shows the production shape of `spec.monitoredResourceTypes[]` and `spec.meters[]`.
+- Per-service-domain bundle layout: `datum-cloud/datum/config/services/`

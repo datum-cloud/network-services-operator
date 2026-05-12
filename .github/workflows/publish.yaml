@@ -31,4 +31,6 @@ jobs:
     with:
       bundle-name: ghcr.io/datum-cloud/network-services-operator-kustomize
       bundle-path: config
+      image-name: ghcr.io/datum-cloud/network-services-operator
+      image-overlays: config/manager
     secrets: inherit

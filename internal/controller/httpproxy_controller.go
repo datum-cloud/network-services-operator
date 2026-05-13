@@ -294,6 +294,19 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 			endpointSlice.AddressType = desiredEndpointSlice.AddressType
 			endpointSlice.Endpoints = desiredEndpointSlice.Endpoints
 			endpointSlice.Ports = desiredEndpointSlice.Ports
+
+			// Keep the backend cert hostname annotation in sync. The gateway
+			// controller reads this to build the BackendTLSPolicy when the
+			// URLRewrite filter carries a user Host override instead of the
+			// real backend FQDN.
+			if v, ok := desiredEndpointSlice.Annotations[BackendCertHostnameAnnotation]; ok {
+				if endpointSlice.Annotations == nil {
+					endpointSlice.Annotations = map[string]string{}
+				}
+				endpointSlice.Annotations[BackendCertHostnameAnnotation] = v
+			} else {
+				delete(endpointSlice.Annotations, BackendCertHostnameAnnotation)
+			}
 			return nil
 		})
 

@@ -355,7 +355,7 @@ func TestHTTPProxyCollectDesiredResources(t *testing.T) {
 						},
 					},
 				}
-				h.Spec.Rules[0].Backends[0].Endpoint = "https://192.168.1.1"
+				h.Spec.Rules[0].Backends[0].Endpoint = "https://10.0.0.1"
 				h.Spec.Rules[0].Backends[0].TLS = &networkingv1alpha.HTTPProxyBackendTLS{
 					Hostname: ptr.To("api.example.com"),
 				}

@@ -277,6 +277,96 @@ func TestHTTPProxyCollectDesiredResources(t *testing.T) {
 			},
 		},
 		{
+			name: "user Host header override on FQDN backend skips URLRewrite injection",
+			httpProxy: newHTTPProxy(func(h *networkingv1alpha.HTTPProxy) {
+				h.Spec.Rules[0].Filters = []gatewayv1.HTTPRouteFilter{
+					{
+						Type: gatewayv1.HTTPRouteFilterRequestHeaderModifier,
+						RequestHeaderModifier: &gatewayv1.HTTPHeaderFilter{
+							Set: []gatewayv1.HTTPHeader{
+								{Name: "Host", Value: "example.internal"},
+							},
+						},
+					},
+				}
+			}),
+			assert: func(t *testing.T, httpProxy *networkingv1alpha.HTTPProxy, desiredResources *desiredHTTPProxyResources) {
+				routeRule := desiredResources.httpRoute.Spec.Rules[0]
+				for _, f := range routeRule.Filters {
+					assert.NotEqual(t, gatewayv1.HTTPRouteFilterURLRewrite, f.Type, "URLRewrite must not be injected when user has set Host header")
+				}
+				if assert.Len(t, routeRule.Filters, 1) {
+					assert.Equal(t, gatewayv1.HTTPRouteFilterRequestHeaderModifier, routeRule.Filters[0].Type)
+					assert.Equal(t, "example.internal", routeRule.Filters[0].RequestHeaderModifier.Set[0].Value)
+				}
+			},
+		},
+		{
+			name: "user Host header override is case-insensitive",
+			httpProxy: newHTTPProxy(func(h *networkingv1alpha.HTTPProxy) {
+				h.Spec.Rules[0].Filters = []gatewayv1.HTTPRouteFilter{
+					{
+						Type: gatewayv1.HTTPRouteFilterRequestHeaderModifier,
+						RequestHeaderModifier: &gatewayv1.HTTPHeaderFilter{
+							Set: []gatewayv1.HTTPHeader{
+								{Name: "host", Value: "example.internal"},
+							},
+						},
+					},
+				}
+			}),
+			assert: func(t *testing.T, httpProxy *networkingv1alpha.HTTPProxy, desiredResources *desiredHTTPProxyResources) {
+				for _, f := range desiredResources.httpRoute.Spec.Rules[0].Filters {
+					assert.NotEqual(t, gatewayv1.HTTPRouteFilterURLRewrite, f.Type)
+				}
+			},
+		},
+		{
+			name: "user Host header override at backend level skips URLRewrite injection",
+			httpProxy: newHTTPProxy(func(h *networkingv1alpha.HTTPProxy) {
+				h.Spec.Rules[0].Filters = nil
+				h.Spec.Rules[0].Backends[0].Filters = []gatewayv1.HTTPRouteFilter{
+					{
+						Type: gatewayv1.HTTPRouteFilterRequestHeaderModifier,
+						RequestHeaderModifier: &gatewayv1.HTTPHeaderFilter{
+							Set: []gatewayv1.HTTPHeader{
+								{Name: "Host", Value: "example.internal"},
+							},
+						},
+					},
+				}
+			}),
+			assert: func(t *testing.T, httpProxy *networkingv1alpha.HTTPProxy, desiredResources *desiredHTTPProxyResources) {
+				for _, f := range desiredResources.httpRoute.Spec.Rules[0].Filters {
+					assert.NotEqual(t, gatewayv1.HTTPRouteFilterURLRewrite, f.Type, "URLRewrite must not be injected when user has set Host at backend level")
+				}
+			},
+		},
+		{
+			name: "user Host header override on HTTPS IP backend skips URLRewrite injection",
+			httpProxy: newHTTPProxy(func(h *networkingv1alpha.HTTPProxy) {
+				h.Spec.Rules[0].Filters = []gatewayv1.HTTPRouteFilter{
+					{
+						Type: gatewayv1.HTTPRouteFilterRequestHeaderModifier,
+						RequestHeaderModifier: &gatewayv1.HTTPHeaderFilter{
+							Set: []gatewayv1.HTTPHeader{
+								{Name: "Host", Value: "example.internal"},
+							},
+						},
+					},
+				}
+				h.Spec.Rules[0].Backends[0].Endpoint = "https://192.168.1.1"
+				h.Spec.Rules[0].Backends[0].TLS = &networkingv1alpha.HTTPProxyBackendTLS{
+					Hostname: ptr.To("api.example.com"),
+				}
+			}),
+			assert: func(t *testing.T, httpProxy *networkingv1alpha.HTTPProxy, desiredResources *desiredHTTPProxyResources) {
+				for _, f := range desiredResources.httpRoute.Spec.Rules[0].Filters {
+					assert.NotEqual(t, gatewayv1.HTTPRouteFilterURLRewrite, f.Type)
+				}
+			},
+		},
+		{
 			name: "custom hostnames",
 			httpProxy: newHTTPProxy(func(h *networkingv1alpha.HTTPProxy) {
 				h.Spec.Hostnames = []gatewayv1.Hostname{

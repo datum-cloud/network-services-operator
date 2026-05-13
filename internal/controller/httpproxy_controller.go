@@ -624,6 +624,23 @@ func httpProxyReferencesConnector(httpProxy *networkingv1alpha.HTTPProxy, connec
 	return false
 }
 
+// hasHostHeaderOverride reports whether any filter in the list is a
+// RequestHeaderModifier that sets the Host header. Header names are matched
+// case-insensitively per RFC 7230.
+func hasHostHeaderOverride(filters []gatewayv1.HTTPRouteFilter) bool {
+	for _, filter := range filters {
+		if filter.Type != gatewayv1.HTTPRouteFilterRequestHeaderModifier || filter.RequestHeaderModifier == nil {
+			continue
+		}
+		for _, h := range filter.RequestHeaderModifier.Set {
+			if strings.EqualFold(string(h.Name), "Host") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (r *HTTPProxyReconciler) collectDesiredResources(
 	ctx context.Context,
 	cl client.Client,
@@ -782,30 +799,38 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 				}
 			}
 
+			// If the user already overrode the Host header via a RequestHeaderModifier
+			// filter (on the rule or this backend), respect it and skip the
+			// implicit URLRewrite injection that would clobber it via Envoy's
+			// host_rewrite_literal (applied after request_headers_to_add).
+			userSetHost := hasHostHeaderOverride(ruleFilters) || hasHostHeaderOverride(backend.Filters)
+
 			// For HTTPS endpoints with IP addresses, require tls.hostname for certificate validation
 			// and use it as the Host header for the upstream request.
 			if u.Scheme == "https" && isIPAddress {
 				if backend.TLS == nil || backend.TLS.Hostname == nil || *backend.TLS.Hostname == "" {
 					return nil, fmt.Errorf("HTTPS endpoint with IP address requires tls.hostname for backend %d in rule %d", backendIndex, ruleIndex)
 				}
-				// Use tls.hostname for the Host header rewrite
-				hostnameRewriteFound := false
-				for i, filter := range ruleFilters {
-					if filter.Type == gatewayv1.HTTPRouteFilterURLRewrite {
-						ruleFilters[i].URLRewrite.Hostname = ptr.To(gatewayv1.PreciseHostname(*backend.TLS.Hostname))
-						hostnameRewriteFound = true
-						break
+				if !userSetHost {
+					// Use tls.hostname for the Host header rewrite
+					hostnameRewriteFound := false
+					for i, filter := range ruleFilters {
+						if filter.Type == gatewayv1.HTTPRouteFilterURLRewrite {
+							ruleFilters[i].URLRewrite.Hostname = ptr.To(gatewayv1.PreciseHostname(*backend.TLS.Hostname))
+							hostnameRewriteFound = true
+							break
+						}
+					}
+					if !hostnameRewriteFound {
+						ruleFilters = append(ruleFilters, gatewayv1.HTTPRouteFilter{
+							Type: gatewayv1.HTTPRouteFilterURLRewrite,
+							URLRewrite: &gatewayv1.HTTPURLRewriteFilter{
+								Hostname: ptr.To(gatewayv1.PreciseHostname(*backend.TLS.Hostname)),
+							},
+						})
 					}
 				}
-				if !hostnameRewriteFound {
-					ruleFilters = append(ruleFilters, gatewayv1.HTTPRouteFilter{
-						Type: gatewayv1.HTTPRouteFilterURLRewrite,
-						URLRewrite: &gatewayv1.HTTPURLRewriteFilter{
-							Hostname: ptr.To(gatewayv1.PreciseHostname(*backend.TLS.Hostname)),
-						},
-					})
-				}
-			} else if !isIPAddress && backend.Connector == nil {
+			} else if !isIPAddress && backend.Connector == nil && !userSetHost {
 				// For FQDN endpoints, rewrite the Host header to match the backend hostname
 				hostnameRewriteFound := false
 				for i, filter := range ruleFilters {

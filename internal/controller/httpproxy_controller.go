@@ -627,6 +627,9 @@ func httpProxyReferencesConnector(httpProxy *networkingv1alpha.HTTPProxy, connec
 // hasHostHeaderOverride reports whether any filter in the list is a
 // RequestHeaderModifier that sets the Host header. Header names are matched
 // case-insensitively per RFC 7230.
+//
+// Used by collectDesiredResources to suppress the implicit URLRewrite
+// hostname injection when the user has already supplied a Host override.
 func hasHostHeaderOverride(filters []gatewayv1.HTTPRouteFilter) bool {
 	for _, filter := range filters {
 		if filter.Type != gatewayv1.HTTPRouteFilterRequestHeaderModifier || filter.RequestHeaderModifier == nil {

@@ -1860,7 +1860,7 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 
 				if appProtocol != nil && *appProtocol == "https" {
 					var hostname *gatewayv1.PreciseHostname
-					// Fall back to looking at rule filters for a hostname.
+					// Look at rule filters for a hostname first.
 					for _, filter := range rule.Filters {
 						if filter.URLRewrite != nil {
 							hostname = filter.URLRewrite.Hostname
@@ -1868,10 +1868,23 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 						}
 					}
 
+					// When the user has supplied a Host header override via
+					// RequestHeaderModifier, the httpproxy controller intentionally
+					// suppresses the implicit URLRewrite injection so the user's
+					// Host value is honoured at egress. In that case, derive the
+					// BackendTLSPolicy hostname directly from the upstream
+					// EndpointSlice's FQDN address — that's the cert SAN we need
+					// to validate against the backend.
+					if hostname == nil && upstreamEndpointSlice.AddressType == discoveryv1.AddressTypeFQDN &&
+						len(upstreamEndpointSlice.Endpoints) > 0 &&
+						len(upstreamEndpointSlice.Endpoints[0].Addresses) > 0 {
+						hostname = ptr.To(gatewayv1.PreciseHostname(upstreamEndpointSlice.Endpoints[0].Addresses[0]))
+					}
+
 					if hostname == nil {
 						// TODO(jreese) set the RouteConditionResolvedRefs condition to
 						// False, as the hostname is not present.
-						return nil, nil, nil, fmt.Errorf("no hostname found in URLRewrite filters on backendRef or Route %q", upstreamRoute.Name)
+						return nil, nil, nil, fmt.Errorf("no hostname found in URLRewrite filters or EndpointSlice on backendRef or Route %q", upstreamRoute.Name)
 					}
 
 					backendTLSPolicy := &gatewayv1alpha3.BackendTLSPolicy{

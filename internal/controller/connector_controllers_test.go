@@ -10,10 +10,13 @@ import (
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	kubefake "k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/kubernetes/scheme"
+	coordinationv1client "k8s.io/client-go/kubernetes/typed/coordination/v1"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -123,13 +126,25 @@ func TestConnectorReconcile(t *testing.T) {
 			if tt.connectorClass != nil {
 				builder = builder.WithObjects(tt.connectorClass)
 			}
-			if tt.lease != nil {
-				builder = builder.WithObjects(tt.lease)
-			}
 			builder = builder.WithStatusSubresource(tt.connector)
 			cl := builder.Build()
 
-			reconciler := &ConnectorReconciler{mgr: &fakeMockManager{cl: cl}}
+			// Lease access goes through the typed coordinationv1 client to
+			// bypass the controller-runtime client's REST mapper (which on
+			// some project control planes has no mapping for Lease). Mirror
+			// that in tests with a typed fake clientset.
+			var leaseSeed []runtime.Object
+			if tt.lease != nil {
+				leaseSeed = append(leaseSeed, tt.lease)
+			}
+			leaseCS := kubefake.NewSimpleClientset(leaseSeed...)
+
+			reconciler := &ConnectorReconciler{
+				mgr: &fakeMockManager{cl: cl},
+				LeaseClient: func(cluster.Cluster) (coordinationv1client.LeasesGetter, error) {
+					return leaseCS.CoordinationV1(), nil
+				},
+			}
 			req := mcreconcile.Request{
 				Request: reconcile.Request{
 					NamespacedName: client.ObjectKeyFromObject(tt.connector),

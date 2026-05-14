@@ -14,6 +14,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	coordinationv1client "k8s.io/client-go/kubernetes/typed/coordination/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
@@ -34,6 +35,26 @@ import (
 type ConnectorReconciler struct {
 	mgr    mcmanager.Manager
 	Config config.NetworkServicesOperator
+
+	// LeaseClient builds a typed Lease client for a given project cluster.
+	// Production leaves this nil; the reconciler falls back to
+	// coordinationv1client.NewForConfig(cl.GetConfig()). The typed client
+	// encodes its own group/version, so it does not depend on the cluster's
+	// REST mapper — that's the whole point of routing Lease access through
+	// it rather than the controller-runtime client, which would fail with
+	// `no matches for kind "Lease"` against project control planes that
+	// omit coordination.k8s.io from discovery (see
+	// network-services-operator#160). Tests inject a fake clientset's
+	// CoordinationV1() so they don't need a real REST config.
+	LeaseClient func(cluster.Cluster) (coordinationv1client.LeasesGetter, error)
+}
+
+// leases returns the typed Lease client for the supplied cluster.
+func (r *ConnectorReconciler) leases(cl cluster.Cluster) (coordinationv1client.LeasesGetter, error) {
+	if r.LeaseClient != nil {
+		return r.LeaseClient(cl)
+	}
+	return coordinationv1client.NewForConfig(cl.GetConfig())
 }
 
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=connectors,verbs=get;list;watch;create;update;patch;delete
@@ -120,31 +141,21 @@ func (r *ConnectorReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 		return ctrl.Result{}, nil
 	}
 
+	leases, err := r.leases(cl)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("build lease client: %w", err)
+	}
+
 	leaseDurationSeconds := r.connectorLeaseDurationSeconds()
 	if connector.Status.LeaseRef == nil || connector.Status.LeaseRef.Name == "" {
-		lease := &coordinationv1.Lease{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      connector.Name,
-				Namespace: connector.Namespace,
-			},
-		}
-
-		if _, err := controllerutil.CreateOrUpdate(ctx, cl.GetClient(), lease, func() error {
-			if err := controllerutil.SetControllerReference(&connector, lease, cl.GetScheme()); err != nil {
-				return err
-			}
-			if lease.Spec.LeaseDurationSeconds == nil || *lease.Spec.LeaseDurationSeconds == 0 {
-				lease.Spec.LeaseDurationSeconds = &leaseDurationSeconds
-			}
-			return nil
-		}); err != nil {
+		lease, err := r.ensureConnectorLease(ctx, cl, leases, &connector, leaseDurationSeconds)
+		if err != nil {
 			return ctrl.Result{}, err
 		}
-
 		connector.Status.LeaseRef = &corev1.LocalObjectReference{Name: lease.Name}
 	}
 
-	leaseStatus, err := r.connectorLeaseReady(ctx, cl.GetClient(), &connector)
+	leaseStatus, err := r.connectorLeaseReady(ctx, leases, &connector)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -185,7 +196,64 @@ type connectorLeaseStatus struct {
 	message      string
 }
 
-func (r *ConnectorReconciler) connectorLeaseReady(ctx context.Context, cl client.Client, connector *networkingv1alpha1.Connector) (connectorLeaseStatus, error) {
+// ensureConnectorLease creates the per-Connector Lease if absent, or refreshes
+// the owner reference / lease duration on an existing one. Goes through the
+// typed Lease client to avoid the controller-runtime client's REST mapper,
+// which has no mapping for coordination.k8s.io on project control planes that
+// hide the group from discovery.
+func (r *ConnectorReconciler) ensureConnectorLease(
+	ctx context.Context,
+	cl cluster.Cluster,
+	leases coordinationv1client.LeasesGetter,
+	connector *networkingv1alpha1.Connector,
+	leaseDurationSeconds int32,
+) (*coordinationv1.Lease, error) {
+	existing, err := leases.Leases(connector.Namespace).Get(ctx, connector.Name, metav1.GetOptions{})
+	switch {
+	case apierrors.IsNotFound(err):
+		lease := &coordinationv1.Lease{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      connector.Name,
+				Namespace: connector.Namespace,
+			},
+			Spec: coordinationv1.LeaseSpec{
+				LeaseDurationSeconds: &leaseDurationSeconds,
+			},
+		}
+		if err := controllerutil.SetControllerReference(connector, lease, cl.GetScheme()); err != nil {
+			return nil, fmt.Errorf("set owner ref on connector lease: %w", err)
+		}
+		created, err := leases.Leases(connector.Namespace).Create(ctx, lease, metav1.CreateOptions{})
+		if apierrors.IsAlreadyExists(err) {
+			// A racing reconcile (or the agent) created it; re-fetch.
+			return leases.Leases(connector.Namespace).Get(ctx, connector.Name, metav1.GetOptions{})
+		}
+		if err != nil {
+			return nil, fmt.Errorf("create connector lease: %w", err)
+		}
+		return created, nil
+	case err != nil:
+		return nil, fmt.Errorf("load connector lease: %w", err)
+	}
+
+	mutated := existing.DeepCopy()
+	if err := controllerutil.SetControllerReference(connector, mutated, cl.GetScheme()); err != nil {
+		return nil, fmt.Errorf("set owner ref on connector lease: %w", err)
+	}
+	if mutated.Spec.LeaseDurationSeconds == nil || *mutated.Spec.LeaseDurationSeconds == 0 {
+		mutated.Spec.LeaseDurationSeconds = &leaseDurationSeconds
+	}
+	if equality.Semantic.DeepEqual(existing, mutated) {
+		return existing, nil
+	}
+	updated, err := leases.Leases(connector.Namespace).Update(ctx, mutated, metav1.UpdateOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("update connector lease: %w", err)
+	}
+	return updated, nil
+}
+
+func (r *ConnectorReconciler) connectorLeaseReady(ctx context.Context, leases coordinationv1client.LeasesGetter, connector *networkingv1alpha1.Connector) (connectorLeaseStatus, error) {
 	// Fallback poll interval for the not-ready paths. Used when discovery on
 	// this project control plane is missing coordination.k8s.io, so the Lease
 	// watch is no-op'd by nsosource.OptionalKind and only this RequeueAfter
@@ -198,8 +266,8 @@ func (r *ConnectorReconciler) connectorLeaseReady(ctx context.Context, cl client
 		return connectorLeaseStatus{message: "Connector lease has not been created yet.", requeueAfter: &pollAfter}, nil
 	}
 
-	var lease coordinationv1.Lease
-	if err := cl.Get(ctx, client.ObjectKey{Namespace: connector.Namespace, Name: connector.Status.LeaseRef.Name}, &lease); err != nil {
+	lease, err := leases.Leases(connector.Namespace).Get(ctx, connector.Status.LeaseRef.Name, metav1.GetOptions{})
+	if err != nil {
 		if apierrors.IsNotFound(err) {
 			return connectorLeaseStatus{message: "Connector lease not found. Agent may be offline.", requeueAfter: &pollAfter}, nil
 		}

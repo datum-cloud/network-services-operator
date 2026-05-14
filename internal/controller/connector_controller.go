@@ -27,6 +27,7 @@ import (
 
 	networkingv1alpha1 "go.datum.net/network-services-operator/api/v1alpha1"
 	"go.datum.net/network-services-operator/internal/config"
+	nsosource "go.datum.net/network-services-operator/internal/controller/source"
 )
 
 // ConnectorReconciler reconciles a Connector object
@@ -185,26 +186,34 @@ type connectorLeaseStatus struct {
 }
 
 func (r *ConnectorReconciler) connectorLeaseReady(ctx context.Context, cl client.Client, connector *networkingv1alpha1.Connector) (connectorLeaseStatus, error) {
+	// Fallback poll interval for the not-ready paths. Used when discovery on
+	// this project control plane is missing coordination.k8s.io, so the Lease
+	// watch is no-op'd by nsosource.OptionalKind and only this RequeueAfter
+	// keeps the Connector converging. Matches the per-Connector lease cadence
+	// so a freshly-renewed Lease shows up Ready within one duration.
+	leaseDuration := time.Duration(r.connectorLeaseDurationSeconds()) * time.Second
+	pollAfter := leaseDuration + leaseJitter(leaseDuration)
+
 	if connector.Status.LeaseRef == nil || connector.Status.LeaseRef.Name == "" {
-		return connectorLeaseStatus{message: "Connector lease has not been created yet."}, nil
+		return connectorLeaseStatus{message: "Connector lease has not been created yet.", requeueAfter: &pollAfter}, nil
 	}
 
 	var lease coordinationv1.Lease
 	if err := cl.Get(ctx, client.ObjectKey{Namespace: connector.Namespace, Name: connector.Status.LeaseRef.Name}, &lease); err != nil {
 		if apierrors.IsNotFound(err) {
-			return connectorLeaseStatus{message: "Connector lease not found. Agent may be offline."}, nil
+			return connectorLeaseStatus{message: "Connector lease not found. Agent may be offline.", requeueAfter: &pollAfter}, nil
 		}
 		return connectorLeaseStatus{}, fmt.Errorf("failed to load connector lease: %w", err)
 	}
 
 	if lease.Spec.RenewTime == nil || lease.Spec.LeaseDurationSeconds == nil {
-		return connectorLeaseStatus{message: "Connector lease has not been renewed yet."}, nil
+		return connectorLeaseStatus{message: "Connector lease has not been renewed yet.", requeueAfter: &pollAfter}, nil
 	}
 
 	expiryDuration := time.Duration(*lease.Spec.LeaseDurationSeconds) * time.Second
 	expiresAt := lease.Spec.RenewTime.Add(expiryDuration)
 	if time.Now().After(expiresAt) {
-		return connectorLeaseStatus{message: "Connector lease has expired. Agent may be offline."}, nil
+		return connectorLeaseStatus{message: "Connector lease has expired. Agent may be offline.", requeueAfter: &pollAfter}, nil
 	}
 
 	requeueAfter := time.Until(expiresAt) + leaseJitter(expiryDuration)
@@ -226,7 +235,7 @@ func leaseJitter(base time.Duration) time.Duration {
 func (r *ConnectorReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	r.mgr = mgr
 
-	return mcbuilder.ControllerManagedBy(mgr).
+	c, err := mcbuilder.ControllerManagedBy(mgr).
 		For(&networkingv1alpha1.Connector{}).
 		Watches(
 			&networkingv1alpha1.ConnectorClass{},
@@ -263,10 +272,24 @@ func (r *ConnectorReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 				})
 			},
 		).
-		Watches(
+		Named("connector").
+		Build(r)
+	if err != nil {
+		return err
+	}
+
+	// Lease watch is best-effort: some project control planes omit
+	// coordination.k8s.io from API discovery even though Lease itself is
+	// served (see network-services-operator#160). nsosource.OptionalKind
+	// keeps the per-cluster engagement alive when the GVK is missing from
+	// discovery; reconcile latency on those clusters falls back to the
+	// connectorLeaseReady RequeueAfter cadence above. The builder's
+	// .Watches() always wires mcsource.Kind, so we bypass it for Lease and
+	// call MultiClusterWatch directly with the optional wrapper.
+	return c.MultiClusterWatch(
+		nsosource.OptionalKind(
 			&coordinationv1.Lease{},
 			mchandler.EnqueueRequestForOwner(&networkingv1alpha1.Connector{}, handler.OnlyControllerOwner()),
-		).
-		Named("connector").
-		Complete(r)
+		),
+	)
 }

@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -33,6 +34,7 @@ import (
 
 	networkingv1alpha1 "go.datum.net/network-services-operator/api/v1alpha1"
 	"go.datum.net/network-services-operator/internal/config"
+	nsosource "go.datum.net/network-services-operator/internal/controller/source"
 	"go.datum.net/network-services-operator/internal/iroh"
 )
 
@@ -123,20 +125,39 @@ func (r *IrohDNSReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 		return ctrl.Result{}, nil
 	}
 
+	// Periodic requeue as the safety net for sibling handover on project
+	// control planes where Lease discovery is missing and nsosource.OptionalKind
+	// has disengaged the Lease watch. Owners get redundant polls; siblings get
+	// their only convergence signal. Bound on handover ≈ one lease duration.
+	result := ctrl.Result{RequeueAfter: r.requeueInterval()}
+
 	desired, ok, err := r.buildDesiredRecordSet(req.ClusterName, &connector)
 	if err != nil {
-		return ctrl.Result{}, err
+		return result, err
 	}
 	if !ok {
 		// Status not yet populated by the agent. If we previously claimed
 		// this endpoint id, release so a sibling can take over.
 		if err := r.releaseIfOwner(ctx, &connector); err != nil {
-			return ctrl.Result{}, err
+			return result, err
 		}
-		return ctrl.Result{}, r.setPublishedCondition(ctx, cl, &connector, metav1.ConditionFalse, connectorReasonIrohPending, "Connector status does not yet carry connection details.")
+		return result, r.setPublishedCondition(ctx, cl, &connector, metav1.ConditionFalse, connectorReasonIrohPending, "Connector status does not yet carry connection details.")
 	}
 
-	return ctrl.Result{}, r.applyClaim(ctx, cl, &connector, desired)
+	return result, r.applyClaim(ctx, cl, &connector, desired)
+}
+
+// requeueInterval is the periodic re-reconcile cadence for connectors whose
+// ConnectorClass routes to iroh. Matches the Connector lease duration so
+// sibling handover converges within ≈ one duration on clusters where the
+// Lease watch is unavailable.
+func (r *IrohDNSReconciler) requeueInterval() time.Duration {
+	d := int32(30)
+	if r.Config.Connector.LeaseDurationSeconds > 0 {
+		d = r.Config.Connector.LeaseDurationSeconds
+	}
+	base := time.Duration(d) * time.Second
+	return base + leaseJitter(base)
 }
 
 // applyClaim implements the claim-then-write loop:
@@ -387,13 +408,20 @@ func (r *IrohDNSReconciler) setPublishedCondition(ctx context.Context, cl cluste
 //   - Connector (For) and ConnectorClass (Watches) — the primary multicluster
 //     event sources.
 //
-//   - Lease (Watches with EnqueueRequestForOwner) — agent heartbeats renew the
-//     Connector's Lease on every interval; that update fires our reconcile
-//     even when the Connector itself hasn't changed. This is the load-bearing
-//     trigger for sibling handover: when an owner Connector is deleted and
+//   - Lease (WatchesRawSource via nsosource.OptionalKind) — agent heartbeats
+//     renew the Connector's Lease on every interval; that update fires our
+//     reconcile even when the Connector itself hasn't changed. When the
+//     project control plane advertises coordination.k8s.io in discovery this
+//     watch drives sibling handover: when an owner Connector is deleted and
 //     its DNSRecordSet is GC'd, every sibling's next lease renewal drives its
 //     reconcile, and one of them wins the Create race for the now-empty z32.
-//     Bound on handover ≈ leaseDurationSeconds.
+//
+//     The watch is best-effort — see network-services-operator#160. Some
+//     PCPs serve Lease at the raw URL but omit it from discovery, in which
+//     case OptionalKind disengages this source so the rest of the controller
+//     still reconciles. On those clusters sibling handover is driven instead
+//     by the irohRequeueInterval RequeueAfter at the bottom of Reconcile.
+//     Either way, bound on handover ≈ leaseDurationSeconds.
 //
 //   - DNSRecordSet on the downstream cluster — drift detection. Mapper
 //     enqueues the *current owner* Connector identified by the labels on the
@@ -401,7 +429,8 @@ func (r *IrohDNSReconciler) setPublishedCondition(ctx context.Context, cl cluste
 //     record. Sibling handover does NOT flow through this watch:
 //     multicluster-runtime's manager exposes GetCluster(name) but no
 //     enumeration, so a downstream event can't fan out to siblings across
-//     project clusters. That's the Lease watch's job.
+//     project clusters. That's the Lease watch's (and now the periodic
+//     requeue's) job.
 func (r *IrohDNSReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	r.mgr = mgr
 
@@ -424,7 +453,7 @@ func (r *IrohDNSReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	)
 	downstreamClusterSource, _, _ := downstreamSource.ForCluster("", r.Downstream)
 
-	return mcbuilder.ControllerManagedBy(mgr).
+	c, err := mcbuilder.ControllerManagedBy(mgr).
 		For(&networkingv1alpha1.Connector{}).
 		Watches(
 			&networkingv1alpha1.ConnectorClass{},
@@ -455,11 +484,20 @@ func (r *IrohDNSReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 				})
 			},
 		).
-		Watches(
-			&coordinationv1.Lease{},
-			mchandler.EnqueueRequestForOwner(&networkingv1alpha1.Connector{}, handler.OnlyControllerOwner()),
-		).
 		WatchesRawSource(downstreamClusterSource).
 		Named("iroh-dns").
-		Complete(r)
+		Build(r)
+	if err != nil {
+		return err
+	}
+
+	// Best-effort multi-cluster Lease watch — bypasses the builder so it can
+	// degrade gracefully on PCPs missing coordination.k8s.io in discovery.
+	// See connector_controller.go SetupWithManager for the rationale.
+	return c.MultiClusterWatch(
+		nsosource.OptionalKind(
+			&coordinationv1.Lease{},
+			mchandler.EnqueueRequestForOwner(&networkingv1alpha1.Connector{}, handler.OnlyControllerOwner()),
+		),
+	)
 }

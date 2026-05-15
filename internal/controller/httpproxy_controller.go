@@ -65,6 +65,14 @@ type desiredHTTPProxyResources struct {
 const httpProxyFinalizer = "networking.datumapis.com/httpproxy-cleanup"
 const connectorOfflineFilterPrefix = "connector-offline"
 
+// BackendCertHostnameAnnotation is set on the upstream EndpointSlice by the
+// HTTPProxy controller to record the hostname expected on the backend's TLS
+// certificate. The gateway controller reads it when building a
+// BackendTLSPolicy so SAN validation continues to target the real backend
+// FQDN even when URLRewrite.Hostname has been redirected to a user-supplied
+// Host header override.
+const BackendCertHostnameAnnotation = "networking.datumapis.com/backend-cert-hostname"
+
 const (
 	SchemeHTTP  = "http"
 	SchemeHTTPS = "https"
@@ -286,6 +294,19 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 			endpointSlice.AddressType = desiredEndpointSlice.AddressType
 			endpointSlice.Endpoints = desiredEndpointSlice.Endpoints
 			endpointSlice.Ports = desiredEndpointSlice.Ports
+
+			// Keep the backend cert hostname annotation in sync. The gateway
+			// controller reads this to build the BackendTLSPolicy when the
+			// URLRewrite filter carries a user Host override instead of the
+			// real backend FQDN.
+			if v, ok := desiredEndpointSlice.Annotations[BackendCertHostnameAnnotation]; ok {
+				if endpointSlice.Annotations == nil {
+					endpointSlice.Annotations = map[string]string{}
+				}
+				endpointSlice.Annotations[BackendCertHostnameAnnotation] = v
+			} else {
+				delete(endpointSlice.Annotations, BackendCertHostnameAnnotation)
+			}
 			return nil
 		})
 
@@ -624,6 +645,65 @@ func httpProxyReferencesConnector(httpProxy *networkingv1alpha.HTTPProxy, connec
 	return false
 }
 
+// extractHostHeaderOverride returns the Host header value from a
+// RequestHeaderModifier filter, if present. Header names are matched
+// case-insensitively per RFC 7230. The returned bool indicates whether a
+// Host header override was found.
+//
+// Envoy Gateway does not accept Host header manipulation via
+// RequestHeaderModifier — it must go through URLRewrite.Hostname instead.
+// collectDesiredResources uses this helper to translate the user-facing
+// RequestHeaderModifier{Host} shape (which round-trips with datumctl and
+// the cloud portal) into the URLRewrite{Hostname} that Envoy actually
+// honours at egress.
+func extractHostHeaderOverride(filters []gatewayv1.HTTPRouteFilter) (string, bool) {
+	for _, filter := range filters {
+		if filter.Type != gatewayv1.HTTPRouteFilterRequestHeaderModifier || filter.RequestHeaderModifier == nil {
+			continue
+		}
+		for _, h := range filter.RequestHeaderModifier.Set {
+			if strings.EqualFold(string(h.Name), "Host") {
+				return h.Value, true
+			}
+		}
+	}
+	return "", false
+}
+
+// stripHostFromRequestHeaderModifier returns the filter list with any
+// Host entry removed from each RequestHeaderModifier's Set list. If a
+// RequestHeaderModifier ends up empty (no add/set/remove), the filter
+// itself is dropped. This keeps Envoy Gateway from rejecting the route
+// because of an "empty" RequestHeaderModifier after we've moved the
+// Host override into URLRewrite.
+func stripHostFromRequestHeaderModifier(filters []gatewayv1.HTTPRouteFilter) []gatewayv1.HTTPRouteFilter {
+	out := make([]gatewayv1.HTTPRouteFilter, 0, len(filters))
+	for _, filter := range filters {
+		if filter.Type != gatewayv1.HTTPRouteFilterRequestHeaderModifier || filter.RequestHeaderModifier == nil {
+			out = append(out, filter)
+			continue
+		}
+		modifier := filter.RequestHeaderModifier
+		filtered := make([]gatewayv1.HTTPHeader, 0, len(modifier.Set))
+		for _, h := range modifier.Set {
+			if strings.EqualFold(string(h.Name), "Host") {
+				continue
+			}
+			filtered = append(filtered, h)
+		}
+		if len(filtered) == 0 && len(modifier.Add) == 0 && len(modifier.Remove) == 0 {
+			// Drop the now-empty RequestHeaderModifier filter entirely.
+			continue
+		}
+		newFilter := filter
+		newModifier := *modifier
+		newModifier.Set = filtered
+		newFilter.RequestHeaderModifier = &newModifier
+		out = append(out, newFilter)
+	}
+	return out
+}
+
 func (r *HTTPProxyReconciler) collectDesiredResources(
 	ctx context.Context,
 	cl client.Client,
@@ -782,17 +862,47 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 				}
 			}
 
+			// Resolve the user's Host header override, if any. Envoy Gateway
+			// rejects RequestHeaderModifier filters that touch Host; the Host
+			// rewrite must be expressed as URLRewrite.Hostname instead. We
+			// translate the user-facing RequestHeaderModifier{Host} shape
+			// (which is what datumctl and the cloud portal write) into the
+			// URLRewrite.Hostname value Envoy will honour at egress, then
+			// strip the now-redundant Host entry from the RequestHeaderModifier
+			// so EG doesn't see the conflicting combination.
+			userHostOverride, hasUserHost := extractHostHeaderOverride(ruleFilters)
+			if !hasUserHost {
+				userHostOverride, hasUserHost = extractHostHeaderOverride(backend.Filters)
+			}
+			if hasUserHost {
+				ruleFilters = stripHostFromRequestHeaderModifier(ruleFilters)
+				backend.Filters = stripHostFromRequestHeaderModifier(backend.Filters)
+			}
+
+			// Track the backend cert hostname separately from the Host
+			// rewrite value. The two can diverge when the user sets a Host
+			// override — URLRewrite.Hostname carries the user's value to
+			// Envoy, while certHostname (propagated via an EndpointSlice
+			// annotation and read by the gateway controller) is used for
+			// BackendTLSPolicy SAN validation against the real backend.
+			var certHostname string
+
 			// For HTTPS endpoints with IP addresses, require tls.hostname for certificate validation
 			// and use it as the Host header for the upstream request.
 			if u.Scheme == "https" && isIPAddress {
 				if backend.TLS == nil || backend.TLS.Hostname == nil || *backend.TLS.Hostname == "" {
 					return nil, fmt.Errorf("HTTPS endpoint with IP address requires tls.hostname for backend %d in rule %d", backendIndex, ruleIndex)
 				}
-				// Use tls.hostname for the Host header rewrite
+				certHostname = *backend.TLS.Hostname
+				rewriteHostname := certHostname
+				if hasUserHost {
+					rewriteHostname = userHostOverride
+				}
+				// Use tls.hostname (or the user override) for the Host header rewrite
 				hostnameRewriteFound := false
 				for i, filter := range ruleFilters {
 					if filter.Type == gatewayv1.HTTPRouteFilterURLRewrite {
-						ruleFilters[i].URLRewrite.Hostname = ptr.To(gatewayv1.PreciseHostname(*backend.TLS.Hostname))
+						ruleFilters[i].URLRewrite.Hostname = ptr.To(gatewayv1.PreciseHostname(rewriteHostname))
 						hostnameRewriteFound = true
 						break
 					}
@@ -801,16 +911,23 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 					ruleFilters = append(ruleFilters, gatewayv1.HTTPRouteFilter{
 						Type: gatewayv1.HTTPRouteFilterURLRewrite,
 						URLRewrite: &gatewayv1.HTTPURLRewriteFilter{
-							Hostname: ptr.To(gatewayv1.PreciseHostname(*backend.TLS.Hostname)),
+							Hostname: ptr.To(gatewayv1.PreciseHostname(rewriteHostname)),
 						},
 					})
 				}
 			} else if !isIPAddress && backend.Connector == nil {
-				// For FQDN endpoints, rewrite the Host header to match the backend hostname
+				// For FQDN endpoints, rewrite the Host header to match the
+				// backend hostname — or to the user's override if they set
+				// one via RequestHeaderModifier.
+				certHostname = host
+				rewriteHostname := host
+				if hasUserHost {
+					rewriteHostname = userHostOverride
+				}
 				hostnameRewriteFound := false
 				for i, filter := range ruleFilters {
 					if filter.Type == gatewayv1.HTTPRouteFilterURLRewrite {
-						ruleFilters[i].URLRewrite.Hostname = ptr.To(gatewayv1.PreciseHostname(host))
+						ruleFilters[i].URLRewrite.Hostname = ptr.To(gatewayv1.PreciseHostname(rewriteHostname))
 						hostnameRewriteFound = true
 						break
 					}
@@ -820,16 +937,25 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 					ruleFilters = append(ruleFilters, gatewayv1.HTTPRouteFilter{
 						Type: gatewayv1.HTTPRouteFilterURLRewrite,
 						URLRewrite: &gatewayv1.HTTPURLRewriteFilter{
-							Hostname: ptr.To(gatewayv1.PreciseHostname(host)),
+							Hostname: ptr.To(gatewayv1.PreciseHostname(rewriteHostname)),
 						},
 					})
 				}
 			}
 
+			epAnnotations := map[string]string{}
+			if certHostname != "" {
+				// Surface the backend cert hostname so the gateway controller
+				// can build the BackendTLSPolicy without relying on the
+				// URLRewrite filter (which may now carry a user-supplied Host
+				// override instead of the real backend FQDN).
+				epAnnotations[BackendCertHostnameAnnotation] = certHostname
+			}
 			endpointSlice := &discoveryv1.EndpointSlice{
 				ObjectMeta: metav1.ObjectMeta{
-					Namespace: httpProxy.Namespace,
-					Name:      fmt.Sprintf("%s-%d-%d", httpProxy.Name, ruleIndex, backendIndex),
+					Namespace:   httpProxy.Namespace,
+					Name:        fmt.Sprintf("%s-%d-%d", httpProxy.Name, ruleIndex, backendIndex),
+					Annotations: epAnnotations,
 				},
 				AddressType: addressType,
 				Endpoints: []discoveryv1.Endpoint{

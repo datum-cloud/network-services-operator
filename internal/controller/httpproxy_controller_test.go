@@ -277,6 +277,148 @@ func TestHTTPProxyCollectDesiredResources(t *testing.T) {
 			},
 		},
 		{
+			name: "user Host header override on FQDN backend rewrites URLRewrite hostname",
+			httpProxy: newHTTPProxy(func(h *networkingv1alpha.HTTPProxy) {
+				h.Spec.Rules[0].Filters = []gatewayv1.HTTPRouteFilter{
+					{
+						Type: gatewayv1.HTTPRouteFilterRequestHeaderModifier,
+						RequestHeaderModifier: &gatewayv1.HTTPHeaderFilter{
+							Set: []gatewayv1.HTTPHeader{
+								{Name: "Host", Value: "example.internal"},
+							},
+						},
+					},
+				}
+			}),
+			assert: func(t *testing.T, httpProxy *networkingv1alpha.HTTPProxy, desiredResources *desiredHTTPProxyResources) {
+				routeRule := desiredResources.httpRoute.Spec.Rules[0]
+				// URLRewrite must carry the user's Host value (Envoy's
+				// host_rewrite_literal); RequestHeaderModifier{Host} must
+				// have been stripped (EG rejects it on Host).
+				var urlRewrite *gatewayv1.HTTPRouteFilter
+				for i := range routeRule.Filters {
+					if routeRule.Filters[i].Type == gatewayv1.HTTPRouteFilterURLRewrite {
+						urlRewrite = &routeRule.Filters[i]
+					}
+					if routeRule.Filters[i].Type == gatewayv1.HTTPRouteFilterRequestHeaderModifier &&
+						routeRule.Filters[i].RequestHeaderModifier != nil {
+						for _, h := range routeRule.Filters[i].RequestHeaderModifier.Set {
+							assert.NotEqual(t, "Host", string(h.Name), "Host must be stripped from RequestHeaderModifier")
+						}
+					}
+				}
+				if assert.NotNil(t, urlRewrite, "URLRewrite must be present to express the Host rewrite") {
+					assert.Equal(t, "example.internal", string(ptr.Deref(urlRewrite.URLRewrite.Hostname, "")))
+				}
+				// Cert hostname must be the real backend FQDN, not the user override.
+				if assert.Len(t, desiredResources.endpointSlices, 1) {
+					assert.Equal(t, "www.example.com",
+						desiredResources.endpointSlices[0].Annotations[BackendCertHostnameAnnotation])
+				}
+			},
+		},
+		{
+			name: "user Host header override is case-insensitive",
+			httpProxy: newHTTPProxy(func(h *networkingv1alpha.HTTPProxy) {
+				h.Spec.Rules[0].Filters = []gatewayv1.HTTPRouteFilter{
+					{
+						Type: gatewayv1.HTTPRouteFilterRequestHeaderModifier,
+						RequestHeaderModifier: &gatewayv1.HTTPHeaderFilter{
+							Set: []gatewayv1.HTTPHeader{
+								{Name: "host", Value: "example.internal"},
+							},
+						},
+					},
+				}
+			}),
+			assert: func(t *testing.T, httpProxy *networkingv1alpha.HTTPProxy, desiredResources *desiredHTTPProxyResources) {
+				routeRule := desiredResources.httpRoute.Spec.Rules[0]
+				foundURLRewriteWithOverride := false
+				for _, f := range routeRule.Filters {
+					if f.Type == gatewayv1.HTTPRouteFilterURLRewrite &&
+						string(ptr.Deref(f.URLRewrite.Hostname, "")) == "example.internal" {
+						foundURLRewriteWithOverride = true
+					}
+				}
+				assert.True(t, foundURLRewriteWithOverride, "URLRewrite must use the user's value (case-insensitive Host match)")
+			},
+		},
+		{
+			name: "user Host header override at backend level rewrites URLRewrite hostname",
+			httpProxy: newHTTPProxy(func(h *networkingv1alpha.HTTPProxy) {
+				h.Spec.Rules[0].Filters = nil
+				h.Spec.Rules[0].Backends[0].Filters = []gatewayv1.HTTPRouteFilter{
+					{
+						Type: gatewayv1.HTTPRouteFilterRequestHeaderModifier,
+						RequestHeaderModifier: &gatewayv1.HTTPHeaderFilter{
+							Set: []gatewayv1.HTTPHeader{
+								{Name: "Host", Value: "example.internal"},
+							},
+						},
+					},
+				}
+			}),
+			assert: func(t *testing.T, httpProxy *networkingv1alpha.HTTPProxy, desiredResources *desiredHTTPProxyResources) {
+				routeRule := desiredResources.httpRoute.Spec.Rules[0]
+				var urlRewrite *gatewayv1.HTTPRouteFilter
+				for i := range routeRule.Filters {
+					if routeRule.Filters[i].Type == gatewayv1.HTTPRouteFilterURLRewrite {
+						urlRewrite = &routeRule.Filters[i]
+					}
+				}
+				if assert.NotNil(t, urlRewrite) {
+					assert.Equal(t, "example.internal", string(ptr.Deref(urlRewrite.URLRewrite.Hostname, "")))
+				}
+				// Backend-level filter should have Host stripped too.
+				for _, br := range routeRule.BackendRefs {
+					for _, f := range br.Filters {
+						if f.Type == gatewayv1.HTTPRouteFilterRequestHeaderModifier && f.RequestHeaderModifier != nil {
+							for _, h := range f.RequestHeaderModifier.Set {
+								assert.NotEqual(t, "Host", string(h.Name))
+							}
+						}
+					}
+				}
+			},
+		},
+		{
+			name: "user Host header override on HTTPS IP backend rewrites URLRewrite hostname",
+			httpProxy: newHTTPProxy(func(h *networkingv1alpha.HTTPProxy) {
+				h.Spec.Rules[0].Filters = []gatewayv1.HTTPRouteFilter{
+					{
+						Type: gatewayv1.HTTPRouteFilterRequestHeaderModifier,
+						RequestHeaderModifier: &gatewayv1.HTTPHeaderFilter{
+							Set: []gatewayv1.HTTPHeader{
+								{Name: "Host", Value: "example.internal"},
+							},
+						},
+					},
+				}
+				h.Spec.Rules[0].Backends[0].Endpoint = "https://10.0.0.1"
+				h.Spec.Rules[0].Backends[0].TLS = &networkingv1alpha.HTTPProxyBackendTLS{
+					Hostname: ptr.To("api.example.com"),
+				}
+			}),
+			assert: func(t *testing.T, httpProxy *networkingv1alpha.HTTPProxy, desiredResources *desiredHTTPProxyResources) {
+				routeRule := desiredResources.httpRoute.Spec.Rules[0]
+				var urlRewrite *gatewayv1.HTTPRouteFilter
+				for i := range routeRule.Filters {
+					if routeRule.Filters[i].Type == gatewayv1.HTTPRouteFilterURLRewrite {
+						urlRewrite = &routeRule.Filters[i]
+					}
+				}
+				if assert.NotNil(t, urlRewrite) {
+					// URLRewrite carries the user's Host override.
+					assert.Equal(t, "example.internal", string(ptr.Deref(urlRewrite.URLRewrite.Hostname, "")))
+				}
+				// Cert hostname annotation must carry the real cert SAN (tls.hostname).
+				if assert.Len(t, desiredResources.endpointSlices, 1) {
+					assert.Equal(t, "api.example.com",
+						desiredResources.endpointSlices[0].Annotations[BackendCertHostnameAnnotation])
+				}
+			},
+		},
+		{
 			name: "custom hostnames",
 			httpProxy: newHTTPProxy(func(h *networkingv1alpha.HTTPProxy) {
 				h.Spec.Hostnames = []gatewayv1.Hostname{

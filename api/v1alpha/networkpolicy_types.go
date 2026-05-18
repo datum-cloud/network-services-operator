@@ -97,6 +97,7 @@ type NetworkPolicyStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:metadata:annotations="discovery.miloapis.com/parent-contexts=Project"
 
 // NetworkPolicy is the Schema for the networkpolicies API
 type NetworkPolicy struct {

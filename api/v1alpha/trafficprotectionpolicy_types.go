@@ -179,6 +179,7 @@ type TrafficProtectionPolicyStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:shortName=tpp
+// +kubebuilder:metadata:annotations="discovery.miloapis.com/parent-contexts=Project"
 
 // TrafficProtectionPolicy is the Schema for the trafficprotectionpolicies API.
 type TrafficProtectionPolicy struct {

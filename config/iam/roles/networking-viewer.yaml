@@ -11,6 +11,7 @@ spec:
     - name: networking.datumapis.com-connector-viewer
     - name: networking.datumapis.com-gateway-viewer
     - name: networking.datumapis.com-domain-viewer
+    - name: networking.datumapis.com-location-viewer
   includedPermissions:
     - networking.datumapis.com/networks.list
     - networking.datumapis.com/networks.get

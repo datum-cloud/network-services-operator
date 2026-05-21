@@ -1042,21 +1042,19 @@ func (r *TrafficProtectionPolicyReconciler) getDesiredEnvoyPatchPolicies(
 			}
 
 			corazaConfig := map[string]any{
-				r.Config.Gateway.Coraza.FilterName: map[string]any{
-					"@type": "type.googleapis.com/envoy.extensions.filters.http.golang.v3alpha.ConfigsPerRoute",
-					"plugins_config": map[string]any{
-						r.Config.Gateway.Coraza.PluginName: map[string]any{
-							"config": map[string]any{
-								"@type": "type.googleapis.com/xds.type.v3.TypedStruct",
-								"value": map[string]any{
-									"log_format": "json",
-									"directives": sanitizeJSONPath(fmt.Sprintf(`{
-										"coraza": {
-											"simple_directives": %s
-										}
-									}`, string(directiveBytes))),
-									"default_directive": "coraza",
-								},
+				"@type": "type.googleapis.com/envoy.extensions.filters.http.golang.v3alpha.ConfigsPerRoute",
+				"plugins_config": map[string]any{
+					r.Config.Gateway.Coraza.PluginName: map[string]any{
+						"config": map[string]any{
+							"@type": "type.googleapis.com/xds.type.v3.TypedStruct",
+							"value": map[string]any{
+								"log_format": "json",
+								"directives": sanitizeJSONPath(fmt.Sprintf(`{
+									"coraza": {
+										"simple_directives": %s
+									}
+								}`, string(directiveBytes))),
+								"default_directive": "coraza",
 							},
 						},
 					},
@@ -1077,7 +1075,7 @@ func (r *TrafficProtectionPolicyReconciler) getDesiredEnvoyPatchPolicies(
 					Operation: envoygatewayv1alpha1.JSONPatchOperation{
 						Op:       "add",
 						JSONPath: ptr.To(httpRoutesJSONPath),
-						Path:     ptr.To("/typed_per_filter_config"),
+						Path:     ptr.To(fmt.Sprintf("/typed_per_filter_config/%s", r.Config.Gateway.Coraza.FilterName)),
 						Value:    &apiextensionsv1.JSON{Raw: corazaConfigBytes},
 					},
 				})
@@ -1108,7 +1106,7 @@ func (r *TrafficProtectionPolicyReconciler) getDesiredEnvoyPatchPolicies(
 						Operation: envoygatewayv1alpha1.JSONPatchOperation{
 							Op:       "add",
 							JSONPath: ptr.To(httpRoutesJSONPath),
-							Path:     ptr.To("/typed_per_filter_config"),
+							Path:     ptr.To(fmt.Sprintf("/typed_per_filter_config/%s", r.Config.Gateway.Coraza.FilterName)),
 							Value:    &apiextensionsv1.JSON{Raw: corazaConfigBytes},
 						},
 					})
@@ -1137,7 +1135,7 @@ func (r *TrafficProtectionPolicyReconciler) getDesiredEnvoyPatchPolicies(
 					Operation: envoygatewayv1alpha1.JSONPatchOperation{
 						Op:       "add",
 						JSONPath: ptr.To(httpRoutesJSONPath),
-						Path:     ptr.To("/typed_per_filter_config"),
+						Path:     ptr.To(fmt.Sprintf("/typed_per_filter_config/%s", r.Config.Gateway.Coraza.FilterName)),
 						Value:    &apiextensionsv1.JSON{Raw: corazaConfigBytes},
 					},
 				})

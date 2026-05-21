@@ -684,6 +684,10 @@ func TestGetDesiredEnvoyPatchPolicies(t *testing.T) {
 				gatewayv1.AnnotationKey("gateway.networking.datumapis.com/certificate-issuer"): gatewayv1.AnnotationValue("test"),
 			},
 			DownstreamGatewayClassName: "test-gateway-class",
+			Coraza: config.CorazaConfig{
+				FilterName: "coraza-waf",
+				PluginName: "coraza-waf",
+			},
 		},
 	}
 
@@ -814,6 +818,29 @@ func TestGetDesiredEnvoyPatchPolicies(t *testing.T) {
 
 					if !assert.Truef(t, patchFound, "did not find patch with vhost constraints %q, listener constraints %q, and route constraints %q", vhostConstraints, listenerConstraint, routeConstraint) {
 						spew.Dump(patchPolicy.Spec.JSONPatches)
+					}
+
+					// Verify that coraza patches target only the specific filter key, not the
+					// entire typed_per_filter_config map — replacing the whole map would wipe
+					// out per-route enablement entries written by other filters (e.g., oauth2).
+					expectedCorazaPath := fmt.Sprintf("/typed_per_filter_config/%s", reconciler.Config.Gateway.Coraza.FilterName)
+					for _, patch := range patchPolicy.Spec.JSONPatches {
+						if patch.Name != fmt.Sprintf("http-%d", DefaultHTTPPort) {
+							continue
+						}
+						if !strings.Contains(ptr.Deref(patch.Operation.JSONPath, ""), vhostConstraints) {
+							continue
+						}
+						if ptr.Deref(patch.Operation.Path, "") == expectedCorazaPath {
+							// found exactly one coraza patch with the right path
+							break
+						}
+						// Any patch whose path starts with /typed_per_filter_config must be the
+						// coraza one and must target the specific key, not the whole map.
+						if strings.HasPrefix(ptr.Deref(patch.Operation.Path, ""), "/typed_per_filter_config") {
+							assert.Equal(t, expectedCorazaPath, ptr.Deref(patch.Operation.Path, ""),
+								"coraza patch must target /typed_per_filter_config/<filterName>, not the whole map")
+						}
 					}
 				}
 

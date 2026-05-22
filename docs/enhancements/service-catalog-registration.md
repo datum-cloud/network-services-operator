@@ -122,13 +122,19 @@ cost profile that request-count billing significantly underrepresents.
 
 ### Dimensions
 
-Each meter carries three optional dimensions for cost attribution and future
-pricing tiers:
+Each meter carries the following optional dimensions for cost attribution and
+future pricing tiers:
 
 - `region` — Datum deployment region serving the request.
 - `gateway` — The `Gateway` resource name, enabling per-gateway cost drill-down.
+- `gateway_namespace` — Namespace of the `Gateway` resource, so gateways with
+  the same name in different namespaces are distinguishable.
 - `gateway_class` — The `GatewayClass` of the underlying gateway, so different
   gateway classes can be priced or analyzed independently.
+- `httproute_name` — Name of the `HTTPRoute` that served the request, so usage
+  is traceable back to the specific route resource.
+- `httproute_namespace` — Namespace of the `HTTPRoute`, completing the
+  cross-namespace identifier alongside `httproute_name`.
 
 Dimensions are declared as optional (not required) so events from proxies that
 cannot populate them are not rejected at the Ingestion Gateway.
@@ -237,8 +243,14 @@ spec:
           description: Datum deployment region serving the requests.
         - name: gateway
           description: Name of the underlying Gateway resource.
+        - name: gateway_namespace
+          description: Namespace of the underlying Gateway resource.
         - name: gateway_class
           description: GatewayClass of the underlying Gateway.
+        - name: httproute_name
+          description: Name of the HTTPRoute that served the request.
+        - name: httproute_namespace
+          description: Namespace of the HTTPRoute that served the request.
   meters:
     - name: networking.datumapis.com/gateway/requests
       displayName: HTTP Route Requests

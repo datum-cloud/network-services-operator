@@ -1,0 +1,19 @@
+apiVersion: services.miloapis.com/v1alpha1
+kind: Service
+metadata:
+  name: networking-datumapis-com
+  labels:
+    app.kubernetes.io/name: network-services-operator
+    app.kubernetes.io/managed-by: kustomize
+spec:
+  serviceName: networking.datumapis.com
+  phase: Draft
+  displayName: Network Services
+  description: |
+    Managed HTTP/HTTPS edge proxy, routing, and traffic protection
+    for Datum Cloud workloads. Provides programmable ingress via
+    Gateway API HTTPRoute and WAF/rate-limit policies. Billed via
+    the networking.datumapis.com/gateway meter family.
+  owner:
+    producerProjectRef:
+      name: datum-cloud

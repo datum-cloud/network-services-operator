@@ -65,6 +65,10 @@ type desiredHTTPProxyResources struct {
 const httpProxyFinalizer = "networking.datumapis.com/httpproxy-cleanup"
 const connectorOfflineFilterPrefix = "connector-offline"
 
+// httpProxyFieldManager is the SSA field manager for all child resources
+// written by the HTTPProxy controller.
+const httpProxyFieldManager = "network-services-operator/httpproxy"
+
 // BackendCertHostnameAnnotation is set on the upstream EndpointSlice by the
 // HTTPProxy controller to record the hostname expected on the backend's TLS
 // certificate. The gateway controller reads it when building a
@@ -179,53 +183,64 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 		return ctrl.Result{}, fmt.Errorf("failed to collect desired resources: %w", err)
 	}
 
-	// Maintain a Gateway for the HTTPProxy, handle conflicts in names by updating the
-	// Programmed condition with info about the conflict.
+	// Maintain a Gateway for the HTTPProxy. Use Server-Side Apply so that
+	// concurrent reconciles applying the same desired state are deduplicated by
+	// the API server rather than racing on the resource version. The default
+	// listener Hostname fields are nil (omitempty in the Gateway API type), so
+	// they are absent from the apply payload; hostnames set by the gateway
+	// controller are therefore preserved without any read-modify-write merging.
 
 	gateway := desiredResources.gateway.DeepCopy()
-
-	result, err := controllerutil.CreateOrUpdate(ctx, cl.GetClient(), gateway, func() error {
-		if hasControllerConflict(gateway, &httpProxy) {
-			// return already exists error - a gateway exists with the name we want to
-			// use, but it's owned by a different resource.
-			return apierrors.NewAlreadyExists(gatewayv1.Resource("Gateway"), gateway.Name)
-		}
-
-		if err := controllerutil.SetControllerReference(&httpProxy, gateway, cl.GetScheme()); err != nil {
-			return fmt.Errorf("failed to set controller on gateway: %w", err)
-		}
-
-		// Special handling for default gateway listeners, as the hostnames will be
-		// updated by the controller. Only required on updates.
-		if !gateway.CreationTimestamp.IsZero() {
-			defaultHTTPListener := gatewayutil.GetListenerByName(gateway.Spec.Listeners, gatewayutil.DefaultHTTPListenerName)
-			if defaultHTTPListener != nil {
-				gatewayutil.SetListener(desiredResources.gateway, *defaultHTTPListener)
-			}
-
-			defaultHTTPSListener := gatewayutil.GetListenerByName(gateway.Spec.Listeners, gatewayutil.DefaultHTTPSListenerName)
-			if defaultHTTPSListener != nil {
-				gatewayutil.SetListener(desiredResources.gateway, *defaultHTTPSListener)
-			}
-		}
-
-		gateway.Spec = desiredResources.gateway.Spec
-
-		return nil
-	})
-	if err != nil {
-		if apierrors.IsAlreadyExists(err) {
-			programmedCondition.Status = metav1.ConditionFalse
-			programmedCondition.Reason = networkingv1alpha.HTTPProxyReasonConflict
-			programmedCondition.Message = fmt.Sprintf("Underlying Gateway with the name %q already exists and is owned by a different resource.", gateway.Name)
-			return ctrl.Result{}, nil
-		}
-		return ctrl.Result{}, fmt.Errorf("failed updating gateway resource: %w", err)
+	// SSA requires TypeMeta to be present in the apply payload.
+	gateway.TypeMeta = metav1.TypeMeta{
+		APIVersion: gatewayv1.SchemeGroupVersion.String(),
+		Kind:       "Gateway",
 	}
 
-	logger.Info("processed gateway", "name", gateway.Name, "result", result)
+	// Read the existing gateway once: to check controller-ownership conflicts
+	// and to carry forward listener hostnames assigned by the gateway controller.
+	// The gateway controller sets hostnames via plain Update (no SSA field
+	// manager), so they are unmanaged in SSA terms. If NSO applied without them,
+	// ForceOwnership on the listener list item would clear them. Carrying them
+	// forward in the apply payload keeps them stable until the gateway controller
+	// adopts SSA itself.
+	{
+		var existing gatewayv1.Gateway
+		if err := cl.GetClient().Get(ctx, client.ObjectKeyFromObject(gateway), &existing); err != nil {
+			if !apierrors.IsNotFound(err) {
+				return ctrl.Result{}, fmt.Errorf("failed to get gateway: %w", err)
+			}
+		} else {
+			if hasControllerConflict(&existing, &httpProxy) {
+				programmedCondition.Status = metav1.ConditionFalse
+				programmedCondition.Reason = networkingv1alpha.HTTPProxyReasonConflict
+				programmedCondition.Message = fmt.Sprintf("Underlying Gateway with the name %q already exists and is owned by a different resource.", gateway.Name)
+				return ctrl.Result{}, nil
+			}
+			// Carry forward hostnames the gateway controller has already set.
+			for i := range gateway.Spec.Listeners {
+				el := gatewayutil.GetListenerByName(existing.Spec.Listeners, gateway.Spec.Listeners[i].Name)
+				if el != nil && el.Hostname != nil {
+					gateway.Spec.Listeners[i].Hostname = el.Hostname
+				}
+			}
+		}
+	}
 
-	// Maintain an HTTPRoute for all rules in the HTTPProxy
+	if err := controllerutil.SetControllerReference(&httpProxy, gateway, cl.GetScheme()); err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to set controller reference on gateway: %w", err)
+	}
+	// SSA Apply: concurrent reconciles applying the same desired state with the
+	// same field manager are deduplicated by the API server — no resource-version
+	// conflict is possible regardless of how many goroutines run simultaneously.
+	if err := cl.GetClient().Patch(ctx, gateway, client.Apply,
+		client.FieldOwner(httpProxyFieldManager),
+		client.ForceOwnership); err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to apply gateway: %w", err)
+	}
+	logger.Info("applied gateway", "name", gateway.Name)
+
+	// Maintain HTTPRouteFilters for connector-offline handling.
 
 	if len(desiredResources.httpRouteFilters) == 0 {
 		if err := cleanupConnectorOfflineHTTPRouteFilter(ctx, cl.GetClient(), &httpProxy); err != nil {
@@ -233,95 +248,91 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 		}
 	} else {
 		for _, desiredFilter := range desiredResources.httpRouteFilters {
-			httpRouteFilter := desiredFilter.DeepCopy()
-			result, err := controllerutil.CreateOrUpdate(ctx, cl.GetClient(), httpRouteFilter, func() error {
-				if err := controllerutil.SetControllerReference(&httpProxy, httpRouteFilter, cl.GetScheme()); err != nil {
-					return fmt.Errorf("failed to set controller on HTTPRouteFilter: %w", err)
-				}
-				httpRouteFilter.Spec = desiredFilter.Spec
-				return nil
-			})
-			if err != nil {
-				return ctrl.Result{}, fmt.Errorf("failed updating httproutefilter resource: %w", err)
+			f := desiredFilter.DeepCopy()
+			f.TypeMeta = metav1.TypeMeta{
+				APIVersion: envoygatewayv1alpha1.GroupVersion.String(),
+				Kind:       "HTTPRouteFilter",
 			}
-			logger.Info("processed httproutefilter", "name", httpRouteFilter.Name, "result", result)
+			if err := controllerutil.SetControllerReference(&httpProxy, f, cl.GetScheme()); err != nil {
+				return ctrl.Result{}, fmt.Errorf("failed to set controller reference on HTTPRouteFilter: %w", err)
+			}
+			if err := cl.GetClient().Patch(ctx, f, client.Apply,
+				client.FieldOwner(httpProxyFieldManager),
+				client.ForceOwnership); err != nil {
+				return ctrl.Result{}, fmt.Errorf("failed to apply httproutefilter: %w", err)
+			}
+			logger.Info("applied httproutefilter", "name", f.Name)
 		}
 	}
 
+	// Maintain an HTTPRoute for all rules in the HTTPProxy.
+
 	httpRoute := desiredResources.httpRoute.DeepCopy()
+	httpRoute.TypeMeta = metav1.TypeMeta{
+		APIVersion: gatewayv1.SchemeGroupVersion.String(),
+		Kind:       "HTTPRoute",
+	}
 
-	result, err = controllerutil.CreateOrUpdate(ctx, cl.GetClient(), httpRoute, func() error {
-		if hasControllerConflict(httpRoute, &httpProxy) {
-			// return already exists error - an httproute exists with the name we want to
-			// use, but it's owned by a different resource.
-			return apierrors.NewAlreadyExists(gatewayv1.Resource("HTTPRoute"), httpRoute.Name)
-		}
-
-		if err := controllerutil.SetControllerReference(&httpProxy, httpRoute, cl.GetScheme()); err != nil {
-			return fmt.Errorf("failed to set controller on httproute: %w", err)
-		}
-
-		httpRoute.Spec = desiredResources.httpRoute.Spec
-
-		return nil
-	})
-	if err != nil {
-		if apierrors.IsAlreadyExists(err) {
+	{
+		var existing gatewayv1.HTTPRoute
+		if err := cl.GetClient().Get(ctx, client.ObjectKeyFromObject(httpRoute), &existing); err != nil {
+			if !apierrors.IsNotFound(err) {
+				return ctrl.Result{}, fmt.Errorf("failed to get httproute: %w", err)
+			}
+		} else if hasControllerConflict(&existing, &httpProxy) {
 			programmedCondition.Status = metav1.ConditionFalse
 			programmedCondition.Reason = networkingv1alpha.HTTPProxyReasonConflict
 			programmedCondition.Message = fmt.Sprintf("Underlying HTTPRoute with the name %q already exists and is owned by a different resource.", httpRoute.Name)
 			return ctrl.Result{}, nil
 		}
-		return ctrl.Result{}, fmt.Errorf("failed updating httproute resource: %w", err)
 	}
 
-	logger.Info("processed httproute", "name", httpRoute.Name, "result", result)
+	if err := controllerutil.SetControllerReference(&httpProxy, httpRoute, cl.GetScheme()); err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to set controller reference on httproute: %w", err)
+	}
+	if err := cl.GetClient().Patch(ctx, httpRoute, client.Apply,
+		client.FieldOwner(httpProxyFieldManager),
+		client.ForceOwnership); err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to apply httproute: %w", err)
+	}
+	logger.Info("applied httproute", "name", httpRoute.Name)
+
+	// Maintain EndpointSlices for each backend in the HTTPProxy rules.
+	// The BackendCertHostnameAnnotation is already set (or absent) on each
+	// desiredEndpointSlice by collectDesiredResources; SSA + ForceOwnership
+	// ensures it is added when present and removed when absent without any
+	// explicit delete call.
 
 	for _, desiredEndpointSlice := range desiredResources.endpointSlices {
-		endpointSlice := desiredEndpointSlice.DeepCopy()
-
-		result, err := controllerutil.CreateOrUpdate(ctx, cl.GetClient(), endpointSlice, func() error {
-			if hasControllerConflict(endpointSlice, &httpProxy) {
-				// return already exists error - an endpointslice exists with the name we want to
-				// use, but it's owned by a different resource.
-				return apierrors.NewAlreadyExists(discoveryv1.Resource("EndpointSlice"), endpointSlice.Name)
-			}
-
-			if err := controllerutil.SetControllerReference(&httpProxy, endpointSlice, cl.GetScheme()); err != nil {
-				return fmt.Errorf("failed to set controller reference on endpointslice: %w", err)
-			}
-
-			endpointSlice.AddressType = desiredEndpointSlice.AddressType
-			endpointSlice.Endpoints = desiredEndpointSlice.Endpoints
-			endpointSlice.Ports = desiredEndpointSlice.Ports
-
-			// Keep the backend cert hostname annotation in sync. The gateway
-			// controller reads this to build the BackendTLSPolicy when the
-			// URLRewrite filter carries a user Host override instead of the
-			// real backend FQDN.
-			if v, ok := desiredEndpointSlice.Annotations[BackendCertHostnameAnnotation]; ok {
-				if endpointSlice.Annotations == nil {
-					endpointSlice.Annotations = map[string]string{}
-				}
-				endpointSlice.Annotations[BackendCertHostnameAnnotation] = v
-			} else {
-				delete(endpointSlice.Annotations, BackendCertHostnameAnnotation)
-			}
-			return nil
-		})
-
-		if err != nil {
-			if apierrors.IsAlreadyExists(err) {
-				programmedCondition.Status = metav1.ConditionFalse
-				programmedCondition.Reason = networkingv1alpha.HTTPProxyReasonConflict
-				programmedCondition.Message = fmt.Sprintf("Underlying EndpointSlice with the name %q already exists and is owned by a different resource.", endpointSlice.Name)
-				return ctrl.Result{}, nil
-			}
-
-			return ctrl.Result{}, fmt.Errorf("failed to create or update endpointslice: %w", err)
+		es := desiredEndpointSlice.DeepCopy()
+		es.TypeMeta = metav1.TypeMeta{
+			APIVersion: discoveryv1.SchemeGroupVersion.String(),
+			Kind:       "EndpointSlice",
 		}
 
-		logger.Info("processed endpointslice", "result", result, "name", desiredEndpointSlice.Name)
+		{
+			var existing discoveryv1.EndpointSlice
+			if err := cl.GetClient().Get(ctx, client.ObjectKeyFromObject(es), &existing); err != nil {
+				if !apierrors.IsNotFound(err) {
+					return ctrl.Result{}, fmt.Errorf("failed to get endpointslice: %w", err)
+				}
+			} else if hasControllerConflict(&existing, &httpProxy) {
+				programmedCondition.Status = metav1.ConditionFalse
+				programmedCondition.Reason = networkingv1alpha.HTTPProxyReasonConflict
+				programmedCondition.Message = fmt.Sprintf("Underlying EndpointSlice with the name %q already exists and is owned by a different resource.", es.Name)
+				return ctrl.Result{}, nil
+			}
+		}
+
+		if err := controllerutil.SetControllerReference(&httpProxy, es, cl.GetScheme()); err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed to set controller reference on endpointslice: %w", err)
+		}
+		if err := cl.GetClient().Patch(ctx, es, client.Apply,
+			client.FieldOwner(httpProxyFieldManager),
+			client.ForceOwnership); err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed to apply endpointslice: %w", err)
+		}
+		logger.Info("applied endpointslice", "name", es.Name)
 	}
 
 	patchPolicy, hasConnectorBackends, err := r.reconcileConnectorEnvoyPatchPolicy(

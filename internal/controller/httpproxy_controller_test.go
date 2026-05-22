@@ -1842,6 +1842,159 @@ func (c *fakeCluster) GetScheme() *runtime.Scheme {
 	return c.cl.Scheme()
 }
 
+// TestHTTPProxyReconcileConflictRequeue verifies that optimistic-locking 409
+// Conflict errors on child-resource writes and on the HTTPProxy status update
+// produce a short RequeueAfter instead of entering the exponential-backoff
+// queue. Without this, concurrent reconciles during tunnel creation silenced
+// the controller for 3-4 minutes.
+func TestHTTPProxyReconcileConflictRequeue(t *testing.T) {
+	t.Parallel()
+
+	logger := zap.New(zap.UseFlagOptions(&zap.Options{Development: true}))
+	ctx := log.IntoContext(context.Background(), logger)
+
+	testScheme := runtime.NewScheme()
+	require.NoError(t, scheme.AddToScheme(testScheme))
+	require.NoError(t, gatewayv1.Install(testScheme))
+	require.NoError(t, envoygatewayv1alpha1.AddToScheme(testScheme))
+	require.NoError(t, discoveryv1.AddToScheme(testScheme))
+	require.NoError(t, networkingv1alpha.AddToScheme(testScheme))
+	require.NoError(t, networkingv1alpha1.AddToScheme(testScheme))
+
+	testConfig := config.NetworkServicesOperator{
+		HTTPProxy: config.HTTPProxyConfig{GatewayClassName: "test-gateway-class"},
+		Gateway: config.GatewayConfig{
+			ControllerName:             gatewayv1.GatewayController("test-gateway-class"),
+			DownstreamGatewayClassName: "test-downstream-gateway-class",
+			TargetDomain:               "example.com",
+		},
+	}
+
+	for _, tc := range []struct {
+		name         string
+		extraObjects func(httpProxy *networkingv1alpha.HTTPProxy) []client.Object
+		injectFunc   func(interceptor.Funcs) interceptor.Funcs
+	}{
+		{
+			name: "conflict on gateway update requeuees quickly",
+			// Pre-seed a gateway with no spec so the reconcile mutates it,
+			// triggering an Update (which the interceptor turns into a 409).
+			extraObjects: func(p *networkingv1alpha.HTTPProxy) []client.Object {
+				return []client.Object{&gatewayv1.Gateway{ObjectMeta: metav1.ObjectMeta{
+					Namespace:         p.Namespace,
+					Name:              p.Name,
+					UID:               uuid.NewUUID(),
+					CreationTimestamp: metav1.Now(),
+				}}}
+			},
+			injectFunc: func(f interceptor.Funcs) interceptor.Funcs {
+				f.Update = func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+					if _, ok := obj.(*gatewayv1.Gateway); ok {
+						return apierrors.NewConflict(gatewayv1.Resource("gateways"), obj.GetName(), fmt.Errorf("injected"))
+					}
+					return c.Update(ctx, obj, opts...)
+				}
+				return f
+			},
+		},
+		{
+			name: "conflict on httproute update requeuees quickly",
+			// Pre-seed gateway (so that path succeeds) and httproute with no
+			// spec so the reconcile mutates the route, triggering an Update.
+			extraObjects: func(p *networkingv1alpha.HTTPProxy) []client.Object {
+				return []client.Object{
+					&gatewayv1.Gateway{ObjectMeta: metav1.ObjectMeta{
+						Namespace:         p.Namespace,
+						Name:              p.Name,
+						UID:               uuid.NewUUID(),
+						CreationTimestamp: metav1.Now(),
+					}},
+					&gatewayv1.HTTPRoute{ObjectMeta: metav1.ObjectMeta{
+						Namespace:         p.Namespace,
+						Name:              p.Name,
+						UID:               uuid.NewUUID(),
+						CreationTimestamp: metav1.Now(),
+					}},
+				}
+			},
+			injectFunc: func(f interceptor.Funcs) interceptor.Funcs {
+				f.Update = func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+					if _, ok := obj.(*gatewayv1.HTTPRoute); ok {
+						return apierrors.NewConflict(gatewayv1.Resource("httproutes"), obj.GetName(), fmt.Errorf("injected"))
+					}
+					return c.Update(ctx, obj, opts...)
+				}
+				return f
+			},
+		},
+		{
+			name: "conflict on status update requeuees quickly",
+			injectFunc: func(f interceptor.Funcs) interceptor.Funcs {
+				f.SubResourceUpdate = func(ctx context.Context, c client.Client, subResourceName string, obj client.Object, opts ...client.SubResourceUpdateOption) error {
+					if subResourceName == "status" {
+						if _, ok := obj.(*networkingv1alpha.HTTPProxy); ok {
+							return apierrors.NewConflict(gatewayv1.Resource("httpproxies"), obj.GetName(), fmt.Errorf("injected"))
+						}
+					}
+					return c.SubResource(subResourceName).Update(ctx, obj, opts...)
+				}
+				return f
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			httpProxy := newHTTPProxy()
+			// Pre-set the finalizer so the reconcile doesn't bail out early
+			// to add it before we can test child-resource conflict handling.
+			httpProxy.Finalizers = append(httpProxy.Finalizers, httpProxyFinalizer)
+
+			ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: httpProxy.Namespace}}
+			ns.SetUID("test-ns-uid")
+
+			initialObjects := []client.Object{httpProxy, ns}
+			if tc.extraObjects != nil {
+				initialObjects = append(initialObjects, tc.extraObjects(httpProxy)...)
+			}
+
+			interceptorFuncs := tc.injectFunc(interceptor.Funcs{
+				Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+					obj.SetUID(uuid.NewUUID())
+					obj.SetCreationTimestamp(metav1.Now())
+					return c.Create(ctx, obj, opts...)
+				},
+			})
+
+			fakeClient := fake.NewClientBuilder().
+				WithScheme(testScheme).
+				WithObjects(initialObjects...).
+				WithStatusSubresource(&networkingv1alpha.HTTPProxy{}, &gatewayv1.Gateway{}).
+				WithInterceptorFuncs(interceptorFuncs).
+				Build()
+
+			mgr := &fakeMockManager{cl: fakeClient}
+			reconciler := &HTTPProxyReconciler{
+				mgr:               mgr,
+				Config:            testConfig,
+				DownstreamCluster: &fakeCluster{cl: fake.NewClientBuilder().WithScheme(testScheme).Build()},
+			}
+
+			req := mcreconcile.Request{
+				Request:     reconcile.Request{NamespacedName: client.ObjectKeyFromObject(httpProxy)},
+				ClusterName: "test-cluster",
+			}
+
+			// The finalizer is already present; this reconcile goes straight to
+			// child-resource management and should hit the injected 409.
+			result, err := reconciler.Reconcile(ctx, req)
+			assert.NoError(t, err, "conflict should not be returned as an error")
+			assert.Equal(t, retryAfterConflict, result.RequeueAfter,
+				"conflict should produce a short RequeueAfter, not exponential backoff")
+		})
+	}
+}
+
 func TestBuildAvailabilityStatuses(t *testing.T) {
 	t.Parallel()
 

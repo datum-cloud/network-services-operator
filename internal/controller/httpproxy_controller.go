@@ -88,7 +88,7 @@ const (
 // +kubebuilder:rbac:groups=gateway.envoyproxy.io,resources=httproutefilters,verbs=get;list;watch;create;update;patch;delete
 // HTTPProxy controller reads cert-manager Certificate resources in the downstream cluster for status; ensure downstream role has cert-manager.io/certificates get;list;watch.
 
-func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (_ ctrl.Result, err error) {
+func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (result ctrl.Result, err error) {
 	logger := log.FromContext(ctx, "cluster", req.ClusterName)
 	ctx = log.IntoContext(ctx, logger)
 
@@ -168,9 +168,18 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 		if !equality.Semantic.DeepEqual(httpProxy.Status, httpProxyCopy.Status) {
 			httpProxy.Status = httpProxyCopy.Status
 			if statusErr := cl.GetClient().Status().Update(ctx, &httpProxy); statusErr != nil {
-				err = errors.Join(err, fmt.Errorf("failed updating httpproxy status: %w", statusErr))
+				if apierrors.IsConflict(statusErr) {
+					// Optimistic-locking conflict on the status write: requeue
+					// quickly rather than entering the exponential-backoff queue.
+					// This prevents multi-minute stalls when concurrent reconciles
+					// race to update the same HTTPProxy status on creation.
+					result.RequeueAfter = retryAfterConflict
+				} else {
+					err = errors.Join(err, fmt.Errorf("failed updating httpproxy status: %w", statusErr))
+				}
+			} else {
+				logger.Info("httpproxy status updated")
 			}
-			logger.Info("httpproxy status updated")
 		}
 	}()
 
@@ -184,7 +193,7 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 
 	gateway := desiredResources.gateway.DeepCopy()
 
-	result, err := controllerutil.CreateOrUpdate(ctx, cl.GetClient(), gateway, func() error {
+	opResult, err := controllerutil.CreateOrUpdate(ctx, cl.GetClient(), gateway, func() error {
 		if hasControllerConflict(gateway, &httpProxy) {
 			// return already exists error - a gateway exists with the name we want to
 			// use, but it's owned by a different resource.
@@ -220,10 +229,13 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 			programmedCondition.Message = fmt.Sprintf("Underlying Gateway with the name %q already exists and is owned by a different resource.", gateway.Name)
 			return ctrl.Result{}, nil
 		}
+		if apierrors.IsConflict(err) {
+			return ctrl.Result{RequeueAfter: retryAfterConflict}, nil
+		}
 		return ctrl.Result{}, fmt.Errorf("failed updating gateway resource: %w", err)
 	}
 
-	logger.Info("processed gateway", "name", gateway.Name, "result", result)
+	logger.Info("processed gateway", "name", gateway.Name, "result", opResult)
 
 	// Maintain an HTTPRoute for all rules in the HTTPProxy
 
@@ -234,7 +246,7 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 	} else {
 		for _, desiredFilter := range desiredResources.httpRouteFilters {
 			httpRouteFilter := desiredFilter.DeepCopy()
-			result, err := controllerutil.CreateOrUpdate(ctx, cl.GetClient(), httpRouteFilter, func() error {
+			opResult, err := controllerutil.CreateOrUpdate(ctx, cl.GetClient(), httpRouteFilter, func() error {
 				if err := controllerutil.SetControllerReference(&httpProxy, httpRouteFilter, cl.GetScheme()); err != nil {
 					return fmt.Errorf("failed to set controller on HTTPRouteFilter: %w", err)
 				}
@@ -244,13 +256,13 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 			if err != nil {
 				return ctrl.Result{}, fmt.Errorf("failed updating httproutefilter resource: %w", err)
 			}
-			logger.Info("processed httproutefilter", "name", httpRouteFilter.Name, "result", result)
+			logger.Info("processed httproutefilter", "name", httpRouteFilter.Name, "result", opResult)
 		}
 	}
 
 	httpRoute := desiredResources.httpRoute.DeepCopy()
 
-	result, err = controllerutil.CreateOrUpdate(ctx, cl.GetClient(), httpRoute, func() error {
+	opResult, err = controllerutil.CreateOrUpdate(ctx, cl.GetClient(), httpRoute, func() error {
 		if hasControllerConflict(httpRoute, &httpProxy) {
 			// return already exists error - an httproute exists with the name we want to
 			// use, but it's owned by a different resource.
@@ -272,15 +284,18 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 			programmedCondition.Message = fmt.Sprintf("Underlying HTTPRoute with the name %q already exists and is owned by a different resource.", httpRoute.Name)
 			return ctrl.Result{}, nil
 		}
+		if apierrors.IsConflict(err) {
+			return ctrl.Result{RequeueAfter: retryAfterConflict}, nil
+		}
 		return ctrl.Result{}, fmt.Errorf("failed updating httproute resource: %w", err)
 	}
 
-	logger.Info("processed httproute", "name", httpRoute.Name, "result", result)
+	logger.Info("processed httproute", "name", httpRoute.Name, "result", opResult)
 
 	for _, desiredEndpointSlice := range desiredResources.endpointSlices {
 		endpointSlice := desiredEndpointSlice.DeepCopy()
 
-		result, err := controllerutil.CreateOrUpdate(ctx, cl.GetClient(), endpointSlice, func() error {
+		opResult, err := controllerutil.CreateOrUpdate(ctx, cl.GetClient(), endpointSlice, func() error {
 			if hasControllerConflict(endpointSlice, &httpProxy) {
 				// return already exists error - an endpointslice exists with the name we want to
 				// use, but it's owned by a different resource.
@@ -317,11 +332,13 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 				programmedCondition.Message = fmt.Sprintf("Underlying EndpointSlice with the name %q already exists and is owned by a different resource.", endpointSlice.Name)
 				return ctrl.Result{}, nil
 			}
-
+			if apierrors.IsConflict(err) {
+				return ctrl.Result{RequeueAfter: retryAfterConflict}, nil
+			}
 			return ctrl.Result{}, fmt.Errorf("failed to create or update endpointslice: %w", err)
 		}
 
-		logger.Info("processed endpointslice", "result", result, "name", desiredEndpointSlice.Name)
+		logger.Info("processed endpointslice", "result", opResult, "name", desiredEndpointSlice.Name)
 	}
 
 	patchPolicy, hasConnectorBackends, err := r.reconcileConnectorEnvoyPatchPolicy(

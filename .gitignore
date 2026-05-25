@@ -32,5 +32,6 @@ ui/.next
 
 .task/
 .test-infra/
-config.bat
 node_modules
+.env
+.env.local

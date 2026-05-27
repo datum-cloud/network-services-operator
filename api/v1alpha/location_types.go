@@ -77,6 +77,7 @@ type LocationStatus struct {
 }
 
 // +kubebuilder:object:root=true
+// +kubebuilder:resource:scope=Cluster
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Class",type="string",JSONPath=".spec.locationClassName"
 // +kubebuilder:printcolumn:name="City",type="string",JSONPath=`.spec.topology.topology\.datum\.net/city-code`

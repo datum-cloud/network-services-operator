@@ -12,7 +12,7 @@ spec:
     listKind: LocationList
     plural: locations
     singular: location
-  scope: Namespaced
+  scope: Cluster
   versions:
   - additionalPrinterColumns:
     - jsonPath: .spec.locationClassName

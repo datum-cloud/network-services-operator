@@ -12,7 +12,7 @@ spec:
     listKind: LocationBindingList
     plural: locationbindings
     singular: locationbinding
-  scope: Namespaced
+  scope: Cluster
   versions:
   - additionalPrinterColumns:
     - jsonPath: .spec.locationRef.name
@@ -32,9 +32,9 @@ spec:
       openAPIV3Schema:
         description: |-
           LocationBinding is the Schema for the locationbindings API. It is a
-          namespace-scoped projection of a cluster-scoped Location into a project's
-          namespace, created once the location's class is supported, the Location is
-          Ready, and the corresponding ServiceAvailability is Available.
+          cluster-scoped projection of a cluster-scoped Location into a project's
+          virtual control plane, created once the location's class is supported, the
+          Location is Ready, and the corresponding ServiceAvailability is Available.
         properties:
           apiVersion:
             description: |-

@@ -37,16 +37,16 @@ type LocationBindingStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:scope=Namespaced
+// +kubebuilder:resource:scope=Cluster
 // +kubebuilder:printcolumn:name="Location",type="string",JSONPath=".spec.locationRef.name"
 // +kubebuilder:printcolumn:name="Class",type="string",JSONPath=".spec.locationClassName"
 // +kubebuilder:printcolumn:name="Available",type="string",JSONPath=`.status.conditions[?(@.type=="Available")].status`
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
 // LocationBinding is the Schema for the locationbindings API. It is a
-// namespace-scoped projection of a cluster-scoped Location into a project's
-// namespace, created once the location's class is supported, the Location is
-// Ready, and the corresponding ServiceAvailability is Available.
+// cluster-scoped projection of a cluster-scoped Location into a project's
+// virtual control plane, created once the location's class is supported, the
+// Location is Ready, and the corresponding ServiceAvailability is Available.
 type LocationBinding struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

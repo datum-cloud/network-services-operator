@@ -58,24 +58,8 @@ spec:
               locationClassName:
                 description: "The location class that indicates control plane behavior
                   of entities\nassociated with the location.\n\nValid values are:\n\t-
-                  datum-managed\n\t- self-managed\n\t- provider-dedicated"
+                  datum-managed\n\t- self-managed"
                 type: string
-              ownerProjectRef:
-                description: |-
-                  OwnerProjectRef is set for provider-dedicated and self-managed locations.
-                  It references the project that owns and manages this location.
-                properties:
-                  name:
-                    default: ""
-                    description: |-
-                      Name of the referent.
-                      This field is effectively required, but due to backwards compatibility is
-                      allowed to be empty. Instances of this type with an empty value here are
-                      almost certainly wrong.
-                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                    type: string
-                type: object
-                x-kubernetes-map-type: atomic
               provider:
                 description: The location provider
                 properties:

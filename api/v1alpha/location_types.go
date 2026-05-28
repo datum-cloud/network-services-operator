@@ -3,7 +3,6 @@
 package v1alpha
 
 import (
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -19,7 +18,6 @@ type LocationSpec struct {
 	// Valid values are:
 	//	- datum-managed
 	//	- self-managed
-	//	- provider-dedicated
 	//
 	// +kubebuilder:validation:Required
 	LocationClassName string `json:"locationClassName,omitempty"`
@@ -37,12 +35,6 @@ type LocationSpec struct {
 	//
 	// +kubebuilder:validation:Required
 	Provider LocationProvider `json:"provider"`
-
-	// OwnerProjectRef is set for provider-dedicated and self-managed locations.
-	// It references the project that owns and manages this location.
-	//
-	// +optional
-	OwnerProjectRef *corev1.LocalObjectReference `json:"ownerProjectRef,omitempty"`
 }
 
 type LocationProvider struct {

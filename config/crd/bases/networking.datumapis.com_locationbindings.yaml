@@ -4,36 +4,37 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.16.4
-  name: locations.networking.datumapis.com
+  name: locationbindings.networking.datumapis.com
 spec:
   group: networking.datumapis.com
   names:
-    kind: Location
-    listKind: LocationList
-    plural: locations
-    singular: location
+    kind: LocationBinding
+    listKind: LocationBindingList
+    plural: locationbindings
+    singular: locationbinding
   scope: Cluster
   versions:
   - additionalPrinterColumns:
+    - jsonPath: .spec.locationRef.name
+      name: Location
+      type: string
     - jsonPath: .spec.locationClassName
       name: Class
       type: string
-    - jsonPath: .spec.topology.topology\.datum\.net/city-code
-      name: City
+    - jsonPath: .status.conditions[?(@.type=="Available")].status
+      name: Available
       type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
-    - jsonPath: .status.conditions[?(@.type==\"Ready\")].status
-      name: Ready
-      type: string
-    - jsonPath: .status.conditions[?(@.type==\"Ready\")].reason
-      name: Reason
-      type: string
     name: v1alpha
     schema:
       openAPIV3Schema:
-        description: Location is the Schema for the locations API.
+        description: |-
+          LocationBinding is the Schema for the locationbindings API. It is a
+          cluster-scoped projection of a cluster-scoped Location into a project's
+          virtual control plane, created once the location's class is supported, the
+          Location is Ready, and the corresponding ServiceAvailability is Available.
         properties:
           apiVersion:
             description: |-
@@ -53,54 +54,44 @@ spec:
           metadata:
             type: object
           spec:
-            description: LocationSpec defines the desired state of Location.
+            description: LocationBindingSpec defines the desired state of LocationBinding.
             properties:
-              locationClassName:
-                description: "The location class that indicates control plane behavior
-                  of entities\nassociated with the location.\n\nValid values are:\n\t-
-                  datum-managed\n\t- self-managed"
+              displayName:
+                description: DisplayName is a human-readable label for the location.
                 type: string
-              provider:
-                description: The location provider
+              locationClassName:
+                description: LocationClassName mirrors spec.locationClassName from
+                  the referenced Location.
+                type: string
+              locationRef:
+                description: LocationRef references the canonical cluster-scoped Location
+                  object.
                 properties:
-                  gcp:
-                    properties:
-                      projectId:
-                        description: |-
-                          The GCP project servicing the location
-
-                          For locations with the class of `datum-managed`, a service account will be
-                          required for each unique GCP project ID across all locations registered in a
-                          namespace.
-                        type: string
-                      region:
-                        description: The GCP region servicing the location
-                        type: string
-                      zone:
-                        description: The GCP zone servicing the location
-                        type: string
-                    required:
-                    - projectId
-                    - region
-                    - zone
-                    type: object
+                  name:
+                    default: ""
+                    description: |-
+                      Name of the referent.
+                      This field is effectively required, but due to backwards compatibility is
+                      allowed to be empty. Instances of this type with an empty value here are
+                      almost certainly wrong.
+                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                    type: string
                 type: object
+                x-kubernetes-map-type: atomic
               topology:
                 additionalProperties:
                   type: string
-                description: "The topology of the location\n\nThis may contain arbitrary
-                  topology keys. Some keys may be well known, such\nas:\n\t- topology.datum.net/city-code"
+                description: |-
+                  Topology mirrors spec.topology from the referenced Location, containing
+                  well-known keys like topology.datum.net/city-code and topology.datum.net/region.
                 type: object
             required:
-            - locationClassName
-            - provider
-            - topology
+            - locationRef
             type: object
           status:
-            description: LocationStatus defines the observed state of Location.
+            description: LocationBindingStatus defines the observed state of LocationBinding.
             properties:
               conditions:
-                description: Represents the observations of a location's current state.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -156,6 +147,9 @@ spec:
                   - type
                   type: object
                 type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
             type: object
         type: object
     served: true

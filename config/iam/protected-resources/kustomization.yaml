@@ -11,6 +11,7 @@ resources:
   - gateways.yaml
   - httpproxies.yaml
   - httproutes.yaml
+  - locationbindings.yaml
   - locations.yaml
   - networkbindings.yaml
   - networkcontexts.yaml

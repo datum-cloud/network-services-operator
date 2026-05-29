@@ -1,0 +1,13 @@
+apiVersion: iam.miloapis.com/v1alpha1
+kind: Role
+metadata:
+  name: networking.datumapis.com-locationbinding-viewer
+  annotations:
+    kubernetes.io/display-name: Location Binding Viewer
+    kubernetes.io/description: "View access to location binding resources"
+spec:
+  launchStage: Beta
+  includedPermissions:
+    - networking.datumapis.com/locationbindings.list
+    - networking.datumapis.com/locationbindings.get
+    - networking.datumapis.com/locationbindings.watch

@@ -5,6 +5,10 @@ metadata:
   labels:
     app.kubernetes.io/name: network-services-operator
     app.kubernetes.io/component: quota-system
+    services.miloapis.com/owner: networking.datumapis.com
+  annotations:
+    kubernetes.io/display-name: "Domains"
+    kubernetes.io/description: "Maximum number of domains that can be created within a project"
 spec:
   consumerType:
     apiGroup: resourcemanager.miloapis.com

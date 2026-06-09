@@ -578,32 +578,17 @@ are needed.
 
 ### Recommendation
 
-**Option D** (WASM filter emitter) is the recommended approach. It eliminates
-the primary reliability concern of Option B (counter loss on pod restart), covers
-all four billing signals including connection-seconds natively, and requires no
-changes to the NSO Go binary or access log configuration. The main investment is
-a small Rust build pipeline and an `EnvoyExtensionPolicy` manifest.
+**Option A** (access log scraping via Vector) is the most consistent with the
+billing pipeline architecture and is recommended as the primary collection
+mechanism for request count, egress bytes, and ingress bytes. Connection-seconds
+for persistent connections is handled by a lightweight controller-side emitter
+(see above). This approach requires:
 
-The filter should batch-emit usage events to a local Vector agent (rather than
-calling the Ingestion Gateway directly) to preserve Vector's tier-1 durability
-guarantee and decouple the filter from billing availability. Flush interval is
-configurable; 60 seconds is a reasonable default.
+1. An `EnvoyProxy` CR patch configuring structured JSON access logs.
+2. A Vector configuration to parse the log format and construct `UsageEvent`s.
+3. A small addition to the gateway controller for connection-lifecycle events.
 
-**Option A** (access logs via Vector) remains a valid fallback if WASM support
-in the deployed Envoy Gateway version is insufficient or if the Rust build
-pipeline cannot be prioritized. In that case connection-seconds requires an
-additional controller-side emitter.
-
-This approach requires:
-
-1. A Rust WASM binary (`proxy-wasm-rust-sdk`) implementing `on_log()` signal
-   extraction and batched `dispatch_http_call()` to the local Vector agent.
-2. An OCI image packaging the `.wasm` binary, published to
-   `ghcr.io/datum-cloud/billing-wasm`.
-3. An `EnvoyExtensionPolicy` manifest in `config/` referencing the image.
-
-None of these changes require modifications to the billing pipeline contract or
-the NSO Go binary.
+None of these changes require modifications to the billing pipeline contract.
 
 ### Pipeline context enrichment
 
@@ -645,15 +630,12 @@ The following decisions are required before work can begin on each phase.
 | OD-3 | ~~`producerProjectRef.name`~~ — resolved: `datum-cloud`. | — | — |
 | OD-4 | ~~Bundle layout~~ — resolved: per-service-domain directory under `config/services/networking.datumapis.com/`, matching `datum-cloud/datum/config/services/<service-domain>/`. | — | — |
 | OD-5 | Is the Vector Agent DaemonSet planned to run on the edge cluster nodes that host Envoy Gateway pods? | Platform / infra | Phase 2 |
-| OD-6 | Can the network-services-operator patch the `EnvoyProxy` CR to inject access log configuration? | Kevin | Phase 2 (Option A fallback only) |
+| OD-6 | Can the network-services-operator patch the `EnvoyProxy` CR to inject access log configuration? | Kevin | Phase 2 |
 | OD-7 | Is the billing SDK published as a consumable Go module? | Billing team | Phase 2 |
 | OD-8 | Enrichment-sidecar placement: per-node alongside Vector, or central in front of the Ingestion Gateway? | Billing team / platform | Phase 2 |
-| OD-9 | Does the deployed Envoy Gateway version support `EnvoyExtensionPolicy` with WASM? Minimum version is Envoy Gateway v1.1. | Platform / infra | Phase 2 (Option D) |
-| OD-10 | WASM build pipeline: standalone repo or subdirectory of `network-services-operator`? Affects release cadence and artifact ownership. | NSO team | Phase 2 (Option D) |
-| OD-11 | WASM dispatch target: emit directly to local Vector agent, or to a dedicated on-node billing relay? Affects durability contract and Vector coupling. | Billing team / platform | Phase 2 (Option D) |
 
 All Phase 1 decisions are resolved; implementation can begin. Phase 2 is
-blocked on OD-5, OD-7, OD-8, and (for Option D) OD-9 through OD-11.
+blocked on OD-5 through OD-8.
 
 ---
 
@@ -691,27 +673,7 @@ From issue [#155](https://github.com/datum-cloud/network-services-operator/issue
 
 ### Phase 2 — Emission integration (~1–2 weeks)
 
-#### Path D (WASM — recommended)
-
-1. Resolve OD-5, OD-7, OD-9, OD-10, OD-11.
-2. Create the WASM filter binary (Rust, `proxy-wasm-rust-sdk`):
-   - Implement `on_log()` to extract `request.size`, `response.size`,
-     `request.duration`, and `upstream.cluster_name`.
-   - Parse `upstream.cluster_name` to derive `httproute_name` and
-     `httproute_namespace`.
-   - Batch signals and flush via `dispatch_http_call()` to the local Vector
-     agent at a configurable interval (default 60 s).
-3. Package the `.wasm` binary as an OCI image and publish to
-   `ghcr.io/datum-cloud/billing-wasm`.
-4. Author an `EnvoyExtensionPolicy` manifest referencing the image.
-5. Configure Vector to receive batched events from the WASM filter and forward
-   them as `UsageEvent` CloudEvents to the Ingestion Gateway.
-6. Write unit tests for the Rust filter and integration tests validating
-   end-to-end event delivery.
-
-#### Path A (access logs — fallback if OD-9 blocks Option D)
-
-1. Resolve OD-5, OD-6, OD-7, OD-8.
+1. Resolve OD-5 through OD-8.
 2. Add billing SDK to `go.mod`.
 3. Patch the `EnvoyProxy` CR to enable structured JSON access logs.
 4. Configure Vector to parse access log entries and emit `UsageEvent`s for

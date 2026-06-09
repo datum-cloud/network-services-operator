@@ -234,7 +234,7 @@ func SetObjectDefaults_NetworkServicesOperator(in *NetworkServicesOperator) {
 		in.Connector.Iroh.RecordPrefix = "_iroh"
 	}
 	if in.Connector.Iroh.TTLSeconds == 0 {
-		in.Connector.Iroh.TTLSeconds = 30
+		in.Connector.Iroh.TTLSeconds = 5
 	}
 	SetDefaults_DiscoveryConfig(&in.Discovery)
 	if in.Redis.DialTimeout == nil {

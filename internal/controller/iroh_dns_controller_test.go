@@ -3,16 +3,41 @@
 package controller
 
 import (
+	"context"
 	"testing"
+	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	coordinationv1 "k8s.io/api/coordination/v1"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	k8sscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 
 	networkingv1alpha1 "go.datum.net/network-services-operator/api/v1alpha1"
 	"go.datum.net/network-services-operator/internal/config"
 )
+
+func newIrohTestScheme(t *testing.T) *runtime.Scheme {
+	t.Helper()
+	s := runtime.NewScheme()
+	require.NoError(t, k8sscheme.AddToScheme(s))
+	require.NoError(t, coordinationv1.AddToScheme(s))
+	require.NoError(t, networkingv1alpha1.AddToScheme(s))
+	require.NoError(t, dnsv1alpha1.AddToScheme(s))
+	return s
+}
 
 // Real iroh public key from iroh-base/src/key.rs SecretKey.public, chosen
 // because it has a known z32 form we can pin against.
@@ -375,5 +400,190 @@ func TestSortIrohAddresses_DoesNotMutateInput(t *testing.T) {
 		if original[i] != want[i] {
 			t.Fatalf("input was mutated at index %d: got %+v, want %+v", i, original[i], want[i])
 		}
+	}
+}
+
+func TestIrohDNSReconcile_ClaimArbitration(t *testing.T) {
+	log.SetLogger(zap.New(zap.UseDevMode(true)))
+
+	const (
+		ourUID     = types.UID("aaaaaaaa-0000-0000-0000-000000000001")
+		foreignUID = "bbbbbbbb-0000-0000-0000-000000000002"
+
+		dnsNamespace = "datum-dns"
+	)
+
+	recordName := "iroh-" + testEndpointZ32
+
+	// irohConnectorClass routes "datum-connect" connectors to this controller.
+	irohConnectorClass := &networkingv1alpha1.ConnectorClass{
+		ObjectMeta: metav1.ObjectMeta{Name: "datum-connect"},
+		Spec:       networkingv1alpha1.ConnectorClassSpec{ControllerName: "networking.datumapis.com/datum-connect"},
+	}
+
+	// makeConnector returns a Connector with the iroh finalizer already set and
+	// valid connection details, so the first Reconcile reaches applyClaim without
+	// an extra add-finalizer round-trip.
+	makeConnector := func() *networkingv1alpha1.Connector {
+		return &networkingv1alpha1.Connector{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:       "my-connector",
+				Namespace:  "default",
+				UID:        ourUID,
+				Finalizers: []string{irohDNSFinalizer},
+			},
+			Spec: networkingv1alpha1.ConnectorSpec{ConnectorClassName: "datum-connect"},
+			Status: networkingv1alpha1.ConnectorStatus{
+				ConnectionDetails: &networkingv1alpha1.ConnectorConnectionDetails{
+					Type: networkingv1alpha1.PublicKeyConnectorConnectionType,
+					PublicKey: &networkingv1alpha1.ConnectorConnectionDetailsPublicKey{
+						Id:        testEndpointHex,
+						HomeRelay: testRelayURL,
+					},
+				},
+			},
+		}
+	}
+
+	// makeExistingRecord returns a DNSRecordSet whose claim label points at the
+	// foreign connector — i.e., the pre-existing state before our connector reconciles.
+	makeExistingRecord := func() *dnsv1alpha1.DNSRecordSet {
+		return &dnsv1alpha1.DNSRecordSet{
+			TypeMeta: metav1.TypeMeta{
+				APIVersion: dnsv1alpha1.GroupVersion.String(),
+				Kind:       "DNSRecordSet",
+			},
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      recordName,
+				Namespace: dnsNamespace,
+				Labels: map[string]string{
+					irohDNSClaimedByUIDLabel:       foreignUID,
+					irohDNSConnectorClusterLabel:   encodeIrohClusterLabel("/foreign-project"),
+					irohDNSConnectorNamespaceLabel: "default",
+					irohDNSConnectorNameLabel:      "foreign-connector",
+				},
+			},
+		}
+	}
+
+	dur30 := int32(30)
+
+	// makeExpiredLease returns a downstream claim Lease for the record whose
+	// RenewTime is far in the past — simulating an agent that stopped heartbeating.
+	makeExpiredLease := func() *coordinationv1.Lease {
+		return &coordinationv1.Lease{
+			ObjectMeta: metav1.ObjectMeta{Name: recordName, Namespace: dnsNamespace},
+			Spec: coordinationv1.LeaseSpec{
+				HolderIdentity:       ptr.To(foreignUID),
+				LeaseDurationSeconds: &dur30,
+				RenewTime:            &metav1.MicroTime{Time: time.Now().Add(-5 * time.Minute)},
+			},
+		}
+	}
+
+	// makeActiveLease returns a downstream claim Lease renewed just now —
+	// simulating an owner whose agent is still alive.
+	makeActiveLease := func() *coordinationv1.Lease {
+		return &coordinationv1.Lease{
+			ObjectMeta: metav1.ObjectMeta{Name: recordName, Namespace: dnsNamespace},
+			Spec: coordinationv1.LeaseSpec{
+				HolderIdentity:       ptr.To(foreignUID),
+				LeaseDurationSeconds: &dur30,
+				RenewTime:            &metav1.MicroTime{Time: time.Now()},
+			},
+		}
+	}
+
+	tests := []struct {
+		name               string
+		existingRecord     *dnsv1alpha1.DNSRecordSet
+		existingClaimLease *coordinationv1.Lease
+		wantStatus         metav1.ConditionStatus
+		wantReason         string
+		wantOwnerUID       string // expected irohDNSClaimedByUIDLabel after reconcile; "" = don't assert record
+	}{
+		{
+			name:         "no existing record — connector creates and owns it",
+			wantStatus:   metav1.ConditionTrue,
+			wantReason:   connectorReasonIrohOwner,
+			wantOwnerUID: string(ourUID),
+		},
+		{
+			name:           "the owner connector was deleted",
+			existingRecord: makeExistingRecord(),
+			wantStatus:     metav1.ConditionTrue,
+			wantReason:     connectorReasonIrohOwner,
+			wantOwnerUID:   string(ourUID),
+		},
+		{
+			name:               "cross-project owner whose agent stopped heartbeating",
+			existingRecord:     makeExistingRecord(),
+			existingClaimLease: makeExpiredLease(),
+			wantStatus:         metav1.ConditionTrue,
+			wantReason:         connectorReasonIrohOwner,
+			wantOwnerUID:       string(ourUID),
+		},
+		{
+			name:               "owner is alive and active",
+			existingRecord:     makeExistingRecord(),
+			existingClaimLease: makeActiveLease(),
+			wantStatus:         metav1.ConditionFalse,
+			wantReason:         connectorReasonIrohDeferredToOwner,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			testScheme := newIrohTestScheme(t)
+			connector := makeConnector()
+
+			upstreamCl := fake.NewClientBuilder().
+				WithScheme(testScheme).
+				WithObjects(connector, irohConnectorClass).
+				WithStatusSubresource(connector).
+				Build()
+
+			downstreamBuilder := fake.NewClientBuilder().WithScheme(testScheme)
+			if tt.existingRecord != nil {
+				downstreamBuilder = downstreamBuilder.WithObjects(tt.existingRecord)
+			}
+			if tt.existingClaimLease != nil {
+				downstreamBuilder = downstreamBuilder.WithObjects(tt.existingClaimLease)
+			}
+			downstreamCl := downstreamBuilder.Build()
+
+			reconciler := &IrohDNSReconciler{
+				mgr:        &fakeMockManager{cl: upstreamCl},
+				Downstream: &clusterWithClient{c: downstreamCl, scheme: testScheme},
+				Config:     newReconciler().Config,
+			}
+
+			ctx := context.Background()
+			_, err := reconciler.Reconcile(ctx, mcreconcile.Request{
+				ClusterName: testClusterName,
+				Request:     reconcile.Request{NamespacedName: client.ObjectKeyFromObject(connector)},
+			})
+			require.NoError(t, err)
+
+			// Verify the IrohDNSPublished condition on the Connector.
+			var updated networkingv1alpha1.Connector
+			require.NoError(t, upstreamCl.Get(ctx, client.ObjectKeyFromObject(connector), &updated))
+
+			cond := apimeta.FindStatusCondition(updated.Status.Conditions, connectorConditionIrohDNSPublished)
+			require.NotNil(t, cond, "IrohDNSPublished condition must be set")
+			assert.Equal(t, tt.wantStatus, cond.Status)
+			assert.Equal(t, tt.wantReason, cond.Reason)
+
+			// For ownership cases, verify the DNSRecordSet claim label and claim Lease.
+			if tt.wantOwnerUID != "" {
+				var record dnsv1alpha1.DNSRecordSet
+				require.NoError(t, downstreamCl.Get(ctx, client.ObjectKey{Namespace: dnsNamespace, Name: recordName}, &record))
+				assert.Equal(t, tt.wantOwnerUID, record.Labels[irohDNSClaimedByUIDLabel], "DNSRecordSet claim label")
+
+				var claimLease coordinationv1.Lease
+				require.NoError(t, downstreamCl.Get(ctx, client.ObjectKey{Namespace: dnsNamespace, Name: recordName}, &claimLease))
+				assert.Equal(t, tt.wantOwnerUID, ptr.Deref(claimLease.Spec.HolderIdentity, ""), "claim Lease holder identity")
+			}
+		})
 	}
 }

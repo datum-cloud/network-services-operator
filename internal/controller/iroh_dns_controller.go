@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -58,6 +59,52 @@ const (
 	connectorReasonIrohPending         = "Pending"
 )
 
+// irohDNSClaimLeaseHeartbeats is the number of upstream Lease heartbeat
+// intervals that must pass without renewal before a competitor may take over.
+const irohDNSClaimLeaseHeartbeats = 3
+
+type claimStatus int
+
+const (
+	claimStatusCreate   claimStatus = iota // no existing record
+	claimStatusOwner                       // we already hold the claim
+	claimStatusTakeOver                    // downstream claim, owner dead
+	claimStatusDefer                       // downstream claim, owner alive
+)
+
+// isLeaseExpired reports whether lease has passed its renewal deadline.
+// Returns true (expired) conservatively when fields are absent.
+func isLeaseExpired(lease coordinationv1.Lease, now time.Time) bool {
+	if lease.Spec.RenewTime == nil || lease.Spec.LeaseDurationSeconds == nil {
+		return true
+	}
+	deadline := lease.Spec.RenewTime.Add(
+		time.Duration(*lease.Spec.LeaseDurationSeconds) * time.Second,
+	)
+	return !now.Before(deadline)
+}
+
+// evaluateClaim decides what applyClaim should do given the current state of
+// the downstream DNSRecordSet and the associated claim Lease.
+// claimLease is nil when the Lease was not found.
+func evaluateClaim(
+	connectorUID types.UID,
+	existing *dnsv1alpha1.DNSRecordSet,
+	claimLease *coordinationv1.Lease,
+	now time.Time,
+) claimStatus {
+	if existing == nil {
+		return claimStatusCreate
+	}
+	if existing.Labels[irohDNSClaimedByUIDLabel] == string(connectorUID) {
+		return claimStatusOwner
+	}
+	if claimLease == nil || isLeaseExpired(*claimLease, now) {
+		return claimStatusTakeOver
+	}
+	return claimStatusDefer
+}
+
 // allowedIrohControllerNames is the set of ConnectorClass.spec.controllerName
 // values for which we publish iroh DNS records. Both names refer to the same
 // controller; "datum-connect" is the legacy name kept alive while older
@@ -84,6 +131,7 @@ type IrohDNSReconciler struct {
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=connectors/status,verbs=update;patch
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=connectors/finalizers,verbs=update
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=connectorclasses,verbs=get;list;watch
+// +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;create;update;patch;delete
 
 func (r *IrohDNSReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx, "cluster", req.ClusterName)
@@ -139,47 +187,96 @@ func (r *IrohDNSReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 	return ctrl.Result{}, r.applyClaim(ctx, cl, &connector, desired)
 }
 
-// applyClaim implements the claim-then-write loop:
-//   - Get the DNSRecordSet at the deterministic z32-derived name.
-//   - Not found → Create with our claim. AlreadyExists means a sibling beat
-//     us; we re-fetch and continue.
-//   - Found, our claim → SSA refresh content.
-//   - Found, foreign claim → defer (no write) and surface a status
-//     condition naming the owner.
+// applyClaim implements the ownership arbitration loop:
+//   - Not found → Create with our claim + create downstream Lease.
+//   - Found, our claim → SSA refresh + renew downstream Lease.
+//   - Found, foreign claim + dead/absent downstream Lease → force-claim.
+//   - Found, foreign claim + live downstream Lease → defer.
 func (r *IrohDNSReconciler) applyClaim(ctx context.Context, cl cluster.Cluster, connector *networkingv1alpha1.Connector, desired *dnsv1alpha1.DNSRecordSet) error {
 	key := client.ObjectKeyFromObject(desired)
-	var existing dnsv1alpha1.DNSRecordSet
-	err := r.Downstream.GetClient().Get(ctx, key, &existing)
 
-	switch {
-	case apierrors.IsNotFound(err):
+	var existing dnsv1alpha1.DNSRecordSet
+	existingErr := r.Downstream.GetClient().Get(ctx, key, &existing)
+	if existingErr != nil && !apierrors.IsNotFound(existingErr) {
+		return fmt.Errorf("get DNSRecordSet: %w", existingErr)
+	}
+	var existingPtr *dnsv1alpha1.DNSRecordSet
+	if existingErr == nil {
+		existingPtr = &existing
+	}
+
+	// Fetch the downstream claim Lease only when a foreign claim is present —
+	// it determines whether the current claimant is still alive.
+	var claimLease *coordinationv1.Lease
+	if existingPtr != nil && existingPtr.Labels[irohDNSClaimedByUIDLabel] != string(connector.UID) {
+		var lease coordinationv1.Lease
+		err := r.Downstream.GetClient().Get(ctx, key, &lease)
+		if err != nil && !apierrors.IsNotFound(err) {
+			return fmt.Errorf("get downstream claim lease: %w", err)
+		}
+		if err == nil {
+			claimLease = &lease
+		}
+	}
+
+	switch evaluateClaim(connector.UID, existingPtr, claimLease, time.Now()) {
+	case claimStatusCreate:
 		if err := r.Downstream.GetClient().Create(ctx, desired); err != nil {
 			if !apierrors.IsAlreadyExists(err) {
 				return fmt.Errorf("create DNSRecordSet: %w", err)
 			}
-			// Sibling raced us. Refetch and fall through to the foreign-claim
-			// branch on next reconcile.
+			// Sibling raced us to the create; next reconcile will re-evaluate.
 			return nil
+		}
+		if err := r.renewDownstreamLease(ctx, connector, desired.Name); err != nil {
+			return err
 		}
 		return r.setPublishedCondition(ctx, cl, connector, metav1.ConditionTrue, connectorReasonIrohOwner, "Owns iroh DNS record.")
 
-	case err != nil:
-		return fmt.Errorf("get DNSRecordSet: %w", err)
-	}
+	case claimStatusOwner, claimStatusTakeOver:
+		if err := r.Downstream.GetClient().Patch(ctx, desired, client.Apply, client.FieldOwner(irohDNSFieldManager), client.ForceOwnership); err != nil {
+			return fmt.Errorf("apply DNSRecordSet: %w", err)
+		}
+		if err := r.renewDownstreamLease(ctx, connector, desired.Name); err != nil {
+			return err
+		}
+		return r.setPublishedCondition(ctx, cl, connector, metav1.ConditionTrue, connectorReasonIrohOwner, "Owns iroh DNS record.")
 
-	currentClaim := existing.Labels[irohDNSClaimedByUIDLabel]
-	if currentClaim != string(connector.UID) {
+	default: // claimStatusDefer
 		ownerCluster := decodeIrohClusterLabel(existing.Labels[irohDNSConnectorClusterLabel])
 		ownerRef := ownerCluster + "/" + existing.Labels[irohDNSConnectorNamespaceLabel] + "/" + existing.Labels[irohDNSConnectorNameLabel]
 		return r.setPublishedCondition(ctx, cl, connector, metav1.ConditionFalse, connectorReasonIrohDeferredToOwner,
-			fmt.Sprintf("iroh DNS record is owned by Connector %s (uid %s).", ownerRef, currentClaim))
+			fmt.Sprintf("iroh DNS record is owned by Connector %s (uid %s).", ownerRef, existing.Labels[irohDNSClaimedByUIDLabel]))
 	}
+}
 
-	// We own it. SSA the desired content.
-	if err := r.Downstream.GetClient().Patch(ctx, desired, client.Apply, client.FieldOwner(irohDNSFieldManager), client.ForceOwnership); err != nil {
-		return fmt.Errorf("apply DNSRecordSet: %w", err)
+// renewDownstreamLease creates or refreshes the claim Lease in the downstream
+// cluster for the given DNSRecordSet name. The Lease is the liveness signal
+// that lets competing connectors (including cross-cluster ones) determine
+// whether the current claimant is still active.
+func (r *IrohDNSReconciler) renewDownstreamLease(ctx context.Context, connector *networkingv1alpha1.Connector, recordSetName string) error {
+	dur := r.Config.Connector.LeaseDurationSeconds * irohDNSClaimLeaseHeartbeats
+	now := metav1.NewMicroTime(time.Now())
+	holderIdentity := string(connector.UID)
+	lease := &coordinationv1.Lease{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: coordinationv1.SchemeGroupVersion.String(),
+			Kind:       "Lease",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      recordSetName,
+			Namespace: r.Config.Connector.Iroh.DNSZoneRef.Namespace,
+		},
+		Spec: coordinationv1.LeaseSpec{
+			HolderIdentity:       &holderIdentity,
+			LeaseDurationSeconds: &dur,
+			RenewTime:            &now,
+		},
 	}
-	return r.setPublishedCondition(ctx, cl, connector, metav1.ConditionTrue, connectorReasonIrohOwner, "Owns iroh DNS record.")
+	if err := r.Downstream.GetClient().Patch(ctx, lease, client.Apply, client.FieldOwner(irohDNSFieldManager), client.ForceOwnership); err != nil {
+		return fmt.Errorf("renew downstream claim lease: %w", err)
+	}
+	return nil
 }
 
 // handleDeletion releases the claim (if held) and removes the finalizer.
@@ -225,6 +322,15 @@ func (r *IrohDNSReconciler) releaseIfOwner(ctx context.Context, connector *netwo
 	}
 	if err := r.Downstream.GetClient().Delete(ctx, &existing); err != nil && !apierrors.IsNotFound(err) {
 		return fmt.Errorf("delete DNSRecordSet: %w", err)
+	}
+	// Release the downstream claim Lease only if we currently hold it.
+	var claimLease coordinationv1.Lease
+	if err := r.Downstream.GetClient().Get(ctx, key, &claimLease); err == nil {
+		if claimLease.Spec.HolderIdentity != nil && *claimLease.Spec.HolderIdentity == string(connector.UID) {
+			if err := r.Downstream.GetClient().Delete(ctx, &claimLease); err != nil && !apierrors.IsNotFound(err) {
+				return fmt.Errorf("delete downstream claim lease: %w", err)
+			}
+		}
 	}
 	return nil
 }

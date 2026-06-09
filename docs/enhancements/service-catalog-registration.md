@@ -387,7 +387,7 @@ confirmed architectural choice before implementation begins.
 
 ### How Envoy Gateway exposes telemetry
 
-Envoy Gateway exposes traffic telemetry through two primary surfaces:
+Envoy Gateway exposes traffic telemetry through three primary surfaces:
 
 1. **Prometheus scrape endpoint** — the Envoy data plane exposes a `/stats`
    endpoint with counters including `envoy_http_downstream_rq_total` (request
@@ -395,13 +395,27 @@ Envoy Gateway exposes traffic telemetry through two primary surfaces:
    `envoy_http_downstream_cx_tx_bytes_total` (egress bytes), and
    `envoy_http_downstream_cx_active` (active connections, from which
    connection-seconds can be derived). These are gauge/counter deltas — they are
-   not pre-attributed to a project or billing account.
+   not pre-attributed to a project or billing account. Importantly, the
+   cluster-level variants (`envoy_cluster_upstream_*`) carry `httproute_name`,
+   `httproute_namespace`, and `httproute_rule_ordinal` labels already, providing
+   per-route attribution with no configuration changes. Counter values are held
+   in-memory and lost when a pod restarts; the data loss window equals the scrape
+   interval (typically 15–30 s).
 
 2. **Access logs** — Envoy can be configured via the `EnvoyProxy` CR to emit
    structured JSON access logs (one line per completed request). Each line carries
    request bytes, response bytes, duration, upstream cluster, and extensible
    metadata. Access logs are the most natural source for per-request billing
    because each log line maps directly to one billable unit.
+
+3. **WASM filter hooks** — Envoy embeds a WASM runtime (V8 or Wasmtime) and
+   executes a `.wasm` binary inside the Envoy process. The proxy-wasm ABI
+   exposes lifecycle hooks (`on_request_headers`, `on_response_headers`,
+   `on_log`, `on_done`) that fire at well-defined points in the request
+   lifecycle. The filter reads request metadata via `get_property()` host
+   function calls and dispatches async HTTP calls via `dispatch_http_call()` —
+   both are synchronous from the filter's perspective but non-blocking to Envoy.
+   Because the filter runs in-process, no sidecar is needed and no data is lost on pod restart.
 
 ### Candidate approaches
 
@@ -467,23 +481,112 @@ forwards to the Ingestion Gateway.
 - Attribution of OTLP metric streams to billing accounts is not defined in the
   current pipeline design.
 
+#### Option D: WASM filter emitter
+
+Build a small WASM binary (Rust, using `proxy-wasm-rust-sdk`) that runs inside
+the Envoy process and hooks into the request lifecycle via the proxy-wasm ABI.
+On `on_log()` — which fires after each request completes and on connection close
+for WebSocket / long-lived connections — the filter extracts billing signals and
+accumulates them in shared memory. Rather than emitting one event per request,
+the filter flushes a single batched payload every N seconds (configurable,
+default 60 s) via `dispatch_http_call()`. At 10 k req/s this reduces outbound
+billing calls from 10,000/s down to 1/min per proxy pod — a reduction of ~600,000×
+in emission volume, with no loss of per-route accuracy since signals are
+aggregated by `httproute_name` + `httproute_namespace` before flushing.
+
+The filter reads signal data through `get_property()` host calls:
+
+```
+request.size              → ingress bytes for this request
+response.size             → egress bytes for this request
+request.duration          → connection duration (ms) on close
+upstream.cluster_name     → encodes httproute_name + httproute_namespace
+response.code             → HTTP status
+```
+
+Envoy's upstream cluster name for a route follows the pattern:
+`httproute/<namespace>/<name>/rule/<ordinal>` — the filter parses this string
+to extract route identity with no Kubernetes API calls.
+
+The binary is packaged as an OCI image and wired in via `EnvoyExtensionPolicy`:
+
+```yaml
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyExtensionPolicy
+metadata:
+  name: billing-wasm
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: Gateway
+    name: <gateway>
+  wasm:
+  - name: billing-emitter
+    rootID: billing
+    code:
+      type: Image
+      image:
+        url: oci://ghcr.io/datum-cloud/billing-wasm:latest
+    config: |
+      { "endpoint": "http://billing-usage-collector-vector.billing-system.svc.cluster.local:9880/cloudevents", "flush_interval_seconds": 60 }
+```
+
+**Pros:**
+- No data loss on pod restarts — each request emits independently; there are no
+  accumulated counters to lose.
+- Connection-seconds for WebSocket / long-lived connections is captured natively
+  — `on_log()` fires on connection close with the full duration available.
+- Runs inside the Envoy process — no sidecar required.
+- No changes to the network-services-operator Go binary.
+- Route identity (`httproute_name`, `httproute_namespace`) is available directly
+  from the upstream cluster name without Kubernetes API calls.
+
+**Cons:**
+- Requires a separate Rust build pipeline and OCI image; adds a new artifact to
+  maintain.
+- The filter cannot make synchronous network calls — billing dispatch goes
+  through Envoy's async `dispatch_http_call()` to a local agent. If that agent
+  is unavailable, events must be dropped or buffered in WASM shared memory
+  (limited).
+- WASM sandbox has no filesystem access; durable buffering must be delegated to
+  Vector or another on-node agent.
+- Adds a small per-request overhead (<1 ms) for the `on_log()` hook.
+
+**Comparison across options:**
+
+| | Option A (access logs) | Option B (Prometheus) | Option D (WASM) |
+|---|---|---|---|
+| Data loss on pod restart | near-zero | ~1 scrape interval | none |
+| Per-request granularity | ✓ | ✗ | ✓ |
+| Connection-seconds | requires separate mechanism | via `cx_length_ms_sum` | ✓ native on close |
+| NSO Go changes | none | none | none |
+| New build artifact | none | none | Rust WASM binary |
+| Infrastructure changes | `EnvoyProxy` CR + Vector config | none | `EnvoyExtensionPolicy` |
+
 ### Connection-seconds handling
 
-For all options, the connection-seconds signal for WebSocket and other
-long-lived connections is not captured naturally by per-request telemetry. The
-recommended approach is to emit a connection-open and connection-close event from
-the network-services-operator's gateway controller (which already watches
-`Gateway` objects and manages their lifecycle). The duration between open and
-close events, reported as a sum of connection-seconds, gives the meter its
-signal. This is a small, localized Go change to the gateway controller.
+For Option A and Option B, the connection-seconds signal for WebSocket and other
+long-lived connections requires a separate mechanism — per-request access logs
+do not emit while a connection is held open, and Prometheus counters
+(`envoy_cluster_upstream_cx_length_ms_sum`) only update when a connection
+closes.
+
+For **Option D (WASM)**, connection-seconds is handled natively: `on_log()`
+fires when a connection closes, at which point `request.duration` contains the
+full connection lifetime in milliseconds. No additional Go controller changes
+are needed.
 
 ### Recommendation
 
-**Option A** (access log scraping via Vector) is the most consistent with the
-billing pipeline architecture and is recommended as the primary collection
-mechanism for request count, egress bytes, and ingress bytes. Connection-seconds
-for persistent connections is handled by a lightweight controller-side emitter
-(see above). This approach requires:
+**Option A** (access log scraping via Vector) is the recommended approach for
+the initial implementation. At current scale, per-request events without
+aggregation are sufficient — one `UsageEvent` per completed request, forwarded
+directly by Vector to the Ingestion Gateway. Aggregation is a pipeline-level
+concern; if it becomes necessary at scale it will be added as a platform
+capability in the billing pipeline, not as Envoy-specific logic.
+
+Connection-seconds for persistent connections is handled by a lightweight
+controller-side emitter (see above). This approach requires:
 
 1. An `EnvoyProxy` CR patch configuring structured JSON access logs.
 2. A Vector configuration to parse the log format and construct `UsageEvent`s.

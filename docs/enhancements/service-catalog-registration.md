@@ -578,11 +578,15 @@ are needed.
 
 ### Recommendation
 
-**Option A** (access log scraping via Vector) is the most consistent with the
-billing pipeline architecture and is recommended as the primary collection
-mechanism for request count, egress bytes, and ingress bytes. Connection-seconds
-for persistent connections is handled by a lightweight controller-side emitter
-(see above). This approach requires:
+**Option A** (access log scraping via Vector) is the recommended approach for
+the initial implementation. At current scale, per-request events without
+aggregation are sufficient — one `UsageEvent` per completed request, forwarded
+directly by Vector to the Ingestion Gateway. Aggregation is a pipeline-level
+concern; if it becomes necessary at scale it will be added as a platform
+capability in the billing pipeline, not as Envoy-specific logic.
+
+Connection-seconds for persistent connections is handled by a lightweight
+controller-side emitter (see above). This approach requires:
 
 1. An `EnvoyProxy` CR patch configuring structured JSON access logs.
 2. A Vector configuration to parse the log format and construct `UsageEvent`s.

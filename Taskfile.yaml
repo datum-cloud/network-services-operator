@@ -1,5 +1,11 @@
 version: '3'
 
+includes:
+  # Documentation tasks
+  docs:
+    taskfile: ./docs/Taskfile.yaml
+    dir: ./docs
+
 tasks:
   validate-kustomizations:
       desc: Validate all kustomization.yaml files using kustomize build
@@ -74,3 +80,8 @@ tasks:
             echo "🎉 All Prometheus rule tests passed."
           fi
       silent: false
+
+  generate:
+    desc: Run code generation (deepcopy, defaults)
+    deps:
+      - task: docs:generate

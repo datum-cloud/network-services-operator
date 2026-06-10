@@ -197,7 +197,13 @@ type IrohConnectorConfig struct {
 
 	// TTLSeconds is the TTL written on each TXT record.
 	//
-	// +default=30
+	// Restarting a connector before the previous record's TTL expires
+	// leaves the gateway's resolver serving the stale answer, which
+	// gates how quickly a restart becomes reachable. 5s keeps that
+	// floor low while staying well within normal authoritative DNS
+	// query rates for the connector zone.
+	//
+	// +default=5
 	TTLSeconds int32 `json:"ttlSeconds,omitempty"`
 }
 

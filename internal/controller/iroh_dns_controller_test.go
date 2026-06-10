@@ -4,6 +4,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -18,9 +19,11 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
@@ -403,27 +406,39 @@ func TestSortIrohAddresses_DoesNotMutateInput(t *testing.T) {
 	}
 }
 
+type irohMultiClusterManager struct {
+	mcmanager.Manager
+	clusters map[string]client.Client
+}
+
+func (m *irohMultiClusterManager) GetCluster(_ context.Context, name string) (cluster.Cluster, error) {
+	cl, ok := m.clusters[name]
+	if !ok {
+		return nil, fmt.Errorf("cluster %q not registered", name)
+	}
+	return &fakeCluster{cl: cl}, nil
+}
+
 func TestIrohDNSReconcile_ClaimArbitration(t *testing.T) {
 	log.SetLogger(zap.New(zap.UseDevMode(true)))
 
 	const (
-		ourUID     = types.UID("aaaaaaaa-0000-0000-0000-000000000001")
-		foreignUID = "bbbbbbbb-0000-0000-0000-000000000002"
+		ourUID      = "aaaaaaaa-0000-0000-0000-000000000001"
+		upstreamUID = "bbbbbbbb-0000-0000-0000-000000000002"
 
-		dnsNamespace = "datum-dns"
+		dnsNamespace      = "datum-dns"
+		upstreamCluster   = "/foreign-project"
+		upstreamConnector = "foreign-connector"
+		upstreamNamespace = "default"
 	)
 
 	recordName := "iroh-" + testEndpointZ32
 
-	// irohConnectorClass routes "datum-connect" connectors to this controller.
 	irohConnectorClass := &networkingv1alpha1.ConnectorClass{
 		ObjectMeta: metav1.ObjectMeta{Name: "datum-connect"},
 		Spec:       networkingv1alpha1.ConnectorClassSpec{ControllerName: "networking.datumapis.com/datum-connect"},
 	}
 
-	// makeConnector returns a Connector with the iroh finalizer already set and
-	// valid connection details, so the first Reconcile reaches applyClaim without
-	// an extra add-finalizer round-trip.
 	makeConnector := func() *networkingv1alpha1.Connector {
 		return &networkingv1alpha1.Connector{
 			ObjectMeta: metav1.ObjectMeta{
@@ -445,8 +460,7 @@ func TestIrohDNSReconcile_ClaimArbitration(t *testing.T) {
 		}
 	}
 
-	// makeExistingRecord returns a DNSRecordSet whose claim label points at the
-	// foreign connector — i.e., the pre-existing state before our connector reconciles.
+	// makeExistingRecord returns a DNSRecordSet claimed by the foreign connector.
 	makeExistingRecord := func() *dnsv1alpha1.DNSRecordSet {
 		return &dnsv1alpha1.DNSRecordSet{
 			TypeMeta: metav1.TypeMeta{
@@ -457,10 +471,10 @@ func TestIrohDNSReconcile_ClaimArbitration(t *testing.T) {
 				Name:      recordName,
 				Namespace: dnsNamespace,
 				Labels: map[string]string{
-					irohDNSClaimedByUIDLabel:       foreignUID,
-					irohDNSConnectorClusterLabel:   encodeIrohClusterLabel("/foreign-project"),
-					irohDNSConnectorNamespaceLabel: "default",
-					irohDNSConnectorNameLabel:      "foreign-connector",
+					irohDNSClaimedByUIDLabel:       upstreamUID,
+					irohDNSConnectorClusterLabel:   encodeIrohClusterLabel(upstreamCluster),
+					irohDNSConnectorNamespaceLabel: upstreamNamespace,
+					irohDNSConnectorNameLabel:      upstreamConnector,
 				},
 			},
 		}
@@ -468,67 +482,97 @@ func TestIrohDNSReconcile_ClaimArbitration(t *testing.T) {
 
 	dur30 := int32(30)
 
-	// makeExpiredLease returns a downstream claim Lease for the record whose
-	// RenewTime is far in the past — simulating an agent that stopped heartbeating.
-	makeExpiredLease := func() *coordinationv1.Lease {
+	makeUpstreamLease := func(renewedAgo time.Duration) *coordinationv1.Lease {
 		return &coordinationv1.Lease{
-			ObjectMeta: metav1.ObjectMeta{Name: recordName, Namespace: dnsNamespace},
+			ObjectMeta: metav1.ObjectMeta{Name: upstreamConnector, Namespace: upstreamNamespace},
 			Spec: coordinationv1.LeaseSpec{
-				HolderIdentity:       ptr.To(foreignUID),
+				HolderIdentity:       ptr.To(upstreamUID),
 				LeaseDurationSeconds: &dur30,
-				RenewTime:            &metav1.MicroTime{Time: time.Now().Add(-5 * time.Minute)},
+				RenewTime:            &metav1.MicroTime{Time: time.Now().Add(-renewedAgo)},
 			},
 		}
 	}
 
-	// makeActiveLease returns a downstream claim Lease renewed just now —
-	// simulating an owner whose agent is still alive.
-	makeActiveLease := func() *coordinationv1.Lease {
+	makeDownstreamLease := func(renewedAgo time.Duration) *coordinationv1.Lease {
 		return &coordinationv1.Lease{
 			ObjectMeta: metav1.ObjectMeta{Name: recordName, Namespace: dnsNamespace},
 			Spec: coordinationv1.LeaseSpec{
-				HolderIdentity:       ptr.To(foreignUID),
+				HolderIdentity:       ptr.To(upstreamUID),
 				LeaseDurationSeconds: &dur30,
-				RenewTime:            &metav1.MicroTime{Time: time.Now()},
+				RenewTime:            &metav1.MicroTime{Time: time.Now().Add(-renewedAgo)},
 			},
 		}
 	}
 
 	tests := []struct {
-		name               string
-		existingRecord     *dnsv1alpha1.DNSRecordSet
-		existingClaimLease *coordinationv1.Lease
-		wantStatus         metav1.ConditionStatus
-		wantReason         string
-		wantOwnerUID       string // expected irohDNSClaimedByUIDLabel after reconcile; "" = don't assert record
+		name                string
+		existingRecord      *dnsv1alpha1.DNSRecordSet
+		upstreamLease       *coordinationv1.Lease // in the foreign cluster (nil = cluster inaccessible or no lease)
+		downstreamLease     *coordinationv1.Lease // downstream claim Lease
+		foreignClusterKnown bool                  // whether the foreign cluster is registered in the manager
+		wantStatus          metav1.ConditionStatus
+		wantReason          string
+		wantOwnerUID        string // expected irohDNSClaimedByUIDLabel after reconcile; "" = don't check
 	}{
 		{
 			name:         "no existing record — connector creates and owns it",
 			wantStatus:   metav1.ConditionTrue,
 			wantReason:   connectorReasonIrohOwner,
-			wantOwnerUID: string(ourUID),
+			wantOwnerUID: ourUID,
 		},
 		{
-			name:           "the owner connector was deleted",
+			name:                "same-operator owner connector was deleted",
+			existingRecord:      makeExistingRecord(),
+			foreignClusterKnown: true,
+			wantStatus:          metav1.ConditionTrue,
+			wantReason:          connectorReasonIrohOwner,
+			wantOwnerUID:        ourUID,
+		},
+		{
+			name:                "same-operator owner whose upstream Lease expired",
+			existingRecord:      makeExistingRecord(),
+			foreignClusterKnown: true,
+			upstreamLease:       makeUpstreamLease(5 * time.Minute),
+			wantStatus:          metav1.ConditionTrue,
+			wantReason:          connectorReasonIrohOwner,
+			wantOwnerUID:        ourUID,
+		},
+		{
+			name:                "same-operator owner alive — upstream Lease active",
+			existingRecord:      makeExistingRecord(),
+			foreignClusterKnown: true,
+			upstreamLease:       makeUpstreamLease(0),
+			wantStatus:          metav1.ConditionFalse,
+			wantReason:          connectorReasonIrohDeferredToOwner,
+		},
+		{
+			name:                "same-operator owner — migration / upstream Lease absent",
+			existingRecord:      makeExistingRecord(),
+			foreignClusterKnown: true,
+			wantStatus:          metav1.ConditionTrue,
+			wantReason:          connectorReasonIrohOwner,
+			wantOwnerUID:        ourUID,
+		},
+		{
+			name:            "cross-account owner whose downstream Lease expired",
+			existingRecord:  makeExistingRecord(),
+			downstreamLease: makeDownstreamLease(5 * time.Minute),
+			wantStatus:      metav1.ConditionTrue,
+			wantReason:      connectorReasonIrohOwner,
+			wantOwnerUID:    ourUID,
+		},
+		{
+			name:            "cross-account owner alive — downstream Lease active",
+			existingRecord:  makeExistingRecord(),
+			downstreamLease: makeDownstreamLease(0),
+			wantStatus:      metav1.ConditionFalse,
+			wantReason:      connectorReasonIrohDeferredToOwner,
+		},
+		{
+			name:           "cross-account pre-protocol record — no downstream Lease",
 			existingRecord: makeExistingRecord(),
-			wantStatus:     metav1.ConditionTrue,
-			wantReason:     connectorReasonIrohOwner,
-			wantOwnerUID:   string(ourUID),
-		},
-		{
-			name:               "cross-project owner whose agent stopped heartbeating",
-			existingRecord:     makeExistingRecord(),
-			existingClaimLease: makeExpiredLease(),
-			wantStatus:         metav1.ConditionTrue,
-			wantReason:         connectorReasonIrohOwner,
-			wantOwnerUID:       string(ourUID),
-		},
-		{
-			name:               "owner is alive and active",
-			existingRecord:     makeExistingRecord(),
-			existingClaimLease: makeActiveLease(),
-			wantStatus:         metav1.ConditionFalse,
-			wantReason:         connectorReasonIrohDeferredToOwner,
+			wantStatus:     metav1.ConditionFalse,
+			wantReason:     connectorReasonIrohDeferredToOwner,
 		},
 	}
 
@@ -543,17 +587,29 @@ func TestIrohDNSReconcile_ClaimArbitration(t *testing.T) {
 				WithStatusSubresource(connector).
 				Build()
 
+			foreignClusterBuilder := fake.NewClientBuilder().WithScheme(testScheme)
+			if tt.upstreamLease != nil {
+				foreignClusterBuilder = foreignClusterBuilder.WithObjects(tt.upstreamLease)
+			}
+			foreignClusterCl := foreignClusterBuilder.Build()
+
+			clusters := map[string]client.Client{testClusterName: upstreamCl}
+			if tt.foreignClusterKnown {
+				clusters[upstreamCluster] = foreignClusterCl
+			}
+			mgr := &irohMultiClusterManager{clusters: clusters}
+
 			downstreamBuilder := fake.NewClientBuilder().WithScheme(testScheme)
 			if tt.existingRecord != nil {
 				downstreamBuilder = downstreamBuilder.WithObjects(tt.existingRecord)
 			}
-			if tt.existingClaimLease != nil {
-				downstreamBuilder = downstreamBuilder.WithObjects(tt.existingClaimLease)
+			if tt.downstreamLease != nil {
+				downstreamBuilder = downstreamBuilder.WithObjects(tt.downstreamLease)
 			}
 			downstreamCl := downstreamBuilder.Build()
 
 			reconciler := &IrohDNSReconciler{
-				mgr:        &fakeMockManager{cl: upstreamCl},
+				mgr:        mgr,
 				Downstream: &clusterWithClient{c: downstreamCl, scheme: testScheme},
 				Config:     newReconciler().Config,
 			}
@@ -565,7 +621,6 @@ func TestIrohDNSReconcile_ClaimArbitration(t *testing.T) {
 			})
 			require.NoError(t, err)
 
-			// Verify the IrohDNSPublished condition on the Connector.
 			var updated networkingv1alpha1.Connector
 			require.NoError(t, upstreamCl.Get(ctx, client.ObjectKeyFromObject(connector), &updated))
 
@@ -574,7 +629,6 @@ func TestIrohDNSReconcile_ClaimArbitration(t *testing.T) {
 			assert.Equal(t, tt.wantStatus, cond.Status)
 			assert.Equal(t, tt.wantReason, cond.Reason)
 
-			// For ownership cases, verify the DNSRecordSet claim label and claim Lease.
 			if tt.wantOwnerUID != "" {
 				var record dnsv1alpha1.DNSRecordSet
 				require.NoError(t, downstreamCl.Get(ctx, client.ObjectKey{Namespace: dnsNamespace, Name: recordName}, &record))

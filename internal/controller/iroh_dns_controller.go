@@ -69,7 +69,17 @@ const (
 	claimStatusCreate   claimStatus = iota // no existing record
 	claimStatusOwner                       // we already hold the claim
 	claimStatusTakeOver                    // downstream claim, owner dead
-	claimStatusDefer                       // downstream claim, owner alive
+	claimStatusDefer                       // downstream claim, owner alive or unknown
+)
+
+// upstreamLeaseStatus is the result of checking the upstream Lease that
+// connector_controller maintains for the foreign connector in its own cluster.
+type upstreamLeaseStatus int
+
+const (
+	upstreamLeaseUnknown upstreamLeaseStatus = iota // cluster not accessible
+	upstreamLeaseAlive                              // lease present and not expired
+	upstreamLeaseDead                               // lease absent or expired
 )
 
 // isLeaseExpired reports whether lease has passed its renewal deadline.
@@ -85,11 +95,16 @@ func isLeaseExpired(lease coordinationv1.Lease, now time.Time) bool {
 }
 
 // evaluateClaim decides what applyClaim should do given the current state of
-// the downstream DNSRecordSet and the associated claim Lease.
-// claimLease is nil when the Lease was not found.
+// the downstream DNSRecordSet, the foreign connector's upstream Lease, and the
+// downstream claim Lease.
+//
+// Priority:
+// - upstream lease (authoritative when accessible)
+// - downstream lease (fallback for cross-cluster/cross-account)
 func evaluateClaim(
 	connectorUID types.UID,
 	existing *dnsv1alpha1.DNSRecordSet,
+	upstream upstreamLeaseStatus,
 	claimLease *coordinationv1.Lease,
 	now time.Time,
 ) claimStatus {
@@ -99,7 +114,14 @@ func evaluateClaim(
 	if existing.Labels[irohDNSClaimedByUIDLabel] == string(connectorUID) {
 		return claimStatusOwner
 	}
-	if claimLease == nil || isLeaseExpired(*claimLease, now) {
+	switch upstream {
+	case upstreamLeaseAlive:
+		return claimStatusDefer
+	case upstreamLeaseDead:
+		return claimStatusTakeOver
+	}
+	// Upstream inaccessible: fall back to downstream Lease.
+	if claimLease != nil && isLeaseExpired(*claimLease, now) {
 		return claimStatusTakeOver
 	}
 	return claimStatusDefer
@@ -190,10 +212,14 @@ func (r *IrohDNSReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 // applyClaim implements the ownership arbitration loop:
 //   - Not found → Create with our claim + create downstream Lease.
 //   - Found, our claim → SSA refresh + renew downstream Lease.
-//   - Found, foreign claim + dead/absent downstream Lease → force-claim.
-//   - Found, foreign claim + live downstream Lease → defer.
+//   - Found, foreign claim + owner confirmed dead → force-claim.
+//   - Found, foreign claim + owner alive or no signal → defer.
+//
+// An absent downstream Lease (upstream inaccessible) results in Defer, not
+// TakeOver, so pre-protocol records are not immediately contested on upgrade.
 func (r *IrohDNSReconciler) applyClaim(ctx context.Context, cl cluster.Cluster, connector *networkingv1alpha1.Connector, desired *dnsv1alpha1.DNSRecordSet) error {
 	key := client.ObjectKeyFromObject(desired)
+	now := time.Now()
 
 	var existing dnsv1alpha1.DNSRecordSet
 	existingErr := r.Downstream.GetClient().Get(ctx, key, &existing)
@@ -205,21 +231,24 @@ func (r *IrohDNSReconciler) applyClaim(ctx context.Context, cl cluster.Cluster, 
 		existingPtr = &existing
 	}
 
-	// Fetch the downstream claim Lease only when a foreign claim is present —
-	// it determines whether the current claimant is still alive.
 	var claimLease *coordinationv1.Lease
+	var upstream upstreamLeaseStatus
 	if existingPtr != nil && existingPtr.Labels[irohDNSClaimedByUIDLabel] != string(connector.UID) {
-		var lease coordinationv1.Lease
-		err := r.Downstream.GetClient().Get(ctx, key, &lease)
-		if err != nil && !apierrors.IsNotFound(err) {
-			return fmt.Errorf("get downstream claim lease: %w", err)
-		}
-		if err == nil {
-			claimLease = &lease
+		upstream = r.checkUpstreamClaimLease(ctx, existingPtr, now)
+		if upstream == upstreamLeaseUnknown {
+			// Upstream inaccessible — check downstream Lease as fallback.
+			var lease coordinationv1.Lease
+			err := r.Downstream.GetClient().Get(ctx, key, &lease)
+			if err != nil && !apierrors.IsNotFound(err) {
+				return fmt.Errorf("get downstream claim lease: %w", err)
+			}
+			if err == nil {
+				claimLease = &lease
+			}
 		}
 	}
 
-	switch evaluateClaim(connector.UID, existingPtr, claimLease, time.Now()) {
+	switch evaluateClaim(connector.UID, existingPtr, upstream, claimLease, now) {
 	case claimStatusCreate:
 		if err := r.Downstream.GetClient().Create(ctx, desired); err != nil {
 			if !apierrors.IsAlreadyExists(err) {
@@ -277,6 +306,33 @@ func (r *IrohDNSReconciler) renewDownstreamLease(ctx context.Context, connector 
 		return fmt.Errorf("renew downstream claim lease: %w", err)
 	}
 	return nil
+}
+
+// checkUpstreamClaimLease looks up the upstream Lease that connector_controller
+// maintains for the foreign connector identified by existing's claim labels.
+// Returns upstreamLeaseUnknown when the cluster is not registered with this
+// manager (cross-account or otherwise inaccessible).
+func (r *IrohDNSReconciler) checkUpstreamClaimLease(ctx context.Context, existing *dnsv1alpha1.DNSRecordSet, now time.Time) upstreamLeaseStatus {
+	clusterName := decodeIrohClusterLabel(existing.Labels[irohDNSConnectorClusterLabel])
+	cl, err := r.mgr.GetCluster(ctx, clusterName)
+	if err != nil {
+		return upstreamLeaseUnknown
+	}
+	key := client.ObjectKey{
+		Namespace: existing.Labels[irohDNSConnectorNamespaceLabel],
+		Name:      existing.Labels[irohDNSConnectorNameLabel],
+	}
+	var lease coordinationv1.Lease
+	if err := cl.GetClient().Get(ctx, key, &lease); err != nil {
+		if apierrors.IsNotFound(err) {
+			return upstreamLeaseDead
+		}
+		return upstreamLeaseUnknown
+	}
+	if isLeaseExpired(lease, now) {
+		return upstreamLeaseDead
+	}
+	return upstreamLeaseAlive
 }
 
 // handleDeletion releases the claim (if held) and removes the finalizer.

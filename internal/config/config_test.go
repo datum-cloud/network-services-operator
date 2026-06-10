@@ -100,7 +100,7 @@ func TestSetObjectDefaults_IrohConnectorConfig(t *testing.T) {
 	if got, want := iroh.RecordPrefix, "_iroh"; got != want {
 		t.Errorf("RecordPrefix = %q, want %q", got, want)
 	}
-	if got, want := iroh.TTLSeconds, int32(30); got != want {
+	if got, want := iroh.TTLSeconds, int32(5); got != want {
 		t.Errorf("TTLSeconds = %d, want %d", got, want)
 	}
 	if iroh.DownstreamKubeconfigPath != "" {

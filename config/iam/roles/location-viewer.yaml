@@ -1,0 +1,13 @@
+apiVersion: iam.miloapis.com/v1alpha1
+kind: Role
+metadata:
+  name: networking.datumapis.com-location-viewer
+  annotations:
+    kubernetes.io/display-name: Location Viewer
+    kubernetes.io/description: "View access to location resources"
+spec:
+  launchStage: Beta
+  includedPermissions:
+    - networking.datumapis.com/locations.list
+    - networking.datumapis.com/locations.get
+    - networking.datumapis.com/locations.watch

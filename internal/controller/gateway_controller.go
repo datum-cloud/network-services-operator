@@ -1860,18 +1860,32 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 
 				if appProtocol != nil && *appProtocol == "https" {
 					var hostname *gatewayv1.PreciseHostname
-					// Fall back to looking at rule filters for a hostname.
-					for _, filter := range rule.Filters {
-						if filter.URLRewrite != nil {
-							hostname = filter.URLRewrite.Hostname
-							break
+
+					// Prefer the cert hostname recorded by the httpproxy
+					// controller on the upstream EndpointSlice. URLRewrite
+					// may now carry a user-supplied Host header override
+					// instead of the backend FQDN, so it's no longer a
+					// reliable source for BackendTLSPolicy SAN validation.
+					if v, ok := upstreamEndpointSlice.Annotations[BackendCertHostnameAnnotation]; ok && v != "" {
+						hostname = ptr.To(gatewayv1.PreciseHostname(v))
+					}
+
+					// Fall back to looking at rule filters for a hostname
+					// (preserves behaviour for EndpointSlices that predate
+					// the annotation).
+					if hostname == nil {
+						for _, filter := range rule.Filters {
+							if filter.URLRewrite != nil {
+								hostname = filter.URLRewrite.Hostname
+								break
+							}
 						}
 					}
 
 					if hostname == nil {
 						// TODO(jreese) set the RouteConditionResolvedRefs condition to
 						// False, as the hostname is not present.
-						return nil, nil, nil, fmt.Errorf("no hostname found in URLRewrite filters on backendRef or Route %q", upstreamRoute.Name)
+						return nil, nil, nil, fmt.Errorf("no hostname found in URLRewrite filters or EndpointSlice annotation on backendRef or Route %q", upstreamRoute.Name)
 					}
 
 					backendTLSPolicy := &gatewayv1alpha3.BackendTLSPolicy{

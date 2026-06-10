@@ -9,6 +9,8 @@ resources:
   - gateway-admin.yaml
   - gateway-viewer.yaml
   - location-admin.yaml
+  - location-viewer.yaml
+  - locationbinding-viewer.yaml
   - networking-admin.yaml
   - networking-viewer.yaml
   - domain-admin.yaml

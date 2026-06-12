@@ -35,9 +35,9 @@ latest-milestone: "v0.x"
 
 Network Services operates an Envoy Gateway-based edge proxy that routes HTTP traffic, terminates TLS, and enforces WAF and rate-limit policies on behalf of platform customers. Today, it lacks a billing presence: there is no registration in the service catalog, no meter definitions, and no integration with the durable usage pipeline.
 
-This enhancement defines the architecture, data structures, and roadmap to bring HTTP traffic metering and catalog registration to Network Services. The work is split into two phases:
-- **Phase 1 (Catalog & Metadata):** Declare a `Service` and a companion `ServiceConfiguration` resource (`services.miloapis.com/v1alpha1`) carrying the monitored-resource and meter declarations inline. This is a YAML-only delivery packaged in the `config/services/` bundle.
-- **Phase 2 (Emission & Integration):** Configure Envoy Gateway proxy logging and deploy a custom Vector Agent to scrape access logs, parse billing signals into CloudEvents, and forward them to the local `billing-usage-collector-vector` DaemonSet.
+This enhancement defines the architecture, data structures, and metadata required to bring HTTP traffic metering and service catalog registration to Network Services. Under this design:
+- Network Services' identity and billable metrics are declared via a standard `Service` and companion `ServiceConfiguration` resource (`services.miloapis.com/v1alpha1`).
+- Envoy Gateway proxies are instrumented to write structured JSON access logs, which are scraped, parsed, and forwarded as CloudEvents to the platform's billing pipeline by the existing `billing-usage-collector-vector` DaemonSet.
 
 ## Motivation
 
@@ -47,26 +47,23 @@ Because `MeterDefinition` fields (such as `meterName` and `measurement.unit`) ar
 
 ### Goals
 
-- Define a standard `Service` and `ServiceConfiguration` to register Network Services under the service domain `networking.datumapis.com`.
-- Define the core billing meters for HTTP traffic: request count, egress bytes, ingress bytes, and connection seconds.
-- Choose a scalable, low-risk telemetry collection approach that bridges Envoy Gateway's telemetry and the Billing Ingestion Gateway.
-- Map the end-to-end data flow with sequence and architecture diagrams.
+- Establish Network Services' identity in the platform service catalog to make it discoverable and activatable by platform consumers.
+- Define clear, usage-based billing metrics for HTTP traffic (requests, bandwidth, and connection time) so customers pay proportionally to their consumption.
+- Design a reliable, zero-data-loss telemetry collection path that ensures accurate billing without impacting proxy performance or request latency.
+- Provide clear architectural visibility into the edge-to-billing data flow for platform operators.
 
 ### Non-Goals
 
-- Defining rate cards, pricing models, tiers, or billing/invoice generation logic.
-- Altering the `MeterDefinition` schema or billing pipeline contract.
-- Implementation of the core Billing SDK (owned by the Billing Team).
-- Shared-infrastructure cost attribution or cross-project billing logic.
-- **Deploying or modifying the Billing System or `billing-usage-collector-vector` DaemonSet.** These components are pre-existing, shared platform infrastructure. Our work is limited to deploying a custom Vector Agent (Log Parser) to parse logs and forward them to this existing collector.
+- **Pricing tiers, currencies, and billing cycle schedules:** This design only concerns measuring and reporting raw usage quantities. Determining pricing rates, tier discounts, billing schedules, and invoice calculations is out of scope.
+- **Runtime traffic enforcement and quota limits:** Telemetry collection does not gate or throttle traffic. Rate limiting, WAF enforcement, and bandwidth capping remain governed by separate gateway policies, not by the billing pipeline.
 
 ## Proposal
 
 We propose to register the service and implement HTTP traffic metering via access log scraping. 
 
 - The **Monitored Resource** is the Kubernetes Gateway API `HTTPRoute` resource, representing the customer-facing HTTP endpoint.
-- **Phase 1** registers the service with the service catalog via declarative YAML configurations. The service catalog fan-out controller automatically creates `MonitoredResourceType` and `MeterDefinition` resources in the billing namespace.
-- **Phase 2** instruments the Envoy Gateway instances to write structured JSON access logs to stdout. A node-level Vector Agent (Log Parser) tails these logs, parses and maps the raw logs into CloudEvents, and forwards them locally via HTTP to the `billing-usage-collector-vector` DaemonSet. The billing collector then handles local disk buffering and reliably forwards them to the Billing System.
+- **Catalog Registration** is handled via declarative YAML configurations. The service catalog fan-out controller automatically creates `MonitoredResourceType` and `MeterDefinition` resources in the billing namespace.
+- **Telemetry Emission** is handled by instrumenting the Envoy Gateway instances to write structured JSON access logs to stdout. The node-level `billing-usage-collector-vector` DaemonSet (already deployed as part of the billing pipeline) tails these log files directly, parses and maps the raw logs into CloudEvents, handles local disk buffering, and reliably forwards them to the central Billing System.
 
 ### Data and Control Flow Diagrams
 
@@ -273,7 +270,7 @@ config/services/
 
 #### How can this feature be enabled / disabled in a live cluster?
 - **Other**
-  - Describe the mechanism: Phase 1 is enabled by deploying the `Service` and `ServiceConfiguration` manifests. Phase 2 (emission) is enabled by configuring the Envoy Gateway access logs via `EnvoyProxy` and updating the Vector Agent config.
+  - Describe the mechanism: Catalog registration is enabled by deploying the `Service` and `ServiceConfiguration` manifests. Telemetry emission is enabled by configuring the Envoy Gateway access logs via `EnvoyProxy` and updating the `billing-usage-collector-vector` DaemonSet configuration.
   - Will enabling / disabling the feature require downtime of the control plane? No.
   - Will enabling / disabling the feature require downtime or reprovisioning of a node? No, Envoy Gateway supports dynamic configuration updates without dropping active traffic.
 
@@ -284,7 +281,7 @@ No, it only adds background logging and telemetric forwarding.
 Yes, reverting the `EnvoyProxy` configuration to its previous state disables access logging.
 
 #### What happens if we reenable the feature if it was previously rolled back?
-Logging resumes, and Vector Agent resumes parsing from the end of the log stream.
+Logging resumes, and `billing-usage-collector-vector` resumes parsing from the end of the log stream.
 
 ---
 
@@ -298,7 +295,7 @@ Rollouts do not affect traffic handling directly. A malformed access log format 
 - Billing Ingestion Gateway event rejection rate.
 
 #### Were upgrade and rollback tested? Was the upgrade->downgrade->upgrade path tested?
-TBD during Phase 2 implementation.
+TBD during telemetry emission implementation.
 
 ---
 
@@ -313,15 +310,14 @@ By checking the customer billing dashboard or querying the billing API for resou
 #### What are the SLIs (Service Level Indicators) an operator can use to determine the health of the service?
 - **Metrics**
   - Metric name: `vector_transform_errors_total`, `ingestion_gateway_request_count` (with status codes).
-  - Components exposing the metric: Vector Agent, Billing Ingestion Gateway.
+  - Components exposing the metric: `billing-usage-collector-vector`, Billing Ingestion Gateway.
 
 ---
 
 ### Dependencies
 
 #### Does this feature depend on any specific services running in the cluster?
-- **Vector Agent (Log Parser):** Tail Envoy logs and forward events to `billing-usage-collector-vector`.
-- **billing-usage-collector-vector DaemonSet:** Accept and stream usage events to the Billing System.
+- **`billing-usage-collector-vector` DaemonSet:** Tails Envoy container logs, parses JSON access logs, translates to CloudEvents, and forwards events to the Billing System.
 
 ---
 
@@ -329,7 +325,7 @@ By checking the customer billing dashboard or querying the billing API for resou
 
 #### Will enabling / using this feature result in any new API calls?
 - Logs are written locally to stdout; there are no new Kube API calls for logging.
-- Vector Agent (Log Parser) performs HTTP POST requests to the local `billing-usage-collector-vector`. Throughput scales linearly with request volume.
+- `billing-usage-collector-vector` performs HTTPS batch POST requests to the Billing System. Throughput scales linearly with request volume.
 
 #### Will enabling / using this feature result in introducing new API types?
 No new Go-level types are introduced in the operator. `Service` and `ServiceConfiguration` are existing types in the platform's service catalog.
@@ -339,11 +335,11 @@ No new Go-level types are introduced in the operator. `Service` and `ServiceConf
 ### Troubleshooting
 
 #### How does this feature react if the API server is unavailable?
-Telemetry generation and log scraping are independent of the Kubernetes API server. Vector will continue to tail files and forward events.
+Telemetry generation and log scraping are independent of the Kubernetes API server. `billing-usage-collector-vector` will continue to tail files and forward events.
 
 #### What are other known failure modes?
-- **Vector pipeline backlog:** If the Ingestion Gateway is slow, Vector Agent buffers events locally on the node disk.
-- **Log rotation race:** Very high traffic might trigger rapid log rotation, which could cause minor data loss if Vector falls too far behind.
+- **Vector pipeline backlog:** If the Ingestion Gateway/Billing System is slow, `billing-usage-collector-vector` buffers events locally on the node disk.
+- **Log rotation race:** Very high traffic might trigger rapid log rotation, which could cause minor data loss if the collector falls too far behind.
 
 ## Open Decisions
 
@@ -355,10 +351,10 @@ The following decisions are tracked for the implementation of this enhancement:
 | OD-2 | Canonical `serviceName` | **Resolved** | `networking.datumapis.com`. |
 | OD-3 | `producerProjectRef.name` | **Resolved** | `datum-cloud`. |
 | OD-4 | Bundle layout | **Resolved** | Per-service-domain directory under `config/services/networking.datumapis.com/`, matching `datum-cloud/datum/config/services/<service-domain>/`. |
-| OD-5 | Is the Vector Agent DaemonSet planned to run on the edge cluster nodes that host Envoy Gateway pods? | **Resolved** | Yes. The shared platform `billing-usage-collector-vector` runs as a DaemonSet in the `billing-system` namespace. We will deploy our custom Vector Agent (Log Parser) as a DaemonSet alongside it to handle log tailing and parsing. |
+| OD-5 | Is the Vector Agent DaemonSet planned to run on the edge cluster nodes that host Envoy Gateway pods? | **Resolved** | Yes. The shared platform `billing-usage-collector-vector` runs as a DaemonSet in the `billing-system` namespace. Under this design, this pre-existing agent will directly tail and parse the Envoy stdout logs, avoiding the need for a separate custom log-parsing agent. |
 | OD-6 | Can the network-services-operator patch the `EnvoyProxy` CR to inject access log configuration? | **Resolved** | Yes. NSO configures and manages the Envoy Gateway proxies and can patch EnvoyProxy resources to enable structured JSON stdout logging. |
-| OD-7 | Is the billing SDK published as a consumable Go module? | **N/A** | We do not compile or use the Billing Go SDK for proxy traffic metering. Instead, the custom Vector Agent (Log Parser) directly parses raw Envoy stdout logs, formats them into CloudEvents, and POSTs them via HTTP to the local `billing-usage-collector-vector` daemon. |
-| OD-8 | Enrichment-sidecar placement: per-node alongside Vector, or central in front of the Ingestion Gateway? | **N/A** | At this stage, we will not enrich the event information with additional control-plane data. The custom Vector Agent (Log Parser) will only parse the raw properties from the JSON logs and map them directly to the CloudEvent schema. |
+| OD-7 | Is the billing SDK published as a consumable Go module? | **N/A** | We do not compile or use the Billing Go SDK for proxy traffic metering. Instead, the `billing-usage-collector-vector` DaemonSet directly parses raw Envoy stdout logs, formats them into CloudEvents, and forwards them. |
+| OD-8 | Enrichment-sidecar placement: per-node alongside Vector, or central in front of the Ingestion Gateway? | **N/A** | At this stage, we will not enrich the event information with additional control-plane data. The `billing-usage-collector-vector` DaemonSet will only parse the raw properties from the JSON logs and map them directly to the CloudEvent schema. |
 
 ---
 

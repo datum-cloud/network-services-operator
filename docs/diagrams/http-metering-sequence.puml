@@ -5,8 +5,7 @@ skinparam ParticipantPadding 10
 actor Client as client
 box "Edge Cluster Node" #LightBlue
   participant "Envoy Gateway (Proxy)" as envoy
-  participant "Vector Agent\n(Log Parser)" as parser
-  participant "billing-usage-collector-vector\n(DaemonSet)" as collector
+  participant "billing-usage-collector-vector\n(DaemonSet)" as vector
 end box
 
 box "Platform Control Plane" #LightYellow
@@ -20,23 +19,17 @@ envoy -> client : 2. HTTP Response (200 OK with Egress Bytes)
 deactivate envoy
 
 note over envoy : Request completed
-envoy -> parser : 3. Write structured JSON access log to stdout\n(contains bytes, duration, route name/namespace)
-activate parser
+envoy -> vector : 3. Write structured JSON access log to stdout\n(contains bytes, duration, route name/namespace)
+activate vector
 
-parser -> parser : Parse JSON log\nand map to CloudEvent\n(No enrichment)
+vector -> vector : Tail logs, parse JSON,\nand map to CloudEvent\n(No enrichment)
 
-parser -> collector : 4. Send CloudEvent via HTTP POST\n(port 9880/cloudevents)
-activate collector
-
-collector -> billing : 5. Forward batched CloudEvents\n(HTTPS batch ingest)
+vector -> billing : 4. Forward batched CloudEvents\n(HTTPS batch ingest)
 activate billing
 
 billing -> billing : Validate, attribute, and persist
-billing --> collector : 200 OK / 202 Accepted
+billing --> vector : 200 OK / 202 Accepted
 deactivate billing
-
-collector --> parser : 200 OK
-deactivate collector
-deactivate parser
+deactivate vector
 
 @enduml

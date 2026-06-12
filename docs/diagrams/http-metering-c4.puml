@@ -9,8 +9,7 @@ Person(client, "End User / Client", "Requests services exposed via Datum Cloud E
 
 System_Boundary(edge_cluster, "Edge Cluster") {
     Container(envoy, "Envoy Gateway Proxy", "Envoy/Go", "Handles ingress HTTP traffic, terminates TLS, enforces WAF/rate-limiting, emits JSON access logs to stdout")
-    Container(vector_parser, "Vector Agent (Log Parser)", "Vector DaemonSet", "Tails Envoy container logs, parses JSON access logs, and translates them to CloudEvents")
-    Container(vector_collector, "billing-usage-collector-vector", "Vector DaemonSet (Billing)", "Receives CloudEvents over HTTP, buffers to local disk, and forwards them to the Billing System")
+    Container(vector_collector, "billing-usage-collector-vector", "Vector DaemonSet (Billing)", "Tails Envoy container logs, parses JSON access logs, translates to CloudEvents, and forwards them to the Billing System")
     Container(nso, "Network Services Operator", "Go", "Deploys Envoy Gateway and configures EnvoyProxy logging policies")
 }
 
@@ -20,8 +19,7 @@ System_Boundary(control_plane, "Platform Control Plane") {
 
 Rel(client, envoy, "Sends HTTPS requests to", "HTTPS")
 Rel(nso, envoy, "Configures & manages", "Kubernetes API / EnvoyProxy CR")
-Rel_D(envoy, vector_parser, "Outputs JSON access logs to", "stdout / container logs")
-Rel_R(vector_parser, vector_collector, "Sends CloudEvents to", "HTTP POST (localhost:9880)")
+Rel_D(envoy, vector_collector, "Outputs JSON access logs to", "stdout / container logs")
 Rel_D(vector_collector, billing_system, "Forwards batched events to", "HTTPS CloudEvents")
 
 @enduml

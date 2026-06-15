@@ -1450,6 +1450,7 @@ func TestBuildConnectorEnvoyPatchesTargetsAllHTTPSListeners(t *testing.T) {
 		gateway,
 		newHTTPProxy(),
 		backends,
+		sets.New("default-https", "https-hostname-0"),
 	)
 	assert.NoError(t, err)
 
@@ -1545,6 +1546,7 @@ func TestBuildConnectorEnvoyPatchesAddsExtendedConnectPathRouteAndFallback(t *te
 		gateway,
 		httpProxy,
 		backends,
+		sets.New("default-https"),
 	)
 	assert.NoError(t, err)
 
@@ -1631,6 +1633,7 @@ func TestBuildConnectorEnvoyPatchesScopesRouteConfigBySectionName(t *testing.T) 
 		gateway,
 		newHTTPProxy(),
 		backends,
+		sets.New("default-https", "https-hostname-0"),
 	)
 	assert.NoError(t, err)
 
@@ -1644,6 +1647,137 @@ func TestBuildConnectorEnvoyPatchesScopesRouteConfigBySectionName(t *testing.T) 
 
 	assert.Equal(t, 2, routeConfigPatchCounts["ns-test/gw/https-hostname-0"])
 	assert.NotContains(t, routeConfigPatchCounts, "ns-test/gw/default-https")
+}
+
+func TestBuildConnectorEnvoyPatchesSkipsIneligibleHTTPSListeners(t *testing.T) {
+	gateway := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{Name: "gw"},
+		Spec: gatewayv1.GatewaySpec{
+			Listeners: []gatewayv1.Listener{
+				{
+					Name:     gatewayv1.SectionName("default-https"),
+					Protocol: gatewayv1.HTTPSProtocolType,
+				},
+				{
+					Name:     gatewayv1.SectionName("https-hostname-0"),
+					Protocol: gatewayv1.HTTPSProtocolType,
+				},
+			},
+		},
+	}
+
+	backends := []connectorBackendPatch{
+		{
+			ruleIndex:  0,
+			matchIndex: 0,
+			targetHost: "127.0.0.1",
+			targetPort: 5432,
+			nodeID:     "node-123",
+		},
+	}
+
+	// Only default-https is eligible; https-hostname-0 has an unissued cert.
+	patches, err := buildConnectorEnvoyPatches(
+		"ns-test",
+		"connector-tunnel",
+		gateway,
+		newHTTPProxy(),
+		backends,
+		sets.New("default-https"),
+	)
+	assert.NoError(t, err)
+
+	routeConfigPatchCounts := map[string]int{}
+	for _, patch := range patches {
+		if patch.Type != routeConfigurationTypeURL {
+			continue
+		}
+		routeConfigPatchCounts[patch.Name]++
+	}
+
+	// Regression case: the unready custom listener is skipped, but the ready
+	// default-https listener still receives its patches.
+	assert.Equal(t, 2, routeConfigPatchCounts["ns-test/gw/default-https"])
+	assert.NotContains(t, routeConfigPatchCounts, "ns-test/gw/https-hostname-0")
+}
+
+func TestBuildConnectorEnvoyPatchesSkipsIneligibleSectionListener(t *testing.T) {
+	gateway := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{Name: "gw"},
+		Spec: gatewayv1.GatewaySpec{
+			Listeners: []gatewayv1.Listener{
+				{
+					Name:     gatewayv1.SectionName("default-https"),
+					Protocol: gatewayv1.HTTPSProtocolType,
+				},
+				{
+					Name:     gatewayv1.SectionName("https-hostname-0"),
+					Protocol: gatewayv1.HTTPSProtocolType,
+				},
+			},
+		},
+	}
+
+	// Backend scoped to https-hostname-0, but that listener is not eligible.
+	backends := []connectorBackendPatch{
+		{
+			sectionName: ptr.To(gatewayv1.SectionName("https-hostname-0")),
+			ruleIndex:   0,
+			matchIndex:  0,
+			targetHost:  "127.0.0.1",
+			targetPort:  5432,
+			nodeID:      "node-123",
+		},
+	}
+
+	patches, err := buildConnectorEnvoyPatches(
+		"ns-test",
+		"connector-tunnel",
+		gateway,
+		newHTTPProxy(),
+		backends,
+		sets.New("default-https"),
+	)
+	assert.NoError(t, err)
+
+	for _, patch := range patches {
+		assert.NotEqual(t, routeConfigurationTypeURL, patch.Type,
+			"no RouteConfiguration patches expected for an ineligible section listener")
+	}
+}
+
+func TestBuildConnectorOfflineEnvoyPatchesSkipsIneligibleHTTPSListeners(t *testing.T) {
+	gateway := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{Name: "gw"},
+		Spec: gatewayv1.GatewaySpec{
+			Listeners: []gatewayv1.Listener{
+				{
+					Name:     gatewayv1.SectionName("default-https"),
+					Protocol: gatewayv1.HTTPSProtocolType,
+				},
+				{
+					Name:     gatewayv1.SectionName("https-hostname-0"),
+					Protocol: gatewayv1.HTTPSProtocolType,
+				},
+			},
+		},
+	}
+
+	patches, err := buildConnectorOfflineEnvoyPatches(
+		"ns-test",
+		gateway,
+		newHTTPProxy(),
+		sets.New("default-https"),
+	)
+	assert.NoError(t, err)
+
+	names := map[string]struct{}{}
+	for _, patch := range patches {
+		names[patch.Name] = struct{}{}
+	}
+
+	assert.Contains(t, names, "ns-test/gw/default-https")
+	assert.NotContains(t, names, "ns-test/gw/https-hostname-0")
 }
 
 func TestHTTPProxyFinalizerCleanup(t *testing.T) {
@@ -2402,6 +2536,216 @@ func TestBuildCertificateStatuses(t *testing.T) {
 					assert.Equal(t, tt.wantMessage, cond.Message)
 				}
 			}
+		})
+	}
+}
+
+func TestEligibleConnectorHTTPSListeners(t *testing.T) {
+	t.Parallel()
+
+	downstreamNamespaceName := "ns-test"
+
+	programmedListenerStatus := func(name string) gatewayv1.ListenerStatus {
+		return gatewayv1.ListenerStatus{
+			Name: gatewayv1.SectionName(name),
+			Conditions: []metav1.Condition{
+				{
+					Type:   string(gatewayv1.ListenerConditionProgrammed),
+					Status: metav1.ConditionTrue,
+					Reason: string(gatewayv1.ListenerReasonProgrammed),
+				},
+			},
+		}
+	}
+
+	httpsListener := func(name string) gatewayv1.Listener {
+		return gatewayv1.Listener{
+			Name:     gatewayv1.SectionName(name),
+			Protocol: gatewayv1.HTTPSProtocolType,
+		}
+	}
+
+	makeCert := func(name string, ready bool) *unstructured.Unstructured {
+		cert := &unstructured.Unstructured{}
+		cert.SetGroupVersionKind(certificateGVK)
+		cert.SetNamespace(downstreamNamespaceName)
+		cert.SetName(name)
+		status := certManagerConditionStatusFalse
+		if ready {
+			status = certManagerConditionStatusTrue
+		}
+		_ = unstructured.SetNestedSlice(cert.Object, []interface{}{
+			map[string]interface{}{
+				"type":   certManagerConditionTypeReady,
+				"status": status,
+				"reason": "test",
+			},
+		}, "status", "conditions")
+		return cert
+	}
+
+	sharedTLSConfig := config.NetworkServicesOperator{
+		Gateway: config.GatewayConfig{
+			DefaultListenerTLSSecretName: "wildcard-tls",
+		},
+	}
+
+	tests := []struct {
+		name              string
+		config            config.NetworkServicesOperator
+		gateway           *gatewayv1.Gateway
+		downstreamObjects []client.Object
+		want              []string
+	}{
+		{
+			name:   "default-https with shared TLS is eligible without a Certificate",
+			config: sharedTLSConfig,
+			gateway: &gatewayv1.Gateway{
+				ObjectMeta: metav1.ObjectMeta{Name: "gw"},
+				Spec: gatewayv1.GatewaySpec{
+					Listeners: []gatewayv1.Listener{httpsListener("default-https")},
+				},
+				Status: gatewayv1.GatewayStatus{
+					Listeners: []gatewayv1.ListenerStatus{programmedListenerStatus("default-https")},
+				},
+			},
+			want: []string{"default-https"},
+		},
+		{
+			name:   "default-https is eligible without shared TLS or a Certificate",
+			config: config.NetworkServicesOperator{},
+			gateway: &gatewayv1.Gateway{
+				ObjectMeta: metav1.ObjectMeta{Name: "gw"},
+				Spec: gatewayv1.GatewaySpec{
+					Listeners: []gatewayv1.Listener{httpsListener("default-https")},
+				},
+				Status: gatewayv1.GatewayStatus{
+					Listeners: []gatewayv1.ListenerStatus{programmedListenerStatus("default-https")},
+				},
+			},
+			want: []string{"default-https"},
+		},
+		{
+			name:   "custom listener with ready cert is eligible",
+			config: sharedTLSConfig,
+			gateway: &gatewayv1.Gateway{
+				ObjectMeta: metav1.ObjectMeta{Name: "gw"},
+				Spec: gatewayv1.GatewaySpec{
+					Listeners: []gatewayv1.Listener{httpsListener("https-hostname-0")},
+				},
+				Status: gatewayv1.GatewayStatus{
+					Listeners: []gatewayv1.ListenerStatus{programmedListenerStatus("https-hostname-0")},
+				},
+			},
+			downstreamObjects: []client.Object{makeCert("gw-https-hostname-0", true)},
+			want:              []string{"https-hostname-0"},
+		},
+		{
+			name:   "custom listener with not-ready cert is skipped",
+			config: sharedTLSConfig,
+			gateway: &gatewayv1.Gateway{
+				ObjectMeta: metav1.ObjectMeta{Name: "gw"},
+				Spec: gatewayv1.GatewaySpec{
+					Listeners: []gatewayv1.Listener{httpsListener("https-hostname-0")},
+				},
+				Status: gatewayv1.GatewayStatus{
+					Listeners: []gatewayv1.ListenerStatus{programmedListenerStatus("https-hostname-0")},
+				},
+			},
+			downstreamObjects: []client.Object{makeCert("gw-https-hostname-0", false)},
+			want:              []string{},
+		},
+		{
+			name:   "custom listener with missing cert is skipped",
+			config: sharedTLSConfig,
+			gateway: &gatewayv1.Gateway{
+				ObjectMeta: metav1.ObjectMeta{Name: "gw"},
+				Spec: gatewayv1.GatewaySpec{
+					Listeners: []gatewayv1.Listener{httpsListener("https-hostname-0")},
+				},
+				Status: gatewayv1.GatewayStatus{
+					Listeners: []gatewayv1.ListenerStatus{programmedListenerStatus("https-hostname-0")},
+				},
+			},
+			want: []string{},
+		},
+		{
+			name:   "not-programmed listener is skipped even with ready cert",
+			config: sharedTLSConfig,
+			gateway: &gatewayv1.Gateway{
+				ObjectMeta: metav1.ObjectMeta{Name: "gw"},
+				Spec: gatewayv1.GatewaySpec{
+					Listeners: []gatewayv1.Listener{httpsListener("https-hostname-0")},
+				},
+			},
+			downstreamObjects: []client.Object{makeCert("gw-https-hostname-0", true)},
+			want:              []string{},
+		},
+		{
+			name:   "ready listener stays eligible while another waits on its cert",
+			config: sharedTLSConfig,
+			gateway: &gatewayv1.Gateway{
+				ObjectMeta: metav1.ObjectMeta{Name: "gw"},
+				Spec: gatewayv1.GatewaySpec{
+					Listeners: []gatewayv1.Listener{
+						httpsListener("default-https"),
+						httpsListener("https-hostname-0"),
+						httpsListener("https-hostname-1"),
+					},
+				},
+				Status: gatewayv1.GatewayStatus{
+					Listeners: []gatewayv1.ListenerStatus{
+						programmedListenerStatus("default-https"),
+						programmedListenerStatus("https-hostname-0"),
+						programmedListenerStatus("https-hostname-1"),
+					},
+				},
+			},
+			downstreamObjects: []client.Object{
+				makeCert("gw-https-hostname-0", true),
+				makeCert("gw-https-hostname-1", false),
+			},
+			want: []string{"default-https", "https-hostname-0"},
+		},
+		{
+			name:   "non-HTTPS listeners are ignored",
+			config: sharedTLSConfig,
+			gateway: &gatewayv1.Gateway{
+				ObjectMeta: metav1.ObjectMeta{Name: "gw"},
+				Spec: gatewayv1.GatewaySpec{
+					Listeners: []gatewayv1.Listener{
+						{Name: "default-http", Protocol: gatewayv1.HTTPProtocolType},
+						httpsListener("default-https"),
+					},
+				},
+				Status: gatewayv1.GatewayStatus{
+					Listeners: []gatewayv1.ListenerStatus{programmedListenerStatus("default-https")},
+				},
+			},
+			want: []string{"default-https"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			scheme := runtime.NewScheme()
+			_ = gatewayv1.Install(scheme)
+
+			downstreamClient := fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithObjects(tt.downstreamObjects...).
+				Build()
+
+			r := &HTTPProxyReconciler{
+				Config:            tt.config,
+				DownstreamCluster: &clusterWithClient{c: downstreamClient, scheme: scheme},
+			}
+
+			got, err := r.eligibleConnectorHTTPSListeners(context.Background(), downstreamNamespaceName, tt.gateway)
+			require.NoError(t, err)
+			assert.ElementsMatch(t, tt.want, got.UnsortedList())
 		})
 	}
 }

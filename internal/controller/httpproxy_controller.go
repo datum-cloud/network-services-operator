@@ -1514,6 +1514,16 @@ func (r *HTTPProxyReconciler) reconcileConnectorEnvoyPatchPolicy(
 		return nil, true, fmt.Errorf("downstreamGatewayClassName is required for connector patching")
 	}
 
+	// Compute the set of HTTPS listeners whose RouteConfiguration is safe to
+	// patch. A custom-hostname listener whose cert-manager Certificate has not
+	// issued never gets a RouteConfiguration in Envoy's xDS, so patching it
+	// leaves the EnvoyPatchPolicy permanently Programmed=False/ResourceNotFound.
+	// Gate per listener so default-https keeps working while other listeners wait.
+	eligibleHTTPSListeners, err := r.eligibleConnectorHTTPSListeners(ctx, downstreamNamespaceName, gateway)
+	if err != nil {
+		return nil, true, err
+	}
+
 	// Collect connector backends that are currently ready. If none are ready the
 	// connector is offline and we keep the EPP alive with a direct_response route
 	// so EG never hits a delete+create cycle (which causes the watchable
@@ -1528,7 +1538,7 @@ func (r *HTTPProxyReconciler) reconcileConnectorEnvoyPatchPolicy(
 	if !connectorOnline {
 		// Connector offline: insert a direct_response CONNECT route so clients
 		// receive a clean 503 "Tunnel not online" instead of a connection error.
-		jsonPatches, err = buildConnectorOfflineEnvoyPatches(downstreamNamespaceName, gateway, httpProxy)
+		jsonPatches, err = buildConnectorOfflineEnvoyPatches(downstreamNamespaceName, gateway, httpProxy, eligibleHTTPSListeners)
 	} else {
 		jsonPatches, err = buildConnectorEnvoyPatches(
 			downstreamNamespaceName,
@@ -1536,6 +1546,7 @@ func (r *HTTPProxyReconciler) reconcileConnectorEnvoyPatchPolicy(
 			gateway,
 			httpProxy,
 			connectorBackends,
+			eligibleHTTPSListeners,
 		)
 	}
 	if err != nil {
@@ -1567,6 +1578,63 @@ func (r *HTTPProxyReconciler) reconcileConnectorEnvoyPatchPolicy(
 		return nil, connectorOnline, err
 	}
 	return &policy, connectorOnline, nil
+}
+
+// eligibleConnectorHTTPSListeners returns the names of HTTPS listeners whose
+// RouteConfiguration the connector EnvoyPatchPolicy may target. A listener is
+// eligible when it is Programmed and its cert-manager Certificate is Ready.
+//
+// The operator-injected default-https listener is treated as always-eligible
+// once it is Programmed: it has no per-listener hostname and is served by the
+// shared wildcard TLS secret rather than a per-listener Certificate, so a Ready
+// listener-status is the only signal available. The gateway-level gate in
+// reconcileConnectorEnvoyPatchPolicy already requires default-https to be
+// Programmed before this runs.
+//
+// Gating is per listener (not all-or-nothing) so a custom-hostname listener
+// waiting on an unissued cert does not suppress patches for ready listeners.
+func (r *HTTPProxyReconciler) eligibleConnectorHTTPSListeners(
+	ctx context.Context,
+	downstreamNamespaceName string,
+	gateway *gatewayv1.Gateway,
+) (sets.Set[string], error) {
+	eligible := sets.New[string]()
+	downstreamClient := r.DownstreamCluster.GetClient()
+
+	for _, listener := range gateway.Spec.Listeners {
+		if listener.Protocol != gatewayv1.HTTPSProtocolType {
+			continue
+		}
+
+		if !gatewayListenerProgrammed(gateway.Status.Listeners, listener.Name) {
+			continue
+		}
+
+		if gatewayutil.IsDefaultListener(listener) {
+			eligible.Insert(string(listener.Name))
+			continue
+		}
+
+		certName := resourcename.GetValidDNS1123Name(fmt.Sprintf("%s-%s", gateway.Name, listener.Name))
+		certificate := newUnstructuredForGVK(certificateGVK)
+		certKey := client.ObjectKey{Namespace: downstreamNamespaceName, Name: certName}
+		if err := downstreamClient.Get(ctx, certKey, certificate); err != nil {
+			if apierrors.IsNotFound(err) {
+				continue
+			}
+			return nil, fmt.Errorf("failed to get certificate %s: %w", certName, err)
+		}
+
+		ready, err := isCertificateReady(certificate)
+		if err != nil {
+			return nil, fmt.Errorf("failed to check if certificate %s is ready: %w", certName, err)
+		}
+		if ready {
+			eligible.Insert(string(listener.Name))
+		}
+	}
+
+	return eligible, nil
 }
 
 func (r *HTTPProxyReconciler) cleanupConnectorEnvoyPatchPolicy(

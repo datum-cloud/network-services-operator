@@ -1514,6 +1514,8 @@ func (r *HTTPProxyReconciler) reconcileConnectorEnvoyPatchPolicy(
 		return nil, true, fmt.Errorf("downstreamGatewayClassName is required for connector patching")
 	}
 
+	eligibleHTTPSListeners := eligibleConnectorHTTPSListeners(gateway)
+
 	// Collect connector backends that are currently ready. If none are ready the
 	// connector is offline and we keep the EPP alive with a direct_response route
 	// so EG never hits a delete+create cycle (which causes the watchable
@@ -1528,7 +1530,7 @@ func (r *HTTPProxyReconciler) reconcileConnectorEnvoyPatchPolicy(
 	if !connectorOnline {
 		// Connector offline: insert a direct_response CONNECT route so clients
 		// receive a clean 503 "Tunnel not online" instead of a connection error.
-		jsonPatches, err = buildConnectorOfflineEnvoyPatches(downstreamNamespaceName, gateway, httpProxy)
+		jsonPatches, err = buildConnectorOfflineEnvoyPatches(downstreamNamespaceName, gateway, httpProxy, eligibleHTTPSListeners)
 	} else {
 		jsonPatches, err = buildConnectorEnvoyPatches(
 			downstreamNamespaceName,
@@ -1536,6 +1538,7 @@ func (r *HTTPProxyReconciler) reconcileConnectorEnvoyPatchPolicy(
 			gateway,
 			httpProxy,
 			connectorBackends,
+			eligibleHTTPSListeners,
 		)
 	}
 	if err != nil {
@@ -1567,6 +1570,24 @@ func (r *HTTPProxyReconciler) reconcileConnectorEnvoyPatchPolicy(
 		return nil, connectorOnline, err
 	}
 	return &policy, connectorOnline, nil
+}
+
+// eligibleConnectorHTTPSListeners returns the gateway's HTTPS listeners that are
+// Programmed. A listener reaches Programmed only once Envoy Gateway has resolved
+// its TLS secret and materialized its RouteConfiguration — exactly what the
+// connector patch targets — so an unprogrammed listener is skipped to avoid a
+// patch stuck Programmed=False/ResourceNotFound.
+func eligibleConnectorHTTPSListeners(gateway *gatewayv1.Gateway) sets.Set[string] {
+	eligible := sets.New[string]()
+	for _, listener := range gateway.Spec.Listeners {
+		if listener.Protocol != gatewayv1.HTTPSProtocolType {
+			continue
+		}
+		if gatewayListenerProgrammed(gateway.Status.Listeners, listener.Name) {
+			eligible.Insert(string(listener.Name))
+		}
+	}
+	return eligible
 }
 
 func (r *HTTPProxyReconciler) cleanupConnectorEnvoyPatchPolicy(

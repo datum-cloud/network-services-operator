@@ -1514,10 +1514,7 @@ func (r *HTTPProxyReconciler) reconcileConnectorEnvoyPatchPolicy(
 		return nil, true, fmt.Errorf("downstreamGatewayClassName is required for connector patching")
 	}
 
-	eligibleHTTPSListeners, err := r.eligibleConnectorHTTPSListeners(ctx, downstreamNamespaceName, gateway)
-	if err != nil {
-		return nil, true, err
-	}
+	eligibleHTTPSListeners := eligibleConnectorHTTPSListeners(gateway)
 
 	// Collect connector backends that are currently ready. If none are ready the
 	// connector is offline and we keep the EPP alive with a direct_response route
@@ -1575,54 +1572,22 @@ func (r *HTTPProxyReconciler) reconcileConnectorEnvoyPatchPolicy(
 	return &policy, connectorOnline, nil
 }
 
-// eligibleConnectorHTTPSListeners returns the HTTPS listeners the connector
-// EnvoyPatchPolicy may target: those Programmed with a Ready Certificate.
-// Patching a listener whose cert hasn't issued targets a RouteConfiguration
-// Envoy Gateway never materializes, leaving the policy stuck Programmed=False.
-// default-https is always eligible once Programmed: it uses the shared wildcard
-// TLS secret and has no per-listener Certificate.
-func (r *HTTPProxyReconciler) eligibleConnectorHTTPSListeners(
-	ctx context.Context,
-	downstreamNamespaceName string,
-	gateway *gatewayv1.Gateway,
-) (sets.Set[string], error) {
+// eligibleConnectorHTTPSListeners returns the gateway's HTTPS listeners that are
+// Programmed. A listener reaches Programmed only once Envoy Gateway has resolved
+// its TLS secret and materialized its RouteConfiguration — exactly what the
+// connector patch targets — so an unprogrammed listener is skipped to avoid a
+// patch stuck Programmed=False/ResourceNotFound.
+func eligibleConnectorHTTPSListeners(gateway *gatewayv1.Gateway) sets.Set[string] {
 	eligible := sets.New[string]()
-	downstreamClient := r.DownstreamCluster.GetClient()
-
 	for _, listener := range gateway.Spec.Listeners {
 		if listener.Protocol != gatewayv1.HTTPSProtocolType {
 			continue
 		}
-
-		if !gatewayListenerProgrammed(gateway.Status.Listeners, listener.Name) {
-			continue
-		}
-
-		if gatewayutil.IsDefaultListener(listener) {
-			eligible.Insert(string(listener.Name))
-			continue
-		}
-
-		certName := resourcename.GetValidDNS1123Name(fmt.Sprintf("%s-%s", gateway.Name, listener.Name))
-		certificate := newUnstructuredForGVK(certificateGVK)
-		certKey := client.ObjectKey{Namespace: downstreamNamespaceName, Name: certName}
-		if err := downstreamClient.Get(ctx, certKey, certificate); err != nil {
-			if apierrors.IsNotFound(err) {
-				continue
-			}
-			return nil, fmt.Errorf("failed to get certificate %s: %w", certName, err)
-		}
-
-		ready, err := isCertificateReady(certificate)
-		if err != nil {
-			return nil, fmt.Errorf("failed to check if certificate %s is ready: %w", certName, err)
-		}
-		if ready {
+		if gatewayListenerProgrammed(gateway.Status.Listeners, listener.Name) {
 			eligible.Insert(string(listener.Name))
 		}
 	}
-
-	return eligible, nil
+	return eligible
 }
 
 func (r *HTTPProxyReconciler) cleanupConnectorEnvoyPatchPolicy(

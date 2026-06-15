@@ -202,13 +202,8 @@ func buildConnectorEnvoyPatches(
 	return patches, nil
 }
 
-// gatewayHTTPSRouteConfigNames returns the RouteConfiguration names for HTTPS
-// listeners that are eligible for patching. A listener is eligible when its name
-// is present in eligibleHTTPSListeners, which the caller computes from per-listener
-// certificate readiness and listener Programmed status. Listeners whose
-// RouteConfiguration Envoy Gateway has not materialized (e.g. a custom-hostname
-// listener with an unissued cert) are excluded so the connector EnvoyPatchPolicy
-// does not target nonexistent xDS resources.
+// gatewayHTTPSRouteConfigNames returns the RouteConfiguration names for the
+// gateway's HTTPS listeners, skipping any not in eligibleHTTPSListeners.
 func gatewayHTTPSRouteConfigNames(
 	downstreamNamespace string,
 	gateway *gatewayv1.Gateway,

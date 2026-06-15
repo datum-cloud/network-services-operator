@@ -1514,11 +1514,6 @@ func (r *HTTPProxyReconciler) reconcileConnectorEnvoyPatchPolicy(
 		return nil, true, fmt.Errorf("downstreamGatewayClassName is required for connector patching")
 	}
 
-	// Compute the set of HTTPS listeners whose RouteConfiguration is safe to
-	// patch. A custom-hostname listener whose cert-manager Certificate has not
-	// issued never gets a RouteConfiguration in Envoy's xDS, so patching it
-	// leaves the EnvoyPatchPolicy permanently Programmed=False/ResourceNotFound.
-	// Gate per listener so default-https keeps working while other listeners wait.
 	eligibleHTTPSListeners, err := r.eligibleConnectorHTTPSListeners(ctx, downstreamNamespaceName, gateway)
 	if err != nil {
 		return nil, true, err
@@ -1580,19 +1575,12 @@ func (r *HTTPProxyReconciler) reconcileConnectorEnvoyPatchPolicy(
 	return &policy, connectorOnline, nil
 }
 
-// eligibleConnectorHTTPSListeners returns the names of HTTPS listeners whose
-// RouteConfiguration the connector EnvoyPatchPolicy may target. A listener is
-// eligible when it is Programmed and its cert-manager Certificate is Ready.
-//
-// The operator-injected default-https listener is treated as always-eligible
-// once it is Programmed: it has no per-listener hostname and is served by the
-// shared wildcard TLS secret rather than a per-listener Certificate, so a Ready
-// listener-status is the only signal available. The gateway-level gate in
-// reconcileConnectorEnvoyPatchPolicy already requires default-https to be
-// Programmed before this runs.
-//
-// Gating is per listener (not all-or-nothing) so a custom-hostname listener
-// waiting on an unissued cert does not suppress patches for ready listeners.
+// eligibleConnectorHTTPSListeners returns the HTTPS listeners the connector
+// EnvoyPatchPolicy may target: those Programmed with a Ready Certificate.
+// Patching a listener whose cert hasn't issued targets a RouteConfiguration
+// Envoy Gateway never materializes, leaving the policy stuck Programmed=False.
+// default-https is always eligible once Programmed: it uses the shared wildcard
+// TLS secret and has no per-listener Certificate.
 func (r *HTTPProxyReconciler) eligibleConnectorHTTPSListeners(
 	ctx context.Context,
 	downstreamNamespaceName string,

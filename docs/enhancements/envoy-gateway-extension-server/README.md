@@ -24,6 +24,7 @@ stage: alpha
   - [Registering the Extension Server with Envoy Gateway](#registering-the-extension-server-with-envoy-gateway)
   - [Securing the Extension Server](#securing-the-extension-server)
   - [Sourcing Policy: How the Extension Server Knows What to Inject](#sourcing-policy-how-the-extension-server-knows-what-to-inject)
+  - [Triggering Re-translation on Policy Change](#triggering-re-translation-on-policy-change)
   - [Deployment Topology](#deployment-topology)
   - [High Availability](#high-availability)
   - [Reference Implementation](#reference-implementation)
@@ -322,22 +323,54 @@ demonstrates the pattern.
 
 ### Registering the Extension Server with Envoy Gateway
 
+#### Dedicated Envoy Gateway control plane
+
+NSO runs a **dedicated Envoy Gateway control plane** (`envoy-datum-downstream-gateway`)
+isolated in its own namespace (`datum-downstream-gateway`), separate from any shared
+cluster-level EG installation. This mirrors the production topology in `datum-cloud/infra`
+where a second `gateway-helm` HelmRelease with `crds: Skip` runs alongside the shared EG.
+
+The dedicated EG is configured with:
+
+- `controllerName: gateway.envoyproxy.io/datum-downstream-gateway` — scoped to NSO's
+  `GatewayClass`; it ignores all gateways owned by other controllers.
+- `enableEnvoyPatchPolicy: false` — the extension server owns all mutations; EPP is disabled.
+- `watch.type: NamespaceSelector` on `meta.datumapis.com/upstream-cluster-name: Exists` —
+  the EG only watches namespaces that NSO has stamped as downstream. NSO stamps this label
+  when `upstreamClusterName != ""` (which is always true in production and in the two-cluster
+  e2e, where `ProviderSingle` sets `ClusterName = "single"`).
+- `extensionManager` baked into the helm values — no runtime ConfigMap patch or EG rollout
+  restart is required.
+
+The local/CI e2e installs the dedicated EG via the second `helmCharts:` entry in
+`config/tools/envoy-gateway/kustomization.yaml` (applied by `make prepare-infra-cluster`).
+In production (`datum-cloud/infra`) it is a FluxCD `HelmRelease` with the same values.
+
+#### extensionManager registration
+
 Envoy Gateway is told about the Extension Server through the
 [`extensionManager`](https://gateway.envoyproxy.io/docs/api/extension_types/#extensionmanager)
-block of the `EnvoyGateway` control-plane config (in production this is set via
-the `envoy-gateway` HelmRelease values). The registration that NSO depends on:
+block baked into the dedicated EG helm values:
 
 ```yaml
 extensionManager:
   service:
     fqdn:
-      hostname: <extension-server>.<namespace>.svc.cluster.local
+      hostname: network-services-operator-extension-server.network-services-operator-system.svc.cluster.local
       port: 5005
     tls:                              # see "Securing the Extension Server"
-      certificateRef:                 # CA that signed the server cert (EG validates the server)
+      certificateRef:                 # CA Secret EG uses to verify the server cert
         name: extension-server-ca
-      clientCertificateRef:           # client cert EG presents for mTLS (server authenticates EG)
-        name: extension-server-client-cert
+        namespace: network-services-operator-system
+      clientCertificateRef:           # client cert EG presents for mTLS
+        name: extension-server-eg-client-tls
+        namespace: network-services-operator-system
+    retry:
+      maxAttempts: 4
+      initialBackoff: 100ms
+      maxBackoff: 1s
+      backoffMultiplier: {numerator: 200}
+      retryableStatusCodes: [UNAVAILABLE]
   hooks:
     xdsTranslator:
       post:
@@ -350,6 +383,11 @@ extensionManager:
   failOpen: false                      # see "High Availability"
 ```
 
+The cert Secrets (`extension-server-ca`, `extension-server-eg-client-tls`) live in NSO's
+namespace. EG v1.8.1 reads them cross-namespace via the explicit `namespace` field in
+`SecretObjectReference` — no `ReferenceGrant` is required (EG uses a cluster-scoped
+client for extension manager TLS).
+
 Two registration details are easy to get wrong and were both confirmed against
 a running Envoy Gateway cluster:
 
@@ -358,10 +396,9 @@ a running Envoy Gateway cluster:
   and routes** unless `includeAll` is set. The WAF listener filter and all
   per-route mutations require them; without these flags the Extension Server
   runs but silently mutates nothing.
-- **The hook enum is `HTTPListener`, not `Listener`.** Only relevant if the
-  granular listener hook is ever enabled — the valid set in v1.8 is
-  `VirtualHost | Route | HTTPListener | Cluster | Endpoints | Translation` — but
-  the wrong value is rejected by the config validator.
+- **The hook enum is `Translation`, not `Listener`.** The valid set in v1.8 is
+  `VirtualHost | Route | HTTPListener | Cluster | Endpoints | Translation` — the
+  wrong value is rejected by the config validator.
 
 Replacing EPPs also lets NSO **drop its dependency on the `XDSNameSchemeV2`
 runtime flag.** Today NSO's EPP patches target xDS resources by EG's
@@ -453,6 +490,80 @@ the corresponding Envoy configuration. Per-route association uses the existing
 to its governing policy without the Extension Server holding build-to-build
 state.
 
+### Triggering Re-translation on Policy Change
+
+The extension server is **passive**: it mutates configuration only during builds
+that Envoy Gateway has already decided to perform. In the EnvoyPatchPolicy model,
+the EPP object itself was the EG-watched trigger — a TPP or Connector change
+produced an EPP change, which EG watched directly and which caused a
+re-translation. Removing EPPs removes that trigger. Without a replacement, a
+`TrafficProtectionPolicy` or `Connector` spec change would reach the data plane
+only at the next unrelated rebuild.
+
+The replacement is **`extensionManager.resources`** on the dedicated EG control
+plane (see [Registering the Extension Server](#registering-the-extension-server-with-envoy-gateway)).
+By listing the TPP and Connector GVKs in the `resources` field, EG sets up
+informers for those CRDs and fires a `GenerationChangedPredicate` on every spec
+change. When a replicated policy object changes on the edge cluster, EG enqueues
+a full re-translation and calls `PostTranslateModify`; the extension server reads
+updated policy from its informer cache as described in [Sourcing
+Policy](#sourcing-policy-how-the-extension-server-knows-what-to-inject) —
+`resources` is the *trigger*, not a delivery mechanism. EG's `NamespaceSelector`
+(`meta.datumapis.com/upstream-cluster-name: Exists`) scopes the new informers to
+NSO's downstream namespaces only. EG's service account (in
+`datum-downstream-gateway`) requires `get;list;watch` on
+`networking.datumapis.com` resources, added as a separate `ClusterRole` and
+`ClusterRoleBinding` to avoid Helm chart upgrade collisions.
+
+```yaml
+extensionManager:
+  resources:
+    - group: networking.datumapis.com
+      version: v1alpha
+      kind: TrafficProtectionPolicy
+    - group: networking.datumapis.com
+      version: v1alpha1
+      kind: Connector
+  # ... hooks and service config unchanged; see "Registering the Extension Server"
+```
+
+The `resources` field is distinct from `extensionManager.policyResources`, which
+this design rejects (see [Sourcing
+Policy](#sourcing-policy-how-the-extension-server-knows-what-to-inject)):
+`resources` is a pure watch-and-trigger — EG registers an informer, fires on spec
+change, and processes nothing further. `policyResources` also validates
+`targetRef`, enforces same-namespace policy-attachment, and delivers objects
+inline in the hook context, none of which this design needs or tolerates.
+`resources` provides the trigger without that coupling.
+
+#### Connector online/offline transitions
+
+`GenerationChangedPredicate` fires only when `metadata.generation` changes, which
+increments exclusively on **spec** writes. A Connector's online/offline state is
+carried in `.status.conditions[Ready]`, updated on Lease expiry or renewal; status
+updates do not increment the generation. The `resources` trigger therefore does
+not cover Connector online/offline transitions.
+
+For this case, the Connector controller touches an annotation on each downstream
+`Gateway` the Connector serves when the `Ready` condition flips. EG's
+`metadataPredicate` for `Gateway` includes `AnnotationChangedPredicate`, so the
+annotation change fires a full re-translation and the extension server re-applies
+the correct routing config from its cache. This is the deliberate choice for
+status-driven transitions: it uses the predicate already in place for Gateway
+events, requires no new EG configuration, and places trigger logic in the
+controller that detects the Lease-driven state change.
+
+The alternative considered was having the replicator write a monotonic nonce into
+the downstream Connector's `spec` when the `Ready` condition flips, which would
+increment `metadata.generation` and satisfy the `GenerationChangedPredicate`. This
+was rejected: the replicator unconditionally overwrites the downstream Connector's
+spec from the upstream on every reconcile and watches downstream changes — any
+written nonce is clobbered on the very next reconcile, and the resulting
+downstream change event re-enqueues the replicator, producing a write/clobber
+loop. With modifications to preserve the nonce the loop can be bounded, but the
+required changes introduce an API anti-pattern (a platform bookkeeping counter in
+user-facing `spec`) and distribute EG trigger semantics across the wrong layer.
+
 ### Deployment Topology
 
 The Extension Server runs as a **distinct process from NSO's reconcilers**. The
@@ -524,6 +635,11 @@ end-to-end against a live Envoy Gateway: it implements the single
 Connector mutation families. It is the basis for the preliminary result cited in
 the [Summary](#summary) (≈3 ms vs ≈72 ms at N=10) and is the seed for the
 production implementation, which lands in a follow-up PR.
+
+The WAF activation pattern — injecting the Coraza filter at listener scope with
+`disabled:true` and enabling it per-route via `typed_per_filter_config` — requires
+the Coraza filter implementation to support per-route configuration merge. This is
+a filter-level prerequisite tracked separately from this proposal.
 
 ### Envoy Version Coupling
 

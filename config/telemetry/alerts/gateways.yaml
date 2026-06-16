@@ -22,6 +22,16 @@ spec:
         summary: "Gateway {{ $labels.resource_name }} is taking longer than 60 seconds to reach Ready status"
         description: "Gateway {{ $labels.resource_name }} in namespace {{ $labels.resource_namespace }} has been in creation state for {{ $value }} seconds without reaching Ready status (Accepted=True AND Programmed=True), which exceeds the 60-second SLO threshold."
 
+    - alert: EnvoyPatchPolicyProgrammingFailed
+      expr: |
+        envoy_gateway_envoypatchpolicy_status_condition{type="Programmed"} == 0
+      for: 5m
+      labels:
+        severity: critical
+      annotations:
+        summary: "EnvoyPatchPolicy {{ $labels.name }} failed to program"
+        description: "EnvoyPatchPolicy {{ $labels.name }} in namespace {{ $labels.namespace }} has been unable to apply its xDS patch for over 5 minutes (reason: {{ $labels.reason }}). Customer traffic on affected gateways may be impacted."
+
     - alert: GatewayDegradedSLOViolation
       expr: |
         (

@@ -80,7 +80,7 @@ helmCharts:
                 kind: Connector
             service:
               fqdn:
-                hostname: network-services-operator-extension-server.network-services-operator-system.svc.cluster.local
+                hostname: network-services-operator-envoy-gateway-extension-server.network-services-operator-system.svc.cluster.local
                 port: 5005
               tls:
                 certificateRef:

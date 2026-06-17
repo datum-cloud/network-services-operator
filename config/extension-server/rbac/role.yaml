@@ -20,7 +20,7 @@ metadata:
     app.kubernetes.io/name: network-services-operator
     app.kubernetes.io/component: extension-server
     app.kubernetes.io/managed-by: kustomize
-  name: extension-server-role
+  name: envoy-gateway-extension-server-role
 rules:
   # Namespace list/watch: builds downstream NS → upstream NS reverse map.
   - apiGroups:

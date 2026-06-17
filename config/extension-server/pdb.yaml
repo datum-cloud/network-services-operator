@@ -5,7 +5,7 @@ metadata:
     app.kubernetes.io/name: network-services-operator
     app.kubernetes.io/component: extension-server
     app.kubernetes.io/managed-by: kustomize
-  name: extension-server-pdb
+  name: envoy-gateway-extension-server-pdb
   namespace: system
 spec:
   # minAvailable: 1 prevents simultaneous eviction of both replicas.

@@ -5,7 +5,7 @@ metadata:
     app.kubernetes.io/name: network-services-operator
     app.kubernetes.io/component: extension-server
     app.kubernetes.io/managed-by: kustomize
-  name: extension-server
+  name: envoy-gateway-extension-server
   namespace: system
 spec:
   selector:

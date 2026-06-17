@@ -8,7 +8,7 @@ metadata:
     app.kubernetes.io/name: network-services-operator
     app.kubernetes.io/component: extension-server
     app.kubernetes.io/managed-by: kustomize
-  name: allow-extension-server-grpc-traffic
+  name: allow-envoy-gateway-extension-server-grpc-traffic
   namespace: system
 spec:
   podSelector:

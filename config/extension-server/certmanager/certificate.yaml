@@ -1,12 +1,4 @@
 ---
-# EG mTLS client certificate — EG presents this when connecting to the extension server.
-# Referenced by extensionManager.service.tls.clientCertificateRef in the downstream EG config.
-#
-# Secret lives in NSO's namespace. EG reads it cross-namespace via SecretObjectReference
-# (EG v1.8.1 uses a cluster-scoped client; no ReferenceGrant required).
-#
-# Issued by the platform's datum-control-plane ClusterIssuer (cert-manager).
-# secretName is NOT kustomize-prefixed; must match the clientCertificateRef name.
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
@@ -25,7 +17,8 @@ spec:
     algorithm: ECDSA
     size: 256
   issuerRef:
-    name: datum-control-plane
+    # Placeholder — an overlay must patch this issuer.
+    name: placeholder-issuer
     kind: ClusterIssuer
     group: cert-manager.io
   usages:

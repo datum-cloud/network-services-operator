@@ -1,6 +1,4 @@
-# NetworkPolicy — restricts gRPC ingress (:5005) to Envoy Gateway control-plane pods.
-# Defense-in-depth: mTLS authenticates the caller; this policy prevents unauthorized peers
-# from even opening a TCP connection to attempt the mTLS handshake.
+# NetworkPolicy — restricts gRPC ingress (:5005) to Envoy Gateway control-plane namespaces.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -17,13 +15,6 @@ spec:
   policyTypes:
     - Ingress
   ingress:
-    # gRPC port: allow from the shared EG (envoy-gateway-system) and the dedicated
-    # NSO EG control plane (datum-downstream-gateway). Without the datum-downstream-gateway
-    # entry, the dedicated EG's gRPC to the ext-server is dropped by NetworkPolicy, and
-    # with failOpen:false EG drops ALL xDS translation — no Gateway reaches Programmed=True.
-    #
-    # podSelector is intentionally omitted: EG pods don't carry kustomize-managed labels
-    # from this kustomization. The namespace selector is the correct isolation boundary.
     - from:
         - namespaceSelector:
             matchLabels:
@@ -34,10 +25,7 @@ spec:
       ports:
         - port: 5005
           protocol: TCP
-    # Health probe port (8080): allow from kubelet (no selector = any source).
-    # Kubelet IPs are node IPs outside the pod CIDR; a pod/namespace selector would
-    # block health checks. KNOWN GAP (P2-1): /metrics is also on 8080 and therefore
-    # open to all cluster pods until health and metrics are split to separate ports.
+    # Health probe port (8080): no selector — kubelet IPs are outside pod CIDR.
     - ports:
         - port: 8080
           protocol: TCP

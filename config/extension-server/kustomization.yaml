@@ -1,14 +1,6 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
-# Extension server deployment — Envoy Gateway PostTranslateModify hook server.
-#
-# Note on namePrefix propagation: Kubernetes resource names (Deployment, Service, SA,
-# ClusterRole, etc.) receive the namePrefix when processed through config/default.
-# cert-manager Secret names (spec.secretName) are NOT kustomize-prefixed — they are
-# fixed strings created by cert-manager. Deployment volume references to these Secrets
-# are also fixed strings.
-
 resources:
   - deployment.yaml
   - service.yaml
@@ -24,12 +16,7 @@ images:
     newTag: latest
 
 labels:
-  # includeSelectors: false — do NOT add part-of to resource selectors.
-  # The NetworkPolicy includes from.podSelector entries targeting EG pods (external
-  # to this kustomization); adding part-of to those selectors would break ingress
-  # because EG pods don't carry the network-services-operator part-of label.
-  # includeTemplates: true — pod template labels DO get part-of, so
-  # Deployment/Service selectors can match pods without needing part-of in matchLabels.
+  # includeSelectors: false — do NOT add part-of to resource selectors (breaks NetworkPolicy ingress from EG pods).
   - includeSelectors: false
     includeTemplates: true
     pairs:

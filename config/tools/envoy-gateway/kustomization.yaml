@@ -1,16 +1,10 @@
 resources:
   - namespace.yaml
 helmCharts:
-  # Shared EG (envoy-gateway-system). Owns cluster CRDs (includeCRDs: true).
-  # Applied separately from config/tools/envoy-gateway-downstream/ to avoid
-  # cluster-scoped resource collisions (ValidatingAdmissionPolicy
-  # safe-upgrades.gateway.networking.k8s.io is emitted by both charts).
   - name: gateway-helm
     includeCRDs: true
     namespace: envoy-gateway-system
     releaseName: envoy-gateway
-    # v1.8.1: required for mTLS clientCertificateRef and PostTranslateModify hook
-    # with full listener/route includeAll support.
     version: v1.8.1
     repo: oci://docker.io/envoyproxy
     valuesInline:
@@ -18,8 +12,6 @@ helmCharts:
         envoyGateway:
           extensionApis:
             enableBackend: true
-            # EPP enabled for Mode A (baseline) e2e test coverage.
-            # Mode B (ext-server) is handled by the dedicated EG (envoy-gateway-downstream).
             enableEnvoyPatchPolicy: true
           runtimeFlags:
             enabled:

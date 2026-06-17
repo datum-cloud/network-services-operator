@@ -8,14 +8,11 @@ metadata:
     app.kubernetes.io/component: extension-server
     app.kubernetes.io/managed-by: kustomize
 spec:
-  # HA requirement: minimum 2 replicas. Every replica serves (no leader election).
   replicas: 2
-  # maxUnavailable: 0 ensures serving capacity never drops below 2 during a rolling
-  # update. A failing new image can never reduce replicas to 0 (failOpen:false + 0
-  # serving = fleet-wide xDS freeze for all gateway updates).
   strategy:
     type: RollingUpdate
     rollingUpdate:
+      # With failOpen: false, 0 serving replicas freezes xDS fleet-wide.
       maxUnavailable: 0
       maxSurge: 1
   selector:
@@ -36,9 +33,6 @@ spec:
         fsGroup: 65532
         seccompProfile:
           type: RuntimeDefault
-      # Topology spread: require replicas on distinct nodes so a single node failure
-      # cannot take both replicas offline at once. With failOpen:false, total replicas=0
-      # freezes all gateway xDS updates fleet-wide.
       topologySpreadConstraints:
         - maxSkew: 1
           topologyKey: kubernetes.io/hostname
@@ -48,7 +42,6 @@ spec:
               app.kubernetes.io/component: extension-server
       containers:
         - name: envoy-gateway-extension-server
-          # Same image as NSO manager — single binary, subcommand selects role.
           image: ghcr.io/datum-cloud/network-services-operator:latest
           imagePullPolicy: IfNotPresent
           command:
@@ -67,9 +60,7 @@ spec:
             - name: health
               containerPort: 8080
               protocol: TCP
-          # startupProbe: gates liveness during initial informer cache sync.
-          # Allows up to 5 minutes (60 × 5s) for WaitForCacheSync before liveness
-          # begins. The gRPC server does not start until the cache is warm.
+          # 60×5s startup window covers informer cache sync before liveness starts.
           startupProbe:
             httpGet:
               path: /healthz
@@ -87,7 +78,6 @@ spec:
             httpGet:
               path: /healthz
               port: 8080
-            # No initialDelaySeconds — startupProbe handles the startup window.
             periodSeconds: 20
             failureThreshold: 3
           resources:
@@ -103,10 +93,6 @@ spec:
             capabilities:
               drop:
                 - ALL
-          # preStop: 5s sleep gives kube-proxy/iptables time to propagate endpoint
-          # removal before the gRPC server starts draining. Without this, new EG
-          # connections arriving after GracefulStop begins get a TCP reset instead
-          # of a retriable gRPC UNAVAILABLE.
           lifecycle:
             preStop:
               sleep:
@@ -118,34 +104,24 @@ spec:
             - name: tls-ca
               mountPath: /tls-ca
               readOnly: true
-      # terminationGracePeriodSeconds: 20 = 5s preStop sleep + 15s for GracefulStop
-      # to drain in-flight RPCs before SIGKILL.
       terminationGracePeriodSeconds: 20
       volumes:
-        # Server TLS cert + key via cert-manager CSI driver (datum-control-plane ClusterIssuer).
-        # Prerequisites: CSI driver installed; datum-control-plane ClusterIssuer exists;
-        # namespace labelled for trust-manager trust bundle injection:
-        #   infra.datum.net/inject-datum-control-plane-trust-bundle: ""
-        #
-        # dns-names assume config/default namePrefix + namespace. Infra overlays deploying in
-        # a different namespace MUST patch this volume's volumeAttributes accordingly.
+        # issuer-name and dns-names are placeholders — an overlay must patch them.
         - name: tls
           csi:
             driver: csi.cert-manager.io
             readOnly: true
             volumeAttributes:
               csi.cert-manager.io/issuer-kind: ClusterIssuer
-              csi.cert-manager.io/issuer-name: datum-control-plane
+              csi.cert-manager.io/issuer-name: placeholder-issuer
               csi.cert-manager.io/common-name: envoy-gateway-extension-server
               csi.cert-manager.io/dns-names: "network-services-operator-envoy-gateway-extension-server.network-services-operator-system.svc,network-services-operator-envoy-gateway-extension-server.network-services-operator-system.svc.cluster.local"
               csi.cert-manager.io/key-usages: server auth
               csi.cert-manager.io/fs-group: "65532"
-
-        # CA trust bundle — trust-manager injects datum-control-plane-trust-bundle into
-        # this ConfigMap. Key 'ca.crt' used by extension server to verify EG's client cert.
+        # Placeholder CA bundle (key ca.crt) — an overlay must patch the ConfigMap name.
         - name: tls-ca
           configMap:
-            name: datum-control-plane-trust-bundle
+            name: placeholder-ca-bundle
             items:
               - key: ca.crt
                 path: ca.crt

@@ -1,26 +1,7 @@
 resources:
   - namespace.yaml
-  # RBAC granting EG's ServiceAccount get;list;watch on NSO's CRDs for the
-  # extensionManager.resources re-translation trigger (GAP-2 Part C).
   - nso-crd-rbac.yaml
 helmCharts:
-  # Dedicated NSO downstream EG (datum-downstream-gateway). Applied separately from
-  # config/tools/envoy-gateway/ to avoid cluster-scoped resource collisions
-  # (ValidatingAdmissionPolicy safe-upgrades.gateway.networking.k8s.io is emitted by
-  # both chart releases and cannot be merged in a single kustomize build). This mirrors
-  # the production topology where two independent Flux HelmReleases manage the two EG
-  # instances.
-  #
-  # Key values:
-  #   controllerName  → gateway.envoyproxy.io/datum-downstream-gateway
-  #   includeCRDs     → false  (CRDs installed by the shared EG release; no double-install)
-  #   EPP             → false  (ext-server owns all mutations)
-  #   extensionManager→ baked into values (no ConfigMap patch or rollout restart needed)
-  #   watch           → NamespaceSelector on meta.datumapis.com/upstream-cluster-name: Exists
-  #
-  # NamespaceSelector rationale: NSO uses ProviderSingle → req.ClusterName = "single" →
-  # downstream namespace label meta.datumapis.com/upstream-cluster-name=cluster-single is
-  # stamped. The Exists operator scopes this EG to NSO-managed namespaces only.
   - name: gateway-helm
     includeCRDs: false
     namespace: datum-downstream-gateway
@@ -48,28 +29,6 @@ helmCharts:
                     - key: meta.datumapis.com/upstream-cluster-name
                       operator: Exists
           extensionManager:
-            # EG re-translates (and calls PostTranslateModify) only when its per-GatewayClass
-            # resource snapshot changes. Resource category determines how a GVK enters the snapshot:
-            #
-            #   policyResources → processExtensionServerPolicies lists every instance of the GVK
-            #     (requires spec.targetRef/targetRefs) and appends to resourceTree.ExtensionServerPolicies.
-            #     A create/update/delete of such a policy changes the snapshot and triggers re-translation.
-            #     Correct home for Gateway-API PolicyAttachment-shaped resources.
-            #
-            #   resources → a GVK here is only pulled in when referenced via an HTTPRoute extensionRef
-            #     filter. A targetRef-style policy is never referenced that way, so changes never
-            #     re-translate.
-            #
-            # TrafficProtectionPolicy uses spec.targetRefs → policyResources: TPP changes reliably
-            # re-translate and the extension server applies/removes per-route WAF config.
-            #
-            # Connector has no spec.targetRefs (referenced by HTTPProxy backends), so it cannot live
-            # under policyResources (processExtensionServerPolicies errors on objects lacking
-            # targetRef/targetRefs). It remains under `resources`; Connector Ready-state changes
-            # do NOT currently auto-trigger re-translation.
-            #
-            # EG's NamespaceSelector scopes informers to downstream namespaces only.
-            # RBAC grant required: see config/tools/envoy-gateway-downstream/nso-crd-rbac.yaml
             policyResources:
               - group: networking.datumapis.com
                 version: v1alpha
@@ -84,18 +43,10 @@ helmCharts:
                 port: 5005
               tls:
                 certificateRef:
-                  # OPEN ITEM (infra): EG reads tls.crt from this Secret to verify the extension
-                  # server's TLS certificate. The ext-server cert is issued by the datum-control-plane
-                  # ClusterIssuer (cert-manager CSI driver). EG must verify it against that same CA.
-                  # Confirm the name and namespace of the Secret holding the datum-control-plane CA
-                  # certificate (tls.crt field) — typically created by cert-manager or trust-manager
-                  # in the cert-manager namespace. Update before deploying to production.
-                  name: datum-control-plane-ca   # PLACEHOLDER — confirm with infra
-                  namespace: cert-manager        # PLACEHOLDER — confirm with infra
+                  # Placeholder — an overlay must patch this to the Secret holding the CA that issued the server cert.
+                  name: placeholder-ca
+                  namespace: placeholder-namespace
                 clientCertificateRef:
-                  # EG mTLS client cert. Issued by datum-control-plane ClusterIssuer via
-                  # cert-manager Certificate. Secret lives in NSO's namespace; EG reads it
-                  # cross-namespace (EG v1.8.1 uses a cluster-scoped client; no ReferenceGrant needed).
                   name: extension-server-eg-client-tls
                   namespace: network-services-operator-system
               retry:
@@ -109,16 +60,15 @@ helmCharts:
             hooks:
               xdsTranslator:
                 post:
-                  - Translation   # PostTranslateModify; no other hooks registered
+                  - Translation
                 translation:
                   listener:
-                    includeAll: true   # MANDATORY — required for WAF listener filter injection
+                    includeAll: true   # MANDATORY — without this, WAF listener filter + per-route mutations are silently dropped
                   route:
-                    includeAll: true   # MANDATORY — required for per-route WAF config + datum-gateway metadata
+                    includeAll: true   # MANDATORY — without this, WAF listener filter + per-route mutations are silently dropped
                   cluster:
                     includeAll: true
                   secret:
                     includeAll: true
-            # Fail-closed: extension errors block the xDS update; Envoy holds last-known-good config.
-            # Prevents WAF/Connector mutations from being silently dropped on extension server errors.
+            # failOpen:false — extension errors block the xDS update; Envoy holds last-known-good config.
             failOpen: false

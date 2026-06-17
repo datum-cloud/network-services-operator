@@ -127,6 +127,67 @@ Each metric will record the following dimensions:
 - `gateway_class`: Underlying GatewayClass (for pricing class differentiation).
 - `httproute_name`: The `HTTPRoute` resource name.
 - `httproute_namespace`: The `HTTPRoute` namespace.
+- `project_name`: Human-readable name of the project that owns the route (see [Surfacing Signals from the Edge](#surfacing-signals-from-the-edge)).
+
+---
+
+### Surfacing Signals from the Edge
+
+All metering signals originate from the **edge cluster**, where the Envoy
+Gateway proxies (`datum-downstream-gateway`) actually serve customer traffic.
+There is no central collection point that observes individual requests — the
+proxy is the only component that sees each request, so the signal must be
+captured, enriched, and emitted at the edge before being forwarded to the
+central Billing System.
+
+The raw access log already carries everything the meters need *except* one
+thing: the `route_name` field identifies the owning project only by its
+control-plane namespace UID (e.g. `ns-<project-uid>`), not by the
+human-readable project name. To populate the `project_name` dimension, three
+components must be updated, all operating at the edge:
+
+1. **Network Services Operator (controller).** When the operator reconciles a
+   customer `HTTPRoute` into its downstream representation, it injects the
+   project name as a request header (`x-datum-project-name`) via a
+   `RequestHeaderModifier` filter on each route rule. The project name is read
+   from the upstream cluster identity (the Milo project name) that the
+   operator already holds while mapping upstream → downstream resources. Routes
+   that already define a `RequestHeaderModifier` are merged into rather than
+   duplicated, since Gateway API permits at most one such filter per rule.
+
+2. **Envoy access log format.** The `EnvoyProxy` access log JSON format is
+   extended with a `project_name` field sourced from the injected header:
+   `project_name: "%REQ(X-DATUM-PROJECT-NAME)%"`. Because the header is set on
+   the route before the access log is written, every logged request for a
+   customer route carries the resolved project name. (We use `%REQ()%` rather
+   than `%METADATA(ROUTE:...)%` because Envoy Gateway's JSON access log
+   formatter does not register the metadata formatter, so route metadata is not
+   accessible from JSON access logs.)
+
+3. **Vector billing collector.** The `billing-usage-collector-vector` VRL
+   transform reads the `project_name` field from each access log line and adds
+   it as a dimension on all four emitted CloudEvents (requests, ingress-bytes,
+   egress-bytes, connection-seconds), and subject. An absent or empty value (rendered by
+   Envoy as `"-"`) is normalized to an empty string so unmatched routes do not
+   pollute the dimension.
+
+This keeps the entire signal path — request handling, name resolution, log
+emission, parsing, and CloudEvent forwarding — co-located on the edge cluster.
+
+#### Transport: how access logs reach Vector
+
+The access log line must travel from the Envoy proxy to the
+`billing-usage-collector-vector` agent. Two transports are viable; see
+[Access Log Transport](#access-log-transport-file-sink-vs-otlp-sink) under
+Alternatives for the trade-offs. In short:
+
+- **File sink (stdout) + `kubernetes_logs`** — the current/baseline approach,
+  where Envoy writes JSON to stdout and Vector tails the node's container logs.
+  This requires Vector to run as a per-node DaemonSet co-located with the Envoy
+  pod, which holds on edge clusters but not where Vector runs as an aggregator.
+- **OpenTelemetry (OTLP) sink** — Envoy pushes access logs directly to Vector's
+  OTLP receiver over the network, independent of pod/node topology. This is
+  implemented in a draft PR (see below).
 
 ---
 
@@ -372,6 +433,54 @@ The following decisions are tracked for the implementation of this enhancement:
 ---
 
 ## Alternatives
+
+### Access Log Transport: File Sink vs OTLP Sink
+
+The signal-collection design above is independent of *how* the Envoy access log
+line reaches the `billing-usage-collector-vector` agent. Two transports were
+evaluated:
+
+#### Option A1: File sink (stdout) + Vector `kubernetes_logs` (baseline)
+
+Envoy keeps its existing `File` access log sink writing JSON to `/dev/stdout`.
+The container runtime persists this to the node's container log files, and
+Vector tails them via a `kubernetes_logs` source.
+
+- *Pros:* No new ports or network hops; reuses the standard Kubernetes log
+  collection pattern; the `File` sink is already present in the base
+  `EnvoyProxy`; logs survive on disk if Vector is briefly down (checkpointed
+  tailing).
+- *Cons:* Requires Vector to run as a **per-node DaemonSet co-located** with the
+  Envoy pod, because `kubernetes_logs` can only read the node it runs on. This
+  holds on **edge** clusters (Vector and Envoy are both DaemonSets), but breaks
+  where the billing Vector runs as a **Stateless-Aggregator** (staging/prod), as
+  a single aggregator pod cannot tail Envoy stdout on other nodes. It also needs
+  a `kubernetes_logs` source plus a ClusterRole for pod metadata, pod-label
+  filtering to avoid ingesting unrelated containers, and a `parse_json(.message)`
+  step.
+
+#### Option A2: OpenTelemetry (OTLP) sink (implemented in draft PR)
+
+Envoy adds an `OpenTelemetry` access log sink alongside the existing `File`
+sink, pushing access logs directly to Vector's OTLP receiver
+(`opentelemetry` source, gRPC :4317). The JSON fields arrive as OTLP
+log-record attributes, which the VRL transform normalizes to top-level fields.
+
+- *Pros:* **Topology-independent** — works identically whether Vector is a
+  DaemonSet or an aggregator, since it targets the Vector Service DNS and lets
+  kube-proxy route. No `kubernetes_logs` source, no ClusterRole, no
+  per-container filtering, no re-parsing of a stringified message. An OTel
+  resource attribute (`service.name: nso-httproute-signals`) tags the stream.
+- *Cons:* Adds a network sink and OTLP ports to the Vector Service; introduces a
+  push dependency (mitigated by keeping the `File` sink in parallel as a
+  fallback / for debugging).
+
+This transport is implemented in a draft PR:
+
+<!-- TODO: reference the draft PR here -->
+PR:
+
+
 
 ### Option B: Prometheus Scrape Delta Calculation
 Run an operator loop that polls the Envoy `/stats` endpoint periodically.

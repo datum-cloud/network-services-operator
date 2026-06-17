@@ -8,15 +8,21 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
+const (
+	testDomainExampleCom     = "example.com"
+	testDomainAutouserRun    = "autouser.run"
+	testDomainAPIAutouserRun = "api.autouser.run"
+)
+
 func TestNormalizeHostname(t *testing.T) {
 	tests := []struct {
 		in   string
 		want string
 	}{
-		{"example.com", "example.com"},
-		{"example.com.", "example.com"},
-		{"  example.com.  ", "example.com"},
-		{"ExAmPlE.CoM", "example.com"},
+		{testDomainExampleCom, testDomainExampleCom},
+		{"example.com.", testDomainExampleCom},
+		{"  example.com.  ", testDomainExampleCom},
+		{"ExAmPlE.CoM", testDomainExampleCom},
 		{"", ""},
 	}
 
@@ -33,14 +39,14 @@ func TestHostnameCoveredByDomain(t *testing.T) {
 		host   string
 		want   bool
 	}{
-		{"autouser.run", "autouser.run", true},
-		{"autouser.run", "api.autouser.run", true},
-		{"api.autouser.run", "api.autouser.run", true},
-		{"api.autouser.run", "v1.api.autouser.run", true},
-		{"api.autouser.run", "autouser.run", false},
-		{"autouser.run", "notautouser.run", false},
-		{"autouser.run", "foo.notautouser.run", false},
-		{"autouser.run", "API.AutoUser.Run.", true},
+		{testDomainAutouserRun, testDomainAutouserRun, true},
+		{testDomainAutouserRun, testDomainAPIAutouserRun, true},
+		{testDomainAPIAutouserRun, testDomainAPIAutouserRun, true},
+		{testDomainAPIAutouserRun, "v1.api.autouser.run", true},
+		{testDomainAPIAutouserRun, testDomainAutouserRun, false},
+		{testDomainAutouserRun, "notautouser.run", false},
+		{testDomainAutouserRun, "foo.notautouser.run", false},
+		{testDomainAutouserRun, "API.AutoUser.Run.", true},
 	}
 
 	for _, tt := range tests {

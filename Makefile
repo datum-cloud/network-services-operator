@@ -241,7 +241,7 @@ KUSTOMIZE_VERSION ?= v5.5.0
 CONTROLLER_TOOLS_VERSION ?= v0.16.4
 DEFAULTER_GEN_VERSION ?= v0.32.3
 ENVTEST_VERSION ?= release-0.19
-GOLANGCI_LINT_VERSION ?= v2.1.6
+GOLANGCI_LINT_VERSION ?= v2.12.2
 
 # renovate: datasource=go depName=github.com/cert-manager/cert-manager
 CERTMANAGER_VERSION ?= 1.17.1

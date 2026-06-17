@@ -46,13 +46,9 @@ import (
 	gatewayutil "go.datum.net/network-services-operator/internal/util/gateway"
 )
 
-const routeConfigurationTypeURL = "type.googleapis.com/envoy.config.route.v3.RouteConfiguration"
-
-// cert-manager condition status values for tests that build Certificate unstructured objects.
-const (
-	certManagerConditionStatusTrue  = "True"
-	certManagerConditionStatusFalse = "False"
-)
+// certManagerConditionStatusFalse is the "False" status value for cert-manager conditions
+// used in tests that build Certificate unstructured objects.
+const certManagerConditionStatusFalse = "False"
 
 //nolint:gocyclo
 func TestHTTPProxyCollectDesiredResources(t *testing.T) {

@@ -65,10 +65,10 @@ func initReplicationResourceConfigs() map[string]replicationResourceConfig {
 	configs := make(map[string]replicationResourceConfig)
 
 	gatewayEnvoyGVKs := []schema.GroupVersionKind{
-		{Group: "gateway.envoyproxy.io", Version: "v1alpha1", Kind: "BackendTrafficPolicy"},
-		{Group: "gateway.envoyproxy.io", Version: "v1alpha1", Kind: "SecurityPolicy"},
-		{Group: "gateway.envoyproxy.io", Version: "v1alpha1", Kind: "HTTPRouteFilter"},
-		{Group: "gateway.networking.k8s.io", Version: "v1alpha3", Kind: "BackendTLSPolicy"},
+		{Group: groupEnvoyGateway, Version: versionV1Alpha1, Kind: "BackendTrafficPolicy"},
+		{Group: groupEnvoyGateway, Version: versionV1Alpha1, Kind: "SecurityPolicy"},
+		{Group: groupEnvoyGateway, Version: versionV1Alpha1, Kind: "HTTPRouteFilter"},
+		{Group: groupGatewayNetworking, Version: "v1alpha3", Kind: KindBackendTLSPolicy},
 	}
 
 	for _, gvk := range gatewayEnvoyGVKs {
@@ -78,18 +78,18 @@ func initReplicationResourceConfigs() map[string]replicationResourceConfig {
 		}
 
 		// Status updates have to go to the storage version of a resource
-		if gvk.Group == "gateway.networking.k8s.io" && gvk.Kind == "BackendTLSPolicy" {
+		if gvk.Group == groupGatewayNetworking && gvk.Kind == KindBackendTLSPolicy {
 			cfg.statusGVK = &schema.GroupVersionKind{
-				Group:   "gateway.networking.k8s.io",
+				Group:   groupGatewayNetworking,
 				Version: "v1",
-				Kind:    "BackendTLSPolicy",
+				Kind:    KindBackendTLSPolicy,
 			}
 		}
 
 		configs[gvkKey(gvk)] = cfg
 	}
 
-	backendGVK := schema.GroupVersionKind{Group: "gateway.envoyproxy.io", Version: "v1alpha1", Kind: "Backend"}
+	backendGVK := schema.GroupVersionKind{Group: groupEnvoyGateway, Version: versionV1Alpha1, Kind: "Backend"}
 
 	configs[gvkKey(backendGVK)] = replicationResourceConfig{
 		statusTransform: func(ctx context.Context, upstreamNamespace, controllerName string, status map[string]any) (map[string]any, error) {
@@ -117,7 +117,7 @@ func (r *GatewayResourceReplicatorReconciler) Reconcile(ctx context.Context, req
 		"gvk", req.GVK.String(),
 		"cluster", req.ClusterName,
 		"namespace", req.Namespace,
-		"name", req.Name,
+		jsonKeyName, req.Name,
 	)
 	ctx = log.IntoContext(ctx, logger)
 
@@ -269,7 +269,7 @@ func (r *GatewayResourceReplicatorReconciler) syncUpstreamStatus(
 		return fmt.Errorf("failed to fetch downstream resource %s/%s for status sync: %w", downstreamMeta.Namespace, downstreamMeta.Name, err)
 	}
 
-	downstreamStatus, ok := downstreamObj.Object["status"]
+	downstreamStatus, ok := downstreamObj.Object[jsonKeyStatus]
 	if !ok {
 		return r.clearUpstreamStatusIfNeeded(ctx, resource, upstreamClient, upstreamObj)
 	}
@@ -289,7 +289,7 @@ func (r *GatewayResourceReplicatorReconciler) syncUpstreamStatus(
 
 	filterConditionMessagesInStatus(statusMap, resource.replicationResourceConfig.conditionHandlers)
 
-	existingStatus, existingHas := upstreamObj.Object["status"]
+	existingStatus, existingHas := upstreamObj.Object[jsonKeyStatus]
 	if existingHas {
 		if existingMap, ok := runtime.DeepCopyJSONValue(existingStatus).(map[string]any); ok {
 			if apiequality.Semantic.DeepEqual(existingMap, statusMap) {
@@ -305,9 +305,9 @@ func (r *GatewayResourceReplicatorReconciler) syncUpstreamStatus(
 	upstreamCopy := upstreamObj.DeepCopy()
 
 	if len(statusMap) == 0 {
-		delete(upstreamCopy.Object, "status")
+		delete(upstreamCopy.Object, jsonKeyStatus)
 	} else {
-		upstreamCopy.Object["status"] = statusMap
+		upstreamCopy.Object[jsonKeyStatus] = statusMap
 	}
 
 	if resource.replicationResourceConfig.statusGVK != nil {
@@ -325,7 +325,7 @@ func (r *GatewayResourceReplicatorReconciler) syncUpstreamStatus(
 		"upstream status synced",
 		"gvk", upstreamObj.GroupVersionKind().String(),
 		"namespace", upstreamObj.GetNamespace(),
-		"name", upstreamObj.GetName(),
+		jsonKeyName, upstreamObj.GetName(),
 	)
 
 	return nil
@@ -338,7 +338,7 @@ func (r *GatewayResourceReplicatorReconciler) clearUpstreamStatusIfNeeded(
 	upstreamObj *unstructured.Unstructured,
 ) error {
 	logger := log.FromContext(ctx)
-	existingStatus, ok := upstreamObj.Object["status"]
+	existingStatus, ok := upstreamObj.Object[jsonKeyStatus]
 	if !ok {
 		return nil
 	}
@@ -348,7 +348,7 @@ func (r *GatewayResourceReplicatorReconciler) clearUpstreamStatusIfNeeded(
 	}
 
 	upstreamCopy := upstreamObj.DeepCopy()
-	delete(upstreamCopy.Object, "status")
+	delete(upstreamCopy.Object, jsonKeyStatus)
 	if resource.replicationResourceConfig.statusGVK != nil {
 		upstreamCopy.SetGroupVersionKind(*resource.replicationResourceConfig.statusGVK)
 	}
@@ -364,7 +364,7 @@ func (r *GatewayResourceReplicatorReconciler) clearUpstreamStatusIfNeeded(
 		"upstream status cleared",
 		"gvk", upstreamObj.GroupVersionKind().String(),
 		"namespace", upstreamObj.GetNamespace(),
-		"name", upstreamObj.GetName(),
+		jsonKeyName, upstreamObj.GetName(),
 	)
 
 	return nil
@@ -410,12 +410,12 @@ func filterConditionList(conditions []any, handlers conditionReasonHandlers) {
 			continue
 		}
 
-		statusValue, _ := condition["status"].(string)
+		statusValue, _ := condition[jsonKeyStatus].(string)
 		if statusValue != string(metav1.ConditionFalse) {
 			continue
 		}
 
-		typeValue, _ := condition["type"].(string)
+		typeValue, _ := condition[jsonKeyType].(string)
 		reasonValue, _ := condition["reason"].(string)
 		messageValue, _ := condition["message"].(string)
 
@@ -514,12 +514,12 @@ func (r *GatewayResourceReplicatorReconciler) finalize(
 	if err := downstreamStrategy.GetClient().Delete(ctx, downstreamObj); client.IgnoreNotFound(err) != nil {
 		return fmt.Errorf("failed to delete downstream resource %s/%s: %w", downstreamObj.GetNamespace(), downstreamObj.GetName(), err)
 	}
-	logger.Info("downstream resource deleted", "namespace", downstreamObj.GetNamespace(), "name", downstreamObj.GetName(), "gvk", upstreamObj.GroupVersionKind().String())
+	logger.Info("downstream resource deleted", "namespace", downstreamObj.GetNamespace(), jsonKeyName, downstreamObj.GetName(), "gvk", upstreamObj.GroupVersionKind().String())
 
 	if err := downstreamStrategy.DeleteAnchorForObject(ctx, upstreamObj); err != nil {
 		return fmt.Errorf("failed to delete downstream anchor for %s/%s: %w", upstreamObj.GetNamespace(), upstreamObj.GetName(), err)
 	}
-	logger.Info("downstream anchor deleted", "gvk", upstreamObj.GroupVersionKind().String(), "namespace", upstreamObj.GetNamespace(), "name", upstreamObj.GetName())
+	logger.Info("downstream anchor deleted", "gvk", upstreamObj.GroupVersionKind().String(), "namespace", upstreamObj.GetNamespace(), jsonKeyName, upstreamObj.GetName())
 
 	return nil
 }

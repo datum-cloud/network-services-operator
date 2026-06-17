@@ -134,7 +134,7 @@ func validateGatewayClusterSettingsTimeout(timeout *envoygatewayv1alpha1.Timeout
 	}
 
 	if timeout.HTTP != nil {
-		httpTimeoutFieldPath := fldPath.Child("http")
+		httpTimeoutFieldPath := fldPath.Child(schemeHTTP)
 
 		if v := timeout.HTTP.ConnectionIdleTimeout; v != nil {
 			connectionIdleTimeoutFieldPath := httpTimeoutFieldPath.Child("connectionIdleTimeout")
@@ -223,12 +223,9 @@ func validateBackendTrafficPolicyRateLimit(rateLimit *envoygatewayv1alpha1.RateL
 
 	allErrs := field.ErrorList{}
 
-	// Type is now a pointer (deprecated in EG v1.8.1 in favour of explicit Global/Local fields).
-	// Only validate if explicitly set.
-	if rateLimit.Type != nil && *rateLimit.Type != envoygatewayv1alpha1.LocalRateLimitType {
-		allErrs = append(allErrs, field.NotSupported(fldPath.Child("type"), rateLimit.Type, []envoygatewayv1alpha1.RateLimitType{envoygatewayv1alpha1.LocalRateLimitType}))
-	}
-
+	// Global rate limiting is not permitted. EG v1.8.1 deprecated the Type
+	// discriminator in favour of the explicit Global/Local fields, so the
+	// presence of Global is the canonical signal to reject.
 	if rateLimit.Global != nil {
 		allErrs = append(allErrs, field.Forbidden(fldPath.Child("global"), "global rate limits are not permitted"))
 	}

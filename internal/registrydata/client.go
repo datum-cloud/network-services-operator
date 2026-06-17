@@ -19,6 +19,7 @@ import (
 )
 
 const rdapSource = "rdap"
+const whoisSource = "whois"
 
 type client struct {
 	cfg Config
@@ -308,10 +309,10 @@ func (c *client) lookupDomainFresh(ctx context.Context, domainNorm, apex string)
 		if whoisErr != nil {
 			return nil, whoisErr
 		}
-		wreg.Source = "whois"
+		wreg.Source = whoisSource
 		reg = wreg
 		providerKey = whoisProvider
-		source = "whois"
+		source = whoisSource
 	}
 
 	// Nameserver selection (apex vs delegated subdomain).
@@ -511,7 +512,7 @@ func (c *client) fetchRegistrationWhois(ctx context.Context, apex string) (*netw
 
 	tld, _ := publicsuffix.PublicSuffix(apex)
 	bodyIANA, _ := c.whoisFetch(ctx, tld, c.cfg.WhoisBootstrapHost)
-	referHost := strings.TrimSpace(findWhoisValue(bodyIANA, []string{"refer", "whois"}))
+	referHost := strings.TrimSpace(findWhoisValue(bodyIANA, []string{"refer", whoisSource}))
 
 	tryHosts := []string{}
 	if referHost != "" {

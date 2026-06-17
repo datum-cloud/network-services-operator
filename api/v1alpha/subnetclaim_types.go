@@ -79,7 +79,3 @@ type SubnetClaimList struct {
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []SubnetClaim `json:"items"`
 }
-
-func init() {
-	SchemeBuilder.Register(&SubnetClaim{}, &SubnetClaimList{})
-}

@@ -94,7 +94,7 @@ type GatewayReconciler struct {
 // +kubebuilder:rbac:groups=externaldns.k8s.io,resources=dnsendpoints/finalizers,verbs=update
 
 func (r *GatewayReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
-	logger := log.FromContext(ctx, "cluster", req.ClusterName, "namespace", req.Namespace, "name", req.Name)
+	logger := log.FromContext(ctx, "cluster", req.ClusterName, "namespace", req.Namespace, jsonKeyName, req.Name)
 	ctx = log.IntoContext(ctx, logger)
 
 	logger.Info("gateway reconcile dequeued")
@@ -612,7 +612,7 @@ func (r *GatewayReconciler) ensureListenerCertificates(
 			DNSNames: []string{hostname},
 			IssuerRef: cmmeta.ObjectReference{
 				Name: clusterIssuerName,
-				Kind: "ClusterIssuer",
+				Kind: KindClusterIssuer,
 			},
 		}
 
@@ -785,7 +785,7 @@ func (r *GatewayReconciler) ensureHostnamesClaimed(
 					},
 				},
 				Data: map[string]string{
-					"owner": upstreamGatewayReferenceName,
+					jsonKeyOwner: upstreamGatewayReferenceName,
 				},
 			}
 
@@ -796,7 +796,7 @@ func (r *GatewayReconciler) ensureHostnamesClaimed(
 				}
 				return nil, nil, nil, err
 			}
-		} else if hostnameConfigMap.Data["owner"] != upstreamGatewayReferenceName {
+		} else if hostnameConfigMap.Data[jsonKeyOwner] != upstreamGatewayReferenceName {
 			notClaimedHostnames = append(notClaimedHostnames, hostname)
 			continue
 		}
@@ -1085,7 +1085,7 @@ func (r *GatewayReconciler) ensureDownstreamGatewayDNSEndpoints(
 	var gatewayDNSEndpoint unstructured.Unstructured
 	gatewayDNSEndpoint.SetGroupVersionKind(schema.GroupVersionKind{
 		Group:   "externaldns.k8s.io",
-		Version: "v1alpha1",
+		Version: versionV1Alpha1,
 		Kind:    "DNSEndpoint",
 	})
 	gatewayDNSEndpoint.SetNamespace(downstreamGateway.Namespace)
@@ -1231,7 +1231,7 @@ func (r *GatewayReconciler) cleanupDNSRecordSets(
 	if err := upstreamClient.List(ctx, &recordSetList,
 		client.InNamespace(upstreamGateway.Namespace),
 		client.MatchingLabels{
-			labelDNSManaged:    "true",
+			labelDNSManaged:    labelValueTrue,
 			labelManagedBy:     labelManagedByValue,
 			labelDNSSourceKind: KindGateway,
 			labelDNSSourceName: upstreamGateway.Name,
@@ -1248,7 +1248,7 @@ func (r *GatewayReconciler) cleanupDNSRecordSets(
 
 	for _, rs := range recordSetList.Items {
 		logger.Info("deleting DNSRecordSet during gateway finalization",
-			"name", rs.Name,
+			jsonKeyName, rs.Name,
 			"hostname", rs.Annotations[annotationDNSHostname],
 		)
 		if err := upstreamClient.Delete(ctx, &rs); err != nil && !apierrors.IsNotFound(err) {
@@ -1292,14 +1292,14 @@ func (r *GatewayReconciler) detachHTTPRoutes(
 			if ptr.Deref(parent.ParentRef.Group, gatewayv1.GroupName) == gatewayv1.GroupName &&
 				ptr.Deref(parent.ParentRef.Kind, KindGateway) == KindGateway &&
 				string(parent.ParentRef.Name) == gateway.Name {
-				logger.Info("removing parent ref from httproute", "name", route.Name, "parent", parent.ParentRef.Name)
+				logger.Info("removing parent ref from httproute", jsonKeyName, route.Name, "parent", parent.ParentRef.Name)
 				continue
 			}
 			parents = append(parents, parent)
 		}
 
 		if len(parents) == 0 && deleteWhenNoParents {
-			logger.Info("deleting httproute due to no parents", "name", route.Name)
+			logger.Info("deleting httproute due to no parents", jsonKeyName, route.Name)
 			if err := gatewayClient.Delete(ctx, &route); err != nil {
 				result.Err = err
 				return result
@@ -1387,7 +1387,7 @@ func (r *GatewayReconciler) ensureDownstreamGatewayHTTPRoutes(
 
 	for _, route := range attachedRoutes {
 		if !route.DeletionTimestamp.IsZero() {
-			logger.Info("skipping httproute due to deletion timestamp", "name", route.Name)
+			logger.Info("skipping httproute due to deletion timestamp", jsonKeyName, route.Name)
 			continue
 		}
 
@@ -1431,7 +1431,7 @@ func (r *GatewayReconciler) ensureDownstreamGatewayHTTPRoutes(
 				SupportedKinds: []gatewayv1.RouteGroupKind{
 					{
 						Group: ptr.To(gatewayv1.Group(gatewayv1.GroupName)),
-						Kind:  "HTTPRoute",
+						Kind:  KindHTTPRoute,
 					},
 				},
 			}
@@ -1513,7 +1513,7 @@ func (r *GatewayReconciler) ensureDownstreamHTTPRoute(
 	upstreamRoute gatewayv1.HTTPRoute,
 ) (result Result) {
 	logger := log.FromContext(ctx)
-	logger.Info("processing httproute", "name", upstreamRoute.Name)
+	logger.Info("processing httproute", jsonKeyName, upstreamRoute.Name)
 
 	downstreamClient := downstreamStrategy.GetClient()
 	downstreamRouteObjectMeta, err := downstreamStrategy.ObjectMetaFromUpstreamObject(ctx, &upstreamRoute)
@@ -1633,9 +1633,9 @@ func (r *GatewayReconciler) ensureDownstreamHTTPRoute(
 
 		logger.Info("downstream resource processed",
 			"operation_result", resourceResult,
-			"kind", gvk.Kind,
+			jsonKeyKind, gvk.Kind,
 			"namespace", resource.GetNamespace(),
-			"name", resource.GetName(),
+			jsonKeyName, resource.GetName(),
 		)
 	}
 
@@ -1659,9 +1659,9 @@ func (r *GatewayReconciler) ensureDownstreamHTTPRoute(
 		}
 
 		logger.Info("stale downstream resource removed",
-			"kind", gvk.Kind,
+			jsonKeyKind, gvk.Kind,
 			"namespace", resource.GetNamespace(),
-			"name", resource.GetName(),
+			jsonKeyName, resource.GetName(),
 		)
 	}
 
@@ -1814,7 +1814,7 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 						Port:        *port.Port,
 					})
 
-					if int32(*backendRef.Port) == *port.Port {
+					if *backendRef.Port == *port.Port {
 						if port.Name == nil {
 							// This should be protected by validation, but check just in case.
 							logger.Info("no port name defined in upstream endpointslice", "endpointslice", upstreamEndpointSlice.Name, "port", port)
@@ -1841,7 +1841,7 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 					},
 					Spec: corev1.ServiceSpec{
 						Type:                  corev1.ServiceTypeClusterIP,
-						ClusterIP:             "None",
+						ClusterIP:             clusterIPNone,
 						Ports:                 ports,
 						InternalTrafficPolicy: ptr.To(corev1.ServiceInternalTrafficPolicyCluster),
 						TrafficDistribution:   ptr.To(corev1.ServiceTrafficDistributionPreferClose),
@@ -1886,7 +1886,7 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 
 				backendRefs = append(backendRefs, downstreamHTTPBackendRef)
 
-				if appProtocol != nil && *appProtocol == "https" {
+				if appProtocol != nil && *appProtocol == SchemeHTTPS {
 					var hostname *gatewayv1.PreciseHostname
 
 					// Prefer the cert hostname recorded by the httpproxy
@@ -1963,7 +1963,7 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 
 			// Other types of backend refs will be handled in the future.
 			default:
-				logger.Info("unknown backend ref kind", "kind", *backendRef.Kind)
+				logger.Info("unknown backend ref kind", jsonKeyKind, *backendRef.Kind)
 				continue
 			}
 		}
@@ -2085,7 +2085,7 @@ func (r *GatewayReconciler) listGatewaysAttachedByHTTPRoute(ctx context.Context,
 func (r *GatewayReconciler) listGatewaysAttachedByDownstreamHTTPRoute(clusterName multicluster.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[*gatewayv1.HTTPRoute, mcreconcile.Request] {
 	return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, httpRoute *gatewayv1.HTTPRoute) []mcreconcile.Request {
 		logger := log.FromContext(ctx)
-		logger.Info("enqueueing upstream gateway for downstream httproute", "name", httpRoute.Name)
+		logger.Info("enqueueing upstream gateway for downstream httproute", jsonKeyName, httpRoute.Name)
 
 		var reqs []mcreconcile.Request
 		if _, ok := httpRoute.Labels[downstreamclient.UpstreamOwnerClusterNameLabel]; ok {

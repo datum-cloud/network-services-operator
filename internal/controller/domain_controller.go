@@ -234,7 +234,7 @@ func (r *DomainReconciler) reconcileVerification(ctx context.Context, reader cli
 			domainStatus.Verification = &networkingv1alpha.DomainVerificationStatus{
 				DNSRecord: networkingv1alpha.DNSVerificationRecord{
 					Name:    fmt.Sprintf("%s.%s", r.Config.DomainVerification.DNSVerificationRecordPrefix, domain.Spec.DomainName),
-					Type:    "TXT",
+					Type:    dnsRecordTypeTXT,
 					Content: verificationContent,
 				},
 				HTTPToken: networkingv1alpha.HTTPVerificationToken{
@@ -317,7 +317,7 @@ func (r *DomainReconciler) reconcileVerification(ctx context.Context, reader cli
 
 var dnsZoneListGVK = schema.GroupVersionKind{
 	Group:   "dns.networking.miloapis.com",
-	Version: "v1alpha1",
+	Version: versionV1Alpha1,
 	Kind:    "DNSZoneList",
 }
 
@@ -375,19 +375,18 @@ func (r *DomainReconciler) attemptDNSZoneVerification(
 		// Must be Accepted=True and Programmed=True
 		accepted := false
 		programmed := false
-		conditionStatusTrue := "True"
-		if conds, found, _ := unstructured.NestedSlice(z.Object, "status", "conditions"); found {
+		if conds, found, _ := unstructured.NestedSlice(z.Object, jsonKeyStatus, "conditions"); found {
 			for _, c := range conds {
 				cm, ok := c.(map[string]any)
 				if !ok {
 					continue
 				}
-				ct, _ := cm["type"].(string)
-				cs, _ := cm["status"].(string)
-				if ct == "Accepted" && cs == conditionStatusTrue {
+				ct, _ := cm[jsonKeyType].(string)
+				cs, _ := cm[jsonKeyStatus].(string)
+				if ct == conditionTypeAccepted && cs == certManagerConditionStatusTrue {
 					accepted = true
 				}
-				if ct == "Programmed" && cs == conditionStatusTrue {
+				if ct == conditionTypeProgrammed && cs == certManagerConditionStatusTrue {
 					programmed = true
 				}
 			}
@@ -399,7 +398,7 @@ func (r *DomainReconciler) attemptDNSZoneVerification(
 		}
 		sawReady = true
 
-		zoneNS, _, _ := unstructured.NestedStringSlice(z.Object, "status", "nameservers")
+		zoneNS, _, _ := unstructured.NestedStringSlice(z.Object, jsonKeyStatus, "nameservers")
 		if len(zoneNS) == 0 {
 			verifiedDNSZoneCondition.Reason = networkingv1alpha.DomainReasonPendingVerification
 			verifiedDNSZoneCondition.Message = fmt.Sprintf("DNSZone %q is ready but has no status.nameservers yet", zoneName)

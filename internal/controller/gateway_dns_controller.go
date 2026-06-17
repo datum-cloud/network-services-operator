@@ -200,8 +200,8 @@ func (r *GatewayReconciler) ensureDNSRecordSets(
 			case noAuthorityDomain != nil:
 				msg := fmt.Sprintf("Domain %q is verified but Datum DNS does not have authority", noAuthorityDomain.Name)
 				if noAuthorityZone != nil {
-					if !apimeta.IsStatusConditionTrue(noAuthorityZone.Status.Conditions, "Accepted") ||
-						!apimeta.IsStatusConditionTrue(noAuthorityZone.Status.Conditions, "Programmed") {
+					if !apimeta.IsStatusConditionTrue(noAuthorityZone.Status.Conditions, conditionTypeAccepted) ||
+						!apimeta.IsStatusConditionTrue(noAuthorityZone.Status.Conditions, conditionTypeProgrammed) {
 						msg = fmt.Sprintf("DNSZone %q is not ready (waiting for Accepted and Programmed conditions)", noAuthorityZone.Name)
 					} else if len(noAuthorityZone.Status.Nameservers) == 0 {
 						msg = fmt.Sprintf("DNSZone %q has no nameservers assigned yet", noAuthorityZone.Name)
@@ -249,7 +249,7 @@ func (r *GatewayReconciler) ensureDNSRecordSets(
 		var existingList dnsv1alpha1.DNSRecordSetList
 		if err := upstreamClient.List(ctx, &existingList,
 			client.InNamespace(upstreamGateway.Namespace),
-			client.MatchingLabels{labelDNSManaged: "true"},
+			client.MatchingLabels{labelDNSManaged: labelValueTrue},
 		); err != nil {
 			result.Err = fmt.Errorf("failed listing existing DNSRecordSets: %w", err)
 			return nil, result
@@ -310,8 +310,8 @@ func (r *GatewayReconciler) ensureDNSRecordSets(
 					desired.Labels = map[string]string{}
 				}
 				desired.Labels[labelManagedBy] = labelManagedByValue
-				desired.Labels[labelDNSManaged] = "true"
-				desired.Labels[labelDNSSourceKind] = "Gateway"
+				desired.Labels[labelDNSManaged] = labelValueTrue
+				desired.Labels[labelDNSSourceKind] = KindGateway
 				desired.Labels[labelDNSSourceName] = upstreamGateway.Name
 				desired.Labels[labelDNSSourceNS] = upstreamGateway.Namespace
 
@@ -454,7 +454,7 @@ func (r *GatewayReconciler) garbageCollectDNSRecordSets(
 	if err := upstreamClient.List(ctx, &existingList,
 		client.InNamespace(upstreamGateway.Namespace),
 		client.MatchingLabels{
-			labelDNSManaged:    "true",
+			labelDNSManaged:    labelValueTrue,
 			labelManagedBy:     labelManagedByValue,
 			labelDNSSourceName: upstreamGateway.Name,
 			labelDNSSourceNS:   upstreamGateway.Namespace,
@@ -470,7 +470,7 @@ func (r *GatewayReconciler) garbageCollectDNSRecordSets(
 		}
 		hostname := rs.Annotations[annotationDNSHostname]
 		logger.Info("deleting stale DNSRecordSet",
-			"name", rs.Name,
+			jsonKeyName, rs.Name,
 			"hostname", hostname,
 		)
 		if err := upstreamClient.Delete(ctx, &rs); err != nil && !apierrors.IsNotFound(err) {

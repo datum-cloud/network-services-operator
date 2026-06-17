@@ -9,6 +9,11 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation/field"
 )
 
+const (
+	schemeHTTP  = "http"
+	schemeHTTPS = "https"
+)
+
 // validateExternalHost validates that a host (IP literal or DNS name) used as an
 // egress target by the shared data plane is not an internal or link-local
 // address that could be abused for SSRF against cluster-local or cloud-metadata
@@ -65,8 +70,8 @@ func validateExternalHTTPSURL(fldPath *field.Path, raw string) field.ErrorList {
 		return allErrs
 	}
 
-	if u.Scheme != "https" {
-		allErrs = append(allErrs, field.NotSupported(fldPath.Key("scheme"), u.Scheme, []string{"https"}))
+	if u.Scheme != schemeHTTPS {
+		allErrs = append(allErrs, field.NotSupported(fldPath.Key("scheme"), u.Scheme, []string{schemeHTTPS}))
 	}
 
 	if u.User != nil {

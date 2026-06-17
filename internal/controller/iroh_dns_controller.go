@@ -177,7 +177,10 @@ func (r *IrohDNSReconciler) applyClaim(ctx context.Context, cl cluster.Cluster, 
 	}
 
 	// We own it. SSA the desired content.
-	if err := r.Downstream.GetClient().Patch(ctx, desired, client.Apply, client.FieldOwner(irohDNSFieldManager), client.ForceOwnership); err != nil {
+	// client.Apply is deprecated in favour of client.Client.Apply(), which requires a generated
+	// runtime.ApplyConfiguration typed struct. desired is *dnsv1alpha1.DNSRecordSet (a concrete
+	// typed object), so switching to the new typed API would require a larger refactor out of scope.
+	if err := r.Downstream.GetClient().Patch(ctx, desired, client.Apply, client.FieldOwner(irohDNSFieldManager), client.ForceOwnership); err != nil { //nolint:staticcheck // SA1019: see comment above
 		return fmt.Errorf("apply DNSRecordSet: %w", err)
 	}
 	return r.setPublishedCondition(ctx, cl, connector, metav1.ConditionTrue, connectorReasonIrohOwner, "Owns iroh DNS record.")

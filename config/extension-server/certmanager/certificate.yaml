@@ -1,13 +1,12 @@
 ---
 # EG mTLS client certificate — EG presents this when connecting to the extension server.
-# Referenced by extensionManager.service.tls.clientCertificateRef in extensionmanager-patch.yaml.
+# Referenced by extensionManager.service.tls.clientCertificateRef in the downstream EG config.
 #
-# The Secret lives in NSO's namespace. EG reads it via SecretObjectReference with an
-# explicit namespace field (EG v1.8.1 supports cross-namespace reads for extension
-# manager TLS; it uses a cluster-scoped client and does not require ReferenceGrant).
+# Secret lives in NSO's namespace. EG reads it cross-namespace via SecretObjectReference
+# (EG v1.8.1 uses a cluster-scoped client; no ReferenceGrant required).
 #
 # Issued by the platform's datum-control-plane ClusterIssuer (cert-manager).
-# secretName is NOT kustomize-prefixed; must match extensionmanager-patch.yaml reference.
+# secretName is NOT kustomize-prefixed; must match the clientCertificateRef name.
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:

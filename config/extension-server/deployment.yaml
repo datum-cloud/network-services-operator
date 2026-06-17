@@ -9,11 +9,10 @@ metadata:
     app.kubernetes.io/managed-by: kustomize
 spec:
   # HA requirement: minimum 2 replicas. Every replica serves (no leader election).
-  # EG calls this endpoint on the build path; a single replica is a reliability risk.
   replicas: 2
-  # Rollout strategy: maxUnavailable=0 ensures serving capacity never drops below
-  # 2 during a rolling update. A failing new image can never reduce replicas to 0
-  # (failOpen:false + 0 serving = fleet-wide xDS freeze for all gateway updates).
+  # maxUnavailable: 0 ensures serving capacity never drops below 2 during a rolling
+  # update. A failing new image can never reduce replicas to 0 (failOpen:false + 0
+  # serving = fleet-wide xDS freeze for all gateway updates).
   strategy:
     type: RollingUpdate
     rollingUpdate:
@@ -30,8 +29,6 @@ spec:
         app.kubernetes.io/component: extension-server
     spec:
       serviceAccountName: extension-server
-      # Pod-level security context: non-root, seccomp.
-      # runAsUser/Group 65532 = the nonroot user in distroless/static-debian12:nonroot.
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532
@@ -40,10 +37,8 @@ spec:
         seccompProfile:
           type: RuntimeDefault
       # Topology spread: require replicas on distinct nodes so a single node failure
-      # (hardware fault, kernel panic) cannot take both replicas offline at once.
-      # With failOpen:false, a total replicas=0 event freezes all gateway xDS updates
-      # fleet-wide until a replica recovers — same blast radius as a Deployment
-      # restart but triggered by infrastructure rather than intentional action.
+      # cannot take both replicas offline at once. With failOpen:false, total replicas=0
+      # freezes all gateway xDS updates fleet-wide.
       topologySpreadConstraints:
         - maxSkew: 1
           topologyKey: kubernetes.io/hostname
@@ -54,15 +49,7 @@ spec:
       containers:
         - name: extension-server
           # Same image as NSO manager — single binary, subcommand selects role.
-          # Dockerfile has ENTRYPOINT ["/network-services"] + no CMD. Setting
-          # 'command' here overrides the entire ENTRYPOINT; no flag conflicts.
           image: ghcr.io/datum-cloud/network-services-operator:latest
-          # IfNotPresent: avoids pulling from the registry on every pod restart,
-          # which is the Kubernetes default for :latest images (Always). Using the
-          # locally-cached or kind-loaded image prevents registry outages from
-          # blocking crash-loop recovery. Production deployments should pin to a
-          # semver tag or SHA digest (the kustomize images: transformer in the
-          # production overlay should set newTag/digest instead of :latest).
           imagePullPolicy: IfNotPresent
           command:
             - /network-services
@@ -70,10 +57,8 @@ spec:
           args:
             - --grpc-addr=:5005
             - --health-addr=:8080
-            # TLS cert/key from the cert-manager CSI volume (datum-control-plane ClusterIssuer).
             - --tls-cert=/tls/tls.crt
             - --tls-key=/tls/tls.key
-            # Client CA from the trust-manager trust bundle ConfigMap (datum-control-plane-trust-bundle).
             - --tls-client-ca=/tls-ca/ca.crt
           ports:
             - name: grpc
@@ -82,12 +67,9 @@ spec:
             - name: health
               containerPort: 8080
               protocol: TCP
-          # startupProbe: gates liveness checks during initial informer cache sync.
+          # startupProbe: gates liveness during initial informer cache sync.
           # Allows up to 5 minutes (60 × 5s) for WaitForCacheSync before liveness
-          # begins. Without this, the liveness probe could kill the pod during a
-          # slow API server response at startup (original liveness window was only
-          # 15 + 3×20 = 75 seconds). The gRPC server does not start until the
-          # cache is warm, so this is also the /healthz readiness gate.
+          # begins. The gRPC server does not start until the cache is warm.
           startupProbe:
             httpGet:
               path: /healthz
@@ -105,8 +87,7 @@ spec:
             httpGet:
               path: /healthz
               port: 8080
-            # No initialDelaySeconds — startupProbe handles the startup window;
-            # liveness only fires after startupProbe succeeds.
+            # No initialDelaySeconds — startupProbe handles the startup window.
             periodSeconds: 20
             failureThreshold: 3
           resources:
@@ -116,65 +97,38 @@ spec:
             limits:
               cpu: "1"
               memory: 256Mi
-          # Container-level security context: full hardening.
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
             capabilities:
               drop:
                 - ALL
-          # preStop: native Kubernetes sleep (no shell required; safe on
-          # distroless/static-debian12:nonroot). Gives kube-proxy/iptables 5s
-          # to propagate endpoint removal before the gRPC server starts draining.
-          # Without this brief pause, new EG connections can arrive after
-          # GracefulStop begins and get a TCP reset instead of a retriable
-          # gRPC UNAVAILABLE error.
+          # preStop: 5s sleep gives kube-proxy/iptables time to propagate endpoint
+          # removal before the gRPC server starts draining. Without this, new EG
+          # connections arriving after GracefulStop begins get a TCP reset instead
+          # of a retriable gRPC UNAVAILABLE.
           lifecycle:
             preStop:
               sleep:
                 seconds: 5
           volumeMounts:
-            # Server TLS cert + key from the cert-manager CSI driver.
-            # Provisioned by the datum-control-plane ClusterIssuer (platform CA).
-            # Produces /tls/tls.crt and /tls/tls.key.
             - name: tls
               mountPath: /tls
               readOnly: true
-            # CA bundle from trust-manager (datum-control-plane-trust-bundle ConfigMap).
-            # Produces /tls-ca/ca.crt — used to verify EG's mTLS client certificate.
-            # Infra must ensure the deploy namespace is labelled for trust bundle injection:
-            #   infra.datum.net/inject-datum-control-plane-trust-bundle: ""
             - name: tls-ca
               mountPath: /tls-ca
               readOnly: true
       # terminationGracePeriodSeconds: 20 = 5s preStop sleep + 15s for GracefulStop
-      # to drain in-flight gRPC RPCs before SIGKILL. Previous value of 10s was too
-      # tight once the preStop sleep was added (5+10=15, leaving only 5s to drain).
+      # to drain in-flight RPCs before SIGKILL.
       terminationGracePeriodSeconds: 20
       volumes:
-        # ==============================================================
-        # TLS provisioning — cert-manager CSI driver + trust-manager
-        # ==============================================================
-        # Certs are NOT managed by cert-manager Certificate resources in this repo.
-        # The platform infra (datum-cloud/infra) provisions them:
-        #   - Server cert: cert-manager CSI driver, datum-control-plane ClusterIssuer
-        #   - CA trust:    trust-manager Bundle → datum-control-plane-trust-bundle ConfigMap
+        # Server TLS cert + key via cert-manager CSI driver (datum-control-plane ClusterIssuer).
+        # Prerequisites: CSI driver installed; datum-control-plane ClusterIssuer exists;
+        # namespace labelled for trust-manager trust bundle injection:
+        #   infra.datum.net/inject-datum-control-plane-trust-bundle: ""
         #
-        # Prerequisites for the deploy namespace:
-        #   1. cert-manager CSI driver must be installed on the cluster.
-        #   2. The 'datum-control-plane' ClusterIssuer must exist (created by infra).
-        #   3. Namespace must be labelled so trust-manager injects the trust bundle:
-        #        infra.datum.net/inject-datum-control-plane-trust-bundle: ""
-        #
-        # OPEN ITEM (infra): The dns-names below assume the default/config overlay
-        # namePrefix + namespace from config/default/kustomization.yaml. If this
-        # extension server is deployed in a different namespace (e.g.
-        # datum-downstream-gateway) or with a different namePrefix, infra overlays
-        # MUST patch this volume's volumeAttributes to update dns-names accordingly.
-        # ==============================================================
-
-        # Server TLS cert + key — provisioned inline by cert-manager CSI driver.
-        # Mounts tls.crt and tls.key at /tls.
+        # dns-names assume config/default namePrefix + namespace. Infra overlays deploying in
+        # a different namespace MUST patch this volume's volumeAttributes accordingly.
         - name: tls
           csi:
             driver: csi.cert-manager.io
@@ -183,19 +137,12 @@ spec:
               csi.cert-manager.io/issuer-kind: ClusterIssuer
               csi.cert-manager.io/issuer-name: datum-control-plane
               csi.cert-manager.io/common-name: extension-server
-              # dns-names derived from config/default/kustomization.yaml:
-              #   namePrefix: network-services-operator-  → service = network-services-operator-extension-server
-              #   namespace:  network-services-operator-system
-              # OPEN ITEM: infra overlays deploying in datum-downstream-gateway or any
-              # other namespace MUST patch this value to reflect the actual Service FQDN.
               csi.cert-manager.io/dns-names: "network-services-operator-extension-server.network-services-operator-system.svc,network-services-operator-extension-server.network-services-operator-system.svc.cluster.local"
               csi.cert-manager.io/key-usages: server auth
-              # fs-group matches runAsGroup/fsGroup (nonroot user 65532).
               csi.cert-manager.io/fs-group: "65532"
 
-        # CA trust bundle — trust-manager injects datum-control-plane-trust-bundle
-        # into this ConfigMap. Used by the extension server to verify EG's client cert.
-        # Key 'ca.crt' → mounted at /tls-ca/ca.crt.
+        # CA trust bundle — trust-manager injects datum-control-plane-trust-bundle into
+        # this ConfigMap. Key 'ca.crt' used by extension server to verify EG's client cert.
         - name: tls-ca
           configMap:
             name: datum-control-plane-trust-bundle

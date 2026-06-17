@@ -3,28 +3,11 @@ kind: Kustomization
 
 # Extension server deployment — Envoy Gateway PostTranslateModify hook server.
 #
-# Include this directory in config/default/kustomization.yaml 'resources' to wire
-# the extension server into the main NSO deployment:
-#   resources:
-#   - ../extension-server
-#
-# cert-manager (certmanager/certificate.yaml — EG client cert only) and network-policy
-# (network-policy/allow-grpc-traffic.yaml) are included here; they can be moved
-# to separate kustomize components if the deployment environment needs to toggle them.
-#
-# The extension server's own TLS cert is provisioned by the cert-manager CSI driver
-# (datum-control-plane ClusterIssuer) as an inline CSI volume in deployment.yaml —
-# no cert-manager Certificate resource is needed in this repo for the server cert.
-# The CA trust bundle is delivered via a trust-manager Bundle → ConfigMap
-# (datum-control-plane-trust-bundle); the deploy namespace must carry the injection label.
-#
-# Note on namePrefix propagation (from config/default kustomization):
-#   Kubernetes resource names (Deployment, Service, SA, ClusterRole, etc.) receive
-#   the namePrefix (e.g. network-services-operator-) when processed through config/default.
-#   cert-manager Secret names (spec.secretName) are NOT kustomize-prefixed — they are
-#   fixed strings created directly by cert-manager. Deployment volume references to
-#   these Secrets are also fixed.
-#   The extensionmanager-patch.yaml references use the fixed cert-manager Secret names.
+# Note on namePrefix propagation: Kubernetes resource names (Deployment, Service, SA,
+# ClusterRole, etc.) receive the namePrefix when processed through config/default.
+# cert-manager Secret names (spec.secretName) are NOT kustomize-prefixed — they are
+# fixed strings created by cert-manager. Deployment volume references to these Secrets
+# are also fixed strings.
 
 resources:
   - deployment.yaml
@@ -45,9 +28,8 @@ labels:
   # The NetworkPolicy includes from.podSelector entries targeting EG pods (external
   # to this kustomization); adding part-of to those selectors would break ingress
   # because EG pods don't carry the network-services-operator part-of label.
-  # includeTemplates: true — pod template metadata.labels DO get part-of, so
-  # Deployment/Service selectors can still match pods without needing part-of in
-  # their matchLabels.
+  # includeTemplates: true — pod template labels DO get part-of, so
+  # Deployment/Service selectors can match pods without needing part-of in matchLabels.
   - includeSelectors: false
     includeTemplates: true
     pairs:

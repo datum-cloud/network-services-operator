@@ -5,4 +5,6 @@ on:
 
 jobs:
   validate-kustomize:
-    uses: datum-cloud/actions/.github/workflows/validate-kustomize.yaml@v1.15.0
+    # TEMP: tracking the actions feature branch until datum-cloud/actions#80
+    # (build with LoadRestrictionsNone) merges and a tag is cut, then pin back.
+    uses: datum-cloud/actions/.github/workflows/validate-kustomize.yaml@fix/kustomize-load-restrictor

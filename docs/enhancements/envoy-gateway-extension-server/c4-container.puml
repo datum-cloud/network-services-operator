@@ -1,0 +1,38 @@
+@startuml c4-container
+!$NEW_C4_STYLE = 1
+!include <C4/C4_Container>
+!include /Users/scotwells/repos/datum-cloud/enhancements/enhancements/datum-theme.puml
+
+LAYOUT_LEFT_RIGHT()
+
+Person_Ext(customer, "Customer", "Creates Gateways and routing\nrules to expose workloads;\nsends traffic to exposed services")
+System_Ext(backend, "Customer's Private\nBackend", "A service running on the\ncustomer's own network;\nnot directly exposed to\nthe internet")
+
+System_Boundary(datum, "Datum Network Services") {
+
+    Boundary(cp, "Control Plane") {
+        Container(nso, "Network Services\nOperator", "Kubernetes Operator", "Watches Gateway and routing\nresources; manages the lifecycle\nof network policy objects")
+
+        Container_Ext(eg, "Envoy Gateway", "Configuration Builder", "Translates Gateway and routing\nresources into proxy configuration;\ncalls the Extension Server\nduring every configuration build")
+
+        Container(ext, "Extension Server", "Configuration Plugin  [NEW]", "Plugs into Envoy Gateway's\nbuild pipeline; injects WAF\nprotection and connector routing\ndirectly during the build")
+
+        Container_Ext(certmgr, "cert-manager", "Certificate Manager", "Automatically issues and renews\nTLS certificates (e.g. via\nLet's Encrypt) for customer domains")
+    }
+
+    Boundary(dp, "Data Plane") {
+        Container(envoy, "Envoy Proxy", "Traffic Handler", "Receives and forwards all\ncustomer HTTP/HTTPS traffic;\nenforces WAF rules and\nhandles connector routing")
+    }
+}
+
+Rel_R(customer, nso, "Creates Gateways\nand routing rules", "Kubernetes API")
+Rel_R(customer, envoy, "Sends HTTP/HTTPS\nrequests", "HTTPS")
+
+Rel_L(nso, eg, "Publishes Gateway\nand policy resources", "Kubernetes API")
+Rel(eg, ext, "Calls extension hook\nduring config build", "gRPC")
+Rel(eg, envoy, "Pushes complete\nproxy configuration", "gRPC")
+Rel_U(certmgr, envoy, "Delivers TLS\ncertificates", "Kubernetes Secret")
+Rel_U(envoy, backend, "Forwards traffic through\nconnector tunnel", "TCP")
+
+SHOW_LEGEND()
+@enduml

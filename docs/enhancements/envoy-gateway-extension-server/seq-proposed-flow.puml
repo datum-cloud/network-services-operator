@@ -1,0 +1,45 @@
+@startuml seq-proposed-flow
+!include /Users/scotwells/repos/datum-cloud/enhancements/enhancements/datum-theme-sequence.puml
+
+title Configuration Flow — Proposed Approach (Extension Server)
+
+participant "Customer" as C <<Person>>
+participant "Network Services\nOperator" as NSO
+participant "Envoy Gateway\n(Control Plane)" as EG
+participant "Extension Server\n[NEW]" as EXT
+participant "Envoy Proxy\n(Data Plane)" as EP
+
+== Customer changes a Gateway or route ==
+
+C -> NSO : Create or update a\nGateway / HTTPRoute
+
+NSO -> EG : Create or update Gateway\nand policy resources\n(no patch objects needed)
+
+== Envoy Gateway builds configuration ==
+
+EG -> EG : Build configuration for\nthe changed gateway
+
+EG -> EXT : Call extension hook —\n"here is the configuration\nin progress"
+
+note right of EXT
+  Called ONCE per build,
+  regardless of how many
+  gateways exist.
+end note
+
+EXT -> EXT : Read WAF and Connector\npolicies for this gateway
+
+EXT -> EG : Return modified configuration —\nWAF filter and Connector\nroutes already injected
+
+EG -> EP : Push complete,\nready-to-use configuration
+
+note right of EG
+  Build completes in seconds,
+  not minutes. TLS certificate
+  challenges can be served
+  before they expire.
+end note
+
+EP --> C : Serve traffic (with WAF\nand Connector active)
+
+@enduml

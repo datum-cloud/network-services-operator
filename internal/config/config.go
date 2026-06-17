@@ -32,6 +32,13 @@ import (
 	"go.datum.net/network-services-operator/internal/registrydata"
 )
 
+const (
+	// envoyGatewayGroup is the API group for Envoy Gateway resources.
+	envoyGatewayGroup = "gateway.envoyproxy.io"
+	// envoyGatewayAlpha1Version is the v1alpha1 API version used by Envoy Gateway resources.
+	envoyGatewayAlpha1Version = "v1alpha1"
+)
+
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 // +k8s:defaulter-gen=true
 
@@ -1042,10 +1049,10 @@ func SetDefaults_GatewayResourceReplicatorConfig(obj *GatewayResourceReplicatorC
 				},
 			},
 		}},
-		{Group: "gateway.envoyproxy.io", Version: "v1alpha1", Kind: "Backend"},
-		{Group: "gateway.envoyproxy.io", Version: "v1alpha1", Kind: "BackendTrafficPolicy"},
-		{Group: "gateway.envoyproxy.io", Version: "v1alpha1", Kind: "SecurityPolicy"},
-		{Group: "gateway.envoyproxy.io", Version: "v1alpha1", Kind: "HTTPRouteFilter"},
+		{Group: envoyGatewayGroup, Version: envoyGatewayAlpha1Version, Kind: "Backend"},
+		{Group: envoyGatewayGroup, Version: envoyGatewayAlpha1Version, Kind: "BackendTrafficPolicy"},
+		{Group: envoyGatewayGroup, Version: envoyGatewayAlpha1Version, Kind: "SecurityPolicy"},
+		{Group: envoyGatewayGroup, Version: envoyGatewayAlpha1Version, Kind: "HTTPRouteFilter"},
 		// Propagate v1alpha3 until v1 is supported by Envoy Gateway
 		{Group: "gateway.networking.k8s.io", Version: "v1alpha3", Kind: "BackendTLSPolicy"},
 	}
@@ -1126,8 +1133,4 @@ func (c *IrohConnectorConfig) validate() error {
 		errs = append(errs, errors.New("dnsZoneRef.namespace is required when dnsEnabled is true"))
 	}
 	return errors.Join(errs...)
-}
-
-func init() {
-	SchemeBuilder.Register(&NetworkServicesOperator{})
 }

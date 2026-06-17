@@ -4,13 +4,10 @@ package v1alpha
 
 import (
 	"context"
-	"fmt"
 
 	"k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 
@@ -24,7 +21,7 @@ import (
 // SetupHTTPProxyWebhookWithManager registers the webhook for HTTPProxy in the manager.
 func SetupHTTPProxyWebhookWithManager(mgr mcmanager.Manager) error {
 	return ctrl.NewWebhookManagedBy(mgr.GetLocalManager(), &networkingv1alpha.HTTPProxy{}).
-		WithCustomValidator(&HTTPProxyCustomValidator{mgr: mgr}).
+		WithValidator(&HTTPProxyCustomValidator{mgr: mgr}).
 		Complete()
 }
 
@@ -34,14 +31,10 @@ type HTTPProxyCustomValidator struct {
 	mgr mcmanager.Manager
 }
 
-var _ webhook.CustomValidator = &HTTPProxyCustomValidator{}
+var _ admission.Validator[*networkingv1alpha.HTTPProxy] = &HTTPProxyCustomValidator{}
 
-// ValidateCreate implements webhook.CustomValidator so a webhook will be registered for the type HTTPProxy.
-func (v *HTTPProxyCustomValidator) ValidateCreate(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
-	httpProxy, ok := obj.(*networkingv1alpha.HTTPProxy)
-	if !ok {
-		return nil, fmt.Errorf("expected a HTTPProxy object but got %T", obj)
-	}
+// ValidateCreate implements admission.Validator so a webhook will be registered for the type HTTPProxy.
+func (v *HTTPProxyCustomValidator) ValidateCreate(ctx context.Context, httpProxy *networkingv1alpha.HTTPProxy) (admission.Warnings, error) {
 	logf.FromContext(ctx).Info("Validation for HTTPProxy upon creation", "name", httpProxy.GetName())
 
 	// TODO(jreese) only validate HTTPProxys attached to gateways with gateway classes
@@ -53,7 +46,7 @@ func (v *HTTPProxyCustomValidator) ValidateCreate(ctx context.Context, obj runti
 	// For now, validate any HTTPProxy based on this operator's validation rules.
 
 	if errs := validation.ValidateHTTPProxy(httpProxy); len(errs) > 0 {
-		return nil, errors.NewInvalid(obj.GetObjectKind().GroupVersionKind().GroupKind(), httpProxy.GetName(), errs)
+		return nil, errors.NewInvalid(httpProxy.GetObjectKind().GroupVersionKind().GroupKind(), httpProxy.GetName(), errs)
 	}
 
 	// TODO(user): fill in your validation logic upon object creation.
@@ -61,16 +54,12 @@ func (v *HTTPProxyCustomValidator) ValidateCreate(ctx context.Context, obj runti
 	return nil, nil
 }
 
-// ValidateUpdate implements webhook.CustomValidator so a webhook will be registered for the type HTTPProxy.
-func (v *HTTPProxyCustomValidator) ValidateUpdate(ctx context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
-	httpProxy, ok := newObj.(*networkingv1alpha.HTTPProxy)
-	if !ok {
-		return nil, fmt.Errorf("expected a HTTPProxy object for the newObj but got %T", newObj)
-	}
-	logf.FromContext(ctx).Info("Validation for HTTPProxy upon update", "name", httpProxy.GetName())
+// ValidateUpdate implements admission.Validator so a webhook will be registered for the type HTTPProxy.
+func (v *HTTPProxyCustomValidator) ValidateUpdate(ctx context.Context, oldHTTPProxy, newHTTPProxy *networkingv1alpha.HTTPProxy) (admission.Warnings, error) {
+	logf.FromContext(ctx).Info("Validation for HTTPProxy upon update", "name", newHTTPProxy.GetName())
 
-	if errs := validation.ValidateHTTPProxy(httpProxy); len(errs) > 0 {
-		return nil, errors.NewInvalid(oldObj.GetObjectKind().GroupVersionKind().GroupKind(), httpProxy.GetName(), errs)
+	if errs := validation.ValidateHTTPProxy(newHTTPProxy); len(errs) > 0 {
+		return nil, errors.NewInvalid(oldHTTPProxy.GetObjectKind().GroupVersionKind().GroupKind(), newHTTPProxy.GetName(), errs)
 	}
 
 	// TODO(user): fill in your validation logic upon object update.
@@ -78,12 +67,8 @@ func (v *HTTPProxyCustomValidator) ValidateUpdate(ctx context.Context, oldObj, n
 	return nil, nil
 }
 
-// ValidateDelete implements webhook.CustomValidator so a webhook will be registered for the type HTTPProxy.
-func (v *HTTPProxyCustomValidator) ValidateDelete(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
-	httpProxy, ok := obj.(*networkingv1alpha.HTTPProxy)
-	if !ok {
-		return nil, fmt.Errorf("expected a HTTPProxy object but got %T", obj)
-	}
+// ValidateDelete implements admission.Validator so a webhook will be registered for the type HTTPProxy.
+func (v *HTTPProxyCustomValidator) ValidateDelete(ctx context.Context, httpProxy *networkingv1alpha.HTTPProxy) (admission.Warnings, error) {
 	logf.FromContext(ctx).Info("Validation for HTTPProxy upon deletion", "name", httpProxy.GetName())
 
 	// TODO(user): fill in your validation logic upon object deletion.

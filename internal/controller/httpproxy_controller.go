@@ -187,7 +187,7 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 		if hasControllerConflict(gateway, &httpProxy) {
 			// return already exists error - a gateway exists with the name we want to
 			// use, but it's owned by a different resource.
-			return apierrors.NewAlreadyExists(gatewayv1.Resource("Gateway"), gateway.Name)
+			return apierrors.NewAlreadyExists(gatewayv1.Resource(KindGateway), gateway.Name)
 		}
 
 		if err := controllerutil.SetControllerReference(&httpProxy, gateway, cl.GetScheme()); err != nil {
@@ -222,7 +222,7 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 		return ctrl.Result{}, fmt.Errorf("failed updating gateway resource: %w", err)
 	}
 
-	logger.Info("processed gateway", "name", gateway.Name, "result", result)
+	logger.Info("processed gateway", jsonKeyName, gateway.Name, "result", result)
 
 	// Maintain an HTTPRoute for all rules in the HTTPProxy
 
@@ -243,7 +243,7 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 			if err != nil {
 				return ctrl.Result{}, fmt.Errorf("failed updating httproutefilter resource: %w", err)
 			}
-			logger.Info("processed httproutefilter", "name", httpRouteFilter.Name, "result", result)
+			logger.Info("processed httproutefilter", jsonKeyName, httpRouteFilter.Name, "result", result)
 		}
 	}
 
@@ -274,7 +274,7 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 		return ctrl.Result{}, fmt.Errorf("failed updating httproute resource: %w", err)
 	}
 
-	logger.Info("processed httproute", "name", httpRoute.Name, "result", result)
+	logger.Info("processed httproute", jsonKeyName, httpRoute.Name, "result", result)
 
 	for _, desiredEndpointSlice := range desiredResources.endpointSlices {
 		endpointSlice := desiredEndpointSlice.DeepCopy()
@@ -320,7 +320,7 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 			return ctrl.Result{}, fmt.Errorf("failed to create or update endpointslice: %w", err)
 		}
 
-		logger.Info("processed endpointslice", "result", result, "name", desiredEndpointSlice.Name)
+		logger.Info("processed endpointslice", "result", result, jsonKeyName, desiredEndpointSlice.Name)
 	}
 
 	patchPolicy, hasConnectorBackends, err := r.reconcileConnectorEnvoyPatchPolicy(
@@ -418,7 +418,6 @@ func (r *HTTPProxyReconciler) reconcileHTTPProxyHostnameStatus(
 	// CanonicalHostname is the platform-managed hostname we create for the HTTPProxy.
 	httpProxyCopy.Status.CanonicalHostname = gatewayCanonicalHostnameForConfig(r.Config.Gateway, gateway)
 
-	var hostnames []gatewayv1.Hostname
 	currentListenerStatus := map[gatewayv1.SectionName]gatewayv1.ListenerStatus{}
 	for _, listener := range gateway.Status.Listeners {
 		currentListenerStatus[listener.Name] = *listener.DeepCopy()
@@ -456,6 +455,7 @@ func (r *HTTPProxyReconciler) reconcileHTTPProxyHostnameStatus(
 
 	acceptedHostnamesSlice := acceptedHostnames.UnsortedList()
 	slices.Sort(acceptedHostnamesSlice)
+	hostnames := make([]gatewayv1.Hostname, 0, len(acceptedHostnamesSlice))
 	//nolint:staticcheck // SA1019: Hostnames is deprecated but still populated for backwards compatibility
 	httpProxyCopy.Status.Hostnames = append(hostnames, acceptedHostnamesSlice...)
 
@@ -603,7 +603,7 @@ func (r *HTTPProxyReconciler) enqueueHTTPProxyForDownstreamCertificate() func(cl
 			if ownerRef == nil {
 				return nil
 			}
-			if ownerRef.Kind != "Gateway" {
+			if ownerRef.Kind != KindGateway {
 				return nil
 			}
 			gatewayKey := client.ObjectKey{Namespace: cert.GetNamespace(), Name: ownerRef.Name}
@@ -883,7 +883,7 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 
 			// For HTTPS endpoints with IP addresses, require tls.hostname for certificate validation
 			// and use it as the Host header for the upstream request.
-			if u.Scheme == "https" && isIPAddress {
+			if u.Scheme == SchemeHTTPS && isIPAddress {
 				if backend.TLS == nil || backend.TLS.Hostname == nil || *backend.TLS.Hostname == "" {
 					return nil, fmt.Errorf("HTTPS endpoint with IP address requires tls.hostname for backend %d in rule %d", backendIndex, ruleIndex)
 				}
@@ -1073,8 +1073,8 @@ func (r *HTTPProxyReconciler) buildDNSStatuses(
 	if err := cl.List(ctx, &recordSets,
 		client.InNamespace(gateway.Namespace),
 		client.MatchingLabels{
-			labelDNSManaged:    "true",
-			labelDNSSourceKind: "Gateway",
+			labelDNSManaged:    labelValueTrue,
+			labelDNSSourceKind: KindGateway,
 			labelDNSSourceName: gateway.Name,
 		},
 	); err != nil {
@@ -1093,7 +1093,7 @@ func (r *HTTPProxyReconciler) buildDNSStatuses(
 		hs := networkingv1alpha.HostnameStatus{Hostname: hostname}
 
 		// Check DNSRecordSet's Programmed condition
-		programmedCond := apimeta.FindStatusCondition(rs.Status.Conditions, "Programmed")
+		programmedCond := apimeta.FindStatusCondition(rs.Status.Conditions, conditionTypeProgrammed)
 		if programmedCond != nil && programmedCond.Status == metav1.ConditionTrue {
 			apimeta.SetStatusCondition(&hs.Conditions, metav1.Condition{
 				Type:               networkingv1alpha.HostnameConditionDNSRecordProgrammed,
@@ -1250,7 +1250,7 @@ func (r *HTTPProxyReconciler) buildCertificateStatuses(
 // getCertificateReadyConditionReason returns the reason and message for the
 // CertificateReady condition based on the cert-manager Certificate's Ready condition.
 func getCertificateReadyConditionReason(certificate *unstructured.Unstructured) (string, string) {
-	conditions, found, err := unstructured.NestedSlice(certificate.Object, "status", "conditions")
+	conditions, found, err := unstructured.NestedSlice(certificate.Object, jsonKeyStatus, "conditions")
 	if err != nil || !found {
 		return networkingv1alpha.CertificateReadyReasonPending, "Certificate status not yet available"
 	}
@@ -1260,10 +1260,10 @@ func getCertificateReadyConditionReason(certificate *unstructured.Unstructured) 
 		if !ok {
 			continue
 		}
-		if condMap["type"] != certManagerConditionTypeReady {
+		if condMap[jsonKeyType] != certManagerConditionTypeReady {
 			continue
 		}
-		if condMap["status"] == string(metav1.ConditionTrue) {
+		if condMap[jsonKeyStatus] == string(metav1.ConditionTrue) {
 			return networkingv1alpha.CertificateReadyReasonCertificateIssued, "Certificate is ready"
 		}
 		// Ready=False
@@ -1552,7 +1552,7 @@ func (r *HTTPProxyReconciler) reconcileConnectorEnvoyPatchPolicy(
 		policy.Spec = envoygatewayv1alpha1.EnvoyPatchPolicySpec{
 			TargetRef: gatewayv1.LocalPolicyTargetReference{
 				Group: gatewayv1.GroupName,
-				Kind:  "GatewayClass",
+				Kind:  KindGatewayClass,
 				Name:  gatewayv1.ObjectName(r.Config.Gateway.DownstreamGatewayClassName),
 			},
 			Type:        envoygatewayv1alpha1.JSONPatchEnvoyPatchType,
@@ -1653,19 +1653,19 @@ func downstreamPatchPolicyReady(policy *envoygatewayv1alpha1.EnvoyPatchPolicy, g
 	}
 
 	for _, ancestor := range policy.Status.Ancestors {
-		if ptr.Deref(ancestor.AncestorRef.Kind, gatewayv1.Kind("")) != gatewayv1.Kind("GatewayClass") ||
+		if ptr.Deref(ancestor.AncestorRef.Kind, gatewayv1.Kind("")) != gatewayv1.Kind(KindGatewayClass) ||
 			ancestor.AncestorRef.Name != gatewayv1.ObjectName(gatewayClassName) {
 			continue
 		}
 
-		accepted := apimeta.FindStatusCondition(ancestor.Conditions, "Accepted")
+		accepted := apimeta.FindStatusCondition(ancestor.Conditions, conditionTypeAccepted)
 		if accepted == nil || accepted.Status != metav1.ConditionTrue {
-			return false, formatPolicyConditionMessage("Accepted", accepted)
+			return false, formatPolicyConditionMessage(conditionTypeAccepted, accepted)
 		}
 
-		programmed := apimeta.FindStatusCondition(ancestor.Conditions, "Programmed")
+		programmed := apimeta.FindStatusCondition(ancestor.Conditions, conditionTypeProgrammed)
 		if programmed == nil || programmed.Status != metav1.ConditionTrue {
-			return false, formatPolicyConditionMessage("Programmed", programmed)
+			return false, formatPolicyConditionMessage(conditionTypeProgrammed, programmed)
 		}
 
 		return true, ""

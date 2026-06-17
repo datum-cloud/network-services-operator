@@ -7,12 +7,12 @@ import (
 	envoygatewayv1alpha1 "github.com/envoyproxy/gateway/api/v1alpha1"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
+	"go.datum.net/network-services-operator/internal/config"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/utils/ptr"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
-	"go.datum.net/network-services-operator/internal/config"
 )
 
 func TestValidateBackendTrafficPolicy(t *testing.T) {
@@ -293,17 +293,15 @@ func TestValidateBackendTrafficPolicy(t *testing.T) {
 				field.Invalid(field.NewPath("spec", "http2", "maxConcurrentStreams"), 0, ""),
 			},
 		},
-		"rate limit type invalid": {
+		"global rate limit not permitted": {
 			backendTrafficPolicy: &envoygatewayv1alpha1.BackendTrafficPolicy{
 				Spec: envoygatewayv1alpha1.BackendTrafficPolicySpec{
 					RateLimit: &envoygatewayv1alpha1.RateLimitSpec{
-						Type:   ptr.To(envoygatewayv1alpha1.GlobalRateLimitType),
 						Global: &envoygatewayv1alpha1.GlobalRateLimit{},
 					},
 				},
 			},
 			expectedErrors: field.ErrorList{
-				field.NotSupported(field.NewPath("spec", "rateLimit", "type"), "", []string{}),
 				field.Forbidden(field.NewPath("spec", "rateLimit", "global"), ""),
 			},
 		},

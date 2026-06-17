@@ -8,10 +8,8 @@ import (
 
 	gatewayv1alpha1 "github.com/envoyproxy/gateway/api/v1alpha1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 	mccontext "sigs.k8s.io/multicluster-runtime/pkg/context"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
@@ -23,7 +21,7 @@ import (
 // SetupBackendTrafficPolicyWebhookWithManager registers the webhook for BackendTrafficPolicy in the manager.
 func SetupBackendTrafficPolicyWebhookWithManager(mgr mcmanager.Manager, cfg config.NetworkServicesOperator) error {
 	return ctrl.NewWebhookManagedBy(mgr.GetLocalManager(), &gatewayv1alpha1.BackendTrafficPolicy{}).
-		WithCustomValidator(&BackendTrafficPolicyCustomValidator{mgr: mgr, validationOpts: cfg.Gateway.ExtensionAPIValidationOptions.BackendTrafficPolicies}).
+		WithValidator(&BackendTrafficPolicyCustomValidator{mgr: mgr, validationOpts: cfg.Gateway.ExtensionAPIValidationOptions.BackendTrafficPolicies}).
 		Complete()
 }
 
@@ -34,15 +32,10 @@ type BackendTrafficPolicyCustomValidator struct {
 	validationOpts config.BackendTrafficPolicyValidationOptions
 }
 
-var _ webhook.CustomValidator = &BackendTrafficPolicyCustomValidator{}
+var _ admission.Validator[*gatewayv1alpha1.BackendTrafficPolicy] = &BackendTrafficPolicyCustomValidator{}
 
-// ValidateCreate implements webhook.CustomValidator so a webhook will be registered for the type BackendTrafficPolicy.
-func (v *BackendTrafficPolicyCustomValidator) ValidateCreate(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
-	backendTrafficPolicy, ok := obj.(*gatewayv1alpha1.BackendTrafficPolicy)
-	if !ok {
-		return nil, fmt.Errorf("expected a BackendTrafficPolicy object but got %T", obj)
-	}
-
+// ValidateCreate implements admission.Validator so a webhook will be registered for the type BackendTrafficPolicy.
+func (v *BackendTrafficPolicyCustomValidator) ValidateCreate(ctx context.Context, backendTrafficPolicy *gatewayv1alpha1.BackendTrafficPolicy) (admission.Warnings, error) {
 	clusterName, ok := mccontext.ClusterFrom(ctx)
 	if !ok {
 		return nil, fmt.Errorf("expected a cluster name in the context")
@@ -52,34 +45,29 @@ func (v *BackendTrafficPolicyCustomValidator) ValidateCreate(ctx context.Context
 	log.Info("Validating BackendTrafficPolicy", "name", backendTrafficPolicy.GetName(), "cluster", clusterName)
 
 	if errs := validation.ValidateBackendTrafficPolicy(backendTrafficPolicy, v.validationOpts); len(errs) > 0 {
-		return nil, apierrors.NewInvalid(obj.GetObjectKind().GroupVersionKind().GroupKind(), backendTrafficPolicy.GetName(), errs)
+		return nil, apierrors.NewInvalid(backendTrafficPolicy.GetObjectKind().GroupVersionKind().GroupKind(), backendTrafficPolicy.GetName(), errs)
 	}
 
 	return nil, nil
 }
 
-// ValidateUpdate implements webhook.CustomValidator so a webhook will be registered for the type BackendTrafficPolicy.
-func (v *BackendTrafficPolicyCustomValidator) ValidateUpdate(ctx context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
-	backendTrafficPolicy, ok := newObj.(*gatewayv1alpha1.BackendTrafficPolicy)
-	if !ok {
-		return nil, fmt.Errorf("expected a BackendTrafficPolicy object for the newObj but got %T", newObj)
-	}
-
+// ValidateUpdate implements admission.Validator so a webhook will be registered for the type BackendTrafficPolicy.
+func (v *BackendTrafficPolicyCustomValidator) ValidateUpdate(ctx context.Context, oldBackendTrafficPolicy, newBackendTrafficPolicy *gatewayv1alpha1.BackendTrafficPolicy) (admission.Warnings, error) {
 	clusterName, ok := mccontext.ClusterFrom(ctx)
 	if !ok {
 		return nil, fmt.Errorf("expected a cluster name in the context")
 	}
 
 	log := logf.FromContext(ctx).WithValues("cluster", clusterName)
-	log.Info("Validating BackendTrafficPolicy", "name", backendTrafficPolicy.GetName(), "cluster", clusterName)
+	log.Info("Validating BackendTrafficPolicy", "name", newBackendTrafficPolicy.GetName(), "cluster", clusterName)
 
-	if errs := validation.ValidateBackendTrafficPolicy(backendTrafficPolicy, v.validationOpts); len(errs) > 0 {
-		return nil, apierrors.NewInvalid(oldObj.GetObjectKind().GroupVersionKind().GroupKind(), backendTrafficPolicy.GetName(), errs)
+	if errs := validation.ValidateBackendTrafficPolicy(newBackendTrafficPolicy, v.validationOpts); len(errs) > 0 {
+		return nil, apierrors.NewInvalid(oldBackendTrafficPolicy.GetObjectKind().GroupVersionKind().GroupKind(), newBackendTrafficPolicy.GetName(), errs)
 	}
 	return nil, nil
 }
 
-// ValidateDelete implements webhook.CustomValidator so a webhook will be registered for the type BackendTrafficPolicy.
-func (v *BackendTrafficPolicyCustomValidator) ValidateDelete(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
+// ValidateDelete implements admission.Validator so a webhook will be registered for the type BackendTrafficPolicy.
+func (v *BackendTrafficPolicyCustomValidator) ValidateDelete(ctx context.Context, backendTrafficPolicy *gatewayv1alpha1.BackendTrafficPolicy) (admission.Warnings, error) {
 	return nil, nil
 }

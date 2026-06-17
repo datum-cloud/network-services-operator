@@ -188,14 +188,14 @@ func (r *TrafficProtectionPolicyReconciler) Reconcile(ctx context.Context, req N
 			if policy.Labels == nil {
 				policy.Labels = make(map[string]string)
 			}
-			policy.Labels[tppManagedLabel] = "true"
+			policy.Labels[tppManagedLabel] = labelValueTrue
 			policy.Spec = desiredPolicy.Spec
 			return nil
 		})
 		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("failed to create or update envoypatchpolicy %s/%s: %w", policy.Namespace, policy.Name, err)
 		}
-		logger.Info("applied envoypatchpolicy to downstream cluster", "namespace", policy.Namespace, "name", policy.Name, "result", result)
+		logger.Info("applied envoypatchpolicy to downstream cluster", "namespace", policy.Namespace, jsonKeyName, policy.Name, "result", result)
 	}
 
 	// Clean up stale EPPs. All EPPs written by this controller are named
@@ -226,7 +226,7 @@ func (r *TrafficProtectionPolicyReconciler) Reconcile(ctx context.Context, req N
 		if err := downstreamStrategy.GetClient().Delete(ctx, existing); err != nil {
 			return ctrl.Result{}, fmt.Errorf("failed to delete stale envoypatchpolicy %s/%s: %w", existing.Namespace, existing.Name, err)
 		}
-		logger.Info("deleted stale envoypatchpolicy from downstream cluster", "namespace", existing.Namespace, "name", existing.Name)
+		logger.Info("deleted stale envoypatchpolicy from downstream cluster", "namespace", existing.Namespace, jsonKeyName, existing.Name)
 	}
 
 	if err := r.updateTPPAncestorsStatus(ctx, cl.GetClient(), trafficProtectionPolicies, originalTrafficProtectionPolicies); err != nil {
@@ -502,7 +502,7 @@ func (r *TrafficProtectionPolicyReconciler) ensureHTTPCorazaListenerFilter(ctx c
 		envoyPatchPolicy.Spec = envoygatewayv1alpha1.EnvoyPatchPolicySpec{
 			TargetRef: gatewayv1.LocalPolicyTargetReference{
 				Group: gatewayv1.GroupName,
-				Kind:  "GatewayClass",
+				Kind:  KindGatewayClass,
 				Name:  gatewayv1.ObjectName(r.Config.Gateway.DownstreamGatewayClassName),
 			},
 			Type: envoygatewayv1alpha1.JSONPatchEnvoyPatchType,
@@ -511,7 +511,7 @@ func (r *TrafficProtectionPolicyReconciler) ensureHTTPCorazaListenerFilter(ctx c
 					Type: "type.googleapis.com/envoy.config.listener.v3.Listener",
 					Name: fmt.Sprintf("tcp-%d", DefaultHTTPPort),
 					Operation: envoygatewayv1alpha1.JSONPatchOperation{
-						Op:    "add",
+						Op:    jsonPatchOpAdd,
 						Path:  ptr.To("/default_filter_chain/filters/0/typed_config/http_filters/0"),
 						Value: &apiextensionsv1.JSON{Raw: corazaConfigBytes},
 					},
@@ -526,7 +526,7 @@ func (r *TrafficProtectionPolicyReconciler) ensureHTTPCorazaListenerFilter(ctx c
 	}
 
 	logger := log.FromContext(ctx)
-	logger.Info("ensured envoypatchpolicy for http listener", "namespace", envoyPatchPolicy.Namespace, "name", envoyPatchPolicy.Name, "result", result)
+	logger.Info("ensured envoypatchpolicy for http listener", "namespace", envoyPatchPolicy.Namespace, jsonKeyName, envoyPatchPolicy.Name, "result", result)
 
 	return nil
 }
@@ -538,15 +538,15 @@ func (r TrafficProtectionPolicyReconciler) getCorazaListenerFilterConfig() ([]by
 	}
 
 	corazaConfig := map[string]any{
-		"name":     r.Config.Gateway.Coraza.FilterName,
-		"disabled": true,
-		"typed_config": map[string]any{
-			"@type":        "type.googleapis.com/envoy.extensions.filters.http.golang.v3alpha.Config",
+		jsonKeyName: r.Config.Gateway.Coraza.FilterName,
+		"disabled":  true,
+		jsonKeyTypedConfig: map[string]any{
+			jsonKeyAtType:  "type.googleapis.com/envoy.extensions.filters.http.golang.v3alpha.Config",
 			"library_id":   r.Config.Gateway.Coraza.LibraryID,
 			"library_path": r.Config.Gateway.Coraza.LibraryPath,
 			"plugin_name":  r.Config.Gateway.Coraza.PluginName,
 			"plugin_config": map[string]any{
-				"@type": "type.googleapis.com/xds.type.v3.TypedStruct",
+				jsonKeyAtType: "type.googleapis.com/xds.type.v3.TypedStruct",
 				"value": map[string]any{
 					"log_format":                     "json",
 					"trace_route_metadata_extractor": r.Config.Gateway.Coraza.TraceRouteMetadataExtractor,
@@ -800,7 +800,7 @@ func (r *TrafficProtectionPolicyReconciler) processTrafficProtectionPolicyForHTT
 
 	for _, parentRef := range route.Spec.ParentRefs {
 		if ptr.Deref(parentRef.Kind, KindGateway) != KindGateway {
-			logger.Info("skipping parentRef that is not a gateway", "kind", parentRef.Kind)
+			logger.Info("skipping parentRef that is not a gateway", jsonKeyKind, parentRef.Kind)
 			continue
 		}
 
@@ -1010,9 +1010,9 @@ func (r *TrafficProtectionPolicyReconciler) getDesiredEnvoyPatchPolicies(
 			datumGatewayMetadata := map[string]any{
 				"resources": []map[string]any{
 					{
-						"kind":      "TrafficProtectionPolicy",
+						jsonKeyKind: "TrafficProtectionPolicy",
 						"namespace": policyAttachment.Policy.Namespace,
-						"name":      policyAttachment.Policy.Name,
+						jsonKeyName: policyAttachment.Policy.Name,
 						"mode":      policyAttachment.Policy.Spec.Mode,
 					},
 				},
@@ -1024,10 +1024,10 @@ func (r *TrafficProtectionPolicyReconciler) getDesiredEnvoyPatchPolicies(
 			}
 
 			jsonPatches = append(jsonPatches, envoygatewayv1alpha1.EnvoyJSONPatchConfig{
-				Type: "type.googleapis.com/envoy.config.route.v3.RouteConfiguration",
+				Type: routeConfigurationTypeURL,
 				Name: fmt.Sprintf("http-%d", DefaultHTTPPort),
 				Operation: envoygatewayv1alpha1.JSONPatchOperation{
-					Op:       "add",
+					Op:       jsonPatchOpAdd,
 					JSONPath: ptr.To(httpRoutesJSONPath),
 					Path:     ptr.To("/metadata/filter_metadata/datum-gateway"),
 					Value:    &apiextensionsv1.JSON{Raw: datumGatewayMetadataBytes},
@@ -1040,11 +1040,11 @@ func (r *TrafficProtectionPolicyReconciler) getDesiredEnvoyPatchPolicies(
 			}
 
 			corazaConfig := map[string]any{
-				"@type": "type.googleapis.com/envoy.extensions.filters.http.golang.v3alpha.ConfigsPerRoute",
+				jsonKeyAtType: "type.googleapis.com/envoy.extensions.filters.http.golang.v3alpha.ConfigsPerRoute",
 				"plugins_config": map[string]any{
 					r.Config.Gateway.Coraza.PluginName: map[string]any{
 						"config": map[string]any{
-							"@type": "type.googleapis.com/xds.type.v3.TypedStruct",
+							jsonKeyAtType: "type.googleapis.com/xds.type.v3.TypedStruct",
 							"value": map[string]any{
 								"log_format": "json",
 								"directives": sanitizeJSONPath(fmt.Sprintf(`{
@@ -1068,10 +1068,10 @@ func (r *TrafficProtectionPolicyReconciler) getDesiredEnvoyPatchPolicies(
 				// Attach to all HTTP listeners on the gateway, only requires a single patch
 				// as there's a single RouteConfiguration for http-80
 				jsonPatches = append(jsonPatches, envoygatewayv1alpha1.EnvoyJSONPatchConfig{
-					Type: "type.googleapis.com/envoy.config.route.v3.RouteConfiguration",
+					Type: routeConfigurationTypeURL,
 					Name: fmt.Sprintf("http-%d", DefaultHTTPPort),
 					Operation: envoygatewayv1alpha1.JSONPatchOperation{
-						Op:       "add",
+						Op:       jsonPatchOpAdd,
 						JSONPath: ptr.To(httpRoutesJSONPath),
 						Path:     ptr.To(fmt.Sprintf("/typed_per_filter_config/%s", r.Config.Gateway.Coraza.FilterName)),
 						Value:    &apiextensionsv1.JSON{Raw: corazaConfigBytes},
@@ -1088,10 +1088,10 @@ func (r *TrafficProtectionPolicyReconciler) getDesiredEnvoyPatchPolicies(
 					tlsFilterChainsWithAttachments.Insert(listenerRouteConfigName)
 
 					jsonPatches = append(jsonPatches, envoygatewayv1alpha1.EnvoyJSONPatchConfig{
-						Type: "type.googleapis.com/envoy.config.route.v3.RouteConfiguration",
+						Type: routeConfigurationTypeURL,
 						Name: listenerRouteConfigName,
 						Operation: envoygatewayv1alpha1.JSONPatchOperation{
-							Op:       "add",
+							Op:       jsonPatchOpAdd,
 							JSONPath: ptr.To(httpRoutesJSONPath),
 							Path:     ptr.To("/metadata/filter_metadata/datum-gateway"),
 							Value:    &apiextensionsv1.JSON{Raw: datumGatewayMetadataBytes},
@@ -1099,10 +1099,10 @@ func (r *TrafficProtectionPolicyReconciler) getDesiredEnvoyPatchPolicies(
 					})
 
 					jsonPatches = append(jsonPatches, envoygatewayv1alpha1.EnvoyJSONPatchConfig{
-						Type: "type.googleapis.com/envoy.config.route.v3.RouteConfiguration",
+						Type: routeConfigurationTypeURL,
 						Name: listenerRouteConfigName,
 						Operation: envoygatewayv1alpha1.JSONPatchOperation{
-							Op:       "add",
+							Op:       jsonPatchOpAdd,
 							JSONPath: ptr.To(httpRoutesJSONPath),
 							Path:     ptr.To(fmt.Sprintf("/typed_per_filter_config/%s", r.Config.Gateway.Coraza.FilterName)),
 							Value:    &apiextensionsv1.JSON{Raw: corazaConfigBytes},
@@ -1128,10 +1128,10 @@ func (r *TrafficProtectionPolicyReconciler) getDesiredEnvoyPatchPolicies(
 				}
 
 				jsonPatches = append(jsonPatches, envoygatewayv1alpha1.EnvoyJSONPatchConfig{
-					Type: "type.googleapis.com/envoy.config.route.v3.RouteConfiguration",
+					Type: routeConfigurationTypeURL,
 					Name: listenerRouteConfigName,
 					Operation: envoygatewayv1alpha1.JSONPatchOperation{
-						Op:       "add",
+						Op:       jsonPatchOpAdd,
 						JSONPath: ptr.To(httpRoutesJSONPath),
 						Path:     ptr.To(fmt.Sprintf("/typed_per_filter_config/%s", r.Config.Gateway.Coraza.FilterName)),
 						Value:    &apiextensionsv1.JSON{Raw: corazaConfigBytes},
@@ -1153,7 +1153,7 @@ func (r *TrafficProtectionPolicyReconciler) getDesiredEnvoyPatchPolicies(
 				Type: "type.googleapis.com/envoy.config.listener.v3.Listener",
 				Name: fmt.Sprintf("tcp-%d", DefaultHTTPSPort),
 				Operation: envoygatewayv1alpha1.JSONPatchOperation{
-					Op:       "add",
+					Op:       jsonPatchOpAdd,
 					JSONPath: ptr.To(fmt.Sprintf(`..filter_chains[?(@.name=="%s")]`, filterChainName)),
 					Path:     ptr.To("/filters/0/typed_config/http_filters/0"),
 					Value:    &apiextensionsv1.JSON{Raw: corazaConfigBytes},
@@ -1174,7 +1174,7 @@ func (r *TrafficProtectionPolicyReconciler) getDesiredEnvoyPatchPolicies(
 			Spec: envoygatewayv1alpha1.EnvoyPatchPolicySpec{
 				TargetRef: gatewayv1.LocalPolicyTargetReference{
 					Group: gatewayv1.GroupName,
-					Kind:  "GatewayClass",
+					Kind:  KindGatewayClass,
 					Name:  gatewayv1.ObjectName(r.Config.Gateway.DownstreamGatewayClassName),
 				},
 				Type:        envoygatewayv1alpha1.JSONPatchEnvoyPatchType,

@@ -96,13 +96,13 @@ func (r *GatewayDownstreamCertificateSolverReconciler) Reconcile(ctx context.Con
 	}
 
 	// Skip any non cluster issuers
-	issuerKind, found, err := unstructured.NestedString(issuerRef, "kind")
-	if err != nil || !found || issuerKind != "ClusterIssuer" {
+	issuerKind, found, err := unstructured.NestedString(issuerRef, jsonKeyKind)
+	if err != nil || !found || issuerKind != KindClusterIssuer {
 		logger.Info("Issuer kind is not ClusterIssuer, skipping")
 		return ctrl.Result{}, nil
 	}
 
-	issuerName, found, err := unstructured.NestedString(issuerRef, "name")
+	issuerName, found, err := unstructured.NestedString(issuerRef, jsonKeyName)
 	if err != nil || !found {
 		logger.Error(err, "Failed to get issuer name from downstream certificate")
 		return ctrl.Result{}, fmt.Errorf("failed to get issuer name from certificate")
@@ -174,7 +174,7 @@ func (r *GatewayDownstreamCertificateSolverReconciler) Reconcile(ctx context.Con
 
 	result, err := controllerutil.CreateOrUpdate(ctx, cl, httpRouteFilter, func() error {
 		httpRouteFilter.Labels = map[string]string{
-			"meta.datumapis.com/http01-solver": "true",
+			"meta.datumapis.com/http01-solver": labelValueTrue,
 		}
 		httpRouteFilter.Spec = envoygatewayv1alpha1.HTTPRouteFilterSpec{
 			DirectResponse: &envoygatewayv1alpha1.HTTPDirectResponseFilter{
@@ -208,7 +208,7 @@ func (r *GatewayDownstreamCertificateSolverReconciler) Reconcile(ctx context.Con
 
 	result, err = controllerutil.CreateOrUpdate(ctx, cl, httpRoute, func() error {
 		httpRoute.Labels = map[string]string{
-			"meta.datumapis.com/http01-solver": "true",
+			"meta.datumapis.com/http01-solver": labelValueTrue,
 		}
 		httpRoute.Spec = gatewayv1.HTTPRouteSpec{
 			CommonRouteSpec: gatewayv1.CommonRouteSpec{
@@ -289,7 +289,7 @@ const certManagerConditionTypeReady = "Ready"
 
 // isCertificateReady checks if a cert-manager Certificate has Ready=True condition.
 func isCertificateReady(certificate *unstructured.Unstructured) (bool, error) {
-	conditions, found, err := unstructured.NestedSlice(certificate.Object, "status", "conditions")
+	conditions, found, err := unstructured.NestedSlice(certificate.Object, jsonKeyStatus, "conditions")
 	if err != nil {
 		return false, err
 	}
@@ -302,7 +302,7 @@ func isCertificateReady(certificate *unstructured.Unstructured) (bool, error) {
 		if !ok {
 			continue
 		}
-		if condMap["type"] == certManagerConditionTypeReady && condMap["status"] == string(metav1.ConditionTrue) {
+		if condMap[jsonKeyType] == certManagerConditionTypeReady && condMap[jsonKeyStatus] == string(metav1.ConditionTrue) {
 			return true, nil
 		}
 	}

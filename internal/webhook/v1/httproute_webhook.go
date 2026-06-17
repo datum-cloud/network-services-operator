@@ -4,13 +4,10 @@ package v1
 
 import (
 	"context"
-	"fmt"
 
 	"k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 	gatewaynetworkingk8siov1 "sigs.k8s.io/gateway-api/apis/v1"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
@@ -24,7 +21,7 @@ import (
 // SetupHTTPRouteWebhookWithManager registers the webhook for HTTPRoute in the manager.
 func SetupHTTPRouteWebhookWithManager(mgr mcmanager.Manager, cfg config.NetworkServicesOperator) error {
 	return ctrl.NewWebhookManagedBy(mgr.GetLocalManager(), &gatewaynetworkingk8siov1.HTTPRoute{}).
-		WithCustomValidator(&HTTPRouteCustomValidator{mgr: mgr, validationOpts: cfg.Gateway.HTTPRoutes}).
+		WithValidator(&HTTPRouteCustomValidator{mgr: mgr, validationOpts: cfg.Gateway.HTTPRoutes}).
 		Complete()
 }
 
@@ -35,14 +32,10 @@ type HTTPRouteCustomValidator struct {
 	validationOpts config.HTTPRouteValidationOptions
 }
 
-var _ webhook.CustomValidator = &HTTPRouteCustomValidator{}
+var _ admission.Validator[*gatewaynetworkingk8siov1.HTTPRoute] = &HTTPRouteCustomValidator{}
 
-// ValidateCreate implements webhook.CustomValidator so a webhook will be registered for the type HTTPRoute.
-func (v *HTTPRouteCustomValidator) ValidateCreate(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
-	httproute, ok := obj.(*gatewaynetworkingk8siov1.HTTPRoute)
-	if !ok {
-		return nil, fmt.Errorf("expected a HTTPRoute object but got %T", obj)
-	}
+// ValidateCreate implements admission.Validator so a webhook will be registered for the type HTTPRoute.
+func (v *HTTPRouteCustomValidator) ValidateCreate(ctx context.Context, httproute *gatewaynetworkingk8siov1.HTTPRoute) (admission.Warnings, error) {
 	logf.FromContext(ctx).Info("Validation for HTTPRoute upon creation", "name", httproute.GetName())
 
 	// TODO(jreese) only validate httproutes attached to gateways with gateway classes
@@ -54,33 +47,25 @@ func (v *HTTPRouteCustomValidator) ValidateCreate(ctx context.Context, obj runti
 	// For now, validate any HTTPRoute based on this operator's validation rules.
 
 	if errs := validation.ValidateHTTPRoute(httproute, v.validationOpts); len(errs) > 0 {
-		return nil, errors.NewInvalid(obj.GetObjectKind().GroupVersionKind().GroupKind(), httproute.GetName(), errs)
+		return nil, errors.NewInvalid(httproute.GetObjectKind().GroupVersionKind().GroupKind(), httproute.GetName(), errs)
 	}
 
 	return nil, nil
 }
 
-// ValidateUpdate implements webhook.CustomValidator so a webhook will be registered for the type HTTPRoute.
-func (v *HTTPRouteCustomValidator) ValidateUpdate(ctx context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
-	httproute, ok := newObj.(*gatewaynetworkingk8siov1.HTTPRoute)
-	if !ok {
-		return nil, fmt.Errorf("expected a HTTPRoute object for the newObj but got %T", newObj)
-	}
-	logf.FromContext(ctx).Info("Validation for HTTPRoute upon update", "name", httproute.GetName())
+// ValidateUpdate implements admission.Validator so a webhook will be registered for the type HTTPRoute.
+func (v *HTTPRouteCustomValidator) ValidateUpdate(ctx context.Context, oldHTTPRoute, newHTTPRoute *gatewaynetworkingk8siov1.HTTPRoute) (admission.Warnings, error) {
+	logf.FromContext(ctx).Info("Validation for HTTPRoute upon update", "name", newHTTPRoute.GetName())
 
-	if errs := validation.ValidateHTTPRoute(httproute, v.validationOpts); len(errs) > 0 {
-		return nil, errors.NewInvalid(oldObj.GetObjectKind().GroupVersionKind().GroupKind(), httproute.GetName(), errs)
+	if errs := validation.ValidateHTTPRoute(newHTTPRoute, v.validationOpts); len(errs) > 0 {
+		return nil, errors.NewInvalid(oldHTTPRoute.GetObjectKind().GroupVersionKind().GroupKind(), newHTTPRoute.GetName(), errs)
 	}
 
 	return nil, nil
 }
 
-// ValidateDelete implements webhook.CustomValidator so a webhook will be registered for the type HTTPRoute.
-func (v *HTTPRouteCustomValidator) ValidateDelete(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
-	httproute, ok := obj.(*gatewaynetworkingk8siov1.HTTPRoute)
-	if !ok {
-		return nil, fmt.Errorf("expected a HTTPRoute object but got %T", obj)
-	}
+// ValidateDelete implements admission.Validator so a webhook will be registered for the type HTTPRoute.
+func (v *HTTPRouteCustomValidator) ValidateDelete(ctx context.Context, httproute *gatewaynetworkingk8siov1.HTTPRoute) (admission.Warnings, error) {
 	logf.FromContext(ctx).Info("Validation for HTTPRoute upon deletion", "name", httproute.GetName())
 
 	// TODO(user): fill in your validation logic upon object deletion.

@@ -45,8 +45,8 @@ func connectorClusterName(downstreamNamespace, httpRouteName string, ruleIndex i
 func buildConnectorInternalListenerClusterJSON(clusterName, internalListenerName string, backend connectorBackendPatch) ([]byte, error) {
 	tunnelAddress := fmt.Sprintf("%s:%d", backend.targetHost, backend.targetPort)
 	cluster := map[string]any{
-		"name":            clusterName,
-		"type":            "STATIC",
+		jsonKeyName:       clusterName,
+		jsonKeyType:       "STATIC",
 		"connect_timeout": "5s",
 		"load_assignment": map[string]any{
 			"cluster_name": clusterName,
@@ -75,19 +75,19 @@ func buildConnectorInternalListenerClusterJSON(clusterName, internalListenerName
 			},
 		},
 		"transport_socket": map[string]any{
-			"name": "envoy.transport_sockets.internal_upstream",
-			"typed_config": map[string]any{
-				"@type": "type.googleapis.com/envoy.extensions.transport_sockets.internal_upstream.v3.InternalUpstreamTransport",
+			jsonKeyName: "envoy.transport_sockets.internal_upstream",
+			jsonKeyTypedConfig: map[string]any{
+				jsonKeyAtType: "type.googleapis.com/envoy.extensions.transport_sockets.internal_upstream.v3.InternalUpstreamTransport",
 				"passthrough_metadata": []map[string]any{
 					{
-						"kind": map[string]any{"host": map[string]any{}},
-						"name": "tunnel",
+						jsonKeyKind: map[string]any{"host": map[string]any{}},
+						jsonKeyName: "tunnel",
 					},
 				},
 				"transport_socket": map[string]any{
-					"name": "envoy.transport_sockets.raw_buffer",
-					"typed_config": map[string]any{
-						"@type": "type.googleapis.com/envoy.extensions.transport_sockets.raw_buffer.v3.RawBuffer",
+					jsonKeyName: "envoy.transport_sockets.raw_buffer",
+					jsonKeyTypedConfig: map[string]any{
+						jsonKeyAtType: "type.googleapis.com/envoy.extensions.transport_sockets.raw_buffer.v3.RawBuffer",
 					},
 				},
 			},
@@ -155,10 +155,10 @@ func buildConnectorEnvoyPatches(
 			}
 			seenDomainRouteConfig[key] = struct{}{}
 			patches = append(patches, envoygatewayv1alpha1.EnvoyJSONPatchConfig{
-				Type: "type.googleapis.com/envoy.config.route.v3.RouteConfiguration",
+				Type: routeConfigurationTypeURL,
 				Name: routeConfigName,
 				Operation: envoygatewayv1alpha1.JSONPatchOperation{
-					Op:    envoygatewayv1alpha1.JSONPatchOperationType("add"),
+					Op:    envoygatewayv1alpha1.JSONPatchOperationType(jsonPatchOpAdd),
 					Path:  ptr.To("/virtual_hosts/0/domains/-"),
 					Value: &apiextensionsv1.JSON{Raw: domainValue},
 				},
@@ -188,10 +188,10 @@ func buildConnectorEnvoyPatches(
 		)
 		for _, routeConfigName := range routeConfigNames {
 			patches = append(patches, envoygatewayv1alpha1.EnvoyJSONPatchConfig{
-				Type: "type.googleapis.com/envoy.config.route.v3.RouteConfiguration",
+				Type: routeConfigurationTypeURL,
 				Name: routeConfigName,
 				Operation: envoygatewayv1alpha1.JSONPatchOperation{
-					Op:    envoygatewayv1alpha1.JSONPatchOperationType("add"),
+					Op:    envoygatewayv1alpha1.JSONPatchOperationType(jsonPatchOpAdd),
 					Path:  ptr.To("/virtual_hosts/0/routes/0"),
 					Value: &apiextensionsv1.JSON{Raw: routeValue},
 				},
@@ -311,7 +311,7 @@ func buildConnectorConnectRoutes(
 			connectMatch := map[string]any{
 				"headers": []map[string]any{
 					{
-						"name": ":method",
+						jsonKeyName: ":method",
 						"string_match": map[string]any{
 							"exact": http.MethodConnect,
 						},
@@ -334,8 +334,8 @@ func buildConnectorConnectRoutes(
 			connectRoutes = append(connectRoutes, connectorConnectRoute{
 				sectionName: sectionByRule[ruleIndex],
 				route: map[string]any{
-					"name":  fmt.Sprintf("connector-connect-%s-rule-%d", httpProxy.Name, ruleIndex),
-					"match": connectMatch,
+					jsonKeyName:  fmt.Sprintf("connector-connect-%s-rule-%d", httpProxy.Name, ruleIndex),
+					jsonKeyMatch: connectMatch,
 					"route": map[string]any{
 						"cluster": clusterName,
 						"upgrade_configs": []map[string]any{
@@ -354,8 +354,8 @@ func buildConnectorConnectRoutes(
 	connectRoutes = append(connectRoutes, connectorConnectRoute{
 		sectionName: fallbackSection,
 		route: map[string]any{
-			"name": fmt.Sprintf("connector-connect-%s", httpProxy.Name),
-			"match": map[string]any{
+			jsonKeyName: fmt.Sprintf("connector-connect-%s", httpProxy.Name),
+			jsonKeyMatch: map[string]any{
 				"connect_matcher": map[string]any{},
 			},
 			"route": map[string]any{
@@ -386,12 +386,12 @@ func buildConnectorOfflineEnvoyPatches(
 	eligibleHTTPSListeners sets.Set[string],
 ) ([]envoygatewayv1alpha1.EnvoyJSONPatchConfig, error) {
 	route := map[string]any{
-		"name": fmt.Sprintf("connector-offline-%s", httpProxy.Name),
-		"match": map[string]any{
+		jsonKeyName: fmt.Sprintf("connector-offline-%s", httpProxy.Name),
+		jsonKeyMatch: map[string]any{
 			"connect_matcher": map[string]any{},
 		},
 		"direct_response": map[string]any{
-			"status": 503,
+			jsonKeyStatus: 503,
 			"body": map[string]any{
 				"inline_string": "Tunnel not online",
 			},
@@ -406,10 +406,10 @@ func buildConnectorOfflineEnvoyPatches(
 	patches := make([]envoygatewayv1alpha1.EnvoyJSONPatchConfig, 0)
 	for _, routeConfigName := range gatewayHTTPSRouteConfigNames(downstreamNamespace, gateway, eligibleHTTPSListeners) {
 		patches = append(patches, envoygatewayv1alpha1.EnvoyJSONPatchConfig{
-			Type: "type.googleapis.com/envoy.config.route.v3.RouteConfiguration",
+			Type: routeConfigurationTypeURL,
 			Name: routeConfigName,
 			Operation: envoygatewayv1alpha1.JSONPatchOperation{
-				Op:    envoygatewayv1alpha1.JSONPatchOperationType("add"),
+				Op:    envoygatewayv1alpha1.JSONPatchOperationType(jsonPatchOpAdd),
 				Path:  ptr.To("/virtual_hosts/0/routes/0"),
 				Value: &apiextensionsv1.JSON{Raw: routeValue},
 			},

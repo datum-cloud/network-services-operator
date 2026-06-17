@@ -209,7 +209,3 @@ type ConnectorList struct {
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []Connector `json:"items"`
 }
-
-func init() {
-	SchemeBuilder.Register(&Connector{}, &ConnectorList{})
-}

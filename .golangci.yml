@@ -37,6 +37,17 @@ linters:
           - dupl
           - lll
         path: internal/*
+      # Repeated string literals in tests are usually fixture/table data;
+      # extracting them to constants hurts readability more than it helps.
+      - linters:
+          - goconst
+        path: _test\.go
+      # The validation packages are built almost entirely from field.ErrorList
+      # accumulators that hold a handful of errors; preallocating them adds noise
+      # without meaningful benefit.
+      - linters:
+          - prealloc
+        path: internal/validation
     paths:
       - third_party$
       - builtin$

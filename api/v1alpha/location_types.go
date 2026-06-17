@@ -106,7 +106,3 @@ type LocationReference struct {
 	// +kubebuilder:validation:Required
 	Namespace string `json:"namespace"`
 }
-
-func init() {
-	SchemeBuilder.Register(&Location{}, &LocationList{})
-}

@@ -120,7 +120,3 @@ type LocalNetworkRef struct {
 	// +kubebuilder:validation:Required
 	Name string `json:"name,omitempty"`
 }
-
-func init() {
-	SchemeBuilder.Register(&Network{}, &NetworkList{})
-}

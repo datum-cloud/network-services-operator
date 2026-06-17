@@ -90,8 +90,8 @@ func validateHTTPProxyRuleBackend(backend networkingv1alpha.HTTPProxyRuleBackend
 	if err != nil {
 		allErrs = append(allErrs, field.Invalid(endpointFieldPath, backend.Endpoint, fmt.Sprintf("invalid endpoint: %s", err)))
 	} else {
-		if u.Scheme != "http" && u.Scheme != "https" {
-			allErrs = append(allErrs, field.NotSupported(endpointFieldPath.Key("scheme"), u.Scheme, []string{"http", "https"}))
+		if u.Scheme != schemeHTTP && u.Scheme != schemeHTTPS {
+			allErrs = append(allErrs, field.NotSupported(endpointFieldPath.Key("scheme"), u.Scheme, []string{schemeHTTP, schemeHTTPS}))
 		}
 
 		if u.User != nil {
@@ -126,7 +126,7 @@ func validateHTTPProxyRuleBackend(backend networkingv1alpha.HTTPProxyRuleBackend
 		}
 
 		// HTTPS endpoints with IP addresses require tls.hostname for certificate validation
-		if u.Scheme == "https" && isIPAddress {
+		if u.Scheme == schemeHTTPS && isIPAddress {
 			if backend.TLS == nil || backend.TLS.Hostname == nil || *backend.TLS.Hostname == "" {
 				allErrs = append(allErrs, field.Required(fldPath.Child("tls", "hostname"), "tls.hostname is required for HTTPS endpoints with IP addresses"))
 			}

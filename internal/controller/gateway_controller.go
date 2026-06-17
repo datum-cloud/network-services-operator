@@ -33,11 +33,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
-	gatewayv1alpha2 "sigs.k8s.io/gateway-api/apis/v1alpha2"
-	gatewayv1alpha3 "sigs.k8s.io/gateway-api/apis/v1alpha3"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mchandler "sigs.k8s.io/multicluster-runtime/pkg/handler"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
+	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 	mcsource "sigs.k8s.io/multicluster-runtime/pkg/source"
 
@@ -134,11 +133,11 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 		return ctrl.Result{}, nil
 	}
 
-	downstreamStrategy := downstreamclient.NewMappedNamespaceResourceStrategy(req.ClusterName, cl.GetClient(), r.DownstreamCluster.GetClient())
+	downstreamStrategy := downstreamclient.NewMappedNamespaceResourceStrategy(string(req.ClusterName), cl.GetClient(), r.DownstreamCluster.GetClient())
 
 	if !gateway.DeletionTimestamp.IsZero() {
 		if controllerutil.ContainsFinalizer(&gateway, gatewayControllerFinalizer) {
-			if result := r.finalizeGateway(ctx, req.ClusterName, cl.GetClient(), &gateway, downstreamStrategy); result.ShouldReturn() {
+			if result := r.finalizeGateway(ctx, string(req.ClusterName), cl.GetClient(), &gateway, downstreamStrategy); result.ShouldReturn() {
 				return result.Complete(ctx)
 			}
 
@@ -164,7 +163,7 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 	logger.Info("reconciling gateway")
 	defer logger.Info("reconcile complete")
 
-	result, _ := r.ensureDownstreamGateway(ctx, req.ClusterName, cl.GetClient(), &gateway, downstreamStrategy)
+	result, _ := r.ensureDownstreamGateway(ctx, string(req.ClusterName), cl.GetClient(), &gateway, downstreamStrategy)
 	if result.ShouldReturn() {
 		return result.Complete(ctx)
 	}
@@ -320,9 +319,12 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 		downstreamStrategy,
 		targetDomainHostnames,
 	)
-	if dnsResult.ShouldReturn() {
+	if dnsResult.Err != nil || dnsResult.StopProcessing {
 		return dnsResult.Merge(result), nil
 	}
+	// Carry RequeueAfter from dnsResult (e.g. IPs not yet available) without
+	// blocking downstream HTTPRoute creation or gateway status updates.
+	result = result.Merge(dnsResult)
 
 	hostnameStatuses, dnsProgramResult := r.ensureDNSRecordSets(
 		ctx,
@@ -341,13 +343,16 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 	}
 
 	gatewayStatusResult := r.reconcileGatewayStatus(
+		ctx,
 		upstreamClient,
 		upstreamGateway,
 		downstreamGateway,
 	)
-	if gatewayStatusResult.ShouldReturn() {
+	if gatewayStatusResult.Err != nil || gatewayStatusResult.StopProcessing {
 		return gatewayStatusResult.Merge(result), nil
 	}
+	// Carry RequeueAfter from gatewayStatusResult (e.g. downstream not yet programmed)
+	// without blocking HTTPRoute creation.
 	result = result.Merge(gatewayStatusResult)
 
 	httpRouteResult := r.ensureDownstreamGatewayHTTPRoutes(
@@ -414,7 +419,7 @@ func (r *GatewayReconciler) getDesiredDownstreamGateway(
 
 				tlsMode := gatewayv1.TLSModeTerminate
 				if useSharedTLS {
-					listenerCopy.TLS = &gatewayv1.GatewayTLSConfig{
+					listenerCopy.TLS = &gatewayv1.ListenerTLSConfig{
 						Mode: &tlsMode,
 						CertificateRefs: []gatewayv1.SecretObjectReference{
 							{
@@ -427,7 +432,7 @@ func (r *GatewayReconciler) getDesiredDownstreamGateway(
 				} else {
 					// Secret name must match the Certificate created by
 					// ensureListenerCertificates for this listener.
-					listenerCopy.TLS = &gatewayv1.GatewayTLSConfig{
+					listenerCopy.TLS = &gatewayv1.ListenerTLSConfig{
 						Mode: &tlsMode,
 						CertificateRefs: []gatewayv1.SecretObjectReference{
 							{
@@ -670,14 +675,21 @@ func (r *GatewayReconciler) ensureListenerCertificates(
 }
 
 func (r *GatewayReconciler) reconcileGatewayStatus(
+	ctx context.Context,
 	upstreamClient client.Client,
 	upstreamGateway *gatewayv1.Gateway,
 	downstreamGateway *gatewayv1.Gateway,
 ) (result Result) {
+	logger := log.FromContext(ctx)
+
+	acceptedReady := false
+	programmedReady := false
+
 	if c := apimeta.FindStatusCondition(downstreamGateway.Status.Conditions, string(gatewayv1.GatewayConditionAccepted)); c != nil {
 		message := "The Gateway has not been scheduled by Datum Gateway"
 		if c.Status == metav1.ConditionTrue {
 			message = "The Gateway has been scheduled by Datum Gateway"
+			acceptedReady = true
 		}
 
 		apimeta.SetStatusCondition(&upstreamGateway.Status.Conditions, metav1.Condition{
@@ -695,6 +707,7 @@ func (r *GatewayReconciler) reconcileGatewayStatus(
 		message := "The Gateway has not been programmed"
 		if c.Status == metav1.ConditionTrue {
 			message = "The Gateway has been programmed"
+			programmedReady = true
 		}
 
 		apimeta.SetStatusCondition(&upstreamGateway.Status.Conditions, metav1.Condition{
@@ -706,6 +719,17 @@ func (r *GatewayReconciler) reconcileGatewayStatus(
 		})
 
 		result.AddStatusUpdate(upstreamClient, upstreamGateway)
+	}
+
+	// If the downstream gateway hasn't been scheduled and programmed yet,
+	// requeue after a short delay. This handles cache-staleness races where
+	// the downstream watch fires before the cache reflects EG's status update
+	// (same pattern as the IP-address requeue in ensureDownstreamGatewayDNSEndpoints).
+	if !acceptedReady || !programmedReady {
+		logger.Info("downstream gateway not yet accepted/programmed, requeueing",
+			"accepted", acceptedReady, "programmed", programmedReady,
+			"downstream_conditions", len(downstreamGateway.Status.Conditions))
+		result.RequeueAfter = 5 * time.Second
 	}
 
 	return result
@@ -1043,13 +1067,17 @@ func (r *GatewayReconciler) ensureDownstreamGatewayDNSEndpoints(
 		}
 	}
 
-	// Return early if no IP addresses were found
+	// Return early if no IP addresses were found. Requeue after a short delay
+	// so we don't rely solely on the downstream Gateway watch to re-trigger
+	// reconciliation (the watch may fire before the cache reflects the status
+	// update, leaving us with stale data on this cycle).
 	if (r.Config.Gateway.IPv4Enabled() && len(v4IPs) == 0) || (r.Config.Gateway.IPv6Enabled() && len(v6IPs) == 0) {
 		logger.Info(
 			"IP addresses not yet available on downstream gateway",
 			"ipv4", v4IPs, "ipv4_enabled", r.Config.Gateway.IPv4Enabled(),
 			"ipv6", v6IPs, "ipv6_enabled", r.Config.Gateway.IPv6Enabled(),
 		)
+		result.RequeueAfter = 5 * time.Second
 		return result
 	}
 
@@ -1587,8 +1615,8 @@ func (r *GatewayReconciler) ensureDownstreamHTTPRoute(
 				obj.AddressType = desiredEndpointSlice.AddressType
 				obj.Endpoints = desiredEndpointSlice.Endpoints
 				obj.Ports = desiredEndpointSlice.Ports
-			case *gatewayv1alpha3.BackendTLSPolicy:
-				obj.Spec = desiredDownstreamResource.(*gatewayv1alpha3.BackendTLSPolicy).Spec
+			case *gatewayv1.BackendTLSPolicy:
+				obj.Spec = desiredDownstreamResource.(*gatewayv1.BackendTLSPolicy).Spec
 			}
 			return nil
 		})
@@ -1888,25 +1916,26 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 						return nil, nil, nil, fmt.Errorf("no hostname found in URLRewrite filters or EndpointSlice annotation on backendRef or Route %q", upstreamRoute.Name)
 					}
 
-					backendTLSPolicy := &gatewayv1alpha3.BackendTLSPolicy{
+					// BackendTLSPolicy graduated from v1alpha3 to v1 in gateway-api v1.5.
+					backendTLSPolicy := &gatewayv1.BackendTLSPolicy{
 						ObjectMeta: metav1.ObjectMeta{
 							Namespace: downstreamGateway.Namespace,
 							Name:      resourceName,
 						},
-						Spec: gatewayv1alpha3.BackendTLSPolicySpec{
-							TargetRefs: []gatewayv1alpha2.LocalPolicyTargetReferenceWithSectionName{
+						Spec: gatewayv1.BackendTLSPolicySpec{
+							TargetRefs: []gatewayv1.LocalPolicyTargetReferenceWithSectionName{
 								// TODO(jreese): We may have multiple ports that we need to set
 								// the policy on.
 								{
-									LocalPolicyTargetReference: gatewayv1alpha2.LocalPolicyTargetReference{
+									LocalPolicyTargetReference: gatewayv1.LocalPolicyTargetReference{
 										Kind: gatewayv1.Kind(KindService),
 										Name: gatewayv1.ObjectName(downstreamService.Name),
 									},
 									SectionName: ptr.To(gatewayv1.SectionName(*endpointPort.Name)),
 								},
 							},
-							Validation: gatewayv1alpha3.BackendTLSPolicyValidation{
-								WellKnownCACertificates: ptr.To(gatewayv1alpha3.WellKnownCACertificatesSystem),
+							Validation: gatewayv1.BackendTLSPolicyValidation{
+								WellKnownCACertificates: ptr.To(gatewayv1.WellKnownCACertificatesSystem),
 								Hostname:                *hostname,
 							},
 						},
@@ -1919,7 +1948,7 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 					// was https) must be removed. The policy name is deterministic
 					// from the route UID and backend indices, so we can target it
 					// directly without listing.
-					downstreamResourcesToDelete = append(downstreamResourcesToDelete, &gatewayv1alpha3.BackendTLSPolicy{
+					downstreamResourcesToDelete = append(downstreamResourcesToDelete, &gatewayv1.BackendTLSPolicy{
 						ObjectMeta: metav1.ObjectMeta{
 							Namespace: downstreamGateway.Namespace,
 							Name:      resourceName,
@@ -2053,7 +2082,7 @@ func (r *GatewayReconciler) listGatewaysAttachedByHTTPRoute(ctx context.Context,
 
 // listGatewaysAttachedByDownstreamHTTPRoute enqueues reconciliation requests for Gateways
 // referenced by a downstream HTTPRoute's ParentRefs.
-func (r *GatewayReconciler) listGatewaysAttachedByDownstreamHTTPRoute(clusterName string, cl cluster.Cluster) handler.TypedEventHandler[*gatewayv1.HTTPRoute, mcreconcile.Request] {
+func (r *GatewayReconciler) listGatewaysAttachedByDownstreamHTTPRoute(clusterName multicluster.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[*gatewayv1.HTTPRoute, mcreconcile.Request] {
 	return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, httpRoute *gatewayv1.HTTPRoute) []mcreconcile.Request {
 		logger := log.FromContext(ctx)
 		logger.Info("enqueueing upstream gateway for downstream httproute", "name", httpRoute.Name)
@@ -2068,7 +2097,7 @@ func (r *GatewayReconciler) listGatewaysAttachedByDownstreamHTTPRoute(clusterNam
 							Name:      string(parentRef.Name),
 						},
 					},
-					ClusterName: strings.TrimPrefix(strings.ReplaceAll(httpRoute.Labels[downstreamclient.UpstreamOwnerClusterNameLabel], "_", "/"), "cluster-"),
+					ClusterName: multicluster.ClusterName(strings.TrimPrefix(strings.ReplaceAll(httpRoute.Labels[downstreamclient.UpstreamOwnerClusterNameLabel], "_", "/"), "cluster-")),
 				})
 
 			}
@@ -2090,7 +2119,7 @@ func (r *GatewayReconciler) listGatewaysAttachedByDownstreamHTTPRoute(clusterNam
 //
 // This ensures that Gateway resources are automatically updated when their backend EndpointSlices
 // change, maintaining proper traffic routing and load balancing.
-func (r *GatewayReconciler) listGatewaysForEndpointSliceFunc(clusterName string, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
+func (r *GatewayReconciler) listGatewaysForEndpointSliceFunc(clusterName multicluster.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
 	return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []mcreconcile.Request {
 		endpointSlice := obj.(*discoveryv1.EndpointSlice)
 		logger := log.FromContext(ctx)
@@ -2136,7 +2165,7 @@ func (r *GatewayReconciler) listGatewaysForEndpointSliceFunc(clusterName string,
 	})
 }
 
-func (r *GatewayReconciler) listGatewaysForDomainFunc(clusterName string, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
+func (r *GatewayReconciler) listGatewaysForDomainFunc(clusterName multicluster.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
 	return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []mcreconcile.Request {
 		domain := obj.(*networkingv1alpha.Domain)
 
@@ -2178,7 +2207,7 @@ func (r *GatewayReconciler) listGatewaysForDomainFunc(clusterName string, cl clu
 	})
 }
 
-func (r *GatewayReconciler) listGatewaysForHTTPRouteFilterFunc(clusterName string, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
+func (r *GatewayReconciler) listGatewaysForHTTPRouteFilterFunc(clusterName multicluster.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
 	return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []mcreconcile.Request {
 		httpRouteFilter := obj.(*envoygatewayv1alpha1.HTTPRouteFilter)
 

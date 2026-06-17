@@ -23,8 +23,8 @@ import (
 
 // SetupHTTPProxyWebhookWithManager registers the webhook for HTTPProxy in the manager.
 func SetupHTTPProxyWebhookWithManager(mgr mcmanager.Manager) error {
-	return ctrl.NewWebhookManagedBy(mgr.GetLocalManager()).For(&networkingv1alpha.HTTPProxy{}).
-		WithValidator(&HTTPProxyCustomValidator{mgr: mgr}).
+	return ctrl.NewWebhookManagedBy(mgr.GetLocalManager(), &networkingv1alpha.HTTPProxy{}).
+		WithCustomValidator(&HTTPProxyCustomValidator{mgr: mgr}).
 		Complete()
 }
 

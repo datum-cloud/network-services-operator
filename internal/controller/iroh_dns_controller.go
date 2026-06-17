@@ -26,6 +26,7 @@ import (
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mchandler "sigs.k8s.io/multicluster-runtime/pkg/handler"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
+	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 	mcsource "sigs.k8s.io/multicluster-runtime/pkg/source"
 
@@ -123,7 +124,7 @@ func (r *IrohDNSReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 		return ctrl.Result{}, nil
 	}
 
-	desired, ok, err := r.buildDesiredRecordSet(req.ClusterName, &connector)
+	desired, ok, err := r.buildDesiredRecordSet(string(req.ClusterName), &connector)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -407,14 +408,14 @@ func (r *IrohDNSReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 
 	downstreamSource := mcsource.Kind(
 		&dnsv1alpha1.DNSRecordSet{},
-		func(_ string, _ cluster.Cluster) handler.TypedEventHandler[*dnsv1alpha1.DNSRecordSet, mcreconcile.Request] {
+		func(_ multicluster.ClusterName, _ cluster.Cluster) handler.TypedEventHandler[*dnsv1alpha1.DNSRecordSet, mcreconcile.Request] {
 			return handler.TypedEnqueueRequestsFromMapFunc(func(_ context.Context, drs *dnsv1alpha1.DNSRecordSet) []mcreconcile.Request {
 				name := drs.Labels[irohDNSConnectorNameLabel]
 				ns := drs.Labels[irohDNSConnectorNamespaceLabel]
 				if name == "" || ns == "" {
 					return nil
 				}
-				clusterName := decodeIrohClusterLabel(drs.Labels[irohDNSConnectorClusterLabel])
+				clusterName := multicluster.ClusterName(decodeIrohClusterLabel(drs.Labels[irohDNSConnectorClusterLabel]))
 				return []mcreconcile.Request{{
 					ClusterName: clusterName,
 					Request:     ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: name}},
@@ -428,7 +429,7 @@ func (r *IrohDNSReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 		For(&networkingv1alpha1.Connector{}).
 		Watches(
 			&networkingv1alpha1.ConnectorClass{},
-			func(clusterName string, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
+			func(clusterName multicluster.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
 				return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []mcreconcile.Request {
 					logger := log.FromContext(ctx)
 					class, ok := obj.(*networkingv1alpha1.ConnectorClass)

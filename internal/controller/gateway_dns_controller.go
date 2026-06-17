@@ -22,6 +22,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
+	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
@@ -601,7 +602,7 @@ func operationResultVerb(result controllerutil.OperationResult) string {
 // Gateway in the same namespace whenever a DNSZone changes. This ensures the
 // controller re-evaluates DNS record status when a zone becomes ready or is
 // deleted.
-func (r *GatewayReconciler) listGatewaysForDNSZoneFunc(clusterName string, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
+func (r *GatewayReconciler) listGatewaysForDNSZoneFunc(clusterName multicluster.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
 	return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []mcreconcile.Request {
 		dnsZone := obj.(*dnsv1alpha1.DNSZone)
 		logger := log.FromContext(ctx)
@@ -629,7 +630,7 @@ func (r *GatewayReconciler) listGatewaysForDNSZoneFunc(clusterName string, cl cl
 // the owning Gateway whenever a DNSRecordSet changes. The owning gateway is
 // identified via the dns.datumapis.com/source-name and
 // dns.datumapis.com/source-namespace labels written by this controller.
-func (r *GatewayReconciler) listGatewaysForDNSRecordSetFunc(clusterName string, _ cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
+func (r *GatewayReconciler) listGatewaysForDNSRecordSetFunc(clusterName multicluster.ClusterName, _ cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
 	return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []mcreconcile.Request {
 		rs := obj.(*dnsv1alpha1.DNSRecordSet)
 		logger := log.FromContext(ctx)

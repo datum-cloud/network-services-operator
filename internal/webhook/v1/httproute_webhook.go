@@ -23,8 +23,8 @@ import (
 
 // SetupHTTPRouteWebhookWithManager registers the webhook for HTTPRoute in the manager.
 func SetupHTTPRouteWebhookWithManager(mgr mcmanager.Manager, cfg config.NetworkServicesOperator) error {
-	return ctrl.NewWebhookManagedBy(mgr.GetLocalManager()).For(&gatewaynetworkingk8siov1.HTTPRoute{}).
-		WithValidator(&HTTPRouteCustomValidator{mgr: mgr, validationOpts: cfg.Gateway.HTTPRoutes}).
+	return ctrl.NewWebhookManagedBy(mgr.GetLocalManager(), &gatewaynetworkingk8siov1.HTTPRoute{}).
+		WithCustomValidator(&HTTPRouteCustomValidator{mgr: mgr, validationOpts: cfg.Gateway.HTTPRoutes}).
 		Complete()
 }
 

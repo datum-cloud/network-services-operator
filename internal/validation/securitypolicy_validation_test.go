@@ -7,13 +7,11 @@ import (
 	envoygatewayv1alpha1 "github.com/envoyproxy/gateway/api/v1alpha1"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
+	"go.datum.net/network-services-operator/internal/config"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/utils/ptr"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
-	gatewayv1alpha2 "sigs.k8s.io/gateway-api/apis/v1alpha2"
-
-	"go.datum.net/network-services-operator/internal/config"
 )
 
 func TestValidateSecurityPolicy(t *testing.T) {
@@ -26,7 +24,7 @@ func TestValidateSecurityPolicy(t *testing.T) {
 			securityPolicy: &envoygatewayv1alpha1.SecurityPolicy{
 				Spec: envoygatewayv1alpha1.SecurityPolicySpec{
 					PolicyTargetReferences: envoygatewayv1alpha1.PolicyTargetReferences{
-						TargetRef: &gatewayv1alpha2.LocalPolicyTargetReferenceWithSectionName{
+						TargetRef: &gatewayv1.LocalPolicyTargetReferenceWithSectionName{
 							SectionName: ptr.To(gatewayv1.SectionName("test")),
 						},
 					},
@@ -351,6 +349,71 @@ func TestValidateSecurityPolicy(t *testing.T) {
 			},
 			expectedErrors: field.ErrorList{
 				field.TooMany(field.NewPath("spec", "authorization", "rules").Index(0).Child("principal", "clientCIDRs"), 3, 2),
+			},
+		},
+		// SSRF / egress hardening – OIDC provider URL checks
+		"oidc provider issuer - http scheme rejected": {
+			securityPolicy: &envoygatewayv1alpha1.SecurityPolicy{
+				Spec: envoygatewayv1alpha1.SecurityPolicySpec{
+					OIDC: &envoygatewayv1alpha1.OIDC{
+						Provider: envoygatewayv1alpha1.OIDCProvider{
+							// "http://x" produces two errors: one NotSupported at [scheme]
+							// because the scheme is not https, and one Invalid at [host]
+							// because "x" is a single-label name that fails FQDN validation.
+							Issuer: "http://x",
+						},
+					},
+				},
+			},
+			expectedErrors: field.ErrorList{
+				field.NotSupported(field.NewPath("spec", "oidc", "provider", "issuer").Key("scheme"), "", []string{"https"}),
+				field.Invalid(field.NewPath("spec", "oidc", "provider", "issuer").Key("host"), "", ""),
+			},
+		},
+		"oidc provider issuer - link-local IP rejected": {
+			securityPolicy: &envoygatewayv1alpha1.SecurityPolicy{
+				Spec: envoygatewayv1alpha1.SecurityPolicySpec{
+					OIDC: &envoygatewayv1alpha1.OIDC{
+						Provider: envoygatewayv1alpha1.OIDCProvider{
+							Issuer: "https://169.254.169.254/",
+						},
+					},
+				},
+			},
+			expectedErrors: field.ErrorList{
+				field.Invalid(field.NewPath("spec", "oidc", "provider", "issuer").Key("host"), "", ""),
+			},
+		},
+		"oidc provider issuer - valid https URL is allowed": {
+			securityPolicy: &envoygatewayv1alpha1.SecurityPolicy{
+				Spec: envoygatewayv1alpha1.SecurityPolicySpec{
+					OIDC: &envoygatewayv1alpha1.OIDC{
+						Provider: envoygatewayv1alpha1.OIDCProvider{
+							Issuer: "https://accounts.example.com",
+						},
+					},
+				},
+			},
+			expectedErrors: field.ErrorList{},
+		},
+		// SSRF / egress hardening – JWT RemoteJWKS URI checks
+		"jwt remoteJWKS uri - link-local IP rejected": {
+			securityPolicy: &envoygatewayv1alpha1.SecurityPolicy{
+				Spec: envoygatewayv1alpha1.SecurityPolicySpec{
+					JWT: &envoygatewayv1alpha1.JWT{
+						Providers: []envoygatewayv1alpha1.JWTProvider{
+							{
+								Name: "test-provider",
+								RemoteJWKS: &envoygatewayv1alpha1.RemoteJWKS{
+									URI: "https://169.254.169.254/keys",
+								},
+							},
+						},
+					},
+				},
+			},
+			expectedErrors: field.ErrorList{
+				field.Invalid(field.NewPath("spec", "jwt", "providers").Index(0).Child("remoteJWKS", "uri").Key("host"), "", ""),
 			},
 		},
 	}

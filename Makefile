@@ -253,7 +253,7 @@ CRDOC_VERSION ?= v0.6.4
 KIND_VERSION ?= v0.27.0
 
 # renovate: datasource=go depName=github.com/kyverno/chainsaw
-CHAINSAW_VERSION ?= v0.2.13
+CHAINSAW_VERSION ?= v0.2.15
 
 # renovate: datasource=go depName=github.com/cert-manager/cmctl/v2
 CMCTL_VERSION ?= v2.1.1

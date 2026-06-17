@@ -223,7 +223,9 @@ func validateBackendTrafficPolicyRateLimit(rateLimit *envoygatewayv1alpha1.RateL
 
 	allErrs := field.ErrorList{}
 
-	if rateLimit.Type != envoygatewayv1alpha1.LocalRateLimitType {
+	// Type is now a pointer (deprecated in EG v1.8.1 in favour of explicit Global/Local fields).
+	// Only validate if explicitly set.
+	if rateLimit.Type != nil && *rateLimit.Type != envoygatewayv1alpha1.LocalRateLimitType {
 		allErrs = append(allErrs, field.NotSupported(fldPath.Child("type"), rateLimit.Type, []envoygatewayv1alpha1.RateLimitType{envoygatewayv1alpha1.LocalRateLimitType}))
 	}
 

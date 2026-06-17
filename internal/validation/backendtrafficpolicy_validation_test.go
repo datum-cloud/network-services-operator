@@ -12,8 +12,6 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/utils/ptr"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
-	gatewayv1alpha2 "sigs.k8s.io/gateway-api/apis/v1alpha2"
-
 	"go.datum.net/network-services-operator/internal/config"
 )
 
@@ -27,7 +25,7 @@ func TestValidateBackendTrafficPolicy(t *testing.T) {
 			backendTrafficPolicy: &envoygatewayv1alpha1.BackendTrafficPolicy{
 				Spec: envoygatewayv1alpha1.BackendTrafficPolicySpec{
 					PolicyTargetReferences: envoygatewayv1alpha1.PolicyTargetReferences{
-						TargetRef: &gatewayv1alpha2.LocalPolicyTargetReferenceWithSectionName{
+						TargetRef: &gatewayv1.LocalPolicyTargetReferenceWithSectionName{
 							SectionName: ptr.To(gatewayv1.SectionName("test")),
 						},
 					},
@@ -299,7 +297,7 @@ func TestValidateBackendTrafficPolicy(t *testing.T) {
 			backendTrafficPolicy: &envoygatewayv1alpha1.BackendTrafficPolicy{
 				Spec: envoygatewayv1alpha1.BackendTrafficPolicySpec{
 					RateLimit: &envoygatewayv1alpha1.RateLimitSpec{
-						Type:   envoygatewayv1alpha1.GlobalRateLimitType,
+						Type:   ptr.To(envoygatewayv1alpha1.GlobalRateLimitType),
 						Global: &envoygatewayv1alpha1.GlobalRateLimit{},
 					},
 				},

@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"net/http"
 	"net/url"
 	"slices"
 	"strconv"
@@ -31,9 +30,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
-	gatewayv1alpha2 "sigs.k8s.io/gateway-api/apis/v1alpha2"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
+	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 	mcsource "sigs.k8s.io/multicluster-runtime/pkg/source"
 
@@ -107,7 +106,7 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 
 	if !httpProxy.DeletionTimestamp.IsZero() {
 		if controllerutil.ContainsFinalizer(&httpProxy, httpProxyFinalizer) {
-			if err := r.cleanupConnectorEnvoyPatchPolicy(ctx, cl.GetClient(), req.ClusterName, &httpProxy); err != nil {
+			if err := r.cleanupConnectorEnvoyPatchPolicy(ctx, cl.GetClient(), string(req.ClusterName), &httpProxy); err != nil {
 				return ctrl.Result{}, err
 			}
 			controllerutil.RemoveFinalizer(&httpProxy, httpProxyFinalizer)
@@ -327,7 +326,7 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 	patchPolicy, hasConnectorBackends, err := r.reconcileConnectorEnvoyPatchPolicy(
 		ctx,
 		cl.GetClient(),
-		req.ClusterName,
+		string(req.ClusterName),
 		&httpProxy,
 		gateway,
 	)
@@ -387,7 +386,7 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 		apimeta.RemoveStatusCondition(&httpProxyCopy.Status.Conditions, networkingv1alpha.HTTPProxyConditionConnectorMetadataProgrammed)
 	}
 
-	r.reconcileHTTPProxyHostnameStatus(ctx, cl.GetClient(), gateway, httpProxyCopy, req.ClusterName)
+	r.reconcileHTTPProxyHostnameStatus(ctx, cl.GetClient(), gateway, httpProxyCopy, string(req.ClusterName))
 
 	return ctrl.Result{}, nil
 }
@@ -530,7 +529,7 @@ func (r *HTTPProxyReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 		// publicKey.id changes (e.g., after connector restart/reconnect).
 		Watches(
 			&networkingv1alpha1.Connector{},
-			func(clusterName string, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
+			func(clusterName multicluster.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
 				return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []mcreconcile.Request {
 					logger := log.FromContext(ctx)
 
@@ -596,8 +595,8 @@ func (r *HTTPProxyReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 // enqueueHTTPProxyForDownstreamCertificate returns a watch handler that enqueues
 // the HTTPProxy (same name/namespace as the owning Gateway) when a downstream
 // cert-manager Certificate changes, so certificate status is updated.
-func (r *HTTPProxyReconciler) enqueueHTTPProxyForDownstreamCertificate() func(clusterName string, cl cluster.Cluster) handler.TypedEventHandler[*unstructured.Unstructured, mcreconcile.Request] {
-	return func(_ string, cl cluster.Cluster) handler.TypedEventHandler[*unstructured.Unstructured, mcreconcile.Request] {
+func (r *HTTPProxyReconciler) enqueueHTTPProxyForDownstreamCertificate() func(clusterName multicluster.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[*unstructured.Unstructured, mcreconcile.Request] {
+	return func(_ multicluster.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[*unstructured.Unstructured, mcreconcile.Request] {
 		return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, cert *unstructured.Unstructured) []mcreconcile.Request {
 			logger := log.FromContext(ctx)
 			ownerRef := metav1.GetControllerOf(cert)
@@ -623,7 +622,7 @@ func (r *HTTPProxyReconciler) enqueueHTTPProxyForDownstreamCertificate() func(cl
 			if upstreamNs == "" || upstreamName == "" || upstreamCluster == "" {
 				return nil
 			}
-			clusterName := strings.TrimPrefix(strings.ReplaceAll(upstreamCluster, "_", "/"), "cluster-")
+			clusterName := multicluster.ClusterName(strings.TrimPrefix(strings.ReplaceAll(upstreamCluster, "_", "/"), "cluster-"))
 			return []mcreconcile.Request{{
 				ClusterName: clusterName,
 				Request:     ctrl.Request{NamespacedName: types.NamespacedName{Namespace: upstreamNs, Name: upstreamName}},
@@ -749,7 +748,7 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 					From: ptr.To(gatewayv1.NamespacesFromSame),
 				},
 			},
-			TLS: &gatewayv1.GatewayTLSConfig{
+			TLS: &gatewayv1.ListenerTLSConfig{
 				Mode:    ptr.To(gatewayv1.TLSModeTerminate),
 				Options: r.Config.Gateway.ListenerTLSOptions,
 			},
@@ -796,23 +795,18 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 					return nil, err
 				}
 				if !ready {
-					filterName := connectorOfflineFilterName(httpProxy)
-					ruleFilters = append(ruleFilters, gatewayv1.HTTPRouteFilter{
-						Type: gatewayv1.HTTPRouteFilterExtensionRef,
-						ExtensionRef: &gatewayv1.LocalObjectReference{
-							Group: envoygatewayv1alpha1.GroupName,
-							Kind:  envoygatewayv1alpha1.KindHTTPRouteFilter,
-							Name:  gatewayv1.ObjectName(filterName),
-						},
-					})
+					// Connector is offline: keep the route rule with no backends so EG
+					// can translate it (creating virtual_hosts). The connector EPP
+					// (buildConnectorOfflineEnvoyPatches) inserts a direct_response CONNECT
+					// route at the front, which is the canonical offline-503 mechanism.
+					// Do NOT add an ExtensionRef→HTTPRouteFilter.DirectResponse here:
+					// EG v1.7.3 cannot translate that filter shape and the HTTPRoute
+					// status would show UnsupportedValue, preventing EPP programming.
 					desiredRouteRules[ruleIndex] = gatewayv1.HTTPRouteRule{
 						Name:        rule.Name,
 						Matches:     rule.Matches,
 						Filters:     ruleFilters,
 						BackendRefs: nil,
-					}
-					if len(desiredRouteFilters) == 0 {
-						desiredRouteFilters = append(desiredRouteFilters, buildConnectorOfflineHTTPRouteFilter(httpProxy))
 					}
 					offlineRuleSet = true
 					break
@@ -1556,7 +1550,7 @@ func (r *HTTPProxyReconciler) reconcileConnectorEnvoyPatchPolicy(
 			return err
 		}
 		policy.Spec = envoygatewayv1alpha1.EnvoyPatchPolicySpec{
-			TargetRef: gatewayv1alpha2.LocalPolicyTargetReference{
+			TargetRef: gatewayv1.LocalPolicyTargetReference{
 				Group: gatewayv1.GroupName,
 				Kind:  "GatewayClass",
 				Name:  gatewayv1.ObjectName(r.Config.Gateway.DownstreamGatewayClassName),
@@ -1761,25 +1755,6 @@ func backendEndpointTarget(backend networkingv1alpha.HTTPProxyRuleBackend) (stri
 
 func connectorOfflineFilterName(httpProxy *networkingv1alpha.HTTPProxy) string {
 	return fmt.Sprintf("%s-%s", connectorOfflineFilterPrefix, httpProxy.Name)
-}
-
-func buildConnectorOfflineHTTPRouteFilter(httpProxy *networkingv1alpha.HTTPProxy) *envoygatewayv1alpha1.HTTPRouteFilter {
-	return &envoygatewayv1alpha1.HTTPRouteFilter{
-		ObjectMeta: metav1.ObjectMeta{
-			Namespace: httpProxy.Namespace,
-			Name:      connectorOfflineFilterName(httpProxy),
-		},
-		Spec: envoygatewayv1alpha1.HTTPRouteFilterSpec{
-			DirectResponse: &envoygatewayv1alpha1.HTTPDirectResponseFilter{
-				ContentType: ptr.To("text/plain; charset=utf-8"),
-				StatusCode:  ptr.To(http.StatusServiceUnavailable),
-				Body: &envoygatewayv1alpha1.CustomResponseBody{
-					Type:   ptr.To(envoygatewayv1alpha1.ResponseValueTypeInline),
-					Inline: ptr.To("Tunnel not online"),
-				},
-			},
-		},
-	}
 }
 
 // httpProxyHasConnectorBackends returns true if any backend in the HTTPProxy

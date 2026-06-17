@@ -28,6 +28,7 @@ import (
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mchandler "sigs.k8s.io/multicluster-runtime/pkg/handler"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
+	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 	mcsource "sigs.k8s.io/multicluster-runtime/pkg/source"
 
@@ -145,7 +146,7 @@ func (r *GatewayResourceReplicatorReconciler) Reconcile(ctx context.Context, req
 	logger.Info("reconciling resource")
 	defer logger.Info("reconcile complete")
 
-	downstreamStrategy := downstreamclient.NewMappedNamespaceResourceStrategy(req.ClusterName, upstreamClient, r.DownstreamCluster.GetClient())
+	downstreamStrategy := downstreamclient.NewMappedNamespaceResourceStrategy(string(req.ClusterName), upstreamClient, r.DownstreamCluster.GetClient())
 
 	if !upstreamObj.GetDeletionTimestamp().IsZero() {
 		return r.finalizeResource(ctx, upstreamClient, upstreamObj, downstreamStrategy)
@@ -478,15 +479,16 @@ func transformGatewayEnvoyPolicyStatus(_ context.Context, upstreamNamespace stri
 }
 
 func defaultGatewayEnvoyReasonHandlers() conditionReasonHandlers {
+	// In gateway-api v1.5.1, policy condition constants moved from v1alpha2 to v1.
 	return conditionReasonHandlers{
-		string(gwapiv1alpha2.PolicyConditionAccepted): {
-			string(gwapiv1alpha2.PolicyReasonConflicted): {
+		string(gwapiv1.PolicyConditionAccepted): {
+			string(gwapiv1.PolicyReasonConflicted): {
 				Message: "conflicting policy attachments detected",
 			},
-			string(gwapiv1alpha2.PolicyReasonInvalid): {
+			string(gwapiv1.PolicyReasonInvalid): {
 				Message: "policy configuration is invalid",
 			},
-			string(gwapiv1alpha2.PolicyReasonTargetNotFound): {
+			string(gwapiv1.PolicyReasonTargetNotFound): {
 				Message: "referenced resource not found in upstream namespace",
 			},
 		},
@@ -591,7 +593,7 @@ func newUnstructuredForGVK(gvk schema.GroupVersionKind) *unstructured.Unstructur
 }
 
 func typedEnqueueDownstreamGVKRequest(gvk schema.GroupVersionKind) mchandler.TypedEventHandlerFunc[*unstructured.Unstructured, GVKRequest] {
-	return func(clusterName string, cl cluster.Cluster) handler.TypedEventHandler[*unstructured.Unstructured, GVKRequest] {
+	return func(clusterName multicluster.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[*unstructured.Unstructured, GVKRequest] {
 		return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, obj *unstructured.Unstructured) []GVKRequest {
 			labels := obj.GetLabels()
 			if labels == nil {
@@ -607,7 +609,7 @@ func typedEnqueueDownstreamGVKRequest(gvk schema.GroupVersionKind) mchandler.Typ
 				return nil
 			}
 
-			clusterName := strings.TrimPrefix(strings.ReplaceAll(clusterLabel, "_", "/"), "cluster-")
+			clusterName := multicluster.ClusterName(strings.TrimPrefix(strings.ReplaceAll(clusterLabel, "_", "/"), "cluster-"))
 
 			request := GVKRequest{
 				GVK: gvk,
@@ -631,7 +633,7 @@ func typedEnqueueRequestForGVK(
 	gvk schema.GroupVersionKind,
 	selector labels.Selector,
 ) mchandler.TypedEventHandlerFunc[client.Object, GVKRequest] {
-	return func(clusterName string, cl cluster.Cluster) handler.TypedEventHandler[client.Object, GVKRequest] {
+	return func(clusterName multicluster.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[client.Object, GVKRequest] {
 		return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []GVKRequest {
 			if selector != nil && !selector.Matches(labels.Set(obj.GetLabels())) {
 				return nil

@@ -23,6 +23,7 @@ import (
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mchandler "sigs.k8s.io/multicluster-runtime/pkg/handler"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
+	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	"go.datum.net/network-services-operator/internal/config"
@@ -43,12 +44,12 @@ type GVKRequest struct {
 }
 
 // Cluster returns the name of the cluster that the request belongs to.
-func (r GVKRequest) Cluster() string {
+func (r GVKRequest) Cluster() multicluster.ClusterName {
 	return r.ClusterName
 }
 
 // WithCluster sets the name of the cluster that the request belongs to.
-func (r GVKRequest) WithCluster(name string) GVKRequest {
+func (r GVKRequest) WithCluster(name multicluster.ClusterName) GVKRequest {
 	r.ClusterName = name
 	return r
 }
@@ -85,7 +86,7 @@ func (r *GatewayDownstreamGCReconciler) Reconcile(ctx context.Context, req GVKRe
 
 	logger.Info("garbage collecting downstream resources")
 
-	downstreamStrategy := downstreamclient.NewMappedNamespaceResourceStrategy(req.ClusterName, cl.GetClient(), r.DownstreamCluster.GetClient())
+	downstreamStrategy := downstreamclient.NewMappedNamespaceResourceStrategy(string(req.ClusterName), cl.GetClient(), r.DownstreamCluster.GetClient())
 
 	if err := downstreamStrategy.DeleteAnchorForObject(ctx, &obj); err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed deleting anchor: %w", err)
@@ -164,7 +165,7 @@ func (r *GatewayDownstreamGCReconciler) SetupWithManager(mgr mcmanager.Manager) 
 func TypedEnqueueRequestForObjectWithGVK(
 	obj client.Object,
 ) mchandler.TypedEventHandlerFunc[client.Object, GVKRequest] {
-	return func(clusterName string, cl cluster.Cluster) handler.TypedEventHandler[client.Object, GVKRequest] {
+	return func(clusterName multicluster.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[client.Object, GVKRequest] {
 		return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []GVKRequest {
 			// Only reconcile objects that are being deleted
 			if dt := obj.GetDeletionTimestamp(); dt.IsZero() {

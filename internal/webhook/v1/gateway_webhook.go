@@ -36,9 +36,9 @@ func SetupGatewayWebhookWithManager(mgr mcmanager.Manager, config config.Network
 		SkipHostnameFQDNValidation: config.Gateway.DisableHostnameVerification,
 	}
 
-	return ctrl.NewWebhookManagedBy(mgr.GetLocalManager()).For(&gatewayv1.Gateway{}).
-		WithValidator(&GatewayCustomValidator{mgr: mgr, validationOpts: validationOpts}).
-		WithDefaulter(&GatewayCustomDefaulter{mgr: mgr, config: config}).
+	return ctrl.NewWebhookManagedBy(mgr.GetLocalManager(), &gatewayv1.Gateway{}).
+		WithCustomValidator(&GatewayCustomValidator{mgr: mgr, validationOpts: validationOpts}).
+		WithCustomDefaulter(&GatewayCustomDefaulter{mgr: mgr, config: config}).
 		Complete()
 }
 
@@ -77,7 +77,7 @@ func (v *GatewayCustomValidator) ValidateCreate(ctx context.Context, obj runtime
 	gatewaylog.Info("Validating Gateway", "name", gateway.GetName(), "cluster", clusterName)
 
 	clusterValidationOpts := v.validationOpts
-	clusterValidationOpts.ClusterName = clusterName
+	clusterValidationOpts.ClusterName = string(clusterName)
 
 	if errs := validation.ValidateGateway(gateway, clusterValidationOpts); len(errs) > 0 {
 		return nil, apierrors.NewInvalid(obj.GetObjectKind().GroupVersionKind().GroupKind(), gateway.GetName(), errs)
@@ -117,7 +117,7 @@ func (v *GatewayCustomValidator) ValidateUpdate(ctx context.Context, oldObj, new
 	}
 
 	clusterValidationOpts := v.validationOpts
-	clusterValidationOpts.ClusterName = clusterName
+	clusterValidationOpts.ClusterName = string(clusterName)
 
 	if errs := validation.ValidateGateway(gateway, clusterValidationOpts); len(errs) > 0 {
 		return nil, apierrors.NewInvalid(oldObj.GetObjectKind().GroupVersionKind().GroupKind(), gateway.GetName(), errs)

@@ -21,8 +21,8 @@ import (
 
 // SetupBackendWebhookWithManager registers the webhook for Backend in the manager.
 func SetupBackendWebhookWithManager(mgr mcmanager.Manager) error {
-	return ctrl.NewWebhookManagedBy(mgr.GetLocalManager()).For(&gatewayv1alpha1.Backend{}).
-		WithValidator(&BackendCustomValidator{mgr: mgr}).
+	return ctrl.NewWebhookManagedBy(mgr.GetLocalManager(), &gatewayv1alpha1.Backend{}).
+		WithCustomValidator(&BackendCustomValidator{mgr: mgr}).
 		Complete()
 }
 

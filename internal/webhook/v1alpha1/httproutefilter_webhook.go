@@ -22,8 +22,8 @@ import (
 
 // SetupHTTPRouteFilterWebhookWithManager registers the webhook for HTTPRouteFilter in the manager.
 func SetupHTTPRouteFilterWebhookWithManager(mgr mcmanager.Manager, cfg config.NetworkServicesOperator) error {
-	return ctrl.NewWebhookManagedBy(mgr.GetLocalManager()).For(&gatewayv1alpha1.HTTPRouteFilter{}).
-		WithValidator(&HTTPRouteFilterCustomValidator{mgr: mgr, validationOpts: cfg.Gateway.ExtensionAPIValidationOptions.HTTPRouteFilters}).
+	return ctrl.NewWebhookManagedBy(mgr.GetLocalManager(), &gatewayv1alpha1.HTTPRouteFilter{}).
+		WithCustomValidator(&HTTPRouteFilterCustomValidator{mgr: mgr, validationOpts: cfg.Gateway.ExtensionAPIValidationOptions.HTTPRouteFilters}).
 		Complete()
 }
 

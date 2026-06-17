@@ -22,8 +22,8 @@ import (
 
 // SetupSecurityPolicyWebhookWithManager registers the webhook for SecurityPolicy in the manager.
 func SetupSecurityPolicyWebhookWithManager(mgr mcmanager.Manager, cfg config.NetworkServicesOperator) error {
-	return ctrl.NewWebhookManagedBy(mgr.GetLocalManager()).For(&gatewayv1alpha1.SecurityPolicy{}).
-		WithValidator(&SecurityPolicyCustomValidator{mgr: mgr, validationOpts: cfg.Gateway.ExtensionAPIValidationOptions.SecurityPolicies}).
+	return ctrl.NewWebhookManagedBy(mgr.GetLocalManager(), &gatewayv1alpha1.SecurityPolicy{}).
+		WithCustomValidator(&SecurityPolicyCustomValidator{mgr: mgr, validationOpts: cfg.Gateway.ExtensionAPIValidationOptions.SecurityPolicies}).
 		Complete()
 }
 

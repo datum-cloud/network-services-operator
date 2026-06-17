@@ -23,6 +23,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/uuid"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/events"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
@@ -36,6 +37,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
+	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
@@ -761,26 +763,25 @@ func TestHTTPProxyReconcile(t *testing.T) {
 					}
 				}
 
+				// The offline HTTPRouteFilter CRD must NOT exist: EG v1.7.3 cannot
+				// translate DirectResponse in HTTPRouteFilterSpec (UnsupportedValue),
+				// which blocks EPP programming. The EPP direct_response route is the
+				// sole mechanism for returning 503 to offline-connector clients.
 				httpRouteFilter := &envoygatewayv1alpha1.HTTPRouteFilter{}
 				filterKey := client.ObjectKey{Namespace: httpProxy.Namespace, Name: connectorOfflineFilterName(httpProxy)}
-				assert.NoError(t, cl.Get(ctx, filterKey, httpRouteFilter))
-				assert.Equal(t, "Tunnel not online", ptr.Deref(httpRouteFilter.Spec.DirectResponse.Body.Inline, ""))
+				err = cl.Get(ctx, filterKey, httpRouteFilter)
+				assert.True(t, apierrors.IsNotFound(err), "offline HTTPRouteFilter should not exist")
 
+				// The HTTPRoute rule must have no backends and no offline ExtensionRef
+				// filter so EG can translate it and the EPP has virtual_hosts to patch.
 				httpRoute := &gatewayv1.HTTPRoute{}
 				assert.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(httpProxy), httpRoute))
 				if assert.Len(t, httpRoute.Spec.Rules, 1) {
 					assert.Empty(t, httpRoute.Spec.Rules[0].BackendRefs)
-					found := false
 					for _, filter := range httpRoute.Spec.Rules[0].Filters {
-						if filter.Type == gatewayv1.HTTPRouteFilterExtensionRef &&
-							filter.ExtensionRef != nil &&
-							filter.ExtensionRef.Kind == envoygatewayv1alpha1.KindHTTPRouteFilter &&
-							filter.ExtensionRef.Name == gatewayv1.ObjectName(httpRouteFilter.Name) {
-							found = true
-							break
-						}
+						assert.NotEqual(t, gatewayv1.HTTPRouteFilterExtensionRef, filter.Type,
+							"offline connector route must not have an ExtensionRef filter")
 					}
-					assert.True(t, found, "expected HTTPRouteFilter extension ref on rule")
 				}
 			},
 		},
@@ -1954,7 +1955,7 @@ type fakeMockManager struct {
 	cl client.Client
 }
 
-func (m *fakeMockManager) GetCluster(ctx context.Context, clusterName string) (cluster.Cluster, error) {
+func (m *fakeMockManager) GetCluster(ctx context.Context, clusterName multicluster.ClusterName) (cluster.Cluster, error) {
 	return &fakeCluster{cl: m.cl}, nil
 }
 
@@ -2666,9 +2667,10 @@ func (c *clusterWithClient) GetFieldIndexer() client.FieldIndexer { return nil }
 func (c *clusterWithClient) GetEventRecorderFor(string) record.EventRecorder {
 	return record.NewFakeRecorder(10)
 }
-func (c *clusterWithClient) GetRESTMapper() apimeta.RESTMapper { return nil }
-func (c *clusterWithClient) GetAPIReader() client.Reader       { return c.c }
-func (c *clusterWithClient) Start(context.Context) error       { return nil }
+func (c *clusterWithClient) GetEventRecorder(string) events.EventRecorder { return nil }
+func (c *clusterWithClient) GetRESTMapper() apimeta.RESTMapper            { return nil }
+func (c *clusterWithClient) GetAPIReader() client.Reader                  { return c.c }
+func (c *clusterWithClient) Start(context.Context) error                  { return nil }
 
 func TestSetCertificatesReadyCondition(t *testing.T) {
 	t.Parallel()

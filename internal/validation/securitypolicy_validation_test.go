@@ -11,8 +11,6 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/utils/ptr"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
-	gatewayv1alpha2 "sigs.k8s.io/gateway-api/apis/v1alpha2"
-
 	"go.datum.net/network-services-operator/internal/config"
 )
 
@@ -26,7 +24,7 @@ func TestValidateSecurityPolicy(t *testing.T) {
 			securityPolicy: &envoygatewayv1alpha1.SecurityPolicy{
 				Spec: envoygatewayv1alpha1.SecurityPolicySpec{
 					PolicyTargetReferences: envoygatewayv1alpha1.PolicyTargetReferences{
-						TargetRef: &gatewayv1alpha2.LocalPolicyTargetReferenceWithSectionName{
+						TargetRef: &gatewayv1.LocalPolicyTargetReferenceWithSectionName{
 							SectionName: ptr.To(gatewayv1.SectionName("test")),
 						},
 					},

@@ -7,6 +7,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 	mccontext "sigs.k8s.io/multicluster-runtime/pkg/context"
+	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 
 	multiclusterproviders "go.miloapis.com/milo/pkg/multicluster-runtime"
 )
@@ -33,7 +34,7 @@ func (s *clusterAwareWebhookServer) Register(path string, hook http.Handler) {
 
 				c = "/" + c
 			}
-			ctx = mccontext.WithCluster(ctx, c)
+			ctx = mccontext.WithCluster(ctx, multicluster.ClusterName(c))
 			return orig.Handle(ctx, req)
 		})
 	}

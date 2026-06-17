@@ -30,8 +30,8 @@ var backendTLSPolicyV1GVK = gatewayv1.SchemeGroupVersion.WithKind("BackendTLSPol
 func SetupBackendTLSPolicyWebhookWithManager(mgr mcmanager.Manager) error {
 	backendTLSPolicy := &unstructured.Unstructured{}
 	backendTLSPolicy.SetGroupVersionKind(backendTLSPolicyV1GVK)
-	return ctrl.NewWebhookManagedBy(mgr.GetLocalManager()).For(backendTLSPolicy).
-		WithValidator(&BackendTLSPolicyCustomValidator{mgr: mgr}).
+	return ctrl.NewWebhookManagedBy(mgr.GetLocalManager(), backendTLSPolicy).
+		WithCustomValidator(&BackendTLSPolicyCustomValidator{mgr: mgr}).
 		Complete()
 }
 

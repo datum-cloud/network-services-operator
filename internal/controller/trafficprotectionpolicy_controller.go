@@ -33,6 +33,7 @@ import (
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mchandler "sigs.k8s.io/multicluster-runtime/pkg/handler"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
+	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	"go.datum.net/network-services-operator/internal/config"
@@ -53,10 +54,11 @@ type TrafficProtectionPolicyReconciler struct {
 const (
 	// PolicyReasonWaitingForCertificates indicates that the policy is waiting
 	// for TLS certificates to become ready before EnvoyPatchPolicies can be created.
-	PolicyReasonWaitingForCertificates gatewayv1alpha2.PolicyConditionReason = "WaitingForCertificates"
+	// In gateway-api v1.5.1, PolicyConditionReason moved from v1alpha2 to v1.
+	PolicyReasonWaitingForCertificates gatewayv1.PolicyConditionReason = "WaitingForCertificates"
 	// PolicyReasonWaitingForListenersProgrammed indicates that the policy is waiting
 	// for HTTPS listeners to be Programmed=True before EnvoyPatchPolicies can be created.
-	PolicyReasonWaitingForListenersProgrammed gatewayv1alpha2.PolicyConditionReason = "WaitingForListenersProgrammed"
+	PolicyReasonWaitingForListenersProgrammed gatewayv1.PolicyConditionReason = "WaitingForListenersProgrammed"
 
 	// tppEnvoyPatchPolicyPrefix is the name prefix for all EnvoyPatchPolicies
 	// written by the TrafficProtectionPolicy controller ("tpp-<gateway-name>").
@@ -103,7 +105,7 @@ func (r *TrafficProtectionPolicyReconciler) Reconcile(ctx context.Context, req N
 	logger.Info("reconciling trafficprotectionpolicies")
 	defer logger.Info("reconcile complete")
 
-	downstreamStrategy := downstreamclient.NewMappedNamespaceResourceStrategy(req.ClusterName, cl.GetClient(), r.DownstreamCluster.GetClient())
+	downstreamStrategy := downstreamclient.NewMappedNamespaceResourceStrategy(string(req.ClusterName), cl.GetClient(), r.DownstreamCluster.GetClient())
 
 	downstreamNamespaceName, err := downstreamStrategy.GetDownstreamNamespaceNameForUpstreamNamespace(ctx, req.Namespace)
 	if err != nil {
@@ -409,7 +411,7 @@ func (r *TrafficProtectionPolicyReconciler) setWaitingForCertificatesConditions(
 				&policy.Status.PolicyStatus,
 				ancestorRef,
 				string(r.Config.Gateway.ControllerName),
-				gatewayv1alpha2.PolicyConditionAccepted,
+				gatewayv1.PolicyConditionAccepted,
 				metav1.ConditionFalse,
 				PolicyReasonWaitingForCertificates,
 				message,
@@ -473,7 +475,7 @@ func (r *TrafficProtectionPolicyReconciler) setWaitingForListenersProgrammedCond
 				&policy.Status.PolicyStatus,
 				ancestorRef,
 				string(r.Config.Gateway.ControllerName),
-				gatewayv1alpha2.PolicyConditionAccepted,
+				gatewayv1.PolicyConditionAccepted,
 				metav1.ConditionFalse,
 				PolicyReasonWaitingForListenersProgrammed,
 				message,
@@ -498,7 +500,7 @@ func (r *TrafficProtectionPolicyReconciler) ensureHTTPCorazaListenerFilter(ctx c
 
 	result, err := controllerutil.CreateOrUpdate(ctx, r.DownstreamCluster.GetClient(), envoyPatchPolicy, func() error {
 		envoyPatchPolicy.Spec = envoygatewayv1alpha1.EnvoyPatchPolicySpec{
-			TargetRef: gatewayv1alpha2.LocalPolicyTargetReference{
+			TargetRef: gatewayv1.LocalPolicyTargetReference{
 				Group: gatewayv1.GroupName,
 				Kind:  "GatewayClass",
 				Name:  gatewayv1.ObjectName(r.Config.Gateway.DownstreamGatewayClassName),
@@ -728,7 +730,7 @@ func (r *TrafficProtectionPolicyReconciler) processTrafficProtectionPolicyForHTT
 				string(r.Config.Gateway.ControllerName),
 				policy.Generation,
 				&gatewaystatus.PolicyResolveError{
-					Reason: gatewayv1alpha2.PolicyReasonConflicted,
+					Reason: gatewayv1.PolicyReasonConflicted,
 					Message: fmt.Sprintf("Unable to target %s %s, another TrafficProtectionPolicy has already attached to it",
 						string(targetRef.Kind), string(targetRef.Name)),
 				},
@@ -752,7 +754,7 @@ func (r *TrafficProtectionPolicyReconciler) processTrafficProtectionPolicyForHTT
 				string(r.Config.Gateway.ControllerName),
 				policy.Generation,
 				&gatewaystatus.PolicyResolveError{
-					Reason: gatewayv1alpha2.PolicyReasonTargetNotFound,
+					Reason: gatewayv1.PolicyReasonTargetNotFound,
 					Message: fmt.Sprintf("No section name %s found for %s %s/%s",
 						string(*targetRef.SectionName), string(targetRef.Kind), policy.Namespace, string(targetRef.Name)),
 				},
@@ -768,7 +770,7 @@ func (r *TrafficProtectionPolicyReconciler) processTrafficProtectionPolicyForHTT
 				string(r.Config.Gateway.ControllerName),
 				policy.Generation,
 				&gatewaystatus.PolicyResolveError{
-					Reason: gatewayv1alpha2.PolicyReasonConflicted,
+					Reason: gatewayv1.PolicyReasonConflicted,
 					Message: fmt.Sprintf("Unable to target RouteRule %s/%s, another TrafficProtectionPolicy has already attached to it",
 						string(targetRef.Name), routeRuleName),
 				},
@@ -784,9 +786,9 @@ func (r *TrafficProtectionPolicyReconciler) processTrafficProtectionPolicyForHTT
 	gatewaystatus.SetConditionForPolicyAncestor(&policy.Status.PolicyStatus,
 		ancestorRef,
 		string(r.Config.Gateway.ControllerName),
-		gatewayv1alpha2.PolicyConditionAccepted,
+		gatewayv1.PolicyConditionAccepted,
 		metav1.ConditionTrue,
-		gatewayv1alpha2.PolicyReasonAccepted,
+		gatewayv1.PolicyReasonAccepted,
 		"Policy has been accepted.",
 		policy.Generation,
 	)
@@ -866,7 +868,7 @@ func (r *TrafficProtectionPolicyReconciler) processTrafficProtectionPolicyForGat
 				string(r.Config.Gateway.ControllerName),
 				policy.Generation,
 				&gatewaystatus.PolicyResolveError{
-					Reason:  gatewayv1alpha2.PolicyReasonConflicted,
+					Reason:  gatewayv1.PolicyReasonConflicted,
 					Message: fmt.Sprintf("Unable to target Gateway %s, another TrafficProtectionPolicy has already attached to it", string(targetRef.Name)),
 				},
 			)
@@ -883,7 +885,7 @@ func (r *TrafficProtectionPolicyReconciler) processTrafficProtectionPolicyForGat
 				string(r.Config.Gateway.ControllerName),
 				policy.Generation,
 				&gatewaystatus.PolicyResolveError{
-					Reason:  gatewayv1alpha2.PolicyReasonConflicted,
+					Reason:  gatewayv1.PolicyReasonConflicted,
 					Message: fmt.Sprintf("Unable to target Listener %s/%s, another TrafficProtectionPolicy has already attached to it", string(targetRef.Name), listenerName),
 				},
 			)
@@ -905,7 +907,7 @@ func (r *TrafficProtectionPolicyReconciler) processTrafficProtectionPolicyForGat
 				string(r.Config.Gateway.ControllerName),
 				policy.Generation,
 				&gatewaystatus.PolicyResolveError{
-					Reason:  gatewayv1alpha2.PolicyReasonTargetNotFound,
+					Reason:  gatewayv1.PolicyReasonTargetNotFound,
 					Message: fmt.Sprintf("No section name %s found for Gateway %s", listenerName, string(targetRef.Name)),
 				},
 			)
@@ -921,9 +923,9 @@ func (r *TrafficProtectionPolicyReconciler) processTrafficProtectionPolicyForGat
 	gatewaystatus.SetConditionForPolicyAncestor(&policy.Status.PolicyStatus,
 		ancestorRef,
 		string(r.Config.Gateway.ControllerName),
-		gatewayv1alpha2.PolicyConditionAccepted,
+		gatewayv1.PolicyConditionAccepted,
 		metav1.ConditionTrue,
-		gatewayv1alpha2.PolicyReasonAccepted,
+		gatewayv1.PolicyReasonAccepted,
 		"Policy has been accepted.",
 		policy.Generation,
 	)
@@ -977,17 +979,17 @@ func (r *TrafficProtectionPolicyReconciler) getDesiredEnvoyPatchPolicies(
 			vhostConstraints := getVHostConstraintForGateway(downstreamNamespaceName, policyAttachment.Gateway)
 
 			if policyAttachment.Listener != nil {
-				vhostConstraints += fmt.Sprintf(" && @.sectionName==\"%s\"", *policyAttachment.Listener)
+				vhostConstraints += fmt.Sprintf(` && @.metadata.filter_metadata["envoy-gateway"].resources[0].sectionName=="%s"`, *policyAttachment.Listener)
 			}
 
 			var routeConstraints string
 			if policyAttachment.Route != nil {
 				var sectionNameConstraint string
 				if policyAttachment.RuleSectionName != nil {
-					sectionNameConstraint = fmt.Sprintf(` && @.sectionName=="%s"`, *policyAttachment.RuleSectionName)
+					sectionNameConstraint = fmt.Sprintf(` && @.metadata.filter_metadata["envoy-gateway"].resources[0].sectionName=="%s"`, *policyAttachment.RuleSectionName)
 				}
 
-				routeConstraints = fmt.Sprintf(` && @.metadata.filter_metadata["envoy-gateway"].resources[?(@.kind=="%s" && @.namespace=="%s" && @.name=="%s"%s)]`,
+				routeConstraints = fmt.Sprintf(` && @.metadata.filter_metadata["envoy-gateway"].resources[0].kind=="%s" && @.metadata.filter_metadata["envoy-gateway"].resources[0].namespace=="%s" && @.metadata.filter_metadata["envoy-gateway"].resources[0].name=="%s"%s`,
 					KindHTTPRoute,
 					downstreamNamespaceName,
 					policyAttachment.Route.Name,
@@ -996,14 +998,10 @@ func (r *TrafficProtectionPolicyReconciler) getDesiredEnvoyPatchPolicies(
 			}
 
 			httpRoutesJSONPath := sanitizeJSONPath(
-				fmt.Sprintf(`..virtual_hosts[?(
-					@.metadata.filter_metadata["envoy-gateway"].resources[?(
-						%s
-					)]
-				)]..routes[?(!@.bogus)%s]`,
-					// @.bogus is here to ensure a list is collected by the JSONPath parser,
-					// otherwise a single element is returned. Need to look into the
-					// implementation to see why this happens.
+				// @.bogus is here to ensure a list is collected by the JSONPath parser,
+				// otherwise a single element is returned. Need to look into the
+				// implementation to see why this happens.
+				fmt.Sprintf(`..virtual_hosts[?(%s)]..routes[?(!@.bogus)%s]`,
 					vhostConstraints,
 					routeConstraints,
 				),
@@ -1174,7 +1172,7 @@ func (r *TrafficProtectionPolicyReconciler) getDesiredEnvoyPatchPolicies(
 				Name:      policyName,
 			},
 			Spec: envoygatewayv1alpha1.EnvoyPatchPolicySpec{
-				TargetRef: gatewayv1alpha2.LocalPolicyTargetReference{
+				TargetRef: gatewayv1.LocalPolicyTargetReference{
 					Group: gatewayv1.GroupName,
 					Kind:  "GatewayClass",
 					Name:  gatewayv1.ObjectName(r.Config.Gateway.DownstreamGatewayClassName),
@@ -1189,7 +1187,8 @@ func (r *TrafficProtectionPolicyReconciler) getDesiredEnvoyPatchPolicies(
 }
 
 func getVHostConstraintForGateway(namespace string, gateway *gatewayv1.Gateway) string {
-	return fmt.Sprintf(`@.kind=="%s" && @.namespace=="%s" && @.name=="%s"`,
+	return fmt.Sprintf(
+		`@.metadata.filter_metadata["envoy-gateway"].resources[0].kind=="%s" && @.metadata.filter_metadata["envoy-gateway"].resources[0].namespace=="%s" && @.metadata.filter_metadata["envoy-gateway"].resources[0].name=="%s"`,
 		KindGateway,
 		namespace,
 		gateway.Name,
@@ -1322,10 +1321,17 @@ func (r *TrafficProtectionPolicyReconciler) enqueuePoliciesForCertificate() hand
 			return nil
 		}
 
+		// Extract the upstream cluster name so the reconciler can look up the
+		// cluster via mcsingle.Get (which requires clusterName == "single").
+		// The label value is "cluster-<name>" with "/" replaced by "_".
+		clusterLabel := downstreamNamespace.Labels[downstreamclient.UpstreamOwnerClusterNameLabel]
+		upstreamClusterName := multicluster.ClusterName(strings.TrimPrefix(strings.ReplaceAll(clusterLabel, "_", "/"), "cluster-"))
+
 		logger.Info("certificate became ready, enqueueing reconcile", "certificate", cert.GetName(), "upstreamNamespace", upstreamNamespace)
 
 		return []NamespaceReconcileRequest{{
-			Namespace: upstreamNamespace,
+			Namespace:   upstreamNamespace,
+			ClusterName: upstreamClusterName,
 		}}
 	})
 }
@@ -1340,7 +1346,7 @@ type NamespaceReconcileRequest struct {
 	Namespace string
 
 	// ClusterName is the name of the cluster that the request belongs to.
-	ClusterName string
+	ClusterName multicluster.ClusterName
 }
 
 // String returns the general purpose string representation.
@@ -1348,16 +1354,16 @@ func (r NamespaceReconcileRequest) String() string {
 	if r.ClusterName == "" {
 		return r.Namespace
 	}
-	return "cluster://" + r.ClusterName + string(types.Separator) + r.Namespace
+	return "cluster://" + string(r.ClusterName) + string(types.Separator) + r.Namespace
 }
 
 // Cluster returns the name of the cluster that the request belongs to.
-func (r NamespaceReconcileRequest) Cluster() string {
+func (r NamespaceReconcileRequest) Cluster() multicluster.ClusterName {
 	return r.ClusterName
 }
 
 // WithCluster sets the name of the cluster that the request belongs to.
-func (r NamespaceReconcileRequest) WithCluster(name string) NamespaceReconcileRequest {
+func (r NamespaceReconcileRequest) WithCluster(name multicluster.ClusterName) NamespaceReconcileRequest {
 	r.ClusterName = name
 	return r
 }

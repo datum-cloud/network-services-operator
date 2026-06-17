@@ -22,8 +22,8 @@ import (
 
 // SetupBackendTrafficPolicyWebhookWithManager registers the webhook for BackendTrafficPolicy in the manager.
 func SetupBackendTrafficPolicyWebhookWithManager(mgr mcmanager.Manager, cfg config.NetworkServicesOperator) error {
-	return ctrl.NewWebhookManagedBy(mgr.GetLocalManager()).For(&gatewayv1alpha1.BackendTrafficPolicy{}).
-		WithValidator(&BackendTrafficPolicyCustomValidator{mgr: mgr, validationOpts: cfg.Gateway.ExtensionAPIValidationOptions.BackendTrafficPolicies}).
+	return ctrl.NewWebhookManagedBy(mgr.GetLocalManager(), &gatewayv1alpha1.BackendTrafficPolicy{}).
+		WithCustomValidator(&BackendTrafficPolicyCustomValidator{mgr: mgr, validationOpts: cfg.Gateway.ExtensionAPIValidationOptions.BackendTrafficPolicies}).
 		Complete()
 }
 

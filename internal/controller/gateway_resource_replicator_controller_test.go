@@ -20,6 +20,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/events"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/utils/ptr"
@@ -122,9 +123,9 @@ func TestReplicatorMirrorsResource(t *testing.T) {
 	}
 
 	downstreamPolicyStatus := gwapiv1alpha2.PolicyStatus{
-		Ancestors: []gwapiv1alpha2.PolicyAncestorStatus{
+		Ancestors: []gwapiv1.PolicyAncestorStatus{
 			{
-				AncestorRef: gwapiv1alpha2.ParentReference{
+				AncestorRef: gwapiv1.ParentReference{
 					Group:     ptr.To(gwapiv1.Group("gateway.networking.k8s.io")),
 					Kind:      ptr.To(gwapiv1.Kind("Gateway")),
 					Name:      gwapiv1.ObjectName("example-gateway"),
@@ -133,9 +134,9 @@ func TestReplicatorMirrorsResource(t *testing.T) {
 				ControllerName: gwapiv1.GatewayController("gateway.envoyproxy.io/controller"),
 				Conditions: []metav1.Condition{
 					{
-						Type:               string(gwapiv1alpha2.PolicyConditionAccepted),
+						Type:               string(gwapiv1.PolicyConditionAccepted),
 						Status:             metav1.ConditionFalse,
-						Reason:             string(gwapiv1alpha2.PolicyReasonTargetNotFound),
+						Reason:             string(gwapiv1.PolicyReasonTargetNotFound),
 						Message:            "downstream attachment target missing",
 						LastTransitionTime: metav1.Now(),
 						ObservedGeneration: 1,
@@ -375,7 +376,7 @@ func newReplicatorForTest(upstream client.Client, downstream client.Client, sche
 		},
 	}
 
-	reconciler.mgr = &replicatorFakeManager{clusters: map[string]cluster.Cluster{"upstream": upstreamCluster}}
+	reconciler.mgr = &replicatorFakeManager{clusters: map[multicluster.ClusterName]cluster.Cluster{"upstream": upstreamCluster}}
 
 	return reconciler
 }
@@ -417,16 +418,17 @@ func (f *replicatorFakeCluster) GetFieldIndexer() client.FieldIndexer { return n
 func (f *replicatorFakeCluster) GetEventRecorderFor(string) record.EventRecorder {
 	return record.NewFakeRecorder(10)
 }
-func (f *replicatorFakeCluster) GetRESTMapper() meta.RESTMapper { return nil }
-func (f *replicatorFakeCluster) GetAPIReader() client.Reader    { return f.c }
-func (f *replicatorFakeCluster) Start(context.Context) error    { return nil }
+func (f *replicatorFakeCluster) GetEventRecorder(string) events.EventRecorder { return nil }
+func (f *replicatorFakeCluster) GetRESTMapper() meta.RESTMapper               { return nil }
+func (f *replicatorFakeCluster) GetAPIReader() client.Reader                  { return f.c }
+func (f *replicatorFakeCluster) Start(context.Context) error                  { return nil }
 
 type replicatorFakeManager struct {
 	mcmanager.Manager
-	clusters map[string]cluster.Cluster
+	clusters map[multicluster.ClusterName]cluster.Cluster
 }
 
-func (f *replicatorFakeManager) GetCluster(_ context.Context, name string) (cluster.Cluster, error) {
+func (f *replicatorFakeManager) GetCluster(_ context.Context, name multicluster.ClusterName) (cluster.Cluster, error) {
 	cl, ok := f.clusters[name]
 	if !ok {
 		return nil, fmt.Errorf("cluster %s not found", name)
@@ -441,6 +443,6 @@ func (f *replicatorFakeManager) GetLogger() logr.Logger               { return l
 func (f *replicatorFakeManager) GetWebhookServer() webhook.Server     { return nil }
 func (f *replicatorFakeManager) GetFieldIndexer() client.FieldIndexer { return nil }
 func (f *replicatorFakeManager) GetProvider() multicluster.Provider   { return nil }
-func (f *replicatorFakeManager) Engage(context.Context, string, cluster.Cluster) error {
+func (f *replicatorFakeManager) Engage(context.Context, multicluster.ClusterName, cluster.Cluster) error {
 	return nil
 }

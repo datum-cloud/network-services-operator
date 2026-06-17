@@ -23,6 +23,7 @@ import (
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mchandler "sigs.k8s.io/multicluster-runtime/pkg/handler"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
+	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	networkingv1alpha1 "go.datum.net/network-services-operator/api/v1alpha1"
@@ -230,7 +231,7 @@ func (r *ConnectorReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 		For(&networkingv1alpha1.Connector{}).
 		Watches(
 			&networkingv1alpha1.ConnectorClass{},
-			func(clusterName string, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
+			func(clusterName multicluster.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
 				return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []mcreconcile.Request {
 					logger := log.FromContext(ctx)
 

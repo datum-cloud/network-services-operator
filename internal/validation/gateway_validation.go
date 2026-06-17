@@ -29,10 +29,6 @@ func ValidateGateway(gateway *gatewayv1.Gateway, opts GatewayValidationOptions) 
 		allErrs = append(allErrs, field.Forbidden(field.NewPath("spec", "infrastructure"), "infrastructure is not permitted"))
 	}
 
-	if gateway.Spec.BackendTLS != nil {
-		allErrs = append(allErrs, field.Forbidden(field.NewPath("spec", "backendTLS"), "backendTLS is not permitted"))
-	}
-
 	return allErrs
 }
 
@@ -106,7 +102,7 @@ func validateAllowedRoutes(allowedRoutes *gatewayv1.AllowedRoutes, fldPath *fiel
 	return allErrs
 }
 
-func validateGatewayTLSConfig(tls *gatewayv1.GatewayTLSConfig, fldPath *field.Path, opts GatewayValidationOptions) field.ErrorList {
+func validateGatewayTLSConfig(tls *gatewayv1.ListenerTLSConfig, fldPath *field.Path, opts GatewayValidationOptions) field.ErrorList {
 	allErrs := field.ErrorList{}
 
 	optionsFieldPath := fldPath.Child("options")
@@ -126,10 +122,6 @@ func validateGatewayTLSConfig(tls *gatewayv1.GatewayTLSConfig, fldPath *field.Pa
 
 	if len(tls.CertificateRefs) > 0 {
 		allErrs = append(allErrs, field.Forbidden(fldPath.Child("certificateRefs"), "certificateRefs are not permitted"))
-	}
-
-	if tls.FrontendValidation != nil {
-		allErrs = append(allErrs, field.Forbidden(fldPath.Child("frontendValidation"), "frontendValidation is not permitted"))
 	}
 
 	for k, v := range tls.Options {

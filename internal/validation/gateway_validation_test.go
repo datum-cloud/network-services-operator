@@ -98,7 +98,7 @@ func TestValidateGateway(t *testing.T) {
 							Name:     "https",
 							Protocol: gatewayv1.HTTPSProtocolType,
 							Port:     443,
-							TLS: &gatewayv1.GatewayTLSConfig{
+							TLS: &gatewayv1.ListenerTLSConfig{
 								Mode: ptr.To(gatewayv1.TLSModePassthrough),
 							},
 						},
@@ -123,7 +123,7 @@ func TestValidateGateway(t *testing.T) {
 							Name:     "https",
 							Protocol: gatewayv1.HTTPSProtocolType,
 							Port:     443,
-							TLS: &gatewayv1.GatewayTLSConfig{
+							TLS: &gatewayv1.ListenerTLSConfig{
 								Mode: ptr.To(gatewayv1.TLSModeTerminate),
 								CertificateRefs: []gatewayv1.SecretObjectReference{
 									{
@@ -251,32 +251,6 @@ func TestValidateGateway(t *testing.T) {
 				field.Forbidden(field.NewPath("spec", "infrastructure"), "infrastructure is not permitted"),
 			},
 		},
-		"backend tls not permitted": {
-			gateway: &gatewayv1.Gateway{
-				Spec: gatewayv1.GatewaySpec{
-					GatewayClassName: "test-gateway-class",
-					Listeners: []gatewayv1.Listener{
-						{
-							Name:     "http",
-							Protocol: gatewayv1.HTTPProtocolType,
-							Port:     80,
-						},
-					},
-					BackendTLS: &gatewayv1.GatewayBackendTLS{
-						ClientCertificateRef: &gatewayv1.SecretObjectReference{
-							Name: "test-cert",
-						},
-					},
-				},
-			},
-			opts: GatewayValidationOptions{
-				ValidPortNumbers:   []int{80, 443},
-				ValidProtocolTypes: defaultValidProtocolTypes,
-			},
-			expectedErrors: field.ErrorList{
-				field.Forbidden(field.NewPath("spec", "backendTLS"), "backendTLS is not permitted"),
-			},
-		},
 		"invalid tls settings": {
 			gateway: &gatewayv1.Gateway{
 				Spec: gatewayv1.GatewaySpec{
@@ -286,11 +260,10 @@ func TestValidateGateway(t *testing.T) {
 							Name:     "https",
 							Protocol: gatewayv1.HTTPSProtocolType,
 							Port:     443,
-							TLS: &gatewayv1.GatewayTLSConfig{
+							TLS: &gatewayv1.ListenerTLSConfig{
 								Options: map[gatewayv1.AnnotationKey]gatewayv1.AnnotationValue{
 									"test-option": "test-value",
 								},
-								FrontendValidation: &gatewayv1.FrontendTLSValidation{},
 							},
 						},
 					},
@@ -301,7 +274,6 @@ func TestValidateGateway(t *testing.T) {
 				ValidProtocolTypes: defaultValidProtocolTypes,
 			},
 			expectedErrors: field.ErrorList{
-				field.Forbidden(field.NewPath("spec", "listeners").Index(0).Child("tls", "frontendValidation"), ""),
 				field.Forbidden(field.NewPath("spec", "listeners").Index(0).Child("tls", "options").Key("test-option"), ""),
 			},
 		},
@@ -314,7 +286,7 @@ func TestValidateGateway(t *testing.T) {
 							Name:     "https",
 							Protocol: gatewayv1.HTTPSProtocolType,
 							Port:     443,
-							TLS: &gatewayv1.GatewayTLSConfig{
+							TLS: &gatewayv1.ListenerTLSConfig{
 								Options: map[gatewayv1.AnnotationKey]gatewayv1.AnnotationValue{
 									"test-option": "invalid-value",
 								},
@@ -343,7 +315,7 @@ func TestValidateGateway(t *testing.T) {
 							Name:     "http",
 							Protocol: gatewayv1.HTTPProtocolType,
 							Port:     80,
-							TLS: &gatewayv1.GatewayTLSConfig{
+							TLS: &gatewayv1.ListenerTLSConfig{
 								Options: map[gatewayv1.AnnotationKey]gatewayv1.AnnotationValue{
 									"test-option": "valid-value",
 								},

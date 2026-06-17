@@ -27,8 +27,8 @@ import (
 
 // SetupDomainWebhookWithManager registers the webhook for Domain in the manager.
 func SetupDomainWebhookWithManager(mgr mcmanager.Manager) error {
-	return ctrl.NewWebhookManagedBy(mgr.GetLocalManager()).For(&networkingv1alpha.Domain{}).
-		WithValidator(&DomainCustomValidator{mgr: mgr}).
+	return ctrl.NewWebhookManagedBy(mgr.GetLocalManager(), &networkingv1alpha.Domain{}).
+		WithCustomValidator(&DomainCustomValidator{mgr: mgr}).
 		Complete()
 }
 

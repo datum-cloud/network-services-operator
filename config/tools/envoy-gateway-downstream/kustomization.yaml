@@ -1,0 +1,135 @@
+resources:
+  - namespace.yaml
+  # RBAC granting EG's ServiceAccount get;list;watch on NSO's CRDs for the
+  # extensionManager.resources re-translation trigger (GAP-2 Part C).
+  - nso-crd-rbac.yaml
+helmCharts:
+  # ── Dedicated NSO downstream EG (datum-downstream-gateway) ──────────────────
+  # Mirrors the datum-cloud/infra pattern: a separate EG control plane owned by
+  # NSO, isolated from any shared gateway infrastructure. Applied SEPARATELY from
+  # config/tools/envoy-gateway/ (shared EG) to avoid cluster-scoped resource
+  # collisions (ValidatingAdmissionPolicy safe-upgrades.gateway.networking.k8s.io
+  # is emitted by both chart releases and cannot be merged in a single kustomize
+  # build). This mirrors the production topology where two independent Flux
+  # HelmReleases manage the two EG instances.
+  #
+  # Key values:
+  #   controllerName  → gateway.envoyproxy.io/datum-downstream-gateway
+  #   includeCRDs     → false  (CRDs installed by the shared EG release; no double-install)
+  #   EPP             → false  (ext-server owns all mutations)
+  #   extensionManager→ baked into values (no ConfigMap patch or rollout restart needed)
+  #   watch           → NamespaceSelector on meta.datumapis.com/upstream-cluster-name: Exists
+  #
+  # NamespaceSelector rationale (e2e verified):
+  #   NSO uses ProviderSingle by default → mcsingle.New("single", ...) →
+  #   req.ClusterName = "single" (non-empty) → downstream namespace label stamped as
+  #   meta.datumapis.com/upstream-cluster-name=cluster-single.
+  #   The Exists operator correctly scopes this EG to NSO-managed namespaces only.
+  #
+  # extensionManager secret names are cert-manager Certificate spec.secretName values
+  # (NOT kustomize-prefixed by the extension-server overlay):
+  #   extension-server-ca            — CA Secret; EG uses tls.crt to verify the server cert
+  #   extension-server-eg-client-tls — client cert EG presents for mTLS
+  # Both Secrets live in network-services-operator-system. EG reads them cross-namespace
+  # via the explicit namespace field (EG v1.8.1 cluster-scoped Secret access;
+  # no ReferenceGrant required — see config/extension-server/extensionmanager-patch.yaml).
+  - name: gateway-helm
+    includeCRDs: false
+    namespace: datum-downstream-gateway
+    releaseName: envoy-datum-downstream-gateway
+    version: v1.8.1
+    repo: oci://docker.io/envoyproxy
+    valuesInline:
+      config:
+        envoyGateway:
+          gateway:
+            controllerName: gateway.envoyproxy.io/datum-downstream-gateway
+          extensionApis:
+            enableBackend: true
+            enableEnvoyPatchPolicy: false
+          runtimeFlags:
+            enabled:
+              - XDSNameSchemeV2
+          provider:
+            type: Kubernetes
+            kubernetes:
+              watch:
+                type: NamespaceSelector
+                namespaceSelector:
+                  matchExpressions:
+                    - key: meta.datumapis.com/upstream-cluster-name
+                      operator: Exists
+          extensionManager:
+            # EG re-translates (and calls PostTranslateModify) only when its
+            # per-GatewayClass resource SNAPSHOT changes. How a watched extension
+            # GVK enters that snapshot differs by category (verified against EG
+            # v1.8.1 source, internal/provider/kubernetes):
+            #
+            #   policyResources -> processExtensionServerPolicies LISTs every
+            #     instance of the GVK (requiring spec.targetRef/targetRefs) and
+            #     appends them to resourceTree.ExtensionServerPolicies. So a
+            #     create/update(generation)/delete of such a policy changes the
+            #     snapshot and triggers a full re-translation. This is the correct
+            #     home for Gateway-API PolicyAttachment-shaped resources.
+            #
+            #   resources -> a GVK here is only pulled into the snapshot when it is
+            #     referenced via an HTTPRoute/GRPCRoute extensionRef FILTER. A
+            #     targetRef-style policy is never referenced that way, so changing
+            #     it never changes the snapshot and never re-translates.
+            #
+            # TrafficProtectionPolicy uses spec.targetRefs -> policyResources, so
+            # TPP create/update/delete reliably re-translates and the extension
+            # server applies/updates/removes per-route WAF config.
+            #
+            # Connector has NO spec.targetRefs (it is referenced by HTTPProxy
+            # backends), so it CANNOT live under policyResources
+            # (processExtensionServerPolicies errors on objects lacking
+            # targetRef/targetRefs and would break the GatewayClass reconcile). It
+            # remains under `resources`; note this means Connector Ready-state
+            # changes do NOT currently auto-trigger re-translation — a separate,
+            # unsolved trigger problem.
+            #
+            # EG's NamespaceSelector scopes these informers to downstream
+            # namespaces only (meta.datumapis.com/upstream-cluster-name: Exists).
+            # RBAC grant required: see config/tools/envoy-gateway-downstream/nso-crd-rbac.yaml
+            policyResources:
+              - group: networking.datumapis.com
+                version: v1alpha
+                kind: TrafficProtectionPolicy
+            resources:
+              - group: networking.datumapis.com
+                version: v1alpha1
+                kind: Connector
+            service:
+              fqdn:
+                hostname: network-services-operator-extension-server.network-services-operator-system.svc.cluster.local
+                port: 5005
+              tls:
+                certificateRef:
+                  name: extension-server-ca
+                  namespace: network-services-operator-system
+                clientCertificateRef:
+                  name: extension-server-eg-client-tls
+                  namespace: network-services-operator-system
+              retry:
+                maxAttempts: 4
+                initialBackoff: 100ms
+                maxBackoff: 1s
+                backoffMultiplier:
+                  numerator: 200
+                retryableStatusCodes:
+                  - UNAVAILABLE
+            hooks:
+              xdsTranslator:
+                post:
+                  - Translation
+                translation:
+                  listener:
+                    includeAll: true
+                  route:
+                    includeAll: true
+                  cluster:
+                    includeAll: true
+                  secret:
+                    includeAll: true
+            failOpen: false

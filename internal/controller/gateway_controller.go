@@ -721,6 +721,15 @@ func (r *GatewayReconciler) reconcileGatewayStatus(
 		result.AddStatusUpdate(upstreamClient, upstreamGateway)
 	}
 
+	// Track per-gateway programmed state. Set 1 when programmed, 0 when not.
+	// Dashboard: sum(nso_gateway_programmed_total) gives fleet-wide count;
+	// a value below total gateway count indicates partial fleet failures.
+	programmedValue := 0.0
+	if programmedReady {
+		programmedValue = 1.0
+	}
+	gatewayProgrammedTotal.WithLabelValues(upstreamGateway.Namespace, upstreamGateway.Name).Set(programmedValue)
+
 	// If the downstream gateway hasn't been scheduled and programmed yet,
 	// requeue after a short delay. This handles cache-staleness races where
 	// the downstream watch fires before the cache reflects EG's status update
@@ -1135,6 +1144,11 @@ func (r *GatewayReconciler) finalizeGateway(
 ) (result Result) {
 	logger := log.FromContext(ctx)
 	logger.Info("finalizing gateway")
+
+	// Remove the per-gateway programmed gauge so deleted gateways do not leave
+	// stale label sets in the metric. This prevents sum(nso_gateway_programmed_total)
+	// from over-counting the fleet after gateways are removed.
+	gatewayProgrammedTotal.DeleteLabelValues(upstreamGateway.Namespace, upstreamGateway.Name)
 
 	// Clean up DNS records created by this gateway
 	if r.Config.Gateway.EnableDNSIntegration {

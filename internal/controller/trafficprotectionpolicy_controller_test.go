@@ -1490,6 +1490,84 @@ func newTestScheme() *runtime.Scheme {
 	return testScheme
 }
 
+// TestTPPReconcileEPPEmissionDisabled verifies that when gateway.eppEmissionEnabled
+// is false, the TPP reconciler emits ZERO EnvoyPatchPolicies and does NOT delete
+// any EPPs (neither "tpp-*" nor "connector-*") that may already exist in the
+// downstream cluster. TPP ancestor status is still updated so that operators can
+// observe the policy state during cutover.
+func TestTPPReconcileEPPEmissionDisabled(t *testing.T) {
+	upstreamScheme := runtime.NewScheme()
+	assert.NoError(t, scheme.AddToScheme(upstreamScheme))
+	assert.NoError(t, gatewayv1.Install(upstreamScheme))
+	assert.NoError(t, networkingv1alpha.AddToScheme(upstreamScheme))
+
+	downstreamScheme := runtime.NewScheme()
+	assert.NoError(t, envoygatewayv1alpha1.AddToScheme(downstreamScheme))
+
+	const (
+		upstreamNS   = "default"
+		nsUID        = "test-ns-uid"
+		downstreamNS = "ns-" + nsUID
+	)
+
+	upstreamNamespace := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: upstreamNS, UID: nsUID},
+	}
+	fakeUpstreamClient := fake.NewClientBuilder().
+		WithScheme(upstreamScheme).
+		WithObjects(upstreamNamespace).
+		Build()
+
+	// Pre-populate the downstream cluster with two EPPs — one from the TPP
+	// controller path and one from the connector path. Both must survive when
+	// EPP emission is disabled (NSO must NOT delete EPPs it did not write in
+	// this reconcile cycle).
+	existingTppEPP := &envoygatewayv1alpha1.EnvoyPatchPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "tpp-my-gw", Namespace: downstreamNS},
+	}
+	existingConnectorEPP := &envoygatewayv1alpha1.EnvoyPatchPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "connector-tunnel-foo", Namespace: downstreamNS},
+	}
+	fakeDownstreamClient := fake.NewClientBuilder().
+		WithScheme(downstreamScheme).
+		WithObjects(existingTppEPP, existingConnectorEPP).
+		Build()
+
+	eppOff := false
+	reconciler := &TrafficProtectionPolicyReconciler{
+		mgr:               &fakeMockManager{cl: fakeUpstreamClient},
+		DownstreamCluster: &fakeCluster{cl: fakeDownstreamClient},
+		Config: config.NetworkServicesOperator{
+			Gateway: config.GatewayConfig{
+				DownstreamGatewayNamespace: "envoy-gateway-system",
+				EPPEmissionEnabled:         &eppOff,
+			},
+		},
+	}
+
+	ctx := context.Background()
+	_, err := reconciler.Reconcile(ctx, NamespaceReconcileRequest{
+		Namespace:   upstreamNS,
+		ClusterName: "test-cluster",
+	})
+	assert.NoError(t, err)
+
+	// Verify the downstream EPP list is unchanged: BOTH pre-existing EPPs must
+	// still be present — the stale-cleanup loop must NOT run when EPP emission
+	// is disabled.
+	var policyList envoygatewayv1alpha1.EnvoyPatchPolicyList
+	assert.NoError(t, fakeDownstreamClient.List(ctx, &policyList))
+	assert.Len(t, policyList.Items, 2,
+		"EPP emission disabled: NSO must NOT delete any pre-existing EPPs")
+
+	names := make([]string, 0, len(policyList.Items))
+	for _, p := range policyList.Items {
+		names = append(names, p.Name)
+	}
+	assert.Contains(t, names, "tpp-my-gw", "pre-existing tpp EPP must survive when EPP emission is disabled")
+	assert.Contains(t, names, "connector-tunnel-foo", "pre-existing connector EPP must survive when EPP emission is disabled")
+}
+
 // TestTPPReconcileStaleCleanupPreservesConnectorEPPs is a regression test for the
 // bug where the TPP stale-cleanup loop deleted connector-* EnvoyPatchPolicies that
 // belong to the HTTPProxy controller. The stale cleanup must only delete EPPs whose

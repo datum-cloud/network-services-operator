@@ -7,14 +7,8 @@ rules:
 - apiGroups:
   - ""
   resources:
-  - namespaces
-  verbs:
-  - get
-  - list
-  - watch
-- apiGroups:
-  - ""
-  resources:
+  - configmaps
+  - secrets
   - services
   verbs:
   - create
@@ -23,6 +17,14 @@ rules:
   - list
   - patch
   - update
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - namespaces
+  verbs:
+  - get
+  - list
   - watch
 - apiGroups:
   - ""
@@ -152,7 +154,10 @@ rules:
 - apiGroups:
   - gateway.envoyproxy.io
   resources:
+  - backends
+  - backendtrafficpolicies
   - httproutefilters
+  - securitypolicies
   verbs:
   - create
   - delete
@@ -161,6 +166,14 @@ rules:
   - patch
   - update
   - watch
+- apiGroups:
+  - gateway.envoyproxy.io
+  resources:
+  - backends/finalizers
+  - backendtrafficpolicies/finalizers
+  - securitypolicies/finalizers
+  verbs:
+  - update
 - apiGroups:
   - gateway.networking.k8s.io
   resources:

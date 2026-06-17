@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app.kubernetes.io/name: network-services-operator
+    app.kubernetes.io/component: extension-server
+    app.kubernetes.io/managed-by: kustomize
+  name: extension-server
+  namespace: system
+spec:
+  selector:
+    app.kubernetes.io/name: network-services-operator
+    app.kubernetes.io/component: extension-server
+  ports:
+    - name: grpc
+      port: 5005
+      targetPort: 5005
+      protocol: TCP
+    - name: metrics
+      port: 8080
+      targetPort: 8080
+      protocol: TCP

@@ -1857,6 +1857,262 @@ func TestHTTPProxyFinalizerCleanup(t *testing.T) {
 	}
 }
 
+// TestHTTPProxyReconcileConnectorEPPEmissionDisabled verifies that when
+// gateway.eppEmissionEnabled is false, the HTTPProxy reconciler does NOT create
+// a connector EnvoyPatchPolicy in the downstream cluster even when all
+// prerequisites (ready Connector, programmed gateway default-https listener) are
+// met. The HTTPProxy's Accepted/Programmed conditions must still be set correctly
+// from the gateway status.
+func TestHTTPProxyReconcileConnectorEPPEmissionDisabled(t *testing.T) {
+	logger := zap.New(zap.UseFlagOptions(&zap.Options{Development: true}))
+	ctx := log.IntoContext(context.Background(), logger)
+
+	testScheme := runtime.NewScheme()
+	assert.NoError(t, scheme.AddToScheme(testScheme))
+	assert.NoError(t, gatewayv1.Install(testScheme))
+	assert.NoError(t, envoygatewayv1alpha1.AddToScheme(testScheme))
+	assert.NoError(t, discoveryv1.AddToScheme(testScheme))
+	assert.NoError(t, networkingv1alpha.AddToScheme(testScheme))
+	assert.NoError(t, networkingv1alpha1.AddToScheme(testScheme))
+
+	eppOff := false
+	testConfig := config.NetworkServicesOperator{
+		HTTPProxy: config.HTTPProxyConfig{
+			GatewayClassName: "test-gateway-class",
+		},
+		Gateway: config.GatewayConfig{
+			ControllerName:             gatewayv1.GatewayController("test-gateway-class"),
+			DownstreamGatewayClassName: "test-downstream-gateway-class",
+			TargetDomain:               "example.com",
+			ListenerTLSOptions: map[gatewayv1.AnnotationKey]gatewayv1.AnnotationValue{
+				gatewayv1.AnnotationKey("gateway.networking.datumapis.com/certificate-issuer"): gatewayv1.AnnotationValue("test-issuer"),
+			},
+			EPPEmissionEnabled: &eppOff,
+		},
+	}
+
+	namespaceUID := types.UID("22222222-2222-2222-2222-222222222222")
+	downstreamNamespaceName := fmt.Sprintf("ns-%s", namespaceUID)
+
+	httpProxy := newHTTPProxy(func(h *networkingv1alpha.HTTPProxy) {
+		h.Spec.Rules[0].Backends[0].Connector = &networkingv1alpha.ConnectorReference{
+			Name: "connector-1",
+		}
+	})
+
+	connector := &networkingv1alpha1.Connector{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "connector-1",
+			Namespace: "test",
+		},
+		Status: networkingv1alpha1.ConnectorStatus{
+			Conditions: []metav1.Condition{
+				{
+					Type:   networkingv1alpha1.ConnectorConditionReady,
+					Status: metav1.ConditionTrue,
+					Reason: networkingv1alpha1.ConnectorReasonReady,
+				},
+			},
+			ConnectionDetails: &networkingv1alpha1.ConnectorConnectionDetails{
+				Type: networkingv1alpha1.PublicKeyConnectorConnectionType,
+				PublicKey: &networkingv1alpha1.ConnectorConnectionDetailsPublicKey{
+					Id:            "node-123",
+					DiscoveryMode: networkingv1alpha1.DNSPublicKeyDiscoveryMode,
+					HomeRelay:     "https://relay.example.test",
+					Addresses: []networkingv1alpha1.PublicKeyConnectorAddress{
+						{Address: "127.0.0.1", Port: 80},
+					},
+				},
+			},
+		},
+	}
+
+	upstreamNamespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: httpProxy.Namespace}}
+	upstreamNamespace.SetUID(namespaceUID)
+
+	gatewayClass := &gatewayv1.GatewayClass{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-gateway-class"},
+		Spec: gatewayv1.GatewayClassSpec{
+			ControllerName: testConfig.Gateway.ControllerName,
+		},
+	}
+	connector.SetCreationTimestamp(metav1.Now())
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(testScheme).
+		WithObjects(httpProxy, upstreamNamespace, connector, gatewayClass).
+		WithStatusSubresource(httpProxy, connector).
+		WithStatusSubresource(&gatewayv1.Gateway{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+				obj.SetUID(uuid.NewUUID())
+				obj.SetCreationTimestamp(metav1.Now())
+				return c.Create(ctx, obj, opts...)
+			},
+		}).
+		Build()
+
+	// Downstream: anchor ConfigMap exists (from a previous cycle when EPP was on);
+	// no pre-existing EPP to keep things simple.
+	fakeDownstreamClient := fake.NewClientBuilder().
+		WithScheme(testScheme).
+		WithObjects(
+			&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: downstreamNamespaceName}},
+			&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{
+				Name:              fmt.Sprintf("anchor-%s", httpProxy.UID),
+				Namespace:         downstreamNamespaceName,
+				CreationTimestamp: metav1.Now(),
+			}},
+		).
+		Build()
+
+	mgr := &fakeMockManager{cl: fakeClient}
+	reconciler := &HTTPProxyReconciler{
+		mgr:               mgr,
+		Config:            testConfig,
+		DownstreamCluster: &fakeCluster{cl: fakeDownstreamClient},
+	}
+	gatewayReconciler := &GatewayReconciler{
+		mgr:               mgr,
+		Config:            testConfig,
+		DownstreamCluster: &fakeCluster{cl: fakeDownstreamClient},
+	}
+
+	req := mcreconcile.Request{
+		Request: reconcile.Request{
+			NamespacedName: client.ObjectKeyFromObject(httpProxy),
+		},
+		ClusterName: "test-cluster",
+	}
+
+	// Run three reconcile passes to let the HTTPProxy and Gateway settle.
+	for i := 0; i < 3; i++ {
+		_, err := reconciler.Reconcile(ctx, req)
+		assert.NoError(t, err)
+	}
+	_, err := gatewayReconciler.Reconcile(ctx, req)
+	assert.NoError(t, err)
+
+	// Simulate the gateway becoming accepted.
+	var gateway gatewayv1.Gateway
+	require.NoError(t, fakeClient.Get(ctx, client.ObjectKeyFromObject(httpProxy), &gateway))
+	apimeta.SetStatusCondition(&gateway.Status.Conditions, metav1.Condition{
+		Type:               string(gatewayv1.GatewayConditionAccepted),
+		Status:             metav1.ConditionTrue,
+		ObservedGeneration: gateway.Generation,
+		Reason:             "TestSuite",
+		Message:            "set by test suite",
+	})
+	require.NoError(t, fakeClient.Status().Update(ctx, &gateway))
+	setGatewayProgrammedWithDefaultHTTPSListener(&gateway)
+	require.NoError(t, fakeClient.Status().Update(ctx, &gateway))
+
+	_, err = reconciler.Reconcile(ctx, req)
+	assert.NoError(t, err)
+
+	// Key assertion: no EnvoyPatchPolicy must be created in the downstream
+	// cluster when EPP emission is disabled.
+	var patchList envoygatewayv1alpha1.EnvoyPatchPolicyList
+	assert.NoError(t, fakeDownstreamClient.List(ctx, &patchList))
+	assert.Empty(t, patchList.Items,
+		"EPP emission disabled: reconcileConnectorEnvoyPatchPolicy must NOT be called")
+}
+
+// TestHTTPProxyFinalizerCleanupEPPEmissionDisabled verifies that when
+// gateway.eppEmissionEnabled is false, the HTTPProxy finalizer cleanup does NOT
+// delete the connector EnvoyPatchPolicy from the downstream cluster (NSO did not
+// write it, so it must not delete it). The HTTPProxy finalizer must still be
+// removed so the object can be garbage-collected.
+func TestHTTPProxyFinalizerCleanupEPPEmissionDisabled(t *testing.T) {
+	logger := zap.New(zap.UseFlagOptions(&zap.Options{Development: true}))
+	ctx := log.IntoContext(context.Background(), logger)
+
+	testScheme := runtime.NewScheme()
+	assert.NoError(t, scheme.AddToScheme(testScheme))
+	assert.NoError(t, gatewayv1.Install(testScheme))
+	assert.NoError(t, envoygatewayv1alpha1.AddToScheme(testScheme))
+	assert.NoError(t, discoveryv1.AddToScheme(testScheme))
+	assert.NoError(t, networkingv1alpha.AddToScheme(testScheme))
+	assert.NoError(t, networkingv1alpha1.AddToScheme(testScheme))
+
+	eppOff := false
+	testConfig := config.NetworkServicesOperator{
+		HTTPProxy: config.HTTPProxyConfig{
+			GatewayClassName: "test-gateway-class",
+		},
+		Gateway: config.GatewayConfig{
+			ControllerName:             gatewayv1.GatewayController("test-gateway-class"),
+			DownstreamGatewayClassName: "test-downstream-gateway-class",
+			EPPEmissionEnabled:         &eppOff,
+		},
+	}
+
+	httpProxy := newHTTPProxy()
+	deletionTime := metav1.Now()
+	httpProxy.DeletionTimestamp = &deletionTime
+	httpProxy.Finalizers = append(httpProxy.Finalizers, httpProxyFinalizer)
+
+	namespaceUID := types.UID("33333333-3333-3333-3333-333333333333")
+	upstreamNamespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: httpProxy.Namespace}}
+	upstreamNamespace.SetUID(namespaceUID)
+
+	downstreamNamespaceName := fmt.Sprintf("ns-%s", namespaceUID)
+	downstreamNamespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: downstreamNamespaceName}}
+
+	// Pre-populate the downstream with a connector EPP. When EPP emission is
+	// disabled the cleanup must leave this EPP untouched.
+	downstreamPolicy := &envoygatewayv1alpha1.EnvoyPatchPolicy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      fmt.Sprintf("connector-%s", httpProxy.Name),
+			Namespace: downstreamNamespaceName,
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(testScheme).
+		WithObjects(httpProxy, upstreamNamespace).
+		WithStatusSubresource(httpProxy).
+		Build()
+
+	fakeDownstreamClient := fake.NewClientBuilder().
+		WithScheme(testScheme).
+		WithObjects(downstreamNamespace, downstreamPolicy).
+		Build()
+
+	reconciler := &HTTPProxyReconciler{
+		mgr:               &fakeMockManager{cl: fakeClient},
+		Config:            testConfig,
+		DownstreamCluster: &fakeCluster{cl: fakeDownstreamClient},
+	}
+
+	req := mcreconcile.Request{
+		Request: reconcile.Request{
+			NamespacedName: client.ObjectKeyFromObject(httpProxy),
+		},
+		ClusterName: "test-cluster",
+	}
+
+	_, err := reconciler.Reconcile(ctx, req)
+	assert.NoError(t, err)
+
+	// The connector EPP must NOT be deleted — NSO did not write it.
+	policyList := envoygatewayv1alpha1.EnvoyPatchPolicyList{}
+	assert.NoError(t, fakeDownstreamClient.List(ctx, &policyList))
+	assert.Len(t, policyList.Items, 1,
+		"EPP emission disabled: cleanup must NOT delete the connector EPP")
+	assert.Equal(t, fmt.Sprintf("connector-%s", httpProxy.Name), policyList.Items[0].Name)
+
+	// The finalizer must still have been removed so GC can proceed.
+	updatedProxy := &networkingv1alpha.HTTPProxy{}
+	err = fakeClient.Get(ctx, client.ObjectKeyFromObject(httpProxy), updatedProxy)
+	if err == nil {
+		assert.False(t, controllerutil.ContainsFinalizer(updatedProxy, httpProxyFinalizer),
+			"finalizer must be removed even when EPP emission is disabled")
+	} else {
+		assert.True(t, apierrors.IsNotFound(err))
+	}
+}
+
 func setGatewayProgrammedWithDefaultHTTPSListener(g *gatewayv1.Gateway) {
 	apimeta.SetStatusCondition(&g.Status.Conditions, metav1.Condition{
 		Type:               string(gatewayv1.GatewayConditionProgrammed),

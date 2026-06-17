@@ -37,6 +37,8 @@ const (
 	envoyGatewayGroup = "gateway.envoyproxy.io"
 	// envoyGatewayAlpha1Version is the v1alpha1 API version used by Envoy Gateway resources.
 	envoyGatewayAlpha1Version = "v1alpha1"
+	// networkingDatumAPIsGroup is the API group for Datum networking resources.
+	networkingDatumAPIsGroup = "networking.datumapis.com"
 )
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
@@ -694,6 +696,15 @@ type GatewayConfig struct {
 	//
 	// +default=5
 	MaxConcurrentReconciles int `json:"maxConcurrentReconciles,omitempty"`
+
+	// EPPEmissionEnabled controls whether NSO's controllers emit EnvoyPatchPolicy
+	// objects. Set to false when the extension server is handling xDS mutation so
+	// that EPPs are no longer created or deleted by these controllers. Rollback =
+	// set to true (or omit, which defaults to true).
+	//
+	// When false: NSO emits ZERO EPPs and does NOT delete EPPs it did not create.
+	// When true (default): EPP emission proceeds as today.
+	EPPEmissionEnabled *bool `json:"eppEmissionEnabled,omitempty" yaml:"eppEmissionEnabled,omitempty"`
 }
 
 // HasDefaultListenerTLSSecret returns true when a shared TLS certificate
@@ -709,6 +720,17 @@ func (c *GatewayConfig) ShouldDeleteErroredChallenges() bool {
 		return true // default enabled
 	}
 	return *c.DeleteErroredChallenges
+}
+
+// IsEPPEmissionEnabled returns whether the operator should emit EnvoyPatchPolicy
+// objects. Defaults to true when not explicitly configured, preserving backward
+// compatibility. Set gateway.eppEmissionEnabled=false in the operator config to
+// disable EPP emission once the extension server is handling xDS mutation.
+func (c *GatewayConfig) IsEPPEmissionEnabled() bool {
+	if c.EPPEmissionEnabled == nil {
+		return true // default: EPP emission on
+	}
+	return *c.EPPEmissionEnabled
 }
 
 func (c *GatewayConfig) GatewayDNSAddress(gateway *gatewayv1.Gateway) string {
@@ -1055,6 +1077,14 @@ func SetDefaults_GatewayResourceReplicatorConfig(obj *GatewayResourceReplicatorC
 		{Group: envoyGatewayGroup, Version: envoyGatewayAlpha1Version, Kind: "HTTPRouteFilter"},
 		// Propagate v1alpha3 until v1 is supported by Envoy Gateway
 		{Group: "gateway.networking.k8s.io", Version: "v1alpha3", Kind: "BackendTLSPolicy"},
+		// Policy types propagated to the downstream edge cluster so the
+		// extension server can read them without reaching into upstream project
+		// control planes.
+		{Group: networkingDatumAPIsGroup, Version: "v1alpha", Kind: "TrafficProtectionPolicy"},
+		{Group: networkingDatumAPIsGroup, Version: "v1alpha", Kind: "HTTPProxy"},
+		// Connector is propagated with status mirrored downstream so the
+		// extension server can check tunnel liveness (Status.Conditions[Ready]).
+		{Group: networkingDatumAPIsGroup, Version: "v1alpha1", Kind: "Connector"},
 	}
 }
 

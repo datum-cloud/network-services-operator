@@ -94,7 +94,17 @@ func (c *mappedNamespaceResourceStrategy) ensureDownstreamNamespace(ctx context.
 			downstreamNamespace.Labels = make(map[string]string)
 		}
 
-		downstreamNamespace.Labels[UpstreamOwnerClusterNameLabel] = fmt.Sprintf("cluster-%s", strings.ReplaceAll(c.upstreamClusterName, "/", "_"))
+		// DEFENSIVE GUARD (single-cluster mode): when upstreamClusterName is empty
+		// the label value would be "cluster-", which the apiserver rejects as an
+		// invalid label value, failing the namespace CreateOrUpdate and blocking
+		// any downstream write (e.g. the per-policy WAF EnvoyPatchPolicy). This is
+		// hit because the TrafficProtectionPolicy controller's enqueue handlers do
+		// not propagate ClusterName (unlike controllers using mcreconcile.Request).
+		// Band-aid: only stamp the label when we actually have a cluster name; the
+		// proper fix is to propagate ClusterName into NamespaceReconcileRequest.
+		if c.upstreamClusterName != "" {
+			downstreamNamespace.Labels[UpstreamOwnerClusterNameLabel] = fmt.Sprintf("cluster-%s", strings.ReplaceAll(c.upstreamClusterName, "/", "_"))
+		}
 
 		labels := obj.GetLabels()
 		if v, ok := labels[UpstreamOwnerNamespaceLabel]; ok {

@@ -1,0 +1,15 @@
+# Teach kustomize to propagate namePrefix into cert-manager cross-resource references.
+#
+# Without this, kustomize's namePrefix transformer renames Certificate and Issuer
+# metadata.name but does NOT update Certificate.spec.issuerRef.name — leaving
+# Certificates pointing at the old (un-prefixed) Issuer name and causing
+# cert-manager to fail with "issuer not found".
+#
+# Mirrors config/certmanager/kustomizeconfig.yaml (the NSO webhook CA).
+nameReference:
+- kind: Issuer
+  group: cert-manager.io
+  fieldSpecs:
+  - kind: Certificate
+    group: cert-manager.io
+    path: spec/issuerRef/name

@@ -92,9 +92,14 @@ func (r *TrafficProtectionPolicyReconciler) Reconcile(ctx context.Context, req N
 	logger := log.FromContext(ctx, "cluster", req.ClusterName)
 	ctx = log.IntoContext(ctx, logger)
 
-	// Ensure that the HTTP listener has the Coraza WAF filter configured.
-	if err := r.ensureHTTPCorazaListenerFilter(ctx); err != nil {
-		return ctrl.Result{}, err
+	// Gate: global Coraza listener EPP (conflict C4: this global EPP must also
+	// be gated — easy to miss because it's at GatewayClass scope, not per-gateway).
+	// The extension server replaces it by injecting Coraza into all listeners
+	// in PostTranslateModify; when the flag is off, emit nothing.
+	if r.Config.Gateway.IsEPPEmissionEnabled() {
+		if err := r.ensureHTTPCorazaListenerFilter(ctx); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 
 	cl, err := r.mgr.GetCluster(ctx, req.ClusterName)
@@ -138,95 +143,102 @@ func (r *TrafficProtectionPolicyReconciler) Reconcile(ctx context.Context, req N
 
 	attachments := r.collectTrafficProtectionPolicyAttachments(ctx, trafficProtectionPolicies, upstreamGateways.Items, upstreamHTTPRoutes.Items)
 
-	// Check if all HTTPS listener certificates are ready before creating EnvoyPatchPolicies.
-	// This prevents JSONPath selector failures when Envoy Gateway hasn't materialized filter_chains.
-	certReadiness, err := r.checkHTTPSListenerCertificatesReady(ctx, downstreamNamespaceName, attachments)
-	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("failed to check certificate readiness: %w", err)
-	}
-
-	if !certReadiness.AllReady {
-		logger.Info("waiting for TLS certificates to become ready", "pendingListeners", certReadiness.PendingListeners)
-		r.setWaitingForCertificatesConditions(trafficProtectionPolicies, certReadiness.PendingListeners)
-
-		if err := r.updateTPPAncestorsStatus(ctx, cl.GetClient(), trafficProtectionPolicies, originalTrafficProtectionPolicies); err != nil {
-			return ctrl.Result{}, err
-		}
-
-		// Certificate watch will trigger reconciliation when certificates become ready
-		return ctrl.Result{}, nil
-	}
-
-	listenerReadiness := r.checkHTTPSListenersProgrammed(attachments)
-	if !listenerReadiness.AllReady {
-		logger.Info("waiting for HTTPS listeners to become programmed", "pendingListeners", listenerReadiness.PendingListeners)
-		r.setWaitingForListenersProgrammedConditions(trafficProtectionPolicies, listenerReadiness.PendingListeners)
-
-		if err := r.updateTPPAncestorsStatus(ctx, cl.GetClient(), trafficProtectionPolicies, originalTrafficProtectionPolicies); err != nil {
-			return ctrl.Result{}, err
-		}
-
-		// Gateway/HTTPRoute watches will trigger reconciliation when listener status changes.
-		return ctrl.Result{}, nil
-	}
-
-	desiredPolicies, err := r.getDesiredEnvoyPatchPolicies(downstreamNamespaceName, attachments)
-	if err != nil {
-		return ctrl.Result{}, err
-	}
-
-	desiredPolicyNames := make(map[string]struct{}, len(desiredPolicies))
-	for _, desiredPolicy := range desiredPolicies {
-		desiredPolicyNames[desiredPolicy.Name] = struct{}{}
-
-		policy := envoygatewayv1alpha1.EnvoyPatchPolicy{ObjectMeta: metav1.ObjectMeta{
-			Namespace: desiredPolicy.Namespace,
-			Name:      desiredPolicy.Name,
-		}}
-
-		result, err := controllerutil.CreateOrUpdate(ctx, downstreamStrategy.GetClient(), &policy, func() error {
-			if policy.Labels == nil {
-				policy.Labels = make(map[string]string)
-			}
-			policy.Labels[tppManagedLabel] = labelValueTrue
-			policy.Spec = desiredPolicy.Spec
-			return nil
-		})
+	// Gate all per-gateway EPP emission and its prerequisites behind the feature
+	// flag. The cert/listener readiness checks exist only to guard EPP creation
+	// (to avoid JSONPath selector failures before filter_chains are materialized),
+	// so they are also skipped when EPP emission is disabled.
+	// When the flag is OFF: NSO emits ZERO EPPs and does NOT delete any EPPs.
+	if r.Config.Gateway.IsEPPEmissionEnabled() {
+		// Check if all HTTPS listener certificates are ready before creating EnvoyPatchPolicies.
+		// This prevents JSONPath selector failures when Envoy Gateway hasn't materialized filter_chains.
+		certReadiness, err := r.checkHTTPSListenerCertificatesReady(ctx, downstreamNamespaceName, attachments)
 		if err != nil {
-			return ctrl.Result{}, fmt.Errorf("failed to create or update envoypatchpolicy %s/%s: %w", policy.Namespace, policy.Name, err)
+			return ctrl.Result{}, fmt.Errorf("failed to check certificate readiness: %w", err)
 		}
-		logger.Info("applied envoypatchpolicy to downstream cluster", "namespace", policy.Namespace, jsonKeyName, policy.Name, "result", result)
-	}
 
-	// Clean up stale EPPs. All EPPs written by this controller are named
-	// "tpp-<gateway-name>"; other controllers use different prefixes (e.g.
-	// "connector-<name>" from the HTTPProxy controller). Filtering by prefix
-	// avoids a label dependency and correctly handles deleted gateways whose EPP
-	// would be missed if we only iterated upstreamGateways.
-	// TODO: once all existing EPPs carry tppManagedLabel (stamped above on every
-	// CreateOrUpdate), switch this List to use a label selector and drop the
-	// prefix check.
-	var existingPolicies envoygatewayv1alpha1.EnvoyPatchPolicyList
-	if err := downstreamStrategy.GetClient().List(
-		ctx,
-		&existingPolicies,
-		client.InNamespace(downstreamNamespaceName),
-	); err != nil {
-		return ctrl.Result{}, fmt.Errorf("failed to list envoypatchpolicies: %w", err)
-	}
+		if !certReadiness.AllReady {
+			logger.Info("waiting for TLS certificates to become ready", "pendingListeners", certReadiness.PendingListeners)
+			r.setWaitingForCertificatesConditions(trafficProtectionPolicies, certReadiness.PendingListeners)
 
-	for i := range existingPolicies.Items {
-		existing := &existingPolicies.Items[i]
-		if !strings.HasPrefix(existing.Name, tppEnvoyPatchPolicyPrefix) {
-			continue
+			if err := r.updateTPPAncestorsStatus(ctx, cl.GetClient(), trafficProtectionPolicies, originalTrafficProtectionPolicies); err != nil {
+				return ctrl.Result{}, err
+			}
+
+			// Certificate watch will trigger reconciliation when certificates become ready
+			return ctrl.Result{}, nil
 		}
-		if _, ok := desiredPolicyNames[existing.Name]; ok {
-			continue
+
+		listenerReadiness := r.checkHTTPSListenersProgrammed(attachments)
+		if !listenerReadiness.AllReady {
+			logger.Info("waiting for HTTPS listeners to become programmed", "pendingListeners", listenerReadiness.PendingListeners)
+			r.setWaitingForListenersProgrammedConditions(trafficProtectionPolicies, listenerReadiness.PendingListeners)
+
+			if err := r.updateTPPAncestorsStatus(ctx, cl.GetClient(), trafficProtectionPolicies, originalTrafficProtectionPolicies); err != nil {
+				return ctrl.Result{}, err
+			}
+
+			// Gateway/HTTPRoute watches will trigger reconciliation when listener status changes.
+			return ctrl.Result{}, nil
 		}
-		if err := downstreamStrategy.GetClient().Delete(ctx, existing); err != nil {
-			return ctrl.Result{}, fmt.Errorf("failed to delete stale envoypatchpolicy %s/%s: %w", existing.Namespace, existing.Name, err)
+
+		desiredPolicies, err := r.getDesiredEnvoyPatchPolicies(downstreamNamespaceName, attachments)
+		if err != nil {
+			return ctrl.Result{}, err
 		}
-		logger.Info("deleted stale envoypatchpolicy from downstream cluster", "namespace", existing.Namespace, jsonKeyName, existing.Name)
+
+		desiredPolicyNames := make(map[string]struct{}, len(desiredPolicies))
+		for _, desiredPolicy := range desiredPolicies {
+			desiredPolicyNames[desiredPolicy.Name] = struct{}{}
+
+			policy := envoygatewayv1alpha1.EnvoyPatchPolicy{ObjectMeta: metav1.ObjectMeta{
+				Namespace: desiredPolicy.Namespace,
+				Name:      desiredPolicy.Name,
+			}}
+
+			result, err := controllerutil.CreateOrUpdate(ctx, downstreamStrategy.GetClient(), &policy, func() error {
+				if policy.Labels == nil {
+					policy.Labels = make(map[string]string)
+				}
+				policy.Labels[tppManagedLabel] = labelValueTrue
+				policy.Spec = desiredPolicy.Spec
+				return nil
+			})
+			if err != nil {
+				return ctrl.Result{}, fmt.Errorf("failed to create or update envoypatchpolicy %s/%s: %w", policy.Namespace, policy.Name, err)
+			}
+			logger.Info("applied envoypatchpolicy to downstream cluster", jsonKeyNamespace, policy.Namespace, jsonKeyName, policy.Name, "result", result)
+		}
+
+		// Clean up stale EPPs. All EPPs written by this controller are named
+		// "tpp-<gateway-name>"; other controllers use different prefixes (e.g.
+		// "connector-<name>" from the HTTPProxy controller). Filtering by prefix
+		// avoids a label dependency and correctly handles deleted gateways whose EPP
+		// would be missed if we only iterated upstreamGateways.
+		// TODO: once all existing EPPs carry tppManagedLabel (stamped above on every
+		// CreateOrUpdate), switch this List to use a label selector and drop the
+		// prefix check.
+		var existingPolicies envoygatewayv1alpha1.EnvoyPatchPolicyList
+		if err := downstreamStrategy.GetClient().List(
+			ctx,
+			&existingPolicies,
+			client.InNamespace(downstreamNamespaceName),
+		); err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed to list envoypatchpolicies: %w", err)
+		}
+
+		for i := range existingPolicies.Items {
+			existing := &existingPolicies.Items[i]
+			if !strings.HasPrefix(existing.Name, tppEnvoyPatchPolicyPrefix) {
+				continue
+			}
+			if _, ok := desiredPolicyNames[existing.Name]; ok {
+				continue
+			}
+			if err := downstreamStrategy.GetClient().Delete(ctx, existing); err != nil {
+				return ctrl.Result{}, fmt.Errorf("failed to delete stale envoypatchpolicy %s/%s: %w", existing.Namespace, existing.Name, err)
+			}
+			logger.Info("deleted stale envoypatchpolicy from downstream cluster", jsonKeyNamespace, existing.Namespace, jsonKeyName, existing.Name)
+		}
 	}
 
 	if err := r.updateTPPAncestorsStatus(ctx, cl.GetClient(), trafficProtectionPolicies, originalTrafficProtectionPolicies); err != nil {
@@ -502,7 +514,7 @@ func (r *TrafficProtectionPolicyReconciler) ensureHTTPCorazaListenerFilter(ctx c
 		envoyPatchPolicy.Spec = envoygatewayv1alpha1.EnvoyPatchPolicySpec{
 			TargetRef: gatewayv1.LocalPolicyTargetReference{
 				Group: gatewayv1.GroupName,
-				Kind:  KindGatewayClass,
+				Kind:  "GatewayClass",
 				Name:  gatewayv1.ObjectName(r.Config.Gateway.DownstreamGatewayClassName),
 			},
 			Type: envoygatewayv1alpha1.JSONPatchEnvoyPatchType,
@@ -526,7 +538,7 @@ func (r *TrafficProtectionPolicyReconciler) ensureHTTPCorazaListenerFilter(ctx c
 	}
 
 	logger := log.FromContext(ctx)
-	logger.Info("ensured envoypatchpolicy for http listener", "namespace", envoyPatchPolicy.Namespace, jsonKeyName, envoyPatchPolicy.Name, "result", result)
+	logger.Info("ensured envoypatchpolicy for http listener", jsonKeyNamespace, envoyPatchPolicy.Namespace, jsonKeyName, envoyPatchPolicy.Name, "result", result)
 
 	return nil
 }
@@ -800,7 +812,7 @@ func (r *TrafficProtectionPolicyReconciler) processTrafficProtectionPolicyForHTT
 
 	for _, parentRef := range route.Spec.ParentRefs {
 		if ptr.Deref(parentRef.Kind, KindGateway) != KindGateway {
-			logger.Info("skipping parentRef that is not a gateway", jsonKeyKind, parentRef.Kind)
+			logger.Info("skipping parentRef that is not a gateway", "kind", parentRef.Kind)
 			continue
 		}
 
@@ -1010,10 +1022,10 @@ func (r *TrafficProtectionPolicyReconciler) getDesiredEnvoyPatchPolicies(
 			datumGatewayMetadata := map[string]any{
 				"resources": []map[string]any{
 					{
-						jsonKeyKind: "TrafficProtectionPolicy",
-						"namespace": policyAttachment.Policy.Namespace,
-						jsonKeyName: policyAttachment.Policy.Name,
-						"mode":      policyAttachment.Policy.Spec.Mode,
+						jsonKeyKind:      KindTrafficProtectionPolicy,
+						jsonKeyNamespace: policyAttachment.Policy.Namespace,
+						jsonKeyName:      policyAttachment.Policy.Name,
+						"mode":           policyAttachment.Policy.Spec.Mode,
 					},
 				},
 			}
@@ -1174,7 +1186,7 @@ func (r *TrafficProtectionPolicyReconciler) getDesiredEnvoyPatchPolicies(
 			Spec: envoygatewayv1alpha1.EnvoyPatchPolicySpec{
 				TargetRef: gatewayv1.LocalPolicyTargetReference{
 					Group: gatewayv1.GroupName,
-					Kind:  KindGatewayClass,
+					Kind:  "GatewayClass",
 					Name:  gatewayv1.ObjectName(r.Config.Gateway.DownstreamGatewayClassName),
 				},
 				Type:        envoygatewayv1alpha1.JSONPatchEnvoyPatchType,
@@ -1311,7 +1323,7 @@ func (r *TrafficProtectionPolicyReconciler) enqueuePoliciesForCertificate() hand
 		downstreamNamespaceName := cert.GetNamespace()
 		var downstreamNamespace corev1.Namespace
 		if err := r.DownstreamCluster.GetClient().Get(ctx, client.ObjectKey{Name: downstreamNamespaceName}, &downstreamNamespace); err != nil {
-			logger.Error(err, "failed to get downstream namespace for certificate", "certificate", cert.GetName(), "namespace", downstreamNamespaceName)
+			logger.Error(err, "failed to get downstream namespace for certificate", "certificate", cert.GetName(), jsonKeyNamespace, downstreamNamespaceName)
 			return nil
 		}
 

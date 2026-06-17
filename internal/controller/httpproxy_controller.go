@@ -323,18 +323,28 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 		logger.Info("processed endpointslice", "result", result, jsonKeyName, desiredEndpointSlice.Name)
 	}
 
-	patchPolicy, hasConnectorBackends, err := r.reconcileConnectorEnvoyPatchPolicy(
-		ctx,
-		cl.GetClient(),
-		string(req.ClusterName),
-		&httpProxy,
-		gateway,
-	)
-	if err != nil {
-		programmedCondition.Status = metav1.ConditionFalse
-		programmedCondition.Reason = networkingv1alpha.HTTPProxyReasonPending
-		programmedCondition.Message = err.Error()
-		return ctrl.Result{}, err
+	// Gate connector EPP emission behind the feature flag. When disabled the
+	// extension server handles connector xDS mutation via PostTranslateModify;
+	// NSO emits ZERO connector EPPs and does NOT delete existing ones.
+	// patchPolicy=nil and hasConnectorBackends=false causes the
+	// ConnectorMetadataProgrammed condition to be cleared (not tracked by NSO
+	// when the extension server owns this path).
+	var patchPolicy *envoygatewayv1alpha1.EnvoyPatchPolicy
+	var hasConnectorBackends bool
+	if r.Config.Gateway.IsEPPEmissionEnabled() {
+		patchPolicy, hasConnectorBackends, err = r.reconcileConnectorEnvoyPatchPolicy(
+			ctx,
+			cl.GetClient(),
+			string(req.ClusterName),
+			&httpProxy,
+			gateway,
+		)
+		if err != nil {
+			programmedCondition.Status = metav1.ConditionFalse
+			programmedCondition.Reason = networkingv1alpha.HTTPProxyReasonPending
+			programmedCondition.Message = err.Error()
+			return ctrl.Result{}, err
+		}
 	}
 
 	httpProxyCopy.Status.Addresses = gateway.Status.Addresses
@@ -1604,20 +1614,28 @@ func (r *HTTPProxyReconciler) cleanupConnectorEnvoyPatchPolicy(
 		return err
 	}
 
-	policyName := fmt.Sprintf("connector-%s", httpProxy.Name)
-	policyKey := client.ObjectKey{Namespace: downstreamNamespaceName, Name: policyName}
 	downstreamClient := downstreamStrategy.GetClient()
 
-	var policy envoygatewayv1alpha1.EnvoyPatchPolicy
-	if err := downstreamClient.Get(ctx, policyKey, &policy); err != nil {
-		if apierrors.IsNotFound(err) {
-			return downstreamStrategy.DeleteAnchorForObject(ctx, httpProxy)
+	// When EPP emission is disabled, NSO did not write the connector EPP so we
+	// must not delete it (it may have been created before the flag was disabled,
+	// or it may belong to the extension server's path). Always clean up NSO's
+	// own anchor ConfigMap regardless of the flag.
+	if r.Config.Gateway.IsEPPEmissionEnabled() {
+		policyName := fmt.Sprintf("connector-%s", httpProxy.Name)
+		policyKey := client.ObjectKey{Namespace: downstreamNamespaceName, Name: policyName}
+
+		var policy envoygatewayv1alpha1.EnvoyPatchPolicy
+		if err := downstreamClient.Get(ctx, policyKey, &policy); err != nil {
+			if apierrors.IsNotFound(err) {
+				return downstreamStrategy.DeleteAnchorForObject(ctx, httpProxy)
+			}
+			return err
 		}
-		return err
+		if err := downstreamClient.Delete(ctx, &policy); err != nil {
+			return err
+		}
 	}
-	if err := downstreamClient.Delete(ctx, &policy); err != nil {
-		return err
-	}
+
 	return downstreamStrategy.DeleteAnchorForObject(ctx, httpProxy)
 }
 

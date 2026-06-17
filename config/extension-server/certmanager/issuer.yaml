@@ -1,0 +1,76 @@
+# Extension server PKI — one internal CA issues all three certificates:
+#   1. extension-server-tls        (NSO namespace) — server TLS cert, mounted in pod
+#   2. extension-server-ca         (NSO namespace) — CA cert; EG references via certificateRef
+#   3. extension-server-eg-client-tls (NSO namespace) — EG's mTLS client cert
+#
+# All three Secrets live in NSO's namespace. EG references (2) and (3) via
+# extensionManager.service.tls.{certificateRef,clientCertificateRef} with explicit
+# namespace: network-services-operator-system (see extensionmanager-patch.yaml).
+#
+# Open item (a) — clientCertificateRef cross-namespace: EG v1.8.1 uses a
+# cluster-scoped Kubernetes client with Secret read access across all namespaces.
+# SecretObjectReference supports an explicit 'namespace' field, and EG's extension
+# manager implementation resolves it. Cross-namespace references to NSO's namespace
+# ARE supported. If this is disproven in testing, the fix is to issue (2) and (3)
+# via a ClusterIssuer backed by a CA in the cert-manager namespace, and create
+# cert-manager Certificate resources in envoy-gateway-system for EG to read.
+---
+# Step 1: SelfSigned Issuer bootstraps the CA Certificate.
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  labels:
+    app.kubernetes.io/name: network-services-operator
+    app.kubernetes.io/component: extension-server
+    app.kubernetes.io/managed-by: kustomize
+  name: extension-server-selfsigned-issuer
+  namespace: system
+spec:
+  selfSigned: {}
+---
+# Step 2: CA Certificate — the root of trust for all extension server TLS.
+# cert-manager stores this in Secret 'extension-server-ca' in NSO's namespace.
+# Secret fields: tls.crt (CA cert), tls.key (CA private key), ca.crt (CA cert).
+# EG's certificateRef reads tls.crt from this Secret to verify the extension
+# server's presented certificate.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  labels:
+    app.kubernetes.io/name: network-services-operator
+    app.kubernetes.io/component: extension-server
+    app.kubernetes.io/managed-by: kustomize
+  name: extension-server-ca
+  namespace: system
+spec:
+  isCA: true
+  commonName: extension-server-ca
+  secretName: extension-server-ca   # fixed; cert-manager-managed, NOT kustomize-prefixed
+  duration: 87600h                  # 10 years
+  renewBefore: 720h                 # 30 days
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    name: extension-server-selfsigned-issuer
+    kind: Issuer
+    group: cert-manager.io
+  usages:
+    - cert sign
+    - crl sign
+---
+# Step 3: CA-backed Issuer — issues the server cert and EG client cert.
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  labels:
+    app.kubernetes.io/name: network-services-operator
+    app.kubernetes.io/component: extension-server
+    app.kubernetes.io/managed-by: kustomize
+  name: extension-server-ca-issuer
+  namespace: system
+spec:
+  ca:
+    # secretName must match the Certificate.spec.secretName above.
+    # cert-manager resolves this Secret in the same namespace as this Issuer.
+    secretName: extension-server-ca   # fixed; cert-manager-managed

@@ -1,10 +1,22 @@
 resources:
   - namespace.yaml
 helmCharts:
+  # ── Release 1: shared EG (envoy-gateway-system) ─────────────────────────────
+  # Default Envoy Gateway control plane. Owns the cluster CRDs (includeCRDs: true).
+  # Used by Mode A (EPP-on baseline) and cluster-level resources.
+  # EPP enabled here for Mode A e2e coverage.
+  #
+  # The dedicated NSO EG (envoy-datum-downstream-gateway) is a SEPARATE helm release
+  # applied by make envoy-gateway-downstream from config/tools/envoy-gateway-downstream/.
+  # It is kept separate to avoid cluster-scoped resource collisions (ValidatingAdmissionPolicy
+  # safe-upgrades.gateway.networking.k8s.io is emitted by both charts and must be applied
+  # independently — consistent with the production Flux HelmRelease pattern).
   - name: gateway-helm
     includeCRDs: true
     namespace: envoy-gateway-system
     releaseName: envoy-gateway
+    # v1.8.1: required for mTLS clientCertificateRef in extensionManager (v1.6.0+)
+    # and for the PostTranslateModify hook with full listener/route includeAll support.
     version: v1.8.1
     repo: oci://docker.io/envoyproxy
     valuesInline:
@@ -12,6 +24,8 @@ helmCharts:
         envoyGateway:
           extensionApis:
             enableBackend: true
+            # Mode A (baseline): EPP enabled for existing e2e test coverage.
+            # Mode B (ext-server): handled by the dedicated EG (envoy-gateway-downstream).
             enableEnvoyPatchPolicy: true
           runtimeFlags:
             enabled:

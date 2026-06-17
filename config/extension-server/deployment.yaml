@@ -1,0 +1,149 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: extension-server
+  namespace: system
+  labels:
+    app.kubernetes.io/name: network-services-operator
+    app.kubernetes.io/component: extension-server
+    app.kubernetes.io/managed-by: kustomize
+spec:
+  # HA requirement: minimum 2 replicas. Every replica serves (no leader election).
+  # EG calls this endpoint on the build path; a single replica is a reliability risk.
+  replicas: 2
+  # Rollout strategy: maxUnavailable=0 ensures serving capacity never drops below
+  # 2 during a rolling update. A failing new image can never reduce replicas to 0
+  # (failOpen:false + 0 serving = fleet-wide xDS freeze for all gateway updates).
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: network-services-operator
+      app.kubernetes.io/component: extension-server
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: network-services-operator
+        app.kubernetes.io/component: extension-server
+    spec:
+      serviceAccountName: extension-server
+      # Pod-level security context: non-root, seccomp.
+      # runAsUser/Group 65532 = the nonroot user in distroless/static-debian12:nonroot.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      # Topology spread: require replicas on distinct nodes so a single node failure
+      # (hardware fault, kernel panic) cannot take both replicas offline at once.
+      # With failOpen:false, a total replicas=0 event freezes all gateway xDS updates
+      # fleet-wide until a replica recovers — same blast radius as a Deployment
+      # restart but triggered by infrastructure rather than intentional action.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/component: extension-server
+      containers:
+        - name: extension-server
+          # Same image as NSO manager — single binary, subcommand selects role.
+          # Dockerfile has ENTRYPOINT ["/manager"] + no CMD. Setting 'command'
+          # here overrides the entire ENTRYPOINT; no conflicts with manager flags.
+          image: ghcr.io/datum-cloud/network-services-operator:latest
+          # IfNotPresent: avoids pulling from the registry on every pod restart,
+          # which is the Kubernetes default for :latest images (Always). Using the
+          # locally-cached or kind-loaded image prevents registry outages from
+          # blocking crash-loop recovery. Production deployments should pin to a
+          # semver tag or SHA digest (the kustomize images: transformer in the
+          # production overlay should set newTag/digest instead of :latest).
+          imagePullPolicy: IfNotPresent
+          command:
+            - /manager
+            - extension-server
+          args:
+            - --grpc-addr=:5005
+            - --health-addr=:8080
+            - --tls-cert=/tls/tls.crt
+            - --tls-key=/tls/tls.key
+            - --tls-client-ca=/tls/ca.crt
+          ports:
+            - name: grpc
+              containerPort: 5005
+              protocol: TCP
+            - name: health
+              containerPort: 8080
+              protocol: TCP
+          # startupProbe: gates liveness checks during initial informer cache sync.
+          # Allows up to 5 minutes (60 × 5s) for WaitForCacheSync before liveness
+          # begins. Without this, the liveness probe could kill the pod during a
+          # slow API server response at startup (original liveness window was only
+          # 15 + 3×20 = 75 seconds). The gRPC server does not start until the
+          # cache is warm, so this is also the /healthz readiness gate.
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            periodSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            # No initialDelaySeconds — startupProbe handles the startup window;
+            # liveness only fires after startupProbe succeeds.
+            periodSeconds: 20
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: "1"
+              memory: 256Mi
+          # Container-level security context: full hardening.
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          # preStop: native Kubernetes sleep (no shell required; safe on
+          # distroless/static-debian12:nonroot). Gives kube-proxy/iptables 5s
+          # to propagate endpoint removal before the gRPC server starts draining.
+          # Without this brief pause, new EG connections can arrive after
+          # GracefulStop begins and get a TCP reset instead of a retriable
+          # gRPC UNAVAILABLE error.
+          lifecycle:
+            preStop:
+              sleep:
+                seconds: 5
+          volumeMounts:
+            # TLS: server cert + key + CA cert from cert-manager Certificate.
+            # Secret name is fixed (cert-manager-managed, not kustomize-prefixed).
+            - name: tls
+              mountPath: /tls
+              readOnly: true
+      # terminationGracePeriodSeconds: 20 = 5s preStop sleep + 15s for GracefulStop
+      # to drain in-flight gRPC RPCs before SIGKILL. Previous value of 10s was too
+      # tight once the preStop sleep was added (5+10=15, leaving only 5s to drain).
+      terminationGracePeriodSeconds: 20
+      volumes:
+        - name: tls
+          secret:
+            # cert-manager creates this Secret; name is NOT kustomize-prefixed
+            # (matches spec.secretName in certmanager/certificate.yaml).
+            secretName: extension-server-tls

@@ -1,0 +1,63 @@
+---
+# ClusterRole for the extension server's ServiceAccount.
+#
+# Credential model: SINGLE-CLUSTER, in-cluster ServiceAccount token (THIS role).
+#
+# The extension server runs at the edge and reads the LOCAL cluster only. There is no
+# Milo multi-cluster discovery — ctrl.NewManager uses the pod's in-cluster config
+# (this SA token) to watch TPP/HTTPProxy/Connector on the cluster where it is deployed.
+# Every replica serves (no leader election). BuildPolicyIndex runs per hook call against
+# the warm in-memory cache.
+#
+# Four types consumed by the cache layer:
+#   - namespaces: builds the downstream-ns → upstream-ns reverse map
+#     (fmt.Sprintf("ns-%s", namespace.UID), mappednamespace.go:82)
+#   - trafficprotectionpolicies: WAF/Coraza directives per gateway/route
+#   - httpproxies: Connector backend endpoint + rule index per HTTPProxy
+#   - connectors: online/offline state via Connector.Status.Conditions[Ready]
+#
+# Connector STATUS read is explicitly included (connectors/status) because
+# ConnectorInfo.Online = apimeta.IsStatusConditionTrue(connector.Status.Conditions, Ready).
+# This is the replicated Connector status at the edge cluster.
+#
+# RBAC surface: read-only subset of config/rbac/role.yaml. No write verbs; no other types.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/name: network-services-operator
+    app.kubernetes.io/component: extension-server
+    app.kubernetes.io/managed-by: kustomize
+  name: extension-server-role
+rules:
+  # Namespace list/watch: used to build the downstream NS → upstream NS reverse map.
+  # (fmt.Sprintf("ns-%s", namespace.UID) — see internal/downstreamclient/mappednamespace.go:82)
+  - apiGroups:
+      - ""
+    resources:
+      - namespaces
+    verbs:
+      - get
+      - list
+      - watch
+  # Policy reads: the extension server's cache.BuildPolicyIndex reads these to
+  # determine WAF and Connector configuration per gateway/route at hook time.
+  - apiGroups:
+      - networking.datumapis.com
+    resources:
+      - trafficprotectionpolicies
+      - httpproxies
+      - connectors
+    verbs:
+      - get
+      - list
+      - watch
+  # Status subresources: ConnectorInfo.Online reads Connector.Status.Conditions[Ready].
+  - apiGroups:
+      - networking.datumapis.com
+    resources:
+      - trafficprotectionpolicies/status
+      - httpproxies/status
+      - connectors/status
+    verbs:
+      - get

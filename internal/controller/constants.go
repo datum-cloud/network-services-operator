@@ -4,9 +4,12 @@ package controller
 
 // Kubernetes resource Kind constants used across multiple controllers.
 const (
-	KindClusterIssuer    = "ClusterIssuer"
-	KindGatewayClass     = "GatewayClass"
-	KindBackendTLSPolicy = "BackendTLSPolicy"
+	KindClusterIssuer           = "ClusterIssuer"
+	KindGatewayClass            = "GatewayClass"
+	KindBackendTLSPolicy        = "BackendTLSPolicy"
+	KindTrafficProtectionPolicy = "TrafficProtectionPolicy"
+	KindHTTPProxy               = "HTTPProxy"
+	KindConnector               = "Connector"
 )
 
 // API group constants.
@@ -17,6 +20,7 @@ const (
 
 // API version constants.
 const (
+	versionV1Alpha  = "v1alpha"
 	versionV1Alpha1 = "v1alpha1"
 )
 
@@ -28,6 +32,7 @@ const (
 // JSON/map field key constants used in Envoy proxy configuration and condition maps.
 const (
 	jsonKeyName        = "name"
+	jsonKeyNamespace   = "namespace"
 	jsonKeyType        = "type"
 	jsonKeyTypedConfig = "typed_config"
 	jsonKeyAtType      = "@type"
@@ -57,6 +62,21 @@ const (
 // Label value constants.
 const (
 	labelValueTrue = "true"
+)
+
+// Metric label name constants.
+const (
+	metricLabelResourceKind = "resource_kind"
+)
+
+// API group constants for networking.datumapis.com resources.
+const (
+	groupNetworkingDatumAPIs = "networking.datumapis.com"
+)
+
+// Sync outcome constants used as Prometheus label values.
+const (
+	syncOutcomeError = "error"
 )
 
 // Service ClusterIP constants.

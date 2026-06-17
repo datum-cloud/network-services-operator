@@ -42,6 +42,7 @@ import (
 	networkingv1alpha1 "go.datum.net/network-services-operator/api/v1alpha1"
 	"go.datum.net/network-services-operator/internal/config"
 	"go.datum.net/network-services-operator/internal/controller"
+	extservercmd "go.datum.net/network-services-operator/internal/extensionserver/cmd"
 	networkingwebhook "go.datum.net/network-services-operator/internal/webhook"
 	networkinggatewayv1webhooks "go.datum.net/network-services-operator/internal/webhook/v1"
 	networkingv1alphawebhooks "go.datum.net/network-services-operator/internal/webhook/v1alpha"
@@ -80,6 +81,15 @@ func init() {
 
 // nolint:gocyclo
 func main() {
+	// Subcommand dispatch: route to the extension server when invoked as
+	//   /manager extension-server [flags...]
+	// Must precede flag.Parse() so the extension server's flag set does not
+	// conflict with the manager's flag set.
+	if len(os.Args) > 1 && os.Args[1] == "extension-server" {
+		extservercmd.RunServer(os.Args[2:])
+		return
+	}
+
 	var enableLeaderElection bool
 	var leaderElectionNamespace string
 	var probeAddr string
@@ -423,7 +433,8 @@ func main() {
 	}
 
 	if err := (&controller.ConnectorReconciler{
-		Config: serverConfig,
+		Config:            serverConfig,
+		DownstreamCluster: downstreamCluster,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Connector")
 		os.Exit(1)

@@ -1,0 +1,20 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  labels:
+    app.kubernetes.io/name: network-services-operator
+    app.kubernetes.io/component: extension-server
+    app.kubernetes.io/managed-by: kustomize
+  name: extension-server-pdb
+  namespace: system
+spec:
+  # minAvailable: 1 ensures at least one replica is always serving during node
+  # drains, cluster upgrades, or Cluster Autoscaler scale-downs.
+  # With failOpen:false, zero serving replicas freezes ALL gateway xDS updates
+  # fleet-wide — no gateway config changes can propagate until a replica recovers.
+  # Two replicas + minAvailable:1 means disruption is always tolerated one pod at
+  # a time; simultaneous eviction of both pods is rejected.
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: extension-server

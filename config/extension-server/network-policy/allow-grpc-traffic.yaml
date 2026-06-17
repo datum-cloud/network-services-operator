@@ -1,0 +1,69 @@
+# NetworkPolicy — restricts gRPC ingress (:5005) to Envoy Gateway control-plane pods.
+#
+# Defense-in-depth: mTLS already authenticates the caller cryptographically.
+# This NetworkPolicy shrinks the attack surface so unauthorized peers cannot even
+# open a TCP connection to attempt the mTLS handshake.
+#
+# EG control-plane pods are in the envoy-gateway-system namespace, selected by
+# both namespace label and the app.kubernetes.io/name=envoy-gateway pod label.
+# Using both selectors (same 'from' entry = AND) ensures only EG pods in that
+# namespace can reach port 5005.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  labels:
+    app.kubernetes.io/name: network-services-operator
+    app.kubernetes.io/component: extension-server
+    app.kubernetes.io/managed-by: kustomize
+  name: allow-extension-server-grpc-traffic
+  namespace: system
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: extension-server
+  policyTypes:
+    - Ingress
+  ingress:
+    # gRPC port: allow only from the envoy-gateway-system namespace.
+    # Requires the envoy-gateway-system namespace to carry the automatic label:
+    #   kubernetes.io/metadata.name: envoy-gateway-system
+    # (set automatically by Kubernetes >= 1.21).
+    #
+    # Note: podSelector is intentionally omitted here. Adding it would require EG
+    # pods to carry kustomize-managed labels from THIS kustomization (e.g.
+    # app.kubernetes.io/part-of: network-services-operator), which they don't.
+    # The namespace selector is the correct isolation boundary; mTLS provides
+    # cryptographic caller authentication as the primary control.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: envoy-gateway-system
+        # The dedicated NSO EG control plane (envoy-datum-downstream-gateway) runs in
+        # the datum-downstream-gateway namespace and is the control plane that actually
+        # registers the extensionManager / dials :5005. Without this entry the dedicated
+        # EG's gRPC to the ext-server is dropped (kindnet enforces NetworkPolicy), and
+        # with extensionManager.failOpen=false EG then drops ALL xDS translation, so no
+        # Gateway ever reaches Programmed=True.
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: datum-downstream-gateway
+      ports:
+        - port: 5005
+          protocol: TCP
+    # Health probe port (8080): allow from kubelet (no selector = any source).
+    # The kubelet IP is typically outside any pod CIDR so cannot be namespaced;
+    # a pod/namespace selector here would block health checks from the node.
+    #
+    # KNOWN GAP (P2-1): port 8080 serves both /healthz (kubelet) and /metrics
+    # (Prometheus/vmagent from telemetry-system). Because kubelet probes arrive
+    # from node IPs (not pods), we cannot restrict this port to a namespace
+    # selector without also blocking health checks. The audit finding P2-1 recommends
+    # splitting health and metrics onto separate ports in a follow-up PR:
+    #   --health-addr=:8080  (kept open for kubelet)
+    #   --metrics-addr=:9090 (restricted to telemetry-system via namespaceSelector)
+    # Until that split lands, /metrics is reachable by any cluster pod.
+    # Monitoring source: vmagent in telemetry-system (VMServiceScrape selects this
+    # Service's metrics port, see test/perf/observability/scrapes.yaml).
+    - ports:
+        - port: 8080
+          protocol: TCP

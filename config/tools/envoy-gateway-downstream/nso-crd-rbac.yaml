@@ -1,0 +1,44 @@
+# RBAC grant for the dedicated Envoy Gateway control plane to watch NSO's
+# TrafficProtectionPolicy and Connector CRDs on the edge cluster.
+#
+# When extensionManager.resources lists these GVKs, EG sets up informers and
+# fires GenerationChangedPredicate on each spec change (replicated by NSO's
+# GatewayResourceReplicator). Without this ClusterRole the informers fail to
+# sync and EG never re-translates when a policy object changes.
+#
+# Kept as a separate manifest (not patched into the Helm-generated ClusterRole)
+# to survive Helm chart upgrades without clobbering the chart's own RBAC output.
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: envoy-datum-downstream-gateway-nso-policy-viewer
+rules:
+  - apiGroups:
+      - networking.datumapis.com
+    resources:
+      - trafficprotectionpolicies
+      - connectors
+    verbs:
+      - get
+      - list
+      - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: envoy-datum-downstream-gateway-nso-policy-viewer
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: envoy-datum-downstream-gateway-nso-policy-viewer
+subjects:
+  - kind: ServiceAccount
+    # The gateway-helm chart hardcodes the control-plane SA as "envoy-gateway"
+    # (NOT release-name-prefixed), so the binding subject must use that exact
+    # name rather than the Helm release name (envoy-datum-downstream-gateway).
+    # A mismatch leaves the downstream EG unable to list TrafficProtectionPolicy/
+    # Connector → informer caches never sync → healthz fails → CrashLoopBackOff
+    # → no downstream Gateway ever programs.
+    name: envoy-gateway
+    namespace: datum-downstream-gateway

@@ -54,8 +54,8 @@ spec:
       containers:
         - name: extension-server
           # Same image as NSO manager — single binary, subcommand selects role.
-          # Dockerfile has ENTRYPOINT ["/manager"] + no CMD. Setting 'command'
-          # here overrides the entire ENTRYPOINT; no conflicts with manager flags.
+          # Dockerfile has ENTRYPOINT ["/network-services"] + no CMD. Setting
+          # 'command' here overrides the entire ENTRYPOINT; no flag conflicts.
           image: ghcr.io/datum-cloud/network-services-operator:latest
           # IfNotPresent: avoids pulling from the registry on every pod restart,
           # which is the Kubernetes default for :latest images (Always). Using the
@@ -65,8 +65,8 @@ spec:
           # production overlay should set newTag/digest instead of :latest).
           imagePullPolicy: IfNotPresent
           command:
-            - /manager
-            - extension-server
+            - /network-services
+            - envoy-gateway-extension-server
           args:
             - --grpc-addr=:5005
             - --health-addr=:8080

@@ -16,6 +16,7 @@ import (
 	pb "github.com/envoyproxy/gateway/proto/extension"
 	"github.com/grpc-ecosystem/go-grpc-middleware/v2/interceptors/recovery"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/spf13/cobra"
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc"
@@ -55,16 +56,8 @@ func envBool(key string, def bool) bool {
 	}
 }
 
-// RunServer is the extension-server subcommand entrypoint. Called from
-// cmd/main.go when os.Args[1] == "extension-server". It owns flag parsing,
-// cache startup, gRPC server lifecycle, and signal handling.
-//
-// The extension server runs at the edge, co-located with Envoy Gateway.
-// It reads policy resources from the LOCAL edge cluster only — NSO replicates
-// TrafficProtectionPolicy, HTTPProxy, and Connector resources into the edge
-// cluster's downstream ns-<uid> namespaces; no upstream connectivity needed.
-//
-// Flag surface (must match SRE's config/extension-server/deployment.yaml):
+// options holds the extension-server command-line flags. The flag surface must
+// match config/extension-server/deployment.yaml:
 //
 //	--grpc-addr=:5005
 //	--health-addr=:8080
@@ -72,35 +65,62 @@ func envBool(key string, def bool) bool {
 //	--tls-key=/tls/tls.key
 //	--tls-client-ca=/tls/ca.crt
 //	--server-config=/config/config.yaml  (optional; provides Coraza WAF config)
+type options struct {
+	grpcAddr      string
+	healthAddr    string
+	tlsCert       string
+	tlsKey        string
+	tlsClientCA   string
+	serverCfgFile string
+}
+
+// NewCommand returns the "extension-server" subcommand.
+//
+// The extension server runs at the edge, co-located with Envoy Gateway. It reads
+// policy resources from the LOCAL edge cluster only — NSO replicates
+// TrafficProtectionPolicy, HTTPProxy, and Connector resources into the edge
+// cluster's downstream ns-<uid> namespaces; no upstream connectivity needed.
 //
 // Tracing:
 //
 //	OTEL_TRACES_ENABLED=true   — enable OTLP span export to the in-cluster Tempo
 //	OTEL_EXPORTER_OTLP_ENDPOINT — override Tempo endpoint (default: telemetry-system-tempo.telemetry-system:4317)
 //	OTEL_SERVICE_NAME           — override service name (default: nso-extension-server)
-func RunServer(args []string) {
+func NewCommand() *cobra.Command {
+	var o options
+
+	fs := flag.NewFlagSet("extension-server", flag.ContinueOnError)
+	fs.StringVar(&o.grpcAddr, "grpc-addr", ":5005", "gRPC listener address")
+	fs.StringVar(&o.healthAddr, "health-addr", ":8080", "Plain HTTP health endpoint address")
+	fs.StringVar(&o.tlsCert, "tls-cert", "", "Path to server TLS certificate (PEM)")
+	fs.StringVar(&o.tlsKey, "tls-key", "", "Path to server TLS key (PEM)")
+	fs.StringVar(&o.tlsClientCA, "tls-client-ca", "", "Path to client CA certificate (PEM) for mTLS")
+	fs.StringVar(&o.serverCfgFile, "server-config", "", "Path to operator config file (optional; provides Coraza WAF settings)")
+
+	cmd := &cobra.Command{
+		Use:   "envoy-gateway-extension-server",
+		Short: "Run the Envoy Gateway extension server",
+		Args:  cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			run(o)
+			return nil
+		},
+	}
+	cmd.Flags().AddGoFlagSet(fs)
+	return cmd
+}
+
+// run starts the extension server with the given options. It owns cache startup,
+// gRPC server lifecycle, and signal handling.
+func run(o options) {
 	log := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
-	fs := flag.NewFlagSet("extension-server", flag.ExitOnError)
-	var (
-		grpcAddr      string
-		healthAddr    string
-		tlsCert       string
-		tlsKey        string
-		tlsClientCA   string
-		serverCfgFile string
-	)
-	fs.StringVar(&grpcAddr, "grpc-addr", ":5005", "gRPC listener address")
-	fs.StringVar(&healthAddr, "health-addr", ":8080", "Plain HTTP health endpoint address")
-	fs.StringVar(&tlsCert, "tls-cert", "", "Path to server TLS certificate (PEM)")
-	fs.StringVar(&tlsKey, "tls-key", "", "Path to server TLS key (PEM)")
-	fs.StringVar(&tlsClientCA, "tls-client-ca", "", "Path to client CA certificate (PEM) for mTLS")
-	fs.StringVar(&serverCfgFile, "server-config", "", "Path to operator config file (optional; provides Coraza WAF settings)")
-
-	if err := fs.Parse(args); err != nil {
-		log.Error("parse flags", "err", err)
-		os.Exit(1)
-	}
+	grpcAddr := o.grpcAddr
+	healthAddr := o.healthAddr
+	tlsCert := o.tlsCert
+	tlsKey := o.tlsKey
+	tlsClientCA := o.tlsClientCA
+	serverCfgFile := o.serverCfgFile
 
 	// --- OTel tracing (optional, default off) ---
 	// Enable by setting OTEL_TRACES_ENABLED=true. Non-fatal: the server continues

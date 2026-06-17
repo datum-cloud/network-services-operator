@@ -15,6 +15,7 @@ import (
 	cmacmev1 "github.com/cert-manager/cert-manager/pkg/apis/acme/v1"
 	cmv1 "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
 	envoygatewayv1alpha1 "github.com/envoyproxy/gateway/api/v1alpha1"
+	"github.com/spf13/cobra"
 	multiclusterproviders "go.miloapis.com/milo/pkg/multicluster-runtime"
 	milomulticluster "go.miloapis.com/milo/pkg/multicluster-runtime/milo"
 	"golang.org/x/sync/errgroup"
@@ -79,17 +80,9 @@ func init() {
 	// +kubebuilder:scaffold:scheme
 }
 
-// nolint:gocyclo
-func main() {
-	// Subcommand dispatch: route to the extension server when invoked as
-	//   /manager extension-server [flags...]
-	// Must precede flag.Parse() so the extension server's flag set does not
-	// conflict with the manager's flag set.
-	if len(os.Args) > 1 && os.Args[1] == "extension-server" {
-		extservercmd.RunServer(os.Args[2:])
-		return
-	}
-
+// newManagerCommand builds the "manager" subcommand, which runs the
+// network-services-operator controller manager.
+func newManagerCommand() *cobra.Command {
 	var enableLeaderElection bool
 	var leaderElectionNamespace string
 	var probeAddr string
@@ -102,42 +95,44 @@ func main() {
 
 	var serverConfigFile string
 
-	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
-	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
+	fs := flag.NewFlagSet("manager", flag.ContinueOnError)
+
+	fs.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
+	fs.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. "+
 			"Enabling this will ensure there is only one active controller manager.")
-	flag.StringVar(&leaderElectionNamespace, "leader-elect-namespace", "", "The namespace to use for leader election.")
-	flag.BoolVar(
+	fs.StringVar(&leaderElectionNamespace, "leader-elect-namespace", "", "The namespace to use for leader election.")
+	fs.BoolVar(
 		&enableClusterSharding,
 		"cluster-sharding-enabled",
 		false,
 		"Enable multicluster controller sharding via per-cluster coordination leases.",
 	)
-	flag.StringVar(
+	fs.StringVar(
 		&clusterShardingLeaseNamespace,
 		"cluster-sharding-lease-namespace",
 		"kube-system",
 		"Namespace for controller cluster sharding leases.",
 	)
-	flag.StringVar(
+	fs.StringVar(
 		&clusterShardingLeasePrefix,
 		"cluster-sharding-lease-prefix",
 		"mcr-shard",
 		"Lease name prefix for controller cluster sharding.",
 	)
-	flag.UintVar(
+	fs.UintVar(
 		&clusterShardingPeerWeight,
 		"cluster-sharding-peer-weight",
 		1,
 		"Relative shard weight for this controller instance.",
 	)
-	flag.BoolVar(
+	fs.BoolVar(
 		&singletonControllersLeaderElection,
 		"singleton-controllers-leader-elect",
 		true,
 		"Enable leader election for singleton downstream controllers (Challenge and GatewayDownstreamCertificateSolver).",
 	)
-	flag.StringVar(
+	fs.StringVar(
 		&singletonControllersLeaderElectionID,
 		"singleton-controllers-leader-election-id",
 		"6a7d51cc.datumapis.com-singleton",
@@ -148,445 +143,475 @@ func main() {
 		Development: true,
 	}
 
-	flag.StringVar(&serverConfigFile, "server-config", "", "path to the server config file")
+	fs.StringVar(&serverConfigFile, "server-config", "", "path to the server config file")
 
-	opts.BindFlags(flag.CommandLine)
-	flag.Parse()
+	opts.BindFlags(fs)
 
-	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+	cmd := &cobra.Command{
+		Use:   "manager",
+		Short: "Run the network-services-operator controller manager",
+		Args:  cobra.NoArgs,
+		// nolint:gocyclo
+		RunE: func(_ *cobra.Command, _ []string) error {
+			ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 
-	setupLog.Info("starting network-services-operator",
-		"version", version,
-		"gitCommit", gitCommit,
-		"gitTreeState", gitTreeState,
-		"buildDate", buildDate,
-	)
-
-	var serverConfig config.NetworkServicesOperator
-	var configData []byte
-	if len(serverConfigFile) > 0 {
-		var err error
-		configData, err = os.ReadFile(serverConfigFile)
-		if err != nil {
-			setupLog.Error(fmt.Errorf("unable to read server config from %q", serverConfigFile), "")
-			os.Exit(1)
-		}
-	}
-
-	if err := runtime.DecodeInto(codecs.UniversalDecoder(), configData, &serverConfig); err != nil {
-		setupLog.Error(err, "unable to decode server config")
-		os.Exit(1)
-	}
-
-	// Allow overriding Redis URL at runtime via env var.
-	if redisURL := strings.TrimSpace(os.Getenv("REDIS_URL")); redisURL != "" {
-		serverConfig.Redis.URL = redisURL
-		setupLog.Info("overriding redis.url from REDIS_URL")
-	}
-
-	setupLog.Info("server config", "config", serverConfig)
-
-	if err := serverConfig.Validate(); err != nil {
-		setupLog.Error(err, "invalid server config")
-		os.Exit(1)
-	}
-
-	cfg := ctrl.GetConfigOrDie()
-	serverConfig.ControlPlaneClient.ApplyTo(cfg)
-
-	deploymentCluster, err := cluster.New(cfg, func(o *cluster.Options) {
-		o.Scheme = scheme
-	})
-	if err != nil {
-		setupLog.Error(err, "failed creating local cluster")
-		os.Exit(1)
-	}
-
-	runnables, provider, err := initializeClusterDiscovery(serverConfig, deploymentCluster, scheme)
-	if err != nil {
-		setupLog.Error(err, "unable to initialize cluster discovery")
-		os.Exit(1)
-	}
-
-	setupLog.Info("cluster discovery mode", "mode", serverConfig.Discovery.Mode)
-
-	ctx := ctrl.SetupSignalHandler()
-
-	deploymentClusterClient := deploymentCluster.GetClient()
-
-	metricsServerOptions := serverConfig.MetricsServer.Options(ctx, deploymentClusterClient)
-
-	webhookServer := webhook.NewServer(
-		serverConfig.WebhookServer.Options(ctx, deploymentClusterClient),
-	)
-
-	webhookServer = networkingwebhook.NewClusterAwareWebhookServer(webhookServer, serverConfig.Discovery.Mode)
-
-	leaseDuration := serverConfig.LeaderElection.LeaseDuration.Duration
-	renewDeadline := serverConfig.LeaderElection.RenewDeadline.Duration
-	retryPeriod := serverConfig.LeaderElection.RetryPeriod.Duration
-
-	mcManagerOptions := []mcmanager.Option{}
-	if enableClusterSharding {
-		setupLog.Info(
-			"enabling cluster sharding coordinator",
-			"leaseNamespace",
-			clusterShardingLeaseNamespace,
-			"leasePrefix",
-			clusterShardingLeasePrefix,
-			"peerWeight",
-			clusterShardingPeerWeight,
-		)
-
-		clusterShardingOptions := []sharded.Option{
-			sharded.WithShardLease(clusterShardingLeaseNamespace, clusterShardingLeasePrefix),
-			sharded.WithPerClusterLease(true),
-		}
-		if clusterShardingPeerWeight > 0 {
-			clusterShardingOptions = append(
-				clusterShardingOptions,
-				sharded.WithPeerWeight(uint32(clusterShardingPeerWeight)),
+			setupLog.Info("starting network-services-operator",
+				"version", version,
+				"gitCommit", gitCommit,
+				"gitTreeState", gitTreeState,
+				"buildDate", buildDate,
 			)
-		}
 
-		mcManagerOptions = append(
-			mcManagerOptions,
-			mcmanager.WithCoordinator(
-				sharded.New(
-					deploymentCluster.GetClient(),
-					ctrl.Log.WithName("cluster-sharding-coordinator"),
-					clusterShardingOptions...,
-				),
-			),
-		)
+			var serverConfig config.NetworkServicesOperator
+			var configData []byte
+			if len(serverConfigFile) > 0 {
+				var err error
+				configData, err = os.ReadFile(serverConfigFile)
+				if err != nil {
+					setupLog.Error(fmt.Errorf("unable to read server config from %q", serverConfigFile), "")
+					os.Exit(1)
+				}
+			}
+
+			if err := runtime.DecodeInto(codecs.UniversalDecoder(), configData, &serverConfig); err != nil {
+				setupLog.Error(err, "unable to decode server config")
+				os.Exit(1)
+			}
+
+			// Allow overriding Redis URL at runtime via env var.
+			if redisURL := strings.TrimSpace(os.Getenv("REDIS_URL")); redisURL != "" {
+				serverConfig.Redis.URL = redisURL
+				setupLog.Info("overriding redis.url from REDIS_URL")
+			}
+
+			setupLog.Info("server config", "config", serverConfig)
+
+			if err := serverConfig.Validate(); err != nil {
+				setupLog.Error(err, "invalid server config")
+				os.Exit(1)
+			}
+
+			cfg := ctrl.GetConfigOrDie()
+			serverConfig.ControlPlaneClient.ApplyTo(cfg)
+
+			deploymentCluster, err := cluster.New(cfg, func(o *cluster.Options) {
+				o.Scheme = scheme
+			})
+			if err != nil {
+				setupLog.Error(err, "failed creating local cluster")
+				os.Exit(1)
+			}
+
+			runnables, provider, err := initializeClusterDiscovery(serverConfig, deploymentCluster, scheme)
+			if err != nil {
+				setupLog.Error(err, "unable to initialize cluster discovery")
+				os.Exit(1)
+			}
+
+			setupLog.Info("cluster discovery mode", "mode", serverConfig.Discovery.Mode)
+
+			ctx := ctrl.SetupSignalHandler()
+
+			deploymentClusterClient := deploymentCluster.GetClient()
+
+			metricsServerOptions := serverConfig.MetricsServer.Options(ctx, deploymentClusterClient)
+
+			webhookServer := webhook.NewServer(
+				serverConfig.WebhookServer.Options(ctx, deploymentClusterClient),
+			)
+
+			webhookServer = networkingwebhook.NewClusterAwareWebhookServer(webhookServer, serverConfig.Discovery.Mode)
+
+			leaseDuration := serverConfig.LeaderElection.LeaseDuration.Duration
+			renewDeadline := serverConfig.LeaderElection.RenewDeadline.Duration
+			retryPeriod := serverConfig.LeaderElection.RetryPeriod.Duration
+
+			mcManagerOptions := []mcmanager.Option{}
+			if enableClusterSharding {
+				setupLog.Info(
+					"enabling cluster sharding coordinator",
+					"leaseNamespace",
+					clusterShardingLeaseNamespace,
+					"leasePrefix",
+					clusterShardingLeasePrefix,
+					"peerWeight",
+					clusterShardingPeerWeight,
+				)
+
+				clusterShardingOptions := []sharded.Option{
+					sharded.WithShardLease(clusterShardingLeaseNamespace, clusterShardingLeasePrefix),
+					sharded.WithPerClusterLease(true),
+				}
+				if clusterShardingPeerWeight > 0 {
+					clusterShardingOptions = append(
+						clusterShardingOptions,
+						sharded.WithPeerWeight(uint32(clusterShardingPeerWeight)),
+					)
+				}
+
+				mcManagerOptions = append(
+					mcManagerOptions,
+					mcmanager.WithCoordinator(
+						sharded.New(
+							deploymentCluster.GetClient(),
+							ctrl.Log.WithName("cluster-sharding-coordinator"),
+							clusterShardingOptions...,
+						),
+					),
+				)
+			}
+
+			primaryManagerLeaderElection := enableLeaderElection
+			if enableClusterSharding && enableLeaderElection {
+				setupLog.Info(
+					"disabling primary manager leader election while cluster sharding is enabled",
+					"singletonControllersLeaderElection",
+					singletonControllersLeaderElection,
+				)
+				primaryManagerLeaderElection = false
+			}
+
+			mgr, err := mcmanager.New(cfg, provider, ctrl.Options{
+				Scheme:                  scheme,
+				Metrics:                 metricsServerOptions,
+				WebhookServer:           webhookServer,
+				HealthProbeBindAddress:  probeAddr,
+				LeaderElection:          primaryManagerLeaderElection,
+				LeaderElectionID:        "6a7d51cc.datumapis.com",
+				LeaderElectionNamespace: leaderElectionNamespace,
+				LeaseDuration:           &leaseDuration,
+				RenewDeadline:           &renewDeadline,
+				RetryPeriod:             &retryPeriod,
+				// LeaderElectionReleaseOnCancel defines if the leader should step down voluntarily
+				// when the Manager ends. This requires the binary to immediately end when the
+				// Manager is stopped, otherwise, this setting is unsafe. Setting this significantly
+				// speeds up voluntary leader transitions as the new leader don't have to wait
+				// LeaseDuration time first.
+				//
+				// In the default scaffold provided, the program ends immediately after
+				// the manager stops, so would be fine to enable this option. However,
+				// if you are doing or is intended to do any operation such as perform cleanups
+				// after the manager stops then its usage might be unsafe.
+				// LeaderElectionReleaseOnCancel: true,
+			}, mcManagerOptions...)
+			if err != nil {
+				setupLog.Error(err, "unable to start manager")
+				os.Exit(1)
+			}
+
+			downstreamRestConfig, err := serverConfig.DownstreamResourceManagement.RestConfig()
+			if err != nil {
+				setupLog.Error(err, "unable to load control plane kubeconfig")
+				os.Exit(1)
+			}
+			serverConfig.DownstreamClient.ApplyTo(downstreamRestConfig)
+
+			downstreamCluster, err := cluster.New(downstreamRestConfig, func(o *cluster.Options) {
+				o.Scheme = scheme
+				o.Client = client.Options{
+					Cache: &client.CacheOptions{
+						Unstructured: true,
+					},
+				}
+			})
+			if err != nil {
+				setupLog.Error(err, "failed to construct cluster")
+				os.Exit(1)
+			}
+
+			var singletonMgr manager.Manager
+			singletonControllerMgr := mgr.GetLocalManager()
+			if enableClusterSharding {
+				singletonMgr, err = manager.New(cfg, manager.Options{
+					Scheme:                  scheme,
+					Metrics:                 metricsserver.Options{BindAddress: "0"},
+					WebhookServer:           webhook.NewServer(webhook.Options{Port: 0}),
+					HealthProbeBindAddress:  "0",
+					LeaderElection:          singletonControllersLeaderElection,
+					LeaderElectionID:        singletonControllersLeaderElectionID,
+					LeaderElectionNamespace: leaderElectionNamespace,
+					LeaseDuration:           &leaseDuration,
+					RenewDeadline:           &renewDeadline,
+					RetryPeriod:             &retryPeriod,
+				})
+				if err != nil {
+					setupLog.Error(err, "unable to create singleton controller manager")
+					os.Exit(1)
+				}
+				singletonControllerMgr = singletonMgr
+			}
+
+			if err := (&controller.NetworkReconciler{}).SetupWithManager(mgr); err != nil {
+				setupLog.Error(err, "unable to create controller", "controller", "Network")
+				os.Exit(1)
+			}
+			if err := (&controller.NetworkBindingReconciler{}).SetupWithManager(mgr); err != nil {
+				setupLog.Error(err, "unable to create controller", "controller", "NetworkBinding")
+				os.Exit(1)
+			}
+			if err := (&controller.NetworkContextReconciler{}).SetupWithManager(mgr); err != nil {
+				setupLog.Error(err, "unable to create controller", "controller", "NetworkContext")
+				os.Exit(1)
+			}
+			if err := (&controller.NetworkPolicyReconciler{}).SetupWithManager(mgr); err != nil {
+				setupLog.Error(err, "unable to create controller", "controller", "NetworkPolicy")
+				os.Exit(1)
+			}
+			if err := (&controller.SubnetReconciler{}).SetupWithManager(mgr); err != nil {
+				setupLog.Error(err, "unable to create controller", "controller", "Subnet")
+				os.Exit(1)
+			}
+			if err := (&controller.SubnetClaimReconciler{}).SetupWithManager(mgr); err != nil {
+				setupLog.Error(err, "unable to create controller", "controller", "SubnetClaim")
+				os.Exit(1)
+			}
+
+			if err := (&controller.HTTPProxyReconciler{
+				Config:            serverConfig,
+				DownstreamCluster: downstreamCluster,
+			}).SetupWithManager(mgr); err != nil {
+				setupLog.Error(err, "unable to create controller", "controller", "HTTPProxy")
+				os.Exit(1)
+			}
+
+			if err := (&controller.GatewayReconciler{
+				Config:            serverConfig,
+				DownstreamCluster: downstreamCluster,
+			}).SetupWithManager(mgr); err != nil {
+				setupLog.Error(err, "unable to create controller", "controller", "Gateway")
+				os.Exit(1)
+			}
+			if err := (&controller.GatewayClassReconciler{
+				Config: serverConfig,
+			}).SetupWithManager(mgr); err != nil {
+				setupLog.Error(err, "unable to create controller", "controller", "GatewayClass")
+				os.Exit(1)
+			}
+
+			if err := (&controller.GatewayDownstreamGCReconciler{
+				Config:            serverConfig,
+				DownstreamCluster: downstreamCluster,
+			}).SetupWithManager(mgr); err != nil {
+				setupLog.Error(err, "unable to create controller", "controller", "GatewayDownstreamGC")
+				os.Exit(1)
+			}
+
+			if err := (&controller.GatewayResourceReplicatorReconciler{
+				Config:            serverConfig,
+				DownstreamCluster: downstreamCluster,
+			}).SetupWithManager(mgr); err != nil {
+				setupLog.Error(err, "unable to create controller", "controller", "GatewayResourceReplicator")
+				os.Exit(1)
+			}
+
+			if !serverConfig.Gateway.Coraza.Disabled {
+				if err = (&controller.TrafficProtectionPolicyReconciler{
+					Config:            serverConfig,
+					DownstreamCluster: downstreamCluster,
+				}).SetupWithManager(mgr); err != nil {
+					setupLog.Error(err, "unable to create controller", "controller", "WAFSecurityPolicy")
+					os.Exit(1)
+				}
+			}
+
+			if serverConfig.Gateway.EnableDownstreamCertificateSolver {
+				setupLog.Info("enabling GatewayDownstreamCertificateSolver controller")
+				if err := (&controller.GatewayDownstreamCertificateSolverReconciler{
+					Config:            serverConfig,
+					DownstreamCluster: downstreamCluster,
+				}).SetupWithManager(singletonControllerMgr); err != nil {
+					setupLog.Error(err, "unable to create controller", "controller", "GatewayDownstreamCertificateSolver")
+					os.Exit(1)
+				}
+			}
+
+			if err := (&controller.DomainReconciler{
+				Config: serverConfig,
+			}).SetupWithManager(mgr); err != nil {
+				setupLog.Error(err, "unable to create controller", "controller", "Domain")
+				os.Exit(1)
+			}
+
+			if err := (&controller.ConnectorReconciler{
+				Config:            serverConfig,
+				DownstreamCluster: downstreamCluster,
+			}).SetupWithManager(mgr); err != nil {
+				setupLog.Error(err, "unable to create controller", "controller", "Connector")
+				os.Exit(1)
+			}
+			if err := (&controller.ConnectorAdvertisementReconciler{}).SetupWithManager(mgr); err != nil {
+				setupLog.Error(err, "unable to create controller", "controller", "ConnectorAdvertisement")
+				os.Exit(1)
+			}
+
+			var irohDownstream cluster.Cluster
+			if serverConfig.Connector.Iroh.DNSEnabled {
+				irohRestCfg, err := serverConfig.Connector.Iroh.DownstreamRestConfig()
+				if err != nil {
+					setupLog.Error(err, "unable to load iroh dns downstream kubeconfig")
+					os.Exit(1)
+				}
+				irohDownstream, err = cluster.New(irohRestCfg, func(o *cluster.Options) {
+					o.Scheme = scheme
+				})
+				if err != nil {
+					setupLog.Error(err, "unable to build iroh dns downstream cluster")
+					os.Exit(1)
+				}
+				if err := (&controller.IrohDNSReconciler{
+					Config:     serverConfig,
+					Downstream: irohDownstream,
+				}).SetupWithManager(mgr); err != nil {
+					setupLog.Error(err, "unable to create controller", "controller", "IrohDNS")
+					os.Exit(1)
+				}
+			}
+
+			if serverConfig.Gateway.ShouldDeleteErroredChallenges() {
+				if err := (&controller.ChallengeReconciler{
+					Config:            serverConfig,
+					DownstreamCluster: downstreamCluster,
+				}).SetupWithManager(singletonControllerMgr); err != nil {
+					setupLog.Error(err, "unable to create controller", "controller", "Challenge")
+					os.Exit(1)
+				}
+			}
+
+			if err := controller.AddIndexers(ctx, mgr); err != nil {
+				setupLog.Error(err, "unable to add indexers")
+				os.Exit(1)
+			}
+
+			if serverConfig.Gateway.EnableDNSIntegration {
+				if err := controller.AddDNSZoneDomainNameIndexer(ctx, mgr); err != nil {
+					setupLog.Error(err, "unable to add DNSZone indexer")
+					os.Exit(1)
+				}
+			}
+
+			if err := networkinggatewayv1webhooks.SetupGatewayWebhookWithManager(mgr, serverConfig); err != nil {
+				setupLog.Error(err, "unable to create webhook", "webhook", "Gateway")
+				os.Exit(1)
+			}
+
+			if err := networkinggatewayv1webhooks.SetupHTTPRouteWebhookWithManager(mgr, serverConfig); err != nil {
+				setupLog.Error(err, "unable to create webhook", "webhook", "HTTPRoute")
+				os.Exit(1)
+			}
+
+			if err := networkinggatewayv1webhooks.SetupBackendTLSPolicyWebhookWithManager(mgr); err != nil {
+				setupLog.Error(err, "unable to create webhook", "webhook", "HTTPRoute")
+				os.Exit(1)
+			}
+
+			if err := networkingv1alphawebhooks.SetupHTTPProxyWebhookWithManager(mgr); err != nil {
+				setupLog.Error(err, "unable to create webhook", "webhook", "HTTPProxy")
+				os.Exit(1)
+			}
+
+			if err := networkingv1alphawebhooks.SetupDomainWebhookWithManager(mgr); err != nil {
+				setupLog.Error(err, "unable to create webhook", "webhook", "Domain")
+				os.Exit(1)
+			}
+
+			if err = webhookgatewayv1alpha1.SetupBackendTrafficPolicyWebhookWithManager(mgr, serverConfig); err != nil {
+				setupLog.Error(err, "unable to create webhook", "webhook", "BackendTrafficPolicy")
+				os.Exit(1)
+			}
+
+			if err = webhookgatewayv1alpha1.SetupSecurityPolicyWebhookWithManager(mgr, serverConfig); err != nil {
+				setupLog.Error(err, "unable to create webhook", "webhook", "SecurityPolicy")
+				os.Exit(1)
+			}
+
+			if err = webhookgatewayv1alpha1.SetupHTTPRouteFilterWebhookWithManager(mgr, serverConfig); err != nil {
+				setupLog.Error(err, "unable to create webhook", "webhook", "HTTPRouteFilter")
+				os.Exit(1)
+			}
+
+			if err = webhookgatewayv1alpha1.SetupBackendWebhookWithManager(mgr); err != nil {
+				setupLog.Error(err, "unable to create webhook", "webhook", "Backend")
+				os.Exit(1)
+			}
+
+			// +kubebuilder:scaffold:builder
+
+			if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
+				setupLog.Error(err, "unable to set up health check")
+				os.Exit(1)
+			}
+			if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
+				setupLog.Error(err, "unable to set up ready check")
+				os.Exit(1)
+			}
+
+			g, ctx := errgroup.WithContext(ctx)
+			for _, runnable := range runnables {
+				g.Go(func() error {
+					return ignoreCanceled(runnable.Start(ctx))
+				})
+			}
+
+			// Providers that still implement the legacy Run(ctx, mgr) shape (e.g. the
+			// Milo provider) must be started by us. Providers that implement upstream's
+			// multicluster.ProviderRunnable interface (e.g. mcsingle) are started
+			// automatically by mgr.Start, so we skip them here.
+			if runner, ok := provider.(legacyRunnableProvider); ok {
+				setupLog.Info("starting cluster discovery provider")
+				g.Go(func() error {
+					return ignoreCanceled(runner.Run(ctx, mgr))
+				})
+			}
+
+			g.Go(func() error {
+				return ignoreCanceled(downstreamCluster.Start(ctx))
+			})
+
+			if irohDownstream != nil {
+				g.Go(func() error {
+					return ignoreCanceled(irohDownstream.Start(ctx))
+				})
+			}
+
+			setupLog.Info("starting multicluster manager")
+			g.Go(func() error {
+				return ignoreCanceled(mgr.Start(ctx))
+			})
+
+			if singletonMgr != nil {
+				setupLog.Info("starting singleton controller manager")
+				g.Go(func() error {
+					return ignoreCanceled(singletonMgr.Start(ctx))
+				})
+			}
+
+			if err := g.Wait(); err != nil {
+				setupLog.Error(err, "unable to start")
+				os.Exit(1)
+			}
+
+			return nil
+		},
 	}
 
-	primaryManagerLeaderElection := enableLeaderElection
-	if enableClusterSharding && enableLeaderElection {
-		setupLog.Info(
-			"disabling primary manager leader election while cluster sharding is enabled",
-			"singletonControllersLeaderElection",
-			singletonControllersLeaderElection,
-		)
-		primaryManagerLeaderElection = false
-	}
+	cmd.Flags().AddGoFlagSet(fs)
+	return cmd
+}
 
-	mgr, err := mcmanager.New(cfg, provider, ctrl.Options{
-		Scheme:                  scheme,
-		Metrics:                 metricsServerOptions,
-		WebhookServer:           webhookServer,
-		HealthProbeBindAddress:  probeAddr,
-		LeaderElection:          primaryManagerLeaderElection,
-		LeaderElectionID:        "6a7d51cc.datumapis.com",
-		LeaderElectionNamespace: leaderElectionNamespace,
-		LeaseDuration:           &leaseDuration,
-		RenewDeadline:           &renewDeadline,
-		RetryPeriod:             &retryPeriod,
-		// LeaderElectionReleaseOnCancel defines if the leader should step down voluntarily
-		// when the Manager ends. This requires the binary to immediately end when the
-		// Manager is stopped, otherwise, this setting is unsafe. Setting this significantly
-		// speeds up voluntary leader transitions as the new leader don't have to wait
-		// LeaseDuration time first.
-		//
-		// In the default scaffold provided, the program ends immediately after
-		// the manager stops, so would be fine to enable this option. However,
-		// if you are doing or is intended to do any operation such as perform cleanups
-		// after the manager stops then its usage might be unsafe.
-		// LeaderElectionReleaseOnCancel: true,
-	}, mcManagerOptions...)
-	if err != nil {
-		setupLog.Error(err, "unable to start manager")
-		os.Exit(1)
+// newRootCommand assembles the command tree: a parent "network-services"
+// command with the controller manager and the extension server as subcommands.
+func newRootCommand() *cobra.Command {
+	root := &cobra.Command{
+		Use:   "network-services",
+		Short: "Datum network services operator",
 	}
+	root.AddCommand(newManagerCommand())
+	root.AddCommand(extservercmd.NewCommand())
+	return root
+}
 
-	downstreamRestConfig, err := serverConfig.DownstreamResourceManagement.RestConfig()
-	if err != nil {
-		setupLog.Error(err, "unable to load control plane kubeconfig")
-		os.Exit(1)
-	}
-	serverConfig.DownstreamClient.ApplyTo(downstreamRestConfig)
-
-	downstreamCluster, err := cluster.New(downstreamRestConfig, func(o *cluster.Options) {
-		o.Scheme = scheme
-		o.Client = client.Options{
-			Cache: &client.CacheOptions{
-				Unstructured: true,
-			},
-		}
-	})
-	if err != nil {
-		setupLog.Error(err, "failed to construct cluster")
-		os.Exit(1)
-	}
-
-	var singletonMgr manager.Manager
-	singletonControllerMgr := mgr.GetLocalManager()
-	if enableClusterSharding {
-		singletonMgr, err = manager.New(cfg, manager.Options{
-			Scheme:                  scheme,
-			Metrics:                 metricsserver.Options{BindAddress: "0"},
-			WebhookServer:           webhook.NewServer(webhook.Options{Port: 0}),
-			HealthProbeBindAddress:  "0",
-			LeaderElection:          singletonControllersLeaderElection,
-			LeaderElectionID:        singletonControllersLeaderElectionID,
-			LeaderElectionNamespace: leaderElectionNamespace,
-			LeaseDuration:           &leaseDuration,
-			RenewDeadline:           &renewDeadline,
-			RetryPeriod:             &retryPeriod,
-		})
-		if err != nil {
-			setupLog.Error(err, "unable to create singleton controller manager")
-			os.Exit(1)
-		}
-		singletonControllerMgr = singletonMgr
-	}
-
-	if err := (&controller.NetworkReconciler{}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "Network")
-		os.Exit(1)
-	}
-	if err := (&controller.NetworkBindingReconciler{}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "NetworkBinding")
-		os.Exit(1)
-	}
-	if err := (&controller.NetworkContextReconciler{}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "NetworkContext")
-		os.Exit(1)
-	}
-	if err := (&controller.NetworkPolicyReconciler{}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "NetworkPolicy")
-		os.Exit(1)
-	}
-	if err := (&controller.SubnetReconciler{}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "Subnet")
-		os.Exit(1)
-	}
-	if err := (&controller.SubnetClaimReconciler{}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "SubnetClaim")
-		os.Exit(1)
-	}
-
-	if err := (&controller.HTTPProxyReconciler{
-		Config:            serverConfig,
-		DownstreamCluster: downstreamCluster,
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "HTTPProxy")
-		os.Exit(1)
-	}
-
-	if err := (&controller.GatewayReconciler{
-		Config:            serverConfig,
-		DownstreamCluster: downstreamCluster,
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "Gateway")
-		os.Exit(1)
-	}
-	if err := (&controller.GatewayClassReconciler{
-		Config: serverConfig,
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "GatewayClass")
-		os.Exit(1)
-	}
-
-	if err := (&controller.GatewayDownstreamGCReconciler{
-		Config:            serverConfig,
-		DownstreamCluster: downstreamCluster,
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "GatewayDownstreamGC")
-		os.Exit(1)
-	}
-
-	if err := (&controller.GatewayResourceReplicatorReconciler{
-		Config:            serverConfig,
-		DownstreamCluster: downstreamCluster,
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "GatewayResourceReplicator")
-		os.Exit(1)
-	}
-
-	if !serverConfig.Gateway.Coraza.Disabled {
-		if err = (&controller.TrafficProtectionPolicyReconciler{
-			Config:            serverConfig,
-			DownstreamCluster: downstreamCluster,
-		}).SetupWithManager(mgr); err != nil {
-			setupLog.Error(err, "unable to create controller", "controller", "WAFSecurityPolicy")
-			os.Exit(1)
-		}
-	}
-
-	if serverConfig.Gateway.EnableDownstreamCertificateSolver {
-		setupLog.Info("enabling GatewayDownstreamCertificateSolver controller")
-		if err := (&controller.GatewayDownstreamCertificateSolverReconciler{
-			Config:            serverConfig,
-			DownstreamCluster: downstreamCluster,
-		}).SetupWithManager(singletonControllerMgr); err != nil {
-			setupLog.Error(err, "unable to create controller", "controller", "GatewayDownstreamCertificateSolver")
-			os.Exit(1)
-		}
-	}
-
-	if err := (&controller.DomainReconciler{
-		Config: serverConfig,
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "Domain")
-		os.Exit(1)
-	}
-
-	if err := (&controller.ConnectorReconciler{
-		Config:            serverConfig,
-		DownstreamCluster: downstreamCluster,
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "Connector")
-		os.Exit(1)
-	}
-	if err := (&controller.ConnectorAdvertisementReconciler{}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "ConnectorAdvertisement")
-		os.Exit(1)
-	}
-
-	var irohDownstream cluster.Cluster
-	if serverConfig.Connector.Iroh.DNSEnabled {
-		irohRestCfg, err := serverConfig.Connector.Iroh.DownstreamRestConfig()
-		if err != nil {
-			setupLog.Error(err, "unable to load iroh dns downstream kubeconfig")
-			os.Exit(1)
-		}
-		irohDownstream, err = cluster.New(irohRestCfg, func(o *cluster.Options) {
-			o.Scheme = scheme
-		})
-		if err != nil {
-			setupLog.Error(err, "unable to build iroh dns downstream cluster")
-			os.Exit(1)
-		}
-		if err := (&controller.IrohDNSReconciler{
-			Config:     serverConfig,
-			Downstream: irohDownstream,
-		}).SetupWithManager(mgr); err != nil {
-			setupLog.Error(err, "unable to create controller", "controller", "IrohDNS")
-			os.Exit(1)
-		}
-	}
-
-	if serverConfig.Gateway.ShouldDeleteErroredChallenges() {
-		if err := (&controller.ChallengeReconciler{
-			Config:            serverConfig,
-			DownstreamCluster: downstreamCluster,
-		}).SetupWithManager(singletonControllerMgr); err != nil {
-			setupLog.Error(err, "unable to create controller", "controller", "Challenge")
-			os.Exit(1)
-		}
-	}
-
-	if err := controller.AddIndexers(ctx, mgr); err != nil {
-		setupLog.Error(err, "unable to add indexers")
-		os.Exit(1)
-	}
-
-	if serverConfig.Gateway.EnableDNSIntegration {
-		if err := controller.AddDNSZoneDomainNameIndexer(ctx, mgr); err != nil {
-			setupLog.Error(err, "unable to add DNSZone indexer")
-			os.Exit(1)
-		}
-	}
-
-	if err := networkinggatewayv1webhooks.SetupGatewayWebhookWithManager(mgr, serverConfig); err != nil {
-		setupLog.Error(err, "unable to create webhook", "webhook", "Gateway")
-		os.Exit(1)
-	}
-
-	if err := networkinggatewayv1webhooks.SetupHTTPRouteWebhookWithManager(mgr, serverConfig); err != nil {
-		setupLog.Error(err, "unable to create webhook", "webhook", "HTTPRoute")
-		os.Exit(1)
-	}
-
-	if err := networkinggatewayv1webhooks.SetupBackendTLSPolicyWebhookWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create webhook", "webhook", "HTTPRoute")
-		os.Exit(1)
-	}
-
-	if err := networkingv1alphawebhooks.SetupHTTPProxyWebhookWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create webhook", "webhook", "HTTPProxy")
-		os.Exit(1)
-	}
-
-	if err := networkingv1alphawebhooks.SetupDomainWebhookWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create webhook", "webhook", "Domain")
-		os.Exit(1)
-	}
-
-	if err = webhookgatewayv1alpha1.SetupBackendTrafficPolicyWebhookWithManager(mgr, serverConfig); err != nil {
-		setupLog.Error(err, "unable to create webhook", "webhook", "BackendTrafficPolicy")
-		os.Exit(1)
-	}
-
-	if err = webhookgatewayv1alpha1.SetupSecurityPolicyWebhookWithManager(mgr, serverConfig); err != nil {
-		setupLog.Error(err, "unable to create webhook", "webhook", "SecurityPolicy")
-		os.Exit(1)
-	}
-
-	if err = webhookgatewayv1alpha1.SetupHTTPRouteFilterWebhookWithManager(mgr, serverConfig); err != nil {
-		setupLog.Error(err, "unable to create webhook", "webhook", "HTTPRouteFilter")
-		os.Exit(1)
-	}
-
-	if err = webhookgatewayv1alpha1.SetupBackendWebhookWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create webhook", "webhook", "Backend")
-		os.Exit(1)
-	}
-
-	// +kubebuilder:scaffold:builder
-
-	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
-		setupLog.Error(err, "unable to set up health check")
-		os.Exit(1)
-	}
-	if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
-		setupLog.Error(err, "unable to set up ready check")
-		os.Exit(1)
-	}
-
-	g, ctx := errgroup.WithContext(ctx)
-	for _, runnable := range runnables {
-		g.Go(func() error {
-			return ignoreCanceled(runnable.Start(ctx))
-		})
-	}
-
-	// Providers that still implement the legacy Run(ctx, mgr) shape (e.g. the
-	// Milo provider) must be started by us. Providers that implement upstream's
-	// multicluster.ProviderRunnable interface (e.g. mcsingle) are started
-	// automatically by mgr.Start, so we skip them here.
-	if runner, ok := provider.(legacyRunnableProvider); ok {
-		setupLog.Info("starting cluster discovery provider")
-		g.Go(func() error {
-			return ignoreCanceled(runner.Run(ctx, mgr))
-		})
-	}
-
-	g.Go(func() error {
-		return ignoreCanceled(downstreamCluster.Start(ctx))
-	})
-
-	if irohDownstream != nil {
-		g.Go(func() error {
-			return ignoreCanceled(irohDownstream.Start(ctx))
-		})
-	}
-
-	setupLog.Info("starting multicluster manager")
-	g.Go(func() error {
-		return ignoreCanceled(mgr.Start(ctx))
-	})
-
-	if singletonMgr != nil {
-		setupLog.Info("starting singleton controller manager")
-		g.Go(func() error {
-			return ignoreCanceled(singletonMgr.Start(ctx))
-		})
-	}
-
-	if err := g.Wait(); err != nil {
-		setupLog.Error(err, "unable to start")
+func main() {
+	if err := newRootCommand().Execute(); err != nil {
 		os.Exit(1)
 	}
 }

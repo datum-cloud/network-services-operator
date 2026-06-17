@@ -29,6 +29,15 @@ func ValidateGateway(gateway *gatewayv1.Gateway, opts GatewayValidationOptions) 
 		allErrs = append(allErrs, field.Forbidden(field.NewPath("spec", "infrastructure"), "infrastructure is not permitted"))
 	}
 
+	// Gateway-level TLS (spec.tls) was introduced in Gateway API v1.5 and replaces
+	// the removed listener-level FrontendValidation and top-level BackendTLS fields.
+	// It allows configuring frontend client-cert validation and a backend
+	// clientCertificateRef, both of which can reference Secrets. TLS configuration
+	// is operator-controlled (see SetDefaultListeners), so tenants must not set it.
+	if gateway.Spec.TLS != nil {
+		allErrs = append(allErrs, field.Forbidden(field.NewPath("spec", "tls"), "tls is not permitted"))
+	}
+
 	return allErrs
 }
 

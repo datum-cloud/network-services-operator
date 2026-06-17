@@ -251,6 +251,34 @@ func TestValidateGateway(t *testing.T) {
 				field.Forbidden(field.NewPath("spec", "infrastructure"), "infrastructure is not permitted"),
 			},
 		},
+		"gateway-level tls not permitted": {
+			gateway: &gatewayv1.Gateway{
+				Spec: gatewayv1.GatewaySpec{
+					GatewayClassName: "test-gateway-class",
+					Listeners: []gatewayv1.Listener{
+						{
+							Name:     "http",
+							Protocol: gatewayv1.HTTPProtocolType,
+							Port:     80,
+						},
+					},
+					TLS: &gatewayv1.GatewayTLSConfig{
+						Backend: &gatewayv1.GatewayBackendTLS{
+							ClientCertificateRef: &gatewayv1.SecretObjectReference{
+								Name: "client-cert",
+							},
+						},
+					},
+				},
+			},
+			opts: GatewayValidationOptions{
+				ValidPortNumbers:   []int{80, 443},
+				ValidProtocolTypes: defaultValidProtocolTypes,
+			},
+			expectedErrors: field.ErrorList{
+				field.Forbidden(field.NewPath("spec", "tls"), "tls is not permitted"),
+			},
+		},
 		"invalid tls settings": {
 			gateway: &gatewayv1.Gateway{
 				Spec: gatewayv1.GatewaySpec{

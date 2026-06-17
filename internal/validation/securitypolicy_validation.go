@@ -3,6 +3,7 @@ package validation
 import (
 	envoygatewayv1alpha1 "github.com/envoyproxy/gateway/api/v1alpha1"
 	"k8s.io/apimachinery/pkg/util/validation/field"
+	"k8s.io/utils/ptr"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	"go.datum.net/network-services-operator/internal/config"
@@ -175,6 +176,14 @@ func validateSecurityPolicyOIDCProvider(provider envoygatewayv1alpha1.OIDCProvid
 
 	allErrs = append(allErrs, validateGatewayBackendCluster(provider.BackendCluster, fldPath, opts)...)
 
+	// The shared data plane fetches these endpoints on the tenant's behalf, so
+	// constrain them to external https URLs to prevent SSRF against cluster-local
+	// or cloud-metadata services.
+	allErrs = append(allErrs, validateExternalHTTPSURL(fldPath.Child("issuer"), provider.Issuer)...)
+	allErrs = append(allErrs, validateExternalHTTPSURL(fldPath.Child("authorizationEndpoint"), ptr.Deref(provider.AuthorizationEndpoint, ""))...)
+	allErrs = append(allErrs, validateExternalHTTPSURL(fldPath.Child("tokenEndpoint"), ptr.Deref(provider.TokenEndpoint, ""))...)
+	allErrs = append(allErrs, validateExternalHTTPSURL(fldPath.Child("endSessionEndpoint"), ptr.Deref(provider.EndSessionEndpoint, ""))...)
+
 	return allErrs
 }
 
@@ -212,6 +221,11 @@ func validateRemoteJWKS(remoteJWKS *envoygatewayv1alpha1.RemoteJWKS, fldPath *fi
 	allErrs := field.ErrorList{}
 
 	allErrs = append(allErrs, validateGatewayBackendCluster(remoteJWKS.BackendCluster, fldPath, opts)...)
+
+	// When no BackendCluster is configured, the data plane fetches the JWKS
+	// directly from this URI; constrain it to an external https URL to prevent
+	// SSRF against cluster-local or cloud-metadata services.
+	allErrs = append(allErrs, validateExternalHTTPSURL(fldPath.Child("uri"), remoteJWKS.URI)...)
 
 	return allErrs
 }

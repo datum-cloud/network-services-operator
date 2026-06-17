@@ -32,5 +32,7 @@ jobs:
       bundle-name: ghcr.io/datum-cloud/network-services-operator-kustomize
       bundle-path: config
       image-name: ghcr.io/datum-cloud/network-services-operator
-      image-overlays: config/manager
+      # Both overlays run the same image (single binary, subcommand selects role),
+      # so pin both to the release tag in the published bundle.
+      image-overlays: config/manager,config/extension-server
     secrets: inherit

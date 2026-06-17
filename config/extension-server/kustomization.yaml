@@ -8,9 +8,15 @@ kind: Kustomization
 #   resources:
 #   - ../extension-server
 #
-# cert-manager (cert-manager/issuer.yaml + certificate.yaml) and network-policy
+# cert-manager (certmanager/certificate.yaml — EG client cert only) and network-policy
 # (network-policy/allow-grpc-traffic.yaml) are included here; they can be moved
 # to separate kustomize components if the deployment environment needs to toggle them.
+#
+# The extension server's own TLS cert is provisioned by the cert-manager CSI driver
+# (datum-control-plane ClusterIssuer) as an inline CSI volume in deployment.yaml —
+# no cert-manager Certificate resource is needed in this repo for the server cert.
+# The CA trust bundle is delivered via a trust-manager Bundle → ConfigMap
+# (datum-control-plane-trust-bundle); the deploy namespace must carry the injection label.
 #
 # Note on namePrefix propagation (from config/default kustomization):
 #   Kubernetes resource names (Deployment, Service, SA, ClusterRole, etc.) receive

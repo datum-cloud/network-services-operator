@@ -1,4 +1,4 @@
-# EnvoyGateway extensionManager registration patch for NSO's production extension server.
+# EnvoyGateway extensionManager registration patch for NSO's extension server.
 #
 # This is a JSON-merge patch applied to the 'envoy-gateway' HelmRelease in the
 # infra repo (datum-cloud/infra). Apply with:
@@ -10,23 +10,22 @@
 #   kubectl -n envoy-gateway-system rollout restart deploy/envoy-gateway
 #
 # ============================================================
-# Open item (a): clientCertificateRef / certificateRef namespace
+# Open item (a): certificateRef — datum-control-plane CA Secret
 # ============================================================
-# Finding: EG v1.8.1 uses a cluster-scoped Kubernetes client (ClusterRole-level
-# Secret access) to load extension manager TLS configuration. The SecretObjectReference
-# in ExtensionTLS supports an explicit 'namespace' field and EG's extension manager
-# loader resolves it cross-namespace. Unlike Gateway API ingress TLS which requires
-# ReferenceGrant for cross-namespace Secrets, the extensionManager TLS fields are
-# EG-internal and bypass ReferenceGrant. Cross-namespace references to NSO's namespace
-# ARE supported in EG v1.8.1.
+# EG's extensionManager.service.tls.certificateRef takes a SecretObjectReference
+# (namespace + name). It reads tls.crt from that Secret to verify the extension
+# server's presented TLS certificate.
 #
-# RECOMMENDATION: Use NSO namespace for both certificateRef and clientCertificateRef
-# (implemented below). This avoids Secret sync between namespaces and keeps all PKI
-# in NSO's namespace.
+# The extension server's cert is now issued by the platform's datum-control-plane
+# ClusterIssuer (cert-manager CSI driver). EG must verify it against the same CA.
 #
-# Fallback (if cross-ns fails in cluster testing): Create cert-manager Certificate
-# resources in envoy-gateway-system backed by a ClusterIssuer (CA in cert-manager
-# namespace). Update the namespace fields below to envoy-gateway-system.
+# OPEN ITEM (infra): Confirm the name and namespace of the Secret that holds the
+# datum-control-plane CA certificate (tls.crt field) in the cluster. This is
+# typically created by cert-manager when the ClusterIssuer is provisioned, or by
+# a trust-manager Bundle. Update the certificateRef.name and .namespace below
+# once confirmed.
+#
+# Placeholder value below; DO NOT apply to production until this is resolved.
 #
 # ============================================================
 # Open item (b): NSO deployed namespace / Service FQDN
@@ -38,13 +37,9 @@
 #   → FQDN: network-services-operator-extension-server.network-services-operator-system.svc.cluster.local
 #
 # CONFIRM before applying: verify that the NSO namespace and namePrefix match the
-# actual FluxCD/production deployment. The infra repo overlays may use different values.
-#
-# ============================================================
-# Conflict C2 note (from implementation plan §5)
-# ============================================================
-# The perf seed deploys in envoy-gateway-system. Production MUST deploy in NSO's
-# namespace. The FQDN below targets NSO's namespace, NOT envoy-gateway-system.
+# actual FluxCD/production deployment. Infra overlays deploying in
+# datum-downstream-gateway or another namespace must update both the FQDN below
+# and the dns-names in the CSI volume in deployment.yaml.
 #
 # ============================================================
 # Correctness notes (from perf seed validation)
@@ -69,17 +64,20 @@ spec:
               port: 5005
             tls:
               certificateRef:
-                # CA cert Secret: EG uses tls.crt from this Secret to verify the
-                # extension server's presented TLS certificate.
-                # Issued by cert-manager Certificate 'extension-server-ca' in NSO namespace.
-                name: extension-server-ca
-                namespace: network-services-operator-system   # open-item (a): cross-ns, see above
+                # OPEN ITEM (a): EG uses tls.crt from this Secret to verify the
+                # extension server's TLS certificate. Must reference a Secret containing
+                # the datum-control-plane CA cert. Confirm the correct Secret name and
+                # namespace with the infra team before applying to production.
+                # This placeholder must be replaced.
+                name: datum-control-plane-ca   # PLACEHOLDER — confirm with infra
+                namespace: cert-manager        # PLACEHOLDER — confirm with infra
               clientCertificateRef:
                 # EG mTLS client cert: EG presents this when connecting to the
                 # extension server. Extension server verifies it using ca.crt from
-                # its mounted extension-server-tls Secret.
+                # the datum-control-plane-trust-bundle ConfigMap.
+                # Issued by datum-control-plane ClusterIssuer via cert-manager Certificate.
                 name: extension-server-eg-client-tls
-                namespace: network-services-operator-system   # open-item (a): cross-ns, see above
+                namespace: network-services-operator-system   # open-item (b): must match deploy namespace
             # Retry policy: bounded retries with exponential backoff on transient
             # gRPC failures. A rolling restart of one replica should not fail a build.
             # Defaults (EG v1.8.1) match these values; listed explicitly for clarity.

@@ -1,57 +1,12 @@
 ---
-# Server TLS certificate — mounted in the extension server pod.
-# Extension server reads:
-#   --tls-cert=/tls/tls.crt   (server cert, presented to EG)
-#   --tls-key=/tls/tls.key    (server private key)
-#   --tls-client-ca=/tls/ca.crt  (CA cert, used to verify EG's client cert)
-#
-# cert-manager automatically populates ca.crt in this Secret from the issuing CA.
-# secretName is NOT kustomize-prefixed; must match deployment.yaml volume reference.
-apiVersion: cert-manager.io/v1
-kind: Certificate
-metadata:
-  labels:
-    app.kubernetes.io/name: network-services-operator
-    app.kubernetes.io/component: extension-server
-    app.kubernetes.io/managed-by: kustomize
-  name: extension-server-tls
-  namespace: system
-spec:
-  secretName: extension-server-tls   # fixed; cert-manager-managed, NOT kustomize-prefixed
-  duration: 8760h                    # 1 year
-  renewBefore: 720h                  # 30 days; cert-manager rotates automatically
-  commonName: extension-server
-  # dnsNames: must exactly match the FQDN EG connects to.
-  # cert-manager Certificate dnsNames are static strings — kustomize's namespace
-  # transformer does NOT substitute them. The values below are derived from
-  # config/default/kustomization.yaml:
-  #   namePrefix: network-services-operator-  → service = network-services-operator-extension-server
-  #   namespace:  network-services-operator-system
-  #
-  # Open item (b): confirm these match the actual production deployment before applying.
-  # If a different namespace or no namePrefix is used, update accordingly.
-  dnsNames:
-    - extension-server.network-services-operator-system.svc
-    - extension-server.network-services-operator-system.svc.cluster.local
-    - network-services-operator-extension-server.network-services-operator-system.svc
-    - network-services-operator-extension-server.network-services-operator-system.svc.cluster.local
-  privateKey:
-    algorithm: ECDSA
-    size: 256
-  issuerRef:
-    name: extension-server-ca-issuer
-    kind: Issuer
-    group: cert-manager.io
-  usages:
-    - digital signature
-    - key encipherment
-    - server auth
----
-# EG client TLS certificate — EG presents this for mTLS to authenticate itself.
+# EG mTLS client certificate — EG presents this when connecting to the extension server.
 # Referenced by extensionManager.service.tls.clientCertificateRef in extensionmanager-patch.yaml.
-# Also in NSO namespace; EG reads it cross-namespace via explicit namespace field
-# in SecretObjectReference (open item a: confirmed supported in EG v1.8.1).
 #
+# The Secret lives in NSO's namespace. EG reads it via SecretObjectReference with an
+# explicit namespace field (EG v1.8.1 supports cross-namespace reads for extension
+# manager TLS; it uses a cluster-scoped client and does not require ReferenceGrant).
+#
+# Issued by the platform's datum-control-plane ClusterIssuer (cert-manager).
 # secretName is NOT kustomize-prefixed; must match extensionmanager-patch.yaml reference.
 apiVersion: cert-manager.io/v1
 kind: Certificate
@@ -71,8 +26,8 @@ spec:
     algorithm: ECDSA
     size: 256
   issuerRef:
-    name: extension-server-ca-issuer
-    kind: Issuer
+    name: datum-control-plane
+    kind: ClusterIssuer
     group: cert-manager.io
   usages:
     - digital signature

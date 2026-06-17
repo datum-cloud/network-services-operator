@@ -70,9 +70,11 @@ spec:
           args:
             - --grpc-addr=:5005
             - --health-addr=:8080
+            # TLS cert/key from the cert-manager CSI volume (datum-control-plane ClusterIssuer).
             - --tls-cert=/tls/tls.crt
             - --tls-key=/tls/tls.key
-            - --tls-client-ca=/tls/ca.crt
+            # Client CA from the trust-manager trust bundle ConfigMap (datum-control-plane-trust-bundle).
+            - --tls-client-ca=/tls-ca/ca.crt
           ports:
             - name: grpc
               containerPort: 5005
@@ -132,18 +134,71 @@ spec:
               sleep:
                 seconds: 5
           volumeMounts:
-            # TLS: server cert + key + CA cert from cert-manager Certificate.
-            # Secret name is fixed (cert-manager-managed, not kustomize-prefixed).
+            # Server TLS cert + key from the cert-manager CSI driver.
+            # Provisioned by the datum-control-plane ClusterIssuer (platform CA).
+            # Produces /tls/tls.crt and /tls/tls.key.
             - name: tls
               mountPath: /tls
+              readOnly: true
+            # CA bundle from trust-manager (datum-control-plane-trust-bundle ConfigMap).
+            # Produces /tls-ca/ca.crt — used to verify EG's mTLS client certificate.
+            # Infra must ensure the deploy namespace is labelled for trust bundle injection:
+            #   infra.datum.net/inject-datum-control-plane-trust-bundle: ""
+            - name: tls-ca
+              mountPath: /tls-ca
               readOnly: true
       # terminationGracePeriodSeconds: 20 = 5s preStop sleep + 15s for GracefulStop
       # to drain in-flight gRPC RPCs before SIGKILL. Previous value of 10s was too
       # tight once the preStop sleep was added (5+10=15, leaving only 5s to drain).
       terminationGracePeriodSeconds: 20
       volumes:
+        # ==============================================================
+        # TLS provisioning — cert-manager CSI driver + trust-manager
+        # ==============================================================
+        # Certs are NOT managed by cert-manager Certificate resources in this repo.
+        # The platform infra (datum-cloud/infra) provisions them:
+        #   - Server cert: cert-manager CSI driver, datum-control-plane ClusterIssuer
+        #   - CA trust:    trust-manager Bundle → datum-control-plane-trust-bundle ConfigMap
+        #
+        # Prerequisites for the deploy namespace:
+        #   1. cert-manager CSI driver must be installed on the cluster.
+        #   2. The 'datum-control-plane' ClusterIssuer must exist (created by infra).
+        #   3. Namespace must be labelled so trust-manager injects the trust bundle:
+        #        infra.datum.net/inject-datum-control-plane-trust-bundle: ""
+        #
+        # OPEN ITEM (infra): The dns-names below assume the default/config overlay
+        # namePrefix + namespace from config/default/kustomization.yaml. If this
+        # extension server is deployed in a different namespace (e.g.
+        # datum-downstream-gateway) or with a different namePrefix, infra overlays
+        # MUST patch this volume's volumeAttributes to update dns-names accordingly.
+        # ==============================================================
+
+        # Server TLS cert + key — provisioned inline by cert-manager CSI driver.
+        # Mounts tls.crt and tls.key at /tls.
         - name: tls
-          secret:
-            # cert-manager creates this Secret; name is NOT kustomize-prefixed
-            # (matches spec.secretName in certmanager/certificate.yaml).
-            secretName: extension-server-tls
+          csi:
+            driver: csi.cert-manager.io
+            readOnly: true
+            volumeAttributes:
+              csi.cert-manager.io/issuer-kind: ClusterIssuer
+              csi.cert-manager.io/issuer-name: datum-control-plane
+              csi.cert-manager.io/common-name: extension-server
+              # dns-names derived from config/default/kustomization.yaml:
+              #   namePrefix: network-services-operator-  → service = network-services-operator-extension-server
+              #   namespace:  network-services-operator-system
+              # OPEN ITEM: infra overlays deploying in datum-downstream-gateway or any
+              # other namespace MUST patch this value to reflect the actual Service FQDN.
+              csi.cert-manager.io/dns-names: "network-services-operator-extension-server.network-services-operator-system.svc,network-services-operator-extension-server.network-services-operator-system.svc.cluster.local"
+              csi.cert-manager.io/key-usages: server auth
+              # fs-group matches runAsGroup/fsGroup (nonroot user 65532).
+              csi.cert-manager.io/fs-group: "65532"
+
+        # CA trust bundle — trust-manager injects datum-control-plane-trust-bundle
+        # into this ConfigMap. Used by the extension server to verify EG's client cert.
+        # Key 'ca.crt' → mounted at /tls-ca/ca.crt.
+        - name: tls-ca
+          configMap:
+            name: datum-control-plane-trust-bundle
+            items:
+              - key: ca.crt
+                path: ca.crt

@@ -2,5 +2,4 @@ configurations:
 - kustomizeconfig.yaml
 
 resources:
-- issuer.yaml
 - certificate.yaml

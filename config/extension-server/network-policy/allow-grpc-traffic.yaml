@@ -4,14 +4,14 @@ kind: NetworkPolicy
 metadata:
   labels:
     app.kubernetes.io/name: network-services-operator
-    app.kubernetes.io/component: extension-server
+    app.kubernetes.io/component: envoy-gateway-extension-server
     app.kubernetes.io/managed-by: kustomize
   name: allow-envoy-gateway-extension-server-grpc-traffic
   namespace: system
 spec:
   podSelector:
     matchLabels:
-      app.kubernetes.io/component: extension-server
+      app.kubernetes.io/component: envoy-gateway-extension-server
   policyTypes:
     - Ingress
   ingress:

@@ -47,7 +47,7 @@ helmCharts:
                   name: placeholder-ca
                   namespace: placeholder-namespace
                 clientCertificateRef:
-                  name: extension-server-eg-client-tls
+                  name: envoy-gateway-extension-server-eg-client-tls
                   namespace: network-services-operator-system
               retry:
                 maxAttempts: 4

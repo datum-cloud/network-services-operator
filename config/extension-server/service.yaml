@@ -3,14 +3,14 @@ kind: Service
 metadata:
   labels:
     app.kubernetes.io/name: network-services-operator
-    app.kubernetes.io/component: extension-server
+    app.kubernetes.io/component: envoy-gateway-extension-server
     app.kubernetes.io/managed-by: kustomize
   name: envoy-gateway-extension-server
   namespace: system
 spec:
   selector:
     app.kubernetes.io/name: network-services-operator
-    app.kubernetes.io/component: extension-server
+    app.kubernetes.io/component: envoy-gateway-extension-server
   ports:
     - name: grpc
       port: 5005

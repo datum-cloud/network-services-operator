@@ -4,12 +4,12 @@ kind: Certificate
 metadata:
   labels:
     app.kubernetes.io/name: network-services-operator
-    app.kubernetes.io/component: extension-server
+    app.kubernetes.io/component: envoy-gateway-extension-server
     app.kubernetes.io/managed-by: kustomize
-  name: extension-server-eg-client-tls
+  name: envoy-gateway-extension-server-eg-client-tls
   namespace: system
 spec:
-  secretName: extension-server-eg-client-tls   # fixed; cert-manager-managed, NOT kustomize-prefixed
+  secretName: envoy-gateway-extension-server-eg-client-tls   # fixed; cert-manager-managed, NOT kustomize-prefixed
   duration: 8760h
   renewBefore: 720h
   commonName: envoy-gateway

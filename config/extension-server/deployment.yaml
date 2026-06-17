@@ -47,12 +47,31 @@ spec:
           command:
             - /network-services
             - envoy-gateway-extension-server
+          # Args reference env vars so overlays can override any value with a
+          # strategic-merge patch on env (matched by name) instead of rewriting
+          # the args list.
           args:
-            - --grpc-addr=:5005
-            - --health-addr=:8080
-            - --tls-cert=/tls/tls.crt
-            - --tls-key=/tls/tls.key
-            - --tls-client-ca=/tls-ca/ca.crt
+            - --grpc-addr=$(GRPC_ADDR)
+            - --health-addr=$(HEALTH_ADDR)
+            - --tls-cert=$(TLS_CERT)
+            - --tls-key=$(TLS_KEY)
+            - --tls-client-ca=$(TLS_CLIENT_CA)
+            - --server-config=$(SERVER_CONFIG)
+          env:
+            - name: GRPC_ADDR
+              value: ":5005"
+            - name: HEALTH_ADDR
+              value: ":8080"
+            - name: TLS_CERT
+              value: /tls/tls.crt
+            - name: TLS_KEY
+              value: /tls/tls.key
+            - name: TLS_CLIENT_CA
+              value: /tls-ca/ca.crt
+            # Empty by default (no operator config); overlays set this to a
+            # mounted path to apply Coraza directives.
+            - name: SERVER_CONFIG
+              value: ""
           ports:
             - name: grpc
               containerPort: 5005

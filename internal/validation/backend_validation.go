@@ -32,6 +32,17 @@ func validateBackendEndpoints(endpoints []envoygatewayv1alpha1.BackendEndpoint, 
 		if endpoint.Unix != nil {
 			allErrs = append(allErrs, field.Forbidden(endpointPath.Child("unix"), "unix endpoints are not permitted"))
 		}
+
+		// Constrain egress targets so a tenant cannot point a Backend at
+		// cluster-local or cloud-metadata addresses (SSRF). Mirrors the rules
+		// enforced for HTTPProxy backends.
+		if endpoint.IP != nil {
+			allErrs = append(allErrs, validateExternalHost(endpointPath.Child("ip", "address"), endpoint.IP.Address)...)
+		}
+
+		if endpoint.FQDN != nil {
+			allErrs = append(allErrs, validateExternalHost(endpointPath.Child("fqdn", "hostname"), endpoint.FQDN.Hostname)...)
+		}
 	}
 
 	return allErrs

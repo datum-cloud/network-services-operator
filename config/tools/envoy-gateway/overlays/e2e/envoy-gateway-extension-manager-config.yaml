@@ -1,0 +1,83 @@
+---
+# Patches the Helm-managed envoy-gateway-config ConfigMap to enable the
+# extensionManager. Applied after the EG helm chart with --server-side
+# --force-conflicts so the extra field is owned by this apply, not helm.
+#
+# All other fields (extensionApis, runtimeFlags, provider image pins, etc.) are
+# reproduced verbatim from the v1.8.1 helm chart so the full ConfigMap value is
+# consistent — the data field is a single YAML string and cannot be merged at
+# field granularity by server-side apply.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: envoy-gateway-config
+  namespace: envoy-gateway-system
+data:
+  envoy-gateway.yaml: |
+    apiVersion: gateway.envoyproxy.io/v1alpha1
+    kind: EnvoyGateway
+    extensionApis:
+      enableBackend: true
+      enableEnvoyPatchPolicy: true
+    gateway:
+      controllerName: gateway.envoyproxy.io/gatewayclass-controller
+    logging:
+      level:
+        default: info
+    provider:
+      kubernetes:
+        rateLimitDeployment:
+          container:
+            image: docker.io/envoyproxy/ratelimit:ff287602
+          patch:
+            type: StrategicMerge
+            value:
+              spec:
+                template:
+                  spec:
+                    containers:
+                    - imagePullPolicy: IfNotPresent
+                      name: envoy-ratelimit
+        shutdownManager:
+          image: docker.io/envoyproxy/gateway:v1.8.1
+      type: Kubernetes
+    runtimeFlags:
+      enabled:
+      - XDSNameSchemeV2
+    extensionManager:
+      service:
+        fqdn:
+          hostname: network-services-operator-envoy-gateway-extension-server.network-services-operator-system.svc.cluster.local
+          port: 5005
+        tls:
+          # certificateRef points to the Secret created by the nso-es-tls Certificate.
+          # EG reads ca.crt from this Secret to verify the extension server's TLS cert.
+          certificateRef:
+            name: nso-extension-server-tls
+            namespace: network-services-operator-system
+          # EG presents this client cert when dialing the extension server.
+          clientCertificateRef:
+            name: envoy-gateway-extension-server-eg-client-tls
+            namespace: network-services-operator-system
+        retry:
+          maxAttempts: 4
+          initialBackoff: 100ms
+          maxBackoff: 1s
+          backoffMultiplier:
+            numerator: 200
+          retryableStatusCodes:
+            - UNAVAILABLE
+      hooks:
+        xdsTranslator:
+          post:
+            - Translation
+          translation:
+            listener:
+              includeAll: true
+            route:
+              includeAll: true
+            cluster:
+              includeAll: true
+            secret:
+              includeAll: true
+      failOpen: false

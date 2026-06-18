@@ -613,7 +613,8 @@ spec:
               # A "-" or empty value means the extension server did not inject the
               # metadata (extension server not running, or %METADATA()% not
               # supported in this EG version for JSON access logs).
-              PROJECT_NAME=$(python3 -c "import sys, json; print(json.loads(sys.argv[1]).get('project_name', ''))" "$ENVOY_LOG")
+              # json null → Python None → print gives "None"; coerce to "" explicitly.
+              PROJECT_NAME=$(python3 -c "import sys, json; v=json.loads(sys.argv[1]).get('project_name'); print('' if v is None else v)" "$ENVOY_LOG")
               if [ -z "$PROJECT_NAME" ] || [ "$PROJECT_NAME" = "-" ]; then
                 echo "ERROR: Envoy access log has no project_name; extension server did not inject datum-gateway route metadata, or %METADATA(ROUTE:...)% is not supported in this EG version for JSON access logs. Log: $ENVOY_LOG" >&2
                 exit 1

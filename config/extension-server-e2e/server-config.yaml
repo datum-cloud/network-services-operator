@@ -1,0 +1,17 @@
+---
+# ConfigMap holding the extension server operator config for e2e.
+# Disables Coraza WAF injection — e2e uses the standard Envoy image which
+# does not have the golang filter compiled in, so injecting coraza-waf causes
+# Envoy to reject the listener configuration.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: extension-server-config
+  namespace: network-services-operator-system
+data:
+  config.yaml: |
+    apiVersion: apiserver.config.datumapis.com/v1alpha1
+    kind: NetworkServicesOperator
+    gateway:
+      coraza:
+        disabled: true

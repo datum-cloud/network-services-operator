@@ -165,11 +165,6 @@ func ApplyTPPRouteConfig(
 	idx *extcache.PolicyIndex,
 	cfg *CorazaConfig,
 ) (int, error) {
-	// When disabled, emit no per-route WAF config — matches the no-op in
-	// InjectCorazaListenerFilters so the two halves are always consistent.
-	if cfg.Disabled {
-		return 0, nil
-	}
 	mutated := 0
 	for _, vh := range rc.GetVirtualHosts() {
 		// Extract VH-level EG resource reference; expect Kind=Gateway.
@@ -197,6 +192,13 @@ func ApplyTPPRouteConfig(
 			// applyRouteWAFConfig overwrites this entry for TPP-governed routes,
 			// so it also includes project_name in the metadata it builds.
 			injectProjectNameMetadata(rt, projectName)
+
+			// WAF per-route config requires the listener-level filter to be present.
+			// Skip when Coraza is disabled (e.g. standard Envoy image without the
+			// golang filter) so that project_name is still stamped above.
+			if cfg.Disabled {
+				continue
+			}
 
 			// Check for a route-level TPP (HTTPRoute targeting) — takes precedence.
 			_, _, routeName, _ := extractEGResource(rt.GetMetadata())

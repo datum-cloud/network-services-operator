@@ -1,0 +1,28 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: network-services-operator-system
+namePrefix: network-services-operator-
+
+resources:
+  - namespace.yaml
+  - ../extension-server
+  - tls.yaml
+  - server-config.yaml
+
+patches:
+  # Replace CSI + ConfigMap volumes with Secret-based mounts; reduce replicas to 1 for single-node kind.
+  - path: deployment-patch.yaml
+    target:
+      kind: Deployment
+      name: envoy-gateway-extension-server
+  # Remove the PDB minAvailable constraint — kind clusters have only 1 node so minAvailable:1 prevents eviction.
+  - path: pdb-patch.yaml
+    target:
+      kind: PodDisruptionBudget
+      name: envoy-gateway-extension-server-pdb
+  # Switch the EG client cert issuer from the placeholder to the e2e CA.
+  - path: client-cert-patch.yaml
+    target:
+      kind: Certificate
+      name: envoy-gateway-extension-server-eg-client-tls

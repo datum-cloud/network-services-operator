@@ -23,6 +23,9 @@ jobs:
     secrets: inherit
 
   publish-kustomize-bundles:
+    # The bundle pins image references to this build, so only publish it once
+    # the container image has been built and pushed.
+    needs: publish-container-image
     permissions:
       id-token: write
       contents: read

@@ -799,7 +799,23 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 		}
 
 		for backendIndex, backend := range rule.Backends {
-			if backend.Connector != nil {
+			// Offline-connector handling differs by emission mode:
+			//
+			//   * EPP mode (legacy): emit a backend-less route rule. EG translates
+			//     it into a virtual_host, and the connector EPP
+			//     (buildConnectorOfflineEnvoyPatches) inserts the direct_response 503
+			//     "Tunnel not online" CONNECT route at the front.
+			//   * Extension-server mode: the ext-server keys its offline-503 handling
+			//     on the presence of a connector *cluster*, which EG only emits when
+			//     the route rule carries a backendRef. So we must NOT null the
+			//     backendRef here — fall through and emit the same connector.local
+			//     placeholder EndpointSlice + backendRef as the online case. The
+			//     ext-server then sees the cluster, classifies the connector offline
+			//     from the replicated Connector Ready condition, and inserts the 503
+			//     route itself. Nulling the backendRef leaves EG with a backend-less
+			//     route, which it renders as a bare direct_response 500 (no offline
+			//     page) — the regression this guards against.
+			if backend.Connector != nil && r.Config.Gateway.IsEPPEmissionEnabled() {
 				ready, err := connectorReady(ctx, cl, httpProxy.Namespace, backend.Connector.Name)
 				if err != nil {
 					return nil, err

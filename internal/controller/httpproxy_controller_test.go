@@ -553,6 +553,11 @@ func TestHTTPProxyReconcile(t *testing.T) {
 			Name: "connector-1",
 		}
 	})
+	connectorModeBHTTPProxy := newHTTPProxy(func(h *networkingv1alpha.HTTPProxy) {
+		h.Spec.Rules[0].Backends[0].Connector = &networkingv1alpha.ConnectorReference{
+			Name: "connector-1",
+		}
+	})
 
 	connectorDownstreamObjects := func(proxy *networkingv1alpha.HTTPProxy) []client.Object {
 		return []client.Object{
@@ -571,6 +576,7 @@ func TestHTTPProxyReconcile(t *testing.T) {
 		existingObjects         []client.Object
 		downstreamObjects       []client.Object
 		namespaceUID            string
+		eppEmissionDisabled     bool
 		postCreateGatewayStatus func(*gatewayv1.Gateway)
 		expectedError           bool
 		expectedConditions      []metav1.Condition
@@ -777,6 +783,82 @@ func TestHTTPProxyReconcile(t *testing.T) {
 					for _, filter := range httpRoute.Spec.Rules[0].Filters {
 						assert.NotEqual(t, gatewayv1.HTTPRouteFilterExtensionRef, filter.Type,
 							"offline connector route must not have an ExtensionRef filter")
+					}
+				}
+			},
+		},
+		{
+			// Regression: in extension-server mode (EPP emission disabled) an
+			// offline connector must keep its backendRef so EG renders a connector
+			// cluster. The ext-server keys its offline-503 "Tunnel not online" route
+			// on that cluster. Nulling the backendRef (the EPP-mode behavior) leaves
+			// EG with a backend-less route, which it renders as a bare
+			// direct_response 500 with no offline page.
+			name:                "offline connector keeps backendRef in extension-server mode",
+			httpProxy:           connectorModeBHTTPProxy,
+			downstreamObjects:   connectorDownstreamObjects(connectorModeBHTTPProxy),
+			namespaceUID:        string(connectorNamespaceUID),
+			eppEmissionDisabled: true,
+			existingObjects: []client.Object{
+				&networkingv1alpha1.Connector{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "connector-1",
+						Namespace: "test",
+					},
+					Status: networkingv1alpha1.ConnectorStatus{
+						Conditions: []metav1.Condition{
+							{
+								Type:   networkingv1alpha1.ConnectorConditionReady,
+								Status: metav1.ConditionFalse,
+								Reason: networkingv1alpha1.ConnectorReasonNotReady,
+							},
+						},
+					},
+				},
+			},
+			postCreateGatewayStatus: func(g *gatewayv1.Gateway) {
+				setGatewayProgrammedWithDefaultHTTPSListener(g)
+			},
+			expectedError: false,
+			expectedConditions: []metav1.Condition{
+				{
+					Type:   networkingv1alpha.HTTPProxyConditionAccepted,
+					Status: metav1.ConditionTrue,
+					Reason: networkingv1alpha.HTTPProxyReasonAccepted,
+				},
+				{
+					Type:   networkingv1alpha.HTTPProxyConditionProgrammed,
+					Status: metav1.ConditionTrue,
+					Reason: networkingv1alpha.HTTPProxyReasonProgrammed,
+				},
+			},
+			assert: func(t *testContext, cl client.Client, httpProxy *networkingv1alpha.HTTPProxy) {
+				ctx := context.Background()
+
+				// Extension-server mode emits no EnvoyPatchPolicy at all.
+				var patchList envoygatewayv1alpha1.EnvoyPatchPolicyList
+				assert.NoError(t, t.downstreamClient.List(ctx, &patchList))
+				assert.Empty(t, patchList.Items, "no EPP should be emitted in extension-server mode")
+
+				// The offline connector route MUST retain a backendRef pointing at
+				// the placeholder EndpointSlice so EG renders a connector cluster.
+				httpRoute := &gatewayv1.HTTPRoute{}
+				assert.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(httpProxy), httpRoute))
+				if assert.Len(t, httpRoute.Spec.Rules, 1) {
+					if assert.Len(t, httpRoute.Spec.Rules[0].BackendRefs, 1,
+						"offline connector route must keep a backendRef in extension-server mode") {
+						br := httpRoute.Spec.Rules[0].BackendRefs[0]
+						assert.Equal(t, gatewayv1.Kind("EndpointSlice"), *br.Kind)
+					}
+				}
+
+				// The connector.local placeholder EndpointSlice must exist.
+				var sliceList discoveryv1.EndpointSliceList
+				assert.NoError(t, cl.List(ctx, &sliceList, client.InNamespace(httpProxy.Namespace)))
+				if assert.Len(t, sliceList.Items, 1) {
+					if assert.NotEmpty(t, sliceList.Items[0].Endpoints) &&
+						assert.NotEmpty(t, sliceList.Items[0].Endpoints[0].Addresses) {
+						assert.Equal(t, "connector.local", sliceList.Items[0].Endpoints[0].Addresses[0])
 					}
 				}
 			},
@@ -1278,15 +1360,20 @@ func TestHTTPProxyReconcile(t *testing.T) {
 
 			mgr := &fakeMockManager{cl: fakeClient}
 
+			caseConfig := testConfig
+			if tt.eppEmissionDisabled {
+				caseConfig.Gateway.EPPEmissionEnabled = ptr.To(false)
+			}
+
 			reconciler := &HTTPProxyReconciler{
 				mgr:               mgr,
-				Config:            testConfig,
+				Config:            caseConfig,
 				DownstreamCluster: &fakeCluster{cl: fakeDownstreamClient},
 			}
 
 			gatewayReconciler := &GatewayReconciler{
 				mgr:               mgr,
-				Config:            testConfig,
+				Config:            caseConfig,
 				DownstreamCluster: &fakeCluster{cl: fakeDownstreamClient},
 			}
 

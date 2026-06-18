@@ -625,7 +625,7 @@ func newReplicatorForGVKTest(gvk schema.GroupVersionKind, upstream client.Client
 	upstreamCluster := &replicatorFakeCluster{scheme: scheme, c: upstream}
 	downstreamCluster := &replicatorFakeCluster{scheme: scheme, c: downstream}
 
-	resource := replicationResource{gvk: gvk, controllerName: testControllerName}
+	resource := replicationResource{gvk: gvk, downstreamGVK: gvk, controllerName: testControllerName}
 	if cfg, ok := defaultReplicationResourceConfigs[gvkKey(gvk)]; ok {
 		resource.replicationResourceConfig = cfg
 	}

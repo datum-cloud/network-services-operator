@@ -632,7 +632,7 @@ func (r *HTTPProxyReconciler) enqueueHTTPProxyForDownstreamCertificate() func(cl
 			if upstreamNs == "" || upstreamName == "" || upstreamCluster == "" {
 				return nil
 			}
-			clusterName := multicluster.ClusterName(strings.TrimPrefix(strings.ReplaceAll(upstreamCluster, "_", "/"), "cluster-"))
+			clusterName := multicluster.ClusterName(downstreamclient.UpstreamClusterNameFromLabel(upstreamCluster))
 			return []mcreconcile.Request{{
 				ClusterName: clusterName,
 				Request:     ctrl.Request{NamespacedName: types.NamespacedName{Namespace: upstreamNs, Name: upstreamName}},

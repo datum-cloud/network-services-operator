@@ -61,7 +61,8 @@ spec:
         #   type: RuntimeDefault
       containers:
       - command:
-        - /manager
+        - /network-services
+        - manager
         args:
           - --leader-elect
           - --health-probe-bind-address=:8081

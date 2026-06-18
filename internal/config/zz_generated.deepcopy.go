@@ -10,7 +10,7 @@ import (
 	"go.datum.net/network-services-operator/api/v1alpha"
 	"k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	runtime "k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime"
 	apisv1 "sigs.k8s.io/gateway-api/apis/v1"
 )
 
@@ -337,6 +337,11 @@ func (in *GatewayConfig) DeepCopyInto(out *GatewayConfig) {
 	in.ResourceReplicator.DeepCopyInto(&out.ResourceReplicator)
 	if in.DeleteErroredChallenges != nil {
 		in, out := &in.DeleteErroredChallenges, &out.DeleteErroredChallenges
+		*out = new(bool)
+		**out = **in
+	}
+	if in.EPPEmissionEnabled != nil {
+		in, out := &in.EPPEmissionEnabled, &out.EPPEmissionEnabled
 		*out = new(bool)
 		**out = **in
 	}

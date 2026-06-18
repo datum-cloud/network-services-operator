@@ -153,7 +153,13 @@ set-image-controller: manifests kustomize
 	cd config/manager && $(KUSTOMIZE) edit set image ghcr.io/datum-cloud/network-services-operator=${IMG}
 
 .PHONY: prepare-infra-cluster
-prepare-infra-cluster: cert-manager envoy-gateway external-dns
+prepare-infra-cluster: cert-manager envoy-gateway external-dns downstream-crds
+
+.PHONY: downstream-crds
+downstream-crds: ## Install NSO CRDs on the downstream (infra) cluster that the replicator mirrors into it.
+	$(KUBECTL) apply -f config/crd/bases/networking.datumapis.com_connectors.yaml
+	$(KUBECTL) apply -f config/crd/bases/networking.datumapis.com_httpproxies.yaml
+	$(KUBECTL) apply -f config/crd/bases/networking.datumapis.com_trafficprotectionpolicies.yaml
 
 .PHONY: prepare-e2e
 prepare-e2e: chainsaw set-image-controller cert-manager load-image-all deploy-e2e

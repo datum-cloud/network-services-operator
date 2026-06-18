@@ -6,7 +6,16 @@ helmCharts:
     includeCRDs: false
     namespace: datum-downstream-gateway
     releaseName: envoy-datum-downstream-gateway
-    version: v1.8.1
+    # Rolled back from v1.8.1 to v1.7.4: EG v1.8.0 (PR #8703) reworked OIDC into a
+    # listener-level "dumb" oauth2 filter. When a SecurityPolicy's OIDC clientSecret
+    # is missing, v1.8.x emits a config-less envoy.filters.http.oauth2 at listener
+    # scope, which Envoy rejects ("config must be present for global config"),
+    # rejecting the WHOLE listener snapshot for every tenant on the shared gateway.
+    # v1.7.4 (last pre-redesign release) fails safe: it omits the oauth2 filter for
+    # the broken route and returns a per-route 500 direct response instead. All
+    # extensionManager features used below (policyResources, resources,
+    # translation.includeAll, retry, failOpen) are present in v1.7.4.
+    version: v1.7.4
     repo: oci://docker.io/envoyproxy
     valuesInline:
       config:

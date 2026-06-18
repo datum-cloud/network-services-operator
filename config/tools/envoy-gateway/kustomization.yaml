@@ -5,7 +5,14 @@ helmCharts:
     includeCRDs: true
     namespace: envoy-gateway-system
     releaseName: envoy-gateway
-    version: v1.8.1
+    # Rolled back from v1.8.1 to v1.7.4: EG v1.8.0 (PR #8703) reworked OIDC into a
+    # listener-level "dumb" oauth2 filter. When a SecurityPolicy's OIDC clientSecret
+    # is missing, v1.8.x emits a config-less envoy.filters.http.oauth2 at listener
+    # scope, which Envoy rejects ("config must be present for global config"),
+    # rejecting the WHOLE listener snapshot for every tenant on the shared gateway.
+    # v1.7.4 (last pre-redesign release) fails safe: it omits the oauth2 filter for
+    # the broken route and returns a per-route 500 direct response instead.
+    version: v1.7.4
     repo: oci://docker.io/envoyproxy
     valuesInline:
       config:

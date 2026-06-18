@@ -11,6 +11,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
@@ -86,6 +87,7 @@ type replicationResourceConfig struct {
 
 type replicationResource struct {
 	gvk                       schema.GroupVersionKind
+	downstreamGVK             schema.GroupVersionKind
 	replicationResourceConfig replicationResourceConfig
 	controllerName            string
 }
@@ -221,7 +223,7 @@ func (r *GatewayResourceReplicatorReconciler) Reconcile(ctx context.Context, req
 	downstreamStrategy := downstreamclient.NewMappedNamespaceResourceStrategy(string(req.ClusterName), upstreamClient, r.DownstreamCluster.GetClient())
 
 	if !upstreamObj.GetDeletionTimestamp().IsZero() {
-		return r.finalizeResource(ctx, upstreamClient, upstreamObj, downstreamStrategy)
+		return r.finalizeResource(ctx, resourceCfg, upstreamClient, upstreamObj, downstreamStrategy)
 	}
 
 	if !controllerutil.ContainsFinalizer(upstreamObj, gatewayResourceReplicatorFinalizer) {
@@ -245,12 +247,13 @@ func (r *GatewayResourceReplicatorReconciler) Reconcile(ctx context.Context, req
 // nolint:unparam
 func (r *GatewayResourceReplicatorReconciler) finalizeResource(
 	ctx context.Context,
+	resource replicationResource,
 	upstreamClient client.Client,
 	upstreamObj *unstructured.Unstructured,
 	downstreamStrategy downstreamclient.ResourceStrategy,
 ) (ctrl.Result, error) {
 	if controllerutil.ContainsFinalizer(upstreamObj, gatewayResourceReplicatorFinalizer) {
-		if err := r.finalize(ctx, upstreamObj, downstreamStrategy); err != nil {
+		if err := r.finalize(ctx, resource, upstreamObj, downstreamStrategy); err != nil {
 			return ctrl.Result{}, err
 		}
 
@@ -292,7 +295,7 @@ func (r *GatewayResourceReplicatorReconciler) ensureDownstreamResource(
 	}
 
 	downstreamObj := &unstructured.Unstructured{}
-	downstreamObj.SetGroupVersionKind(upstreamObj.GroupVersionKind())
+	downstreamObj.SetGroupVersionKind(resource.downstreamGVK)
 	downstreamObj.SetName(downstreamObjectMeta.Name)
 	downstreamObj.SetNamespace(downstreamObjectMeta.Namespace)
 
@@ -434,7 +437,7 @@ func (r *GatewayResourceReplicatorReconciler) syncUpstreamStatus(
 ) error {
 	logger := log.FromContext(ctx)
 	downstreamObj := &unstructured.Unstructured{}
-	downstreamObj.SetGroupVersionKind(upstreamObj.GroupVersionKind())
+	downstreamObj.SetGroupVersionKind(resource.downstreamGVK)
 
 	if err := downstreamStrategy.GetClient().Get(ctx, client.ObjectKey{Name: downstreamMeta.Name, Namespace: downstreamMeta.Namespace}, downstreamObj); err != nil {
 		if apierrors.IsNotFound(err) {
@@ -671,6 +674,7 @@ func defaultGatewayEnvoyReasonHandlers() conditionReasonHandlers {
 
 func (r *GatewayResourceReplicatorReconciler) finalize(
 	ctx context.Context,
+	resource replicationResource,
 	upstreamObj *unstructured.Unstructured,
 	downstreamStrategy downstreamclient.ResourceStrategy,
 ) error {
@@ -681,7 +685,7 @@ func (r *GatewayResourceReplicatorReconciler) finalize(
 	}
 
 	downstreamObj := &unstructured.Unstructured{}
-	downstreamObj.SetGroupVersionKind(upstreamObj.GroupVersionKind())
+	downstreamObj.SetGroupVersionKind(resource.downstreamGVK)
 	downstreamObj.SetName(downstreamObjectMeta.Name)
 	downstreamObj.SetNamespace(downstreamObjectMeta.Namespace)
 
@@ -728,10 +732,23 @@ func (r *GatewayResourceReplicatorReconciler) SetupWithManager(mgr mcmanager.Man
 
 		resource := replicationResource{
 			gvk:            gvk,
+			downstreamGVK:  gvk,
 			controllerName: string(r.Config.Gateway.ControllerName),
 		}
 		if cfg, ok := defaultReplicationResourceConfigs[gvkKey(gvk)]; ok {
 			resource.replicationResourceConfig = cfg
+		}
+
+		// If the downstream cluster no longer serves the upstream version (e.g.
+		// v1alpha3 removed after a Gateway API graduation), fall back to the
+		// storage version for both the watch and the create path. The discovery
+		// check is done once at setup so reconciles pay no extra cost.
+		if resource.replicationResourceConfig.statusGVK != nil {
+			if _, err := r.DownstreamCluster.GetRESTMapper().RESTMapping(
+				schema.GroupKind{Group: gvk.Group, Kind: gvk.Kind}, gvk.Version,
+			); err != nil && apimeta.IsNoMatchError(err) {
+				resource.downstreamGVK = *resource.replicationResourceConfig.statusGVK
+			}
 		}
 
 		resources[gvkKey(gvk)] = resource
@@ -740,7 +757,7 @@ func (r *GatewayResourceReplicatorReconciler) SetupWithManager(mgr mcmanager.Man
 
 		builder = builder.Watches(upstreamWatchObj, typedEnqueueRequestForGVK(gvk, selector))
 
-		downstreamWatchObj := newUnstructuredForGVK(gvk)
+		downstreamWatchObj := newUnstructuredForGVK(resource.downstreamGVK)
 
 		src := mcsource.TypedKind(
 			downstreamWatchObj,

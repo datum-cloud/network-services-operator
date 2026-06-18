@@ -2111,7 +2111,7 @@ func (r *GatewayReconciler) listGatewaysAttachedByDownstreamHTTPRoute(clusterNam
 							Name:      string(parentRef.Name),
 						},
 					},
-					ClusterName: multicluster.ClusterName(strings.TrimPrefix(strings.ReplaceAll(httpRoute.Labels[downstreamclient.UpstreamOwnerClusterNameLabel], "_", "/"), "cluster-")),
+					ClusterName: multicluster.ClusterName(downstreamclient.UpstreamClusterNameFromLabel(httpRoute.Labels[downstreamclient.UpstreamOwnerClusterNameLabel])),
 				})
 
 			}

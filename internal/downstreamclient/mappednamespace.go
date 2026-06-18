@@ -128,6 +128,20 @@ const (
 	UpstreamOwnerNamespaceLabel   = "meta.datumapis.com/upstream-namespace"
 )
 
+// UpstreamClusterNameFromLabel decodes the upstream cluster name from the value
+// of UpstreamOwnerClusterNameLabel, reversing the encoding applied when the
+// label is written ("cluster-" prefix, slashes encoded as underscores).
+//
+// It also tolerates labels written before the cluster name format changed in
+// #196: those carried a leading slash (e.g. "/project", encoded as
+// "cluster-_project") which decodes to "/project". The multicluster provider
+// now engages clusters under the slash-less name ("project"), so the leading
+// slash is stripped to keep legacy downstream resources resolvable.
+func UpstreamClusterNameFromLabel(value string) string {
+	name := strings.TrimPrefix(strings.ReplaceAll(value, "_", "/"), "cluster-")
+	return strings.TrimPrefix(name, "/")
+}
+
 func (c *mappedNamespaceResourceStrategy) SetControllerReference(ctx context.Context, owner, controlled metav1.Object, opts ...controllerutil.OwnerReferenceOption) error {
 	// TODO(jreese) add owner validation
 

@@ -800,7 +800,7 @@ func typedEnqueueDownstreamGVKRequest(gvk schema.GroupVersionKind) mchandler.Typ
 				return nil
 			}
 
-			clusterName := multicluster.ClusterName(strings.TrimPrefix(strings.ReplaceAll(clusterLabel, "_", "/"), "cluster-"))
+			clusterName := multicluster.ClusterName(downstreamclient.UpstreamClusterNameFromLabel(clusterLabel))
 
 			request := GVKRequest{
 				GVK: gvk,

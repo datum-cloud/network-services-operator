@@ -1337,7 +1337,7 @@ func (r *TrafficProtectionPolicyReconciler) enqueuePoliciesForCertificate() hand
 		// cluster via mcsingle.Get (which requires clusterName == "single").
 		// The label value is "cluster-<name>" with "/" replaced by "_".
 		clusterLabel := downstreamNamespace.Labels[downstreamclient.UpstreamOwnerClusterNameLabel]
-		upstreamClusterName := multicluster.ClusterName(strings.TrimPrefix(strings.ReplaceAll(clusterLabel, "_", "/"), "cluster-"))
+		upstreamClusterName := multicluster.ClusterName(downstreamclient.UpstreamClusterNameFromLabel(clusterLabel))
 
 		logger.Info("certificate became ready, enqueueing reconcile", "certificate", cert.GetName(), "upstreamNamespace", upstreamNamespace)
 

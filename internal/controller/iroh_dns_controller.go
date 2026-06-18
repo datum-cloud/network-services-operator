@@ -264,7 +264,11 @@ func encodeIrohClusterLabel(clusterName string) string {
 }
 
 func decodeIrohClusterLabel(label string) string {
-	return strings.TrimPrefix(strings.ReplaceAll(label, "_", "/"), "cluster-")
+	// Tolerate labels written before #196, when cluster names carried a leading
+	// slash (encoded as "_"): strip it so the result matches the slash-less name
+	// the provider now engages. Mirrors downstreamclient.UpstreamClusterNameFromLabel.
+	name := strings.TrimPrefix(strings.ReplaceAll(label, "_", "/"), "cluster-")
+	return strings.TrimPrefix(name, "/")
 }
 
 func connectorEndpointZ32(connector *networkingv1alpha1.Connector) (string, error) {

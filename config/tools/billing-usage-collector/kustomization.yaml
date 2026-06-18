@@ -1,0 +1,258 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: billing-system
+
+resources:
+  - namespace.yaml
+
+helmCharts:
+  - name: vector
+    namespace: billing-system
+    releaseName: billing-usage-collector
+    version: 0.34.0
+    repo: https://helm.vector.dev
+    valuesInline:
+      role: Agent
+      image:
+        tag: "0.55.0-alpine"
+      tolerations:
+        - operator: Exists
+      serviceAccount:
+        create: true
+        name: billing-usage-collector
+      env:
+        - name: BILLING_GATEWAY_URL
+          value: "http://mock-billing-gateway.billing-system.svc.cluster.local:8080"
+      customConfig:
+        data_dir: "/vector-data-dir"
+        sources:
+          billing_sdk:
+            type: http_server
+            address: "0.0.0.0:9880"
+            path: "/cloudevents"
+            decoding:
+              codec: json
+          nso_logs:
+            type: http_server
+            address: "0.0.0.0:9881"
+            path: "/logs"
+            decoding:
+              codec: json
+          # Envoy Gateway pushes access logs here via its OpenTelemetry access
+          # log sink (OTLP). The JSON access log fields arrive as OTLP log-record
+          # attributes (i.e. under `.attributes.*`). This is the real ingestion
+          # path for live traffic; the `nso_logs` http_server above is only used
+          # by the e2e test to inject hand-crafted log lines.
+          envoy_access_logs:
+            type: opentelemetry
+            grpc:
+              address: "0.0.0.0:4317"
+            http:
+              address: "0.0.0.0:4318"
+        transforms:
+          parse_nso_logs:
+            type: remap
+            inputs:
+              - nso_logs
+              - envoy_access_logs.logs
+            source: |
+              # The OpenTelemetry source (Envoy push) nests the access log fields
+              # under `.attributes`; the http_server source (e2e test injection)
+              # delivers them at the top level. Normalize both to top-level fields
+              # so the rest of this transform is source-agnostic.
+              if exists(.attributes) {
+                . = object(.attributes) ?? .
+              }
+
+              parsed_route, err = parse_regex(.route_name, r'^httproute/(?P<namespace>[^/]+)/(?P<name>[^/]+)')
+              if err != null || is_null(parsed_route) {
+                abort
+              }
+
+              httproute_namespace = parsed_route.namespace
+              httproute_name = parsed_route.name
+
+              project_id = replace!(to_string(httproute_namespace), r'^ns-', "")
+              subject = "projects/" + project_id
+
+              # Human-readable project name injected by the gateway access log
+              # (x-datum-project-name header). Absent/empty renders as "" or "-".
+              project_name = ""
+              if !is_null(.project_name) {
+                pn = to_string(.project_name) ?? ""
+                if pn != "-" {
+                  project_name = pn
+                }
+              }
+
+              bytes_sent = to_int(.bytes_sent) ?? 0
+              bytes_received = to_int(.bytes_received) ?? 0
+              duration_ms = to_int(.duration) ?? 0
+
+              uuid_clean = replace(uuid_v4(), "-", "")
+              ulid_base = "0" + upcase(slice(uuid_clean, 1, 26) ?? "")
+
+              events = []
+              region = "us-east-1"
+              if !is_null(.region) {
+                region = .region
+              }
+              gateway_name = "test-gateway"
+              if !is_null(.gateway_name) {
+                gateway_name = .gateway_name
+              }
+              gateway_namespace = "default"
+              if !is_null(.gateway_namespace) {
+                gateway_namespace = .gateway_namespace
+              }
+              gateway_class = "datum-downstream-gateway"
+              if !is_null(.gateway_class) {
+                gateway_class = .gateway_class
+              }
+              start_time = .start_time
+              if is_null(start_time) {
+                start_time = format_timestamp!(now(), "%Y-%m-%dT%H:%M:%SZ")
+              }
+
+              req_event = {
+                "specversion": "1.0",
+                "id": ulid_base,
+                "type": "networking.datumapis.com/gateway/requests",
+                "source": "//networking.datumapis.com/gateway",
+                "subject": subject,
+                "time": start_time,
+                "datacontenttype": "application/json",
+                "data": {
+                  "value": "1",
+                  "dimensions": {
+                    "region": region,
+                    "gateway": gateway_name,
+                    "gateway_namespace": gateway_namespace,
+                    "gateway_class": gateway_class,
+                    "httproute_name": httproute_name,
+                    "httproute_namespace": httproute_namespace,
+                    "project_name": project_name
+                  }
+                }
+              }
+              events = push(events, req_event)
+
+              if bytes_sent > 0 {
+                uuid_clean_egress = replace(uuid_v4(), "-", "")
+                ulid_egress = "0" + upcase(slice(uuid_clean_egress, 1, 26) ?? "")
+                egress_event = req_event
+                egress_event.id = ulid_egress
+                egress_event.type = "networking.datumapis.com/gateway/egress-bytes"
+                egress_event.data.value = to_string(bytes_sent)
+                events = push(events, egress_event)
+              }
+
+              if bytes_received > 0 {
+                uuid_clean_ingress = replace(uuid_v4(), "-", "")
+                ulid_ingress = "0" + upcase(slice(uuid_clean_ingress, 1, 26) ?? "")
+                ingress_event = req_event
+                ingress_event.id = ulid_ingress
+                ingress_event.type = "networking.datumapis.com/gateway/ingress-bytes"
+                ingress_event.data.value = to_string(bytes_received)
+                events = push(events, ingress_event)
+              }
+
+              if duration_ms > 0 {
+                duration_sec = to_float(duration_ms) / 1000.0
+                if duration_sec > 0 {
+                  uuid_clean_conn = replace(uuid_v4(), "-", "")
+                  ulid_conn = "0" + upcase(slice(uuid_clean_conn, 1, 26) ?? "")
+                  conn_event = req_event
+                  conn_event.id = ulid_conn
+                  conn_event.type = "networking.datumapis.com/gateway/connection-seconds"
+                  conn_event.data.value = to_string(duration_sec)
+                  events = push(events, conn_event)
+                }
+              }
+
+              . = events
+          clean_cloudevents:
+            type: remap
+            inputs:
+              - billing_sdk
+              - parse_nso_logs
+            source: |
+              del(.timestamp)
+              del(.host)
+              del(.source_type)
+        sinks:
+          billing_gateway:
+            type: http
+            inputs:
+              - clean_cloudevents
+            uri: "${BILLING_GATEWAY_URL}/v1/usage/events:batchIngest"
+            method: post
+            encoding:
+              codec: json
+            batch:
+              max_events: 100
+              timeout_secs: 1
+            tls:
+              verify_certificate: false
+            buffer:
+              type: memory
+              when_full: block
+            request:
+              retry_policy:
+                max_retries: 30
+                initial_backoff_secs: 1
+                max_backoff_secs: 60
+                jitter_mode: full
+      initContainers:
+        - name: init-data
+          image: busybox:1.36
+          securityContext:
+            runAsUser: 0
+            runAsNonRoot: false
+            privileged: true
+          command:
+            - sh
+            - -c
+            - chown -R 1000:1000 /var/lib/vector
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/vector
+      podSecurityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        runAsNonRoot: true
+      securityContext:
+        allowPrivilegeEscalation: false
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          cpu: 500m
+          memory: 256Mi
+      service:
+        enabled: true
+        type: ClusterIP
+        internalTrafficPolicy: Local
+        ports:
+          - name: cloudevents
+            port: 9880
+            protocol: TCP
+            targetPort: 9880
+          - name: nso-logs
+            port: 9881
+            protocol: TCP
+            targetPort: 9881
+          # OTLP endpoints for Envoy Gateway's OpenTelemetry access log sink.
+          # internalTrafficPolicy: Local keeps each Envoy pod talking to the
+          # Vector agent on its own node.
+          - name: otlp-grpc
+            port: 4317
+            protocol: TCP
+            targetPort: 4317
+          - name: otlp-http
+            port: 4318
+            protocol: TCP
+            targetPort: 4318
+      podMonitor:
+        enabled: true

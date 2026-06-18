@@ -1153,9 +1153,10 @@ func TestPopulateFromClient_NamespaceNameCollision_LatentRisk(t *testing.T) {
 
 	// Simulate what BuildPolicyIndex does: call populateFromClient once per cluster.
 	idx := &PolicyIndex{
-		DStoUS:     make(map[string]string),
-		TPPs:       make(map[string][]TPPInfo),
-		Connectors: make(map[ConnectorKey]ConnectorInfo),
+		DStoUS:       make(map[string]string),
+		ProjectNames: make(map[string]string),
+		TPPs:         make(map[string][]TPPInfo),
+		Connectors:   make(map[ConnectorKey]ConnectorInfo),
 	}
 	require.NoError(t, populateFromClient(context.Background(), clA, idx, nil))
 	require.NoError(t, populateFromClient(context.Background(), clB, idx, nil))

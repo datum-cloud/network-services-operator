@@ -155,10 +155,11 @@ func InjectCorazaListenerFilters(l *listenerv3.Listener, cfg *CorazaConfig) (int
 // TrafficProtectionPolicy. For each VirtualHost it:
 //  1. Extracts the EG filter_metadata["envoy-gateway"] gateway resource ref.
 //  2. Resolves the upstream namespace via idx.DStoUS.
-//  3. Finds the governing TPP from idx.TPPs (route-level wins over gateway-level).
-//  4. Writes typed_per_filter_config and datum-gateway metadata on governed routes.
+//  3. Stamps project_name into datum-gateway route metadata on every NSO-owned route.
+//  4. Finds the governing TPP from idx.TPPs (route-level wins over gateway-level).
+//  5. Writes typed_per_filter_config and datum-gateway metadata on governed routes.
 //
-// Returns the number of routes mutated.
+// Returns the number of routes mutated (WAF-configured routes only).
 func ApplyTPPRouteConfig(
 	rc *routev3.RouteConfiguration,
 	idx *extcache.PolicyIndex,
@@ -184,12 +185,19 @@ func ApplyTPPRouteConfig(
 			continue
 		}
 
+		projectName := idx.ProjectNames[dsNS]
 		tpps := idx.TPPs[upstreamNS]
 
 		// Gateway-level governing TPP (no SectionName scoping in P1; see design §2.2 C5).
 		gwTPP := findGatewayTPP(tpps, gwName)
 
 		for _, rt := range vh.GetRoutes() {
+			// Stamp project_name on every NSO-owned route so the Envoy access log
+			// can emit it via %METADATA(ROUTE:datum-gateway:project_name)%.
+			// applyRouteWAFConfig overwrites this entry for TPP-governed routes,
+			// so it also includes project_name in the metadata it builds.
+			injectProjectNameMetadata(rt, projectName)
+
 			// Check for a route-level TPP (HTTPRoute targeting) — takes precedence.
 			_, _, routeName, _ := extractEGResource(rt.GetMetadata())
 			routeTPP := findRouteTPP(tpps, routeName)
@@ -202,7 +210,7 @@ func ApplyTPPRouteConfig(
 				continue
 			}
 
-			if err := applyRouteWAFConfig(rt, governing, cfg); err != nil {
+			if err := applyRouteWAFConfig(rt, governing, projectName, cfg); err != nil {
 				return mutated, fmt.Errorf("apply WAF config to route %q: %w", rt.GetName(), err)
 			}
 			mutated++
@@ -211,10 +219,34 @@ func ApplyTPPRouteConfig(
 	return mutated, nil
 }
 
+// injectProjectNameMetadata writes project_name into the datum-gateway
+// filter_metadata of a route. Called for every NSO-owned route regardless of
+// whether a TrafficProtectionPolicy governs it, so that
+// %METADATA(ROUTE:datum-gateway:project_name)% is always available in the
+// Envoy access log format.
+func injectProjectNameMetadata(rt *routev3.Route, projectName string) {
+	if rt.Metadata == nil {
+		rt.Metadata = &corev3.Metadata{}
+	}
+	if rt.Metadata.FilterMetadata == nil {
+		rt.Metadata.FilterMetadata = make(map[string]*structpb.Struct)
+	}
+	existing := rt.Metadata.FilterMetadata[datumGatewayMetadataKey]
+	if existing == nil {
+		s, _ := structpb.NewStruct(map[string]any{"project_name": projectName})
+		rt.Metadata.FilterMetadata[datumGatewayMetadataKey] = s
+		return
+	}
+	if existing.Fields == nil {
+		existing.Fields = make(map[string]*structpb.Value)
+	}
+	existing.Fields["project_name"] = structpb.NewStringValue(projectName)
+}
+
 // applyRouteWAFConfig writes the datum-gateway filter_metadata and Coraza
 // typed_per_filter_config onto a single route.
-func applyRouteWAFConfig(rt *routev3.Route, tpp *extcache.TPPInfo, cfg *CorazaConfig) error {
-	meta, err := buildDatumGatewayMetadata(tpp)
+func applyRouteWAFConfig(rt *routev3.Route, tpp *extcache.TPPInfo, projectName string, cfg *CorazaConfig) error {
+	meta, err := buildDatumGatewayMetadata(tpp, projectName)
 	if err != nil {
 		return fmt.Errorf("build datum-gateway metadata: %w", err)
 	}
@@ -368,8 +400,9 @@ func corazaPluginConfigAny(directives []string, cfg *CorazaConfig) (*anypb.Any, 
 
 // buildDatumGatewayMetadata builds the filter_metadata["datum-gateway"] struct
 // for a governed route. Matches the metadata contract in STATE.md.
-func buildDatumGatewayMetadata(tpp *extcache.TPPInfo) (*structpb.Struct, error) {
+func buildDatumGatewayMetadata(tpp *extcache.TPPInfo, projectName string) (*structpb.Struct, error) {
 	s, err := structpb.NewStruct(map[string]any{
+		"project_name": projectName,
 		egMetaFieldResources: []any{
 			map[string]any{
 				egMetaFieldKind:      "TrafficProtectionPolicy",

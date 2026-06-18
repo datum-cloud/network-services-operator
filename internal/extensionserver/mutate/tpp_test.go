@@ -145,9 +145,10 @@ func tppTargetingHTTPRoute(upstreamNS, tppName, routeName string) extcache.TPPIn
 // ("test-project") are fixed — all callers in this package use those values.
 func policyIndex(tpps ...extcache.TPPInfo) *extcache.PolicyIndex {
 	return &extcache.PolicyIndex{
-		DStoUS:     map[string]string{"ns-abc-123": "test-project"},
-		TPPs:       map[string][]extcache.TPPInfo{"test-project": tpps},
-		Connectors: make(map[extcache.ConnectorKey]extcache.ConnectorInfo),
+		DStoUS:       map[string]string{"ns-abc-123": "test-project"},
+		ProjectNames: map[string]string{"ns-abc-123": "test-project"},
+		TPPs:         map[string][]extcache.TPPInfo{"test-project": tpps},
+		Connectors:   make(map[extcache.ConnectorKey]extcache.ConnectorInfo),
 	}
 }
 
@@ -342,9 +343,10 @@ func TestApplyTPPRouteConfig_UnknownDSNamespace_Skipped(t *testing.T) {
 	cfg := testCorazaConfig()
 	// idx does NOT contain a mapping for dsNS.
 	idx := &extcache.PolicyIndex{
-		DStoUS:     map[string]string{"ns-other": "other-project"},
-		TPPs:       make(map[string][]extcache.TPPInfo),
-		Connectors: make(map[extcache.ConnectorKey]extcache.ConnectorInfo),
+		DStoUS:       map[string]string{"ns-other": "other-project"},
+		ProjectNames: make(map[string]string),
+		TPPs:         make(map[string][]extcache.TPPInfo),
+		Connectors:   make(map[extcache.ConnectorKey]extcache.ConnectorInfo),
 	}
 
 	vh := buildVHWithGatewayMeta(

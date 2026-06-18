@@ -96,6 +96,36 @@ spec:
         disable: false
       enableVirtualHostStats: true
       enablePerEndpointStats: true
+    accessLog:
+      settings:
+        - format:
+            type: JSON
+            json:
+              start_time: "%START_TIME%"
+              method: "%REQ(:METHOD)%"
+              path: "%REQ(X-ENVOY-ORIGINAL-PATH?:PATH)%"
+              protocol: "%PROTOCOL%"
+              response_code: "%RESPONSE_CODE%"
+              bytes_received: "%BYTES_RECEIVED%"
+              bytes_sent: "%BYTES_SENT%"
+              duration: "%DURATION%"
+              route_name: "%ROUTE_NAME%"
+              project_name: "%METADATA(ROUTE:datum-gateway:project_name)%"
+          # Push access logs straight to the node-local Vector agent over OTLP.
+          # The JSON fields above are delivered as OTLP log-record attributes,
+          # which Vector's `envoy_access_logs` opentelemetry source parses into
+          # billing CloudEvents. internalTrafficPolicy: Local on the Vector
+          # Service keeps this hop on-node.
+          sinks:
+            - type: OpenTelemetry
+              openTelemetry:
+                host: billing-usage-collector-vector.billing-system.svc.cluster.local
+                port: 4317
+                # OTLP has no custom URL path; identify this stream via an OTel
+                # resource attribute instead. Surfaces in Vector under
+                # `.resources` and can be used to route/filter signals.
+                resources:
+                  service.name: nso-httproute-signals
 ---
 apiVersion: gateway.networking.k8s.io/v1
 kind: GatewayClass

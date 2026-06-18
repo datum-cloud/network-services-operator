@@ -1,5 +1,9 @@
 version: '3'
 
+includes:
+  dev:
+    taskfile: ./Taskfile.dev.yaml
+
 tasks:
   validate-kustomizations:
       desc: Validate all kustomization.yaml files using kustomize build

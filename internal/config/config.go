@@ -633,6 +633,11 @@ type GatewayConfig struct {
 	// Coraza specifies configuration for the Coraza WAF.
 	Coraza CorazaConfig `json:"coraza,omitempty"`
 
+	// ErrorPage specifies configuration for the branded data-plane error page
+	// served for edge-generated 5xx responses on the downstream / Connector
+	// data plane.
+	ErrorPage ErrorPageConfig `json:"errorPage,omitempty"`
+
 	// ValidPortNumbers is a list of port numbers that are permitted on gateway
 	// listeners.
 	//
@@ -786,6 +791,45 @@ type CorazaConfig struct {
 	// stored in Envoy routes to inject into trace span attributes. MUST return
 	// a map of string keys to values.
 	TraceRouteMetadataExtractor string `json:"traceRouteMetadataExtractor,omitempty"`
+}
+
+// +k8s:deepcopy-gen=true
+
+// ErrorPageConfig configures the branded data-plane error page. When enabled,
+// the extension server attaches an Envoy local_reply_config to every
+// customer-facing HCM so edge-generated 5xx responses render a branded HTML
+// page instead of a raw body like "no healthy upstream".
+//
+// The page content is sourced from BodyPath (a mounted ConfigMap) when present
+// and readable, otherwise from the page compiled into the operator image. A
+// missing or unreadable override never fails startup and never blocks xDS — it
+// falls back to the embedded default.
+type ErrorPageConfig struct {
+	// Enabled toggles branded error-page injection. Defaults to false; the
+	// extension server only attaches local_reply_config when this is true.
+	Enabled bool `json:"enabled,omitempty"`
+
+	// BodyPath is an optional path to a file (typically a mounted ConfigMap key)
+	// containing the branded HTML. When empty, unreadable, or empty-on-disk, the
+	// embedded default page is used instead.
+	BodyPath string `json:"bodyPath,omitempty"`
+
+	// MinStatusCode is the inclusive lower bound for response status codes that
+	// receive the branded body. The original status code is always preserved.
+	//
+	// +default=500
+	MinStatusCode uint32 `json:"minStatusCode,omitempty"`
+
+	// RuntimeKey is the Envoy runtime key gating the branded reply, allowing it
+	// to be disabled at runtime without a redeploy.
+	//
+	// +default="local_reply_5xx"
+	RuntimeKey string `json:"runtimeKey,omitempty"`
+
+	// ContentType is the Content-Type set on the branded response body.
+	//
+	// +default="text/html; charset=UTF-8"
+	ContentType string `json:"contentType,omitempty"`
 }
 
 // +k8s:deepcopy-gen=true

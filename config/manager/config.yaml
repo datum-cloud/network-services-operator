@@ -13,3 +13,18 @@ gateway:
   #
   # Default: false. Set to true in environments where dns-operator is deployed.
   enableDNSIntegration: false
+  # errorPage configures the branded data-plane error page served by the
+  # extension server for edge-generated 5xx responses on the downstream /
+  # Connector data plane (e.g. an offline Connector tunnel). When enabled, the
+  # extension server attaches an Envoy local_reply_config to every customer-
+  # facing HCM so visitors see a branded "temporarily unavailable" page instead
+  # of a raw body like "no healthy upstream".
+  #
+  # bodyPath points at the optional ConfigMap mount (volume "error-pages" in
+  # config/extension-server/deployment.yaml). When the file is absent or empty,
+  # the page compiled into the operator image is used as the fallback — content
+  # problems never block xDS or fail startup.
+  errorPage:
+    enabled: true
+    bodyPath: /etc/datum/error-pages/error-5xx.html
+    minStatusCode: 500

@@ -181,44 +181,6 @@ const (
 
 const ConnectorNameAnnotation = "networking.datum.org/connector-name"
 
-// ConnectorLivenessAnnotation carries a compact snapshot of a Connector's
-// authoritative upstream liveness down to edge member clusters.
-//
-// A Connector's Ready condition and ConnectionDetails are computed in the
-// Project control plane and stored in the Connector's status subresource. The
-// edge extension server reads connectors from the local member-cluster cache to
-// decide whether a tunnel is online. Karmada propagates a resource template's
-// spec and metadata (labels/annotations) to member clusters but NOT the status
-// subresource, so the member-cluster Connector never carries Ready or
-// ConnectionDetails. To bridge that gap the replicator stamps the liveness onto
-// this annotation — which Karmada DOES propagate — and the extension server
-// reads it from there, falling back to status when the annotation is absent.
-//
-// The value is a JSON-marshalled ConnectorLiveness. Keep the JSON schema in
-// sync with that type.
-const ConnectorLivenessAnnotation = "networking.datumapis.com/connector-liveness"
-
-// ConnectorLiveness is the JSON payload stored in ConnectorLivenessAnnotation.
-//
-// It carries the upstream Connector's Ready classification plus its full
-// ConnectionDetails. Embedding the complete ConnectionDetails — including the
-// type discriminator and the type-specific block — lets the extension server
-// derive the tunnel node ID for any connection type the API supports, today and
-// in future, without changing this annotation's JSON schema. It deliberately
-// does NOT include the tunnel TargetHost/TargetPort: those are derived from the
-// referencing HTTPProxy backend endpoint URL, not from Connector status.
-type ConnectorLiveness struct {
-	// Ready mirrors the upstream Connector's Ready condition being True.
-	Ready bool `json:"ready"`
-
-	// ConnectionDetails is the upstream Connector's full
-	// Status.ConnectionDetails, copied verbatim. Carrying the complete structure
-	// keeps the data available for future connection types without an
-	// annotation-schema change; consumers read the field they need directly. Nil
-	// when the upstream connector has not yet published connection details.
-	ConnectionDetails *ConnectorConnectionDetails `json:"connectionDetails,omitempty"`
-}
-
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:selectablefield:JSONPath=".status.connectionDetails.publicKey.id"

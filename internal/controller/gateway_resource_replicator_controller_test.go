@@ -441,13 +441,13 @@ func TestReplicatorMirrorsNSOPolicyTypesSkipsUpstreamStatusSync(t *testing.T) {
 // TestReplicatorMirrorsConnectorSpecAndLivenessAnnotation verifies that when the
 // replicator handles a Connector it:
 //   - copies spec into the downstream ns-<uid> namespace, AND
-//   - stamps the ConnectorLivenessAnnotation (ready + full connectionDetails)
+//   - mirrors the upstream .status verbatim into the UpstreamStatusAnnotation
 //     onto the downstream object's metadata so the edge extension server can read
-//     tunnel liveness locally.
+//     connector liveness locally.
 //
-// The annotation — not the status subresource — carries liveness because Karmada
-// propagates a resource template's spec + metadata to member clusters but NOT
-// its status.
+// The annotation — not the status subresource — carries the status because
+// Karmada propagates a resource template's spec + metadata to member clusters
+// but NOT its status.
 func TestReplicatorMirrorsConnectorSpecAndLivenessAnnotation(t *testing.T) {
 	connectorGVK := schema.GroupVersionKind{
 		Group: "networking.datumapis.com", Version: "v1alpha1", Kind: "Connector",
@@ -525,22 +525,14 @@ func TestReplicatorMirrorsConnectorSpecAndLivenessAnnotation(t *testing.T) {
 	assert.Equal(t, upstreamObj.Object["spec"], downstream.Object["spec"],
 		"downstream spec must mirror upstream spec")
 
-	// Key assertion: the liveness annotation reflects the upstream Ready
-	// condition and carries the full upstream connectionDetails (type
-	// discriminator + type-specific block), not a reduced node-ID-only view.
-	expected, err := json.Marshal(networkingv1alpha1.ConnectorLiveness{
-		Ready: true,
-		ConnectionDetails: &networkingv1alpha1.ConnectorConnectionDetails{
-			Type: networkingv1alpha1.PublicKeyConnectorConnectionType,
-			PublicKey: &networkingv1alpha1.ConnectorConnectionDetailsPublicKey{
-				Id: "node-abc",
-			},
-		},
-	})
+	// Key assertion: the annotation carries the upstream .status verbatim — the
+	// replicator mirrors the whole status object resource-agnostically, with no
+	// bespoke per-type shape.
+	expected, err := json.Marshal(connectorStatus)
 	assert.NoError(t, err)
 	assert.Equal(t, string(expected),
-		downstream.GetAnnotations()[networkingv1alpha1.ConnectorLivenessAnnotation],
-		"downstream liveness annotation must carry ready + the full upstream connectionDetails")
+		downstream.GetAnnotations()[networkingv1alpha1.UpstreamStatusAnnotation],
+		"downstream annotation must carry the full upstream status verbatim")
 
 	// The replicator must NOT mirror the status subresource downstream (Karmada
 	// would not propagate it to members anyway).
@@ -556,8 +548,8 @@ func TestReplicatorMirrorsConnectorSpecAndLivenessAnnotation(t *testing.T) {
 }
 
 // TestReplicatorConnectorNotReadyLivenessAnnotation verifies that a Connector
-// whose Ready condition is False produces a not-ready liveness annotation with
-// no node ID.
+// whose Ready condition is False mirrors that not-ready status verbatim into the
+// annotation (no connectionDetails).
 func TestReplicatorConnectorNotReadyLivenessAnnotation(t *testing.T) {
 	connectorGVK := schema.GroupVersionKind{
 		Group: "networking.datumapis.com", Version: "v1alpha1", Kind: "Connector",
@@ -617,15 +609,15 @@ func TestReplicatorConnectorNotReadyLivenessAnnotation(t *testing.T) {
 	assert.NoError(t, downstreamClient.Get(ctx,
 		client.ObjectKey{Name: "connector-down", Namespace: "ns-ns-uid"}, &downstream))
 
-	expected, err := json.Marshal(networkingv1alpha1.ConnectorLiveness{Ready: false})
+	expected, err := json.Marshal(connectorStatus)
 	assert.NoError(t, err)
 	assert.Equal(t, string(expected),
-		downstream.GetAnnotations()[networkingv1alpha1.ConnectorLivenessAnnotation],
-		"not-ready connector must produce a ready:false liveness annotation with no nodeID")
+		downstream.GetAnnotations()[networkingv1alpha1.UpstreamStatusAnnotation],
+		"not-ready connector must mirror its not-ready status verbatim into the annotation")
 }
 
 // TestReplicatorConnectorLivenessAnnotationIdempotent verifies that repeated
-// reconciles of an already-synced Connector keep the liveness annotation stable
+// reconciles of an already-synced Connector keep the status annotation stable
 // and do not error.
 func TestReplicatorConnectorLivenessAnnotationIdempotent(t *testing.T) {
 	connectorGVK := schema.GroupVersionKind{
@@ -689,11 +681,11 @@ func TestReplicatorConnectorLivenessAnnotationIdempotent(t *testing.T) {
 	assert.NoError(t, wrappedDownstream.Get(ctx,
 		client.ObjectKey{Name: "connector-idem", Namespace: "ns-ns-uid"}, &downstream))
 
-	expected, err := json.Marshal(networkingv1alpha1.ConnectorLiveness{Ready: true})
+	expected, err := json.Marshal(connectorStatus)
 	assert.NoError(t, err)
 	assert.Equal(t, string(expected),
-		downstream.GetAnnotations()[networkingv1alpha1.ConnectorLivenessAnnotation],
-		"liveness annotation must remain stable after an idempotent reconcile")
+		downstream.GetAnnotations()[networkingv1alpha1.UpstreamStatusAnnotation],
+		"status annotation must remain stable after an idempotent reconcile")
 }
 
 func newReplicatorForTest(upstream client.Client, downstream client.Client, scheme *runtime.Scheme) *GatewayResourceReplicatorReconciler {

@@ -141,6 +141,19 @@ var (
 		},
 	)
 
+	// ConnectorOfflineRoutesTotal counts total user-facing forwarding routes
+	// rewritten to a tunnel-offline 503 direct_response across all hook
+	// invocations. Each increment = one route that previously targeted an
+	// endpoint-less offline-connector cluster and now returns a deterministic
+	// 503 (instead of Envoy's generic 503 no_healthy_upstream). Use rate()/sum()
+	// to derive per-build averages.
+	ConnectorOfflineRoutesTotal = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "nso_extension_connector_offline_routes_total",
+			Help: "Total user-facing forwarding routes rewritten to a tunnel-offline 503 direct_response across all hook invocations.",
+		},
+	)
+
 	// CacheSynced is 1 when the informer cache has synced and the extension server
 	// is accepting gRPC connections, 0 during startup or if the cache lost sync.
 	CacheSynced = promauto.NewGauge(

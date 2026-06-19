@@ -72,16 +72,11 @@ func ReplaceConnectorClusters(
 }
 
 // ApplyConnectorRoutes applies connector route mutations to a RouteConfiguration:
-//   - Online (replaced) connector found in a VH: prepend a CONNECT upgrade route
-//     targeting the replaced cluster and append info.TargetHost to VH domains.
-//   - Offline connector found in a VH: prepend a direct_response 503 CONNECT
-//     route (for CONNECT/tunnel-control clients) AND rewrite the user-facing
-//     forwarding routes that target the (endpoint-less) offline connector
-//     cluster into an immediate direct_response 503. Without the latter, a
-//     normal user GET falls through to the prefix:"/" route, which still targets
-//     the zero-endpoint cluster — Envoy then returns a generic 503
-//     no_healthy_upstream (UH) instead of a deterministic tunnel-offline
-//     response, and the empty cluster triggers retries/cluster-stat noise.
+//   - Online (replaced) connector: prepend a CONNECT upgrade route targeting the
+//     replaced cluster and append info.TargetHost to VH domains.
+//   - Offline connector: prepend a CONNECT direct_response 503 (tunnel-control
+//     clients) and rewrite the user-facing forwarding routes to a 503
+//     direct_response (see the offline branch for why).
 //
 // Returns the number of VirtualHosts mutated and the number of forwarding
 // routes converted to a tunnel-offline direct_response.
@@ -126,26 +121,18 @@ func ApplyConnectorRoutes(
 			// NOT a synthetic .connector.local domain.
 			vh.Domains = appendUnique(vh.Domains, info.TargetHost)
 		} else {
-			// Offline: prepend the direct_response 503 connect_matcher route so
-			// CONNECT (tunnel-control) clients still get "Tunnel not online".
+			// Offline connect_matcher route for tunnel-control clients.
 			newRoute, err = buildOfflineRoute("connector-offline-" + sanitizeID(vh.GetName()))
 			if err != nil {
 				return mutated, converted, fmt.Errorf("build offline route for %q: %w", vh.GetName(), err)
 			}
 			vh.Routes = append([]*routev3.Route{newRoute}, vh.Routes...)
-			// No domain appended for offline connectors (no live tunnel).
 
-			// Rewrite the user-facing forwarding route(s) that target the
-			// endpoint-less offline connector cluster into an immediate 503
-			// direct_response. Otherwise a normal GET falls through to the
-			// prefix:"/" route, hits the zero-endpoint cluster, and Envoy
-			// returns a generic 503 no_healthy_upstream (UH) plus retry/stat
-			// noise. We only replace the route's Action oneof, so each route's
-			// match, metadata, and typed_per_filter_config are preserved.
-			//
-			// Idempotent: the prepended connect_matcher route and any already
-			// converted forwarding route are direct_responses, so routeCluster
-			// returns "" for them and they never re-match connectorCluster.
+			// Route user traffic to a deterministic 503 instead of the
+			// endpoint-less offline cluster, which would yield a generic
+			// no_healthy_upstream plus retry/cluster-stat noise. Replacing only
+			// the Action oneof preserves each route's match/metadata; idempotent
+			// because direct_responses carry no cluster to re-match.
 			for _, rt := range vh.GetRoutes() {
 				if routeCluster(rt) != connectorCluster {
 					continue
@@ -262,11 +249,9 @@ func buildConnectRoute(name, cluster string) (*routev3.Route, error) {
 	return rt, nil
 }
 
-// offlineResponseBody is the inline body returned for tunnel-offline 503
-// responses. Shared by the connect_matcher offline route (buildOfflineRoute)
-// and the user-facing forwarding-route conversion (setRouteDirectResponse) so
-// both paths return an identical body. The exact string is part of the
-// STATE.md metadata contract.
+// offlineResponseBody is the inline body for tunnel-offline 503 responses,
+// shared by both offline paths so they return an identical body. The exact
+// string is part of the STATE.md metadata contract.
 const offlineResponseBody = "Tunnel not online"
 
 // buildOfflineRoute builds the offline CONNECT route (direct_response 503
@@ -284,11 +269,8 @@ func buildOfflineRoute(name string) (*routev3.Route, error) {
 	return rt, nil
 }
 
-// setRouteDirectResponse rewrites a route's action to an immediate
-// direct_response with the given status and inline body. Only the Action oneof
-// is replaced, so the route's match, metadata, and typed_per_filter_config are
-// preserved. Used to convert a forwarding route that targets an endpoint-less
-// offline connector cluster into a deterministic tunnel-offline response.
+// setRouteDirectResponse swaps a route's action for a direct_response. Only the
+// Action oneof is replaced, so match/metadata/typed_per_filter_config survive.
 func setRouteDirectResponse(rt *routev3.Route, status uint32, body string) error {
 	j := fmt.Sprintf(`{ "status": %d, "body": { "inline_string": %q } }`, status, body)
 	dr := &routev3.DirectResponseAction{}

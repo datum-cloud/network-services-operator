@@ -212,28 +212,11 @@ type ConnectorLiveness struct {
 	Ready bool `json:"ready"`
 
 	// ConnectionDetails is the upstream Connector's full
-	// Status.ConnectionDetails, copied verbatim so the extension server can
-	// extract the tunnel node ID in a type-aware way (see TunnelNodeID). Nil
+	// Status.ConnectionDetails, copied verbatim. Carrying the complete structure
+	// keeps the data available for future connection types without an
+	// annotation-schema change; consumers read the field they need directly. Nil
 	// when the upstream connector has not yet published connection details.
 	ConnectionDetails *ConnectorConnectionDetails `json:"connectionDetails,omitempty"`
-}
-
-// TunnelNodeID returns the data-plane tunnel endpoint_id for these connection
-// details, dispatching on the connection Type so new connection types can be
-// added by extending the switch rather than by assuming PublicKey. It returns
-// an empty string for nil details or any type that does not (yet) advertise a
-// node ID.
-func (d *ConnectorConnectionDetails) TunnelNodeID() string {
-	if d == nil {
-		return ""
-	}
-	switch d.Type {
-	case PublicKeyConnectorConnectionType:
-		if d.PublicKey != nil {
-			return d.PublicKey.Id
-		}
-	}
-	return ""
 }
 
 // +kubebuilder:object:root=true

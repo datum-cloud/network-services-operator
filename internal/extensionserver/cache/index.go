@@ -181,7 +181,10 @@ func connectorLiveness(connector *networkingv1alpha1.Connector) (online bool, no
 	if raw, ok := connector.Annotations[networkingv1alpha1.ConnectorLivenessAnnotation]; ok {
 		var liveness networkingv1alpha1.ConnectorLiveness
 		if err := json.Unmarshal([]byte(raw), &liveness); err == nil {
-			return liveness.Ready, liveness.NodeID
+			// TunnelNodeID dispatches on the connection type, so a new
+			// connection type is supported by extending that switch rather than
+			// by changing the annotation schema here.
+			return liveness.Ready, liveness.ConnectionDetails.TunnelNodeID()
 		}
 		// Unparseable annotation: fall through to status-based classification.
 	}
@@ -191,11 +194,7 @@ func connectorLiveness(connector *networkingv1alpha1.Connector) (online bool, no
 		networkingv1alpha1.ConnectorConditionReady,
 	)
 	if online {
-		if details := connector.Status.ConnectionDetails; details != nil &&
-			details.Type == networkingv1alpha1.PublicKeyConnectorConnectionType &&
-			details.PublicKey != nil {
-			nodeID = details.PublicKey.Id
-		}
+		nodeID = connector.Status.ConnectionDetails.TunnelNodeID()
 	}
 	return online, nodeID
 }

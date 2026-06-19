@@ -441,9 +441,9 @@ func TestReplicatorMirrorsNSOPolicyTypesSkipsUpstreamStatusSync(t *testing.T) {
 // TestReplicatorMirrorsConnectorSpecAndLivenessAnnotation verifies that when the
 // replicator handles a Connector it:
 //   - copies spec into the downstream ns-<uid> namespace, AND
-//   - stamps the ConnectorLivenessAnnotation (ready + nodeID) onto the
-//     downstream object's metadata so the edge extension server can read tunnel
-//     liveness locally.
+//   - stamps the ConnectorLivenessAnnotation (ready + full connectionDetails)
+//     onto the downstream object's metadata so the edge extension server can read
+//     tunnel liveness locally.
 //
 // The annotation — not the status subresource — carries liveness because Karmada
 // propagates a resource template's spec + metadata to member clusters but NOT
@@ -526,12 +526,21 @@ func TestReplicatorMirrorsConnectorSpecAndLivenessAnnotation(t *testing.T) {
 		"downstream spec must mirror upstream spec")
 
 	// Key assertion: the liveness annotation reflects the upstream Ready
-	// condition and the PublicKey node ID.
-	expected, err := json.Marshal(networkingv1alpha1.ConnectorLiveness{Ready: true, NodeID: "node-abc"})
+	// condition and carries the full upstream connectionDetails (type
+	// discriminator + type-specific block), not a reduced node-ID-only view.
+	expected, err := json.Marshal(networkingv1alpha1.ConnectorLiveness{
+		Ready: true,
+		ConnectionDetails: &networkingv1alpha1.ConnectorConnectionDetails{
+			Type: networkingv1alpha1.PublicKeyConnectorConnectionType,
+			PublicKey: &networkingv1alpha1.ConnectorConnectionDetailsPublicKey{
+				Id: "node-abc",
+			},
+		},
+	})
 	assert.NoError(t, err)
 	assert.Equal(t, string(expected),
 		downstream.GetAnnotations()[networkingv1alpha1.ConnectorLivenessAnnotation],
-		"downstream liveness annotation must carry ready + nodeID derived from upstream status")
+		"downstream liveness annotation must carry ready + the full upstream connectionDetails")
 
 	// The replicator must NOT mirror the status subresource downstream (Karmada
 	// would not propagate it to members anyway).

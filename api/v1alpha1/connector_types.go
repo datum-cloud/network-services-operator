@@ -200,20 +200,40 @@ const ConnectorLivenessAnnotation = "networking.datumapis.com/connector-liveness
 
 // ConnectorLiveness is the JSON payload stored in ConnectorLivenessAnnotation.
 //
-// It carries only the status-derived fields the extension server needs to
-// classify a connector online/offline and to build the data-plane tunnel
-// cluster. It deliberately does NOT include the tunnel TargetHost/TargetPort:
-// those are derived from the referencing HTTPProxy backend endpoint URL, not
-// from Connector status.
+// It carries the upstream Connector's Ready classification plus its full
+// ConnectionDetails. Embedding the complete ConnectionDetails — including the
+// type discriminator and the type-specific block — lets the extension server
+// derive the tunnel node ID for any connection type the API supports, today and
+// in future, without changing this annotation's JSON schema. It deliberately
+// does NOT include the tunnel TargetHost/TargetPort: those are derived from the
+// referencing HTTPProxy backend endpoint URL, not from Connector status.
 type ConnectorLiveness struct {
 	// Ready mirrors the upstream Connector's Ready condition being True.
 	Ready bool `json:"ready"`
 
-	// NodeID is the connector's public-key id, taken from
-	// Status.ConnectionDetails.PublicKey.Id when the connector is ready and
-	// advertises PublicKey connection details. Empty otherwise. Used as the
-	// tunnel endpoint_id in the data-plane connector cluster.
-	NodeID string `json:"nodeID,omitempty"`
+	// ConnectionDetails is the upstream Connector's full
+	// Status.ConnectionDetails, copied verbatim so the extension server can
+	// extract the tunnel node ID in a type-aware way (see TunnelNodeID). Nil
+	// when the upstream connector has not yet published connection details.
+	ConnectionDetails *ConnectorConnectionDetails `json:"connectionDetails,omitempty"`
+}
+
+// TunnelNodeID returns the data-plane tunnel endpoint_id for these connection
+// details, dispatching on the connection Type so new connection types can be
+// added by extending the switch rather than by assuming PublicKey. It returns
+// an empty string for nil details or any type that does not (yet) advertise a
+// node ID.
+func (d *ConnectorConnectionDetails) TunnelNodeID() string {
+	if d == nil {
+		return ""
+	}
+	switch d.Type {
+	case PublicKeyConnectorConnectionType:
+		if d.PublicKey != nil {
+			return d.PublicKey.Id
+		}
+	}
+	return ""
 }
 
 // +kubebuilder:object:root=true

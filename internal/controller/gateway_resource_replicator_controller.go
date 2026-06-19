@@ -483,10 +483,12 @@ func setConnectorLivenessAnnotation(downstreamObj, upstreamObj *unstructured.Uns
 	return nil
 }
 
-// connectorLivenessFromUpstream extracts the Ready condition and PublicKey node
-// ID from an upstream Connector's (unstructured) status. A connector with no
-// status, a non-True Ready condition, or no PublicKey connection details yields
-// a not-ready liveness with an empty NodeID.
+// connectorLivenessFromUpstream extracts the Ready condition and the full
+// ConnectionDetails from an upstream Connector's (unstructured) status. A
+// connector with no status yields a not-ready liveness with nil
+// ConnectionDetails. The complete ConnectionDetails is carried so the extension
+// server can derive the tunnel node ID for any connection type without an
+// annotation-schema change.
 func connectorLivenessFromUpstream(upstreamObj *unstructured.Unstructured) (networkingv1alpha1.ConnectorLiveness, error) {
 	var liveness networkingv1alpha1.ConnectorLiveness
 
@@ -505,13 +507,7 @@ func connectorLivenessFromUpstream(upstreamObj *unstructured.Unstructured) (netw
 	}
 
 	liveness.Ready = apimeta.IsStatusConditionTrue(status.Conditions, networkingv1alpha1.ConnectorConditionReady)
-	if liveness.Ready {
-		if details := status.ConnectionDetails; details != nil &&
-			details.Type == networkingv1alpha1.PublicKeyConnectorConnectionType &&
-			details.PublicKey != nil {
-			liveness.NodeID = details.PublicKey.Id
-		}
-	}
+	liveness.ConnectionDetails = status.ConnectionDetails
 	return liveness, nil
 }
 

@@ -910,6 +910,17 @@ func TestBuildPolicyIndexFromClient_ConnectorResolution_NonConnectorBackend_Skip
 // status-fallback classification.
 // =============================================================================
 
+// publicKeyDetails builds ConnectionDetails for the PublicKey connection type
+// advertising the given node id — the only connection type defined today.
+func publicKeyDetails(nodeID string) *networkingv1alpha1.ConnectorConnectionDetails {
+	return &networkingv1alpha1.ConnectorConnectionDetails{
+		Type: networkingv1alpha1.PublicKeyConnectorConnectionType,
+		PublicKey: &networkingv1alpha1.ConnectorConnectionDetailsPublicKey{
+			Id: nodeID,
+		},
+	}
+}
+
 // newConnectorWithLiveness builds a Connector carrying only the liveness
 // annotation (no status) — simulating a member-cluster replica object.
 func newConnectorWithLiveness(ns, name string, liveness networkingv1alpha1.ConnectorLiveness) *networkingv1alpha1.Connector {
@@ -927,10 +938,33 @@ func newConnectorWithLiveness(ns, name string, liveness networkingv1alpha1.Conne
 
 func TestConnectorLiveness_AnnotationOnlineWithNodeID(t *testing.T) {
 	c := newConnectorWithLiveness("ns", "conn",
-		networkingv1alpha1.ConnectorLiveness{Ready: true, NodeID: "node-anno"})
+		networkingv1alpha1.ConnectorLiveness{Ready: true, ConnectionDetails: publicKeyDetails("node-anno")})
 	online, nodeID := connectorLiveness(c)
 	assert.True(t, online, "ready annotation must classify online")
-	assert.Equal(t, "node-anno", nodeID, "nodeID must come from the annotation")
+	assert.Equal(t, "node-anno", nodeID, "nodeID must come from the annotation's connectionDetails")
+}
+
+func TestConnectorLiveness_AnnotationOnlineUnknownTypeEmptyNodeID(t *testing.T) {
+	// A connection type the extension server does not (yet) understand still
+	// classifies online from ready, but yields no node ID rather than panicking
+	// or assuming PublicKey.
+	c := newConnectorWithLiveness("ns", "conn",
+		networkingv1alpha1.ConnectorLiveness{
+			Ready:             true,
+			ConnectionDetails: &networkingv1alpha1.ConnectorConnectionDetails{Type: "FutureType"},
+		})
+	online, nodeID := connectorLiveness(c)
+	assert.True(t, online, "ready annotation must classify online regardless of connection type")
+	assert.Empty(t, nodeID, "unknown connection type must yield an empty node ID")
+}
+
+func TestConnectorLiveness_AnnotationOnlineNilDetailsEmptyNodeID(t *testing.T) {
+	// Ready but no connection details published yet: online, empty node ID.
+	c := newConnectorWithLiveness("ns", "conn",
+		networkingv1alpha1.ConnectorLiveness{Ready: true})
+	online, nodeID := connectorLiveness(c)
+	assert.True(t, online, "ready annotation with nil connectionDetails must classify online")
+	assert.Empty(t, nodeID, "nil connectionDetails must yield an empty node ID")
 }
 
 func TestConnectorLiveness_AnnotationOffline(t *testing.T) {
@@ -945,7 +979,7 @@ func TestConnectorLiveness_AnnotationTakesPrecedenceOverStatus(t *testing.T) {
 	// Annotation says online; status says offline. Annotation wins (it is the
 	// authoritative liveness on member clusters where status never propagates).
 	c := newOfflineConnector("ns", "conn")
-	raw, _ := json.Marshal(networkingv1alpha1.ConnectorLiveness{Ready: true, NodeID: "node-anno"})
+	raw, _ := json.Marshal(networkingv1alpha1.ConnectorLiveness{Ready: true, ConnectionDetails: publicKeyDetails("node-anno")})
 	c.Annotations = map[string]string{networkingv1alpha1.ConnectorLivenessAnnotation: string(raw)}
 
 	online, nodeID := connectorLiveness(c)
@@ -996,7 +1030,7 @@ func TestBuildPolicyIndexFromClient_ConnectorResolution_AnnotationDrivesOnline(t
 
 	proxy := newHTTPProxy(upstreamNS, "http://backend.example.com:9000", connectorName)
 	connector := newConnectorWithLiveness(upstreamNS, connectorName,
-		networkingv1alpha1.ConnectorLiveness{Ready: true, NodeID: nodeID})
+		networkingv1alpha1.ConnectorLiveness{Ready: true, ConnectionDetails: publicKeyDetails(nodeID)})
 
 	cl := fake.NewClientBuilder().
 		WithScheme(scheme).

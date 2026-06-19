@@ -124,6 +124,7 @@ Each risk is mitigated by a design choice detailed in the linked section below.
 
 ## Design Details
 
+> [!NOTE]
 > This section stays at the product/architecture level. The translation hook,
 > security, and re-translation machinery are described in detail in the
 > [Envoy Gateway Extension Server](../envoy-gateway-extension-server/README.md)

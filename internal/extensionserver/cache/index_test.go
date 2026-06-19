@@ -2,6 +2,7 @@ package cache
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -897,6 +898,173 @@ func TestBuildPolicyIndexFromClient_ConnectorResolution_NonConnectorBackend_Skip
 
 	assert.Empty(t, idx.Connectors,
 		"HTTPProxy rules without a Connector ref must not produce Connectors entries")
+}
+
+// =============================================================================
+// Connector liveness tests
+//
+// In the two-cluster Karmada topology, the member-cluster Connector the
+// extension server reads carries spec + metadata only — Karmada does not
+// propagate the status subresource. The replicator mirrors the upstream status
+// into the generic UpstreamStatusAnnotation instead. These tests lock the
+// annotation-first, live-status-fallback classification.
+// =============================================================================
+
+// publicKeyDetails builds ConnectionDetails for the PublicKey connection type
+// advertising the given node id — the only connection type defined today.
+func publicKeyDetails(nodeID string) *networkingv1alpha1.ConnectorConnectionDetails {
+	return &networkingv1alpha1.ConnectorConnectionDetails{
+		Type: networkingv1alpha1.PublicKeyConnectorConnectionType,
+		PublicKey: &networkingv1alpha1.ConnectorConnectionDetailsPublicKey{
+			Id: nodeID,
+		},
+	}
+}
+
+// connectorStatus builds a ConnectorStatus with a Ready condition of the given
+// truth value and the supplied connection details.
+func connectorStatus(ready bool, details *networkingv1alpha1.ConnectorConnectionDetails) networkingv1alpha1.ConnectorStatus {
+	readyStatus := metav1.ConditionFalse
+	if ready {
+		readyStatus = metav1.ConditionTrue
+	}
+	return networkingv1alpha1.ConnectorStatus{
+		Conditions: []metav1.Condition{
+			{
+				Type:               networkingv1alpha1.ConnectorConditionReady,
+				Status:             readyStatus,
+				Reason:             "Test",
+				LastTransitionTime: metav1.Now(),
+			},
+		},
+		ConnectionDetails: details,
+	}
+}
+
+// newConnectorWithStatusAnnotation builds a Connector carrying only the mirrored
+// upstream-status annotation (no live status) — simulating a member-cluster
+// replica object as Karmada delivers it.
+func newConnectorWithStatusAnnotation(ns, name string, status networkingv1alpha1.ConnectorStatus) *networkingv1alpha1.Connector {
+	raw, _ := json.Marshal(status)
+	return &networkingv1alpha1.Connector{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: ns,
+			Annotations: map[string]string{
+				networkingv1alpha1.UpstreamStatusAnnotation: string(raw),
+			},
+		},
+	}
+}
+
+func TestConnectorLiveness_AnnotationOnlineWithNodeID(t *testing.T) {
+	c := newConnectorWithStatusAnnotation("ns", "conn",
+		connectorStatus(true, publicKeyDetails("node-anno")))
+	online, nodeID := connectorLiveness(c)
+	assert.True(t, online, "ready annotation must classify online")
+	assert.Equal(t, "node-anno", nodeID, "nodeID must come from the annotation's connectionDetails")
+}
+
+func TestConnectorLiveness_AnnotationOnlineUnknownTypeEmptyNodeID(t *testing.T) {
+	// A connection type the extension server does not (yet) understand still
+	// classifies online from ready, but yields no node ID rather than panicking
+	// or assuming PublicKey.
+	c := newConnectorWithStatusAnnotation("ns", "conn",
+		connectorStatus(true, &networkingv1alpha1.ConnectorConnectionDetails{Type: "FutureType"}))
+	online, nodeID := connectorLiveness(c)
+	assert.True(t, online, "ready annotation must classify online regardless of connection type")
+	assert.Empty(t, nodeID, "unknown connection type must yield an empty node ID")
+}
+
+func TestConnectorLiveness_AnnotationOnlineNilDetailsEmptyNodeID(t *testing.T) {
+	// Ready but no connection details published yet: online, empty node ID.
+	c := newConnectorWithStatusAnnotation("ns", "conn", connectorStatus(true, nil))
+	online, nodeID := connectorLiveness(c)
+	assert.True(t, online, "ready annotation with nil connectionDetails must classify online")
+	assert.Empty(t, nodeID, "nil connectionDetails must yield an empty node ID")
+}
+
+func TestConnectorLiveness_AnnotationOffline(t *testing.T) {
+	c := newConnectorWithStatusAnnotation("ns", "conn", connectorStatus(false, nil))
+	online, nodeID := connectorLiveness(c)
+	assert.False(t, online, "not-ready annotation must classify offline")
+	assert.Empty(t, nodeID)
+}
+
+func TestConnectorLiveness_AnnotationTakesPrecedenceOverStatus(t *testing.T) {
+	// Annotation says online; live status says offline. Annotation wins (it is the
+	// authoritative status on member clusters where the real status never
+	// propagates).
+	c := newOfflineConnector("ns", "conn")
+	raw, _ := json.Marshal(connectorStatus(true, publicKeyDetails("node-anno")))
+	c.Annotations = map[string]string{networkingv1alpha1.UpstreamStatusAnnotation: string(raw)}
+
+	online, nodeID := connectorLiveness(c)
+	assert.True(t, online, "annotation must take precedence over live status")
+	assert.Equal(t, "node-anno", nodeID)
+}
+
+func TestConnectorLiveness_AbsentAnnotationFallsBackToStatus(t *testing.T) {
+	// No annotation: single-cluster / pre-rollout object → use status.
+	c := newOnlineConnector("ns", "conn", "node-status")
+	online, nodeID := connectorLiveness(c)
+	assert.True(t, online, "absent annotation must fall back to status-based classification")
+	assert.Equal(t, "node-status", nodeID, "nodeID must come from status on fallback")
+}
+
+func TestConnectorLiveness_UnparseableAnnotationFallsBackToStatus(t *testing.T) {
+	c := newOnlineConnector("ns", "conn", "node-status")
+	c.Annotations = map[string]string{
+		networkingv1alpha1.UpstreamStatusAnnotation: "{not valid json",
+	}
+	online, nodeID := connectorLiveness(c)
+	assert.True(t, online, "unparseable annotation must fall back to status")
+	assert.Equal(t, "node-status", nodeID)
+}
+
+func TestConnectorLiveness_NeitherAnnotationNorReadyStatus_Offline(t *testing.T) {
+	c := &networkingv1alpha1.Connector{
+		ObjectMeta: metav1.ObjectMeta{Name: "conn", Namespace: "ns"},
+	}
+	online, nodeID := connectorLiveness(c)
+	assert.False(t, online, "no annotation and no Ready condition must classify offline")
+	assert.Empty(t, nodeID)
+}
+
+// TestBuildPolicyIndexFromClient_ConnectorResolution_AnnotationDrivesOnline is the
+// member-cluster regression test: the Connector carries ONLY the mirrored
+// upstream-status annotation (no live status, as Karmada delivers it), yet the
+// index must classify it online and carry the annotation's nodeID.
+// TargetHost/TargetPort still come from the HTTPProxy backend endpoint.
+func TestBuildPolicyIndexFromClient_ConnectorResolution_AnnotationDrivesOnline(t *testing.T) {
+	const (
+		upstreamNS    = "test-project"
+		proxyName     = "my-proxy"
+		connectorName = "my-connector"
+		nodeID        = "node-from-annotation"
+	)
+	scheme := indexTestScheme(t)
+
+	proxy := newHTTPProxy(upstreamNS, "http://backend.example.com:9000", connectorName)
+	connector := newConnectorWithStatusAnnotation(upstreamNS, connectorName,
+		connectorStatus(true, publicKeyDetails(nodeID)))
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(proxy, connector).
+		Build()
+
+	idx, err := BuildPolicyIndexFromClient(context.Background(), cl, nil)
+	require.NoError(t, err)
+
+	key := ConnectorKey{UpstreamNS: upstreamNS, HTTPProxyName: proxyName, RuleIndex: 0}
+	info, ok := idx.Connectors[key]
+	require.True(t, ok)
+	assert.True(t, info.Online, "annotation ready:true must drive Online even with no live status")
+	assert.Equal(t, nodeID, info.NodeID, "NodeID must come from the mirrored upstream-status annotation")
+	assert.Equal(t, "backend.example.com", info.TargetHost,
+		"TargetHost still derives from the HTTPProxy backend endpoint, not the annotation")
+	assert.Equal(t, 9000, info.TargetPort)
 }
 
 // =============================================================================

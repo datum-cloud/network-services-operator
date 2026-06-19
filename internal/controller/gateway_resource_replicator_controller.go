@@ -4,6 +4,7 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -35,6 +36,7 @@ import (
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 	mcsource "sigs.k8s.io/multicluster-runtime/pkg/source"
 
+	networkingv1alpha1 "go.datum.net/network-services-operator/api/v1alpha1"
 	"go.datum.net/network-services-operator/internal/config"
 	downstreamclient "go.datum.net/network-services-operator/internal/downstreamclient"
 )
@@ -71,12 +73,13 @@ type replicationResourceConfig struct {
 	statusTransform   statusTransformFunc
 	conditionHandlers conditionReasonHandlers
 
-	// mirrorStatusDownstream copies upstream status → downstream status after
-	// each spec sync. Used for resource types (e.g. Connector) whose status is
-	// authoritative in the upstream cluster and must be readable by consumers
-	// in the downstream cluster (e.g. the extension server). When true,
-	// skipUpstreamStatusSync is implicitly honoured as well.
-	mirrorStatusDownstream bool
+	// mirrorStatusToAnnotation, when true, copies the upstream resource's full
+	// .status verbatim into the UpstreamStatusAnnotation on the downstream
+	// object's metadata. Karmada propagates resource-template annotations (but
+	// NOT the status subresource) to member clusters, so this is how an upstream
+	// status reaches a downstream consumer on a member cluster. Resource-agnostic
+	// and opt-in per type. Implies skipUpstreamStatusSync should also be set.
+	mirrorStatusToAnnotation bool
 
 	// skipUpstreamStatusSync suppresses the normal downstream→upstream status
 	// propagation. Set this for resource types where the upstream status is
@@ -146,14 +149,17 @@ func initReplicationResourceConfigs() map[string]replicationResourceConfig {
 		}
 	}
 
-	// Connector status (conditions + connectionDetails) is authoritative
-	// upstream and must be readable by the extension server downstream so it
-	// can determine whether a tunnel is online before injecting connector
-	// cluster patches. Mirror status downstream; do not propagate back.
+	// Connector status (Ready condition + connectionDetails) is authoritative
+	// upstream and must be readable by the edge extension server so it can
+	// determine whether a tunnel is online before injecting connector cluster
+	// patches. The extension server runs on a member cluster, and Karmada does
+	// not propagate the status subresource hub→member — only spec + metadata.
+	// Mirror the upstream status into an annotation (which Karmada DOES
+	// propagate) instead. Do not propagate status back upstream.
 	connectorGVK := schema.GroupVersionKind{Group: groupNetworkingDatumAPIs, Version: versionV1Alpha1, Kind: KindConnector}
 	configs[gvkKey(connectorGVK)] = replicationResourceConfig{
-		mirrorStatusDownstream: true,
-		skipUpstreamStatusSync: true,
+		mirrorStatusToAnnotation: true,
+		skipUpstreamStatusSync:   true,
 	}
 
 	return configs
@@ -278,8 +284,8 @@ func (r *GatewayResourceReplicatorReconciler) ensureDownstreamResource(
 ) error {
 	logger := log.FromContext(ctx)
 
-	// Time the full downstream sync (CreateOrUpdate + status mirror) per resource
-	// kind so replication latency regressions per family are attributable.
+	// Time the full downstream sync (CreateOrUpdate) per resource kind so
+	// replication latency regressions per family are attributable.
 	syncStart := time.Now()
 	syncOutcome := "success"
 	defer func() {
@@ -314,6 +320,16 @@ func (r *GatewayResourceReplicatorReconciler) ensureDownstreamResource(
 			return fmt.Errorf("failed to set downstream controller reference: %w", err)
 		}
 
+		// Mirror the upstream status into an annotation on the downstream
+		// object's metadata. This is part of the same CreateOrUpdate Update, so it
+		// is persisted as ordinary metadata (which Karmada propagates to members)
+		// — no status subresource write involved.
+		if resource.replicationResourceConfig.mirrorStatusToAnnotation {
+			if err := setUpstreamStatusAnnotation(downstreamObj, upstreamObj); err != nil {
+				return err
+			}
+		}
+
 		return nil
 	})
 	if err != nil {
@@ -337,17 +353,6 @@ func (r *GatewayResourceReplicatorReconciler) ensureDownstreamResource(
 		)
 	}
 
-	// Mirror upstream status → downstream when configured (e.g. Connector).
-	// This is the reverse of syncUpstreamStatus: upstream is authoritative and
-	// the downstream copy must reflect it so local consumers (extension server)
-	// can read liveness without reaching into upstream project namespaces.
-	if resource.replicationResourceConfig.mirrorStatusDownstream {
-		if err := r.mirrorUpstreamStatusToDownstream(ctx, resource.gvk.Kind, upstreamObj, downstreamObj, downstreamStrategy); err != nil {
-			syncOutcome = syncOutcomeError
-			return err
-		}
-	}
-
 	// Propagate downstream status → upstream for types where a downstream
 	// controller (e.g. Envoy Gateway) writes acceptance conditions. Skip for
 	// types whose status is owned by NSO's own upstream controllers.
@@ -361,69 +366,31 @@ func (r *GatewayResourceReplicatorReconciler) ensureDownstreamResource(
 	return nil
 }
 
-// mirrorUpstreamStatusToDownstream copies the upstream object's status
-// subresource to the corresponding downstream object. This is used for resource
-// types (currently Connector) where the upstream cluster holds the authoritative
-// status and downstream consumers need to read it locally.
-func (r *GatewayResourceReplicatorReconciler) mirrorUpstreamStatusToDownstream(
-	ctx context.Context,
-	resourceKind string,
-	upstreamObj *unstructured.Unstructured,
-	downstreamObj *unstructured.Unstructured,
-	downstreamStrategy downstreamclient.ResourceStrategy,
-) error {
-	logger := log.FromContext(ctx)
-
-	// Re-fetch the downstream to get the current resourceVersion needed for
-	// the status subresource update.
-	currentDownstream := downstreamObj.DeepCopy()
-	if err := downstreamStrategy.GetClient().Get(ctx, client.ObjectKeyFromObject(currentDownstream), currentDownstream); err != nil {
-		if apierrors.IsNotFound(err) {
-			return nil
-		}
-		return fmt.Errorf("failed to fetch downstream %s/%s for status mirror: %w",
-			currentDownstream.GetNamespace(), currentDownstream.GetName(), err)
-	}
-
-	upstreamStatus, hasUpstreamStatus := upstreamObj.Object["status"]
-	existingDownstreamStatus, hasExistingDownstreamStatus := currentDownstream.Object["status"]
-
-	// Nothing to sync: upstream has no status and downstream already has none.
-	if !hasUpstreamStatus && !hasExistingDownstreamStatus {
+// setUpstreamStatusAnnotation copies the upstream resource's full .status
+// verbatim into the UpstreamStatusAnnotation on the downstream object's
+// metadata. It is the Karmada-friendly replacement for mirroring the status
+// subresource downstream: Karmada propagates a resource template's metadata
+// (annotations) to member clusters but not its status, so a downstream consumer
+// on a member cluster reads the upstream status from this annotation instead.
+// The copy is resource-agnostic — no field-level knowledge of any status shape.
+func setUpstreamStatusAnnotation(downstreamObj, upstreamObj *unstructured.Unstructured) error {
+	statusRaw, ok := upstreamObj.Object[jsonKeyStatus]
+	if !ok {
+		// No upstream status yet — nothing to mirror.
 		return nil
 	}
 
-	// Already in sync: deep equality check avoids a spurious write.
-	if hasUpstreamStatus && hasExistingDownstreamStatus &&
-		apiequality.Semantic.DeepEqual(upstreamStatus, existingDownstreamStatus) {
-		return nil
+	raw, err := json.Marshal(statusRaw)
+	if err != nil {
+		return fmt.Errorf("failed to marshal upstream status: %w", err)
 	}
 
-	if hasUpstreamStatus {
-		currentDownstream.Object["status"] = runtime.DeepCopyJSONValue(upstreamStatus)
-	} else {
-		delete(currentDownstream.Object, "status")
+	annotations := downstreamObj.GetAnnotations()
+	if annotations == nil {
+		annotations = make(map[string]string, 1)
 	}
-
-	if err := downstreamStrategy.GetClient().Status().Update(ctx, currentDownstream); err != nil {
-		if apierrors.IsNotFound(err) {
-			return nil
-		}
-		// Count status-mirror failures per resource kind so flaky downstream API
-		// server connectivity surfaces as a metric rather than only as an
-		// incremented generic reconcile error counter.
-		replicatorStatusMirrorErrorsTotal.WithLabelValues(resourceKind).Inc()
-		return fmt.Errorf("failed to mirror upstream status to downstream %s/%s: %w",
-			currentDownstream.GetNamespace(), currentDownstream.GetName(), err)
-	}
-
-	logger.Info(
-		"downstream status mirrored from upstream",
-		"gvk", upstreamObj.GroupVersionKind().String(),
-		jsonKeyNamespace, upstreamObj.GetNamespace(),
-		"name", upstreamObj.GetName(),
-	)
-
+	annotations[networkingv1alpha1.UpstreamStatusAnnotation] = string(raw)
+	downstreamObj.SetAnnotations(annotations)
 	return nil
 }
 

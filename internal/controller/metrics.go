@@ -27,29 +27,16 @@ var (
 	)
 
 	// replicatorSyncDuration is a histogram of the time taken to sync one
-	// upstream resource to the downstream cluster (CreateOrUpdate + status mirror).
-	// Labeled by resource kind and outcome (success | error) so per-family latency
+	// upstream resource to the downstream cluster (CreateOrUpdate). Labeled by
+	// resource kind and outcome (success | error) so per-family latency
 	// regressions are attributable.
 	replicatorSyncDuration = promauto.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name:    "nso_replicator_sync_duration_seconds",
-			Help:    "Duration of a single downstream resource sync (CreateOrUpdate + optional status mirror) by resource kind and outcome.",
+			Help:    "Duration of a single downstream resource sync (CreateOrUpdate) by resource kind and outcome.",
 			Buckets: prometheus.DefBuckets,
 		},
 		[]string{metricLabelResourceKind, "outcome"},
-	)
-
-	// replicatorStatusMirrorErrorsTotal counts failures to mirror upstream status
-	// to the downstream resource in mirrorUpstreamStatusToDownstream. Under the
-	// two-cluster topology, downstream consumers (e.g. the extension server) read
-	// Connector status from the local edge cluster; mirror failures mean the
-	// extension server sees stale (potentially incorrect) connector liveness state.
-	replicatorStatusMirrorErrorsTotal = promauto.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "nso_replicator_status_mirror_errors_total",
-			Help: "Total upstream→downstream status mirror failures in the gateway-resource-replicator controller, by resource kind.",
-		},
-		[]string{metricLabelResourceKind},
 	)
 
 	// gatewayProgrammedTotal is a per-gateway gauge that is set to 1 when the

@@ -39,8 +39,8 @@ Datum already authored a **branded HTML error page** for exactly this moment. It
 was delivered through an `EnvoyPatchPolicy`, but that mechanism was switched off
 on the downstream data plane as part of the
 [Envoy Gateway Extension Server](../envoy-gateway-extension-server/README.md)
-migration. As a result the branded page has been **inert for months** on the
-Connector data plane, and visitors have been seeing the raw Envoy output instead.
+migration. As a result the branded page is not being delivered on the Connector
+data plane, and visitors see the raw Envoy output instead.
 
 This enhancement restores the branded error experience by moving its delivery
 into the extension server (the supported path now that `EnvoyPatchPolicy` is
@@ -120,11 +120,11 @@ Envoy body. The branded experience that product intended is not being delivered.
 
 Deliver the branded error page through the extension server's existing
 per-listener mutation pass. During Envoy Gateway's translation, the extension
-server already rewrites listeners (for the WAF) and routes/clusters (for the
-Connector). We add one more listener mutation: attach a **local reply
-configuration** that renders the branded HTML for any response with status
-≥ 500. The page's bytes come from a mounted `ConfigMap`, with a copy compiled
-into the operator as an always-valid fallback.
+server already rewrites listeners (for the WAF) and routes and clusters (for the
+Connector); we add one more listener mutation that attaches a **local reply
+configuration** carrying the branded HTML. The mechanics — which responses are
+branded, where the content lives, and how updates propagate — are covered under
+[Design Details](#design-details).
 
 ### User Stories
 
@@ -144,12 +144,13 @@ into the operator as an always-valid fallback.
 
 ### Risks and Mitigations
 
+Each risk is mitigated by a design choice detailed in the linked section below.
+
 | Risk | Mitigation |
 | --- | --- |
-| A missing/empty/typo'd `ConfigMap` removes the page or, worse, blocks config updates (the downstream extension hook is fail-closed). | The operator ships an **embedded default** page and treats the `ConfigMap` purely as an *override*. The mount is `optional`. If the override is absent or unreadable, the embedded page is used; the hook never errors on content. |
-| A content edit appears not to take effect. | Editing a mounted `ConfigMap` does not by itself reach Envoy; the new content only applies on the next Envoy Gateway translation. We make content changes **roll the extension server** (which forces a fresh translation) so propagation is deterministic. See [Updating the page](#updating-the-page). |
-| The branded page overrides the Connector's terse "tunnel offline" signal used by tunnel clients. | The page is scoped to browser-facing responses; the tunnel-control response is preserved or treated as a deliberate, documented decision. See [Interaction with the Connector "tunnel offline" message](#interaction-with-the-connector-tunnel-offline-message). |
-| Drift between the embedded fallback and the live `ConfigMap`. | The `ConfigMap` is the single source of truth in infra; the embedded copy is a minimal, rarely-changed safety net, not a second design to maintain. |
+| A missing or malformed page removes the experience or, worse, blocks config updates (the downstream extension hook is fail-closed). | Embedded fallback + `optional` mount; content is an override only. See [Content ownership](#content-ownership-a-configmap-with-a-baked-in-fallback). |
+| A content edit appears not to take effect. | Content changes roll the extension server to force a fresh translation. See [Updating the page](#updating-the-page). |
+| The branded page overrides the Connector's terse tunnel-control signal. | Visitor traffic and tunnel-control traffic are distinct; handling is a deliberate decision. See [Interaction with the Connector "tunnel offline" message](#interaction-with-the-connector-tunnel-offline-message). |
 
 ## Design Details
 
@@ -276,8 +277,8 @@ about — is the branded page.
 ## Drawbacks
 
 - It adds one more responsibility to the extension server, which is on the
-  critical translation path for the data plane. This is mitigated by the
-  embedded fallback and fail-safe handling, and the work is small and isolated.
+  critical translation path for the data plane — though the work is small and
+  isolated.
 - Content updates are not instantaneous: they require a translation, which we
   trigger via a controlled rollout. This is inherent to the extension-server
   model and is an acceptable trade for not coupling content to code releases.

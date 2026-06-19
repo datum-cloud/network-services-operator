@@ -124,6 +124,13 @@ spec:
             - name: tls-ca
               mountPath: /tls-ca
               readOnly: true
+            # Branded data-plane error pages. Backed by an OPTIONAL ConfigMap so
+            # the pod starts even when the ConfigMap is absent — the extension
+            # server then serves the page compiled into the operator image.
+            # The operator config's gateway.errorPage.bodyPath points here.
+            - name: error-pages
+              mountPath: /etc/datum/error-pages
+              readOnly: true
       terminationGracePeriodSeconds: 20
       volumes:
         # issuer-name and dns-names are placeholders — an overlay must patch them.
@@ -145,3 +152,14 @@ spec:
             items:
               - key: ca.crt
                 path: ca.crt
+        # Optional branded error-page content. The ConfigMap is created in the
+        # infrastructure (GitOps) repo and carries the key error-5xx.html. With
+        # optional: true the pod starts cleanly when it is absent, in which case
+        # the extension server serves the embedded default page.
+        - name: error-pages
+          configMap:
+            name: envoy-error-pages
+            optional: true
+            items:
+              - key: error-5xx.html
+                path: error-5xx.html

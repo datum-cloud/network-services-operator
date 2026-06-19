@@ -31,6 +31,11 @@ type ServerConfig struct {
 	// list when building Coraza simple_directives. Sourced from
 	// GatewayConfig.Coraza.RouteBaseDirectives.
 	CorazaRouteBaseDirectives []string
+	// LocalReply carries the branded data-plane error-page configuration
+	// (branded HTML body, status threshold, runtime key). When disabled or
+	// empty, local-reply injection is a no-op. Sourced from
+	// GatewayConfig.ErrorPage + the embedded/override HTML body.
+	LocalReply mutate.LocalReplyConfig
 }
 
 // Server implements pb.EnvoyGatewayExtensionServer for the NSO production
@@ -126,11 +131,12 @@ func (s *Server) PostTranslateModify(
 	}
 
 	var (
-		hcmCount    int
-		tppCount    int
-		vhCount     int
-		replaced    map[string]*extcache.ConnectorInfo
-		connOffline map[string]*extcache.ConnectorInfo
+		hcmCount        int
+		localReplyCount int
+		tppCount        int
+		vhCount         int
+		replaced        map[string]*extcache.ConnectorInfo
+		connOffline     map[string]*extcache.ConnectorInfo
 	)
 
 	// --- mutate phase ---
@@ -162,8 +168,31 @@ func (s *Server) PostTranslateModify(
 			return nil, mutErr
 		}
 		hcmCount += n
+
+		// Attach the branded error page (local_reply_config) to the same
+		// RDS-based HCMs. No-op when disabled or no body is configured. Like the
+		// Coraza injector, this only errors on a genuinely malformed HCM — with
+		// failOpen:false on the downstream EG a returned error blocks the xDS
+		// update, so the injector is fail-safe by construction (missing/empty
+		// content is a no-op, not an error).
+		lr, lrErr := mutate.InjectLocalReplyConfig(l, &s.cfg.LocalReply)
+		if lrErr != nil {
+			s.log.Error("inject local reply config", "listener", l.GetName(), "err", lrErr)
+			tppListenersSpan.RecordError(lrErr)
+			tppListenersSpan.End()
+			mspan.RecordError(lrErr)
+			mspan.End()
+			extmetrics.PhaseDuration.WithLabelValues("mutate").Observe(time.Since(mutStart).Seconds())
+			hspan.RecordError(lrErr)
+			outcome = outcomeError
+			return nil, lrErr
+		}
+		localReplyCount += lr
 	}
-	tppListenersSpan.SetAttributes(attribute.Int("hcm.injected", hcmCount))
+	tppListenersSpan.SetAttributes(
+		attribute.Int("hcm.injected", hcmCount),
+		attribute.Int("hcm.local_reply_applied", localReplyCount),
+	)
 	tppListenersSpan.End()
 
 	_, tppRoutesSpan := tr.Start(mctx, "tpp.routes")
@@ -230,6 +259,7 @@ func (s *Server) PostTranslateModify(
 	// Record per-mutation-family counters. These accumulate across builds; use
 	// rate() in Prometheus / PromQL to derive per-build averages.
 	extmetrics.WAFHCMMutationsTotal.Add(float64(hcmCount))
+	extmetrics.LocalReplyMutationsTotal.Add(float64(localReplyCount))
 	extmetrics.WAFRouteMutationsTotal.Add(float64(tppCount))
 	extmetrics.ConnectorClustersTotal.Add(float64(len(replaced)))
 	extmetrics.ConnectorRoutesTotal.Add(float64(vhCount))
@@ -239,6 +269,7 @@ func (s *Server) PostTranslateModify(
 		"listeners", len(listeners),
 		"route_configs", len(routes),
 		"hcm_filters_injected", hcmCount,
+		"local_reply_applied", localReplyCount,
 		"routes_tpp_applied", tppCount,
 		"clusters_replaced", len(replaced),
 		"clusters_offline", len(connOffline),

@@ -7,7 +7,6 @@ stage: alpha
 
 - [Summary](#summary)
 - [Motivation](#motivation)
-  - [Background: what a customer sees when something breaks](#background-what-a-customer-sees-when-something-breaks)
   - [Goals](#goals)
   - [Non-Goals](#non-goals)
 - [Proposal](#proposal)
@@ -43,8 +42,6 @@ always-valid fallback. That makes the page editable through GitOps without an
 operator release, while guaranteeing a valid page even if the override is absent.
 
 ## Motivation
-
-### Background: what a customer sees when something breaks
 
 Datum's network services route a visitor's request through edge Envoy to a
 customer's backend — either directly, or, for the **Connector**, through an

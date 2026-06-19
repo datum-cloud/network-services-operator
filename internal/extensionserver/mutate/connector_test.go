@@ -310,7 +310,7 @@ func TestApplyConnectorRoutes_Offline_Prepends503Route_NoDomain(t *testing.T) {
 		"offline route body must be 'Tunnel not online' per STATE.md contract")
 
 	// Second route: the original user-facing forwarding route must now be a
-	// direct_response 503 too (Gap B), NOT a cluster route to the empty cluster.
+	// direct_response 503 too, NOT a cluster route to the empty cluster.
 	fwd := vh.Routes[1]
 	assert.Equal(t, "fwd", fwd.GetName(), "forwarding route identity preserved")
 	assert.Empty(t, routeCluster(fwd),

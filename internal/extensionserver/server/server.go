@@ -135,6 +135,7 @@ func (s *Server) PostTranslateModify(
 		localReplyCount int
 		tppCount        int
 		vhCount         int
+		offlineRtCount  int
 		replaced        map[string]*extcache.ConnectorInfo
 		connOffline     map[string]*extcache.ConnectorInfo
 	)
@@ -236,7 +237,7 @@ func (s *Server) PostTranslateModify(
 
 	_, connRoutesSpan := tr.Start(mctx, "connector.routes")
 	for _, rc := range routes {
-		n, mutErr := mutate.ApplyConnectorRoutes(rc, idx, replaced, connOffline)
+		n, offlineRt, mutErr := mutate.ApplyConnectorRoutes(rc, idx, replaced, connOffline)
 		if mutErr != nil {
 			s.log.Error("apply connector routes", "route_config", rc.GetName(), "err", mutErr)
 			connRoutesSpan.RecordError(mutErr)
@@ -249,8 +250,12 @@ func (s *Server) PostTranslateModify(
 			return nil, mutErr
 		}
 		vhCount += n
+		offlineRtCount += offlineRt
 	}
-	connRoutesSpan.SetAttributes(attribute.Int("vhosts.connector_applied", vhCount))
+	connRoutesSpan.SetAttributes(
+		attribute.Int("vhosts.connector_applied", vhCount),
+		attribute.Int("routes.connector_offline", offlineRtCount),
+	)
 	connRoutesSpan.End()
 	mspan.End()
 
@@ -263,6 +268,7 @@ func (s *Server) PostTranslateModify(
 	extmetrics.WAFRouteMutationsTotal.Add(float64(tppCount))
 	extmetrics.ConnectorClustersTotal.Add(float64(len(replaced)))
 	extmetrics.ConnectorRoutesTotal.Add(float64(vhCount))
+	extmetrics.ConnectorOfflineRoutesTotal.Add(float64(offlineRtCount))
 
 	s.log.Info("PostTranslateModify",
 		"clusters", len(clusters),
@@ -274,6 +280,7 @@ func (s *Server) PostTranslateModify(
 		"clusters_replaced", len(replaced),
 		"clusters_offline", len(connOffline),
 		"vhosts_connector_applied", vhCount,
+		"connector_offline_routes", offlineRtCount,
 	)
 
 	return &pb.PostTranslateModifyResponse{

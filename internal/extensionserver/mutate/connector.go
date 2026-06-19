@@ -72,17 +72,19 @@ func ReplaceConnectorClusters(
 }
 
 // ApplyConnectorRoutes applies connector route mutations to a RouteConfiguration:
-//   - Online (replaced) connector found in a VH: prepend a CONNECT upgrade route
-//     targeting the replaced cluster and append info.TargetHost to VH domains.
-//   - Offline connector found in a VH: prepend a direct_response 503 CONNECT route.
+//   - Online (replaced) connector: prepend a CONNECT upgrade route targeting the
+//     replaced cluster and append info.TargetHost to VH domains.
+//   - Offline connector: prepend a CONNECT direct_response 503 (tunnel-control
+//     clients) and rewrite the user-facing forwarding routes to a 503
+//     direct_response (see the offline branch for why).
 //
-// Returns the number of VirtualHosts mutated.
+// Returns the number of VirtualHosts mutated and the number of forwarding
+// routes converted to a tunnel-offline direct_response.
 func ApplyConnectorRoutes(
 	rc *routev3.RouteConfiguration,
 	idx *extcache.PolicyIndex,
 	replaced, offline map[string]*extcache.ConnectorInfo,
-) (int, error) {
-	mutated := 0
+) (mutated, converted int, err error) {
 	for _, vh := range rc.GetVirtualHosts() {
 		// Find any connector cluster referenced by routes in this VH.
 		var connectorCluster string
@@ -102,7 +104,6 @@ func ApplyConnectorRoutes(
 		}
 
 		var newRoute *routev3.Route
-		var err error
 
 		if info, ok := replaced[connectorCluster]; ok {
 			// Online: CONNECT route targeting the replaced cluster.
@@ -111,7 +112,7 @@ func ApplyConnectorRoutes(
 				connectorCluster,
 			)
 			if err != nil {
-				return mutated, fmt.Errorf("build connect route for %q: %w", vh.GetName(), err)
+				return mutated, converted, fmt.Errorf("build connect route for %q: %w", vh.GetName(), err)
 			}
 			// Prepend the CONNECT route (NSO inserts at /virtual_hosts/0/routes/0).
 			vh.Routes = append([]*routev3.Route{newRoute}, vh.Routes...)
@@ -120,17 +121,31 @@ func ApplyConnectorRoutes(
 			// NOT a synthetic .connector.local domain.
 			vh.Domains = appendUnique(vh.Domains, info.TargetHost)
 		} else {
-			// Offline: direct_response 503 CONNECT route ("Tunnel not online").
+			// Offline connect_matcher route for tunnel-control clients.
 			newRoute, err = buildOfflineRoute("connector-offline-" + sanitizeID(vh.GetName()))
 			if err != nil {
-				return mutated, fmt.Errorf("build offline route for %q: %w", vh.GetName(), err)
+				return mutated, converted, fmt.Errorf("build offline route for %q: %w", vh.GetName(), err)
 			}
 			vh.Routes = append([]*routev3.Route{newRoute}, vh.Routes...)
-			// No domain appended for offline connectors (no live tunnel).
+
+			// Route user traffic to a deterministic 503 instead of the
+			// endpoint-less offline cluster, which would yield a generic
+			// no_healthy_upstream plus retry/cluster-stat noise. Replacing only
+			// the Action oneof preserves each route's match/metadata; idempotent
+			// because direct_responses carry no cluster to re-match.
+			for _, rt := range vh.GetRoutes() {
+				if routeCluster(rt) != connectorCluster {
+					continue
+				}
+				if derr := setRouteDirectResponse(rt, 503, offlineResponseBody); derr != nil {
+					return mutated, converted, fmt.Errorf("convert offline forward route for %q: %w", vh.GetName(), derr)
+				}
+				converted++
+			}
 		}
 		mutated++
 	}
-	return mutated, nil
+	return mutated, converted, nil
 }
 
 // --- Internal helpers ---
@@ -234,18 +249,34 @@ func buildConnectRoute(name, cluster string) (*routev3.Route, error) {
 	return rt, nil
 }
 
-// buildOfflineRoute builds the offline CONNECT route (direct_response 503
-// "Tunnel not online"). Mirrors buildOfflineRoute in the seed. The exact body
+// offlineResponseBody is the inline body for tunnel-offline 503 responses,
+// shared by both offline paths so they return an identical body. The exact
 // string is part of the STATE.md metadata contract.
+const offlineResponseBody = "Tunnel not online"
+
+// buildOfflineRoute builds the offline CONNECT route (direct_response 503
+// "Tunnel not online"). Mirrors buildOfflineRoute in the seed.
 func buildOfflineRoute(name string) (*routev3.Route, error) {
 	j := fmt.Sprintf(`{
   "name": %q,
   "match": { "connect_matcher": {} },
-  "direct_response": { "status": 503, "body": { "inline_string": "Tunnel not online" } }
-}`, name)
+  "direct_response": { "status": 503, "body": { "inline_string": %q } }
+}`, name, offlineResponseBody)
 	rt := &routev3.Route{}
 	if err := protojson.Unmarshal([]byte(j), rt); err != nil {
 		return nil, fmt.Errorf("unmarshal offline route JSON: %w", err)
 	}
 	return rt, nil
+}
+
+// setRouteDirectResponse swaps a route's action for a direct_response. Only the
+// Action oneof is replaced, so match/metadata/typed_per_filter_config survive.
+func setRouteDirectResponse(rt *routev3.Route, status uint32, body string) error {
+	j := fmt.Sprintf(`{ "status": %d, "body": { "inline_string": %q } }`, status, body)
+	dr := &routev3.DirectResponseAction{}
+	if err := protojson.Unmarshal([]byte(j), dr); err != nil {
+		return fmt.Errorf("unmarshal direct_response action JSON: %w", err)
+	}
+	rt.Action = &routev3.Route_DirectResponse{DirectResponse: dr}
+	return nil
 }

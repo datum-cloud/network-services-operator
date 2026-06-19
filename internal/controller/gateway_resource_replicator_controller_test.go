@@ -695,7 +695,7 @@ func newReplicatorForTest(upstream client.Client, downstream client.Client, sche
 // newReplicatorForGVKTest builds a GatewayResourceReplicatorReconciler wired
 // for the given GVK with fake upstream/downstream clients. It pulls the config
 // from defaultReplicationResourceConfigs so that type-specific flags
-// (skipUpstreamStatusSync, mirrorStatusDownstream) are honoured in tests.
+// (skipUpstreamStatusSync, mirrorStatusToAnnotation) are honoured in tests.
 func newReplicatorForGVKTest(gvk schema.GroupVersionKind, upstream client.Client, downstream client.Client, scheme *runtime.Scheme) *GatewayResourceReplicatorReconciler {
 	upstreamCluster := &replicatorFakeCluster{scheme: scheme, c: upstream}
 	downstreamCluster := &replicatorFakeCluster{scheme: scheme, c: downstream}

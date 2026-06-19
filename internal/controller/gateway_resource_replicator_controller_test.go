@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"testing"
@@ -38,6 +39,7 @@ import (
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
+	networkingv1alpha1 "go.datum.net/network-services-operator/api/v1alpha1"
 	"go.datum.net/network-services-operator/internal/config"
 	downstreamclient "go.datum.net/network-services-operator/internal/downstreamclient"
 )
@@ -436,13 +438,17 @@ func TestReplicatorMirrorsNSOPolicyTypesSkipsUpstreamStatusSync(t *testing.T) {
 	}
 }
 
-// TestReplicatorMirrorsConnectorSpecAndStatus verifies that when the replicator
-// handles a Connector it:
+// TestReplicatorMirrorsConnectorSpecAndLivenessAnnotation verifies that when the
+// replicator handles a Connector it:
 //   - copies spec into the downstream ns-<uid> namespace, AND
-//   - mirrors the upstream Connector.Status (conditions + connectionDetails)
-//     into the downstream object via Status().Update so the extension server
-//     can read tunnel liveness locally without reaching upstream.
-func TestReplicatorMirrorsConnectorSpecAndStatus(t *testing.T) {
+//   - stamps the ConnectorLivenessAnnotation (ready + nodeID) onto the
+//     downstream object's metadata so the edge extension server can read tunnel
+//     liveness locally.
+//
+// The annotation — not the status subresource — carries liveness because Karmada
+// propagates a resource template's spec + metadata to member clusters but NOT
+// its status.
+func TestReplicatorMirrorsConnectorSpecAndLivenessAnnotation(t *testing.T) {
 	connectorGVK := schema.GroupVersionKind{
 		Group: "networking.datumapis.com", Version: "v1alpha1", Kind: "Connector",
 	}
@@ -466,14 +472,14 @@ func TestReplicatorMirrorsConnectorSpecAndStatus(t *testing.T) {
 		},
 		"connectionDetails": map[string]any{
 			"type": "PublicKey",
+			"publicKey": map[string]any{
+				"id": "node-abc",
+			},
 		},
 	}
 
 	upstreamStatusTemplate := &unstructured.Unstructured{}
 	upstreamStatusTemplate.SetGroupVersionKind(connectorGVK)
-
-	downstreamStatusTemplate := &unstructured.Unstructured{}
-	downstreamStatusTemplate.SetGroupVersionKind(connectorGVK)
 
 	upstreamObj := &unstructured.Unstructured{}
 	upstreamObj.SetGroupVersionKind(connectorGVK)
@@ -491,7 +497,6 @@ func TestReplicatorMirrorsConnectorSpecAndStatus(t *testing.T) {
 
 	downstreamClient := fake.NewClientBuilder().
 		WithScheme(scheme).
-		WithStatusSubresource(downstreamStatusTemplate).
 		Build()
 
 	reconciler := newReplicatorForGVKTest(connectorGVK, upstreamClient, downstreamClient, scheme)
@@ -504,7 +509,7 @@ func TestReplicatorMirrorsConnectorSpecAndStatus(t *testing.T) {
 		},
 	}
 
-	// Two passes: first adds the finalizer, second does spec+status replication.
+	// Two passes: first adds the finalizer, second does the spec + annotation sync.
 	_, err := reconciler.Reconcile(ctx, req)
 	assert.NoError(t, err, "first reconcile")
 	_, err = reconciler.Reconcile(ctx, req)
@@ -520,10 +525,18 @@ func TestReplicatorMirrorsConnectorSpecAndStatus(t *testing.T) {
 	assert.Equal(t, upstreamObj.Object["spec"], downstream.Object["spec"],
 		"downstream spec must mirror upstream spec")
 
-	// Key assertion: downstream status must reflect the upstream Connector
-	// status so the extension server can read tunnel liveness locally.
-	assert.Equal(t, connectorStatus, downstream.Object["status"],
-		"downstream status must be mirrored from upstream Connector status")
+	// Key assertion: the liveness annotation reflects the upstream Ready
+	// condition and the PublicKey node ID.
+	expected, err := json.Marshal(networkingv1alpha1.ConnectorLiveness{Ready: true, NodeID: "node-abc"})
+	assert.NoError(t, err)
+	assert.Equal(t, string(expected),
+		downstream.GetAnnotations()[networkingv1alpha1.ConnectorLivenessAnnotation],
+		"downstream liveness annotation must carry ready + nodeID derived from upstream status")
+
+	// The replicator must NOT mirror the status subresource downstream (Karmada
+	// would not propagate it to members anyway).
+	_, hasStatus := downstream.Object["status"]
+	assert.False(t, hasStatus, "replicator must not write the downstream status subresource for connectors")
 
 	// Upstream status must be untouched (skipUpstreamStatusSync=true).
 	var upstreamAfter unstructured.Unstructured
@@ -533,10 +546,79 @@ func TestReplicatorMirrorsConnectorSpecAndStatus(t *testing.T) {
 		"replicator must not clear or modify upstream Connector status")
 }
 
-// TestReplicatorConnectorStatusUpdateIdempotent verifies that a second reconcile
-// of an already-synced Connector does not emit a spurious Status().Update to the
-// downstream cluster (equality guard must short-circuit).
-func TestReplicatorConnectorStatusUpdateIdempotent(t *testing.T) {
+// TestReplicatorConnectorNotReadyLivenessAnnotation verifies that a Connector
+// whose Ready condition is False produces a not-ready liveness annotation with
+// no node ID.
+func TestReplicatorConnectorNotReadyLivenessAnnotation(t *testing.T) {
+	connectorGVK := schema.GroupVersionKind{
+		Group: "networking.datumapis.com", Version: "v1alpha1", Kind: "Connector",
+	}
+
+	scheme := runtime.NewScheme()
+	assert.NoError(t, corev1.AddToScheme(scheme))
+
+	ctx := context.Background()
+
+	upstreamNs := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-suite", UID: types.UID("ns-uid")},
+	}
+
+	connectorStatus := map[string]any{
+		"conditions": []any{
+			map[string]any{"type": "Ready", "status": "False", "reason": "ConnectorNotReady"},
+		},
+	}
+
+	upstreamStatusTemplate := &unstructured.Unstructured{}
+	upstreamStatusTemplate.SetGroupVersionKind(connectorGVK)
+
+	upstreamObj := &unstructured.Unstructured{}
+	upstreamObj.SetGroupVersionKind(connectorGVK)
+	upstreamObj.SetNamespace(upstreamNs.Name)
+	upstreamObj.SetName("connector-down")
+	upstreamObj.SetUID("connector-down-uid")
+	upstreamObj.Object["spec"] = map[string]any{"connectorClassName": "iroh"}
+	upstreamObj.Object["status"] = connectorStatus
+
+	upstreamClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(upstreamStatusTemplate).
+		WithObjects(upstreamNs, upstreamObj.DeepCopy()).
+		Build()
+
+	downstreamClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	reconciler := newReplicatorForGVKTest(connectorGVK, upstreamClient, downstreamClient, scheme)
+
+	req := GVKRequest{
+		GVK: connectorGVK,
+		Request: mcreconcile.Request{
+			ClusterName: "upstream",
+			Request:     reconcile.Request{NamespacedName: client.ObjectKeyFromObject(upstreamObj)},
+		},
+	}
+
+	_, err := reconciler.Reconcile(ctx, req)
+	assert.NoError(t, err, "first reconcile")
+	_, err = reconciler.Reconcile(ctx, req)
+	assert.NoError(t, err, "second reconcile")
+
+	var downstream unstructured.Unstructured
+	downstream.SetGroupVersionKind(connectorGVK)
+	assert.NoError(t, downstreamClient.Get(ctx,
+		client.ObjectKey{Name: "connector-down", Namespace: "ns-ns-uid"}, &downstream))
+
+	expected, err := json.Marshal(networkingv1alpha1.ConnectorLiveness{Ready: false})
+	assert.NoError(t, err)
+	assert.Equal(t, string(expected),
+		downstream.GetAnnotations()[networkingv1alpha1.ConnectorLivenessAnnotation],
+		"not-ready connector must produce a ready:false liveness annotation with no nodeID")
+}
+
+// TestReplicatorConnectorLivenessAnnotationIdempotent verifies that repeated
+// reconciles of an already-synced Connector keep the liveness annotation stable
+// and do not error.
+func TestReplicatorConnectorLivenessAnnotationIdempotent(t *testing.T) {
 	connectorGVK := schema.GroupVersionKind{
 		Group: "networking.datumapis.com", Version: "v1alpha1", Kind: "Connector",
 	}
@@ -559,9 +641,6 @@ func TestReplicatorConnectorStatusUpdateIdempotent(t *testing.T) {
 	upstreamStatusTemplate := &unstructured.Unstructured{}
 	upstreamStatusTemplate.SetGroupVersionKind(connectorGVK)
 
-	downstreamStatusTemplate := &unstructured.Unstructured{}
-	downstreamStatusTemplate.SetGroupVersionKind(connectorGVK)
-
 	upstreamObj := &unstructured.Unstructured{}
 	upstreamObj.SetGroupVersionKind(connectorGVK)
 	upstreamObj.SetNamespace(upstreamNs.Name)
@@ -576,10 +655,7 @@ func TestReplicatorConnectorStatusUpdateIdempotent(t *testing.T) {
 		WithObjects(upstreamNs, upstreamObj.DeepCopy()).
 		Build()
 
-	wrappedDownstream := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithStatusSubresource(downstreamStatusTemplate).
-		Build()
+	wrappedDownstream := fake.NewClientBuilder().WithScheme(scheme).Build()
 
 	reconciler := newReplicatorForGVKTest(connectorGVK, upstreamClient, wrappedDownstream, scheme)
 
@@ -591,26 +667,24 @@ func TestReplicatorConnectorStatusUpdateIdempotent(t *testing.T) {
 		},
 	}
 
-	// Pass 1: add finalizer
+	// Pass 1: add finalizer. Pass 2: spec + annotation sync. Pass 3: idempotent.
 	_, err := reconciler.Reconcile(ctx, req)
 	assert.NoError(t, err, "first reconcile")
-
-	// Pass 2: spec+status sync (one Status().Update expected)
 	_, err = reconciler.Reconcile(ctx, req)
 	assert.NoError(t, err, "second reconcile")
-
-	// Pass 3: second sync — should be idempotent (no change in upstream spec or status)
 	_, err = reconciler.Reconcile(ctx, req)
 	assert.NoError(t, err, "third reconcile (idempotent)")
 
-	// Status on downstream must still match upstream.
 	var downstream unstructured.Unstructured
 	downstream.SetGroupVersionKind(connectorGVK)
 	assert.NoError(t, wrappedDownstream.Get(ctx,
 		client.ObjectKey{Name: "connector-idem", Namespace: "ns-ns-uid"}, &downstream))
-	assert.Equal(t, connectorStatus, downstream.Object["status"],
-		"downstream status must remain equal to upstream after idempotent reconcile")
 
+	expected, err := json.Marshal(networkingv1alpha1.ConnectorLiveness{Ready: true})
+	assert.NoError(t, err)
+	assert.Equal(t, string(expected),
+		downstream.GetAnnotations()[networkingv1alpha1.ConnectorLivenessAnnotation],
+		"liveness annotation must remain stable after an idempotent reconcile")
 }
 
 func newReplicatorForTest(upstream client.Client, downstream client.Client, scheme *runtime.Scheme) *GatewayResourceReplicatorReconciler {

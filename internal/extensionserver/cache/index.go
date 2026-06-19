@@ -2,6 +2,7 @@ package cache
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"sort"
@@ -150,19 +151,7 @@ func populateFromClient(ctx context.Context, cl client.Client, idx *PolicyIndex,
 					continue
 				}
 
-				online := apimeta.IsStatusConditionTrue(
-					connector.Status.Conditions,
-					networkingv1alpha1.ConnectorConditionReady,
-				)
-
-				var nodeID string
-				if online {
-					if details := connector.Status.ConnectionDetails; details != nil &&
-						details.Type == networkingv1alpha1.PublicKeyConnectorConnectionType &&
-						details.PublicKey != nil {
-						nodeID = details.PublicKey.Id
-					}
-				}
+				online, nodeID := connectorLiveness(&connector)
 
 				idx.Connectors[key] = ConnectorInfo{
 					Online:     online,
@@ -174,6 +163,41 @@ func populateFromClient(ctx context.Context, cl client.Client, idx *PolicyIndex,
 		}
 	}
 	return nil
+}
+
+// connectorLiveness determines whether a connector is online and, if so, its
+// tunnel node ID. It prefers the ConnectorLivenessAnnotation, which is how
+// connector liveness reaches edge member clusters: a Connector's Ready condition
+// and ConnectionDetails are authoritative in the Project control plane and live
+// in its status subresource, but Karmada propagates a resource template's spec +
+// metadata (annotations) to members, NOT the status subresource. The replicator
+// stamps the liveness onto the annotation; this reads it back.
+//
+// When the annotation is absent or unparseable — single-cluster deployments
+// (where the local object carries real status), or member-cluster objects
+// written before this rollout — it falls back to the status-based
+// classification, preserving the previous behaviour.
+func connectorLiveness(connector *networkingv1alpha1.Connector) (online bool, nodeID string) {
+	if raw, ok := connector.Annotations[networkingv1alpha1.ConnectorLivenessAnnotation]; ok {
+		var liveness networkingv1alpha1.ConnectorLiveness
+		if err := json.Unmarshal([]byte(raw), &liveness); err == nil {
+			return liveness.Ready, liveness.NodeID
+		}
+		// Unparseable annotation: fall through to status-based classification.
+	}
+
+	online = apimeta.IsStatusConditionTrue(
+		connector.Status.Conditions,
+		networkingv1alpha1.ConnectorConditionReady,
+	)
+	if online {
+		if details := connector.Status.ConnectionDetails; details != nil &&
+			details.Type == networkingv1alpha1.PublicKeyConnectorConnectionType &&
+			details.PublicKey != nil {
+			nodeID = details.PublicKey.Id
+		}
+	}
+	return online, nodeID
 }
 
 // computeCorazaDirectives builds the Coraza simple_directives list for a TPP,

@@ -4,6 +4,7 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -35,6 +36,7 @@ import (
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 	mcsource "sigs.k8s.io/multicluster-runtime/pkg/source"
 
+	networkingv1alpha1 "go.datum.net/network-services-operator/api/v1alpha1"
 	"go.datum.net/network-services-operator/internal/config"
 	downstreamclient "go.datum.net/network-services-operator/internal/downstreamclient"
 )
@@ -72,11 +74,26 @@ type replicationResourceConfig struct {
 	conditionHandlers conditionReasonHandlers
 
 	// mirrorStatusDownstream copies upstream status → downstream status after
-	// each spec sync. Used for resource types (e.g. Connector) whose status is
-	// authoritative in the upstream cluster and must be readable by consumers
-	// in the downstream cluster (e.g. the extension server). When true,
-	// skipUpstreamStatusSync is implicitly honoured as well.
+	// each spec sync. Used for resource types whose status is authoritative in
+	// the upstream cluster and must be readable by consumers in the downstream
+	// cluster. When true, skipUpstreamStatusSync is implicitly honoured as well.
+	//
+	// NOTE: this does NOT work across a Karmada hub→member boundary — Karmada
+	// propagates a resource template's spec + metadata to members but NOT the
+	// status subresource. For the Connector type (whose downstream consumer, the
+	// edge extension server, lives on a member cluster) use
+	// writeLivenessAnnotation instead, which rides an annotation Karmada does
+	// propagate.
 	mirrorStatusDownstream bool
+
+	// writeLivenessAnnotation, when true, derives a compact liveness snapshot
+	// from the upstream Connector's status and stores it as the
+	// ConnectorLivenessAnnotation on the downstream object's metadata. Karmada
+	// propagates resource-template annotations (but NOT the status subresource)
+	// to member clusters, so this is how connector liveness reaches the edge
+	// extension server. Used instead of mirrorStatusDownstream for the Connector
+	// type. Implies skipUpstreamStatusSync should also be set.
+	writeLivenessAnnotation bool
 
 	// skipUpstreamStatusSync suppresses the normal downstream→upstream status
 	// propagation. Set this for resource types where the upstream status is
@@ -146,14 +163,17 @@ func initReplicationResourceConfigs() map[string]replicationResourceConfig {
 		}
 	}
 
-	// Connector status (conditions + connectionDetails) is authoritative
-	// upstream and must be readable by the extension server downstream so it
-	// can determine whether a tunnel is online before injecting connector
-	// cluster patches. Mirror status downstream; do not propagate back.
+	// Connector liveness (Ready condition + connectionDetails) is authoritative
+	// upstream and must be readable by the edge extension server so it can
+	// determine whether a tunnel is online before injecting connector cluster
+	// patches. The extension server runs on a member cluster, and Karmada does
+	// not propagate the status subresource hub→member — only spec + metadata.
+	// Carry liveness down through an annotation (which Karmada DOES propagate)
+	// instead of mirroring status. Do not propagate status back upstream.
 	connectorGVK := schema.GroupVersionKind{Group: groupNetworkingDatumAPIs, Version: versionV1Alpha1, Kind: KindConnector}
 	configs[gvkKey(connectorGVK)] = replicationResourceConfig{
-		mirrorStatusDownstream: true,
-		skipUpstreamStatusSync: true,
+		writeLivenessAnnotation: true,
+		skipUpstreamStatusSync:  true,
 	}
 
 	return configs
@@ -314,6 +334,16 @@ func (r *GatewayResourceReplicatorReconciler) ensureDownstreamResource(
 			return fmt.Errorf("failed to set downstream controller reference: %w", err)
 		}
 
+		// Stamp the connector liveness annotation onto the downstream object's
+		// metadata. This is part of the same CreateOrUpdate Update, so it is
+		// persisted as ordinary metadata (which Karmada propagates to members) —
+		// no status subresource write involved.
+		if resource.replicationResourceConfig.writeLivenessAnnotation {
+			if err := setConnectorLivenessAnnotation(downstreamObj, upstreamObj); err != nil {
+				return err
+			}
+		}
+
 		return nil
 	})
 	if err != nil {
@@ -425,6 +455,64 @@ func (r *GatewayResourceReplicatorReconciler) mirrorUpstreamStatusToDownstream(
 	)
 
 	return nil
+}
+
+// setConnectorLivenessAnnotation derives a compact liveness snapshot from the
+// upstream Connector's status and stores it as ConnectorLivenessAnnotation on
+// the downstream object's metadata. It is the Karmada-friendly replacement for
+// mirroring the status subresource downstream: Karmada propagates a resource
+// template's metadata (annotations) to member clusters but not its status, so
+// the edge extension server reads liveness from this annotation instead.
+func setConnectorLivenessAnnotation(downstreamObj, upstreamObj *unstructured.Unstructured) error {
+	liveness, err := connectorLivenessFromUpstream(upstreamObj)
+	if err != nil {
+		return err
+	}
+
+	raw, err := json.Marshal(liveness)
+	if err != nil {
+		return fmt.Errorf("failed to marshal connector liveness: %w", err)
+	}
+
+	annotations := downstreamObj.GetAnnotations()
+	if annotations == nil {
+		annotations = make(map[string]string, 1)
+	}
+	annotations[networkingv1alpha1.ConnectorLivenessAnnotation] = string(raw)
+	downstreamObj.SetAnnotations(annotations)
+	return nil
+}
+
+// connectorLivenessFromUpstream extracts the Ready condition and PublicKey node
+// ID from an upstream Connector's (unstructured) status. A connector with no
+// status, a non-True Ready condition, or no PublicKey connection details yields
+// a not-ready liveness with an empty NodeID.
+func connectorLivenessFromUpstream(upstreamObj *unstructured.Unstructured) (networkingv1alpha1.ConnectorLiveness, error) {
+	var liveness networkingv1alpha1.ConnectorLiveness
+
+	statusRaw, ok := upstreamObj.Object[jsonKeyStatus]
+	if !ok {
+		return liveness, nil
+	}
+	statusMap, ok := statusRaw.(map[string]any)
+	if !ok {
+		return liveness, nil
+	}
+
+	var status networkingv1alpha1.ConnectorStatus
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(statusMap, &status); err != nil {
+		return liveness, fmt.Errorf("failed to decode connector status: %w", err)
+	}
+
+	liveness.Ready = apimeta.IsStatusConditionTrue(status.Conditions, networkingv1alpha1.ConnectorConditionReady)
+	if liveness.Ready {
+		if details := status.ConnectionDetails; details != nil &&
+			details.Type == networkingv1alpha1.PublicKeyConnectorConnectionType &&
+			details.PublicKey != nil {
+			liveness.NodeID = details.PublicKey.Id
+		}
+	}
+	return liveness, nil
 }
 
 func (r *GatewayResourceReplicatorReconciler) syncUpstreamStatus(

@@ -36,6 +36,7 @@ import (
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	networkingv1alpha1 "go.datum.net/network-services-operator/api/v1alpha1"
 	"go.datum.net/network-services-operator/internal/config"
+	extassets "go.datum.net/network-services-operator/internal/extensionserver/assets"
 	extcache "go.datum.net/network-services-operator/internal/extensionserver/cache"
 	extmetrics "go.datum.net/network-services-operator/internal/extensionserver/metrics"
 	"go.datum.net/network-services-operator/internal/extensionserver/mutate"
@@ -108,6 +109,44 @@ func NewCommand() *cobra.Command {
 	}
 	cmd.Flags().AddGoFlagSet(fs)
 	return cmd
+}
+
+// buildLocalReplyConfig assembles the branded error-page configuration for the
+// extension server from the operator's ErrorPageConfig.
+//
+// Content sourcing is fail-safe by design: it starts from the page compiled
+// into the operator image and, only if ErrorPage.BodyPath points at a readable
+// non-empty file, swaps in that override. A missing, unreadable, or empty
+// override logs a warning and keeps the embedded default — it NEVER fails
+// startup. This guarantees the downstream EG extension hook (failOpen:false)
+// always has a valid body to inject and is never stalled by a content problem.
+//
+// Injection itself is gated on ErrorPage.Enabled via the Disabled flag.
+func buildLocalReplyConfig(cfg config.ErrorPageConfig, log *slog.Logger) mutate.LocalReplyConfig {
+	body := extassets.DefaultError5xxHTML
+
+	if cfg.BodyPath != "" {
+		data, err := os.ReadFile(cfg.BodyPath)
+		switch {
+		case err != nil:
+			log.Warn("read error-page body override; using embedded default",
+				"path", cfg.BodyPath, "err", err)
+		case len(data) == 0:
+			log.Warn("error-page body override is empty; using embedded default",
+				"path", cfg.BodyPath)
+		default:
+			body = string(data)
+			log.Info("using error-page body override", "path", cfg.BodyPath, "bytes", len(data))
+		}
+	}
+
+	return mutate.LocalReplyConfig{
+		Disabled:      !cfg.Enabled,
+		MinStatusCode: cfg.MinStatusCode,
+		RuntimeKey:    cfg.RuntimeKey,
+		BodyHTML:      body,
+		ContentType:   cfg.ContentType,
+	}
 }
 
 // run starts the extension server with the given options. It owns cache startup,
@@ -205,6 +244,7 @@ func run(o options) {
 		},
 		ConnectorInternalListener: serverConfig.Gateway.ConnectorTunnelListenerName(),
 		CorazaRouteBaseDirectives: coraza.RouteBaseDirectives,
+		LocalReply:                buildLocalReplyConfig(serverConfig.Gateway.ErrorPage, log),
 	}
 
 	// --- gRPC panic recovery interceptor ---

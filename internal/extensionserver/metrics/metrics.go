@@ -101,6 +101,17 @@ var (
 		},
 	)
 
+	// LocalReplyMutationsTotal counts total branded error-page (local_reply_config)
+	// injections across all hook invocations. Each increment = one HCM that had a
+	// branded local_reply_config attached. Use rate()/sum() to derive per-build
+	// averages.
+	LocalReplyMutationsTotal = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "nso_extension_local_reply_mutations_total",
+			Help: "Total branded error-page (local_reply_config) injections across all hook invocations.",
+		},
+	)
+
 	// WAFRouteMutationsTotal counts total per-route TrafficProtectionPolicy (WAF)
 	// config applications across all hook invocations.
 	WAFRouteMutationsTotal = promauto.NewCounter(

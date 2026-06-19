@@ -57,6 +57,15 @@ func SetObjectDefaults_NetworkServicesOperator(in *NetworkServicesOperator) {
 			panic(err)
 		}
 	}
+	if in.Gateway.ErrorPage.MinStatusCode == 0 {
+		in.Gateway.ErrorPage.MinStatusCode = 500
+	}
+	if in.Gateway.ErrorPage.RuntimeKey == "" {
+		in.Gateway.ErrorPage.RuntimeKey = "local_reply_5xx"
+	}
+	if in.Gateway.ErrorPage.ContentType == "" {
+		in.Gateway.ErrorPage.ContentType = "text/html; charset=UTF-8"
+	}
 	if in.Gateway.ValidPortNumbers == nil {
 		if err := json.Unmarshal([]byte(`[80,443]`), &in.Gateway.ValidPortNumbers); err != nil {
 			panic(err)

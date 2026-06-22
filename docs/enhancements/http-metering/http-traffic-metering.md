@@ -133,6 +133,8 @@ Each metric will record the following dimensions:
 
 ### Surfacing Signals from the Edge
 
+![HTTP Metering Signal Pipeline](./signal-pipeline.png)
+
 All metering signals originate from the **edge cluster**, where the Envoy
 Gateway proxies (`datum-downstream-gateway`) actually serve customer traffic.
 There is no central collection point that observes individual requests — the
@@ -144,50 +146,47 @@ The raw access log already carries everything the meters need *except* one
 thing: the `route_name` field identifies the owning project only by its
 control-plane namespace UID (e.g. `ns-<project-uid>`), not by the
 human-readable project name. To populate the `project_name` dimension, three
-components must be updated, all operating at the edge:
+components collaborate at the edge:
 
-1. **Network Services Operator (controller).** When the operator reconciles a
-   customer `HTTPRoute` into its downstream representation, it injects the
-   project name as a request header (`x-datum-project-name`) via a
-   `RequestHeaderModifier` filter on each route rule. The project name is read
-   from the upstream cluster identity (the Milo project name) that the
-   operator already holds while mapping upstream → downstream resources. Routes
-   that already define a `RequestHeaderModifier` are merged into rather than
-   duplicated, since Gateway API permits at most one such filter per rule.
+1. **Extension Server (xDS mutation).** The NSO extension server implements
+   `ApplyTPPRouteConfig` in `internal/extensionserver/mutate/tpp.go`. During
+   each xDS route-config build, it iterates every VirtualHost owned by NSO and
+   calls `injectProjectNameMetadata` on every route, which writes the resolved
+   `project_name` string directly into
+   `filter_metadata["datum-gateway"]["project_name"]` on the Envoy
+   `RouteConfiguration` proto. This happens for every NSO-owned route
+   regardless of whether a `TrafficProtectionPolicy` governs it — WAF config is
+   an optional overlay on top of the metadata that is always stamped. The
+   project name is sourced from `idx.ProjectNames[dsNS]`, the
+   downstream-namespace → project-name mapping the operator maintains in its
+   policy index.
 
-2. **Envoy access log format.** The `EnvoyProxy` access log JSON format is
-   extended with a `project_name` field sourced from the injected header:
-   `project_name: "%REQ(X-DATUM-PROJECT-NAME)%"`. Because the header is set on
-   the route before the access log is written, every logged request for a
-   customer route carries the resolved project name. (We use `%REQ()%` rather
-   than `%METADATA(ROUTE:...)%` because Envoy Gateway's JSON access log
-   formatter does not register the metadata formatter, so route metadata is not
-   accessible from JSON access logs.)
+2. **Envoy access log format.** The `EnvoyProxy` access log JSON format
+   includes a `project_name` field read from the xDS route metadata:
+   `project_name: "%METADATA(ROUTE:datum-gateway:project_name)%"`. Because the
+   extension server stamps the metadata into the xDS route before any request is
+   served, every logged request for a customer route carries the resolved
+   project name. (`%METADATA(ROUTE:...)%` is used because the name lives in xDS
+   route metadata — it is not a per-request value and does not need to travel as
+   a header.)
 
 3. **Vector billing collector.** The `billing-usage-collector-vector` VRL
-   transform reads the `project_name` field from each access log line and adds
-   it as a dimension on all four emitted CloudEvents (requests, ingress-bytes,
-   egress-bytes, connection-seconds), and subject. An absent or empty value (rendered by
-   Envoy as `"-"`) is normalized to an empty string so unmatched routes do not
+   transform reads the `project_name` field from each parsed access log line
+   and adds it as a dimension on all four emitted CloudEvents (requests,
+   ingress-bytes, egress-bytes, connection-seconds). An absent or Envoy-default
+   `"-"` value is normalized to an empty string so unmatched routes do not
    pollute the dimension.
 
-This keeps the entire signal path — request handling, name resolution, log
-emission, parsing, and CloudEvent forwarding — co-located on the edge cluster.
+This keeps the entire signal path — xDS route enrichment, log emission,
+parsing, and CloudEvent forwarding — co-located on the edge cluster.
 
 #### Transport: how access logs reach Vector
 
-The access log line must travel from the Envoy proxy to the
-`billing-usage-collector-vector` agent. Two transports are viable; see
-[Access Log Transport](#access-log-transport-file-sink-vs-otlp-sink) under
-Alternatives for the trade-offs. In short:
-
-- **File sink (stdout) + `kubernetes_logs`** — the current/baseline approach,
-  where Envoy writes JSON to stdout and Vector tails the node's container logs.
-  This requires Vector to run as a per-node DaemonSet co-located with the Envoy
-  pod, which holds on edge clusters but not where Vector runs as an aggregator.
-- **OpenTelemetry (OTLP) sink** — Envoy pushes access logs directly to Vector's
-  OTLP receiver over the network, independent of pod/node topology. This is
-  implemented in a draft PR (see below).
+The access log line travels from the Envoy proxy to the
+`billing-usage-collector-vector` agent via the **File sink (stdout) +
+`kubernetes_logs`** approach: Envoy writes JSON to `/dev/stdout` (the `File`
+sink configured on `datum-downstream-gateway`) and the node-local Vector
+DaemonSet tails the container log file via its `kubernetes_logs` source.
 
 ---
 

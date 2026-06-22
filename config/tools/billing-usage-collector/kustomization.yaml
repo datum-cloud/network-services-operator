@@ -38,30 +38,46 @@ helmCharts:
             path: "/logs"
             decoding:
               codec: json
-          # Envoy Gateway pushes access logs here via its OpenTelemetry access
-          # log sink (OTLP). The JSON access log fields arrive as OTLP log-record
-          # attributes (i.e. under `.attributes.*`). This is the real ingestion
-          # path for live traffic; the `nso_logs` http_server above is only used
-          # by the e2e test to inject hand-crafted log lines.
+          # Envoy Gateway writes access logs to stdout via its File access log
+          # sink (path: /dev/stdout), exactly as the production downstream
+          # gateway EnvoyProxy does. The node-local Vector agent tails the
+          # container log files through the kubernetes_logs source -- the real,
+          # file-based ingestion path for live traffic. The JSON access log
+          # line arrives as a string in `.message`. The `nso_logs` http_server
+          # above is only used by the e2e test to inject hand-crafted log lines.
           envoy_access_logs:
-            type: opentelemetry
-            grpc:
-              address: "0.0.0.0:4317"
-            http:
-              address: "0.0.0.0:4318"
+            type: kubernetes_logs
+            # Only tail the Envoy proxy pods; their access logs live on the
+            # `envoy` container's stdout. Other namespaces/containers are
+            # ignored so the agent does not parse unrelated cluster logs.
+            extra_field_selector: "metadata.namespace=envoy-gateway-system"
+            # Re-scan for new container log files every 2s instead of the 60s
+            # default so the agent picks up freshly-created Envoy proxy pods
+            # quickly -- the e2e test provisions a gateway and verifies within a
+            # short window.
+            glob_minimum_cooldown_ms: 2000
         transforms:
           parse_nso_logs:
             type: remap
             inputs:
               - nso_logs
-              - envoy_access_logs.logs
+              - envoy_access_logs
             source: |
-              # The OpenTelemetry source (Envoy push) nests the access log fields
-              # under `.attributes`; the http_server source (e2e test injection)
-              # delivers them at the top level. Normalize both to top-level fields
-              # so the rest of this transform is source-agnostic.
-              if exists(.attributes) {
-                . = object(.attributes) ?? .
+              # The kubernetes_logs source (Envoy File sink -> stdout) delivers
+              # the raw access log line as a string in `.message`; parse it as
+              # JSON and lift the fields to the top level. The http_server source
+              # (e2e test injection) already delivers them at the top level.
+              # Normalize both so the rest of this transform is source-agnostic.
+              # Lines that are not JSON (e.g. Envoy startup logs) are dropped.
+              if is_string(.message) {
+                # `.message` is known to be a string inside this guard, so
+                # string!() never actually aborts (hence Vector's harmless
+                # "can't abort infallible function" compile warning).
+                parsed, err = parse_json(string!(.message))
+                if err != null {
+                  abort
+                }
+                . = object(parsed) ?? {}
               }
 
               parsed_route, err = parse_regex(.route_name, r'^httproute/(?P<namespace>[^/]+)/(?P<name>[^/]+)')
@@ -219,7 +235,12 @@ helmCharts:
               mountPath: /var/lib/vector
       podSecurityContext:
         runAsUser: 1000
-        runAsGroup: 1000
+        # Primary GID 0 (root group) so the kubernetes_logs source can read the
+        # Envoy container logs: the kubelet writes them as root:root with
+        # /var/log/pods at 0750 and each 0.log at 0640 -- both group-readable by
+        # the root group only. We keep runAsUser 1000 / runAsNonRoot: true so the
+        # process is still a non-root user; only the supplemental group is root.
+        runAsGroup: 0
         runAsNonRoot: true
       securityContext:
         allowPrivilegeEscalation: false
@@ -243,16 +264,5 @@ helmCharts:
             port: 9881
             protocol: TCP
             targetPort: 9881
-          # OTLP endpoints for Envoy Gateway's OpenTelemetry access log sink.
-          # internalTrafficPolicy: Local keeps each Envoy pod talking to the
-          # Vector agent on its own node.
-          - name: otlp-grpc
-            port: 4317
-            protocol: TCP
-            targetPort: 4317
-          - name: otlp-http
-            port: 4318
-            protocol: TCP
-            targetPort: 4318
       podMonitor:
         enabled: true

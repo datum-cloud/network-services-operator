@@ -156,20 +156,17 @@ spec:
                   accessLog:
                     settings:
                       - sinks:
-                          # File sink: the test still scrapes stdout to derive the
+                          # File sink only -- identical to the production
+                          # downstream gateway EnvoyProxy. Envoy writes the JSON
+                          # access log to stdout; the node-local Vector agent
+                          # tails the container log file (kubernetes_logs source)
+                          # and emits the CloudEvents. This exercises the real,
+                          # file-based production ingestion path -- no OTLP push.
+                          # The test also scrapes the same stdout to derive the
                           # expected metric values (bytes, duration, project_name).
                           - type: File
                             file:
                               path: /dev/stdout
-                          # OpenTelemetry sink: Envoy pushes the access log to the
-                          # node-local Vector agent automatically, exercising the
-                          # real production ingestion path (no manual forwarding).
-                          - type: OpenTelemetry
-                            openTelemetry:
-                              host: billing-usage-collector-vector.billing-system.svc.cluster.local
-                              port: 4317
-                              resources:
-                                service.name: nso-httproute-signals
                         format:
                           type: JSON
                           json:
@@ -545,10 +542,11 @@ spec:
                 curl -kvf -H \"Host: ${PRIMARY_HOSTNAME}\" -d 'hello world' http://\${GATEWAY_SERVICE_NAME}.\${GATEWAY_SERVICE_NAMESPACE}.svc.cluster.local/delay/2; \
               "
 
-        # Verify Vector emitted the CloudEvents. Envoy pushed the access log to
-        # Vector automatically via its OpenTelemetry sink when the request above
-        # was served, so this step only derives the expected values and polls the
-        # mock billing gateway for the result.
+        # Verify Vector emitted the CloudEvents. Envoy wrote the access log to
+        # stdout via its File sink when the request above was served, and the
+        # node-local Vector agent tailed the container log file (kubernetes_logs
+        # source) automatically, so this step only derives the expected values
+        # and polls the mock billing gateway for the result.
         - script:
             timeout: 45s
             cluster: nso-infra
@@ -559,16 +557,20 @@ spec:
               # =====================================================================
               # Validates the full HTTP metering pipeline, end to end:
               #
-              #   Envoy access log  --(OTLP push)-->  Vector opentelemetry source
-              #        |                                   |
-              #        | (also written to stdout for       | (VRL transform fans the
-              #        |  capturing expected values)       |  log record out into
-              #        v                                   v  CloudEvents)
-              #   captured here (STEP 1-2)          mock-billing-gateway (STEP 4)
+              #   Envoy access log  --(File sink -> stdout)-->  container log file
+              #        |                                            |
+              #        | (captured here for                         | (Vector agent
+              #        |  expected values)                          |  kubernetes_logs
+              #        |                                            |  source tails it,
+              #        |                                            |  VRL transform fans
+              #        v                                            v  it into CloudEvents)
+              #   captured here (STEP 1-2)               mock-billing-gateway (STEP 4)
               #
-              # Envoy pushes the access log to Vector automatically (OpenTelemetry
-              # sink on custom-proxy-config -> billing-usage-collector-vector:4317)
-              # when the request is served -- the test does NOT forward it manually.
+              # Envoy writes the access log to stdout (File sink on
+              # custom-proxy-config, path: /dev/stdout) when the request is
+              # served; the node-local Vector agent tails the container log file
+              # automatically -- the test does NOT forward it manually. This is
+              # the same file-based ingestion path as the production gateway.
               #
               # A single access log line is expected to produce FOUR CloudEvents,
               # one per usage dimension, all sharing the same subject
@@ -627,11 +629,12 @@ spec:
               echo "  - Project name (expected): $PROJECT_NAME"
 
               # --- STEP 3: (no manual forwarding) --------------------------------
-              # The request above already caused Envoy to push this access log to
-              # Vector automatically via its OpenTelemetry sink (custom-proxy-config
-              # -> billing-usage-collector-vector:4317). Vector's VRL transform
-              # parses it and emits the four CloudEvents to the mock-billing-gateway
-              # sink, so there is nothing to POST here -- we just poll for the result.
+              # The request above already caused Envoy to write this access log to
+              # stdout via its File sink (custom-proxy-config, path: /dev/stdout).
+              # The node-local Vector agent tails the Envoy container log file via
+              # its kubernetes_logs source, and Vector's VRL transform parses it
+              # and emits the four CloudEvents to the mock-billing-gateway sink, so
+              # there is nothing to POST here -- we just poll for the result.
 
               # --- STEP 4: verify the CloudEvents the mock billing gateway received
               # Poll the mock gateway's request log (Vector may take a moment to

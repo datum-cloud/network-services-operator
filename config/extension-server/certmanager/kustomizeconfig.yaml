@@ -1,0 +1,8 @@
+# Propagates namePrefix into Certificate.spec.issuerRef.name so cert-manager can resolve the issuer.
+nameReference:
+- kind: Issuer
+  group: cert-manager.io
+  fieldSpecs:
+  - kind: Certificate
+    group: cert-manager.io
+    path: spec/issuerRef/name

@@ -10,12 +10,10 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 	mccontext "sigs.k8s.io/multicluster-runtime/pkg/context"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
@@ -25,9 +23,11 @@ import (
 
 // nolint:unused
 
+const domainResource = "domains"
+
 // SetupDomainWebhookWithManager registers the webhook for Domain in the manager.
 func SetupDomainWebhookWithManager(mgr mcmanager.Manager) error {
-	return ctrl.NewWebhookManagedBy(mgr.GetLocalManager()).For(&networkingv1alpha.Domain{}).
+	return ctrl.NewWebhookManagedBy(mgr.GetLocalManager(), &networkingv1alpha.Domain{}).
 		WithValidator(&DomainCustomValidator{mgr: mgr}).
 		Complete()
 }
@@ -38,7 +38,7 @@ type DomainCustomValidator struct {
 	mgr mcmanager.Manager
 }
 
-var _ webhook.CustomValidator = &DomainCustomValidator{}
+var _ admission.Validator[*networkingv1alpha.Domain] = &DomainCustomValidator{}
 
 var dnsZoneListGVK = schema.GroupVersionKind{
 	Group:   "dns.networking.miloapis.com",
@@ -46,13 +46,8 @@ var dnsZoneListGVK = schema.GroupVersionKind{
 	Kind:    "DNSZoneList",
 }
 
-// ValidateCreate implements webhook.CustomValidator so a webhook will be registered for the type Domain.
-func (v *DomainCustomValidator) ValidateCreate(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
-	domain, ok := obj.(*networkingv1alpha.Domain)
-	if !ok {
-		return nil, fmt.Errorf("expected a Domain object but got %T", obj)
-	}
-
+// ValidateCreate implements admission.Validator so a webhook will be registered for the type Domain.
+func (v *DomainCustomValidator) ValidateCreate(ctx context.Context, domain *networkingv1alpha.Domain) (admission.Warnings, error) {
 	clusterName, ok := mccontext.ClusterFrom(ctx)
 	if !ok {
 		return nil, fmt.Errorf("expected a cluster name in the context")
@@ -72,7 +67,7 @@ func (v *DomainCustomValidator) ValidateCreate(ctx context.Context, obj runtime.
 	target := normalizeHostname(domain.Spec.DomainName)
 	for _, d := range domains.Items {
 		if normalizeHostname(d.Spec.DomainName) == target {
-			gr := schema.GroupResource{Group: networkingv1alpha.GroupVersion.Group, Resource: "domains"}
+			gr := schema.GroupResource{Group: networkingv1alpha.GroupVersion.Group, Resource: domainResource}
 			return nil, apierrors.NewConflict(
 				gr,
 				domain.GetName(),
@@ -84,19 +79,14 @@ func (v *DomainCustomValidator) ValidateCreate(ctx context.Context, obj runtime.
 	return nil, nil
 }
 
-// ValidateUpdate implements webhook.CustomValidator so a webhook will be registered for the type Domain.
+// ValidateUpdate implements admission.Validator so a webhook will be registered for the type Domain.
 // Domain spec.domainName is immutable, so no additional update validation is required.
-func (v *DomainCustomValidator) ValidateUpdate(ctx context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
+func (v *DomainCustomValidator) ValidateUpdate(ctx context.Context, oldDomain, newDomain *networkingv1alpha.Domain) (admission.Warnings, error) {
 	return nil, nil
 }
 
-// ValidateDelete implements webhook.CustomValidator so a webhook will be registered for the type Domain.
-func (v *DomainCustomValidator) ValidateDelete(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
-	domain, ok := obj.(*networkingv1alpha.Domain)
-	if !ok {
-		return nil, fmt.Errorf("expected a Domain object but got %T", obj)
-	}
-
+// ValidateDelete implements admission.Validator so a webhook will be registered for the type Domain.
+func (v *DomainCustomValidator) ValidateDelete(ctx context.Context, domain *networkingv1alpha.Domain) (admission.Warnings, error) {
 	clusterName, ok := mccontext.ClusterFrom(ctx)
 	if !ok {
 		return nil, fmt.Errorf("expected a cluster name in the context")
@@ -122,7 +112,7 @@ func (v *DomainCustomValidator) ValidateDelete(ctx context.Context, obj runtime.
 		// been Accepted/Programmed yet.
 		for _, h := range p.Spec.Hostnames {
 			if hostnameCoveredByDomain(domainName, string(h)) {
-				gr := schema.GroupResource{Group: networkingv1alpha.GroupVersion.Group, Resource: "domains"}
+				gr := schema.GroupResource{Group: networkingv1alpha.GroupVersion.Group, Resource: domainResource}
 				return nil, apierrors.NewForbidden(
 					gr,
 					domain.GetName(),
@@ -134,7 +124,7 @@ func (v *DomainCustomValidator) ValidateDelete(ctx context.Context, obj runtime.
 		//nolint:staticcheck // SA1019: Hostnames is deprecated but still checked for backwards compatibility
 		for _, h := range p.Status.Hostnames {
 			if hostnameCoveredByDomain(domainName, string(h)) {
-				gr := schema.GroupResource{Group: networkingv1alpha.GroupVersion.Group, Resource: "domains"}
+				gr := schema.GroupResource{Group: networkingv1alpha.GroupVersion.Group, Resource: domainResource}
 				return nil, apierrors.NewForbidden(
 					gr,
 					domain.GetName(),
@@ -168,7 +158,7 @@ func (v *DomainCustomValidator) ValidateDelete(ctx context.Context, obj runtime.
 			continue
 		}
 		if refName == domain.GetName() {
-			gr := schema.GroupResource{Group: networkingv1alpha.GroupVersion.Group, Resource: "domains"}
+			gr := schema.GroupResource{Group: networkingv1alpha.GroupVersion.Group, Resource: domainResource}
 			return nil, apierrors.NewForbidden(
 				gr,
 				domain.GetName(),

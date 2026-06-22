@@ -148,7 +148,3 @@ type ConnectorAdvertisementList struct {
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []ConnectorAdvertisement `json:"items"`
 }
-
-func init() {
-	SchemeBuilder.Register(&ConnectorAdvertisement{}, &ConnectorAdvertisementList{})
-}

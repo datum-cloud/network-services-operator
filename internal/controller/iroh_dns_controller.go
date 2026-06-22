@@ -26,6 +26,7 @@ import (
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mchandler "sigs.k8s.io/multicluster-runtime/pkg/handler"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
+	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 	mcsource "sigs.k8s.io/multicluster-runtime/pkg/source"
 
@@ -123,7 +124,7 @@ func (r *IrohDNSReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 		return ctrl.Result{}, nil
 	}
 
-	desired, ok, err := r.buildDesiredRecordSet(req.ClusterName, &connector)
+	desired, ok, err := r.buildDesiredRecordSet(string(req.ClusterName), &connector)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -176,7 +177,10 @@ func (r *IrohDNSReconciler) applyClaim(ctx context.Context, cl cluster.Cluster, 
 	}
 
 	// We own it. SSA the desired content.
-	if err := r.Downstream.GetClient().Patch(ctx, desired, client.Apply, client.FieldOwner(irohDNSFieldManager), client.ForceOwnership); err != nil {
+	// client.Apply is deprecated in favour of client.Client.Apply(), which requires a generated
+	// runtime.ApplyConfiguration typed struct. desired is *dnsv1alpha1.DNSRecordSet (a concrete
+	// typed object), so switching to the new typed API would require a larger refactor out of scope.
+	if err := r.Downstream.GetClient().Patch(ctx, desired, client.Apply, client.FieldOwner(irohDNSFieldManager), client.ForceOwnership); err != nil { //nolint:staticcheck // SA1019: see comment above
 		return fmt.Errorf("apply DNSRecordSet: %w", err)
 	}
 	return r.setPublishedCondition(ctx, cl, connector, metav1.ConditionTrue, connectorReasonIrohOwner, "Owns iroh DNS record.")
@@ -260,7 +264,11 @@ func encodeIrohClusterLabel(clusterName string) string {
 }
 
 func decodeIrohClusterLabel(label string) string {
-	return strings.TrimPrefix(strings.ReplaceAll(label, "_", "/"), "cluster-")
+	// Tolerate labels written before #196, when cluster names carried a leading
+	// slash (encoded as "_"): strip it so the result matches the slash-less name
+	// the provider now engages. Mirrors downstreamclient.UpstreamClusterNameFromLabel.
+	name := strings.TrimPrefix(strings.ReplaceAll(label, "_", "/"), "cluster-")
+	return strings.TrimPrefix(name, "/")
 }
 
 func connectorEndpointZ32(connector *networkingv1alpha1.Connector) (string, error) {
@@ -407,14 +415,14 @@ func (r *IrohDNSReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 
 	downstreamSource := mcsource.Kind(
 		&dnsv1alpha1.DNSRecordSet{},
-		func(_ string, _ cluster.Cluster) handler.TypedEventHandler[*dnsv1alpha1.DNSRecordSet, mcreconcile.Request] {
+		func(_ multicluster.ClusterName, _ cluster.Cluster) handler.TypedEventHandler[*dnsv1alpha1.DNSRecordSet, mcreconcile.Request] {
 			return handler.TypedEnqueueRequestsFromMapFunc(func(_ context.Context, drs *dnsv1alpha1.DNSRecordSet) []mcreconcile.Request {
 				name := drs.Labels[irohDNSConnectorNameLabel]
 				ns := drs.Labels[irohDNSConnectorNamespaceLabel]
 				if name == "" || ns == "" {
 					return nil
 				}
-				clusterName := decodeIrohClusterLabel(drs.Labels[irohDNSConnectorClusterLabel])
+				clusterName := multicluster.ClusterName(decodeIrohClusterLabel(drs.Labels[irohDNSConnectorClusterLabel]))
 				return []mcreconcile.Request{{
 					ClusterName: clusterName,
 					Request:     ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: name}},
@@ -428,7 +436,7 @@ func (r *IrohDNSReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 		For(&networkingv1alpha1.Connector{}).
 		Watches(
 			&networkingv1alpha1.ConnectorClass{},
-			func(clusterName string, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
+			func(clusterName multicluster.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
 				return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []mcreconcile.Request {
 					logger := log.FromContext(ctx)
 					class, ok := obj.(*networkingv1alpha1.ConnectorClass)

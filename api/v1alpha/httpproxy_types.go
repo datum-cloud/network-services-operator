@@ -459,7 +459,3 @@ type HTTPProxyList struct {
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []HTTPProxy `json:"items"`
 }
-
-func init() {
-	SchemeBuilder.Register(&HTTPProxy{}, &HTTPProxyList{})
-}

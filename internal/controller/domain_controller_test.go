@@ -653,7 +653,7 @@ func TestRegistration_Apex_UsesRDAPNameservers(t *testing.T) {
 
 	assert.True(t, got.Status.Apex, "expected apex=true")
 	// top-level nameservers should mirror RDAP NS
-	have := []string{}
+	have := make([]string, 0, len(got.Status.Nameservers))
 	for _, ns := range got.Status.Nameservers {
 		have = append(have, ns.Hostname)
 	}
@@ -889,7 +889,7 @@ func TestRegistration_Subdomain_DelegationOverridesApexNS(t *testing.T) {
 	_ = cl.Get(context.Background(), client.ObjectKeyFromObject(dom), got)
 
 	assert.False(t, got.Status.Apex, "expected apex=false")
-	have := []string{}
+	have := make([]string, 0, len(got.Status.Nameservers))
 	for _, ns := range got.Status.Nameservers {
 		have = append(have, ns.Hostname)
 	}
@@ -943,7 +943,7 @@ func TestRegistration_Subdomain_NoDelegation_FallsBackToApexNS(t *testing.T) {
 	_ = cl.Get(context.Background(), client.ObjectKeyFromObject(dom), got)
 
 	assert.False(t, got.Status.Apex)
-	have := []string{}
+	have := make([]string, 0, len(got.Status.Nameservers))
 	for _, ns := range got.Status.Nameservers {
 		have = append(have, ns.Hostname)
 	}

@@ -1,0 +1,50 @@
+@startuml seq-current-flow
+!include /Users/scotwells/repos/datum-cloud/enhancements/enhancements/datum-theme-sequence.puml
+
+title Configuration Flow — Current Approach (EnvoyPatchPolicy)
+
+participant "Customer" as C <<Person>>
+participant "Network Services\nOperator" as NSO
+participant "Envoy Gateway\n(Control Plane)" as EG
+participant "Envoy Proxy\n(Data Plane)" as EP
+
+== Customer changes a Gateway or route ==
+
+C -> NSO : Create or update a\nGateway / HTTPRoute
+
+NSO -> EG : Create WAF EnvoyPatchPolicy\n(one per gateway with WAF)
+NSO -> EG : Create Connector EnvoyPatchPolicy\n(one per gateway with Connector)
+
+note right of NSO
+  At 140 gateways, this produces
+  hundreds of patch objects that
+  must all be re-applied on every
+  single rebuild.
+end note
+
+== Envoy Gateway rebuilds and patches ==
+
+EG -> EG : Rebuild the ENTIRE shared\nconfiguration (all gateways)
+
+loop For every EnvoyPatchPolicy across all gateways
+    EG -> EG : Apply patch to\nconfiguration
+end
+
+note right of EG
+  Rebuild time scales with the
+  total number of gateways —
+  not the number of changed ones.
+  At ~140 gateways: >1 minute.
+end note
+
+EG -> EP : Push patched configuration
+
+note right of EP
+  If a TLS certificate challenge
+  was pending, it may have already
+  expired during the rebuild.
+end note
+
+EP --> C : Serve traffic (with WAF\nand Connector active)
+
+@enduml

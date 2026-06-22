@@ -8,10 +8,8 @@ import (
 
 	gatewayv1alpha1 "github.com/envoyproxy/gateway/api/v1alpha1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 	mccontext "sigs.k8s.io/multicluster-runtime/pkg/context"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
@@ -21,7 +19,7 @@ import (
 
 // SetupBackendWebhookWithManager registers the webhook for Backend in the manager.
 func SetupBackendWebhookWithManager(mgr mcmanager.Manager) error {
-	return ctrl.NewWebhookManagedBy(mgr.GetLocalManager()).For(&gatewayv1alpha1.Backend{}).
+	return ctrl.NewWebhookManagedBy(mgr.GetLocalManager(), &gatewayv1alpha1.Backend{}).
 		WithValidator(&BackendCustomValidator{mgr: mgr}).
 		Complete()
 }
@@ -32,15 +30,10 @@ type BackendCustomValidator struct {
 	mgr mcmanager.Manager
 }
 
-var _ webhook.CustomValidator = &BackendCustomValidator{}
+var _ admission.Validator[*gatewayv1alpha1.Backend] = &BackendCustomValidator{}
 
-// ValidateCreate implements webhook.CustomValidator so a webhook will be registered for the type Backend.
-func (v *BackendCustomValidator) ValidateCreate(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
-	backend, ok := obj.(*gatewayv1alpha1.Backend)
-	if !ok {
-		return nil, fmt.Errorf("expected a Backend object but got %T", obj)
-	}
-
+// ValidateCreate implements admission.Validator so a webhook will be registered for the type Backend.
+func (v *BackendCustomValidator) ValidateCreate(ctx context.Context, backend *gatewayv1alpha1.Backend) (admission.Warnings, error) {
 	clusterName, ok := mccontext.ClusterFrom(ctx)
 	if !ok {
 		return nil, fmt.Errorf("expected a cluster name in the context")
@@ -50,35 +43,30 @@ func (v *BackendCustomValidator) ValidateCreate(ctx context.Context, obj runtime
 	log.Info("Validating Backend", "name", backend.GetName(), "cluster", clusterName)
 
 	if errs := validation.ValidateBackend(backend); len(errs) > 0 {
-		return nil, apierrors.NewInvalid(obj.GetObjectKind().GroupVersionKind().GroupKind(), backend.GetName(), errs)
+		return nil, apierrors.NewInvalid(backend.GetObjectKind().GroupVersionKind().GroupKind(), backend.GetName(), errs)
 	}
 
 	return nil, nil
 }
 
-// ValidateUpdate implements webhook.CustomValidator so a webhook will be registered for the type Backend.
-func (v *BackendCustomValidator) ValidateUpdate(ctx context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
-	backend, ok := newObj.(*gatewayv1alpha1.Backend)
-	if !ok {
-		return nil, fmt.Errorf("expected a Backend object but got %T", newObj)
-	}
-
+// ValidateUpdate implements admission.Validator so a webhook will be registered for the type Backend.
+func (v *BackendCustomValidator) ValidateUpdate(ctx context.Context, oldBackend, newBackend *gatewayv1alpha1.Backend) (admission.Warnings, error) {
 	clusterName, ok := mccontext.ClusterFrom(ctx)
 	if !ok {
 		return nil, fmt.Errorf("expected a cluster name in the context")
 	}
 
 	log := logf.FromContext(ctx).WithValues("cluster", clusterName)
-	log.Info("Validating Backend", "name", backend.GetName(), "cluster", clusterName)
+	log.Info("Validating Backend", "name", newBackend.GetName(), "cluster", clusterName)
 
-	if errs := validation.ValidateBackend(backend); len(errs) > 0 {
-		return nil, apierrors.NewInvalid(oldObj.GetObjectKind().GroupVersionKind().GroupKind(), backend.GetName(), errs)
+	if errs := validation.ValidateBackend(newBackend); len(errs) > 0 {
+		return nil, apierrors.NewInvalid(oldBackend.GetObjectKind().GroupVersionKind().GroupKind(), newBackend.GetName(), errs)
 	}
 
 	return nil, nil
 }
 
-// ValidateDelete implements webhook.CustomValidator so a webhook will be registered for the type Backend.
-func (v *BackendCustomValidator) ValidateDelete(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
+// ValidateDelete implements admission.Validator so a webhook will be registered for the type Backend.
+func (v *BackendCustomValidator) ValidateDelete(ctx context.Context, backend *gatewayv1alpha1.Backend) (admission.Warnings, error) {
 	return nil, nil
 }

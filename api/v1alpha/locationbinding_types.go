@@ -63,7 +63,3 @@ type LocationBindingList struct {
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []LocationBinding `json:"items"`
 }
-
-func init() {
-	SchemeBuilder.Register(&LocationBinding{}, &LocationBindingList{})
-}

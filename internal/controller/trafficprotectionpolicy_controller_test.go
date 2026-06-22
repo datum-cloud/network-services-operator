@@ -67,7 +67,7 @@ func TestCollectTrafficProtectionPolicyAttachments(t *testing.T) {
 				newTrafficProtectionPolicy("default", "tpp-1", func(tpp *networkingv1alpha.TrafficProtectionPolicy) {
 					tpp.Spec.TargetRefs = []gatewayv1alpha2.LocalPolicyTargetReferenceWithSectionName{
 						{
-							LocalPolicyTargetReference: gatewayv1alpha2.LocalPolicyTargetReference{
+							LocalPolicyTargetReference: gatewayv1.LocalPolicyTargetReference{
 								Kind: "Gateway",
 								Name: "gateway-1",
 							},
@@ -90,7 +90,7 @@ func TestCollectTrafficProtectionPolicyAttachments(t *testing.T) {
 						ancestor := policy.Status.Ancestors[0]
 						assert.Equal(t, "Gateway", string(ptr.Deref(ancestor.AncestorRef.Kind, "")))
 						assert.Equal(t, attachment.Gateway.Name, string(ancestor.AncestorRef.Name), "expected ancestor name to match gateway name")
-						assert.Equal(t, string(gatewayv1alpha2.PolicyReasonAccepted), ancestor.Conditions[0].Reason, "expected accepted reason")
+						assert.Equal(t, string(gatewayv1.PolicyReasonAccepted), ancestor.Conditions[0].Reason, "expected accepted reason")
 					}
 				}
 			},
@@ -105,13 +105,13 @@ func TestCollectTrafficProtectionPolicyAttachments(t *testing.T) {
 				newTrafficProtectionPolicy("default", "tpp-1", func(tpp *networkingv1alpha.TrafficProtectionPolicy) {
 					tpp.Spec.TargetRefs = []gatewayv1alpha2.LocalPolicyTargetReferenceWithSectionName{
 						{
-							LocalPolicyTargetReference: gatewayv1alpha2.LocalPolicyTargetReference{
+							LocalPolicyTargetReference: gatewayv1.LocalPolicyTargetReference{
 								Kind: "Gateway",
 								Name: "gateway-1",
 							},
 						},
 						{
-							LocalPolicyTargetReference: gatewayv1alpha2.LocalPolicyTargetReference{
+							LocalPolicyTargetReference: gatewayv1.LocalPolicyTargetReference{
 								Kind: "Gateway",
 								Name: "gateway-2",
 							},
@@ -136,7 +136,7 @@ func TestCollectTrafficProtectionPolicyAttachments(t *testing.T) {
 						assert.Equal(t, "Gateway", string(ptr.Deref(ancestor.AncestorRef.Kind, "")))
 						assert.Equal(t, attachment.Gateway.Name, string(ancestor.AncestorRef.Name), "expected ancestor name to match gateway name")
 						if assert.Len(t, ancestor.Conditions, 1) {
-							assert.Equal(t, string(gatewayv1alpha2.PolicyReasonAccepted), ancestor.Conditions[0].Reason, "expected accepted reason")
+							assert.Equal(t, string(gatewayv1.PolicyReasonAccepted), ancestor.Conditions[0].Reason, "expected accepted reason")
 						}
 					}
 
@@ -154,7 +154,7 @@ func TestCollectTrafficProtectionPolicyAttachments(t *testing.T) {
 						assert.Equal(t, attachment.Gateway.Name, string(ancestor.AncestorRef.Name), "expected ancestor name to match gateway name")
 
 						if assert.Len(t, ancestor.Conditions, 1) {
-							assert.Equal(t, string(gatewayv1alpha2.PolicyReasonAccepted), ancestor.Conditions[0].Reason, "expected accepted reason")
+							assert.Equal(t, string(gatewayv1.PolicyReasonAccepted), ancestor.Conditions[0].Reason, "expected accepted reason")
 						}
 					}
 				}
@@ -169,7 +169,7 @@ func TestCollectTrafficProtectionPolicyAttachments(t *testing.T) {
 				newTrafficProtectionPolicy("default", "tpp-1", func(tpp *networkingv1alpha.TrafficProtectionPolicy) {
 					tpp.Spec.TargetRefs = []gatewayv1alpha2.LocalPolicyTargetReferenceWithSectionName{
 						{
-							LocalPolicyTargetReference: gatewayv1alpha2.LocalPolicyTargetReference{
+							LocalPolicyTargetReference: gatewayv1.LocalPolicyTargetReference{
 								Kind: "Gateway",
 								Name: "gateway-1",
 							},
@@ -194,7 +194,7 @@ func TestCollectTrafficProtectionPolicyAttachments(t *testing.T) {
 						assert.Equal(t, "Gateway", string(ptr.Deref(ancestor.AncestorRef.Kind, "")))
 						assert.Equal(t, attachment.Gateway.Name, string(ancestor.AncestorRef.Name), "expected ancestor name to match gateway name")
 						if assert.Len(t, ancestor.Conditions, 1) {
-							assert.Equal(t, string(gatewayv1alpha2.PolicyReasonAccepted), ancestor.Conditions[0].Reason, "expected accepted reason")
+							assert.Equal(t, string(gatewayv1.PolicyReasonAccepted), ancestor.Conditions[0].Reason, "expected accepted reason")
 						}
 					}
 				}
@@ -225,13 +225,13 @@ func TestCollectTrafficProtectionPolicyAttachments(t *testing.T) {
 				newTrafficProtectionPolicy("default", "tpp-1", func(tpp *networkingv1alpha.TrafficProtectionPolicy) {
 					tpp.Spec.TargetRefs = []gatewayv1alpha2.LocalPolicyTargetReferenceWithSectionName{
 						{
-							LocalPolicyTargetReference: gatewayv1alpha2.LocalPolicyTargetReference{
+							LocalPolicyTargetReference: gatewayv1.LocalPolicyTargetReference{
 								Kind: "HTTPRoute",
 								Name: "route-1",
 							},
 						},
 						{
-							LocalPolicyTargetReference: gatewayv1alpha2.LocalPolicyTargetReference{
+							LocalPolicyTargetReference: gatewayv1.LocalPolicyTargetReference{
 								Kind: "HTTPRoute",
 								Name: "route-2",
 							},
@@ -255,7 +255,7 @@ func TestCollectTrafficProtectionPolicyAttachments(t *testing.T) {
 						assert.Equal(t, "HTTPRoute", string(ptr.Deref(ancestor.AncestorRef.Kind, "")))
 						assert.Equal(t, attachment.Route.Name, string(ancestor.AncestorRef.Name), "expected ancestor name to match gateway name")
 						if assert.Len(t, ancestor.Conditions, 1) {
-							assert.Equal(t, string(gatewayv1alpha2.PolicyReasonAccepted), ancestor.Conditions[0].Reason, "expected accepted reason")
+							assert.Equal(t, string(gatewayv1.PolicyReasonAccepted), ancestor.Conditions[0].Reason, "expected accepted reason")
 						}
 					}
 
@@ -272,7 +272,7 @@ func TestCollectTrafficProtectionPolicyAttachments(t *testing.T) {
 						assert.Equal(t, "HTTPRoute", string(ptr.Deref(ancestor.AncestorRef.Kind, "")))
 						assert.Equal(t, attachment.Route.Name, string(ancestor.AncestorRef.Name), "expected ancestor name to match gateway name")
 						if assert.Len(t, ancestor.Conditions, 1) {
-							assert.Equal(t, string(gatewayv1alpha2.PolicyReasonAccepted), ancestor.Conditions[0].Reason, "expected accepted reason")
+							assert.Equal(t, string(gatewayv1.PolicyReasonAccepted), ancestor.Conditions[0].Reason, "expected accepted reason")
 						}
 					}
 				}
@@ -296,7 +296,7 @@ func TestCollectTrafficProtectionPolicyAttachments(t *testing.T) {
 				newTrafficProtectionPolicy("default", "tpp-1", func(tpp *networkingv1alpha.TrafficProtectionPolicy) {
 					tpp.Spec.TargetRefs = []gatewayv1alpha2.LocalPolicyTargetReferenceWithSectionName{
 						{
-							LocalPolicyTargetReference: gatewayv1alpha2.LocalPolicyTargetReference{
+							LocalPolicyTargetReference: gatewayv1.LocalPolicyTargetReference{
 								Kind: "HTTPRoute",
 								Name: "route-1",
 							},
@@ -339,7 +339,7 @@ func TestCollectTrafficProtectionPolicyAttachments(t *testing.T) {
 				newTrafficProtectionPolicy("default", "tpp-1", func(tpp *networkingv1alpha.TrafficProtectionPolicy) {
 					tpp.Spec.TargetRefs = []gatewayv1alpha2.LocalPolicyTargetReferenceWithSectionName{
 						{
-							LocalPolicyTargetReference: gatewayv1alpha2.LocalPolicyTargetReference{
+							LocalPolicyTargetReference: gatewayv1.LocalPolicyTargetReference{
 								Kind: "HTTPRoute",
 								Name: "route-1",
 							},
@@ -435,7 +435,7 @@ func TestProcessTrafficProtectionPolicyForHTTPRoute(t *testing.T) {
 				},
 			},
 			targetRef: gatewayv1alpha2.LocalPolicyTargetReferenceWithSectionName{
-				LocalPolicyTargetReference: gatewayv1alpha2.LocalPolicyTargetReference{
+				LocalPolicyTargetReference: gatewayv1.LocalPolicyTargetReference{
 					Kind: "HTTPRoute",
 					Name: "route-1",
 				},
@@ -443,7 +443,7 @@ func TestProcessTrafficProtectionPolicyForHTTPRoute(t *testing.T) {
 			assert: func(t *testContext, policyAttachments []policyAttachment) {
 				if assert.Len(t, t.policy.Status.Ancestors, 1) {
 					if assert.Len(t, t.policy.Status.Ancestors[0].Conditions, 1) {
-						assert.Equal(t, string(gatewayv1alpha2.PolicyReasonConflicted), t.policy.Status.Ancestors[0].Conditions[0].Reason, "expected conflicted reason")
+						assert.Equal(t, string(gatewayv1.PolicyReasonConflicted), t.policy.Status.Ancestors[0].Conditions[0].Reason, "expected conflicted reason")
 					}
 				}
 			},
@@ -465,7 +465,7 @@ func TestProcessTrafficProtectionPolicyForHTTPRoute(t *testing.T) {
 				},
 			},
 			targetRef: gatewayv1alpha2.LocalPolicyTargetReferenceWithSectionName{
-				LocalPolicyTargetReference: gatewayv1alpha2.LocalPolicyTargetReference{
+				LocalPolicyTargetReference: gatewayv1.LocalPolicyTargetReference{
 					Kind: "HTTPRoute",
 					Name: "route-1",
 				},
@@ -474,7 +474,7 @@ func TestProcessTrafficProtectionPolicyForHTTPRoute(t *testing.T) {
 			assert: func(t *testContext, policyAttachments []policyAttachment) {
 				if assert.Len(t, t.policy.Status.Ancestors, 1) {
 					if assert.Len(t, t.policy.Status.Ancestors[0].Conditions, 1) {
-						assert.Equal(t, string(gatewayv1alpha2.PolicyReasonTargetNotFound), t.policy.Status.Ancestors[0].Conditions[0].Reason, "expected conflicted reason")
+						assert.Equal(t, string(gatewayv1.PolicyReasonTargetNotFound), t.policy.Status.Ancestors[0].Conditions[0].Reason, "expected conflicted reason")
 					}
 				}
 			},
@@ -504,7 +504,7 @@ func TestProcessTrafficProtectionPolicyForHTTPRoute(t *testing.T) {
 				},
 			},
 			targetRef: gatewayv1alpha2.LocalPolicyTargetReferenceWithSectionName{
-				LocalPolicyTargetReference: gatewayv1alpha2.LocalPolicyTargetReference{
+				LocalPolicyTargetReference: gatewayv1.LocalPolicyTargetReference{
 					Kind: "HTTPRoute",
 					Name: "route-1",
 				},
@@ -513,7 +513,7 @@ func TestProcessTrafficProtectionPolicyForHTTPRoute(t *testing.T) {
 			assert: func(t *testContext, policyAttachments []policyAttachment) {
 				if assert.Len(t, t.policy.Status.Ancestors, 1) {
 					if assert.Len(t, t.policy.Status.Ancestors[0].Conditions, 1) {
-						assert.Equal(t, string(gatewayv1alpha2.PolicyReasonConflicted), t.policy.Status.Ancestors[0].Conditions[0].Reason, "expected conflicted reason")
+						assert.Equal(t, string(gatewayv1.PolicyReasonConflicted), t.policy.Status.Ancestors[0].Conditions[0].Reason, "expected conflicted reason")
 					}
 				}
 			},
@@ -583,7 +583,7 @@ func TestProcessTrafficProtectionPolicyForGateway(t *testing.T) {
 				},
 			},
 			targetRef: gatewayv1alpha2.LocalPolicyTargetReferenceWithSectionName{
-				LocalPolicyTargetReference: gatewayv1alpha2.LocalPolicyTargetReference{
+				LocalPolicyTargetReference: gatewayv1.LocalPolicyTargetReference{
 					Kind: "Gateway",
 					Name: "gateway-1",
 				},
@@ -591,7 +591,7 @@ func TestProcessTrafficProtectionPolicyForGateway(t *testing.T) {
 			assert: func(t *testContext, policyAttachments []policyAttachment) {
 				if assert.Len(t, t.policy.Status.Ancestors, 1) {
 					if assert.Len(t, t.policy.Status.Ancestors[0].Conditions, 1) {
-						assert.Equal(t, string(gatewayv1alpha2.PolicyReasonConflicted), t.policy.Status.Ancestors[0].Conditions[0].Reason, "expected conflicted reason")
+						assert.Equal(t, string(gatewayv1.PolicyReasonConflicted), t.policy.Status.Ancestors[0].Conditions[0].Reason, "expected conflicted reason")
 					}
 				}
 			},
@@ -607,7 +607,7 @@ func TestProcessTrafficProtectionPolicyForGateway(t *testing.T) {
 				},
 			},
 			targetRef: gatewayv1alpha2.LocalPolicyTargetReferenceWithSectionName{
-				LocalPolicyTargetReference: gatewayv1alpha2.LocalPolicyTargetReference{
+				LocalPolicyTargetReference: gatewayv1.LocalPolicyTargetReference{
 					Kind: "Gateway",
 					Name: "gateway-1",
 				},
@@ -616,7 +616,7 @@ func TestProcessTrafficProtectionPolicyForGateway(t *testing.T) {
 			assert: func(t *testContext, policyAttachments []policyAttachment) {
 				if assert.Len(t, t.policy.Status.Ancestors, 1) {
 					if assert.Len(t, t.policy.Status.Ancestors[0].Conditions, 1) {
-						assert.Equal(t, string(gatewayv1alpha2.PolicyReasonTargetNotFound), t.policy.Status.Ancestors[0].Conditions[0].Reason, "expected conflicted reason")
+						assert.Equal(t, string(gatewayv1.PolicyReasonTargetNotFound), t.policy.Status.Ancestors[0].Conditions[0].Reason, "expected conflicted reason")
 					}
 				}
 			},
@@ -635,7 +635,7 @@ func TestProcessTrafficProtectionPolicyForGateway(t *testing.T) {
 				},
 			},
 			targetRef: gatewayv1alpha2.LocalPolicyTargetReferenceWithSectionName{
-				LocalPolicyTargetReference: gatewayv1alpha2.LocalPolicyTargetReference{
+				LocalPolicyTargetReference: gatewayv1.LocalPolicyTargetReference{
 					Kind: "Gateway",
 					Name: "gateway-1",
 				},
@@ -644,7 +644,7 @@ func TestProcessTrafficProtectionPolicyForGateway(t *testing.T) {
 			assert: func(t *testContext, policyAttachments []policyAttachment) {
 				if assert.Len(t, t.policy.Status.Ancestors, 1) {
 					if assert.Len(t, t.policy.Status.Ancestors[0].Conditions, 1) {
-						assert.Equal(t, string(gatewayv1alpha2.PolicyReasonConflicted), t.policy.Status.Ancestors[0].Conditions[0].Reason, "expected conflicted reason")
+						assert.Equal(t, string(gatewayv1.PolicyReasonConflicted), t.policy.Status.Ancestors[0].Conditions[0].Reason, "expected conflicted reason")
 					}
 				}
 			},
@@ -798,14 +798,14 @@ func TestGetDesiredEnvoyPatchPolicies(t *testing.T) {
 						if strings.Contains(ptr.Deref(patch.Operation.JSONPath, ""), vhostConstraints) {
 
 							if attachment.Listener != nil {
-								listenerConstraint = fmt.Sprintf(" && @.sectionName==\"%s\"", *attachment.Listener)
+								listenerConstraint = fmt.Sprintf(` && @.metadata.filter_metadata["envoy-gateway"].resources[0].sectionName=="%s"`, *attachment.Listener)
 								if !strings.Contains(ptr.Deref(patch.Operation.JSONPath, ""), listenerConstraint) {
 									continue
 								}
 							}
 
 							if attachment.Route != nil {
-								routeConstraint = fmt.Sprintf(`@.kind=="HTTPRoute" && @.namespace=="%s" && @.name=="%s"`, testNamespace, attachment.Route.Name)
+								routeConstraint = fmt.Sprintf(`@.metadata.filter_metadata["envoy-gateway"].resources[0].kind=="HTTPRoute" && @.metadata.filter_metadata["envoy-gateway"].resources[0].namespace=="%s" && @.metadata.filter_metadata["envoy-gateway"].resources[0].name=="%s"`, testNamespace, attachment.Route.Name)
 								if !strings.Contains(ptr.Deref(patch.Operation.JSONPath, ""), routeConstraint) {
 									continue
 								}
@@ -1238,7 +1238,7 @@ func TestSetWaitingForCertificatesConditions(t *testing.T) {
 		TrafficProtectionPolicy: ptr.To(newTrafficProtectionPolicy("default", "tpp-1", func(tpp *networkingv1alpha.TrafficProtectionPolicy) {
 			tpp.Spec.TargetRefs = []gatewayv1alpha2.LocalPolicyTargetReferenceWithSectionName{
 				{
-					LocalPolicyTargetReference: gatewayv1alpha2.LocalPolicyTargetReference{
+					LocalPolicyTargetReference: gatewayv1.LocalPolicyTargetReference{
 						Kind: "Gateway",
 						Name: "gateway-1",
 					},
@@ -1255,7 +1255,7 @@ func TestSetWaitingForCertificatesConditions(t *testing.T) {
 		ancestor := policy.Status.Ancestors[0]
 		if assert.Len(t, ancestor.Conditions, 1) {
 			cond := ancestor.Conditions[0]
-			assert.Equal(t, string(gatewayv1alpha2.PolicyConditionAccepted), cond.Type)
+			assert.Equal(t, string(gatewayv1.PolicyConditionAccepted), cond.Type)
 			assert.Equal(t, metav1.ConditionFalse, cond.Status)
 			assert.Equal(t, string(PolicyReasonWaitingForCertificates), cond.Reason)
 			assert.Contains(t, cond.Message, "gateway-1-https")
@@ -1436,7 +1436,7 @@ func TestSetWaitingForListenersProgrammedConditions(t *testing.T) {
 		TrafficProtectionPolicy: ptr.To(newTrafficProtectionPolicy("default", "tpp-1", func(tpp *networkingv1alpha.TrafficProtectionPolicy) {
 			tpp.Spec.TargetRefs = []gatewayv1alpha2.LocalPolicyTargetReferenceWithSectionName{
 				{
-					LocalPolicyTargetReference: gatewayv1alpha2.LocalPolicyTargetReference{
+					LocalPolicyTargetReference: gatewayv1.LocalPolicyTargetReference{
 						Kind: "Gateway",
 						Name: "gateway-1",
 					},
@@ -1453,7 +1453,7 @@ func TestSetWaitingForListenersProgrammedConditions(t *testing.T) {
 		ancestor := policy.Status.Ancestors[0]
 		if assert.Len(t, ancestor.Conditions, 1) {
 			cond := ancestor.Conditions[0]
-			assert.Equal(t, string(gatewayv1alpha2.PolicyConditionAccepted), cond.Type)
+			assert.Equal(t, string(gatewayv1.PolicyConditionAccepted), cond.Type)
 			assert.Equal(t, metav1.ConditionFalse, cond.Status)
 			assert.Equal(t, string(PolicyReasonWaitingForListenersProgrammed), cond.Reason)
 			assert.Contains(t, cond.Message, "default-https")
@@ -1488,6 +1488,84 @@ func newTestScheme() *runtime.Scheme {
 	_ = gatewayv1.Install(testScheme)
 	_ = networkingv1alpha.AddToScheme(testScheme)
 	return testScheme
+}
+
+// TestTPPReconcileEPPEmissionDisabled verifies that when gateway.eppEmissionEnabled
+// is false, the TPP reconciler emits ZERO EnvoyPatchPolicies and does NOT delete
+// any EPPs (neither "tpp-*" nor "connector-*") that may already exist in the
+// downstream cluster. TPP ancestor status is still updated so that operators can
+// observe the policy state during cutover.
+func TestTPPReconcileEPPEmissionDisabled(t *testing.T) {
+	upstreamScheme := runtime.NewScheme()
+	assert.NoError(t, scheme.AddToScheme(upstreamScheme))
+	assert.NoError(t, gatewayv1.Install(upstreamScheme))
+	assert.NoError(t, networkingv1alpha.AddToScheme(upstreamScheme))
+
+	downstreamScheme := runtime.NewScheme()
+	assert.NoError(t, envoygatewayv1alpha1.AddToScheme(downstreamScheme))
+
+	const (
+		upstreamNS   = "default"
+		nsUID        = "test-ns-uid"
+		downstreamNS = "ns-" + nsUID
+	)
+
+	upstreamNamespace := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: upstreamNS, UID: nsUID},
+	}
+	fakeUpstreamClient := fake.NewClientBuilder().
+		WithScheme(upstreamScheme).
+		WithObjects(upstreamNamespace).
+		Build()
+
+	// Pre-populate the downstream cluster with two EPPs — one from the TPP
+	// controller path and one from the connector path. Both must survive when
+	// EPP emission is disabled (NSO must NOT delete EPPs it did not write in
+	// this reconcile cycle).
+	existingTppEPP := &envoygatewayv1alpha1.EnvoyPatchPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "tpp-my-gw", Namespace: downstreamNS},
+	}
+	existingConnectorEPP := &envoygatewayv1alpha1.EnvoyPatchPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "connector-tunnel-foo", Namespace: downstreamNS},
+	}
+	fakeDownstreamClient := fake.NewClientBuilder().
+		WithScheme(downstreamScheme).
+		WithObjects(existingTppEPP, existingConnectorEPP).
+		Build()
+
+	eppOff := false
+	reconciler := &TrafficProtectionPolicyReconciler{
+		mgr:               &fakeMockManager{cl: fakeUpstreamClient},
+		DownstreamCluster: &fakeCluster{cl: fakeDownstreamClient},
+		Config: config.NetworkServicesOperator{
+			Gateway: config.GatewayConfig{
+				DownstreamGatewayNamespace: "envoy-gateway-system",
+				EPPEmissionEnabled:         &eppOff,
+			},
+		},
+	}
+
+	ctx := context.Background()
+	_, err := reconciler.Reconcile(ctx, NamespaceReconcileRequest{
+		Namespace:   upstreamNS,
+		ClusterName: "test-cluster",
+	})
+	assert.NoError(t, err)
+
+	// Verify the downstream EPP list is unchanged: BOTH pre-existing EPPs must
+	// still be present — the stale-cleanup loop must NOT run when EPP emission
+	// is disabled.
+	var policyList envoygatewayv1alpha1.EnvoyPatchPolicyList
+	assert.NoError(t, fakeDownstreamClient.List(ctx, &policyList))
+	assert.Len(t, policyList.Items, 2,
+		"EPP emission disabled: NSO must NOT delete any pre-existing EPPs")
+
+	names := make([]string, 0, len(policyList.Items))
+	for _, p := range policyList.Items {
+		names = append(names, p.Name)
+	}
+	assert.Contains(t, names, "tpp-my-gw", "pre-existing tpp EPP must survive when EPP emission is disabled")
+	assert.Contains(t, names, "connector-tunnel-foo", "pre-existing connector EPP must survive when EPP emission is disabled")
 }
 
 // TestTPPReconcileStaleCleanupPreservesConnectorEPPs is a regression test for the

@@ -1,0 +1,103 @@
+version: '3'
+
+vars:
+  TMP_DIR:
+    sh: echo "${TMPDIR:-/tmp}"
+
+tasks:
+  bootstrap:
+    desc: "Bootstrap the multi-cluster dev environment (nso-standard and nso-infra) for local testing"
+    cmds:
+      - echo "🚀 Bootstrapping dev environment..."
+      - task: create-clusters
+      - task: prep-upstream
+      - task: prep-downstream
+      - task: link-clusters
+      - echo "🎉 Dev environment bootstrapped successfully! Context is now kind-nso-standard."
+
+  create-clusters:
+    desc: "Create Kind upstream (standard) and downstream (infra) clusters"
+    cmds:
+      - echo "🧹 Cleaning up any existing clusters..."
+      - kind delete cluster --name nso-standard || true
+      - kind delete cluster --name nso-infra || true
+      - echo "🏗️ Creating upstream (nso-standard) cluster..."
+      - make kind-standard-cluster
+      - echo "🏗️ Creating downstream (nso-infra) cluster..."
+      - make kind-infra-cluster
+
+  prep-upstream:
+    desc: "Prepare the upstream cluster with Operator and cert-manager"
+    cmds:
+      - echo "🔧 Preparing upstream (nso-standard)..."
+      - kubectl config use-context kind-nso-standard
+      - make prepare-e2e
+
+  prep-downstream:
+    desc: "Prepare the downstream cluster with cert-manager, envoy-gateway, and external-dns"
+    cmds:
+      - echo "🔧 Preparing downstream (nso-infra)..."
+      - kubectl config use-context kind-nso-infra
+      - make prepare-infra-cluster
+
+  link-clusters:
+    desc: "Link upstream and downstream clusters using kubeconfig secret"
+    cmds:
+      - echo "🔗 Linking clusters..."
+      - kind get kubeconfig --name nso-infra --internal > {{.TMP_DIR}}/.kind-nso-infra-internal.yaml
+      - kubectl config use-context kind-nso-standard
+      - |
+        kubectl create namespace network-services-operator-system --dry-run=client -o yaml | kubectl apply -f -
+        kubectl create secret -n network-services-operator-system \
+          generic downstream-cluster-kubeconfig \
+          --save-config \
+          --dry-run=client -o yaml \
+          --from-file=kubeconfig={{.TMP_DIR}}/.kind-nso-infra-internal.yaml | kubectl apply -f -
+      - echo "⏳ Waiting for operator controller manager deployment to be ready..."
+      - |
+        kubectl -n network-services-operator-system \
+          wait deploy network-services-operator-controller-manager \
+          --for=condition=Available \
+          --timeout=180s
+
+  redeploy-operator:
+    desc: "Rebuild the operator image, load it into nso-standard, and roll out the deployed controller"
+    cmds:
+      - echo "🔨 Building operator image and loading it into nso-standard..."
+      # docker-build + kind load docker-image $(IMG) -n nso-standard
+      - make load-image-operator
+      - echo "♻️  Restarting the controller-manager to pick up the new image..."
+      - kubectl config use-context kind-nso-standard
+      - |
+        kubectl -n network-services-operator-system \
+          rollout restart deploy network-services-operator-controller-manager
+      - echo "⏳ Waiting for the new controller-manager rollout to complete..."
+      - |
+        kubectl -n network-services-operator-system \
+          rollout status deploy network-services-operator-controller-manager \
+          --timeout=180s
+      - echo "✅ Operator redeployed with the freshly built image."
+
+  destroy:
+    desc: "Tear down the multi-cluster dev environment"
+    cmds:
+      - echo "💥 Destroying clusters..."
+      - kind delete cluster --name nso-standard || true
+      - kind delete cluster --name nso-infra || true
+      - rm -f {{.TMP_DIR}}/.kind-nso-infra-internal.yaml
+      - echo "✨ Cleanup finished."
+
+  test:
+    desc: "Run E2E tests using chainsaw on the local multi-cluster setup"
+    cmds:
+      - echo "🧪 Running E2E tests..."
+      - |
+        if [ -n "{{.CLI_ARGS}}" ]; then
+          if [[ "{{.CLI_ARGS}}" == test/e2e/* || "{{.CLI_ARGS}}" == ./test/e2e/* ]]; then
+            make test-e2e TEST_DIR="{{.CLI_ARGS}}"
+          else
+            make test-e2e TEST_DIR="./test/e2e/{{.CLI_ARGS}}"
+          fi
+        else
+          make test-e2e
+        fi

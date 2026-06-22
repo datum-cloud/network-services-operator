@@ -40,6 +40,84 @@ func TestValidateBackend(t *testing.T) {
 				field.Forbidden(field.NewPath("spec", "endpoints").Index(0).Child("unix"), ""),
 			},
 		},
+		// SSRF / egress hardening – IP address checks
+		"ip endpoint - link-local (169.254.169.254) is rejected": {
+			backend: &envoygatewayv1alpha1.Backend{
+				Spec: envoygatewayv1alpha1.BackendSpec{
+					Endpoints: []envoygatewayv1alpha1.BackendEndpoint{
+						{
+							IP: &envoygatewayv1alpha1.IPEndpoint{
+								Address: "169.254.169.254",
+							},
+						},
+					},
+				},
+			},
+			expectedErrors: field.ErrorList{
+				field.Invalid(field.NewPath("spec", "endpoints").Index(0).Child("ip", "address"), "", ""),
+			},
+		},
+		"ip endpoint - loopback (127.0.0.1) is rejected": {
+			backend: &envoygatewayv1alpha1.Backend{
+				Spec: envoygatewayv1alpha1.BackendSpec{
+					Endpoints: []envoygatewayv1alpha1.BackendEndpoint{
+						{
+							IP: &envoygatewayv1alpha1.IPEndpoint{
+								Address: "127.0.0.1",
+							},
+						},
+					},
+				},
+			},
+			expectedErrors: field.ErrorList{
+				field.Invalid(field.NewPath("spec", "endpoints").Index(0).Child("ip", "address"), "", ""),
+			},
+		},
+		"ip endpoint - public IP (203.0.113.10) is allowed": {
+			backend: &envoygatewayv1alpha1.Backend{
+				Spec: envoygatewayv1alpha1.BackendSpec{
+					Endpoints: []envoygatewayv1alpha1.BackendEndpoint{
+						{
+							IP: &envoygatewayv1alpha1.IPEndpoint{
+								Address: "203.0.113.10",
+							},
+						},
+					},
+				},
+			},
+			expectedErrors: field.ErrorList{},
+		},
+		// SSRF / egress hardening – FQDN hostname checks
+		"fqdn endpoint - single-label name (metadata) is rejected": {
+			backend: &envoygatewayv1alpha1.Backend{
+				Spec: envoygatewayv1alpha1.BackendSpec{
+					Endpoints: []envoygatewayv1alpha1.BackendEndpoint{
+						{
+							FQDN: &envoygatewayv1alpha1.FQDNEndpoint{
+								Hostname: "metadata",
+							},
+						},
+					},
+				},
+			},
+			expectedErrors: field.ErrorList{
+				field.Invalid(field.NewPath("spec", "endpoints").Index(0).Child("fqdn", "hostname"), "", ""),
+			},
+		},
+		"fqdn endpoint - valid FQDN (jwks.example.com) is allowed": {
+			backend: &envoygatewayv1alpha1.Backend{
+				Spec: envoygatewayv1alpha1.BackendSpec{
+					Endpoints: []envoygatewayv1alpha1.BackendEndpoint{
+						{
+							FQDN: &envoygatewayv1alpha1.FQDNEndpoint{
+								Hostname: "jwks.example.com",
+							},
+						},
+					},
+				},
+			},
+			expectedErrors: field.ErrorList{},
+		},
 	}
 
 	for name, scenario := range scenarios {

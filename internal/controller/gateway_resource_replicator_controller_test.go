@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"testing"
@@ -20,6 +21,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/events"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/utils/ptr"
@@ -37,6 +39,7 @@ import (
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
+	networkingv1alpha1 "go.datum.net/network-services-operator/api/v1alpha1"
 	"go.datum.net/network-services-operator/internal/config"
 	downstreamclient "go.datum.net/network-services-operator/internal/downstreamclient"
 )
@@ -122,9 +125,9 @@ func TestReplicatorMirrorsResource(t *testing.T) {
 	}
 
 	downstreamPolicyStatus := gwapiv1alpha2.PolicyStatus{
-		Ancestors: []gwapiv1alpha2.PolicyAncestorStatus{
+		Ancestors: []gwapiv1.PolicyAncestorStatus{
 			{
-				AncestorRef: gwapiv1alpha2.ParentReference{
+				AncestorRef: gwapiv1.ParentReference{
 					Group:     ptr.To(gwapiv1.Group("gateway.networking.k8s.io")),
 					Kind:      ptr.To(gwapiv1.Kind("Gateway")),
 					Name:      gwapiv1.ObjectName("example-gateway"),
@@ -133,9 +136,9 @@ func TestReplicatorMirrorsResource(t *testing.T) {
 				ControllerName: gwapiv1.GatewayController("gateway.envoyproxy.io/controller"),
 				Conditions: []metav1.Condition{
 					{
-						Type:               string(gwapiv1alpha2.PolicyConditionAccepted),
+						Type:               string(gwapiv1.PolicyConditionAccepted),
 						Status:             metav1.ConditionFalse,
-						Reason:             string(gwapiv1alpha2.PolicyReasonTargetNotFound),
+						Reason:             string(gwapiv1.PolicyReasonTargetNotFound),
 						Message:            "downstream attachment target missing",
 						LastTransitionTime: metav1.Now(),
 						ObservedGeneration: 1,
@@ -349,12 +352,356 @@ func TestReplicatorCleansDownstreamOnDelete(t *testing.T) {
 	}
 }
 
+// TestReplicatorMirrorsNSOPolicyTypesSkipsUpstreamStatusSync verifies that
+// when the replicator handles TrafficProtectionPolicy or HTTPProxy it:
+//   - copies spec into the downstream ns-<uid> namespace, and
+//   - does NOT clear or overwrite existing upstream status (those conditions are
+//     set by NSO's own TPP / HTTPProxy controllers, not by a downstream actor).
+func TestReplicatorMirrorsNSOPolicyTypesSkipsUpstreamStatusSync(t *testing.T) {
+	for _, gvk := range []schema.GroupVersionKind{
+		{Group: "networking.datumapis.com", Version: "v1alpha", Kind: "TrafficProtectionPolicy"},
+		{Group: "networking.datumapis.com", Version: "v1alpha", Kind: "HTTPProxy"},
+	} {
+		t.Run(gvk.Kind, func(t *testing.T) {
+			scheme := runtime.NewScheme()
+			assert.NoError(t, corev1.AddToScheme(scheme))
+
+			ctx := context.Background()
+
+			upstreamNs := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-suite", UID: types.UID("ns-uid")},
+			}
+
+			// Pre-populate the upstream object with a status already set by
+			// NSO (simulates real-world state after the TPP/HTTPProxy controller
+			// has run). The replicator must leave this status intact.
+			upstreamStatusTemplate := &unstructured.Unstructured{}
+			upstreamStatusTemplate.SetGroupVersionKind(gvk)
+
+			upstreamObj := &unstructured.Unstructured{}
+			upstreamObj.SetGroupVersionKind(gvk)
+			upstreamObj.SetNamespace(upstreamNs.Name)
+			upstreamObj.SetName("test-policy")
+			upstreamObj.SetUID("policy-uid")
+			upstreamObj.Object["spec"] = map[string]any{"key": "val"}
+			// Simulate NSO-set upstream status that must not be cleared.
+			upstreamObj.Object["status"] = map[string]any{
+				"conditions": []any{
+					map[string]any{
+						"type":   "Accepted",
+						"status": "True",
+						"reason": "Accepted",
+					},
+				},
+			}
+
+			upstreamClient := fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithStatusSubresource(upstreamStatusTemplate).
+				WithObjects(upstreamNs, upstreamObj.DeepCopy()).
+				Build()
+
+			downstreamClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+			reconciler := newReplicatorForGVKTest(gvk, upstreamClient, downstreamClient, scheme)
+
+			req := GVKRequest{
+				GVK: gvk,
+				Request: mcreconcile.Request{
+					ClusterName: "upstream",
+					Request:     reconcile.Request{NamespacedName: client.ObjectKeyFromObject(upstreamObj)},
+				},
+			}
+
+			// Two passes: first adds the finalizer, second does the replication.
+			_, err := reconciler.Reconcile(ctx, req)
+			assert.NoError(t, err, "first reconcile")
+			_, err = reconciler.Reconcile(ctx, req)
+			assert.NoError(t, err, "second reconcile")
+
+			// Downstream object must exist with the same spec.
+			var downstream unstructured.Unstructured
+			downstream.SetGroupVersionKind(gvk)
+			assert.NoError(t, downstreamClient.Get(ctx,
+				client.ObjectKey{Name: "test-policy", Namespace: "ns-ns-uid"}, &downstream),
+				"downstream object must be created")
+			assert.Equal(t, upstreamObj.Object["spec"], downstream.Object["spec"],
+				"downstream spec must mirror upstream spec")
+
+			// Upstream status must be unchanged — the replicator must NOT zero it.
+			var upstreamAfter unstructured.Unstructured
+			upstreamAfter.SetGroupVersionKind(gvk)
+			assert.NoError(t, upstreamClient.Get(ctx, client.ObjectKeyFromObject(upstreamObj), &upstreamAfter))
+			assert.Equal(t, upstreamObj.Object["status"], upstreamAfter.Object["status"],
+				"replicator must not clear or overwrite upstream NSO-set status")
+		})
+	}
+}
+
+// TestReplicatorMirrorsConnectorSpecAndLivenessAnnotation verifies that when the
+// replicator handles a Connector it:
+//   - copies spec into the downstream ns-<uid> namespace, AND
+//   - mirrors the upstream .status verbatim into the UpstreamStatusAnnotation
+//     onto the downstream object's metadata so the edge extension server can read
+//     connector liveness locally.
+//
+// The annotation — not the status subresource — carries the status because
+// Karmada propagates a resource template's spec + metadata to member clusters
+// but NOT its status.
+func TestReplicatorMirrorsConnectorSpecAndLivenessAnnotation(t *testing.T) {
+	connectorGVK := schema.GroupVersionKind{
+		Group: "networking.datumapis.com", Version: "v1alpha1", Kind: "Connector",
+	}
+
+	scheme := runtime.NewScheme()
+	assert.NoError(t, corev1.AddToScheme(scheme))
+
+	ctx := context.Background()
+
+	upstreamNs := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-suite", UID: types.UID("ns-uid")},
+	}
+
+	connectorStatus := map[string]any{
+		"conditions": []any{
+			map[string]any{
+				"type":   "Ready",
+				"status": "True",
+				"reason": "Ready",
+			},
+		},
+		"connectionDetails": map[string]any{
+			"type": "PublicKey",
+			"publicKey": map[string]any{
+				"id": "node-abc",
+			},
+		},
+	}
+
+	upstreamStatusTemplate := &unstructured.Unstructured{}
+	upstreamStatusTemplate.SetGroupVersionKind(connectorGVK)
+
+	upstreamObj := &unstructured.Unstructured{}
+	upstreamObj.SetGroupVersionKind(connectorGVK)
+	upstreamObj.SetNamespace(upstreamNs.Name)
+	upstreamObj.SetName("connector-1")
+	upstreamObj.SetUID("connector-uid")
+	upstreamObj.Object["spec"] = map[string]any{"connectorClassName": "iroh"}
+	upstreamObj.Object["status"] = connectorStatus
+
+	upstreamClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(upstreamStatusTemplate).
+		WithObjects(upstreamNs, upstreamObj.DeepCopy()).
+		Build()
+
+	downstreamClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		Build()
+
+	reconciler := newReplicatorForGVKTest(connectorGVK, upstreamClient, downstreamClient, scheme)
+
+	req := GVKRequest{
+		GVK: connectorGVK,
+		Request: mcreconcile.Request{
+			ClusterName: "upstream",
+			Request:     reconcile.Request{NamespacedName: client.ObjectKeyFromObject(upstreamObj)},
+		},
+	}
+
+	// Two passes: first adds the finalizer, second does the spec + annotation sync.
+	_, err := reconciler.Reconcile(ctx, req)
+	assert.NoError(t, err, "first reconcile")
+	_, err = reconciler.Reconcile(ctx, req)
+	assert.NoError(t, err, "second reconcile")
+
+	// Downstream spec must mirror upstream.
+	var downstream unstructured.Unstructured
+	downstream.SetGroupVersionKind(connectorGVK)
+	assert.NoError(t, downstreamClient.Get(ctx,
+		client.ObjectKey{Name: "connector-1", Namespace: "ns-ns-uid"}, &downstream),
+		"downstream connector must be created")
+
+	assert.Equal(t, upstreamObj.Object["spec"], downstream.Object["spec"],
+		"downstream spec must mirror upstream spec")
+
+	// Key assertion: the annotation carries the upstream .status verbatim — the
+	// replicator mirrors the whole status object resource-agnostically, with no
+	// bespoke per-type shape.
+	expected, err := json.Marshal(connectorStatus)
+	assert.NoError(t, err)
+	assert.Equal(t, string(expected),
+		downstream.GetAnnotations()[networkingv1alpha1.UpstreamStatusAnnotation],
+		"downstream annotation must carry the full upstream status verbatim")
+
+	// The replicator must NOT mirror the status subresource downstream (Karmada
+	// would not propagate it to members anyway).
+	_, hasStatus := downstream.Object["status"]
+	assert.False(t, hasStatus, "replicator must not write the downstream status subresource for connectors")
+
+	// Upstream status must be untouched (skipUpstreamStatusSync=true).
+	var upstreamAfter unstructured.Unstructured
+	upstreamAfter.SetGroupVersionKind(connectorGVK)
+	assert.NoError(t, upstreamClient.Get(ctx, client.ObjectKeyFromObject(upstreamObj), &upstreamAfter))
+	assert.Equal(t, connectorStatus, upstreamAfter.Object["status"],
+		"replicator must not clear or modify upstream Connector status")
+}
+
+// TestReplicatorConnectorNotReadyLivenessAnnotation verifies that a Connector
+// whose Ready condition is False mirrors that not-ready status verbatim into the
+// annotation (no connectionDetails).
+func TestReplicatorConnectorNotReadyLivenessAnnotation(t *testing.T) {
+	connectorGVK := schema.GroupVersionKind{
+		Group: "networking.datumapis.com", Version: "v1alpha1", Kind: "Connector",
+	}
+
+	scheme := runtime.NewScheme()
+	assert.NoError(t, corev1.AddToScheme(scheme))
+
+	ctx := context.Background()
+
+	upstreamNs := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-suite", UID: types.UID("ns-uid")},
+	}
+
+	connectorStatus := map[string]any{
+		"conditions": []any{
+			map[string]any{"type": "Ready", "status": "False", "reason": "ConnectorNotReady"},
+		},
+	}
+
+	upstreamStatusTemplate := &unstructured.Unstructured{}
+	upstreamStatusTemplate.SetGroupVersionKind(connectorGVK)
+
+	upstreamObj := &unstructured.Unstructured{}
+	upstreamObj.SetGroupVersionKind(connectorGVK)
+	upstreamObj.SetNamespace(upstreamNs.Name)
+	upstreamObj.SetName("connector-down")
+	upstreamObj.SetUID("connector-down-uid")
+	upstreamObj.Object["spec"] = map[string]any{"connectorClassName": "iroh"}
+	upstreamObj.Object["status"] = connectorStatus
+
+	upstreamClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(upstreamStatusTemplate).
+		WithObjects(upstreamNs, upstreamObj.DeepCopy()).
+		Build()
+
+	downstreamClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	reconciler := newReplicatorForGVKTest(connectorGVK, upstreamClient, downstreamClient, scheme)
+
+	req := GVKRequest{
+		GVK: connectorGVK,
+		Request: mcreconcile.Request{
+			ClusterName: "upstream",
+			Request:     reconcile.Request{NamespacedName: client.ObjectKeyFromObject(upstreamObj)},
+		},
+	}
+
+	_, err := reconciler.Reconcile(ctx, req)
+	assert.NoError(t, err, "first reconcile")
+	_, err = reconciler.Reconcile(ctx, req)
+	assert.NoError(t, err, "second reconcile")
+
+	var downstream unstructured.Unstructured
+	downstream.SetGroupVersionKind(connectorGVK)
+	assert.NoError(t, downstreamClient.Get(ctx,
+		client.ObjectKey{Name: "connector-down", Namespace: "ns-ns-uid"}, &downstream))
+
+	expected, err := json.Marshal(connectorStatus)
+	assert.NoError(t, err)
+	assert.Equal(t, string(expected),
+		downstream.GetAnnotations()[networkingv1alpha1.UpstreamStatusAnnotation],
+		"not-ready connector must mirror its not-ready status verbatim into the annotation")
+}
+
+// TestReplicatorConnectorLivenessAnnotationIdempotent verifies that repeated
+// reconciles of an already-synced Connector keep the status annotation stable
+// and do not error.
+func TestReplicatorConnectorLivenessAnnotationIdempotent(t *testing.T) {
+	connectorGVK := schema.GroupVersionKind{
+		Group: "networking.datumapis.com", Version: "v1alpha1", Kind: "Connector",
+	}
+
+	scheme := runtime.NewScheme()
+	assert.NoError(t, corev1.AddToScheme(scheme))
+
+	ctx := context.Background()
+
+	upstreamNs := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-suite", UID: types.UID("ns-uid")},
+	}
+
+	connectorStatus := map[string]any{
+		"conditions": []any{
+			map[string]any{"type": "Ready", "status": "True", "reason": "Ready"},
+		},
+	}
+
+	upstreamStatusTemplate := &unstructured.Unstructured{}
+	upstreamStatusTemplate.SetGroupVersionKind(connectorGVK)
+
+	upstreamObj := &unstructured.Unstructured{}
+	upstreamObj.SetGroupVersionKind(connectorGVK)
+	upstreamObj.SetNamespace(upstreamNs.Name)
+	upstreamObj.SetName("connector-idem")
+	upstreamObj.SetUID("connector-idem-uid")
+	upstreamObj.Object["spec"] = map[string]any{"connectorClassName": "iroh"}
+	upstreamObj.Object["status"] = connectorStatus
+
+	upstreamClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(upstreamStatusTemplate).
+		WithObjects(upstreamNs, upstreamObj.DeepCopy()).
+		Build()
+
+	wrappedDownstream := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	reconciler := newReplicatorForGVKTest(connectorGVK, upstreamClient, wrappedDownstream, scheme)
+
+	req := GVKRequest{
+		GVK: connectorGVK,
+		Request: mcreconcile.Request{
+			ClusterName: "upstream",
+			Request:     reconcile.Request{NamespacedName: client.ObjectKeyFromObject(upstreamObj)},
+		},
+	}
+
+	// Pass 1: add finalizer. Pass 2: spec + annotation sync. Pass 3: idempotent.
+	_, err := reconciler.Reconcile(ctx, req)
+	assert.NoError(t, err, "first reconcile")
+	_, err = reconciler.Reconcile(ctx, req)
+	assert.NoError(t, err, "second reconcile")
+	_, err = reconciler.Reconcile(ctx, req)
+	assert.NoError(t, err, "third reconcile (idempotent)")
+
+	var downstream unstructured.Unstructured
+	downstream.SetGroupVersionKind(connectorGVK)
+	assert.NoError(t, wrappedDownstream.Get(ctx,
+		client.ObjectKey{Name: "connector-idem", Namespace: "ns-ns-uid"}, &downstream))
+
+	expected, err := json.Marshal(connectorStatus)
+	assert.NoError(t, err)
+	assert.Equal(t, string(expected),
+		downstream.GetAnnotations()[networkingv1alpha1.UpstreamStatusAnnotation],
+		"status annotation must remain stable after an idempotent reconcile")
+}
+
 func newReplicatorForTest(upstream client.Client, downstream client.Client, scheme *runtime.Scheme) *GatewayResourceReplicatorReconciler {
+	return newReplicatorForGVKTest(testGVK, upstream, downstream, scheme)
+}
+
+// newReplicatorForGVKTest builds a GatewayResourceReplicatorReconciler wired
+// for the given GVK with fake upstream/downstream clients. It pulls the config
+// from defaultReplicationResourceConfigs so that type-specific flags
+// (skipUpstreamStatusSync, mirrorStatusToAnnotation) are honoured in tests.
+func newReplicatorForGVKTest(gvk schema.GroupVersionKind, upstream client.Client, downstream client.Client, scheme *runtime.Scheme) *GatewayResourceReplicatorReconciler {
 	upstreamCluster := &replicatorFakeCluster{scheme: scheme, c: upstream}
 	downstreamCluster := &replicatorFakeCluster{scheme: scheme, c: downstream}
 
-	resource := replicationResource{gvk: testGVK, controllerName: testControllerName}
-	if cfg, ok := defaultReplicationResourceConfigs[gvkKey(testGVK)]; ok {
+	resource := replicationResource{gvk: gvk, downstreamGVK: gvk, controllerName: testControllerName}
+	if cfg, ok := defaultReplicationResourceConfigs[gvkKey(gvk)]; ok {
 		resource.replicationResourceConfig = cfg
 	}
 
@@ -364,18 +711,18 @@ func newReplicatorForTest(upstream client.Client, downstream client.Client, sche
 				ControllerName: gwapiv1.GatewayController(testControllerName),
 				ResourceReplicator: config.GatewayResourceReplicatorConfig{
 					Resources: []config.ReplicatedResourceConfig{
-						{Group: testGVK.Group, Version: testGVK.Version, Kind: testGVK.Kind},
+						{Group: gvk.Group, Version: gvk.Version, Kind: gvk.Kind},
 					},
 				},
 			},
 		},
 		DownstreamCluster: downstreamCluster,
 		resources: map[string]replicationResource{
-			gvkKey(testGVK): resource,
+			gvkKey(gvk): resource,
 		},
 	}
 
-	reconciler.mgr = &replicatorFakeManager{clusters: map[string]cluster.Cluster{"upstream": upstreamCluster}}
+	reconciler.mgr = &replicatorFakeManager{clusters: map[multicluster.ClusterName]cluster.Cluster{"upstream": upstreamCluster}}
 
 	return reconciler
 }
@@ -417,16 +764,17 @@ func (f *replicatorFakeCluster) GetFieldIndexer() client.FieldIndexer { return n
 func (f *replicatorFakeCluster) GetEventRecorderFor(string) record.EventRecorder {
 	return record.NewFakeRecorder(10)
 }
-func (f *replicatorFakeCluster) GetRESTMapper() meta.RESTMapper { return nil }
-func (f *replicatorFakeCluster) GetAPIReader() client.Reader    { return f.c }
-func (f *replicatorFakeCluster) Start(context.Context) error    { return nil }
+func (f *replicatorFakeCluster) GetEventRecorder(string) events.EventRecorder { return nil }
+func (f *replicatorFakeCluster) GetRESTMapper() meta.RESTMapper               { return nil }
+func (f *replicatorFakeCluster) GetAPIReader() client.Reader                  { return f.c }
+func (f *replicatorFakeCluster) Start(context.Context) error                  { return nil }
 
 type replicatorFakeManager struct {
 	mcmanager.Manager
-	clusters map[string]cluster.Cluster
+	clusters map[multicluster.ClusterName]cluster.Cluster
 }
 
-func (f *replicatorFakeManager) GetCluster(_ context.Context, name string) (cluster.Cluster, error) {
+func (f *replicatorFakeManager) GetCluster(_ context.Context, name multicluster.ClusterName) (cluster.Cluster, error) {
 	cl, ok := f.clusters[name]
 	if !ok {
 		return nil, fmt.Errorf("cluster %s not found", name)
@@ -441,6 +789,6 @@ func (f *replicatorFakeManager) GetLogger() logr.Logger               { return l
 func (f *replicatorFakeManager) GetWebhookServer() webhook.Server     { return nil }
 func (f *replicatorFakeManager) GetFieldIndexer() client.FieldIndexer { return nil }
 func (f *replicatorFakeManager) GetProvider() multicluster.Provider   { return nil }
-func (f *replicatorFakeManager) Engage(context.Context, string, cluster.Cluster) error {
+func (f *replicatorFakeManager) Engage(context.Context, multicluster.ClusterName, cluster.Cluster) error {
 	return nil
 }

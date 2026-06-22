@@ -103,7 +103,7 @@ func (r *SubnetClaimReconciler) Reconcile(ctx context.Context, req mcreconcile.R
 		}
 
 		apimeta.SetStatusCondition(&claim.Status.Conditions, metav1.Condition{
-			Type:               "Ready",
+			Type:               certManagerConditionTypeReady,
 			Status:             metav1.ConditionFalse,
 			Reason:             "SubnetNotReady",
 			ObservedGeneration: claim.Generation,
@@ -127,7 +127,7 @@ func (r *SubnetClaimReconciler) Reconcile(ctx context.Context, req mcreconcile.R
 	}
 
 	apimeta.SetStatusCondition(&claim.Status.Conditions, metav1.Condition{
-		Type:               "Ready",
+		Type:               certManagerConditionTypeReady,
 		Status:             metav1.ConditionTrue,
 		Reason:             "SubnetReady",
 		ObservedGeneration: claim.Generation,

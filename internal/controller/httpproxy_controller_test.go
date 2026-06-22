@@ -23,6 +23,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/uuid"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/events"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
@@ -36,6 +37,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
+	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
@@ -44,13 +46,9 @@ import (
 	gatewayutil "go.datum.net/network-services-operator/internal/util/gateway"
 )
 
-const routeConfigurationTypeURL = "type.googleapis.com/envoy.config.route.v3.RouteConfiguration"
-
-// cert-manager condition status values for tests that build Certificate unstructured objects.
-const (
-	certManagerConditionStatusTrue  = "True"
-	certManagerConditionStatusFalse = "False"
-)
+// certManagerConditionStatusFalse is the "False" status value for cert-manager conditions
+// used in tests that build Certificate unstructured objects.
+const certManagerConditionStatusFalse = "False"
 
 //nolint:gocyclo
 func TestHTTPProxyCollectDesiredResources(t *testing.T) {
@@ -555,6 +553,11 @@ func TestHTTPProxyReconcile(t *testing.T) {
 			Name: "connector-1",
 		}
 	})
+	connectorModeBHTTPProxy := newHTTPProxy(func(h *networkingv1alpha.HTTPProxy) {
+		h.Spec.Rules[0].Backends[0].Connector = &networkingv1alpha.ConnectorReference{
+			Name: "connector-1",
+		}
+	})
 
 	connectorDownstreamObjects := func(proxy *networkingv1alpha.HTTPProxy) []client.Object {
 		return []client.Object{
@@ -573,6 +576,7 @@ func TestHTTPProxyReconcile(t *testing.T) {
 		existingObjects         []client.Object
 		downstreamObjects       []client.Object
 		namespaceUID            string
+		eppEmissionDisabled     bool
 		postCreateGatewayStatus func(*gatewayv1.Gateway)
 		expectedError           bool
 		expectedConditions      []metav1.Condition
@@ -761,26 +765,101 @@ func TestHTTPProxyReconcile(t *testing.T) {
 					}
 				}
 
+				// The offline HTTPRouteFilter CRD must NOT exist: EG v1.7.3 cannot
+				// translate DirectResponse in HTTPRouteFilterSpec (UnsupportedValue),
+				// which blocks EPP programming. The EPP direct_response route is the
+				// sole mechanism for returning 503 to offline-connector clients.
 				httpRouteFilter := &envoygatewayv1alpha1.HTTPRouteFilter{}
 				filterKey := client.ObjectKey{Namespace: httpProxy.Namespace, Name: connectorOfflineFilterName(httpProxy)}
-				assert.NoError(t, cl.Get(ctx, filterKey, httpRouteFilter))
-				assert.Equal(t, "Tunnel not online", ptr.Deref(httpRouteFilter.Spec.DirectResponse.Body.Inline, ""))
+				err = cl.Get(ctx, filterKey, httpRouteFilter)
+				assert.True(t, apierrors.IsNotFound(err), "offline HTTPRouteFilter should not exist")
 
+				// The HTTPRoute rule must have no backends and no offline ExtensionRef
+				// filter so EG can translate it and the EPP has virtual_hosts to patch.
 				httpRoute := &gatewayv1.HTTPRoute{}
 				assert.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(httpProxy), httpRoute))
 				if assert.Len(t, httpRoute.Spec.Rules, 1) {
 					assert.Empty(t, httpRoute.Spec.Rules[0].BackendRefs)
-					found := false
 					for _, filter := range httpRoute.Spec.Rules[0].Filters {
-						if filter.Type == gatewayv1.HTTPRouteFilterExtensionRef &&
-							filter.ExtensionRef != nil &&
-							filter.ExtensionRef.Kind == envoygatewayv1alpha1.KindHTTPRouteFilter &&
-							filter.ExtensionRef.Name == gatewayv1.ObjectName(httpRouteFilter.Name) {
-							found = true
-							break
-						}
+						assert.NotEqual(t, gatewayv1.HTTPRouteFilterExtensionRef, filter.Type,
+							"offline connector route must not have an ExtensionRef filter")
 					}
-					assert.True(t, found, "expected HTTPRouteFilter extension ref on rule")
+				}
+			},
+		},
+		{
+			// Regression: in extension-server mode (EPP emission disabled) an
+			// offline connector must keep its backendRef so EG renders a connector
+			// cluster. The ext-server keys its offline-503 "Tunnel not online" route
+			// on that cluster. Nulling the backendRef (the EPP-mode behavior) leaves
+			// EG with a backend-less route, which it renders as a bare
+			// direct_response 500 with no offline page.
+			name:                "offline connector keeps backendRef in extension-server mode",
+			httpProxy:           connectorModeBHTTPProxy,
+			downstreamObjects:   connectorDownstreamObjects(connectorModeBHTTPProxy),
+			namespaceUID:        string(connectorNamespaceUID),
+			eppEmissionDisabled: true,
+			existingObjects: []client.Object{
+				&networkingv1alpha1.Connector{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "connector-1",
+						Namespace: "test",
+					},
+					Status: networkingv1alpha1.ConnectorStatus{
+						Conditions: []metav1.Condition{
+							{
+								Type:   networkingv1alpha1.ConnectorConditionReady,
+								Status: metav1.ConditionFalse,
+								Reason: networkingv1alpha1.ConnectorReasonNotReady,
+							},
+						},
+					},
+				},
+			},
+			postCreateGatewayStatus: func(g *gatewayv1.Gateway) {
+				setGatewayProgrammedWithDefaultHTTPSListener(g)
+			},
+			expectedError: false,
+			expectedConditions: []metav1.Condition{
+				{
+					Type:   networkingv1alpha.HTTPProxyConditionAccepted,
+					Status: metav1.ConditionTrue,
+					Reason: networkingv1alpha.HTTPProxyReasonAccepted,
+				},
+				{
+					Type:   networkingv1alpha.HTTPProxyConditionProgrammed,
+					Status: metav1.ConditionTrue,
+					Reason: networkingv1alpha.HTTPProxyReasonProgrammed,
+				},
+			},
+			assert: func(t *testContext, cl client.Client, httpProxy *networkingv1alpha.HTTPProxy) {
+				ctx := context.Background()
+
+				// Extension-server mode emits no EnvoyPatchPolicy at all.
+				var patchList envoygatewayv1alpha1.EnvoyPatchPolicyList
+				assert.NoError(t, t.downstreamClient.List(ctx, &patchList))
+				assert.Empty(t, patchList.Items, "no EPP should be emitted in extension-server mode")
+
+				// The offline connector route MUST retain a backendRef pointing at
+				// the placeholder EndpointSlice so EG renders a connector cluster.
+				httpRoute := &gatewayv1.HTTPRoute{}
+				assert.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(httpProxy), httpRoute))
+				if assert.Len(t, httpRoute.Spec.Rules, 1) {
+					if assert.Len(t, httpRoute.Spec.Rules[0].BackendRefs, 1,
+						"offline connector route must keep a backendRef in extension-server mode") {
+						br := httpRoute.Spec.Rules[0].BackendRefs[0]
+						assert.Equal(t, gatewayv1.Kind("EndpointSlice"), *br.Kind)
+					}
+				}
+
+				// The connector.local placeholder EndpointSlice must exist.
+				var sliceList discoveryv1.EndpointSliceList
+				assert.NoError(t, cl.List(ctx, &sliceList, client.InNamespace(httpProxy.Namespace)))
+				if assert.Len(t, sliceList.Items, 1) {
+					if assert.NotEmpty(t, sliceList.Items[0].Endpoints) &&
+						assert.NotEmpty(t, sliceList.Items[0].Endpoints[0].Addresses) {
+						assert.Equal(t, "connector.local", sliceList.Items[0].Endpoints[0].Addresses[0])
+					}
 				}
 			},
 		},
@@ -1281,15 +1360,20 @@ func TestHTTPProxyReconcile(t *testing.T) {
 
 			mgr := &fakeMockManager{cl: fakeClient}
 
+			caseConfig := testConfig
+			if tt.eppEmissionDisabled {
+				caseConfig.Gateway.EPPEmissionEnabled = ptr.To(false)
+			}
+
 			reconciler := &HTTPProxyReconciler{
 				mgr:               mgr,
-				Config:            testConfig,
+				Config:            caseConfig,
 				DownstreamCluster: &fakeCluster{cl: fakeDownstreamClient},
 			}
 
 			gatewayReconciler := &GatewayReconciler{
 				mgr:               mgr,
-				Config:            testConfig,
+				Config:            caseConfig,
 				DownstreamCluster: &fakeCluster{cl: fakeDownstreamClient},
 			}
 
@@ -1450,6 +1534,7 @@ func TestBuildConnectorEnvoyPatchesTargetsAllHTTPSListeners(t *testing.T) {
 		gateway,
 		newHTTPProxy(),
 		backends,
+		sets.New("default-https", "https-hostname-0"),
 	)
 	assert.NoError(t, err)
 
@@ -1545,6 +1630,7 @@ func TestBuildConnectorEnvoyPatchesAddsExtendedConnectPathRouteAndFallback(t *te
 		gateway,
 		httpProxy,
 		backends,
+		sets.New("default-https"),
 	)
 	assert.NoError(t, err)
 
@@ -1631,6 +1717,7 @@ func TestBuildConnectorEnvoyPatchesScopesRouteConfigBySectionName(t *testing.T) 
 		gateway,
 		newHTTPProxy(),
 		backends,
+		sets.New("default-https", "https-hostname-0"),
 	)
 	assert.NoError(t, err)
 
@@ -1644,6 +1731,137 @@ func TestBuildConnectorEnvoyPatchesScopesRouteConfigBySectionName(t *testing.T) 
 
 	assert.Equal(t, 2, routeConfigPatchCounts["ns-test/gw/https-hostname-0"])
 	assert.NotContains(t, routeConfigPatchCounts, "ns-test/gw/default-https")
+}
+
+func TestBuildConnectorEnvoyPatchesSkipsIneligibleHTTPSListeners(t *testing.T) {
+	gateway := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{Name: "gw"},
+		Spec: gatewayv1.GatewaySpec{
+			Listeners: []gatewayv1.Listener{
+				{
+					Name:     gatewayv1.SectionName("default-https"),
+					Protocol: gatewayv1.HTTPSProtocolType,
+				},
+				{
+					Name:     gatewayv1.SectionName("https-hostname-0"),
+					Protocol: gatewayv1.HTTPSProtocolType,
+				},
+			},
+		},
+	}
+
+	backends := []connectorBackendPatch{
+		{
+			ruleIndex:  0,
+			matchIndex: 0,
+			targetHost: "127.0.0.1",
+			targetPort: 5432,
+			nodeID:     "node-123",
+		},
+	}
+
+	// Only default-https is eligible; https-hostname-0 has an unissued cert.
+	patches, err := buildConnectorEnvoyPatches(
+		"ns-test",
+		"connector-tunnel",
+		gateway,
+		newHTTPProxy(),
+		backends,
+		sets.New("default-https"),
+	)
+	assert.NoError(t, err)
+
+	routeConfigPatchCounts := map[string]int{}
+	for _, patch := range patches {
+		if patch.Type != routeConfigurationTypeURL {
+			continue
+		}
+		routeConfigPatchCounts[patch.Name]++
+	}
+
+	// Regression case: the unready custom listener is skipped, but the ready
+	// default-https listener still receives its patches.
+	assert.Equal(t, 2, routeConfigPatchCounts["ns-test/gw/default-https"])
+	assert.NotContains(t, routeConfigPatchCounts, "ns-test/gw/https-hostname-0")
+}
+
+func TestBuildConnectorEnvoyPatchesSkipsIneligibleSectionListener(t *testing.T) {
+	gateway := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{Name: "gw"},
+		Spec: gatewayv1.GatewaySpec{
+			Listeners: []gatewayv1.Listener{
+				{
+					Name:     gatewayv1.SectionName("default-https"),
+					Protocol: gatewayv1.HTTPSProtocolType,
+				},
+				{
+					Name:     gatewayv1.SectionName("https-hostname-0"),
+					Protocol: gatewayv1.HTTPSProtocolType,
+				},
+			},
+		},
+	}
+
+	// Backend scoped to https-hostname-0, but that listener is not eligible.
+	backends := []connectorBackendPatch{
+		{
+			sectionName: ptr.To(gatewayv1.SectionName("https-hostname-0")),
+			ruleIndex:   0,
+			matchIndex:  0,
+			targetHost:  "127.0.0.1",
+			targetPort:  5432,
+			nodeID:      "node-123",
+		},
+	}
+
+	patches, err := buildConnectorEnvoyPatches(
+		"ns-test",
+		"connector-tunnel",
+		gateway,
+		newHTTPProxy(),
+		backends,
+		sets.New("default-https"),
+	)
+	assert.NoError(t, err)
+
+	for _, patch := range patches {
+		assert.NotEqual(t, routeConfigurationTypeURL, patch.Type,
+			"no RouteConfiguration patches expected for an ineligible section listener")
+	}
+}
+
+func TestBuildConnectorOfflineEnvoyPatchesSkipsIneligibleHTTPSListeners(t *testing.T) {
+	gateway := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{Name: "gw"},
+		Spec: gatewayv1.GatewaySpec{
+			Listeners: []gatewayv1.Listener{
+				{
+					Name:     gatewayv1.SectionName("default-https"),
+					Protocol: gatewayv1.HTTPSProtocolType,
+				},
+				{
+					Name:     gatewayv1.SectionName("https-hostname-0"),
+					Protocol: gatewayv1.HTTPSProtocolType,
+				},
+			},
+		},
+	}
+
+	patches, err := buildConnectorOfflineEnvoyPatches(
+		"ns-test",
+		gateway,
+		newHTTPProxy(),
+		sets.New("default-https"),
+	)
+	assert.NoError(t, err)
+
+	names := map[string]struct{}{}
+	for _, patch := range patches {
+		names[patch.Name] = struct{}{}
+	}
+
+	assert.Contains(t, names, "ns-test/gw/default-https")
+	assert.NotContains(t, names, "ns-test/gw/https-hostname-0")
 }
 
 func TestHTTPProxyFinalizerCleanup(t *testing.T) {
@@ -1721,6 +1939,262 @@ func TestHTTPProxyFinalizerCleanup(t *testing.T) {
 	err = fakeClient.Get(ctx, client.ObjectKeyFromObject(httpProxy), updatedProxy)
 	if err == nil {
 		assert.False(t, controllerutil.ContainsFinalizer(updatedProxy, httpProxyFinalizer))
+	} else {
+		assert.True(t, apierrors.IsNotFound(err))
+	}
+}
+
+// TestHTTPProxyReconcileConnectorEPPEmissionDisabled verifies that when
+// gateway.eppEmissionEnabled is false, the HTTPProxy reconciler does NOT create
+// a connector EnvoyPatchPolicy in the downstream cluster even when all
+// prerequisites (ready Connector, programmed gateway default-https listener) are
+// met. The HTTPProxy's Accepted/Programmed conditions must still be set correctly
+// from the gateway status.
+func TestHTTPProxyReconcileConnectorEPPEmissionDisabled(t *testing.T) {
+	logger := zap.New(zap.UseFlagOptions(&zap.Options{Development: true}))
+	ctx := log.IntoContext(context.Background(), logger)
+
+	testScheme := runtime.NewScheme()
+	assert.NoError(t, scheme.AddToScheme(testScheme))
+	assert.NoError(t, gatewayv1.Install(testScheme))
+	assert.NoError(t, envoygatewayv1alpha1.AddToScheme(testScheme))
+	assert.NoError(t, discoveryv1.AddToScheme(testScheme))
+	assert.NoError(t, networkingv1alpha.AddToScheme(testScheme))
+	assert.NoError(t, networkingv1alpha1.AddToScheme(testScheme))
+
+	eppOff := false
+	testConfig := config.NetworkServicesOperator{
+		HTTPProxy: config.HTTPProxyConfig{
+			GatewayClassName: "test-gateway-class",
+		},
+		Gateway: config.GatewayConfig{
+			ControllerName:             gatewayv1.GatewayController("test-gateway-class"),
+			DownstreamGatewayClassName: "test-downstream-gateway-class",
+			TargetDomain:               "example.com",
+			ListenerTLSOptions: map[gatewayv1.AnnotationKey]gatewayv1.AnnotationValue{
+				gatewayv1.AnnotationKey("gateway.networking.datumapis.com/certificate-issuer"): gatewayv1.AnnotationValue("test-issuer"),
+			},
+			EPPEmissionEnabled: &eppOff,
+		},
+	}
+
+	namespaceUID := types.UID("22222222-2222-2222-2222-222222222222")
+	downstreamNamespaceName := fmt.Sprintf("ns-%s", namespaceUID)
+
+	httpProxy := newHTTPProxy(func(h *networkingv1alpha.HTTPProxy) {
+		h.Spec.Rules[0].Backends[0].Connector = &networkingv1alpha.ConnectorReference{
+			Name: "connector-1",
+		}
+	})
+
+	connector := &networkingv1alpha1.Connector{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "connector-1",
+			Namespace: "test",
+		},
+		Status: networkingv1alpha1.ConnectorStatus{
+			Conditions: []metav1.Condition{
+				{
+					Type:   networkingv1alpha1.ConnectorConditionReady,
+					Status: metav1.ConditionTrue,
+					Reason: networkingv1alpha1.ConnectorReasonReady,
+				},
+			},
+			ConnectionDetails: &networkingv1alpha1.ConnectorConnectionDetails{
+				Type: networkingv1alpha1.PublicKeyConnectorConnectionType,
+				PublicKey: &networkingv1alpha1.ConnectorConnectionDetailsPublicKey{
+					Id:            "node-123",
+					DiscoveryMode: networkingv1alpha1.DNSPublicKeyDiscoveryMode,
+					HomeRelay:     "https://relay.example.test",
+					Addresses: []networkingv1alpha1.PublicKeyConnectorAddress{
+						{Address: "127.0.0.1", Port: 80},
+					},
+				},
+			},
+		},
+	}
+
+	upstreamNamespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: httpProxy.Namespace}}
+	upstreamNamespace.SetUID(namespaceUID)
+
+	gatewayClass := &gatewayv1.GatewayClass{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-gateway-class"},
+		Spec: gatewayv1.GatewayClassSpec{
+			ControllerName: testConfig.Gateway.ControllerName,
+		},
+	}
+	connector.SetCreationTimestamp(metav1.Now())
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(testScheme).
+		WithObjects(httpProxy, upstreamNamespace, connector, gatewayClass).
+		WithStatusSubresource(httpProxy, connector).
+		WithStatusSubresource(&gatewayv1.Gateway{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+				obj.SetUID(uuid.NewUUID())
+				obj.SetCreationTimestamp(metav1.Now())
+				return c.Create(ctx, obj, opts...)
+			},
+		}).
+		Build()
+
+	// Downstream: anchor ConfigMap exists (from a previous cycle when EPP was on);
+	// no pre-existing EPP to keep things simple.
+	fakeDownstreamClient := fake.NewClientBuilder().
+		WithScheme(testScheme).
+		WithObjects(
+			&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: downstreamNamespaceName}},
+			&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{
+				Name:              fmt.Sprintf("anchor-%s", httpProxy.UID),
+				Namespace:         downstreamNamespaceName,
+				CreationTimestamp: metav1.Now(),
+			}},
+		).
+		Build()
+
+	mgr := &fakeMockManager{cl: fakeClient}
+	reconciler := &HTTPProxyReconciler{
+		mgr:               mgr,
+		Config:            testConfig,
+		DownstreamCluster: &fakeCluster{cl: fakeDownstreamClient},
+	}
+	gatewayReconciler := &GatewayReconciler{
+		mgr:               mgr,
+		Config:            testConfig,
+		DownstreamCluster: &fakeCluster{cl: fakeDownstreamClient},
+	}
+
+	req := mcreconcile.Request{
+		Request: reconcile.Request{
+			NamespacedName: client.ObjectKeyFromObject(httpProxy),
+		},
+		ClusterName: "test-cluster",
+	}
+
+	// Run three reconcile passes to let the HTTPProxy and Gateway settle.
+	for i := 0; i < 3; i++ {
+		_, err := reconciler.Reconcile(ctx, req)
+		assert.NoError(t, err)
+	}
+	_, err := gatewayReconciler.Reconcile(ctx, req)
+	assert.NoError(t, err)
+
+	// Simulate the gateway becoming accepted.
+	var gateway gatewayv1.Gateway
+	require.NoError(t, fakeClient.Get(ctx, client.ObjectKeyFromObject(httpProxy), &gateway))
+	apimeta.SetStatusCondition(&gateway.Status.Conditions, metav1.Condition{
+		Type:               string(gatewayv1.GatewayConditionAccepted),
+		Status:             metav1.ConditionTrue,
+		ObservedGeneration: gateway.Generation,
+		Reason:             "TestSuite",
+		Message:            "set by test suite",
+	})
+	require.NoError(t, fakeClient.Status().Update(ctx, &gateway))
+	setGatewayProgrammedWithDefaultHTTPSListener(&gateway)
+	require.NoError(t, fakeClient.Status().Update(ctx, &gateway))
+
+	_, err = reconciler.Reconcile(ctx, req)
+	assert.NoError(t, err)
+
+	// Key assertion: no EnvoyPatchPolicy must be created in the downstream
+	// cluster when EPP emission is disabled.
+	var patchList envoygatewayv1alpha1.EnvoyPatchPolicyList
+	assert.NoError(t, fakeDownstreamClient.List(ctx, &patchList))
+	assert.Empty(t, patchList.Items,
+		"EPP emission disabled: reconcileConnectorEnvoyPatchPolicy must NOT be called")
+}
+
+// TestHTTPProxyFinalizerCleanupEPPEmissionDisabled verifies that when
+// gateway.eppEmissionEnabled is false, the HTTPProxy finalizer cleanup does NOT
+// delete the connector EnvoyPatchPolicy from the downstream cluster (NSO did not
+// write it, so it must not delete it). The HTTPProxy finalizer must still be
+// removed so the object can be garbage-collected.
+func TestHTTPProxyFinalizerCleanupEPPEmissionDisabled(t *testing.T) {
+	logger := zap.New(zap.UseFlagOptions(&zap.Options{Development: true}))
+	ctx := log.IntoContext(context.Background(), logger)
+
+	testScheme := runtime.NewScheme()
+	assert.NoError(t, scheme.AddToScheme(testScheme))
+	assert.NoError(t, gatewayv1.Install(testScheme))
+	assert.NoError(t, envoygatewayv1alpha1.AddToScheme(testScheme))
+	assert.NoError(t, discoveryv1.AddToScheme(testScheme))
+	assert.NoError(t, networkingv1alpha.AddToScheme(testScheme))
+	assert.NoError(t, networkingv1alpha1.AddToScheme(testScheme))
+
+	eppOff := false
+	testConfig := config.NetworkServicesOperator{
+		HTTPProxy: config.HTTPProxyConfig{
+			GatewayClassName: "test-gateway-class",
+		},
+		Gateway: config.GatewayConfig{
+			ControllerName:             gatewayv1.GatewayController("test-gateway-class"),
+			DownstreamGatewayClassName: "test-downstream-gateway-class",
+			EPPEmissionEnabled:         &eppOff,
+		},
+	}
+
+	httpProxy := newHTTPProxy()
+	deletionTime := metav1.Now()
+	httpProxy.DeletionTimestamp = &deletionTime
+	httpProxy.Finalizers = append(httpProxy.Finalizers, httpProxyFinalizer)
+
+	namespaceUID := types.UID("33333333-3333-3333-3333-333333333333")
+	upstreamNamespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: httpProxy.Namespace}}
+	upstreamNamespace.SetUID(namespaceUID)
+
+	downstreamNamespaceName := fmt.Sprintf("ns-%s", namespaceUID)
+	downstreamNamespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: downstreamNamespaceName}}
+
+	// Pre-populate the downstream with a connector EPP. When EPP emission is
+	// disabled the cleanup must leave this EPP untouched.
+	downstreamPolicy := &envoygatewayv1alpha1.EnvoyPatchPolicy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      fmt.Sprintf("connector-%s", httpProxy.Name),
+			Namespace: downstreamNamespaceName,
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(testScheme).
+		WithObjects(httpProxy, upstreamNamespace).
+		WithStatusSubresource(httpProxy).
+		Build()
+
+	fakeDownstreamClient := fake.NewClientBuilder().
+		WithScheme(testScheme).
+		WithObjects(downstreamNamespace, downstreamPolicy).
+		Build()
+
+	reconciler := &HTTPProxyReconciler{
+		mgr:               &fakeMockManager{cl: fakeClient},
+		Config:            testConfig,
+		DownstreamCluster: &fakeCluster{cl: fakeDownstreamClient},
+	}
+
+	req := mcreconcile.Request{
+		Request: reconcile.Request{
+			NamespacedName: client.ObjectKeyFromObject(httpProxy),
+		},
+		ClusterName: "test-cluster",
+	}
+
+	_, err := reconciler.Reconcile(ctx, req)
+	assert.NoError(t, err)
+
+	// The connector EPP must NOT be deleted — NSO did not write it.
+	policyList := envoygatewayv1alpha1.EnvoyPatchPolicyList{}
+	assert.NoError(t, fakeDownstreamClient.List(ctx, &policyList))
+	assert.Len(t, policyList.Items, 1,
+		"EPP emission disabled: cleanup must NOT delete the connector EPP")
+	assert.Equal(t, fmt.Sprintf("connector-%s", httpProxy.Name), policyList.Items[0].Name)
+
+	// The finalizer must still have been removed so GC can proceed.
+	updatedProxy := &networkingv1alpha.HTTPProxy{}
+	err = fakeClient.Get(ctx, client.ObjectKeyFromObject(httpProxy), updatedProxy)
+	if err == nil {
+		assert.False(t, controllerutil.ContainsFinalizer(updatedProxy, httpProxyFinalizer),
+			"finalizer must be removed even when EPP emission is disabled")
 	} else {
 		assert.True(t, apierrors.IsNotFound(err))
 	}
@@ -1820,7 +2294,7 @@ type fakeMockManager struct {
 	cl client.Client
 }
 
-func (m *fakeMockManager) GetCluster(ctx context.Context, clusterName string) (cluster.Cluster, error) {
+func (m *fakeMockManager) GetCluster(ctx context.Context, clusterName multicluster.ClusterName) (cluster.Cluster, error) {
 	return &fakeCluster{cl: m.cl}, nil
 }
 
@@ -2406,6 +2880,117 @@ func TestBuildCertificateStatuses(t *testing.T) {
 	}
 }
 
+func TestEligibleConnectorHTTPSListeners(t *testing.T) {
+	t.Parallel()
+
+	programmedListenerStatus := func(name string) gatewayv1.ListenerStatus {
+		return gatewayv1.ListenerStatus{
+			Name: gatewayv1.SectionName(name),
+			Conditions: []metav1.Condition{
+				{
+					Type:   string(gatewayv1.ListenerConditionProgrammed),
+					Status: metav1.ConditionTrue,
+					Reason: string(gatewayv1.ListenerReasonProgrammed),
+				},
+			},
+		}
+	}
+
+	httpsListener := func(name string) gatewayv1.Listener {
+		return gatewayv1.Listener{
+			Name:     gatewayv1.SectionName(name),
+			Protocol: gatewayv1.HTTPSProtocolType,
+		}
+	}
+
+	tests := []struct {
+		name    string
+		gateway *gatewayv1.Gateway
+		want    []string
+	}{
+		{
+			name: "programmed default-https is eligible",
+			gateway: &gatewayv1.Gateway{
+				ObjectMeta: metav1.ObjectMeta{Name: "gw"},
+				Spec: gatewayv1.GatewaySpec{
+					Listeners: []gatewayv1.Listener{httpsListener("default-https")},
+				},
+				Status: gatewayv1.GatewayStatus{
+					Listeners: []gatewayv1.ListenerStatus{programmedListenerStatus("default-https")},
+				},
+			},
+			want: []string{"default-https"},
+		},
+		{
+			name: "programmed custom listener is eligible",
+			gateway: &gatewayv1.Gateway{
+				ObjectMeta: metav1.ObjectMeta{Name: "gw"},
+				Spec: gatewayv1.GatewaySpec{
+					Listeners: []gatewayv1.Listener{httpsListener("https-hostname-0")},
+				},
+				Status: gatewayv1.GatewayStatus{
+					Listeners: []gatewayv1.ListenerStatus{programmedListenerStatus("https-hostname-0")},
+				},
+			},
+			want: []string{"https-hostname-0"},
+		},
+		{
+			name: "not-programmed listener is skipped",
+			gateway: &gatewayv1.Gateway{
+				ObjectMeta: metav1.ObjectMeta{Name: "gw"},
+				Spec: gatewayv1.GatewaySpec{
+					Listeners: []gatewayv1.Listener{httpsListener("https-hostname-0")},
+				},
+			},
+			want: []string{},
+		},
+		{
+			name: "only programmed listeners are eligible",
+			gateway: &gatewayv1.Gateway{
+				ObjectMeta: metav1.ObjectMeta{Name: "gw"},
+				Spec: gatewayv1.GatewaySpec{
+					Listeners: []gatewayv1.Listener{
+						httpsListener("default-https"),
+						httpsListener("https-hostname-0"),
+						httpsListener("https-hostname-1"),
+					},
+				},
+				Status: gatewayv1.GatewayStatus{
+					Listeners: []gatewayv1.ListenerStatus{
+						programmedListenerStatus("default-https"),
+						programmedListenerStatus("https-hostname-0"),
+					},
+				},
+			},
+			want: []string{"default-https", "https-hostname-0"},
+		},
+		{
+			name: "non-HTTPS listeners are ignored",
+			gateway: &gatewayv1.Gateway{
+				ObjectMeta: metav1.ObjectMeta{Name: "gw"},
+				Spec: gatewayv1.GatewaySpec{
+					Listeners: []gatewayv1.Listener{
+						{Name: "default-http", Protocol: gatewayv1.HTTPProtocolType},
+						httpsListener("default-https"),
+					},
+				},
+				Status: gatewayv1.GatewayStatus{
+					Listeners: []gatewayv1.ListenerStatus{programmedListenerStatus("default-https")},
+				},
+			},
+			want: []string{"default-https"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := eligibleConnectorHTTPSListeners(tt.gateway)
+			assert.ElementsMatch(t, tt.want, got.UnsortedList())
+		})
+	}
+}
+
 // clusterWithClient implements cluster.Cluster for tests.
 type clusterWithClient struct {
 	c      client.Client
@@ -2421,9 +3006,10 @@ func (c *clusterWithClient) GetFieldIndexer() client.FieldIndexer { return nil }
 func (c *clusterWithClient) GetEventRecorderFor(string) record.EventRecorder {
 	return record.NewFakeRecorder(10)
 }
-func (c *clusterWithClient) GetRESTMapper() apimeta.RESTMapper { return nil }
-func (c *clusterWithClient) GetAPIReader() client.Reader       { return c.c }
-func (c *clusterWithClient) Start(context.Context) error       { return nil }
+func (c *clusterWithClient) GetEventRecorder(string) events.EventRecorder { return nil }
+func (c *clusterWithClient) GetRESTMapper() apimeta.RESTMapper            { return nil }
+func (c *clusterWithClient) GetAPIReader() client.Reader                  { return c.c }
+func (c *clusterWithClient) Start(context.Context) error                  { return nil }
 
 func TestSetCertificatesReadyCondition(t *testing.T) {
 	t.Parallel()

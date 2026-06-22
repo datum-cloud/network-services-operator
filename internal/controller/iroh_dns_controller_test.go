@@ -202,18 +202,24 @@ func TestBuildDesiredRecordSet_RecordContents(t *testing.T) {
 }
 
 func TestEncodeDecodeIrohClusterLabel(t *testing.T) {
-	tests := []string{
-		"",
-		"/test-project-staging",
-		"/zachs-project-z5pegw",
-		"plain-no-slashes",
-		"/with/multiple/slashes",
-	}
-	for _, want := range tests {
-		t.Run(want, func(t *testing.T) {
-			got := decodeIrohClusterLabel(encodeIrohClusterLabel(want))
-			if got != want {
+	// Modern (slash-less) cluster names round-trip exactly.
+	for _, want := range []string{"", "test-project-staging", "zachs-project-z5pegw", "plain-no-slashes"} {
+		t.Run("roundtrip/"+want, func(t *testing.T) {
+			if got := decodeIrohClusterLabel(encodeIrohClusterLabel(want)); got != want {
 				t.Errorf("round-trip mismatch: encode(%q) -> decode = %q", want, got)
+			}
+		})
+	}
+
+	// Labels written before #196 carried a leading slash; decode strips it so
+	// they resolve to the slash-less name the provider now engages.
+	for label, want := range map[string]string{
+		"cluster-_test-project-staging": "test-project-staging",
+		"cluster-_zachs-project-z5pegw": "zachs-project-z5pegw",
+	} {
+		t.Run("legacy/"+label, func(t *testing.T) {
+			if got := decodeIrohClusterLabel(label); got != want {
+				t.Errorf("decodeIrohClusterLabel(%q) = %q, want %q", label, got, want)
 			}
 		})
 	}

@@ -368,7 +368,7 @@ func TestEnsureDownstreamGatewayWildcardCert(t *testing.T) {
 								From: ptr.To(gatewayv1.NamespacesFromSame),
 							},
 						},
-						TLS: &gatewayv1.GatewayTLSConfig{
+						TLS: &gatewayv1.ListenerTLSConfig{
 							Mode: ptr.To(gatewayv1.TLSModeTerminate),
 							Options: map[gatewayv1.AnnotationKey]gatewayv1.AnnotationValue{
 								gatewayv1.AnnotationKey(certificateIssuerTLSOption): "test-issuer",
@@ -452,7 +452,7 @@ func TestEnsureDownstreamGatewayWildcardCert(t *testing.T) {
 								From: ptr.To(gatewayv1.NamespacesFromSame),
 							},
 						},
-						TLS: &gatewayv1.GatewayTLSConfig{
+						TLS: &gatewayv1.ListenerTLSConfig{
 							Mode: ptr.To(gatewayv1.TLSModeTerminate),
 							Options: map[gatewayv1.AnnotationKey]gatewayv1.AnnotationValue{
 								gatewayv1.AnnotationKey(certificateIssuerTLSOption): "test-issuer",
@@ -567,7 +567,7 @@ func TestEnsureDownstreamGatewayWildcardCert(t *testing.T) {
 								From: ptr.To(gatewayv1.NamespacesFromSame),
 							},
 						},
-						TLS: &gatewayv1.GatewayTLSConfig{
+						TLS: &gatewayv1.ListenerTLSConfig{
 							Mode: ptr.To(gatewayv1.TLSModeTerminate),
 							Options: map[gatewayv1.AnnotationKey]gatewayv1.AnnotationValue{
 								gatewayv1.AnnotationKey(certificateIssuerTLSOption): autoIssuerSentinel,
@@ -1306,7 +1306,7 @@ func TestGetDesiredDownstreamGateway_UnclaimedHostnameSkipped(t *testing.T) {
 					Port:     443,
 					Protocol: gatewayv1.HTTPSProtocolType,
 					Hostname: ptr.To(gatewayv1.Hostname("unclaimed.example.com")),
-					TLS: &gatewayv1.GatewayTLSConfig{
+					TLS: &gatewayv1.ListenerTLSConfig{
 						Options: map[gatewayv1.AnnotationKey]gatewayv1.AnnotationValue{
 							certificateIssuerTLSOption: "letsencrypt",
 						},
@@ -1324,7 +1324,7 @@ func TestGetDesiredDownstreamGateway_UnclaimedHostnameSkipped(t *testing.T) {
 					Port:     443,
 					Protocol: gatewayv1.HTTPSProtocolType,
 					Hostname: ptr.To(gatewayv1.Hostname("claimed.example.com")),
-					TLS: &gatewayv1.GatewayTLSConfig{
+					TLS: &gatewayv1.ListenerTLSConfig{
 						Options: map[gatewayv1.AnnotationKey]gatewayv1.AnnotationValue{
 							certificateIssuerTLSOption: "letsencrypt",
 						},
@@ -1342,7 +1342,7 @@ func TestGetDesiredDownstreamGateway_UnclaimedHostnameSkipped(t *testing.T) {
 					Port:     443,
 					Protocol: gatewayv1.HTTPSProtocolType,
 					Hostname: ptr.To(gatewayv1.Hostname("unclaimed.example.com")),
-					TLS: &gatewayv1.GatewayTLSConfig{
+					TLS: &gatewayv1.ListenerTLSConfig{
 						Options: map[gatewayv1.AnnotationKey]gatewayv1.AnnotationValue{
 							certificateIssuerTLSOption: "letsencrypt",
 						},
@@ -1353,7 +1353,7 @@ func TestGetDesiredDownstreamGateway_UnclaimedHostnameSkipped(t *testing.T) {
 					Port:     443,
 					Protocol: gatewayv1.HTTPSProtocolType,
 					Hostname: ptr.To(gatewayv1.Hostname("claimed.example.com")),
-					TLS: &gatewayv1.GatewayTLSConfig{
+					TLS: &gatewayv1.ListenerTLSConfig{
 						Options: map[gatewayv1.AnnotationKey]gatewayv1.AnnotationValue{
 							certificateIssuerTLSOption: "letsencrypt",
 						},

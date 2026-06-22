@@ -1,0 +1,165 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: envoy-gateway-extension-server
+  namespace: system
+  labels:
+    app.kubernetes.io/name: network-services-operator
+    app.kubernetes.io/component: envoy-gateway-extension-server
+    app.kubernetes.io/managed-by: kustomize
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # With failOpen: false, 0 serving replicas freezes xDS fleet-wide.
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: network-services-operator
+      app.kubernetes.io/component: envoy-gateway-extension-server
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: network-services-operator
+        app.kubernetes.io/component: envoy-gateway-extension-server
+    spec:
+      serviceAccountName: envoy-gateway-extension-server
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          nodeTaintsPolicy: Honor
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/component: envoy-gateway-extension-server
+      containers:
+        - name: envoy-gateway-extension-server
+          image: ghcr.io/datum-cloud/network-services-operator:latest
+          imagePullPolicy: IfNotPresent
+          command:
+            - /network-services
+            - envoy-gateway-extension-server
+          # Args reference env vars so overlays can override any value with a
+          # strategic-merge patch on env (matched by name) instead of rewriting
+          # the args list.
+          args:
+            - --grpc-addr=$(GRPC_ADDR)
+            - --health-addr=$(HEALTH_ADDR)
+            - --tls-cert=$(TLS_CERT)
+            - --tls-key=$(TLS_KEY)
+            - --tls-client-ca=$(TLS_CLIENT_CA)
+            - --server-config=$(SERVER_CONFIG)
+          env:
+            - name: GRPC_ADDR
+              value: ":5005"
+            - name: HEALTH_ADDR
+              value: ":8080"
+            - name: TLS_CERT
+              value: /tls/tls.crt
+            - name: TLS_KEY
+              value: /tls/tls.key
+            - name: TLS_CLIENT_CA
+              value: /tls-ca/ca.crt
+            # Empty by default (no operator config); overlays set this to a
+            # mounted path to apply Coraza directives.
+            - name: SERVER_CONFIG
+              value: ""
+          ports:
+            - name: grpc
+              containerPort: 5005
+              protocol: TCP
+            - name: health
+              containerPort: 8080
+              protocol: TCP
+          # 60×5s startup window covers informer cache sync before liveness starts.
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            periodSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            periodSeconds: 20
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: "1"
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          lifecycle:
+            preStop:
+              sleep:
+                seconds: 5
+          volumeMounts:
+            - name: tls
+              mountPath: /tls
+              readOnly: true
+            - name: tls-ca
+              mountPath: /tls-ca
+              readOnly: true
+            # Branded data-plane error pages. Backed by an OPTIONAL ConfigMap so
+            # the pod starts even when the ConfigMap is absent — the extension
+            # server then serves the page compiled into the operator image.
+            # The operator config's gateway.errorPage.bodyPath points here.
+            - name: error-pages
+              mountPath: /etc/datum/error-pages
+              readOnly: true
+      terminationGracePeriodSeconds: 20
+      volumes:
+        # issuer-name and dns-names are placeholders — an overlay must patch them.
+        - name: tls
+          csi:
+            driver: csi.cert-manager.io
+            readOnly: true
+            volumeAttributes:
+              csi.cert-manager.io/issuer-kind: ClusterIssuer
+              csi.cert-manager.io/issuer-name: placeholder-issuer
+              csi.cert-manager.io/common-name: envoy-gateway-extension-server
+              csi.cert-manager.io/dns-names: "network-services-operator-envoy-gateway-extension-server.network-services-operator-system.svc,network-services-operator-envoy-gateway-extension-server.network-services-operator-system.svc.cluster.local"
+              csi.cert-manager.io/key-usages: server auth
+              csi.cert-manager.io/fs-group: "65532"
+        # Placeholder CA bundle (key ca.crt) — an overlay must patch the ConfigMap name.
+        - name: tls-ca
+          configMap:
+            name: placeholder-ca-bundle
+            items:
+              - key: ca.crt
+                path: ca.crt
+        # Optional branded error-page content. The ConfigMap is created in the
+        # infrastructure (GitOps) repo and carries the key error-5xx.html. With
+        # optional: true the pod starts cleanly when it is absent, in which case
+        # the extension server serves the embedded default page.
+        - name: error-pages
+          configMap:
+            name: envoy-error-pages
+            optional: true
+            items:
+              - key: error-5xx.html
+                path: error-5xx.html

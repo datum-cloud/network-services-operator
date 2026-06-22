@@ -5,6 +5,8 @@ includes:
   docs:
     taskfile: ./docs/Taskfile.yaml
     dir: ./docs
+  dev:
+    taskfile: ./Taskfile.dev.yaml
 
 tasks:
   validate-kustomizations:

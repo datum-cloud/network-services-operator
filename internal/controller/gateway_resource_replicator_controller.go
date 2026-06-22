@@ -4,11 +4,15 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
@@ -28,14 +32,32 @@ import (
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mchandler "sigs.k8s.io/multicluster-runtime/pkg/handler"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
+	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 	mcsource "sigs.k8s.io/multicluster-runtime/pkg/source"
 
+	networkingv1alpha1 "go.datum.net/network-services-operator/api/v1alpha1"
 	"go.datum.net/network-services-operator/internal/config"
 	downstreamclient "go.datum.net/network-services-operator/internal/downstreamclient"
 )
 
 const gatewayResourceReplicatorFinalizer = "gateway.networking.datumapis.com/gateway-resource-replicator"
+
+// +kubebuilder:rbac:groups=networking.datumapis.com,resources=trafficprotectionpolicies,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=networking.datumapis.com,resources=trafficprotectionpolicies/finalizers,verbs=update
+// +kubebuilder:rbac:groups=networking.datumapis.com,resources=httpproxies,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=networking.datumapis.com,resources=httpproxies/finalizers,verbs=update
+// +kubebuilder:rbac:groups=networking.datumapis.com,resources=connectors,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=networking.datumapis.com,resources=connectors/finalizers,verbs=update
+// +kubebuilder:rbac:groups=networking.datumapis.com,resources=connectors/status,verbs=get;update;patch
+// The replicator's default resource set also mirrors label-selected ConfigMaps/Secrets and the
+// Envoy Gateway policy types. These watches require list/watch on the upstream cluster; without
+// them the corresponding informers fail to sync and the replicator silently never reconciles ANY
+// resource (including TrafficProtectionPolicy/HTTPProxy/Connector). See config.go
+// SetDefaults_GatewayResourceReplicatorConfig.
+// +kubebuilder:rbac:groups="",resources=configmaps;secrets,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=gateway.envoyproxy.io,resources=backends;backendtrafficpolicies;securitypolicies,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=gateway.envoyproxy.io,resources=backends/finalizers;backendtrafficpolicies/finalizers;securitypolicies/finalizers,verbs=update
 
 type statusTransformFunc func(ctx context.Context, upstreamNamespace string, controllerName string, status map[string]any) (map[string]any, error)
 
@@ -50,10 +72,25 @@ type replicationResourceConfig struct {
 	statusGVK         *schema.GroupVersionKind
 	statusTransform   statusTransformFunc
 	conditionHandlers conditionReasonHandlers
+
+	// mirrorStatusToAnnotation, when true, copies the upstream resource's full
+	// .status verbatim into the UpstreamStatusAnnotation on the downstream
+	// object's metadata. Karmada propagates resource-template annotations (but
+	// NOT the status subresource) to member clusters, so this is how an upstream
+	// status reaches a downstream consumer on a member cluster. Resource-agnostic
+	// and opt-in per type. Implies skipUpstreamStatusSync should also be set.
+	mirrorStatusToAnnotation bool
+
+	// skipUpstreamStatusSync suppresses the normal downstream→upstream status
+	// propagation. Set this for resource types where the upstream status is
+	// managed by NSO's own controllers (not by a downstream controller), so
+	// the replicator must NOT overwrite or clear it.
+	skipUpstreamStatusSync bool
 }
 
 type replicationResource struct {
 	gvk                       schema.GroupVersionKind
+	downstreamGVK             schema.GroupVersionKind
 	replicationResourceConfig replicationResourceConfig
 	controllerName            string
 }
@@ -64,10 +101,10 @@ func initReplicationResourceConfigs() map[string]replicationResourceConfig {
 	configs := make(map[string]replicationResourceConfig)
 
 	gatewayEnvoyGVKs := []schema.GroupVersionKind{
-		{Group: "gateway.envoyproxy.io", Version: "v1alpha1", Kind: "BackendTrafficPolicy"},
-		{Group: "gateway.envoyproxy.io", Version: "v1alpha1", Kind: "SecurityPolicy"},
-		{Group: "gateway.envoyproxy.io", Version: "v1alpha1", Kind: "HTTPRouteFilter"},
-		{Group: "gateway.networking.k8s.io", Version: "v1alpha3", Kind: "BackendTLSPolicy"},
+		{Group: groupEnvoyGateway, Version: versionV1Alpha1, Kind: "BackendTrafficPolicy"},
+		{Group: groupEnvoyGateway, Version: versionV1Alpha1, Kind: "SecurityPolicy"},
+		{Group: groupEnvoyGateway, Version: versionV1Alpha1, Kind: "HTTPRouteFilter"},
+		{Group: groupGatewayNetworking, Version: "v1alpha3", Kind: KindBackendTLSPolicy},
 	}
 
 	for _, gvk := range gatewayEnvoyGVKs {
@@ -77,24 +114,52 @@ func initReplicationResourceConfigs() map[string]replicationResourceConfig {
 		}
 
 		// Status updates have to go to the storage version of a resource
-		if gvk.Group == "gateway.networking.k8s.io" && gvk.Kind == "BackendTLSPolicy" {
+		if gvk.Group == groupGatewayNetworking && gvk.Kind == KindBackendTLSPolicy {
 			cfg.statusGVK = &schema.GroupVersionKind{
-				Group:   "gateway.networking.k8s.io",
+				Group:   groupGatewayNetworking,
 				Version: "v1",
-				Kind:    "BackendTLSPolicy",
+				Kind:    KindBackendTLSPolicy,
 			}
 		}
 
 		configs[gvkKey(gvk)] = cfg
 	}
 
-	backendGVK := schema.GroupVersionKind{Group: "gateway.envoyproxy.io", Version: "v1alpha1", Kind: "Backend"}
+	backendGVK := schema.GroupVersionKind{Group: groupEnvoyGateway, Version: versionV1Alpha1, Kind: "Backend"}
 
 	configs[gvkKey(backendGVK)] = replicationResourceConfig{
 		statusTransform: func(ctx context.Context, upstreamNamespace, controllerName string, status map[string]any) (map[string]any, error) {
 			return status, nil
 		},
 		conditionHandlers: defaultGatewayEnvoyReasonHandlers(),
+	}
+
+	// Policy types whose status is owned by NSO's upstream controllers —
+	// the replicator mirrors spec downstream so the extension server can read
+	// them from the local edge cluster. The replicator must NOT propagate
+	// downstream status back upstream (there is no downstream controller
+	// writing to these objects).
+	policyGVKs := []schema.GroupVersionKind{
+		{Group: groupNetworkingDatumAPIs, Version: versionV1Alpha, Kind: KindTrafficProtectionPolicy},
+		{Group: groupNetworkingDatumAPIs, Version: versionV1Alpha, Kind: KindHTTPProxy},
+	}
+	for _, gvk := range policyGVKs {
+		configs[gvkKey(gvk)] = replicationResourceConfig{
+			skipUpstreamStatusSync: true,
+		}
+	}
+
+	// Connector status (Ready condition + connectionDetails) is authoritative
+	// upstream and must be readable by the edge extension server so it can
+	// determine whether a tunnel is online before injecting connector cluster
+	// patches. The extension server runs on a member cluster, and Karmada does
+	// not propagate the status subresource hub→member — only spec + metadata.
+	// Mirror the upstream status into an annotation (which Karmada DOES
+	// propagate) instead. Do not propagate status back upstream.
+	connectorGVK := schema.GroupVersionKind{Group: groupNetworkingDatumAPIs, Version: versionV1Alpha1, Kind: KindConnector}
+	configs[gvkKey(connectorGVK)] = replicationResourceConfig{
+		mirrorStatusToAnnotation: true,
+		skipUpstreamStatusSync:   true,
 	}
 
 	return configs
@@ -115,8 +180,8 @@ func (r *GatewayResourceReplicatorReconciler) Reconcile(ctx context.Context, req
 	logger := log.FromContext(ctx).WithValues(
 		"gvk", req.GVK.String(),
 		"cluster", req.ClusterName,
-		"namespace", req.Namespace,
-		"name", req.Name,
+		jsonKeyNamespace, req.Namespace,
+		jsonKeyName, req.Name,
 	)
 	ctx = log.IntoContext(ctx, logger)
 
@@ -133,6 +198,22 @@ func (r *GatewayResourceReplicatorReconciler) Reconcile(ctx context.Context, req
 
 	upstreamClient := upstreamCluster.GetClient()
 
+	// In single-cluster mode the downstream ns-<uid> namespaces live in the same
+	// cluster as upstream namespaces. Skip objects whose namespace is already a
+	// downstream-mapped namespace to prevent unbounded ns-<uid>→ns-ns-<uid>→…
+	// replication recursion.
+	if req.Namespace != "" {
+		var ns corev1.Namespace
+		if err := upstreamClient.Get(ctx, client.ObjectKey{Name: req.Namespace}, &ns); err == nil {
+			if _, ok := ns.Labels[downstreamclient.UpstreamOwnerNamespaceLabel]; ok {
+				logger.V(5).Info("skipping downstream-mapped namespace as replication source")
+				return ctrl.Result{}, nil
+			}
+		} else if !apierrors.IsNotFound(err) {
+			return ctrl.Result{}, fmt.Errorf("failed to check namespace labels: %w", err)
+		}
+	}
+
 	upstreamObj := &unstructured.Unstructured{}
 	upstreamObj.SetGroupVersionKind(req.GVK)
 	if err := upstreamClient.Get(ctx, req.NamespacedName, upstreamObj); err != nil {
@@ -145,10 +226,10 @@ func (r *GatewayResourceReplicatorReconciler) Reconcile(ctx context.Context, req
 	logger.Info("reconciling resource")
 	defer logger.Info("reconcile complete")
 
-	downstreamStrategy := downstreamclient.NewMappedNamespaceResourceStrategy(req.ClusterName, upstreamClient, r.DownstreamCluster.GetClient())
+	downstreamStrategy := downstreamclient.NewMappedNamespaceResourceStrategy(string(req.ClusterName), upstreamClient, r.DownstreamCluster.GetClient())
 
 	if !upstreamObj.GetDeletionTimestamp().IsZero() {
-		return r.finalizeResource(ctx, upstreamClient, upstreamObj, downstreamStrategy)
+		return r.finalizeResource(ctx, resourceCfg, upstreamClient, upstreamObj, downstreamStrategy)
 	}
 
 	if !controllerutil.ContainsFinalizer(upstreamObj, gatewayResourceReplicatorFinalizer) {
@@ -172,12 +253,13 @@ func (r *GatewayResourceReplicatorReconciler) Reconcile(ctx context.Context, req
 // nolint:unparam
 func (r *GatewayResourceReplicatorReconciler) finalizeResource(
 	ctx context.Context,
+	resource replicationResource,
 	upstreamClient client.Client,
 	upstreamObj *unstructured.Unstructured,
 	downstreamStrategy downstreamclient.ResourceStrategy,
 ) (ctrl.Result, error) {
 	if controllerutil.ContainsFinalizer(upstreamObj, gatewayResourceReplicatorFinalizer) {
-		if err := r.finalize(ctx, upstreamObj, downstreamStrategy); err != nil {
+		if err := r.finalize(ctx, resource, upstreamObj, downstreamStrategy); err != nil {
 			return ctrl.Result{}, err
 		}
 
@@ -201,13 +283,25 @@ func (r *GatewayResourceReplicatorReconciler) ensureDownstreamResource(
 	downstreamStrategy downstreamclient.ResourceStrategy,
 ) error {
 	logger := log.FromContext(ctx)
+
+	// Time the full downstream sync (CreateOrUpdate) per resource kind so
+	// replication latency regressions per family are attributable.
+	syncStart := time.Now()
+	syncOutcome := "success"
+	defer func() {
+		replicatorSyncDuration.WithLabelValues(resource.gvk.Kind, syncOutcome).Observe(
+			time.Since(syncStart).Seconds(),
+		)
+	}()
+
 	downstreamObjectMeta, err := downstreamStrategy.ObjectMetaFromUpstreamObject(ctx, upstreamObj)
 	if err != nil {
+		syncOutcome = syncOutcomeError
 		return fmt.Errorf("failed to derive downstream metadata: %w", err)
 	}
 
 	downstreamObj := &unstructured.Unstructured{}
-	downstreamObj.SetGroupVersionKind(upstreamObj.GroupVersionKind())
+	downstreamObj.SetGroupVersionKind(resource.downstreamGVK)
 	downstreamObj.SetName(downstreamObjectMeta.Name)
 	downstreamObj.SetNamespace(downstreamObjectMeta.Namespace)
 
@@ -226,9 +320,26 @@ func (r *GatewayResourceReplicatorReconciler) ensureDownstreamResource(
 			return fmt.Errorf("failed to set downstream controller reference: %w", err)
 		}
 
+		// Mirror the upstream status into an annotation on the downstream
+		// object's metadata. This is part of the same CreateOrUpdate Update, so it
+		// is persisted as ordinary metadata (which Karmada propagates to members)
+		// — no status subresource write involved.
+		if resource.replicationResourceConfig.mirrorStatusToAnnotation {
+			if err := setUpstreamStatusAnnotation(downstreamObj, upstreamObj); err != nil {
+				return err
+			}
+		}
+
 		return nil
 	})
 	if err != nil {
+		// Conflict errors are retried automatically by controller-runtime but are
+		// otherwise invisible. Count them separately so a rising rate signals
+		// replication-path saturation under high churn.
+		if apierrors.IsConflict(err) {
+			replicatorConflictsTotal.WithLabelValues(resource.gvk.Kind).Inc()
+		}
+		syncOutcome = syncOutcomeError
 		return fmt.Errorf("failed to ensure downstream resource %s/%s: %w", downstreamObj.GetNamespace(), downstreamObj.GetName(), err)
 	}
 
@@ -242,10 +353,44 @@ func (r *GatewayResourceReplicatorReconciler) ensureDownstreamResource(
 		)
 	}
 
-	if err := r.syncUpstreamStatus(ctx, resource, upstreamClient, upstreamObj, downstreamObjectMeta, downstreamStrategy); err != nil {
-		return err
+	// Propagate downstream status → upstream for types where a downstream
+	// controller (e.g. Envoy Gateway) writes acceptance conditions. Skip for
+	// types whose status is owned by NSO's own upstream controllers.
+	if !resource.replicationResourceConfig.skipUpstreamStatusSync {
+		if err := r.syncUpstreamStatus(ctx, resource, upstreamClient, upstreamObj, downstreamObjectMeta, downstreamStrategy); err != nil {
+			syncOutcome = syncOutcomeError
+			return err
+		}
 	}
 
+	return nil
+}
+
+// setUpstreamStatusAnnotation copies the upstream resource's full .status
+// verbatim into the UpstreamStatusAnnotation on the downstream object's
+// metadata. It is the Karmada-friendly replacement for mirroring the status
+// subresource downstream: Karmada propagates a resource template's metadata
+// (annotations) to member clusters but not its status, so a downstream consumer
+// on a member cluster reads the upstream status from this annotation instead.
+// The copy is resource-agnostic — no field-level knowledge of any status shape.
+func setUpstreamStatusAnnotation(downstreamObj, upstreamObj *unstructured.Unstructured) error {
+	statusRaw, ok := upstreamObj.Object[jsonKeyStatus]
+	if !ok {
+		// No upstream status yet — nothing to mirror.
+		return nil
+	}
+
+	raw, err := json.Marshal(statusRaw)
+	if err != nil {
+		return fmt.Errorf("failed to marshal upstream status: %w", err)
+	}
+
+	annotations := downstreamObj.GetAnnotations()
+	if annotations == nil {
+		annotations = make(map[string]string, 1)
+	}
+	annotations[networkingv1alpha1.UpstreamStatusAnnotation] = string(raw)
+	downstreamObj.SetAnnotations(annotations)
 	return nil
 }
 
@@ -259,7 +404,7 @@ func (r *GatewayResourceReplicatorReconciler) syncUpstreamStatus(
 ) error {
 	logger := log.FromContext(ctx)
 	downstreamObj := &unstructured.Unstructured{}
-	downstreamObj.SetGroupVersionKind(upstreamObj.GroupVersionKind())
+	downstreamObj.SetGroupVersionKind(resource.downstreamGVK)
 
 	if err := downstreamStrategy.GetClient().Get(ctx, client.ObjectKey{Name: downstreamMeta.Name, Namespace: downstreamMeta.Namespace}, downstreamObj); err != nil {
 		if apierrors.IsNotFound(err) {
@@ -268,7 +413,7 @@ func (r *GatewayResourceReplicatorReconciler) syncUpstreamStatus(
 		return fmt.Errorf("failed to fetch downstream resource %s/%s for status sync: %w", downstreamMeta.Namespace, downstreamMeta.Name, err)
 	}
 
-	downstreamStatus, ok := downstreamObj.Object["status"]
+	downstreamStatus, ok := downstreamObj.Object[jsonKeyStatus]
 	if !ok {
 		return r.clearUpstreamStatusIfNeeded(ctx, resource, upstreamClient, upstreamObj)
 	}
@@ -288,7 +433,7 @@ func (r *GatewayResourceReplicatorReconciler) syncUpstreamStatus(
 
 	filterConditionMessagesInStatus(statusMap, resource.replicationResourceConfig.conditionHandlers)
 
-	existingStatus, existingHas := upstreamObj.Object["status"]
+	existingStatus, existingHas := upstreamObj.Object[jsonKeyStatus]
 	if existingHas {
 		if existingMap, ok := runtime.DeepCopyJSONValue(existingStatus).(map[string]any); ok {
 			if apiequality.Semantic.DeepEqual(existingMap, statusMap) {
@@ -304,9 +449,9 @@ func (r *GatewayResourceReplicatorReconciler) syncUpstreamStatus(
 	upstreamCopy := upstreamObj.DeepCopy()
 
 	if len(statusMap) == 0 {
-		delete(upstreamCopy.Object, "status")
+		delete(upstreamCopy.Object, jsonKeyStatus)
 	} else {
-		upstreamCopy.Object["status"] = statusMap
+		upstreamCopy.Object[jsonKeyStatus] = statusMap
 	}
 
 	if resource.replicationResourceConfig.statusGVK != nil {
@@ -323,8 +468,8 @@ func (r *GatewayResourceReplicatorReconciler) syncUpstreamStatus(
 	logger.Info(
 		"upstream status synced",
 		"gvk", upstreamObj.GroupVersionKind().String(),
-		"namespace", upstreamObj.GetNamespace(),
-		"name", upstreamObj.GetName(),
+		jsonKeyNamespace, upstreamObj.GetNamespace(),
+		jsonKeyName, upstreamObj.GetName(),
 	)
 
 	return nil
@@ -337,7 +482,7 @@ func (r *GatewayResourceReplicatorReconciler) clearUpstreamStatusIfNeeded(
 	upstreamObj *unstructured.Unstructured,
 ) error {
 	logger := log.FromContext(ctx)
-	existingStatus, ok := upstreamObj.Object["status"]
+	existingStatus, ok := upstreamObj.Object[jsonKeyStatus]
 	if !ok {
 		return nil
 	}
@@ -347,7 +492,7 @@ func (r *GatewayResourceReplicatorReconciler) clearUpstreamStatusIfNeeded(
 	}
 
 	upstreamCopy := upstreamObj.DeepCopy()
-	delete(upstreamCopy.Object, "status")
+	delete(upstreamCopy.Object, jsonKeyStatus)
 	if resource.replicationResourceConfig.statusGVK != nil {
 		upstreamCopy.SetGroupVersionKind(*resource.replicationResourceConfig.statusGVK)
 	}
@@ -362,8 +507,8 @@ func (r *GatewayResourceReplicatorReconciler) clearUpstreamStatusIfNeeded(
 	logger.Info(
 		"upstream status cleared",
 		"gvk", upstreamObj.GroupVersionKind().String(),
-		"namespace", upstreamObj.GetNamespace(),
-		"name", upstreamObj.GetName(),
+		jsonKeyNamespace, upstreamObj.GetNamespace(),
+		jsonKeyName, upstreamObj.GetName(),
 	)
 
 	return nil
@@ -409,12 +554,12 @@ func filterConditionList(conditions []any, handlers conditionReasonHandlers) {
 			continue
 		}
 
-		statusValue, _ := condition["status"].(string)
+		statusValue, _ := condition[jsonKeyStatus].(string)
 		if statusValue != string(metav1.ConditionFalse) {
 			continue
 		}
 
-		typeValue, _ := condition["type"].(string)
+		typeValue, _ := condition[jsonKeyType].(string)
 		reasonValue, _ := condition["reason"].(string)
 		messageValue, _ := condition["message"].(string)
 
@@ -478,15 +623,16 @@ func transformGatewayEnvoyPolicyStatus(_ context.Context, upstreamNamespace stri
 }
 
 func defaultGatewayEnvoyReasonHandlers() conditionReasonHandlers {
+	// In gateway-api v1.5.1, policy condition constants moved from v1alpha2 to v1.
 	return conditionReasonHandlers{
-		string(gwapiv1alpha2.PolicyConditionAccepted): {
-			string(gwapiv1alpha2.PolicyReasonConflicted): {
+		string(gwapiv1.PolicyConditionAccepted): {
+			string(gwapiv1.PolicyReasonConflicted): {
 				Message: "conflicting policy attachments detected",
 			},
-			string(gwapiv1alpha2.PolicyReasonInvalid): {
+			string(gwapiv1.PolicyReasonInvalid): {
 				Message: "policy configuration is invalid",
 			},
-			string(gwapiv1alpha2.PolicyReasonTargetNotFound): {
+			string(gwapiv1.PolicyReasonTargetNotFound): {
 				Message: "referenced resource not found in upstream namespace",
 			},
 		},
@@ -495,6 +641,7 @@ func defaultGatewayEnvoyReasonHandlers() conditionReasonHandlers {
 
 func (r *GatewayResourceReplicatorReconciler) finalize(
 	ctx context.Context,
+	resource replicationResource,
 	upstreamObj *unstructured.Unstructured,
 	downstreamStrategy downstreamclient.ResourceStrategy,
 ) error {
@@ -505,19 +652,19 @@ func (r *GatewayResourceReplicatorReconciler) finalize(
 	}
 
 	downstreamObj := &unstructured.Unstructured{}
-	downstreamObj.SetGroupVersionKind(upstreamObj.GroupVersionKind())
+	downstreamObj.SetGroupVersionKind(resource.downstreamGVK)
 	downstreamObj.SetName(downstreamObjectMeta.Name)
 	downstreamObj.SetNamespace(downstreamObjectMeta.Namespace)
 
 	if err := downstreamStrategy.GetClient().Delete(ctx, downstreamObj); client.IgnoreNotFound(err) != nil {
 		return fmt.Errorf("failed to delete downstream resource %s/%s: %w", downstreamObj.GetNamespace(), downstreamObj.GetName(), err)
 	}
-	logger.Info("downstream resource deleted", "namespace", downstreamObj.GetNamespace(), "name", downstreamObj.GetName(), "gvk", upstreamObj.GroupVersionKind().String())
+	logger.Info("downstream resource deleted", jsonKeyNamespace, downstreamObj.GetNamespace(), jsonKeyName, downstreamObj.GetName(), "gvk", upstreamObj.GroupVersionKind().String())
 
 	if err := downstreamStrategy.DeleteAnchorForObject(ctx, upstreamObj); err != nil {
 		return fmt.Errorf("failed to delete downstream anchor for %s/%s: %w", upstreamObj.GetNamespace(), upstreamObj.GetName(), err)
 	}
-	logger.Info("downstream anchor deleted", "gvk", upstreamObj.GroupVersionKind().String(), "namespace", upstreamObj.GetNamespace(), "name", upstreamObj.GetName())
+	logger.Info("downstream anchor deleted", "gvk", upstreamObj.GroupVersionKind().String(), jsonKeyNamespace, upstreamObj.GetNamespace(), jsonKeyName, upstreamObj.GetName())
 
 	return nil
 }
@@ -552,10 +699,23 @@ func (r *GatewayResourceReplicatorReconciler) SetupWithManager(mgr mcmanager.Man
 
 		resource := replicationResource{
 			gvk:            gvk,
+			downstreamGVK:  gvk,
 			controllerName: string(r.Config.Gateway.ControllerName),
 		}
 		if cfg, ok := defaultReplicationResourceConfigs[gvkKey(gvk)]; ok {
 			resource.replicationResourceConfig = cfg
+		}
+
+		// If the downstream cluster no longer serves the upstream version (e.g.
+		// v1alpha3 removed after a Gateway API graduation), fall back to the
+		// storage version for both the watch and the create path. The discovery
+		// check is done once at setup so reconciles pay no extra cost.
+		if resource.replicationResourceConfig.statusGVK != nil {
+			if _, err := r.DownstreamCluster.GetRESTMapper().RESTMapping(
+				schema.GroupKind{Group: gvk.Group, Kind: gvk.Kind}, gvk.Version,
+			); err != nil && apimeta.IsNoMatchError(err) {
+				resource.downstreamGVK = *resource.replicationResourceConfig.statusGVK
+			}
 		}
 
 		resources[gvkKey(gvk)] = resource
@@ -564,7 +724,7 @@ func (r *GatewayResourceReplicatorReconciler) SetupWithManager(mgr mcmanager.Man
 
 		builder = builder.Watches(upstreamWatchObj, typedEnqueueRequestForGVK(gvk, selector))
 
-		downstreamWatchObj := newUnstructuredForGVK(gvk)
+		downstreamWatchObj := newUnstructuredForGVK(resource.downstreamGVK)
 
 		src := mcsource.TypedKind(
 			downstreamWatchObj,
@@ -591,7 +751,7 @@ func newUnstructuredForGVK(gvk schema.GroupVersionKind) *unstructured.Unstructur
 }
 
 func typedEnqueueDownstreamGVKRequest(gvk schema.GroupVersionKind) mchandler.TypedEventHandlerFunc[*unstructured.Unstructured, GVKRequest] {
-	return func(clusterName string, cl cluster.Cluster) handler.TypedEventHandler[*unstructured.Unstructured, GVKRequest] {
+	return func(clusterName multicluster.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[*unstructured.Unstructured, GVKRequest] {
 		return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, obj *unstructured.Unstructured) []GVKRequest {
 			labels := obj.GetLabels()
 			if labels == nil {
@@ -607,7 +767,7 @@ func typedEnqueueDownstreamGVKRequest(gvk schema.GroupVersionKind) mchandler.Typ
 				return nil
 			}
 
-			clusterName := strings.TrimPrefix(strings.ReplaceAll(clusterLabel, "_", "/"), "cluster-")
+			clusterName := multicluster.ClusterName(downstreamclient.UpstreamClusterNameFromLabel(clusterLabel))
 
 			request := GVKRequest{
 				GVK: gvk,
@@ -631,7 +791,7 @@ func typedEnqueueRequestForGVK(
 	gvk schema.GroupVersionKind,
 	selector labels.Selector,
 ) mchandler.TypedEventHandlerFunc[client.Object, GVKRequest] {
-	return func(clusterName string, cl cluster.Cluster) handler.TypedEventHandler[client.Object, GVKRequest] {
+	return func(clusterName multicluster.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[client.Object, GVKRequest] {
 		return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []GVKRequest {
 			if selector != nil && !selector.Matches(labels.Set(obj.GetLabels())) {
 				return nil

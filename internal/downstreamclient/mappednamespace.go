@@ -94,7 +94,17 @@ func (c *mappedNamespaceResourceStrategy) ensureDownstreamNamespace(ctx context.
 			downstreamNamespace.Labels = make(map[string]string)
 		}
 
-		downstreamNamespace.Labels[UpstreamOwnerClusterNameLabel] = fmt.Sprintf("cluster-%s", strings.ReplaceAll(c.upstreamClusterName, "/", "_"))
+		// DEFENSIVE GUARD (single-cluster mode): when upstreamClusterName is empty
+		// the label value would be "cluster-", which the apiserver rejects as an
+		// invalid label value, failing the namespace CreateOrUpdate and blocking
+		// any downstream write (e.g. the per-policy WAF EnvoyPatchPolicy). This is
+		// hit because the TrafficProtectionPolicy controller's enqueue handlers do
+		// not propagate ClusterName (unlike controllers using mcreconcile.Request).
+		// Band-aid: only stamp the label when we actually have a cluster name; the
+		// proper fix is to propagate ClusterName into NamespaceReconcileRequest.
+		if c.upstreamClusterName != "" {
+			downstreamNamespace.Labels[UpstreamOwnerClusterNameLabel] = fmt.Sprintf("cluster-%s", strings.ReplaceAll(c.upstreamClusterName, "/", "_"))
+		}
 
 		labels := obj.GetLabels()
 		if v, ok := labels[UpstreamOwnerNamespaceLabel]; ok {
@@ -117,6 +127,20 @@ const (
 	UpstreamOwnerNameLabel        = "meta.datumapis.com/upstream-name"
 	UpstreamOwnerNamespaceLabel   = "meta.datumapis.com/upstream-namespace"
 )
+
+// UpstreamClusterNameFromLabel decodes the upstream cluster name from the value
+// of UpstreamOwnerClusterNameLabel, reversing the encoding applied when the
+// label is written ("cluster-" prefix, slashes encoded as underscores).
+//
+// It also tolerates labels written before the cluster name format changed in
+// #196: those carried a leading slash (e.g. "/project", encoded as
+// "cluster-_project") which decodes to "/project". The multicluster provider
+// now engages clusters under the slash-less name ("project"), so the leading
+// slash is stripped to keep legacy downstream resources resolvable.
+func UpstreamClusterNameFromLabel(value string) string {
+	name := strings.TrimPrefix(strings.ReplaceAll(value, "_", "/"), "cluster-")
+	return strings.TrimPrefix(name, "/")
+}
 
 func (c *mappedNamespaceResourceStrategy) SetControllerReference(ctx context.Context, owner, controlled metav1.Object, opts ...controllerutil.OwnerReferenceOption) error {
 	// TODO(jreese) add owner validation

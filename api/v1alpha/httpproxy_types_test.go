@@ -14,7 +14,11 @@ import (
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 )
 
-const testMutatedHostname = "mutated.example.com"
+const (
+	testMutatedHostname          = "mutated.example.com"
+	testAPIHostname              = "api.example.com"
+	testCanonicalGatewayHostname = "abc123.gateways.test.local"
+)
 
 // TestHostnameStatus_DeepCopy verifies that DeepCopy produces an independent
 // copy of a HostnameStatus value with all nested slices properly duplicated.
@@ -22,7 +26,7 @@ func TestHostnameStatus_DeepCopy(t *testing.T) {
 	t.Parallel()
 
 	original := networkingv1alpha.HostnameStatus{
-		Hostname: "api.example.com",
+		Hostname: testAPIHostname,
 		Conditions: []metav1.Condition{
 			{
 				Type:               networkingv1alpha.HostnameConditionDNSRecordProgrammed,
@@ -52,7 +56,7 @@ func TestHostnameStatus_DeepCopy(t *testing.T) {
 	copied.Conditions[0].Message = "mutated message"
 	copied.Conditions = append(copied.Conditions, metav1.Condition{Type: "Extra"})
 
-	assert.Equal(t, "api.example.com", original.Hostname)
+	assert.Equal(t, testAPIHostname, original.Hostname)
 	assert.Equal(t, "cname record created in DNSZone \"example-com\"", original.Conditions[0].Message)
 	assert.Len(t, original.Conditions, 2, "original conditions should not gain extra element")
 }
@@ -87,11 +91,11 @@ func TestHTTPProxyStatus_DeepCopy(t *testing.T) {
 	t.Parallel()
 
 	original := networkingv1alpha.HTTPProxyStatus{
-		CanonicalHostname: "abc123.gateways.test.local",
+		CanonicalHostname: testCanonicalGatewayHostname,
 		Addresses: []gatewayv1.GatewayStatusAddress{
 			{
 				Type:  ptr.To(gatewayv1.HostnameAddressType),
-				Value: "abc123.gateways.test.local",
+				Value: testCanonicalGatewayHostname,
 			},
 			{
 				Type:  ptr.To(gatewayv1.IPAddressType),
@@ -100,7 +104,7 @@ func TestHTTPProxyStatus_DeepCopy(t *testing.T) {
 		},
 		HostnameStatuses: []networkingv1alpha.HostnameStatus{
 			{
-				Hostname: "api.example.com",
+				Hostname: testAPIHostname,
 				Conditions: []metav1.Condition{
 					{
 						Type:   networkingv1alpha.HostnameConditionDNSRecordProgrammed,
@@ -130,11 +134,11 @@ func TestHTTPProxyStatus_DeepCopy(t *testing.T) {
 
 	// Mutation independence – addresses.
 	copied.Addresses[0].Value = "mutated"
-	assert.Equal(t, "abc123.gateways.test.local", original.Addresses[0].Value)
+	assert.Equal(t, testCanonicalGatewayHostname, original.Addresses[0].Value)
 
 	// Mutation independence – hostname statuses.
 	copied.HostnameStatuses[0].Hostname = testMutatedHostname
-	assert.Equal(t, "api.example.com", original.HostnameStatuses[0].Hostname)
+	assert.Equal(t, testAPIHostname, original.HostnameStatuses[0].Hostname)
 
 	// Mutation independence – conditions.
 	copied.Conditions[0].Reason = "Mutated"
@@ -161,13 +165,13 @@ func TestHTTPProxy_DeepCopy(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: networkingv1alpha.HTTPProxySpec{
-			Hostnames: []gatewayv1.Hostname{"api.example.com", "example.com"},
+			Hostnames: []gatewayv1.Hostname{testAPIHostname, "example.com"},
 		},
 		Status: networkingv1alpha.HTTPProxyStatus{
-			CanonicalHostname: "abc123.gateways.test.local",
+			CanonicalHostname: testCanonicalGatewayHostname,
 			HostnameStatuses: []networkingv1alpha.HostnameStatus{
 				{
-					Hostname: "api.example.com",
+					Hostname: testAPIHostname,
 					Conditions: []metav1.Condition{
 						{
 							Type:   networkingv1alpha.HostnameConditionDNSRecordProgrammed,
@@ -192,13 +196,13 @@ func TestHTTPProxy_DeepCopy(t *testing.T) {
 
 	// Mutation independence.
 	copied.Status.CanonicalHostname = "mutated"
-	assert.Equal(t, "abc123.gateways.test.local", original.Status.CanonicalHostname)
+	assert.Equal(t, testCanonicalGatewayHostname, original.Status.CanonicalHostname)
 
 	copied.Status.HostnameStatuses[0].Hostname = testMutatedHostname
-	assert.Equal(t, "api.example.com", original.Status.HostnameStatuses[0].Hostname)
+	assert.Equal(t, testAPIHostname, original.Status.HostnameStatuses[0].Hostname)
 
 	copied.Spec.Hostnames[0] = testMutatedHostname
-	assert.Equal(t, gatewayv1.Hostname("api.example.com"), original.Spec.Hostnames[0])
+	assert.Equal(t, gatewayv1.Hostname(testAPIHostname), original.Spec.Hostnames[0])
 }
 
 // TestConditionConstants verifies that the expected condition constant strings

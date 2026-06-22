@@ -47,7 +47,3 @@ type ConnectorClassList struct {
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []ConnectorClass `json:"items"`
 }
-
-func init() {
-	SchemeBuilder.Register(&ConnectorClass{}, &ConnectorClassList{})
-}

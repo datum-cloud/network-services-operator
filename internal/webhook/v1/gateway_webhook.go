@@ -7,12 +7,10 @@ import (
 	"fmt"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	mccontext "sigs.k8s.io/multicluster-runtime/pkg/context"
@@ -36,7 +34,7 @@ func SetupGatewayWebhookWithManager(mgr mcmanager.Manager, config config.Network
 		SkipHostnameFQDNValidation: config.Gateway.DisableHostnameVerification,
 	}
 
-	return ctrl.NewWebhookManagedBy(mgr.GetLocalManager()).For(&gatewayv1.Gateway{}).
+	return ctrl.NewWebhookManagedBy(mgr.GetLocalManager(), &gatewayv1.Gateway{}).
 		WithValidator(&GatewayCustomValidator{mgr: mgr, validationOpts: validationOpts}).
 		WithDefaulter(&GatewayCustomDefaulter{mgr: mgr, config: config}).
 		Complete()
@@ -49,15 +47,10 @@ type GatewayCustomValidator struct {
 	validationOpts validation.GatewayValidationOptions
 }
 
-var _ webhook.CustomValidator = &GatewayCustomValidator{}
+var _ admission.Validator[*gatewayv1.Gateway] = &GatewayCustomValidator{}
 
-// ValidateCreate implements webhook.CustomValidator so a webhook will be registered for the type Gateway.
-func (v *GatewayCustomValidator) ValidateCreate(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
-	gateway, ok := obj.(*gatewayv1.Gateway)
-	if !ok {
-		return nil, fmt.Errorf("expected a Gateway object but got %T", obj)
-	}
-
+// ValidateCreate implements admission.Validator so a webhook will be registered for the type Gateway.
+func (v *GatewayCustomValidator) ValidateCreate(ctx context.Context, gateway *gatewayv1.Gateway) (admission.Warnings, error) {
 	clusterName, ok := mccontext.ClusterFrom(ctx)
 	if !ok {
 		return nil, fmt.Errorf("expected a cluster name in the context")
@@ -77,22 +70,17 @@ func (v *GatewayCustomValidator) ValidateCreate(ctx context.Context, obj runtime
 	gatewaylog.Info("Validating Gateway", "name", gateway.GetName(), "cluster", clusterName)
 
 	clusterValidationOpts := v.validationOpts
-	clusterValidationOpts.ClusterName = clusterName
+	clusterValidationOpts.ClusterName = string(clusterName)
 
 	if errs := validation.ValidateGateway(gateway, clusterValidationOpts); len(errs) > 0 {
-		return nil, apierrors.NewInvalid(obj.GetObjectKind().GroupVersionKind().GroupKind(), gateway.GetName(), errs)
+		return nil, apierrors.NewInvalid(gateway.GetObjectKind().GroupVersionKind().GroupKind(), gateway.GetName(), errs)
 	}
 
 	return nil, nil
 }
 
-// ValidateUpdate implements webhook.CustomValidator so a webhook will be registered for the type Gateway.
-func (v *GatewayCustomValidator) ValidateUpdate(ctx context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
-	gateway, ok := newObj.(*gatewayv1.Gateway)
-	if !ok {
-		return nil, fmt.Errorf("expected a Gateway object for the newObj but got %T", newObj)
-	}
-
+// ValidateUpdate implements admission.Validator so a webhook will be registered for the type Gateway.
+func (v *GatewayCustomValidator) ValidateUpdate(ctx context.Context, oldGateway, newGateway *gatewayv1.Gateway) (admission.Warnings, error) {
 	clusterName, ok := mccontext.ClusterFrom(ctx)
 	if !ok {
 		return nil, fmt.Errorf("expected a cluster name in the context")
@@ -104,34 +92,30 @@ func (v *GatewayCustomValidator) ValidateUpdate(ctx context.Context, oldObj, new
 	}
 	clusterClient := cluster.GetClient()
 
-	if shouldProcess, err := shouldProcess(ctx, clusterClient, v.validationOpts.ControllerName, gateway); !shouldProcess || err != nil {
+	if shouldProcess, err := shouldProcess(ctx, clusterClient, v.validationOpts.ControllerName, newGateway); !shouldProcess || err != nil {
 		return nil, err
 	}
 
 	gatewaylog := logf.FromContext(ctx).WithValues("cluster", clusterName)
-	gatewaylog.Info("Validating Gateway", "name", gateway.GetName())
+	gatewaylog.Info("Validating Gateway", "name", newGateway.GetName())
 
-	if dt := gateway.DeletionTimestamp; !dt.IsZero() {
+	if dt := newGateway.DeletionTimestamp; !dt.IsZero() {
 		// Gateway is deleting, let it go through
 		return nil, nil
 	}
 
 	clusterValidationOpts := v.validationOpts
-	clusterValidationOpts.ClusterName = clusterName
+	clusterValidationOpts.ClusterName = string(clusterName)
 
-	if errs := validation.ValidateGateway(gateway, clusterValidationOpts); len(errs) > 0 {
-		return nil, apierrors.NewInvalid(oldObj.GetObjectKind().GroupVersionKind().GroupKind(), gateway.GetName(), errs)
+	if errs := validation.ValidateGateway(newGateway, clusterValidationOpts); len(errs) > 0 {
+		return nil, apierrors.NewInvalid(oldGateway.GetObjectKind().GroupVersionKind().GroupKind(), newGateway.GetName(), errs)
 	}
 
 	return nil, nil
 }
 
-// ValidateDelete implements webhook.CustomValidator so a webhook will be registered for the type Gateway.
-func (v *GatewayCustomValidator) ValidateDelete(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
-	gateway, ok := obj.(*gatewayv1.Gateway)
-	if !ok {
-		return nil, fmt.Errorf("expected a Gateway object but got %T", obj)
-	}
+// ValidateDelete implements admission.Validator so a webhook will be registered for the type Gateway.
+func (v *GatewayCustomValidator) ValidateDelete(ctx context.Context, gateway *gatewayv1.Gateway) (admission.Warnings, error) {
 	gatewaylog := logf.FromContext(ctx)
 	gatewaylog.Info("Validation for Gateway upon deletion", "name", gateway.GetName())
 
@@ -145,15 +129,10 @@ type GatewayCustomDefaulter struct {
 	config config.NetworkServicesOperator
 }
 
-var _ webhook.CustomDefaulter = &GatewayCustomDefaulter{}
+var _ admission.Defaulter[*gatewayv1.Gateway] = &GatewayCustomDefaulter{}
 
-// Default implements webhook.CustomDefaulter so a webhook will be registered for the Kind Gateway.
-func (d *GatewayCustomDefaulter) Default(ctx context.Context, obj runtime.Object) error {
-	gateway, ok := obj.(*gatewayv1.Gateway)
-	if !ok {
-		return fmt.Errorf("expected a Gateway object but got %T", obj)
-	}
-
+// Default implements admission.Defaulter so a webhook will be registered for the Kind Gateway.
+func (d *GatewayCustomDefaulter) Default(ctx context.Context, gateway *gatewayv1.Gateway) error {
 	clusterName, ok := mccontext.ClusterFrom(ctx)
 	if !ok {
 		return fmt.Errorf("expected a cluster name in the context")

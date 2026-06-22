@@ -1,0 +1,23 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - deployment.yaml
+  - service.yaml
+  - serviceaccount.yaml
+  - pdb.yaml
+  - rbac
+  - certmanager
+  - network-policy
+
+images:
+  - name: ghcr.io/datum-cloud/network-services-operator
+    newName: ghcr.io/datum-cloud/network-services-operator
+    newTag: latest
+
+labels:
+  # includeSelectors: false — do NOT add part-of to resource selectors (breaks NetworkPolicy ingress from EG pods).
+  - includeSelectors: false
+    includeTemplates: true
+    pairs:
+      app.kubernetes.io/part-of: network-services-operator

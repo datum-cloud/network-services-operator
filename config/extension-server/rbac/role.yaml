@@ -1,0 +1,36 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/name: network-services-operator
+    app.kubernetes.io/component: envoy-gateway-extension-server
+    app.kubernetes.io/managed-by: kustomize
+  name: envoy-gateway-extension-server-role
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - namespaces
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - networking.datumapis.com
+    resources:
+      - trafficprotectionpolicies
+      - httpproxies
+      - connectors
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - networking.datumapis.com
+    resources:
+      - trafficprotectionpolicies/status
+      - httpproxies/status
+      - connectors/status
+    verbs:
+      - get

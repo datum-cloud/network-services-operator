@@ -1,5 +1,5 @@
 # Build the manager binary
-FROM --platform=$BUILDPLATFORM golang:1.24 AS builder
+FROM --platform=$BUILDPLATFORM golang:1.26 AS builder
 ARG TARGETOS
 ARG TARGETARCH
 ARG VERSION=dev
@@ -31,13 +31,18 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build \
       -X main.gitCommit=${GIT_COMMIT} \
       -X main.gitTreeState=${GIT_TREE_STATE} \
       -X main.buildDate=${BUILD_DATE}" \
-    -o manager cmd/main.go
+    -o network-services cmd/main.go
 
-# Use distroless as minimal base image to package the manager binary
+# Use distroless as minimal base image to package the manager binary.
+# static-debian12:nonroot is explicit about the Debian variant to avoid silent
+# drift if the :nonroot alias resolves to a different Debian release in future.
+# For reproducible builds, pin to a SHA digest via:
+#   FROM gcr.io/distroless/static-debian12:nonroot@sha256:<digest>
+# and update via Dependabot or `cosign verify`.
 # Refer to https://github.com/GoogleContainerTools/distroless for more details
-FROM gcr.io/distroless/static:nonroot
+FROM gcr.io/distroless/static-debian12:nonroot
 WORKDIR /
-COPY --from=builder /workspace/manager .
+COPY --from=builder /workspace/network-services .
 USER 65532:65532
 
-ENTRYPOINT ["/manager"]
+ENTRYPOINT ["/network-services"]

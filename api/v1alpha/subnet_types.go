@@ -107,7 +107,3 @@ type SubnetList struct {
 type LocalSubnetReference struct {
 	Name string `json:"name"`
 }
-
-func init() {
-	SchemeBuilder.Register(&Subnet{}, &SubnetList{})
-}

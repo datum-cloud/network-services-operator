@@ -32,6 +32,15 @@ import (
 	"go.datum.net/network-services-operator/internal/registrydata"
 )
 
+const (
+	// envoyGatewayGroup is the API group for Envoy Gateway resources.
+	envoyGatewayGroup = "gateway.envoyproxy.io"
+	// envoyGatewayAlpha1Version is the v1alpha1 API version used by Envoy Gateway resources.
+	envoyGatewayAlpha1Version = "v1alpha1"
+	// networkingDatumAPIsGroup is the API group for Datum networking resources.
+	networkingDatumAPIsGroup = "networking.datumapis.com"
+)
+
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 // +k8s:defaulter-gen=true
 
@@ -624,6 +633,11 @@ type GatewayConfig struct {
 	// Coraza specifies configuration for the Coraza WAF.
 	Coraza CorazaConfig `json:"coraza,omitempty"`
 
+	// ErrorPage specifies configuration for the branded data-plane error page
+	// served for edge-generated 5xx responses on the downstream / Connector
+	// data plane.
+	ErrorPage ErrorPageConfig `json:"errorPage,omitempty"`
+
 	// ValidPortNumbers is a list of port numbers that are permitted on gateway
 	// listeners.
 	//
@@ -687,6 +701,15 @@ type GatewayConfig struct {
 	//
 	// +default=5
 	MaxConcurrentReconciles int `json:"maxConcurrentReconciles,omitempty"`
+
+	// EPPEmissionEnabled controls whether NSO's controllers emit EnvoyPatchPolicy
+	// objects. Set to false when the extension server is handling xDS mutation so
+	// that EPPs are no longer created or deleted by these controllers. Rollback =
+	// set to true (or omit, which defaults to true).
+	//
+	// When false: NSO emits ZERO EPPs and does NOT delete EPPs it did not create.
+	// When true (default): EPP emission proceeds as today.
+	EPPEmissionEnabled *bool `json:"eppEmissionEnabled,omitempty" yaml:"eppEmissionEnabled,omitempty"`
 }
 
 // HasDefaultListenerTLSSecret returns true when a shared TLS certificate
@@ -702,6 +725,17 @@ func (c *GatewayConfig) ShouldDeleteErroredChallenges() bool {
 		return true // default enabled
 	}
 	return *c.DeleteErroredChallenges
+}
+
+// IsEPPEmissionEnabled returns whether the operator should emit EnvoyPatchPolicy
+// objects. Defaults to true when not explicitly configured, preserving backward
+// compatibility. Set gateway.eppEmissionEnabled=false in the operator config to
+// disable EPP emission once the extension server is handling xDS mutation.
+func (c *GatewayConfig) IsEPPEmissionEnabled() bool {
+	if c.EPPEmissionEnabled == nil {
+		return true // default: EPP emission on
+	}
+	return *c.EPPEmissionEnabled
 }
 
 func (c *GatewayConfig) GatewayDNSAddress(gateway *gatewayv1.Gateway) string {
@@ -757,6 +791,45 @@ type CorazaConfig struct {
 	// stored in Envoy routes to inject into trace span attributes. MUST return
 	// a map of string keys to values.
 	TraceRouteMetadataExtractor string `json:"traceRouteMetadataExtractor,omitempty"`
+}
+
+// +k8s:deepcopy-gen=true
+
+// ErrorPageConfig configures the branded data-plane error page. When enabled,
+// the extension server attaches an Envoy local_reply_config to every
+// customer-facing HCM so edge-generated 5xx responses render a branded HTML
+// page instead of a raw body like "no healthy upstream".
+//
+// The page content is sourced from BodyPath (a mounted ConfigMap) when present
+// and readable, otherwise from the page compiled into the operator image. A
+// missing or unreadable override never fails startup and never blocks xDS — it
+// falls back to the embedded default.
+type ErrorPageConfig struct {
+	// Enabled toggles branded error-page injection. Defaults to false; the
+	// extension server only attaches local_reply_config when this is true.
+	Enabled bool `json:"enabled,omitempty"`
+
+	// BodyPath is an optional path to a file (typically a mounted ConfigMap key)
+	// containing the branded HTML. When empty, unreadable, or empty-on-disk, the
+	// embedded default page is used instead.
+	BodyPath string `json:"bodyPath,omitempty"`
+
+	// MinStatusCode is the inclusive lower bound for response status codes that
+	// receive the branded body. The original status code is always preserved.
+	//
+	// +default=500
+	MinStatusCode uint32 `json:"minStatusCode,omitempty"`
+
+	// RuntimeKey is the Envoy runtime key gating the branded reply, allowing it
+	// to be disabled at runtime without a redeploy.
+	//
+	// +default="local_reply_5xx"
+	RuntimeKey string `json:"runtimeKey,omitempty"`
+
+	// ContentType is the Content-Type set on the branded response body.
+	//
+	// +default="text/html; charset=UTF-8"
+	ContentType string `json:"contentType,omitempty"`
 }
 
 // +k8s:deepcopy-gen=true
@@ -1042,12 +1115,20 @@ func SetDefaults_GatewayResourceReplicatorConfig(obj *GatewayResourceReplicatorC
 				},
 			},
 		}},
-		{Group: "gateway.envoyproxy.io", Version: "v1alpha1", Kind: "Backend"},
-		{Group: "gateway.envoyproxy.io", Version: "v1alpha1", Kind: "BackendTrafficPolicy"},
-		{Group: "gateway.envoyproxy.io", Version: "v1alpha1", Kind: "SecurityPolicy"},
-		{Group: "gateway.envoyproxy.io", Version: "v1alpha1", Kind: "HTTPRouteFilter"},
+		{Group: envoyGatewayGroup, Version: envoyGatewayAlpha1Version, Kind: "Backend"},
+		{Group: envoyGatewayGroup, Version: envoyGatewayAlpha1Version, Kind: "BackendTrafficPolicy"},
+		{Group: envoyGatewayGroup, Version: envoyGatewayAlpha1Version, Kind: "SecurityPolicy"},
+		{Group: envoyGatewayGroup, Version: envoyGatewayAlpha1Version, Kind: "HTTPRouteFilter"},
 		// Propagate v1alpha3 until v1 is supported by Envoy Gateway
 		{Group: "gateway.networking.k8s.io", Version: "v1alpha3", Kind: "BackendTLSPolicy"},
+		// Policy types propagated to the downstream edge cluster so the
+		// extension server can read them without reaching into upstream project
+		// control planes.
+		{Group: networkingDatumAPIsGroup, Version: "v1alpha", Kind: "TrafficProtectionPolicy"},
+		{Group: networkingDatumAPIsGroup, Version: "v1alpha", Kind: "HTTPProxy"},
+		// Connector is propagated with status mirrored downstream so the
+		// extension server can check tunnel liveness (Status.Conditions[Ready]).
+		{Group: networkingDatumAPIsGroup, Version: "v1alpha1", Kind: "Connector"},
 	}
 }
 
@@ -1126,8 +1207,4 @@ func (c *IrohConnectorConfig) validate() error {
 		errs = append(errs, errors.New("dnsZoneRef.namespace is required when dnsEnabled is true"))
 	}
 	return errors.Join(errs...)
-}
-
-func init() {
-	SchemeBuilder.Register(&NetworkServicesOperator{})
 }

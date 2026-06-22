@@ -62,7 +62,7 @@ func SetDefaultListeners(gateway *gatewayv1.Gateway, gatewayConfig config.Gatewa
 				From: ptr.To(gatewayv1.NamespacesFromSame),
 			},
 		},
-		TLS: &gatewayv1.GatewayTLSConfig{
+		TLS: &gatewayv1.ListenerTLSConfig{
 			Mode:    ptr.To(gatewayv1.TLSModeTerminate),
 			Options: gatewayConfig.ListenerTLSOptions,
 		},

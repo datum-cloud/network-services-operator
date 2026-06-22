@@ -9,6 +9,7 @@ import (
 
 	envoygatewayv1alpha1 "github.com/envoyproxy/gateway/api/v1alpha1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/utils/ptr"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
@@ -44,8 +45,8 @@ func connectorClusterName(downstreamNamespace, httpRouteName string, ruleIndex i
 func buildConnectorInternalListenerClusterJSON(clusterName, internalListenerName string, backend connectorBackendPatch) ([]byte, error) {
 	tunnelAddress := fmt.Sprintf("%s:%d", backend.targetHost, backend.targetPort)
 	cluster := map[string]any{
-		"name":            clusterName,
-		"type":            "STATIC",
+		jsonKeyName:       clusterName,
+		jsonKeyType:       "STATIC",
 		"connect_timeout": "5s",
 		"load_assignment": map[string]any{
 			"cluster_name": clusterName,
@@ -74,19 +75,19 @@ func buildConnectorInternalListenerClusterJSON(clusterName, internalListenerName
 			},
 		},
 		"transport_socket": map[string]any{
-			"name": "envoy.transport_sockets.internal_upstream",
-			"typed_config": map[string]any{
-				"@type": "type.googleapis.com/envoy.extensions.transport_sockets.internal_upstream.v3.InternalUpstreamTransport",
+			jsonKeyName: "envoy.transport_sockets.internal_upstream",
+			jsonKeyTypedConfig: map[string]any{
+				jsonKeyAtType: "type.googleapis.com/envoy.extensions.transport_sockets.internal_upstream.v3.InternalUpstreamTransport",
 				"passthrough_metadata": []map[string]any{
 					{
-						"kind": map[string]any{"host": map[string]any{}},
-						"name": "tunnel",
+						jsonKeyKind: map[string]any{"host": map[string]any{}},
+						jsonKeyName: "tunnel",
 					},
 				},
 				"transport_socket": map[string]any{
-					"name": "envoy.transport_sockets.raw_buffer",
-					"typed_config": map[string]any{
-						"@type": "type.googleapis.com/envoy.extensions.transport_sockets.raw_buffer.v3.RawBuffer",
+					jsonKeyName: "envoy.transport_sockets.raw_buffer",
+					jsonKeyTypedConfig: map[string]any{
+						jsonKeyAtType: "type.googleapis.com/envoy.extensions.transport_sockets.raw_buffer.v3.RawBuffer",
 					},
 				},
 			},
@@ -101,6 +102,7 @@ func buildConnectorEnvoyPatches(
 	gateway *gatewayv1.Gateway,
 	httpProxy *networkingv1alpha.HTTPProxy,
 	backends []connectorBackendPatch,
+	eligibleHTTPSListeners sets.Set[string],
 ) ([]envoygatewayv1alpha1.EnvoyJSONPatchConfig, error) {
 	patches := make([]envoygatewayv1alpha1.EnvoyJSONPatchConfig, 0)
 	// Cluster patch (per connector backend): point the route's cluster at the internal
@@ -131,7 +133,7 @@ func buildConnectorEnvoyPatches(
 	//
 	// Future extension: when sectionName is populated from route attachment
 	// context, patch only that specific HTTPS listener's RouteConfiguration.
-	allHTTPSRouteConfigNames := gatewayHTTPSRouteConfigNames(downstreamNamespace, gateway)
+	allHTTPSRouteConfigNames := gatewayHTTPSRouteConfigNames(downstreamNamespace, gateway, eligibleHTTPSListeners)
 	seenDomainRouteConfig := make(map[string]struct{})
 	for _, backend := range backends {
 		domain := backend.targetHost
@@ -140,6 +142,7 @@ func buildConnectorEnvoyPatches(
 			gateway,
 			backend.sectionName,
 			allHTTPSRouteConfigNames,
+			eligibleHTTPSListeners,
 		)
 		domainValue, err := json.Marshal(domain)
 		if err != nil {
@@ -152,10 +155,10 @@ func buildConnectorEnvoyPatches(
 			}
 			seenDomainRouteConfig[key] = struct{}{}
 			patches = append(patches, envoygatewayv1alpha1.EnvoyJSONPatchConfig{
-				Type: "type.googleapis.com/envoy.config.route.v3.RouteConfiguration",
+				Type: routeConfigurationTypeURL,
 				Name: routeConfigName,
 				Operation: envoygatewayv1alpha1.JSONPatchOperation{
-					Op:    envoygatewayv1alpha1.JSONPatchOperationType("add"),
+					Op:    envoygatewayv1alpha1.JSONPatchOperationType(jsonPatchOpAdd),
 					Path:  ptr.To("/virtual_hosts/0/domains/-"),
 					Value: &apiextensionsv1.JSON{Raw: domainValue},
 				},
@@ -181,13 +184,14 @@ func buildConnectorEnvoyPatches(
 			gateway,
 			connectRoute.sectionName,
 			allHTTPSRouteConfigNames,
+			eligibleHTTPSListeners,
 		)
 		for _, routeConfigName := range routeConfigNames {
 			patches = append(patches, envoygatewayv1alpha1.EnvoyJSONPatchConfig{
-				Type: "type.googleapis.com/envoy.config.route.v3.RouteConfiguration",
+				Type: routeConfigurationTypeURL,
 				Name: routeConfigName,
 				Operation: envoygatewayv1alpha1.JSONPatchOperation{
-					Op:    envoygatewayv1alpha1.JSONPatchOperationType("add"),
+					Op:    envoygatewayv1alpha1.JSONPatchOperationType(jsonPatchOpAdd),
 					Path:  ptr.To("/virtual_hosts/0/routes/0"),
 					Value: &apiextensionsv1.JSON{Raw: routeValue},
 				},
@@ -198,12 +202,21 @@ func buildConnectorEnvoyPatches(
 	return patches, nil
 }
 
-func gatewayHTTPSRouteConfigNames(downstreamNamespace string, gateway *gatewayv1.Gateway) []string {
+// gatewayHTTPSRouteConfigNames returns the RouteConfiguration names for the
+// gateway's HTTPS listeners, skipping any not in eligibleHTTPSListeners.
+func gatewayHTTPSRouteConfigNames(
+	downstreamNamespace string,
+	gateway *gatewayv1.Gateway,
+	eligibleHTTPSListeners sets.Set[string],
+) []string {
 	names := make([]string, 0)
 	seen := make(map[string]struct{})
 
 	for _, listener := range gateway.Spec.Listeners {
 		if listener.Protocol != gatewayv1.HTTPSProtocolType {
+			continue
+		}
+		if !eligibleHTTPSListeners.Has(string(listener.Name)) {
 			continue
 		}
 		name := fmt.Sprintf("%s/%s/%s", downstreamNamespace, gateway.Name, listener.Name)
@@ -222,6 +235,7 @@ func gatewayHTTPSRouteConfigNamesForSection(
 	gateway *gatewayv1.Gateway,
 	sectionName *gatewayv1.SectionName,
 	allHTTPSRouteConfigNames []string,
+	eligibleHTTPSListeners sets.Set[string],
 ) []string {
 	if sectionName == nil {
 		return allHTTPSRouteConfigNames
@@ -230,6 +244,9 @@ func gatewayHTTPSRouteConfigNamesForSection(
 	for _, listener := range gateway.Spec.Listeners {
 		if listener.Name != *sectionName || listener.Protocol != gatewayv1.HTTPSProtocolType {
 			continue
+		}
+		if !eligibleHTTPSListeners.Has(string(listener.Name)) {
+			return nil
 		}
 		return []string{fmt.Sprintf("%s/%s/%s", downstreamNamespace, gateway.Name, listener.Name)}
 	}
@@ -294,7 +311,7 @@ func buildConnectorConnectRoutes(
 			connectMatch := map[string]any{
 				"headers": []map[string]any{
 					{
-						"name": ":method",
+						jsonKeyName: ":method",
 						"string_match": map[string]any{
 							"exact": http.MethodConnect,
 						},
@@ -317,8 +334,8 @@ func buildConnectorConnectRoutes(
 			connectRoutes = append(connectRoutes, connectorConnectRoute{
 				sectionName: sectionByRule[ruleIndex],
 				route: map[string]any{
-					"name":  fmt.Sprintf("connector-connect-%s-rule-%d", httpProxy.Name, ruleIndex),
-					"match": connectMatch,
+					jsonKeyName:  fmt.Sprintf("connector-connect-%s-rule-%d", httpProxy.Name, ruleIndex),
+					jsonKeyMatch: connectMatch,
 					"route": map[string]any{
 						"cluster": clusterName,
 						"upgrade_configs": []map[string]any{
@@ -337,8 +354,8 @@ func buildConnectorConnectRoutes(
 	connectRoutes = append(connectRoutes, connectorConnectRoute{
 		sectionName: fallbackSection,
 		route: map[string]any{
-			"name": fmt.Sprintf("connector-connect-%s", httpProxy.Name),
-			"match": map[string]any{
+			jsonKeyName: fmt.Sprintf("connector-connect-%s", httpProxy.Name),
+			jsonKeyMatch: map[string]any{
 				"connect_matcher": map[string]any{},
 			},
 			"route": map[string]any{
@@ -366,14 +383,15 @@ func buildConnectorOfflineEnvoyPatches(
 	downstreamNamespace string,
 	gateway *gatewayv1.Gateway,
 	httpProxy *networkingv1alpha.HTTPProxy,
+	eligibleHTTPSListeners sets.Set[string],
 ) ([]envoygatewayv1alpha1.EnvoyJSONPatchConfig, error) {
 	route := map[string]any{
-		"name": fmt.Sprintf("connector-offline-%s", httpProxy.Name),
-		"match": map[string]any{
+		jsonKeyName: fmt.Sprintf("connector-offline-%s", httpProxy.Name),
+		jsonKeyMatch: map[string]any{
 			"connect_matcher": map[string]any{},
 		},
 		"direct_response": map[string]any{
-			"status": 503,
+			jsonKeyStatus: 503,
 			"body": map[string]any{
 				"inline_string": "Tunnel not online",
 			},
@@ -386,12 +404,12 @@ func buildConnectorOfflineEnvoyPatches(
 	}
 
 	patches := make([]envoygatewayv1alpha1.EnvoyJSONPatchConfig, 0)
-	for _, routeConfigName := range gatewayHTTPSRouteConfigNames(downstreamNamespace, gateway) {
+	for _, routeConfigName := range gatewayHTTPSRouteConfigNames(downstreamNamespace, gateway, eligibleHTTPSListeners) {
 		patches = append(patches, envoygatewayv1alpha1.EnvoyJSONPatchConfig{
-			Type: "type.googleapis.com/envoy.config.route.v3.RouteConfiguration",
+			Type: routeConfigurationTypeURL,
 			Name: routeConfigName,
 			Operation: envoygatewayv1alpha1.JSONPatchOperation{
-				Op:    envoygatewayv1alpha1.JSONPatchOperationType("add"),
+				Op:    envoygatewayv1alpha1.JSONPatchOperationType(jsonPatchOpAdd),
 				Path:  ptr.To("/virtual_hosts/0/routes/0"),
 				Value: &apiextensionsv1.JSON{Raw: routeValue},
 			},

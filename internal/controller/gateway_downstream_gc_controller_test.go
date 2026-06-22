@@ -11,6 +11,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/uuid"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/utils/ptr"
@@ -97,7 +98,7 @@ func TestHTTPRouteGC(t *testing.T) {
 	_, err := reconciler.Reconcile(
 		ctx,
 		GVKRequest{
-			GVK: gatewayv1.SchemeGroupVersion.WithKind("HTTPRoute"),
+			GVK: schema.GroupVersion{Group: gatewayv1.GroupName, Version: "v1"}.WithKind(KindHTTPRoute),
 			Request: mcreconcile.Request{
 				ClusterName: "test",
 				Request: reconcile.Request{

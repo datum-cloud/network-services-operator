@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"net/http"
 	"net/url"
 	"slices"
 	"strconv"
@@ -31,9 +30,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
-	gatewayv1alpha2 "sigs.k8s.io/gateway-api/apis/v1alpha2"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
+	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 	mcsource "sigs.k8s.io/multicluster-runtime/pkg/source"
 
@@ -107,7 +106,7 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 
 	if !httpProxy.DeletionTimestamp.IsZero() {
 		if controllerutil.ContainsFinalizer(&httpProxy, httpProxyFinalizer) {
-			if err := r.cleanupConnectorEnvoyPatchPolicy(ctx, cl.GetClient(), req.ClusterName, &httpProxy); err != nil {
+			if err := r.cleanupConnectorEnvoyPatchPolicy(ctx, cl.GetClient(), string(req.ClusterName), &httpProxy); err != nil {
 				return ctrl.Result{}, err
 			}
 			controllerutil.RemoveFinalizer(&httpProxy, httpProxyFinalizer)
@@ -188,7 +187,7 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 		if hasControllerConflict(gateway, &httpProxy) {
 			// return already exists error - a gateway exists with the name we want to
 			// use, but it's owned by a different resource.
-			return apierrors.NewAlreadyExists(gatewayv1.Resource("Gateway"), gateway.Name)
+			return apierrors.NewAlreadyExists(gatewayv1.Resource(KindGateway), gateway.Name)
 		}
 
 		if err := controllerutil.SetControllerReference(&httpProxy, gateway, cl.GetScheme()); err != nil {
@@ -223,7 +222,7 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 		return ctrl.Result{}, fmt.Errorf("failed updating gateway resource: %w", err)
 	}
 
-	logger.Info("processed gateway", "name", gateway.Name, "result", result)
+	logger.Info("processed gateway", jsonKeyName, gateway.Name, "result", result)
 
 	// Maintain an HTTPRoute for all rules in the HTTPProxy
 
@@ -244,7 +243,7 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 			if err != nil {
 				return ctrl.Result{}, fmt.Errorf("failed updating httproutefilter resource: %w", err)
 			}
-			logger.Info("processed httproutefilter", "name", httpRouteFilter.Name, "result", result)
+			logger.Info("processed httproutefilter", jsonKeyName, httpRouteFilter.Name, "result", result)
 		}
 	}
 
@@ -275,7 +274,7 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 		return ctrl.Result{}, fmt.Errorf("failed updating httproute resource: %w", err)
 	}
 
-	logger.Info("processed httproute", "name", httpRoute.Name, "result", result)
+	logger.Info("processed httproute", jsonKeyName, httpRoute.Name, "result", result)
 
 	for _, desiredEndpointSlice := range desiredResources.endpointSlices {
 		endpointSlice := desiredEndpointSlice.DeepCopy()
@@ -321,21 +320,31 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 			return ctrl.Result{}, fmt.Errorf("failed to create or update endpointslice: %w", err)
 		}
 
-		logger.Info("processed endpointslice", "result", result, "name", desiredEndpointSlice.Name)
+		logger.Info("processed endpointslice", "result", result, jsonKeyName, desiredEndpointSlice.Name)
 	}
 
-	patchPolicy, hasConnectorBackends, err := r.reconcileConnectorEnvoyPatchPolicy(
-		ctx,
-		cl.GetClient(),
-		req.ClusterName,
-		&httpProxy,
-		gateway,
-	)
-	if err != nil {
-		programmedCondition.Status = metav1.ConditionFalse
-		programmedCondition.Reason = networkingv1alpha.HTTPProxyReasonPending
-		programmedCondition.Message = err.Error()
-		return ctrl.Result{}, err
+	// Gate connector EPP emission behind the feature flag. When disabled the
+	// extension server handles connector xDS mutation via PostTranslateModify;
+	// NSO emits ZERO connector EPPs and does NOT delete existing ones.
+	// patchPolicy=nil and hasConnectorBackends=false causes the
+	// ConnectorMetadataProgrammed condition to be cleared (not tracked by NSO
+	// when the extension server owns this path).
+	var patchPolicy *envoygatewayv1alpha1.EnvoyPatchPolicy
+	var hasConnectorBackends bool
+	if r.Config.Gateway.IsEPPEmissionEnabled() {
+		patchPolicy, hasConnectorBackends, err = r.reconcileConnectorEnvoyPatchPolicy(
+			ctx,
+			cl.GetClient(),
+			string(req.ClusterName),
+			&httpProxy,
+			gateway,
+		)
+		if err != nil {
+			programmedCondition.Status = metav1.ConditionFalse
+			programmedCondition.Reason = networkingv1alpha.HTTPProxyReasonPending
+			programmedCondition.Message = err.Error()
+			return ctrl.Result{}, err
+		}
 	}
 
 	httpProxyCopy.Status.Addresses = gateway.Status.Addresses
@@ -387,7 +396,7 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 		apimeta.RemoveStatusCondition(&httpProxyCopy.Status.Conditions, networkingv1alpha.HTTPProxyConditionConnectorMetadataProgrammed)
 	}
 
-	r.reconcileHTTPProxyHostnameStatus(ctx, cl.GetClient(), gateway, httpProxyCopy, req.ClusterName)
+	r.reconcileHTTPProxyHostnameStatus(ctx, cl.GetClient(), gateway, httpProxyCopy, string(req.ClusterName))
 
 	return ctrl.Result{}, nil
 }
@@ -419,7 +428,6 @@ func (r *HTTPProxyReconciler) reconcileHTTPProxyHostnameStatus(
 	// CanonicalHostname is the platform-managed hostname we create for the HTTPProxy.
 	httpProxyCopy.Status.CanonicalHostname = gatewayCanonicalHostnameForConfig(r.Config.Gateway, gateway)
 
-	var hostnames []gatewayv1.Hostname
 	currentListenerStatus := map[gatewayv1.SectionName]gatewayv1.ListenerStatus{}
 	for _, listener := range gateway.Status.Listeners {
 		currentListenerStatus[listener.Name] = *listener.DeepCopy()
@@ -457,6 +465,7 @@ func (r *HTTPProxyReconciler) reconcileHTTPProxyHostnameStatus(
 
 	acceptedHostnamesSlice := acceptedHostnames.UnsortedList()
 	slices.Sort(acceptedHostnamesSlice)
+	hostnames := make([]gatewayv1.Hostname, 0, len(acceptedHostnamesSlice))
 	//nolint:staticcheck // SA1019: Hostnames is deprecated but still populated for backwards compatibility
 	httpProxyCopy.Status.Hostnames = append(hostnames, acceptedHostnamesSlice...)
 
@@ -530,7 +539,7 @@ func (r *HTTPProxyReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 		// publicKey.id changes (e.g., after connector restart/reconnect).
 		Watches(
 			&networkingv1alpha1.Connector{},
-			func(clusterName string, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
+			func(clusterName multicluster.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
 				return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []mcreconcile.Request {
 					logger := log.FromContext(ctx)
 
@@ -596,15 +605,15 @@ func (r *HTTPProxyReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 // enqueueHTTPProxyForDownstreamCertificate returns a watch handler that enqueues
 // the HTTPProxy (same name/namespace as the owning Gateway) when a downstream
 // cert-manager Certificate changes, so certificate status is updated.
-func (r *HTTPProxyReconciler) enqueueHTTPProxyForDownstreamCertificate() func(clusterName string, cl cluster.Cluster) handler.TypedEventHandler[*unstructured.Unstructured, mcreconcile.Request] {
-	return func(_ string, cl cluster.Cluster) handler.TypedEventHandler[*unstructured.Unstructured, mcreconcile.Request] {
+func (r *HTTPProxyReconciler) enqueueHTTPProxyForDownstreamCertificate() func(clusterName multicluster.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[*unstructured.Unstructured, mcreconcile.Request] {
+	return func(_ multicluster.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[*unstructured.Unstructured, mcreconcile.Request] {
 		return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, cert *unstructured.Unstructured) []mcreconcile.Request {
 			logger := log.FromContext(ctx)
 			ownerRef := metav1.GetControllerOf(cert)
 			if ownerRef == nil {
 				return nil
 			}
-			if ownerRef.Kind != "Gateway" {
+			if ownerRef.Kind != KindGateway {
 				return nil
 			}
 			gatewayKey := client.ObjectKey{Namespace: cert.GetNamespace(), Name: ownerRef.Name}
@@ -623,7 +632,7 @@ func (r *HTTPProxyReconciler) enqueueHTTPProxyForDownstreamCertificate() func(cl
 			if upstreamNs == "" || upstreamName == "" || upstreamCluster == "" {
 				return nil
 			}
-			clusterName := strings.TrimPrefix(strings.ReplaceAll(upstreamCluster, "_", "/"), "cluster-")
+			clusterName := multicluster.ClusterName(downstreamclient.UpstreamClusterNameFromLabel(upstreamCluster))
 			return []mcreconcile.Request{{
 				ClusterName: clusterName,
 				Request:     ctrl.Request{NamespacedName: types.NamespacedName{Namespace: upstreamNs, Name: upstreamName}},
@@ -749,7 +758,7 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 					From: ptr.To(gatewayv1.NamespacesFromSame),
 				},
 			},
-			TLS: &gatewayv1.GatewayTLSConfig{
+			TLS: &gatewayv1.ListenerTLSConfig{
 				Mode:    ptr.To(gatewayv1.TLSModeTerminate),
 				Options: r.Config.Gateway.ListenerTLSOptions,
 			},
@@ -790,29 +799,40 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 		}
 
 		for backendIndex, backend := range rule.Backends {
-			if backend.Connector != nil {
+			// Offline-connector handling differs by emission mode:
+			//
+			//   * EPP mode (legacy): emit a backend-less route rule. EG translates
+			//     it into a virtual_host, and the connector EPP
+			//     (buildConnectorOfflineEnvoyPatches) inserts the direct_response 503
+			//     "Tunnel not online" CONNECT route at the front.
+			//   * Extension-server mode: the ext-server keys its offline-503 handling
+			//     on the presence of a connector *cluster*, which EG only emits when
+			//     the route rule carries a backendRef. So we must NOT null the
+			//     backendRef here — fall through and emit the same connector.local
+			//     placeholder EndpointSlice + backendRef as the online case. The
+			//     ext-server then sees the cluster, classifies the connector offline
+			//     from the replicated Connector Ready condition, and inserts the 503
+			//     route itself. Nulling the backendRef leaves EG with a backend-less
+			//     route, which it renders as a bare direct_response 500 (no offline
+			//     page) — the regression this guards against.
+			if backend.Connector != nil && r.Config.Gateway.IsEPPEmissionEnabled() {
 				ready, err := connectorReady(ctx, cl, httpProxy.Namespace, backend.Connector.Name)
 				if err != nil {
 					return nil, err
 				}
 				if !ready {
-					filterName := connectorOfflineFilterName(httpProxy)
-					ruleFilters = append(ruleFilters, gatewayv1.HTTPRouteFilter{
-						Type: gatewayv1.HTTPRouteFilterExtensionRef,
-						ExtensionRef: &gatewayv1.LocalObjectReference{
-							Group: envoygatewayv1alpha1.GroupName,
-							Kind:  envoygatewayv1alpha1.KindHTTPRouteFilter,
-							Name:  gatewayv1.ObjectName(filterName),
-						},
-					})
+					// Connector is offline: keep the route rule with no backends so EG
+					// can translate it (creating virtual_hosts). The connector EPP
+					// (buildConnectorOfflineEnvoyPatches) inserts a direct_response CONNECT
+					// route at the front, which is the canonical offline-503 mechanism.
+					// Do NOT add an ExtensionRef→HTTPRouteFilter.DirectResponse here:
+					// EG v1.7.3 cannot translate that filter shape and the HTTPRoute
+					// status would show UnsupportedValue, preventing EPP programming.
 					desiredRouteRules[ruleIndex] = gatewayv1.HTTPRouteRule{
 						Name:        rule.Name,
 						Matches:     rule.Matches,
 						Filters:     ruleFilters,
 						BackendRefs: nil,
-					}
-					if len(desiredRouteFilters) == 0 {
-						desiredRouteFilters = append(desiredRouteFilters, buildConnectorOfflineHTTPRouteFilter(httpProxy))
 					}
 					offlineRuleSet = true
 					break
@@ -889,7 +909,7 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 
 			// For HTTPS endpoints with IP addresses, require tls.hostname for certificate validation
 			// and use it as the Host header for the upstream request.
-			if u.Scheme == "https" && isIPAddress {
+			if u.Scheme == SchemeHTTPS && isIPAddress {
 				if backend.TLS == nil || backend.TLS.Hostname == nil || *backend.TLS.Hostname == "" {
 					return nil, fmt.Errorf("HTTPS endpoint with IP address requires tls.hostname for backend %d in rule %d", backendIndex, ruleIndex)
 				}
@@ -1079,8 +1099,8 @@ func (r *HTTPProxyReconciler) buildDNSStatuses(
 	if err := cl.List(ctx, &recordSets,
 		client.InNamespace(gateway.Namespace),
 		client.MatchingLabels{
-			labelDNSManaged:    "true",
-			labelDNSSourceKind: "Gateway",
+			labelDNSManaged:    labelValueTrue,
+			labelDNSSourceKind: KindGateway,
 			labelDNSSourceName: gateway.Name,
 		},
 	); err != nil {
@@ -1099,7 +1119,7 @@ func (r *HTTPProxyReconciler) buildDNSStatuses(
 		hs := networkingv1alpha.HostnameStatus{Hostname: hostname}
 
 		// Check DNSRecordSet's Programmed condition
-		programmedCond := apimeta.FindStatusCondition(rs.Status.Conditions, "Programmed")
+		programmedCond := apimeta.FindStatusCondition(rs.Status.Conditions, conditionTypeProgrammed)
 		if programmedCond != nil && programmedCond.Status == metav1.ConditionTrue {
 			apimeta.SetStatusCondition(&hs.Conditions, metav1.Condition{
 				Type:               networkingv1alpha.HostnameConditionDNSRecordProgrammed,
@@ -1256,7 +1276,7 @@ func (r *HTTPProxyReconciler) buildCertificateStatuses(
 // getCertificateReadyConditionReason returns the reason and message for the
 // CertificateReady condition based on the cert-manager Certificate's Ready condition.
 func getCertificateReadyConditionReason(certificate *unstructured.Unstructured) (string, string) {
-	conditions, found, err := unstructured.NestedSlice(certificate.Object, "status", "conditions")
+	conditions, found, err := unstructured.NestedSlice(certificate.Object, jsonKeyStatus, "conditions")
 	if err != nil || !found {
 		return networkingv1alpha.CertificateReadyReasonPending, "Certificate status not yet available"
 	}
@@ -1266,10 +1286,10 @@ func getCertificateReadyConditionReason(certificate *unstructured.Unstructured) 
 		if !ok {
 			continue
 		}
-		if condMap["type"] != certManagerConditionTypeReady {
+		if condMap[jsonKeyType] != certManagerConditionTypeReady {
 			continue
 		}
-		if condMap["status"] == string(metav1.ConditionTrue) {
+		if condMap[jsonKeyStatus] == string(metav1.ConditionTrue) {
 			return networkingv1alpha.CertificateReadyReasonCertificateIssued, "Certificate is ready"
 		}
 		// Ready=False
@@ -1514,6 +1534,8 @@ func (r *HTTPProxyReconciler) reconcileConnectorEnvoyPatchPolicy(
 		return nil, true, fmt.Errorf("downstreamGatewayClassName is required for connector patching")
 	}
 
+	eligibleHTTPSListeners := eligibleConnectorHTTPSListeners(gateway)
+
 	// Collect connector backends that are currently ready. If none are ready the
 	// connector is offline and we keep the EPP alive with a direct_response route
 	// so EG never hits a delete+create cycle (which causes the watchable
@@ -1528,7 +1550,7 @@ func (r *HTTPProxyReconciler) reconcileConnectorEnvoyPatchPolicy(
 	if !connectorOnline {
 		// Connector offline: insert a direct_response CONNECT route so clients
 		// receive a clean 503 "Tunnel not online" instead of a connection error.
-		jsonPatches, err = buildConnectorOfflineEnvoyPatches(downstreamNamespaceName, gateway, httpProxy)
+		jsonPatches, err = buildConnectorOfflineEnvoyPatches(downstreamNamespaceName, gateway, httpProxy, eligibleHTTPSListeners)
 	} else {
 		jsonPatches, err = buildConnectorEnvoyPatches(
 			downstreamNamespaceName,
@@ -1536,6 +1558,7 @@ func (r *HTTPProxyReconciler) reconcileConnectorEnvoyPatchPolicy(
 			gateway,
 			httpProxy,
 			connectorBackends,
+			eligibleHTTPSListeners,
 		)
 	}
 	if err != nil {
@@ -1553,9 +1576,9 @@ func (r *HTTPProxyReconciler) reconcileConnectorEnvoyPatchPolicy(
 			return err
 		}
 		policy.Spec = envoygatewayv1alpha1.EnvoyPatchPolicySpec{
-			TargetRef: gatewayv1alpha2.LocalPolicyTargetReference{
+			TargetRef: gatewayv1.LocalPolicyTargetReference{
 				Group: gatewayv1.GroupName,
-				Kind:  "GatewayClass",
+				Kind:  KindGatewayClass,
 				Name:  gatewayv1.ObjectName(r.Config.Gateway.DownstreamGatewayClassName),
 			},
 			Type:        envoygatewayv1alpha1.JSONPatchEnvoyPatchType,
@@ -1567,6 +1590,24 @@ func (r *HTTPProxyReconciler) reconcileConnectorEnvoyPatchPolicy(
 		return nil, connectorOnline, err
 	}
 	return &policy, connectorOnline, nil
+}
+
+// eligibleConnectorHTTPSListeners returns the gateway's HTTPS listeners that are
+// Programmed. A listener reaches Programmed only once Envoy Gateway has resolved
+// its TLS secret and materialized its RouteConfiguration — exactly what the
+// connector patch targets — so an unprogrammed listener is skipped to avoid a
+// patch stuck Programmed=False/ResourceNotFound.
+func eligibleConnectorHTTPSListeners(gateway *gatewayv1.Gateway) sets.Set[string] {
+	eligible := sets.New[string]()
+	for _, listener := range gateway.Spec.Listeners {
+		if listener.Protocol != gatewayv1.HTTPSProtocolType {
+			continue
+		}
+		if gatewayListenerProgrammed(gateway.Status.Listeners, listener.Name) {
+			eligible.Insert(string(listener.Name))
+		}
+	}
+	return eligible
 }
 
 func (r *HTTPProxyReconciler) cleanupConnectorEnvoyPatchPolicy(
@@ -1589,20 +1630,28 @@ func (r *HTTPProxyReconciler) cleanupConnectorEnvoyPatchPolicy(
 		return err
 	}
 
-	policyName := fmt.Sprintf("connector-%s", httpProxy.Name)
-	policyKey := client.ObjectKey{Namespace: downstreamNamespaceName, Name: policyName}
 	downstreamClient := downstreamStrategy.GetClient()
 
-	var policy envoygatewayv1alpha1.EnvoyPatchPolicy
-	if err := downstreamClient.Get(ctx, policyKey, &policy); err != nil {
-		if apierrors.IsNotFound(err) {
-			return downstreamStrategy.DeleteAnchorForObject(ctx, httpProxy)
+	// When EPP emission is disabled, NSO did not write the connector EPP so we
+	// must not delete it (it may have been created before the flag was disabled,
+	// or it may belong to the extension server's path). Always clean up NSO's
+	// own anchor ConfigMap regardless of the flag.
+	if r.Config.Gateway.IsEPPEmissionEnabled() {
+		policyName := fmt.Sprintf("connector-%s", httpProxy.Name)
+		policyKey := client.ObjectKey{Namespace: downstreamNamespaceName, Name: policyName}
+
+		var policy envoygatewayv1alpha1.EnvoyPatchPolicy
+		if err := downstreamClient.Get(ctx, policyKey, &policy); err != nil {
+			if apierrors.IsNotFound(err) {
+				return downstreamStrategy.DeleteAnchorForObject(ctx, httpProxy)
+			}
+			return err
 		}
-		return err
+		if err := downstreamClient.Delete(ctx, &policy); err != nil {
+			return err
+		}
 	}
-	if err := downstreamClient.Delete(ctx, &policy); err != nil {
-		return err
-	}
+
 	return downstreamStrategy.DeleteAnchorForObject(ctx, httpProxy)
 }
 
@@ -1638,19 +1687,19 @@ func downstreamPatchPolicyReady(policy *envoygatewayv1alpha1.EnvoyPatchPolicy, g
 	}
 
 	for _, ancestor := range policy.Status.Ancestors {
-		if ptr.Deref(ancestor.AncestorRef.Kind, gatewayv1.Kind("")) != gatewayv1.Kind("GatewayClass") ||
+		if ptr.Deref(ancestor.AncestorRef.Kind, gatewayv1.Kind("")) != gatewayv1.Kind(KindGatewayClass) ||
 			ancestor.AncestorRef.Name != gatewayv1.ObjectName(gatewayClassName) {
 			continue
 		}
 
-		accepted := apimeta.FindStatusCondition(ancestor.Conditions, "Accepted")
+		accepted := apimeta.FindStatusCondition(ancestor.Conditions, conditionTypeAccepted)
 		if accepted == nil || accepted.Status != metav1.ConditionTrue {
-			return false, formatPolicyConditionMessage("Accepted", accepted)
+			return false, formatPolicyConditionMessage(conditionTypeAccepted, accepted)
 		}
 
-		programmed := apimeta.FindStatusCondition(ancestor.Conditions, "Programmed")
+		programmed := apimeta.FindStatusCondition(ancestor.Conditions, conditionTypeProgrammed)
 		if programmed == nil || programmed.Status != metav1.ConditionTrue {
-			return false, formatPolicyConditionMessage("Programmed", programmed)
+			return false, formatPolicyConditionMessage(conditionTypeProgrammed, programmed)
 		}
 
 		return true, ""
@@ -1740,25 +1789,6 @@ func backendEndpointTarget(backend networkingv1alpha.HTTPProxyRuleBackend) (stri
 
 func connectorOfflineFilterName(httpProxy *networkingv1alpha.HTTPProxy) string {
 	return fmt.Sprintf("%s-%s", connectorOfflineFilterPrefix, httpProxy.Name)
-}
-
-func buildConnectorOfflineHTTPRouteFilter(httpProxy *networkingv1alpha.HTTPProxy) *envoygatewayv1alpha1.HTTPRouteFilter {
-	return &envoygatewayv1alpha1.HTTPRouteFilter{
-		ObjectMeta: metav1.ObjectMeta{
-			Namespace: httpProxy.Namespace,
-			Name:      connectorOfflineFilterName(httpProxy),
-		},
-		Spec: envoygatewayv1alpha1.HTTPRouteFilterSpec{
-			DirectResponse: &envoygatewayv1alpha1.HTTPDirectResponseFilter{
-				ContentType: ptr.To("text/plain; charset=utf-8"),
-				StatusCode:  ptr.To(http.StatusServiceUnavailable),
-				Body: &envoygatewayv1alpha1.CustomResponseBody{
-					Type:   ptr.To(envoygatewayv1alpha1.ResponseValueTypeInline),
-					Inline: ptr.To("Tunnel not online"),
-				},
-			},
-		},
-	}
 }
 
 // httpProxyHasConnectorBackends returns true if any backend in the HTTPProxy

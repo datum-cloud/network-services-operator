@@ -1,0 +1,74 @@
+resources:
+  - namespace.yaml
+  - nso-crd-rbac.yaml
+helmCharts:
+  - name: gateway-helm
+    includeCRDs: false
+    namespace: datum-downstream-gateway
+    releaseName: envoy-datum-downstream-gateway
+    version: v1.8.1
+    repo: oci://docker.io/envoyproxy
+    valuesInline:
+      config:
+        envoyGateway:
+          gateway:
+            controllerName: gateway.envoyproxy.io/datum-downstream-gateway
+          extensionApis:
+            enableBackend: true
+            enableEnvoyPatchPolicy: false
+          runtimeFlags:
+            enabled:
+              - XDSNameSchemeV2
+          provider:
+            type: Kubernetes
+            kubernetes:
+              watch:
+                type: NamespaceSelector
+                namespaceSelector:
+                  matchExpressions:
+                    - key: meta.datumapis.com/upstream-cluster-name
+                      operator: Exists
+          extensionManager:
+            policyResources:
+              - group: networking.datumapis.com
+                version: v1alpha
+                kind: TrafficProtectionPolicy
+            resources:
+              - group: networking.datumapis.com
+                version: v1alpha1
+                kind: Connector
+            service:
+              fqdn:
+                hostname: network-services-operator-envoy-gateway-extension-server.network-services-operator-system.svc.cluster.local
+                port: 5005
+              tls:
+                certificateRef:
+                  # Placeholder — an overlay must patch this to the Secret holding the CA that issued the server cert.
+                  name: placeholder-ca
+                  namespace: placeholder-namespace
+                clientCertificateRef:
+                  name: envoy-gateway-extension-server-eg-client-tls
+                  namespace: network-services-operator-system
+              retry:
+                maxAttempts: 4
+                initialBackoff: 100ms
+                maxBackoff: 1s
+                backoffMultiplier:
+                  numerator: 200
+                retryableStatusCodes:
+                  - UNAVAILABLE
+            hooks:
+              xdsTranslator:
+                post:
+                  - Translation
+                translation:
+                  listener:
+                    includeAll: true   # MANDATORY — without this, WAF listener filter + per-route mutations are silently dropped
+                  route:
+                    includeAll: true   # MANDATORY — without this, WAF listener filter + per-route mutations are silently dropped
+                  cluster:
+                    includeAll: true
+                  secret:
+                    includeAll: true
+            # failOpen:false — extension errors block the xDS update; Envoy holds last-known-good config.
+            failOpen: false

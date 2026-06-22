@@ -109,11 +109,11 @@ lint-fix: golangci-lint ## Run golangci-lint linter and perform fixes
 
 .PHONY: build
 build: manifests generate fmt vet ## Build manager binary.
-	go build -o bin/manager cmd/main.go
+	go build -o bin/network-services cmd/main.go
 
 .PHONY: run
 run: manifests generate fmt vet ## Run a controller from your host.
-	go run ./cmd/main.go -health-probe-bind-address 0 --server-config ./config/dev/config.yaml
+	go run ./cmd/main.go manager --health-probe-bind-address=0 --server-config=./config/dev/config.yaml
 
 # If you wish to build the manager image targeting other platforms you can use the --platform flag.
 # (i.e. docker build --platform linux/arm64). However, you must enable docker buildKit for it.
@@ -153,7 +153,13 @@ set-image-controller: manifests kustomize
 	cd config/manager && $(KUSTOMIZE) edit set image ghcr.io/datum-cloud/network-services-operator=${IMG}
 
 .PHONY: prepare-infra-cluster
-prepare-infra-cluster: cert-manager envoy-gateway external-dns
+prepare-infra-cluster: cert-manager envoy-gateway external-dns downstream-crds
+
+.PHONY: downstream-crds
+downstream-crds: ## Install NSO CRDs on the downstream (infra) cluster that the replicator mirrors into it.
+	$(KUBECTL) apply -f config/crd/bases/networking.datumapis.com_connectors.yaml
+	$(KUBECTL) apply -f config/crd/bases/networking.datumapis.com_httpproxies.yaml
+	$(KUBECTL) apply -f config/crd/bases/networking.datumapis.com_trafficprotectionpolicies.yaml
 
 .PHONY: prepare-e2e
 prepare-e2e: chainsaw set-image-controller cert-manager load-image-all deploy-e2e
@@ -241,7 +247,7 @@ KUSTOMIZE_VERSION ?= v5.5.0
 CONTROLLER_TOOLS_VERSION ?= v0.16.4
 DEFAULTER_GEN_VERSION ?= v0.32.3
 ENVTEST_VERSION ?= release-0.19
-GOLANGCI_LINT_VERSION ?= v2.1.6
+GOLANGCI_LINT_VERSION ?= v2.12.2
 
 # renovate: datasource=go depName=github.com/cert-manager/cert-manager
 CERTMANAGER_VERSION ?= 1.17.1
@@ -253,7 +259,7 @@ CRDOC_VERSION ?= v0.6.4
 KIND_VERSION ?= v0.27.0
 
 # renovate: datasource=go depName=github.com/kyverno/chainsaw
-CHAINSAW_VERSION ?= v0.2.13
+CHAINSAW_VERSION ?= v0.2.15
 
 # renovate: datasource=go depName=github.com/cert-manager/cmctl/v2
 CMCTL_VERSION ?= v2.1.1

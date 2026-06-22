@@ -16,21 +16,26 @@ jobs:
       contents: read
       packages: write
       attestations: write
-    uses: datum-cloud/actions/.github/workflows/publish-docker.yaml@v1.14.0
+    uses: datum-cloud/actions/.github/workflows/publish-docker.yaml@v1.15.0
     with:
       image-name: network-services-operator
       platforms: linux/amd64,linux/arm64
     secrets: inherit
 
   publish-kustomize-bundles:
+    # The bundle pins image references to this build, so only publish it once
+    # the container image has been built and pushed.
+    needs: publish-container-image
     permissions:
       id-token: write
       contents: read
       packages: write
-    uses: datum-cloud/actions/.github/workflows/publish-kustomize-bundle.yaml@v1.14.0
+    uses: datum-cloud/actions/.github/workflows/publish-kustomize-bundle.yaml@v1.15.0
     with:
       bundle-name: ghcr.io/datum-cloud/network-services-operator-kustomize
       bundle-path: config
       image-name: ghcr.io/datum-cloud/network-services-operator
-      image-overlays: config/manager
+      # Both overlays run the same image (single binary, subcommand selects role),
+      # so pin both to the release tag in the published bundle.
+      image-overlays: config/manager,config/extension-server
     secrets: inherit

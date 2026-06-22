@@ -85,7 +85,3 @@ type NetworkBindingList struct {
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []NetworkBinding `json:"items"`
 }
-
-func init() {
-	SchemeBuilder.Register(&NetworkBinding{}, &NetworkBindingList{})
-}

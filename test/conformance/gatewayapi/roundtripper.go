@@ -39,8 +39,10 @@ func (d *NodePortRoundTripper) httpTransport(request roundtripper.Request) (http
 		// Ref. https://github.com/kubernetes-sigs/gateway-api/issues/2357
 		DisableKeepAlives: true,
 	}
-	if request.Server != "" && len(request.CertPem) != 0 && len(request.KeyPem) != 0 {
-		tlsConfig, err := tlsClientConfig(request.Server, request.CertPem, request.KeyPem)
+	// In gateway-api conformance v1.5.1, Server/CertPem/KeyPem were renamed:
+	//   Server → ServerName, CertPem → ServerCertificate (server CA cert only, no key).
+	if request.ServerName != "" && len(request.ServerCertificate) > 0 {
+		tlsConfig, err := tlsClientConfig(request.ServerName, request.ServerCertificate)
 		if err != nil {
 			return nil, err
 		}
@@ -51,8 +53,8 @@ func (d *NodePortRoundTripper) httpTransport(request roundtripper.Request) (http
 }
 
 func (d *NodePortRoundTripper) h2cPriorKnowledgeTransport(request roundtripper.Request) (http.RoundTripper, error) {
-	if request.Server != "" && len(request.CertPem) != 0 && len(request.KeyPem) != 0 {
-		return nil, errors.New("request has configured cert and key but h2 prior knowledge is not encrypted")
+	if request.ServerName != "" && len(request.ServerCertificate) > 0 {
+		return nil, errors.New("request has configured TLS but h2 prior knowledge is not encrypted")
 	}
 
 	transport := &http2.Transport{
@@ -190,30 +192,26 @@ func (d *NodePortRoundTripper) defaultRoundTrip(request roundtripper.Request, tr
 	return cReq, cRes, nil
 }
 
-func tlsClientConfig(server string, certPem []byte, keyPem []byte) (*tls.Config, error) {
-	// Create a certificate from the provided cert and key
-	cert, err := tls.X509KeyPair(certPem, keyPem)
-	if err != nil {
-		return nil, fmt.Errorf("unexpected error creating cert: %w", err)
-	}
-
-	// Add the provided cert as a trusted CA
-	certPool := x509.NewCertPool()
-	if !certPool.AppendCertsFromPEM(certPem) {
-		return nil, fmt.Errorf("unexpected error adding trusted CA: %w", err)
-	}
-
+// tlsClientConfig builds a TLS client config that trusts the given server CA certificate.
+// In gateway-api conformance v1.5.1 the Request no longer carries a client key/cert;
+// client certificates are injected via Request.GetClientCertificateHook if needed.
+func tlsClientConfig(server string, serverCertificate []byte) (*tls.Config, error) {
 	if server == "" {
 		return nil, fmt.Errorf("unexpected error, server name required for TLS")
 	}
 
-	// Create the tls Config for this provided host, cert, and trusted CA
+	// Add the provided cert as a trusted CA
+	certPool := x509.NewCertPool()
+	if !certPool.AppendCertsFromPEM(serverCertificate) {
+		return nil, fmt.Errorf("unexpected error adding trusted CA from ServerCertificate")
+	}
+
+	// Create the tls Config for this provided host and trusted CA.
 	// Disable G402: TLS MinVersion too low. (gosec)
 	// #nosec G402
 	return &tls.Config{
-		Certificates: []tls.Certificate{cert},
-		ServerName:   server,
-		RootCAs:      certPool,
+		ServerName: server,
+		RootCAs:    certPool,
 	}, nil
 }
 

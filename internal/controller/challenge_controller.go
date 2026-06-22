@@ -83,7 +83,7 @@ func (r *ChallengeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 // isGatewayRelatedIssuer checks if the given issuer reference is for a Gateway-managed
 // certificate issuer (ClusterIssuers that are mapped in the ClusterIssuerMap configuration).
 func (r *ChallengeReconciler) isGatewayRelatedIssuer(ref cmmeta.ObjectReference) bool {
-	if ref.Kind == "ClusterIssuer" || ref.Kind == "" {
+	if ref.Kind == KindClusterIssuer || ref.Kind == "" {
 		for _, mappedIssuer := range r.Config.Gateway.ClusterIssuerMap {
 			if mappedIssuer == ref.Name {
 				return true

@@ -74,6 +74,30 @@ spec:
                 - name: status
                   value: "item.status"
 
+    - name: network-status-condition-last-transition-time
+      resource:
+        group: networking.datumapis.com
+        version: v1alpha
+        resource: networks
+      families:
+        - name: datum_cloud_network_status_condition_last_transition_time
+          help: "last transition time for status conditions"
+          type: gauge
+          metrics:
+            - forEach: "has(object.status) && has(object.status.conditions) ? object.status.conditions : []"
+              value: "double(timestamp(item.lastTransitionTime).getSeconds())"
+              labels:
+                - name: name
+                  value: "object.metadata.name"
+                - name: namespace
+                  value: "object.metadata.namespace"
+                - name: condition
+                  value: "item.type"
+                - name: reason
+                  value: "item.reason"
+                - name: status
+                  value: "item.status"
+
     # -------------------------------------------------------------------------
     # NetworkBinding
     # -------------------------------------------------------------------------
@@ -378,6 +402,34 @@ spec:
                 - name: status
                   value: "item.status"
 
+    - name: subnet-status-condition-last-transition-time
+      resource:
+        group: networking.datumapis.com
+        version: v1alpha
+        resource: subnets
+      families:
+        - name: datum_cloud_subnet_status_condition_last_transition_time
+          help: "last transition time for status conditions"
+          type: gauge
+          metrics:
+            - forEach: "has(object.status) && has(object.status.conditions) ? object.status.conditions : []"
+              value: "double(timestamp(item.lastTransitionTime).getSeconds())"
+              labels:
+                - name: name
+                  value: "object.metadata.name"
+                - name: namespace
+                  value: "object.metadata.namespace"
+                - name: network_name
+                  value: "object.spec.network.name"
+                - name: network_namespace
+                  value: "object.spec.network.namespace"
+                - name: condition
+                  value: "item.type"
+                - name: reason
+                  value: "item.reason"
+                - name: status
+                  value: "item.status"
+
     # -------------------------------------------------------------------------
     # SubnetClaim
     # -------------------------------------------------------------------------
@@ -456,6 +508,34 @@ spec:
           metrics:
             - forEach: "has(object.status) && has(object.status.conditions) ? object.status.conditions : []"
               value: "item.status == 'True' ? 1.0 : 0.0"
+              labels:
+                - name: name
+                  value: "object.metadata.name"
+                - name: namespace
+                  value: "object.metadata.namespace"
+                - name: network_name
+                  value: "object.spec.network.name"
+                - name: network_namespace
+                  value: "object.spec.network.namespace"
+                - name: condition
+                  value: "item.type"
+                - name: reason
+                  value: "item.reason"
+                - name: status
+                  value: "item.status"
+
+    - name: subnet-claim-status-condition-last-transition-time
+      resource:
+        group: networking.datumapis.com
+        version: v1alpha
+        resource: subnetclaims
+      families:
+        - name: datum_cloud_subnet_claim_status_condition_last_transition_time
+          help: "last transition time for status conditions"
+          type: gauge
+          metrics:
+            - forEach: "has(object.status) && has(object.status.conditions) ? object.status.conditions : []"
+              value: "double(timestamp(item.lastTransitionTime).getSeconds())"
               labels:
                 - name: name
                   value: "object.metadata.name"
@@ -787,6 +867,30 @@ spec:
           metrics:
             - forEach: "has(object.status) && has(object.status.conditions) ? object.status.conditions : []"
               value: "item.status == 'True' ? 1.0 : 0.0"
+              labels:
+                - name: name
+                  value: "object.metadata.name"
+                - name: namespace
+                  value: "object.metadata.namespace"
+                - name: condition
+                  value: "item.type"
+                - name: reason
+                  value: "item.reason"
+                - name: status
+                  value: "item.status"
+
+    - name: http-proxy-status-condition-last-transition-time
+      resource:
+        group: networking.datumapis.com
+        version: v1alpha
+        resource: httpproxies
+      families:
+        - name: datum_cloud_networking_http_proxy_status_condition_last_transition_time
+          help: "last transition time for status conditions"
+          type: gauge
+          metrics:
+            - forEach: "has(object.status) && has(object.status.conditions) ? object.status.conditions : []"
+              value: "double(timestamp(item.lastTransitionTime).getSeconds())"
               labels:
                 - name: name
                   value: "object.metadata.name"

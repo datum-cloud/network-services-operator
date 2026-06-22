@@ -91,7 +91,3 @@ type LocalNetworkContextRef struct {
 	// +kubebuilder:validation:Required
 	Name string `json:"name"`
 }
-
-func init() {
-	SchemeBuilder.Register(&NetworkContext{}, &NetworkContextList{})
-}

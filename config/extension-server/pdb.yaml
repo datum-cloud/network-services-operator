@@ -1,0 +1,15 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  labels:
+    app.kubernetes.io/name: network-services-operator
+    app.kubernetes.io/component: envoy-gateway-extension-server
+    app.kubernetes.io/managed-by: kustomize
+  name: envoy-gateway-extension-server-pdb
+  namespace: system
+spec:
+  # failOpen:false + zero replicas freezes xDS fleet-wide; minAvailable:1 prevents that.
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: envoy-gateway-extension-server

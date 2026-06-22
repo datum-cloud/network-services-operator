@@ -8,10 +8,8 @@ import (
 
 	gatewayv1alpha1 "github.com/envoyproxy/gateway/api/v1alpha1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 	mccontext "sigs.k8s.io/multicluster-runtime/pkg/context"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
@@ -22,7 +20,7 @@ import (
 
 // SetupSecurityPolicyWebhookWithManager registers the webhook for SecurityPolicy in the manager.
 func SetupSecurityPolicyWebhookWithManager(mgr mcmanager.Manager, cfg config.NetworkServicesOperator) error {
-	return ctrl.NewWebhookManagedBy(mgr.GetLocalManager()).For(&gatewayv1alpha1.SecurityPolicy{}).
+	return ctrl.NewWebhookManagedBy(mgr.GetLocalManager(), &gatewayv1alpha1.SecurityPolicy{}).
 		WithValidator(&SecurityPolicyCustomValidator{mgr: mgr, validationOpts: cfg.Gateway.ExtensionAPIValidationOptions.SecurityPolicies}).
 		Complete()
 }
@@ -34,15 +32,10 @@ type SecurityPolicyCustomValidator struct {
 	validationOpts config.SecurityPolicyValidationOptions
 }
 
-var _ webhook.CustomValidator = &SecurityPolicyCustomValidator{}
+var _ admission.Validator[*gatewayv1alpha1.SecurityPolicy] = &SecurityPolicyCustomValidator{}
 
-// ValidateCreate implements webhook.CustomValidator so a webhook will be registered for the type SecurityPolicy.
-func (v *SecurityPolicyCustomValidator) ValidateCreate(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
-	securityPolicy, ok := obj.(*gatewayv1alpha1.SecurityPolicy)
-	if !ok {
-		return nil, fmt.Errorf("expected a SecurityPolicy object but got %T", obj)
-	}
-
+// ValidateCreate implements admission.Validator so a webhook will be registered for the type SecurityPolicy.
+func (v *SecurityPolicyCustomValidator) ValidateCreate(ctx context.Context, securityPolicy *gatewayv1alpha1.SecurityPolicy) (admission.Warnings, error) {
 	clusterName, ok := mccontext.ClusterFrom(ctx)
 	if !ok {
 		return nil, fmt.Errorf("expected a cluster name in the context")
@@ -52,35 +45,30 @@ func (v *SecurityPolicyCustomValidator) ValidateCreate(ctx context.Context, obj 
 	log.Info("Validating SecurityPolicy", "name", securityPolicy.GetName(), "cluster", clusterName)
 
 	if errs := validation.ValidateSecurityPolicy(securityPolicy, v.validationOpts); len(errs) > 0 {
-		return nil, apierrors.NewInvalid(obj.GetObjectKind().GroupVersionKind().GroupKind(), securityPolicy.GetName(), errs)
+		return nil, apierrors.NewInvalid(securityPolicy.GetObjectKind().GroupVersionKind().GroupKind(), securityPolicy.GetName(), errs)
 	}
 
 	return nil, nil
 }
 
-// ValidateUpdate implements webhook.CustomValidator so a webhook will be registered for the type SecurityPolicy.
-func (v *SecurityPolicyCustomValidator) ValidateUpdate(ctx context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
-	securityPolicy, ok := newObj.(*gatewayv1alpha1.SecurityPolicy)
-	if !ok {
-		return nil, fmt.Errorf("expected a SecurityPolicy object but got %T", newObj)
-	}
-
+// ValidateUpdate implements admission.Validator so a webhook will be registered for the type SecurityPolicy.
+func (v *SecurityPolicyCustomValidator) ValidateUpdate(ctx context.Context, oldSecurityPolicy, newSecurityPolicy *gatewayv1alpha1.SecurityPolicy) (admission.Warnings, error) {
 	clusterName, ok := mccontext.ClusterFrom(ctx)
 	if !ok {
 		return nil, fmt.Errorf("expected a cluster name in the context")
 	}
 
 	log := logf.FromContext(ctx).WithValues("cluster", clusterName)
-	log.Info("Validating SecurityPolicy", "name", securityPolicy.GetName(), "cluster", clusterName)
+	log.Info("Validating SecurityPolicy", "name", newSecurityPolicy.GetName(), "cluster", clusterName)
 
-	if errs := validation.ValidateSecurityPolicy(securityPolicy, v.validationOpts); len(errs) > 0 {
-		return nil, apierrors.NewInvalid(oldObj.GetObjectKind().GroupVersionKind().GroupKind(), securityPolicy.GetName(), errs)
+	if errs := validation.ValidateSecurityPolicy(newSecurityPolicy, v.validationOpts); len(errs) > 0 {
+		return nil, apierrors.NewInvalid(oldSecurityPolicy.GetObjectKind().GroupVersionKind().GroupKind(), newSecurityPolicy.GetName(), errs)
 	}
 
 	return nil, nil
 }
 
-// ValidateDelete implements webhook.CustomValidator so a webhook will be registered for the type SecurityPolicy.
-func (v *SecurityPolicyCustomValidator) ValidateDelete(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
+// ValidateDelete implements admission.Validator so a webhook will be registered for the type SecurityPolicy.
+func (v *SecurityPolicyCustomValidator) ValidateDelete(ctx context.Context, securityPolicy *gatewayv1alpha1.SecurityPolicy) (admission.Warnings, error) {
 	return nil, nil
 }

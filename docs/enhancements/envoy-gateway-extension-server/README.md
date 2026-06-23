@@ -251,6 +251,22 @@ computed from the snapshot Envoy Gateway passes in plus policy read from
 Kubernetes (cached; see [Sourcing
 Policy](#sourcing-policy-how-the-extension-server-knows-what-to-inject)).
 
+#### Invariant: mutations to shared resources must be globally unique
+
+Because Envoy Gateway merges all customer gateways into one shared
+configuration, several resources the Extension Server mutates are themselves
+shared — most notably the HTTP listener's route configuration, whose
+virtual-host domains form a single global namespace. Envoy enforces that these
+domains are unique and rejects the entire xDS snapshot if any two collide. Any
+identifier the Extension Server adds to a shared resource — a virtual-host
+domain above all — must therefore be globally unique across the whole fleet, not
+merely unique within one connector or gateway. The Connector satisfies this by
+deriving a synthetic per-connector domain rather than reusing the backend host
+(which is frequently a non-unique value such as `localhost`). This invariant is
+load-bearing under the fail-closed delivery posture: a single duplicate value
+does not degrade one gateway, it NACKs the snapshot and freezes configuration
+delivery for every gateway (see [High Availability](#high-availability)).
+
 ### Extension Mechanism: Which Hook and Why
 
 Envoy Gateway's
@@ -592,6 +608,14 @@ Gateway share a namespace, and the Gateway is named after the `HTTPProxy`. The
 controller needs `get;patch` on `gateways.gateway.networking.k8s.io` in addition
 to the extension server's read-only policy access.
 
+One coverage edge remains: the controller watches Connectors, but the
+connector→Gateway association is resolved through the `HTTPProxy`. A change that
+newly links an existing Gateway to an already-online Connector — an `HTTPProxy`
+created or repointed after the Connector's liveness has settled — produces no
+Connector event, so the Gateway is not stamped until an unrelated rebuild fires.
+Closing this fully requires the controller to additionally watch `HTTPProxy` and
+map back to the affected Gateway.
+
 The alternative considered was having the replicator write a monotonic nonce into
 the downstream Connector's `spec` when the `Ready` condition flips, which would
 increment `metadata.generation` and satisfy the `GenerationChangedPredicate`. This
@@ -671,9 +695,29 @@ Envoy Gateway is configured with:
   Server recovers, which is exactly why the two-replica, probe-gated,
   retry-backed posture above is mandatory rather than optional.
 
+Fail-closed protects against the hook *erroring*, but not against the hook
+returning a response Envoy Gateway accepts and pushes yet Envoy itself then
+rejects (for example, a malformed or colliding resource — see the uniqueness
+invariant above). Envoy applies each xDS snapshot atomically, so one rejected
+resource discards the whole update and freezes configuration for every gateway
+at once. This failure is invisible to Kubernetes state: Gateway and Route status
+stay `Programmed=True` because translation succeeded. The only signals are
+Envoy's `*.update_rejected` counters (LDS/RDS/CDS) and Envoy Gateway's
+translation-error logs. Alerting on these xDS rejection metrics — RDS and CDS
+rejections as well as LDS — is required; without it a fleet-wide config freeze is
+silent.
+
 Latency must be monitored: per-build hook latency and error rate are
 platform-health metrics. Policy reads stay off the synchronous build path via
 the informer cache described above.
+
+Operability note: because the Extension Server embeds controller-runtime (the
+policy cache and the re-translation controller), it must install a logger at
+process startup. controller-runtime suppresses all of its own and its
+controllers' log output until a logger is set, so an Extension Server that skips
+this step runs without controller or hook logs — removing the second of the only
+two diagnostic signals (logs and xDS metrics) precisely when an incident needs
+them.
 
 ### Reference Implementation
 
@@ -896,6 +940,13 @@ registration. In-flight traffic is unaffected during rollback.
 configuration updates simultaneously; an EPP misconfiguration affects only one
 gateway's EPP object. This is the primary operational tradeoff (see
 [High Availability](#high-availability) for mitigations).
+
+**Fleet-wide config freeze is invisible to Kubernetes status.** A single
+malformed or colliding resource in a shared config makes Envoy reject the whole
+atomic snapshot, freezing updates for every gateway while Gateway/Route status
+still reads `Programmed=True`. Detection depends on Envoy xDS-rejection metrics
+and EG translation logs rather than Kubernetes conditions (see
+[High Availability](#high-availability)).
 
 **Coupling to EG's extension hook API.** A supported, upstream-recommended
 mechanism, but an additional API surface to track across EG version upgrades.

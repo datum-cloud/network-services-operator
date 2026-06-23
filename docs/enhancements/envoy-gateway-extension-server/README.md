@@ -443,15 +443,18 @@ following controls apply:
   only. mTLS already authenticates the caller; the `NetworkPolicy` shrinks the
   attack surface so unauthorized peers cannot even open a connection to attempt
   the handshake.
-- **Least-privilege Kubernetes access.** The Extension Server reads policy and
-  status from Kubernetes but never writes; its ServiceAccount holds
-  **read-only**
-  [RBAC](https://kubernetes.io/docs/reference/access-authn-authz/rbac/) on
-  exactly the resource types it consumes (Traffic Protection and Connector
-  policy and their status), and nothing more. This bounds the damage if the
-  process is compromised. The contrast with NSO's reconcilers, which hold write
-  access, is the reason the two run as separate processes — see [Deployment
-  Topology](#deployment-topology).
+- **Least-privilege Kubernetes access.** The Extension Server reads the policy
+  and status it consumes (Traffic Protection and Connector policy and their
+  status) and holds no write access to any of it; its
+  [RBAC](https://kubernetes.io/docs/reference/access-authn-authz/rbac/) grants
+  read-only verbs on exactly those types. Its one write is the re-translation
+  trigger: `patch` on `Gateway` (see [Triggering Re-translation on Policy
+  Change](#triggering-re-translation-on-policy-change)), scoped to that single
+  resource and verb and used only to set a trigger annotation — it cannot mutate
+  Gateway spec semantics, and it touches nothing else. This bounds the damage if
+  the process is compromised. The contrast with NSO's reconcilers, which hold
+  broad write access, is the reason the two run as separate processes — see
+  [Deployment Topology](#deployment-topology).
 - **Hardened pod.** Run as non-root with a read-only root filesystem, all
   capabilities dropped, and `allowPrivilegeEscalation: false` — the standard
   hardened posture for a control-plane workload.
@@ -544,14 +547,50 @@ carried in `.status.conditions[Ready]`, updated on Lease expiry or renewal; stat
 updates do not increment the generation. The `resources` trigger therefore does
 not cover Connector online/offline transitions.
 
-For this case, the Connector controller touches an annotation on each downstream
-`Gateway` the Connector serves when the `Ready` condition flips. EG's
-`metadataPredicate` for `Gateway` includes `AnnotationChangedPredicate`, so the
-annotation change fires a full re-translation and the extension server re-applies
-the correct routing config from its cache. This is the deliberate choice for
-status-driven transitions: it uses the predicate already in place for Gateway
-events, requires no new EG configuration, and places trigger logic in the
-controller that detects the Lease-driven state change.
+On the edge, the Connector's liveness arrives in the
+`networking.datumapis.com/upstream-status` annotation — Karmada propagates a
+member object's metadata, but not its `status` subresource, so the connector's
+`Ready` condition and `connectionDetails` are mirrored into an annotation by the
+replicator and the extension server reads its routing decision from there. EG
+does not watch this annotation (the `Connector` is registered with a
+generation-only predicate via `resources`), so a freshly online connector's
+liveness lands in the extension server's cache while the data plane keeps serving
+the stale — usually offline — program until some unrelated rebuild happens to
+fire.
+
+A **dedicated re-translation controller**, co-located with the extension server
+and sharing its informer cache, closes this gap. It watches Connectors and, when
+a connector's liveness changes, patches a trigger annotation onto every Gateway
+backed by an `HTTPProxy` that references the connector. EG re-translates on
+Gateway annotation changes, so the patch forces a fresh `PostTranslateModify`
+call, and the extension server re-applies the correct routing config from cache.
+
+Three properties make this safe and cheap:
+
+- **It runs at the edge, against the same cache EG translates against.** This is
+  the reason the controller is co-located with the extension server rather than
+  placed in the project-side Connector controller. The annotation is touched only
+  *after* the new liveness is already in the shared cache, so the re-translation
+  it provokes is guaranteed to read fresh data — eliminating the cross-cluster
+  ordering race a project-side trigger would have, where the Gateway touch could
+  reach the edge before the connector's own status annotation does and re-translate
+  against a stale cache.
+- **It only reconciles on liveness changes.** The watch predicate admits creates
+  (so connectors already online at startup get stamped) and only those updates
+  that change the `(online, nodeID)` the extension server keys on; routine
+  heartbeat churn that does not affect routing is ignored. The annotation value
+  encodes that same `(online, nodeID)`, so a `connectionDetails` change (e.g. the
+  tunnel endpoint moves) re-translates too, not only `Ready` flips.
+- **The Gateway patch is idempotent.** It is a merge patch with no preceding Get;
+  an unchanged value is a no-op at the API server (no `resourceVersion` bump, no
+  EG event), so the controller never provokes a spurious re-translation. A missing
+  Gateway is ignored — EG translates a Gateway when it is created, reading the
+  already-fresh cache, so there is nothing to nudge yet.
+
+The connector→Gateway mapping stays local: the Connector, its `HTTPProxy`, and the
+Gateway share a namespace, and the Gateway is named after the `HTTPProxy`. The
+controller needs `get;patch` on `gateways.gateway.networking.k8s.io` in addition
+to the extension server's read-only policy access.
 
 The alternative considered was having the replicator write a monotonic nonce into
 the downstream Connector's `spec` when the `Ready` condition flips, which would
@@ -582,17 +621,27 @@ The Envoy AI Gateway project
 on all replicas because EG's calls are the bottleneck under load. NSO takes the
 split one step further: the Extension Server ships as its **own Deployment**,
 built from the same Go module and image as NSO but running as a distinct
-workload with its own ServiceAccount. This is what gives it the read-only RBAC,
-the dedicated `NetworkPolicy`, and the independent horizontal scaling the rest
-of this design depends on — none of which it could have as a serving path inside
-the leader-elected reconciler process. It is **horizontally scalable and
+workload with its own ServiceAccount. This is what gives it the tightly scoped
+RBAC, the dedicated `NetworkPolicy`, and the independent horizontal scaling the
+rest of this design depends on — none of which it could have as a serving path
+inside the leader-elected reconciler process. It is **horizontally scalable and
 stateless**, sized by EG's call rate rather than by reconcile load.
 
 The Extension Server runs in NSO's namespace, owned by NSO, and is reached by
 Envoy Gateway at a stable in-cluster FQDN (the
-`extensionManager.service.fqdn`). NSO ownership is what makes the read-only RBAC,
-the `NetworkPolicy`, and TLS SAN scoping coherent: one team owns the workload,
-its identity, and the policy that fronts it.
+`extensionManager.service.fqdn`). NSO ownership is what makes the RBAC, the
+`NetworkPolicy`, and TLS SAN scoping coherent: one team owns the workload, its
+identity, and the policy that fronts it.
+
+The re-translation controller (see [Triggering Re-translation on Policy
+Change](#triggering-re-translation-on-policy-change)) runs **inside** this
+process. It is the one writer in an otherwise read-only workload, and it runs on
+every replica without leader election: its only write is an idempotent merge patch
+of a trigger annotation, so concurrent replicas converge on the same value and the
+redundant patches are no-ops at the API server. Co-locating it here is deliberate
+— it must observe the same informer cache the extension server translates against,
+which is what removes the cross-cluster ordering race a separate, project-side
+trigger would have.
 
 ### High Availability
 

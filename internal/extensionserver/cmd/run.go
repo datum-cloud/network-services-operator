@@ -32,6 +32,7 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	networkingv1alpha1 "go.datum.net/network-services-operator/api/v1alpha1"
@@ -40,6 +41,7 @@ import (
 	extcache "go.datum.net/network-services-operator/internal/extensionserver/cache"
 	extmetrics "go.datum.net/network-services-operator/internal/extensionserver/metrics"
 	"go.datum.net/network-services-operator/internal/extensionserver/mutate"
+	"go.datum.net/network-services-operator/internal/extensionserver/retrigger"
 	extserver "go.datum.net/network-services-operator/internal/extensionserver/server"
 	exttls "go.datum.net/network-services-operator/internal/extensionserver/tls"
 	exttracing "go.datum.net/network-services-operator/internal/extensionserver/tracing"
@@ -205,11 +207,14 @@ func run(o options) {
 	}
 
 	// --- Cache scheme ---
-	// Minimal scheme covering the four types watched by the informer cache.
+	// Minimal scheme covering the four types watched by the informer cache,
+	// plus Gateway: the edge re-translation controller patches a trigger
+	// annotation onto Gateways (it does not cache them — patches are writes).
 	cacheScheme := runtime.NewScheme()
 	utilruntime.Must(clientgoscheme.AddToScheme(cacheScheme)) // corev1.Namespace
 	utilruntime.Must(networkingv1alpha.AddToScheme(cacheScheme))
 	utilruntime.Must(networkingv1alpha1.AddToScheme(cacheScheme))
+	utilruntime.Must(gatewayv1.Install(cacheScheme))
 
 	// --- Single-cluster read-only cache manager ---
 	// NewManager uses ctrl.GetConfig() (in-cluster config) internally and
@@ -218,6 +223,14 @@ func run(o options) {
 	mgr, err := extcache.NewManager(cacheScheme)
 	if err != nil {
 		log.Error("create cache manager", "err", err)
+		os.Exit(1)
+	}
+
+	// --- Edge re-translation controller ---
+	// Makes Envoy Gateway re-translate when a Connector's liveness changes, so
+	// the hook re-runs against fresh liveness. See the retrigger package doc.
+	if err := (&retrigger.Reconciler{Client: mgr.GetClient()}).SetupWithManager(mgr); err != nil {
+		log.Error("set up gateway re-translation controller", "err", err)
 		os.Exit(1)
 	}
 

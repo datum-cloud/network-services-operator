@@ -122,7 +122,7 @@ func mkListenerWithStaticRoute(t *testing.T, name string) *listenerv3.Listener {
 }
 
 // egGatewayMeta builds the envoy-gateway filter_metadata struct for a VH.
-// This simulates the metadata EG populates on VirtualHosts per design §2.1.
+// This simulates the metadata EG populates on VirtualHosts.
 func egGatewayMeta(t *testing.T, dsNS, gwName string) *corev3.Metadata {
 	t.Helper()
 	s, err := structpb.NewStruct(map[string]any{
@@ -547,8 +547,9 @@ func TestPostTranslateModify_EGInternalListener_Skipped(t *testing.T) {
 	}
 }
 
-// TestPostTranslateModify_TwoClusterTopology_DistinctReplicaUID is the GAP-1b
-// full-pipeline regression test. It simulates the two-cluster edge topology:
+// TestPostTranslateModify_TwoClusterTopology_DistinctReplicaUID is the
+// full-pipeline regression test for connector/TPP resolution in the two-cluster
+// edge topology:
 //   - Ext-server client lists EDGE cluster replica namespaces.
 //   - Replica namespace is named "ns-<upstream-uid>" but has a DISTINCT own UID
 //     assigned by the edge cluster's API server.
@@ -704,7 +705,7 @@ func TestPostTranslateModify_TwoClusterTopology_DistinctReplicaUID(t *testing.T)
 	require.NoError(t, err)
 	require.NotNil(t, resp)
 
-	// --- Connector cluster must be replaced (GAP-1b: Connector resolution) ---
+	// --- Connector cluster must be replaced (connector resolution) ---
 	// Old code: DStoUS["ns-upstream-uid-abc"] absent → ReplaceConnectorClusters
 	// skipped the cluster → no internal-upstream replacement.
 	require.Len(t, resp.Clusters, 2)
@@ -712,7 +713,7 @@ func TestPostTranslateModify_TwoClusterTopology_DistinctReplicaUID(t *testing.T)
 	assert.Equal(t, connCluster, connectorCluster.GetName(),
 		"connector cluster name must be preserved")
 	require.NotNil(t, connectorCluster.GetTransportSocket(),
-		"GAP-1b regression: connector cluster must be replaced with internal-upstream; "+
+		"connector cluster must be replaced with internal-upstream; "+
 			"old code skipped it because DStoUS[replicaNSName] was absent")
 	assert.Equal(t, "envoy.transport_sockets.internal_upstream",
 		connectorCluster.GetTransportSocket().GetName())
@@ -721,12 +722,12 @@ func TestPostTranslateModify_TwoClusterTopology_DistinctReplicaUID(t *testing.T)
 	assert.Nil(t, resp.Clusters[1].GetTransportSocket(),
 		"non-connector cluster must not get transport_socket")
 
-	// --- Route must carry WAF config (GAP-1b: TPP resolution) ---
+	// --- Route must carry WAF config (TPP resolution) ---
 	// Old code: DStoUS["ns-upstream-uid-abc"] absent → ApplyTPPRouteConfig skipped
 	// every VH → no WAF mutations → routes_tpp_applied:0.
 	vh := resp.Routes[0].VirtualHosts[0]
 	require.Len(t, vh.Routes, 2,
-		"GAP-1b regression: CONNECT route must be prepended (connector was resolved); "+
+		"CONNECT route must be prepended (connector was resolved); "+
 			"old code left only the original forwarding route")
 
 	// CONNECT route first.
@@ -737,7 +738,7 @@ func TestPostTranslateModify_TwoClusterTopology_DistinctReplicaUID(t *testing.T)
 	fwd := vh.Routes[1]
 	tpfc := fwd.GetTypedPerFilterConfig()["coraza-waf"]
 	require.NotNil(t, tpfc,
-		"GAP-1b regression: forwarding route must have coraza typed_per_filter_config; "+
+		"forwarding route must have coraza typed_per_filter_config; "+
 			"old code silently skipped WAF injection")
 	assert.True(t, strings.Contains(tpfc.GetTypeUrl(), "golang.v3alpha.ConfigsPerRoute"),
 		"tpfc type url must reference ConfigsPerRoute")
@@ -754,10 +755,10 @@ func TestPostTranslateModify_TwoClusterTopology_DistinctReplicaUID(t *testing.T)
 	assert.Equal(t, replicaNSName, entry["namespace"].GetStringValue())
 
 	// --- Connector resolved: its synthetic domain is appended ---
-	// GAP-1b regression: old code never appended any domain because the
+	// old code never appended any domain because the
 	// connector was not resolved through the DStoUS mapping.
 	assert.Contains(t, vh.Domains, "vh.connector.internal",
-		"GAP-1b regression: connector must resolve and append its synthetic domain")
+		"connector must resolve and append its synthetic domain")
 }
 
 // TestPostTranslateModify_OfflineConnector_503Route verifies that an offline

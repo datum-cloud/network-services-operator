@@ -688,6 +688,124 @@ func TestReplicatorConnectorLivenessAnnotationIdempotent(t *testing.T) {
 		"status annotation must remain stable after an idempotent reconcile")
 }
 
+// TestReplicatorReMirrorsConnectorAfterReadyFlip verifies that after an upstream
+// Connector's Ready condition flips False→True (a status-only change), a
+// reconcile re-mirrors the new status into the downstream upstream-status
+// annotation — the downstream annotation tracks upstream status changes.
+func TestReplicatorReMirrorsConnectorAfterReadyFlip(t *testing.T) {
+	connectorGVK := schema.GroupVersionKind{
+		Group: "networking.datumapis.com", Version: "v1alpha1", Kind: "Connector",
+	}
+
+	scheme := runtime.NewScheme()
+	assert.NoError(t, corev1.AddToScheme(scheme))
+
+	ctx := context.Background()
+
+	upstreamNs := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-suite", UID: types.UID("ns-uid")},
+	}
+
+	// connectionDetails are populated (agent connected) while Ready is still False.
+	connectionDetails := map[string]any{
+		"type": "PublicKey",
+		"publicKey": map[string]any{
+			"id": "378843c806c8c93c5770abaa19bc47e04e9f56977c6e7cc28044a09ef5a1cd23",
+		},
+	}
+	notReadyStatus := map[string]any{
+		"conditions": []any{
+			map[string]any{
+				"type":    "Ready",
+				"status":  "False",
+				"reason":  "ConnectorNotReady",
+				"message": "Connector lease has expired. Agent may be offline.",
+			},
+		},
+		"connectionDetails": connectionDetails,
+	}
+
+	upstreamStatusTemplate := &unstructured.Unstructured{}
+	upstreamStatusTemplate.SetGroupVersionKind(connectorGVK)
+
+	upstreamObj := &unstructured.Unstructured{}
+	upstreamObj.SetGroupVersionKind(connectorGVK)
+	upstreamObj.SetNamespace(upstreamNs.Name)
+	upstreamObj.SetName("connector-209")
+	upstreamObj.SetUID("connector-209-uid")
+	upstreamObj.Object["spec"] = map[string]any{"connectorClassName": "iroh"}
+	upstreamObj.Object["status"] = notReadyStatus
+
+	upstreamClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(upstreamStatusTemplate).
+		WithObjects(upstreamNs, upstreamObj.DeepCopy()).
+		Build()
+
+	downstreamClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	reconciler := newReplicatorForGVKTest(connectorGVK, upstreamClient, downstreamClient, scheme)
+
+	req := GVKRequest{
+		GVK: connectorGVK,
+		Request: mcreconcile.Request{
+			ClusterName: "upstream",
+			Request:     reconcile.Request{NamespacedName: client.ObjectKeyFromObject(upstreamObj)},
+		},
+	}
+
+	// Initial replication while Ready:False (finalizer pass + sync pass).
+	_, err := reconciler.Reconcile(ctx, req)
+	assert.NoError(t, err, "first reconcile")
+	_, err = reconciler.Reconcile(ctx, req)
+	assert.NoError(t, err, "second reconcile")
+
+	dsKey := client.ObjectKey{Name: "connector-209", Namespace: "ns-ns-uid"}
+
+	var downstream unstructured.Unstructured
+	downstream.SetGroupVersionKind(connectorGVK)
+	assert.NoError(t, downstreamClient.Get(ctx, dsKey, &downstream))
+
+	expectedNotReady, err := json.Marshal(notReadyStatus)
+	assert.NoError(t, err)
+	assert.Equal(t, string(expectedNotReady),
+		downstream.GetAnnotations()[networkingv1alpha1.UpstreamStatusAnnotation],
+		"initial mirror must capture the Ready:False state")
+
+	// Flip upstream Ready False→True via a status-only update (no spec change).
+	var upstreamLive unstructured.Unstructured
+	upstreamLive.SetGroupVersionKind(connectorGVK)
+	assert.NoError(t, upstreamClient.Get(ctx, client.ObjectKeyFromObject(upstreamObj), &upstreamLive))
+	readyStatus := map[string]any{
+		"conditions": []any{
+			map[string]any{
+				"type":    "Ready",
+				"status":  "True",
+				"reason":  "ConnectorReady",
+				"message": "The connector is ready to tunnel traffic.",
+			},
+		},
+		"connectionDetails": connectionDetails,
+	}
+	upstreamLive.Object["status"] = readyStatus
+	assert.NoError(t, upstreamClient.Status().Update(ctx, &upstreamLive),
+		"flip upstream connector to Ready:True via status subresource")
+
+	// Reconcile again, as the upstream status watch would in production.
+	_, err = reconciler.Reconcile(ctx, req)
+	assert.NoError(t, err, "reconcile after Ready flip")
+
+	downstream = unstructured.Unstructured{}
+	downstream.SetGroupVersionKind(connectorGVK)
+	assert.NoError(t, downstreamClient.Get(ctx, dsKey, &downstream))
+
+	expectedReady, err := json.Marshal(readyStatus)
+	assert.NoError(t, err)
+	assert.Equal(t, string(expectedReady),
+		downstream.GetAnnotations()[networkingv1alpha1.UpstreamStatusAnnotation],
+		"after Ready flips True, the replicator must re-mirror the annotation with Ready:True")
+}
+
 func newReplicatorForTest(upstream client.Client, downstream client.Client, scheme *runtime.Scheme) *GatewayResourceReplicatorReconciler {
 	return newReplicatorForGVKTest(testGVK, upstream, downstream, scheme)
 }

@@ -153,8 +153,8 @@ func egGatewayMeta(t *testing.T, dsNS, gwName string) *corev3.Metadata {
 //   - Listener receives Coraza filter at HCM position 0 (disabled).
 //   - Route configuration: CONNECT route prepended, forwarding route carries
 //     coraza typed_per_filter_config and datum-gateway metadata.
-//   - VH domains include the connector's TargetHost (production behavior per
-//     design §2.3 C1 — NOT a synthetic .connector.local domain).
+//   - VH domains include a unique per-connector synthetic domain (NOT the raw
+//     backend host, which collides across connectors and gets NACK'd).
 //   - ALL four resource lists appear in the response.
 func TestPostTranslateModify_FullSnapshot(t *testing.T) {
 	const (
@@ -367,13 +367,14 @@ func TestPostTranslateModify_FullSnapshot(t *testing.T) {
 	assert.Equal(t, "test-tpp", entry["name"].GetStringValue())
 	assert.Equal(t, upstreamNS, entry["namespace"].GetStringValue())
 
-	// --- VH domains include connector TargetHost (NOT .connector.local) ---
-	assert.Contains(t, vh.Domains, targetHost,
-		"VH domains must contain connector TargetHost (design §2.3 C1: use actual hostname)")
-	for _, d := range vh.Domains {
-		assert.False(t, strings.HasSuffix(d, ".connector.local"),
-			"synthetic .connector.local domain must NOT appear (design §2.3 C1 fix)")
-	}
+	// --- VH domains carry a unique synthetic connector domain, NOT the raw
+	// backend host. The raw host (commonly "localhost") collides across
+	// connectors on shared route configs and gets the snapshot NACK'd; the
+	// synthetic domain is derived from the unique VH name. See connector.go.
+	assert.Contains(t, vh.Domains, "vh.connector.internal",
+		"VH domains must include the unique per-connector synthetic domain")
+	assert.NotContains(t, vh.Domains, targetHost,
+		"raw backend host must not be appended (duplicate-domain collision source)")
 }
 
 // TestPostTranslateModify_SecretsPassThroughUnchanged verifies that secrets are
@@ -752,10 +753,11 @@ func TestPostTranslateModify_TwoClusterTopology_DistinctReplicaUID(t *testing.T)
 	assert.Equal(t, "replica-tpp", entry["name"].GetStringValue())
 	assert.Equal(t, replicaNSName, entry["namespace"].GetStringValue())
 
-	// --- VH domains include connector TargetHost ---
-	assert.Contains(t, vh.Domains, targetHost,
-		"GAP-1b regression: VH domains must include connector TargetHost; "+
-			"old code never appended it because the connector was not resolved")
+	// --- Connector resolved: its synthetic domain is appended ---
+	// GAP-1b regression: old code never appended any domain because the
+	// connector was not resolved through the DStoUS mapping.
+	assert.Contains(t, vh.Domains, "vh.connector.internal",
+		"GAP-1b regression: connector must resolve and append its synthetic domain")
 }
 
 // TestPostTranslateModify_OfflineConnector_503Route verifies that an offline

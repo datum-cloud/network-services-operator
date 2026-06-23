@@ -73,7 +73,7 @@ func ReplaceConnectorClusters(
 
 // ApplyConnectorRoutes applies connector route mutations to a RouteConfiguration:
 //   - Online (replaced) connector: prepend a CONNECT upgrade route targeting the
-//     replaced cluster and append info.TargetHost to VH domains.
+//     replaced cluster and append a unique per-connector domain to VH domains.
 //   - Offline connector: prepend a CONNECT direct_response 503 (tunnel-control
 //     clients) and rewrite the user-facing forwarding routes to a 503
 //     direct_response (see the offline branch for why).
@@ -105,7 +105,7 @@ func ApplyConnectorRoutes(
 
 		var newRoute *routev3.Route
 
-		if info, ok := replaced[connectorCluster]; ok {
+		if _, ok := replaced[connectorCluster]; ok {
 			// Online: CONNECT route targeting the replaced cluster.
 			newRoute, err = buildConnectRoute(
 				"connector-connect-"+sanitizeID(vh.GetName()),
@@ -116,10 +116,15 @@ func ApplyConnectorRoutes(
 			}
 			// Prepend the CONNECT route (NSO inserts at /virtual_hosts/0/routes/0).
 			vh.Routes = append([]*routev3.Route{newRoute}, vh.Routes...)
-			// Append the connector's target host to VH domains.
-			// Production uses the actual backend hostname (conflict C1 in design plan),
-			// NOT a synthetic .connector.local domain.
-			vh.Domains = appendUnique(vh.Domains, info.TargetHost)
+			// Make the CONNECT route addressable with a domain that is unique per
+			// virtual host. The backend host itself must NOT be used here: tunnels
+			// overwhelmingly target "localhost", so reusing it would put the same
+			// domain on every connector's virtual host. On a shared route
+			// configuration (e.g. the HTTP listener that merges all gateways) those
+			// collide, and Envoy rejects the entire snapshot — freezing config
+			// updates fleet-wide. The internal tunnel listener routes on cluster
+			// metadata, not this domain, so a synthetic unique value is sufficient.
+			vh.Domains = appendUnique(vh.Domains, connectorMatchDomain(vh.GetName()))
 		} else {
 			// Offline connect_matcher route for tunnel-control clients.
 			newRoute, err = buildOfflineRoute("connector-offline-" + sanitizeID(vh.GetName()))
@@ -228,6 +233,15 @@ func buildConnectorCluster(
 		return nil, fmt.Errorf("unmarshal connector cluster JSON: %w", err)
 	}
 	return cl, nil
+}
+
+// connectorMatchDomain returns the synthetic domain added to an online
+// connector's virtual host so its CONNECT route is addressable. It is derived
+// from the virtual host name, which Envoy already requires to be unique within a
+// route configuration, so the domain can never collide with another connector on
+// the same (possibly shared) route configuration.
+func connectorMatchDomain(vhName string) string {
+	return sanitizeID(vhName) + ".connector.internal"
 }
 
 // buildConnectRoute builds an online CONNECT route (connect_matcher + CONNECT

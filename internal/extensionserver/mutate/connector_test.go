@@ -182,7 +182,7 @@ func TestReplaceConnectorClusters_ClusterNotInPolicyIndex_Skipped(t *testing.T) 
 
 // --- ApplyConnectorRoutes tests ---
 
-func TestApplyConnectorRoutes_Online_PrependsCONNECTRouteAndAppendsTargetHost(t *testing.T) {
+func TestApplyConnectorRoutes_Online_PrependsCONNECTRouteAndAppendsUniqueDomain(t *testing.T) {
 	idx := connectorPolicyIndex(true)
 	clusterName := testClusterName()
 
@@ -230,25 +230,28 @@ func TestApplyConnectorRoutes_Online_PrependsCONNECTRouteAndAppendsTargetHost(t 
 	// Original forwarding route must remain second.
 	assert.Equal(t, "fwd", vh.Routes[1].GetName())
 
-	// TargetHost (actual backend host) must be appended to VH domains.
-	// Production uses info.TargetHost, NOT a synthetic .connector.local domain (design §2.3 C1).
-	assert.Contains(t, vh.Domains, testTargetHost,
-		"TargetHost must be appended to VH domains (not a .connector.local synthetic domain)")
+	// A unique synthetic domain is appended so the CONNECT route is addressable.
+	// The raw backend host must NOT be used: tunnels commonly share a target host
+	// (e.g. "localhost"), which collides on shared route configurations.
+	assert.Contains(t, vh.Domains, connectorMatchDomain(vh.GetName()),
+		"a unique per-VH synthetic domain must be appended")
+	assert.NotContains(t, vh.Domains, testTargetHost,
+		"the raw backend host must not be appended (it is the collision source)")
 }
 
-func TestApplyConnectorRoutes_Online_TargetHostDeduplicated(t *testing.T) {
+func TestApplyConnectorRoutes_Online_DomainAppendIsIdempotent(t *testing.T) {
 	idx := connectorPolicyIndex(true)
 	clusterName := testClusterName()
 	info := &extcache.ConnectorInfo{Online: true, TargetHost: testTargetHost, TargetPort: testTargetPort}
 	replaced := map[string]*extcache.ConnectorInfo{clusterName: info}
 	offline := map[string]*extcache.ConnectorInfo{}
 
-	// VH already has the target host in its domains.
+	// VH already carries the synthetic domain from a prior mutation.
 	rc := &routev3.RouteConfiguration{
 		VirtualHosts: []*routev3.VirtualHost{
 			{
 				Name:    "vh",
-				Domains: []string{"app.local.test", testTargetHost},
+				Domains: []string{"app.local.test", connectorMatchDomain("vh")},
 				Routes:  []*routev3.Route{routeTargeting(clusterName)},
 			},
 		},
@@ -257,14 +260,54 @@ func TestApplyConnectorRoutes_Online_TargetHostDeduplicated(t *testing.T) {
 	_, _, err := ApplyConnectorRoutes(rc, idx, replaced, offline)
 	require.NoError(t, err)
 
-	// Domain must not be duplicated.
+	// Synthetic domain must not be duplicated.
 	count := 0
 	for _, d := range rc.VirtualHosts[0].Domains {
-		if d == testTargetHost {
+		if d == connectorMatchDomain("vh") {
 			count++
 		}
 	}
-	assert.Equal(t, 1, count, "target host must appear exactly once in VH domains")
+	assert.Equal(t, 1, count, "synthetic domain must appear exactly once in VH domains")
+}
+
+// TestApplyConnectorRoutes_Online_NoDomainCollisionAcrossConnectors is the
+// regression test for the duplicate-domain Envoy NACK: two online connectors
+// that share a backend host ("localhost") on the SAME (shared) route
+// configuration must not produce a duplicate domain, or Envoy rejects the whole
+// snapshot and freezes config updates fleet-wide.
+func TestApplyConnectorRoutes_Online_NoDomainCollisionAcrossConnectors(t *testing.T) {
+	clusterA := "httproute/ds-ns/proxy-a/rule/0"
+	clusterB := "httproute/ds-ns/proxy-b/rule/0"
+	const sharedHost = "localhost"
+
+	replaced := map[string]*extcache.ConnectorInfo{
+		clusterA: {Online: true, TargetHost: sharedHost, TargetPort: 8099},
+		clusterB: {Online: true, TargetHost: sharedHost, TargetPort: 8099},
+	}
+	offline := map[string]*extcache.ConnectorInfo{}
+
+	// One shared route config (e.g. the merged HTTP listener) with both tunnels.
+	rc := &routev3.RouteConfiguration{
+		Name: "http-80",
+		VirtualHosts: []*routev3.VirtualHost{
+			{Name: "tunnel-a", Domains: []string{"a.example.com"}, Routes: []*routev3.Route{routeTargeting(clusterA)}},
+			{Name: "tunnel-b", Domains: []string{"b.example.com"}, Routes: []*routev3.Route{routeTargeting(clusterB)}},
+		},
+	}
+
+	_, _, err := ApplyConnectorRoutes(rc, &extcache.PolicyIndex{}, replaced, offline)
+	require.NoError(t, err)
+
+	// No domain may appear more than once across the whole route config.
+	seen := map[string]string{}
+	for _, vh := range rc.VirtualHosts {
+		for _, d := range vh.Domains {
+			if prev, dup := seen[d]; dup {
+				t.Fatalf("duplicate domain %q across vhosts %q and %q (Envoy would NACK)", d, prev, vh.Name)
+			}
+			seen[d] = vh.Name
+		}
+	}
 }
 
 func TestApplyConnectorRoutes_Offline_Prepends503Route_NoDomain(t *testing.T) {

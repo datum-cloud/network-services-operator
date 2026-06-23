@@ -56,6 +56,22 @@ spec:
                 ca:
                   secretName: ($clusterIssuerName)
 
+        # Wait for cert-manager to issue the CA before the script copies its
+        # secret. Without this, the copy races issuance and intermittently fails
+        # with "secrets <name> not found / no objects passed to apply".
+        - assert:
+            cluster: nso-infra
+            resource:
+              apiVersion: cert-manager.io/v1
+              kind: Certificate
+              metadata:
+                name: (join('-', [$clusterIssuerName, 'ca']))
+                namespace: cert-manager
+              status:
+                conditions:
+                  - type: Ready
+                    status: "True"
+
         - script:
             # skipCommandOutput: true
             # skipLogOutput: true

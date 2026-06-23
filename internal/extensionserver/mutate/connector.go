@@ -116,14 +116,10 @@ func ApplyConnectorRoutes(
 			}
 			// Prepend the CONNECT route (NSO inserts at /virtual_hosts/0/routes/0).
 			vh.Routes = append([]*routev3.Route{newRoute}, vh.Routes...)
-			// Make the CONNECT route addressable with a domain that is unique per
-			// virtual host. The backend host itself must NOT be used here: tunnels
-			// overwhelmingly target "localhost", so reusing it would put the same
-			// domain on every connector's virtual host. On a shared route
-			// configuration (e.g. the HTTP listener that merges all gateways) those
-			// collide, and Envoy rejects the entire snapshot — freezing config
-			// updates fleet-wide. The internal tunnel listener routes on cluster
-			// metadata, not this domain, so a synthetic unique value is sufficient.
+			// Connectors share one domain namespace on merged listeners, so a
+			// duplicate domain breaks the whole config. The backend host won't do
+			// as that domain — tunnels usually target "localhost" — so give each
+			// connector a unique synthetic domain.
 			vh.Domains = appendUnique(vh.Domains, connectorMatchDomain(vh.GetName()))
 		} else {
 			// Offline connect_matcher route for tunnel-control clients.
@@ -235,11 +231,11 @@ func buildConnectorCluster(
 	return cl, nil
 }
 
-// connectorMatchDomain returns the synthetic domain added to an online
-// connector's virtual host so its CONNECT route is addressable. It is derived
-// from the virtual host name, which Envoy already requires to be unique within a
-// route configuration, so the domain can never collide with another connector on
-// the same (possibly shared) route configuration.
+// connectorMatchDomain returns a per-connector domain of the form
+// "<virtual-host>.connector.internal". Uniqueness is the point: connector
+// domains share a namespace on merged listeners, so a collision breaks the whole
+// config. Reusing the virtual host name — which Envoy already guarantees unique
+// within a route configuration — makes that guarantee free.
 func connectorMatchDomain(vhName string) string {
 	return sanitizeID(vhName) + ".connector.internal"
 }

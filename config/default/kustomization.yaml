@@ -17,6 +17,13 @@ namePrefix: network-services-operator-
 components:
 - ../resource-metrics
 - ../webhook
+# Prometheus ServiceMonitor for the controller-manager metrics endpoint.
+# The controller serves metrics over HTTPS on :8443 with delegated authn/authz
+# (controller-runtime WithAuthenticationAndAuthorization). The ServiceMonitor
+# uses insecureSkipVerify because the controller auto-generates a self-signed
+# TLS cert — there is no cert-manager-issued cert for the metrics endpoint and
+# no CA bundle to reference. Prometheus still authenticates via the bearer token.
+- ../prometheus
 
 resources:
 - ../crd
@@ -26,10 +33,7 @@ resources:
 # crd/kustomization.yaml
 # [CERTMANAGER] To enable cert-manager, uncomment all sections with 'CERTMANAGER'. 'WEBHOOK' components are required.
 #- ../certmanager
-# [PROMETHEUS] To enable prometheus monitor, uncomment all sections with 'PROMETHEUS'.
-#- ../prometheus
-# [METRICS] Expose the controller manager metrics service.
-- metrics_service.yaml
+# metrics_service.yaml is now included by the ../prometheus component above.
 # [NETWORK POLICY] Protect the /metrics endpoint and Webhook Server with NetworkPolicy.
 # Only Pod(s) running a namespace labeled with 'metrics: enabled' will be able to gather the metrics.
 # Only CR(s) which requires webhooks and are applied on namespaces labeled with 'webhooks: enabled' will

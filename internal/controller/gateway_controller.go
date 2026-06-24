@@ -4,6 +4,7 @@ package controller
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"slices"
 	"strings"
@@ -270,10 +271,21 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 		return result, nil
 	}
 
+	// Evaluate certificate health once so the listener we propagate and the
+	// status we report to the user can never disagree.
+	listenerCertHealth := r.evaluateListenerCertHealth(
+		ctx,
+		downstreamClient,
+		downstreamGateway.Namespace,
+		upstreamGateway,
+		claimedHostnames,
+	)
+
 	desiredDownstreamGateway := r.getDesiredDownstreamGateway(
 		ctx,
 		upstreamGateway,
 		claimedHostnames,
+		listenerCertHealth,
 	)
 
 	if downstreamGateway.CreationTimestamp.IsZero() {
@@ -364,7 +376,17 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 		downstreamStrategy,
 		verifiedHostnames,
 		notClaimedHostnames,
+		listenerCertHealth,
 	)
+
+	// When a listener is only waiting on a certificate to be issued, check back
+	// soon so it starts serving promptly once the certificate is ready.
+	for _, status := range listenerCertHealth {
+		if !status.healthy && status.pending {
+			result.RequeueAfter = max(result.RequeueAfter, 1*time.Minute)
+			break
+		}
+	}
 
 	addresses := make([]gatewayv1.GatewayStatusAddress, 0, len(targetDomainHostnames))
 
@@ -383,10 +405,199 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 	return httpRouteResult.Merge(result), downstreamGateway
 }
 
+// listenerCertExpiryMargin keeps a certificate that is mid-renewal from briefly
+// looking expired and dropping the listener.
+const listenerCertExpiryMargin = 1 * time.Minute
+
+// listenerCertStatus describes whether a listener's TLS certificate is usable.
+// A listener with no entry is never gated: its certificate is managed elsewhere
+// (for example the shared platform certificate) and a customer's certificate
+// failure must never disable it.
+type listenerCertStatus struct {
+	healthy bool
+	// reason is the listener status reason shown when the certificate is unusable.
+	reason gatewayv1.ListenerConditionReason
+	// message is a plain-language explanation shown to the customer.
+	message string
+	// pending means the listener is only waiting on a certificate to be issued,
+	// so the reconcile should check back to let it recover.
+	pending bool
+}
+
+// evaluateListenerCertHealth reports which listeners have a usable certificate.
+// It only considers listeners that own a per-hostname certificate; the same
+// selection the rest of the controller uses keeps what we propagate and what we
+// report to the customer consistent. A listener with no certificate of its own
+// is left out so it is never gated.
+func (r *GatewayReconciler) evaluateListenerCertHealth(
+	ctx context.Context,
+	downstreamClient client.Client,
+	downstreamNamespace string,
+	upstreamGateway *gatewayv1.Gateway,
+	claimedHostnames []string,
+) map[gatewayv1.SectionName]listenerCertStatus {
+	logger := log.FromContext(ctx)
+	health := make(map[gatewayv1.SectionName]listenerCertStatus)
+
+	wildcardSuffix := "." + r.Config.Gateway.TargetDomain
+	hasSharedSecret := r.Config.Gateway.HasDefaultListenerTLSSecret()
+	now := time.Now()
+
+	for _, l := range upstreamGateway.Spec.Listeners {
+		// Only listeners that own a per-hostname certificate are gated.
+		if l.TLS == nil || l.TLS.Options[certificateIssuerTLSOption] == "" || l.Hostname == nil {
+			continue
+		}
+		hostname := string(*l.Hostname)
+		if !slices.Contains(claimedHostnames, hostname) {
+			continue
+		}
+		// The shared platform certificate is managed by us, not the customer,
+		// so never gate listeners that use it.
+		if hasSharedSecret && (strings.HasSuffix(hostname, wildcardSuffix) || hostname == r.Config.Gateway.TargetDomain) {
+			continue
+		}
+
+		health[l.Name] = r.listenerCertHealth(ctx, downstreamClient, downstreamNamespace, upstreamGateway.Name, l.Name, hostname, now)
+		if !health[l.Name].healthy {
+			logger.Info("listener certificate unhealthy",
+				"listener", l.Name, "hostname", hostname,
+				"reason", health[l.Name].reason, "message", health[l.Name].message)
+		}
+	}
+
+	return health
+}
+
+// listenerCertHealth reports whether a single listener's certificate can be
+// used to serve HTTPS right now, covering every way it can be unusable: still
+// being issued, not yet valid, expired, or missing.
+func (r *GatewayReconciler) listenerCertHealth(
+	ctx context.Context,
+	downstreamClient client.Client,
+	downstreamNamespace string,
+	gatewayName string,
+	listenerName gatewayv1.SectionName,
+	hostname string,
+	now time.Time,
+) listenerCertStatus {
+	logger := log.FromContext(ctx)
+
+	certName := listenerCertificateName(gatewayName, listenerName)
+	secretName := listenerCertificateSecretName(gatewayName, listenerName)
+
+	// The certificate must have been issued.
+	var cert cmv1.Certificate
+	if err := downstreamClient.Get(ctx, client.ObjectKey{Namespace: downstreamNamespace, Name: certName}, &cert); err != nil {
+		if apierrors.IsNotFound(err) {
+			return listenerCertStatus{
+				reason:  gatewayv1.ListenerReasonInvalidCertificateRef,
+				message: certIssuanceFailingMessage(hostname),
+				pending: true,
+			}
+		}
+		// On a read error, hold the listener back but allow it to recover later.
+		logger.Error(err, "failed to get listener Certificate", "certificate", certName)
+		return listenerCertStatus{
+			reason:  gatewayv1.ListenerReasonInvalidCertificateRef,
+			message: certIssuanceFailingMessage(hostname),
+			pending: true,
+		}
+	}
+
+	if !certIsReady(&cert) {
+		return listenerCertStatus{
+			reason:  gatewayv1.ListenerReasonInvalidCertificateRef,
+			message: certIssuanceFailingMessage(hostname),
+			pending: true,
+		}
+	}
+
+	// The certificate must be within its valid dates.
+	if cert.Status.NotBefore != nil && cert.Status.NotBefore.After(now) {
+		return listenerCertStatus{
+			reason:  gatewayv1.ListenerReasonInvalidCertificateRef,
+			message: certNotYetValidMessage(hostname),
+		}
+	}
+	if cert.Status.NotAfter != nil && !cert.Status.NotAfter.After(now.Add(listenerCertExpiryMargin)) {
+		return listenerCertStatus{
+			reason:  gatewayv1.ListenerReasonInvalidCertificateRef,
+			message: certExpiredMessage(hostname),
+		}
+	}
+
+	// Finally, load the stored certificate and key and confirm they match and
+	// are still valid. This catches a broken or mismatched certificate that
+	// would otherwise be served and break HTTPS for the listener.
+	var secret corev1.Secret
+	if err := downstreamClient.Get(ctx, client.ObjectKey{Namespace: downstreamNamespace, Name: secretName}, &secret); err != nil {
+		if apierrors.IsNotFound(err) {
+			return listenerCertStatus{
+				reason:  gatewayv1.ListenerReasonInvalidCertificateRef,
+				message: certMissingMessage(hostname),
+				pending: true,
+			}
+		}
+		logger.Error(err, "failed to get listener Secret", "secret", secretName)
+		return listenerCertStatus{
+			reason:  gatewayv1.ListenerReasonInvalidCertificateRef,
+			message: certMissingMessage(hostname),
+			pending: true,
+		}
+	}
+
+	keyPair, err := tls.X509KeyPair(secret.Data["tls.crt"], secret.Data["tls.key"])
+	if err != nil {
+		return listenerCertStatus{
+			reason:  gatewayv1.ListenerReasonInvalidCertificateRef,
+			message: certMissingMessage(hostname),
+		}
+	}
+	if leaf := keyPair.Leaf; leaf != nil && !leaf.NotAfter.After(now) {
+		return listenerCertStatus{
+			reason:  gatewayv1.ListenerReasonInvalidCertificateRef,
+			message: certExpiredMessage(hostname),
+		}
+	}
+
+	return listenerCertStatus{healthy: true}
+}
+
+// certIsReady reports whether a cert-manager Certificate has Ready=True.
+func certIsReady(cert *cmv1.Certificate) bool {
+	for _, c := range cert.Status.Conditions {
+		if c.Type == cmv1.CertificateConditionReady {
+			return c.Status == cmmeta.ConditionTrue
+		}
+	}
+	return false
+}
+
+// These messages are shown to customers, so they stay plain and name the
+// hostname affected.
+
+func certExpiredMessage(hostname string) string {
+	return fmt.Sprintf("The TLS certificate for %s has expired, so HTTPS for this hostname is paused until a valid certificate is issued. This usually means the domain no longer points to Datum — please check its DNS.", hostname)
+}
+
+func certNotYetValidMessage(hostname string) string {
+	return fmt.Sprintf("The TLS certificate for %s isn't valid yet. HTTPS will start automatically once its start date is reached.", hostname)
+}
+
+func certIssuanceFailingMessage(hostname string) string {
+	return fmt.Sprintf("We couldn't issue a TLS certificate for %s, so HTTPS for this hostname is unavailable. Please confirm the domain points to Datum.", hostname)
+}
+
+func certMissingMessage(hostname string) string {
+	return fmt.Sprintf("The TLS certificate for %s is missing or unreadable, so HTTPS for this hostname is unavailable.", hostname)
+}
+
 func (r *GatewayReconciler) getDesiredDownstreamGateway(
 	ctx context.Context,
 	upstreamGateway *gatewayv1.Gateway,
 	claimedHostnames []string,
+	listenerCertHealth map[gatewayv1.SectionName]listenerCertStatus,
 ) *gatewayv1.Gateway {
 	logger := log.FromContext(ctx)
 	var downstreamGateway gatewayv1.Gateway
@@ -398,6 +609,16 @@ func (r *GatewayReconciler) getDesiredDownstreamGateway(
 	for listenerIndex, l := range upstreamGateway.Spec.Listeners {
 		if l.Hostname != nil && !slices.Contains(claimedHostnames, string(*l.Hostname)) {
 			logger.Info("skipping downstream gateway listener with unclaimed hostname", "upstream_listener_index", listenerIndex, "hostname", *l.Hostname)
+			continue
+		}
+
+		// Leave out a listener whose certificate isn't usable. A bad certificate
+		// then only affects its own hostname, and every other hostname on the
+		// gateway keeps serving.
+		if status, gated := listenerCertHealth[l.Name]; gated && !status.healthy {
+			logger.Info("skipping downstream gateway listener with unhealthy certificate",
+				"upstream_listener_index", listenerIndex, "listener", l.Name,
+				"reason", status.reason, "message", status.message)
 			continue
 		}
 
@@ -1335,6 +1556,7 @@ func (r *GatewayReconciler) ensureDownstreamGatewayHTTPRoutes(
 	downstreamStrategy downstreamclient.ResourceStrategy,
 	verifiedHostnames []string,
 	notClaimedHostnames []string,
+	listenerCertHealth map[gatewayv1.SectionName]listenerCertStatus,
 ) (result Result) {
 	logger := log.FromContext(ctx)
 
@@ -1469,9 +1691,22 @@ func (r *GatewayReconciler) ensureDownstreamGatewayHTTPRoutes(
 			ObservedGeneration: upstreamGateway.Generation,
 		}
 
+		resolvedRefsCondition := metav1.Condition{
+			Type:               string(gatewayv1.ListenerConditionResolvedRefs),
+			Status:             metav1.ConditionTrue,
+			Reason:             string(gatewayv1.ListenerReasonResolvedRefs),
+			Message:            "The listener has been resolved by the Datum Gateway",
+			ObservedGeneration: upstreamGateway.Generation,
+		}
+
+		// A hostname problem is reported instead of a certificate problem, since
+		// the hostname has to be sorted out first.
+		hostnameProblem := false
+
 		if listener.Hostname != nil {
 
 			if !slices.Contains(verifiedHostnames, string(*listener.Hostname)) {
+				hostnameProblem = true
 				acceptedCondition.Status = metav1.ConditionFalse
 				acceptedCondition.Reason = networkingv1alpha.UnverifiedHostnamesPresent
 				acceptedCondition.Message = fmt.Sprintf("The hostname %q has not been verified. Check status of Domains in the same namespace.", *listener.Hostname)
@@ -1480,6 +1715,7 @@ func (r *GatewayReconciler) ensureDownstreamGatewayHTTPRoutes(
 				programmedCondition.Reason = acceptedCondition.Reason
 				programmedCondition.Message = acceptedCondition.Message
 			} else if slices.Contains(notClaimedHostnames, string(*listener.Hostname)) {
+				hostnameProblem = true
 				acceptedCondition.Status = metav1.ConditionFalse
 				acceptedCondition.Reason = networkingv1alpha.HostnameInUseReason
 				acceptedCondition.Message = fmt.Sprintf("The hostname %q is already attached to a resource.", *listener.Hostname)
@@ -1490,18 +1726,24 @@ func (r *GatewayReconciler) ensureDownstreamGatewayHTTPRoutes(
 			}
 		}
 
+		// Tell the customer when a listener's certificate is the reason HTTPS
+		// isn't running. The listener stays accepted because the configuration
+		// is fine; only the certificate needs attention.
+		if !hostnameProblem {
+			if certStatus, gated := listenerCertHealth[listener.Name]; gated && !certStatus.healthy {
+				resolvedRefsCondition.Status = metav1.ConditionFalse
+				resolvedRefsCondition.Reason = string(gatewayv1.ListenerReasonInvalidCertificateRef)
+				resolvedRefsCondition.Message = certStatus.message
+
+				programmedCondition.Status = metav1.ConditionFalse
+				programmedCondition.Reason = string(gatewayv1.ListenerReasonInvalid)
+				programmedCondition.Message = certStatus.message
+			}
+		}
+
 		apimeta.SetStatusCondition(&status.Conditions, acceptedCondition)
-
-		// TODO(jreese) update this based on the downstream gateway's status
 		apimeta.SetStatusCondition(&status.Conditions, programmedCondition)
-
-		apimeta.SetStatusCondition(&status.Conditions, metav1.Condition{
-			Type:               string(gatewayv1.ListenerConditionResolvedRefs),
-			Status:             metav1.ConditionTrue,
-			Reason:             string(gatewayv1.ListenerReasonResolvedRefs),
-			Message:            "The listener has been resolved by the Datum Gateway",
-			ObservedGeneration: upstreamGateway.Generation,
-		})
+		apimeta.SetStatusCondition(&status.Conditions, resolvedRefsCondition)
 
 		listenerStatus = append(listenerStatus, status)
 	}

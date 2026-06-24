@@ -1,0 +1,654 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+#
+# Issue #212 — a listener whose certificate can't be used must not be sent to
+# the edge, and the customer must be told why. One bad certificate must never
+# take HTTPS down for the other hostnames that share the gateway.
+#
+# The test follows the whole story:
+#   - the bad hostname is held back while the good one keeps working;
+#   - the customer sees a plain-language reason on the bad hostname;
+#   - a real HTTPS request to the good hostname returns 200, and the bad one is
+#     not served;
+#   - once the certificate can be issued, the bad hostname recovers and serves.
+#
+# To make the failure happen reliably, the bad hostname points at a certificate
+# issuer that doesn't exist yet, so its certificate is never issued. Expired and
+# mismatched certificates are covered by unit tests.
+#
+# concurrent: false — this test shares some cluster-wide setup with the
+# gateway-accepted test, so it must not run at the same time.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: gateway-invalid-certificate
+spec:
+  concurrent: false
+  bindings:
+    - name: clusterIssuerName
+      value: (join('-', ['e2e', $namespace]))
+    - name: gatewayClassName
+      value: (join('-', ['e2e', $namespace]))
+    # The issuer the bad listener references. It does NOT exist when the gateway
+    # is created (so issuance fails), and is created later to drive recovery.
+    - name: recoveryIssuerName
+      value: (join('-', ['recover', $namespace]))
+  cluster: nso-standard
+  steps:
+    - name: Create CA on the downstream cluster
+      try:
+        - create:
+            cluster: nso-infra
+            resource:
+              apiVersion: cert-manager.io/v1
+              kind: ClusterIssuer
+              metadata:
+                name: (join('-', [$clusterIssuerName, 'issuer']))
+              spec:
+                selfSigned: {}
+
+        - create:
+            cluster: nso-infra
+            resource:
+              apiVersion: cert-manager.io/v1
+              kind: Certificate
+              metadata:
+                name: (join('-', [$clusterIssuerName, 'ca']))
+                namespace: cert-manager
+              spec:
+                isCA: true
+                commonName: (join('-', [$clusterIssuerName, 'ca']))
+                secretName: ($clusterIssuerName)
+                privateKey:
+                  algorithm: ECDSA
+                  size: 256
+                issuerRef:
+                  name: (join('-', [$clusterIssuerName, 'issuer']))
+                  kind: ClusterIssuer
+                  group: cert-manager.io
+
+        - create:
+            cluster: nso-infra
+            resource:
+              apiVersion: cert-manager.io/v1
+              kind: ClusterIssuer
+              metadata:
+                name: ($clusterIssuerName)
+              spec:
+                ca:
+                  secretName: ($clusterIssuerName)
+
+        # Wait for the CA to be issued before anything depends on it.
+        - assert:
+            cluster: nso-infra
+            resource:
+              apiVersion: cert-manager.io/v1
+              kind: Certificate
+              metadata:
+                name: (join('-', [$clusterIssuerName, 'ca']))
+                namespace: cert-manager
+              status:
+                conditions:
+                  - type: Ready
+                    status: "True"
+
+    - name: Create the GatewayClasses
+      try:
+        - create:
+            cluster: nso-standard
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: GatewayClass
+              metadata:
+                name: ($gatewayClassName)
+              spec:
+                controllerName: gateway.networking.datumapis.com/external-global-proxy-controller
+
+        # Shared cluster-scoped downstream config — applied (not created) so this
+        # test coexists with gateway-accepted regardless of run order.
+        - apply:
+            cluster: nso-infra
+            resource:
+              apiVersion: gateway.envoyproxy.io/v1alpha1
+              kind: EnvoyProxy
+              metadata:
+                name: custom-proxy-config
+                namespace: envoy-gateway-system
+              spec:
+                provider:
+                  type: Kubernetes
+                  kubernetes:
+                    envoyService:
+                      type: ClusterIP
+                      patch:
+                        type: StrategicMerge
+                        value:
+                          spec:
+                            ipFamilyPolicy: RequireDualStack
+                mergeGateways: true
+
+        - apply:
+            cluster: nso-infra
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: GatewayClass
+              metadata:
+                name: datum-downstream-gateway-e2e
+              spec:
+                controllerName: gateway.envoyproxy.io/gatewayclass-controller
+                parametersRef:
+                  group: gateway.envoyproxy.io
+                  kind: EnvoyProxy
+                  name: custom-proxy-config
+                  namespace: envoy-gateway-system
+
+        - apply:
+            cluster: nso-infra
+            resource:
+              apiVersion: v1
+              kind: Namespace
+              metadata:
+                name: datum-downstream-gateway-hostnames
+
+    - name: Create a backend to route to
+      try:
+        # Plain HTTP backend on the downstream cluster. The gateway terminates
+        # TLS with the per-listener certificate and forwards plaintext here.
+        - create:
+            cluster: nso-infra
+            resource:
+              apiVersion: v1
+              kind: Pod
+              metadata:
+                name: backend-pod
+                namespace: default
+                labels:
+                  purpose: backend-pod
+              spec:
+                containers:
+                  - name: backend
+                    image: ghcr.io/mccutchen/go-httpbin:2.18.1
+                    command: ["/bin/go-httpbin"]
+                    args: ["-host", "0.0.0.0", "-port", "8080"]
+                    resources:
+                      requests:
+                        cpu: 50m
+                        memory: 64Mi
+                      limits:
+                        cpu: 100m
+                        memory: 128Mi
+                terminationGracePeriodSeconds: 0
+
+        - create:
+            cluster: nso-infra
+            resource:
+              apiVersion: v1
+              kind: Service
+              metadata:
+                name: backend-service
+                namespace: default
+              spec:
+                ports:
+                  - name: http
+                    port: 8080
+                    targetPort: 8080
+                selector:
+                  purpose: backend-pod
+
+    - name: Provision and verify the Domain
+      try:
+        - create:
+            cluster: nso-standard
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Domain
+              metadata:
+                name: test-domain
+              spec:
+                domainName: e2e.env.datum.net
+
+        - description: |
+            Stand in for the Domain controller's HTTP/DNS verification so the
+            listener hostnames below are claimable.
+          script:
+            content: |
+              kubectl -n $NAMESPACE patch domain test-domain \
+                --subresource=status --type=merge \
+                -p '{"status":{"conditions":[{"type": "Verified", "status": "True", "reason": "Test", "message": "test", "lastTransitionTime": "2025-02-24T23:59:09Z"}]}}'
+
+    - name: Provision a Gateway with a good and a bad certificate listener
+      try:
+        - script:
+            cluster: nso-standard
+            skipCommandOutput: true
+            skipLogOutput: true
+            content: |
+              kubectl get ns $NAMESPACE -o json
+            outputs:
+              - name: downstreamNamespaceName
+                value: (join('-', ['ns', json_parse($stdout).metadata.uid]))
+
+        - create:
+            cluster: nso-standard
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: Gateway
+              metadata:
+                name: test-gateway
+              spec:
+                gatewayClassName: ($gatewayClassName)
+                listeners:
+                  - protocol: HTTP
+                    port: 80
+                    name: http
+                    allowedRoutes:
+                      namespaces:
+                        from: Same
+                    hostname: good.e2e.env.datum.net
+                  # Healthy listener: references the working CA issuer.
+                  - protocol: HTTPS
+                    port: 443
+                    name: https-good
+                    allowedRoutes:
+                      namespaces:
+                        from: Same
+                    hostname: good.e2e.env.datum.net
+                    tls:
+                      mode: Terminate
+                      options:
+                        gateway.networking.datumapis.com/certificate-issuer: ($clusterIssuerName)
+                  # Bad listener: references an issuer that does not exist yet, so
+                  # cert-manager cannot issue the certificate and it stays
+                  # Ready=False. NSO must omit this listener downstream.
+                  - protocol: HTTPS
+                    port: 443
+                    name: https-bad
+                    allowedRoutes:
+                      namespaces:
+                        from: Same
+                    hostname: bad.e2e.env.datum.net
+                    tls:
+                      mode: Terminate
+                      options:
+                        gateway.networking.datumapis.com/certificate-issuer: ($recoveryIssuerName)
+
+        # An EndpointSlice (upstream) that NSO mirrors into a downstream Service,
+        # plus an HTTPRoute serving both hostnames. The route binds to whichever
+        # listeners exist, so it covers the good listener now and the bad listener
+        # after recovery.
+        - create:
+            cluster: nso-standard
+            resource:
+              apiVersion: discovery.k8s.io/v1
+              kind: EndpointSlice
+              metadata:
+                name: test-slice-1
+              addressType: FQDN
+              endpoints:
+                - addresses:
+                    - backend-service.default.svc.cluster.local
+                  conditions:
+                    ready: true
+                    serving: true
+                    terminating: false
+              ports:
+                - name: http
+                  appProtocol: http
+                  port: 8080
+
+        - create:
+            cluster: nso-standard
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: HTTPRoute
+              metadata:
+                name: test-route
+              spec:
+                # NSO forbids spec.hostnames on HTTPRoutes; the route inherits
+                # each attached listener's hostname, so it serves good now and
+                # the recovered bad listener later.
+                parentRefs:
+                  - name: test-gateway
+                    kind: Gateway
+                rules:
+                  - matches:
+                      - path:
+                          type: PathPrefix
+                          value: /
+                    backendRefs:
+                      - group: discovery.k8s.io
+                        kind: EndpointSlice
+                        name: test-slice-1
+                        port: 8080
+
+        # Wait until the operator has published the canonical hostname so we know
+        # the gateway has reconciled at least once.
+        - assert:
+            timeout: 120s
+            cluster: nso-standard
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: Gateway
+              metadata:
+                name: test-gateway
+              status:
+                (addresses[?type == 'Hostname'] | [0]):
+                  type: Hostname
+
+        # The good hostname is sent to the edge; the bad one is held back. Every
+        # other hostname on the gateway keeps working.
+        - assert:
+            timeout: 120s
+            cluster: nso-infra
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: Gateway
+              metadata:
+                name: test-gateway
+                namespace: ($downstreamNamespaceName)
+              spec:
+                # good-cert HTTPS listener present with its per-listener secret.
+                (listeners[?name == 'https-good']):
+                  - port: 443
+                    protocol: HTTPS
+                    tls:
+                      mode: Terminate
+                      certificateRefs:
+                        - group: ""
+                          kind: Secret
+                          name: test-gateway-https-good
+                # bad-cert HTTPS listener omitted entirely.
+                (listeners[?name == 'https-bad'] | length(@)): 0
+                # plain HTTP listener (no certificate) is never gated.
+                (listeners[?name == 'http'] | length(@)): 1
+
+        # The customer-facing status explains, in plain language, that the bad
+        # hostname is held back because of its certificate, while the good one
+        # reports healthy. Listeners are matched by name because the gateway also
+        # adds its own default listeners.
+        - assert:
+            timeout: 120s
+            cluster: nso-standard
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: Gateway
+              metadata:
+                name: test-gateway
+              status:
+                (listeners[?name == 'https-good'] | [0]):
+                  (conditions[?type == 'Accepted']):
+                    - status: "True"
+                  (conditions[?type == 'Programmed']):
+                    - status: "True"
+                  (conditions[?type == 'ResolvedRefs']):
+                    - status: "True"
+                (listeners[?name == 'https-bad'] | [0]):
+                  # Config is structurally valid, so Accepted stays True.
+                  (conditions[?type == 'Accepted']):
+                    - status: "True"
+                  # But the certificate isn't usable, so the listener is not
+                  # programmed and its refs don't resolve.
+                  (conditions[?type == 'Programmed']):
+                    - status: "False"
+                      reason: Invalid
+                  (conditions[?type == 'ResolvedRefs']):
+                    - status: "False"
+                      reason: InvalidCertificateRef
+                      message: "We couldn't issue a TLS certificate for bad.e2e.env.datum.net, so HTTPS for this hostname is unavailable. Please confirm the domain points to Datum."
+      catch:
+        - script:
+            cluster: nso-standard
+            content: |
+              kubectl -n network-services-operator-system logs -l app.kubernetes.io/name=network-services-operator --tail=200
+              kubectl -n $NAMESPACE get gateway test-gateway -o yaml
+        - script:
+            cluster: nso-infra
+            env:
+              - name: DOWNSTREAM_NAMESPACE
+                value: ($downstreamNamespaceName)
+            content: |
+              kubectl -n $DOWNSTREAM_NAMESPACE get gateway test-gateway -o yaml
+              kubectl -n $DOWNSTREAM_NAMESPACE get httproute -o yaml
+              kubectl -n $DOWNSTREAM_NAMESPACE get certificates -o yaml
+
+    - name: Confirm Envoy programmed and serves the good listener
+      try:
+        - script:
+            cluster: nso-standard
+            skipCommandOutput: true
+            skipLogOutput: true
+            content: |
+              kubectl get ns $NAMESPACE -o json
+            outputs:
+              - name: downstreamNamespaceName
+                value: (join('-', ['ns', json_parse($stdout).metadata.uid]))
+
+        # This status is set by the edge gateway itself, so Programmed=True means
+        # the edge accepted the configuration and is ready to serve it.
+        - assert:
+            timeout: 180s
+            cluster: nso-infra
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: Gateway
+              metadata:
+                name: test-gateway
+                namespace: ($downstreamNamespaceName)
+              status:
+                (listeners[?name == 'https-good'] | [0]):
+                  (conditions[?type == 'Programmed']):
+                    - status: "True"
+
+        # The HTTPRoute is accepted and its refs resolve on the downstream
+        # gateway (the data-plane route is in place).
+        - assert:
+            timeout: 120s
+            cluster: nso-infra
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: HTTPRoute
+              metadata:
+                name: test-route
+                namespace: ($downstreamNamespaceName)
+              status:
+                parents:
+                  - (conditions[?type == 'Accepted']):
+                      - status: "True"
+                    (conditions[?type == 'ResolvedRefs']):
+                      - status: "True"
+
+        - assert:
+            cluster: nso-infra
+            resource:
+              apiVersion: v1
+              kind: Pod
+              metadata:
+                name: backend-pod
+                namespace: default
+              status:
+                phase: Running
+
+        # A long-lived client pod with curl preinstalled.
+        - create:
+            cluster: nso-infra
+            resource:
+              apiVersion: v1
+              kind: Pod
+              metadata:
+                name: conntest
+                namespace: default
+              spec:
+                containers:
+                  - name: curl
+                    image: curlimages/curl:8.11.1
+                    command: ["sleep", "infinity"]
+                    resources:
+                      requests:
+                        cpu: 50m
+                        memory: 64Mi
+                      limits:
+                        cpu: 100m
+                        memory: 128Mi
+                terminationGracePeriodSeconds: 0
+
+        - assert:
+            cluster: nso-infra
+            resource:
+              apiVersion: v1
+              kind: Pod
+              metadata:
+                name: conntest
+                namespace: default
+              status:
+                phase: Running
+
+        # A real HTTPS request to the good hostname must return 200, and the bad
+        # hostname must not be served. Retries give the edge a moment to pick up
+        # the configuration.
+        # Explicit timeout: the chainsaw default for script steps is 5s, too short
+        # for the retry loop below.
+        - script:
+            timeout: 240s
+            cluster: nso-infra
+            content: |
+              set -eu
+              IP=$(kubectl get svc -n envoy-gateway-system \
+                -l gateway.envoyproxy.io/owning-gatewayclass=datum-downstream-gateway-e2e \
+                -o jsonpath='{.items[0].spec.clusterIP}')
+              echo "gateway service clusterIP: ${IP}"
+
+              echo "--- good hostname must serve 200 ---"
+              ok=""
+              for i in $(seq 1 24); do
+                code=$(kubectl -n default exec conntest -- \
+                  curl -ksS -o /dev/null -w '%{http_code}' --max-time 10 \
+                  --resolve good.e2e.env.datum.net:443:"${IP}" \
+                  https://good.e2e.env.datum.net/status/200 || true)
+                echo "attempt ${i}: good -> ${code}"
+                if [ "${code}" = "200" ]; then ok="yes"; break; fi
+                sleep 5
+              done
+              if [ -z "${ok}" ]; then
+                echo "ERROR: good hostname never returned 200"; exit 1
+              fi
+
+              echo "--- bad hostname must not serve (no matching listener) ---"
+              code=$(kubectl -n default exec conntest -- \
+                curl -ksS -o /dev/null -w '%{http_code}' --max-time 10 \
+                --resolve bad.e2e.env.datum.net:443:"${IP}" \
+                https://bad.e2e.env.datum.net/status/200 || true)
+              echo "bad -> ${code}"
+              if [ "${code}" = "200" ]; then
+                echo "ERROR: bad hostname was served despite an invalid certificate"; exit 1
+              fi
+              echo "OK: good served, bad not served"
+      catch:
+        - script:
+            cluster: nso-infra
+            env:
+              - name: DOWNSTREAM_NAMESPACE
+                value: ($downstreamNamespaceName)
+            content: |
+              kubectl -n $DOWNSTREAM_NAMESPACE get gateway test-gateway -o yaml
+              kubectl -n $DOWNSTREAM_NAMESPACE get httproute -o yaml
+              kubectl get svc -n envoy-gateway-system -o wide
+              kubectl -n envoy-gateway-system logs -l gateway.envoyproxy.io/owning-gatewayclass=datum-downstream-gateway-e2e -c envoy --tail=100
+
+    - name: Recover the bad listener by creating its issuer
+      try:
+        - script:
+            cluster: nso-standard
+            skipCommandOutput: true
+            skipLogOutput: true
+            content: |
+              kubectl get ns $NAMESPACE -o json
+            outputs:
+              - name: downstreamNamespaceName
+                value: (join('-', ['ns', json_parse($stdout).metadata.uid]))
+
+        # The previously-missing issuer now exists and can sign, using the same
+        # CA. cert-manager issues the listener's certificate, the gate sees it
+        # Ready, and the listener is propagated.
+        - create:
+            cluster: nso-infra
+            resource:
+              apiVersion: cert-manager.io/v1
+              kind: ClusterIssuer
+              metadata:
+                name: ($recoveryIssuerName)
+              spec:
+                ca:
+                  secretName: ($clusterIssuerName)
+
+        # The recovered hostname is sent to the edge once its certificate issues.
+        - assert:
+            timeout: 180s
+            cluster: nso-infra
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: Gateway
+              metadata:
+                name: test-gateway
+                namespace: ($downstreamNamespaceName)
+              spec:
+                (listeners[?name == 'https-bad']):
+                  - port: 443
+                    protocol: HTTPS
+                    tls:
+                      mode: Terminate
+                      certificateRefs:
+                        - group: ""
+                          kind: Secret
+                          name: test-gateway-https-bad
+
+        # The recovered hostname reports healthy to the customer.
+        - assert:
+            timeout: 120s
+            cluster: nso-standard
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: Gateway
+              metadata:
+                name: test-gateway
+              status:
+                (listeners[?name == 'https-bad'] | [0]):
+                  (conditions[?type == 'Accepted']):
+                    - status: "True"
+                  (conditions[?type == 'Programmed']):
+                    - status: "True"
+                  (conditions[?type == 'ResolvedRefs']):
+                    - status: "True"
+
+        # The recovered hostname now actually serves 200.
+        - script:
+            timeout: 240s
+            cluster: nso-infra
+            content: |
+              set -eu
+              IP=$(kubectl get svc -n envoy-gateway-system \
+                -l gateway.envoyproxy.io/owning-gatewayclass=datum-downstream-gateway-e2e \
+                -o jsonpath='{.items[0].spec.clusterIP}')
+              echo "--- recovered hostname must now serve 200 ---"
+              ok=""
+              for i in $(seq 1 24); do
+                code=$(kubectl -n default exec conntest -- \
+                  curl -ksS -o /dev/null -w '%{http_code}' --max-time 10 \
+                  --resolve bad.e2e.env.datum.net:443:"${IP}" \
+                  https://bad.e2e.env.datum.net/status/200 || true)
+                echo "attempt ${i}: recovered bad -> ${code}"
+                if [ "${code}" = "200" ]; then ok="yes"; break; fi
+                sleep 5
+              done
+              if [ -z "${ok}" ]; then
+                echo "ERROR: recovered hostname never returned 200"; exit 1
+              fi
+              echo "OK: recovered hostname serves 200"
+      catch:
+        - script:
+            cluster: nso-infra
+            env:
+              - name: DOWNSTREAM_NAMESPACE
+                value: ($downstreamNamespaceName)
+            content: |
+              kubectl -n $DOWNSTREAM_NAMESPACE get gateway test-gateway -o yaml
+              kubectl -n $DOWNSTREAM_NAMESPACE get certificates -o yaml
+              kubectl -n network-services-operator-system logs -l app.kubernetes.io/name=network-services-operator --tail=200

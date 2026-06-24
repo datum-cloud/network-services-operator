@@ -154,6 +154,33 @@ var (
 		},
 	)
 
+	// TLSPrunedChainsTotal tracks how often a broken certificate had to be
+	// dropped from a listener to keep the rest of it serving (issue #212).
+	TLSPrunedChainsTotal = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "nso_extension_tls_pruned_chains_total",
+			Help: "Total TLS filter chains dropped for referencing an invalid (mismatched/expired) certificate across all hook invocations.",
+		},
+	)
+
+	// TLSPrunedSecretsTotal tracks how many broken certificates were dropped.
+	TLSPrunedSecretsTotal = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "nso_extension_tls_pruned_secrets_total",
+			Help: "Total invalid TLS secrets dropped from the response across all hook invocations.",
+		},
+	)
+
+	// TLSListenersLeftIntactTotal tracks listeners that were left untouched
+	// because every certificate on them was broken; a non-zero value means a
+	// listener could not be saved here and still needs the controller-side fix.
+	TLSListenersLeftIntactTotal = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "nso_extension_tls_listeners_left_intact_total",
+			Help: "Total listeners left intact (not emptied) because all their TLS filter chains were invalid, across all hook invocations.",
+		},
+	)
+
 	// CacheSynced is 1 when the informer cache has synced and the extension server
 	// is accepting gRPC connections, 0 during startup or if the cache lost sync.
 	CacheSynced = promauto.NewGauge(

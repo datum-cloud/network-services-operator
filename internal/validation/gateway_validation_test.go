@@ -433,3 +433,52 @@ func TestValidateListenersAllowsExistingHostnameInStatus(t *testing.T) {
 	assert.Len(t, errs, 0, "expected validateListeners to permit a hostname on a default listener that matches an existing status address")
 
 }
+
+func TestValidateTenantListenerHostnames(t *testing.T) {
+	hostnamePath := field.NewPath("spec", "listeners").Index(0).Child("hostname")
+	hostnameRequired := field.Required(hostnamePath,
+		"a hostname must be set; this controller injects default HTTP/HTTPS listeners, so listeners you define must specify a distinguishing hostname")
+
+	scenarios := map[string]struct {
+		listeners      []gatewayv1.Listener
+		expectedErrors field.ErrorList
+	}{
+		"bare gateway, no listeners": {
+			listeners:      nil,
+			expectedErrors: field.ErrorList{},
+		},
+		"tenant listener without hostname is rejected": {
+			listeners: []gatewayv1.Listener{
+				{Name: "http", Protocol: gatewayv1.HTTPProtocolType, Port: 80},
+			},
+			expectedErrors: field.ErrorList{hostnameRequired},
+		},
+		"tenant listener with hostname is permitted": {
+			listeners: []gatewayv1.Listener{
+				{Name: "http", Protocol: gatewayv1.HTTPProtocolType, Port: 80, Hostname: ptr.To(gatewayv1.Hostname("custom.example.com"))},
+			},
+			expectedErrors: field.ErrorList{},
+		},
+		"default-named listeners are exempt": {
+			listeners: []gatewayv1.Listener{
+				{Name: gatewayutil.DefaultHTTPListenerName, Protocol: gatewayv1.HTTPProtocolType, Port: 80},
+				{Name: gatewayutil.DefaultHTTPSListenerName, Protocol: gatewayv1.HTTPSProtocolType, Port: 443},
+			},
+			expectedErrors: field.ErrorList{},
+		},
+	}
+
+	for name, scenario := range scenarios {
+		t.Run(name, func(t *testing.T) {
+			gateway := &gatewayv1.Gateway{
+				Spec: gatewayv1.GatewaySpec{Listeners: scenario.listeners},
+			}
+
+			errs := ValidateTenantListenerHostnames(gateway)
+
+			if diff := cmp.Diff(scenario.expectedErrors, errs, cmpopts.IgnoreFields(field.Error{}, "BadValue")); diff != "" {
+				t.Errorf("unexpected errors (-want +got):\n%s", diff)
+			}
+		})
+	}
+}

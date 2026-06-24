@@ -181,6 +181,30 @@ var (
 		},
 	)
 
+	// TLSPrunedChainsActive is the number of TLS filter chains that were dropped
+	// in the most recent PostTranslateModify response. Set to zero when the hook
+	// runs cleanly. Use this to know whether the data-plane backstop is currently
+	// active, as opposed to TLSPrunedChainsTotal which only accumulates.
+	TLSPrunedChainsActive = promauto.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "nso_extension_tls_pruned_chains_active",
+			Help: "TLS filter chains dropped in the most recent PostTranslateModify response. Non-zero means the data-plane cert backstop is currently active.",
+		},
+	)
+
+	// TLSListenersLeftIntactActive is the number of listeners left completely
+	// untouched in the most recent PostTranslateModify response because every
+	// certificate on them was broken. Non-zero means the backstop could not save
+	// the listener (it never empties a listener) — this is an important signal
+	// that the controller-side gating did not suppress the listener and an Envoy
+	// LDS NACK may follow.
+	TLSListenersLeftIntactActive = promauto.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "nso_extension_tls_listeners_left_intact_active",
+			Help: "Listeners left intact in the most recent PostTranslateModify response because all their TLS chains were broken. Non-zero means the backstop could not protect the listener.",
+		},
+	)
+
 	// CacheSynced is 1 when the informer cache has synced and the extension server
 	// is accepting gRPC connections, 0 during startup or if the cache lost sync.
 	CacheSynced = promauto.NewGauge(

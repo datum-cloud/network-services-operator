@@ -13,6 +13,7 @@ import (
 	cmv1 "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
 	cmmeta "github.com/cert-manager/cert-manager/pkg/apis/meta/v1"
 	envoygatewayv1alpha1 "github.com/envoyproxy/gateway/api/v1alpha1"
+	"github.com/prometheus/client_golang/prometheus"
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
@@ -422,6 +423,25 @@ type listenerCertStatus struct {
 	// pending means the listener is only waiting on a certificate to be issued,
 	// so the reconcile should check back to let it recover.
 	pending bool
+	// notAfter is the certificate's expiry time, populated only when the
+	// certificate is healthy and its expiry is known. Used to set the expiry
+	// gauge so operators can alert before a cert expires.
+	notAfter *metav1.Time
+	// secretName is the downstream Secret that holds the certificate material.
+	// Carried here so the expiry gauge can be labelled with the secret name
+	// without recomputing it outside listenerCertHealth.
+	secretName string
+}
+
+// clearListenerCertMetrics removes every certificate-health gauge series for a
+// gateway. Used both before re-recording each reconcile and on gateway deletion
+// so a removed listener never leaves a series stuck at its last value. The gating
+// counter is left alone because it is cumulative.
+func clearListenerCertMetrics(namespace, name string) {
+	labels := prometheus.Labels{jsonKeyNamespace: namespace, jsonKeyName: name}
+	gatewayListenerCertWithheld.DeletePartialMatch(labels)
+	gatewayListenerCertExpiryTime.DeletePartialMatch(labels)
+	gatewayListenerCertManaged.DeletePartialMatch(labels)
 }
 
 // evaluateListenerCertHealth reports which listeners have a usable certificate.
@@ -443,6 +463,11 @@ func (r *GatewayReconciler) evaluateListenerCertHealth(
 	hasSharedSecret := r.Config.Gateway.HasDefaultListenerTLSSecret()
 	now := time.Now()
 
+	// Drop this gateway's previous certificate metrics up front and re-record the
+	// current state below, so series for listeners that recovered, changed
+	// hostname, or were removed don't linger at a stale value.
+	clearListenerCertMetrics(upstreamGateway.Namespace, upstreamGateway.Name)
+
 	for _, l := range upstreamGateway.Spec.Listeners {
 		// Only listeners that own a per-hostname certificate are gated.
 		if l.TLS == nil || l.TLS.Options[certificateIssuerTLSOption] == "" || l.Hostname == nil {
@@ -458,11 +483,42 @@ func (r *GatewayReconciler) evaluateListenerCertHealth(
 			continue
 		}
 
-		health[l.Name] = r.listenerCertHealth(ctx, downstreamClient, downstreamNamespace, upstreamGateway.Name, l.Name, hostname, now)
-		if !health[l.Name].healthy {
-			logger.Info("listener certificate unhealthy",
+		status := r.listenerCertHealth(ctx, downstreamClient, downstreamNamespace, upstreamGateway.Name, l.Name, hostname, now)
+		health[l.Name] = status
+
+		// Mark this listener as managed regardless of its health, so the
+		// SLI ratio (withheld / managed) can be computed fleet-wide.
+		gatewayListenerCertManaged.WithLabelValues(
+			upstreamGateway.Namespace, upstreamGateway.Name, string(l.Name), hostname,
+		).Set(1)
+
+		if !status.healthy {
+			logArgs := []any{
 				"listener", l.Name, "hostname", hostname,
-				"reason", health[l.Name].reason, "message", health[l.Name].message)
+				"reason", status.reason, "message", status.message,
+			}
+			// Include the expiry timestamp when available so log queries can
+			// identify exactly when the cert stopped being valid.
+			if status.notAfter != nil {
+				logArgs = append(logArgs, "cert_not_after", status.notAfter.UTC().Format(time.RFC3339))
+			}
+			logger.Info("listener certificate unhealthy", logArgs...)
+
+			gatewayListenerCertWithheld.WithLabelValues(
+				upstreamGateway.Namespace, upstreamGateway.Name,
+				string(l.Name), hostname, string(status.reason),
+			).Set(1)
+			gatewayListenerCertGatingTotal.WithLabelValues(
+				upstreamGateway.Namespace, upstreamGateway.Name,
+				string(l.Name), hostname, string(status.reason),
+			).Inc()
+		} else if status.notAfter != nil {
+			// Record the expiry timestamp for healthy certs so operators can
+			// alert before the next expiry rather than after.
+			gatewayListenerCertExpiryTime.WithLabelValues(
+				upstreamGateway.Namespace, upstreamGateway.Name,
+				string(l.Name), hostname, status.secretName,
+			).Set(float64(status.notAfter.Unix()))
 		}
 	}
 
@@ -491,39 +547,45 @@ func (r *GatewayReconciler) listenerCertHealth(
 	if err := downstreamClient.Get(ctx, client.ObjectKey{Namespace: downstreamNamespace, Name: certName}, &cert); err != nil {
 		if apierrors.IsNotFound(err) {
 			return listenerCertStatus{
-				reason:  gatewayv1.ListenerReasonInvalidCertificateRef,
-				message: certIssuanceFailingMessage(hostname),
-				pending: true,
+				reason:     gatewayv1.ListenerReasonInvalidCertificateRef,
+				message:    certIssuanceFailingMessage(hostname),
+				pending:    true,
+				secretName: secretName,
 			}
 		}
 		// On a read error, hold the listener back but allow it to recover later.
 		logger.Error(err, "failed to get listener Certificate", "certificate", certName)
 		return listenerCertStatus{
-			reason:  gatewayv1.ListenerReasonInvalidCertificateRef,
-			message: certIssuanceFailingMessage(hostname),
-			pending: true,
+			reason:     gatewayv1.ListenerReasonInvalidCertificateRef,
+			message:    certIssuanceFailingMessage(hostname),
+			pending:    true,
+			secretName: secretName,
 		}
 	}
 
 	if !certIsReady(&cert) {
 		return listenerCertStatus{
-			reason:  gatewayv1.ListenerReasonInvalidCertificateRef,
-			message: certIssuanceFailingMessage(hostname),
-			pending: true,
+			reason:     gatewayv1.ListenerReasonInvalidCertificateRef,
+			message:    certIssuanceFailingMessage(hostname),
+			pending:    true,
+			secretName: secretName,
 		}
 	}
 
 	// The certificate must be within its valid dates.
 	if cert.Status.NotBefore != nil && cert.Status.NotBefore.After(now) {
 		return listenerCertStatus{
-			reason:  gatewayv1.ListenerReasonInvalidCertificateRef,
-			message: certNotYetValidMessage(hostname),
+			reason:     gatewayv1.ListenerReasonInvalidCertificateRef,
+			message:    certNotYetValidMessage(hostname),
+			secretName: secretName,
 		}
 	}
 	if cert.Status.NotAfter != nil && !cert.Status.NotAfter.After(now.Add(listenerCertExpiryMargin)) {
 		return listenerCertStatus{
-			reason:  gatewayv1.ListenerReasonInvalidCertificateRef,
-			message: certExpiredMessage(hostname),
+			reason:     gatewayv1.ListenerReasonInvalidCertificateRef,
+			message:    certExpiredMessage(hostname),
+			notAfter:   cert.Status.NotAfter,
+			secretName: secretName,
 		}
 	}
 
@@ -534,34 +596,38 @@ func (r *GatewayReconciler) listenerCertHealth(
 	if err := downstreamClient.Get(ctx, client.ObjectKey{Namespace: downstreamNamespace, Name: secretName}, &secret); err != nil {
 		if apierrors.IsNotFound(err) {
 			return listenerCertStatus{
-				reason:  gatewayv1.ListenerReasonInvalidCertificateRef,
-				message: certMissingMessage(hostname),
-				pending: true,
+				reason:     gatewayv1.ListenerReasonInvalidCertificateRef,
+				message:    certMissingMessage(hostname),
+				pending:    true,
+				secretName: secretName,
 			}
 		}
 		logger.Error(err, "failed to get listener Secret", "secret", secretName)
 		return listenerCertStatus{
-			reason:  gatewayv1.ListenerReasonInvalidCertificateRef,
-			message: certMissingMessage(hostname),
-			pending: true,
+			reason:     gatewayv1.ListenerReasonInvalidCertificateRef,
+			message:    certMissingMessage(hostname),
+			pending:    true,
+			secretName: secretName,
 		}
 	}
 
 	keyPair, err := tls.X509KeyPair(secret.Data["tls.crt"], secret.Data["tls.key"])
 	if err != nil {
 		return listenerCertStatus{
-			reason:  gatewayv1.ListenerReasonInvalidCertificateRef,
-			message: certMissingMessage(hostname),
+			reason:     gatewayv1.ListenerReasonInvalidCertificateRef,
+			message:    certMissingMessage(hostname),
+			secretName: secretName,
 		}
 	}
 	if leaf := keyPair.Leaf; leaf != nil && !leaf.NotAfter.After(now) {
 		return listenerCertStatus{
-			reason:  gatewayv1.ListenerReasonInvalidCertificateRef,
-			message: certExpiredMessage(hostname),
+			reason:     gatewayv1.ListenerReasonInvalidCertificateRef,
+			message:    certExpiredMessage(hostname),
+			secretName: secretName,
 		}
 	}
 
-	return listenerCertStatus{healthy: true}
+	return listenerCertStatus{healthy: true, notAfter: cert.Status.NotAfter, secretName: secretName}
 }
 
 // certIsReady reports whether a cert-manager Certificate has Ready=True.
@@ -615,11 +681,18 @@ func (r *GatewayReconciler) getDesiredDownstreamGateway(
 		// Leave out a listener whose certificate isn't usable. A bad certificate
 		// then only affects its own hostname, and every other hostname on the
 		// gateway keeps serving.
-		if status, gated := listenerCertHealth[l.Name]; gated && !status.healthy {
-			logger.Info("skipping downstream gateway listener with unhealthy certificate",
-				"upstream_listener_index", listenerIndex, "listener", l.Name,
-				"reason", status.reason, "message", status.message)
-			continue
+		if status, gated := listenerCertHealth[l.Name]; gated {
+			if !status.healthy {
+				logger.Info("skipping downstream gateway listener with unhealthy certificate",
+					"upstream_listener_index", listenerIndex, "listener", l.Name,
+					"reason", status.reason, "message", status.message)
+				continue
+			}
+			// The listener was evaluated (it owns a per-hostname cert) and is
+			// healthy: it is admitted to the downstream gateway. Log this so
+			// operators can confirm recovery without correlating metric state.
+			logger.Info("admitting downstream gateway listener with healthy certificate",
+				"upstream_listener_index", listenerIndex, "listener", l.Name)
 		}
 
 		// Per-listener TLS decision: hostnames covered by the wildcard
@@ -1366,10 +1439,11 @@ func (r *GatewayReconciler) finalizeGateway(
 	logger := log.FromContext(ctx)
 	logger.Info("finalizing gateway")
 
-	// Remove the per-gateway programmed gauge so deleted gateways do not leave
-	// stale label sets in the metric. This prevents sum(nso_gateway_programmed_total)
-	// from over-counting the fleet after gateways are removed.
+	// Remove per-gateway metric series so deleted gateways do not leave stale
+	// label sets that misrepresent fleet state.
 	gatewayProgrammedTotal.DeleteLabelValues(upstreamGateway.Namespace, upstreamGateway.Name)
+	// Clear this gateway's cert-health series now that it is gone.
+	clearListenerCertMetrics(upstreamGateway.Namespace, upstreamGateway.Name)
 
 	// Clean up DNS records created by this gateway
 	if r.Config.Gateway.EnableDNSIntegration {

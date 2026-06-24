@@ -261,6 +261,53 @@ func (s *Server) PostTranslateModify(
 
 	extmetrics.PhaseDuration.WithLabelValues("mutate").Observe(time.Since(mutStart).Seconds())
 
+	// Last line of defence (issue #212): drop only the parts of a listener that
+	// use a broken certificate, so one bad certificate can't take HTTPS down for
+	// every other hostname sharing the listener. This only removes things it can
+	// prove are broken and never empties a listener, so it cannot make things
+	// worse.
+	_, tlsSpan := tr.Start(ctx, "tls.prune")
+	keptSecrets, prunedChains, prunedSecrets, listenersLeftIntact, droppedTLSNames :=
+		mutate.PruneInvalidTLSSecrets(listeners, req.GetSecrets(), time.Now())
+
+	// Collect the Envoy listener names that had chains pruned or were left
+	// intact so they appear in the trace and the log alongside the SNI hostnames.
+	var affectedListenerNames []string
+	if prunedChains > 0 || listenersLeftIntact > 0 {
+		for _, l := range listeners {
+			if n := l.GetName(); n != "" {
+				affectedListenerNames = append(affectedListenerNames, n)
+			}
+		}
+	}
+
+	tlsSpan.SetAttributes(
+		attribute.Int("tls.pruned_chains", prunedChains),
+		attribute.Int("tls.pruned_secrets", prunedSecrets),
+		attribute.Int("tls.listeners_left_intact", listenersLeftIntact),
+		attribute.StringSlice("tls.dropped_names", droppedTLSNames),
+	)
+	tlsSpan.End()
+
+	// Counters accumulate across all hook invocations; use rate() for trending.
+	extmetrics.TLSPrunedChainsTotal.Add(float64(prunedChains))
+	extmetrics.TLSPrunedSecretsTotal.Add(float64(prunedSecrets))
+	extmetrics.TLSListenersLeftIntactTotal.Add(float64(listenersLeftIntact))
+	// Active gauges reflect the current state after each invocation so operators
+	// can alert on "is the backstop firing right now" without needing rate().
+	extmetrics.TLSPrunedChainsActive.Set(float64(prunedChains))
+	extmetrics.TLSListenersLeftIntactActive.Set(float64(listenersLeftIntact))
+
+	if prunedChains > 0 || listenersLeftIntact > 0 {
+		s.log.Warn("PostTranslateModify pruned invalid TLS chains",
+			"pruned_chains", prunedChains,
+			"pruned_secrets", prunedSecrets,
+			"listeners_left_intact", listenersLeftIntact,
+			"dropped_hostnames", droppedTLSNames,
+			"affected_listeners", affectedListenerNames,
+		)
+	}
+
 	// Record per-mutation-family counters. These accumulate across builds; use
 	// rate() in Prometheus / PromQL to derive per-build averages.
 	extmetrics.WAFHCMMutationsTotal.Add(float64(hcmCount))
@@ -285,7 +332,7 @@ func (s *Server) PostTranslateModify(
 
 	return &pb.PostTranslateModifyResponse{
 		Clusters:  clusters,
-		Secrets:   req.GetSecrets(), // pass through unchanged
+		Secrets:   keptSecrets, // invalid-cert secrets pruned (issue #212); see TLS prune phase
 		Listeners: listeners,
 		Routes:    routes,
 	}, nil

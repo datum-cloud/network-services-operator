@@ -11,6 +11,14 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
+// Metric label name constants for TLS certificate health metrics.
+const (
+	metricLabelListener = "listener"
+	metricLabelHostname = "hostname"
+	metricLabelSecret   = "secret"
+	metricLabelReason   = "reason"
+)
+
 var (
 	// replicatorConflictsTotal counts resource-version conflicts observed by the
 	// gateway-resource-replicator controller. Conflicts arise when the upstream or
@@ -52,5 +60,59 @@ var (
 			Help: "1 if the downstream Gateway has Programmed=True, 0 otherwise. Sum for fleet-wide programmed count.",
 		},
 		[]string{jsonKeyNamespace, jsonKeyName},
+	)
+
+	// gatewayListenerCertWithheld is 1 for each upstream Gateway listener that NSO
+	// is currently withholding from the downstream because its TLS certificate is
+	// unusable. The series for a listener is removed when the listener recovers,
+	// is removed from the Gateway, or the Gateway is deleted.
+	//
+	// Use sum(nso_gateway_listener_cert_withheld) to count how many listeners are
+	// currently dark across the fleet, or filter by namespace/name/listener/hostname
+	// to find the specific affected object during an incident.
+	gatewayListenerCertWithheld = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "nso_gateway_listener_cert_withheld",
+			Help: "1 when a Gateway listener is withheld from the downstream because its TLS certificate is unusable, 0 after it recovers.",
+		},
+		[]string{jsonKeyNamespace, jsonKeyName, metricLabelListener, metricLabelHostname, metricLabelReason},
+	)
+
+	// gatewayListenerCertGatingTotal counts every reconcile cycle in which a
+	// Gateway listener is withheld due to an unusable certificate. A rising rate
+	// means new cert failures are arriving, not just that existing ones persist.
+	gatewayListenerCertGatingTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "nso_gateway_listener_cert_gating_total",
+			Help: "Total reconcile cycles in which a Gateway listener was withheld because its TLS certificate was unusable.",
+		},
+		[]string{jsonKeyNamespace, jsonKeyName, metricLabelListener, metricLabelHostname, metricLabelReason},
+	)
+
+	// gatewayListenerCertExpiryTime is the Unix timestamp (seconds) at which a
+	// managed Gateway listener's TLS certificate expires. Only set for listeners
+	// with a healthy certificate whose expiry is known. Use this to alert before
+	// a cert expires and NSO begins gating the listener.
+	//
+	// Query time-to-expiry in days:
+	//   (nso_gateway_listener_cert_expiry_time - time()) / 86400
+	gatewayListenerCertExpiryTime = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "nso_gateway_listener_cert_expiry_time",
+			Help: "Unix timestamp when the managed TLS certificate for this Gateway listener expires. Only present when the certificate is healthy.",
+		},
+		[]string{jsonKeyNamespace, jsonKeyName, metricLabelListener, metricLabelHostname, metricLabelSecret},
+	)
+
+	// gatewayListenerCertManaged counts the total number of Gateway listeners
+	// that NSO evaluates for certificate health each reconcile. Together with
+	// gatewayListenerCertWithheld this gives the fraction of managed listeners
+	// that are currently serving (the SLI ratio).
+	gatewayListenerCertManaged = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "nso_gateway_listener_cert_managed",
+			Help: "1 for each Gateway listener whose TLS certificate is managed and evaluated by NSO, regardless of health.",
+		},
+		[]string{jsonKeyNamespace, jsonKeyName, metricLabelListener, metricLabelHostname},
 	)
 )

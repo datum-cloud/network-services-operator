@@ -1,0 +1,147 @@
+rule_files:
+  - cert-health-rules.yaml
+
+evaluation_interval: 30s
+
+tests:
+  # GatewayListenerCertUnusable — listener withheld for more than 5 minutes
+  - interval: 1m
+    input_series:
+      - series: 'nso_gateway_listener_cert_withheld{namespace="customer-ns", name="my-gateway", listener="https-custom", hostname="example.com", reason="InvalidCertificateRef"}'
+        values: '1+0x5'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: GatewayListenerCertUnusable
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              namespace: customer-ns
+              name: my-gateway
+              listener: https-custom
+              hostname: example.com
+              reason: InvalidCertificateRef
+            exp_annotations:
+              summary: "Gateway listener customer-ns/my-gateway/https-custom has an unusable TLS certificate"
+              description: "NSO has withheld listener https-custom (hostname example.com) on Gateway my-gateway in namespace customer-ns because its TLS certificate is unusable (reason: InvalidCertificateRef). The customer cannot serve HTTPS on this hostname. Check the cert-manager Certificate and Secret in the downstream cluster."
+
+  # GatewayListenerCertUnusable — listener withheld for less than 5 minutes (should NOT alert)
+  - interval: 1m
+    input_series:
+      - series: 'nso_gateway_listener_cert_withheld{namespace="customer-ns", name="my-gateway", listener="https-custom", hostname="example.com", reason="InvalidCertificateRef"}'
+        values: '1+0x2'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: GatewayListenerCertUnusable
+        exp_alerts: []
+
+  # GatewayListenerCertUnusable — listener is healthy (withheld=0, should NOT alert)
+  - interval: 1m
+    input_series:
+      - series: 'nso_gateway_listener_cert_withheld{namespace="customer-ns", name="healthy-gateway", listener="https-custom", hostname="ok.com", reason="InvalidCertificateRef"}'
+        values: '0+0x5'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: GatewayListenerCertUnusable
+        exp_alerts: []
+
+  # GatewayListenerCertExpiringSoon — cert expires in 5 days (within 7-day threshold)
+  # At eval_time 62m (3720s), expiry_time = 3720 + 5*86400 = 435720
+  - interval: 1m
+    input_series:
+      - series: 'nso_gateway_listener_cert_expiry_time{namespace="customer-ns", name="my-gateway", listener="https-custom", hostname="example.com", secret="my-gateway-https-custom"}'
+        values: '435720+0x62'
+    alert_rule_test:
+      - eval_time: 62m
+        alertname: GatewayListenerCertExpiringSoon
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              namespace: customer-ns
+              name: my-gateway
+              listener: https-custom
+              hostname: example.com
+              secret: my-gateway-https-custom
+            exp_annotations:
+              summary: "TLS certificate for Gateway listener customer-ns/my-gateway/https-custom expires in less than 7 days"
+              description: "The cert-manager Certificate for listener https-custom (hostname example.com, secret my-gateway-https-custom) on Gateway my-gateway in namespace customer-ns expires within 7 days. cert-manager should renew it automatically, but renewal fails if the domain's DNS no longer points to Datum. Verify the Certificate is Ready=True in the downstream cluster."
+
+  # GatewayListenerCertExpiringSoon — cert expires in 8 days (outside threshold, should NOT alert)
+  # At eval_time 62m (3720s), expiry_time = 3720 + 8*86400 = 694920
+  - interval: 1m
+    input_series:
+      - series: 'nso_gateway_listener_cert_expiry_time{namespace="customer-ns", name="my-gateway", listener="https-custom", hostname="example.com", secret="my-gateway-https-custom"}'
+        values: '694920+0x62'
+    alert_rule_test:
+      - eval_time: 62m
+        alertname: GatewayListenerCertExpiringSoon
+        exp_alerts: []
+
+  # TLSBackstopPruningChains — backstop actively dropping chains for more than 2 minutes
+  - interval: 1m
+    input_series:
+      - series: 'nso_extension_tls_pruned_chains_active'
+        values: '3+0x2'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: TLSBackstopPruningChains
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "Extension server TLS backstop is actively pruning 3 broken filter chain(s)"
+              description: "The extension server's TLS backstop is dropping 3 broken TLS filter chain(s) from PostTranslateModify responses. Check extension server logs for 'pruned invalid TLS chains' to identify affected hostnames. If GatewayListenerCertUnusable is also firing, the two-layer defense is working as expected. If only this alert fires, the controller-side cert gating may have missed the listener."
+
+  # TLSBackstopPruningChains — backstop just started, under 2 minutes (should NOT alert)
+  - interval: 1m
+    input_series:
+      - series: 'nso_extension_tls_pruned_chains_active'
+        values: '2+0x0'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: TLSBackstopPruningChains
+        exp_alerts: []
+
+  # TLSBackstopPruningChains — no chains pruned (should NOT alert)
+  - interval: 1m
+    input_series:
+      - series: 'nso_extension_tls_pruned_chains_active'
+        values: '0+0x2'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: TLSBackstopPruningChains
+        exp_alerts: []
+
+  # TLSBackstopListenerAllCertsBroken — all certs broken for more than 2 minutes (critical)
+  - interval: 1m
+    input_series:
+      - series: 'nso_extension_tls_listeners_left_intact_active'
+        values: '1+0x2'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: TLSBackstopListenerAllCertsBroken
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: "1 Envoy listener(s) have all TLS certificates broken — backstop cannot protect them"
+              description: "The extension server left 1 Envoy listener(s) completely intact because every TLS filter chain on them referenced a broken certificate. The backstop never empties a listener, so Envoy will reject the LDS update for those listeners (see EnvoyListenerUpdateRejected). This means NSO's controller-side cert gating did not suppress the listener before it reached the data plane. Check extension server logs for 'listeners_left_intact' and investigate why evaluateListenerCertHealth did not catch the listener."
+
+  # TLSBackstopListenerAllCertsBroken — condition just started, under 2 minutes (should NOT alert)
+  - interval: 1m
+    input_series:
+      - series: 'nso_extension_tls_listeners_left_intact_active'
+        values: '2+0x0'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: TLSBackstopListenerAllCertsBroken
+        exp_alerts: []
+
+  # TLSBackstopListenerAllCertsBroken — no intact listeners (should NOT alert)
+  - interval: 1m
+    input_series:
+      - series: 'nso_extension_tls_listeners_left_intact_active'
+        values: '0+0x2'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: TLSBackstopListenerAllCertsBroken
+        exp_alerts: []

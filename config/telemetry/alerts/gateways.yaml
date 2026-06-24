@@ -22,6 +22,16 @@ spec:
         summary: "Gateway {{ $labels.resource_name }} is taking longer than 60 seconds to reach Ready status"
         description: "Gateway {{ $labels.resource_name }} in namespace {{ $labels.resource_namespace }} has been in creation state for {{ $value }} seconds without reaching Ready status (Accepted=True AND Programmed=True), which exceeds the 60-second SLO threshold."
 
+    - alert: EnvoyPatchPolicyProgrammingFailed
+      expr: |
+        envoy_gateway_envoypatchpolicy_status_condition{type="Programmed"} == 0
+      for: 5m
+      labels:
+        severity: critical
+      annotations:
+        summary: "EnvoyPatchPolicy {{ $labels.name }} failed to program"
+        description: "EnvoyPatchPolicy {{ $labels.name }} in namespace {{ $labels.namespace }} has been unable to apply its xDS patch for over 5 minutes (reason: {{ $labels.reason }}). Customer traffic on affected gateways may be impacted."
+
     - alert: GatewayDegradedSLOViolation
       expr: |
         (
@@ -39,3 +49,75 @@ spec:
       annotations:
         summary: "Gateway {{ $labels.resource_name }} has been degraded for over 60 seconds"
         description: "Gateway {{ $labels.resource_name }} in namespace {{ $labels.resource_namespace }} has been in a degraded state for over 60 seconds without recovering, which exceeds the 60-second SLO threshold."
+
+  # TLS certificate health alerts fire on nso_* metrics emitted directly by the
+  # NSO operator and extension server. They are available in the same Prometheus
+  # that loads this rule, alongside the envoy_gateway_* metrics above.
+  # These complement the infrastructure EnvoyListenerUpdateRejected alert (which
+  # fires when Envoy rejects a bad LDS update). These alerts cover the earlier
+  # prevention path: NSO withholds a listener or the extension server drops a
+  # broken filter chain before Envoy has a chance to reject the update.
+  - name: nso-tls-cert-health
+    interval: 30s
+    rules:
+    # Fires when NSO has withheld a Gateway listener because its TLS certificate
+    # is unusable. The customer's HTTPS hostname is dark until the cert recovers.
+    # If EnvoyListenerUpdateRejected is also firing without this alert, NSO's
+    # cert gating has regressed and a bad cert reached Envoy directly.
+    - alert: GatewayListenerCertUnusable
+      expr: |
+        nso_gateway_listener_cert_withheld == 1
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: "Gateway listener {{ $labels.namespace }}/{{ $labels.name }}/{{ $labels.listener }} has an unusable TLS certificate"
+        description: "NSO has withheld listener {{ $labels.listener }} (hostname {{ $labels.hostname }}) on Gateway {{ $labels.name }} in namespace {{ $labels.namespace }} because its TLS certificate is unusable (reason: {{ $labels.reason }}). The customer cannot serve HTTPS on this hostname. Check the cert-manager Certificate and Secret in the downstream cluster."
+        runbook_url: "https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/gateway-tls-certificates.md#gatewaylistenercertunusable"
+
+    # Fires when a managed TLS certificate is within 7 days of expiry while it
+    # is still healthy. cert-manager renews automatically, but renewal fails if
+    # the domain's DNS no longer points to Datum. Acting here avoids a future
+    # GatewayListenerCertUnusable alert.
+    - alert: GatewayListenerCertExpiringSoon
+      expr: |
+        (nso_gateway_listener_cert_expiry_time - time()) / 86400 < 7
+      for: 1h
+      labels:
+        severity: warning
+      annotations:
+        summary: "TLS certificate for Gateway listener {{ $labels.namespace }}/{{ $labels.name }}/{{ $labels.listener }} expires in less than 7 days"
+        description: "The cert-manager Certificate for listener {{ $labels.listener }} (hostname {{ $labels.hostname }}, secret {{ $labels.secret }}) on Gateway {{ $labels.name }} in namespace {{ $labels.namespace }} expires within 7 days. cert-manager should renew it automatically, but renewal fails if the domain's DNS no longer points to Datum. Verify the Certificate is Ready=True in the downstream cluster."
+        runbook_url: "https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/gateway-tls-certificates.md#gatewaylistenercertexpiringsoon"
+
+    # Fires when the extension server is actively dropping broken certificates
+    # from the configuration it sends to the edge. This is expected briefly
+    # between a certificate failing and the controller withholding the listener.
+    # If only this fires and GatewayListenerCertUnusable does not, the controller
+    # may have missed the listener.
+    - alert: TLSBackstopPruningChains
+      expr: |
+        nso_extension_tls_pruned_chains_active > 0
+      for: 2m
+      labels:
+        severity: warning
+      annotations:
+        summary: "Extension server is dropping {{ $value }} broken certificate(s) to protect the edge listener"
+        description: "The extension server is dropping {{ $value }} broken certificate(s) from the configuration it sends to the edge gateway. Check extension server logs for 'pruned invalid TLS chains' to find the affected hostnames. If GatewayListenerCertUnusable is also firing, both layers of protection are working as expected. If only this alert fires, the controller may have missed the listener."
+        runbook_url: "https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/gateway-tls-certificates.md#tlsbackstoppruningchains"
+
+    # Fires when the extension server could not protect a listener because every
+    # certificate on it is broken. It never removes a listener entirely, so the
+    # edge will reject the update for that listener — EnvoyListenerUpdateRejected
+    # (infra) confirms it. It means the controller did not withhold the listener
+    # before it reached the edge.
+    - alert: TLSBackstopListenerAllCertsBroken
+      expr: |
+        nso_extension_tls_listeners_left_intact_active > 0
+      for: 2m
+      labels:
+        severity: critical
+      annotations:
+        summary: "{{ $value }} edge listener(s) have every TLS certificate broken and cannot be protected"
+        description: "The extension server left {{ $value }} edge listener(s) untouched because every certificate on them is broken. It never removes a listener entirely, so the edge will reject the configuration update for those listeners (EnvoyListenerUpdateRejected confirms it). This means the controller did not withhold the listener before it reached the edge. Check extension server logs for 'listeners_left_intact' and why the controller did not withhold the listener."
+        runbook_url: "https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/gateway-tls-certificates.md#tlsbackstoplistenerallcertsbroken"

@@ -1,0 +1,61 @@
+groups:
+- name: nso-tls-cert-health
+  interval: 30s
+  rules:
+  # Fires when NSO has withheld a Gateway listener because its TLS certificate
+  # is unusable. The customer's HTTPS hostname is dark until the cert recovers.
+  # If EnvoyListenerUpdateRejected is also firing without this alert, NSO's
+  # cert gating has regressed and a bad cert reached Envoy directly.
+  - alert: GatewayListenerCertUnusable
+    expr: |
+      nso_gateway_listener_cert_withheld == 1
+    for: 5m
+    labels:
+      severity: warning
+    annotations:
+      summary: "Gateway listener {{ $labels.namespace }}/{{ $labels.name }}/{{ $labels.listener }} has an unusable TLS certificate"
+      description: "NSO has withheld listener {{ $labels.listener }} (hostname {{ $labels.hostname }}) on Gateway {{ $labels.name }} in namespace {{ $labels.namespace }} because its TLS certificate is unusable (reason: {{ $labels.reason }}). The customer cannot serve HTTPS on this hostname. Check the cert-manager Certificate and Secret in the downstream cluster."
+
+  # Fires when a managed TLS certificate is within 7 days of expiry while it
+  # is still healthy. cert-manager renews automatically, but renewal fails if
+  # the domain's DNS no longer points to Datum. Acting here avoids a future
+  # GatewayListenerCertUnusable alert.
+  - alert: GatewayListenerCertExpiringSoon
+    expr: |
+      (nso_gateway_listener_cert_expiry_time - time()) / 86400 < 7
+    for: 1h
+    labels:
+      severity: warning
+    annotations:
+      summary: "TLS certificate for Gateway listener {{ $labels.namespace }}/{{ $labels.name }}/{{ $labels.listener }} expires in less than 7 days"
+      description: "The cert-manager Certificate for listener {{ $labels.listener }} (hostname {{ $labels.hostname }}, secret {{ $labels.secret }}) on Gateway {{ $labels.name }} in namespace {{ $labels.namespace }} expires within 7 days. cert-manager should renew it automatically, but renewal fails if the domain's DNS no longer points to Datum. Verify the Certificate is Ready=True in the downstream cluster."
+
+  # Fires when the extension server's data-plane backstop is actively dropping
+  # broken TLS filter chains from PostTranslateModify responses. This is normal
+  # during the window between cert failure and controller-side gating catching
+  # up. If only this alert fires and GatewayListenerCertUnusable does not, the
+  # controller may have missed the bad listener — investigate.
+  - alert: TLSBackstopPruningChains
+    expr: |
+      nso_extension_tls_pruned_chains_active > 0
+    for: 2m
+    labels:
+      severity: warning
+    annotations:
+      summary: "Extension server TLS backstop is actively pruning {{ $value }} broken filter chain(s)"
+      description: "The extension server's TLS backstop is dropping {{ $value }} broken TLS filter chain(s) from PostTranslateModify responses. Check extension server logs for 'pruned invalid TLS chains' to identify affected hostnames. If GatewayListenerCertUnusable is also firing, the two-layer defense is working as expected. If only this alert fires, the controller-side cert gating may have missed the listener."
+
+  # Fires when the extension server's backstop could not save a listener because
+  # every TLS filter chain on it is broken. The backstop never empties a listener,
+  # so Envoy will NACK the full LDS update — see EnvoyListenerUpdateRejected in
+  # the infra alerts for the confirming signal. This means NSO's controller-side
+  # cert gating did not suppress the listener before it reached the data plane.
+  - alert: TLSBackstopListenerAllCertsBroken
+    expr: |
+      nso_extension_tls_listeners_left_intact_active > 0
+    for: 2m
+    labels:
+      severity: critical
+    annotations:
+      summary: "{{ $value }} Envoy listener(s) have all TLS certificates broken — backstop cannot protect them"
+      description: "The extension server left {{ $value }} Envoy listener(s) completely intact because every TLS filter chain on them referenced a broken certificate. The backstop never empties a listener, so Envoy will reject the LDS update for those listeners (see EnvoyListenerUpdateRejected). This means NSO's controller-side cert gating did not suppress the listener before it reached the data plane. Check extension server logs for 'listeners_left_intact' and investigate why evaluateListenerCertHealth did not catch the listener."

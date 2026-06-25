@@ -7,6 +7,7 @@ package server
 import (
 	"context"
 	"log/slog"
+	"net/http"
 	"time"
 
 	pb "github.com/envoyproxy/gateway/proto/extension"
@@ -51,14 +52,28 @@ type Server struct {
 	client client.Client
 	cfg    ServerConfig
 	log    *slog.Logger
+	// programmed records what the last build changed, so a test can ask the proxy
+	// to prove it is running exactly that. Always non-nil; capturing it only reads
+	// what was already produced.
+	programmed *programmedRecorder
 }
 
 // New returns a production extension server backed by the given cache client.
 // In production, cl is the ctrl.Manager.GetClient() from NewManager().
 // In tests, cl is a fake client pre-populated with the test objects.
 func New(cl client.Client, cfg ServerConfig, log *slog.Logger) *Server {
-	return &Server{client: cl, cfg: cfg, log: log}
+	return &Server{client: cl, cfg: cfg, log: log, programmed: newProgrammedRecorder()}
 }
+
+// ProgrammedSetHandler serves what the last build changed, so a test can confirm
+// the proxy is running exactly that. Read-only.
+func (s *Server) ProgrammedSetHandler() http.HandlerFunc {
+	return s.programmed.programmedSetHandler()
+}
+
+// ProgrammedSetEndpointPath is exported so the server and the test tooling share
+// one definition of where this endpoint lives.
+const ProgrammedSetEndpointPath = programmedSetEndpointPath
 
 // PostTranslateModify applies the TPP/WAF and Connector mutation families to
 // the full xDS snapshot and returns the complete (mutated) resource set.
@@ -316,6 +331,14 @@ func (s *Server) PostTranslateModify(
 	extmetrics.ConnectorClustersTotal.Add(float64(len(replaced)))
 	extmetrics.ConnectorRoutesTotal.Add(float64(vhCount))
 	extmetrics.ConnectorOfflineRoutesTotal.Add(float64(offlineRtCount))
+
+	// Record what this build changed so a test can later confirm the proxy is
+	// running exactly that. This only reads the configuration just produced; it
+	// changes nothing.
+	s.programmed.record(
+		listeners, routes, clusters, s.cfg.Coraza.FilterName,
+		prunedChains, prunedSecrets, listenersLeftIntact,
+	)
 
 	s.log.Info("PostTranslateModify",
 		"clusters", len(clusters),

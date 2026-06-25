@@ -450,6 +450,9 @@ func run(o options) {
 		}
 	})
 	mux.Handle("/metrics", promhttp.Handler())
+	// Debug endpoint that reports what the last build changed, so a test can
+	// confirm the proxy is running exactly that. Read-only; keeps only the last build.
+	mux.HandleFunc(extserver.ProgrammedSetEndpointPath, extSrv.ProgrammedSetHandler())
 	healthServer := &http.Server{
 		Addr:    healthAddr,
 		Handler: mux,

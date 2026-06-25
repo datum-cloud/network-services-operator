@@ -1,0 +1,234 @@
+# Future test coverage for resource interpreters can leverage the test framework
+# once it's merged.
+#
+# See: https://github.com/karmada-io/karmada/pull/6938
+---
+apiVersion: config.karmada.io/v1alpha1
+kind: ResourceInterpreterCustomization
+metadata:
+  name: gateway.networking.k8s.io-gateway
+spec:
+  target:
+    apiVersion: gateway.networking.k8s.io/v1
+    kind: Gateway
+  customizations:
+    statusAggregation:
+      luaScript: >
+        function AggregateStatus(desiredObj, statusItems)
+          if statusItems == nil or #statusItems == 0 then
+            return desiredObj
+          end
+          if desiredObj.status == nil then
+            desiredObj.status = {}
+          end
+
+          local item = statusItems[1]
+          if item == nil or item.status == nil then
+            return desiredObj
+          end
+
+          -- TODO(jreese) implement proper aggregation logic. Would be good to
+          -- think through how to represent propagation status across clusters.
+          if item.status.addresses ~= nil then
+            desiredObj.status.addresses = item.status.addresses
+          end
+          if item.status.conditions ~= nil then
+            desiredObj.status.conditions = item.status.conditions
+          end
+          if item.status.listeners ~= nil then
+            desiredObj.status.listeners = item.status.listeners
+          end
+          return desiredObj
+        end
+---
+apiVersion: config.karmada.io/v1alpha1
+kind: ResourceInterpreterCustomization
+metadata:
+  name: gateway.networking.k8s.io-httproute
+spec:
+  target:
+    apiVersion: gateway.networking.k8s.io/v1
+    kind: HTTPRoute
+  customizations:
+    statusAggregation:
+      luaScript: >
+        function AggregateStatus(desiredObj, statusItems)
+          if statusItems == nil or #statusItems == 0 then
+            return desiredObj
+          end
+          if desiredObj.status == nil then
+            desiredObj.status = {}
+          end
+
+          local item = statusItems[1]
+          if item == nil or item.status == nil then
+            return desiredObj
+          end
+
+          -- TODO(jreese) implement proper aggregation logic. Would be good to
+          -- think through how to represent propagation status across clusters.
+          if item.status.parents ~= nil then
+            desiredObj.status.parents = item.status.parents
+          end
+          return desiredObj
+        end
+---
+apiVersion: config.karmada.io/v1alpha1
+kind: ResourceInterpreterCustomization
+metadata:
+  name: gateway.networking.k8s.io-backendtlspolicy
+spec:
+  target:
+    apiVersion: gateway.networking.k8s.io/v1
+    kind: BackendTLSPolicy
+  customizations:
+    statusAggregation:
+      luaScript: >
+        function AggregateStatus(desiredObj, statusItems)
+          if statusItems == nil or #statusItems == 0 then
+            return desiredObj
+          end
+          if desiredObj.status == nil then
+            desiredObj.status = {}
+          end
+
+          local item = statusItems[1]
+          if item == nil or item.status == nil then
+            return desiredObj
+          end
+
+          -- TODO(jreese) implement proper aggregation logic. Would be good to
+          -- think through how to represent propagation status across clusters.
+          if item.status.ancestors ~= nil then
+            desiredObj.status.ancestors = item.status.ancestors
+          end
+          return desiredObj
+        end
+---
+apiVersion: config.karmada.io/v1alpha1
+kind: ResourceInterpreterCustomization
+metadata:
+  name: gateway.envoyproxy.io-backend
+spec:
+  target:
+    apiVersion: gateway.envoyproxy.io/v1alpha1
+    kind: Backend
+  customizations:
+    statusAggregation:
+      luaScript: >
+        function AggregateStatus(desiredObj, statusItems)
+          if statusItems == nil or #statusItems == 0 then
+            return desiredObj
+          end
+          if desiredObj.status == nil then
+            desiredObj.status = {}
+          end
+
+          local item = statusItems[1]
+          if item == nil or item.status == nil then
+            return desiredObj
+          end
+
+          -- TODO(jreese) implement proper aggregation logic. Would be good to
+          -- think through how to represent propagation status across clusters.
+          if item.status.conditions ~= nil then
+            desiredObj.status.conditions = item.status.conditions
+          end
+          return desiredObj
+        end
+---
+apiVersion: config.karmada.io/v1alpha1
+kind: ResourceInterpreterCustomization
+metadata:
+  name: gateway.envoyproxy.io-backendtrafficpolicy
+spec:
+  target:
+    apiVersion: gateway.envoyproxy.io/v1alpha1
+    kind: BackendTrafficPolicy
+  customizations:
+    statusAggregation:
+      luaScript: >
+        function AggregateStatus(desiredObj, statusItems)
+          if statusItems == nil or #statusItems == 0 then
+            return desiredObj
+          end
+          if desiredObj.status == nil then
+            desiredObj.status = {}
+          end
+
+          local item = statusItems[1]
+          if item == nil or item.status == nil then
+            return desiredObj
+          end
+
+          -- TODO(jreese) implement proper aggregation logic. Would be good to
+          -- think through how to represent propagation status across clusters.
+          if item.status.ancestors ~= nil then
+            desiredObj.status.ancestors = item.status.ancestors
+          end
+          return desiredObj
+        end
+---
+apiVersion: config.karmada.io/v1alpha1
+kind: ResourceInterpreterCustomization
+metadata:
+  name: gateway.envoyproxy.io-envoypatchpolicy
+spec:
+  target:
+    apiVersion: gateway.envoyproxy.io/v1alpha1
+    kind: EnvoyPatchPolicy
+  customizations:
+    statusAggregation:
+      luaScript: >
+        function AggregateStatus(desiredObj, statusItems)
+          if statusItems == nil or #statusItems == 0 then
+            return desiredObj
+          end
+          if desiredObj.status == nil then
+            desiredObj.status = {}
+          end
+
+          local item = statusItems[1]
+          if item == nil or item.status == nil then
+            return desiredObj
+          end
+
+          -- TODO(jreese) implement proper aggregation logic. Would be good to
+          -- think through how to represent propagation status across clusters.
+          if item.status.ancestors ~= nil then
+            desiredObj.status.ancestors = item.status.ancestors
+          end
+          return desiredObj
+        end
+---
+apiVersion: config.karmada.io/v1alpha1
+kind: ResourceInterpreterCustomization
+metadata:
+  name: externaldns.k8s.io-dnsendpoint
+spec:
+  target:
+    apiVersion: externaldns.k8s.io/v1alpha1
+    kind: DNSEndpoint
+  customizations:
+    statusAggregation:
+      luaScript: >
+        function AggregateStatus(desiredObj, statusItems)
+          if statusItems == nil or #statusItems == 0 then
+            return desiredObj
+          end
+          if desiredObj.status == nil then
+            desiredObj.status = {}
+          end
+
+          local item = statusItems[1]
+          if item == nil or item.status == nil then
+            return desiredObj
+          end
+
+          -- TODO(jreese) implement proper aggregation logic. Would be good to
+          -- think through how to represent propagation status across clusters.
+          if item.status.observedGeneration ~= nil then
+            desiredObj.status.observedGeneration = item.status.observedGeneration
+          end
+          return desiredObj
+        end

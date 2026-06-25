@@ -17,7 +17,7 @@ spec:
     # TrafficProtectionPolicy creation with spec available
     - name: create
       match: "!audit.user.username.startsWith('system:') && audit.verb == 'create' && has(audit.requestObject.spec)"
-      summary: "{{ actor }} created traffic protection policy {{ link(audit.objectRef.name, audit.objectRef) }}"
+      summary: "{{ actor }} created traffic protection policy {{ link(audit.responseObject.metadata.name, audit.objectRef) }}"
 
     # TrafficProtectionPolicy creation fallback (no spec)
     - name: create-fallback

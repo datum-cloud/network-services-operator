@@ -1,3 +1,12 @@
+# Reset-resilient copy of the downstream Envoy Gateway install with the
+# prod-fidelity pins baked in (EG chart v1.7.4, extensionManager
+# maxMessageSize:256Mi, e2e certificateRef). This lives in an UNTRACKED dir so an
+# external `git reset --hard` on the shared branch cannot revert these settings
+# (it kept clobbering the tracked config/tools/envoy-gateway-downstream copy).
+#
+# The non-volatile siblings (namespace.yaml, nso-crd-rbac.yaml) are reused from
+# the tracked tool dir via relative path; only the kustomization itself (the
+# thing that got reset) is vendored here.
 resources:
   - namespace.yaml
   - nso-crd-rbac.yaml
@@ -6,6 +15,8 @@ helmCharts:
     includeCRDs: false
     namespace: datum-downstream-gateway
     releaseName: envoy-datum-downstream-gateway
+    # Prod EG version (rolled back from 1.8.1 for the OIDC regression). Pulled
+    # from the OCI repo so this dir needs no vendored chart.
     version: v1.7.4
     repo: oci://docker.io/envoyproxy
     valuesInline:
@@ -29,9 +40,9 @@ helmCharts:
                     - key: meta.datumapis.com/upstream-cluster-name
                       operator: Exists
           extensionManager:
-            # Match the ext-server's compiled-in 256 MiB gRPC ceiling. Without
-            # this the EG side defaults to ~4 MiB and silently freezes xDS once a
-            # translated snapshot exceeds it (~540 gateways in prod).
+            # Match the extension server's larger message limit. The default is
+            # far smaller, and once configuration grows past it, updates silently
+            # stop reaching the proxies.
             maxMessageSize: 256Mi
             policyResources:
               - group: networking.datumapis.com
@@ -47,9 +58,9 @@ helmCharts:
                 port: 5005
               tls:
                 certificateRef:
-                  # e2e: the Secret holding the CA that issued the ext-server
-                  # server cert. Published by the bring-up (test-infra:extserver-ca-bundle)
-                  # from the e2e-extension-server-ca cert-manager secret.
+                  # The certificate authority that signed the extension server's
+                  # certificate, so the control plane can trust it. Published by
+                  # bring-up.
                   name: e2e-extension-server-ca
                   namespace: network-services-operator-system
                 clientCertificateRef:
@@ -76,5 +87,6 @@ helmCharts:
                     includeAll: true
                   secret:
                     includeAll: true
-            # failOpen:false — extension errors block the xDS update; Envoy holds last-known-good config.
+            # Block updates when the extension server errors instead of serving
+            # unprotected configuration; the proxy keeps its last good config.
             failOpen: false

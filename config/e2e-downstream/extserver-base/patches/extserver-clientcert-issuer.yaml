@@ -1,0 +1,11 @@
+# Point the EG client cert (CN=envoy-gateway) at the e2e CA ClusterIssuer,
+# replacing the base certificate's placeholder-issuer.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: envoy-gateway-extension-server-eg-client-tls
+spec:
+  issuerRef:
+    name: e2e-extension-server-ca
+    kind: ClusterIssuer
+    group: cert-manager.io

@@ -1,0 +1,6 @@
+# The ext-server namespace on the edge cluster. The base ext-server resources
+# target this namespace but do not create it.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: network-services-operator-system

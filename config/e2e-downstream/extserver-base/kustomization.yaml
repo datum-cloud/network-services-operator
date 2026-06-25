@@ -26,3 +26,7 @@ patches:
     target:
       kind: Deployment
       name: envoy-gateway-extension-server
+  - path: patches/extserver-programmed-set.yaml
+    target:
+      kind: Deployment
+      name: envoy-gateway-extension-server

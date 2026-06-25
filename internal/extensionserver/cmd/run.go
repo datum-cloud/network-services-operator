@@ -68,13 +68,15 @@ func envBool(key string, def bool) bool {
 //	--tls-key=/tls/tls.key
 //	--tls-client-ca=/tls/ca.crt
 //	--server-config=/config/config.yaml  (optional; provides Coraza WAF config)
+//	--enable-programmed-set=false         (default off; test environments set true)
 type options struct {
-	grpcAddr      string
-	healthAddr    string
-	tlsCert       string
-	tlsKey        string
-	tlsClientCA   string
-	serverCfgFile string
+	grpcAddr            string
+	healthAddr          string
+	tlsCert             string
+	tlsKey              string
+	tlsClientCA         string
+	serverCfgFile       string
+	enableProgrammedSet bool
 }
 
 // NewCommand returns the "extension-server" subcommand.
@@ -99,6 +101,8 @@ func NewCommand() *cobra.Command {
 	fs.StringVar(&o.tlsKey, "tls-key", "", "Path to server TLS key (PEM)")
 	fs.StringVar(&o.tlsClientCA, "tls-client-ca", "", "Path to client CA certificate (PEM) for mTLS")
 	fs.StringVar(&o.serverCfgFile, "server-config", "", "Path to operator config file (optional; provides Coraza WAF settings)")
+	fs.BoolVar(&o.enableProgrammedSet, "enable-programmed-set", false,
+		"Serve the read-only /debug/programmed-set endpoint used by the parity test (test environments only)")
 
 	cmd := &cobra.Command{
 		Use:   "envoy-gateway-extension-server",
@@ -258,6 +262,9 @@ func run(o options) {
 		ConnectorInternalListener: serverConfig.Gateway.ConnectorTunnelListenerName(),
 		CorazaRouteBaseDirectives: coraza.RouteBaseDirectives,
 		LocalReply:                buildLocalReplyConfig(serverConfig.Gateway.ErrorPage, log),
+		// The programmed-set debug endpoint is for the test environment only; it
+		// stays off in production unless --enable-programmed-set is passed.
+		EnableProgrammedSet: o.enableProgrammedSet,
 	}
 
 	// --- gRPC panic recovery interceptor ---
@@ -450,9 +457,12 @@ func run(o options) {
 		}
 	})
 	mux.Handle("/metrics", promhttp.Handler())
-	// Debug endpoint that reports what the last build changed, so a test can
-	// confirm the proxy is running exactly that. Read-only; keeps only the last build.
-	mux.HandleFunc(extserver.ProgrammedSetEndpointPath, extSrv.ProgrammedSetHandler())
+	// Read-only debug endpoint that reports what the last build changed, so a test
+	// can confirm the proxy is running exactly that. Test environment only; it is
+	// not served in production. Keeps only the last build.
+	if srvCfg.EnableProgrammedSet {
+		mux.HandleFunc(extserver.ProgrammedSetEndpointPath, extSrv.ProgrammedSetHandler())
+	}
 	healthServer := &http.Server{
 		Addr:    healthAddr,
 		Handler: mux,

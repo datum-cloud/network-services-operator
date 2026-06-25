@@ -306,7 +306,10 @@ func TestPostTranslateModify_RecordsProgrammedSet(t *testing.T) {
 	cl := fake.NewClientBuilder().WithScheme(scheme).
 		WithObjects(ns, tpp, proxy).
 		WithStatusSubresource(connector).WithObjects(connector).Build()
-	srv := New(cl, testServerConfig(), discardLogger())
+	// Recording only happens when the test-environment endpoint is enabled.
+	cfg := testServerConfig()
+	cfg.EnableProgrammedSet = true
+	srv := New(cl, cfg, discardLogger())
 
 	req := &pb.PostTranslateModifyRequest{
 		Clusters: []*clusterv3.Cluster{{Name: connCluster}, {Name: "infra-cluster"}},
@@ -341,4 +344,20 @@ func TestPostTranslateModify_RecordsProgrammedSet(t *testing.T) {
 	// The WAF route key must name the governing TPP (wrong-keyed oracle).
 	require.Len(t, ps.Keys[FamilyWAFRoute], 1)
 	assert.Contains(t, ps.Keys[FamilyWAFRoute][0], "test-project/test-tpp/Observe")
+}
+
+// TestPostTranslateModify_NoRecordingWhenDisabled proves the production default:
+// with the test-only endpoint off, a build records nothing, so the snapshot
+// stays empty and no per-build work is done.
+func TestPostTranslateModify_NoRecordingWhenDisabled(t *testing.T) {
+	cl := fake.NewClientBuilder().WithScheme(testServerScheme(t)).Build()
+	// testServerConfig() leaves EnableProgrammedSet at its false default.
+	srv := New(cl, testServerConfig(), discardLogger())
+
+	_, err := srv.PostTranslateModify(context.Background(), &pb.PostTranslateModifyRequest{})
+	require.NoError(t, err)
+
+	ps := srv.programmed.snapshot()
+	assert.Equal(t, uint64(0), ps.BuildID, "no build was recorded")
+	assert.Empty(t, ps.Keys, "nothing recorded while the endpoint is disabled")
 }

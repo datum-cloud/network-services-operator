@@ -37,6 +37,12 @@ type ServerConfig struct {
 	// empty, local-reply injection is a no-op. Sourced from
 	// GatewayConfig.ErrorPage + the embedded/override HTML body.
 	LocalReply mutate.LocalReplyConfig
+	// EnableProgrammedSet turns on the read-only /debug/programmed-set endpoint
+	// and the per-build recording that backs it. It exists only to let a test
+	// confirm the proxy is running exactly the set the build intended, so it is
+	// off in production and enabled only in the test environment. When off, the
+	// build does no extra work and the endpoint is not served.
+	EnableProgrammedSet bool
 }
 
 // Server implements pb.EnvoyGatewayExtensionServer for the NSO production
@@ -332,13 +338,15 @@ func (s *Server) PostTranslateModify(
 	extmetrics.ConnectorRoutesTotal.Add(float64(vhCount))
 	extmetrics.ConnectorOfflineRoutesTotal.Add(float64(offlineRtCount))
 
-	// Record what this build changed so a test can later confirm the proxy is
-	// running exactly that. This only reads the configuration just produced; it
-	// changes nothing.
-	s.programmed.record(
-		listeners, routes, clusters, s.cfg.Coraza.FilterName,
-		prunedChains, prunedSecrets, listenersLeftIntact,
-	)
+	// In the test environment, record what this build changed so a test can later
+	// confirm the proxy is running exactly that. This only reads the configuration
+	// just produced; it changes nothing. Off in production, where it does no work.
+	if s.cfg.EnableProgrammedSet {
+		s.programmed.record(
+			listeners, routes, clusters, s.cfg.Coraza.FilterName,
+			prunedChains, prunedSecrets, listenersLeftIntact,
+		)
+	}
 
 	s.log.Info("PostTranslateModify",
 		"clusters", len(clusters),

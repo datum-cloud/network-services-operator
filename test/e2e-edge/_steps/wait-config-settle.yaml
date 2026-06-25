@@ -1,0 +1,85 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/step-template-chainsaw-v1alpha1.json
+#
+# Wait for the edge configuration to settle before a parity assertion.
+#
+# The parity gate compares what the extension server reports it programmed
+# against the proxy's live configuration. Both move while the configuration is
+# being rebuilt — e.g. right after a scenario adds a second gateway, which rolls
+# the shared proxy and triggers fresh builds — and the live configuration lags
+# behind. This step polls the extension server's build ID until it stops changing
+# for a stable window, then returns. Run it immediately before a `use:` of
+# assert-config-dump.
+#
+# The gate has its own retry loop, but on CI runs where one test's teardown
+# overlaps a fresh run this explicit settle is cheap insurance.
+#
+# Required bindings: extServerSelector, extServerNamespace.
+# Optional (defaulted below): dataplaneCluster, stableReads, intervalSeconds,
+#   maxAttempts.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: StepTemplate
+metadata:
+  name: wait-config-settle
+spec:
+  bindings:
+    - name: dataplaneCluster
+      value: nso-downstream
+    # Require this many consecutive identical BuildID reads to call it settled.
+    - name: stableReads
+      value: "3"
+    - name: intervalSeconds
+      value: "5"
+    - name: maxAttempts
+      value: "36"
+  try:
+    - description: Poll the ext-server programmed-set BuildID until it stops changing.
+      script:
+        timeout: 240s
+        cluster: ($dataplaneCluster)
+        env:
+          - name: EXT_SELECTOR
+            value: ($extServerSelector)
+          - name: EXT_NS
+            value: ($extServerNamespace)
+          - name: STABLE_READS
+            value: ($stableReads)
+          - name: INTERVAL
+            value: ($intervalSeconds)
+          - name: MAX_ATTEMPTS
+            value: ($maxAttempts)
+        content: |
+          set -eu
+          # Build parity-check once; its --print-build-id mode resolves the
+          # authoritative replica and reads its build ID.
+          ROOT="$(git rev-parse --show-toplevel)"
+          BIN="${ROOT}/bin/parity-check"
+          [ -x "${BIN}" ] || go build -o "${BIN}" "${ROOT}/cmd/parity-check"
+
+          read_build() {
+            "${BIN}" --print-build-id \
+              --ext-exec-selector "${EXT_SELECTOR}" \
+              --ext-exec-namespace "${EXT_NS}" 2>/dev/null \
+              | tr -dc '0-9'
+          }
+
+          last=""
+          stable=0
+          for i in $(seq 1 "${MAX_ATTEMPTS}"); do
+            cur="$(read_build || true)"
+            [ -z "${cur}" ] && cur="?"
+            echo "attempt ${i}: BuildID=${cur} (stable streak ${stable}/${STABLE_READS})"
+            if [ "${cur}" != "?" ] && [ "${cur}" = "${last}" ]; then
+              stable=$((stable + 1))
+              if [ "${stable}" -ge "${STABLE_READS}" ]; then
+                echo "OK: config settled at BuildID=${cur} (stable for ${STABLE_READS} reads)"
+                exit 0
+              fi
+            else
+              stable=0
+            fi
+            last="${cur}"
+            sleep "${INTERVAL}"
+          done
+          # Not fatal: the parity gate has its own retry. A non-settled exit just
+          # means the configuration was still changing; let the gate try anyway.
+          echo "WARN: BuildID did not fully settle after ${MAX_ATTEMPTS} reads; proceeding to parity"

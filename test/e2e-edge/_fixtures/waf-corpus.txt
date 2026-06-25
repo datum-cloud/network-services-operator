@@ -1,0 +1,30 @@
+# WAF request corpus.
+#
+# Format (tab- or space-separated; lines starting with # are comments):
+#   <verdict>  <request-path>  <label>
+# where <verdict> is the expected HTTP status when the firewall is enforcing:
+#   200  -> benign, must pass
+#   403  -> malicious, must be blocked
+#
+# Assert on the 403 outcome, never on a specific firewall rule id, since rule ids
+# shift between rule-set versions. Each malicious payload must actually return
+# 403 against the pinned firewall image; drop any that does not rather than
+# weakening the assertion.
+#
+# Paths target go-httpbin's /get so the query string carries the payload and the
+# request is otherwise a normal, routable GET.
+
+# --- benign: must return 200 ---
+200  /get                                              benign-plain
+200  /status/200                                       benign-status
+200  /get?q=hello&page=2                               benign-querystring
+
+# --- SQL injection: must return 403 ---
+403  /get?id=1%27%20OR%20%271%27%3D%271                sqli-tautology
+403  /get?q=UNION%20SELECT%20username%2Cpassword%20FROM%20users  sqli-union
+
+# --- path traversal: must return 403 ---
+403  /get?file=..%2F..%2F..%2Fetc%2Fpasswd             traversal-etc-passwd
+
+# --- cross-site scripting: must return 403 ---
+403  /get?x=%3Cscript%3Ealert(1)%3C%2Fscript%3E        xss-script-tag

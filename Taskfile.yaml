@@ -7,6 +7,8 @@ includes:
     dir: ./docs
   dev:
     taskfile: ./Taskfile.dev.yaml
+  test-infra:
+    taskfile: ./Taskfile.test-infra.yml
 
 tasks:
   validate-kustomizations:

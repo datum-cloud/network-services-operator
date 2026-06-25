@@ -1,0 +1,16 @@
+# Branded 5xx error page, mounted at /etc/datum/error-pages. The body carries a
+# known marker so the suite can tell the branded page apart from the proxy's
+# default 5xx body by content.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: envoy-error-pages
+  namespace: network-services-operator-system
+data:
+  error-5xx.html: |
+    <!-- X-Datum-Branded-Page: v1 -->
+    <!DOCTYPE html>
+    <html>
+      <head><title>Service Unavailable</title></head>
+      <body><h1>This service is temporarily unavailable.</h1></body>
+    </html>

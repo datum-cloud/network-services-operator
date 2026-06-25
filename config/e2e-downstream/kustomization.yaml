@@ -1,76 +1,38 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
-namespace: datum-downstream-gateway
-
+# The e2e edge overlay applied to nso-downstream. Composes the ext-server
+# (prefixed/namespaced via extserver-base) with the e2e mTLS issuer chain, the
+# Coraza/branded-page server-config, the branded error page, and the test
+# EnvoyProxy (real Coraza WAF image + admin :19000) and its GatewayClass.
+#
+# The ConfigMaps / issuer / EnvoyProxy / GatewayClass are kept OUT of the
+# name-prefix so the deployment's literal references (envoy-error-pages,
+# extension-server-config) and the EG fqdn resolve unchanged.
 resources:
-  - namespace.yaml
-  - ../extension-server
-  - pki.yaml
-  - waf-gateway.yaml
+- namespace.yaml
+- extserver-base
+- issuer.yaml
+- extserver-config.yaml
+- error-pages.yaml
+- envoyproxy.yaml
 
-configMapGenerator:
-  - name: nso-extension-server-config
-    files:
-      - config.yaml=extension-server-config.yaml
-    options:
-      disableNameSuffixHash: true
+# The NSO image tag is set by the bring-up (test-infra:extension-server) to the
+# git-SHA-built image.
+images:
+- name: ghcr.io/datum-cloud/network-services-operator
+  newName: ghcr.io/datum-cloud/network-services-operator
+  newTag: 63fa912
 
+# The default e2e path has no Prometheus operator; drop the ServiceMonitor so
+# the apply doesn't fail on the missing monitoring.coreos.com CRD. (Re-add via
+# OBSERVABILITY=1 when the Flux observability stack is enabled.)
 patches:
-  - target:
-      kind: ServiceMonitor
+- patch: |
+    $patch: delete
+    apiVersion: monitoring.coreos.com/v1
+    kind: ServiceMonitor
+    metadata:
       name: envoy-gateway-extension-server-metrics
-    patch: |
-      $patch: delete
-      apiVersion: monitoring.coreos.com/v1
-      kind: ServiceMonitor
-      metadata:
-        name: envoy-gateway-extension-server-metrics
-  - target:
-      kind: Certificate
-      name: envoy-gateway-extension-server-eg-client-tls
-    patch: |
-      - op: replace
-        path: /spec/issuerRef/kind
-        value: Issuer
-      - op: replace
-        path: /spec/issuerRef/name
-        value: envoy-gateway-extension-server
-  - target:
-      kind: Deployment
-      name: envoy-gateway-extension-server
-    patch: |
-      apiVersion: apps/v1
-      kind: Deployment
-      metadata:
-        name: envoy-gateway-extension-server
-      spec:
-        replicas: 1
-        template:
-          spec:
-            containers:
-              - name: envoy-gateway-extension-server
-                env:
-                  - name: SERVER_CONFIG
-                    value: /config/config.yaml
-                volumeMounts:
-                  - name: server-config
-                    mountPath: /config
-                    readOnly: true
-            volumes:
-              - name: tls
-                csi:
-                  volumeAttributes:
-                    csi.cert-manager.io/issuer-kind: Issuer
-                    csi.cert-manager.io/issuer-name: envoy-gateway-extension-server
-                    csi.cert-manager.io/dns-names: "envoy-gateway-extension-server.datum-downstream-gateway.svc,envoy-gateway-extension-server.datum-downstream-gateway.svc.cluster.local"
-              - name: tls-ca
-                configMap: null
-                secret:
-                  secretName: envoy-gateway-extension-server-ca
-                  items:
-                    - key: ca.crt
-                      path: ca.crt
-              - name: server-config
-                configMap:
-                  name: nso-extension-server-config
+  target:
+    kind: ServiceMonitor

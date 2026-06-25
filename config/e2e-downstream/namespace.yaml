@@ -1,6 +1,6 @@
+# The ext-server namespace on the edge cluster. The base ext-server resources
+# target this namespace but do not create it.
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: datum-downstream-gateway
-  labels:
-    meta.datumapis.com/upstream-cluster-name: 0-datum-internal-anchor
+  name: network-services-operator-system

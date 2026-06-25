@@ -1,0 +1,14 @@
+# Stable namespace for fixtures delivered straight to the edge cluster. The
+# gateway controller only watches namespaces that already carry the
+# meta.datumapis.com/upstream-cluster-name label when they are created; a label
+# added afterward is not reliably picked up, and a gateway there can stay
+# unprogrammed. Creating the namespace with the label up front makes gateways
+# applied here program deterministically.
+#
+# Tests that deliver a gateway straight to the edge should use this namespace.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: e2e-direct
+  labels:
+    meta.datumapis.com/upstream-cluster-name: cluster-single

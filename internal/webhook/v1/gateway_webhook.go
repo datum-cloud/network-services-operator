@@ -157,6 +157,15 @@ func (d *GatewayCustomDefaulter) Default(ctx context.Context, gateway *gatewayv1
 	// of creation.
 
 	if gateway.CreationTimestamp.IsZero() {
+		// Reject hostname-less tenant listeners here, before injecting the
+		// default listeners. The injected defaults share ports 80/443 with no
+		// hostname, so a colliding tenant listener would otherwise be rejected
+		// by the upstream CRD CEL (which runs before the validating webhook)
+		// with an opaque "must be unique" message instead of this one.
+		if errs := validation.ValidateTenantListenerHostnames(gateway); len(errs) > 0 {
+			return apierrors.NewInvalid(gateway.GetObjectKind().GroupVersionKind().GroupKind(), gateway.GetName(), errs)
+		}
+
 		gatewayutil.SetDefaultListeners(gateway, d.config.Gateway)
 	}
 

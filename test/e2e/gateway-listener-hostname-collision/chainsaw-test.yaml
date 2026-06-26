@@ -1,39 +1,44 @@
 # yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
 #
 # Issue #219 — a tenant Gateway whose listeners use the default ports/protocols
-# (80/HTTP, 443/HTTPS) WITHOUT a hostname is rejected at admission with the
-# misleading upstream message:
+# (80/HTTP, 443/HTTPS) WITHOUT a hostname used to be rejected at admission with
+# the misleading upstream CEL message:
 #
 #   Combination of port, protocol and hostname must be unique for each listener
 #
-# The spec is valid per upstream Gateway API (listener hostname is optional).
-# The rejection comes from NSO's default-listener injection: the mutating
-# webhook unconditionally appends hostname-less default-http (80/HTTP) and
-# default-https (443/HTTPS) listeners. When a tenant defines their own 80/HTTP
-# or 443/HTTPS listener and omits the hostname, defaulting produces duplicate
-# (port, protocol, hostname=empty) tuples, and the upstream CRD CEL rejects the
-# whole object before NSO's own validating webhook can surface a clear reason.
+# Root cause: NSO's default-listener injection. The mutating webhook
+# unconditionally appends hostname-less default-http (80/HTTP) and default-https
+# (443/HTTPS) listeners. When a tenant defines their own 80/HTTP or 443/HTTPS
+# listener and omits the hostname, defaulting produced duplicate
+# (port, protocol, hostname=empty) tuples, and the upstream CRD CEL rejected the
+# whole object before NSO's own validating webhook could surface a clear reason.
 #
-# This is a pure admission-time reproduction: the rejection happens on the
+# The fix (#220) rejects hostname-less tenant (non-default) listeners in NSO's
+# defaulting webhook, which runs BEFORE the CRD CEL stage. The object is still
+# rejected — but now with an actionable message:
+#
+#   spec.listeners[N].hostname: Required value: a hostname must be set; this
+#   controller injects default HTTP/HTTPS listeners, so listeners you define
+#   must specify a distinguishing hostname
+#
+# This test now asserts the FIXED behavior: probes A/B are still rejected, but
+# with the clear hostname-required message instead of the opaque "must be
+# unique" CEL error. Probe D (listener WITH a hostname) is still admitted.
+#
+# This is a pure admission-time check: the rejection happens on the
 # control-plane (nso-standard) cluster, so no downstream/edge wiring is needed.
 # We drive it exactly the way the issue did — kubectl apply --dry-run=server —
 # which runs the mutating webhook + CRD CEL without persisting anything.
 #
 # The probes mirror the issue's investigation matrix:
-#   B (decisive) — 1 listener, 80/HTTP, no hostname            -> rejected
-#   A            — 2 listeners, 80/HTTP + 443/HTTPS, no hostname -> rejected
+#   B (decisive) — 1 listener, 80/HTTP, no hostname            -> rejected (clear msg)
+#   A            — 2 listeners, 80/HTTP + 443/HTTPS, no hostname -> rejected (clear msg)
 #   D (control)  — 1 listener, 80/HTTP, WITH a hostname         -> accepted
 #
 # Probe B is decisive: a single tenant listener cannot collide with itself, yet
-# it is rejected — proving the failure is the injected-default collision, not
-# tenant-side duplication. Probe D is the positive control: adding a hostname
-# makes the tuple distinct from the injected defaults and the object is admitted.
-#
-# Run against unfixed code (main / this branch), all three probes pass: the bug
-# reproduces. Once datum-cloud/network-services-operator#220 merges, probes A/B
-# are rejected by NSO's defaulting webhook FIRST, with a clear hostname-required
-# message instead of "must be unique" — so this test's expected message will
-# change with the fix (see the grep in each probe).
+# it is rejected — the rejection comes from the hostname-required rule guarding
+# the injected defaults, not tenant-side duplication. Probe D is the positive
+# control: adding a hostname makes the tuple distinct and the object is admitted.
 #
 # concurrent: false — creating the shared managed GatewayClass coexists with the
 # other gateway e2e tests via apply (not create), but keep it serialized to
@@ -67,9 +72,10 @@ spec:
 
     - name: Probe B (decisive) — single hostname-less 80/HTTP listener is rejected
       description: |
-        A single tenant listener cannot collide with itself. Its rejection with
-        "must be unique" proves the injected default-http (80/HTTP, no hostname)
-        is what duplicates the tuple.
+        A single tenant listener cannot collide with itself. It is still
+        rejected — now by NSO's defaulting webhook with a clear hostname-required
+        message, because the injected default-http (80/HTTP, no hostname) would
+        otherwise duplicate the tuple.
       try:
         - script:
             cluster: nso-standard
@@ -95,14 +101,14 @@ spec:
               echo "--- apply output (rc=$rc) ---"
               echo "$out"
               if [ "$rc" -eq 0 ]; then
-                echo "FAIL: hostname-less listener was admitted; issue #219 not reproduced"
+                echo "FAIL: hostname-less listener was admitted; issue #219 not fixed correctly"
                 exit 1
               fi
-              echo "$out" | grep -q "Combination of port, protocol and hostname must be unique for each listener" || {
-                echo "FAIL: rejected, but not with the misleading 'must be unique' CEL message"
+              echo "$out" | grep -q "a hostname must be set" || {
+                echo "FAIL: rejected, but not with the clear hostname-required message (got the opaque CEL error?)"
                 exit 1
               }
-              echo "OK: probe B reproduced the misleading rejection"
+              echo "OK: probe B rejected with the clear hostname-required message"
 
     - name: Probe A — two hostname-less listeners (80/HTTP + 443/HTTPS) are rejected
       try:
@@ -137,14 +143,14 @@ spec:
               echo "--- apply output (rc=$rc) ---"
               echo "$out"
               if [ "$rc" -eq 0 ]; then
-                echo "FAIL: hostname-less listeners were admitted; issue #219 not reproduced"
+                echo "FAIL: hostname-less listeners were admitted; issue #219 not fixed correctly"
                 exit 1
               fi
-              echo "$out" | grep -q "Combination of port, protocol and hostname must be unique for each listener" || {
-                echo "FAIL: rejected, but not with the misleading 'must be unique' CEL message"
+              echo "$out" | grep -q "a hostname must be set" || {
+                echo "FAIL: rejected, but not with the clear hostname-required message (got the opaque CEL error?)"
                 exit 1
               }
-              echo "OK: probe A reproduced the misleading rejection"
+              echo "OK: probe A rejected with the clear hostname-required message"
 
     - name: Probe D (control) — single 80/HTTP listener WITH a hostname is accepted
       description: |

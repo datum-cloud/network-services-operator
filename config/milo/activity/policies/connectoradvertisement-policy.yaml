@@ -18,7 +18,7 @@ spec:
     # ConnectorAdvertisement creation with spec available
     - name: create
       match: "!audit.user.username.startsWith('system:') && audit.verb == 'create' && has(audit.requestObject.spec)"
-      summary: "{{ actor }} created connector advertisement {{ link(audit.objectRef.name, audit.objectRef) }}"
+      summary: "{{ actor }} created connector advertisement {{ link(audit.responseObject.metadata.name, audit.objectRef) }}"
 
     # ConnectorAdvertisement creation fallback (no spec)
     - name: create-fallback

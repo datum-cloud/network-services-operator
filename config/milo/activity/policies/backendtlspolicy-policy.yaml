@@ -14,10 +14,13 @@ spec:
     kind: BackendTLSPolicy
 
   auditRules:
-    # BackendTLSPolicy creation with spec available
+    # BackendTLSPolicy creation with spec available.
+    # Rejected creates return a Status responseObject (no metadata.name); for
+    # generateName creates objectRef.name is also empty, so fall back to
+    # responseObject.details.name. has() is guarded per level.
     - name: create
       match: "!audit.user.username.startsWith('system:') && audit.verb == 'create' && has(audit.requestObject.spec)"
-      summary: "{{ actor }} created backend TLS policy {{ has(audit.responseObject.metadata.name) ? link(audit.responseObject.metadata.name, audit.objectRef) : link(audit.objectRef.name, audit.objectRef) }}"
+      summary: "{{ actor }} created backend TLS policy {{ has(audit.responseObject.metadata.name) ? link(audit.responseObject.metadata.name, audit.objectRef) : has(audit.objectRef.name) ? link(audit.objectRef.name, audit.objectRef) : (has(audit.responseObject.details) && has(audit.responseObject.details.name)) ? link(audit.responseObject.details.name, audit.objectRef) : link('a backend TLS policy', audit.objectRef) }}"
 
     # BackendTLSPolicy creation fallback (no spec)
     - name: create-fallback

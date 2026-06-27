@@ -15,10 +15,13 @@ spec:
     kind: ConnectorAdvertisement
 
   auditRules:
-    # ConnectorAdvertisement creation with spec available
+    # ConnectorAdvertisement creation with spec available.
+    # Like Connector, advertisements may be created via generateName; a rejected create
+    # yields a Status responseObject (no metadata.name) with an empty objectRef.name, so
+    # fall back to responseObject.details.name. has() is guarded per level.
     - name: create
       match: "!audit.user.username.startsWith('system:') && audit.verb == 'create' && has(audit.requestObject.spec)"
-      summary: "{{ actor }} created connector advertisement {{ has(audit.responseObject.metadata.name) ? link(audit.responseObject.metadata.name, audit.objectRef) : link(audit.objectRef.name, audit.objectRef) }}"
+      summary: "{{ actor }} created connector advertisement {{ has(audit.responseObject.metadata.name) ? link(audit.responseObject.metadata.name, audit.objectRef) : has(audit.objectRef.name) ? link(audit.objectRef.name, audit.objectRef) : (has(audit.responseObject.details) && has(audit.responseObject.details.name)) ? link(audit.responseObject.details.name, audit.objectRef) : link('a connector advertisement', audit.objectRef) }}"
 
     # ConnectorAdvertisement creation fallback (no spec)
     - name: create-fallback

@@ -14,10 +14,15 @@ spec:
     kind: Connector
 
   auditRules:
-    # Connector creation with spec available
+    # Connector creation with spec available.
+    # Clients create Connectors via generateName (e.g. "datum-connect-"). A rejected
+    # create (quota/admission) returns a Status as responseObject with no metadata.name,
+    # and objectRef.name is empty because no name was assigned — so fall back to
+    # responseObject.details.name. has() is guarded per level (nested has errors on a
+    # missing intermediate).
     - name: create
       match: "!audit.user.username.startsWith('system:') && audit.verb == 'create' && has(audit.requestObject.spec)"
-      summary: "{{ actor }} created connector {{ has(audit.responseObject.metadata.name) ? link(audit.responseObject.metadata.name, audit.objectRef) : link(audit.objectRef.name, audit.objectRef) }}"
+      summary: "{{ actor }} created connector {{ has(audit.responseObject.metadata.name) ? link(audit.responseObject.metadata.name, audit.objectRef) : has(audit.objectRef.name) ? link(audit.objectRef.name, audit.objectRef) : (has(audit.responseObject.details) && has(audit.responseObject.details.name)) ? link(audit.responseObject.details.name, audit.objectRef) : link('a connector', audit.objectRef) }}"
 
     # Connector creation fallback (no spec)
     - name: create-fallback

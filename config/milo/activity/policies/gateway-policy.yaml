@@ -15,11 +15,13 @@ spec:
 
   auditRules:
     # Gateway creation with spec available
-    # responseObject lacks metadata.name when a create is rejected (the apiserver
-    # returns a Status object), so guard the leaf and fall back to objectRef.name.
+    # A rejected create returns a Status object as responseObject (no metadata.name).
+    # For generateName creates rejected before naming, objectRef.name is also empty,
+    # so fall back further to responseObject.details.name (carried on the Status).
+    # has() is guarded at each level: nested has(a.b.c) errors if b is absent.
     - name: create
       match: "!audit.user.username.startsWith('system:') && audit.verb == 'create' && has(audit.requestObject.spec)"
-      summary: "{{ actor }} created gateway {{ has(audit.responseObject.metadata.name) ? link(audit.responseObject.metadata.name, audit.objectRef) : link(audit.objectRef.name, audit.objectRef) }}"
+      summary: "{{ actor }} created gateway {{ has(audit.responseObject.metadata.name) ? link(audit.responseObject.metadata.name, audit.objectRef) : has(audit.objectRef.name) ? link(audit.objectRef.name, audit.objectRef) : (has(audit.responseObject.details) && has(audit.responseObject.details.name)) ? link(audit.responseObject.details.name, audit.objectRef) : link('a gateway', audit.objectRef) }}"
 
     # Gateway creation fallback (no spec)
     - name: create-fallback

@@ -1596,26 +1596,33 @@ func (r *GatewayReconciler) detachHTTPRoutes(
 			continue
 		}
 
-		var parents []gatewayv1.RouteParentStatus
-		for _, parent := range route.Status.Parents {
-			if ptr.Deref(parent.ParentRef.Group, gatewayv1.GroupName) == gatewayv1.GroupName &&
-				ptr.Deref(parent.ParentRef.Kind, KindGateway) == KindGateway &&
-				string(parent.ParentRef.Name) == gateway.Name {
-				logger.Info("removing parent ref from httproute", jsonKeyName, route.Name, "parent", parent.ParentRef.Name)
+		var remainingRefs []gatewayv1.ParentReference
+		for _, ref := range route.Spec.ParentRefs {
+			if ptr.Deref(ref.Group, gatewayv1.GroupName) == gatewayv1.GroupName &&
+				ptr.Deref(ref.Kind, KindGateway) == KindGateway &&
+				string(ref.Name) == gateway.Name {
+				logger.Info("removing parent ref from httproute", jsonKeyName, route.Name, "parent", ref.Name)
 				continue
 			}
-			parents = append(parents, parent)
+			remainingRefs = append(remainingRefs, ref)
 		}
 
-		if len(parents) == 0 && deleteWhenNoParents {
+		if len(remainingRefs) == len(route.Spec.ParentRefs) {
+			continue
+		}
+
+		if len(remainingRefs) == 0 && deleteWhenNoParents {
 			logger.Info("deleting httproute due to no parents", jsonKeyName, route.Name)
 			if err := gatewayClient.Delete(ctx, &route); err != nil {
 				result.Err = err
 				return result
 			}
-		} else if !equality.Semantic.DeepEqual(route.Status.Parents, parents) {
-			route.Status.Parents = parents
-			result.AddStatusUpdate(gatewayClient, &route)
+		} else {
+			route.Spec.ParentRefs = remainingRefs
+			if err := gatewayClient.Update(ctx, &route); err != nil {
+				result.Err = err
+				return result
+			}
 		}
 	}
 	return result

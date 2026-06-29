@@ -1,0 +1,56 @@
+@startuml signal-pipeline
+skinparam sequenceArrowThickness 1.5
+skinparam sequenceGroupBorderColor #888888
+skinparam sequenceGroupFontColor #444444
+skinparam sequenceGroupBackgroundColor #F8F8F8
+skinparam participantBackgroundColor #DDEEFF
+skinparam participantBorderColor #336699
+skinparam noteBorderColor #AAAAAA
+skinparam noteBackgroundColor #FFFDE7
+skinparam defaultFontName "Helvetica"
+skinparam defaultFontSize 12
+
+title HTTP Metering Signal Pipeline
+
+participant "Envoy Gateway\n(Control Plane)" as EG
+participant "NSO\nExtension Server" as EXT <<Go>>
+participant "Envoy Proxy\n(Data Plane)\n/dev/stdout" as ENV
+participant "Vector Agent\n(DaemonSet)\nkubernetes_logs" as VEC <<VRL>>
+participant "Billing Gateway\n(HTTP sink)" as BG
+
+== xDS Build (once per HTTPRoute change) ==
+
+EG -> EXT : PostRouteModifyHook\n(RouteConfiguration)
+note right of EXT
+  ApplyTPPRouteConfig iterates\nevery NSO-owned VirtualHost/route
+  and calls injectProjectNameMetadata,\nwriting project_name into
+  filter_metadata["datum-gateway"]
+  on each Envoy route proto.
+end note
+EXT -> EG : mutated RouteConfiguration\n(route.metadata.filter_metadata\n["datum-gateway"]["project_name"])
+EG -> ENV : xDS push — routes now carry\nproject_name in filter_metadata
+
+== Per-Request (data plane) ==
+
+?-> ENV : HTTP request
+activate ENV
+ENV -> ENV : Serve request,\nwrite JSON access log to stdout\n(File sink, path: /dev/stdout)\nincl. METADATA(ROUTE:datum-gateway:project_name)
+ENV -->?: HTTP response
+deactivate ENV
+
+VEC -> ENV : tail container log file\n/var/log/pods/.../envoy/0.log\n(kubernetes_logs, gid=0)
+note right of VEC
+  VRL transform:
+  1. parse_json(.message) → top-level fields
+  2. abort if route_name !~ httproute/<ns>/<name>
+  3. derive subject = "project_name"
+  4. emit 4 CloudEvents:
+     • requests        = "1"
+     • ingress-bytes   = bytes_received
+     • egress-bytes    = bytes_sent
+     • connection-secs = duration_ms / 1000
+  Each event carries dimensions including project_name.
+end note
+VEC -> BG : POST /v1/usage/events:batchIngest\n[4 CloudEvents, JSON body]
+
+@enduml

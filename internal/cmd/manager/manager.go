@@ -400,6 +400,13 @@ func NewCommand(build BuildInfo) *cobra.Command {
 				os.Exit(1)
 			}
 
+			if err := (&controller.OrphanedDownstreamHTTPRouteGCReconciler{
+				DownstreamCluster: downstreamCluster,
+			}).SetupWithManager(mgr); err != nil {
+				setupLog.Error(err, "unable to create controller", "controller", "OrphanedDownstreamHTTPRouteGC")
+				os.Exit(1)
+			}
+
 			if err := (&controller.GatewayResourceReplicatorReconciler{
 				Config:            serverConfig,
 				DownstreamCluster: downstreamCluster,

@@ -15,17 +15,14 @@ spec:
     kind: ConnectorAdvertisement
 
   auditRules:
-    # ConnectorAdvertisement creation with spec available.
-    # Like Connector, advertisements may be created via generateName; a rejected create
-    # yields a Status responseObject (no metadata.name) with an empty objectRef.name, so
-    # fall back to responseObject.details.name. has() is guarded per level.
+    # ConnectorAdvertisement creation with spec available
     - name: create
-      match: "!audit.user.username.startsWith('system:') && audit.verb == 'create' && has(audit.requestObject.spec)"
-      summary: "{{ actor }} created connector advertisement {{ has(audit.responseObject.metadata.name) ? link(audit.responseObject.metadata.name, audit.objectRef) : has(audit.objectRef.name) ? link(audit.objectRef.name, audit.objectRef) : (has(audit.responseObject.details) && has(audit.responseObject.details.name)) ? link(audit.responseObject.details.name, audit.objectRef) : link('a connector advertisement', audit.objectRef) }}"
+      match: "!audit.user.username.startsWith('system:') && audit.verb == 'create' && has(audit.requestObject.spec) && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
+      summary: "{{ actor }} created connector advertisement {{ link(audit.responseObject.metadata.name, audit.objectRef) }}"
 
     # ConnectorAdvertisement creation fallback (no spec)
     - name: create-fallback
-      match: "!audit.user.username.startsWith('system:') && audit.verb == 'create'"
+      match: "!audit.user.username.startsWith('system:') && audit.verb == 'create' && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
       summary: "{{ actor }} created {{ link('a connector advertisement', audit.objectRef) }}"
 
     # ConnectorAdvertisement deletion with responseObject.spec available (response contains the deleted resource)
@@ -40,10 +37,10 @@ spec:
 
     # ConnectorAdvertisement update with spec available - excludes status subresource
     - name: update
-      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && has(audit.requestObject.spec)"
+      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && has(audit.requestObject.spec) && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
       summary: "{{ actor }} updated connector advertisement {{ link(audit.objectRef.name, audit.objectRef) }}"
 
     # ConnectorAdvertisement update fallback (no spec)
     - name: update-fallback
-      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource)"
+      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
       summary: "{{ actor }} updated {{ link('a connector advertisement', audit.objectRef) }}"

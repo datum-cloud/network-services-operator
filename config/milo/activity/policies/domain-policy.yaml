@@ -15,17 +15,14 @@ spec:
     kind: Domain
 
   auditRules:
-    # Domain creation with spec.domainName available - use domain name as display text.
-    # A rejected create returns a Status responseObject (no spec), so has() must guard
-    # the spec level too: nested has(responseObject.spec.domainName) errors when spec is
-    # absent. Fall back to objectRef.name, then responseObject.details.name (generateName).
+    # Domain creation with spec.domainName available - use domain name as display text
     - name: create
-      match: "!audit.user.username.startsWith('system:') && audit.verb == 'create' && has(audit.requestObject.spec)"
-      summary: "{{ actor }} created domain {{ (has(audit.responseObject.spec) && has(audit.responseObject.spec.domainName)) ? link(audit.responseObject.spec.domainName, audit.objectRef) : has(audit.objectRef.name) ? link(audit.objectRef.name, audit.objectRef) : (has(audit.responseObject.details) && has(audit.responseObject.details.name)) ? link(audit.responseObject.details.name, audit.objectRef) : link('a domain', audit.objectRef) }}"
+      match: "!audit.user.username.startsWith('system:') && audit.verb == 'create' && has(audit.requestObject.spec) && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
+      summary: "{{ actor }} created domain {{ link(audit.responseObject.spec.domainName, audit.objectRef) }}"
 
     # Domain creation fallback (no spec)
     - name: create-fallback
-      match: "!audit.user.username.startsWith('system:') && audit.verb == 'create'"
+      match: "!audit.user.username.startsWith('system:') && audit.verb == 'create' && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
       summary: "{{ actor }} created {{ link('a domain', audit.objectRef) }}"
 
     # Domain deletion with responseObject.spec available (response contains the deleted resource)
@@ -38,13 +35,12 @@ spec:
       match: "!audit.user.username.startsWith('system:') && audit.verb == 'delete'"
       summary: "{{ actor }} deleted a domain"
 
-    # Domain update with spec available - excludes status subresource.
-    # Same Status-response guarding as create: a rejected update has no responseObject.spec.
+    # Domain update with spec available - excludes status subresource
     - name: update
-      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && has(audit.requestObject.spec)"
-      summary: "{{ actor }} updated domain {{ (has(audit.responseObject.spec) && has(audit.responseObject.spec.domainName)) ? link(audit.responseObject.spec.domainName, audit.objectRef) : has(audit.objectRef.name) ? link(audit.objectRef.name, audit.objectRef) : (has(audit.responseObject.details) && has(audit.responseObject.details.name)) ? link(audit.responseObject.details.name, audit.objectRef) : link('a domain', audit.objectRef) }}"
+      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && has(audit.requestObject.spec) && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
+      summary: "{{ actor }} updated domain {{ link(audit.responseObject.spec.domainName, audit.objectRef) }}"
 
     # Domain update fallback (no spec)
     - name: update-fallback
-      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource)"
+      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
       summary: "{{ actor }} updated {{ link('a domain', audit.objectRef) }}"

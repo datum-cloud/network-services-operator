@@ -20,6 +20,13 @@ patches:
       kind: CustomResourceDefinition
       metadata:
         name: referencegrants.gateway.networking.k8s.io
+  # Backports fields from EG v1.8.1. Re-evaluate this when upgrading the gateway CRDs.
+  - path: patch-securitypolicy-forward-id-token.yaml
+    target:
+      group: apiextensions.k8s.io
+      version: v1
+      kind: CustomResourceDefinition
+      name: securitypolicies.gateway.envoyproxy.io
   # Envoy gateway resources
   - patch: |
       $patch: delete

@@ -1,0 +1,23 @@
+- op: add
+  path: /spec/versions/0/schema/openAPIV3Schema/properties/spec/properties/oidc/properties/forwardIDToken
+  value:
+    description: |-
+      ForwardIDToken configures forwarding of the OIDC ID token to the upstream.
+
+      If the configured header is "Authorization", EG forwards the ID token using
+      the "Bearer " prefix. For any other header, EG forwards the raw token value.
+      If not specified, the ID token will not be forwarded.
+    properties:
+      header:
+        description: Header is the upstream request header that will carry the ID token.
+        minLength: 1
+        type: string
+    required:
+      - header
+    type: object
+- op: add
+  path: /spec/versions/0/schema/openAPIV3Schema/properties/spec/properties/oidc/x-kubernetes-validations/-
+  value:
+    message: forwardAccessToken cannot be true when forwardIDToken.header is Authorization
+    rule: "!(has(self.forwardAccessToken) && self.forwardAccessToken && has(self.forwardIDToken)\
+      \ && self.forwardIDToken.header.lowerAscii() == 'authorization')"

@@ -133,7 +133,7 @@ Each metric will record the following dimensions:
 
 ### Surfacing Signals from the Edge
 
-![HTTP Metering Signal Pipeline](./signal-pipeline.png)
+![HTTP Metering Signal Pipeline](../../diagrams/signal-pipeline.png)
 
 All metering signals originate from the **edge cluster**, where the Envoy
 Gateway proxies (`datum-downstream-gateway`) actually serve customer traffic.

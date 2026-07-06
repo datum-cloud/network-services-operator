@@ -2,12 +2,21 @@ package controller
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"fmt"
+	"math/big"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	cmv1 "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
+	cmmeta "github.com/cert-manager/cert-manager/pkg/apis/meta/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
@@ -316,6 +325,10 @@ func TestEnsureDownstreamGatewayWildcardCert(t *testing.T) {
 		},
 	}
 
+	// downstreamNamespaceName is the namespace NSO maps the upstream namespace to
+	// (see mappednamespace.go). Per-listener Certificates/Secrets live here.
+	downstreamNamespaceName := fmt.Sprintf("ns-%s", upstreamNamespace.UID)
+
 	tests := []struct {
 		name                      string
 		defaultTLSSecretName      string
@@ -323,8 +336,11 @@ func TestEnsureDownstreamGatewayWildcardCert(t *testing.T) {
 		upstreamGateway           *gatewayv1.Gateway
 		existingUpstreamObjects   []client.Object
 		existingDownstreamObjects []client.Object
-		assert                    func(t *testing.T, upstreamGateway, downstreamGateway *gatewayv1.Gateway)
-		assertDownstream          func(t *testing.T, downstreamClient client.Client, downstreamGateway *gatewayv1.Gateway)
+		// listenerCertStates seed downstream Certificate/Secret objects in the
+		// downstream namespace before reconcile, modelling per-listener cert health.
+		listenerCertStates []listenerCertState
+		assert             func(t *testing.T, upstreamGateway, downstreamGateway *gatewayv1.Gateway)
+		assertDownstream   func(t *testing.T, downstreamClient client.Client, downstreamGateway *gatewayv1.Gateway)
 	}{
 		{
 			name:                 "default https listener uses shared TLS secret",
@@ -385,6 +401,9 @@ func TestEnsureDownstreamGatewayWildcardCert(t *testing.T) {
 						Status: metav1.ConditionTrue,
 					})
 				}),
+			},
+			listenerCertStates: []listenerCertState{
+				{gatewayName: "test-gw", listenerName: "https-hostname-0", hostname: "custom.example.com", ready: true},
 			},
 			assert: func(t *testing.T, upstreamGateway, downstreamGateway *gatewayv1.Gateway) {
 				httpsListener := gatewayutil.GetListenerByName(
@@ -515,6 +534,9 @@ func TestEnsureDownstreamGatewayWildcardCert(t *testing.T) {
 			defaultTLSSecretName: "",
 			upstreamGateway: newGateway(config.NetworkServicesOperator{Gateway: baseConfig}, upstreamNamespace.Name, "test-gw", func(g *gatewayv1.Gateway) {
 			}),
+			listenerCertStates: []listenerCertState{
+				{gatewayName: "test-gw", listenerName: gatewayutil.DefaultHTTPSListenerName, hostname: "test-gw.test-suite.com", ready: true},
+			},
 			assert: func(t *testing.T, upstreamGateway, downstreamGateway *gatewayv1.Gateway) {
 				httpsListener := gatewayutil.GetListenerByName(
 					downstreamGateway.Spec.Listeners,
@@ -621,6 +643,11 @@ func TestEnsureDownstreamGatewayWildcardCert(t *testing.T) {
 				},
 			})
 
+			for _, s := range tt.listenerCertStates {
+				tt.existingDownstreamObjects = append(tt.existingDownstreamObjects,
+					newDownstreamListenerCertObjects(t, downstreamNamespaceName, s)...)
+			}
+
 			for _, obj := range append(tt.existingUpstreamObjects, tt.existingDownstreamObjects...) {
 				obj.SetUID(uuid.NewUUID())
 				obj.SetCreationTimestamp(metav1.Now())
@@ -675,6 +702,283 @@ func TestEnsureDownstreamGatewayWildcardCert(t *testing.T) {
 
 			if tt.assertDownstream != nil {
 				tt.assertDownstream(t, fakeDownstreamClient, downstreamGateway)
+			}
+		})
+	}
+}
+
+// TestListenerCertificateHealthGating checks that a listener with an unusable
+// certificate is kept out of the downstream gateway and reported to the customer,
+// while a healthy listener on the same gateway is unaffected.
+func TestListenerCertificateHealthGating(t *testing.T) {
+	testScheme := runtime.NewScheme()
+	require.NoError(t, scheme.AddToScheme(testScheme))
+	require.NoError(t, gatewayv1.Install(testScheme))
+	require.NoError(t, discoveryv1.AddToScheme(testScheme))
+	require.NoError(t, networkingv1alpha.AddToScheme(testScheme))
+	require.NoError(t, cmv1.AddToScheme(testScheme))
+
+	upstreamNamespace := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: "test", UID: uuid.NewUUID()},
+	}
+	downstreamNamespaceName := fmt.Sprintf("ns-%s", upstreamNamespace.UID)
+
+	testConfig := config.NetworkServicesOperator{
+		Gateway: config.GatewayConfig{
+			DownstreamGatewayClassName:            "test-suite",
+			DownstreamHostnameAccountingNamespace: "default",
+			TargetDomain:                          "test-suite.com",
+			IPFamilies: []networkingv1alpha.IPFamily{
+				networkingv1alpha.IPv4Protocol,
+				networkingv1alpha.IPv6Protocol,
+			},
+		},
+	}
+
+	now := time.Now()
+
+	// customHTTPSListener builds a per-listener-cert HTTPS listener.
+	customHTTPSListener := func(name gatewayv1.SectionName, hostname string) gatewayv1.Listener {
+		return gatewayv1.Listener{
+			Name:     name,
+			Protocol: gatewayv1.HTTPSProtocolType,
+			Port:     DefaultHTTPSPort,
+			Hostname: ptr.To(gatewayv1.Hostname(hostname)),
+			AllowedRoutes: &gatewayv1.AllowedRoutes{
+				Namespaces: &gatewayv1.RouteNamespaces{From: ptr.To(gatewayv1.NamespacesFromSame)},
+			},
+			TLS: &gatewayv1.ListenerTLSConfig{
+				Mode: ptr.To(gatewayv1.TLSModeTerminate),
+				Options: map[gatewayv1.AnnotationKey]gatewayv1.AnnotationValue{
+					gatewayv1.AnnotationKey(certificateIssuerTLSOption): "test-issuer",
+				},
+			},
+		}
+	}
+
+	verifiedDomain := func(name string) client.Object {
+		return newDomain(upstreamNamespace.Name, name, func(d *networkingv1alpha.Domain) {
+			d.Spec.DomainName = name
+			apimeta.SetStatusCondition(&d.Status.Conditions, metav1.Condition{
+				Type:   networkingv1alpha.DomainConditionVerified,
+				Status: metav1.ConditionTrue,
+			})
+		})
+	}
+
+	type listenerExpect struct {
+		name                  gatewayv1.SectionName
+		present               bool // present in downstream Gateway.Spec.Listeners
+		programmed            metav1.ConditionStatus
+		resolvedRefs          metav1.ConditionStatus
+		resolvedRefsReason    string // when False
+		expectMessageContains string // substring of the user-facing message (when unhealthy)
+	}
+
+	tests := []struct {
+		name       string
+		listeners  []gatewayv1.Listener
+		domains    []client.Object
+		certStates []listenerCertState
+		expect     []listenerExpect
+	}{
+		{
+			name:      "ready cert keeps listener present and programmed",
+			listeners: []gatewayv1.Listener{customHTTPSListener("https-0", "a.example.com")},
+			domains:   []client.Object{verifiedDomain("a.example.com")},
+			certStates: []listenerCertState{
+				{gatewayName: "test-gw", listenerName: "https-0", hostname: "a.example.com", ready: true},
+			},
+			expect: []listenerExpect{
+				{name: "https-0", present: true, programmed: metav1.ConditionTrue, resolvedRefs: metav1.ConditionTrue},
+			},
+		},
+		{
+			name:      "expired cert omits listener and reports expired message",
+			listeners: []gatewayv1.Listener{customHTTPSListener("https-0", "a.example.com")},
+			domains:   []client.Object{verifiedDomain("a.example.com")},
+			certStates: []listenerCertState{
+				{gatewayName: "test-gw", listenerName: "https-0", hostname: "a.example.com", ready: true,
+					notAfter: ptr.To(now.Add(-1 * time.Hour))},
+			},
+			expect: []listenerExpect{
+				{name: "https-0", present: false, programmed: metav1.ConditionFalse,
+					resolvedRefs: metav1.ConditionFalse, resolvedRefsReason: string(gatewayv1.ListenerReasonInvalidCertificateRef),
+					expectMessageContains: "has expired"},
+			},
+		},
+		{
+			name:      "not-yet-valid cert omits listener and reports not-yet-valid message",
+			listeners: []gatewayv1.Listener{customHTTPSListener("https-0", "a.example.com")},
+			domains:   []client.Object{verifiedDomain("a.example.com")},
+			certStates: []listenerCertState{
+				{gatewayName: "test-gw", listenerName: "https-0", hostname: "a.example.com", ready: true,
+					notBefore: ptr.To(now.Add(24 * time.Hour))},
+			},
+			expect: []listenerExpect{
+				{name: "https-0", present: false, programmed: metav1.ConditionFalse,
+					resolvedRefs: metav1.ConditionFalse, resolvedRefsReason: string(gatewayv1.ListenerReasonInvalidCertificateRef),
+					expectMessageContains: "isn't valid yet"},
+			},
+		},
+		{
+			name:      "not-ready cert omits listener and reports issuance-failing message",
+			listeners: []gatewayv1.Listener{customHTTPSListener("https-0", "a.example.com")},
+			domains:   []client.Object{verifiedDomain("a.example.com")},
+			certStates: []listenerCertState{
+				{gatewayName: "test-gw", listenerName: "https-0", hostname: "a.example.com", ready: false},
+			},
+			expect: []listenerExpect{
+				{name: "https-0", present: false, programmed: metav1.ConditionFalse,
+					resolvedRefs: metav1.ConditionFalse, resolvedRefsReason: string(gatewayv1.ListenerReasonInvalidCertificateRef),
+					expectMessageContains: "couldn't issue"},
+			},
+		},
+		{
+			name:       "missing cert omits listener and reports issuance-failing message",
+			listeners:  []gatewayv1.Listener{customHTTPSListener("https-0", "a.example.com")},
+			domains:    []client.Object{verifiedDomain("a.example.com")},
+			certStates: nil, // no downstream Certificate seeded
+			expect: []listenerExpect{
+				{name: "https-0", present: false, programmed: metav1.ConditionFalse,
+					resolvedRefs: metav1.ConditionFalse, resolvedRefsReason: string(gatewayv1.ListenerReasonInvalidCertificateRef),
+					expectMessageContains: "couldn't issue"},
+			},
+		},
+		{
+			name:      "cert-key mismatch omits listener and reports missing/unreadable message",
+			listeners: []gatewayv1.Listener{customHTTPSListener("https-0", "a.example.com")},
+			domains:   []client.Object{verifiedDomain("a.example.com")},
+			certStates: []listenerCertState{
+				{gatewayName: "test-gw", listenerName: "https-0", hostname: "a.example.com", ready: true, mismatchedKey: true},
+			},
+			expect: []listenerExpect{
+				{name: "https-0", present: false, programmed: metav1.ConditionFalse,
+					resolvedRefs: metav1.ConditionFalse, resolvedRefsReason: string(gatewayv1.ListenerReasonInvalidCertificateRef),
+					expectMessageContains: "missing or unreadable"},
+			},
+		},
+		{
+			// Incident regression: one expired cert must NOT take down a sibling
+			// healthy listener sharing the same :443.
+			name: "expired sibling does not affect healthy listener",
+			listeners: []gatewayv1.Listener{
+				customHTTPSListener("https-good", "good.example.com"),
+				customHTTPSListener("https-bad", "bad.example.com"),
+			},
+			domains: []client.Object{verifiedDomain("good.example.com"), verifiedDomain("bad.example.com")},
+			certStates: []listenerCertState{
+				{gatewayName: "test-gw", listenerName: "https-good", hostname: "good.example.com", ready: true},
+				{gatewayName: "test-gw", listenerName: "https-bad", hostname: "bad.example.com", ready: true,
+					notAfter: ptr.To(now.Add(-1 * time.Hour))},
+			},
+			expect: []listenerExpect{
+				{name: "https-good", present: true, programmed: metav1.ConditionTrue, resolvedRefs: metav1.ConditionTrue},
+				{name: "https-bad", present: false, programmed: metav1.ConditionFalse,
+					resolvedRefs: metav1.ConditionFalse, resolvedRefsReason: string(gatewayv1.ListenerReasonInvalidCertificateRef),
+					expectMessageContains: "has expired"},
+			},
+		},
+	}
+
+	logger := zap.New(zap.UseFlagOptions(&zap.Options{Development: true}))
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			upstreamGateway := newGateway(testConfig, upstreamNamespace.Name, "test-gw", func(g *gatewayv1.Gateway) {
+				g.Spec.Listeners = append(g.Spec.Listeners, tt.listeners...)
+			})
+
+			upstreamObjects := append([]client.Object{}, tt.domains...)
+			upstreamObjects = append(upstreamObjects, &gatewayv1.GatewayClass{
+				ObjectMeta: metav1.ObjectMeta{Name: "test"},
+				Spec:       gatewayv1.GatewayClassSpec{ControllerName: gatewayv1.GatewayController("test")},
+			})
+
+			var downstreamObjects []client.Object
+			for _, s := range tt.certStates {
+				downstreamObjects = append(downstreamObjects, newDownstreamListenerCertObjects(t, downstreamNamespaceName, s)...)
+			}
+
+			for _, obj := range append(append([]client.Object{}, upstreamObjects...), downstreamObjects...) {
+				obj.SetUID(uuid.NewUUID())
+				obj.SetCreationTimestamp(metav1.Now())
+			}
+
+			fakeUpstreamClient := fake.NewClientBuilder().
+				WithScheme(testScheme).
+				WithObjects(upstreamGateway, upstreamNamespace).
+				WithObjects(upstreamObjects...).
+				WithStatusSubresource(upstreamGateway).
+				WithStatusSubresource(upstreamObjects...).
+				Build()
+
+			fakeDownstreamClient := fake.NewClientBuilder().
+				WithScheme(testScheme).
+				WithObjects(downstreamObjects...).
+				WithStatusSubresource(&gatewayv1.Gateway{}).
+				WithStatusSubresource(downstreamObjects...).
+				Build()
+
+			ctx := log.IntoContext(context.Background(), logger)
+			mgr := &fakeMockManager{cl: fakeUpstreamClient}
+			reconciler := &GatewayReconciler{
+				mgr:               mgr,
+				Config:            testConfig,
+				DownstreamCluster: &fakeCluster{cl: fakeDownstreamClient},
+			}
+			downstreamStrategy := downstreamclient.NewMappedNamespaceResourceStrategy("test", fakeUpstreamClient, fakeDownstreamClient)
+
+			reconciler.prepareUpstreamGateway(upstreamGateway)
+			result, downstreamGateway := reconciler.ensureDownstreamGateway(
+				ctx, "test-suite", fakeUpstreamClient, upstreamGateway, downstreamStrategy,
+			)
+			require.NoError(t, result.Err, "ensureDownstreamGateway returned error")
+			_, err := result.Complete(ctx)
+			require.NoError(t, err, "result.Complete returned error")
+
+			updatedUpstream := &gatewayv1.Gateway{}
+			require.NoError(t, fakeUpstreamClient.Get(ctx, client.ObjectKeyFromObject(upstreamGateway), updatedUpstream))
+
+			listenerStatusByName := map[gatewayv1.SectionName]gatewayv1.ListenerStatus{}
+			for _, ls := range updatedUpstream.Status.Listeners {
+				listenerStatusByName[ls.Name] = ls
+			}
+
+			for _, exp := range tt.expect {
+				// The listener is sent to the edge only when its certificate is usable.
+				ds := gatewayutil.GetListenerByName(downstreamGateway.Spec.Listeners, exp.name)
+				if exp.present {
+					assert.NotNil(t, ds, "listener %q should be present in downstream gateway", exp.name)
+				} else {
+					assert.Nil(t, ds, "listener %q should be omitted from downstream gateway", exp.name)
+				}
+
+				// The customer-facing status reflects the certificate problem.
+				ls, ok := listenerStatusByName[exp.name]
+				if !assert.True(t, ok, "listener %q missing from upstream status", exp.name) {
+					continue
+				}
+
+				programmed := apimeta.FindStatusCondition(ls.Conditions, string(gatewayv1.ListenerConditionProgrammed))
+				if assert.NotNil(t, programmed, "programmed condition missing on %q", exp.name) {
+					assert.Equal(t, exp.programmed, programmed.Status, "programmed status on %q", exp.name)
+				}
+
+				resolvedRefs := apimeta.FindStatusCondition(ls.Conditions, string(gatewayv1.ListenerConditionResolvedRefs))
+				if assert.NotNil(t, resolvedRefs, "resolvedRefs condition missing on %q", exp.name) {
+					assert.Equal(t, exp.resolvedRefs, resolvedRefs.Status, "resolvedRefs status on %q", exp.name)
+					if exp.resolvedRefs == metav1.ConditionFalse {
+						assert.Equal(t, exp.resolvedRefsReason, resolvedRefs.Reason, "resolvedRefs reason on %q", exp.name)
+						assert.Contains(t, resolvedRefs.Message, exp.expectMessageContains, "resolvedRefs message on %q", exp.name)
+					}
+				}
+
+				// Accepted must remain True regardless of cert health.
+				accepted := apimeta.FindStatusCondition(ls.Conditions, string(gatewayv1.ListenerConditionAccepted))
+				if assert.NotNil(t, accepted, "accepted condition missing on %q", exp.name) {
+					assert.Equal(t, metav1.ConditionTrue, accepted.Status, "accepted should stay True on %q", exp.name)
+				}
 			}
 		})
 	}
@@ -875,6 +1179,7 @@ func TestEnsureDownstreamGatewayHTTPRoutes(t *testing.T) {
 				"test",
 				downstreamGateway,
 				downstreamStrategy,
+				nil,
 				nil,
 				nil,
 			)
@@ -1380,12 +1685,125 @@ func TestGetDesiredDownstreamGateway_UnclaimedHostnameSkipped(t *testing.T) {
 				Spec:       gatewayv1.GatewaySpec{Listeners: tt.listeners},
 			}
 
-			desired := reconciler.getDesiredDownstreamGateway(ctx, upstream, tt.claimedHostnames)
+			desired := reconciler.getDesiredDownstreamGateway(ctx, upstream, tt.claimedHostnames, nil)
 
 			assert.Empty(t, desired.Annotations, "desired gateway should have no cert-manager annotations")
 			assert.Len(t, desired.Spec.Listeners, tt.expectListeners, "downstream listener count")
 		})
 	}
+}
+
+// generateTLSKeyPair returns PEM-encoded cert and key bytes for hostname, with
+// the supplied validity window. Used to seed downstream Secrets in cert-health
+// tests so the X509 self-check exercises real material.
+func generateTLSKeyPair(t *testing.T, hostname string, notBefore, notAfter time.Time) (certPEM, keyPEM []byte) {
+	t.Helper()
+
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: hostname},
+		DNSNames:     []string{hostname},
+		NotBefore:    notBefore,
+		NotAfter:     notAfter,
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	require.NoError(t, err)
+
+	certPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	require.NoError(t, err)
+	keyPEM = pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
+
+	return certPEM, keyPEM
+}
+
+// listenerCertState describes a downstream cert-manager Certificate + Secret
+// pair to seed for a listener in cert-health tests.
+type listenerCertState struct {
+	gatewayName  string
+	listenerName gatewayv1.SectionName
+	hostname     string
+
+	ready     bool       // Certificate Ready condition
+	notBefore *time.Time // Certificate.status.NotBefore (defaults to past)
+	notAfter  *time.Time // Certificate.status.NotAfter (defaults to far future)
+
+	omitSecret     bool       // do not create the backing Secret
+	mismatchedKey  bool       // seed a Secret whose key does not match the cert
+	secretNotAfter *time.Time // leaf NotAfter for the Secret material (defaults to far future)
+}
+
+// newDownstreamListenerCertObjects builds the downstream Certificate (+ Secret)
+// objects for a listener in the namespace, modelling the requested health state.
+func newDownstreamListenerCertObjects(t *testing.T, namespace string, s listenerCertState) []client.Object {
+	t.Helper()
+
+	now := time.Now()
+	notBefore := now.Add(-1 * time.Hour)
+	if s.notBefore != nil {
+		notBefore = *s.notBefore
+	}
+	notAfter := now.Add(365 * 24 * time.Hour)
+	if s.notAfter != nil {
+		notAfter = *s.notAfter
+	}
+
+	cert := &cmv1.Certificate{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: namespace,
+			Name:      listenerCertificateName(s.gatewayName, s.listenerName),
+		},
+		Status: cmv1.CertificateStatus{
+			NotBefore: &metav1.Time{Time: notBefore},
+			NotAfter:  &metav1.Time{Time: notAfter},
+		},
+	}
+	readyStatus := cmmeta.ConditionFalse
+	if s.ready {
+		readyStatus = cmmeta.ConditionTrue
+	}
+	cert.Status.Conditions = []cmv1.CertificateCondition{
+		{Type: cmv1.CertificateConditionReady, Status: readyStatus},
+	}
+
+	objs := make([]client.Object, 0, 2)
+	objs = append(objs, cert)
+
+	if s.omitSecret {
+		return objs
+	}
+
+	secretNotAfter := now.Add(365 * 24 * time.Hour)
+	if s.secretNotAfter != nil {
+		secretNotAfter = *s.secretNotAfter
+	}
+	certPEM, keyPEM := generateTLSKeyPair(t, s.hostname, now.Add(-1*time.Hour), secretNotAfter)
+	if s.mismatchedKey {
+		// Replace the key with one from an unrelated keypair so X509KeyPair fails.
+		_, keyPEM = generateTLSKeyPair(t, s.hostname, now.Add(-1*time.Hour), secretNotAfter)
+	}
+
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: namespace,
+			Name:      listenerCertificateSecretName(s.gatewayName, s.listenerName),
+		},
+		Type: corev1.SecretTypeTLS,
+		Data: map[string][]byte{
+			"tls.crt": certPEM,
+			"tls.key": keyPEM,
+		},
+	}
+	objs = append(objs, secret)
+
+	return objs
 }
 
 func newHTTPRoute(namespace, name string, opts ...func(*gatewayv1.HTTPRoute)) *gatewayv1.HTTPRoute {

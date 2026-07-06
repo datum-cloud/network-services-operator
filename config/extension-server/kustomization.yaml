@@ -9,6 +9,7 @@ resources:
   - rbac
   - certmanager
   - network-policy
+  - metrics-monitor.yaml
 
 images:
   - name: ghcr.io/datum-cloud/network-services-operator

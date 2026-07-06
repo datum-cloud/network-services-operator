@@ -1,0 +1,22 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  labels:
+    app.kubernetes.io/name: network-services-operator
+    app.kubernetes.io/component: envoy-gateway-extension-server
+    app.kubernetes.io/managed-by: kustomize
+  name: envoy-gateway-extension-server-metrics
+  namespace: system
+spec:
+  endpoints:
+    # The extension server serves /metrics on plain HTTP (no TLS) on the
+    # health-addr port (:8080). Only the gRPC port uses mTLS; the health
+    # address intentionally stays plain HTTP so Kubernetes probes don't
+    # need certificates.
+    - path: /metrics
+      port: metrics
+      scheme: http
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: network-services-operator
+      app.kubernetes.io/component: envoy-gateway-extension-server

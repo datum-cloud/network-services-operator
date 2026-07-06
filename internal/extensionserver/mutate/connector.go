@@ -73,7 +73,7 @@ func ReplaceConnectorClusters(
 
 // ApplyConnectorRoutes applies connector route mutations to a RouteConfiguration:
 //   - Online (replaced) connector: prepend a CONNECT upgrade route targeting the
-//     replaced cluster and append info.TargetHost to VH domains.
+//     replaced cluster and append a unique per-connector domain to VH domains.
 //   - Offline connector: prepend a CONNECT direct_response 503 (tunnel-control
 //     clients) and rewrite the user-facing forwarding routes to a 503
 //     direct_response (see the offline branch for why).
@@ -105,7 +105,7 @@ func ApplyConnectorRoutes(
 
 		var newRoute *routev3.Route
 
-		if info, ok := replaced[connectorCluster]; ok {
+		if _, ok := replaced[connectorCluster]; ok {
 			// Online: CONNECT route targeting the replaced cluster.
 			newRoute, err = buildConnectRoute(
 				"connector-connect-"+sanitizeID(vh.GetName()),
@@ -116,10 +116,11 @@ func ApplyConnectorRoutes(
 			}
 			// Prepend the CONNECT route (NSO inserts at /virtual_hosts/0/routes/0).
 			vh.Routes = append([]*routev3.Route{newRoute}, vh.Routes...)
-			// Append the connector's target host to VH domains.
-			// Production uses the actual backend hostname (conflict C1 in design plan),
-			// NOT a synthetic .connector.local domain.
-			vh.Domains = appendUnique(vh.Domains, info.TargetHost)
+			// Connectors share one domain namespace on merged listeners, so a
+			// duplicate domain breaks the whole config. The backend host won't do
+			// as that domain — tunnels usually target "localhost" — so give each
+			// connector a unique synthetic domain.
+			vh.Domains = appendUnique(vh.Domains, connectorMatchDomain(vh.GetName()))
 		} else {
 			// Offline connect_matcher route for tunnel-control clients.
 			newRoute, err = buildOfflineRoute("connector-offline-" + sanitizeID(vh.GetName()))
@@ -228,6 +229,15 @@ func buildConnectorCluster(
 		return nil, fmt.Errorf("unmarshal connector cluster JSON: %w", err)
 	}
 	return cl, nil
+}
+
+// connectorMatchDomain returns a per-connector domain of the form
+// "<virtual-host>.connector.internal". Uniqueness is the point: connector
+// domains share a namespace on merged listeners, so a collision breaks the whole
+// config. Reusing the virtual host name — which Envoy already guarantees unique
+// within a route configuration — makes that guarantee free.
+func connectorMatchDomain(vhName string) string {
+	return sanitizeID(vhName) + ".connector.internal"
 }
 
 // buildConnectRoute builds an online CONNECT route (connect_matcher + CONNECT

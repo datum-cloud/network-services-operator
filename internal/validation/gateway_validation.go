@@ -41,6 +41,37 @@ func ValidateGateway(gateway *gatewayv1.Gateway, opts GatewayValidationOptions) 
 	return allErrs
 }
 
+// ValidateTenantListenerHostnames enforces that every tenant-provided
+// (non-default) listener carries a hostname. It is meant to run in the mutating
+// defaulting webhook, before SetDefaultListeners injects the hostname-less
+// default-http/default-https listeners.
+//
+// here be dragons
+//
+// Without this check, a tenant listener on a managed port (80/443) with no
+// hostname collides with an injected default on the same port and protocol —
+// both have an empty hostname — and the upstream Gateway API CRD CEL rejects the
+// whole object with the opaque "Combination of port, protocol and hostname must
+// be unique for each listener". CRD CEL validation runs after mutating webhooks
+// but before validating webhooks, so the equivalent check in validateListeners
+// is preempted and never surfaces for this case at creation time.
+func ValidateTenantListenerHostnames(gateway *gatewayv1.Gateway) field.ErrorList {
+	allErrs := field.ErrorList{}
+	fldPath := field.NewPath("spec", "listeners")
+
+	for i, l := range gateway.Spec.Listeners {
+		if gatewayutil.IsDefaultListener(l) {
+			continue
+		}
+		if l.Hostname == nil {
+			allErrs = append(allErrs, field.Required(fldPath.Index(i).Child("hostname"),
+				"a hostname must be set; this controller injects default HTTP/HTTPS listeners, so listeners you define must specify a distinguishing hostname"))
+		}
+	}
+
+	return allErrs
+}
+
 func validateListeners(gateway *gatewayv1.Gateway, fldPath *field.Path, opts GatewayValidationOptions) field.ErrorList {
 	allErrs := field.ErrorList{}
 

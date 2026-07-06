@@ -190,6 +190,14 @@ func connectorLiveness(connector *networkingv1alpha1.Connector) (online bool, no
 	return connectorStatusLiveness(&connector.Status)
 }
 
+// ConnectorLiveness reports whether a Connector is online and, if so, its tunnel
+// node id, using the same annotation-first classification the extension server
+// applies when programming routes. It is exported so callers can detect liveness
+// changes consistently with what the hook will program.
+func ConnectorLiveness(connector *networkingv1alpha1.Connector) (online bool, nodeID string) {
+	return connectorLiveness(connector)
+}
+
 // connectorStatusLiveness derives the (online, nodeID) classification from a
 // ConnectorStatus, regardless of whether that status came from the mirrored
 // upstream-status annotation or the object's live status. Online is the Ready

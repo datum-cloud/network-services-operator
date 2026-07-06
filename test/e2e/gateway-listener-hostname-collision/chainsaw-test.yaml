@@ -1,0 +1,189 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+#
+# Issue #219 — a tenant Gateway whose listeners use the default ports/protocols
+# (80/HTTP, 443/HTTPS) WITHOUT a hostname used to be rejected at admission with
+# the misleading upstream CEL message:
+#
+#   Combination of port, protocol and hostname must be unique for each listener
+#
+# Root cause: NSO's default-listener injection. The mutating webhook
+# unconditionally appends hostname-less default-http (80/HTTP) and default-https
+# (443/HTTPS) listeners. When a tenant defines their own 80/HTTP or 443/HTTPS
+# listener and omits the hostname, defaulting produced duplicate
+# (port, protocol, hostname=empty) tuples, and the upstream CRD CEL rejected the
+# whole object before NSO's own validating webhook could surface a clear reason.
+#
+# The fix (#220) rejects hostname-less tenant (non-default) listeners in NSO's
+# defaulting webhook, which runs BEFORE the CRD CEL stage. The object is still
+# rejected — but now with an actionable message:
+#
+#   spec.listeners[N].hostname: Required value: a hostname must be set; this
+#   controller injects default HTTP/HTTPS listeners, so listeners you define
+#   must specify a distinguishing hostname
+#
+# This test now asserts the FIXED behavior: probes A/B are still rejected, but
+# with the clear hostname-required message instead of the opaque "must be
+# unique" CEL error. Probe D (listener WITH a hostname) is still admitted.
+#
+# This is a pure admission-time check: the rejection happens on the
+# control-plane (nso-standard) cluster, so no downstream/edge wiring is needed.
+# We drive it exactly the way the issue did — kubectl apply --dry-run=server —
+# which runs the mutating webhook + CRD CEL without persisting anything.
+#
+# The probes mirror the issue's investigation matrix:
+#   B (decisive) — 1 listener, 80/HTTP, no hostname            -> rejected (clear msg)
+#   A            — 2 listeners, 80/HTTP + 443/HTTPS, no hostname -> rejected (clear msg)
+#   D (control)  — 1 listener, 80/HTTP, WITH a hostname         -> accepted
+#
+# Probe B is decisive: a single tenant listener cannot collide with itself, yet
+# it is rejected — the rejection comes from the hostname-required rule guarding
+# the injected defaults, not tenant-side duplication. Probe D is the positive
+# control: adding a hostname makes the tuple distinct and the object is admitted.
+#
+# concurrent: false — creating the shared managed GatewayClass coexists with the
+# other gateway e2e tests via apply (not create), but keep it serialized to
+# avoid GatewayClass churn racing their admission paths.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: gateway-listener-hostname-collision
+spec:
+  concurrent: false
+  bindings:
+    - name: gatewayClassName
+      value: (join('-', ['e2e', $namespace]))
+  cluster: nso-standard
+  steps:
+    - name: Create a managed GatewayClass
+      description: |
+        The Gateway webhooks only fire for a GatewayClass whose controllerName
+        matches the operator's managed controller. Without this, shouldProcess()
+        short-circuits and neither defaulting nor validation runs.
+      try:
+        - apply:
+            cluster: nso-standard
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: GatewayClass
+              metadata:
+                name: ($gatewayClassName)
+              spec:
+                controllerName: gateway.networking.datumapis.com/external-global-proxy-controller
+
+    - name: Probe B (decisive) — single hostname-less 80/HTTP listener is rejected
+      description: |
+        A single tenant listener cannot collide with itself. It is still
+        rejected — now by NSO's defaulting webhook with a clear hostname-required
+        message, because the injected default-http (80/HTTP, no hostname) would
+        otherwise duplicate the tuple.
+      try:
+        - script:
+            cluster: nso-standard
+            env:
+              - name: GATEWAY_CLASS
+                value: ($gatewayClassName)
+            content: |
+              set -u
+              out=$(kubectl apply --dry-run=server -f - 2>&1 <<EOF
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: Gateway
+              metadata:
+                name: probe-b
+                namespace: $NAMESPACE
+              spec:
+                gatewayClassName: $GATEWAY_CLASS
+                listeners:
+                  - name: http
+                    protocol: HTTP
+                    port: 80
+              EOF
+              ) && rc=0 || rc=$?
+              echo "--- apply output (rc=$rc) ---"
+              echo "$out"
+              if [ "$rc" -eq 0 ]; then
+                echo "FAIL: hostname-less listener was admitted; issue #219 not fixed correctly"
+                exit 1
+              fi
+              echo "$out" | grep -q "a hostname must be set" || {
+                echo "FAIL: rejected, but not with the clear hostname-required message (got the opaque CEL error?)"
+                exit 1
+              }
+              echo "OK: probe B rejected with the clear hostname-required message"
+
+    - name: Probe A — two hostname-less listeners (80/HTTP + 443/HTTPS) are rejected
+      try:
+        - script:
+            cluster: nso-standard
+            env:
+              - name: GATEWAY_CLASS
+                value: ($gatewayClassName)
+            content: |
+              set -u
+              out=$(kubectl apply --dry-run=server -f - 2>&1 <<EOF
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: Gateway
+              metadata:
+                name: probe-a
+                namespace: $NAMESPACE
+              spec:
+                gatewayClassName: $GATEWAY_CLASS
+                listeners:
+                  - name: http
+                    protocol: HTTP
+                    port: 80
+                  - name: https
+                    protocol: HTTPS
+                    port: 443
+                    tls:
+                      mode: Terminate
+                      options:
+                        gateway.networking.datumapis.com/certificate-issuer: e2e
+              EOF
+              ) && rc=0 || rc=$?
+              echo "--- apply output (rc=$rc) ---"
+              echo "$out"
+              if [ "$rc" -eq 0 ]; then
+                echo "FAIL: hostname-less listeners were admitted; issue #219 not fixed correctly"
+                exit 1
+              fi
+              echo "$out" | grep -q "a hostname must be set" || {
+                echo "FAIL: rejected, but not with the clear hostname-required message (got the opaque CEL error?)"
+                exit 1
+              }
+              echo "OK: probe A rejected with the clear hostname-required message"
+
+    - name: Probe D (control) — single 80/HTTP listener WITH a hostname is accepted
+      description: |
+        Positive control. Giving the tenant listener a hostname makes its tuple
+        distinct from the hostname-less injected defaults, so the object is
+        admitted. This isolates the missing hostname as the cause.
+      try:
+        - script:
+            cluster: nso-standard
+            env:
+              - name: GATEWAY_CLASS
+                value: ($gatewayClassName)
+            content: |
+              set -u
+              out=$(kubectl apply --dry-run=server -f - 2>&1 <<EOF
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: Gateway
+              metadata:
+                name: probe-d
+                namespace: $NAMESPACE
+              spec:
+                gatewayClassName: $GATEWAY_CLASS
+                listeners:
+                  - name: http
+                    protocol: HTTP
+                    port: 80
+                    hostname: probe-d.e2e.env.datum.net
+              EOF
+              ) && rc=0 || rc=$?
+              echo "--- apply output (rc=$rc) ---"
+              echo "$out"
+              if [ "$rc" -ne 0 ]; then
+                echo "FAIL: a listener with a distinguishing hostname should be admitted"
+                exit 1
+              fi
+              echo "OK: probe D admitted — hostname makes the tuple unique"

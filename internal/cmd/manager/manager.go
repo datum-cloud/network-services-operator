@@ -437,8 +437,7 @@ func NewCommand(build BuildInfo) *cobra.Command {
 			}
 
 			if err := (&controller.ConnectorReconciler{
-				Config:            serverConfig,
-				DownstreamCluster: downstreamCluster,
+				Config: serverConfig,
 			}).SetupWithManager(mgr); err != nil {
 				setupLog.Error(err, "unable to create controller", "controller", "Connector")
 				os.Exit(1)

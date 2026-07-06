@@ -34,3 +34,13 @@ rules:
       - connectors/status
     verbs:
       - get
+  # The edge re-translation controller patches a trigger annotation onto
+  # Gateways to make Envoy Gateway re-translate when a Connector's liveness
+  # changes.
+  - apiGroups:
+      - gateway.networking.k8s.io
+    resources:
+      - gateways
+    verbs:
+      - get
+      - patch

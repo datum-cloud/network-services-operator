@@ -1,0 +1,69 @@
+version: '3'
+
+vars:
+  DIAGRAMS_DIR: "{{.ROOT_DIR}}/docs/diagrams"
+  OUTPUT_FORMAT: "png"
+  PLANTUML_IMAGE: plantuml/plantuml:1.2026.4
+
+tasks:
+  generate:
+    desc: Generate all documentation artifacts (diagrams, etc.)
+    cmds:
+      - task: diagrams:render
+    silent: true
+
+  diagrams:
+    desc: Generate all architecture diagrams from PlantUML
+    cmds:
+      - task: diagrams:render
+    silent: true
+
+  diagrams:render:
+    desc: Render PlantUML diagrams to PNG format using Docker
+    cmds:
+      - |
+        set -e
+        echo "Rendering PlantUML diagrams..."
+        echo ""
+
+        # Check if PlantUML files exist
+        if ! ls {{.DIAGRAMS_DIR}}/*.puml >/dev/null 2>&1; then
+          echo "❌ Error: PlantUML source files (*.puml) not found in {{.DIAGRAMS_DIR}}"
+          exit 1
+        fi
+
+        # Render using Docker (no local installation required)
+        docker run --rm \
+          -v "{{.DIAGRAMS_DIR}}":/data \
+          {{.PLANTUML_IMAGE}} \
+          -t{{.OUTPUT_FORMAT}} \
+          /data/*.puml
+
+        echo ""
+        echo "✅ Diagrams rendered in {{.DIAGRAMS_DIR}}"
+        echo ""
+        echo "Generated files:"
+        ls -1 {{.DIAGRAMS_DIR}}/*.{{.OUTPUT_FORMAT}} 2>/dev/null | xargs -n1 basename || echo "No output files found"
+    silent: true
+
+  diagrams:clean:
+    desc: Remove generated diagram files
+    cmds:
+      - |
+        rm -f {{.DIAGRAMS_DIR}}/*.png {{.DIAGRAMS_DIR}}/*.svg
+        echo "✅ Generated diagram files removed"
+    silent: true
+
+  diagrams:validate:
+    desc: Validate PlantUML syntax using Docker
+    cmds:
+      - |
+        set -e
+        echo "Validating PlantUML diagrams..."
+        docker run --rm \
+          -v "{{.DIAGRAMS_DIR}}":/data \
+          {{.PLANTUML_IMAGE}} \
+          -syntax \
+          /data/*.puml
+        echo "✅ All diagrams are valid"
+    silent: true

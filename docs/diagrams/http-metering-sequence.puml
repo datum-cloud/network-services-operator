@@ -1,0 +1,35 @@
+@startuml http-metering-sequence
+skinparam BoxPadding 10
+skinparam ParticipantPadding 10
+
+actor Client as client
+box "Edge Cluster Node" #LightBlue
+  participant "Envoy Gateway (Proxy)" as envoy
+  participant "billing-usage-collector-vector\n(DaemonSet)" as vector
+end box
+
+box "Platform Control Plane" #LightYellow
+  participant "Billing System" as billing
+end box
+
+client -> envoy : 1. HTTP Request (GET /path)
+activate envoy
+envoy -> envoy : Route lookup & WAF checks
+envoy -> client : 2. HTTP Response (200 OK with Egress Bytes)
+deactivate envoy
+
+note over envoy : Request completed
+envoy -> vector : 3. Write structured JSON access log to stdout\n(contains bytes, duration, route name/namespace)
+activate vector
+
+vector -> vector : Tail logs, parse JSON,\nand map to CloudEvent\n(No enrichment)
+
+vector -> billing : 4. Forward batched CloudEvents\n(HTTPS batch ingest)
+activate billing
+
+billing -> billing : Validate, attribute, and persist
+billing --> vector : 200 OK / 202 Accepted
+deactivate billing
+deactivate vector
+
+@enduml

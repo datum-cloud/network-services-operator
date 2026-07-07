@@ -26,3 +26,11 @@ patches:
     target:
       kind: Certificate
       name: envoy-gateway-extension-server-eg-client-tls
+  # Delete the ServiceMonitor since Prometheus CRDs are not installed in the e2e/dev environment.
+  - patch: |-
+      $patch: delete
+      apiVersion: monitoring.coreos.com/v1
+      kind: ServiceMonitor
+      metadata:
+        name: envoy-gateway-extension-server-metrics
+        namespace: system

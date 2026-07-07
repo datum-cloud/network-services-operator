@@ -36,6 +36,16 @@ type PolicyIndex struct {
 	// Values are upstream namespace names; they key into TPPs and Connectors.
 	DStoUS map[string]string
 
+	// ProjectNames maps downstream namespace names to the human-readable
+	// project name for that namespace. Derived from
+	// meta.datumapis.com/upstream-cluster-name on replica namespaces (value
+	// format: "cluster-<projectName>"). Empty string when the label is absent
+	// (e.g. single-cluster dev with no cluster name configured).
+	//
+	// TODO: replace with resourcemanager.miloapis.com/project-name once that
+	// label is available on project namespaces.
+	ProjectNames map[string]string
+
 	// TPPs maps upstream namespace names to the list of
 	// TrafficProtectionPolicies in that namespace, sorted by creation
 	// timestamp then name to match NSO reconciler precedence order.

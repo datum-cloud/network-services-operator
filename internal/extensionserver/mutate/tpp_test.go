@@ -145,9 +145,10 @@ func tppTargetingHTTPRoute(upstreamNS, tppName, routeName string) extcache.TPPIn
 // ("test-project") are fixed — all callers in this package use those values.
 func policyIndex(tpps ...extcache.TPPInfo) *extcache.PolicyIndex {
 	return &extcache.PolicyIndex{
-		DStoUS:     map[string]string{"ns-abc-123": "test-project"},
-		TPPs:       map[string][]extcache.TPPInfo{"test-project": tpps},
-		Connectors: make(map[extcache.ConnectorKey]extcache.ConnectorInfo),
+		DStoUS:       map[string]string{"ns-abc-123": "test-project"},
+		ProjectNames: map[string]string{"ns-abc-123": "test-project"},
+		TPPs:         map[string][]extcache.TPPInfo{"test-project": tpps},
+		Connectors:   make(map[extcache.ConnectorKey]extcache.ConnectorInfo),
 	}
 }
 
@@ -342,9 +343,10 @@ func TestApplyTPPRouteConfig_UnknownDSNamespace_Skipped(t *testing.T) {
 	cfg := testCorazaConfig()
 	// idx does NOT contain a mapping for dsNS.
 	idx := &extcache.PolicyIndex{
-		DStoUS:     map[string]string{"ns-other": "other-project"},
-		TPPs:       make(map[string][]extcache.TPPInfo),
-		Connectors: make(map[extcache.ConnectorKey]extcache.ConnectorInfo),
+		DStoUS:       map[string]string{"ns-other": "other-project"},
+		ProjectNames: make(map[string]string),
+		TPPs:         make(map[string][]extcache.TPPInfo),
+		Connectors:   make(map[extcache.ConnectorKey]extcache.ConnectorInfo),
 	}
 
 	vh := buildVHWithGatewayMeta(
@@ -486,9 +488,10 @@ func TestInjectCorazaListenerFilters_StaticRouteConfig_Skipped(t *testing.T) {
 }
 
 // TestApplyTPPRouteConfig_Disabled_NoOp verifies that setting
-// CorazaConfig.Disabled=true causes ApplyTPPRouteConfig to return 0 mutations
-// and leave all routes untouched, even when a governing TPP exists.
-func TestApplyTPPRouteConfig_Disabled_NoOp(t *testing.T) {
+// CorazaConfig.Disabled=true skips WAF per-route config but still stamps
+// project_name into the datum-gateway route metadata so the access log can
+// emit it even on standard Envoy images (no golang filter).
+func TestApplyTPPRouteConfig_Disabled_StampsProjectName(t *testing.T) {
 	cfg := testCorazaConfig()
 	cfg.Disabled = true
 
@@ -509,13 +512,16 @@ func TestApplyTPPRouteConfig_Disabled_NoOp(t *testing.T) {
 
 	n, err := ApplyTPPRouteConfig(rc, idx, cfg)
 	require.NoError(t, err)
-	assert.Equal(t, 0, n, "disabled Coraza must not apply any per-route WAF config")
+	assert.Equal(t, 0, n, "disabled Coraza must not count any WAF per-route mutations")
 
 	rt := vh.Routes[0]
 	assert.Nil(t, rt.GetTypedPerFilterConfig(),
 		"route must have no typed_per_filter_config when Coraza is disabled")
-	assert.Nil(t, rt.GetMetadata().GetFilterMetadata()[datumGatewayMetadataKey],
-		"route must have no datum-gateway metadata when Coraza is disabled")
+	// project_name is stamped unconditionally so access logs always carry it.
+	meta := rt.GetMetadata().GetFilterMetadata()[datumGatewayMetadataKey]
+	require.NotNil(t, meta, "datum-gateway filter_metadata must be set even when Coraza is disabled")
+	assert.Equal(t, upstreamNS, meta.GetFields()["project_name"].GetStringValue(),
+		"project_name must be stamped on NSO-owned routes regardless of Coraza.Disabled")
 }
 
 func TestApplyTPPRouteConfig_RouteLevelTPPWins(t *testing.T) {

@@ -96,6 +96,25 @@ spec:
         disable: false
       enableVirtualHostStats: true
       enablePerEndpointStats: true
+    accessLog:
+      settings:
+        - sinks:
+            - type: File
+              file:
+                path: /dev/stdout
+          format:
+            type: JSON
+            json:
+              start_time: "%START_TIME%"
+              method: "%REQ(:METHOD)%"
+              path: "%REQ(X-ENVOY-ORIGINAL-PATH?:PATH)%"
+              protocol: "%PROTOCOL%"
+              response_code: "%RESPONSE_CODE%"
+              bytes_received: "%BYTES_RECEIVED%"
+              bytes_sent: "%BYTES_SENT%"
+              duration: "%DURATION%"
+              route_name: "%ROUTE_NAME%"
+              project_name: "%METADATA(ROUTE:datum-gateway:project_name)%"
 ---
 apiVersion: gateway.networking.k8s.io/v1
 kind: GatewayClass

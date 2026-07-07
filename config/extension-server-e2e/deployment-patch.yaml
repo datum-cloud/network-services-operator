@@ -1,0 +1,41 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: envoy-gateway-extension-server
+spec:
+  # Single-node kind clusters can't satisfy the base DoNotSchedule topology constraint.
+  replicas: 1
+  template:
+    spec:
+      # Remove the hostname spread constraint — only 1 node in kind.
+      topologySpreadConstraints: null
+      volumes:
+        # Replace cert-manager CSI driver mount with a regular Secret volume.
+        # cert-manager Certificate nso-es-tls populates this Secret.
+        - name: tls
+          csi: null
+          secret:
+            secretName: nso-extension-server-tls
+        # Replace ConfigMap CA bundle with the same Secret; the ca.crt key holds
+        # the issuing CA cert that the extension server uses to verify EG's client cert.
+        - name: tls-ca
+          configMap: null
+          secret:
+            secretName: nso-extension-server-tls
+            items:
+              - key: ca.crt
+                path: ca.crt
+        # Extension server operator config — disables Coraza WAF injection
+        # so standard (non-contrib) Envoy images work in e2e.
+        - name: server-config
+          configMap:
+            name: extension-server-config
+      containers:
+        - name: envoy-gateway-extension-server
+          env:
+            - name: SERVER_CONFIG
+              value: /server-config/config.yaml
+          volumeMounts:
+            - name: server-config
+              mountPath: /server-config
+              readOnly: true

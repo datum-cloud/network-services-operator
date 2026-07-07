@@ -1,0 +1,59 @@
+---
+# Self-signed bootstrap issuer; creates the e2e CA cert below.
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: nso-es-selfsigned
+spec:
+  selfSigned: {}
+---
+# CA cert. cert-manager places the CA cert+key in Secret nso-extension-server-ca
+# (in the same namespace). The CA Issuer below references that Secret.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: nso-es-ca
+spec:
+  isCA: true
+  commonName: nso-extension-server-ca
+  secretName: nso-extension-server-ca
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    name: nso-es-selfsigned
+    kind: Issuer
+    group: cert-manager.io
+---
+# CA-backed issuer used by both the server cert and the EG client cert below.
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: nso-es-ca-issuer
+spec:
+  ca:
+    secretName: nso-extension-server-ca
+---
+# Extension-server TLS cert. cert-manager writes it to Secret nso-extension-server-tls,
+# which includes ca.crt = the CA cert — EG reads this field from certificateRef to verify
+# the extension server's presented cert.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: nso-es-tls
+spec:
+  secretName: nso-extension-server-tls
+  dnsNames:
+    - network-services-operator-envoy-gateway-extension-server.network-services-operator-system.svc
+    - network-services-operator-envoy-gateway-extension-server.network-services-operator-system.svc.cluster.local
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    name: nso-es-ca-issuer
+    kind: Issuer
+    group: cert-manager.io
+  usages:
+    - server auth
+    - digital signature
+    - key encipherment

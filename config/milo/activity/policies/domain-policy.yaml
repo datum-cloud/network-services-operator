@@ -17,12 +17,12 @@ spec:
   auditRules:
     # Domain creation with spec.domainName available - use domain name as display text
     - name: create
-      match: "!audit.user.username.startsWith('system:') && audit.verb == 'create' && has(audit.requestObject.spec)"
+      match: "!audit.user.username.startsWith('system:') && audit.verb == 'create' && has(audit.requestObject.spec) && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
       summary: "{{ actor }} created domain {{ link(audit.responseObject.spec.domainName, audit.objectRef) }}"
 
     # Domain creation fallback (no spec)
     - name: create-fallback
-      match: "!audit.user.username.startsWith('system:') && audit.verb == 'create'"
+      match: "!audit.user.username.startsWith('system:') && audit.verb == 'create' && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
       summary: "{{ actor }} created {{ link('a domain', audit.objectRef) }}"
 
     # Domain deletion with responseObject.spec available (response contains the deleted resource)

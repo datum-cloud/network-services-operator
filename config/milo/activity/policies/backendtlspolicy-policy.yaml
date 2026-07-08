@@ -16,12 +16,12 @@ spec:
   auditRules:
     # BackendTLSPolicy creation with spec available
     - name: create
-      match: "!audit.user.username.startsWith('system:') && audit.verb == 'create' && has(audit.requestObject.spec)"
+      match: "!audit.user.username.startsWith('system:') && audit.verb == 'create' && has(audit.requestObject.spec) && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
       summary: "{{ actor }} created backend TLS policy {{ link(audit.responseObject.metadata.name, audit.objectRef) }}"
 
     # BackendTLSPolicy creation fallback (no spec)
     - name: create-fallback
-      match: "!audit.user.username.startsWith('system:') && audit.verb == 'create'"
+      match: "!audit.user.username.startsWith('system:') && audit.verb == 'create' && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
       summary: "{{ actor }} created {{ link('a backend TLS policy', audit.objectRef) }}"
 
     # BackendTLSPolicy deletion with responseObject.spec available (response contains the deleted resource)

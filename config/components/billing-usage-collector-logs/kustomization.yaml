@@ -1,0 +1,141 @@
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+# Patches the billing-usage-collector HelmRelease to inject the permissions
+# and custom configuration required to tail and parse Envoy access logs.
+patches:
+  - target:
+      kind: Kustomization
+      name: billing-vector-agent-app
+    patch: |
+      - op: add
+        path: /spec/patches/-
+        value:
+          target:
+            kind: HelmRelease
+            name: billing-usage-collector
+          patch: |
+            - op: replace
+              path: /spec/values/podSecurityContext/runAsGroup
+              value: 0
+            - op: add
+              path: /spec/values/customConfig/sources/envoy_access_logs
+              value:
+                type: kubernetes_logs
+                extra_field_selector: "metadata.namespace=envoy-gateway-system"
+            - op: add
+              path: /spec/values/customConfig/transforms/parse_nso_logs
+              value:
+                type: remap
+                inputs:
+                  - envoy_access_logs
+                source: |
+                  if is_string(.message) {
+                    parsed, err = parse_json(string!(.message))
+                    if err != null {
+                      abort
+                    }
+                    . = object(parsed) ?? {}
+                  }
+
+                  parsed_route, err = parse_regex(.route_name, r'^httproute/(?P<namespace>[^/]+)/(?P<name>[^/]+)')
+                  if err != null || is_null(parsed_route) {
+                    abort
+                  }
+
+                  httproute_namespace = parsed_route.namespace
+                  httproute_name = parsed_route.name
+                  project_id = replace!(to_string(httproute_namespace), r'^ns-', "")
+                  subject = "projects/" + project_id
+
+                  project_name = ""
+                  if !is_null(.project_name) {
+                    pn = to_string(.project_name) ?? ""
+                    if pn != "-" {
+                      project_name = pn
+                    }
+                  }
+
+                  bytes_sent = to_int(.bytes_sent) ?? 0
+                  bytes_received = to_int(.bytes_received) ?? 0
+                  duration_ms = to_int(.duration) ?? 0
+
+                  uuid_clean = replace(uuid_v4(), "-", "")
+                  ulid_base = "0" + upcase(slice(uuid_clean, 1, 26) ?? "")
+
+                  events = []
+                  region = "us-east-1"
+                  if !is_null(.region) { region = .region }
+                  gateway_name = "test-gateway"
+                  if !is_null(.gateway_name) { gateway_name = .gateway_name }
+                  gateway_namespace = "default"
+                  if !is_null(.gateway_namespace) { gateway_namespace = .gateway_namespace }
+                  gateway_class = "datum-downstream-gateway"
+                  if !is_null(.gateway_class) { gateway_class = .gateway_class }
+                  
+                  start_time = .start_time
+                  if is_null(start_time) {
+                    start_time = format_timestamp!(now(), "%Y-%m-%dT%H:%M:%SZ")
+                  }
+
+                  req_event = {
+                    "specversion": "1.0",
+                    "id": ulid_base,
+                    "type": "networking.datumapis.com/gateway/requests",
+                    "source": "//networking.datumapis.com/gateway",
+                    "subject": subject,
+                    "time": start_time,
+                    "datacontenttype": "application/json",
+                    "data": {
+                      "value": "1",
+                      "dimensions": {
+                        "region": region,
+                        "gateway": gateway_name,
+                        "gateway_namespace": gateway_namespace,
+                        "gateway_class": gateway_class,
+                        "httproute_name": httproute_name,
+                        "httproute_namespace": httproute_namespace,
+                        "project_name": project_name
+                      }
+                    }
+                  }
+                  events = push(events, req_event)
+
+                  if bytes_sent > 0 {
+                    uuid_clean_egress = replace(uuid_v4(), "-", "")
+                    ulid_egress = "0" + upcase(slice(uuid_clean_egress, 1, 26) ?? "")
+                    egress_event = req_event
+                    egress_event.id = ulid_egress
+                    egress_event.type = "networking.datumapis.com/gateway/egress-bytes"
+                    egress_event.data.value = to_string(bytes_sent)
+                    events = push(events, egress_event)
+                  }
+
+                  if bytes_received > 0 {
+                    uuid_clean_ingress = replace(uuid_v4(), "-", "")
+                    ulid_ingress = "0" + upcase(slice(uuid_clean_ingress, 1, 26) ?? "")
+                    ingress_event = req_event
+                    ingress_event.id = ulid_ingress
+                    ingress_event.type = "networking.datumapis.com/gateway/ingress-bytes"
+                    ingress_event.data.value = to_string(bytes_received)
+                    events = push(events, ingress_event)
+                  }
+
+                  if duration_ms > 0 {
+                    duration_sec = to_float(duration_ms) / 1000.0
+                    if duration_sec > 0 {
+                      uuid_clean_conn = replace(uuid_v4(), "-", "")
+                      ulid_conn = "0" + upcase(slice(uuid_clean_conn, 1, 26) ?? "")
+                      conn_event = req_event
+                      conn_event.id = ulid_conn
+                      conn_event.type = "networking.datumapis.com/gateway/connection-seconds"
+                      conn_event.data.value = to_string(duration_sec)
+                      events = push(events, conn_event)
+                    }
+                  }
+                  . = events
+            - op: replace
+              path: /spec/values/customConfig/transforms/clean_cloudevents/inputs
+              value:
+                - billing_sdk
+                - parse_nso_logs

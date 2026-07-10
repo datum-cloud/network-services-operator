@@ -91,6 +91,22 @@ jobs:
           echo "::group::downstream pods"
           kubectl --context kind-nso-downstream get pods -A -o wide
           echo "::endgroup::"
+          echo "::group::not-ready pods — describe (both clusters)"
+          for ctx in kind-nso-upstream kind-nso-downstream; do
+            echo "### $ctx"
+            kubectl --context "$ctx" get pods -A \
+              --field-selector=status.phase!=Running,status.phase!=Succeeded -o name | while read -r p; do
+              ns=$(kubectl --context "$ctx" get "$p" -A -o jsonpath='{..metadata.namespace}' 2>/dev/null)
+              kubectl --context "$ctx" -n "$ns" describe "${p#*/}" 2>/dev/null | tail -30
+            done
+          done
+          echo "::endgroup::"
+          echo "::group::cert-manager health (upstream) — restarts + issuance"
+          kubectl --context kind-nso-upstream -n cert-manager get pods -o wide
+          kubectl --context kind-nso-upstream -n cert-manager \
+            logs -l app.kubernetes.io/name=cert-manager --tail=80 --previous 2>/dev/null || true
+          kubectl --context kind-nso-upstream get certificate,certificaterequest,issuer,clusterissuer -A
+          echo "::endgroup::"
           echo "::group::karmada member clusters"
           KCFG=/tmp/karmada-nso-upstream/karmada-apiserver.config
           kubectl --kubeconfig "$KCFG" --context karmada-apiserver get clusters -o wide

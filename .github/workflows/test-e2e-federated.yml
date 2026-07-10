@@ -1,0 +1,110 @@
+name: Federated E2E
+
+# Exercises the production-fidelity edge: two kind clusters (control plane + edge)
+# wired with real Karmada federation, the production Envoy Gateway version, the
+# Coraza WAF data plane, and the NSO extension server — then runs the edge e2e
+# scenarios against real traffic. This is the path the older single-stack
+# `make test-e2e` never covered.
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'Taskfile.test-infra.yml'
+      - 'config/e2e-downstream/**'
+      - 'config/federation/**'
+      - 'config/tools/**'
+      - 'config/extension-server/**'
+      - 'internal/extensionserver/**'
+      - 'cmd/**'
+      - 'test/e2e-edge/**'
+      - 'test/parity/**'
+      - '.github/workflows/test-e2e-federated.yml'
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+# One federated run per ref; a newer push cancels an in-flight one.
+concurrency:
+  group: federated-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  federated-e2e:
+    name: Two-cluster federated edge (Karmada)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      TMPDIR: /tmp
+    steps:
+      - name: Clone the code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '~1.26'
+
+      # Two kind clusters plus a full Karmada control plane and the edge data
+      # plane need more room than the runner ships with. Reclaim disk from
+      # toolchains this job never uses.
+      - name: Free up disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /opt/hostedtoolcache/CodeQL
+          docker system prune -af || true
+          df -h /
+
+      # Karmada plus two clusters open a large number of file watches; the
+      # default runner limits crashloop a component with "too many open files".
+      - name: Raise inotify limits
+        run: |
+          sudo sysctl -w fs.inotify.max_user_instances=8192
+          sudo sysctl -w fs.inotify.max_user_watches=1048576
+
+      - name: Install Task
+        run: |
+          go install github.com/go-task/task/v3/cmd/task@v3.49.1
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Install pinned tools (kind, karmadactl, kustomize, cmctl, chainsaw)
+        run: task test-infra:tools
+
+      - name: Bring up the two-cluster prod-fidelity env
+        run: task test-infra:up
+
+      - name: Stand up Karmada federation
+        run: task test-infra:karmada-up
+
+      - name: Run edge e2e scenarios
+        run: task test-infra:e2e
+
+      # When something fails, capture enough cross-cluster state to diagnose it
+      # from the logs alone — the runner is torn down immediately after.
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          set +e
+          echo "::group::upstream pods"
+          kubectl --context kind-nso-upstream get pods -A -o wide
+          echo "::endgroup::"
+          echo "::group::downstream pods"
+          kubectl --context kind-nso-downstream get pods -A -o wide
+          echo "::endgroup::"
+          echo "::group::karmada member clusters"
+          KCFG=/tmp/karmada-nso-upstream/karmada-apiserver.config
+          kubectl --kubeconfig "$KCFG" --context karmada-apiserver get clusters -o wide
+          kubectl --kubeconfig "$KCFG" --context karmada-apiserver get clusterpropagationpolicy,work -A
+          echo "::endgroup::"
+          echo "::group::NSO manager logs (upstream)"
+          kubectl --context kind-nso-upstream -n network-services-operator-system \
+            logs deploy/network-services-operator-controller-manager --tail=200
+          echo "::endgroup::"
+          echo "::group::extension server logs (downstream)"
+          kubectl --context kind-nso-downstream -n network-services-operator-system \
+            logs deploy/network-services-operator-envoy-gateway-extension-server --tail=200
+          echo "::endgroup::"
+          echo "::group::downstream Envoy Gateway logs"
+          kubectl --context kind-nso-downstream -n datum-downstream-gateway \
+            logs deploy/envoy-gateway --tail=200
+          echo "::endgroup::"

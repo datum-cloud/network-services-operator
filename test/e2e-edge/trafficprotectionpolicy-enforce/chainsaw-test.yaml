@@ -1,0 +1,291 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+#
+# TrafficProtectionPolicy Enforce mode must not take the gateway offline.
+#
+# Regression for issue #243: the branded error page NSO injects into Envoy's
+# local_reply_config is a SubstitutionFormatString, so an unescaped '%' in the
+# page (e.g. CSS "height: 100%") makes Envoy reject the whole listener and, with
+# failOpen:false, drops the xDS update — every request then fails with an empty
+# reply instead of the backend's 200. This drives a real benign request through
+# a WAF gateway carrying an Enforce-mode policy and requires a 200, asserted on
+# the wire rather than on Gateway.status (EG reports Programmed from its own
+# translation, independent of Envoy's xDS ACK).
+#
+# This lives in the edge suite, not test/e2e, because it needs the real WAF data
+# plane (extension server + Coraza on the datum-downstream-gateway class) the
+# single-stack environment does not have. The two cluster names are written
+# inline (nso-upstream / nso-downstream) because chainsaw cannot bind a cluster
+# name. Runs alone (concurrent: false) because it shares cluster-wide downstream
+# config with the other data-plane tests.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: trafficprotectionpolicy-enforce-serves-traffic
+spec:
+  concurrent: false
+  bindings:
+    - name: clusterIssuerName
+      value: (join('-', ['e2e', $namespace]))
+    - name: gatewayClassName
+      value: (join('-', ['e2e', $namespace]))
+    # The downstream gateway class wired to the extension server.
+    - name: downstreamGatewayClass
+      value: datum-downstream-gateway-e2e
+    - name: hostname
+      value: tpp-enforce.e2e.env.datum.net
+  cluster: nso-upstream
+  steps:
+    - name: Create CA on the downstream cluster
+      try:
+        - create:
+            cluster: nso-downstream
+            resource:
+              apiVersion: cert-manager.io/v1
+              kind: ClusterIssuer
+              metadata:
+                name: (join('-', [$clusterIssuerName, 'issuer']))
+              spec:
+                selfSigned: {}
+        - create:
+            cluster: nso-downstream
+            resource:
+              apiVersion: cert-manager.io/v1
+              kind: Certificate
+              metadata:
+                name: (join('-', [$clusterIssuerName, 'ca']))
+                namespace: cert-manager
+              spec:
+                isCA: true
+                commonName: (join('-', [$clusterIssuerName, 'ca']))
+                secretName: ($clusterIssuerName)
+                privateKey:
+                  algorithm: ECDSA
+                  size: 256
+                issuerRef:
+                  name: (join('-', [$clusterIssuerName, 'issuer']))
+                  kind: ClusterIssuer
+                  group: cert-manager.io
+        - create:
+            cluster: nso-downstream
+            resource:
+              apiVersion: cert-manager.io/v1
+              kind: ClusterIssuer
+              metadata:
+                name: ($clusterIssuerName)
+              spec:
+                ca:
+                  secretName: ($clusterIssuerName)
+        - assert:
+            cluster: nso-downstream
+            resource:
+              apiVersion: cert-manager.io/v1
+              kind: Certificate
+              metadata:
+                name: (join('-', [$clusterIssuerName, 'ca']))
+                namespace: cert-manager
+              status:
+                conditions:
+                  - type: Ready
+                    status: "True"
+
+    - name: Create the upstream GatewayClass (downstream class/EnvoyProxy are pre-provisioned)
+      try:
+        - create:
+            cluster: nso-upstream
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: GatewayClass
+              metadata:
+                name: ($gatewayClassName)
+              spec:
+                controllerName: gateway.networking.datumapis.com/external-global-proxy-controller
+        - apply:
+            cluster: nso-downstream
+            resource:
+              apiVersion: v1
+              kind: Namespace
+              metadata:
+                name: datum-downstream-gateway-hostnames
+
+    - name: Create the echo backend
+      try:
+        - apply:
+            cluster: nso-downstream
+            file: ../_fixtures/echo-backend.yaml
+
+    - name: Provision and verify the Domain
+      try:
+        - create:
+            cluster: nso-upstream
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Domain
+              metadata:
+                name: test-domain
+              spec:
+                domainName: e2e.env.datum.net
+        - description: Stand in for the Domain controller's HTTP/DNS verification.
+          script:
+            content: |
+              kubectl -n $NAMESPACE patch domain test-domain \
+                --subresource=status --type=merge \
+                -p '{"status":{"conditions":[{"type": "Verified", "status": "True", "reason": "Test", "message": "test", "lastTransitionTime": "2025-02-24T23:59:09Z"}]}}'
+
+    - name: Provision a Gateway, route, and an Enforce-mode TrafficProtectionPolicy
+      try:
+        - create:
+            cluster: nso-upstream
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: Gateway
+              metadata:
+                name: test-gateway
+              spec:
+                gatewayClassName: ($gatewayClassName)
+                listeners:
+                  - protocol: HTTPS
+                    port: 443
+                    name: https-waf
+                    allowedRoutes:
+                      namespaces:
+                        from: Same
+                    hostname: ($hostname)
+                    tls:
+                      mode: Terminate
+                      options:
+                        gateway.networking.datumapis.com/certificate-issuer: ($clusterIssuerName)
+        - create:
+            cluster: nso-upstream
+            resource:
+              apiVersion: discovery.k8s.io/v1
+              kind: EndpointSlice
+              metadata:
+                name: test-slice-1
+              addressType: FQDN
+              endpoints:
+                - addresses:
+                    - echo-backend.default.svc.cluster.local
+                  conditions:
+                    ready: true
+                    serving: true
+                    terminating: false
+              ports:
+                - name: http
+                  appProtocol: http
+                  port: 8080
+        - create:
+            cluster: nso-upstream
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: HTTPRoute
+              metadata:
+                name: test-route
+              spec:
+                parentRefs:
+                  - name: test-gateway
+                    kind: Gateway
+                rules:
+                  - matches:
+                      - path:
+                          type: PathPrefix
+                          value: /
+                    backendRefs:
+                      - group: discovery.k8s.io
+                        kind: EndpointSlice
+                        name: test-slice-1
+                        port: 8080
+        # Enforce mode: the policy is live and can block. The regression is that
+        # it must not, by itself, break the listener for benign traffic.
+        - create:
+            cluster: nso-upstream
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: TrafficProtectionPolicy
+              metadata:
+                name: test-waf
+              spec:
+                targetRefs:
+                  - group: gateway.networking.k8s.io
+                    kind: Gateway
+                    name: test-gateway
+                mode: Enforce
+                ruleSets:
+                  - type: OWASPCoreRuleSet
+                    owaspCoreRuleSet: {}
+        - assert:
+            timeout: 120s
+            cluster: nso-upstream
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: Gateway
+              metadata:
+                name: test-gateway
+              status:
+                (addresses[?type == 'Hostname'] | [0]):
+                  type: Hostname
+      catch:
+        - script:
+            cluster: nso-upstream
+            content: |
+              kubectl -n network-services-operator-system logs -l app.kubernetes.io/name=network-services-operator --tail=200
+              kubectl -n $NAMESPACE get gateway,httproute,trafficprotectionpolicy -o yaml
+
+    - name: Stand up the long-lived conntest client
+      try:
+        - assert:
+            cluster: nso-downstream
+            resource:
+              apiVersion: v1
+              kind: Pod
+              metadata:
+                name: echo-backend
+                namespace: default
+              status:
+                phase: Running
+        - create:
+            cluster: nso-downstream
+            resource:
+              apiVersion: v1
+              kind: Pod
+              metadata:
+                name: conntest
+                namespace: default
+              spec:
+                containers:
+                  - name: curl
+                    image: curlimages/curl:8.11.1
+                    command: ["sleep", "infinity"]
+                    resources:
+                      requests:
+                        cpu: 50m
+                        memory: 64Mi
+                      limits:
+                        cpu: 100m
+                        memory: 128Mi
+                terminationGracePeriodSeconds: 0
+        - assert:
+            cluster: nso-downstream
+            resource:
+              apiVersion: v1
+              kind: Pod
+              metadata:
+                name: conntest
+                namespace: default
+              status:
+                phase: Running
+
+    - name: Benign traffic still returns 200 under an Enforce-mode policy (issue #243)
+      description: >
+        The core regression check: with an Enforce-mode policy attached and the
+        branded error page in the proxy's local_reply_config, a benign request
+        must still reach the backend. Before the fix the listener is rejected and
+        this returns 000 / empty reply; after the fix it returns the backend's
+        200.
+      use:
+        template: ../_steps/assert-http-response.yaml
+        with:
+          bindings:
+            - { name: host, value: tpp-enforce.e2e.env.datum.net }
+            - { name: path, value: /get }
+            - { name: scheme, value: https }
+            - { name: expectCode, value: "200" }

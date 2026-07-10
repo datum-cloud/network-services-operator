@@ -419,7 +419,7 @@ tasks:
     vars:
       # Scenarios authored against this env's cluster names and downstream path.
       # Older fixtures targeting the previous cluster names are excluded here.
-      DEFAULT_SCENARIOS: extension-server-smoke waf-enforcement branded-error-page connector-offline-503 atomic-reject-isolation
+      DEFAULT_SCENARIOS: extension-server-smoke waf-enforcement trafficprotectionpolicy-enforce branded-error-page connector-offline-503 atomic-reject-isolation
       # CLI_ARGS (after --) wins; else SCENARIOS env; else the default set.
       SELECTED: '{{.CLI_ARGS | default .SCENARIOS | default .DEFAULT_SCENARIOS}}'
     deps:

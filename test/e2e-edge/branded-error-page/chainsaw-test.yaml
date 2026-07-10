@@ -1,0 +1,480 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+#
+# Branded error page reaches the customer.
+#
+# Checks that a 5xx served by the edge carries the branded error page, and — the
+# important part — that this still works for a gateway provisioned after the
+# fact, without restarting anything. Activating the branded page in production
+# once needed a manual restart, which a status-based or restart-then-check test
+# would have missed.
+#
+# Two assertions:
+#   1. The branded body is present on a 5xx (identified by the sentinel
+#      X-Datum-Branded-Page: v1) and absent on a benign 200, proving branding is
+#      scoped to 5xx responses.
+#   2. Provision a second gateway and route after the edge is already running,
+#      without restarting anything, and assert its 5xx is also branded. If
+#      branding only takes effect on a restart, the fresh path serves an
+#      unbranded 5xx and this fails.
+#
+# The 5xx is produced by pointing a route at a backend Service with no ready
+# endpoints, so the proxy returns the error itself (the path the branded page
+# hooks). No connector is involved.
+#
+# The mounted error-page body must contain the sentinel X-Datum-Branded-Page: v1;
+# the test environment wires that body and this test only greps for it.
+#
+# Cluster names are inline; downstreamGatewayClass is as in waf-enforcement.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: branded-error-page
+spec:
+  concurrent: false
+  bindings:
+    - name: clusterIssuerName
+      value: (join('-', ['e2e', $namespace]))
+    - name: gatewayClassName
+      value: (join('-', ['e2e', $namespace]))
+    - name: downstreamGatewayClass
+      value: datum-downstream-gateway-e2e
+    # The sentinel substring the test environment mounts into the error-page body.
+    - name: sentinel
+      value: "X-Datum-Branded-Page: v1"
+    # Inputs for the config-presence check, which resolves the extension server
+    # pods by label selector (one per replica).
+    - name: extServerSelector
+      value: app.kubernetes.io/component=envoy-gateway-extension-server
+    - name: extServerNamespace
+      value: network-services-operator-system
+    - name: envoyPodSelector
+      value: gateway.envoyproxy.io/owning-gatewayclass=datum-downstream-gateway-e2e
+    # Namespace holding the data-plane proxy and its admin endpoint.
+    - name: envoyNamespace
+      value: datum-downstream-gateway
+  cluster: nso-upstream
+  steps:
+    - name: Create CA on the downstream cluster
+      try:
+        - create:
+            cluster: nso-downstream
+            resource:
+              apiVersion: cert-manager.io/v1
+              kind: ClusterIssuer
+              metadata:
+                name: (join('-', [$clusterIssuerName, 'issuer']))
+              spec:
+                selfSigned: {}
+        - create:
+            cluster: nso-downstream
+            resource:
+              apiVersion: cert-manager.io/v1
+              kind: Certificate
+              metadata:
+                name: (join('-', [$clusterIssuerName, 'ca']))
+                namespace: cert-manager
+              spec:
+                isCA: true
+                commonName: (join('-', [$clusterIssuerName, 'ca']))
+                secretName: ($clusterIssuerName)
+                privateKey:
+                  algorithm: ECDSA
+                  size: 256
+                issuerRef:
+                  name: (join('-', [$clusterIssuerName, 'issuer']))
+                  kind: ClusterIssuer
+                  group: cert-manager.io
+        - create:
+            cluster: nso-downstream
+            resource:
+              apiVersion: cert-manager.io/v1
+              kind: ClusterIssuer
+              metadata:
+                name: ($clusterIssuerName)
+              spec:
+                ca:
+                  secretName: ($clusterIssuerName)
+        - assert:
+            cluster: nso-downstream
+            resource:
+              apiVersion: cert-manager.io/v1
+              kind: Certificate
+              metadata:
+                name: (join('-', [$clusterIssuerName, 'ca']))
+                namespace: cert-manager
+              status:
+                conditions:
+                  - type: Ready
+                    status: "True"
+
+    - name: Create the upstream GatewayClass (downstream class/EnvoyProxy are pre-provisioned)
+      try:
+        - create:
+            cluster: nso-upstream
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: GatewayClass
+              metadata:
+                name: ($gatewayClassName)
+              spec:
+                controllerName: gateway.networking.datumapis.com/external-global-proxy-controller
+        # The downstream gateway class and its proxy are provisioned once by the
+        # test environment; tests must not recreate them. Only ensure the
+        # hostname-accounting namespace here.
+        - apply:
+            cluster: nso-downstream
+            resource:
+              apiVersion: v1
+              kind: Namespace
+              metadata:
+                name: datum-downstream-gateway-hostnames
+
+    - name: Create the echo backend (for the benign 200 control)
+      try:
+        - apply:
+            cluster: nso-downstream
+            file: ../_fixtures/echo-backend.yaml
+
+    - name: Provision and verify the Domain
+      try:
+        - create:
+            cluster: nso-upstream
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Domain
+              metadata:
+                name: test-domain
+              spec:
+                domainName: e2e.env.datum.net
+        - description: Stand in for the Domain controller's HTTP/DNS verification.
+          script:
+            content: |
+              kubectl -n $NAMESPACE patch domain test-domain \
+                --subresource=status --type=merge \
+                -p '{"status":{"conditions":[{"type": "Verified", "status": "True", "reason": "Test", "message": "test", "lastTransitionTime": "2025-02-24T23:59:09Z"}]}}'
+
+    - name: Provision the first Gateway with a 5xx route and a benign 200 route
+      try:
+        - script:
+            cluster: nso-upstream
+            skipCommandOutput: true
+            skipLogOutput: true
+            content: |
+              kubectl get ns $NAMESPACE -o json
+            outputs:
+              - name: downstreamNamespaceName
+                value: (join('-', ['ns', json_parse($stdout).metadata.uid]))
+        - create:
+            cluster: nso-upstream
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: Gateway
+              metadata:
+                name: test-gateway
+              spec:
+                gatewayClassName: ($gatewayClassName)
+                listeners:
+                  - protocol: HTTPS
+                    port: 443
+                    name: https-brand
+                    allowedRoutes:
+                      namespaces:
+                        from: Same
+                    hostname: brand.e2e.env.datum.net
+                    tls:
+                      mode: Terminate
+                      options:
+                        gateway.networking.datumapis.com/certificate-issuer: ($clusterIssuerName)
+        # Benign backend (echo) for the 200 control on /ok.
+        - create:
+            cluster: nso-upstream
+            resource:
+              apiVersion: discovery.k8s.io/v1
+              kind: EndpointSlice
+              metadata:
+                name: ok-slice
+              addressType: FQDN
+              endpoints:
+                - addresses:
+                    - echo-backend.default.svc.cluster.local
+                  conditions:
+                    ready: true
+                    serving: true
+                    terminating: false
+              ports:
+                - name: http
+                  appProtocol: http
+                  port: 8080
+        # A backend with no ready endpoints: the proxy returns a 5xx itself,
+        # which is exactly the path the branded page hooks.
+        - create:
+            cluster: nso-upstream
+            resource:
+              apiVersion: discovery.k8s.io/v1
+              kind: EndpointSlice
+              metadata:
+                name: dead-slice
+              addressType: FQDN
+              endpoints:
+                - addresses:
+                    - no-such-backend.default.svc.cluster.local
+                  conditions:
+                    ready: false
+                    serving: false
+                    terminating: false
+              ports:
+                - name: http
+                  appProtocol: http
+                  port: 8080
+        - create:
+            cluster: nso-upstream
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: HTTPRoute
+              metadata:
+                name: test-route
+              spec:
+                parentRefs:
+                  - name: test-gateway
+                    kind: Gateway
+                rules:
+                  - matches:
+                      - path:
+                          type: PathPrefix
+                          value: /ok
+                    backendRefs:
+                      - group: discovery.k8s.io
+                        kind: EndpointSlice
+                        name: ok-slice
+                        port: 8080
+                    filters:
+                      - type: URLRewrite
+                        urlRewrite:
+                          path:
+                            type: ReplacePrefixMatch
+                            replacePrefixMatch: /
+                  - matches:
+                      - path:
+                          type: PathPrefix
+                          value: /
+                    backendRefs:
+                      - group: discovery.k8s.io
+                        kind: EndpointSlice
+                        name: dead-slice
+                        port: 8080
+        - assert:
+            timeout: 120s
+            cluster: nso-upstream
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: Gateway
+              metadata:
+                name: test-gateway
+              status:
+                (addresses[?type == 'Hostname'] | [0]):
+                  type: Hostname
+      catch:
+        - script:
+            cluster: nso-upstream
+            content: |
+              kubectl -n network-services-operator-system logs -l app.kubernetes.io/name=network-services-operator --tail=200
+              kubectl -n $NAMESPACE get gateway,httproute -o yaml
+
+    - name: Stand up the long-lived conntest client and resolve the edge IP
+      try:
+        - create:
+            cluster: nso-downstream
+            resource:
+              apiVersion: v1
+              kind: Pod
+              metadata:
+                name: conntest
+                namespace: default
+              spec:
+                containers:
+                  - name: curl
+                    image: curlimages/curl:8.11.1
+                    command: ["sleep", "infinity"]
+                    resources:
+                      requests:
+                        cpu: 50m
+                        memory: 64Mi
+                      limits:
+                        cpu: 100m
+                        memory: 128Mi
+                terminationGracePeriodSeconds: 0
+        - assert:
+            cluster: nso-downstream
+            resource:
+              apiVersion: v1
+              kind: Pod
+              metadata:
+                name: conntest
+                namespace: default
+              status:
+                phase: Running
+    - name: The 5xx response carries the branded sentinel body
+      description: |
+        A real request to the dead-backend route returns 5xx and the body
+        contains the branded sentinel. If the branded config never applied, the
+        body is a stock 5xx and this fails.
+      use:
+        template: ../_steps/assert-http-response.yaml
+        with:
+          bindings:
+            - { name: host, value: brand.e2e.env.datum.net }
+            - { name: path, value: / }
+            - { name: scheme, value: https }
+            # 503 is the typical response with no healthy backend; the body
+            # substring is what makes this branded-specific.
+            - { name: expectCode, value: "503" }
+            - { name: expectBodySubstring, value: ($sentinel) }
+
+    - name: A benign 200 response does NOT carry the sentinel (branding is scoped to 5xx)
+      try:
+        - description: |
+            Branding must apply only to 5xx responses. A 200 body must not
+            contain the sentinel; if it does, branding is mis-scoped.
+          script:
+            timeout: 120s
+            cluster: nso-downstream
+            env:
+              - name: SENTINEL
+                value: ($sentinel)
+              - name: OWNING_GC
+                value: ($downstreamGatewayClass)
+            content: |
+              set -eu
+              HOST=brand.e2e.env.datum.net
+              # Resolve the edge IP here; output bindings don't cross steps.
+              IP=$(kubectl get svc -n datum-downstream-gateway \
+                -l gateway.envoyproxy.io/owning-gatewayclass=$OWNING_GC \
+                -o jsonpath='{.items[0].spec.clusterIP}')
+              # Wait for the 200 path to be live, then assert its body lacks the
+              # sentinel.
+              ok=""
+              for i in $(seq 1 24); do
+                code=$(kubectl -n default exec conntest -- \
+                  curl -ksS -o /tmp/ok -w '%{http_code}' --max-time 10 \
+                  --resolve "${HOST}:443:${IP}" \
+                  "https://${HOST}/ok/status/200" 2>/dev/null || true)
+                echo "attempt ${i}: /ok -> ${code}"
+                if [ "${code}" = "200" ]; then ok="yes"; break; fi
+                sleep 5
+              done
+              [ -n "${ok}" ] || { echo "ERROR: benign 200 route never served"; exit 1; }
+              if kubectl -n default exec conntest -- grep -qF -- "${SENTINEL}" /tmp/ok 2>/dev/null; then
+                echo "ERROR: branded sentinel leaked into a 200 response body"; exit 1
+              fi
+              echo "OK: 200 body is clean (no sentinel), branding scoped to 5xx"
+
+    - name: Inert-detection - a NEW gateway translated with no restart is also branded
+      try:
+        - description: |
+            Provision a second gateway and dead-backend route after the edge is
+            already running, without restarting anything, and assert its 5xx is
+            branded too. If branding only takes effect on a restart, this fresh
+            path serves an unbranded 5xx and the next step fails.
+          create:
+            cluster: nso-upstream
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: Gateway
+              metadata:
+                name: test-gateway-2
+              spec:
+                gatewayClassName: ($gatewayClassName)
+                listeners:
+                  - protocol: HTTPS
+                    port: 443
+                    name: https-brand2
+                    allowedRoutes:
+                      namespaces:
+                        from: Same
+                    hostname: brand2.e2e.env.datum.net
+                    tls:
+                      mode: Terminate
+                      options:
+                        gateway.networking.datumapis.com/certificate-issuer: ($clusterIssuerName)
+        - create:
+            cluster: nso-upstream
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: HTTPRoute
+              metadata:
+                name: test-route-2
+              spec:
+                parentRefs:
+                  - name: test-gateway-2
+                    kind: Gateway
+                rules:
+                  - matches:
+                      - path:
+                          type: PathPrefix
+                          value: /
+                    backendRefs:
+                      - group: discovery.k8s.io
+                        kind: EndpointSlice
+                        name: dead-slice
+                        port: 8080
+        - assert:
+            timeout: 120s
+            cluster: nso-upstream
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: Gateway
+              metadata:
+                name: test-gateway-2
+              status:
+                (addresses[?type == 'Hostname'] | [0]):
+                  type: Hostname
+      catch:
+        - script:
+            cluster: nso-upstream
+            content: |
+              kubectl -n $NAMESPACE get gateway,httproute -o yaml
+
+    - name: The newly translated gateway's 5xx is ALSO branded (no restart)
+      description: |
+        The new gateway's path must carry the branded body without any restart.
+        A miss here means branding only takes effect on a restart.
+      use:
+        template: ../_steps/assert-http-response.yaml
+        with:
+          bindings:
+            - { name: host, value: brand2.e2e.env.datum.net }
+            - { name: path, value: / }
+            - { name: scheme, value: https }
+            - { name: expectCode, value: "503" }
+            - { name: expectBodySubstring, value: ($sentinel) }
+
+    # Let the edge config settle after the second gateway is provisioned before
+    # the config-presence check compares.
+    - name: Wait for the edge config to settle before the parity gate
+      use:
+        template: ../_steps/wait-config-settle.yaml
+        with:
+          bindings:
+            - { name: extServerSelector, value: app.kubernetes.io/component=envoy-gateway-extension-server }
+            - { name: extServerNamespace, value: network-services-operator-system }
+
+    - name: Config-presence - the new listener's HCM carries local_reply_config (parity gate)
+      description: |
+        Confirms the branded error-page config is actually present at the edge
+        for the new gateway: the live config carries the branded-page mapping the
+        extension server reports it programmed, and the proxy accepted the
+        update. Catches config that is present in the operator but never reaches
+        the edge.
+      use:
+        template: ../_steps/assert-config-dump.yaml
+        with:
+          # Values are inlined, not referenced as ($envoyNamespace) etc.: a
+          # with-binding whose name matches a template default resolves ($name)
+          # against the template default, not this test's value. Literals avoid
+          # that self-reference.
+          bindings:
+            - { name: envoyPodSelector, value: gateway.envoyproxy.io/owning-gatewayclass=datum-downstream-gateway-e2e }
+            - { name: envoyNamespace, value: datum-downstream-gateway }
+            - { name: extServerSelector, value: app.kubernetes.io/component=envoy-gateway-extension-server }
+            - { name: extServerNamespace, value: network-services-operator-system }
+            - { name: dataplaneCluster, value: nso-downstream }

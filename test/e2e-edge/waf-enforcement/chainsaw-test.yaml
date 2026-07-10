@@ -1,0 +1,440 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+#
+# Web-app firewall enforcement.
+#
+# Checks that the firewall blocks a malicious request with 403 while a benign
+# request still returns 200 — asserted on the real HTTP responses, never on
+# gateway status, because the firewall rule can be accepted in config yet never
+# actually apply to traffic.
+#
+# The benign-after-malicious request also guards against a bad firewall rule
+# breaking the listener, and the Observe-mode flip at the end proves the 403 is
+# driven by the policy and not some unrelated default.
+#
+# The two cluster names are written inline (nso-upstream / nso-downstream)
+# because chainsaw cannot bind a cluster name. downstreamGatewayClass is both
+# the gateway class created here and the label the edge proxy service is
+# selected by; confirm it against the test environment before a live run.
+#
+# Runs alone (concurrent: false) because it shares cluster-wide downstream
+# config with the other data-plane tests.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: waf-enforcement
+spec:
+  concurrent: false
+  bindings:
+    - name: clusterIssuerName
+      value: (join('-', ['e2e', $namespace]))
+    - name: gatewayClassName
+      value: (join('-', ['e2e', $namespace]))
+    # The downstream gateway class wired to the extension server.
+    - name: downstreamGatewayClass
+      value: datum-downstream-gateway-e2e
+    # Inputs for the config-presence check, which resolves the extension server
+    # pods by label selector (one per replica).
+    - name: extServerSelector
+      value: app.kubernetes.io/component=envoy-gateway-extension-server
+    - name: extServerNamespace
+      value: network-services-operator-system
+    - name: envoyPodSelector
+      value: gateway.envoyproxy.io/owning-gatewayclass=datum-downstream-gateway-e2e
+    # Namespace holding the data-plane proxy and its admin endpoint.
+    - name: envoyNamespace
+      value: datum-downstream-gateway
+  cluster: nso-upstream
+  steps:
+    - name: Create CA on the downstream cluster
+      try:
+        - create:
+            cluster: nso-downstream
+            resource:
+              apiVersion: cert-manager.io/v1
+              kind: ClusterIssuer
+              metadata:
+                name: (join('-', [$clusterIssuerName, 'issuer']))
+              spec:
+                selfSigned: {}
+        - create:
+            cluster: nso-downstream
+            resource:
+              apiVersion: cert-manager.io/v1
+              kind: Certificate
+              metadata:
+                name: (join('-', [$clusterIssuerName, 'ca']))
+                namespace: cert-manager
+              spec:
+                isCA: true
+                commonName: (join('-', [$clusterIssuerName, 'ca']))
+                secretName: ($clusterIssuerName)
+                privateKey:
+                  algorithm: ECDSA
+                  size: 256
+                issuerRef:
+                  name: (join('-', [$clusterIssuerName, 'issuer']))
+                  kind: ClusterIssuer
+                  group: cert-manager.io
+        - create:
+            cluster: nso-downstream
+            resource:
+              apiVersion: cert-manager.io/v1
+              kind: ClusterIssuer
+              metadata:
+                name: ($clusterIssuerName)
+              spec:
+                ca:
+                  secretName: ($clusterIssuerName)
+        - assert:
+            cluster: nso-downstream
+            resource:
+              apiVersion: cert-manager.io/v1
+              kind: Certificate
+              metadata:
+                name: (join('-', [$clusterIssuerName, 'ca']))
+                namespace: cert-manager
+              status:
+                conditions:
+                  - type: Ready
+                    status: "True"
+
+    - name: Create the upstream GatewayClass (downstream class/EnvoyProxy are pre-provisioned)
+      try:
+        - create:
+            cluster: nso-upstream
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: GatewayClass
+              metadata:
+                name: ($gatewayClassName)
+              spec:
+                controllerName: gateway.networking.datumapis.com/external-global-proxy-controller
+        # The downstream gateway class and its proxy are provisioned once by the
+        # test environment; tests must not recreate them. Only ensure the
+        # hostname-accounting namespace here.
+        - apply:
+            cluster: nso-downstream
+            resource:
+              apiVersion: v1
+              kind: Namespace
+              metadata:
+                name: datum-downstream-gateway-hostnames
+
+    - name: Create the echo backend
+      try:
+        - apply:
+            cluster: nso-downstream
+            file: ../_fixtures/echo-backend.yaml
+
+    - name: Provision and verify the Domain
+      try:
+        - create:
+            cluster: nso-upstream
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Domain
+              metadata:
+                name: test-domain
+              spec:
+                domainName: e2e.env.datum.net
+        - description: Stand in for the Domain controller's HTTP/DNS verification.
+          script:
+            content: |
+              kubectl -n $NAMESPACE patch domain test-domain \
+                --subresource=status --type=merge \
+                -p '{"status":{"conditions":[{"type": "Verified", "status": "True", "reason": "Test", "message": "test", "lastTransitionTime": "2025-02-24T23:59:09Z"}]}}'
+
+    - name: Provision a Gateway, route, and an Enforce-mode TrafficProtectionPolicy
+      try:
+        - script:
+            cluster: nso-upstream
+            skipCommandOutput: true
+            skipLogOutput: true
+            content: |
+              kubectl get ns $NAMESPACE -o json
+            outputs:
+              - name: downstreamNamespaceName
+                value: (join('-', ['ns', json_parse($stdout).metadata.uid]))
+        - create:
+            cluster: nso-upstream
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: Gateway
+              metadata:
+                name: test-gateway
+              spec:
+                gatewayClassName: ($gatewayClassName)
+                listeners:
+                  - protocol: HTTPS
+                    port: 443
+                    name: https-waf
+                    allowedRoutes:
+                      namespaces:
+                        from: Same
+                    hostname: waf.e2e.env.datum.net
+                    tls:
+                      mode: Terminate
+                      options:
+                        gateway.networking.datumapis.com/certificate-issuer: ($clusterIssuerName)
+        - create:
+            cluster: nso-upstream
+            resource:
+              apiVersion: discovery.k8s.io/v1
+              kind: EndpointSlice
+              metadata:
+                name: test-slice-1
+              addressType: FQDN
+              endpoints:
+                - addresses:
+                    - echo-backend.default.svc.cluster.local
+                  conditions:
+                    ready: true
+                    serving: true
+                    terminating: false
+              ports:
+                - name: http
+                  appProtocol: http
+                  port: 8080
+        - create:
+            cluster: nso-upstream
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: HTTPRoute
+              metadata:
+                name: test-route
+              spec:
+                parentRefs:
+                  - name: test-gateway
+                    kind: Gateway
+                rules:
+                  - matches:
+                      - path:
+                          type: PathPrefix
+                          value: /
+                    backendRefs:
+                      - group: discovery.k8s.io
+                        kind: EndpointSlice
+                        name: test-slice-1
+                        port: 8080
+        # Enforce mode: a matching request must be blocked with 403.
+        - create:
+            cluster: nso-upstream
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: TrafficProtectionPolicy
+              metadata:
+                name: test-waf
+              spec:
+                targetRefs:
+                  - group: gateway.networking.k8s.io
+                    kind: Gateway
+                    name: test-gateway
+                mode: Enforce
+                ruleSets:
+                  - type: OWASPCoreRuleSet
+                    owaspCoreRuleSet: {}
+        - assert:
+            timeout: 120s
+            cluster: nso-upstream
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: Gateway
+              metadata:
+                name: test-gateway
+              status:
+                (addresses[?type == 'Hostname'] | [0]):
+                  type: Hostname
+      catch:
+        - script:
+            cluster: nso-upstream
+            content: |
+              kubectl -n network-services-operator-system logs -l app.kubernetes.io/name=network-services-operator --tail=200
+              kubectl -n $NAMESPACE get gateway,httproute,trafficprotectionpolicy -o yaml
+
+    - name: Stand up the long-lived conntest client and resolve the edge IP
+      try:
+        - assert:
+            cluster: nso-downstream
+            resource:
+              apiVersion: v1
+              kind: Pod
+              metadata:
+                name: echo-backend
+                namespace: default
+              status:
+                phase: Running
+        - create:
+            cluster: nso-downstream
+            resource:
+              apiVersion: v1
+              kind: Pod
+              metadata:
+                name: conntest
+                namespace: default
+              spec:
+                containers:
+                  - name: curl
+                    image: curlimages/curl:8.11.1
+                    command: ["sleep", "infinity"]
+                    resources:
+                      requests:
+                        cpu: 50m
+                        memory: 64Mi
+                      limits:
+                        cpu: 100m
+                        memory: 128Mi
+                terminationGracePeriodSeconds: 0
+        - assert:
+            cluster: nso-downstream
+            resource:
+              apiVersion: v1
+              kind: Pod
+              metadata:
+                name: conntest
+                namespace: default
+              status:
+                phase: Running
+    - name: Benign request returns 200
+      use:
+        template: ../_steps/assert-http-response.yaml
+        with:
+          bindings:
+            - { name: host, value: waf.e2e.env.datum.net }
+            - { name: path, value: /get }
+            - { name: scheme, value: https }
+            - { name: expectCode, value: "200" }
+
+    - name: Malicious requests are blocked with 403 (SQLi, traversal, XSS)
+      try:
+        - description: |
+            Send each malicious payload and require a 403. Assert on the 403
+            itself, not on which firewall rule fired, since rule identifiers
+            change between rule-set versions. If the firewall rule never applied,
+            these return 200 and the step fails.
+          script:
+            timeout: 240s
+            cluster: nso-downstream
+            env:
+              - name: HOST
+                value: waf.e2e.env.datum.net
+              - name: OWNING_GC
+                value: ($downstreamGatewayClass)
+            content: |
+              set -eu
+              # Resolve the edge IP here; output bindings don't cross steps.
+              IP=$(kubectl get svc -n datum-downstream-gateway \
+                -l gateway.envoyproxy.io/owning-gatewayclass=$OWNING_GC \
+                -o jsonpath='{.items[0].spec.clusterIP}')
+              # Malicious payloads, kept inline so the assertion is
+              # self-contained; the corpus file is the reviewable source.
+              fail=0
+              for q in \
+                'id=1%27%20OR%20%271%27%3D%271' \
+                'q=UNION%20SELECT%20username%2Cpassword%20FROM%20users' \
+                'file=..%2F..%2F..%2Fetc%2Fpasswd' \
+                'x=%3Cscript%3Ealert(1)%3C%2Fscript%3E' ; do
+                code=$(kubectl -n default exec conntest -- \
+                  curl -ksS -o /dev/null -w '%{http_code}' --max-time 10 \
+                  --resolve "${HOST}:443:${IP}" \
+                  "https://${HOST}/get?${q}" 2>/dev/null || true)
+                echo "malicious '${q}' -> ${code}"
+                if [ "${code}" != "403" ]; then
+                  echo "  ERROR: expected 403 (WAF block), got ${code}"
+                  fail=1
+                fi
+              done
+              [ "${fail}" -eq 0 ] || { echo "ERROR: a malicious request was not blocked"; exit 1; }
+              echo "OK: all malicious requests blocked with 403"
+      catch:
+        - script:
+            cluster: nso-downstream
+            content: |
+              kubectl -n datum-downstream-gateway logs -l gateway.envoyproxy.io/owning-gatewayclass=$OWNING_GC -c envoy --tail=100
+            env:
+              - name: OWNING_GC
+                value: ($downstreamGatewayClass)
+
+    - name: Benign request still returns 200 after the WAF blocks (parser.Merge guard)
+      description: |
+        Checks the listener still works after a firewall block. If a bad
+        firewall rule broke the proxy or its listener, this returns non-200 and
+        the test fails.
+      use:
+        template: ../_steps/assert-http-response.yaml
+        with:
+          bindings:
+            - { name: host, value: waf.e2e.env.datum.net }
+            - { name: path, value: /get }
+            - { name: scheme, value: https }
+            - { name: expectCode, value: "200" }
+
+    - name: Observe-mode control - the same malicious request now returns 200
+      try:
+        - description: |
+            Switch the policy to Observe so the firewall logs but does not
+            block. This proves the 403 above came from the policy, not an
+            unrelated default.
+          patch:
+            cluster: nso-upstream
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: TrafficProtectionPolicy
+              metadata:
+                name: test-waf
+              spec:
+                mode: Observe
+      catch:
+        - script:
+            cluster: nso-downstream
+            content: |
+              kubectl -n datum-downstream-gateway logs -l gateway.envoyproxy.io/owning-gatewayclass=$OWNING_GC -c envoy --tail=100
+            env:
+              - name: OWNING_GC
+                value: ($downstreamGatewayClass)
+
+    - name: In Observe mode the previously-blocked SQLi request returns 200
+      description: |
+        After the switch to Observe, the edge must pick up the new config and
+        the same payload that returned 403 now returns 200. This 403-to-200
+        transition is what proves enforcement is driven by the policy.
+      use:
+        template: ../_steps/assert-http-response.yaml
+        with:
+          bindings:
+            - { name: host, value: waf.e2e.env.datum.net }
+            - { name: path, value: "/get?id=1%27%20OR%20%271%27%3D%271" }
+            - { name: scheme, value: https }
+            - { name: expectCode, value: "200" }
+
+    # Let the edge config settle after the Observe-mode switch before the
+    # config-presence check compares.
+    - name: Wait for the edge config to settle before the parity gate
+      use:
+        template: ../_steps/wait-config-settle.yaml
+        with:
+          bindings:
+            - { name: extServerSelector, value: app.kubernetes.io/component=envoy-gateway-extension-server }
+            - { name: extServerNamespace, value: network-services-operator-system }
+
+    # Runs last so a config-presence hiccup never masks the firewall traffic
+    # assertions above.
+    - name: Config-presence - the WAF config actually landed at the edge (parity gate)
+      description: |
+        Confirms the firewall config is actually present at the edge: the live
+        proxy config carries exactly the firewall rules the extension server
+        reports it programmed, and the proxy accepted the update. The traffic
+        assertions prove the firewall blocks; this proves the config is present
+        and not silently dropped.
+      use:
+        template: ../_steps/assert-config-dump.yaml
+        with:
+          # Values are inlined, not referenced as ($envoyNamespace) etc.: a
+          # with-binding whose name matches a template default resolves ($name)
+          # against the template default, not this test's value. Literals avoid
+          # that self-reference.
+          bindings:
+            - { name: envoyPodSelector, value: gateway.envoyproxy.io/owning-gatewayclass=datum-downstream-gateway-e2e }
+            - { name: envoyNamespace, value: datum-downstream-gateway }
+            - { name: extServerSelector, value: app.kubernetes.io/component=envoy-gateway-extension-server }
+            - { name: extServerNamespace, value: network-services-operator-system }
+            - { name: dataplaneCluster, value: nso-downstream }

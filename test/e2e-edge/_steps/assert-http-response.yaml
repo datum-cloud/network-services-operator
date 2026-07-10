@@ -1,0 +1,152 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/step-template-chainsaw-v1alpha1.json
+#
+# Reusable "assert real HTTP response" step. Drives a real request from the
+# long-lived `conntest` pod and retries until the response matches, or fails.
+# Scenarios assert observed proxy behaviour through this helper rather than
+# Kubernetes status, so it is the most-reused step in the suite.
+#
+# Use it from a scenario step:
+#
+#   - name: good hostname serves 200
+#     use:
+#       template: ../_steps/assert-http-response.yaml
+#       with:
+#         bindings:
+#           - { name: host,        value: good.e2e.env.datum.net }
+#           - { name: path,        value: /status/200 }
+#           - { name: resolveIP,   value: ($gatewayIP) }
+#           - { name: scheme,      value: https }
+#           - { name: expectCode,  value: "200" }
+#
+# Required bindings: host, path, resolveIP, scheme(http|https), expectCode.
+# Optional (defaulted below): port, expectBodySubstring, attempts, sleepSeconds,
+# maxTime, conntestNamespace, conntestPod, dataplaneCluster.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: StepTemplate
+metadata:
+  name: assert-http-response
+spec:
+  # Defaults so callers only pass what varies. A caller binding for the same name
+  # overrides the default.
+  bindings:
+    - name: port
+      value: "443"
+    - name: expectBodySubstring
+      value: ""
+    - name: attempts
+      value: "24"
+    - name: sleepSeconds
+      value: "5"
+    - name: maxTime
+      value: "10"
+    - name: conntestNamespace
+      value: default
+    - name: conntestPod
+      value: conntest
+    # The edge cluster where the conntest pod and the edge proxy service live.
+    - name: dataplaneCluster
+      value: nso-downstream
+    # The edge IP is resolved inside this step, because a value resolved in a
+    # prior step is not visible here. By default we look up the edge proxy
+    # service's cluster IP by its gateway-class label; a caller may pass an
+    # explicit resolveIP to skip the lookup.
+    - name: resolveIP
+      value: ""
+    - name: envoyPodSelector
+      value: gateway.envoyproxy.io/owning-gatewayclass=datum-downstream-gateway-e2e
+    - name: envoyNamespace
+      value: datum-downstream-gateway
+  try:
+    - description: Drive the request and retry until it matches the expected outcome.
+      script:
+        # The retry loop owns its own timing, so allow enough wall clock for
+        # attempts*sleepSeconds plus per-request maxTime. The chainsaw default is
+        # far too short.
+        timeout: 360s
+        cluster: ($dataplaneCluster)
+        env:
+          - name: HOST
+            value: ($host)
+          - name: REQ_PATH
+            value: ($path)
+          - name: RESOLVE_IP
+            value: ($resolveIP)
+          - name: ENVOY_SELECTOR
+            value: ($envoyPodSelector)
+          - name: ENVOY_NS
+            value: ($envoyNamespace)
+          - name: SCHEME
+            value: ($scheme)
+          - name: PORT
+            value: ($port)
+          - name: EXPECT_CODE
+            value: ($expectCode)
+          - name: EXPECT_BODY
+            value: ($expectBodySubstring)
+          - name: ATTEMPTS
+            value: ($attempts)
+          - name: SLEEP_SECONDS
+            value: ($sleepSeconds)
+          - name: MAX_TIME
+            value: ($maxTime)
+          - name: CONNTEST_NS
+            value: ($conntestNamespace)
+          - name: CONNTEST_POD
+            value: ($conntestPod)
+        content: |
+          set -eu
+          # The edge proxy is reached by its in-cluster service IP; --resolve maps
+          # the customer hostname to that IP so hostname routing works exactly as
+          # it would at the edge. The body is captured so we can assert on it: a
+          # right status code with the wrong body (e.g. a generic 503 instead of
+          # the connector "Tunnel not online") is a different bug and must fail.
+          #
+          # If the caller passed an explicit RESOLVE_IP, use it; otherwise look up
+          # the edge proxy service IP by its gateway-class label. That service is
+          # created lazily once a gateway attaches, so retry the lookup briefly.
+          RESOLVE_IP="${RESOLVE_IP:-}"
+          if [ -z "${RESOLVE_IP}" ]; then
+            for j in $(seq 1 30); do
+              RESOLVE_IP=$(kubectl get svc -n "${ENVOY_NS}" -l "${ENVOY_SELECTOR}" \
+                -o jsonpath='{.items[0].spec.clusterIP}' 2>/dev/null || true)
+              [ -n "${RESOLVE_IP}" ] && [ "${RESOLVE_IP}" != "None" ] && break
+              echo "waiting for edge Envoy service (${ENVOY_SELECTOR} in ${ENVOY_NS})... ${j}"
+              sleep 5
+            done
+            if [ -z "${RESOLVE_IP}" ]; then
+              echo "ERROR: could not resolve edge Envoy service IP for ${ENVOY_SELECTOR} in ${ENVOY_NS}"
+              exit 1
+            fi
+          fi
+          echo "edge IP: ${RESOLVE_IP}"
+          ok=""
+          last_code=""
+          for i in $(seq 1 "${ATTEMPTS}"); do
+            code=$(kubectl -n "${CONNTEST_NS}" exec "${CONNTEST_POD}" -- \
+              curl -ksS -o /tmp/body -w '%{http_code}' --max-time "${MAX_TIME}" \
+              --resolve "${HOST}:${PORT}:${RESOLVE_IP}" \
+              "${SCHEME}://${HOST}${REQ_PATH}" 2>/dev/null || true)
+            last_code="${code}"
+            echo "attempt ${i}: ${SCHEME}://${HOST}${REQ_PATH} -> ${code}"
+            if [ "${code}" = "${EXPECT_CODE}" ]; then
+              if [ -z "${EXPECT_BODY}" ]; then
+                ok="yes"; break
+              fi
+              if kubectl -n "${CONNTEST_NS}" exec "${CONNTEST_POD}" -- \
+                   grep -qF -- "${EXPECT_BODY}" /tmp/body 2>/dev/null; then
+                ok="yes"; break
+              fi
+              echo "  status matched but body missing substring: ${EXPECT_BODY}"
+            fi
+            sleep "${SLEEP_SECONDS}"
+          done
+          if [ -z "${ok}" ]; then
+            echo "ERROR: ${HOST}${REQ_PATH} expected ${EXPECT_CODE}" \
+                 "${EXPECT_BODY:+(body contains '${EXPECT_BODY}')}," \
+                 "last status ${last_code}"
+            echo "--- last response body ---"
+            kubectl -n "${CONNTEST_NS}" exec "${CONNTEST_POD}" -- \
+              sh -c 'cat /tmp/body 2>/dev/null | head -c 2000' || true
+            exit 1
+          fi
+          echo "OK: ${HOST}${REQ_PATH} -> ${EXPECT_CODE}${EXPECT_BODY:+ (body matched)}"

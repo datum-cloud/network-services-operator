@@ -2,6 +2,8 @@ package mutate
 
 import (
 	"fmt"
+	"regexp"
+	"strings"
 
 	accesslogv3 "github.com/envoyproxy/go-control-plane/envoy/config/accesslog/v3"
 	corev3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
@@ -146,10 +148,51 @@ func buildLocalReplyConfig(cfg *LocalReplyConfig) *hcmv3.LocalReplyConfig {
 				ContentType: cfg.ContentType,
 				Format: &corev3.SubstitutionFormatString_TextFormatSource{
 					TextFormatSource: &corev3.DataSource{
-						Specifier: &corev3.DataSource_InlineString{InlineString: cfg.BodyHTML},
+						Specifier: &corev3.DataSource_InlineString{InlineString: escapeEnvoyFormatLiterals(cfg.BodyHTML)},
 					},
 				},
 			},
 		}},
 	}
+}
+
+// envoyCommandToken matches a single well-formed Envoy substitution command
+// operator (e.g. %RESPONSE_CODE%, %REQ(x-header)%, %REQ(x-header):10%) anchored
+// at the start of the input. It is used to distinguish intended command
+// operators from literal percent signs.
+var envoyCommandToken = regexp.MustCompile(`^%[A-Z0-9_]+(\([^)]*\))?(:[0-9]+)?%`)
+
+// escapeEnvoyFormatLiterals makes an arbitrary string safe to embed as the
+// text_format of an Envoy SubstitutionFormatString. Envoy parses that string as
+// a format template, so any bare '%' is read as the start of a command operator
+// and an unrecognized one is rejected — which, on the failOpen:false downstream
+// hook, NACKs the whole listener xDS update fleet-wide (see issue #243: the
+// branded error page's CSS "height: 100%" took the listener down).
+//
+// Bare '%' are escaped to '%%' (Envoy's literal-percent escape) while
+// already-escaped '%%' and valid '%COMMAND%' operators (such as the intended
+// %RESPONSE_CODE%) are preserved unchanged. The transform is idempotent.
+func escapeEnvoyFormatLiterals(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); {
+		if s[i] != '%' {
+			b.WriteByte(s[i])
+			i++
+			continue
+		}
+		if i+1 < len(s) && s[i+1] == '%' {
+			b.WriteString("%%")
+			i += 2
+			continue
+		}
+		if m := envoyCommandToken.FindString(s[i:]); m != "" {
+			b.WriteString(m)
+			i += len(m)
+			continue
+		}
+		b.WriteString("%%")
+		i++
+	}
+	return b.String()
 }

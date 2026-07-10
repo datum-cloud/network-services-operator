@@ -518,6 +518,43 @@ func TestProcessTrafficProtectionPolicyForHTTPRoute(t *testing.T) {
 				}
 			},
 		},
+		{
+			name: "inverted paranoia levels rejected",
+			policy: &policyContext{
+				TrafficProtectionPolicy: ptr.To(newTrafficProtectionPolicy("default", "tpp-1", func(tpp *networkingv1alpha.TrafficProtectionPolicy) {
+					tpp.Spec.RuleSets[0].OWASPCoreRuleSet.ParanoiaLevels = networkingv1alpha.ParanoiaLevels{
+						Blocking:  2,
+						Detection: 1,
+					}
+				})),
+			},
+			routeMap: map[client.ObjectKey]*policyRouteTargetContext{
+				{Namespace: "default", Name: "route-1"}: {
+					HTTPRoute: newHTTPRoute("default", "route-1"),
+				},
+			},
+			gatewayMap: map[client.ObjectKey]*policyGatewayTargetContext{
+				{Namespace: "default", Name: "gateway-1"}: {
+					Gateway: ptr.To(newGatewayFunc("default", "gateway-1")),
+				},
+			},
+			targetRef: gatewayv1alpha2.LocalPolicyTargetReferenceWithSectionName{
+				LocalPolicyTargetReference: gatewayv1.LocalPolicyTargetReference{
+					Kind: "HTTPRoute",
+					Name: "route-1",
+				},
+			},
+			assert: func(t *testContext, policyAttachments []policyAttachment) {
+				assert.Empty(t, policyAttachments, "invalid policy must not be attached")
+				if assert.Len(t, t.policy.Status.Ancestors, 1) {
+					if assert.Len(t, t.policy.Status.Ancestors[0].Conditions, 1) {
+						cond := t.policy.Status.Ancestors[0].Conditions[0]
+						assert.Equal(t, string(gatewayv1.PolicyReasonInvalid), cond.Reason, "expected invalid reason")
+						assert.Equal(t, metav1.ConditionFalse, cond.Status, "expected Accepted=False")
+					}
+				}
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -649,6 +686,38 @@ func TestProcessTrafficProtectionPolicyForGateway(t *testing.T) {
 				}
 			},
 		},
+		{
+			name: "inverted paranoia levels rejected",
+			policy: &policyContext{
+				TrafficProtectionPolicy: ptr.To(newTrafficProtectionPolicy("default", "tpp-1", func(tpp *networkingv1alpha.TrafficProtectionPolicy) {
+					tpp.Spec.RuleSets[0].OWASPCoreRuleSet.ParanoiaLevels = networkingv1alpha.ParanoiaLevels{
+						Blocking:  2,
+						Detection: 1,
+					}
+				})),
+			},
+			gatewayMap: map[client.ObjectKey]*policyGatewayTargetContext{
+				{Namespace: "default", Name: "gateway-1"}: {
+					Gateway: ptr.To(newGatewayFunc("default", "gateway-1")),
+				},
+			},
+			targetRef: gatewayv1alpha2.LocalPolicyTargetReferenceWithSectionName{
+				LocalPolicyTargetReference: gatewayv1.LocalPolicyTargetReference{
+					Kind: "Gateway",
+					Name: "gateway-1",
+				},
+			},
+			assert: func(t *testContext, policyAttachments []policyAttachment) {
+				assert.Empty(t, policyAttachments, "invalid policy must not be attached")
+				if assert.Len(t, t.policy.Status.Ancestors, 1) {
+					if assert.Len(t, t.policy.Status.Ancestors[0].Conditions, 1) {
+						cond := t.policy.Status.Ancestors[0].Conditions[0]
+						assert.Equal(t, string(gatewayv1.PolicyReasonInvalid), cond.Reason, "expected invalid reason")
+						assert.Equal(t, metav1.ConditionFalse, cond.Status, "expected Accepted=False")
+					}
+				}
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -671,6 +740,42 @@ func TestProcessTrafficProtectionPolicyForGateway(t *testing.T) {
 
 			tt.assert(testCtx, attachments)
 
+		})
+	}
+}
+
+func TestParanoiaLevelsResolveError(t *testing.T) {
+	tests := []struct {
+		name      string
+		blocking  int
+		detection int
+		wantError bool
+	}{
+		{name: "equal levels", blocking: 2, detection: 2, wantError: false},
+		{name: "higher detection", blocking: 1, detection: 3, wantError: false},
+		{name: "detection below blocking", blocking: 2, detection: 1, wantError: true},
+		{name: "defaulted detection below blocking", blocking: 4, detection: 1, wantError: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			policy := &policyContext{
+				TrafficProtectionPolicy: ptr.To(newTrafficProtectionPolicy("default", "tpp-1", func(tpp *networkingv1alpha.TrafficProtectionPolicy) {
+					tpp.Spec.RuleSets[0].OWASPCoreRuleSet.ParanoiaLevels = networkingv1alpha.ParanoiaLevels{
+						Blocking:  tt.blocking,
+						Detection: tt.detection,
+					}
+				})),
+			}
+
+			resolveErr := paranoiaLevelsResolveError(policy)
+			if tt.wantError {
+				if assert.NotNil(t, resolveErr) {
+					assert.Equal(t, gatewayv1.PolicyReasonInvalid, resolveErr.Reason)
+				}
+			} else {
+				assert.Nil(t, resolveErr)
+			}
 		})
 	}
 }

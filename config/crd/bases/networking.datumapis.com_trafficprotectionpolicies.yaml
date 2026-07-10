@@ -89,6 +89,10 @@ spec:
                               minimum: 1
                               type: integer
                           type: object
+                          x-kubernetes-validations:
+                          - message: detection paranoia level must be greater than
+                              or equal to blocking paranoia level
+                            rule: self.detection >= self.blocking
                         ruleExclusions:
                           description: |-
                             RuleExclusions can be used to disable specific OWASP ModSecurity Rules.

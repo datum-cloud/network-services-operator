@@ -1,0 +1,87 @@
+# Test edge data plane for the downstream gateway. It models the production edge
+# proxy on the two things that matter for testing: the real WAF image, and an
+# admin endpoint (test-env-only) so the suite and parity gate can read the
+# proxy's live configuration and stats.
+#
+# Here the data plane is a Deployment/Service rather than the production
+# DaemonSet, which does not change WAF or configuration behavior.
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyProxy
+metadata:
+  name: datum-downstream-gateway
+  namespace: datum-downstream-gateway
+spec:
+  mergeGateways: true
+  ipFamily: DualStack
+  provider:
+    type: Kubernetes
+    kubernetes:
+      envoyDeployment:
+        pod:
+          volumes:
+            - name: coraza-waf
+              emptyDir: {}
+        container:
+          image: envoyproxy/envoy:contrib-v1.37.1
+          volumeMounts:
+            - name: coraza-waf
+              mountPath: /opt/coraza-waf
+        initContainers:
+          - name: coraza-waf
+            # Multi-arch build of the same WAF filter as the production edge. The
+            # multi-arch image loads natively on arm64 dev hosts as well as on
+            # amd64 CI and production — same filter, same rules.
+            image: ghcr.io/datum-labs/coraza-envoy-go-filter/coraza-waf:v1.3.0-multiarch.1
+            imagePullPolicy: IfNotPresent
+            command:
+              - cp
+              - /coraza-waf.so
+              - /opt/coraza-waf/
+            volumeMounts:
+              - name: coraza-waf
+                mountPath: /opt/coraza-waf
+      envoyService:
+        externalTrafficPolicy: Cluster
+        type: NodePort
+        patch:
+          type: StrategicMerge
+          value:
+            spec:
+              ipFamilyPolicy: RequireDualStack
+              ports:
+                - name: http-80
+                  nodePort: 30080
+                  port: 80
+                - name: https-443
+                  nodePort: 30443
+                  port: 443
+  # TEST-ENV-ONLY: expose the proxy's admin interface so an in-cluster runner can
+  # read its live configuration and stats. The admin endpoint is unauthenticated
+  # and must never be applied in production — a CI guard asserts this patch is
+  # absent from any non-e2e output.
+  bootstrap:
+    type: JSONPatch
+    jsonPatches:
+      - op: add
+        path: /admin/address
+        value:
+          socket_address:
+            address: 0.0.0.0
+            port_value: 19000
+  telemetry:
+    metrics:
+      prometheus:
+        disable: false
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: datum-downstream-gateway-e2e
+spec:
+  controllerName: gateway.envoyproxy.io/datum-downstream-gateway
+  parametersRef:
+    group: gateway.envoyproxy.io
+    kind: EnvoyProxy
+    name: datum-downstream-gateway
+    namespace: datum-downstream-gateway

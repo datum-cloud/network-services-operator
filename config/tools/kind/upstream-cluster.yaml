@@ -1,0 +1,15 @@
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: nso-upstream
+networking:
+  ipFamily: dual
+nodes:
+- role: control-plane
+  # Expose the Karmada apiserver NodePort (32443) to the host so karmadactl —
+  # which runs on the host — can reach the Karmada apiserver during init/join.
+  # On macOS the kind docker-network IP is not host-routable, so without this
+  # mapping karmadactl times out dialing the advertised node IP:32443.
+  extraPortMappings:
+  - containerPort: 32443
+    hostPort: 32443
+    protocol: TCP

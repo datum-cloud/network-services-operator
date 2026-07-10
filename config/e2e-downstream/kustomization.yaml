@@ -1,0 +1,38 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# The e2e edge overlay applied to nso-downstream. Composes the ext-server
+# (prefixed/namespaced via extserver-base) with the e2e mTLS issuer chain, the
+# Coraza/branded-page server-config, the branded error page, and the test
+# EnvoyProxy (real Coraza WAF image + admin :19000) and its GatewayClass.
+#
+# The ConfigMaps / issuer / EnvoyProxy / GatewayClass are kept OUT of the
+# name-prefix so the deployment's literal references (envoy-error-pages,
+# extension-server-config) and the EG fqdn resolve unchanged.
+resources:
+- namespace.yaml
+- extserver-base
+- issuer.yaml
+- extserver-config.yaml
+- error-pages.yaml
+- envoyproxy.yaml
+
+# The NSO image tag is set by the bring-up (test-infra:extension-server) to the
+# git-SHA-built image.
+images:
+- name: ghcr.io/datum-cloud/network-services-operator
+  newName: ghcr.io/datum-cloud/network-services-operator
+  newTag: 63fa912
+
+# The default e2e path has no Prometheus operator; drop the ServiceMonitor so
+# the apply doesn't fail on the missing monitoring.coreos.com CRD. (Re-add via
+# OBSERVABILITY=1 when the Flux observability stack is enabled.)
+patches:
+- patch: |
+    $patch: delete
+    apiVersion: monitoring.coreos.com/v1
+    kind: ServiceMonitor
+    metadata:
+      name: envoy-gateway-extension-server-metrics
+  target:
+    kind: ServiceMonitor

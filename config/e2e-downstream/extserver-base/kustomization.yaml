@@ -1,0 +1,32 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Ext-server, namespaced + prefixed so the Service FQDN matches the EG
+# extensionManager fqdn and the CSI dns-names baked into the base deployment.
+namespace: network-services-operator-system
+namePrefix: network-services-operator-
+
+resources:
+  - ../../extension-server
+
+patches:
+  - path: patches/extserver-tls.yaml
+    target:
+      kind: Deployment
+      name: envoy-gateway-extension-server
+  - path: patches/extserver-serverconfig.yaml
+    target:
+      kind: Deployment
+      name: envoy-gateway-extension-server
+  - path: patches/extserver-clientcert-issuer.yaml
+    target:
+      kind: Certificate
+      name: envoy-gateway-extension-server-eg-client-tls
+  - path: patches/extserver-ca-bundle.yaml
+    target:
+      kind: Deployment
+      name: envoy-gateway-extension-server
+  - path: patches/extserver-programmed-set.yaml
+    target:
+      kind: Deployment
+      name: envoy-gateway-extension-server

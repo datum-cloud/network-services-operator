@@ -95,6 +95,10 @@ tasks:
     cmds:
       - echo "🚀 test-infra:up — building nso-upstream + nso-downstream"
       - task: clusters
+      # The gateway CRDs live inside the Envoy Gateway helm chart, which is
+      # gitignored (config/**/charts). Pull it first so eg-crds can apply them —
+      # on a dev machine it is already vendored, on CI it is fetched fresh.
+      - task: eg-chart
       # The Gateway-API and gateway CRDs must land on the downstream cluster
       # before cert-manager (it probes the Gateway-API CRDs at startup) and before
       # the downstream gateway (it needs its own CRDs present).
@@ -183,6 +187,18 @@ tasks:
       - |
         kubectl --context {{.UPSTREAM_CTX}} -n network-services-operator-system patch deploy network-services-operator-controller-manager \
           --type=json -p '[{"op":"replace","path":"/spec/template/spec/containers/0/resources/limits/memory","value":"2Gi"},{"op":"replace","path":"/spec/template/spec/containers/0/resources/requests/memory","value":"512Mi"}]' || true
+
+  eg-chart:
+    desc: "Vendor the Envoy Gateway helm chart into config/tools/envoy-gateway-downstream/charts so eg-crds can apply the CRDs bundled inside it. The chart dir is gitignored (config/**/charts); this pulls it if absent. Idempotent — a no-op when it is already vendored (dev machine) and a fresh pull on CI."
+    vars:
+      CHART_DIR: config/tools/envoy-gateway-downstream/charts/gateway-helm-{{.ENVOY_GATEWAY_VERSION}}
+    cmds:
+      - |
+        if [ ! -d "{{.CHART_DIR}}/gateway-helm/crds" ]; then
+          echo "📦 pulling gateway-helm {{.ENVOY_GATEWAY_VERSION}} from oci://docker.io/envoyproxy"
+          mkdir -p "{{.CHART_DIR}}"
+          helm pull oci://docker.io/envoyproxy/gateway-helm --version {{.ENVOY_GATEWAY_VERSION}} --untar --untardir "{{.CHART_DIR}}"
+        fi
 
   eg-crds:
     desc: "Install the full Gateway-API + Envoy Gateway CRD set (incl ReferenceGrant + EnvoyProxy) on the downstream cluster. The downstream EG chart sets includeCRDs:false, so CRDs are applied separately (matches prod, where CRDs are managed out-of-band)."

@@ -58,6 +58,7 @@ spec:
             - --tls-key=$(TLS_KEY)
             - --tls-client-ca=$(TLS_CLIENT_CA)
             - --server-config=$(SERVER_CONFIG)
+            - --enable-programmed-set=$(ENABLE_PROGRAMMED_SET)
           env:
             - name: GRPC_ADDR
               value: ":5005"
@@ -73,6 +74,11 @@ spec:
             # mounted path to apply Coraza directives.
             - name: SERVER_CONFIG
               value: ""
+            # Off in production. The test-environment overlay sets this to "true"
+            # to serve the read-only /debug/programmed-set endpoint the parity
+            # test reads.
+            - name: ENABLE_PROGRAMMED_SET
+              value: "false"
           ports:
             - name: grpc
               containerPort: 5005

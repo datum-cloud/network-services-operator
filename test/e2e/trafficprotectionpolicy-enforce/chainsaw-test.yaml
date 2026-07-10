@@ -22,9 +22,6 @@ spec:
     metadata:
       labels:
         meta.datumapis.com/upstream-cluster-name: e2e
-  bindings:
-    - name: hostname
-      value: (join('.', [$namespace, 'e2e.test']))
   steps:
     - name: Deploy a backend
       try:
@@ -72,6 +69,9 @@ spec:
                 availableReplicas: 1
 
     - name: Route through the WAF gateway with an Enforce policy
+      bindings:
+        - name: hostname
+          value: (join('.', [$namespace, 'e2e.test']))
       try:
         - apply:
             resource:
@@ -141,6 +141,9 @@ spec:
         not sufficient on its own — EG reports Programmed from its own
         translation, independent of Envoy's xDS ACK — so this asserts on the
         wire.
+      bindings:
+        - name: hostname
+          value: (join('.', [$namespace, 'e2e.test']))
       try:
         - script:
             env:

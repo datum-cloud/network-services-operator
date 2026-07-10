@@ -105,6 +105,11 @@ tasks:
       - task: eg-crds
       - task: downstream-crds
       - task: downstream-namespaces
+      # cert-manager runs with enableGatewayAPI:true and crashloops at startup if
+      # the Gateway-API CRDs are absent. The downstream gets them from eg-crds; the
+      # upstream otherwise wouldn't until prepare-upstream (config/e2e), far too
+      # late — the crashloop delays the manager's webhook cert and stalls bring-up.
+      - task: upstream-gateway-crds
       - task: cert-manager-upstream
       - task: cert-manager-downstream
       - task: nso-image
@@ -207,6 +212,13 @@ tasks:
     cmds:
       - kubectl --context {{.DOWNSTREAM_CTX}} apply --server-side=true --force-conflicts -f {{.EG_CRD_DIR}}/gatewayapi-crds.yaml
       - kubectl --context {{.DOWNSTREAM_CTX}} apply --server-side=true --force-conflicts -f {{.EG_CRD_DIR}}/generated/
+
+  upstream-gateway-crds:
+    desc: "Install the Gateway-API CRDs on the upstream cluster so cert-manager (enableGatewayAPI:true) starts cleanly instead of crashlooping until config/e2e lands them. Uses the same chart-bundled CRDs as eg-crds; requires eg-chart to have pulled the chart."
+    vars:
+      EG_CRD_DIR: config/tools/envoy-gateway-downstream/charts/gateway-helm-{{.ENVOY_GATEWAY_VERSION}}/gateway-helm/crds
+    cmds:
+      - kubectl --context {{.UPSTREAM_CTX}} apply --server-side=true --force-conflicts -f {{.EG_CRD_DIR}}/gatewayapi-crds.yaml
 
   downstream-namespaces:
     desc: "Create the downstream gateway + hostname-accounting namespaces, plus the EG-watched e2e-direct namespace for hand-delivered fixtures (D1/D2). Runs BEFORE eg-downstream so e2e-direct carries its watch label before EG establishes its informer."
@@ -323,7 +335,7 @@ tasks:
     desc: "Wait for the core components (NSO manager, downstream EG, ext-server) to be Available."
     cmds:
       - echo "⏳ waiting for NSO manager (upstream)"
-      - kubectl --context {{.UPSTREAM_CTX}} -n network-services-operator-system wait deploy network-services-operator-controller-manager --for=condition=Available --timeout=240s
+      - kubectl --context {{.UPSTREAM_CTX}} -n network-services-operator-system wait deploy network-services-operator-controller-manager --for=condition=Available --timeout=300s
       - echo "⏳ waiting for downstream EG"
       # The gateway control-plane Deployment is named `envoy-gateway` by its chart,
       # not after the release name.

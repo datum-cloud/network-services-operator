@@ -95,9 +95,11 @@ jobs:
           for ctx in kind-nso-upstream kind-nso-downstream; do
             echo "### $ctx"
             kubectl --context "$ctx" get pods -A \
-              --field-selector=status.phase!=Running,status.phase!=Succeeded -o name | while read -r p; do
-              ns=$(kubectl --context "$ctx" get "$p" -A -o jsonpath='{..metadata.namespace}' 2>/dev/null)
-              kubectl --context "$ctx" -n "$ns" describe "${p#*/}" 2>/dev/null | tail -30
+              --field-selector=status.phase!=Running,status.phase!=Succeeded \
+              -o jsonpath='{range .items[*]}{.metadata.namespace}{" "}{.metadata.name}{"\n"}{end}' \
+              | while read -r ns name; do
+              [ -n "$name" ] || continue
+              kubectl --context "$ctx" -n "$ns" describe pod "$name" 2>/dev/null | tail -30
             done
           done
           echo "::endgroup::"

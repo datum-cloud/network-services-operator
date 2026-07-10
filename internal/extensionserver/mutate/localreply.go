@@ -2,7 +2,6 @@ package mutate
 
 import (
 	"fmt"
-	"regexp"
 	"strings"
 
 	accesslogv3 "github.com/envoyproxy/go-control-plane/envoy/config/accesslog/v3"
@@ -156,11 +155,27 @@ func buildLocalReplyConfig(cfg *LocalReplyConfig) *hcmv3.LocalReplyConfig {
 	}
 }
 
-// envoyCommandToken matches a single well-formed Envoy substitution command
-// operator (e.g. %RESPONSE_CODE%, %REQ(x-header)%, %REQ(x-header):10%) anchored
-// at the start of the input. It is used to distinguish intended command
-// operators from literal percent signs.
-var envoyCommandToken = regexp.MustCompile(`^%[A-Z0-9_]+(\([^)]*\))?(:[0-9]+)?%`)
+// envoyBodyAllowedCommands is the allowlist of Envoy substitution command
+// operators permitted to pass through unescaped in an error-page body. It is an
+// allowlist, not a grammar match: only operators we actually template are
+// preserved, because any *other* command-shaped token (e.g. a literal
+// "%COMPLETE%" in an override page) is not a valid Envoy operator and would
+// re-trigger the exact listener rejection this escaper exists to prevent
+// (issue #243). Keep entries longest-first so matching is unambiguous.
+var envoyBodyAllowedCommands = []string{
+	"%RESPONSE_CODE%",
+}
+
+// matchAllowedCommand returns the allowlisted command operator that prefixes s,
+// or "" if none does.
+func matchAllowedCommand(s string) string {
+	for _, cmd := range envoyBodyAllowedCommands {
+		if strings.HasPrefix(s, cmd) {
+			return cmd
+		}
+	}
+	return ""
+}
 
 // escapeEnvoyFormatLiterals makes an arbitrary string safe to embed as the
 // text_format of an Envoy SubstitutionFormatString. Envoy parses that string as
@@ -170,8 +185,11 @@ var envoyCommandToken = regexp.MustCompile(`^%[A-Z0-9_]+(\([^)]*\))?(:[0-9]+)?%`
 // branded error page's CSS "height: 100%" took the listener down).
 //
 // Bare '%' are escaped to '%%' (Envoy's literal-percent escape) while
-// already-escaped '%%' and valid '%COMMAND%' operators (such as the intended
-// %RESPONSE_CODE%) are preserved unchanged. The transform is idempotent.
+// already-escaped '%%' and allowlisted operators (envoyBodyAllowedCommands,
+// e.g. the intended %RESPONSE_CODE%) are preserved unchanged. Every other
+// command-shaped token is treated as a literal and escaped, so an unrecognized
+// operator can never survive into the pushed config. The transform is
+// idempotent.
 func escapeEnvoyFormatLiterals(s string) string {
 	var b strings.Builder
 	b.Grow(len(s))
@@ -186,13 +204,57 @@ func escapeEnvoyFormatLiterals(s string) string {
 			i += 2
 			continue
 		}
-		if m := envoyCommandToken.FindString(s[i:]); m != "" {
-			b.WriteString(m)
-			i += len(m)
+		if cmd := matchAllowedCommand(s[i:]); cmd != "" {
+			b.WriteString(cmd)
+			i += len(cmd)
 			continue
 		}
 		b.WriteString("%%")
 		i++
 	}
 	return b.String()
+}
+
+// assertEnvoyFormatSafe returns an error if s still contains a bare '%' that
+// Envoy would misparse as an incomplete or unrecognized command operator. It is
+// the inverse invariant of escapeEnvoyFormatLiterals and backs the startup
+// validation in ValidateLocalReplyConfig.
+func assertEnvoyFormatSafe(s string) error {
+	for i := 0; i < len(s); {
+		if s[i] != '%' {
+			i++
+			continue
+		}
+		if i+1 < len(s) && s[i+1] == '%' {
+			i += 2
+			continue
+		}
+		if cmd := matchAllowedCommand(s[i:]); cmd != "" {
+			i += len(cmd)
+			continue
+		}
+		return fmt.Errorf("bare %% at byte offset %d", i)
+	}
+	return nil
+}
+
+// ValidateLocalReplyConfig assembles the local_reply_config and asserts it is
+// safe to push, so a malformed body is caught in the operator process at startup
+// instead of NACKing the xDS update fleet-wide on the failOpen:false downstream
+// hook (issue #243). It round-trips the config through proto marshalling and
+// verifies the injected body carries no bare '%'. A disabled or empty config is
+// vacuously valid (injection is a no-op).
+func ValidateLocalReplyConfig(cfg *LocalReplyConfig) error {
+	if cfg.Disabled || cfg.BodyHTML == "" {
+		return nil
+	}
+	lrc := buildLocalReplyConfig(cfg)
+	if _, err := anypb.New(lrc); err != nil {
+		return fmt.Errorf("marshal local_reply_config: %w", err)
+	}
+	body := lrc.GetMappers()[0].GetBodyFormatOverride().GetTextFormatSource().GetInlineString()
+	if err := assertEnvoyFormatSafe(body); err != nil {
+		return fmt.Errorf("assembled error-page body is not Envoy-safe: %w", err)
+	}
+	return nil
 }

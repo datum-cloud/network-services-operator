@@ -1,7 +1,6 @@
 package mutate
 
 import (
-	"regexp"
 	"strings"
 	"testing"
 
@@ -233,9 +232,10 @@ func TestEscapeEnvoyFormatLiterals(t *testing.T) {
 		{"no percent", "<html>plain</html>", "<html>plain</html>"},
 		{"bare percent in css", "height: 100%;", "height: 100%%;"},
 		{"multiple bare percents", "120% 50% 0%", "120%% 50%% 0%%"},
-		{"preserve command", "code %RESPONSE_CODE% end", "code %RESPONSE_CODE% end"},
-		{"preserve command with args", "%REQ(x-header)%", "%REQ(x-header)%"},
-		{"preserve command with length", "%REQ(x-header):10%", "%REQ(x-header):10%"},
+		{"preserve allowlisted command", "code %RESPONSE_CODE% end", "code %RESPONSE_CODE% end"},
+		{"escape non-allowlisted command", "%REQ(x-header)%", "%%REQ(x-header)%%"},
+		{"escape non-allowlisted command with length", "%REQ(x-header):10%", "%%REQ(x-header):10%%"},
+		{"escape command-shaped literal", "progress %COMPLETE% now", "progress %%COMPLETE%% now"},
 		{"already escaped stays escaped", "width: 100%%;", "width: 100%%;"},
 		{"mixed command and literal", "%RESPONSE_CODE% at 100%", "%RESPONSE_CODE% at 100%%"},
 		{"trailing bare percent", "50%", "50%%"},
@@ -264,12 +264,41 @@ func TestEmbeddedDefaultPageIsEnvoySafe(t *testing.T) {
 	assert.Equal(t, 1, strings.Count(escaped, "%RESPONSE_CODE%"), "command operator must be preserved exactly once")
 	assert.Equal(t, escaped, escapeEnvoyFormatLiterals(escaped), "escaping must be idempotent")
 
-	// No bare '%' may remain: every '%' is either part of a '%%' pair or a
-	// valid command token. Strip the escaped pairs first, then the command
-	// tokens (with a non-anchored copy of the operator pattern), and assert
-	// nothing is left.
-	commandToken := regexp.MustCompile(`%[A-Z0-9_]+(\([^)]*\))?(:[0-9]+)?%`)
-	residual := strings.ReplaceAll(escaped, "%%", "")
-	residual = commandToken.ReplaceAllString(residual, "")
-	assert.NotContains(t, residual, "%", "no bare percent may remain after escaping")
+	// The escaped body must satisfy the same invariant the startup validator
+	// asserts: no bare '%' Envoy could misparse as a command operator.
+	assert.NoError(t, assertEnvoyFormatSafe(escaped), "no bare percent may remain after escaping")
+}
+
+// TestValidateLocalReplyConfig covers the startup guard (issue #243): the
+// assembled config must validate for the embedded default, reject a body whose
+// bare '%' would reach Envoy unescaped, and no-op when injection is disabled.
+func TestValidateLocalReplyConfig(t *testing.T) {
+	base := testLocalReplyConfig()
+
+	t.Run("embedded default is valid", func(t *testing.T) {
+		cfg := *base
+		cfg.BodyHTML = assets.DefaultError5xxHTML
+		assert.NoError(t, ValidateLocalReplyConfig(&cfg))
+	})
+
+	t.Run("escaped body is valid", func(t *testing.T) {
+		cfg := *base
+		cfg.BodyHTML = "height: 100%;"
+		assert.NoError(t, ValidateLocalReplyConfig(&cfg))
+	})
+
+	t.Run("disabled is a no-op", func(t *testing.T) {
+		cfg := *base
+		cfg.Disabled = true
+		cfg.BodyHTML = "height: 100%;"
+		assert.NoError(t, ValidateLocalReplyConfig(&cfg))
+	})
+
+	t.Run("bare percent surviving into the body is rejected", func(t *testing.T) {
+		// buildLocalReplyConfig escapes, so this asserts the raw invariant the
+		// validator enforces on the injected body.
+		assert.Error(t, assertEnvoyFormatSafe("height: 100%;"))
+		assert.Error(t, assertEnvoyFormatSafe("%COMPLETE%"))
+		assert.NoError(t, assertEnvoyFormatSafe("code %RESPONSE_CODE% ok"))
+	})
 }

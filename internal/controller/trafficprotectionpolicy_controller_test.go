@@ -992,6 +992,36 @@ func TestGetCorazaDirectivesForTrafficProtectionPolicy(t *testing.T) {
 	}
 }
 
+func TestGetCorazaDirectivesDoesNotAliasRouteBaseDirectives(t *testing.T) {
+	base := make([]string, 2, 8)
+	base[0] = "Include @crs-setup-conf"
+	base[1] = "Include @recommended-conf"
+
+	operatorConfig := config.NetworkServicesOperator{
+		Gateway: config.GatewayConfig{
+			Coraza: config.CorazaConfig{RouteBaseDirectives: base},
+		},
+	}
+	reconciler := &TrafficProtectionPolicyReconciler{Config: operatorConfig}
+
+	enforce := reconciler.getCorazaDirectivesForTrafficProtectionPolicy(&policyContext{ptr.To(
+		newTrafficProtectionPolicy("default", "tpp-enforce", func(tpp *networkingv1alpha.TrafficProtectionPolicy) {
+			tpp.Spec.Mode = networkingv1alpha.TrafficProtectionPolicyEnforce
+		}),
+	)})
+	assert.Contains(t, enforce, "SecRuleEngine On")
+
+	reconciler.getCorazaDirectivesForTrafficProtectionPolicy(&policyContext{ptr.To(
+		newTrafficProtectionPolicy("default", "tpp-observe"),
+	)})
+
+	assert.Contains(t, enforce, "SecRuleEngine On",
+		"second policy leaked into the first via a shared RouteBaseDirectives backing array")
+	assert.EqualValues(t, []string{"Include @crs-setup-conf", "Include @recommended-conf"},
+		reconciler.Config.Gateway.Coraza.RouteBaseDirectives,
+		"shared base directives were mutated")
+}
+
 // nolint:unparam
 func newTrafficProtectionPolicy(
 	namespace,

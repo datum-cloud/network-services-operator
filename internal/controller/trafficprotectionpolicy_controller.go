@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -1229,7 +1230,7 @@ func (r *TrafficProtectionPolicyReconciler) getCorazaDirectivesForTrafficProtect
 		secRuleEngine = "Off"
 	}
 
-	directives := r.Config.Gateway.Coraza.RouteBaseDirectives
+	directives := slices.Clone(r.Config.Gateway.Coraza.RouteBaseDirectives)
 
 	directives = append(directives, fmt.Sprintf("SecRuleEngine %s", secRuleEngine))
 

@@ -1,6 +1,7 @@
 package mutate
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -11,6 +12,8 @@ import (
 	routev3 "github.com/envoyproxy/go-control-plane/envoy/config/route/v3"
 	hcmv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/http_connection_manager/v3"
 	"google.golang.org/protobuf/types/known/anypb"
+
+	"go.datum.net/network-services-operator/internal/extensionserver/assets"
 )
 
 const (
@@ -217,4 +220,85 @@ func TestInjectLocalReplyConfig_NoOp(t *testing.T) {
 			assert.Nil(t, hcm.GetLocalReplyConfig(), "no local_reply_config must be set on no-op")
 		})
 	}
+}
+
+func TestEscapeEnvoyFormatLiterals(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"empty", "", ""},
+		{"no percent", "<html>plain</html>", "<html>plain</html>"},
+		{"bare percent in css", "height: 100%;", "height: 100%%;"},
+		{"multiple bare percents", "120% 50% 0%", "120%% 50%% 0%%"},
+		{"preserve allowlisted command", "code %RESPONSE_CODE% end", "code %RESPONSE_CODE% end"},
+		{"escape non-allowlisted command", "%REQ(x-header)%", "%%REQ(x-header)%%"},
+		{"escape non-allowlisted command with length", "%REQ(x-header):10%", "%%REQ(x-header):10%%"},
+		{"escape command-shaped literal", "progress %COMPLETE% now", "progress %%COMPLETE%% now"},
+		{"already escaped stays escaped", "width: 100%%;", "width: 100%%;"},
+		{"mixed command and literal", "%RESPONSE_CODE% at 100%", "%RESPONSE_CODE% at 100%%"},
+		{"trailing bare percent", "50%", "50%%"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := escapeEnvoyFormatLiterals(tc.in)
+			assert.Equal(t, tc.want, got)
+			assert.Equal(t, got, escapeEnvoyFormatLiterals(got), "must be idempotent")
+		})
+	}
+}
+
+// TestEmbeddedDefaultPageIsEnvoySafe is the regression guard for issue #243:
+// the embedded default error page contains literal CSS percent signs
+// (e.g. "height: 100%") that Envoy would misparse as command operators and
+// reject the listener. After escaping, no bare '%' may remain and the intended
+// %RESPONSE_CODE% operator must survive.
+func TestEmbeddedDefaultPageIsEnvoySafe(t *testing.T) {
+	raw := assets.DefaultError5xxHTML
+	require.Contains(t, raw, "height: 100%;", "test premise: raw page has an unescaped percent")
+
+	escaped := escapeEnvoyFormatLiterals(raw)
+
+	assert.Contains(t, escaped, "height: 100%%;", "literal percent must be escaped")
+	assert.Equal(t, 1, strings.Count(escaped, "%RESPONSE_CODE%"), "command operator must be preserved exactly once")
+	assert.Equal(t, escaped, escapeEnvoyFormatLiterals(escaped), "escaping must be idempotent")
+
+	// The escaped body must satisfy the same invariant the startup validator
+	// asserts: no bare '%' Envoy could misparse as a command operator.
+	assert.NoError(t, assertEnvoyFormatSafe(escaped), "no bare percent may remain after escaping")
+}
+
+// TestValidateLocalReplyConfig covers the startup guard (issue #243): the
+// assembled config must validate for the embedded default, reject a body whose
+// bare '%' would reach Envoy unescaped, and no-op when injection is disabled.
+func TestValidateLocalReplyConfig(t *testing.T) {
+	base := testLocalReplyConfig()
+
+	t.Run("embedded default is valid", func(t *testing.T) {
+		cfg := *base
+		cfg.BodyHTML = assets.DefaultError5xxHTML
+		assert.NoError(t, ValidateLocalReplyConfig(&cfg))
+	})
+
+	t.Run("escaped body is valid", func(t *testing.T) {
+		cfg := *base
+		cfg.BodyHTML = "height: 100%;"
+		assert.NoError(t, ValidateLocalReplyConfig(&cfg))
+	})
+
+	t.Run("disabled is a no-op", func(t *testing.T) {
+		cfg := *base
+		cfg.Disabled = true
+		cfg.BodyHTML = "height: 100%;"
+		assert.NoError(t, ValidateLocalReplyConfig(&cfg))
+	})
+
+	t.Run("bare percent surviving into the body is rejected", func(t *testing.T) {
+		// buildLocalReplyConfig escapes, so this asserts the raw invariant the
+		// validator enforces on the injected body.
+		assert.Error(t, assertEnvoyFormatSafe("height: 100%;"))
+		assert.Error(t, assertEnvoyFormatSafe("%COMPLETE%"))
+		assert.NoError(t, assertEnvoyFormatSafe("code %RESPONSE_CODE% ok"))
+	})
 }

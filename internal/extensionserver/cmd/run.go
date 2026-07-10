@@ -142,13 +142,33 @@ func buildLocalReplyConfig(cfg config.ErrorPageConfig, log *slog.Logger) mutate.
 		}
 	}
 
-	return mutate.LocalReplyConfig{
+	lrConfig := mutate.LocalReplyConfig{
 		Disabled:      !cfg.Enabled,
 		MinStatusCode: cfg.MinStatusCode,
 		RuntimeKey:    cfg.RuntimeKey,
 		BodyHTML:      body,
 		ContentType:   cfg.ContentType,
 	}
+
+	// Validate before the config can reach the data plane. Escaping already makes
+	// the body Envoy-safe, so this is defense-in-depth: if the escaper or its
+	// allowlist ever regresses, fail loud here and fall back to a known-safe body
+	// instead of NACKing the xDS update fleet-wide on the failOpen:false hook.
+	if err := mutate.ValidateLocalReplyConfig(&lrConfig); err != nil {
+		if body != extassets.DefaultError5xxHTML {
+			log.Error("error-page body override failed validation; using embedded default",
+				"path", cfg.BodyPath, "err", err)
+			lrConfig.BodyHTML = extassets.DefaultError5xxHTML
+			err = mutate.ValidateLocalReplyConfig(&lrConfig)
+		}
+		if err != nil {
+			log.Error("embedded default error page failed validation; disabling branded error page",
+				"err", err)
+			lrConfig.Disabled = true
+		}
+	}
+
+	return lrConfig
 }
 
 // run starts the extension server with the given options. It owns cache startup,

@@ -110,6 +110,7 @@ type OWASPCRS struct {
 	RuleExclusions *OWASPRuleExclusions `json:"ruleExclusions,omitempty"`
 }
 
+// +kubebuilder:validation:XValidation:message="detection paranoia level must be greater than or equal to blocking paranoia level",rule="self.detection >= self.blocking"
 type ParanoiaLevels struct {
 	// Blocking specifies the paranoia level for blocking requests or responses.
 	//

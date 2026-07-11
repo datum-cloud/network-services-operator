@@ -1,0 +1,92 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: trafficprotectionpolicy-paranoia-validation
+# Regression for issue #250: a TrafficProtectionPolicy whose blocking paranoia
+# level exceeds its detection paranoia level is an illegal CRS configuration
+# (CRS rule 901500 denies every request with HTTP 500). The CRD now carries a
+# CEL rule requiring detection >= blocking, so the illegal combination must be
+# rejected at admission rather than silently 500ing all traffic.
+spec:
+  cluster: nso-standard
+  steps:
+    - name: Reject blocking > detection at admission
+      try:
+        - apply:
+            expect:
+              - check:
+                  ($error != null): true
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: TrafficProtectionPolicy
+              metadata:
+                name: inverted-paranoia
+              spec:
+                mode: Enforce
+                targetRefs:
+                  - group: gateway.networking.k8s.io
+                    kind: Gateway
+                    name: waf-gw
+                ruleSets:
+                  - type: OWASPCoreRuleSet
+                    owaspCoreRuleSet:
+                      paranoiaLevels:
+                        blocking: 2
+                        detection: 1
+
+    - name: Reject blocking set with detection defaulted at admission
+      try:
+        - apply:
+            expect:
+              - check:
+                  ($error != null): true
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: TrafficProtectionPolicy
+              metadata:
+                name: default-detection-paranoia
+              spec:
+                mode: Enforce
+                targetRefs:
+                  - group: gateway.networking.k8s.io
+                    kind: Gateway
+                    name: waf-gw
+                ruleSets:
+                  - type: OWASPCoreRuleSet
+                    owaspCoreRuleSet:
+                      paranoiaLevels:
+                        blocking: 2
+
+    - name: Accept detection >= blocking
+      try:
+        - apply:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: TrafficProtectionPolicy
+              metadata:
+                name: valid-paranoia
+              spec:
+                mode: Enforce
+                targetRefs:
+                  - group: gateway.networking.k8s.io
+                    kind: Gateway
+                    name: waf-gw
+                ruleSets:
+                  - type: OWASPCoreRuleSet
+                    owaspCoreRuleSet:
+                      paranoiaLevels:
+                        blocking: 2
+                        detection: 3
+      catch:
+        - delete:
+            ref:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: TrafficProtectionPolicy
+              name: valid-paranoia
+      finally:
+        - delete:
+            ref:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: TrafficProtectionPolicy
+              name: valid-paranoia

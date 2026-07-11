@@ -191,6 +191,7 @@ Core Rule Set (CRS).
           ParanoiaLevels specifies the OWASP ModSecurity Core Rule Set (CRS)
 paranoia levels to use.<br/>
           <br/>
+            <i>Validations</i>:<li>self.detection >= self.blocking: detection paranoia level must be greater than or equal to blocking paranoia level</li>
             <i>Default</i>: map[]<br/>
         </td>
         <td>false</td>

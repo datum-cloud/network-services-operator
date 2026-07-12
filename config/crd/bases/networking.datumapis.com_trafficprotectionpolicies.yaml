@@ -67,7 +67,9 @@ spec:
                         Core Rule Set (CRS).
                       properties:
                         paranoiaLevels:
-                          default: {}
+                          default:
+                            blocking: 1
+                            detection: 1
                           description: |-
                             ParanoiaLevels specifies the OWASP ModSecurity Core Rule Set (CRS)
                             paranoia levels to use.

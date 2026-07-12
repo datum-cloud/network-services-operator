@@ -91,7 +91,7 @@ type OWASPCRS struct {
 	// ParanoiaLevels specifies the OWASP ModSecurity Core Rule Set (CRS)
 	// paranoia levels to use.
 	//
-	// +kubebuilder:default={}
+	// +kubebuilder:default={blocking:1,detection:1}
 	ParanoiaLevels ParanoiaLevels `json:"paranoiaLevels,omitempty"`
 
 	// ScoreThresholds specifies the OWASP ModSecurity Core Rule Set (CRS)

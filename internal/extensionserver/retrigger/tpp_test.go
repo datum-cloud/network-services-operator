@@ -47,7 +47,14 @@ func tpp(mode networkingv1alpha.TrafficProtectionPolicyMode, generation int64, g
 
 func reconcileTPP(t *testing.T, cl client.Client) {
 	t.Helper()
-	r := &TPPReconciler{Client: cl}
+	reconcileTPPWith(t, &TPPReconciler{Client: cl})
+}
+
+// reconcileTPPWith reconciles through a caller-owned reconciler so its in-memory
+// previous-target map survives across reconciles (needed to exercise delete and
+// targetRef removal).
+func reconcileTPPWith(t *testing.T, r *TPPReconciler) {
+	t.Helper()
 	_, err := r.Reconcile(context.Background(), ctrl.Request{
 		NamespacedName: client.ObjectKey{Namespace: testNS, Name: testTPP},
 	})
@@ -130,8 +137,58 @@ func TestTPPReconcile_PerTPPKey(t *testing.T) {
 		"each TPP must own a distinct annotation slot to avoid flip-flop churn")
 }
 
-// TestTPPSpecChangedPredicate verifies the controller reconciles on creates and
-// generation bumps, and ignores status/metadata churn and deletes.
+// TestTPPReconcile_DeletionClearsGateways: after a TPP is stamped onto its
+// Gateway, deleting the TPP clears the trigger annotation so EG re-translates
+// against the now-empty cache and drops the orphaned WAF program.
+func TestTPPReconcile_DeletionClearsGateways(t *testing.T) {
+	scheme := testScheme(t)
+	cl := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(tpp(networkingv1alpha.TrafficProtectionPolicyEnforce, 5, testProxy), gateway()).
+		Build()
+	r := &TPPReconciler{Client: cl}
+
+	reconcileTPPWith(t, r)
+	require.Equal(t, "5", gatewayTPPTrigger(t, cl, testProxy))
+
+	var current networkingv1alpha.TrafficProtectionPolicy
+	require.NoError(t, cl.Get(context.Background(), client.ObjectKey{Namespace: testNS, Name: testTPP}, &current))
+	require.NoError(t, cl.Delete(context.Background(), &current))
+	reconcileTPPWith(t, r)
+
+	assert.Empty(t, gatewayTPPTrigger(t, cl, testProxy),
+		"deleting a TPP must clear its trigger annotation so EG drops the orphaned WAF")
+}
+
+// TestTPPReconcile_TargetRefRemovalClearsDropped: dropping a Gateway from
+// spec.targetRefs clears that Gateway's trigger annotation while the retained
+// target is re-stamped with the new generation.
+func TestTPPReconcile_TargetRefRemovalClearsDropped(t *testing.T) {
+	scheme := testScheme(t)
+	gwB := &gatewayv1.Gateway{ObjectMeta: metav1.ObjectMeta{Name: "proxy-2", Namespace: testNS}}
+	cl := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(tpp(networkingv1alpha.TrafficProtectionPolicyEnforce, 2, testProxy, "proxy-2"), gateway(), gwB).
+		Build()
+	r := &TPPReconciler{Client: cl}
+
+	reconcileTPPWith(t, r)
+	require.Equal(t, "2", gatewayTPPTrigger(t, cl, testProxy))
+	require.Equal(t, "2", gatewayTPPTrigger(t, cl, "proxy-2"))
+
+	var current networkingv1alpha.TrafficProtectionPolicy
+	require.NoError(t, cl.Get(context.Background(), client.ObjectKey{Namespace: testNS, Name: testTPP}, &current))
+	current.Spec.TargetRefs = []gatewayv1alpha2.LocalPolicyTargetReferenceWithSectionName{gatewayTargetRef(testProxy)}
+	current.Generation = 3
+	require.NoError(t, cl.Update(context.Background(), &current))
+	reconcileTPPWith(t, r)
+
+	assert.Equal(t, "3", gatewayTPPTrigger(t, cl, testProxy),
+		"a retained target must be re-stamped with the new generation")
+	assert.Empty(t, gatewayTPPTrigger(t, cl, "proxy-2"),
+		"a dropped target must have its trigger annotation cleared")
+}
+
+// TestTPPSpecChangedPredicate verifies the controller reconciles on creates,
+// generation bumps, and deletes, and ignores status/metadata churn.
 func TestTPPSpecChangedPredicate(t *testing.T) {
 	p := tppSpecChangedPredicate()
 
@@ -140,8 +197,8 @@ func TestTPPSpecChangedPredicate(t *testing.T) {
 
 	assert.True(t, p.Create(event.CreateEvent{Object: observe}),
 		"create is always admitted so existing TPPs stamp their Gateway on startup")
-	assert.False(t, p.Delete(event.DeleteEvent{Object: observe}),
-		"delete is not handled by this arm")
+	assert.True(t, p.Delete(event.DeleteEvent{Object: observe}),
+		"delete is admitted so a removed TPP's Gateways are re-translated")
 	assert.True(t, p.Update(event.UpdateEvent{ObjectOld: observe, ObjectNew: enforce}),
 		"a generation bump (spec change) must reconcile")
 

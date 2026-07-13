@@ -122,6 +122,16 @@ spec:
                     backendRefs:
                       - name: echo
                         port: 80
+        - assert:
+            timeout: 3m
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: Gateway
+              metadata:
+                name: waf-gw
+              status:
+                (conditions[?type == 'Programmed']):
+                  - status: "True"
 
     - name: Inject a grandfathered inverted policy by bypassing admission
       description: >
@@ -198,6 +208,7 @@ spec:
           value: (join('.', [$namespace, 'e2e.test']))
       try:
         - script:
+            timeout: 180s
             env:
               - name: HOSTNAME
                 value: ($hostname)

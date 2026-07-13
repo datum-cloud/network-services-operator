@@ -17,12 +17,12 @@ spec:
   auditRules:
     # HTTPProxy creation with spec.hostnames available - use first hostname as display text
     - name: create
-      match: "!audit.user.username.startsWith('system:') && audit.verb == 'create' && has(audit.requestObject.spec) && has(audit.requestObject.spec.hostnames) && size(audit.requestObject.spec.hostnames) > 0"
+      match: "!audit.user.username.startsWith('system:') && audit.verb == 'create' && has(audit.requestObject.spec) && has(audit.requestObject.spec.hostnames) && size(audit.requestObject.spec.hostnames) > 0 && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
       summary: "{{ actor }} created HTTP proxy {{ link(string(audit.requestObject.spec.hostnames[0]), audit.objectRef) }}"
 
     # HTTPProxy creation fallback (no spec or no hostnames)
     - name: create-fallback
-      match: "!audit.user.username.startsWith('system:') && audit.verb == 'create'"
+      match: "!audit.user.username.startsWith('system:') && audit.verb == 'create' && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
       summary: "{{ actor }} created {{ link('an HTTP proxy', audit.objectRef) }}"
 
     # HTTPProxy deletion with responseObject.spec.hostnames available

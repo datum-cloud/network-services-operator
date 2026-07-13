@@ -22,27 +22,32 @@ spec:
               - name: NETWORK_NAME
                 value: (@.metadata.name)
 
-    - name: Assert Network is Ready
+    - name: Assert Network is admitted and finalized
+      description: |
+        NSO's network controller writes no readiness condition on a bare
+        Network; readiness is provider-driven and no provider runs in the local
+        kind harness. What NSO owns here is admission and the finalizer
+        lifecycle, so that is what this asserts.
       try:
         - assert:
-            timeout: 2m
+            timeout: 30s
             resource:
               apiVersion: networking.datumapis.com/v1alpha
               kind: Network
               metadata:
                 name: ($NETWORK_NAME)
                 namespace: default
-              status:
-                (conditions[?type == 'Ready'][0].status): 'True'
+                (contains(finalizers, 'networking.datumapis.com/network-controller')): true
 
     - name: Delete Network
+      description: |
+        Delete blocks until the object is gone, asserting the network controller
+        releases its finalizer (no NetworkContexts exist to garbage-collect).
       try:
-        - script:
+        - delete:
             timeout: 1m
-            env:
-              - name: NETWORK_NAME
-                value: ($NETWORK_NAME)
-            content: |
-              set -e
-              kubectl delete network.networking.datumapis.com $NETWORK_NAME -n default --wait=true --timeout=60s
-              echo "Network $NETWORK_NAME deleted"
+            ref:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Network
+              name: ($NETWORK_NAME)
+              namespace: default

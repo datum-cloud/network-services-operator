@@ -13,14 +13,11 @@ spec:
               apiVersion: networking.datumapis.com/v1alpha
               kind: Network
               metadata:
-                name: (to_lower(concat('e2e-net-', replace_all(time_now(), ':', '-'))))
+                name: test-network-crud
                 namespace: default
               spec:
                 ipam:
                   mode: Auto
-            outputs:
-              - name: NETWORK_NAME
-                value: (@.metadata.name)
 
     - name: Assert Network is admitted and finalized
       description: |
@@ -35,9 +32,10 @@ spec:
               apiVersion: networking.datumapis.com/v1alpha
               kind: Network
               metadata:
-                name: ($NETWORK_NAME)
+                name: test-network-crud
                 namespace: default
-                (contains(finalizers, 'networking.datumapis.com/network-controller')): true
+                finalizers:
+                  - networking.datumapis.com/network-controller
 
     - name: Delete Network
       description: |
@@ -49,5 +47,5 @@ spec:
             ref:
               apiVersion: networking.datumapis.com/v1alpha
               kind: Network
-              name: ($NETWORK_NAME)
+              name: test-network-crud
               namespace: default

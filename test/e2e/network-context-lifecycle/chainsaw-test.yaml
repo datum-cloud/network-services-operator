@@ -75,7 +75,9 @@ spec:
                 name: test-cascade-network-default-test-location
                 namespace: default
               status:
-                (conditions[?type == 'Ready'][0].status): 'True'
+                conditions:
+                  - type: Ready
+                    status: 'True'
 
     - name: Assert NetworkBinding becomes Ready
       try:

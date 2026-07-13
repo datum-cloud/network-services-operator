@@ -85,14 +85,6 @@ test-e2e: chainsaw
 		--cluster nso-standard=$(TMPDIR)/.kind-nso-standard.yaml \
 		--cluster nso-infra=$(TMPDIR)/.kind-nso-infra.yaml
 
-.PHONY: test-e2e-nonblocking
-test-e2e-nonblocking: chainsaw ## Run quarantined, expected-red e2e tests (NOT part of the gating test-e2e run).
-	$(KIND) get kubeconfig --name nso-standard > $(TMPDIR)/.kind-nso-standard.yaml
-	$(KIND) get kubeconfig --name nso-infra > $(TMPDIR)/.kind-nso-infra.yaml
-	$(CHAINSAW) test ./test/e2e-nonblocking \
-		--cluster nso-standard=$(TMPDIR)/.kind-nso-standard.yaml \
-		--cluster nso-infra=$(TMPDIR)/.kind-nso-infra.yaml
-
 GATEWAY_CONFORMANCE_CLASS ?= gateway-conformance
 GATEWAY_CONFORMANCE_FLAGS ?=
 

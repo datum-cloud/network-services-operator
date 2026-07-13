@@ -1235,21 +1235,16 @@ func getVHostConstraintForGateway(namespace string, gateway *gatewayv1.Gateway) 
 // closed on this configuration and denies every request with HTTP 500 before any
 // attack evaluation, so the policy must not be attached.
 func paranoiaLevelsResolveError(policy *policyContext) *gatewaystatus.PolicyResolveError {
-	for _, ruleSet := range policy.Spec.RuleSets {
-		if ruleSet.Type != networkingv1alpha.TrafficProtectionPolicyOWASPCoreRuleSet {
-			continue
-		}
-		levels := ruleSet.OWASPCoreRuleSet.ParanoiaLevels
-		if levels.Detection < levels.Blocking {
-			return &gatewaystatus.PolicyResolveError{
-				Reason: gatewayv1.PolicyReasonInvalid,
-				Message: fmt.Sprintf(
-					"OWASPCoreRuleSet detection paranoia level (%d) must be greater than or equal to blocking paranoia level (%d); this is an illegal CRS configuration that would deny all traffic with HTTP 500",
-					levels.Detection, levels.Blocking),
-			}
-		}
+	levels := policy.Spec.InvertedParanoiaLevels()
+	if levels == nil {
+		return nil
 	}
-	return nil
+	return &gatewaystatus.PolicyResolveError{
+		Reason: gatewayv1.PolicyReasonInvalid,
+		Message: fmt.Sprintf(
+			"OWASPCoreRuleSet detection paranoia level (%d) must be greater than or equal to blocking paranoia level (%d); this is an illegal CRS configuration that would deny all traffic with HTTP 500",
+			levels.Detection, levels.Blocking),
+	}
 }
 
 func (r *TrafficProtectionPolicyReconciler) getCorazaDirectivesForTrafficProtectionPolicy(

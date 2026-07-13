@@ -4,26 +4,16 @@ kind: Test
 metadata:
   name: trafficprotectionpolicy-neutralize-inverted
 #
-# QUARANTINED — EXPECTED RED until network-services-operator#252 fixes edge-path
-# neutralization. This test lives in test/e2e-nonblocking/, which the gating
-# `make test-e2e` (chainsaw test ./test/e2e) does NOT discover. Run it on purpose
-# with `make test-e2e-nonblocking`. It must never be moved under test/e2e/ while
-# it is red, or it will re-red main's E2E gate.
-#
-# TODO(network-services-operator#252, infra#3408): once the controller refuses to
-# enforce an inverted policy on the Coraza edge path, move this test under
-# test/e2e/ (into the gate) and keep the benign GET / -> 200 assertion.
-#
-# What this proves (network-services-operator#242 / #251 / #252):
+# What this proves (network-services-operator#242 / #251 / #252 / #273):
 # Mechanism A is an inverted OWASP policy (blocking paranoia > detection). CRS
 # rule 901500 then fails closed and returns HTTP 500 on 100% of traffic. #251
 # added a CRD CEL rule (self.detection >= self.blocking) that REJECTS inverted
-# writes at admission, and #252 was meant to neutralize already-persisted
-# inverted policies (Accepted=False + skip attachment). #252 does NOT neutralize
-# on the real Coraza edge data plane, so a grandfathered inverted policy still
-# 500s live. This test injects such a grandfathered policy and asserts a benign
-# GET / returns 200 (the desired neutralized behavior). It FAILS today: the
-# benign request gets a 500. That failure documents the outstanding defect.
+# writes at admission, and #252 set Accepted=False + skipped attachment on the
+# EnvoyPatchPolicy path — but that did NOT neutralize the real Coraza edge data
+# plane, where the extension server still emitted the inverted policy's
+# directives (#273). This test injects a grandfathered inverted policy and
+# asserts a benign GET / returns 200: the extension server now withholds the
+# inverted policy's directives, so CRS 901500 never fires.
 #
 # Admission bypass (Case 2 injection):
 # #251's CEL rule blocks `kubectl apply` of an inverted TrafficProtectionPolicy,
@@ -200,10 +190,9 @@ spec:
 
     - name: A benign GET must return 200, not 500
       description: >
-        The neutralized/desired behavior. FAILS today: because #252 does not
-        neutralize on the Coraza edge path, the inverted policy makes CRS rule
-        901500 fail closed and every request 500s. Un-skip (move under test/e2e/)
-        once #252 lands.
+        The neutralized behavior. The extension server withholds the inverted
+        policy's Coraza directives from the edge data plane, so CRS rule 901500
+        never fires and benign traffic is unaffected.
       bindings:
         - name: hostname
           value: (join('.', [$namespace, 'e2e.test']))
@@ -222,11 +211,11 @@ spec:
                   exit 0
                 fi
                 if [ "${code}" = "500" ]; then
-                  echo "inverted policy still enforced on the edge (500) — #252 defect"
+                  echo "inverted policy still enforced on the edge (500) — regression of #273"
                 fi
                 sleep 3
               done
-              echo "benign request never returned 200 (network-services-operator#252 defect)"
+              echo "benign request never returned 200 (regression of network-services-operator#273)"
               exit 1
       finally:
         - delete:

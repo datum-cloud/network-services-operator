@@ -246,11 +246,17 @@ func run(o options) {
 		os.Exit(1)
 	}
 
-	// --- Edge re-translation controller ---
+	// --- Edge re-translation controllers ---
 	// Makes Envoy Gateway re-translate when a Connector's liveness changes, so
 	// the hook re-runs against fresh liveness. See the retrigger package doc.
 	if err := (&retrigger.Reconciler{Client: mgr.GetClient()}).SetupWithManager(mgr); err != nil {
-		log.Error("set up gateway re-translation controller", "err", err)
+		log.Error("set up connector re-translation controller", "err", err)
+		os.Exit(1)
+	}
+	// Symmetric arm for TrafficProtectionPolicy: a TPP is not EG-watched, so a
+	// mode/spec flip lands in the cache but never re-translates on its own.
+	if err := (&retrigger.TPPReconciler{Client: mgr.GetClient()}).SetupWithManager(mgr); err != nil {
+		log.Error("set up TPP re-translation controller", "err", err)
 		os.Exit(1)
 	}
 

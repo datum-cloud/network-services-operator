@@ -16,12 +16,12 @@ spec:
   auditRules:
     # TrafficProtectionPolicy creation with spec available
     - name: create
-      match: "!audit.user.username.startsWith('system:') && audit.verb == 'create' && has(audit.requestObject.spec)"
+      match: "!audit.user.username.startsWith('system:') && audit.verb == 'create' && has(audit.requestObject.spec) && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
       summary: "{{ actor }} created traffic protection policy {{ link(audit.responseObject.metadata.name, audit.objectRef) }}"
 
     # TrafficProtectionPolicy creation fallback (no spec)
     - name: create-fallback
-      match: "!audit.user.username.startsWith('system:') && audit.verb == 'create'"
+      match: "!audit.user.username.startsWith('system:') && audit.verb == 'create' && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
       summary: "{{ actor }} created {{ link('a traffic protection policy', audit.objectRef) }}"
 
     # TrafficProtectionPolicy deletion with responseObject.spec available (response contains the deleted resource)
@@ -36,10 +36,10 @@ spec:
 
     # TrafficProtectionPolicy update with spec available - excludes status subresource
     - name: update
-      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && has(audit.requestObject.spec)"
+      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && has(audit.requestObject.spec) && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
       summary: "{{ actor }} updated traffic protection policy {{ link(audit.objectRef.name, audit.objectRef) }}"
 
     # TrafficProtectionPolicy update fallback (no spec)
     - name: update-fallback
-      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource)"
+      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
       summary: "{{ actor }} updated {{ link('a traffic protection policy', audit.objectRef) }}"

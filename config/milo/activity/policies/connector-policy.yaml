@@ -16,12 +16,12 @@ spec:
   auditRules:
     # Connector creation with spec available
     - name: create
-      match: "!audit.user.username.startsWith('system:') && audit.verb == 'create' && has(audit.requestObject.spec)"
+      match: "!audit.user.username.startsWith('system:') && audit.verb == 'create' && has(audit.requestObject.spec) && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
       summary: "{{ actor }} created connector {{ link(audit.responseObject.metadata.name, audit.objectRef) }}"
 
     # Connector creation fallback (no spec)
     - name: create-fallback
-      match: "!audit.user.username.startsWith('system:') && audit.verb == 'create'"
+      match: "!audit.user.username.startsWith('system:') && audit.verb == 'create' && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
       summary: "{{ actor }} created {{ link('a connector', audit.objectRef) }}"
 
     # Connector deletion with responseObject.spec available (response contains the deleted resource)
@@ -36,10 +36,10 @@ spec:
 
     # Connector update with spec available - excludes status subresource
     - name: update
-      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && has(audit.requestObject.spec)"
+      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && has(audit.requestObject.spec) && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
       summary: "{{ actor }} updated connector {{ link(audit.objectRef.name, audit.objectRef) }}"
 
     # Connector update fallback (no spec)
     - name: update-fallback
-      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource)"
+      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
       summary: "{{ actor }} updated {{ link('a connector', audit.objectRef) }}"

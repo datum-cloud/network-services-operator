@@ -63,7 +63,7 @@ spec:
               mountPath: /opt/coraza-waf
         initContainers:
           - name: coraza-waf
-            image: coraza-waf:v1.1.1-dev2
+            image: ghcr.io/datum-labs/coraza-envoy-go-filter/coraza-waf:v1.3.0-alpha10
             imagePullPolicy: IfNotPresent
             command:
               - cp

@@ -710,6 +710,35 @@ type GatewayConfig struct {
 	// When false: NSO emits ZERO EPPs and does NOT delete EPPs it did not create.
 	// When true (default): EPP emission proceeds as today.
 	EPPEmissionEnabled *bool `json:"eppEmissionEnabled,omitempty" yaml:"eppEmissionEnabled,omitempty"`
+
+	// CertificateReissuance controls how the gateway controller handles
+	// failed certificate issuance for custom hostnames. When a Certificate
+	// is stuck in a failed state, the controller deletes and recreates it
+	// to bypass cert-manager's exponential backoff. Kubernetes GC cascades
+	// the deletion through the entire chain (CertificateRequest, Order,
+	// Challenge, solver resources).
+	CertificateReissuance CertificateReissuanceConfig `json:"certificateReissuance,omitempty"`
+}
+
+// +k8s:deepcopy-gen=true
+
+// CertificateReissuanceConfig controls automatic recovery of failed certificate
+// issuance by deleting and recreating stuck Certificates.
+type CertificateReissuanceConfig struct {
+	// RetryInterval is the minimum time to wait after a Certificate failure
+	// before deleting it and recreating a fresh one. This prevents excessive
+	// requests to the ACME provider when the underlying issue persists (e.g.
+	// DNS not pointed to the Gateway).
+	//
+	// Defaults to 5m via GetRetryInterval().
+	RetryInterval metav1.Duration `json:"retryInterval,omitempty"`
+
+	// MaxRetries is the maximum number of times the gateway controller will
+	// fast-track re-issuance of a failed Certificate before falling back to
+	// cert-manager's built-in exponential backoff.
+	//
+	// +default=3
+	MaxRetries int `json:"maxRetries,omitempty"`
 }
 
 // HasDefaultListenerTLSSecret returns true when a shared TLS certificate
@@ -736,6 +765,24 @@ func (c *GatewayConfig) IsEPPEmissionEnabled() bool {
 		return true // default: EPP emission on
 	}
 	return *c.EPPEmissionEnabled
+}
+
+// GetRetryInterval returns the configured retry interval for certificate
+// re-issuance, defaulting to 5 minutes.
+func (c *CertificateReissuanceConfig) GetRetryInterval() time.Duration {
+	if c.RetryInterval.Duration > 0 {
+		return c.RetryInterval.Duration
+	}
+	return 5 * time.Minute
+}
+
+// GetMaxRetries returns the configured maximum number of fast-track
+// re-issuance attempts, defaulting to 3.
+func (c *CertificateReissuanceConfig) GetMaxRetries() int {
+	if c.MaxRetries > 0 {
+		return c.MaxRetries
+	}
+	return 3
 }
 
 func (c *GatewayConfig) GatewayDNSAddress(gateway *gatewayv1.Gateway) string {

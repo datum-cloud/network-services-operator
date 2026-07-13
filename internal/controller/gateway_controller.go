@@ -276,6 +276,11 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 
 	// Evaluate certificate health once so the listener we propagate and the
 	// status we report to the user can never disagree.
+	//
+	// Deliberately separate from fast-track re-issuance (see
+	// reissueFailedCertificate): this path is read-only and gates on any
+	// unusable cert, re-issuance mutates and fires only on cert-manager
+	// hard-fail (LastFailureTime). See #260.
 	listenerCertHealth := r.evaluateListenerCertHealth(
 		ctx,
 		downstreamClient,
@@ -941,6 +946,11 @@ func (r *GatewayReconciler) ensureListenerCertificates(
 
 		// Check if an existing Certificate is stuck in a failed state and
 		// should be deleted so we can recreate it fresh on the next reconcile.
+		//
+		// Deliberately separate from health-gating (see
+		// evaluateListenerCertHealth): this triggers only on cert-manager
+		// hard-fail (LastFailureTime), not on every unhealthy cert, since
+		// expired/missing certs recover via renewal or the isNew path. See #260.
 		if !isNew {
 			requeueAfter, gwChanged := r.reissueFailedCertificate(ctx, cert, certName, downstreamGateway, downstreamClient)
 			if gwChanged {

@@ -45,6 +45,19 @@ spec:
                   kind: ClusterIssuer
                   group: cert-manager.io
 
+        - assert:
+            cluster: nso-infra
+            resource:
+              apiVersion: cert-manager.io/v1
+              kind: Certificate
+              metadata:
+                name: (join('-', [$clusterIssuerName, 'ca']))
+                namespace: cert-manager
+              status:
+                conditions:
+                  - type: Ready
+                    status: "True"
+
         - create:
             cluster: nso-infra
             resource:

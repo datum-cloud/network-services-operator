@@ -180,6 +180,7 @@ spec:
                             duration: "%DURATION%"
                             route_name: "%ROUTE_NAME%"
                             project_name: "%METADATA(ROUTE:datum-gateway:project_name)%"
+                            request_id: "%REQ(X-REQUEST-ID)%"
                 provider:
                   type: Kubernetes
                   kubernetes:
@@ -649,7 +650,7 @@ spec:
                 PYTHON_VERIFY="
                 import sys, json
                 expected_bytes_sent = float($BYTES_SENT)
-                expected_duration_sec = float($DURATION_MS) / 1000.0
+                expected_duration_sec = float(int(float($DURATION_MS) / 1000.0))
                 expected_project_name = \"$PROJECT_NAME\"
                 logs = sys.stdin.read()
                 diagnostics = []

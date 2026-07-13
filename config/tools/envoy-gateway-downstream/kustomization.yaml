@@ -6,7 +6,11 @@ helmCharts:
     includeCRDs: false
     namespace: datum-downstream-gateway
     releaseName: envoy-datum-downstream-gateway
-    version: v1.8.1
+    # Pinned to match production: v1.8.x does not program merged gateways served
+    # through the extension manager (waf-gw stays with an empty status), so the
+    # downstream WAF control plane runs v1.7.4. CRDs come from the base
+    # envoy-gateway install (v1.8.1), which is forward-compatible.
+    version: v1.7.4
     repo: oci://docker.io/envoyproxy
     valuesInline:
       config:
@@ -29,6 +33,10 @@ helmCharts:
                     - key: meta.datumapis.com/upstream-cluster-name
                       operator: Exists
           extensionManager:
+            # The WAF-augmented merged xDS response exceeds gRPC's 4 MiB default,
+            # so EG rejects it and stops publishing config with failOpen:false.
+            # Match the ext-server's 256 MiB limit; both sides must agree.
+            maxMessageSize: 256Mi
             policyResources:
               - group: networking.datumapis.com
                 version: v1alpha

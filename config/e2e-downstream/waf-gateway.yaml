@@ -25,7 +25,7 @@ spec:
             imagePullPolicy: IfNotPresent
             command:
               - cp
-              - /app/coraza-waf.so
+              - /coraza-waf.so
               - /opt/coraza-waf/
             volumeMounts:
               - name: coraza-waf

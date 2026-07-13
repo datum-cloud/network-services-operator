@@ -2,3 +2,5 @@ apiVersion: v1
 kind: Namespace
 metadata:
   name: datum-downstream-gateway
+  labels:
+    meta.datumapis.com/upstream-cluster-name: 0-datum-internal-anchor

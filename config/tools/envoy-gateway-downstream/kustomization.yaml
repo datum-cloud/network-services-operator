@@ -39,16 +39,17 @@ helmCharts:
                 kind: Connector
             service:
               fqdn:
-                hostname: network-services-operator-envoy-gateway-extension-server.network-services-operator-system.svc.cluster.local
+                hostname: envoy-gateway-extension-server.datum-downstream-gateway.svc.cluster.local
                 port: 5005
               tls:
+                # EG reads the CA from tls.crt of this Secret; the self-signed CA
+                # Certificate's Secret carries the CA cert there.
                 certificateRef:
-                  # Placeholder — an overlay must patch this to the Secret holding the CA that issued the server cert.
-                  name: placeholder-ca
-                  namespace: placeholder-namespace
+                  name: envoy-gateway-extension-server-ca
+                  namespace: datum-downstream-gateway
                 clientCertificateRef:
                   name: envoy-gateway-extension-server-eg-client-tls
-                  namespace: network-services-operator-system
+                  namespace: datum-downstream-gateway
               retry:
                 maxAttempts: 4
                 initialBackoff: 100ms

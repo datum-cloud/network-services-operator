@@ -1,0 +1,12 @@
+apiVersion: apiserver.config.datumapis.com/v1alpha1
+kind: NetworkServicesOperator
+gateway:
+  coraza:
+    routeBaseDirectives:
+      - Include @crs-setup-conf
+      - Include @recommended-conf
+      - SecResponseBodyLimitAction ProcessPartial
+      - SecResponseBodyLimit 32000
+  errorPage:
+    enabled: true
+    bodyPath: /etc/datum/error-pages/error-5xx.html

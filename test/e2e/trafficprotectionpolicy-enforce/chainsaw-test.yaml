@@ -12,9 +12,8 @@ metadata:
 #
 # Precondition: the downstream (nso-infra) must have the WAF data plane wired up
 # (extension-server + the extensionManager Envoy Gateway registered on the
-# `datum-downstream-gateway` GatewayClass, with the Coraza filter). The stock
-# `make prepare-infra-cluster` does NOT install this; this test is skipped by
-# CI environments without it (the Gateway never reaches Programmed=True).
+# `datum-downstream-gateway` GatewayClass, with the Coraza filter).
+# `make prepare-infra-cluster` installs this via `make downstream-waf-dataplane`.
 spec:
   cluster: nso-infra
   # EG only reconciles namespaces carrying this label.

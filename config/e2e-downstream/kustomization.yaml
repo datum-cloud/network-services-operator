@@ -1,0 +1,76 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: datum-downstream-gateway
+
+resources:
+  - namespace.yaml
+  - ../extension-server
+  - pki.yaml
+  - waf-gateway.yaml
+
+configMapGenerator:
+  - name: nso-extension-server-config
+    files:
+      - config.yaml=extension-server-config.yaml
+    options:
+      disableNameSuffixHash: true
+
+patches:
+  - target:
+      kind: ServiceMonitor
+      name: envoy-gateway-extension-server-metrics
+    patch: |
+      $patch: delete
+      apiVersion: monitoring.coreos.com/v1
+      kind: ServiceMonitor
+      metadata:
+        name: envoy-gateway-extension-server-metrics
+  - target:
+      kind: Certificate
+      name: envoy-gateway-extension-server-eg-client-tls
+    patch: |
+      - op: replace
+        path: /spec/issuerRef/kind
+        value: Issuer
+      - op: replace
+        path: /spec/issuerRef/name
+        value: envoy-gateway-extension-server
+  - target:
+      kind: Deployment
+      name: envoy-gateway-extension-server
+    patch: |
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: envoy-gateway-extension-server
+      spec:
+        replicas: 1
+        template:
+          spec:
+            containers:
+              - name: envoy-gateway-extension-server
+                env:
+                  - name: SERVER_CONFIG
+                    value: /config/config.yaml
+                volumeMounts:
+                  - name: server-config
+                    mountPath: /config
+                    readOnly: true
+            volumes:
+              - name: tls
+                csi:
+                  volumeAttributes:
+                    csi.cert-manager.io/issuer-kind: Issuer
+                    csi.cert-manager.io/issuer-name: envoy-gateway-extension-server
+                    csi.cert-manager.io/dns-names: "envoy-gateway-extension-server.datum-downstream-gateway.svc,envoy-gateway-extension-server.datum-downstream-gateway.svc.cluster.local"
+              - name: tls-ca
+                configMap: null
+                secret:
+                  secretName: envoy-gateway-extension-server-ca
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+              - name: server-config
+                configMap:
+                  name: nso-extension-server-config

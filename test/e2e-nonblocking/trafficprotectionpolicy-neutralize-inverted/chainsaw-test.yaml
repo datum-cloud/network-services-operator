@@ -1,0 +1,236 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: trafficprotectionpolicy-neutralize-inverted
+#
+# QUARANTINED — EXPECTED RED until network-services-operator#252 fixes edge-path
+# neutralization. This test lives in test/e2e-nonblocking/, which the gating
+# `make test-e2e` (chainsaw test ./test/e2e) does NOT discover. Run it on purpose
+# with `make test-e2e-nonblocking`. It must never be moved under test/e2e/ while
+# it is red, or it will re-red main's E2E gate.
+#
+# TODO(network-services-operator#252, infra#3408): once the controller refuses to
+# enforce an inverted policy on the Coraza edge path, move this test under
+# test/e2e/ (into the gate) and keep the benign GET / -> 200 assertion.
+#
+# What this proves (network-services-operator#242 / #251 / #252):
+# Mechanism A is an inverted OWASP policy (blocking paranoia > detection). CRS
+# rule 901500 then fails closed and returns HTTP 500 on 100% of traffic. #251
+# added a CRD CEL rule (self.detection >= self.blocking) that REJECTS inverted
+# writes at admission, and #252 was meant to neutralize already-persisted
+# inverted policies (Accepted=False + skip attachment). #252 does NOT neutralize
+# on the real Coraza edge data plane, so a grandfathered inverted policy still
+# 500s live. This test injects such a grandfathered policy and asserts a benign
+# GET / returns 200 (the desired neutralized behavior). It FAILS today: the
+# benign request gets a 500. That failure documents the outstanding defect.
+#
+# Admission bypass (Case 2 injection):
+# #251's CEL rule blocks `kubectl apply` of an inverted TrafficProtectionPolicy,
+# so we cannot create one directly. To reproduce a policy that was persisted
+# before the CEL rule existed (a grandfathered object), the setup step strips the
+# x-kubernetes-validations block from the CRD's paranoiaLevels schema, creates the
+# inverted {detection:1, blocking:2} policy while validation is absent, then
+# restores the CRD validation. The apiserver does not re-validate existing
+# objects on CRD update, so the inverted object survives exactly like a
+# grandfathered one, and subsequent writes are rejected again. The strip/restore
+# is deterministic: the CRD has a single version (index 0) and one fixed JSON
+# path to the validation block.
+#
+# Precondition: the downstream (nso-infra) must have the WAF data plane wired up
+# (`make prepare-infra-cluster` -> `make downstream-waf-dataplane`).
+spec:
+  cluster: nso-infra
+  # EG only reconciles namespaces carrying this label.
+  namespaceTemplate:
+    metadata:
+      labels:
+        meta.datumapis.com/upstream-cluster-name: e2e
+  steps:
+    - name: Deploy a backend
+      try:
+        - apply:
+            resource:
+              apiVersion: apps/v1
+              kind: Deployment
+              metadata:
+                name: echo
+              spec:
+                replicas: 1
+                selector:
+                  matchLabels:
+                    app: echo
+                template:
+                  metadata:
+                    labels:
+                      app: echo
+                  spec:
+                    containers:
+                      - name: echo
+                        image: hashicorp/http-echo:1.0
+                        args: ["-text=hello from backend", "-listen=:8080"]
+                        ports:
+                          - containerPort: 8080
+        - apply:
+            resource:
+              apiVersion: v1
+              kind: Service
+              metadata:
+                name: echo
+              spec:
+                selector:
+                  app: echo
+                ports:
+                  - port: 80
+                    targetPort: 8080
+        - assert:
+            resource:
+              apiVersion: apps/v1
+              kind: Deployment
+              metadata:
+                name: echo
+              status:
+                availableReplicas: 1
+
+    - name: Route through the WAF gateway
+      bindings:
+        - name: hostname
+          value: (join('.', [$namespace, 'e2e.test']))
+      try:
+        - apply:
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: Gateway
+              metadata:
+                name: waf-gw
+              spec:
+                gatewayClassName: datum-downstream-gateway
+                listeners:
+                  - name: http
+                    protocol: HTTP
+                    port: 80
+                    hostname: ($hostname)
+                    allowedRoutes:
+                      namespaces:
+                        from: Same
+        - apply:
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: HTTPRoute
+              metadata:
+                name: echo
+              spec:
+                parentRefs:
+                  - name: waf-gw
+                hostnames:
+                  - ($hostname)
+                rules:
+                  - matches:
+                      - path:
+                          type: PathPrefix
+                          value: /
+                    backendRefs:
+                      - name: echo
+                        port: 80
+
+    - name: Inject a grandfathered inverted policy by bypassing admission
+      description: >
+        Strip the CRD's paranoiaLevels CEL validation, create the inverted
+        {detection:1, blocking:2} policy, then restore the validation so the
+        object survives like a grandfathered one and future writes are rejected
+        again.
+      try:
+        - script:
+            timeout: 120s
+            content: |
+              set -eu
+              crd=trafficprotectionpolicies.networking.datumapis.com
+              path=/spec/versions/0/schema/openAPIV3Schema/properties/spec/properties/ruleSets/items/properties/owaspCoreRuleSet/properties/paranoiaLevels/x-kubernetes-validations
+
+              kubectl patch crd "${crd}" --type=json \
+                -p "[{\"op\":\"remove\",\"path\":\"${path}\"}]"
+
+              restore() {
+                kubectl patch crd "${crd}" --type=json -p "[{\"op\":\"add\",\"path\":\"${path}\",\"value\":[{\"message\":\"detection paranoia level must be greater than or equal to blocking paranoia level\",\"rule\":\"self.detection >= self.blocking\"}]}]"
+              }
+              trap restore EXIT
+
+              created=false
+              for i in $(seq 1 20); do
+                if cat <<'EOF' | kubectl apply -f -
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: TrafficProtectionPolicy
+              metadata:
+                name: inverted-waf
+              spec:
+                mode: Enforce
+                targetRefs:
+                  - group: gateway.networking.k8s.io
+                    kind: Gateway
+                    name: waf-gw
+                ruleSets:
+                  - type: OWASPCoreRuleSet
+                    owaspCoreRuleSet:
+                      paranoiaLevels:
+                        detection: 1
+                        blocking: 2
+              EOF
+                then
+                  created=true
+                  break
+                fi
+                echo "apply attempt ${i} failed (schema cache lag?), retrying"
+                sleep 2
+              done
+
+              if [ "${created}" != "true" ]; then
+                echo "failed to inject inverted policy while CEL was stripped"
+                exit 1
+              fi
+
+              blocking=$(kubectl get trafficprotectionpolicy inverted-waf \
+                -o jsonpath='{.spec.ruleSets[0].owaspCoreRuleSet.paranoiaLevels.blocking}')
+              detection=$(kubectl get trafficprotectionpolicy inverted-waf \
+                -o jsonpath='{.spec.ruleSets[0].owaspCoreRuleSet.paranoiaLevels.detection}')
+              echo "injected inverted policy: blocking=${blocking} detection=${detection}"
+              if [ "${blocking}" != "2" ] || [ "${detection}" != "1" ]; then
+                echo "inverted policy not persisted as expected"
+                exit 1
+              fi
+
+    - name: A benign GET must return 200, not 500
+      description: >
+        The neutralized/desired behavior. FAILS today: because #252 does not
+        neutralize on the Coraza edge path, the inverted policy makes CRS rule
+        901500 fail closed and every request 500s. Un-skip (move under test/e2e/)
+        once #252 lands.
+      bindings:
+        - name: hostname
+          value: (join('.', [$namespace, 'e2e.test']))
+      try:
+        - script:
+            env:
+              - name: HOSTNAME
+                value: ($hostname)
+            content: |
+              set -u
+              for i in $(seq 1 40); do
+                code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
+                  -H "Host: ${HOSTNAME}" http://localhost:30080/) || code=000
+                echo "attempt ${i}: HTTP ${code}"
+                if [ "${code}" = "200" ]; then
+                  exit 0
+                fi
+                if [ "${code}" = "500" ]; then
+                  echo "inverted policy still enforced on the edge (500) — #252 defect"
+                fi
+                sleep 3
+              done
+              echo "benign request never returned 200 (network-services-operator#252 defect)"
+              exit 1
+      finally:
+        - delete:
+            ref:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: TrafficProtectionPolicy
+              name: inverted-waf

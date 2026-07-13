@@ -1,0 +1,114 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: network-context-lifecycle
+spec:
+  cluster: nso-standard
+  steps:
+    - name: Create Network
+      try:
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Network
+              metadata:
+                name: test-cascade-network
+                namespace: default
+              spec:
+                ipam:
+                  mode: Auto
+
+    - name: Create NetworkBinding and assert NetworkContext is created
+      description: |
+        The binding controller creates a NetworkContext owned by the Network.
+        This ownership is what the Network finalizer relies on to garbage-collect
+        the context on delete.
+      try:
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkBinding
+              metadata:
+                name: test-cascade-binding
+                namespace: default
+              spec:
+                network:
+                  name: test-cascade-network
+                location:
+                  name: test-location
+                  namespace: default
+        - assert:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkContext
+              metadata:
+                name: test-cascade-network-default-test-location
+                namespace: default
+                (length(ownerReferences[?kind == 'Network' && controller == `true`]) == `1`): true
+
+    - name: Mark NetworkContext as Programmed
+      description: |
+        A plugin is expected to program the context at its backend and set the
+        Programmed condition. No such plugin runs in the local harness, so the
+        condition is set directly. A kubectl command is used because Chainsaw
+        does not support updating subresources.
+        See https://github.com/kyverno/chainsaw/issues/300.
+      try:
+        - script:
+            content: |
+              kubectl -n default patch networkcontext test-cascade-network-default-test-location \
+                --subresource=status --type=merge \
+                -p '{"status":{"conditions":[{"type": "Programmed", "status": "True", "reason": "Test", "message": "test", "lastTransitionTime": "2025-02-24T23:59:09Z"}]}}'
+
+    - name: Assert NetworkContext becomes Ready
+      description: |
+        The networkcontext controller derives Ready from Programmed. This asserts
+        that transition, which no other e2e exercises.
+      try:
+        - assert:
+            timeout: 1m
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkContext
+              metadata:
+                name: test-cascade-network-default-test-location
+                namespace: default
+              status:
+                (conditions[?type == 'Ready'][0].status): 'True'
+
+    - name: Assert NetworkBinding becomes Ready
+      try:
+        - wait:
+            apiVersion: networking.datumapis.com/v1alpha
+            kind: NetworkBinding
+            name: test-cascade-binding
+            namespace: default
+            timeout: 1m
+            for:
+              condition:
+                name: Ready
+                value: 'true'
+
+    - name: Delete Network and assert cascade cleanup
+      description: |
+        Deleting the Network drives its finalizer to garbage-collect the owned
+        NetworkContext before releasing. The delete blocks until the Network is
+        gone, which can only happen after the context is removed; the script then
+        confirms the context is absent.
+      try:
+        - delete:
+            timeout: 1m
+            ref:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Network
+              name: test-cascade-network
+              namespace: default
+        - script:
+            content: |
+              set -e
+              if kubectl -n default get networkcontext test-cascade-network-default-test-location 2>/dev/null; then
+                echo "NetworkContext still exists after Network deletion" >&2
+                exit 1
+              fi
+              echo "NetworkContext garbage-collected"

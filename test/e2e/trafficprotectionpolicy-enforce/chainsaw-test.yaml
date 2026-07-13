@@ -12,9 +12,8 @@ metadata:
 #
 # Precondition: the downstream (nso-infra) must have the WAF data plane wired up
 # (extension-server + the extensionManager Envoy Gateway registered on the
-# `datum-downstream-gateway` GatewayClass, with the Coraza filter). The stock
-# `make prepare-infra-cluster` does NOT install this; this test is skipped by
-# CI environments without it (the Gateway never reaches Programmed=True).
+# `datum-downstream-gateway` GatewayClass, with the Coraza filter).
+# `make prepare-infra-cluster` installs this via `make downstream-waf-dataplane`.
 spec:
   cluster: nso-infra
   # EG only reconciles namespaces carrying this label.
@@ -124,6 +123,11 @@ spec:
                   - type: OWASPCoreRuleSet
                     owaspCoreRuleSet: {}
         - assert:
+            # The downstream Envoy fleet pulls the contrib Envoy and Coraza WAF
+            # init images cold on the kind node before its endpoints exist, and
+            # Envoy Gateway only writes Programmed once they do. That first-pull
+            # window overruns chainsaw's 30s assert default, so allow more time.
+            timeout: 3m
             resource:
               apiVersion: gateway.networking.k8s.io/v1
               kind: Gateway
@@ -132,6 +136,18 @@ spec:
               status:
                 (conditions[?type == 'Programmed']):
                   - status: "True"
+      catch:
+        - script:
+            timeout: 60s
+            content: |
+              set -x
+              kubectl get gateway -A -o yaml
+              kubectl describe gateway -A
+              kubectl get gatewayclass datum-downstream-gateway -o yaml
+              kubectl -n datum-downstream-gateway get pods -o wide
+              kubectl -n datum-downstream-gateway describe pods
+              kubectl -n datum-downstream-gateway logs deploy/envoy-gateway --tail=-1
+              kubectl -n datum-downstream-gateway logs -l gateway.envoyproxy.io/owning-gateway-namespace --all-containers --tail=200 || true
 
     - name: Benign traffic must reach the backend (not an empty/5xx reply)
       description: >

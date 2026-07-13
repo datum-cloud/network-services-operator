@@ -64,3 +64,29 @@ jobs:
 
       - name: Running Test e2e
         run: make test-e2e
+
+      - name: Dump downstream WAF data plane on failure
+        if: failure()
+        run: |
+          kubectl config use-context kind-nso-infra
+          echo "::group::GatewayClasses"
+          kubectl get gatewayclass -o wide || true
+          kubectl describe gatewayclass datum-downstream-gateway || true
+          echo "::endgroup::"
+          echo "::group::EnvoyProxy"
+          kubectl -n datum-downstream-gateway get envoyproxy -o yaml || true
+          echo "::endgroup::"
+          echo "::group::datum-downstream-gateway namespace + pods"
+          kubectl get ns datum-downstream-gateway --show-labels || true
+          kubectl -n datum-downstream-gateway get pods -o wide || true
+          echo "::endgroup::"
+          echo "::group::Downstream Envoy Gateway logs"
+          kubectl -n datum-downstream-gateway logs deploy/envoy-gateway --tail=200 || true
+          echo "::endgroup::"
+          echo "::group::Extension server"
+          kubectl -n datum-downstream-gateway describe deploy envoy-gateway-extension-server || true
+          kubectl -n datum-downstream-gateway logs -l app.kubernetes.io/component=envoy-gateway-extension-server --tail=200 || true
+          echo "::endgroup::"
+          echo "::group::Certificates"
+          kubectl -n datum-downstream-gateway get certificate,secret || true
+          echo "::endgroup::"

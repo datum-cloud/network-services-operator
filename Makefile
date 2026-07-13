@@ -153,13 +153,18 @@ set-image-controller: manifests kustomize
 	cd config/manager && $(KUSTOMIZE) edit set image ghcr.io/datum-cloud/network-services-operator=${IMG}
 
 .PHONY: prepare-infra-cluster
-prepare-infra-cluster: cert-manager envoy-gateway external-dns downstream-crds
+prepare-infra-cluster: cert-manager envoy-gateway external-dns downstream-crds downstream-waf-dataplane
 
 .PHONY: downstream-crds
 downstream-crds: ## Install NSO CRDs on the downstream (infra) cluster that the replicator mirrors into it.
 	$(KUBECTL) apply -f config/crd/bases/networking.datumapis.com_connectors.yaml
 	$(KUBECTL) apply -f config/crd/bases/networking.datumapis.com_httpproxies.yaml
 	$(KUBECTL) apply -f config/crd/bases/networking.datumapis.com_trafficprotectionpolicies.yaml
+
+.PHONY: downstream-waf-dataplane
+downstream-waf-dataplane: kustomize load-image-infra ## Install the Coraza WAF data plane (downstream EG instance + extension server + datum-downstream-gateway GatewayClass) on the infra cluster.
+	$(KUSTOMIZE) build --enable-helm config/tools/envoy-gateway-downstream | kubectl apply --server-side=true --force-conflicts -f -
+	$(KUSTOMIZE) build config/e2e-downstream | kubectl apply --server-side=true --force-conflicts -f -
 
 .PHONY: prepare-e2e
 prepare-e2e: chainsaw set-image-controller cert-manager load-image-all deploy-e2e
@@ -173,6 +178,10 @@ load-image-all: load-image-operator
 .PHONY: load-image-operator
 load-image-operator: docker-build kind
 	$(KIND) load docker-image $(IMG) -n nso-standard
+
+.PHONY: load-image-infra
+load-image-infra: docker-build kind
+	$(KIND) load docker-image $(IMG) -n nso-infra
 
 .PHONY: cert-manager
 cert-manager: cmctl

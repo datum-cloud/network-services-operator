@@ -74,6 +74,7 @@ tasks:
       - task: prepare-upstream
       - task: eg-downstream
       - task: extension-server
+      - task: billing-usage-collector
       - task: external-dns
       - task: link-clusters
       - task: wait-ready
@@ -167,6 +168,12 @@ tasks:
       # reliably watches a namespace labeled at creation time, so the label must
       # be in the manifest, not added afterward.
       - kubectl --context {{.DOWNSTREAM_CTX}} apply -f config/e2e-downstream/direct-namespace.yaml
+
+  billing-usage-collector:
+    desc: "Install the billing usage collector (Vector agent) that tails the downstream Envoy access logs and emits usage CloudEvents."
+    cmds:
+      - echo "🔧 installing billing-usage-collector (Vector agent, tailing datum-downstream-gateway)"
+      - '{{.KUSTOMIZE}} build --enable-helm config/tools/billing-usage-collector | kubectl --context {{.DOWNSTREAM_CTX}} apply --server-side=true --force-conflicts -f -'
 
   eg-downstream:
     desc: "Install the dedicated downstream Envoy Gateway (v1.7.4) with the ext-server extensionManager wiring on the downstream cluster."

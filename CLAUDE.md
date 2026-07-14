@@ -84,6 +84,20 @@ defined in `Taskfile.test-infra.yml` and is what CI runs.
 - `task test-prometheus-rules` — `promtool` tests for the alerting rules in
   `test/prometheus-rules/`
 
+#### Authoring e2e tests against the env
+- Bind to the shared data plane the env stands up: downstream GatewayClass
+  `datum-downstream-gateway-e2e`, Envoy Gateway namespace
+  `datum-downstream-gateway`, extension server in
+  `network-services-operator-system`. Do **not** hardcode the bare
+  `datum-downstream-gateway` class or self-provision a per-test EnvoyProxy in
+  `envoy-gateway-system` — that was the retired single-stack bridge's model.
+- Every scenario under `test/e2e/` runs against this env in CI. Any setup a
+  scenario needs (a data-plane component, a namespace) must be installed by
+  `task test-infra:up` (add it to `Taskfile.test-infra.yml`), not assumed from
+  outside — a scenario whose dependency isn't provisioned by the env will fail.
+- Editing `.github/workflows/*` requires pushing over SSH; the HTTPS token used
+  by `gh` lacks the `workflow` scope.
+
 ## High-Level Architecture
 
 ### Multi-Cluster (upstream / downstream)

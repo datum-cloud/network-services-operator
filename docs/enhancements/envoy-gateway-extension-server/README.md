@@ -358,9 +358,10 @@ The dedicated EG is configured with:
 - `extensionManager` baked into the helm values — no runtime ConfigMap patch or EG rollout
   restart is required.
 
-The local/CI e2e installs the dedicated EG via the second `helmCharts:` entry in
-`config/tools/envoy-gateway/kustomization.yaml` (applied by `make prepare-infra-cluster`).
-In production (`datum-cloud/infra`) it is a FluxCD `HelmRelease` with the same values.
+The local/CI e2e installs the dedicated downstream EG via
+`config/tools/envoy-gateway-downstream` (applied by the `test-infra:eg-downstream`
+task during `task test-infra:up`). In production (`datum-cloud/infra`) it is a
+FluxCD `HelmRelease` with the same values.
 
 #### extensionManager registration
 
@@ -819,7 +820,7 @@ meaning of "parity" in the Transition Plan below.
 
 **3. Real-traffic end-to-end (two kind clusters, live requests).** The
 [Chainsaw e2e suite](https://github.com/datum-cloud/network-services-operator/blob/main/test/e2e/gateway/chainsaw-test.yaml) (run by
-`make test-e2e`, gated in CI) stands up the full upstream/downstream split,
+`task test-infra:test-e2e`, gated in CI) stands up the full upstream/downstream split,
 provisions Gateways and HTTPRoutes, and sends real HTTP through Envoy with
 `curl` — confirming plaintext routing, TLS termination, and certificate
 issuance actually work, not just that the config looks right. The

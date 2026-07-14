@@ -290,6 +290,24 @@ tasks:
       - kubectl --context {{.DOWNSTREAM_CTX}} -n datum-downstream-gateway wait deploy envoy-gateway --for=condition=Available --timeout=240s
       - echo "⏳ waiting for ext-server"
       - kubectl --context {{.DOWNSTREAM_CTX}} -n network-services-operator-system wait deploy network-services-operator-envoy-gateway-extension-server --for=condition=Available --timeout=240s
+      # Deployment Available != webhook serving: cert-manager injects the webhook
+      # cert after the pod is up, so early Domain/Gateway creates race it and time
+      # out ("context deadline exceeded"). Block until a server-side dry-run is
+      # actually admitted.
+      - echo "⏳ waiting for the NSO admission webhook to admit"
+      - |
+        DOMAIN_JSON='{"apiVersion":"networking.datumapis.com/v1alpha","kind":"Domain","metadata":{"name":"warmup-probe"},"spec":{"domainName":"warmup.e2e.env.datum.net"}}'
+        for i in $(seq 1 60); do
+          if echo "$DOMAIN_JSON" | kubectl --context {{.UPSTREAM_CTX}} -n default create --dry-run=server -f - >/dev/null 2>&1; then
+            echo "✅ webhook admitting"; break
+          fi
+          if [ "$i" -eq 60 ]; then echo "❌ webhook never became ready"; exit 1; fi
+          sleep 2
+        done
+      # Ensure the downstream GatewayClass is Accepted so the first test gateway
+      # programs promptly instead of racing a 30s assert on a cold edge.
+      - echo "⏳ waiting for the downstream GatewayClass to be Accepted"
+      - kubectl --context {{.DOWNSTREAM_CTX}} wait gatewayclass datum-downstream-gateway-e2e --for=condition=Accepted --timeout=120s
       - echo "✅ core components ready."
 
   # ---- Karmada ------------------------------------------------------------

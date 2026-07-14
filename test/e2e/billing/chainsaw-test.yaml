@@ -255,6 +255,9 @@ spec:
                       namespaces:
                         from: Same
         - assert:
+            # Cold edge: the first gateway waits on the merged Envoy proxy to
+            # spin up, which overruns the 30s default.
+            timeout: 3m
             resource:
               apiVersion: gateway.networking.k8s.io/v1
               kind: Gateway

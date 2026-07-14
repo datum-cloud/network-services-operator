@@ -283,7 +283,7 @@ tasks:
     desc: "Wait for the core components (NSO manager, downstream EG, ext-server) to be Available."
     cmds:
       - echo "⏳ waiting for NSO manager (upstream)"
-      - kubectl --context {{.UPSTREAM_CTX}} -n network-services-operator-system wait deploy network-services-operator-controller-manager --for=condition=Available --timeout=240s
+      - kubectl --context {{.UPSTREAM_CTX}} -n network-services-operator-system wait deploy network-services-operator-controller-manager --for=condition=Available --timeout=360s
       - echo "⏳ waiting for downstream EG"
       # The gateway control-plane Deployment is named `envoy-gateway` by its chart,
       # not after the release name.

@@ -50,6 +50,18 @@ jobs:
         if: failure()
         run: |
           set +e
+          UKC=${TMPDIR}/.kind-nso-upstream.yaml
+          bin/kind-v0.32.0 get kubeconfig --name nso-upstream > "${UKC}"
+          echo "::group::Upstream NSO manager"
+          KUBECONFIG="${UKC}" kubectl -n network-services-operator-system get pods -o wide
+          KUBECONFIG="${UKC}" kubectl -n network-services-operator-system describe deploy network-services-operator-controller-manager
+          KUBECONFIG="${UKC}" kubectl -n network-services-operator-system describe pod -l app.kubernetes.io/name=network-services-operator
+          KUBECONFIG="${UKC}" kubectl -n network-services-operator-system logs -l app.kubernetes.io/name=network-services-operator --tail=200 --all-containers
+          echo "::endgroup::"
+          echo "::group::Upstream cert-manager + webhook cert"
+          KUBECONFIG="${UKC}" kubectl -n cert-manager get pods -o wide
+          KUBECONFIG="${UKC}" kubectl -n network-services-operator-system get certificate,secret
+          echo "::endgroup::"
           KC=${TMPDIR}/.kind-nso-downstream.yaml
           bin/kind-v0.32.0 get kubeconfig --name nso-downstream > "${KC}"
           export KUBECONFIG="${KC}"

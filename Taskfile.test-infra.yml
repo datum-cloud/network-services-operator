@@ -422,6 +422,7 @@ tasks:
       - echo "🧪 chainsaw suite {{.TARGET}} (nso-standard={{.UPSTREAM_CLUSTER}}, nso-infra={{.DOWNSTREAM_CLUSTER}}); report {{.REPORT_PATH}}/{{.REPORT_NAME}}.json"
       - |
         {{.CHAINSAW}} test {{.TARGET}} \
+          --parallel 1 \
           --cluster nso-standard={{.TMP_DIR}}/.kind-{{.UPSTREAM_CLUSTER}}.yaml \
           --cluster nso-infra={{.TMP_DIR}}/.kind-{{.DOWNSTREAM_CLUSTER}}.yaml \
           --report-format JSON \

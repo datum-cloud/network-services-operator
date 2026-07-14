@@ -94,7 +94,7 @@ spec:
               metadata:
                 name: waf-gw
               spec:
-                gatewayClassName: datum-downstream-gateway
+                gatewayClassName: datum-downstream-gateway-e2e
                 listeners:
                   - name: http
                     protocol: HTTP
@@ -147,13 +147,15 @@ spec:
               crd=trafficprotectionpolicies.networking.datumapis.com
               path=/spec/versions/0/schema/openAPIV3Schema/properties/spec/properties/ruleSets/items/properties/owaspCoreRuleSet/properties/paranoiaLevels/x-kubernetes-validations
 
-              kubectl patch crd "${crd}" --type=json \
-                -p "[{\"op\":\"remove\",\"path\":\"${path}\"}]"
-
-              restore() {
-                kubectl patch crd "${crd}" --type=json -p "[{\"op\":\"add\",\"path\":\"${path}\",\"value\":[{\"message\":\"detection paranoia level must be greater than or equal to blocking paranoia level\",\"rule\":\"self.detection >= self.blocking\"}]}]"
-              }
-              trap restore EXIT
+              cel=".spec.versions[0].schema.openAPIV3Schema.properties.spec.properties.ruleSets.items.properties.owaspCoreRuleSet.properties.paranoiaLevels.x-kubernetes-validations"
+              if kubectl get crd "${crd}" -o jsonpath="{${cel}}" | grep -q .; then
+                kubectl patch crd "${crd}" --type=json \
+                  -p "[{\"op\":\"remove\",\"path\":\"${path}\"}]"
+                restore() {
+                  kubectl patch crd "${crd}" --type=json -p "[{\"op\":\"add\",\"path\":\"${path}\",\"value\":[{\"message\":\"detection paranoia level must be greater than or equal to blocking paranoia level\",\"rule\":\"self.detection >= self.blocking\"}]}]"
+                }
+                trap restore EXIT
+              fi
 
               created=false
               for i in $(seq 1 20); do

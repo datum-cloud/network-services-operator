@@ -17,7 +17,7 @@ metadata:
 #
 # Precondition: the downstream (nso-infra) must have the WAF data plane wired up
 # (extension-server + the extensionManager Envoy Gateway registered on the
-# `datum-downstream-gateway` GatewayClass, with the Coraza filter).
+# `datum-downstream-gateway-e2e` GatewayClass, with the Coraza filter).
 # `make prepare-infra-cluster` installs this via `make downstream-waf-dataplane`.
 spec:
   cluster: nso-infra
@@ -84,7 +84,7 @@ spec:
               metadata:
                 name: waf-gw
               spec:
-                gatewayClassName: datum-downstream-gateway
+                gatewayClassName: datum-downstream-gateway-e2e
                 listeners:
                   - name: http
                     protocol: HTTP
@@ -144,7 +144,7 @@ spec:
               set -x
               kubectl get gateway -A -o yaml
               kubectl describe gateway -A
-              kubectl get gatewayclass datum-downstream-gateway -o yaml
+              kubectl get gatewayclass datum-downstream-gateway-e2e -o yaml
               kubectl -n datum-downstream-gateway get pods -o wide
               kubectl -n datum-downstream-gateway describe pods
               kubectl -n datum-downstream-gateway logs deploy/envoy-gateway --tail=-1

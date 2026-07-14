@@ -384,14 +384,21 @@ tasks:
       # CLI_ARGS (after --) wins so a single test can be selected; else the whole
       # suite directory.
       TARGET: '{{.CLI_ARGS | default "./test/e2e"}}'
+      # Persist a machine-readable run report so a hang or kill still leaves a
+      # forensic trail on disk (chainsaw writes nothing by default).
+      REPORT_PATH: '{{.REPORT_PATH | default .TMP_DIR}}'
+      REPORT_NAME: '{{.REPORT_NAME | default "chainsaw-report"}}'
     deps:
       - kubeconfigs
     cmds:
-      - echo "🧪 chainsaw suite {{.TARGET}} (nso-standard={{.UPSTREAM_CLUSTER}}, nso-infra={{.DOWNSTREAM_CLUSTER}})"
+      - echo "🧪 chainsaw suite {{.TARGET}} (nso-standard={{.UPSTREAM_CLUSTER}}, nso-infra={{.DOWNSTREAM_CLUSTER}}); report {{.REPORT_PATH}}/{{.REPORT_NAME}}.json"
       - |
         {{.CHAINSAW}} test {{.TARGET}} \
           --cluster nso-standard={{.TMP_DIR}}/.kind-{{.UPSTREAM_CLUSTER}}.yaml \
-          --cluster nso-infra={{.TMP_DIR}}/.kind-{{.DOWNSTREAM_CLUSTER}}.yaml
+          --cluster nso-infra={{.TMP_DIR}}/.kind-{{.DOWNSTREAM_CLUSTER}}.yaml \
+          --report-format JSON \
+          --report-path {{.REPORT_PATH}} \
+          --report-name {{.REPORT_NAME}}
 
   kubeconfigs:
     desc: "Export per-cluster kubeconfigs to TMPDIR for chainsaw."

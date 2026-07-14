@@ -1,0 +1,8 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: envoy-gateway-extension-server-pdb
+spec:
+  # replicas=1 in e2e; minAvailable:1 would block any eviction. Set to 0 so kind
+  # cluster teardown / upgrades don't stall.
+  minAvailable: 0

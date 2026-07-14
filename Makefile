@@ -81,7 +81,8 @@ test-e2e: chainsaw
 	}
 	$(KIND) get kubeconfig --name nso-standard > $(TMPDIR)/.kind-nso-standard.yaml
 	$(KIND) get kubeconfig --name nso-infra > $(TMPDIR)/.kind-nso-infra.yaml
-	$(CHAINSAW) test ./test/e2e \
+	$(CHAINSAW) test $(or $(TEST_DIR),./test/e2e) \
+	    --parallel 1 \
 		--cluster nso-standard=$(TMPDIR)/.kind-nso-standard.yaml \
 		--cluster nso-infra=$(TMPDIR)/.kind-nso-infra.yaml
 
@@ -153,7 +154,7 @@ set-image-controller: manifests kustomize
 	cd config/manager && $(KUSTOMIZE) edit set image ghcr.io/datum-cloud/network-services-operator=${IMG}
 
 .PHONY: prepare-infra-cluster
-prepare-infra-cluster: cert-manager envoy-gateway external-dns downstream-crds downstream-waf-dataplane
+prepare-infra-cluster: cert-manager envoy-gateway external-dns downstream-crds downstream-waf-dataplane billing-usage-collector load-image-infra extension-server configure-eg-extension-manager
 
 .PHONY: downstream-crds
 downstream-crds: ## Install NSO CRDs on the downstream (infra) cluster that the replicator mirrors into it.
@@ -173,14 +174,14 @@ prepare-e2e: chainsaw set-image-controller cert-manager load-image-all deploy-e2
 prepare-dev: chainsaw set-image-controller cert-manager install
 
 .PHONY: load-image-all
-load-image-all: load-image-operator
+load-image-all: load-image-operator load-image-infra
 
 .PHONY: load-image-operator
 load-image-operator: docker-build kind
 	$(KIND) load docker-image $(IMG) -n nso-standard
 
 .PHONY: load-image-infra
-load-image-infra: docker-build kind
+load-image-infra: docker-build kind ## Load operator image into nso-infra kind cluster (needed by the extension server).
 	$(KIND) load docker-image $(IMG) -n nso-infra
 
 .PHONY: cert-manager
@@ -195,6 +196,24 @@ envoy-gateway:
 .PHONY: external-dns
 external-dns:
 	$(KUSTOMIZE) build --enable-helm config/tools/external-dns | kubectl apply --server-side=true --force-conflicts -f -
+
+.PHONY: billing-usage-collector
+billing-usage-collector:
+	$(KUSTOMIZE) build --enable-helm config/tools/billing-usage-collector | kubectl apply --server-side=true --force-conflicts -f -
+
+.PHONY: extension-server
+extension-server: ## Deploy the NSO extension server to the infra cluster (e2e overlay with cert-manager-issued TLS).
+	$(KUSTOMIZE) build --enable-helm config/extension-server-e2e | kubectl apply --server-side=true --force-conflicts -f -
+	kubectl rollout restart deployment/network-services-operator-envoy-gateway-extension-server \
+	    -n network-services-operator-system
+	kubectl rollout status deployment/network-services-operator-envoy-gateway-extension-server \
+	    -n network-services-operator-system --timeout=5m
+
+.PHONY: configure-eg-extension-manager
+configure-eg-extension-manager: ## Patch the EG ConfigMap to enable extensionManager and restart the EG controller.
+	$(KUSTOMIZE) build --enable-helm config/tools/envoy-gateway/overlays/e2e | kubectl apply --server-side=true --force-conflicts -f -
+	kubectl rollout restart deployment/envoy-gateway -n envoy-gateway-system
+	kubectl rollout status deployment/envoy-gateway -n envoy-gateway-system --timeout=3m
 
 .PHONY: kind-standard-cluster
 kind-standard-cluster: kind

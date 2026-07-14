@@ -1,0 +1,771 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: billing-http-metering
+spec:
+  bindings:
+    - name: clusterIssuerName
+      value: (join('-', ['e2e-billing', $namespace]))
+    - name: gatewayClassName
+      value: (join('-', ['e2e-billing', $namespace]))
+  cluster: nso-standard
+  steps:
+    - name: Create CA
+      try:
+        - create:
+            cluster: nso-infra
+            resource:
+              apiVersion: cert-manager.io/v1
+              kind: ClusterIssuer
+              metadata:
+                name: (join('-', [$clusterIssuerName, 'issuer']))
+              spec:
+                selfSigned: {}
+
+        - create:
+            cluster: nso-infra
+            resource:
+              apiVersion: cert-manager.io/v1
+              kind: Certificate
+              metadata:
+                name: (join('-', [$clusterIssuerName, 'ca']))
+                namespace: cert-manager
+              spec:
+                isCA: true
+                commonName: (join('-', [$clusterIssuerName, 'ca']))
+                secretName: ($clusterIssuerName)
+                privateKey:
+                  algorithm: ECDSA
+                  size: 256
+                issuerRef:
+                  name: (join('-', [$clusterIssuerName, 'issuer']))
+                  kind: ClusterIssuer
+                  group: cert-manager.io
+
+        - create:
+            cluster: nso-infra
+            resource:
+              apiVersion: cert-manager.io/v1
+              kind: ClusterIssuer
+              metadata:
+                name: ($clusterIssuerName)
+              spec:
+                ca:
+                  secretName: ($clusterIssuerName)
+
+        - script:
+            cluster: nso-infra
+            env:
+              - name: CLUSTER_ISSUER_NAME
+                value: ($clusterIssuerName)
+            content: |
+              kubectl get secret -n cert-manager $CLUSTER_ISSUER_NAME -o yaml | \
+                sed 's/namespace: .*/namespace: envoy-gateway-system/' | \
+                kubectl apply -n envoy-gateway-system -f -
+
+    - name: Deploy Mock Billing Gateway
+      try:
+        - create:
+            cluster: nso-infra
+            resource:
+              apiVersion: v1
+              kind: Service
+              metadata:
+                name: mock-billing-gateway
+                namespace: billing-system
+              spec:
+                ports:
+                  - name: http
+                    port: 8080
+                    targetPort: 8080
+                selector:
+                  app: mock-billing-gateway
+        - create:
+            cluster: nso-infra
+            resource:
+              apiVersion: apps/v1
+              kind: Deployment
+              metadata:
+                name: mock-billing-gateway
+                namespace: billing-system
+              spec:
+                replicas: 1
+                selector:
+                  matchLabels:
+                    app: mock-billing-gateway
+                template:
+                  metadata:
+                    labels:
+                      app: mock-billing-gateway
+                  spec:
+                    containers:
+                      - name: mock-billing-gateway
+                        image: python:3.11-alpine
+                        command: ["python", "-c", "import socket; s=socket.socket(); s.bind(('0.0.0.0', 8080)); s.listen(5); print('Started');\nwhile True:\n conn, addr = s.accept(); req = conn.recv(4096); print(req.decode('utf-8', errors='ignore'), flush=True); conn.sendall(b'HTTP/1.1 200 OK\\r\\nContent-Length: 0\\r\\n\\r\\n'); conn.close()"]
+                        resources:
+                          requests:
+                            cpu: 10m
+                            memory: 16Mi
+                          limits:
+                            cpu: 50m
+                            memory: 32Mi
+        - assert:
+            cluster: nso-infra
+            resource:
+              apiVersion: apps/v1
+              kind: Deployment
+              metadata:
+                name: mock-billing-gateway
+                namespace: billing-system
+              status:
+                readyReplicas: 1
+
+    - name: Reset Vector
+      try:
+        - script:
+            timeout: 90s
+            cluster: nso-infra
+            content: |
+              kubectl rollout restart daemonset/billing-usage-collector-vector -n billing-system
+              kubectl rollout status daemonset/billing-usage-collector-vector -n billing-system --timeout=60s
+
+    - name: Create GatewayClasses
+      try:
+        - create:
+            cluster: nso-standard
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: GatewayClass
+              metadata:
+                name: ($gatewayClassName)
+              spec:
+                controllerName: gateway.networking.datumapis.com/external-global-proxy-controller
+
+        # Ensure the downstream environment's standard gateway class and config exists
+        - apply:
+            cluster: nso-infra
+            resource:
+              apiVersion: gateway.envoyproxy.io/v1alpha1
+              kind: EnvoyProxy
+              metadata:
+                name: custom-proxy-config
+                namespace: envoy-gateway-system
+              spec:
+                telemetry:
+                  accessLog:
+                    settings:
+                      - sinks:
+                          # File sink only -- identical to the production
+                          # downstream gateway EnvoyProxy. Envoy writes the JSON
+                          # access log to stdout; the node-local Vector agent
+                          # tails the container log file (kubernetes_logs source)
+                          # and emits the CloudEvents. This exercises the real,
+                          # file-based production ingestion path -- no OTLP push.
+                          # The test also scrapes the same stdout to derive the
+                          # expected metric values (bytes, duration, project_name).
+                          - type: File
+                            file:
+                              path: /dev/stdout
+                        format:
+                          type: JSON
+                          json:
+                            start_time: "%START_TIME%"
+                            method: "%REQ(:METHOD)%"
+                            path: "%REQ(X-ENVOY-ORIGINAL-PATH?:PATH)%"
+                            protocol: "%PROTOCOL%"
+                            response_code: "%RESPONSE_CODE%"
+                            bytes_received: "%BYTES_RECEIVED%"
+                            bytes_sent: "%BYTES_SENT%"
+                            duration: "%DURATION%"
+                            route_name: "%ROUTE_NAME%"
+                            project_name: "%METADATA(ROUTE:datum-gateway:project_name)%"
+                            request_id: "%REQ(X-REQUEST-ID)%"
+                provider:
+                  type: Kubernetes
+                  kubernetes:
+                    envoyService:
+                      type: ClusterIP
+                      patch:
+                        type: StrategicMerge
+                        value:
+                          spec:
+                            ipFamilyPolicy: RequireDualStack
+                    envoyDeployment:
+                      patch:
+                        type: StrategicMerge
+                        value:
+                          spec:
+                            template:
+                              spec:
+                                containers:
+                                  - name: envoy
+                                    volumeMounts:
+                                      - mountPath: /etc/ssl/certs/
+                                        name: selfsigned-ca
+                                        readOnly: true
+                                volumes:
+                                  - name: selfsigned-ca
+                                    secret:
+                                      secretName: ($clusterIssuerName)
+                                      items:
+                                        - key: ca.crt
+                                          path: ca-certificates.crt
+                mergeGateways: true
+
+        - apply:
+            cluster: nso-infra
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: GatewayClass
+              metadata:
+                name: datum-downstream-gateway-e2e
+              spec:
+                controllerName: gateway.envoyproxy.io/gatewayclass-controller
+                parametersRef:
+                  group: gateway.envoyproxy.io
+                  kind: EnvoyProxy
+                  name: custom-proxy-config
+                  namespace: envoy-gateway-system
+
+        - apply:
+            cluster: nso-infra
+            resource:
+              apiVersion: v1
+              kind: Namespace
+              metadata:
+                name: datum-downstream-gateway-hostnames
+
+        # Get downstream namespace name by retrieving standard namespace UID
+        - script:
+            cluster: nso-standard
+            content: |
+              kubectl get ns $NAMESPACE -o json
+            outputs:
+              - name: downstreamNamespaceName
+                value: (join('-', ['ns', json_parse($stdout).metadata.uid]))
+
+    - name: Create namespace on infra cluster
+      try:
+        - script:
+            cluster: nso-infra
+            content: |
+              kubectl create namespace $NAMESPACE --dry-run=client -o yaml | kubectl apply -f -
+      cleanup:
+        - script:
+            timeout: 60s
+            cluster: nso-infra
+            content: |
+              kubectl delete namespace $NAMESPACE --ignore-not-found=true
+
+    - name: Create backend pod and service
+      try:
+        - create:
+            cluster: nso-infra
+            resource:
+              apiVersion: cert-manager.io/v1
+              kind: Certificate
+              metadata:
+                name: backend-pod
+              spec:
+                dnsNames:
+                  - (join('.', ['backend-service', $namespace, 'svc.cluster.local']))
+                issuerRef:
+                  name: ($clusterIssuerName)
+                  kind: ClusterIssuer
+                secretName: backend-cert
+        - create:
+            cluster: nso-infra
+            resource:
+              apiVersion: v1
+              kind: Pod
+              metadata:
+                name: backend-pod
+                labels:
+                  app: backend
+              spec:
+                containers:
+                  - name: backend
+                    image: ghcr.io/mccutchen/go-httpbin:2.18.1
+                    command: ["/bin/go-httpbin"]
+                    args:
+                      - -host
+                      - "0.0.0.0"
+                      - -port
+                      - "8080"
+                    resources:
+                      requests:
+                        cpu: 10m
+                        memory: 16Mi
+                      limits:
+                        cpu: 50m
+                        memory: 64Mi
+        - create:
+            cluster: nso-infra
+            resource:
+              apiVersion: v1
+              kind: Service
+              metadata:
+                name: backend-service
+              spec:
+                ports:
+                  - name: http
+                    port: 8080
+                    targetPort: 8080
+                selector:
+                  app: backend
+
+    - name: Provision Domain
+      try:
+        - create:
+            cluster: nso-standard
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Domain
+              metadata:
+                name: test-domain
+              spec:
+                domainName: e2e.env.datum.net
+        - script:
+            content: |
+              kubectl -n $NAMESPACE patch domain test-domain \
+                --subresource=status --type=merge \
+                -p '{"status":{"conditions":[{"type": "Verified", "status": "True", "reason": "Test", "message": "test", "lastTransitionTime": "2025-02-24T23:59:09Z"}]}}'
+
+    - name: Provision Gateway
+      try:
+        - script:
+            cluster: nso-standard
+            skipCommandOutput: true
+            skipLogOutput: true
+            content: |
+              kubectl get ns $NAMESPACE -o json
+            outputs:
+              - name: downstreamNamespaceName
+                value: (join('-', ['ns', json_parse($stdout).metadata.uid]))
+        - create:
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: Gateway
+              metadata:
+                name: test-gateway
+              spec:
+                gatewayClassName: ($gatewayClassName)
+                listeners:
+                  - name: default-http
+                    port: 80
+                    protocol: HTTP
+                    allowedRoutes:
+                      namespaces:
+                        from: Same
+        - assert:
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: Gateway
+              metadata:
+                name: test-gateway
+              status:
+                conditions:
+                  - type: Accepted
+                    status: "True"
+                  - type: Programmed
+                    status: "True"
+        - assert:
+            cluster: nso-infra
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: Gateway
+              metadata:
+                name: test-gateway
+                namespace: ($downstreamNamespaceName)
+
+    - name: Provision HTTPRoute
+      try:
+        - script:
+            cluster: nso-standard
+            skipCommandOutput: true
+            skipLogOutput: true
+            content: |
+              kubectl get ns $NAMESPACE -o json
+            outputs:
+              - name: downstreamNamespaceName
+                value: (join('-', ['ns', json_parse($stdout).metadata.uid]))
+        - create:
+            resource:
+              apiVersion: discovery.k8s.io/v1
+              kind: EndpointSlice
+              metadata:
+                name: test-slice-1
+                labels:
+                  kubernetes.io/service-name: backend-service
+              addressType: FQDN
+              ports:
+                - name: http
+                  port: 8080
+              endpoints:
+                - addresses:
+                    - (join('.', ['backend-service', $namespace, 'svc.cluster.local']))
+                  conditions:
+                    ready: true
+                    serving: true
+                    terminating: false
+        - create:
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: HTTPRoute
+              metadata:
+                name: test-route
+              spec:
+                parentRefs:
+                  - name: test-gateway
+                rules:
+                  - matches:
+                      - path:
+                          type: PathPrefix
+                          value: /
+                    backendRefs:
+                      - group: discovery.k8s.io
+                        kind: EndpointSlice
+                        name: test-slice-1
+                        port: 8080
+        - assert:
+            cluster: nso-infra
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: HTTPRoute
+              metadata:
+                name: test-route
+                namespace: ($downstreamNamespaceName)
+
+    - name: Provision Pod to test connectivity
+      try:
+        - script:
+            cluster: nso-standard
+            skipCommandOutput: true
+            skipLogOutput: true
+            content: |
+              kubectl get ns $NAMESPACE -o json
+            outputs:
+              - name: downstreamNamespaceName
+                value: (join('-', ['ns', json_parse($stdout).metadata.uid]))
+        - script:
+            timeout: 45s
+            skipCommandOutput: true
+            skipLogOutput: true
+            cluster: nso-infra
+            content: |
+              # Wait up to 10s for the envoy service to be created
+              for i in $(seq 1 10); do
+                SVC=$(kubectl get svc -n envoy-gateway-system -l gateway.envoyproxy.io/owning-gatewayclass=datum-downstream-gateway-e2e -o json || true)
+                if [ ! -z "$SVC" ] && echo "$SVC" | grep -q "metadata"; then
+                  echo "$SVC"
+                  exit 0
+                fi
+                sleep 1
+              done
+              echo "ERROR: Envoy service not found for namespace ($downstreamNamespaceName)" >&2
+              exit 1
+            outputs:
+              - name: gatewayService
+                value: (json_parse($stdout).items | [0])
+
+        - create:
+            cluster: nso-infra
+            resource:
+              apiVersion: v1
+              kind: Pod
+              metadata:
+                name: test-pod
+              spec:
+                containers:
+                  - name: test-pod
+                    image: alpine:3.19
+                    command: ["sleep", "3600"]
+                    env:
+                      - name: GATEWAY_SERVICE_NAME
+                        value: ($gatewayService.metadata.name)
+                      - name: GATEWAY_SERVICE_NAMESPACE
+                        value: envoy-gateway-system
+                    lifecycle:
+                      postStart:
+                        exec:
+                          command: ["apk", "add", "curl"]
+                terminationGracePeriodSeconds: 0
+
+        - assert:
+            cluster: nso-infra
+            resource:
+              apiVersion: v1
+              kind: Pod
+              metadata:
+                name: backend-pod
+              status:
+                phase: Running
+
+        - assert:
+            cluster: nso-infra
+            resource:
+              apiVersion: v1
+              kind: Pod
+              metadata:
+                name: test-pod
+              status:
+                phase: Running
+
+        - sleep:
+            duration: 10s
+
+        # Get primary hostname on nso-standard
+        - script:
+            cluster: nso-standard
+            content: |
+              PRIMARY_HOSTNAME=$(kubectl -n $NAMESPACE get gateway test-gateway -o jsonpath='{.status.addresses[0].value}' || true)
+              if [ -z "$PRIMARY_HOSTNAME" ]; then
+                PRIMARY_HOSTNAME="test-domain.prism.e2e.env.datum.net"
+              fi
+              printf "%s" "$PRIMARY_HOSTNAME"
+            outputs:
+              - name: primaryHostname
+                value: ($stdout)
+
+        # Send request with a known request/response size and capture it on nso-infra
+        - script:
+            cluster: nso-infra
+            env:
+              - name: STANDARD_NAMESPACE
+                value: ($namespace)
+              - name: PRIMARY_HOSTNAME
+                value: ($primaryHostname)
+            content: |
+              # Send request with 11 bytes of request body ("hello world") to /delay/2 to ensure duration >= 2s
+              kubectl -n $STANDARD_NAMESPACE exec -i test-pod -- sh -c " \
+                set -x; \
+                curl -kvf -H \"Host: ${PRIMARY_HOSTNAME}\" -d 'hello world' http://\${GATEWAY_SERVICE_NAME}.\${GATEWAY_SERVICE_NAMESPACE}.svc.cluster.local/delay/2; \
+              "
+
+        # Verify Vector emitted the CloudEvents. Envoy wrote the access log to
+        # stdout via its File sink when the request above was served, and the
+        # node-local Vector agent tailed the container log file (kubernetes_logs
+        # source) automatically, so this step only derives the expected values
+        # and polls the mock billing gateway for the result.
+        - script:
+            timeout: 45s
+            cluster: nso-infra
+            env:
+              - name: DOWNSTREAM_NAMESPACE
+                value: ($downstreamNamespaceName)
+            content: |
+              # =====================================================================
+              # Validates the full HTTP metering pipeline, end to end:
+              #
+              #   Envoy access log  --(File sink -> stdout)-->  container log file
+              #        |                                            |
+              #        | (captured here for                         | (Vector agent
+              #        |  expected values)                          |  kubernetes_logs
+              #        |                                            |  source tails it,
+              #        |                                            |  VRL transform fans
+              #        v                                            v  it into CloudEvents)
+              #   captured here (STEP 1-2)               mock-billing-gateway (STEP 4)
+              #
+              # Envoy writes the access log to stdout (File sink on
+              # custom-proxy-config, path: /dev/stdout) when the request is
+              # served; the node-local Vector agent tails the container log file
+              # automatically -- the test does NOT forward it manually. This is
+              # the same file-based ingestion path as the production gateway.
+              #
+              # A single access log line is expected to produce FOUR CloudEvents,
+              # one per usage dimension, all sharing the same subject
+              # ("projects/<project-control-plane-namespace-uid>"):
+              #
+              #   type                                              value
+              #   ------------------------------------------------  -------------------
+              #   networking.datumapis.com/gateway/requests         "1"
+              #   networking.datumapis.com/gateway/ingress-bytes     bytes_received ("11")
+              #   networking.datumapis.com/gateway/egress-bytes      bytes_sent
+              #   networking.datumapis.com/gateway/connection-seconds duration_ms / 1000
+              #
+              # Every CloudEvent also carries a "dimensions" object that must include
+              # the project_name (stamped by the extension server onto route
+              # filter_metadata["datum-gateway"]["project_name"] at xDS build time
+              # and surfaced in the access log via
+              # %METADATA(ROUTE:datum-gateway:project_name)%). STEP 4 asserts both
+              # the per-type values AND that the project_name dimension is correct.
+              # =====================================================================
+
+              sleep 3
+              # --- STEP 1: capture the Envoy access log line for our HTTPRoute -----
+              # The route_name embeds the downstream namespace, so grepping for
+              # 'httproute/<downstream-namespace>/' isolates this test's request.
+              ENVOY_LOG=$(kubectl -n envoy-gateway-system logs -l gateway.envoyproxy.io/owning-gatewayclass=datum-downstream-gateway-e2e -c envoy --tail=500 | grep "httproute/$DOWNSTREAM_NAMESPACE/" | tail -n 1 || true)
+              if [ -z "$ENVOY_LOG" ]; then
+                echo "ERROR: No Envoy access log found containing 'httproute/'" >&2
+                exit 1
+              fi
+              echo "Found Envoy access log: $ENVOY_LOG"
+
+              # --- STEP 2: derive the expected CloudEvent values from that log ----
+              # These are the source-of-truth values Vector should reproduce in the
+              # CloudEvents it emits. They are parsed from the captured log rather
+              # than hardcoded so the assertions track the real request.
+              BYTES_SENT=$(python3 -c "import sys, json; print(json.loads(sys.argv[1])['bytes_sent'])" "$ENVOY_LOG")
+              DURATION_MS=$(python3 -c "import sys, json; print(json.loads(sys.argv[1])['duration'])" "$ENVOY_LOG")
+              EXPECTED_DURATION=$(( DURATION_MS / 1000 ))
+              # project_name is stamped by the extension server onto route
+              # filter_metadata["datum-gateway"]["project_name"] at xDS build
+              # time and read by Envoy via %METADATA(ROUTE:datum-gateway:project_name)%.
+              # A "-" or empty value means the extension server did not inject the
+              # metadata (extension server not running, or %METADATA()% not
+              # supported in this EG version for JSON access logs).
+              # json null → Python None → print gives "None"; coerce to "" explicitly.
+              PROJECT_NAME=$(python3 -c "import sys, json; v=json.loads(sys.argv[1]).get('project_name'); print('' if v is None else v)" "$ENVOY_LOG")
+              if [ -z "$PROJECT_NAME" ] || [ "$PROJECT_NAME" = "-" ]; then
+                echo "ERROR: Envoy access log has no project_name; extension server did not inject datum-gateway route metadata, or %METADATA(ROUTE:...)% is not supported in this EG version for JSON access logs. Log: $ENVOY_LOG" >&2
+                exit 1
+              fi
+
+              echo "Parsed Envoy Log metrics:"
+              echo "  - Ingress bytes (expected): 11"
+              echo "  - Egress bytes (expected): $BYTES_SENT"
+              echo "  - Duration ms (expected): $DURATION_MS ($EXPECTED_DURATION seconds)"
+              echo "  - Project name (expected): $PROJECT_NAME"
+
+              # --- STEP 3: (no manual forwarding) --------------------------------
+              # The request above already caused Envoy to write this access log to
+              # stdout via its File sink (custom-proxy-config, path: /dev/stdout).
+              # The node-local Vector agent tails the Envoy container log file via
+              # its kubernetes_logs source, and Vector's VRL transform parses it
+              # and emits the four CloudEvents to the mock-billing-gateway sink, so
+              # there is nothing to POST here -- we just poll for the result.
+
+              # --- STEP 4: verify the CloudEvents the mock billing gateway received
+              # Poll the mock gateway's request log (Vector may take a moment to
+              # flush) and assert that, for our subject, all four event types are
+              # present with the expected values AND the correct project_name
+              # dimension. Give up after the deadline and dump diagnostics.
+              DEADLINE=$(($(date +%s) + 30))
+              while [ "$(date +%s)" -lt "$DEADLINE" ]; do
+                MOCK_LOGS=$(kubectl logs -n billing-system -l app=mock-billing-gateway --tail=100 || true)
+                
+                # Define Python verification script as a bash variable (indented safely in YAML)
+                PYTHON_VERIFY="
+                import sys, json
+                expected_bytes_sent = float($BYTES_SENT)
+                expected_duration_sec = float(int(float($DURATION_MS) / 1000.0))
+                expected_project_name = \"$PROJECT_NAME\"
+                logs = sys.stdin.read()
+                diagnostics = []
+                def check_events(events):
+                    # Returns True once a single subject has the full, correct set
+                    # of CloudEvents for our request. Records why each subject was
+                    # rejected in 'diagnostics' for failure output.
+                    diagnostics.clear()
+                    # Group events by subject (projects/<uid>); a valid run has all
+                    # four event types under one subject.
+                    by_subject = {}
+                    for e in events:
+                        subj = e.get('subject', '')
+                        by_subject.setdefault(subj, []).append(e)
+                    if not by_subject:
+                        diagnostics.append(\"No events found in this log chunk.\")
+                        return False
+                    for subj, subj_events in by_subject.items():
+                        # Index this subject's events by type so we can assert each
+                        # of the four expected usage events exists exactly once.
+                        types = {e.get('type'): e for e in subj_events}
+                        req = types.get('networking.datumapis.com/gateway/requests')
+                        ingress = types.get('networking.datumapis.com/gateway/ingress-bytes')
+                        egress = types.get('networking.datumapis.com/gateway/egress-bytes')
+                        conn = types.get('networking.datumapis.com/gateway/connection-seconds')
+                        missing = []
+                        if not req: missing.append('requests')
+                        if not ingress: missing.append('ingress-bytes')
+                        if not egress: missing.append('egress-bytes')
+                        if not conn: missing.append('connection-seconds')
+                        if missing:
+                            diagnostics.append(f\"Subject '{subj}': missing event types {missing} (found: {list(types.keys())})\")
+                            continue
+                        r_val = req['data'].get('value')
+                        i_val = ingress['data'].get('value')
+                        e_val = egress['data'].get('value')
+                        c_val = conn['data'].get('value')
+                        if r_val != '1':
+                            diagnostics.append(f\"Subject '{subj}': req value expected '1', got '{r_val}'\")
+                            continue
+                        if i_val != '11':
+                            diagnostics.append(f\"Subject '{subj}': ingress value expected '11', got '{i_val}'\")
+                            continue
+                        try:
+                            e_val_f = float(e_val)
+                            if e_val_f != expected_bytes_sent:
+                                diagnostics.append(f\"Subject '{subj}': egress value expected {expected_bytes_sent}, got {e_val_f}\")
+                                continue
+                        except Exception as ex:
+                            diagnostics.append(f\"Subject '{subj}': egress value '{e_val}' could not be parsed as float: {ex}\")
+                            continue
+                        try:
+                            c_val_f = float(c_val)
+                            diff = abs(c_val_f - expected_duration_sec)
+                            if diff > 0.001:
+                                diagnostics.append(f\"Subject '{subj}': conn value expected {expected_duration_sec} (diff <= 0.001), got {c_val_f} (diff {diff})\")
+                                continue
+                        except Exception as ex:
+                            diagnostics.append(f\"Subject '{subj}': conn value '{c_val}' could not be parsed as float: {ex}\")
+                            continue
+                        # All per-type values matched; finally assert the shared
+                        # project_name dimension (carried on every event; checked
+                        # here on the 'requests' event) resolves to the project.
+                        dims = req['data'].get('dimensions', {})
+                        p_val = dims.get('project_name')
+                        if p_val != expected_project_name:
+                            diagnostics.append(f\"Subject '{subj}': project_name dimension expected '{expected_project_name}', got '{p_val}'\")
+                            continue
+                        # This subject passed every check.
+                        return True
+                    return False
+
+                # Try JSON array format (e.g. future codec: json_array)
+                found = False
+                for line in logs.splitlines():
+                    stripped = line.strip()
+                    if stripped.startswith('[') and stripped.endswith(']'):
+                        try:
+                            if check_events(json.loads(stripped)):
+                                found = True
+                                break
+                        except Exception:
+                            pass
+
+                # Try NDJSON format (Vector default: one JSON object per line)
+                if not found:
+                    ndjson_events = []
+                    for line in logs.splitlines():
+                        stripped = line.strip()
+                        if stripped.startswith('{') and stripped.endswith('}'):
+                            try:
+                                e = json.loads(stripped)
+                                if 'type' in e and 'data' in e:
+                                    ndjson_events.append(e)
+                            except Exception:
+                                pass
+                    if ndjson_events:
+                        found = check_events(ndjson_events)
+
+                if not found:
+                    print(\"Validation Failure Details:\", file=sys.stderr)
+                    for d in diagnostics:
+                        print(f\"  - {d}\", file=sys.stderr)
+                sys.exit(0 if found else 1)
+                "
+                
+                # Verify request count, ingress-bytes, egress-bytes, and connection-seconds CloudEvents using python
+                if echo "$MOCK_LOGS" | python3 -c "import sys, textwrap; exec(textwrap.dedent(sys.argv[1]))" "$PYTHON_VERIFY"; then
+                  echo "SUCCESS: mock-billing-gateway received correct requests (1), ingress (11), egress ($BYTES_SENT), connection-seconds (equivalent to $DURATION_MS ms) and project_name ($PROJECT_NAME) CloudEvents!"
+                  exit 0
+                fi
+                sleep 2
+              done
+              echo "FAIL: mock-billing-gateway did not receive correct CloudEvent metrics. Logs:" >&2
+              kubectl logs -n billing-system -l app=mock-billing-gateway --tail=100 >&2
+              exit 1
+
+

@@ -1,0 +1,95 @@
+apiVersion: services.miloapis.com/v1alpha1
+kind: ServiceConfiguration
+metadata:
+  name: networking-datumapis-com
+spec:
+  phase: Published
+  serviceRef:
+    name: networking-datumapis-com
+  monitoredResourceTypes:
+    - type: networking.datumapis.com/HTTPRoute
+      displayName: HTTP Route
+      description: |
+        A customer-defined HTTP routing configuration attached to a managed
+        Gateway. One HTTPRoute represents a single HTTP service surface on
+        the Datum Cloud edge. Usage events cover proxied request count,
+        egress bytes, ingress bytes, and active connection seconds.
+      gvk:
+        group: gateway.networking.k8s.io
+        kind: HTTPRoute
+      labels:
+        - name: region
+          description: Datum deployment region serving the requests.
+        - name: gateway
+          description: Name of the underlying Gateway resource.
+        - name: gateway_namespace
+          description: Namespace of the underlying Gateway resource.
+        - name: gateway_class
+          description: GatewayClass of the underlying Gateway.
+        - name: httproute_name
+          description: Name of the HTTPRoute that served the request.
+        - name: httproute_namespace
+          description: Namespace of the HTTPRoute that served the request.
+        - name: project_name
+          description: Name of the project serving the request.
+  metrics:
+    - name: networking.datumapis.com/gateway/requests
+      displayName: HTTP Route Requests
+      description: HTTP requests proxied through the route.
+      kind: Delta
+      unit: "{request}"
+      dimensions:
+        - region
+        - gateway
+        - gateway_namespace
+        - gateway_class
+        - httproute_name
+        - httproute_namespace
+        - project_name
+    - name: networking.datumapis.com/gateway/egress-bytes
+      displayName: HTTP Route Egress Bytes
+      description: Bytes sent downstream by the route.
+      kind: Delta
+      unit: By
+      dimensions:
+        - region
+        - gateway
+        - gateway_namespace
+        - gateway_class
+        - httproute_name
+        - httproute_namespace
+        - project_name
+    - name: networking.datumapis.com/gateway/ingress-bytes
+      displayName: HTTP Route Ingress Bytes
+      description: Bytes received from clients by the route.
+      kind: Delta
+      unit: By
+      dimensions:
+        - region
+        - gateway
+        - gateway_namespace
+        - gateway_class
+        - httproute_name
+        - httproute_namespace
+        - project_name
+    - name: networking.datumapis.com/gateway/connection-seconds
+      displayName: HTTP Route Connection Seconds
+      description: Seconds long-lived connections (e.g. WebSocket) are held open.
+      kind: Delta
+      unit: s
+      dimensions:
+        - region
+        - gateway
+        - gateway_namespace
+        - gateway_class
+        - httproute_name
+        - httproute_namespace
+        - project_name
+  billing:
+    consumerDestinations:
+      - monitoredResourceType: networking.datumapis.com/HTTPRoute
+        metrics:
+          - networking.datumapis.com/gateway/requests
+          - networking.datumapis.com/gateway/egress-bytes
+          - networking.datumapis.com/gateway/ingress-bytes
+          - networking.datumapis.com/gateway/connection-seconds

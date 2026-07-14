@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"sort"
 	"strconv"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
@@ -30,9 +31,10 @@ import (
 // they are prepended to every policy's per-rule directive list.
 func BuildPolicyIndexFromClient(ctx context.Context, cl client.Client, baseDirectives []string) (*PolicyIndex, error) {
 	idx := &PolicyIndex{
-		DStoUS:     make(map[string]string),
-		TPPs:       make(map[string][]TPPInfo),
-		Connectors: make(map[ConnectorKey]ConnectorInfo),
+		DStoUS:       make(map[string]string),
+		ProjectNames: make(map[string]string),
+		TPPs:         make(map[string][]TPPInfo),
+		Connectors:   make(map[ConnectorKey]ConnectorInfo),
 	}
 	if err := populateFromClient(ctx, cl, idx, baseDirectives); err != nil {
 		return nil, err
@@ -66,6 +68,14 @@ func populateFromClient(ctx context.Context, cl client.Client, idx *PolicyIndex,
 			// resource live in the same cluster. EG puts the plain namespace name
 			// in filter_metadata, so dsNS == ns.Name. Identity entry.
 			idx.DStoUS[ns.Name] = ns.Name
+		}
+
+		// Derive project name from the upstream cluster name label. The label
+		// value is "cluster-<projectName>" (written by mappednamespace.go). In
+		// single-cluster deployments where no cluster name is configured the
+		// label is absent and ProjectNames[ns.Name] is left empty.
+		if clusterLabel := ns.Labels[downstreamclient.UpstreamOwnerClusterNameLabel]; clusterLabel != "" {
+			idx.ProjectNames[ns.Name] = strings.TrimPrefix(clusterLabel, "cluster-")
 		}
 	}
 

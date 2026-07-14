@@ -1,0 +1,12 @@
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: envoy-gateway-extension-server-eg-client-tls
+spec:
+  issuerRef:
+    # Switch from the production placeholder ClusterIssuer to the e2e CA Issuer.
+    # kustomize propagates the namePrefix so this resolves to
+    # network-services-operator-nso-es-ca-issuer at apply time.
+    name: nso-es-ca-issuer
+    kind: Issuer
+    group: cert-manager.io

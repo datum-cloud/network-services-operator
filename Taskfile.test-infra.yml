@@ -378,6 +378,21 @@ tasks:
             --cluster {{.DOWNSTREAM_CLUSTER}}={{.TMP_DIR}}/.kind-{{.DOWNSTREAM_CLUSTER}}.yaml
         done
 
+  test-e2e:
+    desc: "Run the full control-plane e2e suite (test/e2e) against the live two-cluster env. The suite's chainsaw aliases nso-standard/nso-infra are mapped to this env's upstream/downstream kubeconfigs at invocation. Pass a scenario path after -- to run a single test."
+    vars:
+      # CLI_ARGS (after --) wins so a single test can be selected; else the whole
+      # suite directory.
+      TARGET: '{{.CLI_ARGS | default "./test/e2e"}}'
+    deps:
+      - kubeconfigs
+    cmds:
+      - echo "🧪 chainsaw suite {{.TARGET}} (nso-standard={{.UPSTREAM_CLUSTER}}, nso-infra={{.DOWNSTREAM_CLUSTER}})"
+      - |
+        {{.CHAINSAW}} test {{.TARGET}} \
+          --cluster nso-standard={{.TMP_DIR}}/.kind-{{.UPSTREAM_CLUSTER}}.yaml \
+          --cluster nso-infra={{.TMP_DIR}}/.kind-{{.DOWNSTREAM_CLUSTER}}.yaml
+
   kubeconfigs:
     desc: "Export per-cluster kubeconfigs to TMPDIR for chainsaw."
     cmds:

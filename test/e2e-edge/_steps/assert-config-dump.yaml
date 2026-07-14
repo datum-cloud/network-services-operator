@@ -1,0 +1,156 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/step-template-chainsaw-v1alpha1.json
+#
+# Reusable step that asserts the proxy's live configuration matches what the
+# extension server reports it programmed — the same routes, listeners, and
+# clusters, by both count and key, with no rejected configuration update.
+#
+# It runs cmd/parity-check, which reads the extension server's expected set,
+# fetches the proxy's live configuration, then compares and classifies any
+# difference, exiting non-zero on failure.
+#
+# The step retries until the live configuration converges to the expected set or
+# the attempt budget runs out, so it is deterministic rather than a fixed sleep.
+#
+# Use it from a scenario step:
+#
+#   - name: WAF config landed at the edge
+#     use:
+#       template: ../_steps/assert-config-dump.yaml
+#       with:
+#         bindings:
+#           - { name: envoyPodSelector,   value: "gateway.envoyproxy.io/owning-gatewayclass=my-class" }
+#           - { name: extServerSelector,  value: "app.kubernetes.io/component=envoy-gateway-extension-server" }
+#           - { name: extServerNamespace, value: network-services-operator-system }
+#
+# Required bindings:
+#   envoyPodSelector  — label selector for the edge proxy pod. This env runs one
+#     shared proxy per gateway class, so select by gateway class, not by gateway
+#     name (which matches no pod here). Any one shared-proxy pod carries the full
+#     merged configuration, so the step takes the first.
+#   extServerSelector — label selector resolving ALL extension-server replicas.
+#     The env runs two replicas, but only the one the gateway is connected to does
+#     the work; parity-check queries every matched pod and uses the authoritative
+#     one. Do NOT pass a single pod name here.
+#   extServerNamespace — namespace of the extension-server pods.
+# Optional (defaulted below): envoyNamespace, envoyContainer, corazaFilter,
+#   attempts, sleepSeconds, dataplaneCluster, expectMinBuildID.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: StepTemplate
+metadata:
+  name: assert-config-dump
+spec:
+  bindings:
+    - name: envoyNamespace
+      value: envoy-gateway-system
+    - name: envoyContainer
+      value: envoy
+    - name: corazaFilter
+      value: coraza-waf
+    - name: attempts
+      value: "24"
+    - name: sleepSeconds
+      value: "5"
+    # The edge cluster where the proxy and the extension server live.
+    - name: dataplaneCluster
+      value: nso-downstream
+    # When greater than zero, require the extension server's build ID to be at
+    # least this value. Capture the build ID before a change, then set this to
+    # one past it afterward to prove the configuration was actually rebuilt.
+    - name: expectMinBuildID
+      value: "0"
+  try:
+    - description: Build parity-check, then assert the live config_dump matches the ext-server programmed-set.
+      script:
+        # Owns its own retry timing, so allow attempts*sleepSeconds plus build and
+        # fetch time. The chainsaw default is far too short.
+        timeout: 420s
+        cluster: ($dataplaneCluster)
+        env:
+          - name: ENVOY_POD_SELECTOR
+            value: ($envoyPodSelector)
+          - name: ENVOY_NS
+            value: ($envoyNamespace)
+          - name: ENVOY_CONTAINER
+            value: ($envoyContainer)
+          - name: EXT_SELECTOR
+            value: ($extServerSelector)
+          - name: EXT_NS
+            value: ($extServerNamespace)
+          - name: CORAZA_FILTER
+            value: ($corazaFilter)
+          - name: ATTEMPTS
+            value: ($attempts)
+          - name: SLEEP_SECONDS
+            value: ($sleepSeconds)
+          - name: EXPECT_MIN_BUILD_ID
+            value: ($expectMinBuildID)
+        content: |
+          set -eu
+          # Build the parity-check binary. chainsaw runs script steps from the
+          # test directory, not the repo root, so a relative path would not
+          # resolve; find the repo root and build from there. A prebuilt binary
+          # can be supplied via PARITY_CHECK_BIN to skip the build.
+          BIN="${PARITY_CHECK_BIN:-}"
+          if [ -z "${BIN}" ]; then
+            ROOT="$(git rev-parse --show-toplevel)"
+            BIN="${ROOT}/bin/parity-check"
+            go build -o "${BIN}" "${ROOT}/cmd/parity-check"
+          fi
+
+          # Retry until the live configuration converges to the expected set.
+          # parity-check exits 1 on a parity failure and 2 on a tool error; only
+          # retry on parity failure.
+          #
+          # The edge proxy pod is re-resolved each attempt: the shared proxy pod
+          # is recreated whenever a gateway is added or removed, so it can be
+          # terminating or absent exactly when this step runs (e.g. right after a
+          # second gateway is added). An empty result simply retries rather than
+          # failing.
+          ok=""
+          for i in $(seq 1 "${ATTEMPTS}"); do
+            echo "--- parity attempt ${i}/${ATTEMPTS} ---"
+            # Pick a shared-proxy pod that is Ready and not terminating. Ready and
+            # no deletion timestamp is the precise "serving" test; a terminating
+            # pod can still report itself running, so filtering on running alone
+            # would not exclude it. Absence of a match just retries.
+            ENVOY_POD="$(kubectl -n "${ENVOY_NS}" get pods \
+              -l "${ENVOY_POD_SELECTOR}" \
+              -o go-template='{{range $p := .items}}{{if not $p.metadata.deletionTimestamp}}{{range $p.status.conditions}}{{if (and (eq .type "Ready") (eq .status "True"))}}{{$p.metadata.name}}{{"\n"}}{{end}}{{end}}{{end}}{{end}}' \
+              2>/dev/null | head -n1 || true)"
+            if [ -z "${ENVOY_POD}" ]; then
+              echo "  no Ready Envoy proxy pod yet (selector ${ENVOY_POD_SELECTOR} in ${ENVOY_NS}); merged proxy may be mid-roll, retrying"
+              sleep "${SLEEP_SECONDS}"
+              continue
+            fi
+            echo "  edge Envoy pod: ${ENVOY_POD}"
+            # Capture the parity-check output so the failure reason and the
+            # offending keys land in the chainsaw log on failure instead of being
+            # swallowed. The last attempt's report is echoed if we never pass.
+            set +e
+            LAST_REPORT="$("${BIN}" \
+              --coraza-filter "${CORAZA_FILTER}" \
+              --expect-min-build-id "${EXPECT_MIN_BUILD_ID}" \
+              --timeout 120s \
+              --admin-exec-pod "${ENVOY_POD}" \
+              --admin-exec-namespace "${ENVOY_NS}" \
+              --admin-exec-container "${ENVOY_CONTAINER}" \
+              --ext-exec-selector "${EXT_SELECTOR}" \
+              --ext-exec-namespace "${EXT_NS}" 2>&1)"
+            rc=$?
+            set -e
+            printf '%s\n' "${LAST_REPORT}"
+            if [ "${rc}" = "0" ]; then
+              ok="yes"; break
+            fi
+            if [ "${rc}" = "2" ]; then
+              echo "  tool error (rc=2); retrying"
+            fi
+            sleep "${SLEEP_SECONDS}"
+          done
+          if [ -z "${ok}" ]; then
+            echo "ERROR: config-dump parity did not converge after ${ATTEMPTS} attempts"
+            echo "--- last parity-check report (classification + offending keys) ---"
+            printf '%s\n' "${LAST_REPORT}"
+            exit 1
+          fi
+          echo "OK: config-dump parity gate passed"

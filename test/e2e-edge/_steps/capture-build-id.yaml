@@ -1,0 +1,115 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/step-template-chainsaw-v1alpha1.json
+#
+# Reusable step that captures the extension server's current build ID and emits
+# it as an output binding.
+#
+# It is the "before" half of proving a configuration rebuild actually happened:
+# capture the build ID, perform a change (e.g. flip connector liveness), then
+# call assert-config-dump.yaml with expectMinBuildID set to one past it — the
+# parity check then fails unless the configuration was genuinely rebuilt. This is
+# something a status or traffic check cannot show: it proves a new build ran, not
+# merely that the end state looks right.
+#
+# The build ID increments once per build and starts at 1, so a "before" of 0
+# means no build had run yet.
+#
+# The env runs two extension-server replicas, but only the one the gateway is
+# connected to does the work and carries the real build ID; the idle replica
+# sits at 0. This step resolves all replicas and takes the highest build ID — the
+# authoritative one. assert-config-dump.yaml resolves the same way, so capture
+# and assert agree on the active replica.
+#
+# Use it from a scenario:
+#
+#   # 1. capture the BuildID before the change
+#   - name: capture build id before liveness flip
+#     use:
+#       template: ../_steps/capture-build-id.yaml
+#       with:
+#         bindings:
+#           - { name: extServerSelector,  value: "app.kubernetes.io/component=envoy-gateway-extension-server" }
+#           - { name: extServerNamespace, value: network-services-operator-system }
+#     # this step emits output bindings `buildID` and `minNextBuildID` (strings)
+#
+#   # 2. ... perform the change (flip-connector-liveness.yaml etc.) ...
+#
+#   # 3. assert the post-change build advanced AND the config is correct.
+#   #    Pass the captured `minNextBuildID` straight into expectMinBuildID:
+#   - name: re-translation fired and config landed
+#     use:
+#       template: ../_steps/assert-config-dump.yaml
+#       with:
+#         bindings:
+#           - { name: envoyPodSelector,   value: "gateway.envoyproxy.io/owning-gatewayclass=($downstreamGatewayClass)" }
+#           - { name: extServerSelector,  value: "app.kubernetes.io/component=envoy-gateway-extension-server" }
+#           - { name: extServerNamespace, value: network-services-operator-system }
+#           # require a build strictly newer than the captured one:
+#           - { name: expectMinBuildID,   value: ($minNextBuildID) }
+#
+# Required bindings: extServerSelector (resolves ALL replicas), extServerNamespace.
+# Optional (defaulted below): dataplaneCluster.
+# Emits output bindings:
+#   buildID         — highest build ID across replicas at capture time (string;
+#                     "0" if no build has run anywhere).
+#   minNextBuildID  — buildID+1 (string); feed directly into the post-change
+#                     assert-config-dump call's expectMinBuildID. Incremented
+#                     in-script so callers need no arithmetic of their own.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: StepTemplate
+metadata:
+  name: capture-build-id
+spec:
+  bindings:
+    - name: dataplaneCluster
+      value: nso-downstream
+  try:
+    - description: Resolve the authoritative ext-server replica's BuildID via parity-check and emit it as an output binding.
+      script:
+        timeout: 120s
+        cluster: ($dataplaneCluster)
+        env:
+          - name: EXT_SELECTOR
+            value: ($extServerSelector)
+          - name: EXT_NS
+            value: ($extServerNamespace)
+        content: |
+          set -eu
+          # Delegate to the parity-check binary's --print-build-id mode, which
+          # resolves all extension-server replicas and prints the highest build
+          # ID. Reusing the binary keeps this identical to how
+          # assert-config-dump.yaml reads it.
+          #
+          # chainsaw runs script steps from the test directory, not the repo root,
+          # so find the root and build from there. PARITY_CHECK_BIN skips the
+          # build if a prebuilt binary is supplied.
+          BIN="${PARITY_CHECK_BIN:-}"
+          if [ -z "${BIN}" ]; then
+            ROOT="$(git rev-parse --show-toplevel)"
+            BIN="${ROOT}/bin/parity-check"
+            go build -o "${BIN}" "${ROOT}/cmd/parity-check"
+          fi
+
+          BUILD_ID="$("${BIN}" \
+            --print-build-id \
+            --ext-exec-selector "${EXT_SELECTOR}" \
+            --ext-exec-namespace "${EXT_NS}" \
+            --timeout 90s)"
+          # Strip any stray whitespace; parity-check prints just the integer.
+          BUILD_ID="$(printf '%s' "${BUILD_ID}" | tr -dc '0-9')"
+          if [ -z "${BUILD_ID}" ]; then
+            echo "ERROR: parity-check --print-build-id returned no BuildID" >&2
+            exit 1
+          fi
+          echo "authoritative ext-server BuildID=${BUILD_ID}" >&2
+          # Increment here so callers need no arithmetic of their own. Emit both
+          # values as a small JSON object; the outputs below parse each field.
+          NEXT=$((BUILD_ID + 1))
+          printf '{"buildID":%s,"minNextBuildID":%s}' "${BUILD_ID}" "${NEXT}"
+        outputs:
+          # Bindings consumed by a later assert-config-dump call. Values are
+          # stringified so they drop straight into the string-typed
+          # expectMinBuildID binding.
+          - name: buildID
+            value: (to_string(json_parse($stdout).buildID))
+          - name: minNextBuildID
+            value: (to_string(json_parse($stdout).minNextBuildID))

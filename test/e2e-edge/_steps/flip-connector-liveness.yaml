@@ -1,0 +1,78 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/step-template-chainsaw-v1alpha1.json
+#
+# Reusable step that flips a connector between online and offline by patching its
+# `networking.datumapis.com/upstream-status` annotation. This mirrors production:
+# the federation layer propagates annotations but not status to the edge, so the
+# edge reads connector liveness from this annotation rather than from live
+# status.
+#
+# `state: online` writes a Ready=True status whose connection details carry the
+# tunnel fixture's node id; `state: offline` writes Ready=False with none. The
+# extension server reads liveness from this annotation, so flipping it is what
+# drives the 503<->200 swap at the edge.
+#
+# Use it from a scenario step:
+#
+#   - name: bring the connector online
+#     use:
+#       template: ../_steps/flip-connector-liveness.yaml
+#       with:
+#         bindings:
+#           - { name: state,         value: online }
+#           - { name: connectorName, value: test-connector }
+#           - { name: nodeID,        value: ($tunnelNodeID) }
+#
+# Required bindings: state(online|offline), connectorName. nodeID required when
+# state=online. Optional (defaulted): connectorNamespace, upstreamCluster.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: StepTemplate
+metadata:
+  name: flip-connector-liveness
+spec:
+  bindings:
+    - name: connectorNamespace
+      value: ($namespace)
+    - name: nodeID
+      value: ""
+    # The connector lives on the upstream cluster; its annotation is propagated
+    # to the edge by the federation layer.
+    - name: upstreamCluster
+      value: nso-upstream
+  try:
+    - description: Patch the connector's upstream-status annotation to the requested liveness.
+      script:
+        cluster: ($upstreamCluster)
+        env:
+          - name: STATE
+            value: ($state)
+          - name: CONNECTOR
+            value: ($connectorName)
+          - name: CONNECTOR_NS
+            value: ($connectorNamespace)
+          - name: NODE_ID
+            value: ($nodeID)
+        content: |
+          set -eu
+          # The annotation holds the connector's status as JSON. The transition
+          # time is fixed and irrelevant to liveness — only the Ready condition and
+          # connection details matter.
+          #
+          # The annotation value must itself be a JSON string, so we build the
+          # status and escape its quotes by hand. Doing the escaping inline keeps
+          # the runner free of extra tooling.
+          if [ "${STATE}" = "online" ]; then
+            if [ -z "${NODE_ID}" ]; then
+              echo "ERROR: state=online requires nodeID (the tunnel fixture node id)"; exit 1
+            fi
+            STATUS='{"conditions":[{"type":"Ready","status":"True","reason":"ConnectorReady","lastTransitionTime":"2026-06-23T00:00:00Z"}],"connectionDetails":{"type":"PublicKey","publicKey":{"id":"'"${NODE_ID}"'"}}}'
+          elif [ "${STATE}" = "offline" ]; then
+            STATUS='{"conditions":[{"type":"Ready","status":"False","reason":"ConnectorNotReady","lastTransitionTime":"2026-06-23T00:00:00Z"}]}'
+          else
+            echo "ERROR: state must be online or offline, got: ${STATE}"; exit 1
+          fi
+          # Escape the status JSON so it can be embedded as a string value.
+          ESCAPED=$(printf '%s' "${STATUS}" | sed 's/\\/\\\\/g; s/"/\\"/g')
+          PATCH=$(printf '{"metadata":{"annotations":{"networking.datumapis.com/upstream-status":"%s"}}}' "${ESCAPED}")
+          echo "patching connector ${CONNECTOR} -> ${STATE}"
+          kubectl -n "${CONNECTOR_NS}" patch connector "${CONNECTOR}" \
+            --type=merge -p "${PATCH}"

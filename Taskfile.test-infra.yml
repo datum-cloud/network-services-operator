@@ -70,7 +70,6 @@ tasks:
       - task: cert-manager-upstream
       - task: cert-manager-downstream
       - task: nso-image
-      - task: load-fixtures
       - task: prepare-upstream
       - task: eg-downstream
       - task: extension-server

@@ -1,0 +1,21 @@
+# Extension server config for the e2e edge.
+#
+# The WAF is enabled so its rules reach the proxy, and the branded 5xx page is
+# pointed at the mounted error-pages volume so the suite can assert the branded
+# body by content. The connector-tunnel listener name is left at its default so
+# the connector fixtures find the listener by the same name production uses.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: extension-server-config
+  namespace: network-services-operator-system
+data:
+  config.yaml: |
+    apiVersion: apiserver.config.datumapis.com/v1alpha1
+    kind: NetworkServicesOperator
+    gateway:
+      coraza:
+        disabled: false
+      errorPage:
+        enabled: true
+        bodyPath: /etc/datum/error-pages/error-5xx.html

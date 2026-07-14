@@ -1,0 +1,26 @@
+# Mount the operator config ConfigMap and set SERVER_CONFIG to its path so the
+# ext-server loads Coraza + branded-error-page settings. Strategic-merge on env
+# (matched by name) and on volumes/volumeMounts.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: envoy-gateway-extension-server
+spec:
+  template:
+    spec:
+      containers:
+        - name: envoy-gateway-extension-server
+          env:
+            - name: SERVER_CONFIG
+              value: /etc/datum/server-config/config.yaml
+          volumeMounts:
+            - name: server-config
+              mountPath: /etc/datum/server-config
+              readOnly: true
+      volumes:
+        - name: server-config
+          configMap:
+            name: extension-server-config
+            items:
+              - key: config.yaml
+                path: config.yaml

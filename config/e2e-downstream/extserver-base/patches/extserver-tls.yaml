@@ -1,0 +1,21 @@
+# Point the ext-server server-cert CSI volume at the e2e CA-backed ClusterIssuer,
+# replacing the base deployment's placeholder-issuer.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: envoy-gateway-extension-server
+spec:
+  template:
+    spec:
+      volumes:
+        - name: tls
+          csi:
+            driver: csi.cert-manager.io
+            readOnly: true
+            volumeAttributes:
+              csi.cert-manager.io/issuer-kind: ClusterIssuer
+              csi.cert-manager.io/issuer-name: e2e-extension-server-ca
+              csi.cert-manager.io/common-name: envoy-gateway-extension-server
+              csi.cert-manager.io/dns-names: "network-services-operator-envoy-gateway-extension-server.network-services-operator-system.svc,network-services-operator-envoy-gateway-extension-server.network-services-operator-system.svc.cluster.local"
+              csi.cert-manager.io/key-usages: server auth
+              csi.cert-manager.io/fs-group: "65532"

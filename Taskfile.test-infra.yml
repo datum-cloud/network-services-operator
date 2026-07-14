@@ -1,0 +1,470 @@
+version: '3'
+
+# Production-fidelity test environment. Two kind clusters: nso-upstream (the
+# control plane) and nso-downstream (the edge). Consumed by both the e2e and perf
+# suites.
+#
+# Bring up:   task test-infra:up
+# Tear down:  task test-infra:down
+# Smoke:      task test-infra:smoke
+
+# kustomize fetches some CRDs over https. A developer's global git config can
+# rewrite https to ssh, which fails in a non-interactive fetch. Neutralize the
+# global git config for kustomize's child git so the https fetches succeed; the
+# repo-local config is untouched.
+env:
+  GIT_CONFIG_GLOBAL: /dev/null
+
+vars:
+  TMP_DIR:
+    sh: echo "${TMPDIR:-/tmp}"
+  REPO:
+    sh: pwd
+  # Pinned-to-prod tooling. We use an explicit kind v0.32.0 binary because it
+  # ships the node image production runs, which the checked-in bin/kind predates.
+  KIND: '{{.REPO}}/bin/kind-v0.32.0'
+  KUSTOMIZE: '{{.REPO}}/bin/kustomize'
+  CMCTL: '{{.REPO}}/bin/cmctl'
+  KARMADACTL: '{{.REPO}}/bin/karmadactl'
+  CHAINSAW: '{{.REPO}}/bin/chainsaw'
+
+  UPSTREAM_CLUSTER: nso-upstream
+  DOWNSTREAM_CLUSTER: nso-downstream
+  UPSTREAM_CTX: kind-nso-upstream
+  DOWNSTREAM_CTX: kind-nso-downstream
+
+  # The exact node image the production edge runs.
+  K8S_NODE_IMAGE: kindest/node:v1.35.5@sha256:ce977ae6d65918d0b58a5f8b5e940429c2ce42fa3a5619ec2bbc60b949c0ac95
+  # Gateway control-plane version, matching production. The extension-server SDK
+  # version is paired with it deliberately, also matching production.
+  ENVOY_GATEWAY_VERSION: v1.7.4
+  EG_SDK_VERSION: v1.8.1
+  # Multi-arch WAF image — the same filter as the production edge, but it also
+  # loads natively on arm64 dev hosts. The data plane references this image.
+  CORAZA_WAF_IMAGE: ghcr.io/datum-labs/coraza-envoy-go-filter/coraza-waf:v1.3.0-multiarch.1
+  # CONNECT-proxy stand-in for the connector-tunnel scenario, built from
+  # test/e2e-edge/_fixtures/connector-tunnel and loaded into the downstream cluster.
+  CONNECT_PROXY_IMAGE: connect-proxy:e2e
+  # The WAF is enabled by default since the multi-arch image loads on every
+  # architecture. Set CORAZA_DISABLED=true only to deliberately skip the WAF.
+  CORAZA_DISABLED: '{{.CORAZA_DISABLED | default "false"}}'
+  # Karmada-bundled kube-apiserver, pinned to production.
+  KARMADA_APISERVER_VERSION: v1.33.2
+  # NSO image pinned by git SHA so the loaded image is used deterministically.
+  IMG:
+    sh: echo "ghcr.io/datum-cloud/network-services-operator:$(git rev-parse --short HEAD)"
+
+tasks:
+
+  up:
+    desc: "Bring the canonical two-cluster prod-fidelity test env ONLINE (clusters + EG v1.7.4 + ext-server + Coraza data plane + NSO manager)."
+    cmds:
+      - echo "🚀 test-infra:up — building nso-upstream + nso-downstream"
+      - task: clusters
+      # The Gateway-API and gateway CRDs must land on the downstream cluster
+      # before cert-manager (it probes the Gateway-API CRDs at startup) and before
+      # the downstream gateway (it needs its own CRDs present).
+      - task: eg-crds
+      - task: downstream-crds
+      - task: downstream-namespaces
+      - task: cert-manager-upstream
+      - task: cert-manager-downstream
+      - task: nso-image
+      - task: prepare-upstream
+      - task: eg-downstream
+      - task: extension-server
+      - task: billing-usage-collector
+      - task: external-dns
+      - task: link-clusters
+      - task: wait-ready
+      - echo "🎉 test-infra:up complete. Run 'task test-infra:smoke' to confirm M2."
+
+  down:
+    desc: "Tear down the test-infra clusters (and any Karmada host)."
+    cmds:
+      - echo "💥 test-infra:down"
+      # Deleting both kind clusters removes all federation state, so this unjoin
+      # is only a best-effort courtesy.
+      - '{{.KARMADACTL}} deinit --context {{.UPSTREAM_CTX}} --force --purge-namespace 2>/dev/null || true'
+      - rm -rf {{.TMP_DIR}}/karmada-{{.UPSTREAM_CLUSTER}}
+      - '{{.KIND}} delete cluster --name {{.UPSTREAM_CLUSTER}} || true'
+      - '{{.KIND}} delete cluster --name {{.DOWNSTREAM_CLUSTER}} || true'
+      - rm -f {{.TMP_DIR}}/.kind-{{.DOWNSTREAM_CLUSTER}}-internal.yaml {{.TMP_DIR}}/.kind-{{.UPSTREAM_CLUSTER}}.yaml {{.TMP_DIR}}/.kind-{{.DOWNSTREAM_CLUSTER}}.yaml
+      - echo "✨ done."
+
+  clusters:
+    desc: "Create the upstream + downstream kind clusters pinned to the prod edge node image."
+    cmds:
+      - echo "🏗️ creating clusters (node {{.K8S_NODE_IMAGE}})"
+      - '{{.KIND}} delete cluster --name {{.UPSTREAM_CLUSTER}} 2>/dev/null || true'
+      - '{{.KIND}} delete cluster --name {{.DOWNSTREAM_CLUSTER}} 2>/dev/null || true'
+      - '{{.KIND}} create cluster --image {{.K8S_NODE_IMAGE}} --config=config/tools/kind/upstream-cluster.yaml'
+      - '{{.KIND}} create cluster --image {{.K8S_NODE_IMAGE}} --config=config/tools/kind/downstream-cluster.yaml'
+      # Running the full federation control plane alongside the rest of the stack
+      # in one kind node exhausts the default file-watch limits on the macOS
+      # Docker VM, which crashloops a component with "too many open files" and
+      # blocks the member join. Raise the limits on both nodes.
+      - docker exec {{.UPSTREAM_CLUSTER}}-control-plane sysctl -w fs.inotify.max_user_instances=8192 fs.inotify.max_user_watches=1048576
+      - docker exec {{.DOWNSTREAM_CLUSTER}}-control-plane sysctl -w fs.inotify.max_user_instances=8192 fs.inotify.max_user_watches=1048576
+
+  cert-manager-upstream:
+    desc: "Install cert-manager (+ CSI driver) on the upstream cluster."
+    cmds:
+      - '{{.KUSTOMIZE}} build --enable-helm config/tools/cert-manager | kubectl --context {{.UPSTREAM_CTX}} apply --server-side=true --force-conflicts -f -'
+      - '{{.CMCTL}} check api --context {{.UPSTREAM_CTX}} --wait=5m'
+
+  cert-manager-downstream:
+    desc: "Install cert-manager (+ CSI driver) on the downstream cluster."
+    cmds:
+      - '{{.KUSTOMIZE}} build --enable-helm config/tools/cert-manager | kubectl --context {{.DOWNSTREAM_CTX}} apply --server-side=true --force-conflicts -f -'
+      - '{{.CMCTL}} check api --context {{.DOWNSTREAM_CTX}} --wait=5m'
+
+  nso-image:
+    desc: "Build the NSO operator image (git-SHA tag) and load it into both clusters."
+    cmds:
+      - echo "🔨 building {{.IMG}}"
+      - docker build -t {{.IMG}} .
+      - cd config/manager && {{.KUSTOMIZE}} edit set image ghcr.io/datum-cloud/network-services-operator={{.IMG}}
+      - '{{.KIND}} load docker-image {{.IMG}} --name {{.UPSTREAM_CLUSTER}}'
+      - '{{.KIND}} load docker-image {{.IMG}} --name {{.DOWNSTREAM_CLUSTER}}'
+
+  prepare-upstream:
+    desc: "Deploy the NSO manager + webhook (config/e2e) on the upstream cluster, with the prod-base memory profile."
+    cmds:
+      - echo "🔧 deploying NSO manager (upstream)"
+      - '{{.KUSTOMIZE}} build config/e2e | kubectl --context {{.UPSTREAM_CTX}} apply --server-side=true --force-conflicts -f -'
+      # Match production: with the extension server handling proxy configuration,
+      # NSO must not also emit its own patch policies. The shared config file is
+      # also used by an older path that still relies on them, so we patch the live
+      # config here rather than editing that file.
+      - |
+        CFG=$(kubectl --context {{.UPSTREAM_CTX}} -n network-services-operator-system get cm network-services-operator-config -o jsonpath='{.data.config\.yaml}')
+        if ! echo "$CFG" | grep -q "eppEmissionEnabled"; then
+          NEW=$(echo "$CFG" | sed 's|^  downstreamGatewayClassName: .*|&\n  eppEmissionEnabled: false|')
+          kubectl --context {{.UPSTREAM_CTX}} -n network-services-operator-system create cm network-services-operator-config \
+            --from-literal=config.yaml="$NEW" --dry-run=client -o yaml | kubectl --context {{.UPSTREAM_CTX}} apply -f -
+        fi
+      # Raise the manager's memory limit to the production base so perf sweeps and
+      # webhook-under-load reflect production headroom.
+      - |
+        kubectl --context {{.UPSTREAM_CTX}} -n network-services-operator-system patch deploy network-services-operator-controller-manager \
+          --type=json -p '[{"op":"replace","path":"/spec/template/spec/containers/0/resources/limits/memory","value":"2Gi"},{"op":"replace","path":"/spec/template/spec/containers/0/resources/requests/memory","value":"512Mi"}]' || true
+
+  eg-crds:
+    desc: "Install the full Gateway-API + Envoy Gateway CRD set (incl ReferenceGrant + EnvoyProxy) on the downstream cluster. The downstream EG chart sets includeCRDs:false, so CRDs are applied separately (matches prod, where CRDs are managed out-of-band)."
+    vars:
+      EG_CRD_DIR: config/tools/envoy-gateway-downstream/charts/gateway-helm-{{.ENVOY_GATEWAY_VERSION}}/gateway-helm/crds
+    cmds:
+      # The gateway-helm chart is gitignored (config/**/charts); vendor it first
+      # so the CRD files below exist on a fresh checkout (e.g. CI). Output is
+      # discarded — this runs for the side effect of pulling the chart.
+      - '{{.KUSTOMIZE}} build --enable-helm config/tools/envoy-gateway-downstream >/dev/null'
+      - kubectl --context {{.DOWNSTREAM_CTX}} apply --server-side=true --force-conflicts -f {{.EG_CRD_DIR}}/gatewayapi-crds.yaml
+      - kubectl --context {{.DOWNSTREAM_CTX}} apply --server-side=true --force-conflicts -f {{.EG_CRD_DIR}}/generated/
+
+  downstream-namespaces:
+    desc: "Create the downstream gateway + hostname-accounting namespaces, plus the EG-watched e2e-direct namespace for hand-delivered fixtures (D1/D2). Runs BEFORE eg-downstream so e2e-direct carries its watch label before EG establishes its informer."
+    cmds:
+      - kubectl --context {{.DOWNSTREAM_CTX}} apply -f config/dev/downstream_resources/namespaces.yaml
+      # e2e-direct carries the gateway watch label from creation so gateways
+      # applied directly here reconcile deterministically. The gateway only
+      # reliably watches a namespace labeled at creation time, so the label must
+      # be in the manifest, not added afterward.
+      - kubectl --context {{.DOWNSTREAM_CTX}} apply -f config/e2e-downstream/direct-namespace.yaml
+
+  billing-usage-collector:
+    desc: "Install the billing usage collector (Vector agent) that tails the downstream Envoy access logs and emits usage CloudEvents."
+    cmds:
+      - echo "🔧 installing billing-usage-collector (Vector agent, tailing datum-downstream-gateway)"
+      - '{{.KUSTOMIZE}} build --enable-helm config/tools/billing-usage-collector | kubectl --context {{.DOWNSTREAM_CTX}} apply --server-side=true --force-conflicts -f -'
+
+  eg-downstream:
+    desc: "Install the dedicated downstream Envoy Gateway (v1.7.4) with the ext-server extensionManager wiring on the downstream cluster."
+    cmds:
+      - echo "🔧 installing downstream EG {{.ENVOY_GATEWAY_VERSION}} (+ extensionManager, failOpen:false, maxMessageSize:256Mi)"
+      # Build from the untracked config/e2e-downstream/eg-downstream copy, which
+      # bakes in the e2e pins, so a hard reset on the shared branch cannot revert
+      # them — it kept clobbering the tracked copy.
+      - '{{.KUSTOMIZE}} build --enable-helm config/e2e-downstream/eg-downstream | kubectl --context {{.DOWNSTREAM_CTX}} apply --server-side=true --force-conflicts -f -'
+
+  load-coraza-waf:
+    desc: "Fallback: pull the Coraza WAF image and kind-load it into the downstream cluster (offline-CI escape hatch)."
+    cmds:
+      - docker pull {{.CORAZA_WAF_IMAGE}}
+      - '{{.KIND}} load docker-image {{.CORAZA_WAF_IMAGE}} --name {{.DOWNSTREAM_CLUSTER}}'
+
+  load-fixtures:
+    desc: "Build + load the e2e fixture images into the downstream cluster (CONNECT-proxy stand-in for the connector-tunnel scenario)."
+    cmds:
+      - echo "🔧 building + loading fixture image {{.CONNECT_PROXY_IMAGE}}"
+      - docker build -t {{.CONNECT_PROXY_IMAGE}} test/e2e-edge/_fixtures/connector-tunnel
+      - '{{.KIND}} load docker-image {{.CONNECT_PROXY_IMAGE}} --name {{.DOWNSTREAM_CLUSTER}}'
+
+  d1-mint-expired-secret:
+    desc: "D1 helper: mint an ALREADY-EXPIRED kubernetes.io/tls Secret and apply it to the downstream cluster, bypassing the upstream #212 cert-health gate so the ext-server prune backstop can be tested in isolation. Vars: NAMESPACE, SECRET, HOSTNAME."
+    vars:
+      # Default to the pre-provisioned, gateway-watched namespace so a gateway
+      # applied alongside this secret reconciles deterministically.
+      NAMESPACE: '{{.NAMESPACE | default "e2e-direct"}}'
+      SECRET: '{{.SECRET | default "d1-expired-tls"}}'
+      HOSTNAME: '{{.HOSTNAME | default "d1-bad.e2e.env.datum.net"}}'
+    cmds:
+      - |
+        config/e2e-downstream/d1-cert-bypass/mint-expired-secret.sh \
+          "{{.NAMESPACE}}" "{{.SECRET}}" "{{.HOSTNAME}}" \
+          | kubectl --context {{.DOWNSTREAM_CTX}} apply -f -
+      - echo "✅ applied expired TLS Secret {{.NAMESPACE}}/{{.SECRET}} (host {{.HOSTNAME}}) to {{.DOWNSTREAM_CLUSTER}}"
+
+  extension-server:
+    desc: "Deploy the ext-server (2 replicas + PDB + mTLS) + e2e cert chain + Coraza/branded-page config + test EnvoyProxy (Coraza+admin:19000) on the downstream cluster."
+    cmds:
+      - echo "🔧 deploying ext-server + e2e issuer chain + test EnvoyProxy (config/e2e-downstream)"
+      # Pin the ext-server image to the git-SHA build (same image as the manager).
+      - cd config/e2e-downstream && {{.KUSTOMIZE}} edit set image ghcr.io/datum-cloud/network-services-operator={{.IMG}} 2>/dev/null || true
+      - '{{.KUSTOMIZE}} build config/e2e-downstream | kubectl --context {{.DOWNSTREAM_CTX}} apply --server-side=true --force-conflicts -f -'
+      # WAF disable toggle. The overlay ships the WAF enabled for production
+      # fidelity; when CORAZA_DISABLED is set we flip the live config so listeners
+      # program without it.
+      - |
+        if [ "{{.CORAZA_DISABLED}}" = "true" ]; then
+          echo "⚠️  Coraza WAF disabled (host arch {{OS}}/$(uname -m); WAF .so is amd64-only)"
+          kubectl --context {{.DOWNSTREAM_CTX}} -n network-services-operator-system get cm extension-server-config -o yaml \
+            | sed 's/disabled: false/disabled: true/' | kubectl --context {{.DOWNSTREAM_CTX}} apply -f -
+        fi
+      # The extension server's server cert and the gateway's client cert are both
+      # issued from the e2e certificate authority. Wait for that authority's cert,
+      # then publish it where each side reads it so they can verify each other.
+      - task: extserver-ca-bundle
+
+  extserver-ca-bundle:
+    desc: "Publish the e2e CA's ca.crt into the ext-server CA-bundle ConfigMap and the EG certificateRef Secret (both in network-services-operator-system)."
+    cmds:
+      - echo "⏳ waiting for the e2e CA certificate to be issued"
+      - |
+        kubectl --context {{.DOWNSTREAM_CTX}} -n cert-manager wait certificate e2e-extension-server-ca \
+          --for=condition=Ready --timeout=120s
+      - kubectl --context {{.DOWNSTREAM_CTX}} create namespace network-services-operator-system --dry-run=client -o yaml | kubectl --context {{.DOWNSTREAM_CTX}} apply -f -
+      - |
+        CA_CRT=$(kubectl --context {{.DOWNSTREAM_CTX}} -n cert-manager get secret e2e-extension-server-ca -o jsonpath='{.data.ca\.crt}' | base64 -d)
+        # The certificate-authority bundle the extension server mounts.
+        kubectl --context {{.DOWNSTREAM_CTX}} -n network-services-operator-system create configmap extension-server-ca-bundle \
+          --from-literal=ca.crt="$CA_CRT" --dry-run=client -o yaml | kubectl --context {{.DOWNSTREAM_CTX}} apply -f -
+        # The same authority cert the downstream gateway references. The gateway
+        # reads it from the tls.crt key, not ca.crt.
+        kubectl --context {{.DOWNSTREAM_CTX}} -n network-services-operator-system create secret generic e2e-extension-server-ca \
+          --from-literal=tls.crt="$CA_CRT" --dry-run=client -o yaml | kubectl --context {{.DOWNSTREAM_CTX}} apply -f -
+      # Restart the extension server so it picks up the freshly-published bundle.
+      - kubectl --context {{.DOWNSTREAM_CTX}} -n network-services-operator-system rollout restart deploy network-services-operator-envoy-gateway-extension-server || true
+
+  downstream-crds:
+    desc: "Install the NSO CRDs the replicator mirrors into the downstream cluster (the Gateway-API/EG CRDs come from eg-crds)."
+    cmds:
+      - kubectl --context {{.DOWNSTREAM_CTX}} apply -f config/crd/bases/networking.datumapis.com_connectors.yaml
+      - kubectl --context {{.DOWNSTREAM_CTX}} apply -f config/crd/bases/networking.datumapis.com_httpproxies.yaml
+      - kubectl --context {{.DOWNSTREAM_CTX}} apply -f config/crd/bases/networking.datumapis.com_trafficprotectionpolicies.yaml
+
+  external-dns:
+    desc: "Install external-dns CRDs (DNSEndpoint) on the downstream cluster."
+    cmds:
+      - '{{.KUSTOMIZE}} build --enable-helm config/tools/external-dns | kubectl --context {{.DOWNSTREAM_CTX}} apply --server-side=true --force-conflicts -f -'
+
+  link-clusters:
+    desc: "Wire the NSO manager's downstream client to the downstream cluster via the downstream-cluster-kubeconfig secret on the upstream cluster."
+    cmds:
+      - echo "🔗 linking upstream -> downstream"
+      - '{{.KIND}} get kubeconfig --name {{.DOWNSTREAM_CLUSTER}} --internal > {{.TMP_DIR}}/.kind-{{.DOWNSTREAM_CLUSTER}}-internal.yaml'
+      - kubectl --context {{.UPSTREAM_CTX}} create namespace network-services-operator-system --dry-run=client -o yaml | kubectl --context {{.UPSTREAM_CTX}} apply -f -
+      - |
+        kubectl --context {{.UPSTREAM_CTX}} create secret -n network-services-operator-system \
+          generic downstream-cluster-kubeconfig --save-config --dry-run=client -o yaml \
+          --from-file=kubeconfig={{.TMP_DIR}}/.kind-{{.DOWNSTREAM_CLUSTER}}-internal.yaml | kubectl --context {{.UPSTREAM_CTX}} apply -f -
+
+  wait-ready:
+    desc: "Wait for the core components (NSO manager, downstream EG, ext-server) to be Available."
+    cmds:
+      - echo "⏳ waiting for NSO manager (upstream)"
+      - kubectl --context {{.UPSTREAM_CTX}} -n network-services-operator-system wait deploy network-services-operator-controller-manager --for=condition=Available --timeout=360s
+      - echo "⏳ waiting for downstream EG"
+      # The gateway control-plane Deployment is named `envoy-gateway` by its chart,
+      # not after the release name.
+      - kubectl --context {{.DOWNSTREAM_CTX}} -n datum-downstream-gateway wait deploy envoy-gateway --for=condition=Available --timeout=240s
+      - echo "⏳ waiting for ext-server"
+      - kubectl --context {{.DOWNSTREAM_CTX}} -n network-services-operator-system wait deploy network-services-operator-envoy-gateway-extension-server --for=condition=Available --timeout=240s
+      # Deployment Available != webhook serving: cert-manager injects the webhook
+      # cert after the pod is up, so early Domain/Gateway creates race it and time
+      # out ("context deadline exceeded"). Block until a server-side dry-run is
+      # actually admitted.
+      - echo "⏳ waiting for the NSO admission webhook to admit"
+      - |
+        DOMAIN_JSON='{"apiVersion":"networking.datumapis.com/v1alpha","kind":"Domain","metadata":{"name":"warmup-probe"},"spec":{"domainName":"warmup.e2e.env.datum.net"}}'
+        for i in $(seq 1 60); do
+          if echo "$DOMAIN_JSON" | kubectl --context {{.UPSTREAM_CTX}} -n default create --dry-run=server -f - >/dev/null 2>&1; then
+            echo "✅ webhook admitting"; break
+          fi
+          if [ "$i" -eq 60 ]; then echo "❌ webhook never became ready"; exit 1; fi
+          sleep 2
+        done
+      # Ensure the downstream GatewayClass is Accepted so the first test gateway
+      # programs promptly instead of racing a 30s assert on a cold edge.
+      - echo "⏳ waiting for the downstream GatewayClass to be Accepted"
+      - kubectl --context {{.DOWNSTREAM_CTX}} wait gatewayclass datum-downstream-gateway-e2e --for=condition=Accepted --timeout=120s
+      - echo "✅ core components ready."
+
+  # ---- Karmada ------------------------------------------------------------
+
+  karmada-up:
+    desc: "Stand up a real Karmada host on the upstream cluster (apiserver v1.33.2), join the downstream member, and apply the prod federation artifacts."
+    vars:
+      KARMADA_KUBECONFIG: '{{.TMP_DIR}}/karmada-{{.UPSTREAM_CLUSTER}}/karmada-apiserver.config'
+      # The upstream node's docker-network IP, reachable from the downstream node
+      # on the same network, used to sign the Karmada apiserver cert.
+      HOST_IP:
+        sh: docker inspect {{.UPSTREAM_CLUSTER}}-control-plane -f '{{"{{"}}.NetworkSettings.Networks.kind.IPAddress{{"}}"}}'
+      # The downstream member's docker-network IP — reachable from the upstream
+      # control-plane pods on the same network, but not from the macOS host.
+      MEMBER_IP:
+        sh: docker inspect {{.DOWNSTREAM_CLUSTER}}-control-plane -f '{{"{{"}}.NetworkSettings.Networks.kind.IPAddress{{"}}"}}'
+    cmds:
+      # Advertise 127.0.0.1: karmadactl runs on the macOS host, and init's own
+      # post-deploy steps dial the advertise address. The docker-network IP is not
+      # routable from the macOS host, so advertising it would make init time out;
+      # the upstream cluster maps a host port through to the apiserver, so
+      # 127.0.0.1 reaches it. We still sign the cert for the docker IP for any
+      # in-cluster path. The member is joined in push mode, so it never needs to
+      # reach the apiserver address — advertising 127.0.0.1 is safe for the join.
+      - echo "🌐 karmada init (apiserver {{.KARMADA_APISERVER_VERSION}}, advertise 127.0.0.1:32443, cert-ip incl {{.HOST_IP}}) on {{.UPSTREAM_CLUSTER}}"
+      - mkdir -p {{.TMP_DIR}}/karmada-{{.UPSTREAM_CLUSTER}}
+      - |
+        {{.KARMADACTL}} init --context {{.UPSTREAM_CTX}} \
+          --kube-image-tag {{.KARMADA_APISERVER_VERSION}} \
+          --karmada-apiserver-advertise-address 127.0.0.1 \
+          --cert-external-ip "127.0.0.1,{{.HOST_IP}}" \
+          --etcd-storage-mode hostPath \
+          --karmada-data {{.TMP_DIR}}/karmada-{{.UPSTREAM_CLUSTER}} \
+          --karmada-pki {{.TMP_DIR}}/karmada-{{.UPSTREAM_CLUSTER}}/pki
+      - echo "🔗 joining {{.DOWNSTREAM_CLUSTER}} as a Karmada member"
+      # karmadactl join runs on the host and connects to the member to install its
+      # agent, so it needs a host-reachable member kubeconfig, not the internal
+      # docker-hostname form the host cannot resolve.
+      - '{{.KIND}} get kubeconfig --name {{.DOWNSTREAM_CLUSTER}} > {{.TMP_DIR}}/.kind-{{.DOWNSTREAM_CLUSTER}}-host.yaml'
+      - |
+        {{.KARMADACTL}} join {{.DOWNSTREAM_CLUSTER}} \
+          --karmada-context karmada-apiserver \
+          --kubeconfig {{.KARMADA_KUBECONFIG}} \
+          --cluster-kubeconfig {{.TMP_DIR}}/.kind-{{.DOWNSTREAM_CLUSTER}}-host.yaml \
+          --cluster-context {{.DOWNSTREAM_CTX}}
+      # The join stores the host address as the member's endpoint, which the
+      # control-plane pods running inside the upstream cluster cannot reach.
+      # Repoint it to the member's docker IP, which they can reach on the shared
+      # network, and the member then goes Ready.
+      - |
+        kubectl --kubeconfig {{.KARMADA_KUBECONFIG}} --context karmada-apiserver \
+          patch cluster {{.DOWNSTREAM_CLUSTER}} --type=merge \
+          -p '{"spec":{"apiEndpoint":"https://{{.MEMBER_IP}}:6443"}}'
+      # Label the member so the production propagation policy places resources onto
+      # it.
+      - |
+        kubectl --kubeconfig {{.KARMADA_KUBECONFIG}} --context karmada-apiserver \
+          label cluster {{.DOWNSTREAM_CLUSTER}} infra.datum.net/gateways=enabled --overwrite
+      - echo "⏳ waiting for the member cluster to become Ready"
+      - |
+        kubectl --kubeconfig {{.KARMADA_KUBECONFIG}} --context karmada-apiserver \
+          wait cluster {{.DOWNSTREAM_CLUSTER}} --for=condition=Ready --timeout=120s
+      - echo "📜 applying federation artifacts (config/federation)"
+      - |
+        kubectl --kubeconfig {{.KARMADA_KUBECONFIG}} --context karmada-apiserver apply -f config/federation/
+      - echo "✅ karmada-up complete. Karmada apiserver kubeconfig at {{.KARMADA_KUBECONFIG}}"
+
+  smoke:
+    desc: "M2 functional confirmation: drive an upstream Gateway+HTTPRoute through the ext-server path and curl a real 200."
+    cmds:
+      - '{{.CHAINSAW}} test ./test/e2e-edge/extension-server-smoke --cluster {{.UPSTREAM_CLUSTER}}={{.TMP_DIR}}/.kind-{{.UPSTREAM_CLUSTER}}.yaml --cluster {{.DOWNSTREAM_CLUSTER}}={{.TMP_DIR}}/.kind-{{.DOWNSTREAM_CLUSTER}}.yaml'
+
+  e2e:
+    desc: "Run chainsaw e2e scenarios against the live two-cluster env. Pass a scenario name or path after -- (e.g. `task test-infra:e2e -- waf-enforcement`); with no arg, runs every ext-server-path scenario that targets nso-upstream/nso-downstream. Use SCENARIOS=... to override the default set."
+    vars:
+      # Scenarios authored against this env's cluster names and downstream path.
+      # Older fixtures targeting the previous cluster names are excluded here.
+      DEFAULT_SCENARIOS: extension-server-smoke waf-enforcement branded-error-page connector-offline-503 atomic-reject-isolation
+      # CLI_ARGS (after --) wins; else SCENARIOS env; else the default set.
+      SELECTED: '{{.CLI_ARGS | default .SCENARIOS | default .DEFAULT_SCENARIOS}}'
+    deps:
+      - kubeconfigs
+    cmds:
+      - |
+        set -e
+        for s in {{.SELECTED}}; do
+          # Accept either a bare scenario name or a full/relative path.
+          case "$s" in
+            test/e2e-edge/*|./test/e2e-edge/*) dir="$s" ;;
+            */*)                     dir="$s" ;;
+            *)                       dir="./test/e2e-edge/$s" ;;
+          esac
+          echo "🧪 chainsaw: $dir"
+          {{.CHAINSAW}} test "$dir" \
+            --cluster {{.UPSTREAM_CLUSTER}}={{.TMP_DIR}}/.kind-{{.UPSTREAM_CLUSTER}}.yaml \
+            --cluster {{.DOWNSTREAM_CLUSTER}}={{.TMP_DIR}}/.kind-{{.DOWNSTREAM_CLUSTER}}.yaml
+        done
+
+  test-e2e:
+    desc: "Run the full control-plane e2e suite (test/e2e) against the live two-cluster env. The suite's chainsaw aliases nso-standard/nso-infra are mapped to this env's upstream/downstream kubeconfigs at invocation. Pass a scenario path after -- to run a single test."
+    vars:
+      # CLI_ARGS (after --) wins so a single test can be selected; else the whole
+      # suite directory.
+      TARGET: '{{.CLI_ARGS | default "./test/e2e"}}'
+      # Persist a machine-readable run report so a hang or kill still leaves a
+      # forensic trail on disk (chainsaw writes nothing by default).
+      REPORT_PATH: '{{.REPORT_PATH | default .TMP_DIR}}'
+      REPORT_NAME: '{{.REPORT_NAME | default "chainsaw-report"}}'
+    deps:
+      - kubeconfigs
+    cmds:
+      - echo "🧪 chainsaw suite {{.TARGET}} (nso-standard={{.UPSTREAM_CLUSTER}}, nso-infra={{.DOWNSTREAM_CLUSTER}}); report {{.REPORT_PATH}}/{{.REPORT_NAME}}.json"
+      - |
+        {{.CHAINSAW}} test {{.TARGET}} \
+          --parallel 1 \
+          --cluster nso-standard={{.TMP_DIR}}/.kind-{{.UPSTREAM_CLUSTER}}.yaml \
+          --cluster nso-infra={{.TMP_DIR}}/.kind-{{.DOWNSTREAM_CLUSTER}}.yaml \
+          --report-format JSON \
+          --report-path {{.REPORT_PATH}} \
+          --report-name {{.REPORT_NAME}}
+
+  kubeconfigs:
+    desc: "Export per-cluster kubeconfigs to TMPDIR for chainsaw."
+    cmds:
+      - '{{.KIND}} get kubeconfig --name {{.UPSTREAM_CLUSTER}} > {{.TMP_DIR}}/.kind-{{.UPSTREAM_CLUSTER}}.yaml'
+      - '{{.KIND}} get kubeconfig --name {{.DOWNSTREAM_CLUSTER}} > {{.TMP_DIR}}/.kind-{{.DOWNSTREAM_CLUSTER}}.yaml'
+
+  parity:check:
+    desc: "Run the config-dump parity gate against the live downstream Envoy + ext-server. Pass CLI flags after -- (PARITY owns the CLI). Exit 0 PASS / 1 parity FAIL / 2 tool error."
+    cmds:
+      - go build -o bin/parity-check ./cmd/parity-check
+      - ./bin/parity-check {{.CLI_ARGS}}
+
+  parity:check-live:
+    desc: "Convenience: resolve the live data-plane Envoy pod from this env's labels and run parity:check in kubectl-exec mode (ext-server via selector across replicas). Extra flags pass through after --."
+    vars:
+      # In this env the data-plane proxy and the extension server live in these
+      # namespaces.
+      DP_NS: datum-downstream-gateway
+      DP_SELECTOR: gateway.envoyproxy.io/owning-gatewayclass=datum-downstream-gateway-e2e
+      EXT_NS: network-services-operator-system
+      EXT_SELECTOR: app.kubernetes.io/component=envoy-gateway-extension-server
+      # The admin side wants a single exact proxy pod name, resolved here. The
+      # extension-server side takes a selector and picks the authoritative replica
+      # itself.
+      DP_POD:
+        sh: kubectl --context {{.DOWNSTREAM_CTX}} -n datum-downstream-gateway get pods -l gateway.envoyproxy.io/owning-gatewayclass=datum-downstream-gateway-e2e -o jsonpath='{.items[0].metadata.name}'
+    cmds:
+      - go build -o bin/parity-check ./cmd/parity-check
+      - |
+        if [ -z "{{.DP_POD}}" ]; then
+          echo "no data-plane Envoy pod found (label {{.DP_SELECTOR}} in {{.DP_NS}}); a Gateway must exist in a watched namespace for the merged data plane to be provisioned" >&2
+          exit 2
+        fi
+      - |
+        ./bin/parity-check \
+          --coraza-filter=coraza-waf \
+          --admin-exec-pod={{.DP_POD}} --admin-exec-namespace={{.DP_NS}} --admin-exec-container=envoy --admin-exec-context={{.DOWNSTREAM_CTX}} \
+          --ext-exec-selector={{.EXT_SELECTOR}} --ext-exec-namespace={{.EXT_NS}} --ext-exec-context={{.DOWNSTREAM_CTX}} \
+          {{.CLI_ARGS}}

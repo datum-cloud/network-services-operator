@@ -7,6 +7,7 @@ on:
   pull_request:
     branches:
       - main
+  workflow_dispatch:
 
 jobs:
   test-e2e:
@@ -23,70 +24,58 @@ jobs:
         with:
           go-version: '~1.26'
 
-      - name: Verify kind installation
-        run: kind version
+      - name: Install Task
+        uses: arduino/setup-task@v2
+        with:
+          version: 3.x
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Create upstream kind cluster
-        run: make kind-standard-cluster
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+        with:
+          # kustomize v5.5.0 probes helm with `helm version -c`; the -c shorthand
+          # was removed in helm 3.13, so pin to the last release that accepts it.
+          version: v3.12.3
 
-      - name: Create downstream kind cluster
-        run: |
-          make kind-infra-cluster
-          kubectl config use-context kind-nso-standard
+      - name: Install pinned tools
+        run: make kind kustomize cmctl chainsaw
 
-      - name: Prepare e2e
-        run: |
-          kubectl config use-context kind-nso-standard
-          make prepare-e2e
+      - name: Bring up the prod-fidelity env
+        run: task test-infra:up
 
-          kubectl config use-context kind-nso-infra
-          make prepare-infra-cluster
+      - name: Run e2e suite
+        run: task test-infra:test-e2e
 
-          kind get kubeconfig --name nso-infra --internal > ${TMPDIR}/.kind-nso-infra-internal.yaml
-
-          kubectl config use-context kind-nso-standard
-          kubectl create secret -n network-services-operator-system \
-            generic downstream-cluster-kubeconfig \
-            --from-file=kubeconfig=${TMPDIR}/.kind-nso-infra-internal.yaml
-
-          # Wait for the operator to be ready
-          kubectl -n network-services-operator-system \
-            wait deploy network-services-operator-controller-manager \
-            --for=condition=Available \
-            --timeout=120s || \
-              kubectl -n cert-manager describe pods && \
-              kubectl logs -n cert-manager -l app.kubernetes.io/name=cert-manager --tail=-1 && \
-              kubectl -n network-services-operator-system describe issuer && \
-              kubectl -n network-services-operator-system describe certificates && \
-              kubectl -n network-services-operator-system describe secrets && \
-              kubectl -n network-services-operator-system describe pod && \
-              kubectl -n network-services-operator-system logs -l app.kubernetes.io/name=network-services-operator --tail=-1
-
-      - name: Running Test e2e
-        run: make test-e2e
-
-      - name: Dump downstream WAF data plane on failure
+      - name: Dump the downstream data plane on failure
         if: failure()
         run: |
-          kubectl config use-context kind-nso-infra
+          set +e
+          UKC=${TMPDIR}/.kind-nso-upstream.yaml
+          bin/kind-v0.32.0 get kubeconfig --name nso-upstream > "${UKC}"
+          echo "::group::Upstream NSO manager"
+          KUBECONFIG="${UKC}" kubectl -n network-services-operator-system get pods -o wide
+          KUBECONFIG="${UKC}" kubectl -n network-services-operator-system describe deploy network-services-operator-controller-manager
+          KUBECONFIG="${UKC}" kubectl -n network-services-operator-system describe pod -l app.kubernetes.io/name=network-services-operator
+          KUBECONFIG="${UKC}" kubectl -n network-services-operator-system logs -l app.kubernetes.io/name=network-services-operator --tail=200 --all-containers
+          echo "::endgroup::"
+          echo "::group::Upstream cert-manager + webhook cert"
+          KUBECONFIG="${UKC}" kubectl -n cert-manager get pods -o wide
+          KUBECONFIG="${UKC}" kubectl -n network-services-operator-system get certificate,secret
+          echo "::endgroup::"
+          KC=${TMPDIR}/.kind-nso-downstream.yaml
+          bin/kind-v0.32.0 get kubeconfig --name nso-downstream > "${KC}"
+          export KUBECONFIG="${KC}"
           echo "::group::GatewayClasses"
-          kubectl get gatewayclass -o wide || true
-          kubectl describe gatewayclass datum-downstream-gateway || true
+          kubectl get gatewayclass -o wide
           echo "::endgroup::"
-          echo "::group::EnvoyProxy"
-          kubectl -n datum-downstream-gateway get envoyproxy -o yaml || true
+          echo "::group::Gateways (all namespaces)"
+          kubectl get gateway -A -o wide
           echo "::endgroup::"
-          echo "::group::datum-downstream-gateway namespace + pods"
-          kubectl get ns datum-downstream-gateway --show-labels || true
-          kubectl -n datum-downstream-gateway get pods -o wide || true
-          echo "::endgroup::"
-          echo "::group::Downstream Envoy Gateway logs"
-          kubectl -n datum-downstream-gateway logs deploy/envoy-gateway --tail=200 || true
+          echo "::group::datum-downstream-gateway pods"
+          kubectl -n datum-downstream-gateway get pods -o wide
+          kubectl -n datum-downstream-gateway logs deploy/envoy-gateway --tail=200
           echo "::endgroup::"
           echo "::group::Extension server"
-          kubectl -n datum-downstream-gateway describe deploy envoy-gateway-extension-server || true
-          kubectl -n datum-downstream-gateway logs -l app.kubernetes.io/component=envoy-gateway-extension-server --tail=200 || true
-          echo "::endgroup::"
-          echo "::group::Certificates"
-          kubectl -n datum-downstream-gateway get certificate,secret || true
+          kubectl -n network-services-operator-system get pods -o wide
+          kubectl -n network-services-operator-system logs -l app.kubernetes.io/component=envoy-gateway-extension-server --tail=200
           echo "::endgroup::"

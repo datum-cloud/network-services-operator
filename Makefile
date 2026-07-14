@@ -64,27 +64,9 @@ vet: ## Run go vet against code.
 test: manifests generate fmt vet envtest ## Run tests.
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" go test $$(go list ./... | grep -v /e2e) -coverprofile cover.out
 
-# TODO(user): To use a different vendor for e2e tests, modify the setup under 'tests/e2e'.
-# The default setup assumes Kind is pre-installed and builds/loads the Manager Docker image locally.
-# Prometheus and CertManager are installed by default; skip with:
-# - PROMETHEUS_INSTALL_SKIP=true
-# - CERT_MANAGER_INSTALL_SKIP=true
-.PHONY: test-e2e
-test-e2e: chainsaw
-	@command -v kind >/dev/null 2>&1 || { \
-		echo "Kind is not installed. Please install Kind manually."; \
-		exit 1; \
-	}
-	@kind get clusters | grep -q 'nso-standard' || { \
-		echo "No Kind cluster is running. Please start a Kind cluster before running the e2e tests."; \
-		exit 1; \
-	}
-	$(KIND) get kubeconfig --name nso-standard > $(TMPDIR)/.kind-nso-standard.yaml
-	$(KIND) get kubeconfig --name nso-infra > $(TMPDIR)/.kind-nso-infra.yaml
-	$(CHAINSAW) test $(or $(TEST_DIR),./test/e2e) \
-	    --parallel 1 \
-		--cluster nso-standard=$(TMPDIR)/.kind-nso-standard.yaml \
-		--cluster nso-infra=$(TMPDIR)/.kind-nso-infra.yaml
+# The e2e suite runs against the two-cluster prod-fidelity env; bring it up and
+# run it with `task test-infra:up` then `task test-infra:test-e2e`
+# (Taskfile.test-infra.yml).
 
 GATEWAY_CONFORMANCE_CLASS ?= gateway-conformance
 GATEWAY_CONFORMANCE_FLAGS ?=
@@ -153,75 +135,13 @@ build-installer: set-image-controller generate ## Generate a consolidated YAML w
 set-image-controller: manifests kustomize
 	cd config/manager && $(KUSTOMIZE) edit set image ghcr.io/datum-cloud/network-services-operator=${IMG}
 
-.PHONY: prepare-infra-cluster
-prepare-infra-cluster: cert-manager envoy-gateway external-dns downstream-crds downstream-waf-dataplane billing-usage-collector load-image-infra extension-server configure-eg-extension-manager
-
-.PHONY: downstream-crds
-downstream-crds: ## Install NSO CRDs on the downstream (infra) cluster that the replicator mirrors into it.
-	$(KUBECTL) apply -f config/crd/bases/networking.datumapis.com_connectors.yaml
-	$(KUBECTL) apply -f config/crd/bases/networking.datumapis.com_httpproxies.yaml
-	$(KUBECTL) apply -f config/crd/bases/networking.datumapis.com_trafficprotectionpolicies.yaml
-
-.PHONY: downstream-waf-dataplane
-downstream-waf-dataplane: kustomize load-image-infra ## Install the Coraza WAF data plane (downstream EG instance + extension server + datum-downstream-gateway GatewayClass) on the infra cluster.
-	$(KUSTOMIZE) build --enable-helm config/tools/envoy-gateway-downstream | kubectl apply --server-side=true --force-conflicts -f -
-	$(KUSTOMIZE) build config/e2e-downstream | kubectl apply --server-side=true --force-conflicts -f -
-
-.PHONY: prepare-e2e
-prepare-e2e: chainsaw set-image-controller cert-manager load-image-all deploy-e2e
-
 .PHONY: prepare-dev
 prepare-dev: chainsaw set-image-controller cert-manager install
-
-.PHONY: load-image-all
-load-image-all: load-image-operator load-image-infra
-
-.PHONY: load-image-operator
-load-image-operator: docker-build kind
-	$(KIND) load docker-image $(IMG) -n nso-standard
-
-.PHONY: load-image-infra
-load-image-infra: docker-build kind ## Load operator image into nso-infra kind cluster (needed by the extension server).
-	$(KIND) load docker-image $(IMG) -n nso-infra
 
 .PHONY: cert-manager
 cert-manager: cmctl
 	$(KUSTOMIZE) build --enable-helm config/tools/cert-manager | kubectl apply --server-side=true --force-conflicts -f -
 	$(CMCTL) check api --wait=5m
-
-.PHONY: envoy-gateway
-envoy-gateway:
-	$(KUSTOMIZE) build --enable-helm config/tools/envoy-gateway | kubectl apply --server-side=true --force-conflicts -f -
-
-.PHONY: external-dns
-external-dns:
-	$(KUSTOMIZE) build --enable-helm config/tools/external-dns | kubectl apply --server-side=true --force-conflicts -f -
-
-.PHONY: billing-usage-collector
-billing-usage-collector:
-	$(KUSTOMIZE) build --enable-helm config/tools/billing-usage-collector | kubectl apply --server-side=true --force-conflicts -f -
-
-.PHONY: extension-server
-extension-server: ## Deploy the NSO extension server to the infra cluster (e2e overlay with cert-manager-issued TLS).
-	$(KUSTOMIZE) build --enable-helm config/extension-server-e2e | kubectl apply --server-side=true --force-conflicts -f -
-	kubectl rollout restart deployment/network-services-operator-envoy-gateway-extension-server \
-	    -n network-services-operator-system
-	kubectl rollout status deployment/network-services-operator-envoy-gateway-extension-server \
-	    -n network-services-operator-system --timeout=5m
-
-.PHONY: configure-eg-extension-manager
-configure-eg-extension-manager: ## Patch the EG ConfigMap to enable extensionManager and restart the EG controller.
-	$(KUSTOMIZE) build --enable-helm config/tools/envoy-gateway/overlays/e2e | kubectl apply --server-side=true --force-conflicts -f -
-	kubectl rollout restart deployment/envoy-gateway -n envoy-gateway-system
-	kubectl rollout status deployment/envoy-gateway -n envoy-gateway-system --timeout=3m
-
-.PHONY: kind-standard-cluster
-kind-standard-cluster: kind
-	$(KIND) create cluster --config=config/tools/kind/standard-cluster.yaml
-
-.PHONY: kind-infra-cluster
-kind-infra-cluster: kind
-	$(KIND) create cluster --config=config/tools/kind/infra-cluster.yaml
 
 ##@ Deployment
 
@@ -241,9 +161,6 @@ uninstall: manifests kustomize ## Uninstall CRDs from the K8s cluster specified 
 deploy: set-image-controller ## Deploy controller to the K8s cluster specified in ~/.kube/config.
 	$(KUSTOMIZE) build config/default | $(KUBECTL) apply -f -
 
-.PHONY: deploy-e2e
-deploy-e2e: set-image-controller
-	$(KUSTOMIZE) build config/e2e | $(KUBECTL) apply -f -
 
 .PHONY: undeploy
 undeploy: kustomize ## Undeploy controller from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
@@ -284,7 +201,7 @@ CERTMANAGER_VERSION ?= 1.17.1
 CRDOC_VERSION ?= v0.6.4
 
 # renovate: datasource=go depName=sigs.k8s.io/kind
-KIND_VERSION ?= v0.27.0
+KIND_VERSION ?= v0.32.0
 
 # renovate: datasource=go depName=github.com/kyverno/chainsaw
 CHAINSAW_VERSION ?= v0.2.15

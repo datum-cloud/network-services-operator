@@ -54,16 +54,6 @@ spec:
                 ca:
                   secretName: ($clusterIssuerName)
 
-        - script:
-            cluster: nso-infra
-            env:
-              - name: CLUSTER_ISSUER_NAME
-                value: ($clusterIssuerName)
-            content: |
-              kubectl get secret -n cert-manager $CLUSTER_ISSUER_NAME -o yaml | \
-                sed 's/namespace: .*/namespace: envoy-gateway-system/' | \
-                kubectl apply -n envoy-gateway-system -f -
-
     - name: Deploy Mock Billing Gateway
       try:
         - create:
@@ -141,100 +131,6 @@ spec:
                 name: ($gatewayClassName)
               spec:
                 controllerName: gateway.networking.datumapis.com/external-global-proxy-controller
-
-        # Ensure the downstream environment's standard gateway class and config exists
-        - apply:
-            cluster: nso-infra
-            resource:
-              apiVersion: gateway.envoyproxy.io/v1alpha1
-              kind: EnvoyProxy
-              metadata:
-                name: custom-proxy-config
-                namespace: envoy-gateway-system
-              spec:
-                telemetry:
-                  accessLog:
-                    settings:
-                      - sinks:
-                          # File sink only -- identical to the production
-                          # downstream gateway EnvoyProxy. Envoy writes the JSON
-                          # access log to stdout; the node-local Vector agent
-                          # tails the container log file (kubernetes_logs source)
-                          # and emits the CloudEvents. This exercises the real,
-                          # file-based production ingestion path -- no OTLP push.
-                          # The test also scrapes the same stdout to derive the
-                          # expected metric values (bytes, duration, project_name).
-                          - type: File
-                            file:
-                              path: /dev/stdout
-                        format:
-                          type: JSON
-                          json:
-                            start_time: "%START_TIME%"
-                            method: "%REQ(:METHOD)%"
-                            path: "%REQ(X-ENVOY-ORIGINAL-PATH?:PATH)%"
-                            protocol: "%PROTOCOL%"
-                            response_code: "%RESPONSE_CODE%"
-                            bytes_received: "%BYTES_RECEIVED%"
-                            bytes_sent: "%BYTES_SENT%"
-                            duration: "%DURATION%"
-                            route_name: "%ROUTE_NAME%"
-                            project_name: "%METADATA(ROUTE:datum-gateway:project_name)%"
-                            request_id: "%REQ(X-REQUEST-ID)%"
-                provider:
-                  type: Kubernetes
-                  kubernetes:
-                    envoyService:
-                      type: ClusterIP
-                      patch:
-                        type: StrategicMerge
-                        value:
-                          spec:
-                            ipFamilyPolicy: RequireDualStack
-                    envoyDeployment:
-                      patch:
-                        type: StrategicMerge
-                        value:
-                          spec:
-                            template:
-                              spec:
-                                containers:
-                                  - name: envoy
-                                    volumeMounts:
-                                      - mountPath: /etc/ssl/certs/
-                                        name: selfsigned-ca
-                                        readOnly: true
-                                volumes:
-                                  - name: selfsigned-ca
-                                    secret:
-                                      secretName: ($clusterIssuerName)
-                                      items:
-                                        - key: ca.crt
-                                          path: ca-certificates.crt
-                mergeGateways: true
-
-        - apply:
-            cluster: nso-infra
-            resource:
-              apiVersion: gateway.networking.k8s.io/v1
-              kind: GatewayClass
-              metadata:
-                name: datum-downstream-gateway-e2e
-              spec:
-                controllerName: gateway.envoyproxy.io/gatewayclass-controller
-                parametersRef:
-                  group: gateway.envoyproxy.io
-                  kind: EnvoyProxy
-                  name: custom-proxy-config
-                  namespace: envoy-gateway-system
-
-        - apply:
-            cluster: nso-infra
-            resource:
-              apiVersion: v1
-              kind: Namespace
-              metadata:
-                name: datum-downstream-gateway-hostnames
 
         # Get downstream namespace name by retrieving standard namespace UID
         - script:
@@ -359,6 +255,9 @@ spec:
                       namespaces:
                         from: Same
         - assert:
+            # Cold edge: the first gateway waits on the merged Envoy proxy to
+            # spin up, which overruns the 30s default.
+            timeout: 3m
             resource:
               apiVersion: gateway.networking.k8s.io/v1
               kind: Gateway
@@ -456,7 +355,7 @@ spec:
             content: |
               # Wait up to 10s for the envoy service to be created
               for i in $(seq 1 10); do
-                SVC=$(kubectl get svc -n envoy-gateway-system -l gateway.envoyproxy.io/owning-gatewayclass=datum-downstream-gateway-e2e -o json || true)
+                SVC=$(kubectl get svc -n datum-downstream-gateway -l gateway.envoyproxy.io/owning-gatewayclass=datum-downstream-gateway-e2e -o json || true)
                 if [ ! -z "$SVC" ] && echo "$SVC" | grep -q "metadata"; then
                   echo "$SVC"
                   exit 0
@@ -485,7 +384,7 @@ spec:
                       - name: GATEWAY_SERVICE_NAME
                         value: ($gatewayService.metadata.name)
                       - name: GATEWAY_SERVICE_NAMESPACE
-                        value: envoy-gateway-system
+                        value: datum-downstream-gateway
                     lifecycle:
                       postStart:
                         exec:
@@ -568,7 +467,7 @@ spec:
               #   captured here (STEP 1-2)               mock-billing-gateway (STEP 4)
               #
               # Envoy writes the access log to stdout (File sink on
-              # custom-proxy-config, path: /dev/stdout) when the request is
+              # the env's shared EnvoyProxy, path: /dev/stdout) when the request is
               # served; the node-local Vector agent tails the container log file
               # automatically -- the test does NOT forward it manually. This is
               # the same file-based ingestion path as the production gateway.
@@ -596,7 +495,7 @@ spec:
               # --- STEP 1: capture the Envoy access log line for our HTTPRoute -----
               # The route_name embeds the downstream namespace, so grepping for
               # 'httproute/<downstream-namespace>/' isolates this test's request.
-              ENVOY_LOG=$(kubectl -n envoy-gateway-system logs -l gateway.envoyproxy.io/owning-gatewayclass=datum-downstream-gateway-e2e -c envoy --tail=500 | grep "httproute/$DOWNSTREAM_NAMESPACE/" | tail -n 1 || true)
+              ENVOY_LOG=$(kubectl -n datum-downstream-gateway logs -l gateway.envoyproxy.io/owning-gatewayclass=datum-downstream-gateway-e2e -c envoy --tail=500 | grep "httproute/$DOWNSTREAM_NAMESPACE/" | tail -n 1 || true)
               if [ -z "$ENVOY_LOG" ]; then
                 echo "ERROR: No Envoy access log found containing 'httproute/'" >&2
                 exit 1
@@ -631,7 +530,7 @@ spec:
 
               # --- STEP 3: (no manual forwarding) --------------------------------
               # The request above already caused Envoy to write this access log to
-              # stdout via its File sink (custom-proxy-config, path: /dev/stdout).
+              # stdout via its File sink (env shared EnvoyProxy, path: /dev/stdout).
               # The node-local Vector agent tails the Envoy container log file via
               # its kubernetes_logs source, and Vector's VRL transform parses it
               # and emits the four CloudEvents to the mock-billing-gateway sink, so

@@ -235,6 +235,10 @@ func computeCorazaDirectives(
 	tpp *networkingv1alpha.TrafficProtectionPolicy,
 	baseDirectives []string,
 ) []string {
+	if tpp.Spec.InvertedParanoiaLevels() != nil {
+		return nil
+	}
+
 	var owaspCRS *networkingv1alpha.OWASPCRS
 	for _, ruleSet := range tpp.Spec.RuleSets {
 		if ruleSet.Type == networkingv1alpha.TrafficProtectionPolicyOWASPCoreRuleSet {

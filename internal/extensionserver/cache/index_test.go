@@ -485,6 +485,33 @@ func TestBuildPolicyIndexFromClient_TPPFieldsPreserved(t *testing.T) {
 	assert.NotEmpty(t, info.Directives, "OWASP CRS rules must generate non-empty directives")
 }
 
+func TestBuildPolicyIndexFromClient_InvertedParanoia_NoDirectivesEmitted(t *testing.T) {
+	scheme := indexTestScheme(t)
+
+	inverted := newTPP("test-ns", "inverted-tpp", withOWASPCRS(5, 4, 2, 1))
+	inverted.Spec.Mode = networkingv1alpha.TrafficProtectionPolicyEnforce
+
+	valid := newTPP("test-ns", "valid-tpp", withOWASPCRS(5, 4, 1, 1))
+	valid.Spec.Mode = networkingv1alpha.TrafficProtectionPolicyEnforce
+
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(inverted, valid).Build()
+
+	idx, err := BuildPolicyIndexFromClient(context.Background(), cl, nil)
+	require.NoError(t, err)
+
+	byName := map[string]TPPInfo{}
+	for _, info := range idx.TPPs["test-ns"] {
+		byName[info.Name] = info
+	}
+	require.Contains(t, byName, "inverted-tpp")
+	require.Contains(t, byName, "valid-tpp")
+
+	assert.Empty(t, byName["inverted-tpp"].Directives,
+		"inverted policy must yield no directives so the mutation layer withholds it from the data plane")
+	assert.NotEmpty(t, byName["valid-tpp"].Directives,
+		"valid policy must still emit directives")
+}
+
 // =============================================================================
 // computeCorazaDirectives unit tests
 //
@@ -592,6 +619,36 @@ func TestComputeCorazaDirectives_ParanoiaLevels(t *testing.T) {
 	}
 	assert.True(t, foundBlocking, "blocking paranoia level 3 must appear in directives")
 	assert.True(t, foundDetection, "detection paranoia level 4 must appear in directives")
+}
+
+func TestComputeCorazaDirectives_InvertedParanoiaLevels(t *testing.T) {
+	tests := []struct {
+		name        string
+		blocking    int
+		detection   int
+		wantEmitted bool
+	}{
+		{name: "equal levels emitted", blocking: 2, detection: 2, wantEmitted: true},
+		{name: "higher detection emitted", blocking: 1, detection: 3, wantEmitted: true},
+		{name: "inverted not emitted", blocking: 2, detection: 1, wantEmitted: false},
+		{name: "inverted far not emitted", blocking: 4, detection: 1, wantEmitted: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tpp := newTPP("ns", "tpp", withOWASPCRS(5, 4, tt.blocking, tt.detection))
+			tpp.Spec.Mode = networkingv1alpha.TrafficProtectionPolicyEnforce
+
+			result := computeCorazaDirectives(tpp, nil)
+
+			if tt.wantEmitted {
+				assert.NotEmpty(t, result, "valid paranoia levels must emit directives")
+				return
+			}
+			assert.Nil(t, result,
+				"inverted paranoia levels must emit no directives (withheld from the data plane)")
+		})
+	}
 }
 
 func TestComputeCorazaDirectives_IncludeOWASPCRSAppendedAfterActions(t *testing.T) {

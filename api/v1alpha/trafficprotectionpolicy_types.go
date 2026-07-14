@@ -129,6 +129,19 @@ type ParanoiaLevels struct {
 	Detection int `json:"detection,omitempty"`
 }
 
+func (s *TrafficProtectionPolicySpec) InvertedParanoiaLevels() *ParanoiaLevels {
+	for i := range s.RuleSets {
+		if s.RuleSets[i].Type != TrafficProtectionPolicyOWASPCoreRuleSet {
+			continue
+		}
+		levels := &s.RuleSets[i].OWASPCoreRuleSet.ParanoiaLevels
+		if levels.Detection < levels.Blocking {
+			return levels
+		}
+	}
+	return nil
+}
+
 type OWASPRuleExclusions struct {
 	// Tags is a list of rule tags to disable.
 	//

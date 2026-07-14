@@ -2,13 +2,18 @@
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
-  name: trafficprotectionpolicy-enforce-serves-traffic
-# Regression for issue #243: a TrafficProtectionPolicy in Enforce mode must not
-# take the gateway offline. The branded error page NSO injects into Envoy's
-# local_reply_config is a SubstitutionFormatString, so an unescaped '%' in the
-# page (e.g. CSS "height: 100%") makes Envoy reject the whole listener and, with
-# failOpen:false, drops the xDS update fleet-wide — every request then fails
-# with an empty reply instead of the backend's 200.
+  name: trafficprotectionpolicy-enforce-blocks-attack
+# Mechanism A enforcement-correctness coverage (network-services-operator#242).
+# A valid Enforce TrafficProtectionPolicy (detection >= blocking) attached to a
+# gateway must, end to end on the real Coraza edge data plane:
+#   1. pass benign traffic through to the backend with the body intact, and
+#   2. block a CRS-tripping attack payload with HTTP 403.
+#
+# Body integrity is asserted on the benign 200 (not just the status code): a WAF
+# translation bug can leave the listener up yet corrupt or replace the response
+# body (infra#3321). The branded local_reply_config only maps status >= 500, so a
+# WAF block returns Coraza's raw 403 (unbranded) — this test asserts the 403 and
+# that the attack never reached the backend, not a branded body.
 #
 # Precondition: the downstream (nso-infra) must have the WAF data plane wired up
 # (extension-server + the extensionManager Envoy Gateway registered on the
@@ -67,7 +72,7 @@ spec:
               status:
                 availableReplicas: 1
 
-    - name: Route through the WAF gateway with an Enforce policy
+    - name: Route through the WAF gateway with a valid Enforce policy
       bindings:
         - name: hostname
           value: (join('.', [$namespace, 'e2e.test']))
@@ -123,10 +128,6 @@ spec:
                   - type: OWASPCoreRuleSet
                     owaspCoreRuleSet: {}
         - assert:
-            # The downstream Envoy fleet pulls the contrib Envoy and Coraza WAF
-            # init images cold on the kind node before its endpoints exist, and
-            # Envoy Gateway only writes Programmed once they do. That first-pull
-            # window overruns chainsaw's 30s assert default, so allow more time.
             timeout: 3m
             resource:
               apiVersion: gateway.networking.k8s.io/v1
@@ -149,14 +150,13 @@ spec:
               kubectl -n datum-downstream-gateway logs deploy/envoy-gateway --tail=-1
               kubectl -n datum-downstream-gateway logs -l gateway.envoyproxy.io/owning-gateway-namespace --all-containers --tail=200 || true
 
-    - name: Benign traffic must reach the backend (not an empty/5xx reply)
+    - name: Benign traffic reaches the backend with the body intact
       description: >
-        Probe the downstream Envoy via the kind hostPort (30080). Before the fix
-        the listener is rejected and curl returns 000 / empty reply; after the
-        fix a benign GET returns the backend's 200. Gateway.status.Programmed is
-        not sufficient on its own — EG reports Programmed from its own
-        translation, independent of Envoy's xDS ACK — so this asserts on the
-        wire.
+        Probe the downstream Envoy via the kind hostPort (30080). Assert the
+        benign GET returns 200 AND the backend body ("hello from backend") is
+        served intact — a WAF/listener translation bug can keep the listener up
+        while corrupting or replacing the body (infra#3321), which a status-only
+        check would miss.
       bindings:
         - name: hostname
           value: (join('.', [$namespace, 'e2e.test']))
@@ -167,14 +167,65 @@ spec:
                 value: ($hostname)
             content: |
               set -u
-              for i in $(seq 1 30); do
-                code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
-                  -H "Host: ${HOSTNAME}" http://localhost:30080/) || code=000
+              for i in $(seq 1 40); do
+                resp=$(curl -s -w '\n%{http_code}' --max-time 5 \
+                  -H "Host: ${HOSTNAME}" http://localhost:30080/) || resp=$'\n000'
+                code=$(printf '%s' "$resp" | tail -n1)
+                body=$(printf '%s' "$resp" | sed '$d')
                 echo "attempt ${i}: HTTP ${code}"
                 if [ "${code}" = "200" ]; then
-                  exit 0
+                  case "${body}" in
+                    *"hello from backend"*)
+                      echo "benign body intact"
+                      exit 0
+                      ;;
+                    *)
+                      echo "benign GET returned 200 but body was corrupted: [${body}]"
+                      exit 1
+                      ;;
+                  esac
                 fi
                 sleep 3
               done
-              echo "benign request never returned 200 (issue #243 regression)"
+              echo "benign request never returned 200"
+              exit 1
+
+    - name: A CRS-tripping attack payload is blocked with 403
+      description: >
+        A path-traversal payload in a query parameter trips CRS rule 930110
+        (severity CRITICAL, score 5) which meets the default inbound anomaly
+        threshold at paranoia level 1, so Coraza denies the request with 403.
+        Assert the 403 and that the attack never reached the backend.
+      bindings:
+        - name: hostname
+          value: (join('.', [$namespace, 'e2e.test']))
+      try:
+        - script:
+            env:
+              - name: HOSTNAME
+                value: ($hostname)
+            content: |
+              set -u
+              url='http://localhost:30080/?file=../../../../etc/passwd'
+              for i in $(seq 1 20); do
+                resp=$(curl -s -w '\n%{http_code}' --max-time 5 \
+                  -H "Host: ${HOSTNAME}" "${url}") || resp=$'\n000'
+                code=$(printf '%s' "$resp" | tail -n1)
+                body=$(printf '%s' "$resp" | sed '$d')
+                echo "attempt ${i}: HTTP ${code}"
+                if [ "${code}" = "403" ]; then
+                  case "${body}" in
+                    *"hello from backend"*)
+                      echo "attack was blocked with 403 but backend body leaked"
+                      exit 1
+                      ;;
+                    *)
+                      echo "attack blocked with 403, backend not reached"
+                      exit 0
+                      ;;
+                  esac
+                fi
+                sleep 3
+              done
+              echo "attack payload was not blocked with 403"
               exit 1

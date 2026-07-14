@@ -156,6 +156,10 @@ tasks:
     vars:
       EG_CRD_DIR: config/tools/envoy-gateway-downstream/charts/gateway-helm-{{.ENVOY_GATEWAY_VERSION}}/gateway-helm/crds
     cmds:
+      # The gateway-helm chart is gitignored (config/**/charts); vendor it first
+      # so the CRD files below exist on a fresh checkout (e.g. CI). Output is
+      # discarded — this runs for the side effect of pulling the chart.
+      - '{{.KUSTOMIZE}} build --enable-helm config/tools/envoy-gateway-downstream >/dev/null'
       - kubectl --context {{.DOWNSTREAM_CTX}} apply --server-side=true --force-conflicts -f {{.EG_CRD_DIR}}/gatewayapi-crds.yaml
       - kubectl --context {{.DOWNSTREAM_CTX}} apply --server-side=true --force-conflicts -f {{.EG_CRD_DIR}}/generated/
 

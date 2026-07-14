@@ -22,7 +22,7 @@ resources:
 images:
 - name: ghcr.io/datum-cloud/network-services-operator
   newName: ghcr.io/datum-cloud/network-services-operator
-  newTag: d2e62bf
+  newTag: 63fa912
 
 # The default e2e path has no Prometheus operator; drop the ServiceMonitor so
 # the apply doesn't fail on the missing monitoring.coreos.com CRD. (Re-add via

@@ -201,6 +201,9 @@ spec:
                   - reason: Accepted
                     status: "True"
                     type: Accepted
+                  - reason: ResolvedRefs
+                    status: "True"
+                    type: ResolvedRefs
                   parentRef:
                     name: test-gateway
                     kind: Gateway

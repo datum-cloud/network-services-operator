@@ -1,0 +1,158 @@
+apiVersion: policy.karmada.io/v1alpha1
+kind: ClusterPropagationPolicy
+metadata:
+  name: nso-resources
+spec:
+  conflictResolution: Overwrite
+  placement:
+    clusterAffinities:
+      - affinityName: gateway-enabled
+        labelSelector:
+          matchExpressions:
+          - key: infra.datum.net/gateways
+            operator: In
+            values:
+            - enabled
+  resourceSelectors:
+  - apiVersion: v1
+    kind: Namespace
+    labelSelector:
+      matchExpressions:
+      - key: meta.datumapis.com/upstream-namespace
+        operator: Exists
+  - apiVersion: v1
+    kind: ConfigMap
+    labelSelector:
+      matchExpressions:
+      - key: meta.datumapis.com/upstream-namespace
+        operator: Exists
+  - apiVersion: v1
+    kind: Secret
+    labelSelector:
+      matchExpressions:
+      - key: meta.datumapis.com/upstream-namespace
+        operator: Exists
+  # TODO(jreese) clean up dupe secret policies
+  - apiVersion: v1
+    kind: Secret
+    labelSelector:
+      matchExpressions:
+      - key: meta.datumapis.com/upstream-cluster-name
+        operator: Exists
+  - apiVersion: v1
+    kind: Secret
+    labelSelector:
+      matchExpressions:
+      - key: cert-manager.io/issuer-name
+        operator: In
+        values:
+          - nso-gateway
+  - apiVersion: discovery.k8s.io/v1
+    kind: EndpointSlice
+    labelSelector:
+      matchExpressions:
+      - key: meta.datumapis.com/upstream-cluster-name
+        operator: Exists
+  - apiVersion: v1
+    kind: Service
+    # TODO(jreese) get labels on these patch policies
+    # labelSelector:
+    #   matchExpressions:
+    #   - key: meta.datumapis.com/upstream-cluster-name
+    #     operator: Exists
+
+  # Gateway API
+  - apiVersion: gateway.networking.k8s.io/v1
+    kind: Gateway
+    labelSelector:
+      matchExpressions:
+      - key: meta.datumapis.com/upstream-cluster-name
+        operator: Exists
+  - apiVersion: gateway.networking.k8s.io/v1
+    kind: HTTPRoute
+    labelSelector:
+      matchExpressions:
+      - key: meta.datumapis.com/upstream-cluster-name
+        operator: Exists
+  - apiVersion: gateway.networking.k8s.io/v1
+    kind: HTTPRoute
+    labelSelector:
+      matchExpressions:
+      - key: meta.datumapis.com/http01-solver
+        operator: Exists
+  - apiVersion: gateway.networking.k8s.io/v1
+    kind: BackendTLSPolicy
+    # TODO(jreese) get labels on these when they are created by the httpproxy
+    # controller
+    # labelSelector:
+    #   matchExpressions:
+    #   - key: meta.datumapis.com/upstream-cluster-name
+    #     operator: Exists
+
+  # Envoy Gateway API Extensions
+  - apiVersion: gateway.envoyproxy.io/v1alpha1
+    kind: Backend
+    labelSelector:
+      matchExpressions:
+      - key: meta.datumapis.com/upstream-cluster-name
+        operator: Exists
+  - apiVersion: gateway.envoyproxy.io/v1alpha1
+    kind: BackendTrafficPolicy
+    labelSelector:
+      matchExpressions:
+      - key: meta.datumapis.com/upstream-cluster-name
+        operator: Exists
+  - apiVersion: gateway.envoyproxy.io/v1alpha1
+    kind: HTTPRouteFilter
+    labelSelector:
+      matchExpressions:
+      - key: meta.datumapis.com/upstream-cluster-name
+        operator: Exists
+  - apiVersion: gateway.envoyproxy.io/v1alpha1
+    kind: HTTPRouteFilter
+    labelSelector:
+      matchExpressions:
+      - key: meta.datumapis.com/http01-solver
+        operator: Exists
+  - apiVersion: gateway.envoyproxy.io/v1alpha1
+    kind: SecurityPolicy
+    labelSelector:
+      matchExpressions:
+      - key: meta.datumapis.com/upstream-cluster-name
+        operator: Exists
+  - apiVersion: gateway.envoyproxy.io/v1alpha1
+    kind: EnvoyPatchPolicy
+    # TODO(jreese) get labels on these patch policies
+    # labelSelector:
+    #   matchExpressions:
+    #   - key: meta.datumapis.com/upstream-cluster-name
+    #     operator: Exists
+
+  # Network Services Operator CRDs (replicated for the extension server)
+  - apiVersion: networking.datumapis.com/v1alpha1
+    kind: Connector
+    labelSelector:
+      matchExpressions:
+      - key: meta.datumapis.com/upstream-cluster-name
+        operator: Exists
+  - apiVersion: networking.datumapis.com/v1alpha
+    kind: TrafficProtectionPolicy
+    labelSelector:
+      matchExpressions:
+      - key: meta.datumapis.com/upstream-cluster-name
+        operator: Exists
+  - apiVersion: networking.datumapis.com/v1alpha
+    kind: HTTPProxy
+    labelSelector:
+      matchExpressions:
+      - key: meta.datumapis.com/upstream-cluster-name
+        operator: Exists
+
+  # External DNS
+  - apiVersion: externaldns.k8s.io/v1alpha1
+    kind: DNSEndpoint
+    # TODO(jreese) get labels on these
+    # labelSelector:
+    #   matchExpressions:
+    #   - key: meta.datumapis.com/upstream-cluster-name
+    #     operator: Exists

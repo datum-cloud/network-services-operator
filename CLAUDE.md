@@ -63,26 +63,40 @@ Run `make help` for the full list. Most-used targets:
 ### Tests
 - `make test` — unit/integration tests via **envtest** (excludes `test/e2e`);
   runs `manifests generate fmt vet` first, writes `cover.out`
-- `make test-e2e` — **Chainsaw** e2e suite in `test/e2e` against the two local
-  Kind clusters (requires `nso-standard` and `nso-infra` to exist)
+- `task test-infra:test-e2e` — **Chainsaw** e2e suite in `test/e2e` against the
+  prod-fidelity env (below); pass a scenario path after `--` for a single test
 - `make test-conformance` — Gateway API conformance suite in
   `test/conformance/gatewayapi`
 
-### Local Multi-Cluster Dev Environment (Taskfile)
-The dev environment is two Kind clusters: an **upstream** cluster
-(`nso-standard`) running the operator, and a **downstream** cluster
-(`nso-infra`) running Envoy Gateway, cert-manager, and external-dns.
+### Prod-Fidelity Test Environment (Taskfile)
+The e2e environment is two Kind clusters that mirror how the edge runs in
+production: an **upstream** cluster (`nso-upstream`) running the operator, and a
+**downstream** cluster (`nso-downstream`) running Envoy Gateway v1.7.4, the
+extension server + Coraza WAF data plane, cert-manager, and external-dns. It is
+defined in `Taskfile.test-infra.yml` and is what CI runs.
 
-- `task dev:bootstrap` — full setup: create both clusters, deploy the operator
-  upstream, prepare downstream, and link them via a kubeconfig secret
-- `task dev:redeploy-operator` — rebuild the image, load it into `nso-standard`,
-  and roll the controller-manager
-- `task dev:test [-- <path-or-name>]` — run the e2e suite (optionally a single
-  test under `test/e2e/`)
-- `task dev:destroy` — tear down both clusters
+- `task test-infra:up` — build the operator image, create both clusters, install
+  the downstream data plane, deploy + link the operator
+- `task test-infra:test-e2e [-- <path>]` — run the e2e suite against the live env
+  (JSON report written to `$TMPDIR`); optionally a single scenario
+- `task test-infra:down` — tear down both clusters
 - `task validate-kustomizations` — `kustomize build` every kustomization
 - `task test-prometheus-rules` — `promtool` tests for the alerting rules in
   `test/prometheus-rules/`
+
+#### Authoring e2e tests against the env
+- Bind to the shared data plane the env stands up: downstream GatewayClass
+  `datum-downstream-gateway-e2e`, Envoy Gateway namespace
+  `datum-downstream-gateway`, extension server in
+  `network-services-operator-system`. Do **not** hardcode the bare
+  `datum-downstream-gateway` class or self-provision a per-test EnvoyProxy in
+  `envoy-gateway-system` — that was the retired single-stack bridge's model.
+- Every scenario under `test/e2e/` runs against this env in CI. Any setup a
+  scenario needs (a data-plane component, a namespace) must be installed by
+  `task test-infra:up` (add it to `Taskfile.test-infra.yml`), not assumed from
+  outside — a scenario whose dependency isn't provisioned by the env will fail.
+- Editing `.github/workflows/*` requires pushing over SSH; the HTTPS token used
+  by `gh` lacks the `workflow` scope.
 
 ## High-Level Architecture
 
@@ -139,7 +153,7 @@ project follows the Kubebuilder v4 layout (`PROJECT`, domain `datumapis.com`).
 2. Run `make manifests generate` to regenerate CRDs, RBAC, deepcopy, defaulters.
 3. Run `make api-docs` if the CRD reference under `docs/api/` should update.
 4. Add/extend reconciler logic in `internal/controller/` and a `_test.go`.
-5. `make test` (envtest) and, when relevant, `make test-e2e`.
+5. `make test` (envtest) and, when relevant, `task test-infra:test-e2e`.
 
 Never hand-edit generated files (`zz_generated.*`, `config/crd/bases/*`,
 `docs/api/*`) — change the source and regenerate.
@@ -154,7 +168,8 @@ Operator deployment config is composed from Kustomize bases and overlays under
 
 ### CI
 GitHub Actions enforce the same commands locally available:
-`make test` (test.yml), `make test-e2e` (test-e2e.yml), `golangci-lint`
+`make test` (test.yml), the `test-infra` e2e env (test-e2e.yml, via
+`task test-infra:up` + `task test-infra:test-e2e`), `golangci-lint`
 (lint.yml), and kustomize validation (validate-kustomize.yaml). Run them
 locally before pushing.
 

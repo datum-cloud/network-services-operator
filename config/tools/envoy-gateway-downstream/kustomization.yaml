@@ -6,10 +6,6 @@ helmCharts:
     includeCRDs: false
     namespace: datum-downstream-gateway
     releaseName: envoy-datum-downstream-gateway
-    # Pinned to match production: v1.8.x does not program merged gateways served
-    # through the extension manager (waf-gw stays with an empty status), so the
-    # downstream WAF control plane runs v1.7.4. CRDs come from the base
-    # envoy-gateway install (v1.8.1), which is forward-compatible.
     version: v1.7.4
     repo: oci://docker.io/envoyproxy
     valuesInline:
@@ -33,9 +29,9 @@ helmCharts:
                     - key: meta.datumapis.com/upstream-cluster-name
                       operator: Exists
           extensionManager:
-            # The WAF-augmented merged xDS response exceeds gRPC's 4 MiB default,
-            # so EG rejects it and stops publishing config with failOpen:false.
-            # Match the ext-server's 256 MiB limit; both sides must agree.
+            # Match the ext-server's compiled-in 256 MiB gRPC ceiling. Without
+            # this the EG side defaults to ~4 MiB and silently freezes xDS once a
+            # translated snapshot exceeds it (~540 gateways in prod).
             maxMessageSize: 256Mi
             policyResources:
               - group: networking.datumapis.com
@@ -47,17 +43,18 @@ helmCharts:
                 kind: Connector
             service:
               fqdn:
-                hostname: envoy-gateway-extension-server.datum-downstream-gateway.svc.cluster.local
+                hostname: network-services-operator-envoy-gateway-extension-server.network-services-operator-system.svc.cluster.local
                 port: 5005
               tls:
-                # EG reads the CA from tls.crt of this Secret; the self-signed CA
-                # Certificate's Secret carries the CA cert there.
                 certificateRef:
-                  name: envoy-gateway-extension-server-ca
-                  namespace: datum-downstream-gateway
+                  # e2e: the Secret holding the CA that issued the ext-server
+                  # server cert. Published by the bring-up (test-infra:extserver-ca-bundle)
+                  # from the e2e-extension-server-ca cert-manager secret.
+                  name: e2e-extension-server-ca
+                  namespace: network-services-operator-system
                 clientCertificateRef:
                   name: envoy-gateway-extension-server-eg-client-tls
-                  namespace: datum-downstream-gateway
+                  namespace: network-services-operator-system
               retry:
                 maxAttempts: 4
                 initialBackoff: 100ms

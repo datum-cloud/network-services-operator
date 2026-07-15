@@ -50,7 +50,7 @@ helmCharts:
             # Only tail the Envoy proxy pods; their access logs live on the
             # `envoy` container's stdout. Other namespaces/containers are
             # ignored so the agent does not parse unrelated cluster logs.
-            extra_field_selector: "metadata.namespace=envoy-gateway-system"
+            extra_field_selector: "metadata.namespace=datum-downstream-gateway"
             # Re-scan for new container log files every 2s instead of the 60s
             # default so the agent picks up freshly-created Envoy proxy pods
             # quickly -- the e2e test provisions a gateway and verifies within a

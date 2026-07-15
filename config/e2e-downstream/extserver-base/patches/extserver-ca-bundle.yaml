@@ -1,0 +1,18 @@
+# Point the ext-server CA bundle volume at the e2e CA ConfigMap (carrying the
+# ca.crt that signed the EG client cert), replacing placeholder-ca-bundle. The
+# ConfigMap is published by the bring-up (test-infra:extserver-ca-bundle) from
+# the e2e-extension-server-ca cert-manager secret.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: envoy-gateway-extension-server
+spec:
+  template:
+    spec:
+      volumes:
+        - name: tls-ca
+          configMap:
+            name: extension-server-ca-bundle
+            items:
+              - key: ca.crt
+                path: ca.crt

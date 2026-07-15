@@ -1,0 +1,546 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+#
+# Offline backend returns a clean 503.
+#
+# When a connector is offline a user request returns 503 with the body
+# "Tunnel not online"; when it comes online and the edge picks up the change the
+# same request returns 200 through the tunnel; flipping back returns 503. The
+# 503-to-200 transition is the headline assertion: if the edge never picks up
+# the change when the connector comes online, the online phase hangs at 503 and
+# fails.
+#
+# The test drives the tunnel through a stand-in proxy; it does not exercise real
+# tunnel establishment or NAT traversal.
+#
+# The online phase depends on the edge re-applying config when the connector's
+# state changes, which is not yet confirmed on this edge version. Until it is,
+# the online-phase assertions are gated behind ($connectorTestEnabled): leave it
+# false to run only the offline 503 check (which needs no config re-apply), or
+# set it true once the re-apply is confirmed. If the re-apply turns out not to
+# fire, repurpose the online assertion to confirm the response stays 503.
+#
+# The online phase also needs the connect-proxy image built and loaded:
+#   docker build -t connect-proxy:e2e test/e2e-edge/_fixtures/connector-tunnel
+#   kind load docker-image connect-proxy:e2e --name <downstream-cluster>
+#
+# Cluster names are inline; downstreamGatewayClass is as in the other tests.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: connector-offline-503
+spec:
+  concurrent: false
+  bindings:
+    - name: clusterIssuerName
+      value: (join('-', ['e2e', $namespace]))
+    - name: gatewayClassName
+      value: (join('-', ['e2e', $namespace]))
+    - name: downstreamGatewayClass
+      value: datum-downstream-gateway-e2e
+    # The node id the tunnel fixture advertises; the online connector annotation
+    # carries this so the connector is classified online.
+    - name: tunnelNodeID
+      value: e2e-connect-proxy-node
+    # Gate the online-phase assertions until the edge re-apply is confirmed and
+    # the connect-proxy image is available (see header).
+    - name: connectorTestEnabled
+      value: "false"
+    # Extension server selector/namespace used to confirm the edge re-applied
+    # config; resolves all replicas and takes the highest build number.
+    - name: extServerSelector
+      value: app.kubernetes.io/component=envoy-gateway-extension-server
+    - name: extServerNamespace
+      value: network-services-operator-system
+  cluster: nso-upstream
+  steps:
+    - name: Create CA on the downstream cluster
+      try:
+        - create:
+            cluster: nso-downstream
+            resource:
+              apiVersion: cert-manager.io/v1
+              kind: ClusterIssuer
+              metadata:
+                name: (join('-', [$clusterIssuerName, 'issuer']))
+              spec:
+                selfSigned: {}
+        - create:
+            cluster: nso-downstream
+            resource:
+              apiVersion: cert-manager.io/v1
+              kind: Certificate
+              metadata:
+                name: (join('-', [$clusterIssuerName, 'ca']))
+                namespace: cert-manager
+              spec:
+                isCA: true
+                commonName: (join('-', [$clusterIssuerName, 'ca']))
+                secretName: ($clusterIssuerName)
+                privateKey:
+                  algorithm: ECDSA
+                  size: 256
+                issuerRef:
+                  name: (join('-', [$clusterIssuerName, 'issuer']))
+                  kind: ClusterIssuer
+                  group: cert-manager.io
+        - create:
+            cluster: nso-downstream
+            resource:
+              apiVersion: cert-manager.io/v1
+              kind: ClusterIssuer
+              metadata:
+                name: ($clusterIssuerName)
+              spec:
+                ca:
+                  secretName: ($clusterIssuerName)
+        - assert:
+            cluster: nso-downstream
+            resource:
+              apiVersion: cert-manager.io/v1
+              kind: Certificate
+              metadata:
+                name: (join('-', [$clusterIssuerName, 'ca']))
+                namespace: cert-manager
+              status:
+                conditions:
+                  - type: Ready
+                    status: "True"
+
+    - name: Create the upstream GatewayClass (downstream class/EnvoyProxy are pre-provisioned)
+      try:
+        - create:
+            cluster: nso-upstream
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: GatewayClass
+              metadata:
+                name: ($gatewayClassName)
+              spec:
+                controllerName: gateway.networking.datumapis.com/external-global-proxy-controller
+        # The HTTPProxy controller builds its gateway with the operator-configured
+        # class (default "datum-external-global-proxy"), not our per-test class.
+        # That class must exist or the proxy's gateway waits for a controller
+        # forever. Cluster-scoped and shared, so apply is idempotent.
+        - apply:
+            cluster: nso-upstream
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: GatewayClass
+              metadata:
+                name: datum-external-global-proxy
+              spec:
+                controllerName: gateway.networking.datumapis.com/external-global-proxy-controller
+        # The downstream gateway class and its proxy are provisioned once by the
+        # test environment; tests must not recreate them. Only ensure the
+        # hostname-accounting namespace here.
+        - apply:
+            cluster: nso-downstream
+            resource:
+              apiVersion: v1
+              kind: Namespace
+              metadata:
+                name: datum-downstream-gateway-hostnames
+
+    - name: Create the echo backend and the CONNECT-proxy tunnel stand-in
+      try:
+        - apply:
+            cluster: nso-downstream
+            file: ../_fixtures/echo-backend.yaml
+        # The connect-proxy is the tunnel target: when the connector is online
+        # the edge dials this proxy Service, which forwards to the echo backend.
+        # An online request can only succeed through this path; there is no
+        # direct fallback route.
+        - apply:
+            cluster: nso-downstream
+            file: ../_fixtures/connector-tunnel/manifest.yaml
+
+    - name: Provision and verify the Domain
+      try:
+        - create:
+            cluster: nso-upstream
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Domain
+              metadata:
+                name: test-domain
+              spec:
+                domainName: e2e.env.datum.net
+        - description: Stand in for the Domain controller's HTTP/DNS verification.
+          script:
+            content: |
+              kubectl -n $NAMESPACE patch domain test-domain \
+                --subresource=status --type=merge \
+                -p '{"status":{"conditions":[{"type": "Verified", "status": "True", "reason": "Test", "message": "test", "lastTransitionTime": "2025-02-24T23:59:09Z"}]}}'
+
+    - name: Provision the ConnectorClass, Connector (offline), and connector-backed HTTPProxy
+      try:
+        # A Connector must reference an existing ConnectorClass to be accepted.
+        # ConnectorClass is cluster-scoped; apply (not create) so a leftover from
+        # a prior run does not fail the step.
+        - apply:
+            cluster: nso-upstream
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha1
+              kind: ConnectorClass
+              metadata:
+                name: test-connector-class
+              spec: {}
+        # Start offline: the upstream-status annotation carries Ready=False with
+        # no connection details. The connector's online/offline state rides on
+        # this annotation because only metadata is propagated to the edge, not
+        # status.
+        - create:
+            cluster: nso-upstream
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha1
+              kind: Connector
+              metadata:
+                name: test-connector
+                annotations:
+                  networking.datumapis.com/upstream-status: |
+                    {"conditions":[{"type":"Ready","status":"False","reason":"ConnectorNotReady","lastTransitionTime":"2026-06-23T00:00:00Z"}]}
+              spec:
+                connectorClassName: test-connector-class
+        # The HTTPProxy backend references the connector; its endpoint URL points
+        # at the connect-proxy Service so the online path tunnels there.
+        - create:
+            cluster: nso-upstream
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: HTTPProxy
+              metadata:
+                name: test-proxy
+              spec:
+                rules:
+                  - matches:
+                      - path:
+                          type: PathPrefix
+                          value: /
+                    backends:
+                      - endpoint: http://connect-proxy.default.svc.cluster.local:8080
+                        connector:
+                          name: test-connector
+        # Wait for the HTTPProxy to publish its canonical hostname, which tells us
+        # it reconciled and the downstream gateway and route exist. Poll in a
+        # script because the field is empty until the proxy's gateway gets an
+        # address, and a plain assert on it errors instead of retrying.
+        - script:
+            timeout: 180s
+            cluster: nso-upstream
+            content: |
+              set -eu
+              for i in $(seq 1 36); do
+                H=$(kubectl -n $NAMESPACE get httpproxy test-proxy \
+                  -o jsonpath='{.status.canonicalHostname}' 2>/dev/null || true)
+                # printf (no trailing newline) so $stdout is exactly the hostname.
+                if [ -n "${H}" ]; then printf '%s' "${H}"; exit 0; fi
+                echo "waiting for HTTPProxy canonicalHostname... ${i}" >&2
+                sleep 5
+              done
+              echo "ERROR: HTTPProxy never published a canonicalHostname" >&2
+              exit 1
+            outputs:
+              - name: proxyHostname
+                value: ($stdout)
+      catch:
+        - script:
+            cluster: nso-upstream
+            content: |
+              kubectl -n network-services-operator-system logs -l app.kubernetes.io/name=network-services-operator --tail=200
+              kubectl -n $NAMESPACE get connector,connectorclass,httpproxy -o yaml
+
+    - name: Stand up the long-lived conntest client and resolve the edge IP
+      try:
+        - create:
+            cluster: nso-downstream
+            resource:
+              apiVersion: v1
+              kind: Pod
+              metadata:
+                name: conntest
+                namespace: default
+              spec:
+                containers:
+                  - name: curl
+                    image: curlimages/curl:8.11.1
+                    command: ["sleep", "infinity"]
+                    resources:
+                      requests:
+                        cpu: 50m
+                        memory: 64Mi
+                      limits:
+                        cpu: 100m
+                        memory: 128Mi
+                terminationGracePeriodSeconds: 0
+        - assert:
+            cluster: nso-downstream
+            resource:
+              apiVersion: v1
+              kind: Pod
+              metadata:
+                name: conntest
+                namespace: default
+              status:
+                phase: Running
+    - name: Phase 1 (offline) - the user path returns 503 (connector offline route applied)
+      description: |
+        Runs unconditionally: the offline state needs no edge config re-apply.
+        The hostname and edge IP are resolved within this step. Probes the plain
+        HTTP listener on port 80 because the HTTPS listener has no issued
+        certificate in this environment, and the offline 503 route applies on
+        both protocols.
+
+        Body contract: the offline route returns a 503 whose body is
+        "Tunnel not online", but when the branded error page is active (it is, by
+        default) it rewrites every 5xx body to the branded page. So the offline
+        body may be either the raw "Tunnel not online" or the branded page; we
+        accept either as proof of the offline route, and reject a 503 with
+        neither (that would be a different upstream error).
+      try:
+        # Resolve the connector hostname from the upstream HTTPProxy; the output
+        # binding is available to later operations in this same step.
+        - script:
+            cluster: nso-upstream
+            skipCommandOutput: true
+            skipLogOutput: true
+            content: |
+              kubectl -n $NAMESPACE get httpproxy test-proxy \
+                -o jsonpath='{.status.canonicalHostname}'
+            outputs:
+              - name: proxyHostname
+                value: ($stdout)
+        - script:
+            timeout: 300s
+            cluster: nso-downstream
+            env:
+              - name: HOST
+                value: ($proxyHostname)
+              - name: OWNING_GC
+                value: ($downstreamGatewayClass)
+              - name: SENTINEL
+                value: "X-Datum-Branded-Page: v1"
+            content: |
+              set -eu
+              echo "connector hostname: ${HOST}"
+              IP=$(kubectl get svc -n datum-downstream-gateway \
+                -l gateway.envoyproxy.io/owning-gatewayclass=$OWNING_GC \
+                -o jsonpath='{.items[0].spec.clusterIP}')
+              echo "edge IP: ${IP}"
+              ok=""
+              for i in $(seq 1 30); do
+                code=$(kubectl -n default exec conntest -- \
+                  curl -ksS -o /tmp/body -w '%{http_code}' --max-time 10 \
+                  --resolve "${HOST}:80:${IP}" \
+                  "http://${HOST}/" 2>/dev/null || true)
+                echo "attempt ${i}: offline ${HOST} -> ${code}"
+                if [ "${code}" = "503" ]; then
+                  # Accept the raw offline body or the branded override of it;
+                  # reject a 503 carrying neither (a different upstream error).
+                  if kubectl -n default exec conntest -- grep -qF -- "Tunnel not online" /tmp/body 2>/dev/null \
+                     || kubectl -n default exec conntest -- grep -qF -- "${SENTINEL}" /tmp/body 2>/dev/null; then
+                    ok="yes"; break
+                  fi
+                  echo "  got 503 but body has neither 'Tunnel not online' nor the branded sentinel"
+                fi
+                sleep 5
+              done
+              if [ -z "${ok}" ]; then
+                echo "ERROR: offline connector did not return the expected 503 offline response"
+                kubectl -n default exec conntest -- sh -c 'cat /tmp/body 2>/dev/null | head -c 1000' || true
+                exit 1
+              fi
+              echo "OK: offline connector returns 503 (offline route applied; body is the offline/branded reply)"
+
+    - name: Phase 2 (online) - flip the connector online, then 503->200 with a BuildID advance
+      description: |
+        The headline assertion, self-contained in one step. Capture the
+        extension server's build number, bring the connector online, then require
+        both the 503-to-200 transition and an advance in the build number. The
+        new build proves the edge actually re-applied config, not just that the
+        end state happens to look right. Gated behind ($connectorTestEnabled);
+        if the edge turns out not to re-apply on the change, repoint this to
+        assert the response stays 503.
+      try:
+        # Step 1 (downstream): resolve hostname and capture the build number
+        # before the connector comes online.
+        - script:
+            cluster: nso-downstream
+            skipCommandOutput: true
+            skipLogOutput: true
+            env:
+              - name: EXT_SELECTOR
+                value: ($extServerSelector)
+              - name: EXT_NS
+                value: ($extServerNamespace)
+            content: |
+              set -eu
+              PODS="$(kubectl -n "${EXT_NS}" get pods -l "${EXT_SELECTOR}" \
+                --field-selector=status.phase=Running \
+                -o jsonpath='{.items[*].metadata.name}')"
+              MAX=0
+              for p in ${PODS}; do
+                BODY="$(kubectl -n "${EXT_NS}" exec "${p}" -- \
+                  curl -sS --max-time 10 http://localhost:8080/debug/programmed-set 2>/dev/null || true)"
+                ID="$(printf '%s' "${BODY}" | tr -d ' \n' | sed -n 's/.*"buildID":\([0-9][0-9]*\).*/\1/p')"
+                [ -z "${ID}" ] && ID=0
+                [ "${ID}" -gt "${MAX}" ] && MAX="${ID}"
+              done
+              printf '%s' "${MAX}"
+            outputs:
+              - name: buildIDBefore
+                value: ($stdout)
+        - script:
+            cluster: nso-upstream
+            skipCommandOutput: true
+            skipLogOutput: true
+            content: |
+              kubectl -n $NAMESPACE get httpproxy test-proxy \
+                -o jsonpath='{.status.canonicalHostname}'
+            outputs:
+              - name: proxyHostname
+                value: ($stdout)
+        # Step 2 (upstream): bring the connector online.
+        - script:
+            cluster: nso-upstream
+            env:
+              - name: ENABLED
+                value: ($connectorTestEnabled)
+              - name: NODE_ID
+                value: ($tunnelNodeID)
+            content: |
+              set -eu
+              [ "${ENABLED}" = "true" ] || { echo "SKIP: connectorTestEnabled=false"; exit 0; }
+              STATUS='{"conditions":[{"type":"Ready","status":"True","reason":"ConnectorReady","lastTransitionTime":"2026-06-23T00:00:00Z"}],"connectionDetails":{"type":"PublicKey","publicKey":{"id":"'"${NODE_ID}"'"}}}'
+              ESCAPED=$(printf '%s' "${STATUS}" | sed 's/\\/\\\\/g; s/"/\\"/g')
+              kubectl -n $NAMESPACE patch connector test-connector --type=merge \
+                -p "{\"metadata\":{\"annotations\":{\"networking.datumapis.com/upstream-status\":\"${ESCAPED}\"}}}"
+        # Step 3 (downstream): require the 503-to-200 transition and a build
+        # number advance.
+        - script:
+            timeout: 220s
+            cluster: nso-downstream
+            env:
+              - name: ENABLED
+                value: ($connectorTestEnabled)
+              - name: HOST
+                value: ($proxyHostname)
+              - name: OWNING_GC
+                value: ($downstreamGatewayClass)
+              - name: EXT_SELECTOR
+                value: ($extServerSelector)
+              - name: EXT_NS
+                value: ($extServerNamespace)
+              - name: BEFORE
+                value: ($buildIDBefore)
+            content: |
+              set -eu
+              if [ "${ENABLED}" != "true" ]; then
+                echo "SKIP: connectorTestEnabled=false (awaiting B0 outcome + connect-proxy image)"
+                exit 0
+              fi
+              IP=$(kubectl get svc -n datum-downstream-gateway \
+                -l gateway.envoyproxy.io/owning-gatewayclass=$OWNING_GC \
+                -o jsonpath='{.items[0].spec.clusterIP}')
+              echo "edge IP: ${IP}; BuildID before flip: ${BEFORE}"
+              ok=""
+              for i in $(seq 1 30); do
+                code=$(kubectl -n default exec conntest -- \
+                  curl -ksS -o /dev/null -w '%{http_code}' --max-time 10 \
+                  --resolve "${HOST}:443:${IP}" \
+                  "https://${HOST}/status/200" 2>/dev/null || true)
+                echo "attempt ${i}: online ${HOST} -> ${code}"
+                if [ "${code}" = "200" ]; then ok="yes"; break; fi
+                sleep 5
+              done
+              if [ -z "${ok}" ]; then
+                echo "ERROR: connector came online but the user path never reached 200"
+                echo "       (the edge did not re-translate on the liveness flip — the re-translation gap)"
+                exit 1
+              fi
+              echo "OK: 503->200 transition observed; edge re-translated on liveness flip"
+
+              # The extension server's build number must have advanced past BEFORE.
+              PODS="$(kubectl -n "${EXT_NS}" get pods -l "${EXT_SELECTOR}" \
+                --field-selector=status.phase=Running \
+                -o jsonpath='{.items[*].metadata.name}')"
+              AFTER=0
+              for p in ${PODS}; do
+                BODY="$(kubectl -n "${EXT_NS}" exec "${p}" -- \
+                  curl -sS --max-time 10 http://localhost:8080/debug/programmed-set 2>/dev/null || true)"
+                ID="$(printf '%s' "${BODY}" | tr -d ' \n' | sed -n 's/.*"buildID":\([0-9][0-9]*\).*/\1/p')"
+                [ -z "${ID}" ] && ID=0
+                [ "${ID}" -gt "${AFTER}" ] && AFTER="${ID}"
+              done
+              echo "BuildID after flip: ${AFTER} (require > ${BEFORE})"
+              if [ "${AFTER}" -le "${BEFORE}" ]; then
+                echo "ERROR: BuildID did not advance (no new build); traffic may have"
+                echo "       changed but re-translation did not fire — the #208/#209 gap"
+                exit 1
+              fi
+              echo "OK: BuildID advanced ${BEFORE}->${AFTER}; re-translation genuinely fired"
+      catch:
+        - script:
+            cluster: nso-downstream
+            env:
+              - name: OWNING_GC
+                value: ($downstreamGatewayClass)
+            content: |
+              kubectl -n datum-downstream-gateway logs -l gateway.envoyproxy.io/owning-gatewayclass=$OWNING_GC -c envoy --tail=150
+
+    - name: Phase 3 (back offline) - flip Ready False, the request returns to 503
+      description: |
+        Self-contained step. Take the connector offline, then assert the user
+        path returns to 503. Gated behind ($connectorTestEnabled): the return to
+        503 also depends on the edge re-applying config on the change.
+      try:
+        - script:
+            cluster: nso-upstream
+            skipCommandOutput: true
+            skipLogOutput: true
+            content: |
+              kubectl -n $NAMESPACE get httpproxy test-proxy \
+                -o jsonpath='{.status.canonicalHostname}'
+            outputs:
+              - name: proxyHostname
+                value: ($stdout)
+        - script:
+            cluster: nso-upstream
+            env:
+              - name: ENABLED
+                value: ($connectorTestEnabled)
+            content: |
+              set -eu
+              [ "${ENABLED}" = "true" ] || { echo "SKIP: connectorTestEnabled=false"; exit 0; }
+              kubectl -n $NAMESPACE patch connector test-connector --type=merge \
+                -p '{"metadata":{"annotations":{"networking.datumapis.com/upstream-status":"{\"conditions\":[{\"type\":\"Ready\",\"status\":\"False\",\"reason\":\"ConnectorNotReady\",\"lastTransitionTime\":\"2026-06-23T00:00:00Z\"}]}"}}}'
+        - script:
+            timeout: 200s
+            cluster: nso-downstream
+            env:
+              - name: ENABLED
+                value: ($connectorTestEnabled)
+              - name: HOST
+                value: ($proxyHostname)
+              - name: OWNING_GC
+                value: ($downstreamGatewayClass)
+            content: |
+              set -eu
+              if [ "${ENABLED}" != "true" ]; then
+                echo "SKIP: connectorTestEnabled=false (awaiting B0 outcome + connect-proxy image)"
+                exit 0
+              fi
+              IP=$(kubectl get svc -n datum-downstream-gateway \
+                -l gateway.envoyproxy.io/owning-gatewayclass=$OWNING_GC \
+                -o jsonpath='{.items[0].spec.clusterIP}')
+              ok=""
+              for i in $(seq 1 30); do
+                code=$(kubectl -n default exec conntest -- \
+                  curl -ksS -o /dev/null -w '%{http_code}' --max-time 10 \
+                  --resolve "${HOST}:443:${IP}" \
+                  "https://${HOST}/status/200" 2>/dev/null || true)
+                echo "attempt ${i}: back-offline ${HOST} -> ${code}"
+                if [ "${code}" = "503" ]; then ok="yes"; break; fi
+                sleep 5
+              done
+              [ -n "${ok}" ] || { echo "ERROR: connector went offline but the path never returned to 503"; exit 1; }
+              echo "OK: returned to 503 after the connector went offline"

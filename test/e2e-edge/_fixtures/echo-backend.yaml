@@ -1,0 +1,46 @@
+# Echo / HTTP backend fixture.
+#
+# go-httpbin gives deterministic endpoints the suite leans on:
+#   /status/<code>  -> returns that status (drive 200 and 5xx)
+#   /get            -> echoes the request (drive WAF benign/malicious probes)
+# Plain HTTP only: the edge proxy terminates TLS per listener and forwards
+# plaintext to this backend.
+#
+# Applied rather than freshly created so scenarios that share the downstream
+# cluster coexist regardless of run order.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: echo-backend
+  namespace: default
+  labels:
+    purpose: echo-backend
+spec:
+  containers:
+    - name: backend
+      image: ghcr.io/mccutchen/go-httpbin:2.18.1
+      command: ["/bin/go-httpbin"]
+      args: ["-host", "0.0.0.0", "-port", "8080"]
+      ports:
+        - containerPort: 8080
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          cpu: 100m
+          memory: 128Mi
+  terminationGracePeriodSeconds: 0
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: echo-backend
+  namespace: default
+spec:
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+  selector:
+    purpose: echo-backend

@@ -1,0 +1,66 @@
+# Connector tunnel stand-in deployment.
+#
+# The image is built from this directory's Dockerfile and loaded into the
+# downstream cluster, e.g.:
+#   docker build -t connect-proxy:e2e test/e2e/_fixtures/connector-tunnel
+#   kind load docker-image connect-proxy:e2e --name <downstream-cluster>
+#
+# When a connector is online, the extension server points it at the connector's
+# target. Point that target at this Service so an online request can only succeed
+# through the tunnel — there is no direct fallback route to the echo backend.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: connect-proxy
+  namespace: default
+  labels:
+    purpose: connect-proxy
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      purpose: connect-proxy
+  template:
+    metadata:
+      labels:
+        purpose: connect-proxy
+    spec:
+      containers:
+        - name: connect-proxy
+          image: connect-proxy:e2e
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: LISTEN_ADDR
+              value: ":8080"
+            # Forward CONNECT to the echo backend Service.
+            - name: UPSTREAM_ADDR
+              value: "echo-backend.default.svc.cluster.local:8080"
+          ports:
+            - containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 1
+            periodSeconds: 2
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+      terminationGracePeriodSeconds: 0
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: connect-proxy
+  namespace: default
+spec:
+  ports:
+    - name: connect
+      port: 8080
+      targetPort: 8080
+  selector:
+    purpose: connect-proxy

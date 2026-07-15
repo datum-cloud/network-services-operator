@@ -1,0 +1,41 @@
+# Self-signed root + CA-backed ClusterIssuer for the e2e ext-server mTLS chain.
+#
+# This issues both sides of the EG <-> ext-server handshake:
+#   - the ext-server SERVER cert (via the CSI driver, see patches/extserver-tls.yaml)
+#   - the EG CLIENT cert (envoy-gateway-extension-server-eg-client-tls, CN=envoy-gateway)
+# The CA's ca.crt is also published into the ext-server CA bundle ConfigMap
+# (so the ext-server can verify the EG client) and into the EG certificateRef
+# secret (so EG can verify the ext-server server cert).
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: e2e-extension-server-selfsigned
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: e2e-extension-server-ca
+  namespace: cert-manager
+spec:
+  isCA: true
+  commonName: e2e-extension-server-ca
+  secretName: e2e-extension-server-ca
+  duration: 8760h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    name: e2e-extension-server-selfsigned
+    kind: ClusterIssuer
+    group: cert-manager.io
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: e2e-extension-server-ca
+spec:
+  ca:
+    secretName: e2e-extension-server-ca

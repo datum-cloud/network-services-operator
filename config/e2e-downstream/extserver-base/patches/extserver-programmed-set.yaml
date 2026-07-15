@@ -1,0 +1,17 @@
+# Turn on the read-only /debug/programmed-set endpoint so the parity test can
+# confirm the proxy is running exactly the set the build intended. The base
+# deployment reads --enable-programmed-set from this env var, defaulting off in
+# production; flip it to "true" here for the test environment. Strategic-merge
+# on env (matched by name).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: envoy-gateway-extension-server
+spec:
+  template:
+    spec:
+      containers:
+        - name: envoy-gateway-extension-server
+          env:
+            - name: ENABLE_PROGRAMMED_SET
+              value: "true"

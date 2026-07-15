@@ -1,0 +1,337 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+#
+# M2 functional confirmation for the prod-fidelity test-infra env.
+#
+# Drives an upstream Gateway + HTTPRoute through the production wiring — the
+# dedicated downstream Envoy Gateway (v1.7.4) + the NSO extension server
+# (failOpen:false, PostTranslateModify hook) on the real Coraza data plane — and
+# asserts a real HTTP 200 from the data plane. This is the path the default e2e
+# run never exercised (vanilla EG, no ext-server).
+#
+# Cluster names: nso-upstream (control) / nso-downstream (edge).
+# Downstream GatewayClass: datum-downstream-gateway-e2e (controllerName
+# gateway.envoyproxy.io/datum-downstream-gateway — the dedicated downstream EG).
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: extension-server-smoke
+spec:
+  bindings:
+    - name: gatewayClassName
+      value: (join('-', ['e2e', $namespace]))
+  cluster: nso-upstream
+  steps:
+    - name: Upstream GatewayClass (NSO-managed)
+      try:
+        - create:
+            cluster: nso-upstream
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: GatewayClass
+              metadata:
+                name: ($gatewayClassName)
+              spec:
+                controllerName: gateway.networking.datumapis.com/external-global-proxy-controller
+
+    - name: Backend pod + service (edge)
+      try:
+        - description: Hostname-accounting namespace the gateway controller writes into.
+          apply:
+            cluster: nso-downstream
+            resource:
+              apiVersion: v1
+              kind: Namespace
+              metadata:
+                name: datum-downstream-gateway-hostnames
+        - create:
+            cluster: nso-downstream
+            resource:
+              apiVersion: v1
+              kind: Pod
+              metadata:
+                name: backend-pod
+                namespace: default
+                labels:
+                  purpose: backend-pod
+              spec:
+                containers:
+                  - name: test-plaintext
+                    image: ghcr.io/mccutchen/go-httpbin:2.18.1
+                    command: ["/bin/go-httpbin"]
+                    args: ["-host", "0.0.0.0", "-port", "8080"]
+                    resources:
+                      requests: { cpu: 100m, memory: 128Mi }
+                      limits: { cpu: 100m, memory: 128Mi }
+        - create:
+            cluster: nso-downstream
+            resource:
+              apiVersion: v1
+              kind: Service
+              metadata:
+                name: backend-service
+                namespace: default
+              spec:
+                ports:
+                  - name: http
+                    port: 8080
+                    targetPort: 8080
+                selector:
+                  purpose: backend-pod
+
+    - name: Provision Domain
+      try:
+        - create:
+            cluster: nso-upstream
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Domain
+              metadata:
+                name: test-domain
+              spec:
+                domainName: e2e.env.datum.net
+        - script:
+            content: |
+              kubectl -n $NAMESPACE patch domain test-domain \
+                --subresource=status --type=merge \
+                -p '{"status":{"conditions":[{"type": "Verified", "status": "True", "reason": "Test", "message": "test", "lastTransitionTime": "2025-02-24T23:59:09Z"}]}}'
+
+    - name: Provision Gateway (HTTP) and confirm it programs through the ext-server
+      try:
+        - script:
+            cluster: nso-upstream
+            skipCommandOutput: true
+            skipLogOutput: true
+            content: |
+              kubectl get ns $NAMESPACE -o json
+            outputs:
+              - name: downstreamNamespaceName
+                value: (join('-', ['ns', json_parse($stdout).metadata.uid]))
+
+        - create:
+            cluster: nso-upstream
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: Gateway
+              metadata:
+                name: test-gateway
+              spec:
+                gatewayClassName: ($gatewayClassName)
+                listeners:
+                  - protocol: HTTP
+                    port: 80
+                    name: http-test-e2e
+                    allowedRoutes:
+                      namespaces:
+                        from: Same
+                    hostname: test.e2e.env.datum.net
+
+        # Wait for the operator to publish the canonical hostname.
+        - assert:
+            timeout: 120s
+            cluster: nso-upstream
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: Gateway
+              metadata:
+                name: test-gateway
+              status:
+                (addresses[?type == 'Hostname'] | [0]):
+                  type: Hostname
+
+        # The gateway must report ready. Because the edge is configured to refuse
+        # updates the extension server hasn't accepted, a ready gateway proves the
+        # extension server is in the path and working.
+        - assert:
+            timeout: 180s
+            cluster: nso-downstream
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: Gateway
+              metadata:
+                name: test-gateway
+                namespace: ($downstreamNamespaceName)
+              status:
+                (conditions[?type == 'Accepted']):
+                  - status: "True"
+                (conditions[?type == 'Programmed']):
+                  - status: "True"
+
+    - name: Provision HTTPRoute
+      try:
+        - script:
+            cluster: nso-upstream
+            skipCommandOutput: true
+            skipLogOutput: true
+            content: |
+              kubectl get ns $NAMESPACE -o json
+            outputs:
+              - name: downstreamNamespaceName
+                value: (join('-', ['ns', json_parse($stdout).metadata.uid]))
+
+        - create:
+            cluster: nso-upstream
+            resource:
+              kind: EndpointSlice
+              metadata:
+                name: test-slice-1
+              addressType: FQDN
+              apiVersion: discovery.k8s.io/v1
+              endpoints:
+                - addresses:
+                    - backend-service.default.svc.cluster.local
+                  conditions:
+                    ready: true
+                    serving: true
+                    terminating: false
+              ports:
+                - name: http
+                  appProtocol: http
+                  port: 8080
+
+        - create:
+            cluster: nso-upstream
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: HTTPRoute
+              metadata:
+                name: test-route
+              spec:
+                parentRefs:
+                  - name: test-gateway
+                    kind: Gateway
+                rules:
+                  - matches:
+                      - path:
+                          type: PathPrefix
+                          value: /plaintext
+                    backendRefs:
+                      - group: discovery.k8s.io
+                        kind: EndpointSlice
+                        name: test-slice-1
+                        port: 8080
+                    filters:
+                      - type: URLRewrite
+                        urlRewrite:
+                          path:
+                            type: ReplacePrefixMatch
+                            replacePrefixMatch: /
+
+        - assert:
+            timeout: 120s
+            cluster: nso-downstream
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: HTTPRoute
+              metadata:
+                name: test-route
+                namespace: ($downstreamNamespaceName)
+              status:
+                parents:
+                  - conditions:
+                      - reason: Accepted
+                        status: "True"
+                        type: Accepted
+                      - reason: ResolvedRefs
+                        status: "True"
+                        type: ResolvedRefs
+
+    - name: Real HTTP 200 through the data plane
+      try:
+        - script:
+            cluster: nso-upstream
+            skipCommandOutput: true
+            skipLogOutput: true
+            content: |
+              kubectl -n $NAMESPACE get gateway test-gateway -o json
+            outputs:
+              - name: upstreamGateway
+                value: (json_parse($stdout))
+              - name: primaryHostname
+                value: ($upstreamGateway.status.addresses[?type == 'Hostname'].value | [0])
+
+        # The dedicated downstream EG provisions the merged data-plane Service in
+        # its own namespace (datum-downstream-gateway), labeled by owning
+        # gatewayclass — NOT in envoy-gateway-system.
+        - script:
+            cluster: nso-downstream
+            skipCommandOutput: true
+            skipLogOutput: true
+            content: |
+              kubectl get svc -n datum-downstream-gateway -l gateway.envoyproxy.io/owning-gatewayclass=datum-downstream-gateway-e2e -o json
+            outputs:
+              - name: gatewayService
+                value: (json_parse($stdout).items | [0])
+
+        - assert:
+            cluster: nso-downstream
+            resource:
+              apiVersion: v1
+              kind: Pod
+              metadata:
+                name: backend-pod
+                namespace: default
+              status:
+                phase: Running
+
+        - create:
+            cluster: nso-downstream
+            resource:
+              apiVersion: v1
+              kind: Pod
+              metadata:
+                name: test-pod
+                namespace: default
+              spec:
+                containers:
+                  - name: connectivity-test
+                    image: alpine:3.21.3
+                    command: ["/bin/sh", "-c", "sleep infinity"]
+                    resources:
+                      requests: { cpu: 100m, memory: 128Mi }
+                      limits: { cpu: 100m, memory: 1Gi }
+                    env:
+                      - name: GATEWAY_SERVICE_NAME
+                        value: ($gatewayService.metadata.name)
+                      - name: GATEWAY_SERVICE_NAMESPACE
+                        value: ($gatewayService.metadata.namespace)
+                      - name: PRIMARY_HOSTNAME
+                        value: ($primaryHostname)
+                    lifecycle:
+                      postStart:
+                        exec:
+                          command: ["apk", "add", "curl"]
+                terminationGracePeriodSeconds: 0
+
+        - assert:
+            cluster: nso-downstream
+            resource:
+              apiVersion: v1
+              kind: Pod
+              metadata:
+                name: test-pod
+                namespace: default
+              status:
+                phase: Running
+
+        # Give the proxies a moment to pick up the latest configuration.
+        - sleep:
+            duration: 15s
+
+        - script:
+            cluster: nso-downstream
+            content: |
+              kubectl -n default exec -i test-pod -- sh -c " \
+                set -x; \
+                curl -svf -H \"Host: \${PRIMARY_HOSTNAME}\" http://\${GATEWAY_SERVICE_NAME}.\${GATEWAY_SERVICE_NAMESPACE}.svc.cluster.local/plaintext/status/200; \
+              "
+      catch:
+        - script:
+            cluster: nso-downstream
+            content: |
+              kubectl -n network-services-operator-system logs -l app.kubernetes.io/component=envoy-gateway-extension-server --tail=80 || true
+              kubectl -n datum-downstream-gateway logs deploy/envoy-datum-downstream-gateway --tail=80 || true
+              kubectl -n envoy-gateway-system get pods -o wide || true
+        - script:
+            cluster: nso-upstream
+            content: |
+              kubectl -n network-services-operator-system logs -l app.kubernetes.io/name=network-services-operator --tail=80 || true

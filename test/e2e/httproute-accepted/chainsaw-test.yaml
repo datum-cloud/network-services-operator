@@ -1,0 +1,215 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: httproute-accepted
+spec:
+  bindings:
+    - name: clusterIssuerName
+      value: (join('-', ['e2e', $namespace]))
+    - name: gatewayClassName
+      value: (join('-', ['e2e', $namespace]))
+  cluster: nso-standard
+  steps:
+    - name: Create CA
+      try:
+        - create:
+            cluster: nso-infra
+            resource:
+              apiVersion: cert-manager.io/v1
+              kind: ClusterIssuer
+              metadata:
+                name: (join('-', [$clusterIssuerName, 'issuer']))
+              spec:
+                selfSigned: {}
+
+        - create:
+            cluster: nso-infra
+            resource:
+              apiVersion: cert-manager.io/v1
+              kind: Certificate
+              metadata:
+                name: (join('-', [$clusterIssuerName, 'ca']))
+                namespace: cert-manager
+              spec:
+                isCA: true
+                commonName: (join('-', [$clusterIssuerName, 'ca']))
+                secretName: ($clusterIssuerName)
+                privateKey:
+                  algorithm: ECDSA
+                  size: 256
+                issuerRef:
+                  name: (join('-', [$clusterIssuerName, 'issuer']))
+                  kind: ClusterIssuer
+                  group: cert-manager.io
+
+        - create:
+            cluster: nso-infra
+            resource:
+              apiVersion: cert-manager.io/v1
+              kind: ClusterIssuer
+              metadata:
+                name: ($clusterIssuerName)
+              spec:
+                ca:
+                  secretName: ($clusterIssuerName)
+
+        - assert:
+            cluster: nso-infra
+            resource:
+              apiVersion: cert-manager.io/v1
+              kind: Certificate
+              metadata:
+                name: (join('-', [$clusterIssuerName, 'ca']))
+                namespace: cert-manager
+              status:
+                conditions:
+                  - type: Ready
+                    status: "True"
+
+    - name: Create GatewayClass for the upstream gateways
+      try:
+        - create:
+            cluster: nso-standard
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: GatewayClass
+              metadata:
+                name: ($gatewayClassName)
+              spec:
+                controllerName: gateway.networking.datumapis.com/external-global-proxy-controller
+
+    - name: Provision Domain
+      try:
+        - create:
+            cluster: nso-standard
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Domain
+              metadata:
+                name: test-domain
+              spec:
+                domainName: e2e.env.datum.net
+
+        - description: |
+            Under normal operation, the Domain controller will perform verification
+            via HTTP or DNS, and update the Domain's status.
+          script:
+            content: |
+                kubectl -n $NAMESPACE patch domain test-domain \
+                  --subresource=status --type=merge \
+                  -p '{"status":{"conditions":[{"type": "Verified", "status": "True", "reason": "Test", "message": "test", "lastTransitionTime": "2025-02-24T23:59:09Z"}]}}'
+
+    - name: Provision Gateway
+      try:
+        - create:
+            cluster: nso-standard
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: Gateway
+              metadata:
+                name: test-gateway
+              spec:
+                gatewayClassName: ($gatewayClassName)
+                listeners:
+                - protocol: HTTP
+                  port: 80
+                  name: http-test-e2e
+                  allowedRoutes:
+                    namespaces:
+                      from: Same
+                  hostname: test.e2e.env.datum.net
+                - protocol: HTTPS
+                  port: 443
+                  name: https-test-e2e
+                  allowedRoutes:
+                    namespaces:
+                      from: Same
+                  hostname: test.e2e.env.datum.net
+                  tls:
+                    mode: Terminate
+                    options:
+                      gateway.networking.datumapis.com/certificate-issuer: ($clusterIssuerName)
+
+        - assert:
+            timeout: 120s
+            cluster: nso-standard
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: Gateway
+              metadata:
+                name: test-gateway
+              status:
+                (conditions[?type == 'Accepted']):
+                  - status: "True"
+
+    - name: Provision HTTPRoute and assert it is Accepted
+      try:
+        - create:
+            cluster: nso-standard
+            resource:
+              kind: EndpointSlice
+              metadata:
+                name: test-slice-1
+              addressType: FQDN
+              apiVersion: discovery.k8s.io/v1
+              endpoints:
+              - addresses:
+                - backend-service.default.svc.cluster.local
+                conditions:
+                  ready: true
+                  serving: true
+                  terminating: false
+              ports:
+              - name: http
+                appProtocol: http
+                port: 8080
+
+        - create:
+            cluster: nso-standard
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: HTTPRoute
+              metadata:
+                name: test-route
+              spec:
+                parentRefs:
+                - name: test-gateway
+                  kind: Gateway
+                rules:
+                  - matches:
+                    - path:
+                        type: PathPrefix
+                        value: /
+                    backendRefs:
+                    - group: discovery.k8s.io
+                      kind: EndpointSlice
+                      name: test-slice-1
+                      port: 8080
+
+        - assert:
+            timeout: 120s
+            cluster: nso-standard
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: HTTPRoute
+              metadata:
+                name: test-route
+              status:
+                parents:
+                - conditions:
+                  - reason: Accepted
+                    status: "True"
+                    type: Accepted
+                  parentRef:
+                    name: test-gateway
+                    kind: Gateway
+                    group: gateway.networking.k8s.io
+      catch:
+        - script:
+            cluster: nso-standard
+            content: |
+              kubectl -n network-services-operator-system logs -l app.kubernetes.io/name=network-services-operator
+              kubectl get gateways -n $NAMESPACE -o yaml
+              kubectl get httproutes -n $NAMESPACE -o yaml
+              kubectl get endpointslices -n $NAMESPACE -o yaml

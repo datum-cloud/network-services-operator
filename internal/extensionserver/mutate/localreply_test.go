@@ -233,6 +233,8 @@ func TestEscapeEnvoyFormatLiterals(t *testing.T) {
 		{"bare percent in css", "height: 100%;", "height: 100%%;"},
 		{"multiple bare percents", "120% 50% 0%", "120%% 50%% 0%%"},
 		{"preserve allowlisted command", "code %RESPONSE_CODE% end", "code %RESPONSE_CODE% end"},
+		{"preserve allowlisted response code details", "details: %RESPONSE_CODE_DETAILS%", "details: %RESPONSE_CODE_DETAILS%"},
+		{"preserve allowlisted start time", "at %START_TIME(%Y-%m-%d %H:%M:%S UTC)%", "at %START_TIME(%Y-%m-%d %H:%M:%S UTC)%"},
 		{"escape non-allowlisted command", "%REQ(x-header)%", "%%REQ(x-header)%%"},
 		{"escape non-allowlisted command with length", "%REQ(x-header):10%", "%%REQ(x-header):10%%"},
 		{"escape command-shaped literal", "progress %COMPLETE% now", "progress %%COMPLETE%% now"},

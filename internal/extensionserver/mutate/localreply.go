@@ -163,6 +163,8 @@ func buildLocalReplyConfig(cfg *LocalReplyConfig) *hcmv3.LocalReplyConfig {
 // re-trigger the exact listener rejection this escaper exists to prevent
 // (issue #243). Keep entries longest-first so matching is unambiguous.
 var envoyBodyAllowedCommands = []string{
+	"%START_TIME(%Y-%m-%d %H:%M:%S UTC)%",
+	"%RESPONSE_CODE_DETAILS%",
 	"%RESPONSE_CODE%",
 }
 

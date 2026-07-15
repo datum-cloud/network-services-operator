@@ -56,6 +56,35 @@ vars:
 
 tasks:
 
+  tools:
+    desc: "Install the pinned tool binaries this env needs into bin/ (kind v0.32.0, karmadactl, kustomize, cmctl, chainsaw). Idempotent — skips any already present. Lets CI and a clean checkout bring up the env without hand-placed binaries."
+    vars:
+      KIND_TOOL_VERSION: v0.32.0
+      KARMADACTL_VERSION: v1.15.2
+      KUSTOMIZE_VERSION: v5.5.0
+      CMCTL_VERSION: v2.1.1
+      CHAINSAW_VERSION: v0.2.15
+    cmds:
+      - mkdir -p {{.REPO}}/bin
+      - |
+        if [ ! -x {{.REPO}}/bin/kind-{{.KIND_TOOL_VERSION}} ]; then
+          echo "installing kind {{.KIND_TOOL_VERSION}}"
+          GOBIN={{.REPO}}/bin go install sigs.k8s.io/kind@{{.KIND_TOOL_VERSION}}
+          mv {{.REPO}}/bin/kind {{.REPO}}/bin/kind-{{.KIND_TOOL_VERSION}}
+        fi
+      - '[ -x {{.REPO}}/bin/kustomize ] || GOBIN={{.REPO}}/bin go install sigs.k8s.io/kustomize/kustomize/v5@{{.KUSTOMIZE_VERSION}}'
+      - '[ -x {{.REPO}}/bin/cmctl ] || GOBIN={{.REPO}}/bin go install github.com/cert-manager/cmctl/v2@{{.CMCTL_VERSION}}'
+      - '[ -x {{.REPO}}/bin/chainsaw ] || GOBIN={{.REPO}}/bin go install github.com/kyverno/chainsaw@{{.CHAINSAW_VERSION}}'
+      # karmadactl carries replace directives in its go.mod, so `go install` can't
+      # build it; pull the published release binary for this OS/arch instead.
+      - |
+        if [ ! -x {{.REPO}}/bin/karmadactl ]; then
+          url="https://github.com/karmada-io/karmada/releases/download/{{.KARMADACTL_VERSION}}/karmadactl-{{OS}}-{{ARCH}}.tgz"
+          echo "downloading karmadactl {{.KARMADACTL_VERSION}} ({{OS}}/{{ARCH}})"
+          curl -fsSL "$url" | tar -xz -C {{.REPO}}/bin karmadactl
+        fi
+      - echo "tools ready in {{.REPO}}/bin"
+
   up:
     desc: "Bring the canonical two-cluster prod-fidelity test env ONLINE (clusters + EG v1.7.4 + ext-server + Coraza data plane + NSO manager)."
     cmds:

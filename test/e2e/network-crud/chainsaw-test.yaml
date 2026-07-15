@@ -1,0 +1,51 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: network-crud
+spec:
+  cluster: nso-standard
+  steps:
+    - name: Create Network
+      try:
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Network
+              metadata:
+                name: test-network-crud
+                namespace: default
+              spec:
+                ipam:
+                  mode: Auto
+
+    - name: Assert Network is admitted and finalized
+      description: |
+        NSO's network controller writes no readiness condition on a bare
+        Network; readiness is provider-driven and no provider runs in the local
+        kind harness. What NSO owns here is admission and the finalizer
+        lifecycle, so that is what this asserts.
+      try:
+        - assert:
+            timeout: 30s
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Network
+              metadata:
+                name: test-network-crud
+                namespace: default
+                finalizers:
+                  - networking.datumapis.com/network-controller
+
+    - name: Delete Network
+      description: |
+        Delete blocks until the object is gone, asserting the network controller
+        releases its finalizer (no NetworkContexts exist to garbage-collect).
+      try:
+        - delete:
+            timeout: 1m
+            ref:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Network
+              name: test-network-crud
+              namespace: default

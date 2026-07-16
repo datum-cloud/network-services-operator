@@ -522,6 +522,27 @@ spec:
                 exit 1
               fi
 
+              # The billing consumer (milo-os/billing) resolves attribution by
+              # PROJECT NAME: it strips "projects/" from the CloudEvent subject
+              # and matches the remainder against
+              # BillingAccountBinding.spec.projectRef.name. So the subject MUST be
+              # projects/<project-name>; a subject built from the route_name
+              # namespace UID would never resolve. Assert subject ==
+              # projects/<project_name>, and guard that project_name differs from
+              # the namespace UID so a UID-based subject regression is actually
+              # distinguishable (infra#3444 / #286).
+              ROUTE_NAME=$(python3 -c "import sys, json; print(json.loads(sys.argv[1]).get('route_name', ''))" "$ENVOY_LOG")
+              NS_UID=$(python3 -c "import sys, re; m = re.match(r'^httproute/ns-([^/]+)/', sys.argv[1]); print(m.group(1) if m else '')" "$ROUTE_NAME")
+              if [ -z "$NS_UID" ]; then
+                echo "ERROR: could not derive namespace uid from route_name '$ROUTE_NAME'" >&2
+                exit 1
+              fi
+              EXPECTED_SUBJECT="projects/$PROJECT_NAME"
+              if [ "$PROJECT_NAME" = "$NS_UID" ]; then
+                echo "ERROR: fixture project_name equals the namespace uid; the test cannot distinguish a name-based subject from a uid-based one. Use a project whose name differs from its uid." >&2
+                exit 1
+              fi
+
               echo "Parsed Envoy Log metrics:"
               echo "  - Ingress bytes (expected): 11"
               echo "  - Egress bytes (expected): $BYTES_SENT"
@@ -551,6 +572,7 @@ spec:
                 expected_bytes_sent = float($BYTES_SENT)
                 expected_duration_sec = float(int(float($DURATION_MS) / 1000.0))
                 expected_project_name = \"$PROJECT_NAME\"
+                expected_subject = \"$EXPECTED_SUBJECT\"
                 logs = sys.stdin.read()
                 diagnostics = []
                 def check_events(events):
@@ -558,8 +580,8 @@ spec:
                     # of CloudEvents for our request. Records why each subject was
                     # rejected in 'diagnostics' for failure output.
                     diagnostics.clear()
-                    # Group events by subject (projects/<uid>); a valid run has all
-                    # four event types under one subject.
+                    # Group events by subject (projects/<project-name>); a valid
+                    # run has all four event types under one subject.
                     by_subject = {}
                     for e in events:
                         subj = e.get('subject', '')
@@ -568,6 +590,14 @@ spec:
                         diagnostics.append(\"No events found in this log chunk.\")
                         return False
                     for subj, subj_events in by_subject.items():
+                        # The billing subject must be projects/<project-name> (the
+                        # attribution key the consumer matches against
+                        # BillingAccountBinding.spec.projectRef.name); a subject
+                        # built from the route_name namespace UID must NOT satisfy
+                        # this check.
+                        if subj != expected_subject:
+                            diagnostics.append(f\"Ignoring subject '{subj}': expected '{expected_subject}' (projects/<project-name>)\")
+                            continue
                         # Index this subject's events by type so we can assert each
                         # of the four expected usage events exists exactly once.
                         types = {e.get('type'): e for e in subj_events}

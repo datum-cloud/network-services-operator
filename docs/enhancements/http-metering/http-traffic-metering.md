@@ -144,9 +144,13 @@ central Billing System.
 
 The raw access log already carries everything the meters need *except* one
 thing: the `route_name` field identifies the owning project only by its
-control-plane namespace UID (e.g. `ns-<project-uid>`), not by the
-human-readable project name. To populate the `project_name` dimension, three
-components collaborate at the edge:
+control-plane namespace UID (e.g. `ns-<project-uid>`), not by the project name.
+This matters because the billing consumer attributes usage **by project name**:
+it strips `projects/` from the CloudEvent subject and matches the remainder
+against `BillingAccountBinding.spec.projectRef.name` (see `milo-os/billing`,
+`internal/controller/consumer`). The namespace UID would never resolve, so the
+CloudEvent subject **must** be `projects/<project-name>`. To surface the project
+name at the edge, three components collaborate:
 
 1. **Extension Server (xDS mutation).** The NSO extension server implements
    `ApplyTPPRouteConfig` in `internal/extensionserver/mutate/tpp.go`. During
@@ -171,11 +175,14 @@ components collaborate at the edge:
    a header.)
 
 3. **Vector billing collector.** The `billing-usage-collector-vector` VRL
-   transform reads the `project_name` field from each parsed access log line
-   and adds it as a dimension on all four emitted CloudEvents (requests,
-   ingress-bytes, egress-bytes, connection-seconds). An absent or Envoy-default
-   `"-"` value is normalized to an empty string so unmatched routes do not
-   pollute the dimension.
+   transform reads the `project_name` field from each parsed access log line and
+   uses it as the CloudEvent **subject** — `projects/<project-name>` — on all
+   four emitted events (requests, ingress-bytes, egress-bytes,
+   connection-seconds); this is the value the consumer attributes on. The same
+   name is also carried as a `project_name` dimension for reporting. The subject
+   falls back to the `route_name` namespace UID only when `project_name` is
+   absent (those events cannot be attributed and are quarantined); an absent or
+   Envoy-default `"-"` value is normalized to an empty string.
 
 This keeps the entire signal path — xDS route enrichment, log emission,
 parsing, and CloudEvent forwarding — co-located on the edge cluster.

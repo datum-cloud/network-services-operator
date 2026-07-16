@@ -1327,6 +1327,16 @@ func (r *GatewayReconciler) ensureHostnameVerification(
 
 	gatewayDefaultHostname := r.gatewayCanonicalHostname(upstreamGateway)
 
+	// Get a unique set of hostnames currently declared on the upstream gateway.
+	// This must be computed before the downstream grace-period handling below,
+	// since that logic only applies to hostnames the user still wants.
+	hostnames := sets.New[string]()
+	for _, l := range upstreamGateway.Spec.Listeners {
+		if l.Hostname != nil {
+			hostnames.Insert(string(*l.Hostname))
+		}
+	}
+
 	// Allow hostnames which have been successfully configured on the downstream
 	// gateway stay on the gateway, regardless of whether or not there is a
 	// matching Domain that's verified. This is done in case the user deletes the
@@ -1338,12 +1348,22 @@ func (r *GatewayReconciler) ensureHostnameVerification(
 	//
 	// For more thoughts on liens, the following issue provides good context:
 	// https://github.com/kubernetes/kubernetes/issues/10179#issuecomment-2889238042
+	//
+	// This grace period only applies to hostnames the upstream gateway still
+	// declares. Without the hostnames.Has check, a hostname the user removed
+	// entirely would be read back from the downstream gateway's pre-reconcile
+	// listeners and stay claimed indefinitely, since getDesiredDownstreamGateway
+	// only drops listeners absent from the upstream spec -- it never revisits a
+	// hostname that's gone from both, so nothing forces the extra reconcile this
+	// grace period relies on to expire. See network-services-operator#283.
 	verifiedHostnames := sets.New[string]()
 	addressHostnames := sets.New[string]()
 	addressHostnames.Insert(gatewayDefaultHostname)
 	if dt := downstreamGateway.DeletionTimestamp; dt.IsZero() {
 		for _, listener := range downstreamGateway.Spec.Listeners {
-			if listener.Hostname != nil && !strings.HasSuffix(string(*listener.Hostname), r.Config.Gateway.TargetDomain) {
+			if listener.Hostname != nil &&
+				!strings.HasSuffix(string(*listener.Hostname), r.Config.Gateway.TargetDomain) &&
+				hostnames.Has(string(*listener.Hostname)) {
 				verifiedHostnames.Insert(string(*listener.Hostname))
 			}
 		}
@@ -1361,14 +1381,6 @@ func (r *GatewayReconciler) ensureHostnameVerification(
 	verifiedHostnames.Insert(addressHostnames.UnsortedList()...)
 
 	logger.Info("collected verified hostnames from listener conditions", "hostnames", verifiedHostnames.UnsortedList())
-
-	// Get a unique set of hostnames
-	hostnames := sets.New[string]()
-	for _, l := range upstreamGateway.Spec.Listeners {
-		if l.Hostname != nil {
-			hostnames.Insert(string(*l.Hostname))
-		}
-	}
 
 	if r.Config.Gateway.DisableHostnameVerification {
 		verifiedHostnamesSlice := hostnames.UnsortedList()

@@ -1115,6 +1115,13 @@ type HTTPProxyConfig struct {
 	// underlying Gateway for an HTTPProxy.
 	// +default="datum-external-global-proxy"
 	GatewayClassName gatewayv1.ObjectName `json:"gatewayClassName"`
+
+	// MaxConcurrentReconciles is the maximum number of concurrent HTTPProxy
+	// reconciliations. Higher values allow the controller to process
+	// HTTPProxies across multiple projects in parallel.
+	//
+	// +default=5
+	MaxConcurrentReconciles int `json:"maxConcurrentReconciles,omitempty"`
 }
 
 // +k8s:deepcopy-gen=true

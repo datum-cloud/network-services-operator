@@ -26,6 +26,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -125,7 +126,6 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 		if err := cl.GetClient().Update(ctx, &httpProxy); err != nil {
 			return ctrl.Result{}, err
 		}
-		return ctrl.Result{}, nil
 	}
 
 	httpProxyCopy := httpProxy.DeepCopy()
@@ -599,7 +599,11 @@ func (r *HTTPProxyReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 		builder = builder.WatchesRawSource(downstreamCertificateClusterSource)
 	}
 
-	return builder.Named("httpproxy").Complete(r)
+	return builder.
+		WithOptions(controller.TypedOptions[mcreconcile.Request]{
+			MaxConcurrentReconciles: r.Config.HTTPProxy.MaxConcurrentReconciles,
+		}).
+		Named("httpproxy").Complete(r)
 }
 
 // enqueueHTTPProxyForDownstreamCertificate returns a watch handler that enqueues

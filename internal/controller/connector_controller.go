@@ -268,6 +268,7 @@ func (r *ConnectorReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 		Watches(
 			&coordinationv1.Lease{},
 			mchandler.EnqueueRequestForOwner(&networkingv1alpha1.Connector{}, handler.OnlyControllerOwner()),
+			onlyClustersServingLeases(),
 		).
 		Named("connector").
 		Complete(r)

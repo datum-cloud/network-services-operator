@@ -466,6 +466,7 @@ func (r *IrohDNSReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 		Watches(
 			&coordinationv1.Lease{},
 			mchandler.EnqueueRequestForOwner(&networkingv1alpha1.Connector{}, handler.OnlyControllerOwner()),
+			onlyClustersServingLeases(),
 		).
 		WatchesRawSource(downstreamClusterSource).
 		Named("iroh-dns").

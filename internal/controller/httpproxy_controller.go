@@ -279,6 +279,19 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 	for _, desiredEndpointSlice := range desiredResources.endpointSlices {
 		endpointSlice := desiredEndpointSlice.DeepCopy()
 
+		existingEndpointSlice := &discoveryv1.EndpointSlice{}
+		err = cl.GetClient().Get(ctx, client.ObjectKeyFromObject(endpointSlice), existingEndpointSlice)
+		switch {
+		case apierrors.IsNotFound(err):
+		case err != nil:
+			return ctrl.Result{}, fmt.Errorf("failed to get endpointslice: %w", err)
+		case existingEndpointSlice.AddressType != desiredEndpointSlice.AddressType &&
+			!hasControllerConflict(existingEndpointSlice, &httpProxy):
+			if err := cl.GetClient().Delete(ctx, existingEndpointSlice); err != nil && !apierrors.IsNotFound(err) {
+				return ctrl.Result{}, fmt.Errorf("failed to delete endpointslice for address type change: %w", err)
+			}
+		}
+
 		result, err := controllerutil.CreateOrUpdate(ctx, cl.GetClient(), endpointSlice, func() error {
 			if hasControllerConflict(endpointSlice, &httpProxy) {
 				// return already exists error - an endpointslice exists with the name we want to

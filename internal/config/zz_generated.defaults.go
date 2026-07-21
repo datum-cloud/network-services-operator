@@ -239,6 +239,9 @@ func SetObjectDefaults_NetworkServicesOperator(in *NetworkServicesOperator) {
 	if in.HTTPProxy.GatewayClassName == "" {
 		in.HTTPProxy.GatewayClassName = "datum-external-global-proxy"
 	}
+	if in.HTTPProxy.MaxConcurrentReconciles == 0 {
+		in.HTTPProxy.MaxConcurrentReconciles = 5
+	}
 	if in.Connector.LeaseDurationSeconds == 0 {
 		in.Connector.LeaseDurationSeconds = 30
 	}

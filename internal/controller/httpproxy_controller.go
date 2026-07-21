@@ -124,6 +124,9 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 	if !controllerutil.ContainsFinalizer(&httpProxy, httpProxyFinalizer) {
 		controllerutil.AddFinalizer(&httpProxy, httpProxyFinalizer)
 		if err := cl.GetClient().Update(ctx, &httpProxy); err != nil {
+			if apierrors.IsConflict(err) {
+				return ctrl.Result{RequeueAfter: retryAfterConflict}, nil
+			}
 			return ctrl.Result{}, err
 		}
 	}
@@ -219,6 +222,9 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 			programmedCondition.Message = fmt.Sprintf("Underlying Gateway with the name %q already exists and is owned by a different resource.", gateway.Name)
 			return ctrl.Result{}, nil
 		}
+		if apierrors.IsConflict(err) {
+			return ctrl.Result{RequeueAfter: retryAfterConflict}, nil
+		}
 		return ctrl.Result{}, fmt.Errorf("failed updating gateway resource: %w", err)
 	}
 
@@ -241,6 +247,9 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 				return nil
 			})
 			if err != nil {
+				if apierrors.IsConflict(err) {
+					return ctrl.Result{RequeueAfter: retryAfterConflict}, nil
+				}
 				return ctrl.Result{}, fmt.Errorf("failed updating httproutefilter resource: %w", err)
 			}
 			logger.Info("processed httproutefilter", jsonKeyName, httpRouteFilter.Name, "result", result)
@@ -271,6 +280,9 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 			programmedCondition.Message = fmt.Sprintf("Underlying HTTPRoute with the name %q already exists and is owned by a different resource.", httpRoute.Name)
 			return ctrl.Result{}, nil
 		}
+		if apierrors.IsConflict(err) {
+			return ctrl.Result{RequeueAfter: retryAfterConflict}, nil
+		}
 		return ctrl.Result{}, fmt.Errorf("failed updating httproute resource: %w", err)
 	}
 
@@ -288,6 +300,9 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 		case existingEndpointSlice.AddressType != desiredEndpointSlice.AddressType &&
 			!hasControllerConflict(existingEndpointSlice, &httpProxy):
 			if err := cl.GetClient().Delete(ctx, existingEndpointSlice); err != nil && !apierrors.IsNotFound(err) {
+				if apierrors.IsConflict(err) {
+					return ctrl.Result{RequeueAfter: retryAfterConflict}, nil
+				}
 				return ctrl.Result{}, fmt.Errorf("failed to delete endpointslice for address type change: %w", err)
 			}
 		}
@@ -328,6 +343,10 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 				programmedCondition.Reason = networkingv1alpha.HTTPProxyReasonConflict
 				programmedCondition.Message = fmt.Sprintf("Underlying EndpointSlice with the name %q already exists and is owned by a different resource.", endpointSlice.Name)
 				return ctrl.Result{}, nil
+			}
+
+			if apierrors.IsConflict(err) {
+				return ctrl.Result{RequeueAfter: retryAfterConflict}, nil
 			}
 
 			return ctrl.Result{}, fmt.Errorf("failed to create or update endpointslice: %w", err)

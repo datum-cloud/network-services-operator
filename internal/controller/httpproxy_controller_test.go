@@ -2224,6 +2224,97 @@ func TestHTTPProxyReconcileEndpointSliceAddressTypeChange(t *testing.T) {
 	assert.Equal(t, discoveryv1.AddressTypeIPv4, updatedSlice.AddressType)
 }
 
+func TestHTTPProxyReconcileRequeuesPromptlyOnConflict(t *testing.T) {
+	logger := zap.New(zap.UseFlagOptions(&zap.Options{Development: true}))
+	ctx := log.IntoContext(context.Background(), logger)
+
+	testScheme := runtime.NewScheme()
+	assert.NoError(t, scheme.AddToScheme(testScheme))
+	assert.NoError(t, gatewayv1.Install(testScheme))
+	assert.NoError(t, envoygatewayv1alpha1.AddToScheme(testScheme))
+	assert.NoError(t, discoveryv1.AddToScheme(testScheme))
+	assert.NoError(t, networkingv1alpha.AddToScheme(testScheme))
+	assert.NoError(t, networkingv1alpha1.AddToScheme(testScheme))
+
+	testConfig := config.NetworkServicesOperator{
+		HTTPProxy: config.HTTPProxyConfig{
+			GatewayClassName: "test-gateway-class",
+		},
+		Gateway: config.GatewayConfig{
+			ControllerName: gatewayv1.GatewayController("test-gateway-class"),
+			TargetDomain:   "example.com",
+			ListenerTLSOptions: map[gatewayv1.AnnotationKey]gatewayv1.AnnotationValue{
+				gatewayv1.AnnotationKey("gateway.networking.datumapis.com/certificate-issuer"): gatewayv1.AnnotationValue("test-issuer"),
+			},
+		},
+	}
+
+	httpProxy := newHTTPProxy(func(h *networkingv1alpha.HTTPProxy) {
+		controllerutil.AddFinalizer(h, httpProxyFinalizer)
+	})
+
+	existingGateway := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              httpProxy.Name,
+			Namespace:         httpProxy.Namespace,
+			CreationTimestamp: metav1.Now(),
+			OwnerReferences: []metav1.OwnerReference{
+				{
+					APIVersion: "networking.datumapis.com/v1alpha",
+					Kind:       "HTTPProxy",
+					Name:       httpProxy.Name,
+					UID:        httpProxy.UID,
+					Controller: ptr.To(true),
+				},
+			},
+		},
+		Spec: gatewayv1.GatewaySpec{
+			GatewayClassName: "stale-gateway-class",
+		},
+	}
+
+	upstreamNamespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: httpProxy.Namespace}}
+	upstreamNamespace.SetUID(uuid.NewUUID())
+
+	gatewayUpdateConflicts := 0
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(testScheme).
+		WithObjects(httpProxy, upstreamNamespace, existingGateway).
+		WithStatusSubresource(httpProxy).
+		WithStatusSubresource(&gatewayv1.Gateway{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Update: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+				if _, ok := obj.(*gatewayv1.Gateway); ok && gatewayUpdateConflicts == 0 {
+					gatewayUpdateConflicts++
+					return apierrors.NewConflict(
+						gatewayv1.Resource("gateways"),
+						obj.GetName(),
+						fmt.Errorf("the object has been modified; please apply your changes and try again"),
+					)
+				}
+				return c.Update(ctx, obj, opts...)
+			},
+		}).
+		Build()
+
+	reconciler := &HTTPProxyReconciler{
+		mgr:    &fakeMockManager{cl: fakeClient},
+		Config: testConfig,
+	}
+
+	req := mcreconcile.Request{
+		Request: reconcile.Request{
+			NamespacedName: client.ObjectKeyFromObject(httpProxy),
+		},
+		ClusterName: "test-cluster",
+	}
+
+	result, err := reconciler.Reconcile(ctx, req)
+	require.NoError(t, err)
+	assert.Equal(t, 1, gatewayUpdateConflicts)
+	assert.Equal(t, retryAfterConflict, result.RequeueAfter)
+}
+
 // TestHTTPProxyFinalizerCleanupEPPEmissionDisabled verifies that when
 // gateway.eppEmissionEnabled is false, the HTTPProxy finalizer cleanup does NOT
 // delete the connector EnvoyPatchPolicy from the downstream cluster (NSO did not

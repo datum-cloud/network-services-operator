@@ -300,6 +300,21 @@ func (r *GatewayResourceReplicatorReconciler) ensureDownstreamResource(
 		return fmt.Errorf("failed to derive downstream metadata: %w", err)
 	}
 
+	if isSecurityPolicyGVK(resource.gvk) {
+		missing, err := r.missingDownstreamSecrets(ctx, upstreamObj, downstreamStrategy)
+		if err != nil {
+			syncOutcome = syncOutcomeError
+			return err
+		}
+		if len(missing) > 0 {
+			if err := r.holdSecurityPolicy(ctx, resource, upstreamClient, upstreamObj, missing); err != nil {
+				syncOutcome = syncOutcomeError
+				return err
+			}
+			return nil
+		}
+	}
+
 	downstreamObj := &unstructured.Unstructured{}
 	downstreamObj.SetGroupVersionKind(resource.downstreamGVK)
 	downstreamObj.SetName(downstreamObjectMeta.Name)
@@ -737,6 +752,20 @@ func (r *GatewayResourceReplicatorReconciler) SetupWithManager(mgr mcmanager.Man
 		}
 
 		builder = builder.WatchesRawSource(clusterSrc)
+
+		if isSecurityPolicyGVK(gvk) {
+			secretSrc := mcsource.TypedKind(
+				newUnstructuredForGVK(secretGVK),
+				r.enqueueSecurityPoliciesForDownstreamSecret(gvk),
+			)
+
+			secretClusterSrc, _, err := secretSrc.ForCluster("", r.DownstreamCluster)
+			if err != nil {
+				return fmt.Errorf("failed to build downstream secret watch for %s: %w", gvk.String(), err)
+			}
+
+			builder = builder.WatchesRawSource(secretClusterSrc)
+		}
 	}
 
 	r.resources = resources

@@ -900,6 +900,130 @@ func (f *replicatorFakeManager) GetCluster(_ context.Context, name multicluster.
 	return cl, nil
 }
 
+func TestReplicatorHoldsSecurityPolicyUntilSecretPresent(t *testing.T) {
+	scheme := runtime.NewScheme()
+	assert.NoError(t, corev1.AddToScheme(scheme))
+
+	ctx := context.Background()
+
+	upstreamNs := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-suite", UID: types.UID("ns-uid")},
+	}
+
+	upstreamObj := &unstructured.Unstructured{}
+	upstreamObj.SetGroupVersionKind(testGVK)
+	upstreamObj.SetNamespace(upstreamNs.Name)
+	upstreamObj.SetName("tenant-oidc")
+	upstreamObj.SetUID("policy-uid")
+	upstreamObj.Object["spec"] = map[string]any{
+		"targetRefs": []any{
+			map[string]any{
+				"group": "gateway.networking.k8s.io",
+				"kind":  "Gateway",
+				"name":  "shared-gateway",
+			},
+		},
+		"oidc": map[string]any{
+			"clientSecret": map[string]any{"name": "oidc-client-secret"},
+		},
+	}
+
+	upstreamStatusTemplate := &unstructured.Unstructured{}
+	upstreamStatusTemplate.SetGroupVersionKind(testGVK)
+	upstreamClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(upstreamStatusTemplate).
+		WithObjects(upstreamNs, upstreamObj.DeepCopy()).
+		Build()
+
+	downstreamClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	reconciler := newReplicatorForTest(upstreamClient, downstreamClient, scheme)
+
+	req := gvkRequestFor(upstreamObj)
+
+	// Pass 1 adds the finalizer; pass 2 evaluates the guard.
+	_, err := reconciler.Reconcile(ctx, req)
+	assert.NoError(t, err, "first reconcile")
+	_, err = reconciler.Reconcile(ctx, req)
+	assert.NoError(t, err, "second reconcile")
+
+	// The poisoning policy must not reach the shared gateway.
+	var downstream unstructured.Unstructured
+	downstream.SetGroupVersionKind(testGVK)
+	err = downstreamClient.Get(ctx, client.ObjectKey{Name: "tenant-oidc", Namespace: "ns-ns-uid"}, &downstream)
+	assert.True(t, apierrors.IsNotFound(err), "held SecurityPolicy must not be projected downstream, err=%v", err)
+
+	// The source policy carries a held condition explaining why.
+	var heldUpstream unstructured.Unstructured
+	heldUpstream.SetGroupVersionKind(testGVK)
+	assert.NoError(t, upstreamClient.Get(ctx, client.ObjectKeyFromObject(upstreamObj), &heldUpstream))
+	assert.Equal(t, metav1.ConditionFalse, securityPolicyAcceptedConditionStatus(t, &heldUpstream),
+		"held SecurityPolicy must report Accepted=False")
+	assert.Equal(t, securityPolicyPendingSecretReason, securityPolicyAcceptedConditionReason(t, &heldUpstream),
+		"held SecurityPolicy must report the PendingSecret reason")
+
+	// Once the referenced Secret is present downstream, the policy projects.
+	downstreamSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "oidc-client-secret", Namespace: "ns-ns-uid"},
+	}
+	assert.NoError(t, downstreamClient.Create(ctx, downstreamSecret))
+
+	_, err = reconciler.Reconcile(ctx, req)
+	assert.NoError(t, err, "reconcile after secret present")
+
+	var projected unstructured.Unstructured
+	projected.SetGroupVersionKind(testGVK)
+	assert.NoError(t, downstreamClient.Get(ctx, client.ObjectKey{Name: "tenant-oidc", Namespace: "ns-ns-uid"}, &projected),
+		"SecurityPolicy must be projected once its secret is present downstream")
+	assert.Equal(t, upstreamObj.Object["spec"], projected.Object["spec"], "projected spec must mirror upstream spec")
+}
+
+func securityPolicyAcceptedCondition(t *testing.T, obj *unstructured.Unstructured) map[string]any {
+	t.Helper()
+	status, ok := obj.Object["status"].(map[string]any)
+	if !assert.True(t, ok, "status missing: %v", obj.Object) {
+		return nil
+	}
+	ancestors, ok := status["ancestors"].([]any)
+	if !assert.True(t, ok && len(ancestors) > 0, "ancestors missing: %v", status) {
+		return nil
+	}
+	ancestor, ok := ancestors[0].(map[string]any)
+	if !assert.True(t, ok, "unexpected ancestor type: %T", ancestors[0]) {
+		return nil
+	}
+	conditions, ok := ancestor["conditions"].([]any)
+	if !assert.True(t, ok && len(conditions) > 0, "conditions missing: %v", ancestor) {
+		return nil
+	}
+	for _, item := range conditions {
+		condition, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if condition["type"] == string(gwapiv1.PolicyConditionAccepted) {
+			return condition
+		}
+	}
+	assert.Fail(t, "Accepted condition missing", "conditions: %v", conditions)
+	return nil
+}
+
+func securityPolicyAcceptedConditionStatus(t *testing.T, obj *unstructured.Unstructured) metav1.ConditionStatus {
+	t.Helper()
+	condition := securityPolicyAcceptedCondition(t, obj)
+	status, _ := condition["status"].(string)
+	return metav1.ConditionStatus(status)
+}
+
+func securityPolicyAcceptedConditionReason(t *testing.T, obj *unstructured.Unstructured) string {
+	t.Helper()
+	condition := securityPolicyAcceptedCondition(t, obj)
+	reason, _ := condition["reason"].(string)
+	return reason
+}
+
 func (f *replicatorFakeManager) GetControllerOptions() mgrconfig.Controller {
 	return mgrconfig.Controller{}
 }

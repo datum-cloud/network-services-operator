@@ -2105,6 +2105,125 @@ func TestHTTPProxyReconcileConnectorEPPEmissionDisabled(t *testing.T) {
 		"EPP emission disabled: reconcileConnectorEnvoyPatchPolicy must NOT be called")
 }
 
+func TestHTTPProxyReconcileEndpointSliceAddressTypeChange(t *testing.T) {
+	logger := zap.New(zap.UseFlagOptions(&zap.Options{Development: true}))
+	ctx := log.IntoContext(context.Background(), logger)
+
+	testScheme := runtime.NewScheme()
+	assert.NoError(t, scheme.AddToScheme(testScheme))
+	assert.NoError(t, gatewayv1.Install(testScheme))
+	assert.NoError(t, envoygatewayv1alpha1.AddToScheme(testScheme))
+	assert.NoError(t, discoveryv1.AddToScheme(testScheme))
+	assert.NoError(t, networkingv1alpha.AddToScheme(testScheme))
+	assert.NoError(t, networkingv1alpha1.AddToScheme(testScheme))
+
+	testConfig := config.NetworkServicesOperator{
+		HTTPProxy: config.HTTPProxyConfig{
+			GatewayClassName: "test-gateway-class",
+		},
+		Gateway: config.GatewayConfig{
+			ControllerName:             gatewayv1.GatewayController("test-gateway-class"),
+			DownstreamGatewayClassName: "test-downstream-gateway-class",
+			TargetDomain:               "example.com",
+			ListenerTLSOptions: map[gatewayv1.AnnotationKey]gatewayv1.AnnotationValue{
+				gatewayv1.AnnotationKey("gateway.networking.datumapis.com/certificate-issuer"): gatewayv1.AnnotationValue("test-issuer"),
+			},
+		},
+	}
+
+	httpProxy := newHTTPProxy(func(h *networkingv1alpha.HTTPProxy) {
+		h.Spec.Rules[0].Backends[0].Endpoint = "http://192.0.2.10"
+	})
+
+	existingSlice := &discoveryv1.EndpointSlice{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              "test-0-0",
+			Namespace:         "test",
+			CreationTimestamp: metav1.Now(),
+			OwnerReferences: []metav1.OwnerReference{
+				{
+					APIVersion: "networking.datumapis.com/v1alpha",
+					Kind:       "HTTPProxy",
+					Name:       httpProxy.Name,
+					UID:        httpProxy.UID,
+					Controller: ptr.To(true),
+				},
+			},
+		},
+		AddressType: discoveryv1.AddressTypeFQDN,
+		Endpoints: []discoveryv1.Endpoint{
+			{Addresses: []string{"www.example.com"}},
+		},
+	}
+
+	upstreamNamespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: httpProxy.Namespace}}
+	upstreamNamespace.SetUID(uuid.NewUUID())
+
+	gatewayClass := &gatewayv1.GatewayClass{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-gateway-class"},
+		Spec: gatewayv1.GatewayClassSpec{
+			ControllerName: testConfig.Gateway.ControllerName,
+		},
+	}
+	gatewayClass.SetCreationTimestamp(metav1.Now())
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(testScheme).
+		WithObjects(httpProxy, upstreamNamespace, gatewayClass, existingSlice).
+		WithStatusSubresource(httpProxy).
+		WithStatusSubresource(&gatewayv1.Gateway{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+				obj.SetUID(uuid.NewUUID())
+				obj.SetCreationTimestamp(metav1.Now())
+				return c.Create(ctx, obj, opts...)
+			},
+			Update: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+				if slice, ok := obj.(*discoveryv1.EndpointSlice); ok {
+					var current discoveryv1.EndpointSlice
+					if err := c.Get(ctx, client.ObjectKeyFromObject(slice), &current); err == nil &&
+						current.AddressType != slice.AddressType {
+						return apierrors.NewInvalid(
+							discoveryv1.SchemeGroupVersion.WithKind("EndpointSlice").GroupKind(),
+							slice.Name,
+							nil,
+						)
+					}
+				}
+				return c.Update(ctx, obj, opts...)
+			},
+		}).
+		Build()
+
+	fakeDownstreamClient := fake.NewClientBuilder().
+		WithScheme(testScheme).
+		WithStatusSubresource(&gatewayv1.Gateway{}).
+		Build()
+
+	mgr := &fakeMockManager{cl: fakeClient}
+	reconciler := &HTTPProxyReconciler{
+		mgr:               mgr,
+		Config:            testConfig,
+		DownstreamCluster: &fakeCluster{cl: fakeDownstreamClient},
+	}
+
+	req := mcreconcile.Request{
+		Request: reconcile.Request{
+			NamespacedName: client.ObjectKeyFromObject(httpProxy),
+		},
+		ClusterName: "test-cluster",
+	}
+
+	for i := 0; i < 3; i++ {
+		_, err := reconciler.Reconcile(ctx, req)
+		assert.NoError(t, err)
+	}
+
+	var updatedSlice discoveryv1.EndpointSlice
+	require.NoError(t, fakeClient.Get(ctx, client.ObjectKeyFromObject(existingSlice), &updatedSlice))
+	assert.Equal(t, discoveryv1.AddressTypeIPv4, updatedSlice.AddressType)
+}
+
 // TestHTTPProxyFinalizerCleanupEPPEmissionDisabled verifies that when
 // gateway.eppEmissionEnabled is false, the HTTPProxy finalizer cleanup does NOT
 // delete the connector EnvoyPatchPolicy from the downstream cluster (NSO did not

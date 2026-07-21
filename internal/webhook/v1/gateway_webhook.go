@@ -5,9 +5,11 @@ package v1
 import (
 	"context"
 	"fmt"
+	"sort"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -62,8 +64,10 @@ func (v *GatewayCustomValidator) ValidateCreate(ctx context.Context, gateway *ga
 	}
 	clusterClient := cluster.GetClient()
 
-	if shouldProcess, err := shouldProcess(ctx, clusterClient, v.validationOpts.ControllerName, gateway); !shouldProcess || err != nil {
+	if fieldErr, err := validateManagedGatewayClass(ctx, clusterClient, v.validationOpts.ControllerName, gateway); err != nil {
 		return nil, err
+	} else if fieldErr != nil {
+		return nil, apierrors.NewInvalid(gateway.GetObjectKind().GroupVersionKind().GroupKind(), gateway.GetName(), field.ErrorList{fieldErr})
 	}
 
 	gatewaylog := logf.FromContext(ctx).WithValues("cluster", clusterName)
@@ -92,16 +96,18 @@ func (v *GatewayCustomValidator) ValidateUpdate(ctx context.Context, oldGateway,
 	}
 	clusterClient := cluster.GetClient()
 
-	if shouldProcess, err := shouldProcess(ctx, clusterClient, v.validationOpts.ControllerName, newGateway); !shouldProcess || err != nil {
-		return nil, err
-	}
-
 	gatewaylog := logf.FromContext(ctx).WithValues("cluster", clusterName)
 	gatewaylog.Info("Validating Gateway", "name", newGateway.GetName())
 
 	if dt := newGateway.DeletionTimestamp; !dt.IsZero() {
 		// Gateway is deleting, let it go through
 		return nil, nil
+	}
+
+	if fieldErr, err := validateManagedGatewayClass(ctx, clusterClient, v.validationOpts.ControllerName, newGateway); err != nil {
+		return nil, err
+	} else if fieldErr != nil {
+		return nil, apierrors.NewInvalid(oldGateway.GetObjectKind().GroupVersionKind().GroupKind(), newGateway.GetName(), field.ErrorList{fieldErr})
 	}
 
 	clusterValidationOpts := v.validationOpts
@@ -195,4 +201,31 @@ func shouldProcess(
 	}
 
 	return true, nil
+}
+
+func validateManagedGatewayClass(
+	ctx context.Context,
+	clusterClient client.Client,
+	controllerName gatewayv1.GatewayController,
+	gateway *gatewayv1.Gateway,
+) (*field.Error, error) {
+	var gatewayClasses gatewayv1.GatewayClassList
+	if err := clusterClient.List(ctx, &gatewayClasses); err != nil {
+		return nil, err
+	}
+
+	var managed []string
+	for i := range gatewayClasses.Items {
+		gatewayClass := &gatewayClasses.Items[i]
+		if gatewayClass.Spec.ControllerName != controllerName {
+			continue
+		}
+		managed = append(managed, gatewayClass.Name)
+		if gatewayClass.Name == string(gateway.Spec.GatewayClassName) {
+			return nil, nil
+		}
+	}
+
+	sort.Strings(managed)
+	return field.NotSupported(field.NewPath("spec", "gatewayClassName"), gateway.Spec.GatewayClassName, managed), nil
 }

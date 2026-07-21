@@ -42,6 +42,11 @@ type DomainSpec struct {
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:validation:XValidation:message="must be at least 5m after the previous desiredRegistrationRefreshAttempt when changed",rule="oldSelf == null || self == null || self == oldSelf || self >= oldSelf + duration('5m')"
 	DesiredRegistrationRefreshAttempt *metav1.Time `json:"desiredRegistrationRefreshAttempt,omitempty"`
+
+	// DesiredVerificationRefreshAttempt is the desired time of the next verification refresh attempt.
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:XValidation:message="must be at least 5m after the previous desiredVerificationRefreshAttempt when changed",rule="oldSelf == null || self == null || self == oldSelf || self >= oldSelf + duration('5m')"
+	DesiredVerificationRefreshAttempt *metav1.Time `json:"desiredVerificationRefreshAttempt,omitempty"`
 }
 
 // DomainStatus defines the observed state of Domain
@@ -124,6 +129,7 @@ type DomainVerificationStatus struct {
 	DNSRecord               DNSVerificationRecord `json:"dnsRecord,omitempty"`
 	HTTPToken               HTTPVerificationToken `json:"httpToken,omitempty"`
 	NextVerificationAttempt metav1.Time           `json:"nextVerificationAttempt,omitempty"`
+	LastVerificationAttempt metav1.Time           `json:"lastVerificationAttempt,omitempty"`
 }
 
 // DNSVerificationRecord represents a DNS record required for verification

@@ -64,19 +64,26 @@ func (v *DomainCustomValidator) ValidateCreate(ctx context.Context, domain *netw
 		return nil, fmt.Errorf("failed to list Domains in namespace %q: %w", domain.GetNamespace(), err)
 	}
 
-	target := normalizeHostname(domain.Spec.DomainName)
-	for _, d := range domains.Items {
-		if normalizeHostname(d.Spec.DomainName) == target {
-			gr := schema.GroupResource{Group: networkingv1alpha.GroupVersion.Group, Resource: domainResource}
-			return nil, apierrors.NewConflict(
-				gr,
-				domain.GetName(),
-				fmt.Errorf("domain resource with .spec.domainName %q already exists", domain.Spec.DomainName),
-			)
-		}
+	if duplicateDomainName(domains.Items, domain.Spec.DomainName) {
+		gr := schema.GroupResource{Group: networkingv1alpha.GroupVersion.Group, Resource: domainResource}
+		return nil, apierrors.NewConflict(
+			gr,
+			domain.GetName(),
+			fmt.Errorf("domain resource with .spec.domainName %q already exists", domain.Spec.DomainName),
+		)
 	}
 
 	return nil, nil
+}
+
+func duplicateDomainName(existing []networkingv1alpha.Domain, candidate string) bool {
+	target := normalizeHostname(candidate)
+	for _, d := range existing {
+		if normalizeHostname(d.Spec.DomainName) == target {
+			return true
+		}
+	}
+	return false
 }
 
 // ValidateUpdate implements admission.Validator so a webhook will be registered for the type Domain.

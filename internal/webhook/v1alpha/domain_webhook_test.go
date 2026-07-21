@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+
+	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 )
 
 const (
@@ -53,6 +55,34 @@ func TestHostnameCoveredByDomain(t *testing.T) {
 		if got := hostnameCoveredByDomain(tt.domain, tt.host); got != tt.want {
 			t.Fatalf("hostnameCoveredByDomain(%q, %q) = %v, want %v", tt.domain, tt.host, got, tt.want)
 		}
+	}
+}
+
+func TestDuplicateDomainName(t *testing.T) {
+	existing := []networkingv1alpha.Domain{
+		{Spec: networkingv1alpha.DomainSpec{DomainName: testDomainExampleCom}},
+		{Spec: networkingv1alpha.DomainSpec{DomainName: testDomainAPIAutouserRun}},
+	}
+
+	tests := []struct {
+		name      string
+		candidate string
+		want      bool
+	}{
+		{"unique domain accepted", testDomainAutouserRun, false},
+		{"exact duplicate rejected", testDomainExampleCom, true},
+		{"case-insensitive duplicate rejected", "ExAmPlE.CoM", true},
+		{"trailing-dot duplicate rejected", "example.com.", true},
+		{"whitespace duplicate rejected", "  api.autouser.run  ", true},
+		{"subdomain is not a duplicate", "www.example.com", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := duplicateDomainName(existing, tt.candidate); got != tt.want {
+				t.Fatalf("duplicateDomainName(_, %q) = %v, want %v", tt.candidate, got, tt.want)
+			}
+		})
 	}
 }
 

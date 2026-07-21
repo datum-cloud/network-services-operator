@@ -1,0 +1,108 @@
+rule_files:
+  - controller-health-rules.yaml
+
+evaluation_interval: 1m
+
+tests:
+  # Multi-controller: three controllers evaluated independently.
+  #   gateway — 9 errors + 1 success = 90% error ratio (critical, also crosses warning)
+  #   domain  — 3 errors + 7 success = 30% error ratio (warning only)
+  #   subnet  — 1 error  + 9 success = 10% error ratio (healthy, fires nothing)
+  # At 16m the warning alert fires for the two offending controllers, each
+  # carrying its own `controller` label; the healthy controller is absent.
+  - interval: 1m
+    input_series:
+      - series: 'controller_runtime_reconcile_total{controller="gateway",result="error"}'
+        values: '0+9x20'
+      - series: 'controller_runtime_reconcile_total{controller="gateway",result="success"}'
+        values: '0+1x20'
+      - series: 'controller_runtime_reconcile_total{controller="domain",result="error"}'
+        values: '0+3x20'
+      - series: 'controller_runtime_reconcile_total{controller="domain",result="success"}'
+        values: '0+7x20'
+      - series: 'controller_runtime_reconcile_total{controller="subnet",result="error"}'
+        values: '0+1x20'
+      - series: 'controller_runtime_reconcile_total{controller="subnet",result="success"}'
+        values: '0+9x20'
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: ControllerReconcileErrorRatioHigh
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              controller: gateway
+            exp_annotations:
+              summary: "Controller gateway reconcile error ratio is 90% (threshold 20%)"
+              description: "More than 20% of the 'gateway' controller's reconcile attempts are failing. It cannot apply its intent — changes are not reaching their target and the last successfully written state stays programmed. Common causes: an object fails CRD validation, an API server admission error, or a permissions regression. Check controller logs for 'Reconciler error' entries on the 'gateway' controller."
+              runbook_url: "https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/controller-health.md#controllerreconcileerrorratiohigh"
+          - exp_labels:
+              severity: warning
+              controller: domain
+            exp_annotations:
+              summary: "Controller domain reconcile error ratio is 30% (threshold 20%)"
+              description: "More than 20% of the 'domain' controller's reconcile attempts are failing. It cannot apply its intent — changes are not reaching their target and the last successfully written state stays programmed. Common causes: an object fails CRD validation, an API server admission error, or a permissions regression. Check controller logs for 'Reconciler error' entries on the 'domain' controller."
+              runbook_url: "https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/controller-health.md#controllerreconcileerrorratiohigh"
+
+  # Same multi-controller input at the critical tier: only the controller above
+  # 50% (gateway, 90%) fires; the 30% and 10% controllers do not.
+  - interval: 1m
+    input_series:
+      - series: 'controller_runtime_reconcile_total{controller="gateway",result="error"}'
+        values: '0+9x20'
+      - series: 'controller_runtime_reconcile_total{controller="gateway",result="success"}'
+        values: '0+1x20'
+      - series: 'controller_runtime_reconcile_total{controller="domain",result="error"}'
+        values: '0+3x20'
+      - series: 'controller_runtime_reconcile_total{controller="domain",result="success"}'
+        values: '0+7x20'
+      - series: 'controller_runtime_reconcile_total{controller="subnet",result="error"}'
+        values: '0+1x20'
+      - series: 'controller_runtime_reconcile_total{controller="subnet",result="success"}'
+        values: '0+9x20'
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: ControllerReconcileErrorRatioCritical
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              controller: gateway
+            exp_annotations:
+              summary: "Controller gateway reconcile error ratio is 90% (threshold 50%) — reconciliation is stalled"
+              description: "More than 50% of the 'gateway' controller's reconcile attempts are failing — it has effectively stopped applying changes. Treat as an active outage for anything this controller programs. Check controller logs for 'Reconciler error' entries. See ControllerReconcileErrorRatioHigh for initial diagnosis."
+              runbook_url: "https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/controller-health.md#controllerreconcileerrorratiocritical"
+
+  # Healthy controller (10% errors) never crosses the warning threshold.
+  - interval: 1m
+    input_series:
+      - series: 'controller_runtime_reconcile_total{controller="domain",result="error"}'
+        values: '0+1x20'
+      - series: 'controller_runtime_reconcile_total{controller="domain",result="success"}'
+        values: '0+9x20'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: ControllerReconcileErrorRatioHigh
+        exp_alerts: []
+
+  # Above the warning threshold (90%) but checked before for: 15m elapses.
+  - interval: 1m
+    input_series:
+      - series: 'controller_runtime_reconcile_total{controller="gateway",result="error"}'
+        values: '0+9x20'
+      - series: 'controller_runtime_reconcile_total{controller="gateway",result="success"}'
+        values: '0+1x20'
+    alert_rule_test:
+      - eval_time: 14m
+        alertname: ControllerReconcileErrorRatioHigh
+        exp_alerts: []
+
+  # Above the critical threshold (80%) but checked before for: 10m elapses.
+  - interval: 1m
+    input_series:
+      - series: 'controller_runtime_reconcile_total{controller="gateway",result="error"}'
+        values: '0+8x20'
+      - series: 'controller_runtime_reconcile_total{controller="gateway",result="success"}'
+        values: '0+2x20'
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: ControllerReconcileErrorRatioCritical
+        exp_alerts: []

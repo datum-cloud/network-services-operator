@@ -61,6 +61,9 @@ const certificateIssuerTLSOption = "gateway.networking.datumapis.com/certificate
 // TLS listener on this gateway specified" — see resolveAutoIssuer.
 const autoIssuerSentinel = "auto"
 const annotationReissuanceCount = "networking.datumapis.com/reissuance-count"
+
+const gatewayClassRequeueInterval = 30 * time.Second
+
 const KindGateway = "Gateway"
 const KindHTTPRoute = "HTTPRoute"
 const KindService = "Service"
@@ -125,16 +128,16 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 	var upstreamGatewayClass gatewayv1.GatewayClass
 	if err := cl.GetClient().Get(ctx, types.NamespacedName{Name: string(gateway.Spec.GatewayClassName)}, &upstreamGatewayClass); err != nil {
 		if apierrors.IsNotFound(err) {
-			logger.Info("gateway class not found, skipping")
-			return ctrl.Result{}, nil
+			logger.Info("gateway class not found, requeueing", "requeueAfter", gatewayClassRequeueInterval)
+			return ctrl.Result{RequeueAfter: gatewayClassRequeueInterval}, nil
 		}
 		logger.Error(err, "failed to get gateway class")
 		return ctrl.Result{}, err
 	}
 
 	if upstreamGatewayClass.Spec.ControllerName != r.Config.Gateway.ControllerName {
-		logger.Info("gateway class controller name mismatch, skipping", "expected", r.Config.Gateway.ControllerName, "actual", upstreamGatewayClass.Spec.ControllerName)
-		return ctrl.Result{}, nil
+		logger.Info("gateway class controller name mismatch, requeueing", "expected", r.Config.Gateway.ControllerName, "actual", upstreamGatewayClass.Spec.ControllerName, "requeueAfter", gatewayClassRequeueInterval)
+		return ctrl.Result{RequeueAfter: gatewayClassRequeueInterval}, nil
 	}
 
 	downstreamStrategy := downstreamclient.NewMappedNamespaceResourceStrategy(string(req.ClusterName), cl.GetClient(), r.DownstreamCluster.GetClient())

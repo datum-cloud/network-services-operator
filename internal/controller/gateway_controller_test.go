@@ -35,7 +35,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
+	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	"go.datum.net/network-services-operator/internal/config"
@@ -2200,4 +2202,83 @@ func TestReissueFailedCertificate(t *testing.T) {
 			assert.Equal(t, time.Duration(0), requeueAfter, "call %d: should not requeue", i)
 		}
 	})
+}
+
+func TestReconcileRequeuesWhenGatewayClassUnavailable(t *testing.T) {
+	testScheme := runtime.NewScheme()
+	require.NoError(t, scheme.AddToScheme(testScheme))
+	require.NoError(t, gatewayv1.Install(testScheme))
+
+	const controllerName = gatewayv1.GatewayController("gateway.networking.datumapis.com/external-global-proxy-controller")
+	const gatewayClassName = "datum-external-global-proxy"
+
+	newGateway := func() *gatewayv1.Gateway {
+		return &gatewayv1.Gateway{
+			ObjectMeta: metav1.ObjectMeta{
+				Namespace: "test",
+				Name:      "test-gateway",
+			},
+			Spec: gatewayv1.GatewaySpec{
+				GatewayClassName: gatewayClassName,
+			},
+		}
+	}
+
+	tests := []struct {
+		name            string
+		existingObjects func() []client.Object
+	}{
+		{
+			name: "gateway class not found",
+			existingObjects: func() []client.Object {
+				return []client.Object{newGateway()}
+			},
+		},
+		{
+			name: "gateway class controller name mismatch",
+			existingObjects: func() []client.Object {
+				return []client.Object{
+					newGateway(),
+					&gatewayv1.GatewayClass{
+						ObjectMeta: metav1.ObjectMeta{Name: gatewayClassName},
+						Spec: gatewayv1.GatewayClassSpec{
+							ControllerName: gatewayv1.GatewayController("other.example.com/some-controller"),
+						},
+					},
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := log.IntoContext(context.Background(), zap.New(zap.UseFlagOptions(&zap.Options{Development: true})))
+
+			fakeClient := fake.NewClientBuilder().
+				WithScheme(testScheme).
+				WithObjects(tt.existingObjects()...).
+				Build()
+
+			reconciler := &GatewayReconciler{
+				mgr: &fakeMockManager{cl: fakeClient},
+				Config: config.NetworkServicesOperator{
+					Gateway: config.GatewayConfig{
+						ControllerName: controllerName,
+					},
+				},
+				DownstreamCluster: &fakeCluster{cl: fakeClient},
+			}
+
+			result, err := reconciler.Reconcile(ctx, mcreconcile.Request{
+				ClusterName: "test",
+				Request: reconcile.Request{
+					NamespacedName: types.NamespacedName{Namespace: "test", Name: "test-gateway"},
+				},
+			})
+
+			require.NoError(t, err)
+			assert.Positive(t, result.RequeueAfter,
+				"initial reconcile must requeue so the gateway is retried once its GatewayClass is fixed")
+		})
+	}
 }

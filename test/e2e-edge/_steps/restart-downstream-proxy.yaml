@@ -1,0 +1,105 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/step-template-chainsaw-v1alpha1.json
+#
+# Reusable step that forces a fresh xDS pull on the shared edge proxy: it deletes
+# the running proxy pod(s) for a gateway class and waits until a brand-new Ready,
+# non-terminating pod is serving.
+#
+# Why this exists: some edge regressions are latent in steady state and only
+# surface when a proxy pod comes up cold and pulls the current xDS snapshot from
+# scratch. A poisoned snapshot that an already-running proxy tolerated (it keeps
+# its last-good config) drops all listener filter chains on the fresh pull. A
+# steady-state assertion would pass on a broken build; restarting the proxy first
+# is what makes the fresh-pull outage observable.
+#
+# The pod is managed by an Envoy Gateway Deployment, so deleting it triggers a
+# recreate. This step records the pre-existing pod names, deletes them, then waits
+# for a Ready pod whose name is not in that set — proving the config came up on a
+# genuinely new process, not the one that was already holding good config.
+#
+# Use it from a scenario step:
+#
+#   - name: force a fresh xDS pull on the shared proxy
+#     use:
+#       template: ../_steps/restart-downstream-proxy.yaml
+#       with:
+#         bindings:
+#           - { name: envoyPodSelector, value: "gateway.envoyproxy.io/owning-gatewayclass=datum-downstream-gateway-e2e" }
+#           - { name: envoyNamespace,   value: datum-downstream-gateway }
+#
+# Required bindings: envoyPodSelector, envoyNamespace.
+# Optional (defaulted below): dataplaneCluster, envoyContainer, attempts,
+#   sleepSeconds.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: StepTemplate
+metadata:
+  name: restart-downstream-proxy
+spec:
+  bindings:
+    - name: dataplaneCluster
+      value: nso-downstream
+    - name: envoyContainer
+      value: envoy
+    - name: attempts
+      value: "60"
+    - name: sleepSeconds
+      value: "5"
+  try:
+    - description: Delete the shared proxy pod(s) and wait for a fresh Ready pod to serve.
+      script:
+        timeout: 420s
+        cluster: ($dataplaneCluster)
+        env:
+          - name: ENVOY_POD_SELECTOR
+            value: ($envoyPodSelector)
+          - name: ENVOY_NS
+            value: ($envoyNamespace)
+          - name: ATTEMPTS
+            value: ($attempts)
+          - name: SLEEP_SECONDS
+            value: ($sleepSeconds)
+        content: |
+          set -eu
+          # Ready and no deletion timestamp is the precise "serving" test; a
+          # terminating pod can still report itself running, so it is excluded.
+          ready_pods() {
+            kubectl -n "${ENVOY_NS}" get pods \
+              -l "${ENVOY_POD_SELECTOR}" \
+              -o go-template='{{range $p := .items}}{{if not $p.metadata.deletionTimestamp}}{{range $p.status.conditions}}{{if (and (eq .type "Ready") (eq .status "True"))}}{{$p.metadata.name}}{{"\n"}}{{end}}{{end}}{{end}}{{end}}' \
+              2>/dev/null || true
+          }
+
+          OLD_PODS="$(kubectl -n "${ENVOY_NS}" get pods -l "${ENVOY_POD_SELECTOR}" \
+            -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null || true)"
+          echo "--- proxy pods before restart ---"
+          echo "${OLD_PODS:-<none>}"
+
+          # Delete every current proxy pod. The Envoy Gateway Deployment recreates
+          # it, forcing the replacement to build its config from a cold xDS pull.
+          if [ -n "${OLD_PODS}" ]; then
+            kubectl -n "${ENVOY_NS}" delete pods -l "${ENVOY_POD_SELECTOR}" --wait=false
+          else
+            echo "WARN: no proxy pod matched ${ENVOY_POD_SELECTOR} in ${ENVOY_NS}; nothing to delete"
+          fi
+
+          fresh=""
+          for i in $(seq 1 "${ATTEMPTS}"); do
+            for pod in $(ready_pods); do
+              is_old=""
+              for old in ${OLD_PODS}; do
+                [ "${pod}" = "${old}" ] && { is_old="yes"; break; }
+              done
+              if [ -z "${is_old}" ]; then
+                fresh="${pod}"; break
+              fi
+            done
+            [ -n "${fresh}" ] && break
+            echo "attempt ${i}/${ATTEMPTS}: no fresh Ready proxy pod yet"
+            sleep "${SLEEP_SECONDS}"
+          done
+
+          if [ -z "${fresh}" ]; then
+            echo "ERROR: no fresh Ready proxy pod appeared after restart"
+            kubectl -n "${ENVOY_NS}" get pods -l "${ENVOY_POD_SELECTOR}" -o wide || true
+            exit 1
+          fi
+          echo "OK: fresh proxy pod serving after cold xDS pull: ${fresh}"

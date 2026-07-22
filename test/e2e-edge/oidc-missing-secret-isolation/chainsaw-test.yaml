@@ -1,0 +1,731 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+#
+# One tenant's broken login policy must not black out the shared gateway.
+#
+# The incident: on the shared datum-downstream-gateway, a tenant OIDC
+# SecurityPolicy that references a missing clientSecret makes Envoy Gateway emit a
+# config-less oauth2 listener filter. Envoy rejects it, and because a listener
+# snapshot is applied atomically, the WHOLE listener set is dropped. An
+# already-running proxy keeps its last-good config and hides the damage; a fresh
+# proxy pod comes up serving nothing — every tenant on that proxy loses traffic.
+# This is Envoy Gateway upstream behaviour (envoyproxy/gateway#6123, open) that
+# appeared in EG v1.8.0; v1.7.x fails safe with a per-route 5xx.
+#
+# This scenario is the EG-upgrade gate. It is GREEN on the pinned EG v1.7.4 and
+# with the NSO guard shipped in #304. It flips RED only if Envoy Gateway is bumped
+# to v1.8.x while envoyproxy/gateway#6123 is still unfixed — do not read "green"
+# as "the upstream bug is fixed". It asserts two independent protections:
+#
+#   Arm 1 — the guard keeps the poison off the shared snapshot. NSO holds a
+#   SecurityPolicy back from the shared gateway until its referenced secret is
+#   present downstream, and marks it Accepted=False, reason=PendingSecret. On the
+#   normal tenant path the poison never reaches the proxy.
+#
+#   Arm 2 — even a fresh proxy pull stays healthy. The poison is hand-delivered
+#   directly onto the shared downstream gateway, bypassing the guard (the same
+#   pattern the cert sub-test uses to reach the edge), then the shared proxy is
+#   restarted so it pulls the config cold. A neighbour tenant's WAF-protected
+#   route keeps serving (benign 200 / attack 403), the bad route fails on its own
+#   (per-route 5xx), the restarted proxy's listeners still carry active filter
+#   chains, and Envoy Gateway logs no "config must be present" listener rejection.
+#
+# Cluster names are inline (nso-upstream / nso-downstream); chainsaw cannot bind a
+# cluster name. downstreamGatewayClass is both the class created here and the
+# label the edge proxy service is selected by. Runs alone (concurrent: false)
+# because it shares cluster-wide downstream config and restarts the shared proxy.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: oidc-missing-secret-isolation
+spec:
+  concurrent: false
+  bindings:
+    - name: clusterIssuerName
+      value: (join('-', ['e2e', $namespace]))
+    - name: gatewayClassName
+      value: (join('-', ['e2e', $namespace]))
+    - name: downstreamGatewayClass
+      value: datum-downstream-gateway-e2e
+    - name: adminPort
+      value: "19000"
+    - name: extServerSelector
+      value: app.kubernetes.io/component=envoy-gateway-extension-server
+    - name: extServerNamespace
+      value: network-services-operator-system
+    - name: envoyPodSelector
+      value: gateway.envoyproxy.io/owning-gatewayclass=datum-downstream-gateway-e2e
+    - name: envoyNamespace
+      value: datum-downstream-gateway
+  cluster: nso-upstream
+  steps:
+    - name: Create CA on the downstream cluster
+      try:
+        - create:
+            cluster: nso-downstream
+            resource:
+              apiVersion: cert-manager.io/v1
+              kind: ClusterIssuer
+              metadata:
+                name: (join('-', [$clusterIssuerName, 'issuer']))
+              spec:
+                selfSigned: {}
+        - create:
+            cluster: nso-downstream
+            resource:
+              apiVersion: cert-manager.io/v1
+              kind: Certificate
+              metadata:
+                name: (join('-', [$clusterIssuerName, 'ca']))
+                namespace: cert-manager
+              spec:
+                isCA: true
+                commonName: (join('-', [$clusterIssuerName, 'ca']))
+                secretName: ($clusterIssuerName)
+                privateKey:
+                  algorithm: ECDSA
+                  size: 256
+                issuerRef:
+                  name: (join('-', [$clusterIssuerName, 'issuer']))
+                  kind: ClusterIssuer
+                  group: cert-manager.io
+        - create:
+            cluster: nso-downstream
+            resource:
+              apiVersion: cert-manager.io/v1
+              kind: ClusterIssuer
+              metadata:
+                name: ($clusterIssuerName)
+              spec:
+                ca:
+                  secretName: ($clusterIssuerName)
+        - assert:
+            cluster: nso-downstream
+            resource:
+              apiVersion: cert-manager.io/v1
+              kind: Certificate
+              metadata:
+                name: (join('-', [$clusterIssuerName, 'ca']))
+                namespace: cert-manager
+              status:
+                conditions:
+                  - type: Ready
+                    status: "True"
+
+    - name: Create the upstream GatewayClass (downstream class/EnvoyProxy are pre-provisioned)
+      try:
+        - create:
+            cluster: nso-upstream
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: GatewayClass
+              metadata:
+                name: ($gatewayClassName)
+              spec:
+                controllerName: gateway.networking.datumapis.com/external-global-proxy-controller
+        - apply:
+            cluster: nso-downstream
+            resource:
+              apiVersion: v1
+              kind: Namespace
+              metadata:
+                name: datum-downstream-gateway-hostnames
+
+    - name: Create the echo backend
+      try:
+        - apply:
+            cluster: nso-downstream
+            file: ../_fixtures/echo-backend.yaml
+
+    - name: Provision and verify the Domain
+      try:
+        - create:
+            cluster: nso-upstream
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Domain
+              metadata:
+                name: test-domain
+              spec:
+                domainName: e2e.env.datum.net
+        - description: Stand in for the Domain controller's HTTP/DNS verification.
+          script:
+            content: |
+              kubectl -n $NAMESPACE patch domain test-domain \
+                --subresource=status --type=merge \
+                -p '{"status":{"conditions":[{"type": "Verified", "status": "True", "reason": "Test", "message": "test", "lastTransitionTime": "2025-02-24T23:59:09Z"}]}}'
+
+    # ---- The neighbour tenant: a WAF-protected route that must stay healthy ----
+    - name: Provision the neighbour Gateway, route, and an Enforce-mode TrafficProtectionPolicy
+      try:
+        - create:
+            cluster: nso-upstream
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: Gateway
+              metadata:
+                name: neighbour-gateway
+              spec:
+                gatewayClassName: ($gatewayClassName)
+                listeners:
+                  - protocol: HTTPS
+                    port: 443
+                    name: https-waf
+                    allowedRoutes:
+                      namespaces:
+                        from: Same
+                    hostname: neighbour.e2e.env.datum.net
+                    tls:
+                      mode: Terminate
+                      options:
+                        gateway.networking.datumapis.com/certificate-issuer: ($clusterIssuerName)
+        - create:
+            cluster: nso-upstream
+            resource:
+              apiVersion: discovery.k8s.io/v1
+              kind: EndpointSlice
+              metadata:
+                name: neighbour-slice
+              addressType: FQDN
+              endpoints:
+                - addresses:
+                    - echo-backend.default.svc.cluster.local
+                  conditions:
+                    ready: true
+                    serving: true
+                    terminating: false
+              ports:
+                - name: http
+                  appProtocol: http
+                  port: 8080
+        - create:
+            cluster: nso-upstream
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: HTTPRoute
+              metadata:
+                name: neighbour-route
+              spec:
+                parentRefs:
+                  - name: neighbour-gateway
+                    kind: Gateway
+                rules:
+                  - matches:
+                      - path:
+                          type: PathPrefix
+                          value: /
+                    backendRefs:
+                      - group: discovery.k8s.io
+                        kind: EndpointSlice
+                        name: neighbour-slice
+                        port: 8080
+        - create:
+            cluster: nso-upstream
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: TrafficProtectionPolicy
+              metadata:
+                name: neighbour-waf
+              spec:
+                targetRefs:
+                  - group: gateway.networking.k8s.io
+                    kind: Gateway
+                    name: neighbour-gateway
+                mode: Enforce
+                ruleSets:
+                  - type: OWASPCoreRuleSet
+                    owaspCoreRuleSet: {}
+        - assert:
+            timeout: 120s
+            cluster: nso-upstream
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: Gateway
+              metadata:
+                name: neighbour-gateway
+              status:
+                (addresses[?type == 'Hostname'] | [0]):
+                  type: Hostname
+      catch:
+        - script:
+            cluster: nso-upstream
+            content: |
+              kubectl -n network-services-operator-system logs -l app.kubernetes.io/name=network-services-operator --tail=200
+              kubectl -n $NAMESPACE get gateway,httproute,trafficprotectionpolicy -o yaml
+
+    - name: Stand up the long-lived conntest client
+      try:
+        - assert:
+            cluster: nso-downstream
+            resource:
+              apiVersion: v1
+              kind: Pod
+              metadata:
+                name: echo-backend
+                namespace: default
+              status:
+                phase: Running
+        - create:
+            cluster: nso-downstream
+            resource:
+              apiVersion: v1
+              kind: Pod
+              metadata:
+                name: conntest
+                namespace: default
+              spec:
+                containers:
+                  - name: curl
+                    image: curlimages/curl:8.11.1
+                    command: ["sleep", "infinity"]
+                    resources:
+                      requests:
+                        cpu: 50m
+                        memory: 64Mi
+                      limits:
+                        cpu: 100m
+                        memory: 128Mi
+                terminationGracePeriodSeconds: 0
+        - assert:
+            cluster: nso-downstream
+            resource:
+              apiVersion: v1
+              kind: Pod
+              metadata:
+                name: conntest
+                namespace: default
+              status:
+                phase: Running
+
+    - name: Baseline - the neighbour serves 200 before any poison
+      use:
+        template: ../_steps/assert-http-response.yaml
+        with:
+          bindings:
+            - { name: host, value: neighbour.e2e.env.datum.net }
+            - { name: path, value: /get }
+            - { name: scheme, value: https }
+            - { name: expectCode, value: "200" }
+
+    # ---- Arm 1: the guard keeps the poison off the shared snapshot ----
+    # A tenant attaches an OIDC SecurityPolicy to the shared gateway whose
+    # clientSecret Secret is never created (so it is never mirrored downstream).
+    # The guard (#304) must hold it back from the shared gateway and mark it
+    # Accepted=False, reason=PendingSecret — the poison never reaches the proxy on
+    # the normal tenant path, and the neighbour keeps serving.
+    - name: Arm1 - a tenant attaches an OIDC SecurityPolicy with a missing clientSecret
+      try:
+        - create:
+            cluster: nso-upstream
+            resource:
+              apiVersion: gateway.envoyproxy.io/v1alpha1
+              kind: SecurityPolicy
+              metadata:
+                name: tenant-oidc
+              spec:
+                targetRefs:
+                  - group: gateway.networking.k8s.io
+                    kind: Gateway
+                    name: neighbour-gateway
+                oidc:
+                  provider:
+                    issuer: https://oidc.example.com
+                    authorizationEndpoint: https://oidc.example.com/authorize
+                    tokenEndpoint: https://oidc.example.com/token
+                  clientID: tenant-oidc-client
+                  clientSecret:
+                    name: tenant-oidc-client-secret
+                  redirectURL: https://neighbour.e2e.env.datum.net/oauth2/callback
+                  logoutPath: /logout
+        - description: The guard marks the held policy Accepted=False, reason=PendingSecret.
+          assert:
+            timeout: 120s
+            cluster: nso-upstream
+            resource:
+              apiVersion: gateway.envoyproxy.io/v1alpha1
+              kind: SecurityPolicy
+              metadata:
+                name: tenant-oidc
+              status:
+                (ancestors[?conditions[?type == 'Accepted']] | [0]):
+                  (conditions[?type == 'Accepted'] | [0]):
+                    status: "False"
+                    reason: PendingSecret
+      catch:
+        - script:
+            cluster: nso-upstream
+            content: |
+              kubectl -n $NAMESPACE get securitypolicy tenant-oidc -o yaml
+              kubectl -n network-services-operator-system logs -l app.kubernetes.io/name=network-services-operator --tail=120
+
+    - name: Arm1 - the held policy is NOT projected onto the shared gateway
+      description: |
+        The guard holds the SecurityPolicy back, so no downstream copy exists in
+        the tenant's mapped namespace (ns-<upstream-namespace-uid>). If a copy is
+        found, the poison reached the shared gateway and the guard failed.
+      try:
+        - script:
+            cluster: nso-upstream
+            skipCommandOutput: true
+            skipLogOutput: true
+            content: |
+              kubectl get ns $NAMESPACE -o json
+            outputs:
+              - name: downstreamNamespaceName
+                value: (join('-', ['ns', json_parse($stdout).metadata.uid]))
+        - script:
+            cluster: nso-downstream
+            env:
+              - name: DOWNSTREAM_NS
+                value: ($downstreamNamespaceName)
+            content: |
+              set -eu
+              FOUND=$(kubectl -n "${DOWNSTREAM_NS}" get securitypolicy tenant-oidc \
+                --ignore-not-found -o name 2>/dev/null || true)
+              if [ -n "${FOUND}" ]; then
+                echo "ERROR: held SecurityPolicy was projected downstream (${FOUND}); guard failed to hold the poison off the shared gateway"
+                kubectl -n "${DOWNSTREAM_NS}" get securitypolicy -o yaml || true
+                exit 1
+              fi
+              echo "OK: no downstream SecurityPolicy in ${DOWNSTREAM_NS}; guard held the poison off the shared gateway"
+
+    - name: Arm1 - the neighbour still serves 200 with the held policy in place
+      description: |
+        Attaching a broken login policy to a shared gateway must not disturb the
+        neighbour. The guard holds it, so the neighbour keeps serving.
+      use:
+        template: ../_steps/assert-http-response.yaml
+        with:
+          bindings:
+            - { name: host, value: neighbour.e2e.env.datum.net }
+            - { name: path, value: /get }
+            - { name: scheme, value: https }
+            - { name: expectCode, value: "200" }
+
+    # ---- Arm 2: even a fresh proxy pull stays healthy (EG-upgrade gate) ----
+    # Hand-deliver the poison directly onto the shared downstream gateway,
+    # bypassing the guard, exactly as the cert sub-test hand-delivers a bad
+    # certificate to reach the edge. A downstream gateway on the shared class
+    # carries a config-less OIDC SecurityPolicy (its clientSecret Secret is never
+    # created downstream). The namespace must carry the gateway-watch label
+    # meta.datumapis.com/upstream-cluster-name at creation.
+    - name: Arm2 - hand-deliver a config-less OIDC policy onto the shared gateway
+      try:
+        - description: The gateway only watches namespaces carrying this label; it must be present at creation.
+          create:
+            cluster: nso-downstream
+            resource:
+              apiVersion: v1
+              kind: Namespace
+              metadata:
+                name: (join('-', ['bad', $namespace]))
+                labels:
+                  meta.datumapis.com/upstream-cluster-name: cluster-single
+        - create:
+            cluster: nso-downstream
+            resource:
+              apiVersion: v1
+              kind: Pod
+              metadata:
+                name: echo-backend
+                namespace: (join('-', ['bad', $namespace]))
+                labels:
+                  purpose: bad-echo
+              spec:
+                containers:
+                  - name: backend
+                    image: ghcr.io/mccutchen/go-httpbin:2.18.1
+                    command: ["/bin/go-httpbin"]
+                    args: ["-host", "0.0.0.0", "-port", "8080"]
+                terminationGracePeriodSeconds: 0
+        - create:
+            cluster: nso-downstream
+            resource:
+              apiVersion: v1
+              kind: Service
+              metadata:
+                name: echo-backend
+                namespace: (join('-', ['bad', $namespace]))
+              spec:
+                ports:
+                  - name: http
+                    port: 8080
+                    targetPort: 8080
+                selector:
+                  purpose: bad-echo
+        - create:
+            cluster: nso-downstream
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: Gateway
+              metadata:
+                name: bad-oidc-gateway
+                namespace: (join('-', ['bad', $namespace]))
+              spec:
+                gatewayClassName: ($downstreamGatewayClass)
+                listeners:
+                  - name: http
+                    protocol: HTTP
+                    port: 80
+                    hostname: bad-oidc.e2e.env.datum.net
+                    allowedRoutes:
+                      namespaces:
+                        from: Same
+        - create:
+            cluster: nso-downstream
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: HTTPRoute
+              metadata:
+                name: bad-oidc-route
+                namespace: (join('-', ['bad', $namespace]))
+              spec:
+                parentRefs:
+                  - name: bad-oidc-gateway
+                    kind: Gateway
+                rules:
+                  - matches:
+                      - path:
+                          type: PathPrefix
+                          value: /
+                    backendRefs:
+                      - name: echo-backend
+                        port: 8080
+        # The poison: an OIDC policy whose clientSecret Secret is never created in
+        # this namespace, so Envoy Gateway emits a config-less oauth2 listener
+        # filter. On EG v1.7.4 the route fails safe (per-route 5xx); on EG v1.8.x
+        # the whole listener snapshot is rejected on a fresh pull.
+        - create:
+            cluster: nso-downstream
+            resource:
+              apiVersion: gateway.envoyproxy.io/v1alpha1
+              kind: SecurityPolicy
+              metadata:
+                name: bad-oidc
+                namespace: (join('-', ['bad', $namespace]))
+              spec:
+                targetRefs:
+                  - group: gateway.networking.k8s.io
+                    kind: Gateway
+                    name: bad-oidc-gateway
+                oidc:
+                  provider:
+                    issuer: https://oidc.example.com
+                    authorizationEndpoint: https://oidc.example.com/authorize
+                    tokenEndpoint: https://oidc.example.com/token
+                  clientID: bad-oidc-client
+                  clientSecret:
+                    name: bad-oidc-client-secret
+                  redirectURL: https://bad-oidc.e2e.env.datum.net/oauth2/callback
+                  logoutPath: /logout
+      catch:
+        - script:
+            cluster: nso-downstream
+            env:
+              - name: BAD_NS
+                value: (join('-', ['bad', $namespace]))
+            content: |
+              kubectl -n "$BAD_NS" get gateway,httproute,securitypolicy -o yaml
+
+    - name: Arm2 - restart the shared proxy so it pulls the poisoned snapshot cold
+      description: |
+        The already-running proxy tolerates the poison by keeping its last-good
+        config; only a fresh pod re-pulling the xDS snapshot from scratch reveals
+        the zero-listener-chain outage. This restart is what makes the regression
+        observable.
+      use:
+        template: ../_steps/restart-downstream-proxy.yaml
+        with:
+          bindings:
+            - { name: envoyPodSelector, value: gateway.envoyproxy.io/owning-gatewayclass=datum-downstream-gateway-e2e }
+            - { name: envoyNamespace, value: datum-downstream-gateway }
+            - { name: dataplaneCluster, value: nso-downstream }
+
+    - name: Arm2 - the neighbour still serves 200 after the fresh proxy pull
+      description: |
+        Decisive verdict. If the poison dropped the listener set, the neighbour's
+        :443 listener would come up empty and this would never return 200.
+      use:
+        template: ../_steps/assert-http-response.yaml
+        with:
+          bindings:
+            - { name: host, value: neighbour.e2e.env.datum.net }
+            - { name: path, value: /get }
+            - { name: scheme, value: https }
+            - { name: expectCode, value: "200" }
+
+    - name: Arm2 - the neighbour still blocks an attack with 403 after the fresh pull
+      try:
+        - description: |
+            The neighbour's WAF listener survived the poison and still enforces.
+            A SQLi payload must be refused with 403; a 200 would mean the listener
+            came up without its filter chain.
+          script:
+            timeout: 240s
+            cluster: nso-downstream
+            env:
+              - name: HOST
+                value: neighbour.e2e.env.datum.net
+              - name: OWNING_GC
+                value: ($downstreamGatewayClass)
+            content: |
+              set -eu
+              IP=$(kubectl get svc -n datum-downstream-gateway \
+                -l gateway.envoyproxy.io/owning-gatewayclass=$OWNING_GC \
+                -o jsonpath='{.items[0].spec.clusterIP}')
+              ok=""
+              for i in $(seq 1 30); do
+                code=$(kubectl -n default exec conntest -- \
+                  curl -ksS -o /dev/null -w '%{http_code}' --max-time 10 \
+                  --resolve "${HOST}:443:${IP}" \
+                  "https://${HOST}/get?id=1%27%20OR%20%271%27%3D%271" 2>/dev/null || true)
+                echo "attempt ${i}: neighbour attack -> ${code}"
+                [ "${code}" = "403" ] && { ok="yes"; break; }
+                sleep 5
+              done
+              [ -n "${ok}" ] || { echo "ERROR: neighbour WAF did not block with 403 after the fresh pull"; exit 1; }
+              echo "OK: neighbour still enforces (attack blocked 403) after the fresh proxy pull"
+      catch:
+        - script:
+            cluster: nso-downstream
+            env:
+              - name: OWNING_GC
+                value: ($downstreamGatewayClass)
+            content: |
+              kubectl -n datum-downstream-gateway logs -l gateway.envoyproxy.io/owning-gatewayclass=$OWNING_GC -c envoy --tail=150
+
+    - name: Arm2 - the bad route fails on its own (per-route 5xx), not the whole gateway
+      description: |
+        The poison is contained to its own route. On the fail-safe EG v1.7.4 the
+        config-less oauth2 filter makes the bad hostname return a 5xx while its
+        neighbours keep serving. A 200 here would mean the broken policy was
+        silently ignored (the poison never exercised); a working neighbour with a
+        5xx bad route is the isolation this gate protects.
+      try:
+        - script:
+            timeout: 200s
+            cluster: nso-downstream
+            env:
+              - name: HOST
+                value: bad-oidc.e2e.env.datum.net
+              - name: OWNING_GC
+                value: ($downstreamGatewayClass)
+            content: |
+              set -eu
+              IP=$(kubectl get svc -n datum-downstream-gateway \
+                -l gateway.envoyproxy.io/owning-gatewayclass=$OWNING_GC \
+                -o jsonpath='{.items[0].spec.clusterIP}')
+              last=""
+              for i in $(seq 1 30); do
+                code=$(kubectl -n default exec conntest -- \
+                  curl -sS -o /dev/null -w '%{http_code}' --max-time 10 \
+                  --resolve "${HOST}:80:${IP}" "http://${HOST}/get" 2>/dev/null || true)
+                last="${code}"
+                echo "attempt ${i}: bad route -> ${code}"
+                case "${code}" in
+                  5??) echo "OK: bad route fails on its own (${code}); poison contained to its route"; exit 0 ;;
+                  200) echo "ERROR: bad route served 200; the broken OIDC policy was ignored, so the poison was never exercised"; exit 1 ;;
+                esac
+                sleep 5
+              done
+              echo "ERROR: bad route never returned a 5xx (last ${last:-<none>}); expected the EG v1.7.x per-route fail-safe"
+              exit 1
+      catch:
+        - script:
+            cluster: nso-downstream
+            env:
+              - name: OWNING_GC
+                value: ($downstreamGatewayClass)
+            content: |
+              kubectl -n datum-downstream-gateway logs -l gateway.envoyproxy.io/owning-gatewayclass=$OWNING_GC -c envoy --tail=150
+
+    - name: Arm2 - the restarted proxy has listeners with active filter chains
+      description: |
+        The direct config-presence check for the zero-listener-chain symptom.
+        Fetch the fresh proxy's live config_dump and confirm its dynamic listeners
+        carry filter chains, and that the neighbour hostname is present. Zero
+        filter chains is the exact outage this gate guards against.
+      try:
+        - script:
+            timeout: 240s
+            cluster: nso-downstream
+            env:
+              - name: ADMIN_PORT
+                value: ($adminPort)
+              - name: OWNING_GC
+                value: ($downstreamGatewayClass)
+            content: |
+              set -eu
+              ok=""
+              for i in $(seq 1 24); do
+                POD=$(kubectl -n datum-downstream-gateway get pods \
+                  -l gateway.envoyproxy.io/owning-gatewayclass=${OWNING_GC} \
+                  -o go-template='{{range $p := .items}}{{if not $p.metadata.deletionTimestamp}}{{range $p.status.conditions}}{{if (and (eq .type "Ready") (eq .status "True"))}}{{$p.metadata.name}}{{"\n"}}{{end}}{{end}}{{end}}{{end}}' \
+                  2>/dev/null | head -n1 || true)
+                if [ -z "${POD}" ]; then
+                  echo "attempt ${i}: no Ready proxy pod yet"; sleep 5; continue
+                fi
+                DUMP=$(kubectl -n datum-downstream-gateway exec "${POD}" -c envoy -- \
+                  curl -s "http://127.0.0.1:${ADMIN_PORT}/config_dump?resource=dynamic_listeners" 2>/dev/null || true)
+                CHAINS=$(printf '%s' "${DUMP}" | grep -c '"filter_chains"' || true)
+                HAS_NEIGHBOUR=$(printf '%s' "${DUMP}" | grep -c 'neighbour.e2e.env.datum.net' || true)
+                echo "attempt ${i}: pod ${POD} filter_chains=${CHAINS} neighbour-listener-refs=${HAS_NEIGHBOUR}"
+                if [ "${CHAINS}" -gt 0 ] && [ "${HAS_NEIGHBOUR}" -gt 0 ]; then
+                  ok="yes"; break
+                fi
+                sleep 5
+              done
+              if [ -z "${ok}" ]; then
+                echo "ERROR: restarted proxy has no listener filter chains (or lost the neighbour listener); the poison dropped the listener set on a fresh pull"
+                exit 1
+              fi
+              echo "OK: restarted proxy serves listeners with active filter chains including the neighbour"
+
+    - name: Arm2 - Envoy Gateway logged no listener rejection on the fresh pull
+      description: |
+        The v1.8.x symptom is a rejected listener update carrying "config must be
+        present" for the config-less oauth2 filter, which drops the whole snapshot.
+        On the pinned v1.7.4 there is no such rejection. Assert the listener-update
+        rejection counter is zero on the fresh proxy and the log carries no
+        "config must be present".
+      try:
+        - script:
+            timeout: 120s
+            cluster: nso-downstream
+            env:
+              - name: ADMIN_PORT
+                value: ($adminPort)
+              - name: OWNING_GC
+                value: ($downstreamGatewayClass)
+            content: |
+              set -eu
+              POD=$(kubectl -n datum-downstream-gateway get pods \
+                -l gateway.envoyproxy.io/owning-gatewayclass=${OWNING_GC} \
+                -o go-template='{{range $p := .items}}{{if not $p.metadata.deletionTimestamp}}{{range $p.status.conditions}}{{if (and (eq .type "Ready") (eq .status "True"))}}{{$p.metadata.name}}{{"\n"}}{{end}}{{end}}{{end}}{{end}}' \
+                2>/dev/null | head -n1 || true)
+              [ -n "${POD}" ] || { echo "ERROR: no Ready proxy pod to inspect"; exit 1; }
+              echo "fresh edge pod: ${POD}"
+              STATS=$(kubectl -n datum-downstream-gateway exec "${POD}" -c envoy -- \
+                curl -s "http://127.0.0.1:${ADMIN_PORT}/stats?filter=lds.update_rejected" 2>/dev/null || true)
+              echo "--- lds.update_rejected ---"
+              echo "${STATS:-<none>}"
+              REJECTED=$(printf '%s' "${STATS}" | awk -F': ' '/lds.update_rejected/ {s+=$2} END{print s+0}')
+              echo "total lds.update_rejected: ${REJECTED}"
+              if [ "${REJECTED}" -ne 0 ]; then
+                echo "ERROR: the fresh proxy rejected a listener update (lds.update_rejected=${REJECTED}); the poison broke the snapshot"
+                exit 1
+              fi
+              LOGS=$(kubectl -n datum-downstream-gateway logs "${POD}" -c envoy --tail=400 2>/dev/null || true)
+              if printf '%s' "${LOGS}" | grep -qi 'config must be present'; then
+                echo "ERROR: proxy log carries a 'config must be present' listener rejection; the poison broke the snapshot"
+                printf '%s\n' "${LOGS}" | grep -i 'config must be present' | head
+                exit 1
+              fi
+              echo "OK: no listener-update rejection and no 'config must be present' on the fresh pull"
+      catch:
+        - script:
+            cluster: nso-downstream
+            env:
+              - name: OWNING_GC
+                value: ($downstreamGatewayClass)
+            content: |
+              kubectl -n datum-downstream-gateway logs -l gateway.envoyproxy.io/owning-gatewayclass=$OWNING_GC -c envoy --tail=200

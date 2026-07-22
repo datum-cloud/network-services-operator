@@ -3,3 +3,4 @@ kind: Component
 
 resources:
   - gateways.yaml
+  - controller-health.yaml

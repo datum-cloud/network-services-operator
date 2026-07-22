@@ -50,51 +50,6 @@ spec:
         summary: "Gateway {{ $labels.resource_name }} has been degraded for over 60 seconds"
         description: "Gateway {{ $labels.resource_name }} in namespace {{ $labels.resource_namespace }} has been in a degraded state for over 60 seconds without recovering, which exceeds the 60-second SLO threshold."
 
-  # Controller reconcile-error alerts detect when the gateway controller is
-  # failing to write downstream Gateway objects. A high error ratio means updates
-  # are being rejected by the API server (e.g. invalid objects), the controller
-  # is hot-looping, and the stale configuration stays programmed at the edge.
-  - name: nso-gateway-controller-health
-    interval: 30s
-    rules:
-    # Fires when more than 20% of gateway controller reconcile attempts are
-    # failing over a 10-minute window, sustained for 15 minutes. A common cause
-    # is a downstream Gateway object failing CRD validation (e.g. all listeners
-    # withheld leaves spec.listeners empty, which is rejected as Required value).
-    # While this fires, controller changes are not reaching the edge.
-    - alert: GatewayControllerReconcileErrorRatioHigh
-      expr: |
-        (
-          sum without(result) (rate(controller_runtime_reconcile_total{controller="gateway",result="error"}[10m]))
-          /
-          sum without(result) (rate(controller_runtime_reconcile_total{controller="gateway"}[10m]))
-        ) > 0.2
-      for: 15m
-      labels:
-        severity: warning
-      annotations:
-        summary: "Gateway controller reconcile error ratio is {{ $value | humanizePercentage }} (threshold 20%)"
-        description: "More than 20% of gateway controller reconcile attempts are failing. The controller cannot write downstream Gateway objects — changes are not reaching the edge and the stale configuration stays programmed. Common causes: a downstream Gateway fails CRD validation (e.g. zero listeners after cert withholding empties the list), an API server admission error, or a permissions regression. Check controller logs for 'Reconciler error' entries on the 'gateway' controller."
-        runbook_url: "https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/gateway-controller-health.md#gatewaycontrollerreconcileerrorratiohigh"
-
-    # Fires at a critical threshold when more than 50% of reconciles are failing,
-    # sustained for 10 minutes. At this rate the controller has essentially
-    # stopped applying changes — treat as an active outage for gateway programming.
-    - alert: GatewayControllerReconcileErrorRatioCritical
-      expr: |
-        (
-          sum without(result) (rate(controller_runtime_reconcile_total{controller="gateway",result="error"}[10m]))
-          /
-          sum without(result) (rate(controller_runtime_reconcile_total{controller="gateway"}[10m]))
-        ) > 0.5
-      for: 10m
-      labels:
-        severity: critical
-      annotations:
-        summary: "Gateway controller reconcile error ratio is {{ $value | humanizePercentage }} (threshold 50%) — edge programming is stalled"
-        description: "More than 50% of gateway controller reconcile attempts are failing. The controller has effectively stopped programming downstream gateways — this is an active outage for any gateway changes (new listeners, cert updates, connector changes). Check controller logs for 'Reconciler error' entries. See GatewayControllerReconcileErrorRatioHigh for initial diagnosis."
-        runbook_url: "https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/gateway-controller-health.md#gatewaycontrollerreconcileerrorratiocritical"
-
   # TLS certificate health alerts fire on nso_* metrics emitted directly by the
   # NSO operator and extension server. They are available in the same Prometheus
   # that loads this rule, alongside the envoy_gateway_* metrics above.

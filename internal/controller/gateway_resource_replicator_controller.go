@@ -263,6 +263,12 @@ func (r *GatewayResourceReplicatorReconciler) finalizeResource(
 			return ctrl.Result{}, err
 		}
 
+		if isSecurityPolicyGVK(resource.gvk) {
+			if err := r.reconcileReferencedSecretLabels(ctx, upstreamClient, resource.gvk, upstreamObj.GetNamespace()); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
+
 		controllerutil.RemoveFinalizer(upstreamObj, gatewayResourceReplicatorFinalizer)
 		if err := upstreamClient.Update(ctx, upstreamObj); err != nil {
 			if apierrors.IsNotFound(err) {
@@ -301,6 +307,11 @@ func (r *GatewayResourceReplicatorReconciler) ensureDownstreamResource(
 	}
 
 	if isSecurityPolicyGVK(resource.gvk) {
+		if err := r.reconcileReferencedSecretLabels(ctx, upstreamClient, resource.gvk, upstreamObj.GetNamespace()); err != nil {
+			syncOutcome = syncOutcomeError
+			return err
+		}
+
 		missing, err := r.missingDownstreamSecrets(ctx, upstreamObj, downstreamStrategy)
 		if err != nil {
 			syncOutcome = syncOutcomeError

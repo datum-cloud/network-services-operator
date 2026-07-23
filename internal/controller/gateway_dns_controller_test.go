@@ -383,7 +383,31 @@ func TestEnsureDNSRecordSets(t *testing.T) {
 					{Hostname: "ns1.otherprovider.com"},
 					{Hostname: "ns2.otherprovider.com"},
 				}
-				return []client.Object{d, newDNSZone(ns, "example-com", "example.com")}
+				// Pre-existing platform record that must be retained across the
+				// authority miss (Domain NS flap must not GC wanted CNAMEs).
+				existingRS := &dnsv1alpha1.DNSRecordSet{
+					ObjectMeta: metav1.ObjectMeta{
+						Namespace: ns,
+						Name:      dnsRecordSetName("test-gw", "api.example.com"),
+						UID:       uuid.NewUUID(),
+						Labels: map[string]string{
+							labelManagedBy:     labelManagedByValue,
+							labelDNSManaged:    "true",
+							labelDNSSourceKind: "Gateway",
+							labelDNSSourceName: "test-gw",
+							labelDNSSourceNS:   ns,
+						},
+						Annotations: map[string]string{
+							annotationDNSHostname: "api.example.com",
+						},
+					},
+					Spec: dnsv1alpha1.DNSRecordSetSpec{
+						DNSZoneRef: corev1.LocalObjectReference{Name: "example-com"},
+						RecordType: dnsv1alpha1.RRTypeCNAME,
+						Records:    []dnsv1alpha1.RecordEntry{{Name: "api.example.com."}},
+					},
+				}
+				return []client.Object{d, newDNSZone(ns, "example-com", "example.com"), existingRS}
 			}(),
 			assertStatuses: func(t *testing.T, statuses []networkingv1alpha.HostnameStatus) {
 				require.Len(t, statuses, 1)
@@ -396,7 +420,8 @@ func TestEnsureDNSRecordSets(t *testing.T) {
 			assertRecords: func(t *testing.T, cl client.Client) {
 				var list dnsv1alpha1.DNSRecordSetList
 				require.NoError(t, cl.List(context.Background(), &list, client.InNamespace(ns)))
-				assert.Empty(t, list.Items, "no DNSRecordSet should be created when DNS authority is missing")
+				require.Len(t, list.Items, 1, "existing DNSRecordSet must be retained when DNS authority is missing")
+				assert.Equal(t, dnsRecordSetName("test-gw", "api.example.com"), list.Items[0].Name)
 			},
 		},
 		{
@@ -524,6 +549,83 @@ func TestEnsureDNSRecordSets(t *testing.T) {
 			},
 		},
 		{
+			name:             "conflict with same-FQDN peer even when managed-by matches platform",
+			claimedHostnames: []string{"api.example.com"},
+			upstreamObjects: func() []client.Object {
+				// Leftover A-record-shaped DNSRecordSet at the same FQDN (e.g. from
+				// the former ExternalDNS dual-write path) still labeled as managed.
+				existingRS := &dnsv1alpha1.DNSRecordSet{
+					ObjectMeta: metav1.ObjectMeta{
+						Namespace: ns,
+						Name:      "v4-api-example-com-a-leftover",
+						UID:       uuid.NewUUID(),
+						Labels: map[string]string{
+							labelDNSManaged: "true",
+							labelManagedBy:  labelManagedByValue,
+						},
+						Annotations: map[string]string{
+							annotationDNSHostname: "api.example.com",
+						},
+					},
+					Spec: dnsv1alpha1.DNSRecordSetSpec{
+						DNSZoneRef: corev1.LocalObjectReference{Name: "example-com"},
+						RecordType: dnsv1alpha1.RRTypeA,
+						Records: []dnsv1alpha1.RecordEntry{{
+							Name: "api.example.com.",
+							A:    &dnsv1alpha1.ARecordSpec{Content: "203.0.113.10"},
+						}},
+					},
+				}
+				return []client.Object{
+					newVerifiedDNSZoneDomain(ns, "example.com", false),
+					newDNSZone(ns, "example-com", "example.com"),
+					existingRS,
+				}
+			}(),
+			assertStatuses: func(t *testing.T, statuses []networkingv1alpha.HostnameStatus) {
+				require.Len(t, statuses, 1)
+				c := apimeta.FindStatusCondition(statuses[0].Conditions, networkingv1alpha.HostnameConditionDNSRecordProgrammed)
+				require.NotNil(t, c)
+				assert.Equal(t, metav1.ConditionFalse, c.Status)
+				assert.Equal(t, networkingv1alpha.DNSRecordReasonConflict, c.Reason)
+				assert.Contains(t, c.Message, "v4-api-example-com-a-leftover")
+			},
+			assertRecords: func(t *testing.T, cl client.Client) {
+				var list dnsv1alpha1.DNSRecordSetList
+				require.NoError(t, cl.List(context.Background(), &list, client.InNamespace(ns)))
+				require.Len(t, list.Items, 1, "conflict must not create a second DNSRecordSet")
+				assert.Equal(t, "v4-api-example-com-a-leftover", list.Items[0].Name)
+			},
+		},
+		{
+			name:             "v4 and v6 aliases create CNAME records to the canonical hostname",
+			claimedHostnames: []string{"v4.11111111111111111111111111111111.gateways.test.local", "v6.11111111111111111111111111111111.gateways.test.local"},
+			upstreamObjects: []client.Object{
+				newVerifiedDNSZoneDomain(ns, "gateways.test.local", false),
+				newDNSZone(ns, "gateways-zone", "gateways.test.local"),
+			},
+			assertStatuses: func(t *testing.T, statuses []networkingv1alpha.HostnameStatus) {
+				require.Len(t, statuses, 2)
+				for _, hs := range statuses {
+					c := apimeta.FindStatusCondition(hs.Conditions, networkingv1alpha.HostnameConditionDNSRecordProgrammed)
+					require.NotNil(t, c)
+					assert.Equal(t, metav1.ConditionTrue, c.Status)
+					assert.Equal(t, networkingv1alpha.DNSRecordReasonCreated, c.Reason)
+				}
+			},
+			assertRecords: func(t *testing.T, cl client.Client) {
+				var list dnsv1alpha1.DNSRecordSetList
+				require.NoError(t, cl.List(context.Background(), &list, client.InNamespace(ns)))
+				require.Len(t, list.Items, 2)
+				for _, rs := range list.Items {
+					assert.Equal(t, dnsv1alpha1.RRTypeCNAME, rs.Spec.RecordType)
+					require.Len(t, rs.Spec.Records, 1)
+					require.NotNil(t, rs.Spec.Records[0].CNAME)
+					assert.Equal(t, "11111111111111111111111111111111.gateways.test.local.", rs.Spec.Records[0].CNAME.Content)
+				}
+			},
+		},
+		{
 			name:             "canonical hostname is skipped (handled by external-dns)",
 			claimedHostnames: []string{}, // empty; we add the canonical hostname below in test setup
 			upstreamObjects: []client.Object{
@@ -607,7 +709,8 @@ func TestEnsureDNSRecordSets(t *testing.T) {
 			s := newDNSTestScheme(t)
 
 			gw := newTestGatewayForDNS(ns, "test-gw")
-			if tt.name == "legacy canonical hostname remains canonical when status already set" {
+			if tt.name == "legacy canonical hostname remains canonical when status already set" ||
+				tt.name == "v4 and v6 aliases create CNAME records to the canonical hostname" {
 				gw.UID = types.UID("11111111-1111-1111-1111-111111111111")
 				gw.Status.Addresses = []gatewayv1.GatewayStatusAddress{
 					{

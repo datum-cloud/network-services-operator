@@ -1506,6 +1506,43 @@ func managedGatewayHostnameFromStatus(
 	return ""
 }
 
+// isIPFamilyHostname reports whether hostname is a platform v4./v6. alias of
+// the gateway canonical name. Those aliases are programmed as CNAME/ALIAS
+// DNSRecordSets by Gateway DNS; ExternalDNS must not also emit A/AAAA for them
+// or PowerDNS rejects the CNAME with a 422 conflict.
+func isIPFamilyHostname(hostname string) bool {
+	return strings.HasPrefix(hostname, "v4.") || strings.HasPrefix(hostname, "v6.")
+}
+
+// gatewayDNSEndpointEntries builds ExternalDNS endpoint entries for the apex
+// (and any other non-IP-family) hostnames only. v4./v6. aliases are omitted so
+// Gateway DNS remains the sole writer for those names.
+func gatewayDNSEndpointEntries(hostnames []string, v4IPs, v6IPs []any) []any {
+	endpoints := []any{}
+	for _, hostname := range hostnames {
+		if isIPFamilyHostname(hostname) {
+			continue
+		}
+		if len(v4IPs) > 0 {
+			endpoints = append(endpoints, map[string]any{
+				"dnsName":    hostname,
+				"targets":    v4IPs,
+				"recordType": "A",
+				"recordTTL":  int64(300),
+			})
+		}
+		if len(v6IPs) > 0 {
+			endpoints = append(endpoints, map[string]any{
+				"dnsName":    hostname,
+				"targets":    v6IPs,
+				"recordType": "AAAA",
+				"recordTTL":  int64(300),
+			})
+		}
+	}
+	return endpoints
+}
+
 func (r *GatewayReconciler) ensureDownstreamGatewayDNSEndpoints(
 	ctx context.Context,
 	downstreamGateway *gatewayv1.Gateway,
@@ -1547,7 +1584,7 @@ func (r *GatewayReconciler) ensureDownstreamGatewayDNSEndpoints(
 		return result
 	}
 
-	endpoints := []any{}
+	endpoints := gatewayDNSEndpointEntries(hostnames, v4IPs, v6IPs)
 	var gatewayDNSEndpoint unstructured.Unstructured
 	gatewayDNSEndpoint.SetGroupVersionKind(schema.GroupVersionKind{
 		Group:   "externaldns.k8s.io",
@@ -1556,28 +1593,6 @@ func (r *GatewayReconciler) ensureDownstreamGatewayDNSEndpoints(
 	})
 	gatewayDNSEndpoint.SetNamespace(downstreamGateway.Namespace)
 	gatewayDNSEndpoint.SetName(downstreamGateway.Name)
-
-	for _, hostname := range hostnames {
-		if len(v4IPs) > 0 && !strings.HasPrefix(hostname, "v6") {
-			// v4 specific hostname, or hostname that includes both v4 and v6
-			endpoints = append(endpoints, map[string]any{
-				"dnsName":    hostname,
-				"targets":    v4IPs,
-				"recordType": "A",
-				"recordTTL":  int64(300),
-			})
-		}
-
-		if len(v6IPs) > 0 && !strings.HasPrefix(hostname, "v4") {
-			// v6 specific hostname, or hostname that includes both v4 and v6
-			endpoints = append(endpoints, map[string]any{
-				"dnsName":    hostname,
-				"targets":    v6IPs,
-				"recordType": "AAAA",
-				"recordTTL":  int64(300),
-			})
-		}
-	}
 
 	if _, err := controllerutil.CreateOrUpdate(ctx, downstreamStrategy.GetClient(), &gatewayDNSEndpoint, func() error {
 		if err := controllerutil.SetControllerReference(downstreamGateway, &gatewayDNSEndpoint, downstreamStrategy.GetClient().Scheme()); err != nil {

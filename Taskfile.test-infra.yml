@@ -99,6 +99,7 @@ tasks:
       - task: cert-manager-upstream
       - task: cert-manager-downstream
       - task: nso-image
+      - task: dns-crds
       - task: prepare-upstream
       - task: eg-downstream
       - task: extension-server
@@ -156,6 +157,17 @@ tasks:
       - cd config/manager && {{.KUSTOMIZE}} edit set image ghcr.io/datum-cloud/network-services-operator={{.IMG}}
       - '{{.KIND}} load docker-image {{.IMG}} --name {{.UPSTREAM_CLUSTER}}'
       - '{{.KIND}} load docker-image {{.IMG}} --name {{.DOWNSTREAM_CLUSTER}}'
+
+  dns-crds:
+    desc: "Install DNSZone / DNSRecordSet / DNSZoneClass CRDs from the dns-operator Go module on the upstream cluster. Required before prepare-upstream when gateway.enableDNSIntegration is true (the operator indexes and watches these types at startup)."
+    vars:
+      DNS_OPERATOR_CRD_DIR:
+        sh: go list -m -f '{{.Dir}}' go.miloapis.com/dns-operator
+    cmds:
+      - echo "📜 installing dns-operator CRDs (upstream)"
+      - kubectl --context {{.UPSTREAM_CTX}} apply -f {{.DNS_OPERATOR_CRD_DIR}}/config/crd/bases/dns.networking.miloapis.com_dnszoneclasses.yaml
+      - kubectl --context {{.UPSTREAM_CTX}} apply -f {{.DNS_OPERATOR_CRD_DIR}}/config/crd/bases/dns.networking.miloapis.com_dnszones.yaml
+      - kubectl --context {{.UPSTREAM_CTX}} apply -f {{.DNS_OPERATOR_CRD_DIR}}/config/crd/bases/dns.networking.miloapis.com_dnsrecordsets.yaml
 
   prepare-upstream:
     desc: "Deploy the NSO manager + webhook (config/e2e) on the upstream cluster, with the prod-base memory profile."

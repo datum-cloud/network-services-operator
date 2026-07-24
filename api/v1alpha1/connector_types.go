@@ -184,6 +184,7 @@ const ConnectorNameAnnotation = "networking.datum.org/connector-name"
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:selectablefield:JSONPath=".status.connectionDetails.publicKey.id"
+// +kubebuilder:metadata:annotations="discovery.miloapis.com/parent-contexts=Project"
 
 // Connector is the Schema for the connectors API.
 type Connector struct {

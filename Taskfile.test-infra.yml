@@ -161,10 +161,12 @@ tasks:
   dns-crds:
     desc: "Install DNSZone / DNSRecordSet / DNSZoneClass CRDs from the dns-operator Go module on the upstream cluster. Required before prepare-upstream when gateway.enableDNSIntegration is true (the operator indexes and watches these types at startup)."
     vars:
+      # Escape {{.Dir}} so Task does not treat it as a Task template var;
+      # go list must receive the literal {{.Dir}} format string.
       DNS_OPERATOR_CRD_DIR:
-        sh: go list -m -f '{{.Dir}}' go.miloapis.com/dns-operator
+        sh: go list -m -f '{{`{{.Dir}}`}}' go.miloapis.com/dns-operator
     cmds:
-      - echo "📜 installing dns-operator CRDs (upstream)"
+      - echo "📜 installing dns-operator CRDs (upstream) from {{.DNS_OPERATOR_CRD_DIR}}"
       - kubectl --context {{.UPSTREAM_CTX}} apply -f {{.DNS_OPERATOR_CRD_DIR}}/config/crd/bases/dns.networking.miloapis.com_dnszoneclasses.yaml
       - kubectl --context {{.UPSTREAM_CTX}} apply -f {{.DNS_OPERATOR_CRD_DIR}}/config/crd/bases/dns.networking.miloapis.com_dnszones.yaml
       - kubectl --context {{.UPSTREAM_CTX}} apply -f {{.DNS_OPERATOR_CRD_DIR}}/config/crd/bases/dns.networking.miloapis.com_dnsrecordsets.yaml

@@ -193,3 +193,7 @@ Key changes:
 - **Commit types**: feat, fix, refactor, docs, test, chore, perf, style, ci
 - **No watermarks** or co-author tags
 - **Focus on what/why**, not how
+- **Scope**: the 80-char hard-wrap applies to commit messages only. PR
+  descriptions, GitHub issues, and comments render as GitHub-flavored markdown —
+  do not hard-wrap them; let prose reflow naturally and only break lines where
+  markdown needs it (lists, tables, code fences).

@@ -19,10 +19,59 @@ shortly.
 
 ### Prerequisites
 
-- go version v1.24.0+
-- docker version 17.03+.
-- kubectl version v1.31.0+.
-- Access to a Kubernetes v1.31.0+ cluster.
+- Go v1.26.4+ (see `go.mod`).
+- Docker v17.03+.
+- kubectl v1.31.0+.
+- Access to a Kubernetes v1.31.0+ cluster. For local development a
+  [kind](https://kind.sigs.k8s.io/), [k3d](https://k3d.io/), or
+  [minikube](https://minikube.sigs.k8s.io/) cluster works.
+
+### Running locally for development
+
+Run the operator from your host against a cluster in your current kubectl
+context. This is the fast-iteration loop — no image build, no in-cluster
+deploy.
+
+The operator is multi-cluster: it watches an **upstream** control plane where
+users declare intent and reconciles into a **downstream** cluster that hosts the
+data plane. In the default `single` discovery mode `make run` uses your current
+kubectl context as the upstream cluster, and `config/dev/config.yaml` points
+downstream resource management at `./infra.kubeconfig`.
+
+**1. Prepare the cluster** (installs CRDs, cert-manager, and webhook config):
+
+```sh
+make prepare-dev
+```
+
+`make prepare-dev` installs chainsaw, sets the controller image, installs
+cert-manager and waits for its API, then runs `make install`. Run `make install`
+on its own to (re)apply just the CRDs and webhook config
+(`kustomize build config/dev | kubectl apply -f -`, into `kube-system`).
+
+**2. Provide a downstream kubeconfig.** `make run` loads `./infra.kubeconfig`
+for downstream resources at startup and exits if it is missing. To point
+downstream at the same cluster you are already using:
+
+```sh
+kind get kubeconfig --name <cluster> > infra.kubeconfig
+# or
+cp "${KUBECONFIG:-$HOME/.kube/config}" infra.kubeconfig
+```
+
+**3. Run the operator:**
+
+```sh
+make run
+```
+
+This runs `go run ./cmd/main.go manager --server-config=./config/dev/config.yaml`
+with metrics and health probes disabled. It regenerates manifests, deepcopy, and
+runs `fmt`/`vet` first, then reconciles against your current context. Stop with
+`Ctrl-C` and rerun to pick up changes.
+
+To point at a different cluster, set `KUBECONFIG` or switch your kubectl context
+before running.
 
 ### To Deploy on the cluster
 

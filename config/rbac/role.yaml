@@ -175,6 +175,17 @@ rules:
   verbs:
   - update
 - apiGroups:
+  - gateway.envoyproxy.io
+  resources:
+  - backends/status
+  - backendtrafficpolicies/status
+  - httproutefilters/status
+  - securitypolicies/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
   - gateway.networking.k8s.io
   resources:
   - backendtlspolicies

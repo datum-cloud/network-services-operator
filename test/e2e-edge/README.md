@@ -82,7 +82,8 @@ environment these assume.
 ## Layout
 
 - Scenario folders (`waf-enforcement/`, `connector-offline-503/`,
-  `branded-error-page/`, `atomic-reject-isolation/`) — one guarantee each.
+  `branded-error-page/`, `atomic-reject-isolation/`,
+  `oidc-missing-secret-isolation/`) — one guarantee each.
 - `_steps/` — shared, reusable checks (send-a-request, confirm-configuration,
   capture-the-build-marker) so every scenario asserts behavior the same way.
 - `_fixtures/` — the supporting pieces a scenario needs (a sample backend, an

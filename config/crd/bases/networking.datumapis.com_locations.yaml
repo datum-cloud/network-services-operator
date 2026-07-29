@@ -55,6 +55,30 @@ spec:
           spec:
             description: LocationSpec defines the desired state of Location.
             properties:
+              coordinates:
+                description: |-
+                  The geographic coordinates of the location, used by consumers that need
+                  to plot the location on a map.
+                properties:
+                  latitude:
+                    description: Latitude in decimal degrees, in the range [-90, 90].
+                    pattern: ^-?\d{1,2}(\.\d+)?$
+                    type: string
+                    x-kubernetes-validations:
+                    - message: latitude must be between -90 and 90
+                      rule: double(self) >= -90.0 && double(self) <= 90.0
+                  longitude:
+                    description: Longitude in decimal degrees, in the range [-180,
+                      180].
+                    pattern: ^-?\d{1,3}(\.\d+)?$
+                    type: string
+                    x-kubernetes-validations:
+                    - message: longitude must be between -180 and 180
+                      rule: double(self) >= -180.0 && double(self) <= 180.0
+                required:
+                - latitude
+                - longitude
+                type: object
               locationClassName:
                 description: "The location class that indicates control plane behavior
                   of entities\nassociated with the location.\n\nValid values are:\n\t-

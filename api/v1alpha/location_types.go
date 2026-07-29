@@ -35,6 +35,33 @@ type LocationSpec struct {
 	//
 	// +kubebuilder:validation:Required
 	Provider LocationProvider `json:"provider"`
+
+	// The geographic coordinates of the location, used by consumers that need
+	// to plot the location on a map.
+	//
+	// +kubebuilder:validation:Optional
+	Coordinates *Coordinates `json:"coordinates,omitempty"`
+}
+
+// Coordinates describes a geographic point in decimal degrees (WGS 84).
+//
+// Latitude and longitude are serialized as strings rather than floats, per
+// Kubernetes API convention (float precision/serialization varies across
+// client languages).
+type Coordinates struct {
+	// Latitude in decimal degrees, in the range [-90, 90].
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Pattern=`^-?\d{1,2}(\.\d+)?$`
+	// +kubebuilder:validation:XValidation:message="latitude must be between -90 and 90",rule="double(self) >= -90.0 && double(self) <= 90.0"
+	Latitude string `json:"latitude"`
+
+	// Longitude in decimal degrees, in the range [-180, 180].
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Pattern=`^-?\d{1,3}(\.\d+)?$`
+	// +kubebuilder:validation:XValidation:message="longitude must be between -180 and 180",rule="double(self) >= -180.0 && double(self) <= 180.0"
+	Longitude string `json:"longitude"`
 }
 
 type LocationProvider struct {

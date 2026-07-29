@@ -8,6 +8,10 @@ webhookServer:
 gateway:
   targetDomain: prism.e2e.env.datum.net
   downstreamGatewayClassName: datum-downstream-gateway-e2e
+  # Enable DNSRecordSet creation for claimed Gateway hostnames. Requires
+  # dns-operator CRDs installed via `task test-infra:dns-crds` (wired into
+  # test-infra:up) before the operator starts.
+  enableDNSIntegration: true
   permittedTLSOptions:
     gateway.networking.datumapis.com/certificate-issuer: []
 downstreamResourceManagement:

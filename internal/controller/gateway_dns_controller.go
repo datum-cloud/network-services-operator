@@ -547,28 +547,46 @@ func buildDesiredDNSRecordSet(
 	}
 }
 
+// relativeOwnerName returns the DNS owner name for hostname relative to
+// zoneDomain. Trailing dots are stripped before comparison. Apex (hostname
+// equals the zone domain) yields "@". Multi-label prefixes are preserved with
+// their original casing (e.g. "a.b.example.com" in "example.com" → "a.b").
+// If hostname is not under the zone, the absolute hostname without a trailing
+// dot is returned as a safe fallback.
+func relativeOwnerName(hostname, zoneDomain string) string {
+	h := strings.TrimSuffix(hostname, ".")
+	z := strings.TrimSuffix(zoneDomain, ".")
+	if h == "" || z == "" {
+		return h
+	}
+	if strings.EqualFold(h, z) {
+		return "@"
+	}
+	// Case-insensitive suffix match on "."+zoneDomain, but keep original labels.
+	if len(h) > len(z)+1 && h[len(h)-len(z)-1] == '.' && strings.EqualFold(h[len(h)-len(z):], z) {
+		return h[:len(h)-len(z)-1]
+	}
+	return h
+}
+
 // buildDesiredDNSRecordSetSpec constructs the DNSRecordSetSpec that points
-// hostname at canonicalHostname. Both values are normalized to absolute FQDNs
-// (trailing dot) before being written into the record entry. The record type
-// is CNAME for non-apex hostnames and ALIAS for apex domains, as determined
-// by the caller.
+// hostname at canonicalHostname. The owner name is written relative to
+// dnsZone.Spec.DomainName (e.g. "api", "@"); CNAME/ALIAS content is
+// normalized to an absolute FQDN with a trailing dot. The record type is
+// CNAME for non-apex hostnames and ALIAS for apex domains, as determined by
+// the caller.
 func buildDesiredDNSRecordSetSpec(
 	hostname, canonicalHostname string,
 	dnsZone dnsv1alpha1.DNSZone,
 	rrType dnsv1alpha1.RRType,
 ) dnsv1alpha1.DNSRecordSetSpec {
-	fqdnHostname := hostname
-	if !strings.HasSuffix(fqdnHostname, ".") {
-		fqdnHostname = fqdnHostname + "."
-	}
-
 	fqdnTarget := canonicalHostname
 	if !strings.HasSuffix(fqdnTarget, ".") {
 		fqdnTarget = fqdnTarget + "."
 	}
 
 	var entry dnsv1alpha1.RecordEntry
-	entry.Name = fqdnHostname
+	entry.Name = relativeOwnerName(hostname, dnsZone.Spec.DomainName)
 	entry.TTL = ptr.To(int64(300))
 
 	switch rrType {

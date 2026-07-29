@@ -56,8 +56,9 @@ const gatewayResourceReplicatorFinalizer = "gateway.networking.datumapis.com/gat
 // resource (including TrafficProtectionPolicy/HTTPProxy/Connector). See config.go
 // SetDefaults_GatewayResourceReplicatorConfig.
 // +kubebuilder:rbac:groups="",resources=configmaps;secrets,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=gateway.envoyproxy.io,resources=backends;backendtrafficpolicies;securitypolicies,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=gateway.envoyproxy.io,resources=backends;backendtrafficpolicies;httproutefilters;securitypolicies,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=gateway.envoyproxy.io,resources=backends/finalizers;backendtrafficpolicies/finalizers;securitypolicies/finalizers,verbs=update
+// +kubebuilder:rbac:groups=gateway.envoyproxy.io,resources=backends/status;backendtrafficpolicies/status;httproutefilters/status;securitypolicies/status,verbs=get;update;patch
 
 type statusTransformFunc func(ctx context.Context, upstreamNamespace string, controllerName string, status map[string]any) (map[string]any, error)
 

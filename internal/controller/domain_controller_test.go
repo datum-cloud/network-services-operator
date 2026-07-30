@@ -842,6 +842,143 @@ func TestVerification_RequeueFloorsSubSecondToOneSecond(t *testing.T) {
 	assert.Equal(t, 1*time.Second, res.RequeueAfter)
 }
 
+func TestVerification_DesiredRefreshAttempt_ExpediteBehavior(t *testing.T) {
+	s := runtime.NewScheme()
+	_ = scheme.AddToScheme(s)
+	_ = networkingv1alpha.AddToScheme(s)
+
+	now := time.Date(2025, 11, 14, 12, 0, 0, 0, time.UTC)
+
+	newReconciler := func(cl client.Client, txtCalled *bool) *DomainReconciler {
+		return &DomainReconciler{
+			mgr: &fakeMockManager{cl: cl},
+			Config: config.NetworkServicesOperator{
+				DomainVerification: config.DomainVerificationConfig{
+					RetryIntervals:       []config.RetryInterval{{Interval: metav1.Duration{Duration: 5 * time.Minute}}},
+					RetryJitterMaxFactor: 0,
+				},
+				DomainRegistration: config.DomainRegistrationConfig{
+					LookupTimeout:   &metav1.Duration{Duration: 3 * time.Second},
+					RefreshInterval: &metav1.Duration{Duration: time.Hour},
+					JitterMaxFactor: 0,
+					RetryBackoff:    &metav1.Duration{Duration: time.Minute},
+				},
+			},
+			timeNow: func() time.Time { return now },
+			httpGet: func(ctx context.Context, url string) ([]byte, *http.Response, error) {
+				return nil, nil, fmt.Errorf("not implemented")
+			},
+			lookupTXT: func(ctx context.Context, name string) ([]string, error) {
+				*txtCalled = true
+				return nil, &net.DNSError{IsNotFound: true}
+			},
+			registryClient: &fakeRegistryClient{},
+		}
+	}
+
+	verificationScaffold := func(next, last time.Time) *networkingv1alpha.DomainVerificationStatus {
+		v := &networkingv1alpha.DomainVerificationStatus{
+			DNSRecord: networkingv1alpha.DNSVerificationRecord{
+				Name:    "_dnsverify.example.com",
+				Type:    "TXT",
+				Content: "token",
+			},
+			NextVerificationAttempt: metav1.Time{Time: next},
+		}
+		if !last.IsZero() {
+			v.LastVerificationAttempt = metav1.Time{Time: last}
+		}
+		return v
+	}
+
+	buildClient := func(dom *networkingv1alpha.Domain) client.Client {
+		return fake.NewClientBuilder().
+			WithScheme(s).
+			WithIndex(newUnstructuredForGVK(dnsZoneGVK), "status.domainRef.name", dnsZoneDomainRefNameIndex).
+			WithObjects(dom).
+			WithStatusSubresource(dom).
+			Build()
+	}
+
+	t.Run("skips when next attempt in future and no desired override", func(t *testing.T) {
+		dom := newDomain("default", "no-desired", func(d *networkingv1alpha.Domain) {
+			d.Status.Verification = verificationScaffold(now.Add(10*time.Minute), time.Time{})
+		})
+		cl := buildClient(dom)
+		txtCalled := false
+		r := newReconciler(cl, &txtCalled)
+
+		res, err := r.Reconcile(context.Background(), mcreconcile.Request{ClusterName: "test", Request: reconcile.Request{NamespacedName: client.ObjectKeyFromObject(dom)}})
+		assert.NoError(t, err)
+
+		assert.False(t, txtCalled, "verification should not be attempted when not due")
+		assert.GreaterOrEqual(t, res.RequeueAfter, 9*time.Minute)
+
+		got := &networkingv1alpha.Domain{}
+		_ = cl.Get(context.Background(), client.ObjectKeyFromObject(dom), got)
+		assert.True(t, got.Status.Verification.LastVerificationAttempt.IsZero(), "last attempt should remain zero when skipping")
+	})
+
+	t.Run("expedites when desired in past and last attempt before desired", func(t *testing.T) {
+		dom := newDomain("default", "expedite", func(d *networkingv1alpha.Domain) {
+			d.Status.Verification = verificationScaffold(now.Add(10*time.Minute), time.Time{})
+			desired := metav1.NewTime(now.Add(-1 * time.Minute))
+			d.Spec.DesiredVerificationRefreshAttempt = &desired
+		})
+		cl := buildClient(dom)
+		txtCalled := false
+		r := newReconciler(cl, &txtCalled)
+
+		_, err := r.Reconcile(context.Background(), mcreconcile.Request{ClusterName: "test", Request: reconcile.Request{NamespacedName: client.ObjectKeyFromObject(dom)}})
+		assert.NoError(t, err)
+
+		assert.True(t, txtCalled, "verification should be attempted due to expedite")
+
+		got := &networkingv1alpha.Domain{}
+		_ = cl.Get(context.Background(), client.ObjectKeyFromObject(dom), got)
+		assert.WithinDuration(t, now, got.Status.Verification.LastVerificationAttempt.Time, 2*time.Second, "last attempt should be stamped to now")
+	})
+
+	t.Run("does not expedite when last attempt already after desired", func(t *testing.T) {
+		last := now.Add(-1 * time.Minute)
+		dom := newDomain("default", "no-expedite", func(d *networkingv1alpha.Domain) {
+			d.Status.Verification = verificationScaffold(now.Add(10*time.Minute), last)
+			desired := metav1.NewTime(now.Add(-2 * time.Minute)) // before last attempt
+			d.Spec.DesiredVerificationRefreshAttempt = &desired
+		})
+		cl := buildClient(dom)
+		txtCalled := false
+		r := newReconciler(cl, &txtCalled)
+
+		_, err := r.Reconcile(context.Background(), mcreconcile.Request{ClusterName: "test", Request: reconcile.Request{NamespacedName: client.ObjectKeyFromObject(dom)}})
+		assert.NoError(t, err)
+
+		assert.False(t, txtCalled, "verification should not be attempted when desired already satisfied")
+
+		got := &networkingv1alpha.Domain{}
+		_ = cl.Get(context.Background(), client.ObjectKeyFromObject(dom), got)
+		assert.True(t, got.Status.Verification.LastVerificationAttempt.Time.Equal(last), "last attempt should remain unchanged")
+	})
+
+	t.Run("schedules wake to desired when desired sooner than next", func(t *testing.T) {
+		dom := newDomain("default", "schedule-desired", func(d *networkingv1alpha.Domain) {
+			d.Status.Verification = verificationScaffold(now.Add(20*time.Minute), time.Time{})
+			desired := metav1.NewTime(now.Add(5 * time.Minute)) // earlier than next
+			d.Spec.DesiredVerificationRefreshAttempt = &desired
+		})
+		cl := buildClient(dom)
+		txtCalled := false
+		r := newReconciler(cl, &txtCalled)
+
+		res, err := r.Reconcile(context.Background(), mcreconcile.Request{ClusterName: "test", Request: reconcile.Request{NamespacedName: client.ObjectKeyFromObject(dom)}})
+		assert.NoError(t, err)
+
+		assert.False(t, txtCalled, "verification should not be attempted when only scheduling to desired")
+		assert.GreaterOrEqual(t, res.RequeueAfter, 4*time.Minute)
+		assert.LessOrEqual(t, res.RequeueAfter, 6*time.Minute)
+	})
+}
+
 func TestRegistration_Subdomain_DelegationOverridesApexNS(t *testing.T) {
 	s := runtime.NewScheme()
 	_ = scheme.AddToScheme(s)

@@ -56,8 +56,9 @@ const gatewayResourceReplicatorFinalizer = "gateway.networking.datumapis.com/gat
 // resource (including TrafficProtectionPolicy/HTTPProxy/Connector). See config.go
 // SetDefaults_GatewayResourceReplicatorConfig.
 // +kubebuilder:rbac:groups="",resources=configmaps;secrets,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=gateway.envoyproxy.io,resources=backends;backendtrafficpolicies;securitypolicies,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=gateway.envoyproxy.io,resources=backends;backendtrafficpolicies;httproutefilters;securitypolicies,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=gateway.envoyproxy.io,resources=backends/finalizers;backendtrafficpolicies/finalizers;securitypolicies/finalizers,verbs=update
+// +kubebuilder:rbac:groups=gateway.envoyproxy.io,resources=backends/status;backendtrafficpolicies/status;httproutefilters/status;securitypolicies/status,verbs=get;update;patch
 
 type statusTransformFunc func(ctx context.Context, upstreamNamespace string, controllerName string, status map[string]any) (map[string]any, error)
 
@@ -263,6 +264,12 @@ func (r *GatewayResourceReplicatorReconciler) finalizeResource(
 			return ctrl.Result{}, err
 		}
 
+		if isSecurityPolicyGVK(resource.gvk) {
+			if err := r.reconcileReferencedSecretLabels(ctx, upstreamClient, resource.gvk, upstreamObj.GetNamespace()); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
+
 		controllerutil.RemoveFinalizer(upstreamObj, gatewayResourceReplicatorFinalizer)
 		if err := upstreamClient.Update(ctx, upstreamObj); err != nil {
 			if apierrors.IsNotFound(err) {
@@ -301,6 +308,11 @@ func (r *GatewayResourceReplicatorReconciler) ensureDownstreamResource(
 	}
 
 	if isSecurityPolicyGVK(resource.gvk) {
+		if err := r.reconcileReferencedSecretLabels(ctx, upstreamClient, resource.gvk, upstreamObj.GetNamespace()); err != nil {
+			syncOutcome = syncOutcomeError
+			return err
+		}
+
 		missing, err := r.missingDownstreamSecrets(ctx, upstreamObj, downstreamStrategy)
 		if err != nil {
 			syncOutcome = syncOutcomeError

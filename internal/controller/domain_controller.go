@@ -253,14 +253,33 @@ func (r *DomainReconciler) reconcileVerification(ctx context.Context, reader cli
 			verifiedDNSCondition.Message = "Update your DNS provider with record defined in `status.verification.dnsRecord`."
 			verifiedHTTPCondition.Message = "Update your HTTP server with token defined in `status.verification.httpToken`."
 		} else {
-			// If we're not yet due, short-circuit
-			if remaining := domainStatus.Verification.NextVerificationAttempt.Sub(r.timeNow()); remaining > 0 {
+			now := r.timeNow()
+
+			expedite := false
+			var desiredWake time.Time
+			if domain.Spec.DesiredVerificationRefreshAttempt != nil {
+				desired := domain.Spec.DesiredVerificationRefreshAttempt.Time
+				desiredPending := domainStatus.Verification.LastVerificationAttempt.IsZero() ||
+					domainStatus.Verification.LastVerificationAttempt.Time.Before(desired)
+				if !desired.IsZero() && !desired.After(now) && desiredPending {
+					expedite = true
+					logger.Info("expediting domain verification per spec.desiredVerificationRefreshAttempt", "desired", desired)
+				} else if desiredPending && desired.After(now) {
+					desiredWake = desired
+				}
+			}
+
+			// If we're not yet due and not expediting, short-circuit
+			if remaining := domainStatus.Verification.NextVerificationAttempt.Sub(now); remaining > 0 && !expedite {
 				logger.Info("not attempting another validation until remaining time elapsed", "remaining", remaining)
-				nextAttempt = r.timeNow().Add(remaining)
+				nextAttempt = now.Add(remaining)
+				if !desiredWake.IsZero() && desiredWake.Before(nextAttempt) {
+					nextAttempt = desiredWake
+				}
 			} else {
 				// Compute next backoff based on elapsed since last transition time
 				initialAttempt := verifiedCondition.LastTransitionTime.Time
-				elapsed := r.timeNow().Sub(initialAttempt)
+				elapsed := now.Sub(initialAttempt)
 				logger.Info("time elapsed since last transition time", "duration", elapsed)
 
 				requeueAfter := wait.Jitter(
@@ -268,8 +287,9 @@ func (r *DomainReconciler) reconcileVerification(ctx context.Context, reader cli
 					r.Config.DomainVerification.RetryJitterMaxFactor,
 				)
 
+				domainStatus.Verification.LastVerificationAttempt = metav1.NewTime(now)
 				// Set the next attempt on status (this intentionally triggers an immediate reconcile via status update)
-				domainStatus.Verification.NextVerificationAttempt = metav1.NewTime(r.timeNow().Add(requeueAfter))
+				domainStatus.Verification.NextVerificationAttempt = metav1.NewTime(now.Add(requeueAfter))
 				nextAttempt = domainStatus.Verification.NextVerificationAttempt.Time
 
 				// Perform verification attempts now

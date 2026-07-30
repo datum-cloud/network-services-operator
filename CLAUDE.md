@@ -193,3 +193,20 @@ Key changes:
 - **Commit types**: feat, fix, refactor, docs, test, chore, perf, style, ci
 - **No watermarks** or co-author tags
 - **Focus on what/why**, not how
+- **Scope**: the 80-char hard-wrap applies to commit messages only. PR
+  descriptions, GitHub issues, and comments render as GitHub-flavored markdown —
+  do not hard-wrap them; let prose reflow naturally and only break lines where
+  markdown needs it (lists, tables, code fences).
+
+## GitHub PR / Issue / Comment Conventions
+
+The "Be concise" rule above governs responses and code comments. It applies to
+GitHub prose too.
+
+- **Say it once.** Do not describe the same behaviour in prose and again in a
+  checklist, or restate the summary in the test plan. Reference it instead.
+- **Lead with the problem** in plain language, then what changed and why. Push
+  implementation detail into bullets or a follow-up, not the summary.
+- **Cut every word carrying no fact.** One dense paragraph beats three that
+  re-sell the same point. Brevity must not drop facts — compress, do not omit.
+- **Don't hard-wrap** prose (see the commit section above).

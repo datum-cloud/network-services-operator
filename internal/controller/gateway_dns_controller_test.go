@@ -422,7 +422,7 @@ func TestEnsureDNSRecordSets(t *testing.T) {
 				assert.Equal(t, dnsv1alpha1.RRTypeCNAME, rs.Spec.RecordType)
 				assert.Equal(t, "example-com", rs.Spec.DNSZoneRef.Name)
 				require.Len(t, rs.Spec.Records, 1)
-				assert.Equal(t, "api.example.com.", rs.Spec.Records[0].Name)
+				assert.Equal(t, "api", rs.Spec.Records[0].Name)
 				require.NotNil(t, rs.Spec.Records[0].CNAME)
 				// canonical hostname target should end with a dot
 				assert.True(t, len(rs.Spec.Records[0].CNAME.Content) > 0)
@@ -450,6 +450,7 @@ func TestEnsureDNSRecordSets(t *testing.T) {
 				rs := list.Items[0]
 				assert.Equal(t, dnsv1alpha1.RRTypeALIAS, rs.Spec.RecordType)
 				require.Len(t, rs.Spec.Records, 1)
+				assert.Equal(t, "@", rs.Spec.Records[0].Name)
 				require.NotNil(t, rs.Spec.Records[0].ALIAS)
 			},
 		},
@@ -480,7 +481,7 @@ func TestEnsureDNSRecordSets(t *testing.T) {
 				// Should use the more specific subdomain zone.
 				assert.Equal(t, "api-example-com", rs.Spec.DNSZoneRef.Name)
 				require.Len(t, rs.Spec.Records, 1)
-				assert.Equal(t, "v1.api.example.com.", rs.Spec.Records[0].Name)
+				assert.Equal(t, "v1", rs.Spec.Records[0].Name)
 			},
 		},
 		{
@@ -756,12 +757,16 @@ func TestEnsureDNSRecordSets_UpdateExistingRecord(t *testing.T) {
 		"expected RecordCreated or RecordUpdated on existing platform-managed record",
 	)
 
-	// The DNSRecordSet should still exist and contain the new canonical hostname.
+	// The DNSRecordSet should still exist, converge owner name to relative form,
+	// and contain the new canonical hostname.
 	var updatedRS dnsv1alpha1.DNSRecordSet
 	require.NoError(t, cl.Get(ctx, client.ObjectKey{Namespace: ns, Name: existingRSName}, &updatedRS))
 	require.Len(t, updatedRS.Spec.Records, 1)
+	assert.Equal(t, "api", updatedRS.Spec.Records[0].Name)
+	require.NotNil(t, updatedRS.Spec.Records[0].CNAME)
 	// The canonical hostname target should end with a dot.
 	assert.True(t, len(updatedRS.Spec.Records[0].CNAME.Content) > 0)
+	assert.Equal(t, ".", string(updatedRS.Spec.Records[0].CNAME.Content[len(updatedRS.Spec.Records[0].CNAME.Content)-1]))
 }
 
 // ---------------------------------------------------------------------------
@@ -1070,45 +1075,120 @@ func TestBuildDesiredDNSRecordSetSpec(t *testing.T) {
 	t.Parallel()
 
 	zone := *newDNSZone("ns", "example-com", "example.com")
+	apiZone := *newDNSZone("ns", "api-example-com", "api.example.com")
 
 	tests := []struct {
 		name              string
 		hostname          string
 		canonicalHostname string
+		zone              dnsv1alpha1.DNSZone
 		rrType            dnsv1alpha1.RRType
 		wantRecordType    dnsv1alpha1.RRType
-		wantFQDNName      string
+		wantName          string
 		wantFQDNContent   string
 		wantNilCNAME      bool
 		wantNilALIAS      bool
 	}{
 		{
-			name:              "CNAME record gets trailing dots on both name and content",
+			name:              "CNAME uses relative owner name; content stays FQDN",
 			hostname:          "api.example.com",
 			canonicalHostname: "gw.gateways.test.local",
+			zone:              zone,
 			rrType:            dnsv1alpha1.RRTypeCNAME,
 			wantRecordType:    dnsv1alpha1.RRTypeCNAME,
-			wantFQDNName:      "api.example.com.",
+			wantName:          "api",
 			wantFQDNContent:   "gw.gateways.test.local.",
 			wantNilALIAS:      true,
 		},
 		{
-			name:              "ALIAS record gets trailing dots on both name and content",
+			name:              "ALIAS apex uses @; content stays FQDN",
 			hostname:          "example.com",
 			canonicalHostname: "gw.gateways.test.local",
+			zone:              zone,
 			rrType:            dnsv1alpha1.RRTypeALIAS,
 			wantRecordType:    dnsv1alpha1.RRTypeALIAS,
-			wantFQDNName:      "example.com.",
+			wantName:          "@",
 			wantFQDNContent:   "gw.gateways.test.local.",
 			wantNilCNAME:      true,
 		},
 		{
-			name:              "already FQDN inputs do not get double dots",
+			name:              "case-insensitive apex still yields @",
+			hostname:          "Example.COM",
+			canonicalHostname: "gw.gateways.test.local",
+			zone:              zone,
+			rrType:            dnsv1alpha1.RRTypeALIAS,
+			wantRecordType:    dnsv1alpha1.RRTypeALIAS,
+			wantName:          "@",
+			wantFQDNContent:   "gw.gateways.test.local.",
+			wantNilCNAME:      true,
+		},
+		{
+			name:              "zone DomainName with trailing dot still yields relative name",
+			hostname:          "api.example.com",
+			canonicalHostname: "gw.gateways.test.local",
+			zone: func() dnsv1alpha1.DNSZone {
+				z := zone
+				z.Spec.DomainName = "example.com."
+				return z
+			}(),
+			rrType:          dnsv1alpha1.RRTypeCNAME,
+			wantRecordType:  dnsv1alpha1.RRTypeCNAME,
+			wantName:        "api",
+			wantFQDNContent: "gw.gateways.test.local.",
+			wantNilALIAS:    true,
+		},
+		{
+			name:              "hostname with trailing dot still yields relative name",
 			hostname:          "api.example.com.",
 			canonicalHostname: "gw.gateways.test.local.",
+			zone:              zone,
 			rrType:            dnsv1alpha1.RRTypeCNAME,
 			wantRecordType:    dnsv1alpha1.RRTypeCNAME,
-			wantFQDNName:      "api.example.com.",
+			wantName:          "api",
+			wantFQDNContent:   "gw.gateways.test.local.",
+			wantNilALIAS:      true,
+		},
+		{
+			name:              "multi-label relative owner name",
+			hostname:          "a.b.example.com",
+			canonicalHostname: "gw.gateways.test.local",
+			zone:              zone,
+			rrType:            dnsv1alpha1.RRTypeCNAME,
+			wantRecordType:    dnsv1alpha1.RRTypeCNAME,
+			wantName:          "a.b",
+			wantFQDNContent:   "gw.gateways.test.local.",
+			wantNilALIAS:      true,
+		},
+		{
+			name:              "preserves original casing of relative labels",
+			hostname:          "Help.API.example.com",
+			canonicalHostname: "gw.gateways.test.local",
+			zone:              zone,
+			rrType:            dnsv1alpha1.RRTypeCNAME,
+			wantRecordType:    dnsv1alpha1.RRTypeCNAME,
+			wantName:          "Help.API",
+			wantFQDNContent:   "gw.gateways.test.local.",
+			wantNilALIAS:      true,
+		},
+		{
+			name:              "relative name against more specific subdomain zone",
+			hostname:          "v1.api.example.com",
+			canonicalHostname: "gw.gateways.test.local",
+			zone:              apiZone,
+			rrType:            dnsv1alpha1.RRTypeCNAME,
+			wantRecordType:    dnsv1alpha1.RRTypeCNAME,
+			wantName:          "v1",
+			wantFQDNContent:   "gw.gateways.test.local.",
+			wantNilALIAS:      true,
+		},
+		{
+			name:              "hostname outside zone falls back to absolute without trailing dot",
+			hostname:          "other.example.org",
+			canonicalHostname: "gw.gateways.test.local",
+			zone:              zone,
+			rrType:            dnsv1alpha1.RRTypeCNAME,
+			wantRecordType:    dnsv1alpha1.RRTypeCNAME,
+			wantName:          "other.example.org",
 			wantFQDNContent:   "gw.gateways.test.local.",
 			wantNilALIAS:      true,
 		},
@@ -1117,14 +1197,14 @@ func TestBuildDesiredDNSRecordSetSpec(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			spec := buildDesiredDNSRecordSetSpec(tt.hostname, tt.canonicalHostname, zone, tt.rrType)
+			spec := buildDesiredDNSRecordSetSpec(tt.hostname, tt.canonicalHostname, tt.zone, tt.rrType)
 
 			assert.Equal(t, tt.wantRecordType, spec.RecordType)
-			assert.Equal(t, "example-com", spec.DNSZoneRef.Name)
+			assert.Equal(t, tt.zone.Name, spec.DNSZoneRef.Name)
 			require.Len(t, spec.Records, 1)
 
 			entry := spec.Records[0]
-			assert.Equal(t, tt.wantFQDNName, entry.Name)
+			assert.Equal(t, tt.wantName, entry.Name)
 			require.NotNil(t, entry.TTL)
 			assert.Equal(t, int64(300), *entry.TTL)
 

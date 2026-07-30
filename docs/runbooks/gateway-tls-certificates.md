@@ -15,6 +15,10 @@ so an unusable certificate is handled in two layers:
 A certificate is "unusable" when it has expired, is not valid yet, is missing,
 its certificate and key do not match, or it has not been issued yet.
 
+For how a hostname becomes an issued cert in the first place — issuance paths,
+issuer selection, the downstream solver, and re-issuance — see
+[Gateway certificate issuance model](../gateway-certificate-issuance-model.md).
+
 Related: issue [#212](https://github.com/datum-cloud/network-services-operator/issues/212).
 The infra-side `EnvoyListenerUpdateRejected` alert fires when the edge actually
 rejects a listener update — the alerts here are designed to fire *before* that

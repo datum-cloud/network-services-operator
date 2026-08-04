@@ -9,17 +9,24 @@ target.
 
 Every controller in the operator emits the standard controller-runtime counter
 `controller_runtime_reconcile_total`, labelled with `controller` (the reconciler
-name) and `result` (`error` / `success`). These alerts group by `controller`, so
-each reconciler is evaluated independently and the firing alert names the
-offending one in its `controller` label.
+name) and `result` (`error` / `success`). These alerts group by `cluster`,
+`namespace` and `controller`, so each reconciler is evaluated independently per
+deployment and the firing alert names both the offending reconciler and where it
+is running.
+
+The counter is emitted by every controller-runtime binary scraped into the same
+Prometheus, not only by this operator. A firing alert may therefore name a
+controller belonging to another component — read the `namespace` label before
+assuming the problem is in NSO.
 
 ## Shared diagnosis
 
-The `controller` label on the alert tells you which reconciler is failing. Find
-the specific objects and error messages in the controller logs:
+The `cluster` and `namespace` labels tell you where to look; the `controller`
+label tells you which reconciler is failing. Find the specific objects and error
+messages in the controller logs:
 
 ```sh
-kubectl -n <nso-ns> logs -l <controller-selector> | grep 'Reconciler error' | grep '"controller":"<controller>"'
+kubectl -n <namespace> logs -l <controller-selector> | grep 'Reconciler error' | grep '"controller":"<controller>"'
 ```
 
 Each error line names the namespace and name of the object that failed and the
@@ -40,6 +47,12 @@ Common error classes:
   RBAC for that resource.
 - `conflict` / `ResourceVersion` — transient write conflicts that resolve on
   their own and should not sustain a high error rate.
+- `not found` for a parent or cluster that no longer exists — the object is
+  orphaned and can never reconcile, so it retries forever and pins the ratio at
+  100% with no successes to dilute it. This is dead data rather than a live
+  outage: confirm the referenced parent is really gone, then remove the orphan.
+  Seen in prod for the `instance-projector` controller —
+  [datum-cloud/compute#194](https://github.com/datum-cloud/compute/issues/194).
 
 ## ControllerReconcileErrorRatioHigh
 

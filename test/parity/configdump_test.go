@@ -35,7 +35,11 @@ func buildSyntheticDump(t *testing.T, corazaFilter string) []byte {
 	// --- WAF-governed route + CONNECT route ---
 	wafMeta, err := structpb.NewStruct(map[string]any{
 		"resources": []any{map[string]any{
-			"kind": "TrafficProtectionPolicy", "namespace": "proj-ns", "name": "test-tpp", "mode": "Observe", "generation": float64(1),
+			"kind":       "TrafficProtectionPolicy",
+			"namespace":  "proj-ns",
+			"name":       "test-tpp",
+			"mode":       "Observe",
+			"generation": float64(1),
 		}},
 	})
 	require.NoError(t, err)

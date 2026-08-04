@@ -21,7 +21,7 @@ const (
 	// Karmada-aggregated value onto the project-CP TPP.
 	edgeProgrammedControllerName = "networking.datumapis.com/envoy-gateway-extension-server"
 
-	conditionTypeProgrammed                     = "Programmed"
+	conditionTypeProgrammed                                   = "Programmed"
 	conditionReasonProgrammed gatewayv1.PolicyConditionReason = "Programmed"
 )
 

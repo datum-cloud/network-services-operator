@@ -95,7 +95,8 @@ func scanListener(l *listenerv3.Listener, corazaFilterName string, act *Actual) 
 // --- identity formats (MUST match the extension server) ---
 
 func wafRouteKey(rc, vh, rt, tppNS, tppName, mode string, generation int64) string {
-	return strings.Join([]string{rc, vh, rt, tppNS + "/" + tppName + "/" + mode + "/" + strconv.FormatInt(generation, 10)}, keySep)
+	tpp := tppNS + "/" + tppName + "/" + mode + "/" + strconv.FormatInt(generation, 10)
+	return strings.Join([]string{rc, vh, rt, tpp}, keySep)
 }
 
 func connectorRouteKey(rc, vh, rt string) string {

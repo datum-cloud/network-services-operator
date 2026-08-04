@@ -1,6 +1,7 @@
 package parity
 
 import (
+	"strconv"
 	"strings"
 
 	clusterv3 "github.com/envoyproxy/go-control-plane/envoy/config/cluster/v3"
@@ -63,9 +64,9 @@ func scanRouteConfig(rc *routev3.RouteConfiguration, act *Actual) {
 	for _, vh := range rc.GetVirtualHosts() {
 		vhName := vh.GetName()
 		for _, rt := range vh.GetRoutes() {
-			if ns, name, mode, ok := datumGatewayTPP(rt); ok {
+			if ns, name, mode, generation, ok := datumGatewayTPP(rt); ok {
 				act.Keys[FamilyWAFRoute] = append(act.Keys[FamilyWAFRoute],
-					wafRouteKey(rcName, vhName, rt.GetName(), ns, name, mode))
+					wafRouteKey(rcName, vhName, rt.GetName(), ns, name, mode, generation))
 			}
 			if isConnectRoute(rt) {
 				act.Keys[FamilyConnectorRoute] = append(act.Keys[FamilyConnectorRoute],
@@ -93,8 +94,8 @@ func scanListener(l *listenerv3.Listener, corazaFilterName string, act *Actual) 
 
 // --- identity formats (MUST match the extension server) ---
 
-func wafRouteKey(rc, vh, rt, tppNS, tppName, mode string) string {
-	return strings.Join([]string{rc, vh, rt, tppNS + "/" + tppName + "/" + mode}, keySep)
+func wafRouteKey(rc, vh, rt, tppNS, tppName, mode string, generation int64) string {
+	return strings.Join([]string{rc, vh, rt, tppNS + "/" + tppName + "/" + mode + "/" + strconv.FormatInt(generation, 10)}, keySep)
 }
 
 func connectorRouteKey(rc, vh, rt string) string {
@@ -107,23 +108,24 @@ func listenerChainKey(listener, chain string) string {
 
 // --- detectors (mirror, in reverse, how the configuration is written) ---
 
-func datumGatewayTPP(rt *routev3.Route) (ns, name, mode string, ok bool) {
+func datumGatewayTPP(rt *routev3.Route) (ns, name, mode string, generation int64, ok bool) {
 	md := rt.GetMetadata()
 	if md == nil {
-		return "", "", "", false
+		return "", "", "", 0, false
 	}
 	dg := md.GetFilterMetadata()[datumGatewayMetaKey]
 	if dg == nil {
-		return "", "", "", false
+		return "", "", "", 0, false
 	}
 	res := dg.GetFields()["resources"].GetListValue()
 	if res == nil || len(res.GetValues()) == 0 {
-		return "", "", "", false
+		return "", "", "", 0, false
 	}
 	f := res.GetValues()[0].GetStructValue().GetFields()
 	return f["namespace"].GetStringValue(),
 		f["name"].GetStringValue(),
 		f["mode"].GetStringValue(),
+		int64(f["generation"].GetNumberValue()),
 		true
 }
 

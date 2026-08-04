@@ -121,6 +121,27 @@ var (
 		},
 	)
 
+	// TPPCacheGeneration is the TrafficProtectionPolicy generation currently in
+	// the extension-server informer cache on this edge. Compare with
+	// TPPAppliedGeneration to see sync vs translate lag.
+	TPPCacheGeneration = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "nso_extension_tpp_cache_generation",
+			Help: "TrafficProtectionPolicy generation currently in the extension-server informer cache on this edge.",
+		},
+		[]string{"namespace", "name"},
+	)
+
+	// TPPAppliedGeneration is the TrafficProtectionPolicy generation last
+	// successfully applied via PostTranslateModify on this edge.
+	TPPAppliedGeneration = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "nso_extension_tpp_applied_generation",
+			Help: "TrafficProtectionPolicy generation last successfully applied via PostTranslateModify on this edge.",
+		},
+		[]string{"namespace", "name"},
+	)
+
 	// ConnectorClustersTotal counts total connector backend cluster replacements
 	// across all hook invocations. One increment = one cluster replaced with a
 	// STATIC internal-upstream cluster.

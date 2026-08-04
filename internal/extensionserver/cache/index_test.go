@@ -454,6 +454,7 @@ func TestBuildPolicyIndexFromClient_TPPFieldsPreserved(t *testing.T) {
 	scheme := indexTestScheme(t)
 
 	tpp := newTPP("test-ns", "my-tpp", func(tpp *networkingv1alpha.TrafficProtectionPolicy) {
+		tpp.Generation = 7
 		tpp.Spec.Mode = networkingv1alpha.TrafficProtectionPolicyEnforce
 		tpp.Spec.RuleSets = []networkingv1alpha.TrafficProtectionPolicyRuleSet{
 			{
@@ -481,6 +482,7 @@ func TestBuildPolicyIndexFromClient_TPPFieldsPreserved(t *testing.T) {
 	info := tpps[0]
 	assert.Equal(t, "test-ns", info.Namespace)
 	assert.Equal(t, "my-tpp", info.Name)
+	assert.Equal(t, int64(7), info.Generation)
 	assert.Equal(t, networkingv1alpha.TrafficProtectionPolicyEnforce, info.Mode)
 	assert.NotEmpty(t, info.Directives, "OWASP CRS rules must generate non-empty directives")
 }

@@ -63,6 +63,7 @@ type PolicyIndex struct {
 type TPPInfo struct {
 	Namespace  string
 	Name       string
+	Generation int64
 	Mode       networkingv1alpha.TrafficProtectionPolicyMode
 	TargetRefs []v1alpha2.LocalPolicyTargetReferenceWithSectionName
 	// Directives is the pre-computed list of Coraza simple_directives for

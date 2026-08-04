@@ -106,9 +106,10 @@ func buildVHWithGatewayMeta(routes ...*routev3.Route) *routev3.VirtualHost {
 // The upstream namespace is fixed as "test-project" — all callers in this package use that value.
 func tppTargetingGateway(tppName, gwName string) extcache.TPPInfo {
 	return extcache.TPPInfo{
-		Namespace: "test-project",
-		Name:      tppName,
-		Mode:      networkingv1alpha.TrafficProtectionPolicyObserve,
+		Namespace:  "test-project",
+		Name:       tppName,
+		Generation: 1,
+		Mode:       networkingv1alpha.TrafficProtectionPolicyObserve,
 		TargetRefs: []gatewayv1alpha2.LocalPolicyTargetReferenceWithSectionName{
 			{
 				LocalPolicyTargetReference: gatewayv1.LocalPolicyTargetReference{
@@ -125,9 +126,10 @@ func tppTargetingGateway(tppName, gwName string) extcache.TPPInfo {
 // tppTargetingHTTPRoute returns a TPPInfo that targets the named HTTPRoute.
 func tppTargetingHTTPRoute(upstreamNS, tppName, routeName string) extcache.TPPInfo {
 	return extcache.TPPInfo{
-		Namespace: upstreamNS,
-		Name:      tppName,
-		Mode:      networkingv1alpha.TrafficProtectionPolicyEnforce,
+		Namespace:  upstreamNS,
+		Name:       tppName,
+		Generation: 1,
+		Mode:       networkingv1alpha.TrafficProtectionPolicyEnforce,
 		TargetRefs: []gatewayv1alpha2.LocalPolicyTargetReferenceWithSectionName{
 			{
 				LocalPolicyTargetReference: gatewayv1.LocalPolicyTargetReference{
@@ -283,7 +285,7 @@ func TestApplyTPPRouteConfig_GoverningGatewayTPP_AnnotatesRoutes(t *testing.T) {
 		VirtualHosts: []*routev3.VirtualHost{vh},
 	}
 
-	n, err := ApplyTPPRouteConfig(rc, idx, cfg)
+	n, err := ApplyTPPRouteConfig(rc, idx, cfg, nil)
 	require.NoError(t, err)
 	assert.Equal(t, 2, n, "both routes should be mutated")
 
@@ -327,7 +329,7 @@ func TestApplyTPPRouteConfig_NoEGMetadata_Skipped(t *testing.T) {
 		},
 	}
 
-	n, err := ApplyTPPRouteConfig(rc, idx, cfg)
+	n, err := ApplyTPPRouteConfig(rc, idx, cfg, nil)
 	require.NoError(t, err)
 	assert.Equal(t, 0, n, "VH without EG metadata must be skipped")
 
@@ -354,7 +356,7 @@ func TestApplyTPPRouteConfig_UnknownDSNamespace_Skipped(t *testing.T) {
 	)
 	rc := &routev3.RouteConfiguration{VirtualHosts: []*routev3.VirtualHost{vh}}
 
-	n, err := ApplyTPPRouteConfig(rc, idx, cfg)
+	n, err := ApplyTPPRouteConfig(rc, idx, cfg, nil)
 	require.NoError(t, err)
 	assert.Equal(t, 0, n, "VH with unknown dsNS must be skipped")
 }
@@ -371,7 +373,7 @@ func TestApplyTPPRouteConfig_NoGoverningTPP_RoutesUntouched(t *testing.T) {
 	)
 	rc := &routev3.RouteConfiguration{VirtualHosts: []*routev3.VirtualHost{vh}}
 
-	n, err := ApplyTPPRouteConfig(rc, idx, cfg)
+	n, err := ApplyTPPRouteConfig(rc, idx, cfg, nil)
 	require.NoError(t, err)
 	assert.Equal(t, 0, n, "route with no governing TPP must be untouched")
 	assert.Nil(t, rc.VirtualHosts[0].Routes[0].GetTypedPerFilterConfig(),
@@ -407,7 +409,7 @@ func TestApplyTPPRouteConfig_EmptyDirectives_RoutesUntouched(t *testing.T) {
 	)
 	rc := &routev3.RouteConfiguration{VirtualHosts: []*routev3.VirtualHost{vh}}
 
-	n, err := ApplyTPPRouteConfig(rc, idx, cfg)
+	n, err := ApplyTPPRouteConfig(rc, idx, cfg, nil)
 	require.NoError(t, err)
 	assert.Equal(t, 0, n, "TPP with no directives must not annotate routes")
 }
@@ -510,7 +512,7 @@ func TestApplyTPPRouteConfig_Disabled_StampsProjectName(t *testing.T) {
 		VirtualHosts: []*routev3.VirtualHost{vh},
 	}
 
-	n, err := ApplyTPPRouteConfig(rc, idx, cfg)
+	n, err := ApplyTPPRouteConfig(rc, idx, cfg, nil)
 	require.NoError(t, err)
 	assert.Equal(t, 0, n, "disabled Coraza must not count any WAF per-route mutations")
 
@@ -561,7 +563,7 @@ func TestApplyTPPRouteConfig_RouteLevelTPPWins(t *testing.T) {
 	vh := buildVHWithGatewayMeta(rt)
 	rc := &routev3.RouteConfiguration{VirtualHosts: []*routev3.VirtualHost{vh}}
 
-	n, err := ApplyTPPRouteConfig(rc, idx, cfg)
+	n, err := ApplyTPPRouteConfig(rc, idx, cfg, nil)
 	require.NoError(t, err)
 	assert.Equal(t, 1, n)
 

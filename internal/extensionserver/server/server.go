@@ -218,8 +218,9 @@ func (s *Server) PostTranslateModify(
 	tppListenersSpan.End()
 
 	_, tppRoutesSpan := tr.Start(mctx, "tpp.routes")
+	appliedTPPs := map[string]int64{}
 	for _, rc := range routes {
-		n, mutErr := mutate.ApplyTPPRouteConfig(rc, idx, &s.cfg.Coraza)
+		n, mutErr := mutate.ApplyTPPRouteConfig(rc, idx, &s.cfg.Coraza, appliedTPPs)
 		if mutErr != nil {
 			s.log.Error("apply tpp route config", "route_config", rc.GetName(), "err", mutErr)
 			tppRoutesSpan.RecordError(mutErr)
@@ -235,6 +236,15 @@ func (s *Server) PostTranslateModify(
 	}
 	tppRoutesSpan.SetAttributes(attribute.Int("routes.tpp_applied", tppCount))
 	tppRoutesSpan.End()
+
+	for key, gen := range appliedTPPs {
+		ns, name, ok := splitNamespaceName(key)
+		if !ok {
+			continue
+		}
+		extmetrics.TPPAppliedGeneration.WithLabelValues(ns, name).Set(float64(gen))
+	}
+	s.markTPPsProgrammed(ctx, appliedTPPs)
 
 	// --- Connector family ---
 	// Replace clusters BEFORE adding CONNECT routes so route wiring sees the

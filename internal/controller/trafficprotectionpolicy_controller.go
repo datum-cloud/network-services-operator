@@ -16,6 +16,7 @@ import (
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
@@ -60,6 +61,18 @@ const (
 	// PolicyReasonWaitingForListenersProgrammed indicates that the policy is waiting
 	// for HTTPS listeners to be Programmed=True before EnvoyPatchPolicies can be created.
 	PolicyReasonWaitingForListenersProgrammed gatewayv1.PolicyConditionReason = "WaitingForListenersProgrammed"
+
+	// PolicyReasonProgrammed indicates the policy generation has been programmed
+	// on all edges that should serve it.
+	PolicyReasonProgrammed gatewayv1.PolicyConditionReason = "Programmed"
+
+	// PolicyReasonProgrammedPending indicates the policy has been accepted but
+	// edge programming for the current generation has not completed.
+	PolicyReasonProgrammedPending gatewayv1.PolicyConditionReason = "Pending"
+
+	// PolicyReasonProgrammedPartialFailure indicates some but not all edges have
+	// programmed the current policy generation.
+	PolicyReasonProgrammedPartialFailure gatewayv1.PolicyConditionReason = "PartialFailure"
 
 	// tppEnvoyPatchPolicyPrefix is the name prefix for all EnvoyPatchPolicies
 	// written by the TrafficProtectionPolicy controller ("tpp-<gateway-name>").
@@ -242,11 +255,124 @@ func (r *TrafficProtectionPolicyReconciler) Reconcile(ctx context.Context, req N
 		}
 	}
 
+	r.setProgrammedConditionsFromDownstream(ctx, downstreamNamespaceName, trafficProtectionPolicies)
+
 	if err := r.updateTPPAncestorsStatus(ctx, cl.GetClient(), trafficProtectionPolicies, originalTrafficProtectionPolicies); err != nil {
 		return ctrl.Result{}, err
 	}
 
 	return ctrl.Result{}, nil
+}
+
+// setProgrammedConditionsFromDownstream mirrors edge-applied Programmed status
+// from the downstream (Karmada-aggregated) TPP onto each upstream ancestor.
+// Accepted remains attach-only; Programmed means the current generation is live
+// on all edges (AND aggregation encodes M/N in the message when partial).
+func (r *TrafficProtectionPolicyReconciler) setProgrammedConditionsFromDownstream(
+	ctx context.Context,
+	downstreamNamespaceName string,
+	policies []*policyContext,
+) {
+	logger := log.FromContext(ctx)
+	downstreamClient := r.DownstreamCluster.GetClient()
+	controllerName := string(r.Config.Gateway.ControllerName)
+
+	for _, policy := range policies {
+		downstreamTPP := &networkingv1alpha.TrafficProtectionPolicy{}
+		err := downstreamClient.Get(ctx, client.ObjectKey{
+			Namespace: downstreamNamespaceName,
+			Name:      policy.Name,
+		}, downstreamTPP)
+		if client.IgnoreNotFound(err) != nil {
+			logger.Error(err, "failed to get downstream trafficprotectionpolicy", "name", policy.Name, "namespace", downstreamNamespaceName)
+		}
+
+		for _, targetRef := range policy.Spec.TargetRefs {
+			ancestorRef := getAncestorRefForTarget(policy.Namespace, targetRef)
+			accepted := findAncestorCondition(policy.Status.Ancestors, controllerName, ancestorRef, string(gatewayv1.PolicyConditionAccepted))
+			if accepted == nil || accepted.Status != metav1.ConditionTrue {
+				continue
+			}
+
+			status, reason, message := programmedFromDownstream(downstreamTPP, err != nil, policy.Generation)
+			gatewaystatus.SetConditionForPolicyAncestor(
+				&policy.Status.PolicyStatus,
+				ancestorRef,
+				controllerName,
+				gatewayv1.PolicyConditionType(conditionTypeProgrammed),
+				status,
+				reason,
+				message,
+				policy.Generation,
+			)
+		}
+	}
+}
+
+// programmedFromDownstream derives the upstream Programmed condition from the
+// downstream (edge/Karmada-aggregated) TPP status. Karmada AND-aggregation
+// collapses per-edge feedback into ancestor Programmed conditions whose
+// messages carry M/N when partial.
+func programmedFromDownstream(
+	downstreamTPP *networkingv1alpha.TrafficProtectionPolicy,
+	missing bool,
+	desiredGeneration int64,
+) (metav1.ConditionStatus, gatewayv1.PolicyConditionReason, string) {
+	pendingMsg := fmt.Sprintf("Waiting for policy generation %d to be programmed on edges", desiredGeneration)
+	if missing || downstreamTPP == nil {
+		return metav1.ConditionFalse, PolicyReasonProgrammedPending, pendingMsg
+	}
+
+	var best *metav1.Condition
+	for i := range downstreamTPP.Status.Ancestors {
+		cond := apimeta.FindStatusCondition(downstreamTPP.Status.Ancestors[i].Conditions, conditionTypeProgrammed)
+		if cond == nil {
+			continue
+		}
+		if best == nil || cond.Status != metav1.ConditionTrue {
+			best = cond
+		}
+	}
+	if best == nil {
+		return metav1.ConditionFalse, PolicyReasonProgrammedPending, pendingMsg
+	}
+	if best.ObservedGeneration < desiredGeneration {
+		return metav1.ConditionFalse, PolicyReasonProgrammedPending, pendingMsg
+	}
+
+	message := best.Message
+	if message == "" {
+		message = fmt.Sprintf("Policy generation %d programmed on edges", desiredGeneration)
+	}
+
+	if best.Status == metav1.ConditionTrue {
+		return metav1.ConditionTrue, PolicyReasonProgrammed, message
+	}
+
+	reason := PolicyReasonProgrammedPending
+	if best.Reason == string(PolicyReasonProgrammedPartialFailure) {
+		reason = PolicyReasonProgrammedPartialFailure
+	}
+	return metav1.ConditionFalse, reason, message
+}
+
+func findAncestorCondition(
+	ancestors []gatewayv1.PolicyAncestorStatus,
+	controllerName string,
+	ancestorRef *gatewayv1alpha2.ParentReference,
+	conditionType string,
+) *metav1.Condition {
+	for i := range ancestors {
+		ancestor := &ancestors[i]
+		if string(ancestor.ControllerName) != controllerName {
+			continue
+		}
+		if !equality.Semantic.DeepEqual(ancestor.AncestorRef, *ancestorRef) {
+			continue
+		}
+		return apimeta.FindStatusCondition(ancestor.Conditions, conditionType)
+	}
+	return nil
 }
 
 func (r *TrafficProtectionPolicyReconciler) getTrafficProtectionPolicyContexts(
@@ -1338,13 +1464,52 @@ func (r *TrafficProtectionPolicyReconciler) SetupWithManager(mgr mcmanager.Manag
 		r.enqueuePoliciesForCertificate(),
 	)
 
+	// Watch downstream TPP status so edge Programmed feedback requeues upstream.
+	downstreamTPPSource := source.TypedKind(
+		r.DownstreamCluster.GetCache(),
+		&networkingv1alpha.TrafficProtectionPolicy{},
+		r.enqueuePoliciesForDownstreamTPP(),
+	)
+
 	return mcbuilder.TypedControllerManagedBy[NamespaceReconcileRequest](mgr).
 		Watches(&networkingv1alpha.TrafficProtectionPolicy{}, EnqueueRequestForObjectNamespace).
 		Watches(&gatewayv1.Gateway{}, EnqueueRequestForObjectNamespace).
 		Watches(&gatewayv1.HTTPRoute{}, EnqueueRequestForObjectNamespace).
 		WatchesRawSource(downstreamCertificateSource).
+		WatchesRawSource(downstreamTPPSource).
 		Named("trafficprotectionpolicy").
 		Complete(r)
+}
+
+// enqueuePoliciesForDownstreamTPP enqueues the upstream namespace when a
+// downstream TrafficProtectionPolicy status changes (edge Programmed feedback).
+func (r *TrafficProtectionPolicyReconciler) enqueuePoliciesForDownstreamTPP() handler.TypedEventHandler[*networkingv1alpha.TrafficProtectionPolicy, NamespaceReconcileRequest] {
+	return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, tpp *networkingv1alpha.TrafficProtectionPolicy) []NamespaceReconcileRequest {
+		logger := log.FromContext(ctx)
+
+		downstreamNamespaceName := tpp.GetNamespace()
+		var downstreamNamespace corev1.Namespace
+		if err := r.DownstreamCluster.GetClient().Get(ctx, client.ObjectKey{Name: downstreamNamespaceName}, &downstreamNamespace); err != nil {
+			logger.Error(err, "failed to get downstream namespace for trafficprotectionpolicy", "name", tpp.GetName(), jsonKeyNamespace, downstreamNamespaceName)
+			return nil
+		}
+
+		upstreamNamespace := downstreamNamespace.Labels[downstreamclient.UpstreamOwnerNamespaceLabel]
+		if upstreamNamespace == "" {
+			upstreamNamespace = tpp.Labels[downstreamclient.UpstreamOwnerNamespaceLabel]
+		}
+		if upstreamNamespace == "" {
+			return nil
+		}
+
+		clusterLabel := downstreamNamespace.Labels[downstreamclient.UpstreamOwnerClusterNameLabel]
+		upstreamClusterName := multicluster.ClusterName(downstreamclient.UpstreamClusterNameFromLabel(clusterLabel))
+
+		return []NamespaceReconcileRequest{{
+			Namespace:   upstreamNamespace,
+			ClusterName: upstreamClusterName,
+		}}
+	})
 }
 
 // enqueuePoliciesForCertificate returns an event handler that enqueues a reconcile

@@ -138,8 +138,9 @@ func initReplicationResourceConfigs() map[string]replicationResourceConfig {
 	// Policy types whose status is owned by NSO's upstream controllers —
 	// the replicator mirrors spec downstream so the extension server can read
 	// them from the local edge cluster. The replicator must NOT propagate
-	// downstream status back upstream (there is no downstream controller
-	// writing to these objects).
+	// downstream status back upstream wholesale: the extension server writes
+	// edge-local Programmed on TPP (NSO#266), and the upstream TPP reconciler
+	// explicitly mirrors the Karmada-aggregated Programmed condition.
 	policyGVKs := []schema.GroupVersionKind{
 		{Group: groupNetworkingDatumAPIs, Version: versionV1Alpha, Kind: KindTrafficProtectionPolicy},
 		{Group: groupNetworkingDatumAPIs, Version: versionV1Alpha, Kind: KindHTTPProxy},

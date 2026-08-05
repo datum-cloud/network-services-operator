@@ -168,7 +168,7 @@ spec:
               set -eu
 
               programmed_obs() {
-                kubectl get trafficprotectionpolicy gen-waf -o go-template='{{.metadata.generation}} {{range .status.ancestors}}{{range .conditions}}{{if eq .type "Programmed"}}{{.status}} {{.observedGeneration}}{{end}}{{end}}{{end}}{{println}}'
+                kubectl -n "$NAMESPACE" get trafficprotectionpolicy gen-waf -o go-template='{{.metadata.generation}} {{range .status.ancestors}}{{range .conditions}}{{if eq .type "Programmed"}}{{.status}} {{.observedGeneration}}{{end}}{{end}}{{end}}{{println}}'
               }
 
               set -- $(programmed_obs)
@@ -179,7 +179,7 @@ spec:
                 exit 1
               fi
 
-              kubectl patch trafficprotectionpolicy gen-waf --type=merge -p '{
+              kubectl -n "$NAMESPACE" patch trafficprotectionpolicy gen-waf --type=merge -p '{
                 "spec": {
                   "samplingPercentage": 50,
                   "ruleSets": [{
@@ -230,14 +230,14 @@ spec:
               done
 
               echo "Programmed never reached the post-edit generation (unbounded silent lag, #266)"
-              kubectl get trafficprotectionpolicy gen-waf -o yaml || true
+              kubectl -n "$NAMESPACE" get trafficprotectionpolicy gen-waf -o yaml || true
               exit 1
       catch:
         - script:
             timeout: 60s
             content: |
               set -x
-              kubectl get trafficprotectionpolicy gen-waf -o yaml || true
+              kubectl -n "$NAMESPACE" get trafficprotectionpolicy gen-waf -o yaml || true
               kubectl -n datum-downstream-gateway logs deploy/envoy-gateway-extension-server --tail=200 || true
 
     - name: Benign traffic still reaches the backend after the generation bump

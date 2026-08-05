@@ -200,13 +200,11 @@ Key changes:
 
 ## GitHub PR / Issue / Comment Conventions
 
-The "Be concise" rule above governs responses and code comments. It applies to
-GitHub prose too.
+The `datum-platform:pr-conventions` skill owns these rules for every repo, and
+this one adds nothing. Read it before drafting GitHub content.
 
-- **Say it once.** Do not describe the same behaviour in prose and again in a
-  checklist, or restate the summary in the test plan. Reference it instead.
-- **Lead with the problem** in plain language, then what changed and why. Push
-  implementation detail into bullets or a follow-up, not the summary.
-- **Cut every word carrying no fact.** One dense paragraph beats three that
-  re-sell the same point. Brevity must not drop facts — compress, do not omit.
-- **Don't hard-wrap** prose (see the commit section above).
+It carries the countable bar — a four-sentence summary, a four-checkbox test
+plan, no file paths or identifiers in the opening post, no hard-wrapped prose —
+and the writing rules behind it. The skill's `pr-op-gate` hook measures a body
+on `gh pr|issue create|edit` and blocks the post when it misses, naming the rule
+and the count that broke it.

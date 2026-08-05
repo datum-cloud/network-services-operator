@@ -50,6 +50,19 @@ spec:
         summary: "Gateway {{ $labels.resource_name }} has been degraded for over 60 seconds"
         description: "Gateway {{ $labels.resource_name }} in namespace {{ $labels.resource_namespace }} has been in a degraded state for over 60 seconds without recovering, which exceeds the 60-second SLO threshold."
 
+    - alert: TrafficProtectionPolicyApplyLagSLOViolation
+      expr: |
+        max by (cluster, name, exported_namespace) (nso_extension_tpp_cache_generation)
+          >
+        max by (cluster, name, exported_namespace) (nso_extension_tpp_applied_generation)
+      for: 30s
+      labels:
+        severity: critical
+        slo_violation: "true"
+      annotations:
+        summary: "TrafficProtectionPolicy {{ $labels.name }} apply lag on {{ $labels.cluster }} exceeds 30s"
+        description: "Edge {{ $labels.cluster }} has TrafficProtectionPolicy {{ $labels.exported_namespace }}/{{ $labels.name }} cached at a generation ahead of the last applied generation for over 30 seconds. The edge may be serving stale WAF config for this policy."
+
   # TLS certificate health alerts fire on nso_* metrics emitted directly by the
   # NSO operator and extension server. They are available in the same Prometheus
   # that loads this rule, alongside the envoy_gateway_* metrics above.

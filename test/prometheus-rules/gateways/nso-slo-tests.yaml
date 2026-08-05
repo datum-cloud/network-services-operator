@@ -99,3 +99,51 @@ tests:
       - eval_time: 1m
         alertname: GatewayNotReadySLOViolation
         exp_alerts: []
+  # TrafficProtectionPolicyApplyLagSLOViolation — cache ahead of applied for >30s
+  - interval: 30s
+    input_series:
+      - series: 'nso_extension_tpp_cache_generation{cluster="edge-a", name="waf-pol", exported_namespace="ns-tenant", pod="ext-0"}'
+        values: '5+0x4'
+      - series: 'nso_extension_tpp_cache_generation{cluster="edge-a", name="waf-pol", exported_namespace="ns-tenant", pod="ext-1"}'
+        values: '5+0x4'
+      - series: 'nso_extension_tpp_applied_generation{cluster="edge-a", name="waf-pol", exported_namespace="ns-tenant", pod="ext-0"}'
+        values: '4+0x4'
+      - series: 'nso_extension_tpp_applied_generation{cluster="edge-a", name="waf-pol", exported_namespace="ns-tenant", pod="ext-1"}'
+        values: '4+0x4'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: TrafficProtectionPolicyApplyLagSLOViolation
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              slo_violation: "true"
+              cluster: edge-a
+              name: waf-pol
+              exported_namespace: ns-tenant
+            exp_annotations:
+              summary: "TrafficProtectionPolicy waf-pol apply lag on edge-a exceeds 30s"
+              description: "Edge edge-a has TrafficProtectionPolicy ns-tenant/waf-pol cached at a generation ahead of the last applied generation for over 30 seconds. The edge may be serving stale WAF config for this policy."
+
+  # TrafficProtectionPolicyApplyLagSLOViolation — in sync (should NOT alert)
+  - interval: 30s
+    input_series:
+      - series: 'nso_extension_tpp_cache_generation{cluster="edge-a", name="waf-pol", exported_namespace="ns-tenant", pod="ext-0"}'
+        values: '5+0x4'
+      - series: 'nso_extension_tpp_applied_generation{cluster="edge-a", name="waf-pol", exported_namespace="ns-tenant", pod="ext-0"}'
+        values: '5+0x4'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: TrafficProtectionPolicyApplyLagSLOViolation
+        exp_alerts: []
+
+  # TrafficProtectionPolicyApplyLagSLOViolation — brief skew clears before 30s (should NOT alert)
+  - interval: 15s
+    input_series:
+      - series: 'nso_extension_tpp_cache_generation{cluster="edge-a", name="waf-pol", exported_namespace="ns-tenant", pod="ext-0"}'
+        values: '5 5 5 5'
+      - series: 'nso_extension_tpp_applied_generation{cluster="edge-a", name="waf-pol", exported_namespace="ns-tenant", pod="ext-0"}'
+        values: '4 4 5 5'
+    alert_rule_test:
+      - eval_time: 45s
+        alertname: TrafficProtectionPolicyApplyLagSLOViolation
+        exp_alerts: []

@@ -171,7 +171,8 @@ spec:
                 kubectl get trafficprotectionpolicy gen-waf -o go-template='{{.metadata.generation}} {{range .status.ancestors}}{{range .conditions}}{{if eq .type "Programmed"}}{{.status}} {{.observedGeneration}}{{end}}{{end}}{{end}}{{println}}'
               }
 
-              read -r gen1 status1 obs1 <<<"$(programmed_obs)"
+              set -- $(programmed_obs)
+              gen1=$1 status1=$2 obs1=$3
               echo "before patch: generation=${gen1} Programmed=${status1} observedGeneration=${obs1}"
               if [ "${status1}" != "True" ] || [ -z "${obs1}" ] || [ "${obs1}" -lt "${gen1}" ]; then
                 echo "precondition failed: Programmed must be True for the current generation"
@@ -191,18 +192,22 @@ spec:
               }'
 
               skew_seen=false
-              for i in $(seq 1 20); do
-                read -r gen status obs <<<"$(programmed_obs)"
+              i=1
+              while [ "$i" -le 20 ]; do
+                set -- $(programmed_obs)
+                gen=$1 status=$2 obs=$3
                 echo "skew probe ${i}: generation=${gen} Programmed=${status} observedGeneration=${obs}"
                 if [ "${gen}" -le "${gen1}" ]; then
-                  sleep 0.5
+                  sleep 1
+                  i=$((i + 1))
                   continue
                 fi
                 if [ "${status}" != "True" ] || [ -z "${obs}" ] || [ "${obs}" -lt "${gen}" ]; then
                   skew_seen=true
                   break
                 fi
-                sleep 0.5
+                sleep 1
+                i=$((i + 1))
               done
 
               if [ "${skew_seen}" != "true" ]; then
@@ -211,14 +216,17 @@ spec:
                 exit 1
               fi
 
-              for i in $(seq 1 60); do
-                read -r gen status obs <<<"$(programmed_obs)"
+              i=1
+              while [ "$i" -le 60 ]; do
+                set -- $(programmed_obs)
+                gen=$1 status=$2 obs=$3
                 echo "converge probe ${i}: generation=${gen} Programmed=${status} observedGeneration=${obs}"
                 if [ "${status}" = "True" ] && [ -n "${obs}" ] && [ "${obs}" -ge "${gen}" ] && [ "${gen}" -gt "${gen1}" ]; then
                   echo "Programmed caught up to generation ${gen}"
                   exit 0
                 fi
                 sleep 3
+                i=$((i + 1))
               done
 
               echo "Programmed never reached the post-edit generation (unbounded silent lag, #266)"

@@ -29,11 +29,21 @@ rules:
   - apiGroups:
       - networking.datumapis.com
     resources:
-      - trafficprotectionpolicies/status
       - httpproxies/status
       - connectors/status
     verbs:
       - get
+  # Edge-local Programmed feedback for TrafficProtectionPolicy (NSO#266). The
+  # extension server writes status only on the edge replica after a successful
+  # WAF apply; upstream NSO mirrors the Karmada-aggregated value to tenants.
+  - apiGroups:
+      - networking.datumapis.com
+    resources:
+      - trafficprotectionpolicies/status
+    verbs:
+      - get
+      - update
+      - patch
   # The edge re-translation controller patches a trigger annotation onto
   # Gateways to make Envoy Gateway re-translate when a Connector's liveness
   # changes.

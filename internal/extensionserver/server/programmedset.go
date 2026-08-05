@@ -129,8 +129,8 @@ func buildProgrammedSet(
 			for _, rt := range vh.GetRoutes() {
 				// The identity includes the protection policy governing the route,
 				// so a route protected by the wrong policy shows up as a mismatch.
-				if ns, name, mode, ok := datumGatewayTPP(rt); ok {
-					add(FamilyWAFRoute, wafRouteKey(rcName, vhName, rt.GetName(), ns, name, mode))
+				if ns, name, mode, generation, ok := datumGatewayTPP(rt); ok {
+					add(FamilyWAFRoute, wafRouteKey(rcName, vhName, rt.GetName(), ns, name, mode, generation))
 				}
 				if isConnectRoute(rt) {
 					add(FamilyConnectorRoute, connectorRouteKey(rcName, vhName, rt.GetName()))

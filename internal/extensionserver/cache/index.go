@@ -16,6 +16,7 @@ import (
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	networkingv1alpha1 "go.datum.net/network-services-operator/api/v1alpha1"
 	"go.datum.net/network-services-operator/internal/downstreamclient"
+	extmetrics "go.datum.net/network-services-operator/internal/extensionserver/metrics"
 )
 
 // BuildPolicyIndexFromClient constructs the per-call in-memory policy index
@@ -108,11 +109,13 @@ func populateFromClient(ctx context.Context, cl client.Client, idx *PolicyIndex,
 		info := TPPInfo{
 			Namespace:  tpp.Namespace,
 			Name:       tpp.Name,
+			Generation: tpp.Generation,
 			Mode:       tpp.Spec.Mode,
 			TargetRefs: tpp.Spec.TargetRefs,
 			Directives: computeCorazaDirectives(tpp, baseDirectives),
 		}
 		idx.TPPs[effectiveNS] = append(idx.TPPs[effectiveNS], info)
+		extmetrics.TPPCacheGeneration.WithLabelValues(info.Namespace, info.Name).Set(float64(info.Generation))
 	}
 
 	// --- HTTPProxies → ConnectorInfo ---

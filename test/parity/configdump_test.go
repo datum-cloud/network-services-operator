@@ -35,7 +35,11 @@ func buildSyntheticDump(t *testing.T, corazaFilter string) []byte {
 	// --- WAF-governed route + CONNECT route ---
 	wafMeta, err := structpb.NewStruct(map[string]any{
 		"resources": []any{map[string]any{
-			"kind": "TrafficProtectionPolicy", "namespace": "proj-ns", "name": "test-tpp", "mode": "Observe",
+			"kind":       "TrafficProtectionPolicy",
+			"namespace":  "proj-ns",
+			"name":       "test-tpp",
+			"mode":       "Observe",
+			"generation": float64(1),
 		}},
 	})
 	require.NoError(t, err)
@@ -132,7 +136,7 @@ func TestParseAndScan_EndToEnd(t *testing.T) {
 	assert.Equal(t, []string{"good-cert"}, dump.SecretNames)
 
 	act := ScanActual(dump, corazaFilter, nil)
-	assert.Equal(t, []string{wafRouteKey("gw/https", "vh", "fwd", "proj-ns", "test-tpp", "Observe")},
+	assert.Equal(t, []string{wafRouteKey("gw/https", "vh", "fwd", "proj-ns", "test-tpp", "Observe", 1)},
 		normalize(act.Keys[FamilyWAFRoute]))
 	assert.Equal(t, []string{"httproute/proj-ns/proxy/rule/0"}, normalize(act.Keys[FamilyConnectorCluster]))
 	assert.Equal(t, []string{connectorRouteKey("gw/https", "vh", "connector-connect-vh")},
@@ -154,7 +158,7 @@ func TestParseAndScan_FullParity(t *testing.T) {
 	// Expected derived from the same artifact set (as the programmed-set endpoint
 	// would report it).
 	expected := exp(map[Family][]string{
-		FamilyWAFRoute:         {wafRouteKey("gw/https", "vh", "fwd", "proj-ns", "test-tpp", "Observe")},
+		FamilyWAFRoute:         {wafRouteKey("gw/https", "vh", "fwd", "proj-ns", "test-tpp", "Observe", 1)},
 		FamilyConnectorCluster: {"httproute/proj-ns/proxy/rule/0"},
 		FamilyConnectorRoute:   {connectorRouteKey("gw/https", "vh", "connector-connect-vh")},
 		FamilyWAFHCM:           {listenerChainKey("gw/https", "fc")},

@@ -20,17 +20,26 @@
 #     "failed to get downstream namespace name: failed to get downstream namespace:
 #      failed to get upstream namespace: Namespace \"strand-ns\" not found"}
 #
-# The finalizer never completes, so the upstream Gateway is stuck terminating
-# forever and the anchor ConfigMap, the mirrored Gateway and the DNSEndpoint all
-# stay on the edge. In production those objects are propagated on to every edge
-# cluster by Karmada, so a deleted project's listener and DNS records go on
-# serving real traffic with no upstream object left to explain them or to
-# delete them through.
+# The finalizer never completes, so the anchor ConfigMap, the mirrored Gateway
+# and the DNSEndpoint all stay on the edge. In production those objects are
+# propagated on to every edge cluster by Karmada, so a deleted project's listener
+# and DNS records go on serving real traffic with no upstream object left to
+# explain them or to delete them through. That is what this test requires to
+# stop happening.
 #
 # The same failure is not specific to gateways: the trafficprotectionpolicy
 # controller resolves the edge namespace the same way and logs the same error at
 # the same moment, which is why the fix belongs in the shared downstream-client
 # layer rather than in one controller.
+#
+# What this test does NOT require, and why. The upstream Gateway itself stays
+# terminating forever, because NamespaceLifecycle admission refuses every write
+# except DELETE in a namespace that does not exist — so once the namespace is
+# force-finalized, nobody, not even a cluster admin, can remove the finalizer.
+# No change to NSO can close that; it is the upstream half of the problem,
+# milo-os/milo#750. The last step documents the gap and proves it is the API
+# server refusing the write rather than NSO failing to try, instead of quietly
+# asserting a guarantee this side of the system cannot keep.
 #
 # Why the namespace is force-finalized rather than the whole project deleted.
 # The trigger is the upstream namespace vanishing while NSO still has work to
@@ -346,9 +355,9 @@ spec:
                   - status: "True"
                 (conditions[?type == 'Programmed']):
                   - status: "True"
-        - description: The DNSEndpoint and the anchor ConfigMap that owns the mirrored objects both exist.
+        - description: The DNSEndpoint and the anchor ConfigMap that owns the mirrored objects both exist. Polled, because they are written by a separate pass that can land shortly after the Gateway is Programmed.
           script:
-            timeout: 120s
+            timeout: 180s
             cluster: nso-downstream
             env:
               - name: DS_NS
@@ -357,10 +366,16 @@ spec:
                 value: ($gatewayName)
             content: |
               set -eu
-              kubectl -n "${DS_NS}" get dnsendpoint "${GATEWAY_NAME}" >/dev/null
-              ANCHORS="$(kubectl -n "${DS_NS}" get configmap \
-                -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' | grep '^anchor-' || true)"
-              [ -n "${ANCHORS}" ] || { echo "ERROR: no anchor ConfigMap in ${DS_NS}; nothing owns the mirrored objects"; exit 1; }
+              ready=""
+              for i in $(seq 1 30); do
+                ANCHORS="$(kubectl -n "${DS_NS}" get configmap \
+                  -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null | grep '^anchor-' || true)"
+                if kubectl -n "${DS_NS}" get dnsendpoint "${GATEWAY_NAME}" >/dev/null 2>&1 && [ -n "${ANCHORS}" ]; then
+                  ready="yes"; break
+                fi
+                sleep 4
+              done
+              [ -n "${ready}" ] || { echo "ERROR: ${DS_NS} never gained both a DNSEndpoint and an anchor ConfigMap; there is nothing for the rest of this test to require the cleanup of"; kubectl -n "${DS_NS}" get gateway,dnsendpoint,configmap || true; exit 1; }
               echo "--- edge namespace ${DS_NS} as created ---"
               kubectl -n "${DS_NS}" get gateway,dnsendpoint,configmap
       catch:
@@ -450,16 +465,18 @@ spec:
       description: |
         The guarantee. The customer deletes the Gateway; within
         ($cleanupWindowSeconds) the mirrored Gateway, the DNSEndpoint and the
-        anchor ConfigMap must all be gone from the edge, and the upstream Gateway
-        must have lost its finalizer and been removed. Whether or not the
+        anchor ConfigMap must all be gone from the edge. Whether or not the
         upstream namespace still exists is NSO's problem, not the customer's.
 
-        This step fails today. NSO's finalizer cannot resolve the edge namespace
-        without the upstream namespace, so it errors on every attempt, the
-        upstream Gateway stays terminating forever, and the edge objects stay
-        exactly where they are — in production, still serving. On failure the
-        step prints the surviving objects and the NSO log lines that explain
-        them, so the diagnosis is in the output rather than somewhere else.
+        Before the fix this failed: NSO's finalizer could not resolve the edge
+        namespace without the upstream namespace, so it errored on every attempt
+        and the edge objects stayed exactly where they were — in production,
+        still serving. On failure the step prints the surviving objects, so the
+        diagnosis is in the output rather than somewhere else.
+
+        The last op is not part of the guarantee. It records the half of this
+        that NSO cannot fix: the upstream Gateway can never be written again, so
+        its finalizer can never be removed. See the header.
 
         The edge namespace is re-derived here from its label rather than from the
         UID captured earlier: chainsaw outputs are step-scoped, and the upstream
@@ -549,9 +566,9 @@ spec:
               echo "--- surviving objects in ${DS_NS} ---"
               kubectl -n "${DS_NS}" get gateway,dnsendpoint,configmap || true
               exit 1
-        - description: And the upstream Gateway itself is released rather than stuck terminating behind a finalizer that can never complete.
+        - description: THE GAP - the upstream Gateway stays terminating, and nothing on this side of the system can change that.
           script:
-            timeout: 300s
+            timeout: 180s
             cluster: nso-upstream
             env:
               - name: PROJECT
@@ -560,8 +577,6 @@ spec:
                 value: ($projectNamespace)
               - name: GATEWAY_NAME
                 value: ($gatewayName)
-              - name: WINDOW
-                value: ($cleanupWindowSeconds)
               - name: MILO_PORT
                 value: ($miloLocalPort)
               - name: MILO_TOKEN
@@ -579,30 +594,35 @@ spec:
               done
               PROJ="kubectl --kubeconfig ${WORK}/project.yaml"
 
-              deadline=$(( $(date +%s) + WINDOW ))
-              released=""
-              while [ "$(date +%s)" -lt "${deadline}" ]; do
-                if ! ${PROJ} -n "${PROJECT_NS}" get gateway "${GATEWAY_NAME}" >/dev/null 2>&1; then
-                  released="yes"; break
-                fi
-                echo "upstream gateway ${GATEWAY_NAME} still present"
-                sleep 5
-              done
-
-              if [ -n "${released}" ]; then
-                echo "OK: the upstream gateway was released and removed"
+              if ! ${PROJ} -n "${PROJECT_NS}" get gateway "${GATEWAY_NAME}" >/dev/null 2>&1; then
+                echo "OK: the upstream gateway is gone. The API server now allows objects in a"
+                echo "    force-finalized namespace to be updated, so the gap this step documents"
+                echo "    has closed. Fold this into the guarantee above and update the header."
                 exit 0
               fi
 
-              echo
-              echo "STUCK: the upstream gateway is still terminating; NSO's finalizer never completed."
+              echo "the upstream gateway is still terminating:"
               ${PROJ} -n "${PROJECT_NS}" get gateway "${GATEWAY_NAME}" \
-                -o jsonpath='deletionTimestamp={.metadata.deletionTimestamp}{"\n"}finalizers={.metadata.finalizers}{"\n"}' || true
+                -o jsonpath='  deletionTimestamp={.metadata.deletionTimestamp}{"\n"}  finalizers={.metadata.finalizers}{"\n"}'
+
+              # Prove this is the API server and not NSO, by trying the same write
+              # as a cluster admin. NamespaceLifecycle admission rejects every
+              # operation except DELETE in a namespace that does not exist, so the
+              # finalizer cannot be removed by anyone.
+              OUT="$(${PROJ} -n "${PROJECT_NS}" patch gateway "${GATEWAY_NAME}" \
+                --type=json -p '[{"op":"remove","path":"/metadata/finalizers"}]' 2>&1 || true)"
+              echo "a cluster admin removing the finalizer by hand gets: ${OUT}"
+              case "${OUT}" in
+                *"namespaces \"${PROJECT_NS}\" not found"*) ;;
+                *) echo "ERROR: expected the API server to refuse the write because the namespace is gone, but it said: ${OUT}"; exit 1 ;;
+              esac
+
               echo
-              echo "--- why: NSO cannot resolve the edge namespace without the upstream namespace ---"
-              kubectl -n network-services-operator-system logs -l app.kubernetes.io/name=network-services-operator --tail=400 2>/dev/null \
-                | grep 'failed to get upstream namespace' | tail -5 || true
-              exit 1
+              echo "GAP (not NSO's to close): an object whose namespace was force-finalized can never"
+              echo "be written again, so its finalizer can never be removed and the object stays in"
+              echo "etcd until the whole project control plane is torn down. The fix belongs upstream"
+              echo "in the purge ordering — milo-os/milo#750. What matters for customers is the edge,"
+              echo "and the step above requires that to be clean regardless."
       catch:
         - script:
             cluster: nso-downstream

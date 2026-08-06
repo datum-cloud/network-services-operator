@@ -1,0 +1,662 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+#
+# A purged project's edge configuration is stranded and keeps serving traffic.
+#
+# This test asserts the CORRECT behavior: when a customer's gateway goes away,
+# everything NSO put on the edge for it goes away too. It fails until the
+# stranding bug is fixed, and it is expected to keep passing afterwards. There
+# is nothing to flip.
+#
+# What goes wrong. Every downstream cleanup path in NSO resolves the edge
+# namespace by reading the *upstream* namespace and deriving ns-<uid> from its
+# metadata.uid. Milo's project purge force-finalizes that upstream namespace
+# (it clears spec.finalizers directly, so the namespace disappears whether or
+# not anything is still cleaning up inside it — see
+# milo-os/milo#750 and config/e2e-milo/purge-project.sh, which replays the same
+# ordering). From that moment NSO can no longer answer "which edge namespace
+# does this object belong to", so its finalizer fails on every attempt:
+#
+#   ERROR Reconciler error {"controller": "gateway", "error":
+#     "failed to get downstream namespace name: failed to get downstream namespace:
+#      failed to get upstream namespace: Namespace \"strand-ns\" not found"}
+#
+# The finalizer never completes, so the upstream Gateway is stuck terminating
+# forever and the anchor ConfigMap, the mirrored Gateway and the DNSEndpoint all
+# stay on the edge. In production those objects are propagated on to every edge
+# cluster by Karmada, so a deleted project's listener and DNS records go on
+# serving real traffic with no upstream object left to explain them or to
+# delete them through.
+#
+# The same failure is not specific to gateways: the trafficprotectionpolicy
+# controller resolves the edge namespace the same way and logs the same error at
+# the same moment, which is why the fix belongs in the shared downstream-client
+# layer rather than in one controller.
+#
+# Why the namespace is force-finalized rather than the whole project deleted.
+# The trigger is the upstream namespace vanishing while NSO still has work to
+# do in it, and that is exactly what a project purge does. Removing only the
+# namespace isolates that trigger: the project and its control plane stay up, so
+# the test can still ask the API server about the Gateway afterwards and watch
+# the finalizer fail in place. Deleting the whole project would destroy the
+# evidence along with the bug.
+#
+# Not the same bug as project-deletion-namespace-leak. That test is about the
+# empty edge *namespace* surviving after a clean teardown. This one is about the
+# *objects* inside it surviving because teardown cannot run at all. Both are
+# open; they fail in different places and are fixed by different changes.
+#
+# Talking to the project control plane. The upstream Gateway does not live in
+# the nso-upstream cluster; it lives in a Milo project control plane, reached at
+# https://127.0.0.1:16443/apis/resourcemanager.miloapis.com/v1alpha1/projects/<project>/control-plane
+# through a port-forward to svc/milo-apiserver in milo-system on nso-upstream.
+# Chainsaw cannot address that control plane natively, so every project-side
+# operation runs inside a script: block on cluster nso-upstream that backgrounds
+# its own port-forward, traps it closed on exit, waits for it to actually serve,
+# and then drives kubectl --kubeconfig, authenticating with the static
+# ($miloToken) the environment ships. Each script is self-contained because the
+# trap fires when that script's own shell exits.
+#
+# Naming the edge namespace. Chainsaw outputs are step-scoped, so a binding
+# captured in one step is not visible in the next; every step that needs the edge
+# namespace re-derives it at the top of its own try:. Only the second step reads
+# the upstream namespace UID, because that identity is destroyed in the step
+# after it. Every later step looks the namespace up on the downstream cluster by
+# its meta.datumapis.com/upstream-cluster-name=cluster-<project> label, which
+# still works once the upstream namespace is gone.
+#
+# Prerequisites (the Milo layer is opt-in on top of the standard env):
+#   task test-infra:up
+#   task test-infra:milo-up
+# The project, its namespace, and all its contents are created by this test.
+#
+# Not in DEFAULT_SCENARIOS in Taskfile.test-infra.yml; run it explicitly:
+#   task test-infra:e2e -- project-purge-object-stranding
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: project-purge-object-stranding
+spec:
+  concurrent: false
+  bindings:
+    # The Milo project this test creates. Derived from the chainsaw namespace so
+    # concurrent runs never collide, and short enough that the derived label
+    # value cluster-<project> stays under 63 characters.
+    - name: projectName
+      value: (join('-', ['strand', $namespace]))
+    # The namespace inside the project control plane. It is force-finalized
+    # mid-test, which is the trigger for the whole failure.
+    - name: projectNamespace
+      value: strand-ns
+    - name: gatewayClassName
+      value: strand-gc
+    - name: gatewayName
+      value: strand-gateway
+    # Per-run unique. Hostnames are claimed exclusively by an anchor ConfigMap in
+    # the downstream accounting namespace, keyed by hostname and owned by one
+    # gateway. A fixed hostname would be claimed by the first run's project and
+    # then refused to every later run, whose listener would be silently dropped
+    # and whose downstream Gateway would be rejected as having no listeners.
+    - name: gatewayHostname
+      value: (join('.', [$projectName, 'e2e.env.datum.net']))
+    # Milo runs inside the upstream cluster with no host port mapping, so the
+    # host reaches it on this local port through a port-forward.
+    - name: miloLocalPort
+      value: "16443"
+    # The static credential Milo's own test-infra overlay ships in its published
+    # bundle. It is a fixed test value, not a secret, and the scripts mint their
+    # kubeconfigs from it rather than depending on a task having been run.
+    - name: miloToken
+      value: test-admin-token
+    # How long cleanup is given after the Gateway is deleted. Cleanup on the
+    # healthy path completes in a couple of seconds, so this is generous enough
+    # that a failure means cleanup is not happening rather than that it is slow.
+    - name: cleanupWindowSeconds
+      value: "120"
+  cluster: nso-upstream
+  # A run that fails partway through would otherwise leave a project behind, and
+  # NSO would keep reconciling a gateway nobody is watching. Delete it on any
+  # failure; the edge namespace and the hostname claim go with it in the last
+  # step's finally:, which runs on both outcomes.
+  catch:
+    - script:
+        timeout: 180s
+        cluster: nso-upstream
+        env:
+          - name: PROJECT
+            value: ($projectName)
+          - name: MILO_PORT
+            value: ($miloLocalPort)
+          - name: MILO_TOKEN
+            value: ($miloToken)
+        content: |
+          kubectl -n milo-system port-forward svc/milo-apiserver "${MILO_PORT}:6443" >/dev/null 2>&1 &
+          PF_PID=$!
+          trap 'kill ${PF_PID} 2>/dev/null || true' EXIT
+          for i in $(seq 1 60); do
+            curl -sk -m 2 -H "Authorization: Bearer ${MILO_TOKEN}" \
+              "https://127.0.0.1:${MILO_PORT}/healthz" 2>/dev/null | grep -q '^ok' && break
+            sleep 1
+          done
+          WORK="${TMPDIR:-/tmp}/strand-${PROJECT}"
+          kubectl --kubeconfig "${WORK}/root.yaml" delete project "${PROJECT}" --ignore-not-found --timeout=120s || true
+          exit 0
+  steps:
+    - name: A project with a verified domain and a gateway comes up in its own control plane
+      description: |
+        Everything here happens inside the Milo project control plane, which
+        chainsaw cannot address directly, so it runs as one self-contained
+        script: port-forward, wait for it to serve, mint the root and
+        project-scoped kubeconfigs, then create the project, wait for it to be
+        Ready (NSO only engages Ready projects), and create the namespace,
+        GatewayClass, verified Domain, and Gateway. The Domain must exist in the
+        same namespace and be Verified on its status subresource, or the Gateway
+        never programs downstream and there is nothing for the deletion to
+        clean up.
+      try:
+        - script:
+            timeout: 300s
+            cluster: nso-upstream
+            env:
+              - name: PROJECT
+                value: ($projectName)
+              - name: PROJECT_NS
+                value: ($projectNamespace)
+              - name: GATEWAY_CLASS
+                value: ($gatewayClassName)
+              - name: GATEWAY_NAME
+                value: ($gatewayName)
+              - name: GATEWAY_HOSTNAME
+                value: ($gatewayHostname)
+              - name: MILO_PORT
+                value: ($miloLocalPort)
+              - name: MILO_TOKEN
+                value: ($miloToken)
+            content: |
+              set -eu
+              WORK="${TMPDIR:-/tmp}/strand-${PROJECT}"
+              mkdir -p "${WORK}"
+
+              # Background the port-forward and make sure it dies with this
+              # shell. If a forward is already running on this port this one
+              # simply loses the bind and exits; the readiness poll below still
+              # succeeds through the existing tunnel.
+              kubectl -n milo-system port-forward svc/milo-apiserver "${MILO_PORT}:6443" >/dev/null 2>&1 &
+              PF_PID=$!
+              trap 'kill ${PF_PID} 2>/dev/null || true' EXIT
+
+              TOKEN="${MILO_TOKEN}"
+              # The listener binds before the tunnel carries traffic, so wait on
+              # a real request rather than on the port being open.
+              ready=""
+              for i in $(seq 1 60); do
+                if curl -sk -m 2 -H "Authorization: Bearer ${TOKEN}" \
+                     "https://127.0.0.1:${MILO_PORT}/healthz" 2>/dev/null | grep -q '^ok'; then
+                  ready="yes"; break
+                fi
+                sleep 1
+              done
+              [ -n "${ready}" ] || { echo "ERROR: Milo API server never served through the port-forward (is 'task test-infra:milo-up' done?)"; exit 1; }
+
+              printf 'apiVersion: v1\nkind: Config\nclusters:\n- name: milo\n  cluster:\n    server: https://127.0.0.1:%s\n    insecure-skip-tls-verify: true\nusers:\n- name: nso\n  user:\n    token: %s\ncontexts:\n- name: milo\n  context:\n    cluster: milo\n    user: nso\ncurrent-context: milo\n' \
+                "${MILO_PORT}" "${TOKEN}" > "${WORK}/root.yaml"
+              sed 's|server: https://127.0.0.1:'"${MILO_PORT}"'|&/apis/resourcemanager.miloapis.com/v1alpha1/projects/'"${PROJECT}"'/control-plane|' \
+                "${WORK}/root.yaml" > "${WORK}/project.yaml"
+
+              ROOT="kubectl --kubeconfig ${WORK}/root.yaml"
+              PROJ="kubectl --kubeconfig ${WORK}/project.yaml"
+
+              ${ROOT} apply -f - <<'EOF'
+              apiVersion: resourcemanager.miloapis.com/v1alpha1
+              kind: Organization
+              metadata:
+                name: e2e-org
+              spec:
+                type: Personal
+              EOF
+              ${ROOT} apply -f - <<EOF
+              apiVersion: resourcemanager.miloapis.com/v1alpha1
+              kind: Project
+              metadata:
+                name: ${PROJECT}
+              spec:
+                ownerRef:
+                  kind: Organization
+                  name: e2e-org
+              EOF
+              # NSO only engages a project whose Ready condition is True. Milo's
+              # controller manager sets that, so wait for it rather than forcing
+              # it — a timeout here means the controller is not doing its job.
+              ${ROOT} wait project "${PROJECT}" --for=condition=Ready --timeout=180s
+
+              # The project control plane is served lazily; wait until it answers.
+              served=""
+              for i in $(seq 1 60); do
+                if ${PROJ} get ns >/dev/null 2>&1; then served="yes"; break; fi
+                echo "waiting for the ${PROJECT} control plane to serve... ${i}"
+                sleep 2
+              done
+              [ -n "${served}" ] || { echo "ERROR: project control plane for ${PROJECT} never served"; exit 1; }
+
+              ${PROJ} create namespace "${PROJECT_NS}" --dry-run=client -o yaml | ${PROJ} apply -f -
+              ${PROJ} apply -f - <<EOF
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: GatewayClass
+              metadata:
+                name: ${GATEWAY_CLASS}
+              spec:
+                controllerName: gateway.networking.datumapis.com/external-global-proxy-controller
+              EOF
+              ${PROJ} apply -f - <<EOF
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Domain
+              metadata:
+                name: test-domain
+                namespace: ${PROJECT_NS}
+              spec:
+                domainName: e2e.env.datum.net
+              EOF
+              # Stand in for the Domain controller's HTTP/DNS verification; an
+              # unverified Domain means the Gateway never programs downstream.
+              ${PROJ} -n "${PROJECT_NS}" patch domain test-domain \
+                --subresource=status --type=merge \
+                -p '{"status":{"conditions":[{"type":"Verified","status":"True","reason":"Test","message":"test","lastTransitionTime":"2025-02-24T23:59:09Z"}]}}'
+              ${PROJ} apply -f - <<EOF
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: Gateway
+              metadata:
+                name: ${GATEWAY_NAME}
+                namespace: ${PROJECT_NS}
+              spec:
+                gatewayClassName: ${GATEWAY_CLASS}
+                listeners:
+                  - name: http
+                    protocol: HTTP
+                    port: 80
+                    hostname: ${GATEWAY_HOSTNAME}
+                    allowedRoutes:
+                      namespaces:
+                        from: Same
+              EOF
+              echo "OK: project ${PROJECT} is Ready and carries a verified Domain and a Gateway"
+      catch:
+        - script:
+            cluster: nso-upstream
+            content: |
+              kubectl -n milo-system get pods -o wide || true
+              kubectl -n milo-system logs deploy/milo-apiserver --tail=100 || true
+              kubectl -n network-services-operator-system logs -l app.kubernetes.io/name=network-services-operator --tail=200 || true
+
+    - name: NSO mirrors the gateway onto the edge in a namespace named after the upstream namespace UID
+      description: |
+        The baseline the stranding is measured against, and the reason the
+        stranding happens. The edge namespace is ns-<uid>, where uid is the
+        *upstream* namespace's metadata.uid — an identity that exists only for as
+        long as that namespace does. This step reads the UID while it is still
+        readable and requires the edge namespace, the mirrored Gateway, the
+        DNSEndpoint and the anchor ConfigMap that owns them to be in place. If
+        any of this is missing, the rest of the test would be asserting cleanup
+        of something that was never created.
+      try:
+        - description: Read the upstream namespace UID. stdout is kept to the bare UID so the binding is exact.
+          script:
+            timeout: 120s
+            cluster: nso-upstream
+            skipCommandOutput: true
+            skipLogOutput: true
+            env:
+              - name: PROJECT
+                value: ($projectName)
+              - name: PROJECT_NS
+                value: ($projectNamespace)
+              - name: MILO_PORT
+                value: ($miloLocalPort)
+              - name: MILO_TOKEN
+                value: ($miloToken)
+            content: |
+              set -eu
+              WORK="${TMPDIR:-/tmp}/strand-${PROJECT}"
+              kubectl -n milo-system port-forward svc/milo-apiserver "${MILO_PORT}:6443" >/dev/null 2>&1 &
+              PF_PID=$!
+              trap 'kill ${PF_PID} 2>/dev/null || true' EXIT
+              for i in $(seq 1 60); do
+                curl -sk -m 2 -H "Authorization: Bearer ${MILO_TOKEN}" \
+                  "https://127.0.0.1:${MILO_PORT}/healthz" 2>/dev/null | grep -q '^ok' && break
+                sleep 1
+              done
+              UID_VALUE="$(kubectl --kubeconfig "${WORK}/project.yaml" get ns "${PROJECT_NS}" \
+                -o jsonpath='{.metadata.uid}')"
+              [ -n "${UID_VALUE}" ] || { echo "ERROR: upstream namespace ${PROJECT_NS} has no UID" >&2; exit 1; }
+              # printf (no trailing newline) so $stdout is exactly the UID.
+              printf '%s' "${UID_VALUE}"
+            outputs:
+              - name: downstreamNamespaceName
+                value: (join('-', ['ns', $stdout]))
+        - description: The mirrored Gateway is Accepted and Programmed in that namespace.
+          assert:
+            timeout: 240s
+            cluster: nso-downstream
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: Gateway
+              metadata:
+                name: ($gatewayName)
+                namespace: ($downstreamNamespaceName)
+              status:
+                (conditions[?type == 'Accepted']):
+                  - status: "True"
+                (conditions[?type == 'Programmed']):
+                  - status: "True"
+        - description: The DNSEndpoint and the anchor ConfigMap that owns the mirrored objects both exist.
+          script:
+            timeout: 120s
+            cluster: nso-downstream
+            env:
+              - name: DS_NS
+                value: ($downstreamNamespaceName)
+              - name: GATEWAY_NAME
+                value: ($gatewayName)
+            content: |
+              set -eu
+              kubectl -n "${DS_NS}" get dnsendpoint "${GATEWAY_NAME}" >/dev/null
+              ANCHORS="$(kubectl -n "${DS_NS}" get configmap \
+                -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' | grep '^anchor-' || true)"
+              [ -n "${ANCHORS}" ] || { echo "ERROR: no anchor ConfigMap in ${DS_NS}; nothing owns the mirrored objects"; exit 1; }
+              echo "--- edge namespace ${DS_NS} as created ---"
+              kubectl -n "${DS_NS}" get gateway,dnsendpoint,configmap
+      catch:
+        - script:
+            cluster: nso-downstream
+            env:
+              - name: PROJECT
+                value: ($projectName)
+            content: |
+              DS_NS="$(kubectl get ns -l meta.datumapis.com/upstream-cluster-name=cluster-${PROJECT} -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+              echo "edge namespace: ${DS_NS:-<none found>}"
+              kubectl -n "${DS_NS}" get gateway,dnsendpoint,configmap -o yaml || true
+        - script:
+            cluster: nso-upstream
+            content: |
+              kubectl -n network-services-operator-system logs -l app.kubernetes.io/name=network-services-operator --tail=200 || true
+
+    - name: The project purge force-finalizes the namespace out from under NSO
+      description: |
+        This is the trigger, reproduced exactly as Milo's purge performs it:
+        delete the namespace without waiting, then clear spec.finalizers through
+        the finalize subresource so the namespace is removed regardless of what
+        is still inside it.
+
+        The Gateway survives the namespace as an etcd ghost — still listed by the
+        API server, still carrying NSO's finalizer, but with no namespace object
+        behind it. That combination is the whole bug: NSO is about to be asked to
+        clean the Gateway up, and the only route it has to the edge namespace
+        runs through a namespace that no longer exists.
+      try:
+        - script:
+            timeout: 180s
+            cluster: nso-upstream
+            env:
+              - name: PROJECT
+                value: ($projectName)
+              - name: PROJECT_NS
+                value: ($projectNamespace)
+              - name: GATEWAY_NAME
+                value: ($gatewayName)
+              - name: MILO_PORT
+                value: ($miloLocalPort)
+              - name: MILO_TOKEN
+                value: ($miloToken)
+            content: |
+              set -eu
+              WORK="${TMPDIR:-/tmp}/strand-${PROJECT}"
+              kubectl -n milo-system port-forward svc/milo-apiserver "${MILO_PORT}:6443" >/dev/null 2>&1 &
+              PF_PID=$!
+              trap 'kill ${PF_PID} 2>/dev/null || true' EXIT
+              for i in $(seq 1 60); do
+                curl -sk -m 2 -H "Authorization: Bearer ${MILO_TOKEN}" \
+                  "https://127.0.0.1:${MILO_PORT}/healthz" 2>/dev/null | grep -q '^ok' && break
+                sleep 1
+              done
+              PROJ="kubectl --kubeconfig ${WORK}/project.yaml"
+
+              ${PROJ} delete namespace "${PROJECT_NS}" --wait=false
+              ${PROJ} get namespace "${PROJECT_NS}" -o json \
+                | jq '.spec.finalizers = []' \
+                | ${PROJ} replace --raw "/api/v1/namespaces/${PROJECT_NS}/finalize" -f - >/dev/null
+
+              gone=""
+              for i in $(seq 1 30); do
+                if ! ${PROJ} get namespace "${PROJECT_NS}" >/dev/null 2>&1; then gone="yes"; break; fi
+                echo "waiting for namespace ${PROJECT_NS} to disappear... ${i}"
+                sleep 2
+              done
+              [ -n "${gone}" ] || { echo "ERROR: namespace ${PROJECT_NS} survived the force-finalize; the trigger did not fire and the rest of this test proves nothing"; exit 1; }
+
+              # The Gateway must outlive its namespace, otherwise there is no
+              # object left for NSO's finalizer to fail on.
+              FINALIZERS="$(${PROJ} -n "${PROJECT_NS}" get gateway "${GATEWAY_NAME}" \
+                -o jsonpath='{.metadata.finalizers}' 2>/dev/null || true)"
+              case "${FINALIZERS}" in
+                *gateway.networking.datumapis.com/gateway-controller*) ;;
+                *) echo "ERROR: gateway ${GATEWAY_NAME} did not survive as a ghost (finalizers=${FINALIZERS:-<none>}); the reproduction is not set up"; exit 1 ;;
+              esac
+              echo "OK: namespace ${PROJECT_NS} is gone and gateway ${GATEWAY_NAME} survives it holding ${FINALIZERS}"
+      catch:
+        - script:
+            cluster: nso-upstream
+            content: |
+              kubectl -n network-services-operator-system logs -l app.kubernetes.io/name=network-services-operator --tail=200 || true
+
+    - name: Deleting the gateway must remove everything NSO created on the edge
+      description: |
+        The guarantee. The customer deletes the Gateway; within
+        ($cleanupWindowSeconds) the mirrored Gateway, the DNSEndpoint and the
+        anchor ConfigMap must all be gone from the edge, and the upstream Gateway
+        must have lost its finalizer and been removed. Whether or not the
+        upstream namespace still exists is NSO's problem, not the customer's.
+
+        This step fails today. NSO's finalizer cannot resolve the edge namespace
+        without the upstream namespace, so it errors on every attempt, the
+        upstream Gateway stays terminating forever, and the edge objects stay
+        exactly where they are — in production, still serving. On failure the
+        step prints the surviving objects and the NSO log lines that explain
+        them, so the diagnosis is in the output rather than somewhere else.
+
+        The edge namespace is re-derived here from its label rather than from the
+        UID captured earlier: chainsaw outputs are step-scoped, and the upstream
+        namespace that held the UID no longer exists.
+      try:
+        - description: Re-derive the edge namespace for this step, by a label that survives the upstream namespace.
+          script:
+            timeout: 120s
+            cluster: nso-downstream
+            skipCommandOutput: true
+            skipLogOutput: true
+            env:
+              - name: PROJECT
+                value: ($projectName)
+            content: |
+              set -eu
+              printf '%s' "$(kubectl get ns -l meta.datumapis.com/upstream-cluster-name=cluster-${PROJECT} \
+                -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+            outputs:
+              - name: downstreamNamespaceName
+                value: ($stdout)
+        - description: The customer deletes the Gateway. --wait=false because the finalizer is what is under test; waiting here would only move the timeout into kubectl.
+          script:
+            timeout: 120s
+            cluster: nso-upstream
+            env:
+              - name: PROJECT
+                value: ($projectName)
+              - name: PROJECT_NS
+                value: ($projectNamespace)
+              - name: GATEWAY_NAME
+                value: ($gatewayName)
+              - name: MILO_PORT
+                value: ($miloLocalPort)
+              - name: MILO_TOKEN
+                value: ($miloToken)
+            content: |
+              set -eu
+              WORK="${TMPDIR:-/tmp}/strand-${PROJECT}"
+              kubectl -n milo-system port-forward svc/milo-apiserver "${MILO_PORT}:6443" >/dev/null 2>&1 &
+              PF_PID=$!
+              trap 'kill ${PF_PID} 2>/dev/null || true' EXIT
+              for i in $(seq 1 60); do
+                curl -sk -m 2 -H "Authorization: Bearer ${MILO_TOKEN}" \
+                  "https://127.0.0.1:${MILO_PORT}/healthz" 2>/dev/null | grep -q '^ok' && break
+                sleep 1
+              done
+              kubectl --kubeconfig "${WORK}/project.yaml" -n "${PROJECT_NS}" \
+                delete gateway "${GATEWAY_NAME}" --wait=false
+              echo "OK: deletion of gateway ${GATEWAY_NAME} requested"
+        - description: THE GUARANTEE - nothing NSO created is left on the edge.
+          script:
+            timeout: 300s
+            cluster: nso-downstream
+            env:
+              - name: PROJECT
+                value: ($projectName)
+              - name: DS_NS
+                value: ($downstreamNamespaceName)
+              - name: WINDOW
+                value: ($cleanupWindowSeconds)
+            content: |
+              set -eu
+              [ -n "${DS_NS}" ] || { echo "ERROR: no edge namespace labelled cluster-${PROJECT} was found; the earlier steps did not leave the state this one needs"; exit 1; }
+
+              deadline=$(( $(date +%s) + WINDOW ))
+              clean=""
+              while [ "$(date +%s)" -lt "${deadline}" ]; do
+                GW="$(kubectl -n "${DS_NS}" get gateway -o name 2>/dev/null | wc -l | tr -d ' ')"
+                DE="$(kubectl -n "${DS_NS}" get dnsendpoint -o name 2>/dev/null | wc -l | tr -d ' ')"
+                AN="$(kubectl -n "${DS_NS}" get configmap -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null | grep -c '^anchor-' || true)"
+                echo "edge gateways=${GW} dnsendpoints=${DE} anchors=${AN}"
+                if [ "${GW}" = "0" ] && [ "${DE}" = "0" ] && [ "${AN}" = "0" ]; then clean="yes"; break; fi
+                sleep 5
+              done
+
+              if [ -n "${clean}" ]; then
+                echo "OK: the edge is clean even though the upstream namespace was already gone"
+                exit 0
+              fi
+
+              echo
+              echo "STRANDED: ${WINDOW}s after the gateway was deleted, configuration NSO created is still"
+              echo "on the edge with nothing upstream left to delete it through. In production Karmada"
+              echo "propagates these objects to every edge cluster, so this listener keeps serving."
+              echo
+              echo "--- surviving objects in ${DS_NS} ---"
+              kubectl -n "${DS_NS}" get gateway,dnsendpoint,configmap || true
+              exit 1
+        - description: And the upstream Gateway itself is released rather than stuck terminating behind a finalizer that can never complete.
+          script:
+            timeout: 300s
+            cluster: nso-upstream
+            env:
+              - name: PROJECT
+                value: ($projectName)
+              - name: PROJECT_NS
+                value: ($projectNamespace)
+              - name: GATEWAY_NAME
+                value: ($gatewayName)
+              - name: WINDOW
+                value: ($cleanupWindowSeconds)
+              - name: MILO_PORT
+                value: ($miloLocalPort)
+              - name: MILO_TOKEN
+                value: ($miloToken)
+            content: |
+              set -eu
+              WORK="${TMPDIR:-/tmp}/strand-${PROJECT}"
+              kubectl -n milo-system port-forward svc/milo-apiserver "${MILO_PORT}:6443" >/dev/null 2>&1 &
+              PF_PID=$!
+              trap 'kill ${PF_PID} 2>/dev/null || true' EXIT
+              for i in $(seq 1 60); do
+                curl -sk -m 2 -H "Authorization: Bearer ${MILO_TOKEN}" \
+                  "https://127.0.0.1:${MILO_PORT}/healthz" 2>/dev/null | grep -q '^ok' && break
+                sleep 1
+              done
+              PROJ="kubectl --kubeconfig ${WORK}/project.yaml"
+
+              deadline=$(( $(date +%s) + WINDOW ))
+              released=""
+              while [ "$(date +%s)" -lt "${deadline}" ]; do
+                if ! ${PROJ} -n "${PROJECT_NS}" get gateway "${GATEWAY_NAME}" >/dev/null 2>&1; then
+                  released="yes"; break
+                fi
+                echo "upstream gateway ${GATEWAY_NAME} still present"
+                sleep 5
+              done
+
+              if [ -n "${released}" ]; then
+                echo "OK: the upstream gateway was released and removed"
+                exit 0
+              fi
+
+              echo
+              echo "STUCK: the upstream gateway is still terminating; NSO's finalizer never completed."
+              ${PROJ} -n "${PROJECT_NS}" get gateway "${GATEWAY_NAME}" \
+                -o jsonpath='deletionTimestamp={.metadata.deletionTimestamp}{"\n"}finalizers={.metadata.finalizers}{"\n"}' || true
+              echo
+              echo "--- why: NSO cannot resolve the edge namespace without the upstream namespace ---"
+              kubectl -n network-services-operator-system logs -l app.kubernetes.io/name=network-services-operator --tail=400 2>/dev/null \
+                | grep 'failed to get upstream namespace' | tail -5 || true
+              exit 1
+      catch:
+        - script:
+            cluster: nso-downstream
+            env:
+              - name: PROJECT
+                value: ($projectName)
+            content: |
+              DS_NS="$(kubectl get ns -l meta.datumapis.com/upstream-cluster-name=cluster-${PROJECT} -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+              echo "edge namespace: ${DS_NS:-<none found>}"
+              kubectl -n "${DS_NS}" get gateway,dnsendpoint,configmap -o yaml || true
+        - script:
+            cluster: nso-upstream
+            content: |
+              kubectl -n network-services-operator-system logs -l app.kubernetes.io/name=network-services-operator --tail=300 || true
+      finally:
+        # Delete the project on both outcomes. On a failing run this also stops
+        # NSO reconciling a gateway that will never finalize.
+        - script:
+            timeout: 180s
+            cluster: nso-upstream
+            env:
+              - name: PROJECT
+                value: ($projectName)
+              - name: MILO_PORT
+                value: ($miloLocalPort)
+              - name: MILO_TOKEN
+                value: ($miloToken)
+            content: |
+              kubectl -n milo-system port-forward svc/milo-apiserver "${MILO_PORT}:6443" >/dev/null 2>&1 &
+              PF_PID=$!
+              trap 'kill ${PF_PID} 2>/dev/null || true' EXIT
+              for i in $(seq 1 60); do
+                curl -sk -m 2 -H "Authorization: Bearer ${MILO_TOKEN}" \
+                  "https://127.0.0.1:${MILO_PORT}/healthz" 2>/dev/null | grep -q '^ok' && break
+                sleep 1
+              done
+              WORK="${TMPDIR:-/tmp}/strand-${PROJECT}"
+              kubectl --kubeconfig "${WORK}/root.yaml" delete project "${PROJECT}" --ignore-not-found --timeout=120s || true
+              exit 0
+        # The edge namespace is not reaped by the product (see
+        # project-deletion-namespace-leak), and on a failing run it still holds
+        # the stranded objects, so remove it and the hostname claim here.
+        # Otherwise every run leaves a live listener behind on the edge cluster.
+        - script:
+            timeout: 180s
+            cluster: nso-downstream
+            env:
+              - name: PROJECT
+                value: ($projectName)
+            content: |
+              kubectl delete configmap -A -l "meta.datumapis.com/upstream-cluster-name=cluster-${PROJECT}" \
+                --ignore-not-found --wait=false || true
+              # --wait=false: the delete only has to be requested, and waiting on
+              # namespace termination here would outlast the step.
+              kubectl delete ns -l "meta.datumapis.com/upstream-cluster-name=cluster-${PROJECT}" \
+                --ignore-not-found --wait=false || true
+              exit 0

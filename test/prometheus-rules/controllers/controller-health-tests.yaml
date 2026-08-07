@@ -179,6 +179,58 @@ tests:
         alertname: ControllerReconcileErrorRatioCritical
         exp_alerts: []
 
+  # Sparse controller at the warning tier: the same mechanism as the critical
+  # case above, verified against `for: 15m` rather than `for: 10m`.
+  - interval: 1m
+    input_series:
+      - series: 'controller_runtime_reconcile_total{controller="instance-projector",result="error",cluster="prod",namespace="compute-system"}'
+        values: '0+0x19 4+0x19 8+0x19 12+0x19 16+0x19'
+    alert_rule_test:
+      - eval_time: 45m
+        alertname: ControllerReconcileErrorRatioHigh
+        exp_alerts: &sparse_firing_warning
+          - exp_labels:
+              severity: warning
+              controller: instance-projector
+              cluster: prod
+              namespace: compute-system
+            exp_annotations:
+              summary: "Controller instance-projector in prod/compute-system reconcile error ratio is 100% (threshold 20%)"
+              description: "More than 20% of the 'instance-projector' controller's reconcile attempts are failing in cluster 'prod', namespace 'compute-system'. It cannot apply its intent — changes are not reaching their target and the last successfully written state stays programmed. Common causes: an object fails CRD validation, an API server admission error, or a permissions regression. Check controller logs for 'Reconciler error' entries on the 'instance-projector' controller."
+              runbook_url: "https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/controller-health.md#controllerreconcileerrorratiohigh"
+      - eval_time: 59m
+        alertname: ControllerReconcileErrorRatioHigh
+        exp_alerts: *sparse_firing_warning
+      - eval_time: 99m
+        alertname: ControllerReconcileErrorRatioHigh
+        exp_alerts: *sparse_firing_warning
+
+  # Reconcile period longer than the old evaluation window — the Grafana operator
+  # CRs in datum-cloud/infra#3742, which reconcile about every 15 minutes and have
+  # failed 100% with zero successes for over a month without ever firing. Under a
+  # 10-minute range `for:` reset on every reconcile and the rule could never latch;
+  # the 30-minute range is what makes this condition alertable at all.
+  - interval: 1m
+    input_series:
+      - series: 'controller_runtime_reconcile_total{controller="grafanaalertrulegroup",result="error",cluster="prod",namespace="telemetry-system"}'
+        values: '0+0x14 1+0x14 2+0x14 3+0x14 4+0x14 5+0x14 6+0x14 7+0x14'
+    alert_rule_test:
+      - eval_time: 60m
+        alertname: ControllerReconcileErrorRatioCritical
+        exp_alerts: &grafana_firing
+          - exp_labels:
+              severity: critical
+              controller: grafanaalertrulegroup
+              cluster: prod
+              namespace: telemetry-system
+            exp_annotations:
+              summary: "Controller grafanaalertrulegroup in prod/telemetry-system reconcile error ratio is 100% (threshold 50%) — reconciliation is stalled"
+              description: "More than 50% of the 'grafanaalertrulegroup' controller's reconcile attempts are failing in cluster 'prod', namespace 'telemetry-system' — it has effectively stopped applying changes. Treat as an active outage for anything this controller programs. Check controller logs for 'Reconciler error' entries. See ControllerReconcileErrorRatioHigh for initial diagnosis."
+              runbook_url: "https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/controller-health.md#controllerreconcileerrorratiocritical"
+      - eval_time: 90m
+        alertname: ControllerReconcileErrorRatioCritical
+        exp_alerts: *grafana_firing
+
   # Healthy controller (10% errors) never crosses the warning threshold.
   - interval: 1m
     input_series:

@@ -5,12 +5,15 @@ import (
 	"fmt"
 	"strings"
 
+	resourcemanagerv1alpha1 "go.miloapis.com/milo/pkg/apis/resourcemanager/v1alpha1"
+	multiclusterproviders "go.miloapis.com/milo/pkg/multicluster-runtime"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -82,7 +85,7 @@ func (c *mappedNamespaceResourceStrategy) GetDownstreamNamespaceNameForUpstreamN
 	return fmt.Sprintf("ns-%s", namespace.UID), nil
 }
 
-func (c *mappedNamespaceResourceStrategy) ensureDownstreamNamespace(ctx context.Context, obj metav1.Object) (*corev1.Namespace, error) {
+func (c *mappedNamespaceResourceStrategy) ensureDownstreamNamespace(ctx context.Context, obj metav1.Object) error {
 	downstreamNamespace := &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: obj.GetNamespace(),
@@ -106,6 +109,10 @@ func (c *mappedNamespaceResourceStrategy) ensureDownstreamNamespace(ctx context.
 			downstreamNamespace.Labels[UpstreamOwnerClusterNameLabel] = fmt.Sprintf("cluster-%s", strings.ReplaceAll(c.upstreamClusterName, "/", "_"))
 		}
 
+		if project := ProjectNameFromClusterName(c.upstreamClusterName); project != "" {
+			downstreamNamespace.Labels[resourcemanagerv1alpha1.ProjectNameLabel] = project
+		}
+
 		labels := obj.GetLabels()
 		if v, ok := labels[UpstreamOwnerNamespaceLabel]; ok {
 			downstreamNamespace.Labels[UpstreamOwnerNamespaceLabel] = v
@@ -114,10 +121,10 @@ func (c *mappedNamespaceResourceStrategy) ensureDownstreamNamespace(ctx context.
 		return nil
 	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to ensure downstream namespace: %w", err)
+		return fmt.Errorf("failed to ensure downstream namespace: %w", err)
 	}
 
-	return downstreamNamespace, nil
+	return nil
 }
 
 const (
@@ -127,6 +134,31 @@ const (
 	UpstreamOwnerNameLabel        = "meta.datumapis.com/upstream-name"
 	UpstreamOwnerNamespaceLabel   = "meta.datumapis.com/upstream-namespace"
 )
+
+// singleClusterName is the cluster name the single-cluster provider engages
+// with (see initializeClusterDiscovery in internal/cmd/manager). It names a
+// deployment cluster rather than a project.
+const singleClusterName = string(multiclusterproviders.ProviderSingle)
+
+// ProjectNameFromClusterName returns the project that owns an upstream cluster
+// name, or "" when the name does not identify a project or would not be a valid
+// label value.
+//
+// Under the Milo provider the cluster name is the project name, so downstream
+// resources can record the owning project without observing anything inside the
+// project control plane.
+func ProjectNameFromClusterName(clusterName string) string {
+	if clusterName == "" || clusterName == singleClusterName {
+		return ""
+	}
+
+	name := strings.TrimPrefix(clusterName, "/")
+	if len(validation.IsValidLabelValue(name)) > 0 {
+		return ""
+	}
+
+	return name
+}
 
 // UpstreamClusterNameFromLabel decodes the upstream cluster name from the value
 // of UpstreamOwnerClusterNameLabel, reversing the encoding applied when the
@@ -248,9 +280,8 @@ func (c *mappedNamespaceClient) Apply(ctx context.Context, obj runtime.ApplyConf
 }
 
 func (c *mappedNamespaceClient) Create(ctx context.Context, obj client.Object, opts ...client.CreateOption) error {
-	_, err := c.resourceStrategy.ensureDownstreamNamespace(ctx, obj)
-	if err != nil {
-		return fmt.Errorf("failed to ensure downstream namespace: %w", err)
+	if err := c.resourceStrategy.ensureDownstreamNamespace(ctx, obj); err != nil {
+		return err
 	}
 
 	return c.client.Create(ctx, obj, opts...)
@@ -273,10 +304,18 @@ func (c *mappedNamespaceClient) List(ctx context.Context, list client.ObjectList
 }
 
 func (c *mappedNamespaceClient) Patch(ctx context.Context, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+	if err := c.resourceStrategy.ensureDownstreamNamespace(ctx, obj); err != nil {
+		return err
+	}
+
 	return c.client.Patch(ctx, obj, patch, opts...)
 }
 
 func (c *mappedNamespaceClient) Update(ctx context.Context, obj client.Object, opts ...client.UpdateOption) error {
+	if err := c.resourceStrategy.ensureDownstreamNamespace(ctx, obj); err != nil {
+		return err
+	}
+
 	return c.client.Update(ctx, obj, opts...)
 }
 

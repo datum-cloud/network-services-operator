@@ -9,20 +9,21 @@ tests:
   #   domain  — 3 errors + 7 success = 30% error ratio (warning only)
   #   subnet  — 1 error  + 9 success = 10% error ratio (healthy, fires nothing)
   # At 16m the warning alert fires for the two offending controllers, each
-  # carrying its own `controller` label; the healthy controller is absent.
+  # carrying its own `controller` label plus the cluster and namespace it runs
+  # in; the healthy controller is absent.
   - interval: 1m
     input_series:
-      - series: 'controller_runtime_reconcile_total{controller="gateway",result="error"}'
+      - series: 'controller_runtime_reconcile_total{controller="gateway",result="error",cluster="prod",namespace="nso-system"}'
         values: '0+9x20'
-      - series: 'controller_runtime_reconcile_total{controller="gateway",result="success"}'
+      - series: 'controller_runtime_reconcile_total{controller="gateway",result="success",cluster="prod",namespace="nso-system"}'
         values: '0+1x20'
-      - series: 'controller_runtime_reconcile_total{controller="domain",result="error"}'
+      - series: 'controller_runtime_reconcile_total{controller="domain",result="error",cluster="prod",namespace="nso-system"}'
         values: '0+3x20'
-      - series: 'controller_runtime_reconcile_total{controller="domain",result="success"}'
+      - series: 'controller_runtime_reconcile_total{controller="domain",result="success",cluster="prod",namespace="nso-system"}'
         values: '0+7x20'
-      - series: 'controller_runtime_reconcile_total{controller="subnet",result="error"}'
+      - series: 'controller_runtime_reconcile_total{controller="subnet",result="error",cluster="prod",namespace="nso-system"}'
         values: '0+1x20'
-      - series: 'controller_runtime_reconcile_total{controller="subnet",result="success"}'
+      - series: 'controller_runtime_reconcile_total{controller="subnet",result="success",cluster="prod",namespace="nso-system"}'
         values: '0+9x20'
     alert_rule_test:
       - eval_time: 16m
@@ -31,33 +32,37 @@ tests:
           - exp_labels:
               severity: warning
               controller: gateway
+              cluster: prod
+              namespace: nso-system
             exp_annotations:
-              summary: "Controller gateway reconcile error ratio is 90% (threshold 20%)"
-              description: "More than 20% of the 'gateway' controller's reconcile attempts are failing. It cannot apply its intent — changes are not reaching their target and the last successfully written state stays programmed. Common causes: an object fails CRD validation, an API server admission error, or a permissions regression. Check controller logs for 'Reconciler error' entries on the 'gateway' controller."
+              summary: "Controller gateway in prod/nso-system reconcile error ratio is 90% (threshold 20%)"
+              description: "More than 20% of the 'gateway' controller's reconcile attempts are failing in cluster 'prod', namespace 'nso-system'. It cannot apply its intent — changes are not reaching their target and the last successfully written state stays programmed. Common causes: an object fails CRD validation, an API server admission error, or a permissions regression. Check controller logs for 'Reconciler error' entries on the 'gateway' controller."
               runbook_url: "https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/controller-health.md#controllerreconcileerrorratiohigh"
           - exp_labels:
               severity: warning
               controller: domain
+              cluster: prod
+              namespace: nso-system
             exp_annotations:
-              summary: "Controller domain reconcile error ratio is 30% (threshold 20%)"
-              description: "More than 20% of the 'domain' controller's reconcile attempts are failing. It cannot apply its intent — changes are not reaching their target and the last successfully written state stays programmed. Common causes: an object fails CRD validation, an API server admission error, or a permissions regression. Check controller logs for 'Reconciler error' entries on the 'domain' controller."
+              summary: "Controller domain in prod/nso-system reconcile error ratio is 30% (threshold 20%)"
+              description: "More than 20% of the 'domain' controller's reconcile attempts are failing in cluster 'prod', namespace 'nso-system'. It cannot apply its intent — changes are not reaching their target and the last successfully written state stays programmed. Common causes: an object fails CRD validation, an API server admission error, or a permissions regression. Check controller logs for 'Reconciler error' entries on the 'domain' controller."
               runbook_url: "https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/controller-health.md#controllerreconcileerrorratiohigh"
 
   # Same multi-controller input at the critical tier: only the controller above
   # 50% (gateway, 90%) fires; the 30% and 10% controllers do not.
   - interval: 1m
     input_series:
-      - series: 'controller_runtime_reconcile_total{controller="gateway",result="error"}'
+      - series: 'controller_runtime_reconcile_total{controller="gateway",result="error",cluster="prod",namespace="nso-system"}'
         values: '0+9x20'
-      - series: 'controller_runtime_reconcile_total{controller="gateway",result="success"}'
+      - series: 'controller_runtime_reconcile_total{controller="gateway",result="success",cluster="prod",namespace="nso-system"}'
         values: '0+1x20'
-      - series: 'controller_runtime_reconcile_total{controller="domain",result="error"}'
+      - series: 'controller_runtime_reconcile_total{controller="domain",result="error",cluster="prod",namespace="nso-system"}'
         values: '0+3x20'
-      - series: 'controller_runtime_reconcile_total{controller="domain",result="success"}'
+      - series: 'controller_runtime_reconcile_total{controller="domain",result="success",cluster="prod",namespace="nso-system"}'
         values: '0+7x20'
-      - series: 'controller_runtime_reconcile_total{controller="subnet",result="error"}'
+      - series: 'controller_runtime_reconcile_total{controller="subnet",result="error",cluster="prod",namespace="nso-system"}'
         values: '0+1x20'
-      - series: 'controller_runtime_reconcile_total{controller="subnet",result="success"}'
+      - series: 'controller_runtime_reconcile_total{controller="subnet",result="success",cluster="prod",namespace="nso-system"}'
         values: '0+9x20'
     alert_rule_test:
       - eval_time: 11m
@@ -66,17 +71,172 @@ tests:
           - exp_labels:
               severity: critical
               controller: gateway
+              cluster: prod
+              namespace: nso-system
             exp_annotations:
-              summary: "Controller gateway reconcile error ratio is 90% (threshold 50%) — reconciliation is stalled"
-              description: "More than 50% of the 'gateway' controller's reconcile attempts are failing — it has effectively stopped applying changes. Treat as an active outage for anything this controller programs. Check controller logs for 'Reconciler error' entries. See ControllerReconcileErrorRatioHigh for initial diagnosis."
+              summary: "Controller gateway in prod/nso-system reconcile error ratio is 90% (threshold 50%) — reconciliation is stalled"
+              description: "More than 50% of the 'gateway' controller's reconcile attempts are failing in cluster 'prod', namespace 'nso-system' — it has effectively stopped applying changes. Treat as an active outage for anything this controller programs. Check controller logs for 'Reconciler error' entries. See ControllerReconcileErrorRatioHigh for initial diagnosis."
               runbook_url: "https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/controller-health.md#controllerreconcileerrorratiocritical"
+
+  # Two clusters running the same controller at different health: the alert is
+  # per-cluster, so the unhealthy one fires alone and the notification names the
+  # cluster it came from.
+  - interval: 1m
+    input_series:
+      - series: 'controller_runtime_reconcile_total{controller="gateway",result="error",cluster="staging",namespace="nso-system"}'
+        values: '0+9x20'
+      - series: 'controller_runtime_reconcile_total{controller="gateway",result="success",cluster="staging",namespace="nso-system"}'
+        values: '0+1x20'
+      - series: 'controller_runtime_reconcile_total{controller="gateway",result="error",cluster="prod",namespace="nso-system"}'
+        values: '0+1x20'
+      - series: 'controller_runtime_reconcile_total{controller="gateway",result="success",cluster="prod",namespace="nso-system"}'
+        values: '0+9x20'
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: ControllerReconcileErrorRatioCritical
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              controller: gateway
+              cluster: staging
+              namespace: nso-system
+            exp_annotations:
+              summary: "Controller gateway in staging/nso-system reconcile error ratio is 90% (threshold 50%) — reconciliation is stalled"
+              description: "More than 50% of the 'gateway' controller's reconcile attempts are failing in cluster 'staging', namespace 'nso-system' — it has effectively stopped applying changes. Treat as an active outage for anything this controller programs. Check controller logs for 'Reconciler error' entries. See ControllerReconcileErrorRatioHigh for initial diagnosis."
+              runbook_url: "https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/controller-health.md#controllerreconcileerrorratiocritical"
+
+  # Sparse, permanently-failing controller — the prod `instance-projector` case
+  # (datum-cloud/compute#194). Every reconcile fails and there are no successes,
+  # but the controller only wakes every ~20 minutes, so a short evaluation window
+  # contains no increments at all: the denominator goes to zero, the ratio series
+  # disappears, and the alert resolves and re-fires on a loop. It must instead
+  # stay continuously firing across the quiet stretches.
+  - interval: 1m
+    input_series:
+      - series: 'controller_runtime_reconcile_total{controller="instance-projector",result="error",cluster="prod",namespace="compute-system"}'
+        values: '0+0x19 4+0x19 8+0x19 12+0x19 16+0x19'
+    alert_rule_test:
+      - eval_time: 45m
+        alertname: ControllerReconcileErrorRatioCritical
+        exp_alerts: &sparse_firing
+          - exp_labels:
+              severity: critical
+              controller: instance-projector
+              cluster: prod
+              namespace: compute-system
+            exp_annotations:
+              summary: "Controller instance-projector in prod/compute-system reconcile error ratio is 100% (threshold 50%) — reconciliation is stalled"
+              description: "More than 50% of the 'instance-projector' controller's reconcile attempts are failing in cluster 'prod', namespace 'compute-system' — it has effectively stopped applying changes. Treat as an active outage for anything this controller programs. Check controller logs for 'Reconciler error' entries. See ControllerReconcileErrorRatioHigh for initial diagnosis."
+              runbook_url: "https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/controller-health.md#controllerreconcileerrorratiocritical"
+      # Mid-gap, immediately before the next batch of failures lands.
+      - eval_time: 59m
+        alertname: ControllerReconcileErrorRatioCritical
+        exp_alerts: *sparse_firing
+      - eval_time: 75m
+        alertname: ControllerReconcileErrorRatioCritical
+        exp_alerts: *sparse_firing
+      - eval_time: 99m
+        alertname: ControllerReconcileErrorRatioCritical
+        exp_alerts: *sparse_firing
+
+  # Fixed error rate against a varying success rate — the `dnsrecordset-powerdns`
+  # and staging `gateway` case. A constant 4 errors/min sits above the threshold
+  # while success runs at 1/min, then a burst of 100 successes/min from t=60
+  # dilutes the ratio to ~4% without the error rate changing at all. The
+  # controller is no healthier than before, so `keep_firing_for` must hold the
+  # alert through the dilution rather than resolving and re-firing when the burst
+  # passes.
+  - interval: 1m
+    input_series:
+      - series: 'controller_runtime_reconcile_total{controller="dnsrecordset-powerdns",result="error",cluster="prod",namespace="nso-system"}'
+        values: '0+4x120'
+      - series: 'controller_runtime_reconcile_total{controller="dnsrecordset-powerdns",result="success",cluster="prod",namespace="nso-system"}'
+        values: '0+1x59 159+100x60'
+    alert_rule_test:
+      # Above threshold on its own merits, before the success burst.
+      - eval_time: 45m
+        alertname: ControllerReconcileErrorRatioCritical
+        exp_alerts: &diluted_firing
+          - exp_labels:
+              severity: critical
+              controller: dnsrecordset-powerdns
+              cluster: prod
+              namespace: nso-system
+            exp_annotations:
+              summary: "Controller dnsrecordset-powerdns in prod/nso-system reconcile error ratio is 80% (threshold 50%) — reconciliation is stalled"
+              description: "More than 50% of the 'dnsrecordset-powerdns' controller's reconcile attempts are failing in cluster 'prod', namespace 'nso-system' — it has effectively stopped applying changes. Treat as an active outage for anything this controller programs. Check controller logs for 'Reconciler error' entries. See ControllerReconcileErrorRatioHigh for initial diagnosis."
+              runbook_url: "https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/controller-health.md#controllerreconcileerrorratiocritical"
+      # Ratio diluted well under the threshold; held by keep_firing_for.
+      - eval_time: 70m
+        alertname: ControllerReconcileErrorRatioCritical
+        exp_alerts: *diluted_firing
+      - eval_time: 80m
+        alertname: ControllerReconcileErrorRatioCritical
+        exp_alerts: *diluted_firing
+      # keep_firing_for has lapsed: the hold is bounded, so a controller that
+      # really does stay under the threshold still resolves.
+      - eval_time: 110m
+        alertname: ControllerReconcileErrorRatioCritical
+        exp_alerts: []
+
+  # Sparse controller at the warning tier: the same mechanism as the critical
+  # case above, verified against `for: 15m` rather than `for: 10m`.
+  - interval: 1m
+    input_series:
+      - series: 'controller_runtime_reconcile_total{controller="instance-projector",result="error",cluster="prod",namespace="compute-system"}'
+        values: '0+0x19 4+0x19 8+0x19 12+0x19 16+0x19'
+    alert_rule_test:
+      - eval_time: 45m
+        alertname: ControllerReconcileErrorRatioHigh
+        exp_alerts: &sparse_firing_warning
+          - exp_labels:
+              severity: warning
+              controller: instance-projector
+              cluster: prod
+              namespace: compute-system
+            exp_annotations:
+              summary: "Controller instance-projector in prod/compute-system reconcile error ratio is 100% (threshold 20%)"
+              description: "More than 20% of the 'instance-projector' controller's reconcile attempts are failing in cluster 'prod', namespace 'compute-system'. It cannot apply its intent — changes are not reaching their target and the last successfully written state stays programmed. Common causes: an object fails CRD validation, an API server admission error, or a permissions regression. Check controller logs for 'Reconciler error' entries on the 'instance-projector' controller."
+              runbook_url: "https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/controller-health.md#controllerreconcileerrorratiohigh"
+      - eval_time: 59m
+        alertname: ControllerReconcileErrorRatioHigh
+        exp_alerts: *sparse_firing_warning
+      - eval_time: 99m
+        alertname: ControllerReconcileErrorRatioHigh
+        exp_alerts: *sparse_firing_warning
+
+  # Reconcile period longer than the old evaluation window — the Grafana operator
+  # CRs in datum-cloud/infra#3742, which reconcile about every 15 minutes and have
+  # failed 100% with zero successes for over a month without ever firing. Under a
+  # 10-minute range `for:` reset on every reconcile and the rule could never latch;
+  # the 30-minute range is what makes this condition alertable at all.
+  - interval: 1m
+    input_series:
+      - series: 'controller_runtime_reconcile_total{controller="grafanaalertrulegroup",result="error",cluster="prod",namespace="telemetry-system"}'
+        values: '0+0x14 1+0x14 2+0x14 3+0x14 4+0x14 5+0x14 6+0x14 7+0x14'
+    alert_rule_test:
+      - eval_time: 60m
+        alertname: ControllerReconcileErrorRatioCritical
+        exp_alerts: &grafana_firing
+          - exp_labels:
+              severity: critical
+              controller: grafanaalertrulegroup
+              cluster: prod
+              namespace: telemetry-system
+            exp_annotations:
+              summary: "Controller grafanaalertrulegroup in prod/telemetry-system reconcile error ratio is 100% (threshold 50%) — reconciliation is stalled"
+              description: "More than 50% of the 'grafanaalertrulegroup' controller's reconcile attempts are failing in cluster 'prod', namespace 'telemetry-system' — it has effectively stopped applying changes. Treat as an active outage for anything this controller programs. Check controller logs for 'Reconciler error' entries. See ControllerReconcileErrorRatioHigh for initial diagnosis."
+              runbook_url: "https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/controller-health.md#controllerreconcileerrorratiocritical"
+      - eval_time: 90m
+        alertname: ControllerReconcileErrorRatioCritical
+        exp_alerts: *grafana_firing
 
   # Healthy controller (10% errors) never crosses the warning threshold.
   - interval: 1m
     input_series:
-      - series: 'controller_runtime_reconcile_total{controller="domain",result="error"}'
+      - series: 'controller_runtime_reconcile_total{controller="domain",result="error",cluster="prod",namespace="nso-system"}'
         values: '0+1x20'
-      - series: 'controller_runtime_reconcile_total{controller="domain",result="success"}'
+      - series: 'controller_runtime_reconcile_total{controller="domain",result="success",cluster="prod",namespace="nso-system"}'
         values: '0+9x20'
     alert_rule_test:
       - eval_time: 20m
@@ -86,9 +246,9 @@ tests:
   # Above the warning threshold (90%) but checked before for: 15m elapses.
   - interval: 1m
     input_series:
-      - series: 'controller_runtime_reconcile_total{controller="gateway",result="error"}'
+      - series: 'controller_runtime_reconcile_total{controller="gateway",result="error",cluster="prod",namespace="nso-system"}'
         values: '0+9x20'
-      - series: 'controller_runtime_reconcile_total{controller="gateway",result="success"}'
+      - series: 'controller_runtime_reconcile_total{controller="gateway",result="success",cluster="prod",namespace="nso-system"}'
         values: '0+1x20'
     alert_rule_test:
       - eval_time: 14m
@@ -98,9 +258,9 @@ tests:
   # Above the critical threshold (80%) but checked before for: 10m elapses.
   - interval: 1m
     input_series:
-      - series: 'controller_runtime_reconcile_total{controller="gateway",result="error"}'
+      - series: 'controller_runtime_reconcile_total{controller="gateway",result="error",cluster="prod",namespace="nso-system"}'
         values: '0+8x20'
-      - series: 'controller_runtime_reconcile_total{controller="gateway",result="success"}'
+      - series: 'controller_runtime_reconcile_total{controller="gateway",result="success",cluster="prod",namespace="nso-system"}'
         values: '0+2x20'
     alert_rule_test:
       - eval_time: 9m

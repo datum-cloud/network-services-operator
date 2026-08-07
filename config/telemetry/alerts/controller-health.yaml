@@ -9,26 +9,36 @@ spec:
   # reconciler is failing to apply its intent. A high error ratio means writes
   # are being rejected (invalid objects, admission errors, permissions), the
   # controller is hot-looping, and the last successfully written state stays
-  # programmed. The `controller` label names the offending reconciler.
+  # programmed. The `controller` label names the offending reconciler, and
+  # `cluster`/`namespace` name where it is running.
+  #
+  # A controller reconciling only a handful of objects produces no samples at
+  # all in a short window: the denominator goes to zero, the series disappears,
+  # and the alert resolves and re-fires every time `for` elapses again. The
+  # 30-minute range keeps the series continuous at low reconcile volume, and
+  # `keep_firing_for` holds the alert through the remaining gaps and through
+  # brief dips under the threshold, so a persistently failing controller pages
+  # once instead of flapping.
   - name: nso-controller-health
     interval: 30s
     rules:
     # Fires when more than 20% of a controller's reconcile attempts fail over a
-    # 10-minute window, sustained for 15 minutes. Grouped by controller so each
-    # reconciler is evaluated independently and the alert names which one.
+    # 30-minute window, sustained for 15 minutes. Each reconciler is evaluated
+    # independently per cluster and namespace.
     - alert: ControllerReconcileErrorRatioHigh
       expr: |
         (
-          sum by (controller) (rate(controller_runtime_reconcile_total{result="error"}[10m]))
+          sum by (cluster, namespace, controller) (rate(controller_runtime_reconcile_total{result="error"}[30m]))
           /
-          sum by (controller) (rate(controller_runtime_reconcile_total[10m]))
+          sum by (cluster, namespace, controller) (rate(controller_runtime_reconcile_total[30m]))
         ) > 0.2
       for: 15m
+      keep_firing_for: 30m
       labels:
         severity: warning
       annotations:
-        summary: "Controller {{ $labels.controller }} reconcile error ratio is {{ $value | humanizePercentage }} (threshold 20%)"
-        description: "More than 20% of the '{{ $labels.controller }}' controller's reconcile attempts are failing. It cannot apply its intent — changes are not reaching their target and the last successfully written state stays programmed. Common causes: an object fails CRD validation, an API server admission error, or a permissions regression. Check controller logs for 'Reconciler error' entries on the '{{ $labels.controller }}' controller."
+        summary: "Controller {{ $labels.controller }} in {{ $labels.cluster }}/{{ $labels.namespace }} reconcile error ratio is {{ $value | humanizePercentage }} (threshold 20%)"
+        description: "More than 20% of the '{{ $labels.controller }}' controller's reconcile attempts are failing in cluster '{{ $labels.cluster }}', namespace '{{ $labels.namespace }}'. It cannot apply its intent — changes are not reaching their target and the last successfully written state stays programmed. Common causes: an object fails CRD validation, an API server admission error, or a permissions regression. Check controller logs for 'Reconciler error' entries on the '{{ $labels.controller }}' controller."
         runbook_url: "https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/controller-health.md#controllerreconcileerrorratiohigh"
 
     # Fires at a critical threshold when more than 50% of a controller's
@@ -37,14 +47,15 @@ spec:
     - alert: ControllerReconcileErrorRatioCritical
       expr: |
         (
-          sum by (controller) (rate(controller_runtime_reconcile_total{result="error"}[10m]))
+          sum by (cluster, namespace, controller) (rate(controller_runtime_reconcile_total{result="error"}[30m]))
           /
-          sum by (controller) (rate(controller_runtime_reconcile_total[10m]))
+          sum by (cluster, namespace, controller) (rate(controller_runtime_reconcile_total[30m]))
         ) > 0.5
       for: 10m
+      keep_firing_for: 30m
       labels:
         severity: critical
       annotations:
-        summary: "Controller {{ $labels.controller }} reconcile error ratio is {{ $value | humanizePercentage }} (threshold 50%) — reconciliation is stalled"
-        description: "More than 50% of the '{{ $labels.controller }}' controller's reconcile attempts are failing — it has effectively stopped applying changes. Treat as an active outage for anything this controller programs. Check controller logs for 'Reconciler error' entries. See ControllerReconcileErrorRatioHigh for initial diagnosis."
+        summary: "Controller {{ $labels.controller }} in {{ $labels.cluster }}/{{ $labels.namespace }} reconcile error ratio is {{ $value | humanizePercentage }} (threshold 50%) — reconciliation is stalled"
+        description: "More than 50% of the '{{ $labels.controller }}' controller's reconcile attempts are failing in cluster '{{ $labels.cluster }}', namespace '{{ $labels.namespace }}' — it has effectively stopped applying changes. Treat as an active outage for anything this controller programs. Check controller logs for 'Reconciler error' entries. See ControllerReconcileErrorRatioHigh for initial diagnosis."
         runbook_url: "https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/controller-health.md#controllerreconcileerrorratiocritical"

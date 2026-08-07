@@ -9,17 +9,38 @@ target.
 
 Every controller in the operator emits the standard controller-runtime counter
 `controller_runtime_reconcile_total`, labelled with `controller` (the reconciler
-name) and `result` (`error` / `success`). These alerts group by `controller`, so
-each reconciler is evaluated independently and the firing alert names the
-offending one in its `controller` label.
+name) and `result` (`error` / `success`). These alerts group by `cluster`,
+`namespace` and `controller`, so each reconciler is evaluated independently per
+deployment and the firing alert names both the offending reconciler and where it
+is running.
+
+The counter is emitted by every controller-runtime binary scraped into the same
+Prometheus, not only by this operator. A firing alert may therefore name a
+controller belonging to another component — read the `namespace` label before
+assuming the problem is in NSO.
+
+## Alert timing
+
+Both alerts evaluate a 30-minute rate window and hold with `keep_firing_for: 30m`.
+Two consequences while you are working an incident:
+
+- **A fix does not clear the page immediately.** The alert keeps firing for up to
+  30 minutes after reconciles start succeeding again. A still-firing alert shortly
+  after a fix is expected and is not evidence the fix failed — confirm recovery
+  from the error ratio itself, not from the alert state.
+- **A new failure takes longer to page.** A controller that was healthy and then
+  fails outright reaches the critical threshold in roughly 26 minutes rather than
+  16. The wide window is what stops a low-volume controller flapping; detection
+  latency is the price.
 
 ## Shared diagnosis
 
-The `controller` label on the alert tells you which reconciler is failing. Find
-the specific objects and error messages in the controller logs:
+The `cluster` and `namespace` labels tell you where to look; the `controller`
+label tells you which reconciler is failing. Find the specific objects and error
+messages in the controller logs:
 
 ```sh
-kubectl -n <nso-ns> logs -l <controller-selector> | grep 'Reconciler error' | grep '"controller":"<controller>"'
+kubectl -n <namespace> logs -l <controller-selector> | grep 'Reconciler error' | grep '"controller":"<controller>"'
 ```
 
 Each error line names the namespace and name of the object that failed and the
@@ -40,6 +61,19 @@ Common error classes:
   RBAC for that resource.
 - `conflict` / `ResourceVersion` — transient write conflicts that resolve on
   their own and should not sustain a high error rate.
+- `not found` for a parent or cluster that no longer exists — the object is
+  orphaned and can never reconcile, so it retries forever and pins the ratio at
+  100% with no successes to dilute it. Project deletion is the usual trigger
+  ([milo-os/milo#750](https://github.com/milo-os/milo/issues/750)). **Do not
+  assume an orphan is inert** — it depends on what the controller programs:
+  - Compute orphans are dead data; an orphaned Instance drives no workload
+    ([datum-cloud/compute#194](https://github.com/datum-cloud/compute/issues/194)).
+  - Gateway orphans are not. Mirrored Gateways and DNS records keep propagating
+    through Karmada, so a deleted project's listener can still serve live traffic
+    ([#338](https://github.com/datum-cloud/network-services-operator/pull/338)).
+
+  Establish which case you have before calling the alert benign, then remove the
+  orphan.
 
 ## ControllerReconcileErrorRatioHigh
 
@@ -56,7 +90,8 @@ diagnosis) and identify the failing objects and the rejection reason.
 **Remediate.** Fix the root cause identified in the logs — correct the object
 that fails validation, restore the missing permission, or roll back the change
 that introduced the regression. The error ratio recovers automatically once
-writes succeed again.
+writes succeed again, though the alert itself holds for up to 30 minutes longer
+(see [Alert timing](#alert-timing)).
 
 ## ControllerReconcileErrorRatioCritical
 
@@ -82,4 +117,6 @@ kubectl get --raw /healthz
 **Remediate.** Fix the root cause as for the warning tier. If one object's
 validation failure is blocking the rest, correcting it unblocks the queue. If an
 API server or permissions change caused a broad failure, roll it back and verify
-the controller regains a healthy reconcile ratio before resolving the alert.
+the controller regains a healthy reconcile ratio. Judge recovery by the ratio,
+not the alert state — the alert holds for up to 30 minutes after the ratio
+recovers (see [Alert timing](#alert-timing)).

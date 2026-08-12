@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	envoygatewayv1alpha1 "github.com/envoyproxy/gateway/api/v1alpha1"
 	v1 "k8s.io/api/core/v1"
@@ -44,6 +45,7 @@ import (
 	conditionutil "go.datum.net/network-services-operator/internal/util/condition"
 	gatewayutil "go.datum.net/network-services-operator/internal/util/gateway"
 	"go.datum.net/network-services-operator/internal/util/resourcename"
+	"go.datum.net/network-services-operator/internal/validation"
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 )
 
@@ -63,6 +65,8 @@ type desiredHTTPProxyResources struct {
 }
 
 const httpProxyFinalizer = "networking.datumapis.com/httpproxy-cleanup"
+
+const retryAfterInvalid = 5 * time.Minute
 const connectorOfflineFilterPrefix = "connector-offline"
 
 // BackendCertHostnameAnnotation is set on the upstream EndpointSlice by the
@@ -121,16 +125,6 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 	logger.Info("reconciling httpproxy")
 	defer logger.Info("reconcile complete")
 
-	if !controllerutil.ContainsFinalizer(&httpProxy, httpProxyFinalizer) {
-		controllerutil.AddFinalizer(&httpProxy, httpProxyFinalizer)
-		if err := cl.GetClient().Update(ctx, &httpProxy); err != nil {
-			if apierrors.IsConflict(err) {
-				return ctrl.Result{RequeueAfter: retryAfterConflict}, nil
-			}
-			return ctrl.Result{}, err
-		}
-	}
-
 	httpProxyCopy := httpProxy.DeepCopy()
 
 	acceptedCondition := &metav1.Condition{
@@ -175,6 +169,28 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 			logger.Info("httpproxy status updated")
 		}
 	}()
+
+	if !controllerutil.ContainsFinalizer(&httpProxy, httpProxyFinalizer) {
+		controllerutil.AddFinalizer(&httpProxy, httpProxyFinalizer)
+		if updateErr := cl.GetClient().Update(ctx, &httpProxy); updateErr != nil {
+			if apierrors.IsConflict(updateErr) {
+				return ctrl.Result{RequeueAfter: retryAfterConflict}, nil
+			}
+			if apierrors.IsInvalid(updateErr) {
+				acceptedCondition.Reason = networkingv1alpha.HTTPProxyReasonInvalid
+				acceptedCondition.Message = fmt.Sprintf("The HTTPProxy cannot be programmed because its stored spec is rejected by validation: %s", updateErr.Error())
+				return ctrl.Result{RequeueAfter: retryAfterInvalid}, nil
+			}
+			return ctrl.Result{}, updateErr
+		}
+	}
+
+	if errs := validation.ValidateHTTPProxy(&httpProxy); len(errs) > 0 {
+		acceptedCondition.Status = metav1.ConditionFalse
+		acceptedCondition.Reason = networkingv1alpha.HTTPProxyReasonInvalid
+		acceptedCondition.Message = fmt.Sprintf("The HTTPProxy is invalid and cannot be programmed: %s", errs.ToAggregate())
+		return ctrl.Result{}, nil
+	}
 
 	desiredResources, err := r.collectDesiredResources(ctx, cl.GetClient(), &httpProxy)
 	if err != nil {
@@ -690,29 +706,9 @@ func httpProxyReferencesConnector(httpProxy *networkingv1alpha.HTTPProxy, connec
 	return false
 }
 
-// extractHostHeaderOverride returns the Host header value from a
-// RequestHeaderModifier filter, if present. Header names are matched
-// case-insensitively per RFC 7230. The returned bool indicates whether a
-// Host header override was found.
-//
-// Envoy Gateway does not accept Host header manipulation via
-// RequestHeaderModifier — it must go through URLRewrite.Hostname instead.
-// collectDesiredResources uses this helper to translate the user-facing
-// RequestHeaderModifier{Host} shape (which round-trips with datumctl and
-// the cloud portal) into the URLRewrite{Hostname} that Envoy actually
-// honours at egress.
 func extractHostHeaderOverride(filters []gatewayv1.HTTPRouteFilter) (string, bool) {
-	for _, filter := range filters {
-		if filter.Type != gatewayv1.HTTPRouteFilterRequestHeaderModifier || filter.RequestHeaderModifier == nil {
-			continue
-		}
-		for _, h := range filter.RequestHeaderModifier.Set {
-			if strings.EqualFold(string(h.Name), "Host") {
-				return h.Value, true
-			}
-		}
-	}
-	return "", false
+	override, found := gatewayutil.FindHostHeaderOverride(filters)
+	return override.Value, found
 }
 
 // stripHostFromRequestHeaderModifier returns the filter list with any
@@ -949,10 +945,10 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 				if backend.TLS == nil || backend.TLS.Hostname == nil || *backend.TLS.Hostname == "" {
 					return nil, fmt.Errorf("HTTPS endpoint with IP address requires tls.hostname for backend %d in rule %d", backendIndex, ruleIndex)
 				}
-				certHostname = *backend.TLS.Hostname
+				certHostname = gatewayutil.NormalizeHostname(*backend.TLS.Hostname)
 				rewriteHostname := certHostname
 				if hasUserHost {
-					rewriteHostname = userHostOverride
+					rewriteHostname = gatewayutil.NormalizeHostname(userHostOverride)
 				}
 				// Use tls.hostname (or the user override) for the Host header rewrite
 				hostnameRewriteFound := false
@@ -975,10 +971,10 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 				// For FQDN endpoints, rewrite the Host header to match the
 				// backend hostname — or to the user's override if they set
 				// one via RequestHeaderModifier.
-				certHostname = host
-				rewriteHostname := host
+				certHostname = gatewayutil.NormalizeHostname(host)
+				rewriteHostname := certHostname
 				if hasUserHost {
-					rewriteHostname = userHostOverride
+					rewriteHostname = gatewayutil.NormalizeHostname(userHostOverride)
 				}
 				hostnameRewriteFound := false
 				for i, filter := range ruleFilters {

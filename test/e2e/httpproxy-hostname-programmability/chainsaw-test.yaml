@@ -1,0 +1,208 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+#
+# A hostname the HTTPProxy API accepts must be a hostname the proxy can be
+# programmed with (issue #347).
+#
+# Three fields reach the generated HTTPRoute's urlRewrite.hostname (a Gateway
+# API PreciseHostname) without ever passing a hostname check on the way in:
+# a Host header set by a RequestHeaderModifier, backend tls.hostname, and the
+# port inside a backend endpoint URL. Each is asserted here at the only two
+# outcomes that are acceptable to a user: the value is programmed, or the write
+# is refused with a message naming the field they wrote.
+#
+# The proxy's own gateway uses the operator-configured class
+# ("datum-external-global-proxy"), not a per-test class, so that class must
+# exist upstream. It is cluster-scoped and shared, so apply is idempotent.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: httpproxy-hostname-programmability
+spec:
+  cluster: nso-standard
+  # Each programmed proxy leaves a Gateway and a replicated downstream set to
+  # tear down, which does not finish inside the 30s default.
+  timeouts:
+    cleanup: 420s
+  steps:
+    - name: Ensure the shared upstream GatewayClass exists
+      try:
+        - apply:
+            cluster: nso-standard
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: GatewayClass
+              metadata:
+                name: datum-external-global-proxy
+              spec:
+                controllerName: gateway.networking.datumapis.com/external-global-proxy-controller
+
+    - name: A Host header override differing only in case is programmed
+      description: |
+        The production case. Host header values are case-insensitive (RFC 7230)
+        but urlRewrite.hostname is not, so a value like "Coffee" is carried
+        verbatim into a field that refuses it. The proxy must end up programmed
+        with the equivalent lowercase hostname.
+      try:
+        - create:
+            cluster: nso-standard
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: HTTPProxy
+              metadata:
+                name: mixed-case-host
+              spec:
+                rules:
+                  - matches:
+                      - path:
+                          type: PathPrefix
+                          value: /
+                    filters:
+                      - type: RequestHeaderModifier
+                        requestHeaderModifier:
+                          set:
+                            - name: Host
+                              value: Coffee.E2E.Env.Datum.Net
+                    backends:
+                      - endpoint: http://origin.e2e.env.datum.net
+        - assert:
+            timeout: 120s
+            cluster: nso-standard
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: HTTPRoute
+              metadata:
+                name: mixed-case-host
+              spec:
+                (rules[0].filters[?type == 'URLRewrite'] | [0].urlRewrite.hostname): coffee.e2e.env.datum.net
+        - assert:
+            timeout: 120s
+            cluster: nso-standard
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: HTTPProxy
+              metadata:
+                name: mixed-case-host
+              status:
+                (conditions[?type == 'Accepted']):
+                  - status: "True"
+      catch:
+        - script:
+            cluster: nso-standard
+            content: |
+              kubectl -n $NAMESPACE get httpproxy,httproute,gateway -o yaml
+              kubectl -n network-services-operator-system logs -l app.kubernetes.io/name=network-services-operator --tail=100
+
+    - name: A Host header value that is not a hostname is refused at admission
+      description: |
+        "example.com:8080" is a legal Host header and an illegal
+        PreciseHostname. Refusing it is correct; silently dropping the port
+        would forward to a different origin than the user asked for.
+      try:
+        - apply:
+            cluster: nso-standard
+            expect:
+              - check:
+                  ($error != null): true
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: HTTPProxy
+              metadata:
+                name: host-with-port
+              spec:
+                rules:
+                  - matches:
+                      - path:
+                          type: PathPrefix
+                          value: /
+                    filters:
+                      - type: RequestHeaderModifier
+                        requestHeaderModifier:
+                          set:
+                            - name: Host
+                              value: example.com:8080
+                    backends:
+                      - endpoint: http://origin.e2e.env.datum.net
+
+    - name: A backend tls.hostname is judged the same way as any other hostname
+      description: |
+        tls.hostname reaches the same urlRewrite.hostname (and the downstream
+        BackendTLSPolicy) for HTTPS backends addressed by IP. A case-different
+        value must program; a value that is not a hostname at all must be
+        refused.
+      try:
+        - create:
+            cluster: nso-standard
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: HTTPProxy
+              metadata:
+                name: mixed-case-tls-hostname
+              spec:
+                rules:
+                  - matches:
+                      - path:
+                          type: PathPrefix
+                          value: /
+                    backends:
+                      - endpoint: https://198.51.100.10
+                        tls:
+                          hostname: Coffee.E2E.Env.Datum.Net
+        - assert:
+            timeout: 120s
+            cluster: nso-standard
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: HTTPRoute
+              metadata:
+                name: mixed-case-tls-hostname
+              spec:
+                (rules[0].filters[?type == 'URLRewrite'] | [0].urlRewrite.hostname): coffee.e2e.env.datum.net
+        - apply:
+            cluster: nso-standard
+            expect:
+              - check:
+                  ($error != null): true
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: HTTPProxy
+              metadata:
+                name: invalid-tls-hostname
+              spec:
+                rules:
+                  - matches:
+                      - path:
+                          type: PathPrefix
+                          value: /
+                    backends:
+                      - endpoint: https://198.51.100.10
+                        tls:
+                          hostname: not a hostname
+      catch:
+        - script:
+            cluster: nso-standard
+            content: |
+              kubectl -n $NAMESPACE get httpproxy,httproute -o yaml
+
+    - name: An out-of-range endpoint port is refused at admission
+      description: |
+        The endpoint port is parsed and handed to a backendRef and an
+        EndpointSlice, both of which enforce 1-65535.
+      try:
+        - apply:
+            cluster: nso-standard
+            expect:
+              - check:
+                  ($error != null): true
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: HTTPProxy
+              metadata:
+                name: endpoint-port-out-of-range
+              spec:
+                rules:
+                  - matches:
+                      - path:
+                          type: PathPrefix
+                          value: /
+                    backends:
+                      - endpoint: http://origin.e2e.env.datum.net:99999

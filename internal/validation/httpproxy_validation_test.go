@@ -366,6 +366,76 @@ func TestValidateHTTPProxy(t *testing.T) {
 			},
 			expectedErrors: field.ErrorList{},
 		},
+		"tls.hostname differing only in case is valid": {
+			proxy:          newHostnameProxy(withTLSHostname("Coffee.Example.Com")),
+			expectedErrors: field.ErrorList{},
+		},
+		"tls.hostname that is not a hostname is invalid": {
+			proxy: newHostnameProxy(withTLSHostname("not a hostname")),
+			expectedErrors: field.ErrorList{
+				field.Invalid(backendPath().Child("tls", "hostname"), "", ""),
+			},
+		},
+		"tls.hostname with a port is invalid": {
+			proxy: newHostnameProxy(withTLSHostname("api.example.com:8443")),
+			expectedErrors: field.ErrorList{
+				field.Invalid(backendPath().Child("tls", "hostname"), "", ""),
+			},
+		},
+		"tls.hostname wildcard is invalid": {
+			proxy: newHostnameProxy(withTLSHostname("*.example.com")),
+			expectedErrors: field.ErrorList{
+				field.Invalid(backendPath().Child("tls", "hostname"), "", ""),
+			},
+		},
+		"Host header override differing only in case is valid": {
+			proxy:          newHostnameProxy(withRuleHostHeader("Coffee.Example.Com")),
+			expectedErrors: field.ErrorList{},
+		},
+		"Host header override that is not a hostname is invalid": {
+			proxy: newHostnameProxy(withRuleHostHeader("Coffee Pot")),
+			expectedErrors: field.ErrorList{
+				field.Invalid(rulePath().Child("filters").Index(0).
+					Child("requestHeaderModifier", "set").Index(0).Child("value"), "", ""),
+			},
+		},
+		"Host header override carrying a port is invalid": {
+			proxy: newHostnameProxy(withRuleHostHeader("example.com:8080")),
+			expectedErrors: field.ErrorList{
+				field.Invalid(rulePath().Child("filters").Index(0).
+					Child("requestHeaderModifier", "set").Index(0).Child("value"), "", ""),
+			},
+		},
+		"Host header override too long is invalid": {
+			proxy: newHostnameProxy(withRuleHostHeader(strings.Repeat("a", 254))),
+			expectedErrors: field.ErrorList{
+				field.Invalid(rulePath().Child("filters").Index(0).
+					Child("requestHeaderModifier", "set").Index(0).Child("value"), "", ""),
+			},
+		},
+		"Host header override on a backend filter is validated": {
+			proxy: newHostnameProxy(withBackendHostHeader("Coffee Pot")),
+			expectedErrors: field.ErrorList{
+				field.Invalid(backendPath().Child("filters").Index(0).
+					Child("requestHeaderModifier", "set").Index(0).Child("value"), "", ""),
+			},
+		},
+		"endpoint port in range is valid": {
+			proxy:          newHostnameProxy(withEndpoint("http://api.example.com:8080")),
+			expectedErrors: field.ErrorList{},
+		},
+		"endpoint port above the maximum is invalid": {
+			proxy: newHostnameProxy(withEndpoint("http://api.example.com:99999")),
+			expectedErrors: field.ErrorList{
+				field.Invalid(backendPath().Child("endpoint").Key("port"), "", ""),
+			},
+		},
+		"endpoint port zero is invalid": {
+			proxy: newHostnameProxy(withEndpoint("http://api.example.com:0")),
+			expectedErrors: field.ErrorList{
+				field.Invalid(backendPath().Child("endpoint").Key("port"), "", ""),
+			},
+		},
 	}
 
 	for name, scenario := range scenarios {
@@ -379,5 +449,69 @@ func TestValidateHTTPProxy(t *testing.T) {
 				t.Errorf("Testcase %s - expected errors '%v', got '%v', diff: '%v'", name, scenario.expectedErrors, errs, delta)
 			}
 		})
+	}
+}
+
+func rulePath() *field.Path {
+	return field.NewPath("spec", "rules").Index(0)
+}
+
+func backendPath() *field.Path {
+	return rulePath().Child("backends").Index(0)
+}
+
+func newHostnameProxy(opts ...func(*networkingv1alpha.HTTPProxy)) *networkingv1alpha.HTTPProxy {
+	proxy := &networkingv1alpha.HTTPProxy{
+		Spec: networkingv1alpha.HTTPProxySpec{
+			Rules: []networkingv1alpha.HTTPProxyRule{
+				{
+					Backends: []networkingv1alpha.HTTPProxyRuleBackend{
+						{Endpoint: "https://api.example.com"},
+					},
+				},
+			},
+		},
+	}
+
+	for _, opt := range opts {
+		opt(proxy)
+	}
+
+	return proxy
+}
+
+func withEndpoint(endpoint string) func(*networkingv1alpha.HTTPProxy) {
+	return func(proxy *networkingv1alpha.HTTPProxy) {
+		proxy.Spec.Rules[0].Backends[0].Endpoint = endpoint
+	}
+}
+
+func withTLSHostname(hostname string) func(*networkingv1alpha.HTTPProxy) {
+	return func(proxy *networkingv1alpha.HTTPProxy) {
+		proxy.Spec.Rules[0].Backends[0].Endpoint = "https://192.168.1.1"
+		proxy.Spec.Rules[0].Backends[0].TLS = &networkingv1alpha.HTTPProxyBackendTLS{
+			Hostname: ptr.To(hostname),
+		}
+	}
+}
+
+func hostHeaderFilter(value string) gatewayv1.HTTPRouteFilter {
+	return gatewayv1.HTTPRouteFilter{
+		Type: gatewayv1.HTTPRouteFilterRequestHeaderModifier,
+		RequestHeaderModifier: &gatewayv1.HTTPHeaderFilter{
+			Set: []gatewayv1.HTTPHeader{{Name: "Host", Value: value}},
+		},
+	}
+}
+
+func withRuleHostHeader(value string) func(*networkingv1alpha.HTTPProxy) {
+	return func(proxy *networkingv1alpha.HTTPProxy) {
+		proxy.Spec.Rules[0].Filters = []gatewayv1.HTTPRouteFilter{hostHeaderFilter(value)}
+	}
+}
+
+func withBackendHostHeader(value string) func(*networkingv1alpha.HTTPProxy) {
+	return func(proxy *networkingv1alpha.HTTPProxy) {
+		proxy.Spec.Rules[0].Backends[0].Filters = []gatewayv1.HTTPRouteFilter{hostHeaderFilter(value)}
 	}
 }

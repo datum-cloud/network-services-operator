@@ -405,6 +405,10 @@ const (
 	// HTTPProxyReasonConnectorMetadataApplied indicates connector metadata has been applied.
 	HTTPProxyReasonConnectorMetadataApplied = "ConnectorMetadataApplied"
 
+	// HTTPProxyReasonInvalid indicates that the HTTP proxy's stored spec is
+	// rejected by current validation rules, so the operator cannot program it.
+	HTTPProxyReasonInvalid = "Invalid"
+
 	// HTTPProxyReasonConflict indicates that the HTTP proxy encountered a conflict
 	// when being programmed.
 	HTTPProxyReasonConflict = "Conflict"

@@ -16,6 +16,7 @@ import (
 
 	"go.datum.net/network-services-operator/internal/config"
 	"go.datum.net/network-services-operator/internal/validation"
+	webhookutil "go.datum.net/network-services-operator/internal/webhook"
 )
 
 // SetupHTTPRouteFilterWebhookWithManager registers the webhook for HTTPRouteFilter in the manager.
@@ -60,6 +61,10 @@ func (v *HTTPRouteFilterCustomValidator) ValidateUpdate(ctx context.Context, old
 
 	log := logf.FromContext(ctx).WithValues("cluster", clusterName)
 	log.Info("Validating HTTPRouteFilter", "name", newHTTPRouteFilter.GetName(), "cluster", clusterName)
+
+	if webhookutil.SkipUpdateValidation(newHTTPRouteFilter, oldHTTPRouteFilter.Spec, newHTTPRouteFilter.Spec) {
+		return nil, nil
+	}
 
 	if errs := validation.ValidateHTTPRouteFilter(newHTTPRouteFilter, v.validationOpts); len(errs) > 0 {
 		return nil, apierrors.NewInvalid(oldHTTPRouteFilter.GetObjectKind().GroupVersionKind().GroupKind(), newHTTPRouteFilter.GetName(), errs)

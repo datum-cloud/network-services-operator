@@ -12,6 +12,7 @@ import (
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 
 	"go.datum.net/network-services-operator/internal/validation"
+	webhookutil "go.datum.net/network-services-operator/internal/webhook"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 )
@@ -58,11 +59,13 @@ func (v *HTTPProxyCustomValidator) ValidateCreate(ctx context.Context, httpProxy
 func (v *HTTPProxyCustomValidator) ValidateUpdate(ctx context.Context, oldHTTPProxy, newHTTPProxy *networkingv1alpha.HTTPProxy) (admission.Warnings, error) {
 	logf.FromContext(ctx).Info("Validation for HTTPProxy upon update", "name", newHTTPProxy.GetName())
 
+	if webhookutil.SkipUpdateValidation(newHTTPProxy, oldHTTPProxy.Spec, newHTTPProxy.Spec) {
+		return nil, nil
+	}
+
 	if errs := validation.ValidateHTTPProxy(newHTTPProxy); len(errs) > 0 {
 		return nil, errors.NewInvalid(oldHTTPProxy.GetObjectKind().GroupVersionKind().GroupKind(), newHTTPProxy.GetName(), errs)
 	}
-
-	// TODO(user): fill in your validation logic upon object update.
 
 	return nil, nil
 }

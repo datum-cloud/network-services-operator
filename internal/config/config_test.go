@@ -110,3 +110,95 @@ func TestSetObjectDefaults_IrohConnectorConfig(t *testing.T) {
 		t.Error("DNSEnabled should default to false")
 	}
 }
+
+func TestGatewayConfig_ValidateLegacyTargetDomains(t *testing.T) {
+	tests := []struct {
+		name    string
+		gateway GatewayConfig
+		wantSub string
+	}{
+		{
+			name:    "empty list",
+			gateway: GatewayConfig{TargetDomain: "datumproxy.net"},
+		},
+		{
+			name: "legacy domain set",
+			gateway: GatewayConfig{
+				TargetDomain:        "datumproxy.net",
+				LegacyTargetDomains: []string{"prism.global.datum-dns.net"},
+			},
+		},
+		{
+			name: "empty entry",
+			gateway: GatewayConfig{
+				TargetDomain:        "datumproxy.net",
+				LegacyTargetDomains: []string{""},
+			},
+			wantSub: "must not be empty",
+		},
+		{
+			name: "leading dot",
+			gateway: GatewayConfig{
+				TargetDomain:        "datumproxy.net",
+				LegacyTargetDomains: []string{".prism.global.datum-dns.net"},
+			},
+			wantSub: "must be a bare domain",
+		},
+		{
+			name: "repeats target domain",
+			gateway: GatewayConfig{
+				TargetDomain:        "datumproxy.net",
+				LegacyTargetDomains: []string{"datumproxy.net"},
+			},
+			wantSub: "must not repeat targetDomain",
+		},
+		{
+			name: "duplicate entry",
+			gateway: GatewayConfig{
+				TargetDomain:        "datumproxy.net",
+				LegacyTargetDomains: []string{"prism.global.datum-dns.net", "prism.global.datum-dns.net"},
+			},
+			wantSub: "duplicate entry",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &NetworkServicesOperator{Gateway: tt.gateway}
+			err := cfg.Validate()
+
+			if tt.wantSub == "" {
+				if err != nil {
+					t.Fatalf("expected nil, got %v", err)
+				}
+				return
+			}
+
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", tt.wantSub)
+			}
+			if !strings.Contains(err.Error(), tt.wantSub) {
+				t.Fatalf("expected error containing %q, got %v", tt.wantSub, err)
+			}
+		})
+	}
+}
+
+func TestGatewayConfig_ManagedTargetDomains(t *testing.T) {
+	cfg := GatewayConfig{
+		TargetDomain:        "datumproxy.net",
+		LegacyTargetDomains: []string{"prism.global.datum-dns.net", ""},
+	}
+
+	got := cfg.ManagedTargetDomains()
+	want := []string{"datumproxy.net", "prism.global.datum-dns.net"}
+
+	if len(got) != len(want) {
+		t.Fatalf("expected %v, got %v", want, got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("expected %v, got %v", want, got)
+		}
+	}
+}

@@ -1293,15 +1293,21 @@ func (r *GatewayReconciler) ensureHostnamesClaimed(
 }
 
 func (r *GatewayReconciler) isDatumManagedGatewayHostname(upstreamGateway *gatewayv1.Gateway, hostname string) bool {
-	targetDomain := r.Config.Gateway.TargetDomain
 	gatewayUID := string(upstreamGateway.UID)
 	legacyUIDWithoutDashes := strings.ReplaceAll(gatewayUID, "-", "")
 
-	managedBaseHostnames := []string{
-		r.gatewayCanonicalHostname(upstreamGateway),
-		r.Config.Gateway.GatewayDNSAddress(upstreamGateway),
-		fmt.Sprintf("%s.%s", legacyUIDWithoutDashes, targetDomain),
-		fmt.Sprintf("%s.%s", gatewayUID, targetDomain),
+	targetDomains := r.Config.Gateway.ManagedTargetDomains()
+
+	managedBaseHostnames := make([]string, 0, 1+3*len(targetDomains))
+	managedBaseHostnames = append(managedBaseHostnames, r.gatewayCanonicalHostname(upstreamGateway))
+
+	for _, targetDomain := range targetDomains {
+		managedBaseHostnames = append(
+			managedBaseHostnames,
+			r.Config.Gateway.GatewayDNSAddressForDomain(upstreamGateway, targetDomain),
+			fmt.Sprintf("%s.%s", legacyUIDWithoutDashes, targetDomain),
+			fmt.Sprintf("%s.%s", gatewayUID, targetDomain),
+		)
 	}
 
 	for _, managedHostname := range managedBaseHostnames {
@@ -1475,7 +1481,7 @@ func (r *GatewayReconciler) gatewayCanonicalHostname(upstreamGateway *gatewayv1.
 func gatewayCanonicalHostnameForConfig(gatewayCfg config.GatewayConfig, gw *gatewayv1.Gateway) string {
 	if existing := managedGatewayHostnameFromStatus(
 		gw.Status.Addresses,
-		gatewayCfg.TargetDomain,
+		gatewayCfg.ManagedTargetDomains(),
 	); existing != "" {
 		return existing
 	}
@@ -1483,24 +1489,24 @@ func gatewayCanonicalHostnameForConfig(gatewayCfg config.GatewayConfig, gw *gate
 }
 
 // managedGatewayHostnameFromStatus returns the base hostname address (not v4/v6
-// variants) in the target domain from gateway status, if present.
+// variants) in one of the managed target domains from gateway status, if
+// present.
 func managedGatewayHostnameFromStatus(
 	addresses []gatewayv1.GatewayStatusAddress,
-	targetDomain string,
+	targetDomains []string,
 ) string {
-	suffix := "." + targetDomain
-
 	for _, addr := range addresses {
 		if ptr.Deref(addr.Type, "") != gatewayv1.HostnameAddressType {
-			continue
-		}
-		if addr.Value != targetDomain && !strings.HasSuffix(addr.Value, suffix) {
 			continue
 		}
 		if strings.HasPrefix(addr.Value, "v4.") || strings.HasPrefix(addr.Value, "v6.") {
 			continue
 		}
-		return addr.Value
+		for _, targetDomain := range targetDomains {
+			if addr.Value == targetDomain || strings.HasSuffix(addr.Value, "."+targetDomain) {
+				return addr.Value
+			}
+		}
 	}
 
 	return ""

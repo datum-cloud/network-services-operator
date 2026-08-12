@@ -2282,3 +2282,213 @@ func TestReconcileRequeuesWhenGatewayClassUnavailable(t *testing.T) {
 		})
 	}
 }
+
+func TestIsDatumManagedGatewayHostname(t *testing.T) {
+	const (
+		currentDomain = "datumproxy.net"
+		legacyDomain  = "prism.global.datum-dns.net"
+	)
+
+	gatewayUID := types.UID("11111111-1111-1111-1111-111111111111")
+	uidWithoutDashes := strings.ReplaceAll(string(gatewayUID), "-", "")
+
+	tests := []struct {
+		name                string
+		legacyTargetDomains []string
+		hostname            string
+		expected            bool
+	}{
+		{
+			name:     "uid hostname in current domain",
+			hostname: fmt.Sprintf("%s.%s", gatewayUID, currentDomain),
+			expected: true,
+		},
+		{
+			name:     "legacy uid format hostname in current domain",
+			hostname: fmt.Sprintf("%s.%s", uidWithoutDashes, currentDomain),
+			expected: true,
+		},
+		{
+			name:                "uid hostname in legacy domain",
+			legacyTargetDomains: []string{legacyDomain},
+			hostname:            fmt.Sprintf("%s.%s", gatewayUID, legacyDomain),
+			expected:            true,
+		},
+		{
+			name:                "legacy uid format hostname in legacy domain",
+			legacyTargetDomains: []string{legacyDomain},
+			hostname:            fmt.Sprintf("%s.%s", uidWithoutDashes, legacyDomain),
+			expected:            true,
+		},
+		{
+			name:                "v4 variant in legacy domain",
+			legacyTargetDomains: []string{legacyDomain},
+			hostname:            fmt.Sprintf("v4.%s.%s", uidWithoutDashes, legacyDomain),
+			expected:            true,
+		},
+		{
+			name:     "legacy domain hostname with empty legacy domain list",
+			hostname: fmt.Sprintf("%s.%s", uidWithoutDashes, legacyDomain),
+			expected: false,
+		},
+		{
+			name:                "custom hostname",
+			legacyTargetDomains: []string{legacyDomain},
+			hostname:            "app.example.com",
+			expected:            false,
+		},
+		{
+			name:                "another gateway uid in legacy domain",
+			legacyTargetDomains: []string{legacyDomain},
+			hostname:            fmt.Sprintf("22222222-2222-2222-2222-222222222222.%s", legacyDomain),
+			expected:            false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reconciler := &GatewayReconciler{
+				Config: config.NetworkServicesOperator{
+					Gateway: config.GatewayConfig{
+						TargetDomain:        currentDomain,
+						LegacyTargetDomains: tt.legacyTargetDomains,
+					},
+				},
+			}
+
+			gateway := &gatewayv1.Gateway{ObjectMeta: metav1.ObjectMeta{UID: gatewayUID}}
+
+			assert.Equal(t, tt.expected, reconciler.isDatumManagedGatewayHostname(gateway, tt.hostname))
+		})
+	}
+}
+
+func TestIsDatumManagedGatewayHostname_WordsHostnameInLegacyDomain(t *testing.T) {
+	const (
+		currentDomain = "datumproxy.net"
+		legacyDomain  = "prism.global.datum-dns.net"
+	)
+
+	gateway := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{UID: types.UID("11111111-1111-1111-1111-111111111111")},
+	}
+
+	legacyConfig := config.GatewayConfig{TargetDomain: legacyDomain}
+
+	reconciler := &GatewayReconciler{
+		Config: config.NetworkServicesOperator{
+			Gateway: config.GatewayConfig{
+				TargetDomain:        currentDomain,
+				LegacyTargetDomains: []string{legacyDomain},
+			},
+		},
+	}
+
+	assert.True(t, reconciler.isDatumManagedGatewayHostname(gateway, legacyConfig.GatewayDNSAddress(gateway)))
+}
+
+func TestEnsureHostnamesClaimed_LegacyTargetDomain(t *testing.T) {
+	testScheme := runtime.NewScheme()
+	require.NoError(t, scheme.AddToScheme(testScheme))
+	require.NoError(t, gatewayv1.Install(testScheme))
+	require.NoError(t, discoveryv1.AddToScheme(testScheme))
+	require.NoError(t, networkingv1alpha.AddToScheme(testScheme))
+
+	const legacyDomain = "prism.global.datum-dns.net"
+
+	upstreamNamespace := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: "test", UID: uuid.NewUUID()},
+	}
+
+	gatewayUID := types.UID("11111111-1111-1111-1111-111111111111")
+	legacyHostname := fmt.Sprintf("%s.%s", strings.ReplaceAll(string(gatewayUID), "-", ""), legacyDomain)
+
+	tests := []struct {
+		name                        string
+		legacyTargetDomains         []string
+		expectedClaimedHostnames    []string
+		expectedNotClaimedHostnames []string
+	}{
+		{
+			name:                        "legacy domain not configured leaves the hostname unclaimed",
+			expectedNotClaimedHostnames: []string{legacyHostname},
+		},
+		{
+			name:                     "legacy domain configured reclaims the hostname",
+			legacyTargetDomains:      []string{legacyDomain},
+			expectedClaimedHostnames: []string{legacyHostname},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			testConfig := config.NetworkServicesOperator{
+				Gateway: config.GatewayConfig{
+					DownstreamGatewayClassName:            "test-suite",
+					DownstreamHostnameAccountingNamespace: "default",
+					TargetDomain:                          "datumproxy.net",
+					LegacyTargetDomains:                   tt.legacyTargetDomains,
+				},
+			}
+
+			upstreamGateway := newGateway(testConfig, upstreamNamespace.Name, "test", func(g *gatewayv1.Gateway) {
+				g.UID = gatewayUID
+				g.Spec.Listeners = []gatewayv1.Listener{
+					{
+						Name:     gatewayutil.DefaultHTTPListenerName,
+						Port:     DefaultHTTPPort,
+						Protocol: gatewayv1.HTTPProtocolType,
+						Hostname: ptr.To(gatewayv1.Hostname(legacyHostname)),
+					},
+				}
+				g.Status.Addresses = []gatewayv1.GatewayStatusAddress{
+					{Type: ptr.To(gatewayv1.HostnameAddressType), Value: legacyHostname},
+				}
+			})
+
+			staleClaim := &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace:         testConfig.Gateway.DownstreamHostnameAccountingNamespace,
+					Name:              legacyHostname,
+					UID:               uuid.NewUUID(),
+					CreationTimestamp: metav1.Now(),
+				},
+				Data: map[string]string{"owner": "/test-suite/test/test"},
+			}
+
+			fakeUpstreamClient := fake.NewClientBuilder().
+				WithScheme(testScheme).
+				WithObjects(upstreamGateway, upstreamNamespace).
+				WithStatusSubresource(upstreamGateway).
+				Build()
+
+			downstreamGateway := &gatewayv1.Gateway{}
+
+			fakeDownstreamClient := fake.NewClientBuilder().
+				WithScheme(testScheme).
+				WithObjects(downstreamGateway, staleClaim).
+				WithStatusSubresource(&gatewayv1.Gateway{}).
+				Build()
+
+			reconciler := &GatewayReconciler{
+				mgr:               &fakeMockManager{cl: fakeUpstreamClient},
+				Config:            testConfig,
+				DownstreamCluster: &fakeCluster{cl: fakeDownstreamClient},
+			}
+
+			_, claimedHostnames, notClaimedHostnames, err := reconciler.ensureHostnamesClaimed(
+				context.Background(),
+				"test-suite",
+				fakeUpstreamClient,
+				upstreamGateway,
+				downstreamGateway,
+			)
+			require.NoError(t, err)
+
+			for _, hostname := range tt.expectedClaimedHostnames {
+				assert.Contains(t, claimedHostnames, hostname)
+			}
+			assert.EqualValues(t, tt.expectedNotClaimedHostnames, notClaimedHostnames)
+		})
+	}
+}

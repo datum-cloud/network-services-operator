@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"time"
 
 	words "go.datum.net/network-services-operator/internal/words"
@@ -584,6 +585,12 @@ type GatewayConfig struct {
 	// DNS endpoints for gateways.
 	TargetDomain string `json:"targetDomain"`
 
+	// LegacyTargetDomains are domains that were previously used as the
+	// TargetDomain. Hostnames under these domains are still treated as
+	// platform managed gateway hostnames so that gateways programmed before a
+	// target domain change keep reconciling.
+	LegacyTargetDomains []string `json:"legacyTargetDomains,omitempty"`
+
 	// IPFamilies defines the IP families that should be enabled on gateways
 	// created by the operator.
 	//
@@ -786,9 +793,26 @@ func (c *CertificateReissuanceConfig) GetMaxRetries() int {
 }
 
 func (c *GatewayConfig) GatewayDNSAddress(gateway *gatewayv1.Gateway) string {
+	return c.GatewayDNSAddressForDomain(gateway, c.TargetDomain)
+}
+
+func (c *GatewayConfig) GatewayDNSAddressForDomain(gateway *gatewayv1.Gateway, domain string) string {
 	seed := string(gateway.UID)
-	suffix := fmt.Sprintf(".%s", c.TargetDomain)
+	suffix := fmt.Sprintf(".%s", domain)
 	return words.WordsAndEntropy(suffix, seed)
+}
+
+// ManagedTargetDomains returns the current target domain followed by any
+// legacy target domains, with empty and duplicate entries removed.
+func (c *GatewayConfig) ManagedTargetDomains() []string {
+	domains := make([]string, 0, len(c.LegacyTargetDomains)+1)
+	for _, domain := range append([]string{c.TargetDomain}, c.LegacyTargetDomains...) {
+		if domain == "" || slices.Contains(domains, domain) {
+			continue
+		}
+		domains = append(domains, domain)
+	}
+	return domains
 }
 
 func (c *GatewayConfig) ConnectorTunnelListenerName() string {
@@ -1246,7 +1270,29 @@ func (c *NetworkServicesOperator) Validate() error {
 	if err := c.Connector.Iroh.validate(); err != nil {
 		return fmt.Errorf("connector.iroh: %w", err)
 	}
+	if err := c.Gateway.validate(); err != nil {
+		return fmt.Errorf("gateway: %w", err)
+	}
 	return nil
+}
+
+func (c *GatewayConfig) validate() error {
+	var errs []error
+	seen := make([]string, 0, len(c.LegacyTargetDomains))
+	for i, domain := range c.LegacyTargetDomains {
+		switch {
+		case strings.TrimSpace(domain) == "":
+			errs = append(errs, fmt.Errorf("legacyTargetDomains[%d] must not be empty", i))
+		case domain != strings.TrimSpace(domain) || strings.HasPrefix(domain, "."):
+			errs = append(errs, fmt.Errorf("legacyTargetDomains[%d] must be a bare domain, got %q", i, domain))
+		case domain == c.TargetDomain:
+			errs = append(errs, fmt.Errorf("legacyTargetDomains[%d] must not repeat targetDomain %q", i, domain))
+		case slices.Contains(seen, domain):
+			errs = append(errs, fmt.Errorf("legacyTargetDomains[%d] is a duplicate entry %q", i, domain))
+		}
+		seen = append(seen, domain)
+	}
+	return errors.Join(errs...)
 }
 
 func (c *IrohConnectorConfig) validate() error {

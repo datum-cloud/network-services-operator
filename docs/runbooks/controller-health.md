@@ -81,6 +81,11 @@ Common error classes:
 attempts are returning errors, sustained for 15 minutes. The reconciler is
 struggling to write its objects and some intent is not reaching its target.
 
+This tier has no minimum error-rate floor. A sparse controller failing all of
+a tiny workload — a few permanently-failing objects and nothing else in its
+queue — fires here at a 100% ratio and latches, rather than escalating to the
+critical tier (see below).
+
 **Impact.** Whatever the controller manages is not receiving updates. The last
 successfully written state continues to run.
 
@@ -96,8 +101,19 @@ writes succeed again, though the alert itself holds for up to 30 minutes longer
 ## ControllerReconcileErrorRatioCritical
 
 **Meaning (critical).** More than 50% of the named controller's reconcile
-attempts are failing, sustained for 10 minutes. The reconciler has effectively
-stopped applying changes.
+attempts are failing *and* its error rate exceeds roughly one error per minute,
+both over the 30-minute window and sustained for 10 minutes. The reconciler has
+effectively stopped applying changes to a workload large enough to page for.
+
+**A sparse, permanently-failing controller does not reach this tier — by
+design.** A controller retrying a handful of orphaned objects at
+controller-runtime's capped backoff pins its ratio at 100% but stays far below
+the error-rate floor, so it fires `ControllerReconcileErrorRatioHigh` and
+latches there instead of paging on-call
+([datum-cloud/compute#194](https://github.com/datum-cloud/compute/issues/194)
+is the canonical case). Treat a latched warning with a ~100% ratio and a tiny
+error rate as likely orphaned data — see the orphan guidance under
+[Shared diagnosis](#shared-diagnosis).
 
 **Impact.** Treat as an active outage for anything this controller programs. No
 updates are being applied; consumers see whatever was in place before the errors

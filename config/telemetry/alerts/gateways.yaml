@@ -19,7 +19,7 @@ spec:
         severity: critical
         slo_violation: "true"
         service: network-services
-        team: networking
+        team: sre
       annotations:
         summary: "Gateway {{ $labels.resource_name }} is taking longer than 60 seconds to reach Ready status"
         description: "Gateway {{ $labels.resource_name }} in namespace {{ $labels.resource_namespace }} has been in creation state for {{ $value }} seconds without reaching Ready status (Accepted=True AND Programmed=True), which exceeds the 60-second SLO threshold."
@@ -31,7 +31,7 @@ spec:
       labels:
         severity: critical
         service: network-services
-        team: networking
+        team: sre
       annotations:
         summary: "EnvoyPatchPolicy {{ $labels.name }} failed to program"
         description: "EnvoyPatchPolicy {{ $labels.name }} in namespace {{ $labels.namespace }} has been unable to apply its xDS patch for over 5 minutes (reason: {{ $labels.reason }}). Customer traffic on affected gateways may be impacted."
@@ -51,7 +51,7 @@ spec:
         severity: critical
         slo_violation: "true"
         service: network-services
-        team: networking
+        team: sre
       annotations:
         summary: "Gateway {{ $labels.resource_name }} has been degraded for over 60 seconds"
         description: "Gateway {{ $labels.resource_name }} in namespace {{ $labels.resource_namespace }} has been in a degraded state for over 60 seconds without recovering, which exceeds the 60-second SLO threshold."
@@ -77,7 +77,7 @@ spec:
       labels:
         severity: warning
         service: network-services
-        team: networking
+        team: sre
       annotations:
         summary: "Gateway listener {{ $labels.namespace }}/{{ $labels.name }}/{{ $labels.listener }} has an unusable TLS certificate"
         description: "NSO has withheld listener {{ $labels.listener }} (hostname {{ $labels.hostname }}) on Gateway {{ $labels.name }} in namespace {{ $labels.namespace }} because its TLS certificate is unusable (reason: {{ $labels.reason }}). The customer cannot serve HTTPS on this hostname. Check the cert-manager Certificate and Secret in the downstream cluster."
@@ -94,7 +94,7 @@ spec:
       labels:
         severity: warning
         service: network-services
-        team: networking
+        team: sre
       annotations:
         summary: "TLS certificate for Gateway listener {{ $labels.namespace }}/{{ $labels.name }}/{{ $labels.listener }} expires in less than 7 days"
         description: "The cert-manager Certificate for listener {{ $labels.listener }} (hostname {{ $labels.hostname }}, secret {{ $labels.secret }}) on Gateway {{ $labels.name }} in namespace {{ $labels.namespace }} expires within 7 days. cert-manager should renew it automatically, but renewal fails if the domain's DNS no longer points to Datum. Verify the Certificate is Ready=True in the downstream cluster."
@@ -112,7 +112,7 @@ spec:
       labels:
         severity: warning
         service: network-services
-        team: networking
+        team: sre
       annotations:
         summary: "Extension server is dropping {{ $value }} broken certificate(s) to protect the edge listener"
         description: "The extension server is dropping {{ $value }} broken certificate(s) from the configuration it sends to the edge gateway. Check extension server logs for 'pruned invalid TLS chains' to find the affected hostnames. If GatewayListenerCertUnusable is also firing, both layers of protection are working as expected. If only this alert fires, the controller may have missed the listener."
@@ -130,7 +130,7 @@ spec:
       labels:
         severity: critical
         service: network-services
-        team: networking
+        team: sre
       annotations:
         summary: "{{ $value }} edge listener(s) have every TLS certificate broken and cannot be protected"
         description: "The extension server left {{ $value }} edge listener(s) untouched because every certificate on them is broken. It never removes a listener entirely, so the edge will reject the configuration update for those listeners (EnvoyListenerUpdateRejected confirms it). This means the controller did not withhold the listener before it reached the edge. Check extension server logs for 'listeners_left_intact' and why the controller did not withhold the listener."

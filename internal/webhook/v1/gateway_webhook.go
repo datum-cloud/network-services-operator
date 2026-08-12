@@ -21,6 +21,7 @@ import (
 	"go.datum.net/network-services-operator/internal/config"
 	gatewayutil "go.datum.net/network-services-operator/internal/util/gateway"
 	"go.datum.net/network-services-operator/internal/validation"
+	webhookutil "go.datum.net/network-services-operator/internal/webhook"
 )
 
 // nolint:unused
@@ -85,6 +86,10 @@ func (v *GatewayCustomValidator) ValidateCreate(ctx context.Context, gateway *ga
 
 // ValidateUpdate implements admission.Validator so a webhook will be registered for the type Gateway.
 func (v *GatewayCustomValidator) ValidateUpdate(ctx context.Context, oldGateway, newGateway *gatewayv1.Gateway) (admission.Warnings, error) {
+	if webhookutil.SkipUpdateValidation(newGateway, oldGateway.Spec, newGateway.Spec) {
+		return nil, nil
+	}
+
 	clusterName, ok := mccontext.ClusterFrom(ctx)
 	if !ok {
 		return nil, fmt.Errorf("expected a cluster name in the context")
@@ -98,11 +103,6 @@ func (v *GatewayCustomValidator) ValidateUpdate(ctx context.Context, oldGateway,
 
 	gatewaylog := logf.FromContext(ctx).WithValues("cluster", clusterName)
 	gatewaylog.Info("Validating Gateway", "name", newGateway.GetName())
-
-	if dt := newGateway.DeletionTimestamp; !dt.IsZero() {
-		// Gateway is deleting, let it go through
-		return nil, nil
-	}
 
 	if fieldErr, err := validateManagedGatewayClass(ctx, clusterClient, v.validationOpts.ControllerName, newGateway); err != nil {
 		return nil, err

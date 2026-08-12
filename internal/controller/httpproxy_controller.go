@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	envoygatewayv1alpha1 "github.com/envoyproxy/gateway/api/v1alpha1"
 	v1 "k8s.io/api/core/v1"
@@ -63,6 +64,8 @@ type desiredHTTPProxyResources struct {
 }
 
 const httpProxyFinalizer = "networking.datumapis.com/httpproxy-cleanup"
+
+const retryAfterInvalid = 5 * time.Minute
 const connectorOfflineFilterPrefix = "connector-offline"
 
 // BackendCertHostnameAnnotation is set on the upstream EndpointSlice by the
@@ -121,16 +124,6 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 	logger.Info("reconciling httpproxy")
 	defer logger.Info("reconcile complete")
 
-	if !controllerutil.ContainsFinalizer(&httpProxy, httpProxyFinalizer) {
-		controllerutil.AddFinalizer(&httpProxy, httpProxyFinalizer)
-		if err := cl.GetClient().Update(ctx, &httpProxy); err != nil {
-			if apierrors.IsConflict(err) {
-				return ctrl.Result{RequeueAfter: retryAfterConflict}, nil
-			}
-			return ctrl.Result{}, err
-		}
-	}
-
 	httpProxyCopy := httpProxy.DeepCopy()
 
 	acceptedCondition := &metav1.Condition{
@@ -175,6 +168,21 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 			logger.Info("httpproxy status updated")
 		}
 	}()
+
+	if !controllerutil.ContainsFinalizer(&httpProxy, httpProxyFinalizer) {
+		controllerutil.AddFinalizer(&httpProxy, httpProxyFinalizer)
+		if updateErr := cl.GetClient().Update(ctx, &httpProxy); updateErr != nil {
+			if apierrors.IsConflict(updateErr) {
+				return ctrl.Result{RequeueAfter: retryAfterConflict}, nil
+			}
+			if apierrors.IsInvalid(updateErr) {
+				acceptedCondition.Reason = networkingv1alpha.HTTPProxyReasonInvalid
+				acceptedCondition.Message = fmt.Sprintf("The HTTPProxy cannot be programmed because its stored spec is rejected by validation: %s", updateErr.Error())
+				return ctrl.Result{RequeueAfter: retryAfterInvalid}, nil
+			}
+			return ctrl.Result{}, updateErr
+		}
+	}
 
 	desiredResources, err := r.collectDesiredResources(ctx, cl.GetClient(), &httpProxy)
 	if err != nil {

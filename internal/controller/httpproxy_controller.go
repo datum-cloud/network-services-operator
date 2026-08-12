@@ -45,6 +45,7 @@ import (
 	conditionutil "go.datum.net/network-services-operator/internal/util/condition"
 	gatewayutil "go.datum.net/network-services-operator/internal/util/gateway"
 	"go.datum.net/network-services-operator/internal/util/resourcename"
+	"go.datum.net/network-services-operator/internal/validation"
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 )
 
@@ -182,6 +183,13 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 			}
 			return ctrl.Result{}, updateErr
 		}
+	}
+
+	if errs := validation.ValidateHTTPProxy(&httpProxy); len(errs) > 0 {
+		acceptedCondition.Status = metav1.ConditionFalse
+		acceptedCondition.Reason = networkingv1alpha.HTTPProxyReasonInvalid
+		acceptedCondition.Message = fmt.Sprintf("The HTTPProxy is invalid and cannot be programmed: %s", errs.ToAggregate())
+		return ctrl.Result{}, nil
 	}
 
 	desiredResources, err := r.collectDesiredResources(ctx, cl.GetClient(), &httpProxy)
@@ -698,29 +706,9 @@ func httpProxyReferencesConnector(httpProxy *networkingv1alpha.HTTPProxy, connec
 	return false
 }
 
-// extractHostHeaderOverride returns the Host header value from a
-// RequestHeaderModifier filter, if present. Header names are matched
-// case-insensitively per RFC 7230. The returned bool indicates whether a
-// Host header override was found.
-//
-// Envoy Gateway does not accept Host header manipulation via
-// RequestHeaderModifier — it must go through URLRewrite.Hostname instead.
-// collectDesiredResources uses this helper to translate the user-facing
-// RequestHeaderModifier{Host} shape (which round-trips with datumctl and
-// the cloud portal) into the URLRewrite{Hostname} that Envoy actually
-// honours at egress.
 func extractHostHeaderOverride(filters []gatewayv1.HTTPRouteFilter) (string, bool) {
-	for _, filter := range filters {
-		if filter.Type != gatewayv1.HTTPRouteFilterRequestHeaderModifier || filter.RequestHeaderModifier == nil {
-			continue
-		}
-		for _, h := range filter.RequestHeaderModifier.Set {
-			if strings.EqualFold(string(h.Name), "Host") {
-				return h.Value, true
-			}
-		}
-	}
-	return "", false
+	override, found := gatewayutil.FindHostHeaderOverride(filters)
+	return override.Value, found
 }
 
 // stripHostFromRequestHeaderModifier returns the filter list with any
@@ -957,10 +945,10 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 				if backend.TLS == nil || backend.TLS.Hostname == nil || *backend.TLS.Hostname == "" {
 					return nil, fmt.Errorf("HTTPS endpoint with IP address requires tls.hostname for backend %d in rule %d", backendIndex, ruleIndex)
 				}
-				certHostname = *backend.TLS.Hostname
+				certHostname = gatewayutil.NormalizeHostname(*backend.TLS.Hostname)
 				rewriteHostname := certHostname
 				if hasUserHost {
-					rewriteHostname = userHostOverride
+					rewriteHostname = gatewayutil.NormalizeHostname(userHostOverride)
 				}
 				// Use tls.hostname (or the user override) for the Host header rewrite
 				hostnameRewriteFound := false
@@ -983,10 +971,10 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 				// For FQDN endpoints, rewrite the Host header to match the
 				// backend hostname — or to the user's override if they set
 				// one via RequestHeaderModifier.
-				certHostname = host
-				rewriteHostname := host
+				certHostname = gatewayutil.NormalizeHostname(host)
+				rewriteHostname := certHostname
 				if hasUserHost {
-					rewriteHostname = userHostOverride
+					rewriteHostname = gatewayutil.NormalizeHostname(userHostOverride)
 				}
 				hostnameRewriteFound := false
 				for i, filter := range ruleFilters {

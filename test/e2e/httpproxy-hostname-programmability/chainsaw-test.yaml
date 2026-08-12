@@ -22,7 +22,7 @@ spec:
   # Each programmed proxy leaves a Gateway and a replicated downstream set to
   # tear down, which does not finish inside the 30s default.
   timeouts:
-    cleanup: 180s
+    cleanup: 420s
   steps:
     - name: Ensure the shared upstream GatewayClass exists
       try:

@@ -17,6 +17,8 @@ import (
 const (
 	networkContextControllerNetworkUIDIndex = "networkContextControllerNetworkUIDIndex"
 
+	networkInterfaceClaimNetworkIndex = "networkInterfaceClaimNetworkIndex"
+
 	// dnsZoneDomainNameIndex is the field index name for DNSZone.spec.domainName.
 	dnsZoneDomainNameIndex = "spec.domainName"
 )
@@ -24,7 +26,24 @@ const (
 func AddIndexers(ctx context.Context, mgr mcmanager.Manager) error {
 	return errors.Join(
 		addNetworkContextControllerIndexers(ctx, mgr),
+		addNetworkInterfaceClaimIndexers(ctx, mgr),
 	)
+}
+
+func addNetworkInterfaceClaimIndexers(ctx context.Context, mgr mcmanager.Manager) error {
+	if err := mgr.GetFieldIndexer().IndexField(ctx, &networkingv1alpha.NetworkInterfaceClaim{}, networkInterfaceClaimNetworkIndex, networkInterfaceClaimNetworkIndexFunc); err != nil {
+		return fmt.Errorf("failed to add network interface claim indexer %q: %w", networkInterfaceClaimNetworkIndex, err)
+	}
+
+	return nil
+}
+
+func networkInterfaceClaimNetworkIndexFunc(o client.Object) []string {
+	claim, ok := o.(*networkingv1alpha.NetworkInterfaceClaim)
+	if !ok || claim.Spec.Network.Name == "" {
+		return nil
+	}
+	return []string{claim.Spec.Network.Name}
 }
 
 func addNetworkContextControllerIndexers(ctx context.Context, mgr mcmanager.Manager) error {

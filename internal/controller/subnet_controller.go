@@ -82,8 +82,7 @@ func (r *SubnetReconciler) Reconcile(ctx context.Context, req mcreconcile.Reques
 
 		var location networkingv1alpha.Location
 		locationObjectKey := client.ObjectKey{
-			Namespace: networkContext.Spec.Location.Namespace,
-			Name:      networkContext.Spec.Location.Name,
+			Name: networkContext.Spec.Location.Name,
 		}
 		if err := cl.GetClient().Get(ctx, locationObjectKey, &location); err != nil {
 			return ctrl.Result{}, fmt.Errorf("failed fetching network context location: %w", err)

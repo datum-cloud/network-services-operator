@@ -250,7 +250,7 @@ func (r *NetworkInterfaceClaimReconciler) resolveNetworkContext(
 
 	binding := &networkingv1alpha.NetworkBinding{}
 	binding.Namespace = claim.Namespace
-	binding.Name = fmt.Sprintf("%s-%s-%s", network.Name, location.Namespace, location.Name)
+	binding.Name = networkContextName(network.Name, location)
 
 	_, err := controllerutil.CreateOrUpdate(ctx, cl, binding, func() error {
 		binding.Spec.Network = networkingv1alpha.NetworkRef{

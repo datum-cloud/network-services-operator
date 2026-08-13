@@ -197,6 +197,11 @@ tasks:
       - |
         kubectl --context {{.UPSTREAM_CTX}} -n network-services-operator-system patch deploy network-services-operator-controller-manager \
           --type=json -p '[{"op":"replace","path":"/spec/template/spec/containers/0/resources/limits/memory","value":"2Gi"},{"op":"replace","path":"/spec/template/spec/containers/0/resources/requests/memory","value":"512Mi"}]' || true
+      # A single manager pod serves every admission request, so one restart takes
+      # all admission down and scenarios fail with a refused connection or a
+      # webhook timeout. Production runs three.
+      - |
+        kubectl --context {{.UPSTREAM_CTX}} -n network-services-operator-system scale deploy network-services-operator-controller-manager --replicas=2 || true
 
   eg-crds:
     desc: "Install the full Gateway-API + Envoy Gateway CRD set (incl ReferenceGrant + EnvoyProxy) on the downstream cluster. The downstream EG chart sets includeCRDs:false, so CRDs are applied separately (matches prod, where CRDs are managed out-of-band)."
@@ -352,6 +357,18 @@ tasks:
           if [ "$i" -eq 60 ]; then echo "❌ webhook never became ready"; exit 1; fi
           sleep 2
         done
+      - echo "⏳ waiting for the NSO gateway webhook to admit"
+      - |
+        GW_JSON='{"apiVersion":"gateway.networking.k8s.io/v1","kind":"Gateway","metadata":{"name":"warmup-probe"},"spec":{"gatewayClassName":"datum-external-global-proxy","listeners":[{"name":"probe","protocol":"HTTP","port":80,"hostname":"warmup.e2e.env.datum.net"}]}}'
+        for i in $(seq 1 60); do
+          if echo "$GW_JSON" | kubectl --context {{.UPSTREAM_CTX}} -n default create --dry-run=server -f - >/dev/null 2>&1; then
+            echo "✅ gateway webhook admitting"; break
+          fi
+          if [ "$i" -eq 60 ]; then echo "❌ gateway webhook never became ready"; exit 1; fi
+          sleep 2
+        done
+      - echo "⏳ waiting for all manager replicas to be ready"
+      - kubectl --context {{.UPSTREAM_CTX}} -n network-services-operator-system rollout status deploy network-services-operator-controller-manager --timeout=240s
       # Ensure the downstream GatewayClass is Accepted so the first test gateway
       # programs promptly instead of racing a 30s assert on a cold edge.
       - echo "⏳ waiting for the downstream GatewayClass to be Accepted"

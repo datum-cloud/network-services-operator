@@ -19,6 +19,7 @@ latest-milestone: "v0.x"
   - [Where a location is answered from](#where-a-location-is-answered-from)
   - [Locations reach the cells](#locations-reach-the-cells)
   - [Declaring that a network is needed somewhere](#declaring-that-a-network-is-needed-somewhere)
+  - [What a binding reports](#what-a-binding-reports)
   - [Consumers that are not hub objects](#consumers-that-are-not-hub-objects)
   - [Counting by listing](#counting-by-listing)
   - [The presence controller](#the-presence-controller)
@@ -49,10 +50,10 @@ which address families the network carries and what MTU its interfaces use.
 This document makes a network's presence in a location a real, declared thing.
 
 **Anything that consumes a network** says "I need this network here" by creating a
-`NetworkBinding` on the Karmada hub. A hub-resident controller turns every binding for the
-same (network, location) pair into one `NetworkContext` carrying the network's rules, and
-Karmada delivers that context to the location. Whatever needs the network there reads the
-context.
+`NetworkBinding` on the federation control plane. A controller resident there turns every
+binding for the same (network, location) pair into one `NetworkContext` carrying the
+network's rules, and the federation control plane delivers that context to the location.
+Whatever needs the network there reads the context.
 
 A consumer is any resource that attaches something to a network in a place. A compute
 workload deployment is the consumer that exists today and the one that motivates the
@@ -93,8 +94,8 @@ but no controller resolves that location; it is read only to build a name. There
 of which consumer wanted the network here, so there is nothing to key a lifetime to, and no
 way for two consumers to share one presence.
 
-**Locations are invisible where the work happens.** No `Location` object exists on the hub or
-on any cell, and the hub does not have the CRD. The platform knows which locations exist and
+**Locations are invisible where the work happens.** No `Location` object exists on the
+federation control plane or on any cell, and neither has the CRD. The platform knows which locations exist and
 which have which services enabled; the systems placing and running work have to be told
 separately.
 
@@ -170,9 +171,13 @@ lb-frontend-eu-west-1   False   LocationNotAvailable
 
 ### The three objects
 
+Three control planes are involved, and the middle one is the federation control plane. It is
+called **the hub** from here on, because what matters below is that bindings and contexts
+live in its namespaces, not how it federates.
+
 ```
-project control plane            Karmada hub                        location
-─────────────────────            ───────────                        ────────
+project control plane                 hub                          location
+─────────────────────        ────────────────────────              ────────
 Network                          NetworkBinding  ← owned by, or created for,
   ipFamilies                       network         the consuming resource
   mtu                              location
@@ -181,7 +186,7 @@ Network                          NetworkBinding  ← owned by, or created for,
      └───────────► presence controller ◄──┘
                              │ writes
                              ▼
-                     NetworkContext  ──── Karmada ───►  NetworkContext
+                     NetworkContext  ─── propagated ──►  NetworkContext
                        network                            (same object,
                        location                            no status, no
                        ipFamilies    ◄── the network's        owner refs)
@@ -231,8 +236,8 @@ was the one that caused it to exist, and never has to clean up something shared.
   and are handled explicitly below.
 - **Reference counting is a `LIST`, not a number.** A count stored on the context is state
   that can be wrong. Listing labelled bindings for a (network, location) pair cannot be.
-- **Everything a location reads is in `spec`.** Karmada strips `status`, `uid`,
-  `ownerReferences`, and finalizers from what it propagates. A context that carried its
+- **Everything a location reads is in `spec`.** The federation control plane strips
+  `status`, `uid`, `ownerReferences`, and finalizers from what it propagates. A context that carried its
   rules in `status` would arrive empty.
 - **Nothing at the location re-decides anything.** It does not evaluate availability, does
   not read a `Location` to make a decision, and does not reach for a `Network`. It reads the
@@ -276,8 +281,8 @@ the project cannot use.
 
 ### Locations reach the cells
 
-`Location` objects are copied out of Milo's platform control plane onto the Karmada hub, and
-propagated from there. The hub does not have the CRD today; it gets one, and so does every
+`Location` objects are copied out of Milo's platform control plane onto the federation
+control plane, and propagated from there. The hub does not have the CRD today; it gets one, and so does every
 cell.
 
 A hub-resident replicator watches `Location` in the platform plane and maintains a matching
@@ -352,6 +357,59 @@ of it.
 The two labels are what make counting cheap, and they are why the label is on the binding
 rather than derived at list time.
 
+### What a binding reports
+
+The binding is the only object a consumer watches, so its status has to answer the whole
+question on its own.
+
+```yaml
+status:
+  # Set once the presence exists. A breadcrumb: it tells an operator which
+  # shared object serves this binding. A consumer does not need to read it.
+  networkContextRef:
+    namespace: ns-8c1d…
+    name: default-datum-cloud-us-central-1
+
+  conditions:
+    # The network is present in this location and the consumer may proceed.
+    - type: Ready
+      status: "True"
+      reason: NetworkContextReady
+      observedGeneration: 1
+```
+
+**One condition, and it means "you may proceed."** `NetworkBinding` already defaults and
+sets exactly this condition, and the existing meaning — the binding is associated with a
+context and the owner should expect functional network features — is the meaning this design
+needs. Nothing is added to it.
+
+`Ready` is false for one of two kinds of reason, and the split is worth keeping visible
+because it decides who has to act.
+
+| Reason | What is wrong | Whose problem |
+|---|---|---|
+| `LocationNotAvailable` | the project cannot use this location | the consumer's, or the platform's |
+| `NetworkNotFound` | the network named does not exist in the project | the consumer's |
+| `ProjectUnresolved` | the namespace does not resolve to a project | the platform's |
+| `NetworkContextNotReady` | the presence exists and is not usable yet | nobody's yet, wait |
+
+The first three are faults in this binding. The last is the shared presence still coming up,
+and every binding for the pair reports it identically.
+
+**Every binding for a pair carries the same answer, and that is deliberate.** The status is
+a fan-out of one shared fact, written onto each declaration, so a consumer never has to find
+the context, never has to know that other consumers exist, and never has to work out whether
+it was the one that caused the presence to exist. The cost is a status write per binding per
+change, which is why the presence controller writes status only when the answer differs from
+what is already recorded.
+
+**What the binding does not report.** It does not report how many consumers share the
+presence, which would leak one consumer's existence to another and would be a number that
+can be stale. It does not report the network's `ipFamilies` or MTU, which belong to whatever
+attaches to the network rather than to whoever declared it should be present. And it does
+not report data-plane programming: `Ready` on a binding means the network is present, not
+that packets move, which stays true to what `Programmed` on the context is for.
+
 ### Consumers that are not hub objects
 
 The clean cleanup story assumes the consumer is a hub object in the same namespace as its
@@ -401,15 +459,15 @@ Per reconcile it:
    `LocationNotAvailable` and nothing is created.
 3. Reads the `Network` from the project control plane, for `spec.ipFamilies` and `spec.mtu`.
 4. Writes the `NetworkContext` into the same hub namespace, carrying those two facts, with
-   the labels Karmada's policy selects on.
+   the labels the federation control plane's policy selects on.
 5. Reports readiness back onto every binding for the pair.
 
 It never reads the consumer. It reads the binding, the location, and the network, which is
 what makes it indifferent to what kind of thing asked.
 
 **It runs on the singleton manager, not the sharded one.** The central NSO manager's own
-deployment cluster is the Karmada hub, and its milo provider engages project control planes
-concurrently in the same process, so a hub-resident controller needs no new deployment and no
+deployment cluster is the federation control plane, and its milo provider engages project
+control planes concurrently in the same process, so a hub-resident controller needs no new deployment and no
 new credentials, and both reads it needs are already available to it. But the sharded
 managers run three replicas with leader election disabled, so a controller watching the hub
 from there would reconcile the same object in all three. This is a registration detail with a
@@ -465,16 +523,16 @@ arrive empty and nothing reads them.
 
 ### Reaching the cell
 
-Karmada propagates the hub `NetworkContext` under the existing `ClusterPropagationPolicy`,
-selected by the `upstream-cluster-name` label the presence controller stamps, which is the
-same selector every other NSO kind on that policy uses. The namespace itself is already
-propagated by that policy.
+The federation control plane propagates the hub `NetworkContext` under the existing
+`ClusterPropagationPolicy`, selected by the `upstream-cluster-name` label the presence
+controller stamps, which is the same selector every other NSO kind on that policy uses. The
+namespace itself is already propagated by that policy.
 
 What arrives is the spec and the labels. No owner references, no finalizers, no uid, no
 status. That is the whole reason the network's rules live in `spec`.
 
-Karmada's propagation is one-way. Nothing at the location can report back through it, which
-is a constraint that shapes the teardown decision below rather than something to work around
+Propagation is one-way. Nothing at the location can report back through it, which is a
+constraint that shapes the teardown decision below rather than something to work around
 here.
 
 ### What a consumer of the presence reads
@@ -540,7 +598,7 @@ with both views, so it is the only one that can do this in one place:
   `Network` for `ipFamilies` and MTU, so a deletion timestamp is another event on that watch.
 - On deletion it lists hub bindings and contexts by network UID, deletes them, and removes
   the finalizer once the list is empty. Deleting the hub context deletes the propagated copy
-  through Karmada.
+  with it.
 
 Deleting a network deletes bindings that consumers still own, which is correct and worth
 being explicit about: the network is gone, so the presence cannot be kept, and each consumer
@@ -570,14 +628,15 @@ one-way propagation.
 maintain, no signal to wait for. The presence controller reconciles what the declarations
 say, and when nothing declares the network is needed there, the hub says it is not.
 
-**At the location, a local finalizer holds the copy while addresses are held.** Karmada
-preserves what a local controller adds to a propagated object. The location adds a finalizer
+**At the location, a local finalizer holds the copy while addresses are held.** The
+federation control plane preserves what a local controller adds to a propagated object. The
+location adds a finalizer
 to its `NetworkContext` while any `NetworkInterface` on that network exists in that namespace,
 and removes it when the last one is released. A hub deletion therefore removes the copy
 promptly in the ordinary case and blocks on a retained address in the case that matters.
 
 When a retained slot comes back, its consumer creates a binding again, the presence controller
-writes the context under the same deterministic name, and Karmada, which already runs
+writes the context under the same deterministic name, and propagation, which already runs
 `conflictResolution: Overwrite`, adopts the lingering copy. The retained interface never lost
 its context.
 
@@ -733,7 +792,7 @@ None of the following is provided here, and all of it is required.
 ## Alternatives
 
 - **Have the location read the project control plane directly for the network.** Rejected:
-  cells read state from Karmada, deliberately. IPAM is the one exception and stays one because
+  cells read state from the federation control plane, deliberately. IPAM is the one exception and stays one because
   allocation is a transaction against a central allocator, not a data read. A per-network data
   read has no such justification, and it would give every cell a credential for every project
   control plane.
@@ -756,8 +815,8 @@ None of the following is provided here, and all of it is required.
   cluster is already the hub and its milo provider already engages project control planes in
   the same process. A second deployment adds a credential, a rollout, and an alert path for
   nothing.
-- **Carry the network's rules in `NetworkContext.status`.** Not an alternative: Karmada strips
-  status. Recorded because it is the obvious shape and it silently produces empty objects at
+- **Carry the network's rules in `NetworkContext.status`.** Not an alternative: the
+  federation control plane strips status. Recorded because it is the obvious shape and it silently produces empty objects at
   the location.
 - **Leave contexts in place forever and reclaim on a slow sweep.** Discussed under
   [Teardown and retained addresses](#teardown-and-retained-addresses); rejected because the

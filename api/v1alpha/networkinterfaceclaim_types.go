@@ -25,6 +25,21 @@ const (
 	NetworkInterfaceClaimReady = "Ready"
 )
 
+const (
+	// NetworkInterfaceClaimReasonNetworkNotAvailableInLocation means the network
+	// exists and has not reached this location yet, which is a different answer
+	// from a consumer naming a network that does not exist.
+	NetworkInterfaceClaimReasonNetworkNotAvailableInLocation = "NetworkNotAvailableInLocation"
+
+	// NetworkInterfaceClaimReasonAddressFamilyNotCarried means the network does
+	// not carry an address family the claim asked for.
+	NetworkInterfaceClaimReasonAddressFamilyNotCarried = "AddressFamilyNotCarried"
+
+	// NetworkInterfaceClaimReasonAddressFamiliesUnknown means the network reached
+	// this location without saying which families it carries.
+	NetworkInterfaceClaimReasonAddressFamiliesUnknown = "AddressFamiliesUnknown"
+)
+
 // NetworkInterfaceAddressRequest asks for one address beyond the ones the
 // interface holds inside its network, such as a public IPv4 address in front of
 // a private one.

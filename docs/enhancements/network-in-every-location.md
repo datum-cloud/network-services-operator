@@ -95,7 +95,8 @@ of which consumer wanted the network here, so there is nothing to key a lifetime
 way for two consumers to share one presence.
 
 **Locations are invisible where the work happens.** No `Location` object exists on the
-federation control plane or on any cell, and neither has the CRD. The platform knows which locations exist and
+federation control plane or on any cell, and neither has the CRD. The platform knows which
+locations exist and
 which have which services enabled; the systems placing and running work have to be told
 separately.
 
@@ -237,7 +238,8 @@ was the one that caused it to exist, and never has to clean up something shared.
 - **Reference counting is a `LIST`, not a number.** A count stored on the context is state
   that can be wrong. Listing labelled bindings for a (network, location) pair cannot be.
 - **Everything a location reads is in `spec`.** The federation control plane strips
-  `status`, `uid`, `ownerReferences`, and finalizers from what it propagates. A context that carried its
+  `status`, `uid`, `ownerReferences`, and finalizers from what it propagates. A context
+  that carried its
   rules in `status` would arrive empty.
 - **Nothing at the location re-decides anything.** It does not evaluate availability, does
   not read a `Location` to make a decision, and does not reach for a `Network`. It reads the
@@ -282,7 +284,8 @@ the project cannot use.
 ### Locations reach the cells
 
 `Location` objects are copied out of Milo's platform control plane onto the federation
-control plane, and propagated from there. The hub does not have the CRD today; it gets one, and so does every
+control plane, and propagated from there. The hub does not have the CRD today; it gets
+one, and so does every
 cell.
 
 A hub-resident replicator watches `Location` in the platform plane and maintains a matching
@@ -360,55 +363,106 @@ rather than derived at list time.
 ### What a binding reports
 
 The binding is the only object a consumer watches, so its status has to answer the whole
-question on its own.
+question on its own. It carries a reference to the presence serving it and one condition.
 
 ```yaml
 status:
-  # Set once the presence exists. A breadcrumb: it tells an operator which
-  # shared object serves this binding. A consumer does not need to read it.
+  # Set once the presence exists, and never recomputed while it does. A
+  # breadcrumb: it tells an operator which shared object serves this binding.
+  # A consumer does not need to read it.
   networkContextRef:
     namespace: ns-8c1d…
     name: default-datum-cloud-us-central-1
 
   conditions:
-    # The network is present in this location and the consumer may proceed.
     - type: Ready
       status: "True"
       reason: NetworkContextReady
+      message: Network context is ready.
       observedGeneration: 1
 ```
 
 **One condition, and it means "you may proceed."** `NetworkBinding` already defaults and
-sets exactly this condition, and the existing meaning — the binding is associated with a
+sets exactly this condition, and its existing meaning — the binding is associated with a
 context and the owner should expect functional network features — is the meaning this design
 needs. Nothing is added to it.
 
-`Ready` is false for one of two kinds of reason, and the split is worth keeping visible
-because it decides who has to act.
+#### The states
 
-| Reason | What is wrong | Whose problem |
-|---|---|---|
-| `LocationNotAvailable` | the project cannot use this location | the consumer's, or the platform's |
-| `NetworkNotFound` | the network named does not exist in the project | the consumer's |
-| `ProjectUnresolved` | the namespace does not resolve to a project | the platform's |
-| `NetworkContextNotReady` | the presence exists and is not usable yet | nobody's yet, wait |
+Every state a binding can be in, in the order a healthy one passes through the first two.
 
-The first three are faults in this binding. The last is the shared presence still coming up,
-and every binding for the pair reports it identically.
+| `Ready` | Reason | What it means | What the consumer does |
+|---|---|---|---|
+| `Unknown` | `Pending` | The object exists and no controller has looked at it. This is the CRD's default, so it is the state a binding is created in. | Wait. |
+| `False` | `ProjectUnresolved` | The namespace the binding is in does not resolve to a project. | Nothing. This is a platform fault and no consumer can fix it. |
+| `False` | `NetworkNotFound` | The network named does not exist in the project. | Fix the reference, or wait if the network is still being created. |
+| `False` | `LocationNotAvailable` | The project has no `LocationBinding` for this location, so it cannot use it. | Choose another location, or wait for the platform to enable this one. |
+| `False` | `NetworkContextNotReady` | The presence exists and is not usable yet. | Wait. |
+| `True` | `NetworkContextReady` | The network is present in this location. | Proceed. |
 
-**Every binding for a pair carries the same answer, and that is deliberate.** The status is
-a fan-out of one shared fact, written onto each declaration, so a consumer never has to find
+The first three are faults in this binding, and two of them are the consumer's to fix. The
+fourth is the shared presence still coming up and belongs to nobody. A consumer that
+distinguishes "wait" from "fix your reference" in its own status saves an operator the
+lookup; one that reports "not ready" for all four does not.
+
+`status.networkContextRef` is set when the presence is created, which is before it is ready.
+A binding can therefore be `NetworkContextNotReady` with a reference already set, and that
+combination is the normal middle of the sequence rather than a contradiction.
+
+#### How it moves
+
+The happy path is `Pending` → `NetworkContextNotReady` → `NetworkContextReady`, and the
+middle state may be too brief to observe when a presence already exists. A second consumer
+arriving at a location that already has the network usually goes from `Pending` straight to
+ready in one reconcile, because the presence controller finds the context already there.
+
+**`Ready` can go back to false, and consumers must expect it.** Three things cause that: the
+platform withdraws the location's availability from the project, the presence stops being
+ready, or the context is deleted out from under the controller and is being rebuilt. The
+binding reports the current answer in each case.
+
+**A regression does not withdraw what was already handed out.** Addresses allocated while
+the network was present stay allocated, and interfaces already attached stay attached. A
+binding going not-ready says a new attach should not be attempted, not that existing ones
+are void. This matters because the alternative — treating a transient not-ready as a signal
+to tear down — would turn a brief control-plane hiccup into a data-plane outage.
+
+**A binding never reports its own deletion.** It is removed by owner garbage collection, by
+its consumer, or by the network being deleted, and in each case the object goes rather than
+reporting a terminal state. A consumer watching for its binding to disappear is watching for
+the right thing; there is no `Terminating` reason to wait on.
+
+**The presence being torn down is not a binding state at all.** By the time the last binding
+is gone there is no binding left to report on, which is the whole reason teardown is decided
+by listing rather than by a status.
+
+#### Generation and change
+
+`observedGeneration` is the binding's own generation, so a consumer can tell an answer about
+the current spec from an answer about the previous one.
+
+`spec.network` and `spec.location` should be immutable. A binding whose spec changed is a
+declaration about a different presence, and mutating it in place would move a consumer
+between two shared objects with no state to describe the crossing: the old presence loses a
+holder and the new one gains one, in one write, with a status that cannot honestly describe
+either until the next reconcile. Deleting and recreating is the same operation with an
+observable sequence, which is what the consumer contract already assumes.
+
+#### What every binding shares, and what it hides
+
+**Every binding for a pair carries the same answer, and that is deliberate.** The status is a
+fan-out of one shared fact, written onto each declaration, so a consumer never has to find
 the context, never has to know that other consumers exist, and never has to work out whether
 it was the one that caused the presence to exist. The cost is a status write per binding per
 change, which is why the presence controller writes status only when the answer differs from
 what is already recorded.
 
 **What the binding does not report.** It does not report how many consumers share the
-presence, which would leak one consumer's existence to another and would be a number that
-can be stale. It does not report the network's `ipFamilies` or MTU, which belong to whatever
-attaches to the network rather than to whoever declared it should be present. And it does
-not report data-plane programming: `Ready` on a binding means the network is present, not
-that packets move, which stays true to what `Programmed` on the context is for.
+presence, which would leak one consumer's existence to another and would be a number that can
+be stale. It does not report the network's `ipFamilies` or MTU, which belong to whatever
+attaches to the network rather than to whoever declared it should be present. And it does not
+report data-plane programming: `Ready` on a binding means the network is present, not that
+packets move, which stays true to what `Programmed` on the context is for.
 
 ### Consumers that are not hub objects
 
@@ -467,7 +521,8 @@ what makes it indifferent to what kind of thing asked.
 
 **It runs on the singleton manager, not the sharded one.** The central NSO manager's own
 deployment cluster is the federation control plane, and its milo provider engages project
-control planes concurrently in the same process, so a hub-resident controller needs no new deployment and no
+control planes concurrently in the same process, so a hub-resident controller needs no new
+deployment and no
 new credentials, and both reads it needs are already available to it. But the sharded
 managers run three replicas with leader election disabled, so a controller watching the hub
 from there would reconcile the same object in all three. This is a registration detail with a
@@ -733,18 +788,23 @@ interface there is still holding an address, in which case the copy stays until 
 The scope item most easily lost in implementation is the last one: a network that is not
 available in a location has to read as that.
 
-| What is wrong | Reported on | As |
-|---|---|---|
-| The project cannot use this location | `NetworkBinding` | `LocationNotAvailable` |
-| The network does not exist in the project | `NetworkBinding` | `NetworkNotFound` |
-| The project cannot be resolved from the namespace | `NetworkBinding` | `ProjectUnresolved` |
-| The context has not reached the location yet | the attaching resource | `NetworkNotAvailableInLocation` |
-| The network does not carry a requested family | the attaching resource | `AddressFamilyNotCarried` |
+Two objects report, and they report different halves of it.
 
-The first three are on the object the consumer created, which is why the consumer contract
-says to watch the binding and nothing else. A consumer that surfaces its binding's reason
-onto its own status gives an operator the answer without a second lookup; compute does this
-by way of the claim's reason reaching the instance.
+A consumer that declared it needs the network reads its `NetworkBinding`, whose states are
+above. A resource attaching to the network at the location reports its own failures:
+
+| What is wrong | As |
+|---|---|
+| The context has not reached the location yet | `NetworkNotAvailableInLocation` |
+| The network does not carry a requested family | `AddressFamilyNotCarried` |
+
+`NetworkNotAvailableInLocation` is the one that closes the gap this document opened with. It
+is the difference between "your network has not got here yet" and today's `NetworkNotFound`,
+which says the consumer named something that does not exist.
+
+A consumer that surfaces the reason onto its own status gives an operator the answer without
+a second lookup. Compute does this already, by way of the claim's reason reaching the
+instance.
 
 ## What this depends on
 
@@ -792,7 +852,8 @@ None of the following is provided here, and all of it is required.
 ## Alternatives
 
 - **Have the location read the project control plane directly for the network.** Rejected:
-  cells read state from the federation control plane, deliberately. IPAM is the one exception and stays one because
+  cells read state from the federation control plane, deliberately. IPAM is the one
+  exception and stays one because
   allocation is a transaction against a central allocator, not a data read. A per-network data
   read has no such justification, and it would give every cell a credential for every project
   control plane.
@@ -816,7 +877,8 @@ None of the following is provided here, and all of it is required.
   the same process. A second deployment adds a credential, a rollout, and an alert path for
   nothing.
 - **Carry the network's rules in `NetworkContext.status`.** Not an alternative: the
-  federation control plane strips status. Recorded because it is the obvious shape and it silently produces empty objects at
+  federation control plane strips status. Recorded because it is the obvious shape and it
+  silently produces empty objects at
   the location.
 - **Leave contexts in place forever and reclaim on a slow sweep.** Discussed under
   [Teardown and retained addresses](#teardown-and-retained-addresses); rejected because the

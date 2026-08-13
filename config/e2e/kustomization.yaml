@@ -33,6 +33,26 @@ patches:
           spec:
             containers:
               - name: manager
+                resources:
+                  limits:
+                    cpu: "2"
+                    memory: 2Gi
+                  requests:
+                    cpu: 500m
+                    memory: 512Mi
+  - target:
+      kind: Deployment
+      name: controller-manager
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: controller-manager
+      spec:
+        template:
+          spec:
+            containers:
+              - name: manager
                 volumeMounts:
                 - name: downstream-cluster-kubeconfig
                   mountPath: /etc/downstream-cluster

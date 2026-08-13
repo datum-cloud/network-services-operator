@@ -365,10 +365,21 @@ func NewCommand(build BuildInfo) *cobra.Command {
 			// controller needs are already here. It goes on the singleton manager
 			// because the sharded managers run three replicas with leader election
 			// disabled, which would reconcile every hub object three times.
-			if err := (&controller.NetworkPresenceReconciler{
+			networkPresence := &controller.NetworkPresenceReconciler{
 				Projects: controller.NewProjectClusterResolver(mgr),
-			}).SetupWithManager(singletonControllerMgr); err != nil {
+			}
+			if err := networkPresence.SetupWithManager(singletonControllerMgr); err != nil {
 				setupLog.Error(err, "unable to create controller", "controller", "NetworkPresence")
+				os.Exit(1)
+			}
+
+			// Network deletion is the other half of the same controller, and it
+			// has to watch project control planes, which only the multicluster
+			// manager engages.
+			if err := (&controller.NetworkPresenceGCReconciler{
+				Presence: networkPresence,
+			}).SetupWithManager(mgr); err != nil {
+				setupLog.Error(err, "unable to create controller", "controller", "NetworkPresenceGC")
 				os.Exit(1)
 			}
 			if err := (&controller.NetworkPolicyReconciler{}).SetupWithManager(mgr); err != nil {

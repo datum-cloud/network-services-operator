@@ -71,6 +71,9 @@ func newPresenceScenario(t *testing.T, opts presenceOptions) *presenceScenario {
 	ctx := context.Background()
 
 	suffix := sanitizeName(strings.ToLower(t.Name()))
+	if len(suffix) > 48 {
+		suffix = suffix[:48]
+	}
 	s := &presenceScenario{
 		t:                t,
 		ctx:              ctx,

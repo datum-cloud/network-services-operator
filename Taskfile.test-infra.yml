@@ -70,6 +70,13 @@ vars:
   IPAM_BUNDLE_DIGEST: sha256:08418654958ea6861d54fe5f9e87d9cf306b87429b29fc41a7876dc143a13bf5
   IPAM_COMMIT: 13bd2c8c077b12983fa16a8888dcd117b65a14d2
   IPAM_STAGE: '{{.TMP_DIR}}/.ipam-bundle'
+
+  # The dns-operator CRDs come from its published bundle at the version go.mod
+  # pins, so the CRDs installed and the types NSO compiles against match.
+  DNS_BUNDLE_REPO: ghcr.io/datum-cloud/dns-operator-kustomize
+  DNS_BUNDLE_TAG: v0.5.1
+  DNS_BUNDLE_DIGEST: sha256:cd7dd3a0d2fbbbaa029f2b5e083723a675e88c89e56f999257ff4bd87221cd4a
+  DNS_STAGE: '{{.TMP_DIR}}/.dns-bundle'
   CRANE: '{{.REPO}}/bin/crane'
   CRANE_VERSION: v0.21.7
   IPAM_KUBECONFIG: '{{.TMP_DIR}}/.ipam-tenant-impersonation.yaml'
@@ -163,7 +170,7 @@ tasks:
       # The IPAM fixtures and their database die with the upstream cluster; only
       # the impersonation kubeconfig outlives it.
       - rm -f {{.IPAM_KUBECONFIG}}
-      - rm -rf {{.IPAM_STAGE}}
+      - rm -rf {{.IPAM_STAGE}} {{.DNS_STAGE}}
       - echo "✨ done."
 
   clusters:
@@ -203,19 +210,25 @@ tasks:
       - '{{.KIND}} load docker-image {{.IMG}} --name {{.DOWNSTREAM_CLUSTER}}'
 
   dns-crds:
-    desc: "Install DNSZone / DNSRecordSet / DNSZoneClass CRDs from the dns-operator Go module on the upstream cluster. Required before prepare-upstream when gateway.enableDNSIntegration is true (the operator indexes and watches these types at startup)."
-    vars:
-      # Resolved through the helper, not `go list` directly: go list does not
-      # download, so on a cold module cache it returns an empty string and exits
-      # 0, and the apply below then fails on a path with a leading slash that
-      # says nothing about the real cause.
-      DNS_OPERATOR_CRD_DIR:
-        sh: '{{.REPO}}/hack/module-dir.sh go.miloapis.com/dns-operator'
+    desc: "Install the dns-operator CRDs (DNSZone / DNSRecordSet / DNSZoneClass) on the upstream cluster from the operator's published bundle, pinned by digest at the version go.mod pins. Required before prepare-upstream when gateway.enableDNSIntegration is true, since the operator indexes and watches these types at startup."
     cmds:
-      - echo "📜 installing dns-operator CRDs (upstream) from {{.DNS_OPERATOR_CRD_DIR}}"
-      - kubectl --context {{.UPSTREAM_CTX}} apply -f {{.DNS_OPERATOR_CRD_DIR}}/config/crd/bases/dns.networking.miloapis.com_dnszoneclasses.yaml
-      - kubectl --context {{.UPSTREAM_CTX}} apply -f {{.DNS_OPERATOR_CRD_DIR}}/config/crd/bases/dns.networking.miloapis.com_dnszones.yaml
-      - kubectl --context {{.UPSTREAM_CTX}} apply -f {{.DNS_OPERATOR_CRD_DIR}}/config/crd/bases/dns.networking.miloapis.com_dnsrecordsets.yaml
+      - |
+        set -e
+        stage="{{.DNS_STAGE}}"
+        if [ -f "$stage/.digest" ] && [ "$(cat "$stage/.digest")" = "{{.DNS_BUNDLE_DIGEST}}" ]; then
+          echo "📜 dns-operator bundle already staged ({{.DNS_BUNDLE_TAG}})" >&2
+        else
+          echo "📜 fetching {{.DNS_BUNDLE_REPO}}:{{.DNS_BUNDLE_TAG}}" >&2
+          rev=$({{.REPO}}/hack/fetch-oci-bundle.sh \
+            {{.CRANE}} {{.CRANE_VERSION}} \
+            {{.DNS_BUNDLE_REPO}} {{.DNS_BUNDLE_DIGEST}} {{.DNS_BUNDLE_TAG}} "$stage/bundle")
+          echo "✅ fetched $rev" >&2
+          echo "{{.DNS_BUNDLE_DIGEST}}" > "$stage/.digest"
+        fi
+      - echo "📜 installing dns-operator CRDs (upstream)"
+      - kubectl --context {{.UPSTREAM_CTX}} apply -f {{.DNS_STAGE}}/bundle/crd/bases/dns.networking.miloapis.com_dnszoneclasses.yaml
+      - kubectl --context {{.UPSTREAM_CTX}} apply -f {{.DNS_STAGE}}/bundle/crd/bases/dns.networking.miloapis.com_dnszones.yaml
+      - kubectl --context {{.UPSTREAM_CTX}} apply -f {{.DNS_STAGE}}/bundle/crd/bases/dns.networking.miloapis.com_dnsrecordsets.yaml
 
   prepare-upstream:
     desc: "Deploy the NSO manager + webhook (config/e2e) on the upstream cluster, with the prod-base memory profile."
@@ -449,7 +462,7 @@ tasks:
           echo "📦 IPAM bundle already staged ({{.IPAM_BUNDLE_TAG}})" >&2
         else
           echo "📦 fetching {{.IPAM_BUNDLE_REPO}}:{{.IPAM_BUNDLE_TAG}}" >&2
-          rev=$({{.REPO}}/hack/ipam-fetch-bundle.sh \
+          rev=$({{.REPO}}/hack/fetch-oci-bundle.sh \
             {{.CRANE}} {{.CRANE_VERSION}} \
             {{.IPAM_BUNDLE_REPO}} {{.IPAM_BUNDLE_DIGEST}} {{.IPAM_COMMIT}} "$stage/bundle")
           echo "✅ fetched $rev" >&2
@@ -586,6 +599,10 @@ tasks:
           --from-file=kubeconfig={{.TMP_DIR}}/.ipam-cluster-kubeconfig.yaml \
           | kubectl --context {{.UPSTREAM_CTX}} apply -f -
 
+  # DEPRECATED, pending the e2e suites moving to hack/ipam-tenant-kubectl.sh.
+  # Nothing in this Taskfile uses it any more; 11 suites still reference the
+  # contexts it writes. Delete this task, the script and IPAM_KUBECONFIG once
+  # they do.
   ipam-impersonation-kubeconfig:
     desc: "Write the per-project impersonation kubeconfig used to seed fixtures and to drive chainsaw suites as a tenant. Contexts: tenant-platform (no project, reads nothing by design), tenant-project-alpha, tenant-project-beta."
     cmds:
@@ -595,8 +612,6 @@ tasks:
 
   ipam-fixtures:
     desc: "Seed the IPClass/IPPool fixtures for both projects, clearing any leftovers first. Classes are named identically in the two projects and their pools are disjoint (test/e2e/fixtures/ipam/RANGES.md), so a controller routing to the wrong project allocates from visibly wrong space instead of quietly succeeding. Do not run this while a suite is in flight: it removes the fixtures and the tenant RBAC that a running suite is mid-way through using."
-    deps:
-      - ipam-impersonation-kubeconfig
     cmds:
       - task: ipam-tenant-rbac
       - task: ipam-fixtures-clear
@@ -604,8 +619,8 @@ tasks:
         set -e
         for proj in {{.IPAM_PROJECTS}}; do
           echo "🌱 seeding $proj"
-          KUBECONFIG={{.IPAM_KUBECONFIG}} kubectl --context "tenant-$proj" apply -f test/e2e/fixtures/ipam/$proj/classes.yaml
-          KUBECONFIG={{.IPAM_KUBECONFIG}} kubectl --context "tenant-$proj" apply -f test/e2e/fixtures/ipam/$proj/pools.yaml
+          IPAM_KUBE_CONTEXT={{.UPSTREAM_CTX}} {{.REPO}}/hack/ipam-tenant-kubectl.sh "$proj" apply -f test/e2e/fixtures/ipam/$proj/classes.yaml
+          IPAM_KUBE_CONTEXT={{.UPSTREAM_CTX}} {{.REPO}}/hack/ipam-tenant-kubectl.sh "$proj" apply -f test/e2e/fixtures/ipam/$proj/pools.yaml
         done
 
   ipam-tenant-rbac:
@@ -618,12 +633,7 @@ tasks:
       - ipam-tenant-rbac
     desc: "Delete every IPAM object in the fixture projects, claims first. IPPool and IPClass are cluster-scoped, so chainsaw's namespace teardown never reaches them and a suite that dies mid-run leaves pools that make the NEXT run fail on 'already exists'. Runs ahead of every seed for that reason. Do not run this while a suite is in flight: it removes the fixtures and the tenant RBAC that a running suite is mid-way through using."
     cmds:
-      - |
-        if [ -f {{.IPAM_KUBECONFIG}} ]; then
-          {{.REPO}}/hack/ipam-clear-fixtures.sh {{.IPAM_KUBECONFIG}} {{.IPAM_PROJECTS}}
-        else
-          echo "no impersonation kubeconfig at {{.IPAM_KUBECONFIG}}; nothing to clear"
-        fi
+      - '{{.REPO}}/hack/ipam-clear-fixtures.sh {{.UPSTREAM_CTX}} {{.IPAM_PROJECTS}}' 
 
   ipam-namespaces:
     desc: "Create the namespaces the interface scenarios resolve a project from, carrying the ENCODED meta.datumapis.com/upstream-cluster-name label the mapped-namespace strategy really writes, plus one namespace deliberately missing it for the fail-closed case. Applied to BOTH clusters: NetworkInterfaceClaims live on the upstream cell and resolveProject reads the claim's own namespace through the cell client, so upstream is the one that has to have them."
@@ -721,6 +731,8 @@ tasks:
       SELECTED: '{{.CLI_ARGS | default .SCENARIOS | default .DEFAULT_SCENARIOS}}'
     deps:
       - kubeconfigs
+      # Only the suites still need this; see the task's own note.
+      - ipam-impersonation-kubeconfig
     cmds:
       # Reset the cluster-scoped fixtures before the first suite. A run that
       # died mid-suite leaves pools and classes that chainsaw's namespace
@@ -758,6 +770,8 @@ tasks:
       REPORT_NAME: '{{.REPORT_NAME | default "chainsaw-report"}}'
     deps:
       - kubeconfigs
+      # Only the suites still need this; see the task's own note.
+      - ipam-impersonation-kubeconfig
     cmds:
       # See the note in `e2e`: cluster-scoped fixtures outlive a failed run, so
       # the suite starts by putting them back to a known state.

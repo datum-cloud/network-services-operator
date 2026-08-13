@@ -65,9 +65,9 @@ spec:
         - script:
             content: |
               set -eu
-              IPAM_KUBECONFIG="${TMPDIR:-/tmp}/.ipam-tenant-impersonation.yaml"
+              IPAM=$(git rev-parse --show-toplevel)/hack/ipam-tenant-kubectl.sh
               for name in nic-delete-f-ipv6 nic-delete-f-ipv4 nic-delete-c-datum-public-v4; do
-                phase=$(KUBECONFIG=$IPAM_KUBECONFIG kubectl --context tenant-project-alpha -n default \
+                phase=$("$IPAM" project-alpha -n default \
                   get ipclaim "$name" -o jsonpath='{.status.phase}' 2>/dev/null || true)
                 echo "${name}: ${phase:-missing}"
                 [ "$phase" = "Bound" ] || { echo "IPClaim ${name} is ${phase:-missing}, want Bound"; exit 1; }
@@ -85,8 +85,8 @@ spec:
         - script:
             content: |
               set -eu
-              IPAM_KUBECONFIG="${TMPDIR:-/tmp}/.ipam-tenant-impersonation.yaml"
-              ipam() { KUBECONFIG=$IPAM_KUBECONFIG kubectl --context tenant-project-alpha -n default "$@"; }
+              IPAM=$(git rev-parse --show-toplevel)/hack/ipam-tenant-kubectl.sh
+              ipam() { "$IPAM" project-alpha -n default "$@"; }
 
               ipam get ipclass datum-public-v4 >/dev/null \
                 || { echo "project-alpha's fixtures are not readable through this context, so an empty IPClaim list means nothing"; exit 1; }

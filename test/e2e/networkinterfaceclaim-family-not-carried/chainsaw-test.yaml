@@ -114,8 +114,8 @@ spec:
         - script:
             content: |
               set -eu
-              IPAM_KUBECONFIG="${TMPDIR:-/tmp}/.ipam-tenant-impersonation.yaml"
-              ipam() { KUBECONFIG=$IPAM_KUBECONFIG kubectl --context tenant-project-alpha -n default "$@"; }
+              IPAM=$(git rev-parse --show-toplevel)/hack/ipam-tenant-kubectl.sh
+              ipam() { "$IPAM" project-alpha -n default "$@"; }
 
               claims=$(ipam get ipclaim -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}')
               echo "project-alpha IPClaims: $(echo $claims)"

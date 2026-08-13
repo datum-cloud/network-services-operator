@@ -63,9 +63,9 @@ spec:
         - script:
             content: |
               set -eu
-              IPAM_KUBECONFIG="${TMPDIR:-/tmp}/.ipam-tenant-impersonation.yaml"
+              IPAM=$(git rev-parse --show-toplevel)/hack/ipam-tenant-kubectl.sh
               record="${TMPDIR:-/tmp}/nic-boundifdel-addresses"
-              KUBECONFIG=$IPAM_KUBECONFIG kubectl --context tenant-project-alpha -n default get ipclaim \
+              "$IPAM" project-alpha -n default get ipclaim \
                 -o 'jsonpath={range .items[*]}{.metadata.name}={.status.allocatedCIDR} {end}' > "$record"
               kubectl -n ipam-e2e-alpha get networkinterface nic-boundifdel -o jsonpath='{.metadata.uid}' > "${record}.uid"
               cat "$record"
@@ -84,8 +84,8 @@ spec:
           script:
             content: |
               set -u
-              IPAM_KUBECONFIG="${TMPDIR:-/tmp}/.ipam-tenant-impersonation.yaml"
-              ipam() { KUBECONFIG=$IPAM_KUBECONFIG kubectl --context tenant-project-alpha -n default "$@"; }
+              IPAM=$(git rev-parse --show-toplevel)/hack/ipam-tenant-kubectl.sh
+              ipam() { "$IPAM" project-alpha -n default "$@"; }
 
               kubectl -n ipam-e2e-alpha delete networkinterfaceclaim nic-boundifdel --ignore-not-found --timeout=60s
               kubectl -n ipam-e2e-alpha delete networkinterface nic-boundifdel --ignore-not-found --timeout=60s
@@ -126,8 +126,8 @@ spec:
         - script:
             content: |
               set -eu
-              IPAM_KUBECONFIG="${TMPDIR:-/tmp}/.ipam-tenant-impersonation.yaml"
-              ipam() { KUBECONFIG=$IPAM_KUBECONFIG kubectl --context tenant-project-alpha -n default "$@"; }
+              IPAM=$(git rev-parse --show-toplevel)/hack/ipam-tenant-kubectl.sh
+              ipam() { "$IPAM" project-alpha -n default "$@"; }
 
               before=$(cat "${TMPDIR:-/tmp}/nic-boundifdel-addresses")
               after=$(ipam get ipclaim -o 'jsonpath={range .items[*]}{.metadata.name}={.status.allocatedCIDR} {end}')
@@ -172,8 +172,8 @@ spec:
         - script:
             content: |
               set -eu
-              IPAM_KUBECONFIG="${TMPDIR:-/tmp}/.ipam-tenant-impersonation.yaml"
-              ipam() { KUBECONFIG=$IPAM_KUBECONFIG kubectl --context tenant-project-alpha -n default "$@"; }
+              IPAM=$(git rev-parse --show-toplevel)/hack/ipam-tenant-kubectl.sh
+              ipam() { "$IPAM" project-alpha -n default "$@"; }
 
               before=$(cat "${TMPDIR:-/tmp}/nic-boundifdel-addresses")
               after=$(ipam get ipclaim -o 'jsonpath={range .items[*]}{.metadata.name}={.status.allocatedCIDR} {end}')
@@ -208,8 +208,8 @@ spec:
         - script:
             content: |
               set -eu
-              IPAM_KUBECONFIG="${TMPDIR:-/tmp}/.ipam-tenant-impersonation.yaml"
-              ipam() { KUBECONFIG=$IPAM_KUBECONFIG kubectl --context tenant-project-alpha -n default "$@"; }
+              IPAM=$(git rev-parse --show-toplevel)/hack/ipam-tenant-kubectl.sh
+              ipam() { "$IPAM" project-alpha -n default "$@"; }
 
               ipam get ipclass datum-public-v4 >/dev/null \
                 || { echo "project-alpha's fixtures are not readable through this context, so an empty IPClaim list means nothing"; exit 1; }

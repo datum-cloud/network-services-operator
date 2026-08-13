@@ -148,50 +148,58 @@ spec:
 
     - name: Neither project can see the other's IPClaims
       description: |
-        Read back through the per-project impersonation contexts. A project that
-        can read the other's IPClaim means the impersonation is not scoping
-        anything and every other assertion in this suite is coincidence.
+        Read back as each project in turn. A project that can read the other's
+        IPClaim means the impersonation is not scoping anything, and every other
+        assertion in this suite is coincidence.
 
-        Each context earns the right to be believed first: the two project
-        contexts must find their own IPClaim, and tenant-platform — which is
+        Each identity earns the right to be believed first: the two projects
+        must find their own IPClaim, and the project-less request — which is
         meant to read nothing — must still reach IPAM, proving its blindness is
-        scoping rather than a broken kubeconfig. Its NotFound comes from the
-        server, and the IPClasses it cannot see are the same ones a project can.
+        scoping rather than a broken call. Its NotFound comes from the server,
+        and the IPClasses it cannot see are the same ones a project can.
+
+        That request is the same user with none of the three parent extras, so
+        it is written out rather than routed through the wrapper: what is being
+        tested is precisely the absence of the impersonation the wrapper exists
+        to add.
       try:
         - script:
             content: |
               set -eu
-              IPAM_KUBECONFIG="${TMPDIR:-/tmp}/.ipam-tenant-impersonation.yaml"
-              ipam() { ctx=$1; shift; KUBECONFIG=$IPAM_KUBECONFIG kubectl --context "$ctx" -n default "$@"; }
+              IPAM=$(git rev-parse --show-toplevel)/hack/ipam-tenant-kubectl.sh
+              ipam() { proj=$1; shift; "$IPAM" "$proj" -n default "$@"; }
+              # The same identity carrying none of the parent extras: no project,
+              # so IPAM scopes it to nothing.
+              noproject() { kubectl --as=e2e-tenant-tester "$@"; }
 
               visible() { ipam "$1" get ipclaim "$2" >/dev/null 2>&1; }
 
-              visible tenant-project-alpha nic-isolation-alpha-f-ipv4 || { echo "project-alpha cannot see its own IPClaim"; exit 1; }
-              visible tenant-project-beta nic-isolation-beta-f-ipv4 || { echo "project-beta cannot see its own IPClaim"; exit 1; }
-              visible tenant-project-alpha nic-isolation-legacy-f-ipv4 || { echo "the legacy-labelled namespace did not allocate in project-alpha"; exit 1; }
+              visible project-alpha nic-isolation-alpha-f-ipv4 || { echo "project-alpha cannot see its own IPClaim"; exit 1; }
+              visible project-beta nic-isolation-beta-f-ipv4 || { echo "project-beta cannot see its own IPClaim"; exit 1; }
+              visible project-alpha nic-isolation-legacy-f-ipv4 || { echo "the legacy-labelled namespace did not allocate in project-alpha"; exit 1; }
 
-              KUBECONFIG=$IPAM_KUBECONFIG kubectl --context tenant-platform get --raw /apis/ipam.miloapis.com/v1alpha1 >/dev/null \
-                || { echo "tenant-platform cannot reach IPAM at all, so it proves nothing about scoping"; exit 1; }
-              classes=$(ipam tenant-project-alpha get ipclass -o name | wc -l | tr -d ' ')
-              [ "$classes" -gt 0 ] || { echo "project-alpha sees no IPClass, so the fixtures are not readable through this context"; exit 1; }
-              platform_classes=$(KUBECONFIG=$IPAM_KUBECONFIG kubectl --context tenant-platform get ipclass -o name | wc -l | tr -d ' ')
-              [ "$platform_classes" -eq 0 ] || { echo "tenant-platform reads ${platform_classes} IPClass objects; it is meant to hold no project"; exit 1; }
-              denial=$(ipam tenant-platform get ipclaim nic-isolation-alpha-f-ipv4 2>&1 || true)
+              noproject get --raw /apis/ipam.miloapis.com/v1alpha1 >/dev/null \
+                || { echo "the project-less request cannot reach IPAM at all, so it proves nothing about scoping"; exit 1; }
+              classes=$(ipam project-alpha get ipclass -o name | wc -l | tr -d ' ')
+              [ "$classes" -gt 0 ] || { echo "project-alpha sees no IPClass, so the fixtures are not readable as that project"; exit 1; }
+              platform_classes=$(noproject get ipclass -o name | wc -l | tr -d ' ')
+              [ "$platform_classes" -eq 0 ] || { echo "the project-less request reads ${platform_classes} IPClass objects; it is meant to hold no project"; exit 1; }
+              denial=$(noproject -n default get ipclaim nic-isolation-alpha-f-ipv4 2>&1 || true)
               echo "$denial" | grep -Eq 'NotFound|Forbidden|forbidden|not found' \
-                || { echo "tenant-platform's refusal did not come from the server: ${denial}"; exit 1; }
+                || { echo "the project-less refusal did not come from the server: ${denial}"; exit 1; }
 
-              ! visible tenant-project-beta nic-isolation-alpha-f-ipv4 || { echo "project-beta can read project-alpha's IPClaim"; exit 1; }
-              ! visible tenant-project-alpha nic-isolation-beta-f-ipv4 || { echo "project-alpha can read project-beta's IPClaim"; exit 1; }
-              ! visible tenant-platform nic-isolation-alpha-f-ipv4 || { echo "the project-less context can read project-alpha's IPClaim"; exit 1; }
-              ! visible tenant-platform nic-isolation-beta-f-ipv4 || { echo "the project-less context can read project-beta's IPClaim"; exit 1; }
+              ! visible project-beta nic-isolation-alpha-f-ipv4 || { echo "project-beta can read project-alpha's IPClaim"; exit 1; }
+              ! visible project-alpha nic-isolation-beta-f-ipv4 || { echo "project-alpha can read project-beta's IPClaim"; exit 1; }
+              ! noproject -n default get ipclaim nic-isolation-alpha-f-ipv4 >/dev/null 2>&1 || { echo "the project-less request can read project-alpha's IPClaim"; exit 1; }
+              ! noproject -n default get ipclaim nic-isolation-beta-f-ipv4 >/dev/null 2>&1 || { echo "the project-less request can read project-beta's IPClaim"; exit 1; }
 
     - name: The address IPAM holds is the address the claim published
       try:
         - script:
             content: |
               set -eu
-              IPAM_KUBECONFIG="${TMPDIR:-/tmp}/.ipam-tenant-impersonation.yaml"
-              allocated() { KUBECONFIG=$IPAM_KUBECONFIG kubectl --context "$1" -n default get ipclaim "$2" -o jsonpath='{.status.allocatedCIDR}'; }
+              IPAM=$(git rev-parse --show-toplevel)/hack/ipam-tenant-kubectl.sh
+              allocated() { "$IPAM" "$1" -n default get ipclaim "$2" -o jsonpath='{.status.allocatedCIDR}'; }
 
               check() {
                 published=$(kubectl -n "$1" get networkinterfaceclaim "$2" -o jsonpath='{.status.addresses[0].address}')
@@ -199,6 +207,6 @@ spec:
                 [ "$published" = "$held" ] || { echo "$2 published ${published}, IPAM holds ${held}"; exit 1; }
               }
 
-              check ipam-e2e-alpha nic-isolation-alpha tenant-project-alpha
-              check ipam-e2e-beta nic-isolation-beta tenant-project-beta
-              check ipam-e2e-legacy nic-isolation-legacy tenant-project-alpha
+              check ipam-e2e-alpha nic-isolation-alpha project-alpha
+              check ipam-e2e-beta nic-isolation-beta project-beta
+              check ipam-e2e-legacy nic-isolation-legacy project-alpha

@@ -82,9 +82,9 @@ spec:
           script:
             content: |
               set -u
-              IPAM_KUBECONFIG="${TMPDIR:-/tmp}/.ipam-tenant-impersonation.yaml"
+              IPAM=$(git rev-parse --show-toplevel)/hack/ipam-tenant-kubectl.sh
               record="${TMPDIR:-/tmp}/nic-retain-addresses"
-              ipam() { KUBECONFIG=$IPAM_KUBECONFIG kubectl --context tenant-project-alpha -n default "$@"; }
+              ipam() { "$IPAM" project-alpha -n default "$@"; }
 
               kubectl -n ipam-e2e-alpha delete networkinterfaceclaim nic-retain --ignore-not-found --timeout=60s
               kubectl -n ipam-e2e-alpha delete networkinterface nic-retain --ignore-not-found --timeout=60s
@@ -130,10 +130,10 @@ spec:
         - script:
             content: |
               set -eu
-              IPAM_KUBECONFIG="${TMPDIR:-/tmp}/.ipam-tenant-impersonation.yaml"
+              IPAM=$(git rev-parse --show-toplevel)/hack/ipam-tenant-kubectl.sh
               read -r want6 want4 wantext _ < "${TMPDIR:-/tmp}/nic-retain-addresses" || true
 
-              held() { KUBECONFIG=$IPAM_KUBECONFIG kubectl --context tenant-project-alpha -n default get ipclaim "$1" -o jsonpath='{.status.allocatedCIDR}'; }
+              held() { "$IPAM" project-alpha -n default get ipclaim "$1" -o jsonpath='{.status.allocatedCIDR}'; }
 
               [ "$(held nic-retain-f-ipv6)" = "$want6" ] || { echo "IPv6 address was not retained in IPAM"; exit 1; }
               [ "$(held nic-retain-f-ipv4)" = "$want4" ] || { echo "IPv4 address was not retained in IPAM"; exit 1; }

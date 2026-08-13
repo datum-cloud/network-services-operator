@@ -68,11 +68,11 @@ spec:
         - script:
             content: |
               set -eu
-              IPAM_KUBECONFIG="${TMPDIR:-/tmp}/.ipam-tenant-impersonation.yaml"
+              IPAM=$(git rev-parse --show-toplevel)/hack/ipam-tenant-kubectl.sh
 
               external=$(kubectl -n ipam-e2e-alpha get networkinterfaceclaim nic-external -o jsonpath='{.status.externalAddresses[0].address}')
               internal=$(kubectl -n ipam-e2e-alpha get networkinterfaceclaim nic-external -o jsonpath='{.status.addresses[0].address}')
-              held=$(KUBECONFIG=$IPAM_KUBECONFIG kubectl --context tenant-project-alpha -n default \
+              held=$("$IPAM" project-alpha -n default \
                 get ipclaim nic-external-c-datum-public-v4 -o jsonpath='{.status.allocatedCIDR}')
               echo "external=${external} internal=${internal} ipam=${held}"
 

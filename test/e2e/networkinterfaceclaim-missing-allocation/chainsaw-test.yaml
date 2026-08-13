@@ -67,8 +67,8 @@ spec:
         - script:
             content: |
               set -u
-              IPAM_KUBECONFIG="${TMPDIR:-/tmp}/.ipam-tenant-impersonation.yaml"
-              ipam() { KUBECONFIG=$IPAM_KUBECONFIG kubectl --context tenant-project-alpha -n default "$@"; }
+              IPAM=$(git rev-parse --show-toplevel)/hack/ipam-tenant-kubectl.sh
+              ipam() { "$IPAM" project-alpha -n default "$@"; }
 
               kubectl -n ipam-e2e-alpha delete networkinterfaceclaim nic-missingalloc --ignore-not-found --timeout=60s
               kubectl -n ipam-e2e-alpha delete networkinterface nic-missingalloc --ignore-not-found --timeout=60s
@@ -83,8 +83,8 @@ spec:
         - script:
             content: |
               set -eu
-              IPAM_KUBECONFIG="${TMPDIR:-/tmp}/.ipam-tenant-impersonation.yaml"
-              ipam() { KUBECONFIG=$IPAM_KUBECONFIG kubectl --context tenant-project-alpha -n default "$@"; }
+              IPAM=$(git rev-parse --show-toplevel)/hack/ipam-tenant-kubectl.sh
+              ipam() { "$IPAM" project-alpha -n default "$@"; }
 
               address=$(kubectl -n ipam-e2e-alpha get networkinterfaceclaim nic-missingalloc -o jsonpath='{.status.addresses[0].address}')
               [ -n "$address" ] || { echo "the claim never published an address"; exit 1; }
@@ -206,8 +206,8 @@ spec:
         - script:
             content: |
               set -eu
-              IPAM_KUBECONFIG="${TMPDIR:-/tmp}/.ipam-tenant-impersonation.yaml"
-              ipam() { KUBECONFIG=$IPAM_KUBECONFIG kubectl --context tenant-project-alpha -n default "$@"; }
+              IPAM=$(git rev-parse --show-toplevel)/hack/ipam-tenant-kubectl.sh
+              ipam() { "$IPAM" project-alpha -n default "$@"; }
               address=$(cat "${TMPDIR:-/tmp}/nic-missingalloc-address")
 
               for name in nic-missingalloc-blocker nic-missingalloc-f-ipv4; do
@@ -255,8 +255,8 @@ spec:
         - script:
             content: |
               set -eu
-              IPAM_KUBECONFIG="${TMPDIR:-/tmp}/.ipam-tenant-impersonation.yaml"
-              ipam() { KUBECONFIG=$IPAM_KUBECONFIG kubectl --context tenant-project-alpha -n default "$@"; }
+              IPAM=$(git rev-parse --show-toplevel)/hack/ipam-tenant-kubectl.sh
+              ipam() { "$IPAM" project-alpha -n default "$@"; }
               address=$(cat "${TMPDIR:-/tmp}/nic-missingalloc-address")
               moved=$(ipam get ipclaim nic-missingalloc-f-ipv4 -o jsonpath='{.status.allocatedCIDR}')
 

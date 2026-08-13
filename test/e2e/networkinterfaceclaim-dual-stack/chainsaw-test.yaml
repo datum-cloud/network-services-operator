@@ -4,9 +4,9 @@
 # in the upstream IPAM service rather than values NSO invented.
 #
 # The claim lives in ipam-e2e-alpha, whose upstream-cluster-name label routes to
-# project-alpha; the IPClaims are therefore read back through the
-# tenant-project-alpha impersonation context, in the project namespace named by
-# the cell namespace's upstream-namespace label (default).
+# project-alpha; the IPClaims are therefore read back as project-alpha, in the
+# project namespace named by the cell namespace's upstream-namespace label
+# (default).
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
@@ -99,8 +99,8 @@ spec:
         - script:
             content: |
               set -eu
-              IPAM_KUBECONFIG="${TMPDIR:-/tmp}/.ipam-tenant-impersonation.yaml"
-              ipam() { ctx=$1; shift; KUBECONFIG=$IPAM_KUBECONFIG kubectl --context "tenant-$ctx" -n default "$@"; }
+              IPAM=$(git rev-parse --show-toplevel)/hack/ipam-tenant-kubectl.sh
+              ipam() { proj=$1; shift; "$IPAM" "$proj" -n default "$@"; }
 
               for family in ipv6 ipv4; do
                 upper=$(echo "$family" | tr '[:lower:]' '[:upper:]' | sed 's/IPV/IPv/')
@@ -134,8 +134,8 @@ spec:
         - script:
             content: |
               set -eu
-              IPAM_KUBECONFIG="${TMPDIR:-/tmp}/.ipam-tenant-impersonation.yaml"
-              ipam() { KUBECONFIG=$IPAM_KUBECONFIG kubectl --context tenant-project-alpha -n default "$@"; }
+              IPAM=$(git rev-parse --show-toplevel)/hack/ipam-tenant-kubectl.sh
+              ipam() { "$IPAM" project-alpha -n default "$@"; }
 
               ipam get ipclass datum-endpoint-v4 >/dev/null \
                 || { echo "project-alpha's fixtures are not readable through this context, so an empty IPClaim list means nothing"; exit 1; }

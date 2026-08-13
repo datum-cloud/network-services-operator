@@ -62,8 +62,8 @@ spec:
         - script:
             content: |
               set -eu
-              IPAM_KUBECONFIG="${TMPDIR:-/tmp}/.ipam-tenant-impersonation.yaml"
-              ipam() { KUBECONFIG=$IPAM_KUBECONFIG kubectl --context tenant-project-alpha -n default "$@"; }
+              IPAM=$(git rev-parse --show-toplevel)/hack/ipam-tenant-kubectl.sh
+              ipam() { "$IPAM" project-alpha -n default "$@"; }
               count=$(ipam get ipclaim -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' | grep -cE '^nic-reverse-' || true)
               [ "$count" -eq 3 ] || { echo "expected 3 IPClaims before the deletes, found ${count}"; exit 1; }
       catch:
@@ -79,8 +79,8 @@ spec:
           script:
             content: |
               set -u
-              IPAM_KUBECONFIG="${TMPDIR:-/tmp}/.ipam-tenant-impersonation.yaml"
-              ipam() { KUBECONFIG=$IPAM_KUBECONFIG kubectl --context tenant-project-alpha -n default "$@"; }
+              IPAM=$(git rev-parse --show-toplevel)/hack/ipam-tenant-kubectl.sh
+              ipam() { "$IPAM" project-alpha -n default "$@"; }
 
               kubectl -n ipam-e2e-alpha delete networkinterfaceclaim nic-reverse --ignore-not-found --timeout=60s
               kubectl -n ipam-e2e-alpha delete networkinterface nic-reverse --ignore-not-found --timeout=60s
@@ -110,8 +110,8 @@ spec:
         - script:
             content: |
               set -eu
-              IPAM_KUBECONFIG="${TMPDIR:-/tmp}/.ipam-tenant-impersonation.yaml"
-              ipam() { KUBECONFIG=$IPAM_KUBECONFIG kubectl --context tenant-project-alpha -n default "$@"; }
+              IPAM=$(git rev-parse --show-toplevel)/hack/ipam-tenant-kubectl.sh
+              ipam() { "$IPAM" project-alpha -n default "$@"; }
 
               ipam get ipclass datum-public-v4 >/dev/null \
                 || { echo "project-alpha's fixtures are not readable through this context, so an empty IPClaim list means nothing"; exit 1; }

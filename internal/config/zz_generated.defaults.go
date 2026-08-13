@@ -370,4 +370,8 @@ func SetObjectDefaults_NetworkServicesOperator(in *NetworkServicesOperator) {
 	if in.IPAM.Client.Burst == 0 {
 		in.IPAM.Client.Burst = 100
 	}
+	SetDefaults_LocationReplicationConfig(&in.LocationReplication)
+	if in.LocationReplication.PropagationClusterName == "" {
+		in.LocationReplication.PropagationClusterName = "datum-platform"
+	}
 }

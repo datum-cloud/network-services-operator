@@ -299,7 +299,16 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 		listenerCertHealth,
 	)
 
-	if downstreamGateway.CreationTimestamp.IsZero() {
+	listenersDropped := len(desiredDownstreamGateway.Spec.Listeners) < len(upstreamGateway.Spec.Listeners)
+
+	if len(desiredDownstreamGateway.Spec.Listeners) == 0 {
+		// The Gateway API requires at least one listener, so writing this would
+		// be rejected and end the reconcile before any status reached the user.
+		// Keep whatever is already serving and carry on, so the listener status
+		// below can say which hostname is unavailable and why.
+		log.FromContext(ctx).Info("no programmable listeners, leaving downstream gateway unchanged",
+			"upstream_listeners", len(upstreamGateway.Spec.Listeners))
+	} else if downstreamGateway.CreationTimestamp.IsZero() {
 		if err := downstreamStrategy.SetControllerReference(ctx, upstreamGateway, downstreamGateway); err != nil {
 			result.Err = fmt.Errorf("failed to set controller reference on downstream gateway: %w", err)
 			return result, nil
@@ -370,6 +379,7 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 		upstreamClient,
 		upstreamGateway,
 		downstreamGateway,
+		listenersDropped,
 	)
 	if gatewayStatusResult.Err != nil || gatewayStatusResult.StopProcessing {
 		return gatewayStatusResult.Merge(result), nil
@@ -1124,6 +1134,7 @@ func (r *GatewayReconciler) reconcileGatewayStatus(
 	upstreamClient client.Client,
 	upstreamGateway *gatewayv1.Gateway,
 	downstreamGateway *gatewayv1.Gateway,
+	listenersDropped bool,
 ) (result Result) {
 	logger := log.FromContext(ctx)
 
@@ -1150,16 +1161,25 @@ func (r *GatewayReconciler) reconcileGatewayStatus(
 
 	if c := apimeta.FindStatusCondition(downstreamGateway.Status.Conditions, string(gatewayv1.GatewayConditionProgrammed)); c != nil {
 		message := "The Gateway has not been programmed"
+		status := c.Status
+		reason := c.Reason
 		if c.Status == metav1.ConditionTrue {
 			message = "The Gateway has been programmed"
 			programmedReady = true
 		}
 
+		if listenersDropped {
+			message = "One or more listeners could not be programmed. See the listener status for the reason."
+			status = metav1.ConditionFalse
+			reason = string(gatewayv1.GatewayReasonListenersNotValid)
+			programmedReady = false
+		}
+
 		apimeta.SetStatusCondition(&upstreamGateway.Status.Conditions, metav1.Condition{
 			Message:            message,
 			Type:               string(gatewayv1.GatewayConditionProgrammed),
-			Reason:             c.Reason,
-			Status:             c.Status,
+			Reason:             reason,
+			Status:             status,
 			ObservedGeneration: upstreamGateway.Generation,
 		})
 

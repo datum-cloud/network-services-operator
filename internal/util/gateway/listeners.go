@@ -41,6 +41,22 @@ func SetListener(gateway *gatewayv1.Gateway, listener gatewayv1.Listener) {
 	gateway.Spec.Listeners = append(gateway.Spec.Listeners, listener)
 }
 
+// RestoreMissingDefaultListeners re-adds a default listener the gateway no
+// longer carries, and leaves any it still has untouched. On an existing gateway
+// the controller has already written the platform hostname onto the defaults,
+// so replacing them wholesale would strip that hostname.
+func RestoreMissingDefaultListeners(gateway *gatewayv1.Gateway, gatewayConfig config.GatewayConfig) {
+	existing := gateway.Spec.Listeners
+	var defaults gatewayv1.Gateway
+	SetDefaultListeners(&defaults, gatewayConfig)
+
+	for _, l := range defaults.Spec.Listeners {
+		if GetListenerByName(existing, l.Name) == nil {
+			gateway.Spec.Listeners = append(gateway.Spec.Listeners, l)
+		}
+	}
+}
+
 func SetDefaultListeners(gateway *gatewayv1.Gateway, gatewayConfig config.GatewayConfig) {
 	SetListener(gateway, gatewayv1.Listener{
 		Name:     DefaultHTTPListenerName,

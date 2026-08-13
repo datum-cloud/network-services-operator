@@ -557,8 +557,10 @@ func (r *NetworkInterfaceClaimReconciler) allocate(
 			ipClaim.Spec.IPFamily = ipamv1alpha1.IPFamily(request.family)
 		}
 
-		// IPAM reports a duplicate name inconsistently, so ask whether the
-		// address exists instead of reading the refusal.
+		// Ask whether the address exists rather than reading the refusal. This
+		// holds against any IPAM version, whatever that version reports for a
+		// duplicate, which matters while the operator can run ahead of the
+		// server it talks to. The cost is one read per address per reconcile.
 		existing := &ipamv1alpha1.IPClaim{}
 		getErr := ipamClient.Get(ctx, client.ObjectKeyFromObject(ipClaim), existing)
 		if getErr != nil && !apierrors.IsNotFound(getErr) {
@@ -569,6 +571,8 @@ func (r *NetworkInterfaceClaimReconciler) allocate(
 		if getErr == nil {
 			ipClaim = existing
 		} else if createErr := ipamClient.Create(ctx, ipClaim); createErr != nil {
+			// The create can still lose a race with another writer, so ask
+			// again before calling this a failure to allocate.
 			raced := &ipamv1alpha1.IPClaim{}
 			if err := ipamClient.Get(ctx, client.ObjectKeyFromObject(ipClaim), raced); err != nil {
 				rollback()

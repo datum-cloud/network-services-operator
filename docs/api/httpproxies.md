@@ -235,6 +235,16 @@ ports, and paths.<br/>
         </td>
         <td>true</td>
       </tr><tr>
+        <td><b><a href="#httpproxyspecrulesindexbackendsindexconnector">connector</a></b></td>
+        <td>object</td>
+        <td>
+          Connector references the Connector that should be used for this backend.
+
+For now, only a name reference is supported. In the future this can be
+extended to selector-based matching to allow multiple connectors.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
         <td><b><a href="#httpproxyspecrulesindexbackendsindexfiltersindex">filters</a></b></td>
         <td>[]object</td>
         <td>
@@ -244,6 +254,46 @@ request is being forwarded to the backend defined here.<br/>
             <i>Validations</i>:<li>!(self.exists(f, f.type == 'RequestRedirect') && self.exists(f, f.type == 'URLRewrite')): May specify either requestRedirect or urlRewrite, but not both</li><li>self.filter(f, f.type == 'RequestHeaderModifier').size() <= 1: RequestHeaderModifier filter cannot be repeated</li><li>self.filter(f, f.type == 'ResponseHeaderModifier').size() <= 1: ResponseHeaderModifier filter cannot be repeated</li><li>self.filter(f, f.type == 'RequestRedirect').size() <= 1: RequestRedirect filter cannot be repeated</li><li>self.filter(f, f.type == 'URLRewrite').size() <= 1: URLRewrite filter cannot be repeated</li>
         </td>
         <td>false</td>
+      </tr><tr>
+        <td><b><a href="#httpproxyspecrulesindexbackendsindextls">tls</a></b></td>
+        <td>object</td>
+        <td>
+          TLS contains backend TLS configuration.
+
+When the backend endpoint uses HTTPS with an IP address, the Hostname field
+must be specified for TLS certificate validation.<br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### HTTPProxy.spec.rules[index].backends[index].connector
+<sup><sup>[↩ Parent](#httpproxyspecrulesindexbackendsindex)</sup></sup>
+
+
+
+Connector references the Connector that should be used for this backend.
+
+For now, only a name reference is supported. In the future this can be
+extended to selector-based matching to allow multiple connectors.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>name</b></td>
+        <td>string</td>
+        <td>
+          Name of the referenced Connector.<br/>
+        </td>
+        <td>true</td>
       </tr></tbody>
 </table>
 
@@ -260,8 +310,8 @@ examples include request or response modification, implementing
 authentication strategies, rate-limiting, and traffic shaping. API
 guarantee/conformance is defined based on the type of the filter.
 
-<gateway:experimental:validation:XValidation:message="filter.cors must be nil if the filter.type is not CORS",rule="!(has(self.cors) && self.type != 'CORS')">
-<gateway:experimental:validation:XValidation:message="filter.cors must be specified for CORS filter.type",rule="!(!has(self.cors) && self.type == 'CORS')">
+<gateway:experimental:validation:XValidation:message="filter.externalAuth must be nil if the filter.type is not ExternalAuth",rule="!(has(self.externalAuth) && self.type != 'ExternalAuth')">
+<gateway:experimental:validation:XValidation:message="filter.externalAuth must be specified for ExternalAuth filter.type",rule="!(!has(self.externalAuth) && self.type == 'ExternalAuth')">
 
 <table>
     <thead>
@@ -309,9 +359,9 @@ Unknown values here must result in the implementation setting the
 Accepted Condition for the Route to `status: False`, with a
 Reason of `UnsupportedValue`.
 
-<gateway:experimental:validation:Enum=RequestHeaderModifier;ResponseHeaderModifier;RequestMirror;RequestRedirect;URLRewrite;ExtensionRef;CORS><br/>
+<gateway:experimental:validation:Enum=RequestHeaderModifier;ResponseHeaderModifier;RequestMirror;RequestRedirect;URLRewrite;ExtensionRef;CORS;ExternalAuth><br/>
           <br/>
-            <i>Enum</i>: RequestHeaderModifier, ResponseHeaderModifier, RequestMirror, RequestRedirect, URLRewrite, ExtensionRef<br/>
+            <i>Enum</i>: RequestHeaderModifier, ResponseHeaderModifier, RequestMirror, RequestRedirect, URLRewrite, ExtensionRef, CORS<br/>
         </td>
         <td>true</td>
       </tr><tr>
@@ -321,9 +371,7 @@ Reason of `UnsupportedValue`.
           CORS defines a schema for a filter that responds to the
 cross-origin request based on HTTP response header.
 
-Support: Extended
-
-<gateway:experimental><br/>
+Support: Extended<br/>
         </td>
         <td>false</td>
       </tr><tr>
@@ -338,6 +386,24 @@ extended filters.
 This filter can be used multiple times within the same rule.
 
 Support: Implementation-specific<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b><a href="#httpproxyspecrulesindexbackendsindexfiltersindexexternalauth">externalAuth</a></b></td>
+        <td>object</td>
+        <td>
+          ExternalAuth configures settings related to sending request details
+to an external auth service. The external service MUST authenticate
+the request, and MAY authorize the request as well.
+
+If there is any problem communicating with the external service,
+this filter MUST fail closed.
+
+Support: Extended
+
+<gateway:experimental><br/>
+          <br/>
+            <i>Validations</i>:<li>self.protocol == 'GRPC' ? has(self.grpc) : true: grpc must be specified when protocol is set to 'GRPC'</li><li>has(self.grpc) ? self.protocol == 'GRPC' : true: protocol must be 'GRPC' when grpc is set</li><li>self.protocol == 'HTTP' ? has(self.http) : true: http must be specified when protocol is set to 'HTTP'</li><li>has(self.http) ? self.protocol == 'HTTP' : true: protocol must be 'HTTP' when http is set</li>
         </td>
         <td>false</td>
       </tr><tr>
@@ -410,8 +476,6 @@ cross-origin request based on HTTP response header.
 
 Support: Extended
 
-<gateway:experimental>
-
 <table>
     <thead>
         <tr>
@@ -428,16 +492,14 @@ Support: Extended
           AllowCredentials indicates whether the actual cross-origin request allows
 to include credentials.
 
-The only valid value for the `Access-Control-Allow-Credentials` response
-header is true (case-sensitive).
+When set to true, the gateway will include the `Access-Control-Allow-Credentials`
+response header with value true (case-sensitive).
 
-If the credentials are not allowed in cross-origin requests, the gateway
-will omit the header `Access-Control-Allow-Credentials` entirely rather
-than setting its value to false.
+When set to false or omitted the gateway will omit the header
+`Access-Control-Allow-Credentials` entirely (this is the standard CORS
+behavior).
 
 Support: Extended<br/>
-          <br/>
-            <i>Enum</i>: true<br/>
         </td>
         <td>false</td>
       </tr><tr>
@@ -447,7 +509,7 @@ Support: Extended<br/>
           AllowHeaders indicates which HTTP request headers are supported for
 accessing the requested resource.
 
-Header names are not case sensitive.
+Header names are not case-sensitive.
 
 Multiple header names in the value of the `Access-Control-Allow-Headers`
 response header are separated by a comma (",").
@@ -466,20 +528,25 @@ does not recognize by the client, it will also occur an error on the
 client side.
 
 A wildcard indicates that the requests with all HTTP headers are allowed.
-The `Access-Control-Allow-Headers` response header can only use `*`
-wildcard as value when the `AllowCredentials` field is unspecified.
+If config contains the wildcard "*" in allowHeaders and the request is
+not credentialed, the `Access-Control-Allow-Headers` response header
+can either use the `*` wildcard or the value of
+Access-Control-Request-Headers from the request.
 
-When the `AllowCredentials` field is specified and `AllowHeaders` field
-specified with the `*` wildcard, the gateway must specify one or more
+When the request is credentialed, the gateway must not specify the `*`
+wildcard in the `Access-Control-Allow-Headers` response header. When
+also the `AllowCredentials` field is true and `AllowHeaders` field
+is specified with the `*` wildcard, the gateway must specify one or more
 HTTP headers in the value of the `Access-Control-Allow-Headers` response
 header. The value of the header `Access-Control-Allow-Headers` is same as
 the `Access-Control-Request-Headers` header provided by the client. If
 the header `Access-Control-Request-Headers` is not included in the
 request, the gateway will omit the `Access-Control-Allow-Headers`
-response header, instead of specifying the `*` wildcard. A Gateway
-implementation may choose to add implementation-specific default headers.
+response header, instead of specifying the `*` wildcard.
 
 Support: Extended<br/>
+          <br/>
+            <i>Validations</i>:<li>!('*' in self && self.size() > 1): AllowHeaders cannot contain '*' alongside other methods</li>
         </td>
         <td>false</td>
       </tr><tr>
@@ -492,7 +559,7 @@ requested resource.
 Valid values are any method defined by RFC9110, along with the special
 value `*`, which represents all HTTP methods are allowed.
 
-Method names are case sensitive, so these values are also case-sensitive.
+Method names are case-sensitive, so these values are also case-sensitive.
 (See https://www.rfc-editor.org/rfc/rfc2616#section-5.1.1)
 
 Multiple method names in the value of the `Access-Control-Allow-Methods`
@@ -512,18 +579,21 @@ is not included in the list of methods specified by the response header
 `Access-Control-Allow-Methods`, it will present an error on the client
 side.
 
-The `Access-Control-Allow-Methods` response header can only use `*`
-wildcard as value when the `AllowCredentials` field is unspecified.
+If config contains the wildcard "*" in allowMethods and the request is
+not credentialed, the `Access-Control-Allow-Methods` response header
+can either use the `*` wildcard or the value of
+Access-Control-Request-Method from the request.
 
-When the `AllowCredentials` field is specified and `AllowMethods` field
+When the request is credentialed, the gateway must not specify the `*`
+wildcard in the `Access-Control-Allow-Methods` response header. When
+also the `AllowCredentials` field is true and `AllowMethods` field
 specified with the `*` wildcard, the gateway must specify one HTTP method
 in the value of the Access-Control-Allow-Methods response header. The
 value of the header `Access-Control-Allow-Methods` is same as the
 `Access-Control-Request-Method` header provided by the client. If the
 header `Access-Control-Request-Method` is not included in the request,
 the gateway will omit the `Access-Control-Allow-Methods` response header,
-instead of specifying the `*` wildcard. A Gateway implementation may
-choose to add implementation-specific default methods.
+instead of specifying the `*` wildcard.
 
 Support: Extended<br/>
           <br/>
@@ -577,10 +647,19 @@ cross-origin response headers. Alternatively, the gateway responds with
 the CORS headers. The cross-origin request fails on the client side.
 Therefore, the client doesn't attempt the actual cross-origin request.
 
-The `Access-Control-Allow-Origin` response header can only use `*`
-wildcard as value when the `AllowCredentials` field is unspecified.
+Conversely, if the request `Origin` matches one of the configured
+allowed origins, the gateway sets the response header
+`Access-Control-Allow-Origin` to the same value as the `Origin`
+header provided by the client.
 
-When the `AllowCredentials` field is specified and `AllowOrigins` field
+When config has the wildcard ("*") in allowOrigins, and the request
+is not credentialed (e.g., it is a preflight request), the
+`Access-Control-Allow-Origin` response header either contains the
+wildcard as well or the Origin from the request.
+
+When the request is credentialed, the gateway must not specify the `*`
+wildcard in the `Access-Control-Allow-Origin` response header. When
+also the `AllowCredentials` field is true and `AllowOrigins` field
 specified with the `*` wildcard, the gateway must return a single origin
 in the value of the `Access-Control-Allow-Origin` response header,
 instead of specifying the `*` wildcard. The value of the header
@@ -588,6 +667,8 @@ instead of specifying the `*` wildcard. The value of the header
 the client.
 
 Support: Extended<br/>
+          <br/>
+            <i>Validations</i>:<li>!('*' in self && self.size() > 1): AllowOrigins cannot contain '*' alongside other origins</li>
         </td>
         <td>false</td>
       </tr><tr>
@@ -614,15 +695,18 @@ When an HTTP header name is specified using the `ExposeHeaders` field,
 this additional header will be exposed as part of the response to the
 client.
 
-Header names are not case sensitive.
+Header names are not case-sensitive.
 
 Multiple header names in the value of the `Access-Control-Expose-Headers`
 response header are separated by a comma (",").
 
 A wildcard indicates that the responses with all HTTP headers are exposed
 to clients. The `Access-Control-Expose-Headers` response header can only
-use `*` wildcard as value when the `AllowCredentials` field is
-unspecified.
+use `*` wildcard as value when the request is not credentialed.
+
+When the `exposeHeaders` config field contains the "*" wildcard and
+the request is credentialed, the gateway cannot use the `*` wildcard in
+the `Access-Control-Expose-Headers` response header.
 
 Support: Extended<br/>
         </td>
@@ -639,7 +723,10 @@ The information provided by the `Access-Control-Allow-Methods` and
 client until the time specified by `Access-Control-Max-Age` elapses.
 
 The default value of `Access-Control-Max-Age` response header is 5
-(seconds).<br/>
+(seconds).
+
+When the `MaxAge` field is unspecified, the gateway sets the response
+header "Access-Control-Max-Age: 5" by default.<br/>
           <br/>
             <i>Format</i>: int32<br/>
             <i>Default</i>: 5<br/>
@@ -695,6 +782,377 @@ When unspecified or empty string, core API group is inferred.<br/>
           Name is the name of the referent.<br/>
         </td>
         <td>true</td>
+      </tr></tbody>
+</table>
+
+
+### HTTPProxy.spec.rules[index].backends[index].filters[index].externalAuth
+<sup><sup>[↩ Parent](#httpproxyspecrulesindexbackendsindexfiltersindex)</sup></sup>
+
+
+
+ExternalAuth configures settings related to sending request details
+to an external auth service. The external service MUST authenticate
+the request, and MAY authorize the request as well.
+
+If there is any problem communicating with the external service,
+this filter MUST fail closed.
+
+Support: Extended
+
+<gateway:experimental>
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b><a href="#httpproxyspecrulesindexbackendsindexfiltersindexexternalauthbackendref">backendRef</a></b></td>
+        <td>object</td>
+        <td>
+          BackendRef is a reference to a backend to send authorization
+requests to.
+
+The backend must speak the selected protocol (GRPC or HTTP) on the
+referenced port.
+
+If the backend service requires TLS, use BackendTLSPolicy to tell the
+implementation to supply the TLS details to be used to connect to that
+backend.<br/>
+          <br/>
+            <i>Validations</i>:<li>(size(self.group) == 0 && self.kind == 'Service') ? has(self.port) : true: Must have port for Service reference</li>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>protocol</b></td>
+        <td>enum</td>
+        <td>
+          ExternalAuthProtocol describes which protocol to use when communicating with an
+ext_authz authorization server.
+
+When this is set to GRPC, each backend must use the Envoy ext_authz protocol
+on the port specified in `backendRefs`. Requests and responses are defined
+in the protobufs explained at:
+https://www.envoyproxy.io/docs/envoy/latest/api-v3/service/auth/v3/external_auth.proto
+
+When this is set to HTTP, each backend must respond with a `200` status
+code in on a successful authorization. Any other code is considered
+an authorization failure.
+
+Feature Names:
+GRPC Support - HTTPRouteExternalAuthGRPC
+HTTP Support - HTTPRouteExternalAuthHTTP<br/>
+          <br/>
+            <i>Enum</i>: HTTP, GRPC<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b><a href="#httpproxyspecrulesindexbackendsindexfiltersindexexternalauthforwardbody">forwardBody</a></b></td>
+        <td>object</td>
+        <td>
+          ForwardBody controls if requests to the authorization server should include
+the body of the client request; and if so, how big that body is allowed
+to be.
+
+It is expected that implementations will buffer the request body up to
+`forwardBody.maxSize` bytes. Bodies over that size must be rejected with a
+4xx series error (413 or 403 are common examples), and fail processing
+of the filter.
+
+If unset, or `forwardBody.maxSize` is set to `0`, then the body will not
+be forwarded.
+
+Feature Name: HTTPRouteExternalAuthForwardBody<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b><a href="#httpproxyspecrulesindexbackendsindexfiltersindexexternalauthgrpc">grpc</a></b></td>
+        <td>object</td>
+        <td>
+          GRPCAuthConfig contains configuration for communication with ext_authz
+protocol-speaking backends.
+
+If unset, implementations must assume the default behavior for each
+included field is intended.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b><a href="#httpproxyspecrulesindexbackendsindexfiltersindexexternalauthhttp">http</a></b></td>
+        <td>object</td>
+        <td>
+          HTTPAuthConfig contains configuration for communication with HTTP-speaking
+backends.
+
+If unset, implementations must assume the default behavior for each
+included field is intended.<br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### HTTPProxy.spec.rules[index].backends[index].filters[index].externalAuth.backendRef
+<sup><sup>[↩ Parent](#httpproxyspecrulesindexbackendsindexfiltersindexexternalauth)</sup></sup>
+
+
+
+BackendRef is a reference to a backend to send authorization
+requests to.
+
+The backend must speak the selected protocol (GRPC or HTTP) on the
+referenced port.
+
+If the backend service requires TLS, use BackendTLSPolicy to tell the
+implementation to supply the TLS details to be used to connect to that
+backend.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>name</b></td>
+        <td>string</td>
+        <td>
+          Name is the name of the referent.<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>group</b></td>
+        <td>string</td>
+        <td>
+          Group is the group of the referent. For example, "gateway.networking.k8s.io".
+When unspecified or empty string, core API group is inferred.<br/>
+          <br/>
+            <i>Default</i>: <br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>kind</b></td>
+        <td>string</td>
+        <td>
+          Kind is the Kubernetes resource kind of the referent. For example
+"Service".
+
+Defaults to "Service" when not specified.
+
+ExternalName services can refer to CNAME DNS records that may live
+outside of the cluster and as such are difficult to reason about in
+terms of conformance. They also may not be safe to forward to (see
+CVE-2021-25740 for more information). Implementations SHOULD NOT
+support ExternalName Services.
+
+Support: Core (Services with a type other than ExternalName)
+
+Support: Implementation-specific (Services with type ExternalName)<br/>
+          <br/>
+            <i>Default</i>: Service<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>namespace</b></td>
+        <td>string</td>
+        <td>
+          Namespace is the namespace of the backend. When unspecified, the local
+namespace is inferred.
+
+Note that when a namespace different than the local namespace is specified,
+a ReferenceGrant object is required in the referent namespace to allow that
+namespace's owner to accept the reference. See the ReferenceGrant
+documentation for details.
+
+Support: Core<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>port</b></td>
+        <td>integer</td>
+        <td>
+          Port specifies the destination port number to use for this resource.
+Port is required when the referent is a Kubernetes Service. In this
+case, the port number is the service port number, not the target port.
+For other resources, destination port might be derived from the referent
+resource or this field.<br/>
+          <br/>
+            <i>Format</i>: int32<br/>
+            <i>Minimum</i>: 1<br/>
+            <i>Maximum</i>: 65535<br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### HTTPProxy.spec.rules[index].backends[index].filters[index].externalAuth.forwardBody
+<sup><sup>[↩ Parent](#httpproxyspecrulesindexbackendsindexfiltersindexexternalauth)</sup></sup>
+
+
+
+ForwardBody controls if requests to the authorization server should include
+the body of the client request; and if so, how big that body is allowed
+to be.
+
+It is expected that implementations will buffer the request body up to
+`forwardBody.maxSize` bytes. Bodies over that size must be rejected with a
+4xx series error (413 or 403 are common examples), and fail processing
+of the filter.
+
+If unset, or `forwardBody.maxSize` is set to `0`, then the body will not
+be forwarded.
+
+Feature Name: HTTPRouteExternalAuthForwardBody
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>maxSize</b></td>
+        <td>integer</td>
+        <td>
+          MaxSize specifies how large in bytes the largest body that will be buffered
+and sent to the authorization server. If the body size is larger than
+`maxSize`, then the body sent to the authorization server must be
+truncated to `maxSize` bytes.
+
+Experimental note: This behavior needs to be checked against
+various dataplanes; it may need to be changed.
+See https://github.com/kubernetes-sigs/gateway-api/pull/4001#discussion_r2291405746
+for more.
+
+If 0, the body will not be sent to the authorization server.<br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### HTTPProxy.spec.rules[index].backends[index].filters[index].externalAuth.grpc
+<sup><sup>[↩ Parent](#httpproxyspecrulesindexbackendsindexfiltersindexexternalauth)</sup></sup>
+
+
+
+GRPCAuthConfig contains configuration for communication with ext_authz
+protocol-speaking backends.
+
+If unset, implementations must assume the default behavior for each
+included field is intended.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>allowedHeaders</b></td>
+        <td>[]string</td>
+        <td>
+          AllowedRequestHeaders specifies what headers from the client request
+will be sent to the authorization server.
+
+If this list is empty, then all headers must be sent.
+
+If the list has entries, only those entries must be sent.<br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### HTTPProxy.spec.rules[index].backends[index].filters[index].externalAuth.http
+<sup><sup>[↩ Parent](#httpproxyspecrulesindexbackendsindexfiltersindexexternalauth)</sup></sup>
+
+
+
+HTTPAuthConfig contains configuration for communication with HTTP-speaking
+backends.
+
+If unset, implementations must assume the default behavior for each
+included field is intended.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>allowedHeaders</b></td>
+        <td>[]string</td>
+        <td>
+          AllowedRequestHeaders specifies what additional headers from the client request
+will be sent to the authorization server.
+
+The following headers must always be sent to the authorization server,
+regardless of this setting:
+
+* `Host`
+* `Method`
+* `Path`
+* `Content-Length`
+* `Authorization`
+
+If this list is empty, then only those headers must be sent.
+
+Note that `Content-Length` has a special behavior, in that the length
+sent must be correct for the actual request to the external authorization
+server - that is, it must reflect the actual number of bytes sent in the
+body of the request to the authorization server.
+
+So if the `forwardBody` stanza is unset, or `forwardBody.maxSize` is set
+to `0`, then `Content-Length` must be `0`. If `forwardBody.maxSize` is set
+to anything other than `0`, then the `Content-Length` of the authorization
+request must be set to the actual number of bytes forwarded.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>allowedResponseHeaders</b></td>
+        <td>[]string</td>
+        <td>
+          AllowedResponseHeaders specifies what headers from the authorization response
+will be copied into the request to the backend.
+
+If this list is empty, then all headers from the authorization server
+except Authority or Host must be copied.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>path</b></td>
+        <td>string</td>
+        <td>
+          Path sets the prefix that paths from the client request will have added
+when forwarded to the authorization server.
+
+When empty or unspecified, no prefix is added.
+
+Valid values are the same as the "value" regex for path values in the `match`
+stanza, and the validation regex will screen out invalid paths in the same way.
+Even with the validation, implementations MUST sanitize this input before using it
+directly.<br/>
+        </td>
+        <td>false</td>
       </tr></tbody>
 </table>
 
@@ -822,7 +1280,13 @@ equivalent.<br/>
         <td><b>value</b></td>
         <td>string</td>
         <td>
-          Value is the value of HTTP Header to be matched.<br/>
+          Value is the value of HTTP Header to be matched.
+<gateway:experimental:description>
+Must consist of printable US-ASCII characters, optionally separated
+by single tabs or spaces. See: https://tools.ietf.org/html/rfc7230#section-3.2
+</gateway:experimental:description>
+
+<gateway:experimental:validation:Pattern=`^[!-~]+([\t ]?[!-~]+)*$`><br/>
         </td>
         <td>true</td>
       </tr></tbody>
@@ -863,7 +1327,13 @@ equivalent.<br/>
         <td><b>value</b></td>
         <td>string</td>
         <td>
-          Value is the value of HTTP Header to be matched.<br/>
+          Value is the value of HTTP Header to be matched.
+<gateway:experimental:description>
+Must consist of printable US-ASCII characters, optionally separated
+by single tabs or spaces. See: https://tools.ietf.org/html/rfc7230#section-3.2
+</gateway:experimental:description>
+
+<gateway:experimental:validation:Pattern=`^[!-~]+([\t ]?[!-~]+)*$`><br/>
         </td>
         <td>true</td>
       </tr></tbody>
@@ -1226,7 +1696,7 @@ Reason of `UnsupportedValue`.
 
 Support: Core<br/>
           <br/>
-            <i>Enum</i>: 301, 302<br/>
+            <i>Enum</i>: 301, 302, 303, 307, 308<br/>
             <i>Default</i>: 302<br/>
         </td>
         <td>false</td>
@@ -1428,7 +1898,13 @@ equivalent.<br/>
         <td><b>value</b></td>
         <td>string</td>
         <td>
-          Value is the value of HTTP Header to be matched.<br/>
+          Value is the value of HTTP Header to be matched.
+<gateway:experimental:description>
+Must consist of printable US-ASCII characters, optionally separated
+by single tabs or spaces. See: https://tools.ietf.org/html/rfc7230#section-3.2
+</gateway:experimental:description>
+
+<gateway:experimental:validation:Pattern=`^[!-~]+([\t ]?[!-~]+)*$`><br/>
         </td>
         <td>true</td>
       </tr></tbody>
@@ -1469,7 +1945,13 @@ equivalent.<br/>
         <td><b>value</b></td>
         <td>string</td>
         <td>
-          Value is the value of HTTP Header to be matched.<br/>
+          Value is the value of HTTP Header to be matched.
+<gateway:experimental:description>
+Must consist of printable US-ASCII characters, optionally separated
+by single tabs or spaces. See: https://tools.ietf.org/html/rfc7230#section-3.2
+</gateway:experimental:description>
+
+<gateway:experimental:validation:Pattern=`^[!-~]+([\t ]?[!-~]+)*$`><br/>
         </td>
         <td>true</td>
       </tr></tbody>
@@ -1588,6 +2070,46 @@ Request Path | Prefix Match | Replace Prefix | Modified Path<br/>
 </table>
 
 
+### HTTPProxy.spec.rules[index].backends[index].tls
+<sup><sup>[↩ Parent](#httpproxyspecrulesindexbackendsindex)</sup></sup>
+
+
+
+TLS contains backend TLS configuration.
+
+When the backend endpoint uses HTTPS with an IP address, the Hostname field
+must be specified for TLS certificate validation.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>hostname</b></td>
+        <td>string</td>
+        <td>
+          Hostname is used for TLS certificate validation when connecting to an
+HTTPS backend. This hostname is used for:
+
+1. SNI (Server Name Indication) during the TLS handshake
+2. Certificate validation - the certificate must be valid for this hostname
+
+This field is required when the backend endpoint uses HTTPS with an IP
+address, as there is no hostname to extract from the endpoint URL.
+
+When the backend endpoint uses HTTPS with a DNS hostname, this field is
+optional and defaults to the hostname from the endpoint URL.<br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
 ### HTTPProxy.spec.rules[index].filters[index]
 <sup><sup>[↩ Parent](#httpproxyspecrulesindex)</sup></sup>
 
@@ -1600,8 +2122,8 @@ examples include request or response modification, implementing
 authentication strategies, rate-limiting, and traffic shaping. API
 guarantee/conformance is defined based on the type of the filter.
 
-<gateway:experimental:validation:XValidation:message="filter.cors must be nil if the filter.type is not CORS",rule="!(has(self.cors) && self.type != 'CORS')">
-<gateway:experimental:validation:XValidation:message="filter.cors must be specified for CORS filter.type",rule="!(!has(self.cors) && self.type == 'CORS')">
+<gateway:experimental:validation:XValidation:message="filter.externalAuth must be nil if the filter.type is not ExternalAuth",rule="!(has(self.externalAuth) && self.type != 'ExternalAuth')">
+<gateway:experimental:validation:XValidation:message="filter.externalAuth must be specified for ExternalAuth filter.type",rule="!(!has(self.externalAuth) && self.type == 'ExternalAuth')">
 
 <table>
     <thead>
@@ -1649,9 +2171,9 @@ Unknown values here must result in the implementation setting the
 Accepted Condition for the Route to `status: False`, with a
 Reason of `UnsupportedValue`.
 
-<gateway:experimental:validation:Enum=RequestHeaderModifier;ResponseHeaderModifier;RequestMirror;RequestRedirect;URLRewrite;ExtensionRef;CORS><br/>
+<gateway:experimental:validation:Enum=RequestHeaderModifier;ResponseHeaderModifier;RequestMirror;RequestRedirect;URLRewrite;ExtensionRef;CORS;ExternalAuth><br/>
           <br/>
-            <i>Enum</i>: RequestHeaderModifier, ResponseHeaderModifier, RequestMirror, RequestRedirect, URLRewrite, ExtensionRef<br/>
+            <i>Enum</i>: RequestHeaderModifier, ResponseHeaderModifier, RequestMirror, RequestRedirect, URLRewrite, ExtensionRef, CORS<br/>
         </td>
         <td>true</td>
       </tr><tr>
@@ -1661,9 +2183,7 @@ Reason of `UnsupportedValue`.
           CORS defines a schema for a filter that responds to the
 cross-origin request based on HTTP response header.
 
-Support: Extended
-
-<gateway:experimental><br/>
+Support: Extended<br/>
         </td>
         <td>false</td>
       </tr><tr>
@@ -1678,6 +2198,24 @@ extended filters.
 This filter can be used multiple times within the same rule.
 
 Support: Implementation-specific<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b><a href="#httpproxyspecrulesindexfiltersindexexternalauth">externalAuth</a></b></td>
+        <td>object</td>
+        <td>
+          ExternalAuth configures settings related to sending request details
+to an external auth service. The external service MUST authenticate
+the request, and MAY authorize the request as well.
+
+If there is any problem communicating with the external service,
+this filter MUST fail closed.
+
+Support: Extended
+
+<gateway:experimental><br/>
+          <br/>
+            <i>Validations</i>:<li>self.protocol == 'GRPC' ? has(self.grpc) : true: grpc must be specified when protocol is set to 'GRPC'</li><li>has(self.grpc) ? self.protocol == 'GRPC' : true: protocol must be 'GRPC' when grpc is set</li><li>self.protocol == 'HTTP' ? has(self.http) : true: http must be specified when protocol is set to 'HTTP'</li><li>has(self.http) ? self.protocol == 'HTTP' : true: protocol must be 'HTTP' when http is set</li>
         </td>
         <td>false</td>
       </tr><tr>
@@ -1750,8 +2288,6 @@ cross-origin request based on HTTP response header.
 
 Support: Extended
 
-<gateway:experimental>
-
 <table>
     <thead>
         <tr>
@@ -1768,16 +2304,14 @@ Support: Extended
           AllowCredentials indicates whether the actual cross-origin request allows
 to include credentials.
 
-The only valid value for the `Access-Control-Allow-Credentials` response
-header is true (case-sensitive).
+When set to true, the gateway will include the `Access-Control-Allow-Credentials`
+response header with value true (case-sensitive).
 
-If the credentials are not allowed in cross-origin requests, the gateway
-will omit the header `Access-Control-Allow-Credentials` entirely rather
-than setting its value to false.
+When set to false or omitted the gateway will omit the header
+`Access-Control-Allow-Credentials` entirely (this is the standard CORS
+behavior).
 
 Support: Extended<br/>
-          <br/>
-            <i>Enum</i>: true<br/>
         </td>
         <td>false</td>
       </tr><tr>
@@ -1787,7 +2321,7 @@ Support: Extended<br/>
           AllowHeaders indicates which HTTP request headers are supported for
 accessing the requested resource.
 
-Header names are not case sensitive.
+Header names are not case-sensitive.
 
 Multiple header names in the value of the `Access-Control-Allow-Headers`
 response header are separated by a comma (",").
@@ -1806,20 +2340,25 @@ does not recognize by the client, it will also occur an error on the
 client side.
 
 A wildcard indicates that the requests with all HTTP headers are allowed.
-The `Access-Control-Allow-Headers` response header can only use `*`
-wildcard as value when the `AllowCredentials` field is unspecified.
+If config contains the wildcard "*" in allowHeaders and the request is
+not credentialed, the `Access-Control-Allow-Headers` response header
+can either use the `*` wildcard or the value of
+Access-Control-Request-Headers from the request.
 
-When the `AllowCredentials` field is specified and `AllowHeaders` field
-specified with the `*` wildcard, the gateway must specify one or more
+When the request is credentialed, the gateway must not specify the `*`
+wildcard in the `Access-Control-Allow-Headers` response header. When
+also the `AllowCredentials` field is true and `AllowHeaders` field
+is specified with the `*` wildcard, the gateway must specify one or more
 HTTP headers in the value of the `Access-Control-Allow-Headers` response
 header. The value of the header `Access-Control-Allow-Headers` is same as
 the `Access-Control-Request-Headers` header provided by the client. If
 the header `Access-Control-Request-Headers` is not included in the
 request, the gateway will omit the `Access-Control-Allow-Headers`
-response header, instead of specifying the `*` wildcard. A Gateway
-implementation may choose to add implementation-specific default headers.
+response header, instead of specifying the `*` wildcard.
 
 Support: Extended<br/>
+          <br/>
+            <i>Validations</i>:<li>!('*' in self && self.size() > 1): AllowHeaders cannot contain '*' alongside other methods</li>
         </td>
         <td>false</td>
       </tr><tr>
@@ -1832,7 +2371,7 @@ requested resource.
 Valid values are any method defined by RFC9110, along with the special
 value `*`, which represents all HTTP methods are allowed.
 
-Method names are case sensitive, so these values are also case-sensitive.
+Method names are case-sensitive, so these values are also case-sensitive.
 (See https://www.rfc-editor.org/rfc/rfc2616#section-5.1.1)
 
 Multiple method names in the value of the `Access-Control-Allow-Methods`
@@ -1852,18 +2391,21 @@ is not included in the list of methods specified by the response header
 `Access-Control-Allow-Methods`, it will present an error on the client
 side.
 
-The `Access-Control-Allow-Methods` response header can only use `*`
-wildcard as value when the `AllowCredentials` field is unspecified.
+If config contains the wildcard "*" in allowMethods and the request is
+not credentialed, the `Access-Control-Allow-Methods` response header
+can either use the `*` wildcard or the value of
+Access-Control-Request-Method from the request.
 
-When the `AllowCredentials` field is specified and `AllowMethods` field
+When the request is credentialed, the gateway must not specify the `*`
+wildcard in the `Access-Control-Allow-Methods` response header. When
+also the `AllowCredentials` field is true and `AllowMethods` field
 specified with the `*` wildcard, the gateway must specify one HTTP method
 in the value of the Access-Control-Allow-Methods response header. The
 value of the header `Access-Control-Allow-Methods` is same as the
 `Access-Control-Request-Method` header provided by the client. If the
 header `Access-Control-Request-Method` is not included in the request,
 the gateway will omit the `Access-Control-Allow-Methods` response header,
-instead of specifying the `*` wildcard. A Gateway implementation may
-choose to add implementation-specific default methods.
+instead of specifying the `*` wildcard.
 
 Support: Extended<br/>
           <br/>
@@ -1917,10 +2459,19 @@ cross-origin response headers. Alternatively, the gateway responds with
 the CORS headers. The cross-origin request fails on the client side.
 Therefore, the client doesn't attempt the actual cross-origin request.
 
-The `Access-Control-Allow-Origin` response header can only use `*`
-wildcard as value when the `AllowCredentials` field is unspecified.
+Conversely, if the request `Origin` matches one of the configured
+allowed origins, the gateway sets the response header
+`Access-Control-Allow-Origin` to the same value as the `Origin`
+header provided by the client.
 
-When the `AllowCredentials` field is specified and `AllowOrigins` field
+When config has the wildcard ("*") in allowOrigins, and the request
+is not credentialed (e.g., it is a preflight request), the
+`Access-Control-Allow-Origin` response header either contains the
+wildcard as well or the Origin from the request.
+
+When the request is credentialed, the gateway must not specify the `*`
+wildcard in the `Access-Control-Allow-Origin` response header. When
+also the `AllowCredentials` field is true and `AllowOrigins` field
 specified with the `*` wildcard, the gateway must return a single origin
 in the value of the `Access-Control-Allow-Origin` response header,
 instead of specifying the `*` wildcard. The value of the header
@@ -1928,6 +2479,8 @@ instead of specifying the `*` wildcard. The value of the header
 the client.
 
 Support: Extended<br/>
+          <br/>
+            <i>Validations</i>:<li>!('*' in self && self.size() > 1): AllowOrigins cannot contain '*' alongside other origins</li>
         </td>
         <td>false</td>
       </tr><tr>
@@ -1954,15 +2507,18 @@ When an HTTP header name is specified using the `ExposeHeaders` field,
 this additional header will be exposed as part of the response to the
 client.
 
-Header names are not case sensitive.
+Header names are not case-sensitive.
 
 Multiple header names in the value of the `Access-Control-Expose-Headers`
 response header are separated by a comma (",").
 
 A wildcard indicates that the responses with all HTTP headers are exposed
 to clients. The `Access-Control-Expose-Headers` response header can only
-use `*` wildcard as value when the `AllowCredentials` field is
-unspecified.
+use `*` wildcard as value when the request is not credentialed.
+
+When the `exposeHeaders` config field contains the "*" wildcard and
+the request is credentialed, the gateway cannot use the `*` wildcard in
+the `Access-Control-Expose-Headers` response header.
 
 Support: Extended<br/>
         </td>
@@ -1979,7 +2535,10 @@ The information provided by the `Access-Control-Allow-Methods` and
 client until the time specified by `Access-Control-Max-Age` elapses.
 
 The default value of `Access-Control-Max-Age` response header is 5
-(seconds).<br/>
+(seconds).
+
+When the `MaxAge` field is unspecified, the gateway sets the response
+header "Access-Control-Max-Age: 5" by default.<br/>
           <br/>
             <i>Format</i>: int32<br/>
             <i>Default</i>: 5<br/>
@@ -2035,6 +2594,377 @@ When unspecified or empty string, core API group is inferred.<br/>
           Name is the name of the referent.<br/>
         </td>
         <td>true</td>
+      </tr></tbody>
+</table>
+
+
+### HTTPProxy.spec.rules[index].filters[index].externalAuth
+<sup><sup>[↩ Parent](#httpproxyspecrulesindexfiltersindex)</sup></sup>
+
+
+
+ExternalAuth configures settings related to sending request details
+to an external auth service. The external service MUST authenticate
+the request, and MAY authorize the request as well.
+
+If there is any problem communicating with the external service,
+this filter MUST fail closed.
+
+Support: Extended
+
+<gateway:experimental>
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b><a href="#httpproxyspecrulesindexfiltersindexexternalauthbackendref">backendRef</a></b></td>
+        <td>object</td>
+        <td>
+          BackendRef is a reference to a backend to send authorization
+requests to.
+
+The backend must speak the selected protocol (GRPC or HTTP) on the
+referenced port.
+
+If the backend service requires TLS, use BackendTLSPolicy to tell the
+implementation to supply the TLS details to be used to connect to that
+backend.<br/>
+          <br/>
+            <i>Validations</i>:<li>(size(self.group) == 0 && self.kind == 'Service') ? has(self.port) : true: Must have port for Service reference</li>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>protocol</b></td>
+        <td>enum</td>
+        <td>
+          ExternalAuthProtocol describes which protocol to use when communicating with an
+ext_authz authorization server.
+
+When this is set to GRPC, each backend must use the Envoy ext_authz protocol
+on the port specified in `backendRefs`. Requests and responses are defined
+in the protobufs explained at:
+https://www.envoyproxy.io/docs/envoy/latest/api-v3/service/auth/v3/external_auth.proto
+
+When this is set to HTTP, each backend must respond with a `200` status
+code in on a successful authorization. Any other code is considered
+an authorization failure.
+
+Feature Names:
+GRPC Support - HTTPRouteExternalAuthGRPC
+HTTP Support - HTTPRouteExternalAuthHTTP<br/>
+          <br/>
+            <i>Enum</i>: HTTP, GRPC<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b><a href="#httpproxyspecrulesindexfiltersindexexternalauthforwardbody">forwardBody</a></b></td>
+        <td>object</td>
+        <td>
+          ForwardBody controls if requests to the authorization server should include
+the body of the client request; and if so, how big that body is allowed
+to be.
+
+It is expected that implementations will buffer the request body up to
+`forwardBody.maxSize` bytes. Bodies over that size must be rejected with a
+4xx series error (413 or 403 are common examples), and fail processing
+of the filter.
+
+If unset, or `forwardBody.maxSize` is set to `0`, then the body will not
+be forwarded.
+
+Feature Name: HTTPRouteExternalAuthForwardBody<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b><a href="#httpproxyspecrulesindexfiltersindexexternalauthgrpc">grpc</a></b></td>
+        <td>object</td>
+        <td>
+          GRPCAuthConfig contains configuration for communication with ext_authz
+protocol-speaking backends.
+
+If unset, implementations must assume the default behavior for each
+included field is intended.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b><a href="#httpproxyspecrulesindexfiltersindexexternalauthhttp">http</a></b></td>
+        <td>object</td>
+        <td>
+          HTTPAuthConfig contains configuration for communication with HTTP-speaking
+backends.
+
+If unset, implementations must assume the default behavior for each
+included field is intended.<br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### HTTPProxy.spec.rules[index].filters[index].externalAuth.backendRef
+<sup><sup>[↩ Parent](#httpproxyspecrulesindexfiltersindexexternalauth)</sup></sup>
+
+
+
+BackendRef is a reference to a backend to send authorization
+requests to.
+
+The backend must speak the selected protocol (GRPC or HTTP) on the
+referenced port.
+
+If the backend service requires TLS, use BackendTLSPolicy to tell the
+implementation to supply the TLS details to be used to connect to that
+backend.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>name</b></td>
+        <td>string</td>
+        <td>
+          Name is the name of the referent.<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>group</b></td>
+        <td>string</td>
+        <td>
+          Group is the group of the referent. For example, "gateway.networking.k8s.io".
+When unspecified or empty string, core API group is inferred.<br/>
+          <br/>
+            <i>Default</i>: <br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>kind</b></td>
+        <td>string</td>
+        <td>
+          Kind is the Kubernetes resource kind of the referent. For example
+"Service".
+
+Defaults to "Service" when not specified.
+
+ExternalName services can refer to CNAME DNS records that may live
+outside of the cluster and as such are difficult to reason about in
+terms of conformance. They also may not be safe to forward to (see
+CVE-2021-25740 for more information). Implementations SHOULD NOT
+support ExternalName Services.
+
+Support: Core (Services with a type other than ExternalName)
+
+Support: Implementation-specific (Services with type ExternalName)<br/>
+          <br/>
+            <i>Default</i>: Service<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>namespace</b></td>
+        <td>string</td>
+        <td>
+          Namespace is the namespace of the backend. When unspecified, the local
+namespace is inferred.
+
+Note that when a namespace different than the local namespace is specified,
+a ReferenceGrant object is required in the referent namespace to allow that
+namespace's owner to accept the reference. See the ReferenceGrant
+documentation for details.
+
+Support: Core<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>port</b></td>
+        <td>integer</td>
+        <td>
+          Port specifies the destination port number to use for this resource.
+Port is required when the referent is a Kubernetes Service. In this
+case, the port number is the service port number, not the target port.
+For other resources, destination port might be derived from the referent
+resource or this field.<br/>
+          <br/>
+            <i>Format</i>: int32<br/>
+            <i>Minimum</i>: 1<br/>
+            <i>Maximum</i>: 65535<br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### HTTPProxy.spec.rules[index].filters[index].externalAuth.forwardBody
+<sup><sup>[↩ Parent](#httpproxyspecrulesindexfiltersindexexternalauth)</sup></sup>
+
+
+
+ForwardBody controls if requests to the authorization server should include
+the body of the client request; and if so, how big that body is allowed
+to be.
+
+It is expected that implementations will buffer the request body up to
+`forwardBody.maxSize` bytes. Bodies over that size must be rejected with a
+4xx series error (413 or 403 are common examples), and fail processing
+of the filter.
+
+If unset, or `forwardBody.maxSize` is set to `0`, then the body will not
+be forwarded.
+
+Feature Name: HTTPRouteExternalAuthForwardBody
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>maxSize</b></td>
+        <td>integer</td>
+        <td>
+          MaxSize specifies how large in bytes the largest body that will be buffered
+and sent to the authorization server. If the body size is larger than
+`maxSize`, then the body sent to the authorization server must be
+truncated to `maxSize` bytes.
+
+Experimental note: This behavior needs to be checked against
+various dataplanes; it may need to be changed.
+See https://github.com/kubernetes-sigs/gateway-api/pull/4001#discussion_r2291405746
+for more.
+
+If 0, the body will not be sent to the authorization server.<br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### HTTPProxy.spec.rules[index].filters[index].externalAuth.grpc
+<sup><sup>[↩ Parent](#httpproxyspecrulesindexfiltersindexexternalauth)</sup></sup>
+
+
+
+GRPCAuthConfig contains configuration for communication with ext_authz
+protocol-speaking backends.
+
+If unset, implementations must assume the default behavior for each
+included field is intended.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>allowedHeaders</b></td>
+        <td>[]string</td>
+        <td>
+          AllowedRequestHeaders specifies what headers from the client request
+will be sent to the authorization server.
+
+If this list is empty, then all headers must be sent.
+
+If the list has entries, only those entries must be sent.<br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### HTTPProxy.spec.rules[index].filters[index].externalAuth.http
+<sup><sup>[↩ Parent](#httpproxyspecrulesindexfiltersindexexternalauth)</sup></sup>
+
+
+
+HTTPAuthConfig contains configuration for communication with HTTP-speaking
+backends.
+
+If unset, implementations must assume the default behavior for each
+included field is intended.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>allowedHeaders</b></td>
+        <td>[]string</td>
+        <td>
+          AllowedRequestHeaders specifies what additional headers from the client request
+will be sent to the authorization server.
+
+The following headers must always be sent to the authorization server,
+regardless of this setting:
+
+* `Host`
+* `Method`
+* `Path`
+* `Content-Length`
+* `Authorization`
+
+If this list is empty, then only those headers must be sent.
+
+Note that `Content-Length` has a special behavior, in that the length
+sent must be correct for the actual request to the external authorization
+server - that is, it must reflect the actual number of bytes sent in the
+body of the request to the authorization server.
+
+So if the `forwardBody` stanza is unset, or `forwardBody.maxSize` is set
+to `0`, then `Content-Length` must be `0`. If `forwardBody.maxSize` is set
+to anything other than `0`, then the `Content-Length` of the authorization
+request must be set to the actual number of bytes forwarded.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>allowedResponseHeaders</b></td>
+        <td>[]string</td>
+        <td>
+          AllowedResponseHeaders specifies what headers from the authorization response
+will be copied into the request to the backend.
+
+If this list is empty, then all headers from the authorization server
+except Authority or Host must be copied.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>path</b></td>
+        <td>string</td>
+        <td>
+          Path sets the prefix that paths from the client request will have added
+when forwarded to the authorization server.
+
+When empty or unspecified, no prefix is added.
+
+Valid values are the same as the "value" regex for path values in the `match`
+stanza, and the validation regex will screen out invalid paths in the same way.
+Even with the validation, implementations MUST sanitize this input before using it
+directly.<br/>
+        </td>
+        <td>false</td>
       </tr></tbody>
 </table>
 
@@ -2162,7 +3092,13 @@ equivalent.<br/>
         <td><b>value</b></td>
         <td>string</td>
         <td>
-          Value is the value of HTTP Header to be matched.<br/>
+          Value is the value of HTTP Header to be matched.
+<gateway:experimental:description>
+Must consist of printable US-ASCII characters, optionally separated
+by single tabs or spaces. See: https://tools.ietf.org/html/rfc7230#section-3.2
+</gateway:experimental:description>
+
+<gateway:experimental:validation:Pattern=`^[!-~]+([\t ]?[!-~]+)*$`><br/>
         </td>
         <td>true</td>
       </tr></tbody>
@@ -2203,7 +3139,13 @@ equivalent.<br/>
         <td><b>value</b></td>
         <td>string</td>
         <td>
-          Value is the value of HTTP Header to be matched.<br/>
+          Value is the value of HTTP Header to be matched.
+<gateway:experimental:description>
+Must consist of printable US-ASCII characters, optionally separated
+by single tabs or spaces. See: https://tools.ietf.org/html/rfc7230#section-3.2
+</gateway:experimental:description>
+
+<gateway:experimental:validation:Pattern=`^[!-~]+([\t ]?[!-~]+)*$`><br/>
         </td>
         <td>true</td>
       </tr></tbody>
@@ -2566,7 +3508,7 @@ Reason of `UnsupportedValue`.
 
 Support: Core<br/>
           <br/>
-            <i>Enum</i>: 301, 302<br/>
+            <i>Enum</i>: 301, 302, 303, 307, 308<br/>
             <i>Default</i>: 302<br/>
         </td>
         <td>false</td>
@@ -2768,7 +3710,13 @@ equivalent.<br/>
         <td><b>value</b></td>
         <td>string</td>
         <td>
-          Value is the value of HTTP Header to be matched.<br/>
+          Value is the value of HTTP Header to be matched.
+<gateway:experimental:description>
+Must consist of printable US-ASCII characters, optionally separated
+by single tabs or spaces. See: https://tools.ietf.org/html/rfc7230#section-3.2
+</gateway:experimental:description>
+
+<gateway:experimental:validation:Pattern=`^[!-~]+([\t ]?[!-~]+)*$`><br/>
         </td>
         <td>true</td>
       </tr></tbody>
@@ -2809,7 +3757,13 @@ equivalent.<br/>
         <td><b>value</b></td>
         <td>string</td>
         <td>
-          Value is the value of HTTP Header to be matched.<br/>
+          Value is the value of HTTP Header to be matched.
+<gateway:experimental:description>
+Must consist of printable US-ASCII characters, optionally separated
+by single tabs or spaces. See: https://tools.ietf.org/html/rfc7230#section-3.2
+</gateway:experimental:description>
+
+<gateway:experimental:validation:Pattern=`^[!-~]+([\t ]?[!-~]+)*$`><br/>
         </td>
         <td>true</td>
       </tr></tbody>
@@ -3049,7 +4003,13 @@ processing a repeated header, with special handling for "Set-Cookie".<br/>
         <td><b>value</b></td>
         <td>string</td>
         <td>
-          Value is the value of HTTP Header to be matched.<br/>
+          Value is the value of HTTP Header to be matched.
+<gateway:experimental:description>
+Must consist of printable US-ASCII characters, optionally separated
+by single tabs or spaces. See: https://tools.ietf.org/html/rfc7230#section-3.2
+</gateway:experimental:description>
+
+<gateway:experimental:validation:Pattern=`^[!-~]+([\t ]?[!-~]+)*$`><br/>
         </td>
         <td>true</td>
       </tr><tr>
@@ -3217,10 +4177,31 @@ the `hostnames` field<br/>
         </td>
         <td>false</td>
       </tr><tr>
+        <td><b>canonicalHostname</b></td>
+        <td>string</td>
+        <td>
+          CanonicalHostname is the platform-managed stable hostname assigned to this
+HTTPProxy (e.g., "<uid>.datumproxy.net"). Users may create external CNAME
+or ALIAS records pointing to this hostname to route traffic through the
+platform. The platform manages A/AAAA records for this hostname in the
+datumproxy.net zone.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
         <td><b><a href="#httpproxystatusconditionsindex">conditions</a></b></td>
         <td>[]object</td>
         <td>
           Conditions describe the current conditions of the HTTPProxy.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b><a href="#httpproxystatushostnamestatusesindex">hostnameStatuses</a></b></td>
+        <td>[]object</td>
+        <td>
+          HostnameStatuses lists the per-hostname status for each hostname configured
+on this HTTPProxy. Each entry includes verification and DNS record
+programming conditions. Use this field instead of the deprecated Hostnames
+field for detailed per-hostname lifecycle information.<br/>
         </td>
         <td>false</td>
       </tr><tr>
@@ -3230,7 +4211,10 @@ the `hostnames` field<br/>
           Hostnames lists the hostnames that have been bound to the HTTPProxy.
 
 If this list does not match that defined in the HTTPProxy, see the
-`HostnamesVerified` condition message for details.<br/>
+`HostnamesVerified` condition message for details.
+
+Deprecated: Use HostnameStatuses for detailed per-hostname status.
+This field will be removed in a future API version.<br/>
         </td>
         <td>false</td>
       </tr></tbody>
@@ -3278,6 +4262,121 @@ Examples: `1.2.3.4`, `128::1`, `my-ip-address`.<br/>
 
 ### HTTPProxy.status.conditions[index]
 <sup><sup>[↩ Parent](#httpproxystatus)</sup></sup>
+
+
+
+Condition contains details for one aspect of the current state of this API Resource.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>lastTransitionTime</b></td>
+        <td>string</td>
+        <td>
+          lastTransitionTime is the last time the condition transitioned from one status to another.
+This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.<br/>
+          <br/>
+            <i>Format</i>: date-time<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>message</b></td>
+        <td>string</td>
+        <td>
+          message is a human readable message indicating details about the transition.
+This may be an empty string.<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>reason</b></td>
+        <td>string</td>
+        <td>
+          reason contains a programmatic identifier indicating the reason for the condition's last transition.
+Producers of specific condition types may define expected values and meanings for this field,
+and whether the values are considered a guaranteed API.
+The value should be a CamelCase string.
+This field may not be empty.<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>status</b></td>
+        <td>enum</td>
+        <td>
+          status of the condition, one of True, False, Unknown.<br/>
+          <br/>
+            <i>Enum</i>: True, False, Unknown<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>type</b></td>
+        <td>string</td>
+        <td>
+          type of condition in CamelCase or in foo.example.com/CamelCase.<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>observedGeneration</b></td>
+        <td>integer</td>
+        <td>
+          observedGeneration represents the .metadata.generation that the condition was set based upon.
+For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+with respect to the current state of the instance.<br/>
+          <br/>
+            <i>Format</i>: int64<br/>
+            <i>Minimum</i>: 0<br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### HTTPProxy.status.hostnameStatuses[index]
+<sup><sup>[↩ Parent](#httpproxystatus)</sup></sup>
+
+
+
+HostnameStatus captures the per-hostname verification and DNS programming status.
+Each hostname configured on an HTTPProxy has a corresponding entry tracking
+its lifecycle from domain ownership verification through DNS record creation.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>hostname</b></td>
+        <td>string</td>
+        <td>
+          Hostname is the fully qualified domain name being tracked.
+Must be a valid RFC 1123 hostname without a trailing dot.<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b><a href="#httpproxystatushostnamestatusesindexconditionsindex">conditions</a></b></td>
+        <td>[]object</td>
+        <td>
+          Conditions contains the current status conditions for this hostname.
+Standard condition types include Verified and DNSRecordProgrammed.<br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### HTTPProxy.status.hostnameStatuses[index].conditions[index]
+<sup><sup>[↩ Parent](#httpproxystatushostnamestatusesindex)</sup></sup>
 
 
 

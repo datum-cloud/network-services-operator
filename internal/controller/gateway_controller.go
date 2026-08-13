@@ -299,7 +299,16 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 		listenerCertHealth,
 	)
 
-	listenersDropped := len(desiredDownstreamGateway.Spec.Listeners) < len(upstreamGateway.Spec.Listeners)
+	// Only a hostname we could not claim makes the gateway dishonest about being
+	// programmed. A listener held back by an unhealthy certificate is a normal
+	// transient state that reports itself through the certificate conditions.
+	listenersDropped := false
+	for _, l := range upstreamGateway.Spec.Listeners {
+		if l.Hostname != nil && !slices.Contains(claimedHostnames, string(*l.Hostname)) {
+			listenersDropped = true
+			break
+		}
+	}
 
 	if len(desiredDownstreamGateway.Spec.Listeners) == 0 {
 		// The Gateway API requires at least one listener, so writing this would

@@ -166,6 +166,15 @@ tasks:
       DNS_OPERATOR_CRD_DIR:
         sh: go list -m -f '{{`{{.Dir}}`}}' go.miloapis.com/dns-operator
     cmds:
+      # go list reports an empty directory for a module that has not been
+      # downloaded, which builds an absolute path and fails with a confusing
+      # missing-file error part way through bringing the environment up.
+      - go mod download go.miloapis.com/dns-operator
+      - |
+        if [ -z "{{.DNS_OPERATOR_CRD_DIR}}" ] || [ ! -d "{{.DNS_OPERATOR_CRD_DIR}}" ]; then
+          echo "❌ could not locate the dns-operator module. Run 'go mod download go.miloapis.com/dns-operator' and retry."
+          exit 1
+        fi
       - echo "📜 installing dns-operator CRDs (upstream) from {{.DNS_OPERATOR_CRD_DIR}}"
       - kubectl --context {{.UPSTREAM_CTX}} apply -f {{.DNS_OPERATOR_CRD_DIR}}/config/crd/bases/dns.networking.miloapis.com_dnszoneclasses.yaml
       - kubectl --context {{.UPSTREAM_CTX}} apply -f {{.DNS_OPERATOR_CRD_DIR}}/config/crd/bases/dns.networking.miloapis.com_dnszones.yaml
@@ -357,7 +366,7 @@ tasks:
           if [ "$i" -eq 60 ]; then echo "❌ gateway webhook never became ready"; exit 1; fi
           sleep 2
         done
-      - echo "⏳ waiting for all manager replicas to be ready"
+      - echo "⏳ waiting for the manager rollout to finish"
       - kubectl --context {{.UPSTREAM_CTX}} -n network-services-operator-system rollout status deploy network-services-operator-controller-manager --timeout=240s
       # Ensure the downstream GatewayClass is Accepted so the first test gateway
       # programs promptly instead of racing a 30s assert on a cold edge.

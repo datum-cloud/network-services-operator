@@ -29,7 +29,6 @@ patches:
       metadata:
         name: controller-manager
       spec:
-        replicas: 2
         template:
           spec:
             containers:

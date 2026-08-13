@@ -160,25 +160,23 @@ tasks:
 
   dns-crds:
     desc: "Install DNSZone / DNSRecordSet / DNSZoneClass CRDs from the dns-operator Go module on the upstream cluster. Required before prepare-upstream when gateway.enableDNSIntegration is true (the operator indexes and watches these types at startup)."
-    vars:
-      # Escape {{.Dir}} so Task does not treat it as a Task template var;
-      # go list must receive the literal {{.Dir}} format string.
-      DNS_OPERATOR_CRD_DIR:
-        sh: go list -m -f '{{`{{.Dir}}`}}' go.miloapis.com/dns-operator
     cmds:
-      # go list reports an empty directory for a module that has not been
-      # downloaded, which builds an absolute path and fails with a confusing
-      # missing-file error part way through bringing the environment up.
-      - go mod download go.miloapis.com/dns-operator
+      # The module directory is resolved after the download, inside the same
+      # shell. Resolving it as a task var runs before any command, so on a cold
+      # module cache go list returns an empty directory and the apply paths turn
+      # into absolute paths that do not exist.
       - |
-        if [ -z "{{.DNS_OPERATOR_CRD_DIR}}" ] || [ ! -d "{{.DNS_OPERATOR_CRD_DIR}}" ]; then
-          echo "❌ could not locate the dns-operator module. Run 'go mod download go.miloapis.com/dns-operator' and retry."
+        set -euo pipefail
+        go mod download go.miloapis.com/dns-operator
+        CRD_DIR=$(go list -m -f '{{`{{.Dir}}`}}' go.miloapis.com/dns-operator)
+        if [ -z "$CRD_DIR" ] || [ ! -d "$CRD_DIR" ]; then
+          echo "❌ could not locate the dns-operator module directory"
           exit 1
         fi
-      - echo "📜 installing dns-operator CRDs (upstream) from {{.DNS_OPERATOR_CRD_DIR}}"
-      - kubectl --context {{.UPSTREAM_CTX}} apply -f {{.DNS_OPERATOR_CRD_DIR}}/config/crd/bases/dns.networking.miloapis.com_dnszoneclasses.yaml
-      - kubectl --context {{.UPSTREAM_CTX}} apply -f {{.DNS_OPERATOR_CRD_DIR}}/config/crd/bases/dns.networking.miloapis.com_dnszones.yaml
-      - kubectl --context {{.UPSTREAM_CTX}} apply -f {{.DNS_OPERATOR_CRD_DIR}}/config/crd/bases/dns.networking.miloapis.com_dnsrecordsets.yaml
+        echo "📜 installing dns-operator CRDs (upstream) from $CRD_DIR"
+        for crd in dnszoneclasses dnszones dnsrecordsets; do
+          kubectl --context {{.UPSTREAM_CTX}} apply -f "$CRD_DIR/config/crd/bases/dns.networking.miloapis.com_$crd.yaml"
+        done
 
   prepare-upstream:
     desc: "Deploy the NSO manager + webhook (config/e2e) on the upstream cluster, with the prod-base memory profile."

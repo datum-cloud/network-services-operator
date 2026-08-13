@@ -23,7 +23,6 @@ import (
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/validation"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	eventsv1client "k8s.io/client-go/kubernetes/typed/events/v1"
@@ -37,6 +36,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	ipamv1alpha1 "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
+	"go.miloapis.com/ipam/pkg/ipamerrors"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	"go.datum.net/network-services-operator/internal/config"
@@ -173,10 +173,11 @@ func (f *fakeIPAM) retainedConflictLocked(ipClaim *ipamv1alpha1.IPClaim) error {
 	if _, orphaned := f.orphans[allocationName]; !orphaned {
 		return nil
 	}
-	return apierrors.NewConflict(
+	return ipamerrors.NewRetainedAllocation(
 		ipamv1alpha1.SchemeGroupVersion.WithResource("ipclaims").GroupResource(),
 		ipClaim.Name,
-		fmt.Errorf("an allocation under this identity already exists: IPAllocation %q, retained by an earlier claim of the same name; delete it to reuse the name", allocationName),
+		allocationName,
+		fmt.Sprintf("an allocation under this identity already exists: IPAllocation %q, retained by an earlier claim of the same name; delete it to reuse the name", allocationName),
 	)
 }
 
@@ -584,10 +585,8 @@ func TestNetworkInterfaceClaimRollsBackPartialAllocation(t *testing.T) {
 	s := newScenario(t, true,
 		[]networkingv1alpha.IPFamily{networkingv1alpha.IPv4Protocol, networkingv1alpha.IPv6Protocol})
 
-	s.ipam.refuse("half-eth0-f-ipv4", apierrors.NewGenericServerResponse(
-		httpStatusInsufficientStorage, "POST",
-		schema.GroupResource{Group: "ipam.miloapis.com", Resource: "ipclaims"},
-		"", "IPPool exhausted", 0, false))
+	s.ipam.refuse("half-eth0-f-ipv4",
+		ipamerrors.NewPoolExhausted("datum-v4", "IPPool exhausted"))
 
 	claim := s.createClaim("half-eth0", networkingv1alpha.NetworkInterfaceClaimSpec{
 		InterfaceName: "eth0",
@@ -611,6 +610,8 @@ func TestNetworkInterfaceClaimRollsBackPartialAllocation(t *testing.T) {
 	require.Equal(t, string(allocationFailureExhausted), condition.Reason)
 	require.Contains(t, condition.Message, "IPPool exhausted",
 		"IPAM's own message is carried through verbatim")
+	require.Contains(t, condition.Message, "datum-v4",
+		"the pool that ran out is what an operator has to widen")
 }
 
 func TestNetworkInterfaceRetainRebindsSameAddresses(t *testing.T) {

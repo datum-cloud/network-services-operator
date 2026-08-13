@@ -371,6 +371,36 @@ func NewCommand(build BuildInfo) *cobra.Command {
 				setupLog.Error(err, "unable to create controller", "controller", "NetworkPresence")
 				os.Exit(1)
 			}
+
+			// Locations are authored in the platform control plane, which the
+			// discovery connection already reaches. The copy is cluster-scoped
+			// and goes on the singleton manager for the same reason the
+			// presence controller does.
+			var platformCluster cluster.Cluster
+			if serverConfig.LocationReplication.Enabled {
+				platformRestConfig, err := serverConfig.Discovery.DiscoveryRestConfig()
+				if err != nil {
+					setupLog.Error(err, "unable to get platform control plane rest config")
+					os.Exit(1)
+				}
+				serverConfig.ProjectClient.ApplyTo(platformRestConfig)
+
+				platformCluster, err = cluster.New(platformRestConfig, func(o *cluster.Options) {
+					o.Scheme = scheme
+				})
+				if err != nil {
+					setupLog.Error(err, "failed creating platform control plane cluster")
+					os.Exit(1)
+				}
+
+				if err := (&controller.LocationReplicator{
+					PropagationClusterName: serverConfig.LocationReplication.PropagationClusterName,
+				}).SetupWithManager(singletonControllerMgr, platformCluster); err != nil {
+					setupLog.Error(err, "unable to create controller", "controller", "LocationReplicator")
+					os.Exit(1)
+				}
+			}
+
 			if err := (&controller.NetworkPolicyReconciler{}).SetupWithManager(mgr); err != nil {
 				setupLog.Error(err, "unable to create controller", "controller", "NetworkPolicy")
 				os.Exit(1)
@@ -550,6 +580,12 @@ func NewCommand(build BuildInfo) *cobra.Command {
 			g.Go(func() error {
 				return ignoreCanceled(downstreamCluster.Start(ctx))
 			})
+
+			if platformCluster != nil {
+				g.Go(func() error {
+					return ignoreCanceled(platformCluster.Start(ctx))
+				})
+			}
 
 			if irohDownstream != nil {
 				g.Go(func() error {

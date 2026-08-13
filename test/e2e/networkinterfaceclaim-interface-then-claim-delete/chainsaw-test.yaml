@@ -1,0 +1,132 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+#
+# Delete the interface, then the claim. Nothing is left holding an address.
+#
+# This order used to leak everything: release() read the addresses off the
+# interface, so a claim whose interface was already gone found nothing to
+# release, dropped its finalizer and left every IPClaim alive with no NSO object
+# naming it. A claim now releases what it ASKED for — its ipFamilies and its
+# addresses[].class — which is what the names were minted from, so the interface
+# no longer has to survive for the addresses to come back.
+#
+# The interface delete does not wait: whether the claim controller rebuilds the
+# interface before the claim delete lands is a race, and the end state has to be
+# empty either way.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: networkinterfaceclaim-interface-then-claim-delete
+spec:
+  cluster: nso-standard
+  steps:
+    - name: A claim holds a family address and a named class
+      try:
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Network
+              metadata:
+                name: nic-reverse-net
+                namespace: ipam-e2e-alpha
+              spec:
+                ipam:
+                  mode: Auto
+                ipFamilies:
+                  - IPv4
+                  - IPv6
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterfaceClaim
+              metadata:
+                name: nic-reverse
+                namespace: ipam-e2e-alpha
+              spec:
+                network:
+                  name: nic-reverse-net
+                ipFamilies:
+                  - IPv6
+                  - IPv4
+                addresses:
+                  - class: datum-public-v4
+        - assert:
+            timeout: 120s
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterfaceClaim
+              metadata:
+                name: nic-reverse
+                namespace: ipam-e2e-alpha
+              status:
+                (conditions[?type == 'Allocated'] | [0].status): "True"
+        - script:
+            content: |
+              set -eu
+              IPAM=$(git rev-parse --show-toplevel)/hack/ipam-tenant-kubectl.sh
+              ipam() { "$IPAM" project-alpha -n default "$@"; }
+              count=$(ipam get ipclaim -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' | grep -cE '^nic-reverse-' || true)
+              [ "$count" -eq 3 ] || { echo "expected 3 IPClaims before the deletes, found ${count}"; exit 1; }
+      catch:
+        - script:
+            content: |
+              kubectl -n ipam-e2e-alpha get networkinterfaceclaim,networkinterface -o yaml
+              kubectl -n network-services-operator-system logs -l app.kubernetes.io/name=network-services-operator --tail=100
+      cleanup:
+        - description: >
+            Safety net. If the release regresses, the addresses would be held in
+            project-alpha for every later run; the count printed here is zero
+            whenever the test itself passed.
+          script:
+            content: |
+              set -u
+              IPAM=$(git rev-parse --show-toplevel)/hack/ipam-tenant-kubectl.sh
+              ipam() { "$IPAM" project-alpha -n default "$@"; }
+
+              kubectl -n ipam-e2e-alpha delete networkinterfaceclaim nic-reverse --ignore-not-found --timeout=60s
+              kubectl -n ipam-e2e-alpha delete networkinterface nic-reverse --ignore-not-found --timeout=60s
+              stranded=$(ipam get ipclaim -o jsonpath='{range .items[*]}{.metadata.name} {end}' | tr ' ' '\n' | grep -E '^nic-reverse-' || true)
+              echo "IPClaims left holding addresses: $(echo "$stranded" | grep -c . || true)"
+              [ -z "$stranded" ] || ipam delete ipclaim $stranded --ignore-not-found --timeout=60s
+              orphans=$(ipam get ipallocation -o name)
+              [ -z "$orphans" ] || ipam delete $orphans --ignore-not-found
+
+    - name: Deleting the interface and then the claim releases everything
+      try:
+        - script:
+            timeout: 120s
+            content: |
+              set -eu
+              # --wait=false on purpose: the claim controller rebuilds the
+              # interface within seconds, so a waiting delete can watch the
+              # replacement appear under the same name and never return.
+              kubectl -n ipam-e2e-alpha delete networkinterface nic-reverse --wait=false
+        - delete:
+            timeout: 120s
+            ref:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterfaceClaim
+              name: nic-reverse
+              namespace: ipam-e2e-alpha
+        - script:
+            content: |
+              set -eu
+              IPAM=$(git rev-parse --show-toplevel)/hack/ipam-tenant-kubectl.sh
+              ipam() { "$IPAM" project-alpha -n default "$@"; }
+
+              ipam get ipclass datum-public-v4 >/dev/null \
+                || { echo "project-alpha's fixtures are not readable through this context, so an empty IPClaim list means nothing"; exit 1; }
+
+              for found in $(ipam get ipclaim -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' | grep -E '^nic-reverse-' || true); do
+                echo "IPClaim ${found} outlived both the interface and the claim"
+                exit 1
+              done
+
+              orphans=$(ipam get ipallocation -o name | grep -c . || true)
+              [ "$orphans" -eq 0 ] || { echo "${orphans} IPAllocations are still holding addresses"; exit 1; }
+        - error:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterface
+              metadata:
+                name: nic-reverse
+                namespace: ipam-e2e-alpha

@@ -1,0 +1,89 @@
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClass
+metadata:
+  name: datum-network-v6
+  labels:
+    nso-fixture: "true"
+spec:
+  ipFamily: IPv6
+  poolPer:
+    - network
+  defaultPrefixLength: 48
+  allowedPrefixLengths:
+    min: 48
+    max: 48
+  routing:
+    external: Aggregate
+---
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClass
+metadata:
+  name: datum-subnet-v6
+  labels:
+    nso-fixture: "true"
+spec:
+  ipFamily: IPv6
+  parentClassName: datum-network-v6
+  poolPer:
+    - network
+    - location
+  defaultPrefixLength: 64
+  allowedPrefixLengths:
+    min: 64
+    max: 64
+---
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClass
+metadata:
+  name: datum-endpoint-v6
+  annotations:
+    # The default class for this family: a claim naming no class but
+    # setting ipFamily resolves to this one.
+    ipam.miloapis.com/is-default-class: "true"
+  labels:
+    nso-fixture: "true"
+spec:
+  ipFamily: IPv6
+  parentClassName: datum-subnet-v6
+  defaultPrefixLength: 96
+  allowedPrefixLengths:
+    min: 96
+    max: 96
+  reclaimPolicy: Delete
+  routing:
+    internal: Host
+---
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClass
+metadata:
+  name: datum-endpoint-v4
+  annotations:
+    # The default class for this family: a claim naming no class but
+    # setting ipFamily resolves to this one.
+    ipam.miloapis.com/is-default-class: "true"
+  labels:
+    nso-fixture: "true"
+spec:
+  ipFamily: IPv4
+  allowedPrefixLengths:
+    min: 32
+    max: 32
+  reclaimPolicy: Delete
+  routing:
+    internal: Host
+---
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClass
+metadata:
+  name: datum-public-v4
+  labels:
+    nso-fixture: "true"
+spec:
+  ipFamily: IPv4
+  allowedPrefixLengths:
+    min: 32
+    max: 32
+  reclaimPolicy: Delete
+  routing:
+    internal: Host
+    external: Aggregate

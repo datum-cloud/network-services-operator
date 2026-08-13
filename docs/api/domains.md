@@ -94,6 +94,26 @@ DomainSpec defines the desired state of Domain
             <i>Validations</i>:<li>oldSelf == '' || self == oldSelf: A domain name is immutable and cannot be changed after creation</li><li>self.indexOf('.') != -1: Must have at least two segments separated by dots</li>
         </td>
         <td>true</td>
+      </tr><tr>
+        <td><b>desiredRegistrationRefreshAttempt</b></td>
+        <td>string</td>
+        <td>
+          DesiredRegistrationRefreshAttempt is the desired time of the next registration refresh attempt.<br/>
+          <br/>
+            <i>Validations</i>:<li>oldSelf == null || self == null || self == oldSelf || self >= oldSelf + duration('5m'): must be at least 5m after the previous desiredRegistrationRefreshAttempt when changed</li>
+            <i>Format</i>: date-time<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>desiredVerificationRefreshAttempt</b></td>
+        <td>string</td>
+        <td>
+          DesiredVerificationRefreshAttempt is the desired time of the next verification refresh attempt.<br/>
+          <br/>
+            <i>Validations</i>:<li>oldSelf == null || self == null || self == oldSelf || self >= oldSelf + duration('5m'): must be at least 5m after the previous desiredVerificationRefreshAttempt when changed</li>
+            <i>Format</i>: date-time<br/>
+        </td>
+        <td>false</td>
       </tr></tbody>
 </table>
 
@@ -367,6 +387,15 @@ Registration represents the registration information for a domain
         <td>string</td>
         <td>
           <br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>lastRefreshAttempt</b></td>
+        <td>string</td>
+        <td>
+          <br/>
+          <br/>
+            <i>Format</i>: date-time<br/>
         </td>
         <td>false</td>
       </tr><tr>
@@ -809,6 +838,15 @@ DomainVerificationStatus represents the verification status of a domain
         <td>object</td>
         <td>
           <br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>lastVerificationAttempt</b></td>
+        <td>string</td>
+        <td>
+          <br/>
+          <br/>
+            <i>Format</i>: date-time<br/>
         </td>
         <td>false</td>
       </tr><tr>

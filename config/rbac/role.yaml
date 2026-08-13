@@ -126,6 +126,13 @@ rules:
   - list
   - watch
 - apiGroups:
+  - events.k8s.io
+  resources:
+  - events
+  verbs:
+  - create
+  - patch
+- apiGroups:
   - externaldns.k8s.io
   resources:
   - dnsendpoints
@@ -229,6 +236,8 @@ rules:
   - httpproxies
   - networkbindings
   - networkcontexts
+  - networkinterfaceclaims
+  - networkinterfaces
   - networkpolicies
   - networks
   - subnetclaims
@@ -251,6 +260,8 @@ rules:
   - httpproxies/finalizers
   - networkbindings/finalizers
   - networkcontexts/finalizers
+  - networkinterfaceclaims/finalizers
+  - networkinterfaces/finalizers
   - networkpolicies/finalizers
   - networks/finalizers
   - subnetclaims/finalizers
@@ -267,6 +278,8 @@ rules:
   - httpproxies/status
   - networkbindings/status
   - networkcontexts/status
+  - networkinterfaceclaims/status
+  - networkinterfaces/status
   - networkpolicies/status
   - networks/status
   - subnetclaims/status

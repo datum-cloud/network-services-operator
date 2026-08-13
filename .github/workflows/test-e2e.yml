@@ -37,8 +37,11 @@ jobs:
           # was removed in helm 3.13, so pin to the last release that accepts it.
           version: v3.12.3
 
+      # The same installer the federated workflow uses. An explicit `make` list
+      # here meant the two workflows disagreed about which binaries exist, and
+      # a tool added to the test-infra tools task reached only one of them.
       - name: Install pinned tools
-        run: make kind kustomize cmctl chainsaw
+        run: task test-infra:tools
 
       - name: Bring up the prod-fidelity env
         run: task test-infra:up
@@ -61,6 +64,22 @@ jobs:
           echo "::group::Upstream cert-manager + webhook cert"
           KUBECONFIG="${UKC}" kubectl -n cert-manager get pods -o wide
           KUBECONFIG="${UKC}" kubectl -n network-services-operator-system get certificate,secret
+          echo "::endgroup::"
+          echo "::group::IPAM (upstream project control plane)"
+          KUBECONFIG="${UKC}" kubectl get apiservice v1alpha1.ipam.miloapis.com -o yaml
+          KUBECONFIG="${UKC}" kubectl -n ipam-system get pods,certificate,configmap -o wide
+          KUBECONFIG="${UKC}" kubectl -n ipam-system logs -l app=ipam-apiserver --tail=200 --all-containers
+          KUBECONFIG="${UKC}" kubectl -n ipam-system get cluster.postgresql.cnpg.io -o wide
+          KUBECONFIG="${UKC}" kubectl -n ipam-system describe cluster.postgresql.cnpg.io ipam-db
+          KUBECONFIG="${UKC}" kubectl -n ipam-system logs -l cnpg.io/cluster=ipam-db --tail=100 --all-containers
+          echo "::endgroup::"
+          echo "::group::CloudNativePG operator"
+          KUBECONFIG="${UKC}" kubectl -n cnpg-system get pods -o wide
+          KUBECONFIG="${UKC}" kubectl -n cnpg-system logs deploy/cnpg-cloudnative-pg --tail=200
+          echo "::endgroup::"
+          echo "::group::IPAM fixtures"
+          IPAM_KUBE_CONTEXT=kind-nso-upstream hack/ipam-tenant-kubectl.sh project-alpha get ipclasses,ippools -o wide
+          IPAM_KUBE_CONTEXT=kind-nso-upstream hack/ipam-tenant-kubectl.sh project-beta get ipclasses,ippools -o wide
           echo "::endgroup::"
           KC=${TMPDIR}/.kind-nso-downstream.yaml
           bin/kind-v0.32.0 get kubeconfig --name nso-downstream > "${KC}"

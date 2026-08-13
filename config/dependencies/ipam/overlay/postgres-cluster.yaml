@@ -1,0 +1,55 @@
+# IPAM's database, declared for the CloudNativePG operator.
+#
+# The operator ships with IPAM's own bundle; the Cluster does not — IPAM
+# installs CNPG and leaves the database to the consumer, so this is ours to
+# author. It replaces the plain Deployment this env ran before.
+#
+# CNPG must be fully live before this applies: the CRD has to be established
+# and the webhook has to be answering, or the apply fails in a way that reads
+# like a flake. task test-infra:cnpg-operator gates on exactly that.
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: ipam-db
+  namespace: ipam-system
+spec:
+  # One instance: a single kind node cannot honour anti-affinity across
+  # replicas, and a failover this env can never exercise is not worth the
+  # startup time.
+  instances: 1
+  imageName: ghcr.io/cloudnative-pg/postgresql:17.0
+
+  bootstrap:
+    initdb:
+      database: ipam
+      owner: ipam
+      # Credentials come from the secret above rather than being generated, so
+      # the DSN IPAM reads is a constant.
+      secret:
+        name: postgres-credentials
+
+  storage:
+    size: 1Gi
+    # Unset storageClass: take the cluster default, which on kind is the
+    # built-in local-path provisioner.
+
+  # Matches what the retired Deployment ran with. synchronous_commit=off is
+  # safe here and meaningfully faster: the suites do many small writes, and a
+  # lost transaction on a database that is destroyed with the cluster costs
+  # nothing.
+  postgresql:
+    parameters:
+      synchronous_commit: "off"
+      max_connections: "200"
+      shared_buffers: 192MB
+
+  # The memory request must exceed shared_buffers, and CNPG's webhook enforces
+  # it. The retired Deployment asked for 128Mi while telling Postgres to reserve
+  # 192MB of it, which nothing validated — the operator refuses the same spec.
+  resources:
+    requests:
+      cpu: 50m
+      memory: 256Mi
+    limits:
+      cpu: "2"
+      memory: 512Mi

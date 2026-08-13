@@ -56,10 +56,24 @@ patches:
                 volumeMounts:
                 - name: downstream-cluster-kubeconfig
                   mountPath: /etc/downstream-cluster
+                - name: ipam-cluster-kubeconfig
+                  mountPath: /etc/ipam-cluster
             volumes:
               - name: downstream-cluster-kubeconfig
                 secret:
                   secretName: downstream-cluster-kubeconfig
+              # Optional only so a missing secret fails in the manager rather
+              # than in the kubelet. It does NOT make the manager tolerate the
+              # secret's absence: with networkInterface.enabled true, loading
+              # the IPAM kubeconfig is part of setup, and failing it exits the
+              # process — so the manager crashloops and takes every other
+              # controller with it. Deliberate: a clear "unable to load IPAM
+              # kubeconfig" beats a manager that comes up half-functional.
+              # test-infra:up creates the secret before prepare-upstream.
+              - name: ipam-cluster-kubeconfig
+                secret:
+                  secretName: ipam-cluster-kubeconfig
+                  optional: true
 
 replacements:
   - source: # Add cert-manager annotation to ValidatingWebhookConfiguration, MutatingWebhookConfiguration and CRDs

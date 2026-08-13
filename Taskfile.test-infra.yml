@@ -54,10 +54,37 @@ vars:
   IMG:
     sh: echo "ghcr.io/datum-cloud/network-services-operator:$(git rev-parse --short HEAD)"
 
+  # IPAM runs on the upstream cluster as the project control plane NSO claims
+  # addresses from. Its manifests come from the bundle milo-os/ipam publishes on
+  # every push to main, and its image from ghcr.io — both at the commit go.mod
+  # pins, so the apiserver and the Go client NSO compiles against stay in
+  # lockstep. Nothing is built locally: the image is pulled from ghcr by
+  # digest, multi-arch since upstream 13bd2c8 fixed the arm64 build.
+  #
+  # Digest, not tag: the release workflow republishes on every push, so the tag
+  # can move. The tag is kept alongside for legibility. Update all three
+  # together, and keep IPAM_COMMIT equal to the go.mod replace directive —
+  # ipam-bundle fails if the artifact does not carry that commit.
+  IPAM_BUNDLE_REPO: ghcr.io/milo-os/ipam-kustomize
+  IPAM_BUNDLE_TAG: v0.0.0-13bd2c8
+  IPAM_BUNDLE_DIGEST: sha256:08418654958ea6861d54fe5f9e87d9cf306b87429b29fc41a7876dc143a13bf5
+  IPAM_COMMIT: 13bd2c8c077b12983fa16a8888dcd117b65a14d2
+  IPAM_STAGE: '{{.TMP_DIR}}/.ipam-bundle'
+
+  # The dns-operator CRDs come from its published bundle at the version go.mod
+  # pins, so the CRDs installed and the types NSO compiles against match.
+  DNS_BUNDLE_REPO: ghcr.io/datum-cloud/dns-operator-kustomize
+  DNS_BUNDLE_TAG: v0.5.1
+  DNS_BUNDLE_DIGEST: sha256:cd7dd3a0d2fbbbaa029f2b5e083723a675e88c89e56f999257ff4bd87221cd4a
+  DNS_STAGE: '{{.TMP_DIR}}/.dns-bundle'
+  CRANE: '{{.REPO}}/bin/crane'
+  CRANE_VERSION: v0.21.7
+  IPAM_PROJECTS: project-alpha project-beta
+
 tasks:
 
   tools:
-    desc: "Install the pinned tool binaries this env needs into bin/ (kind v0.32.0, karmadactl, kustomize, cmctl, chainsaw). Idempotent — skips any already present. Lets CI and a clean checkout bring up the env without hand-placed binaries."
+    desc: "Install the pinned tool binaries this env needs into bin/ (kind v0.32.0, karmadactl, kustomize, cmctl, chainsaw, crane). Idempotent — skips any already present. Lets CI and a clean checkout bring up the env without hand-placed binaries."
     vars:
       KIND_TOOL_VERSION: v0.32.0
       KARMADACTL_VERSION: v1.15.2
@@ -75,6 +102,11 @@ tasks:
       - '[ -x {{.REPO}}/bin/kustomize ] || GOBIN={{.REPO}}/bin go install sigs.k8s.io/kustomize/kustomize/v5@{{.KUSTOMIZE_VERSION}}'
       - '[ -x {{.REPO}}/bin/cmctl ] || GOBIN={{.REPO}}/bin go install github.com/cert-manager/cmctl/v2@{{.CMCTL_VERSION}}'
       - '[ -x {{.REPO}}/bin/chainsaw ] || GOBIN={{.REPO}}/bin go install github.com/kyverno/chainsaw@{{.CHAINSAW_VERSION}}'
+      # crane reads the published IPAM manifest bundle out of ghcr.io. The flux
+      # CLI can do this too, but its go.mod replace directives stop `go install`
+      # building it, and crane is a much smaller dependency than all of flux for
+      # one registry read.
+      - '[ -x {{.REPO}}/bin/crane ] || GOBIN={{.REPO}}/bin go install github.com/google/go-containerregistry/cmd/crane@{{.CRANE_VERSION}}'
       # karmadactl carries replace directives in its go.mod, so `go install` can't
       # build it; pull the published release binary for this OS/arch instead.
       - |
@@ -98,9 +130,23 @@ tasks:
       - task: downstream-namespaces
       - task: cert-manager-upstream
       - task: cert-manager-downstream
+      # Fetched early: it depends on nothing in the cluster, and pulling it here
+      # surfaces a registry problem before the long build below.
+      - task: ipam-bundle
       - task: nso-image
       - task: dns-crds
+      # The manager mounts this secret, so it has to exist before the pod does.
+      - task: ipam-kubeconfig
       - task: prepare-upstream
+      # IPAM's serving certificate cannot issue until upstream cert-manager is
+      # running, and upstream cert-manager crashloops with "the Gateway API CRDs
+      # do not seem to be present" until prepare-upstream installs them. Every
+      # IPAM step that touches the cluster therefore has to follow it.
+      - task: cnpg-operator
+      - task: ipam-deploy
+      - task: ipam-wait
+      - task: ipam-fixtures
+      - task: ipam-namespaces
       - task: eg-downstream
       - task: extension-server
       - task: billing-usage-collector
@@ -120,6 +166,7 @@ tasks:
       - '{{.KIND}} delete cluster --name {{.UPSTREAM_CLUSTER}} || true'
       - '{{.KIND}} delete cluster --name {{.DOWNSTREAM_CLUSTER}} || true'
       - rm -f {{.TMP_DIR}}/.kind-{{.DOWNSTREAM_CLUSTER}}-internal.yaml {{.TMP_DIR}}/.kind-{{.UPSTREAM_CLUSTER}}.yaml {{.TMP_DIR}}/.kind-{{.DOWNSTREAM_CLUSTER}}.yaml
+      - rm -rf {{.IPAM_STAGE}} {{.DNS_STAGE}}
       - echo "✨ done."
 
   clusters:
@@ -159,24 +206,25 @@ tasks:
       - '{{.KIND}} load docker-image {{.IMG}} --name {{.DOWNSTREAM_CLUSTER}}'
 
   dns-crds:
-    desc: "Install DNSZone / DNSRecordSet / DNSZoneClass CRDs from the dns-operator Go module on the upstream cluster. Required before prepare-upstream when gateway.enableDNSIntegration is true (the operator indexes and watches these types at startup)."
+    desc: "Install the dns-operator CRDs (DNSZone / DNSRecordSet / DNSZoneClass) on the upstream cluster from the operator's published bundle, pinned by digest at the version go.mod pins. Required before prepare-upstream when gateway.enableDNSIntegration is true, since the operator indexes and watches these types at startup."
     cmds:
-      # The module directory is resolved after the download, inside the same
-      # shell. Resolving it as a task var runs before any command, so on a cold
-      # module cache go list returns an empty directory and the apply paths turn
-      # into absolute paths that do not exist.
       - |
-        set -euo pipefail
-        go mod download go.miloapis.com/dns-operator
-        CRD_DIR=$(go list -m -f '{{`{{.Dir}}`}}' go.miloapis.com/dns-operator)
-        if [ -z "$CRD_DIR" ] || [ ! -d "$CRD_DIR" ]; then
-          echo "❌ could not locate the dns-operator module directory"
-          exit 1
+        set -e
+        stage="{{.DNS_STAGE}}"
+        if [ -f "$stage/.digest" ] && [ "$(cat "$stage/.digest")" = "{{.DNS_BUNDLE_DIGEST}}" ]; then
+          echo "📜 dns-operator bundle already staged ({{.DNS_BUNDLE_TAG}})" >&2
+        else
+          echo "📜 fetching {{.DNS_BUNDLE_REPO}}:{{.DNS_BUNDLE_TAG}}" >&2
+          rev=$({{.REPO}}/hack/fetch-oci-bundle.sh \
+            {{.CRANE}} {{.CRANE_VERSION}} \
+            {{.DNS_BUNDLE_REPO}} {{.DNS_BUNDLE_DIGEST}} {{.DNS_BUNDLE_TAG}} "$stage/bundle")
+          echo "✅ fetched $rev" >&2
+          echo "{{.DNS_BUNDLE_DIGEST}}" > "$stage/.digest"
         fi
-        echo "📜 installing dns-operator CRDs (upstream) from $CRD_DIR"
-        for crd in dnszoneclasses dnszones dnsrecordsets; do
-          kubectl --context {{.UPSTREAM_CTX}} apply -f "$CRD_DIR/config/crd/bases/dns.networking.miloapis.com_$crd.yaml"
-        done
+      - echo "📜 installing dns-operator CRDs (upstream)"
+      - kubectl --context {{.UPSTREAM_CTX}} apply -f {{.DNS_STAGE}}/bundle/crd/bases/dns.networking.miloapis.com_dnszoneclasses.yaml
+      - kubectl --context {{.UPSTREAM_CTX}} apply -f {{.DNS_STAGE}}/bundle/crd/bases/dns.networking.miloapis.com_dnszones.yaml
+      - kubectl --context {{.UPSTREAM_CTX}} apply -f {{.DNS_STAGE}}/bundle/crd/bases/dns.networking.miloapis.com_dnsrecordsets.yaml
 
   prepare-upstream:
     desc: "Deploy the NSO manager + webhook (config/e2e) on the upstream cluster, with the prod-base memory profile."
@@ -361,6 +409,224 @@ tasks:
       - kubectl --context {{.DOWNSTREAM_CTX}} wait gatewayclass datum-downstream-gateway-e2e --for=condition=Accepted --timeout=120s
       - echo "✅ core components ready."
 
+  # ---- IPAM ---------------------------------------------------------------
+  #
+  # IPAM is the upstream PROJECT control plane: NSO's manager, running on the
+  # same kind cluster, plays the cell that claims addresses from it. The two
+  # roles are separated by kubeconfig and impersonation, not by cluster
+  # boundary, so colocating them costs no fidelity — the cells that provision
+  # network interfaces run single-cluster in production and reach IPAM exactly
+  # this way.
+
+  cnpg-operator:
+    desc: "Install the CloudNativePG operator (chart 0.29.0 / CNPG 1.30.0) on the upstream cluster and wait until it can actually admit a Cluster. IPAM's bundle ships CNPG as a Flux HelmRelease; this env has no Flux, so it takes the same chart through kustomize --enable-helm, the way cert-manager is installed here."
+    cmds:
+      - echo "🐘 installing CloudNativePG (upstream)"
+      - '{{.KUSTOMIZE}} build --enable-helm config/dependencies/postgres-operator | kubectl --context {{.UPSTREAM_CTX}} apply --server-side=true --force-conflicts -f -'
+      - echo "⏳ waiting for the CNPG CRDs to be established"
+      - kubectl --context {{.UPSTREAM_CTX}} wait --for=condition=Established crd/clusters.postgresql.cnpg.io --timeout=120s
+      - echo "⏳ waiting for the CNPG operator"
+      - kubectl --context {{.UPSTREAM_CTX}} -n cnpg-system rollout status deploy/cnpg-cloudnative-pg --timeout=300s
+      # Deployment Available is not the same as "the webhook answers": the
+      # operator injects its own CA into the webhook configuration after it
+      # starts, and a Cluster applied into that window is rejected with a TLS
+      # or connection error that reads exactly like a flaky apply. Block until a
+      # server-side dry run is genuinely admitted, the same way wait-ready does
+      # for the NSO webhook.
+      - echo "⏳ waiting for the CNPG webhook to admit"
+      - |
+        PROBE='{"apiVersion":"postgresql.cnpg.io/v1","kind":"Cluster","metadata":{"name":"admit-probe","namespace":"default"},"spec":{"instances":1,"storage":{"size":"128Mi"}}}'
+        for i in $(seq 1 60); do
+          if echo "$PROBE" | kubectl --context {{.UPSTREAM_CTX}} create --dry-run=server -f - >/dev/null 2>&1; then
+            echo "✅ CNPG admitting"; break
+          fi
+          if [ "$i" -eq 60 ]; then echo "❌ CNPG webhook never became ready"; exit 1; fi
+          sleep 2
+        done
+
+  ipam-bundle:
+    desc: "Fetch the published IPAM manifest bundle from ghcr.io and assemble the composed deployment in a staging directory. Pinned by digest, and verified to carry the commit go.mod pins, so a rebuild of that commit cannot silently change what is deployed. Anonymous pull — CI needs no registry credentials."
+    cmds:
+      - |
+        set -e
+        stage="{{.IPAM_STAGE}}"
+        if [ -f "$stage/.digest" ] && [ "$(cat "$stage/.digest")" = "{{.IPAM_BUNDLE_DIGEST}}" ]; then
+          echo "📦 IPAM bundle already staged ({{.IPAM_BUNDLE_TAG}})" >&2
+        else
+          echo "📦 fetching {{.IPAM_BUNDLE_REPO}}:{{.IPAM_BUNDLE_TAG}}" >&2
+          rev=$({{.REPO}}/hack/fetch-oci-bundle.sh \
+            {{.CRANE}} {{.CRANE_VERSION}} \
+            {{.IPAM_BUNDLE_REPO}} {{.IPAM_BUNDLE_DIGEST}} {{.IPAM_COMMIT}} "$stage/bundle")
+          echo "✅ fetched $rev" >&2
+        fi
+        # Refreshed every run: these come from the working tree, so an edit to
+        # the overlay or a patch must reach the staged build without re-pulling.
+        rm -rf "$stage/overlay" "$stage/patches"
+        cp -R "{{.REPO}}/config/dependencies/ipam/overlay" "$stage/overlay"
+        cp -R "{{.REPO}}/config/dependencies/ipam/patches" "$stage/patches"
+        cp "{{.REPO}}/config/dependencies/ipam/root-kustomization.yaml" "$stage/kustomization.yaml"
+        echo "{{.IPAM_BUNDLE_DIGEST}}" > "$stage/.digest"
+
+  ipam-render:
+    desc: "Render the composed IPAM deployment to stdout. What ipam-deploy applies, without applying it — the composed root is assembled at task time, so this is the only way to review it."
+    deps:
+      - ipam-bundle
+    cmds:
+      - '{{.KUSTOMIZE}} build {{.IPAM_STAGE}}'
+
+  ipam-deploy:
+    deps:
+      - ipam-bundle
+      - cnpg-operator
+    desc: "Apply the IPAM apiserver, its Postgres, and the tenant RBAC to the upstream cluster (config/dependencies/ipam). Applies only — ipam-wait is what gates on readiness. Must follow prepare-upstream: upstream cert-manager crashloops until the Gateway-API CRDs it probes at startup exist, and until it runs, ipam-tls is never issued."
+    cmds:
+      - echo "🔧 deploying IPAM (upstream)"
+      - task: ipam-certmanager-ready
+      # The aggregated apiserver verifies the front proxy with
+      # --requestheader-client-ca-file. In kind that CA lives in the host's
+      # extension-apiserver-authentication ConfigMap, so it has to be copied
+      # into ipam-system before the pod starts — without it every impersonated
+      # extra arrives unauthenticated and every claim reads an empty tenant.
+      - kubectl --context {{.UPSTREAM_CTX}} create namespace ipam-system --dry-run=client -o yaml | kubectl --context {{.UPSTREAM_CTX}} apply -f -
+      - |
+        kubectl --context {{.UPSTREAM_CTX}} -n kube-system get configmap extension-apiserver-authentication \
+          -o jsonpath='{.data.requestheader-client-ca-file}' > {{.TMP_DIR}}/.ipam-requestheader-ca.crt
+        kubectl --context {{.UPSTREAM_CTX}} -n ipam-system create configmap control-plane-ca \
+          --from-file=ca.crt={{.TMP_DIR}}/.ipam-requestheader-ca.crt \
+          --dry-run=client -o yaml | kubectl --context {{.UPSTREAM_CTX}} apply -f -
+      - '{{.KUSTOMIZE}} build {{.IPAM_STAGE}} | kubectl --context {{.UPSTREAM_CTX}} apply --server-side=true --force-conflicts -f -'
+
+  ipam-certmanager-ready:
+    desc: "Make sure upstream cert-manager is actually running before anything asks it for a certificate. It exits at startup when the Gateway-API CRDs are absent, so on a fresh env it is in CrashLoopBackOff by the time prepare-upstream installs them — and the backoff can be minutes long. Restart it rather than wait the backoff out."
+    cmds:
+      - |
+        if kubectl --context {{.UPSTREAM_CTX}} -n cert-manager wait deploy cert-manager \
+             --for=condition=Available --timeout=15s >/dev/null 2>&1; then
+          echo "✅ upstream cert-manager already Available"
+          exit 0
+        fi
+        echo "♻️  upstream cert-manager is not Available; restarting it"
+        kubectl --context {{.UPSTREAM_CTX}} -n cert-manager rollout restart deploy cert-manager
+        kubectl --context {{.UPSTREAM_CTX}} -n cert-manager rollout status deploy cert-manager --timeout=240s
+
+  ipam-wait:
+    desc: "Gate on IPAM being genuinely servable: Postgres, the apiserver rollout, then the APIService itself. The certificate gate is on the internal CA, not on a serving cert: the CSI driver issues serving certs per pod at mount time, so a CA problem surfaces as a pod that never leaves Init. The APIService gate is not redundant — a suite that starts while aggregation is still settling fails with ServiceUnavailable, which reads like a test bug and is not one."
+    cmds:
+      # The serving cert is issued per pod by the cert-manager CSI driver, from
+      # the CA this gate waits on. Without the CA the mount never completes and
+      # the pod sits in Init with nothing in its logs to explain why.
+      - echo "⏳ waiting for the IPAM internal CA"
+      - kubectl --context {{.UPSTREAM_CTX}} -n ipam-system wait certificate/ipam-ca --for=condition=Ready --timeout=180s
+      - echo "⏳ waiting for Postgres (CNPG cluster ipam-db)"
+      # The apiserver's migrate init container runs `ipam migrate up` against
+      # this database, so it crashloops until Postgres accepts connections.
+      # CNPG reports Ready only once the instance is serving, which is what the
+      # init container needs — a scheduled pod is not enough. This replaced a
+      # `wait pod -l app.kubernetes.io/name=postgresql` gate when the plain
+      # Deployment gave way to the operator.
+      - kubectl --context {{.UPSTREAM_CTX}} -n ipam-system wait cluster.postgresql.cnpg.io/ipam-db --for=condition=Ready --timeout=420s
+      # Ready is the operator's opinion; the init container's is the one that
+      # matters. Ask the database directly, as the role and database IPAM
+      # actually connects as, so a cluster that reports Ready while still
+      # finishing bootstrap fails here rather than as a crashlooping migration.
+      - |
+        for i in $(seq 1 45); do
+          POD=$(kubectl --context {{.UPSTREAM_CTX}} -n ipam-system get pod \
+            -l cnpg.io/cluster=ipam-db -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+          if [ -n "$POD" ] && kubectl --context {{.UPSTREAM_CTX}} -n ipam-system exec "$POD" -c postgres -- \
+               pg_isready -U ipam -d ipam >/dev/null 2>&1; then
+            echo "✅ postgres accepting connections as ipam/ipam"; break
+          fi
+          if [ "$i" -eq 45 ]; then echo "❌ postgres never accepted a connection"; exit 1; fi
+          sleep 2
+        done
+      - echo "⏳ waiting for the IPAM apiserver (readiness probe has a 60s initial delay)"
+      # rollout status, not `wait pod -l`: a label selector also matches pods
+      # left over from a previous revision that are still terminating, and the
+      # wait then fails on a pod that is on its way out.
+      - kubectl --context {{.UPSTREAM_CTX}} -n ipam-system rollout status deploy/ipam-apiserver --timeout=300s
+      - echo "⏳ waiting for the aggregated APIService"
+      - kubectl --context {{.UPSTREAM_CTX}} wait --for=condition=Available apiservice/v1alpha1.ipam.miloapis.com --timeout=180s
+      - echo "✅ IPAM serving ipam.miloapis.com/v1alpha1"
+
+  ipam-kubeconfig:
+    desc: "Wire the NSO manager to IPAM: mint a token for its ServiceAccount and publish it as the ipam-cluster-kubeconfig secret on the upstream cluster. The manager authenticates with this and sets the project impersonation per request; the RBAC that lets it do so ships in config/dependencies/ipam/rbac.yaml."
+    cmds:
+      - echo "🔗 wiring NSO manager -> IPAM (secret ipam-cluster-kubeconfig)"
+      - kubectl --context {{.UPSTREAM_CTX}} create namespace network-services-operator-system --dry-run=client -o yaml | kubectl --context {{.UPSTREAM_CTX}} apply -f -
+      # The ServiceAccount is created by config/e2e, which is applied later, so
+      # ensure it exists before minting a token against it. Applying the same
+      # object twice is harmless.
+      - |
+        kubectl --context {{.UPSTREAM_CTX}} -n network-services-operator-system create serviceaccount \
+          network-services-operator-controller-manager --dry-run=client -o yaml \
+          | kubectl --context {{.UPSTREAM_CTX}} apply -f -
+      # The manager runs inside the upstream cluster, so the kubeconfig must
+      # name the in-cluster service address rather than the host-mapped one.
+      - |
+        CA=$(kubectl --context {{.UPSTREAM_CTX}} -n kube-system get configmap kube-root-ca.crt -o jsonpath='{.data.ca\.crt}' | base64 | tr -d '\n')
+        TOKEN=$(kubectl --context {{.UPSTREAM_CTX}} -n network-services-operator-system create token \
+          network-services-operator-controller-manager --duration=24h)
+        # Piped, never written to a file: a ServiceAccount token on disk outlives
+        # the run and the env that issued it. It reaches the cluster and nothing
+        # else.
+        KUBECONFIG_YAML=$(cat <<EOF
+        apiVersion: v1
+        kind: Config
+        current-context: ipam
+        clusters:
+        - name: ipam
+          cluster:
+            server: https://kubernetes.default.svc:443
+            certificate-authority-data: ${CA}
+        users:
+        - name: ipam
+          user:
+            token: ${TOKEN}
+        contexts:
+        - name: ipam
+          context:
+            cluster: ipam
+            user: ipam
+        EOF
+        )
+        printf '%s\n' "$KUBECONFIG_YAML" | \
+        kubectl --context {{.UPSTREAM_CTX}} -n network-services-operator-system create secret generic \
+          ipam-cluster-kubeconfig --save-config --dry-run=client -o yaml \
+          --from-file=kubeconfig=/dev/stdin \
+          | kubectl --context {{.UPSTREAM_CTX}} apply -f -
+
+  ipam-fixtures:
+    desc: "Seed the IPClass/IPPool fixtures for both projects, clearing any leftovers first. Classes are named identically in the two projects and their pools are disjoint (test/e2e/fixtures/ipam/RANGES.md), so a controller routing to the wrong project allocates from visibly wrong space instead of quietly succeeding. Do not run this while a suite is in flight: it removes the fixtures and the tenant RBAC that a running suite is mid-way through using."
+    cmds:
+      - task: ipam-tenant-rbac
+      - task: ipam-fixtures-clear
+      - |
+        set -e
+        for proj in {{.IPAM_PROJECTS}}; do
+          echo "🌱 seeding $proj"
+          IPAM_KUBE_CONTEXT={{.UPSTREAM_CTX}} {{.REPO}}/hack/ipam-tenant-kubectl.sh "$proj" apply -f test/e2e/fixtures/ipam/$proj/classes.yaml
+          IPAM_KUBE_CONTEXT={{.UPSTREAM_CTX}} {{.REPO}}/hack/ipam-tenant-kubectl.sh "$proj" apply -f test/e2e/fixtures/ipam/$proj/pools.yaml
+        done
+
+  ipam-tenant-rbac:
+    desc: "Grant the identity the suites and the fixture seeder impersonate its IPAM access. It binds the operator's own tenant role rather than restating it. Separate from the deployment on purpose — a test identity is not deployment config — which means ipam-deploy prunes it from the deployment's binding, so anything that impersonates the tester must run this first."
+    cmds:
+      - kubectl --context {{.UPSTREAM_CTX}} apply -f test/e2e/fixtures/ipam/rbac.yaml
+
+  ipam-fixtures-clear:
+    deps:
+      - ipam-tenant-rbac
+    desc: "Release the addresses a previous run left held in the fixture projects. IPClaims and IPAllocations only, which is what measurement showed leaks: a run starting with 15 stale IPPools and 5 IPClasses passes 25/25, because seeding re-applies them as a no-op and cascade pools are reused by scope digest — but a single leftover IPClaim fails two suites, which enumerate the project's claims and assert against the stranger they find. Do not run this while a suite is in flight: it removes the addresses a running suite is mid-way through using."
+    cmds:
+      - '{{.REPO}}/hack/ipam-clear-fixtures.sh {{.UPSTREAM_CTX}} {{.IPAM_PROJECTS}}' 
+
+  ipam-namespaces:
+    desc: "Create the namespaces the interface scenarios resolve a project from, carrying the ENCODED meta.datumapis.com/upstream-cluster-name label the mapped-namespace strategy really writes, plus one namespace deliberately missing it for the fail-closed case. Applied to BOTH clusters: NetworkInterfaceClaims live on the upstream cell and resolveProject reads the claim's own namespace through the cell client, so upstream is the one that has to have them."
+    cmds:
+      - kubectl --context {{.UPSTREAM_CTX}} apply -f test/e2e/fixtures/ipam/namespaces.yaml
+      - kubectl --context {{.DOWNSTREAM_CTX}} apply -f test/e2e/fixtures/ipam/namespaces.yaml
+
   # ---- Karmada ------------------------------------------------------------
 
   karmada-up:
@@ -383,6 +649,16 @@ tasks:
       # 127.0.0.1 reaches it. We still sign the cert for the docker IP for any
       # in-cluster path. The member is joined in push mode, so it never needs to
       # reach the apiserver address — advertising 127.0.0.1 is safe for the join.
+      # docker inspect prints nothing and exits 0 when the container is absent or
+      # off the kind network, which would sign a certificate for "127.0.0.1,"
+      # and later set the member endpoint to "https://:6443". Both fail far from
+      # the cause, so check before using them.
+      - |
+        if [ -z "{{.HOST_IP}}" ] || [ -z "{{.MEMBER_IP}}" ]; then
+          echo "❌ could not read the kind-network IP of a cluster node (host='{{.HOST_IP}}' member='{{.MEMBER_IP}}')." >&2
+          echo "   Are both clusters up? Run 'task test-infra:clusters' first." >&2
+          exit 1
+        fi
       - echo "🌐 karmada init (apiserver {{.KARMADA_APISERVER_VERSION}}, advertise 127.0.0.1:32443, cert-ip incl {{.HOST_IP}}) on {{.UPSTREAM_CLUSTER}}"
       - mkdir -p {{.TMP_DIR}}/karmada-{{.UPSTREAM_CLUSTER}}
       - |
@@ -432,7 +708,7 @@ tasks:
       - '{{.CHAINSAW}} test ./test/e2e-edge/extension-server-smoke --cluster {{.UPSTREAM_CLUSTER}}={{.TMP_DIR}}/.kind-{{.UPSTREAM_CLUSTER}}.yaml --cluster {{.DOWNSTREAM_CLUSTER}}={{.TMP_DIR}}/.kind-{{.DOWNSTREAM_CLUSTER}}.yaml'
 
   e2e:
-    desc: "Run chainsaw e2e scenarios against the live two-cluster env. Pass a scenario name or path after -- (e.g. `task test-infra:e2e -- waf-enforcement`); with no arg, runs every ext-server-path scenario that targets nso-upstream/nso-downstream. Use SCENARIOS=... to override the default set."
+    desc: "Run chainsaw e2e scenarios against the live two-cluster env. Pass a scenario name or path after -- (e.g. `task test-infra:e2e -- waf-enforcement`); with no arg, runs every ext-server-path scenario that targets nso-upstream/nso-downstream. Use SCENARIOS=... to override the default set. NOT safe to run while anything else is touching the env. The interface suites use fixed object names in the shared ipam-e2e-* namespaces (the project routing lives on those namespace labels), and this task clears and re-seeds the cluster-scoped fixtures at its head — which also republishes the tenant RBAC. So a second invocation, or a bare ipam-fixtures / ipam-fixtures-clear / ipam-tenant-rbac run, will pull the fixtures and the tenant's access out from under a suite already in flight. Run one at a time."
     vars:
       # Scenarios authored against this env's cluster names and downstream path.
       # Older fixtures targeting the previous cluster names are excluded here.
@@ -442,6 +718,11 @@ tasks:
     deps:
       - kubeconfigs
     cmds:
+      # Reset the cluster-scoped fixtures before the first suite. A run that
+      # died mid-suite leaves pools and classes that chainsaw's namespace
+      # teardown cannot reach, and the next run would fail on "already exists"
+      # rather than on what it was testing.
+      - task: ipam-fixtures
       - |
         set -e
         for s in {{.SELECTED}}; do
@@ -452,13 +733,17 @@ tasks:
             *)                       dir="./test/e2e-edge/$s" ;;
           esac
           echo "🧪 chainsaw: $dir"
+          # --parallel 1 for the same reason test-e2e sets it: suites share
+          # cluster-scoped IPPools and IPClasses, so running two at once has
+          # them carving the same address space.
           {{.CHAINSAW}} test "$dir" \
+            --parallel 1 \
             --cluster {{.UPSTREAM_CLUSTER}}={{.TMP_DIR}}/.kind-{{.UPSTREAM_CLUSTER}}.yaml \
             --cluster {{.DOWNSTREAM_CLUSTER}}={{.TMP_DIR}}/.kind-{{.DOWNSTREAM_CLUSTER}}.yaml
         done
 
   test-e2e:
-    desc: "Run the full control-plane e2e suite (test/e2e) against the live two-cluster env. The suite's chainsaw aliases nso-standard/nso-infra are mapped to this env's upstream/downstream kubeconfigs at invocation. Pass a scenario path after -- to run a single test."
+    desc: "Run the full control-plane e2e suite (test/e2e) against the live two-cluster env. The suite's chainsaw aliases nso-standard/nso-infra are mapped to this env's upstream/downstream kubeconfigs at invocation. Pass a scenario path after -- to run a single test. NOT safe to run while anything else is touching the env. The interface suites use fixed object names in the shared ipam-e2e-* namespaces (the project routing lives on those namespace labels), and this task clears and re-seeds the cluster-scoped fixtures at its head — which also republishes the tenant RBAC. So a second invocation, or a bare ipam-fixtures / ipam-fixtures-clear / ipam-tenant-rbac run, will pull the fixtures and the tenant's access out from under a suite already in flight. Run one at a time."
     vars:
       # CLI_ARGS (after --) wins so a single test can be selected; else the whole
       # suite directory.
@@ -470,6 +755,9 @@ tasks:
     deps:
       - kubeconfigs
     cmds:
+      # See the note in `e2e`: cluster-scoped fixtures outlive a failed run, so
+      # the suite starts by putting them back to a known state.
+      - task: ipam-fixtures
       - echo "🧪 chainsaw suite {{.TARGET}} (nso-standard={{.UPSTREAM_CLUSTER}}, nso-infra={{.DOWNSTREAM_CLUSTER}}); report {{.REPORT_PATH}}/{{.REPORT_NAME}}.json"
       - |
         {{.CHAINSAW}} test {{.TARGET}} \

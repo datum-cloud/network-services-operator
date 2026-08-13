@@ -1,0 +1,220 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+#
+# Deleting an interface a live claim still holds must not take the addresses
+# with it.
+#
+# The delete is allowed — it is not refused and it does not cascade to the
+# claim — but the release must NOT happen, because the addresses belong to a
+# workload that is still running. Releasing here and re-allocating later is
+# silent renumbering, which is worse than either refusing the delete or
+# cascading it.
+#
+# The guarantee is asserted where it is real: the IPClaims in project-alpha
+# still hold the same CIDRs after the interface is gone. NSO's own copy of the
+# addresses proves nothing here — it is written once at bind and would look
+# identical either way.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: networkinterfaceclaim-bound-interface-delete
+spec:
+  cluster: nso-standard
+  steps:
+    - name: A bound claim holds three addresses
+      try:
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Network
+              metadata:
+                name: nic-boundifdel-net
+                namespace: ipam-e2e-alpha
+              spec:
+                ipam:
+                  mode: Auto
+                ipFamilies:
+                  - IPv4
+                  - IPv6
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterfaceClaim
+              metadata:
+                name: nic-boundifdel
+                namespace: ipam-e2e-alpha
+              spec:
+                network:
+                  name: nic-boundifdel-net
+                ipFamilies:
+                  - IPv6
+                  - IPv4
+                addresses:
+                  - class: datum-public-v4
+        - assert:
+            timeout: 120s
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterfaceClaim
+              metadata:
+                name: nic-boundifdel
+                namespace: ipam-e2e-alpha
+              status:
+                (conditions[?type == 'Allocated'] | [0].status): "True"
+        - script:
+            content: |
+              set -eu
+              IPAM=$(git rev-parse --show-toplevel)/hack/ipam-tenant-kubectl.sh
+              record="${TMPDIR:-/tmp}/nic-boundifdel-addresses"
+              "$IPAM" project-alpha -n default get ipclaim \
+                -o 'jsonpath={range .items[*]}{.metadata.name}={.status.allocatedCIDR} {end}' > "$record"
+              kubectl -n ipam-e2e-alpha get networkinterface nic-boundifdel -o jsonpath='{.metadata.uid}' > "${record}.uid"
+              cat "$record"
+              grep -q 'nic-boundifdel-f-ipv6=' "$record" || { echo "the v6 address was never allocated in IPAM"; exit 1; }
+      catch:
+        - script:
+            content: |
+              kubectl -n ipam-e2e-alpha get networkinterfaceclaim,networkinterface -o yaml
+              kubectl -n network-services-operator-system logs -l app.kubernetes.io/name=network-services-operator --tail=100
+      cleanup:
+        - description: >
+            Safety net. The count it prints is the signal: a claim now releases
+            its addresses from what it asked for rather than from an interface
+            it may no longer have, so anything above zero here means a claim
+            went away without handing its addresses back.
+          script:
+            content: |
+              set -u
+              IPAM=$(git rev-parse --show-toplevel)/hack/ipam-tenant-kubectl.sh
+              ipam() { "$IPAM" project-alpha -n default "$@"; }
+
+              kubectl -n ipam-e2e-alpha delete networkinterfaceclaim nic-boundifdel --ignore-not-found --timeout=60s
+              kubectl -n ipam-e2e-alpha delete networkinterface nic-boundifdel --ignore-not-found --timeout=60s
+              stranded=$(ipam get ipclaim -o jsonpath='{range .items[*]}{.metadata.name} {end}' | tr ' ' '\n' | grep -E '^nic-boundifdel-' || true)
+              echo "IPClaims stranded by the deleted interface: $(echo "$stranded" | grep -c . || true)"
+              [ -z "$stranded" ] || ipam delete ipclaim $stranded --ignore-not-found --timeout=60s
+              orphans=$(ipam get ipallocation -o name)
+              [ -z "$orphans" ] || ipam delete $orphans --ignore-not-found
+              rm -f "${TMPDIR:-/tmp}/nic-boundifdel-addresses" "${TMPDIR:-/tmp}/nic-boundifdel-addresses.uid"
+
+    - name: Deleting the interface under a live claim is allowed
+      description: |
+        Not refused and not cascaded: the interface's finalizer clears at once
+        because a live claim still holds it, and the claim itself is untouched.
+      try:
+        - script:
+            timeout: 120s
+            content: |
+              set -eu
+              # --wait=false on purpose: the claim controller rebuilds the
+              # interface within seconds, so a waiting delete can watch the
+              # replacement appear under the same name and never return.
+              kubectl -n ipam-e2e-alpha delete networkinterface nic-boundifdel --wait=false
+        - assert:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterfaceClaim
+              metadata:
+                name: nic-boundifdel
+                namespace: ipam-e2e-alpha
+
+    - name: The addresses were not released
+      description: |
+        The assertion that matters. Every IPClaim must still exist and still
+        hold the CIDR recorded before the delete — a release here would hand the
+        workload new addresses on the next reconcile.
+      try:
+        - script:
+            content: |
+              set -eu
+              IPAM=$(git rev-parse --show-toplevel)/hack/ipam-tenant-kubectl.sh
+              ipam() { "$IPAM" project-alpha -n default "$@"; }
+
+              before=$(cat "${TMPDIR:-/tmp}/nic-boundifdel-addresses")
+              after=$(ipam get ipclaim -o 'jsonpath={range .items[*]}{.metadata.name}={.status.allocatedCIDR} {end}')
+              echo "before: ${before}"
+              echo "after:  ${after}"
+              [ "$before" = "$after" ] || { echo "the addresses changed when the interface was deleted"; exit 1; }
+
+    - name: The claim rebuilds the interface on the same addresses
+      description: |
+        The rebuild is driven by the claim controller watching NetworkInterface
+        and enqueuing the holder, so no nudge is needed here; a claim left
+        Bound against a missing interface would be the failure.
+
+        The rebuilt interface must carry the addresses IPAM already holds, not
+        newly allocated ones — that reuse is the whole reason deleting a bound
+        interface is allowed to be survivable.
+      try:
+        - assert:
+            timeout: 120s
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterface
+              metadata:
+                name: nic-boundifdel
+                namespace: ipam-e2e-alpha
+              spec:
+                claimRef:
+                  name: nic-boundifdel
+              status:
+                phase: Bound
+        - assert:
+            timeout: 60s
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterfaceClaim
+              metadata:
+                name: nic-boundifdel
+                namespace: ipam-e2e-alpha
+              status:
+                (conditions[?type == 'Bound'] | [0].status): "True"
+                (conditions[?type == 'Allocated'] | [0].status): "True"
+        - script:
+            content: |
+              set -eu
+              IPAM=$(git rev-parse --show-toplevel)/hack/ipam-tenant-kubectl.sh
+              ipam() { "$IPAM" project-alpha -n default "$@"; }
+
+              before=$(cat "${TMPDIR:-/tmp}/nic-boundifdel-addresses")
+              after=$(ipam get ipclaim -o 'jsonpath={range .items[*]}{.metadata.name}={.status.allocatedCIDR} {end}')
+              [ "$before" = "$after" ] || { echo "the rebuild reallocated: before ${before}, after ${after}"; exit 1; }
+
+              # A rebuild, not a delete that never took: the object carrying
+              # these addresses is a different one.
+              was=$(cat "${TMPDIR:-/tmp}/nic-boundifdel-addresses.uid")
+              now=$(kubectl -n ipam-e2e-alpha get networkinterface nic-boundifdel -o jsonpath='{.metadata.uid}')
+              [ "$was" != "$now" ] || { echo "the interface was never actually deleted (same uid ${now})"; exit 1; }
+
+              for entry in $before; do
+                name=${entry%%=*}
+                cidr=${entry#*=}
+                case "$name" in
+                  *-c-datum-public-v4) published=$(kubectl -n ipam-e2e-alpha get networkinterfaceclaim nic-boundifdel -o jsonpath='{.status.externalAddresses[0].address}')/32 ;;
+                  *-f-ipv6) published=$(kubectl -n ipam-e2e-alpha get networkinterfaceclaim nic-boundifdel -o 'jsonpath={.status.addresses[?(@.family=="IPv6")].address}') ;;
+                  *-f-ipv4) published=$(kubectl -n ipam-e2e-alpha get networkinterfaceclaim nic-boundifdel -o 'jsonpath={.status.addresses[?(@.family=="IPv4")].address}') ;;
+                esac
+                [ "$published" = "$cidr" ] || { echo "the rebuilt interface publishes ${published} where IPAM holds ${cidr}"; exit 1; }
+              done
+
+    - name: The rebuilt claim releases everything on delete
+      try:
+        - delete:
+            timeout: 120s
+            ref:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterfaceClaim
+              name: nic-boundifdel
+              namespace: ipam-e2e-alpha
+        - script:
+            content: |
+              set -eu
+              IPAM=$(git rev-parse --show-toplevel)/hack/ipam-tenant-kubectl.sh
+              ipam() { "$IPAM" project-alpha -n default "$@"; }
+
+              ipam get ipclass datum-public-v4 >/dev/null \
+                || { echo "project-alpha's fixtures are not readable through this context, so an empty IPClaim list means nothing"; exit 1; }
+
+              for found in $(ipam get ipclaim -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' | grep -E '^nic-boundifdel-' || true); do
+                echo "IPClaim ${found} survived the claim that held it"
+                exit 1
+              done

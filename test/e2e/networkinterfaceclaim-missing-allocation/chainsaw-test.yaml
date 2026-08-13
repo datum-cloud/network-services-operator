@@ -102,14 +102,19 @@ spec:
             would stop testing anything the day the controller went quiet.
 
             Then the claim is nudged, because nothing watches IPAM: this forces
-            the reconcile an operator's next edit would have caused anyway.
+            the reconcile an operator's next edit would have caused anyway. The
+            nudge value is nanoseconds, not seconds. Both nudges in this suite
+            can land in the same second, and an annotate that writes the value
+            already there does not change the object, raises no watch event and
+            causes no reconcile — leaving the previous step's condition in place
+            until the next assert times out.
           script:
             content: |
               set -eu
               kubectl -n ipam-e2e-alpha delete events \
                 --field-selector involvedObject.name=nic-missingalloc --ignore-not-found
               kubectl -n ipam-e2e-alpha annotate networkinterfaceclaim nic-missingalloc \
-                e2e.datum.net/nudge="$(date +%s)" --overwrite
+                e2e.datum.net/nudge="$(date +%s%N)" --overwrite
 
     - name: The loss is reported as a Warning on the claim
       description: |
@@ -233,7 +238,7 @@ spec:
               kubectl -n ipam-e2e-alpha delete events \
                 --field-selector involvedObject.name=nic-missingalloc --ignore-not-found
               kubectl -n ipam-e2e-alpha annotate networkinterfaceclaim nic-missingalloc \
-                e2e.datum.net/nudge="$(date +%s)" --overwrite
+                e2e.datum.net/nudge="$(date +%s%N)" --overwrite
         - assert:
             timeout: 120s
             resource:

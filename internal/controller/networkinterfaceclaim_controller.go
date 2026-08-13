@@ -36,6 +36,7 @@ import (
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	"go.datum.net/network-services-operator/internal/config"
+	"go.datum.net/network-services-operator/internal/downstreamclient"
 )
 
 const (
@@ -186,9 +187,22 @@ func (r *NetworkInterfaceClaimReconciler) fulfill(
 type projectRouting struct {
 	project          string
 	projectNamespace string
+
+	// clusterNameLabel is the namespace's own label value, copied rather than
+	// re-encoded so anything derived from it is selected by the same propagation
+	// policy that already carries the namespace.
+	clusterNameLabel string
 }
 
 func (r *NetworkInterfaceClaimReconciler) resolveProject(
+	ctx context.Context,
+	cl client.Client,
+	namespaceName string,
+) (projectRouting, error) {
+	return resolveProjectRouting(ctx, cl, namespaceName)
+}
+
+func resolveProjectRouting(
 	ctx context.Context,
 	cl client.Client,
 	namespaceName string,
@@ -208,7 +222,11 @@ func (r *NetworkInterfaceClaimReconciler) resolveProject(
 		return projectRouting{}, &projectUnresolvable{message: err.Error()}
 	}
 
-	return projectRouting{project: project, projectNamespace: projectNamespace}, nil
+	return projectRouting{
+		project:          project,
+		projectNamespace: projectNamespace,
+		clusterNameLabel: namespace.Labels[downstreamclient.UpstreamOwnerClusterNameLabel],
+	}, nil
 }
 
 // projectUnresolvable means the namespace does not name a project. A failure to

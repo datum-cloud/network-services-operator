@@ -293,6 +293,7 @@ rules:
   - networking.datumapis.com
   resources:
   - connectorclasses
+  - locationbindings
   verbs:
   - get
   - list

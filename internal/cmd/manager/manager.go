@@ -359,6 +359,18 @@ func NewCommand(build BuildInfo) *cobra.Command {
 				setupLog.Error(err, "unable to create controller", "controller", "NetworkContext")
 				os.Exit(1)
 			}
+
+			// The deployment cluster is the hub, and the milo provider engages
+			// project control planes in the same process, so both reads this
+			// controller needs are already here. It goes on the singleton manager
+			// because the sharded managers run three replicas with leader election
+			// disabled, which would reconcile every hub object three times.
+			if err := (&controller.NetworkPresenceReconciler{
+				Projects: controller.NewProjectClusterResolver(mgr),
+			}).SetupWithManager(singletonControllerMgr); err != nil {
+				setupLog.Error(err, "unable to create controller", "controller", "NetworkPresence")
+				os.Exit(1)
+			}
 			if err := (&controller.NetworkPolicyReconciler{}).SetupWithManager(mgr); err != nil {
 				setupLog.Error(err, "unable to create controller", "controller", "NetworkPolicy")
 				os.Exit(1)

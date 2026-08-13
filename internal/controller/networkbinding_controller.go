@@ -55,6 +55,19 @@ func (r *NetworkBindingReconciler) Reconcile(ctx context.Context, req mcreconcil
 		return ctrl.Result{}, nil
 	}
 
+	// A binding in a namespace that names a project is a hub binding, and the
+	// presence controller owns it. The two never overlap where the hub and the
+	// project control planes are separate clusters; they do where one cluster
+	// plays both roles, and then both would write the same context and fight
+	// over the same status.
+	hubBinding, err := isHubNamespace(ctx, cl.GetClient(), binding.Namespace)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if hubBinding {
+		return ctrl.Result{}, nil
+	}
+
 	logger.Info("reconciling network binding")
 	defer logger.Info("reconcile complete")
 
@@ -170,5 +183,16 @@ func (r *NetworkBindingReconciler) SetupWithManager(mgr mcmanager.Manager) error
 }
 
 func networkContextNameForBinding(binding *networkingv1alpha.NetworkBinding) string {
-	return fmt.Sprintf("%s-%s-%s", binding.Spec.Network.Name, binding.Spec.Location.Namespace, binding.Spec.Location.Name)
+	return networkContextName(binding.Spec.Network.Name, binding.Spec.Location)
+}
+
+// networkContextName reads the deprecated location namespace rather than the
+// constant it now defaults to, so a reference persisted under another value
+// keeps the name its subnets were allocated under.
+func networkContextName(network string, location networkingv1alpha.LocationReference) string {
+	namespace := location.Namespace //nolint:staticcheck // see above
+	if namespace == "" {
+		namespace = networkingv1alpha.LocationReferenceDefaultNamespace
+	}
+	return fmt.Sprintf("%s-%s-%s", network, namespace, location.Name)
 }

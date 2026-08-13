@@ -17,6 +17,30 @@ type NetworkContextSpec struct {
 	//
 	// +kubebuilder:validation:Required
 	Location LocationReference `json:"location,omitempty"`
+
+	// IP families the network carries, projected from the Network.
+	//
+	// A reader that finds this unset must refuse rather than assume a family:
+	// a context written before this field existed carries nothing, which is not
+	// the same as a network that carries nothing.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=2
+	IPFamilies []IPFamily `json:"ipFamilies,omitempty"`
+
+	// MTU of interfaces on the network, projected from the Network.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:Minimum=1300
+	// +kubebuilder:validation:Maximum=8856
+	MTU int32 `json:"mtu,omitempty"`
+
+	// The Network generation the projected fields were read from, so an operator
+	// comparing this to the Network can tell whether this location has caught up.
+	//
+	// +kubebuilder:validation:Optional
+	NetworkGeneration int64 `json:"networkGeneration,omitempty"`
 }
 
 // NetworkContextStatus defines the observed state of NetworkContext

@@ -99,6 +99,40 @@ NetworkContextSpec defines the desired state of NetworkContext
           The attached network<br/>
         </td>
         <td>true</td>
+      </tr><tr>
+        <td><b>ipFamilies</b></td>
+        <td>[]enum</td>
+        <td>
+          IP families the network carries, projected from the Network.
+
+A reader that finds this unset must refuse rather than assume a family:
+a context written before this field existed carries nothing, which is not
+the same as a network that carries nothing.<br/>
+          <br/>
+            <i>Enum</i>: IPv4, IPv6<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>mtu</b></td>
+        <td>integer</td>
+        <td>
+          MTU of interfaces on the network, projected from the Network.<br/>
+          <br/>
+            <i>Format</i>: int32<br/>
+            <i>Minimum</i>: 1300<br/>
+            <i>Maximum</i>: 8856<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>networkGeneration</b></td>
+        <td>integer</td>
+        <td>
+          The Network generation the projected fields were read from, so an operator
+comparing this to the Network can tell whether this location has caught up.<br/>
+          <br/>
+            <i>Format</i>: int64<br/>
+        </td>
+        <td>false</td>
       </tr></tbody>
 </table>
 
@@ -130,9 +164,16 @@ The location of where a network context exists.
         <td><b>namespace</b></td>
         <td>string</td>
         <td>
-          Namespace for the datum location<br/>
+          Namespace for the datum location.
+
+Deprecated: a Location is cluster-scoped, so this names nothing. It is
+defaulted when unset and ignored when set, and will be dropped at the next
+API version. It is retained because deterministic NetworkContext names are
+built from it, and existing contexts own subnets under those names.<br/>
+          <br/>
+            <i>Default</i>: default<br/>
         </td>
-        <td>true</td>
+        <td>false</td>
       </tr></tbody>
 </table>
 

@@ -49,21 +49,60 @@ spec:
           spec:
             description: NetworkBindingSpec defines the desired state of NetworkBinding
             properties:
+              consumer:
+                description: |-
+                  The resource that needs the network in this location.
+
+                  Nothing reads this to decide anything, and a binding is never held open
+                  because of it. It records who asked in a form that does not depend on the
+                  consumer being an object in this control plane, which is the only record
+                  for a consumer that cannot be an owner.
+                properties:
+                  apiGroup:
+                    description: APIGroup of the consumer. Empty means the core group.
+                    type: string
+                  kind:
+                    description: Kind of the consumer.
+                    type: string
+                  name:
+                    description: Name of the consumer.
+                    type: string
+                required:
+                - kind
+                - name
+                type: object
               location:
-                description: The location of where a network binding exists.
+                description: |-
+                  The location of where a network binding exists.
+
+                  Immutable, for the same reason as spec.network.
                 properties:
                   name:
                     description: Name of a datum location
                     type: string
                   namespace:
-                    description: Namespace for the datum location
+                    default: default
+                    description: |-
+                      Namespace for the datum location.
+
+                      Deprecated: a Location is cluster-scoped, so this names nothing. It is
+                      defaulted when unset and ignored when set, and will be dropped at the next
+                      API version. It is retained because deterministic NetworkContext names are
+                      built from it, and existing contexts own subnets under those names.
                     type: string
                 required:
                 - name
-                - namespace
                 type: object
+                x-kubernetes-validations:
+                - message: spec.location is immutable
+                  rule: self == oldSelf
               network:
-                description: The network that the binding is for.
+                description: |-
+                  The network that the binding is for.
+
+                  Immutable: a binding whose network changed is a declaration about a
+                  different presence. Delete and recreate instead, so the crossing is
+                  observable.
                 properties:
                   name:
                     description: The network name
@@ -77,6 +116,9 @@ spec:
                 required:
                 - name
                 type: object
+                x-kubernetes-validations:
+                - message: spec.network is immutable
+                  rule: self == oldSelf
             required:
             - location
             - network

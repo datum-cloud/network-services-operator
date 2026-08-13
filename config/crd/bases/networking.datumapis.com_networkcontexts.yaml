@@ -49,6 +49,21 @@ spec:
           spec:
             description: NetworkContextSpec defines the desired state of NetworkContext
             properties:
+              ipFamilies:
+                description: |-
+                  IP families the network carries, projected from the Network.
+
+                  A reader that finds this unset must refuse rather than assume a family:
+                  a context written before this field existed carries nothing, which is not
+                  the same as a network that carries nothing.
+                items:
+                  enum:
+                  - IPv4
+                  - IPv6
+                  type: string
+                maxItems: 2
+                minItems: 1
+                type: array
               location:
                 description: The location of where a network context exists.
                 properties:
@@ -56,12 +71,25 @@ spec:
                     description: Name of a datum location
                     type: string
                   namespace:
-                    description: Namespace for the datum location
+                    default: default
+                    description: |-
+                      Namespace for the datum location.
+
+                      Deprecated: a Location is cluster-scoped, so this names nothing. It is
+                      defaulted when unset and ignored when set, and will be dropped at the next
+                      API version. It is retained because deterministic NetworkContext names are
+                      built from it, and existing contexts own subnets under those names.
                     type: string
                 required:
                 - name
-                - namespace
                 type: object
+              mtu:
+                description: MTU of interfaces on the network, projected from the
+                  Network.
+                format: int32
+                maximum: 8856
+                minimum: 1300
+                type: integer
               network:
                 description: The attached network
                 properties:
@@ -71,6 +99,12 @@ spec:
                 required:
                 - name
                 type: object
+              networkGeneration:
+                description: |-
+                  The Network generation the projected fields were read from, so an operator
+                  comparing this to the Network can tell whether this location has caught up.
+                format: int64
+                type: integer
             required:
             - location
             - network

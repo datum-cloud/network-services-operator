@@ -192,11 +192,14 @@ tasks:
           kubectl --context {{.UPSTREAM_CTX}} -n network-services-operator-system create cm network-services-operator-config \
             --from-literal=config.yaml="$NEW" --dry-run=client -o yaml | kubectl --context {{.UPSTREAM_CTX}} apply -f -
         fi
-      # Raise the manager's memory limit to the production base so perf sweeps and
-      # webhook-under-load reflect production headroom.
+      # Raise the manager's memory and cpu to the production base so perf sweeps
+      # and webhook-under-load reflect production headroom. The manager serves
+      # admission from the same process that runs every controller, so throttling
+      # it costs the liveness probe and the leader-election lease, and losing
+      # either takes admission down with the process.
       - |
         kubectl --context {{.UPSTREAM_CTX}} -n network-services-operator-system patch deploy network-services-operator-controller-manager \
-          --type=json -p '[{"op":"replace","path":"/spec/template/spec/containers/0/resources/limits/memory","value":"2Gi"},{"op":"replace","path":"/spec/template/spec/containers/0/resources/requests/memory","value":"512Mi"}]' || true
+          --type=json -p '[{"op":"replace","path":"/spec/template/spec/containers/0/resources/limits/memory","value":"2Gi"},{"op":"replace","path":"/spec/template/spec/containers/0/resources/requests/memory","value":"512Mi"},{"op":"replace","path":"/spec/template/spec/containers/0/resources/limits/cpu","value":"2"},{"op":"replace","path":"/spec/template/spec/containers/0/resources/requests/cpu","value":"500m"}]' || true
       # A single manager pod serves every admission request, so one restart takes
       # all admission down and scenarios fail with a refused connection or a
       # webhook timeout. Production runs three.

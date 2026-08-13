@@ -1,0 +1,28 @@
+# The test identity, kept out of the IPAM deployment.
+#
+# The suites and the fixture seeder reach IPAM by impersonating
+# e2e-tenant-tester with the three iam.miloapis.com project extras. IPAM
+# authorizes through a delegated SubjectAccessReview against the host
+# apiserver, so that impersonated user needs ordinary RBAC of its own.
+#
+# It binds the nso-ipam-tenant ClusterRole from
+# config/dependencies/ipam/overlay/rbac.yaml rather than restating the rules:
+# the tester must hold exactly what the operator holds, and two copies of a
+# permission set drift.
+#
+# Nothing grants the *right to impersonate* here. The seeder runs as the kind
+# admin credential, which is in system:masters and already authorized for
+# everything; only the NSO manager's ServiceAccount needs an explicit
+# impersonation grant, and that ships with the deployment.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: nso-ipam-tenant-e2e
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: nso-ipam-tenant
+subjects:
+  - kind: User
+    apiGroup: rbac.authorization.k8s.io
+    name: e2e-tenant-tester

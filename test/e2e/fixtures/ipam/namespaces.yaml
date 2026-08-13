@@ -1,0 +1,58 @@
+# Namespaces carrying the labels the mapped-namespace strategy really writes,
+# so a scenario exercises the production decode path rather than a hand-written
+# approximation of it.
+#
+# Applied to BOTH clusters. The label is written on downstream namespaces in
+# production, but the consumer here is the NetworkInterfaceClaim reconciler:
+# it runs on the upstream cell and resolveProject reads the namespace of the
+# CLAIM through the cell client. Claims live upstream, so upstream is where
+# these must exist for a project to resolve at all.
+#
+# meta.datumapis.com/upstream-cluster-name is ENCODED: a "cluster-" prefix with
+# every "/" written as "_" (see internal/downstreamclient/mappednamespace.go,
+# UpstreamClusterNameFromLabel). A fixture that writes the bare cluster name
+# passes on its own and fails against the real path.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ipam-e2e-alpha
+  labels:
+    meta.datumapis.com/upstream-cluster-name: cluster-project-alpha
+    meta.datumapis.com/upstream-namespace: default
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ipam-e2e-beta
+  labels:
+    meta.datumapis.com/upstream-cluster-name: cluster-project-beta
+    meta.datumapis.com/upstream-namespace: default
+---
+# What this env's single-cluster provider actually stamps: the provider engages
+# one cluster named "single".
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ipam-e2e-single
+  labels:
+    meta.datumapis.com/upstream-cluster-name: cluster-single
+    meta.datumapis.com/upstream-namespace: default
+---
+# Pre-#196 encoding: the cluster name carried a leading slash, so "/project-alpha"
+# encodes to "cluster-_project-alpha" and must still decode to "project-alpha".
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ipam-e2e-legacy
+  labels:
+    meta.datumapis.com/upstream-cluster-name: cluster-_project-alpha
+    meta.datumapis.com/upstream-namespace: default
+---
+# No cluster-name label at all. Anything resolving a project from a downstream
+# namespace must fail closed here, not fall back to a default project.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ipam-e2e-unlabeled
+  labels:
+    meta.datumapis.com/upstream-namespace: default

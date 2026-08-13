@@ -1,0 +1,137 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+#
+# A namespace that names no project allocates nothing. ipam-e2e-unlabeled
+# carries no meta.datumapis.com/upstream-cluster-name label, and the only safe
+# outcome is a refusal naming the missing label — a fallback to some default
+# project would hand one tenant another tenant's address space.
+#
+# The absence of an allocation is only evidence if this suite can see an
+# allocation when there is one, so a canary claim in ipam-e2e-alpha allocates
+# for real and is read back through the same context, in the same step, before
+# any absence is asserted. Without it a dead IPAM, a stale kubeconfig or a
+# typo'd context all read as a pass.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: networkinterfaceclaim-unlabeled-namespace
+spec:
+  cluster: nso-standard
+  steps:
+    - name: A claim in an unlabelled namespace is refused
+      try:
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Network
+              metadata:
+                name: nic-unlabeled-net
+                namespace: ipam-e2e-unlabeled
+              spec:
+                ipam:
+                  mode: Auto
+                ipFamilies:
+                  - IPv4
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterfaceClaim
+              metadata:
+                name: nic-unlabeled
+                namespace: ipam-e2e-unlabeled
+              spec:
+                network:
+                  name: nic-unlabeled-net
+                ipFamilies:
+                  - IPv4
+        - assert:
+            timeout: 120s
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterfaceClaim
+              metadata:
+                name: nic-unlabeled
+                namespace: ipam-e2e-unlabeled
+              status:
+                (conditions[?type == 'Bound'] | [0]):
+                  status: "False"
+                  reason: ProjectUnresolved
+                (conditions[?type == 'Allocated'] | [0].status): "False"
+                (conditions[?type == 'Ready'] | [0].status): "False"
+                (contains(conditions[?type == 'Bound'] | [0].message, 'meta.datumapis.com/upstream-cluster-name')): true
+      catch:
+        - script:
+            content: |
+              kubectl -n ipam-e2e-unlabeled get networkinterfaceclaim -o yaml
+              kubectl -n network-services-operator-system logs -l app.kubernetes.io/name=network-services-operator --tail=100
+
+    - name: A labelled namespace allocates, so an empty result means empty
+      description: |
+        The positive control. This claim differs from the refused one only in
+        the namespace it lives in.
+      try:
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Network
+              metadata:
+                name: nic-unlabeled-canary-net
+                namespace: ipam-e2e-alpha
+              spec:
+                ipam:
+                  mode: Auto
+                ipFamilies:
+                  - IPv4
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterfaceClaim
+              metadata:
+                name: nic-unlabeled-canary
+                namespace: ipam-e2e-alpha
+              spec:
+                network:
+                  name: nic-unlabeled-canary-net
+                ipFamilies:
+                  - IPv4
+        - assert:
+            timeout: 120s
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterfaceClaim
+              metadata:
+                name: nic-unlabeled-canary
+                namespace: ipam-e2e-alpha
+              status:
+                (conditions[?type == 'Allocated'] | [0].status): "True"
+
+    - name: Nothing was bound and nothing was allocated
+      description: |
+        Every IPClaim in both project namespaces is listed and matched against
+        the refused claim's name prefix, rather than probing the two names the
+        naming scheme happens to derive today — a leak under an unexpected name
+        is exactly what a derivation bug produces.
+      try:
+        - script:
+            content: |
+              set -eu
+              IPAM_KUBECONFIG="${TMPDIR:-/tmp}/.ipam-tenant-impersonation.yaml"
+              ipam() { ctx=$1; shift; KUBECONFIG=$IPAM_KUBECONFIG kubectl --context "$ctx" -n default "$@"; }
+              names() { ipam "$1" get ipclaim -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}'; }
+
+              alpha=$(names tenant-project-alpha)
+              beta=$(names tenant-project-beta)
+              echo "project-alpha IPClaims: $(echo $alpha)"
+              echo "project-beta  IPClaims: $(echo $beta)"
+
+              echo "$alpha" | grep -qx 'nic-unlabeled-canary-f-ipv4' \
+                || { echo "the canary's IPClaim is not visible in project-alpha — this suite cannot see allocations, so it cannot prove their absence"; exit 1; }
+
+              for found in $(printf '%s\n%s\n' "$alpha" "$beta" | grep -E '^nic-unlabeled-(f|c)-' || true); do
+                echo "an unresolvable claim allocated ${found}"
+                exit 1
+              done
+
+              if kubectl -n ipam-e2e-unlabeled get networkinterface nic-unlabeled >/dev/null 2>&1; then
+                echo "an unresolvable claim still created a NetworkInterface"
+                exit 1
+              fi

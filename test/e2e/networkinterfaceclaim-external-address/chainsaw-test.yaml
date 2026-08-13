@@ -1,0 +1,86 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+#
+# A class named in spec.addresses[] yields an EXTERNAL address, and it arrives
+# bare.
+#
+# datum-public-v4 carries no default-class annotation, so the only way to reach
+# 198.51.100.0/24 is to name it. It is a /32 class: IPAM hands back
+# "198.51.100.x/32" and the interface must publish "198.51.100.x". A prefix
+# surviving into externalAddresses is a regression, not a fixture quirk.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: networkinterfaceclaim-external-address
+spec:
+  cluster: nso-standard
+  steps:
+    - name: A claim naming datum-public-v4 binds
+      try:
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Network
+              metadata:
+                name: nic-external-net
+                namespace: ipam-e2e-alpha
+              spec:
+                ipam:
+                  mode: Auto
+                ipFamilies:
+                  - IPv4
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterfaceClaim
+              metadata:
+                name: nic-external
+                namespace: ipam-e2e-alpha
+              spec:
+                network:
+                  name: nic-external-net
+                ipFamilies:
+                  - IPv4
+                addresses:
+                  - class: datum-public-v4
+        - assert:
+            timeout: 120s
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterfaceClaim
+              metadata:
+                name: nic-external
+                namespace: ipam-e2e-alpha
+              status:
+                externalAddresses:
+                  - family: IPv4
+                    class: datum-public-v4
+                (length(externalAddresses || `[]`) == `1`): true
+                (length(addresses || `[]`) == `1`): true
+                (conditions[?type == 'Allocated'] | [0].status): "True"
+      catch:
+        - script:
+            content: |
+              kubectl -n ipam-e2e-alpha get networkinterfaceclaim,networkinterface -o yaml
+              kubectl -n network-services-operator-system logs -l app.kubernetes.io/name=network-services-operator --tail=100
+
+    - name: The external address is bare and comes from project-alpha's public range
+      try:
+        - script:
+            content: |
+              set -eu
+              IPAM_KUBECONFIG="${TMPDIR:-/tmp}/.ipam-tenant-impersonation.yaml"
+
+              external=$(kubectl -n ipam-e2e-alpha get networkinterfaceclaim nic-external -o jsonpath='{.status.externalAddresses[0].address}')
+              internal=$(kubectl -n ipam-e2e-alpha get networkinterfaceclaim nic-external -o jsonpath='{.status.addresses[0].address}')
+              held=$(KUBECONFIG=$IPAM_KUBECONFIG kubectl --context tenant-project-alpha -n default \
+                get ipclaim nic-external-c-datum-public-v4 -o jsonpath='{.status.allocatedCIDR}')
+              echo "external=${external} internal=${internal} ipam=${held}"
+
+              echo "$external" | grep -Eq '^198\.51\.100\.[0-9]+$' || { echo "external address ${external} is not a bare address from 198.51.100.0/24"; exit 1; }
+              echo "$internal" | grep -Eq '^10\.128\.[0-9]+\.[0-9]+/32$' || { echo "internal address ${internal} is not a /32 from 10.128.0.0/16"; exit 1; }
+              [ "$held" = "${external}/32" ] || { echo "IPAM holds ${held}, claim published ${external}"; exit 1; }
+
+              # The named class must not have leaked into the internal address
+              # list, and the family entry must not have taken the public class.
+              class=$(kubectl -n ipam-e2e-alpha get networkinterfaceclaim nic-external -o jsonpath='{.status.addresses[0].class}')
+              [ -z "$class" ] || { echo "the family address was allocated from class ${class}, want the default class"; exit 1; }

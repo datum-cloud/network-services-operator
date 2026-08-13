@@ -1,0 +1,146 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+#
+# A dual-stack claim binds, and the addresses it publishes are real allocations
+# in the upstream IPAM service rather than values NSO invented.
+#
+# The claim lives in ipam-e2e-alpha, whose upstream-cluster-name label routes to
+# project-alpha; the IPClaims are therefore read back through the
+# tenant-project-alpha impersonation context, in the project namespace named by
+# the cell namespace's upstream-namespace label (default).
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: networkinterfaceclaim-dual-stack
+spec:
+  cluster: nso-standard
+  steps:
+    - name: Create a dual-stack network
+      try:
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Network
+              metadata:
+                name: nic-dualstack-net
+                namespace: ipam-e2e-alpha
+              spec:
+                ipam:
+                  mode: Auto
+                ipFamilies:
+                  - IPv4
+                  - IPv6
+
+    - name: A dual-stack claim binds and publishes one address per family
+      description: |
+        Programmed stays Unknown because no data plane reports the attachment in
+        this env, so Ready is never True. Waiting for Ready here would hang.
+      try:
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterfaceClaim
+              metadata:
+                name: nic-dualstack
+                namespace: ipam-e2e-alpha
+              spec:
+                network:
+                  name: nic-dualstack-net
+                ipFamilies:
+                  - IPv6
+                  - IPv4
+        - assert:
+            timeout: 120s
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterfaceClaim
+              metadata:
+                name: nic-dualstack
+                namespace: ipam-e2e-alpha
+              status:
+                networkInterfaceRef:
+                  name: nic-dualstack
+                addresses:
+                  - family: IPv6
+                    primary: true
+                  - family: IPv4
+                (length(addresses || `[]`) == `2`): true
+                (conditions[?type == 'Bound'] | [0].status): "True"
+                (conditions[?type == 'Allocated'] | [0].status): "True"
+                (conditions[?type == 'Programmed'] | [0].status): Unknown
+                (length(conditions[?type == 'Ready' && status == 'True']) == `0`): true
+      catch:
+        - script:
+            content: |
+              kubectl -n ipam-e2e-alpha get networkinterfaceclaim,networkinterface -o yaml
+              kubectl -n network-services-operator-system logs -l app.kubernetes.io/name=network-services-operator --tail=100
+
+    - name: The interface the claim names exists and is bound to it
+      try:
+        - assert:
+            timeout: 60s
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterface
+              metadata:
+                name: nic-dualstack
+                namespace: ipam-e2e-alpha
+              spec:
+                claimRef:
+                  name: nic-dualstack
+              status:
+                phase: Bound
+
+    - name: Every published address is an IPClaim held in project-alpha
+      description: |
+        The assertion this environment exists to make. Each address is looked up
+        in IPAM under its deterministic name — <claim>-f-ipv6 / <claim>-f-ipv4 —
+        and must be Bound to exactly the CIDR NSO published.
+      try:
+        - script:
+            content: |
+              set -eu
+              IPAM_KUBECONFIG="${TMPDIR:-/tmp}/.ipam-tenant-impersonation.yaml"
+              ipam() { ctx=$1; shift; KUBECONFIG=$IPAM_KUBECONFIG kubectl --context "tenant-$ctx" -n default "$@"; }
+
+              for family in ipv6 ipv4; do
+                upper=$(echo "$family" | tr '[:lower:]' '[:upper:]' | sed 's/IPV/IPv/')
+                published=$(kubectl -n ipam-e2e-alpha get networkinterfaceclaim nic-dualstack \
+                  -o "jsonpath={.status.addresses[?(@.family=='${upper}')].address}")
+                allocated=$(ipam project-alpha get ipclaim "nic-dualstack-f-${family}" -o jsonpath='{.status.allocatedCIDR}')
+                phase=$(ipam project-alpha get ipclaim "nic-dualstack-f-${family}" -o jsonpath='{.status.phase}')
+
+                echo "${upper}: claim=${published} ipam=${allocated} (${phase})"
+                [ -n "$published" ] || { echo "claim published no ${upper} address"; exit 1; }
+                [ "$phase" = "Bound" ] || { echo "IPClaim nic-dualstack-f-${family} is ${phase}, want Bound"; exit 1; }
+                [ "$published" = "$allocated" ] || { echo "claim published ${published}, IPAM holds ${allocated}"; exit 1; }
+              done
+
+              # Addresses on the interface are always CIDRs, host prefix included.
+              # A bare address here is a regression.
+              v6=$(kubectl -n ipam-e2e-alpha get networkinterfaceclaim nic-dualstack -o "jsonpath={.status.addresses[?(@.family=='IPv6')].address}")
+              v4=$(kubectl -n ipam-e2e-alpha get networkinterfaceclaim nic-dualstack -o "jsonpath={.status.addresses[?(@.family=='IPv4')].address}")
+              echo "$v6" | grep -Eq '^2001:db8:a[0-9a-f]{3}:.*/96$' || { echo "IPv6 ${v6} is not a /96 out of project-alpha's 2001:db8:a000::/36"; exit 1; }
+              echo "$v4" | grep -Eq '^10\.128\.[0-9]+\.[0-9]+/32$' || { echo "IPv4 ${v4} is not a /32 out of project-alpha's 10.128.0.0/16"; exit 1; }
+
+    - name: Deleting the claim releases both addresses
+      try:
+        - delete:
+            timeout: 120s
+            ref:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterfaceClaim
+              name: nic-dualstack
+              namespace: ipam-e2e-alpha
+        - script:
+            content: |
+              set -eu
+              IPAM_KUBECONFIG="${TMPDIR:-/tmp}/.ipam-tenant-impersonation.yaml"
+              ipam() { KUBECONFIG=$IPAM_KUBECONFIG kubectl --context tenant-project-alpha -n default "$@"; }
+
+              ipam get ipclass datum-endpoint-v4 >/dev/null \
+                || { echo "project-alpha's fixtures are not readable through this context, so an empty IPClaim list means nothing"; exit 1; }
+
+              for found in $(ipam get ipclaim -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' | grep -E '^nic-dualstack-' || true); do
+                echo "IPClaim ${found} still exists in project-alpha after the claim was deleted"
+                exit 1
+              done

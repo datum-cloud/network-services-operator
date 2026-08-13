@@ -1,0 +1,104 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+#
+# reclaimPolicy: Delete returns every address to IPAM when the claim goes away.
+#
+# The interface disappearing proves nothing on its own — an address that stays
+# claimed in IPAM after its consumer is gone is leaked space that no one can
+# name. The release is therefore asserted in IPAM, over all three claim kinds
+# the interface holds: both family entries and the named class.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: networkinterfaceclaim-reclaim-delete
+spec:
+  cluster: nso-standard
+  steps:
+    - name: Claim two families and a named class with reclaimPolicy Delete
+      try:
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Network
+              metadata:
+                name: nic-delete-net
+                namespace: ipam-e2e-alpha
+              spec:
+                ipam:
+                  mode: Auto
+                ipFamilies:
+                  - IPv4
+                  - IPv6
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterfaceClaim
+              metadata:
+                name: nic-delete
+                namespace: ipam-e2e-alpha
+              spec:
+                network:
+                  name: nic-delete-net
+                ipFamilies:
+                  - IPv6
+                  - IPv4
+                reclaimPolicy: Delete
+                addresses:
+                  - class: datum-public-v4
+        - assert:
+            timeout: 120s
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterfaceClaim
+              metadata:
+                name: nic-delete
+                namespace: ipam-e2e-alpha
+              status:
+                (conditions[?type == 'Allocated'] | [0].status): "True"
+      catch:
+        - script:
+            content: |
+              kubectl -n ipam-e2e-alpha get networkinterfaceclaim,networkinterface -o yaml
+              kubectl -n network-services-operator-system logs -l app.kubernetes.io/name=network-services-operator --tail=100
+
+    - name: All three addresses are held in IPAM
+      try:
+        - script:
+            content: |
+              set -eu
+              IPAM_KUBECONFIG="${TMPDIR:-/tmp}/.ipam-tenant-impersonation.yaml"
+              for name in nic-delete-f-ipv6 nic-delete-f-ipv4 nic-delete-c-datum-public-v4; do
+                phase=$(KUBECONFIG=$IPAM_KUBECONFIG kubectl --context tenant-project-alpha -n default \
+                  get ipclaim "$name" -o jsonpath='{.status.phase}' 2>/dev/null || true)
+                echo "${name}: ${phase:-missing}"
+                [ "$phase" = "Bound" ] || { echo "IPClaim ${name} is ${phase:-missing}, want Bound"; exit 1; }
+              done
+
+    - name: Deleting the claim releases every address
+      try:
+        - delete:
+            timeout: 120s
+            ref:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterfaceClaim
+              name: nic-delete
+              namespace: ipam-e2e-alpha
+        - script:
+            content: |
+              set -eu
+              IPAM_KUBECONFIG="${TMPDIR:-/tmp}/.ipam-tenant-impersonation.yaml"
+              ipam() { KUBECONFIG=$IPAM_KUBECONFIG kubectl --context tenant-project-alpha -n default "$@"; }
+
+              ipam get ipclass datum-public-v4 >/dev/null \
+                || { echo "project-alpha's fixtures are not readable through this context, so an empty IPClaim list means nothing"; exit 1; }
+
+              for found in $(ipam get ipclaim -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' | grep -E '^nic-delete-' || true); do
+                echo "IPClaim ${found} survived the claim it was allocated for"
+                exit 1
+              done
+        - error:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterface
+              metadata:
+                name: nic-delete
+                namespace: ipam-e2e-alpha

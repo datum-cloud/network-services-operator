@@ -1,0 +1,77 @@
+# Two RBAC layers are required to reach IPAM as a project.
+#
+# 1. The caller impersonates a user plus the three iam.miloapis.com extras that
+#    carry the project. The kube-apiserver front proxy re-emits those extras as
+#    X-Remote-Extra-*, which is where IPAM reads the tenant from.
+# 2. IPAM authorizes through a delegated SubjectAccessReview against the host
+#    apiserver, so the IMPERSONATED user needs ordinary RBAC of its own.
+#
+# The kind admin credential is in system:masters and is authorized for
+# everything already, so only the NSO manager's ServiceAccount needs the
+# impersonation grant below.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: nso-ipam-impersonator
+rules:
+  - apiGroups: [""]
+    resources: ["users"]
+    verbs: ["impersonate"]
+    resourceNames: ["nso-ipam-agent"]
+  - apiGroups: ["authentication.k8s.io"]
+    resources:
+      - "userextras/iam.miloapis.com/parent-name"
+      - "userextras/iam.miloapis.com/parent-type"
+      - "userextras/iam.miloapis.com/parent-api-group"
+    verbs: ["impersonate"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: nso-ipam-impersonator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: nso-ipam-impersonator
+subjects:
+  - kind: ServiceAccount
+    name: network-services-operator-controller-manager
+    namespace: network-services-operator-system
+---
+# ipclasses is not optional: every claim resolves its class on create, so a
+# subject without it gets a 403 on every allocation.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: nso-ipam-tenant
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "create", "delete"]
+  - apiGroups: ["ipam.miloapis.com"]
+    resources:
+      - "ippools"
+      - "ippools/status"
+      - "ipclasses"
+      - "ipclasses/status"
+      - "ipclaims"
+      - "ipclaims/status"
+      - "ipallocations"
+      - "ipallocations/status"
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: nso-ipam-tenant
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: nso-ipam-tenant
+subjects:
+  # The identity the NSO manager impersonates. The test suites impersonate a
+  # different one, bound to this same role from test/e2e/fixtures/ipam/rbac.yaml —
+  # test identities do not belong in the deployment.
+  - kind: User
+    apiGroup: rbac.authorization.k8s.io
+    name: nso-ipam-agent

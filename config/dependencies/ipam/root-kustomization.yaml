@@ -1,0 +1,70 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# The composed IPAM deployment: the published bundle plus this env's additions.
+#
+# NOT named kustomization.yaml on purpose. It only builds inside the staging
+# directory test-infra:ipam-bundle assembles, where `bundle/` is the extracted
+# OCI artifact; in the repo it would be a kustomization that cannot build, and
+# `task validate-kustomizations` discovers every kustomization.yaml there is.
+# The self-contained half lives in overlay/ and is validated there.
+
+namespace: ipam-system
+
+resources:
+  - bundle/base
+  - overlay
+
+components:
+  - bundle/components/namespace
+  - bundle/components/api-registration
+  # Gives the base's CSI volume something it can actually issue from. The base
+  # points it at selfsigned-cluster-issuer, and a SelfSigned issuer signs every
+  # certificate with a freshly generated key — so each pod would get an
+  # unrelated cert chained to nothing and the APIService would have no stable CA
+  # to trust. This component bootstraps a real CA from that selfsigned issuer
+  # and repoints the volume at it, which is what makes per-pod issuance work.
+  #
+  # It lives here rather than in overlay/ because it comes from the fetched
+  # bundle, which does not exist on a clean checkout — overlay/ has to stay
+  # self-contained so validate-kustomizations can build it.
+  - bundle/components/cert-manager-ca
+
+# Pulled from ghcr by digest, not by the bundle's own tag: the release workflow
+# republishes on every push, so a tag can move under us. The tag is recorded for
+# legibility. Update it, the digest, and the bundle pins in
+# Taskfile.test-infra.yml together.
+#
+# This is an index digest, so the node resolves its own platform. Genuinely
+# multi-arch since upstream 13bd2c8: before that, both platform entries of the
+# index pointed at one layer holding an x86-64 binary, which ran under emulation
+# on arm64 and panicked inside pgx mid-suite. The two platforms now carry
+# distinct layers and the arm64 entry is a real AArch64 binary — verified by
+# reading the ELF header, not by trusting the manifest, because the manifest is
+# exactly what was wrong before.
+images:
+  - name: ghcr.io/milo-os/ipam
+    newName: ghcr.io/milo-os/ipam
+    # tag v0.0.0-13bd2c8
+    digest: sha256:4fb11adf3f748d41f5e3d7f9d3357eb7aafe211e356297a0d845d579dacffe8f
+
+patches:
+  - path: patches/apiservice-patch.yaml
+  - path: patches/deployment-patch.yaml
+    target:
+      kind: Deployment
+      name: ipam-apiserver
+  - path: patches/single-replica-patch.yaml
+    target:
+      kind: Deployment
+      name: ipam-apiserver
+  - path: patches/networkpolicy-apiserver-egress-patch.yaml
+    target:
+      kind: NetworkPolicy
+      name: ipam-apiserver
+
+labels:
+  - includeSelectors: false
+    includeTemplates: true
+    pairs:
+      environment: test-infra

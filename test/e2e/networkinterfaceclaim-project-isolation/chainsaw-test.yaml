@@ -1,0 +1,204 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+#
+# Two cell namespaces routing to two projects allocate out of two disjoint
+# address spaces through the SAME class name, and neither project can see the
+# other's IPClaims.
+#
+# datum-endpoint-v4 is the default IPv4 class in both projects and is backed by
+# 10.128.0.0/16 in project-alpha and 10.129.0.0/16 in project-beta
+# (test/e2e/fixtures/ipam/RANGES.md). A controller that routed every allocation
+# to one project would still bind both claims — the octet is what makes the
+# routing visible.
+#
+# ipam-e2e-legacy carries the pre-#196 "cluster-_project-alpha" label encoding
+# and must land in project-alpha's space too.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: networkinterfaceclaim-project-isolation
+spec:
+  cluster: nso-standard
+  steps:
+    - name: Claim an IPv4 address in each project
+      try:
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Network
+              metadata:
+                name: nic-isolation-net
+                namespace: ipam-e2e-alpha
+              spec:
+                ipam:
+                  mode: Auto
+                ipFamilies:
+                  - IPv4
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Network
+              metadata:
+                name: nic-isolation-net
+                namespace: ipam-e2e-beta
+              spec:
+                ipam:
+                  mode: Auto
+                ipFamilies:
+                  - IPv4
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Network
+              metadata:
+                name: nic-isolation-net
+                namespace: ipam-e2e-legacy
+              spec:
+                ipam:
+                  mode: Auto
+                ipFamilies:
+                  - IPv4
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterfaceClaim
+              metadata:
+                name: nic-isolation-alpha
+                namespace: ipam-e2e-alpha
+              spec:
+                network:
+                  name: nic-isolation-net
+                ipFamilies:
+                  - IPv4
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterfaceClaim
+              metadata:
+                name: nic-isolation-beta
+                namespace: ipam-e2e-beta
+              spec:
+                network:
+                  name: nic-isolation-net
+                ipFamilies:
+                  - IPv4
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterfaceClaim
+              metadata:
+                name: nic-isolation-legacy
+                namespace: ipam-e2e-legacy
+              spec:
+                network:
+                  name: nic-isolation-net
+                ipFamilies:
+                  - IPv4
+        - assert:
+            timeout: 120s
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterfaceClaim
+              metadata:
+                name: nic-isolation-alpha
+                namespace: ipam-e2e-alpha
+              status:
+                (conditions[?type == 'Allocated'] | [0].status): "True"
+        - assert:
+            timeout: 120s
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterfaceClaim
+              metadata:
+                name: nic-isolation-beta
+                namespace: ipam-e2e-beta
+              status:
+                (conditions[?type == 'Allocated'] | [0].status): "True"
+        - assert:
+            timeout: 120s
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterfaceClaim
+              metadata:
+                name: nic-isolation-legacy
+                namespace: ipam-e2e-legacy
+              status:
+                (conditions[?type == 'Allocated'] | [0].status): "True"
+      catch:
+        - script:
+            content: |
+              kubectl get networkinterfaceclaim -A -o yaml
+              kubectl -n network-services-operator-system logs -l app.kubernetes.io/name=network-services-operator --tail=100
+
+    - name: Each namespace allocated out of its own project's space
+      try:
+        - script:
+            content: |
+              set -eu
+              address() { kubectl -n "$1" get networkinterfaceclaim "$2" -o jsonpath='{.status.addresses[0].address}'; }
+
+              alpha=$(address ipam-e2e-alpha nic-isolation-alpha)
+              beta=$(address ipam-e2e-beta nic-isolation-beta)
+              legacy=$(address ipam-e2e-legacy nic-isolation-legacy)
+              echo "alpha=${alpha} beta=${beta} legacy=${legacy}"
+
+              echo "$alpha" | grep -Eq '^10\.128\.[0-9]+\.[0-9]+/32$' || { echo "ipam-e2e-alpha got ${alpha}, want project-alpha's 10.128.0.0/16"; exit 1; }
+              echo "$beta" | grep -Eq '^10\.129\.[0-9]+\.[0-9]+/32$' || { echo "ipam-e2e-beta got ${beta}, want project-beta's 10.129.0.0/16"; exit 1; }
+              echo "$legacy" | grep -Eq '^10\.128\.[0-9]+\.[0-9]+/32$' || { echo "ipam-e2e-legacy (legacy label encoding) got ${legacy}, want project-alpha's 10.128.0.0/16"; exit 1; }
+              [ "$alpha" != "$beta" ] || { echo "both projects were handed ${alpha}"; exit 1; }
+
+    - name: Neither project can see the other's IPClaims
+      description: |
+        Read back through the per-project impersonation contexts. A project that
+        can read the other's IPClaim means the impersonation is not scoping
+        anything and every other assertion in this suite is coincidence.
+
+        Each context earns the right to be believed first: the two project
+        contexts must find their own IPClaim, and tenant-platform — which is
+        meant to read nothing — must still reach IPAM, proving its blindness is
+        scoping rather than a broken kubeconfig. Its NotFound comes from the
+        server, and the IPClasses it cannot see are the same ones a project can.
+      try:
+        - script:
+            content: |
+              set -eu
+              IPAM_KUBECONFIG="${TMPDIR:-/tmp}/.ipam-tenant-impersonation.yaml"
+              ipam() { ctx=$1; shift; KUBECONFIG=$IPAM_KUBECONFIG kubectl --context "$ctx" -n default "$@"; }
+
+              visible() { ipam "$1" get ipclaim "$2" >/dev/null 2>&1; }
+
+              visible tenant-project-alpha nic-isolation-alpha-f-ipv4 || { echo "project-alpha cannot see its own IPClaim"; exit 1; }
+              visible tenant-project-beta nic-isolation-beta-f-ipv4 || { echo "project-beta cannot see its own IPClaim"; exit 1; }
+              visible tenant-project-alpha nic-isolation-legacy-f-ipv4 || { echo "the legacy-labelled namespace did not allocate in project-alpha"; exit 1; }
+
+              KUBECONFIG=$IPAM_KUBECONFIG kubectl --context tenant-platform get --raw /apis/ipam.miloapis.com/v1alpha1 >/dev/null \
+                || { echo "tenant-platform cannot reach IPAM at all, so it proves nothing about scoping"; exit 1; }
+              classes=$(ipam tenant-project-alpha get ipclass -o name | wc -l | tr -d ' ')
+              [ "$classes" -gt 0 ] || { echo "project-alpha sees no IPClass, so the fixtures are not readable through this context"; exit 1; }
+              platform_classes=$(KUBECONFIG=$IPAM_KUBECONFIG kubectl --context tenant-platform get ipclass -o name | wc -l | tr -d ' ')
+              [ "$platform_classes" -eq 0 ] || { echo "tenant-platform reads ${platform_classes} IPClass objects; it is meant to hold no project"; exit 1; }
+              denial=$(ipam tenant-platform get ipclaim nic-isolation-alpha-f-ipv4 2>&1 || true)
+              echo "$denial" | grep -Eq 'NotFound|Forbidden|forbidden|not found' \
+                || { echo "tenant-platform's refusal did not come from the server: ${denial}"; exit 1; }
+
+              ! visible tenant-project-beta nic-isolation-alpha-f-ipv4 || { echo "project-beta can read project-alpha's IPClaim"; exit 1; }
+              ! visible tenant-project-alpha nic-isolation-beta-f-ipv4 || { echo "project-alpha can read project-beta's IPClaim"; exit 1; }
+              ! visible tenant-platform nic-isolation-alpha-f-ipv4 || { echo "the project-less context can read project-alpha's IPClaim"; exit 1; }
+              ! visible tenant-platform nic-isolation-beta-f-ipv4 || { echo "the project-less context can read project-beta's IPClaim"; exit 1; }
+
+    - name: The address IPAM holds is the address the claim published
+      try:
+        - script:
+            content: |
+              set -eu
+              IPAM_KUBECONFIG="${TMPDIR:-/tmp}/.ipam-tenant-impersonation.yaml"
+              allocated() { KUBECONFIG=$IPAM_KUBECONFIG kubectl --context "$1" -n default get ipclaim "$2" -o jsonpath='{.status.allocatedCIDR}'; }
+
+              check() {
+                published=$(kubectl -n "$1" get networkinterfaceclaim "$2" -o jsonpath='{.status.addresses[0].address}')
+                held=$(allocated "$3" "$2-f-ipv4")
+                [ "$published" = "$held" ] || { echo "$2 published ${published}, IPAM holds ${held}"; exit 1; }
+              }
+
+              check ipam-e2e-alpha nic-isolation-alpha tenant-project-alpha
+              check ipam-e2e-beta nic-isolation-beta tenant-project-beta
+              check ipam-e2e-legacy nic-isolation-legacy tenant-project-alpha

@@ -1,0 +1,289 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+#
+# reclaimPolicy: Retain is a promise about specific addresses: a claim of the
+# same name that comes back gets the SAME interface holding the SAME addresses,
+# because a workload that is rescheduled keeps the address its peers, its DNS,
+# and its firewall rules already know.
+#
+# The addresses are captured before the claim is deleted and compared verbatim
+# after it is recreated. Asserting that the new claim merely has "an" address
+# would pass against a controller that reallocated, which is the exact failure
+# this policy exists to prevent.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: networkinterfaceclaim-reclaim-retain
+spec:
+  cluster: nso-standard
+  steps:
+    - name: A retained claim binds and its addresses are recorded
+      try:
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Network
+              metadata:
+                name: nic-retain-net
+                namespace: ipam-e2e-alpha
+              spec:
+                ipam:
+                  mode: Auto
+                ipFamilies:
+                  - IPv4
+                  - IPv6
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterfaceClaim
+              metadata:
+                name: nic-retain
+                namespace: ipam-e2e-alpha
+              spec:
+                network:
+                  name: nic-retain-net
+                ipFamilies:
+                  - IPv6
+                  - IPv4
+                reclaimPolicy: Retain
+                addresses:
+                  - class: datum-public-v4
+        - assert:
+            timeout: 120s
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterfaceClaim
+              metadata:
+                name: nic-retain
+                namespace: ipam-e2e-alpha
+              status:
+                (conditions[?type == 'Allocated'] | [0].status): "True"
+        - script:
+            content: |
+              set -eu
+              record="${TMPDIR:-/tmp}/nic-retain-addresses"
+              kubectl -n ipam-e2e-alpha get networkinterfaceclaim nic-retain -o jsonpath='{.status.addresses[?(@.family=="IPv6")].address} {.status.addresses[?(@.family=="IPv4")].address} {.status.externalAddresses[0].address} {.status.networkInterfaceRef.name}' > "$record"
+              cat "$record"
+              grep -Eq '^2001:db8:a[0-9a-f]{3}:[^ ]*/96 10\.128\.[0-9]+\.[0-9]+/32 198\.51\.100\.[0-9]+ nic-retain$' "$record" \
+                || { echo "recorded an unexpected address set"; exit 1; }
+      catch:
+        - script:
+            content: |
+              kubectl -n ipam-e2e-alpha get networkinterfaceclaim,networkinterface -o yaml
+              kubectl -n network-services-operator-system logs -l app.kubernetes.io/name=network-services-operator --tail=100
+      cleanup:
+        - description: >
+            Safety net, and not optional. A retained interface and its IPClaims
+            outlive the claim by design, and deleting a retained IPClaim leaves
+            its IPAllocation behind in IPAM — which keeps holding the address
+            AND blocks the name, so the next run of this test is refused with
+            RetainedAddressConflict. Every layer therefore has to be cleared
+            here: claim, interface, IPClaims, then the allocations that held the
+            recorded addresses.
+          script:
+            content: |
+              set -u
+              IPAM_KUBECONFIG="${TMPDIR:-/tmp}/.ipam-tenant-impersonation.yaml"
+              record="${TMPDIR:-/tmp}/nic-retain-addresses"
+              ipam() { KUBECONFIG=$IPAM_KUBECONFIG kubectl --context tenant-project-alpha -n default "$@"; }
+
+              kubectl -n ipam-e2e-alpha delete networkinterfaceclaim nic-retain --ignore-not-found --timeout=60s
+              kubectl -n ipam-e2e-alpha delete networkinterface nic-retain --ignore-not-found --timeout=60s
+              ipam delete ipclaim nic-retain-f-ipv6 nic-retain-f-ipv4 nic-retain-c-datum-public-v4 \
+                --ignore-not-found --timeout=60s
+
+              if [ -f "$record" ]; then
+                read -r want6 want4 wantext _ < "$record" || true
+                purged=0
+                for cidr in "$want6" "$want4" "${wantext}/32"; do
+                  leftover=$(ipam get ipallocation -o "jsonpath={range .items[?(@.status.allocatedCIDR=='${cidr}')]}{.metadata.name} {end}")
+                  if [ -n "$leftover" ]; then
+                    echo "orphaned IPAllocation holding ${cidr}: ${leftover}"
+                    ipam delete ipallocation $leftover --ignore-not-found
+                    purged=$((purged + 1))
+                  fi
+                done
+                echo "orphaned IPAllocations purged: ${purged}"
+              fi
+              rm -f "$record"
+
+    - name: Deleting the claim leaves the interface and its addresses in place
+      try:
+        - delete:
+            timeout: 120s
+            ref:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterfaceClaim
+              name: nic-retain
+              namespace: ipam-e2e-alpha
+        - assert:
+            timeout: 60s
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterface
+              metadata:
+                name: nic-retain
+                namespace: ipam-e2e-alpha
+              spec:
+                (claimRef == null): true
+              status:
+                phase: Available
+        - script:
+            content: |
+              set -eu
+              IPAM_KUBECONFIG="${TMPDIR:-/tmp}/.ipam-tenant-impersonation.yaml"
+              read -r want6 want4 wantext _ < "${TMPDIR:-/tmp}/nic-retain-addresses" || true
+
+              held() { KUBECONFIG=$IPAM_KUBECONFIG kubectl --context tenant-project-alpha -n default get ipclaim "$1" -o jsonpath='{.status.allocatedCIDR}'; }
+
+              [ "$(held nic-retain-f-ipv6)" = "$want6" ] || { echo "IPv6 address was not retained in IPAM"; exit 1; }
+              [ "$(held nic-retain-f-ipv4)" = "$want4" ] || { echo "IPv4 address was not retained in IPAM"; exit 1; }
+              [ "$(held nic-retain-c-datum-public-v4)" = "${wantext}/32" ] || { echo "the external address was not retained in IPAM"; exit 1; }
+
+    - name: A claim asking for a different reclaim policy cannot adopt it
+      description: |
+        The delete-and-recreate route to the wedge the CEL immutability closes
+        in place. These addresses were allocated under Retain and IPAM freezes
+        that onto the allocation, so a Delete claim adopting them would strand
+        what it was told to release. It has to be refused at bind.
+      try:
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterfaceClaim
+              metadata:
+                name: nic-retain
+                namespace: ipam-e2e-alpha
+              spec:
+                network:
+                  name: nic-retain-net
+                ipFamilies:
+                  - IPv6
+                  - IPv4
+                reclaimPolicy: Delete
+                addresses:
+                  - class: datum-public-v4
+        - assert:
+            timeout: 120s
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterfaceClaim
+              metadata:
+                name: nic-retain
+                namespace: ipam-e2e-alpha
+              status:
+                (conditions[?type == 'Bound'] | [0]):
+                  status: "False"
+                  reason: ReclaimPolicyMismatch
+                (conditions[?type == 'Allocated'] | [0].status): "False"
+                (contains(conditions[?type == 'Bound'] | [0].message, 'reclaimPolicy')): true
+        - assert:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterface
+              metadata:
+                name: nic-retain
+                namespace: ipam-e2e-alpha
+              spec:
+                reclaimPolicy: Retain
+                (claimRef == null): true
+        - delete:
+            timeout: 120s
+            ref:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterfaceClaim
+              name: nic-retain
+              namespace: ipam-e2e-alpha
+
+    - name: A claim of the same name rebinds the same interface with the same addresses
+      try:
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterfaceClaim
+              metadata:
+                name: nic-retain
+                namespace: ipam-e2e-alpha
+              spec:
+                network:
+                  name: nic-retain-net
+                ipFamilies:
+                  - IPv6
+                  - IPv4
+                reclaimPolicy: Retain
+                addresses:
+                  - class: datum-public-v4
+        - assert:
+            timeout: 120s
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterfaceClaim
+              metadata:
+                name: nic-retain
+                namespace: ipam-e2e-alpha
+              status:
+                networkInterfaceRef:
+                  name: nic-retain
+                (conditions[?type == 'Bound'] | [0].status): "True"
+                (conditions[?type == 'Allocated'] | [0].status): "True"
+        - script:
+            content: |
+              set -eu
+              read -r want6 want4 wantext wantiface < "${TMPDIR:-/tmp}/nic-retain-addresses" || true
+
+              got6=$(kubectl -n ipam-e2e-alpha get networkinterfaceclaim nic-retain -o 'jsonpath={.status.addresses[?(@.family=="IPv6")].address}')
+              got4=$(kubectl -n ipam-e2e-alpha get networkinterfaceclaim nic-retain -o 'jsonpath={.status.addresses[?(@.family=="IPv4")].address}')
+              gotext=$(kubectl -n ipam-e2e-alpha get networkinterfaceclaim nic-retain -o jsonpath='{.status.externalAddresses[0].address}')
+              gotiface=$(kubectl -n ipam-e2e-alpha get networkinterfaceclaim nic-retain -o jsonpath='{.status.networkInterfaceRef.name}')
+              echo "before: ${want6} ${want4} ${wantext} ${wantiface}"
+              echo "after:  ${got6} ${got4} ${gotext} ${gotiface}"
+
+              [ "$got6" = "$want6" ] || { echo "IPv6 address changed across the rebind"; exit 1; }
+              [ "$got4" = "$want4" ] || { echo "IPv4 address changed across the rebind"; exit 1; }
+              [ "$gotext" = "$wantext" ] || { echo "the external address changed across the rebind"; exit 1; }
+              [ "$gotiface" = "$wantiface" ] || { echo "the claim bound a different interface"; exit 1; }
+        - assert:
+            timeout: 60s
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterface
+              metadata:
+                name: nic-retain
+                namespace: ipam-e2e-alpha
+                annotations:
+                  networking.datumapis.com/allocation-claim: nic-retain
+              spec:
+                claimRef:
+                  name: nic-retain
+              status:
+                phase: Bound
+
+    - name: The reclaim policy cannot be edited after creation
+      description: |
+        A retained interface is given up by deleting the interface, not by
+        relaxing the claim that holds it. Editing reclaimPolicy in place is
+        refused at admission: NSO freezes the policy into IPAM when the address
+        is first allocated and cannot revise it there, so a claim that changed
+        its mind would delete an IPClaim that IPAM still believes is retained
+        and strand the allocation.
+      try:
+        - patch:
+            expect:
+              - check:
+                  ($error != null): true
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterfaceClaim
+              metadata:
+                name: nic-retain
+                namespace: ipam-e2e-alpha
+              spec:
+                reclaimPolicy: Delete
+        - assert:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterfaceClaim
+              metadata:
+                name: nic-retain
+                namespace: ipam-e2e-alpha
+              spec:
+                reclaimPolicy: Retain

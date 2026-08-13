@@ -1,0 +1,16 @@
+---
+# Trust the CA that signs the serving certificate, rather than skipping
+# verification.
+#
+# cert-manager's cainjector reads the ipam-ca Certificate and writes its CA into
+# spec.caBundle. That is the same CA the CSI driver issues each pod's serving
+# cert from, so aggregation verifies a real chain. This replaced
+# insecureSkipTLSVerify: true, which was needed only while the serving cert was
+# self-signed and chained to nothing — the bundle's own component already sets
+# that field to false, so this patch no longer has to touch it.
+apiVersion: apiregistration.k8s.io/v1
+kind: APIService
+metadata:
+  name: v1alpha1.ipam.miloapis.com
+  annotations:
+    cert-manager.io/inject-ca-from: ipam-system/ipam-ca

@@ -1,0 +1,191 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+#
+# Deleting a retained interface hands its addresses back.
+#
+# A retained interface sits unbound with no claim left to carry a finalizer on
+# its behalf, which is exactly when it looks disposable. Before the interface
+# grew its own finalizer, deleting one left its IPClaims alive with nothing in
+# NSO naming them: capacity gone, nothing reporting it, and the obvious manual
+# remedy — deleting those IPClaims by hand — stranded an IPAllocation per claim
+# and wedged the name permanently.
+#
+# So this asserts the release in IPAM, and asserts that the state which made
+# the manual remedy tempting no longer exists.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: networkinterfaceclaim-interface-release
+spec:
+  cluster: nso-standard
+  steps:
+    - name: A retained claim binds and its interface carries a finalizer
+      description: |
+        The finalizer and the allocation-claim annotation are what make the
+        release possible at all: the first holds the delete open, the second
+        records which claim the IPClaims were minted under so they can still be
+        found once the claim is gone.
+      try:
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Network
+              metadata:
+                name: nic-ifrelease-net
+                namespace: ipam-e2e-alpha
+              spec:
+                ipam:
+                  mode: Auto
+                ipFamilies:
+                  - IPv4
+                  - IPv6
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterfaceClaim
+              metadata:
+                name: nic-ifrelease
+                namespace: ipam-e2e-alpha
+              spec:
+                network:
+                  name: nic-ifrelease-net
+                ipFamilies:
+                  - IPv6
+                  - IPv4
+                reclaimPolicy: Retain
+                addresses:
+                  - class: datum-public-v4
+        - assert:
+            timeout: 120s
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterfaceClaim
+              metadata:
+                name: nic-ifrelease
+                namespace: ipam-e2e-alpha
+              status:
+                (conditions[?type == 'Allocated'] | [0].status): "True"
+        - assert:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterface
+              metadata:
+                name: nic-ifrelease
+                namespace: ipam-e2e-alpha
+                annotations:
+                  networking.datumapis.com/allocation-claim: nic-ifrelease
+                (contains(finalizers, 'networking.datumapis.com/networkinterface-release')): true
+      catch:
+        - script:
+            content: |
+              kubectl -n ipam-e2e-alpha get networkinterfaceclaim,networkinterface -o yaml
+              kubectl -n network-services-operator-system logs -l app.kubernetes.io/name=network-services-operator --tail=100
+      cleanup:
+        - description: >
+            Safety net. Everything this test creates outlives its claim by
+            design, so a failure part-way through would otherwise hold three
+            addresses in project-alpha for every later run.
+          script:
+            content: |
+              set -u
+              IPAM_KUBECONFIG="${TMPDIR:-/tmp}/.ipam-tenant-impersonation.yaml"
+              ipam() { KUBECONFIG=$IPAM_KUBECONFIG kubectl --context tenant-project-alpha -n default "$@"; }
+
+              kubectl -n ipam-e2e-alpha delete networkinterfaceclaim nic-ifrelease --ignore-not-found --timeout=60s
+              kubectl -n ipam-e2e-alpha delete networkinterface nic-ifrelease --ignore-not-found --timeout=60s
+              leftover=$(ipam get ipclaim -o jsonpath='{range .items[*]}{.metadata.name} {end}' | tr ' ' '\n' | grep -E '^nic-ifrelease-' || true)
+              [ -z "$leftover" ] || ipam delete ipclaim $leftover --ignore-not-found --timeout=60s
+              orphans=$(ipam get ipallocation -o name)
+              [ -z "$orphans" ] || ipam delete $orphans --ignore-not-found
+              echo "orphaned IPAllocations purged: $(echo "$orphans" | grep -c . || true)"
+
+    - name: The addresses are held in IPAM and survive the claim
+      try:
+        - script:
+            content: |
+              set -eu
+              IPAM_KUBECONFIG="${TMPDIR:-/tmp}/.ipam-tenant-impersonation.yaml"
+              ipam() { KUBECONFIG=$IPAM_KUBECONFIG kubectl --context tenant-project-alpha -n default "$@"; }
+              held() { ipam get ipclaim -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' | grep -cE '^nic-ifrelease-' || true; }
+
+              [ "$(held)" -eq 3 ] || { echo "expected 3 IPClaims for this interface, found $(held)"; exit 1; }
+        - delete:
+            timeout: 120s
+            ref:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterfaceClaim
+              name: nic-ifrelease
+              namespace: ipam-e2e-alpha
+        - assert:
+            timeout: 60s
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterface
+              metadata:
+                name: nic-ifrelease
+                namespace: ipam-e2e-alpha
+              spec:
+                (claimRef == null): true
+              status:
+                phase: Available
+        - script:
+            content: |
+              set -eu
+              IPAM_KUBECONFIG="${TMPDIR:-/tmp}/.ipam-tenant-impersonation.yaml"
+              ipam() { KUBECONFIG=$IPAM_KUBECONFIG kubectl --context tenant-project-alpha -n default "$@"; }
+              count=$(ipam get ipclaim -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' | grep -cE '^nic-ifrelease-' || true)
+              [ "$count" -eq 3 ] || { echo "a retained interface should still hold its 3 addresses, found ${count}"; exit 1; }
+
+    - name: Deleting the unheld interface releases every address
+      description: |
+        The delete blocks on the interface's finalizer until the release has
+        happened, so an assertion after it returns is asserting a completed
+        release rather than racing one.
+      try:
+        - delete:
+            timeout: 120s
+            ref:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterface
+              name: nic-ifrelease
+              namespace: ipam-e2e-alpha
+        - script:
+            content: |
+              set -eu
+              IPAM_KUBECONFIG="${TMPDIR:-/tmp}/.ipam-tenant-impersonation.yaml"
+              ipam() { KUBECONFIG=$IPAM_KUBECONFIG kubectl --context tenant-project-alpha -n default "$@"; }
+
+              ipam get ipclass datum-public-v4 >/dev/null \
+                || { echo "project-alpha's fixtures are not readable through this context, so an empty IPClaim list means nothing"; exit 1; }
+
+              for found in $(ipam get ipclaim -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' | grep -E '^nic-ifrelease-' || true); do
+                echo "IPClaim ${found} survived the interface that held it"
+                exit 1
+              done
+
+    - name: Nothing is left for an operator to clean up by hand
+      description: |
+        The composition that made this dangerous: stranded IPClaims invite a
+        manual delete, and deleting a Retain-allocated IPClaim leaves an
+        IPAllocation holding the address and blocking the name forever. There
+        is no longer a stranded IPClaim to invite it.
+
+        The IPAllocations themselves still outlive the release — IPAM freezes
+        Retain onto the allocation and nothing revisits it — so the cleanup on
+        the first step purges them and prints the count. That residue is
+        IPAM-side and is not something NSO can assert away today.
+      try:
+        - error:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterface
+              metadata:
+                name: nic-ifrelease
+                namespace: ipam-e2e-alpha
+        - script:
+            content: |
+              set -eu
+              IPAM_KUBECONFIG="${TMPDIR:-/tmp}/.ipam-tenant-impersonation.yaml"
+              ipam() { KUBECONFIG=$IPAM_KUBECONFIG kubectl --context tenant-project-alpha -n default "$@"; }
+              stranded=$(ipam get ipclaim -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' | grep -cE '^nic-ifrelease-' || true)
+              [ "$stranded" -eq 0 ] || { echo "${stranded} IPClaims are stranded with nothing in NSO naming them"; exit 1; }
+              echo "IPAllocations still holding addresses after the release: $(ipam get ipallocation -o name | grep -c . || true)"

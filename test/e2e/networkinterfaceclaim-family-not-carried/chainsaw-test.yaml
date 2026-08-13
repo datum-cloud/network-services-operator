@@ -1,0 +1,134 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+#
+# A claim asking for a family its network does not carry fails, naming the
+# family, and allocates nothing.
+#
+# This is the accidental case, not an exotic one: Network.spec.ipFamilies
+# defaults to [IPv4] and a claim's defaults to [IPv6], so the most minimal claim
+# anyone can write against the most minimal network is exactly this mismatch.
+# The check is NSO's own — it compares the two specs before it ever reaches
+# IPAM — so a green result here says nothing about IPAM and everything about
+# NSO refusing to ask for space it knows is wrong.
+#
+# A second claim on the SAME network, differing only in the family it asks for,
+# allocates for real. It is the control that gives the absence its meaning: an
+# IPAM this suite cannot read at all would otherwise look identical to an IPAM
+# that was never asked.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: networkinterfaceclaim-family-not-carried
+spec:
+  cluster: nso-standard
+  steps:
+    - name: A minimal claim on a default network is refused
+      try:
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Network
+              metadata:
+                name: nic-family-net
+                namespace: ipam-e2e-alpha
+              spec:
+                ipam:
+                  mode: Auto
+        - assert:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Network
+              metadata:
+                name: nic-family-net
+                namespace: ipam-e2e-alpha
+              spec:
+                ipFamilies:
+                  - IPv4
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterfaceClaim
+              metadata:
+                name: nic-family-mismatch
+                namespace: ipam-e2e-alpha
+              spec:
+                network:
+                  name: nic-family-net
+        - assert:
+            timeout: 120s
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterfaceClaim
+              metadata:
+                name: nic-family-mismatch
+                namespace: ipam-e2e-alpha
+              spec:
+                ipFamilies:
+                  - IPv6
+              status:
+                (conditions[?type == 'Bound'] | [0]):
+                  status: "False"
+                  reason: AddressFamilyNotCarried
+                (conditions[?type == 'Allocated'] | [0].status): "False"
+                (conditions[?type == 'Ready'] | [0].status): "False"
+                (contains(conditions[?type == 'Bound'] | [0].message, 'IPv6')): true
+      catch:
+        - script:
+            content: |
+              kubectl -n ipam-e2e-alpha get network,networkinterfaceclaim -o yaml
+              kubectl -n network-services-operator-system logs -l app.kubernetes.io/name=network-services-operator --tail=100
+
+    - name: The same network satisfies the family it does carry
+      description: |
+        The positive control. Identical to the refused claim but for the family
+        it asks for.
+      try:
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterfaceClaim
+              metadata:
+                name: nic-family-canary
+                namespace: ipam-e2e-alpha
+              spec:
+                network:
+                  name: nic-family-net
+                ipFamilies:
+                  - IPv4
+        - assert:
+            timeout: 120s
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterfaceClaim
+              metadata:
+                name: nic-family-canary
+                namespace: ipam-e2e-alpha
+              status:
+                (conditions[?type == 'Allocated'] | [0].status): "True"
+
+    - name: The refusal allocated nothing
+      description: |
+        The whole IPClaim list is matched against the refused claim's prefix
+        rather than the one name today's derivation produces, so an allocation
+        made under a name this suite did not predict is still caught.
+      try:
+        - script:
+            content: |
+              set -eu
+              IPAM_KUBECONFIG="${TMPDIR:-/tmp}/.ipam-tenant-impersonation.yaml"
+              ipam() { KUBECONFIG=$IPAM_KUBECONFIG kubectl --context tenant-project-alpha -n default "$@"; }
+
+              claims=$(ipam get ipclaim -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}')
+              echo "project-alpha IPClaims: $(echo $claims)"
+
+              echo "$claims" | grep -qx 'nic-family-canary-f-ipv4' \
+                || { echo "the canary's IPClaim is not visible in project-alpha — this suite cannot see allocations, so it cannot prove their absence"; exit 1; }
+
+              for found in $(echo "$claims" | grep -E '^nic-family-mismatch-' || true); do
+                echo "a refused claim still allocated ${found}"
+                exit 1
+              done
+
+              if kubectl -n ipam-e2e-alpha get networkinterface nic-family-mismatch >/dev/null 2>&1; then
+                echo "a refused claim still created a NetworkInterface"
+                exit 1
+              fi

@@ -199,6 +199,10 @@ func (r *NetworkPresenceReconciler) ensure(
 		return false, fmt.Errorf("failed reading network %q: %w", networkKey.Name, err)
 	}
 
+	if err := r.stamp(ctx, holders, &network); err != nil {
+		return false, err
+	}
+
 	networkContext, err := r.project(ctx, req, routing, &pair, &network)
 	if err != nil {
 		return false, err
@@ -221,6 +225,38 @@ func (r *NetworkPresenceReconciler) ensure(
 		Reason:  networkingv1alpha.NetworkBindingReasonNetworkContextReady,
 		Message: "Network context is ready.",
 	})
+}
+
+// stamp records the network's UID on every binding declaring the presence, which
+// is what garbage collection keys on. A consumer cannot be asked for it: the
+// binding names a network by name and the UID lives in a control plane the
+// consumer may not read.
+//
+// It runs before the context is written, so a binding is countable by the time
+// anything it caused to exist is.
+func (r *NetworkPresenceReconciler) stamp(
+	ctx context.Context,
+	holders []networkingv1alpha.NetworkBinding,
+	network *networkingv1alpha.Network,
+) error {
+	var errs []error
+	for i := range holders {
+		binding := &holders[i]
+		if binding.Labels[networkingv1alpha.NetworkUIDLabel] == string(network.UID) {
+			continue
+		}
+
+		patch := client.MergeFrom(binding.DeepCopy())
+		if binding.Labels == nil {
+			binding.Labels = map[string]string{}
+		}
+		binding.Labels[networkingv1alpha.NetworkUIDLabel] = string(network.UID)
+
+		if err := r.hub.Patch(ctx, binding, patch); err != nil {
+			errs = append(errs, fmt.Errorf("failed labelling network binding %q: %w", binding.Name, err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // project writes the network's rules into the hub context. Everything a

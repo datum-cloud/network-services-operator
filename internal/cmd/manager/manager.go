@@ -365,40 +365,28 @@ func NewCommand(build BuildInfo) *cobra.Command {
 			// controller needs are already here. It goes on the singleton manager
 			// because the sharded managers run three replicas with leader election
 			// disabled, which would reconcile every hub object three times.
-			if err := (&controller.NetworkPresenceReconciler{
+			networkPresence := &controller.NetworkPresenceReconciler{
 				Projects: controller.NewProjectClusterResolver(mgr),
-			}).SetupWithManager(singletonControllerMgr); err != nil {
+			}
+			if err := networkPresence.SetupWithManager(singletonControllerMgr); err != nil {
 				setupLog.Error(err, "unable to create controller", "controller", "NetworkPresence")
 				os.Exit(1)
 			}
 
-			// Locations are authored in the platform control plane, which the
-			// discovery connection already reaches. The copy is cluster-scoped
-			// and goes on the singleton manager for the same reason the
-			// presence controller does.
-			var platformCluster cluster.Cluster
-			if serverConfig.LocationReplication.Enabled {
-				platformRestConfig, err := serverConfig.Discovery.DiscoveryRestConfig()
-				if err != nil {
-					setupLog.Error(err, "unable to get platform control plane rest config")
-					os.Exit(1)
-				}
-				serverConfig.ProjectClient.ApplyTo(platformRestConfig)
+			platformCluster, err := setupLocationReplicator(serverConfig, singletonControllerMgr)
+			if err != nil {
+				setupLog.Error(err, "unable to create controller", "controller", "LocationReplicator")
+				os.Exit(1)
+			}
 
-				platformCluster, err = cluster.New(platformRestConfig, func(o *cluster.Options) {
-					o.Scheme = scheme
-				})
-				if err != nil {
-					setupLog.Error(err, "failed creating platform control plane cluster")
-					os.Exit(1)
-				}
-
-				if err := (&controller.LocationReplicator{
-					PropagationClusterName: serverConfig.LocationReplication.PropagationClusterName,
-				}).SetupWithManager(singletonControllerMgr, platformCluster); err != nil {
-					setupLog.Error(err, "unable to create controller", "controller", "LocationReplicator")
-					os.Exit(1)
-				}
+			// Network deletion is the other half of the same controller, and it
+			// has to watch project control planes, which only the multicluster
+			// manager engages.
+			if err := (&controller.NetworkPresenceGCReconciler{
+				Presence: networkPresence,
+			}).SetupWithManager(mgr); err != nil {
+				setupLog.Error(err, "unable to create controller", "controller", "NetworkPresenceGC")
+				os.Exit(1)
 			}
 
 			if err := (&controller.NetworkPolicyReconciler{}).SetupWithManager(mgr); err != nil {
@@ -670,6 +658,39 @@ func setupWebhooks(mgr mcmanager.Manager, serverConfig config.NetworkServicesOpe
 		}
 	}
 	return "", nil
+}
+
+// setupLocationReplicator reaches the platform control plane through the
+// discovery connection the operator already opens, and returns the cluster to
+// start, or nil when replication is off.
+func setupLocationReplicator(
+	serverConfig config.NetworkServicesOperator,
+	mgr manager.Manager,
+) (cluster.Cluster, error) {
+	if !serverConfig.LocationReplication.Enabled {
+		return nil, nil
+	}
+
+	platformRestConfig, err := serverConfig.Discovery.DiscoveryRestConfig()
+	if err != nil {
+		return nil, fmt.Errorf("unable to get platform control plane rest config: %w", err)
+	}
+	serverConfig.ProjectClient.ApplyTo(platformRestConfig)
+
+	platformCluster, err := cluster.New(platformRestConfig, func(o *cluster.Options) {
+		o.Scheme = scheme
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed creating platform control plane cluster: %w", err)
+	}
+
+	if err := (&controller.LocationReplicator{
+		PropagationClusterName: serverConfig.LocationReplication.PropagationClusterName,
+	}).SetupWithManager(mgr, platformCluster); err != nil {
+		return nil, err
+	}
+
+	return platformCluster, nil
 }
 
 // setupNetworkInterfaceClaimController wires the controllers to one IPAM

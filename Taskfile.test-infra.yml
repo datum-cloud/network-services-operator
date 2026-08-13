@@ -176,6 +176,11 @@ tasks:
     cmds:
       - echo "🔧 deploying NSO manager (upstream)"
       - '{{.KUSTOMIZE}} build config/e2e | kubectl --context {{.UPSTREAM_CTX}} apply --server-side=true --force-conflicts -f -'
+      # The HTTPProxy controller builds every proxy's gateway with the
+      # operator-configured class, so that class must outlive any single
+      # scenario. A test that provisions it owns it, and chainsaw deletes it on
+      # cleanup while gateways are still terminating, wedging their namespaces.
+      - kubectl --context {{.UPSTREAM_CTX}} apply -f config/upstream_resources/gatewayclass.yaml
       # Match production: with the extension server handling proxy configuration,
       # NSO must not also emit its own patch policies. The shared config file is
       # also used by an older path that still relies on them, so we patch the live

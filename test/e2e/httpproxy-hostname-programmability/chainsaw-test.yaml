@@ -11,31 +11,20 @@
 # is refused with a message naming the field they wrote.
 #
 # The proxy's own gateway uses the operator-configured class
-# ("datum-external-global-proxy"), not a per-test class, so that class must
-# exist upstream. It is cluster-scoped and shared, so apply is idempotent.
+# ("datum-external-global-proxy"), which the test environment provisions. A
+# scenario must not provision it: chainsaw would then delete that shared,
+# cluster-scoped class on cleanup while gateways still reference it, and the
+# gateway controller cannot resolve a class it cannot find, so it never removes
+# its finalizer and the namespace terminates forever.
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
   name: httpproxy-hostname-programmability
 spec:
   cluster: nso-standard
-  # Each programmed proxy leaves a Gateway and a replicated downstream set to
-  # tear down, which does not finish inside the 30s default.
   timeouts:
-    cleanup: 420s
+    cleanup: 120s
   steps:
-    - name: Ensure the shared upstream GatewayClass exists
-      try:
-        - apply:
-            cluster: nso-standard
-            resource:
-              apiVersion: gateway.networking.k8s.io/v1
-              kind: GatewayClass
-              metadata:
-                name: datum-external-global-proxy
-              spec:
-                controllerName: gateway.networking.datumapis.com/external-global-proxy-controller
-
     - name: A Host header override differing only in case is programmed
       description: |
         The production case. Host header values are case-insensitive (RFC 7230)

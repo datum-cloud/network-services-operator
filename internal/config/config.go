@@ -86,6 +86,95 @@ type NetworkServicesOperator struct {
 	// ProjectClient configures the Kubernetes client connection used for both
 	// project discovery and per-project cluster connections.
 	ProjectClient ClientConnectionConfig `json:"projectClient,omitempty"`
+
+	// IPAM configures the connection to the IPAM aggregated API server that
+	// network interface addresses are claimed from.
+	IPAM IPAMConfig `json:"ipam,omitempty"`
+
+	// NetworkInterface configures the controller that fulfils
+	// NetworkInterfaceClaims.
+	NetworkInterface NetworkInterfaceConfig `json:"networkInterface,omitempty"`
+}
+
+// +k8s:deepcopy-gen=true
+
+// IPAMConfig describes how the operator reaches the IPAM API server. One
+// connection serves every project. Each request names its project through
+// impersonation.
+type IPAMConfig struct {
+	// KubeconfigPath is the path to a kubeconfig file pointing at the cluster
+	// serving the IPAM API. When empty, the operator's own in-cluster config is
+	// used.
+	KubeconfigPath string `json:"kubeconfigPath,omitempty"`
+
+	// ImpersonateUsername is the user the operator impersonates when claiming
+	// addresses. IPAM checks this user's permissions, not the operator's.
+	//
+	// +default="nso-ipam-agent"
+	ImpersonateUsername string `json:"impersonateUsername,omitempty"`
+
+	// Client configures the Kubernetes client connection to the IPAM API
+	// server.
+	Client ClientConnectionConfig `json:"client,omitempty"`
+}
+
+func SetDefaults_IPAMConfig(obj *IPAMConfig) {
+	if obj.ImpersonateUsername == "" {
+		obj.ImpersonateUsername = "nso-ipam-agent"
+	}
+}
+
+func (c *IPAMConfig) RestConfig() (*rest.Config, error) {
+	var (
+		cfg *rest.Config
+		err error
+	)
+	if c.KubeconfigPath == "" {
+		cfg, err = ctrl.GetConfig()
+	} else {
+		cfg, err = clientcmd.BuildConfigFromFlags("", c.KubeconfigPath)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	c.Client.ApplyTo(cfg)
+	return cfg, nil
+}
+
+// +k8s:deepcopy-gen=true
+
+// NetworkInterfaceConfig configures the NetworkInterfaceClaim controller.
+type NetworkInterfaceConfig struct {
+	// Enabled registers the NetworkInterfaceClaim controller. Leave it off on a
+	// control plane that serves no location.
+	Enabled bool `json:"enabled,omitempty"`
+
+	// Location is the location this control plane serves. Claims carry no
+	// location of their own, so every claim allocates against this one.
+	Location LocationConfig `json:"location,omitempty"`
+}
+
+// +k8s:deepcopy-gen=true
+
+type LocationConfig struct {
+	Name string `json:"name,omitempty"`
+
+	Namespace string `json:"namespace,omitempty"`
+}
+
+func (c *NetworkInterfaceConfig) validate() error {
+	if !c.Enabled {
+		return nil
+	}
+	var errs []error
+	if c.Location.Name == "" {
+		errs = append(errs, errors.New("location.name is required when enabled is true"))
+	}
+	if c.Location.Namespace == "" {
+		errs = append(errs, errors.New("location.namespace is required when enabled is true"))
+	}
+	return errors.Join(errs...)
 }
 
 // +k8s:deepcopy-gen=true
@@ -1272,6 +1361,9 @@ func (c *NetworkServicesOperator) Validate() error {
 	}
 	if err := c.Gateway.validate(); err != nil {
 		return fmt.Errorf("gateway: %w", err)
+	}
+	if err := c.NetworkInterface.validate(); err != nil {
+		return fmt.Errorf("networkInterface: %w", err)
 	}
 	return nil
 }

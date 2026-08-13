@@ -1,0 +1,281 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+#
+# An interface advertising an address IPAM no longer holds is reported loudly
+# and gates nothing.
+#
+# Both halves matter. IPAM considers the address free and will hand it to the
+# next claimant — measured: a fresh datum-endpoint-v4 claim in project-alpha
+# came back with the very address the interface was still advertising — so an
+# operator has to find out. But re-allocating would renumber a workload that is
+# running on that address right now, which is worse than the duplicate, so the
+# claim must stay Bound and keep advertising what it is actually using.
+#
+# The state is built by deleting the IPClaim out from under a bound interface.
+# That is not a state NSO can reach on its own; it stands in for an address lost
+# to an IPAM-side repair, restore, or operator error.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: networkinterfaceclaim-missing-allocation
+spec:
+  cluster: nso-standard
+  steps:
+    - name: A claim binds and holds one address
+      try:
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Network
+              metadata:
+                name: nic-missingalloc-net
+                namespace: ipam-e2e-alpha
+              spec:
+                ipam:
+                  mode: Auto
+                ipFamilies:
+                  - IPv4
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterfaceClaim
+              metadata:
+                name: nic-missingalloc
+                namespace: ipam-e2e-alpha
+              spec:
+                network:
+                  name: nic-missingalloc-net
+                ipFamilies:
+                  - IPv4
+        - assert:
+            timeout: 120s
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterfaceClaim
+              metadata:
+                name: nic-missingalloc
+                namespace: ipam-e2e-alpha
+              status:
+                (conditions[?type == 'Bound'] | [0].status): "True"
+                (conditions[?type == 'Allocated'] | [0].status): "True"
+      catch:
+        - script:
+            content: |
+              kubectl -n ipam-e2e-alpha get networkinterfaceclaim,networkinterface -o yaml
+              kubectl -n ipam-e2e-alpha get events --field-selector involvedObject.name=nic-missingalloc
+              kubectl -n network-services-operator-system logs -l app.kubernetes.io/name=network-services-operator --tail=100
+      cleanup:
+        - script:
+            content: |
+              set -u
+              IPAM=$(git rev-parse --show-toplevel)/hack/ipam-tenant-kubectl.sh
+              ipam() { "$IPAM" project-alpha -n default "$@"; }
+
+              kubectl -n ipam-e2e-alpha delete networkinterfaceclaim nic-missingalloc --ignore-not-found --timeout=60s
+              kubectl -n ipam-e2e-alpha delete networkinterface nic-missingalloc --ignore-not-found --timeout=60s
+              leftover=$(ipam get ipclaim -o jsonpath='{range .items[*]}{.metadata.name} {end}' | tr ' ' '\n' | grep -E '^nic-missingalloc-' || true)
+              [ -z "$leftover" ] || ipam delete ipclaim $leftover --ignore-not-found --timeout=60s
+              orphans=$(ipam get ipallocation -o name)
+              [ -z "$orphans" ] || ipam delete $orphans --ignore-not-found
+              rm -f "${TMPDIR:-/tmp}/nic-missingalloc-address"
+
+    - name: The allocation disappears from IPAM
+      try:
+        - script:
+            content: |
+              set -eu
+              IPAM=$(git rev-parse --show-toplevel)/hack/ipam-tenant-kubectl.sh
+              ipam() { "$IPAM" project-alpha -n default "$@"; }
+
+              address=$(kubectl -n ipam-e2e-alpha get networkinterfaceclaim nic-missingalloc -o jsonpath='{.status.addresses[0].address}')
+              [ -n "$address" ] || { echo "the claim never published an address"; exit 1; }
+              echo "$address" > "${TMPDIR:-/tmp}/nic-missingalloc-address"
+
+              held=$(ipam get ipclaim nic-missingalloc-f-ipv4 -o jsonpath='{.status.allocatedCIDR}')
+              [ "$held" = "$address" ] || { echo "IPAM holds ${held}, the claim publishes ${address}"; exit 1; }
+
+              ipam delete ipclaim nic-missingalloc-f-ipv4 --timeout=60s
+              ! ipam get ipclaim nic-missingalloc-f-ipv4 >/dev/null 2>&1 || { echo "the IPClaim is still there"; exit 1; }
+        - description: >
+            Every event for this claim is cleared first. The claim name is fixed
+            and events outlive a run by about an hour, so an event from an
+            earlier run would otherwise satisfy the next one — the assertion
+            would stop testing anything the day the controller went quiet.
+
+            Then the claim is nudged, because nothing watches IPAM: this forces
+            the reconcile an operator's next edit would have caused anyway. The
+            nudge value is nanoseconds, not seconds. Both nudges in this suite
+            can land in the same second, and an annotate that writes the value
+            already there does not change the object, raises no watch event and
+            causes no reconcile — leaving the previous step's condition in place
+            until the next assert times out.
+          script:
+            content: |
+              set -eu
+              kubectl -n ipam-e2e-alpha delete events \
+                --field-selector involvedObject.name=nic-missingalloc --ignore-not-found
+              kubectl -n ipam-e2e-alpha annotate networkinterfaceclaim nic-missingalloc \
+                e2e.datum.net/nudge="$(date +%s%N)" --overwrite
+
+    - name: The loss is reported as a Warning on the claim
+      description: |
+        The event is re-emitted every reconcile so the signal stays alive rather
+        than ageing out, so this asserts at least one rather than exactly one.
+      try:
+        - script:
+            timeout: 120s
+            content: |
+              set -eu
+              address=$(cat "${TMPDIR:-/tmp}/nic-missingalloc-address")
+
+              for _ in $(seq 1 30); do
+                count=$(kubectl -n ipam-e2e-alpha get events \
+                  --field-selector involvedObject.name=nic-missingalloc,reason=AddressAllocationMissing \
+                  -o jsonpath='{range .items[*]}{.type}{"\n"}{end}' | grep -c '^Warning$' || true)
+                [ "$count" -ge 1 ] && break
+                sleep 3
+              done
+
+              [ "$count" -ge 1 ] || { echo "no Warning/AddressAllocationMissing event was recorded on the claim"; exit 1; }
+
+              message=$(kubectl -n ipam-e2e-alpha get events \
+                --field-selector involvedObject.name=nic-missingalloc,reason=AddressAllocationMissing \
+                -o jsonpath='{.items[0].message}')
+              echo "event: ${message}"
+              case "$message" in
+                *"$address"*) ;;
+                *) echo "the event does not name the address ${address}"; exit 1 ;;
+              esac
+              case "$message" in
+                *nic-missingalloc-f-ipv4*) ;;
+                *) echo "the event does not name the missing IPClaim"; exit 1 ;;
+              esac
+              case "$message" in
+                *project-alpha*) ;;
+                *) echo "the event does not name the project"; exit 1 ;;
+              esac
+
+    - name: Allocated goes False and the address is kept anyway
+      description: |
+        Allocated says every requested address is held. It is not, so it reads
+        False — reporting True here would be the status contradicting a check the
+        controller had just failed. Ready follows it down.
+
+        Bound stays True and the address does not move: a workload is running on
+        it, and re-allocating to make the status tidy would renumber a live
+        interface to report a problem the operator has to resolve in IPAM either
+        way. Loud, and still not destructive.
+      try:
+        - assert:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterfaceClaim
+              metadata:
+                name: nic-missingalloc
+                namespace: ipam-e2e-alpha
+              status:
+                (conditions[?type == 'Bound'] | [0].status): "True"
+                (conditions[?type == 'Allocated'] | [0]):
+                  status: "False"
+                  reason: AddressAllocationMissing
+                (conditions[?type == 'Ready'] | [0]):
+                  status: "False"
+                  reason: NotAllocated
+        - script:
+            content: |
+              set -eu
+              address=$(cat "${TMPDIR:-/tmp}/nic-missingalloc-address")
+              published=$(kubectl -n ipam-e2e-alpha get networkinterfaceclaim nic-missingalloc -o jsonpath='{.status.addresses[0].address}')
+              advertised=$(kubectl -n ipam-e2e-alpha get networkinterface nic-missingalloc -o jsonpath='{.spec.addresses[0].address}')
+              [ "$published" = "$address" ] || { echo "the claim renumbered to ${published}"; exit 1; }
+              [ "$advertised" = "$address" ] || { echo "the interface renumbered to ${advertised}"; exit 1; }
+
+              message=$(kubectl -n ipam-e2e-alpha get networkinterfaceclaim nic-missingalloc \
+                -o "jsonpath={.status.conditions[?(@.type=='Allocated')].message}")
+              echo "Allocated: ${message}"
+              case "$message" in
+                *"$address"*) ;;
+                *) echo "the condition does not name the address ${address}"; exit 1 ;;
+              esac
+
+    - name: An allocation that moved to another address is caught too
+      description: |
+        The harder half of the same check: the IPClaim exists, under the right
+        name, and holds a DIFFERENT address. Only comparing what IPAM holds
+        against what the interface publishes catches it — a check that stopped
+        at "the IPClaim is there" would call this healthy.
+
+        The blocker claim takes the freed address first, so the recreated one is
+        guaranteed to land somewhere else; without it IPAM hands back the very
+        address that was just released and there is nothing to detect.
+      try:
+        - script:
+            content: |
+              set -eu
+              IPAM=$(git rev-parse --show-toplevel)/hack/ipam-tenant-kubectl.sh
+              ipam() { "$IPAM" project-alpha -n default "$@"; }
+              address=$(cat "${TMPDIR:-/tmp}/nic-missingalloc-address")
+
+              for name in nic-missingalloc-blocker nic-missingalloc-f-ipv4; do
+                ipam apply -f - >/dev/null <<EOF
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPClaim
+              metadata:
+                name: ${name}
+              spec:
+                className: datum-endpoint-v4
+                reclaimPolicy: Delete
+              EOF
+                for _ in $(seq 1 30); do
+                  [ -n "$(ipam get ipclaim "$name" -o jsonpath='{.status.allocatedCIDR}')" ] && break
+                  sleep 2
+                done
+              done
+
+              moved=$(ipam get ipclaim nic-missingalloc-f-ipv4 -o jsonpath='{.status.allocatedCIDR}')
+              echo "interface publishes ${address}; the allocation under its name now holds ${moved}"
+              [ "$moved" != "$address" ] || { echo "the recreated allocation landed on the same address, so there is nothing to detect"; exit 1; }
+
+              kubectl -n ipam-e2e-alpha delete events \
+                --field-selector involvedObject.name=nic-missingalloc --ignore-not-found
+              kubectl -n ipam-e2e-alpha annotate networkinterfaceclaim nic-missingalloc \
+                e2e.datum.net/nudge="$(date +%s%N)" --overwrite
+        - assert:
+            timeout: 120s
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterfaceClaim
+              metadata:
+                name: nic-missingalloc
+                namespace: ipam-e2e-alpha
+              status:
+                (conditions[?type == 'Bound'] | [0].status): "True"
+                (conditions[?type == 'Allocated'] | [0]):
+                  status: "False"
+                  reason: AddressAllocationMissing
+                # Allocated is already False with this reason from the previous
+                # step, so status and reason alone cannot tell the two cases
+                # apart. The message is what proves this reconcile saw the
+                # moved allocation rather than the missing one.
+                (contains(conditions[?type == 'Allocated'] | [0].message, 'is published, but allocation')): true
+        - script:
+            content: |
+              set -eu
+              IPAM=$(git rev-parse --show-toplevel)/hack/ipam-tenant-kubectl.sh
+              ipam() { "$IPAM" project-alpha -n default "$@"; }
+              address=$(cat "${TMPDIR:-/tmp}/nic-missingalloc-address")
+              moved=$(ipam get ipclaim nic-missingalloc-f-ipv4 -o jsonpath='{.status.allocatedCIDR}')
+
+              message=$(kubectl -n ipam-e2e-alpha get networkinterfaceclaim nic-missingalloc \
+                -o "jsonpath={.status.conditions[?(@.type=='Allocated')].message}")
+              echo "Allocated: ${message}"
+              case "$message" in
+                *"$address"*) ;;
+                *) echo "the condition does not name the published address ${address}"; exit 1 ;;
+              esac
+              case "$message" in
+                *"$moved"*) ;;
+                *) echo "the condition does not name the address the allocation actually holds (${moved})"; exit 1 ;;
+              esac
+
+              published=$(kubectl -n ipam-e2e-alpha get networkinterfaceclaim nic-missingalloc -o jsonpath='{.status.addresses[0].address}')
+              [ "$published" = "$address" ] || { echo "the claim renumbered to ${published}"; exit 1; }

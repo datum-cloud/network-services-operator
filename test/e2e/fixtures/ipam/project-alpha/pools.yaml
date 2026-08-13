@@ -1,0 +1,52 @@
+# Ranges are registered in ../RANGES.md. Root pools of one project may not
+# overlap.
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPPool
+metadata:
+  name: datum-network-v6-root
+  labels:
+    nso-fixture: "true"
+spec:
+  cidr: 2001:db8:a000::/36
+  ipFamily: IPv6
+  visibility: consumer
+  classNames:
+    - datum-network-v6
+  allocation:
+    minPrefixLength: 48
+    maxPrefixLength: 48
+    strategy: FirstFit
+---
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPPool
+metadata:
+  name: datum-endpoint-v4-root
+  labels:
+    nso-fixture: "true"
+spec:
+  cidr: 10.128.0.0/16
+  ipFamily: IPv4
+  visibility: consumer
+  classNames:
+    - datum-endpoint-v4
+  allocation:
+    minPrefixLength: 32
+    maxPrefixLength: 32
+    strategy: FirstFit
+---
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPPool
+metadata:
+  name: datum-public-v4-root
+  labels:
+    nso-fixture: "true"
+spec:
+  cidr: 198.51.100.0/24
+  ipFamily: IPv4
+  visibility: consumer
+  classNames:
+    - datum-public-v4
+  allocation:
+    minPrefixLength: 32
+    maxPrefixLength: 32
+    strategy: FirstFit

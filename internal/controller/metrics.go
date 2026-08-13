@@ -17,9 +17,20 @@ const (
 	metricLabelHostname = "hostname"
 	metricLabelSecret   = "secret"
 	metricLabelReason   = "reason"
+	metricLabelProject  = "project"
 )
 
 var (
+	// missingAllocationsTotal counts addresses no IPClaim holds. IPAM may give
+	// the same address to another claim.
+	missingAllocationsTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "nso_network_interface_missing_allocations_total",
+			Help: "Total addresses advertised by a NetworkInterface with no IPClaim holding them, by project.",
+		},
+		[]string{metricLabelProject},
+	)
+
 	// replicatorConflictsTotal counts resource-version conflicts observed by the
 	// gateway-resource-replicator controller. Conflicts arise when the upstream or
 	// downstream API server rejects an update because the local object's

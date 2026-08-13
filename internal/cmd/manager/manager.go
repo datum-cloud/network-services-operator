@@ -50,6 +50,7 @@ import (
 	networkingv1alphawebhooks "go.datum.net/network-services-operator/internal/webhook/v1alpha"
 	webhookgatewayv1alpha1 "go.datum.net/network-services-operator/internal/webhook/v1alpha1"
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
+	ipamv1alpha1 "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -73,6 +74,7 @@ func init() {
 	utilruntime.Must(cmacmev1.AddToScheme(scheme))
 	utilruntime.Must(cmv1.AddToScheme(scheme))
 	utilruntime.Must(dnsv1alpha1.AddToScheme(scheme))
+	utilruntime.Must(ipamv1alpha1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
 
@@ -370,6 +372,13 @@ func NewCommand(build BuildInfo) *cobra.Command {
 				os.Exit(1)
 			}
 
+			if serverConfig.NetworkInterface.Enabled {
+				if err := setupNetworkInterfaceClaimController(serverConfig, mgr); err != nil {
+					setupLog.Error(err, "unable to create controller", "controller", "NetworkInterfaceClaim")
+					os.Exit(1)
+				}
+			}
+
 			if err := (&controller.HTTPProxyReconciler{
 				Config:            serverConfig,
 				DownstreamCluster: downstreamCluster,
@@ -492,48 +501,8 @@ func NewCommand(build BuildInfo) *cobra.Command {
 				}
 			}
 
-			if err := networkinggatewayv1webhooks.SetupGatewayWebhookWithManager(mgr, serverConfig); err != nil {
-				setupLog.Error(err, "unable to create webhook", "webhook", "Gateway")
-				os.Exit(1)
-			}
-
-			if err := networkinggatewayv1webhooks.SetupHTTPRouteWebhookWithManager(mgr, serverConfig); err != nil {
-				setupLog.Error(err, "unable to create webhook", "webhook", "HTTPRoute")
-				os.Exit(1)
-			}
-
-			if err := networkinggatewayv1webhooks.SetupBackendTLSPolicyWebhookWithManager(mgr); err != nil {
-				setupLog.Error(err, "unable to create webhook", "webhook", "HTTPRoute")
-				os.Exit(1)
-			}
-
-			if err := networkingv1alphawebhooks.SetupHTTPProxyWebhookWithManager(mgr); err != nil {
-				setupLog.Error(err, "unable to create webhook", "webhook", "HTTPProxy")
-				os.Exit(1)
-			}
-
-			if err := networkingv1alphawebhooks.SetupDomainWebhookWithManager(mgr); err != nil {
-				setupLog.Error(err, "unable to create webhook", "webhook", "Domain")
-				os.Exit(1)
-			}
-
-			if err = webhookgatewayv1alpha1.SetupBackendTrafficPolicyWebhookWithManager(mgr, serverConfig); err != nil {
-				setupLog.Error(err, "unable to create webhook", "webhook", "BackendTrafficPolicy")
-				os.Exit(1)
-			}
-
-			if err = webhookgatewayv1alpha1.SetupSecurityPolicyWebhookWithManager(mgr, serverConfig); err != nil {
-				setupLog.Error(err, "unable to create webhook", "webhook", "SecurityPolicy")
-				os.Exit(1)
-			}
-
-			if err = webhookgatewayv1alpha1.SetupHTTPRouteFilterWebhookWithManager(mgr, serverConfig); err != nil {
-				setupLog.Error(err, "unable to create webhook", "webhook", "HTTPRouteFilter")
-				os.Exit(1)
-			}
-
-			if err = webhookgatewayv1alpha1.SetupBackendWebhookWithManager(mgr); err != nil {
-				setupLog.Error(err, "unable to create webhook", "webhook", "Backend")
+			if webhook, err := setupWebhooks(mgr, serverConfig); err != nil {
+				setupLog.Error(err, "unable to create webhook", "webhook", webhook)
 				os.Exit(1)
 			}
 
@@ -609,6 +578,88 @@ func NewCommand(build BuildInfo) *cobra.Command {
 type legacyRunnableProvider interface {
 	multicluster.Provider
 	Run(context.Context, mcmanager.Manager) error
+}
+
+// setupWebhooks registers every admission webhook. It returns the name of the
+// webhook that failed.
+func setupWebhooks(mgr mcmanager.Manager, serverConfig config.NetworkServicesOperator) (string, error) {
+	registrations := []struct {
+		name  string
+		setup func() error
+	}{
+		{"Gateway", func() error {
+			return networkinggatewayv1webhooks.SetupGatewayWebhookWithManager(mgr, serverConfig)
+		}},
+		{"HTTPRoute", func() error {
+			return networkinggatewayv1webhooks.SetupHTTPRouteWebhookWithManager(mgr, serverConfig)
+		}},
+		{"BackendTLSPolicy", func() error {
+			return networkinggatewayv1webhooks.SetupBackendTLSPolicyWebhookWithManager(mgr)
+		}},
+		{"HTTPProxy", func() error {
+			return networkingv1alphawebhooks.SetupHTTPProxyWebhookWithManager(mgr)
+		}},
+		{"Domain", func() error {
+			return networkingv1alphawebhooks.SetupDomainWebhookWithManager(mgr)
+		}},
+		{"BackendTrafficPolicy", func() error {
+			return webhookgatewayv1alpha1.SetupBackendTrafficPolicyWebhookWithManager(mgr, serverConfig)
+		}},
+		{"SecurityPolicy", func() error {
+			return webhookgatewayv1alpha1.SetupSecurityPolicyWebhookWithManager(mgr, serverConfig)
+		}},
+		{"HTTPRouteFilter", func() error {
+			return webhookgatewayv1alpha1.SetupHTTPRouteFilterWebhookWithManager(mgr, serverConfig)
+		}},
+		{"Backend", func() error {
+			return webhookgatewayv1alpha1.SetupBackendWebhookWithManager(mgr)
+		}},
+	}
+
+	for _, registration := range registrations {
+		if err := registration.setup(); err != nil {
+			return registration.name, err
+		}
+	}
+	return "", nil
+}
+
+// setupNetworkInterfaceClaimController wires the controllers to one IPAM
+// connection. Impersonation names the project on each request.
+func setupNetworkInterfaceClaimController(
+	serverConfig config.NetworkServicesOperator,
+	mgr mcmanager.Manager,
+) error {
+	ipamRestConfig, err := serverConfig.IPAM.RestConfig()
+	if err != nil {
+		return fmt.Errorf("unable to load IPAM kubeconfig: %w", err)
+	}
+
+	ipamScheme, err := controller.IPAMScheme()
+	if err != nil {
+		return fmt.Errorf("unable to build IPAM scheme: %w", err)
+	}
+
+	ipamClients, err := controller.NewIPAMClientFactory(
+		ipamRestConfig,
+		ipamScheme,
+		serverConfig.IPAM.ImpersonateUsername,
+	)
+	if err != nil {
+		return fmt.Errorf("unable to build IPAM client factory: %w", err)
+	}
+
+	if err := (&controller.NetworkInterfaceClaimReconciler{
+		Config: serverConfig,
+		IPAM:   ipamClients,
+	}).SetupWithManager(mgr); err != nil {
+		return err
+	}
+
+	return (&controller.NetworkInterfaceReconciler{
+		Config: serverConfig,
+		IPAM:   ipamClients,
+	}).SetupWithManager(mgr)
 }
 
 func initializeClusterDiscovery(

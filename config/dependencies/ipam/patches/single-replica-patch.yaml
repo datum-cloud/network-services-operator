@@ -1,0 +1,14 @@
+# One replica, env-only. The IPAM base runs two so a kubelet eviction during a
+# claim CREATE has a second pod to absorb the request — a real concern in
+# production and one this single-node kind cluster cannot exercise anyway.
+#
+# It is not merely unnecessary here, it is actively broken: the second replica
+# reliably hangs with "informer-sync failed: 2 informers not started yet:
+# [*v1.FlowSchema *v1.PriorityLevelConfiguration]" and never becomes Ready,
+# which wedges the readiness gate while the first replica serves fine.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ipam-apiserver
+spec:
+  replicas: 1

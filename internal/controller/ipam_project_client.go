@@ -14,18 +14,15 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	ipamv1alpha1 "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
+	iamv1alpha1 "go.miloapis.com/milo/pkg/apis/iam/v1alpha1"
+	resourcemanagerv1alpha1 "go.miloapis.com/milo/pkg/apis/resourcemanager/v1alpha1"
 
 	"go.datum.net/network-services-operator/internal/downstreamclient"
 )
 
-const (
-	ipamParentAPIGroupExtraKey = "iam.miloapis.com/parent-api-group"
-	ipamParentTypeExtraKey     = "iam.miloapis.com/parent-type"
-	ipamParentNameExtraKey     = "iam.miloapis.com/parent-name"
-
-	ipamParentAPIGroup = "resourcemanager.miloapis.com"
-	ipamParentType     = "Project"
-)
+// Milo exports no constant for a kind name, so the project kind is spelled
+// here.
+const ipamParentType = "Project"
 
 // IPAMClientFactory returns a client bound to one project. Every IPAM request
 // goes through one, so no request can reach IPAM without naming a project.
@@ -75,9 +72,9 @@ func (f *impersonatingIPAMClientFactory) ClientForProject(project string) (clien
 	cfg.Impersonate = rest.ImpersonationConfig{
 		UserName: f.actAsUsername,
 		Extra: map[string][]string{
-			ipamParentAPIGroupExtraKey: {ipamParentAPIGroup},
-			ipamParentTypeExtraKey:     {ipamParentType},
-			ipamParentNameExtraKey:     {project},
+			iamv1alpha1.ParentAPIGroupExtraKey: {resourcemanagerv1alpha1.GroupVersion.Group},
+			iamv1alpha1.ParentKindExtraKey:     {ipamParentType},
+			iamv1alpha1.ParentNameExtraKey:     {project},
 		},
 	}
 

@@ -188,17 +188,6 @@ tasks:
       # scenario. A test that provisions it owns it, and chainsaw deletes it on
       # cleanup while gateways are still terminating, wedging their namespaces.
       - kubectl --context {{.UPSTREAM_CTX}} apply -f config/upstream_resources/gatewayclass.yaml
-      # Match production: with the extension server handling proxy configuration,
-      # NSO must not also emit its own patch policies. The shared config file is
-      # also used by an older path that still relies on them, so we patch the live
-      # config here rather than editing that file.
-      - |
-        CFG=$(kubectl --context {{.UPSTREAM_CTX}} -n network-services-operator-system get cm network-services-operator-config -o jsonpath='{.data.config\.yaml}')
-        if ! echo "$CFG" | grep -q "eppEmissionEnabled"; then
-          NEW=$(echo "$CFG" | sed 's|^  downstreamGatewayClassName: .*|&\n  eppEmissionEnabled: false|')
-          kubectl --context {{.UPSTREAM_CTX}} -n network-services-operator-system create cm network-services-operator-config \
-            --from-literal=config.yaml="$NEW" --dry-run=client -o yaml | kubectl --context {{.UPSTREAM_CTX}} apply -f -
-        fi
 
   eg-crds:
     desc: "Install the full Gateway-API + Envoy Gateway CRD set (incl ReferenceGrant + EnvoyProxy) on the downstream cluster. The downstream EG chart sets includeCRDs:false, so CRDs are applied separately (matches prod, where CRDs are managed out-of-band)."

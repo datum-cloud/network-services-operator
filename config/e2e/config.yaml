@@ -8,6 +8,9 @@ webhookServer:
 gateway:
   targetDomain: prism.e2e.env.datum.net
   downstreamGatewayClassName: datum-downstream-gateway-e2e
+  # Match production: the extension server configures every proxy, so NSO must
+  # not also emit its own patch policies.
+  eppEmissionEnabled: false
   # Enable DNSRecordSet creation for claimed Gateway hostnames. Requires
   # dns-operator CRDs installed via `task test-infra:dns-crds` (wired into
   # test-infra:up) before the operator starts.

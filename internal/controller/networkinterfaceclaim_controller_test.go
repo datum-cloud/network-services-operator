@@ -586,7 +586,7 @@ func TestNetworkInterfaceClaimRollsBackPartialAllocation(t *testing.T) {
 		[]networkingv1alpha.IPFamily{networkingv1alpha.IPv4Protocol, networkingv1alpha.IPv6Protocol})
 
 	s.ipam.refuse("half-eth0-f-ipv4",
-		ipamerrors.NewPoolExhausted("datum-v4", "IPPool exhausted"))
+		ipamerrors.NewPoolExhausted("datum-v4", `IPPool "datum-v4" is exhausted`))
 
 	claim := s.createClaim("half-eth0", networkingv1alpha.NetworkInterfaceClaimSpec{
 		InterfaceName: "eth0",
@@ -608,10 +608,10 @@ func TestNetworkInterfaceClaimRollsBackPartialAllocation(t *testing.T) {
 	condition := conditionOf(rejected, networkingv1alpha.NetworkInterfaceClaimAllocated)
 	require.Equal(t, metav1.ConditionFalse, condition.Status)
 	require.Equal(t, string(allocationFailureExhausted), condition.Reason)
-	require.Contains(t, condition.Message, "IPPool exhausted",
-		"IPAM's own message is carried through verbatim")
-	require.Contains(t, condition.Message, "datum-v4",
-		"the pool that ran out is what an operator has to widen")
+	require.Equal(t,
+		`No address is left for an IPv4 address: IPPool "datum-v4" is exhausted`,
+		condition.Message,
+		"the condition names the address we wanted and the pool to widen, each once")
 }
 
 func TestNetworkInterfaceRetainRebindsSameAddresses(t *testing.T) {

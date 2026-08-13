@@ -45,7 +45,7 @@ func classRequest() allocationRequest {
 func TestClassifyAllocationFailure(t *testing.T) {
 	for _, tc := range []struct {
 		name string
-		err  error
+		err  *apierrors.StatusError
 		want allocationFailureReason
 	}{
 		{"pool exhausted", ipamerrors.NewPoolExhausted("datum-v4", `IPPool "datum-v4" is exhausted`), allocationFailureExhausted},
@@ -60,9 +60,7 @@ func TestClassifyAllocationFailure(t *testing.T) {
 		{"no project scope", ipamerrors.New(ipamerrors.ReasonNoProjectScope, "ipam: request carries no project scope"), allocationFailureRejected},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			status, ok := tc.err.(*apierrors.StatusError)
-			require.True(t, ok)
-			require.Equal(t, tc.want, classifyAllocationFailure(fromTheWire(t, status)))
+			require.Equal(t, tc.want, classifyAllocationFailure(fromTheWire(t, tc.err)))
 		})
 	}
 }
@@ -92,96 +90,106 @@ func TestClassifyAllocationFailureReadsAnOlderServer(t *testing.T) {
 	require.Equal(t, allocationFailureExhausted, classifyAllocationFailure(fromTheWire(t, legacy)))
 }
 
-// Naming the pool that ran out was the point of asking IPAM for it. A message
-// that says an address ran out without saying what ran out leaves an operator
-// with nothing to widen.
-func TestExhaustionMessageNamesThePool(t *testing.T) {
-	err := fromTheWire(t, ipamerrors.NewPoolExhausted("datum-v4", `IPPool "datum-v4" is exhausted`))
-	message := allocationFailureMessage(classifyAllocationFailure(err), v4Request(), err)
-
-	require.Contains(t, message, "datum-v4", "the pool that ran out belongs in the condition")
-	require.Contains(t, message, "an IPv4 address")
-	require.Contains(t, message, `IPPool "datum-v4" is exhausted`, "IPAM's message is carried verbatim")
-}
-
-// Exhaustion while a level of the class chain is provisioned names no pool. An
-// invented name would send an operator to the wrong place.
-func TestExhaustionMessageWithoutAPoolNamesNone(t *testing.T) {
-	err := fromTheWire(t, ipamerrors.New(ipamerrors.ReasonExhausted, "ipam: pool exhausted"))
-	message := allocationFailureMessage(classifyAllocationFailure(err), classRequest(), err)
-
-	require.NotContains(t, message, "IPPool")
-	require.Contains(t, message, `an address of class "public-v4"`)
-	require.Contains(t, message, "ipam: pool exhausted")
-}
-
-// The refusals that used to be one indistinguishable 400 now say which piece of
-// configuration is missing.
-func TestRejectionMessagesSayWhichConfigurationIsMissing(t *testing.T) {
+// Every branch, rendered whole. A test matching a fragment passes while the
+// rest of the message repeats itself, which is how a doubly-named pool shipped.
+func TestAllocationFailureMessages(t *testing.T) {
 	for _, tc := range []struct {
-		name     string
-		err      *apierrors.StatusError
-		contains string
+		name    string
+		request allocationRequest
+		err     *apierrors.StatusError
+		want    string
 	}{
-		{"class not found", ipamerrors.New(ipamerrors.ReasonClassNotFound, "ipam: class not found"), "no address class"},
-		{"no default class", ipamerrors.New(ipamerrors.ReasonNoDefaultClass, "ipam: no default class"), "no default address class"},
-		{"no offering pool", ipamerrors.New(ipamerrors.ReasonNoOfferingPool, "ipam: no pool offers this class"), "No address pool offers"},
-		{"prefix length", ipamerrors.New(ipamerrors.ReasonPrefixLengthRejected, "prefixLength 20 is outside"), "at the requested size"},
-		{"no project scope", ipamerrors.New(ipamerrors.ReasonNoProjectScope, "ipam: request carries no project scope"), "without a project"},
+		{
+			name:    "exhaustion names the pool once",
+			request: v4Request(),
+			err:     ipamerrors.NewPoolExhausted("datum-v4", `IPPool "datum-v4" is exhausted`),
+			want:    `No address is left for an IPv4 address: IPPool "datum-v4" is exhausted`,
+		},
+		{
+			// No pool accounts for this one, so IPAM's account of which level
+			// of the chain ran out is all there is.
+			name:    "exhaustion with no pool falls back to IPAM",
+			request: classRequest(),
+			err:     ipamerrors.New(ipamerrors.ReasonExhausted, `provisioning IPPool "datum-v4-us-east": ipam: pool exhausted`),
+			want:    `No address is left for an address of class "public-v4": provisioning IPPool "datum-v4-us-east": ipam: pool exhausted`,
+		},
+		{
+			name:    "retained allocation names the allocation once",
+			request: v4Request(),
+			err: ipamerrors.NewRetainedAllocation(ipclaimsResource, "eth0-f-ipv4", "alloc-9f2c",
+				`an allocation under this identity already exists: IPAllocation "alloc-9f2c", retained by an earlier claim of the same name; delete it to reuse the name`),
+			want: `Another allocation still holds the name for an IPv4 address: Operation cannot be fulfilled on ipclaims.ipam.miloapis.com "eth0-f-ipv4": an allocation under this identity already exists: IPAllocation "alloc-9f2c", retained by an earlier claim of the same name; delete it to reuse the name`,
+		},
+		{
+			name:    "scope roles are named once, by IPAM",
+			request: v4Request(),
+			err: ipamerrors.NewScopeRolesMissing([]string{"network", "location"},
+				`scope is missing roles "network", "location" required by uniqueWithin (class "public-v4")`),
+			want: `IPAM would not allocate an IPv4 address: scope is missing roles "network", "location" required by uniqueWithin (class "public-v4")`,
+		},
+		{
+			name:    "an unconfigured class is named by IPAM, with its project",
+			request: classRequest(),
+			err:     ipamerrors.New(ipamerrors.ReasonClassNotFound, `ipam: class not found: "public-v4" in project "shared-infra"`),
+			want:    `IPAM would not allocate an address of class "public-v4": ipam: class not found: "public-v4" in project "shared-infra"`,
+		},
+		{
+			name:    "no pool offers the class",
+			request: classRequest(),
+			err:     ipamerrors.New(ipamerrors.ReasonNoOfferingPool, `ipam: no pool offers this class: class "public-v4" in project "shared-infra"`),
+			want:    `IPAM would not allocate an address of class "public-v4": ipam: no pool offers this class: class "public-v4" in project "shared-infra"`,
+		},
+		{
+			name:    "a failure we cannot classify is still reported",
+			request: v4Request(),
+			err:     apierrors.NewInternalError(errors.New("postgres is unreachable")),
+			want:    "Allocating an IPv4 address failed: Internal error occurred: postgres is unreachable",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := fromTheWire(t, tc.err)
-			message := allocationFailureMessage(classifyAllocationFailure(err), classRequest(), err)
-
-			require.Contains(t, message, tc.contains)
-			require.Contains(t, message, tc.err.ErrStatus.Message, "IPAM's message is carried verbatim")
-			require.NotContains(t, message, "usually means",
-				"the reason is known now, so the message must not hedge")
+			require.Equal(t, tc.want,
+				allocationFailureMessage(classifyAllocationFailure(err), tc.request, err))
 		})
 	}
 }
 
-// A claim short two roles is one refusal naming both, so the condition names
-// both rather than sending an operator back for the second.
-func TestScopeRolesMessageNamesEveryMissingRole(t *testing.T) {
-	err := fromTheWire(t, ipamerrors.NewScopeRolesMissing(
-		[]string{"network", "location"}, "scope is missing roles"))
-	message := allocationFailureMessage(classifyAllocationFailure(err), v4Request(), err)
-
-	require.Contains(t, message, `"network"`)
-	require.Contains(t, message, `"location"`)
-	require.Contains(t, message, "scope roles")
+// The message must never carry a fact twice. An operator reading a condition
+// should learn something from every clause of it.
+func TestMessagesDoNotRepeatThemselves(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		err    *apierrors.StatusError
+		repeat string
+	}{
+		{"pool", ipamerrors.NewPoolExhausted("datum-v4", `IPPool "datum-v4" is exhausted`), "datum-v4"},
+		{
+			"roles",
+			ipamerrors.NewScopeRolesMissing([]string{"location"}, `scope is missing role "location" required by uniqueWithin`),
+			`"location"`,
+		},
+		{
+			"allocation",
+			ipamerrors.NewRetainedAllocation(ipclaimsResource, "eth0-f-ipv4", "alloc-9f2c", `IPAllocation "alloc-9f2c" is retained`),
+			"alloc-9f2c",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := fromTheWire(t, tc.err)
+			message := allocationFailureMessage(classifyAllocationFailure(err), v4Request(), err)
+			require.Contains(t, message, tc.repeat)
+			require.Equal(t, 1, countOccurrences(message, tc.repeat),
+				"%q appears more than once in %q", tc.repeat, message)
+		})
+	}
 }
 
-// The hedge survives for exactly one case: a refusal this build cannot name.
-func TestUnnamedRejectionStillHedges(t *testing.T) {
-	err := fromTheWire(t, apierrors.NewBadRequest("something IPAM has not classified"))
-	require.Equal(t, allocationFailureUnknown, classifyAllocationFailure(err))
-	require.Contains(t,
-		allocationFailureMessage(allocationFailureRejected, classRequest(), err),
-		"usually means")
-}
-
-// The two conflicts are one condition reason to our consumers, but the message
-// names the allocation that has to go when IPAM says which one it is.
-func TestConflictMessageNamesTheRetainedAllocation(t *testing.T) {
-	retained := fromTheWire(t, ipamerrors.NewRetainedAllocation(
-		ipclaimsResource, "eth0-f-ipv4", "alloc-9f2c", "retained by an earlier claim"))
-	message := allocationFailureMessage(classifyAllocationFailure(retained), v4Request(), retained)
-	require.Contains(t, message, "alloc-9f2c")
-	require.Contains(t, message, "retained by an earlier claim")
-
-	exists := fromTheWire(t, ipamerrors.NewClaimExists(
-		ipclaimsResource, "eth0-f-ipv4", "already holds an allocation"))
-	require.NotContains(t,
-		allocationFailureMessage(classifyAllocationFailure(exists), v4Request(), exists),
-		"IPAllocation")
-}
-
-// Whatever the reason, IPAM's account of the failure reaches the condition.
-// Parsing it instead would tie our conditions to its wording.
-func TestEveryMessageCarriesIPAMsOwnMessage(t *testing.T) {
-	err := fromTheWire(t, apierrors.NewInternalError(errors.New("postgres is unreachable")))
-	message := allocationFailureMessage(classifyAllocationFailure(err), v4Request(), err)
-	require.Contains(t, message, "postgres is unreachable")
+func countOccurrences(haystack, needle string) int {
+	count := 0
+	for i := 0; i+len(needle) <= len(haystack); i++ {
+		if haystack[i:i+len(needle)] == needle {
+			count++
+		}
+	}
+	return count
 }

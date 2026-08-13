@@ -1,21 +1,24 @@
 #!/usr/bin/env bash
-# Delete every IPAM object in the fixture projects.
+# Release the addresses a previous run left held in the fixture projects.
 #
-# IPPool and IPClass are cluster-scoped, so chainsaw's namespace teardown never
-# reaches them. A suite that dies partway leaves its pools and classes behind,
-# and the next run fails on "already exists" for a reason unrelated to what it
-# was testing.
+# Only IPClaims and IPAllocations. That is measured, not assumed:
 #
-# Order matters: a bound allocation refuses deletion of the pool it came from,
-# and a class with pools offering it refuses deletion too. Claims first,
-# allocations next, then pools, then classes.
+#   * A full suite run starting with 15 stale IPPools and 5 IPClasses and no
+#     leftover claims passes 25/25. Seeding uses `apply`, so re-applying
+#     identical classes and pools is a no-op, and cascade-provisioned pools are
+#     keyed by (class, scope digest) and get reused rather than duplicated —
+#     the pool count converges instead of growing.
+#   * A full suite run starting with one leftover IPClaim fails, twice over.
+#     Suites that enumerate the project's claims see the stranger and assert
+#     against it: "the rebuilt interface publishes 2001:db8:a005::/96 where
+#     IPAM holds 2001:db8:a006::/96".
 #
-# This script exists to guarantee a clean slate, so it must never report one it
-# did not produce. It proves it can reach each tenant before deleting anything,
-# and it verifies all four kinds are empty afterwards.
+# So pools and classes are stable and need no clearing; claims and allocations
+# hold addresses and change what the next run sees.
 #
-# Adapted from github.com/milo-os/ipam test/e2e/lib/clear-tenant-fixtures.sh at
-# ref 20865afe018c.
+# Order matters. An IPAllocation bound to an IPClaim refuses deletion —
+# "IPAllocation is bound to IPClaim ...; delete the claim instead" — so claims
+# go first and the allocations they held follow.
 #
 # Usage: ipam-clear-fixtures.sh <kube-context> [project...]
 
@@ -29,7 +32,7 @@ if [ ${#PROJECTS[@]} -eq 0 ]; then
 fi
 
 DELETE_TIMEOUT="${IPAM_CLEAR_TIMEOUT:-60s}"
-KINDS="ipclaims ipallocations ippools ipclasses"
+KINDS="ipclaims ipallocations"
 
 here="$(cd "$(dirname "$0")" && pwd)"
 
@@ -40,9 +43,9 @@ k() {
 }
 
 # Positive control. Reading a type that always resolves proves the aggregated
-# API is reachable AND that this context's impersonation is accepted. Without
-# it, an unreachable cluster or a wrong context name would make every delete
-# below a no-op and this script would report a clean tenant it never touched.
+# API is reachable AND that this project's impersonation is accepted. Without
+# it, an unreachable cluster would make every delete below a no-op and this
+# script would report a clean tenant it never touched.
 verify_reachable() {
   local proj="$1" out
   if ! out="$(k "$proj" get ipclasses 2>&1)"; then
@@ -52,11 +55,6 @@ verify_reachable() {
   fi
 }
 
-# A delete that fails because the object is already gone is success. A pool
-# pinned by a child that has not been deleted yet is expected mid-loop and is
-# resolved by the next pass — the residue check at the end is what decides
-# whether clearing actually worked. Anything else is surfaced rather than
-# swallowed.
 attempt_delete() {
   local proj="$1" kind="$2" out rc
   set +e
@@ -64,7 +62,7 @@ attempt_delete() {
     --timeout="$DELETE_TIMEOUT" 2>&1)"
   rc=$?
   set -e
-  if [ "$rc" -ne 0 ] && ! printf '%s' "$out" | grep -qiE 'not found|no matches for|cannot delete IPPool'; then
+  if [ "$rc" -ne 0 ] && ! printf '%s' "$out" | grep -qiE 'not found|no matches for'; then
     echo "   ⚠️  deleting ${kind} in ${proj}: ${out}" >&2
   fi
 }
@@ -78,35 +76,20 @@ residue() {
 for proj in "${PROJECTS[@]}"; do
   verify_reachable "$proj"
 
-  attempt_delete "$proj" ipclaims
-  attempt_delete "$proj" ipallocations
-
-  # Pools need more than one pass. A cascade leaves child pools carved out of
-  # their parent, and the parent refuses to go while a carve is outstanding —
-  # but `delete --all` works through the list in name order, so a parent is
-  # usually attempted before the children that pin it. Each pass frees one
-  # level of the chain; the chain is at most a few deep.
-  for _ in 1 2 3 4; do
-    [ -z "$(residue "$proj" ippools)" ] && break
-    attempt_delete "$proj" ippools
+  for kind in $KINDS; do
+    attempt_delete "$proj" "$kind"
   done
 
-  attempt_delete "$proj" ipclasses
-
-  # The authoritative check, over every kind. Pools and classes block the next
-  # run with "already exists"; a stranded claim or allocation is worse, because
-  # a bound allocation refuses deletion of the pool it came from and wedges the
-  # run after that one.
   left=""
   for kind in $KINDS; do
     found="$(residue "$proj" "$kind")"
     [ -n "$found" ] && left="${left}${kind}: ${found}"$'\n'
   done
   if [ -n "$left" ]; then
-    echo "❌ ${proj} still holds IPAM fixtures after clearing:" >&2
+    echo "❌ ${proj} still holds addresses after clearing:" >&2
     printf '%s' "$left" >&2
     exit 1
   fi
 
-  echo "cleared IPAM fixtures in ${proj}"
+  echo "cleared held addresses in ${proj}"
 done

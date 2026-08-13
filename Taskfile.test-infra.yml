@@ -79,7 +79,6 @@ vars:
   DNS_STAGE: '{{.TMP_DIR}}/.dns-bundle'
   CRANE: '{{.REPO}}/bin/crane'
   CRANE_VERSION: v0.21.7
-  IPAM_KUBECONFIG: '{{.TMP_DIR}}/.ipam-tenant-impersonation.yaml'
   IPAM_PROJECTS: project-alpha project-beta
 
 tasks:
@@ -167,9 +166,6 @@ tasks:
       - '{{.KIND}} delete cluster --name {{.UPSTREAM_CLUSTER}} || true'
       - '{{.KIND}} delete cluster --name {{.DOWNSTREAM_CLUSTER}} || true'
       - rm -f {{.TMP_DIR}}/.kind-{{.DOWNSTREAM_CLUSTER}}-internal.yaml {{.TMP_DIR}}/.kind-{{.UPSTREAM_CLUSTER}}.yaml {{.TMP_DIR}}/.kind-{{.DOWNSTREAM_CLUSTER}}.yaml
-      # The IPAM fixtures and their database die with the upstream cluster; only
-      # the impersonation kubeconfig outlives it.
-      - rm -f {{.IPAM_KUBECONFIG}}
       - rm -rf {{.IPAM_STAGE}} {{.DNS_STAGE}}
       - echo "✨ done."
 
@@ -575,7 +571,10 @@ tasks:
         CA=$(kubectl --context {{.UPSTREAM_CTX}} -n kube-system get configmap kube-root-ca.crt -o jsonpath='{.data.ca\.crt}' | base64 | tr -d '\n')
         TOKEN=$(kubectl --context {{.UPSTREAM_CTX}} -n network-services-operator-system create token \
           network-services-operator-controller-manager --duration=24h)
-        cat > {{.TMP_DIR}}/.ipam-cluster-kubeconfig.yaml <<EOF
+        # Piped, never written to a file: a ServiceAccount token on disk outlives
+        # the run and the env that issued it. It reaches the cluster and nothing
+        # else.
+        KUBECONFIG_YAML=$(cat <<EOF
         apiVersion: v1
         kind: Config
         current-context: ipam
@@ -594,21 +593,12 @@ tasks:
             cluster: ipam
             user: ipam
         EOF
+        )
+        printf '%s\n' "$KUBECONFIG_YAML" | \
         kubectl --context {{.UPSTREAM_CTX}} -n network-services-operator-system create secret generic \
           ipam-cluster-kubeconfig --save-config --dry-run=client -o yaml \
-          --from-file=kubeconfig={{.TMP_DIR}}/.ipam-cluster-kubeconfig.yaml \
+          --from-file=kubeconfig=/dev/stdin \
           | kubectl --context {{.UPSTREAM_CTX}} apply -f -
-
-  # DEPRECATED, pending the e2e suites moving to hack/ipam-tenant-kubectl.sh.
-  # Nothing in this Taskfile uses it any more; 11 suites still reference the
-  # contexts it writes. Delete this task, the script and IPAM_KUBECONFIG once
-  # they do.
-  ipam-impersonation-kubeconfig:
-    desc: "Write the per-project impersonation kubeconfig used to seed fixtures and to drive chainsaw suites as a tenant. Contexts: tenant-platform (no project, reads nothing by design), tenant-project-alpha, tenant-project-beta."
-    cmds:
-      - |
-        {{.REPO}}/hack/gen-ipam-impersonation-kubeconfig.sh \
-          {{.IPAM_KUBECONFIG}} {{.UPSTREAM_CTX}} {{.IPAM_PROJECTS}}
 
   ipam-fixtures:
     desc: "Seed the IPClass/IPPool fixtures for both projects, clearing any leftovers first. Classes are named identically in the two projects and their pools are disjoint (test/e2e/fixtures/ipam/RANGES.md), so a controller routing to the wrong project allocates from visibly wrong space instead of quietly succeeding. Do not run this while a suite is in flight: it removes the fixtures and the tenant RBAC that a running suite is mid-way through using."
@@ -631,7 +621,7 @@ tasks:
   ipam-fixtures-clear:
     deps:
       - ipam-tenant-rbac
-    desc: "Delete every IPAM object in the fixture projects, claims first. IPPool and IPClass are cluster-scoped, so chainsaw's namespace teardown never reaches them and a suite that dies mid-run leaves pools that make the NEXT run fail on 'already exists'. Runs ahead of every seed for that reason. Do not run this while a suite is in flight: it removes the fixtures and the tenant RBAC that a running suite is mid-way through using."
+    desc: "Release the addresses a previous run left held in the fixture projects. IPClaims and IPAllocations only, which is what measurement showed leaks: a run starting with 15 stale IPPools and 5 IPClasses passes 25/25, because seeding re-applies them as a no-op and cascade pools are reused by scope digest — but a single leftover IPClaim fails two suites, which enumerate the project's claims and assert against the stranger they find. Do not run this while a suite is in flight: it removes the addresses a running suite is mid-way through using."
     cmds:
       - '{{.REPO}}/hack/ipam-clear-fixtures.sh {{.UPSTREAM_CTX}} {{.IPAM_PROJECTS}}' 
 
@@ -731,8 +721,6 @@ tasks:
       SELECTED: '{{.CLI_ARGS | default .SCENARIOS | default .DEFAULT_SCENARIOS}}'
     deps:
       - kubeconfigs
-      # Only the suites still need this; see the task's own note.
-      - ipam-impersonation-kubeconfig
     cmds:
       # Reset the cluster-scoped fixtures before the first suite. A run that
       # died mid-suite leaves pools and classes that chainsaw's namespace
@@ -770,8 +758,6 @@ tasks:
       REPORT_NAME: '{{.REPORT_NAME | default "chainsaw-report"}}'
     deps:
       - kubeconfigs
-      # Only the suites still need this; see the task's own note.
-      - ipam-impersonation-kubeconfig
     cmds:
       # See the note in `e2e`: cluster-scoped fixtures outlive a failed run, so
       # the suite starts by putting them back to a known state.

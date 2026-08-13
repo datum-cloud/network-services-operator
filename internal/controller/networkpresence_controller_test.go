@@ -315,6 +315,34 @@ func TestNetworkPresenceRefusesALocationTheProjectCannotUse(t *testing.T) {
 	require.False(t, ok, "no presence may be created in a location the project cannot use")
 }
 
+// A refusal has no watch behind it, so it needs its own way back. Without the
+// requeue a binding refused for an unavailable location would stay refused
+// after the platform enabled it.
+func TestNetworkPresenceRetriesARefusal(t *testing.T) {
+	s := newPresenceScenario(t, presenceOptions{withoutLocationBinding: true})
+	s.createBinding("consumer-a")
+
+	result, err := s.reconciler.Reconcile(s.ctx, s.request())
+	require.NoError(t, err)
+	require.Equal(t, refusedPresenceRetryInterval, result.RequeueAfter)
+
+	locationBinding := &networkingv1alpha.LocationBinding{}
+	locationBinding.Name = s.locationName
+	locationBinding.Spec.LocationRef = corev1.LocalObjectReference{Name: s.locationName}
+	locationBinding.Spec.LocationClassName = "datum-managed"
+	require.NoError(t, s.hub.Create(s.ctx, locationBinding))
+	t.Cleanup(func() { _ = s.hub.Delete(s.ctx, locationBinding) })
+
+	result, err = s.reconciler.Reconcile(s.ctx, s.request())
+	require.NoError(t, err)
+	require.Zero(t, result.RequeueAfter)
+
+	requireReady(t, s.binding("consumer-a"), metav1.ConditionFalse,
+		networkingv1alpha.NetworkBindingReasonNetworkContextNotReady)
+	_, ok := s.networkContext()
+	require.True(t, ok, "the presence appears once the platform enables the location")
+}
+
 func TestNetworkPresenceRefusesAMissingNetwork(t *testing.T) {
 	s := newPresenceScenario(t, presenceOptions{withoutNetwork: true})
 	s.createBinding("consumer-a")

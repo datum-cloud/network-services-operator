@@ -1,0 +1,177 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: network-presence-shared
+spec:
+  cluster: nso-standard
+  steps:
+    - name: Seed the project and the hub namespace
+      try:
+        - apply:
+            resource:
+              apiVersion: v1
+              kind: Namespace
+              metadata:
+                name: presence-shared-project
+        - apply:
+            resource:
+              apiVersion: v1
+              kind: Namespace
+              metadata:
+                name: presence-shared-hub
+                labels:
+                  meta.datumapis.com/upstream-cluster-name: cluster-single
+                  meta.datumapis.com/upstream-namespace: presence-shared-project
+        - apply:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: LocationBinding
+              metadata:
+                name: presence-shared-loc
+              spec:
+                locationRef:
+                  name: presence-shared-loc
+                locationClassName: datum-managed
+        - apply:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Network
+              metadata:
+                name: presence-shared-net
+                namespace: presence-shared-project
+              spec:
+                ipam:
+                  mode: Auto
+                ipFamilies:
+                  - IPv4
+
+    - name: Two consumers of different kinds declare they need the same network here
+      description: |
+        One binding per consumer, not per pair. Neither consumer knows the other
+        exists, and neither has to work out whether it was the one that caused
+        the presence to exist.
+      try:
+        - apply:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkBinding
+              metadata:
+                name: presence-shared-workload
+                namespace: presence-shared-hub
+                labels:
+                  networking.datumapis.com/network: presence-shared-net
+                  networking.datumapis.com/location: presence-shared-loc
+              spec:
+                network:
+                  name: presence-shared-net
+                location:
+                  name: presence-shared-loc
+                consumer:
+                  apiGroup: compute.datumapis.com
+                  kind: WorkloadDeployment
+                  name: presence-shared-workload
+        - apply:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkBinding
+              metadata:
+                name: presence-shared-lb
+                namespace: presence-shared-hub
+                labels:
+                  networking.datumapis.com/network: presence-shared-net
+                  networking.datumapis.com/location: presence-shared-loc
+              spec:
+                network:
+                  name: presence-shared-net
+                location:
+                  name: presence-shared-loc
+                consumer:
+                  apiGroup: networking.datumapis.com
+                  kind: LoadBalancer
+                  name: presence-shared-lb
+
+    - name: Assert both bindings converge on one presence
+      description: |
+        Three declarations would still be one context. The status is a fan-out of
+        one shared fact written onto each declaration, so both bindings name the
+        same NetworkContext.
+      try:
+        - assert:
+            timeout: 1m
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkBinding
+              metadata:
+                name: presence-shared-workload
+                namespace: presence-shared-hub
+              status:
+                networkContextRef:
+                  name: presence-shared-net-default-presence-shared-loc
+        - assert:
+            timeout: 1m
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkBinding
+              metadata:
+                name: presence-shared-lb
+                namespace: presence-shared-hub
+              status:
+                networkContextRef:
+                  name: presence-shared-net-default-presence-shared-loc
+        - script:
+            content: |
+              set -e
+              count=$(kubectl -n presence-shared-hub get networkcontext \
+                --no-headers 2>/dev/null | wc -l | tr -d ' ')
+              if [ "$count" != "1" ]; then
+                echo "expected exactly one shared presence, found $count" >&2
+                kubectl -n presence-shared-hub get networkcontext >&2
+                exit 1
+              fi
+              echo "two consumers share one presence"
+
+    - name: The first consumer goes away and the presence stays
+      description: |
+        Teardown is decided by listing the declarations, so a consumer leaving
+        while another still needs the network here changes nothing.
+      try:
+        - delete:
+            ref:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkBinding
+              name: presence-shared-workload
+              namespace: presence-shared-hub
+        - sleep:
+            duration: 10s
+        - assert:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkContext
+              metadata:
+                name: presence-shared-net-default-presence-shared-loc
+                namespace: presence-shared-hub
+
+    - name: The last consumer goes away and the presence goes with it
+      try:
+        - delete:
+            ref:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkBinding
+              name: presence-shared-lb
+              namespace: presence-shared-hub
+        - error:
+            timeout: 1m
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkContext
+              metadata:
+                name: presence-shared-net-default-presence-shared-loc
+                namespace: presence-shared-hub
+
+  cleanup:
+    - script:
+        content: |
+          kubectl delete networkbinding -n presence-shared-hub --all --ignore-not-found
+          kubectl delete namespace presence-shared-hub presence-shared-project --ignore-not-found
+          kubectl delete locationbinding presence-shared-loc --ignore-not-found

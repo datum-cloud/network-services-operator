@@ -1,0 +1,120 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: network-presence-location-unavailable
+spec:
+  cluster: nso-standard
+  steps:
+    - name: Seed a project with no binding for the location
+      description: |
+        LocationBinding is the answer to "can this project use this location".
+        Nothing else re-derives that decision, so a project without one cannot
+        have the network made present there.
+      try:
+        - apply:
+            resource:
+              apiVersion: v1
+              kind: Namespace
+              metadata:
+                name: presence-unavail-project
+        - apply:
+            resource:
+              apiVersion: v1
+              kind: Namespace
+              metadata:
+                name: presence-unavail-hub
+                labels:
+                  meta.datumapis.com/upstream-cluster-name: cluster-single
+                  meta.datumapis.com/upstream-namespace: presence-unavail-project
+        - apply:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Network
+              metadata:
+                name: presence-unavail-net
+                namespace: presence-unavail-project
+              spec:
+                ipam:
+                  mode: Auto
+                ipFamilies:
+                  - IPv4
+
+    - name: Declare the network is needed in a location the project cannot use
+      try:
+        - apply:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkBinding
+              metadata:
+                name: presence-unavail-consumer
+                namespace: presence-unavail-hub
+                labels:
+                  networking.datumapis.com/network: presence-unavail-net
+                  networking.datumapis.com/location: presence-unavail-loc
+              spec:
+                network:
+                  name: presence-unavail-net
+                location:
+                  name: presence-unavail-loc
+                consumer:
+                  apiGroup: networking.datumapis.com
+                  kind: LoadBalancer
+                  name: presence-unavail-consumer
+
+    - name: Assert it reads as a network problem, not as a consumer that never starts
+      try:
+        - assert:
+            timeout: 1m
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkBinding
+              metadata:
+                name: presence-unavail-consumer
+                namespace: presence-unavail-hub
+              status:
+                (length(conditions[?type == 'Ready' && status == 'False' && reason == 'LocationNotAvailable']) == `1`): true
+
+    - name: Assert no presence was created
+      description: |
+        The network is not made present somewhere the project cannot use.
+      try:
+        - error:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkContext
+              metadata:
+                name: presence-unavail-net-default-presence-unavail-loc
+                namespace: presence-unavail-hub
+
+    - name: The platform enables the location and the binding recovers
+      description: |
+        Ready moving in both directions is part of the contract. A binding that
+        reported LocationNotAvailable has to pick up the platform enabling the
+        location without the consumer doing anything.
+      try:
+        - apply:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: LocationBinding
+              metadata:
+                name: presence-unavail-loc
+              spec:
+                locationRef:
+                  name: presence-unavail-loc
+                locationClassName: datum-managed
+        - assert:
+            timeout: 2m
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkContext
+              metadata:
+                name: presence-unavail-net-default-presence-unavail-loc
+                namespace: presence-unavail-hub
+
+  cleanup:
+    - script:
+        content: |
+          kubectl delete networkbinding -n presence-unavail-hub --all --ignore-not-found
+          kubectl delete namespace presence-unavail-hub presence-unavail-project --ignore-not-found
+          kubectl delete locationbinding presence-unavail-loc --ignore-not-found

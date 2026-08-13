@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -87,8 +88,21 @@ func (r *NetworkPresenceReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	logger.Info("reconciling network presence", "holders", len(holders))
 	defer logger.Info("reconcile complete")
 
-	return ctrl.Result{}, r.ensure(ctx, req, holders)
+	refused, err := r.ensure(ctx, req, holders)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
+	// Nothing watches a LocationBinding, a project namespace, or a network that
+	// does not exist yet, so a refusal for a condition that later clears has no
+	// other way back.
+	if refused {
+		return ctrl.Result{RequeueAfter: refusedPresenceRetryInterval}, nil
+	}
+	return ctrl.Result{}, nil
 }
+
+const refusedPresenceRetryInterval = time.Minute
 
 // holders lists the bindings declaring the presence this request names. The
 // count is a list rather than a stored number, so it cannot drift.
@@ -129,42 +143,44 @@ func (r *NetworkPresenceReconciler) teardown(ctx context.Context, req ctrl.Reque
 	return nil
 }
 
+// ensure reports whether it refused, so a refusal with no watch behind it gets
+// a way back.
 func (r *NetworkPresenceReconciler) ensure(
 	ctx context.Context,
 	req ctrl.Request,
 	holders []networkingv1alpha.NetworkBinding,
-) error {
+) (bool, error) {
 	pair := holders[0].Spec
 
 	routing, err := resolveProjectRouting(ctx, r.hub, req.Namespace)
 	if err != nil {
 		var unresolvable *projectUnresolvable
 		if errors.As(err, &unresolvable) {
-			return r.report(ctx, holders, nil, refusal(
+			return true, r.report(ctx, holders, nil, refusal(
 				networkingv1alpha.NetworkBindingReasonProjectUnresolved, unresolvable.Error()))
 		}
-		return err
+		return false, err
 	}
 
 	projectClient, err := r.Projects.ClientForProject(ctx, routing.project)
 	if err != nil {
 		if errors.Is(err, multicluster.ErrClusterNotFound) {
-			return r.report(ctx, holders, nil, refusal(
+			return true, r.report(ctx, holders, nil, refusal(
 				networkingv1alpha.NetworkBindingReasonProjectUnresolved,
 				fmt.Sprintf("Project %q is not engaged by this operator", routing.project)))
 		}
-		return fmt.Errorf("failed reaching project %q: %w", routing.project, err)
+		return false, fmt.Errorf("failed reaching project %q: %w", routing.project, err)
 	}
 
 	var locationBinding networkingv1alpha.LocationBinding
 	if err := projectClient.Get(ctx, client.ObjectKey{Name: pair.Location.Name}, &locationBinding); err != nil {
 		if apierrors.IsNotFound(err) {
-			return r.report(ctx, holders, nil, refusal(
+			return true, r.report(ctx, holders, nil, refusal(
 				networkingv1alpha.NetworkBindingReasonLocationNotAvailable,
 				fmt.Sprintf("Project %q has no location binding for location %q",
 					routing.project, pair.Location.Name)))
 		}
-		return fmt.Errorf("failed reading location binding %q: %w", pair.Location.Name, err)
+		return false, fmt.Errorf("failed reading location binding %q: %w", pair.Location.Name, err)
 	}
 
 	networkKey := client.ObjectKey{Namespace: routing.projectNamespace, Name: pair.Network.Name}
@@ -175,17 +191,17 @@ func (r *NetworkPresenceReconciler) ensure(
 	var network networkingv1alpha.Network
 	if err := projectClient.Get(ctx, networkKey, &network); err != nil {
 		if apierrors.IsNotFound(err) {
-			return r.report(ctx, holders, nil, refusal(
+			return true, r.report(ctx, holders, nil, refusal(
 				networkingv1alpha.NetworkBindingReasonNetworkNotFound,
 				fmt.Sprintf("Network %q was not found in namespace %q of project %q",
 					networkKey.Name, networkKey.Namespace, routing.project)))
 		}
-		return fmt.Errorf("failed reading network %q: %w", networkKey.Name, err)
+		return false, fmt.Errorf("failed reading network %q: %w", networkKey.Name, err)
 	}
 
 	networkContext, err := r.project(ctx, req, routing, &pair, &network)
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	ref := &networkingv1alpha.NetworkContextRef{
@@ -194,12 +210,12 @@ func (r *NetworkPresenceReconciler) ensure(
 	}
 
 	if !apimeta.IsStatusConditionTrue(networkContext.Status.Conditions, networkingv1alpha.NetworkContextReady) {
-		return r.report(ctx, holders, ref, refusal(
+		return false, r.report(ctx, holders, ref, refusal(
 			networkingv1alpha.NetworkBindingReasonNetworkContextNotReady,
 			"Network context is not ready."))
 	}
 
-	return r.report(ctx, holders, ref, metav1.Condition{
+	return false, r.report(ctx, holders, ref, metav1.Condition{
 		Type:    networkingv1alpha.NetworkBindingReady,
 		Status:  metav1.ConditionTrue,
 		Reason:  networkingv1alpha.NetworkBindingReasonNetworkContextReady,

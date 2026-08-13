@@ -1,0 +1,186 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: network-presence-ready
+spec:
+  cluster: nso-standard
+  steps:
+    - name: Seed the project and the hub namespace
+      description: |
+        The hub namespace names the project it belongs to through the labels
+        compute stamps on the namespaces it creates. That is what lets the
+        presence controller find the Network, which lives in the project.
+
+        This environment runs one cluster in single discovery mode, so the
+        project is engaged under the name `single` and the project's control
+        plane is this same apiserver. The hub namespace and the project
+        namespace are therefore two namespaces here rather than two clusters.
+      try:
+        - apply:
+            resource:
+              apiVersion: v1
+              kind: Namespace
+              metadata:
+                name: presence-ready-project
+        - apply:
+            resource:
+              apiVersion: v1
+              kind: Namespace
+              metadata:
+                name: presence-ready-hub
+                labels:
+                  meta.datumapis.com/upstream-cluster-name: cluster-single
+                  meta.datumapis.com/upstream-namespace: presence-ready-project
+        - apply:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: LocationBinding
+              metadata:
+                name: presence-ready-loc
+              spec:
+                locationRef:
+                  name: presence-ready-loc
+                locationClassName: datum-managed
+        - apply:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Network
+              metadata:
+                name: presence-ready-net
+                namespace: presence-ready-project
+              spec:
+                ipam:
+                  mode: Auto
+                ipFamilies:
+                  - IPv4
+                  - IPv6
+                mtu: 8000
+
+    - name: Declare that the network is needed in the location
+      description: |
+        A consumer creates one binding per (network, location) it needs, in the
+        project's hub namespace, carrying the two labels that make the consumers
+        of a presence countable.
+      try:
+        - apply:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkBinding
+              metadata:
+                name: presence-ready-consumer
+                namespace: presence-ready-hub
+                labels:
+                  networking.datumapis.com/network: presence-ready-net
+                  networking.datumapis.com/location: presence-ready-loc
+              spec:
+                network:
+                  name: presence-ready-net
+                location:
+                  name: presence-ready-loc
+                consumer:
+                  apiGroup: networking.datumapis.com
+                  kind: LoadBalancer
+                  name: presence-ready-consumer
+
+    - name: Assert the presence appears carrying the network's rules
+      description: |
+        The reason this object exists is the two facts it carries. They are in
+        spec, because propagation to a location strips status.
+      try:
+        - assert:
+            timeout: 1m
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkContext
+              metadata:
+                name: presence-ready-net-default-presence-ready-loc
+                namespace: presence-ready-hub
+                labels:
+                  networking.datumapis.com/network: presence-ready-net
+                  networking.datumapis.com/location: presence-ready-loc
+                  meta.datumapis.com/upstream-cluster-name: cluster-single
+                  meta.datumapis.com/upstream-namespace: presence-ready-project
+              spec:
+                network:
+                  name: presence-ready-net
+                location:
+                  name: presence-ready-loc
+                ipFamilies:
+                  - IPv4
+                  - IPv6
+                mtu: 8000
+        - assert:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkContext
+              metadata:
+                name: presence-ready-net-default-presence-ready-loc
+                namespace: presence-ready-hub
+              spec:
+                (networkGeneration > `0`): true
+
+    - name: Assert the binding reports the presence coming up
+      description: |
+        The reference is set when the presence is created, which is before it is
+        ready. That combination is the normal middle of the sequence rather than
+        a contradiction.
+      try:
+        - assert:
+            timeout: 1m
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkBinding
+              metadata:
+                name: presence-ready-consumer
+                namespace: presence-ready-hub
+              status:
+                networkContextRef:
+                  namespace: presence-ready-hub
+                  name: presence-ready-net-default-presence-ready-loc
+                (length(conditions[?type == 'Ready' && status == 'False' && reason == 'NetworkContextNotReady']) == `1`): true
+
+    - name: Program the presence
+      description: |
+        A plugin is expected to program the context at its backend and set
+        Programmed, from which the context controller derives Ready. Nothing in
+        this repository does that, so the condition is set directly.
+
+        kubectl is used because Chainsaw does not support updating subresources.
+        See https://github.com/kyverno/chainsaw/issues/300.
+      try:
+        - script:
+            content: |
+              kubectl -n presence-ready-hub patch networkcontext \
+                presence-ready-net-default-presence-ready-loc \
+                --subresource=status --type=merge \
+                -p '{"status":{"conditions":[{"type": "Programmed", "status": "True", "reason": "Test", "message": "test", "lastTransitionTime": "2025-02-24T23:59:09Z"}]}}'
+
+    - name: Assert the consumer is told it may proceed
+      try:
+        - wait:
+            apiVersion: networking.datumapis.com/v1alpha
+            kind: NetworkBinding
+            name: presence-ready-consumer
+            namespace: presence-ready-hub
+            timeout: 1m
+            for:
+              condition:
+                name: Ready
+                value: 'true'
+        - assert:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkBinding
+              metadata:
+                name: presence-ready-consumer
+                namespace: presence-ready-hub
+              status:
+                (length(conditions[?type == 'Ready' && reason == 'NetworkContextReady']) == `1`): true
+
+  cleanup:
+    - script:
+        content: |
+          kubectl delete networkbinding -n presence-ready-hub --all --ignore-not-found
+          kubectl delete namespace presence-ready-hub presence-ready-project --ignore-not-found
+          kubectl delete locationbinding presence-ready-loc --ignore-not-found

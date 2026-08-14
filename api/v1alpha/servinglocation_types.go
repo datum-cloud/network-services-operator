@@ -52,6 +52,7 @@ type ServingLocationSource struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:resource:scope=Cluster
 // +kubebuilder:printcolumn:name="City",type="string",JSONPath=`.spec.topology.topology\.datum\.net/city-code`
+// +kubebuilder:printcolumn:name="Region",type="string",JSONPath=`.spec.topology.topology\.datum\.net/region`
 // +kubebuilder:printcolumn:name="Source Generation",type="integer",JSONPath=".spec.source.generation"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 

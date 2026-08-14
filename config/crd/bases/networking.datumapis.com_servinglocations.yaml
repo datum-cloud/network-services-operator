@@ -18,6 +18,9 @@ spec:
     - jsonPath: .spec.topology.topology\.datum\.net/city-code
       name: City
       type: string
+    - jsonPath: .spec.topology.topology\.datum\.net/region
+      name: Region
+      type: string
     - jsonPath: .spec.source.generation
       name: Source Generation
       type: integer

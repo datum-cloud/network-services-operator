@@ -1,14 +1,11 @@
 # yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
 #
-# The whole identity leg, end to end on real federation: a Location at the
-# source becomes a ServingLocation and one propagation policy on the Karmada
-# hub, and lands on the member cluster that claims it by label.
+# End to end over real federation: a Location becomes a ServingLocation and one
+# propagation policy on the Karmada hub, and lands on the member cluster that
+# claims it by label.
 #
-# It also carries the churn guard. publishedAt means "when the content last
-# changed", not "when the publisher last ran" — a timestamp stamped every pass
-# would make the object change on every reconcile and propagate to every cell
-# forever. The env runs the publisher at a 1m safety resync, so holding the
-# resourceVersion still across several passes is a real assertion.
+# Also asserts that a reconcile with no source change leaves publishedAt and
+# resourceVersion untouched. The env runs the publisher at a 1m safety resync.
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
@@ -130,9 +127,8 @@ spec:
 
     - name: A no-op reconcile does not change the published object
       description: |
-        The publisher runs a 1m safety resync in this env, so 150s covers at
-        least two passes with no source change. Any movement in resourceVersion
-        or publishedAt is the churn defect.
+        150s covers at least two safety resyncs. resourceVersion and
+        publishedAt must not move.
       try:
         - script:
             cluster: nso-hub
@@ -156,9 +152,8 @@ spec:
         - script:
             cluster: nso-hub
             content: |
-              # Point the cell at some other location rather than stripping the
-              # label: an unlabelled fleet is the guard's third row and would
-              # (correctly) retain the copy this test is done with.
+              # Point the cell at another location. Stripping the label
+              # instead leaves the fleet unlabelled, which retains the copy.
               kubectl label cluster nso-downstream topology.datum.net/location=e2e-cleanup --overwrite || true
         - delete:
             ref:

@@ -1,17 +1,14 @@
 # yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
 #
-# Cell-side identity resolution: a delivered ServingLocation wins over the
-# configured location, and with none delivered the configured one is used. The
-# NetworkBinding a claim creates names the location it resolved, so the binding
-# name is the observable.
+# A delivered ServingLocation wins over the configured location; with none
+# delivered, the configured one is used. The name of the NetworkBinding a claim
+# creates says which location was resolved.
 #
-# The delivered copy is created directly on the cell rather than federated: this
-# is the reader's half of the contract, and the delivery half is proven by
-# location-federation-publish. NSO's manager runs on nso-standard in this env,
-# so nso-standard is the cell whose identity is under test.
+# The delivered copy is created directly on nso-standard, the cell under test.
+# location-federation-publish covers delivery over real federation.
 #
-# Not safe to run alongside anything else. While the ServingLocation exists it
-# changes the identity of every claim on this cell, which is the whole point.
+# Do not run this alongside other scenarios. The ServingLocation changes the
+# identity of every claim on the cell while it exists.
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
@@ -107,8 +104,8 @@ spec:
 
     - name: More than one delivered copy is a labelling error the cell refuses to guess at
       description: |
-        The configured location is the explicit answer to fall back on. Picking
-        one of the two arbitrarily is the failure this design is named after.
+        With two copies delivered, the cell falls back to the configured
+        location rather than picking one of them.
       try:
         - create:
             resource:

@@ -129,13 +129,9 @@ var (
 		[]string{jsonKeyNamespace, jsonKeyName, metricLabelListener, metricLabelHostname},
 	)
 
-	// locationSourceTotal and locationPublishedTotal are the pair the location
-	// federation design exists to make checkable. Both are sampled in one pass,
-	// so they are internally consistent by construction, and the gap between
-	// them is the primary signal:
+	// locationSourceTotal and locationPublishedTotal are sampled in one pass.
+	// The difference between them is the count of locations not published:
 	//   nso_location_source_total - nso_location_published_total
-	// A publisher that silently stops is otherwise indistinguishable from a
-	// fleet with nothing to publish.
 	locationSourceTotal = promauto.NewGauge(
 		prometheus.GaugeOpts{
 			Name: "nso_location_source_total",
@@ -150,9 +146,8 @@ var (
 		},
 	)
 
-	// locationRetainedTotal counts copies deliberately kept alive because their
-	// removal is blocked. They are excluded from the gap pair above so one
-	// blocked removal cannot permanently trip the primary alert.
+	// locationRetainedTotal counts copies kept because their removal is
+	// blocked. They are excluded from locationPublishedTotal.
 	locationRetainedTotal = promauto.NewGauge(
 		prometheus.GaugeOpts{
 			Name: "nso_location_retained_total",
@@ -160,8 +155,6 @@ var (
 		},
 	)
 
-	// locationPublishTimestamp is when a location's published content last
-	// changed, not when the publisher last ran.
 	locationPublishTimestamp = promauto.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "nso_location_publish_timestamp_seconds",
@@ -178,8 +171,6 @@ var (
 		[]string{metricLabelLocation, metricLabelReason},
 	)
 
-	// locationMatchedClusters is how a policy resolving to zero clusters reads
-	// as a state rather than as silence.
 	locationMatchedClusters = promauto.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "nso_location_matched_clusters",
@@ -196,9 +187,6 @@ var (
 		[]string{metricLabelLocation, metricLabelReason},
 	)
 
-	// locationPublisherConflictsTotal counts what force ownership would
-	// otherwise hide: a foreign field manager, an unlabelled hub object of the
-	// published kind, and a source list that returned zero while copies are held.
 	locationPublisherConflictsTotal = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "nso_location_publisher_conflicts_total",
@@ -207,8 +195,6 @@ var (
 		[]string{metricLabelLocation, metricLabelReason},
 	)
 
-	// cellLocationIdentitySource reports which source a cell's identity came
-	// from, so a permanent configuration fallback cannot become a hiding place.
 	cellLocationIdentitySource = promauto.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "nso_cell_location_identity_source",

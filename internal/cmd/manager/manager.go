@@ -647,10 +647,7 @@ func controllerRegistrations(
 	}
 }
 
-// leaderElectedRunnable states a runnable's leader-election intent instead of
-// letting the runnable-group router supply one. Three incidents in this org came
-// from a runnable whose intent was never declared, so the publisher states it
-// even where the default is already correct.
+// leaderElectedRunnable states a runnable's leader-election intent explicitly.
 type leaderElectedRunnable struct {
 	manager.Runnable
 	leaderElected bool
@@ -658,14 +655,9 @@ type leaderElectedRunnable struct {
 
 func (r leaderElectedRunnable) NeedLeaderElection() bool { return r.leaderElected }
 
-// setupLocationPublisher wires the publisher to its two single-cluster ends: the
-// platform control plane it reads Location records from, and the federation hub
-// it owns the published set on.
-//
-// Publishing mutates shared state and includes a prune, so it is leader-gated,
-// and both of its caches are gated with it: two replicas racing a delete on the
-// object a cell reads to learn its identity is the outage this exists to
-// prevent.
+// setupLocationPublisher connects the publisher to the control plane it reads
+// Locations from and the federation hub it writes copies to. Both connections
+// run only on the leader.
 func setupLocationPublisher(
 	serverConfig config.NetworkServicesOperator,
 	scheme *runtime.Scheme,

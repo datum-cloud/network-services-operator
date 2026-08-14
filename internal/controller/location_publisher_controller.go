@@ -34,9 +34,7 @@ const (
 	locationPublisherFieldManager = "network-services-operator-location-publisher"
 
 	// LocationPublisherManagedByLabel marks every hub object this publisher
-	// owns. The prune candidate set is defined by this label and never by
-	// absence: an unlabelled hub object of the same kind is a conflict to
-	// report, not a thing to delete.
+	// owns. The publisher only ever deletes objects carrying it.
 	LocationPublisherManagedByLabel = "networking.datumapis.com/published-by"
 
 	// LocationPublisherManagedByValue is the value carried by every published
@@ -44,13 +42,10 @@ const (
 	LocationPublisherManagedByValue = "location-publisher"
 
 	// LocationRemovalOverrideAnnotation, set to "true" on a retained hub copy,
-	// releases the removal guard for that copy. It is an annotation on the
-	// published object because that is the only object surviving the source's
-	// deletion.
+	// lets the publisher delete that copy without checking the removal guard.
 	LocationRemovalOverrideAnnotation = "networking.datumapis.com/removal-override"
 
-	// LocationRemovalBlockedAnnotation records why a copy is being retained, so
-	// the blocked state is readable on the object an operator will find.
+	// LocationRemovalBlockedAnnotation records why a copy is being retained.
 	LocationRemovalBlockedAnnotation = "networking.datumapis.com/removal-blocked"
 
 	removalBlockedRequeue = 5 * time.Minute
@@ -80,7 +75,6 @@ var (
 	}
 )
 
-// removalDecision is the three-state answer to "may this published copy go".
 type removalDecision struct {
 	allowed bool
 	reason  string
@@ -89,17 +83,13 @@ type removalDecision struct {
 
 // LocationPublisherReconciler publishes one ServingLocation and one
 // ClusterPropagationPolicy per source Location onto the federation hub.
-//
-// Publication is gated on the Location existing, not on it being Ready: an
-// unhealthy location is still a real place whose workloads need to resolve
-// where they are.
 type LocationPublisherReconciler struct {
 	Config config.NetworkServicesOperator
 
-	// SourceCluster serves the platform control plane's Location records.
+	// SourceCluster holds the Location records.
 	SourceCluster cluster.Cluster
 
-	// HubCluster serves the federation hub the published set lives on.
+	// HubCluster holds the published copies.
 	HubCluster cluster.Cluster
 
 	Recorder record.EventRecorder
@@ -192,9 +182,6 @@ func (r *LocationPublisherReconciler) publish(
 		return ctrl.Result{}, err
 	}
 
-	// A location that comes back is no longer being retained. The annotation is
-	// not owned by the apply above, so it outlives the block unless cleared, and
-	// a retained copy is excluded from the gap metric.
 	if err := r.clearBlocked(ctx, published); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -206,8 +193,6 @@ func (r *LocationPublisherReconciler) publish(
 	return ctrl.Result{RequeueAfter: r.Config.LocationPublisher.SafetyResyncPeriod.Duration}, nil
 }
 
-// remove evaluates the removal guard for a location whose source record is
-// gone. It fails closed: absence of evidence retains the copy.
 func (r *LocationPublisherReconciler) remove(ctx context.Context, name string) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
@@ -264,8 +249,6 @@ func (r *LocationPublisherReconciler) remove(ctx context.Context, name string) (
 	return ctrl.Result{}, nil
 }
 
-// blockedRequeue paces the guard's re-check. Nothing watches cluster labels, so
-// a blocked removal clears itself only on this tick.
 func (r *LocationPublisherReconciler) blockedRequeue() time.Duration {
 	resync := r.Config.LocationPublisher.SafetyResyncPeriod.Duration
 	if resync > 0 && resync < removalBlockedRequeue {
@@ -274,9 +257,6 @@ func (r *LocationPublisherReconciler) blockedRequeue() time.Duration {
 	return removalBlockedRequeue
 }
 
-// pruneAllowed is the hard gate in front of every delete. There is no
-// owner-reference safety net across clusters, so a prune computed from an
-// unsynced cache or against an empty source list deletes the fleet's identity.
 func (r *LocationPublisherReconciler) pruneAllowed(ctx context.Context) error {
 	syncCtx, cancel := context.WithTimeout(ctx, cacheSyncWaitTimeout)
 	defer cancel()
@@ -296,9 +276,6 @@ func (r *LocationPublisherReconciler) pruneAllowed(ctx context.Context) error {
 		return nil
 	}
 
-	// An empty source list is never a valid desired state. Deriving the held
-	// count from the hub rather than from in-memory state is what makes this
-	// survive a restart.
 	held, err := r.listPublished(ctx)
 	if err != nil {
 		return err
@@ -310,9 +287,6 @@ func (r *LocationPublisherReconciler) pruneAllowed(ctx context.Context) error {
 	return nil
 }
 
-// evaluateRemovalGuard reads the hub's Karmada Cluster records, which are the
-// only place "this site exists" is a readable fact. It reads live rather than
-// from cache: a delete re-verifies its evidence immediately before issuing.
 func (r *LocationPublisherReconciler) evaluateRemovalGuard(
 	ctx context.Context,
 	name string,
@@ -492,13 +466,6 @@ func (r *LocationPublisherReconciler) ownsObject(obj client.Object) bool {
 	return obj.GetLabels()[LocationPublisherManagedByLabel] == LocationPublisherManagedByValue
 }
 
-// reportForeignManagers restores the visibility that force ownership hides.
-//
-// Only spec ownership counts. The publisher is authoritative for the published
-// content, not for the object's metadata: the federation layer stamps its own
-// labels and annotations on every copy it carries, so reporting metadata
-// co-ownership would fire on every pass against the one hub this runs on, and a
-// signal that is always on is not a signal.
 func (r *LocationPublisherReconciler) reportForeignManagers(
 	location *networkingv1alpha.Location,
 	published *networkingv1alpha.ServingLocation,
@@ -555,9 +522,6 @@ func (r *LocationPublisherReconciler) refreshMatchedClusters(ctx context.Context
 	locationMatchedClusters.WithLabelValues(name).Set(matched)
 }
 
-// refreshFleetMetrics exports the pair the whole design exists to make
-// checkable. Retained copies are excluded from the published count so one
-// blocked removal cannot permanently trip the gap alert.
 func (r *LocationPublisherReconciler) refreshFleetMetrics(ctx context.Context) {
 	logger := log.FromContext(ctx)
 
@@ -623,9 +587,6 @@ func publishedContentEqual(
 	return true
 }
 
-// SetupWithManager registers the publisher on a leader-electing manager. Both
-// edges are real watches; the safety resync only shortens the window an
-// out-of-band hub edit survives.
 func (r *LocationPublisherReconciler) SetupWithManager(mgr manager.Manager) error {
 	if r.SourceCluster == nil || r.HubCluster == nil {
 		return errors.New("a source cluster and a hub cluster are required to publish locations")

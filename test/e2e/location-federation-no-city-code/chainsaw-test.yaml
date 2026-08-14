@@ -1,8 +1,7 @@
 # yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
 #
-# A Location with no city code is refused, and the refusal is reported rather
-# than skipped silently. An empty topology makes every location-scoped placement
-# fail with nothing catching it, which is the failure this check closes.
+# A Location with no city code is not published, and the refusal is reported as
+# an event.
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
@@ -36,8 +35,7 @@ spec:
             resource:
               apiVersion: v1
               kind: Event
-              # Location is cluster-scoped, so its events land in default rather
-              # than in the ephemeral namespace chainsaw scopes asserts to.
+              # Location is cluster-scoped, so its events land in default.
               metadata:
                 namespace: default
               reason: MissingCityCode

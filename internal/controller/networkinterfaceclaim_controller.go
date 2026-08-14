@@ -271,9 +271,6 @@ func networkBindingName(networkName string, location networkingv1alpha.LocationR
 	return fmt.Sprintf("%s-%s-%s", networkName, location.Namespace, location.Name)
 }
 
-// location resolves the location this cell serves. A ServingLocation delivered
-// to the cell wins over the configured one; with neither, the claim waits
-// visibly rather than the operator failing to start.
 func (r *NetworkInterfaceClaimReconciler) location(
 	ctx context.Context,
 ) (networkingv1alpha.LocationReference, error) {

@@ -31,8 +31,20 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          ServingLocation names the location a cell serves. Its name is the name of the
-          Location it was published from.
+          ServingLocation tells a cell which location it serves.
+
+          A cell is a cluster that runs workloads at one physical location. It cannot
+          tell where it is on its own, so the platform delivers it a ServingLocation:
+          a read-only copy of a Location, carrying the name and topology of the place
+          the cell sits in. Everything the cell does that depends on where it is,
+          such as claiming network addresses, resolves through this object.
+
+          A ServingLocation takes the name of the Location it was copied from. Expect
+          exactly one on a cell. Two or more means more than one location has been
+          delivered to the same cell, and the cell refuses to guess between them.
+
+          This object is managed for you. Create and edit Locations on the platform
+          control plane; the copies follow.
         properties:
           apiVersion:
             description: |-
@@ -52,37 +64,46 @@ spec:
           metadata:
             type: object
           spec:
-            description: |-
-              ServingLocationSpec carries the identity and locality of the location a cell
-              serves. It deliberately omits the provider block, coordinates, location class
-              and display name: a field earns its place here by having a reader at a cell.
+            description: ServingLocationSpec describes the location a cell serves.
             properties:
               source:
                 description: |-
-                  Source describes the record this copy was published from. It is declared
-                  spec-side because the propagation layer strips status, so a reader that
-                  must reason about staleness has nowhere else to read it.
+                  Source identifies the Location this copy came from. Use it to tell how
+                  current the copy is: compare it against the Location of the same name to
+                  see whether an edit has reached this cell yet.
+
+                  The publisher sets this field. Leave it alone.
                 properties:
                   generation:
                     description: |-
-                      Generation is the metadata.generation of the Location this copy was
-                      published from.
+                      Generation is the metadata.generation of the Location this copy came
+                      from. When it is lower than the Location's current generation, an edit
+                      has not reached this cell yet.
                     format: int64
                     type: integer
                   publishedAt:
                     description: |-
-                      PublishedAt is when the published content last changed, not when the
-                      publisher last ran.
+                      PublishedAt is when the content of this copy last changed. A copy that is
+                      re-checked but not changed keeps its original timestamp, so an old
+                      timestamp means the location has been stable, not that publishing has
+                      stalled.
                     format: date-time
                     type: string
                 type: object
               topology:
                 additionalProperties:
                   type: string
-                description: |-
-                  Topology carries the locality of the location, keyed as it is on Location
-                  and LocationBinding. An empty city code makes every location-scoped
-                  placement fail with nothing catching it, so it is required here.
+                description: "Topology describes where in the world this location
+                  is. Workloads placed\nat this location inherit it, and placement
+                  rules that ask for a city or a\nregion are answered from these keys.\n\nThe
+                  map holds arbitrary keys. Some keys are well known:\n\n\ttopology.datum.net/city-code:
+                  IAD\n\ttopology.datum.net/region: us-east-1\n\nYou must supply topology.datum.net/city-code,
+                  and it must not be empty.\nA location with no city code cannot serve
+                  placement requests that name a\ncity, so the API rejects it. Any
+                  other key you set is carried through\nunchanged and is available
+                  to workloads at this location.\n\nThis field copies the topology
+                  of the Location it was published from.\nEdit the Location, not this
+                  copy."
                 minProperties: 1
                 type: object
                 x-kubernetes-validations:

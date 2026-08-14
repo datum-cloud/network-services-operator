@@ -10,8 +10,7 @@ import (
 // +k8s:defaulter-gen=true
 
 // CellControllerManager configures the controller manager that runs in a
-// cell's control plane. It carries only what a cell needs: the connection to
-// the IPAM API addresses are claimed from, and the location the cell serves.
+// cell's control plane.
 type CellControllerManager struct {
 	metav1.TypeMeta
 
@@ -34,17 +33,20 @@ type CellControllerManager struct {
 	// network interface addresses are claimed from.
 	IPAM IPAMConfig `json:"ipam"`
 
-	// Location names the location this cell serves, and is only the fallback:
-	// a ServingLocation delivered to the cell wins over it. No two cells may
-	// share one. Absent both, the cell reports a waiting state on the claims it
-	// cannot fulfil and heals when the delivered copy arrives, so its absence is
-	// not a validation failure.
+	// Location names the location this cell serves. Leave it unset unless you
+	// have to pin one: a ServingLocation delivered to the cell wins over it,
+	// and is the normal way a cell learns where it is.
 	//
-	// This field is transitional. It carries cells through the fleet labelling
-	// migration, after which a cell's identity is delivered and nothing about
-	// it is hand typed. It is removed once no cell has reported Configured as
-	// its identity source for a sustained period, which the
-	// nso_cell_location_identity_source metric answers directly.
+	// Set it only for a cell that no ServingLocation reaches yet. Never give
+	// two cells the same location. They would both hand out and both release
+	// the same addresses, and nothing detects it.
+	//
+	// With no location from either source, the cell still starts. It reports a
+	// waiting state on the claims it cannot fulfil and recovers on its own when
+	// a ServingLocation arrives.
+	//
+	// This field is temporary. It goes away once no cell reports Configured for
+	// nso_cell_location_identity_source.
 	Location LocationConfig `json:"location,omitempty"`
 }
 

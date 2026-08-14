@@ -25,21 +25,17 @@ const (
 	LocationUnresolvedAmbiguous  = "AmbiguousLocationIdentity"
 )
 
-// LocationIdentity is the answer to "which location is this cell".
+// LocationIdentity is the location a cell serves and where that answer came
+// from. Mismatch reports that a delivered copy and a configured location
+// disagree; the delivered copy wins.
 type LocationIdentity struct {
 	Reference networkingv1alpha.LocationReference
 	Source    string
-
-	// Mismatch is set when a delivered copy and a configured location disagree.
-	// The delivered copy wins, because it is reconciled and centrally
-	// correctable, but the disagreement is exactly the failure this design
-	// exists to kill and must not pass silently.
-	Mismatch bool
+	Mismatch  bool
 }
 
-// LocationUnresolved means the cell cannot name itself yet. It is a waiting
-// state to report on the objects that are stuck, never a boot failure: a cell
-// must not crash-loop because delivery is merely late.
+// LocationUnresolved reports that a cell cannot yet name the location it
+// serves. Callers report it on the objects that are stuck rather than failing.
 type LocationUnresolved struct {
 	Reason  string
 	Message string
@@ -47,10 +43,10 @@ type LocationUnresolved struct {
 
 func (e *LocationUnresolved) Error() string { return e.Message }
 
-// ResolveLocationIdentity picks the location a cell serves. Delivery wins over
-// configuration, and neither guesses: more than one delivered copy is a
-// labelling error, so an explicit configured answer is used if there is one and
-// otherwise the cell waits visibly.
+// ResolveLocationIdentity returns the location a cell serves. A single
+// delivered ServingLocation wins over the configured location. More than one
+// delivered copy falls back to the configured location, and returns
+// LocationUnresolved when there is none.
 func ResolveLocationIdentity(
 	ctx context.Context,
 	reader client.Reader,
@@ -102,8 +98,6 @@ func ResolveLocationIdentity(
 	}
 }
 
-// reportLocationIdentity exports which source a cell's identity came from, so a
-// permanent fallback cannot become a hiding place.
 func reportLocationIdentity(identity LocationIdentity, err error) {
 	cellLocationIdentitySource.Reset()
 	cellLocationIdentityMismatch.Reset()

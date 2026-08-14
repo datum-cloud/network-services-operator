@@ -21,8 +21,20 @@ Resource Types:
 
 
 
-ServingLocation names the location a cell serves. Its name is the name of the
-Location it was published from.
+ServingLocation tells a cell which location it serves.
+
+A cell is a cluster that runs workloads at one physical location. It cannot
+tell where it is on its own, so the platform delivers it a ServingLocation:
+a read-only copy of a Location, carrying the name and topology of the place
+the cell sits in. Everything the cell does that depends on where it is,
+such as claiming network addresses, resolves through this object.
+
+A ServingLocation takes the name of the Location it was copied from. Expect
+exactly one on a cell. Two or more means more than one location has been
+delivered to the same cell, and the cell refuses to guess between them.
+
+This object is managed for you. Create and edit Locations on the platform
+control plane; the copies follow.
 
 <table>
     <thead>
@@ -54,9 +66,7 @@ Location it was published from.
         <td><b><a href="#servinglocationspec">spec</a></b></td>
         <td>object</td>
         <td>
-          ServingLocationSpec carries the identity and locality of the location a cell
-serves. It deliberately omits the provider block, coordinates, location class
-and display name: a field earns its place here by having a reader at a cell.<br/>
+          ServingLocationSpec describes the location a cell serves.<br/>
         </td>
         <td>false</td>
       </tr></tbody>
@@ -68,9 +78,7 @@ and display name: a field earns its place here by having a reader at a cell.<br/
 
 
 
-ServingLocationSpec carries the identity and locality of the location a cell
-serves. It deliberately omits the provider block, coordinates, location class
-and display name: a field earns its place here by having a reader at a cell.
+ServingLocationSpec describes the location a cell serves.
 
 <table>
     <thead>
@@ -85,9 +93,22 @@ and display name: a field earns its place here by having a reader at a cell.
         <td><b>topology</b></td>
         <td>map[string]string</td>
         <td>
-          Topology carries the locality of the location, keyed as it is on Location
-and LocationBinding. An empty city code makes every location-scoped
-placement fail with nothing catching it, so it is required here.<br/>
+          Topology describes where in the world this location is. Workloads placed
+at this location inherit it, and placement rules that ask for a city or a
+region are answered from these keys.
+
+The map holds arbitrary keys. Some keys are well known:
+
+	topology.datum.net/city-code: IAD
+	topology.datum.net/region: us-east-1
+
+You must supply topology.datum.net/city-code, and it must not be empty.
+A location with no city code cannot serve placement requests that name a
+city, so the API rejects it. Any other key you set is carried through
+unchanged and is available to workloads at this location.
+
+This field copies the topology of the Location it was published from.
+Edit the Location, not this copy.<br/>
           <br/>
             <i>Validations</i>:<li>'topology.datum.net/city-code' in self && self['topology.datum.net/city-code'] != '': topology must carry a non-empty topology.datum.net/city-code</li>
         </td>
@@ -96,9 +117,11 @@ placement fail with nothing catching it, so it is required here.<br/>
         <td><b><a href="#servinglocationspecsource">source</a></b></td>
         <td>object</td>
         <td>
-          Source describes the record this copy was published from. It is declared
-spec-side because the propagation layer strips status, so a reader that
-must reason about staleness has nowhere else to read it.<br/>
+          Source identifies the Location this copy came from. Use it to tell how
+current the copy is: compare it against the Location of the same name to
+see whether an edit has reached this cell yet.
+
+The publisher sets this field. Leave it alone.<br/>
         </td>
         <td>false</td>
       </tr></tbody>
@@ -110,9 +133,11 @@ must reason about staleness has nowhere else to read it.<br/>
 
 
 
-Source describes the record this copy was published from. It is declared
-spec-side because the propagation layer strips status, so a reader that
-must reason about staleness has nowhere else to read it.
+Source identifies the Location this copy came from. Use it to tell how
+current the copy is: compare it against the Location of the same name to
+see whether an edit has reached this cell yet.
+
+The publisher sets this field. Leave it alone.
 
 <table>
     <thead>
@@ -127,8 +152,9 @@ must reason about staleness has nowhere else to read it.
         <td><b>generation</b></td>
         <td>integer</td>
         <td>
-          Generation is the metadata.generation of the Location this copy was
-published from.<br/>
+          Generation is the metadata.generation of the Location this copy came
+from. When it is lower than the Location's current generation, an edit
+has not reached this cell yet.<br/>
           <br/>
             <i>Format</i>: int64<br/>
         </td>
@@ -137,8 +163,10 @@ published from.<br/>
         <td><b>publishedAt</b></td>
         <td>string</td>
         <td>
-          PublishedAt is when the published content last changed, not when the
-publisher last ran.<br/>
+          PublishedAt is when the content of this copy last changed. A copy that is
+re-checked but not changed keeps its original timestamp, so an old
+timestamp means the location has been stable, not that publishing has
+stalled.<br/>
           <br/>
             <i>Format</i>: date-time<br/>
         </td>

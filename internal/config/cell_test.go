@@ -48,11 +48,11 @@ func TestCellControllerManager_Validate(t *testing.T) {
 			mutate: func(*CellControllerManager) {},
 		},
 		{
-			name:   "no configured location, because a delivered one may arrive",
+			name:   "no configured location",
 			mutate: func(c *CellControllerManager) { c.Location = LocationConfig{} },
 		},
 		{
-			name:   "no location namespace, which is vestigial",
+			name:   "no location namespace",
 			mutate: func(c *CellControllerManager) { c.Location.Namespace = "" },
 		},
 		{

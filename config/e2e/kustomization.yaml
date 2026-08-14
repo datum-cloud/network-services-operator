@@ -85,9 +85,8 @@ patches:
               - name: downstream-cluster-kubeconfig
                 secret:
                   secretName: downstream-cluster-kubeconfig
-              # test-infra:karmada-hub-secret creates this after the manager is
-              # already deployed, so the manager crashloops until the hub exists
-              # — the same accepted ordering as the downstream kubeconfig above.
+              # test-infra:karmada-hub-secret creates this after the manager
+              # is deployed, so the manager crashloops until it exists.
               - name: karmada-hub-kubeconfig
                 secret:
                   secretName: karmada-hub-kubeconfig

@@ -101,8 +101,8 @@ type NetworkServicesOperator struct {
 	// Deprecated: configure the cell controller manager instead.
 	NetworkInterface NetworkInterfaceConfig `json:"networkInterface,omitempty"`
 
-	// LocationPublisher configures the controller that publishes Location
-	// records to the federation hub. Control-plane only.
+	// LocationPublisher configures the controller that publishes Locations to
+	// the federation hub.
 	LocationPublisher LocationPublisherConfig `json:"locationPublisher,omitempty"`
 }
 
@@ -174,49 +174,52 @@ type NetworkInterfaceConfig struct {
 	// Deprecated: run the cell controller manager instead.
 	Enabled bool `json:"enabled,omitempty"`
 
-	// Deprecated: run the cell controller manager instead.
+	// Location names the location this control plane serves. Run the cell
+	// controller manager instead.
 	Location LocationConfig `json:"location,omitempty"`
 }
 
 // +k8s:deepcopy-gen=true
 
-// LocationConfig names a location. For a cell it is the fallback identity, used
-// only when no ServingLocation has been delivered to it.
+// LocationConfig names a Location. On a cell it is a fallback, used only while
+// no ServingLocation has been delivered to that cell.
 type LocationConfig struct {
+	// Name is the name of the Location, such as "us-east-1-iad".
 	Name string `json:"name,omitempty"`
 
-	// Namespace is vestigial. Location is cluster-scoped and every stored value
-	// is empty.
+	// Namespace has no effect. Location is cluster-scoped. Leave it unset.
 	Namespace string `json:"namespace,omitempty"`
 }
 
 // +k8s:deepcopy-gen=true
 
-// LocationPublisherConfig configures the controller that publishes the platform
-// control plane's Location records to the federation hub as ServingLocations.
+// LocationPublisherConfig configures the controller that copies Locations to
+// the federation hub as ServingLocations, so that each cell is told which
+// location it serves.
 //
-// The publisher belongs to the control-plane controller set and is registered
-// only by the manager command, so a cell never runs it. Naming a hub is what
-// asks a control plane to publish: exactly one component must own the published
-// set for pruning to be unambiguous.
+// Only the manager runs this controller. A cell never does. Set
+// hubKubeconfigPath to turn it on, and set it on exactly one deployment: two
+// publishers writing the same hub fight over the same objects.
 type LocationPublisherConfig struct {
-	// SourceKubeconfigPath points at the platform control plane holding the
-	// Location records. When empty, discovery.discoveryKubeconfigPath is used.
+	// SourceKubeconfigPath is the path to a kubeconfig for the control plane
+	// holding the Locations to publish. Defaults to
+	// discovery.discoveryKubeconfigPath.
 	SourceKubeconfigPath string `json:"sourceKubeconfigPath,omitempty"`
 
-	// HubKubeconfigPath points at the federation hub the published copies and
-	// their propagation policies are written to. Publishing is off until it is
-	// set: no other connection is a safe stand-in for the hub, and writing the
-	// published set anywhere else would prune against the wrong inventory.
+	// HubKubeconfigPath is the path to a kubeconfig for the federation hub the
+	// copies are written to. Publishing stays off while this is empty.
 	HubKubeconfigPath string `json:"hubKubeconfigPath,omitempty"`
 
-	// SafetyResyncPeriod re-lists both ends as self-heal. Correctness comes from
-	// the watches; this only shortens the window an out-of-band edit survives.
+	// SafetyResyncPeriod is how often the publisher re-reads both ends and
+	// repairs any difference it finds. Publishing itself is driven by watches,
+	// so this only bounds how long an edit made directly on the hub survives.
+	// Shorten it to repair such edits sooner, at the cost of more API traffic.
 	//
 	// Defaults to 30 minutes.
 	SafetyResyncPeriod metav1.Duration `json:"safetyResyncPeriod,omitempty"`
 
-	// Client configures the Kubernetes client connections to both ends.
+	// Client configures the Kubernetes client connections to both the source
+	// and the hub.
 	Client ClientConnectionConfig `json:"client,omitempty"`
 }
 

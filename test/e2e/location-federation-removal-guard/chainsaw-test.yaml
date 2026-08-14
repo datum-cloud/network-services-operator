@@ -1,14 +1,12 @@
 # yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
 #
 # All three states of the removal guard, in the order an operator meets them.
-# The guard fails closed: absence of evidence retains the copy, because a
-# retained copy still answers "which location is this" for a site that is still
-# standing, and there is no owner-reference safety net across clusters.
+# The guard fails closed: without evidence that no cell serves the location, the
+# published copy is retained.
 #
-# The env holds one member cell, so "drop the label" cannot be the proceed case
-# — dropping it leaves the fleet not fully labelled, which is the third row. The
-# proceed case is the member claiming a different location, which is what
-# decommissioning actually looks like.
+# The env holds one member cell, so dropping its label leaves the fleet
+# unlabelled, which is the third state. The proceed case is the member claiming
+# a different location.
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
@@ -83,9 +81,8 @@ spec:
 
     - name: An unlabelled fleet is a distinct block, not a licence to prune
       description: |
-        Without this row the guard finds no labelled cluster for any location
-        during a fleet labelling backfill and blocks nothing — decorative
-        protection, exactly when the fleet is least understood.
+        During a fleet labelling backfill no cluster is labelled for any
+        location. The guard must still block.
       try:
         - script:
             cluster: nso-hub

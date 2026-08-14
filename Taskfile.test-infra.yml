@@ -151,9 +151,6 @@ tasks:
       - task: extension-server
       - task: billing-usage-collector
       - task: external-dns
-      # Real federation. The location publisher writes to this hub and the
-      # location-federation scenarios assert against it, so it is part of the
-      # env rather than an optional extra.
       - task: karmada-up
       - task: karmada-hub-secret
       - task: location-fixtures
@@ -358,8 +355,6 @@ tasks:
       - kubectl --context {{.DOWNSTREAM_CTX}} apply -f config/crd/bases/networking.datumapis.com_connectors.yaml
       - kubectl --context {{.DOWNSTREAM_CTX}} apply -f config/crd/bases/networking.datumapis.com_httpproxies.yaml
       - kubectl --context {{.DOWNSTREAM_CTX}} apply -f config/crd/bases/networking.datumapis.com_trafficprotectionpolicies.yaml
-      # ServingLocation is federated onto the member rather than replicated, but
-      # the member still needs the schema to receive it.
       - kubectl --context {{.DOWNSTREAM_CTX}} apply -f config/crd/bases/networking.datumapis.com_servinglocations.yaml
 
   external-dns:
@@ -714,29 +709,26 @@ tasks:
       - echo "📜 applying federation artifacts (config/federation)"
       - |
         kubectl --kubeconfig {{.KARMADA_KUBECONFIG}} --context karmada-apiserver apply -f config/federation/
-      # The hub stores the published copies, so it needs the schema too. The
-      # member is not labelled for any location here: the location-federation
-      # scenarios own that label, and the unlabelled state is one of them.
+      # The location-federation scenarios label the member themselves.
       - |
         kubectl --kubeconfig {{.KARMADA_KUBECONFIG}} --context karmada-apiserver \
           apply -f config/crd/bases/networking.datumapis.com_servinglocations.yaml
       - echo "✅ karmada-up complete. Karmada apiserver kubeconfig at {{.KARMADA_KUBECONFIG}}"
 
   location-fixtures:
-    desc: "Seed the anchor Location the location-federation scenarios rely on. The publisher refuses to prune while the source list is empty, so a scenario deleting the only Location would be blocked for a reason it is not testing."
+    desc: "Seed the anchor Location the location-federation scenarios rely on. It keeps the source Location list non-empty, which the publisher requires before it will prune."
     cmds:
       - kubectl --context {{.UPSTREAM_CTX}} apply -f test/e2e/fixtures/location/anchor.yaml
 
   karmada-hub-secret:
-    desc: "Publish the Karmada apiserver kubeconfig to the upstream cluster as karmada-hub-kubeconfig, rewritten to the in-cluster service address so the NSO manager pod can reach the hub."
+    desc: "Publish the Karmada apiserver kubeconfig to the upstream cluster as karmada-hub-kubeconfig, rewritten to the in-cluster Service address the NSO manager pod can reach."
     vars:
       KARMADA_KUBECONFIG: '{{.TMP_DIR}}/karmada-{{.UPSTREAM_CLUSTER}}/karmada-apiserver.config'
       IN_CLUSTER_KUBECONFIG: '{{.TMP_DIR}}/karmada-{{.UPSTREAM_CLUSTER}}/karmada-apiserver-incluster.config'
     cmds:
-      # karmadactl init writes 127.0.0.1:32443, which is the macOS host's route
-      # to the hub and nothing a pod can dial. The Service address is, and the
-      # apiserver certificate is not signed for it — a test env skips the check
-      # rather than re-issuing the certificate.
+      # karmadactl init writes a host address no pod can dial. Swap in the
+      # Service address; its certificate does not cover that name, so skip
+      # verification.
       - cp {{.KARMADA_KUBECONFIG}} {{.IN_CLUSTER_KUBECONFIG}}
       - |
         kubectl --kubeconfig {{.IN_CLUSTER_KUBECONFIG}} config set-cluster karmada-apiserver \

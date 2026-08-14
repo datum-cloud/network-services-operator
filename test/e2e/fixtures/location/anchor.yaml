@@ -1,11 +1,5 @@
-# A permanent Location so the source list is never empty.
-#
-# An empty source list is never a valid desired state: the publisher treats a
-# zero-length list as a suspected read fault and refuses to prune anything. That
-# is correct, and it is also the single most destructive failure the component
-# has, so it is deliberately not relaxed for tests. Without this anchor, a
-# scenario that deletes the only Location in the cluster would have its removal
-# blocked for a reason unrelated to what it is testing.
+# A permanent Location. The publisher refuses to prune while the source list is
+# empty, so keep at least one Location in the cluster. Do not delete this.
 apiVersion: networking.datumapis.com/v1alpha
 kind: Location
 metadata:

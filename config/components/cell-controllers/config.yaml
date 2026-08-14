@@ -5,9 +5,5 @@ metricsServer:
 ipam:
   kubeconfigPath: /etc/ipam-cluster/kubeconfig
   impersonateUsername: nso-ipam-agent
-# No location is configured here on purpose. A cell learns which location it is
-# from the ServingLocation delivered to it, and a placeholder configured here
-# would either be used as a real identity or disagree with the delivered copy.
-# An overlay that must pin one replaces this whole ConfigMap: two deployments
-# sharing a location name both fulfil and both release the same claims'
-# addresses, and nothing in the operator can detect it.
+# A cell learns its location from the ServingLocation delivered to it.
+# To pin one, replace this ConfigMap in an overlay.

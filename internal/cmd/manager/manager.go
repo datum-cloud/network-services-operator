@@ -375,22 +375,10 @@ func NewCommand(build BuildInfo) *cobra.Command {
 				}
 			}
 
-			// Locations are authored in the platform control plane, which the
-			// discovery connection already reaches.
-			var platformCluster cluster.Cluster
-			if serverConfig.LocationReplication.Enabled {
-				platformCluster, err = newPlatformCluster(serverConfig)
-				if err != nil {
-					setupLog.Error(err, "unable to reach the platform control plane")
-					os.Exit(1)
-				}
-			}
-
 			registeredControllers, err := setupControllers(mgr, serverConfig, controllerDeps{
 				downstreamCluster: downstreamCluster,
 				singletonManager:  singletonControllerMgr,
 				irohDownstream:    irohDownstream,
-				platformCluster:   platformCluster,
 			})
 			if err != nil {
 				setupLog.Error(err, "unable to set up controllers")
@@ -455,12 +443,6 @@ func NewCommand(build BuildInfo) *cobra.Command {
 			if irohDownstream != nil {
 				g.Go(func() error {
 					return ignoreCanceled(irohDownstream.Start(ctx))
-				})
-			}
-
-			if platformCluster != nil {
-				g.Go(func() error {
-					return ignoreCanceled(platformCluster.Start(ctx))
 				})
 			}
 
@@ -560,28 +542,12 @@ func setupWebhooks(mgr mcmanager.Manager, serverConfig config.NetworkServicesOpe
 	return runSetups("webhook", webhookRegistrations(mgr, serverConfig))
 }
 
-// newPlatformCluster reaches Milo's platform control plane through the
-// discovery connection the operator already opens, so location replication
-// needs no credential of its own.
-func newPlatformCluster(serverConfig config.NetworkServicesOperator) (cluster.Cluster, error) {
-	platformRestConfig, err := serverConfig.Discovery.DiscoveryRestConfig()
-	if err != nil {
-		return nil, fmt.Errorf("unable to get platform control plane rest config: %w", err)
-	}
-	serverConfig.ProjectClient.ApplyTo(platformRestConfig)
-
-	return cluster.New(platformRestConfig, func(o *cluster.Options) {
-		o.Scheme = scheme
-	})
-}
-
 // controllerDeps carries the clients and managers that controllers are wired
 // against. Fields are only populated for the sets that need them.
 type controllerDeps struct {
 	downstreamCluster cluster.Cluster
 	singletonManager  manager.Manager
 	irohDownstream    cluster.Cluster
-	platformCluster   cluster.Cluster
 }
 
 // controllerRegistrations lists every controller and the set it belongs to.
@@ -621,11 +587,6 @@ func controllerRegistrations(
 			return (&controller.NetworkPresenceGCReconciler{
 				Presence: networkPresence,
 			}).SetupWithManager(mgr)
-		}},
-		{"locationreplicator", serverConfig.LocationReplication.Enabled, func() error {
-			return (&controller.LocationReplicator{
-				PropagationClusterName: serverConfig.LocationReplication.PropagationClusterName,
-			}).SetupWithManager(deps.singletonManager, deps.platformCluster)
 		}},
 		{"networkpolicy", true, func() error {
 			return (&controller.NetworkPolicyReconciler{}).SetupWithManager(mgr)

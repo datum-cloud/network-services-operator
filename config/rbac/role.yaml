@@ -234,7 +234,6 @@ rules:
   - connectors
   - domains
   - httpproxies
-  - locations
   - networkbindings
   - networkcontexts
   - networkinterfaceclaims

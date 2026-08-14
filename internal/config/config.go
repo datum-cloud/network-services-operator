@@ -17,7 +17,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/utils/ptr"
@@ -101,50 +100,9 @@ type NetworkServicesOperator struct {
 	//
 	// Deprecated: configure the cell controller manager instead.
 	NetworkInterface NetworkInterfaceConfig `json:"networkInterface,omitempty"`
-
-	// LocationReplication configures the replicator that copies the platform
-	// control plane's locations onto the hub.
-	LocationReplication LocationReplicationConfig `json:"locationReplication,omitempty"`
 }
 
 // +k8s:deepcopy-gen=true
-
-// LocationReplicationConfig configures the LocationReplicator. Locations are
-// read through the discovery connection, which already reaches the platform
-// control plane.
-type LocationReplicationConfig struct {
-	// Enabled registers the replicator. Leave it off where the operator's own
-	// control plane is the platform control plane, which would make every copy
-	// its own source.
-	Enabled bool `json:"enabled,omitempty"`
-
-	// PropagationClusterName is stamped onto every copy as
-	// meta.datumapis.com/upstream-cluster-name, which is the label the
-	// federation control plane's policy selects NSO resources by. A Location
-	// belongs to no project, so unlike every other propagated kind there is
-	// nothing to derive this from, and a value that names a real project would
-	// claim the location for it.
-	//
-	// +default="datum-platform"
-	PropagationClusterName string `json:"propagationClusterName,omitempty"`
-}
-
-func SetDefaults_LocationReplicationConfig(obj *LocationReplicationConfig) {
-	if obj.PropagationClusterName == "" {
-		obj.PropagationClusterName = "datum-platform"
-	}
-}
-
-func (c *LocationReplicationConfig) validate() error {
-	if !c.Enabled {
-		return nil
-	}
-	if errs := validation.IsValidLabelValue(c.PropagationClusterName); len(errs) > 0 {
-		return fmt.Errorf("propagationClusterName %q is not a valid label value: %s",
-			c.PropagationClusterName, strings.Join(errs, ", "))
-	}
-	return nil
-}
 
 // +k8s:deepcopy-gen=true
 
@@ -1411,9 +1369,6 @@ func (c *NetworkServicesOperator) Validate() error {
 	}
 	if err := c.Gateway.validate(); err != nil {
 		return fmt.Errorf("gateway: %w", err)
-	}
-	if err := c.LocationReplication.validate(); err != nil {
-		return fmt.Errorf("locationReplication: %w", err)
 	}
 	return nil
 }

@@ -147,14 +147,6 @@ spec:
       matchExpressions:
       - key: meta.datumapis.com/upstream-cluster-name
         operator: Exists
-  # Cluster-scoped, and belonging to no project: the label carries the platform
-  # control plane the copy was read from rather than a project.
-  - apiVersion: networking.datumapis.com/v1alpha
-    kind: Location
-    labelSelector:
-      matchExpressions:
-      - key: meta.datumapis.com/upstream-cluster-name
-        operator: Exists
   # A network's presence in a location. Everything a location reads is in spec,
   # because propagation carries no status.
   - apiVersion: networking.datumapis.com/v1alpha

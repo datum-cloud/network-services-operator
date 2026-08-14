@@ -32,7 +32,6 @@ var reconcilerControllerNames = map[string]string{
 	"IrohDNSReconciler":                            "iroh-dns",
 	"NetworkBindingReconciler":                     "networkbinding",
 	"NetworkContextReconciler":                     "networkcontext",
-	"LocationReplicator":                           "locationreplicator",
 	"NetworkContextHoldReconciler":                 "networkcontexthold",
 	"NetworkInterfaceClaimReconciler":              "networkinterfaceclaim",
 	"NetworkInterfaceReconciler":                   "networkinterface",

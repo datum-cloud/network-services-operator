@@ -89,11 +89,6 @@ type GCPLocationProvider struct {
 	Zone string `json:"zone,omitempty"`
 }
 
-// LocationReady is the condition a location's platform control plane sets, and
-// the only fact about a location's status that leaves that control plane: a
-// location that does not carry it is not copied anywhere.
-const LocationReady = "Ready"
-
 // LocationStatus defines the observed state of Location.
 type LocationStatus struct {
 	// Represents the observations of a location's current state.

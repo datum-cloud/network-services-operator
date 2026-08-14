@@ -33,7 +33,6 @@ spec:
                   name: test-binding-network
                 location:
                   name: some-location
-                  namespace: default
         - assert:
             resource:
               apiVersion: networking.datumapis.com/v1alpha

@@ -37,7 +37,6 @@ spec:
                   name: test-cascade-network
                 location:
                   name: test-location
-                  namespace: default
         - assert:
             resource:
               apiVersion: networking.datumapis.com/v1alpha

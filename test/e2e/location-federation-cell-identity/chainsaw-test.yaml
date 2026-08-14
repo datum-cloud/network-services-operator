@@ -49,12 +49,11 @@ spec:
               apiVersion: networking.datumapis.com/v1alpha
               kind: NetworkBinding
               metadata:
-                name: identity-net-default-us-central-1
+                name: identity-net-us-central-1
                 namespace: ipam-e2e-alpha
               spec:
                 location:
                   name: us-central-1
-                  namespace: default
       catch:
         - script:
             content: |
@@ -134,7 +133,7 @@ spec:
               apiVersion: networking.datumapis.com/v1alpha
               kind: NetworkBinding
               metadata:
-                name: identity-net-default-us-central-1
+                name: identity-net-us-central-1
                 namespace: ipam-e2e-alpha
               spec:
                 location:

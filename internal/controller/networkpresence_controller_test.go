@@ -377,6 +377,27 @@ func TestNetworkPresenceLeavesProjectPlaneBindingsAlone(t *testing.T) {
 		"the presence controller must not answer for a binding it does not serve")
 }
 
+// A context a location reads is propagated in, not written here, and nothing
+// on the hub declares it. Reaping it would take the network's rules away from
+// the very component that needs them.
+func TestNetworkPresenceLeavesAContextItDidNotWrite(t *testing.T) {
+	s := newPresenceScenario(t, presenceOptions{})
+
+	propagated := &networkingv1alpha.NetworkContext{}
+	propagated.Namespace = s.hubNamespace
+	propagated.Name = s.contextName()
+	propagated.Spec.Network = networkingv1alpha.LocalNetworkRef{Name: s.networkName}
+	propagated.Spec.Location = networkingv1alpha.LocationReference{Name: s.locationName}
+	propagated.Spec.IPFamilies = []networkingv1alpha.IPFamily{networkingv1alpha.IPv4Protocol}
+	propagated.Spec.MTU = 1460
+	require.NoError(t, s.hub.Create(s.ctx, propagated))
+
+	s.reconcile()
+
+	_, ok := s.networkContext()
+	require.True(t, ok, "a context this controller did not write must survive having no holder")
+}
+
 func TestNetworkPresenceRefusesAMissingNetwork(t *testing.T) {
 	s := newPresenceScenario(t, presenceOptions{withoutNetwork: true})
 	s.createBinding("consumer-a")

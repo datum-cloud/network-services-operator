@@ -149,6 +149,15 @@ func (r *NetworkPresenceReconciler) teardown(ctx context.Context, req ctrl.Reque
 		return nil
 	}
 
+	// Only a presence this controller wrote is this controller's to remove. It
+	// stamps the network UID on everything it creates, so a context without one
+	// was put here by something else — a copy propagated in, or a context that
+	// predates this controller — and deleting it would take away the object a
+	// location reads.
+	if networkContext.Labels[networkingv1alpha.NetworkUIDLabel] == "" {
+		return nil
+	}
+
 	log.FromContext(ctx).Info("no binding declares this network presence, removing it")
 	if err := r.hub.Delete(ctx, &networkContext); err != nil {
 		return client.IgnoreNotFound(err)

@@ -39,6 +39,12 @@ type CellControllerManager struct {
 	// share one. Absent both, the cell reports a waiting state on the claims it
 	// cannot fulfil and heals when the delivered copy arrives, so its absence is
 	// not a validation failure.
+	//
+	// This field is transitional. It carries cells through the fleet labelling
+	// migration, after which a cell's identity is delivered and nothing about
+	// it is hand typed. It is removed once no cell has reported Configured as
+	// its identity source for a sustained period, which the
+	// nso_cell_location_identity_source metric answers directly.
 	Location LocationConfig `json:"location,omitempty"`
 }
 

@@ -169,9 +169,3 @@ spec:
                 name: presence-shared-net-default-presence-shared-loc
                 namespace: presence-shared-hub
 
-  cleanup:
-    - script:
-        content: |
-          kubectl delete networkbinding -n presence-shared-hub --all --ignore-not-found
-          kubectl delete namespace presence-shared-hub presence-shared-project --ignore-not-found
-          kubectl delete locationbinding presence-shared-loc --ignore-not-found

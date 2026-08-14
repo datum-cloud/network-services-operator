@@ -112,9 +112,3 @@ spec:
                 name: presence-unavail-net-default-presence-unavail-loc
                 namespace: presence-unavail-hub
 
-  cleanup:
-    - script:
-        content: |
-          kubectl delete networkbinding -n presence-unavail-hub --all --ignore-not-found
-          kubectl delete namespace presence-unavail-hub presence-unavail-project --ignore-not-found
-          kubectl delete locationbinding presence-unavail-loc --ignore-not-found

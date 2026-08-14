@@ -116,9 +116,3 @@ spec:
                   - IPv4
                   - IPv6
 
-  cleanup:
-    - script:
-        content: |
-          kubectl delete networkbinding -n presence-edit-hub --all --ignore-not-found
-          kubectl delete namespace presence-edit-hub presence-edit-project --ignore-not-found
-          kubectl delete locationbinding presence-edit-loc --ignore-not-found

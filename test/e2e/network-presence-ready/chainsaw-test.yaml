@@ -178,9 +178,3 @@ spec:
               status:
                 (length(conditions[?type == 'Ready' && reason == 'NetworkContextReady']) == `1`): true
 
-  cleanup:
-    - script:
-        content: |
-          kubectl delete networkbinding -n presence-ready-hub --all --ignore-not-found
-          kubectl delete namespace presence-ready-hub presence-ready-project --ignore-not-found
-          kubectl delete locationbinding presence-ready-loc --ignore-not-found

@@ -318,8 +318,7 @@ func newScenario(t *testing.T, labelled bool, networkFamilies []networkingv1alph
 	ipam := newFakeIPAM(t, classes...)
 
 	location := config.LocationConfig{
-		Name:      testLocationName,
-		Namespace: testLocationNS,
+		Name: testLocationName,
 	}
 
 	s := &scenario{
@@ -357,8 +356,7 @@ func (s *scenario) createNetworkContext(
 	networkContext.Spec = networkingv1alpha.NetworkContextSpec{
 		Network: networkingv1alpha.LocalNetworkRef{Name: network},
 		Location: networkingv1alpha.LocationReference{
-			Name:      testLocationName,
-			Namespace: testLocationNS,
+			Name: testLocationName,
 		},
 		IPFamilies: families,
 		MTU:        mtu,
@@ -368,8 +366,7 @@ func (s *scenario) createNetworkContext(
 
 func (s *scenario) networkContextName(network string) string {
 	return networkContextName(network, networkingv1alpha.LocationReference{
-		Name:      testLocationName,
-		Namespace: testLocationNS,
+		Name: testLocationName,
 	})
 }
 
@@ -450,8 +447,7 @@ func (s *scenario) createSubnet(
 		SubnetClass:    "private",
 		NetworkContext: networkingv1alpha.LocalNetworkContextRef{Name: contextName},
 		Location: networkingv1alpha.LocationReference{
-			Name:      testLocationName,
-			Namespace: testLocationNS,
+			Name: testLocationName,
 		},
 		IPFamily:     family,
 		StartAddress: startAddress,

@@ -138,8 +138,7 @@ func newPresenceScenario(t *testing.T, opts presenceOptions) *presenceScenario {
 // contextName is the deterministic name every binding for the pair resolves to.
 func (s *presenceScenario) contextName() string {
 	return networkContextName(s.networkName, networkingv1alpha.LocationReference{
-		Name:      s.locationName,
-		Namespace: networkingv1alpha.LocationReferenceDefaultNamespace,
+		Name: s.locationName,
 	})
 }
 

@@ -39,7 +39,7 @@ spec:
               apiVersion: networking.datumapis.com/v1alpha
               kind: NetworkContext
               metadata:
-                name: test-binding-network-default-some-location
+                name: test-binding-network-some-location
                 namespace: default
                 (creationTimestamp != nil): true
         - wait:
@@ -65,7 +65,7 @@ spec:
       try:
         - script:
             content: |
-                kubectl -n default patch networkcontext test-binding-network-default-some-location \
+                kubectl -n default patch networkcontext test-binding-network-some-location \
                   --subresource=status --type=merge \
                   -p '{"status":{"conditions":[{"type": "Ready", "status": "True", "reason": "Test", "message": "test", "lastTransitionTime": "2025-02-24T23:59:09Z"}]}}'
 

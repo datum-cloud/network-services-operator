@@ -107,7 +107,7 @@ spec:
                 namespace: presence-shared-hub
               status:
                 networkContextRef:
-                  name: presence-shared-net-default-presence-shared-loc
+                  name: presence-shared-net-presence-shared-loc
         - assert:
             timeout: 1m
             resource:
@@ -118,7 +118,7 @@ spec:
                 namespace: presence-shared-hub
               status:
                 networkContextRef:
-                  name: presence-shared-net-default-presence-shared-loc
+                  name: presence-shared-net-presence-shared-loc
         - script:
             content: |
               set -e
@@ -149,7 +149,7 @@ spec:
               apiVersion: networking.datumapis.com/v1alpha
               kind: NetworkContext
               metadata:
-                name: presence-shared-net-default-presence-shared-loc
+                name: presence-shared-net-presence-shared-loc
                 namespace: presence-shared-hub
 
     - name: The last consumer goes away and the presence goes with it
@@ -166,6 +166,6 @@ spec:
               apiVersion: networking.datumapis.com/v1alpha
               kind: NetworkContext
               metadata:
-                name: presence-shared-net-default-presence-shared-loc
+                name: presence-shared-net-presence-shared-loc
                 namespace: presence-shared-hub
 

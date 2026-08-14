@@ -127,21 +127,4 @@ type LocationReference struct {
 	//
 	// +kubebuilder:validation:Required
 	Name string `json:"name"`
-
-	// Namespace for the datum location.
-	//
-	// Deprecated: a Location is cluster-scoped, so this names nothing. It is
-	// defaulted when unset and ignored when set, and will be dropped at the next
-	// API version. It is retained because deterministic NetworkContext names are
-	// built from it, and existing contexts own subnets under those names.
-	//
-	// +kubebuilder:validation:Optional
-	// +kubebuilder:default="default"
-	Namespace string `json:"namespace,omitempty"`
 }
-
-// LocationReferenceDefaultNamespace is the value LocationReference.Namespace is
-// defaulted to. Names derived from a reference use the field rather than this
-// constant, so a reference persisted under another value keeps the name its
-// subnets were allocated under.
-const LocationReferenceDefaultNamespace = "default"

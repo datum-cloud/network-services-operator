@@ -27,7 +27,7 @@ spec:
               apiVersion: networking.datumapis.com/v1alpha
               kind: NetworkContext
               metadata:
-                name: nic-dualstack-net-default-us-central-1
+                name: nic-dualstack-net-us-central-1
                 namespace: ipam-e2e-alpha
               spec:
                 network:

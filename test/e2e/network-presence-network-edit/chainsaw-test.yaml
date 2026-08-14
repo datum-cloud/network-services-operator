@@ -74,7 +74,7 @@ spec:
               apiVersion: networking.datumapis.com/v1alpha
               kind: NetworkContext
               metadata:
-                name: presence-edit-net-default-presence-edit-loc
+                name: presence-edit-net-presence-edit-loc
                 namespace: presence-edit-hub
               spec:
                 mtu: 1460
@@ -108,7 +108,7 @@ spec:
               apiVersion: networking.datumapis.com/v1alpha
               kind: NetworkContext
               metadata:
-                name: presence-edit-net-default-presence-edit-loc
+                name: presence-edit-net-presence-edit-loc
                 namespace: presence-edit-hub
               spec:
                 mtu: 8856

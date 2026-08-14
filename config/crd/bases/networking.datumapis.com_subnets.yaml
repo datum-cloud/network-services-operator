@@ -67,16 +67,6 @@ spec:
                   name:
                     description: Name of a datum location
                     type: string
-                  namespace:
-                    default: default
-                    description: |-
-                      Namespace for the datum location.
-
-                      Deprecated: a Location is cluster-scoped, so this names nothing. It is
-                      defaulted when unset and ignored when set, and will be dropped at the next
-                      API version. It is retained because deterministic NetworkContext names are
-                      built from it, and existing contexts own subnets under those names.
-                    type: string
                 required:
                 - name
                 type: object

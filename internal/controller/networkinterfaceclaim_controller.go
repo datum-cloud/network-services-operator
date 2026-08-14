@@ -357,8 +357,7 @@ func claimsOnNetworkContext(ctx context.Context, cl client.Client, obj client.Ob
 
 func (r *NetworkInterfaceClaimReconciler) location() networkingv1alpha.LocationReference {
 	return networkingv1alpha.LocationReference{
-		Name:      r.Location.Name,
-		Namespace: r.Location.Namespace,
+		Name: r.Location.Name,
 	}
 }
 
@@ -1322,7 +1321,7 @@ func (r *NetworkInterfaceClaimReconciler) SetupWithManager(mgr mcmanager.Manager
 	if r.IPAM == nil {
 		return errors.New("an IPAM client factory is required")
 	}
-	if r.Location.Name == "" || r.Location.Namespace == "" {
+	if r.Location.Name == "" {
 		return errors.New("a location is required to fulfil network interface claims")
 	}
 

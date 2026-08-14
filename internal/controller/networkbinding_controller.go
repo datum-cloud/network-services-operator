@@ -186,13 +186,6 @@ func networkContextNameForBinding(binding *networkingv1alpha.NetworkBinding) str
 	return networkContextName(binding.Spec.Network.Name, binding.Spec.Location)
 }
 
-// networkContextName reads the deprecated location namespace rather than the
-// constant it now defaults to, so a reference persisted under another value
-// keeps the name its subnets were allocated under.
 func networkContextName(network string, location networkingv1alpha.LocationReference) string {
-	namespace := location.Namespace //nolint:staticcheck // see above
-	if namespace == "" {
-		namespace = networkingv1alpha.LocationReferenceDefaultNamespace
-	}
-	return fmt.Sprintf("%s-%s-%s", network, namespace, location.Name)
+	return fmt.Sprintf("%s-%s", network, location.Name)
 }

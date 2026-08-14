@@ -33,7 +33,7 @@ spec:
               apiVersion: networking.datumapis.com/v1alpha
               kind: NetworkContext
               metadata:
-                name: nic-missingalloc-net-default-us-central-1
+                name: nic-missingalloc-net-us-central-1
                 namespace: ipam-e2e-alpha
               spec:
                 network:

@@ -81,7 +81,6 @@ func NewCommand() *cobra.Command {
 
 			setupLog.Info("server config", "config", serverConfig)
 			setupLog.Info("serving location",
-				"namespace", serverConfig.Location.Namespace,
 				"name", serverConfig.Location.Name,
 			)
 

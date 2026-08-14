@@ -32,7 +32,7 @@ func decodeInto(t *testing.T, data []byte, into runtime.Object) {
 
 func validCell() CellControllerManager {
 	cfg := CellControllerManager{}
-	cfg.Location = LocationConfig{Name: "us-central-1", Namespace: "default"}
+	cfg.Location = LocationConfig{Name: "us-central-1"}
 	cfg.IPAM.KubeconfigPath = "/etc/ipam-cluster/kubeconfig"
 	return cfg
 }
@@ -51,11 +51,6 @@ func TestCellControllerManager_Validate(t *testing.T) {
 			name:    "missing location name",
 			mutate:  func(c *CellControllerManager) { c.Location.Name = "" },
 			wantSub: "location.name is required",
-		},
-		{
-			name:    "missing location namespace",
-			mutate:  func(c *CellControllerManager) { c.Location.Namespace = "" },
-			wantSub: "location.namespace is required",
 		},
 		{
 			name:    "no ipam connection",
@@ -107,7 +102,6 @@ ipam:
   kubeconfigPath: /etc/ipam-cluster/kubeconfig
 location:
   name: us-central-1
-  namespace: default
 `)
 
 	var cfg CellControllerManager
@@ -131,7 +125,6 @@ gateway:
   targetDomain: example.com
 location:
   name: us-central-1
-  namespace: default
 `)
 
 	var cfg CellControllerManager

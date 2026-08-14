@@ -181,8 +181,6 @@ type NetworkInterfaceConfig struct {
 
 type LocationConfig struct {
 	Name string `json:"name,omitempty"`
-
-	Namespace string `json:"namespace,omitempty"`
 }
 
 // +k8s:deepcopy-gen=true

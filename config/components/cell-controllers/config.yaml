@@ -11,4 +11,3 @@ ipam:
 # its own location.
 location:
   name: PLACEHOLDER-LOCATION
-  namespace: PLACEHOLDER-NAMESPACE

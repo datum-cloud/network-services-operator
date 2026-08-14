@@ -160,20 +160,6 @@ The location of where a network context exists.
           Name of a datum location<br/>
         </td>
         <td>true</td>
-      </tr><tr>
-        <td><b>namespace</b></td>
-        <td>string</td>
-        <td>
-          Namespace for the datum location.
-
-Deprecated: a Location is cluster-scoped, so this names nothing. It is
-defaulted when unset and ignored when set, and will be dropped at the next
-API version. It is retained because deterministic NetworkContext names are
-built from it, and existing contexts own subnets under those names.<br/>
-          <br/>
-            <i>Default</i>: default<br/>
-        </td>
-        <td>false</td>
       </tr></tbody>
 </table>
 

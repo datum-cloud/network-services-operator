@@ -45,9 +45,6 @@ func (c *CellControllerManager) Validate() error {
 	if c.Location.Name == "" {
 		errs = append(errs, errors.New("location.name is required"))
 	}
-	if c.Location.Namespace == "" {
-		errs = append(errs, errors.New("location.namespace is required"))
-	}
 	if err := errors.Join(errs...); err != nil {
 		return err
 	}

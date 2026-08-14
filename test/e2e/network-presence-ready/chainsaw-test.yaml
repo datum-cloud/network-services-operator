@@ -94,7 +94,7 @@ spec:
               apiVersion: networking.datumapis.com/v1alpha
               kind: NetworkContext
               metadata:
-                name: presence-ready-net-default-presence-ready-loc
+                name: presence-ready-net-presence-ready-loc
                 namespace: presence-ready-hub
                 labels:
                   networking.datumapis.com/network: presence-ready-net
@@ -115,7 +115,7 @@ spec:
               apiVersion: networking.datumapis.com/v1alpha
               kind: NetworkContext
               metadata:
-                name: presence-ready-net-default-presence-ready-loc
+                name: presence-ready-net-presence-ready-loc
                 namespace: presence-ready-hub
               spec:
                 (networkGeneration > `0`): true
@@ -137,7 +137,7 @@ spec:
               status:
                 networkContextRef:
                   namespace: presence-ready-hub
-                  name: presence-ready-net-default-presence-ready-loc
+                  name: presence-ready-net-presence-ready-loc
                 (length(conditions[?type == 'Ready' && status == 'False' && reason == 'NetworkContextNotReady']) == `1`): true
 
     - name: Program the presence
@@ -152,7 +152,7 @@ spec:
         - script:
             content: |
               kubectl -n presence-ready-hub patch networkcontext \
-                presence-ready-net-default-presence-ready-loc \
+                presence-ready-net-presence-ready-loc \
                 --subresource=status --type=merge \
                 -p '{"status":{"conditions":[{"type": "Programmed", "status": "True", "reason": "Test", "message": "test", "lastTransitionTime": "2025-02-24T23:59:09Z"}]}}'
 

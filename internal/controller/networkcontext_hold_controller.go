@@ -47,8 +47,7 @@ func (r *NetworkContextHoldReconciler) SetupWithManager(mgr mcmanager.Manager) e
 	r.mgr = mgr
 
 	location := networkingv1alpha.LocationReference{
-		Name:      r.Location.Name,
-		Namespace: r.Location.Namespace,
+		Name: r.Location.Name,
 	}
 
 	return mcbuilder.ControllerManagedBy(mgr).

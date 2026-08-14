@@ -30,7 +30,7 @@ spec:
               apiVersion: networking.datumapis.com/v1alpha
               kind: NetworkContext
               metadata:
-                name: nic-unlabeled-net-default-us-central-1
+                name: nic-unlabeled-net-us-central-1
                 namespace: ipam-e2e-unlabeled
               spec:
                 network:
@@ -45,7 +45,7 @@ spec:
               apiVersion: networking.datumapis.com/v1alpha
               kind: NetworkContext
               metadata:
-                name: nic-unlabeled-canary-net-default-us-central-1
+                name: nic-unlabeled-canary-net-us-central-1
                 namespace: ipam-e2e-alpha
               spec:
                 network:

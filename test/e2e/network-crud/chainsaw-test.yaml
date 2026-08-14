@@ -34,8 +34,10 @@ spec:
               metadata:
                 name: test-network-crud
                 namespace: default
-                finalizers:
-                  - networking.datumapis.com/network-controller
+                # Each holder is asserted on its own. Two controllers finalize a
+                # network now, and an exact list would break again on the third.
+                (contains(finalizers, 'networking.datumapis.com/network-controller')): true
+                (contains(finalizers, 'networking.datumapis.com/network-presence')): true
 
     - name: Delete Network
       description: |

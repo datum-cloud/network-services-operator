@@ -272,13 +272,23 @@ func (r *NetworkInterfaceClaimReconciler) syncNetworkContextHold(
 	namespace string,
 	network string,
 ) error {
+	return reconcileNetworkContextHold(ctx, cl, client.ObjectKey{
+		Namespace: namespace,
+		Name:      networkContextName(network, r.location()),
+	})
+}
+
+// reconcileNetworkContextHold is keyed on the context rather than on whatever
+// released the last interface. The hold is evaluated while that interface is
+// still terminating, so the answer it produces is stale by the time the object
+// is gone, and nothing else would ever look again.
+func reconcileNetworkContextHold(ctx context.Context, cl client.Client, key client.ObjectKey) error {
 	var networkContext networkingv1alpha.NetworkContext
-	key := client.ObjectKey{Namespace: namespace, Name: networkContextName(network, r.location())}
 	if err := cl.Get(ctx, key, &networkContext); err != nil {
 		return client.IgnoreNotFound(err)
 	}
 
-	held, err := networkCarriesInterfaces(ctx, cl, namespace, network)
+	held, err := networkCarriesInterfaces(ctx, cl, key.Namespace, networkContext.Spec.Network.Name)
 	if err != nil {
 		return err
 	}

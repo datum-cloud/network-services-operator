@@ -1508,3 +1508,47 @@ func TestNetworkContextIsHeldWhileAnInterfaceHoldsAddresses(t *testing.T) {
 	require.True(t, apierrors.IsNotFound(err),
 		"the last interface releasing must let the context go")
 }
+
+// The hold is evaluated while the last interface is still terminating, so the
+// answer is already stale when the object goes. Nothing keyed on the interface
+// looks again, which left the propagated copy terminating for good.
+func TestNetworkContextHoldIsReleasedAfterTheLastInterfaceIsGone(t *testing.T) {
+	s := newScenario(t, true, []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol})
+
+	claim := s.createClaim("stranded", networkingv1alpha.NetworkInterfaceClaimSpec{
+		InterfaceName: "eth0",
+		IPFamilies:    []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol},
+		ReclaimPolicy: networkingv1alpha.NetworkInterfaceReclaimPolicyRetain,
+	})
+	s.reconcile(claim)
+
+	held, err := s.getNetworkContext()
+	require.NoError(t, err)
+	require.Contains(t, held.Finalizers, networkContextInUseFinalizer)
+
+	require.NoError(t, s.client.Delete(s.ctx, held))
+	s.deleteClaim(s.getClaim("stranded"))
+
+	retained, err := s.getInterface("stranded")
+	require.NoError(t, err)
+
+	// Evaluate the hold while the interface is still terminating, which is the
+	// stale answer the interface-keyed path recorded.
+	require.NoError(t, s.client.Delete(s.ctx, retained))
+	require.NoError(t, reconcileNetworkContextHold(s.ctx, s.client, client.ObjectKey{
+		Namespace: s.namespace, Name: s.networkContextName("default")}))
+
+	// Now let the interface finish going, and drive only the context's own
+	// reconcile. Nothing keyed on the interface can fire again.
+	s.reconcileInterface("stranded")
+	if _, err := s.getInterface("stranded"); !apierrors.IsNotFound(err) {
+		require.NoError(t, err)
+	}
+
+	require.NoError(t, reconcileNetworkContextHold(s.ctx, s.client, client.ObjectKey{
+		Namespace: s.namespace, Name: s.networkContextName("default")}))
+
+	_, err = s.getNetworkContext()
+	require.True(t, apierrors.IsNotFound(err),
+		"the context's own reconcile must release a hold no interface justifies")
+}

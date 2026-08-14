@@ -725,9 +725,15 @@ func setupNetworkInterfaceClaimController(
 		return err
 	}
 
-	return (&controller.NetworkInterfaceReconciler{
+	if err := (&controller.NetworkInterfaceReconciler{
 		Config: serverConfig,
 		IPAM:   ipamClients,
+	}).SetupWithManager(mgr); err != nil {
+		return err
+	}
+
+	return (&controller.NetworkContextHoldReconciler{
+		Config: serverConfig,
 	}).SetupWithManager(mgr)
 }
 

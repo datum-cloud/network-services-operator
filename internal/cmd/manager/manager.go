@@ -560,7 +560,6 @@ func setupWebhooks(mgr mcmanager.Manager, serverConfig config.NetworkServicesOpe
 	return runSetups("webhook", webhookRegistrations(mgr, serverConfig))
 }
 
-
 // newPlatformCluster reaches Milo's platform control plane through the
 // discovery connection the operator already opens, so location replication
 // needs no credential of its own.

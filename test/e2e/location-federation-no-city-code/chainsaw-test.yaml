@@ -52,11 +52,14 @@ spec:
 
     - name: Nothing is published for it
       try:
+        # Waiting inside the script outruns chainsaw's exec timeout, which kills
+        # it and fails the step. Chainsaw's own sleep is not on that clock.
+        - sleep:
+            duration: 20s
         - script:
             cluster: nso-hub
             content: |
               set -eu
-              sleep 20
               if kubectl get servinglocation e2e-nocity >/dev/null 2>&1; then
                 echo "a location with no city code was published"
                 exit 1

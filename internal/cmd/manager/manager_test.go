@@ -12,16 +12,11 @@ import (
 	"strings"
 	"testing"
 
-	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/envtest"
-	"sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/controller-runtime/pkg/log/zap"
-	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
-	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
-
+	"go.datum.net/network-services-operator/internal/cmd/cell"
 	"go.datum.net/network-services-operator/internal/config"
 )
+
+var setupWithManagerPattern = regexp.MustCompile(`func \(\w+ \*(\w+)\) SetupWithManager\(`)
 
 var reconcilerControllerNames = map[string]string{
 	"ChallengeReconciler":                          "challenge",
@@ -46,20 +41,6 @@ var reconcilerControllerNames = map[string]string{
 	"TrafficProtectionPolicyReconciler":            "trafficprotectionpolicy",
 }
 
-func configForSets(sets ...config.ControllerSet) config.NetworkServicesOperator {
-	cfg := config.NetworkServicesOperator{
-		Controllers: config.ControllersConfig{Sets: sets},
-		Gateway: config.GatewayConfig{
-			EnableDownstreamCertificateSolver: true,
-		},
-		Connector: config.ConnectorConfig{
-			Iroh: config.IrohConnectorConfig{DNSEnabled: true},
-		},
-	}
-	cfg.NetworkInterface.Location = config.LocationConfig{Name: "edge-1", Namespace: "datum-locations"}
-	return cfg
-}
-
 func registeredNames(registrations []namedSetup) []string {
 	names := make([]string, 0, len(registrations))
 	for _, registration := range registrations {
@@ -70,68 +51,8 @@ func registeredNames(registrations []namedSetup) []string {
 	return names
 }
 
-func TestControllerRegistrations_Sets(t *testing.T) {
-	controlPlaneControllers := []string{
-		"network",
-		"networkbinding",
-		"networkcontext",
-		"networkpolicy",
-		"subnet",
-		"subnetclaim",
-		"httpproxy",
-		"gateway",
-		"gatewayclass",
-		"gateway_downstream_resources",
-		"gateway_resource_replicator",
-		"trafficprotectionpolicy",
-		"downstream-certificate-solver",
-		"domain",
-		"connector",
-		"connectoradvertisement",
-		"iroh-dns",
-		"challenge",
-	}
-	locationControllers := []string{"networkinterfaceclaim", "networkinterface"}
-
-	tests := []struct {
-		name string
-		sets []config.ControllerSet
-		want []string
-	}{
-		{
-			name: "control-plane only",
-			sets: []config.ControllerSet{config.ControllerSetControlPlane},
-			want: controlPlaneControllers,
-		},
-		{
-			name: "cell only",
-			sets: []config.ControllerSet{config.ControllerSetCell},
-			want: locationControllers,
-		},
-		{
-			name: "every set",
-			sets: config.AllControllerSets(),
-			want: append(append([]string{}, controlPlaneControllers...), locationControllers...),
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := registeredNames(controllerRegistrations(nil, configForSets(tt.sets...), controllerDeps{}))
-
-			slices.Sort(got)
-			want := slices.Clone(tt.want)
-			slices.Sort(want)
-
-			if !slices.Equal(got, want) {
-				t.Fatalf("expected %v, got %v", want, got)
-			}
-		})
-	}
-}
-
 func TestControllerRegistrations_CapabilityGates(t *testing.T) {
-	cfg := configForSets(config.ControllerSetControlPlane)
+	var cfg config.NetworkServicesOperator
 	cfg.Gateway.EnableDownstreamCertificateSolver = false
 	cfg.Gateway.Coraza.Disabled = true
 	cfg.Gateway.DeleteErroredChallenges = new(bool)
@@ -168,24 +89,27 @@ func TestControllerRegistrations_EveryControllerClassifiedExactlyOnce(t *testing
 		}
 	}
 
-	perSet := map[config.ControllerSet][]string{}
-	for _, set := range config.AllControllerSets() {
-		perSet[set] = registeredNames(controllerRegistrations(nil, configForSets(set), controllerDeps{}))
+	perCommand := map[string][]string{
+		"manager":      ControllerNames(),
+		"cell-manager": cell.ControllerNames(),
 	}
 
 	for reconciler, name := range reconcilerControllerNames {
-		var owners []config.ControllerSet
-		for set, names := range perSet {
+		var owners []string
+		for command, names := range perCommand {
 			if slices.Contains(names, name) {
-				owners = append(owners, set)
+				owners = append(owners, command)
 			}
 		}
 		if len(owners) != 1 {
-			t.Errorf("%s (%q) belongs to %d controller sets, want exactly 1", reconciler, name, len(owners))
+			t.Errorf("%s (%q) is registered by %d commands, want exactly 1", reconciler, name, len(owners))
 		}
 	}
 
-	registered := registeredNames(controllerRegistrations(nil, configForSets(config.AllControllerSets()...), controllerDeps{}))
+	var registered []string
+	for _, names := range perCommand {
+		registered = append(registered, names...)
+	}
 	classified := slices.Collect(maps.Values(reconcilerControllerNames))
 	for _, name := range registered {
 		if !slices.Contains(classified, name) {
@@ -197,17 +121,7 @@ func TestControllerRegistrations_EveryControllerClassifiedExactlyOnce(t *testing
 	}
 }
 
-func TestSetupWebhooks_LocationOnlyRegistersNothing(t *testing.T) {
-	registered, err := setupWebhooks(nil, configForSets(config.ControllerSetCell))
-	if err != nil {
-		t.Fatalf("expected nil, got %v", err)
-	}
-	if len(registered) != 0 {
-		t.Fatalf("expected no webhooks, got %v", registered)
-	}
-}
-
-func TestWebhookRegistrations_ControlPlaneRegistersEveryWebhook(t *testing.T) {
+func TestWebhookRegistrations_RegistersEveryWebhook(t *testing.T) {
 	want := []string{
 		"Backend",
 		"BackendTLSPolicy",
@@ -220,7 +134,7 @@ func TestWebhookRegistrations_ControlPlaneRegistersEveryWebhook(t *testing.T) {
 		"SecurityPolicy",
 	}
 
-	got := registeredNames(webhookRegistrations(nil, configForSets(config.ControllerSetControlPlane)))
+	got := registeredNames(webhookRegistrations(nil, config.NetworkServicesOperator{}))
 
 	slices.Sort(got)
 	slices.Sort(want)
@@ -228,50 +142,6 @@ func TestWebhookRegistrations_ControlPlaneRegistersEveryWebhook(t *testing.T) {
 		t.Fatalf("expected %v, got %v", want, got)
 	}
 }
-
-func TestLeaderElectionIDForSets(t *testing.T) {
-	tests := []struct {
-		name string
-		sets []config.ControllerSet
-		want string
-	}{
-		{
-			name: "every set keeps the historical lease name",
-			sets: config.AllControllerSets(),
-			want: "6a7d51cc.datumapis.com",
-		},
-		{
-			name: "control-plane only keeps the historical lease name",
-			sets: []config.ControllerSet{config.ControllerSetControlPlane},
-			want: "6a7d51cc.datumapis.com",
-		},
-		{
-			name: "cell only",
-			sets: []config.ControllerSet{config.ControllerSetCell},
-			want: "6a7d51cc.datumapis.com-cell",
-		},
-		{
-			name: "order does not change the lease name",
-			sets: []config.ControllerSet{config.ControllerSetCell, config.ControllerSetControlPlane},
-			want: "6a7d51cc.datumapis.com",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := leaderElectionIDForSets(tt.sets); got != tt.want {
-				t.Fatalf("expected %q, got %q", tt.want, got)
-			}
-		})
-	}
-
-	if leaderElectionIDForSets([]config.ControllerSet{config.ControllerSetControlPlane}) ==
-		leaderElectionIDForSets([]config.ControllerSet{config.ControllerSetCell}) {
-		t.Fatal("control-plane and location must not share a lease")
-	}
-}
-
-var setupWithManagerPattern = regexp.MustCompile(`func \(\w+ \*(\w+)\) SetupWithManager\(`)
 
 func reconcilersInSource(t *testing.T) []string {
 	t.Helper()
@@ -306,50 +176,4 @@ func reconcilersInSource(t *testing.T) []string {
 		t.Fatalf("found no reconcilers in %s", dir)
 	}
 	return reconcilers
-}
-
-type stubIPAMClientFactory struct{}
-
-func (stubIPAMClientFactory) ClientForProject(string) (client.Client, error) {
-	return nil, nil
-}
-
-func TestSetupControllers_LocationOnlyRegistersAgainstAManager(t *testing.T) {
-	if os.Getenv("KUBEBUILDER_ASSETS") == "" {
-		t.Skip("KUBEBUILDER_ASSETS unset; run via `make test` to exercise envtest")
-	}
-
-	log.SetLogger(zap.New(zap.UseDevMode(true)))
-
-	env := &envtest.Environment{
-		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "..", "config", "crd", "bases")},
-		ErrorIfCRDPathMissing: true,
-	}
-	restConfig, err := env.Start()
-	if err != nil {
-		t.Fatalf("unable to start envtest: %v", err)
-	}
-	t.Cleanup(func() { _ = env.Stop() })
-
-	mgr, err := mcmanager.New(restConfig, nil, ctrl.Options{
-		Scheme:  scheme,
-		Metrics: metricsserver.Options{BindAddress: "0"},
-	})
-	if err != nil {
-		t.Fatalf("unable to build manager: %v", err)
-	}
-
-	registered, err := setupControllers(mgr, configForSets(config.ControllerSetCell), controllerDeps{
-		ipamClients: stubIPAMClientFactory{},
-	})
-	if err != nil {
-		t.Fatalf("expected nil, got %v", err)
-	}
-
-	want := []string{"networkinterfaceclaim", "networkinterface"}
-	slices.Sort(registered)
-	slices.Sort(want)
-	if !slices.Equal(registered, want) {
-		t.Fatalf("expected %v, got %v", want, registered)
-	}
 }

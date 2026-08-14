@@ -15,12 +15,44 @@ import (
 // Public to allow building arbitrary schemes.
 // All generated defaulters are covering - they call all nested defaulters.
 func RegisterDefaults(scheme *runtime.Scheme) error {
+	scheme.AddTypeDefaultingFunc(&CellControllerManager{}, func(obj interface{}) { SetObjectDefaults_CellControllerManager(obj.(*CellControllerManager)) })
 	scheme.AddTypeDefaultingFunc(&NetworkServicesOperator{}, func(obj interface{}) { SetObjectDefaults_NetworkServicesOperator(obj.(*NetworkServicesOperator)) })
 	return nil
 }
 
+func SetObjectDefaults_CellControllerManager(in *CellControllerManager) {
+	SetDefaults_MetricsServerConfig(&in.MetricsServer)
+	SetDefaults_TLSConfig(&in.MetricsServer.TLS)
+	SetDefaults_DiscoveryConfig(&in.Discovery)
+	SetDefaults_LeaderElectionConfig(&in.LeaderElection)
+	SetDefaults_ClientConnectionConfig(&in.ControlPlaneClient)
+	if in.ControlPlaneClient.QPS == 0 {
+		in.ControlPlaneClient.QPS = 50
+	}
+	if in.ControlPlaneClient.Burst == 0 {
+		in.ControlPlaneClient.Burst = 100
+	}
+	SetDefaults_ClientConnectionConfig(&in.ProjectClient)
+	if in.ProjectClient.QPS == 0 {
+		in.ProjectClient.QPS = 50
+	}
+	if in.ProjectClient.Burst == 0 {
+		in.ProjectClient.Burst = 100
+	}
+	SetDefaults_IPAMConfig(&in.IPAM)
+	if in.IPAM.ImpersonateUsername == "" {
+		in.IPAM.ImpersonateUsername = "nso-ipam-agent"
+	}
+	SetDefaults_ClientConnectionConfig(&in.IPAM.Client)
+	if in.IPAM.Client.QPS == 0 {
+		in.IPAM.Client.QPS = 50
+	}
+	if in.IPAM.Client.Burst == 0 {
+		in.IPAM.Client.Burst = 100
+	}
+}
+
 func SetObjectDefaults_NetworkServicesOperator(in *NetworkServicesOperator) {
-	SetDefaults_NetworkServicesOperator(in)
 	SetDefaults_MetricsServerConfig(&in.MetricsServer)
 	SetDefaults_TLSConfig(&in.MetricsServer.TLS)
 	SetDefaults_TLSConfig(&in.WebhookServer.TLS)

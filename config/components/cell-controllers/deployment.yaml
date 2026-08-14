@@ -33,7 +33,7 @@ spec:
           imagePullPolicy: IfNotPresent
           command:
             - /network-services
-            - manager
+            - cell-manager
           # Args reference env vars so overlays can override any value with a
           # strategic-merge patch on env (matched by name) instead of rewriting
           # the args list.

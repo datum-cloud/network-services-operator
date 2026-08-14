@@ -34,19 +34,15 @@ patches:
       data:
         config.yaml: |
           apiVersion: apiserver.config.datumapis.com/v1alpha1
-          kind: NetworkServicesOperator
-          controllers:
-            sets:
-              - cell
+          kind: CellControllerManager
           metricsServer:
             bindAddress: ":8443"
           ipam:
             kubeconfigPath: /etc/ipam-cluster/kubeconfig
             impersonateUsername: nso-ipam-agent
-          networkInterface:
-            location:
-              name: us-central-1
-              namespace: default
+          location:
+            name: us-central-1
+            namespace: default
   - target:
       kind: Deployment
       name: controller-manager

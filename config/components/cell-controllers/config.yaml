@@ -1,18 +1,14 @@
 apiVersion: apiserver.config.datumapis.com/v1alpha1
-kind: NetworkServicesOperator
-controllers:
-  sets:
-    - cell
+kind: CellControllerManager
 metricsServer:
   bindAddress: ":8443"
 ipam:
   kubeconfigPath: /etc/ipam-cluster/kubeconfig
   impersonateUsername: nso-ipam-agent
-networkInterface:
-  # PLACEHOLDER values. Two deployments sharing a location name both fulfil and
-  # both release the same claims' addresses, and nothing in the operator can
-  # detect it — every consuming overlay must replace this whole ConfigMap with
-  # its own location.
-  location:
-    name: PLACEHOLDER-LOCATION
-    namespace: PLACEHOLDER-NAMESPACE
+# PLACEHOLDER values. Two deployments sharing a location name both fulfil and
+# both release the same claims' addresses, and nothing in the operator can
+# detect it — every consuming overlay must replace this whole ConfigMap with
+# its own location.
+location:
+  name: PLACEHOLDER-LOCATION
+  namespace: PLACEHOLDER-NAMESPACE

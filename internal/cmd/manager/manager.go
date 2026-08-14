@@ -8,7 +8,6 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"slices"
 	"strings"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
@@ -19,8 +18,6 @@ import (
 	cmv1 "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
 	envoygatewayv1alpha1 "github.com/envoyproxy/gateway/api/v1alpha1"
 	"github.com/spf13/cobra"
-	multiclusterproviders "go.miloapis.com/milo/pkg/multicluster-runtime"
-	milomulticluster "go.miloapis.com/milo/pkg/multicluster-runtime/milo"
 	"golang.org/x/sync/errgroup"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
@@ -40,10 +37,10 @@ import (
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	"sigs.k8s.io/multicluster-runtime/pkg/manager/coordinator/sharded"
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
-	mcsingle "sigs.k8s.io/multicluster-runtime/providers/single"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	networkingv1alpha1 "go.datum.net/network-services-operator/api/v1alpha1"
+	"go.datum.net/network-services-operator/internal/cmd/clusterdiscovery"
 	"go.datum.net/network-services-operator/internal/config"
 	"go.datum.net/network-services-operator/internal/controller"
 	networkingwebhook "go.datum.net/network-services-operator/internal/webhook"
@@ -205,28 +202,11 @@ func NewCommand(build BuildInfo) *cobra.Command {
 				os.Exit(1)
 			}
 
-			controlPlane := serverConfig.Enabled(config.ControllerSetControlPlane)
-			cell := serverConfig.Enabled(config.ControllerSetCell)
-
-			setupLog.Info("controller sets",
-				"sets", serverConfig.Controllers.Sets,
-				"controlPlane", controlPlane,
-				"cell", cell,
-			)
-
-			if cell {
-				setupLog.Info("serving location",
-					"namespace", serverConfig.NetworkInterface.Location.Namespace,
-					"name", serverConfig.NetworkInterface.Location.Name,
-				)
-			}
-
-			derivedLeaderElectionID := leaderElectionIDForSets(serverConfig.Controllers.Sets)
 			if leaderElectionID == "" {
-				leaderElectionID = derivedLeaderElectionID
+				leaderElectionID = defaultLeaderElectionID
 			}
 			if singletonControllersLeaderElectionID == "" {
-				singletonControllersLeaderElectionID = derivedLeaderElectionID + "-singleton"
+				singletonControllersLeaderElectionID = defaultLeaderElectionID + "-singleton"
 			}
 
 			cfg := ctrl.GetConfigOrDie()
@@ -240,7 +220,7 @@ func NewCommand(build BuildInfo) *cobra.Command {
 				os.Exit(1)
 			}
 
-			runnables, provider, err := initializeClusterDiscovery(serverConfig, deploymentCluster, scheme)
+			runnables, provider, err := clusterdiscovery.Initialize(serverConfig.Discovery, serverConfig.ProjectClient, deploymentCluster, scheme)
 			if err != nil {
 				setupLog.Error(err, "unable to initialize cluster discovery")
 				os.Exit(1)
@@ -254,13 +234,10 @@ func NewCommand(build BuildInfo) *cobra.Command {
 
 			metricsServerOptions := serverConfig.MetricsServer.Options(ctx, deploymentClusterClient)
 
-			var webhookServer webhook.Server
-			if controlPlane {
-				webhookServer = networkingwebhook.NewClusterAwareWebhookServer(
-					webhook.NewServer(serverConfig.WebhookServer.Options(ctx, deploymentClusterClient)),
-					serverConfig.Discovery.Mode,
-				)
-			}
+			webhookServer := networkingwebhook.NewClusterAwareWebhookServer(
+				webhook.NewServer(serverConfig.WebhookServer.Options(ctx, deploymentClusterClient)),
+				serverConfig.Discovery.Mode,
+			)
 
 			leaseDuration := serverConfig.LeaderElection.LeaseDuration.Duration
 			renewDeadline := serverConfig.LeaderElection.RenewDeadline.Duration
@@ -340,31 +317,29 @@ func NewCommand(build BuildInfo) *cobra.Command {
 			}
 
 			var downstreamCluster cluster.Cluster
-			if controlPlane {
-				downstreamRestConfig, err := serverConfig.DownstreamResourceManagement.RestConfig()
-				if err != nil {
-					setupLog.Error(err, "unable to load control plane kubeconfig")
-					os.Exit(1)
-				}
-				serverConfig.DownstreamClient.ApplyTo(downstreamRestConfig)
+			downstreamRestConfig, err := serverConfig.DownstreamResourceManagement.RestConfig()
+			if err != nil {
+				setupLog.Error(err, "unable to load control plane kubeconfig")
+				os.Exit(1)
+			}
+			serverConfig.DownstreamClient.ApplyTo(downstreamRestConfig)
 
-				downstreamCluster, err = cluster.New(downstreamRestConfig, func(o *cluster.Options) {
-					o.Scheme = scheme
-					o.Client = client.Options{
-						Cache: &client.CacheOptions{
-							Unstructured: true,
-						},
-					}
-				})
-				if err != nil {
-					setupLog.Error(err, "failed to construct cluster")
-					os.Exit(1)
+			downstreamCluster, err = cluster.New(downstreamRestConfig, func(o *cluster.Options) {
+				o.Scheme = scheme
+				o.Client = client.Options{
+					Cache: &client.CacheOptions{
+						Unstructured: true,
+					},
 				}
+			})
+			if err != nil {
+				setupLog.Error(err, "failed to construct cluster")
+				os.Exit(1)
 			}
 
 			var singletonMgr manager.Manager
 			singletonControllerMgr := mgr.GetLocalManager()
-			if controlPlane && enableClusterSharding {
+			if enableClusterSharding {
 				singletonMgr, err = manager.New(cfg, manager.Options{
 					Scheme:                  scheme,
 					Metrics:                 metricsserver.Options{BindAddress: "0"},
@@ -385,7 +360,7 @@ func NewCommand(build BuildInfo) *cobra.Command {
 			}
 
 			var irohDownstream cluster.Cluster
-			if controlPlane && serverConfig.Connector.Iroh.DNSEnabled {
+			if serverConfig.Connector.Iroh.DNSEnabled {
 				irohRestCfg, err := serverConfig.Connector.Iroh.DownstreamRestConfig()
 				if err != nil {
 					setupLog.Error(err, "unable to load iroh dns downstream kubeconfig")
@@ -400,20 +375,10 @@ func NewCommand(build BuildInfo) *cobra.Command {
 				}
 			}
 
-			var ipamClients controller.IPAMClientFactory
-			if cell {
-				ipamClients, err = newIPAMClientFactory(serverConfig)
-				if err != nil {
-					setupLog.Error(err, "unable to reach IPAM for the cell controller set")
-					os.Exit(1)
-				}
-			}
-
 			registeredControllers, err := setupControllers(mgr, serverConfig, controllerDeps{
 				downstreamCluster: downstreamCluster,
 				singletonManager:  singletonControllerMgr,
 				irohDownstream:    irohDownstream,
-				ipamClients:       ipamClients,
 			})
 			if err != nil {
 				setupLog.Error(err, "unable to set up controllers")
@@ -421,17 +386,15 @@ func NewCommand(build BuildInfo) *cobra.Command {
 			}
 			setupLog.Info("registered controllers", "controllers", registeredControllers)
 
-			if controlPlane {
-				if err := controller.AddIndexers(ctx, mgr); err != nil {
-					setupLog.Error(err, "unable to add indexers")
-					os.Exit(1)
-				}
+			if err := controller.AddIndexers(ctx, mgr); err != nil {
+				setupLog.Error(err, "unable to add indexers")
+				os.Exit(1)
+			}
 
-				if serverConfig.Gateway.EnableDNSIntegration {
-					if err := controller.AddDNSZoneDomainNameIndexer(ctx, mgr); err != nil {
-						setupLog.Error(err, "unable to add DNSZone indexer")
-						os.Exit(1)
-					}
+			if serverConfig.Gateway.EnableDNSIntegration {
+				if err := controller.AddDNSZoneDomainNameIndexer(ctx, mgr); err != nil {
+					setupLog.Error(err, "unable to add DNSZone indexer")
+					os.Exit(1)
 				}
 			}
 
@@ -538,37 +501,34 @@ func runSetups(kind string, registrations []namedSetup) ([]string, error) {
 	return registered, nil
 }
 
-// webhookRegistrations lists every admission webhook. All of them belong to the
-// control-plane set.
+// webhookRegistrations lists every admission webhook.
 func webhookRegistrations(mgr mcmanager.Manager, serverConfig config.NetworkServicesOperator) []namedSetup {
-	controlPlane := serverConfig.Enabled(config.ControllerSetControlPlane)
-
 	registrations := []namedSetup{
-		{"Gateway", controlPlane, func() error {
+		{"Gateway", true, func() error {
 			return networkinggatewayv1webhooks.SetupGatewayWebhookWithManager(mgr, serverConfig)
 		}},
-		{"HTTPRoute", controlPlane, func() error {
+		{"HTTPRoute", true, func() error {
 			return networkinggatewayv1webhooks.SetupHTTPRouteWebhookWithManager(mgr, serverConfig)
 		}},
-		{"BackendTLSPolicy", controlPlane, func() error {
+		{"BackendTLSPolicy", true, func() error {
 			return networkinggatewayv1webhooks.SetupBackendTLSPolicyWebhookWithManager(mgr)
 		}},
-		{"HTTPProxy", controlPlane, func() error {
+		{"HTTPProxy", true, func() error {
 			return networkingv1alphawebhooks.SetupHTTPProxyWebhookWithManager(mgr)
 		}},
-		{"Domain", controlPlane, func() error {
+		{"Domain", true, func() error {
 			return networkingv1alphawebhooks.SetupDomainWebhookWithManager(mgr)
 		}},
-		{"BackendTrafficPolicy", controlPlane, func() error {
+		{"BackendTrafficPolicy", true, func() error {
 			return webhookgatewayv1alpha1.SetupBackendTrafficPolicyWebhookWithManager(mgr, serverConfig)
 		}},
-		{"SecurityPolicy", controlPlane, func() error {
+		{"SecurityPolicy", true, func() error {
 			return webhookgatewayv1alpha1.SetupSecurityPolicyWebhookWithManager(mgr, serverConfig)
 		}},
-		{"HTTPRouteFilter", controlPlane, func() error {
+		{"HTTPRouteFilter", true, func() error {
 			return webhookgatewayv1alpha1.SetupHTTPRouteFilterWebhookWithManager(mgr, serverConfig)
 		}},
-		{"Backend", controlPlane, func() error {
+		{"Backend", true, func() error {
 			return webhookgatewayv1alpha1.SetupBackendWebhookWithManager(mgr)
 		}},
 	}
@@ -588,7 +548,6 @@ type controllerDeps struct {
 	downstreamCluster cluster.Cluster
 	singletonManager  manager.Manager
 	irohDownstream    cluster.Cluster
-	ipamClients       controller.IPAMClientFactory
 }
 
 // controllerRegistrations lists every controller and the set it belongs to.
@@ -597,102 +556,86 @@ func controllerRegistrations(
 	serverConfig config.NetworkServicesOperator,
 	deps controllerDeps,
 ) []namedSetup {
-	controlPlane := serverConfig.Enabled(config.ControllerSetControlPlane)
-	cell := serverConfig.Enabled(config.ControllerSetCell)
-	ipamClients := deps.ipamClients
-
 	return []namedSetup{
-		{"network", controlPlane, func() error {
+		{"network", true, func() error {
 			return (&controller.NetworkReconciler{}).SetupWithManager(mgr)
 		}},
-		{"networkbinding", controlPlane, func() error {
+		{"networkbinding", true, func() error {
 			return (&controller.NetworkBindingReconciler{}).SetupWithManager(mgr)
 		}},
-		{"networkcontext", controlPlane, func() error {
+		{"networkcontext", true, func() error {
 			return (&controller.NetworkContextReconciler{}).SetupWithManager(mgr)
 		}},
-		{"networkpolicy", controlPlane, func() error {
+		{"networkpolicy", true, func() error {
 			return (&controller.NetworkPolicyReconciler{}).SetupWithManager(mgr)
 		}},
-		{"subnet", controlPlane, func() error {
+		{"subnet", true, func() error {
 			return (&controller.SubnetReconciler{}).SetupWithManager(mgr)
 		}},
-		{"subnetclaim", controlPlane, func() error {
+		{"subnetclaim", true, func() error {
 			return (&controller.SubnetClaimReconciler{}).SetupWithManager(mgr)
 		}},
-		{"networkinterfaceclaim", cell, func() error {
-			return (&controller.NetworkInterfaceClaimReconciler{
-				Config: serverConfig,
-				IPAM:   ipamClients,
-			}).SetupWithManager(mgr)
-		}},
-		{"networkinterface", cell, func() error {
-			return (&controller.NetworkInterfaceReconciler{
-				Config: serverConfig,
-				IPAM:   ipamClients,
-			}).SetupWithManager(mgr)
-		}},
-		{"httpproxy", controlPlane, func() error {
+		{"httpproxy", true, func() error {
 			return (&controller.HTTPProxyReconciler{
 				Config:            serverConfig,
 				DownstreamCluster: deps.downstreamCluster,
 			}).SetupWithManager(mgr)
 		}},
-		{"gateway", controlPlane, func() error {
+		{"gateway", true, func() error {
 			return (&controller.GatewayReconciler{
 				Config:            serverConfig,
 				DownstreamCluster: deps.downstreamCluster,
 			}).SetupWithManager(mgr)
 		}},
-		{"gatewayclass", controlPlane, func() error {
+		{"gatewayclass", true, func() error {
 			return (&controller.GatewayClassReconciler{
 				Config: serverConfig,
 			}).SetupWithManager(mgr)
 		}},
-		{"gateway_downstream_resources", controlPlane, func() error {
+		{"gateway_downstream_resources", true, func() error {
 			return (&controller.GatewayDownstreamGCReconciler{
 				Config:            serverConfig,
 				DownstreamCluster: deps.downstreamCluster,
 			}).SetupWithManager(mgr)
 		}},
-		{"gateway_resource_replicator", controlPlane, func() error {
+		{"gateway_resource_replicator", true, func() error {
 			return (&controller.GatewayResourceReplicatorReconciler{
 				Config:            serverConfig,
 				DownstreamCluster: deps.downstreamCluster,
 			}).SetupWithManager(mgr)
 		}},
-		{"trafficprotectionpolicy", controlPlane && !serverConfig.Gateway.Coraza.Disabled, func() error {
+		{"trafficprotectionpolicy", !serverConfig.Gateway.Coraza.Disabled, func() error {
 			return (&controller.TrafficProtectionPolicyReconciler{
 				Config:            serverConfig,
 				DownstreamCluster: deps.downstreamCluster,
 			}).SetupWithManager(mgr)
 		}},
-		{"downstream-certificate-solver", controlPlane && serverConfig.Gateway.EnableDownstreamCertificateSolver, func() error {
+		{"downstream-certificate-solver", serverConfig.Gateway.EnableDownstreamCertificateSolver, func() error {
 			return (&controller.GatewayDownstreamCertificateSolverReconciler{
 				Config:            serverConfig,
 				DownstreamCluster: deps.downstreamCluster,
 			}).SetupWithManager(deps.singletonManager)
 		}},
-		{"domain", controlPlane, func() error {
+		{"domain", true, func() error {
 			return (&controller.DomainReconciler{
 				Config: serverConfig,
 			}).SetupWithManager(mgr)
 		}},
-		{"connector", controlPlane, func() error {
+		{"connector", true, func() error {
 			return (&controller.ConnectorReconciler{
 				Config: serverConfig,
 			}).SetupWithManager(mgr)
 		}},
-		{"connectoradvertisement", controlPlane, func() error {
+		{"connectoradvertisement", true, func() error {
 			return (&controller.ConnectorAdvertisementReconciler{}).SetupWithManager(mgr)
 		}},
-		{"iroh-dns", controlPlane && serverConfig.Connector.Iroh.DNSEnabled, func() error {
+		{"iroh-dns", serverConfig.Connector.Iroh.DNSEnabled, func() error {
 			return (&controller.IrohDNSReconciler{
 				Config:     serverConfig,
 				Downstream: deps.irohDownstream,
 			}).SetupWithManager(mgr)
 		}},
-		{"challenge", controlPlane && serverConfig.Gateway.ShouldDeleteErroredChallenges(), func() error {
+		{"challenge", serverConfig.Gateway.ShouldDeleteErroredChallenges(), func() error {
 			return (&controller.ChallengeReconciler{
 				Config:            serverConfig,
 				DownstreamCluster: deps.downstreamCluster,
@@ -713,122 +656,22 @@ func setupControllers(
 
 // newIPAMClientFactory wires the cell controllers to one IPAM connection.
 // Impersonation names the project on each request.
-func newIPAMClientFactory(serverConfig config.NetworkServicesOperator) (controller.IPAMClientFactory, error) {
-	ipamRestConfig, err := serverConfig.IPAM.RestConfig()
-	if err != nil {
-		return nil, fmt.Errorf("unable to load IPAM kubeconfig: %w", err)
-	}
-
-	ipamScheme, err := controller.IPAMScheme()
-	if err != nil {
-		return nil, fmt.Errorf("unable to build IPAM scheme: %w", err)
-	}
-
-	ipamClients, err := controller.NewIPAMClientFactory(
-		ipamRestConfig,
-		ipamScheme,
-		serverConfig.IPAM.ImpersonateUsername,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("unable to build IPAM client factory: %w", err)
-	}
-
-	return ipamClients, nil
-}
-
-// defaultLeaderElectionID is the historical lease name. Every process running
-// the control-plane set keeps it, or an upgrading pod cannot see the pod it
-// replaces and both reconcile for the length of the rollout.
 const defaultLeaderElectionID = "6a7d51cc.datumapis.com"
-
-func leaderElectionIDForSets(sets []config.ControllerSet) string {
-	if slices.Contains(sets, config.ControllerSetControlPlane) {
-		return defaultLeaderElectionID
-	}
-
-	enabled := make([]string, 0, len(sets))
-	for _, set := range config.AllControllerSets() {
-		if slices.Contains(sets, set) {
-			enabled = append(enabled, string(set))
-		}
-	}
-
-	return defaultLeaderElectionID + "-" + strings.Join(enabled, "-")
-}
-
-func initializeClusterDiscovery(
-	serverConfig config.NetworkServicesOperator,
-	deploymentCluster cluster.Cluster,
-	scheme *runtime.Scheme,
-) (runnables []manager.Runnable, provider multicluster.Provider, err error) {
-	runnables = append(runnables, deploymentCluster)
-	switch serverConfig.Discovery.Mode {
-	case multiclusterproviders.ProviderSingle:
-		// mcsingle implements multicluster.ProviderRunnable; mgr.Start engages
-		// the cluster and blocks for us — no wrapper needed.
-		provider = mcsingle.New("single", deploymentCluster)
-
-	case multiclusterproviders.ProviderMilo:
-		discoveryRestConfig, err := serverConfig.Discovery.DiscoveryRestConfig()
-		if err != nil {
-			return nil, nil, fmt.Errorf("unable to get discovery rest config: %w", err)
-		}
-		serverConfig.ProjectClient.ApplyTo(discoveryRestConfig)
-
-		projectRestConfig, err := serverConfig.Discovery.ProjectRestConfig()
-		if err != nil {
-			return nil, nil, fmt.Errorf("unable to get project rest config: %w", err)
-		}
-		serverConfig.ProjectClient.ApplyTo(projectRestConfig)
-
-		discoveryManager, err := manager.New(discoveryRestConfig, manager.Options{
-			Client: client.Options{
-				Cache: &client.CacheOptions{
-					Unstructured: true,
-				},
-			},
-		})
-		if err != nil {
-			return nil, nil, fmt.Errorf("unable to set up overall controller manager: %w", err)
-		}
-
-		provider, err = milomulticluster.New(discoveryManager, milomulticluster.Options{
-			ClusterOptions: []cluster.Option{
-				func(o *cluster.Options) {
-					o.Scheme = scheme
-				},
-			},
-			InternalServiceDiscovery: serverConfig.Discovery.InternalServiceDiscovery,
-			ProjectRestConfig:        projectRestConfig,
-		})
-		if err != nil {
-			return nil, nil, fmt.Errorf("unable to create datum project provider: %w", err)
-		}
-
-		runnables = append(runnables, discoveryManager)
-
-	// case providers.ProviderKind:
-	// 	provider = mckind.New(mckind.Options{
-	// 		ClusterOptions: []cluster.Option{
-	// 			func(o *cluster.Options) {
-	// 				o.Scheme = scheme
-	// 			},
-	// 		},
-	// 	})
-
-	default:
-		return nil, nil, fmt.Errorf(
-			"unsupported cluster discovery mode %s",
-			serverConfig.Discovery.Mode,
-		)
-	}
-
-	return runnables, provider, nil
-}
 
 func ignoreCanceled(err error) error {
 	if errors.Is(err, context.Canceled) {
 		return nil
 	}
 	return err
+}
+
+// ControllerNames returns every controller this command registers, including
+// those a capability gate would skip.
+func ControllerNames() []string {
+	registrations := controllerRegistrations(nil, config.NetworkServicesOperator{}, controllerDeps{})
+	names := make([]string, 0, len(registrations))
+	for _, registration := range registrations {
+		names = append(names, registration.name)
+	}
+	return names
 }

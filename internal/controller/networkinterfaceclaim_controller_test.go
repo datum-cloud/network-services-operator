@@ -316,12 +316,7 @@ func newScenario(t *testing.T, labelled bool, networkFamilies []networkingv1alph
 
 	ipam := newFakeIPAM(t, classes...)
 
-	operatorConfig := config.NetworkServicesOperator{
-		Controllers: config.ControllersConfig{
-			Sets: []config.ControllerSet{config.ControllerSetCell},
-		},
-	}
-	operatorConfig.NetworkInterface.Location = config.LocationConfig{
+	location := config.LocationConfig{
 		Name:      testLocationName,
 		Namespace: testLocationNS,
 	}
@@ -333,7 +328,7 @@ func newScenario(t *testing.T, labelled bool, networkFamilies []networkingv1alph
 		ctx:        ctx,
 		client:     cl,
 		ipam:       ipam,
-		reconciler: &NetworkInterfaceClaimReconciler{Config: operatorConfig, IPAM: ipam},
+		reconciler: &NetworkInterfaceClaimReconciler{Location: location, IPAM: ipam},
 		namespace:  namespaceName,
 	}
 }
@@ -388,7 +383,7 @@ func (s *scenario) reconcile(claim *networkingv1alpha.NetworkInterfaceClaim) {
 
 func (s *scenario) reconcileInterface(name string) {
 	s.t.Helper()
-	interfaces := &NetworkInterfaceReconciler{Config: s.reconciler.Config, IPAM: s.ipam, claims: s.reconciler}
+	interfaces := &NetworkInterfaceReconciler{Location: s.reconciler.Location, IPAM: s.ipam, claims: s.reconciler}
 	require.NoError(s.t, interfaces.reconcileInterface(s.ctx, s.client,
 		client.ObjectKey{Namespace: s.namespace, Name: name}))
 }

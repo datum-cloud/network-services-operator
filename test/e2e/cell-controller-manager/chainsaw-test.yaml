@@ -1,10 +1,10 @@
 # yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
 #
-# The cell runs the same image as the control plane with a different
-# controller set, so nothing about its shape is enforced by the type system: a
-# cell that quietly grew a webhook server, a downstream cache or the control
-# plane's lease would still serve NetworkInterfaceClaims, and every claim
-# scenario would still pass. This asserts the properties that make it a cell.
+# The cell runs the same image as the control plane under a different command,
+# so nothing about its deployed shape is enforced by the type system: a cell
+# that quietly grew a webhook server, a downstream cache or the control plane's
+# lease would still serve NetworkInterfaceClaims, and every claim scenario would
+# still pass. This asserts the properties that make it a cell.
 #
 # The claim scenarios are the functional half of this proof — they only run
 # through the cell — so this test deliberately creates no claims and asserts no
@@ -12,7 +12,7 @@
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
-  name: controller-sets-cell
+  name: cell-controller-manager
 spec:
   cluster: nso-standard
   steps:
@@ -102,7 +102,7 @@ spec:
 
               [ -n "$cell" ] || { echo "the cell lease has no holder — the cell never became leader"; exit 1; }
               [ -n "$plane" ] || { echo "the control-plane lease has no holder"; exit 1; }
-              [ "$cell" != "$plane" ] || { echo "both leases are held by ${cell} — one deployment is running both sets"; exit 1; }
+              [ "$cell" != "$plane" ] || { echo "both leases are held by ${cell} — one deployment is running both commands"; exit 1; }
 
               case "$cell" in
                 network-services-operator-cell-controller-manager-*) ;;

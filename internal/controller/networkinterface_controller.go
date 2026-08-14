@@ -23,8 +23,8 @@ import (
 // NetworkInterfaceReconciler releases an interface's addresses when the
 // interface is deleted. A retained interface has no claim to do this for it.
 type NetworkInterfaceReconciler struct {
-	Config config.NetworkServicesOperator
-	IPAM   IPAMClientFactory
+	Location config.LocationConfig
+	IPAM     IPAMClientFactory
 
 	claims *NetworkInterfaceClaimReconciler
 	mgr    mcmanager.Manager
@@ -123,7 +123,7 @@ func (r *NetworkInterfaceReconciler) SetupWithManager(mgr mcmanager.Manager) err
 	}
 
 	r.mgr = mgr
-	r.claims = &NetworkInterfaceClaimReconciler{Config: r.Config, IPAM: r.IPAM, mgr: mgr}
+	r.claims = &NetworkInterfaceClaimReconciler{Location: r.Location, IPAM: r.IPAM, mgr: mgr}
 
 	return mcbuilder.ControllerManagedBy(mgr).
 		For(&networkingv1alpha.NetworkInterface{}, mcbuilder.WithEngageWithLocalCluster(false)).

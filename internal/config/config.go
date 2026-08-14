@@ -87,93 +87,19 @@ type NetworkServicesOperator struct {
 	// project discovery and per-project cluster connections.
 	ProjectClient ClientConnectionConfig `json:"projectClient,omitempty"`
 
-	// IPAM configures the connection to the IPAM aggregated API server that
-	// network interface addresses are claimed from.
+	// IPAM is read by the cell controller manager, which takes its own
+	// CellControllerManager config. It is retained here so a config written
+	// before the split still decodes.
+	//
+	// Deprecated: configure the cell controller manager instead.
 	IPAM IPAMConfig `json:"ipam,omitempty"`
 
-	// NetworkInterface configures the controller that fulfils
-	// NetworkInterfaceClaims.
+	// NetworkInterface is read by the cell controller manager, which takes its
+	// own CellControllerManager config. It is retained here so a config written
+	// before the split still decodes.
+	//
+	// Deprecated: configure the cell controller manager instead.
 	NetworkInterface NetworkInterfaceConfig `json:"networkInterface,omitempty"`
-
-	// Controllers selects which controller sets this process runs.
-	Controllers ControllersConfig `json:"controllers,omitempty"`
-}
-
-// ControllerSet names a group of controllers that are placed together.
-type ControllerSet string
-
-const (
-	// ControllerSetControlPlane covers the controllers, webhooks, and indexers
-	// that reconcile user intent declared in a control plane.
-	ControllerSetControlPlane ControllerSet = "control-plane"
-
-	// ControllerSetCell covers the controllers a cell's control plane owns:
-	// those whose authoritative input arrives at the cell's location and whose
-	// writes stay in the cell.
-	ControllerSetCell ControllerSet = "cell"
-)
-
-var allControllerSets = []ControllerSet{
-	ControllerSetControlPlane,
-	ControllerSetCell,
-}
-
-// AllControllerSets returns every known controller set.
-func AllControllerSets() []ControllerSet {
-	return slices.Clone(allControllerSets)
-}
-
-// +k8s:deepcopy-gen=true
-
-// ControllersConfig selects the controller sets a process runs.
-type ControllersConfig struct {
-	// Sets lists the controller sets to run. When empty it defaults to
-	// control-plane, plus location when the deprecated networkInterface.enabled
-	// is set.
-	Sets []ControllerSet `json:"sets,omitempty"`
-}
-
-func SetDefaults_NetworkServicesOperator(obj *NetworkServicesOperator) {
-	if len(obj.Controllers.Sets) > 0 {
-		return
-	}
-
-	obj.Controllers.Sets = []ControllerSet{ControllerSetControlPlane}
-	if obj.NetworkInterface.Enabled {
-		obj.Controllers.Sets = append(obj.Controllers.Sets, ControllerSetCell)
-	}
-}
-
-func (c *ControllersConfig) validate() error {
-	if len(c.Sets) == 0 {
-		return fmt.Errorf("sets must not be empty, expected one or more of %s", controllerSetChoices())
-	}
-
-	var errs []error
-	seen := make([]ControllerSet, 0, len(c.Sets))
-	for i, set := range c.Sets {
-		switch {
-		case !slices.Contains(allControllerSets, set):
-			errs = append(errs, fmt.Errorf("sets[%d] is unknown controller set %q, expected one of %s", i, set, controllerSetChoices()))
-		case slices.Contains(seen, set):
-			errs = append(errs, fmt.Errorf("sets[%d] is a duplicate entry %q", i, set))
-		}
-		seen = append(seen, set)
-	}
-	return errors.Join(errs...)
-}
-
-func controllerSetChoices() string {
-	choices := make([]string, 0, len(allControllerSets))
-	for _, set := range allControllerSets {
-		choices = append(choices, string(set))
-	}
-	return strings.Join(choices, ", ")
-}
-
-// Enabled reports whether this process runs the given controller set.
-func (c *NetworkServicesOperator) Enabled(set ControllerSet) bool {
-	return slices.Contains(c.Controllers.Sets, set)
 }
 
 // +k8s:deepcopy-gen=true
@@ -183,8 +109,8 @@ func (c *NetworkServicesOperator) Enabled(set ControllerSet) bool {
 // impersonation.
 type IPAMConfig struct {
 	// KubeconfigPath is the path to a kubeconfig file pointing at the cluster
-	// serving the IPAM API. Mutually exclusive with inCluster; the location
-	// controller set requires one of the two.
+	// serving the IPAM API. Mutually exclusive with inCluster; one of the two
+	// is required.
 	KubeconfigPath string `json:"kubeconfigPath,omitempty"`
 
 	// InCluster reaches the IPAM API through the operator's own kube-apiserver,
@@ -212,7 +138,7 @@ func SetDefaults_IPAMConfig(obj *IPAMConfig) {
 func (c *IPAMConfig) validate() error {
 	switch {
 	case c.KubeconfigPath == "" && !c.InCluster:
-		return errors.New("one of kubeconfigPath or inCluster is required when the cell controller set is enabled, otherwise the IPAM client targets the operator's own kube-apiserver, which serves no ipam.miloapis.com API")
+		return errors.New("one of kubeconfigPath or inCluster is required, otherwise the IPAM client targets the manager's own kube-apiserver, which serves no ipam.miloapis.com API")
 	case c.KubeconfigPath != "" && c.InCluster:
 		return errors.New("kubeconfigPath and inCluster are mutually exclusive")
 	}
@@ -241,12 +167,7 @@ func (c *IPAMConfig) RestConfig() (*rest.Config, error) {
 
 // NetworkInterfaceConfig configures the NetworkInterfaceClaim controller.
 type NetworkInterfaceConfig struct {
-	// Enabled no longer gates the NetworkInterfaceClaim controller; membership
-	// in the "cell" controller set does. It is only consulted when
-	// controllers.sets is absent, so a config written before controller sets
-	// existed keeps running the same controllers.
-	//
-	// Deprecated: use controllers.sets instead.
+	// Deprecated: run the cell controller manager instead.
 	Enabled bool `json:"enabled,omitempty"`
 
 	// Location is the location this control plane serves. Claims carry no
@@ -260,17 +181,6 @@ type LocationConfig struct {
 	Name string `json:"name,omitempty"`
 
 	Namespace string `json:"namespace,omitempty"`
-}
-
-func (c *NetworkInterfaceConfig) validate() error {
-	var errs []error
-	if c.Location.Name == "" {
-		errs = append(errs, errors.New("location.name is required when the cell controller set is enabled"))
-	}
-	if c.Location.Namespace == "" {
-		errs = append(errs, errors.New("location.namespace is required when the cell controller set is enabled"))
-	}
-	return errors.Join(errs...)
 }
 
 // +k8s:deepcopy-gen=true
@@ -1452,22 +1362,11 @@ func (c *DiscoveryConfig) ProjectRestConfig() (*rest.Config, error) {
 // known invariant. New cross-field rules should land here as the
 // codebase grows; today only Connector.Iroh is checked.
 func (c *NetworkServicesOperator) Validate() error {
-	if err := c.Controllers.validate(); err != nil {
-		return fmt.Errorf("controllers: %w", err)
-	}
 	if err := c.Connector.Iroh.validate(); err != nil {
 		return fmt.Errorf("connector.iroh: %w", err)
 	}
 	if err := c.Gateway.validate(); err != nil {
 		return fmt.Errorf("gateway: %w", err)
-	}
-	if c.Enabled(ControllerSetCell) {
-		if err := c.NetworkInterface.validate(); err != nil {
-			return fmt.Errorf("networkInterface: %w", err)
-		}
-		if err := c.IPAM.validate(); err != nil {
-			return fmt.Errorf("ipam: %w", err)
-		}
 	}
 	return nil
 }

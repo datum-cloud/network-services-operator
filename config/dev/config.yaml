@@ -1,8 +1,5 @@
 apiVersion: apiserver.config.datumapis.com/v1alpha1
 kind: NetworkServicesOperator
-controllers:
-  sets:
-    - control-plane
 metricsServer:
   bindAddress: "0"
 

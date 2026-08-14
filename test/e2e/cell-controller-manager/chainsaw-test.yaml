@@ -1,0 +1,149 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+#
+# The cell runs the same image as the control plane under a different command,
+# so nothing about its deployed shape is enforced by the type system: a cell
+# that quietly grew a webhook server, a downstream cache or the control plane's
+# lease would still serve NetworkInterfaceClaims, and every claim scenario would
+# still pass. This asserts the properties that make it a cell.
+#
+# The claim scenarios are the functional half of this proof — they only run
+# through the cell — so this test deliberately creates no claims and asserts no
+# addresses.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: cell-controller-manager
+spec:
+  cluster: nso-standard
+  steps:
+    - name: The cell is deployed and its pod is Ready
+      description: |
+        Available alone would pass with a pod that has never held its lease, so
+        the pod's Ready condition is asserted too.
+      try:
+        - assert:
+            timeout: 120s
+            resource:
+              apiVersion: apps/v1
+              kind: Deployment
+              metadata:
+                name: network-services-operator-cell-controller-manager
+                namespace: network-services-operator-system
+              status:
+                (conditions[?type == 'Available'] | [0].status): "True"
+        - assert:
+            timeout: 120s
+            resource:
+              apiVersion: v1
+              kind: Pod
+              metadata:
+                namespace: network-services-operator-system
+                labels:
+                  app.kubernetes.io/component: cell-controller-manager
+              status:
+                phase: Running
+                (conditions[?type == 'Ready'] | [0].status): "True"
+      catch:
+        - script:
+            content: |
+              kubectl -n network-services-operator-system get deploy,pods -o wide
+              kubectl -n network-services-operator-system logs -l app.kubernetes.io/component=cell-controller-manager --tail=100
+
+    - name: The cell serves no webhooks and holds no downstream cluster
+      description: |
+        Registering a webhook makes controller-runtime start a server that needs
+        a serving cert, and building the downstream cluster opens a second cache
+        that at an edge would point at the local cluster. Neither has any input
+        here, so neither may be wired: no container port, no cert volume, no
+        downstream kubeconfig.
+      try:
+        - assert:
+            resource:
+              apiVersion: apps/v1
+              kind: Deployment
+              metadata:
+                name: network-services-operator-cell-controller-manager
+                namespace: network-services-operator-system
+              spec:
+                template:
+                  spec:
+                    (containers[?name == 'manager'] | [0]):
+                      (length(ports || `[]`) == `0`): true
+                      (length(volumeMounts[?contains(mountPath, 'webhook')] || `[]`) == `0`): true
+                      (length(volumeMounts[?contains(mountPath, 'downstream')] || `[]`) == `0`): true
+                    (length(volumes[?name == 'downstream-cluster-kubeconfig'] || `[]`) == `0`): true
+                    (length(volumes[?name == 'cert'] || `[]`) == `0`): true
+
+    - name: The cell holds its own lease, and the control plane holds the other
+      description: |
+        The split-brain guard. A cell that inherited the hardcoded
+        6a7d51cc.datumapis.com would contend with the control plane for one
+        lease and one of the two would park silently, which no claim assertion
+        can see. Both leases must exist and be held by different processes.
+      try:
+        - assert:
+            timeout: 120s
+            resource:
+              apiVersion: coordination.k8s.io/v1
+              kind: Lease
+              metadata:
+                name: 6a7d51cc.datumapis.com-cell
+                namespace: network-services-operator-system
+        - script:
+            content: |
+              set -eu
+              NS=network-services-operator-system
+              holder() { kubectl -n "$NS" get lease "$1" -o jsonpath='{.spec.holderIdentity}'; }
+
+              cell=$(holder 6a7d51cc.datumapis.com-cell)
+              plane=$(holder 6a7d51cc.datumapis.com)
+              echo "cell lease holder:      ${cell}"
+              echo "control-plane lease holder: ${plane}"
+
+              [ -n "$cell" ] || { echo "the cell lease has no holder — the cell never became leader"; exit 1; }
+              [ -n "$plane" ] || { echo "the control-plane lease has no holder"; exit 1; }
+              [ "$cell" != "$plane" ] || { echo "both leases are held by ${cell} — one deployment is running both commands"; exit 1; }
+
+              case "$cell" in
+                network-services-operator-cell-controller-manager-*) ;;
+                *) echo "the cell lease is held by ${cell}, which is not a cell pod"; exit 1 ;;
+              esac
+              case "$plane" in
+                network-services-operator-controller-manager-*) ;;
+                *) echo "the control-plane lease is held by ${plane}, which is not a control-plane pod"; exit 1 ;;
+              esac
+
+    - name: The cell is not an endpoint of the webhook Service
+      description: |
+        config/webhook/service.yaml selects control-plane: controller-manager. A
+        cell carrying that label would receive admission requests it has no
+        webhook registered to answer, so the label's absence is checked at the
+        pod and confirmed against the Service's live endpoints.
+      try:
+        - script:
+            content: |
+              set -eu
+              NS=network-services-operator-system
+              SVC=network-services-operator-webhook-service
+
+              pods=$(kubectl -n "$NS" get pods -l app.kubernetes.io/component=cell-controller-manager \
+                -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}')
+              [ -n "$pods" ] || { echo "no cell pods found"; exit 1; }
+
+              for pod in $pods; do
+                label=$(kubectl -n "$NS" get pod "$pod" -o jsonpath='{.metadata.labels.control-plane}')
+                [ -z "$label" ] || { echo "cell pod ${pod} carries control-plane=${label}"; exit 1; }
+              done
+
+              endpoints=$(kubectl -n "$NS" get endpointslice -l "kubernetes.io/service-name=${SVC}" \
+                -o jsonpath='{range .items[*].endpoints[*]}{.addresses[0]} {.targetRef.name}{"\n"}{end}')
+              echo "${SVC} endpoints:"
+              echo "$endpoints"
+              echo "$endpoints" | grep -q . || { echo "${SVC} has no endpoints — this check cannot distinguish exclusion from an empty Service"; exit 1; }
+
+              for pod in $pods; do
+                if echo "$endpoints" | grep -qw "$pod"; then
+                  echo "cell pod ${pod} is an endpoint of ${SVC}"
+                  exit 1
+                fi
+              done

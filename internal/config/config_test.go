@@ -54,7 +54,9 @@ func TestNetworkServicesOperator_Validate_IrohEnabled(t *testing.T) {
 			if tt.mutate != nil {
 				tt.mutate(&iroh)
 			}
-			cfg := &NetworkServicesOperator{Connector: ConnectorConfig{Iroh: iroh}}
+			cfg := &NetworkServicesOperator{
+				Connector: ConnectorConfig{Iroh: iroh},
+			}
 			err := cfg.Validate()
 			if tt.wantSub == "" {
 				if err != nil {

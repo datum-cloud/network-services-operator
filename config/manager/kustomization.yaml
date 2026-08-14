@@ -6,7 +6,7 @@ resources:
 images:
 - name: ghcr.io/datum-cloud/network-services-operator
   newName: ghcr.io/datum-cloud/network-services-operator
-  newTag: b49bbe1
+  newTag: latest
 configMapGenerator:
 - files:
   - config.yaml

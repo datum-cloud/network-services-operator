@@ -316,8 +316,11 @@ func newScenario(t *testing.T, labelled bool, networkFamilies []networkingv1alph
 
 	ipam := newFakeIPAM(t, classes...)
 
-	operatorConfig := config.NetworkServicesOperator{}
-	operatorConfig.NetworkInterface.Enabled = true
+	operatorConfig := config.NetworkServicesOperator{
+		Controllers: config.ControllersConfig{
+			Sets: []config.ControllerSet{config.ControllerSetCell},
+		},
+	}
 	operatorConfig.NetworkInterface.Location = config.LocationConfig{
 		Name:      testLocationName,
 		Namespace: testLocationNS,

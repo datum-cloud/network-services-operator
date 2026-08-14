@@ -202,6 +202,9 @@ tasks:
       - echo "🔨 building {{.IMG}}"
       - docker build -t {{.IMG}} .
       - cd config/manager && {{.KUSTOMIZE}} edit set image ghcr.io/datum-cloud/network-services-operator={{.IMG}}
+      # The cell Deployment carries its own image name so the component's
+      # transformer cannot rewrite the control-plane Deployment.
+      - cd config/components/cell-controllers && {{.KUSTOMIZE}} edit set image network-services-operator-cell={{.IMG}}
       - '{{.KIND}} load docker-image {{.IMG}} --name {{.UPSTREAM_CLUSTER}}'
       - '{{.KIND}} load docker-image {{.IMG}} --name {{.DOWNSTREAM_CLUSTER}}'
 
@@ -387,6 +390,8 @@ tasks:
     cmds:
       - echo "⏳ waiting for NSO manager (upstream)"
       - kubectl --context {{.UPSTREAM_CTX}} -n network-services-operator-system wait deploy network-services-operator-controller-manager --for=condition=Available --timeout=360s
+      - echo "⏳ waiting for NSO location controllers (upstream)"
+      - kubectl --context {{.UPSTREAM_CTX}} -n network-services-operator-system wait deploy network-services-operator-cell-controller-manager --for=condition=Available --timeout=360s
       - echo "⏳ waiting for downstream EG"
       # The gateway control-plane Deployment is named `envoy-gateway` by its chart,
       # not after the release name.

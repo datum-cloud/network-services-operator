@@ -1,0 +1,93 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cell-controller-manager
+  namespace: system
+  labels:
+    app.kubernetes.io/name: network-services-operator
+    app.kubernetes.io/component: cell-controller-manager
+    app.kubernetes.io/managed-by: kustomize
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      # Never `control-plane: controller-manager`: config/webhook/service.yaml and
+      # config/prometheus/metrics_service.yaml select on it, and the control-plane
+      # Deployment uses it in its own pod selector.
+      app.kubernetes.io/name: network-services-operator
+      app.kubernetes.io/component: cell-controller-manager
+  template:
+    metadata:
+      annotations:
+        kubectl.kubernetes.io/default-container: manager
+      labels:
+        app.kubernetes.io/name: network-services-operator
+        app.kubernetes.io/component: cell-controller-manager
+    spec:
+      serviceAccountName: controller-manager
+      securityContext:
+        runAsNonRoot: true
+      containers:
+        - name: manager
+          image: network-services-operator-cell
+          imagePullPolicy: IfNotPresent
+          command:
+            - /network-services
+            - manager
+          # Args reference env vars so overlays can override any value with a
+          # strategic-merge patch on env (matched by name) instead of rewriting
+          # the args list.
+          args:
+            - --leader-elect
+            - --leader-election-id=$(LEADER_ELECTION_ID)
+            - --health-probe-bind-address=$(HEALTH_PROBE_BIND_ADDRESS)
+            - --server-config=$(SERVER_CONFIG)
+          env:
+            - name: LEADER_ELECTION_ID
+              value: 6a7d51cc.datumapis.com-cell
+            - name: HEALTH_PROBE_BIND_ADDRESS
+              value: ":8081"
+            - name: SERVER_CONFIG
+              value: /config/config.yaml
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - "ALL"
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8081
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8081
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            limits:
+              cpu: 500m
+              memory: 512Mi
+            requests:
+              cpu: 10m
+              memory: 128Mi
+          volumeMounts:
+            - name: config
+              mountPath: /config
+            - name: ipam-cluster-kubeconfig
+              mountPath: /etc/ipam-cluster
+      terminationGracePeriodSeconds: 10
+      volumes:
+        - name: config
+          configMap:
+            name: cell-config
+        # Optional only so a missing secret fails in the manager rather than in
+        # the kubelet: loading the IPAM kubeconfig is part of setup for the
+        # cell set, and failing it exits the process. A clear "unable to load
+        # IPAM kubeconfig" beats a pod stuck in ContainerCreating.
+        - name: ipam-cluster-kubeconfig
+          secret:
+            secretName: ipam-cluster-kubeconfig
+            optional: true

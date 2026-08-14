@@ -96,7 +96,7 @@ func ResolveLocationIdentity(
 		return LocationIdentity{}, &LocationUnresolved{
 			Reason: LocationUnresolvedNoIdentity,
 			Message: fmt.Sprintf(
-				"no ServingLocation has been delivered to this cell and networkInterface.location.name is not configured; label the cluster with %s or configure a location",
+				"no ServingLocation has been delivered to this cell and location.name is not configured; label the cluster with %s or configure a location",
 				networkingv1alpha.ServingLocationTopologyLabel),
 		}
 	}

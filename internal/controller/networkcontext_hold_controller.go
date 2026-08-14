@@ -25,7 +25,7 @@ import (
 // interface evaluates the hold while that interface is still terminating, and
 // then never looks again, leaving the copy stuck terminating for good.
 type NetworkContextHoldReconciler struct {
-	Config config.NetworkServicesOperator
+	Location config.LocationConfig
 
 	mgr mcmanager.Manager
 }
@@ -47,8 +47,8 @@ func (r *NetworkContextHoldReconciler) SetupWithManager(mgr mcmanager.Manager) e
 	r.mgr = mgr
 
 	location := networkingv1alpha.LocationReference{
-		Name:      r.Config.NetworkInterface.Location.Name,
-		Namespace: r.Config.NetworkInterface.Location.Namespace,
+		Name:      r.Location.Name,
+		Namespace: r.Location.Namespace,
 	}
 
 	return mcbuilder.ControllerManagedBy(mgr).

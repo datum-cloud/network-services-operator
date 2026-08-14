@@ -18,8 +18,6 @@ import (
 	cmv1 "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
 	envoygatewayv1alpha1 "github.com/envoyproxy/gateway/api/v1alpha1"
 	"github.com/spf13/cobra"
-	multiclusterproviders "go.miloapis.com/milo/pkg/multicluster-runtime"
-	milomulticluster "go.miloapis.com/milo/pkg/multicluster-runtime/milo"
 	"golang.org/x/sync/errgroup"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
@@ -39,10 +37,10 @@ import (
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	"sigs.k8s.io/multicluster-runtime/pkg/manager/coordinator/sharded"
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
-	mcsingle "sigs.k8s.io/multicluster-runtime/providers/single"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	networkingv1alpha1 "go.datum.net/network-services-operator/api/v1alpha1"
+	"go.datum.net/network-services-operator/internal/cmd/clusterdiscovery"
 	"go.datum.net/network-services-operator/internal/config"
 	"go.datum.net/network-services-operator/internal/controller"
 	networkingwebhook "go.datum.net/network-services-operator/internal/webhook"
@@ -98,6 +96,7 @@ func NewCommand(build BuildInfo) *cobra.Command {
 	var clusterShardingPeerWeight uint
 	var singletonControllersLeaderElection bool
 	var singletonControllersLeaderElectionID string
+	var leaderElectionID string
 
 	var serverConfigFile string
 
@@ -108,6 +107,12 @@ func NewCommand(build BuildInfo) *cobra.Command {
 		"Enable leader election for controller manager. "+
 			"Enabling this will ensure there is only one active controller manager.")
 	fs.StringVar(&leaderElectionNamespace, "leader-elect-namespace", "", "The namespace to use for leader election.")
+	fs.StringVar(
+		&leaderElectionID,
+		"leader-election-id",
+		"",
+		"Leader election ID for the controller manager. When empty, it is derived from the enabled controller sets.",
+	)
 	fs.BoolVar(
 		&enableClusterSharding,
 		"cluster-sharding-enabled",
@@ -141,8 +146,8 @@ func NewCommand(build BuildInfo) *cobra.Command {
 	fs.StringVar(
 		&singletonControllersLeaderElectionID,
 		"singleton-controllers-leader-election-id",
-		"6a7d51cc.datumapis.com-singleton",
-		"Leader election ID for singleton downstream controllers.",
+		"",
+		"Leader election ID for singleton downstream controllers. When empty, it is derived from the enabled controller sets.",
 	)
 
 	opts := zap.Options{
@@ -197,6 +202,13 @@ func NewCommand(build BuildInfo) *cobra.Command {
 				os.Exit(1)
 			}
 
+			if leaderElectionID == "" {
+				leaderElectionID = defaultLeaderElectionID
+			}
+			if singletonControllersLeaderElectionID == "" {
+				singletonControllersLeaderElectionID = defaultLeaderElectionID + "-singleton"
+			}
+
 			cfg := ctrl.GetConfigOrDie()
 			serverConfig.ControlPlaneClient.ApplyTo(cfg)
 
@@ -208,7 +220,7 @@ func NewCommand(build BuildInfo) *cobra.Command {
 				os.Exit(1)
 			}
 
-			runnables, provider, err := initializeClusterDiscovery(serverConfig, deploymentCluster, scheme)
+			runnables, provider, err := clusterdiscovery.Initialize(serverConfig.Discovery, serverConfig.ProjectClient, deploymentCluster, scheme)
 			if err != nil {
 				setupLog.Error(err, "unable to initialize cluster discovery")
 				os.Exit(1)
@@ -222,11 +234,10 @@ func NewCommand(build BuildInfo) *cobra.Command {
 
 			metricsServerOptions := serverConfig.MetricsServer.Options(ctx, deploymentClusterClient)
 
-			webhookServer := webhook.NewServer(
-				serverConfig.WebhookServer.Options(ctx, deploymentClusterClient),
+			webhookServer := networkingwebhook.NewClusterAwareWebhookServer(
+				webhook.NewServer(serverConfig.WebhookServer.Options(ctx, deploymentClusterClient)),
+				serverConfig.Discovery.Mode,
 			)
-
-			webhookServer = networkingwebhook.NewClusterAwareWebhookServer(webhookServer, serverConfig.Discovery.Mode)
 
 			leaseDuration := serverConfig.LeaderElection.LeaseDuration.Duration
 			renewDeadline := serverConfig.LeaderElection.RenewDeadline.Duration
@@ -283,7 +294,7 @@ func NewCommand(build BuildInfo) *cobra.Command {
 				WebhookServer:           webhookServer,
 				HealthProbeBindAddress:  probeAddr,
 				LeaderElection:          primaryManagerLeaderElection,
-				LeaderElectionID:        "6a7d51cc.datumapis.com",
+				LeaderElectionID:        leaderElectionID,
 				LeaderElectionNamespace: leaderElectionNamespace,
 				LeaseDuration:           &leaseDuration,
 				RenewDeadline:           &renewDeadline,
@@ -305,6 +316,7 @@ func NewCommand(build BuildInfo) *cobra.Command {
 				os.Exit(1)
 			}
 
+			var downstreamCluster cluster.Cluster
 			downstreamRestConfig, err := serverConfig.DownstreamResourceManagement.RestConfig()
 			if err != nil {
 				setupLog.Error(err, "unable to load control plane kubeconfig")
@@ -312,7 +324,7 @@ func NewCommand(build BuildInfo) *cobra.Command {
 			}
 			serverConfig.DownstreamClient.ApplyTo(downstreamRestConfig)
 
-			downstreamCluster, err := cluster.New(downstreamRestConfig, func(o *cluster.Options) {
+			downstreamCluster, err = cluster.New(downstreamRestConfig, func(o *cluster.Options) {
 				o.Scheme = scheme
 				o.Client = client.Options{
 					Cache: &client.CacheOptions{
@@ -347,145 +359,6 @@ func NewCommand(build BuildInfo) *cobra.Command {
 				singletonControllerMgr = singletonMgr
 			}
 
-			if err := (&controller.NetworkReconciler{}).SetupWithManager(mgr); err != nil {
-				setupLog.Error(err, "unable to create controller", "controller", "Network")
-				os.Exit(1)
-			}
-			if err := (&controller.NetworkBindingReconciler{}).SetupWithManager(mgr); err != nil {
-				setupLog.Error(err, "unable to create controller", "controller", "NetworkBinding")
-				os.Exit(1)
-			}
-			if err := (&controller.NetworkContextReconciler{}).SetupWithManager(mgr); err != nil {
-				setupLog.Error(err, "unable to create controller", "controller", "NetworkContext")
-				os.Exit(1)
-			}
-
-			// The deployment cluster is the hub, and the milo provider engages
-			// project control planes in the same process, so both reads this
-			// controller needs are already here. It goes on the singleton manager
-			// because the sharded managers run three replicas with leader election
-			// disabled, which would reconcile every hub object three times.
-			networkPresence := &controller.NetworkPresenceReconciler{
-				Projects: controller.NewProjectClusterResolver(mgr),
-			}
-			if err := networkPresence.SetupWithManager(singletonControllerMgr); err != nil {
-				setupLog.Error(err, "unable to create controller", "controller", "NetworkPresence")
-				os.Exit(1)
-			}
-
-			platformCluster, err := setupLocationReplicator(serverConfig, singletonControllerMgr)
-			if err != nil {
-				setupLog.Error(err, "unable to create controller", "controller", "LocationReplicator")
-				os.Exit(1)
-			}
-
-			// Network deletion is the other half of the same controller, and it
-			// has to watch project control planes, which only the multicluster
-			// manager engages.
-			if err := (&controller.NetworkPresenceGCReconciler{
-				Presence: networkPresence,
-			}).SetupWithManager(mgr); err != nil {
-				setupLog.Error(err, "unable to create controller", "controller", "NetworkPresenceGC")
-				os.Exit(1)
-			}
-
-			if err := (&controller.NetworkPolicyReconciler{}).SetupWithManager(mgr); err != nil {
-				setupLog.Error(err, "unable to create controller", "controller", "NetworkPolicy")
-				os.Exit(1)
-			}
-			if err := (&controller.SubnetReconciler{}).SetupWithManager(mgr); err != nil {
-				setupLog.Error(err, "unable to create controller", "controller", "Subnet")
-				os.Exit(1)
-			}
-			if err := (&controller.SubnetClaimReconciler{}).SetupWithManager(mgr); err != nil {
-				setupLog.Error(err, "unable to create controller", "controller", "SubnetClaim")
-				os.Exit(1)
-			}
-
-			if serverConfig.NetworkInterface.Enabled {
-				if err := setupNetworkInterfaceClaimController(serverConfig, mgr); err != nil {
-					setupLog.Error(err, "unable to create controller", "controller", "NetworkInterfaceClaim")
-					os.Exit(1)
-				}
-			}
-
-			if err := (&controller.HTTPProxyReconciler{
-				Config:            serverConfig,
-				DownstreamCluster: downstreamCluster,
-			}).SetupWithManager(mgr); err != nil {
-				setupLog.Error(err, "unable to create controller", "controller", "HTTPProxy")
-				os.Exit(1)
-			}
-
-			if err := (&controller.GatewayReconciler{
-				Config:            serverConfig,
-				DownstreamCluster: downstreamCluster,
-			}).SetupWithManager(mgr); err != nil {
-				setupLog.Error(err, "unable to create controller", "controller", "Gateway")
-				os.Exit(1)
-			}
-			if err := (&controller.GatewayClassReconciler{
-				Config: serverConfig,
-			}).SetupWithManager(mgr); err != nil {
-				setupLog.Error(err, "unable to create controller", "controller", "GatewayClass")
-				os.Exit(1)
-			}
-
-			if err := (&controller.GatewayDownstreamGCReconciler{
-				Config:            serverConfig,
-				DownstreamCluster: downstreamCluster,
-			}).SetupWithManager(mgr); err != nil {
-				setupLog.Error(err, "unable to create controller", "controller", "GatewayDownstreamGC")
-				os.Exit(1)
-			}
-
-			if err := (&controller.GatewayResourceReplicatorReconciler{
-				Config:            serverConfig,
-				DownstreamCluster: downstreamCluster,
-			}).SetupWithManager(mgr); err != nil {
-				setupLog.Error(err, "unable to create controller", "controller", "GatewayResourceReplicator")
-				os.Exit(1)
-			}
-
-			if !serverConfig.Gateway.Coraza.Disabled {
-				if err = (&controller.TrafficProtectionPolicyReconciler{
-					Config:            serverConfig,
-					DownstreamCluster: downstreamCluster,
-				}).SetupWithManager(mgr); err != nil {
-					setupLog.Error(err, "unable to create controller", "controller", "WAFSecurityPolicy")
-					os.Exit(1)
-				}
-			}
-
-			if serverConfig.Gateway.EnableDownstreamCertificateSolver {
-				setupLog.Info("enabling GatewayDownstreamCertificateSolver controller")
-				if err := (&controller.GatewayDownstreamCertificateSolverReconciler{
-					Config:            serverConfig,
-					DownstreamCluster: downstreamCluster,
-				}).SetupWithManager(singletonControllerMgr); err != nil {
-					setupLog.Error(err, "unable to create controller", "controller", "GatewayDownstreamCertificateSolver")
-					os.Exit(1)
-				}
-			}
-
-			if err := (&controller.DomainReconciler{
-				Config: serverConfig,
-			}).SetupWithManager(mgr); err != nil {
-				setupLog.Error(err, "unable to create controller", "controller", "Domain")
-				os.Exit(1)
-			}
-
-			if err := (&controller.ConnectorReconciler{
-				Config: serverConfig,
-			}).SetupWithManager(mgr); err != nil {
-				setupLog.Error(err, "unable to create controller", "controller", "Connector")
-				os.Exit(1)
-			}
-			if err := (&controller.ConnectorAdvertisementReconciler{}).SetupWithManager(mgr); err != nil {
-				setupLog.Error(err, "unable to create controller", "controller", "ConnectorAdvertisement")
-				os.Exit(1)
-			}
-
 			var irohDownstream cluster.Cluster
 			if serverConfig.Connector.Iroh.DNSEnabled {
 				irohRestCfg, err := serverConfig.Connector.Iroh.DownstreamRestConfig()
@@ -500,24 +373,30 @@ func NewCommand(build BuildInfo) *cobra.Command {
 					setupLog.Error(err, "unable to build iroh dns downstream cluster")
 					os.Exit(1)
 				}
-				if err := (&controller.IrohDNSReconciler{
-					Config:     serverConfig,
-					Downstream: irohDownstream,
-				}).SetupWithManager(mgr); err != nil {
-					setupLog.Error(err, "unable to create controller", "controller", "IrohDNS")
+			}
+
+			// Locations are authored in the platform control plane, which the
+			// discovery connection already reaches.
+			var platformCluster cluster.Cluster
+			if serverConfig.LocationReplication.Enabled {
+				platformCluster, err = newPlatformCluster(serverConfig)
+				if err != nil {
+					setupLog.Error(err, "unable to reach the platform control plane")
 					os.Exit(1)
 				}
 			}
 
-			if serverConfig.Gateway.ShouldDeleteErroredChallenges() {
-				if err := (&controller.ChallengeReconciler{
-					Config:            serverConfig,
-					DownstreamCluster: downstreamCluster,
-				}).SetupWithManager(singletonControllerMgr); err != nil {
-					setupLog.Error(err, "unable to create controller", "controller", "Challenge")
-					os.Exit(1)
-				}
+			registeredControllers, err := setupControllers(mgr, serverConfig, controllerDeps{
+				downstreamCluster: downstreamCluster,
+				singletonManager:  singletonControllerMgr,
+				irohDownstream:    irohDownstream,
+				platformCluster:   platformCluster,
+			})
+			if err != nil {
+				setupLog.Error(err, "unable to set up controllers")
+				os.Exit(1)
 			}
+			setupLog.Info("registered controllers", "controllers", registeredControllers)
 
 			if err := controller.AddIndexers(ctx, mgr); err != nil {
 				setupLog.Error(err, "unable to add indexers")
@@ -531,10 +410,12 @@ func NewCommand(build BuildInfo) *cobra.Command {
 				}
 			}
 
-			if webhook, err := setupWebhooks(mgr, serverConfig); err != nil {
-				setupLog.Error(err, "unable to create webhook", "webhook", webhook)
+			registeredWebhooks, err := setupWebhooks(mgr, serverConfig)
+			if err != nil {
+				setupLog.Error(err, "unable to set up webhooks")
 				os.Exit(1)
 			}
+			setupLog.Info("registered webhooks", "webhooks", registeredWebhooks)
 
 			// +kubebuilder:scaffold:builder
 
@@ -565,19 +446,21 @@ func NewCommand(build BuildInfo) *cobra.Command {
 				})
 			}
 
-			g.Go(func() error {
-				return ignoreCanceled(downstreamCluster.Start(ctx))
-			})
-
-			if platformCluster != nil {
+			if downstreamCluster != nil {
 				g.Go(func() error {
-					return ignoreCanceled(platformCluster.Start(ctx))
+					return ignoreCanceled(downstreamCluster.Start(ctx))
 				})
 			}
 
 			if irohDownstream != nil {
 				g.Go(func() error {
 					return ignoreCanceled(irohDownstream.Start(ctx))
+				})
+			}
+
+			if platformCluster != nil {
+				g.Go(func() error {
+					return ignoreCanceled(platformCluster.Start(ctx))
 				})
 			}
 
@@ -616,200 +499,241 @@ type legacyRunnableProvider interface {
 	Run(context.Context, mcmanager.Manager) error
 }
 
-// setupWebhooks registers every admission webhook. It returns the name of the
-// webhook that failed.
-func setupWebhooks(mgr mcmanager.Manager, serverConfig config.NetworkServicesOperator) (string, error) {
-	registrations := []struct {
-		name  string
-		setup func() error
-	}{
-		{"Gateway", func() error {
+type namedSetup struct {
+	name    string
+	enabled bool
+	setup   func() error
+}
+
+func runSetups(kind string, registrations []namedSetup) ([]string, error) {
+	registered := make([]string, 0, len(registrations))
+	for _, registration := range registrations {
+		if !registration.enabled {
+			continue
+		}
+		if err := registration.setup(); err != nil {
+			return nil, fmt.Errorf("unable to create %s %s: %w", kind, registration.name, err)
+		}
+		registered = append(registered, registration.name)
+	}
+	return registered, nil
+}
+
+// webhookRegistrations lists every admission webhook.
+func webhookRegistrations(mgr mcmanager.Manager, serverConfig config.NetworkServicesOperator) []namedSetup {
+	registrations := []namedSetup{
+		{"Gateway", true, func() error {
 			return networkinggatewayv1webhooks.SetupGatewayWebhookWithManager(mgr, serverConfig)
 		}},
-		{"HTTPRoute", func() error {
+		{"HTTPRoute", true, func() error {
 			return networkinggatewayv1webhooks.SetupHTTPRouteWebhookWithManager(mgr, serverConfig)
 		}},
-		{"BackendTLSPolicy", func() error {
+		{"BackendTLSPolicy", true, func() error {
 			return networkinggatewayv1webhooks.SetupBackendTLSPolicyWebhookWithManager(mgr)
 		}},
-		{"HTTPProxy", func() error {
+		{"HTTPProxy", true, func() error {
 			return networkingv1alphawebhooks.SetupHTTPProxyWebhookWithManager(mgr)
 		}},
-		{"Domain", func() error {
+		{"Domain", true, func() error {
 			return networkingv1alphawebhooks.SetupDomainWebhookWithManager(mgr)
 		}},
-		{"BackendTrafficPolicy", func() error {
+		{"BackendTrafficPolicy", true, func() error {
 			return webhookgatewayv1alpha1.SetupBackendTrafficPolicyWebhookWithManager(mgr, serverConfig)
 		}},
-		{"SecurityPolicy", func() error {
+		{"SecurityPolicy", true, func() error {
 			return webhookgatewayv1alpha1.SetupSecurityPolicyWebhookWithManager(mgr, serverConfig)
 		}},
-		{"HTTPRouteFilter", func() error {
+		{"HTTPRouteFilter", true, func() error {
 			return webhookgatewayv1alpha1.SetupHTTPRouteFilterWebhookWithManager(mgr, serverConfig)
 		}},
-		{"Backend", func() error {
+		{"Backend", true, func() error {
 			return webhookgatewayv1alpha1.SetupBackendWebhookWithManager(mgr)
 		}},
 	}
 
-	for _, registration := range registrations {
-		if err := registration.setup(); err != nil {
-			return registration.name, err
-		}
-	}
-	return "", nil
+	return registrations
 }
 
-// setupLocationReplicator reaches the platform control plane through the
-// discovery connection the operator already opens, and returns the cluster to
-// start, or nil when replication is off.
-func setupLocationReplicator(
-	serverConfig config.NetworkServicesOperator,
-	mgr manager.Manager,
-) (cluster.Cluster, error) {
-	if !serverConfig.LocationReplication.Enabled {
-		return nil, nil
-	}
+// setupWebhooks registers every admission webhook belonging to an enabled set
+// and returns the names it registered.
+func setupWebhooks(mgr mcmanager.Manager, serverConfig config.NetworkServicesOperator) ([]string, error) {
+	return runSetups("webhook", webhookRegistrations(mgr, serverConfig))
+}
 
+
+// newPlatformCluster reaches Milo's platform control plane through the
+// discovery connection the operator already opens, so location replication
+// needs no credential of its own.
+func newPlatformCluster(serverConfig config.NetworkServicesOperator) (cluster.Cluster, error) {
 	platformRestConfig, err := serverConfig.Discovery.DiscoveryRestConfig()
 	if err != nil {
 		return nil, fmt.Errorf("unable to get platform control plane rest config: %w", err)
 	}
 	serverConfig.ProjectClient.ApplyTo(platformRestConfig)
 
-	platformCluster, err := cluster.New(platformRestConfig, func(o *cluster.Options) {
+	return cluster.New(platformRestConfig, func(o *cluster.Options) {
 		o.Scheme = scheme
 	})
-	if err != nil {
-		return nil, fmt.Errorf("failed creating platform control plane cluster: %w", err)
-	}
-
-	if err := (&controller.LocationReplicator{
-		PropagationClusterName: serverConfig.LocationReplication.PropagationClusterName,
-	}).SetupWithManager(mgr, platformCluster); err != nil {
-		return nil, err
-	}
-
-	return platformCluster, nil
 }
 
-// setupNetworkInterfaceClaimController wires the controllers to one IPAM
-// connection. Impersonation names the project on each request.
-func setupNetworkInterfaceClaimController(
-	serverConfig config.NetworkServicesOperator,
+// controllerDeps carries the clients and managers that controllers are wired
+// against. Fields are only populated for the sets that need them.
+type controllerDeps struct {
+	downstreamCluster cluster.Cluster
+	singletonManager  manager.Manager
+	irohDownstream    cluster.Cluster
+	platformCluster   cluster.Cluster
+}
+
+// controllerRegistrations lists every controller and the set it belongs to.
+func controllerRegistrations(
 	mgr mcmanager.Manager,
-) error {
-	ipamRestConfig, err := serverConfig.IPAM.RestConfig()
-	if err != nil {
-		return fmt.Errorf("unable to load IPAM kubeconfig: %w", err)
-	}
-
-	ipamScheme, err := controller.IPAMScheme()
-	if err != nil {
-		return fmt.Errorf("unable to build IPAM scheme: %w", err)
-	}
-
-	ipamClients, err := controller.NewIPAMClientFactory(
-		ipamRestConfig,
-		ipamScheme,
-		serverConfig.IPAM.ImpersonateUsername,
-	)
-	if err != nil {
-		return fmt.Errorf("unable to build IPAM client factory: %w", err)
-	}
-
-	if err := (&controller.NetworkInterfaceClaimReconciler{
-		Config: serverConfig,
-		IPAM:   ipamClients,
-	}).SetupWithManager(mgr); err != nil {
-		return err
-	}
-
-	if err := (&controller.NetworkInterfaceReconciler{
-		Config: serverConfig,
-		IPAM:   ipamClients,
-	}).SetupWithManager(mgr); err != nil {
-		return err
-	}
-
-	return (&controller.NetworkContextHoldReconciler{
-		Config: serverConfig,
-	}).SetupWithManager(mgr)
-}
-
-func initializeClusterDiscovery(
 	serverConfig config.NetworkServicesOperator,
-	deploymentCluster cluster.Cluster,
-	scheme *runtime.Scheme,
-) (runnables []manager.Runnable, provider multicluster.Provider, err error) {
-	runnables = append(runnables, deploymentCluster)
-	switch serverConfig.Discovery.Mode {
-	case multiclusterproviders.ProviderSingle:
-		// mcsingle implements multicluster.ProviderRunnable; mgr.Start engages
-		// the cluster and blocks for us — no wrapper needed.
-		provider = mcsingle.New("single", deploymentCluster)
-
-	case multiclusterproviders.ProviderMilo:
-		discoveryRestConfig, err := serverConfig.Discovery.DiscoveryRestConfig()
-		if err != nil {
-			return nil, nil, fmt.Errorf("unable to get discovery rest config: %w", err)
-		}
-		serverConfig.ProjectClient.ApplyTo(discoveryRestConfig)
-
-		projectRestConfig, err := serverConfig.Discovery.ProjectRestConfig()
-		if err != nil {
-			return nil, nil, fmt.Errorf("unable to get project rest config: %w", err)
-		}
-		serverConfig.ProjectClient.ApplyTo(projectRestConfig)
-
-		discoveryManager, err := manager.New(discoveryRestConfig, manager.Options{
-			Client: client.Options{
-				Cache: &client.CacheOptions{
-					Unstructured: true,
-				},
-			},
-		})
-		if err != nil {
-			return nil, nil, fmt.Errorf("unable to set up overall controller manager: %w", err)
-		}
-
-		provider, err = milomulticluster.New(discoveryManager, milomulticluster.Options{
-			ClusterOptions: []cluster.Option{
-				func(o *cluster.Options) {
-					o.Scheme = scheme
-				},
-			},
-			InternalServiceDiscovery: serverConfig.Discovery.InternalServiceDiscovery,
-			ProjectRestConfig:        projectRestConfig,
-		})
-		if err != nil {
-			return nil, nil, fmt.Errorf("unable to create datum project provider: %w", err)
-		}
-
-		runnables = append(runnables, discoveryManager)
-
-	// case providers.ProviderKind:
-	// 	provider = mckind.New(mckind.Options{
-	// 		ClusterOptions: []cluster.Option{
-	// 			func(o *cluster.Options) {
-	// 				o.Scheme = scheme
-	// 			},
-	// 		},
-	// 	})
-
-	default:
-		return nil, nil, fmt.Errorf(
-			"unsupported cluster discovery mode %s",
-			serverConfig.Discovery.Mode,
-		)
+	deps controllerDeps,
+) []namedSetup {
+	// The garbage collector drives the presence controller rather than
+	// duplicating its projection, so both entries share one instance.
+	networkPresence := &controller.NetworkPresenceReconciler{
+		Projects: controller.NewProjectClusterResolver(mgr),
 	}
 
-	return runnables, provider, nil
+	return []namedSetup{
+		{"network", true, func() error {
+			return (&controller.NetworkReconciler{}).SetupWithManager(mgr)
+		}},
+		{"networkbinding", true, func() error {
+			return (&controller.NetworkBindingReconciler{}).SetupWithManager(mgr)
+		}},
+		{"networkcontext", true, func() error {
+			return (&controller.NetworkContextReconciler{}).SetupWithManager(mgr)
+		}},
+		// The deployment cluster is the hub, and the milo provider engages
+		// project control planes in the same process. The presence controller
+		// goes on the singleton manager because the sharded managers run three
+		// replicas with leader election disabled, which would reconcile every
+		// hub object three times.
+		{"networkpresence", true, func() error {
+			return networkPresence.SetupWithManager(deps.singletonManager)
+		}},
+		// Network deletion is the other half of the same controller, and it has
+		// to watch project control planes, which only the multicluster manager
+		// engages.
+		{"networkpresencegc", true, func() error {
+			return (&controller.NetworkPresenceGCReconciler{
+				Presence: networkPresence,
+			}).SetupWithManager(mgr)
+		}},
+		{"locationreplicator", serverConfig.LocationReplication.Enabled, func() error {
+			return (&controller.LocationReplicator{
+				PropagationClusterName: serverConfig.LocationReplication.PropagationClusterName,
+			}).SetupWithManager(deps.singletonManager, deps.platformCluster)
+		}},
+		{"networkpolicy", true, func() error {
+			return (&controller.NetworkPolicyReconciler{}).SetupWithManager(mgr)
+		}},
+		{"subnet", true, func() error {
+			return (&controller.SubnetReconciler{}).SetupWithManager(mgr)
+		}},
+		{"subnetclaim", true, func() error {
+			return (&controller.SubnetClaimReconciler{}).SetupWithManager(mgr)
+		}},
+		{"httpproxy", true, func() error {
+			return (&controller.HTTPProxyReconciler{
+				Config:            serverConfig,
+				DownstreamCluster: deps.downstreamCluster,
+			}).SetupWithManager(mgr)
+		}},
+		{"gateway", true, func() error {
+			return (&controller.GatewayReconciler{
+				Config:            serverConfig,
+				DownstreamCluster: deps.downstreamCluster,
+			}).SetupWithManager(mgr)
+		}},
+		{"gatewayclass", true, func() error {
+			return (&controller.GatewayClassReconciler{
+				Config: serverConfig,
+			}).SetupWithManager(mgr)
+		}},
+		{"gateway_downstream_resources", true, func() error {
+			return (&controller.GatewayDownstreamGCReconciler{
+				Config:            serverConfig,
+				DownstreamCluster: deps.downstreamCluster,
+			}).SetupWithManager(mgr)
+		}},
+		{"gateway_resource_replicator", true, func() error {
+			return (&controller.GatewayResourceReplicatorReconciler{
+				Config:            serverConfig,
+				DownstreamCluster: deps.downstreamCluster,
+			}).SetupWithManager(mgr)
+		}},
+		{"trafficprotectionpolicy", !serverConfig.Gateway.Coraza.Disabled, func() error {
+			return (&controller.TrafficProtectionPolicyReconciler{
+				Config:            serverConfig,
+				DownstreamCluster: deps.downstreamCluster,
+			}).SetupWithManager(mgr)
+		}},
+		{"downstream-certificate-solver", serverConfig.Gateway.EnableDownstreamCertificateSolver, func() error {
+			return (&controller.GatewayDownstreamCertificateSolverReconciler{
+				Config:            serverConfig,
+				DownstreamCluster: deps.downstreamCluster,
+			}).SetupWithManager(deps.singletonManager)
+		}},
+		{"domain", true, func() error {
+			return (&controller.DomainReconciler{
+				Config: serverConfig,
+			}).SetupWithManager(mgr)
+		}},
+		{"connector", true, func() error {
+			return (&controller.ConnectorReconciler{
+				Config: serverConfig,
+			}).SetupWithManager(mgr)
+		}},
+		{"connectoradvertisement", true, func() error {
+			return (&controller.ConnectorAdvertisementReconciler{}).SetupWithManager(mgr)
+		}},
+		{"iroh-dns", serverConfig.Connector.Iroh.DNSEnabled, func() error {
+			return (&controller.IrohDNSReconciler{
+				Config:     serverConfig,
+				Downstream: deps.irohDownstream,
+			}).SetupWithManager(mgr)
+		}},
+		{"challenge", serverConfig.Gateway.ShouldDeleteErroredChallenges(), func() error {
+			return (&controller.ChallengeReconciler{
+				Config:            serverConfig,
+				DownstreamCluster: deps.downstreamCluster,
+			}).SetupWithManager(deps.singletonManager)
+		}},
+	}
 }
+
+// setupControllers registers every controller belonging to an enabled set and
+// returns the names it registered.
+func setupControllers(
+	mgr mcmanager.Manager,
+	serverConfig config.NetworkServicesOperator,
+	deps controllerDeps,
+) ([]string, error) {
+	return runSetups("controller", controllerRegistrations(mgr, serverConfig, deps))
+}
+
+// newIPAMClientFactory wires the cell controllers to one IPAM connection.
+// Impersonation names the project on each request.
+const defaultLeaderElectionID = "6a7d51cc.datumapis.com"
 
 func ignoreCanceled(err error) error {
 	if errors.Is(err, context.Canceled) {
 		return nil
 	}
 	return err
+}
+
+// ControllerNames returns every controller this command registers, including
+// those a capability gate would skip.
+func ControllerNames() []string {
+	registrations := controllerRegistrations(nil, config.NetworkServicesOperator{}, controllerDeps{})
+	names := make([]string, 0, len(registrations))
+	for _, registration := range registrations {
+		names = append(names, registration.name)
+	}
+	return names
 }

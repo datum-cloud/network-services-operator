@@ -88,12 +88,18 @@ type NetworkServicesOperator struct {
 	// project discovery and per-project cluster connections.
 	ProjectClient ClientConnectionConfig `json:"projectClient,omitempty"`
 
-	// IPAM configures the connection to the IPAM aggregated API server that
-	// network interface addresses are claimed from.
+	// IPAM is read by the cell controller manager, which takes its own
+	// CellControllerManager config. It is retained here so a config written
+	// before the split still decodes.
+	//
+	// Deprecated: configure the cell controller manager instead.
 	IPAM IPAMConfig `json:"ipam,omitempty"`
 
-	// NetworkInterface configures the controller that fulfils
-	// NetworkInterfaceClaims.
+	// NetworkInterface is read by the cell controller manager, which takes its
+	// own CellControllerManager config. It is retained here so a config written
+	// before the split still decodes.
+	//
+	// Deprecated: configure the cell controller manager instead.
 	NetworkInterface NetworkInterfaceConfig `json:"networkInterface,omitempty"`
 
 	// LocationReplication configures the replicator that copies the platform
@@ -147,9 +153,14 @@ func (c *LocationReplicationConfig) validate() error {
 // impersonation.
 type IPAMConfig struct {
 	// KubeconfigPath is the path to a kubeconfig file pointing at the cluster
-	// serving the IPAM API. When empty, the operator's own in-cluster config is
-	// used.
+	// serving the IPAM API. Mutually exclusive with inCluster; one of the two
+	// is required.
 	KubeconfigPath string `json:"kubeconfigPath,omitempty"`
+
+	// InCluster reaches the IPAM API through the operator's own kube-apiserver,
+	// for a deployment colocated with the cluster that aggregates
+	// ipam.miloapis.com. Mutually exclusive with kubeconfigPath.
+	InCluster bool `json:"inCluster,omitempty"`
 
 	// ImpersonateUsername is the user the operator impersonates when claiming
 	// addresses. IPAM checks this user's permissions, not the operator's.
@@ -166,6 +177,16 @@ func SetDefaults_IPAMConfig(obj *IPAMConfig) {
 	if obj.ImpersonateUsername == "" {
 		obj.ImpersonateUsername = "nso-ipam-agent"
 	}
+}
+
+func (c *IPAMConfig) validate() error {
+	switch {
+	case c.KubeconfigPath == "" && !c.InCluster:
+		return errors.New("one of kubeconfigPath or inCluster is required, otherwise the IPAM client targets the manager's own kube-apiserver, which serves no ipam.miloapis.com API")
+	case c.KubeconfigPath != "" && c.InCluster:
+		return errors.New("kubeconfigPath and inCluster are mutually exclusive")
+	}
+	return nil
 }
 
 func (c *IPAMConfig) RestConfig() (*rest.Config, error) {
@@ -190,8 +211,7 @@ func (c *IPAMConfig) RestConfig() (*rest.Config, error) {
 
 // NetworkInterfaceConfig configures the NetworkInterfaceClaim controller.
 type NetworkInterfaceConfig struct {
-	// Enabled registers the NetworkInterfaceClaim controller. Leave it off on a
-	// control plane that serves no location.
+	// Deprecated: run the cell controller manager instead.
 	Enabled bool `json:"enabled,omitempty"`
 
 	// Location is the location this control plane serves. Claims carry no
@@ -205,20 +225,6 @@ type LocationConfig struct {
 	Name string `json:"name,omitempty"`
 
 	Namespace string `json:"namespace,omitempty"`
-}
-
-func (c *NetworkInterfaceConfig) validate() error {
-	if !c.Enabled {
-		return nil
-	}
-	var errs []error
-	if c.Location.Name == "" {
-		errs = append(errs, errors.New("location.name is required when enabled is true"))
-	}
-	if c.Location.Namespace == "" {
-		errs = append(errs, errors.New("location.namespace is required when enabled is true"))
-	}
-	return errors.Join(errs...)
 }
 
 // +k8s:deepcopy-gen=true
@@ -1405,9 +1411,6 @@ func (c *NetworkServicesOperator) Validate() error {
 	}
 	if err := c.Gateway.validate(); err != nil {
 		return fmt.Errorf("gateway: %w", err)
-	}
-	if err := c.NetworkInterface.validate(); err != nil {
-		return fmt.Errorf("networkInterface: %w", err)
 	}
 	if err := c.LocationReplication.validate(); err != nil {
 		return fmt.Errorf("locationReplication: %w", err)

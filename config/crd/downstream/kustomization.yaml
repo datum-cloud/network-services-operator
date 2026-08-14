@@ -1,7 +1,12 @@
 # NSO CRDs the downstream edge cluster needs: the GatewayResourceReplicator
-# mirrors these three types downstream and the extension server's cache reads
-# them locally. Gateway API and Envoy Gateway CRDs are installed out-of-band.
+# mirrors the first three types downstream and the extension server's cache
+# reads them locally. Gateway API and Envoy Gateway CRDs are installed
+# out-of-band.
+#
+# ServingLocation is federated, not replicated. Apply this same path to the
+# Karmada hub and to every cell.
 resources:
   - ../bases/networking.datumapis.com_trafficprotectionpolicies.yaml
   - ../bases/networking.datumapis.com_httpproxies.yaml
   - ../bases/networking.datumapis.com_connectors.yaml
+  - ../bases/networking.datumapis.com_servinglocations.yaml

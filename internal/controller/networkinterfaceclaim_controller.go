@@ -70,7 +70,8 @@ type NetworkInterfaceClaimReconciler struct {
 	Location config.LocationConfig
 	IPAM     IPAMClientFactory
 
-	mgr mcmanager.Manager
+	mgr         mcmanager.Manager
+	localReader client.Reader
 }
 
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkinterfaceclaims,verbs=get;list;watch;create;update;patch;delete
@@ -127,6 +128,15 @@ func (r *NetworkInterfaceClaimReconciler) fulfill(
 	recorder events.EventRecorder,
 	claim *networkingv1alpha.NetworkInterfaceClaim,
 ) (ctrl.Result, error) {
+	location, err := r.location(ctx)
+	if err != nil {
+		var unresolved *LocationUnresolved
+		if errors.As(err, &unresolved) {
+			return r.reject(ctx, cl, claim, unresolved.Reason, unresolved.Message)
+		}
+		return ctrl.Result{}, err
+	}
+
 	routing, err := r.resolveProject(ctx, cl, claim.Namespace)
 	if err != nil {
 		var unresolvable *projectUnresolvable
@@ -136,7 +146,6 @@ func (r *NetworkInterfaceClaimReconciler) fulfill(
 		return ctrl.Result{}, err
 	}
 
-	location := r.location()
 	contextKey := client.ObjectKey{
 		Namespace: claim.Namespace,
 		Name:      networkContextName(claim.Spec.Network.Name, location),
@@ -176,7 +185,7 @@ func (r *NetworkInterfaceClaimReconciler) fulfill(
 		return ctrl.Result{}, fmt.Errorf("failed building IPAM client: %w", err)
 	}
 
-	iface, err := r.bindInterface(ctx, cl, ipamClient, routing, claim, &networkContext)
+	iface, err := r.bindInterface(ctx, cl, ipamClient, routing, claim, &networkContext, location)
 	if err != nil {
 		var failure *allocationFailure
 		if errors.As(err, &failure) {
@@ -189,7 +198,7 @@ func (r *NetworkInterfaceClaimReconciler) fulfill(
 		return ctrl.Result{}, err
 	}
 
-	if err := r.syncNetworkContextHold(ctx, cl, claim.Namespace, claim.Spec.Network.Name); err != nil {
+	if err := r.syncNetworkContextHold(ctx, cl, claim.Namespace, claim.Spec.Network.Name, location); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -271,10 +280,11 @@ func (r *NetworkInterfaceClaimReconciler) syncNetworkContextHold(
 	cl client.Client,
 	namespace string,
 	network string,
+	location networkingv1alpha.LocationReference,
 ) error {
 	return reconcileNetworkContextHold(ctx, cl, client.ObjectKey{
 		Namespace: namespace,
-		Name:      networkContextName(network, r.location()),
+		Name:      networkContextName(network, location),
 	})
 }
 
@@ -355,10 +365,21 @@ func claimsOnNetworkContext(ctx context.Context, cl client.Client, obj client.Ob
 	return requests
 }
 
-func (r *NetworkInterfaceClaimReconciler) location() networkingv1alpha.LocationReference {
-	return networkingv1alpha.LocationReference{
-		Name: r.Location.Name,
+func (r *NetworkInterfaceClaimReconciler) location(
+	ctx context.Context,
+) (networkingv1alpha.LocationReference, error) {
+	identity, err := ResolveLocationIdentity(ctx, r.localReader, r.Location)
+	reportLocationIdentity(identity, err)
+	if err != nil {
+		return networkingv1alpha.LocationReference{}, err
 	}
+	if identity.Mismatch {
+		log.FromContext(ctx).Info(
+			"the delivered serving location disagrees with the configured one; using the delivered copy",
+			"delivered", identity.Reference.Name,
+			"configured", r.Location.Name)
+	}
+	return identity.Reference, nil
 }
 
 type bindingRefused struct {
@@ -439,6 +460,7 @@ func (r *NetworkInterfaceClaimReconciler) bindInterface(
 	routing projectRouting,
 	claim *networkingv1alpha.NetworkInterfaceClaim,
 	networkContext *networkingv1alpha.NetworkContext,
+	location networkingv1alpha.LocationReference,
 ) (*networkingv1alpha.NetworkInterface, error) {
 	interfaceKey := client.ObjectKey{Namespace: claim.Namespace, Name: interfaceNameForClaim(claim)}
 
@@ -474,7 +496,7 @@ func (r *NetworkInterfaceClaimReconciler) bindInterface(
 		return nil, err
 	}
 
-	allocated, err := r.allocate(ctx, ipamClient, routing, claim, networkContext, requests)
+	allocated, err := r.allocate(ctx, ipamClient, routing, claim, networkContext, requests, location)
 	if err != nil {
 		return nil, err
 	}
@@ -608,6 +630,7 @@ func (r *NetworkInterfaceClaimReconciler) allocate(
 	claim *networkingv1alpha.NetworkInterfaceClaim,
 	networkContext *networkingv1alpha.NetworkContext,
 	requests []allocationRequest,
+	location networkingv1alpha.LocationReference,
 ) ([]allocatedAddress, error) {
 	logger := log.FromContext(ctx)
 
@@ -615,7 +638,6 @@ func (r *NetworkInterfaceClaimReconciler) allocate(
 		return nil, fmt.Errorf("failed ensuring project namespace %q: %w", routing.projectNamespace, err)
 	}
 
-	location := r.location()
 	allocated := make([]allocatedAddress, 0, len(requests))
 	created := make([]*ipamv1alpha1.IPClaim, 0, len(requests))
 
@@ -1179,7 +1201,11 @@ func (r *NetworkInterfaceClaimReconciler) release(
 		}
 	}
 
-	if err := r.syncNetworkContextHold(ctx, cl, claim.Namespace, claim.Spec.Network.Name); err != nil {
+	location, err := r.location(ctx)
+	if err != nil {
+		return err
+	}
+	if err := r.syncNetworkContextHold(ctx, cl, claim.Namespace, claim.Spec.Network.Name, location); err != nil {
 		return err
 	}
 
@@ -1321,11 +1347,8 @@ func (r *NetworkInterfaceClaimReconciler) SetupWithManager(mgr mcmanager.Manager
 	if r.IPAM == nil {
 		return errors.New("an IPAM client factory is required")
 	}
-	if r.Location.Name == "" {
-		return errors.New("a location is required to fulfil network interface claims")
-	}
-
 	r.mgr = mgr
+	r.localReader = mgr.GetLocalManager().GetClient()
 	return mcbuilder.ControllerManagedBy(mgr).
 		For(&networkingv1alpha.NetworkInterfaceClaim{}, mcbuilder.WithEngageWithLocalCluster(false)).
 		// A deleted interface is rebuilt by the claim that holds it.

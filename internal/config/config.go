@@ -100,6 +100,10 @@ type NetworkServicesOperator struct {
 	//
 	// Deprecated: configure the cell controller manager instead.
 	NetworkInterface NetworkInterfaceConfig `json:"networkInterface,omitempty"`
+
+	// LocationPublisher configures the controller that publishes Locations to
+	// the federation hub.
+	LocationPublisher LocationPublisherConfig `json:"locationPublisher,omitempty"`
 }
 
 // +k8s:deepcopy-gen=true
@@ -172,15 +176,109 @@ type NetworkInterfaceConfig struct {
 	// Deprecated: run the cell controller manager instead.
 	Enabled bool `json:"enabled,omitempty"`
 
-	// Location is the location this control plane serves. Claims carry no
-	// location of their own, so every claim allocates against this one.
+	// Location names the location this control plane serves. Run the cell
+	// controller manager instead.
 	Location LocationConfig `json:"location,omitempty"`
 }
 
 // +k8s:deepcopy-gen=true
 
+// LocationConfig names a Location. On a cell it is a fallback, used only while
+// no ServingLocation has been delivered to that cell.
 type LocationConfig struct {
+	// Name is the name of the Location, such as "us-east-1-iad".
 	Name string `json:"name,omitempty"`
+
+	// Namespace has no effect. Location is cluster-scoped. Leave it unset.
+	Namespace string `json:"namespace,omitempty"`
+}
+
+// +k8s:deepcopy-gen=true
+
+// LocationPublisherConfig configures the controller that copies Locations to
+// the federation hub as ServingLocations, so that each cell is told which
+// location it serves.
+//
+// Only the manager runs this controller. A cell never does. Set
+// hubKubeconfigPath to turn it on, and set it on exactly one deployment: two
+// publishers writing the same hub fight over the same objects.
+type LocationPublisherConfig struct {
+	// SourceKubeconfigPath is the path to a kubeconfig for the control plane
+	// holding the Locations to publish. Defaults to
+	// discovery.discoveryKubeconfigPath.
+	SourceKubeconfigPath string `json:"sourceKubeconfigPath,omitempty"`
+
+	// HubKubeconfigPath is the path to a kubeconfig for the federation hub the
+	// copies are written to. Publishing stays off while this is empty.
+	HubKubeconfigPath string `json:"hubKubeconfigPath,omitempty"`
+
+	// SafetyResyncPeriod is how often the publisher re-reads both ends and
+	// repairs any difference it finds. Publishing itself is driven by watches,
+	// so this only bounds how long an edit made directly on the hub survives.
+	// Shorten it to repair such edits sooner, at the cost of more API traffic.
+	//
+	// Defaults to 30 minutes.
+	SafetyResyncPeriod metav1.Duration `json:"safetyResyncPeriod,omitempty"`
+
+	// Client configures the Kubernetes client connections to both the source
+	// and the hub.
+	Client ClientConnectionConfig `json:"client,omitempty"`
+}
+
+func SetDefaults_LocationPublisherConfig(obj *LocationPublisherConfig) {
+	if obj.SafetyResyncPeriod.Duration == 0 {
+		obj.SafetyResyncPeriod = metav1.Duration{Duration: 30 * time.Minute}
+	}
+}
+
+// Enabled reports whether this deployment publishes to a federation hub.
+func (c *LocationPublisherConfig) Enabled() bool {
+	return c.HubKubeconfigPath != ""
+}
+
+func (c *LocationPublisherConfig) validate() error {
+	if !c.Enabled() {
+		return nil
+	}
+	var errs []error
+	if c.SafetyResyncPeriod.Duration < 0 {
+		errs = append(errs, errors.New("safetyResyncPeriod must not be negative"))
+	}
+	return errors.Join(errs...)
+}
+
+// SourceRestConfig resolves the connection to the platform control plane the
+// Location records are read from.
+func (c *LocationPublisherConfig) SourceRestConfig(discovery *DiscoveryConfig) (*rest.Config, error) {
+	path := c.SourceKubeconfigPath
+	if path == "" {
+		path = discovery.DiscoveryKubeconfigPath
+	}
+	return c.restConfig(path)
+}
+
+// HubRestConfig resolves the connection to the federation hub the published
+// copies are written to.
+func (c *LocationPublisherConfig) HubRestConfig() (*rest.Config, error) {
+	return c.restConfig(c.HubKubeconfigPath)
+}
+
+func (c *LocationPublisherConfig) restConfig(path string) (*rest.Config, error) {
+	var (
+		cfg *rest.Config
+		err error
+	)
+	if path == "" {
+		cfg, err = ctrl.GetConfig()
+	} else {
+		cfg, err = clientcmd.BuildConfigFromFlags("", path)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	c.Client.ApplyTo(cfg)
+	return cfg, nil
 }
 
 // +k8s:deepcopy-gen=true
@@ -1367,6 +1465,9 @@ func (c *NetworkServicesOperator) Validate() error {
 	}
 	if err := c.Gateway.validate(); err != nil {
 		return fmt.Errorf("gateway: %w", err)
+	}
+	if err := c.LocationPublisher.validate(); err != nil {
+		return fmt.Errorf("locationPublisher: %w", err)
 	}
 	return nil
 }

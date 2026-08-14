@@ -87,7 +87,12 @@ func (r *NetworkInterfaceReconciler) reconcileInterface(
 		return fmt.Errorf("failed removing finalizer: %w", err)
 	}
 
-	return r.claims.syncNetworkContextHold(ctx, cl, iface.Namespace, iface.Spec.Network.Name)
+	location, err := r.claims.location(ctx)
+	if err != nil {
+		return err
+	}
+
+	return r.claims.syncNetworkContextHold(ctx, cl, iface.Namespace, iface.Spec.Network.Name, location)
 }
 
 // heldByLiveClaim reports whether a claim named in claimRef still exists and is
@@ -123,7 +128,12 @@ func (r *NetworkInterfaceReconciler) SetupWithManager(mgr mcmanager.Manager) err
 	}
 
 	r.mgr = mgr
-	r.claims = &NetworkInterfaceClaimReconciler{Location: r.Location, IPAM: r.IPAM, mgr: mgr}
+	r.claims = &NetworkInterfaceClaimReconciler{
+		Location:    r.Location,
+		IPAM:        r.IPAM,
+		mgr:         mgr,
+		localReader: mgr.GetLocalManager().GetClient(),
+	}
 
 	return mcbuilder.ControllerManagedBy(mgr).
 		For(&networkingv1alpha.NetworkInterface{}, mcbuilder.WithEngageWithLocalCluster(false)).

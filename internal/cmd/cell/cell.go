@@ -80,7 +80,8 @@ func NewCommand() *cobra.Command {
 			}
 
 			setupLog.Info("server config", "config", serverConfig)
-			setupLog.Info("serving location",
+			setupLog.Info("configured location fallback, used only until a "+
+				"ServingLocation is delivered to this cell",
 				"name", serverConfig.Location.Name,
 			)
 

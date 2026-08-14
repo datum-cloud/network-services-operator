@@ -30,6 +30,7 @@ var reconcilerControllerNames = map[string]string{
 	"GatewayResourceReplicatorReconciler":          "gateway_resource_replicator",
 	"HTTPProxyReconciler":                          "httpproxy",
 	"IrohDNSReconciler":                            "iroh-dns",
+	"LocationPublisherReconciler":                  "location_publisher",
 	"NetworkBindingReconciler":                     "networkbinding",
 	"NetworkContextReconciler":                     "networkcontext",
 	"NetworkContextHoldReconciler":                 "networkcontexthold",
@@ -60,6 +61,7 @@ func TestControllerRegistrations_CapabilityGates(t *testing.T) {
 	cfg.Gateway.Coraza.Disabled = true
 	cfg.Gateway.DeleteErroredChallenges = new(bool)
 	cfg.Connector.Iroh.DNSEnabled = false
+	cfg.LocationPublisher.HubKubeconfigPath = ""
 
 	got := registeredNames(controllerRegistrations(nil, cfg, controllerDeps{}))
 
@@ -68,6 +70,7 @@ func TestControllerRegistrations_CapabilityGates(t *testing.T) {
 		"trafficprotectionpolicy",
 		"challenge",
 		"iroh-dns",
+		"location_publisher",
 	} {
 		if slices.Contains(got, name) {
 			t.Errorf("expected %q to stay unregistered, got %v", name, got)

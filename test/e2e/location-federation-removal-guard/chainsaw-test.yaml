@@ -1,0 +1,133 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+#
+# All three states of the removal guard, in the order an operator meets them.
+# The guard fails closed: without evidence that no cell serves the location, the
+# published copy is retained.
+#
+# The env holds one member cell, so dropping its label leaves the fleet
+# unlabelled, which is the third state. The proceed case is the member claiming
+# a different location.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: location-federation-removal-guard
+spec:
+  concurrent: false
+  cluster: nso-standard
+  steps:
+    - name: A location the member cell claims is published
+      try:
+        - script:
+            cluster: nso-hub
+            content: |
+              set -eu
+              kubectl label cluster nso-downstream topology.datum.net/location=e2e-guard --overwrite
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Location
+              metadata:
+                name: e2e-guard
+              spec:
+                locationClassName: self-managed
+                topology:
+                  topology.datum.net/city-code: LHR
+                provider:
+                  gcp:
+                    projectId: e2e
+                    region: europe-west2
+                    zone: europe-west2-a
+        - assert:
+            timeout: 120s
+            cluster: nso-hub
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: ServingLocation
+              metadata:
+                name: e2e-guard
+
+    - name: Deleting the Location while a cell still claims it retains the copy
+      try:
+        - delete:
+            ref:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Location
+              name: e2e-guard
+        - assert:
+            timeout: 120s
+            cluster: nso-hub
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: ServingLocation
+              metadata:
+                name: e2e-guard
+                annotations:
+                  (contains(keys(@), 'networking.datumapis.com/removal-blocked')): true
+        - script:
+            cluster: nso-hub
+            content: |
+              set -eu
+              reason=$(kubectl get servinglocation e2e-guard \
+                -o jsonpath='{.metadata.annotations.networking\.datumapis\.com/removal-blocked}')
+              echo "blocked: ${reason}"
+              case "$reason" in
+                ClustersStillServing*nso-downstream*) ;;
+                *) echo "expected the block to name the cluster still serving"; exit 1 ;;
+              esac
+      catch:
+        - script:
+            content: |
+              kubectl -n network-services-operator-system logs -l app.kubernetes.io/name=network-services-operator --tail=200
+
+    - name: An unlabelled fleet is a distinct block, not a licence to prune
+      description: |
+        During a fleet labelling backfill no cluster is labelled for any
+        location. The guard must still block.
+      try:
+        - script:
+            cluster: nso-hub
+            content: |
+              set -eu
+              kubectl label cluster nso-downstream topology.datum.net/location- --overwrite
+
+              for i in $(seq 1 90); do
+                reason=$(kubectl get servinglocation e2e-guard \
+                  -o jsonpath='{.metadata.annotations.networking\.datumapis\.com/removal-blocked}' 2>/dev/null || true)
+                case "$reason" in
+                  FleetNotFullyLabelled*) echo "blocked: ${reason}"; exit 0 ;;
+                esac
+                kubectl get servinglocation e2e-guard >/dev/null 2>&1 \
+                  || { echo "the copy was pruned while the fleet was not fully labelled"; exit 1; }
+                sleep 2
+              done
+              echo "the guard never reported FleetNotFullyLabelled (last: ${reason})"
+              exit 1
+            timeout: 300s
+
+    - name: Once the fleet is labelled and nothing claims it, the copy is pruned
+      try:
+        - script:
+            cluster: nso-hub
+            content: |
+              set -eu
+              kubectl label cluster nso-downstream topology.datum.net/location=e2e-elsewhere --overwrite
+
+              for i in $(seq 1 120); do
+                kubectl get servinglocation e2e-guard >/dev/null 2>&1 || break
+                sleep 2
+              done
+              kubectl get servinglocation e2e-guard >/dev/null 2>&1 \
+                && { echo "the copy was retained after nothing claimed it"; exit 1; }
+
+              kubectl get clusterpropagationpolicy location-e2e-guard >/dev/null 2>&1 \
+                && { echo "the generated policy outlived the copy it selects"; exit 1; }
+              exit 0
+            timeout: 300s
+
+      finally:
+        - script:
+            cluster: nso-hub
+            content: |
+              kubectl label cluster nso-downstream topology.datum.net/location- --overwrite || true
+              kubectl delete servinglocation e2e-guard --ignore-not-found
+              kubectl delete clusterpropagationpolicy location-e2e-guard --ignore-not-found

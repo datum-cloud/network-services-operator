@@ -78,10 +78,18 @@ patches:
                 volumeMounts:
                 - name: downstream-cluster-kubeconfig
                   mountPath: /etc/downstream-cluster
+                - name: karmada-hub-kubeconfig
+                  mountPath: /etc/karmada-hub
             volumes:
               - name: downstream-cluster-kubeconfig
                 secret:
                   secretName: downstream-cluster-kubeconfig
+              # test-infra:karmada-hub-secret creates this after the manager
+              # is deployed, so the manager crashloops until it exists.
+              - name: karmada-hub-kubeconfig
+                secret:
+                  secretName: karmada-hub-kubeconfig
+                  optional: true
 
 replacements:
   - source: # Add cert-manager annotation to ValidatingWebhookConfiguration, MutatingWebhookConfiguration and CRDs

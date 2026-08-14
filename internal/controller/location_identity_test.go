@@ -57,7 +57,7 @@ func TestResolveLocationIdentity(t *testing.T) {
 		},
 		{
 			name:         "with nothing delivered the configured location is used",
-			configured:   config.LocationConfig{Name: "lhr-1", Namespace: "default"},
+			configured:   config.LocationConfig{Name: "lhr-1"},
 			expectName:   "lhr-1",
 			expectSource: LocationIdentitySourceConfigured,
 		},

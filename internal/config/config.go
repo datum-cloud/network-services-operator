@@ -188,9 +188,6 @@ type NetworkInterfaceConfig struct {
 type LocationConfig struct {
 	// Name is the name of the Location, such as "us-east-1-iad".
 	Name string `json:"name,omitempty"`
-
-	// Namespace has no effect. Location is cluster-scoped. Leave it unset.
-	Namespace string `json:"namespace,omitempty"`
 }
 
 // +k8s:deepcopy-gen=true

@@ -1,13 +1,37 @@
-# NSO CRDs the downstream edge cluster needs: the GatewayResourceReplicator
-# mirrors the first three types downstream and the extension server's cache
-# reads them locally. Gateway API and Envoy Gateway CRDs are installed
+# NSO CRDs that must exist outside the project control plane. Infra applies
+# this same path to the Karmada hub and to every cell, so it is the union of
+# what those two need. Gateway API and Envoy Gateway CRDs are installed
 # out-of-band.
 #
-# ServingLocation and NetworkContext are federated, not replicated. Apply this
-# same path to the Karmada hub and to every cell.
+# Gateway data plane: the GatewayResourceReplicator mirrors
+# TrafficProtectionPolicy, HTTPProxy and Connector downstream, and the
+# extension server's cache reads them locally.
+#
+# Network presence: a consumer writes a NetworkBinding on the hub, the control
+# plane manager turns every binding for a (network, location) pair into one
+# shared NetworkContext on the hub, and Karmada propagates that context to the
+# cells serving the location. The cell controller manager then serves
+# NetworkInterfaceClaims against it. ServingLocation is federated the same way.
+#
+# The cell set is derived from what the cell controller manager watches
+# (internal/cmd/cell/cell.go): NetworkInterfaceClaim, NetworkInterface,
+# NetworkContext, Subnet, and ServingLocation on the local cluster. Network is
+# only ever referenced by name on a cell, never read, so its CRD is not needed
+# there.
 resources:
+  # Gateway data plane
   - ../bases/networking.datumapis.com_trafficprotectionpolicies.yaml
   - ../bases/networking.datumapis.com_httpproxies.yaml
   - ../bases/networking.datumapis.com_connectors.yaml
+
+  # Location identity, federated to cells
   - ../bases/networking.datumapis.com_servinglocations.yaml
+
+  # Network presence: hub stores bindings and contexts, cells receive contexts
+  - ../bases/networking.datumapis.com_networkbindings.yaml
   - ../bases/networking.datumapis.com_networkcontexts.yaml
+
+  # Network interface claim path, served on cells
+  - ../bases/networking.datumapis.com_networkinterfaceclaims.yaml
+  - ../bases/networking.datumapis.com_networkinterfaces.yaml
+  - ../bases/networking.datumapis.com_subnets.yaml

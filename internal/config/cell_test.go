@@ -109,9 +109,6 @@ location:
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("expected the config to validate, got %v", err)
 	}
-	if cfg.IPAM.ImpersonateUsername != "nso-ipam-agent" {
-		t.Errorf("expected the IPAM username to default, got %q", cfg.IPAM.ImpersonateUsername)
-	}
 	if cfg.Location.Name != "us-central-1" {
 		t.Errorf("expected the location to decode, got %q", cfg.Location.Name)
 	}

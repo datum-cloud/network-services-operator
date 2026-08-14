@@ -105,7 +105,13 @@ func (f *fakeIPAM) ClientForProject(project string) (client.Client, error) {
 		return existing, nil
 	}
 
-	builder := fakeclient.NewClientBuilder().WithScheme(f.scheme)
+	// A project's control plane already holds the namespace its own objects
+	// live in, so the fake starts with it rather than having the operator make
+	// one.
+	projectNamespace := &corev1.Namespace{}
+	projectNamespace.Name = testProjectNS
+
+	builder := fakeclient.NewClientBuilder().WithScheme(f.scheme).WithObjects(projectNamespace)
 	for _, class := range f.classes {
 		builder = builder.WithObjects(class.DeepCopy())
 	}

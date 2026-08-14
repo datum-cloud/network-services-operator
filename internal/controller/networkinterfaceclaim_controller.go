@@ -634,8 +634,8 @@ func (r *NetworkInterfaceClaimReconciler) allocate(
 ) ([]allocatedAddress, error) {
 	logger := log.FromContext(ctx)
 
-	if err := ensureProjectNamespace(ctx, ipamClient, routing.projectNamespace); err != nil {
-		return nil, fmt.Errorf("failed ensuring project namespace %q: %w", routing.projectNamespace, err)
+	if err := requireProjectNamespace(ctx, ipamClient, routing.projectNamespace); err != nil {
+		return nil, fmt.Errorf("failed reading project namespace %q: %w", routing.projectNamespace, err)
 	}
 
 	allocated := make([]allocatedAddress, 0, len(requests))

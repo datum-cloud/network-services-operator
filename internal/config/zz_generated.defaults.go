@@ -39,10 +39,6 @@ func SetObjectDefaults_CellControllerManager(in *CellControllerManager) {
 	if in.ProjectClient.Burst == 0 {
 		in.ProjectClient.Burst = 100
 	}
-	SetDefaults_IPAMConfig(&in.IPAM)
-	if in.IPAM.ImpersonateUsername == "" {
-		in.IPAM.ImpersonateUsername = "nso-ipam-agent"
-	}
 	SetDefaults_ClientConnectionConfig(&in.IPAM.Client)
 	if in.IPAM.Client.QPS == 0 {
 		in.IPAM.Client.QPS = 50
@@ -391,10 +387,6 @@ func SetObjectDefaults_NetworkServicesOperator(in *NetworkServicesOperator) {
 	}
 	if in.ProjectClient.Burst == 0 {
 		in.ProjectClient.Burst = 100
-	}
-	SetDefaults_IPAMConfig(&in.IPAM)
-	if in.IPAM.ImpersonateUsername == "" {
-		in.IPAM.ImpersonateUsername = "nso-ipam-agent"
 	}
 	SetDefaults_ClientConnectionConfig(&in.IPAM.Client)
 	if in.IPAM.Client.QPS == 0 {

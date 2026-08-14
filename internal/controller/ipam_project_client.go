@@ -5,24 +5,19 @@ package controller
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"sync"
 
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	ipamv1alpha1 "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
-	iamv1alpha1 "go.miloapis.com/milo/pkg/apis/iam/v1alpha1"
 	resourcemanagerv1alpha1 "go.miloapis.com/milo/pkg/apis/resourcemanager/v1alpha1"
 
 	"go.datum.net/network-services-operator/internal/downstreamclient"
 )
-
-// Milo exports no constant for a kind name, so the project kind is spelled
-// here.
-const ipamParentType = "Project"
 
 // IPAMClientFactory returns a client bound to one project. Every IPAM request
 // goes through one, so no request can reach IPAM without naming a project.
@@ -32,31 +27,26 @@ type IPAMClientFactory interface {
 
 // NewIPAMClientFactory builds project-scoped clients from one connection. The
 // clients are uncached, because a cache would watch every project served.
-func NewIPAMClientFactory(base *rest.Config, scheme *runtime.Scheme, actAsUsername string) (IPAMClientFactory, error) {
+func NewIPAMClientFactory(base *rest.Config, scheme *runtime.Scheme) (IPAMClientFactory, error) {
 	if base == nil {
 		return nil, fmt.Errorf("a rest config is required")
 	}
-	if actAsUsername == "" {
-		return nil, fmt.Errorf("an impersonation username is required")
-	}
-	return &impersonatingIPAMClientFactory{
-		base:          base,
-		scheme:        scheme,
-		actAsUsername: actAsUsername,
-		clients:       map[string]client.Client{},
+	return &projectPathIPAMClientFactory{
+		base:    base,
+		scheme:  scheme,
+		clients: map[string]client.Client{},
 	}, nil
 }
 
-type impersonatingIPAMClientFactory struct {
-	base          *rest.Config
-	scheme        *runtime.Scheme
-	actAsUsername string
+type projectPathIPAMClientFactory struct {
+	base   *rest.Config
+	scheme *runtime.Scheme
 
 	mu      sync.Mutex
 	clients map[string]client.Client
 }
 
-func (f *impersonatingIPAMClientFactory) ClientForProject(project string) (client.Client, error) {
+func (f *projectPathIPAMClientFactory) ClientForProject(project string) (client.Client, error) {
 	if project == "" {
 		return nil, errNoProject
 	}
@@ -68,14 +58,9 @@ func (f *impersonatingIPAMClientFactory) ClientForProject(project string) (clien
 		return existing, nil
 	}
 
-	cfg := rest.CopyConfig(f.base)
-	cfg.Impersonate = rest.ImpersonationConfig{
-		UserName: f.actAsUsername,
-		Extra: map[string][]string{
-			iamv1alpha1.ParentAPIGroupExtraKey: {resourcemanagerv1alpha1.GroupVersion.Group},
-			iamv1alpha1.ParentKindExtraKey:     {ipamParentType},
-			iamv1alpha1.ParentNameExtraKey:     {project},
-		},
+	cfg, err := f.configForProject(project)
+	if err != nil {
+		return nil, err
 	}
 
 	cl, err := client.New(cfg, client.Options{Scheme: f.scheme})
@@ -85,6 +70,24 @@ func (f *impersonatingIPAMClientFactory) ClientForProject(project string) (clien
 
 	f.clients[project] = cl
 	return cl, nil
+}
+
+// configForProject addresses the base connection at one project's control
+// plane. The path names the project, so Milo authorizes the operator's own
+// identity against that project rather than trusting a caller-supplied parent.
+// Any path the base host already carries is replaced, not extended.
+func (f *projectPathIPAMClientFactory) configForProject(project string) (*rest.Config, error) {
+	cfg := rest.CopyConfig(f.base)
+
+	host, err := url.Parse(cfg.Host)
+	if err != nil {
+		return nil, fmt.Errorf("failed parsing IPAM host %q: %w", cfg.Host, err)
+	}
+	host.Path = fmt.Sprintf("/apis/%s/v1alpha1/projects/%s/control-plane",
+		resourcemanagerv1alpha1.GroupVersion.Group, project)
+	cfg.Host = host.String()
+
+	return cfg, nil
 }
 
 // IPAMScheme is the scheme a project-scoped IPAM client is built with.
@@ -125,20 +128,13 @@ func projectNamespaceFromNamespace(ns *corev1.Namespace) (string, error) {
 	return value, nil
 }
 
-func ensureProjectNamespace(ctx context.Context, cl client.Client, name string) error {
+// requireProjectNamespace confirms the namespace addresses land in exists. The
+// name is the upstream namespace the claim's own objects live in, inside the
+// project's control plane, so it is already there; the read only turns a
+// missing namespace into a clear failure instead of a rejected claim. The
+// operator never creates it, because that would be writing into a customer's
+// project on their behalf.
+func requireProjectNamespace(ctx context.Context, cl client.Client, name string) error {
 	var existing corev1.Namespace
-	err := cl.Get(ctx, client.ObjectKey{Name: name}, &existing)
-	if err == nil {
-		return nil
-	}
-	if !apierrors.IsNotFound(err) {
-		return err
-	}
-
-	namespace := &corev1.Namespace{}
-	namespace.Name = name
-	if err := cl.Create(ctx, namespace); err != nil && !apierrors.IsAlreadyExists(err) {
-		return err
-	}
-	return nil
+	return cl.Get(ctx, client.ObjectKey{Name: name}, &existing)
 }

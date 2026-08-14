@@ -111,8 +111,9 @@ type NetworkServicesOperator struct {
 // +k8s:deepcopy-gen=true
 
 // IPAMConfig describes how the operator reaches the IPAM API server. One
-// connection serves every project. Each request names its project through
-// impersonation.
+// connection serves every project: each request is addressed to a project's
+// control-plane path, so the operator's own identity is authorized against
+// that project.
 type IPAMConfig struct {
 	// KubeconfigPath is the path to a kubeconfig file pointing at the cluster
 	// serving the IPAM API. Mutually exclusive with inCluster; one of the two
@@ -124,21 +125,9 @@ type IPAMConfig struct {
 	// ipam.miloapis.com. Mutually exclusive with kubeconfigPath.
 	InCluster bool `json:"inCluster,omitempty"`
 
-	// ImpersonateUsername is the user the operator impersonates when claiming
-	// addresses. IPAM checks this user's permissions, not the operator's.
-	//
-	// +default="nso-ipam-agent"
-	ImpersonateUsername string `json:"impersonateUsername,omitempty"`
-
 	// Client configures the Kubernetes client connection to the IPAM API
 	// server.
 	Client ClientConnectionConfig `json:"client,omitempty"`
-}
-
-func SetDefaults_IPAMConfig(obj *IPAMConfig) {
-	if obj.ImpersonateUsername == "" {
-		obj.ImpersonateUsername = "nso-ipam-agent"
-	}
 }
 
 func (c *IPAMConfig) validate() error {

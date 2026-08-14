@@ -4,6 +4,5 @@ metricsServer:
   bindAddress: ":8443"
 ipam:
   kubeconfigPath: /etc/ipam-cluster/kubeconfig
-  impersonateUsername: nso-ipam-agent
 # A cell learns its location from the ServingLocation delivered to it.
 # To pin one, replace this ConfigMap in an overlay.

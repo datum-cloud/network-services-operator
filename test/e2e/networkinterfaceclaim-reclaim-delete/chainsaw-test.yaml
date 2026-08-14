@@ -13,6 +13,31 @@ metadata:
 spec:
   cluster: nso-standard
   steps:
+    - name: Deliver the network's presence to this location
+      description: |
+        At a location a NetworkContext arrives by propagation from the hub; no
+        controller here creates one. The claim reconciler reads it for the
+        address families the network carries and the MTU, so the scenario has to
+        put it there, shaped as propagation delivers it: spec only, no status,
+        no owner references.
+      try:
+        - apply:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkContext
+              metadata:
+                name: nic-delete-net-default-us-central-1
+                namespace: ipam-e2e-alpha
+              spec:
+                network:
+                  name: nic-delete-net
+                location:
+                  name: us-central-1
+                ipFamilies:
+                  - IPv4
+                  - IPv6
+                mtu: 1460
+
     - name: Claim two families and a named class with reclaimPolicy Delete
       try:
         - create:

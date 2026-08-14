@@ -346,6 +346,37 @@ func TestNetworkPresenceRetriesARefusal(t *testing.T) {
 	require.True(t, ok, "the presence appears once the platform enables the location")
 }
 
+// A binding in a project control plane belongs to the other controller. Serving
+// it here overwrites that controller's answer with ProjectUnresolved, and the
+// teardown path would delete a context this controller never created.
+func TestNetworkPresenceLeavesProjectPlaneBindingsAlone(t *testing.T) {
+	s := newPresenceScenario(t, presenceOptions{})
+
+	plain := &corev1.Namespace{}
+	plain.Name = "plane-" + sanitizeName(strings.ToLower(t.Name()))[:40]
+	require.NoError(t, s.hub.Create(s.ctx, plain))
+
+	binding := &networkingv1alpha.NetworkBinding{}
+	binding.Namespace = plain.Name
+	binding.Name = "project-plane-binding"
+	binding.Spec.Network = networkingv1alpha.NetworkRef{Name: s.networkName}
+	binding.Spec.Location = networkingv1alpha.LocationReference{Name: s.locationName}
+	require.NoError(t, s.hub.Create(s.ctx, binding))
+
+	_, err := s.reconciler.Reconcile(s.ctx, ctrl.Request{NamespacedName: client.ObjectKey{
+		Namespace: plain.Name,
+		Name:      networkContextNameForBinding(binding),
+	}})
+	require.NoError(t, err)
+
+	var seen networkingv1alpha.NetworkBinding
+	require.NoError(t, s.hub.Get(s.ctx, client.ObjectKeyFromObject(binding), &seen))
+	condition := apimeta.FindStatusCondition(seen.Status.Conditions, networkingv1alpha.NetworkBindingReady)
+	require.NotNil(t, condition)
+	require.Equal(t, networkingv1alpha.NetworkBindingReasonPending, condition.Reason,
+		"the presence controller must not answer for a binding it does not serve")
+}
+
 func TestNetworkPresenceRefusesAMissingNetwork(t *testing.T) {
 	s := newPresenceScenario(t, presenceOptions{withoutNetwork: true})
 	s.createBinding("consumer-a")

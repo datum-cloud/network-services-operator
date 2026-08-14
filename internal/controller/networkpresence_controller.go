@@ -76,6 +76,19 @@ type NetworkPresenceReconciler struct {
 func (r *NetworkPresenceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
+	// Only hub namespaces are this controller's. Where the hub and the project
+	// control planes are separate clusters this is every namespace it can see;
+	// where one cluster plays both roles it is not, and serving a project-plane
+	// binding would fight the controller that owns it and tear down a context
+	// this controller never created.
+	serves, err := isHubNamespace(ctx, r.hub, req.Namespace)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if !serves {
+		return ctrl.Result{}, nil
+	}
+
 	holders, err := r.holders(ctx, req)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -340,8 +353,14 @@ func refusal(reason, message string) metav1.Condition {
 	}
 }
 
-// isHubNamespace reports whether a namespace names a project, which is what
-// makes it a hub namespace rather than a namespace in a project control plane.
+// isHubNamespace reports whether a namespace was created to hold one project's
+// objects, which is what makes it a hub namespace rather than a namespace in a
+// project control plane.
+//
+// Either label is enough. A namespace carrying one of them is a hub namespace
+// that is missing the other, and it has to stay this controller's so the
+// binding reports ProjectUnresolved rather than being served by both
+// controllers or by neither.
 func isHubNamespace(ctx context.Context, cl client.Client, namespaceName string) (bool, error) {
 	var namespace corev1.Namespace
 	if err := cl.Get(ctx, client.ObjectKey{Name: namespaceName}, &namespace); err != nil {
@@ -351,8 +370,15 @@ func isHubNamespace(ctx context.Context, cl client.Client, namespaceName string)
 		return false, fmt.Errorf("failed reading namespace %q: %w", namespaceName, err)
 	}
 
-	_, err := projectFromNamespace(&namespace)
-	return err == nil, nil
+	for _, label := range []string{
+		downstreamclient.UpstreamOwnerClusterNameLabel,
+		downstreamclient.UpstreamOwnerNamespaceLabel,
+	} {
+		if namespace.Labels[label] != "" {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // SetupWithManager registers the controller against the hub.

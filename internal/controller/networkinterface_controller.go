@@ -123,7 +123,12 @@ func (r *NetworkInterfaceReconciler) SetupWithManager(mgr mcmanager.Manager) err
 	}
 
 	r.mgr = mgr
-	r.claims = &NetworkInterfaceClaimReconciler{Location: r.Location, IPAM: r.IPAM, mgr: mgr}
+	r.claims = &NetworkInterfaceClaimReconciler{
+		Location:    r.Location,
+		IPAM:        r.IPAM,
+		mgr:         mgr,
+		localReader: mgr.GetLocalManager().GetClient(),
+	}
 
 	return mcbuilder.ControllerManagedBy(mgr).
 		For(&networkingv1alpha.NetworkInterface{}, mcbuilder.WithEngageWithLocalCluster(false)).

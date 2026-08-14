@@ -1,0 +1,153 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+#
+# A delivered ServingLocation wins over the configured location; with none
+# delivered, the configured one is used. The name of the NetworkBinding a claim
+# creates says which location was resolved.
+#
+# The delivered copy is created directly on nso-standard, the cell under test.
+# location-federation-publish covers delivery over real federation.
+#
+# Do not run this alongside other scenarios. The ServingLocation changes the
+# identity of every claim on the cell while it exists.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: location-federation-cell-identity
+spec:
+  concurrent: false
+  cluster: nso-standard
+  steps:
+    - name: With nothing delivered, the configured location is used
+      try:
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Network
+              metadata:
+                name: identity-net
+                namespace: ipam-e2e-alpha
+              spec:
+                ipam:
+                  mode: Auto
+                ipFamilies:
+                  - IPv4
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterfaceClaim
+              metadata:
+                name: identity-configured
+                namespace: ipam-e2e-alpha
+              spec:
+                network:
+                  name: identity-net
+                ipFamilies:
+                  - IPv4
+        - assert:
+            timeout: 120s
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkBinding
+              metadata:
+                name: identity-net-default-us-central-1
+                namespace: ipam-e2e-alpha
+              spec:
+                location:
+                  name: us-central-1
+                  namespace: default
+      catch:
+        - script:
+            content: |
+              kubectl -n ipam-e2e-alpha get networkbinding,networkinterfaceclaim -o yaml
+              kubectl -n network-services-operator-system logs -l app.kubernetes.io/name=network-services-operator --tail=200
+
+    - name: A delivered ServingLocation wins over the configured location
+      try:
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: ServingLocation
+              metadata:
+                name: e2e-delivered
+              spec:
+                topology:
+                  topology.datum.net/city-code: SJC
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterfaceClaim
+              metadata:
+                name: identity-delivered
+                namespace: ipam-e2e-alpha
+              spec:
+                network:
+                  name: identity-net
+                ipFamilies:
+                  - IPv4
+        - assert:
+            timeout: 180s
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkBinding
+              metadata:
+                name: identity-net-e2e-delivered
+                namespace: ipam-e2e-alpha
+              spec:
+                location:
+                  name: e2e-delivered
+      catch:
+        - script:
+            content: |
+              kubectl -n ipam-e2e-alpha get networkbinding -o yaml
+              kubectl get servinglocations -o yaml
+              kubectl -n network-services-operator-system logs -l app.kubernetes.io/name=network-services-operator --tail=200
+
+    - name: More than one delivered copy is a labelling error the cell refuses to guess at
+      description: |
+        With two copies delivered, the cell falls back to the configured
+        location rather than picking one of them.
+      try:
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: ServingLocation
+              metadata:
+                name: e2e-delivered-two
+              spec:
+                topology:
+                  topology.datum.net/city-code: LHR
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterfaceClaim
+              metadata:
+                name: identity-ambiguous
+                namespace: ipam-e2e-alpha
+              spec:
+                network:
+                  name: identity-net
+                ipFamilies:
+                  - IPv4
+        - assert:
+            timeout: 180s
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkBinding
+              metadata:
+                name: identity-net-default-us-central-1
+                namespace: ipam-e2e-alpha
+              spec:
+                location:
+                  name: us-central-1
+
+      finally:
+        - delete:
+            ref:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: ServingLocation
+              name: e2e-delivered
+        - delete:
+            ref:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: ServingLocation
+              name: e2e-delivered-two

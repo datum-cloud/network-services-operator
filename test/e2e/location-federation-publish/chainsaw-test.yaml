@@ -1,0 +1,172 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+#
+# End to end over real federation: a Location becomes a ServingLocation and one
+# propagation policy on the Karmada hub, and lands on the member cluster that
+# claims it by label.
+#
+# Also asserts that a reconcile with no source change leaves publishedAt and
+# resourceVersion untouched. The env runs the publisher at a 1m safety resync.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: location-federation-publish
+spec:
+  concurrent: false
+  cluster: nso-standard
+  steps:
+    - name: A Location at the source is published to the hub
+      try:
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Location
+              metadata:
+                name: e2e-publish
+              spec:
+                locationClassName: self-managed
+                topology:
+                  topology.datum.net/city-code: SJC
+                  topology.datum.net/region: us-west-1
+                provider:
+                  gcp:
+                    projectId: e2e
+                    region: us-west1
+                    zone: us-west1-a
+        - assert:
+            timeout: 120s
+            cluster: nso-hub
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: ServingLocation
+              metadata:
+                name: e2e-publish
+                labels:
+                  networking.datumapis.com/published-by: location-publisher
+              spec:
+                topology:
+                  topology.datum.net/city-code: SJC
+                  topology.datum.net/region: us-west-1
+                source:
+                  (generation > `0`): true
+                  (publishedAt != null): true
+      catch:
+        - script:
+            content: |
+              kubectl -n network-services-operator-system logs -l app.kubernetes.io/name=network-services-operator --tail=200
+
+    - name: The generated policy targets only the cell that claims this location
+      try:
+        - assert:
+            timeout: 60s
+            cluster: nso-hub
+            resource:
+              apiVersion: policy.karmada.io/v1alpha1
+              kind: ClusterPropagationPolicy
+              metadata:
+                name: location-e2e-publish
+              spec:
+                conflictResolution: Overwrite
+                resourceSelectors:
+                  - apiVersion: networking.datumapis.com/v1alpha
+                    kind: ServingLocation
+                    name: e2e-publish
+                placement:
+                  clusterAffinity:
+                    labelSelector:
+                      matchLabels:
+                        topology.datum.net/location: e2e-publish
+
+    - name: A cell claiming the location by label receives the copy
+      try:
+        - script:
+            cluster: nso-hub
+            content: |
+              set -eu
+              kubectl label cluster nso-downstream topology.datum.net/location=e2e-publish --overwrite
+        - assert:
+            timeout: 180s
+            cluster: nso-infra
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: ServingLocation
+              metadata:
+                name: e2e-publish
+              spec:
+                topology:
+                  topology.datum.net/city-code: SJC
+      catch:
+        - script:
+            cluster: nso-hub
+            content: |
+              kubectl get clusterresourcebindings -o yaml
+              kubectl get works -A -o yaml | head -200
+
+    - name: A content change reaches the cell
+      try:
+        - patch:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Location
+              metadata:
+                name: e2e-publish
+              spec:
+                topology:
+                  topology.datum.net/city-code: SJC
+                  topology.datum.net/region: us-west-2
+        - assert:
+            timeout: 180s
+            cluster: nso-infra
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: ServingLocation
+              metadata:
+                name: e2e-publish
+              spec:
+                topology:
+                  topology.datum.net/region: us-west-2
+
+    - name: A no-op reconcile does not change the published object
+      description: |
+        150s covers at least two safety resyncs. resourceVersion and
+        publishedAt must not move.
+      try:
+        - script:
+            cluster: nso-hub
+            content: |
+              set -eu
+              before_rv=$(kubectl get servinglocation e2e-publish -o jsonpath='{.metadata.resourceVersion}')
+              before_at=$(kubectl get servinglocation e2e-publish -o jsonpath='{.spec.source.publishedAt}')
+              echo "before: rv=${before_rv} publishedAt=${before_at}"
+
+              sleep 150
+
+              after_rv=$(kubectl get servinglocation e2e-publish -o jsonpath='{.metadata.resourceVersion}')
+              after_at=$(kubectl get servinglocation e2e-publish -o jsonpath='{.spec.source.publishedAt}')
+              echo "after:  rv=${after_rv} publishedAt=${after_at}"
+
+              [ "$before_at" = "$after_at" ] || { echo "publishedAt was restamped by a no-op reconcile"; exit 1; }
+              [ "$before_rv" = "$after_rv" ] || { echo "a no-op reconcile rewrote the object (rv ${before_rv} -> ${after_rv})"; exit 1; }
+            timeout: 300s
+
+      finally:
+        - script:
+            cluster: nso-hub
+            content: |
+              # Point the cell at another location. Stripping the label
+              # instead leaves the fleet unlabelled, which retains the copy.
+              kubectl label cluster nso-downstream topology.datum.net/location=e2e-cleanup --overwrite || true
+        - delete:
+            ref:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Location
+              name: e2e-publish
+        - script:
+            cluster: nso-hub
+            content: |
+              set -eu
+              for i in $(seq 1 60); do
+                kubectl get servinglocation e2e-publish >/dev/null 2>&1 || exit 0
+                sleep 2
+              done
+              kubectl delete servinglocation e2e-publish --ignore-not-found
+              kubectl delete clusterpropagationpolicy location-e2e-publish --ignore-not-found

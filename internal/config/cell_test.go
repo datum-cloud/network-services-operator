@@ -48,14 +48,12 @@ func TestCellControllerManager_Validate(t *testing.T) {
 			mutate: func(*CellControllerManager) {},
 		},
 		{
-			name:    "missing location name",
-			mutate:  func(c *CellControllerManager) { c.Location.Name = "" },
-			wantSub: "location.name is required",
+			name:   "no configured location",
+			mutate: func(c *CellControllerManager) { c.Location = LocationConfig{} },
 		},
 		{
-			name:    "missing location namespace",
-			mutate:  func(c *CellControllerManager) { c.Location.Namespace = "" },
-			wantSub: "location.namespace is required",
+			name:   "no location namespace",
+			mutate: func(c *CellControllerManager) { c.Location.Namespace = "" },
 		},
 		{
 			name:    "no ipam connection",

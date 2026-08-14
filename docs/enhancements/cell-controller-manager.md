@@ -44,7 +44,7 @@ The boundary is what a controller *writes*, not what it reads. Gateway, domain, 
 
 The component gives the cell Deployment its own image name so the component's image transformer, which applies to the parent's whole accumulation, cannot rewrite the control-plane Deployment.
 
-`location` carries placeholder values. Two cells sharing a location both fulfil and both release the same claims' addresses, and nothing detects it, so every consuming overlay must replace the whole ConfigMap.
+`location` is optional and the component sets none. A cell learns which location it is from the `ServingLocation` delivered to it, and falls back to `location` only when none has been delivered; with neither, it reports a waiting state on the claims it cannot fulfil rather than failing to start. An overlay pinning a location replaces the whole ConfigMap: two cells sharing a location both fulfil and both release the same claims' addresses, and nothing detects it.
 
 ## Testing
 

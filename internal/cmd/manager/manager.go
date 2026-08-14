@@ -641,7 +641,63 @@ func controllerRegistrations(
 				DownstreamCluster: deps.downstreamCluster,
 			}).SetupWithManager(deps.singletonManager)
 		}},
+		{"location_publisher", serverConfig.LocationPublisher.Enabled(), func() error {
+			return setupLocationPublisher(serverConfig, scheme, deps.singletonManager)
+		}},
 	}
+}
+
+// leaderElectedRunnable states a runnable's leader-election intent explicitly.
+type leaderElectedRunnable struct {
+	manager.Runnable
+	leaderElected bool
+}
+
+func (r leaderElectedRunnable) NeedLeaderElection() bool { return r.leaderElected }
+
+// setupLocationPublisher connects the publisher to the control plane it reads
+// Locations from and the federation hub it writes copies to. Both connections
+// run only on the leader.
+func setupLocationPublisher(
+	serverConfig config.NetworkServicesOperator,
+	scheme *runtime.Scheme,
+	mgr manager.Manager,
+) error {
+	sourceRestConfig, err := serverConfig.LocationPublisher.SourceRestConfig(&serverConfig.Discovery)
+	if err != nil {
+		return fmt.Errorf("unable to load the location source kubeconfig: %w", err)
+	}
+	hubRestConfig, err := serverConfig.LocationPublisher.HubRestConfig()
+	if err != nil {
+		return fmt.Errorf("unable to load the federation hub kubeconfig: %w", err)
+	}
+
+	sourceCluster, err := cluster.New(sourceRestConfig, func(o *cluster.Options) {
+		o.Scheme = scheme
+	})
+	if err != nil {
+		return fmt.Errorf("unable to construct the location source cluster: %w", err)
+	}
+
+	hubCluster, err := cluster.New(hubRestConfig, func(o *cluster.Options) {
+		o.Scheme = scheme
+		o.Client = client.Options{Cache: &client.CacheOptions{Unstructured: true}}
+	})
+	if err != nil {
+		return fmt.Errorf("unable to construct the federation hub cluster: %w", err)
+	}
+
+	for _, c := range []cluster.Cluster{sourceCluster, hubCluster} {
+		if err := mgr.Add(leaderElectedRunnable{Runnable: c, leaderElected: true}); err != nil {
+			return fmt.Errorf("unable to add a location publisher cluster: %w", err)
+		}
+	}
+
+	return (&controller.LocationPublisherReconciler{
+		Config:        serverConfig,
+		SourceCluster: sourceCluster,
+		HubCluster:    hubCluster,
+	}).SetupWithManager(mgr)
 }
 
 // setupControllers registers every controller belonging to an enabled set and
@@ -654,8 +710,6 @@ func setupControllers(
 	return runSetups("controller", controllerRegistrations(mgr, serverConfig, deps))
 }
 
-// newIPAMClientFactory wires the cell controllers to one IPAM connection.
-// Impersonation names the project on each request.
 const defaultLeaderElectionID = "6a7d51cc.datumapis.com"
 
 func ignoreCanceled(err error) error {

@@ -1,7 +1,6 @@
 package config
 
 import (
-	"errors"
 	"fmt"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -11,8 +10,7 @@ import (
 // +k8s:defaulter-gen=true
 
 // CellControllerManager configures the controller manager that runs in a
-// cell's control plane. It carries only what a cell needs: the connection to
-// the IPAM API addresses are claimed from, and the location the cell serves.
+// cell's control plane.
 type CellControllerManager struct {
 	metav1.TypeMeta
 
@@ -35,22 +33,25 @@ type CellControllerManager struct {
 	// network interface addresses are claimed from.
 	IPAM IPAMConfig `json:"ipam"`
 
-	// Location names the location this cell serves. No two cells may share one.
-	Location LocationConfig `json:"location"`
+	// Location names the location this cell serves. Leave it unset unless you
+	// have to pin one: a ServingLocation delivered to the cell wins over it,
+	// and is the normal way a cell learns where it is.
+	//
+	// Set it only for a cell that no ServingLocation reaches yet. Never give
+	// two cells the same location. They would both hand out and both release
+	// the same addresses, and nothing detects it.
+	//
+	// With no location from either source, the cell still starts. It reports a
+	// waiting state on the claims it cannot fulfil and recovers on its own when
+	// a ServingLocation arrives.
+	//
+	// This field is temporary. It goes away once no cell reports Configured for
+	// nso_cell_location_identity_source.
+	Location LocationConfig `json:"location,omitempty"`
 }
 
 // Validate reports whether the cell configuration can serve a cell.
 func (c *CellControllerManager) Validate() error {
-	var errs []error
-	if c.Location.Name == "" {
-		errs = append(errs, errors.New("location.name is required"))
-	}
-	if c.Location.Namespace == "" {
-		errs = append(errs, errors.New("location.namespace is required"))
-	}
-	if err := errors.Join(errs...); err != nil {
-		return err
-	}
 	if err := c.IPAM.validate(); err != nil {
 		return fmt.Errorf("ipam: %w", err)
 	}

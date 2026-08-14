@@ -19,17 +19,6 @@ gateway:
     gateway.networking.datumapis.com/certificate-issuer: []
 downstreamResourceManagement:
   kubeconfigPath: /etc/downstream-cluster/kubeconfig
-ipam:
-  kubeconfigPath: /etc/ipam-cluster/kubeconfig
-  impersonateUsername: nso-ipam-agent
-networkInterface:
-  enabled: true
-  # No ServingLocation is delivered to the upstream cell by default, so this is
-  # the configured fallback the identity scenarios exercise.
-  location:
-    name: us-central-1
-    namespace: default
 locationPublisher:
-  enabled: true
   hubKubeconfigPath: /etc/karmada-hub/kubeconfig
   safetyResyncPeriod: 1m

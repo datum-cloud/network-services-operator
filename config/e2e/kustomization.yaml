@@ -11,6 +11,7 @@ resources:
 components:
   - ../rbac_deployment
   - ../webhook
+  - ../components/cell-controllers
 
 configMapGenerator:
   - name: config
@@ -20,6 +21,28 @@ configMapGenerator:
 
 patches:
   - path: manager_webhook_patch.yaml
+  # A generator merge would replace the whole config.yaml key, and a
+  # `behavior: replace` generator cannot see a ConfigMap a component generated.
+  - target:
+      kind: ConfigMap
+      name: cell-config
+    patch: |-
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: cell-config
+      data:
+        config.yaml: |
+          apiVersion: apiserver.config.datumapis.com/v1alpha1
+          kind: CellControllerManager
+          metricsServer:
+            bindAddress: ":8443"
+          ipam:
+            kubeconfigPath: /etc/ipam-cluster/kubeconfig
+            impersonateUsername: nso-ipam-agent
+          location:
+            name: us-central-1
+            namespace: default
   - target:
       kind: Deployment
       name: controller-manager
@@ -56,26 +79,12 @@ patches:
                 volumeMounts:
                 - name: downstream-cluster-kubeconfig
                   mountPath: /etc/downstream-cluster
-                - name: ipam-cluster-kubeconfig
-                  mountPath: /etc/ipam-cluster
                 - name: karmada-hub-kubeconfig
                   mountPath: /etc/karmada-hub
             volumes:
               - name: downstream-cluster-kubeconfig
                 secret:
                   secretName: downstream-cluster-kubeconfig
-              # Optional only so a missing secret fails in the manager rather
-              # than in the kubelet. It does NOT make the manager tolerate the
-              # secret's absence: with networkInterface.enabled true, loading
-              # the IPAM kubeconfig is part of setup, and failing it exits the
-              # process — so the manager crashloops and takes every other
-              # controller with it. Deliberate: a clear "unable to load IPAM
-              # kubeconfig" beats a manager that comes up half-functional.
-              # test-infra:up creates the secret before prepare-upstream.
-              - name: ipam-cluster-kubeconfig
-                secret:
-                  secretName: ipam-cluster-kubeconfig
-                  optional: true
               # test-infra:karmada-hub-secret creates this after the manager is
               # already deployed, so the manager crashloops until the hub exists
               # — the same accepted ordering as the downstream kubeconfig above.

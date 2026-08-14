@@ -60,8 +60,8 @@ const (
 // NetworkInterfaceClaimReconciler binds a NetworkInterfaceClaim to a
 // NetworkInterface.
 type NetworkInterfaceClaimReconciler struct {
-	Config config.NetworkServicesOperator
-	IPAM   IPAMClientFactory
+	Location config.LocationConfig
+	IPAM     IPAMClientFactory
 
 	mgr         mcmanager.Manager
 	localReader client.Reader
@@ -75,6 +75,7 @@ type NetworkInterfaceClaimReconciler struct {
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkbindings,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networks,verbs=get;list;watch
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=subnets,verbs=get;list;watch
+// +kubebuilder:rbac:groups=networking.datumapis.com,resources=servinglocations,verbs=get;list;watch
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
 func (r *NetworkInterfaceClaimReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
@@ -276,7 +277,7 @@ func networkBindingName(networkName string, location networkingv1alpha.LocationR
 func (r *NetworkInterfaceClaimReconciler) location(
 	ctx context.Context,
 ) (networkingv1alpha.LocationReference, error) {
-	identity, err := ResolveLocationIdentity(ctx, r.localReader, r.Config.NetworkInterface.Location)
+	identity, err := ResolveLocationIdentity(ctx, r.localReader, r.Location)
 	reportLocationIdentity(identity, err)
 	if err != nil {
 		return networkingv1alpha.LocationReference{}, err
@@ -285,7 +286,7 @@ func (r *NetworkInterfaceClaimReconciler) location(
 		log.FromContext(ctx).Info(
 			"the delivered serving location disagrees with the configured one; using the delivered copy",
 			"delivered", identity.Reference.Name,
-			"configured", r.Config.NetworkInterface.Location.Name)
+			"configured", r.Location.Name)
 	}
 	return identity.Reference, nil
 }
@@ -1248,6 +1249,7 @@ func (r *NetworkInterfaceClaimReconciler) SetupWithManager(mgr mcmanager.Manager
 	if r.IPAM == nil {
 		return errors.New("an IPAM client factory is required")
 	}
+
 	r.mgr = mgr
 	r.localReader = mgr.GetLocalManager().GetClient()
 	return mcbuilder.ControllerManagedBy(mgr).

@@ -87,12 +87,18 @@ type NetworkServicesOperator struct {
 	// project discovery and per-project cluster connections.
 	ProjectClient ClientConnectionConfig `json:"projectClient,omitempty"`
 
-	// IPAM configures the connection to the IPAM aggregated API server that
-	// network interface addresses are claimed from.
+	// IPAM is read by the cell controller manager, which takes its own
+	// CellControllerManager config. It is retained here so a config written
+	// before the split still decodes.
+	//
+	// Deprecated: configure the cell controller manager instead.
 	IPAM IPAMConfig `json:"ipam,omitempty"`
 
-	// NetworkInterface configures the controller that fulfils
-	// NetworkInterfaceClaims.
+	// NetworkInterface is read by the cell controller manager, which takes its
+	// own CellControllerManager config. It is retained here so a config written
+	// before the split still decodes.
+	//
+	// Deprecated: configure the cell controller manager instead.
 	NetworkInterface NetworkInterfaceConfig `json:"networkInterface,omitempty"`
 
 	// LocationPublisher configures the controller that publishes Location
@@ -107,9 +113,14 @@ type NetworkServicesOperator struct {
 // impersonation.
 type IPAMConfig struct {
 	// KubeconfigPath is the path to a kubeconfig file pointing at the cluster
-	// serving the IPAM API. When empty, the operator's own in-cluster config is
-	// used.
+	// serving the IPAM API. Mutually exclusive with inCluster; one of the two
+	// is required.
 	KubeconfigPath string `json:"kubeconfigPath,omitempty"`
+
+	// InCluster reaches the IPAM API through the operator's own kube-apiserver,
+	// for a deployment colocated with the cluster that aggregates
+	// ipam.miloapis.com. Mutually exclusive with kubeconfigPath.
+	InCluster bool `json:"inCluster,omitempty"`
 
 	// ImpersonateUsername is the user the operator impersonates when claiming
 	// addresses. IPAM checks this user's permissions, not the operator's.
@@ -126,6 +137,16 @@ func SetDefaults_IPAMConfig(obj *IPAMConfig) {
 	if obj.ImpersonateUsername == "" {
 		obj.ImpersonateUsername = "nso-ipam-agent"
 	}
+}
+
+func (c *IPAMConfig) validate() error {
+	switch {
+	case c.KubeconfigPath == "" && !c.InCluster:
+		return errors.New("one of kubeconfigPath or inCluster is required, otherwise the IPAM client targets the manager's own kube-apiserver, which serves no ipam.miloapis.com API")
+	case c.KubeconfigPath != "" && c.InCluster:
+		return errors.New("kubeconfigPath and inCluster are mutually exclusive")
+	}
+	return nil
 }
 
 func (c *IPAMConfig) RestConfig() (*rest.Config, error) {
@@ -150,19 +171,17 @@ func (c *IPAMConfig) RestConfig() (*rest.Config, error) {
 
 // NetworkInterfaceConfig configures the NetworkInterfaceClaim controller.
 type NetworkInterfaceConfig struct {
-	// Enabled registers the NetworkInterfaceClaim controller. Leave it off on a
-	// control plane that serves no location.
+	// Deprecated: run the cell controller manager instead.
 	Enabled bool `json:"enabled,omitempty"`
 
-	// Location is the location this control plane serves when no ServingLocation
-	// has been delivered to it. A delivered copy wins. Neither present is a
-	// reported waiting state, not a boot failure: a cell must not crash-loop
-	// because delivery is merely late.
+	// Deprecated: run the cell controller manager instead.
 	Location LocationConfig `json:"location,omitempty"`
 }
 
 // +k8s:deepcopy-gen=true
 
+// LocationConfig names a location. For a cell it is the fallback identity, used
+// only when no ServingLocation has been delivered to it.
 type LocationConfig struct {
 	Name string `json:"name,omitempty"`
 
@@ -176,21 +195,19 @@ type LocationConfig struct {
 // LocationPublisherConfig configures the controller that publishes the platform
 // control plane's Location records to the federation hub as ServingLocations.
 //
-// It belongs to the control-plane controller set. A cell-side deployment must
-// never run it, which is what keeping Enabled default-off buys.
+// The publisher belongs to the control-plane controller set and is registered
+// only by the manager command, so a cell never runs it. Naming a hub is what
+// asks a control plane to publish: exactly one component must own the published
+// set for pruning to be unambiguous.
 type LocationPublisherConfig struct {
-	// Enabled registers the location publisher. Off unless a deployment is the
-	// one control-plane instance that owns the published set: exactly one
-	// component must own it for pruning to be unambiguous.
-	Enabled bool `json:"enabled,omitempty"`
-
 	// SourceKubeconfigPath points at the platform control plane holding the
 	// Location records. When empty, discovery.discoveryKubeconfigPath is used.
 	SourceKubeconfigPath string `json:"sourceKubeconfigPath,omitempty"`
 
 	// HubKubeconfigPath points at the federation hub the published copies and
-	// their propagation policies are written to. When empty,
-	// downstreamResourceManagement.kubeconfigPath is used.
+	// their propagation policies are written to. Publishing is off until it is
+	// set: no other connection is a safe stand-in for the hub, and writing the
+	// published set anywhere else would prune against the wrong inventory.
 	HubKubeconfigPath string `json:"hubKubeconfigPath,omitempty"`
 
 	// SafetyResyncPeriod re-lists both ends as self-heal. Correctness comes from
@@ -209,8 +226,13 @@ func SetDefaults_LocationPublisherConfig(obj *LocationPublisherConfig) {
 	}
 }
 
+// Enabled reports whether this deployment publishes to a federation hub.
+func (c *LocationPublisherConfig) Enabled() bool {
+	return c.HubKubeconfigPath != ""
+}
+
 func (c *LocationPublisherConfig) validate() error {
-	if !c.Enabled {
+	if !c.Enabled() {
 		return nil
 	}
 	var errs []error
@@ -232,12 +254,8 @@ func (c *LocationPublisherConfig) SourceRestConfig(discovery *DiscoveryConfig) (
 
 // HubRestConfig resolves the connection to the federation hub the published
 // copies are written to.
-func (c *LocationPublisherConfig) HubRestConfig(downstream *DownstreamResourceManagementConfig) (*rest.Config, error) {
-	path := c.HubKubeconfigPath
-	if path == "" {
-		path = downstream.KubeconfigPath
-	}
-	return c.restConfig(path)
+func (c *LocationPublisherConfig) HubRestConfig() (*rest.Config, error) {
+	return c.restConfig(c.HubKubeconfigPath)
 }
 
 func (c *LocationPublisherConfig) restConfig(path string) (*rest.Config, error) {

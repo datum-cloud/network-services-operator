@@ -36,11 +36,18 @@ import (
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	"go.datum.net/network-services-operator/internal/config"
+	"go.datum.net/network-services-operator/internal/downstreamclient"
 )
 
 const (
 	networkInterfaceClaimFinalizer = "networking.datumapis.com/networkinterfaceclaim-release"
 	networkInterfaceFinalizer      = "networking.datumapis.com/networkinterface-release"
+
+	// networkContextInUseFinalizer is added at the location, never on the hub.
+	// Propagation keeps what a cell-local controller adds, so a hub deletion
+	// removes the copy promptly unless an interface here still holds addresses
+	// on the network.
+	networkContextInUseFinalizer = "networking.datumapis.com/networkcontext-in-use"
 
 	allocationClaimAnnotation = "networking.datumapis.com/allocation-claim"
 
@@ -72,10 +79,9 @@ type NetworkInterfaceClaimReconciler struct {
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkinterfaceclaims/finalizers,verbs=update
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkinterfaces,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkinterfaces/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkbindings,verbs=get;list;watch;create;update;patch
-// +kubebuilder:rbac:groups=networking.datumapis.com,resources=networks,verbs=get;list;watch
+// +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkcontexts,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkcontexts/finalizers,verbs=update
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=subnets,verbs=get;list;watch
-// +kubebuilder:rbac:groups=networking.datumapis.com,resources=servinglocations,verbs=get;list;watch
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
 func (r *NetworkInterfaceClaimReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
@@ -140,32 +146,46 @@ func (r *NetworkInterfaceClaimReconciler) fulfill(
 		return ctrl.Result{}, err
 	}
 
-	var network networkingv1alpha.Network
-	networkKey := client.ObjectKey{Namespace: claim.Namespace, Name: claim.Spec.Network.Name}
-	if err := cl.Get(ctx, networkKey, &network); err != nil {
+	contextKey := client.ObjectKey{
+		Namespace: claim.Namespace,
+		Name:      networkContextName(claim.Spec.Network.Name, location),
+	}
+
+	var networkContext networkingv1alpha.NetworkContext
+	if err := cl.Get(ctx, contextKey, &networkContext); err != nil {
 		if apierrors.IsNotFound(err) {
-			return r.reject(ctx, cl, claim, "NetworkNotFound",
-				fmt.Sprintf("Network %q was not found in namespace %q", networkKey.Name, networkKey.Namespace))
+			return r.reject(ctx, cl, claim,
+				networkingv1alpha.NetworkInterfaceClaimReasonNetworkNotAvailableInLocation,
+				fmt.Sprintf("Network %q has not reached location %q: no network context %q exists in namespace %q",
+					claim.Spec.Network.Name, location.Name, contextKey.Name, contextKey.Namespace))
 		}
-		return ctrl.Result{}, fmt.Errorf("failed fetching network: %w", err)
+		return ctrl.Result{}, fmt.Errorf("failed fetching network context: %w", err)
+	}
+
+	// A context that states no families is one written before they were carried.
+	// Defaulting here would attach the interface to rules nobody declared.
+	if len(networkContext.Spec.IPFamilies) == 0 {
+		return r.reject(ctx, cl, claim,
+			networkingv1alpha.NetworkInterfaceClaimReasonAddressFamiliesUnknown,
+			fmt.Sprintf("Network context %q states no address families, so what network %q carries in location %q is unknown here",
+				contextKey.Name, claim.Spec.Network.Name, location.Name))
 	}
 
 	for _, family := range claim.Spec.IPFamilies {
-		if !slices.Contains(network.Spec.IPFamilies, family) {
-			return r.reject(ctx, cl, claim, "AddressFamilyNotCarried",
-				fmt.Sprintf("Network %q in namespace %q does not carry address family %s",
-					network.Name, network.Namespace, family))
+		if !slices.Contains(networkContext.Spec.IPFamilies, family) {
+			return r.reject(ctx, cl, claim,
+				networkingv1alpha.NetworkInterfaceClaimReasonAddressFamilyNotCarried,
+				fmt.Sprintf("Network %q in location %q does not carry address family %s",
+					claim.Spec.Network.Name, location.Name, family))
 		}
 	}
-
-	networkContextName := r.resolveNetworkContext(ctx, cl, claim, &network, location)
 
 	ipamClient, err := r.IPAM.ClientForProject(routing.project)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed building IPAM client: %w", err)
 	}
 
-	iface, err := r.bindInterface(ctx, cl, ipamClient, routing, claim, &network, location)
+	iface, err := r.bindInterface(ctx, cl, ipamClient, routing, claim, &networkContext, location)
 	if err != nil {
 		var failure *allocationFailure
 		if errors.As(err, &failure) {
@@ -178,16 +198,20 @@ func (r *NetworkInterfaceClaimReconciler) fulfill(
 		return ctrl.Result{}, err
 	}
 
+	if err := r.syncNetworkContextHold(ctx, cl, claim.Namespace, claim.Spec.Network.Name, location); err != nil {
+		return ctrl.Result{}, err
+	}
+
 	allocations, err := r.checkAllocations(ctx, ipamClient, recorder, routing, claim, iface)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 
-	if err := r.syncInterface(ctx, cl, iface, claim, &network, networkContextName); err != nil {
+	if err := r.syncInterface(ctx, cl, iface, claim, &networkContext); err != nil {
 		return ctrl.Result{}, err
 	}
 
-	if err := r.publishInterfaceStatus(ctx, cl, iface, networkContextName, allocations); err != nil {
+	if err := r.publishInterfaceStatus(ctx, cl, iface, networkContext.Name, allocations); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -197,9 +221,22 @@ func (r *NetworkInterfaceClaimReconciler) fulfill(
 type projectRouting struct {
 	project          string
 	projectNamespace string
+
+	// clusterNameLabel is the namespace's own label value, copied rather than
+	// re-encoded so anything derived from it is selected by the same propagation
+	// policy that already carries the namespace.
+	clusterNameLabel string
 }
 
 func (r *NetworkInterfaceClaimReconciler) resolveProject(
+	ctx context.Context,
+	cl client.Client,
+	namespaceName string,
+) (projectRouting, error) {
+	return resolveProjectRouting(ctx, cl, namespaceName)
+}
+
+func resolveProjectRouting(
 	ctx context.Context,
 	cl client.Client,
 	namespaceName string,
@@ -219,7 +256,11 @@ func (r *NetworkInterfaceClaimReconciler) resolveProject(
 		return projectRouting{}, &projectUnresolvable{message: err.Error()}
 	}
 
-	return projectRouting{project: project, projectNamespace: projectNamespace}, nil
+	return projectRouting{
+		project:          project,
+		projectNamespace: projectNamespace,
+		clusterNameLabel: namespace.Labels[downstreamclient.UpstreamOwnerClusterNameLabel],
+	}, nil
 }
 
 // projectUnresolvable means the namespace does not name a project. A failure to
@@ -230,45 +271,98 @@ type projectUnresolvable struct {
 
 func (e *projectUnresolvable) Error() string { return e.message }
 
-// resolveNetworkContext records where the network lives. An unresolved context
-// does not hold up allocation.
-func (r *NetworkInterfaceClaimReconciler) resolveNetworkContext(
+// syncNetworkContextHold keeps the propagated context alive while an interface
+// here still holds addresses on the network. A retained interface outlives the
+// consumer that used it, and would have nothing to re-bind against if the
+// context were torn down under it.
+func (r *NetworkInterfaceClaimReconciler) syncNetworkContextHold(
 	ctx context.Context,
 	cl client.Client,
-	claim *networkingv1alpha.NetworkInterfaceClaim,
-	network *networkingv1alpha.Network,
+	namespace string,
+	network string,
 	location networkingv1alpha.LocationReference,
-) string {
-	logger := log.FromContext(ctx)
-
-	binding := &networkingv1alpha.NetworkBinding{}
-	binding.Namespace = claim.Namespace
-	binding.Name = networkBindingName(network.Name, location)
-
-	_, err := controllerutil.CreateOrUpdate(ctx, cl, binding, func() error {
-		binding.Spec.Network = networkingv1alpha.NetworkRef{
-			Namespace: network.Namespace,
-			Name:      network.Name,
-		}
-		binding.Spec.Location = location
-		return controllerutil.SetControllerReference(network, binding, cl.Scheme())
+) error {
+	return reconcileNetworkContextHold(ctx, cl, client.ObjectKey{
+		Namespace: namespace,
+		Name:      networkContextName(network, location),
 	})
-	if err != nil {
-		logger.Error(err, "failed ensuring network binding", "binding", binding.Name)
-		return ""
-	}
-
-	if binding.Status.NetworkContextRef == nil {
-		return ""
-	}
-	return binding.Status.NetworkContextRef.Name
 }
 
-func networkBindingName(networkName string, location networkingv1alpha.LocationReference) string {
-	if location.Namespace == "" {
-		return fmt.Sprintf("%s-%s", networkName, location.Name)
+// reconcileNetworkContextHold is keyed on the context rather than on whatever
+// released the last interface. The hold is evaluated while that interface is
+// still terminating, so the answer it produces is stale by the time the object
+// is gone, and nothing else would ever look again.
+func reconcileNetworkContextHold(ctx context.Context, cl client.Client, key client.ObjectKey) error {
+	var networkContext networkingv1alpha.NetworkContext
+	if err := cl.Get(ctx, key, &networkContext); err != nil {
+		return client.IgnoreNotFound(err)
 	}
-	return fmt.Sprintf("%s-%s-%s", networkName, location.Namespace, location.Name)
+
+	held, err := networkCarriesInterfaces(ctx, cl, key.Namespace, networkContext.Spec.Network.Name)
+	if err != nil {
+		return err
+	}
+
+	changed := false
+	switch {
+	case held && networkContext.DeletionTimestamp.IsZero():
+		changed = controllerutil.AddFinalizer(&networkContext, networkContextInUseFinalizer)
+	case !held:
+		changed = controllerutil.RemoveFinalizer(&networkContext, networkContextInUseFinalizer)
+	}
+	if !changed {
+		return nil
+	}
+
+	if err := cl.Update(ctx, &networkContext); err != nil {
+		return fmt.Errorf("failed updating network context %q: %w", key.Name, err)
+	}
+	return nil
+}
+
+func networkCarriesInterfaces(
+	ctx context.Context,
+	cl client.Client,
+	namespace string,
+	network string,
+) (bool, error) {
+	var interfaces networkingv1alpha.NetworkInterfaceList
+	if err := cl.List(ctx, &interfaces, client.InNamespace(namespace)); err != nil {
+		return false, fmt.Errorf("failed listing network interfaces: %w", err)
+	}
+
+	for i := range interfaces.Items {
+		iface := &interfaces.Items[i]
+		if iface.Spec.Network.Name == network && iface.DeletionTimestamp.IsZero() {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func claimsOnNetworkContext(ctx context.Context, cl client.Client, obj client.Object) []reconcile.Request {
+	networkContext, ok := obj.(*networkingv1alpha.NetworkContext)
+	if !ok || networkContext.Spec.Network.Name == "" {
+		return nil
+	}
+
+	var claims networkingv1alpha.NetworkInterfaceClaimList
+	if err := cl.List(ctx, &claims,
+		client.InNamespace(networkContext.Namespace),
+		client.MatchingFields{networkInterfaceClaimNetworkIndex: networkContext.Spec.Network.Name},
+	); err != nil {
+		log.FromContext(ctx).Error(err, "failed listing claims for a network context event",
+			"networkcontext", networkContext.Name)
+		return nil
+	}
+
+	requests := make([]reconcile.Request, 0, len(claims.Items))
+	for i := range claims.Items {
+		requests = append(requests, reconcile.Request{
+			NamespacedName: client.ObjectKeyFromObject(&claims.Items[i]),
+		})
+	}
+	return requests
 }
 
 func (r *NetworkInterfaceClaimReconciler) location(
@@ -365,7 +459,7 @@ func (r *NetworkInterfaceClaimReconciler) bindInterface(
 	ipamClient client.Client,
 	routing projectRouting,
 	claim *networkingv1alpha.NetworkInterfaceClaim,
-	network *networkingv1alpha.Network,
+	networkContext *networkingv1alpha.NetworkContext,
 	location networkingv1alpha.LocationReference,
 ) (*networkingv1alpha.NetworkInterface, error) {
 	interfaceKey := client.ObjectKey{Namespace: claim.Namespace, Name: interfaceNameForClaim(claim)}
@@ -402,7 +496,7 @@ func (r *NetworkInterfaceClaimReconciler) bindInterface(
 		return nil, err
 	}
 
-	allocated, err := r.allocate(ctx, ipamClient, routing, claim, network, requests, location)
+	allocated, err := r.allocate(ctx, ipamClient, routing, claim, networkContext, requests, location)
 	if err != nil {
 		return nil, err
 	}
@@ -413,10 +507,10 @@ func (r *NetworkInterfaceClaimReconciler) bindInterface(
 	iface.Annotations = map[string]string{allocationClaimAnnotation: claim.Name}
 	iface.Finalizers = []string{networkInterfaceFinalizer}
 	iface.Spec = networkingv1alpha.NetworkInterfaceSpec{
-		Network:       networkingv1alpha.LocalNetworkRef{Name: network.Name},
+		Network:       networkingv1alpha.LocalNetworkRef{Name: networkContext.Spec.Network.Name},
 		ClaimRef:      &networkingv1alpha.NetworkInterfaceClaimRef{Name: claim.Name},
 		InterfaceName: claim.Spec.InterfaceName,
-		MTU:           network.Spec.MTU,
+		MTU:           networkContext.Spec.MTU,
 		ReclaimPolicy: claim.Spec.ReclaimPolicy,
 	}
 
@@ -534,7 +628,7 @@ func (r *NetworkInterfaceClaimReconciler) allocate(
 	ipamClient client.Client,
 	routing projectRouting,
 	claim *networkingv1alpha.NetworkInterfaceClaim,
-	network *networkingv1alpha.Network,
+	networkContext *networkingv1alpha.NetworkContext,
 	requests []allocationRequest,
 	location networkingv1alpha.LocationReference,
 ) ([]allocatedAddress, error) {
@@ -573,7 +667,7 @@ func (r *NetworkInterfaceClaimReconciler) allocate(
 				ipamScopeRoleNetwork: {
 					APIGroup: datumNetworkingAPIGroup,
 					Kind:     "Network",
-					Name:     network.Name,
+					Name:     networkContext.Spec.Network.Name,
 				},
 				ipamScopeRoleLocation: {
 					APIGroup: datumNetworkingAPIGroup,
@@ -840,16 +934,15 @@ func (r *NetworkInterfaceClaimReconciler) syncInterface(
 	cl client.Client,
 	iface *networkingv1alpha.NetworkInterface,
 	claim *networkingv1alpha.NetworkInterfaceClaim,
-	network *networkingv1alpha.Network,
-	networkContextName string,
+	networkContext *networkingv1alpha.NetworkContext,
 ) error {
 	changed := false
 
 	// MTU follows the network, and the primary address follows the claim's
 	// first family. Both are derived, and an adopted interface carries whatever
 	// its previous claim left behind.
-	if iface.Spec.MTU != network.Spec.MTU {
-		iface.Spec.MTU = network.Spec.MTU
+	if iface.Spec.MTU != networkContext.Spec.MTU {
+		iface.Spec.MTU = networkContext.Spec.MTU
 		changed = true
 	}
 	for i := range iface.Spec.Addresses {
@@ -860,7 +953,7 @@ func (r *NetworkInterfaceClaimReconciler) syncInterface(
 		}
 	}
 
-	if err := r.applyGateways(ctx, cl, iface, networkContextName, &changed); err != nil {
+	if err := r.applyGateways(ctx, cl, iface, networkContext.Name, &changed); err != nil {
 		return err
 	}
 
@@ -1108,6 +1201,14 @@ func (r *NetworkInterfaceClaimReconciler) release(
 		}
 	}
 
+	location, err := r.location(ctx)
+	if err != nil {
+		return err
+	}
+	if err := r.syncNetworkContextHold(ctx, cl, claim.Namespace, claim.Spec.Network.Name, location); err != nil {
+		return err
+	}
+
 	controllerutil.RemoveFinalizer(claim, networkInterfaceClaimFinalizer)
 	if err := cl.Update(ctx, claim); err != nil {
 		return fmt.Errorf("failed removing finalizer: %w", err)
@@ -1246,7 +1347,6 @@ func (r *NetworkInterfaceClaimReconciler) SetupWithManager(mgr mcmanager.Manager
 	if r.IPAM == nil {
 		return errors.New("an IPAM client factory is required")
 	}
-
 	r.mgr = mgr
 	r.localReader = mgr.GetLocalManager().GetClient()
 	return mcbuilder.ControllerManagedBy(mgr).
@@ -1263,6 +1363,14 @@ func (r *NetworkInterfaceClaimReconciler) SetupWithManager(mgr mcmanager.Manager
 					Name:      iface.Spec.ClaimRef.Name,
 				}}}
 			})).
+		// The context arriving is what makes a claim fulfillable, and a change to
+		// it has to reach the interfaces that already exist.
+		Watches(&networkingv1alpha.NetworkContext{}, func(clusterName multicluster.ClusterName, cl cluster.Cluster) mchandler.EventHandler {
+			return mchandler.ForCluster(handler.EnqueueRequestsFromMapFunc(
+				func(ctx context.Context, obj client.Object) []reconcile.Request {
+					return claimsOnNetworkContext(ctx, cl.GetClient(), obj)
+				}), clusterName)
+		}).
 		// A subnet appearing is what makes the gateway resolvable, and no claim
 		// event follows it.
 		Watches(&networkingv1alpha.Subnet{}, func(clusterName multicluster.ClusterName, cl cluster.Cluster) mchandler.EventHandler {

@@ -1,8 +1,9 @@
 # yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
 #
 # A delivered ServingLocation wins over the configured location; with none
-# delivered, the configured one is used. The name of the NetworkBinding a claim
-# creates says which location was resolved.
+# delivered, the configured one is used. A claim names the network context it
+# looked for, and that name carries the location it resolved, so refusing to
+# find one says which location the cell believes it is in.
 #
 # The delivered copy is created directly on nso-standard, the cell under test.
 # location-federation-publish covers delivery over real federation.
@@ -47,18 +48,17 @@ spec:
             timeout: 120s
             resource:
               apiVersion: networking.datumapis.com/v1alpha
-              kind: NetworkBinding
+              kind: NetworkInterfaceClaim
               metadata:
-                name: identity-net-default-us-central-1
+                name: identity-configured
                 namespace: ipam-e2e-alpha
-              spec:
-                location:
-                  name: us-central-1
-                  namespace: default
+              status:
+                (conditions[?type == 'Bound'] | [0].reason): NetworkNotAvailableInLocation
+                (contains(conditions[?type == 'Bound'] | [0].message, 'identity-net-us-central-1')): true
       catch:
         - script:
             content: |
-              kubectl -n ipam-e2e-alpha get networkbinding,networkinterfaceclaim -o yaml
+              kubectl -n ipam-e2e-alpha get networkinterfaceclaim -o yaml
               kubectl -n network-services-operator-system logs -l app.kubernetes.io/name=network-services-operator --tail=200
 
     - name: A delivered ServingLocation wins over the configured location
@@ -88,17 +88,17 @@ spec:
             timeout: 180s
             resource:
               apiVersion: networking.datumapis.com/v1alpha
-              kind: NetworkBinding
+              kind: NetworkInterfaceClaim
               metadata:
-                name: identity-net-e2e-delivered
+                name: identity-delivered
                 namespace: ipam-e2e-alpha
-              spec:
-                location:
-                  name: e2e-delivered
+              status:
+                (conditions[?type == 'Bound'] | [0].reason): NetworkNotAvailableInLocation
+                (contains(conditions[?type == 'Bound'] | [0].message, 'identity-net-e2e-delivered')): true
       catch:
         - script:
             content: |
-              kubectl -n ipam-e2e-alpha get networkbinding -o yaml
+              kubectl -n ipam-e2e-alpha get networkinterfaceclaim -o yaml
               kubectl get servinglocations -o yaml
               kubectl -n network-services-operator-system logs -l app.kubernetes.io/name=network-services-operator --tail=200
 
@@ -132,13 +132,13 @@ spec:
             timeout: 180s
             resource:
               apiVersion: networking.datumapis.com/v1alpha
-              kind: NetworkBinding
+              kind: NetworkInterfaceClaim
               metadata:
-                name: identity-net-default-us-central-1
+                name: identity-ambiguous
                 namespace: ipam-e2e-alpha
-              spec:
-                location:
-                  name: us-central-1
+              status:
+                (conditions[?type == 'Bound'] | [0].reason): NetworkNotAvailableInLocation
+                (contains(conditions[?type == 'Bound'] | [0].message, 'identity-net-us-central-1')): true
 
       finally:
         - delete:

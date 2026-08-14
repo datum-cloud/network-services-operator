@@ -127,9 +127,4 @@ type LocationReference struct {
 	//
 	// +kubebuilder:validation:Required
 	Name string `json:"name"`
-
-	// Namespace for the datum location
-	//
-	// +kubebuilder:validation:Required
-	Namespace string `json:"namespace"`
 }

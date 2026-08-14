@@ -87,7 +87,12 @@ func (r *NetworkInterfaceReconciler) reconcileInterface(
 		return fmt.Errorf("failed removing finalizer: %w", err)
 	}
 
-	return nil
+	location, err := r.claims.location(ctx)
+	if err != nil {
+		return err
+	}
+
+	return r.claims.syncNetworkContextHold(ctx, cl, iface.Namespace, iface.Spec.Network.Name, location)
 }
 
 // heldByLiveClaim reports whether a claim named in claimRef still exists and is

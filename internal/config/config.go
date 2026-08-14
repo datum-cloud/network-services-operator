@@ -108,6 +108,8 @@ type NetworkServicesOperator struct {
 
 // +k8s:deepcopy-gen=true
 
+// +k8s:deepcopy-gen=true
+
 // IPAMConfig describes how the operator reaches the IPAM API server. One
 // connection serves every project. Each request names its project through
 // impersonation.
@@ -186,9 +188,6 @@ type NetworkInterfaceConfig struct {
 type LocationConfig struct {
 	// Name is the name of the Location, such as "us-east-1-iad".
 	Name string `json:"name,omitempty"`
-
-	// Namespace has no effect. Location is cluster-scoped. Leave it unset.
-	Namespace string `json:"namespace,omitempty"`
 }
 
 // +k8s:deepcopy-gen=true

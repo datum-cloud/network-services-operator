@@ -266,6 +266,11 @@ func controllerRegistrations(
 				IPAM:     ipamClients,
 			}).SetupWithManager(mgr)
 		}},
+		{"networkcontexthold", func() error {
+			return (&controller.NetworkContextHoldReconciler{
+				Location: serverConfig.Location,
+			}).SetupWithManager(mgr)
+		}},
 	}
 }
 

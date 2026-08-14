@@ -42,7 +42,6 @@ patches:
             impersonateUsername: nso-ipam-agent
           location:
             name: us-central-1
-            namespace: default
   - target:
       kind: Deployment
       name: controller-manager

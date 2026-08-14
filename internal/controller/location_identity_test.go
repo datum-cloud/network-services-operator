@@ -57,7 +57,7 @@ func TestResolveLocationIdentity(t *testing.T) {
 		},
 		{
 			name:         "with nothing delivered the configured location is used",
-			configured:   config.LocationConfig{Name: "lhr-1", Namespace: "default"},
+			configured:   config.LocationConfig{Name: "lhr-1"},
 			expectName:   "lhr-1",
 			expectSource: LocationIdentitySourceConfigured,
 		},
@@ -116,15 +116,11 @@ func TestResolveLocationIdentity(t *testing.T) {
 	}
 }
 
-func TestNetworkBindingNameDropsAnEmptyNamespace(t *testing.T) {
-	delivered := networkBindingName("net", networkingv1alpha.LocationReference{Name: "sjc-1"})
-	if delivered != "net-sjc-1" {
-		t.Fatalf("expected net-sjc-1, got %q", delivered)
-	}
-
-	configured := networkBindingName("net",
-		networkingv1alpha.LocationReference{Name: "sjc-1", Namespace: "default"})
-	if configured != "net-default-sjc-1" {
-		t.Fatalf("expected net-default-sjc-1, got %q", configured)
+// A delivered ServingLocation carries no namespace and a configured location
+// no longer has one, so a location produces one name however it was resolved.
+func TestNetworkContextNameIsTheNetworkAndTheLocation(t *testing.T) {
+	name := networkContextName("net", networkingv1alpha.LocationReference{Name: "sjc-1"})
+	if name != "net-sjc-1" {
+		t.Fatalf("expected net-sjc-1, got %q", name)
 	}
 }

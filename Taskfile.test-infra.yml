@@ -670,25 +670,40 @@ tasks:
         fi
       - echo "🌐 karmada init (apiserver {{.KARMADA_APISERVER_VERSION}}, advertise 127.0.0.1:32443, cert-ip incl {{.HOST_IP}}) on {{.UPSTREAM_CLUSTER}}"
       - mkdir -p {{.TMP_DIR}}/karmada-{{.UPSTREAM_CLUSTER}}
+      # init takes a fixed NodePort, so a second run fails on the port the first
+      # one took rather than reporting that Karmada is already up. Ask first, so
+      # running this after `up` is a no-op instead of an error.
       - |
-        {{.KARMADACTL}} init --context {{.UPSTREAM_CTX}} \
-          --kube-image-tag {{.KARMADA_APISERVER_VERSION}} \
-          --karmada-apiserver-advertise-address 127.0.0.1 \
-          --cert-external-ip "127.0.0.1,{{.HOST_IP}}" \
-          --etcd-storage-mode hostPath \
-          --karmada-data {{.TMP_DIR}}/karmada-{{.UPSTREAM_CLUSTER}} \
-          --karmada-pki {{.TMP_DIR}}/karmada-{{.UPSTREAM_CLUSTER}}/pki
+        if kubectl --context {{.UPSTREAM_CTX}} -n karmada-system \
+             get service karmada-apiserver >/dev/null 2>&1; then
+          echo "✅ karmada is already initialised on {{.UPSTREAM_CLUSTER}}, skipping init"
+        else
+          {{.KARMADACTL}} init --context {{.UPSTREAM_CTX}} \
+            --kube-image-tag {{.KARMADA_APISERVER_VERSION}} \
+            --karmada-apiserver-advertise-address 127.0.0.1 \
+            --cert-external-ip "127.0.0.1,{{.HOST_IP}}" \
+            --etcd-storage-mode hostPath \
+            --karmada-data {{.TMP_DIR}}/karmada-{{.UPSTREAM_CLUSTER}} \
+            --karmada-pki {{.TMP_DIR}}/karmada-{{.UPSTREAM_CLUSTER}}/pki
+        fi
       - echo "🔗 joining {{.DOWNSTREAM_CLUSTER}} as a Karmada member"
       # karmadactl join runs on the host and connects to the member to install its
       # agent, so it needs a host-reachable member kubeconfig, not the internal
       # docker-hostname form the host cannot resolve.
       - '{{.KIND}} get kubeconfig --name {{.DOWNSTREAM_CLUSTER}} > {{.TMP_DIR}}/.kind-{{.DOWNSTREAM_CLUSTER}}-host.yaml'
+      # Joining a member that is already joined is an error too, for the same
+      # reason: the second run is reporting success, not a conflict.
       - |
-        {{.KARMADACTL}} join {{.DOWNSTREAM_CLUSTER}} \
-          --karmada-context karmada-apiserver \
-          --kubeconfig {{.KARMADA_KUBECONFIG}} \
-          --cluster-kubeconfig {{.TMP_DIR}}/.kind-{{.DOWNSTREAM_CLUSTER}}-host.yaml \
-          --cluster-context {{.DOWNSTREAM_CTX}}
+        if kubectl --kubeconfig {{.KARMADA_KUBECONFIG}} --context karmada-apiserver \
+             get cluster {{.DOWNSTREAM_CLUSTER}} >/dev/null 2>&1; then
+          echo "✅ {{.DOWNSTREAM_CLUSTER}} is already a member, skipping join"
+        else
+          {{.KARMADACTL}} join {{.DOWNSTREAM_CLUSTER}} \
+            --karmada-context karmada-apiserver \
+            --kubeconfig {{.KARMADA_KUBECONFIG}} \
+            --cluster-kubeconfig {{.TMP_DIR}}/.kind-{{.DOWNSTREAM_CLUSTER}}-host.yaml \
+            --cluster-context {{.DOWNSTREAM_CTX}}
+        fi
       # The join stores the host address as the member's endpoint, which the
       # control-plane pods running inside the upstream cluster cannot reach.
       # Repoint it to the member's docker IP, which they can reach on the shared

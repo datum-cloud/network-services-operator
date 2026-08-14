@@ -1,0 +1,118 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: network-presence-network-edit
+spec:
+  cluster: nso-standard
+  steps:
+    - name: Seed the project and the hub namespace
+      try:
+        - apply:
+            resource:
+              apiVersion: v1
+              kind: Namespace
+              metadata:
+                name: presence-edit-project
+        - apply:
+            resource:
+              apiVersion: v1
+              kind: Namespace
+              metadata:
+                name: presence-edit-hub
+                labels:
+                  meta.datumapis.com/upstream-cluster-name: cluster-single
+                  meta.datumapis.com/upstream-namespace: presence-edit-project
+        - apply:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: LocationBinding
+              metadata:
+                name: presence-edit-loc
+              spec:
+                locationRef:
+                  name: presence-edit-loc
+                locationClassName: datum-managed
+        - apply:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Network
+              metadata:
+                name: presence-edit-net
+                namespace: presence-edit-project
+              spec:
+                ipam:
+                  mode: Auto
+                ipFamilies:
+                  - IPv4
+                mtu: 1460
+
+    - name: Make the network present in the location
+      try:
+        - apply:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkBinding
+              metadata:
+                name: presence-edit-consumer
+                namespace: presence-edit-hub
+                labels:
+                  networking.datumapis.com/network: presence-edit-net
+                  networking.datumapis.com/location: presence-edit-loc
+              spec:
+                network:
+                  name: presence-edit-net
+                location:
+                  name: presence-edit-loc
+                consumer:
+                  apiGroup: networking.datumapis.com
+                  kind: LoadBalancer
+                  name: presence-edit-consumer
+        - assert:
+            timeout: 1m
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkContext
+              metadata:
+                name: presence-edit-net-presence-edit-loc
+                namespace: presence-edit-hub
+              spec:
+                mtu: 1460
+                ipFamilies:
+                  - IPv4
+
+    - name: Edit the network
+      description: |
+        A network edited after a context exists has to reach the locations that
+        carry it. Nothing else would ever cause that context to be rewritten, so
+        the failure would be silent and could persist indefinitely.
+      try:
+        - patch:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Network
+              metadata:
+                name: presence-edit-net
+                namespace: presence-edit-project
+              spec:
+                mtu: 8856
+                ipFamilies:
+                  - IPv4
+                  - IPv6
+
+    - name: Assert the location learns
+      try:
+        - assert:
+            timeout: 2m
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkContext
+              metadata:
+                name: presence-edit-net-presence-edit-loc
+                namespace: presence-edit-hub
+              spec:
+                mtu: 8856
+                ipFamilies:
+                  - IPv4
+                  - IPv6
+

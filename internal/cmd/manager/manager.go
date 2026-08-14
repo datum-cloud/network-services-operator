@@ -556,6 +556,12 @@ func controllerRegistrations(
 	serverConfig config.NetworkServicesOperator,
 	deps controllerDeps,
 ) []namedSetup {
+	// The garbage collector drives the presence controller rather than
+	// duplicating its projection, so both entries share one instance.
+	networkPresence := &controller.NetworkPresenceReconciler{
+		Projects: controller.NewProjectClusterResolver(mgr),
+	}
+
 	return []namedSetup{
 		{"network", true, func() error {
 			return (&controller.NetworkReconciler{}).SetupWithManager(mgr)
@@ -565,6 +571,22 @@ func controllerRegistrations(
 		}},
 		{"networkcontext", true, func() error {
 			return (&controller.NetworkContextReconciler{}).SetupWithManager(mgr)
+		}},
+		// The deployment cluster is the hub, and the milo provider engages
+		// project control planes in the same process. The presence controller
+		// goes on the singleton manager because the sharded managers run three
+		// replicas with leader election disabled, which would reconcile every
+		// hub object three times.
+		{"networkpresence", true, func() error {
+			return networkPresence.SetupWithManager(deps.singletonManager)
+		}},
+		// Network deletion is the other half of the same controller, and it has
+		// to watch project control planes, which only the multicluster manager
+		// engages.
+		{"networkpresencegc", true, func() error {
+			return (&controller.NetworkPresenceGCReconciler{
+				Presence: networkPresence,
+			}).SetupWithManager(mgr)
 		}},
 		{"networkpolicy", true, func() error {
 			return (&controller.NetworkPolicyReconciler{}).SetupWithManager(mgr)

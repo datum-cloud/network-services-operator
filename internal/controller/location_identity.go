@@ -59,8 +59,7 @@ func ResolveLocationIdentity(
 
 	configuredIdentity := LocationIdentity{
 		Reference: networkingv1alpha.LocationReference{
-			Name:      configured.Name,
-			Namespace: configured.Namespace,
+			Name: configured.Name,
 		},
 		Source: LocationIdentitySourceConfigured,
 	}

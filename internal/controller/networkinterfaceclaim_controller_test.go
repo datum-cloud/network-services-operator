@@ -33,6 +33,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/yaml"
 
 	ipamv1alpha1 "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
@@ -317,11 +318,10 @@ func newScenario(t *testing.T, labelled bool, networkFamilies []networkingv1alph
 	ipam := newFakeIPAM(t, classes...)
 
 	location := config.LocationConfig{
-		Name:      testLocationName,
-		Namespace: testLocationNS,
+		Name: testLocationName,
 	}
 
-	return &scenario{
+	s := &scenario{
 		restConfig: restConfig,
 		events:     events.NewFakeRecorder(64),
 		t:          t,
@@ -331,6 +331,50 @@ func newScenario(t *testing.T, labelled bool, networkFamilies []networkingv1alph
 		reconciler: &NetworkInterfaceClaimReconciler{Location: location, IPAM: ipam, localReader: cl},
 		namespace:  namespaceName,
 	}
+
+	// The claim reconciler runs in a cell and reads the propagated context, not
+	// the network. Families are set explicitly throughout, because a claim
+	// defaulting to IPv6 on a network defaulting to IPv4 rejects forever until
+	// compute stops defaulting the claim's families.
+	s.createNetworkContext("default", networkFamilies, 1460)
+
+	return s
+}
+
+// createNetworkContext stands in for what the hub writes and propagation
+// delivers: spec only, with no owner references, no finalizers and no status.
+func (s *scenario) createNetworkContext(
+	network string,
+	families []networkingv1alpha.IPFamily,
+	mtu int32,
+) {
+	s.t.Helper()
+
+	networkContext := &networkingv1alpha.NetworkContext{}
+	networkContext.Namespace = s.namespace
+	networkContext.Name = s.networkContextName(network)
+	networkContext.Spec = networkingv1alpha.NetworkContextSpec{
+		Network: networkingv1alpha.LocalNetworkRef{Name: network},
+		Location: networkingv1alpha.LocationReference{
+			Name: testLocationName,
+		},
+		IPFamilies: families,
+		MTU:        mtu,
+	}
+	require.NoError(s.t, s.client.Create(s.ctx, networkContext))
+}
+
+func (s *scenario) networkContextName(network string) string {
+	return networkContextName(network, networkingv1alpha.LocationReference{
+		Name: testLocationName,
+	})
+}
+
+func (s *scenario) getNetworkContext() (*networkingv1alpha.NetworkContext, error) {
+	var networkContext networkingv1alpha.NetworkContext
+	err := s.client.Get(s.ctx,
+		client.ObjectKey{Namespace: s.namespace, Name: s.networkContextName("default")}, &networkContext)
+	return &networkContext, err
 }
 
 // transientNamespaceClient fails namespace reads the way a flaky API server
@@ -388,25 +432,6 @@ func (s *scenario) reconcileInterface(name string) {
 		client.ObjectKey{Namespace: s.namespace, Name: name}))
 }
 
-// programNetworkContext marks the binding's context ready, which is what makes
-// the interface record a context and the gateway resolvable.
-func (s *scenario) programNetworkContext() string {
-	s.t.Helper()
-
-	bindingName := fmt.Sprintf("default-%s-%s", testLocationNS, testLocationName)
-	var binding networkingv1alpha.NetworkBinding
-	require.NoError(s.t, s.client.Get(s.ctx,
-		client.ObjectKey{Namespace: s.namespace, Name: bindingName}, &binding))
-
-	contextName := bindingName
-	binding.Status.NetworkContextRef = &networkingv1alpha.NetworkContextRef{
-		Namespace: s.namespace,
-		Name:      contextName,
-	}
-	require.NoError(s.t, s.client.Status().Update(s.ctx, &binding))
-	return contextName
-}
-
 func (s *scenario) createSubnet(
 	name, contextName string,
 	family networkingv1alpha.IPFamily,
@@ -422,8 +447,7 @@ func (s *scenario) createSubnet(
 		SubnetClass:    "private",
 		NetworkContext: networkingv1alpha.LocalNetworkContextRef{Name: contextName},
 		Location: networkingv1alpha.LocationReference{
-			Name:      testLocationName,
-			Namespace: testLocationNS,
+			Name: testLocationName,
 		},
 		IPFamily:     family,
 		StartAddress: startAddress,
@@ -882,6 +906,7 @@ func TestAdoptionRefusesAnInterfaceOnAnotherNetwork(t *testing.T) {
 		MTU:        1460,
 	}
 	require.NoError(t, s.client.Create(s.ctx, other))
+	s.createNetworkContext("other", []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol}, 1460)
 
 	spec := networkingv1alpha.NetworkInterfaceClaimSpec{
 		InterfaceName: "eth0",
@@ -1022,8 +1047,7 @@ func TestGatewayReachesTheInterfaceWhenTheSubnetAppears(t *testing.T) {
 	require.Empty(t, iface.Spec.Addresses[0].Gateway,
 		"no subnet yet, so no gateway, which is a legitimate state")
 
-	contextName := s.programNetworkContext()
-	s.createSubnet("v4", contextName, networkingv1alpha.IPv4Protocol, "10.128.0.0", 24)
+	s.createSubnet("v4", s.networkContextName("default"), networkingv1alpha.IPv4Protocol, "10.128.0.0", 24)
 
 	s.reconcile(s.getClaim("routed"))
 
@@ -1297,4 +1321,228 @@ func TestIPClaimNamesSurviveInstanceReplacement(t *testing.T) {
 		ipClaimName(longName, familyDiscriminator(networkingv1alpha.IPv4Protocol)),
 		ipClaimName(longName, familyDiscriminator(networkingv1alpha.IPv6Protocol)),
 		"truncation must not merge two requests into one name")
+}
+
+// The MTU an interface is configured with comes from the context the location
+// was given, which is the only statement of the network's rules a cell can read.
+func TestNetworkInterfaceClaimTakesMTUFromTheNetworkContext(t *testing.T) {
+	s := newScenario(t, true, []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol})
+
+	networkContext, err := s.getNetworkContext()
+	require.NoError(t, err)
+	networkContext.Spec.MTU = 1500
+	require.NoError(t, s.client.Update(s.ctx, networkContext))
+
+	claim := s.createClaim("jumbo", networkingv1alpha.NetworkInterfaceClaimSpec{
+		InterfaceName: "eth0",
+		IPFamilies:    []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol},
+		ReclaimPolicy: networkingv1alpha.NetworkInterfaceReclaimPolicyDelete,
+	})
+	s.reconcile(claim)
+
+	iface, err := s.getInterface("jumbo")
+	require.NoError(t, err)
+	require.Equal(t, int32(1500), iface.Spec.MTU,
+		"the context carries the MTU, and the network the cell cannot read carries 1460")
+}
+
+// A network that has not reached the location is a different answer from a
+// consumer naming a network that does not exist.
+func TestNetworkInterfaceClaimRejectsAMissingNetworkContext(t *testing.T) {
+	s := newScenario(t, true, []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol})
+
+	networkContext, err := s.getNetworkContext()
+	require.NoError(t, err)
+	require.NoError(t, s.client.Delete(s.ctx, networkContext))
+
+	claim := s.createClaim("early", networkingv1alpha.NetworkInterfaceClaimSpec{
+		InterfaceName: "eth0",
+		IPFamilies:    []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol},
+		ReclaimPolicy: networkingv1alpha.NetworkInterfaceReclaimPolicyDelete,
+	})
+
+	result, err := s.reconciler.reconcileClaim(s.ctx, s.client, s.events, client.ObjectKeyFromObject(claim))
+	require.NoError(t, err)
+	require.NotZero(t, result.RequeueAfter)
+
+	require.Zero(t, s.ipam.createdAnywhere(),
+		"nothing is allocated against a network whose rules have not arrived")
+
+	rejected := s.getClaim("early")
+	condition := conditionOf(rejected, networkingv1alpha.NetworkInterfaceClaimReady)
+	require.Equal(t, metav1.ConditionFalse, condition.Status)
+	require.Equal(t, "NetworkNotAvailableInLocation", condition.Reason,
+		"NetworkNotFound would say the consumer named something that does not exist")
+	require.Contains(t, condition.Message, testLocationName)
+}
+
+// A context written before the rules were carried states nothing. Defaulting a
+// family here would attach the interface to rules nobody declared.
+func TestClaimRefusesAContextCarryingNoAddressFamilies(t *testing.T) {
+	s := newScenario(t, true, []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol})
+
+	networkContext, err := s.getNetworkContext()
+	require.NoError(t, err)
+	networkContext.Spec.IPFamilies = nil
+	require.NoError(t, s.client.Update(s.ctx, networkContext))
+
+	claim := s.createClaim("silent", networkingv1alpha.NetworkInterfaceClaimSpec{
+		InterfaceName: "eth0",
+		IPFamilies:    []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol},
+		ReclaimPolicy: networkingv1alpha.NetworkInterfaceReclaimPolicyDelete,
+	})
+	s.reconcile(claim)
+
+	require.Zero(t, s.ipam.createdAnywhere(), "no family may be assumed")
+
+	_, err = s.getInterface("silent")
+	require.True(t, apierrors.IsNotFound(err))
+
+	condition := conditionOf(s.getClaim("silent"), networkingv1alpha.NetworkInterfaceClaimAllocated)
+	require.Equal(t, metav1.ConditionFalse, condition.Status)
+	require.Equal(t, "AddressFamiliesUnknown", condition.Reason)
+	require.Contains(t, condition.Message, "default")
+}
+
+// A binding created at a location is a declaration nobody can see or count.
+func TestNetworkInterfaceClaimCreatesNoNetworkBinding(t *testing.T) {
+	s := newScenario(t, true, []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol})
+
+	claim := s.createClaim("quiet", networkingv1alpha.NetworkInterfaceClaimSpec{
+		InterfaceName: "eth0",
+		IPFamilies:    []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol},
+		ReclaimPolicy: networkingv1alpha.NetworkInterfaceReclaimPolicyDelete,
+	})
+	s.reconcile(claim)
+
+	_, err := s.getInterface("quiet")
+	require.NoError(t, err)
+
+	var bindings networkingv1alpha.NetworkBindingList
+	require.NoError(t, s.client.List(s.ctx, &bindings, client.InNamespace(s.namespace)))
+	require.Empty(t, bindings.Items,
+		"the context arrives from the hub, so nothing at the location declares a binding")
+}
+
+// Without this the first claim waits up to the reject requeue, and a context
+// edited later never reaches the interfaces that already exist.
+func TestNetworkContextEnqueuesTheClaimsOnItsNetwork(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, networkingv1alpha.AddToScheme(scheme))
+
+	claimOn := func(name, network string) *networkingv1alpha.NetworkInterfaceClaim {
+		claim := &networkingv1alpha.NetworkInterfaceClaim{}
+		claim.Namespace = "ns-a"
+		claim.Name = name
+		claim.Spec.Network = networkingv1alpha.LocalNetworkRef{Name: network}
+		return claim
+	}
+
+	elsewhere := claimOn("elsewhere", "default")
+	elsewhere.Namespace = "ns-b"
+
+	cl := fakeclient.NewClientBuilder().
+		WithScheme(scheme).
+		WithIndex(&networkingv1alpha.NetworkInterfaceClaim{},
+			networkInterfaceClaimNetworkIndex, networkInterfaceClaimNetworkIndexFunc).
+		WithObjects(claimOn("first", "default"), claimOn("second", "default"),
+			claimOn("other-network", "other"), elsewhere).
+		Build()
+
+	networkContext := &networkingv1alpha.NetworkContext{}
+	networkContext.Namespace = "ns-a"
+	networkContext.Name = "default-default-us-central-1"
+	networkContext.Spec.Network = networkingv1alpha.LocalNetworkRef{Name: "default"}
+
+	requests := claimsOnNetworkContext(context.Background(), cl, networkContext)
+
+	require.ElementsMatch(t, []reconcile.Request{
+		{NamespacedName: client.ObjectKey{Namespace: "ns-a", Name: "first"}},
+		{NamespacedName: client.ObjectKey{Namespace: "ns-a", Name: "second"}},
+	}, requests,
+		"only the claims naming that network, in that namespace, are enqueued")
+}
+
+// A retained interface outlives the consumer that used it. Tearing the context
+// down under it would leave it nothing to re-bind against.
+func TestNetworkContextIsHeldWhileAnInterfaceHoldsAddresses(t *testing.T) {
+	s := newScenario(t, true, []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol})
+
+	claim := s.createClaim("anchored", networkingv1alpha.NetworkInterfaceClaimSpec{
+		InterfaceName: "eth0",
+		IPFamilies:    []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol},
+		ReclaimPolicy: networkingv1alpha.NetworkInterfaceReclaimPolicyRetain,
+	})
+	s.reconcile(claim)
+
+	held, err := s.getNetworkContext()
+	require.NoError(t, err)
+	require.Contains(t, held.Finalizers, networkContextInUseFinalizer,
+		"the location adds its own finalizer, which propagation preserves")
+
+	require.NoError(t, s.client.Delete(s.ctx, held))
+
+	blocked, err := s.getNetworkContext()
+	require.NoError(t, err, "a hub deletion must block while an address is held here")
+	require.False(t, blocked.DeletionTimestamp.IsZero())
+
+	s.deleteClaim(s.getClaim("anchored"))
+
+	retained, err := s.getInterface("anchored")
+	require.NoError(t, err, "Retain keeps the interface after the consumer goes")
+
+	stillBlocked, err := s.getNetworkContext()
+	require.NoError(t, err, "the retained interface is the reason the hold exists")
+	require.Contains(t, stillBlocked.Finalizers, networkContextInUseFinalizer)
+
+	require.NoError(t, s.client.Delete(s.ctx, retained))
+	s.reconcileInterface("anchored")
+
+	_, err = s.getNetworkContext()
+	require.True(t, apierrors.IsNotFound(err),
+		"the last interface releasing must let the context go")
+}
+
+// The hold is evaluated while the last interface is still terminating, so the
+// answer is already stale when the object goes. Nothing keyed on the interface
+// looks again, which left the propagated copy terminating for good.
+func TestNetworkContextHoldIsReleasedAfterTheLastInterfaceIsGone(t *testing.T) {
+	s := newScenario(t, true, []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol})
+
+	claim := s.createClaim("stranded", networkingv1alpha.NetworkInterfaceClaimSpec{
+		InterfaceName: "eth0",
+		IPFamilies:    []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol},
+		ReclaimPolicy: networkingv1alpha.NetworkInterfaceReclaimPolicyRetain,
+	})
+	s.reconcile(claim)
+
+	held, err := s.getNetworkContext()
+	require.NoError(t, err)
+	require.Contains(t, held.Finalizers, networkContextInUseFinalizer)
+
+	require.NoError(t, s.client.Delete(s.ctx, held))
+	s.deleteClaim(s.getClaim("stranded"))
+
+	retained, err := s.getInterface("stranded")
+	require.NoError(t, err)
+
+	// Evaluate the hold while the interface is still terminating, which is the
+	// stale answer the interface-keyed path recorded.
+	require.NoError(t, s.client.Delete(s.ctx, retained))
+	require.NoError(t, reconcileNetworkContextHold(s.ctx, s.client, client.ObjectKey{
+		Namespace: s.namespace, Name: s.networkContextName("default")}))
+
+	// Now let the interface finish going, and drive only the context's own
+	// reconcile. Nothing keyed on the interface can fire again.
+	s.reconcileInterface("stranded")
+	if _, err := s.getInterface("stranded"); !apierrors.IsNotFound(err) {
+		require.NoError(t, err)
+	}
+
+	require.NoError(t, reconcileNetworkContextHold(s.ctx, s.client, client.ObjectKey{
+		Namespace: s.namespace, Name: s.networkContextName("default")}))
+
+	_, err = s.getNetworkContext()
+	require.True(t, apierrors.IsNotFound(err),
+		"the context's own reconcile must release a hold no interface justifies")
 }

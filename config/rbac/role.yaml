@@ -303,6 +303,7 @@ rules:
   - networking.datumapis.com
   resources:
   - connectorclasses
+  - locationbindings
   - locations
   verbs:
   - get

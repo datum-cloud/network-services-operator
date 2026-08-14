@@ -77,6 +77,11 @@ vars:
   DNS_BUNDLE_TAG: v0.5.1
   DNS_BUNDLE_DIGEST: sha256:cd7dd3a0d2fbbbaa029f2b5e083723a675e88c89e56f999257ff4bd87221cd4a
   DNS_STAGE: '{{.TMP_DIR}}/.dns-bundle'
+  # The e2e stand-in for Milo's project control-plane front door. Built from
+  # test/e2e/milo-shim and side-loaded; it exists in no production overlay.
+  MILO_SHIM_IMAGE: milo-shim:e2e
+  MILO_SHIM_STAGE: '{{.TMP_DIR}}/.milo-shim'
+
   CRANE: '{{.REPO}}/bin/crane'
   CRANE_VERSION: v0.21.7
   IPAM_PROJECTS: project-alpha project-beta
@@ -135,6 +140,9 @@ tasks:
       - task: ipam-bundle
       - task: nso-image
       - task: dns-crds
+      # The stand-in for Milo. It must precede ipam-kubeconfig, which publishes
+      # its address and CA to the manager.
+      - task: milo-shim-deploy
       # The manager mounts this secret, so it has to exist before the pod does.
       - task: ipam-kubeconfig
       - task: prepare-upstream
@@ -558,8 +566,64 @@ tasks:
       - kubectl --context {{.UPSTREAM_CTX}} wait --for=condition=Available apiservice/v1alpha1.ipam.miloapis.com --timeout=180s
       - echo "✅ IPAM serving ipam.miloapis.com/v1alpha1"
 
+  milo-shim-image:
+    desc: "Build the e2e Milo stand-in (test/e2e/milo-shim) and side-load it into the upstream cluster. It terminates the project control-plane path the operator addresses IPAM at, which nothing in kind otherwise serves."
+    cmds:
+      - echo "🔨 building {{.MILO_SHIM_IMAGE}}"
+      # Cross-compiled on the host rather than in a builder stage: the module
+      # cache is already warm here, and the image is one static binary.
+      - CGO_ENABLED=0 GOOS=linux GOARCH={{ARCH}} go build -o {{.MILO_SHIM_STAGE}}/milo-shim ./test/e2e/milo-shim
+      - cp test/e2e/milo-shim/Dockerfile {{.MILO_SHIM_STAGE}}/Dockerfile
+      - docker build -t {{.MILO_SHIM_IMAGE}} {{.MILO_SHIM_STAGE}}
+      - '{{.KIND}} load docker-image {{.MILO_SHIM_IMAGE}} --name {{.UPSTREAM_CLUSTER}}'
+
+  milo-shim-certs:
+    desc: "Self-sign the Milo stand-in's serving certificate and publish it as the milo-shim-serving secret. Not cert-manager: the operator's IPAM kubeconfig must carry this CA, and that kubeconfig has to exist before prepare-upstream — which is itself what makes cert-manager start serving."
+    cmds:
+      - mkdir -p {{.MILO_SHIM_STAGE}}
+      # A config file rather than -addext: LibreSSL, which is what macOS ships
+      # as openssl, does not reliably take that flag.
+      - |
+        set -e
+        stage={{.MILO_SHIM_STAGE}}
+        cat > "$stage/openssl.cnf" <<'EOF'
+        [req]
+        distinguished_name = dn
+        x509_extensions = ext
+        prompt = no
+        [dn]
+        CN = milo-shim.milo-shim-e2e.svc
+        [ext]
+        subjectAltName = DNS:milo-shim.milo-shim-e2e.svc, DNS:milo-shim.milo-shim-e2e.svc.cluster.local
+        # The certificate is its own trust anchor — it is what the operator's
+        # kubeconfig carries as the CA — so it has to be allowed to sign.
+        # Naming x509_extensions above drops the defaults that would have set
+        # this, and without it the verifier rejects the chain.
+        basicConstraints = critical, CA:TRUE
+        keyUsage = critical, digitalSignature, keyEncipherment, keyCertSign
+        extendedKeyUsage = serverAuth
+        EOF
+        openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
+          -keyout "$stage/tls.key" -out "$stage/tls.crt" -config "$stage/openssl.cnf" 2>/dev/null
+      - kubectl --context {{.UPSTREAM_CTX}} create namespace milo-shim-e2e --dry-run=client -o yaml | kubectl --context {{.UPSTREAM_CTX}} apply -f -
+      - |
+        kubectl --context {{.UPSTREAM_CTX}} -n milo-shim-e2e create secret tls milo-shim-serving \
+          --cert={{.MILO_SHIM_STAGE}}/tls.crt --key={{.MILO_SHIM_STAGE}}/tls.key \
+          --save-config --dry-run=client -o yaml \
+          | kubectl --context {{.UPSTREAM_CTX}} apply -f -
+
+  milo-shim-deploy:
+    desc: "Deploy the e2e Milo stand-in on the upstream cluster."
+    deps:
+      - milo-shim-image
+      - milo-shim-certs
+    cmds:
+      - echo "🚪 deploying the e2e Milo stand-in (milo-shim-e2e)"
+      - kubectl --context {{.UPSTREAM_CTX}} apply -f test/e2e/milo-shim/manifests.yaml
+      - kubectl --context {{.UPSTREAM_CTX}} -n milo-shim-e2e rollout status deploy/milo-shim --timeout=180s
+
   ipam-kubeconfig:
-    desc: "Wire the NSO manager to IPAM: mint a token for its ServiceAccount and publish it as the ipam-cluster-kubeconfig secret on the upstream cluster. The manager authenticates with this and sets the project impersonation per request; the RBAC that lets it do so ships in config/dependencies/ipam/rbac.yaml."
+    desc: "Wire the NSO manager to IPAM: mint a token for its ServiceAccount and publish it as the ipam-cluster-kubeconfig secret on the upstream cluster. The server is the e2e Milo stand-in, because the manager addresses a project by control-plane path and only that stand-in serves one here."
     cmds:
       - echo "🔗 wiring NSO manager -> IPAM (secret ipam-cluster-kubeconfig)"
       - kubectl --context {{.UPSTREAM_CTX}} create namespace network-services-operator-system --dry-run=client -o yaml | kubectl --context {{.UPSTREAM_CTX}} apply -f -
@@ -570,10 +634,15 @@ tasks:
         kubectl --context {{.UPSTREAM_CTX}} -n network-services-operator-system create serviceaccount \
           network-services-operator-controller-manager --dry-run=client -o yaml \
           | kubectl --context {{.UPSTREAM_CTX}} apply -f -
-      # The manager runs inside the upstream cluster, so the kubeconfig must
-      # name the in-cluster service address rather than the host-mapped one.
+      # The server is the Milo stand-in, not the kube-apiserver. The manager
+      # rewrites this host's PATH to a project's control plane and sends nothing
+      # else, and only the stand-in serves that path — the kind aggregator 404s
+      # it, because nothing there serves resourcemanager.miloapis.com.
+      #
+      # The manager runs inside the upstream cluster, so the kubeconfig names
+      # the in-cluster service address rather than the host-mapped one.
       - |
-        CA=$(kubectl --context {{.UPSTREAM_CTX}} -n kube-system get configmap kube-root-ca.crt -o jsonpath='{.data.ca\.crt}' | base64 | tr -d '\n')
+        CA=$(kubectl --context {{.UPSTREAM_CTX}} -n milo-shim-e2e get secret milo-shim-serving -o jsonpath='{.data.tls\.crt}')
         TOKEN=$(kubectl --context {{.UPSTREAM_CTX}} -n network-services-operator-system create token \
           network-services-operator-controller-manager --duration=24h)
         # Piped, never written to a file: a ServiceAccount token on disk outlives
@@ -586,7 +655,7 @@ tasks:
         clusters:
         - name: ipam
           cluster:
-            server: https://kubernetes.default.svc:443
+            server: https://milo-shim.milo-shim-e2e.svc:443
             certificate-authority-data: ${CA}
         users:
         - name: ipam

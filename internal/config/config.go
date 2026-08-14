@@ -94,6 +94,10 @@ type NetworkServicesOperator struct {
 	// NetworkInterface configures the controller that fulfils
 	// NetworkInterfaceClaims.
 	NetworkInterface NetworkInterfaceConfig `json:"networkInterface,omitempty"`
+
+	// LocationPublisher configures the controller that publishes Location
+	// records to the federation hub. Control-plane only.
+	LocationPublisher LocationPublisherConfig `json:"locationPublisher,omitempty"`
 }
 
 // +k8s:deepcopy-gen=true
@@ -150,8 +154,10 @@ type NetworkInterfaceConfig struct {
 	// control plane that serves no location.
 	Enabled bool `json:"enabled,omitempty"`
 
-	// Location is the location this control plane serves. Claims carry no
-	// location of their own, so every claim allocates against this one.
+	// Location is the location this control plane serves when no ServingLocation
+	// has been delivered to it. A delivered copy wins. Neither present is a
+	// reported waiting state, not a boot failure: a cell must not crash-loop
+	// because delivery is merely late.
 	Location LocationConfig `json:"location,omitempty"`
 }
 
@@ -160,21 +166,96 @@ type NetworkInterfaceConfig struct {
 type LocationConfig struct {
 	Name string `json:"name,omitempty"`
 
+	// Namespace is vestigial. Location is cluster-scoped and every stored value
+	// is empty.
 	Namespace string `json:"namespace,omitempty"`
 }
 
-func (c *NetworkInterfaceConfig) validate() error {
+// +k8s:deepcopy-gen=true
+
+// LocationPublisherConfig configures the controller that publishes the platform
+// control plane's Location records to the federation hub as ServingLocations.
+//
+// It belongs to the control-plane controller set. A cell-side deployment must
+// never run it, which is what keeping Enabled default-off buys.
+type LocationPublisherConfig struct {
+	// Enabled registers the location publisher. Off unless a deployment is the
+	// one control-plane instance that owns the published set: exactly one
+	// component must own it for pruning to be unambiguous.
+	Enabled bool `json:"enabled,omitempty"`
+
+	// SourceKubeconfigPath points at the platform control plane holding the
+	// Location records. When empty, discovery.discoveryKubeconfigPath is used.
+	SourceKubeconfigPath string `json:"sourceKubeconfigPath,omitempty"`
+
+	// HubKubeconfigPath points at the federation hub the published copies and
+	// their propagation policies are written to. When empty,
+	// downstreamResourceManagement.kubeconfigPath is used.
+	HubKubeconfigPath string `json:"hubKubeconfigPath,omitempty"`
+
+	// SafetyResyncPeriod re-lists both ends as self-heal. Correctness comes from
+	// the watches; this only shortens the window an out-of-band edit survives.
+	//
+	// Defaults to 30 minutes.
+	SafetyResyncPeriod metav1.Duration `json:"safetyResyncPeriod,omitempty"`
+
+	// Client configures the Kubernetes client connections to both ends.
+	Client ClientConnectionConfig `json:"client,omitempty"`
+}
+
+func SetDefaults_LocationPublisherConfig(obj *LocationPublisherConfig) {
+	if obj.SafetyResyncPeriod.Duration == 0 {
+		obj.SafetyResyncPeriod = metav1.Duration{Duration: 30 * time.Minute}
+	}
+}
+
+func (c *LocationPublisherConfig) validate() error {
 	if !c.Enabled {
 		return nil
 	}
 	var errs []error
-	if c.Location.Name == "" {
-		errs = append(errs, errors.New("location.name is required when enabled is true"))
-	}
-	if c.Location.Namespace == "" {
-		errs = append(errs, errors.New("location.namespace is required when enabled is true"))
+	if c.SafetyResyncPeriod.Duration < 0 {
+		errs = append(errs, errors.New("safetyResyncPeriod must not be negative"))
 	}
 	return errors.Join(errs...)
+}
+
+// SourceRestConfig resolves the connection to the platform control plane the
+// Location records are read from.
+func (c *LocationPublisherConfig) SourceRestConfig(discovery *DiscoveryConfig) (*rest.Config, error) {
+	path := c.SourceKubeconfigPath
+	if path == "" {
+		path = discovery.DiscoveryKubeconfigPath
+	}
+	return c.restConfig(path)
+}
+
+// HubRestConfig resolves the connection to the federation hub the published
+// copies are written to.
+func (c *LocationPublisherConfig) HubRestConfig(downstream *DownstreamResourceManagementConfig) (*rest.Config, error) {
+	path := c.HubKubeconfigPath
+	if path == "" {
+		path = downstream.KubeconfigPath
+	}
+	return c.restConfig(path)
+}
+
+func (c *LocationPublisherConfig) restConfig(path string) (*rest.Config, error) {
+	var (
+		cfg *rest.Config
+		err error
+	)
+	if path == "" {
+		cfg, err = ctrl.GetConfig()
+	} else {
+		cfg, err = clientcmd.BuildConfigFromFlags("", path)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	c.Client.ApplyTo(cfg)
+	return cfg, nil
 }
 
 // +k8s:deepcopy-gen=true
@@ -1362,8 +1443,8 @@ func (c *NetworkServicesOperator) Validate() error {
 	if err := c.Gateway.validate(); err != nil {
 		return fmt.Errorf("gateway: %w", err)
 	}
-	if err := c.NetworkInterface.validate(); err != nil {
-		return fmt.Errorf("networkInterface: %w", err)
+	if err := c.LocationPublisher.validate(); err != nil {
+		return fmt.Errorf("locationPublisher: %w", err)
 	}
 	return nil
 }

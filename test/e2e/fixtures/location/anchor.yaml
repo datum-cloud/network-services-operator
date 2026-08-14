@@ -1,0 +1,22 @@
+# A permanent Location so the source list is never empty.
+#
+# An empty source list is never a valid desired state: the publisher treats a
+# zero-length list as a suspected read fault and refuses to prune anything. That
+# is correct, and it is also the single most destructive failure the component
+# has, so it is deliberately not relaxed for tests. Without this anchor, a
+# scenario that deletes the only Location in the cluster would have its removal
+# blocked for a reason unrelated to what it is testing.
+apiVersion: networking.datumapis.com/v1alpha
+kind: Location
+metadata:
+  name: e2e-anchor
+spec:
+  locationClassName: self-managed
+  topology:
+    topology.datum.net/city-code: IAD
+    topology.datum.net/region: us-east-1
+  provider:
+    gcp:
+      projectId: e2e
+      region: us-east1
+      zone: us-east1-a

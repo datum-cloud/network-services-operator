@@ -1,0 +1,72 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+#
+# A Location with no city code is refused, and the refusal is reported rather
+# than skipped silently. An empty topology makes every location-scoped placement
+# fail with nothing catching it, which is the failure this check closes.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: location-federation-no-city-code
+spec:
+  concurrent: false
+  cluster: nso-standard
+  steps:
+    - name: A Location carrying no city code is created
+      try:
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Location
+              metadata:
+                name: e2e-nocity
+              spec:
+                locationClassName: self-managed
+                topology:
+                  topology.datum.net/region: us-west-1
+                provider:
+                  gcp:
+                    projectId: e2e
+                    region: us-west1
+                    zone: us-west1-a
+
+    - name: The refusal is reported as an event on the Location
+      try:
+        - assert:
+            timeout: 120s
+            resource:
+              apiVersion: v1
+              kind: Event
+              reason: MissingCityCode
+              type: Warning
+              involvedObject:
+                apiVersion: networking.datumapis.com/v1alpha
+                kind: Location
+                name: e2e-nocity
+      catch:
+        - script:
+            content: |
+              kubectl get events -A --field-selector involvedObject.name=e2e-nocity -o yaml
+              kubectl -n network-services-operator-system logs -l app.kubernetes.io/name=network-services-operator --tail=200
+
+    - name: Nothing is published for it
+      try:
+        - script:
+            cluster: nso-hub
+            content: |
+              set -eu
+              sleep 20
+              if kubectl get servinglocation e2e-nocity >/dev/null 2>&1; then
+                echo "a location with no city code was published"
+                exit 1
+              fi
+              if kubectl get clusterpropagationpolicy location-e2e-nocity >/dev/null 2>&1; then
+                echo "a policy was generated for an unpublishable location"
+                exit 1
+              fi
+
+      finally:
+        - delete:
+            ref:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Location
+              name: e2e-nocity

@@ -370,4 +370,12 @@ func SetObjectDefaults_NetworkServicesOperator(in *NetworkServicesOperator) {
 	if in.IPAM.Client.Burst == 0 {
 		in.IPAM.Client.Burst = 100
 	}
+	SetDefaults_LocationPublisherConfig(&in.LocationPublisher)
+	SetDefaults_ClientConnectionConfig(&in.LocationPublisher.Client)
+	if in.LocationPublisher.Client.QPS == 0 {
+		in.LocationPublisher.Client.QPS = 50
+	}
+	if in.LocationPublisher.Client.Burst == 0 {
+		in.LocationPublisher.Client.Burst = 100
+	}
 }

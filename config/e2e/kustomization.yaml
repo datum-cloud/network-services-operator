@@ -58,6 +58,8 @@ patches:
                   mountPath: /etc/downstream-cluster
                 - name: ipam-cluster-kubeconfig
                   mountPath: /etc/ipam-cluster
+                - name: karmada-hub-kubeconfig
+                  mountPath: /etc/karmada-hub
             volumes:
               - name: downstream-cluster-kubeconfig
                 secret:
@@ -73,6 +75,13 @@ patches:
               - name: ipam-cluster-kubeconfig
                 secret:
                   secretName: ipam-cluster-kubeconfig
+                  optional: true
+              # test-infra:karmada-hub-secret creates this after the manager is
+              # already deployed, so the manager crashloops until the hub exists
+              # — the same accepted ordering as the downstream kubeconfig above.
+              - name: karmada-hub-kubeconfig
+                secret:
+                  secretName: karmada-hub-kubeconfig
                   optional: true
 
 replacements:

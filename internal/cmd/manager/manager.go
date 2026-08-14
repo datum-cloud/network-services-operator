@@ -489,6 +489,13 @@ func NewCommand(build BuildInfo) *cobra.Command {
 				}
 			}
 
+			if serverConfig.LocationPublisher.Enabled {
+				if err := setupLocationPublisher(serverConfig, scheme, singletonControllerMgr); err != nil {
+					setupLog.Error(err, "unable to create controller", "controller", "LocationPublisher")
+					os.Exit(1)
+				}
+			}
+
 			if err := controller.AddIndexers(ctx, mgr); err != nil {
 				setupLog.Error(err, "unable to add indexers")
 				os.Exit(1)
@@ -659,6 +666,67 @@ func setupNetworkInterfaceClaimController(
 	return (&controller.NetworkInterfaceReconciler{
 		Config: serverConfig,
 		IPAM:   ipamClients,
+	}).SetupWithManager(mgr)
+}
+
+// leaderElectedRunnable states a runnable's leader-election intent instead of
+// letting the runnable-group router supply one. Three incidents in this org came
+// from a runnable whose intent was never declared, so the publisher states it
+// even where the default is already correct.
+type leaderElectedRunnable struct {
+	manager.Runnable
+	leaderElected bool
+}
+
+func (r leaderElectedRunnable) NeedLeaderElection() bool { return r.leaderElected }
+
+// setupLocationPublisher wires the publisher to its two single-cluster ends: the
+// platform control plane it reads Location records from, and the federation hub
+// it owns the published set on.
+//
+// Publishing mutates shared state and includes a prune, so it is leader-gated,
+// and both of its caches are gated with it: two replicas racing a delete on the
+// object a cell reads to learn its identity is the outage this exists to
+// prevent.
+func setupLocationPublisher(
+	serverConfig config.NetworkServicesOperator,
+	scheme *runtime.Scheme,
+	mgr manager.Manager,
+) error {
+	sourceRestConfig, err := serverConfig.LocationPublisher.SourceRestConfig(&serverConfig.Discovery)
+	if err != nil {
+		return fmt.Errorf("unable to load the location source kubeconfig: %w", err)
+	}
+	hubRestConfig, err := serverConfig.LocationPublisher.HubRestConfig(&serverConfig.DownstreamResourceManagement)
+	if err != nil {
+		return fmt.Errorf("unable to load the federation hub kubeconfig: %w", err)
+	}
+
+	sourceCluster, err := cluster.New(sourceRestConfig, func(o *cluster.Options) {
+		o.Scheme = scheme
+	})
+	if err != nil {
+		return fmt.Errorf("unable to construct the location source cluster: %w", err)
+	}
+
+	hubCluster, err := cluster.New(hubRestConfig, func(o *cluster.Options) {
+		o.Scheme = scheme
+		o.Client = client.Options{Cache: &client.CacheOptions{Unstructured: true}}
+	})
+	if err != nil {
+		return fmt.Errorf("unable to construct the federation hub cluster: %w", err)
+	}
+
+	for _, c := range []cluster.Cluster{sourceCluster, hubCluster} {
+		if err := mgr.Add(leaderElectedRunnable{Runnable: c, leaderElected: true}); err != nil {
+			return fmt.Errorf("unable to add a location publisher cluster: %w", err)
+		}
+	}
+
+	return (&controller.LocationPublisherReconciler{
+		Config:        serverConfig,
+		SourceCluster: sourceCluster,
+		HubCluster:    hubCluster,
 	}).SetupWithManager(mgr)
 }
 

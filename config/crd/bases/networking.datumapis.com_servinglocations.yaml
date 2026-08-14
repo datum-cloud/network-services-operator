@@ -1,0 +1,95 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.16.4
+  name: servinglocations.networking.datumapis.com
+spec:
+  group: networking.datumapis.com
+  names:
+    kind: ServingLocation
+    listKind: ServingLocationList
+    plural: servinglocations
+    singular: servinglocation
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.topology.topology\.datum\.net/city-code
+      name: City
+      type: string
+    - jsonPath: .spec.source.generation
+      name: Source Generation
+      type: integer
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha
+    schema:
+      openAPIV3Schema:
+        description: |-
+          ServingLocation names the location a cell serves. Its name is the name of the
+          Location it was published from.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              ServingLocationSpec carries the identity and locality of the location a cell
+              serves. It deliberately omits the provider block, coordinates, location class
+              and display name: a field earns its place here by having a reader at a cell.
+            properties:
+              source:
+                description: |-
+                  Source describes the record this copy was published from. It is declared
+                  spec-side because the propagation layer strips status, so a reader that
+                  must reason about staleness has nowhere else to read it.
+                properties:
+                  generation:
+                    description: |-
+                      Generation is the metadata.generation of the Location this copy was
+                      published from.
+                    format: int64
+                    type: integer
+                  publishedAt:
+                    description: |-
+                      PublishedAt is when the published content last changed, not when the
+                      publisher last ran.
+                    format: date-time
+                    type: string
+                type: object
+              topology:
+                additionalProperties:
+                  type: string
+                description: |-
+                  Topology carries the locality of the location, keyed as it is on Location
+                  and LocationBinding. An empty city code makes every location-scoped
+                  placement fail with nothing catching it, so it is required here.
+                minProperties: 1
+                type: object
+                x-kubernetes-validations:
+                - message: topology must carry a non-empty topology.datum.net/city-code
+                  rule: '''topology.datum.net/city-code'' in self && self[''topology.datum.net/city-code'']
+                    != '''''
+            required:
+            - topology
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources: {}

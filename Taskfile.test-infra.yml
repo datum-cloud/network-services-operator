@@ -151,6 +151,12 @@ tasks:
       - task: extension-server
       - task: billing-usage-collector
       - task: external-dns
+      # Real federation. The location publisher writes to this hub and the
+      # location-federation scenarios assert against it, so it is part of the
+      # env rather than an optional extra.
+      - task: karmada-up
+      - task: karmada-hub-secret
+      - task: location-fixtures
       - task: link-clusters
       - task: wait-ready
       - echo "🎉 test-infra:up complete. Run 'task test-infra:smoke' to confirm M2."
@@ -349,6 +355,9 @@ tasks:
       - kubectl --context {{.DOWNSTREAM_CTX}} apply -f config/crd/bases/networking.datumapis.com_connectors.yaml
       - kubectl --context {{.DOWNSTREAM_CTX}} apply -f config/crd/bases/networking.datumapis.com_httpproxies.yaml
       - kubectl --context {{.DOWNSTREAM_CTX}} apply -f config/crd/bases/networking.datumapis.com_trafficprotectionpolicies.yaml
+      # ServingLocation is federated onto the member rather than replicated, but
+      # the member still needs the schema to receive it.
+      - kubectl --context {{.DOWNSTREAM_CTX}} apply -f config/crd/bases/networking.datumapis.com_servinglocations.yaml
 
   external-dns:
     desc: "Install external-dns CRDs (DNSEndpoint) on the downstream cluster."
@@ -700,7 +709,43 @@ tasks:
       - echo "📜 applying federation artifacts (config/federation)"
       - |
         kubectl --kubeconfig {{.KARMADA_KUBECONFIG}} --context karmada-apiserver apply -f config/federation/
+      # The hub stores the published copies, so it needs the schema too. The
+      # member is not labelled for any location here: the location-federation
+      # scenarios own that label, and the unlabelled state is one of them.
+      - |
+        kubectl --kubeconfig {{.KARMADA_KUBECONFIG}} --context karmada-apiserver \
+          apply -f config/crd/bases/networking.datumapis.com_servinglocations.yaml
       - echo "✅ karmada-up complete. Karmada apiserver kubeconfig at {{.KARMADA_KUBECONFIG}}"
+
+  location-fixtures:
+    desc: "Seed the anchor Location the location-federation scenarios rely on. The publisher refuses to prune while the source list is empty, so a scenario deleting the only Location would be blocked for a reason it is not testing."
+    cmds:
+      - kubectl --context {{.UPSTREAM_CTX}} apply -f test/e2e/fixtures/location/anchor.yaml
+
+  karmada-hub-secret:
+    desc: "Publish the Karmada apiserver kubeconfig to the upstream cluster as karmada-hub-kubeconfig, rewritten to the in-cluster service address so the NSO manager pod can reach the hub."
+    vars:
+      KARMADA_KUBECONFIG: '{{.TMP_DIR}}/karmada-{{.UPSTREAM_CLUSTER}}/karmada-apiserver.config'
+      IN_CLUSTER_KUBECONFIG: '{{.TMP_DIR}}/karmada-{{.UPSTREAM_CLUSTER}}/karmada-apiserver-incluster.config'
+    cmds:
+      # karmadactl init writes 127.0.0.1:32443, which is the macOS host's route
+      # to the hub and nothing a pod can dial. The Service address is, and the
+      # apiserver certificate is not signed for it — a test env skips the check
+      # rather than re-issuing the certificate.
+      - cp {{.KARMADA_KUBECONFIG}} {{.IN_CLUSTER_KUBECONFIG}}
+      - |
+        kubectl --kubeconfig {{.IN_CLUSTER_KUBECONFIG}} config set-cluster karmada-apiserver \
+          --server=https://karmada-apiserver.karmada-system.svc.cluster.local:5443
+      - |
+        kubectl --kubeconfig {{.IN_CLUSTER_KUBECONFIG}} config unset clusters.karmada-apiserver.certificate-authority-data
+      - |
+        kubectl --kubeconfig {{.IN_CLUSTER_KUBECONFIG}} config set-cluster karmada-apiserver \
+          --insecure-skip-tls-verify=true
+      - kubectl --context {{.UPSTREAM_CTX}} create namespace network-services-operator-system --dry-run=client -o yaml | kubectl --context {{.UPSTREAM_CTX}} apply -f -
+      - |
+        kubectl --context {{.UPSTREAM_CTX}} create secret -n network-services-operator-system \
+          generic karmada-hub-kubeconfig --save-config --dry-run=client -o yaml \
+          --from-file=kubeconfig={{.IN_CLUSTER_KUBECONFIG}} | kubectl --context {{.UPSTREAM_CTX}} apply -f -
 
   smoke:
     desc: "M2 functional confirmation: drive an upstream Gateway+HTTPRoute through the ext-server path and curl a real 200."
@@ -764,6 +809,7 @@ tasks:
           --parallel 1 \
           --cluster nso-standard={{.TMP_DIR}}/.kind-{{.UPSTREAM_CLUSTER}}.yaml \
           --cluster nso-infra={{.TMP_DIR}}/.kind-{{.DOWNSTREAM_CLUSTER}}.yaml \
+          --cluster nso-hub={{.TMP_DIR}}/karmada-{{.UPSTREAM_CLUSTER}}/karmada-apiserver.config \
           --report-format JSON \
           --report-path {{.REPORT_PATH}} \
           --report-name {{.REPORT_NAME}}

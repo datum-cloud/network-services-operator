@@ -330,7 +330,7 @@ func newScenario(t *testing.T, labelled bool, networkFamilies []networkingv1alph
 		ctx:        ctx,
 		client:     cl,
 		ipam:       ipam,
-		reconciler: &NetworkInterfaceClaimReconciler{Config: operatorConfig, IPAM: ipam},
+		reconciler: &NetworkInterfaceClaimReconciler{Config: operatorConfig, IPAM: ipam, localReader: cl},
 		namespace:  namespaceName,
 	}
 }

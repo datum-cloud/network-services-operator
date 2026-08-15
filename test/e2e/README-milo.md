@@ -106,20 +106,40 @@ there, not on inspecting the object.)
 
 ## Shape
 
-- `config/dependencies/milo/` — Milo's manifests. Apiserver and etcd, nothing
+- Milo's deployment comes from the kustomize bundle Milo publishes on release,
+  `ghcr.io/milo-os/milo-kustomize`, fetched by digest — the same arrangement as
+  IPAM and the dns-operator. `config/dependencies/milo/root-kustomization.yaml`
+  composes the bundle's apiserver and its certificate components with this
+  environment's additions; `test-infra:milo-bundle` assembles the two into a
+  staging directory, and `test-infra:milo-render` prints the result.
+- What is local is only what this environment adds. Apiserver and etcd, nothing
   else: no controller-manager, no gateway, no audit or tracing sinks. Project
-  control-plane paths serve without any of them.
+  control-plane paths serve without any of them. Upstream's own
+  `overlays/test-infra` pulls all of those in, which is why the bundle's pieces
+  are composed rather than that overlay consumed.
+- `config/dependencies/milo/overlay/` — the local additions, and nothing from
+  the bundle, so it builds on a clean checkout where the bundle has not been
+  fetched: the namespace, etcd, the static tokens, and the front-proxy client
+  certificate. `config/dependencies/milo/patches/` holds the two patches that
+  need the bundle's objects to patch.
 - `config/dependencies/milo/bootstrap-in-milo.yaml` — applied **inside** Milo:
   the two `Project` objects, and the root-scoped RBAC discussed above.
 - etcd is a plain single-member `StatefulSet` on `emptyDir`. Upstream ships it
   as a Flux `HelmRelease`; installing Flux to obtain one StatefulSet is more
   machinery than the StatefulSet.
-- The Milo version is pinned in **one** place: `MILO_IMAGE_TAG` in
-  `Taskfile.test-infra.yml`.
+- The bundle's apiserver drives every flag from an env var and ships no volumes,
+  so `patches/apiserver-patch.yaml` is where storage, credentials and
+  certificates are wired. A bundle default this environment cannot satisfy is a
+  startup failure rather than a fallback, which is why the tracing config, the
+  etcd client certificates and the authn/authz webhook configs are blanked
+  rather than left alone.
+- The Milo version is pinned by `MILO_BUNDLE_TAG` in `Taskfile.test-infra.yml`
+  and by the image digest in `root-kustomization.yaml`. They must name the same
+  release, or the manifests and the binary they configure have drifted.
 
 ## Identities
 
-Milo authenticates by static token (`config/dependencies/milo/auth.yaml`).
+Milo authenticates by static token (`config/dependencies/milo/overlay/auth.yaml`).
 
 | user | groups | used by |
 | --- | --- | --- |

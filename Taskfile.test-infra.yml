@@ -81,12 +81,19 @@ vars:
   # by control-plane path and Milo is what resolves the project from that path,
   # so nothing about project-scoped IPAM is exercised without it.
   #
-  # THIS IS THE ONE PLACE THE MILO VERSION IS PINNED. The image is pulled by the
-  # node from ghcr (anonymously, like the IPAM image) rather than side-loaded.
-  # config/dependencies/milo/apiserver.yaml carries a placeholder tag that the
-  # milo-deploy task overrides with this one.
-  MILO_IMAGE_REPO: ghcr.io/milo-os/milo
-  MILO_IMAGE_TAG: v0.32.5
+  # Its manifests come from the bundle milo-os/milo publishes on every release,
+  # and its image from ghcr.io — both at the same version, so the flags the
+  # manifests set and the binary that reads them stay in lockstep. Nothing is
+  # built locally and the node pulls the image anonymously, like IPAM's.
+  #
+  # Digest, not tag: the tag identifies the release, but a tag can be
+  # republished. The tag is kept alongside for legibility. Update both together,
+  # and with the image digest in config/dependencies/milo/root-kustomization.yaml
+  # — milo-bundle fails if the artifact does not carry MILO_BUNDLE_TAG.
+  MILO_BUNDLE_REPO: ghcr.io/milo-os/milo-kustomize
+  MILO_BUNDLE_TAG: v0.32.5
+  MILO_BUNDLE_DIGEST: sha256:975896513b3afda4400eb09f8a5602000c52fd35f14284258803266f5d2ee1a9
+  MILO_STAGE: '{{.TMP_DIR}}/.milo-bundle'
   # The NodePort Milo's Service publishes, mapped to the same host port by
   # config/tools/kind/upstream-cluster.yaml. The chainsaw suites run on the host
   # and reach Milo through it.
@@ -150,9 +157,10 @@ tasks:
       - task: downstream-namespaces
       - task: cert-manager-upstream
       - task: cert-manager-downstream
-      # Fetched early: it depends on nothing in the cluster, and pulling it here
-      # surfaces a registry problem before the long build below.
+      # Fetched early: they depend on nothing in the cluster, and pulling them
+      # here surfaces a registry problem before the long build below.
       - task: ipam-bundle
+      - task: milo-bundle
       - task: nso-image
       - task: dns-crds
       - task: prepare-upstream
@@ -210,7 +218,7 @@ tasks:
       # The Milo kubeconfigs carry a bearer token. They go with the cluster that
       # issued them rather than being left behind for the next env to inherit.
       - rm -f {{.MILO_ADMIN_KUBECONFIG}} {{.MILO_ROOT_KUBECONFIG}} {{.TMP_DIR}}/.milo-project-*.yaml
-      - rm -rf {{.IPAM_STAGE}} {{.DNS_STAGE}}
+      - rm -rf {{.IPAM_STAGE}} {{.DNS_STAGE}} {{.MILO_STAGE}}
       - echo "✨ done."
 
   clusters:
@@ -546,7 +554,7 @@ tasks:
       - kubectl --context {{.UPSTREAM_CTX}} create namespace ipam-system --dry-run=client -o yaml | kubectl --context {{.UPSTREAM_CTX}} apply -f -
       - |
         set -e
-        kubectl --context {{.UPSTREAM_CTX}} -n milo-system get secret milo-ca \
+        kubectl --context {{.UPSTREAM_CTX}} -n milo-system get secret milo-ca-tls \
           -o jsonpath='{.data.ca\.crt}' | base64 -d > {{.TMP_DIR}}/.ipam-requestheader-ca.crt
         if [ ! -s {{.TMP_DIR}}/.ipam-requestheader-ca.crt ]; then
           echo "❌ Milo's CA is empty; milo-deploy/milo-wait must run before ipam-deploy" >&2
@@ -620,18 +628,47 @@ tasks:
       # objects through a real project path.
       - echo "✅ IPAM apiserver rolled out"
 
-  milo-deploy:
-    desc: "Deploy Milo (apiserver + etcd) to the upstream cluster. Milo is the front door: the operator and the suites address a project by control-plane path, and Milo is what turns that path into a tenant. Pinned by MILO_IMAGE_TAG."
+  milo-bundle:
+    desc: "Fetch the published Milo manifest bundle from ghcr.io and assemble the composed deployment in a staging directory. Pinned by digest, and verified to carry the pinned release tag, so a republished tag cannot silently change what is deployed. Anonymous pull — CI needs no registry credentials."
     cmds:
-      - echo "🚪 deploying Milo {{.MILO_IMAGE_TAG}} (upstream)"
+      - |
+        set -e
+        stage="{{.MILO_STAGE}}"
+        if [ -f "$stage/.digest" ] && [ "$(cat "$stage/.digest")" = "{{.MILO_BUNDLE_DIGEST}}" ]; then
+          echo "🚪 Milo bundle already staged ({{.MILO_BUNDLE_TAG}})" >&2
+        else
+          echo "🚪 fetching {{.MILO_BUNDLE_REPO}}:{{.MILO_BUNDLE_TAG}}" >&2
+          rev=$({{.REPO}}/hack/fetch-oci-bundle.sh \
+            {{.CRANE}} {{.CRANE_VERSION}} \
+            {{.MILO_BUNDLE_REPO}} {{.MILO_BUNDLE_DIGEST}} {{.MILO_BUNDLE_TAG}} "$stage/bundle")
+          echo "✅ fetched $rev" >&2
+        fi
+        # Refreshed every run: these come from the working tree, so an edit to
+        # the overlay or a patch must reach the staged build without re-pulling.
+        rm -rf "$stage/overlay" "$stage/patches"
+        cp -R "{{.REPO}}/config/dependencies/milo/overlay" "$stage/overlay"
+        cp -R "{{.REPO}}/config/dependencies/milo/patches" "$stage/patches"
+        cp "{{.REPO}}/config/dependencies/milo/root-kustomization.yaml" "$stage/kustomization.yaml"
+        echo "{{.MILO_BUNDLE_DIGEST}}" > "$stage/.digest"
+
+  milo-render:
+    desc: "Render the composed Milo deployment to stdout. What milo-deploy applies, without applying it — the composed root is assembled at task time, so this is the only way to review it."
+    deps:
+      - milo-bundle
+    cmds:
+      - '{{.KUSTOMIZE}} build {{.MILO_STAGE}}'
+
+  milo-deploy:
+    deps:
+      - milo-bundle
+    desc: "Deploy Milo (apiserver + etcd) to the upstream cluster. Milo is the front door: the operator and the suites address a project by control-plane path, and Milo is what turns that path into a tenant. Pinned by MILO_BUNDLE_TAG."
+    cmds:
+      - echo "🚪 deploying Milo {{.MILO_BUNDLE_TAG}} (upstream)"
       # cert-manager issues Milo's serving cert and its front-proxy client cert,
       # so it has to be running first. prepare-upstream is what unblocks it; see
       # the note on ipam-certmanager-ready.
       - task: ipam-certmanager-ready
-      - |
-        {{.KUSTOMIZE}} build config/dependencies/milo \
-          | sed 's|image: {{.MILO_IMAGE_REPO}}:latest|image: {{.MILO_IMAGE_REPO}}:{{.MILO_IMAGE_TAG}}|' \
-          | kubectl --context {{.UPSTREAM_CTX}} apply --server-side=true --force-conflicts -f -
+      - '{{.KUSTOMIZE}} build {{.MILO_STAGE}} | kubectl --context {{.UPSTREAM_CTX}} apply --server-side=true --force-conflicts -f -'
 
   milo-wait:
     desc: "Gate on Milo actually serving. etcd first — Milo exits at startup if it cannot reach its storage within the deadline, so a slow etcd shows up as a crashloop with the cause several hundred log lines back."
@@ -651,7 +688,7 @@ tasks:
       - echo "🔑 writing Milo kubeconfigs to {{.TMP_DIR}}"
       - |
         set -e
-        CA=$(kubectl --context {{.UPSTREAM_CTX}} -n milo-system get secret milo-ca -o jsonpath='{.data.ca\.crt}')
+        CA=$(kubectl --context {{.UPSTREAM_CTX}} -n milo-system get secret milo-ca-tls -o jsonpath='{.data.ca\.crt}')
         if [ -z "$CA" ]; then echo "❌ Milo CA secret is empty" >&2; exit 1; fi
         # 127.0.0.1 via the mapped NodePort: on macOS the kind node's own
         # network is not host-routable. The cert is issued for the in-cluster
@@ -707,7 +744,7 @@ tasks:
       # In production the namespace comes with the project: milo-controller-
       # manager's ProjectController writes it on every reconcile. This Milo is
       # the apiserver alone, with no controller-manager to run that
-      # (config/dependencies/milo/kustomization.yaml), so the step below stands
+      # (config/dependencies/milo/root-kustomization.yaml), so the step below stands
       # in for that one write, label included. Without it every claim is
       # rejected with ProjectNamespaceNotFound and the interface suites never
       # see an Allocated condition.
@@ -837,7 +874,7 @@ tasks:
       # Milo's in-cluster service address rather than the host-mapped NodePort.
       - |
         set -e
-        CA=$(kubectl --context {{.UPSTREAM_CTX}} -n milo-system get secret milo-ca -o jsonpath='{.data.ca\.crt}')
+        CA=$(kubectl --context {{.UPSTREAM_CTX}} -n milo-system get secret milo-ca-tls -o jsonpath='{.data.ca\.crt}')
         if [ -z "$CA" ]; then echo "❌ Milo CA secret is empty; is milo-wait done?" >&2; exit 1; fi
         KUBECONFIG_YAML=$(cat <<EOF
         apiVersion: v1

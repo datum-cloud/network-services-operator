@@ -704,12 +704,13 @@ tasks:
       # — deliberately, because creating it would be writing into a customer's
       # project on their behalf (internal/controller/ipam_project_client.go).
       #
-      # A project control plane starts with only milo-system in it; in
-      # production the namespaces a project uses are already there. Nothing
-      # else in this environment creates one, and its absence surfaces as
-      # "failed reading project namespace \"default\": namespaces \"default\"
-      # not found" on every claim, with the interface suites simply timing out
-      # waiting for an Allocated condition that never arrives.
+      # In production the namespace comes with the project: milo-controller-
+      # manager's ProjectController writes it on every reconcile. This Milo is
+      # the apiserver alone, with no controller-manager to run that
+      # (config/dependencies/milo/kustomization.yaml), so the step below stands
+      # in for that one write, label included. Without it every claim is
+      # rejected with ProjectNamespaceNotFound and the interface suites never
+      # see an Allocated condition.
       #
       # Created through each project's control-plane path, so it lands in that
       # project's storage rather than at Milo's root.
@@ -722,7 +723,7 @@ tasks:
             echo "  ✅ ${proj} already has a default namespace"
             continue
           fi
-          echo '{"apiVersion":"v1","kind":"Namespace","metadata":{"name":"default"}}' \
+          echo '{"apiVersion":"v1","kind":"Namespace","metadata":{"name":"default","labels":{"miloapis.com/project-default":"true"}}}' \
             | kubectl --kubeconfig {{.MILO_ADMIN_KUBECONFIG}} \
                 create --raw "${path}/api/v1/namespaces" -f - >/dev/null
           echo "  ✅ created default namespace in ${proj}"

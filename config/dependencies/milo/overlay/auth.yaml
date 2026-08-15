@@ -15,6 +15,16 @@
 #                       system:masters, so a suite cannot pass by privilege.
 #
 # The last two are authorized by the ClusterRoles in rbac.yaml.
+#
+# The bundle's overlays/test-infra/components/auth ships a Secret of the same
+# name and cannot be substituted for this one. It carries two identities rather
+# than three — an `admin` and a `test-user` — so there is no separate identity
+# for the operator, and the operator/tester split above is exactly what makes a
+# passing suite mean something. Its token strings differ from the ones the
+# kubeconfigs in Taskfile.test-infra.yml are written with, and its usernames
+# differ from the RBAC subjects in bootstrap-in-milo.yaml. Adding it alongside
+# this file does not even build: same kind, same name, same namespace, so
+# kustomize fails with an ID conflict.
 apiVersion: v1
 kind: Secret
 metadata:

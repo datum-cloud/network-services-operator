@@ -50,17 +50,36 @@ spec:
               value: /etc/kubernetes/pki/apiserver/ca.crt
             - name: SERVICE_ACCOUNT_KEY_FILE
               value: /etc/kubernetes/pki/apiserver/ca.crt
-            # No tracing sink here, and the bundle's default path is mounted
-            # only by the apiserver-tracing component.
+            # Tracing off. The bundle's apiserver-tracing component would set
+            # this itself, so adopting it would remove this line — but it points
+            # the exporter at telemetry-system-tempo, and there is no Tempo in a
+            # kind cluster. Measured with the component applied: Milo serves
+            # fine, then logs "traces export: ... produced zero addresses" every
+            # ten seconds for the life of the run. Trading one line of config
+            # for a permanent error stream in the log people read when an e2e
+            # run fails is not a good trade.
             - name: TRACING_CONFIG_FILE
               value: ""
-            # No audit sink either, so AUDIT_POLICY_FILE stays at the bundle's
-            # empty default and nothing is emitted. The backoff still has to
-            # parse as a duration: the flag is passed unconditionally and ""
-            # is not a duration, so leaving the bundle's own default in place
-            # makes the apiserver exit at startup before it reads the policy
-            # file and discovers auditing is off. Upstream's overlay never hits
-            # this because it always enables auditing.
+            # Auditing off, so AUDIT_POLICY_FILE stays at the bundle's empty
+            # default and nothing is emitted.
+            #
+            # The bundle's apiserver-audit-logging component does NOT replace
+            # this line. It contributes two ConfigMaps and mounts them, and sets
+            # no environment at all — upstream's overlay still has to set
+            # AUDIT_POLICY_FILE, AUDIT_WEBHOOK_CONFIG_FILE, AUDIT_WEBHOOK_MODE
+            # and this backoff by hand. Adopting it would mean three more env
+            # vars here, not one fewer, plus an audit stream posted at a
+            # vector-audit-log-processor that does not exist. Measured with the
+            # component applied: "Error in audit plugin 'webhook' affecting 172
+            # audit events: ... no such host", with the impacted events dumped
+            # into the log, from the env-up gate alone.
+            #
+            # So the backoff is set here on its own. The flag is passed
+            # unconditionally and the bundle's own default is the empty string,
+            # which is not a parseable duration, so leaving it alone makes the
+            # apiserver exit at startup before it ever reads the policy file and
+            # discovers auditing is off. Upstream never hits this because its
+            # overlay always enables auditing.
             - name: AUDIT_WEBHOOK_INITIAL_BACKOFF
               value: 10s
             # The client certificate Milo's aggregator presents to IPAM. Without

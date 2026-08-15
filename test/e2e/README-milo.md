@@ -133,6 +133,18 @@ there, not on inspecting the object.)
   startup failure rather than a fallback, which is why the tracing config, the
   etcd client certificates and the authn/authz webhook configs are blanked
   rather than left alone.
+- Three further bundle components were evaluated and deliberately **not**
+  adopted. `components/apiserver-audit-logging` and `components/apiserver-tracing`
+  are config-only and do not crash a kind cluster, but both point at sinks that
+  do not exist here — `vector-audit-log-processor` and `telemetry-system-tempo`
+  — and neither is quiet about it: with them applied Milo logs a failed audit
+  batch with the impacted events inlined, and a trace-export error every ten
+  seconds. Nothing here consumes either stream. The audit component also sets no
+  environment of its own, so it would add three env vars rather than remove the
+  one that keeps the apiserver from exiting at startup.
+  `overlays/test-infra/components/auth` carries two identities where this
+  environment needs three, with different tokens and usernames, and collides by
+  name with the local Secret. The reasoning is recorded next to each.
 - The Milo version is pinned by `MILO_BUNDLE_TAG` in `Taskfile.test-infra.yml`
   and by the image digest in `root-kustomization.yaml`. They must name the same
   release, or the manifests and the binary they configure have drifted.

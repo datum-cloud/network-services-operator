@@ -76,6 +76,13 @@ type fakeIPAM struct {
 	// failOn refuses the named IPClaim with the given error.
 	failOn map[string]error
 
+	// noProjectNamespace builds project clients without the namespace the
+	// platform provisions, standing in for a control plane never bootstrapped.
+	noProjectNamespace bool
+	// namespaceReadErr fails namespace reads inside the project's control plane
+	// the way a flaky API server does, with the namespace still there.
+	namespaceReadErr error
+
 	nextV4 int
 	nextV6 int
 }
@@ -108,15 +115,28 @@ func (f *fakeIPAM) ClientForProject(project string) (client.Client, error) {
 	// A project's control plane already holds the namespace its own objects
 	// live in, so the fake starts with it rather than having the operator make
 	// one.
-	projectNamespace := &corev1.Namespace{}
-	projectNamespace.Name = testProjectNS
-
-	builder := fakeclient.NewClientBuilder().WithScheme(f.scheme).WithObjects(projectNamespace)
+	builder := fakeclient.NewClientBuilder().WithScheme(f.scheme)
+	if !f.noProjectNamespace {
+		projectNamespace := &corev1.Namespace{}
+		projectNamespace.Name = testProjectNS
+		builder = builder.WithObjects(projectNamespace)
+	}
 	for _, class := range f.classes {
 		builder = builder.WithObjects(class.DeepCopy())
 	}
 
 	cl := builder.WithInterceptorFuncs(interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if _, ok := obj.(*corev1.Namespace); ok {
+				f.mu.Lock()
+				failure := f.namespaceReadErr
+				f.mu.Unlock()
+				if failure != nil {
+					return failure
+				}
+			}
+			return c.Get(ctx, key, obj, opts...)
+		},
 		Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
 			ipClaim, ok := obj.(*ipamv1alpha1.IPClaim)
 			if !ok {
@@ -586,6 +606,68 @@ func TestNetworkInterfaceClaimFailsClosedWithoutProject(t *testing.T) {
 	var gone networkingv1alpha.NetworkInterfaceClaim
 	err = s.client.Get(s.ctx, client.ObjectKeyFromObject(rejected), &gone)
 	require.True(t, apierrors.IsNotFound(err))
+}
+
+// The platform provisions the namespace addresses land in with the project, so
+// its absence is an answer the claim can carry rather than something to wait
+// out. Retrying forever would leave a consumer with a timeout and no account of
+// why.
+func TestNetworkInterfaceClaimRejectsAMissingProjectNamespace(t *testing.T) {
+	s := newScenario(t, true, []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol})
+	s.ipam.noProjectNamespace = true
+
+	claim := s.createClaim("unbootstrapped", networkingv1alpha.NetworkInterfaceClaimSpec{
+		InterfaceName: "eth0",
+		IPFamilies:    []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol},
+		ReclaimPolicy: networkingv1alpha.NetworkInterfaceReclaimPolicyDelete,
+	})
+
+	result, err := s.reconciler.reconcileClaim(s.ctx, s.client, s.events, client.ObjectKeyFromObject(claim))
+	require.NoError(t, err, "a control plane without its namespace is a rejection, not a reconcile failure")
+	require.NotZero(t, result.RequeueAfter,
+		"nothing watches the project, so the rejection carries its own way back")
+
+	require.Zero(t, s.ipam.createdAnywhere(),
+		"no address may be claimed in a project whose namespace is absent")
+
+	_, err = s.getInterface("unbootstrapped")
+	require.True(t, apierrors.IsNotFound(err), "nothing may be published without the namespace to allocate in")
+
+	rejected := s.getClaim("unbootstrapped")
+	for _, conditionType := range []string{
+		networkingv1alpha.NetworkInterfaceClaimBound,
+		networkingv1alpha.NetworkInterfaceClaimAllocated,
+		networkingv1alpha.NetworkInterfaceClaimReady,
+	} {
+		condition := conditionOf(rejected, conditionType)
+		require.Equal(t, metav1.ConditionFalse, condition.Status, conditionType)
+		require.Equal(t, networkingv1alpha.NetworkInterfaceClaimReasonProjectNamespaceNotFound,
+			condition.Reason, conditionType)
+		require.Contains(t, condition.Message, testProjectNS,
+			"the failure must name the namespace that is missing")
+		require.Contains(t, condition.Message, testProject,
+			"and the project it is missing from")
+	}
+}
+
+// A namespace that cannot be read is not a namespace that is gone. Rejecting on
+// a blip would demote a claim for a condition that was never true.
+func TestNetworkInterfaceClaimRetriesAnUnreadableProjectNamespace(t *testing.T) {
+	s := newScenario(t, true, []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol})
+	s.ipam.namespaceReadErr = apierrors.NewServiceUnavailable("the server is currently unable to handle the request")
+
+	claim := s.createClaim("unreadable", networkingv1alpha.NetworkInterfaceClaimSpec{
+		InterfaceName: "eth0",
+		IPFamilies:    []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol},
+		ReclaimPolicy: networkingv1alpha.NetworkInterfaceReclaimPolicyDelete,
+	})
+
+	_, err := s.reconciler.reconcileClaim(s.ctx, s.client, s.events, client.ObjectKeyFromObject(claim))
+	require.Error(t, err, "a failed read must be retried, not turned into a rejection")
+
+	pending := s.getClaim("unreadable")
+	require.NotEqual(t, networkingv1alpha.NetworkInterfaceClaimReasonProjectNamespaceNotFound,
+		conditionOf(pending, networkingv1alpha.NetworkInterfaceClaimReady).Reason)
 }
 
 func TestNetworkInterfaceClaimRejectsFamilyTheNetworkDoesNotCarry(t *testing.T) {

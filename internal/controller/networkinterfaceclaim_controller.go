@@ -634,7 +634,19 @@ func (r *NetworkInterfaceClaimReconciler) allocate(
 ) ([]allocatedAddress, error) {
 	logger := log.FromContext(ctx)
 
+	// The platform provisions this namespace with the project, so a missing one
+	// is not a race to wait out: it says the project's control plane is not
+	// bootstrapped, and a claim retrying forever would only time out with
+	// nothing said. Any other read failure is transient and is retried.
 	if err := requireProjectNamespace(ctx, ipamClient, routing.projectNamespace); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, &bindingRefused{
+				reason: networkingv1alpha.NetworkInterfaceClaimReasonProjectNamespaceNotFound,
+				message: fmt.Sprintf(
+					"Project %q has no namespace %q in its control plane, so no address can be allocated for it",
+					routing.project, routing.projectNamespace),
+			}
+		}
 		return nil, fmt.Errorf("failed reading project namespace %q: %w", routing.projectNamespace, err)
 	}
 

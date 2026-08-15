@@ -3,7 +3,6 @@
 package controller
 
 import (
-	"context"
 	"fmt"
 	"net/url"
 	"sync"
@@ -126,16 +125,4 @@ func projectNamespaceFromNamespace(ns *corev1.Namespace) (string, error) {
 		return "", fmt.Errorf("namespace %q carries no %s label", ns.Name, downstreamclient.UpstreamOwnerNamespaceLabel)
 	}
 	return value, nil
-}
-
-// requireProjectNamespace confirms the namespace addresses land in exists. The
-// name is the upstream namespace the claim's own objects live in, inside the
-// project's control plane, and the platform provisions it with the project, so
-// it is already there; the read only turns its absence into an answer on the
-// claim instead of allocations failing one at a time. The operator never
-// creates it, because that would be writing into a customer's project on their
-// behalf.
-func requireProjectNamespace(ctx context.Context, cl client.Client, name string) error {
-	var existing corev1.Namespace
-	return cl.Get(ctx, client.ObjectKey{Name: name}, &existing)
 }

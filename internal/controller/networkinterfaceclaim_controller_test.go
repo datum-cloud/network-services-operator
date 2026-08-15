@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
@@ -23,6 +24,7 @@ import (
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/validation"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	eventsv1client "k8s.io/client-go/kubernetes/typed/events/v1"
@@ -76,12 +78,10 @@ type fakeIPAM struct {
 	// failOn refuses the named IPClaim with the given error.
 	failOn map[string]error
 
-	// noProjectNamespace builds project clients without the namespace the
-	// platform provisions, standing in for a control plane never bootstrapped.
+	// noProjectNamespace stands in for a control plane never bootstrapped: the
+	// namespace the platform provisions with the project is absent, so writes
+	// into it are refused the way an API server refuses them.
 	noProjectNamespace bool
-	// namespaceReadErr fails namespace reads inside the project's control plane
-	// the way a flaky API server does, with the namespace still there.
-	namespaceReadErr error
 
 	nextV4 int
 	nextV6 int
@@ -126,17 +126,6 @@ func (f *fakeIPAM) ClientForProject(project string) (client.Client, error) {
 	}
 
 	cl := builder.WithInterceptorFuncs(interceptor.Funcs{
-		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
-			if _, ok := obj.(*corev1.Namespace); ok {
-				f.mu.Lock()
-				failure := f.namespaceReadErr
-				f.mu.Unlock()
-				if failure != nil {
-					return failure
-				}
-			}
-			return c.Get(ctx, key, obj, opts...)
-		},
 		Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
 			ipClaim, ok := obj.(*ipamv1alpha1.IPClaim)
 			if !ok {
@@ -145,7 +134,17 @@ func (f *fakeIPAM) ClientForProject(project string) (client.Client, error) {
 
 			f.mu.Lock()
 			f.createdIn[project] = append(f.createdIn[project], ipClaim.Name)
-			failure := f.failOn[ipClaim.Name]
+			var failure error
+			if f.noProjectNamespace {
+				// The fake client does not enforce namespaces, so the refusal is
+				// injected in the shape a real API server sends. That shape is
+				// held to the server itself by
+				// TestNamespaceNotFoundIsReadOffTheServersOwnRefusal.
+				failure = apierrors.NewNotFound(corev1.Resource("namespaces"), ipClaim.Namespace)
+			}
+			if failure == nil {
+				failure = f.failOn[ipClaim.Name]
+			}
 			if failure == nil {
 				failure = f.retainedConflictLocked(ipClaim)
 			}
@@ -254,6 +253,24 @@ func (f *fakeIPAM) createdAnywhere() int {
 	total := 0
 	for _, names := range f.createdIn {
 		total += len(names)
+	}
+	return total
+}
+
+// storedAnywhere counts the IPClaims that survive in every project, which is
+// what a leak would show up as after a rollback.
+func (f *fakeIPAM) storedAnywhere(t *testing.T) int {
+	t.Helper()
+
+	f.mu.Lock()
+	clients := maps.Clone(f.clients)
+	f.mu.Unlock()
+
+	total := 0
+	for _, cl := range clients {
+		var stored ipamv1alpha1.IPClaimList
+		require.NoError(t, cl.List(context.Background(), &stored))
+		total += len(stored.Items)
 	}
 	return total
 }
@@ -611,7 +628,8 @@ func TestNetworkInterfaceClaimFailsClosedWithoutProject(t *testing.T) {
 // The platform provisions the namespace addresses land in with the project, so
 // its absence is an answer the claim can carry rather than something to wait
 // out. Retrying forever would leave a consumer with a timeout and no account of
-// why.
+// why. Nothing checks the namespace first: the answer is read off the write the
+// API server refuses.
 func TestNetworkInterfaceClaimRejectsAMissingProjectNamespace(t *testing.T) {
 	s := newScenario(t, true, []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol})
 	s.ipam.noProjectNamespace = true
@@ -627,8 +645,10 @@ func TestNetworkInterfaceClaimRejectsAMissingProjectNamespace(t *testing.T) {
 	require.NotZero(t, result.RequeueAfter,
 		"nothing watches the project, so the rejection carries its own way back")
 
-	require.Zero(t, s.ipam.createdAnywhere(),
-		"no address may be claimed in a project whose namespace is absent")
+	require.Zero(t, s.ipam.storedAnywhere(t),
+		"no address may be left claimed in a project whose namespace is absent")
+	require.Empty(t, s.ipam.deleted(),
+		"the first create is the one that fails, so the rollback has nothing to release")
 
 	_, err = s.getInterface("unbootstrapped")
 	require.True(t, apierrors.IsNotFound(err), "nothing may be published without the namespace to allocate in")
@@ -650,24 +670,66 @@ func TestNetworkInterfaceClaimRejectsAMissingProjectNamespace(t *testing.T) {
 	}
 }
 
-// A namespace that cannot be read is not a namespace that is gone. Rejecting on
-// a blip would demote a claim for a condition that was never true.
-func TestNetworkInterfaceClaimRetriesAnUnreadableProjectNamespace(t *testing.T) {
+// A control plane that cannot answer is not a control plane without a
+// namespace, and neither is a project that no longer exists. Naming the
+// namespace on any refusal that happens to arrive as a NotFound would send an
+// operator to look at something that was never wrong.
+func TestNetworkInterfaceClaimNamesTheNamespaceOnlyWhenGone(t *testing.T) {
 	s := newScenario(t, true, []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol})
-	s.ipam.namespaceReadErr = apierrors.NewServiceUnavailable("the server is currently unable to handle the request")
 
-	claim := s.createClaim("unreadable", networkingv1alpha.NetworkInterfaceClaimSpec{
-		InterfaceName: "eth0",
-		IPFamilies:    []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol},
-		ReclaimPolicy: networkingv1alpha.NetworkInterfaceReclaimPolicyDelete,
-	})
+	for _, tc := range []struct {
+		claim   string
+		refusal error
+	}{
+		// The server is there and the namespace with it; the request only fails.
+		{"unavailable", apierrors.NewServiceUnavailable(
+			"the server is currently unable to handle the request")},
+		// A 404 about the object being written, not about where it was written.
+		{"otherobject", apierrors.NewNotFound(
+			ipamv1alpha1.SchemeGroupVersion.WithResource("ipclaims").GroupResource(), "unrelated-eth0-f-ipv6")},
+		// What a deleted project's path gives: a NotFound with no account of
+		// what was not found, raised before the request is even sent.
+		{"deletedproject", milo404()},
+		// A namespace 404, but naming a namespace this claim never addressed.
+		{"othernamespace", apierrors.NewNotFound(
+			corev1.Resource("namespaces"), "some-other-namespace")},
+	} {
+		name := tc.claim + "-eth0"
+		s.ipam.refuse(name+"-f-ipv6", tc.refusal)
 
-	_, err := s.reconciler.reconcileClaim(s.ctx, s.client, s.events, client.ObjectKeyFromObject(claim))
-	require.Error(t, err, "a failed read must be retried, not turned into a rejection")
+		claim := s.createClaim(name, networkingv1alpha.NetworkInterfaceClaimSpec{
+			InterfaceName: "eth0",
+			IPFamilies:    []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol},
+			ReclaimPolicy: networkingv1alpha.NetworkInterfaceReclaimPolicyDelete,
+		})
+		s.reconcile(claim)
 
-	pending := s.getClaim("unreadable")
-	require.NotEqual(t, networkingv1alpha.NetworkInterfaceClaimReasonProjectNamespaceNotFound,
-		conditionOf(pending, networkingv1alpha.NetworkInterfaceClaimReady).Reason)
+		_, err := s.getInterface(name)
+		require.True(t, apierrors.IsNotFound(err), "%s: nothing may be published from a failed allocation", tc.claim)
+
+		refused := s.getClaim(name)
+		for _, conditionType := range []string{
+			networkingv1alpha.NetworkInterfaceClaimAllocated,
+			networkingv1alpha.NetworkInterfaceClaimReady,
+		} {
+			condition := conditionOf(refused, conditionType)
+			require.NotEqual(t,
+				networkingv1alpha.NetworkInterfaceClaimReasonProjectNamespaceNotFound,
+				condition.Reason, "%s: %s", tc.claim, conditionType)
+			require.NotContains(t, condition.Message, testProjectNS,
+				"%s: a failure that is not about the namespace must not name it", tc.claim)
+		}
+	}
+}
+
+// milo404 is the error a request through a deleted project's path comes back
+// with: discovery 404s before the request is sent, so client-go wraps it. It
+// reads as a NotFound while saying nothing about what was missing, which is the
+// whole reason the namespace is identified by its details and not its code.
+func milo404() error {
+	return fmt.Errorf("failed to get server groups: %w",
+		apierrors.NewGenericServerResponse(
+			http.StatusNotFound, "get", schema.GroupResource{}, "", "the server could not find the requested resource", 0, false))
 }
 
 func TestNetworkInterfaceClaimRejectsFamilyTheNetworkDoesNotCarry(t *testing.T) {

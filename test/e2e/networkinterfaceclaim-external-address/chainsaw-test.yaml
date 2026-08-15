@@ -92,7 +92,7 @@ spec:
         - script:
             content: |
               set -eu
-              IPAM=$(git rev-parse --show-toplevel)/hack/ipam-tenant-kubectl.sh
+              IPAM=$(git rev-parse --show-toplevel)/hack/ipam-project-kubectl.sh
 
               external=$(kubectl -n ipam-e2e-alpha get networkinterfaceclaim nic-external -o jsonpath='{.status.externalAddresses[0].address}')
               internal=$(kubectl -n ipam-e2e-alpha get networkinterfaceclaim nic-external -o jsonpath='{.status.addresses[0].address}')

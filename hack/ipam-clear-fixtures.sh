@@ -20,12 +20,14 @@
 # "IPAllocation is bound to IPClaim ...; delete the claim instead" — so claims
 # go first and the allocations they held follow.
 #
-# Usage: ipam-clear-fixtures.sh <kube-context> [project...]
+# Usage: ipam-clear-fixtures.sh [project...]
+#
+# The kube-context argument this used to take is gone: each project is reached
+# through its own control-plane path on Milo, so there is no ambient context to
+# choose.
 
 set -euo pipefail
 
-CONTEXT="${1:?usage: ipam-clear-fixtures.sh <kube-context> [project...]}"
-shift
 PROJECTS=("$@")
 if [ ${#PROJECTS[@]} -eq 0 ]; then
   PROJECTS=(project-alpha project-beta)
@@ -36,20 +38,21 @@ KINDS="ipclaims ipallocations"
 
 here="$(cd "$(dirname "$0")" && pwd)"
 
-# Every call reaches IPAM as a project; a request without the project extras
-# reads nothing, which would make an empty result look like a clean tenant.
+# Every call reaches IPAM through a project's control-plane path; a request
+# that named no project would read nothing, which would make an empty result
+# look like a clean tenant.
 k() {
-  IPAM_KUBE_CONTEXT="$CONTEXT" "${here}/ipam-tenant-kubectl.sh" "$@"
+  "${here}/ipam-project-kubectl.sh" "$@"
 }
 
 # Positive control. Reading a type that always resolves proves the aggregated
-# API is reachable AND that this project's impersonation is accepted. Without
-# it, an unreachable cluster would make every delete below a no-op and this
-# script would report a clean tenant it never touched.
+# API is reachable through this project's path. Without it, an unreachable
+# front door would make every delete below a no-op and this script would report
+# a clean tenant it never touched.
 verify_reachable() {
   local proj="$1" out
   if ! out="$(k "$proj" get ipclasses 2>&1)"; then
-    echo "❌ cannot reach IPAM as ${proj}; refusing to report a clean tenant" >&2
+    echo "❌ cannot reach IPAM through ${proj}'s control-plane path; refusing to report a clean tenant" >&2
     echo "   ${out}" >&2
     exit 1
   fi

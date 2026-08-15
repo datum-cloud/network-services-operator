@@ -1,18 +1,23 @@
-# Two RBAC layers are required to reach IPAM as a project.
+# Reaching IPAM as a project is authorized in two places, by two different
+# control planes, and both grants have to exist.
 #
-# 1. Something impersonates a user plus the three iam.miloapis.com extras that
-#    carry the project. The kube-apiserver front proxy re-emits those extras as
-#    X-Remote-Extra-*, which is where IPAM reads the tenant from.
-# 2. IPAM authorizes through a delegated SubjectAccessReview against the host
-#    apiserver, so the IMPERSONATED user needs ordinary RBAC of its own — which
-#    is the role below.
+# 1. Milo authorizes the caller before its aggregator proxies anything. That
+#    grant lives in Milo's own store — config/dependencies/milo/bootstrap-in-milo.yaml.
+# 2. IPAM then authorizes through a delegated SubjectAccessReview against the
+#    KIND apiserver, which is still its delegated-authorization host. So the
+#    identity Milo forwarded needs ordinary RBAC here too — which is the role
+#    below.
 #
-# Layer 1 is no longer the operator's business. The operator addresses a
-# project by URL path and holds no impersonation grant at all; in this
-# environment the e2e Milo stand-in (test/e2e/milo-shim) terminates that path
-# and asserts the tenant, and its impersonation grant ships with it. The kind
-# admin credential the fixture seeder runs as is in system:masters and is
-# authorized for everything already.
+# Nothing impersonates any more. The operator addresses a project by URL path
+# and holds no impersonation grant at all; Milo resolves the project from the
+# path and forwards it as X-Remote-Extra-*, which is where IPAM reads the tenant
+# from. The identity IPAM authorizes is the operator's own.
+#
+# Why IPAM's delegated authorization still points at kind rather than at Milo:
+# under RBAC-only Milo the two answer the same question the same way, because
+# Milo's RBAC is root-scoped and knows nothing about projects either. Pointing
+# it at Milo would add a credential and a second RBAC universe and change no
+# decision. See test/e2e/README-milo.md.
 #
 # ipclasses is not optional: every claim resolves its class on create, so a
 # subject without it gets a 403 on every allocation.
@@ -45,10 +50,10 @@ roleRef:
   kind: ClusterRole
   name: nso-ipam-tenant
 subjects:
-  # The identity the Milo stand-in asserts once it has resolved a project from
-  # the request path. The test suites impersonate a different one, bound to this
-  # same role from test/e2e/fixtures/ipam/rbac.yaml — test identities do not
-  # belong in the deployment.
+  # The operator's own identity, as Milo authenticated it and forwarded it. It
+  # names no project: the path did that. The suites use a different identity,
+  # bound to this same role from test/e2e/fixtures/ipam/rbac.yaml — test
+  # identities do not belong in the deployment.
   - kind: User
     apiGroup: rbac.authorization.k8s.io
-    name: nso-ipam-agent
+    name: nso-manager

@@ -1,0 +1,21 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Milo, the control plane that fronts IPAM. It is what makes a project a real
+# thing in this environment rather than a string: the operator addresses a
+# project by URL path, and Milo resolves the project from that path and hands
+# IPAM the tenant.
+#
+# This is a deliberately small Milo. It is the apiserver and its storage, and
+# nothing else — no controller-manager, no gateway, no audit or tracing sinks,
+# no authorization provider. Project control-plane paths serve without any of
+# them.
+#
+# Read test/e2e/README-milo.md before assuming this environment covers
+# per-project authorization. It does not.
+resources:
+  - namespace.yaml
+  - etcd.yaml
+  - certificates.yaml
+  - auth.yaml
+  - apiserver.yaml

@@ -1,0 +1,28 @@
+---
+# Milo authenticates by static token here. Its own test overlay does the same:
+# the alternative is the zitadel provider, and an OIDC stack is not what these
+# suites are testing.
+#
+# Three identities, and the split between them is load-bearing:
+#
+#   e2e-admin           bootstrap only — creates the Projects and registers the
+#                       IPAM APIService. system:masters, so it bypasses RBAC.
+#   nso-manager         the operator's own identity. This is the point of
+#                       addressing projects by path: the operator authenticates
+#                       as itself and Milo derives the project from the URL,
+#                       instead of the operator asserting a tenant.
+#   e2e-tenant-tester   the suites and the fixture seeder. Deliberately NOT
+#                       system:masters, so a suite cannot pass by privilege.
+#
+# The last two are authorized by the ClusterRoles in rbac.yaml.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: milo-apiserver-auth-tokens
+  namespace: milo-system
+type: Opaque
+stringData:
+  tokens.csv: |
+    e2e-milo-admin-token,e2e-admin,e2e-admin,"system:masters"
+    nso-manager-token,nso-manager,nso-manager,"system:authenticated"
+    e2e-tenant-tester-token,e2e-tenant-tester,e2e-tenant-tester,"system:authenticated"

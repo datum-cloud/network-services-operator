@@ -49,7 +49,6 @@ images:
     digest: sha256:4fb11adf3f748d41f5e3d7f9d3357eb7aafe211e356297a0d845d579dacffe8f
 
 patches:
-  - path: patches/apiservice-patch.yaml
   - path: patches/deployment-patch.yaml
     target:
       kind: Deployment
@@ -59,6 +58,10 @@ patches:
       kind: Deployment
       name: ipam-apiserver
   - path: patches/networkpolicy-apiserver-egress-patch.yaml
+    target:
+      kind: NetworkPolicy
+      name: ipam-apiserver
+  - path: patches/networkpolicy-apiserver-ingress-patch.yaml
     target:
       kind: NetworkPolicy
       name: ipam-apiserver

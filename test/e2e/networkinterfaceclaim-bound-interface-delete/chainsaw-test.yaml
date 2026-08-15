@@ -88,7 +88,7 @@ spec:
         - script:
             content: |
               set -eu
-              IPAM=$(git rev-parse --show-toplevel)/hack/ipam-tenant-kubectl.sh
+              IPAM=$(git rev-parse --show-toplevel)/hack/ipam-project-kubectl.sh
               record="${TMPDIR:-/tmp}/nic-boundifdel-addresses"
               "$IPAM" project-alpha -n default get ipclaim \
                 -o 'jsonpath={range .items[*]}{.metadata.name}={.status.allocatedCIDR} {end}' > "$record"
@@ -109,7 +109,7 @@ spec:
           script:
             content: |
               set -u
-              IPAM=$(git rev-parse --show-toplevel)/hack/ipam-tenant-kubectl.sh
+              IPAM=$(git rev-parse --show-toplevel)/hack/ipam-project-kubectl.sh
               ipam() { "$IPAM" project-alpha -n default "$@"; }
 
               kubectl -n ipam-e2e-alpha delete networkinterfaceclaim nic-boundifdel --ignore-not-found --timeout=60s
@@ -151,7 +151,7 @@ spec:
         - script:
             content: |
               set -eu
-              IPAM=$(git rev-parse --show-toplevel)/hack/ipam-tenant-kubectl.sh
+              IPAM=$(git rev-parse --show-toplevel)/hack/ipam-project-kubectl.sh
               ipam() { "$IPAM" project-alpha -n default "$@"; }
 
               before=$(cat "${TMPDIR:-/tmp}/nic-boundifdel-addresses")
@@ -197,7 +197,7 @@ spec:
         - script:
             content: |
               set -eu
-              IPAM=$(git rev-parse --show-toplevel)/hack/ipam-tenant-kubectl.sh
+              IPAM=$(git rev-parse --show-toplevel)/hack/ipam-project-kubectl.sh
               ipam() { "$IPAM" project-alpha -n default "$@"; }
 
               before=$(cat "${TMPDIR:-/tmp}/nic-boundifdel-addresses")
@@ -233,7 +233,7 @@ spec:
         - script:
             content: |
               set -eu
-              IPAM=$(git rev-parse --show-toplevel)/hack/ipam-tenant-kubectl.sh
+              IPAM=$(git rev-parse --show-toplevel)/hack/ipam-project-kubectl.sh
               ipam() { "$IPAM" project-alpha -n default "$@"; }
 
               ipam get ipclass datum-public-v4 >/dev/null \

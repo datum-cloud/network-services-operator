@@ -1,0 +1,99 @@
+---
+# Milo's storage. Upstream ships etcd as a Flux HelmRelease; this environment has
+# no Flux and installing it to obtain one StatefulSet is more machinery than the
+# StatefulSet itself. The image is the one the kind node already carries, so the
+# node pulls nothing.
+#
+# Single member, no TLS, emptyDir: this etcd holds only what a run puts in it and
+# is discarded with the cluster.
+apiVersion: v1
+kind: Service
+metadata:
+  name: etcd
+  namespace: milo-system
+  labels:
+    app.kubernetes.io/name: etcd
+    app.kubernetes.io/component: etcd
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: etcd
+  ports:
+    - name: client
+      port: 2379
+      targetPort: client
+    - name: peer
+      port: 2380
+      targetPort: peer
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: etcd
+  namespace: milo-system
+  labels:
+    app.kubernetes.io/name: etcd
+    app.kubernetes.io/component: etcd
+spec:
+  serviceName: etcd
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: etcd
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: etcd
+        app.kubernetes.io/component: etcd
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        fsGroup: 65534
+      containers:
+        - name: etcd
+          image: registry.k8s.io/etcd:3.6.6-0
+          imagePullPolicy: IfNotPresent
+          command:
+            - etcd
+            - --name=etcd-0
+            - --data-dir=/var/lib/etcd
+            - --listen-client-urls=http://0.0.0.0:2379
+            - --advertise-client-urls=http://etcd.milo-system.svc.cluster.local:2379
+            - --listen-peer-urls=http://0.0.0.0:2380
+            - --initial-advertise-peer-urls=http://etcd-0.etcd.milo-system.svc.cluster.local:2380
+            - --initial-cluster=etcd-0=http://etcd-0.etcd.milo-system.svc.cluster.local:2380
+            - --initial-cluster-state=new
+            # The apiserver's watch cache replays from etcd on reconnect; the
+            # default 5-minute compaction is fine for a run this short.
+            - --auto-compaction-retention=1
+          ports:
+            - name: client
+              containerPort: 2379
+            - name: peer
+              containerPort: 2380
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: client
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: client
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/etcd
+      volumes:
+        - name: data
+          emptyDir: {}

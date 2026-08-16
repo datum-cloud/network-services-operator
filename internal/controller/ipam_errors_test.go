@@ -3,16 +3,23 @@
 package controller
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	ipamv1alpha1 "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
 	"go.miloapis.com/ipam/pkg/ipamerrors"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
@@ -79,6 +86,65 @@ func TestClassifyAllocationFailureDoesNotGuess(t *testing.T) {
 	require.Equal(t, allocationFailureUnknown, classifyAllocationFailure(errors.New("connection refused")))
 	require.Equal(t, allocationFailureUnknown,
 		classifyAllocationFailure(apierrors.NewInternalError(errors.New("boom"))))
+}
+
+// The refusal a missing namespace produces is not something to assume the shape
+// of: it decides whether a claim is told its project has no namespace or is told
+// something else entirely. So the discriminator is held against a real API
+// server, alongside the other refusals that reach the same code path and must
+// not be read as this one.
+func TestNamespaceNotFoundIsReadOffTheServersOwnRefusal(t *testing.T) {
+	_, cfg := startNetworkInterfaceEnv(t)
+	ctx := context.Background()
+
+	testScheme := runtime.NewScheme()
+	require.NoError(t, clientgoscheme.AddToScheme(testScheme))
+	require.NoError(t, ipamv1alpha1.AddToScheme(testScheme))
+
+	cl, err := client.New(cfg, client.Options{Scheme: testScheme})
+	require.NoError(t, err)
+
+	const missing = "no-such-namespace"
+	inMissing := func(namespace string) client.Object {
+		return &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: "probe"}}
+	}
+
+	// The write the namespace lifecycle admission plugin refuses. This is the
+	// one case the claim is told about, and it names the namespace itself.
+	refused := cl.Create(ctx, inMissing(missing))
+	require.Error(t, refused)
+	require.True(t, isNamespaceNotFound(refused, missing), "actual refusal: %v", refused)
+
+	// The same refusal read against a namespace this caller never addressed.
+	require.False(t, isNamespaceNotFound(refused, "some-other-namespace"))
+
+	// A read in a missing namespace is a 404 about the object, so it says
+	// nothing about the namespace and must not be read as if it did.
+	var read corev1.ConfigMap
+	readErr := cl.Get(ctx, client.ObjectKey{Namespace: missing, Name: "probe"}, &read)
+	require.True(t, apierrors.IsNotFound(readErr))
+	require.False(t, isNamespaceNotFound(readErr, missing), "actual refusal: %v", readErr)
+
+	// An API this build knows but the server does not serve, which is what an
+	// IPAM the platform has not installed looks like. It fails in discovery,
+	// with no status at all.
+	unserved := cl.Create(ctx, &ipamv1alpha1.IPClaim{
+		ObjectMeta: metav1.ObjectMeta{Namespace: missing, Name: "probe"}})
+	require.Error(t, unserved)
+	require.False(t, isNamespaceNotFound(unserved, missing), "actual refusal: %v", unserved)
+
+	// A project path that 404s, as a deleted project's does. It also fails in
+	// discovery, and reads as a NotFound while naming nothing, which is why the
+	// status code alone cannot carry this decision.
+	pathConfig := rest.CopyConfig(cfg)
+	pathConfig.Host += "/apis/resourcemanager.miloapis.com/v1alpha1/projects/deleted/control-plane"
+	pathClient, err := client.New(pathConfig, client.Options{Scheme: testScheme})
+	require.NoError(t, err)
+
+	gone := pathClient.Create(ctx, inMissing("default"))
+	require.Error(t, gone)
+	require.True(t, apierrors.IsNotFound(gone), "a deleted project's path reads as a NotFound")
+	require.False(t, isNamespaceNotFound(gone, "default"), "actual refusal: %v", gone)
 }
 
 // An operator may upgrade this operator before IPAM. An older server answers

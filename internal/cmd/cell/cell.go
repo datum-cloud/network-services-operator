@@ -285,11 +285,7 @@ func newIPAMClientFactory(serverConfig config.CellControllerManager) (controller
 		return nil, fmt.Errorf("unable to build IPAM scheme: %w", err)
 	}
 
-	ipamClients, err := controller.NewIPAMClientFactory(
-		ipamRestConfig,
-		ipamScheme,
-		serverConfig.IPAM.ImpersonateUsername,
-	)
+	ipamClients, err := controller.NewIPAMClientFactory(ipamRestConfig, ipamScheme)
 	if err != nil {
 		return nil, fmt.Errorf("unable to build IPAM client factory: %w", err)
 	}

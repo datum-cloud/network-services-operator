@@ -77,6 +77,33 @@ vars:
   DNS_BUNDLE_TAG: v0.5.1
   DNS_BUNDLE_DIGEST: sha256:cd7dd3a0d2fbbbaa029f2b5e083723a675e88c89e56f999257ff4bd87221cd4a
   DNS_STAGE: '{{.TMP_DIR}}/.dns-bundle'
+  # Milo, the control plane that fronts IPAM. The operator addresses a project
+  # by control-plane path and Milo is what resolves the project from that path,
+  # so nothing about project-scoped IPAM is exercised without it.
+  #
+  # Its manifests come from the bundle milo-os/milo publishes on every release,
+  # and its image from ghcr.io — both at the same version, so the flags the
+  # manifests set and the binary that reads them stay in lockstep. Nothing is
+  # built locally and the node pulls the image anonymously, like IPAM's.
+  #
+  # Digest, not tag: the tag identifies the release, but a tag can be
+  # republished. The tag is kept alongside for legibility. Update both together,
+  # and with the image digest in config/dependencies/milo/root-kustomization.yaml
+  # — milo-bundle fails if the artifact does not carry MILO_BUNDLE_TAG.
+  MILO_BUNDLE_REPO: ghcr.io/milo-os/milo-kustomize
+  MILO_BUNDLE_TAG: v0.32.5
+  MILO_BUNDLE_DIGEST: sha256:975896513b3afda4400eb09f8a5602000c52fd35f14284258803266f5d2ee1a9
+  MILO_STAGE: '{{.TMP_DIR}}/.milo-bundle'
+  # The NodePort Milo's Service publishes, mapped to the same host port by
+  # config/tools/kind/upstream-cluster.yaml. The chainsaw suites run on the host
+  # and reach Milo through it.
+  MILO_NODE_PORT: 32450
+  # Kubeconfigs written for host-side callers. The admin one bootstraps Milo;
+  # the per-project ones are what the suites and the fixture seeder use, and
+  # their server URL carries the project's control-plane path.
+  MILO_ADMIN_KUBECONFIG: '{{.TMP_DIR}}/.milo-admin.yaml'
+  MILO_ROOT_KUBECONFIG: '{{.TMP_DIR}}/.milo-root.yaml'
+
   CRANE: '{{.REPO}}/bin/crane'
   CRANE_VERSION: v0.21.7
   IPAM_PROJECTS: project-alpha project-beta
@@ -118,7 +145,7 @@ tasks:
       - echo "tools ready in {{.REPO}}/bin"
 
   up:
-    desc: "Bring the canonical two-cluster prod-fidelity test env ONLINE (clusters + EG v1.7.4 + ext-server + Coraza data plane + NSO manager)."
+    desc: "Bring the canonical two-cluster prod-fidelity test env ONLINE (clusters + Milo + IPAM + EG v1.7.4 + ext-server + Coraza data plane + NSO manager). IPAM is aggregated into Milo and addressed by project control-plane path; read test/e2e/README-milo.md before treating this env as evidence about per-project AUTHORIZATION, which it does not test."
     cmds:
       - echo "🚀 test-infra:up — building nso-upstream + nso-downstream"
       - task: clusters
@@ -130,21 +157,40 @@ tasks:
       - task: downstream-namespaces
       - task: cert-manager-upstream
       - task: cert-manager-downstream
-      # Fetched early: it depends on nothing in the cluster, and pulling it here
-      # surfaces a registry problem before the long build below.
+      # Fetched early: they depend on nothing in the cluster, and pulling them
+      # here surfaces a registry problem before the long build below.
       - task: ipam-bundle
+      - task: milo-bundle
       - task: nso-image
       - task: dns-crds
-      # The manager mounts this secret, so it has to exist before the pod does.
-      - task: ipam-kubeconfig
       - task: prepare-upstream
-      # IPAM's serving certificate cannot issue until upstream cert-manager is
-      # running, and upstream cert-manager crashloops with "the Gateway API CRDs
-      # do not seem to be present" until prepare-upstream installs them. Every
-      # IPAM step that touches the cluster therefore has to follow it.
+      # Everything that needs a certificate has to follow prepare-upstream.
+      # Upstream cert-manager crashloops with "the Gateway API CRDs do not seem
+      # to be present" until prepare-upstream installs them, so before this
+      # point nothing can be issued at all.
+      #
+      # That is why Milo lands here rather than alongside the other
+      # infrastructure: its serving certificate and the front-proxy client
+      # certificate its aggregator authenticates to IPAM with both come from
+      # cert-manager. The stand-in Milo this replaced self-signed with openssl
+      # precisely to sit earlier in this list; a real Milo does not need to.
+      - task: milo-deploy
+      - task: milo-wait
+      - task: milo-kubeconfigs
+      # The manager mounts this secret. It is created a moment after the pod
+      # rather than before it now, because its contents — Milo's address and CA
+      # — do not exist until Milo does. The pod waits in ContainerCreating and
+      # starts as soon as this lands; wait-ready is what gates on the result.
+      - task: ipam-kubeconfig
       - task: cnpg-operator
       - task: ipam-deploy
       - task: ipam-wait
+      # Projects, Milo-side RBAC, and IPAM's registration as an aggregated API
+      # inside Milo. Needs IPAM's serving CA, so it follows ipam-wait.
+      - task: milo-bootstrap
+      # Nothing may assume the front door works: prove it with a real request
+      # through a project path before any suite depends on one.
+      - task: milo-ipam-gate
       - task: ipam-fixtures
       - task: ipam-namespaces
       - task: eg-downstream
@@ -169,7 +215,10 @@ tasks:
       - '{{.KIND}} delete cluster --name {{.UPSTREAM_CLUSTER}} || true'
       - '{{.KIND}} delete cluster --name {{.DOWNSTREAM_CLUSTER}} || true'
       - rm -f {{.TMP_DIR}}/.kind-{{.DOWNSTREAM_CLUSTER}}-internal.yaml {{.TMP_DIR}}/.kind-{{.UPSTREAM_CLUSTER}}.yaml {{.TMP_DIR}}/.kind-{{.DOWNSTREAM_CLUSTER}}.yaml
-      - rm -rf {{.IPAM_STAGE}} {{.DNS_STAGE}}
+      # The Milo kubeconfigs carry a bearer token. They go with the cluster that
+      # issued them rather than being left behind for the next env to inherit.
+      - rm -f {{.MILO_ADMIN_KUBECONFIG}} {{.MILO_ROOT_KUBECONFIG}} {{.TMP_DIR}}/.milo-project-*.yaml
+      - rm -rf {{.IPAM_STAGE}} {{.DNS_STAGE}} {{.MILO_STAGE}}
       - echo "✨ done."
 
   clusters:
@@ -491,19 +540,38 @@ tasks:
     cmds:
       - echo "🔧 deploying IPAM (upstream)"
       - task: ipam-certmanager-ready
-      # The aggregated apiserver verifies the front proxy with
-      # --requestheader-client-ca-file. In kind that CA lives in the host's
-      # extension-apiserver-authentication ConfigMap, so it has to be copied
-      # into ipam-system before the pod starts — without it every impersonated
-      # extra arrives unauthenticated and every claim reads an empty tenant.
+      # The aggregated apiserver verifies its front proxy with
+      # --requestheader-client-ca-file, and only then believes the X-Remote-*
+      # headers that carry the caller and the project. That CA used to be the
+      # kind apiserver's, read out of its extension-apiserver-authentication
+      # ConfigMap, because kind was the aggregator. Milo is the aggregator now,
+      # so the CA IPAM must trust is the one that signed Milo's front-proxy
+      # client certificate.
+      #
+      # Get this wrong and the failure is quiet rather than loud: the headers
+      # arrive unauthenticated, so every request reads an empty tenant and sees
+      # an empty project instead of being refused.
       - kubectl --context {{.UPSTREAM_CTX}} create namespace ipam-system --dry-run=client -o yaml | kubectl --context {{.UPSTREAM_CTX}} apply -f -
       - |
-        kubectl --context {{.UPSTREAM_CTX}} -n kube-system get configmap extension-apiserver-authentication \
-          -o jsonpath='{.data.requestheader-client-ca-file}' > {{.TMP_DIR}}/.ipam-requestheader-ca.crt
+        set -e
+        kubectl --context {{.UPSTREAM_CTX}} -n milo-system get secret milo-ca-tls \
+          -o jsonpath='{.data.ca\.crt}' | base64 -d > {{.TMP_DIR}}/.ipam-requestheader-ca.crt
+        if [ ! -s {{.TMP_DIR}}/.ipam-requestheader-ca.crt ]; then
+          echo "❌ Milo's CA is empty; milo-deploy/milo-wait must run before ipam-deploy" >&2
+          exit 1
+        fi
         kubectl --context {{.UPSTREAM_CTX}} -n ipam-system create configmap control-plane-ca \
           --from-file=ca.crt={{.TMP_DIR}}/.ipam-requestheader-ca.crt \
           --dry-run=client -o yaml | kubectl --context {{.UPSTREAM_CTX}} apply -f -
       - '{{.KUSTOMIZE}} build {{.IPAM_STAGE}} | kubectl --context {{.UPSTREAM_CTX}} apply --server-side=true --force-conflicts -f -'
+      # The bundle registers IPAM as an aggregated API in the KIND apiserver.
+      # That is the old front door and it has to go: leaving it would let a
+      # caller reach IPAM without passing through Milo, and a suite that
+      # accidentally did so would pass while proving nothing about project
+      # routing. Milo carries the only registration now (milo-bootstrap).
+      - |
+        kubectl --context {{.UPSTREAM_CTX}} delete apiservice v1alpha1.ipam.miloapis.com \
+          --ignore-not-found=true
 
   ipam-certmanager-ready:
     desc: "Make sure upstream cert-manager is actually running before anything asks it for a certificate. It exits at startup when the Gateway-API CRDs are absent, so on a fresh env it is in CrashLoopBackOff by the time prepare-upstream installs them — and the backoff can be minutes long. Restart it rather than wait the backoff out."
@@ -554,31 +622,260 @@ tasks:
       # left over from a previous revision that are still terminating, and the
       # wait then fails on a pod that is on its way out.
       - kubectl --context {{.UPSTREAM_CTX}} -n ipam-system rollout status deploy/ipam-apiserver --timeout=300s
-      - echo "⏳ waiting for the aggregated APIService"
-      - kubectl --context {{.UPSTREAM_CTX}} wait --for=condition=Available apiservice/v1alpha1.ipam.miloapis.com --timeout=180s
-      - echo "✅ IPAM serving ipam.miloapis.com/v1alpha1"
+      # There is no APIService to wait on here any more: IPAM is aggregated into
+      # Milo, not into kind. Readiness of the aggregation is milo-ipam-gate's
+      # job, and it asks a stronger question than a condition — it reads real
+      # objects through a real project path.
+      - echo "✅ IPAM apiserver rolled out"
+
+  milo-bundle:
+    desc: "Fetch the published Milo manifest bundle from ghcr.io and assemble the composed deployment in a staging directory. Pinned by digest, and verified to carry the pinned release tag, so a republished tag cannot silently change what is deployed. Anonymous pull — CI needs no registry credentials."
+    cmds:
+      - |
+        set -e
+        stage="{{.MILO_STAGE}}"
+        if [ -f "$stage/.digest" ] && [ "$(cat "$stage/.digest")" = "{{.MILO_BUNDLE_DIGEST}}" ]; then
+          echo "🚪 Milo bundle already staged ({{.MILO_BUNDLE_TAG}})" >&2
+        else
+          echo "🚪 fetching {{.MILO_BUNDLE_REPO}}:{{.MILO_BUNDLE_TAG}}" >&2
+          rev=$({{.REPO}}/hack/fetch-oci-bundle.sh \
+            {{.CRANE}} {{.CRANE_VERSION}} \
+            {{.MILO_BUNDLE_REPO}} {{.MILO_BUNDLE_DIGEST}} {{.MILO_BUNDLE_TAG}} "$stage/bundle")
+          echo "✅ fetched $rev" >&2
+        fi
+        # Refreshed every run: these come from the working tree, so an edit to
+        # the overlay or a patch must reach the staged build without re-pulling.
+        rm -rf "$stage/overlay" "$stage/patches"
+        cp -R "{{.REPO}}/config/dependencies/milo/overlay" "$stage/overlay"
+        cp -R "{{.REPO}}/config/dependencies/milo/patches" "$stage/patches"
+        cp "{{.REPO}}/config/dependencies/milo/root-kustomization.yaml" "$stage/kustomization.yaml"
+        echo "{{.MILO_BUNDLE_DIGEST}}" > "$stage/.digest"
+
+  milo-render:
+    desc: "Render the composed Milo deployment to stdout. What milo-deploy applies, without applying it — the composed root is assembled at task time, so this is the only way to review it."
+    deps:
+      - milo-bundle
+    cmds:
+      - '{{.KUSTOMIZE}} build {{.MILO_STAGE}}'
+
+  milo-deploy:
+    deps:
+      - milo-bundle
+    desc: "Deploy Milo (apiserver + etcd) to the upstream cluster. Milo is the front door: the operator and the suites address a project by control-plane path, and Milo is what turns that path into a tenant. Pinned by MILO_BUNDLE_TAG."
+    cmds:
+      - echo "🚪 deploying Milo {{.MILO_BUNDLE_TAG}} (upstream)"
+      # cert-manager issues Milo's serving cert and its front-proxy client cert,
+      # so it has to be running first. prepare-upstream is what unblocks it; see
+      # the note on ipam-certmanager-ready.
+      - task: ipam-certmanager-ready
+      - '{{.KUSTOMIZE}} build {{.MILO_STAGE}} | kubectl --context {{.UPSTREAM_CTX}} apply --server-side=true --force-conflicts -f -'
+
+  milo-wait:
+    desc: "Gate on Milo actually serving. etcd first — Milo exits at startup if it cannot reach its storage within the deadline, so a slow etcd shows up as a crashloop with the cause several hundred log lines back."
+    cmds:
+      - echo "⏳ waiting for Milo's etcd"
+      - kubectl --context {{.UPSTREAM_CTX}} -n milo-system rollout status statefulset/etcd --timeout=180s
+      - echo "⏳ waiting for Milo's certificates"
+      - kubectl --context {{.UPSTREAM_CTX}} -n milo-system wait certificate/milo-apiserver-tls --for=condition=Ready --timeout=180s
+      - kubectl --context {{.UPSTREAM_CTX}} -n milo-system wait certificate/milo-front-proxy-client --for=condition=Ready --timeout=180s
+      - echo "⏳ waiting for the Milo apiserver"
+      - kubectl --context {{.UPSTREAM_CTX}} -n milo-system rollout status deploy/milo-apiserver --timeout=300s
+      - echo "✅ Milo serving"
+
+  milo-kubeconfigs:
+    desc: "Write the host-side Milo kubeconfigs to TMPDIR: one admin, one at Milo's root (no project), and one per project whose server URL carries that project's control-plane path. The per-project ones are how the suites and the fixture seeder reach IPAM — there is no impersonation anywhere in them."
+    cmds:
+      - echo "🔑 writing Milo kubeconfigs to {{.TMP_DIR}}"
+      - |
+        set -e
+        CA=$(kubectl --context {{.UPSTREAM_CTX}} -n milo-system get secret milo-ca-tls -o jsonpath='{.data.ca\.crt}')
+        if [ -z "$CA" ]; then echo "❌ Milo CA secret is empty" >&2; exit 1; fi
+        # 127.0.0.1 via the mapped NodePort: on macOS the kind node's own
+        # network is not host-routable. The cert is issued for the in-cluster
+        # service name, so the SNI/verification name is set explicitly rather
+        # than disabling verification.
+        write() {
+          out=$1; token=$2; path=$3
+          cat > "$out" <<EOF
+        apiVersion: v1
+        kind: Config
+        current-context: milo
+        clusters:
+        - name: milo
+          cluster:
+            server: https://127.0.0.1:{{.MILO_NODE_PORT}}${path}
+            certificate-authority-data: ${CA}
+            tls-server-name: milo-apiserver.milo-system.svc
+        users:
+        - name: milo
+          user:
+            token: ${token}
+        contexts:
+        - name: milo
+          context:
+            cluster: milo
+            user: milo
+        EOF
+        }
+        write {{.MILO_ADMIN_KUBECONFIG}} e2e-milo-admin-token ""
+        # The root kubeconfig names no project. It is not a leftover: the
+        # isolation suite uses it as its negative control, and it must reach
+        # IPAM through the very same front door while reading nothing.
+        write {{.MILO_ROOT_KUBECONFIG}} e2e-tenant-tester-token ""
+        for proj in {{.IPAM_PROJECTS}}; do
+          write "{{.TMP_DIR}}/.milo-${proj}.yaml" e2e-tenant-tester-token \
+            "/apis/resourcemanager.miloapis.com/v1alpha1/projects/${proj}/control-plane"
+        done
+      - kubectl --kubeconfig {{.MILO_ADMIN_KUBECONFIG}} get --raw /healthz > /dev/null
+      - echo "✅ Milo reachable from the host on 127.0.0.1:{{.MILO_NODE_PORT}}"
+
+  milo-bootstrap:
+    desc: "Create the Projects, the Milo-side RBAC, and IPAM's registration as an aggregated API INSIDE Milo. Everything here is addressed with the Milo kubeconfig, not the kind one."
+    deps:
+      - milo-kubeconfigs
+    cmds:
+      - echo "🌱 bootstrapping Milo (projects, RBAC, IPAM aggregation)"
+      - kubectl --kubeconfig {{.MILO_ADMIN_KUBECONFIG}} apply -f config/dependencies/milo/bootstrap-in-milo.yaml
+      # The namespace addresses land in, inside each project's own control
+      # plane. The operator READS this and refuses to allocate if it is absent
+      # — deliberately, because creating it would be writing into a customer's
+      # project on their behalf (internal/controller/ipam_project_client.go).
+      #
+      # In production the namespace comes with the project: milo-controller-
+      # manager's ProjectController writes it on every reconcile. This Milo is
+      # the apiserver alone, with no controller-manager to run that
+      # (config/dependencies/milo/root-kustomization.yaml), so the step below stands
+      # in for that one write, label included. Without it every claim is
+      # rejected with ProjectNamespaceNotFound and the interface suites never
+      # see an Allocated condition.
+      #
+      # Created through each project's control-plane path, so it lands in that
+      # project's storage rather than at Milo's root.
+      - |
+        set -e
+        for proj in {{.IPAM_PROJECTS}}; do
+          path=/apis/resourcemanager.miloapis.com/v1alpha1/projects/${proj}/control-plane
+          if kubectl --kubeconfig {{.MILO_ADMIN_KUBECONFIG}} \
+               get --raw "${path}/api/v1/namespaces/default" >/dev/null 2>&1; then
+            echo "  ✅ ${proj} already has a default namespace"
+            continue
+          fi
+          echo '{"apiVersion":"v1","kind":"Namespace","metadata":{"name":"default","labels":{"miloapis.com/project-default":"true"}}}' \
+            | kubectl --kubeconfig {{.MILO_ADMIN_KUBECONFIG}} \
+                create --raw "${path}/api/v1/namespaces" -f - >/dev/null
+          echo "  ✅ created default namespace in ${proj}"
+        done
+      # IPAM's serving CA, so Milo's aggregator verifies a real chain rather
+      # than skipping verification. In the kind cluster cert-manager's cainjector
+      # wrote this for us; Milo is a different control plane and cainjector
+      # cannot see into it, so it is copied across explicitly.
+      - |
+        set -e
+        # The secret the ipam-ca Certificate issues into, resolved from the
+        # Certificate rather than hardcoded: the bundle names it ipam-ca-secret,
+        # not ipam-ca, and a wrong guess here fails as a NotFound several steps
+        # from anything to do with aggregation.
+        IPAM_CA_SECRET=$(kubectl --context {{.UPSTREAM_CTX}} -n ipam-system get certificate ipam-ca -o jsonpath='{.spec.secretName}')
+        IPAM_CA=$(kubectl --context {{.UPSTREAM_CTX}} -n ipam-system get secret "$IPAM_CA_SECRET" -o jsonpath='{.data.ca\.crt}')
+        if [ -z "$IPAM_CA" ]; then echo "❌ secret ${IPAM_CA_SECRET} has no ca.crt" >&2; exit 1; fi
+        cat <<EOF | kubectl --kubeconfig {{.MILO_ADMIN_KUBECONFIG}} apply -f -
+        apiVersion: apiregistration.k8s.io/v1
+        kind: APIService
+        metadata:
+          name: v1alpha1.ipam.miloapis.com
+        spec:
+          group: ipam.miloapis.com
+          version: v1alpha1
+          groupPriorityMinimum: 1000
+          versionPriority: 15
+          caBundle: ${IPAM_CA}
+          service:
+            name: ipam-apiserver
+            namespace: ipam-system
+            port: 443
+        EOF
+      # Milo's aggregator refuses to proxy an APIService that is not marked
+      # Available, and Milo's apiserver never marks a REMOTE one: it sets
+      # DisableRemoteAvailableConditionController (cmd/milo/apiserver/config.go).
+      # In production the condition is written by milo-controller-manager's
+      # RemoteAPIServiceAvailabilityReconciler, which sets Available=True
+      # unconditionally — it performs no probe of any kind. Writing it here
+      # produces the same object from the same evidence; the reconciler is not
+      # deployed because it would drag in the whole controller-manager and an
+      # infrastructure-cluster CRD set to perform one unconditional write.
+      #
+      # This is not the readiness gate. milo-ipam-gate is, and it makes a real
+      # request through a project path — strictly more evidence than the
+      # production mechanism collects. See test/e2e/README-milo.md.
+      - |
+        kubectl --kubeconfig {{.MILO_ADMIN_KUBECONFIG}} patch apiservice v1alpha1.ipam.miloapis.com \
+          --subresource=status --type=merge -p '{"status":{"conditions":[{"type":"Available","status":"True","reason":"Remote","message":"Availability asserted by the environment, mirroring Milo'"'"'s RemoteAPIServiceAvailabilityReconciler; readiness is gated by milo-ipam-gate","lastTransitionTime":"2026-01-01T00:00:00Z"}]}}'
+
+  milo-ipam-gate:
+    desc: "Prove the front door works before anything depends on it: read IPAM through each project's control-plane path, and confirm that the SAME identity at Milo's root reads nothing. This is what makes the hand-written Available condition safe — a dead or unreachable IPAM fails here rather than surfacing as an unexplained 503 inside a suite. It exercises BOTH authorization layers, so it also catches a missing grant on either side."
+    deps:
+      - milo-kubeconfigs
+      # The gate reads as e2e-tenant-tester, and that identity is authorized
+      # twice: by Milo before its aggregator proxies, and by IPAM afterwards
+      # through a delegated SubjectAccessReview against the kind apiserver.
+      # ipam-tenant-rbac is the second half. Without it the gate fails with a
+      # Forbidden from IPAM that reads exactly like a Milo denial.
+      - ipam-tenant-rbac
+    cmds:
+      - echo "🔍 proving IPAM is reachable through Milo's project paths"
+      - |
+        set -e
+        for proj in {{.IPAM_PROJECTS}}; do
+          # Keep the server's own words. A 403 here means a missing grant on one
+          # of the two authorization layers and a 503 means the aggregation is
+          # not working — swallowing the body makes those indistinguishable.
+          if ! out=$(kubectl --kubeconfig {{.TMP_DIR}}/.milo-${proj}.yaml \
+                 get --raw /apis/ipam.miloapis.com/v1alpha1/ippools 2>&1); then
+            echo "❌ cannot read IPAM through ${proj}'s control-plane path:" >&2
+            echo "   ${out}" >&2
+            echo "   milo:  kubectl --context {{.UPSTREAM_CTX}} -n milo-system logs deploy/milo-apiserver" >&2
+            echo "   ipam:  kubectl --context {{.UPSTREAM_CTX}} -n ipam-system logs deploy/ipam-apiserver" >&2
+            exit 1
+          fi
+          echo "  ✅ ${proj}"
+        done
+      # The root path must reach IPAM and read nothing. If it 404s, the
+      # aggregation is not registered and the per-project reads above were
+      # answered by something else; if it returns rows, the project extras are
+      # not scoping anything and every isolation assertion downstream is void.
+      - |
+        set -e
+        pools=$(kubectl --kubeconfig {{.MILO_ROOT_KUBECONFIG}} \
+          get --raw /apis/ipam.miloapis.com/v1alpha1/ippools) \
+          || { echo "❌ Milo's root path cannot reach IPAM at all" >&2; exit 1; }
+        count=$(printf '%s' "$pools" | tr ',' '\n' | grep -c '"kind":"IPPool"' || true)
+        if [ "$count" != "0" ]; then
+          echo "❌ Milo's root path read ${count} IPPools; it holds no project and must read none" >&2
+          exit 1
+        fi
+        echo "  ✅ root path reaches IPAM and reads nothing"
 
   ipam-kubeconfig:
-    desc: "Wire the NSO manager to IPAM: mint a token for its ServiceAccount and publish it as the ipam-cluster-kubeconfig secret on the upstream cluster. The manager authenticates with this and sets the project impersonation per request; the RBAC that lets it do so ships in config/dependencies/ipam/rbac.yaml."
+    desc: "Wire the NSO manager to IPAM through Milo: publish the ipam-cluster-kubeconfig secret naming Milo's in-cluster address. The manager rewrites this server's PATH to a project's control plane and sends nothing else, so what it points at has to be something that serves those paths."
     cmds:
-      - echo "🔗 wiring NSO manager -> IPAM (secret ipam-cluster-kubeconfig)"
+      - echo "🔗 wiring NSO manager -> Milo -> IPAM (secret ipam-cluster-kubeconfig)"
       - kubectl --context {{.UPSTREAM_CTX}} create namespace network-services-operator-system --dry-run=client -o yaml | kubectl --context {{.UPSTREAM_CTX}} apply -f -
-      # The ServiceAccount is created by config/e2e, which is applied later, so
-      # ensure it exists before minting a token against it. Applying the same
-      # object twice is harmless.
+      # The manager authenticates to Milo as nso-manager, a static token from
+      # Milo's tokens.csv rather than a kind ServiceAccount token: the token is
+      # presented to MILO, and Milo cannot validate a ServiceAccount token the
+      # kind apiserver issued — different issuer, different keys.
+      #
+      # Nothing in this credential names a project. Which project a request
+      # lands in is decided by the path the manager sends it to, and by nothing
+      # the manager holds. That is the whole point of the change this
+      # environment exists to test.
+      #
+      # The manager runs inside the upstream cluster, so the kubeconfig names
+      # Milo's in-cluster service address rather than the host-mapped NodePort.
       - |
-        kubectl --context {{.UPSTREAM_CTX}} -n network-services-operator-system create serviceaccount \
-          network-services-operator-controller-manager --dry-run=client -o yaml \
-          | kubectl --context {{.UPSTREAM_CTX}} apply -f -
-      # The manager runs inside the upstream cluster, so the kubeconfig must
-      # name the in-cluster service address rather than the host-mapped one.
-      - |
-        CA=$(kubectl --context {{.UPSTREAM_CTX}} -n kube-system get configmap kube-root-ca.crt -o jsonpath='{.data.ca\.crt}' | base64 | tr -d '\n')
-        TOKEN=$(kubectl --context {{.UPSTREAM_CTX}} -n network-services-operator-system create token \
-          network-services-operator-controller-manager --duration=24h)
-        # Piped, never written to a file: a ServiceAccount token on disk outlives
-        # the run and the env that issued it. It reaches the cluster and nothing
-        # else.
+        set -e
+        CA=$(kubectl --context {{.UPSTREAM_CTX}} -n milo-system get secret milo-ca-tls -o jsonpath='{.data.ca\.crt}')
+        if [ -z "$CA" ]; then echo "❌ Milo CA secret is empty; is milo-wait done?" >&2; exit 1; fi
         KUBECONFIG_YAML=$(cat <<EOF
         apiVersion: v1
         kind: Config
@@ -586,12 +883,12 @@ tasks:
         clusters:
         - name: ipam
           cluster:
-            server: https://kubernetes.default.svc:443
+            server: https://milo-apiserver.milo-system.svc:6443
             certificate-authority-data: ${CA}
         users:
         - name: ipam
           user:
-            token: ${TOKEN}
+            token: nso-manager-token
         contexts:
         - name: ipam
           context:
@@ -607,6 +904,10 @@ tasks:
 
   ipam-fixtures:
     desc: "Seed the IPClass/IPPool fixtures for both projects, clearing any leftovers first. Classes are named identically in the two projects and their pools are disjoint (test/e2e/fixtures/ipam/RANGES.md), so a controller routing to the wrong project allocates from visibly wrong space instead of quietly succeeding. Do not run this while a suite is in flight: it removes the fixtures and the tenant RBAC that a running suite is mid-way through using."
+    deps:
+      # The seeder reaches each project through its control-plane path, so the
+      # per-project kubeconfigs have to exist before it runs.
+      - milo-kubeconfigs
     cmds:
       - task: ipam-tenant-rbac
       - task: ipam-fixtures-clear
@@ -614,21 +915,22 @@ tasks:
         set -e
         for proj in {{.IPAM_PROJECTS}}; do
           echo "🌱 seeding $proj"
-          IPAM_KUBE_CONTEXT={{.UPSTREAM_CTX}} {{.REPO}}/hack/ipam-tenant-kubectl.sh "$proj" apply -f test/e2e/fixtures/ipam/$proj/classes.yaml
-          IPAM_KUBE_CONTEXT={{.UPSTREAM_CTX}} {{.REPO}}/hack/ipam-tenant-kubectl.sh "$proj" apply -f test/e2e/fixtures/ipam/$proj/pools.yaml
+          {{.REPO}}/hack/ipam-project-kubectl.sh "$proj" apply -f test/e2e/fixtures/ipam/$proj/classes.yaml
+          {{.REPO}}/hack/ipam-project-kubectl.sh "$proj" apply -f test/e2e/fixtures/ipam/$proj/pools.yaml
         done
 
   ipam-tenant-rbac:
-    desc: "Grant the identity the suites and the fixture seeder impersonate its IPAM access. It binds the operator's own tenant role rather than restating it. Separate from the deployment on purpose — a test identity is not deployment config — which means ipam-deploy prunes it from the deployment's binding, so anything that impersonates the tester must run this first."
+    desc: "Grant the suites' identity its IPAM access on the KIND cluster, which is where IPAM's delegated SubjectAccessReview is answered. Its matching grant inside Milo ships with config/dependencies/milo/bootstrap-in-milo.yaml — both are needed, because Milo authorizes before proxying and IPAM authorizes again after. It binds the operator's own tenant role rather than restating it. Separate from the deployment on purpose — a test identity is not deployment config — which means ipam-deploy prunes it from the deployment's binding, so anything running as the tester must run this first."
     cmds:
       - kubectl --context {{.UPSTREAM_CTX}} apply -f test/e2e/fixtures/ipam/rbac.yaml
 
   ipam-fixtures-clear:
     deps:
       - ipam-tenant-rbac
+      - milo-kubeconfigs
     desc: "Release the addresses a previous run left held in the fixture projects. IPClaims and IPAllocations only, which is what measurement showed leaks: a run starting with 15 stale IPPools and 5 IPClasses passes 25/25, because seeding re-applies them as a no-op and cascade pools are reused by scope digest — but a single leftover IPClaim fails two suites, which enumerate the project's claims and assert against the stranger they find. Do not run this while a suite is in flight: it removes the addresses a running suite is mid-way through using."
     cmds:
-      - '{{.REPO}}/hack/ipam-clear-fixtures.sh {{.UPSTREAM_CTX}} {{.IPAM_PROJECTS}}' 
+      - '{{.REPO}}/hack/ipam-clear-fixtures.sh {{.IPAM_PROJECTS}}' 
 
   ipam-namespaces:
     desc: "Create the namespaces the interface scenarios resolve a project from, carrying the ENCODED meta.datumapis.com/upstream-cluster-name label the mapped-namespace strategy really writes, plus one namespace deliberately missing it for the fail-closed case. Applied to BOTH clusters: NetworkInterfaceClaims live on the upstream cell and resolveProject reads the claim's own namespace through the cell client, so upstream is the one that has to have them."
@@ -827,7 +1129,11 @@ tasks:
           --report-name {{.REPORT_NAME}}
 
   kubeconfigs:
-    desc: "Export per-cluster kubeconfigs to TMPDIR for chainsaw."
+    desc: "Export per-cluster kubeconfigs to TMPDIR for chainsaw, and refresh the Milo ones the suites reach IPAM through."
+    deps:
+      # The interface suites address IPAM by project path, so their kubeconfigs
+      # are as much a precondition as the cluster ones.
+      - milo-kubeconfigs
     cmds:
       - '{{.KIND}} get kubeconfig --name {{.UPSTREAM_CLUSTER}} > {{.TMP_DIR}}/.kind-{{.UPSTREAM_CLUSTER}}.yaml'
       - '{{.KIND}} get kubeconfig --name {{.DOWNSTREAM_CLUSTER}} > {{.TMP_DIR}}/.kind-{{.DOWNSTREAM_CLUSTER}}.yaml'

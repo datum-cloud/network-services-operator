@@ -202,9 +202,9 @@ spec:
 
     - name: Neither project can see the other's IPClaims
       description: |
-        Read back as each project in turn. A project that can read the other's
-        IPClaim means the impersonation is not scoping anything, and every other
-        assertion in this suite is coincidence.
+        Read back through each project's control-plane path in turn. A project
+        that can read the other's IPClaim means the path is not scoping
+        anything, and every other assertion in this suite is coincidence.
 
         Each identity earns the right to be believed first: the two projects
         must find their own IPClaim, and the project-less request — which is
@@ -212,19 +212,21 @@ spec:
         scoping rather than a broken call. Its NotFound comes from the server,
         and the IPClasses it cannot see are the same ones a project can.
 
-        That request is the same user with none of the three parent extras, so
-        it is written out rather than routed through the wrapper: what is being
-        tested is precisely the absence of the impersonation the wrapper exists
-        to add.
+        The project-less request is the SAME identity and the SAME front door,
+        addressed at Milo's root instead of at a project. Nothing about the
+        caller changes between the two: only the path does, which is precisely
+        the claim under test. It used to be an un-extra'd impersonation against
+        the kind apiserver — a different server, a different mechanism, and one
+        that could still have succeeded had project routing been broken.
       try:
         - script:
             content: |
               set -eu
-              IPAM=$(git rev-parse --show-toplevel)/hack/ipam-tenant-kubectl.sh
+              IPAM=$(git rev-parse --show-toplevel)/hack/ipam-project-kubectl.sh
               ipam() { proj=$1; shift; "$IPAM" "$proj" -n default "$@"; }
-              # The same identity carrying none of the parent extras: no project,
-              # so IPAM scopes it to nothing.
-              noproject() { kubectl --as=e2e-tenant-tester "$@"; }
+              # The same identity at Milo's root: it names no project, so Milo
+              # forwards no project and IPAM scopes it to nothing.
+              noproject() { kubectl --kubeconfig "${TMPDIR:-/tmp}/.milo-root.yaml" "$@"; }
 
               visible() { ipam "$1" get ipclaim "$2" >/dev/null 2>&1; }
 
@@ -252,7 +254,7 @@ spec:
         - script:
             content: |
               set -eu
-              IPAM=$(git rev-parse --show-toplevel)/hack/ipam-tenant-kubectl.sh
+              IPAM=$(git rev-parse --show-toplevel)/hack/ipam-project-kubectl.sh
               allocated() { "$IPAM" "$1" -n default get ipclaim "$2" -o jsonpath='{.status.allocatedCIDR}'; }
 
               check() {

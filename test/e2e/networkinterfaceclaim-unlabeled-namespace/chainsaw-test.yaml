@@ -153,7 +153,7 @@ spec:
         - script:
             content: |
               set -eu
-              IPAM=$(git rev-parse --show-toplevel)/hack/ipam-tenant-kubectl.sh
+              IPAM=$(git rev-parse --show-toplevel)/hack/ipam-project-kubectl.sh
               ipam() { proj=$1; shift; "$IPAM" "$proj" -n default "$@"; }
               names() { ipam "$1" get ipclaim -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}'; }
 

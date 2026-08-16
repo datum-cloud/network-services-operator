@@ -39,7 +39,6 @@ patches:
             bindAddress: ":8443"
           ipam:
             kubeconfigPath: /etc/ipam-cluster/kubeconfig
-            impersonateUsername: nso-ipam-agent
           location:
             name: us-central-1
   - target:

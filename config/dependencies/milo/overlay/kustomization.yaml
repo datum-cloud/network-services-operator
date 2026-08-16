@@ -1,0 +1,18 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Everything this env adds to the published Milo bundle, and nothing from it.
+# Kept self-contained so `task validate-kustomizations` can build it on a clean
+# checkout, where the bundle has not been fetched yet.
+#
+# The composed deployment — this plus the bundle's apiserver and certificate
+# components, with the patches in ../patches — is assembled at task time by
+# test-infra:milo-bundle from ../root-kustomization.yaml.
+
+namespace: milo-system
+
+resources:
+  - namespace.yaml
+  - etcd.yaml
+  - auth.yaml
+  - certificates.yaml

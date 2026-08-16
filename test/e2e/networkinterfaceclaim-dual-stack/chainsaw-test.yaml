@@ -124,7 +124,7 @@ spec:
         - script:
             content: |
               set -eu
-              IPAM=$(git rev-parse --show-toplevel)/hack/ipam-tenant-kubectl.sh
+              IPAM=$(git rev-parse --show-toplevel)/hack/ipam-project-kubectl.sh
               ipam() { proj=$1; shift; "$IPAM" "$proj" -n default "$@"; }
 
               for family in ipv6 ipv4; do
@@ -159,7 +159,7 @@ spec:
         - script:
             content: |
               set -eu
-              IPAM=$(git rev-parse --show-toplevel)/hack/ipam-tenant-kubectl.sh
+              IPAM=$(git rev-parse --show-toplevel)/hack/ipam-project-kubectl.sh
               ipam() { "$IPAM" project-alpha -n default "$@"; }
 
               ipam get ipclass datum-endpoint-v4 >/dev/null \

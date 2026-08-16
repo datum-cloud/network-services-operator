@@ -1,0 +1,82 @@
+# Applied INSIDE Milo, not to the kind cluster.
+#
+# Everything here lives in Milo's own storage and is addressed with Milo's
+# kubeconfig ({{.TMP_DIR}}/.milo-admin.yaml, written by the milo-kubeconfigs
+# task). Applying it to the kind apiserver would silently create nothing useful:
+# resourcemanager.miloapis.com does not exist there.
+---
+apiVersion: resourcemanager.miloapis.com/v1alpha1
+kind: Organization
+metadata:
+  name: nso-e2e
+spec:
+  type: Standard
+---
+# The two projects the suites allocate in. These were bare strings before —
+# a project existed only as a label value on a namespace and as an extra on an
+# impersonated request. They are objects now, and the control-plane path the
+# operator addresses is derived from this name.
+apiVersion: resourcemanager.miloapis.com/v1alpha1
+kind: Project
+metadata:
+  name: project-alpha
+spec:
+  ownerRef:
+    name: nso-e2e
+    kind: Organization
+---
+apiVersion: resourcemanager.miloapis.com/v1alpha1
+kind: Project
+metadata:
+  name: project-beta
+spec:
+  ownerRef:
+    name: nso-e2e
+    kind: Organization
+---
+# Milo authorizes the caller before its aggregator proxies anything, so a
+# request that IPAM would have allowed still needs a grant here.
+#
+# This grant is ROOT-scoped, and that is not an oversight — it is the whole
+# shape of RBAC-only Milo. It authorizes its subjects on EVERY project path,
+# because stock RBAC never reads the per-project object store. See
+# test/e2e/README-milo.md.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: nso-ipam-access
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "create", "delete"]
+  - apiGroups: ["ipam.miloapis.com"]
+    resources:
+      - "ippools"
+      - "ippools/status"
+      - "ipclasses"
+      - "ipclasses/status"
+      - "ipclaims"
+      - "ipclaims/status"
+      - "ipallocations"
+      - "ipallocations/status"
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: nso-ipam-access
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: nso-ipam-access
+subjects:
+  # The operator's own identity. Nothing it holds names a project: which project
+  # a request lands in is decided by the path it is sent to.
+  - kind: User
+    apiGroup: rbac.authorization.k8s.io
+    name: nso-manager
+  # The suites and the fixture seeder. Deliberately not system:masters, so a
+  # suite that passes does so on a real authorization decision.
+  - kind: User
+    apiGroup: rbac.authorization.k8s.io
+    name: e2e-tenant-tester

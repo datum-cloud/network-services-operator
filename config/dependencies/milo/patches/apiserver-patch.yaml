@@ -1,0 +1,128 @@
+# Everything the bundle's apiserver Deployment leaves to the environment.
+#
+# The bundle drives every flag from an env var and ships no volumes at all, so
+# this is where storage, credentials and certificates are actually wired. A
+# value left at the bundle's default that this env cannot satisfy is a startup
+# failure, not a fallback: --tracing-config-file is the clearest case, since the
+# bundle points it at a file only the apiserver-tracing component mounts.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: milo-apiserver
+spec:
+  template:
+    spec:
+      containers:
+        - name: milo-apiserver
+          env:
+            # The single-member etcd in overlay/etcd.yaml. No TLS, so the
+            # bundle's client certificate flags have to be blanked rather than
+            # left pointing at secrets this env never creates.
+            - name: ETCD_SERVERS
+              value: http://etcd.milo-system.svc.cluster.local:2379
+            - name: ETCD_CAFILE
+              value: ""
+            - name: ETCD_CERTFILE
+              value: ""
+            - name: ETCD_KEYFILE
+              value: ""
+            - name: ETCD_PREFIX
+              value: /
+            # RBAC only. Milo's own test overlay runs this way; the alternative
+            # is the OpenFGA authorization provider, which this environment does
+            # not deploy. See the note in test/e2e/README-milo.md — per-project
+            # authorization is NOT exercised here. The webhook configs are
+            # blanked for the same reason: the bundle points them at files that
+            # only the provider deployment supplies.
+            - name: AUTHORIZATION_MODE
+              value: RBAC
+            - name: AUTHORIZATION_WEBHOOK_CONFIG_FILE
+              value: ""
+            - name: AUTHENTICATION_WEBHOOK_CONFIG_FILE
+              value: ""
+            # Static tokens, from overlay/auth.yaml.
+            - name: TOKEN_AUTH_FILE
+              value: /etc/kubernetes/auth/tokens.csv
+            # cert-manager writes the issuing CA alongside the serving cert, so
+            # the same mount answers both. The bundle's default path belongs to
+            # a trust bundle this env does not deploy.
+            - name: CLIENT_CA_FILE
+              value: /etc/kubernetes/pki/apiserver/ca.crt
+            - name: SERVICE_ACCOUNT_KEY_FILE
+              value: /etc/kubernetes/pki/apiserver/ca.crt
+            # Tracing off. The bundle's apiserver-tracing component would set
+            # this itself, so adopting it would remove this line — but it points
+            # the exporter at telemetry-system-tempo, and there is no Tempo in a
+            # kind cluster. Measured with the component applied: Milo serves
+            # fine, then logs "traces export: ... produced zero addresses" every
+            # ten seconds for the life of the run. Trading one line of config
+            # for a permanent error stream in the log people read when an e2e
+            # run fails is not a good trade.
+            - name: TRACING_CONFIG_FILE
+              value: ""
+            # Auditing off, so AUDIT_POLICY_FILE stays at the bundle's empty
+            # default and nothing is emitted.
+            #
+            # The bundle's apiserver-audit-logging component does NOT replace
+            # this line. It contributes two ConfigMaps and mounts them, and sets
+            # no environment at all — upstream's overlay still has to set
+            # AUDIT_POLICY_FILE, AUDIT_WEBHOOK_CONFIG_FILE, AUDIT_WEBHOOK_MODE
+            # and this backoff by hand. Adopting it would mean three more env
+            # vars here, not one fewer, plus an audit stream posted at a
+            # vector-audit-log-processor that does not exist. Measured with the
+            # component applied: "Error in audit plugin 'webhook' affecting 172
+            # audit events: ... no such host", with the impacted events dumped
+            # into the log, from the env-up gate alone.
+            #
+            # So the backoff is set here on its own. The flag is passed
+            # unconditionally and the bundle's own default is the empty string,
+            # which is not a parseable duration, so leaving it alone makes the
+            # apiserver exit at startup before it ever reads the policy file and
+            # discovers auditing is off. Upstream never hits this because its
+            # overlay always enables auditing.
+            - name: AUDIT_WEBHOOK_INITIAL_BACKOFF
+              value: 10s
+            # The client certificate Milo's aggregator presents to IPAM. Without
+            # these two the aggregator proxies anonymously and IPAM rejects
+            # every request; the bundle leaves them empty.
+            - name: PROXY_CLIENT_CERT_FILE
+              value: /etc/kubernetes/pki/front-proxy/tls.crt
+            - name: PROXY_CLIENT_KEY_FILE
+              value: /etc/kubernetes/pki/front-proxy/tls.key
+            - name: FEATURE_GATES
+              value: DiscoveryContextFilter=true
+            # Trust Milo's own CA for outbound TLS, matching its test overlay.
+            - name: SSL_CERT_DIR
+              value: /etc/certs/ssl
+            - name: LOG_LEVEL
+              value: "2"
+          volumeMounts:
+            - name: auth-tokens
+              mountPath: /etc/kubernetes/auth
+              readOnly: true
+            - name: tls-certs
+              mountPath: /etc/kubernetes/pki/apiserver
+              readOnly: true
+            - name: front-proxy
+              mountPath: /etc/kubernetes/pki/front-proxy
+              readOnly: true
+            - name: system-certs
+              mountPath: /etc/certs/ssl/milo-ca.crt
+              subPath: ca.crt
+              readOnly: true
+      volumes:
+        - name: auth-tokens
+          secret:
+            secretName: milo-apiserver-auth-tokens
+        - name: tls-certs
+          secret:
+            secretName: milo-apiserver-tls
+        - name: front-proxy
+          secret:
+            secretName: milo-front-proxy-client
+        - name: system-certs
+          secret:
+            secretName: milo-apiserver-tls
+            items:
+              - key: ca.crt
+                path: ca.crt

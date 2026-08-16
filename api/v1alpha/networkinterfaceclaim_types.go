@@ -38,6 +38,12 @@ const (
 	// NetworkInterfaceClaimReasonAddressFamiliesUnknown means the network reached
 	// this location without saying which families it carries.
 	NetworkInterfaceClaimReasonAddressFamiliesUnknown = "AddressFamiliesUnknown"
+
+	// NetworkInterfaceClaimReasonProjectNamespaceNotFound means the namespace
+	// addresses are allocated in does not exist in the project's control plane.
+	// The platform provisions it with the project, so its absence says the
+	// control plane is not bootstrapped rather than that it is slow to appear.
+	NetworkInterfaceClaimReasonProjectNamespaceNotFound = "ProjectNamespaceNotFound"
 )
 
 // NetworkInterfaceAddressRequest asks for one address beyond the ones the

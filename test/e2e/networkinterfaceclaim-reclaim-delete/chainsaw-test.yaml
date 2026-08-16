@@ -90,7 +90,7 @@ spec:
         - script:
             content: |
               set -eu
-              IPAM=$(git rev-parse --show-toplevel)/hack/ipam-tenant-kubectl.sh
+              IPAM=$(git rev-parse --show-toplevel)/hack/ipam-project-kubectl.sh
               for name in nic-delete-f-ipv6 nic-delete-f-ipv4 nic-delete-c-datum-public-v4; do
                 phase=$("$IPAM" project-alpha -n default \
                   get ipclaim "$name" -o jsonpath='{.status.phase}' 2>/dev/null || true)
@@ -110,7 +110,7 @@ spec:
         - script:
             content: |
               set -eu
-              IPAM=$(git rev-parse --show-toplevel)/hack/ipam-tenant-kubectl.sh
+              IPAM=$(git rev-parse --show-toplevel)/hack/ipam-project-kubectl.sh
               ipam() { "$IPAM" project-alpha -n default "$@"; }
 
               ipam get ipclass datum-public-v4 >/dev/null \

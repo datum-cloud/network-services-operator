@@ -1,0 +1,65 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# The composed Milo deployment: the published bundle plus this env's additions.
+#
+# NOT named kustomization.yaml on purpose. It only builds inside the staging
+# directory test-infra:milo-bundle assembles, where `bundle/` is the extracted
+# OCI artifact; in the repo it would be a kustomization that cannot build, and
+# `task validate-kustomizations` discovers every kustomization.yaml there is.
+# The self-contained half lives in overlay/ and is validated there.
+#
+# This is a deliberately small Milo. It is the apiserver and its storage, and
+# nothing else — no controller-manager, no gateway, no audit or tracing sinks,
+# no authorization provider. Project control-plane paths serve without any of
+# them. Upstream's own overlays/test-infra pulls all of those in, which is why
+# this composes the bundle's pieces rather than consuming that overlay.
+#
+# Read test/e2e/README-milo.md before assuming this environment covers
+# per-project authorization. It does not.
+
+namespace: milo-system
+
+resources:
+  - bundle/apiserver
+  - overlay
+
+components:
+  # The CA everything here chains to: a selfSigned Issuer, a CA Certificate, and
+  # a CA Issuer that signs from it. One CA means one bundle verifies both
+  # directions — clients verify Milo's serving cert, and IPAM verifies the client
+  # cert Milo's aggregator presents when it proxies.
+  - bundle/components/certificates
+  # Milo's serving certificate, issued by that CA. Upstream keeps it in its
+  # test-infra overlay rather than in a shared component, but it is a plain
+  # Certificate for milo-apiserver.milo-system.svc with no other coupling to
+  # that overlay, so it is taken as-is instead of re-vendored.
+  #
+  # Both live here rather than in overlay/ because they come from the fetched
+  # bundle, which does not exist on a clean checkout — overlay/ has to stay
+  # self-contained so validate-kustomizations can build it.
+  - bundle/overlays/test-infra/components/certificates
+
+# Pulled from ghcr by digest, not by the bundle's own tag: the tag is what
+# identifies the release, but a tag can be republished. The tag is recorded for
+# legibility. Update it, the digest, and the bundle pins in
+# Taskfile.test-infra.yml together — this and MILO_BUNDLE_TAG must name the same
+# Milo version, or the manifests and the binary they configure have drifted.
+#
+# This is an index digest, so the node resolves its own platform; the index
+# carries distinct amd64 and arm64 entries.
+images:
+  - name: ghcr.io/milo-os/milo
+    newName: ghcr.io/milo-os/milo
+    # tag v0.32.5
+    digest: sha256:3b4f2890491220c4c79731d9e9b350881ce15dcca9de15b9f511cd7e5323f609
+
+patches:
+  - path: patches/apiserver-patch.yaml
+    target:
+      kind: Deployment
+      name: milo-apiserver
+  - path: patches/service-nodeport-patch.yaml
+    target:
+      kind: Service
+      name: milo-apiserver

@@ -1,19 +1,24 @@
 # The test identity, kept out of the IPAM deployment.
 #
-# The suites and the fixture seeder reach IPAM by impersonating
-# e2e-tenant-tester with the three iam.miloapis.com project extras. IPAM
-# authorizes through a delegated SubjectAccessReview against the host
-# apiserver, so that impersonated user needs ordinary RBAC of its own.
+# The suites and the fixture seeder reach IPAM as e2e-tenant-tester through a
+# project's control-plane path on Milo. They impersonate nobody and assert no
+# project: the path carries it. IPAM authorizes through a delegated
+# SubjectAccessReview against the KIND apiserver, so the identity Milo
+# forwarded needs ordinary RBAC here.
+#
+# This is only half the grant. Milo authorizes the caller before its aggregator
+# proxies anything, and that half lives in
+# config/dependencies/milo/bootstrap-in-milo.yaml. Both must exist.
 #
 # It binds the nso-ipam-tenant ClusterRole from
 # config/dependencies/ipam/overlay/rbac.yaml rather than restating the rules:
 # the tester must hold exactly what the operator holds, and two copies of a
 # permission set drift.
 #
-# Nothing grants the *right to impersonate* here. The seeder runs as the kind
-# admin credential, which is in system:masters and already authorized for
-# everything; only the NSO manager's ServiceAccount needs an explicit
-# impersonation grant, and that ships with the deployment.
+# Nothing grants the *right to impersonate* here, because nothing impersonates
+# any more. Note that the tester is deliberately not system:masters in either
+# control plane, so a suite that passes does so on a real authorization
+# decision — though not a per-project one: see test/e2e/README-milo.md.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:

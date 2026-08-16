@@ -91,7 +91,7 @@ spec:
         - script:
             content: |
               set -u
-              IPAM=$(git rev-parse --show-toplevel)/hack/ipam-tenant-kubectl.sh
+              IPAM=$(git rev-parse --show-toplevel)/hack/ipam-project-kubectl.sh
               ipam() { "$IPAM" project-alpha -n default "$@"; }
 
               kubectl -n ipam-e2e-alpha delete networkinterfaceclaim nic-missingalloc --ignore-not-found --timeout=60s
@@ -107,7 +107,7 @@ spec:
         - script:
             content: |
               set -eu
-              IPAM=$(git rev-parse --show-toplevel)/hack/ipam-tenant-kubectl.sh
+              IPAM=$(git rev-parse --show-toplevel)/hack/ipam-project-kubectl.sh
               ipam() { "$IPAM" project-alpha -n default "$@"; }
 
               address=$(kubectl -n ipam-e2e-alpha get networkinterfaceclaim nic-missingalloc -o jsonpath='{.status.addresses[0].address}')
@@ -235,7 +235,7 @@ spec:
         - script:
             content: |
               set -eu
-              IPAM=$(git rev-parse --show-toplevel)/hack/ipam-tenant-kubectl.sh
+              IPAM=$(git rev-parse --show-toplevel)/hack/ipam-project-kubectl.sh
               ipam() { "$IPAM" project-alpha -n default "$@"; }
               address=$(cat "${TMPDIR:-/tmp}/nic-missingalloc-address")
 
@@ -284,7 +284,7 @@ spec:
         - script:
             content: |
               set -eu
-              IPAM=$(git rev-parse --show-toplevel)/hack/ipam-tenant-kubectl.sh
+              IPAM=$(git rev-parse --show-toplevel)/hack/ipam-project-kubectl.sh
               ipam() { "$IPAM" project-alpha -n default "$@"; }
               address=$(cat "${TMPDIR:-/tmp}/nic-missingalloc-address")
               moved=$(ipam get ipclaim nic-missingalloc-f-ipv4 -o jsonpath='{.status.allocatedCIDR}')

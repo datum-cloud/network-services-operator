@@ -133,6 +133,27 @@ comparing this to the Network can tell whether this location has caught up.<br/>
             <i>Format</i>: int64<br/>
         </td>
         <td>false</td>
+      </tr><tr>
+        <td><b>routingIdentity</b></td>
+        <td>string</td>
+        <td>
+          The network's identity on the routed fabric, projected from
+Network.status.routingIdentity. Every location carrying the network
+carries the same value, which is what makes a network that spans two
+locations one network.
+
+A reader that finds this unset must refuse rather than route without it:
+a context written before this field existed reads the same as one written
+before the identity was allocated, and neither says the network has no
+identity.
+
+Unlike the other projected fields this one is read from the Network's
+status, which does not move NetworkGeneration when it appears. The context
+is rewritten when the allocation lands, so NetworkGeneration still answers
+whether this location has caught up with the Network's spec, and this
+field being set answers whether it has caught up with the allocation.<br/>
+        </td>
+        <td>false</td>
       </tr></tbody>
 </table>
 

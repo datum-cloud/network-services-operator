@@ -87,3 +87,37 @@ spec:
   routing:
     internal: Host
     external: Aggregate
+---
+# A NETWORK'S ROUTING IDENTITY. This class does NOT hand out addresses. The low
+# bits of the prefix are the number the SRv6 fabric keys a VPC on; nothing is
+# ever reachable at it, and its pool is NEVER ROUTED. Do not advertise it, do
+# not aggregate it, and do not reuse it as tenant space.
+#
+# It is a prefix only because IPAM already solves uniqueness, exhaustion
+# accounting, retention and audit for prefixes, and an identifier allocator
+# would have to solve all four again.
+#
+# No poolPer and no uniqueWithin: one address space, one pool, one identity per
+# network, identical in every location that network reaches. Adding either would
+# make the identity per-scope, which is the bug this class exists to fix.
+#
+# reclaimPolicy is Retain because an identifier still installed in a remote
+# location's forwarding tables would carry that traffic to whichever network was
+# handed it next. The lease bounds how long a released identity stays reserved.
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClass
+metadata:
+  name: datum-vpc-identity
+  labels:
+    nso-fixture: "true"
+spec:
+  ipFamily: IPv6
+  defaultPrefixLength: 64
+  allowedPrefixLengths:
+    min: 64
+    max: 64
+  reclaimPolicy: Retain
+  retentionLease: 720h
+  routing:
+    internal: None
+    external: None

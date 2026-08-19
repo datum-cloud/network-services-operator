@@ -375,10 +375,17 @@ func NewCommand(build BuildInfo) *cobra.Command {
 				}
 			}
 
+			ipamClients, err := newIPAMClientFactory(serverConfig)
+			if err != nil {
+				setupLog.Error(err, "unable to reach IPAM")
+				os.Exit(1)
+			}
+
 			registeredControllers, err := setupControllers(mgr, serverConfig, controllerDeps{
 				downstreamCluster: downstreamCluster,
 				singletonManager:  singletonControllerMgr,
 				irohDownstream:    irohDownstream,
+				ipamClients:       ipamClients,
 			})
 			if err != nil {
 				setupLog.Error(err, "unable to set up controllers")
@@ -542,12 +549,36 @@ func setupWebhooks(mgr mcmanager.Manager, serverConfig config.NetworkServicesOpe
 	return runSetups("webhook", webhookRegistrations(mgr, serverConfig))
 }
 
+// newIPAMClientFactory returns nil when no IPAM connection is configured. The
+// manager's own kube-apiserver serves no ipam.miloapis.com API, so a default
+// connection would reach a server that answers nothing; leaving the factory nil
+// leaves routing identities unallocated and says so.
+func newIPAMClientFactory(serverConfig config.NetworkServicesOperator) (controller.IPAMClientFactory, error) {
+	if serverConfig.IPAM.KubeconfigPath == "" && !serverConfig.IPAM.InCluster {
+		setupLog.Info("no IPAM connection is configured; networks will not be allocated a routing identity")
+		return nil, nil
+	}
+
+	ipamRestConfig, err := serverConfig.IPAM.RestConfig()
+	if err != nil {
+		return nil, fmt.Errorf("unable to load IPAM kubeconfig: %w", err)
+	}
+
+	ipamScheme, err := controller.IPAMScheme()
+	if err != nil {
+		return nil, fmt.Errorf("unable to build IPAM scheme: %w", err)
+	}
+
+	return controller.NewIPAMClientFactory(ipamRestConfig, ipamScheme)
+}
+
 // controllerDeps carries the clients and managers that controllers are wired
 // against. Fields are only populated for the sets that need them.
 type controllerDeps struct {
 	downstreamCluster cluster.Cluster
 	singletonManager  manager.Manager
 	irohDownstream    cluster.Cluster
+	ipamClients       controller.IPAMClientFactory
 }
 
 // controllerRegistrations lists every controller and the set it belongs to.
@@ -564,7 +595,9 @@ func controllerRegistrations(
 
 	return []namedSetup{
 		{"network", true, func() error {
-			return (&controller.NetworkReconciler{}).SetupWithManager(mgr)
+			return (&controller.NetworkReconciler{
+				IPAM: deps.ipamClients,
+			}).SetupWithManager(mgr)
 		}},
 		{"networkbinding", true, func() error {
 			return (&controller.NetworkBindingReconciler{}).SetupWithManager(mgr)

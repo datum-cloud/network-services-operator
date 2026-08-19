@@ -14,6 +14,16 @@ const (
 	IPv6Protocol IPFamily = "IPv6"
 )
 
+const (
+	// NetworkAllocated reports that the network holds every allocation it needs
+	// to exist, which today is its routing identity.
+	NetworkAllocated = "Allocated"
+
+	// NetworkReady reports that the network is allocated and can be placed into
+	// a location.
+	NetworkReady = "Ready"
+)
+
 // NetworkSpec defines the desired state of a Network
 type NetworkSpec struct {
 
@@ -69,6 +79,61 @@ type NetworkIPAM struct {
 type NetworkStatus struct {
 	// Represents the observations of a network's current state.
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// routingIdentity is the identity this network is known by on the routed
+	// fabric, in every location it reaches. It is allocated once, when the
+	// network is created, and does not change while the network exists: the
+	// fabric embeds it in forwarding state, and a network that changed identity
+	// would be a different network to everything already carrying its traffic.
+	//
+	// The value is an IPv6 prefix whose low bits are the identifier. It is
+	// drawn from a pool that is never routed, so it is not an address and
+	// nothing is reachable at it.
+	//
+	// Consumers do not request this and cannot influence it.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:XValidation:message="routingIdentity is immutable once allocated",rule="self == oldSelf"
+	RoutingIdentity *NetworkRoutingIdentity `json:"routingIdentity,omitempty"`
+}
+
+// NetworkRoutingIdentity is a network's allocated identity on the routed
+// fabric, together with the allocation backing it.
+type NetworkRoutingIdentity struct {
+	// prefix is the allocated IPv6 prefix carrying the identifier, such as
+	// fd00:0:0:a3f2::/64. It is unique across the platform and identical in
+	// every location the network reaches.
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=43
+	Prefix string `json:"prefix"`
+
+	// claimRef names the IPAM claim holding the prefix, in the project's own
+	// control plane. It is recorded so the allocation behind an identity can be
+	// audited, and released, without anyone re-deriving its name.
+	//
+	// +kubebuilder:validation:Required
+	ClaimRef IPClaimRef `json:"claimRef"`
+}
+
+// IPClaimRef references an IPClaim in a project's control plane. IPAM is a
+// separate API server, so this is a breadcrumb rather than a reference the API
+// resolves.
+type IPClaimRef struct {
+	// namespace is the namespace the claim lives in.
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	Namespace string `json:"namespace"`
+
+	// name is the name of the claim.
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	Name string `json:"name"`
 }
 
 // +kubebuilder:object:root=true
@@ -80,6 +145,7 @@ type NetworkStatus struct {
 // +kubebuilder:printcolumn:name="IPAM",type="string",JSONPath=".spec.ipam.mode"
 // +kubebuilder:printcolumn:name="IPFamilies",type="string",JSONPath=".spec.ipFamilies"
 // +kubebuilder:printcolumn:name="MTU",type="integer",JSONPath=".spec.mtu"
+// +kubebuilder:printcolumn:name="Routing Identity",type="string",JSONPath=".status.routingIdentity.prefix"
 
 // Network is the Schema for the networks API
 type Network struct {

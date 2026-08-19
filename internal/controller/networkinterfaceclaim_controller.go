@@ -544,9 +544,16 @@ type allocationRequest struct {
 	family        networkingv1alpha.IPFamily
 	className     string
 	external      bool
+
+	// description names what is being allocated for callers whose allocation is
+	// not an interface address, where "an address of class X" would be wrong.
+	description string
 }
 
 func (a allocationRequest) describe() string {
+	if a.description != "" {
+		return a.description
+	}
 	if a.className != "" {
 		return fmt.Sprintf("an address of class %q", a.className)
 	}

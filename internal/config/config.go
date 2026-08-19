@@ -87,11 +87,13 @@ type NetworkServicesOperator struct {
 	// project discovery and per-project cluster connections.
 	ProjectClient ClientConnectionConfig `json:"projectClient,omitempty"`
 
-	// IPAM is read by the cell controller manager, which takes its own
-	// CellControllerManager config. It is retained here so a config written
-	// before the split still decodes.
+	// IPAM is how the manager reaches the allocator for the identities it claims
+	// in a project's control plane, such as a network's routing identity. The
+	// cell controller manager takes its own copy in CellControllerManager for
+	// the addresses it claims in a location.
 	//
-	// Deprecated: configure the cell controller manager instead.
+	// Unset, the manager allocates no identities rather than addressing its own
+	// kube-apiserver, which serves no ipam.miloapis.com API.
 	IPAM IPAMConfig `json:"ipam,omitempty"`
 
 	// NetworkInterface is read by the cell controller manager, which takes its

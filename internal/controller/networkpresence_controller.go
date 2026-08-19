@@ -308,6 +308,7 @@ func (r *NetworkPresenceReconciler) project(
 		networkContext.Spec.Location = pair.Location
 		networkContext.Spec.IPFamilies = append([]networkingv1alpha.IPFamily(nil), network.Spec.IPFamilies...)
 		networkContext.Spec.MTU = network.Spec.MTU
+		projectRoutingIdentityIfAllocated(networkContext, network)
 		networkContext.Spec.NetworkGeneration = network.Generation
 		return nil
 	})
@@ -316,6 +317,20 @@ func (r *NetworkPresenceReconciler) project(
 	}
 
 	return networkContext, nil
+}
+
+// projectRoutingIdentityIfAllocated leaves an identity already delivered to a
+// location in place. An identity does not change, so a network read before its
+// allocation lands has nothing to say about the one a location is already
+// forwarding on.
+func projectRoutingIdentityIfAllocated(
+	networkContext *networkingv1alpha.NetworkContext,
+	network *networkingv1alpha.Network,
+) {
+	if network.Status.RoutingIdentity == nil {
+		return
+	}
+	networkContext.Spec.RoutingIdentity = network.Status.RoutingIdentity.Prefix
 }
 
 // report writes the same answer onto every binding for the pair, so a consumer

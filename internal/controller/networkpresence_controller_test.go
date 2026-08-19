@@ -512,6 +512,36 @@ func TestNetworkPresenceConvergesOnANetworkEdit(t *testing.T) {
 		"networkGeneration is what makes staleness visible")
 }
 
+// The identity is allocated in the project plane's status, which does not move
+// the network's generation, so nothing about the spec says a location is
+// missing it. The context carrying it is the only place a cell can look.
+func TestNetworkPresenceCarriesTheRoutingIdentityToTheLocation(t *testing.T) {
+	s := newPresenceScenario(t, presenceOptions{})
+	s.createBinding("consumer-a")
+	s.reconcile()
+
+	networkContext, ok := s.networkContext()
+	require.True(t, ok)
+	require.Empty(t, networkContext.Spec.RoutingIdentity)
+	generationBefore := networkContext.Spec.NetworkGeneration
+
+	s.network.Status.RoutingIdentity = &networkingv1alpha.NetworkRoutingIdentity{
+		Prefix: "fd00:a::a3f2:0:0:0/64",
+		ClaimRef: networkingv1alpha.IPClaimRef{
+			Namespace: s.projectNamespace,
+			Name:      "network-routing-identity-" + string(s.network.UID),
+		},
+	}
+	require.NoError(t, s.hub.Status().Update(s.ctx, s.network))
+
+	s.reconcile()
+
+	networkContext, ok = s.networkContext()
+	require.True(t, ok)
+	require.Equal(t, "fd00:a::a3f2:0:0:0/64", networkContext.Spec.RoutingIdentity)
+	require.Equal(t, generationBefore, networkContext.Spec.NetworkGeneration)
+}
+
 // observedGeneration is the binding's own, so a consumer can tell an answer
 // about the current spec from an answer about the previous one.
 func TestNetworkPresenceReportsTheBindingsOwnGeneration(t *testing.T) {

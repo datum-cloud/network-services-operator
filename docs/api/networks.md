@@ -182,6 +182,25 @@ NetworkStatus defines the observed state of Network
           Represents the observations of a network's current state.<br/>
         </td>
         <td>false</td>
+      </tr><tr>
+        <td><b><a href="#networkstatusroutingidentity">routingIdentity</a></b></td>
+        <td>object</td>
+        <td>
+          routingIdentity is the identity this network is known by on the routed
+fabric, in every location it reaches. It is allocated once, when the
+network is created, and does not change while the network exists: the
+fabric embeds it in forwarding state, and a network that changed identity
+would be a different network to everything already carrying its traffic.
+
+The value is an IPv6 prefix whose low bits are the identifier. It is
+drawn from a pool that is never routed, so it is not an address and
+nothing is reachable at it.
+
+Consumers do not request this and cannot influence it.<br/>
+          <br/>
+            <i>Validations</i>:<li>self == oldSelf: routingIdentity is immutable once allocated</li>
+        </td>
+        <td>false</td>
       </tr></tbody>
 </table>
 
@@ -259,5 +278,89 @@ with respect to the current state of the instance.<br/>
             <i>Minimum</i>: 0<br/>
         </td>
         <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### Network.status.routingIdentity
+<sup><sup>[↩ Parent](#networkstatus)</sup></sup>
+
+
+
+routingIdentity is the identity this network is known by on the routed
+fabric, in every location it reaches. It is allocated once, when the
+network is created, and does not change while the network exists: the
+fabric embeds it in forwarding state, and a network that changed identity
+would be a different network to everything already carrying its traffic.
+
+The value is an IPv6 prefix whose low bits are the identifier. It is
+drawn from a pool that is never routed, so it is not an address and
+nothing is reachable at it.
+
+Consumers do not request this and cannot influence it.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b><a href="#networkstatusroutingidentityclaimref">claimRef</a></b></td>
+        <td>object</td>
+        <td>
+          claimRef names the IPAM claim holding the prefix, in the project's own
+control plane. It is recorded so the allocation behind an identity can be
+audited, and released, without anyone re-deriving its name.<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>prefix</b></td>
+        <td>string</td>
+        <td>
+          prefix is the allocated IPv6 prefix carrying the identifier, such as
+fd00:0:0:a3f2::/64. It is unique across the platform and identical in
+every location the network reaches.<br/>
+        </td>
+        <td>true</td>
+      </tr></tbody>
+</table>
+
+
+### Network.status.routingIdentity.claimRef
+<sup><sup>[↩ Parent](#networkstatusroutingidentity)</sup></sup>
+
+
+
+claimRef names the IPAM claim holding the prefix, in the project's own
+control plane. It is recorded so the allocation behind an identity can be
+audited, and released, without anyone re-deriving its name.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>name</b></td>
+        <td>string</td>
+        <td>
+          name is the name of the claim.<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>namespace</b></td>
+        <td>string</td>
+        <td>
+          namespace is the namespace the claim lives in.<br/>
+        </td>
+        <td>true</td>
       </tr></tbody>
 </table>

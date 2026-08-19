@@ -87,11 +87,13 @@ type NetworkServicesOperator struct {
 	// project discovery and per-project cluster connections.
 	ProjectClient ClientConnectionConfig `json:"projectClient,omitempty"`
 
-	// IPAM is read by the cell controller manager, which takes its own
-	// CellControllerManager config. It is retained here so a config written
-	// before the split still decodes.
+	// IPAM is how this manager reaches IPAM to claim a network's address space
+	// at creation. The cell controller manager reaches IPAM for interface
+	// addresses through its own CellControllerManager config; both are the same
+	// connection, configured once per manager that makes requests.
 	//
-	// Deprecated: configure the cell controller manager instead.
+	// Left unset, no address space is claimed and everything else reconciles
+	// unchanged.
 	IPAM IPAMConfig `json:"ipam,omitempty"`
 
 	// NetworkInterface is read by the cell controller manager, which takes its

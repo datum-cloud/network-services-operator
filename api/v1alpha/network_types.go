@@ -65,10 +65,71 @@ type NetworkIPAM struct {
 	IPV6Range *string `json:"ipv6Range,omitempty"`
 }
 
+const (
+	// NetworkIPAMAllocated reports whether IPAM holds the network's address
+	// space.
+	NetworkIPAMAllocated = "IPAMAllocated"
+
+	// NetworkReasonProjectNamespaceNotFound means the namespace the platform
+	// provisions with a project is absent from its control plane, so nothing
+	// can be allocated for it.
+	NetworkReasonProjectNamespaceNotFound = "ProjectNamespaceNotFound"
+
+	// NetworkReasonProjectUnresolved means the network's namespace names no
+	// project, so no IPAM request can be addressed on its behalf.
+	NetworkReasonProjectUnresolved = "ProjectUnresolved"
+)
+
 // NetworkStatus defines the observed state of Network
 type NetworkStatus struct {
 	// Represents the observations of a network's current state.
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// IPAM reports the address space IPAM holds for this network.
+	//
+	// +kubebuilder:validation:Optional
+	IPAM *NetworkIPAMStatus `json:"ipam,omitempty"`
+}
+
+// NetworkIPAMStatus reports what IPAM holds for a network.
+type NetworkIPAMStatus struct {
+	// IPv6Prefix is the /48 this network was assigned from the platform's
+	// tenant ULA pool. Every subnet and endpoint address in the network is
+	// carved from it.
+	//
+	// +kubebuilder:validation:Optional
+	IPv6Prefix string `json:"ipv6Prefix,omitempty"`
+
+	// IPv6PrefixRef names what holds the prefix in IPAM, so the allocation can
+	// be audited and released.
+	//
+	// +kubebuilder:validation:Optional
+	IPv6PrefixRef *NetworkPrefixRef `json:"ipv6PrefixRef,omitempty"`
+}
+
+// NetworkPrefixRef names the IPAM objects backing a network's prefix.
+type NetworkPrefixRef struct {
+	// Project is the control plane the objects live in.
+	//
+	// +kubebuilder:validation:Optional
+	Project string `json:"project,omitempty"`
+
+	// Namespace is the project namespace holding the claim.
+	//
+	// +kubebuilder:validation:Optional
+	Namespace string `json:"namespace,omitempty"`
+
+	// ClaimName is the IPClaim this operator holds against the prefix.
+	// Deleting it releases what the operator holds.
+	//
+	// +kubebuilder:validation:Optional
+	ClaimName string `json:"claimName,omitempty"`
+
+	// PoolName is the IPPool IPAM provisioned for the prefix. Subnet and
+	// endpoint addresses are drawn from it.
+	//
+	// +kubebuilder:validation:Optional
+	PoolName string `json:"poolName,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -80,6 +141,7 @@ type NetworkStatus struct {
 // +kubebuilder:printcolumn:name="IPAM",type="string",JSONPath=".spec.ipam.mode"
 // +kubebuilder:printcolumn:name="IPFamilies",type="string",JSONPath=".spec.ipFamilies"
 // +kubebuilder:printcolumn:name="MTU",type="integer",JSONPath=".spec.mtu"
+// +kubebuilder:printcolumn:name="IPv6Prefix",type="string",JSONPath=".status.ipam.ipv6Prefix"
 
 // Network is the Schema for the networks API
 type Network struct {

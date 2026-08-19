@@ -182,6 +182,13 @@ NetworkStatus defines the observed state of Network
           Represents the observations of a network's current state.<br/>
         </td>
         <td>false</td>
+      </tr><tr>
+        <td><b><a href="#networkstatusipam">ipam</a></b></td>
+        <td>object</td>
+        <td>
+          IPAM reports the address space IPAM holds for this network.<br/>
+        </td>
+        <td>false</td>
       </tr></tbody>
 </table>
 
@@ -257,6 +264,94 @@ with respect to the current state of the instance.<br/>
           <br/>
             <i>Format</i>: int64<br/>
             <i>Minimum</i>: 0<br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### Network.status.ipam
+<sup><sup>[↩ Parent](#networkstatus)</sup></sup>
+
+
+
+IPAM reports the address space IPAM holds for this network.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>ipv6Prefix</b></td>
+        <td>string</td>
+        <td>
+          IPv6Prefix is the /48 this network was assigned from the platform's
+tenant ULA pool. Every subnet and endpoint address in the network is
+carved from it.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b><a href="#networkstatusipamipv6prefixref">ipv6PrefixRef</a></b></td>
+        <td>object</td>
+        <td>
+          IPv6PrefixRef names what holds the prefix in IPAM, so the allocation can
+be audited and released.<br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### Network.status.ipam.ipv6PrefixRef
+<sup><sup>[↩ Parent](#networkstatusipam)</sup></sup>
+
+
+
+IPv6PrefixRef names what holds the prefix in IPAM, so the allocation can
+be audited and released.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>claimName</b></td>
+        <td>string</td>
+        <td>
+          ClaimName is the IPClaim this operator holds against the prefix.
+Deleting it releases what the operator holds.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>namespace</b></td>
+        <td>string</td>
+        <td>
+          Namespace is the project namespace holding the claim.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>poolName</b></td>
+        <td>string</td>
+        <td>
+          PoolName is the IPPool IPAM provisioned for the prefix. Subnet and
+endpoint addresses are drawn from it.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>project</b></td>
+        <td>string</td>
+        <td>
+          Project is the control plane the objects live in.<br/>
         </td>
         <td>false</td>
       </tr></tbody>

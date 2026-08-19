@@ -19,6 +19,8 @@ gateway:
     gateway.networking.datumapis.com/certificate-issuer: []
 downstreamResourceManagement:
   kubeconfigPath: /etc/downstream-cluster/kubeconfig
+ipam:
+  kubeconfigPath: /etc/ipam-cluster/kubeconfig
 locationPublisher:
   hubKubeconfigPath: /etc/karmada-hub/kubeconfig
   safetyResyncPeriod: 1m

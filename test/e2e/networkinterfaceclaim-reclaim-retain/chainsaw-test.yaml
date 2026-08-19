@@ -88,7 +88,7 @@ spec:
               record="${TMPDIR:-/tmp}/nic-retain-addresses"
               kubectl -n ipam-e2e-alpha get networkinterfaceclaim nic-retain -o jsonpath='{.status.addresses[?(@.family=="IPv6")].address} {.status.addresses[?(@.family=="IPv4")].address} {.status.externalAddresses[0].address} {.status.networkInterfaceRef.name}' > "$record"
               cat "$record"
-              grep -Eq '^2001:db8:a[0-9a-f]{3}:[^ ]*/96 10\.128\.[0-9]+\.[0-9]+/32 198\.51\.100\.[0-9]+ nic-retain$' "$record" \
+              grep -Eq '^fd20:1[0-9a-f]{3}:[^ ]*/96 10\.128\.[0-9]+\.[0-9]+/32 198\.51\.100\.[0-9]+ nic-retain$' "$record" \
                 || { echo "recorded an unexpected address set"; exit 1; }
       catch:
         - script:

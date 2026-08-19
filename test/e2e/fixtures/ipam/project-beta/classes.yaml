@@ -31,6 +31,12 @@ spec:
   allowedPrefixLengths:
     min: 64
     max: 64
+  # The gateway is ::1 of the /64, so the first /96 must never be handed to
+  # an endpoint. Declared on the class that provisions these pools, because a
+  # cascade-provisioned pool has no author to state it on.
+  reservations:
+    leading: 1
+    unitPrefixLength: 96
 ---
 apiVersion: ipam.miloapis.com/v1alpha1
 kind: IPClass

@@ -217,6 +217,9 @@ spec:
                   *-c-datum-public-v4) published=$(kubectl -n ipam-e2e-alpha get networkinterfaceclaim nic-boundifdel -o jsonpath='{.status.externalAddresses[0].address}')/32 ;;
                   *-f-ipv6) published=$(kubectl -n ipam-e2e-alpha get networkinterfaceclaim nic-boundifdel -o 'jsonpath={.status.addresses[?(@.family=="IPv6")].address}') ;;
                   *-f-ipv4) published=$(kubectl -n ipam-e2e-alpha get networkinterfaceclaim nic-boundifdel -o 'jsonpath={.status.addresses[?(@.family=="IPv4")].address}') ;;
+                  # The network's own prefix claim is in this project too and
+                  # publishes no interface address.
+                  *) continue ;;
                 esac
                 [ "$published" = "$cidr" ] || { echo "the rebuilt interface publishes ${published} where IPAM holds ${cidr}"; exit 1; }
               done

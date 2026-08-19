@@ -144,7 +144,7 @@ spec:
               # A bare address here is a regression.
               v6=$(kubectl -n ipam-e2e-alpha get networkinterfaceclaim nic-dualstack -o "jsonpath={.status.addresses[?(@.family=='IPv6')].address}")
               v4=$(kubectl -n ipam-e2e-alpha get networkinterfaceclaim nic-dualstack -o "jsonpath={.status.addresses[?(@.family=='IPv4')].address}")
-              echo "$v6" | grep -Eq '^2001:db8:a[0-9a-f]{3}:.*/96$' || { echo "IPv6 ${v6} is not a /96 out of project-alpha's 2001:db8:a000::/36"; exit 1; }
+              echo "$v6" | grep -Eq '^fd20:1[0-9a-f]{3}:.*/96$' || { echo "IPv6 ${v6} is not a /96 out of project-alpha's fd20:1000::/36"; exit 1; }
               echo "$v4" | grep -Eq '^10\.128\.[0-9]+\.[0-9]+/32$' || { echo "IPv4 ${v4} is not a /32 out of project-alpha's 10.128.0.0/16"; exit 1; }
 
     - name: Deleting the claim releases both addresses

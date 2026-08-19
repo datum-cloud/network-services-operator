@@ -17,6 +17,11 @@ gateway:
   enableDNSIntegration: true
   permittedTLSOptions:
     gateway.networking.datumapis.com/certificate-issuer: []
+# The manager claims a network's routing identity in the project's own control
+# plane, addressing it by path through Milo. The cell controller manager takes
+# its own copy of this for the addresses it claims in a location.
+ipam:
+  kubeconfigPath: /etc/ipam-cluster/kubeconfig
 downstreamResourceManagement:
   kubeconfigPath: /etc/downstream-cluster/kubeconfig
 locationPublisher:

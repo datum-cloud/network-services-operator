@@ -34,6 +34,27 @@ spec:
     name: nso-e2e
     kind: Organization
 ---
+# The project the MANAGER allocates in, and it is named after a cluster on
+# purpose. A manager claims a network's routing identity in the control plane of
+# the project the network lives in, and it identifies that project by the name of
+# the cluster the reconcile came from — the cluster name is the project name.
+# This env runs the single-cluster provider, which names its one cluster
+# "single" (internal/cmd/clusterdiscovery), so "single" is the project every
+# Network here belongs to.
+#
+# Without this project the manager addresses a control-plane path Milo does not
+# serve and no network is ever allocated an identity. The cell controller
+# manager is unaffected: it reads its project from the claim's namespace label,
+# which the fixtures point at project-alpha and project-beta.
+apiVersion: resourcemanager.miloapis.com/v1alpha1
+kind: Project
+metadata:
+  name: single
+spec:
+  ownerRef:
+    name: nso-e2e
+    kind: Organization
+---
 # Milo authorizes the caller before its aggregator proxies anything, so a
 # request that IPAM would have allowed still needs a grant here.
 #

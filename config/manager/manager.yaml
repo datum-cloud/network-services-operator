@@ -99,9 +99,20 @@ spec:
         volumeMounts:
         - name: config
           mountPath: /config
+        - name: ipam-cluster-kubeconfig
+          mountPath: /etc/ipam-cluster
       serviceAccountName: controller-manager
       terminationGracePeriodSeconds: 10
       volumes:
       - name: config
         configMap:
           name: config
+      # Optional only so a missing secret fails in the manager rather than in
+      # the kubelet: a deployment that configures no IPAM connection allocates
+      # no routing identities and must still start. A deployment that configures
+      # one exits with "unable to load IPAM kubeconfig", which beats a pod stuck
+      # in ContainerCreating.
+      - name: ipam-cluster-kubeconfig
+        secret:
+          secretName: ipam-cluster-kubeconfig
+          optional: true

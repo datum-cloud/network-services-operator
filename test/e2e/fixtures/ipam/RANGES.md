@@ -17,6 +17,7 @@ here before you add a pool.
 | project-beta | `datum-endpoint-v4-root` | `10.129.0.0/16` | `datum-endpoint-v4` |
 | project-beta | `datum-public-v4-root` | `203.0.113.0/24` | `datum-public-v4` |
 | project-beta | `datum-vpc-identity-root` | `fd00:b::/32` | `datum-vpc-identity` |
+| single | `datum-vpc-identity-root` | `fd00:5::/32` | `datum-vpc-identity` |
 
 Class names are deliberately IDENTICAL across the two projects: a controller
 routing by project must reach different address space through the same class
@@ -84,6 +85,24 @@ is a fixture choice, not a settled platform policy.
 The pool is `visibility: platform`: a consumer neither requests an identity nor
 sees one. Production allocates from a dedicated `/16`; the fixture narrows it to
 a `/32` per project so the two projects can hold disjoint space in one cluster.
+
+## Why there is a project called `single`
+
+`project-alpha` and `project-beta` are the cell's projects: a
+`NetworkInterfaceClaim` reads its project from the label on the claim's
+namespace, and the fixtures point those namespaces at one or the other.
+
+`single` is the **manager's** project. A network's routing identity is claimed
+in the control plane of the project the `Network` lives in, and the manager
+identifies that project by the name of the cluster the reconcile arrived from —
+the cluster name is the project name. This env runs the single-cluster provider,
+which names its one cluster `single`, so every `Network` here belongs to a
+project of that name. It holds the identity class and nothing else, because
+nothing in it allocates an interface address.
+
+Without the `single` project in `config/dependencies/milo/bootstrap-in-milo.yaml`
+the manager addresses a control-plane path Milo does not serve, and no network is
+ever allocated an identity — with no error anywhere near the network.
 
 **Uniqueness here is per-project, not platform-wide.** Identities are claimed
 through each project's own control-plane path, so `project-alpha` and

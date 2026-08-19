@@ -1,0 +1,26 @@
+# Ranges are registered in ../RANGES.md. Root pools of one project may not
+# overlap.
+#
+# NEVER ROUTED. This pool is identifier space, not address space: a /64 out of
+# it is a network's identity on the SRv6 fabric and nothing answers at it.
+# Advertising it, or drawing tenant addresses from it, is a mistake in both
+# directions.
+#
+# visibility is platform because a consumer neither requests nor sees an
+# identity.
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPPool
+metadata:
+  name: datum-vpc-identity-root
+  labels:
+    nso-fixture: "true"
+spec:
+  cidr: fd00:5::/32
+  ipFamily: IPv6
+  visibility: platform
+  classNames:
+    - datum-vpc-identity
+  allocation:
+    minPrefixLength: 64
+    maxPrefixLength: 64
+    strategy: FirstFit

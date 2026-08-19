@@ -106,7 +106,13 @@ vars:
 
   CRANE: '{{.REPO}}/bin/crane'
   CRANE_VERSION: v0.21.7
-  IPAM_PROJECTS: project-alpha project-beta
+  # project-alpha and project-beta are the fixture projects the cell's claim
+  # suites allocate addresses in, reached by the namespace label on the claim.
+  # "single" is the MANAGER's project: it claims a network's routing identity in
+  # the control plane of the cluster the reconcile came from, and this env's
+  # single-cluster provider names that cluster "single". Every entry here gets a
+  # Milo kubeconfig, a default namespace, fixture seeding and clearing.
+  IPAM_PROJECTS: project-alpha project-beta single
 
 tasks:
 

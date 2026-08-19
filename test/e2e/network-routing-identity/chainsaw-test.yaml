@@ -1,0 +1,335 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: network-routing-identity
+spec:
+  cluster: nso-standard
+  # The Network lives in `default` deliberately. Its identity is claimed in the
+  # control plane of the project the network belongs to, in the network's own
+  # namespace — in production that namespace exists there by construction,
+  # because the Network is in it. Here the project plane is the kind cluster and
+  # IPAM is behind Milo, so the only namespace both have is `default`.
+  steps:
+    - name: Seed the hub namespace, two locations, and a network
+      description: |
+        The project the manager allocates in is named after the cluster the
+        reconcile arrives from, which the single-cluster provider calls
+        "single". test-infra:up creates a Milo project of that name and seeds it
+        with the datum-vpc-identity class; without it nothing here is allocated.
+      try:
+        - apply:
+            resource:
+              apiVersion: v1
+              kind: Namespace
+              metadata:
+                name: routing-identity-hub
+                labels:
+                  meta.datumapis.com/upstream-cluster-name: cluster-single
+                  meta.datumapis.com/upstream-namespace: default
+        - apply:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: LocationBinding
+              metadata:
+                name: routing-identity-loc-a
+              spec:
+                locationRef:
+                  name: routing-identity-loc-a
+                locationClassName: datum-managed
+        - apply:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: LocationBinding
+              metadata:
+                name: routing-identity-loc-b
+              spec:
+                locationRef:
+                  name: routing-identity-loc-b
+                locationClassName: datum-managed
+        - apply:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Network
+              metadata:
+                name: routing-identity-net
+                namespace: default
+              spec:
+                ipam:
+                  mode: Auto
+                ipFamilies:
+                  - IPv6
+                mtu: 1460
+      cleanup:
+        - script:
+            content: |
+              set -u
+              IPAM=$(git rev-parse --show-toplevel)/hack/ipam-project-kubectl.sh
+              ipam() { "$IPAM" single -n default "$@"; }
+
+              kubectl -n default delete network routing-identity-net --ignore-not-found --timeout=90s
+              kubectl -n routing-identity-hub delete networkbinding --all --ignore-not-found --timeout=60s
+              kubectl delete locationbinding routing-identity-loc-a routing-identity-loc-b --ignore-not-found
+              kubectl delete namespace routing-identity-hub --ignore-not-found --timeout=90s
+
+              # The identity is allocated under Retain, so the allocation
+              # deliberately outlives its claim. Left behind it is inert, but it
+              # holds a /64 the next run has no reason to inherit.
+              leftover=$(ipam get ipclaim -o jsonpath='{range .items[*]}{.metadata.name} {end}' | tr ' ' '\n' | grep -E '^network-routing-identity-' || true)
+              [ -z "$leftover" ] || ipam delete ipclaim $leftover --ignore-not-found --timeout=60s
+              orphans=$(ipam get ipallocation -o name)
+              [ -z "$orphans" ] || ipam delete $orphans --ignore-not-found
+              rm -f "${TMPDIR:-/tmp}/routing-identity-prefix" "${TMPDIR:-/tmp}/routing-identity-claim"
+
+    - name: The network is allocated a routing identity
+      description: |
+        Allocation is synchronous at IPAM, so the only wait here is for the
+        reconcile. The claim reference is what makes the allocation auditable,
+        so it is asserted as a value and then resolved against IPAM.
+      try:
+        - assert:
+            timeout: 2m
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Network
+              metadata:
+                name: routing-identity-net
+                namespace: default
+              status:
+                routingIdentity:
+                  (length(prefix) > `0`): true
+                  claimRef:
+                    namespace: default
+                    (starts_with(name, 'network-routing-identity-')): true
+                (conditions[?type == 'Allocated'] | [0].status): "True"
+                (conditions[?type == 'Ready'] | [0].status): "True"
+
+    - name: The identity is backed by a real claim in the project's IPAM
+      description: |
+        A prefix in status with nothing holding it would be an identity IPAM
+        could hand to a second network. The claim named in claimRef has to
+        exist, and it has to hold the prefix the network publishes.
+      try:
+        - script:
+            content: |
+              set -eu
+              IPAM=$(git rev-parse --show-toplevel)/hack/ipam-project-kubectl.sh
+              ipam() { "$IPAM" single -n default "$@"; }
+
+              prefix=$(kubectl -n default get network routing-identity-net \
+                -o jsonpath='{.status.routingIdentity.prefix}')
+              claim=$(kubectl -n default get network routing-identity-net \
+                -o jsonpath='{.status.routingIdentity.claimRef.name}')
+              uid=$(kubectl -n default get network routing-identity-net -o jsonpath='{.metadata.uid}')
+
+              [ -n "$prefix" ] || { echo "the network published no routing identity" >&2; exit 1; }
+
+              # The claim is named after the UID, not the name: a network deleted
+              # and recreated under one name is a different network and must not
+              # inherit the identity its predecessor's routes were built on.
+              if [ "$claim" != "network-routing-identity-${uid}" ]; then
+                echo "claimRef is ${claim}, expected network-routing-identity-${uid}" >&2
+                exit 1
+              fi
+
+              held=$(ipam get ipclaim "$claim" -o jsonpath='{.status.allocatedCIDR}')
+              if [ "$held" != "$prefix" ]; then
+                echo "network publishes ${prefix} but IPClaim ${claim} holds '${held}'" >&2
+                ipam get ipclaim "$claim" -o yaml >&2
+                exit 1
+              fi
+
+              # It is identifier space, never routable space, and the class is
+              # what says so. Asserting the pool here would only restate the
+              # fixture.
+              class=$(ipam get ipclaim "$claim" -o jsonpath='{.spec.className}')
+              if [ "$class" != "datum-vpc-identity" ]; then
+                echo "the identity was drawn from class '${class}'" >&2
+                exit 1
+              fi
+
+              echo "$prefix" > "${TMPDIR:-/tmp}/routing-identity-prefix"
+              echo "$claim" > "${TMPDIR:-/tmp}/routing-identity-claim"
+              echo "network holds ${prefix} via IPClaim ${claim}"
+
+    - name: The network is placed into two locations
+      try:
+        - apply:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkBinding
+              metadata:
+                name: routing-identity-a
+                namespace: routing-identity-hub
+                labels:
+                  networking.datumapis.com/network: routing-identity-net
+                  networking.datumapis.com/location: routing-identity-loc-a
+              spec:
+                network:
+                  name: routing-identity-net
+                location:
+                  name: routing-identity-loc-a
+                consumer:
+                  apiGroup: compute.datumapis.com
+                  kind: WorkloadDeployment
+                  name: routing-identity-a
+        - apply:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkBinding
+              metadata:
+                name: routing-identity-b
+                namespace: routing-identity-hub
+                labels:
+                  networking.datumapis.com/network: routing-identity-net
+                  networking.datumapis.com/location: routing-identity-loc-b
+              spec:
+                network:
+                  name: routing-identity-net
+                location:
+                  name: routing-identity-loc-b
+                consumer:
+                  apiGroup: compute.datumapis.com
+                  kind: WorkloadDeployment
+                  name: routing-identity-b
+
+    - name: Both locations carry the same identity
+      description: |
+        This is the whole point. A network in two locations is one network, so
+        the two contexts must carry one identity — not two, and not one and an
+        empty field. A cell reads spec, because propagation carries nothing else.
+      try:
+        - assert:
+            timeout: 2m
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkContext
+              metadata:
+                name: routing-identity-net-routing-identity-loc-a
+                namespace: routing-identity-hub
+              spec:
+                (length(routingIdentity) > `0`): true
+        - assert:
+            timeout: 2m
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkContext
+              metadata:
+                name: routing-identity-net-routing-identity-loc-b
+                namespace: routing-identity-hub
+              spec:
+                (length(routingIdentity) > `0`): true
+        - script:
+            content: |
+              set -eu
+              prefix=$(cat "${TMPDIR:-/tmp}/routing-identity-prefix")
+
+              a=$(kubectl -n routing-identity-hub get networkcontext \
+                routing-identity-net-routing-identity-loc-a -o jsonpath='{.spec.routingIdentity}')
+              b=$(kubectl -n routing-identity-hub get networkcontext \
+                routing-identity-net-routing-identity-loc-b -o jsonpath='{.spec.routingIdentity}')
+
+              if [ "$a" != "$prefix" ] || [ "$b" != "$prefix" ]; then
+                echo "network holds ${prefix}; loc-a carries '${a}', loc-b carries '${b}'" >&2
+                kubectl -n routing-identity-hub get networkcontext -o yaml >&2
+                exit 1
+              fi
+              echo "both locations carry ${prefix}"
+
+    - name: Editing the network does not move its identity
+      description: |
+        An identity the fabric has embedded in forwarding state cannot change.
+        The edit is a spec change, which re-reconciles the network and rewrites
+        every context, so the MTU moves and the identity does not.
+      try:
+        - patch:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Network
+              metadata:
+                name: routing-identity-net
+                namespace: default
+              spec:
+                mtu: 8000
+        - assert:
+            timeout: 2m
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkContext
+              metadata:
+                name: routing-identity-net-routing-identity-loc-a
+                namespace: routing-identity-hub
+              spec:
+                mtu: 8000
+        - script:
+            content: |
+              set -eu
+              prefix=$(cat "${TMPDIR:-/tmp}/routing-identity-prefix")
+              claim=$(cat "${TMPDIR:-/tmp}/routing-identity-claim")
+              IPAM=$(git rev-parse --show-toplevel)/hack/ipam-project-kubectl.sh
+              ipam() { "$IPAM" single -n default "$@"; }
+
+              now=$(kubectl -n default get network routing-identity-net \
+                -o jsonpath='{.status.routingIdentity.prefix}')
+              if [ "$now" != "$prefix" ]; then
+                echo "identity moved from ${prefix} to ${now}" >&2
+                exit 1
+              fi
+
+              a=$(kubectl -n routing-identity-hub get networkcontext \
+                routing-identity-net-routing-identity-loc-a -o jsonpath='{.spec.routingIdentity}')
+              if [ "$a" != "$prefix" ]; then
+                echo "loc-a now carries ${a}, was ${prefix}" >&2
+                exit 1
+              fi
+
+              # Re-reconciling must not claim a second time. One claim named
+              # after this network is the whole of it.
+              count=$(ipam get ipclaim -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' \
+                | grep -c "^${claim}$" || true)
+              if [ "$count" != "1" ]; then
+                echo "expected exactly one identity claim, found ${count}" >&2
+                ipam get ipclaim >&2
+                exit 1
+              fi
+              echo "identity is unchanged at ${prefix} after a spec edit"
+
+    - name: Deleting the network releases the claim and retains the identifier
+      description: |
+        Release deletes the claim. It does not free the identifier: an identity
+        still installed in a remote location's forwarding tables would carry
+        that traffic to whichever network was handed it next, so the class
+        allocates under Retain and the allocation outlives the claim.
+      try:
+        - delete:
+            timeout: 2m
+            ref:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkBinding
+              namespace: routing-identity-hub
+        - delete:
+            timeout: 2m
+            ref:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Network
+              name: routing-identity-net
+              namespace: default
+        - script:
+            content: |
+              set -eu
+              prefix=$(cat "${TMPDIR:-/tmp}/routing-identity-prefix")
+              claim=$(cat "${TMPDIR:-/tmp}/routing-identity-claim")
+              IPAM=$(git rev-parse --show-toplevel)/hack/ipam-project-kubectl.sh
+              ipam() { "$IPAM" single -n default "$@"; }
+
+              if ipam get ipclaim "$claim" >/dev/null 2>&1; then
+                echo "IPClaim ${claim} survived the network" >&2
+                exit 1
+              fi
+
+              if ! ipam get ipallocation -o yaml | grep -q "${prefix}"; then
+                echo "identifier ${prefix} went back to the pool; Retain did not hold" >&2
+                ipam get ipallocation -o yaml >&2
+                exit 1
+              fi
+              echo "claim released, identifier ${prefix} retained against reuse"

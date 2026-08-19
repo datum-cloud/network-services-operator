@@ -137,3 +137,56 @@ func TestTPPRejectsInvertedParanoia(t *testing.T) {
 	require.Error(t, err, "detection<blocking must be rejected")
 	assert.Truef(t, apierrors.IsInvalid(err), "expected an Invalid error, got %v", err)
 }
+
+// TestNetworkDefaultsToIPv6 asserts a Network created without ipFamilies
+// carries IPv6. A NetworkInterfaceClaim defaults to IPv6 too, and the claim
+// reconciler rejects a family its network does not carry, so an IPv4 default
+// here makes the default workload on the default network unsatisfiable in
+// every location.
+func TestNetworkDefaultsToIPv6(t *testing.T) {
+	cl := requireEnv(t)
+	ctx := context.Background()
+
+	network := &networkingv1alpha.Network{
+		ObjectMeta: metav1.ObjectMeta{Name: "family-defaults", Namespace: "default"},
+		Spec: networkingv1alpha.NetworkSpec{
+			IPAM: networkingv1alpha.NetworkIPAM{Mode: networkingv1alpha.NetworkIPAMModeAuto},
+		},
+	}
+	require.NoError(t, cl.Create(ctx, network))
+	t.Cleanup(func() { _ = cl.Delete(ctx, network) })
+
+	var got networkingv1alpha.Network
+	require.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(network), &got))
+	assert.Equal(t,
+		[]networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol},
+		got.Spec.IPFamilies)
+}
+
+// TestNetworkKeepsExplicitIPFamilies asserts the default does not overwrite an
+// author's own narrowing, including the IPv4-only case every network created
+// before the default flipped persisted.
+func TestNetworkKeepsExplicitIPFamilies(t *testing.T) {
+	cl := requireEnv(t)
+	ctx := context.Background()
+
+	network := &networkingv1alpha.Network{
+		ObjectMeta: metav1.ObjectMeta{Name: "family-explicit", Namespace: "default"},
+		Spec: networkingv1alpha.NetworkSpec{
+			IPAM:       networkingv1alpha.NetworkIPAM{Mode: networkingv1alpha.NetworkIPAMModeAuto},
+			IPFamilies: []networkingv1alpha.IPFamily{networkingv1alpha.IPv4Protocol},
+		},
+	}
+	require.NoError(t, cl.Create(ctx, network))
+	t.Cleanup(func() { _ = cl.Delete(ctx, network) })
+
+	var got networkingv1alpha.Network
+	require.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(network), &got))
+	require.Equal(t,
+		[]networkingv1alpha.IPFamily{networkingv1alpha.IPv4Protocol},
+		got.Spec.IPFamilies)
+
+	got.Spec.IPFamilies = []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol}
+	require.NoError(t, cl.Update(ctx, &got),
+		"ipFamilies carries no immutability marker, so an existing network is patchable in place")
+}

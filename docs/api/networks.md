@@ -94,10 +94,10 @@ NetworkSpec defines the desired state of a Network
         <td><b>ipFamilies</b></td>
         <td>[]enum</td>
         <td>
-          IP Families to permit on a network. Defaults to IPv4.<br/>
+          IP Families to permit on a network. Defaults to IPv6.<br/>
           <br/>
             <i>Enum</i>: IPv4, IPv6<br/>
-            <i>Default</i>: [IPv4]<br/>
+            <i>Default</i>: [IPv6]<br/>
         </td>
         <td>false</td>
       </tr><tr>

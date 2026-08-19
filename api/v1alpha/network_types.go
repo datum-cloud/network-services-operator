@@ -24,6 +24,14 @@ const (
 	NetworkReady = "Ready"
 )
 
+const (
+	// NetworkReasonProjectNamespaceNotFound means the namespace an allocation
+	// would be made in does not exist in the project's control plane. The
+	// platform provisions it with the project, so its absence says the control
+	// plane is not bootstrapped rather than that it is slow to appear.
+	NetworkReasonProjectNamespaceNotFound = "ProjectNamespaceNotFound"
+)
+
 // NetworkSpec defines the desired state of a Network
 type NetworkSpec struct {
 

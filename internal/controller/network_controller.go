@@ -121,7 +121,7 @@ func (r *NetworkReconciler) reconcileRoutingIdentity(
 		return ctrl.Result{}, fmt.Errorf("failed building IPAM client for project %q: %w", project, err)
 	}
 
-	identity, err := claimRoutingIdentity(ctx, ipamClient, network)
+	identity, err := claimRoutingIdentity(ctx, ipamClient, project, network)
 	if err != nil {
 		var failure *allocationFailure
 		if errors.As(err, &failure) {
@@ -156,6 +156,7 @@ func routingIdentityRequest(network *networkingv1alpha.Network) allocationReques
 func claimRoutingIdentity(
 	ctx context.Context,
 	ipamClient client.Client,
+	project string,
 	network *networkingv1alpha.Network,
 ) (*networkingv1alpha.NetworkRoutingIdentity, error) {
 	request := routingIdentityRequest(network)
@@ -186,6 +187,18 @@ func claimRoutingIdentity(
 	if getErr == nil {
 		ipClaim = existing
 	} else if createErr := ipamClient.Create(ctx, ipClaim); createErr != nil {
+		// The platform provisions this namespace with the project, so a missing
+		// one is not a race to wait out. Retrying it as an error would spin
+		// forever with nothing said on the network.
+		if isNamespaceNotFound(createErr, ipClaim.Namespace) {
+			return nil, &allocationFailure{
+				reason: networkingv1alpha.NetworkReasonProjectNamespaceNotFound,
+				message: fmt.Sprintf(
+					"Project %q has no namespace %q in its control plane, so no routing identity can be allocated for network %q",
+					project, ipClaim.Namespace, network.Name),
+			}
+		}
+
 		raced := &ipamv1alpha1.IPClaim{}
 		if err := ipamClient.Get(ctx, client.ObjectKeyFromObject(ipClaim), raced); err != nil {
 			reason := classifyAllocationFailure(createErr)

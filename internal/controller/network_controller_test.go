@@ -232,6 +232,29 @@ func TestExhaustionClearsOnceSpaceIsAvailable(t *testing.T) {
 		network.Status.Conditions, networkingv1alpha.NetworkReady))
 }
 
+// Every network in a cell's namespace reconciles through here, and the project
+// control plane holds only the namespaces the platform provisioned with it. A
+// namespace it does not have has to be an answer on the network, not an error
+// the controller retries forever with nothing said.
+func TestAMissingProjectNamespaceIsSurfacedNotRetriedForever(t *testing.T) {
+	s := newNetworkScenario(t)
+	s.ipam.noProjectNamespace = true
+
+	requeued, err := s.reconcileWithResult()
+	require.NoError(t, err)
+	require.True(t, requeued)
+
+	network := s.get()
+	require.Nil(t, network.Status.RoutingIdentity)
+
+	allocated := apimeta.FindStatusCondition(
+		network.Status.Conditions, networkingv1alpha.NetworkAllocated)
+	require.NotNil(t, allocated)
+	require.Equal(t, metav1.ConditionFalse, allocated.Status)
+	require.Equal(t, networkingv1alpha.NetworkReasonProjectNamespaceNotFound, allocated.Reason)
+	require.Contains(t, allocated.Message, testProjectNS)
+}
+
 func TestNoIPAMConnectionLeavesTheNetworkAlone(t *testing.T) {
 	s := newNetworkScenario(t)
 	s.IPAM = nil

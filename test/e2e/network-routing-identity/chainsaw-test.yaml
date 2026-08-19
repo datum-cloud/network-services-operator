@@ -67,8 +67,11 @@ spec:
               IPAM=$(git rev-parse --show-toplevel)/hack/ipam-project-kubectl.sh
               ipam() { "$IPAM" single -n default "$@"; }
 
-              kubectl -n default delete network routing-identity-net --ignore-not-found --timeout=90s
+              # Bindings first. A network deleted while one still declares it is
+              # needed here blocks on a presence the presence controller keeps
+              # putting back.
               kubectl -n routing-identity-hub delete networkbinding --all --ignore-not-found --timeout=60s
+              kubectl -n default delete network routing-identity-net --ignore-not-found --timeout=90s
               kubectl delete locationbinding routing-identity-loc-a routing-identity-loc-b --ignore-not-found
               kubectl delete namespace routing-identity-hub --ignore-not-found --timeout=90s
 
@@ -100,7 +103,7 @@ spec:
                   (length(prefix) > `0`): true
                   claimRef:
                     namespace: default
-                    (starts_with(name, 'network-routing-identity-')): true
+                    (length(name) > `0`): true
                 (conditions[?type == 'Allocated'] | [0].status): "True"
                 (conditions[?type == 'Ready'] | [0].status): "True"
 

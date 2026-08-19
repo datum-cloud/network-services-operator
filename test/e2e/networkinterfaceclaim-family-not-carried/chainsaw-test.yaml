@@ -3,12 +3,12 @@
 # A claim asking for a family its network does not carry fails, naming the
 # family, and allocates nothing.
 #
-# This is the accidental case, not an exotic one: Network.spec.ipFamilies
-# defaults to [IPv4] and a claim's defaults to [IPv6], so the most minimal claim
-# anyone can write against the most minimal network is exactly this mismatch.
-# The check is NSO's own — it compares the two specs before it ever reaches
-# IPAM — so a green result here says nothing about IPAM and everything about
-# NSO refusing to ask for space it knows is wrong.
+# Network.spec.ipFamilies and a claim's both default to [IPv6], so the mismatch
+# is no longer what a default claim on a default network produces. It is what a
+# default claim on a network narrowed to IPv4 produces, so the network here says
+# IPv4 explicitly. The check is NSO's own — it compares the two specs before it
+# ever reaches IPAM — so a green result here says nothing about IPAM and
+# everything about NSO refusing to ask for space it knows is wrong.
 #
 # A second claim on the SAME network, differing only in the family it asks for,
 # allocates for real. It is the control that gives the absence its meaning: an
@@ -45,7 +45,7 @@ spec:
                   - IPv4
                 mtu: 1460
 
-    - name: A minimal claim on a default network is refused
+    - name: A default claim on an IPv4-only network is refused
       try:
         - create:
             resource:
@@ -57,6 +57,8 @@ spec:
               spec:
                 ipam:
                   mode: Auto
+                ipFamilies:
+                  - IPv4
         - assert:
             resource:
               apiVersion: networking.datumapis.com/v1alpha

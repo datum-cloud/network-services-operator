@@ -31,18 +31,6 @@ import (
 const (
 	networkControllerFinalizer = "networking.datumapis.com/network-controller"
 	networkPrefixFinalizer     = "networking.datumapis.com/network-prefix-release"
-
-	// networkPrefixClass hands out the /48 a VPC is addressed from.
-	networkPrefixClass = "datum-network-v6"
-
-	// networkPrefixAnchorClass is the class immediately below it. IPAM
-	// materialises a /48 only as the pool a claim's ancestry needs, and offers
-	// no way to ask for that pool directly: a claim of networkPrefixClass draws
-	// a second, unrelated /48 from the platform pool rather than the one the
-	// network's subnets are carved from. Claiming one block of the class below
-	// is what makes IPAM provision the network's own /48 and name it on the
-	// claim's poolRef.
-	networkPrefixAnchorClass = "datum-subnet-v6"
 )
 
 // NetworkReconciler reconciles a Network object
@@ -50,6 +38,10 @@ type NetworkReconciler struct {
 	// IPAM is optional. Left nil, no address space is claimed and a network is
 	// reconciled exactly as it was before the operator reached IPAM at all.
 	IPAM IPAMClientFactory
+
+	// PrefixClass is the IPClass that hands out the range a network is
+	// addressed from. Empty means the same as a nil IPAM: nothing is claimed.
+	PrefixClass string
 
 	mgr        mcmanager.Manager
 	finalizers finalizer.Finalizers
@@ -135,7 +127,7 @@ func (r *NetworkReconciler) reconcilePrefix(
 	cl client.Client,
 	network *networkingv1alpha.Network,
 ) (ctrl.Result, error) {
-	if r.IPAM == nil || !networkCarriesIPv6(network) {
+	if r.IPAM == nil || r.PrefixClass == "" || !networkCarriesIPv6(network) {
 		return ctrl.Result{}, nil
 	}
 
@@ -176,12 +168,11 @@ func (r *NetworkReconciler) reconcilePrefix(
 	return ctrl.Result{}, r.publishPrefix(ctx, cl, network, routing, prefix, poolName)
 }
 
-// claimPrefix holds one block of the class below networkPrefixClass, whose pool
-// is the network's /48, and reports that pool's range.
+// claimPrefix holds the range the network is addressed from, and reports it.
 //
 // The claim's name is derived from the network's UID, so a reconcile that lost
-// its answer finds the same allocation again instead of taking a second one.
-// IPAM binds on create and refuses a duplicate name, so the read comes first.
+// its answer finds the same range again instead of taking a second one. IPAM
+// binds on create and refuses a duplicate name, so the read comes first.
 func (r *NetworkReconciler) claimPrefix(
 	ctx context.Context,
 	ipamClient client.Client,
@@ -192,8 +183,8 @@ func (r *NetworkReconciler) claimPrefix(
 	ipClaim.Namespace = routing.projectNamespace
 	ipClaim.Name = networkPrefixClaimName(network)
 	ipClaim.Spec = ipamv1alpha1.IPClaimSpec{
-		ClassName:     networkPrefixAnchorClass,
-		ReclaimPolicy: ipamv1alpha1.ReclaimDelete,
+		ClassName: r.PrefixClass,
+		Target:    ipamv1alpha1.TargetScopeRange,
 		Scope: map[string]ipamv1alpha1.ScopeRef{
 			ipamScopeRoleNetwork: {
 				APIGroup: datumNetworkingAPIGroup,
@@ -226,13 +217,13 @@ func (r *NetworkReconciler) claimPrefix(
 			reason := classifyAllocationFailure(createErr)
 			return "", "", &allocationFailure{
 				reason:  reason,
-				message: networkPrefixFailureMessage(reason, createErr),
+				message: r.prefixFailureMessage(reason, createErr),
 			}
 		}
 		ipClaim = raced
 	}
 
-	if ipClaim.Status.PoolRef == nil || ipClaim.Status.PoolRef.Name == "" {
+	if ipClaim.Status.AllocatedCIDR == "" {
 		return "", "", &allocationFailure{
 			reason: allocationFailureUnknown,
 			message: fmt.Sprintf("IPAM allocated no address space for this network (phase %q)",
@@ -240,28 +231,11 @@ func (r *NetworkReconciler) claimPrefix(
 		}
 	}
 
-	poolName := ipClaim.Status.PoolRef.Name
-	var pool ipamv1alpha1.IPPool
-	if err := ipamClient.Get(ctx, client.ObjectKey{Name: poolName}, &pool); err != nil {
-		return "", "", fmt.Errorf("failed reading IPPool %q: %w", poolName, err)
+	poolName := ""
+	if ipClaim.Status.PoolRef != nil {
+		poolName = ipClaim.Status.PoolRef.Name
 	}
-
-	if pool.Spec.ClassRef == nil || pool.Spec.ClassRef.Name != networkPrefixClass {
-		return "", "", &allocationFailure{
-			reason: allocationFailureRejected,
-			message: fmt.Sprintf("IPAM drew this network's address space from IPPool %q, which does not hand out class %q",
-				poolName, networkPrefixClass),
-		}
-	}
-
-	if pool.Status.AllocatedCIDR == "" {
-		return "", "", &allocationFailure{
-			reason:  allocationFailureUnknown,
-			message: fmt.Sprintf("IPPool %q holds this network's address space but reports no range", poolName),
-		}
-	}
-
-	return pool.Status.AllocatedCIDR, poolName, nil
+	return ipClaim.Status.AllocatedCIDR, poolName, nil
 }
 
 func (r *NetworkReconciler) publishPrefix(
@@ -423,9 +397,8 @@ func networkPrefixClaimName(network *networkingv1alpha.Network) string {
 	return "network-" + string(network.UID)
 }
 
-func networkPrefixFailureMessage(reason allocationFailureReason, err error) string {
-	request := allocationRequest{className: networkPrefixClass}
-	return allocationFailureMessage(reason, request, err)
+func (r *NetworkReconciler) prefixFailureMessage(reason allocationFailureReason, err error) string {
+	return allocationFailureMessage(reason, allocationRequest{className: r.PrefixClass}, err)
 }
 
 var errNetworkContextsExist = errors.New("network contexts exist")

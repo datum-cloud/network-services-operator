@@ -83,10 +83,10 @@ type fakeIPAM struct {
 	// into it are refused the way an API server refuses them.
 	noProjectNamespace bool
 
-	// prefixPools are the /48 pools IPAM provisions per network, keyed by
-	// network name. A claim of networkPrefixAnchorClass makes one appear and
-	// names it, which is how a network's address space comes into existence.
-	prefixPools map[string]*ipamv1alpha1.IPPool
+	// prefixRanges are the /48 ranges IPAM holds per network, keyed by network
+	// name. A scope-range claim brings one into being and reports it; a second
+	// claim for the same network reads the same range back.
+	prefixRanges map[string]string
 
 	nextV4     int
 	nextV6     int
@@ -107,7 +107,7 @@ func newFakeIPAM(t *testing.T, classes ...*ipamv1alpha1.IPClass) *fakeIPAM {
 		allocationPolicy: map[string]ipamv1alpha1.ReclaimPolicy{},
 		orphans:          map[string]string{},
 		failOn:           map[string]error{},
-		prefixPools:      map[string]*ipamv1alpha1.IPPool{},
+		prefixRanges:     map[string]string{},
 	}
 }
 
@@ -155,20 +155,13 @@ func (f *fakeIPAM) ClientForProject(project string) (client.Client, error) {
 			if failure == nil {
 				failure = f.retainedConflictLocked(ipClaim)
 			}
-			var pool *ipamv1alpha1.IPPool
 			if failure == nil {
-				pool = f.allocateLocked(project, ipClaim)
+				f.allocateLocked(project, ipClaim)
 			}
 			f.mu.Unlock()
 
 			if failure != nil {
 				return failure
-			}
-
-			if pool != nil {
-				if err := c.Create(ctx, pool.DeepCopy()); err != nil && !apierrors.IsAlreadyExists(err) {
-					return err
-				}
 			}
 
 			if err := c.Create(ctx, obj, opts...); err != nil {
@@ -221,11 +214,11 @@ func (f *fakeIPAM) retainedConflictLocked(ipClaim *ipamv1alpha1.IPClaim) error {
 	)
 }
 
-// allocateLocked binds a claim and returns the pool that has to be published
-// alongside it, which is only ever the /48 an anchor claim brings into being.
-func (f *fakeIPAM) allocateLocked(project string, ipClaim *ipamv1alpha1.IPClaim) *ipamv1alpha1.IPPool {
-	if ipClaim.Spec.ClassName == networkPrefixAnchorClass {
-		return f.anchorLocked(ipClaim)
+// allocateLocked binds a claim to the address or the range it asked for.
+func (f *fakeIPAM) allocateLocked(project string, ipClaim *ipamv1alpha1.IPClaim) {
+	if ipClaim.Spec.Target == ipamv1alpha1.TargetScopeRange {
+		f.bindRangeLocked(ipClaim)
+		return
 	}
 
 	family := ipClaim.Spec.IPFamily
@@ -251,31 +244,24 @@ func (f *fakeIPAM) allocateLocked(project string, ipClaim *ipamv1alpha1.IPClaim)
 		ipClaim.Status.AllocatedCIDR = fmt.Sprintf("10.128.0.%d/32", f.nextV4)
 	}
 	ipClaim.Status.PoolRef = &ipamv1alpha1.LocalRef{Name: "pool-" + project}
-	return nil
 }
 
-func (f *fakeIPAM) anchorLocked(ipClaim *ipamv1alpha1.IPClaim) *ipamv1alpha1.IPPool {
-	f.allocationPolicy[ipClaim.Name] = ipClaim.Spec.ReclaimPolicy
-
+// bindRangeLocked hands back the range the network's class holds for it,
+// provisioning it on the first ask and reading the same one back after that.
+func (f *fakeIPAM) bindRangeLocked(ipClaim *ipamv1alpha1.IPClaim) {
 	network := ipClaim.Spec.Scope[ipamScopeRoleNetwork].Name
-	pool, provisioned := f.prefixPools[network]
-	if !provisioned {
+	cidr, held := f.prefixRanges[network]
+	if !held {
 		f.nextPrefix++
-		pool = &ipamv1alpha1.IPPool{}
-		pool.Name = fmt.Sprintf("datum-network-v6-%s-%d", network, f.nextPrefix)
-		pool.Spec.ClassRef = &ipamv1alpha1.LocalRef{Name: networkPrefixClass}
-		pool.Status.AllocatedCIDR = fmt.Sprintf("fd20:1000:%d::/48", f.nextPrefix)
-		f.prefixPools[network] = pool
+		cidr = fmt.Sprintf("fd20:1000:%d::/48", f.nextPrefix)
+		f.prefixRanges[network] = cidr
 	}
 
 	ipClaim.Status.Phase = ipamv1alpha1.ClaimBound
-	ipClaim.Status.AllocatedCIDR = strings.TrimSuffix(pool.Status.AllocatedCIDR, "::/48") + "::/64"
-	ipClaim.Status.PoolRef = &ipamv1alpha1.LocalRef{Name: pool.Name}
-
-	if provisioned {
-		return nil
+	ipClaim.Status.AllocatedCIDR = cidr
+	ipClaim.Status.PoolRef = &ipamv1alpha1.LocalRef{
+		Name: fmt.Sprintf("%s-%s", ipClaim.Spec.ClassName, network),
 	}
-	return pool
 }
 
 // created and deleted are keyed by project, so a test can assert which project

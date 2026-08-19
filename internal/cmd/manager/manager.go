@@ -594,7 +594,8 @@ func controllerRegistrations(
 	return []namedSetup{
 		{"network", true, func() error {
 			return (&controller.NetworkReconciler{
-				IPAM: deps.ipamClients,
+				IPAM:        deps.ipamClients,
+				PrefixClass: serverConfig.IPAM.Classes.Network,
 			}).SetupWithManager(mgr)
 		}},
 		{"networkbinding", true, func() error {

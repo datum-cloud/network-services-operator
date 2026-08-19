@@ -23,7 +23,14 @@ import (
 	"go.datum.net/network-services-operator/internal/downstreamclient"
 )
 
-const testNetworkName = "vpc"
+const (
+	testNetworkName = "vpc"
+
+	// The class name a deployment configures. The platform's own is
+	// datum-vpc-ipv6; the e2e fixtures name theirs differently, which is why
+	// the operator takes it from configuration.
+	testNetworkPrefixClass = "datum-network-v6"
+)
 
 type networkScenario struct {
 	t          *testing.T
@@ -54,6 +61,7 @@ func newNetworkScenario(t *testing.T, ipam *fakeIPAM) *networkScenario {
 	reconciler := &NetworkReconciler{}
 	if ipam != nil {
 		reconciler.IPAM = ipam
+		reconciler.PrefixClass = testNetworkPrefixClass
 	}
 	reconciler.finalizers = finalizer.NewFinalizers()
 	require.NoError(t, reconciler.finalizers.Register(networkControllerFinalizer, noNetworkContexts{}))
@@ -162,7 +170,7 @@ func TestNetworkClaimsItsPrefixWhenCreated(t *testing.T) {
 	require.Equal(t, testProject, ref.Project)
 	require.Equal(t, testProjectNS, ref.Namespace)
 	require.Equal(t, networkPrefixClaimName(network), ref.ClaimName)
-	require.Equal(t, "datum-network-v6-"+testNetworkName+"-1", ref.PoolName)
+	require.Equal(t, testNetworkPrefixClass+"-"+testNetworkName, ref.PoolName)
 
 	condition := s.ipamCondition()
 	require.Equal(t, metav1.ConditionTrue, condition.Status)
@@ -170,6 +178,27 @@ func TestNetworkClaimsItsPrefixWhenCreated(t *testing.T) {
 
 	require.Equal(t, []string{networkPrefixClaimName(network)}, s.ipam.created()[testProject],
 		"the claim must be addressed to the project the namespace names")
+}
+
+// The network holds the range its class names for it, and holds nothing
+// inside that range. A block claimed to force the range into existence would
+// be an address no interface can ever be given, held for as long as the
+// network lives.
+func TestNetworkHoldsTheRangeAndNothingInsideIt(t *testing.T) {
+	s := newNetworkScenario(t, newFakeIPAM(t))
+
+	s.createNetwork(networkingv1alpha.IPv6Protocol)
+	s.reconcile()
+
+	claims := s.storedClaims()
+	require.Len(t, claims, 1)
+	require.Equal(t, ipamv1alpha1.TargetScopeRange, claims[0].Spec.Target)
+	require.Equal(t, testNetworkPrefixClass, claims[0].Spec.ClassName,
+		"the operator must name the class it was configured with")
+	require.Empty(t, claims[0].Spec.PrefixLength,
+		"a range is sized by the class that provisions it")
+	require.Equal(t, s.get().Status.IPAM.IPv6Prefix, claims[0].Status.AllocatedCIDR,
+		"the published prefix is the range the claim holds, not a pool read separately")
 }
 
 // A network's prefix is issued once. A reconcile that runs again — after a
@@ -253,6 +282,20 @@ func TestNetworkWithoutIPv6ClaimsNothing(t *testing.T) {
 	s := newNetworkScenario(t, newFakeIPAM(t))
 
 	s.createNetwork(networkingv1alpha.IPv4Protocol)
+	s.reconcile()
+
+	require.Nil(t, s.get().Status.IPAM)
+	require.Nil(t, s.ipamCondition())
+	require.Zero(t, s.ipam.createdAnywhere())
+}
+
+// A deployment that named no class for network ranges claims nothing, the same
+// as one that configured no IPAM connection at all.
+func TestNetworkWithoutAConfiguredClassClaimsNothing(t *testing.T) {
+	s := newNetworkScenario(t, newFakeIPAM(t))
+	s.reconciler.PrefixClass = ""
+
+	s.createNetwork(networkingv1alpha.IPv6Protocol)
 	s.reconcile()
 
 	require.Nil(t, s.get().Status.IPAM)

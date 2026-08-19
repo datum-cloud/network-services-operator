@@ -59,8 +59,12 @@ spec:
       description: |
         A prefix NSO merely wrote onto its own status proves nothing. The pool
         it names must exist in IPAM, hand out datum-network-v6, and hold exactly
-        the range NSO published — and the claim NSO keeps against it must be
+        the range NSO published, and the claim NSO keeps against it must be
         Bound, so the allocation can be audited and released.
+
+        The claim holds the range itself. It binds no allocation inside it,
+        which is what stops a network leaving behind a block no interface can
+        ever be given.
       try:
         - script:
             content: |
@@ -79,12 +83,18 @@ spec:
               class=$(ipam get ippool "$pool" -o jsonpath='{.spec.classRef.name}')
               scope=$(ipam get ippool "$pool" -o jsonpath='{.spec.scope.network.name}')
               phase=$(ipam get ipclaim "$claim" -o jsonpath='{.status.phase}')
+              target=$(ipam get ipclaim "$claim" -o jsonpath='{.spec.target}')
+              claimed=$(ipam get ipclaim "$claim" -o jsonpath='{.status.allocatedCIDR}')
+              bound=$(ipam get ipclaim "$claim" -o jsonpath='{.status.boundAllocationRef.name}')
 
-              echo "network=${published} ippool ${pool}=${held} class=${class} scope=${scope} claim=${claim} (${phase})"
+              echo "network=${published} ippool ${pool}=${held} class=${class} scope=${scope} claim=${claim} (${phase}, ${target})"
               [ "$published" = "$held" ] || { echo "network published ${published}, IPAM holds ${held}"; exit 1; }
               [ "$class" = "datum-network-v6" ] || { echo "pool hands out ${class}, want datum-network-v6"; exit 1; }
               [ "$scope" = "v6prefix-net" ] || { echo "pool is scoped to network ${scope}, not this one"; exit 1; }
               [ "$phase" = "Bound" ] || { echo "IPClaim ${claim} is ${phase}, want Bound"; exit 1; }
+              [ "$target" = "ScopeRange" ] || { echo "IPClaim ${claim} targets ${target}, want ScopeRange"; exit 1; }
+              [ "$claimed" = "$published" ] || { echo "IPClaim holds ${claimed}, network published ${published}"; exit 1; }
+              [ -z "$bound" ] || { echo "IPClaim holds allocation ${bound} inside the range it was only meant to hold"; exit 1; }
 
     - name: Endpoints are addressed out of the network's own /48
       description: |
@@ -93,11 +103,10 @@ spec:
         have been carved from the same platform pool.
 
         This does NOT assert that the endpoint avoids the subnet gateway.
-        datum-subnet-v6 reserves the first /96 of every /64 for it, but IPAM
-        ignores `reservations` at the pinned ref — the allocator's search never
-        receives them — so the first endpoint in a subnet is still handed the
-        gateway's block. See test/e2e/fixtures/ipam/RANGES.md. Add the
-        assertion here once IPAM honours the reservation.
+        datum-subnet-v6 reserves the first /96 of every /64 for it and IPAM
+        honours that at the pinned ref, but gateway placement is a property of
+        the subnet class rather than of the network's range, so it belongs in
+        its own scenario. See test/e2e/fixtures/ipam/RANGES.md.
       try:
         - apply:
             resource:
@@ -156,13 +165,15 @@ spec:
               print(f"ok: {endpoint} is inside {vpc}")
               PY
 
-    - name: Deleting the network releases the claim it held
+    - name: Deleting the network releases the range it held
       try:
         - script:
             content: |
               set -eu
               kubectl -n ipam-e2e-alpha get network v6prefix-net \
                 -o jsonpath='{.status.ipam.ipv6PrefixRef.claimName}' > "${TMPDIR:-/tmp}/v6prefix-claim"
+              kubectl -n ipam-e2e-alpha get network v6prefix-net \
+                -o jsonpath='{.status.ipam.ipv6PrefixRef.poolName}' > "${TMPDIR:-/tmp}/v6prefix-pool"
         - delete:
             timeout: 120s
             ref:
@@ -188,5 +199,11 @@ spec:
 
               if "$IPAM" project-alpha -n default get ipclaim "$claim" >/dev/null 2>&1; then
                 echo "IPClaim ${claim} still exists after the network was deleted"
+                exit 1
+              fi
+
+              pool=$(cat "${TMPDIR:-/tmp}/v6prefix-pool")
+              if "$IPAM" project-alpha -n default get ippool "$pool" >/dev/null 2>&1; then
+                echo "IPPool ${pool} still holds the range after the network was deleted"
                 exit 1
               fi

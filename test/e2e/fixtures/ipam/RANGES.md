@@ -75,19 +75,24 @@ is keyed on (class name, scope digest) alone, with no reference to the parent
 chain, so a subnet class scoped only by location would hand two networks in one
 location the same pool.
 
-### The VPC `/48` is a pool, not a claim
+### The VPC `/48` is a pool, and a claim can hold it
 
 A `/48` only ever exists as the `IPPool` the cascade provisions for
-`datum-network-v6` at scope `{network}`. There is no way to ask IPAM for that
-pool directly, and **a claim of `datum-network-v6` does not produce it** — it
-draws a second, unrelated `/48` from `datum-network-v6-root`, so a consumer
-reading it would be told an address space its own endpoints are not in.
+`datum-network-v6` at scope `{network}`. An ordinary claim of
+`datum-network-v6` does not produce it — that draws a second, unrelated `/48`
+from `datum-network-v6-root`, so a consumer reading it would be told an address
+space its own endpoints are not in.
 
-What makes IPAM materialise a network's `/48` is a claim whose ancestry needs
-it. `NetworkReconciler` therefore claims one `/64` of `datum-subnet-v6` scoped
-`{network}` per network, reads `status.poolRef` off it, and publishes that
-pool's range as the VPC prefix. The `/64` it holds is the cost of the
-`/48` existing before any interface asks for an address.
+A claim setting `spec.target: ScopeRange` asks for that pool itself rather than
+a block from inside it. `NetworkReconciler` makes one per network, scoped
+`{network}`, and publishes `status.allocatedCIDR` as the VPC prefix. The pool
+it brings into being is the same one the cascade would have built under the
+first endpoint claim, identity row and all, so endpoints are addressed out of
+it. Nothing is allocated inside the range to make it exist.
+
+The class the reconciler names comes from `ipam.classes.network` in the
+operator config, because these fixtures and the platform name their classes
+differently.
 
 ### Gateway reservation
 
@@ -97,15 +102,11 @@ is withheld from endpoints. It is declared on `datum-subnet-v6` because that is
 the class that provisions these `/64` pools, and a cascade-provisioned pool has
 no author to state a reservation on.
 
-> [!WARNING]
-> **IPAM ignores this at the pinned ref.** `reservations` is accepted and
-> validated on both `IPClass` and `IPPool`, but the allocator's search path
-> (`allocation.FindFirstAvailableBlock`) never receives it — the code that
-> excludes reserved positions has no non-test caller. Verified live: with this
-> reservation set, the first endpoint claim in a fresh `/64` was allocated
-> `fd20:f000::/96`, the very block containing the gateway `fd20:f000::1`. The
-> declaration is correct and takes effect the moment IPAM wires it up; until
-> then the gateway is still allocatable to an endpoint.
+> [!NOTE]
+> This takes effect at the pinned IPAM ref. Earlier refs accepted and validated
+> `reservations` on both `IPClass` and `IPPool` but never handed them to the
+> allocator's search path, so the gateway block was still allocatable to an
+> endpoint.
 
 ## Host addresses vs blocks
 

@@ -41,6 +41,24 @@ spec:
     type: Kubernetes
     kubernetes:
       envoyDeployment:
+        # The VPC-ingress VRF/SRv6 sidecar (#855) has no native EnvoyDeployment
+        # field to attach to — `container` customizes only the main Envoy
+        # container, and `initContainers` is run-to-completion, not
+        # long-running. Adding a genuinely new sidecar container requires this
+        # StrategicMerge patch on spec.template.spec.containers: Kubernetes'
+        # strategic-merge semantics key PodSpec.Containers by `name`, so a
+        # name not already present is appended rather than replacing the
+        # existing containers this EnvoyProxy CR generates.
+        #
+        # TODO(#856): sidecar binary is a placeholder pending #855 — using
+        # busybox/sleep instead of a nonexistent image so this manifest stays
+        # deployable (task test-infra:up, `make run`) in the meantime. Swap
+        # the image/command for #855's real binary once it's published; the
+        # container name, CAP_NET_ADMIN, and patch location can stay as-is.
+        # Pinned Envoy Gateway version for this raw-patch mechanism:
+        # Taskfile.test-infra.yml's ENVOY_GATEWAY_VERSION (currently v1.7.4)
+        # — a version bump there should be a deliberate, tested action, since
+        # there's no first-class API guarding this patch shape.
         patch:
           type: StrategicMerge
           value:
@@ -52,12 +70,30 @@ spec:
                 metadata:
                   labels:
                     gateway.datum.net/role: core-deployment
+                spec:
+                  containers:
+                    - name: vpc-vrf-sidecar
+                      image: busybox:1.36
+                      command: ["sleep", "infinity"]
+                      securityContext:
+                        capabilities:
+                          add:
+                            - NET_ADMIN
         pod:
           volumes:
             - name: coraza-waf
               emptyDir: {}
         container:
           image: envoyproxy/envoy:contrib-v1.35.0
+          # Required for the vpcPod socket-bind mutation (#856 step 4) to
+          # succeed: SO_BINDTODEVICE requires CAP_NET_RAW on the process
+          # making the setsockopt call, which is Envoy itself, not the
+          # sidecar above (its CAP_NET_ADMIN is for netlink VRF/route
+          # management only and does nothing for this).
+          securityContext:
+            capabilities:
+              add:
+                - NET_RAW
           volumeMounts:
             - name: coraza-waf
               mountPath: /opt/coraza-waf

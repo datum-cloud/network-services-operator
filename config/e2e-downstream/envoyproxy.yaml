@@ -18,12 +18,42 @@ spec:
     type: Kubernetes
     kubernetes:
       envoyDeployment:
+        # See config/dev/downstream_resources/downstream-gateway.yaml for why
+        # the VPC-ingress VRF/SRv6 sidecar (#855) has to go in via a
+        # StrategicMerge patch on spec.template.spec.containers rather than a
+        # native EnvoyDeployment field.
+        #
+        # TODO(#856): sidecar binary is a placeholder pending #855 — using
+        # busybox/sleep instead of a nonexistent image so this manifest stays
+        # deployable by task test-infra:up in the meantime. Swap the
+        # image/command for #855's real binary once it's published.
+        patch:
+          type: StrategicMerge
+          value:
+            spec:
+              template:
+                spec:
+                  containers:
+                    - name: vpc-vrf-sidecar
+                      image: busybox:1.36
+                      command: ["sleep", "infinity"]
+                      securityContext:
+                        capabilities:
+                          add:
+                            - NET_ADMIN
         pod:
           volumes:
             - name: coraza-waf
               emptyDir: {}
         container:
           image: envoyproxy/envoy:contrib-v1.37.1
+          # Required for the vpcPod socket-bind mutation (#856 step 4) —
+          # SO_BINDTODEVICE needs CAP_NET_RAW on Envoy itself, separate from
+          # the sidecar's CAP_NET_ADMIN above.
+          securityContext:
+            capabilities:
+              add:
+                - NET_RAW
           volumeMounts:
             - name: coraza-waf
               mountPath: /opt/coraza-waf

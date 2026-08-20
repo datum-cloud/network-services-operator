@@ -234,7 +234,7 @@ For now, only a name reference is supported. In the future this can be
 extended to selector-based matching to allow multiple connectors.
 
 Used together with endpoint (the tunnel's target address). Mutually
-exclusive with vpcPod.<br/>
+exclusive with instance.<br/>
         </td>
         <td>false</td>
       </tr><tr>
@@ -246,7 +246,7 @@ exclusive with vpcPod.<br/>
 Supports http and https protocols, IPs or DNS addresses in the host, custom
 ports, and paths.
 
-Required unless vpcPod is set. When connector is also set, this is the
+Required unless instance is set. When connector is also set, this is the
 tunnel's target address rather than a directly reachable backend.<br/>
         </td>
         <td>false</td>
@@ -261,6 +261,19 @@ request is being forwarded to the backend defined here.<br/>
         </td>
         <td>false</td>
       </tr><tr>
+        <td><b><a href="#httpproxyspecrulesindexbackendsindexinstance">instance</a></b></td>
+        <td>object</td>
+        <td>
+          Instance references an EndpointSlice published by galactic-cni for a pod
+running on a tenant VPC network. The referenced EndpointSlice is
+resolved and forwarded to as-is — it is never synthesized or mutated by
+this controller, since doing so would separate the pod address from the
+SID annotation the tenant-VRF/SRv6 mechanism depends on.
+
+Mutually exclusive with endpoint and connector.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
         <td><b><a href="#httpproxyspecrulesindexbackendsindextls">tls</a></b></td>
         <td>object</td>
         <td>
@@ -268,19 +281,6 @@ request is being forwarded to the backend defined here.<br/>
 
 When the backend endpoint uses HTTPS with an IP address, the Hostname field
 must be specified for TLS certificate validation.<br/>
-        </td>
-        <td>false</td>
-      </tr><tr>
-        <td><b><a href="#httpproxyspecrulesindexbackendsindexvpcpod">vpcPod</a></b></td>
-        <td>object</td>
-        <td>
-          VPCPod references an EndpointSlice published by galactic-cni for a pod
-running on a tenant VPC network. The referenced EndpointSlice is
-resolved and forwarded to as-is — it is never synthesized or mutated by
-this controller, since doing so would separate the pod address from the
-SID annotation the tenant-VRF/SRv6 mechanism depends on.
-
-Mutually exclusive with endpoint and connector.<br/>
         </td>
         <td>false</td>
       </tr></tbody>
@@ -298,7 +298,7 @@ For now, only a name reference is supported. In the future this can be
 extended to selector-based matching to allow multiple connectors.
 
 Used together with endpoint (the tunnel's target address). Mutually
-exclusive with vpcPod.
+exclusive with instance.
 
 <table>
     <thead>
@@ -2092,6 +2092,51 @@ Request Path | Prefix Match | Replace Prefix | Modified Path<br/>
 </table>
 
 
+### HTTPProxy.spec.rules[index].backends[index].instance
+<sup><sup>[↩ Parent](#httpproxyspecrulesindexbackendsindex)</sup></sup>
+
+
+
+Instance references an EndpointSlice published by galactic-cni for a pod
+running on a tenant VPC network. The referenced EndpointSlice is
+resolved and forwarded to as-is — it is never synthesized or mutated by
+this controller, since doing so would separate the pod address from the
+SID annotation the tenant-VRF/SRv6 mechanism depends on.
+
+Mutually exclusive with endpoint and connector.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>name</b></td>
+        <td>string</td>
+        <td>
+          Name of the EndpointSlice galactic-cni publishes for the target pod.
+Must exist in the same namespace as this HTTPProxy.<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>port</b></td>
+        <td>integer</td>
+        <td>
+          Port on the referenced EndpointSlice to forward traffic to.<br/>
+          <br/>
+            <i>Format</i>: int32<br/>
+            <i>Minimum</i>: 1<br/>
+            <i>Maximum</i>: 65535<br/>
+        </td>
+        <td>true</td>
+      </tr></tbody>
+</table>
+
+
 ### HTTPProxy.spec.rules[index].backends[index].tls
 <sup><sup>[↩ Parent](#httpproxyspecrulesindexbackendsindex)</sup></sup>
 
@@ -2128,51 +2173,6 @@ When the backend endpoint uses HTTPS with a DNS hostname, this field is
 optional and defaults to the hostname from the endpoint URL.<br/>
         </td>
         <td>false</td>
-      </tr></tbody>
-</table>
-
-
-### HTTPProxy.spec.rules[index].backends[index].vpcPod
-<sup><sup>[↩ Parent](#httpproxyspecrulesindexbackendsindex)</sup></sup>
-
-
-
-VPCPod references an EndpointSlice published by galactic-cni for a pod
-running on a tenant VPC network. The referenced EndpointSlice is
-resolved and forwarded to as-is — it is never synthesized or mutated by
-this controller, since doing so would separate the pod address from the
-SID annotation the tenant-VRF/SRv6 mechanism depends on.
-
-Mutually exclusive with endpoint and connector.
-
-<table>
-    <thead>
-        <tr>
-            <th>Name</th>
-            <th>Type</th>
-            <th>Description</th>
-            <th>Required</th>
-        </tr>
-    </thead>
-    <tbody><tr>
-        <td><b>name</b></td>
-        <td>string</td>
-        <td>
-          Name of the EndpointSlice galactic-cni publishes for the target pod.
-Must exist in the same namespace as this HTTPProxy.<br/>
-        </td>
-        <td>true</td>
-      </tr><tr>
-        <td><b>port</b></td>
-        <td>integer</td>
-        <td>
-          Port on the referenced EndpointSlice to forward traffic to.<br/>
-          <br/>
-            <i>Format</i>: int32<br/>
-            <i>Minimum</i>: 1<br/>
-            <i>Maximum</i>: 65535<br/>
-        </td>
-        <td>true</td>
       </tr></tbody>
 </table>
 

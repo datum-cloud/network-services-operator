@@ -134,9 +134,9 @@ func validateHTTPProxyRuleBackends(rule networkingv1alpha.HTTPProxyRule, fldPath
 func validateHTTPProxyRuleBackend(backend networkingv1alpha.HTTPProxyRuleBackend, fldPath *field.Path) field.ErrorList {
 	allErrs := field.ErrorList{}
 
-	// vpcPod backends don't use the endpoint field at all — see the vpcPod
+	// instance backends don't use the endpoint field at all — see the instance
 	// validation block below instead.
-	if backend.VPCPod == nil {
+	if backend.Instance == nil {
 		allErrs = append(allErrs, validateHTTPProxyRuleBackendEndpoint(backend, fldPath)...)
 	}
 
@@ -158,13 +158,13 @@ func validateHTTPProxyRuleBackend(backend networkingv1alpha.HTTPProxyRuleBackend
 		}
 	}
 
-	if backend.VPCPod != nil {
-		vpcPodFieldPath := fldPath.Child("vpcPod", "name")
-		if backend.VPCPod.Name == "" {
-			allErrs = append(allErrs, field.Required(vpcPodFieldPath, "vpcPod name is required"))
+	if backend.Instance != nil {
+		instanceFieldPath := fldPath.Child("instance", "name")
+		if backend.Instance.Name == "" {
+			allErrs = append(allErrs, field.Required(instanceFieldPath, "instance name is required"))
 		} else {
-			for _, msg := range validation.IsDNS1123Subdomain(backend.VPCPod.Name) {
-				allErrs = append(allErrs, field.Invalid(vpcPodFieldPath, backend.VPCPod.Name, msg))
+			for _, msg := range validation.IsDNS1123Subdomain(backend.Instance.Name) {
+				allErrs = append(allErrs, field.Invalid(instanceFieldPath, backend.Instance.Name, msg))
 			}
 		}
 	}
@@ -175,7 +175,7 @@ func validateHTTPProxyRuleBackend(backend networkingv1alpha.HTTPProxyRuleBackend
 }
 
 // validateHTTPProxyRuleBackendEndpoint validates the endpoint field. Only
-// called for endpoint/connector backends — vpcPod backends don't carry an
+// called for endpoint/connector backends — instance backends don't carry an
 // endpoint URL at all.
 func validateHTTPProxyRuleBackendEndpoint(backend networkingv1alpha.HTTPProxyRuleBackend, fldPath *field.Path) field.ErrorList {
 	allErrs := field.ErrorList{}

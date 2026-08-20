@@ -64,21 +64,21 @@ type desiredHTTPProxyResources struct {
 	httpRouteFilters []*envoygatewayv1alpha1.HTTPRouteFilter
 }
 
-// errVPCPodBackendNotFound is returned by collectDesiredResources when a
-// vpcPod backend references an EndpointSlice that doesn't exist. Reconcile
+// errInstanceBackendNotFound is returned by collectDesiredResources when an
+// instance backend references an EndpointSlice that doesn't exist. Reconcile
 // detects it with errors.As and surfaces a Programmed=False condition
 // instead of a generic requeue.
-type errVPCPodBackendNotFound struct {
+type errInstanceBackendNotFound struct {
 	name string
 }
 
-func (e *errVPCPodBackendNotFound) Error() string {
+func (e *errInstanceBackendNotFound) Error() string {
 	return fmt.Sprintf("referenced EndpointSlice %q not found", e.name)
 }
 
 // collectDesiredResourcesErrorResult turns a collectDesiredResources error
 // into the (Result, error) Reconcile should return, or done=false if err is
-// nil and Reconcile should keep going. A vpcPod backend referencing a
+// nil and Reconcile should keep going. An instance backend referencing a
 // missing EndpointSlice gets its own Programmed=False condition and a short
 // requeue (the referenced pod may simply not have started yet) instead of a
 // bare generic requeue. Kept out of Reconcile as a single call so adding
@@ -88,10 +88,10 @@ func collectDesiredResourcesErrorResult(err error, programmedCondition *metav1.C
 		return ctrl.Result{}, nil, false
 	}
 
-	var notFound *errVPCPodBackendNotFound
+	var notFound *errInstanceBackendNotFound
 	if errors.As(err, &notFound) {
 		programmedCondition.Status = metav1.ConditionFalse
-		programmedCondition.Reason = networkingv1alpha.HTTPProxyReasonVPCPodBackendNotFound
+		programmedCondition.Reason = networkingv1alpha.HTTPProxyReasonInstanceBackendNotFound
 		programmedCondition.Message = fmt.Sprintf("The HTTPProxy cannot be programmed: %s", notFound.Error())
 		return ctrl.Result{RequeueAfter: retryAfterConflict}, nil, true
 	}
@@ -866,7 +866,7 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 		}
 
 		for backendIndex, backend := range rule.Backends {
-			if backend.VPCPod != nil {
+			if backend.Instance != nil {
 				// Reference the CNI-published EndpointSlice as-is — never
 				// synthesize one. Synthesizing would separate the pod
 				// address from the SID annotation the tenant-VRF/SRv6
@@ -878,12 +878,12 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 				// existence check belongs in the Gateway controller instead
 				// once the downstream-native resolution path is settled.
 				var referenced discoveryv1.EndpointSlice
-				key := client.ObjectKey{Namespace: httpProxy.Namespace, Name: backend.VPCPod.Name}
+				key := client.ObjectKey{Namespace: httpProxy.Namespace, Name: backend.Instance.Name}
 				if err := cl.Get(ctx, key, &referenced); err != nil {
 					if apierrors.IsNotFound(err) {
-						return nil, &errVPCPodBackendNotFound{name: backend.VPCPod.Name}
+						return nil, &errInstanceBackendNotFound{name: backend.Instance.Name}
 					}
-					return nil, fmt.Errorf("failed getting vpcPod backend endpointslice for backend %d in rule %d: %w", backendIndex, ruleIndex, err)
+					return nil, fmt.Errorf("failed getting instance backend endpointslice for backend %d in rule %d: %w", backendIndex, ruleIndex, err)
 				}
 
 				backendRefs[backendIndex] = gatewayv1.HTTPBackendRef{
@@ -891,8 +891,8 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 						BackendObjectReference: gatewayv1.BackendObjectReference{
 							Group: ptr.To(gatewayv1.Group("discovery.k8s.io")),
 							Kind:  ptr.To(gatewayv1.Kind("EndpointSlice")),
-							Name:  gatewayv1.ObjectName(backend.VPCPod.Name),
-							Port:  ptr.To(backend.VPCPod.Port),
+							Name:  gatewayv1.ObjectName(backend.Instance.Name),
+							Port:  ptr.To(backend.Instance.Port),
 						},
 					},
 					Filters: backend.Filters,

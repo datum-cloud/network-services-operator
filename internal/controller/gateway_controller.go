@@ -71,8 +71,8 @@ const KindEndpointSlice = "EndpointSlice"
 
 // VPCPodTenantIDLabel is the label galactic-cni (#854) is expected to set on
 // the EndpointSlice it publishes for a VPC pod, identifying the owning
-// tenant. Its presence on an EndpointSlice a vpcPod HTTPProxy backend
-// references (api/v1alpha.VPCPodBackendRef) tells this controller to route
+// tenant. Its presence on an EndpointSlice an instance HTTPProxy backend
+// references (api/v1alpha.InstanceBackendRef) tells this controller to route
 // straight through to the pod's real address instead of synthesizing a
 // ClusterIP Service — Envoy needs a real endpoint address for the
 // tenant-VRF/SRv6 socket-bind mechanism (#855) to work.
@@ -2343,7 +2343,7 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 					return nil, nil, nil, fmt.Errorf("no port defined in backendRef")
 				}
 
-				// A vpcPod HTTPProxy backend (api/v1alpha.VPCPodBackendRef)
+				// An instance HTTPProxy backend (api/v1alpha.InstanceBackendRef)
 				// names a CNI-published EndpointSlice directly — never one
 				// this operator synthesized. Recognize it by the tenant-id
 				// label and route straight through to the pod's real

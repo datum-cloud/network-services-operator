@@ -112,14 +112,14 @@ type HTTPProxyRule struct {
 	Backends []HTTPProxyRuleBackend `json:"backends,omitempty"`
 }
 
-// +kubebuilder:validation:XValidation:message="endpoint is required unless vpcPod is set, and vpcPod is mutually exclusive with endpoint and connector",rule="has(self.vpcPod) ? (!has(self.endpoint) && !has(self.connector)) : has(self.endpoint)"
+// +kubebuilder:validation:XValidation:message="endpoint is required unless instance is set, and instance is mutually exclusive with endpoint and connector",rule="has(self.instance) ? (!has(self.endpoint) && !has(self.connector)) : has(self.endpoint)"
 type HTTPProxyRuleBackend struct {
 	// Endpoint for the backend. Must be a valid URL.
 	//
 	// Supports http and https protocols, IPs or DNS addresses in the host, custom
 	// ports, and paths.
 	//
-	// Required unless vpcPod is set. When connector is also set, this is the
+	// Required unless instance is set. When connector is also set, this is the
 	// tunnel's target address rather than a directly reachable backend.
 	//
 	// +kubebuilder:validation:Optional
@@ -131,12 +131,12 @@ type HTTPProxyRuleBackend struct {
 	// extended to selector-based matching to allow multiple connectors.
 	//
 	// Used together with endpoint (the tunnel's target address). Mutually
-	// exclusive with vpcPod.
+	// exclusive with instance.
 	//
 	// +kubebuilder:validation:Optional
 	Connector *ConnectorReference `json:"connector,omitempty"`
 
-	// VPCPod references an EndpointSlice published by galactic-cni for a pod
+	// Instance references an EndpointSlice published by galactic-cni for a pod
 	// running on a tenant VPC network. The referenced EndpointSlice is
 	// resolved and forwarded to as-is — it is never synthesized or mutated by
 	// this controller, since doing so would separate the pod address from the
@@ -145,7 +145,7 @@ type HTTPProxyRuleBackend struct {
 	// Mutually exclusive with endpoint and connector.
 	//
 	// +kubebuilder:validation:Optional
-	VPCPod *VPCPodBackendRef `json:"vpcPod,omitempty"`
+	Instance *InstanceBackendRef `json:"instance,omitempty"`
 
 	// TLS contains backend TLS configuration.
 	//
@@ -187,14 +187,14 @@ type HTTPProxyBackendTLS struct {
 	Hostname *string `json:"hostname,omitempty"`
 }
 
-// VPCPodBackendRef references an EndpointSlice published by galactic-cni for
+// InstanceBackendRef references an EndpointSlice published by galactic-cni for
 // a pod on a tenant VPC network.
 //
 // TODO(#856): the tenant-id label name/schema this reference implicitly
 // depends on (used downstream by the Gateway controller to recognize a
 // CNI-published EndpointSlice and route around Service synthesis) is not
 // yet confirmed with #854. Revisit this type once that's settled.
-type VPCPodBackendRef struct {
+type InstanceBackendRef struct {
 	// Name of the EndpointSlice galactic-cni publishes for the target pod.
 	// Must exist in the same namespace as this HTTPProxy.
 	//
@@ -453,9 +453,9 @@ const (
 	// when being programmed.
 	HTTPProxyReasonConflict = "Conflict"
 
-	// HTTPProxyReasonVPCPodBackendNotFound indicates that a vpcPod backend
+	// HTTPProxyReasonInstanceBackendNotFound indicates that an instance backend
 	// references an EndpointSlice that does not exist.
-	HTTPProxyReasonVPCPodBackendNotFound = "VPCPodBackendNotFound"
+	HTTPProxyReasonInstanceBackendNotFound = "InstanceBackendNotFound"
 
 	// This reason is used with the "Accepted" and "Programmed"
 	// conditions when the status is "Unknown" and no controller has reconciled

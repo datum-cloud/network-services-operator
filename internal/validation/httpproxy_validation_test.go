@@ -436,14 +436,14 @@ func TestValidateHTTPProxy(t *testing.T) {
 				field.Invalid(backendPath().Child("endpoint").Key("port"), "", ""),
 			},
 		},
-		"vpcPod backend skips endpoint validation": {
+		"instance backend skips endpoint validation": {
 			proxy: &networkingv1alpha.HTTPProxy{
 				Spec: networkingv1alpha.HTTPProxySpec{
 					Rules: []networkingv1alpha.HTTPProxyRule{
 						{
 							Backends: []networkingv1alpha.HTTPProxyRuleBackend{
 								{
-									VPCPod: &networkingv1alpha.VPCPodBackendRef{Name: "vpc-pod-1", Port: 8080},
+									Instance: &networkingv1alpha.InstanceBackendRef{Name: "vpc-pod-1", Port: 8080},
 								},
 							},
 						},
@@ -452,14 +452,14 @@ func TestValidateHTTPProxy(t *testing.T) {
 			},
 			expectedErrors: field.ErrorList{},
 		},
-		"vpcPod name required": {
+		"instance name required": {
 			proxy: &networkingv1alpha.HTTPProxy{
 				Spec: networkingv1alpha.HTTPProxySpec{
 					Rules: []networkingv1alpha.HTTPProxyRule{
 						{
 							Backends: []networkingv1alpha.HTTPProxyRuleBackend{
 								{
-									VPCPod: &networkingv1alpha.VPCPodBackendRef{Port: 8080},
+									Instance: &networkingv1alpha.InstanceBackendRef{Port: 8080},
 								},
 							},
 						},
@@ -467,17 +467,17 @@ func TestValidateHTTPProxy(t *testing.T) {
 				},
 			},
 			expectedErrors: field.ErrorList{
-				field.Required(field.NewPath("spec", "rules").Index(0).Child("backends").Index(0).Child("vpcPod", "name"), ""),
+				field.Required(field.NewPath("spec", "rules").Index(0).Child("backends").Index(0).Child("instance", "name"), ""),
 			},
 		},
-		"vpcPod name invalid": {
+		"instance name invalid": {
 			proxy: &networkingv1alpha.HTTPProxy{
 				Spec: networkingv1alpha.HTTPProxySpec{
 					Rules: []networkingv1alpha.HTTPProxyRule{
 						{
 							Backends: []networkingv1alpha.HTTPProxyRuleBackend{
 								{
-									VPCPod: &networkingv1alpha.VPCPodBackendRef{Name: "Invalid_Name", Port: 8080},
+									Instance: &networkingv1alpha.InstanceBackendRef{Name: "Invalid_Name", Port: 8080},
 								},
 							},
 						},
@@ -485,7 +485,7 @@ func TestValidateHTTPProxy(t *testing.T) {
 				},
 			},
 			expectedErrors: field.ErrorList{
-				field.Invalid(field.NewPath("spec", "rules").Index(0).Child("backends").Index(0).Child("vpcPod", "name"), "Invalid", ""),
+				field.Invalid(field.NewPath("spec", "rules").Index(0).Child("backends").Index(0).Child("instance", "name"), "Invalid", ""),
 			},
 		},
 	}

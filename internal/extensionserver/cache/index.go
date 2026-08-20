@@ -173,7 +173,7 @@ func populateFromClient(ctx context.Context, cl client.Client, idx *PolicyIndex,
 						NodeID:     nodeID,
 					}
 
-				case backend.VPCPod != nil:
+				case backend.Instance != nil:
 					key := VPCPodKey{
 						UpstreamNS:    effectiveNS,
 						HTTPProxyName: proxy.Name,
@@ -188,7 +188,7 @@ func populateFromClient(ctx context.Context, cl client.Client, idx *PolicyIndex,
 					var endpointSlice discoveryv1.EndpointSlice
 					if lookupErr := cl.Get(ctx, client.ObjectKey{
 						Namespace: proxy.Namespace,
-						Name:      backend.VPCPod.Name,
+						Name:      backend.Instance.Name,
 					}, &endpointSlice); lookupErr != nil {
 						// Missing or transient error: leave TenantID empty so
 						// ApplyVPCPodSocketBind skips mutation rather than

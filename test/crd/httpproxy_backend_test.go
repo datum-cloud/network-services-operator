@@ -27,10 +27,10 @@ func backendProxy(name string, backend networkingv1alpha.HTTPProxyRuleBackend) *
 
 // TestHTTPProxyCRDBackendExclusivity pins the CEL rule on HTTPProxyRuleBackend
 // against a real apiserver. Regression guard: the rule originally required
-// exactly one of endpoint/connector/vpcPod, which rejected every existing
+// exactly one of endpoint/connector/instance, which rejected every existing
 // connector backend — those always carry endpoint (the tunnel's target
-// address) alongside connector (which tunnel to use). Only vpcPod is
-// mutually exclusive with the other two; endpoint is required unless vpcPod
+// address) alongside connector (which tunnel to use). Only instance is
+// mutually exclusive with the other two; endpoint is required unless instance
 // is set.
 func TestHTTPProxyCRDBackendExclusivity(t *testing.T) {
 	cl := requireEnv(t)
@@ -63,34 +63,34 @@ func TestHTTPProxyCRDBackendExclusivity(t *testing.T) {
 		require.NoError(t, create(t, proxy))
 	})
 
-	t.Run("vpcPod alone is valid", func(t *testing.T) {
-		proxy := backendProxy("backend-vpcpod-only", networkingv1alpha.HTTPProxyRuleBackend{
-			VPCPod: &networkingv1alpha.VPCPodBackendRef{Name: "vpc-pod-1", Port: 8080},
+	t.Run("instance alone is valid", func(t *testing.T) {
+		proxy := backendProxy("backend-instance-only", networkingv1alpha.HTTPProxyRuleBackend{
+			Instance: &networkingv1alpha.InstanceBackendRef{Name: "vpc-pod-1", Port: 8080},
 		})
 		require.NoError(t, create(t, proxy))
 	})
 
-	t.Run("vpcPod with endpoint is rejected", func(t *testing.T) {
-		proxy := backendProxy("backend-vpcpod-endpoint", networkingv1alpha.HTTPProxyRuleBackend{
+	t.Run("instance with endpoint is rejected", func(t *testing.T) {
+		proxy := backendProxy("backend-instance-endpoint", networkingv1alpha.HTTPProxyRuleBackend{
 			Endpoint: "https://api.example.com",
-			VPCPod:   &networkingv1alpha.VPCPodBackendRef{Name: "vpc-pod-1", Port: 8080},
+			Instance: &networkingv1alpha.InstanceBackendRef{Name: "vpc-pod-1", Port: 8080},
 		})
 		err := create(t, proxy)
 		require.Error(t, err)
 		assert.Truef(t, apierrors.IsInvalid(err), "expected an Invalid error, got %v", err)
 	})
 
-	t.Run("vpcPod with connector is rejected", func(t *testing.T) {
-		proxy := backendProxy("backend-vpcpod-connector", networkingv1alpha.HTTPProxyRuleBackend{
+	t.Run("instance with connector is rejected", func(t *testing.T) {
+		proxy := backendProxy("backend-instance-connector", networkingv1alpha.HTTPProxyRuleBackend{
 			Connector: &networkingv1alpha.ConnectorReference{Name: "test-connector"},
-			VPCPod:    &networkingv1alpha.VPCPodBackendRef{Name: "vpc-pod-1", Port: 8080},
+			Instance:  &networkingv1alpha.InstanceBackendRef{Name: "vpc-pod-1", Port: 8080},
 		})
 		err := create(t, proxy)
 		require.Error(t, err)
 		assert.Truef(t, apierrors.IsInvalid(err), "expected an Invalid error, got %v", err)
 	})
 
-	t.Run("neither endpoint nor vpcPod is rejected", func(t *testing.T) {
+	t.Run("neither endpoint nor instance is rejected", func(t *testing.T) {
 		proxy := backendProxy("backend-neither", networkingv1alpha.HTTPProxyRuleBackend{
 			Connector: &networkingv1alpha.ConnectorReference{Name: "test-connector"},
 		})

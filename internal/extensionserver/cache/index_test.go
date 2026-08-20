@@ -157,7 +157,7 @@ func newVPCPodHTTPProxy(ns, vpcPodName string) *networkingv1alpha.HTTPProxy {
 				{
 					Backends: []networkingv1alpha.HTTPProxyRuleBackend{
 						{
-							VPCPod: &networkingv1alpha.VPCPodBackendRef{
+							Instance: &networkingv1alpha.InstanceBackendRef{
 								Name: vpcPodName,
 								Port: 8080,
 							},

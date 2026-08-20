@@ -581,12 +581,12 @@ func TestHTTPProxyCollectDesiredResources(t *testing.T) {
 	}
 }
 
-// TestHTTPProxyCollectDesiredResourcesVPCPod covers the vpcPod backend kind
-// separately from TestHTTPProxyCollectDesiredResources: that table's shared
-// post-loop assertions hardcode a 1:1 backend-to-synthesized-EndpointSlice
-// relationship, which a vpcPod backend (zero synthesized slices, by design)
-// would violate before its own assertions ever ran.
-func TestHTTPProxyCollectDesiredResourcesVPCPod(t *testing.T) {
+// TestHTTPProxyCollectDesiredResourcesInstance covers the instance backend
+// kind separately from TestHTTPProxyCollectDesiredResources: that table's
+// shared post-loop assertions hardcode a 1:1 backend-to-synthesized-
+// EndpointSlice relationship, which an instance backend (zero synthesized
+// slices, by design) would violate before its own assertions ever ran.
+func TestHTTPProxyCollectDesiredResourcesInstance(t *testing.T) {
 	operatorConfig := config.NetworkServicesOperator{
 		Gateway: config.GatewayConfig{
 			TargetDomain: "example.com",
@@ -601,7 +601,7 @@ func TestHTTPProxyCollectDesiredResourcesVPCPod(t *testing.T) {
 	t.Run("resolves the referenced EndpointSlice without synthesizing one", func(t *testing.T) {
 		httpProxy := newHTTPProxy(func(h *networkingv1alpha.HTTPProxy) {
 			h.Spec.Rules[0].Backends[0] = networkingv1alpha.HTTPProxyRuleBackend{
-				VPCPod: &networkingv1alpha.VPCPodBackendRef{Name: "vpc-pod-1", Port: 8080},
+				Instance: &networkingv1alpha.InstanceBackendRef{Name: "vpc-pod-1", Port: 8080},
 			}
 		})
 
@@ -625,10 +625,10 @@ func TestHTTPProxyCollectDesiredResourcesVPCPod(t *testing.T) {
 		assert.EqualValues(t, 8080, ptr.Deref(backendRefs[0].Port, 0))
 	})
 
-	t.Run("missing referenced EndpointSlice fails with errVPCPodBackendNotFound", func(t *testing.T) {
+	t.Run("missing referenced EndpointSlice fails with errInstanceBackendNotFound", func(t *testing.T) {
 		httpProxy := newHTTPProxy(func(h *networkingv1alpha.HTTPProxy) {
 			h.Spec.Rules[0].Backends[0] = networkingv1alpha.HTTPProxyRuleBackend{
-				VPCPod: &networkingv1alpha.VPCPodBackendRef{Name: "does-not-exist", Port: 8080},
+				Instance: &networkingv1alpha.InstanceBackendRef{Name: "does-not-exist", Port: 8080},
 			}
 		})
 
@@ -636,17 +636,17 @@ func TestHTTPProxyCollectDesiredResourcesVPCPod(t *testing.T) {
 		_, err := reconciler.collectDesiredResources(context.Background(), cl, httpProxy)
 		require.Error(t, err)
 
-		var notFound *errVPCPodBackendNotFound
+		var notFound *errInstanceBackendNotFound
 		assert.ErrorAs(t, err, &notFound)
 	})
 }
 
-// TestHTTPProxyReconcileVPCPodBackendNotFound verifies that a vpcPod backend
+// TestHTTPProxyReconcileInstanceBackendNotFound verifies that an instance backend
 // referencing a nonexistent EndpointSlice surfaces as a Programmed=False
 // condition with a dedicated reason, and requeues promptly (the referenced
 // pod may simply not have started yet) rather than bubbling up as a bare
 // generic requeue.
-func TestHTTPProxyReconcileVPCPodBackendNotFound(t *testing.T) {
+func TestHTTPProxyReconcileInstanceBackendNotFound(t *testing.T) {
 	logger := zap.New(zap.UseFlagOptions(&zap.Options{Development: true}))
 	ctx := log.IntoContext(context.Background(), logger)
 
@@ -671,7 +671,7 @@ func TestHTTPProxyReconcileVPCPodBackendNotFound(t *testing.T) {
 	httpProxy := newHTTPProxy(func(h *networkingv1alpha.HTTPProxy) {
 		controllerutil.AddFinalizer(h, httpProxyFinalizer)
 		h.Spec.Rules[0].Backends[0] = networkingv1alpha.HTTPProxyRuleBackend{
-			VPCPod: &networkingv1alpha.VPCPodBackendRef{Name: "does-not-exist", Port: 8080},
+			Instance: &networkingv1alpha.InstanceBackendRef{Name: "does-not-exist", Port: 8080},
 		}
 	})
 
@@ -703,7 +703,7 @@ func TestHTTPProxyReconcileVPCPodBackendNotFound(t *testing.T) {
 	programmed := apimeta.FindStatusCondition(updated.Status.Conditions, networkingv1alpha.HTTPProxyConditionProgrammed)
 	require.NotNil(t, programmed)
 	assert.Equal(t, metav1.ConditionFalse, programmed.Status)
-	assert.Equal(t, networkingv1alpha.HTTPProxyReasonVPCPodBackendNotFound, programmed.Reason)
+	assert.Equal(t, networkingv1alpha.HTTPProxyReasonInstanceBackendNotFound, programmed.Reason)
 }
 
 //nolint:gocyclo

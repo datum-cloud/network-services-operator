@@ -1,0 +1,21 @@
+apiVersion: iam.miloapis.com/v1alpha1
+kind: ProtectedResource
+metadata:
+  name: networking.datumapis.com-networkinterfaceclaim
+spec:
+  serviceRef:
+    name: "networking.datumapis.com"
+  kind: NetworkInterfaceClaim
+  plural: networkinterfaceclaims
+  singular: networkinterfaceclaim
+  permissions:
+    - list
+    - get
+    - create
+    - update
+    - patch
+    - watch
+    - delete
+  parentResources:
+    - apiGroup: resourcemanager.miloapis.com
+      kind: Project

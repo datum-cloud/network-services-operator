@@ -30,3 +30,9 @@ spec:
     - networking.datumapis.com/networkpolicies.list
     - networking.datumapis.com/networkpolicies.get
     - networking.datumapis.com/networkpolicies.watch
+    - networking.datumapis.com/networkinterfaces.list
+    - networking.datumapis.com/networkinterfaces.get
+    - networking.datumapis.com/networkinterfaces.watch
+    - networking.datumapis.com/networkinterfaceclaims.list
+    - networking.datumapis.com/networkinterfaceclaims.get
+    - networking.datumapis.com/networkinterfaceclaims.watch

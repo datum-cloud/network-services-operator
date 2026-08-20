@@ -47,6 +47,32 @@ type NetworkContextSpec struct {
 type NetworkContextStatus struct {
 	// Represents the observations of a network context's current state.
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// IPAM reports the address space IPAM holds for this network in this
+	// location.
+	//
+	// +kubebuilder:validation:Optional
+	IPAM *NetworkContextIPAMStatus `json:"ipam,omitempty"`
+}
+
+// NetworkContextIPAMStatus reports what IPAM holds for a network in one
+// location.
+//
+// The range itself is published on the Subnet this context owns, which is the
+// API a consumer already reads a location's addressing from. What is recorded
+// here is where that range came from, so the allocation can be audited and
+// released without a second copy of it to keep in step.
+type NetworkContextIPAMStatus struct {
+	// IPv6SubnetRef names the Subnet publishing this location's /64.
+	//
+	// +kubebuilder:validation:Optional
+	IPv6SubnetRef *LocalSubnetReference `json:"ipv6SubnetRef,omitempty"`
+
+	// IPv6ClaimRef names what holds the /64 in IPAM. Deleting the claim it
+	// names releases what this operator holds.
+	//
+	// +kubebuilder:validation:Optional
+	IPv6ClaimRef *NetworkPrefixRef `json:"ipv6ClaimRef,omitempty"`
 }
 
 const (
@@ -71,6 +97,32 @@ const (
 	NetworkContextReadyReasonReady = "Ready"
 )
 
+const (
+	// NetworkContextIPAMAllocated reports whether IPAM holds this location's
+	// subnet.
+	NetworkContextIPAMAllocated = "IPAMAllocated"
+
+	// NetworkContextReasonProjectNamespaceNotFound means the namespace the
+	// platform provisions with a project is absent from its control plane, so
+	// nothing can be allocated for it.
+	NetworkContextReasonProjectNamespaceNotFound = "ProjectNamespaceNotFound"
+
+	// NetworkContextReasonProjectUnresolved means the context's namespace names
+	// no project, so no IPAM request can be addressed on its behalf.
+	NetworkContextReasonProjectUnresolved = "ProjectUnresolved"
+
+	// NetworkContextReasonRangeOccupied means this location's subnet cannot be
+	// given back while addresses are still allocated inside it. The interfaces
+	// holding them have to go first.
+	NetworkContextReasonRangeOccupied = "RangeOccupied"
+
+	// NetworkContextReasonRangeUnsupported means IPAM did not keep the request
+	// for a range, so it would answer with a block from inside one. A block is
+	// not this location's subnet and the addresses it hands out do not lie in
+	// it.
+	NetworkContextReasonRangeUnsupported = "RangeUnsupported"
+)
+
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 
@@ -78,6 +130,7 @@ const (
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
 // +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].reason`
+// +kubebuilder:printcolumn:name="IPv6Subnet",type="string",JSONPath=".status.ipam.ipv6SubnetRef.name"
 type NetworkContext struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

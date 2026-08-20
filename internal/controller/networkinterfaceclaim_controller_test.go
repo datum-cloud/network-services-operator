@@ -98,6 +98,7 @@ type fakeIPAM struct {
 	nextV4     int
 	nextV6     int
 	nextPrefix int
+	nextSubnet int
 }
 
 func newFakeIPAM(t *testing.T, classes ...*ipamv1alpha1.IPClass) *fakeIPAM {
@@ -279,22 +280,44 @@ func (f *fakeIPAM) allocateLocked(project string, ipClaim *ipamv1alpha1.IPClaim)
 	ipClaim.Status.BoundAllocationRef = &ipamv1alpha1.LocalRef{Name: allocationNameFor(ipClaim.Name)}
 }
 
-// bindRangeLocked hands back the range the network's class holds for it,
+// bindRangeLocked hands back the range the claim's class holds at its scope,
 // provisioning it on the first ask and reading the same one back after that.
+// A scope naming a location is a subnet, carved from the network's own range —
+// which the cascade brings into being here too if nothing claimed it first.
 func (f *fakeIPAM) bindRangeLocked(ipClaim *ipamv1alpha1.IPClaim) {
 	network := ipClaim.Spec.Scope[ipamScopeRoleNetwork].Name
-	cidr, held := f.prefixRanges[network]
+	location := ipClaim.Spec.Scope[ipamScopeRoleLocation].Name
+
+	cidr, held := f.prefixRanges[network+"/"+location]
 	if !held {
-		f.nextPrefix++
-		cidr = fmt.Sprintf("fd20:1000:%d::/48", f.nextPrefix)
-		f.prefixRanges[network] = cidr
+		if location == "" {
+			cidr = f.networkRangeLocked(network)
+		} else {
+			f.nextSubnet++
+			cidr = fmt.Sprintf("%s:%x::/64",
+				strings.TrimSuffix(f.networkRangeLocked(network), "::/48"), f.nextSubnet)
+		}
+		f.prefixRanges[network+"/"+location] = cidr
+	}
+
+	poolName := fmt.Sprintf("%s-%s", ipClaim.Spec.ClassName, network)
+	if location != "" {
+		poolName += "-" + location
 	}
 
 	ipClaim.Status.Phase = ipamv1alpha1.ClaimBound
 	ipClaim.Status.AllocatedCIDR = cidr
-	ipClaim.Status.PoolRef = &ipamv1alpha1.LocalRef{
-		Name: fmt.Sprintf("%s-%s", ipClaim.Spec.ClassName, network),
+	ipClaim.Status.PoolRef = &ipamv1alpha1.LocalRef{Name: poolName}
+}
+
+func (f *fakeIPAM) networkRangeLocked(network string) string {
+	cidr, held := f.prefixRanges[network+"/"]
+	if !held {
+		f.nextPrefix++
+		cidr = fmt.Sprintf("fd20:1000:%d::/48", f.nextPrefix)
+		f.prefixRanges[network+"/"] = cidr
 	}
+	return cidr
 }
 
 // created and deleted are keyed by project, so a test can assert which project

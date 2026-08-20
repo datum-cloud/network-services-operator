@@ -24,6 +24,9 @@ spec:
     - jsonPath: .status.conditions[?(@.type=="Ready")].reason
       name: Reason
       type: string
+    - jsonPath: .status.ipam.ipv6SubnetRef.name
+      name: IPv6Subnet
+      type: string
     name: v1alpha
     schema:
       openAPIV3Schema:
@@ -172,6 +175,45 @@ spec:
                   - type
                   type: object
                 type: array
+              ipam:
+                description: |-
+                  IPAM reports the address space IPAM holds for this network in this
+                  location.
+                properties:
+                  ipv6ClaimRef:
+                    description: |-
+                      IPv6ClaimRef names what holds the /64 in IPAM. Deleting the claim it
+                      names releases what this operator holds.
+                    properties:
+                      claimName:
+                        description: |-
+                          ClaimName is the IPClaim this operator holds against the prefix.
+                          Deleting it releases what the operator holds.
+                        type: string
+                      namespace:
+                        description: Namespace is the project namespace holding the
+                          claim.
+                        type: string
+                      poolName:
+                        description: |-
+                          PoolName is the IPPool IPAM provisioned for the prefix. Subnet and
+                          endpoint addresses are drawn from it.
+                        type: string
+                      project:
+                        description: Project is the control plane the objects live
+                          in.
+                        type: string
+                    type: object
+                  ipv6SubnetRef:
+                    description: IPv6SubnetRef names the Subnet publishing this location's
+                      /64.
+                    properties:
+                      name:
+                        type: string
+                    required:
+                    - name
+                    type: object
+                type: object
             type: object
         type: object
     served: true

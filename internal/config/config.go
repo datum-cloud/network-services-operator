@@ -146,10 +146,18 @@ type IPAMClasses struct {
 	// from. Unset, no range is claimed and a network is reconciled with no
 	// address space, the same as an unset IPAM connection.
 	//
-	// The per-region and per-endpoint classes are not named here. They are
-	// reached through this class's own chain, which IPAM resolves, so naming
-	// them would be restating something the service already knows.
+	// The per-endpoint class is not named here. It is reached through the
+	// subnet class's own chain, which IPAM resolves, so naming it would be
+	// restating something the service already knows.
 	Network string `json:"network,omitempty"`
+
+	// Subnet is the class that hands out the range a network is addressed from
+	// in one location. Unset, no subnet is claimed and a network context is
+	// reconciled with no address space of its own, the same as an unset IPAM
+	// connection. The subnet a location's endpoints are drawn from still comes
+	// into being under the first of them either way; naming the class is what
+	// gives it an owner that can report it and give it back.
+	Subnet string `json:"subnet,omitempty"`
 }
 
 func (c *IPAMConfig) validate() error {

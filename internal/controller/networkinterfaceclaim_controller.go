@@ -27,6 +27,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
+	mccontext "sigs.k8s.io/multicluster-runtime/pkg/context"
 	mchandler "sigs.k8s.io/multicluster-runtime/pkg/handler"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
@@ -260,6 +261,37 @@ func resolveProjectRouting(
 		project:          project,
 		projectNamespace: projectNamespace,
 		clusterNameLabel: namespace.Labels[downstreamclient.UpstreamOwnerClusterNameLabel],
+	}, nil
+}
+
+// resolveProjectOrCluster reads the project from an object's namespace, and
+// falls back to the cluster the object was read from. A namespace that declares
+// an owner is answering for a control plane holding several projects' objects;
+// one that declares none is a project's own control plane, which the cluster
+// names.
+func resolveProjectOrCluster(
+	ctx context.Context,
+	cl client.Client,
+	namespaceName string,
+) (projectRouting, error) {
+	routing, err := resolveProjectRouting(ctx, cl, namespaceName)
+	if err == nil {
+		return routing, nil
+	}
+
+	var unresolvable *projectUnresolvable
+	if !errors.As(err, &unresolvable) {
+		return projectRouting{}, err
+	}
+
+	clusterName, ok := mccontext.ClusterFrom(ctx)
+	if !ok || string(clusterName) == "" {
+		return projectRouting{}, err
+	}
+
+	return projectRouting{
+		project:          string(clusterName),
+		projectNamespace: namespaceName,
 	}, nil
 }
 

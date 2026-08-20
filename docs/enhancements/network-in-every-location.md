@@ -711,10 +711,14 @@ promptness.
 
 ### The address family default
 
-`NetworkSpec.ipFamilies` defaults to `[IPv4]`. `NetworkInterfaceClaim.spec.ipFamilies`
+`NetworkSpec.ipFamilies` defaulted to `[IPv4]`. `NetworkInterfaceClaim.spec.ipFamilies`
 defaults to `[IPv6]`, as does compute's `InstanceNetworkInterface.ipFamilies`. A claim asking
 for a family the network does not carry is a hard rejection, not a pending condition. So a
-default consumer on a default network rejects, in every location, forever.
+default consumer on a default network rejected, in every location, forever.
+
+`Network`'s default is now `[IPv6]`, which unblocks new objects without waiting on a compute
+API change. The recommendation below stands as the fuller fix; the paragraph after it
+describes what the flip does and does not buy.
 
 This blocks the design in the plainest sense: everything above can be correct and the common
 path still fails. It is called out as an open question in both PR #360 and compute PR #210,
@@ -727,9 +731,10 @@ source of truth for what its interfaces carry. Compute's `[IPv6]` default is rem
 so an unset field on a workload stays unset on the claim, and any future consumer inherits
 the same rule without having to pick a default of its own.
 
-Flipping `Network`'s default to `[IPv6]` instead has the same surface effect on new objects
-and does nothing for the networks that already persisted `[IPv4]` at creation. Those networks
-would keep rejecting IPv6 claims, which is correct behaviour and an unpleasant migration.
+Flipping `Network`'s default to `[IPv6]`, which has now happened, has the same surface effect
+on new objects and does nothing for the networks that already persisted `[IPv4]` at creation.
+Those networks keep rejecting IPv6 claims, which is correct behaviour and an unpleasant
+migration — `ipFamilies` is mutable, so it is a per-object patch rather than a recreate.
 Making the claim defer removes the entire class of mismatch, including for objects that
 already exist.
 

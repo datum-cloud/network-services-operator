@@ -416,9 +416,8 @@ func newScenario(t *testing.T, labelled bool, networkFamilies []networkingv1alph
 	}
 
 	// The claim reconciler runs in a cell and reads the propagated context, not
-	// the network. Families are set explicitly throughout, because a claim
-	// defaulting to IPv6 on a network defaulting to IPv4 rejects forever until
-	// compute stops defaulting the claim's families.
+	// the network. Families are set explicitly throughout so each case names the
+	// families it exercises rather than inheriting either default.
 	s.createNetworkContext("default", networkFamilies, 1460)
 
 	return s

@@ -16,7 +16,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
@@ -92,7 +92,7 @@ type LocationPublisherReconciler struct {
 	// HubCluster holds the published copies.
 	HubCluster cluster.Cluster
 
-	Recorder record.EventRecorder
+	Recorder events.EventRecorder
 }
 
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=locations,verbs=get;list;watch
@@ -562,7 +562,7 @@ func (r *LocationPublisherReconciler) event(obj client.Object, eventType, reason
 	if r.Recorder == nil {
 		return
 	}
-	r.Recorder.Event(obj, eventType, reason, message)
+	r.Recorder.Eventf(obj, nil, eventType, reason, "PublishLocation", "%s", message)
 }
 
 func publishedContentEqual(
@@ -592,7 +592,7 @@ func (r *LocationPublisherReconciler) SetupWithManager(mgr manager.Manager) erro
 		return errors.New("a source cluster and a hub cluster are required to publish locations")
 	}
 	if r.Recorder == nil {
-		r.Recorder = mgr.GetEventRecorderFor("location-publisher")
+		r.Recorder = mgr.GetEventRecorder("location-publisher")
 	}
 
 	publishedPolicy := &unstructured.Unstructured{}

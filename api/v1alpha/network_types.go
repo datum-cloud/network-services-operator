@@ -22,10 +22,10 @@ type NetworkSpec struct {
 	// +kubebuilder:validation:Required
 	IPAM NetworkIPAM `json:"ipam,omitempty"`
 
-	// IP Families to permit on a network. Defaults to IPv4.
+	// IP Families to permit on a network. Defaults to IPv6.
 	//
 	// +kubebuilder:validation:Optional
-	// +kubebuilder:default={IPv4}
+	// +kubebuilder:default={IPv6}
 	IPFamilies []IPFamily `json:"ipFamilies,omitempty"`
 
 	// Network MTU. May be between 1300 and 8856.

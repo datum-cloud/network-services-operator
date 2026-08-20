@@ -625,10 +625,10 @@ none of it is provided here.
   Without it there is no answer to what address an interface gets, and `spec.addresses` has
   nothing to hold.
 - **A network's default families and an interface's must agree.** `NetworkSpec.ipFamilies`
-  defaults to `[IPv4]` while a claim here defaults to `[IPv6]`, so the default workload on
-  the default network requests a family its network does not carry. PR #210 raises the same
-  mismatch as an open question; this design is where it surfaces as a hard failure, and it
-  needs settling before either ships.
+  defaulted to `[IPv4]` while a claim here defaults to `[IPv6]`, so the default workload on
+  the default network requested a family its network did not carry. `Network`'s default is
+  now `[IPv6]`, which settles the new-object case; networks created before the flip persisted
+  `[IPv4]` and still need patching.
 - **A network needs one routing identity across every location it reaches**, unique
   platform-wide, or the two halves of a multi-location workload are unrelated networks
   sharing a name. That it is not the per-location forwarding-instance identifier needs to

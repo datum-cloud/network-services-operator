@@ -66,8 +66,8 @@ spec:
             properties:
               ipFamilies:
                 default:
-                - IPv4
-                description: IP Families to permit on a network. Defaults to IPv4.
+                - IPv6
+                description: IP Families to permit on a network. Defaults to IPv6.
                 items:
                   enum:
                   - IPv4

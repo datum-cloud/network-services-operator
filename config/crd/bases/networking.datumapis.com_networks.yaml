@@ -15,30 +15,30 @@ spec:
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .metadata.name
-      name: Name
+    - jsonPath: .status.ipam.ipv6Prefix
+      name: IPv6Prefix
+      type: string
+    - jsonPath: .status.conditions[?(@.type=='Ready')].status
+      name: Ready
+      type: string
+    - jsonPath: .status.conditions[?(@.type=='Ready')].reason
+      name: Reason
       type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
-    - jsonPath: .status.conditions[?(@.type==\"Ready\")].status
-      name: Ready
-      type: string
-    - jsonPath: .status.conditions[?(@.type==\"Ready\")].reason
-      name: Reason
+    - jsonPath: .spec.ipFamilies
+      name: IPFamilies
+      priority: 1
       type: string
     - jsonPath: .spec.ipam.mode
       name: IPAM
-      type: string
-    - jsonPath: .spec.ipFamilies
-      name: IPFamilies
+      priority: 1
       type: string
     - jsonPath: .spec.mtu
       name: MTU
+      priority: 1
       type: integer
-    - jsonPath: .status.ipam.ipv6Prefix
-      name: IPv6Prefix
-      type: string
     name: v1alpha
     schema:
       openAPIV3Schema:

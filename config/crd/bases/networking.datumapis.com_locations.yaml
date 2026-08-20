@@ -24,10 +24,10 @@ spec:
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
-    - jsonPath: .status.conditions[?(@.type==\"Ready\")].status
+    - jsonPath: .status.conditions[?(@.type=='Ready')].status
       name: Ready
       type: string
-    - jsonPath: .status.conditions[?(@.type==\"Ready\")].reason
+    - jsonPath: .status.conditions[?(@.type=='Ready')].reason
       name: Reason
       type: string
     name: v1alpha

@@ -1203,6 +1203,213 @@ func TestEnsureDownstreamGatewayHTTPRoutes(t *testing.T) {
 
 }
 
+// TestProcessDownstreamHTTPRouteRulesVPCPodPassThrough verifies that a
+// backendRef naming a tenant-labeled EndpointSlice is passed straight
+// through to its downstream-native counterpart — no synthesized Service,
+// EndpointSlice, or BackendTLSPolicy, and no GC finalizer on the upstream
+// object, since its lifecycle belongs to galactic-cni, not this controller.
+func TestProcessDownstreamHTTPRouteRulesVPCPodPassThrough(t *testing.T) {
+	testScheme := runtime.NewScheme()
+	require.NoError(t, scheme.AddToScheme(testScheme))
+	require.NoError(t, gatewayv1.Install(testScheme))
+	require.NoError(t, discoveryv1.AddToScheme(testScheme))
+
+	upstreamNamespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "test", UID: uuid.NewUUID()}}
+	downstreamNamespaceName := fmt.Sprintf("ns-%s", upstreamNamespace.UID)
+
+	upstreamGateway := newGateway(config.NetworkServicesOperator{}, upstreamNamespace.Name, "test")
+	downstreamGateway := newGateway(config.NetworkServicesOperator{}, downstreamNamespaceName, "test")
+
+	upstreamEndpointSlice := &discoveryv1.EndpointSlice{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: upstreamNamespace.Name,
+			Name:      "vpc-pod-1",
+			Labels: map[string]string{
+				VPCPodTenantIDLabel: "tenant-1",
+			},
+		},
+		AddressType: discoveryv1.AddressTypeIPv6,
+		Ports: []discoveryv1.EndpointPort{
+			{Name: ptr.To("http"), Protocol: ptr.To(corev1.ProtocolTCP), Port: ptr.To(int32(8080))},
+		},
+	}
+
+	downstreamEndpointSlice := &discoveryv1.EndpointSlice{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: downstreamNamespaceName,
+			Name:      "vpc-pod-1",
+			Labels: map[string]string{
+				VPCPodTenantIDLabel: "tenant-1",
+			},
+		},
+		AddressType: discoveryv1.AddressTypeIPv6,
+		Endpoints: []discoveryv1.Endpoint{
+			{Addresses: []string{"fd00::1"}},
+		},
+		Ports: []discoveryv1.EndpointPort{
+			{Name: ptr.To("http"), Protocol: ptr.To(corev1.ProtocolTCP), Port: ptr.To(int32(8080))},
+		},
+	}
+
+	upstreamRoute := newHTTPRoute(upstreamNamespace.Name, "test", func(route *gatewayv1.HTTPRoute) {
+		route.Spec.Rules = []gatewayv1.HTTPRouteRule{
+			{
+				BackendRefs: []gatewayv1.HTTPBackendRef{
+					{
+						BackendRef: gatewayv1.BackendRef{
+							BackendObjectReference: gatewayv1.BackendObjectReference{
+								Group: ptr.To(gatewayv1.Group("discovery.k8s.io")),
+								Kind:  ptr.To(gatewayv1.Kind(KindEndpointSlice)),
+								Name:  gatewayv1.ObjectName(upstreamEndpointSlice.Name),
+								Port:  ptr.To(gatewayv1.PortNumber(8080)),
+							},
+						},
+					},
+				},
+			},
+		}
+	})
+
+	fakeUpstreamClient := fake.NewClientBuilder().
+		WithScheme(testScheme).
+		WithObjects(upstreamNamespace, upstreamGateway, upstreamEndpointSlice).
+		Build()
+
+	fakeDownstreamClient := fake.NewClientBuilder().
+		WithScheme(testScheme).
+		WithObjects(downstreamGateway, downstreamEndpointSlice).
+		Build()
+
+	reconciler := &GatewayReconciler{
+		DownstreamCluster: &fakeCluster{cl: fakeDownstreamClient},
+	}
+
+	downstreamStrategy := downstreamclient.NewMappedNamespaceResourceStrategy("test", fakeUpstreamClient, fakeDownstreamClient)
+
+	ctx := context.Background()
+	rules, downstreamResources, downstreamResourcesToDelete, err := reconciler.processDownstreamHTTPRouteRules(
+		ctx,
+		fakeUpstreamClient,
+		upstreamGateway,
+		*upstreamRoute,
+		downstreamGateway,
+		downstreamStrategy,
+	)
+	require.NoError(t, err)
+	assert.Empty(t, downstreamResources, "vpcPod pass-through must not synthesize a Service/EndpointSlice/BackendTLSPolicy")
+	assert.Empty(t, downstreamResourcesToDelete)
+
+	require.Len(t, rules, 1)
+	require.Len(t, rules[0].BackendRefs, 1)
+	backendRef := rules[0].BackendRefs[0]
+	assert.Equal(t, "EndpointSlice", string(ptr.Deref(backendRef.Kind, "")))
+	assert.Equal(t, downstreamNamespaceName, string(ptr.Deref(backendRef.Namespace, "")))
+	assert.Equal(t, "vpc-pod-1", string(backendRef.Name))
+	assert.EqualValues(t, 8080, ptr.Deref(backendRef.Port, 0))
+
+	// The upstream EndpointSlice must not have been mutated with the GC
+	// finalizer — its lifecycle belongs to galactic-cni, not this controller.
+	var updatedUpstreamEndpointSlice discoveryv1.EndpointSlice
+	require.NoError(t, fakeUpstreamClient.Get(ctx, client.ObjectKeyFromObject(upstreamEndpointSlice), &updatedUpstreamEndpointSlice))
+	assert.False(t, controllerutil.ContainsFinalizer(&updatedUpstreamEndpointSlice, gatewayControllerGCFinalizer))
+}
+
+// TestProcessDownstreamHTTPRouteRulesUnlabeledEndpointSliceUnaffected is a
+// regression guard: an EndpointSlice backendRef with no tenant-id label must
+// still go through the existing Service-synthesis path unchanged.
+func TestProcessDownstreamHTTPRouteRulesUnlabeledEndpointSliceUnaffected(t *testing.T) {
+	testScheme := runtime.NewScheme()
+	require.NoError(t, scheme.AddToScheme(testScheme))
+	require.NoError(t, gatewayv1.Install(testScheme))
+	require.NoError(t, discoveryv1.AddToScheme(testScheme))
+
+	upstreamNamespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "test", UID: uuid.NewUUID()}}
+	downstreamNamespaceName := fmt.Sprintf("ns-%s", upstreamNamespace.UID)
+
+	upstreamGateway := newGateway(config.NetworkServicesOperator{}, upstreamNamespace.Name, "test")
+	downstreamGateway := newGateway(config.NetworkServicesOperator{}, downstreamNamespaceName, "test")
+
+	upstreamEndpointSlice := &discoveryv1.EndpointSlice{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: upstreamNamespace.Name,
+			Name:      "test-0-0",
+		},
+		AddressType: discoveryv1.AddressTypeFQDN,
+		Endpoints: []discoveryv1.Endpoint{
+			{Addresses: []string{"backend.example.com"}},
+		},
+		Ports: []discoveryv1.EndpointPort{
+			{Name: ptr.To("http"), Protocol: ptr.To(corev1.ProtocolTCP), Port: ptr.To(int32(80))},
+		},
+	}
+
+	upstreamRoute := newHTTPRoute(upstreamNamespace.Name, "test", func(route *gatewayv1.HTTPRoute) {
+		route.Spec.Rules = []gatewayv1.HTTPRouteRule{
+			{
+				BackendRefs: []gatewayv1.HTTPBackendRef{
+					{
+						BackendRef: gatewayv1.BackendRef{
+							BackendObjectReference: gatewayv1.BackendObjectReference{
+								Group: ptr.To(gatewayv1.Group("discovery.k8s.io")),
+								Kind:  ptr.To(gatewayv1.Kind(KindEndpointSlice)),
+								Name:  gatewayv1.ObjectName(upstreamEndpointSlice.Name),
+								Port:  ptr.To(gatewayv1.PortNumber(80)),
+							},
+						},
+					},
+				},
+			},
+		}
+	})
+
+	fakeUpstreamClient := fake.NewClientBuilder().
+		WithScheme(testScheme).
+		WithObjects(upstreamNamespace, upstreamGateway, upstreamEndpointSlice).
+		Build()
+
+	fakeDownstreamClient := fake.NewClientBuilder().
+		WithScheme(testScheme).
+		WithObjects(downstreamGateway).
+		Build()
+
+	reconciler := &GatewayReconciler{
+		DownstreamCluster: &fakeCluster{cl: fakeDownstreamClient},
+	}
+
+	downstreamStrategy := downstreamclient.NewMappedNamespaceResourceStrategy("test", fakeUpstreamClient, fakeDownstreamClient)
+
+	ctx := context.Background()
+	rules, downstreamResources, _, err := reconciler.processDownstreamHTTPRouteRules(
+		ctx,
+		fakeUpstreamClient,
+		upstreamGateway,
+		*upstreamRoute,
+		downstreamGateway,
+		downstreamStrategy,
+	)
+	require.NoError(t, err)
+	require.Len(t, rules, 1)
+	require.Len(t, rules[0].BackendRefs, 1)
+	assert.Equal(t, "Service", string(ptr.Deref(rules[0].BackendRefs[0].Kind, "")))
+
+	// A Service + EndpointSlice pair must still be synthesized.
+	var serviceCount, endpointSliceCount int
+	for _, obj := range downstreamResources {
+		switch obj.(type) {
+		case *corev1.Service:
+			serviceCount++
+		case *discoveryv1.EndpointSlice:
+			endpointSliceCount++
+		}
+	}
+	assert.Equal(t, 1, serviceCount)
+	assert.Equal(t, 1, endpointSliceCount)
+
+	var updatedUpstreamEndpointSlice discoveryv1.EndpointSlice
+	require.NoError(t, fakeUpstreamClient.Get(ctx, client.ObjectKeyFromObject(upstreamEndpointSlice), &updatedUpstreamEndpointSlice))
+	assert.True(t, controllerutil.ContainsFinalizer(&updatedUpstreamEndpointSlice, gatewayControllerGCFinalizer))
+}
+
 func TestEnsureHostnamesClaimed(t *testing.T) {
 	testScheme := runtime.NewScheme()
 	assert.NoError(t, scheme.AddToScheme(testScheme))

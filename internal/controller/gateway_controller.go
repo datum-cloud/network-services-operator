@@ -69,6 +69,18 @@ const KindHTTPRoute = "HTTPRoute"
 const KindService = "Service"
 const KindEndpointSlice = "EndpointSlice"
 
+// VPCPodTenantIDLabel is the label galactic-cni (#854) is expected to set on
+// the EndpointSlice it publishes for a VPC pod, identifying the owning
+// tenant. Its presence on an EndpointSlice a vpcPod HTTPProxy backend
+// references (api/v1alpha.VPCPodBackendRef) tells this controller to route
+// straight through to the pod's real address instead of synthesizing a
+// ClusterIP Service — Envoy needs a real endpoint address for the
+// tenant-VRF/SRv6 socket-bind mechanism (#855) to work.
+//
+// TODO(#856): label name/schema unconfirmed with #854 — placeholder pending
+// their implementation.
+const VPCPodTenantIDLabel = "galactic.datum.net/tenant-id"
+
 // GatewayReconciler reconciles a Gateway object
 type GatewayReconciler struct {
 	mgr    mcmanager.Manager
@@ -2331,164 +2343,183 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 					return nil, nil, nil, fmt.Errorf("no port defined in backendRef")
 				}
 
-				if !controllerutil.ContainsFinalizer(&upstreamEndpointSlice, gatewayControllerGCFinalizer) {
-					controllerutil.AddFinalizer(&upstreamEndpointSlice, gatewayControllerGCFinalizer)
-					if err := upstreamClient.Update(ctx, &upstreamEndpointSlice); err != nil {
-						return nil, nil, nil, fmt.Errorf("failed to add finalizer to endpointslice: %w", err)
+				// A vpcPod HTTPProxy backend (api/v1alpha.VPCPodBackendRef)
+				// names a CNI-published EndpointSlice directly — never one
+				// this operator synthesized. Recognize it by the tenant-id
+				// label and route straight through to the pod's real
+				// address instead of behind a synthesized ClusterIP
+				// Service: Envoy needs a real endpoint address for the
+				// tenant-VRF/SRv6 socket-bind mechanism to work, and the
+				// pass-through slice must intercept here, before the
+				// finalizer stamp below — that stamp (and everything after
+				// it) assumes an object this controller owns the lifecycle
+				// of, which a CNI-published EndpointSlice never is.
+				if tenantID, ok := upstreamEndpointSlice.Labels[VPCPodTenantIDLabel]; ok && tenantID != "" {
+					passThroughRef, err := r.passThroughVPCPodBackendRef(ctx, downstreamGateway, backendRef)
+					if err != nil {
+						return nil, nil, nil, err
 					}
-				}
-
-				var ports []corev1.ServicePort
-				var appProtocol *string
-				var endpointPort *discoveryv1.EndpointPort
-				for _, port := range upstreamEndpointSlice.Ports {
-					ports = append(ports, corev1.ServicePort{
-						Name:        ptr.Deref(port.Name, ""),
-						Protocol:    ptr.Deref(port.Protocol, corev1.ProtocolTCP),
-						AppProtocol: port.AppProtocol,
-						Port:        *port.Port,
-					})
-
-					if *backendRef.Port == *port.Port {
-						if port.Name == nil {
-							// This should be protected by validation, but check just in case.
-							logger.Info("no port name defined in upstream endpointslice", "endpointslice", upstreamEndpointSlice.Name, "port", port)
-							return nil, nil, nil, fmt.Errorf("no port name defined in upstream endpointslice")
+					backendRefs = append(backendRefs, passThroughRef)
+				} else {
+					if !controllerutil.ContainsFinalizer(&upstreamEndpointSlice, gatewayControllerGCFinalizer) {
+						controllerutil.AddFinalizer(&upstreamEndpointSlice, gatewayControllerGCFinalizer)
+						if err := upstreamClient.Update(ctx, &upstreamEndpointSlice); err != nil {
+							return nil, nil, nil, fmt.Errorf("failed to add finalizer to endpointslice: %w", err)
 						}
-						appProtocol = port.AppProtocol
-						endpointPort = ptr.To(port)
 					}
-				}
 
-				if endpointPort == nil {
-					logger.Info("port not found in upstream endpointslice", "endpointslice", upstreamEndpointSlice.Name, "port", *backendRef.Port)
-					return nil, nil, nil, fmt.Errorf("port not found in upstream endpointslice")
-				}
+					var ports []corev1.ServicePort
+					var appProtocol *string
+					var endpointPort *discoveryv1.EndpointPort
+					for _, port := range upstreamEndpointSlice.Ports {
+						ports = append(ports, corev1.ServicePort{
+							Name:        ptr.Deref(port.Name, ""),
+							Protocol:    ptr.Deref(port.Protocol, corev1.ProtocolTCP),
+							AppProtocol: port.AppProtocol,
+							Port:        *port.Port,
+						})
 
-				// Construct a name to use for the service and endpointslice that the
-				// downstream backendRef will reference.
-				resourceName := fmt.Sprintf("route-%s-rule-%d-backendref-%d", upstreamRoute.UID, ruleIdx, backendRefIdx)
+						if *backendRef.Port == *port.Port {
+							if port.Name == nil {
+								// This should be protected by validation, but check just in case.
+								logger.Info("no port name defined in upstream endpointslice", "endpointslice", upstreamEndpointSlice.Name, "port", port)
+								return nil, nil, nil, fmt.Errorf("no port name defined in upstream endpointslice")
+							}
+							appProtocol = port.AppProtocol
+							endpointPort = ptr.To(port)
+						}
+					}
 
-				downstreamService := &corev1.Service{
-					ObjectMeta: metav1.ObjectMeta{
-						Namespace: downstreamGateway.Namespace,
-						Name:      resourceName,
-					},
-					Spec: corev1.ServiceSpec{
-						Type:                  corev1.ServiceTypeClusterIP,
-						ClusterIP:             clusterIPNone,
-						Ports:                 ports,
-						InternalTrafficPolicy: ptr.To(corev1.ServiceInternalTrafficPolicyCluster),
-						TrafficDistribution:   ptr.To(corev1.ServiceTrafficDistributionPreferClose),
-					},
-				}
-				downstreamResources = append(downstreamResources, downstreamService)
+					if endpointPort == nil {
+						logger.Info("port not found in upstream endpointslice", "endpointslice", upstreamEndpointSlice.Name, "port", *backendRef.Port)
+						return nil, nil, nil, fmt.Errorf("port not found in upstream endpointslice")
+					}
 
-				downstreamEndpointSlice := &discoveryv1.EndpointSlice{
-					ObjectMeta: metav1.ObjectMeta{
-						Namespace: downstreamGateway.Namespace,
-						Name:      resourceName,
-						Labels: map[string]string{
-							downstreamclient.UpstreamOwnerNameLabel: upstreamEndpointSlice.Name,
-							discoveryv1.LabelServiceName:            downstreamService.Name,
+					// Construct a name to use for the service and endpointslice that the
+					// downstream backendRef will reference.
+					resourceName := fmt.Sprintf("route-%s-rule-%d-backendref-%d", upstreamRoute.UID, ruleIdx, backendRefIdx)
+
+					downstreamService := &corev1.Service{
+						ObjectMeta: metav1.ObjectMeta{
+							Namespace: downstreamGateway.Namespace,
+							Name:      resourceName,
 						},
-					},
-					AddressType: upstreamEndpointSlice.AddressType,
-					Endpoints:   upstreamEndpointSlice.Endpoints,
-					Ports:       upstreamEndpointSlice.Ports,
-				}
+						Spec: corev1.ServiceSpec{
+							Type:                  corev1.ServiceTypeClusterIP,
+							ClusterIP:             clusterIPNone,
+							Ports:                 ports,
+							InternalTrafficPolicy: ptr.To(corev1.ServiceInternalTrafficPolicyCluster),
+							TrafficDistribution:   ptr.To(corev1.ServiceTrafficDistributionPreferClose),
+						},
+					}
+					downstreamResources = append(downstreamResources, downstreamService)
 
-				if err := downstreamStrategy.SetControllerReference(ctx, &upstreamEndpointSlice, downstreamEndpointSlice); err != nil {
-					return nil, nil, nil, fmt.Errorf("failed to set controller reference on downstream endpointslice: %w", err)
-				}
-
-				downstreamResources = append(downstreamResources, downstreamEndpointSlice)
-
-				backendObjectReference := gatewayv1.BackendObjectReference{
-					Namespace: ptr.To(gatewayv1.Namespace(downstreamGateway.Namespace)),
-					Kind:      ptr.To(gatewayv1.Kind(KindService)),
-					Name:      gatewayv1.ObjectName(downstreamService.Name),
-					Port:      backendRef.Port,
-				}
-
-				downstreamHTTPBackendRef := gatewayv1.HTTPBackendRef{
-					BackendRef: gatewayv1.BackendRef{
-						Weight:                 backendRef.Weight,
-						BackendObjectReference: backendObjectReference,
-					},
-					Filters: backendRef.Filters,
-				}
-
-				backendRefs = append(backendRefs, downstreamHTTPBackendRef)
-
-				if appProtocol != nil && *appProtocol == SchemeHTTPS {
-					var hostname *gatewayv1.PreciseHostname
-
-					// Prefer the cert hostname recorded by the httpproxy
-					// controller on the upstream EndpointSlice. URLRewrite
-					// may now carry a user-supplied Host header override
-					// instead of the backend FQDN, so it's no longer a
-					// reliable source for BackendTLSPolicy SAN validation.
-					if v, ok := upstreamEndpointSlice.Annotations[BackendCertHostnameAnnotation]; ok && v != "" {
-						hostname = ptr.To(gatewayv1.PreciseHostname(v))
+					downstreamEndpointSlice := &discoveryv1.EndpointSlice{
+						ObjectMeta: metav1.ObjectMeta{
+							Namespace: downstreamGateway.Namespace,
+							Name:      resourceName,
+							Labels: map[string]string{
+								downstreamclient.UpstreamOwnerNameLabel: upstreamEndpointSlice.Name,
+								discoveryv1.LabelServiceName:            downstreamService.Name,
+							},
+						},
+						AddressType: upstreamEndpointSlice.AddressType,
+						Endpoints:   upstreamEndpointSlice.Endpoints,
+						Ports:       upstreamEndpointSlice.Ports,
 					}
 
-					// Fall back to looking at rule filters for a hostname
-					// (preserves behaviour for EndpointSlices that predate
-					// the annotation).
-					if hostname == nil {
-						for _, filter := range rule.Filters {
-							if filter.URLRewrite != nil {
-								hostname = filter.URLRewrite.Hostname
-								break
+					if err := downstreamStrategy.SetControllerReference(ctx, &upstreamEndpointSlice, downstreamEndpointSlice); err != nil {
+						return nil, nil, nil, fmt.Errorf("failed to set controller reference on downstream endpointslice: %w", err)
+					}
+
+					downstreamResources = append(downstreamResources, downstreamEndpointSlice)
+
+					backendObjectReference := gatewayv1.BackendObjectReference{
+						Namespace: ptr.To(gatewayv1.Namespace(downstreamGateway.Namespace)),
+						Kind:      ptr.To(gatewayv1.Kind(KindService)),
+						Name:      gatewayv1.ObjectName(downstreamService.Name),
+						Port:      backendRef.Port,
+					}
+
+					downstreamHTTPBackendRef := gatewayv1.HTTPBackendRef{
+						BackendRef: gatewayv1.BackendRef{
+							Weight:                 backendRef.Weight,
+							BackendObjectReference: backendObjectReference,
+						},
+						Filters: backendRef.Filters,
+					}
+
+					backendRefs = append(backendRefs, downstreamHTTPBackendRef)
+
+					if appProtocol != nil && *appProtocol == SchemeHTTPS {
+						var hostname *gatewayv1.PreciseHostname
+
+						// Prefer the cert hostname recorded by the httpproxy
+						// controller on the upstream EndpointSlice. URLRewrite
+						// may now carry a user-supplied Host header override
+						// instead of the backend FQDN, so it's no longer a
+						// reliable source for BackendTLSPolicy SAN validation.
+						if v, ok := upstreamEndpointSlice.Annotations[BackendCertHostnameAnnotation]; ok && v != "" {
+							hostname = ptr.To(gatewayv1.PreciseHostname(v))
+						}
+
+						// Fall back to looking at rule filters for a hostname
+						// (preserves behaviour for EndpointSlices that predate
+						// the annotation).
+						if hostname == nil {
+							for _, filter := range rule.Filters {
+								if filter.URLRewrite != nil {
+									hostname = filter.URLRewrite.Hostname
+									break
+								}
 							}
 						}
-					}
 
-					if hostname == nil {
-						// TODO(jreese) set the RouteConditionResolvedRefs condition to
-						// False, as the hostname is not present.
-						return nil, nil, nil, fmt.Errorf("no hostname found in URLRewrite filters or EndpointSlice annotation on backendRef or Route %q", upstreamRoute.Name)
-					}
+						if hostname == nil {
+							// TODO(jreese) set the RouteConditionResolvedRefs condition to
+							// False, as the hostname is not present.
+							return nil, nil, nil, fmt.Errorf("no hostname found in URLRewrite filters or EndpointSlice annotation on backendRef or Route %q", upstreamRoute.Name)
+						}
 
-					// BackendTLSPolicy graduated from v1alpha3 to v1 in gateway-api v1.5.
-					backendTLSPolicy := &gatewayv1.BackendTLSPolicy{
-						ObjectMeta: metav1.ObjectMeta{
-							Namespace: downstreamGateway.Namespace,
-							Name:      resourceName,
-						},
-						Spec: gatewayv1.BackendTLSPolicySpec{
-							TargetRefs: []gatewayv1.LocalPolicyTargetReferenceWithSectionName{
-								// TODO(jreese): We may have multiple ports that we need to set
-								// the policy on.
-								{
-									LocalPolicyTargetReference: gatewayv1.LocalPolicyTargetReference{
-										Kind: gatewayv1.Kind(KindService),
-										Name: gatewayv1.ObjectName(downstreamService.Name),
+						// BackendTLSPolicy graduated from v1alpha3 to v1 in gateway-api v1.5.
+						backendTLSPolicy := &gatewayv1.BackendTLSPolicy{
+							ObjectMeta: metav1.ObjectMeta{
+								Namespace: downstreamGateway.Namespace,
+								Name:      resourceName,
+							},
+							Spec: gatewayv1.BackendTLSPolicySpec{
+								TargetRefs: []gatewayv1.LocalPolicyTargetReferenceWithSectionName{
+									// TODO(jreese): We may have multiple ports that we need to set
+									// the policy on.
+									{
+										LocalPolicyTargetReference: gatewayv1.LocalPolicyTargetReference{
+											Kind: gatewayv1.Kind(KindService),
+											Name: gatewayv1.ObjectName(downstreamService.Name),
+										},
+										SectionName: ptr.To(gatewayv1.SectionName(*endpointPort.Name)),
 									},
-									SectionName: ptr.To(gatewayv1.SectionName(*endpointPort.Name)),
+								},
+								Validation: gatewayv1.BackendTLSPolicyValidation{
+									WellKnownCACertificates: ptr.To(gatewayv1.WellKnownCACertificatesSystem),
+									Hostname:                *hostname,
 								},
 							},
-							Validation: gatewayv1.BackendTLSPolicyValidation{
-								WellKnownCACertificates: ptr.To(gatewayv1.WellKnownCACertificatesSystem),
-								Hostname:                *hostname,
-							},
-						},
-					}
+						}
 
-					downstreamResources = append(downstreamResources, backendTLSPolicy)
-				} else {
-					// The backend is not https, so any BackendTLSPolicy that may
-					// have been created by a previous reconcile (when the backend
-					// was https) must be removed. The policy name is deterministic
-					// from the route UID and backend indices, so we can target it
-					// directly without listing.
-					downstreamResourcesToDelete = append(downstreamResourcesToDelete, &gatewayv1.BackendTLSPolicy{
-						ObjectMeta: metav1.ObjectMeta{
-							Namespace: downstreamGateway.Namespace,
-							Name:      resourceName,
-						},
-					})
+						downstreamResources = append(downstreamResources, backendTLSPolicy)
+					} else {
+						// The backend is not https, so any BackendTLSPolicy that may
+						// have been created by a previous reconcile (when the backend
+						// was https) must be removed. The policy name is deterministic
+						// from the route UID and backend indices, so we can target it
+						// directly without listing.
+						downstreamResourcesToDelete = append(downstreamResourcesToDelete, &gatewayv1.BackendTLSPolicy{
+							ObjectMeta: metav1.ObjectMeta{
+								Namespace: downstreamGateway.Namespace,
+								Name:      resourceName,
+							},
+						})
+					}
 				}
 
 			case "Service":
@@ -2517,6 +2548,47 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 	return rules, downstreamResources, downstreamResourcesToDelete, nil
 }
 
+// passThroughVPCPodBackendRef resolves the downstream-native EndpointSlice
+// galactic-cni (#854) publishes for a VPC pod and passes the backendRef
+// through to it unmodified — no synthesized Service, no owner reference, no
+// finalizer. This object was never replicated from upstream (unlike every
+// other resource this controller manages downstream), so its lifecycle is
+// left entirely to galactic-cni: it comes and goes with the pod, and this
+// controller neither owns nor garbage-collects it.
+//
+// TODO(#856): this assumes galactic-cni publishes the EndpointSlice into the
+// same mapped downstream namespace this controller already computes
+// (downstreamGateway.Namespace) under the same name the upstream backendRef
+// carries. Neither assumption is confirmed with #854 — revisit once its
+// implementation lands.
+func (r *GatewayReconciler) passThroughVPCPodBackendRef(
+	ctx context.Context,
+	downstreamGateway *gatewayv1.Gateway,
+	backendRef gatewayv1.HTTPBackendRef,
+) (gatewayv1.HTTPBackendRef, error) {
+	var downstreamEndpointSlice discoveryv1.EndpointSlice
+	if err := r.DownstreamCluster.GetClient().Get(ctx, types.NamespacedName{
+		Namespace: downstreamGateway.Namespace,
+		Name:      string(backendRef.Name),
+	}, &downstreamEndpointSlice); err != nil {
+		return gatewayv1.HTTPBackendRef{}, fmt.Errorf("failed getting downstream vpcPod endpointslice: %w", err)
+	}
+
+	return gatewayv1.HTTPBackendRef{
+		BackendRef: gatewayv1.BackendRef{
+			Weight: backendRef.Weight,
+			BackendObjectReference: gatewayv1.BackendObjectReference{
+				Group:     ptr.To(gatewayv1.Group(discoveryv1.GroupName)),
+				Kind:      ptr.To(gatewayv1.Kind(KindEndpointSlice)),
+				Namespace: ptr.To(gatewayv1.Namespace(downstreamEndpointSlice.Namespace)),
+				Name:      gatewayv1.ObjectName(downstreamEndpointSlice.Name),
+				Port:      backendRef.Port,
+			},
+		},
+		Filters: backendRef.Filters,
+	}, nil
+}
+
 // SetupWithManager sets up the controller with the Manager.
 func (r *GatewayReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	r.mgr = mgr
@@ -2542,6 +2614,20 @@ func (r *GatewayReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 
 	downstreamCertificateClusterSource, _, _ := downstreamCertificateSource.ForCluster("", r.DownstreamCluster)
 
+	// TODO(#856): downstreamVPCPodEndpointSliceSource is the one piece of
+	// this integration with no existing precedent in this codebase — every
+	// other downstream watch here maps back through owner labels this
+	// operator itself stamped on an object it created; a CNI-published
+	// EndpointSlice carries neither. See
+	// listGatewaysForDownstreamVPCPodEndpointSlice's doc comment. Prototype
+	// this in isolation before leaning on it further.
+	downstreamVPCPodEndpointSliceSource := mcsource.Kind(
+		&discoveryv1.EndpointSlice{},
+		r.listGatewaysForDownstreamVPCPodEndpointSlice,
+	)
+
+	downstreamVPCPodEndpointSliceClusterSource, _, _ := downstreamVPCPodEndpointSliceSource.ForCluster("", r.DownstreamCluster)
+
 	builder := mcbuilder.ControllerManagedBy(mgr).
 		For(&gatewayv1.Gateway{}).
 		Watches(
@@ -2562,7 +2648,8 @@ func (r *GatewayReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 		).
 		WatchesRawSource(downstreamGatewayClusterSource).
 		WatchesRawSource(downstreamHTTPRouteClusterSource).
-		WatchesRawSource(downstreamCertificateClusterSource)
+		WatchesRawSource(downstreamCertificateClusterSource).
+		WatchesRawSource(downstreamVPCPodEndpointSliceClusterSource)
 
 	if r.Config.Gateway.EnableDNSIntegration {
 		builder = builder.
@@ -2637,6 +2724,66 @@ func (r *GatewayReconciler) listGatewaysAttachedByDownstreamHTTPRoute(clusterNam
 
 			}
 		}
+		return reqs
+	})
+}
+
+// listGatewaysForDownstreamVPCPodEndpointSlice enqueues every upstream
+// Gateway whose downstream mirror lives in the same namespace as a changed,
+// tenant-labeled EndpointSlice on the downstream cluster — a CNI-side pod
+// add/remove should re-trigger the owning Gateway's reconcile.
+//
+// TODO(#856): this is a placeholder, not a designed solution. Confirmed
+// during review that no other watch in this codebase reads a downstream
+// object it did not create and enqueues off it — every other downstream
+// watch here (see listGatewaysAttachedByDownstreamHTTPRoute above) maps
+// back through owner labels this operator itself stamped on an object it
+// created, which a CNI-published EndpointSlice never carries. Matching by
+// namespace co-location instead of a direct backendRef-name lookup is
+// deliberately coarse — it re-reconciles every downstream Gateway in the
+// namespace rather than only the one actually referencing this
+// EndpointSlice, trading precision for simplicity until this integration is
+// prototyped in isolation (see the plan's sequencing note).
+func (r *GatewayReconciler) listGatewaysForDownstreamVPCPodEndpointSlice(clusterName multicluster.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[*discoveryv1.EndpointSlice, mcreconcile.Request] {
+	return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, endpointSlice *discoveryv1.EndpointSlice) []mcreconcile.Request {
+		if _, ok := endpointSlice.Labels[VPCPodTenantIDLabel]; !ok {
+			return nil
+		}
+
+		logger := log.FromContext(ctx)
+
+		var downstreamGateways gatewayv1.GatewayList
+		if err := cl.GetClient().List(ctx, &downstreamGateways, client.InNamespace(endpointSlice.Namespace)); err != nil {
+			logger.Error(err, "failed to list downstream gateways for vpcPod endpointslice")
+			return nil
+		}
+
+		var reqs []mcreconcile.Request
+		for _, gateway := range downstreamGateways.Items {
+			upstreamNamespace, ok := gateway.Labels[downstreamclient.UpstreamOwnerNamespaceLabel]
+			if !ok {
+				continue
+			}
+			upstreamName, ok := gateway.Labels[downstreamclient.UpstreamOwnerNameLabel]
+			if !ok {
+				continue
+			}
+			upstreamClusterName, ok := gateway.Labels[downstreamclient.UpstreamOwnerClusterNameLabel]
+			if !ok {
+				continue
+			}
+
+			reqs = append(reqs, mcreconcile.Request{
+				Request: ctrl.Request{
+					NamespacedName: types.NamespacedName{
+						Namespace: upstreamNamespace,
+						Name:      upstreamName,
+					},
+				},
+				ClusterName: multicluster.ClusterName(downstreamclient.UpstreamClusterNameFromLabel(upstreamClusterName)),
+			})
+		}
+
 		return reqs
 	})
 }

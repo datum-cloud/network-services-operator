@@ -1,0 +1,28 @@
+# Permissions for a data plane to report what it programmed. NSO seeds
+# Programmed and never writes it again; this is the role for whoever does.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/name: network-services-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: networkinterface-dataplane-role
+rules:
+- apiGroups:
+  - networking.datumapis.com
+  resources:
+  - networkinterfaces
+  - networkinterfaceclaims
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - networking.datumapis.com
+  resources:
+  - networkinterfaces/status
+  - networkinterfaceclaims/status
+  verbs:
+  - get
+  - patch
+  - update

@@ -1873,3 +1873,97 @@ func TestAttachmentModeReachesTheInterface(t *testing.T) {
 	require.Equal(t, networkingv1alpha.NetworkInterfaceAttachmentModeNetns,
 		defaulted.Spec.AttachmentMode, "a claim that states no mode gets a namespace interface")
 }
+
+// The data plane owns Programmed, status.vpc and status.attachmentRef on the
+// interface. Every NSO path that writes interface status has to leave all three
+// where it found them, including a rebind after Retain.
+func TestExternalAttachmentStatusSurvivesNSO(t *testing.T) {
+	s := newScenario(t, true, []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol})
+
+	spec := networkingv1alpha.NetworkInterfaceClaimSpec{
+		InterfaceName: "eth0",
+		IPFamilies:    []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol},
+		ReclaimPolicy: networkingv1alpha.NetworkInterfaceReclaimPolicyRetain,
+	}
+
+	s.reconcile(s.createClaim("slot-0-eth0", spec))
+
+	iface, err := s.getInterface("slot-0-eth0")
+	require.NoError(t, err)
+	require.Equal(t, metav1.ConditionUnknown,
+		apimeta.FindStatusCondition(iface.Status.Conditions,
+			networkingv1alpha.NetworkInterfaceProgrammed).Status,
+		"NSO seeds Programmed and waits for whoever realizes the interface")
+
+	// Stand in for the data plane reporting the attachment.
+	apimeta.SetStatusCondition(&iface.Status.Conditions, metav1.Condition{
+		Type:    networkingv1alpha.NetworkInterfaceProgrammed,
+		Status:  metav1.ConditionTrue,
+		Reason:  "Programmed",
+		Message: "The attachment is ready",
+	})
+	iface.Status.VPC = "0000000ju"
+	iface.Status.AttachmentRef = &networkingv1alpha.NetworkInterfaceAttachmentRef{
+		APIGroup: "cloud.datumapis.com",
+		Kind:     "VPCAttachment",
+		Name:     "slot-0-eth0",
+	}
+	require.NoError(t, s.client.Status().Update(s.ctx, iface))
+
+	requireAttachmentReported := func(stage string) {
+		t.Helper()
+		reported, err := s.getInterface("slot-0-eth0")
+		require.NoError(t, err)
+		require.Equal(t, metav1.ConditionTrue,
+			apimeta.FindStatusCondition(reported.Status.Conditions,
+				networkingv1alpha.NetworkInterfaceProgrammed).Status,
+			"%s reverted the condition the data plane owns", stage)
+		require.Equal(t, "0000000ju", reported.Status.VPC, "%s cleared status.vpc", stage)
+		require.NotNil(t, reported.Status.AttachmentRef, "%s cleared status.attachmentRef", stage)
+	}
+
+	s.reconcile(s.getClaim("slot-0-eth0"))
+	requireAttachmentReported("a requeue")
+
+	s.reconcileInterface("slot-0-eth0")
+	requireAttachmentReported("an interface reconcile")
+
+	// Retain unbinds the interface and a replacement claim adopts it.
+	s.deleteClaim(s.getClaim("slot-0-eth0"))
+	requireAttachmentReported("release under Retain")
+
+	s.reconcile(s.createClaim("slot-0-eth0", spec))
+	requireAttachmentReported("a rebind")
+}
+
+// A rejection demotes the conditions NSO owns. Programmed is not one of them.
+func TestRejectionLeavesProgrammedAlone(t *testing.T) {
+	s := newScenario(t, true, []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol})
+
+	claim := s.createClaim("rejected-eth0", networkingv1alpha.NetworkInterfaceClaimSpec{
+		InterfaceName: "eth0",
+		IPFamilies:    []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol},
+		ReclaimPolicy: networkingv1alpha.NetworkInterfaceReclaimPolicyDelete,
+	})
+	s.reconcile(claim)
+
+	bound := s.getClaim("rejected-eth0")
+	apimeta.SetStatusCondition(&bound.Status.Conditions, metav1.Condition{
+		Type:    networkingv1alpha.NetworkInterfaceClaimProgrammed,
+		Status:  metav1.ConditionTrue,
+		Reason:  "Programmed",
+		Message: "The attachment is ready",
+	})
+	require.NoError(t, s.client.Status().Update(s.ctx, bound))
+
+	_, err := s.reconciler.reject(s.ctx, s.client, s.getClaim("rejected-eth0"),
+		"NetworkNotAvailableInLocation", "the network left this location")
+	require.NoError(t, err)
+
+	rejected := s.getClaim("rejected-eth0")
+	require.Equal(t, metav1.ConditionFalse,
+		conditionOf(rejected, networkingv1alpha.NetworkInterfaceClaimReady).Status)
+	require.Equal(t, metav1.ConditionTrue,
+		conditionOf(rejected, networkingv1alpha.NetworkInterfaceClaimProgrammed).Status,
+		"a rejection says nothing about what the data plane carries")
+}

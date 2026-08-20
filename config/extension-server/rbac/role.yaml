@@ -26,6 +26,18 @@ rules:
       - get
       - list
       - watch
+  # Reads the CNI-published EndpointSlice a vpcPod HTTPProxy backend
+  # references, to resolve the tenant-id label the socket-bind mutation
+  # keys on (#856). This file is hand-maintained — `make manifests` does
+  # not generate it.
+  - apiGroups:
+      - discovery.k8s.io
+    resources:
+      - endpointslices
+    verbs:
+      - get
+      - list
+      - watch
   - apiGroups:
       - networking.datumapis.com
     resources:

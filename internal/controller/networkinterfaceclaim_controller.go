@@ -539,11 +539,12 @@ func (r *NetworkInterfaceClaimReconciler) bindInterface(
 	iface.Annotations = map[string]string{allocationClaimAnnotation: claim.Name}
 	iface.Finalizers = []string{networkInterfaceFinalizer}
 	iface.Spec = networkingv1alpha.NetworkInterfaceSpec{
-		Network:       networkingv1alpha.LocalNetworkRef{Name: networkContext.Spec.Network.Name},
-		ClaimRef:      &networkingv1alpha.NetworkInterfaceClaimRef{Name: claim.Name},
-		InterfaceName: claim.Spec.InterfaceName,
-		MTU:           networkContext.Spec.MTU,
-		ReclaimPolicy: claim.Spec.ReclaimPolicy,
+		Network:        networkingv1alpha.LocalNetworkRef{Name: networkContext.Spec.Network.Name},
+		ClaimRef:       &networkingv1alpha.NetworkInterfaceClaimRef{Name: claim.Name},
+		InterfaceName:  claim.Spec.InterfaceName,
+		AttachmentMode: claim.Spec.AttachmentMode,
+		MTU:            networkContext.Spec.MTU,
+		ReclaimPolicy:  claim.Spec.ReclaimPolicy,
 	}
 
 	for _, entry := range allocated {
@@ -990,6 +991,11 @@ func (r *NetworkInterfaceClaimReconciler) syncInterface(
 	// its previous claim left behind.
 	if iface.Spec.MTU != networkContext.Spec.MTU {
 		iface.Spec.MTU = networkContext.Spec.MTU
+		changed = true
+	}
+	// An interface adopted from before the field existed carries none.
+	if claim.Spec.AttachmentMode != "" && iface.Spec.AttachmentMode != claim.Spec.AttachmentMode {
+		iface.Spec.AttachmentMode = claim.Spec.AttachmentMode
 		changed = true
 	}
 	for i := range iface.Spec.Addresses {

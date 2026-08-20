@@ -1819,3 +1819,90 @@ func TestNetworkContextHoldIsReleasedAfterTheLastInterfaceIsGone(t *testing.T) {
 	require.True(t, apierrors.IsNotFound(err),
 		"the context's own reconcile must release a hold no interface justifies")
 }
+
+// The consumer annotations are written by whoever realizes the interface, in the
+// same way as Programmed. NSO publishes interface status on several paths and
+// none of them may drop what it finds there.
+func TestConsumerAnnotationsSurviveNSO(t *testing.T) {
+	s := newScenario(t, true, []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol})
+
+	spec := networkingv1alpha.NetworkInterfaceClaimSpec{
+		InterfaceName: "eth0",
+		IPFamilies:    []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol},
+		ReclaimPolicy: networkingv1alpha.NetworkInterfaceReclaimPolicyRetain,
+	}
+
+	s.reconcile(s.createClaim("slot-0-eth0", spec))
+
+	iface, err := s.getInterface("slot-0-eth0")
+	require.NoError(t, err)
+	require.Empty(t, iface.Status.ConsumerAnnotations,
+		"NSO publishes none of its own; the field is the data plane's to write")
+
+	// Stand in for the VPC controller reporting what the pod must carry.
+	iface.Status.ConsumerAnnotations = map[string]string{
+		"k8s.v1.cni.cncf.io/networks": s.namespace + "/slot-0-eth0",
+	}
+	apimeta.SetStatusCondition(&iface.Status.Conditions, metav1.Condition{
+		Type:    networkingv1alpha.NetworkInterfaceProgrammed,
+		Status:  metav1.ConditionTrue,
+		Reason:  "Programmed",
+		Message: "The attachment is ready",
+	})
+	require.NoError(t, s.client.Status().Update(s.ctx, iface))
+
+	requirePublished := func(stage string) {
+		t.Helper()
+		reported, err := s.getInterface("slot-0-eth0")
+		require.NoError(t, err)
+		require.Equal(t, s.namespace+"/slot-0-eth0",
+			reported.Status.ConsumerAnnotations["k8s.v1.cni.cncf.io/networks"],
+			"%s dropped the annotations the consumer has to apply", stage)
+		require.Equal(t, metav1.ConditionTrue,
+			apimeta.FindStatusCondition(reported.Status.Conditions,
+				networkingv1alpha.NetworkInterfaceProgrammed).Status,
+			"%s reverted the condition the data plane owns", stage)
+	}
+
+	s.reconcile(s.getClaim("slot-0-eth0"))
+	requirePublished("a requeue")
+
+	s.reconcileInterface("slot-0-eth0")
+	requirePublished("an interface reconcile")
+
+	// Retain unbinds the interface and a replacement claim adopts it.
+	s.deleteClaim(s.getClaim("slot-0-eth0"))
+	requirePublished("release under Retain")
+
+	s.reconcile(s.createClaim("slot-0-eth0", spec))
+	requirePublished("a rebind")
+}
+
+// A provider reads the interface alone, so the consumption mode has to reach it
+// from the claim that asked for it.
+func TestAttachmentModeReachesTheInterface(t *testing.T) {
+	s := newScenario(t, true, []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol})
+
+	s.reconcile(s.createClaim("guest-eth0", networkingv1alpha.NetworkInterfaceClaimSpec{
+		InterfaceName:  "eth0",
+		AttachmentMode: networkingv1alpha.NetworkInterfaceAttachmentModeHypervisor,
+		IPFamilies:     []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol},
+		ReclaimPolicy:  networkingv1alpha.NetworkInterfaceReclaimPolicyDelete,
+	}))
+
+	iface, err := s.getInterface("guest-eth0")
+	require.NoError(t, err)
+	require.Equal(t, networkingv1alpha.NetworkInterfaceAttachmentModeHypervisor,
+		iface.Spec.AttachmentMode, "the mode is carried verbatim from the claim")
+
+	s.reconcile(s.createClaim("container-eth0", networkingv1alpha.NetworkInterfaceClaimSpec{
+		InterfaceName: "eth0",
+		IPFamilies:    []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol},
+		ReclaimPolicy: networkingv1alpha.NetworkInterfaceReclaimPolicyDelete,
+	}))
+
+	defaulted, err := s.getInterface("container-eth0")
+	require.NoError(t, err)
+	require.Equal(t, networkingv1alpha.NetworkInterfaceAttachmentModeNetns,
+		defaulted.Spec.AttachmentMode, "a claim that states no mode gets a namespace interface")
+}

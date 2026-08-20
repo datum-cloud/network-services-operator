@@ -32,6 +32,24 @@ const (
 	NetworkInterfaceReclaimPolicyRetain NetworkInterfaceReclaimPolicy = "Retain"
 )
 
+// NetworkInterfaceAttachmentMode is how the guest consumes the NIC. It is set
+// by the consumer, carried by the operator, and acted on by whoever realizes
+// the interface.
+//
+// +kubebuilder:validation:Enum=Netns;Hypervisor
+type NetworkInterfaceAttachmentMode string
+
+const (
+	// NetworkInterfaceAttachmentModeNetns means the interface is placed in the
+	// workload's network namespace, which is what an ordinary container expects.
+	NetworkInterfaceAttachmentModeNetns NetworkInterfaceAttachmentMode = "Netns"
+
+	// NetworkInterfaceAttachmentModeHypervisor means the interface is handed to a
+	// hypervisor as a device rather than placed in a namespace, which is what a
+	// virtual machine or microVM guest expects.
+	NetworkInterfaceAttachmentModeHypervisor NetworkInterfaceAttachmentMode = "Hypervisor"
+)
+
 // NetworkInterfacePhase reports whether an interface is held by a claim.
 //
 // +kubebuilder:validation:Enum=Available;Bound
@@ -213,6 +231,17 @@ type NetworkInterfaceSpec struct {
 	// +kubebuilder:default="eth0"
 	InterfaceName string `json:"interfaceName,omitempty"`
 
+	// attachmentMode is how the guest consumes this interface. It comes from the
+	// claim, and the operator carries it without interpreting it.
+	//
+	// Netns places the interface in the workload's network namespace. Hypervisor
+	// hands it to a hypervisor as a device, which is what a virtual machine or
+	// microVM guest needs.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default="Netns"
+	AttachmentMode NetworkInterfaceAttachmentMode `json:"attachmentMode,omitempty"`
+
 	// mtu is the MTU, in bytes, the interface must be configured with. It is
 	// resolved from the network, so a provider never has to read the network to
 	// configure the NIC.
@@ -282,6 +311,19 @@ type NetworkInterfaceStatus struct {
 	//
 	// +kubebuilder:validation:Optional
 	VPC string `json:"vpc,omitempty"`
+
+	// consumerAnnotations are annotations the workload object consuming this
+	// interface must carry for the data plane to deliver it, such as the pod
+	// annotation a CNI meta-plugin reads. Whoever realizes the interface writes
+	// them; the consumer copies them verbatim.
+	//
+	// The contents are opaque. They name an implementation the operator does not
+	// know about, so nothing here reads, validates or interprets them, and an
+	// attachment that needs no annotation publishes none.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MaxProperties=16
+	ConsumerAnnotations map[string]string `json:"consumerAnnotations,omitempty"`
 
 	// conditions report the current state of the interface. Allocated means every
 	// address is held. Programmed means the data plane carries them.

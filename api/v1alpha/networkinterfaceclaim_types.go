@@ -98,6 +98,21 @@ type NetworkInterfaceClaimSpec struct {
 	// +kubebuilder:validation:XValidation:message="interfaceName is immutable and cannot be changed after creation",rule="self == oldSelf"
 	InterfaceName string `json:"interfaceName,omitempty"`
 
+	// attachmentMode is how the guest consumes this interface. Netns places it in
+	// the workload's network namespace, which is what an ordinary container
+	// expects. Hypervisor hands it to a hypervisor as a device, which is what a
+	// virtual machine or microVM guest needs.
+	//
+	// It is copied to the bound interface and never interpreted here. Whoever
+	// realizes the interface decides what each mode means on its data plane.
+	//
+	// Immutable, because the guest and the attachment are both built against it.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default="Netns"
+	// +kubebuilder:validation:XValidation:message="attachmentMode is immutable and cannot be changed after creation",rule="self == oldSelf"
+	AttachmentMode NetworkInterfaceAttachmentMode `json:"attachmentMode,omitempty"`
+
 	// ipFamilies are the address families the interface must carry, in priority
 	// order. List [IPv6, IPv4] for a dual-stack interface. The first family
 	// listed holds the interface's primary address, which is the one reported in

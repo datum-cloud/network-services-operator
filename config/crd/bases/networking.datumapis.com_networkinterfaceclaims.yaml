@@ -108,6 +108,26 @@ spec:
                 x-kubernetes-validations:
                 - message: Each address class may be requested at most once
                   rule: self.all(a, self.exists_one(b, b.class == a.class))
+              attachmentMode:
+                default: Netns
+                description: |-
+                  attachmentMode is how the guest consumes this interface. Netns places it in
+                  the workload's network namespace, which is what an ordinary container
+                  expects. Hypervisor hands it to a hypervisor as a device, which is what a
+                  virtual machine or microVM guest needs.
+
+                  It is copied to the bound interface and never interpreted here. Whoever
+                  realizes the interface decides what each mode means on its data plane.
+
+                  Immutable, because the guest and the attachment are both built against it.
+                enum:
+                - Netns
+                - Hypervisor
+                type: string
+                x-kubernetes-validations:
+                - message: attachmentMode is immutable and cannot be changed after
+                    creation
+                  rule: self == oldSelf
               interfaceName:
                 default: eth0
                 description: |-

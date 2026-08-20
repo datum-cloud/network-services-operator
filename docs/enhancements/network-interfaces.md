@@ -19,6 +19,7 @@ latest-milestone: "v0.x"
   - [Binding](#binding)
   - [Fulfilling a claim](#fulfilling-a-claim)
   - [Reaching the data plane](#reaching-the-data-plane)
+  - [How the guest consumes it, and what the consumer must apply](#how-the-guest-consumes-it-and-what-the-consumer-must-apply)
   - [What compute writes](#what-compute-writes)
   - [A workload in two locations](#a-workload-in-two-locations)
 - [What this depends on](#what-this-depends-on)
@@ -163,6 +164,7 @@ spec:
   network:
     name: default
   interfaceName: eth0
+  attachmentMode: Hypervisor
   ipFamilies:
     - IPv6
     - IPv4
@@ -205,6 +207,7 @@ spec:
     name: hello-sandbox-default-us-central-1-0-eth0
     uid: 8c1d…
   interfaceName: eth0
+  attachmentMode: Hypervisor
   mtu: 1460
   reclaimPolicy: Retain
   addresses:
@@ -221,6 +224,8 @@ status:
     kind: VPCAttachment
     name: nic-4f2a9c1e
   vpc: 3kF9qP2x
+  consumerAnnotations:
+    k8s.v1.cni.cncf.io/networks: default/nic-4f2a9c1e
   conditions:
     - type: Allocated   status: "True"
     - type: Programmed  status: "True"
@@ -509,6 +514,29 @@ have been decided elsewhere; this names the elsewhere.
 `Programmed` going false — an attachment lost, a node drained — does not release the
 interface. The addresses stay allocated because the claim still exists, and the instance's
 `Ready` condition reflects the loss without renumbering anything.
+
+### How the guest consumes it, and what the consumer must apply
+
+Two fields carry the parts of an attachment that only the ends of the chain understand, and
+NSO interprets neither.
+
+`spec.attachmentMode` says how the guest consumes the NIC: `Netns` places it in the
+workload's network namespace, which is what an ordinary container expects, and `Hypervisor`
+hands it to a hypervisor as a device, which is what a virtual machine or microVM guest
+needs. It is set on the claim, copied verbatim onto the interface, and read by whoever
+realizes it. NSO carries it exactly as it already carries `interfaceName` and `mtu`, and a
+claim that states nothing gets `Netns`.
+
+`status.consumerAnnotations` is the other direction: a string map of annotations the
+workload object consuming this interface must carry for the data plane to deliver it. On a
+cell where attachment runs through a CNI meta-plugin it holds
+`k8s.v1.cni.cncf.io/networks: <namespace>/<name>`; on a provider that attaches through a
+cloud API it is empty. The contents are deliberately opaque — a typed field would have to
+name the implementation, which is the coupling this avoids. Whoever realizes the interface
+writes the map, and the consumer copies it onto its own object without understanding it.
+
+Both belong to the same seam as `Programmed`: the map is written by the component that
+realizes the interface, and NSO never reads, validates, clears or overwrites it.
 
 ### What compute writes
 

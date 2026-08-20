@@ -136,6 +136,19 @@ spec:
                     == 1
                 - message: Only one address may be held per address family
                   rule: self.all(a, self.exists_one(b, b.family == a.family))
+              attachmentMode:
+                default: Netns
+                description: |-
+                  attachmentMode is how the guest consumes this interface. It comes from the
+                  claim, and the operator carries it without interpreting it.
+
+                  Netns places the interface in the workload's network namespace. Hypervisor
+                  hands it to a hypervisor as a device, which is what a virtual machine or
+                  microVM guest needs.
+                enum:
+                - Netns
+                - Hypervisor
+                type: string
               claimRef:
                 description: |-
                   claimRef is the claim currently holding this interface. It is empty while a
@@ -348,6 +361,20 @@ spec:
                   - type
                   type: object
                 type: array
+              consumerAnnotations:
+                additionalProperties:
+                  type: string
+                description: |-
+                  consumerAnnotations are annotations the workload object consuming this
+                  interface must carry for the data plane to deliver it, such as the pod
+                  annotation a CNI meta-plugin reads. Whoever realizes the interface writes
+                  them; the consumer copies them verbatim.
+
+                  The contents are opaque. They name an implementation the operator does not
+                  know about, so nothing here reads, validates or interprets them, and an
+                  attachment that needs no annotation publishes none.
+                maxProperties: 16
+                type: object
               networkContextRef:
                 description: |-
                   networkContextRef is the network's presence in this location, resolved or

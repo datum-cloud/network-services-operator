@@ -76,6 +76,29 @@ func (e *errVPCPodBackendNotFound) Error() string {
 	return fmt.Sprintf("referenced EndpointSlice %q not found", e.name)
 }
 
+// collectDesiredResourcesErrorResult turns a collectDesiredResources error
+// into the (Result, error) Reconcile should return, or done=false if err is
+// nil and Reconcile should keep going. A vpcPod backend referencing a
+// missing EndpointSlice gets its own Programmed=False condition and a short
+// requeue (the referenced pod may simply not have started yet) instead of a
+// bare generic requeue. Kept out of Reconcile as a single call so adding
+// this case doesn't grow Reconcile's own cyclomatic complexity.
+func collectDesiredResourcesErrorResult(err error, programmedCondition *metav1.Condition) (result ctrl.Result, retErr error, done bool) {
+	if err == nil {
+		return ctrl.Result{}, nil, false
+	}
+
+	var notFound *errVPCPodBackendNotFound
+	if errors.As(err, &notFound) {
+		programmedCondition.Status = metav1.ConditionFalse
+		programmedCondition.Reason = networkingv1alpha.HTTPProxyReasonVPCPodBackendNotFound
+		programmedCondition.Message = fmt.Sprintf("The HTTPProxy cannot be programmed: %s", notFound.Error())
+		return ctrl.Result{RequeueAfter: retryAfterConflict}, nil, true
+	}
+
+	return ctrl.Result{}, fmt.Errorf("failed to collect desired resources: %w", err), true
+}
+
 const httpProxyFinalizer = "networking.datumapis.com/httpproxy-cleanup"
 
 const retryAfterInvalid = 5 * time.Minute
@@ -205,15 +228,8 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 	}
 
 	desiredResources, err := r.collectDesiredResources(ctx, cl.GetClient(), &httpProxy)
-	if err != nil {
-		var notFound *errVPCPodBackendNotFound
-		if errors.As(err, &notFound) {
-			programmedCondition.Status = metav1.ConditionFalse
-			programmedCondition.Reason = networkingv1alpha.HTTPProxyReasonVPCPodBackendNotFound
-			programmedCondition.Message = fmt.Sprintf("The HTTPProxy cannot be programmed: %s", notFound.Error())
-			return ctrl.Result{RequeueAfter: retryAfterConflict}, nil
-		}
-		return ctrl.Result{}, fmt.Errorf("failed to collect desired resources: %w", err)
+	if result, retErr, done := collectDesiredResourcesErrorResult(err, programmedCondition); done {
+		return result, retErr
 	}
 
 	// Maintain a Gateway for the HTTPProxy, handle conflicts in names by updating the
@@ -876,7 +892,7 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 							Group: ptr.To(gatewayv1.Group("discovery.k8s.io")),
 							Kind:  ptr.To(gatewayv1.Kind("EndpointSlice")),
 							Name:  gatewayv1.ObjectName(backend.VPCPod.Name),
-							Port:  ptr.To(gatewayv1.PortNumber(backend.VPCPod.Port)),
+							Port:  ptr.To(backend.VPCPod.Port),
 						},
 					},
 					Filters: backend.Filters,

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
@@ -15,8 +14,6 @@ import (
 )
 
 const (
-	networkContextControllerNetworkUIDIndex = "networkContextControllerNetworkUIDIndex"
-
 	networkInterfaceClaimNetworkIndex = "networkInterfaceClaimNetworkIndex"
 
 	// dnsZoneDomainNameIndex is the field index name for DNSZone.spec.domainName.
@@ -25,7 +22,6 @@ const (
 
 func AddIndexers(ctx context.Context, mgr mcmanager.Manager) error {
 	return errors.Join(
-		addNetworkContextControllerIndexers(ctx, mgr),
 		addNetworkInterfaceClaimIndexers(ctx, mgr),
 	)
 }
@@ -44,25 +40,6 @@ func networkInterfaceClaimNetworkIndexFunc(o client.Object) []string {
 		return nil
 	}
 	return []string{claim.Spec.Network.Name}
-}
-
-func addNetworkContextControllerIndexers(ctx context.Context, mgr mcmanager.Manager) error {
-	if err := mgr.GetFieldIndexer().IndexField(ctx, &networkingv1alpha.NetworkContext{}, networkContextControllerNetworkUIDIndex, networkContextControllerNetworkUIDIndexFunc); err != nil {
-		return fmt.Errorf("failed to add network context controller indexer %q: %w", networkContextControllerNetworkUIDIndex, err)
-	}
-
-	return nil
-}
-
-func networkContextControllerNetworkUIDIndexFunc(o client.Object) []string {
-
-	if networkRef := metav1.GetControllerOf(o); networkRef != nil {
-		return []string{
-			string(networkRef.UID),
-		}
-	}
-
-	return nil
 }
 
 // TODO(jreese): I can't seem to get these indexers to function on the downstream

@@ -140,8 +140,14 @@ func (r *NetworkReconciler) reconcilePrefix(
 	cl client.Client,
 	network *networkingv1alpha.Network,
 ) (ctrl.Result, error) {
-	if r.IPAM == nil || r.PrefixClass == "" || !networkCarriesIPv6(network) {
-		return ctrl.Result{}, nil
+	if r.IPAM == nil || r.PrefixClass == "" {
+		return ctrl.Result{}, r.reportReady(ctx, cl, network,
+			"No address service is configured, so the network is used without claimed address space")
+	}
+
+	if !networkCarriesIPv6(network) {
+		return ctrl.Result{}, r.reportReady(ctx, cl, network,
+			"The network claims no address space")
 	}
 
 	routing, err := resolveProjectOrCluster(ctx, cl, network.Namespace)
@@ -234,6 +240,10 @@ func (r *NetworkReconciler) publishPrefix(
 		changed = true
 	}
 
+	if setNetworkReady(network, "") {
+		changed = true
+	}
+
 	if !changed {
 		return nil
 	}
@@ -257,18 +267,68 @@ func (r *NetworkReconciler) reportPrefix(
 	log.FromContext(ctx).Info("network address space cannot be allocated",
 		"reason", reason, "message", message)
 
-	if apimeta.SetStatusCondition(&network.Status.Conditions, metav1.Condition{
+	changed := apimeta.SetStatusCondition(&network.Status.Conditions, metav1.Condition{
 		Type:               networkingv1alpha.NetworkIPAMAllocated,
 		Status:             metav1.ConditionFalse,
 		Reason:             reason,
 		ObservedGeneration: network.Generation,
 		Message:            message,
-	}) {
+	})
+
+	if setNetworkReady(network, "") {
+		changed = true
+	}
+
+	if changed {
 		if err := cl.Status().Update(ctx, network); err != nil {
 			return ctrl.Result{}, fmt.Errorf("failed updating network status: %w", err)
 		}
 	}
 	return ctrl.Result{RequeueAfter: rejectedClaimRetryInterval}, nil
+}
+
+// reportReady summarises on the network what a consumer otherwise has to
+// assemble out of the allocation condition and the network's own families.
+func (r *NetworkReconciler) reportReady(
+	ctx context.Context,
+	cl client.Client,
+	network *networkingv1alpha.Network,
+	message string,
+) error {
+	if !setNetworkReady(network, message) {
+		return nil
+	}
+
+	if err := cl.Status().Update(ctx, network); err != nil {
+		return fmt.Errorf("failed updating network status: %w", err)
+	}
+	return nil
+}
+
+// setNetworkReady derives Ready from the address space the network needs.
+// Allocation is the only thing a network waits on, so Ready carries that
+// condition's own reason rather than a second vocabulary for the same
+// failures. A network nothing is allocated for has nothing outstanding.
+func setNetworkReady(network *networkingv1alpha.Network, message string) bool {
+	ready := metav1.Condition{
+		Type:               networkingv1alpha.NetworkReady,
+		Status:             metav1.ConditionTrue,
+		Reason:             networkingv1alpha.NetworkReadyReasonReady,
+		ObservedGeneration: network.Generation,
+		Message:            message,
+	}
+
+	if allocated := apimeta.FindStatusCondition(
+		network.Status.Conditions, networkingv1alpha.NetworkIPAMAllocated,
+	); allocated != nil {
+		ready.Message = allocated.Message
+		if allocated.Status != metav1.ConditionTrue {
+			ready.Status = allocated.Status
+			ready.Reason = allocated.Reason
+		}
+	}
+
+	return apimeta.SetStatusCondition(&network.Status.Conditions, ready)
 }
 
 // releasePrefix gives back what this operator holds. The recorded reference is

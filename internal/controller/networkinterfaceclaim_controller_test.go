@@ -83,6 +83,11 @@ type fakeIPAM struct {
 	// into it are refused the way an API server refuses them.
 	noProjectNamespace bool
 
+	// prunesTarget stands in for an IPAM that predates the range claim: the
+	// field is unknown to it, so the API server drops it and serves the claim
+	// as a request for a block.
+	prunesTarget bool
+
 	// prefixRanges are the /48 ranges IPAM holds per network, keyed by network
 	// name. A scope-range claim brings one into being and reports it; a second
 	// claim for the same network reads the same range back.
@@ -216,6 +221,10 @@ func (f *fakeIPAM) retainedConflictLocked(ipClaim *ipamv1alpha1.IPClaim) error {
 
 // allocateLocked binds a claim to the address or the range it asked for.
 func (f *fakeIPAM) allocateLocked(project string, ipClaim *ipamv1alpha1.IPClaim) {
+	if f.prunesTarget {
+		ipClaim.Spec.Target = ""
+	}
+
 	if ipClaim.Spec.Target == ipamv1alpha1.TargetScopeRange {
 		f.bindRangeLocked(ipClaim)
 		return

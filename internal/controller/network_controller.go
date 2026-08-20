@@ -223,6 +223,15 @@ func (r *NetworkReconciler) claimPrefix(
 		ipClaim = raced
 	}
 
+	if ipClaim.Spec.Target != ipamv1alpha1.TargetScopeRange {
+		return "", "", &bindingRefused{
+			reason: networkingv1alpha.NetworkReasonRangeUnsupported,
+			message: fmt.Sprintf(
+				"IPAM did not keep the request for a range on claim %q, so it cannot report the network's own address space",
+				ipClaim.Name),
+		}
+	}
+
 	if ipClaim.Status.AllocatedCIDR == "" {
 		return "", "", &allocationFailure{
 			reason: allocationFailureUnknown,

@@ -276,6 +276,23 @@ func TestNetworkReportsAMissingProjectNamespace(t *testing.T) {
 	require.Nil(t, s.get().Status.IPAM)
 }
 
+// An IPAM that predates the range claim drops the field and serves a block from
+// inside the range instead. That block is not the network's range, so it is
+// refused rather than published as one.
+func TestNetworkRefusesABlockServedForARange(t *testing.T) {
+	ipam := newFakeIPAM(t)
+	ipam.prunesTarget = true
+	s := newNetworkScenario(t, ipam)
+
+	s.createNetwork(networkingv1alpha.IPv6Protocol)
+	s.reconcile()
+
+	condition := s.ipamCondition()
+	require.Equal(t, metav1.ConditionFalse, condition.Status)
+	require.Equal(t, networkingv1alpha.NetworkReasonRangeUnsupported, condition.Reason)
+	require.Nil(t, s.get().Status.IPAM)
+}
+
 // An IPv4-only network is not addressed from the tenant ULA pool, so nothing is
 // claimed for it.
 func TestNetworkWithoutIPv6ClaimsNothing(t *testing.T) {

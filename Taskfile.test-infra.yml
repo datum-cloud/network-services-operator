@@ -66,9 +66,9 @@ vars:
   # together, and keep IPAM_COMMIT equal to the go.mod replace directive —
   # ipam-bundle fails if the artifact does not carry that commit.
   IPAM_BUNDLE_REPO: ghcr.io/milo-os/ipam-kustomize
-  IPAM_BUNDLE_TAG: v0.0.0-13bd2c8
-  IPAM_BUNDLE_DIGEST: sha256:08418654958ea6861d54fe5f9e87d9cf306b87429b29fc41a7876dc143a13bf5
-  IPAM_COMMIT: 13bd2c8c077b12983fa16a8888dcd117b65a14d2
+  IPAM_BUNDLE_TAG: v0.0.0-2f31bea
+  IPAM_BUNDLE_DIGEST: sha256:f006b5604a924b0ce33adf98644cb106234b75a80fcc937214f3f7e327f8c2eb
+  IPAM_COMMIT: 2f31bea79f624c5a94437dc20d82f8f8bdac666e
   IPAM_STAGE: '{{.TMP_DIR}}/.ipam-bundle'
 
   # The dns-operator CRDs come from its published bundle at the version go.mod

@@ -78,6 +78,11 @@ const (
 	// NetworkReasonProjectUnresolved means the network's namespace names no
 	// project, so no IPAM request can be addressed on its behalf.
 	NetworkReasonProjectUnresolved = "ProjectUnresolved"
+
+	// NetworkReasonRangeUnsupported means IPAM did not keep the request for a
+	// range, so it would answer with a block from inside one. A block is not
+	// the network's range and the addresses it hands out do not lie in it.
+	NetworkReasonRangeUnsupported = "RangeUnsupported"
 )
 
 // NetworkStatus defines the observed state of Network

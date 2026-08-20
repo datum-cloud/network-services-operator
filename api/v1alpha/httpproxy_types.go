@@ -112,14 +112,15 @@ type HTTPProxyRule struct {
 	Backends []HTTPProxyRuleBackend `json:"backends,omitempty"`
 }
 
-// +kubebuilder:validation:XValidation:message="Exactly one of endpoint, connector, or vpcPod must be specified",rule="(has(self.endpoint) ? 1 : 0) + (has(self.connector) ? 1 : 0) + (has(self.vpcPod) ? 1 : 0) == 1"
+// +kubebuilder:validation:XValidation:message="endpoint is required unless vpcPod is set, and vpcPod is mutually exclusive with endpoint and connector",rule="has(self.vpcPod) ? (!has(self.endpoint) && !has(self.connector)) : has(self.endpoint)"
 type HTTPProxyRuleBackend struct {
 	// Endpoint for the backend. Must be a valid URL.
 	//
 	// Supports http and https protocols, IPs or DNS addresses in the host, custom
 	// ports, and paths.
 	//
-	// Mutually exclusive with connector and vpcPod.
+	// Required unless vpcPod is set. When connector is also set, this is the
+	// tunnel's target address rather than a directly reachable backend.
 	//
 	// +kubebuilder:validation:Optional
 	Endpoint string `json:"endpoint,omitempty"`
@@ -129,7 +130,8 @@ type HTTPProxyRuleBackend struct {
 	// For now, only a name reference is supported. In the future this can be
 	// extended to selector-based matching to allow multiple connectors.
 	//
-	// Mutually exclusive with endpoint and vpcPod.
+	// Used together with endpoint (the tunnel's target address). Mutually
+	// exclusive with vpcPod.
 	//
 	// +kubebuilder:validation:Optional
 	Connector *ConnectorReference `json:"connector,omitempty"`

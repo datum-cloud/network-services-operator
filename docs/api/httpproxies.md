@@ -233,7 +233,8 @@ if it is set.<br/>
 For now, only a name reference is supported. In the future this can be
 extended to selector-based matching to allow multiple connectors.
 
-Mutually exclusive with endpoint and vpcPod.<br/>
+Used together with endpoint (the tunnel's target address). Mutually
+exclusive with vpcPod.<br/>
         </td>
         <td>false</td>
       </tr><tr>
@@ -245,7 +246,8 @@ Mutually exclusive with endpoint and vpcPod.<br/>
 Supports http and https protocols, IPs or DNS addresses in the host, custom
 ports, and paths.
 
-Mutually exclusive with connector and vpcPod.<br/>
+Required unless vpcPod is set. When connector is also set, this is the
+tunnel's target address rather than a directly reachable backend.<br/>
         </td>
         <td>false</td>
       </tr><tr>
@@ -295,7 +297,8 @@ Connector references the Connector that should be used for this backend.
 For now, only a name reference is supported. In the future this can be
 extended to selector-based matching to allow multiple connectors.
 
-Mutually exclusive with endpoint and vpcPod.
+Used together with endpoint (the tunnel's target address). Mutually
+exclusive with vpcPod.
 
 <table>
     <thead>

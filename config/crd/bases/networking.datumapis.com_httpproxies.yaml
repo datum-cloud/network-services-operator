@@ -137,7 +137,8 @@ spec:
                               For now, only a name reference is supported. In the future this can be
                               extended to selector-based matching to allow multiple connectors.
 
-                              Mutually exclusive with endpoint and vpcPod.
+                              Used together with endpoint (the tunnel's target address). Mutually
+                              exclusive with vpcPod.
                             properties:
                               name:
                                 description: Name of the referenced Connector.
@@ -152,7 +153,8 @@ spec:
                               Supports http and https protocols, IPs or DNS addresses in the host, custom
                               ports, and paths.
 
-                              Mutually exclusive with connector and vpcPod.
+                              Required unless vpcPod is set. When connector is also set, this is the
+                              tunnel's target address rather than a directly reachable backend.
                             type: string
                           filters:
                             description: |-
@@ -1617,10 +1619,10 @@ spec:
                             type: object
                         type: object
                         x-kubernetes-validations:
-                        - message: Exactly one of endpoint, connector, or vpcPod must
-                            be specified
-                          rule: '(has(self.endpoint) ? 1 : 0) + (has(self.connector)
-                            ? 1 : 0) + (has(self.vpcPod) ? 1 : 0) == 1'
+                        - message: endpoint is required unless vpcPod is set, and
+                            vpcPod is mutually exclusive with endpoint and connector
+                          rule: 'has(self.vpcPod) ? (!has(self.endpoint) && !has(self.connector))
+                            : has(self.endpoint)'
                       maxItems: 1
                       minItems: 0
                       type: array

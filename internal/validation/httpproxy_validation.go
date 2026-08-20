@@ -134,6 +134,52 @@ func validateHTTPProxyRuleBackends(rule networkingv1alpha.HTTPProxyRule, fldPath
 func validateHTTPProxyRuleBackend(backend networkingv1alpha.HTTPProxyRuleBackend, fldPath *field.Path) field.ErrorList {
 	allErrs := field.ErrorList{}
 
+	// vpcPod backends don't use the endpoint field at all — see the vpcPod
+	// validation block below instead.
+	if backend.VPCPod == nil {
+		allErrs = append(allErrs, validateHTTPProxyRuleBackendEndpoint(backend, fldPath)...)
+	}
+
+	// tls.hostname becomes the generated route's URLRewrite.Hostname and the
+	// downstream BackendTLSPolicy hostname, so it carries the same constraints
+	// as any other hostname the user writes.
+	if backend.TLS != nil && backend.TLS.Hostname != nil && *backend.TLS.Hostname != "" {
+		allErrs = append(allErrs, validateProgrammableHostname(*backend.TLS.Hostname, fldPath.Child("tls", "hostname"))...)
+	}
+
+	if backend.Connector != nil {
+		connectorFieldPath := fldPath.Child("connector", "name")
+		if backend.Connector.Name == "" {
+			allErrs = append(allErrs, field.Required(connectorFieldPath, "connector name is required"))
+		} else {
+			for _, msg := range validation.IsDNS1123Label(backend.Connector.Name) {
+				allErrs = append(allErrs, field.Invalid(connectorFieldPath, backend.Connector.Name, msg))
+			}
+		}
+	}
+
+	if backend.VPCPod != nil {
+		vpcPodFieldPath := fldPath.Child("vpcPod", "name")
+		if backend.VPCPod.Name == "" {
+			allErrs = append(allErrs, field.Required(vpcPodFieldPath, "vpcPod name is required"))
+		} else {
+			for _, msg := range validation.IsDNS1123Subdomain(backend.VPCPod.Name) {
+				allErrs = append(allErrs, field.Invalid(vpcPodFieldPath, backend.VPCPod.Name, msg))
+			}
+		}
+	}
+
+	allErrs = append(allErrs, validateFilters(backend.Filters, supportedHTTPBackendRefFilters, fldPath.Child("filters"))...)
+	allErrs = append(allErrs, validateHostHeaderOverride(backend.Filters, fldPath.Child("filters"))...)
+	return allErrs
+}
+
+// validateHTTPProxyRuleBackendEndpoint validates the endpoint field. Only
+// called for endpoint/connector backends — vpcPod backends don't carry an
+// endpoint URL at all.
+func validateHTTPProxyRuleBackendEndpoint(backend networkingv1alpha.HTTPProxyRuleBackend, fldPath *field.Path) field.ErrorList {
+	allErrs := field.ErrorList{}
+
 	endpointFieldPath := fldPath.Child("endpoint")
 	u, err := url.Parse(backend.Endpoint)
 	if err != nil {
@@ -207,25 +253,5 @@ func validateHTTPProxyRuleBackend(backend networkingv1alpha.HTTPProxyRuleBackend
 		}
 	}
 
-	// tls.hostname becomes the generated route's URLRewrite.Hostname and the
-	// downstream BackendTLSPolicy hostname, so it carries the same constraints
-	// as any other hostname the user writes.
-	if backend.TLS != nil && backend.TLS.Hostname != nil && *backend.TLS.Hostname != "" {
-		allErrs = append(allErrs, validateProgrammableHostname(*backend.TLS.Hostname, fldPath.Child("tls", "hostname"))...)
-	}
-
-	if backend.Connector != nil {
-		connectorFieldPath := fldPath.Child("connector", "name")
-		if backend.Connector.Name == "" {
-			allErrs = append(allErrs, field.Required(connectorFieldPath, "connector name is required"))
-		} else {
-			for _, msg := range validation.IsDNS1123Label(backend.Connector.Name) {
-				allErrs = append(allErrs, field.Invalid(connectorFieldPath, backend.Connector.Name, msg))
-			}
-		}
-	}
-
-	allErrs = append(allErrs, validateFilters(backend.Filters, supportedHTTPBackendRefFilters, fldPath.Child("filters"))...)
-	allErrs = append(allErrs, validateHostHeaderOverride(backend.Filters, fldPath.Child("filters"))...)
 	return allErrs
 }

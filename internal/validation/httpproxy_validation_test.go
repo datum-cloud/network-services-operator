@@ -436,6 +436,58 @@ func TestValidateHTTPProxy(t *testing.T) {
 				field.Invalid(backendPath().Child("endpoint").Key("port"), "", ""),
 			},
 		},
+		"vpcPod backend skips endpoint validation": {
+			proxy: &networkingv1alpha.HTTPProxy{
+				Spec: networkingv1alpha.HTTPProxySpec{
+					Rules: []networkingv1alpha.HTTPProxyRule{
+						{
+							Backends: []networkingv1alpha.HTTPProxyRuleBackend{
+								{
+									VPCPod: &networkingv1alpha.VPCPodBackendRef{Name: "vpc-pod-1", Port: 8080},
+								},
+							},
+						},
+					},
+				},
+			},
+			expectedErrors: field.ErrorList{},
+		},
+		"vpcPod name required": {
+			proxy: &networkingv1alpha.HTTPProxy{
+				Spec: networkingv1alpha.HTTPProxySpec{
+					Rules: []networkingv1alpha.HTTPProxyRule{
+						{
+							Backends: []networkingv1alpha.HTTPProxyRuleBackend{
+								{
+									VPCPod: &networkingv1alpha.VPCPodBackendRef{Port: 8080},
+								},
+							},
+						},
+					},
+				},
+			},
+			expectedErrors: field.ErrorList{
+				field.Required(field.NewPath("spec", "rules").Index(0).Child("backends").Index(0).Child("vpcPod", "name"), ""),
+			},
+		},
+		"vpcPod name invalid": {
+			proxy: &networkingv1alpha.HTTPProxy{
+				Spec: networkingv1alpha.HTTPProxySpec{
+					Rules: []networkingv1alpha.HTTPProxyRule{
+						{
+							Backends: []networkingv1alpha.HTTPProxyRuleBackend{
+								{
+									VPCPod: &networkingv1alpha.VPCPodBackendRef{Name: "Invalid_Name", Port: 8080},
+								},
+							},
+						},
+					},
+				},
+			},
+			expectedErrors: field.ErrorList{
+				field.Invalid(field.NewPath("spec", "rules").Index(0).Child("backends").Index(0).Child("vpcPod", "name"), "Invalid", ""),
+			},
+		},
 	}
 
 	for name, scenario := range scenarios {

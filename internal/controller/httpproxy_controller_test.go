@@ -581,6 +581,131 @@ func TestHTTPProxyCollectDesiredResources(t *testing.T) {
 	}
 }
 
+// TestHTTPProxyCollectDesiredResourcesVPCPod covers the vpcPod backend kind
+// separately from TestHTTPProxyCollectDesiredResources: that table's shared
+// post-loop assertions hardcode a 1:1 backend-to-synthesized-EndpointSlice
+// relationship, which a vpcPod backend (zero synthesized slices, by design)
+// would violate before its own assertions ever ran.
+func TestHTTPProxyCollectDesiredResourcesVPCPod(t *testing.T) {
+	operatorConfig := config.NetworkServicesOperator{
+		Gateway: config.GatewayConfig{
+			TargetDomain: "example.com",
+		},
+		HTTPProxy: config.HTTPProxyConfig{
+			GatewayClassName: "test",
+		},
+	}
+
+	reconciler := &HTTPProxyReconciler{Config: operatorConfig}
+
+	t.Run("resolves the referenced EndpointSlice without synthesizing one", func(t *testing.T) {
+		httpProxy := newHTTPProxy(func(h *networkingv1alpha.HTTPProxy) {
+			h.Spec.Rules[0].Backends[0] = networkingv1alpha.HTTPProxyRuleBackend{
+				VPCPod: &networkingv1alpha.VPCPodBackendRef{Name: "vpc-pod-1", Port: 8080},
+			}
+		})
+
+		referenced := &discoveryv1.EndpointSlice{
+			ObjectMeta:  metav1.ObjectMeta{Namespace: httpProxy.Namespace, Name: "vpc-pod-1"},
+			AddressType: discoveryv1.AddressTypeIPv6,
+		}
+
+		cl := fake.NewClientBuilder().WithScheme(scheme.Scheme).WithObjects(referenced).Build()
+		desiredResources, err := reconciler.collectDesiredResources(context.Background(), cl, httpProxy)
+		require.NoError(t, err)
+
+		assert.Empty(t, desiredResources.endpointSlices, "vpcPod backend must not synthesize an EndpointSlice")
+
+		require.Len(t, desiredResources.httpRoute.Spec.Rules, 1)
+		backendRefs := desiredResources.httpRoute.Spec.Rules[0].BackendRefs
+		require.Len(t, backendRefs, 1)
+		assert.Equal(t, "EndpointSlice", string(ptr.Deref(backendRefs[0].Kind, "")))
+		assert.Equal(t, "discovery.k8s.io", string(ptr.Deref(backendRefs[0].Group, "")))
+		assert.Equal(t, "vpc-pod-1", string(backendRefs[0].Name))
+		assert.EqualValues(t, 8080, ptr.Deref(backendRefs[0].Port, 0))
+	})
+
+	t.Run("missing referenced EndpointSlice fails with errVPCPodBackendNotFound", func(t *testing.T) {
+		httpProxy := newHTTPProxy(func(h *networkingv1alpha.HTTPProxy) {
+			h.Spec.Rules[0].Backends[0] = networkingv1alpha.HTTPProxyRuleBackend{
+				VPCPod: &networkingv1alpha.VPCPodBackendRef{Name: "does-not-exist", Port: 8080},
+			}
+		})
+
+		cl := fake.NewClientBuilder().WithScheme(scheme.Scheme).Build()
+		_, err := reconciler.collectDesiredResources(context.Background(), cl, httpProxy)
+		require.Error(t, err)
+
+		var notFound *errVPCPodBackendNotFound
+		assert.ErrorAs(t, err, &notFound)
+	})
+}
+
+// TestHTTPProxyReconcileVPCPodBackendNotFound verifies that a vpcPod backend
+// referencing a nonexistent EndpointSlice surfaces as a Programmed=False
+// condition with a dedicated reason, and requeues promptly (the referenced
+// pod may simply not have started yet) rather than bubbling up as a bare
+// generic requeue.
+func TestHTTPProxyReconcileVPCPodBackendNotFound(t *testing.T) {
+	logger := zap.New(zap.UseFlagOptions(&zap.Options{Development: true}))
+	ctx := log.IntoContext(context.Background(), logger)
+
+	testScheme := runtime.NewScheme()
+	assert.NoError(t, scheme.AddToScheme(testScheme))
+	assert.NoError(t, gatewayv1.Install(testScheme))
+	assert.NoError(t, envoygatewayv1alpha1.AddToScheme(testScheme))
+	assert.NoError(t, discoveryv1.AddToScheme(testScheme))
+	assert.NoError(t, networkingv1alpha.AddToScheme(testScheme))
+	assert.NoError(t, networkingv1alpha1.AddToScheme(testScheme))
+
+	testConfig := config.NetworkServicesOperator{
+		HTTPProxy: config.HTTPProxyConfig{
+			GatewayClassName: "test-gateway-class",
+		},
+		Gateway: config.GatewayConfig{
+			ControllerName: gatewayv1.GatewayController("test-gateway-class"),
+			TargetDomain:   "example.com",
+		},
+	}
+
+	httpProxy := newHTTPProxy(func(h *networkingv1alpha.HTTPProxy) {
+		controllerutil.AddFinalizer(h, httpProxyFinalizer)
+		h.Spec.Rules[0].Backends[0] = networkingv1alpha.HTTPProxyRuleBackend{
+			VPCPod: &networkingv1alpha.VPCPodBackendRef{Name: "does-not-exist", Port: 8080},
+		}
+	})
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(testScheme).
+		WithObjects(httpProxy).
+		WithStatusSubresource(httpProxy).
+		Build()
+
+	reconciler := &HTTPProxyReconciler{
+		mgr:    &fakeMockManager{cl: fakeClient},
+		Config: testConfig,
+	}
+
+	req := mcreconcile.Request{
+		Request: reconcile.Request{
+			NamespacedName: client.ObjectKeyFromObject(httpProxy),
+		},
+		ClusterName: "test-cluster",
+	}
+
+	result, err := reconciler.Reconcile(ctx, req)
+	require.NoError(t, err)
+	assert.Equal(t, retryAfterConflict, result.RequeueAfter)
+
+	var updated networkingv1alpha.HTTPProxy
+	require.NoError(t, fakeClient.Get(ctx, client.ObjectKeyFromObject(httpProxy), &updated))
+
+	programmed := apimeta.FindStatusCondition(updated.Status.Conditions, networkingv1alpha.HTTPProxyConditionProgrammed)
+	require.NotNil(t, programmed)
+	assert.Equal(t, metav1.ConditionFalse, programmed.Status)
+	assert.Equal(t, networkingv1alpha.HTTPProxyReasonVPCPodBackendNotFound, programmed.Reason)
+}
+
 //nolint:gocyclo
 func TestHTTPProxyReconcile(t *testing.T) {
 	testScheme := runtime.NewScheme()

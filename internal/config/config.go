@@ -87,11 +87,13 @@ type NetworkServicesOperator struct {
 	// project discovery and per-project cluster connections.
 	ProjectClient ClientConnectionConfig `json:"projectClient,omitempty"`
 
-	// IPAM is read by the cell controller manager, which takes its own
-	// CellControllerManager config. It is retained here so a config written
-	// before the split still decodes.
+	// IPAM is how this manager reaches IPAM to claim a network's address space
+	// at creation. The cell controller manager reaches IPAM for interface
+	// addresses through its own CellControllerManager config; both are the same
+	// connection, configured once per manager that makes requests.
 	//
-	// Deprecated: configure the cell controller manager instead.
+	// Left unset, no address space is claimed and everything else reconciles
+	// unchanged.
 	IPAM IPAMConfig `json:"ipam,omitempty"`
 
 	// NetworkInterface is read by the cell controller manager, which takes its
@@ -128,6 +130,26 @@ type IPAMConfig struct {
 	// Client configures the Kubernetes client connection to the IPAM API
 	// server.
 	Client ClientConnectionConfig `json:"client,omitempty"`
+
+	// Classes names the IPClasses this operator asks IPAM for.
+	Classes IPAMClasses `json:"classes,omitempty"`
+}
+
+// +k8s:deepcopy-gen=true
+
+// IPAMClasses names the IPClasses the operator asks for by name. They are
+// configuration and not constants: the platform's classes and a test
+// environment's classes are different objects, and an operator deployed
+// against either has to name the ones it is pointed at.
+type IPAMClasses struct {
+	// Network is the class that hands out the range a network is addressed
+	// from. Unset, no range is claimed and a network is reconciled with no
+	// address space, the same as an unset IPAM connection.
+	//
+	// The per-region and per-endpoint classes are not named here. They are
+	// reached through this class's own chain, which IPAM resolves, so naming
+	// them would be restating something the service already knows.
+	Network string `json:"network,omitempty"`
 }
 
 func (c *IPAMConfig) validate() error {

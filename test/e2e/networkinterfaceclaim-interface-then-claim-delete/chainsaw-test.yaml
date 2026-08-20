@@ -146,8 +146,12 @@ spec:
                 exit 1
               done
 
-              orphans=$(ipam get ipallocation -o name | grep -c . || true)
-              [ "$orphans" -eq 0 ] || { echo "${orphans} IPAllocations are still holding addresses"; exit 1; }
+              # The network still exists, and a network holds one allocation of
+              # its own for the /48 it is addressed from. Only the interface's
+              # allocations are supposed to be gone.
+              held=$(ipam get ipallocation -o jsonpath='{range .items[*]}{.spec.claimRef.name}{"\n"}{end}' \
+                | grep -v '^network-' | grep -c . || true)
+              [ "$held" -eq 0 ] || { echo "${held} IPAllocations are still holding interface addresses"; exit 1; }
         - error:
             resource:
               apiVersion: networking.datumapis.com/v1alpha

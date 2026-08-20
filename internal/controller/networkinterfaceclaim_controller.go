@@ -1299,11 +1299,49 @@ func (r *NetworkInterfaceClaimReconciler) releaseIPClaims(
 		ipClaim := &ipamv1alpha1.IPClaim{}
 		ipClaim.Namespace = routing.projectNamespace
 		ipClaim.Name = ipClaimName(owner, discriminator)
+
+		var held ipamv1alpha1.IPClaim
+		if err := ipamClient.Get(ctx, client.ObjectKeyFromObject(ipClaim), &held); err != nil {
+			if !apierrors.IsNotFound(err) {
+				errs = append(errs, fmt.Errorf("failed reading %q: %w", ipClaim.Name, err))
+				continue
+			}
+		}
+
 		if err := ipamClient.Delete(ctx, ipClaim); err != nil && !apierrors.IsNotFound(err) {
 			errs = append(errs, fmt.Errorf("failed releasing %q: %w", ipClaim.Name, err))
+			continue
+		}
+
+		if err := releaseRetainedAllocation(ctx, ipamClient, ipClaim.Namespace, held.Status.BoundAllocationRef); err != nil {
+			errs = append(errs, err)
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// releaseRetainedAllocation hands back the address an IPClaim deletion left
+// held. Under reclaimPolicy Retain, IPAM keeps the allocation and only unbinds
+// it, so deleting the claim frees nothing: the address stays out of the pool,
+// blocks the claim name, and keeps the range it sits in from being released.
+// This release is the give-back, so the allocation goes with the claim.
+func releaseRetainedAllocation(
+	ctx context.Context,
+	ipamClient client.Client,
+	namespace string,
+	ref *ipamv1alpha1.LocalRef,
+) error {
+	if ref == nil || ref.Name == "" {
+		return nil
+	}
+
+	allocation := &ipamv1alpha1.IPAllocation{}
+	allocation.Namespace = namespace
+	allocation.Name = ref.Name
+	if err := ipamClient.Delete(ctx, allocation); err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("failed releasing IPAllocation %q: %w", ref.Name, err)
+	}
+	return nil
 }
 
 func claimDiscriminators(claim *networkingv1alpha.NetworkInterfaceClaim) []string {

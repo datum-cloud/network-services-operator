@@ -77,14 +77,27 @@ type fakeIPAM struct {
 
 	// failOn refuses the named IPClaim with the given error.
 	failOn map[string]error
+	// failReleaseOn refuses the release of the named IPClaim.
+	failReleaseOn map[string]error
 
 	// noProjectNamespace stands in for a control plane never bootstrapped: the
 	// namespace the platform provisions with the project is absent, so writes
 	// into it are refused the way an API server refuses them.
 	noProjectNamespace bool
 
-	nextV4 int
-	nextV6 int
+	// prunesTarget stands in for an IPAM that predates the range claim: the
+	// field is unknown to it, so the API server drops it and serves the claim
+	// as a request for a block.
+	prunesTarget bool
+
+	// prefixRanges are the /48 ranges IPAM holds per network, keyed by network
+	// name. A scope-range claim brings one into being and reports it; a second
+	// claim for the same network reads the same range back.
+	prefixRanges map[string]string
+
+	nextV4     int
+	nextV6     int
+	nextPrefix int
 }
 
 func newFakeIPAM(t *testing.T, classes ...*ipamv1alpha1.IPClass) *fakeIPAM {
@@ -101,6 +114,8 @@ func newFakeIPAM(t *testing.T, classes ...*ipamv1alpha1.IPClass) *fakeIPAM {
 		allocationPolicy: map[string]ipamv1alpha1.ReclaimPolicy{},
 		orphans:          map[string]string{},
 		failOn:           map[string]error{},
+		failReleaseOn:    map[string]error{},
+		prefixRanges:     map[string]string{},
 	}
 }
 
@@ -174,12 +189,32 @@ func (f *fakeIPAM) ClientForProject(project string) (client.Client, error) {
 				_ = c.Get(ctx, client.ObjectKeyFromObject(ipClaim), &stored)
 
 				f.mu.Lock()
+				if refusal := f.failReleaseOn[ipClaim.Name]; refusal != nil {
+					f.mu.Unlock()
+					return refusal
+				}
 				f.deletedIn[project] = append(f.deletedIn[project], ipClaim.Name)
 				if f.allocationPolicy[ipClaim.Name] == ipamv1alpha1.ReclaimRetain {
 					f.orphans[allocationNameFor(ipClaim.Name)] = stored.Status.AllocatedCIDR
 				}
 				f.mu.Unlock()
 			}
+
+			// Deleting the allocation is what actually frees the address and
+			// the name it blocks; the fake client holds no object for it.
+			if allocation, ok := obj.(*ipamv1alpha1.IPAllocation); ok {
+				f.mu.Lock()
+				_, held := f.orphans[allocation.Name]
+				delete(f.orphans, allocation.Name)
+				f.mu.Unlock()
+				if !held {
+					return apierrors.NewNotFound(
+						ipamv1alpha1.SchemeGroupVersion.WithResource("ipallocations").GroupResource(),
+						allocation.Name)
+				}
+				return nil
+			}
+
 			return c.Delete(ctx, obj, opts...)
 		},
 	}).Build()
@@ -207,7 +242,17 @@ func (f *fakeIPAM) retainedConflictLocked(ipClaim *ipamv1alpha1.IPClaim) error {
 	)
 }
 
+// allocateLocked binds a claim to the address or the range it asked for.
 func (f *fakeIPAM) allocateLocked(project string, ipClaim *ipamv1alpha1.IPClaim) {
+	if f.prunesTarget {
+		ipClaim.Spec.Target = ""
+	}
+
+	if ipClaim.Spec.Target == ipamv1alpha1.TargetScopeRange {
+		f.bindRangeLocked(ipClaim)
+		return
+	}
+
 	family := ipClaim.Spec.IPFamily
 	if ipClaim.Spec.ClassName != "" {
 		for _, class := range f.classes {
@@ -231,6 +276,25 @@ func (f *fakeIPAM) allocateLocked(project string, ipClaim *ipamv1alpha1.IPClaim)
 		ipClaim.Status.AllocatedCIDR = fmt.Sprintf("10.128.0.%d/32", f.nextV4)
 	}
 	ipClaim.Status.PoolRef = &ipamv1alpha1.LocalRef{Name: "pool-" + project}
+	ipClaim.Status.BoundAllocationRef = &ipamv1alpha1.LocalRef{Name: allocationNameFor(ipClaim.Name)}
+}
+
+// bindRangeLocked hands back the range the network's class holds for it,
+// provisioning it on the first ask and reading the same one back after that.
+func (f *fakeIPAM) bindRangeLocked(ipClaim *ipamv1alpha1.IPClaim) {
+	network := ipClaim.Spec.Scope[ipamScopeRoleNetwork].Name
+	cidr, held := f.prefixRanges[network]
+	if !held {
+		f.nextPrefix++
+		cidr = fmt.Sprintf("fd20:1000:%d::/48", f.nextPrefix)
+		f.prefixRanges[network] = cidr
+	}
+
+	ipClaim.Status.Phase = ipamv1alpha1.ClaimBound
+	ipClaim.Status.AllocatedCIDR = cidr
+	ipClaim.Status.PoolRef = &ipamv1alpha1.LocalRef{
+		Name: fmt.Sprintf("%s-%s", ipClaim.Spec.ClassName, network),
+	}
 }
 
 // created and deleted are keyed by project, so a test can assert which project
@@ -286,6 +350,12 @@ func (f *fakeIPAM) refuse(name string, err error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.failOn[name] = err
+}
+
+func (f *fakeIPAM) refuseRelease(name string, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.failReleaseOn[name] = err
 }
 
 func publicV4Class() *ipamv1alpha1.IPClass {
@@ -926,6 +996,37 @@ func TestDeletingAnInterfaceReleasesItsAddresses(t *testing.T) {
 	require.True(t, apierrors.IsNotFound(err), "the finalizer must not hold the delete open once released")
 	require.Equal(t, []string{"stranded-f-ipv6"}, s.ipam.deleted()[testProject],
 		"the addresses go back to the pool rather than outliving every object naming them")
+	require.Empty(t, s.ipam.orphanedAllocations(),
+		"deleting the IPClaim frees nothing under a frozen Retain, so the allocation has to go with it")
+}
+
+// The address is only actually given back when the allocation goes. While it
+// survives it holds the address, blocks the claim name, and keeps the range it
+// sits in from being released, which is what makes the network undeletable.
+func TestReleasingARetainedAddressFreesTheNameItBlocked(t *testing.T) {
+	s := newScenario(t, true, []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol})
+
+	spec := networkingv1alpha.NetworkInterfaceClaimSpec{
+		InterfaceName: "eth0",
+		IPFamilies:    []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol},
+		ReclaimPolicy: networkingv1alpha.NetworkInterfaceReclaimPolicyRetain,
+	}
+
+	claim := s.createClaim("recycled", spec)
+	s.reconcile(claim)
+	s.deleteClaim(s.getClaim("recycled"))
+
+	released, err := s.getInterface("recycled")
+	require.NoError(t, err)
+	require.NoError(t, s.client.Delete(s.ctx, released))
+	s.reconcileInterface("recycled")
+
+	next := s.createClaim("recycled", spec)
+	s.reconcile(next)
+
+	require.Equal(t, metav1.ConditionTrue,
+		conditionOf(s.getClaim("recycled"), networkingv1alpha.NetworkInterfaceClaimAllocated).Status,
+		"the name is free again, so the same claim can come back to it")
 }
 
 // A live claim rebuilds the interface, so releasing its addresses here would

@@ -453,8 +453,8 @@ github.com/microsoft/go-mssqldb v1.10.0/go.mod h1:mnG7lGa9iYJbzJqGCXyuQCegStKMr3
 github.com/miekg/dns v1.1.46/go.mod h1:e3IlAVfNqAllflbibAZEWOXOQ+Ynzk/dDozDxY7XnME=
 github.com/miekg/dns v1.1.72 h1:vhmr+TF2A3tuoGNkLDFK9zi36F2LS+hKTRW0Uf8kbzI=
 github.com/miekg/dns v1.1.72/go.mod h1:+EuEPhdHOsfk6Wk5TT2CzssZdqkmFhf8r+aVyDEToIs=
-github.com/milo-os/ipam v0.3.2-0.20260813184449-4fac0aa96194 h1:4AUWL/7kuD5i0zT4zvy/oGcH6eDISJaOqPc9LdYKuNI=
-github.com/milo-os/ipam v0.3.2-0.20260813184449-4fac0aa96194/go.mod h1:Jj7xg4lJi9psE0+4PuOg/GQOG8rG13h112xYoM994rc=
+github.com/milo-os/ipam v0.3.2-0.20260819234259-2f31bea79f62 h1:Tm44p0Fq+Ld2CcQvmvhfB6UigvMSUGG8DRXegF5W43Q=
+github.com/milo-os/ipam v0.3.2-0.20260819234259-2f31bea79f62/go.mod h1:Jj7xg4lJi9psE0+4PuOg/GQOG8rG13h112xYoM994rc=
 github.com/mitchellh/copystructure v1.2.0 h1:vpKXTN4ewci03Vljg/q9QvCGUDttBOGBIa15WveJJGw=
 github.com/mitchellh/copystructure v1.2.0/go.mod h1:qLl+cE2AmVv+CoeAwDPye/v+N2HKCj9FbZEVFJRxO9s=
 github.com/mitchellh/go-homedir v1.1.0 h1:lukF9ziXFxDFPkA1vsr5zpc1XuPDn/wFntq5mG+4E0Y=

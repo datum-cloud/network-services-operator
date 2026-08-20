@@ -133,6 +133,13 @@ spec:
               held() { ipam get ipclaim -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' | grep -cE '^nic-ifrelease-' || true; }
 
               [ "$(held)" -eq 3 ] || { echo "expected 3 IPClaims for this interface, found $(held)"; exit 1; }
+
+              # The allocations behind those claims, recorded while something
+              # still names them. After the release nothing does, and an
+              # allocation left holding an address is only findable by name.
+              ipam get ipclaim -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.boundAllocationRef.name}{"\n"}{end}' \
+                | grep -E '^nic-ifrelease-' | awk '{print $2}' > "${TMPDIR:-/tmp}/nic-ifrelease-allocations"
+              cat "${TMPDIR:-/tmp}/nic-ifrelease-allocations"
         - delete:
             timeout: 120s
             ref:
@@ -194,10 +201,11 @@ spec:
         IPAllocation holding the address and blocking the name forever. There
         is no longer a stranded IPClaim to invite it.
 
-        The IPAllocations themselves still outlive the release — IPAM freezes
-        Retain onto the allocation and nothing revisits it — so the cleanup on
-        the first step purges them and prints the count. That residue is
-        IPAM-side and is not something NSO can assert away today.
+        IPAM freezes Retain onto the allocation and never revisits it, so
+        deleting the IPClaim frees nothing on its own: the address stays out of
+        the pool, the claim name stays blocked, and the network's range cannot
+        be given back while it sits inside. The release therefore has to take
+        the allocation with the claim, which is what this asserts.
       try:
         - error:
             resource:
@@ -213,4 +221,11 @@ spec:
               ipam() { "$IPAM" project-alpha -n default "$@"; }
               stranded=$(ipam get ipclaim -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' | grep -cE '^nic-ifrelease-' || true)
               [ "$stranded" -eq 0 ] || { echo "${stranded} IPClaims are stranded with nothing in NSO naming them"; exit 1; }
-              echo "IPAllocations still holding addresses after the release: $(ipam get ipallocation -o name | grep -c . || true)"
+
+              for allocation in $(cat "${TMPDIR:-/tmp}/nic-ifrelease-allocations"); do
+                if ipam get ipallocation "$allocation" >/dev/null 2>&1; then
+                  echo "IPAllocation ${allocation} still holds an address the release was supposed to hand back"
+                  exit 1
+                fi
+              done
+              rm -f "${TMPDIR:-/tmp}/nic-ifrelease-allocations"

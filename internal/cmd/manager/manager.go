@@ -375,10 +375,17 @@ func NewCommand(build BuildInfo) *cobra.Command {
 				}
 			}
 
+			ipamClients, err := newIPAMClientFactory(serverConfig.IPAM)
+			if err != nil {
+				setupLog.Error(err, "unable to build IPAM client factory")
+				os.Exit(1)
+			}
+
 			registeredControllers, err := setupControllers(mgr, serverConfig, controllerDeps{
 				downstreamCluster: downstreamCluster,
 				singletonManager:  singletonControllerMgr,
 				irohDownstream:    irohDownstream,
+				ipamClients:       ipamClients,
 			})
 			if err != nil {
 				setupLog.Error(err, "unable to set up controllers")
@@ -548,6 +555,28 @@ type controllerDeps struct {
 	downstreamCluster cluster.Cluster
 	singletonManager  manager.Manager
 	irohDownstream    cluster.Cluster
+	ipamClients       controller.IPAMClientFactory
+}
+
+// newIPAMClientFactory returns nil when no IPAM connection is configured. A
+// deployment that never named one keeps reconciling everything it reconciled
+// before; only the address space a network would have been given goes unclaimed.
+func newIPAMClientFactory(ipamConfig config.IPAMConfig) (controller.IPAMClientFactory, error) {
+	if ipamConfig.KubeconfigPath == "" && !ipamConfig.InCluster {
+		return nil, nil
+	}
+
+	restConfig, err := ipamConfig.RestConfig()
+	if err != nil {
+		return nil, fmt.Errorf("unable to load IPAM kubeconfig: %w", err)
+	}
+
+	ipamScheme, err := controller.IPAMScheme()
+	if err != nil {
+		return nil, fmt.Errorf("unable to build IPAM scheme: %w", err)
+	}
+
+	return controller.NewIPAMClientFactory(restConfig, ipamScheme)
 }
 
 // controllerRegistrations lists every controller and the set it belongs to.
@@ -564,7 +593,10 @@ func controllerRegistrations(
 
 	return []namedSetup{
 		{"network", true, func() error {
-			return (&controller.NetworkReconciler{}).SetupWithManager(mgr)
+			return (&controller.NetworkReconciler{
+				IPAM:        deps.ipamClients,
+				PrefixClass: serverConfig.IPAM.Classes.Network,
+			}).SetupWithManager(mgr)
 		}},
 		{"networkbinding", true, func() error {
 			return (&controller.NetworkBindingReconciler{}).SetupWithManager(mgr)

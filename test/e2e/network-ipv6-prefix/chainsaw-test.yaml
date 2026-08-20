@@ -1,0 +1,209 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+#
+# A VPC's IPv6 /48 exists as soon as the network does, is visible on the
+# network, and is the space its endpoints are actually addressed from.
+#
+# The network lives in ipam-e2e-alpha, whose upstream-cluster-name label routes
+# to project-alpha, so the /48 is drawn from that project's fd20:1000::/36 —
+# the fixture stand-in for the platform's fd20::/20 tenant pool.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: network-ipv6-prefix
+spec:
+  cluster: nso-standard
+  steps:
+    - name: Creating the network allocates and publishes its /48
+      description: |
+        Nothing has asked for an address yet. The prefix has to be there anyway:
+        allocation is what network creation does, not something the first
+        interface triggers.
+      try:
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Network
+              metadata:
+                name: v6prefix-net
+                namespace: ipam-e2e-alpha
+              spec:
+                ipam:
+                  mode: Auto
+                ipFamilies:
+                  - IPv6
+        - assert:
+            timeout: 120s
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Network
+              metadata:
+                name: v6prefix-net
+                namespace: ipam-e2e-alpha
+              status:
+                ipam:
+                  ipv6PrefixRef:
+                    project: project-alpha
+                    namespace: default
+                (starts_with(ipam.ipv6Prefix, 'fd20:1')): true
+                (ends_with(ipam.ipv6Prefix, '/48')): true
+                (ipam.ipv6PrefixRef.poolName != ''): true
+                (ipam.ipv6PrefixRef.claimName != ''): true
+                (conditions[?type == 'IPAMAllocated'] | [0].status): "True"
+      catch:
+        - script:
+            content: |
+              kubectl -n ipam-e2e-alpha get network v6prefix-net -o yaml
+              kubectl -n network-services-operator-system logs -l app.kubernetes.io/name=network-services-operator --tail=100
+
+    - name: The published /48 is an IPPool IPAM holds in project-alpha
+      description: |
+        A prefix NSO merely wrote onto its own status proves nothing. The pool
+        it names must exist in IPAM, hand out datum-network-v6, and hold exactly
+        the range NSO published, and the claim NSO keeps against it must be
+        Bound, so the allocation can be audited and released.
+
+        The claim holds the range itself. It binds no allocation inside it,
+        which is what stops a network leaving behind a block no interface can
+        ever be given.
+      try:
+        - script:
+            content: |
+              set -eu
+              IPAM=$(git rev-parse --show-toplevel)/hack/ipam-project-kubectl.sh
+              ipam() { "$IPAM" project-alpha -n default "$@"; }
+
+              published=$(kubectl -n ipam-e2e-alpha get network v6prefix-net -o jsonpath='{.status.ipam.ipv6Prefix}')
+              pool=$(kubectl -n ipam-e2e-alpha get network v6prefix-net -o jsonpath='{.status.ipam.ipv6PrefixRef.poolName}')
+              claim=$(kubectl -n ipam-e2e-alpha get network v6prefix-net -o jsonpath='{.status.ipam.ipv6PrefixRef.claimName}')
+
+              [ -n "$pool" ] || { echo "the network names no pool"; exit 1; }
+              [ -n "$claim" ] || { echo "the network names no claim"; exit 1; }
+
+              held=$(ipam get ippool "$pool" -o jsonpath='{.status.allocatedCIDR}')
+              class=$(ipam get ippool "$pool" -o jsonpath='{.spec.classRef.name}')
+              scope=$(ipam get ippool "$pool" -o jsonpath='{.spec.scope.network.name}')
+              phase=$(ipam get ipclaim "$claim" -o jsonpath='{.status.phase}')
+              target=$(ipam get ipclaim "$claim" -o jsonpath='{.spec.target}')
+              claimed=$(ipam get ipclaim "$claim" -o jsonpath='{.status.allocatedCIDR}')
+              bound=$(ipam get ipclaim "$claim" -o jsonpath='{.status.boundAllocationRef.name}')
+
+              echo "network=${published} ippool ${pool}=${held} class=${class} scope=${scope} claim=${claim} (${phase}, ${target})"
+              [ "$published" = "$held" ] || { echo "network published ${published}, IPAM holds ${held}"; exit 1; }
+              [ "$class" = "datum-network-v6" ] || { echo "pool hands out ${class}, want datum-network-v6"; exit 1; }
+              [ "$scope" = "v6prefix-net" ] || { echo "pool is scoped to network ${scope}, not this one"; exit 1; }
+              [ "$phase" = "Bound" ] || { echo "IPClaim ${claim} is ${phase}, want Bound"; exit 1; }
+              [ "$target" = "ScopeRange" ] || { echo "IPClaim ${claim} targets ${target}, want ScopeRange"; exit 1; }
+              [ "$claimed" = "$published" ] || { echo "IPClaim holds ${claimed}, network published ${published}"; exit 1; }
+              [ -z "$bound" ] || { echo "IPClaim holds allocation ${bound} inside the range it was only meant to hold"; exit 1; }
+
+    - name: Endpoints are addressed out of the network's own /48
+      description: |
+        The property the whole hierarchy exists for: an endpoint's /96 is inside
+        the /48 the network published, not inside some other /48 that happens to
+        have been carved from the same platform pool.
+
+        This does NOT assert that the endpoint avoids the subnet gateway.
+        datum-subnet-v6 reserves the first /96 of every /64 for it and IPAM
+        honours that at the pinned ref, but gateway placement is a property of
+        the subnet class rather than of the network's range, so it belongs in
+        its own scenario. See test/e2e/fixtures/ipam/RANGES.md.
+      try:
+        - apply:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkContext
+              metadata:
+                name: v6prefix-net-us-central-1
+                namespace: ipam-e2e-alpha
+              spec:
+                network:
+                  name: v6prefix-net
+                location:
+                  name: us-central-1
+                ipFamilies:
+                  - IPv6
+                mtu: 1460
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterfaceClaim
+              metadata:
+                name: v6prefix-endpoint
+                namespace: ipam-e2e-alpha
+              spec:
+                network:
+                  name: v6prefix-net
+                ipFamilies:
+                  - IPv6
+        - assert:
+            timeout: 120s
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterfaceClaim
+              metadata:
+                name: v6prefix-endpoint
+                namespace: ipam-e2e-alpha
+              status:
+                (conditions[?type == 'Allocated'] | [0].status): "True"
+                (length(addresses || `[]`) == `1`): true
+        - script:
+            content: |
+              set -eu
+              prefix=$(kubectl -n ipam-e2e-alpha get network v6prefix-net -o jsonpath='{.status.ipam.ipv6Prefix}')
+              address=$(kubectl -n ipam-e2e-alpha get networkinterfaceclaim v6prefix-endpoint \
+                -o "jsonpath={.status.addresses[?(@.family=='IPv6')].address}")
+
+              echo "network=${prefix} endpoint=${address}"
+              echo "$address" | grep -Eq '/96$' || { echo "endpoint ${address} is not a /96"; exit 1; }
+
+              python3 - "$prefix" "$address" <<'PY'
+              import ipaddress, sys
+              vpc = ipaddress.ip_network(sys.argv[1])
+              endpoint = ipaddress.ip_network(sys.argv[2])
+              if not endpoint.subnet_of(vpc):
+                  sys.exit(f"endpoint {endpoint} is not inside the network's {vpc}")
+              print(f"ok: {endpoint} is inside {vpc}")
+              PY
+
+    - name: Deleting the network releases the range it held
+      try:
+        - script:
+            content: |
+              set -eu
+              kubectl -n ipam-e2e-alpha get network v6prefix-net \
+                -o jsonpath='{.status.ipam.ipv6PrefixRef.claimName}' > "${TMPDIR:-/tmp}/v6prefix-claim"
+              kubectl -n ipam-e2e-alpha get network v6prefix-net \
+                -o jsonpath='{.status.ipam.ipv6PrefixRef.poolName}' > "${TMPDIR:-/tmp}/v6prefix-pool"
+        - delete:
+            timeout: 120s
+            ref:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterfaceClaim
+              name: v6prefix-endpoint
+              namespace: ipam-e2e-alpha
+        - delete:
+            timeout: 120s
+            ref:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Network
+              name: v6prefix-net
+              namespace: ipam-e2e-alpha
+        - script:
+            content: |
+              set -eu
+              IPAM=$(git rev-parse --show-toplevel)/hack/ipam-project-kubectl.sh
+              claim=$(cat "${TMPDIR:-/tmp}/v6prefix-claim")
+
+              "$IPAM" project-alpha -n default get ipclass datum-network-v6 >/dev/null \
+                || { echo "project-alpha's fixtures are not readable here, so a missing IPClaim means nothing"; exit 1; }
+
+              if "$IPAM" project-alpha -n default get ipclaim "$claim" >/dev/null 2>&1; then
+                echo "IPClaim ${claim} still exists after the network was deleted"
+                exit 1
+              fi
+
+              pool=$(cat "${TMPDIR:-/tmp}/v6prefix-pool")
+              if "$IPAM" project-alpha -n default get ippool "$pool" >/dev/null 2>&1; then
+                echo "IPPool ${pool} still holds the range after the network was deleted"
+                exit 1
+              fi

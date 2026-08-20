@@ -7,7 +7,7 @@ metadata:
   labels:
     nso-fixture: "true"
 spec:
-  cidr: 2001:db8:a000::/36
+  cidr: fd20:1000::/36
   ipFamily: IPv6
   visibility: consumer
   classNames:

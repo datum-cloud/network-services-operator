@@ -19,6 +19,12 @@ gateway:
     gateway.networking.datumapis.com/certificate-issuer: []
 downstreamResourceManagement:
   kubeconfigPath: /etc/downstream-cluster/kubeconfig
+ipam:
+  kubeconfigPath: /etc/ipam-cluster/kubeconfig
+  classes:
+    # The fixtures name their classes differently to the platform, which names
+    # its own datum-vpc-ipv6.
+    network: datum-network-v6
 locationPublisher:
   hubKubeconfigPath: /etc/karmada-hub/kubeconfig
   safetyResyncPeriod: 1m

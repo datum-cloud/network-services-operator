@@ -70,6 +70,14 @@ const (
 	// space.
 	NetworkIPAMAllocated = "IPAMAllocated"
 
+	// NetworkReady reports whether the network holds everything it needs to be
+	// used. A network addressed from the tenant pool is ready once IPAM holds
+	// its range; one that claims no address space has nothing to wait for.
+	NetworkReady = "Ready"
+
+	// NetworkReadyReasonReady means the network is ready for use.
+	NetworkReadyReasonReady = "Ready"
+
 	// NetworkReasonProjectNamespaceNotFound means the namespace the platform
 	// provisions with a project is absent from its control plane, so nothing
 	// can be allocated for it.
@@ -158,7 +166,9 @@ type Network struct {
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
 	// +kubebuilder:validation:Required
-	Spec   NetworkSpec   `json:"spec,omitempty"`
+	Spec NetworkSpec `json:"spec,omitempty"`
+
+	// +kubebuilder:default={conditions:{{type:"Ready",status:"Unknown",reason:"Pending", message:"Waiting for controller", lastTransitionTime: "1970-01-01T00:00:00Z"}}}
 	Status NetworkStatus `json:"status,omitempty"`
 }
 

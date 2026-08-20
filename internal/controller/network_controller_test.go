@@ -147,6 +147,12 @@ func (s *networkScenario) ipamCondition() *metav1.Condition {
 		networkingv1alpha.NetworkIPAMAllocated)
 }
 
+func (s *networkScenario) readyCondition() *metav1.Condition {
+	s.t.Helper()
+	return apimeta.FindStatusCondition(s.get().Status.Conditions,
+		networkingv1alpha.NetworkReady)
+}
+
 func (s *networkScenario) storedClaims() []ipamv1alpha1.IPClaim {
 	s.t.Helper()
 	cl, err := s.ipam.ClientForProject(testProject)
@@ -400,4 +406,164 @@ func TestSubnetGatewayLiesInTheReservedBlock(t *testing.T) {
 		require.True(t, reserved.Contains(gateway),
 			"%s: the gateway must sit in the /96 the subnet class reserves", start)
 	}
+}
+
+// A network is usable once the range it is addressed from is held, and Ready is
+// the single answer to that. Without it a consumer has to know that the
+// allocation condition is the one to read and that it only carries meaning for
+// a network that asked for IPv6.
+func TestNetworkIsReadyOnceItsPrefixIsHeld(t *testing.T) {
+	s := newNetworkScenario(t, newFakeIPAM(t))
+
+	s.createNetwork(networkingv1alpha.IPv6Protocol)
+	s.reconcile()
+
+	ready := s.readyCondition()
+	require.NotNil(t, ready)
+	require.Equal(t, metav1.ConditionTrue, ready.Status)
+	require.Equal(t, networkingv1alpha.NetworkReadyReasonReady, ready.Reason)
+	require.Contains(t, ready.Message, "fd20:1000:1::/48")
+	require.Equal(t, s.get().Generation, ready.ObservedGeneration)
+}
+
+// Ready is a summary, not a second opinion. It says what stopped the network
+// being usable in the words the allocation condition already uses, because the
+// reason is what a listing shows and an operator acts on.
+func TestNetworkReadyCarriesTheAllocationFailure(t *testing.T) {
+	s := newNetworkScenario(t, newFakeIPAM(t))
+
+	network := s.createNetwork(networkingv1alpha.IPv6Protocol)
+	s.ipam.refuse(networkPrefixClaimName(network), fromTheWire(t,
+		ipamerrors.NewPoolExhausted("datum-network-v6-root",
+			`IPPool "datum-network-v6-root" is exhausted`)))
+
+	s.reconcile()
+
+	allocated := s.ipamCondition()
+	ready := s.readyCondition()
+	require.NotNil(t, ready)
+	require.Equal(t, metav1.ConditionFalse, ready.Status)
+	require.Equal(t, string(allocationFailureExhausted), ready.Reason)
+	require.Equal(t, allocated.Reason, ready.Reason)
+	require.Equal(t, allocated.Message, ready.Message)
+}
+
+// A retry is not a pending step: nothing is holding the range, so the network
+// is not usable now and says so. It goes back to true on its own when the next
+// attempt succeeds.
+func TestNetworkReadyRecoversWhenAllocationSucceeds(t *testing.T) {
+	s := newNetworkScenario(t, newFakeIPAM(t))
+
+	network := s.createNetwork(networkingv1alpha.IPv6Protocol)
+	s.ipam.refuse(networkPrefixClaimName(network), fromTheWire(t,
+		ipamerrors.NewPoolExhausted("datum-network-v6-root",
+			`IPPool "datum-network-v6-root" is exhausted`)))
+	s.reconcile()
+	require.Equal(t, metav1.ConditionFalse, s.readyCondition().Status)
+
+	s.ipam.refuse(networkPrefixClaimName(network), nil)
+	s.reconcile()
+
+	ready := s.readyCondition()
+	require.Equal(t, metav1.ConditionTrue, ready.Status)
+	require.Equal(t, networkingv1alpha.NetworkReadyReasonReady, ready.Reason)
+}
+
+// A range that cannot be given back leaves a network stuck Terminating. Ready
+// has to fall with the allocation condition rather than stay true underneath a
+// deletion that is not progressing.
+func TestNetworkReadyFallsWhenARangeCannotBeReleased(t *testing.T) {
+	s := newNetworkScenario(t, newFakeIPAM(t))
+
+	network := s.createNetwork(networkingv1alpha.IPv6Protocol)
+	s.reconcile()
+
+	claimName := networkPrefixClaimName(network)
+	s.ipam.refuseRelease(claimName, apierrors.NewConflict(
+		ipamv1alpha1.SchemeGroupVersion.WithResource("ipclaims").GroupResource(), claimName,
+		errors.New("ipam: range still has allocations inside it: 1 allocation(s) inside pool-x; release everything allocated inside this range first")))
+
+	require.NoError(t, s.client.Delete(s.ctx, s.get()))
+	s.reconcile()
+
+	ready := s.readyCondition()
+	require.Equal(t, metav1.ConditionFalse, ready.Status)
+	require.Equal(t, networkingv1alpha.NetworkReasonRangeOccupied, ready.Reason)
+}
+
+// Nothing is allocated for a network that did not ask for IPv6, so there is
+// nothing for it to wait on. Leaving Ready absent would leave the listing's
+// readiness column permanently blank, which reads the same as broken.
+func TestNetworkWithoutIPv6IsReady(t *testing.T) {
+	s := newNetworkScenario(t, newFakeIPAM(t))
+
+	s.createNetwork(networkingv1alpha.IPv4Protocol)
+	s.reconcile()
+
+	require.Nil(t, s.ipamCondition(), "nothing was claimed, so nothing is reported about a claim")
+
+	ready := s.readyCondition()
+	require.NotNil(t, ready)
+	require.Equal(t, metav1.ConditionTrue, ready.Status)
+	require.Equal(t, networkingv1alpha.NetworkReadyReasonReady, ready.Reason)
+	require.Contains(t, ready.Message, "claims no address space")
+}
+
+// A policy-mode network is addressed by what an operator creates in it, not by
+// the tenant pool, so the operator claims nothing for it either.
+func TestPolicyModeNetworkIsReady(t *testing.T) {
+	s := newNetworkScenario(t, newFakeIPAM(t))
+
+	network := s.createNetwork(networkingv1alpha.IPv6Protocol)
+	network.Spec.IPAM.Mode = networkingv1alpha.NetworkIPAMModePolicy
+	require.NoError(t, s.client.Update(s.ctx, network))
+	s.reconcile()
+
+	require.Nil(t, s.ipamCondition())
+	require.Zero(t, s.ipam.createdAnywhere())
+	require.Equal(t, metav1.ConditionTrue, s.readyCondition().Status)
+}
+
+// A deployment that configured no address service claims nothing on purpose and
+// its networks are used exactly as they were before the operator reached IPAM.
+// Unknown would leave every network in such a deployment permanently unanswered.
+func TestNetworkWithoutIPAMConfiguredIsReady(t *testing.T) {
+	s := newNetworkScenario(t, nil)
+
+	s.createNetwork(networkingv1alpha.IPv6Protocol)
+	s.reconcile()
+
+	require.Nil(t, s.ipamCondition())
+
+	ready := s.readyCondition()
+	require.NotNil(t, ready)
+	require.Equal(t, metav1.ConditionTrue, ready.Status)
+	require.Equal(t, networkingv1alpha.NetworkReadyReasonReady, ready.Reason)
+	require.Contains(t, ready.Message, "No address service is configured")
+}
+
+// The same holds for a deployment reaching IPAM that named no class for network
+// ranges.
+func TestNetworkWithoutAConfiguredClassIsReady(t *testing.T) {
+	s := newNetworkScenario(t, newFakeIPAM(t))
+	s.reconciler.PrefixClass = ""
+
+	s.createNetwork(networkingv1alpha.IPv6Protocol)
+	s.reconcile()
+
+	require.Nil(t, s.ipamCondition())
+	require.Equal(t, metav1.ConditionTrue, s.readyCondition().Status)
+}
+
+// Before the controller has reached a network there is no answer to give, and
+// an unknown one is what distinguishes that from a network that is not usable.
+func TestNetworkReadyIsUnknownBeforeTheControllerRuns(t *testing.T) {
+	s := newNetworkScenario(t, newFakeIPAM(t))
+
+	s.createNetwork(networkingv1alpha.IPv6Protocol)
+
+	ready := s.readyCondition()
+	require.NotNil(t, ready, "the API must seed a readiness answer with the network")
+	require.Equal(t, metav1.ConditionUnknown, ready.Status)
+	require.Equal(t, "Pending", ready.Reason)
 }

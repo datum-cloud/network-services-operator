@@ -61,6 +61,8 @@ Network is the Schema for the networks API
         <td>object</td>
         <td>
           NetworkStatus defines the observed state of Network<br/>
+          <br/>
+            <i>Default</i>: map[conditions:[map[lastTransitionTime:1970-01-01T00:00:00Z message:Waiting for controller reason:Pending status:Unknown type:Ready]]]<br/>
         </td>
         <td>false</td>
       </tr></tbody>

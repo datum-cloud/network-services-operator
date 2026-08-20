@@ -144,13 +144,13 @@ type NetworkPrefixRef struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
-// +kubebuilder:printcolumn:name="Ready",type="string",JSONPath=`.status.conditions[?(@.type==\"Ready\")].status`
-// +kubebuilder:printcolumn:name="Reason",type="string",JSONPath=`.status.conditions[?(@.type==\"Ready\")].reason`
-// +kubebuilder:printcolumn:name="IPAM",type="string",JSONPath=".spec.ipam.mode"
-// +kubebuilder:printcolumn:name="IPFamilies",type="string",JSONPath=".spec.ipFamilies"
-// +kubebuilder:printcolumn:name="MTU",type="integer",JSONPath=".spec.mtu"
 // +kubebuilder:printcolumn:name="IPv6Prefix",type="string",JSONPath=".status.ipam.ipv6Prefix"
+// +kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].status"
+// +kubebuilder:printcolumn:name="Reason",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].reason"
+// +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
+// +kubebuilder:printcolumn:name="IPFamilies",type="string",JSONPath=".spec.ipFamilies",priority=1
+// +kubebuilder:printcolumn:name="IPAM",type="string",JSONPath=".spec.ipam.mode",priority=1
+// +kubebuilder:printcolumn:name="MTU",type="integer",JSONPath=".spec.mtu",priority=1
 
 // Network is the Schema for the networks API
 type Network struct {

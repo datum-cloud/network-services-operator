@@ -62,9 +62,27 @@ func (r *SubnetReconciler) Reconcile(ctx context.Context, req mcreconcile.Reques
 	logger.Info("reconciling subnet")
 	defer logger.Info("reconcile complete")
 
+	return ctrl.Result{}, r.reconcileSubnet(ctx, cl.GetClient(), &subnet)
+}
+
+func (r *SubnetReconciler) reconcileSubnet(
+	ctx context.Context,
+	cl client.Client,
+	subnet *networkingv1alpha.Subnet,
+) error {
 	// TODO(jreese) finalizer work
 
 	needsStatusUpdate := false
+	if subnet.Status.StartAddress == nil && subnet.Spec.StartAddress != "" {
+		// A subnet whose spec already carries a range was allocated by whoever
+		// wrote it, out of the space its network holds. Nothing is left to
+		// allocate here, and the table below would answer with a range from a
+		// different address family entirely.
+		needsStatusUpdate = true
+		subnet.Status.StartAddress = proto.String(subnet.Spec.StartAddress)
+		subnet.Status.PrefixLength = proto.Int32(subnet.Spec.PrefixLength)
+	}
+
 	if subnet.Status.StartAddress == nil {
 		needsStatusUpdate = true
 		var networkContext networkingv1alpha.NetworkContext
@@ -72,26 +90,26 @@ func (r *SubnetReconciler) Reconcile(ctx context.Context, req mcreconcile.Reques
 			Namespace: subnet.Namespace,
 			Name:      subnet.Spec.NetworkContext.Name,
 		}
-		if err := cl.GetClient().Get(ctx, networkContextObjectKey, &networkContext); err != nil {
-			return ctrl.Result{}, fmt.Errorf("failed fetching network context: %w", err)
+		if err := cl.Get(ctx, networkContextObjectKey, &networkContext); err != nil {
+			return fmt.Errorf("failed fetching network context: %w", err)
 		}
 
 		if !apimeta.IsStatusConditionTrue(networkContext.Status.Conditions, networkingv1alpha.NetworkContextReady) {
-			return ctrl.Result{}, fmt.Errorf("network context is not ready")
+			return fmt.Errorf("network context is not ready")
 		}
 
 		var location networkingv1alpha.Location
 		locationObjectKey := client.ObjectKey{
 			Name: networkContext.Spec.Location.Name,
 		}
-		if err := cl.GetClient().Get(ctx, locationObjectKey, &location); err != nil {
-			return ctrl.Result{}, fmt.Errorf("failed fetching network context location: %w", err)
+		if err := cl.Get(ctx, locationObjectKey, &location); err != nil {
+			return fmt.Errorf("failed fetching network context location: %w", err)
 		}
 
 		// TODO(jreese) get topology key from well known package
 		cityCode, ok := location.Spec.Topology["topology.datum.net/city-code"]
 		if !ok {
-			return ctrl.Result{}, fmt.Errorf("unable to find topology key: topology.datum.net/city-code")
+			return fmt.Errorf("unable to find topology key: topology.datum.net/city-code")
 		}
 
 		// TODO(jreese) move to proper higher level subnet allocation logic, this is
@@ -156,12 +174,12 @@ func (r *SubnetReconciler) Reconcile(ctx context.Context, req mcreconcile.Reques
 	}
 
 	if needsStatusUpdate {
-		if err := cl.GetClient().Status().Update(ctx, &subnet); err != nil {
-			return ctrl.Result{}, fmt.Errorf("failed updating subnet status")
+		if err := cl.Status().Update(ctx, subnet); err != nil {
+			return fmt.Errorf("failed updating subnet status")
 		}
 	}
 
-	return ctrl.Result{}, nil
+	return nil
 }
 
 // SetupWithManager sets up the controller with the Manager.

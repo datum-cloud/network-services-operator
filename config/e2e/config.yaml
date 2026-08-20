@@ -25,6 +25,7 @@ ipam:
     # The fixtures name their classes differently to the platform, which names
     # its own datum-vpc-ipv6.
     network: datum-network-v6
+    subnet: datum-subnet-v6
 locationPublisher:
   hubKubeconfigPath: /etc/karmada-hub/kubeconfig
   safetyResyncPeriod: 1m

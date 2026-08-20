@@ -602,7 +602,10 @@ func controllerRegistrations(
 			return (&controller.NetworkBindingReconciler{}).SetupWithManager(mgr)
 		}},
 		{"networkcontext", true, func() error {
-			return (&controller.NetworkContextReconciler{}).SetupWithManager(mgr)
+			return (&controller.NetworkContextReconciler{
+				IPAM:        deps.ipamClients,
+				SubnetClass: serverConfig.IPAM.Classes.Subnet,
+			}).SetupWithManager(mgr)
 		}},
 		// The deployment cluster is the hub, and the milo provider engages
 		// project control planes in the same process. The presence controller

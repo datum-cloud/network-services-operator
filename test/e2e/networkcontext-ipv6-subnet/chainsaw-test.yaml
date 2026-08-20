@@ -1,0 +1,271 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+#
+# A location's /64 exists as soon as the network is attached to that location,
+# is visible on the Subnet a consumer already reads, lies inside the network's
+# own /48, and is the space the endpoints in that location are addressed from.
+#
+# The context lives in ipam-e2e-alpha, whose upstream-cluster-name label routes
+# to project-alpha, so the /64 is carved from the /48 that project's
+# fd20:1000::/36 issued to the network.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: networkcontext-ipv6-subnet
+spec:
+  cluster: nso-standard
+  steps:
+    - name: A network attached to a location publishes that location's subnet
+      description: |
+        Nothing has asked for an address in this location yet. The subnet has to
+        be there anyway: a context existing is what says a tenant needs this
+        region, and that is the trigger the addressing plan asks for.
+
+        The range is published on the Subnet, which is the API a location's
+        addressing is already read from. The context carries only what holds it
+        in IPAM, so there is no second copy of the range to keep in step.
+      try:
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Network
+              metadata:
+                name: ctxsubnet-net
+                namespace: ipam-e2e-alpha
+              spec:
+                ipam:
+                  mode: Auto
+                ipFamilies:
+                  - IPv6
+        - apply:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkContext
+              metadata:
+                name: ctxsubnet-net-us-central-1
+                namespace: ipam-e2e-alpha
+              spec:
+                network:
+                  name: ctxsubnet-net
+                location:
+                  name: us-central-1
+                ipFamilies:
+                  - IPv6
+                mtu: 1460
+        - assert:
+            timeout: 120s
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkContext
+              metadata:
+                name: ctxsubnet-net-us-central-1
+                namespace: ipam-e2e-alpha
+              status:
+                ipam:
+                  ipv6SubnetRef:
+                    name: ctxsubnet-net-us-central-1-ipv6
+                  ipv6ClaimRef:
+                    project: project-alpha
+                    namespace: default
+                (ipam.ipv6ClaimRef.poolName != ''): true
+                (ipam.ipv6ClaimRef.claimName != ''): true
+                (conditions[?type == 'IPAMAllocated'] | [0].status): "True"
+        - assert:
+            timeout: 60s
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Subnet
+              metadata:
+                name: ctxsubnet-net-us-central-1-ipv6
+                namespace: ipam-e2e-alpha
+                (length(ownerReferences[?kind == 'NetworkContext' && controller == `true`]) == `1`): true
+              spec:
+                ipFamily: IPv6
+                prefixLength: 64
+                networkContext:
+                  name: ctxsubnet-net-us-central-1
+              status:
+                prefixLength: 64
+                (starts_with(startAddress, 'fd20:1')): true
+                (conditions[?type == 'Allocated'] | [0].status): "True"
+      catch:
+        - script:
+            content: |
+              kubectl -n ipam-e2e-alpha get networkcontext ctxsubnet-net-us-central-1 -o yaml
+              kubectl -n ipam-e2e-alpha get subnet -o yaml
+              kubectl -n network-services-operator-system logs -l app.kubernetes.io/name=network-services-operator --tail=100
+
+    - name: The published subnet is an IPPool IPAM holds inside the network's range
+      description: |
+        A range NSO merely wrote onto a Subnet proves nothing. The pool it names
+        must exist in IPAM, hand out datum-subnet-v6, be scoped to this network
+        AND this location, and hold exactly the range the Subnet publishes. The
+        claim holds the range itself and binds no allocation inside it, which is
+        what stops a location leaving behind a block no interface can be given.
+
+        And the range has to be inside the network's own /48. A /64 that came
+        from anywhere else would address this location outside the VPC it
+        belongs to.
+      try:
+        - script:
+            content: |
+              set -eu
+              IPAM=$(git rev-parse --show-toplevel)/hack/ipam-project-kubectl.sh
+              ipam() { "$IPAM" project-alpha -n default "$@"; }
+
+              start=$(kubectl -n ipam-e2e-alpha get subnet ctxsubnet-net-us-central-1-ipv6 -o jsonpath='{.status.startAddress}')
+              length=$(kubectl -n ipam-e2e-alpha get subnet ctxsubnet-net-us-central-1-ipv6 -o jsonpath='{.status.prefixLength}')
+              published="${start}/${length}"
+              pool=$(kubectl -n ipam-e2e-alpha get networkcontext ctxsubnet-net-us-central-1 -o jsonpath='{.status.ipam.ipv6ClaimRef.poolName}')
+              claim=$(kubectl -n ipam-e2e-alpha get networkcontext ctxsubnet-net-us-central-1 -o jsonpath='{.status.ipam.ipv6ClaimRef.claimName}')
+
+              held=$(ipam get ippool "$pool" -o jsonpath='{.status.allocatedCIDR}')
+              class=$(ipam get ippool "$pool" -o jsonpath='{.spec.classRef.name}')
+              scopeNetwork=$(ipam get ippool "$pool" -o jsonpath='{.spec.scope.network.name}')
+              scopeLocation=$(ipam get ippool "$pool" -o jsonpath='{.spec.scope.location.name}')
+              phase=$(ipam get ipclaim "$claim" -o jsonpath='{.status.phase}')
+              target=$(ipam get ipclaim "$claim" -o jsonpath='{.spec.target}')
+              claimed=$(ipam get ipclaim "$claim" -o jsonpath='{.status.allocatedCIDR}')
+              bound=$(ipam get ipclaim "$claim" -o jsonpath='{.status.boundAllocationRef.name}')
+
+              echo "subnet=${published} ippool ${pool}=${held} class=${class} scope=${scopeNetwork}/${scopeLocation} claim=${claim} (${phase}, ${target})"
+              [ "$published" = "$held" ] || { echo "subnet published ${published}, IPAM holds ${held}"; exit 1; }
+              [ "$class" = "datum-subnet-v6" ] || { echo "pool hands out ${class}, want datum-subnet-v6"; exit 1; }
+              [ "$scopeNetwork" = "ctxsubnet-net" ] || { echo "pool is scoped to network ${scopeNetwork}, not this one"; exit 1; }
+              [ "$scopeLocation" = "us-central-1" ] || { echo "pool is scoped to location ${scopeLocation}, not this one"; exit 1; }
+              [ "$phase" = "Bound" ] || { echo "IPClaim ${claim} is ${phase}, want Bound"; exit 1; }
+              [ "$target" = "ScopeRange" ] || { echo "IPClaim ${claim} targets ${target}, want ScopeRange"; exit 1; }
+              [ "$claimed" = "$published" ] || { echo "IPClaim holds ${claimed}, subnet published ${published}"; exit 1; }
+              [ -z "$bound" ] || { echo "IPClaim holds allocation ${bound} inside the range it was only meant to hold"; exit 1; }
+
+              prefix=$(kubectl -n ipam-e2e-alpha get network ctxsubnet-net -o jsonpath='{.status.ipam.ipv6Prefix}')
+              python3 - "$prefix" "$published" <<'PY'
+              import ipaddress, sys
+              vpc = ipaddress.ip_network(sys.argv[1])
+              subnet = ipaddress.ip_network(sys.argv[2])
+              if not subnet.subnet_of(vpc):
+                  sys.exit(f"subnet {subnet} is not inside the network's {vpc}")
+              print(f"ok: {subnet} is inside {vpc}")
+              PY
+
+    - name: Endpoints in this location are addressed out of its own subnet
+      description: |
+        The property the hierarchy exists for, one level below the network's:
+        an endpoint's /96 is inside the /64 this location holds, and the gateway
+        it is handed is the first address of that same /64 rather than a value
+        read off a table of city codes.
+      try:
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterfaceClaim
+              metadata:
+                name: ctxsubnet-endpoint
+                namespace: ipam-e2e-alpha
+              spec:
+                network:
+                  name: ctxsubnet-net
+                ipFamilies:
+                  - IPv6
+        - assert:
+            timeout: 120s
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterfaceClaim
+              metadata:
+                name: ctxsubnet-endpoint
+                namespace: ipam-e2e-alpha
+              status:
+                (conditions[?type == 'Allocated'] | [0].status): "True"
+                (length(addresses || `[]`) == `1`): true
+        - script:
+            content: |
+              set -eu
+              start=$(kubectl -n ipam-e2e-alpha get subnet ctxsubnet-net-us-central-1-ipv6 -o jsonpath='{.status.startAddress}')
+              length=$(kubectl -n ipam-e2e-alpha get subnet ctxsubnet-net-us-central-1-ipv6 -o jsonpath='{.status.prefixLength}')
+              address=$(kubectl -n ipam-e2e-alpha get networkinterfaceclaim ctxsubnet-endpoint \
+                -o "jsonpath={.status.addresses[?(@.family=='IPv6')].address}")
+
+              echo "subnet=${start}/${length} endpoint=${address}"
+              python3 - "${start}/${length}" "$address" <<'PY'
+              import ipaddress, sys
+              subnet = ipaddress.ip_network(sys.argv[1])
+              endpoint = ipaddress.ip_network(sys.argv[2])
+              if not endpoint.subnet_of(subnet):
+                  sys.exit(f"endpoint {endpoint} is not inside this location's {subnet}")
+              print(f"ok: {endpoint} is inside {subnet}")
+              PY
+        - script:
+            content: |
+              set -eu
+              start=$(kubectl -n ipam-e2e-alpha get subnet ctxsubnet-net-us-central-1-ipv6 -o jsonpath='{.status.startAddress}')
+              expected="${start}1"
+
+              for _ in $(seq 1 30); do
+                gateway=$(kubectl -n ipam-e2e-alpha get networkinterface ctxsubnet-endpoint \
+                  -o "jsonpath={.spec.addresses[?(@.family=='IPv6')].gateway}")
+                [ "$gateway" = "$expected" ] && break
+                sleep 2
+              done
+
+              echo "gateway=${gateway} expected=${expected}"
+              [ "$gateway" = "$expected" ] || { echo "interface was handed gateway ${gateway}, want ${expected}"; exit 1; }
+
+    - name: Deleting the context releases the subnet it held
+      description: |
+        The endpoint has to go first. IPAM refuses to give a range back while
+        anything is allocated inside it, and the context reports that wait
+        rather than failing in a loop.
+      try:
+        - script:
+            content: |
+              set -eu
+              kubectl -n ipam-e2e-alpha get networkcontext ctxsubnet-net-us-central-1 \
+                -o jsonpath='{.status.ipam.ipv6ClaimRef.claimName}' > "${TMPDIR:-/tmp}/ctxsubnet-claim"
+              kubectl -n ipam-e2e-alpha get networkcontext ctxsubnet-net-us-central-1 \
+                -o jsonpath='{.status.ipam.ipv6ClaimRef.poolName}' > "${TMPDIR:-/tmp}/ctxsubnet-pool"
+        - delete:
+            timeout: 120s
+            ref:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterfaceClaim
+              name: ctxsubnet-endpoint
+              namespace: ipam-e2e-alpha
+        - delete:
+            timeout: 120s
+            ref:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkContext
+              name: ctxsubnet-net-us-central-1
+              namespace: ipam-e2e-alpha
+        - script:
+            content: |
+              set -eu
+              IPAM=$(git rev-parse --show-toplevel)/hack/ipam-project-kubectl.sh
+              claim=$(cat "${TMPDIR:-/tmp}/ctxsubnet-claim")
+              pool=$(cat "${TMPDIR:-/tmp}/ctxsubnet-pool")
+
+              "$IPAM" project-alpha -n default get ipclass datum-subnet-v6 >/dev/null \
+                || { echo "project-alpha's fixtures are not readable here, so a missing IPClaim means nothing"; exit 1; }
+
+              if "$IPAM" project-alpha -n default get ipclaim "$claim" >/dev/null 2>&1; then
+                echo "IPClaim ${claim} still exists after the context was deleted"
+                exit 1
+              fi
+              if "$IPAM" project-alpha -n default get ippool "$pool" >/dev/null 2>&1; then
+                echo "IPPool ${pool} still holds the subnet after the context was deleted"
+                exit 1
+              fi
+        - script:
+            content: |
+              set -eu
+              if kubectl -n ipam-e2e-alpha get subnet ctxsubnet-net-us-central-1-ipv6 >/dev/null 2>&1; then
+                echo "the Subnet outlived the context that owned it"
+                exit 1
+              fi
+        - delete:
+            timeout: 120s
+            ref:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Network
+              name: ctxsubnet-net
+              namespace: ipam-e2e-alpha

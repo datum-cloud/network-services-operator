@@ -214,6 +214,14 @@ NetworkContextStatus defines the observed state of NetworkContext
           Represents the observations of a network context's current state.<br/>
         </td>
         <td>false</td>
+      </tr><tr>
+        <td><b><a href="#networkcontextstatusipam">ipam</a></b></td>
+        <td>object</td>
+        <td>
+          IPAM reports the address space IPAM holds for this network in this
+location.<br/>
+        </td>
+        <td>false</td>
       </tr></tbody>
 </table>
 
@@ -291,5 +299,119 @@ with respect to the current state of the instance.<br/>
             <i>Minimum</i>: 0<br/>
         </td>
         <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### NetworkContext.status.ipam
+<sup><sup>[↩ Parent](#networkcontextstatus)</sup></sup>
+
+
+
+IPAM reports the address space IPAM holds for this network in this
+location.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b><a href="#networkcontextstatusipamipv6claimref">ipv6ClaimRef</a></b></td>
+        <td>object</td>
+        <td>
+          IPv6ClaimRef names what holds the /64 in IPAM. Deleting the claim it
+names releases what this operator holds.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b><a href="#networkcontextstatusipamipv6subnetref">ipv6SubnetRef</a></b></td>
+        <td>object</td>
+        <td>
+          IPv6SubnetRef names the Subnet publishing this location's /64.<br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### NetworkContext.status.ipam.ipv6ClaimRef
+<sup><sup>[↩ Parent](#networkcontextstatusipam)</sup></sup>
+
+
+
+IPv6ClaimRef names what holds the /64 in IPAM. Deleting the claim it
+names releases what this operator holds.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>claimName</b></td>
+        <td>string</td>
+        <td>
+          ClaimName is the IPClaim this operator holds against the prefix.
+Deleting it releases what the operator holds.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>namespace</b></td>
+        <td>string</td>
+        <td>
+          Namespace is the project namespace holding the claim.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>poolName</b></td>
+        <td>string</td>
+        <td>
+          PoolName is the IPPool IPAM provisioned for the prefix. Subnet and
+endpoint addresses are drawn from it.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>project</b></td>
+        <td>string</td>
+        <td>
+          Project is the control plane the objects live in.<br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### NetworkContext.status.ipam.ipv6SubnetRef
+<sup><sup>[↩ Parent](#networkcontextstatusipam)</sup></sup>
+
+
+
+IPv6SubnetRef names the Subnet publishing this location's /64.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>name</b></td>
+        <td>string</td>
+        <td>
+          <br/>
+        </td>
+        <td>true</td>
       </tr></tbody>
 </table>

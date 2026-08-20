@@ -136,7 +136,7 @@ func (r *NetworkReconciler) reconcilePrefix(
 		return ctrl.Result{}, nil
 	}
 
-	routing, err := r.resolveProject(ctx, cl, network)
+	routing, err := resolveProjectOrCluster(ctx, cl, network.Namespace)
 	if err != nil {
 		var unresolvable *projectUnresolvable
 		if errors.As(err, &unresolvable) {
@@ -157,7 +157,7 @@ func (r *NetworkReconciler) reconcilePrefix(
 		}
 	}
 
-	prefix, poolName, err := r.claimPrefix(ctx, ipamClient, routing, network)
+	prefix, err := r.claimPrefix(ctx, ipamClient, routing, network)
 	if err != nil {
 		var refused *bindingRefused
 		if errors.As(err, &refused) {
@@ -170,86 +170,30 @@ func (r *NetworkReconciler) reconcilePrefix(
 		return ctrl.Result{}, err
 	}
 
-	return ctrl.Result{}, r.publishPrefix(ctx, cl, network, routing, prefix, poolName)
+	return ctrl.Result{}, r.publishPrefix(ctx, cl, network, routing, prefix)
 }
 
-// claimPrefix holds the range the network is addressed from, and reports it.
-//
-// The claim's name is derived from the network's UID, so a reconcile that lost
-// its answer finds the same range again instead of taking a second one. IPAM
-// binds on create and refuses a duplicate name, so the read comes first.
 func (r *NetworkReconciler) claimPrefix(
 	ctx context.Context,
 	ipamClient client.Client,
 	routing projectRouting,
 	network *networkingv1alpha.Network,
-) (string, string, error) {
-	ipClaim := &ipamv1alpha1.IPClaim{}
-	ipClaim.Namespace = routing.projectNamespace
-	ipClaim.Name = networkPrefixClaimName(network)
-	ipClaim.Spec = ipamv1alpha1.IPClaimSpec{
-		ClassName: r.PrefixClass,
-		Target:    ipamv1alpha1.TargetScopeRange,
-		Scope: map[string]ipamv1alpha1.ScopeRef{
+) (scopeRange, error) {
+	return holdScopeRange(ctx, ipamClient, routing, scopeRangeRequest{
+		className: r.PrefixClass,
+		claimName: networkPrefixClaimName(network),
+		namespace: routing.projectNamespace,
+		scope: map[string]ipamv1alpha1.ScopeRef{
 			ipamScopeRoleNetwork: {
 				APIGroup: datumNetworkingAPIGroup,
 				Kind:     "Network",
 				Name:     network.Name,
 			},
 		},
-	}
-
-	existing := &ipamv1alpha1.IPClaim{}
-	getErr := ipamClient.Get(ctx, client.ObjectKeyFromObject(ipClaim), existing)
-	if getErr != nil && !apierrors.IsNotFound(getErr) {
-		return "", "", fmt.Errorf("failed reading IPClaim %q: %w", ipClaim.Name, getErr)
-	}
-
-	if getErr == nil {
-		ipClaim = existing
-	} else if createErr := ipamClient.Create(ctx, ipClaim); createErr != nil {
-		if isNamespaceNotFound(createErr, routing.projectNamespace) {
-			return "", "", &bindingRefused{
-				reason: networkingv1alpha.NetworkReasonProjectNamespaceNotFound,
-				message: fmt.Sprintf(
-					"Project %q has no namespace %q in its control plane, so no address space can be allocated for it",
-					routing.project, routing.projectNamespace),
-			}
-		}
-
-		raced := &ipamv1alpha1.IPClaim{}
-		if err := ipamClient.Get(ctx, client.ObjectKeyFromObject(ipClaim), raced); err != nil {
-			reason := classifyAllocationFailure(createErr)
-			return "", "", &allocationFailure{
-				reason:  reason,
-				message: r.prefixFailureMessage(reason, createErr),
-			}
-		}
-		ipClaim = raced
-	}
-
-	if ipClaim.Spec.Target != ipamv1alpha1.TargetScopeRange {
-		return "", "", &bindingRefused{
-			reason: networkingv1alpha.NetworkReasonRangeUnsupported,
-			message: fmt.Sprintf(
-				"IPAM did not keep the request for a range on claim %q, so it cannot report the network's own address space",
-				ipClaim.Name),
-		}
-	}
-
-	if ipClaim.Status.AllocatedCIDR == "" {
-		return "", "", &allocationFailure{
-			reason: allocationFailureUnknown,
-			message: fmt.Sprintf("IPAM allocated no address space for this network (phase %q)",
-				ipClaim.Status.Phase),
-		}
-	}
-
-	poolName := ""
-	if ipClaim.Status.PoolRef != nil {
-		poolName = ipClaim.Status.PoolRef.Name
-	}
-	return ipClaim.Status.AllocatedCIDR, poolName, nil
+		subject:                 "this network",
+		namespaceNotFoundReason: networkingv1alpha.NetworkReasonProjectNamespaceNotFound,
+		rangeUnsupportedReason:  networkingv1alpha.NetworkReasonRangeUnsupported,
+	})
 }
 
 func (r *NetworkReconciler) publishPrefix(
@@ -257,16 +201,15 @@ func (r *NetworkReconciler) publishPrefix(
 	cl client.Client,
 	network *networkingv1alpha.Network,
 	routing projectRouting,
-	prefix string,
-	poolName string,
+	prefix scopeRange,
 ) error {
 	allocated := &networkingv1alpha.NetworkIPAMStatus{
-		IPv6Prefix: prefix,
+		IPv6Prefix: prefix.cidr,
 		IPv6PrefixRef: &networkingv1alpha.NetworkPrefixRef{
 			Project:   routing.project,
 			Namespace: routing.projectNamespace,
 			ClaimName: networkPrefixClaimName(network),
-			PoolName:  poolName,
+			PoolName:  prefix.poolName,
 		},
 	}
 
@@ -278,7 +221,7 @@ func (r *NetworkReconciler) publishPrefix(
 		Status:             metav1.ConditionTrue,
 		Reason:             "Allocated",
 		ObservedGeneration: network.Generation,
-		Message:            "The network is addressed from " + prefix,
+		Message:            "The network is addressed from " + prefix.cidr,
 	}) {
 		changed = true
 	}
@@ -334,7 +277,7 @@ func (r *NetworkReconciler) releasePrefix(
 
 	ref := prefixRef(network)
 	if ref == nil {
-		routing, err := r.resolveProject(ctx, cl, network)
+		routing, err := resolveProjectOrCluster(ctx, cl, network.Namespace)
 		if err != nil {
 			log.FromContext(ctx).Info("network holds no recorded address space and names no project; releasing nothing",
 				"error", err.Error())
@@ -352,28 +295,16 @@ func (r *NetworkReconciler) releasePrefix(
 		return fmt.Errorf("failed building IPAM client: %w", err)
 	}
 
-	ipClaim := &ipamv1alpha1.IPClaim{}
-	ipClaim.Namespace = ref.Namespace
-	ipClaim.Name = ref.ClaimName
-	if err := ipamClient.Delete(ctx, ipClaim); err != nil && !apierrors.IsNotFound(err) {
-		if apierrors.IsConflict(err) {
+	if err := releaseScopeRange(ctx, ipamClient, ref.Namespace, ref.ClaimName); err != nil {
+		var occupied *rangeOccupied
+		if errors.As(err, &occupied) {
 			return &rangeOccupied{message: fmt.Sprintf(
-				"the network's address space still has addresses allocated inside it: %s", err.Error())}
+				"the network's address space still has addresses allocated inside it: %s", occupied.message)}
 		}
-		return fmt.Errorf("failed releasing IPClaim %q: %w", ipClaim.Name, err)
+		return err
 	}
 	return nil
 }
-
-// rangeOccupied reports a release IPAM refused because something is still
-// allocated inside the range. Deleting an interface on the network is what
-// clears it, so the network waits and says so rather than failing in a loop
-// nothing outside the logs can see.
-type rangeOccupied struct {
-	message string
-}
-
-func (e *rangeOccupied) Error() string { return e.message }
 
 func prefixRef(network *networkingv1alpha.Network) *networkingv1alpha.NetworkPrefixRef {
 	if network.Status.IPAM == nil {
@@ -386,36 +317,6 @@ func prefixRef(network *networkingv1alpha.Network) *networkingv1alpha.NetworkPre
 	return ref
 }
 
-// resolveProject reads the project from the network's namespace, and falls back
-// to the cluster the network was read from. A namespace that declares an owner
-// is answering for a control plane holding several projects' objects; one that
-// declares none is a project's own control plane, which the cluster names.
-func (r *NetworkReconciler) resolveProject(
-	ctx context.Context,
-	cl client.Client,
-	network *networkingv1alpha.Network,
-) (projectRouting, error) {
-	routing, err := resolveProjectRouting(ctx, cl, network.Namespace)
-	if err == nil {
-		return routing, nil
-	}
-
-	var unresolvable *projectUnresolvable
-	if !errors.As(err, &unresolvable) {
-		return projectRouting{}, err
-	}
-
-	clusterName, ok := mccontext.ClusterFrom(ctx)
-	if !ok || string(clusterName) == "" {
-		return projectRouting{}, err
-	}
-
-	return projectRouting{
-		project:          string(clusterName),
-		projectNamespace: network.Namespace,
-	}, nil
-}
-
 func networkCarriesIPv6(network *networkingv1alpha.Network) bool {
 	return network.Spec.IPAM.Mode == networkingv1alpha.NetworkIPAMModeAuto &&
 		slices.Contains(network.Spec.IPFamilies, networkingv1alpha.IPv6Protocol)
@@ -423,10 +324,6 @@ func networkCarriesIPv6(network *networkingv1alpha.Network) bool {
 
 func networkPrefixClaimName(network *networkingv1alpha.Network) string {
 	return "network-" + string(network.UID)
-}
-
-func (r *NetworkReconciler) prefixFailureMessage(reason allocationFailureReason, err error) string {
-	return allocationFailureMessage(reason, allocationRequest{className: r.PrefixClass}, err)
 }
 
 var errNetworkContextsExist = errors.New("network contexts exist")

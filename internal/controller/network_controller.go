@@ -20,6 +20,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mccontext "sigs.k8s.io/multicluster-runtime/pkg/context"
+	mchandler "sigs.k8s.io/multicluster-runtime/pkg/handler"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
@@ -83,22 +84,12 @@ func (r *NetworkReconciler) reconcileNetwork(
 ) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
-	if !network.DeletionTimestamp.IsZero() &&
-		controllerutil.ContainsFinalizer(network, networkPrefixFinalizer) {
-		if err := r.releasePrefix(ctx, cl, network); err != nil {
-			var occupied *rangeOccupied
-			if errors.As(err, &occupied) {
-				return r.reportPrefix(ctx, cl, network,
-					networkingv1alpha.NetworkReasonRangeOccupied, occupied.message)
-			}
-			return ctrl.Result{}, err
-		}
-		controllerutil.RemoveFinalizer(network, networkPrefixFinalizer)
-		if err := cl.Update(ctx, network); err != nil {
-			return ctrl.Result{}, fmt.Errorf("failed removing prefix finalizer: %w", err)
-		}
-	}
-
+	// The locations a network is attached to hold subnets carved out of its
+	// range, and IPAM refuses to give a range back while anything is allocated
+	// inside it. So the locations go first: finalization below takes them down
+	// and reports that it is not done until they are gone, and only then is the
+	// range released. Releasing first is a deadlock — the network waits on
+	// subnets held by locations it is the only thing that will ever delete.
 	finalizationResult, err := r.finalizers.Finalize(ctx, network)
 	if err != nil {
 		if v, ok := err.(kerrors.Aggregate); ok && v.Is(errNetworkContextsExist) {
@@ -118,6 +109,23 @@ func (r *NetworkReconciler) reconcileNetwork(
 	}
 
 	if !network.DeletionTimestamp.IsZero() {
+		if !controllerutil.ContainsFinalizer(network, networkPrefixFinalizer) {
+			return ctrl.Result{}, nil
+		}
+
+		if err := r.releasePrefix(ctx, cl, network); err != nil {
+			var occupied *rangeOccupied
+			if errors.As(err, &occupied) {
+				return r.reportPrefix(ctx, cl, network,
+					networkingv1alpha.NetworkReasonRangeOccupied, occupied.message)
+			}
+			return ctrl.Result{}, err
+		}
+
+		controllerutil.RemoveFinalizer(network, networkPrefixFinalizer)
+		if err := cl.Update(ctx, network); err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed removing prefix finalizer: %w", err)
+		}
 		return ctrl.Result{}, nil
 	}
 
@@ -329,9 +337,6 @@ func networkPrefixClaimName(network *networkingv1alpha.Network) string {
 var errNetworkContextsExist = errors.New("network contexts exist")
 
 func (r *NetworkReconciler) Finalize(ctx context.Context, obj client.Object) (finalizer.Result, error) {
-	logger := log.FromContext(ctx)
-	logger.Info("finalizing network")
-
 	clusterName, ok := mccontext.ClusterFrom(ctx)
 	if !ok {
 		return finalizer.Result{}, fmt.Errorf("cluster name not found in context")
@@ -342,26 +347,34 @@ func (r *NetworkReconciler) Finalize(ctx context.Context, obj client.Object) (fi
 		return finalizer.Result{}, err
 	}
 
-	listOpts := client.MatchingFields{
-		networkContextControllerNetworkUIDIndex: string(obj.GetUID()),
-	}
-	var networkContexts networkingv1alpha.NetworkContextList
-	if err := cl.GetClient().List(ctx, &networkContexts, listOpts); err != nil {
+	return finalizeNetworkContexts(ctx, cl.GetClient(), obj)
+}
+
+// finalizeNetworkContexts takes down the locations a network is attached to,
+// and reports that it is not done until they are gone.
+func finalizeNetworkContexts(
+	ctx context.Context,
+	cl client.Client,
+	network client.Object,
+) (finalizer.Result, error) {
+	logger := log.FromContext(ctx)
+	logger.Info("finalizing network")
+
+	networkContexts, err := networkContextsOfNetwork(ctx, cl, network)
+	if err != nil {
 		return finalizer.Result{}, err
 	}
 
-	if len(networkContexts.Items) == 0 {
-		log.FromContext(ctx).Info("network contexts have been removed")
+	if len(networkContexts) == 0 {
+		logger.Info("network contexts have been removed")
 		return finalizer.Result{}, nil
 	}
 
-	// All deployments need to be deleted before the workload may be deleted
-	for _, networkContext := range networkContexts.Items {
+	for i := range networkContexts {
+		networkContext := &networkContexts[i]
 		if networkContext.DeletionTimestamp.IsZero() {
 			logger.Info("deleting network context", "network context", networkContext.Name)
-			// Deletion will result in another reconcile of the workload, where we
-			// will remove the finalizers.
-			if err := cl.GetClient().Delete(ctx, &networkContext); client.IgnoreNotFound(err) != nil {
+			if err := cl.Delete(ctx, networkContext); client.IgnoreNotFound(err) != nil {
 				return finalizer.Result{}, fmt.Errorf("failed deleting network context: %w", err)
 			}
 		}
@@ -371,6 +384,39 @@ func (r *NetworkReconciler) Finalize(ctx context.Context, obj client.Object) (fi
 	// to move away from the finalizer helper to ensure we can wait on child
 	// resources to be gone before allowing the finalizer to be removed.
 	return finalizer.Result{}, errNetworkContextsExist
+}
+
+func networkContextsOfNetwork(
+	ctx context.Context,
+	cl client.Client,
+	network client.Object,
+) ([]networkingv1alpha.NetworkContext, error) {
+	var networkContexts networkingv1alpha.NetworkContextList
+	if err := cl.List(ctx, &networkContexts, client.InNamespace(network.GetNamespace())); err != nil {
+		return nil, fmt.Errorf("failed listing network contexts: %w", err)
+	}
+
+	var owned []networkingv1alpha.NetworkContext
+	for i := range networkContexts.Items {
+		if networkContextBelongsTo(&networkContexts.Items[i], network) {
+			owned = append(owned, networkContexts.Items[i])
+		}
+	}
+	return owned, nil
+}
+
+// networkContextBelongsTo reads the relationship off what the context names,
+// not off who created it. A context the binding controller made carries the
+// network as its controller; one delivered by propagation carries no owner at
+// all, and both are the same network's presence in a location.
+func networkContextBelongsTo(
+	networkContext *networkingv1alpha.NetworkContext,
+	network client.Object,
+) bool {
+	if networkRef := metav1.GetControllerOf(networkContext); networkRef != nil {
+		return networkRef.UID == network.GetUID()
+	}
+	return networkContext.Spec.Network.Name == network.GetName()
 }
 
 // SetupWithManager sets up the controller with the Manager.
@@ -384,7 +430,26 @@ func (r *NetworkReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 
 	return mcbuilder.ControllerManagedBy(mgr).
 		For(&networkingv1alpha.Network{}, mcbuilder.WithEngageWithLocalCluster(false)).
-		Owns(&networkingv1alpha.NetworkContext{}, mcbuilder.WithEngageWithLocalCluster(false)).
+		// Not Owns: a context delivered by propagation carries no owner
+		// reference, and the network waits on it all the same.
+		Watches(&networkingv1alpha.NetworkContext{}, mchandler.EnqueueRequestsFromMapFunc(
+			func(_ context.Context, obj client.Object) []ctrl.Request {
+				networkContext, ok := obj.(*networkingv1alpha.NetworkContext)
+				if !ok {
+					return nil
+				}
+				name := networkContext.Spec.Network.Name
+				if networkRef := metav1.GetControllerOf(networkContext); networkRef != nil {
+					name = networkRef.Name
+				}
+				if name == "" {
+					return nil
+				}
+				return []ctrl.Request{{NamespacedName: client.ObjectKey{
+					Namespace: networkContext.Namespace,
+					Name:      name,
+				}}}
+			}), mcbuilder.WithEngageWithLocalCluster(false)).
 		Named("network").
 		Complete(r)
 }

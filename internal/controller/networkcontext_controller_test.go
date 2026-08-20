@@ -456,3 +456,113 @@ func TestNetworkContextWithoutIPAMConfiguredIsUnchanged(t *testing.T) {
 	_, present := s.find()
 	require.False(t, present)
 }
+
+// deleteNetworkTeardown drives the network and its locations the way the
+// manager does when a tenant deletes a network: each controller reconciles what
+// it owns, and each other's writes wake the other. It stops when nothing
+// changes any more, which is either both objects gone or a deadlock.
+func (s *networkContextScenario) deleteNetworkTeardown(
+	networkReconciler *NetworkReconciler,
+	network *networkingv1alpha.Network,
+) {
+	s.t.Helper()
+
+	for range 16 {
+		before := s.teardownState(network)
+
+		if stored, present := s.findNetwork(network); present {
+			_, err := networkReconciler.reconcileNetwork(s.ctx, s.client, stored)
+			require.NoError(s.t, err)
+		}
+		if stored, present := s.find(); present {
+			_, err := s.reconciler.reconcileNetworkContext(s.ctx, s.client, stored)
+			require.NoError(s.t, err)
+		}
+
+		if s.teardownState(network) == before {
+			return
+		}
+	}
+	s.t.Fatal("the teardown never settled")
+}
+
+func (s *networkContextScenario) teardownState(network *networkingv1alpha.Network) string {
+	s.t.Helper()
+	state := ""
+	if stored, present := s.findNetwork(network); present {
+		state += "network=" + stored.ResourceVersion
+	}
+	if stored, present := s.find(); present {
+		state += " context=" + stored.ResourceVersion
+	}
+	return state
+}
+
+func (s *networkContextScenario) findNetwork(network *networkingv1alpha.Network) (*networkingv1alpha.Network, bool) {
+	s.t.Helper()
+	var stored networkingv1alpha.Network
+	err := s.client.Get(s.ctx, client.ObjectKeyFromObject(network), &stored)
+	if apierrors.IsNotFound(err) {
+		return nil, false
+	}
+	require.NoError(s.t, err)
+	return &stored, true
+}
+
+// A tenant deleting a network is not told to take its locations down first, and
+// nothing in the API says so. The network holds the range every one of those
+// locations carved a subnet out of, and IPAM refuses to give a range back while
+// anything is allocated inside it, so a network that releases its own range
+// before taking its locations down can never finish.
+//
+// The location here arrives the way propagation delivers one, carrying no owner
+// reference, because that is what the platform actually puts in front of this
+// controller.
+func TestDeletingANetworkTakesDownTheLocationsHoldingItsSubnets(t *testing.T) {
+	ipam := newFakeIPAM(t)
+	s := newNetworkContextScenario(t, ipam)
+
+	network := &networkingv1alpha.Network{}
+	network.Namespace = s.namespace
+	network.Name = testNetworkName
+	network.Spec = networkingv1alpha.NetworkSpec{
+		IPAM:       networkingv1alpha.NetworkIPAM{Mode: networkingv1alpha.NetworkIPAMModeAuto},
+		IPFamilies: []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol},
+		MTU:        1460,
+	}
+	require.NoError(t, s.client.Create(s.ctx, network))
+
+	networkReconciler := &NetworkReconciler{IPAM: ipam, PrefixClass: testNetworkPrefixClass}
+	networkReconciler.finalizers = finalizer.NewFinalizers()
+	require.NoError(t, networkReconciler.finalizers.Register(networkControllerFinalizer,
+		networkContextFinalization{cl: s.client}))
+
+	for range 4 {
+		stored, present := s.findNetwork(network)
+		require.True(t, present)
+		_, err := networkReconciler.reconcileNetwork(s.ctx, s.client, stored)
+		require.NoError(t, err)
+	}
+	s.createContext(networkingv1alpha.IPv6Protocol)
+	s.reconcile()
+	require.Len(t, s.storedClaims(), 2, "the network holds its range and the location holds a subnet in it")
+
+	require.NoError(t, s.client.Delete(s.ctx, network))
+	s.deleteNetworkTeardown(networkReconciler, network)
+
+	_, present := s.find()
+	require.False(t, present, "the location must be taken down with the network")
+	_, present = s.findNetwork(network)
+	require.False(t, present, "the network must not hang on a range its own locations hold")
+	require.Empty(t, s.storedClaims(), "every range must go back to IPAM")
+}
+
+// networkContextFinalization runs the reconciler's own context finalization
+// against the test client, rather than standing in for it.
+type networkContextFinalization struct {
+	cl client.Client
+}
+
+func (f networkContextFinalization) Finalize(ctx context.Context, obj client.Object) (finalizer.Result, error) {
+	return finalizeNetworkContexts(ctx, f.cl, obj)
+}

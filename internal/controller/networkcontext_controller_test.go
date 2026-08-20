@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"slices"
 	"strings"
 	"testing"
 
@@ -17,6 +18,7 @@ import (
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/finalizer"
 
 	ipamv1alpha1 "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
@@ -565,4 +567,71 @@ type networkContextFinalization struct {
 
 func (f networkContextFinalization) Finalize(ctx context.Context, obj client.Object) (finalizer.Result, error) {
 	return finalizeNetworkContexts(ctx, f.cl, obj)
+}
+
+// Widening what a network waits on must not widen what it takes down. A
+// location created the ordinary way carries its network as controller, and that
+// owner is what decides: another network deleting must not reach it, even
+// though both are in one namespace. Only a location carrying no owner at all —
+// the shape propagation delivers — is matched by the network it names.
+func TestANetworkTakesDownOnlyItsOwnLocations(t *testing.T) {
+	cl, _ := startNetworkInterfaceEnv(t)
+	ctx := context.Background()
+
+	namespace := &corev1.Namespace{}
+	namespace.Name = "ns-" + sanitizeName(strings.ToLower(t.Name()))
+	require.NoError(t, cl.Create(ctx, namespace))
+
+	newNetwork := func(name string) *networkingv1alpha.Network {
+		network := &networkingv1alpha.Network{}
+		network.Namespace = namespace.Name
+		network.Name = name
+		network.Spec = networkingv1alpha.NetworkSpec{
+			IPAM:       networkingv1alpha.NetworkIPAM{Mode: networkingv1alpha.NetworkIPAMModeAuto},
+			IPFamilies: []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol},
+			MTU:        1460,
+		}
+		require.NoError(t, cl.Create(ctx, network))
+		return network
+	}
+
+	newContext := func(name, network string, owner *networkingv1alpha.Network) {
+		networkContext := &networkingv1alpha.NetworkContext{}
+		networkContext.Namespace = namespace.Name
+		networkContext.Name = name
+		networkContext.Spec = networkingv1alpha.NetworkContextSpec{
+			Network:  networkingv1alpha.LocalNetworkRef{Name: network},
+			Location: networkingv1alpha.LocationReference{Name: testLocationName},
+		}
+		if owner != nil {
+			require.NoError(t, controllerutil.SetControllerReference(owner, networkContext, cl.Scheme()))
+		}
+		require.NoError(t, cl.Create(ctx, networkContext))
+	}
+
+	alpha := newNetwork("alpha")
+	beta := newNetwork("beta")
+
+	newContext("alpha-owned", alpha.Name, alpha)
+	newContext("alpha-propagated", alpha.Name, nil)
+	newContext("beta-owned", beta.Name, beta)
+	newContext("beta-propagated", beta.Name, nil)
+
+	// A context the presence controller made for beta, which happens to name
+	// alpha. The owner decides, so alpha must not reach it.
+	newContext("beta-owned-naming-alpha", alpha.Name, beta)
+
+	names := func(network *networkingv1alpha.Network) []string {
+		found, err := networkContextsOfNetwork(ctx, cl, network)
+		require.NoError(t, err)
+		out := make([]string, 0, len(found))
+		for i := range found {
+			out = append(out, found[i].Name)
+		}
+		slices.Sort(out)
+		return out
+	}
+
+	require.Equal(t, []string{"alpha-owned", "alpha-propagated"}, names(alpha))
+	require.Equal(t, []string{"beta-owned", "beta-owned-naming-alpha", "beta-propagated"}, names(beta))
 }

@@ -327,3 +327,25 @@ type NetworkInterfaceList struct {
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []NetworkInterface `json:"items"`
 }
+
+const (
+	// NetworkInterfaceProjectionLabel marks a copy of an interface published for
+	// visibility outside the cell holding the original. Nothing configures a NIC
+	// from a copy, and the cell never reads one back.
+	NetworkInterfaceProjectionLabel = "networking.datumapis.com/network-interface-projection"
+
+	// NetworkInterfaceLocationLabel names the location whose cell holds the
+	// original. It tells a consumer where the interface is, and it tells the cell
+	// which copies are its own to collect.
+	NetworkInterfaceLocationLabel = "networking.datumapis.com/location"
+
+	// NetworkInterfaceHolderLabel names the claim holding the interface. It is a
+	// label rather than a reference because the claim lives in the cell and does
+	// not exist where a copy is published.
+	NetworkInterfaceHolderLabel = "networking.datumapis.com/held-by"
+
+	// NetworkInterfaceSourceNamespaceLabel names the namespace the copy was
+	// published from, so a collector can find the source of a copy it is looking
+	// at.
+	NetworkInterfaceSourceNamespaceLabel = "networking.datumapis.com/source-namespace"
+)

@@ -623,6 +623,22 @@ func controllerRegistrations(
 				Presence: networkPresence,
 			}).SetupWithManager(mgr)
 		}},
+		// The interfaces a cell publishes arrive on the hub, and only the
+		// multicluster manager reaches the project control planes they are for.
+		// The projector goes on the singleton manager for the same reason the
+		// presence controller does: three replicas would project every one of
+		// them three times.
+		{"networkinterfaceprojector", true, func() error {
+			return (&controller.NetworkInterfaceProjector{
+				Projects: controller.NewProjectClusterResolver(mgr),
+			}).SetupWithManager(deps.singletonManager)
+		}},
+		// Removing a copy is the other half, and it has to watch project control
+		// planes: a published interface that has gone says nothing about where
+		// its copy went.
+		{"networkinterfaceprojectiongc", true, func() error {
+			return (&controller.NetworkInterfaceProjectionGCReconciler{}).SetupWithManager(mgr)
+		}},
 		{"networkpolicy", true, func() error {
 			return (&controller.NetworkPolicyReconciler{}).SetupWithManager(mgr)
 		}},

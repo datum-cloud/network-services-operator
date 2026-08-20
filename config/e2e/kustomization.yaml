@@ -39,8 +39,33 @@ patches:
             bindAddress: ":8443"
           ipam:
             kubeconfigPath: /etc/ipam-cluster/kubeconfig
+          federation:
+            kubeconfigPath: /etc/karmada-hub/kubeconfig
           location:
             name: us-central-1
+  - target:
+      kind: Deployment
+      name: cell-controller-manager
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: cell-controller-manager
+      spec:
+        template:
+          spec:
+            containers:
+              - name: manager
+                volumeMounts:
+                - name: karmada-hub-kubeconfig
+                  mountPath: /etc/karmada-hub
+            volumes:
+              # test-infra:karmada-hub-secret creates this after the cell is
+              # deployed, so the cell crashloops until it exists.
+              - name: karmada-hub-kubeconfig
+                secret:
+                  secretName: karmada-hub-kubeconfig
+                  optional: true
   - target:
       kind: Deployment
       name: controller-manager

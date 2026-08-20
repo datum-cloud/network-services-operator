@@ -1030,6 +1030,15 @@ tasks:
       - |
         kubectl --kubeconfig {{.KARMADA_KUBECONFIG}} --context karmada-apiserver \
           apply -f config/crd/bases/networking.datumapis.com_servinglocations.yaml
+      # A cell publishes its interfaces here so a project can be handed them, and
+      # it writes into the hub namespace of the same name rather than inventing
+      # one. The type and the namespaces both have to be here first.
+      - |
+        kubectl --kubeconfig {{.KARMADA_KUBECONFIG}} --context karmada-apiserver \
+          apply -f config/crd/bases/networking.datumapis.com_networkinterfaces.yaml
+      - |
+        kubectl --kubeconfig {{.KARMADA_KUBECONFIG}} --context karmada-apiserver \
+          apply -f test/e2e/fixtures/ipam/namespaces.yaml
       - echo "✅ karmada-up complete. Karmada apiserver kubeconfig at {{.KARMADA_KUBECONFIG}}"
 
   location-fixtures:

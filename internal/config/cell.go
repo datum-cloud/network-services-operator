@@ -33,6 +33,14 @@ type CellControllerManager struct {
 	// network interface addresses are claimed from.
 	IPAM IPAMConfig `json:"ipam"`
 
+	// Federation configures the connection to the federation hub a cell
+	// publishes its network interfaces to, so a consumer can see the interface
+	// behind their instance in their own control plane.
+	//
+	// Left unset, nothing is published and everything else in the cell
+	// reconciles unchanged.
+	Federation FederationConfig `json:"federation,omitempty"`
+
 	// Location names the location this cell serves. Leave it unset unless you
 	// have to pin one: a ServingLocation delivered to the cell wins over it,
 	// and is the normal way a cell learns where it is.

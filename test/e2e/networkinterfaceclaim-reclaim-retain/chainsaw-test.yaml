@@ -281,6 +281,22 @@ spec:
                   name: nic-retain
               status:
                 phase: Bound
+      cleanup:
+        - description: >
+            Give the retained interface up, after chainsaw has deleted the
+            claim this step created and before the network is torn down.
+            Cleanups run in reverse step order and a step's own resources go
+            first, so this lands in the order a tenant has to use: the claim,
+            then the interface, then the network. A network's range cannot be
+            released while an address is still allocated inside it, and a
+            retained interface holds one with no claim left to release it.
+          delete:
+            timeout: 120s
+            ref:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterface
+              name: nic-retain
+              namespace: ipam-e2e-alpha
 
     - name: The reclaim policy cannot be edited after creation
       description: |

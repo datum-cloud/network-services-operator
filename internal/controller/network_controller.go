@@ -86,6 +86,11 @@ func (r *NetworkReconciler) reconcileNetwork(
 	if !network.DeletionTimestamp.IsZero() &&
 		controllerutil.ContainsFinalizer(network, networkPrefixFinalizer) {
 		if err := r.releasePrefix(ctx, cl, network); err != nil {
+			var occupied *rangeOccupied
+			if errors.As(err, &occupied) {
+				return r.reportPrefix(ctx, cl, network,
+					networkingv1alpha.NetworkReasonRangeOccupied, occupied.message)
+			}
 			return ctrl.Result{}, err
 		}
 		controllerutil.RemoveFinalizer(network, networkPrefixFinalizer)
@@ -351,10 +356,24 @@ func (r *NetworkReconciler) releasePrefix(
 	ipClaim.Namespace = ref.Namespace
 	ipClaim.Name = ref.ClaimName
 	if err := ipamClient.Delete(ctx, ipClaim); err != nil && !apierrors.IsNotFound(err) {
+		if apierrors.IsConflict(err) {
+			return &rangeOccupied{message: fmt.Sprintf(
+				"the network's address space still has addresses allocated inside it: %s", err.Error())}
+		}
 		return fmt.Errorf("failed releasing IPClaim %q: %w", ipClaim.Name, err)
 	}
 	return nil
 }
+
+// rangeOccupied reports a release IPAM refused because something is still
+// allocated inside the range. Deleting an interface on the network is what
+// clears it, so the network waits and says so rather than failing in a loop
+// nothing outside the logs can see.
+type rangeOccupied struct {
+	message string
+}
+
+func (e *rangeOccupied) Error() string { return e.message }
 
 func prefixRef(network *networkingv1alpha.Network) *networkingv1alpha.NetworkPrefixRef {
 	if network.Status.IPAM == nil {

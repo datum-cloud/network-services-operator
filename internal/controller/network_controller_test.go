@@ -4,6 +4,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"net/netip"
 	"strings"
 	"testing"
@@ -233,6 +234,39 @@ func TestNetworkReleasesItsPrefixOnDelete(t *testing.T) {
 	require.Equal(t, []string{networkPrefixClaimName(network)}, s.ipam.deleted()[testProject])
 	require.Empty(t, s.storedClaims(), "deleting a network must give its address space back")
 
+	var gone networkingv1alpha.Network
+	err := s.client.Get(s.ctx, client.ObjectKey{Namespace: s.namespace, Name: testNetworkName}, &gone)
+	require.True(t, apierrors.IsNotFound(err), "every finalizer must be released")
+}
+
+// IPAM refuses to give a range back while addresses are still allocated inside
+// it, so a network whose interfaces have not gone yet cannot be released. The
+// wait has to be reported on the network: an error loop leaves an operator with
+// a network stuck Terminating and nothing but logs to say why.
+func TestNetworkReportsARangeItCannotYetRelease(t *testing.T) {
+	s := newNetworkScenario(t, newFakeIPAM(t))
+
+	network := s.createNetwork(networkingv1alpha.IPv6Protocol)
+	s.reconcile()
+
+	claimName := networkPrefixClaimName(network)
+	s.ipam.refuseRelease(claimName, apierrors.NewConflict(
+		ipamv1alpha1.SchemeGroupVersion.WithResource("ipclaims").GroupResource(), claimName,
+		errors.New("ipam: range still has allocations inside it: 1 allocation(s) inside pool-x; release everything allocated inside this range first")))
+
+	require.NoError(t, s.client.Delete(s.ctx, s.get()))
+	s.reconcile()
+
+	condition := s.ipamCondition()
+	require.Equal(t, metav1.ConditionFalse, condition.Status)
+	require.Equal(t, networkingv1alpha.NetworkReasonRangeOccupied, condition.Reason)
+	require.Contains(t, condition.Message, "still has allocations inside it")
+	require.Len(t, s.storedClaims(), 1, "a refused release must leave the range held")
+
+	s.ipam.refuseRelease(claimName, nil)
+	s.reconcile()
+
+	require.Empty(t, s.storedClaims(), "the range goes back once what was inside it does")
 	var gone networkingv1alpha.Network
 	err := s.client.Get(s.ctx, client.ObjectKey{Namespace: s.namespace, Name: testNetworkName}, &gone)
 	require.True(t, apierrors.IsNotFound(err), "every finalizer must be released")

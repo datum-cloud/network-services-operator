@@ -85,7 +85,7 @@ retained.<br/>
 NetworkInterfaceClaim. It repeats the bound interface's addresses so a
 consumer reads one object rather than following the reference.<br/>
           <br/>
-            <i>Default</i>: map[conditions:[map[lastTransitionTime:1970-01-01T00:00:00Z message:Waiting for controller reason:Pending status:Unknown type:Bound] map[lastTransitionTime:1970-01-01T00:00:00Z message:Waiting for controller reason:Pending status:Unknown type:Allocated] map[lastTransitionTime:1970-01-01T00:00:00Z message:Waiting for controller reason:Pending status:Unknown type:Programmed] map[lastTransitionTime:1970-01-01T00:00:00Z message:Waiting for controller reason:Pending status:Unknown type:Ready]]]<br/>
+            <i>Default</i>: map[conditions:[map[lastTransitionTime:1970-01-01T00:00:00Z message:Waiting for controller reason:Pending status:Unknown type:Bound] map[lastTransitionTime:1970-01-01T00:00:00Z message:Waiting for controller reason:Pending status:Unknown type:Allocated] map[lastTransitionTime:1970-01-01T00:00:00Z message:Waiting for controller reason:Pending status:Unknown type:Prepared] map[lastTransitionTime:1970-01-01T00:00:00Z message:Waiting for controller reason:Pending status:Unknown type:Programmed] map[lastTransitionTime:1970-01-01T00:00:00Z message:Waiting for controller reason:Pending status:Unknown type:Ready]]]<br/>
         </td>
         <td>false</td>
       </tr></tbody>
@@ -140,6 +140,25 @@ bare address, mapped onto the interface address of the same family.
 Omit this field for ordinary private addressing, which is the common case.<br/>
           <br/>
             <i>Validations</i>:<li>self.all(a, self.exists_one(b, b.class == a.class)): Each address class may be requested at most once</li>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>attachmentMode</b></td>
+        <td>enum</td>
+        <td>
+          attachmentMode is how the guest consumes this interface. Netns places it in
+the workload's network namespace, which is what an ordinary container
+expects. Hypervisor hands it to a hypervisor as a device, which is what a
+virtual machine or microVM guest needs.
+
+It is copied to the bound interface and never interpreted here. Whoever
+realizes the interface decides what each mode means on its data plane.
+
+Immutable, because the guest and the attachment are both built against it.<br/>
+          <br/>
+            <i>Validations</i>:<li>self == oldSelf: attachmentMode is immutable and cannot be changed after creation</li>
+            <i>Enum</i>: Netns, Hypervisor<br/>
+            <i>Default</i>: Netns<br/>
         </td>
         <td>false</td>
       </tr><tr>
@@ -323,8 +342,8 @@ truth.<br/>
         <td>[]object</td>
         <td>
           conditions report the current state of the claim. Wait on Ready, which is
-true once the claim is bound, its addresses are allocated, and the data
-plane carries them.<br/>
+true once the claim is bound, its addresses are allocated, the data plane
+is prepared for a workload, and the data plane carries the addresses.<br/>
         </td>
         <td>false</td>
       </tr><tr>

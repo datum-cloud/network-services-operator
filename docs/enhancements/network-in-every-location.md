@@ -462,7 +462,7 @@ presence, which would leak one consumer's existence to another and would be a nu
 be stale. It does not report the network's `ipFamilies` or MTU, which belong to whatever
 attaches to the network rather than to whoever declared it should be present. And it does not
 report data-plane programming: `Ready` on a binding means the network is present, not that
-packets move, which stays true to what `Programmed` on the context is for.
+packets move.
 
 ### Consumers that are not hub objects
 
@@ -821,9 +821,11 @@ None of the following is provided here, and all of it is required.
 - **Nothing seeds per-project `IPClass` and `IPPool` objects.** They exist only as chainsaw
   fixtures. A network can be present in a location and a claim will still find nothing to
   allocate from.
-- **Nothing sets `Programmed` in any repository**, so `Ready` is unreachable on both
-  `NetworkContext` and `NetworkInterface`. Compute gates instances on `Bound` and `Allocated`,
+- **Nothing sets `Programmed` on a `NetworkInterface`**, so its `Ready` is unreachable until a
+  data plane reports what it realized. Compute gates instances on `Bound` and `Allocated`,
   which is why anything works today, and that is a workaround rather than the design.
+  `NetworkContext` no longer carries the condition at all: it is present when this location
+  has the address space the network needs there.
 - **A consumer needs permission to create a `NetworkBinding` on the hub.** Compute's hub
   `ClusterRole` grants no `networking.datumapis.com` at all, so the first consumer is blocked
   on a permission change, and every subsequent consumer needs the same grant.

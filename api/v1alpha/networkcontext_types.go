@@ -78,25 +78,9 @@ type NetworkContextIPAMStatus struct {
 const (
 	// NetworkContextReady indicates whether or not the network context is ready for use.
 	NetworkContextReady = "Ready"
-
-	// NetworkContextProgrammed is deprecated and reports nothing. No component
-	// writes it and no component reads it. A network context's readiness is
-	// derived from IPAMAllocated.
-	//
-	// Deprecated: use NetworkContextIPAMAllocated.
-	NetworkContextProgrammed = "Programmed"
 )
 
 const (
-	// NetworkContextProgrammedReasonNotProgrammed indicates that the network context is not ready because it has not been programmed.
-	NetworkContextProgrammedReasonNotProgrammed = "NotProgrammed"
-
-	// NetworkContextProgrammedReasonProgramming indicates that the network context is being programmed.
-	NetworkContextProgrammedReasonProgrammingInProgress = "ProgrammingInProgress"
-
-	// NetworkContextProgrammedReasonProgrammed indicates that the network context has been programmed.
-	NetworkContextProgrammedReasonProgrammed = "Programmed"
-
 	// NetworkContextReadyReasonReady indicates that the network context is ready for use.
 	NetworkContextReadyReasonReady = "Ready"
 )
@@ -141,7 +125,7 @@ type NetworkContext struct {
 
 	Spec NetworkContextSpec `json:"spec,omitempty"`
 
-	// +kubebuilder:default={conditions:{{type:"Programmed",status:"Unknown",reason:"Pending", message:"Waiting for controller", lastTransitionTime: "1970-01-01T00:00:00Z"},{type:"Ready",status:"Unknown",reason:"Pending", message:"Waiting for controller", lastTransitionTime: "1970-01-01T00:00:00Z"}}}
+	// +kubebuilder:default={conditions:{{type:"Ready",status:"Unknown",reason:"Pending", message:"Waiting for controller", lastTransitionTime: "1970-01-01T00:00:00Z"}}}
 	Status NetworkContextStatus `json:"status,omitempty"`
 }
 

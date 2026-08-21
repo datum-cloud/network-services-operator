@@ -25,6 +25,7 @@ resources:
 - networkbinding_viewer_role.yaml
 - networkcontext_editor_role.yaml
 - networkcontext_viewer_role.yaml
+- networkinterface_dataplane_role.yaml
 - networkpolicy_editor_role.yaml
 - networkpolicy_viewer_role.yaml
 - subnet_editor_role.yaml

@@ -491,8 +491,14 @@ the allocator to preserve.
 A `NetworkInterface` says what an interface must be. `VPCAttachment`, in the
 [cloud](https://github.com/datum-cloud/cloud) API group, is where it becomes real, and the
 split is deliberate: an interface is allocated as soon as a claim exists, before an instance
-has been scheduled to any node, while an attachment cannot exist until a node, a container,
-and a veth pair do.
+has been scheduled to any node, while what a node ends up carrying — a container ID, a host
+device, a VRF — is only knowable once the sandbox exists.
+
+The attachment is therefore **written as intent by the infrastructure provider and reported
+on by the node**, not created by the node. It has to be, because the data plane reads it
+before the sandbox exists: the CNI configuration a `VPCAttachment` produces must already be
+in place when the pod's sandbox is created, so an attachment that only came into being as a
+*result* of the attach would be too late to cause one.
 
 ```
 NetworkInterfaceClaim   compute's intent      created per instance, per interface
@@ -501,17 +507,25 @@ NetworkInterfaceClaim   compute's intent      created per instance, per interfac
 NetworkInterface        NSO's answer          addresses, gateway, MTU
         │  realized by
         ▼
-VPCAttachment           the node's reality    node, containerID, VRF, veth, pod subnet
+VPCAttachment           spec: the provider    intent, written before the pod
+        │               status: the node      node, containerID, VRF, host device
         │  attaches to
         ▼
 VPC                     the data plane        base62 identity the fabric keys on
 ```
 
-The agent on the node creates the `VPCAttachment` from the interface, copying
-`spec.addresses` into `spec.interface.addresses` and naming the VPC backing this network in
-this location. It reports back the facts only a node knows — the container ID, the host and
-VRF device names, the pod subnet — and NSO sets `Programmed` on the interface when the
-attachment reports ready, copying the VPC identifier onto `status.vpc`.
+The infrastructure provider creates the `VPCAttachment` from the interface before it creates
+the pod, copying `spec.addresses` into `spec.interface.addresses` and naming the VPC backing
+this network in this location. The node reports back the facts only a node knows — the
+container ID, the host and VRF device names, the pod subnet — and whoever owns the
+attachment sets `Programmed` on the interface once the data plane carries it, recording the
+VPC identifier on `status.vpc` and the attachment itself on `status.attachmentRef`.
+
+**NSO does not write `Programmed`, `status.vpc` or `status.attachmentRef`, and does not
+clear them.** It seeds `Programmed=Unknown` when the interface has none and leaves every
+subsequent value alone, on every path — a requeue, a rejection, and a rebind after `Retain`
+all preserve what the data plane reported. Whoever realizes the interface is the only writer
+of those three fields, and NSO derives `Ready` from what it finds there.
 
 Nothing in `VPCAttachment` changes to support this. It already requires the addresses to
 have been decided elsewhere; this names the elsewhere.

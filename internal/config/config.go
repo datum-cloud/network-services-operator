@@ -194,16 +194,19 @@ func (c *IPAMConfig) RestConfig() (*rest.Config, error) {
 // plane a cell and the control planes serving projects both reach.
 type FederationConfig struct {
 	// KubeconfigPath is the path to a kubeconfig file pointing at the hub.
-	// Unset, nothing is published.
+	// Required: a cell that cannot reach the hub cannot show a consumer the
+	// interface behind their instance.
 	KubeconfigPath string `json:"kubeconfigPath,omitempty"`
 
 	// Client configures the Kubernetes client connection to the hub.
 	Client ClientConnectionConfig `json:"client,omitempty"`
 }
 
-// Enabled reports whether a hub was named.
-func (c *FederationConfig) Enabled() bool {
-	return c.KubeconfigPath != ""
+func (c *FederationConfig) validate() error {
+	if c.KubeconfigPath == "" {
+		return errors.New("kubeconfigPath is required, otherwise the cell publishes none of its network interfaces and a consumer never sees the interface behind their instance")
+	}
+	return nil
 }
 
 // RestConfig resolves the connection to the hub.

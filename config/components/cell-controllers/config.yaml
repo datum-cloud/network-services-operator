@@ -4,5 +4,18 @@ metricsServer:
   bindAddress: ":8443"
 ipam:
   kubeconfigPath: /etc/ipam-cluster/kubeconfig
+# federation.kubeconfigPath is REQUIRED and is deliberately not set here: the
+# path depends on how an overlay mounts the hub credential, and a default would
+# name a file no deployment has to provide. A cell refuses to start without it,
+# because a cell that cannot publish still allocates addresses and still reports
+# its interfaces Bound, so the consumer-visible failure is otherwise silent.
+#
+# An overlay sets it alongside the mount, e.g.
+#
+#   federation:
+#     kubeconfigPath: /etc/kubernetes/federation/auth/kubeconfig
+#
+# config/e2e/kustomization.yaml is a worked example.
+
 # A cell learns its location from the ServingLocation delivered to it.
 # To pin one, replace this ConfigMap in an overlay.

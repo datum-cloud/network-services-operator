@@ -37,8 +37,10 @@ type CellControllerManager struct {
 	// publishes its network interfaces to, so a consumer can see the interface
 	// behind their instance in their own control plane.
 	//
-	// Left unset, nothing is published and everything else in the cell
-	// reconciles unchanged.
+	// Required. A cell that publishes nothing still allocates addresses and
+	// still reports its interfaces Bound, so leaving it unset produces a cell
+	// that looks healthy and whose interfaces never arrive. Refusing to start
+	// is what makes that a deployment error instead of a silent one.
 	Federation FederationConfig `json:"federation,omitempty"`
 
 	// Location names the location this cell serves. Leave it unset unless you
@@ -62,6 +64,9 @@ type CellControllerManager struct {
 func (c *CellControllerManager) Validate() error {
 	if err := c.IPAM.validate(); err != nil {
 		return fmt.Errorf("ipam: %w", err)
+	}
+	if err := c.Federation.validate(); err != nil {
+		return fmt.Errorf("federation: %w", err)
 	}
 	return nil
 }

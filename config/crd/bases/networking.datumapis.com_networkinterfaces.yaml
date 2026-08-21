@@ -30,6 +30,9 @@ spec:
     - jsonPath: .status.conditions[?(@.type=="Allocated")].status
       name: Allocated
       type: string
+    - jsonPath: .status.conditions[?(@.type=="Prepared")].status
+      name: Prepared
+      type: string
     - jsonPath: .status.conditions[?(@.type=="Programmed")].status
       name: Programmed
       type: string
@@ -136,6 +139,19 @@ spec:
                     == 1
                 - message: Only one address may be held per address family
                   rule: self.all(a, self.exists_one(b, b.family == a.family))
+              attachmentMode:
+                default: Netns
+                description: |-
+                  attachmentMode is how the guest consumes this interface. It comes from the
+                  claim, and the operator carries it without interpreting it.
+
+                  Netns places the interface in the workload's network namespace. Hypervisor
+                  hands it to a hypervisor as a device, which is what a virtual machine or
+                  microVM guest needs.
+                enum:
+                - Netns
+                - Hypervisor
+                type: string
               claimRef:
                 description: |-
                   claimRef is the claim currently holding this interface. It is empty while a
@@ -256,6 +272,11 @@ spec:
                 message: Waiting for controller
                 reason: Pending
                 status: Unknown
+                type: Prepared
+              - lastTransitionTime: "1970-01-01T00:00:00Z"
+                message: Waiting for controller
+                reason: Pending
+                status: Unknown
                 type: Programmed
             description: |-
               NetworkInterfaceStatus defines the observed state of NetworkInterface: which
@@ -292,7 +313,8 @@ spec:
               conditions:
                 description: |-
                   conditions report the current state of the interface. Allocated means every
-                  address is held. Programmed means the data plane carries them.
+                  address is held. Prepared means the data plane is ready for a workload to
+                  consume it. Programmed means the data plane carries the addresses.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.

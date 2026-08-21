@@ -539,11 +539,12 @@ func (r *NetworkInterfaceClaimReconciler) bindInterface(
 	iface.Annotations = map[string]string{allocationClaimAnnotation: claim.Name}
 	iface.Finalizers = []string{networkInterfaceFinalizer}
 	iface.Spec = networkingv1alpha.NetworkInterfaceSpec{
-		Network:       networkingv1alpha.LocalNetworkRef{Name: networkContext.Spec.Network.Name},
-		ClaimRef:      &networkingv1alpha.NetworkInterfaceClaimRef{Name: claim.Name},
-		InterfaceName: claim.Spec.InterfaceName,
-		MTU:           networkContext.Spec.MTU,
-		ReclaimPolicy: claim.Spec.ReclaimPolicy,
+		Network:        networkingv1alpha.LocalNetworkRef{Name: networkContext.Spec.Network.Name},
+		ClaimRef:       &networkingv1alpha.NetworkInterfaceClaimRef{Name: claim.Name},
+		InterfaceName:  claim.Spec.InterfaceName,
+		AttachmentMode: claim.Spec.AttachmentMode,
+		MTU:            networkContext.Spec.MTU,
+		ReclaimPolicy:  claim.Spec.ReclaimPolicy,
 	}
 
 	for _, entry := range allocated {
@@ -928,15 +929,7 @@ func (r *NetworkInterfaceClaimReconciler) publishInterfaceStatus(
 	apimeta.SetStatusCondition(&iface.Status.Conditions, allocatedCondition(
 		networkingv1alpha.NetworkInterfaceAllocated, iface.Generation, allocations))
 
-	if apimeta.FindStatusCondition(iface.Status.Conditions, networkingv1alpha.NetworkInterfaceProgrammed) == nil {
-		apimeta.SetStatusCondition(&iface.Status.Conditions, metav1.Condition{
-			Type:               networkingv1alpha.NetworkInterfaceProgrammed,
-			Status:             metav1.ConditionUnknown,
-			Reason:             "Pending",
-			ObservedGeneration: iface.Generation,
-			Message:            "Waiting for the data plane to report the attachment",
-		})
-	}
+	seedInterfaceDataPlaneConditions(&iface.Status.Conditions, iface.Generation)
 
 	if err := cl.Status().Update(ctx, iface); err != nil {
 		return fmt.Errorf("failed updating network interface status: %w", err)
@@ -964,7 +957,7 @@ func (r *NetworkInterfaceClaimReconciler) publishClaimStatus(
 	})
 	apimeta.SetStatusCondition(&claim.Status.Conditions, allocatedCondition(
 		networkingv1alpha.NetworkInterfaceClaimAllocated, claim.Generation, allocations))
-	seedProgrammed(&claim.Status.Conditions, claim.Generation)
+	seedDataPlaneConditions(&claim.Status.Conditions, claim.Generation)
 	setReady(&claim.Status.Conditions, claim.Generation)
 
 	if err := cl.Status().Update(ctx, claim); err != nil {
@@ -990,6 +983,11 @@ func (r *NetworkInterfaceClaimReconciler) syncInterface(
 	// its previous claim left behind.
 	if iface.Spec.MTU != networkContext.Spec.MTU {
 		iface.Spec.MTU = networkContext.Spec.MTU
+		changed = true
+	}
+	// An interface adopted from before the field existed carries none.
+	if claim.Spec.AttachmentMode != "" && iface.Spec.AttachmentMode != claim.Spec.AttachmentMode {
+		iface.Spec.AttachmentMode = claim.Spec.AttachmentMode
 		changed = true
 	}
 	for i := range iface.Spec.Addresses {
@@ -1096,7 +1094,7 @@ func (r *NetworkInterfaceClaimReconciler) reject(
 			Message:            message,
 		})
 	}
-	seedProgrammed(&claim.Status.Conditions, claim.Generation)
+	seedDataPlaneConditions(&claim.Status.Conditions, claim.Generation)
 
 	if err := cl.Status().Update(ctx, claim); err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed updating claim status: %w", err)
@@ -1140,6 +1138,7 @@ func setReady(conditions *[]metav1.Condition, generation int64) {
 	for _, conditionType := range []string{
 		networkingv1alpha.NetworkInterfaceClaimBound,
 		networkingv1alpha.NetworkInterfaceClaimAllocated,
+		networkingv1alpha.NetworkInterfaceClaimPrepared,
 		networkingv1alpha.NetworkInterfaceClaimProgrammed,
 	} {
 		if !apimeta.IsStatusConditionTrue(*conditions, conditionType) {
@@ -1154,7 +1153,7 @@ func setReady(conditions *[]metav1.Condition, generation int64) {
 			Status:             metav1.ConditionTrue,
 			Reason:             "Ready",
 			ObservedGeneration: generation,
-			Message:            "The interface is bound, addressed, and programmed",
+			Message:            "The interface is bound, addressed, prepared, and programmed",
 		})
 		return
 	}
@@ -1172,18 +1171,35 @@ func setReady(conditions *[]metav1.Condition, generation int64) {
 	})
 }
 
-// seedProgrammed sets Programmed only when it is absent. The data plane owns
-// this condition; overwriting it would revert whoever reported the attachment.
-func seedProgrammed(conditions *[]metav1.Condition, generation int64) {
-	if apimeta.FindStatusCondition(*conditions, networkingv1alpha.NetworkInterfaceClaimProgrammed) != nil {
+// seedDataPlaneConditions sets Prepared and Programmed only when they are
+// absent. The data plane owns both; overwriting either would revert whoever
+// reported it.
+func seedDataPlaneConditions(conditions *[]metav1.Condition, generation int64) {
+	seedCondition(conditions, networkingv1alpha.NetworkInterfaceClaimPrepared, generation,
+		"Waiting for the data plane to prepare the attachment")
+	seedCondition(conditions, networkingv1alpha.NetworkInterfaceClaimProgrammed, generation,
+		"Waiting for the data plane to report the attachment")
+}
+
+// seedInterfaceDataPlaneConditions is the same seeding for the interface's own
+// copies of the two conditions.
+func seedInterfaceDataPlaneConditions(conditions *[]metav1.Condition, generation int64) {
+	seedCondition(conditions, networkingv1alpha.NetworkInterfacePrepared, generation,
+		"Waiting for the data plane to prepare the attachment")
+	seedCondition(conditions, networkingv1alpha.NetworkInterfaceProgrammed, generation,
+		"Waiting for the data plane to report the attachment")
+}
+
+func seedCondition(conditions *[]metav1.Condition, conditionType string, generation int64, message string) {
+	if apimeta.FindStatusCondition(*conditions, conditionType) != nil {
 		return
 	}
 	apimeta.SetStatusCondition(conditions, metav1.Condition{
-		Type:               networkingv1alpha.NetworkInterfaceClaimProgrammed,
+		Type:               conditionType,
 		Status:             metav1.ConditionUnknown,
 		Reason:             "Pending",
 		ObservedGeneration: generation,
-		Message:            "Waiting for the data plane to report the attachment",
+		Message:            message,
 	})
 }
 

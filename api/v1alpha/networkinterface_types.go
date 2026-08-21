@@ -32,6 +32,24 @@ const (
 	NetworkInterfaceReclaimPolicyRetain NetworkInterfaceReclaimPolicy = "Retain"
 )
 
+// NetworkInterfaceAttachmentMode is how the guest consumes the NIC. It is set
+// by the consumer, carried by the operator, and acted on by whoever realizes
+// the interface.
+//
+// +kubebuilder:validation:Enum=Netns;Hypervisor
+type NetworkInterfaceAttachmentMode string
+
+const (
+	// NetworkInterfaceAttachmentModeNetns means the interface is placed in the
+	// workload's network namespace, which is what an ordinary container expects.
+	NetworkInterfaceAttachmentModeNetns NetworkInterfaceAttachmentMode = "Netns"
+
+	// NetworkInterfaceAttachmentModeHypervisor means the interface is handed to a
+	// hypervisor as a device rather than placed in a namespace, which is what a
+	// virtual machine or microVM guest expects.
+	NetworkInterfaceAttachmentModeHypervisor NetworkInterfaceAttachmentMode = "Hypervisor"
+)
+
 // NetworkInterfacePhase reports whether an interface is held by a claim.
 //
 // +kubebuilder:validation:Enum=Available;Bound
@@ -53,8 +71,20 @@ const (
 	// carry is allocated and recorded in spec.
 	NetworkInterfaceAllocated = "Allocated"
 
+	// NetworkInterfacePrepared reports that the data plane's pre-Pod artifacts
+	// for this interface exist, so a workload that consumes it can be created.
+	//
+	// This is the condition to gate workload creation on. It becomes true before
+	// any workload exists, which is what makes waiting on it safe.
+	NetworkInterfacePrepared = "Prepared"
+
 	// NetworkInterfaceProgrammed reports that the data plane carries the
 	// interface's addresses. Traffic flows only once this is true.
+	//
+	// Never gate workload creation on this one. It becomes true when the
+	// interface is attached, which happens while the workload's sandbox is being
+	// created, so anything that withholds the workload until it is true waits for
+	// something its own waiting prevents.
 	NetworkInterfaceProgrammed = "Programmed"
 )
 
@@ -213,6 +243,17 @@ type NetworkInterfaceSpec struct {
 	// +kubebuilder:default="eth0"
 	InterfaceName string `json:"interfaceName,omitempty"`
 
+	// attachmentMode is how the guest consumes this interface. It comes from the
+	// claim, and the operator carries it without interpreting it.
+	//
+	// Netns places the interface in the workload's network namespace. Hypervisor
+	// hands it to a hypervisor as a device, which is what a virtual machine or
+	// microVM guest needs.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default="Netns"
+	AttachmentMode NetworkInterfaceAttachmentMode `json:"attachmentMode,omitempty"`
+
 	// mtu is the MTU, in bytes, the interface must be configured with. It is
 	// resolved from the network, so a provider never has to read the network to
 	// configure the NIC.
@@ -284,7 +325,8 @@ type NetworkInterfaceStatus struct {
 	VPC string `json:"vpc,omitempty"`
 
 	// conditions report the current state of the interface. Allocated means every
-	// address is held. Programmed means the data plane carries them.
+	// address is held. Prepared means the data plane is ready for a workload to
+	// consume it. Programmed means the data plane carries the addresses.
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 
@@ -307,6 +349,7 @@ type NetworkInterfaceStatus struct {
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=".status.phase"
 // +kubebuilder:printcolumn:name="Claim",type=string,JSONPath=".spec.claimRef.name"
 // +kubebuilder:printcolumn:name="Allocated",type=string,JSONPath=`.status.conditions[?(@.type=="Allocated")].status`
+// +kubebuilder:printcolumn:name="Prepared",type=string,JSONPath=`.status.conditions[?(@.type=="Prepared")].status`
 // +kubebuilder:printcolumn:name="Programmed",type=string,JSONPath=`.status.conditions[?(@.type=="Programmed")].status`
 type NetworkInterface struct {
 	metav1.TypeMeta   `json:",inline"`
@@ -315,7 +358,7 @@ type NetworkInterface struct {
 	// +kubebuilder:validation:Required
 	Spec NetworkInterfaceSpec `json:"spec,omitempty"`
 
-	// +kubebuilder:default={conditions:{{type:"Allocated",status:"Unknown",reason:"Pending", message:"Waiting for controller", lastTransitionTime: "1970-01-01T00:00:00Z"},{type:"Programmed",status:"Unknown",reason:"Pending", message:"Waiting for controller", lastTransitionTime: "1970-01-01T00:00:00Z"}}}
+	// +kubebuilder:default={conditions:{{type:"Allocated",status:"Unknown",reason:"Pending", message:"Waiting for controller", lastTransitionTime: "1970-01-01T00:00:00Z"},{type:"Prepared",status:"Unknown",reason:"Pending", message:"Waiting for controller", lastTransitionTime: "1970-01-01T00:00:00Z"},{type:"Programmed",status:"Unknown",reason:"Pending", message:"Waiting for controller", lastTransitionTime: "1970-01-01T00:00:00Z"}}}
 	Status NetworkInterfaceStatus `json:"status,omitempty"`
 }
 

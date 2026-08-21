@@ -19,6 +19,7 @@ latest-milestone: "v0.x"
   - [Binding](#binding)
   - [Fulfilling a claim](#fulfilling-a-claim)
   - [Reaching the data plane](#reaching-the-data-plane)
+  - [How the guest consumes it, and when it is safe to start](#how-the-guest-consumes-it-and-when-it-is-safe-to-start)
   - [What compute writes](#what-compute-writes)
   - [A workload in two locations](#a-workload-in-two-locations)
 - [What this depends on](#what-this-depends-on)
@@ -163,6 +164,7 @@ spec:
   network:
     name: default
   interfaceName: eth0
+  attachmentMode: Hypervisor
   ipFamilies:
     - IPv6
     - IPv4
@@ -186,6 +188,7 @@ status:
   conditions:
     - type: Bound       status: "True"
     - type: Allocated   status: "True"
+    - type: Prepared    status: "True"
     - type: Programmed  status: "True"
     - type: Ready       status: "True"
 ```
@@ -205,6 +208,7 @@ spec:
     name: hello-sandbox-default-us-central-1-0-eth0
     uid: 8c1d…
   interfaceName: eth0
+  attachmentMode: Hypervisor
   mtu: 1460
   reclaimPolicy: Retain
   addresses:
@@ -223,6 +227,7 @@ status:
   vpc: 3kF9qP2x
   conditions:
     - type: Allocated   status: "True"
+    - type: Prepared    status: "True"
     - type: Programmed  status: "True"
 ```
 
@@ -238,9 +243,11 @@ breadcrumb for operators — nothing reads it to do its job.
   is no fan-out and no re-matching.
 - **Consumers never write either resource.** Compute writes claims on their behalf; NSO
   writes interfaces.
-- **`Allocated` and `Programmed` are separate, and `Ready` requires both.** Allocation is
-  synchronous, programming is not, and an instance released on allocation alone comes up
-  before its packets can move.
+- **`Allocated`, `Prepared` and `Programmed` are separate, and `Ready` requires all three.**
+  Allocation is synchronous, the rest is not, and an instance released on allocation alone
+  comes up before its packets can move. `Prepared` is the one a consumer may wait on before
+  creating a workload; `Programmed` cannot be, because it only becomes true once the
+  workload exists.
 - **Both resources live in the cell the deployment landed at.** Location is implicit in
   where the claim exists; nobody writes it down.
 - **The addresses on a claim's status are a copy, and the interface is the source of
@@ -319,14 +326,16 @@ status:
     - type: Bound
     # Every requested family holds an address.
     - type: Allocated
+    # The data plane is ready for a workload to consume the interface.
+    - type: Prepared
     # The data plane can carry those addresses.
     - type: Programmed
-    # Bound, Allocated, and Programmed are all true.
+    # Bound, Allocated, Prepared, and Programmed are all true.
     - type: Ready
 ```
 
-`Allocated` and `Programmed` are surfaced on the claim rather than left on the interface
-because they are the two facts compute gates an instance on, and compute should not have to
+`Allocated`, `Prepared` and `Programmed` are surfaced on the claim rather than left on the
+interface because they are the facts compute gates an instance on, and compute should not have to
 hold a second watch to learn them. `SubnetClaim` already defaults exactly this trio of
 conditions, so the pattern is NSO's own.
 
@@ -399,6 +408,7 @@ status:
 
   conditions:
     - type: Allocated
+    - type: Prepared
     - type: Programmed
 ```
 
@@ -467,8 +477,8 @@ succeed before anything is published.
 subnet, and the MTU read from the network land in `spec`. `Allocated` goes true, the claim
 goes `Bound`, and compute can see an address.
 
-**Wait for the data plane.** `Programmed` follows separately, when the attachment realizing
-the interface reports ready.
+**Wait for the data plane.** `Prepared` follows when the artifacts a workload needs in
+advance exist, and `Programmed` when the attachment realizing the interface reports ready.
 
 The ordering matters for the failure case: an exhausted pool, a location with no space, or
 a family the network does not carry all fail before an interface exists, so a claim that
@@ -510,6 +520,35 @@ have been decided elsewhere; this names the elsewhere.
 interface. The addresses stay allocated because the claim still exists, and the instance's
 `Ready` condition reflects the loss without renumbering anything.
 
+### How the guest consumes it, and when it is safe to start
+
+`spec.attachmentMode` says how the guest consumes the NIC: `Netns` places it in the
+workload's network namespace, which is what an ordinary container expects, and `Hypervisor`
+hands it to a hypervisor as a device, which is what a virtual machine or microVM guest
+needs. It is set on the claim, copied verbatim onto the interface, and read by whoever
+realizes it. NSO carries it exactly as it already carries `interfaceName` and `mtu`, and a
+claim that states nothing gets `Netns`. It names no CNI, no Linux device type and no
+implementation, which is what keeps it meaningful on a platform that has none of those.
+
+Two conditions report the data plane, and the difference between them decides whether a
+platform runs or deadlocks.
+
+**`Prepared` means the data plane's pre-workload artifacts exist.** Whatever an attachment
+needs to be set up in advance has been set up, and a workload consuming this interface can
+now be created. It becomes true before any workload exists, which is exactly what makes it
+safe to wait on. **This is the condition to gate workload creation on.**
+
+**`Programmed` means the data plane carries the addresses.** It becomes true when the
+interface is actually attached, which happens while the workload's sandbox is being
+created. **Nothing may gate workload creation on it.** A consumer that withholds the
+workload until `Programmed` is true waits for something its own waiting prevents: no
+workload, no attachment; no attachment, no `Programmed`. It belongs in readiness reporting,
+never in an admission or scheduling decision.
+
+NSO owns neither. It seeds both `Unknown`, leaves whatever the data plane writes untouched
+on every path, and derives `Ready` from what it finds — the same seam, and the same
+guarantee, described above for `Programmed` alone.
+
 ### What compute writes
 
 Compute's changes are additive on the consumer-facing side and a removal on the internal
@@ -549,6 +588,7 @@ status:
         externalIP: 198.51.100.11
       conditions:
         - type: Allocated   status: "True"
+        - type: Prepared    status: "True"
         - type: Programmed  status: "True"
 ```
 

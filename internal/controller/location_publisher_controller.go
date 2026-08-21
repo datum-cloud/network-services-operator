@@ -388,7 +388,24 @@ func (r *LocationPublisherReconciler) clearBlocked(
 	return nil
 }
 
+// applyPropagationPolicy carries a location's own objects to the cells serving
+// it, and to no others. A network's presence and the range it is addressed from
+// belong to one location, so they are selected by the location they name rather
+// than fleet-wide: a cell serving nowhere would otherwise be given every
+// project's addressing.
 func (r *LocationPublisherReconciler) applyPropagationPolicy(ctx context.Context, name string) error {
+	locationScoped := func(kind string) map[string]any {
+		return map[string]any{
+			"apiVersion": networkingv1alpha.GroupVersion.String(),
+			"kind":       kind,
+			"labelSelector": map[string]any{
+				"matchLabels": map[string]any{
+					networkingv1alpha.LocationLabel: name,
+				},
+			},
+		}
+	}
+
 	policy := &unstructured.Unstructured{Object: map[string]any{
 		"spec": map[string]any{
 			"conflictResolution": "Overwrite",
@@ -398,6 +415,8 @@ func (r *LocationPublisherReconciler) applyPropagationPolicy(ctx context.Context
 					"kind":       "ServingLocation",
 					"name":       name,
 				},
+				locationScoped("NetworkContext"),
+				locationScoped("Subnet"),
 			},
 			"placement": map[string]any{
 				"clusterAffinity": map[string]any{

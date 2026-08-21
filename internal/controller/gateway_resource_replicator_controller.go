@@ -36,6 +36,7 @@ import (
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 	mcsource "sigs.k8s.io/multicluster-runtime/pkg/source"
 
+	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	networkingv1alpha1 "go.datum.net/network-services-operator/api/v1alpha1"
 	"go.datum.net/network-services-operator/internal/config"
 	downstreamclient "go.datum.net/network-services-operator/internal/downstreamclient"
@@ -50,6 +51,7 @@ const gatewayResourceReplicatorFinalizer = "gateway.networking.datumapis.com/gat
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=connectors,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=connectors/finalizers,verbs=update
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=connectors/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkcontexts/finalizers;subnets/finalizers,verbs=update
 // The replicator's default resource set also mirrors label-selected ConfigMaps/Secrets and the
 // Envoy Gateway policy types. These watches require list/watch on the upstream cluster; without
 // them the corresponding informers fail to sync and the replicator silently never reconciles ANY
@@ -87,6 +89,12 @@ type replicationResourceConfig struct {
 	// managed by NSO's own controllers (not by a downstream controller), so
 	// the replicator must NOT overwrite or clear it.
 	skipUpstreamStatusSync bool
+
+	// propagatedLabels names upstream labels to copy onto the downstream object.
+	// The downstream copy otherwise carries only the meta.datumapis.com/upstream-*
+	// labels the strategy stamps, and a federation policy selecting on anything
+	// else would match nothing.
+	propagatedLabels []string
 }
 
 type replicationResource struct {
@@ -162,6 +170,26 @@ func initReplicationResourceConfigs() map[string]replicationResourceConfig {
 	configs[gvkKey(connectorGVK)] = replicationResourceConfig{
 		mirrorStatusToAnnotation: true,
 		skipUpstreamStatusSync:   true,
+	}
+
+	// A network's presence in a location, and the range that location is
+	// addressed from. Both are written in the project control plane and both are
+	// read at the cell serving the location, so both are mirrored onto the hub
+	// for the federation control plane to carry the rest of the way. Their status
+	// is NSO's own and must not be overwritten from downstream, and the location
+	// label is what the per-location propagation policy selects on.
+	presenceGVKs := []schema.GroupVersionKind{
+		{Group: groupNetworkingDatumAPIs, Version: versionV1Alpha, Kind: KindNetworkContext},
+		{Group: groupNetworkingDatumAPIs, Version: versionV1Alpha, Kind: KindSubnet},
+	}
+	for _, gvk := range presenceGVKs {
+		configs[gvkKey(gvk)] = replicationResourceConfig{
+			skipUpstreamStatusSync: true,
+			propagatedLabels: []string{
+				networkingv1alpha.LocationLabel,
+				networkingv1alpha.NetworkLabel,
+			},
+		}
 	}
 
 	return configs
@@ -348,6 +376,8 @@ func (r *GatewayResourceReplicatorReconciler) ensureDownstreamResource(
 			return fmt.Errorf("failed to set downstream controller reference: %w", err)
 		}
 
+		propagateLabels(upstreamObj, downstreamObj, resource.replicationResourceConfig.propagatedLabels)
+
 		// Mirror the upstream status into an annotation on the downstream
 		// object's metadata. This is part of the same CreateOrUpdate Update, so it
 		// is persisted as ordinary metadata (which Karmada propagates to members)
@@ -392,6 +422,27 @@ func (r *GatewayResourceReplicatorReconciler) ensureDownstreamResource(
 	}
 
 	return nil
+}
+
+func propagateLabels(upstreamObj, downstreamObj *unstructured.Unstructured, names []string) {
+	if len(names) == 0 {
+		return
+	}
+
+	upstreamLabels := upstreamObj.GetLabels()
+	downstreamLabels := downstreamObj.GetLabels()
+	if downstreamLabels == nil {
+		downstreamLabels = map[string]string{}
+	}
+
+	for _, name := range names {
+		if value, ok := upstreamLabels[name]; ok {
+			downstreamLabels[name] = value
+		} else {
+			delete(downstreamLabels, name)
+		}
+	}
+	downstreamObj.SetLabels(downstreamLabels)
 }
 
 // setUpstreamStatusAnnotation copies the upstream resource's full .status

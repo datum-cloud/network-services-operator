@@ -76,7 +76,7 @@ a provider needs to configure a NIC without reading any other resource.<br/>
 claim holds it, what realizes it on the data plane, and whether programming
 has succeeded.<br/>
           <br/>
-            <i>Default</i>: map[conditions:[map[lastTransitionTime:1970-01-01T00:00:00Z message:Waiting for controller reason:Pending status:Unknown type:Allocated] map[lastTransitionTime:1970-01-01T00:00:00Z message:Waiting for controller reason:Pending status:Unknown type:Programmed]]]<br/>
+            <i>Default</i>: map[conditions:[map[lastTransitionTime:1970-01-01T00:00:00Z message:Waiting for controller reason:Pending status:Unknown type:Allocated] map[lastTransitionTime:1970-01-01T00:00:00Z message:Waiting for controller reason:Pending status:Unknown type:Prepared] map[lastTransitionTime:1970-01-01T00:00:00Z message:Waiting for controller reason:Pending status:Unknown type:Programmed]]]<br/>
         </td>
         <td>false</td>
       </tr></tbody>
@@ -120,6 +120,21 @@ one per address family, exactly one of them primary. Each carries a prefix
 length and, once the location has a subnet, the gateway to route through.<br/>
           <br/>
             <i>Validations</i>:<li>size(self) == 0 || self.filter(a, has(a.primary) && a.primary).size() == 1: Exactly one address must be primary</li><li>self.all(a, self.exists_one(b, b.family == a.family)): Only one address may be held per address family</li>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>attachmentMode</b></td>
+        <td>enum</td>
+        <td>
+          attachmentMode is how the guest consumes this interface. It comes from the
+claim, and the operator carries it without interpreting it.
+
+Netns places the interface in the workload's network namespace. Hypervisor
+hands it to a hypervisor as a device, which is what a virtual machine or
+microVM guest needs.<br/>
+          <br/>
+            <i>Enum</i>: Netns, Hypervisor<br/>
+            <i>Default</i>: Netns<br/>
         </td>
         <td>false</td>
       </tr><tr>
@@ -395,7 +410,8 @@ provider sets it once an attachment exists.<br/>
         <td>[]object</td>
         <td>
           conditions report the current state of the interface. Allocated means every
-address is held. Programmed means the data plane carries them.<br/>
+address is held. Prepared means the data plane is ready for a workload to
+consume it. Programmed means the data plane carries the addresses.<br/>
         </td>
         <td>false</td>
       </tr><tr>

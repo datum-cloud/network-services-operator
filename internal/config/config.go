@@ -1448,6 +1448,11 @@ func SetDefaults_GatewayResourceReplicatorConfig(obj *GatewayResourceReplicatorC
 		// Connector is propagated with status mirrored downstream so the
 		// extension server can check tunnel liveness (Status.Conditions[Ready]).
 		{Group: networkingDatumAPIsGroup, Version: "v1alpha1", Kind: "Connector"},
+		// A network's presence in a location and the range that location is
+		// addressed from. Written in the project control plane, read at the cell
+		// serving the location.
+		{Group: networkingDatumAPIsGroup, Version: "v1alpha", Kind: "NetworkContext"},
+		{Group: networkingDatumAPIsGroup, Version: "v1alpha", Kind: "Subnet"},
 	}
 }
 

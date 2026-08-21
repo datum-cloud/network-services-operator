@@ -209,6 +209,10 @@ func (r *NetworkInterfaceClaimReconciler) fulfill(
 	}
 
 	if err := r.syncInterface(ctx, cl, iface, claim, &networkContext); err != nil {
+		var refused *bindingRefused
+		if errors.As(err, &refused) {
+			return r.reject(ctx, cl, claim, refused.reason, refused.message)
+		}
 		return ctrl.Result{}, err
 	}
 
@@ -1029,8 +1033,26 @@ func (r *NetworkInterfaceClaimReconciler) applyGateways(
 	}
 
 	for i := range iface.Spec.Addresses {
-		gateway := subnetGatewayFor(&subnets, networkContextName, iface.Spec.Addresses[i].Family)
-		if gateway == "" || iface.Spec.Addresses[i].Gateway == gateway {
+		family := iface.Spec.Addresses[i].Family
+
+		// A location that has published no subnet for this family addresses it
+		// from somewhere else, and the interface is routed by whatever gave it
+		// the address. Only a subnet that exists and yields nothing is a fault.
+		subnet := subnetFor(&subnets, networkContextName, family)
+		if subnet == nil {
+			continue
+		}
+
+		gateway := subnetGateway(subnet)
+		if gateway == "" {
+			return &bindingRefused{
+				reason: networkingv1alpha.NetworkInterfaceClaimReasonSubnetGatewayUnusable,
+				message: fmt.Sprintf("Subnet %q addresses family %s in this location and states no usable start address, so the interface has no gateway",
+					subnet.Name, family),
+			}
+		}
+
+		if iface.Spec.Addresses[i].Gateway == gateway {
 			continue
 		}
 		iface.Spec.Addresses[i].Gateway = gateway
@@ -1039,18 +1061,18 @@ func (r *NetworkInterfaceClaimReconciler) applyGateways(
 	return nil
 }
 
-func subnetGatewayFor(
+func subnetFor(
 	subnets *networkingv1alpha.SubnetList,
 	networkContextName string,
 	family networkingv1alpha.IPFamily,
-) string {
+) *networkingv1alpha.Subnet {
 	for i := range subnets.Items {
 		subnet := &subnets.Items[i]
 		if subnet.Spec.NetworkContext.Name == networkContextName && subnet.Spec.IPFamily == family {
-			return subnetGateway(subnet)
+			return subnet
 		}
 	}
-	return ""
+	return nil
 }
 
 func subnetGateway(subnet *networkingv1alpha.Subnet) string {

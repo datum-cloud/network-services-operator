@@ -40,7 +40,6 @@ var reconcilerControllerNames = map[string]string{
 	"NetworkInterfaceReconciler":                   "networkinterface",
 	"NetworkInterfaceWriteBackReconciler":          "networkinterfacewriteback",
 	"NetworkPolicyReconciler":                      "networkpolicy",
-	"NetworkPresenceGCReconciler":                  "networkpresencegc",
 	"NetworkPresenceReconciler":                    "networkpresence",
 	"NetworkReconciler":                            "network",
 	"SubnetClaimReconciler":                        "subnetclaim",

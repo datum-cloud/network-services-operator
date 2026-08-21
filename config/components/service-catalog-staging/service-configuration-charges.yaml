@@ -1,0 +1,15 @@
+apiVersion: services.miloapis.com/v1alpha1
+kind: ServiceConfiguration
+metadata:
+  name: networking-datumapis-com
+spec:
+  charges:
+    - name: networking.datumapis.com/gateway/requests
+      chargeType: Usage
+      currency: USD
+      displayName: ALB Requests
+      usage:
+        metricRef: networking.datumapis.com/gateway/requests
+        pricingUnit: request
+        rates:
+          - flat: "0.000001"

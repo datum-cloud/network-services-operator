@@ -17,6 +17,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
+	mccontext "sigs.k8s.io/multicluster-runtime/pkg/context"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
@@ -60,6 +61,9 @@ func (r *NetworkContextReconciler) Reconcile(ctx context.Context, req mcreconcil
 	if err != nil {
 		return ctrl.Result{}, err
 	}
+
+	// resolveProjectOrCluster names a project's own control plane from the cluster.
+	ctx = mccontext.WithCluster(ctx, req.ClusterName)
 
 	var networkContext networkingv1alpha.NetworkContext
 	if err := cl.GetClient().Get(ctx, req.NamespacedName, &networkContext); err != nil {

@@ -140,12 +140,6 @@ func (r *NetworkBindingReconciler) Reconcile(ctx context.Context, req mcreconcil
 		readyCondition.Reason = "NetworkContextNotReady"
 		readyCondition.Message = "Network context is not ready."
 
-		condition := apimeta.FindStatusCondition(networkContext.Status.Conditions, networkingv1alpha.NetworkContextProgrammed)
-		if condition != nil && condition.Status == metav1.ConditionFalse && condition.Reason == "NetworkFailedToCreate" {
-			readyCondition.Reason = "NetworkFailedToCreate"
-			readyCondition.Message = condition.Message
-		}
-
 		// Choosing to requeue here instead of establishing a watch on contexts, as
 		// once the context is created an ready, future bindings will immediately
 		// become ready.

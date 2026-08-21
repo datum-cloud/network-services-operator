@@ -585,12 +585,6 @@ func controllerRegistrations(
 	serverConfig config.NetworkServicesOperator,
 	deps controllerDeps,
 ) []namedSetup {
-	// The garbage collector drives the presence controller rather than
-	// duplicating its projection, so both entries share one instance.
-	networkPresence := &controller.NetworkPresenceReconciler{
-		Projects: controller.NewProjectClusterResolver(mgr),
-	}
-
 	return []namedSetup{
 		{"network", true, func() error {
 			return (&controller.NetworkReconciler{
@@ -613,15 +607,9 @@ func controllerRegistrations(
 		// replicas with leader election disabled, which would reconcile every
 		// hub object three times.
 		{"networkpresence", true, func() error {
-			return networkPresence.SetupWithManager(deps.singletonManager)
-		}},
-		// Network deletion is the other half of the same controller, and it has
-		// to watch project control planes, which only the multicluster manager
-		// engages.
-		{"networkpresencegc", true, func() error {
-			return (&controller.NetworkPresenceGCReconciler{
-				Presence: networkPresence,
-			}).SetupWithManager(mgr)
+			return (&controller.NetworkPresenceReconciler{
+				Projects: controller.NewProjectClusterResolver(mgr),
+			}).SetupWithManager(deps.singletonManager)
 		}},
 		// The interfaces a cell publishes arrive on the hub, and only the
 		// multicluster manager reaches the project control planes they are for.

@@ -111,17 +111,7 @@ func (r *NetworkContextReconciler) reportReady(
 	cl client.Client,
 	networkContext *networkingv1alpha.NetworkContext,
 ) error {
-	if !apimeta.IsStatusConditionTrue(networkContext.Status.Conditions, networkingv1alpha.NetworkContextProgrammed) {
-		return nil
-	}
-
-	if !apimeta.SetStatusCondition(&networkContext.Status.Conditions, metav1.Condition{
-		Type:               networkingv1alpha.NetworkContextReady,
-		Status:             metav1.ConditionTrue,
-		Reason:             networkingv1alpha.NetworkContextReadyReasonReady,
-		ObservedGeneration: networkContext.Generation,
-		Message:            "Network context is ready",
-	}) {
+	if !setNetworkContextReady(networkContext) {
 		return nil
 	}
 
@@ -129,6 +119,37 @@ func (r *NetworkContextReconciler) reportReady(
 		return fmt.Errorf("failed updating network context status: %w", err)
 	}
 	return nil
+}
+
+// setNetworkContextReady derives Ready from the subnet this location is
+// addressed from. Allocation is the only thing a context waits on, so Ready
+// carries that condition's own reason rather than a second vocabulary for the
+// same failures.
+//
+// A location nothing is allocated for — no IPAM configured, no subnet class, or
+// a network carrying no IPv6 — has nothing outstanding and is present as soon as
+// it exists. IPAMAllocated is written only where an allocation was attempted, so
+// its absence is what says so.
+func setNetworkContextReady(networkContext *networkingv1alpha.NetworkContext) bool {
+	ready := metav1.Condition{
+		Type:               networkingv1alpha.NetworkContextReady,
+		Status:             metav1.ConditionTrue,
+		Reason:             networkingv1alpha.NetworkContextReadyReasonReady,
+		ObservedGeneration: networkContext.Generation,
+		Message:            "This location needs no address space of its own, so the network is present in it",
+	}
+
+	if allocated := apimeta.FindStatusCondition(
+		networkContext.Status.Conditions, networkingv1alpha.NetworkContextIPAMAllocated,
+	); allocated != nil {
+		ready.Message = allocated.Message
+		if allocated.Status != metav1.ConditionTrue {
+			ready.Status = allocated.Status
+			ready.Reason = allocated.Reason
+		}
+	}
+
+	return apimeta.SetStatusCondition(&networkContext.Status.Conditions, ready)
 }
 
 // reconcileSubnet holds the range this network is addressed from in this
@@ -237,6 +258,12 @@ func (r *NetworkContextReconciler) publishSubnetObject(
 	subnet.Name = networkContextSubnetName(networkContext)
 
 	result, err := controllerutil.CreateOrUpdate(ctx, cl, subnet, func() error {
+		if subnet.Labels == nil {
+			subnet.Labels = map[string]string{}
+		}
+		subnet.Labels[networkingv1alpha.NetworkLabel] = networkContext.Spec.Network.Name
+		subnet.Labels[networkingv1alpha.LocationLabel] = networkContext.Spec.Location.Name
+
 		subnet.Spec.SubnetClass = privateSubnetClass
 		subnet.Spec.IPFamily = networkingv1alpha.IPv6Protocol
 		subnet.Spec.NetworkContext = networkingv1alpha.LocalNetworkContextRef{Name: networkContext.Name}

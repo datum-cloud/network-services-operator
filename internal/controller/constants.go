@@ -10,6 +10,8 @@ const (
 	KindTrafficProtectionPolicy = "TrafficProtectionPolicy"
 	KindHTTPProxy               = "HTTPProxy"
 	KindConnector               = "Connector"
+	KindNetworkContext          = "NetworkContext"
+	KindSubnet                  = "Subnet"
 )
 
 // API group constants.

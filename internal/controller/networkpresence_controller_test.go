@@ -184,10 +184,13 @@ func (s *presenceScenario) binding(name string) *networkingv1alpha.NetworkBindin
 	return &binding
 }
 
+// networkContext reads the presence where this controller writes it: the
+// project control plane, beside the network it is derived from.
 func (s *presenceScenario) networkContext() (*networkingv1alpha.NetworkContext, bool) {
 	s.t.Helper()
 	var networkContext networkingv1alpha.NetworkContext
-	err := s.hub.Get(s.ctx, s.request().NamespacedName, &networkContext)
+	err := s.hub.Get(s.ctx,
+		client.ObjectKey{Namespace: s.projectNamespace, Name: s.contextName()}, &networkContext)
 	if apierrors.IsNotFound(err) {
 		return nil, false
 	}
@@ -246,6 +249,27 @@ func TestNetworkPresenceCreatesContextCarryingTheNetworksRules(t *testing.T) {
 	require.Equal(t, s.networkName, networkContext.Labels[networkingv1alpha.NetworkLabel])
 	require.Equal(t, s.locationName, networkContext.Labels[networkingv1alpha.LocationLabel])
 	require.Equal(t, string(s.network.UID), networkContext.Labels[networkingv1alpha.NetworkUIDLabel])
+
+	// The context lives beside the network it is derived from, owned by it, so
+	// the apiserver collects it when the network goes.
+	require.Equal(t, s.projectNamespace, networkContext.Namespace)
+	require.Len(t, networkContext.OwnerReferences, 1)
+	require.Equal(t, "Network", networkContext.OwnerReferences[0].Kind)
+	require.Equal(t, s.networkName, networkContext.OwnerReferences[0].Name)
+}
+
+// A network deleted while a presence exists takes the presence with it, which
+// is what retiring the hub-side finalizer relies on.
+func TestNetworkPresenceContextIsCollectedWithTheNetwork(t *testing.T) {
+	s := newPresenceScenario(t, presenceOptions{})
+	s.createBinding("consumer-a")
+	s.reconcile()
+
+	networkContext, ok := s.networkContext()
+	require.True(t, ok)
+	require.Equal(t, s.network.UID, networkContext.OwnerReferences[0].UID,
+		"garbage collection keys on the owner, so it must be this network and not its name")
+	require.True(t, *networkContext.OwnerReferences[0].Controller)
 }
 
 // The reference is set when the presence is created, which is before it is
@@ -259,7 +283,8 @@ func TestNetworkPresenceReportsNotReadyWithAReferenceAlreadySet(t *testing.T) {
 	requireReady(t, binding, metav1.ConditionFalse, networkingv1alpha.NetworkBindingReasonNetworkContextNotReady)
 	require.NotNil(t, binding.Status.NetworkContextRef)
 	require.Equal(t, s.contextName(), binding.Status.NetworkContextRef.Name)
-	require.Equal(t, s.hubNamespace, binding.Status.NetworkContextRef.Namespace)
+	require.Equal(t, s.projectNamespace, binding.Status.NetworkContextRef.Namespace,
+		"a consumer is pointed at the object that exists, which is the project-plane one")
 }
 
 func TestNetworkPresenceReachesReadyOnceTheContextIs(t *testing.T) {
@@ -337,12 +362,39 @@ func TestNetworkPresenceRetriesARefusal(t *testing.T) {
 
 	result, err = s.reconciler.Reconcile(s.ctx, s.request())
 	require.NoError(t, err)
-	require.Zero(t, result.RequeueAfter)
 
 	requireReady(t, s.binding("consumer-a"), metav1.ConditionFalse,
 		networkingv1alpha.NetworkBindingReasonNetworkContextNotReady)
 	_, ok := s.networkContext()
 	require.True(t, ok, "the presence appears once the platform enables the location")
+
+	s.markContextReady()
+	result, err = s.reconciler.Reconcile(s.ctx, s.request())
+	require.NoError(t, err)
+	require.Zero(t, result.RequeueAfter)
+}
+
+// The context lives in a control plane this controller does not watch, so its
+// becoming ready is not an event here. Without a requeue the binding would
+// report NotReady for as long as it exists.
+func TestNetworkPresenceRetriesWhileTheContextIsNotReady(t *testing.T) {
+	s := newPresenceScenario(t, presenceOptions{})
+	s.createBinding("consumer-a")
+
+	result, err := s.reconciler.Reconcile(s.ctx, s.request())
+	require.NoError(t, err)
+	require.Equal(t, refusedPresenceRetryInterval, result.RequeueAfter,
+		"nothing else will bring this binding back once the context is ready")
+	requireReady(t, s.binding("consumer-a"), metav1.ConditionFalse,
+		networkingv1alpha.NetworkBindingReasonNetworkContextNotReady)
+
+	s.markContextReady()
+
+	result, err = s.reconciler.Reconcile(s.ctx, s.request())
+	require.NoError(t, err)
+	require.Zero(t, result.RequeueAfter)
+	requireReady(t, s.binding("consumer-a"), metav1.ConditionTrue,
+		networkingv1alpha.NetworkBindingReasonNetworkContextReady)
 }
 
 // A binding in a project control plane belongs to the other controller. Serving
@@ -376,25 +428,30 @@ func TestNetworkPresenceLeavesProjectPlaneBindingsAlone(t *testing.T) {
 		"the presence controller must not answer for a binding it does not serve")
 }
 
-// A context a location reads is propagated in, not written here, and nothing
-// on the hub declares it. Reaping it would take the network's rules away from
-// the very component that needs them.
-func TestNetworkPresenceLeavesAContextItDidNotWrite(t *testing.T) {
+// The hub carries a replicated copy of the presence under the same name and the
+// same labels, and every cell reads the network's rules from what that copy
+// becomes. Teardown must reach the project-plane object and nothing else.
+func TestNetworkPresenceLeavesTheReplicatedHubCopyAlone(t *testing.T) {
 	s := newPresenceScenario(t, presenceOptions{})
 
-	propagated := &networkingv1alpha.NetworkContext{}
-	propagated.Namespace = s.hubNamespace
-	propagated.Name = s.contextName()
-	propagated.Spec.Network = networkingv1alpha.LocalNetworkRef{Name: s.networkName}
-	propagated.Spec.Location = networkingv1alpha.LocationReference{Name: s.locationName}
-	propagated.Spec.IPFamilies = []networkingv1alpha.IPFamily{networkingv1alpha.IPv4Protocol}
-	propagated.Spec.MTU = 1460
-	require.NoError(t, s.hub.Create(s.ctx, propagated))
+	replicated := &networkingv1alpha.NetworkContext{}
+	replicated.Namespace = s.hubNamespace
+	replicated.Name = s.contextName()
+	replicated.Labels = map[string]string{
+		networkingv1alpha.NetworkLabel:    s.networkName,
+		networkingv1alpha.LocationLabel:   s.locationName,
+		networkingv1alpha.NetworkUIDLabel: "9a4c-whatever",
+	}
+	replicated.Spec.Network = networkingv1alpha.LocalNetworkRef{Name: s.networkName}
+	replicated.Spec.Location = networkingv1alpha.LocationReference{Name: s.locationName}
+	replicated.Spec.IPFamilies = []networkingv1alpha.IPFamily{networkingv1alpha.IPv4Protocol}
+	replicated.Spec.MTU = 1460
+	require.NoError(t, s.hub.Create(s.ctx, replicated))
 
 	s.reconcile()
 
-	_, ok := s.networkContext()
-	require.True(t, ok, "a context this controller did not write must survive having no holder")
+	require.NoError(t, s.hub.Get(s.ctx, client.ObjectKeyFromObject(replicated), replicated),
+		"the copy every cell reads must survive having no holder on the hub")
 }
 
 func TestNetworkPresenceRefusesAMissingNetwork(t *testing.T) {
@@ -446,7 +503,7 @@ func TestNetworkPresenceIsSharedByEveryConsumerOfThePair(t *testing.T) {
 	}
 
 	var contexts networkingv1alpha.NetworkContextList
-	require.NoError(t, s.hub.List(s.ctx, &contexts, client.InNamespace(s.hubNamespace)))
+	require.NoError(t, s.hub.List(s.ctx, &contexts, client.InNamespace(s.projectNamespace)))
 	require.Len(t, contexts.Items, 1, "two consumers must share one presence")
 }
 

@@ -252,12 +252,37 @@ func TestPublishWritesOnePolicyPerLocation(t *testing.T) {
 	}
 
 	selectors, _, err := unstructured.NestedSlice(policy.Object, "spec", "resourceSelectors")
-	if err != nil || len(selectors) != 1 {
-		t.Fatalf("expected exactly one resource selector, got %v (err=%v)", selectors, err)
+	if err != nil {
+		t.Fatalf("failed reading the resource selectors: %v", err)
 	}
+	if len(selectors) != 3 {
+		t.Fatalf("expected the location plus its presence objects, got %v", selectors)
+	}
+
 	selector := selectors[0].(map[string]any)
 	if selector["name"] != "sjc-1" || selector["kind"] != "ServingLocation" {
 		t.Fatalf("the policy selects the wrong resource: %v", selector)
+	}
+
+	// A cell serving nowhere must not be handed another location's addressing,
+	// so everything derived from a location is selected by the location it names.
+	for _, raw := range selectors[1:] {
+		selector := raw.(map[string]any)
+		matched, _, err := unstructured.NestedStringMap(selector, "labelSelector", "matchLabels")
+		if err != nil {
+			t.Fatalf("failed reading the selector for %v: %v", selector["kind"], err)
+		}
+		if matched[networkingv1alpha.LocationLabel] != "sjc-1" {
+			t.Fatalf("%v is not scoped to this location: %v", selector["kind"], matched)
+		}
+	}
+
+	kinds := []string{
+		selectors[1].(map[string]any)["kind"].(string),
+		selectors[2].(map[string]any)["kind"].(string),
+	}
+	if kinds[0] != "NetworkContext" || kinds[1] != "Subnet" {
+		t.Fatalf("the policy carries the wrong presence kinds: %v", kinds)
 	}
 }
 

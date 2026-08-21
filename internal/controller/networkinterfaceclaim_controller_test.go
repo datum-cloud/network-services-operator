@@ -1367,6 +1367,34 @@ func TestGatewayReachesTheInterfaceWhenTheSubnetAppears(t *testing.T) {
 		"an unchanged gateway must not write to the API server")
 }
 
+// A location that publishes a subnet and no usable gateway leaves the interface
+// routing nothing. Continuing past it hands out addresses that do not work and
+// says nothing about why, so the claim refuses instead.
+func TestAnUnusableSubnetGatewayIsReportedOnTheClaim(t *testing.T) {
+	s := newScenario(t, true, []networkingv1alpha.IPFamily{networkingv1alpha.IPv4Protocol})
+
+	claim := s.createClaim("stranded", networkingv1alpha.NetworkInterfaceClaimSpec{
+		InterfaceName: "eth0",
+		IPFamilies:    []networkingv1alpha.IPFamily{networkingv1alpha.IPv4Protocol},
+		ReclaimPolicy: networkingv1alpha.NetworkInterfaceReclaimPolicyDelete,
+	})
+	s.reconcile(claim)
+
+	s.createSubnet("v4-broken", s.networkContextName("default"),
+		networkingv1alpha.IPv4Protocol, "not-an-address", 24)
+
+	s.reconcile(s.getClaim("stranded"))
+
+	condition := conditionOf(s.getClaim("stranded"), networkingv1alpha.NetworkInterfaceClaimReady)
+	require.Equal(t, metav1.ConditionFalse, condition.Status)
+	require.Equal(t, networkingv1alpha.NetworkInterfaceClaimReasonSubnetGatewayUnusable, condition.Reason)
+	require.Contains(t, condition.Message, "v4-broken")
+
+	iface, err := s.getInterface("stranded")
+	require.NoError(t, err)
+	require.Empty(t, iface.Spec.Addresses[0].Gateway)
+}
+
 // IPAM may give a missing address to another claim, so an operator has to see
 // it. Reallocating instead would renumber a running workload.
 func TestMissingAllocationIsReportedOnTheClaim(t *testing.T) {

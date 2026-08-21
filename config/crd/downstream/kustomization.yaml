@@ -9,9 +9,11 @@
 #
 # Network presence: a consumer writes a NetworkBinding on the hub, the control
 # plane manager turns every binding for a (network, location) pair into one
-# shared NetworkContext on the hub, and Karmada propagates that context to the
+# shared NetworkContext in the project control plane, the replicator mirrors
+# that context and its Subnet onto the hub, and Karmada propagates both to the
 # cells serving the location. The cell controller manager then serves
-# NetworkInterfaceClaims against it. ServingLocation is federated the same way.
+# NetworkInterfaceClaims against them. ServingLocation is federated the same
+# way.
 #
 # The cell set is derived from what the cell controller manager watches
 # (internal/cmd/cell/cell.go): NetworkInterfaceClaim, NetworkInterface,
@@ -27,7 +29,8 @@ resources:
   # Location identity, federated to cells
   - ../bases/networking.datumapis.com_servinglocations.yaml
 
-  # Network presence: hub stores bindings and contexts, cells receive contexts
+  # Network presence: hub stores bindings and mirrored contexts, cells receive
+  # the contexts for the locations they serve
   - ../bases/networking.datumapis.com_networkbindings.yaml
   - ../bases/networking.datumapis.com_networkcontexts.yaml
 

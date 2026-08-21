@@ -30,7 +30,7 @@ latest-milestone: "v0.x"
   - [Garbage collection](#garbage-collection)
   - [Teardown and retained addresses](#teardown-and-retained-addresses)
   - [The address family default](#the-address-family-default)
-  - [Two controllers, one name](#two-controllers-one-name)
+  - [One presence, one name, one place](#one-presence-one-name-one-place)
   - [One network, two locations, two consumers](#one-network-two-locations-two-consumers)
   - [Failure, reported as itself](#failure-reported-as-itself)
 - [What this depends on](#what-this-depends-on)
@@ -122,8 +122,8 @@ separately.
   unchanged.
 - **A general project-plane-to-cell replication framework.** This carries one kind for one
   reason. If a second kind needs the same path, that is a good time to generalize; not now.
-- **Retiring the project-plane `NetworkBinding` controller.** It keeps serving the providers
-  that read project-plane contexts until they move.
+- **Retiring the project-plane `NetworkBinding` controller.** No consumer writes bindings into
+  a project, so it has nothing to do; it is left in place rather than removed here.
 - **Choosing locations.** Which locations a consumer needs is the consumer's decision, made
   before any of this runs.
 
@@ -512,9 +512,15 @@ Per reconcile it:
 2. Confirms the project has a `LocationBinding` for the location. If not, the binding reports
    `LocationNotAvailable` and nothing is created.
 3. Reads the `Network` from the project control plane, for `spec.ipFamilies` and `spec.mtu`.
-4. Writes the `NetworkContext` into the same hub namespace, carrying those two facts, with
-   the labels the federation control plane's policy selects on.
+4. Writes the `NetworkContext` into the project control plane, beside the network it is
+   derived from and owned by it, carrying those two facts and the labels that decide which
+   locations it reaches.
 5. Reports readiness back onto every binding for the pair.
+
+The hub decides that a presence exists; the project holds the object. A consumer's binding
+is on the hub because that is where consumers declare things, and the context is in the
+project because that is where the network is, where the location's address space is
+allocated, and where an operator looking at a project can see it.
 
 It never reads the consumer. It reads the binding, the location, and the network, which is
 what makes it indifferent to what kind of thing asked.
@@ -538,7 +544,7 @@ apiVersion: networking.datumapis.com/v1alpha
 kind: NetworkContext
 metadata:
   name: default-datum-cloud-us-central-1
-  namespace: ns-8c1d…
+  namespace: default
   labels:
     meta.datumapis.com/upstream-cluster-name: my-project
     meta.datumapis.com/upstream-namespace: default
@@ -561,7 +567,7 @@ spec:
   networkGeneration: 7
 status:
   conditions:
-    - type: Programmed
+    - type: IPAMAllocated
     - type: Ready
 ```
 
@@ -572,16 +578,26 @@ says so, rather than defaulting to something and attaching to the wrong rules.
 
 The `network-uid` label is not decoration. It is what garbage collection keys on, below.
 
-`status` stays as it is and is not propagated. `Programmed` and `Ready` remain meaningful in
-the project plane, where the existing controller sets them; on the propagated copy they
-arrive empty and nothing reads them.
+`Ready` is what every consumer waits on, and it says one thing: whether this location has
+the address space the network needs there. A location that needs none — an IPv4-only network,
+or a deployment with no address service — is ready as soon as it exists. `Programmed` is
+retired: nothing ever wrote it, and a condition no component owns is a permanent "unknown"
+that stops a network from ever becoming usable.
+
+`status` is not propagated, so on the copy a location reads it arrives empty and nothing
+reads it there.
 
 ### Reaching the cell
 
-The federation control plane propagates the hub `NetworkContext` under the existing
-`ClusterPropagationPolicy`, selected by the `upstream-cluster-name` label the presence
-controller stamps, which is the same selector every other NSO kind on that policy uses. The
-namespace itself is already propagated by that policy.
+Two hops. The context and the `Subnet` the location is addressed from are mirrored from the
+project control plane onto the hub, alongside every other kind a cell has to read. The
+federation control plane then carries them from the hub to the cells, under the policy that
+already carries the location itself — so a network's presence reaches exactly the cells
+serving the location it names, and no others.
+
+That last part is the point. A fleet-wide rule would hand every cell every project's
+addressing, including cells serving no location at all. Presence is per-location by
+definition, so it is delivered per-location.
 
 What arrives is the spec and the labels. No owner references, no finalizers, no uid, no
 status. That is the whole reason the network's rules live in `spec`.
@@ -617,13 +633,13 @@ not reached here yet.
 
 Three watches, replacing two requeues and a gap.
 
-**On the hub, the presence controller watches `Network` in project control planes.** An
-`ipFamilies` or MTU change enqueues every context for that network. Without this, a network
-edited after a context exists never reaches the locations that carry it. The failure is
-silent and can persist indefinitely, because nothing else would ever cause that context to be
-rewritten.
+**A binding that is waiting comes back on its own.** The context is in a control plane the
+presence controller does not watch, so a context becoming ready is not an event it sees. A
+binding that reports "not ready yet" therefore carries its own retry, and moves to ready
+without a consumer doing anything.
 
-**On the hub, it owns its contexts.** A context deleted out from under it is rebuilt.
+**A context deleted out from under the controller is rebuilt**, because the declarations that
+caused it are still there.
 
 **At the location, readers watch `NetworkContext`.** For the claim reconciler, a context
 arriving or changing enqueues the claims naming that network in that namespace, which needs a
@@ -637,35 +653,19 @@ network becomes usable.
 
 ### Garbage collection
 
-Network deletion today finds the contexts to delete through a field index on the
-controller-owner UID, in the same control plane as the network. Hub contexts are not owned by
-the network; they cannot be, being in a different cluster. That index returns nothing, so a
-`Network` would delete cleanly while orphaning every hub context and every propagated copy
-derived from it. That is the one place this design can lose objects permanently, so it gets
-an explicit replacement rather than an inherited mechanism.
+Deleting a network takes its presences with it, everywhere. The context is a child of the
+network, in the same control plane, so this is the platform's ordinary deletion behaviour
+rather than a mechanism of its own: no finalizer to get stuck, no sweep to fall behind, and
+no way for a presence to outlive the network it describes. The copies on the hub and at each
+location follow.
 
-**The presence controller owns network deletion for hub contexts.** It is the only component
-with both views, so it is the only one that can do this in one place:
+A network deleted and recreated under the same name is a different network with a different
+address space. Ownership is by identity, not by name, so the new network never adopts its
+predecessor's presences.
 
-- Every hub `NetworkContext` and `NetworkBinding` carries the network's UID as a label, and
-  the hub indexes on it.
-- The project-plane `Network` keeps a finalizer. The presence controller already watches
-  `Network` for `ipFamilies` and MTU, so a deletion timestamp is another event on that watch.
-- On deletion it lists hub bindings and contexts by network UID, deletes them, and removes
-  the finalizer once the list is empty. Deleting the hub context deletes the propagated copy
-  with it.
-
-Deleting a network deletes bindings that consumers still own, which is correct and worth
-being explicit about: the network is gone, so the presence cannot be kept, and each consumer
-learns through its own binding disappearing rather than through a shared object it does not
-watch.
-
-The UID label, not the name, is what this keys on. A network deleted and recreated under the
-same name is a different network with a different address space, and its predecessor's
-contexts must not be adopted.
-
-The existing project-plane finalizer and its owner-UID index keep working for project-plane
-contexts. Nothing about that path changes.
+Bindings a consumer still owns are left alone. Their network is gone, so they report exactly
+that — the consumer named a network that does not exist — rather than disappearing out from
+under whoever created them.
 
 ### Teardown and retained addresses
 
@@ -741,45 +741,44 @@ already exist.
 This requires a compute API change and is therefore a dependency, not something this document
 can land on its own.
 
-### Two controllers, one name
+### One presence, one name, one place
 
-NSO's existing `NetworkBinding` controller runs against project control planes and creates
-project-plane contexts under a deterministic name. The presence controller does the same
-thing on the hub, under the same name, in a different cluster.
+There is exactly one `NetworkContext` per (network, location), it lives in the project, and it
+is named for the pair it describes. An operator finds the same name in the project, on the
+hub, and at the location, and can tell at a glance which of the three is missing.
 
-**A new controller takes the hub role; the existing one keeps its job.** They cannot be the
-same controller, because the hub role needs two clusters at once, the hub for declarations
-and the project plane for the `Network`, and needs to run on the singleton manager, while the
-project-plane role runs sharded across projects. Moving the existing controller to the hub
-would also break the providers reading project-plane contexts today, a migration this work
-does not need to own.
-
-The shared name is deliberate. It is the same tuple, so an operator finds the same name in the
-project plane, on the hub, and at the location, and can tell at a glance which of the three is
-missing. When the providers move off project-plane contexts, the old controller retires and
-nothing else changes.
+NSO's older `NetworkBinding` controller creates project-plane contexts under that same name
+from bindings written into a project. No consumer writes bindings there — every declaration
+arrives on the hub — so that path has no input and is left as it is; it converges on the same
+object rather than competing for it.
 
 ### One network, two locations, two consumers
 
 One network. A workload deployed to two locations, and a load balancer fronting it in one of
 them. Every object this causes to exist:
 
-**The consumer's project.** `Network/default`, plus whatever the consumers are declared as.
-Nothing about presence appears here.
+**The consumer's project.** `Network/default`, plus whatever the consumers are declared as,
+plus the presences derived from them:
 
-**The hub**, in `ns-8c1d…`:
+```
+NetworkContext/default-…-us-central-1     one presence, two bindings
+NetworkContext/default-…-eu-west-1        one presence, one binding
+Subnet/default-…-us-central-1-ipv6        the range that location is addressed from
+Subnet/default-…-eu-west-1-ipv6
+```
+
+**The hub**, in `ns-8c1d…`, holds the declarations and a copy of each presence on its way to
+the cells:
 
 ```
 NetworkBinding/hello-us-central-1     owned by a WorkloadDeployment
 NetworkBinding/hello-eu-west-1        owned by a WorkloadDeployment
 NetworkBinding/lb-frontend-us-central-1   created for a LoadBalancer
-NetworkContext/default-…-us-central-1     one context, two bindings
-NetworkContext/default-…-eu-west-1        one context, one binding
 Location/us-central-1, Location/eu-west-1   cluster-scoped, replicated
 ```
 
-**Each location**, after propagation, holds its `NetworkContext` and whatever attaches to the
-network there: claims and interfaces for the workload's instances, and whatever the load
+**Each location**, after propagation, holds its own `NetworkContext` and `Subnet` — and only
+its own — plus whatever attaches to the network there: claims and interfaces for the workload's instances, and whatever the load
 balancer's data plane needs.
 
 Three bindings, two contexts. In `us-central-1` two consumers of different kinds converge on

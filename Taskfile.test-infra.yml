@@ -414,6 +414,8 @@ tasks:
       - kubectl --context {{.DOWNSTREAM_CTX}} apply -f config/crd/bases/networking.datumapis.com_httpproxies.yaml
       - kubectl --context {{.DOWNSTREAM_CTX}} apply -f config/crd/bases/networking.datumapis.com_trafficprotectionpolicies.yaml
       - kubectl --context {{.DOWNSTREAM_CTX}} apply -f config/crd/bases/networking.datumapis.com_servinglocations.yaml
+      - kubectl --context {{.DOWNSTREAM_CTX}} apply -f config/crd/bases/networking.datumapis.com_networkcontexts.yaml
+      - kubectl --context {{.DOWNSTREAM_CTX}} apply -f config/crd/bases/networking.datumapis.com_subnets.yaml
 
   external-dns:
     desc: "Install external-dns CRDs (DNSEndpoint) on the downstream cluster."

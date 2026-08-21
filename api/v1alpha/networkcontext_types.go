@@ -79,7 +79,11 @@ const (
 	// NetworkContextReady indicates whether or not the network context is ready for use.
 	NetworkContextReady = "Ready"
 
-	// NetworkContextProgrammed indicates whether or not the network context has been programmed.
+	// NetworkContextProgrammed is deprecated and reports nothing. No component
+	// writes it and no component reads it. A network context's readiness is
+	// derived from IPAMAllocated.
+	//
+	// Deprecated: use NetworkContextIPAMAllocated.
 	NetworkContextProgrammed = "Programmed"
 )
 

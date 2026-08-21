@@ -51,12 +51,13 @@ func (r *managerProjectClusterResolver) ClientForProject(ctx context.Context, pr
 }
 
 // NetworkPresenceReconciler maintains one NetworkContext per (project, network,
-// location) triple on the hub, for as long as any NetworkBinding declares the
-// network is needed there.
+// location) triple, for as long as any NetworkBinding declares the network is
+// needed there.
 //
-// It is the only component with both a view of the hub and a view of project
-// control planes, which is why the projection and the garbage collection in
-// networkpresence_gc.go both live here.
+// The hub decides a presence exists and the project control plane holds the
+// object: declarations arrive on the hub, and the context lives beside the
+// Network it is derived from, owned by it, where the reconciler that allocates
+// the location's subnet already runs.
 type NetworkPresenceReconciler struct {
 	Projects ProjectClusterResolver
 
@@ -106,9 +107,9 @@ func (r *NetworkPresenceReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return ctrl.Result{}, err
 	}
 
-	// Nothing watches a LocationBinding, a project namespace, or a network that
-	// does not exist yet, so a refusal for a condition that later clears has no
-	// other way back.
+	// Nothing here watches a LocationBinding, a project namespace, a network
+	// that does not exist yet, or the context in the project control plane, so a
+	// refusal for a condition that later clears has no other way back.
 	if refused {
 		return ctrl.Result{RequeueAfter: refusedPresenceRetryInterval}, nil
 	}
@@ -137,12 +138,35 @@ func (r *NetworkPresenceReconciler) holders(ctx context.Context, req ctrl.Reques
 	return holders, nil
 }
 
-// teardown removes a presence nothing declares any more. At the location a
-// local finalizer holds the propagated copy while addresses are still held, so
-// this is prompt in the ordinary case and blocks where it must.
+// teardown removes a presence nothing declares any more. It targets the project
+// control plane, which is where this controller writes: the hub carries a
+// replicated copy under the same name and the same labels, and reaping that copy
+// would take the network's rules away from every cell reading them.
+//
+// At the location a local finalizer holds the propagated copy while addresses
+// are still held, so this is prompt in the ordinary case and blocks where it
+// must.
 func (r *NetworkPresenceReconciler) teardown(ctx context.Context, req ctrl.Request) error {
+	routing, err := resolveProjectRouting(ctx, r.hub, req.Namespace)
+	if err != nil {
+		var unresolvable *projectUnresolvable
+		if errors.As(err, &unresolvable) {
+			return nil
+		}
+		return err
+	}
+
+	projectClient, err := r.Projects.ClientForProject(ctx, routing.project)
+	if err != nil {
+		if errors.Is(err, multicluster.ErrClusterNotFound) {
+			return nil
+		}
+		return fmt.Errorf("failed reaching project %q: %w", routing.project, err)
+	}
+
 	var networkContext networkingv1alpha.NetworkContext
-	if err := r.hub.Get(ctx, req.NamespacedName, &networkContext); err != nil {
+	key := client.ObjectKey{Namespace: routing.projectNamespace, Name: req.Name}
+	if err := projectClient.Get(ctx, key, &networkContext); err != nil {
 		return client.IgnoreNotFound(err)
 	}
 	if !networkContext.DeletionTimestamp.IsZero() {
@@ -151,15 +175,16 @@ func (r *NetworkPresenceReconciler) teardown(ctx context.Context, req ctrl.Reque
 
 	// Only a presence this controller wrote is this controller's to remove. It
 	// stamps the network UID on everything it creates, so a context without one
-	// was put here by something else — a copy propagated in, or a context that
-	// predates this controller — and deleting it would take away the object a
-	// location reads.
+	// was put here by something else — the binding controller that predates this
+	// one, or a context an operator wrote by hand — and deleting it would take
+	// away the object a location reads.
 	if networkContext.Labels[networkingv1alpha.NetworkUIDLabel] == "" {
 		return nil
 	}
 
-	log.FromContext(ctx).Info("no binding declares this network presence, removing it")
-	if err := r.hub.Delete(ctx, &networkContext); err != nil {
+	log.FromContext(ctx).Info("no binding declares this network presence, removing it",
+		"project", routing.project, "namespace", key.Namespace, "name", key.Name)
+	if err := projectClient.Delete(ctx, &networkContext); err != nil {
 		return client.IgnoreNotFound(err)
 	}
 	return nil
@@ -225,7 +250,7 @@ func (r *NetworkPresenceReconciler) ensure(
 		return false, err
 	}
 
-	networkContext, err := r.project(ctx, req, routing, &pair, &network)
+	networkContext, err := r.project(ctx, req, projectClient, routing, &pair, &network)
 	if err != nil {
 		return false, err
 	}
@@ -235,8 +260,11 @@ func (r *NetworkPresenceReconciler) ensure(
 		Name:      networkContext.Name,
 	}
 
+	// The context is in a control plane this controller does not watch, so its
+	// becoming ready is not an event here. Without a way back the binding would
+	// report NotReady for as long as it exists.
 	if !apimeta.IsStatusConditionTrue(networkContext.Status.Conditions, networkingv1alpha.NetworkContextReady) {
-		return false, r.report(ctx, holders, ref, refusal(
+		return true, r.report(ctx, holders, ref, refusal(
 			networkingv1alpha.NetworkBindingReasonNetworkContextNotReady,
 			"Network context is not ready."))
 	}
@@ -281,20 +309,23 @@ func (r *NetworkPresenceReconciler) stamp(
 	return errors.Join(errs...)
 }
 
-// project writes the network's rules into the hub context. Everything a
+// project writes the network's rules into the context, in the project control
+// plane, owned by the network. The apiserver collects it when the network goes,
+// and the replicator carries it to the hub and on to the cells. Everything a
 // location reads is in spec, because propagation carries nothing else.
 func (r *NetworkPresenceReconciler) project(
 	ctx context.Context,
 	req ctrl.Request,
+	projectClient client.Client,
 	routing projectRouting,
 	pair *networkingv1alpha.NetworkBindingSpec,
 	network *networkingv1alpha.Network,
 ) (*networkingv1alpha.NetworkContext, error) {
 	networkContext := &networkingv1alpha.NetworkContext{}
-	networkContext.Namespace = req.Namespace
+	networkContext.Namespace = routing.projectNamespace
 	networkContext.Name = req.Name
 
-	_, err := controllerutil.CreateOrUpdate(ctx, r.hub, networkContext, func() error {
+	_, err := controllerutil.CreateOrUpdate(ctx, projectClient, networkContext, func() error {
 		if networkContext.Labels == nil {
 			networkContext.Labels = map[string]string{}
 		}
@@ -309,7 +340,8 @@ func (r *NetworkPresenceReconciler) project(
 		networkContext.Spec.IPFamilies = append([]networkingv1alpha.IPFamily(nil), network.Spec.IPFamilies...)
 		networkContext.Spec.MTU = network.Spec.MTU
 		networkContext.Spec.NetworkGeneration = network.Generation
-		return nil
+
+		return controllerutil.SetControllerReference(network, networkContext, projectClient.Scheme())
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed writing network context %q: %w", req.Name, err)
@@ -402,7 +434,6 @@ func (r *NetworkPresenceReconciler) SetupWithManager(mgr manager.Manager) error 
 	r.hub = mgr.GetClient()
 
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&networkingv1alpha.NetworkContext{}).
 		Watches(&networkingv1alpha.NetworkBinding{}, handler.EnqueueRequestsFromMapFunc(
 			func(_ context.Context, obj client.Object) []reconcile.Request {
 				binding, ok := obj.(*networkingv1alpha.NetworkBinding)

@@ -132,6 +132,12 @@ func (s *networkContextScenario) get() *networkingv1alpha.NetworkContext {
 	return networkContext
 }
 
+func (s *networkContextScenario) readyCondition() *metav1.Condition {
+	s.t.Helper()
+	return apimeta.FindStatusCondition(s.get().Status.Conditions,
+		networkingv1alpha.NetworkContextReady)
+}
+
 func (s *networkContextScenario) ipamCondition() *metav1.Condition {
 	s.t.Helper()
 	return apimeta.FindStatusCondition(s.get().Status.Conditions,
@@ -188,6 +194,11 @@ func TestNetworkContextClaimsItsSubnetWhenCreated(t *testing.T) {
 	require.Len(t, subnet.OwnerReferences, 1)
 	require.Equal(t, "NetworkContext", subnet.OwnerReferences[0].Kind)
 	require.Equal(t, s.name, subnet.OwnerReferences[0].Name)
+
+	// The subnet is carried to the cells serving this location by a policy that
+	// selects on the location it names; unlabelled, it reaches nowhere.
+	require.Equal(t, testLocationName, subnet.Labels[networkingv1alpha.LocationLabel])
+	require.Equal(t, testNetworkName, subnet.Labels[networkingv1alpha.NetworkLabel])
 
 	allocated := s.get()
 	require.NotNil(t, allocated.Status.IPAM)
@@ -418,6 +429,45 @@ func TestNetworkContextWithoutIPv6ClaimsNothing(t *testing.T) {
 
 	_, present := s.subnet()
 	require.False(t, present, "an unclaimed location publishes no subnet of its own")
+}
+
+// Readiness is what every consumer of a presence waits on. A location that
+// needs no address space has nothing outstanding, so it is ready as soon as it
+// exists — anything else leaves an IPv4-only network unusable everywhere.
+func TestNetworkContextWithoutIPv6IsReady(t *testing.T) {
+	s := newNetworkContextScenario(t, newFakeIPAM(t))
+
+	s.createContext(networkingv1alpha.IPv4Protocol)
+	s.reconcile()
+
+	condition := s.readyCondition()
+	require.NotNil(t, condition, "a context nothing is allocated for must still say whether it is ready")
+	require.Equal(t, metav1.ConditionTrue, condition.Status)
+	require.Equal(t, networkingv1alpha.NetworkContextReadyReasonReady, condition.Reason)
+}
+
+// A location that is addressed from IPAM is ready once its subnet is held, and
+// carries the allocation's own reason while it is not.
+func TestNetworkContextReadinessFollowsItsSubnet(t *testing.T) {
+	s := newNetworkContextScenario(t, newFakeIPAM(t))
+
+	networkContext := s.createContext(networkingv1alpha.IPv6Protocol)
+	s.ipam.refuse(networkContextSubnetClaimName(networkContext), fromTheWire(t,
+		ipamerrors.NewPoolExhausted("datum-subnet-v6-vpc",
+			`IPPool "datum-subnet-v6-vpc" is exhausted`)))
+	s.reconcile()
+
+	condition := s.readyCondition()
+	require.Equal(t, metav1.ConditionFalse, condition.Status)
+	require.Equal(t, string(allocationFailureExhausted), condition.Reason,
+		"readiness carries the allocation's own reason rather than a second vocabulary for it")
+
+	s.ipam.refuse(networkContextSubnetClaimName(networkContext), nil)
+	s.reconcile()
+
+	condition = s.readyCondition()
+	require.Equal(t, metav1.ConditionTrue, condition.Status)
+	require.Equal(t, networkingv1alpha.NetworkContextReadyReasonReady, condition.Reason)
 }
 
 // A deployment that named no class for subnets claims nothing, the same as one

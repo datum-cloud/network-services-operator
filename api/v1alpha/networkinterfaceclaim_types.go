@@ -52,6 +52,13 @@ const (
 	// this location without saying which families it carries.
 	NetworkInterfaceClaimReasonAddressFamiliesUnknown = "AddressFamiliesUnknown"
 
+	// NetworkInterfaceClaimReasonSubnetGatewayUnusable means the location
+	// published a subnet for an address family the claim holds, and no gateway
+	// can be derived from it. An interface given addresses and no gateway routes
+	// nothing, so this is reported rather than left for an operator to notice on
+	// the interface.
+	NetworkInterfaceClaimReasonSubnetGatewayUnusable = "SubnetGatewayUnusable"
+
 	// NetworkInterfaceClaimReasonProjectNamespaceNotFound means the namespace
 	// addresses are allocated in does not exist in the project's control plane.
 	// The platform provisions it with the project, so its absence says the

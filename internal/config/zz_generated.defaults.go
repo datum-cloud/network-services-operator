@@ -46,6 +46,13 @@ func SetObjectDefaults_CellControllerManager(in *CellControllerManager) {
 	if in.IPAM.Client.Burst == 0 {
 		in.IPAM.Client.Burst = 100
 	}
+	SetDefaults_ClientConnectionConfig(&in.Federation.Client)
+	if in.Federation.Client.QPS == 0 {
+		in.Federation.Client.QPS = 50
+	}
+	if in.Federation.Client.Burst == 0 {
+		in.Federation.Client.Burst = 100
+	}
 }
 
 func SetObjectDefaults_NetworkServicesOperator(in *NetworkServicesOperator) {

@@ -139,7 +139,12 @@ func NewCommand() *cobra.Command {
 				os.Exit(1)
 			}
 
-			registered, err := setupControllers(mgr, serverConfig, ipamClients)
+			hubCluster, err := newHubCluster(serverConfig)
+			if err != nil {
+				setupLog.Error(err, "unable to reach the federation hub")
+				os.Exit(1)
+			}
+			registered, err := setupControllers(mgr, serverConfig, ipamClients, hubCluster)
 			if err != nil {
 				setupLog.Error(err, "unable to set up controllers")
 				os.Exit(1)
@@ -156,6 +161,11 @@ func NewCommand() *cobra.Command {
 			}
 
 			g, ctx := errgroup.WithContext(ctx)
+			if hubCluster != nil {
+				g.Go(func() error {
+					return ignoreCanceled(hubCluster.Start(ctx))
+				})
+			}
 			for _, runnable := range runnables {
 				g.Go(func() error {
 					return ignoreCanceled(runnable.Start(ctx))
@@ -229,8 +239,9 @@ func setupControllers(
 	mgr mcmanager.Manager,
 	serverConfig config.CellControllerManager,
 	ipamClients controller.IPAMClientFactory,
+	hubCluster cluster.Cluster,
 ) ([]string, error) {
-	registrations := controllerRegistrations(mgr, serverConfig, ipamClients)
+	registrations := controllerRegistrations(mgr, serverConfig, ipamClients, hubCluster)
 
 	registered := make([]string, 0, len(registrations))
 	for _, registration := range registrations {
@@ -252,26 +263,59 @@ func controllerRegistrations(
 	mgr mcmanager.Manager,
 	serverConfig config.CellControllerManager,
 	ipamClients controller.IPAMClientFactory,
+	hubCluster cluster.Cluster,
 ) []namedSetup {
-	return []namedSetup{
-		{"networkinterfaceclaim", func() error {
+	registrations := make([]namedSetup, 0, 4)
+	registrations = append(registrations,
+		namedSetup{"networkinterfaceclaim", func() error {
 			return (&controller.NetworkInterfaceClaimReconciler{
 				Location: serverConfig.Location,
 				IPAM:     ipamClients,
 			}).SetupWithManager(mgr)
 		}},
-		{"networkinterface", func() error {
+		namedSetup{"networkinterface", func() error {
 			return (&controller.NetworkInterfaceReconciler{
 				Location: serverConfig.Location,
 				IPAM:     ipamClients,
 			}).SetupWithManager(mgr)
 		}},
-		{"networkcontexthold", func() error {
+		namedSetup{"networkcontexthold", func() error {
 			return (&controller.NetworkContextHoldReconciler{
 				Location: serverConfig.Location,
 			}).SetupWithManager(mgr)
 		}},
+	)
+
+	registrations = append(registrations, namedSetup{"networkinterfacewriteback", func() error {
+		// A cell with no hub keeps its interfaces to itself.
+		if hubCluster == nil {
+			return nil
+		}
+		return (&controller.NetworkInterfaceWriteBackReconciler{
+			Location:   serverConfig.Location,
+			HubCluster: hubCluster,
+		}).SetupWithManager(mgr)
+	}})
+
+	return registrations
+}
+
+// newHubCluster connects a cell to the federation hub it publishes to. It
+// returns nil when no hub is configured, which leaves interfaces cell-local and
+// every other controller untouched.
+func newHubCluster(serverConfig config.CellControllerManager) (cluster.Cluster, error) {
+	if !serverConfig.Federation.Enabled() {
+		return nil, nil
 	}
+
+	restConfig, err := serverConfig.Federation.RestConfig()
+	if err != nil {
+		return nil, fmt.Errorf("unable to load the federation hub kubeconfig: %w", err)
+	}
+
+	return cluster.New(restConfig, func(o *cluster.Options) {
+		o.Scheme = scheme
+	})
 }
 
 func newIPAMClientFactory(serverConfig config.CellControllerManager) (controller.IPAMClientFactory, error) {
@@ -295,7 +339,7 @@ func newIPAMClientFactory(serverConfig config.CellControllerManager) (controller
 
 // ControllerNames returns every controller this command registers.
 func ControllerNames() []string {
-	registrations := controllerRegistrations(nil, config.CellControllerManager{}, nil)
+	registrations := controllerRegistrations(nil, config.CellControllerManager{}, nil, nil)
 	names := make([]string, 0, len(registrations))
 	for _, registration := range registrations {
 		names = append(names, registration.name)

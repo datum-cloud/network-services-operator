@@ -190,6 +190,35 @@ func (c *IPAMConfig) RestConfig() (*rest.Config, error) {
 
 // +k8s:deepcopy-gen=true
 
+// FederationConfig names the federation hub a cell publishes to. It is the only
+// plane a cell and the control planes serving projects both reach.
+type FederationConfig struct {
+	// KubeconfigPath is the path to a kubeconfig file pointing at the hub.
+	// Unset, nothing is published.
+	KubeconfigPath string `json:"kubeconfigPath,omitempty"`
+
+	// Client configures the Kubernetes client connection to the hub.
+	Client ClientConnectionConfig `json:"client,omitempty"`
+}
+
+// Enabled reports whether a hub was named.
+func (c *FederationConfig) Enabled() bool {
+	return c.KubeconfigPath != ""
+}
+
+// RestConfig resolves the connection to the hub.
+func (c *FederationConfig) RestConfig() (*rest.Config, error) {
+	cfg, err := clientcmd.BuildConfigFromFlags("", c.KubeconfigPath)
+	if err != nil {
+		return nil, err
+	}
+
+	c.Client.ApplyTo(cfg)
+	return cfg, nil
+}
+
+// +k8s:deepcopy-gen=true
+
 // NetworkInterfaceConfig configures the NetworkInterfaceClaim controller.
 type NetworkInterfaceConfig struct {
 	// Deprecated: run the cell controller manager instead.

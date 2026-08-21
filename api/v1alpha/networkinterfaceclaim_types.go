@@ -15,12 +15,25 @@ const (
 	// and every requested class, holds an address.
 	NetworkInterfaceClaimAllocated = "Allocated"
 
+	// NetworkInterfaceClaimPrepared reports that the data plane's pre-Pod
+	// artifacts for the bound interface exist, so a workload that consumes it can
+	// be created.
+	//
+	// This is the condition to gate workload creation on. It becomes true before
+	// any workload exists, which is what makes waiting on it safe.
+	NetworkInterfaceClaimPrepared = "Prepared"
+
 	// NetworkInterfaceClaimProgrammed reports that the data plane carries the
 	// claimed addresses.
+	//
+	// Never gate workload creation on this one. It becomes true when the
+	// interface is attached, which happens while the workload's sandbox is being
+	// created, so anything that withholds the workload until it is true waits for
+	// something its own waiting prevents.
 	NetworkInterfaceClaimProgrammed = "Programmed"
 
-	// NetworkInterfaceClaimReady reports that the claim is bound, allocated, and
-	// programmed. A workload that needs the network should wait on this one
+	// NetworkInterfaceClaimReady reports that the claim is bound, allocated,
+	// prepared, and programmed. A workload that needs the network should wait on this one
 	// condition rather than on the three it summarizes.
 	NetworkInterfaceClaimReady = "Ready"
 )
@@ -213,8 +226,8 @@ type NetworkInterfaceClaimStatus struct {
 	ExternalAddresses []NetworkInterfaceExternalAddress `json:"externalAddresses,omitempty"`
 
 	// conditions report the current state of the claim. Wait on Ready, which is
-	// true once the claim is bound, its addresses are allocated, and the data
-	// plane carries them.
+	// true once the claim is bound, its addresses are allocated, the data plane
+	// is prepared for a workload, and the data plane carries the addresses.
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 
@@ -246,7 +259,7 @@ type NetworkInterfaceClaim struct {
 	// +kubebuilder:validation:Required
 	Spec NetworkInterfaceClaimSpec `json:"spec,omitempty"`
 
-	// +kubebuilder:default={conditions:{{type:"Bound",status:"Unknown",reason:"Pending", message:"Waiting for controller", lastTransitionTime: "1970-01-01T00:00:00Z"},{type:"Allocated",status:"Unknown",reason:"Pending", message:"Waiting for controller", lastTransitionTime: "1970-01-01T00:00:00Z"},{type:"Programmed",status:"Unknown",reason:"Pending", message:"Waiting for controller", lastTransitionTime: "1970-01-01T00:00:00Z"},{type:"Ready",status:"Unknown",reason:"Pending", message:"Waiting for controller", lastTransitionTime: "1970-01-01T00:00:00Z"}}}
+	// +kubebuilder:default={conditions:{{type:"Bound",status:"Unknown",reason:"Pending", message:"Waiting for controller", lastTransitionTime: "1970-01-01T00:00:00Z"},{type:"Allocated",status:"Unknown",reason:"Pending", message:"Waiting for controller", lastTransitionTime: "1970-01-01T00:00:00Z"},{type:"Prepared",status:"Unknown",reason:"Pending", message:"Waiting for controller", lastTransitionTime: "1970-01-01T00:00:00Z"},{type:"Programmed",status:"Unknown",reason:"Pending", message:"Waiting for controller", lastTransitionTime: "1970-01-01T00:00:00Z"},{type:"Ready",status:"Unknown",reason:"Pending", message:"Waiting for controller", lastTransitionTime: "1970-01-01T00:00:00Z"}}}
 	Status NetworkInterfaceClaimStatus `json:"status,omitempty"`
 }
 

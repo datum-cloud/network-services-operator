@@ -1610,13 +1610,6 @@ func (in *NetworkInterfaceStatus) DeepCopyInto(out *NetworkInterfaceStatus) {
 		*out = new(NetworkInterfaceAttachmentRef)
 		**out = **in
 	}
-	if in.ConsumerAnnotations != nil {
-		in, out := &in.ConsumerAnnotations, &out.ConsumerAnnotations
-		*out = make(map[string]string, len(*in))
-		for key, val := range *in {
-			(*out)[key] = val
-		}
-	}
 	if in.Conditions != nil {
 		in, out := &in.Conditions, &out.Conditions
 		*out = make([]v1.Condition, len(*in))

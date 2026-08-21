@@ -30,6 +30,9 @@ spec:
     - jsonPath: .status.conditions[?(@.type=="Allocated")].status
       name: Allocated
       type: string
+    - jsonPath: .status.conditions[?(@.type=="Prepared")].status
+      name: Prepared
+      type: string
     - jsonPath: .status.conditions[?(@.type=="Programmed")].status
       name: Programmed
       type: string
@@ -269,6 +272,11 @@ spec:
                 message: Waiting for controller
                 reason: Pending
                 status: Unknown
+                type: Prepared
+              - lastTransitionTime: "1970-01-01T00:00:00Z"
+                message: Waiting for controller
+                reason: Pending
+                status: Unknown
                 type: Programmed
             description: |-
               NetworkInterfaceStatus defines the observed state of NetworkInterface: which
@@ -305,7 +313,8 @@ spec:
               conditions:
                 description: |-
                   conditions report the current state of the interface. Allocated means every
-                  address is held. Programmed means the data plane carries them.
+                  address is held. Prepared means the data plane is ready for a workload to
+                  consume it. Programmed means the data plane carries the addresses.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -361,20 +370,6 @@ spec:
                   - type
                   type: object
                 type: array
-              consumerAnnotations:
-                additionalProperties:
-                  type: string
-                description: |-
-                  consumerAnnotations are annotations the workload object consuming this
-                  interface must carry for the data plane to deliver it, such as the pod
-                  annotation a CNI meta-plugin reads. Whoever realizes the interface writes
-                  them; the consumer copies them verbatim.
-
-                  The contents are opaque. They name an implementation the operator does not
-                  know about, so nothing here reads, validates or interprets them, and an
-                  attachment that needs no annotation publishes none.
-                maxProperties: 16
-                type: object
               networkContextRef:
                 description: |-
                   networkContextRef is the network's presence in this location, resolved or

@@ -678,7 +678,7 @@ func TestNetworkInterfaceClaimBindsDualStack(t *testing.T) {
 	require.Equal(t, metav1.ConditionUnknown, conditionOf(bound, networkingv1alpha.NetworkInterfaceClaimProgrammed).Status,
 		"programming is out of scope and must stay unknown")
 	require.NotEqual(t, metav1.ConditionTrue, conditionOf(bound, networkingv1alpha.NetworkInterfaceClaimReady).Status,
-		"Ready requires Programmed, which nothing reports yet")
+		"Ready requires Prepared and Programmed, which nothing reports yet")
 }
 
 func TestNetworkInterfaceClaimFailsClosedWithoutProject(t *testing.T) {
@@ -1219,8 +1219,8 @@ func TestAdoptionRefusesAnInterfaceOnAnotherNetwork(t *testing.T) {
 	require.Nil(t, unchanged.Spec.ClaimRef, "the interface stays unbound")
 }
 
-// The data plane owns Programmed. Overwriting it puts Ready permanently out of
-// reach, and Ready is what consumers gate on.
+// The data plane owns Prepared and Programmed. Overwriting either puts Ready
+// permanently out of reach, and Ready is what consumers gate on.
 func TestProgrammedIsSeededThenLeftAlone(t *testing.T) {
 	s := newScenario(t, true, []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol})
 
@@ -1233,28 +1233,53 @@ func TestProgrammedIsSeededThenLeftAlone(t *testing.T) {
 
 	seeded := s.getClaim("gated")
 	require.Equal(t, metav1.ConditionUnknown,
+		conditionOf(seeded, networkingv1alpha.NetworkInterfaceClaimPrepared).Status)
+	require.Equal(t, metav1.ConditionUnknown,
 		conditionOf(seeded, networkingv1alpha.NetworkInterfaceClaimProgrammed).Status)
 	require.NotEqual(t, metav1.ConditionTrue,
 		conditionOf(seeded, networkingv1alpha.NetworkInterfaceClaimReady).Status)
 
-	// Stand in for the data plane reporting the attachment.
+	// Stand in for the data plane preparing the attachment, which happens before
+	// any workload exists.
 	apimeta.SetStatusCondition(&seeded.Status.Conditions, metav1.Condition{
-		Type:    networkingv1alpha.NetworkInterfaceClaimProgrammed,
+		Type:    networkingv1alpha.NetworkInterfaceClaimPrepared,
 		Status:  metav1.ConditionTrue,
-		Reason:  "Programmed",
-		Message: "The attachment is ready",
+		Reason:  "Prepared",
+		Message: "The attachment is ready for a workload",
 	})
 	require.NoError(t, s.client.Status().Update(s.ctx, seeded))
 
 	s.reconcile(s.getClaim("gated"))
 
+	prepared := s.getClaim("gated")
+	require.Equal(t, metav1.ConditionTrue,
+		conditionOf(prepared, networkingv1alpha.NetworkInterfaceClaimPrepared).Status,
+		"NSO must not revert the condition the data plane owns")
+	require.NotEqual(t, metav1.ConditionTrue,
+		conditionOf(prepared, networkingv1alpha.NetworkInterfaceClaimReady).Status,
+		"a prepared attachment is not yet carrying traffic")
+
+	// And then reporting the attachment itself, which happens at sandbox creation.
+	apimeta.SetStatusCondition(&prepared.Status.Conditions, metav1.Condition{
+		Type:    networkingv1alpha.NetworkInterfaceClaimProgrammed,
+		Status:  metav1.ConditionTrue,
+		Reason:  "Programmed",
+		Message: "The attachment is ready",
+	})
+	require.NoError(t, s.client.Status().Update(s.ctx, prepared))
+
+	s.reconcile(s.getClaim("gated"))
+
 	settled := s.getClaim("gated")
+	require.Equal(t, metav1.ConditionTrue,
+		conditionOf(settled, networkingv1alpha.NetworkInterfaceClaimPrepared).Status,
+		"NSO must not revert the condition the data plane owns")
 	require.Equal(t, metav1.ConditionTrue,
 		conditionOf(settled, networkingv1alpha.NetworkInterfaceClaimProgrammed).Status,
 		"NSO must not revert the condition the data plane owns")
 	require.Equal(t, metav1.ConditionTrue,
 		conditionOf(settled, networkingv1alpha.NetworkInterfaceClaimReady).Status,
-		"Ready follows from the other three rather than being hardcoded")
+		"Ready follows from the other four rather than being hardcoded")
 }
 
 // A blip reading the namespace must not demote a healthy claim and then leave
@@ -1818,64 +1843,6 @@ func TestNetworkContextHoldIsReleasedAfterTheLastInterfaceIsGone(t *testing.T) {
 	_, err = s.getNetworkContext()
 	require.True(t, apierrors.IsNotFound(err),
 		"the context's own reconcile must release a hold no interface justifies")
-}
-
-// The consumer annotations are written by whoever realizes the interface, in the
-// same way as Programmed. NSO publishes interface status on several paths and
-// none of them may drop what it finds there.
-func TestConsumerAnnotationsSurviveNSO(t *testing.T) {
-	s := newScenario(t, true, []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol})
-
-	spec := networkingv1alpha.NetworkInterfaceClaimSpec{
-		InterfaceName: "eth0",
-		IPFamilies:    []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol},
-		ReclaimPolicy: networkingv1alpha.NetworkInterfaceReclaimPolicyRetain,
-	}
-
-	s.reconcile(s.createClaim("slot-0-eth0", spec))
-
-	iface, err := s.getInterface("slot-0-eth0")
-	require.NoError(t, err)
-	require.Empty(t, iface.Status.ConsumerAnnotations,
-		"NSO publishes none of its own; the field is the data plane's to write")
-
-	// Stand in for the VPC controller reporting what the pod must carry.
-	iface.Status.ConsumerAnnotations = map[string]string{
-		"k8s.v1.cni.cncf.io/networks": s.namespace + "/slot-0-eth0",
-	}
-	apimeta.SetStatusCondition(&iface.Status.Conditions, metav1.Condition{
-		Type:    networkingv1alpha.NetworkInterfaceProgrammed,
-		Status:  metav1.ConditionTrue,
-		Reason:  "Programmed",
-		Message: "The attachment is ready",
-	})
-	require.NoError(t, s.client.Status().Update(s.ctx, iface))
-
-	requirePublished := func(stage string) {
-		t.Helper()
-		reported, err := s.getInterface("slot-0-eth0")
-		require.NoError(t, err)
-		require.Equal(t, s.namespace+"/slot-0-eth0",
-			reported.Status.ConsumerAnnotations["k8s.v1.cni.cncf.io/networks"],
-			"%s dropped the annotations the consumer has to apply", stage)
-		require.Equal(t, metav1.ConditionTrue,
-			apimeta.FindStatusCondition(reported.Status.Conditions,
-				networkingv1alpha.NetworkInterfaceProgrammed).Status,
-			"%s reverted the condition the data plane owns", stage)
-	}
-
-	s.reconcile(s.getClaim("slot-0-eth0"))
-	requirePublished("a requeue")
-
-	s.reconcileInterface("slot-0-eth0")
-	requirePublished("an interface reconcile")
-
-	// Retain unbinds the interface and a replacement claim adopts it.
-	s.deleteClaim(s.getClaim("slot-0-eth0"))
-	requirePublished("release under Retain")
-
-	s.reconcile(s.createClaim("slot-0-eth0", spec))
-	requirePublished("a rebind")
 }
 
 // A provider reads the interface alone, so the consumption mode has to reach it

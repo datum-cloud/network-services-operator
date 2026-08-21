@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -26,6 +27,7 @@ func indexTestScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
 	s := runtime.NewScheme()
 	require.NoError(t, corev1.AddToScheme(s))
+	require.NoError(t, discoveryv1.AddToScheme(s))
 	require.NoError(t, networkingv1alpha.AddToScheme(s))
 	require.NoError(t, networkingv1alpha1.AddToScheme(s))
 	return s
@@ -141,6 +143,40 @@ func newOfflineConnector(ns, name string) *networkingv1alpha1.Connector {
 					LastTransitionTime: metav1.Now(),
 				},
 			},
+		},
+	}
+}
+
+// newVPCPodHTTPProxy builds an HTTPProxy with one rule that has a vpcPod
+// backend. The proxy name is fixed as "my-proxy", matching newHTTPProxy.
+func newVPCPodHTTPProxy(ns, vpcPodName string) *networkingv1alpha.HTTPProxy {
+	return &networkingv1alpha.HTTPProxy{
+		ObjectMeta: metav1.ObjectMeta{Name: "my-proxy", Namespace: ns},
+		Spec: networkingv1alpha.HTTPProxySpec{
+			Rules: []networkingv1alpha.HTTPProxyRule{
+				{
+					Backends: []networkingv1alpha.HTTPProxyRuleBackend{
+						{
+							Instance: &networkingv1alpha.InstanceBackendRef{
+								Name: vpcPodName,
+								Port: 8080,
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+// newTenantEndpointSlice builds an EndpointSlice carrying the tenant-id label
+// galactic-cni is expected to set.
+func newTenantEndpointSlice(ns, name, tenantID string) *discoveryv1.EndpointSlice {
+	return &discoveryv1.EndpointSlice{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: ns,
+			Labels:    map[string]string{VPCPodTenantIDLabel: tenantID},
 		},
 	}
 }
@@ -863,6 +899,87 @@ func TestBuildPolicyIndexFromClient_ConnectorResolution_MissingConnector_Treated
 	assert.Equal(t, "backend.example.com", info.TargetHost)
 	assert.Equal(t, 8080, info.TargetPort)
 	assert.Empty(t, info.NodeID)
+}
+
+func TestBuildPolicyIndexFromClient_VPCPodResolution_TenantIDFromLabel(t *testing.T) {
+	const (
+		upstreamNS = "test-project"
+		proxyName  = "my-proxy"
+		podSlice   = "vpc-pod-1"
+		tenantID   = "tenant-1"
+	)
+	scheme := indexTestScheme(t)
+
+	proxy := newVPCPodHTTPProxy(upstreamNS, podSlice)
+	endpointSlice := newTenantEndpointSlice(upstreamNS, podSlice, tenantID)
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(proxy, endpointSlice).
+		Build()
+
+	idx, err := BuildPolicyIndexFromClient(context.Background(), cl, nil)
+	require.NoError(t, err)
+
+	key := VPCPodKey{UpstreamNS: upstreamNS, HTTPProxyName: proxyName, RuleIndex: 0}
+	info, ok := idx.VPCPods[key]
+	require.True(t, ok, "VPCPodKey {%s, %s, 0} must be present in index", upstreamNS, proxyName)
+	assert.Equal(t, tenantID, info.TenantID)
+}
+
+func TestBuildPolicyIndexFromClient_VPCPodResolution_MissingEndpointSlice_EmptyTenantID(t *testing.T) {
+	// HTTPProxy references a vpcPod EndpointSlice that doesn't exist. Production
+	// behavior: cl.Get returns NotFound → VPCPodInfo{} (empty TenantID), so
+	// ApplyVPCPodSocketBind skips mutation rather than binding to a
+	// zero-value device name.
+	const (
+		upstreamNS = "test-project"
+		proxyName  = "my-proxy"
+	)
+	scheme := indexTestScheme(t)
+
+	proxy := newVPCPodHTTPProxy(upstreamNS, "does-not-exist")
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(proxy).
+		Build()
+
+	idx, err := BuildPolicyIndexFromClient(context.Background(), cl, nil)
+	require.NoError(t, err)
+
+	key := VPCPodKey{UpstreamNS: upstreamNS, HTTPProxyName: proxyName, RuleIndex: 0}
+	info, ok := idx.VPCPods[key]
+	require.True(t, ok, "missing EndpointSlice must still produce a VPCPodInfo entry")
+	assert.Empty(t, info.TenantID)
+}
+
+func TestBuildPolicyIndexFromClient_VPCPodResolution_UnlabeledEndpointSlice_EmptyTenantID(t *testing.T) {
+	const (
+		upstreamNS = "test-project"
+		proxyName  = "my-proxy"
+		podSlice   = "vpc-pod-1"
+	)
+	scheme := indexTestScheme(t)
+
+	proxy := newVPCPodHTTPProxy(upstreamNS, podSlice)
+	// EndpointSlice exists but carries no tenant-id label.
+	endpointSlice := &discoveryv1.EndpointSlice{
+		ObjectMeta: metav1.ObjectMeta{Name: podSlice, Namespace: upstreamNS},
+	}
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(proxy, endpointSlice).
+		Build()
+
+	idx, err := BuildPolicyIndexFromClient(context.Background(), cl, nil)
+	require.NoError(t, err)
+
+	key := VPCPodKey{UpstreamNS: upstreamNS, HTTPProxyName: proxyName, RuleIndex: 0}
+	info, ok := idx.VPCPods[key]
+	require.True(t, ok)
+	assert.Empty(t, info.TenantID)
 }
 
 func TestBuildPolicyIndexFromClient_ConnectorResolution_MultipleRulesCorrectIndex(t *testing.T) {

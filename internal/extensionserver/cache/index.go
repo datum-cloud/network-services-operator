@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -36,6 +37,7 @@ func BuildPolicyIndexFromClient(ctx context.Context, cl client.Client, baseDirec
 		ProjectNames: make(map[string]string),
 		TPPs:         make(map[string][]TPPInfo),
 		Connectors:   make(map[ConnectorKey]ConnectorInfo),
+		VPCPods:      make(map[VPCPodKey]VPCPodInfo),
 	}
 	if err := populateFromClient(ctx, cl, idx, baseDirectives); err != nil {
 		return nil, err
@@ -134,43 +136,68 @@ func populateFromClient(ctx context.Context, cl client.Client, idx *PolicyIndex,
 		}
 		for ruleIndex, rule := range proxy.Spec.Rules {
 			for _, backend := range rule.Backends {
-				if backend.Connector == nil {
-					continue
-				}
+				switch {
+				case backend.Connector != nil:
+					targetHost, targetPort, err := parseEndpoint(backend.Endpoint)
+					if err != nil {
+						// Skip invalid endpoints; proxy admission should have caught them.
+						continue
+					}
 
-				targetHost, targetPort, err := parseEndpoint(backend.Endpoint)
-				if err != nil {
-					// Skip invalid endpoints; proxy admission should have caught them.
-					continue
-				}
+					key := ConnectorKey{
+						UpstreamNS:    effectiveNS,
+						HTTPProxyName: proxy.Name,
+						RuleIndex:     ruleIndex,
+					}
 
-				key := ConnectorKey{
-					UpstreamNS:    effectiveNS,
-					HTTPProxyName: proxy.Name,
-					RuleIndex:     ruleIndex,
-				}
+					var connector networkingv1alpha1.Connector
+					if lookupErr := cl.Get(ctx, client.ObjectKey{
+						Namespace: proxy.Namespace,
+						Name:      backend.Connector.Name,
+					}, &connector); lookupErr != nil {
+						// Connector missing or transient error; treat as offline.
+						idx.Connectors[key] = ConnectorInfo{
+							Online:     false,
+							TargetHost: targetHost,
+							TargetPort: targetPort,
+						}
+						continue
+					}
 
-				var connector networkingv1alpha1.Connector
-				if lookupErr := cl.Get(ctx, client.ObjectKey{
-					Namespace: proxy.Namespace,
-					Name:      backend.Connector.Name,
-				}, &connector); lookupErr != nil {
-					// Connector missing or transient error; treat as offline.
+					online, nodeID := connectorLiveness(&connector)
+
 					idx.Connectors[key] = ConnectorInfo{
-						Online:     false,
+						Online:     online,
 						TargetHost: targetHost,
 						TargetPort: targetPort,
+						NodeID:     nodeID,
 					}
-					continue
-				}
 
-				online, nodeID := connectorLiveness(&connector)
+				case backend.Instance != nil:
+					key := VPCPodKey{
+						UpstreamNS:    effectiveNS,
+						HTTPProxyName: proxy.Name,
+						RuleIndex:     ruleIndex,
+					}
 
-				idx.Connectors[key] = ConnectorInfo{
-					Online:     online,
-					TargetHost: targetHost,
-					TargetPort: targetPort,
-					NodeID:     nodeID,
+					// The referenced EndpointSlice is expected in the same
+					// local (downstream) namespace this HTTPProxy replica
+					// lives in — galactic-cni (#854) publishes it directly
+					// into the edge cluster, same as this HTTPProxy replica
+					// itself, not into an upstream namespace.
+					var endpointSlice discoveryv1.EndpointSlice
+					if lookupErr := cl.Get(ctx, client.ObjectKey{
+						Namespace: proxy.Namespace,
+						Name:      backend.Instance.Name,
+					}, &endpointSlice); lookupErr != nil {
+						// Missing or transient error: leave TenantID empty so
+						// ApplyVPCPodSocketBind skips mutation rather than
+						// binding to a zero-value device name.
+						idx.VPCPods[key] = VPCPodInfo{}
+						continue
+					}
+
+					idx.VPCPods[key] = VPCPodInfo{TenantID: endpointSlice.Labels[VPCPodTenantIDLabel]}
 				}
 			}
 		}

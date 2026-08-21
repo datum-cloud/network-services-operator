@@ -175,6 +175,16 @@ var (
 		},
 	)
 
+	// VPCPodSocketBindTotal counts total clusters patched with a VRF
+	// SO_BINDTODEVICE socket option for a vpcPod HTTPProxy backend (#856),
+	// across all hook invocations.
+	VPCPodSocketBindTotal = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "nso_extension_vpcpod_socket_bind_total",
+			Help: "Total clusters patched with a VRF SO_BINDTODEVICE socket option for a vpcPod HTTPProxy backend across all hook invocations.",
+		},
+	)
+
 	// TLSPrunedChainsTotal tracks how often a broken certificate had to be
 	// dropped from a listener to keep the rest of it serving (issue #212).
 	TLSPrunedChainsTotal = promauto.NewCounter(

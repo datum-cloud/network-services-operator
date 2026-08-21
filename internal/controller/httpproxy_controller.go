@@ -64,6 +64,41 @@ type desiredHTTPProxyResources struct {
 	httpRouteFilters []*envoygatewayv1alpha1.HTTPRouteFilter
 }
 
+// errInstanceBackendNotFound is returned by collectDesiredResources when an
+// instance backend references an EndpointSlice that doesn't exist. Reconcile
+// detects it with errors.As and surfaces a Programmed=False condition
+// instead of a generic requeue.
+type errInstanceBackendNotFound struct {
+	name string
+}
+
+func (e *errInstanceBackendNotFound) Error() string {
+	return fmt.Sprintf("referenced EndpointSlice %q not found", e.name)
+}
+
+// collectDesiredResourcesErrorResult turns a collectDesiredResources error
+// into the (Result, error) Reconcile should return, or done=false if err is
+// nil and Reconcile should keep going. An instance backend referencing a
+// missing EndpointSlice gets its own Programmed=False condition and a short
+// requeue (the referenced pod may simply not have started yet) instead of a
+// bare generic requeue. Kept out of Reconcile as a single call so adding
+// this case doesn't grow Reconcile's own cyclomatic complexity.
+func collectDesiredResourcesErrorResult(err error, programmedCondition *metav1.Condition) (result ctrl.Result, retErr error, done bool) {
+	if err == nil {
+		return ctrl.Result{}, nil, false
+	}
+
+	var notFound *errInstanceBackendNotFound
+	if errors.As(err, &notFound) {
+		programmedCondition.Status = metav1.ConditionFalse
+		programmedCondition.Reason = networkingv1alpha.HTTPProxyReasonInstanceBackendNotFound
+		programmedCondition.Message = fmt.Sprintf("The HTTPProxy cannot be programmed: %s", notFound.Error())
+		return ctrl.Result{RequeueAfter: retryAfterConflict}, nil, true
+	}
+
+	return ctrl.Result{}, fmt.Errorf("failed to collect desired resources: %w", err), true
+}
+
 const httpProxyFinalizer = "networking.datumapis.com/httpproxy-cleanup"
 
 const retryAfterInvalid = 5 * time.Minute
@@ -193,8 +228,8 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 	}
 
 	desiredResources, err := r.collectDesiredResources(ctx, cl.GetClient(), &httpProxy)
-	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("failed to collect desired resources: %w", err)
+	if result, retErr, done := collectDesiredResourcesErrorResult(err, programmedCondition); done {
+		return result, retErr
 	}
 
 	// Maintain a Gateway for the HTTPProxy, handle conflicts in names by updating the
@@ -831,6 +866,40 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 		}
 
 		for backendIndex, backend := range rule.Backends {
+			if backend.Instance != nil {
+				// Reference the CNI-published EndpointSlice as-is — never
+				// synthesize one. Synthesizing would separate the pod
+				// address from the SID annotation the tenant-VRF/SRv6
+				// mechanism depends on staying joined to it.
+				//
+				// TODO(#856): confirm with #854 whether the referenced
+				// EndpointSlice is expected to exist in the HTTPProxy's own
+				// (upstream) namespace via this same client, or whether this
+				// existence check belongs in the Gateway controller instead
+				// once the downstream-native resolution path is settled.
+				var referenced discoveryv1.EndpointSlice
+				key := client.ObjectKey{Namespace: httpProxy.Namespace, Name: backend.Instance.Name}
+				if err := cl.Get(ctx, key, &referenced); err != nil {
+					if apierrors.IsNotFound(err) {
+						return nil, &errInstanceBackendNotFound{name: backend.Instance.Name}
+					}
+					return nil, fmt.Errorf("failed getting instance backend endpointslice for backend %d in rule %d: %w", backendIndex, ruleIndex, err)
+				}
+
+				backendRefs[backendIndex] = gatewayv1.HTTPBackendRef{
+					BackendRef: gatewayv1.BackendRef{
+						BackendObjectReference: gatewayv1.BackendObjectReference{
+							Group: ptr.To(gatewayv1.Group("discovery.k8s.io")),
+							Kind:  ptr.To(gatewayv1.Kind("EndpointSlice")),
+							Name:  gatewayv1.ObjectName(backend.Instance.Name),
+							Port:  ptr.To(backend.Instance.Port),
+						},
+					},
+					Filters: backend.Filters,
+				}
+				continue
+			}
+
 			// Offline-connector handling differs by emission mode:
 			//
 			//   * EPP mode (legacy): emit a backend-less route rule. EG translates

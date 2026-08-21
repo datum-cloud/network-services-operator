@@ -288,6 +288,27 @@ func (s *Server) PostTranslateModify(
 		attribute.Int("routes.connector_offline", offlineRtCount),
 	)
 	connRoutesSpan.End()
+
+	// --- VPC pod family (#856) ---
+	// Binds a vpcPod backend's cluster to its tenant's VRF device
+	// (SO_BINDTODEVICE) so the shared multi-tenant Envoy fleet resolves the
+	// right tenant's address space for that backend. Independent of the TPP
+	// and Connector families above — a cluster is at most one of the three.
+	_, vpcPodSpan := tr.Start(mctx, "vpcpod.clusters")
+	vpcPodCount, err := mutate.ApplyVPCPodSocketBind(clusters, idx)
+	vpcPodSpan.SetAttributes(attribute.Int("clusters.vpcpod_bound", vpcPodCount))
+	vpcPodSpan.End()
+	if err != nil {
+		s.log.Error("apply vpcPod socket bind", "err", err)
+		mspan.RecordError(err)
+		mspan.End()
+		extmetrics.PhaseDuration.WithLabelValues("mutate").Observe(time.Since(mutStart).Seconds())
+		hspan.RecordError(err)
+		outcome = outcomeError
+		return nil, err
+	}
+	extmetrics.VPCPodSocketBindTotal.Add(float64(vpcPodCount))
+
 	mspan.End()
 
 	extmetrics.PhaseDuration.WithLabelValues("mutate").Observe(time.Since(mutStart).Seconds())
@@ -369,6 +390,7 @@ func (s *Server) PostTranslateModify(
 		"clusters_offline", len(connOffline),
 		"vhosts_connector_applied", vhCount,
 		"connector_offline_routes", offlineRtCount,
+		"clusters_vpcpod_bound", vpcPodCount,
 	)
 
 	return &pb.PostTranslateModifyResponse{

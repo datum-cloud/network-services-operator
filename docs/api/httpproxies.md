@@ -225,23 +225,29 @@ if it is set.<br/>
         </tr>
     </thead>
     <tbody><tr>
-        <td><b>endpoint</b></td>
-        <td>string</td>
-        <td>
-          Endpoint for the backend. Must be a valid URL.
-
-Supports http and https protocols, IPs or DNS addresses in the host, custom
-ports, and paths.<br/>
-        </td>
-        <td>true</td>
-      </tr><tr>
         <td><b><a href="#httpproxyspecrulesindexbackendsindexconnector">connector</a></b></td>
         <td>object</td>
         <td>
           Connector references the Connector that should be used for this backend.
 
 For now, only a name reference is supported. In the future this can be
-extended to selector-based matching to allow multiple connectors.<br/>
+extended to selector-based matching to allow multiple connectors.
+
+Used together with endpoint (the tunnel's target address). Mutually
+exclusive with instance.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>endpoint</b></td>
+        <td>string</td>
+        <td>
+          Endpoint for the backend. Must be a valid URL.
+
+Supports http and https protocols, IPs or DNS addresses in the host, custom
+ports, and paths.
+
+Required unless instance is set. When connector is also set, this is the
+tunnel's target address rather than a directly reachable backend.<br/>
         </td>
         <td>false</td>
       </tr><tr>
@@ -252,6 +258,19 @@ extended to selector-based matching to allow multiple connectors.<br/>
 request is being forwarded to the backend defined here.<br/>
           <br/>
             <i>Validations</i>:<li>!(self.exists(f, f.type == 'RequestRedirect') && self.exists(f, f.type == 'URLRewrite')): May specify either requestRedirect or urlRewrite, but not both</li><li>self.filter(f, f.type == 'RequestHeaderModifier').size() <= 1: RequestHeaderModifier filter cannot be repeated</li><li>self.filter(f, f.type == 'ResponseHeaderModifier').size() <= 1: ResponseHeaderModifier filter cannot be repeated</li><li>self.filter(f, f.type == 'RequestRedirect').size() <= 1: RequestRedirect filter cannot be repeated</li><li>self.filter(f, f.type == 'URLRewrite').size() <= 1: URLRewrite filter cannot be repeated</li>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b><a href="#httpproxyspecrulesindexbackendsindexinstance">instance</a></b></td>
+        <td>object</td>
+        <td>
+          Instance references an EndpointSlice published by galactic-cni for a pod
+running on a tenant VPC network. The referenced EndpointSlice is
+resolved and forwarded to as-is — it is never synthesized or mutated by
+this controller, since doing so would separate the pod address from the
+SID annotation the tenant-VRF/SRv6 mechanism depends on.
+
+Mutually exclusive with endpoint and connector.<br/>
         </td>
         <td>false</td>
       </tr><tr>
@@ -277,6 +296,9 @@ Connector references the Connector that should be used for this backend.
 
 For now, only a name reference is supported. In the future this can be
 extended to selector-based matching to allow multiple connectors.
+
+Used together with endpoint (the tunnel's target address). Mutually
+exclusive with instance.
 
 <table>
     <thead>
@@ -2066,6 +2088,51 @@ the implementation setting the Accepted Condition for the Route to `status: Fals
 Request Path | Prefix Match | Replace Prefix | Modified Path<br/>
         </td>
         <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### HTTPProxy.spec.rules[index].backends[index].instance
+<sup><sup>[↩ Parent](#httpproxyspecrulesindexbackendsindex)</sup></sup>
+
+
+
+Instance references an EndpointSlice published by galactic-cni for a pod
+running on a tenant VPC network. The referenced EndpointSlice is
+resolved and forwarded to as-is — it is never synthesized or mutated by
+this controller, since doing so would separate the pod address from the
+SID annotation the tenant-VRF/SRv6 mechanism depends on.
+
+Mutually exclusive with endpoint and connector.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>name</b></td>
+        <td>string</td>
+        <td>
+          Name of the EndpointSlice galactic-cni publishes for the target pod.
+Must exist in the same namespace as this HTTPProxy.<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>port</b></td>
+        <td>integer</td>
+        <td>
+          Port on the referenced EndpointSlice to forward traffic to.<br/>
+          <br/>
+            <i>Format</i>: int32<br/>
+            <i>Minimum</i>: 1<br/>
+            <i>Maximum</i>: 65535<br/>
+        </td>
+        <td>true</td>
       </tr></tbody>
 </table>
 

@@ -112,13 +112,17 @@ type HTTPProxyRule struct {
 	Backends []HTTPProxyRuleBackend `json:"backends,omitempty"`
 }
 
+// +kubebuilder:validation:XValidation:message="endpoint is required unless instance is set, and instance is mutually exclusive with endpoint and connector",rule="has(self.instance) ? (!has(self.endpoint) && !has(self.connector)) : has(self.endpoint)"
 type HTTPProxyRuleBackend struct {
 	// Endpoint for the backend. Must be a valid URL.
 	//
 	// Supports http and https protocols, IPs or DNS addresses in the host, custom
 	// ports, and paths.
 	//
-	// +kubebuilder:validation:Required
+	// Required unless instance is set. When connector is also set, this is the
+	// tunnel's target address rather than a directly reachable backend.
+	//
+	// +kubebuilder:validation:Optional
 	Endpoint string `json:"endpoint,omitempty"`
 
 	// Connector references the Connector that should be used for this backend.
@@ -126,8 +130,22 @@ type HTTPProxyRuleBackend struct {
 	// For now, only a name reference is supported. In the future this can be
 	// extended to selector-based matching to allow multiple connectors.
 	//
+	// Used together with endpoint (the tunnel's target address). Mutually
+	// exclusive with instance.
+	//
 	// +kubebuilder:validation:Optional
 	Connector *ConnectorReference `json:"connector,omitempty"`
+
+	// Instance references an EndpointSlice published by galactic-cni for a pod
+	// running on a tenant VPC network. The referenced EndpointSlice is
+	// resolved and forwarded to as-is — it is never synthesized or mutated by
+	// this controller, since doing so would separate the pod address from the
+	// SID annotation the tenant-VRF/SRv6 mechanism depends on.
+	//
+	// Mutually exclusive with endpoint and connector.
+	//
+	// +kubebuilder:validation:Optional
+	Instance *InstanceBackendRef `json:"instance,omitempty"`
 
 	// TLS contains backend TLS configuration.
 	//
@@ -167,6 +185,28 @@ type HTTPProxyBackendTLS struct {
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
 	Hostname *string `json:"hostname,omitempty"`
+}
+
+// InstanceBackendRef references an EndpointSlice published by galactic-cni for
+// a pod on a tenant VPC network.
+//
+// TODO(#856): the tenant-id label name/schema this reference implicitly
+// depends on (used downstream by the Gateway controller to recognize a
+// CNI-published EndpointSlice and route around Service synthesis) is not
+// yet confirmed with #854. Revisit this type once that's settled.
+type InstanceBackendRef struct {
+	// Name of the EndpointSlice galactic-cni publishes for the target pod.
+	// Must exist in the same namespace as this HTTPProxy.
+	//
+	// +kubebuilder:validation:Required
+	Name string `json:"name"`
+
+	// Port on the referenced EndpointSlice to forward traffic to.
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=65535
+	Port int32 `json:"port"`
 }
 
 // ConnectorReference references a Connector by name.
@@ -412,6 +452,10 @@ const (
 	// HTTPProxyReasonConflict indicates that the HTTP proxy encountered a conflict
 	// when being programmed.
 	HTTPProxyReasonConflict = "Conflict"
+
+	// HTTPProxyReasonInstanceBackendNotFound indicates that an instance backend
+	// references an EndpointSlice that does not exist.
+	HTTPProxyReasonInstanceBackendNotFound = "InstanceBackendNotFound"
 
 	// This reason is used with the "Accepted" and "Programmed"
 	// conditions when the status is "Unknown" and no controller has reconciled

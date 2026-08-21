@@ -56,6 +56,11 @@ type PolicyIndex struct {
 	// Only populated for HTTPProxy rules that have a Connector backend.
 	// Accumulated across all engaged clusters.
 	Connectors map[ConnectorKey]ConnectorInfo
+
+	// VPCPods maps (upstreamNS, httpProxyName, ruleIndex) to VPCPodInfo. Only
+	// populated for HTTPProxy rules that have a vpcPod backend. Accumulated
+	// across all engaged clusters, same shape as Connectors.
+	VPCPods map[VPCPodKey]VPCPodInfo
 }
 
 // TPPInfo holds the fields of a TrafficProtectionPolicy needed by the
@@ -96,6 +101,31 @@ type ConnectorKey struct {
 	// HTTPProxy's UpstreamOwnerNamespaceLabel (two-cluster) or proxy.Namespace
 	// (single-cluster). It matches the value stored in DStoUS and the key used
 	// for idx.TPPs, keeping WAF and Connector resolution consistent.
+	UpstreamNS    string
+	HTTPProxyName string
+	RuleIndex     int
+}
+
+// VPCPodTenantIDLabel is the label galactic-cni (#854) is expected to set on
+// the EndpointSlice it publishes for a VPC pod. Deliberately duplicated
+// rather than imported from internal/controller.VPCPodTenantIDLabel — the
+// extension server and controller packages are kept decoupled, and this
+// value is itself an unconfirmed placeholder pending #854's implementation.
+const VPCPodTenantIDLabel = "galactic.datum.net/tenant-id"
+
+// VPCPodInfo holds the fields the mutation layer needs to bind an Envoy
+// cluster's outbound socket to a tenant's VRF device.
+type VPCPodInfo struct {
+	// TenantID is read from VPCPodTenantIDLabel on the referenced
+	// EndpointSlice. Empty when the EndpointSlice is missing, unreadable, or
+	// carries no tenant-id label — callers must treat that as "skip
+	// mutation," never bind to a zero-value device name.
+	TenantID string
+}
+
+// VPCPodKey uniquely identifies an HTTPProxy rule that has a vpcPod backend.
+// Same shape and namespace-keying rationale as ConnectorKey.
+type VPCPodKey struct {
 	UpstreamNS    string
 	HTTPProxyName string
 	RuleIndex     int

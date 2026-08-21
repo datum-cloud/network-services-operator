@@ -34,6 +34,7 @@ func validCell() CellControllerManager {
 	cfg := CellControllerManager{}
 	cfg.Location = LocationConfig{Name: "us-central-1"}
 	cfg.IPAM.KubeconfigPath = "/etc/ipam-cluster/kubeconfig"
+	cfg.Federation.KubeconfigPath = "/etc/kubernetes/federation/auth/kubeconfig"
 	return cfg
 }
 
@@ -70,6 +71,11 @@ func TestCellControllerManager_Validate(t *testing.T) {
 				c.IPAM.InCluster = true
 			},
 		},
+		{
+			name:    "no federation hub",
+			mutate:  func(c *CellControllerManager) { c.Federation.KubeconfigPath = "" },
+			wantSub: "federation: kubeconfigPath is required",
+		},
 	}
 
 	for _, tt := range tests {
@@ -99,6 +105,8 @@ func TestDecodeCellControllerManager(t *testing.T) {
 kind: CellControllerManager
 ipam:
   kubeconfigPath: /etc/ipam-cluster/kubeconfig
+federation:
+  kubeconfigPath: /etc/kubernetes/federation/auth/kubeconfig
 location:
   name: us-central-1
 `)
@@ -111,6 +119,9 @@ location:
 	}
 	if cfg.Location.Name != "us-central-1" {
 		t.Errorf("expected the location to decode, got %q", cfg.Location.Name)
+	}
+	if cfg.Federation.KubeconfigPath != "/etc/kubernetes/federation/auth/kubeconfig" {
+		t.Errorf("expected the federation hub to decode, got %q", cfg.Federation.KubeconfigPath)
 	}
 }
 

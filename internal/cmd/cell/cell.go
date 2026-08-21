@@ -161,11 +161,9 @@ func NewCommand() *cobra.Command {
 			}
 
 			g, ctx := errgroup.WithContext(ctx)
-			if hubCluster != nil {
-				g.Go(func() error {
-					return ignoreCanceled(hubCluster.Start(ctx))
-				})
-			}
+			g.Go(func() error {
+				return ignoreCanceled(hubCluster.Start(ctx))
+			})
 			for _, runnable := range runnables {
 				g.Go(func() error {
 					return ignoreCanceled(runnable.Start(ctx))
@@ -245,17 +243,25 @@ func setupControllers(
 
 	registered := make([]string, 0, len(registrations))
 	for _, registration := range registrations {
-		if err := registration.setup(); err != nil {
+		on, err := registration.setup()
+		if err != nil {
 			return nil, fmt.Errorf("unable to create controller %q: %w", registration.name, err)
 		}
-		registered = append(registered, registration.name)
+		if on {
+			registered = append(registered, registration.name)
+		}
 	}
 	return registered, nil
 }
 
 type namedSetup struct {
-	name  string
-	setup func() error
+	name string
+
+	// setup reports whether it registered the controller. Every controller a
+	// cell owns registers today, but the startup log is built from what this
+	// returns rather than from the list, so a controller that starts declining
+	// to register cannot be reported as running.
+	setup func() (bool, error)
 }
 
 // controllerRegistrations lists every controller a cell's control plane owns.
@@ -267,31 +273,30 @@ func controllerRegistrations(
 ) []namedSetup {
 	registrations := make([]namedSetup, 0, 4)
 	registrations = append(registrations,
-		namedSetup{"networkinterfaceclaim", func() error {
-			return (&controller.NetworkInterfaceClaimReconciler{
+		namedSetup{"networkinterfaceclaim", func() (bool, error) {
+			return true, (&controller.NetworkInterfaceClaimReconciler{
 				Location: serverConfig.Location,
 				IPAM:     ipamClients,
 			}).SetupWithManager(mgr)
 		}},
-		namedSetup{"networkinterface", func() error {
-			return (&controller.NetworkInterfaceReconciler{
+		namedSetup{"networkinterface", func() (bool, error) {
+			return true, (&controller.NetworkInterfaceReconciler{
 				Location: serverConfig.Location,
 				IPAM:     ipamClients,
 			}).SetupWithManager(mgr)
 		}},
-		namedSetup{"networkcontexthold", func() error {
-			return (&controller.NetworkContextHoldReconciler{
+		namedSetup{"networkcontexthold", func() (bool, error) {
+			return true, (&controller.NetworkContextHoldReconciler{
 				Location: serverConfig.Location,
 			}).SetupWithManager(mgr)
 		}},
 	)
 
-	registrations = append(registrations, namedSetup{"networkinterfacewriteback", func() error {
-		// A cell with no hub keeps its interfaces to itself.
-		if hubCluster == nil {
-			return nil
-		}
-		return (&controller.NetworkInterfaceWriteBackReconciler{
+	// No hub-less branch. A cell with no hub used to register nothing here and
+	// report the controller as running anyway, which is how a cell published
+	// nothing for weeks without saying so. Setup now rejects a missing hub.
+	registrations = append(registrations, namedSetup{"networkinterfacewriteback", func() (bool, error) {
+		return true, (&controller.NetworkInterfaceWriteBackReconciler{
 			Location:   serverConfig.Location,
 			HubCluster: hubCluster,
 		}).SetupWithManager(mgr)
@@ -300,14 +305,10 @@ func controllerRegistrations(
 	return registrations
 }
 
-// newHubCluster connects a cell to the federation hub it publishes to. It
-// returns nil when no hub is configured, which leaves interfaces cell-local and
-// every other controller untouched.
+// newHubCluster connects a cell to the federation hub it publishes to. A cell
+// has no hub-less mode: config validation requires federation.kubeconfigPath,
+// so reaching here without one is a bug rather than a deployment choice.
 func newHubCluster(serverConfig config.CellControllerManager) (cluster.Cluster, error) {
-	if !serverConfig.Federation.Enabled() {
-		return nil, nil
-	}
-
 	restConfig, err := serverConfig.Federation.RestConfig()
 	if err != nil {
 		return nil, fmt.Errorf("unable to load the federation hub kubeconfig: %w", err)

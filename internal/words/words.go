@@ -59,7 +59,7 @@ var DictionaryWords = []string{
 	"sewer", "clown", "result", "stain", "king", "shop", "pendulum", "scalp", "total", "trance",
 	"coffee", "except", "lake", "juicy", "out", "trial", "budget", "rarely", "easy", "look",
 	"brush", "diver", "obtain", "circle", "claim", "silicon", "hundred", "motto", "sauna", "soccer",
-	"spoke", "thrill", "rich", "creep", "dairy", "phone", "shout", "ski", "custom", "devote",
+	"spoke", "thrill", "rich", "birch", "dairy", "phone", "shout", "ski", "custom", "devote",
 	"luck", "rule", "spent", "wheat", "rating", "writer", "empty", "inept", "plaid", "rust",
 	"strict", "joke", "mint", "stride", "ever", "socket", "star", "ignore", "our", "deal",
 	"left", "various", "weasel", "advanced", "cold", "giant", "flat", "list", "range", "reap",

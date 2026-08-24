@@ -13,11 +13,13 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
+	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
@@ -140,9 +142,7 @@ func (r *NetworkBindingReconciler) Reconcile(ctx context.Context, req mcreconcil
 		readyCondition.Reason = "NetworkContextNotReady"
 		readyCondition.Message = "Network context is not ready."
 
-		// Choosing to requeue here instead of establishing a watch on contexts, as
-		// once the context is created an ready, future bindings will immediately
-		// become ready.
+		// Backstop only: the watch on contexts above covers the normal case.
 		return ctrl.Result{RequeueAfter: time.Second * 5}, nil
 	}
 
@@ -161,19 +161,65 @@ func (r *NetworkBindingReconciler) Reconcile(ctx context.Context, req mcreconcil
 }
 
 // SetupWithManager sets up the controller with the Manager.
+//
+// Bindings are reconciled regardless of whether they already reference a
+// context. A binding that stopped reconciling once its reference was set would
+// never notice the context going away, and nothing else recreates it.
 func (r *NetworkBindingReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	r.mgr = mgr
 	return mcbuilder.ControllerManagedBy(mgr).
 		For(&networkingv1alpha.NetworkBinding{},
-			mcbuilder.WithPredicates(
-				predicate.NewPredicateFuncs(func(object client.Object) bool {
-					o := object.(*networkingv1alpha.NetworkBinding)
-					return o.Status.NetworkContextRef == nil
-				}),
-			),
 			mcbuilder.WithEngageWithLocalCluster(false),
 		).
+		Watches(
+			&networkingv1alpha.NetworkContext{},
+			func(clusterName multicluster.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
+				return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []mcreconcile.Request {
+					return networkBindingRequestsForContext(ctx, cl.GetClient(), clusterName, obj)
+				})
+			},
+		).
+		Named("networkbinding").
 		Complete(r)
+}
+
+// networkBindingRequestsForContext maps a NetworkContext back to the bindings
+// that resolve to it, so a context being deleted or becoming ready re-triggers
+// them.
+func networkBindingRequestsForContext(
+	ctx context.Context,
+	c client.Client,
+	clusterName multicluster.ClusterName,
+	obj client.Object,
+) []mcreconcile.Request {
+	logger := log.FromContext(ctx)
+
+	networkContext, ok := obj.(*networkingv1alpha.NetworkContext)
+	if !ok {
+		return nil
+	}
+
+	var bindings networkingv1alpha.NetworkBindingList
+	if err := c.List(ctx, &bindings, client.InNamespace(networkContext.Namespace)); err != nil {
+		logger.Error(err, "failed to list NetworkBindings for NetworkContext watch", "networkContext", networkContext.Name)
+		return nil
+	}
+
+	var requests []mcreconcile.Request
+	for i := range bindings.Items {
+		binding := &bindings.Items[i]
+		if networkContextNameForBinding(binding) != networkContext.Name {
+			continue
+		}
+		requests = append(requests, mcreconcile.Request{
+			ClusterName: clusterName,
+			Request: ctrl.Request{
+				NamespacedName: client.ObjectKeyFromObject(binding),
+			},
+		})
+	}
+
+	return requests
 }
 
 func networkContextNameForBinding(binding *networkingv1alpha.NetworkBinding) string {

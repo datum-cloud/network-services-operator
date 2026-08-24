@@ -1037,16 +1037,15 @@ tasks:
       - echo "📜 applying federation artifacts (config/federation)"
       - |
         kubectl --kubeconfig {{.KARMADA_KUBECONFIG}} --context karmada-apiserver apply -f config/federation/
-      # The location-federation scenarios label the member themselves.
+      # config/crd/downstream is the union the hub and the cells need, and it is
+      # what infra applies to the real hub. Applying the same path here keeps the
+      # harness from drifting to a subset: Karmada resolves every kind a policy
+      # selects both to propagate it and to release it on delete, so a hub
+      # missing one parks that policy in Terminating and the location can never
+      # be removed.
       - |
-        kubectl --kubeconfig {{.KARMADA_KUBECONFIG}} --context karmada-apiserver \
-          apply -f config/crd/bases/networking.datumapis.com_servinglocations.yaml
-      # A cell publishes its interfaces here so a project can be handed them, and
-      # it writes into the hub namespace of the same name rather than inventing
-      # one. The type and the namespaces both have to be here first.
-      - |
-        kubectl --kubeconfig {{.KARMADA_KUBECONFIG}} --context karmada-apiserver \
-          apply -f config/crd/bases/networking.datumapis.com_networkinterfaces.yaml
+        {{.KUSTOMIZE}} build --load-restrictor LoadRestrictionsNone config/crd/downstream | \
+          kubectl --kubeconfig {{.KARMADA_KUBECONFIG}} --context karmada-apiserver apply -f -
       - |
         kubectl --kubeconfig {{.KARMADA_KUBECONFIG}} --context karmada-apiserver \
           apply -f test/e2e/fixtures/ipam/namespaces.yaml

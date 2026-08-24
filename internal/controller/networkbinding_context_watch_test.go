@@ -49,8 +49,8 @@ func TestNetworkBindingRequestsForContext(t *testing.T) {
 	requests := networkBindingRequestsForContext(context.Background(), c, "cluster-a", networkContext)
 
 	require.Len(t, requests, 1, "only the binding resolving to this context should be enqueued")
-	require.Equal(t, "matching", requests[0].Request.Name)
-	require.Equal(t, ns, requests[0].Request.Namespace)
+	require.Equal(t, "matching", requests[0].Name)
+	require.Equal(t, ns, requests[0].Namespace)
 	require.Equal(t, "cluster-a", string(requests[0].ClusterName))
 }
 

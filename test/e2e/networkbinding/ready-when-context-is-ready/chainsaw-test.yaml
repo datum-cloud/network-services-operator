@@ -41,41 +41,25 @@ spec:
                 name: test-binding-network-some-location
                 namespace: default
                 (creationTimestamp != nil): true
-        - wait:
-            apiVersion: networking.datumapis.com/v1alpha
-            kind: NetworkBinding
-            name: test-binding
-            namespace: default
-            for:
-              condition:
-                name: Ready
-                value: 'false'
-
-    - name: Set NetworkContext Ready Condition to True
-      description: |
-        Under normal operation, a plugin is expected to move the network context
-        to be ready once it has been programmed at the plugin's backend. We may
-        introduce a plugin that can be used during tests so that this won't be
-        necessary.
-
-        A direct kubectl command is used as Chainsaw purposefully does not
-        support updating subresources. See https://github.com/kyverno/chainsaw/issues/300
-        for more details.
-      try:
-        - script:
-            content: |
-                kubectl -n default patch networkcontext test-binding-network-some-location \
-                  --subresource=status --type=merge \
-                  -p '{"status":{"conditions":[{"type": "Ready", "status": "True", "reason": "Test", "message": "test", "lastTransitionTime": "2025-02-24T23:59:09Z"}]}}'
 
     - name: Assert NetworkBinding is Ready
+      description: |
+        This network needs no address space of its own, so its context is ready
+        as soon as it exists and the binding never passes through
+        NetworkContextNotReady. Covering that intermediate state needs a context
+        that waits on an address allocation, which needs an IPAM pool for this
+        project.
       try:
-        - wait:
-            apiVersion: networking.datumapis.com/v1alpha
-            kind: NetworkBinding
-            name: test-binding
-            namespace: default
-            for:
-              condition:
-                name: Ready
-                value: 'true'
+        - assert:
+            timeout: 1m
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkBinding
+              metadata:
+                name: test-binding
+                namespace: default
+              status:
+                networkContextRef:
+                  namespace: default
+                  name: test-binding-network-some-location
+                (length(conditions[?type == 'Ready' && status == 'True' && reason == 'NetworkContextReady']) == `1`): true

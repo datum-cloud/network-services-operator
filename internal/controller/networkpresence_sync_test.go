@@ -3,8 +3,8 @@
 package controller
 
 import (
-	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
@@ -200,24 +200,33 @@ func TestNetworkPresenceSyncEnqueuesADeletedContext(t *testing.T) {
 	}}, drainPresenceEvents(t, events))
 }
 
-// The channel is the only thing the sync controller touches, and a shutting-down
-// reconcile must not block on a full one forever.
-func TestNetworkPresenceSyncGivesUpOnAFullChannelWhenCancelled(t *testing.T) {
+// Nothing drains the channel unless the presence controller is running in this
+// process. Blocking there would stall this controller behind a reader that may
+// never arrive, so a full channel drops.
+func TestNetworkPresenceSyncDropsRatherThanBlockingOnAFullChannel(t *testing.T) {
 	s := newPresenceScenario(t, presenceOptions{})
 	s.createBinding("consumer-a")
 
+	// Unbuffered and unread: every send finds no reader.
 	events := make(chan event.GenericEvent)
 	sync := s.syncReconciler(events)
 
-	ctx, cancel := context.WithCancel(s.ctx)
-	cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, err := sync.reconcileNetworkContext(s.ctx, mcreconcile.Request{
+			ClusterName: testProject,
+			Request: ctrl.Request{NamespacedName: client.ObjectKey{
+				Namespace: s.projectNamespace,
+				Name:      s.contextName(),
+			}},
+		})
+		require.NoError(t, err)
+	}()
 
-	_, err := sync.reconcileNetworkContext(ctx, mcreconcile.Request{
-		ClusterName: testProject,
-		Request: ctrl.Request{NamespacedName: client.ObjectKey{
-			Namespace: s.projectNamespace,
-			Name:      s.contextName(),
-		}},
-	})
-	require.NoError(t, err)
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the sync controller blocked on a channel nothing is reading")
+	}
 }

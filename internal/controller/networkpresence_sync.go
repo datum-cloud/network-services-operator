@@ -25,11 +25,13 @@ import (
 // which is the only place the two are related.
 const hubNamespaceProjectIndex = "hubNamespaceProjectIndex"
 
-// presenceEventBufferSize is how many presences may be waiting to be handed to
-// the presence controller's workqueue. The queue coalesces by key, so the buffer
-// only has to absorb a burst; a full one makes the sync controller wait rather
-// than drop the event.
-const presenceEventBufferSize = 1024
+// presenceEventBufferSize is how many presences may be waiting to be picked up
+// by the channel source.
+//
+// It does not need to be large. source.Channel runs a goroutine that drains this
+// channel continuously into a destination buffer of its own, so this only has to
+// cover the moment between a send and that goroutine being scheduled.
+const presenceEventBufferSize = 64
 
 // NewNetworkPresenceEvents builds the channel the sync controller writes and the
 // presence controller reads.
@@ -149,9 +151,15 @@ func (r *NetworkPresenceSyncReconciler) hubNamespaces(
 	return names, nil
 }
 
-// enqueue hands one presence to the presence controller. The handover blocks
-// rather than drops: a missed event is a presence that stays wrong until
-// something else touches it.
+// enqueue hands one presence to the presence controller.
+//
+// The handover never blocks. Nothing drains this channel unless the presence
+// controller is running in this process, and under cluster sharding it may not
+// be: the sharded managers run every replica, while the presence controller runs
+// on the singleton manager in whichever replica holds its lease. Blocking would
+// stall this controller's workers behind a reader that is never going to arrive.
+// Dropping leaves the presence to the refusal retry instead, which is worse but
+// bounded. See the note on SetupWithManager.
 func (r *NetworkPresenceSyncReconciler) enqueue(ctx context.Context, namespace, name string) {
 	presence := &networkingv1alpha.NetworkContext{}
 	presence.Namespace = namespace
@@ -159,8 +167,8 @@ func (r *NetworkPresenceSyncReconciler) enqueue(ctx context.Context, namespace, 
 
 	select {
 	case r.Events <- event.GenericEvent{Object: presence}:
-	case <-ctx.Done():
-		log.FromContext(ctx).Info("dropped a network presence sync event while shutting down",
+	default:
+		log.FromContext(ctx).Info("network presence sync event dropped; nothing is reading the channel",
 			"namespace", namespace, "name", name)
 	}
 }
@@ -195,6 +203,32 @@ func hubNamespaceProjectIndexFunc(obj client.Object) []string {
 // The local cluster is left out of the watches deliberately: the hub carries a
 // replicated copy of every context under the same name, and reconciling those
 // would map a presence onto itself.
+//
+// Why this is a separate controller feeding a channel, rather than the presence
+// controller simply watching these types itself:
+//
+// The presence controller has to stay on the singleton manager. It is the only
+// writer to a presence and to the statuses of every binding declaring it, and
+// the sharded managers run in every replica with leader election disabled, so a
+// controller registered there would have three replicas writing the same two
+// objects. Only the multicluster manager engages project control planes, and
+// they are discovered at runtime, so the presence controller cannot watch them
+// where it lives: controller-runtime has no cross-manager watch, and a source
+// added to a running controller can never be removed again, so engaging them by
+// hand would leak an informer per project that ever disengages.
+//
+// Inverting it does not work either. Making the presence controller an
+// mc-controller would give it the project-plane watches natively and let it
+// watch the hub as a static source, but it would put it back on the sharded
+// managers, which is the one thing it cannot afford.
+//
+// The cost of the split is that producer and consumer are only in the same
+// process while cluster sharding is off, which is the default and is how every
+// configuration in this repository runs. Turning sharding on would shard this
+// controller across replicas while the presence controller stayed in one of
+// them, and the events raised in the others would be dropped rather than
+// delivered. That needs a trigger that goes through the API server rather than a
+// channel, and it is not solved here.
 func (r *NetworkPresenceSyncReconciler) SetupWithManager(mgr mcmanager.Manager, hub manager.Manager) error {
 	if r.Events == nil {
 		return errors.New("a network presence event channel is required")

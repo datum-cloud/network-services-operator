@@ -169,5 +169,5 @@ spec:
                 kubectl get servinglocation e2e-publish >/dev/null 2>&1 || exit 0
                 sleep 2
               done
-              kubectl delete servinglocation e2e-publish --ignore-not-found
-              kubectl delete clusterpropagationpolicy location-e2e-publish --ignore-not-found
+              kubectl delete servinglocation e2e-publish --ignore-not-found --wait=false
+              kubectl delete clusterpropagationpolicy location-e2e-publish --ignore-not-found --wait=false

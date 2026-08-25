@@ -703,9 +703,14 @@ context, as `networking.datumapis.com/unclaimed-since`, and the removal is recon
 the wait expires. A declaration arriving in the meantime clears the stamp and nothing is torn
 down. The instant lives on the object rather than in memory, so a restart or a change of
 leader neither restarts the wait nor skips it. The wait is configurable
-(`networkPresence.unclaimedGracePeriod`, one minute by default): long enough to outlast a
-replacement, short enough that a location a project has really stopped using gives its address
-space back promptly.
+(`networkPresence.unclaimedGracePeriod`, a day by default).
+
+A day is a retention policy rather than a race window. A location keeps the address space it
+was given until the period expires, so a project that redeploys neither loses the network in
+that location nor is addressed from a different prefix afterwards — rebuilding the presence
+would draw a new one. The cost is that a location a project has genuinely finished with holds
+its prefix for a day. Deleting the Network itself is unaffected: its contexts are owned by it
+and go with it immediately.
 
 **At the location, a local finalizer holds the copy while addresses are held.** The
 federation control plane preserves what a local controller adds to a propagated object. The

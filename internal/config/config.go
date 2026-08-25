@@ -121,20 +121,23 @@ type NetworkPresenceConfig struct {
 	// UnclaimedGracePeriod is how long a presence nothing declares any more is
 	// kept before it is torn down.
 	//
-	// Replacing a workload deletes its binding and creates the replacement's,
-	// leaving a few seconds in which nothing declares the presence. Tearing it
-	// down inside that gap gives this location's address space back and takes
-	// every address in it, so the wait has to outlast the gap. It also delays
-	// reclaiming the space of a workload that really has gone, which is what
-	// bounds how long it should be.
+	// This is a retention policy, not a race window. A location keeps the
+	// address space it was given for a day after the last consumer goes, so
+	// redeploying a workload neither loses the network in that location nor
+	// changes the prefix it is addressed from. Tearing the presence down and
+	// rebuilding it would do both, and would draw a different prefix.
 	//
-	// Defaults to 1 minute. Zero means the default.
+	// The cost is that a location which really is finished holds its prefix
+	// until the period expires. Deleting the Network itself is unaffected: the
+	// contexts are owned by it and go with it immediately.
+	//
+	// Defaults to 24 hours. Zero means the default.
 	UnclaimedGracePeriod metav1.Duration `json:"unclaimedGracePeriod,omitempty"`
 }
 
 func SetDefaults_NetworkPresenceConfig(obj *NetworkPresenceConfig) {
 	if obj.UnclaimedGracePeriod.Duration == 0 {
-		obj.UnclaimedGracePeriod = metav1.Duration{Duration: time.Minute}
+		obj.UnclaimedGracePeriod = metav1.Duration{Duration: 24 * time.Hour}
 	}
 }
 

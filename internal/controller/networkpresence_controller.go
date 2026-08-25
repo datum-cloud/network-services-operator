@@ -70,10 +70,9 @@ type NetworkPresenceReconciler struct {
 	Events <-chan event.GenericEvent
 
 	// UnclaimedGracePeriod is how long a presence nothing declares any more is
-	// kept before it is torn down. Replacing a workload deletes its binding and
-	// creates the replacement's, and the presence must survive the gap between
-	// the two: tearing it down gives this location's address space back, and
-	// every address inside it with it.
+	// kept before it is torn down. A location keeps the address space it was
+	// given for this long after the last consumer goes, so a redeploy neither
+	// loses the network there nor changes the prefix it is addressed from.
 	//
 	// Zero tears the presence down on the first observation that nothing
 	// declares it.

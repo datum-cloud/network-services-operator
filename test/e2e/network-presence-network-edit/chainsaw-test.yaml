@@ -75,7 +75,7 @@ spec:
               kind: NetworkContext
               metadata:
                 name: presence-edit-net-presence-edit-loc
-                namespace: presence-edit-hub
+                namespace: presence-edit-project
               spec:
                 mtu: 1460
                 ipFamilies:
@@ -109,7 +109,7 @@ spec:
               kind: NetworkContext
               metadata:
                 name: presence-edit-net-presence-edit-loc
-                namespace: presence-edit-hub
+                namespace: presence-edit-project
               spec:
                 mtu: 8856
                 ipFamilies:

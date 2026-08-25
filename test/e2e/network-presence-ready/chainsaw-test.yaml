@@ -52,9 +52,12 @@ spec:
               spec:
                 ipam:
                   mode: Auto
+                # IPv4 only: a network carrying no IPv6 needs no address space of
+                # its own, so its presence is ready as soon as it exists. With
+                # IPv6 the presence waits on an allocation this environment has no
+                # pool for, and readiness could only be faked.
                 ipFamilies:
                   - IPv4
-                  - IPv6
                 mtu: 8000
 
     - name: Declare that the network is needed in the location
@@ -95,7 +98,7 @@ spec:
               kind: NetworkContext
               metadata:
                 name: presence-ready-net-presence-ready-loc
-                namespace: presence-ready-hub
+                namespace: presence-ready-project
                 labels:
                   networking.datumapis.com/network: presence-ready-net
                   networking.datumapis.com/location: presence-ready-loc
@@ -108,7 +111,6 @@ spec:
                   name: presence-ready-loc
                 ipFamilies:
                   - IPv4
-                  - IPv6
                 mtu: 8000
         - assert:
             resource:
@@ -116,15 +118,20 @@ spec:
               kind: NetworkContext
               metadata:
                 name: presence-ready-net-presence-ready-loc
-                namespace: presence-ready-hub
+                namespace: presence-ready-project
               spec:
                 (networkGeneration > `0`): true
 
-    - name: Assert the binding reports the presence coming up
+    - name: Assert the binding names the presence it resolved to
       description: |
-        The reference is set when the presence is created, which is before it is
-        ready. That combination is the normal middle of the sequence rather than
-        a contradiction.
+        The reference is set when the presence is created, and names the project
+        namespace the context lives in rather than the hub namespace the binding
+        was written to.
+
+        This network carries no IPv6, so its presence is ready on creation and
+        the binding never passes through NetworkContextNotReady. Covering that
+        intermediate state needs a network whose presence waits on an address
+        allocation, which needs an IPAM pool for this project.
       try:
         - assert:
             timeout: 1m
@@ -136,25 +143,8 @@ spec:
                 namespace: presence-ready-hub
               status:
                 networkContextRef:
-                  namespace: presence-ready-hub
+                  namespace: presence-ready-project
                   name: presence-ready-net-presence-ready-loc
-                (length(conditions[?type == 'Ready' && status == 'False' && reason == 'NetworkContextNotReady']) == `1`): true
-
-    - name: Program the presence
-      description: |
-        A plugin is expected to program the context at its backend and set
-        Programmed, from which the context controller derives Ready. Nothing in
-        this repository does that, so the condition is set directly.
-
-        kubectl is used because Chainsaw does not support updating subresources.
-        See https://github.com/kyverno/chainsaw/issues/300.
-      try:
-        - script:
-            content: |
-              kubectl -n presence-ready-hub patch networkcontext \
-                presence-ready-net-presence-ready-loc \
-                --subresource=status --type=merge \
-                -p '{"status":{"conditions":[{"type": "Programmed", "status": "True", "reason": "Test", "message": "test", "lastTransitionTime": "2025-02-24T23:59:09Z"}]}}'
 
     - name: Assert the consumer is told it may proceed
       try:

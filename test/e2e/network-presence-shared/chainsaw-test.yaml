@@ -122,11 +122,11 @@ spec:
         - script:
             content: |
               set -e
-              count=$(kubectl -n presence-shared-hub get networkcontext \
+              count=$(kubectl -n presence-shared-project get networkcontext \
                 --no-headers 2>/dev/null | wc -l | tr -d ' ')
               if [ "$count" != "1" ]; then
                 echo "expected exactly one shared presence, found $count" >&2
-                kubectl -n presence-shared-hub get networkcontext >&2
+                kubectl -n presence-shared-project get networkcontext >&2
                 exit 1
               fi
               echo "two consumers share one presence"
@@ -150,7 +150,7 @@ spec:
               kind: NetworkContext
               metadata:
                 name: presence-shared-net-presence-shared-loc
-                namespace: presence-shared-hub
+                namespace: presence-shared-project
 
     - name: The last consumer goes away and the presence goes with it
       try:
@@ -167,5 +167,5 @@ spec:
               kind: NetworkContext
               metadata:
                 name: presence-shared-net-presence-shared-loc
-                namespace: presence-shared-hub
+                namespace: presence-shared-project
 

@@ -129,5 +129,5 @@ spec:
             cluster: nso-hub
             content: |
               kubectl label cluster nso-downstream topology.datum.net/location- --overwrite || true
-              kubectl delete servinglocation e2e-guard --ignore-not-found
-              kubectl delete clusterpropagationpolicy location-e2e-guard --ignore-not-found
+              kubectl delete servinglocation e2e-guard --ignore-not-found --wait=false
+              kubectl delete clusterpropagationpolicy location-e2e-guard --ignore-not-found --wait=false

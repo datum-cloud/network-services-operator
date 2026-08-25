@@ -13,6 +13,9 @@ jobs:
   test-e2e:
     name: Run on Ubuntu
     runs-on: ubuntu-latest
+    # A green run takes under half an hour. Without this the job inherits the
+    # six hour default, so anything that blocks holds a runner all afternoon.
+    timeout-minutes: 60
     env:
       TMPDIR: /tmp
     steps:

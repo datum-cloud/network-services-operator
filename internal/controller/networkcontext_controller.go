@@ -82,6 +82,14 @@ func (r *NetworkContextReconciler) reconcileNetworkContext(
 	networkContext *networkingv1alpha.NetworkContext,
 ) (ctrl.Result, error) {
 	if !networkContext.DeletionTimestamp.IsZero() {
+		// A context being deleted must stop saying the network is present here.
+		// Recovery keys on the deletion timestamp and never on this, but a
+		// consumer reading Ready=True off an object that is going away has been
+		// told something untrue.
+		if err := r.reportTerminating(ctx, cl, networkContext); err != nil {
+			return ctrl.Result{}, err
+		}
+
 		if !controllerutil.ContainsFinalizer(networkContext, networkContextSubnetFinalizer) {
 			return ctrl.Result{}, nil
 		}
@@ -108,6 +116,27 @@ func (r *NetworkContextReconciler) reconcileNetworkContext(
 	}
 
 	return result, r.reportReady(ctx, cl, networkContext)
+}
+
+func (r *NetworkContextReconciler) reportTerminating(
+	ctx context.Context,
+	cl client.Client,
+	networkContext *networkingv1alpha.NetworkContext,
+) error {
+	if !apimeta.SetStatusCondition(&networkContext.Status.Conditions, metav1.Condition{
+		Type:               networkingv1alpha.NetworkContextReady,
+		Status:             metav1.ConditionFalse,
+		Reason:             networkingv1alpha.NetworkContextReadyReasonTerminating,
+		ObservedGeneration: networkContext.Generation,
+		Message:            "This network presence is being deleted",
+	}) {
+		return nil
+	}
+
+	if err := cl.Status().Update(ctx, networkContext); err != nil {
+		return fmt.Errorf("failed updating network context status: %w", err)
+	}
+	return nil
 }
 
 func (r *NetworkContextReconciler) reportReady(

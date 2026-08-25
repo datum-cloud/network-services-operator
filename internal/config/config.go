@@ -106,6 +106,43 @@ type NetworkServicesOperator struct {
 	// LocationPublisher configures the controller that publishes Locations to
 	// the federation hub.
 	LocationPublisher LocationPublisherConfig `json:"locationPublisher,omitempty"`
+
+	// NetworkPresence configures how a network's presence in a location is
+	// maintained.
+	NetworkPresence NetworkPresenceConfig `json:"networkPresence,omitempty"`
+}
+
+// +k8s:deepcopy-gen=true
+
+// NetworkPresenceConfig configures the controller that keeps one NetworkContext
+// per network and location, for as long as any consumer declares it is needed
+// there.
+type NetworkPresenceConfig struct {
+	// UnclaimedGracePeriod is how long a presence nothing declares any more is
+	// kept before it is torn down.
+	//
+	// Replacing a workload deletes its binding and creates the replacement's,
+	// leaving a few seconds in which nothing declares the presence. Tearing it
+	// down inside that gap gives this location's address space back and takes
+	// every address in it, so the wait has to outlast the gap. It also delays
+	// reclaiming the space of a workload that really has gone, which is what
+	// bounds how long it should be.
+	//
+	// Defaults to 1 minute. Zero means the default.
+	UnclaimedGracePeriod metav1.Duration `json:"unclaimedGracePeriod,omitempty"`
+}
+
+func SetDefaults_NetworkPresenceConfig(obj *NetworkPresenceConfig) {
+	if obj.UnclaimedGracePeriod.Duration == 0 {
+		obj.UnclaimedGracePeriod = metav1.Duration{Duration: time.Minute}
+	}
+}
+
+func (c *NetworkPresenceConfig) validate() error {
+	if c.UnclaimedGracePeriod.Duration < 0 {
+		return errors.New("unclaimedGracePeriod must not be negative")
+	}
+	return nil
 }
 
 // +k8s:deepcopy-gen=true
@@ -1521,6 +1558,9 @@ func (c *NetworkServicesOperator) Validate() error {
 	}
 	if err := c.LocationPublisher.validate(); err != nil {
 		return fmt.Errorf("locationPublisher: %w", err)
+	}
+	if err := c.NetworkPresence.validate(); err != nil {
+		return fmt.Errorf("networkPresence: %w", err)
 	}
 	return nil
 }

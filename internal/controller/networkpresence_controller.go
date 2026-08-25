@@ -9,16 +9,19 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	"sigs.k8s.io/controller-runtime/pkg/source"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 
@@ -61,6 +64,21 @@ func (r *managerProjectClusterResolver) ClientForProject(ctx context.Context, pr
 type NetworkPresenceReconciler struct {
 	Projects ProjectClusterResolver
 
+	// Events carries presences that something in a project control plane says
+	// need looking at again. NetworkPresenceSyncReconciler is the only writer;
+	// this controller stays the only writer to the presence itself.
+	Events <-chan event.GenericEvent
+
+	// UnclaimedGracePeriod is how long a presence nothing declares any more is
+	// kept before it is torn down. Replacing a workload deletes its binding and
+	// creates the replacement's, and the presence must survive the gap between
+	// the two: tearing it down gives this location's address space back, and
+	// every address inside it with it.
+	//
+	// Zero tears the presence down on the first observation that nothing
+	// declares it.
+	UnclaimedGracePeriod time.Duration
+
 	hub client.Client
 }
 
@@ -96,7 +114,7 @@ func (r *NetworkPresenceReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	}
 
 	if len(holders) == 0 {
-		return ctrl.Result{}, r.teardown(ctx, req)
+		return r.teardown(ctx, req)
 	}
 
 	logger.Info("reconciling network presence", "holders", len(holders))
@@ -146,31 +164,35 @@ func (r *NetworkPresenceReconciler) holders(ctx context.Context, req ctrl.Reques
 // At the location a local finalizer holds the propagated copy while addresses
 // are still held, so this is prompt in the ordinary case and blocks where it
 // must.
-func (r *NetworkPresenceReconciler) teardown(ctx context.Context, req ctrl.Request) error {
+//
+// Nothing declaring the presence is not on its own enough to remove it. A
+// workload being replaced stops declaring it for a few seconds, and the removal
+// waits out that gap before it commits.
+func (r *NetworkPresenceReconciler) teardown(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	routing, err := resolveProjectRouting(ctx, r.hub, req.Namespace)
 	if err != nil {
 		var unresolvable *projectUnresolvable
 		if errors.As(err, &unresolvable) {
-			return nil
+			return ctrl.Result{}, nil
 		}
-		return err
+		return ctrl.Result{}, err
 	}
 
 	projectClient, err := r.Projects.ClientForProject(ctx, routing.project)
 	if err != nil {
 		if errors.Is(err, multicluster.ErrClusterNotFound) {
-			return nil
+			return ctrl.Result{}, nil
 		}
-		return fmt.Errorf("failed reaching project %q: %w", routing.project, err)
+		return ctrl.Result{}, fmt.Errorf("failed reaching project %q: %w", routing.project, err)
 	}
 
 	var networkContext networkingv1alpha.NetworkContext
 	key := client.ObjectKey{Namespace: routing.projectNamespace, Name: req.Name}
 	if err := projectClient.Get(ctx, key, &networkContext); err != nil {
-		return client.IgnoreNotFound(err)
+		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	if !networkContext.DeletionTimestamp.IsZero() {
-		return nil
+		return ctrl.Result{}, nil
 	}
 
 	// Only a presence this controller wrote is this controller's to remove. It
@@ -179,15 +201,64 @@ func (r *NetworkPresenceReconciler) teardown(ctx context.Context, req ctrl.Reque
 	// one, or a context an operator wrote by hand — and deleting it would take
 	// away the object a location reads.
 	if networkContext.Labels[networkingv1alpha.NetworkUIDLabel] == "" {
-		return nil
+		return ctrl.Result{}, nil
+	}
+
+	remaining, err := r.grace(ctx, projectClient, &networkContext)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if remaining > 0 {
+		return ctrl.Result{RequeueAfter: remaining}, nil
 	}
 
 	log.FromContext(ctx).Info("no binding declares this network presence, removing it",
 		"project", routing.project, "namespace", key.Namespace, "name", key.Name)
 	if err := projectClient.Delete(ctx, &networkContext); err != nil {
-		return client.IgnoreNotFound(err)
+		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-	return nil
+	return ctrl.Result{}, nil
+}
+
+// grace reports how much longer a presence nothing declares is kept. The instant
+// the last declaration went away is recorded on the object rather than held in
+// memory, so a restart or a change of leader does not restart the wait, and does
+// not skip it either.
+func (r *NetworkPresenceReconciler) grace(
+	ctx context.Context,
+	projectClient client.Client,
+	networkContext *networkingv1alpha.NetworkContext,
+) (time.Duration, error) {
+	if r.UnclaimedGracePeriod <= 0 {
+		return 0, nil
+	}
+
+	// An unparseable stamp is treated as no stamp: the wait restarts rather than
+	// a presence being torn down on the strength of a value nothing can read.
+	if stamp := networkContext.Annotations[networkingv1alpha.NetworkContextUnclaimedSinceAnnotation]; stamp != "" {
+		if since, err := time.Parse(time.RFC3339, stamp); err == nil {
+			remaining := r.UnclaimedGracePeriod - time.Since(since)
+			if remaining < 0 {
+				remaining = 0
+			}
+			return remaining, nil
+		}
+		log.FromContext(ctx).Info("network presence carries an unreadable unclaimed-since stamp, restarting the wait",
+			"stamp", stamp)
+	}
+
+	patch := client.MergeFrom(networkContext.DeepCopy())
+	if networkContext.Annotations == nil {
+		networkContext.Annotations = map[string]string{}
+	}
+	networkContext.Annotations[networkingv1alpha.NetworkContextUnclaimedSinceAnnotation] =
+		time.Now().UTC().Format(time.RFC3339)
+
+	if err := projectClient.Patch(ctx, networkContext, patch); err != nil {
+		return 0, fmt.Errorf("failed recording when network presence %q went unclaimed: %w",
+			networkContext.Name, err)
+	}
+	return r.UnclaimedGracePeriod, nil
 }
 
 // ensure reports whether it refused, so a refusal with no watch behind it gets
@@ -252,6 +323,15 @@ func (r *NetworkPresenceReconciler) ensure(
 
 	networkContext, err := r.project(ctx, req, projectClient, routing, &pair, &network)
 	if err != nil {
+		// A context being deleted is not a context. Adopting it would hand every
+		// consumer a reference to an object that is about to go, and the
+		// finalizers still running on it would take the location's address space
+		// with them.
+		var terminating *networkContextTerminating
+		if errors.As(err, &terminating) {
+			return true, r.report(ctx, holders, nil, refusal(
+				networkingv1alpha.NetworkBindingReasonNetworkContextTerminating, terminating.Error()))
+		}
 		return false, err
 	}
 
@@ -326,6 +406,17 @@ func (r *NetworkPresenceReconciler) project(
 	networkContext.Name = req.Name
 
 	_, err := controllerutil.CreateOrUpdate(ctx, projectClient, networkContext, func() error {
+		// The guard is here rather than only in the caller so the invariant does
+		// not depend on the order anything else happens in: CreateOrUpdate reads
+		// the object immediately before this runs, which is the last moment the
+		// answer can still be current.
+		if !networkContext.DeletionTimestamp.IsZero() {
+			return &networkContextTerminating{name: networkContext.Name}
+		}
+
+		// The presence is declared again, so whatever wait was running is over.
+		delete(networkContext.Annotations, networkingv1alpha.NetworkContextUnclaimedSinceAnnotation)
+
 		if networkContext.Labels == nil {
 			networkContext.Labels = map[string]string{}
 		}
@@ -344,10 +435,24 @@ func (r *NetworkPresenceReconciler) project(
 		return controllerutil.SetControllerReference(network, networkContext, projectClient.Scheme())
 	})
 	if err != nil {
+		var terminating *networkContextTerminating
+		if errors.As(err, &terminating) {
+			return nil, err
+		}
 		return nil, fmt.Errorf("failed writing network context %q: %w", req.Name, err)
 	}
 
 	return networkContext, nil
+}
+
+// networkContextTerminating says the presence for this pair still exists and is
+// being deleted.
+type networkContextTerminating struct {
+	name string
+}
+
+func (e *networkContextTerminating) Error() string {
+	return fmt.Sprintf("Network context %q is being deleted, so the network is not present in this location", e.name)
 }
 
 // report writes the same answer onto every binding for the pair, so a consumer
@@ -364,7 +469,10 @@ func (r *NetworkPresenceReconciler) report(
 		binding := &holders[i]
 
 		changed := false
-		if ref != nil && binding.Status.NetworkContextRef == nil {
+		// The reference is the current answer, not the first one: a refusal that
+		// means there is no context clears it, so a consumer is never pointed at
+		// an object that has gone.
+		if !equality.Semantic.DeepEqual(binding.Status.NetworkContextRef, ref) {
 			binding.Status.NetworkContextRef = ref
 			changed = true
 		}
@@ -433,7 +541,7 @@ func (r *NetworkPresenceReconciler) SetupWithManager(mgr manager.Manager) error 
 	}
 	r.hub = mgr.GetClient()
 
-	return ctrl.NewControllerManagedBy(mgr).
+	builder := ctrl.NewControllerManagedBy(mgr).
 		Watches(&networkingv1alpha.NetworkBinding{}, handler.EnqueueRequestsFromMapFunc(
 			func(_ context.Context, obj client.Object) []reconcile.Request {
 				binding, ok := obj.(*networkingv1alpha.NetworkBinding)
@@ -445,6 +553,14 @@ func (r *NetworkPresenceReconciler) SetupWithManager(mgr manager.Manager) error 
 					Name:      networkContextNameForBinding(binding),
 				}}}
 			})).
-		Named("networkpresence").
-		Complete(r)
+		Named("networkpresence")
+
+	// Everything this controller reads besides the binding lives in a project
+	// control plane it does not watch. The sync controller does watch them, and
+	// maps what it sees onto the presence the change is about.
+	if r.Events != nil {
+		builder = builder.WatchesRawSource(source.Channel(r.Events, &handler.EnqueueRequestForObject{}))
+	}
+
+	return builder.Complete(r)
 }

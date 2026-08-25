@@ -410,4 +410,5 @@ func SetObjectDefaults_NetworkServicesOperator(in *NetworkServicesOperator) {
 	if in.LocationPublisher.Client.Burst == 0 {
 		in.LocationPublisher.Client.Burst = 100
 	}
+	SetDefaults_NetworkPresenceConfig(&in.NetworkPresence)
 }

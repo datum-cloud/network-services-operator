@@ -1,0 +1,188 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: network-presence-replace-keeps-presence
+spec:
+  cluster: nso-standard
+  steps:
+    - name: Seed the project and the hub namespace
+      try:
+        - apply:
+            resource:
+              apiVersion: v1
+              kind: Namespace
+              metadata:
+                name: presence-replace-project
+        - apply:
+            resource:
+              apiVersion: v1
+              kind: Namespace
+              metadata:
+                name: presence-replace-hub
+                labels:
+                  meta.datumapis.com/upstream-cluster-name: cluster-single
+                  meta.datumapis.com/upstream-namespace: presence-replace-project
+        - apply:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: LocationBinding
+              metadata:
+                name: presence-replace-loc
+              spec:
+                locationRef:
+                  name: presence-replace-loc
+                locationClassName: datum-managed
+        - apply:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Network
+              metadata:
+                name: presence-replace-net
+                namespace: presence-replace-project
+              spec:
+                ipam:
+                  mode: Auto
+                ipFamilies:
+                  - IPv4
+
+    - name: One consumer makes the network present in the location
+      try:
+        - apply:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkBinding
+              metadata:
+                name: presence-replace-consumer
+                namespace: presence-replace-hub
+                labels:
+                  networking.datumapis.com/network: presence-replace-net
+                  networking.datumapis.com/location: presence-replace-loc
+              spec:
+                network:
+                  name: presence-replace-net
+                location:
+                  name: presence-replace-loc
+                consumer:
+                  apiGroup: compute.datumapis.com
+                  kind: WorkloadDeployment
+                  name: presence-replace-consumer
+        - assert:
+            timeout: 1m
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkContext
+              metadata:
+                name: presence-replace-net-presence-replace-loc
+                namespace: presence-replace-project
+              status:
+                conditions:
+                  - type: Ready
+                    status: "True"
+        - script:
+            content: |
+              set -eu
+              kubectl -n presence-replace-project get networkcontext \
+                presence-replace-net-presence-replace-loc \
+                -o jsonpath='{.metadata.uid} {.metadata.creationTimestamp}' \
+                > /tmp/presence-replace-identity
+              echo "presence is $(cat /tmp/presence-replace-identity)"
+
+    - name: Replace the workload
+      description: |
+        Deleting a workload and creating its replacement leaves a few seconds in
+        which nothing declares the network is needed here. This location's address
+        space, and every address allocated inside it, must survive that gap.
+      try:
+        - delete:
+            ref:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkBinding
+              name: presence-replace-consumer
+              namespace: presence-replace-hub
+        # Wait long enough for the controller to see that nothing declares the
+        # presence, and not so long that the wait expires. Without this the
+        # replacement can arrive before the gap is ever observed, and the
+        # scenario would pass without exercising anything.
+        - script:
+            content: |
+              set -eu
+              for _ in $(seq 1 8); do
+                stamp=$(kubectl -n presence-replace-project get networkcontext \
+                  presence-replace-net-presence-replace-loc \
+                  -o jsonpath='{.metadata.annotations.networking\.datumapis\.com/unclaimed-since}')
+                if [ -n "$stamp" ]; then
+                  echo "the presence went unclaimed at $stamp and is still here"
+                  exit 0
+                fi
+                sleep 1
+              done
+              echo "the presence never recorded that it went unclaimed" >&2
+              kubectl -n presence-replace-project get networkcontext -o yaml >&2
+              exit 1
+        - apply:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkBinding
+              metadata:
+                name: presence-replace-replacement
+                namespace: presence-replace-hub
+                labels:
+                  networking.datumapis.com/network: presence-replace-net
+                  networking.datumapis.com/location: presence-replace-loc
+              spec:
+                network:
+                  name: presence-replace-net
+                location:
+                  name: presence-replace-loc
+                consumer:
+                  apiGroup: compute.datumapis.com
+                  kind: WorkloadDeployment
+                  name: presence-replace-replacement
+
+    - name: Assert the presence was never taken away
+      try:
+        - assert:
+            timeout: 1m
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkBinding
+              metadata:
+                name: presence-replace-replacement
+                namespace: presence-replace-hub
+              status:
+                conditions:
+                  - type: Ready
+                    status: "True"
+        - script:
+            content: |
+              set -eu
+              before=$(cat /tmp/presence-replace-identity)
+              after=$(kubectl -n presence-replace-project get networkcontext \
+                presence-replace-net-presence-replace-loc \
+                -o jsonpath='{.metadata.uid} {.metadata.creationTimestamp}')
+              if [ "$before" != "$after" ]; then
+                echo "the presence was torn down and rebuilt: $before -> $after" >&2
+                exit 1
+              fi
+              deleting=$(kubectl -n presence-replace-project get networkcontext \
+                presence-replace-net-presence-replace-loc \
+                -o jsonpath='{.metadata.deletionTimestamp}')
+              if [ -n "$deleting" ]; then
+                echo "the presence is being deleted while a consumer declares it" >&2
+                exit 1
+              fi
+              echo "the replacement is served by the presence that was already here"
+        # A presence something declares again is no longer waiting to be torn
+        # down, so the wait must have been cleared rather than left to expire.
+        - script:
+            content: |
+              set -eu
+              stamp=$(kubectl -n presence-replace-project get networkcontext \
+                presence-replace-net-presence-replace-loc \
+                -o jsonpath='{.metadata.annotations.networking\.datumapis\.com/unclaimed-since}')
+              if [ -n "$stamp" ]; then
+                echo "the presence still says it went unclaimed at $stamp" >&2
+                exit 1
+              fi
+              echo "the wait was cleared"

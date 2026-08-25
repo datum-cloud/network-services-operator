@@ -85,7 +85,7 @@ spec:
               kind: NetworkContext
               metadata:
                 name: presence-unavail-net-presence-unavail-loc
-                namespace: presence-unavail-hub
+                namespace: presence-unavail-project
 
     - name: The platform enables the location and the binding recovers
       description: |
@@ -110,5 +110,5 @@ spec:
               kind: NetworkContext
               metadata:
                 name: presence-unavail-net-presence-unavail-loc
-                namespace: presence-unavail-hub
+                namespace: presence-unavail-project
 

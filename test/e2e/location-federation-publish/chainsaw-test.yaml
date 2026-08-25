@@ -66,10 +66,11 @@ spec:
                 name: location-e2e-publish
               spec:
                 conflictResolution: Overwrite
-                resourceSelectors:
-                  - apiVersion: networking.datumapis.com/v1alpha
-                    kind: ServingLocation
-                    name: e2e-publish
+                # Asserted by predicate rather than as an exact list. The policy
+                # carries one selector per kind a location federates, and pinning
+                # the whole list breaks each time another is added; what this test
+                # is about is which cells the policy places on.
+                (length(resourceSelectors[?kind == 'ServingLocation' && name == 'e2e-publish']) == `1`): true
                 placement:
                   clusterAffinity:
                     labelSelector:

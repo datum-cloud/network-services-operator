@@ -13,3 +13,19 @@ spec:
         pricingUnit: request
         rates:
           - flat: "0.000001"
+    - name: networking.datumapis.com/gateway/egress-bytes
+      chargeType: Usage
+      currency: USD
+      displayName: ALB Egress
+      usage:
+        metricRef: networking.datumapis.com/gateway/egress-bytes
+        pricingUnit: GB
+        rates:
+          - tiered:
+              - upTo: "200"
+                rate: "0"
+              - upTo: "10240"
+                rate: "0.05"
+              - upTo: "153600"
+                rate: "0.04"
+              - rate: "0.03"

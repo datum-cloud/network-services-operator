@@ -36,3 +36,6 @@ spec:
     - networking.datumapis.com/networkinterfaceclaims.list
     - networking.datumapis.com/networkinterfaceclaims.get
     - networking.datumapis.com/networkinterfaceclaims.watch
+    - networking.datumapis.com/networkservices.list
+    - networking.datumapis.com/networkservices.get
+    - networking.datumapis.com/networkservices.watch

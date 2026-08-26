@@ -198,6 +198,9 @@ tasks:
       - task: billing-usage-collector
       - task: external-dns
       - task: karmada-up
+      # Same shape as ipam-kubeconfig above: the manager and the cell both mount
+      # this and neither can federate without it, so both wait in
+      # ContainerCreating until it lands here.
       - task: karmada-hub-secret
       - task: location-fixtures
       - task: link-clusters

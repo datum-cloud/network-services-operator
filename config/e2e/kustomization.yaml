@@ -61,11 +61,13 @@ patches:
                   mountPath: /etc/karmada-hub
             volumes:
               # test-infra:karmada-hub-secret creates this after the cell is
-              # deployed, so the cell crashloops until it exists.
+              # deployed. Not optional: the cell cannot federate without it, so
+              # let the pod wait in ContainerCreating for the mount rather than
+              # start against an absent file and crashloop until kubelet's next
+              # volume sync swaps the empty dir for the real secret.
               - name: karmada-hub-kubeconfig
                 secret:
                   secretName: karmada-hub-kubeconfig
-                  optional: true
   - target:
       kind: Deployment
       name: controller-manager
@@ -114,11 +116,14 @@ patches:
                 secret:
                   secretName: ipam-cluster-kubeconfig
               # test-infra:karmada-hub-secret creates this after the manager
-              # is deployed, so the manager crashloops until it exists.
+              # is deployed. Not optional, for the same reason as the
+              # downstream and IPAM kubeconfigs above: the manager waits in
+              # ContainerCreating until the secret lands, instead of starting
+              # without the file and crashlooping until kubelet's next volume
+              # sync. wait-ready is what gates on the result.
               - name: karmada-hub-kubeconfig
                 secret:
                   secretName: karmada-hub-kubeconfig
-                  optional: true
 
 replacements:
   - source: # Add cert-manager annotation to ValidatingWebhookConfiguration, MutatingWebhookConfiguration and CRDs

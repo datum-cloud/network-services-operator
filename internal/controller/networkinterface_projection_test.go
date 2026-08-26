@@ -358,6 +358,45 @@ func TestUpdateOnTheCellReachesTheCopy(t *testing.T) {
 	require.Equal(t, metav1.ConditionTrue, programmed.Status)
 }
 
+// A service reads health off HolderAvailable in the consumer's project, two
+// copies away from the cell that holds the interface. Both hops carry status
+// explicitly, and a copy that lost the condition would report every member
+// unhealthy.
+func TestHolderAvailableReachesTheProjectCopy(t *testing.T) {
+	v := newVisibility(t)
+	iface := v.interfaceOnCell()
+
+	require.NoError(t, v.cell.Get(v.ctx, client.ObjectKeyFromObject(iface), iface))
+	meta.SetStatusCondition(&iface.Status.Conditions, metav1.Condition{
+		Type:   networkingv1alpha.NetworkInterfaceHolderAvailable,
+		Status: metav1.ConditionTrue,
+		Reason: networkingv1alpha.NetworkInterfaceReasonHolderAvailable,
+	})
+	require.NoError(t, v.cell.Status().Update(v.ctx, iface))
+
+	v.publish()
+	v.handToProject()
+
+	copied, found := v.projectCopy()
+	require.True(t, found)
+	require.True(t, isServiceMemberHealthy(copied))
+
+	require.NoError(t, v.cell.Get(v.ctx, client.ObjectKeyFromObject(iface), iface))
+	meta.SetStatusCondition(&iface.Status.Conditions, metav1.Condition{
+		Type:   networkingv1alpha.NetworkInterfaceHolderAvailable,
+		Status: metav1.ConditionFalse,
+		Reason: networkingv1alpha.NetworkInterfaceReasonHolderUnavailable,
+	})
+	require.NoError(t, v.cell.Status().Update(v.ctx, iface))
+
+	v.publish()
+	v.handToProject()
+
+	copied, found = v.projectCopy()
+	require.True(t, found)
+	require.False(t, isServiceMemberHealthy(copied))
+}
+
 func TestEditingACopyDoesNotSurvive(t *testing.T) {
 	v := newVisibility(t)
 	v.interfaceOnCell()

@@ -166,9 +166,9 @@ type NetworkServiceTrafficDistribution struct {
 type NetworkServiceSpec struct {
 	// networkInterfaces selects the interfaces that make up the service's
 	// membership. An interface joins when it matches and a workload holds it,
-	// and it is healthy once the data plane reports it programmed. It leaves
-	// when it stops matching, when its workload releases it, or when it goes
-	// away.
+	// and it is healthy once whatever holds it reports itself available to serve.
+	// It leaves when it stops matching, when its workload releases it, or when it
+	// goes away.
 	//
 	// Membership tracks reality rather than a list, so instances appearing,
 	// disappearing, and moving between locations need no edit here.

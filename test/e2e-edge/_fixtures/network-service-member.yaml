@@ -3,7 +3,7 @@
 #
 # There is no compute in this environment, so nothing listens where IPAM says a
 # member lives. This pod closes that gap the same way compute would: the
-# scenario binds each programmed member's allocated address on the downstream
+# scenario binds each available member's allocated address on the downstream
 # node, and this host-network pod answers on every node address at the port the
 # service declares. Requests the edge sends to a member address are therefore
 # served by a real server over a real socket.

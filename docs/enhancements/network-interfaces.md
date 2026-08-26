@@ -545,7 +545,7 @@ claim that states nothing gets `Netns`. It names no CNI, no Linux device type an
 implementation, which is what keeps it meaningful on a platform that has none of those.
 
 Two conditions report the data plane, and the difference between them decides whether a
-platform runs or deadlocks.
+platform runs or deadlocks. A third reports the holder.
 
 **`Prepared` means the data plane's pre-workload artifacts exist.** Whatever an attachment
 needs to be set up in advance has been set up, and a workload consuming this interface can
@@ -562,6 +562,21 @@ never in an admission or scheduling decision.
 NSO owns neither. It seeds both `Unknown`, leaves whatever the data plane writes untouched
 on every path, and derives `Ready` from what it finds — the same seam, and the same
 guarantee, described above for `Programmed` alone.
+
+**`HolderAvailable` means whatever holds the interface reports itself available to serve.**
+It is written by the holder named in the `networking.datumapis.com/held-by` label and never
+by NSO, which seeds it `Unknown` and reads it back without knowing what a holder is. It says
+nothing about the interface: an interface with every address allocated and programmed still
+carries this false while whatever is behind it is starting, failing, or shutting down.
+
+This is the condition a `NetworkService` reads to decide whether a member takes traffic, and
+the only one of the four it reads. `Programmed` reports fabric realization — whether the
+addresses are actually carried — and stays the signal for reachability and for `Ready`, but
+it no longer gates service health.
+
+It is unrelated to `status.phase`. A phase of `Available` means no claim holds the interface
+at all, which is the opposite of anything being available to serve; membership still
+requires `Bound`.
 
 ### What compute writes
 

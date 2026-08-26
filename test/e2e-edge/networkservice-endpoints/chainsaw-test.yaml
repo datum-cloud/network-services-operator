@@ -2,12 +2,12 @@
 #
 # A NetworkService's members reach the edge as endpoints in their own locations.
 #
-# A service selects three network interfaces; two of them are reported
-# programmed and one is not. The proxy in front of it must end up with all three
-# as endpoints of one Envoy cluster, each in the locality its interface names,
-# with the unprogrammed one carried but out of rotation. A real request must
-# then be served by a member over a real socket, and the unprogrammed member
-# must have taken none of it.
+# A service selects three network interfaces; two of them have a holder
+# reporting itself available and one does not. The proxy in front of it must end
+# up with all three as endpoints of one Envoy cluster, each in the locality its
+# interface names, with the unavailable one carried but out of rotation. A real
+# request must then be served by a member over a real socket, and the
+# unavailable member must have taken none of it.
 #
 # The interfaces are never labelled by hand. Compute stamps its keys on the
 # claim, and the cell carries the allow-listed ones onto the interface it binds
@@ -15,13 +15,13 @@
 # operator wrote.
 #
 # It also holds the two failures that matter: a selector spanning two networks
-# is refused rather than silently narrowed, and an unprogrammed interface counts
+# is refused rather than silently narrowed, and an unavailable interface counts
 # as a member without counting as healthy.
 #
 # What this environment does and does not stand behind:
 #
 #   * There is no compute here, so nothing runs at a member's allocated address
-#     on its own. The scenario binds each programmed member's address on the
+#     on its own. The scenario binds each available member's address on the
 #     downstream node and answers there with a host-network server
 #     (../_fixtures/network-service-member.yaml), so the 200 below is a real
 #     response over a real socket to the address IPAM handed out.
@@ -34,9 +34,9 @@
 #     exist, in the envtest suite; what this proves is that the locality an
 #     interface names reaches Envoy at all.
 #
-#   * The data plane owns the interface's Programmed condition and nothing here
-#     reports it, so the scenario writes that too — the same stand-in the
-#     Domain verification uses in the sibling scenarios.
+#   * Whatever holds an interface owns its HolderAvailable condition and there is
+#     no compute here to hold anything, so the scenario reports it — the same
+#     stand-in the Domain verification uses in the sibling scenarios.
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
@@ -181,11 +181,11 @@ spec:
               kubectl -n $NAMESPACE get networkinterfaceclaim,networkinterface -o yaml
               kubectl -n network-services-operator-system logs -l app.kubernetes.io/name=network-services-operator --tail=100
 
-    - name: Two of the three members are reported programmed
+    - name: Two of the three members have an available holder
       description: |
-        The data plane owns Programmed and there is none here. The operator only
-        seeds the condition Unknown and never overwrites it, so the scenario can
-        report it the way an attachment would.
+        The holder owns HolderAvailable and there is no compute here to be one.
+        The operator only seeds the condition Unknown and never overwrites it, so
+        the scenario can report it the way an instance would.
       try:
         - script:
             content: |
@@ -193,12 +193,12 @@ spec:
               for name in nsvc-member-1 nsvc-member-2; do
                 kubectl -n "$NAMESPACE" patch networkinterface "$name" \
                   --subresource=status --type=merge -p \
-                  '{"status":{"conditions":[{"type":"Programmed","status":"True","reason":"Attached","message":"Reported by the scenario in place of a data plane","lastTransitionTime":"2026-01-01T00:00:00Z"}]}}'
+                  '{"status":{"conditions":[{"type":"HolderAvailable","status":"True","reason":"HolderAvailable","message":"Reported by the scenario in place of a workload instance","lastTransitionTime":"2026-01-01T00:00:00Z"}]}}'
               done
 
     - name: The service resolves three members in one location, two healthy
       description: |
-        The unprogrammed claim is the point of the third member: it must count as
+        The unavailable claim is the point of the third member: it must count as
         a member of its location and not as healthy, and its location must still
         be serving because its siblings are.
       try:
@@ -240,10 +240,10 @@ spec:
         - script:
             content: kubectl -n $NAMESPACE get networkservice nsvc -o yaml
 
-    - name: Make the programmed members answer at their allocated addresses
+    - name: Make the available members answer at their allocated addresses
       description: |
-        Bind each programmed member's address on the downstream node and serve
-        there. The unprogrammed member's address is deliberately left unbound and
+        Bind each available member's address on the downstream node and serve
+        there. The unavailable member's address is deliberately left unbound and
         unserved, so a request reaching it would fail rather than quietly
         succeed. See the header for what this stands in for.
       try:
@@ -395,7 +395,7 @@ spec:
       description: |
         The decisive configuration assertion: read the running proxy's own
         endpoint configuration and require one Envoy locality per location, the
-        members' real addresses inside them, and the unprogrammed member present
+        members' real addresses inside them, and the unavailable member present
         but not healthy. A member missing here is a member the edge will never
         send a request to, however healthy the control plane looks.
       try:
@@ -425,9 +425,9 @@ spec:
               set -eu
               # kubectl get returns items in name order: member-1, -2, -3.
               set -- $MEMBER_ADDRESSES
-              A_ONE=$1; A_TWO=$2; A_UNPROG=$3
-              export A_ONE A_TWO A_UNPROG
-              echo "members: one=${A_ONE} two=${A_TWO} unprogrammed=${A_UNPROG}"
+              A_ONE=$1; A_TWO=$2; A_UNAVAIL=$3
+              export A_ONE A_TWO A_UNAVAIL
+              echo "members: one=${A_ONE} two=${A_TWO} unavailable=${A_UNAVAIL}"
 
               ok=""
               for i in $(seq 1 24); do
@@ -462,7 +462,7 @@ spec:
               want = {
                   os.environ['A_ONE']: ('us-central-1', True),
                   os.environ['A_TWO']: ('us-central-1', True),
-                  os.environ['A_UNPROG']: ('us-central-1', False),
+                  os.environ['A_UNAVAIL']: ('us-central-1', False),
               }
 
               found = {}
@@ -501,7 +501,7 @@ spec:
                   if healthy and got_health != 'HEALTHY':
                       failures.append('%s is %s, want HEALTHY' % (address, got_health))
                   if not healthy and got_health == 'HEALTHY':
-                      failures.append('%s is HEALTHY, but its interface is not programmed' % address)
+                      failures.append('%s is HEALTHY, but its holder is not available' % address)
 
               localities = set(zone for zone, _, _ in found.values())
               if localities != {'us-central-1'}:
@@ -597,7 +597,7 @@ spec:
 
     - name: Only the healthy members took traffic
       description: |
-        Both programmed members must have served, and the unprogrammed one must
+        Both available members must have served, and the unavailable one must
         have taken nothing — the difference between an endpoint the edge carries
         and an endpoint the edge uses.
       try:
@@ -626,8 +626,8 @@ spec:
             content: |
               set -eu
               set -- $MEMBER_ADDRESSES
-              A_ONE=$1; A_TWO=$2; A_UNPROG=$3
-              export A_ONE A_TWO A_UNPROG
+              A_ONE=$1; A_TWO=$2; A_UNAVAIL=$3
+              export A_ONE A_TWO A_UNAVAIL
 
               rm -f /tmp/nsvc-clusters.json
               # Terminating proxy pods linger here for minutes while they drain,
@@ -681,22 +681,22 @@ spec:
                   if not total:
                       failures.append('%s %s served no request' % (label, address))
 
-              unprogrammed = os.environ['A_UNPROG']
-              total, health = served.get(unprogrammed, (None, None))
-              print('  unprogrammed member %s: rq_total=%s health=%s' % (unprogrammed, total, health))
+              unavailable = os.environ['A_UNAVAIL']
+              total, health = served.get(unavailable, (None, None))
+              print('  unavailable member %s: rq_total=%s health=%s' % (unavailable, total, health))
               if total is None:
-                  failures.append('the unprogrammed member %s is not carried by the proxy at all'
-                                  % unprogrammed)
+                  failures.append('the unavailable member %s is not carried by the proxy at all'
+                                  % unavailable)
               elif total:
-                  failures.append('the unprogrammed member %s took %s requests' % (unprogrammed, total))
+                  failures.append('the unavailable member %s took %s requests' % (unavailable, total))
               elif health.get('eds_health_status') == 'HEALTHY':
-                  failures.append('the unprogrammed member %s is HEALTHY at the edge' % unprogrammed)
+                  failures.append('the unavailable member %s is HEALTHY at the edge' % unavailable)
 
               for failure in failures:
                   print('  MISMATCH:', failure)
               sys.exit(1 if failures else 0)
               PY
-              echo "OK: both healthy members served, the unprogrammed member served nothing"
+              echo "OK: both healthy members served, the unavailable member served nothing"
 
     - name: A selector spanning two networks is refused
       description: |

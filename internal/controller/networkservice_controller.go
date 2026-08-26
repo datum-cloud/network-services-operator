@@ -181,10 +181,11 @@ func isServiceMember(iface *networkingv1alpha.NetworkInterface) bool {
 	return iface.Status.Phase == networkingv1alpha.NetworkInterfacePhaseBound
 }
 
-// isServiceMemberHealthy reports whether a member is taking traffic, which the
-// data plane says by reporting the interface programmed.
+// isServiceMemberHealthy reports whether a member is taking traffic, which
+// whatever holds the interface says by reporting itself available to serve.
+// Nothing here knows what a holder is, only that it has spoken.
 func isServiceMemberHealthy(iface *networkingv1alpha.NetworkInterface) bool {
-	return apimeta.IsStatusConditionTrue(iface.Status.Conditions, networkingv1alpha.NetworkInterfaceProgrammed)
+	return apimeta.IsStatusConditionTrue(iface.Status.Conditions, networkingv1alpha.NetworkInterfaceHolderAvailable)
 }
 
 func memberNetworks(members []networkingv1alpha.NetworkInterface) []string {

@@ -1258,12 +1258,14 @@ func seedDataPlaneConditions(conditions *[]metav1.Condition, generation int64) {
 }
 
 // seedInterfaceDataPlaneConditions is the same seeding for the interface's own
-// copies of the two conditions.
+// copies of those conditions, plus the one the holder owns.
 func seedInterfaceDataPlaneConditions(conditions *[]metav1.Condition, generation int64) {
 	seedCondition(conditions, networkingv1alpha.NetworkInterfacePrepared, generation,
 		"Waiting for the data plane to prepare the attachment")
 	seedCondition(conditions, networkingv1alpha.NetworkInterfaceProgrammed, generation,
 		"Waiting for the data plane to report the attachment")
+	seedCondition(conditions, networkingv1alpha.NetworkInterfaceHolderAvailable, generation,
+		"Waiting for the holder to report itself available to serve")
 }
 
 func seedCondition(conditions *[]metav1.Condition, conditionType string, generation int64, message string) {

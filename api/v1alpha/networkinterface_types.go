@@ -86,6 +86,31 @@ const (
 	// created, so anything that withholds the workload until it is true waits for
 	// something its own waiting prevents.
 	NetworkInterfaceProgrammed = "Programmed"
+
+	// NetworkInterfaceHolderAvailable reports that whatever holds this interface
+	// says it is available to serve. It is written by the holder named in the
+	// held-by label and never by the networking operator, which has no idea what
+	// a holder is.
+	//
+	// This is the condition a service reads to decide whether a member takes
+	// traffic. It says nothing about the interface: an interface with every
+	// address allocated and programmed still carries this false while whatever
+	// is behind it is starting, failing, or shutting down.
+	//
+	// Unrelated to status.phase, which reports whether a claim holds the
+	// interface at all. A phase of Available means no claim holds it, which is
+	// the opposite of anything being available to serve.
+	NetworkInterfaceHolderAvailable = "HolderAvailable"
+)
+
+const (
+	// NetworkInterfaceReasonHolderAvailable is what a holder reports on
+	// HolderAvailable once it is serving.
+	NetworkInterfaceReasonHolderAvailable = "HolderAvailable"
+
+	// NetworkInterfaceReasonHolderUnavailable is what a holder reports on
+	// HolderAvailable while it is starting, failing, or shutting down.
+	NetworkInterfaceReasonHolderUnavailable = "HolderUnavailable"
 )
 
 // NetworkInterfaceAddress is an address the interface holds inside its network.
@@ -327,6 +352,8 @@ type NetworkInterfaceStatus struct {
 	// conditions report the current state of the interface. Allocated means every
 	// address is held. Prepared means the data plane is ready for a workload to
 	// consume it. Programmed means the data plane carries the addresses.
+	// HolderAvailable means whatever holds the interface reports itself available
+	// to serve, and it is the only one of the four a service reads.
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 
@@ -351,6 +378,7 @@ type NetworkInterfaceStatus struct {
 // +kubebuilder:printcolumn:name="Allocated",type=string,JSONPath=`.status.conditions[?(@.type=="Allocated")].status`
 // +kubebuilder:printcolumn:name="Prepared",type=string,JSONPath=`.status.conditions[?(@.type=="Prepared")].status`
 // +kubebuilder:printcolumn:name="Programmed",type=string,JSONPath=`.status.conditions[?(@.type=="Programmed")].status`
+// +kubebuilder:printcolumn:name="HolderAvailable",type=string,JSONPath=`.status.conditions[?(@.type=="HolderAvailable")].status`
 type NetworkInterface struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
@@ -358,7 +386,7 @@ type NetworkInterface struct {
 	// +kubebuilder:validation:Required
 	Spec NetworkInterfaceSpec `json:"spec,omitempty"`
 
-	// +kubebuilder:default={conditions:{{type:"Allocated",status:"Unknown",reason:"Pending", message:"Waiting for controller", lastTransitionTime: "1970-01-01T00:00:00Z"},{type:"Prepared",status:"Unknown",reason:"Pending", message:"Waiting for controller", lastTransitionTime: "1970-01-01T00:00:00Z"},{type:"Programmed",status:"Unknown",reason:"Pending", message:"Waiting for controller", lastTransitionTime: "1970-01-01T00:00:00Z"}}}
+	// +kubebuilder:default={conditions:{{type:"Allocated",status:"Unknown",reason:"Pending", message:"Waiting for controller", lastTransitionTime: "1970-01-01T00:00:00Z"},{type:"Prepared",status:"Unknown",reason:"Pending", message:"Waiting for controller", lastTransitionTime: "1970-01-01T00:00:00Z"},{type:"Programmed",status:"Unknown",reason:"Pending", message:"Waiting for controller", lastTransitionTime: "1970-01-01T00:00:00Z"},{type:"HolderAvailable",status:"Unknown",reason:"Pending", message:"Waiting for controller", lastTransitionTime: "1970-01-01T00:00:00Z"}}}
 	Status NetworkInterfaceStatus `json:"status,omitempty"`
 }
 

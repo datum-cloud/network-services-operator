@@ -3754,10 +3754,10 @@ func newNetworkService() *networkingv1alpha.NetworkService {
 	}
 }
 
-func newNetworkServiceMember(name, location string, programmed bool, opts ...func(*networkingv1alpha.NetworkInterface)) *networkingv1alpha.NetworkInterface {
-	programmedStatus := metav1.ConditionFalse
-	if programmed {
-		programmedStatus = metav1.ConditionTrue
+func newNetworkServiceMember(name, location string, holderAvailable bool, opts ...func(*networkingv1alpha.NetworkInterface)) *networkingv1alpha.NetworkInterface {
+	holderStatus := metav1.ConditionFalse
+	if holderAvailable {
+		holderStatus = metav1.ConditionTrue
 	}
 
 	member := &networkingv1alpha.NetworkInterface{
@@ -3776,8 +3776,8 @@ func newNetworkServiceMember(name, location string, programmed bool, opts ...fun
 		Status: networkingv1alpha.NetworkInterfaceStatus{
 			Phase: networkingv1alpha.NetworkInterfacePhaseBound,
 			Conditions: []metav1.Condition{{
-				Type:               networkingv1alpha.NetworkInterfaceProgrammed,
-				Status:             programmedStatus,
+				Type:               networkingv1alpha.NetworkInterfaceHolderAvailable,
+				Status:             holderStatus,
 				Reason:             "Test",
 				LastTransitionTime: metav1.Now(),
 			}},
@@ -3894,7 +3894,9 @@ func TestHTTPProxyCollectDesiredResourcesNetworkService(t *testing.T) {
 		assert.Equal(t, []string{"203.0.113.20"}, endpointSlice.Endpoints[2].Addresses)
 		assert.Equal(t, "sjc", ptr.Deref(endpointSlice.Endpoints[2].Zone, ""))
 		assert.False(t, ptr.Deref(endpointSlice.Endpoints[2].Conditions.Ready, true),
-			"a member that does not report Programmed must not be ready")
+			"a member whose holder does not report itself available must not be ready")
+		assert.False(t, ptr.Deref(endpointSlice.Endpoints[2].Conditions.Serving, true),
+			"a member whose holder does not report itself available must not be serving")
 
 		for _, endpoint := range endpointSlice.Endpoints {
 			assert.NotContains(t, endpoint.Addresses, "203.0.113.40",
@@ -3908,6 +3910,44 @@ func TestHTTPProxyCollectDesiredResourcesNetworkService(t *testing.T) {
 		assert.Equal(t, "EndpointSlice", string(ptr.Deref(backendRefs[0].Kind, "")))
 		assert.Equal(t, "test-0-0", string(backendRefs[0].Name))
 		assert.EqualValues(t, 8080, ptr.Deref(backendRefs[0].Port, 0))
+	})
+
+	t.Run("the holder condition drives endpoint ready and serving", func(t *testing.T) {
+		httpProxy := newNetworkServiceProxy()
+
+		member := newNetworkServiceMember("dfw-1", "dfw", false, withExternalAddress("203.0.113.10"))
+		cl := fake.NewClientBuilder().
+			WithScheme(testScheme).
+			WithObjects(newNetworkService(), member).
+			WithStatusSubresource(member).
+			Build()
+
+		endpointConditions := func() discoveryv1.EndpointConditions {
+			desiredResources, err := reconciler.collectDesiredResources(context.Background(), cl, httpProxy)
+			require.NoError(t, err)
+			require.Len(t, desiredResources.endpointSlices, 1)
+			require.Len(t, desiredResources.endpointSlices[0].Endpoints, 1)
+			return desiredResources.endpointSlices[0].Endpoints[0].Conditions
+		}
+
+		conditions := endpointConditions()
+		assert.False(t, ptr.Deref(conditions.Ready, true))
+		assert.False(t, ptr.Deref(conditions.Serving, true))
+
+		var current networkingv1alpha.NetworkInterface
+		require.NoError(t, cl.Get(context.Background(), client.ObjectKeyFromObject(member), &current))
+		apimeta.SetStatusCondition(&current.Status.Conditions, metav1.Condition{
+			Type:   networkingv1alpha.NetworkInterfaceHolderAvailable,
+			Status: metav1.ConditionTrue,
+			Reason: "Test",
+		})
+		require.NoError(t, cl.Status().Update(context.Background(), &current))
+
+		conditions = endpointConditions()
+		assert.True(t, ptr.Deref(conditions.Ready, false),
+			"a holder reporting itself available must take the endpoint out of draining")
+		assert.True(t, ptr.Deref(conditions.Serving, false))
+		assert.False(t, ptr.Deref(conditions.Terminating, true))
 	})
 
 	t.Run("shards members beyond the per-slice limit and reports partial programming", func(t *testing.T) {

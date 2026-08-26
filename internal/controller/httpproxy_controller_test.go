@@ -3742,7 +3742,7 @@ func newNetworkService() *networkingv1alpha.NetworkService {
 	return &networkingv1alpha.NetworkService{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "test", Name: "storefront"},
 		Spec: networkingv1alpha.NetworkServiceSpec{
-			NetworkInterfaceClaims: networkingv1alpha.NetworkServiceClaimSelector{
+			NetworkInterfaces: networkingv1alpha.NetworkServiceInterfaceSelector{
 				Selector: metav1.LabelSelector{
 					MatchLabels: map[string]string{"app": "storefront"},
 				},
@@ -3754,13 +3754,13 @@ func newNetworkService() *networkingv1alpha.NetworkService {
 	}
 }
 
-func newNetworkServiceClaim(name, location string, programmed bool, opts ...func(*networkingv1alpha.NetworkInterfaceClaim)) *networkingv1alpha.NetworkInterfaceClaim {
+func newNetworkServiceMember(name, location string, programmed bool, opts ...func(*networkingv1alpha.NetworkInterface)) *networkingv1alpha.NetworkInterface {
 	programmedStatus := metav1.ConditionFalse
 	if programmed {
 		programmedStatus = metav1.ConditionTrue
 	}
 
-	claim := &networkingv1alpha.NetworkInterfaceClaim{
+	member := &networkingv1alpha.NetworkInterface{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: "test",
 			Name:      name,
@@ -3769,9 +3769,14 @@ func newNetworkServiceClaim(name, location string, programmed bool, opts ...func
 				networkingv1alpha.NetworkInterfaceLocationLabel: location,
 			},
 		},
-		Status: networkingv1alpha.NetworkInterfaceClaimStatus{
+		Spec: networkingv1alpha.NetworkInterfaceSpec{
+			Network:  networkingv1alpha.LocalNetworkRef{Name: "default"},
+			ClaimRef: &networkingv1alpha.NetworkInterfaceClaimRef{Name: name},
+		},
+		Status: networkingv1alpha.NetworkInterfaceStatus{
+			Phase: networkingv1alpha.NetworkInterfacePhaseBound,
 			Conditions: []metav1.Condition{{
-				Type:               networkingv1alpha.NetworkInterfaceClaimProgrammed,
+				Type:               networkingv1alpha.NetworkInterfaceProgrammed,
 				Status:             programmedStatus,
 				Reason:             "Test",
 				LastTransitionTime: metav1.Now(),
@@ -3780,15 +3785,15 @@ func newNetworkServiceClaim(name, location string, programmed bool, opts ...func
 	}
 
 	for _, opt := range opts {
-		opt(claim)
+		opt(member)
 	}
 
-	return claim
+	return member
 }
 
-func withExternalAddress(address string) func(*networkingv1alpha.NetworkInterfaceClaim) {
-	return func(claim *networkingv1alpha.NetworkInterfaceClaim) {
-		claim.Status.ExternalAddresses = append(claim.Status.ExternalAddresses, networkingv1alpha.NetworkInterfaceExternalAddress{
+func withExternalAddress(address string) func(*networkingv1alpha.NetworkInterface) {
+	return func(member *networkingv1alpha.NetworkInterface) {
+		member.Spec.ExternalAddresses = append(member.Spec.ExternalAddresses, networkingv1alpha.NetworkInterfaceExternalAddress{
 			Family:  networkingv1alpha.IPv4Protocol,
 			Address: address,
 			Class:   "public-ipv4",
@@ -3796,13 +3801,22 @@ func withExternalAddress(address string) func(*networkingv1alpha.NetworkInterfac
 	}
 }
 
-func withInterfaceAddress(address string) func(*networkingv1alpha.NetworkInterfaceClaim) {
-	return func(claim *networkingv1alpha.NetworkInterfaceClaim) {
-		claim.Status.Addresses = append(claim.Status.Addresses, networkingv1alpha.NetworkInterfaceAddress{
+func withInterfaceAddress(address string) func(*networkingv1alpha.NetworkInterface) {
+	return func(member *networkingv1alpha.NetworkInterface) {
+		member.Spec.Addresses = append(member.Spec.Addresses, networkingv1alpha.NetworkInterfaceAddress{
 			Family:  networkingv1alpha.IPv4Protocol,
 			Address: address,
 			Primary: true,
 		})
+	}
+}
+
+// released is a retained interface no claim holds any more. It keeps its labels
+// and its addresses, and nothing answers on them.
+func released() func(*networkingv1alpha.NetworkInterface) {
+	return func(member *networkingv1alpha.NetworkInterface) {
+		member.Spec.ClaimRef = nil
+		member.Status.Phase = networkingv1alpha.NetworkInterfacePhaseAvailable
 	}
 }
 
@@ -3838,11 +3852,12 @@ func TestHTTPProxyCollectDesiredResourcesNetworkService(t *testing.T) {
 			WithScheme(testScheme).
 			WithObjects(
 				newNetworkService(),
-				newNetworkServiceClaim("dfw-1", "dfw", true, withExternalAddress("203.0.113.10"), withInterfaceAddress("10.128.0.2/32")),
-				newNetworkServiceClaim("dfw-2", "dfw", true, withInterfaceAddress("198.51.100.5/32")),
-				newNetworkServiceClaim("sjc-1", "sjc", false, withExternalAddress("203.0.113.20")),
-				newNetworkServiceClaim("other-1", "dfw", true, withExternalAddress("203.0.113.30"), func(c *networkingv1alpha.NetworkInterfaceClaim) {
-					c.Labels["app"] = "not-storefront"
+				newNetworkServiceMember("dfw-1", "dfw", true, withExternalAddress("203.0.113.10"), withInterfaceAddress("10.128.0.2/32")),
+				newNetworkServiceMember("dfw-2", "dfw", true, withInterfaceAddress("198.51.100.5/32")),
+				newNetworkServiceMember("sjc-1", "sjc", false, withExternalAddress("203.0.113.20")),
+				newNetworkServiceMember("dfw-retired", "dfw", true, withExternalAddress("203.0.113.40"), released()),
+				newNetworkServiceMember("other-1", "dfw", true, withExternalAddress("203.0.113.30"), func(m *networkingv1alpha.NetworkInterface) {
+					m.Labels["app"] = "not-storefront"
 				}),
 			).
 			Build()
@@ -3879,7 +3894,12 @@ func TestHTTPProxyCollectDesiredResourcesNetworkService(t *testing.T) {
 		assert.Equal(t, []string{"203.0.113.20"}, endpointSlice.Endpoints[2].Addresses)
 		assert.Equal(t, "sjc", ptr.Deref(endpointSlice.Endpoints[2].Zone, ""))
 		assert.False(t, ptr.Deref(endpointSlice.Endpoints[2].Conditions.Ready, true),
-			"a claim that does not report Programmed must not be ready")
+			"a member that does not report Programmed must not be ready")
+
+		for _, endpoint := range endpointSlice.Endpoints {
+			assert.NotContains(t, endpoint.Addresses, "203.0.113.40",
+				"an interface no workload holds is retired capacity and cannot be an endpoint")
+		}
 
 		require.Len(t, desiredResources.httpRoute.Spec.Rules, 1)
 		backendRefs := desiredResources.httpRoute.Spec.Rules[0].BackendRefs
@@ -3896,7 +3916,7 @@ func TestHTTPProxyCollectDesiredResourcesNetworkService(t *testing.T) {
 		objects := make([]client.Object, 0, 151)
 		objects = append(objects, newNetworkService())
 		for i := range 150 {
-			objects = append(objects, newNetworkServiceClaim(
+			objects = append(objects, newNetworkServiceMember(
 				fmt.Sprintf("member-%03d", i), "dfw", true,
 				withExternalAddress(fmt.Sprintf("203.0.113.%d", i%254+1)),
 			))

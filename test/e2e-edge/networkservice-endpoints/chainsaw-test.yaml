@@ -2,16 +2,21 @@
 #
 # A NetworkService's members reach the edge as endpoints in their own locations.
 #
-# A service selects three network interface claims; two of them are reported
+# A service selects three network interfaces; two of them are reported
 # programmed and one is not. The proxy in front of it must end up with all three
-# as endpoints of one Envoy cluster, each in the locality its claim names, with
-# the unprogrammed one carried but out of rotation. A real request must then be
-# served by a member over a real socket, and the unprogrammed member must have
-# taken none of it.
+# as endpoints of one Envoy cluster, each in the locality its interface names,
+# with the unprogrammed one carried but out of rotation. A real request must
+# then be served by a member over a real socket, and the unprogrammed member
+# must have taken none of it.
+#
+# The interfaces are never labelled by hand. Compute stamps its keys on the
+# claim, and the cell carries the allow-listed ones onto the interface it binds
+# along with the location it serves, so what the selector matches is what the
+# operator wrote.
 #
 # It also holds the two failures that matter: a selector spanning two networks
-# is refused rather than silently narrowed, and an unprogrammed claim counts as
-# a member without counting as healthy.
+# is refused rather than silently narrowed, and an unprogrammed interface counts
+# as a member without counting as healthy.
 #
 # What this environment does and does not stand behind:
 #
@@ -21,15 +26,15 @@
 #     (../_fixtures/network-service-member.yaml), so the 200 below is a real
 #     response over a real socket to the address IPAM handed out.
 #
-#   * The location on each claim is the operator's: the cell stamps
-#     networking.datumapis.com/location on every claim it fulfills, and this
+#   * The location on each interface is the operator's: the cell stamps
+#     networking.datumapis.com/location on every interface it binds, and this
 #     environment is one cell serving one location. Every member is therefore in
 #     us-central-1 and the proxy carries one locality. That a service rolls
 #     several locations up separately is covered where more than one cell can
-#     exist, in the envtest suite; what this proves is that the locality a claim
-#     names reaches Envoy at all.
+#     exist, in the envtest suite; what this proves is that the locality an
+#     interface names reaches Envoy at all.
 #
-#   * The data plane owns the claim's Programmed condition and nothing here
+#   * The data plane owns the interface's Programmed condition and nothing here
 #     reports it, so the scenario writes that too — the same stand-in the
 #     Domain verification uses in the sibling scenarios.
 apiVersion: chainsaw.kyverno.io/v1alpha1
@@ -89,7 +94,7 @@ spec:
                   - IPv4
                 mtu: 1460
 
-    - name: Three claims bind, hold real addresses and carry their location
+    - name: Three claims bind and their interfaces carry what a service selects
       description: |
         Ready never goes true here because no data plane reports the attachment,
         so the claims are waited on by Bound and Allocated.
@@ -112,7 +117,7 @@ spec:
               metadata:
                 name: nsvc-member-1
                 labels:
-                  app: nsvc
+                  compute.datumapis.com/workload-name: nsvc
               spec:
                 network:
                   name: nsvc-net
@@ -125,7 +130,7 @@ spec:
               metadata:
                 name: nsvc-member-2
                 labels:
-                  app: nsvc
+                  compute.datumapis.com/workload-name: nsvc
               spec:
                 network:
                   name: nsvc-net
@@ -138,7 +143,7 @@ spec:
               metadata:
                 name: nsvc-member-3
                 labels:
-                  app: nsvc
+                  compute.datumapis.com/workload-name: nsvc
               spec:
                 network:
                   name: nsvc-net
@@ -158,10 +163,17 @@ spec:
                 echo "${name}: ${addr}"
                 echo "${addr}" | grep -Eq '^10\.128\.[0-9]+\.[0-9]+/32$' \
                   || { echo "ERROR: ${name} published ${addr}, not a /32 out of project-alpha's 10.128.0.0/16"; exit 1; }
-                loc=$(kubectl -n "$NAMESPACE" get networkinterfaceclaim "$name" \
+                loc=$(kubectl -n "$NAMESPACE" get networkinterface "$name" \
                   -o jsonpath='{.metadata.labels.networking\.datumapis\.com/location}')
                 [ "${loc}" = "us-central-1" ] \
-                  || { echo "ERROR: ${name} carries location '${loc}', want the one this cell serves"; exit 1; }
+                  || { echo "ERROR: ${name}'s interface carries location '${loc}', want the one this cell serves"; exit 1; }
+                workload=$(kubectl -n "$NAMESPACE" get networkinterface "$name" \
+                  -o jsonpath='{.metadata.labels.compute\.datumapis\.com/workload-name}')
+                [ "${workload}" = "nsvc" ] \
+                  || { echo "ERROR: ${name}'s interface carries workload-name '${workload}', want the claim's"; exit 1; }
+                phase=$(kubectl -n "$NAMESPACE" get networkinterface "$name" -o jsonpath='{.status.phase}')
+                [ "${phase}" = "Bound" ] \
+                  || { echo "ERROR: ${name}'s interface is ${phase}, want Bound"; exit 1; }
               done
       catch:
         - script:
@@ -179,7 +191,7 @@ spec:
             content: |
               set -eu
               for name in nsvc-member-1 nsvc-member-2; do
-                kubectl -n "$NAMESPACE" patch networkinterfaceclaim "$name" \
+                kubectl -n "$NAMESPACE" patch networkinterface "$name" \
                   --subresource=status --type=merge -p \
                   '{"status":{"conditions":[{"type":"Programmed","status":"True","reason":"Attached","message":"Reported by the scenario in place of a data plane","lastTransitionTime":"2026-01-01T00:00:00Z"}]}}'
               done
@@ -197,10 +209,10 @@ spec:
               metadata:
                 name: nsvc
               spec:
-                networkInterfaceClaims:
+                networkInterfaces:
                   selector:
                     matchLabels:
-                      app: nsvc
+                      compute.datumapis.com/workload-name: nsvc
                 ports:
                   - name: http
                     port: 8080
@@ -325,7 +337,7 @@ spec:
 
     - name: The proxy's EndpointSlice carries every member with its location
       description: |
-        Address, location and readiness are checked against the claims
+        Address, location and readiness are checked against the interfaces
         themselves rather than against literals, so the assertion cannot pass on
         an EndpointSlice built from stale or invented values.
       try:
@@ -347,9 +359,9 @@ spec:
             timeout: 120s
             content: |
               set -eu
-              claim_addr() {
-                kubectl -n "$NAMESPACE" get networkinterfaceclaim "$1" \
-                  -o jsonpath='{.status.addresses[0].address}' | cut -d/ -f1
+              member_addr() {
+                kubectl -n "$NAMESPACE" get networkinterface "$1" \
+                  -o jsonpath='{.spec.addresses[0].address}' | cut -d/ -f1
               }
               slice() {
                 kubectl -n "$NAMESPACE" get endpointslice nsvc-proxy-0-0 -o jsonpath="$1"
@@ -362,10 +374,10 @@ spec:
               count=$(slice '{.endpoints[*].addresses[0]}' | wc -w | tr -d ' ')
               [ "$count" = "3" ] || { echo "ERROR: slice carries ${count} endpoints, want 3"; exit 1; }
 
-              # claim:expected-zone:expected-ready
+              # interface:expected-zone:expected-ready
               for spec in nsvc-member-1:us-central-1:true nsvc-member-2:us-central-1:true nsvc-member-3:us-central-1:false; do
                 name=${spec%%:*}; rest=${spec#*:}; zone=${rest%%:*}; ready=${rest#*:}
-                want=$(claim_addr "$name")
+                want=$(member_addr "$name")
                 slice "{.endpoints[?(@.zone=='${zone}')].addresses[0]}" | tr ' ' '\n' | grep -Fxq "$want" \
                   || { echo "ERROR: ${name} address ${want} is not an endpoint in zone ${zone}"; slice '{.endpoints}'; exit 1; }
                 idx=0
@@ -391,8 +403,8 @@ spec:
             skipCommandOutput: true
             skipLogOutput: true
             content: |
-              kubectl -n "$NAMESPACE" get networkinterfaceclaim nsvc-member-1 nsvc-member-2 nsvc-member-3 \
-                -o jsonpath='{range .items[*]}{.status.addresses[0].address}{" "}{end}' \
+              kubectl -n "$NAMESPACE" get networkinterface nsvc-member-1 nsvc-member-2 nsvc-member-3 \
+                -o jsonpath='{range .items[*]}{.spec.addresses[0].address}{" "}{end}' \
                 | sed 's#/32##g' | tr -s ' ' | sed 's/ $//'
             outputs:
               - name: memberAddresses
@@ -489,11 +501,11 @@ spec:
                   if healthy and got_health != 'HEALTHY':
                       failures.append('%s is %s, want HEALTHY' % (address, got_health))
                   if not healthy and got_health == 'HEALTHY':
-                      failures.append('%s is HEALTHY, but its claim is not programmed' % address)
+                      failures.append('%s is HEALTHY, but its interface is not programmed' % address)
 
               localities = set(zone for zone, _, _ in found.values())
               if localities != {'us-central-1'}:
-                  failures.append('the proxy carries localities %s, want the one the claims name'
+                  failures.append('the proxy carries localities %s, want the one the interfaces name'
                                   % sorted(localities))
 
               for failure in failures:
@@ -593,8 +605,8 @@ spec:
             skipCommandOutput: true
             skipLogOutput: true
             content: |
-              kubectl -n "$NAMESPACE" get networkinterfaceclaim nsvc-member-1 nsvc-member-2 nsvc-member-3 \
-                -o jsonpath='{range .items[*]}{.status.addresses[0].address}{" "}{end}' \
+              kubectl -n "$NAMESPACE" get networkinterface nsvc-member-1 nsvc-member-2 nsvc-member-3 \
+                -o jsonpath='{range .items[*]}{.spec.addresses[0].address}{" "}{end}' \
                 | sed 's#/32##g' | tr -s ' ' | sed 's/ $//'
             outputs:
               - name: memberAddresses
@@ -723,7 +735,7 @@ spec:
               metadata:
                 name: nsvc-stray
                 labels:
-                  spanning: nsvc
+                  compute.datumapis.com/instance-group: spanning
               spec:
                 network:
                   name: nsvc-other-net
@@ -732,7 +744,8 @@ spec:
         - script:
             content: |
               set -eu
-              kubectl -n "$NAMESPACE" label networkinterfaceclaim nsvc-member-1 spanning=nsvc
+              kubectl -n "$NAMESPACE" label networkinterfaceclaim nsvc-member-1 \
+                compute.datumapis.com/instance-group=spanning
         - create:
             resource:
               apiVersion: networking.datumapis.com/v1alpha
@@ -740,10 +753,10 @@ spec:
               metadata:
                 name: nsvc-spanning
               spec:
-                networkInterfaceClaims:
+                networkInterfaces:
                   selector:
                     matchLabels:
-                      spanning: nsvc
+                      compute.datumapis.com/instance-group: spanning
                 ports:
                   - name: http
                     port: 8080

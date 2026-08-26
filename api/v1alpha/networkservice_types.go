@@ -8,10 +8,10 @@ import (
 
 const (
 	// NetworkServiceMembersResolved reports that the selector was evaluated
-	// against the network interface claims the consumer owns and produced a
+	// against the network interfaces the consumer owns and produced a
 	// membership. It is false when the selector matches nothing, which is the
 	// ordinary state of a service written before the workload behind it, and
-	// when the matched claims span more than one network.
+	// when the matched interfaces span more than one network.
 	NetworkServiceMembersResolved = "MembersResolved"
 
 	// NetworkServiceEndpointsReachable reports that the edge is reaching the
@@ -27,14 +27,17 @@ const (
 )
 
 const (
-	// NetworkServiceReasonNoMatchingClaims means the selector matched no network
-	// interface claim. A service is commonly written before the workload behind
-	// it exists, so this is reported rather than treated as an error, and it
-	// clears on its own once claims appear.
-	NetworkServiceReasonNoMatchingClaims = "NoMatchingClaims"
+	// NetworkServiceReasonNoMatchingInterfaces means the selector matched no
+	// network interface holding capacity for the consumer. A service is commonly
+	// written before the workload behind it exists, so this is reported rather
+	// than treated as an error, and it clears on its own once interfaces appear.
+	//
+	// An interface no workload holds any more reads the same way as one that
+	// never existed: it is retired capacity and cannot serve.
+	NetworkServiceReasonNoMatchingInterfaces = "NoMatchingInterfaces"
 
-	// NetworkServiceReasonMultipleNetworks means the selector matched claims on
-	// more than one network. A service spans one network, so the membership is
+	// NetworkServiceReasonMultipleNetworks means the selector matched interfaces
+	// on more than one network. A service spans one network, so the membership is
 	// not resolved rather than silently narrowed to one of them.
 	NetworkServiceReasonMultipleNetworks = "MultipleNetworks"
 
@@ -74,30 +77,33 @@ const (
 	NetworkServiceTrafficDistributionStrategyNearest NetworkServiceTrafficDistributionStrategy = "Nearest"
 )
 
-// NetworkServiceClaimSelector selects the network interface claims that make up
-// a service's membership.
-type NetworkServiceClaimSelector struct {
-	// selector is a standard label selector matched against network interface
-	// claims. It reaches only claims the consumer owns.
+// NetworkServiceInterfaceSelector selects the network interfaces that make up a
+// service's membership.
+type NetworkServiceInterfaceSelector struct {
+	// selector is a standard label selector matched against network interfaces.
+	// It reaches only interfaces the consumer owns.
 	//
-	// Every claim carries a defined set of labels, applied by whichever service
-	// created it, so the facts worth selecting on are present without labelling
-	// anything first. Networking sets networking.datumapis.com/location on every
-	// published claim; compute sets keys such as
-	// compute.datumapis.com/workload-name on the claims it creates. Selecting a
-	// whole application by workload name is the common case, and adding keys
-	// narrows the membership to one placement or one location.
+	// Every interface carries a defined set of labels, so the facts worth
+	// selecting on are present without labelling anything first. Networking sets
+	// networking.datumapis.com/location on every interface; compute sets keys
+	// such as compute.datumapis.com/workload-name on the interfaces its
+	// workloads hold. Selecting a whole application by workload name is the
+	// common case, and adding keys narrows the membership to one placement or
+	// one location.
 	//
-	// Adding the location key restricts which claims are members. It does not
-	// steer traffic: serving users from the location nearest them requires no
-	// configuration.
+	// Adding the location key restricts which interfaces are members. It does
+	// not steer traffic: serving users from the location nearest them requires
+	// no configuration.
 	//
 	// The selector must constrain something. An empty selector would make every
-	// claim in the namespace a member, which is never what a service means.
+	// interface in the namespace a member, which is never what a service means.
 	//
-	// A selector matching claims across more than one network is a configuration
-	// error, reported on the MembersResolved condition. A service spans one
-	// network.
+	// An interface no workload holds any more is never a member, whatever it is
+	// labelled: its addresses are retired capacity and nothing answers on them.
+	//
+	// A selector matching interfaces across more than one network is a
+	// configuration error, reported on the MembersResolved condition. A service
+	// spans one network.
 	//
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:XValidation:message="selector must set matchLabels or matchExpressions",rule="(has(self.matchLabels) && size(self.matchLabels) > 0) || (has(self.matchExpressions) && size(self.matchExpressions) > 0)"
@@ -158,16 +164,17 @@ type NetworkServiceTrafficDistribution struct {
 // members and the ports they answer on, and nothing about where traffic should
 // go: the platform decides that from where each request arrived.
 type NetworkServiceSpec struct {
-	// networkInterfaceClaims selects the claims that make up the service's
-	// membership. A claim joins when it matches, its interface is programmed,
-	// and whatever holds it reports running. It leaves when it stops matching or
-	// goes away, ordinarily after draining rather than abruptly.
+	// networkInterfaces selects the interfaces that make up the service's
+	// membership. An interface joins when it matches and a workload holds it,
+	// and it is healthy once the data plane reports it programmed. It leaves
+	// when it stops matching, when its workload releases it, or when it goes
+	// away.
 	//
 	// Membership tracks reality rather than a list, so instances appearing,
 	// disappearing, and moving between locations need no edit here.
 	//
 	// +kubebuilder:validation:Required
-	NetworkInterfaceClaims NetworkServiceClaimSelector `json:"networkInterfaceClaims"`
+	NetworkInterfaces NetworkServiceInterfaceSelector `json:"networkInterfaces"`
 
 	// ports are the ports the service's members answer on. A backend referencing
 	// this service names one of them.
@@ -193,14 +200,15 @@ type NetworkServiceSpec struct {
 // location, and whether that location is taking traffic.
 type NetworkServiceLocationStatus struct {
 	// name is the location, as it appears in the
-	// networking.datumapis.com/location label on the claims.
+	// networking.datumapis.com/location label on the interfaces.
 	//
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=63
 	Name string `json:"name"`
 
-	// members is how many claims in this location are members of the service.
+	// members is how many interfaces in this location are members of the
+	// service.
 	//
 	// +kubebuilder:validation:Optional
 	Members int32 `json:"members"`
@@ -228,7 +236,7 @@ type NetworkServiceSummary struct {
 	// +kubebuilder:validation:Optional
 	Locations int32 `json:"locations"`
 
-	// members is how many claims are members of the service, across every
+	// members is how many interfaces are members of the service, across every
 	// location.
 	//
 	// +kubebuilder:validation:Optional
@@ -277,8 +285,8 @@ type NetworkServiceStatus struct {
 // request from the best one, and moves to the next if it fails. None of that is
 // configured here.
 //
-// A service selects network interface claims, which belong to the networking
-// API. Nothing in it names a workload, so anything that creates claims can be
+// A service selects network interfaces, which belong to the networking API.
+// Nothing in it names a workload, so anything that holds an interface can be
 // put behind one.
 // +kubebuilder:printcolumn:name="Locations",type=integer,JSONPath=".status.summary.locations"
 // +kubebuilder:printcolumn:name="Members",type=integer,JSONPath=".status.summary.members"

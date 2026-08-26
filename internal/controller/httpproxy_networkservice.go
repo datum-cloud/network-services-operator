@@ -12,7 +12,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -53,8 +52,8 @@ type resolvedNetworkService struct {
 }
 
 // resolveNetworkServiceBackend resolves a NetworkService and the named port on
-// it, then evaluates the service's claim selector directly rather than reading
-// a membership from the service's status.
+// it, then evaluates the service's interface selector directly rather than
+// reading a membership from the service's status.
 func resolveNetworkServiceBackend(
 	ctx context.Context,
 	cl client.Client,
@@ -79,21 +78,17 @@ func resolveNetworkServiceBackend(
 		return nil, &errNetworkServiceBackendNotFound{service: ref.Name, port: ref.Port}
 	}
 
-	selector, err := metav1.LabelSelectorAsSelector(&service.Spec.NetworkInterfaceClaims.Selector)
+	selector, err := metav1.LabelSelectorAsSelector(&service.Spec.NetworkInterfaces.Selector)
 	if err != nil {
-		return nil, fmt.Errorf("invalid claim selector on network service %q: %w", ref.Name, err)
+		return nil, fmt.Errorf("invalid interface selector on network service %q: %w", ref.Name, err)
 	}
 
-	var claims networkingv1alpha.NetworkInterfaceClaimList
-	if err := cl.List(ctx, &claims,
-		client.InNamespace(namespace),
-		client.MatchingLabelsSelector{Selector: selector},
-	); err != nil {
-		return nil, fmt.Errorf("failed listing network interface claims for network service %q: %w", ref.Name, err)
+	members, err := matchingInterfaces(ctx, cl, namespace, selector)
+	if err != nil {
+		return nil, fmt.Errorf("failed resolving the members of network service %q: %w", ref.Name, err)
 	}
 
-	members := slices.Clone(claims.Items)
-	slices.SortFunc(members, func(a, b networkingv1alpha.NetworkInterfaceClaim) int {
+	slices.SortFunc(members, func(a, b networkingv1alpha.NetworkInterface) int {
 		return strings.Compare(a.Name, b.Name)
 	})
 
@@ -104,18 +99,18 @@ func resolveNetworkServiceBackend(
 
 	addressTypeSet := false
 	for i := range members {
-		claim := &members[i]
+		member := &members[i]
 
-		candidates := claimBackhaulAddresses(claim)
+		candidates := interfaceBackhaulAddresses(member)
 		if len(candidates) == 0 {
-			logger.Info("network service member holds no address", "networkService", ref.Name, "claim", claim.Name)
+			logger.Info("network service member holds no address", "networkService", ref.Name, "interface", member.Name)
 			continue
 		}
 
 		if !addressTypeSet {
 			addressType, ok := addressTypeForAddress(candidates[0])
 			if !ok {
-				logger.Info("network service member holds an unparseable address", "networkService", ref.Name, "claim", claim.Name)
+				logger.Info("network service member holds an unparseable address", "networkService", ref.Name, "interface", member.Name)
 				continue
 			}
 			resolved.addressType = addressType
@@ -125,27 +120,27 @@ func resolveNetworkServiceBackend(
 		address, ok := addressOfType(candidates, resolved.addressType)
 		if !ok {
 			logger.Info("network service member holds no address of the service's family",
-				"networkService", ref.Name, "claim", claim.Name, "addressType", resolved.addressType)
+				"networkService", ref.Name, "interface", member.Name, "addressType", resolved.addressType)
 			continue
 		}
 
-		resolved.endpoints = append(resolved.endpoints, networkServiceEndpoint(claim, address))
+		resolved.endpoints = append(resolved.endpoints, networkServiceEndpoint(member, address))
 	}
 
 	return resolved, nil
 }
 
-// claimBackhaulAddresses returns the addresses a claim can be reached at, in
-// the order the edge should prefer them. External addresses come first because
-// backhaul from the edge crosses the public internet.
-func claimBackhaulAddresses(claim *networkingv1alpha.NetworkInterfaceClaim) []string {
+// interfaceBackhaulAddresses returns the addresses a member can be reached at,
+// in the order the edge should prefer them. External addresses come first
+// because backhaul from the edge crosses the public internet.
+func interfaceBackhaulAddresses(member *networkingv1alpha.NetworkInterface) []string {
 	var addresses []string
-	for _, external := range claim.Status.ExternalAddresses {
+	for _, external := range member.Spec.ExternalAddresses {
 		if address, _, _ := strings.Cut(external.Address, "/"); address != "" {
 			addresses = append(addresses, address)
 		}
 	}
-	for _, internal := range claim.Status.Addresses {
+	for _, internal := range member.Spec.Addresses {
 		if address, _, _ := strings.Cut(internal.Address, "/"); address != "" {
 			addresses = append(addresses, address)
 		}
@@ -174,9 +169,9 @@ func addressOfType(candidates []string, addressType discoveryv1.AddressType) (st
 }
 
 // networkServiceEndpoint builds the endpoint for one member. Zone carries the
-// claim's location, which is what Envoy Gateway turns into a locality.
-func networkServiceEndpoint(claim *networkingv1alpha.NetworkInterfaceClaim, address string) discoveryv1.Endpoint {
-	ready := apimeta.IsStatusConditionTrue(claim.Status.Conditions, networkingv1alpha.NetworkInterfaceClaimProgrammed)
+// member's location, which is what Envoy Gateway turns into a locality.
+func networkServiceEndpoint(member *networkingv1alpha.NetworkInterface, address string) discoveryv1.Endpoint {
+	ready := isServiceMemberHealthy(member)
 
 	endpoint := discoveryv1.Endpoint{
 		Addresses: []string{address},
@@ -187,7 +182,7 @@ func networkServiceEndpoint(claim *networkingv1alpha.NetworkInterfaceClaim, addr
 		},
 	}
 
-	if zone := claim.Labels[networkingv1alpha.NetworkInterfaceLocationLabel]; zone != "" {
+	if zone := member.Labels[networkingv1alpha.NetworkInterfaceLocationLabel]; zone != "" {
 		endpoint.Zone = ptr.To(zone)
 	}
 

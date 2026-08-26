@@ -143,7 +143,7 @@ const (
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=httpproxies/finalizers,verbs=update
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=connectors,verbs=get;list;watch
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkservices,verbs=get;list;watch
-// +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkinterfaceclaims,verbs=get;list;watch
+// +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkinterfaces,verbs=get;list;watch
 // +kubebuilder:rbac:groups=gateway.envoyproxy.io,resources=httproutefilters,verbs=get;list;watch;create;update;patch;delete
 // HTTPProxy controller reads cert-manager Certificate resources in the downstream cluster for status; ensure downstream role has cert-manager.io/certificates get;list;watch.
 
@@ -719,7 +719,7 @@ func (r *HTTPProxyReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 			}),
 		).
 		Watches(
-			&networkingv1alpha.NetworkInterfaceClaim{},
+			&networkingv1alpha.NetworkInterface{},
 			enqueueHTTPProxiesForNetworkServiceMembership(func(client.Object) string {
 				return ""
 			}),

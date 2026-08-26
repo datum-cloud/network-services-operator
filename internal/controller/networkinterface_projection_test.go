@@ -522,3 +522,57 @@ func TestACopyGoesWhenItsNetworkDoes(t *testing.T) {
 }
 
 var _ cluster.Cluster = &hubFakeCluster{}
+
+// A consumer selects the members of a network service by the keys whatever
+// created the claim wrote. They only reach a service if they reach the copy.
+func TestConsumerLabelsReachTheCopy(t *testing.T) {
+	v := newVisibility(t)
+	iface := v.interfaceOnCell()
+
+	iface.Labels = map[string]string{
+		"compute.datumapis.com/workload-name": "storefront",
+		"app":                                 "storefront",
+	}
+	require.NoError(t, v.cell.Update(v.ctx, iface))
+
+	v.publish()
+	v.handToProject()
+
+	copied, found := v.projectCopy()
+	require.True(t, found)
+	require.Equal(t, "storefront", copied.Labels["compute.datumapis.com/workload-name"])
+	require.NotContains(t, copied.Labels, "app",
+		"only the allow-listed prefixes travel to a copy")
+}
+
+// A label whose source has dropped it must leave the copy. A copy is selected
+// by its labels, and a stale one keeps retired capacity a member of a service.
+func TestACopyLosesALabelItsSourceDropped(t *testing.T) {
+	v := newVisibility(t)
+	iface := v.interfaceOnCell()
+
+	iface.Labels = map[string]string{"compute.datumapis.com/workload-name": "storefront"}
+	require.NoError(t, v.cell.Update(v.ctx, iface))
+
+	v.publish()
+	v.handToProject()
+
+	copied, found := v.projectCopy()
+	require.True(t, found)
+	require.Equal(t, boundInterfaceName, copied.Labels[networkingv1alpha.NetworkInterfaceHolderLabel])
+
+	require.NoError(t, v.cell.Get(v.ctx, client.ObjectKeyFromObject(iface), iface))
+	iface.Spec.ClaimRef = nil
+	iface.Labels = map[string]string{}
+	require.NoError(t, v.cell.Update(v.ctx, iface))
+
+	v.publish()
+	v.handToProject()
+
+	copied, found = v.projectCopy()
+	require.True(t, found)
+	require.NotContains(t, copied.Labels, networkingv1alpha.NetworkInterfaceHolderLabel,
+		"nothing holds the interface any more")
+	require.NotContains(t, copied.Labels, "compute.datumapis.com/workload-name")
+	require.Equal(t, testLocationName, copied.Labels[networkingv1alpha.NetworkInterfaceLocationLabel])
+}

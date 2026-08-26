@@ -58,7 +58,7 @@ func (s *networkServiceScenario) createService(name string, matchLabels map[stri
 	service.Namespace = s.namespace
 	service.Name = name
 	service.Spec = networkingv1alpha.NetworkServiceSpec{
-		NetworkInterfaceClaims: networkingv1alpha.NetworkServiceClaimSelector{
+		NetworkInterfaces: networkingv1alpha.NetworkServiceInterfaceSelector{
 			Selector: metav1.LabelSelector{MatchLabels: matchLabels},
 		},
 		Ports: []networkingv1alpha.NetworkServicePort{{Name: "http", Port: 8080}},
@@ -67,33 +67,61 @@ func (s *networkServiceScenario) createService(name string, matchLabels map[stri
 	return service
 }
 
-func (s *networkServiceScenario) createClaim(
+func (s *networkServiceScenario) createMember(
 	name, network string,
-	claimLabels map[string]string,
+	memberLabels map[string]string,
 	programmed bool,
-) *networkingv1alpha.NetworkInterfaceClaim {
+) *networkingv1alpha.NetworkInterface {
+	s.t.Helper()
+	return s.createInterface(name, network, memberLabels, programmed,
+		networkingv1alpha.NetworkInterfacePhaseBound)
+}
+
+// createRetiredInterface is a retained interface whose claim is gone. It keeps
+// the labels a service selects on and holds its addresses, and nothing answers
+// on them.
+func (s *networkServiceScenario) createRetiredInterface(
+	name, network string,
+	memberLabels map[string]string,
+	programmed bool,
+) {
+	s.t.Helper()
+	s.createInterface(name, network, memberLabels, programmed,
+		networkingv1alpha.NetworkInterfacePhaseAvailable)
+}
+
+func (s *networkServiceScenario) createInterface(
+	name, network string,
+	memberLabels map[string]string,
+	programmed bool,
+	phase networkingv1alpha.NetworkInterfacePhase,
+) *networkingv1alpha.NetworkInterface {
 	s.t.Helper()
 
-	claim := &networkingv1alpha.NetworkInterfaceClaim{}
-	claim.Namespace = s.namespace
-	claim.Name = name
-	claim.Labels = claimLabels
-	claim.Spec = networkingv1alpha.NetworkInterfaceClaimSpec{
+	iface := &networkingv1alpha.NetworkInterface{}
+	iface.Namespace = s.namespace
+	iface.Name = name
+	iface.Labels = memberLabels
+	iface.Spec = networkingv1alpha.NetworkInterfaceSpec{
 		Network: networkingv1alpha.LocalNetworkRef{Name: network},
 	}
-	require.NoError(s.t, s.client.Create(s.ctx, claim))
+	if phase == networkingv1alpha.NetworkInterfacePhaseBound {
+		iface.Spec.ClaimRef = &networkingv1alpha.NetworkInterfaceClaimRef{Name: name}
+	}
+	require.NoError(s.t, s.client.Create(s.ctx, iface))
 
 	status := metav1.ConditionFalse
 	if programmed {
 		status = metav1.ConditionTrue
 	}
-	apimeta.SetStatusCondition(&claim.Status.Conditions, metav1.Condition{
-		Type:   networkingv1alpha.NetworkInterfaceClaimProgrammed,
+	iface.Status.Phase = phase
+	apimeta.SetStatusCondition(&iface.Status.Conditions, metav1.Condition{
+		Type:   networkingv1alpha.NetworkInterfaceProgrammed,
 		Status: status,
 		Reason: "Test",
 	})
-	require.NoError(s.t, s.client.Status().Update(s.ctx, claim))
-	return claim
+	require.NoError(s.t, s.client.Status().Update(s.ctx, iface))
+	return iface
 }
 
 func (s *networkServiceScenario) reconcile(service *networkingv1alpha.NetworkService) *networkingv1alpha.NetworkService {
@@ -142,10 +170,10 @@ func locationLabels(workload, location string) map[string]string {
 func TestNetworkServiceResolvesMembersPerLocation(t *testing.T) {
 	s := newNetworkServiceScenario(t)
 
-	s.createClaim("storefront-0", "default", locationLabels("storefront", "us-central-1"), true)
-	s.createClaim("storefront-1", "default", locationLabels("storefront", "us-central-1"), true)
-	s.createClaim("storefront-2", "default", locationLabels("storefront", "us-east-1"), true)
-	s.createClaim("other-0", "default", locationLabels("checkout", "us-central-1"), true)
+	s.createMember("storefront-0", "default", locationLabels("storefront", "us-central-1"), true)
+	s.createMember("storefront-1", "default", locationLabels("storefront", "us-central-1"), true)
+	s.createMember("storefront-2", "default", locationLabels("storefront", "us-east-1"), true)
+	s.createMember("other-0", "default", locationLabels("checkout", "us-central-1"), true)
 
 	service := s.reconcile(s.createService("storefront", map[string]string{
 		"compute.datumapis.com/workload-name": "storefront",
@@ -175,11 +203,11 @@ func TestNetworkServiceResolvesMembersPerLocation(t *testing.T) {
 		serviceCondition(t, service, networkingv1alpha.NetworkServiceEndpointsReachable).Status)
 }
 
-func TestNetworkServiceUnprogrammedClaimIsAMemberNotHealthy(t *testing.T) {
+func TestNetworkServiceUnprogrammedInterfaceIsAMemberNotHealthy(t *testing.T) {
 	s := newNetworkServiceScenario(t)
 
-	s.createClaim("storefront-0", "default", locationLabels("storefront", "us-central-1"), true)
-	s.createClaim("storefront-1", "default", locationLabels("storefront", "us-central-1"), false)
+	s.createMember("storefront-0", "default", locationLabels("storefront", "us-central-1"), true)
+	s.createMember("storefront-1", "default", locationLabels("storefront", "us-central-1"), false)
 
 	service := s.reconcile(s.createService("storefront", map[string]string{
 		"compute.datumapis.com/workload-name": "storefront",
@@ -198,7 +226,7 @@ func TestNetworkServiceUnprogrammedClaimIsAMemberNotHealthy(t *testing.T) {
 func TestNetworkServiceLocationWithNoHealthyMembersStopsServing(t *testing.T) {
 	s := newNetworkServiceScenario(t)
 
-	s.createClaim("storefront-0", "default", locationLabels("storefront", "us-central-1"), false)
+	s.createMember("storefront-0", "default", locationLabels("storefront", "us-central-1"), false)
 
 	service := s.reconcile(s.createService("storefront", map[string]string{
 		"compute.datumapis.com/workload-name": "storefront",
@@ -214,11 +242,11 @@ func TestNetworkServiceLocationWithNoHealthyMembersStopsServing(t *testing.T) {
 	require.Equal(t, networkingv1alpha.NetworkServiceReasonNoServingLocations, ready.Reason)
 }
 
-func TestNetworkServiceClaimWithoutLocationIsCountedAndSurfaced(t *testing.T) {
+func TestNetworkServiceUnlocatedMemberIsCounted(t *testing.T) {
 	s := newNetworkServiceScenario(t)
 
-	s.createClaim("storefront-0", "default", locationLabels("storefront", "us-central-1"), true)
-	s.createClaim("storefront-1", "default", map[string]string{
+	s.createMember("storefront-0", "default", locationLabels("storefront", "us-central-1"), true)
+	s.createMember("storefront-1", "default", map[string]string{
 		"compute.datumapis.com/workload-name": "storefront",
 	}, true)
 
@@ -247,18 +275,18 @@ func TestNetworkServiceSelectorMatchingNothing(t *testing.T) {
 
 	resolved := serviceCondition(t, service, networkingv1alpha.NetworkServiceMembersResolved)
 	require.Equal(t, metav1.ConditionFalse, resolved.Status)
-	require.Equal(t, networkingv1alpha.NetworkServiceReasonNoMatchingClaims, resolved.Reason)
+	require.Equal(t, networkingv1alpha.NetworkServiceReasonNoMatchingInterfaces, resolved.Reason)
 
 	ready := serviceCondition(t, service, networkingv1alpha.NetworkServiceReady)
 	require.Equal(t, metav1.ConditionFalse, ready.Status)
-	require.Equal(t, networkingv1alpha.NetworkServiceReasonNoMatchingClaims, ready.Reason)
+	require.Equal(t, networkingv1alpha.NetworkServiceReasonNoMatchingInterfaces, ready.Reason)
 }
 
-func TestNetworkServiceClaimsSpanningTwoNetworks(t *testing.T) {
+func TestNetworkServiceInterfacesSpanningTwoNetworks(t *testing.T) {
 	s := newNetworkServiceScenario(t)
 
-	s.createClaim("storefront-0", "default", locationLabels("storefront", "us-central-1"), true)
-	s.createClaim("storefront-1", "secondary", locationLabels("storefront", "us-east-1"), true)
+	s.createMember("storefront-0", "default", locationLabels("storefront", "us-central-1"), true)
+	s.createMember("storefront-1", "secondary", locationLabels("storefront", "us-east-1"), true)
 
 	service := s.reconcile(s.createService("storefront", map[string]string{
 		"compute.datumapis.com/workload-name": "storefront",
@@ -281,7 +309,7 @@ func TestNetworkServiceClaimsSpanningTwoNetworks(t *testing.T) {
 func TestNetworkServiceStatusIsStableAcrossReconciles(t *testing.T) {
 	s := newNetworkServiceScenario(t)
 
-	s.createClaim("storefront-0", "default", locationLabels("storefront", "us-central-1"), true)
+	s.createMember("storefront-0", "default", locationLabels("storefront", "us-central-1"), true)
 
 	service := s.createService("storefront", map[string]string{
 		"compute.datumapis.com/workload-name": "storefront",
@@ -293,7 +321,7 @@ func TestNetworkServiceStatusIsStableAcrossReconciles(t *testing.T) {
 	require.Equal(t, first.ResourceVersion, second.ResourceVersion)
 }
 
-func TestNetworkServiceClaimEventsReachEveryMatchingService(t *testing.T) {
+func TestNetworkServiceInterfaceEventsReachEveryMatchingService(t *testing.T) {
 	s := newNetworkServiceScenario(t)
 
 	storefront := s.createService("storefront", map[string]string{
@@ -304,9 +332,9 @@ func TestNetworkServiceClaimEventsReachEveryMatchingService(t *testing.T) {
 		"compute.datumapis.com/workload-name": "checkout",
 	})
 
-	claim := s.createClaim("storefront-0", "default", locationLabels("storefront", "us-central-1"), true)
+	member := s.createMember("storefront-0", "default", locationLabels("storefront", "us-central-1"), true)
 
-	requests := servicesMatchingClaim(s.ctx, s.client, claim)
+	requests := servicesMatchingInterface(s.ctx, s.client, member)
 
 	require.Len(t, requests, 2)
 
@@ -316,4 +344,61 @@ func TestNetworkServiceClaimEventsReachEveryMatchingService(t *testing.T) {
 		client.ObjectKeyFromObject(central),
 	}, matched)
 	require.NotContains(t, matched, client.ObjectKeyFromObject(checkout))
+}
+
+// Capacity a workload has released keeps every label the service selects on,
+// and nothing answers on its addresses. Counting it would tell a consumer their
+// service has members it cannot serve from.
+func TestNetworkServiceExcludesRetiredCapacity(t *testing.T) {
+	s := newNetworkServiceScenario(t)
+
+	s.createMember("storefront-0", "default", locationLabels("storefront", "us-central-1"), true)
+	s.createRetiredInterface("storefront-1", "default", locationLabels("storefront", "us-central-1"), true)
+
+	service := s.reconcile(s.createService("storefront", map[string]string{
+		"compute.datumapis.com/workload-name": "storefront",
+	}))
+
+	central := locationStatus(t, service, "us-central-1")
+	require.Equal(t, int32(1), central.Members)
+	require.Equal(t, int32(1), central.Healthy)
+	require.Equal(t, networkingv1alpha.NetworkServiceSummary{Locations: 1, Members: 1, Healthy: 1},
+		service.Status.Summary)
+}
+
+// A selector reaching nothing but released capacity resolves to no members at
+// all, rather than to members that cannot serve.
+func TestNetworkServiceOfOnlyRetiredCapacityHasNoMembers(t *testing.T) {
+	s := newNetworkServiceScenario(t)
+
+	s.createRetiredInterface("storefront-0", "default", locationLabels("storefront", "us-central-1"), true)
+
+	service := s.reconcile(s.createService("storefront", map[string]string{
+		"compute.datumapis.com/workload-name": "storefront",
+	}))
+
+	require.Empty(t, service.Status.Locations)
+	require.Equal(t, networkingv1alpha.NetworkServiceSummary{}, service.Status.Summary)
+
+	resolved := serviceCondition(t, service, networkingv1alpha.NetworkServiceMembersResolved)
+	require.Equal(t, metav1.ConditionFalse, resolved.Status)
+	require.Equal(t, networkingv1alpha.NetworkServiceReasonNoMatchingInterfaces, resolved.Reason)
+}
+
+// A network the service only reaches through released capacity is not a second
+// network: refusing the whole service over it would take a working one down.
+func TestNetworkServiceIgnoresRetiredCapacityOnAnotherNetwork(t *testing.T) {
+	s := newNetworkServiceScenario(t)
+
+	s.createMember("storefront-0", "default", locationLabels("storefront", "us-central-1"), true)
+	s.createRetiredInterface("storefront-1", "secondary", locationLabels("storefront", "us-east-1"), true)
+
+	service := s.reconcile(s.createService("storefront", map[string]string{
+		"compute.datumapis.com/workload-name": "storefront",
+	}))
+
+	resolved := serviceCondition(t, service, networkingv1alpha.NetworkServiceMembersResolved)
+	require.Equal(t, metav1.ConditionTrue, resolved.Status)
+	require.Equal(t, networkingv1alpha.NetworkServiceSummary{Locations: 1, Members: 1, Healthy: 1},
+		service.Status.Summary)
 }

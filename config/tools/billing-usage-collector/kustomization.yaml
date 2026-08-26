@@ -112,10 +112,6 @@ helmCharts:
               events = []
               region = "us-east-1"
               if !is_null(.region) { region = .region }
-              gateway_name = "test-gateway"
-              if !is_null(.gateway_name) { gateway_name = .gateway_name }
-              gateway_namespace = "default"
-              if !is_null(.gateway_namespace) { gateway_namespace = .gateway_namespace }
               gateway_class = "datum-downstream-gateway"
               if !is_null(.gateway_class) { gateway_class = .gateway_class }
               
@@ -136,8 +132,6 @@ helmCharts:
                   "value": "1",
                   "dimensions": {
                     "region": region,
-                    "gateway": gateway_name,
-                    "gateway_namespace": gateway_namespace,
                     "gateway_class": gateway_class,
                     "httproute_name": httproute_name,
                     "httproute_namespace": httproute_namespace,

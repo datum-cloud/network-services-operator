@@ -631,15 +631,28 @@ not reached here yet.
 
 ### Keeping it current
 
-Three watches, replacing two requeues and a gap.
+The presence controller reads a `Network`, a `LocationBinding` and a `NetworkContext` that all
+live in a project control plane, and it runs on the hub, which watches none of them. Its only
+event is the binding. Everything else needs a way back.
 
-**A binding that is waiting comes back on its own.** The context is in a control plane the
-presence controller does not watch, so a context becoming ready is not an event it sees. A
-binding that reports "not ready yet" therefore carries its own retry, and moves to ready
-without a consumer doing anything.
+**A separate controller watches the project control planes and enqueues presences.** It maps a
+`NetworkContext` onto the hub namespaces standing for its project and namespace, and a
+`Network` onto every binding in those namespaces that names it, and hands the presence's key to
+the presence controller over a channel. It writes nothing, holds no finalizer and reports no
+status, so the presence keeps exactly one writer. This is what makes an edited network reach a
+location that already carries it, and what brings a binding back once a context that was being
+deleted has gone.
+
+**A binding that is waiting comes back on its own.** A context that exists and is not ready
+yet is a refusal, and refusals carry their own retry as a backstop for the conditions nothing
+watches — an unavailable location, an unresolvable project, a cluster not engaged yet.
 
 **A context deleted out from under the controller is rebuilt**, because the declarations that
 caused it are still there.
+
+**A context being deleted is not a context.** A presence whose context still carries a
+deletion timestamp is refused rather than adopted: adopting it binds every consumer to an
+object that never comes back.
 
 **At the location, readers watch `NetworkContext`.** For the claim reconciler, a context
 arriving or changing enqueues the claims naming that network in that namespace, which needs a
@@ -679,9 +692,25 @@ retention exists to serve.
 The location cannot report upward. So the decision is made in two halves, on either side of a
 one-way propagation.
 
-**On the hub, the last binding going away deletes the context.** No grace period, no count to
-maintain, no signal to wait for. The presence controller reconciles what the declarations
-say, and when nothing declares the network is needed there, the hub says it is not.
+**On the hub, the last binding going away deletes the context**, after a short wait. The
+presence controller reconciles what the declarations say, and when nothing declares the
+network is needed there, the hub says it is not — but a workload being replaced deletes its
+binding and creates the replacement's a few seconds later, and acting on the first observation
+of that gap destroys the location's address space and every address inside it.
+
+So the first observation that nothing declares the presence records the instant on the
+context, as `networking.datumapis.com/unclaimed-since`, and the removal is reconsidered when
+the wait expires. A declaration arriving in the meantime clears the stamp and nothing is torn
+down. The instant lives on the object rather than in memory, so a restart or a change of
+leader neither restarts the wait nor skips it. The wait is configurable
+(`networkPresence.unclaimedGracePeriod`, a day by default).
+
+A day is a retention policy rather than a race window. A location keeps the address space it
+was given until the period expires, so a project that redeploys neither loses the network in
+that location nor is addressed from a different prefix afterwards — rebuilding the presence
+would draw a new one. The cost is that a location a project has genuinely finished with holds
+its prefix for a day. Deleting the Network itself is unaffected: its contexts are owned by it
+and go with it immediately.
 
 **At the location, a local finalizer holds the copy while addresses are held.** The
 federation control plane preserves what a local controller adds to a propagated object. The

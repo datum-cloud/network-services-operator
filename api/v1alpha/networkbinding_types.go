@@ -131,6 +131,11 @@ const (
 	// NetworkBindingReasonNetworkContextReady means the network is present in
 	// this location.
 	NetworkBindingReasonNetworkContextReady = "NetworkContextReady"
+
+	// NetworkBindingReasonNetworkContextTerminating means the presence serving
+	// this pair is being deleted. A dying context cannot be adopted, so the
+	// binding waits for it to go and for a fresh one to be created.
+	NetworkBindingReasonNetworkContextTerminating = "NetworkContextTerminating"
 )
 
 // +kubebuilder:object:root=true

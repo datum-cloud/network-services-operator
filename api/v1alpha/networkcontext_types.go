@@ -83,7 +83,18 @@ const (
 const (
 	// NetworkContextReadyReasonReady indicates that the network context is ready for use.
 	NetworkContextReadyReasonReady = "Ready"
+
+	// NetworkContextReadyReasonTerminating means the context is being deleted.
+	// Nothing may be bound to it, and nothing may adopt it.
+	NetworkContextReadyReasonTerminating = "Terminating"
 )
+
+// NetworkContextUnclaimedSinceAnnotation records when the last consumer stopped
+// declaring this presence, in RFC3339. A replaced workload leaves a gap of a few
+// seconds with no consumer, and tearing the context down inside that gap takes
+// the location's address space with it. The instant lives on the object so it
+// survives a restart or a change of leader.
+const NetworkContextUnclaimedSinceAnnotation = "networking.datumapis.com/unclaimed-since"
 
 const (
 	// NetworkContextIPAMAllocated reports whether IPAM holds this location's

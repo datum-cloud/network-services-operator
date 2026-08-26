@@ -163,6 +163,16 @@ func (r *NetworkInterfaceClaimReconciler) fulfill(
 		return ctrl.Result{}, fmt.Errorf("failed fetching network context: %w", err)
 	}
 
+	// A presence being deleted is not a presence. An address allocated against
+	// it lands in a range that is being given back, and the range cannot be given
+	// back while the address is held, so the two pin each other.
+	if !networkContext.DeletionTimestamp.IsZero() {
+		return r.reject(ctx, cl, claim,
+			networkingv1alpha.NetworkInterfaceClaimReasonNetworkContextTerminating,
+			fmt.Sprintf("Network %q is being removed from location %q, so no address can be allocated in it",
+				claim.Spec.Network.Name, location.Name))
+	}
+
 	// A context that states no families is one written before they were carried.
 	// Defaulting here would attach the interface to rules nobody declared.
 	if len(networkContext.Spec.IPFamilies) == 0 {
@@ -179,6 +189,15 @@ func (r *NetworkInterfaceClaimReconciler) fulfill(
 				fmt.Sprintf("Network %q in location %q does not carry address family %s",
 					claim.Spec.Network.Name, location.Name, family))
 		}
+	}
+
+	if terminating, err := r.terminatingSubnet(ctx, cl, claim, &networkContext); err != nil {
+		return ctrl.Result{}, err
+	} else if terminating != "" {
+		return r.reject(ctx, cl, claim,
+			networkingv1alpha.NetworkInterfaceClaimReasonSubnetTerminating,
+			fmt.Sprintf("Subnet %q addresses this location and is being deleted, so no address can be allocated in it",
+				terminating))
 	}
 
 	ipamClient, err := r.IPAM.ClientForProject(routing.project)
@@ -1059,6 +1078,29 @@ func (r *NetworkInterfaceClaimReconciler) applyGateways(
 		*changed = true
 	}
 	return nil
+}
+
+// terminatingSubnet names the subnet the claim would be addressed from that is
+// being deleted, if there is one. It reads the same subnets the gateway is
+// derived from, before anything is allocated rather than after.
+func (r *NetworkInterfaceClaimReconciler) terminatingSubnet(
+	ctx context.Context,
+	cl client.Client,
+	claim *networkingv1alpha.NetworkInterfaceClaim,
+	networkContext *networkingv1alpha.NetworkContext,
+) (string, error) {
+	var subnets networkingv1alpha.SubnetList
+	if err := cl.List(ctx, &subnets, client.InNamespace(claim.Namespace)); err != nil {
+		return "", fmt.Errorf("failed listing subnets: %w", err)
+	}
+
+	for _, family := range claim.Spec.IPFamilies {
+		subnet := subnetFor(&subnets, networkContext.Name, family)
+		if subnet != nil && !subnet.DeletionTimestamp.IsZero() {
+			return subnet.Name, nil
+		}
+	}
+	return "", nil
 }
 
 func subnetFor(

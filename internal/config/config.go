@@ -106,6 +106,46 @@ type NetworkServicesOperator struct {
 	// LocationPublisher configures the controller that publishes Locations to
 	// the federation hub.
 	LocationPublisher LocationPublisherConfig `json:"locationPublisher,omitempty"`
+
+	// NetworkPresence configures how a network's presence in a location is
+	// maintained.
+	NetworkPresence NetworkPresenceConfig `json:"networkPresence,omitempty"`
+}
+
+// +k8s:deepcopy-gen=true
+
+// NetworkPresenceConfig configures the controller that keeps one NetworkContext
+// per network and location, for as long as any consumer declares it is needed
+// there.
+type NetworkPresenceConfig struct {
+	// UnclaimedGracePeriod is how long a presence nothing declares any more is
+	// kept before it is torn down.
+	//
+	// This is a retention policy, not a race window. A location keeps the
+	// address space it was given for a day after the last consumer goes, so
+	// redeploying a workload neither loses the network in that location nor
+	// changes the prefix it is addressed from. Tearing the presence down and
+	// rebuilding it would do both, and would draw a different prefix.
+	//
+	// The cost is that a location which really is finished holds its prefix
+	// until the period expires. Deleting the Network itself is unaffected: the
+	// contexts are owned by it and go with it immediately.
+	//
+	// Defaults to 24 hours. Zero means the default.
+	UnclaimedGracePeriod metav1.Duration `json:"unclaimedGracePeriod,omitempty"`
+}
+
+func SetDefaults_NetworkPresenceConfig(obj *NetworkPresenceConfig) {
+	if obj.UnclaimedGracePeriod.Duration == 0 {
+		obj.UnclaimedGracePeriod = metav1.Duration{Duration: 24 * time.Hour}
+	}
+}
+
+func (c *NetworkPresenceConfig) validate() error {
+	if c.UnclaimedGracePeriod.Duration < 0 {
+		return errors.New("unclaimedGracePeriod must not be negative")
+	}
+	return nil
 }
 
 // +k8s:deepcopy-gen=true
@@ -1521,6 +1561,9 @@ func (c *NetworkServicesOperator) Validate() error {
 	}
 	if err := c.LocationPublisher.validate(); err != nil {
 		return fmt.Errorf("locationPublisher: %w", err)
+	}
+	if err := c.NetworkPresence.validate(); err != nil {
+		return fmt.Errorf("networkPresence: %w", err)
 	}
 	return nil
 }

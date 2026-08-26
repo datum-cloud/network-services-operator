@@ -35,10 +35,10 @@ spec:
               metadata:
                 name: test-network-crud
                 namespace: default
-                # Each holder is asserted on its own. Two controllers finalize a
-                # network now, and an exact list would break again on the third.
+                # Each holder is asserted on its own, so adding another does not
+                # break this. The network-presence holder was retired when the
+                # context moved beside the network and became owned by it.
                 (contains(finalizers, 'networking.datumapis.com/network-controller')): true
-                (contains(finalizers, 'networking.datumapis.com/network-presence')): true
               spec:
                 ipFamilies:
                   - IPv6

@@ -305,6 +305,7 @@ rules:
   - connectorclasses
   - locationbindings
   - locations
+  - networkservices
   verbs:
   - get
   - list

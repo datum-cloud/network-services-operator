@@ -112,7 +112,7 @@ type HTTPProxyRule struct {
 	Backends []HTTPProxyRuleBackend `json:"backends,omitempty"`
 }
 
-// +kubebuilder:validation:XValidation:message="endpoint is required unless instance is set, and instance is mutually exclusive with endpoint and connector",rule="has(self.instance) ? (!has(self.endpoint) && !has(self.connector)) : has(self.endpoint)"
+// +kubebuilder:validation:XValidation:message="endpoint is required unless instance or networkService is set; instance and networkService are mutually exclusive with each other and with endpoint and connector",rule="has(self.instance) ? (!has(self.endpoint) && !has(self.connector) && !has(self.networkService)) : (has(self.networkService) ? (!has(self.endpoint) && !has(self.connector)) : has(self.endpoint))"
 type HTTPProxyRuleBackend struct {
 	// Endpoint for the backend. Must be a valid URL.
 	//
@@ -146,6 +146,16 @@ type HTTPProxyRuleBackend struct {
 	//
 	// +kubebuilder:validation:Optional
 	Instance *InstanceBackendRef `json:"instance,omitempty"`
+
+	// NetworkService references a NetworkService in the same namespace, and one
+	// of the ports it declares. Every member the service resolves to becomes an
+	// endpoint of this backend, so instances appearing, disappearing, and moving
+	// between locations need no edit here.
+	//
+	// Mutually exclusive with endpoint, connector and instance.
+	//
+	// +kubebuilder:validation:Optional
+	NetworkService *NetworkServiceBackendRef `json:"networkService,omitempty"`
 
 	// TLS contains backend TLS configuration.
 	//
@@ -207,6 +217,28 @@ type InstanceBackendRef struct {
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=65535
 	Port int32 `json:"port"`
+}
+
+// NetworkServiceBackendRef references a NetworkService, and one of the ports it
+// declares, as the backend of a rule.
+type NetworkServiceBackendRef struct {
+	// Name of the referenced NetworkService. Must exist in the same namespace as
+	// this HTTPProxy.
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	Name string `json:"name"`
+
+	// Port names a port declared in the referenced service's spec.ports, rather
+	// than giving a number, so the reference survives a change to the port the
+	// members answer on.
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
+	Port string `json:"port"`
 }
 
 // ConnectorReference references a Connector by name.
@@ -456,6 +488,17 @@ const (
 	// HTTPProxyReasonInstanceBackendNotFound indicates that an instance backend
 	// references an EndpointSlice that does not exist.
 	HTTPProxyReasonInstanceBackendNotFound = "InstanceBackendNotFound"
+
+	// HTTPProxyReasonNetworkServiceBackendNotFound indicates that a
+	// networkService backend references a NetworkService that does not exist, or
+	// a port name that service does not declare.
+	HTTPProxyReasonNetworkServiceBackendNotFound = "NetworkServiceBackendNotFound"
+
+	// HTTPProxyReasonNetworkServiceMembersUnreferenced indicates that a
+	// networkService backend resolved more members than a single EndpointSlice
+	// holds. Every member is published, but only the members in the referenced
+	// slice are being served.
+	HTTPProxyReasonNetworkServiceMembersUnreferenced = "NetworkServiceMembersUnreferenced"
 
 	// This reason is used with the "Accepted" and "Programmed"
 	// conditions when the status is "Unknown" and no controller has reconciled

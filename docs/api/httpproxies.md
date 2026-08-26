@@ -274,6 +274,18 @@ Mutually exclusive with endpoint and connector.<br/>
         </td>
         <td>false</td>
       </tr><tr>
+        <td><b><a href="#httpproxyspecrulesindexbackendsindexnetworkservice">networkService</a></b></td>
+        <td>object</td>
+        <td>
+          NetworkService references a NetworkService in the same namespace, and one
+of the ports it declares. Every member the service resolves to becomes an
+endpoint of this backend, so instances appearing, disappearing, and moving
+between locations need no edit here.
+
+Mutually exclusive with endpoint, connector and instance.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
         <td><b><a href="#httpproxyspecrulesindexbackendsindextls">tls</a></b></td>
         <td>object</td>
         <td>
@@ -2131,6 +2143,48 @@ Must exist in the same namespace as this HTTPProxy.<br/>
             <i>Format</i>: int32<br/>
             <i>Minimum</i>: 1<br/>
             <i>Maximum</i>: 65535<br/>
+        </td>
+        <td>true</td>
+      </tr></tbody>
+</table>
+
+
+### HTTPProxy.spec.rules[index].backends[index].networkService
+<sup><sup>[↩ Parent](#httpproxyspecrulesindexbackendsindex)</sup></sup>
+
+
+
+NetworkService references a NetworkService in the same namespace, and one
+of the ports it declares. Every member the service resolves to becomes an
+endpoint of this backend, so instances appearing, disappearing, and moving
+between locations need no edit here.
+
+Mutually exclusive with endpoint, connector and instance.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>name</b></td>
+        <td>string</td>
+        <td>
+          Name of the referenced NetworkService. Must exist in the same namespace as
+this HTTPProxy.<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>port</b></td>
+        <td>string</td>
+        <td>
+          Port names a port declared in the referenced service's spec.ports, rather
+than giving a number, so the reference survives a change to the port the
+members answer on.<br/>
         </td>
         <td>true</td>
       </tr></tbody>

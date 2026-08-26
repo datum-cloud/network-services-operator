@@ -292,7 +292,10 @@ Mutually exclusive with endpoint, connector and instance.<br/>
           TLS contains backend TLS configuration.
 
 When the backend endpoint uses HTTPS with an IP address, the Hostname field
-must be specified for TLS certificate validation.<br/>
+must be specified for TLS certificate validation.
+
+Not supported for networkService backends, which are always reached over
+plaintext HTTP.<br/>
         </td>
         <td>false</td>
       </tr></tbody>
@@ -2200,6 +2203,9 @@ TLS contains backend TLS configuration.
 
 When the backend endpoint uses HTTPS with an IP address, the Hostname field
 must be specified for TLS certificate validation.
+
+Not supported for networkService backends, which are always reached over
+plaintext HTTP.
 
 <table>
     <thead>

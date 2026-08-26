@@ -1628,6 +1628,9 @@ spec:
 
                               When the backend endpoint uses HTTPS with an IP address, the Hostname field
                               must be specified for TLS certificate validation.
+
+                              Not supported for networkService backends, which are always reached over
+                              plaintext HTTP.
                             properties:
                               hostname:
                                 description: |-
@@ -1654,6 +1657,9 @@ spec:
                           rule: 'has(self.instance) ? (!has(self.endpoint) && !has(self.connector)
                             && !has(self.networkService)) : (has(self.networkService)
                             ? (!has(self.endpoint) && !has(self.connector)) : has(self.endpoint))'
+                        - message: backend TLS is not supported for networkService
+                            backends
+                          rule: 'has(self.networkService) ? !has(self.tls) : true'
                       maxItems: 1
                       minItems: 0
                       type: array

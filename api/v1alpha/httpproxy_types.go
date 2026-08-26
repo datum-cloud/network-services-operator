@@ -113,6 +113,7 @@ type HTTPProxyRule struct {
 }
 
 // +kubebuilder:validation:XValidation:message="endpoint is required unless instance or networkService is set; instance and networkService are mutually exclusive with each other and with endpoint and connector",rule="has(self.instance) ? (!has(self.endpoint) && !has(self.connector) && !has(self.networkService)) : (has(self.networkService) ? (!has(self.endpoint) && !has(self.connector)) : has(self.endpoint))"
+// +kubebuilder:validation:XValidation:message="backend TLS is not supported for networkService backends",rule="has(self.networkService) ? !has(self.tls) : true"
 type HTTPProxyRuleBackend struct {
 	// Endpoint for the backend. Must be a valid URL.
 	//
@@ -161,6 +162,9 @@ type HTTPProxyRuleBackend struct {
 	//
 	// When the backend endpoint uses HTTPS with an IP address, the Hostname field
 	// must be specified for TLS certificate validation.
+	//
+	// Not supported for networkService backends, which are always reached over
+	// plaintext HTTP.
 	//
 	// +kubebuilder:validation:Optional
 	TLS *HTTPProxyBackendTLS `json:"tls,omitempty"`

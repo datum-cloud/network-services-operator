@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/netip"
@@ -17,6 +18,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -135,6 +137,10 @@ func (r *NetworkInterfaceClaimReconciler) fulfill(
 		if errors.As(err, &unresolved) {
 			return r.reject(ctx, cl, claim, unresolved.Reason, unresolved.Message)
 		}
+		return ctrl.Result{}, err
+	}
+
+	if err := r.stampLocation(ctx, cl, claim, location); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -435,6 +441,39 @@ func (r *NetworkInterfaceClaimReconciler) location(
 			"configured", r.Location.Name)
 	}
 	return identity.Reference, nil
+}
+
+// stampLocation records on the claim itself the location whose cell holds it.
+// A consumer selecting members of a service reads the claim, not the interface,
+// and only the cell knows which location it serves. The write is a merge patch
+// carrying the one key, so labels another writer put there survive and a claim
+// that already names this location is left alone.
+func (r *NetworkInterfaceClaimReconciler) stampLocation(
+	ctx context.Context,
+	cl client.Client,
+	claim *networkingv1alpha.NetworkInterfaceClaim,
+	location networkingv1alpha.LocationReference,
+) error {
+	if location.Name == "" ||
+		claim.Labels[networkingv1alpha.NetworkInterfaceLocationLabel] == location.Name {
+		return nil
+	}
+
+	body, err := json.Marshal(map[string]any{
+		"metadata": map[string]any{
+			"labels": map[string]string{
+				networkingv1alpha.NetworkInterfaceLocationLabel: location.Name,
+			},
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("failed building the location label patch: %w", err)
+	}
+
+	if err := cl.Patch(ctx, claim, client.RawPatch(types.MergePatchType, body)); err != nil {
+		return fmt.Errorf("failed labelling the claim with its location: %w", err)
+	}
+	return nil
 }
 
 type bindingRefused struct {

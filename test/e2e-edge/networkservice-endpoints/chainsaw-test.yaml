@@ -2,12 +2,12 @@
 #
 # A NetworkService's members reach the edge as endpoints in their own locations.
 #
-# A service selects three network interface claims across two locations; two of
-# them are reported programmed and one is not. The proxy in front of it must end
-# up with all three as endpoints of one Envoy cluster, each in the locality its
-# claim names, with the unprogrammed one carried but out of rotation. A real
-# request must then be served by a member over a real socket, and the
-# unprogrammed member must have taken none of it.
+# A service selects three network interface claims; two of them are reported
+# programmed and one is not. The proxy in front of it must end up with all three
+# as endpoints of one Envoy cluster, each in the locality its claim names, with
+# the unprogrammed one carried but out of rotation. A real request must then be
+# served by a member over a real socket, and the unprogrammed member must have
+# taken none of it.
 #
 # It also holds the two failures that matter: a selector spanning two networks
 # is refused rather than silently narrowed, and an unprogrammed claim counts as
@@ -19,17 +19,15 @@
 #     on its own. The scenario binds each programmed member's address on the
 #     downstream node and answers there with a host-network server
 #     (../_fixtures/network-service-member.yaml), so the 200 below is a real
-#     response over a real socket to the address IPAM handed out. Both members
-#     answer from one machine, so the two locations are a label rather than a
-#     distance — this proves the endpoints and their localities reach Envoy and
-#     serve, not that traffic is steered by geography.
+#     response over a real socket to the address IPAM handed out.
 #
-#   * Nothing in the operator writes networking.datumapis.com/location onto a
-#     NetworkInterfaceClaim, though the design has networking stamping it on
-#     every published claim. The scenario writes it, which is the only way a
-#     service resolves more than the single location this cell serves. When the
-#     operator starts stamping it, delete these labels from the claims below and
-#     the scenario should still pass.
+#   * The location on each claim is the operator's: the cell stamps
+#     networking.datumapis.com/location on every claim it fulfills, and this
+#     environment is one cell serving one location. Every member is therefore in
+#     us-central-1 and the proxy carries one locality. That a service rolls
+#     several locations up separately is covered where more than one cell can
+#     exist, in the envtest suite; what this proves is that the locality a claim
+#     names reaches Envoy at all.
 #
 #   * The data plane owns the claim's Programmed condition and nothing here
 #     reports it, so the scenario writes that too — the same stand-in the
@@ -91,11 +89,10 @@ spec:
                   - IPv4
                 mtu: 1460
 
-    - name: Three claims across two locations bind and hold real addresses
+    - name: Three claims bind, hold real addresses and carry their location
       description: |
-        The location label is the scenario's, not the operator's — see the
-        header. Ready never goes true here because no data plane reports the
-        attachment, so the claims are waited on by Bound and Allocated.
+        Ready never goes true here because no data plane reports the attachment,
+        so the claims are waited on by Bound and Allocated.
       try:
         - create:
             resource:
@@ -113,10 +110,9 @@ spec:
               apiVersion: networking.datumapis.com/v1alpha
               kind: NetworkInterfaceClaim
               metadata:
-                name: nsvc-central-1
+                name: nsvc-member-1
                 labels:
                   app: nsvc
-                  networking.datumapis.com/location: us-central-1
               spec:
                 network:
                   name: nsvc-net
@@ -127,10 +123,9 @@ spec:
               apiVersion: networking.datumapis.com/v1alpha
               kind: NetworkInterfaceClaim
               metadata:
-                name: nsvc-east-1
+                name: nsvc-member-2
                 labels:
                   app: nsvc
-                  networking.datumapis.com/location: us-east-1
               spec:
                 network:
                   name: nsvc-net
@@ -141,10 +136,9 @@ spec:
               apiVersion: networking.datumapis.com/v1alpha
               kind: NetworkInterfaceClaim
               metadata:
-                name: nsvc-east-2
+                name: nsvc-member-3
                 labels:
                   app: nsvc
-                  networking.datumapis.com/location: us-east-1
               spec:
                 network:
                   name: nsvc-net
@@ -154,7 +148,7 @@ spec:
             timeout: 300s
             content: |
               set -eu
-              for name in nsvc-central-1 nsvc-east-1 nsvc-east-2; do
+              for name in nsvc-member-1 nsvc-member-2 nsvc-member-3; do
                 kubectl -n "$NAMESPACE" wait networkinterfaceclaim "$name" \
                   --for=condition=Bound --timeout=150s
                 kubectl -n "$NAMESPACE" wait networkinterfaceclaim "$name" \
@@ -164,6 +158,10 @@ spec:
                 echo "${name}: ${addr}"
                 echo "${addr}" | grep -Eq '^10\.128\.[0-9]+\.[0-9]+/32$' \
                   || { echo "ERROR: ${name} published ${addr}, not a /32 out of project-alpha's 10.128.0.0/16"; exit 1; }
+                loc=$(kubectl -n "$NAMESPACE" get networkinterfaceclaim "$name" \
+                  -o jsonpath='{.metadata.labels.networking\.datumapis\.com/location}')
+                [ "${loc}" = "us-central-1" ] \
+                  || { echo "ERROR: ${name} carries location '${loc}', want the one this cell serves"; exit 1; }
               done
       catch:
         - script:
@@ -180,17 +178,17 @@ spec:
         - script:
             content: |
               set -eu
-              for name in nsvc-central-1 nsvc-east-1; do
+              for name in nsvc-member-1 nsvc-member-2; do
                 kubectl -n "$NAMESPACE" patch networkinterfaceclaim "$name" \
                   --subresource=status --type=merge -p \
                   '{"status":{"conditions":[{"type":"Programmed","status":"True","reason":"Attached","message":"Reported by the scenario in place of a data plane","lastTransitionTime":"2026-01-01T00:00:00Z"}]}}'
               done
 
-    - name: The service resolves three members across two locations, two healthy
+    - name: The service resolves three members in one location, two healthy
       description: |
         The unprogrammed claim is the point of the third member: it must count as
         a member of its location and not as healthy, and its location must still
-        be serving because its sibling is.
+        be serving because its siblings are.
       try:
         - create:
             resource:
@@ -215,17 +213,13 @@ spec:
                 name: nsvc
               status:
                 summary:
-                  locations: 2
+                  locations: 1
                   members: 3
                   healthy: 2
                 locations:
                   - name: us-central-1
-                    members: 1
-                    healthy: 1
-                    serving: true
-                  - name: us-east-1
-                    members: 2
-                    healthy: 1
+                    members: 3
+                    healthy: 2
                     serving: true
                 (conditions[?type == 'MembersResolved'] | [0].status): "True"
                 (conditions[?type == 'MembersResolved'] | [0].reason): Resolved
@@ -250,7 +244,7 @@ spec:
             content: |
               set -eu
               : > "${BOUND_FILE}.${NAMESPACE}"
-              for name in nsvc-central-1 nsvc-east-1; do
+              for name in nsvc-member-1 nsvc-member-2; do
                 addr=$(kubectl -n "$NAMESPACE" get networkinterfaceclaim "$name" \
                   -o jsonpath='{.status.addresses[0].address}')
                 echo "binding ${addr} for ${name} on ${NODE}"
@@ -369,7 +363,7 @@ spec:
               [ "$count" = "3" ] || { echo "ERROR: slice carries ${count} endpoints, want 3"; exit 1; }
 
               # claim:expected-zone:expected-ready
-              for spec in nsvc-central-1:us-central-1:true nsvc-east-1:us-east-1:true nsvc-east-2:us-east-1:false; do
+              for spec in nsvc-member-1:us-central-1:true nsvc-member-2:us-central-1:true nsvc-member-3:us-central-1:false; do
                 name=${spec%%:*}; rest=${spec#*:}; zone=${rest%%:*}; ready=${rest#*:}
                 want=$(claim_addr "$name")
                 slice "{.endpoints[?(@.zone=='${zone}')].addresses[0]}" | tr ' ' '\n' | grep -Fxq "$want" \
@@ -397,7 +391,7 @@ spec:
             skipCommandOutput: true
             skipLogOutput: true
             content: |
-              kubectl -n "$NAMESPACE" get networkinterfaceclaim nsvc-central-1 nsvc-east-1 nsvc-east-2 \
+              kubectl -n "$NAMESPACE" get networkinterfaceclaim nsvc-member-1 nsvc-member-2 nsvc-member-3 \
                 -o jsonpath='{range .items[*]}{.status.addresses[0].address}{" "}{end}' \
                 | sed 's#/32##g' | tr -s ' ' | sed 's/ $//'
             outputs:
@@ -417,11 +411,11 @@ spec:
                 value: ($memberAddresses)
             content: |
               set -eu
-              # kubectl get returns items in name order: central-1, east-1, east-2.
+              # kubectl get returns items in name order: member-1, -2, -3.
               set -- $MEMBER_ADDRESSES
-              A_CENTRAL=$1; A_EAST=$2; A_UNPROG=$3
-              export A_CENTRAL A_EAST A_UNPROG
-              echo "members: central=${A_CENTRAL} east=${A_EAST} unprogrammed=${A_UNPROG}"
+              A_ONE=$1; A_TWO=$2; A_UNPROG=$3
+              export A_ONE A_TWO A_UNPROG
+              echo "members: one=${A_ONE} two=${A_TWO} unprogrammed=${A_UNPROG}"
 
               ok=""
               for i in $(seq 1 24); do
@@ -454,9 +448,9 @@ spec:
                   sys.exit(1)
 
               want = {
-                  os.environ['A_CENTRAL']: ('us-central-1', True),
-                  os.environ['A_EAST']: ('us-east-1', True),
-                  os.environ['A_UNPROG']: ('us-east-1', False),
+                  os.environ['A_ONE']: ('us-central-1', True),
+                  os.environ['A_TWO']: ('us-central-1', True),
+                  os.environ['A_UNPROG']: ('us-central-1', False),
               }
 
               found = {}
@@ -498,8 +492,8 @@ spec:
                       failures.append('%s is HEALTHY, but its claim is not programmed' % address)
 
               localities = set(zone for zone, _, _ in found.values())
-              if localities != {'us-central-1', 'us-east-1'}:
-                  failures.append('the proxy carries localities %s, want the two the claims name'
+              if localities != {'us-central-1'}:
+                  failures.append('the proxy carries localities %s, want the one the claims name'
                                   % sorted(localities))
 
               for failure in failures:
@@ -599,7 +593,7 @@ spec:
             skipCommandOutput: true
             skipLogOutput: true
             content: |
-              kubectl -n "$NAMESPACE" get networkinterfaceclaim nsvc-central-1 nsvc-east-1 nsvc-east-2 \
+              kubectl -n "$NAMESPACE" get networkinterfaceclaim nsvc-member-1 nsvc-member-2 nsvc-member-3 \
                 -o jsonpath='{range .items[*]}{.status.addresses[0].address}{" "}{end}' \
                 | sed 's#/32##g' | tr -s ' ' | sed 's/ $//'
             outputs:
@@ -620,8 +614,8 @@ spec:
             content: |
               set -eu
               set -- $MEMBER_ADDRESSES
-              A_CENTRAL=$1; A_EAST=$2; A_UNPROG=$3
-              export A_CENTRAL A_EAST A_UNPROG
+              A_ONE=$1; A_TWO=$2; A_UNPROG=$3
+              export A_ONE A_TWO A_UNPROG
 
               rm -f /tmp/nsvc-clusters.json
               # Terminating proxy pods linger here for minutes while they drain,
@@ -668,8 +662,8 @@ spec:
                           stats.get('rq_total', 0), host.get('health_status', {}))
 
               failures = []
-              for label, address in (('us-central-1 member', os.environ['A_CENTRAL']),
-                                     ('us-east-1 member', os.environ['A_EAST'])):
+              for label, address in (('member nsvc-member-1', os.environ['A_ONE']),
+                                     ('member nsvc-member-2', os.environ['A_TWO'])):
                   total, health = served.get(address, (None, None))
                   print('  %s %s: rq_total=%s health=%s' % (label, address, total, health))
                   if not total:
@@ -730,7 +724,6 @@ spec:
                 name: nsvc-stray
                 labels:
                   spanning: nsvc
-                  networking.datumapis.com/location: us-central-1
               spec:
                 network:
                   name: nsvc-other-net
@@ -739,7 +732,7 @@ spec:
         - script:
             content: |
               set -eu
-              kubectl -n "$NAMESPACE" label networkinterfaceclaim nsvc-central-1 spanning=nsvc
+              kubectl -n "$NAMESPACE" label networkinterfaceclaim nsvc-member-1 spanning=nsvc
         - create:
             resource:
               apiVersion: networking.datumapis.com/v1alpha

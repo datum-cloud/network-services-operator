@@ -2051,3 +2051,116 @@ func TestClaimRefusesATerminatingSubnet(t *testing.T) {
 	require.Equal(t, metav1.ConditionFalse, condition.Status)
 	require.Equal(t, networkingv1alpha.NetworkInterfaceClaimReasonSubnetTerminating, condition.Reason)
 }
+
+// claimPatchCounter counts the patches written to claims, so a reconcile that
+// changes nothing can be shown to write nothing.
+type claimPatchCounter struct {
+	client.Client
+	patches int
+}
+
+func (c *claimPatchCounter) Patch(
+	ctx context.Context,
+	obj client.Object,
+	patch client.Patch,
+	opts ...client.PatchOption,
+) error {
+	if _, ok := obj.(*networkingv1alpha.NetworkInterfaceClaim); ok {
+		c.patches++
+	}
+	return c.Client.Patch(ctx, obj, patch, opts...)
+}
+
+func (s *scenario) labelClaim(name string, labels map[string]string) {
+	s.t.Helper()
+	claim := s.getClaim(name)
+	if claim.Labels == nil {
+		claim.Labels = map[string]string{}
+	}
+	maps.Copy(claim.Labels, labels)
+	require.NoError(s.t, s.client.Update(s.ctx, claim))
+}
+
+func TestBoundClaimCarriesTheLocationItsCellServes(t *testing.T) {
+	s := newScenario(t, true, []networkingv1alpha.IPFamily{networkingv1alpha.IPv4Protocol})
+
+	claim := s.createClaim("located", networkingv1alpha.NetworkInterfaceClaimSpec{
+		InterfaceName: "eth0",
+		IPFamilies:    []networkingv1alpha.IPFamily{networkingv1alpha.IPv4Protocol},
+		ReclaimPolicy: networkingv1alpha.NetworkInterfaceReclaimPolicyDelete,
+	})
+	s.reconcile(claim)
+
+	bound := s.getClaim("located")
+	require.Equal(t, metav1.ConditionTrue,
+		conditionOf(bound, networkingv1alpha.NetworkInterfaceClaimBound).Status)
+	require.Equal(t, testLocationName,
+		bound.Labels[networkingv1alpha.NetworkInterfaceLocationLabel],
+		"a service resolves its members by this label, so the cell has to write it")
+}
+
+// A claim that predates the label must acquire it without being recreated.
+func TestExistingClaimAcquiresItsLocation(t *testing.T) {
+	s := newScenario(t, true, []networkingv1alpha.IPFamily{networkingv1alpha.IPv4Protocol})
+
+	claim := s.createClaim("backfilled", networkingv1alpha.NetworkInterfaceClaimSpec{
+		InterfaceName: "eth0",
+		IPFamilies:    []networkingv1alpha.IPFamily{networkingv1alpha.IPv4Protocol},
+		ReclaimPolicy: networkingv1alpha.NetworkInterfaceReclaimPolicyDelete,
+	})
+	s.reconcile(claim)
+
+	stripped := s.getClaim("backfilled")
+	delete(stripped.Labels, networkingv1alpha.NetworkInterfaceLocationLabel)
+	require.NoError(t, s.client.Update(s.ctx, stripped))
+
+	s.reconcile(s.getClaim("backfilled"))
+
+	require.Equal(t, testLocationName,
+		s.getClaim("backfilled").Labels[networkingv1alpha.NetworkInterfaceLocationLabel])
+}
+
+func TestASettledClaimIsNotRelabelled(t *testing.T) {
+	s := newScenario(t, true, []networkingv1alpha.IPFamily{networkingv1alpha.IPv4Protocol})
+
+	counting := &claimPatchCounter{Client: s.client}
+
+	claim := s.createClaim("settled", networkingv1alpha.NetworkInterfaceClaimSpec{
+		InterfaceName: "eth0",
+		IPFamilies:    []networkingv1alpha.IPFamily{networkingv1alpha.IPv4Protocol},
+		ReclaimPolicy: networkingv1alpha.NetworkInterfaceReclaimPolicyDelete,
+	})
+
+	_, err := s.reconciler.reconcileClaim(s.ctx, counting, s.events, client.ObjectKeyFromObject(claim))
+	require.NoError(t, err)
+	require.Equal(t, 1, counting.patches, "the label is written once")
+
+	counting.patches = 0
+	_, err = s.reconciler.reconcileClaim(s.ctx, counting, s.events, client.ObjectKeyFromObject(claim))
+	require.NoError(t, err)
+	require.Zero(t, counting.patches, "a claim already naming its location must not be written again")
+}
+
+// The claim is labelled by whoever created it as well, and this write must not
+// take anything away from them.
+func TestLabellingTheLocationKeepsOtherLabels(t *testing.T) {
+	s := newScenario(t, true, []networkingv1alpha.IPFamily{networkingv1alpha.IPv4Protocol})
+
+	claim := s.createClaim("shared-labels", networkingv1alpha.NetworkInterfaceClaimSpec{
+		InterfaceName: "eth0",
+		IPFamilies:    []networkingv1alpha.IPFamily{networkingv1alpha.IPv4Protocol},
+		ReclaimPolicy: networkingv1alpha.NetworkInterfaceReclaimPolicyDelete,
+	})
+	s.labelClaim("shared-labels", map[string]string{
+		"compute.datumapis.com/workload-name":           "api",
+		networkingv1alpha.NetworkInterfaceLocationLabel: "somewhere-else",
+	})
+
+	s.reconcile(claim)
+
+	labelled := s.getClaim("shared-labels")
+	require.Equal(t, testLocationName,
+		labelled.Labels[networkingv1alpha.NetworkInterfaceLocationLabel],
+		"the cell knows where the claim is; a stale value is corrected")
+	require.Equal(t, "api", labelled.Labels["compute.datumapis.com/workload-name"])
+}

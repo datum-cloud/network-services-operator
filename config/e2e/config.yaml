@@ -26,6 +26,10 @@ ipam:
     # its own datum-vpc-ipv6.
     network: datum-network-v6
     subnet: datum-subnet-v6
+networkPresence:
+  # Short enough that a scenario asserting a presence is torn down does not have
+  # to wait a minute, long enough to cover a workload being replaced.
+  unclaimedGracePeriod: 15s
 locationPublisher:
   hubKubeconfigPath: /etc/karmada-hub/kubeconfig
   safetyResyncPeriod: 1m

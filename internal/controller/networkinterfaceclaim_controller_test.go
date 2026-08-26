@@ -1995,3 +1995,59 @@ func TestRejectionLeavesProgrammedAlone(t *testing.T) {
 		conditionOf(rejected, networkingv1alpha.NetworkInterfaceClaimProgrammed).Status,
 		"a rejection says nothing about what the data plane carries")
 }
+
+// A context being deleted is being given back. Allocating against it pins the
+// range that the release is waiting on, so the two block each other and the
+// location's address space cannot be reclaimed.
+func TestClaimRefusesATerminatingNetworkContext(t *testing.T) {
+	s := newScenario(t, true, []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol})
+
+	networkContext, err := s.getNetworkContext()
+	require.NoError(t, err)
+	networkContext.Finalizers = append(networkContext.Finalizers, "test.datumapis.com/hold")
+	require.NoError(t, s.client.Update(s.ctx, networkContext))
+	require.NoError(t, s.client.Delete(s.ctx, networkContext))
+
+	claim := s.createClaim("terminating-context", networkingv1alpha.NetworkInterfaceClaimSpec{
+		InterfaceName: "eth0",
+		IPFamilies:    []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol},
+		ReclaimPolicy: networkingv1alpha.NetworkInterfaceReclaimPolicyDelete,
+	})
+	s.reconcile(claim)
+
+	require.Zero(t, s.ipam.createdAnywhere(),
+		"nothing is allocated inside a range that is being given back")
+
+	condition := conditionOf(s.getClaim("terminating-context"), networkingv1alpha.NetworkInterfaceClaimReady)
+	require.Equal(t, metav1.ConditionFalse, condition.Status)
+	require.Equal(t, networkingv1alpha.NetworkInterfaceClaimReasonNetworkContextTerminating, condition.Reason)
+}
+
+// The subnet is the range itself, and it can be going while the context it
+// belongs to is not.
+func TestClaimRefusesATerminatingSubnet(t *testing.T) {
+	s := newScenario(t, true, []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol})
+
+	s.createSubnet("default-subnet", s.networkContextName("default"),
+		networkingv1alpha.IPv6Protocol, "2001:db8::", 64)
+
+	var subnet networkingv1alpha.Subnet
+	require.NoError(t, s.client.Get(s.ctx,
+		client.ObjectKey{Namespace: s.namespace, Name: "default-subnet"}, &subnet))
+	subnet.Finalizers = append(subnet.Finalizers, "test.datumapis.com/hold")
+	require.NoError(t, s.client.Update(s.ctx, &subnet))
+	require.NoError(t, s.client.Delete(s.ctx, &subnet))
+
+	claim := s.createClaim("terminating-subnet", networkingv1alpha.NetworkInterfaceClaimSpec{
+		InterfaceName: "eth0",
+		IPFamilies:    []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol},
+		ReclaimPolicy: networkingv1alpha.NetworkInterfaceReclaimPolicyDelete,
+	})
+	s.reconcile(claim)
+
+	require.Zero(t, s.ipam.createdAnywhere())
+
+	condition := conditionOf(s.getClaim("terminating-subnet"), networkingv1alpha.NetworkInterfaceClaimReady)
+	require.Equal(t, metav1.ConditionFalse, condition.Status)
+	require.Equal(t, networkingv1alpha.NetworkInterfaceClaimReasonSubnetTerminating, condition.Reason)
+}

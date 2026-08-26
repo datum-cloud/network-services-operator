@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
@@ -63,6 +64,9 @@ type presenceOptions struct {
 	families []networkingv1alpha.IPFamily
 	// mtu overrides the network's MTU.
 	mtu int32
+	// unclaimedGrace is how long a presence nothing declares is kept. Zero tears
+	// it down on the first observation, which is what most of these assert.
+	unclaimedGrace time.Duration
 }
 
 func newPresenceScenario(t *testing.T, opts presenceOptions) *presenceScenario {
@@ -128,8 +132,9 @@ func newPresenceScenario(t *testing.T, opts presenceOptions) *presenceScenario {
 	}
 
 	s.reconciler = &NetworkPresenceReconciler{
-		Projects: &staticProjectResolver{clients: map[string]client.Client{testProject: cl}},
-		hub:      cl,
+		Projects:             &staticProjectResolver{clients: map[string]client.Client{testProject: cl}},
+		UnclaimedGracePeriod: opts.unclaimedGrace,
+		hub:                  cl,
 	}
 
 	return s
@@ -613,3 +618,145 @@ func TestNetworkBindingPairIsImmutable(t *testing.T) {
 }
 
 func mustExist(_ *networkingv1alpha.NetworkContext, ok bool) bool { return ok }
+
+// holdContext stands in for the finalizers a real context carries while its
+// address space is being given back, so it stays Terminating for as long as the
+// test needs it to.
+func (s *presenceScenario) holdContext() *networkingv1alpha.NetworkContext {
+	s.t.Helper()
+
+	networkContext, ok := s.networkContext()
+	require.True(s.t, ok)
+
+	networkContext.Finalizers = append(networkContext.Finalizers, "test.datumapis.com/hold")
+	require.NoError(s.t, s.hub.Update(s.ctx, networkContext))
+	require.NoError(s.t, s.hub.Delete(s.ctx, networkContext))
+
+	networkContext, ok = s.networkContext()
+	require.True(s.t, ok)
+	require.False(s.t, networkContext.DeletionTimestamp.IsZero())
+	return networkContext
+}
+
+func (s *presenceScenario) releaseContext() {
+	s.t.Helper()
+
+	networkContext, ok := s.networkContext()
+	require.True(s.t, ok)
+	networkContext.Finalizers = nil
+	require.NoError(s.t, s.hub.Update(s.ctx, networkContext))
+
+	_, ok = s.networkContext()
+	require.False(s.t, ok)
+}
+
+// A workload deleted and recreated inside the window its context takes to finish
+// being deleted must not be bound to the dying object. Adopting it wedges the
+// binding permanently: the context never comes back, and nothing brings the
+// presence round again.
+func TestNetworkPresenceRefusesATerminatingContext(t *testing.T) {
+	s := newPresenceScenario(t, presenceOptions{})
+	s.createBinding("consumer-a")
+	s.reconcile()
+
+	held := s.holdContext()
+
+	s.reconcile()
+
+	binding := s.binding("consumer-a")
+	requireReady(t, binding, metav1.ConditionFalse,
+		networkingv1alpha.NetworkBindingReasonNetworkContextTerminating)
+	require.Nil(t, binding.Status.NetworkContextRef,
+		"a context that is going away is not the presence serving this binding")
+
+	after, ok := s.networkContext()
+	require.True(t, ok)
+	require.Equal(t, held.UID, after.UID)
+	require.Equal(t, held.Generation, after.Generation,
+		"a terminating context must not be adopted and rewritten")
+}
+
+// Recovery keys on the context going, which is an event the sync controller
+// carries. A context that still says Ready while terminating must not be
+// believed either.
+func TestNetworkPresenceRebuildsOnceTheTerminatingContextGoes(t *testing.T) {
+	s := newPresenceScenario(t, presenceOptions{})
+	s.createBinding("consumer-a")
+	s.reconcile()
+
+	held := s.holdContext()
+	s.markContextReady()
+
+	result, err := s.reconciler.Reconcile(s.ctx, s.request())
+	require.NoError(t, err)
+	require.Equal(t, refusedPresenceRetryInterval, result.RequeueAfter)
+	requireReady(t, s.binding("consumer-a"), metav1.ConditionFalse,
+		networkingv1alpha.NetworkBindingReasonNetworkContextTerminating,
+	)
+
+	s.releaseContext()
+	s.reconcile()
+
+	fresh, ok := s.networkContext()
+	require.True(t, ok, "the presence a binding still declares has to be built again")
+	require.NotEqual(t, held.UID, fresh.UID, "the binding must be served by a new context, not the old one")
+	require.True(t, fresh.DeletionTimestamp.IsZero())
+
+	binding := s.binding("consumer-a")
+	require.NotNil(t, binding.Status.NetworkContextRef)
+	require.Equal(t, s.contextName(), binding.Status.NetworkContextRef.Name)
+}
+
+// Replacing a workload deletes its binding and creates the replacement's a few
+// seconds later. Tearing the presence down in that gap gives this location's
+// address space back and takes every address in it.
+func TestNetworkPresenceSurvivesABindingBeingReplaced(t *testing.T) {
+	s := newPresenceScenario(t, presenceOptions{unclaimedGrace: time.Minute})
+	binding := s.createBinding("consumer-a")
+	s.reconcile()
+
+	before, ok := s.networkContext()
+	require.True(t, ok)
+
+	require.NoError(t, s.hub.Delete(s.ctx, binding))
+	result, err := s.reconciler.Reconcile(s.ctx, s.request())
+	require.NoError(t, err)
+	require.Positive(t, result.RequeueAfter, "the wait has to come back and finish the teardown")
+
+	unclaimed, ok := s.networkContext()
+	require.True(t, ok, "a presence must not be torn down on the first observation that nothing declares it")
+	require.NotEmpty(t, unclaimed.Annotations[networkingv1alpha.NetworkContextUnclaimedSinceAnnotation],
+		"the wait is recorded on the object so a restart neither restarts nor skips it")
+
+	s.createBinding("consumer-b")
+	s.reconcile()
+
+	after, ok := s.networkContext()
+	require.True(t, ok)
+	require.Equal(t, before.UID, after.UID, "the replacement is served by the presence that was already here")
+	require.Equal(t, before.CreationTimestamp, after.CreationTimestamp)
+	require.Empty(t, after.Annotations[networkingv1alpha.NetworkContextUnclaimedSinceAnnotation],
+		"a presence declared again is no longer waiting to be torn down")
+}
+
+// The wait is a delay, not a reprieve: a workload that really has gone gives its
+// address space back.
+func TestNetworkPresenceIsTornDownOnceTheGraceExpires(t *testing.T) {
+	s := newPresenceScenario(t, presenceOptions{unclaimedGrace: time.Minute})
+	binding := s.createBinding("consumer-a")
+	s.reconcile()
+
+	require.NoError(t, s.hub.Delete(s.ctx, binding))
+	s.reconcile()
+
+	networkContext, ok := s.networkContext()
+	require.True(t, ok)
+	networkContext.Annotations[networkingv1alpha.NetworkContextUnclaimedSinceAnnotation] =
+		time.Now().Add(-2 * time.Minute).UTC().Format(time.RFC3339)
+	require.NoError(t, s.hub.Update(s.ctx, networkContext))
+
+	s.reconcile()
+
+	_, ok = s.networkContext()
+	require.False(t, ok, "nothing has declared this presence for longer than the wait")
+}

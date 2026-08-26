@@ -585,6 +585,11 @@ func controllerRegistrations(
 	serverConfig config.NetworkServicesOperator,
 	deps controllerDeps,
 ) []namedSetup {
+	// One channel between the two presence controllers, so a project-plane event
+	// and a hub-side binding event land in the same workqueue and the presence
+	// keeps exactly one writer.
+	presenceEvents := controller.NewNetworkPresenceEvents()
+
 	return []namedSetup{
 		{"network", true, func() error {
 			return (&controller.NetworkReconciler{
@@ -608,8 +613,19 @@ func controllerRegistrations(
 		// hub object three times.
 		{"networkpresence", true, func() error {
 			return (&controller.NetworkPresenceReconciler{
-				Projects: controller.NewProjectClusterResolver(mgr),
+				Projects:             controller.NewProjectClusterResolver(mgr),
+				Events:               presenceEvents,
+				UnclaimedGracePeriod: serverConfig.NetworkPresence.UnclaimedGracePeriod.Duration,
 			}).SetupWithManager(deps.singletonManager)
+		}},
+		// Everything the presence controller reads besides the binding lives in a
+		// project control plane, which only the multicluster manager watches. The
+		// sync controller watches them there and hands the presence back to the
+		// controller that owns it; it writes nothing itself.
+		{"networkpresencesync", true, func() error {
+			return (&controller.NetworkPresenceSyncReconciler{
+				Events: presenceEvents,
+			}).SetupWithManager(mgr, deps.singletonManager)
 		}},
 		// The interfaces a cell publishes arrive on the hub, and only the
 		// multicluster manager reaches the project control planes they are for.

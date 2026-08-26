@@ -59,6 +59,15 @@ const (
 	// the interface.
 	NetworkInterfaceClaimReasonSubnetGatewayUnusable = "SubnetGatewayUnusable"
 
+	// NetworkInterfaceClaimReasonNetworkContextTerminating means the network's
+	// presence in this location is being deleted. An address handed out against
+	// it would pin a range that is being given back.
+	NetworkInterfaceClaimReasonNetworkContextTerminating = "NetworkContextTerminating"
+
+	// NetworkInterfaceClaimReasonSubnetTerminating means the subnet this
+	// location is addressed from is being deleted, for the same reason.
+	NetworkInterfaceClaimReasonSubnetTerminating = "SubnetTerminating"
+
 	// NetworkInterfaceClaimReasonProjectNamespaceNotFound means the namespace
 	// addresses are allocated in does not exist in the project's control plane.
 	// The platform provisions it with the project, so its absence says the

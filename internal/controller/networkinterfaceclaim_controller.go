@@ -1410,6 +1410,12 @@ func markInterfaceAvailable(
 //
 // This is the only value NSO ever writes: it seeds and clears Unknown, and the
 // holder alone writes True or False.
+//
+// Every reset must stay on a path that also produces an event on the claim. A
+// holder watches the claim it owns, not the interface behind it, so a reset
+// written out-of-band reaches nothing and the holder sits on Unknown until some
+// unrelated cause wakes it. Both callers are claim releases, which satisfies
+// this; a new caller that is not would have to arrange the wakeup itself.
 func clearHolderAvailable(conditions *[]metav1.Condition, generation int64) bool {
 	current := apimeta.FindStatusCondition(*conditions, networkingv1alpha.NetworkInterfaceHolderAvailable)
 	if current != nil && current.Status == metav1.ConditionUnknown &&

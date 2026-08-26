@@ -90,7 +90,44 @@ func TestHTTPProxyCRDBackendExclusivity(t *testing.T) {
 		assert.Truef(t, apierrors.IsInvalid(err), "expected an Invalid error, got %v", err)
 	})
 
-	t.Run("neither endpoint nor instance is rejected", func(t *testing.T) {
+	t.Run("networkService alone is valid", func(t *testing.T) {
+		proxy := backendProxy("backend-networkservice-only", networkingv1alpha.HTTPProxyRuleBackend{
+			NetworkService: &networkingv1alpha.NetworkServiceBackendRef{Name: "storefront", Port: "http"},
+		})
+		require.NoError(t, create(t, proxy))
+	})
+
+	t.Run("networkService with endpoint is rejected", func(t *testing.T) {
+		proxy := backendProxy("backend-networkservice-endpoint", networkingv1alpha.HTTPProxyRuleBackend{
+			Endpoint:       "https://api.example.com",
+			NetworkService: &networkingv1alpha.NetworkServiceBackendRef{Name: "storefront", Port: "http"},
+		})
+		err := create(t, proxy)
+		require.Error(t, err)
+		assert.Truef(t, apierrors.IsInvalid(err), "expected an Invalid error, got %v", err)
+	})
+
+	t.Run("networkService with connector is rejected", func(t *testing.T) {
+		proxy := backendProxy("backend-networkservice-connector", networkingv1alpha.HTTPProxyRuleBackend{
+			Connector:      &networkingv1alpha.ConnectorReference{Name: "test-connector"},
+			NetworkService: &networkingv1alpha.NetworkServiceBackendRef{Name: "storefront", Port: "http"},
+		})
+		err := create(t, proxy)
+		require.Error(t, err)
+		assert.Truef(t, apierrors.IsInvalid(err), "expected an Invalid error, got %v", err)
+	})
+
+	t.Run("networkService with instance is rejected", func(t *testing.T) {
+		proxy := backendProxy("backend-networkservice-instance", networkingv1alpha.HTTPProxyRuleBackend{
+			Instance:       &networkingv1alpha.InstanceBackendRef{Name: "vpc-pod-1", Port: 8080},
+			NetworkService: &networkingv1alpha.NetworkServiceBackendRef{Name: "storefront", Port: "http"},
+		})
+		err := create(t, proxy)
+		require.Error(t, err)
+		assert.Truef(t, apierrors.IsInvalid(err), "expected an Invalid error, got %v", err)
+	})
+
+	t.Run("neither endpoint nor instance nor networkService is rejected", func(t *testing.T) {
 		proxy := backendProxy("backend-neither", networkingv1alpha.HTTPProxyRuleBackend{
 			Connector: &networkingv1alpha.ConnectorReference{Name: "test-connector"},
 		})

@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"net/url"
 	"slices"
@@ -62,6 +63,15 @@ type desiredHTTPProxyResources struct {
 	httpRoute        *gatewayv1.HTTPRoute
 	endpointSlices   []*discoveryv1.EndpointSlice
 	httpRouteFilters []*envoygatewayv1alpha1.HTTPRouteFilter
+
+	// partialProgramming is set when the resources were built, and can be
+	// programmed, but do not carry everything the spec asked for.
+	partialProgramming *partialProgramming
+}
+
+type partialProgramming struct {
+	reason  string
+	message string
 }
 
 // errInstanceBackendNotFound is returned by collectDesiredResources when an
@@ -96,6 +106,14 @@ func collectDesiredResourcesErrorResult(err error, programmedCondition *metav1.C
 		return ctrl.Result{RequeueAfter: retryAfterConflict}, nil, true
 	}
 
+	var serviceNotFound *errNetworkServiceBackendNotFound
+	if errors.As(err, &serviceNotFound) {
+		programmedCondition.Status = metav1.ConditionFalse
+		programmedCondition.Reason = networkingv1alpha.HTTPProxyReasonNetworkServiceBackendNotFound
+		programmedCondition.Message = fmt.Sprintf("The HTTPProxy cannot be programmed: %s", serviceNotFound.Error())
+		return ctrl.Result{RequeueAfter: retryAfterConflict}, nil, true
+	}
+
 	return ctrl.Result{}, fmt.Errorf("failed to collect desired resources: %w", err), true
 }
 
@@ -124,6 +142,8 @@ const (
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=httpproxies/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=httpproxies/finalizers,verbs=update
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=connectors,verbs=get;list;watch
+// +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkservices,verbs=get;list;watch
+// +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkinterfaceclaims,verbs=get;list;watch
 // +kubebuilder:rbac:groups=gateway.envoyproxy.io,resources=httproutefilters,verbs=get;list;watch;create;update;patch;delete
 // HTTPProxy controller reads cert-manager Certificate resources in the downstream cluster for status; ensure downstream role has cert-manager.io/certificates get;list;watch.
 
@@ -373,6 +393,8 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 			endpointSlice.Endpoints = desiredEndpointSlice.Endpoints
 			endpointSlice.Ports = desiredEndpointSlice.Ports
 
+			endpointSlice.Labels = mergeLabels(endpointSlice.Labels, desiredEndpointSlice.Labels)
+
 			// Keep the backend cert hostname annotation in sync. The gateway
 			// controller reads this to build the BackendTLSPolicy when the
 			// URLRewrite filter carries a user Host override instead of the
@@ -479,9 +501,37 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 		apimeta.RemoveStatusCondition(&httpProxyCopy.Status.Conditions, networkingv1alpha.HTTPProxyConditionConnectorMetadataProgrammed)
 	}
 
+	applyPartialProgramming(desiredResources.partialProgramming, programmedCondition)
+
 	r.reconcileHTTPProxyHostnameStatus(ctx, cl.GetClient(), gateway, httpProxyCopy, string(req.ClusterName))
 
 	return ctrl.Result{}, nil
+}
+
+func mergeLabels(existing, desired map[string]string) map[string]string {
+	if len(desired) == 0 {
+		return existing
+	}
+
+	if existing == nil {
+		existing = map[string]string{}
+	}
+	maps.Copy(existing, desired)
+
+	return existing
+}
+
+// applyPartialProgramming reports resources that were programmed without
+// everything the spec asked for, so a partial result is never mistaken for a
+// complete one.
+func applyPartialProgramming(partial *partialProgramming, programmedCondition *metav1.Condition) {
+	if partial == nil {
+		return
+	}
+
+	programmedCondition.Status = metav1.ConditionFalse
+	programmedCondition.Reason = partial.reason
+	programmedCondition.Message = partial.message
 }
 
 func (r *HTTPProxyReconciler) reconcileHTTPProxyHostnameStatus(
@@ -661,6 +711,18 @@ func (r *HTTPProxyReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 					return requests
 				})
 			},
+		).
+		Watches(
+			&networkingv1alpha.NetworkService{},
+			enqueueHTTPProxiesForNetworkServiceMembership(func(obj client.Object) string {
+				return obj.GetName()
+			}),
+		).
+		Watches(
+			&networkingv1alpha.NetworkInterfaceClaim{},
+			enqueueHTTPProxiesForNetworkServiceMembership(func(client.Object) string {
+				return ""
+			}),
 		)
 
 	if r.DownstreamCluster != nil {
@@ -687,6 +749,40 @@ func (r *HTTPProxyReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 			MaxConcurrentReconciles: r.Config.HTTPProxy.MaxConcurrentReconciles,
 		}).
 		Named("httpproxy").Complete(r)
+}
+
+// enqueueHTTPProxiesForNetworkServiceMembership enqueues the HTTPProxies in the
+// changed object's namespace whose networkService backends the change can move.
+func enqueueHTTPProxiesForNetworkServiceMembership(
+	serviceName func(client.Object) string,
+) func(clusterName multicluster.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
+	return func(clusterName multicluster.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
+		return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []mcreconcile.Request {
+			logger := log.FromContext(ctx)
+
+			var httpProxies networkingv1alpha.HTTPProxyList
+			if err := cl.GetClient().List(ctx, &httpProxies, client.InNamespace(obj.GetNamespace())); err != nil {
+				logger.Error(err, "failed to list HTTPProxies for network service membership watch")
+				return nil
+			}
+
+			var requests []mcreconcile.Request
+			for i := range httpProxies.Items {
+				httpProxy := &httpProxies.Items[i]
+				if !httpProxyReferencesNetworkService(httpProxy, serviceName(obj)) {
+					continue
+				}
+				requests = append(requests, mcreconcile.Request{
+					ClusterName: clusterName,
+					Request: ctrl.Request{
+						NamespacedName: client.ObjectKeyFromObject(httpProxy),
+					},
+				})
+			}
+
+			return requests
+		})
+	}
 }
 
 // enqueueHTTPProxyForDownstreamCertificate returns a watch handler that enqueues
@@ -734,6 +830,24 @@ func httpProxyReferencesConnector(httpProxy *networkingv1alpha.HTTPProxy, connec
 	for _, rule := range httpProxy.Spec.Rules {
 		for _, backend := range rule.Backends {
 			if backend.Connector != nil && backend.Connector.Name == connectorName {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// httpProxyReferencesNetworkService reports whether the proxy has a
+// networkService backend. An empty serviceName matches any of them, which is
+// what a claim change needs: a claim carries no reference back to the services
+// selecting it.
+func httpProxyReferencesNetworkService(httpProxy *networkingv1alpha.HTTPProxy, serviceName string) bool {
+	for _, rule := range httpProxy.Spec.Rules {
+		for _, backend := range rule.Backends {
+			if backend.NetworkService == nil {
+				continue
+			}
+			if serviceName == "" || backend.NetworkService.Name == serviceName {
 				return true
 			}
 		}
@@ -850,6 +964,7 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 
 	var desiredEndpointSlices []*discoveryv1.EndpointSlice
 	var desiredRouteFilters []*envoygatewayv1alpha1.HTTPRouteFilter
+	var partial *partialProgramming
 
 	desiredRouteRules := make([]gatewayv1.HTTPRouteRule, len(httpProxy.Spec.Rules))
 	for ruleIndex, rule := range httpProxy.Spec.Rules {
@@ -893,6 +1008,42 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 							Kind:  ptr.To(gatewayv1.Kind("EndpointSlice")),
 							Name:  gatewayv1.ObjectName(backend.Instance.Name),
 							Port:  ptr.To(backend.Instance.Port),
+						},
+					},
+					Filters: backend.Filters,
+				}
+				continue
+			}
+
+			if backend.NetworkService != nil {
+				resolved, err := resolveNetworkServiceBackend(ctx, cl, httpProxy.Namespace, backend.NetworkService)
+				if err != nil {
+					return nil, err
+				}
+
+				baseName := fmt.Sprintf("%s-%d-%d", httpProxy.Name, ruleIndex, backendIndex)
+				portName := fmt.Sprintf("httpproxy-%d-%d", ruleIndex, backendIndex)
+
+				shards := networkServiceEndpointSlices(httpProxy.Namespace, baseName, portName, backend.NetworkService.Name, resolved)
+				desiredEndpointSlices = append(desiredEndpointSlices, shards...)
+
+				if len(shards) > 1 && partial == nil {
+					partial = &partialProgramming{
+						reason: networkingv1alpha.HTTPProxyReasonNetworkServiceMembersUnreferenced,
+						message: fmt.Sprintf(
+							"NetworkService %q resolved %d members across %d EndpointSlices; only the %d members in %q are being served",
+							backend.NetworkService.Name, len(resolved.endpoints), len(shards), maxEndpointsPerSlice, baseName,
+						),
+					}
+				}
+
+				backendRefs[backendIndex] = gatewayv1.HTTPBackendRef{
+					BackendRef: gatewayv1.BackendRef{
+						BackendObjectReference: gatewayv1.BackendObjectReference{
+							Group: ptr.To(gatewayv1.Group("discovery.k8s.io")),
+							Kind:  ptr.To(gatewayv1.Kind("EndpointSlice")),
+							Name:  gatewayv1.ObjectName(shards[0].Name),
+							Port:  ptr.To(resolved.port),
 						},
 					},
 					Filters: backend.Filters,
@@ -1131,10 +1282,11 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 	httpRoute.Spec.Rules = desiredRouteRules
 
 	return &desiredHTTPProxyResources{
-		gateway:          gateway,
-		httpRoute:        httpRoute,
-		endpointSlices:   desiredEndpointSlices,
-		httpRouteFilters: desiredRouteFilters,
+		gateway:            gateway,
+		httpRoute:          httpRoute,
+		endpointSlices:     desiredEndpointSlices,
+		httpRouteFilters:   desiredRouteFilters,
+		partialProgramming: partial,
 	}, nil
 }
 

@@ -646,6 +646,9 @@ func controllerRegistrations(
 		{"networkpolicy", true, func() error {
 			return (&controller.NetworkPolicyReconciler{}).SetupWithManager(mgr)
 		}},
+		{"networkservice", true, func() error {
+			return (&controller.NetworkServiceReconciler{}).SetupWithManager(mgr)
+		}},
 		{"subnet", true, func() error {
 			return (&controller.SubnetReconciler{}).SetupWithManager(mgr)
 		}},

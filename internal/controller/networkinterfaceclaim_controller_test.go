@@ -1964,6 +1964,61 @@ func TestExternalAttachmentStatusSurvivesNSO(t *testing.T) {
 	requireAttachmentReported("a rebind")
 }
 
+// A retained interface outlives the holder that reported it, and the next claim
+// of its name is a different holder that has said nothing yet. The departed
+// holder's HolderAvailable must not be inherited, or a service counts the new
+// holder healthy and the edge sends it traffic before it is serving.
+func TestHolderAvailableDoesNotSurviveRelease(t *testing.T) {
+	s := newScenario(t, true, []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol})
+
+	spec := networkingv1alpha.NetworkInterfaceClaimSpec{
+		InterfaceName: "eth0",
+		IPFamilies:    []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol},
+		ReclaimPolicy: networkingv1alpha.NetworkInterfaceReclaimPolicyRetain,
+	}
+
+	s.reconcile(s.createClaim("slot-0-eth0", spec))
+
+	iface, err := s.getInterface("slot-0-eth0")
+	require.NoError(t, err)
+	require.Equal(t, metav1.ConditionUnknown,
+		apimeta.FindStatusCondition(iface.Status.Conditions,
+			networkingv1alpha.NetworkInterfaceHolderAvailable).Status,
+		"NSO seeds HolderAvailable and waits for the holder")
+
+	// Stand in for the holder reporting itself in service.
+	apimeta.SetStatusCondition(&iface.Status.Conditions, metav1.Condition{
+		Type:   networkingv1alpha.NetworkInterfaceHolderAvailable,
+		Status: metav1.ConditionTrue,
+		Reason: networkingv1alpha.NetworkInterfaceReasonHolderAvailable,
+	})
+	require.NoError(t, s.client.Status().Update(s.ctx, iface))
+
+	held, err := s.getInterface("slot-0-eth0")
+	require.NoError(t, err)
+	require.True(t, isServiceMemberHealthy(held))
+
+	s.deleteClaim(s.getClaim("slot-0-eth0"))
+
+	released, err := s.getInterface("slot-0-eth0")
+	require.NoError(t, err, "Retain keeps the interface")
+	require.Equal(t, metav1.ConditionUnknown,
+		apimeta.FindStatusCondition(released.Status.Conditions,
+			networkingv1alpha.NetworkInterfaceHolderAvailable).Status,
+		"releasing the interface takes the departed holder's word back")
+	require.Equal(t, networkingv1alpha.NetworkInterfaceReasonHolderReleased,
+		apimeta.FindStatusCondition(released.Status.Conditions,
+			networkingv1alpha.NetworkInterfaceHolderAvailable).Reason)
+
+	s.reconcile(s.createClaim("slot-0-eth0", spec))
+
+	rebound, err := s.getInterface("slot-0-eth0")
+	require.NoError(t, err)
+	require.Equal(t, networkingv1alpha.NetworkInterfacePhaseBound, rebound.Status.Phase)
+	require.False(t, isServiceMemberHealthy(rebound),
+		"the new holder inherits no claim to be serving; it has to say so itself")
+}
+
 // A rejection demotes the conditions NSO owns. Programmed is not one of them.
 func TestRejectionLeavesProgrammedAlone(t *testing.T) {
 	s := newScenario(t, true, []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol})

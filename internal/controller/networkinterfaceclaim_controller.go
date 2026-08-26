@@ -1389,14 +1389,42 @@ func markInterfaceAvailable(
 	cl client.Client,
 	iface *networkingv1alpha.NetworkInterface,
 ) error {
-	if iface.Status.Phase == networkingv1alpha.NetworkInterfacePhaseAvailable {
+	unbound := iface.Status.Phase == networkingv1alpha.NetworkInterfacePhaseAvailable
+	if unbound && !clearHolderAvailable(&iface.Status.Conditions, iface.Generation) {
 		return nil
 	}
+
 	iface.Status.Phase = networkingv1alpha.NetworkInterfacePhaseAvailable
+	clearHolderAvailable(&iface.Status.Conditions, iface.Generation)
+
 	if err := cl.Status().Update(ctx, iface); err != nil {
 		return fmt.Errorf("failed updating network interface status: %w", err)
 	}
 	return nil
+}
+
+// clearHolderAvailable takes back the departed holder's word, because a
+// retained interface outlives the holder that reported it and the next one to
+// bind is a different holder that has said nothing yet. Leaving the last True
+// in place would hand the new holder a service's traffic before it is serving.
+//
+// This is the only value NSO ever writes: it seeds and clears Unknown, and the
+// holder alone writes True or False.
+func clearHolderAvailable(conditions *[]metav1.Condition, generation int64) bool {
+	current := apimeta.FindStatusCondition(*conditions, networkingv1alpha.NetworkInterfaceHolderAvailable)
+	if current != nil && current.Status == metav1.ConditionUnknown &&
+		current.Reason == networkingv1alpha.NetworkInterfaceReasonHolderReleased {
+		return false
+	}
+
+	apimeta.SetStatusCondition(conditions, metav1.Condition{
+		Type:               networkingv1alpha.NetworkInterfaceHolderAvailable,
+		Status:             metav1.ConditionUnknown,
+		Reason:             networkingv1alpha.NetworkInterfaceReasonHolderReleased,
+		ObservedGeneration: generation,
+		Message:            "No holder holds the interface",
+	})
+	return true
 }
 
 func (r *NetworkInterfaceClaimReconciler) releaseIPClaims(

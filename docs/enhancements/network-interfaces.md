@@ -578,6 +578,14 @@ It is unrelated to `status.phase`. A phase of `Available` means no claim holds t
 at all, which is the opposite of anything being available to serve; membership still
 requires `Bound`.
 
+NSO only ever writes it `Unknown`, in two places: it seeds it when it creates the interface,
+and it takes the departed holder's word back when a retained interface is unbound. The
+second matters because a retained interface outlives its holder by design — the claim is
+named after the slot, so the next instance filling that slot rebinds the same interface and
+returns to the same addresses. Without the reset, the new holder would inherit the old one's
+`True` and take a service's traffic before it was serving. `True` and `False` remain the
+holder's alone.
+
 ### What compute writes
 
 Compute's changes are additive on the consumer-facing side and a removal on the internal

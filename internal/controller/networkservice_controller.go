@@ -42,11 +42,6 @@ const (
 	// truthful past it and the per-location list is cut, because a status the
 	// API server refuses reports nothing at all.
 	maxNetworkServiceLocations = 64
-
-	// networkServiceReasonNotAssessed means no request outcome has been reported
-	// for the service's members. Reachability is judged from real traffic, so a
-	// service nothing has asked for yet is unknown rather than unreachable.
-	networkServiceReasonNotAssessed = "NotAssessed"
 )
 
 // NetworkServiceReconciler resolves a NetworkService's membership from the
@@ -130,10 +125,6 @@ func (r *NetworkServiceReconciler) reconcileService(
 		setNetworkServiceCondition(&status, &service, networkingv1alpha.NetworkServiceMembersResolved,
 			metav1.ConditionTrue, networkServiceReasonResolved, membershipMessage(summary, unlocated))
 	}
-
-	setNetworkServiceCondition(&status, &service, networkingv1alpha.NetworkServiceEndpointsReachable,
-		metav1.ConditionUnknown, networkServiceReasonNotAssessed,
-		"No request outcome has been reported for the service's members")
 
 	setNetworkServiceReady(&status, &service)
 
@@ -293,13 +284,6 @@ func setNetworkServiceReady(
 	if resolved.Status != metav1.ConditionTrue {
 		setNetworkServiceCondition(status, service, networkingv1alpha.NetworkServiceReady,
 			metav1.ConditionFalse, resolved.Reason, resolved.Message)
-		return
-	}
-
-	if apimeta.IsStatusConditionFalse(status.Conditions, networkingv1alpha.NetworkServiceEndpointsReachable) {
-		setNetworkServiceCondition(status, service, networkingv1alpha.NetworkServiceReady,
-			metav1.ConditionFalse, networkingv1alpha.NetworkServiceReasonMembersUnreachable,
-			"The edge is failing requests to the service's members")
 		return
 	}
 

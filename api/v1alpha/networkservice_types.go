@@ -14,15 +14,10 @@ const (
 	// when the matched interfaces span more than one network.
 	NetworkServiceMembersResolved = "MembersResolved"
 
-	// NetworkServiceEndpointsReachable reports that the edge is reaching the
-	// service's members. It is judged from real request outcomes rather than a
-	// declared health check, so a service receiving no traffic is not assessed
-	// and the condition stays unknown.
-	NetworkServiceEndpointsReachable = "EndpointsReachable"
-
 	// NetworkServiceReady reports that the service has resolved membership and
-	// its endpoints are reachable, so a proxy naming it has somewhere to send
-	// requests. Wait on this one rather than on the two it summarizes.
+	// at least one location is taking traffic, so a proxy naming it has
+	// somewhere to send requests. Wait on this one rather than on what it
+	// summarizes.
 	NetworkServiceReady = "Ready"
 )
 
@@ -40,11 +35,6 @@ const (
 	// on more than one network. A service spans one network, so the membership is
 	// not resolved rather than silently narrowed to one of them.
 	NetworkServiceReasonMultipleNetworks = "MultipleNetworks"
-
-	// NetworkServiceReasonMembersUnreachable means the edge is failing requests
-	// to the members it has. Membership is a separate question: this reason says
-	// the endpoints exist and do not answer.
-	NetworkServiceReasonMembersUnreachable = "MembersUnreachable"
 
 	// NetworkServiceReasonNoServingLocations means every location the service has
 	// members in is out of rotation, so no location can take traffic.
@@ -301,7 +291,7 @@ type NetworkService struct {
 	// +kubebuilder:validation:Required
 	Spec NetworkServiceSpec `json:"spec,omitempty"`
 
-	// +kubebuilder:default={conditions:{{type:"MembersResolved",status:"Unknown",reason:"Pending", message:"Waiting for controller", lastTransitionTime: "1970-01-01T00:00:00Z"},{type:"EndpointsReachable",status:"Unknown",reason:"Pending", message:"Waiting for controller", lastTransitionTime: "1970-01-01T00:00:00Z"},{type:"Ready",status:"Unknown",reason:"Pending", message:"Waiting for controller", lastTransitionTime: "1970-01-01T00:00:00Z"}}}
+	// +kubebuilder:default={conditions:{{type:"MembersResolved",status:"Unknown",reason:"Pending", message:"Waiting for controller", lastTransitionTime: "1970-01-01T00:00:00Z"},{type:"Ready",status:"Unknown",reason:"Pending", message:"Waiting for controller", lastTransitionTime: "1970-01-01T00:00:00Z"}}}
 	Status NetworkServiceStatus `json:"status,omitempty"`
 }
 

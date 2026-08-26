@@ -217,8 +217,6 @@ func TestNetworkServiceResolvesMembersPerLocation(t *testing.T) {
 
 	require.Equal(t, metav1.ConditionTrue,
 		serviceCondition(t, service, networkingv1alpha.NetworkServiceReady).Status)
-	require.Equal(t, metav1.ConditionUnknown,
-		serviceCondition(t, service, networkingv1alpha.NetworkServiceEndpointsReachable).Status)
 }
 
 func TestNetworkServiceUnavailableHolderIsAMemberNotHealthy(t *testing.T) {

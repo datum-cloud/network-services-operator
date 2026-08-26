@@ -9,10 +9,10 @@ import (
 // Create a deterministic string using two english words and 5 hash-derived
 // characters (no vowels, no ambiguous chars) from a seed string.
 //
-// This yields an output space of roughly 330 trillion strings:
+// This yields an output space of roughly 340 trillion strings:
 // - 5-char alphabet component: 45M
-// - ~2700 words, picking 2 at a time (ordered, permutation): 7.4M
-// - 45M * 7.4M ~= 330T
+// - ~2800 words, picking 2 at a time (ordered, permutation): 7.5M
+// - 45M * 7.5M ~= 340T
 //
 // NB: A seed will generate the same return value each time. However,
 // if the word list or charset is changed below, then strings
@@ -306,5 +306,8 @@ var DictionaryWords = []string{
 	"wombat", "adventure", "amble", "babble", "balloon", "banjo", "boomerang", "bouncy", "carnival", "carousel",
 	"celebrate", "checkers", "confetti", "dandy", "dapper", "dazzle", "daydream", "dominoes", "doodle", "firework",
 	"frisbee", "frolic", "giggle", "hopscotch", "jigsaw", "jingle", "kazoo", "kiteboard", "marbles", "pinball",
-	"pinwheel", "polka", "puzzle", "scooter", "sparkle", "trampoline", "twinkle", "ukulele", "zippy",
+	"pinwheel", "polka", "puzzle", "scooter", "sparkle", "trampoline", "twinkle", "ukulele", "zippy", "breezy",
+	"chirpy", "cuddly", "daring", "dazzling", "dewdrop", "drizzle", "feather", "fizzy", "fluffy", "gumbo",
+	"honeydew", "icicle", "jubilee", "lilypad", "meringue", "nutmeg", "oatmeal", "pebble", "quokka", "ripple",
+	"snowflake", "sundae", "toffee", "velvety", "whimsy", "zigzag", "bumble", "glimmer", "harmony",
 }

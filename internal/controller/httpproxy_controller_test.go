@@ -3983,16 +3983,30 @@ func TestHTTPProxyCollectDesiredResourcesNetworkService(t *testing.T) {
 			desiredResources.partialProgramming.reason)
 	})
 
-	t.Run("a service with no members yields an empty slice", func(t *testing.T) {
+	// Deliberate: a member-less service keeps its slice rather than losing it.
+	// See the comment in networkServiceEndpointSlices — the rule's backendRef
+	// names this slice, and TestProcessDownstreamHTTPRouteRulesEmptyEndpointSlice
+	// pins what the Gateway controller does with it either way.
+	t.Run("a service with no members still yields the slice its backendRef names", func(t *testing.T) {
 		httpProxy := newNetworkServiceProxy()
 
 		cl := fake.NewClientBuilder().WithScheme(testScheme).WithObjects(newNetworkService()).Build()
 
 		desiredResources, err := reconciler.collectDesiredResources(context.Background(), cl, httpProxy)
 		require.NoError(t, err)
-		require.Len(t, desiredResources.endpointSlices, 1)
+		require.Len(t, desiredResources.endpointSlices, 1,
+			"withholding the slice would leave the rule's backendRef dangling")
 		assert.Empty(t, desiredResources.endpointSlices[0].Endpoints)
 		assert.Nil(t, desiredResources.partialProgramming)
+
+		require.Len(t, desiredResources.httpRoute.Spec.Rules, 1)
+		backendRefs := desiredResources.httpRoute.Spec.Rules[0].BackendRefs
+		require.Len(t, backendRefs, 1)
+		assert.Equal(t, desiredResources.endpointSlices[0].Name, string(backendRefs[0].Name))
+
+		require.Len(t, desiredResources.endpointSlices[0].Ports, 1,
+			"the port must survive so the Gateway controller can match the backendRef port")
+		assert.EqualValues(t, 8080, ptr.Deref(desiredResources.endpointSlices[0].Ports[0].Port, 0))
 	})
 
 	t.Run("missing NetworkService fails with errNetworkServiceBackendNotFound", func(t *testing.T) {

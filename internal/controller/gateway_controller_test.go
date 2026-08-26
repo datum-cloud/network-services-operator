@@ -2699,3 +2699,148 @@ func TestEnsureHostnamesClaimed_LegacyTargetDomain(t *testing.T) {
 		})
 	}
 }
+
+// TestProcessDownstreamHTTPRouteRulesEmptyEndpointSlice pins the pair of
+// behaviours that make the empty EndpointSlice a member-less NetworkService
+// gets (see networkServiceEndpointSlices) load-bearing rather than litter.
+//
+// An empty slice still resolves: the downstream Service and its slice are
+// synthesized, the backendRef becomes a Service reference, and Envoy is left
+// with a cluster carrying no endpoints, which it answers 503 on.
+//
+// A missing slice does not resolve, and does not fail quietly: the Get returns
+// NotFound and processDownstreamHTTPRouteRules propagates it. The caller
+// abandons the whole route loop on the first error, so withholding the slice
+// would take every other HTTPProxy on the Gateway down with it.
+func TestProcessDownstreamHTTPRouteRulesEmptyEndpointSlice(t *testing.T) {
+	testScheme := runtime.NewScheme()
+	require.NoError(t, scheme.AddToScheme(testScheme))
+	require.NoError(t, gatewayv1.Install(testScheme))
+	require.NoError(t, discoveryv1.AddToScheme(testScheme))
+
+	newFixture := func(t *testing.T, withSlice bool) (*GatewayReconciler, client.Client, *gatewayv1.Gateway, gatewayv1.HTTPRoute, *gatewayv1.Gateway, downstreamclient.ResourceStrategy) {
+		t.Helper()
+
+		upstreamNamespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "test", UID: uuid.NewUUID()}}
+		downstreamNamespaceName := fmt.Sprintf("ns-%s", upstreamNamespace.UID)
+
+		upstreamGateway := newGateway(config.NetworkServicesOperator{}, upstreamNamespace.Name, "test")
+		downstreamGateway := newGateway(config.NetworkServicesOperator{}, downstreamNamespaceName, "test")
+
+		// Shaped exactly as networkServiceEndpointSlices builds it for a
+		// service that resolved no members.
+		emptySlice := &discoveryv1.EndpointSlice{
+			ObjectMeta: metav1.ObjectMeta{
+				Namespace: upstreamNamespace.Name,
+				Name:      "test-0-0",
+				Labels: map[string]string{
+					discoveryv1.LabelServiceName: "test-0-0",
+					NetworkServiceBackendLabel:   "storefront",
+				},
+			},
+			AddressType: discoveryv1.AddressTypeIPv4,
+			Ports: []discoveryv1.EndpointPort{
+				{Name: ptr.To("httpproxy-0-0"), Protocol: ptr.To(corev1.ProtocolTCP), AppProtocol: ptr.To(SchemeHTTP), Port: ptr.To(int32(8080))},
+			},
+		}
+
+		upstreamRoute := newHTTPRoute(upstreamNamespace.Name, "test", func(route *gatewayv1.HTTPRoute) {
+			route.Spec.Rules = []gatewayv1.HTTPRouteRule{
+				{
+					BackendRefs: []gatewayv1.HTTPBackendRef{
+						{
+							BackendRef: gatewayv1.BackendRef{
+								BackendObjectReference: gatewayv1.BackendObjectReference{
+									Group: ptr.To(gatewayv1.Group("discovery.k8s.io")),
+									Kind:  ptr.To(gatewayv1.Kind(KindEndpointSlice)),
+									Name:  gatewayv1.ObjectName(emptySlice.Name),
+									Port:  ptr.To(gatewayv1.PortNumber(8080)),
+								},
+							},
+						},
+					},
+				},
+			}
+		})
+
+		upstreamObjects := []client.Object{upstreamNamespace, upstreamGateway}
+		if withSlice {
+			upstreamObjects = append(upstreamObjects, emptySlice)
+		}
+
+		fakeUpstreamClient := fake.NewClientBuilder().
+			WithScheme(testScheme).
+			WithObjects(upstreamObjects...).
+			Build()
+
+		fakeDownstreamClient := fake.NewClientBuilder().
+			WithScheme(testScheme).
+			WithObjects(downstreamGateway).
+			Build()
+
+		reconciler := &GatewayReconciler{
+			DownstreamCluster: &fakeCluster{cl: fakeDownstreamClient},
+		}
+
+		return reconciler,
+			fakeUpstreamClient,
+			upstreamGateway,
+			*upstreamRoute,
+			downstreamGateway,
+			downstreamclient.NewMappedNamespaceResourceStrategy("test", fakeUpstreamClient, fakeDownstreamClient)
+	}
+
+	t.Run("an empty slice still resolves into a downstream service", func(t *testing.T) {
+		reconciler, upstreamClient, upstreamGateway, upstreamRoute, downstreamGateway, strategy := newFixture(t, true)
+
+		rules, downstreamResources, _, err := reconciler.processDownstreamHTTPRouteRules(
+			context.Background(),
+			upstreamClient,
+			upstreamGateway,
+			upstreamRoute,
+			downstreamGateway,
+			strategy,
+		)
+		require.NoError(t, err)
+
+		require.Len(t, rules, 1)
+		require.Len(t, rules[0].BackendRefs, 1)
+		assert.Equal(t, "Service", string(ptr.Deref(rules[0].BackendRefs[0].Kind, "")),
+			"the backendRef must still land on a downstream Service")
+
+		var downstreamService *corev1.Service
+		var downstreamSlice *discoveryv1.EndpointSlice
+		for _, obj := range downstreamResources {
+			switch typed := obj.(type) {
+			case *corev1.Service:
+				downstreamService = typed
+			case *discoveryv1.EndpointSlice:
+				downstreamSlice = typed
+			}
+		}
+
+		require.NotNil(t, downstreamService)
+		require.Len(t, downstreamService.Spec.Ports, 1)
+		assert.EqualValues(t, 8080, downstreamService.Spec.Ports[0].Port)
+
+		require.NotNil(t, downstreamSlice)
+		assert.Empty(t, downstreamSlice.Endpoints,
+			"Envoy gets a cluster with no endpoints and answers 503, which is the intended behaviour for a member-less service")
+		assert.Equal(t, downstreamService.Name, downstreamSlice.Labels[discoveryv1.LabelServiceName])
+	})
+
+	t.Run("a withheld slice fails the whole route loop", func(t *testing.T) {
+		reconciler, upstreamClient, upstreamGateway, upstreamRoute, downstreamGateway, strategy := newFixture(t, false)
+
+		_, _, _, err := reconciler.processDownstreamHTTPRouteRules(
+			context.Background(),
+			upstreamClient,
+			upstreamGateway,
+			upstreamRoute,
+			downstreamGateway,
+			strategy,
+		)
+		require.Error(t, err)
+		assert.Truef(t, apierrors.IsNotFound(err), "expected a NotFound error, got %v", err)
+	})
+}

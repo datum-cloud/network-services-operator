@@ -230,6 +230,20 @@ func networkServiceEndpointSlices(
 		}
 	}
 
+	// A service with no members still gets a slice, empty. The rule's
+	// backendRef names shards[0], and the Gateway controller resolves that
+	// reference by getting the upstream EndpointSlice before it can build the
+	// downstream Service. A NotFound there aborts the whole route loop for the
+	// Gateway, not just this route, so withholding the slice would stop every
+	// other HTTPProxy on that Gateway from being reprogrammed for as long as
+	// the service had no members. Carrying it empty keeps the reference
+	// resolvable and costs only this rule, which Envoy answers 503 on a
+	// cluster with no endpoints.
+	//
+	// This holds because the slice stays in one place. If these are ever
+	// authored centrally and fanned out to every edge, an empty slice becomes
+	// a fleet-wide outage and the withholding decision has to be revisited
+	// together with the route loop's per-route error isolation.
 	if len(resolved.endpoints) == 0 {
 		return []*discoveryv1.EndpointSlice{newSlice(0, nil)}
 	}

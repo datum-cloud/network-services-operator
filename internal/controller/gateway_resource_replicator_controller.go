@@ -51,7 +51,8 @@ const gatewayResourceReplicatorFinalizer = "gateway.networking.datumapis.com/gat
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=connectors,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=connectors/finalizers,verbs=update
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=connectors/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkcontexts/finalizers;subnets/finalizers,verbs=update
+// +kubebuilder:rbac:groups=networking.datumapis.com,resources=networks,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkcontexts/finalizers;subnets/finalizers;networks/finalizers,verbs=update
 // The replicator's default resource set also mirrors label-selected ConfigMaps/Secrets and the
 // Envoy Gateway policy types. These watches require list/watch on the upstream cluster; without
 // them the corresponding informers fail to sync and the replicator silently never reconciles ANY
@@ -190,6 +191,19 @@ func initReplicationResourceConfigs() map[string]replicationResourceConfig {
 				networkingv1alpha.NetworkLabel,
 			},
 		}
+	}
+
+	// The network itself, mirrored onto the hub so the central allocator of a
+	// network's fabric identity can be driven by the network rather than infer
+	// it from the contexts that happen to name it. Only that way can it tell a
+	// network that was deleted from one that is required nowhere right now.
+	//
+	// No propagated labels: the per-location policies select contexts and
+	// subnets to carry them to a cell, and nothing carries a Network past the
+	// hub. Its status is NSO's own.
+	networkGVK := schema.GroupVersionKind{Group: groupNetworkingDatumAPIs, Version: versionV1Alpha, Kind: KindNetwork}
+	configs[gvkKey(networkGVK)] = replicationResourceConfig{
+		skipUpstreamStatusSync: true,
 	}
 
 	return configs

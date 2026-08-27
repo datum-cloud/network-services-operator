@@ -1493,6 +1493,10 @@ func SetDefaults_GatewayResourceReplicatorConfig(obj *GatewayResourceReplicatorC
 		// serving the location.
 		{Group: networkingDatumAPIsGroup, Version: "v1alpha", Kind: "NetworkContext"},
 		{Group: networkingDatumAPIsGroup, Version: "v1alpha", Kind: "Subnet"},
+		// The network itself, so what allocates its identity on the fabric can
+		// be driven by the network and tell a deleted one from one required
+		// nowhere. Read on the hub; not carried on to a cell.
+		{Group: networkingDatumAPIsGroup, Version: "v1alpha", Kind: "Network"},
 	}
 }
 

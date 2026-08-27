@@ -130,16 +130,15 @@ func resolveNetworkServiceBackend(
 	return resolved, nil
 }
 
-// interfaceBackhaulAddresses returns the addresses a member can be reached at,
-// in the order the edge should prefer them. External addresses come first
-// because backhaul from the edge crosses the public internet.
+// interfaceBackhaulAddresses returns the addresses a member can be reached at.
+//
+// Only the addresses a member holds inside its network. An edge reaches a
+// member over the fabric, so the address it dials is the tenant one and the
+// external addresses a member may also hold are deliberately not offered: an
+// edge that dialled one would leave the fabric and cross the public internet
+// to reach an origin that is meant to stay private.
 func interfaceBackhaulAddresses(member *networkingv1alpha.NetworkInterface) []string {
 	var addresses []string
-	for _, external := range member.Spec.ExternalAddresses {
-		if address, _, _ := strings.Cut(external.Address, "/"); address != "" {
-			addresses = append(addresses, address)
-		}
-	}
 	for _, internal := range member.Spec.Addresses {
 		if address, _, _ := strings.Cut(internal.Address, "/"); address != "" {
 			addresses = append(addresses, address)

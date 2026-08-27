@@ -3854,9 +3854,9 @@ func TestHTTPProxyCollectDesiredResourcesNetworkService(t *testing.T) {
 				newNetworkService(),
 				newNetworkServiceMember("dfw-1", "dfw", true, withExternalAddress("203.0.113.10"), withInterfaceAddress("10.128.0.2/32")),
 				newNetworkServiceMember("dfw-2", "dfw", true, withInterfaceAddress("198.51.100.5/32")),
-				newNetworkServiceMember("sjc-1", "sjc", false, withExternalAddress("203.0.113.20")),
-				newNetworkServiceMember("dfw-retired", "dfw", true, withExternalAddress("203.0.113.40"), released()),
-				newNetworkServiceMember("other-1", "dfw", true, withExternalAddress("203.0.113.30"), func(m *networkingv1alpha.NetworkInterface) {
+				newNetworkServiceMember("sjc-1", "sjc", false, withInterfaceAddress("192.0.2.7/32")),
+				newNetworkServiceMember("dfw-retired", "dfw", true, withInterfaceAddress("198.51.100.40/32"), released()),
+				newNetworkServiceMember("other-1", "dfw", true, withInterfaceAddress("198.51.100.30/32"), func(m *networkingv1alpha.NetworkInterface) {
 					m.Labels["app"] = "not-storefront"
 				}),
 			).
@@ -3881,17 +3881,21 @@ func TestHTTPProxyCollectDesiredResourcesNetworkService(t *testing.T) {
 
 		require.Len(t, endpointSlice.Endpoints, 3)
 
-		// The external address is preferred over the interface address: the
-		// edge reaches members across the public internet.
-		assert.Equal(t, []string{"203.0.113.10"}, endpointSlice.Endpoints[0].Addresses)
+		// dfw-1 also holds an external address. An edge reaches a member over
+		// the fabric, so only the address inside the network is published.
+		assert.Equal(t, []string{"10.128.0.2"}, endpointSlice.Endpoints[0].Addresses)
+		for _, endpoint := range endpointSlice.Endpoints {
+			assert.NotContains(t, endpoint.Addresses, "203.0.113.10",
+				"an external address must never be published: an edge dialling one leaves the fabric")
+		}
 		assert.Equal(t, "dfw", ptr.Deref(endpointSlice.Endpoints[0].Zone, ""))
 		assert.True(t, ptr.Deref(endpointSlice.Endpoints[0].Conditions.Ready, false))
 
-		// Falls back to the interface address, with the prefix length dropped.
+		// The prefix length is dropped.
 		assert.Equal(t, []string{"198.51.100.5"}, endpointSlice.Endpoints[1].Addresses)
 		assert.Equal(t, "dfw", ptr.Deref(endpointSlice.Endpoints[1].Zone, ""))
 
-		assert.Equal(t, []string{"203.0.113.20"}, endpointSlice.Endpoints[2].Addresses)
+		assert.Equal(t, []string{"192.0.2.7"}, endpointSlice.Endpoints[2].Addresses)
 		assert.Equal(t, "sjc", ptr.Deref(endpointSlice.Endpoints[2].Zone, ""))
 		assert.False(t, ptr.Deref(endpointSlice.Endpoints[2].Conditions.Ready, true),
 			"a member whose holder does not report itself available must not be ready")
@@ -3915,7 +3919,7 @@ func TestHTTPProxyCollectDesiredResourcesNetworkService(t *testing.T) {
 	t.Run("the holder condition drives endpoint ready and serving", func(t *testing.T) {
 		httpProxy := newNetworkServiceProxy()
 
-		member := newNetworkServiceMember("dfw-1", "dfw", false, withExternalAddress("203.0.113.10"))
+		member := newNetworkServiceMember("dfw-1", "dfw", false, withInterfaceAddress("10.128.0.2/32"))
 		cl := fake.NewClientBuilder().
 			WithScheme(testScheme).
 			WithObjects(newNetworkService(), member).
@@ -3958,7 +3962,7 @@ func TestHTTPProxyCollectDesiredResourcesNetworkService(t *testing.T) {
 		for i := range 150 {
 			objects = append(objects, newNetworkServiceMember(
 				fmt.Sprintf("member-%03d", i), "dfw", true,
-				withExternalAddress(fmt.Sprintf("203.0.113.%d", i%254+1)),
+				withInterfaceAddress(fmt.Sprintf("10.128.%d.%d/32", i/254, i%254+1)),
 			))
 		}
 

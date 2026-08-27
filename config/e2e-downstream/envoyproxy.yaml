@@ -51,6 +51,16 @@ spec:
                       volumeMounts:
                         - name: vpc-vrf-lock
                           mountPath: /var/lib/cni/galactic-vrf
+                        # Envoy Gateway sets automountServiceAccountToken:
+                        # false on the pods it generates, so nothing projects a
+                        # token and the sidecar's in-cluster config fails at
+                        # startup. Mount one here and only here: Envoy is
+                        # internet-facing and that default-off is deliberate,
+                        # and a volume the proxy container does not mount is
+                        # not reachable from it.
+                        - name: vpc-vrf-kube-api-access
+                          mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+                          readOnly: true
         pod:
           volumes:
             - name: coraza-waf
@@ -61,6 +71,30 @@ spec:
             # constant names.
             - name: vpc-vrf-lock
               emptyDir: {}
+            # The token the kubelet would have projected had Envoy Gateway not
+            # disabled automounting. No audience on purpose: an omitted
+            # audience is the API server's own default, which is what the local
+            # apiserver validates against, so naming one is a way to break this
+            # rather than harden it. 3607s is the kubelet default and sits well
+            # above the apiserver's 600s floor; the file is rotated in place.
+            - name: vpc-vrf-kube-api-access
+              projected:
+                defaultMode: 420
+                sources:
+                  - serviceAccountToken:
+                      path: token
+                      expirationSeconds: 3607
+                  - configMap:
+                      name: kube-root-ca.crt
+                      items:
+                        - key: ca.crt
+                          path: ca.crt
+                  - downwardAPI:
+                      items:
+                        - fieldRef:
+                            apiVersion: v1
+                            fieldPath: metadata.namespace
+                          path: namespace
         container:
           image: envoyproxy/envoy:contrib-v1.37.1
           # Required for the vpcPod socket-bind mutation (#856 step 4) —
@@ -167,6 +201,9 @@ rules:
 # Envoy Gateway names the proxy ServiceAccount after a hash of the merged
 # GatewayClass, so it cannot be named here. Every ServiceAccount in this
 # namespace is Envoy Gateway's own control plane or a proxy it provisioned.
+# Binding the group rather than a name is what keeps this correct when that
+# hash moves: the pre-flight check logs and continues, so a binding that missed
+# would leave the sidecar running and watching nothing.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:

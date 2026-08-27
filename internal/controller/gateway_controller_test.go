@@ -17,6 +17,7 @@ import (
 
 	cmv1 "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
 	cmmeta "github.com/cert-manager/cert-manager/pkg/apis/meta/v1"
+	envoygatewayv1alpha1 "github.com/envoyproxy/gateway/api/v1alpha1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
@@ -2842,5 +2843,124 @@ func TestProcessDownstreamHTTPRouteRulesEmptyEndpointSlice(t *testing.T) {
 		)
 		require.Error(t, err)
 		assert.Truef(t, apierrors.IsNotFound(err), "expected a NotFound error, got %v", err)
+	})
+}
+
+// TestProcessDownstreamHTTPRouteRulesNetworkServicePanicThreshold covers the
+// half of the offline-page behaviour that lives in the control plane: a route
+// backed by a NetworkService gets a BackendTrafficPolicy turning Envoy's panic
+// threshold off, so zero healthy members fails fast and is reported as having
+// no healthy upstream rather than being force-fed to members that have said
+// they are not serving.
+func TestProcessDownstreamHTTPRouteRulesNetworkServicePanicThreshold(t *testing.T) {
+	testScheme := runtime.NewScheme()
+	require.NoError(t, scheme.AddToScheme(testScheme))
+	require.NoError(t, gatewayv1.Install(testScheme))
+	require.NoError(t, discoveryv1.AddToScheme(testScheme))
+	require.NoError(t, envoygatewayv1alpha1.AddToScheme(testScheme))
+
+	upstreamNamespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "test", UID: uuid.NewUUID()}}
+	downstreamNamespaceName := fmt.Sprintf("ns-%s", upstreamNamespace.UID)
+
+	upstreamGateway := newGateway(config.NetworkServicesOperator{}, upstreamNamespace.Name, "test")
+	downstreamGateway := newGateway(config.NetworkServicesOperator{}, downstreamNamespaceName, "test")
+
+	newEndpointSlice := func(name string, labels map[string]string) *discoveryv1.EndpointSlice {
+		return &discoveryv1.EndpointSlice{
+			ObjectMeta: metav1.ObjectMeta{
+				Namespace: upstreamNamespace.Name,
+				Name:      name,
+				Labels:    labels,
+			},
+			AddressType: discoveryv1.AddressTypeIPv4,
+			Endpoints: []discoveryv1.Endpoint{
+				{Addresses: []string{"10.0.0.1"}, Conditions: discoveryv1.EndpointConditions{Ready: ptr.To(false)}},
+			},
+			Ports: []discoveryv1.EndpointPort{
+				{Name: ptr.To("http"), Protocol: ptr.To(corev1.ProtocolTCP), AppProtocol: ptr.To(SchemeHTTP), Port: ptr.To(int32(80))},
+			},
+		}
+	}
+
+	run := func(t *testing.T, slice *discoveryv1.EndpointSlice) ([]client.Object, []client.Object) {
+		t.Helper()
+
+		upstreamRoute := newHTTPRoute(upstreamNamespace.Name, "test", func(route *gatewayv1.HTTPRoute) {
+			route.Spec.Rules = []gatewayv1.HTTPRouteRule{{
+				BackendRefs: []gatewayv1.HTTPBackendRef{{
+					BackendRef: gatewayv1.BackendRef{
+						BackendObjectReference: gatewayv1.BackendObjectReference{
+							Group: ptr.To(gatewayv1.Group("discovery.k8s.io")),
+							Kind:  ptr.To(gatewayv1.Kind(KindEndpointSlice)),
+							Name:  gatewayv1.ObjectName(slice.Name),
+							Port:  ptr.To(gatewayv1.PortNumber(80)),
+						},
+					},
+				}},
+			}}
+		})
+
+		fakeUpstreamClient := fake.NewClientBuilder().
+			WithScheme(testScheme).
+			WithObjects(upstreamNamespace, upstreamGateway, slice).
+			Build()
+		fakeDownstreamClient := fake.NewClientBuilder().
+			WithScheme(testScheme).
+			WithObjects(downstreamGateway).
+			Build()
+
+		reconciler := &GatewayReconciler{DownstreamCluster: &fakeCluster{cl: fakeDownstreamClient}}
+		downstreamStrategy := downstreamclient.NewMappedNamespaceResourceStrategy("test", fakeUpstreamClient, fakeDownstreamClient)
+
+		_, resources, toDelete, err := reconciler.processDownstreamHTTPRouteRules(
+			context.Background(),
+			fakeUpstreamClient,
+			upstreamGateway,
+			*upstreamRoute,
+			downstreamGateway,
+			downstreamStrategy,
+		)
+		require.NoError(t, err)
+		return resources, toDelete
+	}
+
+	findPolicy := func(objs []client.Object) *envoygatewayv1alpha1.BackendTrafficPolicy {
+		for _, obj := range objs {
+			if policy, ok := obj.(*envoygatewayv1alpha1.BackendTrafficPolicy); ok {
+				return policy
+			}
+		}
+		return nil
+	}
+
+	t.Run("network service backend disables panic mode", func(t *testing.T) {
+		slice := newEndpointSlice("test-0-0", map[string]string{
+			NetworkServiceBackendLabel: "checkout",
+		})
+
+		resources, toDelete := run(t, slice)
+
+		policy := findPolicy(resources)
+		require.NotNil(t, policy, "a networkService backend must get a BackendTrafficPolicy")
+		require.NotNil(t, policy.Spec.HealthCheck)
+		require.NotNil(t, policy.Spec.HealthCheck.PanicThreshold)
+		assert.Equal(t, uint32(0), *policy.Spec.HealthCheck.PanicThreshold)
+		assert.Equal(t, downstreamNamespaceName, policy.Namespace)
+
+		require.Len(t, policy.Spec.TargetRefs, 1)
+		targetRef := policy.Spec.TargetRefs[0]
+		assert.Equal(t, gatewayv1.Group(gatewayv1.GroupName), targetRef.Group)
+		assert.Equal(t, gatewayv1.Kind(KindHTTPRoute), targetRef.Kind)
+
+		assert.Nil(t, findPolicy(toDelete), "the policy must not be scheduled for deletion")
+	})
+
+	t.Run("other backends leave panic mode alone", func(t *testing.T) {
+		slice := newEndpointSlice("test-0-0", nil)
+
+		resources, toDelete := run(t, slice)
+
+		assert.Nil(t, findPolicy(resources), "a plain backend must not get the policy")
+		require.NotNil(t, findPolicy(toDelete), "a route that lost its networkService backend must lose the policy")
 	})
 }

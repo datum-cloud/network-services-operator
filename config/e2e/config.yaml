@@ -17,6 +17,13 @@ gateway:
   enableDNSIntegration: true
   permittedTLSOptions:
     gateway.networking.datumapis.com/certificate-issuer: []
+  # Resolve the `auto` issuer the defaulting webhook stamps on default-https to
+  # the e2e CA (config/e2e-downstream/issuer.yaml), as production resolves it to
+  # its ACME issuer. A gateway that declares no issuer of its own would
+  # otherwise get no certificate for that listener, and the listener would be
+  # withheld from the downstream gateway for the life of the test.
+  clusterIssuerMap:
+    auto: e2e-gateway-http
 downstreamResourceManagement:
   kubeconfigPath: /etc/downstream-cluster/kubeconfig
 ipam:

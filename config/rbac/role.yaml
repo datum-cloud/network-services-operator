@@ -242,6 +242,7 @@ rules:
   - connectoradvertisements
   - connectors
   - domains
+  - edgereachabilities
   - httpproxies
   - networkbindings
   - networkcontexts

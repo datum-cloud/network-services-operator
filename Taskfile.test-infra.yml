@@ -414,6 +414,7 @@ tasks:
     desc: "Install the NSO CRDs the replicator mirrors into the downstream cluster (the Gateway-API/EG CRDs come from eg-crds)."
     cmds:
       - kubectl --context {{.DOWNSTREAM_CTX}} apply -f config/crd/bases/networking.datumapis.com_connectors.yaml
+      - kubectl --context {{.DOWNSTREAM_CTX}} apply -f config/crd/bases/networking.datumapis.com_edgereachabilities.yaml
       - kubectl --context {{.DOWNSTREAM_CTX}} apply -f config/crd/bases/networking.datumapis.com_httpproxies.yaml
       - kubectl --context {{.DOWNSTREAM_CTX}} apply -f config/crd/bases/networking.datumapis.com_trafficprotectionpolicies.yaml
       - kubectl --context {{.DOWNSTREAM_CTX}} apply -f config/crd/bases/networking.datumapis.com_servinglocations.yaml

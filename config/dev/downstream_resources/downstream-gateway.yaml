@@ -84,6 +84,7 @@ spec:
                       args:
                         - --metrics-port=9182
                       securityContext:
+                        runAsUser: 0
                         capabilities:
                           drop:
                             - ALL

@@ -25,6 +25,7 @@ require (
 	github.com/spf13/cobra v1.10.2
 	github.com/stretchr/testify v1.11.1
 	go.miloapis.com/dns-operator v0.5.1
+	go.miloapis.com/locations v0.0.0-00010101000000-000000000000
 	go.miloapis.com/milo v0.28.4-0.20260629130346-79689376fe11
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.67.0
 	go.opentelemetry.io/otel v1.44.0
@@ -327,3 +328,5 @@ require (
 )
 
 replace go.miloapis.com/ipam => github.com/milo-os/ipam v0.3.2-0.20260819234259-2f31bea79f62
+
+replace go.miloapis.com/locations => github.com/milo-os/locations v0.0.0-20260825185141-507ac2cbd48c

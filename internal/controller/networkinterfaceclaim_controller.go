@@ -34,6 +34,8 @@ import (
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	ipamv1alpha1 "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
+	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
+	"go.miloapis.com/locations/pkg/locationidentity"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	"go.datum.net/network-services-operator/internal/config"
@@ -83,6 +85,7 @@ type NetworkInterfaceClaimReconciler struct {
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkcontexts,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkcontexts/finalizers,verbs=update
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=subnets,verbs=get;list;watch
+// +kubebuilder:rbac:groups=locations.miloapis.com,resources=servinglocations,verbs=get;list;watch
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
 func (r *NetworkInterfaceClaimReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
@@ -131,7 +134,7 @@ func (r *NetworkInterfaceClaimReconciler) fulfill(
 ) (ctrl.Result, error) {
 	location, err := r.location(ctx)
 	if err != nil {
-		var unresolved *LocationUnresolved
+		var unresolved *locationidentity.LocationUnresolved
 		if errors.As(err, &unresolved) {
 			return r.reject(ctx, cl, claim, unresolved.Reason, unresolved.Message)
 		}
@@ -335,7 +338,7 @@ func (r *NetworkInterfaceClaimReconciler) syncNetworkContextHold(
 	cl client.Client,
 	namespace string,
 	network string,
-	location networkingv1alpha.LocationReference,
+	location locationsv1alpha1.LocationReference,
 ) error {
 	return reconcileNetworkContextHold(ctx, cl, client.ObjectKey{
 		Namespace: namespace,
@@ -422,11 +425,11 @@ func claimsOnNetworkContext(ctx context.Context, cl client.Client, obj client.Ob
 
 func (r *NetworkInterfaceClaimReconciler) location(
 	ctx context.Context,
-) (networkingv1alpha.LocationReference, error) {
-	identity, err := ResolveLocationIdentity(ctx, r.localReader, r.Location)
+) (locationsv1alpha1.LocationReference, error) {
+	identity, err := resolveLocationIdentity(ctx, r.localReader, r.Location)
 	reportLocationIdentity(identity, err)
 	if err != nil {
-		return networkingv1alpha.LocationReference{}, err
+		return locationsv1alpha1.LocationReference{}, err
 	}
 	if identity.Mismatch {
 		log.FromContext(ctx).Info(
@@ -515,7 +518,7 @@ func (r *NetworkInterfaceClaimReconciler) bindInterface(
 	routing projectRouting,
 	claim *networkingv1alpha.NetworkInterfaceClaim,
 	networkContext *networkingv1alpha.NetworkContext,
-	location networkingv1alpha.LocationReference,
+	location locationsv1alpha1.LocationReference,
 ) (*networkingv1alpha.NetworkInterface, error) {
 	interfaceKey := client.ObjectKey{Namespace: claim.Namespace, Name: interfaceNameForClaim(claim)}
 
@@ -686,7 +689,7 @@ func (r *NetworkInterfaceClaimReconciler) allocate(
 	claim *networkingv1alpha.NetworkInterfaceClaim,
 	networkContext *networkingv1alpha.NetworkContext,
 	requests []allocationRequest,
-	location networkingv1alpha.LocationReference,
+	location locationsv1alpha1.LocationReference,
 ) ([]allocatedAddress, error) {
 	logger := log.FromContext(ctx)
 

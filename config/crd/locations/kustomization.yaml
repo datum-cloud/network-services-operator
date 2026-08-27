@@ -1,0 +1,9 @@
+# CRDs owned by milo-os/locations, vendored so envtest and the downstream
+# bundle can install them without reaching the network. Regenerate by copying
+# config/base/crd/bases from that repo at the pinned commit below.
+#
+# Pinned to milo-os/locations 507ac2cbd48c0228f09baea64199882eca91e865, which is
+# the revision go.mod depends on. Update both together.
+resources:
+  - locations.miloapis.com_locations.yaml
+  - locations.miloapis.com_servinglocations.yaml

@@ -38,6 +38,10 @@ import (
 	"sigs.k8s.io/multicluster-runtime/pkg/manager/coordinator/sharded"
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 
+	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
+	ipamv1alpha1 "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
+	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
+
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	networkingv1alpha1 "go.datum.net/network-services-operator/api/v1alpha1"
 	"go.datum.net/network-services-operator/internal/cmd/clusterdiscovery"
@@ -47,8 +51,6 @@ import (
 	networkinggatewayv1webhooks "go.datum.net/network-services-operator/internal/webhook/v1"
 	networkingv1alphawebhooks "go.datum.net/network-services-operator/internal/webhook/v1alpha"
 	webhookgatewayv1alpha1 "go.datum.net/network-services-operator/internal/webhook/v1alpha1"
-	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
-	ipamv1alpha1 "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -64,6 +66,7 @@ func init() {
 	utilruntime.Must(config.AddToScheme(scheme))
 	utilruntime.Must(config.RegisterDefaults(scheme))
 	utilruntime.Must(networkingv1alpha.AddToScheme(scheme))
+	utilruntime.Must(locationsv1alpha1.AddToScheme(scheme))
 	utilruntime.Must(gatewayv1.Install(scheme))
 	utilruntime.Must(gatewayv1alpha2.Install(scheme))
 	utilruntime.Must(gatewayv1alpha3.Install(scheme))
@@ -718,63 +721,7 @@ func controllerRegistrations(
 				DownstreamCluster: deps.downstreamCluster,
 			}).SetupWithManager(deps.singletonManager)
 		}},
-		{"location_publisher", serverConfig.LocationPublisher.Enabled(), func() error {
-			return setupLocationPublisher(serverConfig, scheme, deps.singletonManager)
-		}},
 	}
-}
-
-// leaderElectedRunnable states a runnable's leader-election intent explicitly.
-type leaderElectedRunnable struct {
-	manager.Runnable
-	leaderElected bool
-}
-
-func (r leaderElectedRunnable) NeedLeaderElection() bool { return r.leaderElected }
-
-// setupLocationPublisher connects the publisher to the control plane it reads
-// Locations from and the federation hub it writes copies to. Both connections
-// run only on the leader.
-func setupLocationPublisher(
-	serverConfig config.NetworkServicesOperator,
-	scheme *runtime.Scheme,
-	mgr manager.Manager,
-) error {
-	sourceRestConfig, err := serverConfig.LocationPublisher.SourceRestConfig(&serverConfig.Discovery)
-	if err != nil {
-		return fmt.Errorf("unable to load the location source kubeconfig: %w", err)
-	}
-	hubRestConfig, err := serverConfig.LocationPublisher.HubRestConfig()
-	if err != nil {
-		return fmt.Errorf("unable to load the federation hub kubeconfig: %w", err)
-	}
-
-	sourceCluster, err := cluster.New(sourceRestConfig, func(o *cluster.Options) {
-		o.Scheme = scheme
-	})
-	if err != nil {
-		return fmt.Errorf("unable to construct the location source cluster: %w", err)
-	}
-
-	hubCluster, err := cluster.New(hubRestConfig, func(o *cluster.Options) {
-		o.Scheme = scheme
-		o.Client = client.Options{Cache: &client.CacheOptions{Unstructured: true}}
-	})
-	if err != nil {
-		return fmt.Errorf("unable to construct the federation hub cluster: %w", err)
-	}
-
-	for _, c := range []cluster.Cluster{sourceCluster, hubCluster} {
-		if err := mgr.Add(leaderElectedRunnable{Runnable: c, leaderElected: true}); err != nil {
-			return fmt.Errorf("unable to add a location publisher cluster: %w", err)
-		}
-	}
-
-	return (&controller.LocationPublisherReconciler{
-		Config:        serverConfig,
-		SourceCluster: sourceCluster,
-		HubCluster:    hubCluster,
-	}).SetupWithManager(mgr)
 }
 
 // setupControllers registers every controller belonging to an enabled set and

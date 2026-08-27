@@ -42,7 +42,10 @@ func TestConnectorEngagesClusterWithoutLeaseDiscovery(t *testing.T) {
 	defer cancel()
 
 	env := &envtest.Environment{
-		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "config", "crd", "bases")},
+		CRDDirectoryPaths: []string{
+			filepath.Join("..", "..", "config", "crd", "bases"),
+			filepath.Join("..", "..", "config", "crd", "locations"),
+		},
 		ErrorIfCRDPathMissing: true,
 	}
 	cfg, err := env.Start()

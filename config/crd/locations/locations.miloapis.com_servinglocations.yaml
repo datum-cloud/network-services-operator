@@ -4,9 +4,9 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.16.4
-  name: servinglocations.networking.datumapis.com
+  name: servinglocations.locations.miloapis.com
 spec:
-  group: networking.datumapis.com
+  group: locations.miloapis.com
   names:
     kind: ServingLocation
     listKind: ServingLocationList
@@ -27,7 +27,7 @@ spec:
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
-    name: v1alpha
+    name: v1alpha1
     schema:
       openAPIV3Schema:
         description: |-

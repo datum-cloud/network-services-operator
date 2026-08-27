@@ -17,6 +17,8 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
+
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	"go.datum.net/network-services-operator/internal/downstreamclient"
 )
@@ -55,9 +57,9 @@ type presenceScenario struct {
 type presenceOptions struct {
 	// unlabelledNamespace leaves the hub namespace naming no project.
 	unlabelledNamespace bool
-	// withoutLocationBinding skips the LocationBinding the project needs to use
-	// the location.
-	withoutLocationBinding bool
+	// withoutProjectedLocation skips the Location the project needs projected
+	// into it before it can use the location.
+	withoutProjectedLocation bool
 	// withoutNetwork skips creating the Network in the project.
 	withoutNetwork bool
 	// families overrides the network's address families.
@@ -102,13 +104,10 @@ func newPresenceScenario(t *testing.T, opts presenceOptions) *presenceScenario {
 	projectNamespace.Name = s.projectNamespace
 	require.NoError(t, cl.Create(ctx, projectNamespace))
 
-	if !opts.withoutLocationBinding {
-		locationBinding := &networkingv1alpha.LocationBinding{}
-		locationBinding.Name = s.locationName
-		locationBinding.Spec.LocationRef = corev1.LocalObjectReference{Name: s.locationName}
-		locationBinding.Spec.LocationClassName = "datum-managed"
-		require.NoError(t, cl.Create(ctx, locationBinding))
-		t.Cleanup(func() { _ = cl.Delete(ctx, locationBinding) })
+	if !opts.withoutProjectedLocation {
+		location := projectedLocation(s.locationName)
+		require.NoError(t, cl.Create(ctx, location))
+		t.Cleanup(func() { _ = cl.Delete(ctx, location) })
 	}
 
 	if !opts.withoutNetwork {
@@ -142,7 +141,7 @@ func newPresenceScenario(t *testing.T, opts presenceOptions) *presenceScenario {
 
 // contextName is the deterministic name every binding for the pair resolves to.
 func (s *presenceScenario) contextName() string {
-	return networkContextName(s.networkName, networkingv1alpha.LocationReference{
+	return networkContextName(s.networkName, locationsv1alpha1.LocationReference{
 		Name: s.locationName,
 	})
 }
@@ -165,7 +164,7 @@ func (s *presenceScenario) createBinding(name string) *networkingv1alpha.Network
 		networkingv1alpha.LocationLabel: s.locationName,
 	}
 	binding.Spec.Network = networkingv1alpha.NetworkRef{Name: s.networkName}
-	binding.Spec.Location = networkingv1alpha.LocationReference{Name: s.locationName}
+	binding.Spec.Location = locationsv1alpha1.LocationReference{Name: s.locationName}
 	binding.Spec.Consumer = &networkingv1alpha.NetworkBindingConsumer{
 		APIGroup: "networking.datumapis.com",
 		Kind:     "LoadBalancer",
@@ -336,7 +335,7 @@ func TestNetworkPresenceReportsAReadinessRegression(t *testing.T) {
 // A location the project cannot use reads as a network problem rather than as a
 // consumer that never becomes ready.
 func TestNetworkPresenceRefusesALocationTheProjectCannotUse(t *testing.T) {
-	s := newPresenceScenario(t, presenceOptions{withoutLocationBinding: true})
+	s := newPresenceScenario(t, presenceOptions{withoutProjectedLocation: true})
 	s.createBinding("consumer-a")
 	s.reconcile()
 
@@ -351,19 +350,16 @@ func TestNetworkPresenceRefusesALocationTheProjectCannotUse(t *testing.T) {
 // requeue a binding refused for an unavailable location would stay refused
 // after the platform enabled it.
 func TestNetworkPresenceRetriesARefusal(t *testing.T) {
-	s := newPresenceScenario(t, presenceOptions{withoutLocationBinding: true})
+	s := newPresenceScenario(t, presenceOptions{withoutProjectedLocation: true})
 	s.createBinding("consumer-a")
 
 	result, err := s.reconciler.Reconcile(s.ctx, s.request())
 	require.NoError(t, err)
 	require.Equal(t, refusedPresenceRetryInterval, result.RequeueAfter)
 
-	locationBinding := &networkingv1alpha.LocationBinding{}
-	locationBinding.Name = s.locationName
-	locationBinding.Spec.LocationRef = corev1.LocalObjectReference{Name: s.locationName}
-	locationBinding.Spec.LocationClassName = "datum-managed"
-	require.NoError(t, s.hub.Create(s.ctx, locationBinding))
-	t.Cleanup(func() { _ = s.hub.Delete(s.ctx, locationBinding) })
+	location := projectedLocation(s.locationName)
+	require.NoError(t, s.hub.Create(s.ctx, location))
+	t.Cleanup(func() { _ = s.hub.Delete(s.ctx, location) })
 
 	result, err = s.reconciler.Reconcile(s.ctx, s.request())
 	require.NoError(t, err)
@@ -416,7 +412,7 @@ func TestNetworkPresenceLeavesProjectPlaneBindingsAlone(t *testing.T) {
 	binding.Namespace = plain.Name
 	binding.Name = "project-plane-binding"
 	binding.Spec.Network = networkingv1alpha.NetworkRef{Name: s.networkName}
-	binding.Spec.Location = networkingv1alpha.LocationReference{Name: s.locationName}
+	binding.Spec.Location = locationsv1alpha1.LocationReference{Name: s.locationName}
 	require.NoError(t, s.hub.Create(s.ctx, binding))
 
 	_, err := s.reconciler.Reconcile(s.ctx, ctrl.Request{NamespacedName: client.ObjectKey{
@@ -448,7 +444,7 @@ func TestNetworkPresenceLeavesTheReplicatedHubCopyAlone(t *testing.T) {
 		networkingv1alpha.NetworkUIDLabel: "9a4c-whatever",
 	}
 	replicated.Spec.Network = networkingv1alpha.LocalNetworkRef{Name: s.networkName}
-	replicated.Spec.Location = networkingv1alpha.LocationReference{Name: s.locationName}
+	replicated.Spec.Location = locationsv1alpha1.LocationReference{Name: s.locationName}
 	replicated.Spec.IPFamilies = []networkingv1alpha.IPFamily{networkingv1alpha.IPv4Protocol}
 	replicated.Spec.MTU = 1460
 	require.NoError(t, s.hub.Create(s.ctx, replicated))
@@ -759,4 +755,14 @@ func TestNetworkPresenceIsTornDownOnceTheGraceExpires(t *testing.T) {
 
 	_, ok = s.networkContext()
 	require.False(t, ok, "nothing has declared this presence for longer than the wait")
+}
+
+func projectedLocation(name string) *locationsv1alpha1.Location {
+	location := &locationsv1alpha1.Location{}
+	location.Name = name
+	location.Spec = locationsv1alpha1.LocationSpec{
+		LocationClassRef: locationsv1alpha1.LocationClassReference{Name: "datum-managed"},
+		Topology:         map[string]string{locationsv1alpha1.TopologyCityCodeKey: "IAD"},
+	}
+	return location
 }

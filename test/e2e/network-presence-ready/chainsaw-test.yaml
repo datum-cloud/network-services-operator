@@ -34,14 +34,15 @@ spec:
                   meta.datumapis.com/upstream-namespace: presence-ready-project
         - apply:
             resource:
-              apiVersion: networking.datumapis.com/v1alpha
-              kind: LocationBinding
+              apiVersion: locations.miloapis.com/v1alpha1
+              kind: Location
               metadata:
                 name: presence-ready-loc
               spec:
-                locationRef:
-                  name: presence-ready-loc
-                locationClassName: datum-managed
+                locationClassRef:
+                  name: datum-managed
+                topology:
+                  topology.datum.net/city-code: IAD
         - apply:
             resource:
               apiVersion: networking.datumapis.com/v1alpha

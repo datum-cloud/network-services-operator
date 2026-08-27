@@ -26,6 +26,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
+	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
+
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	"go.datum.net/network-services-operator/internal/config"
 	"go.datum.net/network-services-operator/internal/downstreamclient"
@@ -85,11 +87,17 @@ var planes = sync.OnceValues(func() ([]client.Client, error) {
 	if err := networkingv1alpha.AddToScheme(testScheme); err != nil {
 		return nil, err
 	}
+	if err := locationsv1alpha1.AddToScheme(testScheme); err != nil {
+		return nil, err
+	}
 
 	clients := make([]client.Client, 0, 2)
 	for range 2 {
 		env := &envtest.Environment{
-			CRDDirectoryPaths:     []string{filepath.Join("..", "..", "config", "crd", "bases")},
+			CRDDirectoryPaths: []string{
+				filepath.Join("..", "..", "config", "crd", "bases"),
+				filepath.Join("..", "..", "config", "crd", "locations"),
+			},
 			ErrorIfCRDPathMissing: true,
 		}
 		cfg, err := env.Start()

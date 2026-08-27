@@ -4,9 +4,9 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.16.4
-  name: locations.networking.datumapis.com
+  name: locations.locations.miloapis.com
 spec:
-  group: networking.datumapis.com
+  group: locations.miloapis.com
   names:
     kind: Location
     listKind: LocationList
@@ -15,7 +15,7 @@ spec:
   scope: Cluster
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .spec.locationClassName
+    - jsonPath: .spec.locationClassRef.name
       name: Class
       type: string
     - jsonPath: .spec.topology.topology\.datum\.net/city-code
@@ -30,10 +30,27 @@ spec:
     - jsonPath: .status.conditions[?(@.type=='Ready')].reason
       name: Reason
       type: string
-    name: v1alpha
+    name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: Location is the Schema for the locations API.
+        description: |-
+          Location is a place the platform serves traffic or runs workloads from,
+          typically a city rather than a cloud vendor's region.
+
+          Every Location names a LocationClass, and where that class lives tells you
+          whose capacity is behind the location. A class in the provider's control
+          plane is the provider's own footprint, offered to you: the provider owns the
+          capacity and operates it. A class in your control plane is capacity you
+          brought, such as your own cloud account, and you operate it. Either way the
+          controller named on the class is the one that acts, so nothing about the
+          location has to restate who runs it.
+
+          Locations the provider offers are declared once on the platform control
+          plane and projected into your project's control plane, and onto each cell as
+          a ServingLocation telling it where it sits. A projected Location is the
+          statement that the location is offered to you; edit the platform copy, not
+          the projection. Locations you declare yourself, on your own class, are yours
+          to edit.
         properties:
           apiVersion:
             description: |-
@@ -79,35 +96,40 @@ spec:
                 - latitude
                 - longitude
                 type: object
-              locationClassName:
-                description: "The location class that indicates control plane behavior
-                  of entities\nassociated with the location.\n\nValid values are:\n\t-
-                  datum-managed\n\t- self-managed"
-                type: string
-              provider:
-                description: The location provider
-                properties:
-                  gcp:
-                    properties:
-                      projectId:
-                        description: |-
-                          The GCP project servicing the location
+              locationClassRef:
+                description: |-
+                  LocationClassRef names the LocationClass backing this location. The class
+                  decides which controller brings the location up and what capacity sits
+                  behind it.
 
-                          For locations with the class of `datum-managed`, a service account will be
-                          required for each unique GCP project ID across all locations registered in a
-                          namespace.
-                        type: string
-                      region:
-                        description: The GCP region servicing the location
-                        type: string
-                      zone:
-                        description: The GCP zone servicing the location
-                        type: string
-                    required:
-                    - projectId
-                    - region
-                    - zone
-                    type: object
+                  Leave the project qualifier empty to name a class in the same control
+                  plane as this Location. Set it to name a class in the provider's control
+                  plane, which is what you do to place a location on capacity the provider
+                  operates.
+
+                  The class must exist and report Accepted=True before the location becomes
+                  Ready. Naming a class that does not exist leaves the location not Ready
+                  rather than rejecting it, so a location can be declared ahead of the
+                  class that will serve it.
+                properties:
+                  name:
+                    description: Name is the name of the LocationClass.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                  project:
+                    description: |-
+                      Project names the project whose control plane holds the class. Leave it
+                      unset, or empty, for a class that lives alongside this Location.
+
+                      Set it when you are consuming capacity somebody else operates: the class
+                      stays in their control plane, where they own it, and your Location points
+                      across at it. You do not get a copy of the class, and you cannot change
+                      what it offers.
+                    maxLength: 253
+                    type: string
+                required:
+                - name
                 type: object
               topology:
                 additionalProperties:
@@ -116,8 +138,7 @@ spec:
                   topology keys. Some keys may be well known, such\nas:\n\t- topology.datum.net/city-code"
                 type: object
             required:
-            - locationClassName
-            - provider
+            - locationClassRef
             - topology
             type: object
           status:
@@ -182,6 +203,10 @@ spec:
                 type: array
             type: object
         type: object
+        x-kubernetes-validations:
+        - message: name must be at most 63 characters, because it is published as
+            a label value
+          rule: size(self.metadata.name) <= 63
     served: true
     storage: true
     subresources:

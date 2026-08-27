@@ -262,7 +262,7 @@ func (r *NetworkInterfaceClaimReconciler) resolveProject(
 
 func resolveProjectRouting(
 	ctx context.Context,
-	cl client.Client,
+	cl client.Reader,
 	namespaceName string,
 ) (projectRouting, error) {
 	var namespace corev1.Namespace
@@ -294,7 +294,7 @@ func resolveProjectRouting(
 // names.
 func resolveProjectOrCluster(
 	ctx context.Context,
-	cl client.Client,
+	cl client.Reader,
 	namespaceName string,
 ) (projectRouting, error) {
 	routing, err := resolveProjectRouting(ctx, cl, namespaceName)

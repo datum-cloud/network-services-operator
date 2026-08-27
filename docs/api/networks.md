@@ -185,6 +185,33 @@ NetworkStatus defines the observed state of Network
         </td>
         <td>false</td>
       </tr><tr>
+        <td><b>fabricIdentity</b></td>
+        <td>integer</td>
+        <td>
+          FabricIdentity is the identity the fabric knows this network by,
+allocated once, platform-wide, and the same in every location the network
+reaches. What consumes it derives the network's BGP Route Target from it,
+which is what makes two locations of one network import each other's
+routes rather than behave as two networks that share a name.
+
+It is an integer rather than an encoded string because the consumer
+builds `ASN:<identity>`, and it is 32 bits wide because that is what
+survives into the Route Target. A wider value would be uniqueness the
+platform believes it has and the fabric does not.
+
+Zero means unallocated, so an unset field and a real allocation never
+read alike. Once set it never changes: the fabric embeds it in import
+policy in every location the network reaches, so a network that changed
+identity would be a different network to everything already carrying its
+traffic.<br/>
+          <br/>
+            <i>Validations</i>:<li>oldSelf == 0 || self == oldSelf: fabricIdentity is immutable once allocated</li>
+            <i>Format</i>: int64<br/>
+            <i>Minimum</i>: 0<br/>
+            <i>Maximum</i>: 4.294967295e+09<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
         <td><b><a href="#networkstatusipam">ipam</a></b></td>
         <td>object</td>
         <td>

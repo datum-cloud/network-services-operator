@@ -44,6 +44,15 @@ type NetworkReconciler struct {
 	// addressed from. Empty means the same as a nil IPAM: nothing is claimed.
 	PrefixClass string
 
+	// FabricIdentityClass is the IPClass that hands out the identity the fabric
+	// knows a network by. Empty means the same as a nil IPAM: no identity is
+	// allocated and a network is reconciled exactly as it was before.
+	FabricIdentityClass string
+
+	// FabricIdentityNamespace is the namespace in the platform's own tenancy
+	// that identity claims are written to.
+	FabricIdentityNamespace string
+
 	mgr        mcmanager.Manager
 	finalizers finalizer.Finalizers
 }
@@ -129,7 +138,27 @@ func (r *NetworkReconciler) reconcileNetwork(
 		return ctrl.Result{}, nil
 	}
 
-	return r.reconcilePrefix(ctx, cl, network)
+	// The identity comes first and is independent of the address space. A
+	// network that claims no addresses still spans locations, and the fabric
+	// still has to know it as one network there.
+	identityChanged, retryIdentity, err := r.reconcileFabricIdentity(ctx, cl, network)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if identityChanged {
+		if retryIdentity {
+			return ctrl.Result{RequeueAfter: rejectedClaimRetryInterval}, nil
+		}
+		// The status write wakes the controller again, and the next pass
+		// reconciles the address space against what was just recorded.
+		return ctrl.Result{}, nil
+	}
+
+	result, err := r.reconcilePrefix(ctx, cl, network)
+	if err == nil && retryIdentity && result.RequeueAfter == 0 {
+		result.RequeueAfter = rejectedClaimRetryInterval
+	}
+	return result, err
 }
 
 // reconcilePrefix claims the network's IPv6 address space when the network is
@@ -326,6 +355,18 @@ func setNetworkReady(network *networkingv1alpha.Network, message string) bool {
 			ready.Status = allocated.Status
 			ready.Reason = allocated.Reason
 		}
+	}
+
+	// A deployment that allocates no identity records no condition for one, so
+	// its networks read exactly as they did before. Where one is recorded and
+	// is not held, the network is not ready: it would reach a location the
+	// fabric cannot tell apart from another network.
+	if identity := apimeta.FindStatusCondition(
+		network.Status.Conditions, networkingv1alpha.NetworkFabricIdentityAllocated,
+	); identity != nil && identity.Status != metav1.ConditionTrue && ready.Status == metav1.ConditionTrue {
+		ready.Status = identity.Status
+		ready.Reason = identity.Reason
+		ready.Message = identity.Message
 	}
 
 	return apimeta.SetStatusCondition(&network.Status.Conditions, ready)

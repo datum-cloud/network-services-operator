@@ -173,6 +173,47 @@ type IPAMConfig struct {
 
 	// Classes names the IPClasses this operator asks IPAM for.
 	Classes IPAMClasses `json:"classes,omitempty"`
+
+	// Platform is the tenancy the operator allocates platform-owned values in,
+	// as opposed to the ones it allocates on a consumer's behalf inside their
+	// own project.
+	//
+	// Left unset, nothing platform-scoped is allocated and every network is
+	// reconciled exactly as it was before.
+	Platform PlatformTenancy `json:"platform,omitempty"`
+}
+
+// +k8s:deepcopy-gen=true
+
+// PlatformTenancy is where the platform allocates the things it owns rather
+// than the things a consumer owns.
+//
+// A network's fabric identity has to be unique across every network on the
+// platform, so it cannot be drawn from the consumer's own space: uniqueness per
+// project is not uniqueness. It also must not be gated on that consumer
+// enabling the address service, and must not draw on their quota, because they
+// never asked for it and cannot see it.
+//
+// IPAM has no platform tenancy of its own yet, so this names a project control
+// plane the platform owns and every network's identity is allocated there. That
+// gives one pool and one allocator for the whole platform, which is what the
+// uniqueness actually rests on. When IPAM grows a real platform scope, only the
+// client factory changes.
+type PlatformTenancy struct {
+	// Project is the control plane platform-owned allocations are addressed at.
+	// Unset means no platform-scoped allocation is made at all.
+	Project string `json:"project,omitempty"`
+
+	// Namespace is the namespace inside that control plane the claims are
+	// written to. Defaults to "default", which is the namespace a project
+	// control plane is provisioned with.
+	Namespace string `json:"namespace,omitempty"`
+}
+
+func SetDefaults_PlatformTenancy(obj *PlatformTenancy) {
+	if obj.Namespace == "" {
+		obj.Namespace = "default"
+	}
 }
 
 // +k8s:deepcopy-gen=true
@@ -190,6 +231,18 @@ type IPAMClasses struct {
 	// subnet class's own chain, which IPAM resolves, so naming it would be
 	// restating something the service already knows.
 	Network string `json:"network,omitempty"`
+
+	// FabricIdentity is the class that hands out a network's fabric identity.
+	// Unset, no identity is allocated and a network is reconciled with none,
+	// the same as an unset IPAM connection.
+	//
+	// The class is an identifier space and not addressing. It roots a /32 that
+	// is never routed and never reachable, and hands out /64s from it, so the
+	// 32 bits between the two are the block's index and the identity is that
+	// index. The pool must not hand out its own zero block: zero is what an
+	// unallocated network reads as, so a network given it would be
+	// indistinguishable from one given nothing.
+	FabricIdentity string `json:"fabricIdentity,omitempty"`
 
 	// Subnet is the class that hands out the range a network is addressed from
 	// in one location. Unset, no subnet is claimed and a network context is

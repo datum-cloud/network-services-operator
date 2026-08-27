@@ -100,6 +100,26 @@ NetworkContextSpec defines the desired state of NetworkContext
         </td>
         <td>true</td>
       </tr><tr>
+        <td><b>fabricIdentity</b></td>
+        <td>integer</td>
+        <td>
+          FabricIdentity is the network's fabric identity, projected from the
+Network's status. This is where a location reads it: cells cannot reach
+project control planes, and propagation to them carries spec and not
+status.
+
+Zero means the identity has not been projected here yet, either because
+the network does not have one or because this location has not caught up
+with the allocation. A reader that finds it unset must wait rather than
+choose an identity of its own, which is what every location does today
+and is the reason one network is two on the fabric.<br/>
+          <br/>
+            <i>Format</i>: int64<br/>
+            <i>Minimum</i>: 0<br/>
+            <i>Maximum</i>: 4.294967295e+09<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
         <td><b>ipFamilies</b></td>
         <td>[]enum</td>
         <td>
@@ -128,7 +148,12 @@ the same as a network that carries nothing.<br/>
         <td>integer</td>
         <td>
           The Network generation the projected fields were read from, so an operator
-comparing this to the Network can tell whether this location has caught up.<br/>
+comparing this to the Network can tell whether this location has caught up.
+
+The identity is allocated into the Network's status, so it lands without
+advancing that generation. This still answers whether the location has
+caught up with the network's spec; whether it has caught up with the
+allocation is answered by the identity being present.<br/>
           <br/>
             <i>Format</i>: int64<br/>
         </td>

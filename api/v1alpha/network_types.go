@@ -98,6 +98,32 @@ const (
 	NetworkReasonRangeUnsupported = "RangeUnsupported"
 )
 
+const (
+	// NetworkFabricIdentityAllocated reports whether the network holds the
+	// identity the fabric knows it by. The type is bare because the fabric
+	// reads this condition as the answer to "does this network have an
+	// identity", not as one allocation among several.
+	NetworkFabricIdentityAllocated = "Allocated"
+
+	// NetworkFabricIdentityReasonAllocated means the network holds an identity.
+	NetworkFabricIdentityReasonAllocated = "Allocated"
+
+	// NetworkFabricIdentityReasonPending means nothing has been allocated yet
+	// and the reason is not yet one of the ones below.
+	NetworkFabricIdentityReasonPending = "Pending"
+
+	// NetworkFabricIdentityReasonIdentitySpaceUnavailable means the identity
+	// space did not answer, so the network has no identity to carry. It is
+	// retried.
+	NetworkFabricIdentityReasonIdentitySpaceUnavailable = "IdentitySpaceUnavailable"
+
+	// NetworkFabricIdentityReasonIdentityUnusable means the identity space
+	// answered with a block the identifier cannot be read out of. Handing out
+	// the zero block is the case an operator hits first: zero is what an
+	// unallocated network reads as, so it can never be an allocation.
+	NetworkFabricIdentityReasonIdentityUnusable = "IdentityUnusable"
+)
+
 // NetworkStatus defines the observed state of Network
 type NetworkStatus struct {
 	// Represents the observations of a network's current state.
@@ -107,6 +133,29 @@ type NetworkStatus struct {
 	//
 	// +kubebuilder:validation:Optional
 	IPAM *NetworkIPAMStatus `json:"ipam,omitempty"`
+
+	// FabricIdentity is the identity the fabric knows this network by,
+	// allocated once, platform-wide, and the same in every location the network
+	// reaches. What consumes it derives the network's BGP Route Target from it,
+	// which is what makes two locations of one network import each other's
+	// routes rather than behave as two networks that share a name.
+	//
+	// It is an integer rather than an encoded string because the consumer
+	// builds `ASN:<identity>`, and it is 32 bits wide because that is what
+	// survives into the Route Target. A wider value would be uniqueness the
+	// platform believes it has and the fabric does not.
+	//
+	// Zero means unallocated, so an unset field and a real allocation never
+	// read alike. Once set it never changes: the fabric embeds it in import
+	// policy in every location the network reaches, so a network that changed
+	// identity would be a different network to everything already carrying its
+	// traffic.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=4294967295
+	// +kubebuilder:validation:XValidation:rule="oldSelf == 0 || self == oldSelf",message="fabricIdentity is immutable once allocated"
+	FabricIdentity int64 `json:"fabricIdentity,omitempty"`
 }
 
 // NetworkIPAMStatus reports what IPAM holds for a network.
@@ -159,6 +208,7 @@ type NetworkPrefixRef struct {
 // +kubebuilder:printcolumn:name="IPFamilies",type="string",JSONPath=".spec.ipFamilies",priority=1
 // +kubebuilder:printcolumn:name="IPAM",type="string",JSONPath=".spec.ipam.mode",priority=1
 // +kubebuilder:printcolumn:name="MTU",type="integer",JSONPath=".spec.mtu",priority=1
+// +kubebuilder:printcolumn:name="FabricIdentity",type="integer",JSONPath=".status.fabricIdentity",priority=1
 
 // Network is the Schema for the networks API
 type Network struct {

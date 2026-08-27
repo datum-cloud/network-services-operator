@@ -566,6 +566,15 @@ func newIPAMClientFactory(ipamConfig config.IPAMConfig) (controller.IPAMClientFa
 		return nil, nil
 	}
 
+	// A network's identity has to be unique across every network on the
+	// platform, so a deployment that names an identifier space and nowhere
+	// platform-owned to allocate it in would hand out identities unique only
+	// within one consumer, which is not unique at all. Say so at startup rather
+	// than per network.
+	if ipamConfig.Classes.FabricIdentity != "" && ipamConfig.Platform.Project == "" {
+		return nil, fmt.Errorf("ipam.classes.fabricIdentity names an identifier space, but ipam.platform.project names nowhere platform-owned to allocate from")
+	}
+
 	restConfig, err := ipamConfig.RestConfig()
 	if err != nil {
 		return nil, fmt.Errorf("unable to load IPAM kubeconfig: %w", err)
@@ -576,7 +585,7 @@ func newIPAMClientFactory(ipamConfig config.IPAMConfig) (controller.IPAMClientFa
 		return nil, fmt.Errorf("unable to build IPAM scheme: %w", err)
 	}
 
-	return controller.NewIPAMClientFactory(restConfig, ipamScheme)
+	return controller.NewIPAMClientFactory(restConfig, ipamScheme, ipamConfig.Platform.Project)
 }
 
 // controllerRegistrations lists every controller and the set it belongs to.
@@ -593,8 +602,10 @@ func controllerRegistrations(
 	return []namedSetup{
 		{"network", true, func() error {
 			return (&controller.NetworkReconciler{
-				IPAM:        deps.ipamClients,
-				PrefixClass: serverConfig.IPAM.Classes.Network,
+				IPAM:                    deps.ipamClients,
+				PrefixClass:             serverConfig.IPAM.Classes.Network,
+				FabricIdentityClass:     serverConfig.IPAM.Classes.FabricIdentity,
+				FabricIdentityNamespace: serverConfig.IPAM.Platform.Namespace,
 			}).SetupWithManager(mgr)
 		}},
 		{"networkbinding", true, func() error {

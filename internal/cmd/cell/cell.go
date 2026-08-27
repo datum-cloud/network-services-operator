@@ -330,7 +330,10 @@ func newIPAMClientFactory(serverConfig config.CellControllerManager) (controller
 		return nil, fmt.Errorf("unable to build IPAM scheme: %w", err)
 	}
 
-	ipamClients, err := controller.NewIPAMClientFactory(ipamRestConfig, ipamScheme)
+	ipamClients, err := controller.NewIPAMClientFactory(ipamRestConfig, ipamScheme,
+		// A cell allocates only on a consumer's behalf, inside their own
+		// project. Nothing platform-scoped is allocated here.
+		"")
 	if err != nil {
 		return nil, fmt.Errorf("unable to build IPAM client factory: %w", err)
 	}

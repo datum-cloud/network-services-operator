@@ -760,3 +760,70 @@ func TestNetworkPresenceIsTornDownOnceTheGraceExpires(t *testing.T) {
 	_, ok = s.networkContext()
 	require.False(t, ok, "nothing has declared this presence for longer than the wait")
 }
+
+// The identity is allocated into the network's status, and a location reads it
+// out of the context's spec. Nothing else carries it there: cells cannot reach
+// project control planes, and propagation to them strips status.
+func TestNetworkPresenceProjectsTheFabricIdentity(t *testing.T) {
+	s := newPresenceScenario(t, presenceOptions{})
+	s.createBinding("consumer-a")
+	s.reconcile()
+
+	networkContext, ok := s.networkContext()
+	require.True(t, ok)
+	require.Zero(t, networkContext.Spec.FabricIdentity,
+		"a network holding no identity projects none")
+
+	s.network.Status.FabricIdentity = 0x12345678
+	require.NoError(t, s.hub.Status().Update(s.ctx, s.network))
+
+	s.reconcile()
+
+	networkContext, ok = s.networkContext()
+	require.True(t, ok)
+	require.Equal(t, int64(0x12345678), networkContext.Spec.FabricIdentity,
+		"the location must read the same identity every other location reads")
+}
+
+// Every location of one network reads the same identity. That is the whole
+// point: two locations that chose their own are two networks on the fabric.
+func TestNetworkPresenceProjectsTheSameIdentityIntoEveryLocation(t *testing.T) {
+	s := newPresenceScenario(t, presenceOptions{})
+
+	s.network.Status.FabricIdentity = 4242
+	require.NoError(t, s.hub.Status().Update(s.ctx, s.network))
+
+	s.createBinding("consumer-a")
+	s.createBinding("consumer-b")
+	s.reconcile()
+
+	networkContext, ok := s.networkContext()
+	require.True(t, ok)
+	require.Equal(t, int64(4242), networkContext.Spec.FabricIdentity)
+
+	other := s.inLocation(s.locationName + "-east")
+	other.createBinding("consumer-c")
+	other.reconcile()
+
+	otherContext, ok := other.networkContext()
+	require.True(t, ok)
+	require.Equal(t, networkContext.Spec.FabricIdentity, otherContext.Spec.FabricIdentity)
+}
+
+// inLocation is the same network in a second location, which is the case the
+// per-location identifier fails at: the network is one network and the fabric
+// has to agree.
+func (s *presenceScenario) inLocation(location string) *presenceScenario {
+	s.t.Helper()
+
+	locationBinding := &networkingv1alpha.LocationBinding{}
+	locationBinding.Name = location
+	locationBinding.Spec.LocationRef = corev1.LocalObjectReference{Name: location}
+	locationBinding.Spec.LocationClassName = "datum-managed"
+	require.NoError(s.t, s.hub.Create(s.ctx, locationBinding))
+	s.t.Cleanup(func() { _ = s.hub.Delete(s.ctx, locationBinding) })
+
+	other := *s
+	other.locationName = location
+	return &other
+}

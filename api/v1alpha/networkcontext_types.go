@@ -36,8 +36,29 @@ type NetworkContextSpec struct {
 	// +kubebuilder:validation:Maximum=8856
 	MTU int32 `json:"mtu,omitempty"`
 
+	// FabricIdentity is the network's fabric identity, projected from the
+	// Network's status. This is where a location reads it: cells cannot reach
+	// project control planes, and propagation to them carries spec and not
+	// status.
+	//
+	// Zero means the identity has not been projected here yet, either because
+	// the network does not have one or because this location has not caught up
+	// with the allocation. A reader that finds it unset must wait rather than
+	// choose an identity of its own, which is what every location does today
+	// and is the reason one network is two on the fabric.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=4294967295
+	FabricIdentity int64 `json:"fabricIdentity,omitempty"`
+
 	// The Network generation the projected fields were read from, so an operator
 	// comparing this to the Network can tell whether this location has caught up.
+	//
+	// The identity is allocated into the Network's status, so it lands without
+	// advancing that generation. This still answers whether the location has
+	// caught up with the network's spec; whether it has caught up with the
+	// allocation is answered by the identity being present.
 	//
 	// +kubebuilder:validation:Optional
 	NetworkGeneration int64 `json:"networkGeneration,omitempty"`

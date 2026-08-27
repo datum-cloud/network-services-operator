@@ -39,6 +39,10 @@ spec:
       name: MTU
       priority: 1
       type: integer
+    - jsonPath: .status.fabricIdentity
+      name: FabricIdentity
+      priority: 1
+      type: integer
     name: v1alpha
     schema:
       openAPIV3Schema:
@@ -171,6 +175,31 @@ spec:
                   - type
                   type: object
                 type: array
+              fabricIdentity:
+                description: |-
+                  FabricIdentity is the identity the fabric knows this network by,
+                  allocated once, platform-wide, and the same in every location the network
+                  reaches. What consumes it derives the network's BGP Route Target from it,
+                  which is what makes two locations of one network import each other's
+                  routes rather than behave as two networks that share a name.
+
+                  It is an integer rather than an encoded string because the consumer
+                  builds `ASN:<identity>`, and it is 32 bits wide because that is what
+                  survives into the Route Target. A wider value would be uniqueness the
+                  platform believes it has and the fabric does not.
+
+                  Zero means unallocated, so an unset field and a real allocation never
+                  read alike. Once set it never changes: the fabric embeds it in import
+                  policy in every location the network reaches, so a network that changed
+                  identity would be a different network to everything already carrying its
+                  traffic.
+                format: int64
+                maximum: 4294967295
+                minimum: 0
+                type: integer
+                x-kubernetes-validations:
+                - message: fabricIdentity is immutable once allocated
+                  rule: oldSelf == 0 || self == oldSelf
               ipam:
                 description: IPAM reports the address space IPAM holds for this network.
                 properties:

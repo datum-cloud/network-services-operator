@@ -52,6 +52,11 @@ const (
 	testLocationName  = "us-central-1"
 	testLocationNS    = "datum-locations"
 	testPublicV4Class = "datum-public-v4"
+
+	// The platform's own tenancy, where what it allocates for every consumer is
+	// allocated rather than inside any one of them.
+	testPlatformProject   = "platform"
+	testPlatformNamespace = "default"
 )
 
 // fakeIPAM stands in for the IPAM API server. Allocation is synchronous there,
@@ -95,10 +100,15 @@ type fakeIPAM struct {
 	// claim for the same network reads the same range back.
 	prefixRanges map[string]string
 
-	nextV4     int
-	nextV6     int
-	nextPrefix int
-	nextSubnet int
+	nextV4       int
+	nextV6       int
+	nextPrefix   int
+	nextSubnet   int
+	nextIdentity int
+
+	// identityBase is the index the identifier pool starts handing out at. Zero
+	// stands in for a pool that was not told to hold its first block back.
+	identityBase int
 }
 
 func newFakeIPAM(t *testing.T, classes ...*ipamv1alpha1.IPClass) *fakeIPAM {
@@ -117,7 +127,16 @@ func newFakeIPAM(t *testing.T, classes ...*ipamv1alpha1.IPClass) *fakeIPAM {
 		failOn:           map[string]error{},
 		failReleaseOn:    map[string]error{},
 		prefixRanges:     map[string]string{},
+
+		// A correctly provisioned identifier pool holds its own first block
+		// back, because a network handed index zero reads as one holding no
+		// identity at all.
+		identityBase: 1,
 	}
+}
+
+func (f *fakeIPAM) ClientForPlatform() (client.Client, error) {
+	return f.ClientForProject(testPlatformProject)
 }
 
 func (f *fakeIPAM) ClientForProject(project string) (client.Client, error) {
@@ -269,6 +288,17 @@ func (f *fakeIPAM) allocateLocked(project string, ipClaim *ipamv1alpha1.IPClaim)
 	// The real server writes only allocatedCIDR, host prefixes included, and
 	// never status.address.
 	ipClaim.Status.Phase = ipamv1alpha1.ClaimBound
+	if ipClaim.Spec.PrefixLength != nil {
+		// A claim naming a block size gets a block of it, carved out of a pool
+		// rooted at a /32. Only the identifier space asks for one.
+		index := f.identityBase + f.nextIdentity
+		f.nextIdentity++
+		ipClaim.Status.AllocatedCIDR = fmt.Sprintf("fc00:0:%x:%x::/%d",
+			index>>16, index&0xffff, *ipClaim.Spec.PrefixLength)
+		ipClaim.Status.PoolRef = &ipamv1alpha1.LocalRef{Name: "pool-" + project}
+		ipClaim.Status.BoundAllocationRef = &ipamv1alpha1.LocalRef{Name: allocationNameFor(ipClaim.Name)}
+		return
+	}
 	if family == ipamv1alpha1.IPv6 {
 		f.nextV6++
 		ipClaim.Status.AllocatedCIDR = fmt.Sprintf("2001:db8:a000:%d::/96", f.nextV6)

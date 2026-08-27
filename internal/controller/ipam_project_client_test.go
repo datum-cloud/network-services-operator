@@ -18,7 +18,7 @@ func newTestIPAMClientFactory(t *testing.T, host string) *projectPathIPAMClientF
 		t.Fatalf("building the IPAM scheme: %v", err)
 	}
 
-	f, err := NewIPAMClientFactory(&rest.Config{Host: host}, scheme)
+	f, err := NewIPAMClientFactory(&rest.Config{Host: host}, scheme, testPlatformProject)
 	if err != nil {
 		t.Fatalf("building the factory: %v", err)
 	}

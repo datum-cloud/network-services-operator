@@ -429,6 +429,13 @@ func (r *NetworkPresenceReconciler) project(
 		networkContext.Spec.Location = pair.Location
 		networkContext.Spec.IPFamilies = append([]networkingv1alpha.IPFamily(nil), network.Spec.IPFamilies...)
 		networkContext.Spec.MTU = network.Spec.MTU
+
+		// Projected from status rather than spec, because that is where it is
+		// allocated. A network without one projects zero, which is what every
+		// context written before the identity existed already reads as, so a
+		// location that has not been given one behaves exactly as it does today.
+		networkContext.Spec.FabricIdentity = network.Status.FabricIdentity
+
 		networkContext.Spec.NetworkGeneration = network.Generation
 
 		return controllerutil.SetControllerReference(network, networkContext, projectClient.Scheme())

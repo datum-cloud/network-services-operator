@@ -2899,3 +2899,81 @@ func TestEnsureHostnamesClaimed_LegacyTargetDomain(t *testing.T) {
 		})
 	}
 }
+
+func TestDeleteEndpointSliceOnAddressTypeChange(t *testing.T) {
+	testScheme := runtime.NewScheme()
+	require.NoError(t, scheme.AddToScheme(testScheme))
+	require.NoError(t, discoveryv1.AddToScheme(testScheme))
+
+	newSlice := func(addressType discoveryv1.AddressType, addresses ...string) *discoveryv1.EndpointSlice {
+		slice := &discoveryv1.EndpointSlice{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "route-abc-rule-0-backendref-0",
+				Namespace: "ns-test",
+			},
+			AddressType: addressType,
+		}
+		if len(addresses) > 0 {
+			slice.Endpoints = []discoveryv1.Endpoint{{Addresses: addresses}}
+		}
+		return slice
+	}
+
+	tests := []struct {
+		name        string
+		existing    *discoveryv1.EndpointSlice
+		desired     *discoveryv1.EndpointSlice
+		wantDeleted bool
+	}{
+		{
+			name:        "no existing slice",
+			desired:     newSlice(discoveryv1.AddressTypeIPv6, "fd20:0:2::1:0:0"),
+			wantDeleted: false,
+		},
+		{
+			name:        "address type unchanged",
+			existing:    newSlice(discoveryv1.AddressTypeIPv6, "fd20:0:2::1:0:0"),
+			desired:     newSlice(discoveryv1.AddressTypeIPv6, "fd20:0:2:1:0:1::"),
+			wantDeleted: false,
+		},
+		{
+			name:        "members drained, family falls back to IPv4",
+			existing:    newSlice(discoveryv1.AddressTypeIPv6, "fd20:0:2::1:0:0"),
+			desired:     newSlice(discoveryv1.AddressTypeIPv4),
+			wantDeleted: true,
+		},
+		{
+			name:        "backend flips IPv4 to IPv6",
+			existing:    newSlice(discoveryv1.AddressTypeIPv4, "10.0.0.1"),
+			desired:     newSlice(discoveryv1.AddressTypeIPv6, "fd20:0:2::1:0:0"),
+			wantDeleted: true,
+		},
+		{
+			name:        "backend flips FQDN to IPv6",
+			existing:    newSlice(discoveryv1.AddressTypeFQDN, "origin.example.com"),
+			desired:     newSlice(discoveryv1.AddressTypeIPv6, "fd20:0:2::1:0:0"),
+			wantDeleted: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			builder := fake.NewClientBuilder().WithScheme(testScheme)
+			if tt.existing != nil {
+				builder = builder.WithObjects(tt.existing.DeepCopy())
+			}
+			cl := builder.Build()
+
+			deleted, err := deleteEndpointSliceOnAddressTypeChange(context.Background(), cl, tt.desired.DeepCopy())
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantDeleted, deleted)
+
+			err = cl.Get(context.Background(), client.ObjectKeyFromObject(tt.desired), &discoveryv1.EndpointSlice{})
+			if tt.wantDeleted || tt.existing == nil {
+				assert.True(t, apierrors.IsNotFound(err), "slice should not be present, got %v", err)
+			} else {
+				assert.NoError(t, err, "slice should have been left in place")
+			}
+		})
+	}
+}

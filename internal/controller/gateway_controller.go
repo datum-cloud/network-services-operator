@@ -2101,6 +2101,28 @@ func (r *GatewayReconciler) ensureDownstreamGatewayHTTPRoutes(
 	return result
 }
 
+func deleteEndpointSliceOnAddressTypeChange(
+	ctx context.Context,
+	c client.Client,
+	desired *discoveryv1.EndpointSlice,
+) (bool, error) {
+	existing := &discoveryv1.EndpointSlice{}
+	err := c.Get(ctx, client.ObjectKeyFromObject(desired), existing)
+	switch {
+	case apierrors.IsNotFound(err):
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("failed to get downstream endpointslice: %w", err)
+	case existing.AddressType == desired.AddressType:
+		return false, nil
+	}
+
+	if err := c.Delete(ctx, existing); err != nil && !apierrors.IsNotFound(err) {
+		return false, fmt.Errorf("failed to delete downstream endpointslice for address type change: %w", err)
+	}
+	return true, nil
+}
+
 func (r *GatewayReconciler) ensureDownstreamHTTPRoute(
 	ctx context.Context,
 	upstreamClient client.Client,
@@ -2170,6 +2192,18 @@ func (r *GatewayReconciler) ensureDownstreamHTTPRoute(
 		if err := controllerutil.SetControllerReference(downstreamRoute, resource, downstreamClient.Scheme()); err != nil {
 			result.Err = err
 			return result
+		}
+
+		if desiredSlice, ok := resource.(*discoveryv1.EndpointSlice); ok {
+			deleted, err := deleteEndpointSliceOnAddressTypeChange(ctx, downstreamClient, desiredSlice)
+			if err != nil {
+				result.Err = err
+				return result
+			}
+			if deleted {
+				result.RequeueAfter = 1 * time.Second
+				return result
+			}
 		}
 
 		desiredDownstreamResource := resource.DeepCopyObject()

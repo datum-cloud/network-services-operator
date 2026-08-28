@@ -41,10 +41,30 @@ spec:
                         capabilities:
                           add:
                             - NET_ADMIN
+                            # See config/dev/downstream_resources/downstream-gateway.yaml
+                            # for why: #855's sidecar opens a pinned eBPF map
+                            # (galactic's egress_route_table, via
+                            # internal/plumbing/srv6.RouteEgressAdd) since galactic
+                            # commit 8475bf9 replaced the netlink-native SEG6 encap
+                            # route (broken by CVE-2026-31668) with a TC-BPF one.
+                            # NET_ADMIN alone doesn't cover the bpf() syscalls that
+                            # requires.
+                            - BPF
+                      volumeMounts:
+                        - name: bpf-fs
+                          mountPath: /sys/fs/bpf
         pod:
           volumes:
             - name: coraza-waf
               emptyDir: {}
+            - name: bpf-fs
+              # Same convention as galactic's own config/galactic-router,
+              # config/galactic-gateway DaemonSets. `Directory` (not
+              # DirectoryOrCreate): fail loudly if bpffs isn't actually mounted at
+              # this host path, rather than masking the failure.
+              hostPath:
+                path: /sys/fs/bpf
+                type: Directory
         container:
           image: envoyproxy/envoy:contrib-v1.37.1
           # Required for the vpcPod socket-bind mutation (#856 step 4) —

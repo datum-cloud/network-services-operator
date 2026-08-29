@@ -314,16 +314,15 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 		listenerCertHealth,
 	)
 
-	// Only a hostname we could not claim makes the gateway dishonest about being
-	// programmed. A listener held back by an unhealthy certificate is a normal
-	// transient state that reports itself through the certificate conditions.
-	listenersDropped := false
-	for _, l := range upstreamGateway.Spec.Listeners {
-		if l.Hostname != nil && !slices.Contains(claimedHostnames, string(*l.Hostname)) {
-			listenersDropped = true
-			break
-		}
-	}
+	// A listener the user asked for that never reaches the downstream gateway
+	// makes the gateway dishonest about being programmed, whatever held it back.
+	// Derived from the listener set actually built, so a new reason to withhold
+	// one is covered without being enumerated here.
+	droppedListeners := summarizeDroppedListeners(
+		upstreamGateway,
+		desiredDownstreamGateway,
+		listenerCertHealth,
+	)
 
 	if len(desiredDownstreamGateway.Spec.Listeners) == 0 {
 		// The Gateway API requires at least one listener, so writing this would
@@ -403,7 +402,7 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 		upstreamClient,
 		upstreamGateway,
 		downstreamGateway,
-		listenersDropped,
+		droppedListeners,
 	)
 	if gatewayStatusResult.Err != nil || gatewayStatusResult.StopProcessing {
 		return gatewayStatusResult.Merge(result), nil
@@ -739,52 +738,53 @@ func (r *GatewayReconciler) getDesiredDownstreamGateway(
 				"upstream_listener_index", listenerIndex, "listener", l.Name)
 		}
 
+		if l.Hostname == nil {
+			logger.Info("skipping downstream gateway listener with unset hostname",
+				"upstream_listener_index", listenerIndex, "listener", l.Name)
+			continue
+		}
+
 		// Per-listener TLS decision: hostnames covered by the wildcard
 		// (*.targetDomain) reference the pre-provisioned shared secret;
 		// all others reference a per-listener secret populated by a
 		// Certificate resource created in ensureListenerCertificates.
-		hostnameUnderWildcard := false
-		if l.Hostname != nil {
-			h := string(*l.Hostname)
-			hostnameUnderWildcard = strings.HasSuffix(h, wildcardSuffix) || h == r.Config.Gateway.TargetDomain
-		}
+		hostname := string(*l.Hostname)
+		hostnameUnderWildcard := strings.HasSuffix(hostname, wildcardSuffix) || hostname == r.Config.Gateway.TargetDomain
 		useSharedTLS := hostnameUnderWildcard && r.Config.Gateway.HasDefaultListenerTLSSecret()
 
-		if l.Hostname != nil {
-			listenerCopy := l.DeepCopy()
-			if l.TLS != nil && l.TLS.Options[certificateIssuerTLSOption] != "" {
-				delete(listenerCopy.TLS.Options, certificateIssuerTLSOption)
+		listenerCopy := l.DeepCopy()
+		if l.TLS != nil && l.TLS.Options[certificateIssuerTLSOption] != "" {
+			delete(listenerCopy.TLS.Options, certificateIssuerTLSOption)
 
-				tlsMode := gatewayv1.TLSModeTerminate
-				if useSharedTLS {
-					listenerCopy.TLS = &gatewayv1.ListenerTLSConfig{
-						Mode: &tlsMode,
-						CertificateRefs: []gatewayv1.SecretObjectReference{
-							{
-								Group: ptr.To(gatewayv1.Group("")),
-								Kind:  ptr.To(gatewayv1.Kind("Secret")),
-								Name:  gatewayv1.ObjectName(r.Config.Gateway.DefaultListenerTLSSecretName),
-							},
+			tlsMode := gatewayv1.TLSModeTerminate
+			if useSharedTLS {
+				listenerCopy.TLS = &gatewayv1.ListenerTLSConfig{
+					Mode: &tlsMode,
+					CertificateRefs: []gatewayv1.SecretObjectReference{
+						{
+							Group: ptr.To(gatewayv1.Group("")),
+							Kind:  ptr.To(gatewayv1.Kind("Secret")),
+							Name:  gatewayv1.ObjectName(r.Config.Gateway.DefaultListenerTLSSecretName),
 						},
-					}
-				} else {
-					// Secret name must match the Certificate created by
-					// ensureListenerCertificates for this listener.
-					listenerCopy.TLS = &gatewayv1.ListenerTLSConfig{
-						Mode: &tlsMode,
-						CertificateRefs: []gatewayv1.SecretObjectReference{
-							{
-								Group: ptr.To(gatewayv1.Group("")),
-								Kind:  ptr.To(gatewayv1.Kind("Secret")),
-								Name:  gatewayv1.ObjectName(listenerCertificateSecretName(upstreamGateway.Name, l.Name)),
-							},
+					},
+				}
+			} else {
+				// Secret name must match the Certificate created by
+				// ensureListenerCertificates for this listener.
+				listenerCopy.TLS = &gatewayv1.ListenerTLSConfig{
+					Mode: &tlsMode,
+					CertificateRefs: []gatewayv1.SecretObjectReference{
+						{
+							Group: ptr.To(gatewayv1.Group("")),
+							Kind:  ptr.To(gatewayv1.Kind("Secret")),
+							Name:  gatewayv1.ObjectName(listenerCertificateSecretName(upstreamGateway.Name, l.Name)),
 						},
-					}
+					},
 				}
 			}
-
-			listeners = append(listeners, *listenerCopy)
 		}
+
+		listeners = append(listeners, *listenerCopy)
 	}
 
 	// TODO(jreese) get from "scheduler"
@@ -793,6 +793,48 @@ func (r *GatewayReconciler) getDesiredDownstreamGateway(
 	downstreamGateway.Spec.Listeners = listeners
 
 	return &downstreamGateway
+}
+
+// listenerDropReport names the spec listeners that never reached the downstream
+// gateway, and records whether an unusable certificate held back every one of
+// them.
+type listenerDropReport struct {
+	names           []gatewayv1.SectionName
+	allCertWithheld bool
+}
+
+// summarizeDroppedListeners compares the listeners the user asked for against
+// the ones the downstream gateway will carry. Working from the built set rather
+// than re-deriving each reason keeps a listener withheld by a future condition
+// from going unreported.
+func summarizeDroppedListeners(
+	upstreamGateway *gatewayv1.Gateway,
+	desiredDownstreamGateway *gatewayv1.Gateway,
+	listenerCertHealth map[gatewayv1.SectionName]listenerCertStatus,
+) listenerDropReport {
+	programmed := make(map[gatewayv1.SectionName]struct{}, len(desiredDownstreamGateway.Spec.Listeners))
+	for _, l := range desiredDownstreamGateway.Spec.Listeners {
+		programmed[l.Name] = struct{}{}
+	}
+
+	report := listenerDropReport{allCertWithheld: true}
+	for _, l := range upstreamGateway.Spec.Listeners {
+		if _, ok := programmed[l.Name]; ok {
+			continue
+		}
+
+		report.names = append(report.names, l.Name)
+
+		if status, gated := listenerCertHealth[l.Name]; !gated || status.healthy {
+			report.allCertWithheld = false
+		}
+	}
+
+	if len(report.names) == 0 {
+		report.allCertWithheld = false
+	}
+
+	return report
 }
 
 // listenerCertificateSecretName returns the deterministic Secret name that a
@@ -1158,7 +1200,7 @@ func (r *GatewayReconciler) reconcileGatewayStatus(
 	upstreamClient client.Client,
 	upstreamGateway *gatewayv1.Gateway,
 	downstreamGateway *gatewayv1.Gateway,
-	listenersDropped bool,
+	droppedListeners listenerDropReport,
 ) (result Result) {
 	logger := log.FromContext(ctx)
 
@@ -1192,10 +1234,19 @@ func (r *GatewayReconciler) reconcileGatewayStatus(
 			programmedReady = true
 		}
 
-		if listenersDropped {
+		if len(droppedListeners.names) > 0 {
 			message = "One or more listeners could not be programmed. See the listener status for the reason."
-			status = metav1.ConditionFalse
 			reason = string(gatewayv1.GatewayReasonListenersNotValid)
+
+			// A listener waiting on a usable certificate is still missing from the
+			// edge, so the gateway is not programmed. It is reported apart from a
+			// listener dropped for any other reason because it clears on its own.
+			if droppedListeners.allCertWithheld {
+				message = "One or more listeners are waiting on a usable certificate. See the listener status for the reason."
+				reason = string(gatewayv1.GatewayReasonPending)
+			}
+
+			status = metav1.ConditionFalse
 			programmedReady = false
 		}
 
@@ -2053,6 +2104,28 @@ func (r *GatewayReconciler) ensureDownstreamGatewayHTTPRoutes(
 	return result
 }
 
+func deleteEndpointSliceOnAddressTypeChange(
+	ctx context.Context,
+	c client.Client,
+	desired *discoveryv1.EndpointSlice,
+) (bool, error) {
+	existing := &discoveryv1.EndpointSlice{}
+	err := c.Get(ctx, client.ObjectKeyFromObject(desired), existing)
+	switch {
+	case apierrors.IsNotFound(err):
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("failed to get downstream endpointslice: %w", err)
+	case existing.AddressType == desired.AddressType:
+		return false, nil
+	}
+
+	if err := c.Delete(ctx, existing); err != nil && !apierrors.IsNotFound(err) {
+		return false, fmt.Errorf("failed to delete downstream endpointslice for address type change: %w", err)
+	}
+	return true, nil
+}
+
 func (r *GatewayReconciler) ensureDownstreamHTTPRoute(
 	ctx context.Context,
 	upstreamClient client.Client,
@@ -2122,6 +2195,18 @@ func (r *GatewayReconciler) ensureDownstreamHTTPRoute(
 		if err := controllerutil.SetControllerReference(downstreamRoute, resource, downstreamClient.Scheme()); err != nil {
 			result.Err = err
 			return result
+		}
+
+		if desiredSlice, ok := resource.(*discoveryv1.EndpointSlice); ok {
+			deleted, err := deleteEndpointSliceOnAddressTypeChange(ctx, downstreamClient, desiredSlice)
+			if err != nil {
+				result.Err = err
+				return result
+			}
+			if deleted {
+				result.RequeueAfter = 1 * time.Second
+				return result
+			}
 		}
 
 		desiredDownstreamResource := resource.DeepCopyObject()

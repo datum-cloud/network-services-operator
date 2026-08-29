@@ -1904,6 +1904,206 @@ func TestGetDesiredDownstreamGateway_UnclaimedHostnameSkipped(t *testing.T) {
 	}
 }
 
+// TestGetDesiredDownstreamGateway_NilHostnameSkipped covers the drop described
+// in #235: a listener whose hostname has not been stamped yet never reaches the
+// downstream gateway.
+func TestGetDesiredDownstreamGateway_NilHostnameSkipped(t *testing.T) {
+	logger := zap.New(zap.UseFlagOptions(&zap.Options{Development: true}))
+	ctx := log.IntoContext(context.Background(), logger)
+
+	reconciler := &GatewayReconciler{
+		Config: config.NetworkServicesOperator{
+			Gateway: config.GatewayConfig{
+				DownstreamGatewayClassName: "envoy",
+				TargetDomain:               "test-suite.com",
+			},
+		},
+	}
+
+	upstream := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-gw", Namespace: "default"},
+		Spec: gatewayv1.GatewaySpec{
+			Listeners: []gatewayv1.Listener{
+				{
+					Name:     gatewayutil.DefaultHTTPListenerName,
+					Port:     gatewayutil.DefaultHTTPPort,
+					Protocol: gatewayv1.HTTPProtocolType,
+				},
+				{
+					Name:     gatewayutil.DefaultHTTPSListenerName,
+					Port:     gatewayutil.DefaultHTTPSPort,
+					Protocol: gatewayv1.HTTPSProtocolType,
+					Hostname: ptr.To(gatewayv1.Hostname("test-gw.test-suite.com")),
+				},
+			},
+		},
+	}
+
+	desired := reconciler.getDesiredDownstreamGateway(ctx, upstream, []string{"test-gw.test-suite.com"}, nil)
+
+	require.Len(t, desired.Spec.Listeners, 1, "downstream listener count")
+	assert.Equal(t, gatewayv1.SectionName(gatewayutil.DefaultHTTPSListenerName), desired.Spec.Listeners[0].Name)
+}
+
+// TestReconcileGatewayStatus_DroppedListenerIsNotProgrammed guards #363: a
+// gateway carrying fewer listeners than the user asked for must never report
+// Programmed=True, whatever held the missing listener back.
+func TestReconcileGatewayStatus_DroppedListenerIsNotProgrammed(t *testing.T) {
+	logger := zap.New(zap.UseFlagOptions(&zap.Options{Development: true}))
+	ctx := log.IntoContext(context.Background(), logger)
+
+	testScheme := runtime.NewScheme()
+	require.NoError(t, scheme.AddToScheme(testScheme))
+	require.NoError(t, gatewayv1.Install(testScheme))
+
+	customListener := func(name gatewayv1.SectionName, hostname string) gatewayv1.Listener {
+		return gatewayv1.Listener{
+			Name:     name,
+			Port:     gatewayutil.DefaultHTTPSPort,
+			Protocol: gatewayv1.HTTPSProtocolType,
+			Hostname: ptr.To(gatewayv1.Hostname(hostname)),
+			TLS: &gatewayv1.ListenerTLSConfig{
+				Options: map[gatewayv1.AnnotationKey]gatewayv1.AnnotationValue{
+					certificateIssuerTLSOption: "letsencrypt",
+				},
+			},
+		}
+	}
+
+	nilHostnameListener := gatewayv1.Listener{
+		Name:     gatewayutil.DefaultHTTPListenerName,
+		Port:     gatewayutil.DefaultHTTPPort,
+		Protocol: gatewayv1.HTTPProtocolType,
+	}
+
+	healthyCert := listenerCertStatus{healthy: true}
+	unusableCert := listenerCertStatus{
+		reason:  gatewayv1.ListenerReasonInvalidCertificateRef,
+		message: "certificate is not ready",
+		pending: true,
+	}
+
+	tests := []struct {
+		name             string
+		listeners        []gatewayv1.Listener
+		claimedHostnames []string
+		certHealth       map[gatewayv1.SectionName]listenerCertStatus
+		expectStatus     metav1.ConditionStatus
+		expectReason     string
+	}{
+		{
+			name:             "every listener programmed",
+			listeners:        []gatewayv1.Listener{customListener("custom-https", "claimed.example.com")},
+			claimedHostnames: []string{"claimed.example.com"},
+			certHealth:       map[gatewayv1.SectionName]listenerCertStatus{"custom-https": healthyCert},
+			expectStatus:     metav1.ConditionTrue,
+			expectReason:     string(gatewayv1.GatewayReasonProgrammed),
+		},
+		{
+			name: "listener dropped for an unset hostname",
+			listeners: []gatewayv1.Listener{
+				nilHostnameListener,
+				customListener("custom-https", "claimed.example.com"),
+			},
+			claimedHostnames: []string{"claimed.example.com"},
+			certHealth:       map[gatewayv1.SectionName]listenerCertStatus{"custom-https": healthyCert},
+			expectStatus:     metav1.ConditionFalse,
+			expectReason:     string(gatewayv1.GatewayReasonListenersNotValid),
+		},
+		{
+			name:             "listener dropped for an unclaimed hostname",
+			listeners:        []gatewayv1.Listener{customListener("custom-https", "unclaimed.example.com")},
+			claimedHostnames: nil,
+			expectStatus:     metav1.ConditionFalse,
+			expectReason:     string(gatewayv1.GatewayReasonListenersNotValid),
+		},
+		{
+			name: "listener withheld by an unusable certificate",
+			listeners: []gatewayv1.Listener{
+				customListener("custom-https", "claimed.example.com"),
+				customListener("other-https", "other.example.com"),
+			},
+			claimedHostnames: []string{"claimed.example.com", "other.example.com"},
+			certHealth: map[gatewayv1.SectionName]listenerCertStatus{
+				"custom-https": unusableCert,
+				"other-https":  healthyCert,
+			},
+			expectStatus: metav1.ConditionFalse,
+			expectReason: string(gatewayv1.GatewayReasonPending),
+		},
+		{
+			name: "certificate and hostname drops report the hostname",
+			listeners: []gatewayv1.Listener{
+				customListener("custom-https", "claimed.example.com"),
+				customListener("other-https", "unclaimed.example.com"),
+			},
+			claimedHostnames: []string{"claimed.example.com"},
+			certHealth: map[gatewayv1.SectionName]listenerCertStatus{
+				"custom-https": unusableCert,
+			},
+			expectStatus: metav1.ConditionFalse,
+			expectReason: string(gatewayv1.GatewayReasonListenersNotValid),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reconciler := &GatewayReconciler{
+				Config: config.NetworkServicesOperator{
+					Gateway: config.GatewayConfig{
+						DownstreamGatewayClassName: "envoy",
+						TargetDomain:               "test-suite.com",
+					},
+				},
+			}
+
+			upstream := &gatewayv1.Gateway{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-gw", Namespace: "default"},
+				Spec:       gatewayv1.GatewaySpec{Listeners: tt.listeners},
+			}
+
+			downstream := &gatewayv1.Gateway{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-gw", Namespace: "downstream"},
+				Status: gatewayv1.GatewayStatus{
+					Conditions: []metav1.Condition{
+						{
+							Type:   string(gatewayv1.GatewayConditionAccepted),
+							Status: metav1.ConditionTrue,
+							Reason: string(gatewayv1.GatewayReasonAccepted),
+						},
+						{
+							Type:   string(gatewayv1.GatewayConditionProgrammed),
+							Status: metav1.ConditionTrue,
+							Reason: string(gatewayv1.GatewayReasonProgrammed),
+						},
+					},
+				},
+			}
+
+			upstreamClient := fake.NewClientBuilder().
+				WithScheme(testScheme).
+				WithObjects(upstream.DeepCopy()).
+				WithStatusSubresource(&gatewayv1.Gateway{}).
+				Build()
+
+			desired := reconciler.getDesiredDownstreamGateway(ctx, upstream, tt.claimedHostnames, tt.certHealth)
+			dropped := summarizeDroppedListeners(upstream, desired, tt.certHealth)
+
+			reconciler.reconcileGatewayStatus(ctx, upstreamClient, upstream, downstream, dropped)
+
+			programmed := apimeta.FindStatusCondition(upstream.Status.Conditions, string(gatewayv1.GatewayConditionProgrammed))
+			require.NotNil(t, programmed, "upstream Programmed condition")
+			assert.Equal(t, tt.expectStatus, programmed.Status, "Programmed status")
+			assert.Equal(t, tt.expectReason, programmed.Reason, "Programmed reason")
+
+			if len(desired.Spec.Listeners) < len(upstream.Spec.Listeners) {
+				assert.NotEqual(t, metav1.ConditionTrue, programmed.Status,
+					"a gateway missing a listener the user asked for must not report Programmed=True")
+			}
+		})
+	}
+}
+
 // generateTLSKeyPair returns PEM-encoded cert and key bytes for hostname, with
 // the supplied validity window. Used to seed downstream Secrets in cert-health
 // tests so the X509 self-check exercises real material.
@@ -2963,4 +3163,82 @@ func TestProcessDownstreamHTTPRouteRulesNetworkServicePanicThreshold(t *testing.
 		assert.Nil(t, findPolicy(resources), "a plain backend must not get the policy")
 		require.NotNil(t, findPolicy(toDelete), "a route that lost its networkService backend must lose the policy")
 	})
+}
+
+func TestDeleteEndpointSliceOnAddressTypeChange(t *testing.T) {
+	testScheme := runtime.NewScheme()
+	require.NoError(t, scheme.AddToScheme(testScheme))
+	require.NoError(t, discoveryv1.AddToScheme(testScheme))
+
+	newSlice := func(addressType discoveryv1.AddressType, addresses ...string) *discoveryv1.EndpointSlice {
+		slice := &discoveryv1.EndpointSlice{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "route-abc-rule-0-backendref-0",
+				Namespace: "ns-test",
+			},
+			AddressType: addressType,
+		}
+		if len(addresses) > 0 {
+			slice.Endpoints = []discoveryv1.Endpoint{{Addresses: addresses}}
+		}
+		return slice
+	}
+
+	tests := []struct {
+		name        string
+		existing    *discoveryv1.EndpointSlice
+		desired     *discoveryv1.EndpointSlice
+		wantDeleted bool
+	}{
+		{
+			name:        "no existing slice",
+			desired:     newSlice(discoveryv1.AddressTypeIPv6, "fd20:0:2::1:0:0"),
+			wantDeleted: false,
+		},
+		{
+			name:        "address type unchanged",
+			existing:    newSlice(discoveryv1.AddressTypeIPv6, "fd20:0:2::1:0:0"),
+			desired:     newSlice(discoveryv1.AddressTypeIPv6, "fd20:0:2:1:0:1::"),
+			wantDeleted: false,
+		},
+		{
+			name:        "members drained, family falls back to IPv4",
+			existing:    newSlice(discoveryv1.AddressTypeIPv6, "fd20:0:2::1:0:0"),
+			desired:     newSlice(discoveryv1.AddressTypeIPv4),
+			wantDeleted: true,
+		},
+		{
+			name:        "backend flips IPv4 to IPv6",
+			existing:    newSlice(discoveryv1.AddressTypeIPv4, "10.0.0.1"),
+			desired:     newSlice(discoveryv1.AddressTypeIPv6, "fd20:0:2::1:0:0"),
+			wantDeleted: true,
+		},
+		{
+			name:        "backend flips FQDN to IPv6",
+			existing:    newSlice(discoveryv1.AddressTypeFQDN, "origin.example.com"),
+			desired:     newSlice(discoveryv1.AddressTypeIPv6, "fd20:0:2::1:0:0"),
+			wantDeleted: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			builder := fake.NewClientBuilder().WithScheme(testScheme)
+			if tt.existing != nil {
+				builder = builder.WithObjects(tt.existing.DeepCopy())
+			}
+			cl := builder.Build()
+
+			deleted, err := deleteEndpointSliceOnAddressTypeChange(context.Background(), cl, tt.desired.DeepCopy())
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantDeleted, deleted)
+
+			err = cl.Get(context.Background(), client.ObjectKeyFromObject(tt.desired), &discoveryv1.EndpointSlice{})
+			if tt.wantDeleted || tt.existing == nil {
+				assert.True(t, apierrors.IsNotFound(err), "slice should not be present, got %v", err)
+			} else {
+				assert.NoError(t, err, "slice should have been left in place")
+			}
+		})
+	}
 }

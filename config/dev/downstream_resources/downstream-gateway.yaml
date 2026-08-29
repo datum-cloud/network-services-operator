@@ -90,6 +90,20 @@ spec:
                             - ALL
                           add:
                             - NET_ADMIN
+                            # #855's sidecar installs its SRv6 egress route via
+                            # galactic's TC-BPF datapath (internal/plumbing/srv6.
+                            # RouteEgressAdd), not netlink.SEG6Encap -- galactic
+                            # commit 8475bf9 dropped the netlink-native SEG6 encap
+                            # route entirely after it was confirmed broken by
+                            # CVE-2026-31668 (seg6 lwtunnel's dst_cache reused
+                            # across the input/output paths' differing per-tenant-
+                            # VRF routing contexts). RouteEgressAdd instead opens a
+                            # pinned eBPF map (egress_route_table under bpffs),
+                            # which needs CAP_BPF on top of NET_ADMIN -- NET_ADMIN
+                            # alone covers only the netlink VRF/route management
+                            # this sidecar also does, not the bpf() syscalls
+                            # LoadPinnedMap makes.
+                            - BPF
                         allowPrivilegeEscalation: false
                         readOnlyRootFilesystem: true
                       resources:
@@ -111,6 +125,8 @@ spec:
                         - name: vpc-vrf-kube-api-access
                           mountPath: /var/run/secrets/kubernetes.io/serviceaccount
                           readOnly: true
+                        - name: bpf-fs
+                          mountPath: /sys/fs/bpf
         pod:
           volumes:
             - name: coraza-waf
@@ -145,6 +161,17 @@ spec:
                             apiVersion: v1
                             fieldPath: metadata.namespace
                           path: namespace
+            - name: bpf-fs
+              # The host's bpffs mount, same convention galactic's own
+              # config/galactic-router, config/galactic-gateway DaemonSets use for
+              # opening a map pinned by galactic-cni's TC-BPF program elsewhere on
+              # the node. `Directory` (not DirectoryOrCreate) is deliberate: it
+              # fails loudly if bpffs isn't actually mounted at this host path,
+              # rather than silently creating a plain directory that masks the
+              # failure until #855's sidecar tries to open a map under it.
+              hostPath:
+                path: /sys/fs/bpf
+                type: Directory
         container:
           image: envoyproxy/envoy:contrib-v1.35.0
           # Required for the vpcPod socket-bind mutation (#856 step 4) to

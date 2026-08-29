@@ -36,14 +36,12 @@ type PolicyIndex struct {
 	// Values are upstream namespace names; they key into TPPs and Connectors.
 	DStoUS map[string]string
 
-	// ProjectNames maps downstream namespace names to the human-readable
-	// project name for that namespace. Derived from
-	// meta.datumapis.com/upstream-cluster-name on replica namespaces (value
-	// format: "cluster-<projectName>"). Empty string when the label is absent
-	// (e.g. single-cluster dev with no cluster name configured).
-	//
-	// TODO: replace with resourcemanager.miloapis.com/project-name once that
-	// label is available on project namespaces.
+	// ProjectNames maps downstream namespace names to the project name for that
+	// namespace, read from meta.datumapis.com/upstream-cluster-name on replica
+	// namespaces (value format: "cluster-<projectName>"). That label is the
+	// operator's record of the owning project; see UpstreamOwnerClusterNameLabel
+	// in internal/downstreamclient. Empty string when the label is absent (e.g.
+	// single-cluster dev with no cluster name configured).
 	ProjectNames map[string]string
 
 	// TPPs maps upstream namespace names to the list of

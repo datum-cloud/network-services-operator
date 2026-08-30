@@ -56,7 +56,8 @@ func (f *fakeRegistryClient) LookupIPRegistrant(ctx context.Context, ip net.IP, 
 }
 
 const (
-	exampleDomain = "example.com"
+	exampleDomain        = "example.com"
+	testDNSZoneClassName = "datum-external-global-dns"
 )
 
 var dnsZoneGVK = schema.GroupVersionKind{
@@ -75,6 +76,60 @@ func dnsZoneDomainRefNameIndex(o client.Object) []string {
 		return nil
 	}
 	return []string{refName}
+}
+
+func newUnprogrammedDNSZone(namespace, domainName, className string) *unstructured.Unstructured {
+	return &unstructured.Unstructured{
+		Object: map[string]any{
+			"apiVersion": "dns.networking.miloapis.com/v1alpha1",
+			"kind":       "DNSZone",
+			"metadata": map[string]any{
+				"name":      domainName + "-zone",
+				"namespace": namespace,
+			},
+			"spec": map[string]any{
+				"domainName":       exampleDomain,
+				"dnsZoneClassName": className,
+			},
+			"status": map[string]any{
+				"conditions": []any{
+					map[string]any{
+						"type":   "Accepted",
+						"status": "False",
+						"reason": "PendingDomainVerification",
+					},
+				},
+				"domainRef": map[string]any{
+					"name": domainName,
+				},
+			},
+		},
+	}
+}
+
+func newDNSZoneClass(servers []any) *unstructured.Unstructured {
+	nameServerPolicy := map[string]any{
+		"mode": "Static",
+	}
+	if len(servers) > 0 {
+		nameServerPolicy["static"] = map[string]any{
+			"servers": servers,
+		}
+	}
+
+	return &unstructured.Unstructured{
+		Object: map[string]any{
+			"apiVersion": "dns.networking.miloapis.com/v1alpha1",
+			"kind":       "DNSZoneClass",
+			"metadata": map[string]any{
+				"name": testDNSZoneClassName,
+			},
+			"spec": map[string]any{
+				"controllerName":   "powerdns",
+				"nameServerPolicy": nameServerPolicy,
+			},
+		},
+	}
 }
 
 func TestDomainVerification(t *testing.T) {
@@ -353,6 +408,193 @@ func TestDomainVerification(t *testing.T) {
 				// VerifiedDNSZone should be present with status=True so downstream consumers
 				// (like the Gateway DNS controller) can detect DNSZone-based verification.
 				assert.True(t, apimeta.IsStatusConditionTrue(domain.Status.Conditions, networkingv1alpha.DomainConditionVerifiedDNSZone), "expected VerifiedDNSZone=True to be present")
+			},
+		},
+		{
+			name:           "dnszone class delegation verifies an unprogrammed zone",
+			reconcileCount: 2,
+			domain: newDomain(upstreamNamespace.Name, "dnszone-class-verify", func(domain *networkingv1alpha.Domain) {
+				domain.Status.Verification = &networkingv1alpha.DomainVerificationStatus{
+					NextVerificationAttempt: metav1.Time{Time: time.Unix(0, 0)},
+				}
+			}),
+			lookupTXT: func(ctx context.Context, name string) ([]string, error) {
+				return []string{}, &net.DNSError{IsNotFound: true}
+			},
+			httpGet: func(ctx context.Context, url string) ([]byte, *http.Response, error) {
+				return nil, &http.Response{StatusCode: http.StatusNotFound}, nil
+			},
+			objects: []client.Object{
+				newUnprogrammedDNSZone(upstreamNamespace.Name, "dnszone-class-verify", testDNSZoneClassName),
+				newDNSZoneClass([]any{"ns1.provider.net.", "ns2.provider.net."}),
+			},
+			registryLookupDomain: func(ctx context.Context, domain string, opts registrydata.LookupOptions) (*registrydata.DomainResult, error) {
+				return &registrydata.DomainResult{
+					Registration: &networkingv1alpha.Registration{},
+					Nameservers: []networkingv1alpha.Nameserver{
+						{Hostname: "ns1.provider.net."},
+					},
+				}, nil
+			},
+			assert: func(t *testing.T, domain *networkingv1alpha.Domain, _ ctrl.Result) {
+				assert.True(t, apimeta.IsStatusConditionTrue(domain.Status.Conditions, networkingv1alpha.DomainConditionVerified))
+				assert.True(t, apimeta.IsStatusConditionTrue(domain.Status.Conditions, networkingv1alpha.DomainConditionVerifiedDNSZone), "expected VerifiedDNSZone=True to be present")
+			},
+		},
+		{
+			name: "no dnszone referencing the domain",
+			domain: newDomain(upstreamNamespace.Name, "dnszone-absent", func(domain *networkingv1alpha.Domain) {
+				domain.Status.Verification = &networkingv1alpha.DomainVerificationStatus{
+					NextVerificationAttempt: metav1.Time{Time: time.Unix(0, 0)},
+				}
+			}),
+			lookupTXT: func(ctx context.Context, name string) ([]string, error) {
+				return []string{}, &net.DNSError{IsNotFound: true}
+			},
+			httpGet: func(ctx context.Context, url string) ([]byte, *http.Response, error) {
+				return nil, &http.Response{StatusCode: http.StatusNotFound}, nil
+			},
+			assert: func(t *testing.T, domain *networkingv1alpha.Domain, _ ctrl.Result) {
+				assert.False(t, apimeta.IsStatusConditionTrue(domain.Status.Conditions, networkingv1alpha.DomainConditionVerified))
+				condition := apimeta.FindStatusCondition(domain.Status.Conditions, networkingv1alpha.DomainConditionVerifiedDNSZone)
+				if assert.NotNil(t, condition, "VerifiedDNSZone condition not found") {
+					assert.Equal(t, networkingv1alpha.DomainReasonDNSZoneNotFound, condition.Reason)
+				}
+			},
+		},
+		{
+			name:           "dnszone class has no static nameservers",
+			reconcileCount: 2,
+			domain: newDomain(upstreamNamespace.Name, "dnszone-class-empty", func(domain *networkingv1alpha.Domain) {
+				domain.Status.Verification = &networkingv1alpha.DomainVerificationStatus{
+					NextVerificationAttempt: metav1.Time{Time: time.Unix(0, 0)},
+				}
+			}),
+			lookupTXT: func(ctx context.Context, name string) ([]string, error) {
+				return []string{}, &net.DNSError{IsNotFound: true}
+			},
+			httpGet: func(ctx context.Context, url string) ([]byte, *http.Response, error) {
+				return nil, &http.Response{StatusCode: http.StatusNotFound}, nil
+			},
+			objects: []client.Object{
+				newUnprogrammedDNSZone(upstreamNamespace.Name, "dnszone-class-empty", testDNSZoneClassName),
+				newDNSZoneClass(nil),
+			},
+			registryLookupDomain: func(ctx context.Context, domain string, opts registrydata.LookupOptions) (*registrydata.DomainResult, error) {
+				return &registrydata.DomainResult{
+					Registration: &networkingv1alpha.Registration{},
+					Nameservers: []networkingv1alpha.Nameserver{
+						{Hostname: "ns1.provider.net."},
+					},
+				}, nil
+			},
+			assert: func(t *testing.T, domain *networkingv1alpha.Domain, _ ctrl.Result) {
+				assert.False(t, apimeta.IsStatusConditionTrue(domain.Status.Conditions, networkingv1alpha.DomainConditionVerified))
+				condition := apimeta.FindStatusCondition(domain.Status.Conditions, networkingv1alpha.DomainConditionVerifiedDNSZone)
+				if assert.NotNil(t, condition, "VerifiedDNSZone condition not found") {
+					assert.Equal(t, networkingv1alpha.DomainReasonDNSZoneClassNameserversUnavailable, condition.Reason)
+				}
+			},
+		},
+		{
+			name:           "dnszone class is missing",
+			reconcileCount: 2,
+			domain: newDomain(upstreamNamespace.Name, "dnszone-class-missing", func(domain *networkingv1alpha.Domain) {
+				domain.Status.Verification = &networkingv1alpha.DomainVerificationStatus{
+					NextVerificationAttempt: metav1.Time{Time: time.Unix(0, 0)},
+				}
+			}),
+			lookupTXT: func(ctx context.Context, name string) ([]string, error) {
+				return []string{}, &net.DNSError{IsNotFound: true}
+			},
+			httpGet: func(ctx context.Context, url string) ([]byte, *http.Response, error) {
+				return nil, &http.Response{StatusCode: http.StatusNotFound}, nil
+			},
+			objects: []client.Object{
+				newUnprogrammedDNSZone(upstreamNamespace.Name, "dnszone-class-missing", testDNSZoneClassName),
+			},
+			registryLookupDomain: func(ctx context.Context, domain string, opts registrydata.LookupOptions) (*registrydata.DomainResult, error) {
+				return &registrydata.DomainResult{
+					Registration: &networkingv1alpha.Registration{},
+					Nameservers: []networkingv1alpha.Nameserver{
+						{Hostname: "ns1.provider.net."},
+					},
+				}, nil
+			},
+			assert: func(t *testing.T, domain *networkingv1alpha.Domain, _ ctrl.Result) {
+				assert.False(t, apimeta.IsStatusConditionTrue(domain.Status.Conditions, networkingv1alpha.DomainConditionVerified))
+				condition := apimeta.FindStatusCondition(domain.Status.Conditions, networkingv1alpha.DomainConditionVerifiedDNSZone)
+				if assert.NotNil(t, condition, "VerifiedDNSZone condition not found") {
+					assert.Equal(t, networkingv1alpha.DomainReasonDNSZoneClassNameserversUnavailable, condition.Reason)
+				}
+			},
+		},
+		{
+			name:           "dnszone names no class",
+			reconcileCount: 2,
+			domain: newDomain(upstreamNamespace.Name, "dnszone-class-unset", func(domain *networkingv1alpha.Domain) {
+				domain.Status.Verification = &networkingv1alpha.DomainVerificationStatus{
+					NextVerificationAttempt: metav1.Time{Time: time.Unix(0, 0)},
+				}
+			}),
+			lookupTXT: func(ctx context.Context, name string) ([]string, error) {
+				return []string{}, &net.DNSError{IsNotFound: true}
+			},
+			httpGet: func(ctx context.Context, url string) ([]byte, *http.Response, error) {
+				return nil, &http.Response{StatusCode: http.StatusNotFound}, nil
+			},
+			objects: []client.Object{
+				newUnprogrammedDNSZone(upstreamNamespace.Name, "dnszone-class-unset", ""),
+				newDNSZoneClass([]any{"ns1.provider.net."}),
+			},
+			registryLookupDomain: func(ctx context.Context, domain string, opts registrydata.LookupOptions) (*registrydata.DomainResult, error) {
+				return &registrydata.DomainResult{
+					Registration: &networkingv1alpha.Registration{},
+					Nameservers: []networkingv1alpha.Nameserver{
+						{Hostname: "ns1.provider.net."},
+					},
+				}, nil
+			},
+			assert: func(t *testing.T, domain *networkingv1alpha.Domain, _ ctrl.Result) {
+				assert.False(t, apimeta.IsStatusConditionTrue(domain.Status.Conditions, networkingv1alpha.DomainConditionVerified))
+				condition := apimeta.FindStatusCondition(domain.Status.Conditions, networkingv1alpha.DomainConditionVerifiedDNSZone)
+				if assert.NotNil(t, condition, "VerifiedDNSZone condition not found") {
+					assert.Equal(t, networkingv1alpha.DomainReasonDNSZoneClassNameserversUnavailable, condition.Reason)
+				}
+			},
+		},
+		{
+			name:           "registry nameservers disjoint from dnszone class",
+			reconcileCount: 2,
+			domain: newDomain(upstreamNamespace.Name, "dnszone-class-mismatch", func(domain *networkingv1alpha.Domain) {
+				domain.Status.Verification = &networkingv1alpha.DomainVerificationStatus{
+					NextVerificationAttempt: metav1.Time{Time: time.Unix(0, 0)},
+				}
+			}),
+			lookupTXT: func(ctx context.Context, name string) ([]string, error) {
+				return []string{}, &net.DNSError{IsNotFound: true}
+			},
+			httpGet: func(ctx context.Context, url string) ([]byte, *http.Response, error) {
+				return nil, &http.Response{StatusCode: http.StatusNotFound}, nil
+			},
+			objects: []client.Object{
+				newUnprogrammedDNSZone(upstreamNamespace.Name, "dnszone-class-mismatch", testDNSZoneClassName),
+				newDNSZoneClass([]any{"ns1.provider.net.", "ns2.provider.net."}),
+			},
+			registryLookupDomain: func(ctx context.Context, domain string, opts registrydata.LookupOptions) (*registrydata.DomainResult, error) {
+				return &registrydata.DomainResult{
+					Registration: &networkingv1alpha.Registration{},
+					Nameservers: []networkingv1alpha.Nameserver{
+						{Hostname: "ns1.someone-else.net."},
+					},
+				}, nil
+			},
+			assert: func(t *testing.T, domain *networkingv1alpha.Domain, _ ctrl.Result) {
+				assert.False(t, apimeta.IsStatusConditionTrue(domain.Status.Conditions, networkingv1alpha.DomainConditionVerified))
+				condition := apimeta.FindStatusCondition(domain.Status.Conditions, networkingv1alpha.DomainConditionVerifiedDNSZone)
+				if assert.NotNil(t, condition, "VerifiedDNSZone condition not found") {
+					assert.Equal(t, networkingv1alpha.DomainReasonDNSZoneNameserverMismatch, condition.Reason)
+				}
 			},
 		},
 		{

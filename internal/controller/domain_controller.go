@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/net/publicsuffix"
 	"k8s.io/apimachinery/pkg/api/equality"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -52,6 +53,7 @@ type DomainReconciler struct {
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=domains/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=domains/finalizers,verbs=update
 // +kubebuilder:rbac:groups=dns.networking.miloapis.com,resources=dnszones,verbs=get;list;watch
+// +kubebuilder:rbac:groups=dns.networking.miloapis.com,resources=dnszoneclasses,verbs=get;list;watch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -389,6 +391,7 @@ func (r *DomainReconciler) attemptDNSZoneVerification(
 	// Evaluate zones; any one matching is sufficient
 	sawNotReady := false
 	sawReady := false
+	sawDelegationOutcome := false
 	for _, z := range zones {
 		zoneName := z.GetName()
 
@@ -411,18 +414,11 @@ func (r *DomainReconciler) attemptDNSZoneVerification(
 				}
 			}
 		}
-		if !accepted || !programmed {
-			sawNotReady = true
-			// Keep evaluating other zones in case one is ready.
-			continue
-		}
-		sawReady = true
 
-		zoneNS, _, _ := unstructured.NestedStringSlice(z.Object, jsonKeyStatus, "nameservers")
-		if len(zoneNS) == 0 {
-			verifiedDNSZoneCondition.Reason = networkingv1alpha.DomainReasonPendingVerification
-			verifiedDNSZoneCondition.Message = fmt.Sprintf("DNSZone %q is ready but has no status.nameservers yet", zoneName)
-			continue
+		if accepted && programmed {
+			sawReady = true
+		} else {
+			sawNotReady = true
 		}
 
 		// Verify via managed DNS once Domain.status.nameservers includes at least one of DNSZone.status.nameservers.
@@ -431,23 +427,95 @@ func (r *DomainReconciler) attemptDNSZoneVerification(
 			verifiedDNSZoneCondition.Message = fmt.Sprintf("Waiting for Domain status.nameservers before verifying via DNSZone %q", zoneName)
 			continue
 		}
-		if !dnsutil.HasNameserverOverlap(domainNS, zoneNS) {
+
+		if accepted && programmed {
+			zoneNS, _, _ := unstructured.NestedStringSlice(z.Object, jsonKeyStatus, "nameservers")
+			if len(zoneNS) > 0 {
+				if !dnsutil.HasNameserverOverlap(domainNS, zoneNS) {
+					verifiedDNSZoneCondition.Reason = networkingv1alpha.DomainReasonDNSZoneNameserverMismatch
+					verifiedDNSZoneCondition.Message = fmt.Sprintf("Domain nameservers do not match DNSZone %q nameservers yet", zoneName)
+					continue
+				}
+
+				verifiedDNSZoneCondition.Status = metav1.ConditionTrue
+				verifiedDNSZoneCondition.Reason = networkingv1alpha.DomainReasonVerified
+				verifiedDNSZoneCondition.Message = fmt.Sprintf("DNSZone %q verification successful", zoneName)
+				return
+			}
+		}
+
+		className, _, _ := unstructured.NestedString(z.Object, jsonKeySpec, "dnsZoneClassName")
+		if className == "" {
+			sawDelegationOutcome = true
+			verifiedDNSZoneCondition.Reason = networkingv1alpha.DomainReasonDNSZoneClassNameserversUnavailable
+			verifiedDNSZoneCondition.Message = fmt.Sprintf("DNSZone %q does not name a DNSZoneClass", zoneName)
+			continue
+		}
+
+		classNS, err := r.dnsZoneClassNameservers(ctx, reader, className)
+		if err != nil {
+			logger.Error(err, "failed reading DNSZoneClass for delegation verification", "zone", zoneName, "class", className)
+			sawDelegationOutcome = true
+			verifiedDNSZoneCondition.Reason = networkingv1alpha.DomainReasonVerificationInternalError
+			verifiedDNSZoneCondition.Message = "Internal error encountered during DNSZoneClass lookup"
+			continue
+		}
+
+		if len(classNS) == 0 {
+			sawDelegationOutcome = true
+			verifiedDNSZoneCondition.Reason = networkingv1alpha.DomainReasonDNSZoneClassNameserversUnavailable
+			verifiedDNSZoneCondition.Message = fmt.Sprintf("DNSZoneClass %q publishes no static nameservers to compare against", className)
+			continue
+		}
+
+		if !dnsutil.HasNameserverOverlap(domainNS, classNS) {
+			sawDelegationOutcome = true
 			verifiedDNSZoneCondition.Reason = networkingv1alpha.DomainReasonDNSZoneNameserverMismatch
-			verifiedDNSZoneCondition.Message = fmt.Sprintf("Domain nameservers do not match DNSZone %q nameservers yet", zoneName)
+			verifiedDNSZoneCondition.Message = fmt.Sprintf("Domain nameservers do not match DNSZoneClass %q nameservers yet", className)
 			continue
 		}
 
 		verifiedDNSZoneCondition.Status = metav1.ConditionTrue
 		verifiedDNSZoneCondition.Reason = networkingv1alpha.DomainReasonVerified
-		verifiedDNSZoneCondition.Message = fmt.Sprintf("DNSZone %q verification successful", zoneName)
+		verifiedDNSZoneCondition.Message = fmt.Sprintf("Domain is delegated to the nameservers of DNSZoneClass %q used by DNSZone %q", className, zoneName)
 		return
 	}
 
 	// If we saw a DNSZone referencing the Domain but none are ready, report that.
-	if sawNotReady && !sawReady {
+	if sawNotReady && !sawReady && !sawDelegationOutcome {
 		verifiedDNSZoneCondition.Reason = networkingv1alpha.DomainReasonDNSZoneNotReady
 		verifiedDNSZoneCondition.Message = "DNSZone exists but is not yet Accepted and Programmed"
 	}
+}
+
+var dnsZoneClassGVK = schema.GroupVersionKind{
+	Group:   "dns.networking.miloapis.com",
+	Version: versionV1Alpha1,
+	Kind:    "DNSZoneClass",
+}
+
+func (r *DomainReconciler) dnsZoneClassNameservers(
+	ctx context.Context,
+	reader client.Reader,
+	className string,
+) ([]string, error) {
+	zoneClass := &unstructured.Unstructured{}
+	zoneClass.SetGroupVersionKind(dnsZoneClassGVK)
+
+	if err := reader.Get(ctx, client.ObjectKey{Name: className}, zoneClass); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	mode, _, _ := unstructured.NestedString(zoneClass.Object, jsonKeySpec, "nameServerPolicy", "mode")
+	if mode != nameServerPolicyModeStatic {
+		return nil, nil
+	}
+
+	servers, _, _ := unstructured.NestedStringSlice(zoneClass.Object, jsonKeySpec, "nameServerPolicy", "static", "servers")
+	return servers, nil
 }
 
 func (r *DomainReconciler) attemptDNSVerification(

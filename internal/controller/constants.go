@@ -40,6 +40,7 @@ const (
 	jsonKeyAtType      = "@type"
 	jsonKeyKind        = "kind"
 	jsonKeyMatch       = "match"
+	jsonKeySpec        = "spec"
 	jsonKeyStatus      = "status"
 	jsonKeyOwner       = "owner"
 	jsonPatchOpAdd     = "add"
@@ -49,6 +50,8 @@ const (
 const (
 	dnsRecordTypeTXT = "TXT"
 )
+
+const nameServerPolicyModeStatic = "Static"
 
 // Condition type constants for unstructured object parsing.
 const (

@@ -116,6 +116,8 @@ const (
 	// provisioned nameservers and the DNSZone nameservers.
 	DomainReasonDNSZoneNameserverMismatch = "DNSZoneNameserverMismatch"
 
+	DomainReasonDNSZoneClassNameserversUnavailable = "DNSZoneClassNameserversUnavailable"
+
 	// DomainReasonInvalidDomain indicates the provided domain name is not
 	// registrable (e.g., only a public suffix like "com"), and flows are paused.
 	DomainReasonInvalidDomain = "InvalidApex"

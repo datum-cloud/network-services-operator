@@ -136,6 +136,7 @@ rules:
 - apiGroups:
   - dns.networking.miloapis.com
   resources:
+  - dnszoneclasses
   - dnszones
   verbs:
   - get

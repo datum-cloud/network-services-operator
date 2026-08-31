@@ -1,10 +1,9 @@
 package mutate
 
 import (
-	"crypto/sha256"
 	"encoding/base64"
-	"encoding/hex"
 	"fmt"
+	"strings"
 
 	clusterv3 "github.com/envoyproxy/go-control-plane/envoy/config/cluster/v3"
 	corev3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
@@ -56,7 +55,16 @@ func ApplyVPCPodSocketBind(clusters []*clusterv3.Cluster, idx *extcache.PolicyIn
 			continue
 		}
 
-		if bindErr := applyVPCPodBindConfig(cl, vrfDeviceName(info.TenantID)); bindErr != nil {
+		device, ok := vrfDeviceName(info.TenantID)
+		if !ok {
+			// Tenant identifier doesn't parse as a galactic-cni
+			// vpc-vpcAttachment pair — same treatment as an empty TenantID
+			// above: never guess a device name, since binding to the wrong
+			// one is a silent cross-tenant blackhole, not a visible error.
+			continue
+		}
+
+		if bindErr := applyVPCPodBindConfig(cl, device); bindErr != nil {
 			return mutated, fmt.Errorf("apply vpcPod socket-bind for cluster %q: %w", cl.GetName(), bindErr)
 		}
 		mutated++
@@ -94,13 +102,37 @@ func applyVPCPodBindConfig(cl *clusterv3.Cluster, device string) error {
 	return nil
 }
 
-// vrfDeviceName derives the VRF device name #855's sidecar is expected to
-// create for a tenant. Bounded to IFNAMSIZ-1 (15 bytes) regardless of tenant
-// ID length — SO_BINDTODEVICE silently fails to bind past that limit.
+// vrfDeviceName derives the VRF device name #855's sidecar creates for a
+// tenant, from the tenant-id label value galactic-cni (#854) publishes on
+// the backend's EndpointSlice.
 //
-// TODO(#856): placeholder naming scheme, unconfirmed with #855. Must match
-// their actual convention exactly or the socket bind resolves nothing.
-func vrfDeviceName(tenantID string) string {
-	sum := sha256.Sum256([]byte(tenantID))
-	return "vrf-" + hex.EncodeToString(sum[:])[:11]
+// That value is galactic's crdnames.TenantIdentifier(vpc, vpcAttachment) —
+// an unencoded "<vpc>-<vpcAttachment>" join (galactic
+// internal/crdnames/crdnames.go). But the VRF itself is per-VPC-per-node,
+// shared by every attachment on that VPC on a given node, not per
+// attachment (galactic internal/plumbing/intf.go's
+// vrfInterfaceNameTemplate doc comment) — so only the vpc half feeds the
+// device name, recovered the same way galactic's own
+// crdnames.ParseTenantIdentifier does: split on the first "-" (vpc and
+// vpcAttachment are both base62 and so never contain the separator
+// themselves).
+//
+// The name itself must exactly match
+// intf.GenerateInterfaceNameVRF(vpc) — "G" + vpc zero-padded to 9
+// characters + "V" (galactic internal/ingresssidecar/backend.go's
+// vrfNameRegex: `^G([A-Za-z0-9]{9})V$`) — or the socket bind resolves to a
+// device the sidecar never created. This format is always exactly 11
+// bytes, comfortably inside the IFNAMSIZ-1 (15 byte) limit
+// SO_BINDTODEVICE enforces, provided vpc itself is no longer than 9 base62
+// characters — true of every vpc identifier this fabric allocates today.
+//
+// Returns ok=false for a tenant identifier that doesn't parse as a
+// vpc-vpcAttachment pair, or whose vpc half is too long to fit the
+// template — callers must never bind to a guessed device name.
+func vrfDeviceName(tenantID string) (device string, ok bool) {
+	vpc, _, found := strings.Cut(tenantID, "-")
+	if !found || vpc == "" || len(vpc) > 9 {
+		return "", false
+	}
+	return fmt.Sprintf("G%09sV", vpc), true
 }

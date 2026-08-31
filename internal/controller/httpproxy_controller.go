@@ -872,11 +872,10 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 				// address from the SID annotation the tenant-VRF/SRv6
 				// mechanism depends on staying joined to it.
 				//
-				// TODO(#856): confirm with #854 whether the referenced
-				// EndpointSlice is expected to exist in the HTTPProxy's own
-				// (upstream) namespace via this same client, or whether this
-				// existence check belongs in the Gateway controller instead
-				// once the downstream-native resolution path is settled.
+				// This Get requires an EndpointSlice named backend.Instance.Name
+				// to exist in the HTTPProxy's own (upstream) namespace — see
+				// api/v1alpha.InstanceBackendRef's doc comment for the open
+				// question of what's responsible for putting it there.
 				var referenced discoveryv1.EndpointSlice
 				key := client.ObjectKey{Namespace: httpProxy.Namespace, Name: backend.Instance.Name}
 				if err := cl.Get(ctx, key, &referenced); err != nil {

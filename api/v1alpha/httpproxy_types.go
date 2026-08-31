@@ -190,10 +190,25 @@ type HTTPProxyBackendTLS struct {
 // InstanceBackendRef references an EndpointSlice published by galactic-cni for
 // a pod on a tenant VPC network.
 //
-// TODO(#856): the tenant-id label name/schema this reference implicitly
-// depends on (used downstream by the Gateway controller to recognize a
-// CNI-published EndpointSlice and route around Service synthesis) is not
-// yet confirmed with #854. Revisit this type once that's settled.
+// The tenant-id label this reference implicitly depends on (used downstream
+// by the Gateway controller to recognize a CNI-published EndpointSlice and
+// route around Service synthesis) is confirmed against galactic's own
+// source of truth: internal/controller.VPCPodTenantIDLabel matches
+// galactic's internal/crdnames.LabelTenantID exactly, both name and value
+// shape.
+//
+// Open: the EndpointSlice named here must exist in this HTTPProxy's own
+// (upstream) namespace for HTTPProxyReconciler.collectDesiredResources's
+// existence check to pass (see that function's Get on backend.Instance.Name)
+// — but galactic-cni (#854) publishes it only in the downstream/edge
+// cluster where the pod's node lives, with no upstream counterpart of its
+// own. Some VPC pods observed live (us-central-1-staging-lab) carry a
+// same-named, same-labeled companion object upstream, marked
+// networking.datumapis.com/vpc-endpointslice-projection: true and
+// Karmada-managed; others don't. Whatever owns that projection (not this
+// repo or galactic — grep for the label found no hits in either) needs to
+// be identified and guaranteed to run for every Instance-referenced pod, or
+// this backend kind 404s for any tenant it hasn't run for yet.
 type InstanceBackendRef struct {
 	// Name of the EndpointSlice galactic-cni publishes for the target pod.
 	// Must exist in the same namespace as this HTTPProxy.

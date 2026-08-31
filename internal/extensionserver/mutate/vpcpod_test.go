@@ -12,7 +12,10 @@ import (
 	extcache "go.datum.net/network-services-operator/internal/extensionserver/cache"
 )
 
-const testTenantID = "test-tenant-1"
+// testTenantID follows galactic's crdnames.TenantIdentifier(vpc,
+// vpcAttachment) format ("<vpc>-<vpcAttachment>", both base62) — the real
+// shape galactic-cni publishes, not an arbitrary string.
+const testTenantID = "2-8s5"
 
 // vpcPodPolicyIndex builds a PolicyIndex with a single vpcPod entry, reusing
 // the connector test fixtures' dsNS/upstreamNS/proxyName so testClusterName()
@@ -58,7 +61,9 @@ func TestApplyVPCPodSocketBind_BindsMatchingCluster(t *testing.T) {
 
 	// GetBufValue() returns the raw bytes — protojson already decoded the
 	// wire-format base64 during Unmarshal.
-	assert.Equal(t, vrfDeviceName(testTenantID), string(opts[0].GetBufValue()))
+	wantDevice, ok := vrfDeviceName(testTenantID)
+	require.True(t, ok)
+	assert.Equal(t, wantDevice, string(opts[0].GetBufValue()))
 	assert.LessOrEqual(t, len(opts[0].GetBufValue()), 15, "device name must fit IFNAMSIZ-1")
 
 	// Non-matching cluster untouched.
@@ -107,14 +112,65 @@ func TestApplyVPCPodSocketBind_NonMatchingClusterName_Untouched(t *testing.T) {
 	assert.Nil(t, clusters[0].GetUpstreamBindConfig())
 }
 
-func TestVRFDeviceName_BoundedToIFNAMSIZ(t *testing.T) {
-	short := vrfDeviceName("t1")
-	long := vrfDeviceName("a-very-long-tenant-identifier-that-would-overflow-ifnamsiz")
+func TestVRFDeviceName(t *testing.T) {
+	tests := []struct {
+		name     string
+		tenantID string
+		want     string
+		wantOK   bool
+	}{
+		{
+			name:     "single-character vpc, zero-padded",
+			tenantID: "2-8s5",
+			want:     "G000000002V",
+			wantOK:   true,
+		},
+		{
+			// Matches a VRF device observed live in
+			// us-central-1-staging-lab (G0ouHZATYMV) — an 8-character vpc
+			// pads with exactly one leading zero.
+			name:     "eight-character vpc",
+			tenantID: "ouHZATYM-x1",
+			want:     "G0ouHZATYMV",
+			wantOK:   true,
+		},
+		{
+			name:     "nine-character vpc, no padding needed",
+			tenantID: "123456789-x1",
+			want:     "G123456789V",
+			wantOK:   true,
+		},
+		{
+			name:     "no separator",
+			tenantID: "novpcattachment",
+			wantOK:   false,
+		},
+		{
+			name:     "empty vpc half",
+			tenantID: "-8s5",
+			wantOK:   false,
+		},
+		{
+			name:     "vpc half exceeds 9 base62 characters",
+			tenantID: "1234567890-x1",
+			wantOK:   false,
+		},
+	}
 
-	assert.Len(t, short, 15)
-	assert.Len(t, long, 15)
-	assert.NotEqual(t, short, long, "distinct tenants must get distinct device names")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := vrfDeviceName(tt.tenantID)
+			require.Equal(t, tt.wantOK, ok)
+			if tt.wantOK {
+				assert.Equal(t, tt.want, got)
+				assert.Len(t, got, 11)
+				assert.LessOrEqual(t, len(got), 15, "device name must fit IFNAMSIZ-1")
+			}
+		})
+	}
 
 	// Deterministic: same tenant always yields the same device name.
-	assert.Equal(t, vrfDeviceName("t1"), vrfDeviceName("t1"))
+	first, _ := vrfDeviceName(testTenantID)
+	second, _ := vrfDeviceName(testTenantID)
+	assert.Equal(t, first, second)
 }

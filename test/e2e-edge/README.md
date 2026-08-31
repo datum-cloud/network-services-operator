@@ -55,6 +55,17 @@ sharing the same proxy. The test introduces a genuinely bad certificate and
 confirms its listener is isolated while sibling listeners keep serving real
 traffic — the "one bad resource freezes everything" failure mode, contained.
 
+### One tenant's broken login policy can't black out the shared gateway
+A tenant OIDC policy that points at a missing secret must not drop every other
+tenant's traffic on the shared gateway. The test proves both defenses: the
+operator holds such a policy back until its secret is present (so the poison
+never reaches the proxy), and — even if the poison is placed directly on the
+gateway — a neighbor's route keeps serving after the shared proxy is restarted
+cold, while the bad route fails on its own. This doubles as the Envoy Gateway
+upgrade gate: it is green on the pinned v1.7.4 and flips red only if EG is bumped
+to v1.8.x while the upstream bug is unfixed, so "green" never gets misread as
+"the upstream bug is fixed".
+
 ## Running them
 
 The scenarios run against the production-fidelity environment:
@@ -71,7 +82,8 @@ environment these assume.
 ## Layout
 
 - Scenario folders (`waf-enforcement/`, `connector-offline-503/`,
-  `branded-error-page/`, `atomic-reject-isolation/`) — one guarantee each.
+  `branded-error-page/`, `atomic-reject-isolation/`,
+  `oidc-missing-secret-isolation/`) — one guarantee each.
 - `_steps/` — shared, reusable checks (send-a-request, confirm-configuration,
   capture-the-build-marker) so every scenario asserts behavior the same way.
 - `_fixtures/` — the supporting pieces a scenario needs (a sample backend, an

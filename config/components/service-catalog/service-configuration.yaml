@@ -6,6 +6,12 @@ spec:
   phase: Published
   serviceRef:
     name: networking-datumapis-com
+  # A service whose configuration lists no supported location class is skipped
+  # when locations are offered to a project, so without this the service is
+  # live but reaches no consumer's location list.
+  locations:
+    supportedClasses:
+      - datum-managed
   monitoredResourceTypes:
     - type: networking.datumapis.com/HTTPRoute
       displayName: ALB

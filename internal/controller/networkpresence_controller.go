@@ -25,6 +25,8 @@ import (
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 
+	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
+
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	"go.datum.net/network-services-operator/internal/downstreamclient"
 )
@@ -84,7 +86,7 @@ type NetworkPresenceReconciler struct {
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkbindings,verbs=get;list;watch;delete
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkbindings/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkcontexts,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=networking.datumapis.com,resources=locationbindings,verbs=get;list;watch
+// +kubebuilder:rbac:groups=locations.miloapis.com,resources=locations,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
 
 // Reconcile is keyed on the presence, not on the binding that triggered it: the
@@ -124,7 +126,7 @@ func (r *NetworkPresenceReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return ctrl.Result{}, err
 	}
 
-	// Nothing here watches a LocationBinding, a project namespace, a network
+	// Nothing here watches a projected Location, a project namespace, a network
 	// that does not exist yet, or the context in the project control plane, so a
 	// refusal for a condition that later clears has no other way back.
 	if refused {
@@ -289,15 +291,15 @@ func (r *NetworkPresenceReconciler) ensure(
 		return false, fmt.Errorf("failed reaching project %q: %w", routing.project, err)
 	}
 
-	var locationBinding networkingv1alpha.LocationBinding
-	if err := projectClient.Get(ctx, client.ObjectKey{Name: pair.Location.Name}, &locationBinding); err != nil {
-		if apierrors.IsNotFound(err) {
+	var location locationsv1alpha1.Location
+	if err := projectClient.Get(ctx, client.ObjectKey{Name: pair.Location.Name}, &location); err != nil {
+		if locationsNotServed(err) {
 			return true, r.report(ctx, holders, nil, refusal(
 				networkingv1alpha.NetworkBindingReasonLocationNotAvailable,
-				fmt.Sprintf("Project %q has no location binding for location %q",
+				fmt.Sprintf("Project %q has not been offered location %q",
 					routing.project, pair.Location.Name)))
 		}
-		return false, fmt.Errorf("failed reading location binding %q: %w", pair.Location.Name, err)
+		return false, fmt.Errorf("failed reading location %q: %w", pair.Location.Name, err)
 	}
 
 	networkKey := client.ObjectKey{Namespace: routing.projectNamespace, Name: pair.Network.Name}

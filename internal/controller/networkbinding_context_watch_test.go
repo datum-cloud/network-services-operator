@@ -11,6 +11,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
+	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
+
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 )
 
@@ -19,7 +21,7 @@ func networkBindingForTest(namespace, name, network, location string) *networkin
 		ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: name},
 		Spec: networkingv1alpha.NetworkBindingSpec{
 			Network:  networkingv1alpha.NetworkRef{Name: network},
-			Location: networkingv1alpha.LocationReference{Name: location},
+			Location: locationsv1alpha1.LocationReference{Name: location},
 		},
 	}
 }

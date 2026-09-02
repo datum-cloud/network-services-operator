@@ -6,11 +6,12 @@ metadata:
 spec:
   cluster: nso-standard
   steps:
-    - name: Seed a project with no binding for the location
+    - name: Seed a project that has not been offered the location
       description: |
-        LocationBinding is the answer to "can this project use this location".
-        Nothing else re-derives that decision, so a project without one cannot
-        have the network made present there.
+        The Location projected into a project control plane is the answer to
+        "can this project use this location". Nothing else re-derives that
+        decision, so a project without one cannot have the network made present
+        there.
       try:
         - apply:
             resource:
@@ -90,19 +91,20 @@ spec:
     - name: The platform enables the location and the binding recovers
       description: |
         Ready moving in both directions is part of the contract. A binding that
-        reported LocationNotAvailable has to pick up the platform enabling the
+        reported LocationNotAvailable has to pick up the platform offering the
         location without the consumer doing anything.
       try:
         - apply:
             resource:
-              apiVersion: networking.datumapis.com/v1alpha
-              kind: LocationBinding
+              apiVersion: locations.miloapis.com/v1alpha1
+              kind: Location
               metadata:
                 name: presence-unavail-loc
               spec:
-                locationRef:
-                  name: presence-unavail-loc
-                locationClassName: datum-managed
+                locationClassRef:
+                  name: datum-managed
+                topology:
+                  topology.datum.net/city-code: IAD
         - assert:
             timeout: 2m
             resource:

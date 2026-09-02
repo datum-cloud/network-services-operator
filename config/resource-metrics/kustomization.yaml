@@ -10,7 +10,6 @@ configMapGenerator:
       - networks.yaml
       - subnet-claims.yaml
       - subnets.yaml
-      - locations.yaml
       - gateways.yaml
       - httpproxies.yaml
       - domains.yaml

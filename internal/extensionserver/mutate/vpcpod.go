@@ -63,8 +63,8 @@ func ApplyVPCPodSocketBind(clusters []*clusterv3.Cluster, idx *extcache.PolicyIn
 			continue
 		}
 
-		device := vrfDeviceName(info.TenantID)
-		if device == "" {
+		device, ok := vrfDeviceName(info.TenantID)
+		if !ok {
 			// Tenant identifier galactic would never have produced, so no
 			// device answers to the name it implies. Binding to a name the
 			// kernel cannot resolve fails every connection on this cluster,
@@ -123,19 +123,17 @@ const maxInterfaceNameLen = 15
 //
 // The name is keyed on the VPC alone, never the full "<vpc>-<vpcAttachment>"
 // tenant identifier: galactic shares one device across every attachment of a
-// VPC on a node.
+// VPC on a node. The format is always exactly 11 bytes when vpc is ≤9
+// characters (galactic internal/ingresssidecar/backend.go's vrfNameRegex:
+// `^G([A-Za-z0-9]{9})V$`), comfortably inside IFNAMSIZ-1.
 //
-// Returns "" for a tenant identifier galactic could not have produced, or one
-// whose VPC half overflows the interface-name limit.
-func vrfDeviceName(tenantID string) string {
+// Returns ok=false for a tenant identifier galactic could not have produced,
+// or one whose VPC half overflows the interface-name limit. Callers must
+// never bind to a guessed device name.
+func vrfDeviceName(tenantID string) (device string, ok bool) {
 	vpc, ok := extcache.TenantVPC(tenantID)
-	if !ok {
-		return ""
+	if !ok || len(vpc) > 9 {
+		return "", false
 	}
-
-	name := fmt.Sprintf("G%09s%s", vpc, "V")
-	if len(name) > maxInterfaceNameLen {
-		return ""
-	}
-	return name
+	return fmt.Sprintf("G%09sV", vpc), true
 }

@@ -69,7 +69,9 @@ func TestApplyVPCPodSocketBind_BindsMatchingCluster(t *testing.T) {
 
 	// GetBufValue() returns the raw bytes — protojson already decoded the
 	// wire-format base64 during Unmarshal.
-	assert.Equal(t, vrfDeviceName(testTenantID), string(opts[0].GetBufValue()))
+	wantDevice, ok := vrfDeviceName(testTenantID)
+	require.True(t, ok)
+	assert.Equal(t, wantDevice, string(opts[0].GetBufValue()))
 	assert.LessOrEqual(t, len(opts[0].GetBufValue()), 15, "device name must fit IFNAMSIZ-1")
 
 	// Non-matching cluster untouched.
@@ -129,17 +131,27 @@ func TestVRFDeviceName_MatchesGalactic(t *testing.T) {
 		name     string
 		tenantID string
 		want     string
+		wantOK   bool
 	}{
-		{"typical vpc", "2wJqT7d-9xKp2Qm", "G002wJqT7dV"},
-		{"another vpc", "5hLm3Xc-9xKp2Qm", "G005hLm3XcV"},
-		{"single character vpc", "1-9xKp2Qm", "G000000001V"},
-		{"alphabetic vpc", "abc-9xKp2Qm", "G000000abcV"},
-		{"vpc filling the pad", "123456789-9xKp2Qm", "G123456789V"},
+		{"typical vpc", "2wJqT7d-9xKp2Qm", "G002wJqT7dV", true},
+		{"another vpc", "5hLm3Xc-9xKp2Qm", "G005hLm3XcV", true},
+		{"single character vpc", "1-9xKp2Qm", "G000000001V", true},
+		{"alphabetic vpc", "abc-9xKp2Qm", "G000000abcV", true},
+		{"vpc filling the pad", "123456789-9xKp2Qm", "G123456789V", true},
+		// Matches a VRF device observed live in us-central-1-staging-lab
+		// (G0ouHZATYMV) — an 8-character vpc pads with exactly one leading zero.
+		{"eight-character vpc", "ouHZATYM-x1", "G0ouHZATYMV", true},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.want, vrfDeviceName(tt.tenantID))
+			got, ok := vrfDeviceName(tt.tenantID)
+			require.Equal(t, tt.wantOK, ok)
+			if tt.wantOK {
+				assert.Equal(t, tt.want, got)
+				assert.Len(t, got, 11)
+				assert.LessOrEqual(t, len(got), maxInterfaceNameLen)
+			}
 		})
 	}
 }
@@ -148,13 +160,15 @@ func TestVRFDeviceName_MatchesGalactic(t *testing.T) {
 // scheme correct: galactic shares one VRF device across every attachment of a
 // VPC on a node, so the attachment half must not reach the name.
 func TestVRFDeviceName_KeyedOnVPCAlone(t *testing.T) {
-	first := vrfDeviceName("2wJqT7d-9xKp2Qm")
-	second := vrfDeviceName("2wJqT7d-4bNr8Zt")
+	first, firstOK := vrfDeviceName("2wJqT7d-9xKp2Qm")
+	second, secondOK := vrfDeviceName("2wJqT7d-4bNr8Zt")
 
-	require.NotEmpty(t, first)
+	require.True(t, firstOK)
+	require.True(t, secondOK)
 	assert.Equal(t, first, second, "two attachments of one VPC share one device")
 
-	other := vrfDeviceName("5hLm3Xc-9xKp2Qm")
+	other, otherOK := vrfDeviceName("5hLm3Xc-9xKp2Qm")
+	require.True(t, otherOK)
 	assert.NotEqual(t, first, other, "distinct VPCs must get distinct devices")
 }
 
@@ -168,18 +182,23 @@ func TestVRFDeviceName_UnusableTenantIDYieldsNoName(t *testing.T) {
 		{"empty vpc half", "-9xKp2Qm"},
 		{"empty attachment half", "2wJqT7d-"},
 		{"vpc half overflows IFNAMSIZ", "abcdefghijklmnop-9xKp2Qm"},
+		{"vpc half exceeds 9 base62 characters", "1234567890-x1"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.Empty(t, vrfDeviceName(tt.tenantID),
+			got, ok := vrfDeviceName(tt.tenantID)
+			assert.False(t, ok)
+			assert.Empty(t, got,
 				"an unusable tenant identifier must yield no name, so the caller skips the bind")
 		})
 	}
 }
 
 func TestVRFDeviceName_FitsIFNAMSIZ(t *testing.T) {
-	assert.LessOrEqual(t, len(vrfDeviceName(testTenantID)), maxInterfaceNameLen)
+	got, ok := vrfDeviceName(testTenantID)
+	require.True(t, ok)
+	assert.LessOrEqual(t, len(got), maxInterfaceNameLen)
 }
 
 // TestApplyVPCPodSocketBind_NetworkServiceBackendEndToEnd drives the whole

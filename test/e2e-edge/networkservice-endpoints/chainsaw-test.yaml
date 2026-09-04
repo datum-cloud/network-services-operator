@@ -109,6 +109,7 @@ spec:
                 ipam:
                   mode: Auto
                 ipFamilies:
+                  - IPv6
                   - IPv4
         - create:
             resource:
@@ -727,6 +728,7 @@ spec:
                 ipam:
                   mode: Auto
                 ipFamilies:
+                  - IPv6
                   - IPv4
         - create:
             resource:

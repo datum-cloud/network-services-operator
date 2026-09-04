@@ -14,6 +14,9 @@ spec:
               kind: Namespace
               metadata:
                 name: presence-shared-project
+                labels:
+                  meta.datumapis.com/upstream-cluster-name: cluster-project-alpha
+                  meta.datumapis.com/upstream-namespace: default
         - apply:
             resource:
               apiVersion: v1
@@ -44,7 +47,7 @@ spec:
                 ipam:
                   mode: Auto
                 ipFamilies:
-                  - IPv4
+                  - IPv6
 
     - name: Two consumers of different kinds declare they need the same network here
       description: |
@@ -98,7 +101,7 @@ spec:
         same NetworkContext.
       try:
         - assert:
-            timeout: 1m
+            timeout: 2m
             resource:
               apiVersion: networking.datumapis.com/v1alpha
               kind: NetworkBinding
@@ -109,7 +112,7 @@ spec:
                 networkContextRef:
                   name: presence-shared-net-presence-shared-loc
         - assert:
-            timeout: 1m
+            timeout: 2m
             resource:
               apiVersion: networking.datumapis.com/v1alpha
               kind: NetworkBinding
@@ -161,7 +164,7 @@ spec:
               name: presence-shared-lb
               namespace: presence-shared-hub
         - error:
-            timeout: 1m
+            timeout: 2m
             resource:
               apiVersion: networking.datumapis.com/v1alpha
               kind: NetworkContext

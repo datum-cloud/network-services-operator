@@ -129,7 +129,37 @@ func (r *NetworkReconciler) reconcileNetwork(
 		return ctrl.Result{}, nil
 	}
 
+	if !slices.Contains(network.Spec.IPFamilies, networkingv1alpha.IPv6Protocol) {
+		return ctrl.Result{}, r.reportIPv6Required(ctx, cl, network)
+	}
+
 	return r.reconcilePrefix(ctx, cl, network)
+}
+
+// reportIPv6Required refuses to call a network ready that nothing can run on.
+// Admission turns a new one away; this is the half that covers the networks
+// predating it, which are found by reading Ready and nowhere else.
+func (r *NetworkReconciler) reportIPv6Required(
+	ctx context.Context,
+	cl client.Client,
+	network *networkingv1alpha.Network,
+) error {
+	if !apimeta.SetStatusCondition(&network.Status.Conditions, metav1.Condition{
+		Type:               networkingv1alpha.NetworkReady,
+		Status:             metav1.ConditionFalse,
+		Reason:             networkingv1alpha.NetworkReadyReasonIPv6Required,
+		ObservedGeneration: network.Generation,
+		Message: "The platform addresses workloads over IPv6 and this network does not carry it, " +
+			"so nothing placed on this network can be given an address. " +
+			"Add IPv6 to spec.ipFamilies.",
+	}) {
+		return nil
+	}
+
+	if err := cl.Status().Update(ctx, network); err != nil {
+		return fmt.Errorf("failed updating network status: %w", err)
+	}
+	return nil
 }
 
 // reconcilePrefix claims the network's IPv6 address space when the network is

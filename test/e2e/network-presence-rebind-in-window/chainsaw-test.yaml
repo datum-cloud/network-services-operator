@@ -88,9 +88,7 @@ spec:
                 name: presence-rebind-net-presence-rebind-loc
                 namespace: presence-rebind-project
               status:
-                conditions:
-                  - type: Ready
-                    status: "True"
+                (conditions[?type == 'Ready'] | [0].status): "True"
         - assert:
             timeout: 2m
             resource:

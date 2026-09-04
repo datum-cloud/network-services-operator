@@ -79,9 +79,7 @@ spec:
                 name: presence-replace-net-presence-replace-loc
                 namespace: presence-replace-project
               status:
-                conditions:
-                  - type: Ready
-                    status: "True"
+                (conditions[?type == 'Ready'] | [0].status): "True"
         - script:
             content: |
               set -eu

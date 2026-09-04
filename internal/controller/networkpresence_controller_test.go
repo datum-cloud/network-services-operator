@@ -114,7 +114,7 @@ func newPresenceScenario(t *testing.T, opts presenceOptions) *presenceScenario {
 	if !opts.withoutNetwork {
 		families := opts.families
 		if families == nil {
-			families = []networkingv1alpha.IPFamily{networkingv1alpha.IPv4Protocol}
+			families = []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol}
 		}
 		mtu := opts.mtu
 		if mtu == 0 {
@@ -449,7 +449,7 @@ func TestNetworkPresenceLeavesTheReplicatedHubCopyAlone(t *testing.T) {
 	}
 	replicated.Spec.Network = networkingv1alpha.LocalNetworkRef{Name: s.networkName}
 	replicated.Spec.Location = networkingv1alpha.LocationReference{Name: s.locationName}
-	replicated.Spec.IPFamilies = []networkingv1alpha.IPFamily{networkingv1alpha.IPv4Protocol}
+	replicated.Spec.IPFamilies = []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol}
 	replicated.Spec.MTU = 1460
 	require.NoError(t, s.hub.Create(s.ctx, replicated))
 
@@ -545,7 +545,7 @@ func TestNetworkPresenceIsTornDownByTheLastConsumerGoingAway(t *testing.T) {
 // it; nothing else would ever rewrite that context.
 func TestNetworkPresenceConvergesOnANetworkEdit(t *testing.T) {
 	s := newPresenceScenario(t, presenceOptions{
-		families: []networkingv1alpha.IPFamily{networkingv1alpha.IPv4Protocol},
+		families: []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol},
 		mtu:      1460,
 	})
 	s.createBinding("consumer-a")
@@ -558,7 +558,7 @@ func TestNetworkPresenceConvergesOnANetworkEdit(t *testing.T) {
 
 	s.network.Spec.MTU = 8856
 	s.network.Spec.IPFamilies = []networkingv1alpha.IPFamily{
-		networkingv1alpha.IPv4Protocol, networkingv1alpha.IPv6Protocol,
+		networkingv1alpha.IPv6Protocol, networkingv1alpha.IPv4Protocol,
 	}
 	require.NoError(t, s.hub.Update(s.ctx, s.network))
 
@@ -568,7 +568,7 @@ func TestNetworkPresenceConvergesOnANetworkEdit(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, int32(8856), networkContext.Spec.MTU)
 	require.Equal(t, []networkingv1alpha.IPFamily{
-		networkingv1alpha.IPv4Protocol, networkingv1alpha.IPv6Protocol,
+		networkingv1alpha.IPv6Protocol, networkingv1alpha.IPv4Protocol,
 	}, networkContext.Spec.IPFamilies)
 	require.Greater(t, networkContext.Spec.NetworkGeneration, generationBefore,
 		"networkGeneration is what makes staleness visible")

@@ -21,6 +21,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -164,14 +165,48 @@ func TestNetworkDefaultsToIPv6(t *testing.T) {
 }
 
 // TestNetworkKeepsExplicitIPFamilies asserts the default does not overwrite an
-// author's own narrowing, including the IPv4-only case every network created
-// before the default flipped persisted.
+// author's own choice of families.
 func TestNetworkKeepsExplicitIPFamilies(t *testing.T) {
 	cl := requireEnv(t)
 	ctx := context.Background()
 
 	network := &networkingv1alpha.Network{
 		ObjectMeta: metav1.ObjectMeta{Name: "family-explicit", Namespace: "default"},
+		Spec: networkingv1alpha.NetworkSpec{
+			IPAM: networkingv1alpha.NetworkIPAM{Mode: networkingv1alpha.NetworkIPAMModeAuto},
+			IPFamilies: []networkingv1alpha.IPFamily{
+				networkingv1alpha.IPv6Protocol, networkingv1alpha.IPv4Protocol,
+			},
+		},
+	}
+	require.NoError(t, cl.Create(ctx, network))
+	t.Cleanup(func() { _ = cl.Delete(ctx, network) })
+
+	var got networkingv1alpha.Network
+	require.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(network), &got))
+	require.Equal(t, []networkingv1alpha.IPFamily{
+		networkingv1alpha.IPv6Protocol, networkingv1alpha.IPv4Protocol,
+	}, got.Spec.IPFamilies)
+}
+
+// TestNetworkSchemaLeavesIPv4NetworksWritable pins the reason a network without
+// IPv6 is turned away by an admission webhook rather than by a rule on this
+// schema. A rule here would run on every write, and validation ratcheting —
+// which lets an unchanged field carry a stale value through a spec update —
+// does not cover the status subresource. The operator's whole answer to the
+// networks that predate the rule is a condition, which is a status write, so a
+// schema rule would gag the report and leave the operator retrying a rejected
+// update forever.
+//
+// Everything below therefore has to keep working against the generated CRD: an
+// IPv4-only network takes a spec patch, takes a status write, and can be
+// repaired in place.
+func TestNetworkSchemaLeavesIPv4NetworksWritable(t *testing.T) {
+	cl := requireEnv(t)
+	ctx := context.Background()
+
+	network := &networkingv1alpha.Network{
+		ObjectMeta: metav1.ObjectMeta{Name: "family-legacy", Namespace: "default"},
 		Spec: networkingv1alpha.NetworkSpec{
 			IPAM:       networkingv1alpha.NetworkIPAM{Mode: networkingv1alpha.NetworkIPAMModeAuto},
 			IPFamilies: []networkingv1alpha.IPFamily{networkingv1alpha.IPv4Protocol},
@@ -182,11 +217,24 @@ func TestNetworkKeepsExplicitIPFamilies(t *testing.T) {
 
 	var got networkingv1alpha.Network
 	require.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(network), &got))
-	require.Equal(t,
-		[]networkingv1alpha.IPFamily{networkingv1alpha.IPv4Protocol},
-		got.Spec.IPFamilies)
 
+	got.Spec.MTU = 1500
+	require.NoError(t, cl.Update(ctx, &got),
+		"a controller patching an unrelated field must not be turned away")
+
+	require.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(network), &got))
+	apimeta.SetStatusCondition(&got.Status.Conditions, metav1.Condition{
+		Type:               networkingv1alpha.NetworkReady,
+		Status:             metav1.ConditionFalse,
+		Reason:             networkingv1alpha.NetworkReadyReasonIPv6Required,
+		ObservedGeneration: got.Generation,
+		Message:            "reported unhealthy",
+	})
+	require.NoError(t, cl.Status().Update(ctx, &got),
+		"reporting the network unhealthy is a status write and must reach the apiserver")
+
+	require.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(network), &got))
 	got.Spec.IPFamilies = []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol}
 	require.NoError(t, cl.Update(ctx, &got),
-		"ipFamilies carries no immutability marker, so an existing network is patchable in place")
+		"a user repairing the network in place must not be turned away")
 }

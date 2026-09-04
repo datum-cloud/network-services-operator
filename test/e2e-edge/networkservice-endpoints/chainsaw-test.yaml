@@ -1,0 +1,780 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+#
+# A NetworkService's members reach the edge as endpoints in their own locations.
+#
+# A service selects three network interfaces; two of them have a holder
+# reporting itself available and one does not. The proxy in front of it must end
+# up with all three as endpoints of one Envoy cluster, each in the locality its
+# interface names, with the unavailable one carried but out of rotation. A real
+# request must then be served by a member over a real socket, and the
+# unavailable member must have taken none of it.
+#
+# The interfaces are never labelled by hand. Compute stamps its keys on the
+# claim, and the cell carries the allow-listed ones onto the interface it binds
+# along with the location it serves, so what the selector matches is what the
+# operator wrote.
+#
+# It also holds the two failures that matter: a selector spanning two networks
+# is refused rather than silently narrowed, and an unavailable interface counts
+# as a member without counting as healthy.
+#
+# What this environment does and does not stand behind:
+#
+#   * There is no compute here, so nothing runs at a member's allocated address
+#     on its own. The scenario binds each available member's address on the
+#     downstream node and answers there with a host-network server
+#     (../_fixtures/network-service-member.yaml), so the 200 below is a real
+#     response over a real socket to the address IPAM handed out.
+#
+#   * The location on each interface is the operator's: the cell stamps
+#     networking.datumapis.com/location on every interface it binds, and this
+#     environment is one cell serving one location. Every member is therefore in
+#     us-central-1 and the proxy carries one locality. That a service rolls
+#     several locations up separately is covered where more than one cell can
+#     exist, in the envtest suite; what this proves is that the locality an
+#     interface names reaches Envoy at all.
+#
+#   * Whatever holds an interface owns its HolderAvailable condition and there is
+#     no compute here to hold anything, so the scenario reports it — the same
+#     stand-in the Domain verification uses in the sibling scenarios.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: networkservice-endpoints
+spec:
+  concurrent: false
+  cluster: nso-upstream
+  # The claim reconciler resolves the project to allocate from out of the
+  # claim's own namespace, so the test namespace has to carry the routing labels
+  # the mapped-namespace strategy really writes. Same encoding as
+  # test/e2e/fixtures/ipam/namespaces.yaml: a "cluster-" prefix with "/" as "_".
+  namespaceTemplate:
+    metadata:
+      labels:
+        meta.datumapis.com/upstream-cluster-name: cluster-project-alpha
+        meta.datumapis.com/upstream-namespace: default
+  bindings:
+    - name: downstreamGatewayClass
+      value: datum-downstream-gateway-e2e
+    - name: envoyNamespace
+      value: datum-downstream-gateway
+    # The node the edge runs on. A member's address is bound here so something
+    # can answer at it.
+    - name: downstreamNode
+      value: nso-downstream-control-plane
+    # Local port the Envoy admin interface is forwarded to. The admin listener
+    # binds 127.0.0.1 inside the proxy and the image carries no shell, so a
+    # port-forward is the only way to read it from a test.
+    - name: adminLocalPort
+      value: "19901"
+    # Where the bound member addresses are recorded, so they can be given back
+    # at teardown without depending on the claims still being readable.
+    - name: boundAddressFile
+      value: /tmp/nsvc-bound-addresses
+  steps:
+    - name: Deliver the network's presence to this location
+      description: |
+        At a location a NetworkContext arrives by propagation from the hub; no
+        controller here creates one. The claim reconciler reads it for the
+        address families the network carries, so the scenario puts it there
+        shaped as propagation delivers it: spec only, no status, no owner.
+      try:
+        - apply:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkContext
+              metadata:
+                name: nsvc-net-us-central-1
+              spec:
+                network:
+                  name: nsvc-net
+                location:
+                  name: us-central-1
+                ipFamilies:
+                  - IPv4
+                mtu: 1460
+
+    - name: Three claims bind and their interfaces carry what a service selects
+      description: |
+        Ready never goes true here because no data plane reports the attachment,
+        so the claims are waited on by Bound and Allocated.
+      try:
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Network
+              metadata:
+                name: nsvc-net
+              spec:
+                ipam:
+                  mode: Auto
+                ipFamilies:
+                  - IPv6
+                  - IPv4
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterfaceClaim
+              metadata:
+                name: nsvc-member-1
+                labels:
+                  compute.datumapis.com/workload-name: nsvc
+              spec:
+                network:
+                  name: nsvc-net
+                ipFamilies:
+                  - IPv4
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterfaceClaim
+              metadata:
+                name: nsvc-member-2
+                labels:
+                  compute.datumapis.com/workload-name: nsvc
+              spec:
+                network:
+                  name: nsvc-net
+                ipFamilies:
+                  - IPv4
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterfaceClaim
+              metadata:
+                name: nsvc-member-3
+                labels:
+                  compute.datumapis.com/workload-name: nsvc
+              spec:
+                network:
+                  name: nsvc-net
+                ipFamilies:
+                  - IPv4
+        - script:
+            timeout: 300s
+            content: |
+              set -eu
+              for name in nsvc-member-1 nsvc-member-2 nsvc-member-3; do
+                kubectl -n "$NAMESPACE" wait networkinterfaceclaim "$name" \
+                  --for=condition=Bound --timeout=150s
+                kubectl -n "$NAMESPACE" wait networkinterfaceclaim "$name" \
+                  --for=condition=Allocated --timeout=150s
+                addr=$(kubectl -n "$NAMESPACE" get networkinterfaceclaim "$name" \
+                  -o jsonpath='{.status.addresses[0].address}')
+                echo "${name}: ${addr}"
+                echo "${addr}" | grep -Eq '^10\.128\.[0-9]+\.[0-9]+/32$' \
+                  || { echo "ERROR: ${name} published ${addr}, not a /32 out of project-alpha's 10.128.0.0/16"; exit 1; }
+                loc=$(kubectl -n "$NAMESPACE" get networkinterface "$name" \
+                  -o jsonpath='{.metadata.labels.networking\.datumapis\.com/location}')
+                [ "${loc}" = "us-central-1" ] \
+                  || { echo "ERROR: ${name}'s interface carries location '${loc}', want the one this cell serves"; exit 1; }
+                workload=$(kubectl -n "$NAMESPACE" get networkinterface "$name" \
+                  -o jsonpath='{.metadata.labels.compute\.datumapis\.com/workload-name}')
+                [ "${workload}" = "nsvc" ] \
+                  || { echo "ERROR: ${name}'s interface carries workload-name '${workload}', want the claim's"; exit 1; }
+                phase=$(kubectl -n "$NAMESPACE" get networkinterface "$name" -o jsonpath='{.status.phase}')
+                [ "${phase}" = "Bound" ] \
+                  || { echo "ERROR: ${name}'s interface is ${phase}, want Bound"; exit 1; }
+              done
+      catch:
+        - script:
+            content: |
+              kubectl -n $NAMESPACE get networkinterfaceclaim,networkinterface -o yaml
+              kubectl -n network-services-operator-system logs -l app.kubernetes.io/name=network-services-operator --tail=100
+
+    - name: Two of the three members have an available holder
+      description: |
+        The holder owns HolderAvailable and there is no compute here to be one.
+        The operator only seeds the condition Unknown and never overwrites it, so
+        the scenario can report it the way an instance would.
+      try:
+        - script:
+            content: |
+              set -eu
+              for name in nsvc-member-1 nsvc-member-2; do
+                kubectl -n "$NAMESPACE" patch networkinterface "$name" \
+                  --subresource=status --type=merge -p \
+                  '{"status":{"conditions":[{"type":"HolderAvailable","status":"True","reason":"HolderAvailable","message":"Reported by the scenario in place of a workload instance","lastTransitionTime":"2026-01-01T00:00:00Z"}]}}'
+              done
+
+    - name: The service resolves three members in one location, two healthy
+      description: |
+        The unavailable claim is the point of the third member: it must count as
+        a member of its location and not as healthy, and its location must still
+        be serving because its siblings are.
+      try:
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkService
+              metadata:
+                name: nsvc
+              spec:
+                networkInterfaces:
+                  selector:
+                    matchLabels:
+                      compute.datumapis.com/workload-name: nsvc
+                ports:
+                  - name: http
+                    port: 8080
+        - assert:
+            timeout: 120s
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkService
+              metadata:
+                name: nsvc
+              status:
+                summary:
+                  locations: 1
+                  members: 3
+                  healthy: 2
+                locations:
+                  - name: us-central-1
+                    members: 3
+                    healthy: 2
+                    serving: true
+                (conditions[?type == 'MembersResolved'] | [0].status): "True"
+                (conditions[?type == 'MembersResolved'] | [0].reason): Resolved
+                (conditions[?type == 'Ready'] | [0].status): "True"
+      catch:
+        - script:
+            content: kubectl -n $NAMESPACE get networkservice nsvc -o yaml
+
+    - name: Make the available members answer at their allocated addresses
+      description: |
+        Bind each available member's address on the downstream node and serve
+        there. The unavailable member's address is deliberately left unbound and
+        unserved, so a request reaching it would fail rather than quietly
+        succeed. See the header for what this stands in for.
+      try:
+        - script:
+            env:
+              - name: NODE
+                value: ($downstreamNode)
+              - name: BOUND_FILE
+                value: ($boundAddressFile)
+            content: |
+              set -eu
+              : > "${BOUND_FILE}.${NAMESPACE}"
+              for name in nsvc-member-1 nsvc-member-2; do
+                addr=$(kubectl -n "$NAMESPACE" get networkinterfaceclaim "$name" \
+                  -o jsonpath='{.status.addresses[0].address}')
+                echo "binding ${addr} for ${name} on ${NODE}"
+                docker exec "$NODE" ip addr add "$addr" dev lo
+                echo "$addr" >> "${BOUND_FILE}.${NAMESPACE}"
+              done
+        - apply:
+            cluster: nso-downstream
+            file: ../_fixtures/network-service-member.yaml
+        - script:
+            cluster: nso-downstream
+            timeout: 300s
+            content: |
+              set -eu
+              kubectl -n default wait pod/network-service-member --for=condition=Ready --timeout=240s
+      cleanup:
+        - script:
+            env:
+              - name: NODE
+                value: ($downstreamNode)
+              - name: BOUND_FILE
+                value: ($boundAddressFile)
+            content: |
+              set -u
+              # The bound addresses outlive the test namespace. Left behind, the
+              # next run's allocations collide with them and a member answers
+              # before its own server exists.
+              if [ -f "${BOUND_FILE}.${NAMESPACE}" ]; then
+                while read -r addr; do
+                  [ -n "$addr" ] || continue
+                  docker exec "$NODE" ip addr del "$addr" dev lo || true
+                  echo "released ${addr}"
+                done < "${BOUND_FILE}.${NAMESPACE}"
+                rm -f "${BOUND_FILE}.${NAMESPACE}"
+              fi
+        - script:
+            cluster: nso-downstream
+            content: |
+              kubectl -n default delete pod network-service-member nsvc-conntest \
+                --ignore-not-found --force --grace-period=0 || true
+
+    - name: An HTTPProxy whose backend is the service publishes a hostname
+      try:
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: HTTPProxy
+              metadata:
+                name: nsvc-proxy
+              spec:
+                rules:
+                  - matches:
+                      - path:
+                          type: PathPrefix
+                          value: /
+                    backends:
+                      - networkService:
+                          name: nsvc
+                          port: http
+        - script:
+            timeout: 300s
+            content: |
+              set -eu
+              for i in $(seq 1 40); do
+                H=$(kubectl -n "$NAMESPACE" get httpproxy nsvc-proxy \
+                  -o jsonpath='{.status.canonicalHostname}' 2>/dev/null || true)
+                if [ -n "${H}" ]; then echo "canonical hostname: ${H}"; exit 0; fi
+                echo "waiting for HTTPProxy canonicalHostname... ${i}" >&2
+                sleep 5
+              done
+              echo "ERROR: HTTPProxy never published a canonicalHostname" >&2
+              exit 1
+      catch:
+        - script:
+            content: |
+              kubectl -n $NAMESPACE get httpproxy,gateway,httproute,endpointslice -o yaml
+              kubectl -n network-services-operator-system logs -l app.kubernetes.io/name=network-services-operator --tail=200
+
+    - name: The proxy's EndpointSlice carries every member with its location
+      description: |
+        Address, location and readiness are checked against the interfaces
+        themselves rather than against literals, so the assertion cannot pass on
+        an EndpointSlice built from stale or invented values.
+      try:
+        - assert:
+            timeout: 120s
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: HTTPRoute
+              metadata:
+                name: nsvc-proxy
+              spec:
+                rules:
+                  - backendRefs:
+                      - group: discovery.k8s.io
+                        kind: EndpointSlice
+                        name: nsvc-proxy-0-0
+                        port: 8080
+        - script:
+            timeout: 120s
+            content: |
+              set -eu
+              member_addr() {
+                kubectl -n "$NAMESPACE" get networkinterface "$1" \
+                  -o jsonpath='{.spec.addresses[0].address}' | cut -d/ -f1
+              }
+              slice() {
+                kubectl -n "$NAMESPACE" get endpointslice nsvc-proxy-0-0 -o jsonpath="$1"
+              }
+
+              got=$(slice '{.addressType}')
+              [ "$got" = "IPv4" ] || { echo "ERROR: slice addressType is ${got}, want IPv4"; exit 1; }
+              got=$(slice '{.metadata.labels.networking\.datumapis\.com/network-service}')
+              [ "$got" = "nsvc" ] || { echo "ERROR: slice names network service ${got}, want nsvc"; exit 1; }
+              count=$(slice '{.endpoints[*].addresses[0]}' | wc -w | tr -d ' ')
+              [ "$count" = "3" ] || { echo "ERROR: slice carries ${count} endpoints, want 3"; exit 1; }
+
+              # interface:expected-zone:expected-ready
+              for spec in nsvc-member-1:us-central-1:true nsvc-member-2:us-central-1:true nsvc-member-3:us-central-1:false; do
+                name=${spec%%:*}; rest=${spec#*:}; zone=${rest%%:*}; ready=${rest#*:}
+                want=$(member_addr "$name")
+                slice "{.endpoints[?(@.zone=='${zone}')].addresses[0]}" | tr ' ' '\n' | grep -Fxq "$want" \
+                  || { echo "ERROR: ${name} address ${want} is not an endpoint in zone ${zone}"; slice '{.endpoints}'; exit 1; }
+                idx=0
+                for a in $(slice '{.endpoints[*].addresses[0]}'); do
+                  [ "$a" = "$want" ] && break
+                  idx=$((idx + 1))
+                done
+                gotready=$(slice "{.endpoints[${idx}].conditions.ready}")
+                [ "$gotready" = "$ready" ] \
+                  || { echo "ERROR: ${name} endpoint ready=${gotready}, want ${ready}"; exit 1; }
+                echo "OK: ${name} ${want} zone=${zone} ready=${ready}"
+              done
+
+    - name: The edge carries the members as endpoints in their own localities
+      description: |
+        The decisive configuration assertion: read the running proxy's own
+        endpoint configuration and require one Envoy locality per location, the
+        members' real addresses inside them, and the unavailable member present
+        but not healthy. A member missing here is a member the edge will never
+        send a request to, however healthy the control plane looks.
+      try:
+        - script:
+            skipCommandOutput: true
+            skipLogOutput: true
+            content: |
+              kubectl -n "$NAMESPACE" get networkinterface nsvc-member-1 nsvc-member-2 nsvc-member-3 \
+                -o jsonpath='{range .items[*]}{.spec.addresses[0].address}{" "}{end}' \
+                | sed 's#/32##g' | tr -s ' ' | sed 's/ $//'
+            outputs:
+              - name: memberAddresses
+                value: ($stdout)
+        - script:
+            cluster: nso-downstream
+            timeout: 420s
+            env:
+              - name: OWNING_GC
+                value: ($downstreamGatewayClass)
+              - name: ENVOY_NS
+                value: ($envoyNamespace)
+              - name: ADMIN_PORT
+                value: ($adminLocalPort)
+              - name: MEMBER_ADDRESSES
+                value: ($memberAddresses)
+            content: |
+              set -eu
+              # kubectl get returns items in name order: member-1, -2, -3.
+              set -- $MEMBER_ADDRESSES
+              A_ONE=$1; A_TWO=$2; A_UNAVAIL=$3
+              export A_ONE A_TWO A_UNAVAIL
+              echo "members: one=${A_ONE} two=${A_TWO} unavailable=${A_UNAVAIL}"
+
+              ok=""
+              for i in $(seq 1 24); do
+                POD=$(kubectl -n "$ENVOY_NS" get pods \
+                  -l "gateway.envoyproxy.io/owning-gatewayclass=${OWNING_GC}" \
+                  -o go-template='{{range $p := .items}}{{if not $p.metadata.deletionTimestamp}}{{range $p.status.conditions}}{{if (and (eq .type "Ready") (eq .status "True"))}}{{$p.metadata.name}}{{"\n"}}{{end}}{{end}}{{end}}{{end}}' \
+                  2>/dev/null | head -n1 || true)
+                if [ -z "$POD" ]; then
+                  echo "attempt ${i}: no Ready edge proxy pod yet"; sleep 5; continue
+                fi
+                rm -f /tmp/nsvc-config-dump.json
+                kubectl -n "$ENVOY_NS" port-forward "pod/${POD}" "${ADMIN_PORT}:19000" >/dev/null 2>&1 &
+                PF=$!
+                for j in $(seq 1 10); do
+                  sleep 1
+                  curl -sf --max-time 5 "http://127.0.0.1:${ADMIN_PORT}/ready" >/dev/null 2>&1 && break
+                done
+                curl -sf --max-time 20 "http://127.0.0.1:${ADMIN_PORT}/config_dump?include_eds" \
+                  -o /tmp/nsvc-config-dump.json || true
+                kill "$PF" 2>/dev/null || true
+                wait "$PF" 2>/dev/null || true
+
+                if python3 - <<'PY'
+              import json, os, sys
+
+              try:
+                  dump = json.load(open('/tmp/nsvc-config-dump.json'))
+              except Exception as err:
+                  print('  config dump not readable yet:', err)
+                  sys.exit(1)
+
+              want = {
+                  os.environ['A_ONE']: ('us-central-1', True),
+                  os.environ['A_TWO']: ('us-central-1', True),
+                  os.environ['A_UNAVAIL']: ('us-central-1', False),
+              }
+
+              found = {}
+              names = []
+              for config in dump.get('configs', []):
+                  if 'EndpointsConfigDump' not in config['@type']:
+                      continue
+                  for entry in config.get('dynamic_endpoint_configs', []):
+                      assignment = entry['endpoint_config']
+                      if '/nsvc-proxy/' not in assignment['cluster_name']:
+                          continue
+                      names.append(assignment['cluster_name'])
+                      for group in assignment.get('endpoints', []):
+                          zone = group.get('locality', {}).get('zone', '')
+                          for endpoint in group.get('lb_endpoints', []):
+                              address = endpoint['endpoint']['address']['socket_address']
+                              found[address['address']] = (
+                                  zone, endpoint.get('health_status'), address['port_value'])
+
+              if len(names) != 1:
+                  print('  the proxy carries %d clusters for this route, want 1: %s' % (len(names), names))
+                  sys.exit(1)
+              print('  cluster:', names[0])
+
+              failures = []
+              for address, (zone, healthy) in want.items():
+                  if address not in found:
+                      failures.append('%s is absent from the proxy' % address)
+                      continue
+                  got_zone, got_health, port = found[address]
+                  print('  %s:%s locality=%r health=%s' % (address, port, got_zone, got_health))
+                  if got_zone != zone:
+                      failures.append('%s is in locality %r, want %r' % (address, got_zone, zone))
+                  if port != 8080:
+                      failures.append('%s is on port %s, want 8080' % (address, port))
+                  if healthy and got_health != 'HEALTHY':
+                      failures.append('%s is %s, want HEALTHY' % (address, got_health))
+                  if not healthy and got_health == 'HEALTHY':
+                      failures.append('%s is HEALTHY, but its holder is not available' % address)
+
+              localities = set(zone for zone, _, _ in found.values())
+              if localities != {'us-central-1'}:
+                  failures.append('the proxy carries localities %s, want the one the interfaces name'
+                                  % sorted(localities))
+
+              for failure in failures:
+                  print('  MISMATCH:', failure)
+              sys.exit(1 if failures else 0)
+              PY
+                then ok="yes"; break; fi
+                echo "attempt ${i}: the edge has not converged yet"
+                sleep 5
+              done
+              [ -n "$ok" ] || { echo "ERROR: the members never reached the proxy in their own localities"; exit 1; }
+              echo "OK: every member reached the edge in the locality its claim names"
+
+    - name: A real request is served by a member
+      description: |
+        The verdict. The request goes to the proxy's own hostname over the edge's
+        listener and must come back 200 from the server answering at a member's
+        allocated address. A 503 here means the edge holds the endpoints and
+        cannot use them.
+      try:
+        - script:
+            skipCommandOutput: true
+            skipLogOutput: true
+            content: |
+              kubectl -n "$NAMESPACE" get httpproxy nsvc-proxy -o jsonpath='{.status.canonicalHostname}'
+            outputs:
+              - name: proxyHostname
+                value: ($stdout)
+        - apply:
+            cluster: nso-downstream
+            resource:
+              apiVersion: v1
+              kind: Pod
+              metadata:
+                name: nsvc-conntest
+                namespace: default
+              spec:
+                containers:
+                  - name: curl
+                    image: curlimages/curl:8.11.1
+                    command: ["sleep", "infinity"]
+                    resources:
+                      requests:
+                        cpu: 50m
+                        memory: 64Mi
+                      limits:
+                        cpu: 100m
+                        memory: 128Mi
+                terminationGracePeriodSeconds: 0
+        - script:
+            cluster: nso-downstream
+            timeout: 480s
+            env:
+              - name: HOST
+                value: ($proxyHostname)
+              - name: OWNING_GC
+                value: ($downstreamGatewayClass)
+              - name: ENVOY_NS
+                value: ($envoyNamespace)
+            content: |
+              set -eu
+              kubectl -n default wait pod/nsvc-conntest --for=condition=Ready --timeout=240s
+              IP=$(kubectl get svc -n "$ENVOY_NS" \
+                -l "gateway.envoyproxy.io/owning-gatewayclass=${OWNING_GC}" \
+                -o jsonpath='{.items[0].spec.clusterIP}')
+              echo "proxy hostname ${HOST} at edge ${IP}"
+              ok=""
+              for i in $(seq 1 30); do
+                code=$(kubectl -n default exec nsvc-conntest -- \
+                  curl -ksS -o /tmp/body -w '%{http_code}' --max-time 15 \
+                  --resolve "${HOST}:80:${IP}" "http://${HOST}/get" 2>/dev/null || true)
+                echo "attempt ${i}: ${code}"
+                if [ "${code}" = "200" ]; then ok="yes"; break; fi
+                sleep 5
+              done
+              if [ -z "$ok" ]; then
+                echo "ERROR: no member served the request"
+                kubectl -n default exec nsvc-conntest -- sh -c 'head -c 600 /tmp/body' || true
+                exit 1
+              fi
+              # Enough further requests that both healthy members are certain to
+              # be given a turn; the next step reads the counters this produces.
+              for i in $(seq 1 20); do
+                kubectl -n default exec nsvc-conntest -- \
+                  curl -ksS -o /dev/null --max-time 15 \
+                  --resolve "${HOST}:80:${IP}" "http://${HOST}/get" >/dev/null 2>&1 || true
+              done
+              echo "OK: a member served a real request through the edge"
+
+    - name: Only the healthy members took traffic
+      description: |
+        Both available members must have served, and the unavailable one must
+        have taken nothing — the difference between an endpoint the edge carries
+        and an endpoint the edge uses.
+      try:
+        - script:
+            skipCommandOutput: true
+            skipLogOutput: true
+            content: |
+              kubectl -n "$NAMESPACE" get networkinterface nsvc-member-1 nsvc-member-2 nsvc-member-3 \
+                -o jsonpath='{range .items[*]}{.spec.addresses[0].address}{" "}{end}' \
+                | sed 's#/32##g' | tr -s ' ' | sed 's/ $//'
+            outputs:
+              - name: memberAddresses
+                value: ($stdout)
+        - script:
+            cluster: nso-downstream
+            timeout: 420s
+            env:
+              - name: OWNING_GC
+                value: ($downstreamGatewayClass)
+              - name: ENVOY_NS
+                value: ($envoyNamespace)
+              - name: ADMIN_PORT
+                value: ($adminLocalPort)
+              - name: MEMBER_ADDRESSES
+                value: ($memberAddresses)
+            content: |
+              set -eu
+              set -- $MEMBER_ADDRESSES
+              A_ONE=$1; A_TWO=$2; A_UNAVAIL=$3
+              export A_ONE A_TWO A_UNAVAIL
+
+              rm -f /tmp/nsvc-clusters.json
+              # Terminating proxy pods linger here for minutes while they drain,
+              # so the serving one is resolved by Ready and no deletion stamp,
+              # freshly on each attempt. The forward then takes an unpredictable
+              # moment to accept, so the admin interface is polled rather than
+              # guessed at.
+              for i in $(seq 1 12); do
+                POD=$(kubectl -n "$ENVOY_NS" get pods \
+                  -l "gateway.envoyproxy.io/owning-gatewayclass=${OWNING_GC}" \
+                  -o go-template='{{range $p := .items}}{{if not $p.metadata.deletionTimestamp}}{{range $p.status.conditions}}{{if (and (eq .type "Ready") (eq .status "True"))}}{{$p.metadata.name}}{{"\n"}}{{end}}{{end}}{{end}}{{end}}' \
+                  2>/dev/null | head -n1 || true)
+                if [ -n "$POD" ]; then
+                  kubectl -n "$ENVOY_NS" port-forward "pod/${POD}" "${ADMIN_PORT}:19000" >/dev/null 2>&1 &
+                  PF=$!
+                  for j in $(seq 1 10); do
+                    sleep 1
+                    curl -sf --max-time 5 "http://127.0.0.1:${ADMIN_PORT}/ready" >/dev/null 2>&1 && break
+                  done
+                  curl -sf --max-time 20 "http://127.0.0.1:${ADMIN_PORT}/clusters?format=json" \
+                    -o /tmp/nsvc-clusters.json || true
+                  kill "$PF" 2>/dev/null || true
+                  wait "$PF" 2>/dev/null || true
+                  [ -s /tmp/nsvc-clusters.json ] && break
+                fi
+                echo "attempt ${i}: the proxy's admin interface did not answer"
+                sleep 3
+              done
+              [ -s /tmp/nsvc-clusters.json ] \
+                || { echo "ERROR: could not read the proxy's cluster statistics"; exit 1; }
+
+              python3 - <<'PY'
+              import json, os, sys
+
+              clusters = json.load(open('/tmp/nsvc-clusters.json'))
+              served = {}
+              for cluster in clusters.get('cluster_statuses', []):
+                  if '/nsvc-proxy/' not in cluster.get('name', ''):
+                      continue
+                  for host in cluster.get('host_statuses', []):
+                      stats = dict((s['name'], int(s.get('value', 0)))
+                                   for s in host.get('stats', []) if 'name' in s)
+                      served[host['address']['socket_address']['address']] = (
+                          stats.get('rq_total', 0), host.get('health_status', {}))
+
+              failures = []
+              for label, address in (('member nsvc-member-1', os.environ['A_ONE']),
+                                     ('member nsvc-member-2', os.environ['A_TWO'])):
+                  total, health = served.get(address, (None, None))
+                  print('  %s %s: rq_total=%s health=%s' % (label, address, total, health))
+                  if not total:
+                      failures.append('%s %s served no request' % (label, address))
+
+              unavailable = os.environ['A_UNAVAIL']
+              total, health = served.get(unavailable, (None, None))
+              print('  unavailable member %s: rq_total=%s health=%s' % (unavailable, total, health))
+              if total is None:
+                  failures.append('the unavailable member %s is not carried by the proxy at all'
+                                  % unavailable)
+              elif total:
+                  failures.append('the unavailable member %s took %s requests' % (unavailable, total))
+              elif health.get('eds_health_status') == 'HEALTHY':
+                  failures.append('the unavailable member %s is HEALTHY at the edge' % unavailable)
+
+              for failure in failures:
+                  print('  MISMATCH:', failure)
+              sys.exit(1 if failures else 0)
+              PY
+              echo "OK: both healthy members served, the unavailable member served nothing"
+
+    - name: A selector spanning two networks is refused
+      description: |
+        A service covers one network. A selector reaching across two must say so
+        on MembersResolved rather than quietly serve one of them.
+      try:
+        - apply:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkContext
+              metadata:
+                name: nsvc-other-net-us-central-1
+              spec:
+                network:
+                  name: nsvc-other-net
+                location:
+                  name: us-central-1
+                ipFamilies:
+                  - IPv4
+                mtu: 1460
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Network
+              metadata:
+                name: nsvc-other-net
+              spec:
+                ipam:
+                  mode: Auto
+                ipFamilies:
+                  - IPv6
+                  - IPv4
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterfaceClaim
+              metadata:
+                name: nsvc-stray
+                labels:
+                  compute.datumapis.com/instance-group: spanning
+              spec:
+                network:
+                  name: nsvc-other-net
+                ipFamilies:
+                  - IPv4
+        - script:
+            content: |
+              set -eu
+              kubectl -n "$NAMESPACE" label networkinterfaceclaim nsvc-member-1 \
+                compute.datumapis.com/instance-group=spanning
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkService
+              metadata:
+                name: nsvc-spanning
+              spec:
+                networkInterfaces:
+                  selector:
+                    matchLabels:
+                      compute.datumapis.com/instance-group: spanning
+                ports:
+                  - name: http
+                    port: 8080
+        - assert:
+            timeout: 120s
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkService
+              metadata:
+                name: nsvc-spanning
+              status:
+                (conditions[?type == 'MembersResolved'] | [0].status): "False"
+                (conditions[?type == 'MembersResolved'] | [0].reason): MultipleNetworks
+                (conditions[?type == 'Ready'] | [0].status): "False"
+                (conditions[?type == 'Ready'] | [0].reason): MultipleNetworks
+                (length(locations || `[]`) == `0`): true
+      catch:
+        - script:
+            content: kubectl -n $NAMESPACE get networkservice -o yaml

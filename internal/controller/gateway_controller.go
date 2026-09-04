@@ -110,6 +110,9 @@ type GatewayReconciler struct {
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=backendtlspolicies/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=backendtlspolicies/finalizers,verbs=update
 
+// +kubebuilder:rbac:groups=gateway.envoyproxy.io,resources=backendtrafficpolicies,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=gateway.envoyproxy.io,resources=backendtrafficpolicies/status,verbs=get;update;patch
+
 // +kubebuilder:rbac:groups=cert-manager.io,resources=certificates,verbs=get;list;watch;create;update;patch;delete
 
 // +kubebuilder:rbac:groups=externaldns.k8s.io,resources=dnsendpoints,verbs=get;list;watch;create;update;patch;delete
@@ -2253,6 +2256,8 @@ func (r *GatewayReconciler) ensureDownstreamHTTPRoute(
 				obj.Ports = desiredEndpointSlice.Ports
 			case *gatewayv1.BackendTLSPolicy:
 				obj.Spec = desiredDownstreamResource.(*gatewayv1.BackendTLSPolicy).Spec
+			case *envoygatewayv1alpha1.BackendTrafficPolicy:
+				obj.Spec = desiredDownstreamResource.(*envoygatewayv1alpha1.BackendTrafficPolicy).Spec
 			}
 			return nil
 		})
@@ -2405,6 +2410,9 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 
 	logger := log.FromContext(ctx)
 
+	networkServiceBackend := false
+	synthesizedBackend := false
+
 	for ruleIdx, rule := range upstreamRoute.Spec.Rules {
 		var backendRefs []gatewayv1.HTTPBackendRef
 		for backendRefIdx, backendRef := range rule.BackendRefs {
@@ -2482,6 +2490,11 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 					if endpointPort == nil {
 						logger.Info("port not found in upstream endpointslice", "endpointslice", upstreamEndpointSlice.Name, "port", *backendRef.Port)
 						return nil, nil, nil, fmt.Errorf("port not found in upstream endpointslice")
+					}
+
+					synthesizedBackend = true
+					if upstreamEndpointSlice.Labels[NetworkServiceBackendLabel] != "" {
+						networkServiceBackend = true
 					}
 
 					// Construct a name to use for the service and endpointslice that the
@@ -2634,7 +2647,76 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 		})
 	}
 
+	// Only routes that go through the Service-synthesis path can ever have been
+	// given this policy, so only those need it removed when their backends stop
+	// being networkService ones.
+	if synthesizedBackend {
+		panicPolicy, err := r.networkServicePanicThresholdPolicy(ctx, upstreamRoute, downstreamGateway, downstreamStrategy)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		if networkServiceBackend {
+			downstreamResources = append(downstreamResources, panicPolicy)
+		} else {
+			downstreamResourcesToDelete = append(downstreamResourcesToDelete, panicPolicy)
+		}
+	}
+
 	return rules, downstreamResources, downstreamResourcesToDelete, nil
+}
+
+// networkServicePanicThresholdPolicy builds the BackendTrafficPolicy that turns
+// Envoy's panic threshold off for a route carrying a networkService backend.
+//
+// Panic mode exists because active health checking can be wrong at scale: below
+// the 50% default Envoy ignores health and spreads load over every member
+// rather than overload the few that still report healthy. A NetworkService's
+// health is not probed but declared — compute writes HolderAvailable from the
+// instance's own state — so zero healthy members is ground truth, not a
+// measurement artifact, and forwarding to a member that has said it is not
+// serving only buys the caller a connect timeout. With the threshold at zero
+// Envoy fails the request straight away and reports it as having no healthy
+// upstream, which is what the edge brands as an offline page.
+//
+// Envoy Gateway's policy API attaches BackendTrafficPolicy to routes and
+// gateways, never to a backend, so the policy is route-scoped even though the
+// intent is per-backend. That is harmless for the other backend kinds sharing a
+// route: none of them carry health state (no active health checking, no outlier
+// detection), so every one of their endpoints is healthy and the panic
+// threshold is never consulted at all.
+func (r *GatewayReconciler) networkServicePanicThresholdPolicy(
+	ctx context.Context,
+	upstreamRoute gatewayv1.HTTPRoute,
+	downstreamGateway *gatewayv1.Gateway,
+	downstreamStrategy downstreamclient.ResourceStrategy,
+) (*envoygatewayv1alpha1.BackendTrafficPolicy, error) {
+	downstreamRouteMeta, err := downstreamStrategy.ObjectMetaFromUpstreamObject(ctx, &upstreamRoute)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get downstream httproute object metadata: %w", err)
+	}
+
+	return &envoygatewayv1alpha1.BackendTrafficPolicy{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: downstreamGateway.Namespace,
+			Name:      fmt.Sprintf("route-%s-panic-threshold", upstreamRoute.UID),
+		},
+		Spec: envoygatewayv1alpha1.BackendTrafficPolicySpec{
+			PolicyTargetReferences: envoygatewayv1alpha1.PolicyTargetReferences{
+				TargetRefs: []gatewayv1.LocalPolicyTargetReferenceWithSectionName{{
+					LocalPolicyTargetReference: gatewayv1.LocalPolicyTargetReference{
+						Group: gatewayv1.GroupName,
+						Kind:  KindHTTPRoute,
+						Name:  gatewayv1.ObjectName(downstreamRouteMeta.Name),
+					},
+				}},
+			},
+			ClusterSettings: envoygatewayv1alpha1.ClusterSettings{
+				HealthCheck: &envoygatewayv1alpha1.HealthCheck{
+					PanicThreshold: ptr.To(uint32(0)),
+				},
+			},
+		},
+	}, nil
 }
 
 // passThroughVPCPodBackendRef resolves the downstream-native EndpointSlice

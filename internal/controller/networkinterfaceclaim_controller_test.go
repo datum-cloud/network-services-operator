@@ -1964,6 +1964,61 @@ func TestExternalAttachmentStatusSurvivesNSO(t *testing.T) {
 	requireAttachmentReported("a rebind")
 }
 
+// A retained interface outlives the holder that reported it, and the next claim
+// of its name is a different holder that has said nothing yet. The departed
+// holder's HolderAvailable must not be inherited, or a service counts the new
+// holder healthy and the edge sends it traffic before it is serving.
+func TestHolderAvailableDoesNotSurviveRelease(t *testing.T) {
+	s := newScenario(t, true, []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol})
+
+	spec := networkingv1alpha.NetworkInterfaceClaimSpec{
+		InterfaceName: "eth0",
+		IPFamilies:    []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol},
+		ReclaimPolicy: networkingv1alpha.NetworkInterfaceReclaimPolicyRetain,
+	}
+
+	s.reconcile(s.createClaim("slot-0-eth0", spec))
+
+	iface, err := s.getInterface("slot-0-eth0")
+	require.NoError(t, err)
+	require.Equal(t, metav1.ConditionUnknown,
+		apimeta.FindStatusCondition(iface.Status.Conditions,
+			networkingv1alpha.NetworkInterfaceHolderAvailable).Status,
+		"NSO seeds HolderAvailable and waits for the holder")
+
+	// Stand in for the holder reporting itself in service.
+	apimeta.SetStatusCondition(&iface.Status.Conditions, metav1.Condition{
+		Type:   networkingv1alpha.NetworkInterfaceHolderAvailable,
+		Status: metav1.ConditionTrue,
+		Reason: networkingv1alpha.NetworkInterfaceReasonHolderAvailable,
+	})
+	require.NoError(t, s.client.Status().Update(s.ctx, iface))
+
+	held, err := s.getInterface("slot-0-eth0")
+	require.NoError(t, err)
+	require.True(t, isServiceMemberHealthy(held))
+
+	s.deleteClaim(s.getClaim("slot-0-eth0"))
+
+	released, err := s.getInterface("slot-0-eth0")
+	require.NoError(t, err, "Retain keeps the interface")
+	require.Equal(t, metav1.ConditionUnknown,
+		apimeta.FindStatusCondition(released.Status.Conditions,
+			networkingv1alpha.NetworkInterfaceHolderAvailable).Status,
+		"releasing the interface takes the departed holder's word back")
+	require.Equal(t, networkingv1alpha.NetworkInterfaceReasonHolderReleased,
+		apimeta.FindStatusCondition(released.Status.Conditions,
+			networkingv1alpha.NetworkInterfaceHolderAvailable).Reason)
+
+	s.reconcile(s.createClaim("slot-0-eth0", spec))
+
+	rebound, err := s.getInterface("slot-0-eth0")
+	require.NoError(t, err)
+	require.Equal(t, networkingv1alpha.NetworkInterfacePhaseBound, rebound.Status.Phase)
+	require.False(t, isServiceMemberHealthy(rebound),
+		"the new holder inherits no claim to be serving; it has to say so itself")
+}
+
 // A rejection demotes the conditions NSO owns. Programmed is not one of them.
 func TestRejectionLeavesProgrammedAlone(t *testing.T) {
 	s := newScenario(t, true, []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol})
@@ -2050,4 +2105,115 @@ func TestClaimRefusesATerminatingSubnet(t *testing.T) {
 	condition := conditionOf(s.getClaim("terminating-subnet"), networkingv1alpha.NetworkInterfaceClaimReady)
 	require.Equal(t, metav1.ConditionFalse, condition.Status)
 	require.Equal(t, networkingv1alpha.NetworkInterfaceClaimReasonSubnetTerminating, condition.Reason)
+}
+
+func (s *scenario) labelClaim(name string, labels map[string]string) {
+	s.t.Helper()
+	claim := s.getClaim(name)
+	if claim.Labels == nil {
+		claim.Labels = map[string]string{}
+	}
+	maps.Copy(claim.Labels, labels)
+	require.NoError(s.t, s.client.Update(s.ctx, claim))
+}
+
+func TestBoundInterfaceCarriesTheLocationItsCellServes(t *testing.T) {
+	s := newScenario(t, true, []networkingv1alpha.IPFamily{networkingv1alpha.IPv4Protocol})
+
+	claim := s.createClaim("located", networkingv1alpha.NetworkInterfaceClaimSpec{
+		InterfaceName: "eth0",
+		IPFamilies:    []networkingv1alpha.IPFamily{networkingv1alpha.IPv4Protocol},
+		ReclaimPolicy: networkingv1alpha.NetworkInterfaceReclaimPolicyDelete,
+	})
+	s.reconcile(claim)
+
+	require.Equal(t, metav1.ConditionTrue,
+		conditionOf(s.getClaim("located"), networkingv1alpha.NetworkInterfaceClaimBound).Status)
+
+	iface, err := s.getInterface("located")
+	require.NoError(t, err)
+	require.Equal(t, testLocationName,
+		iface.Labels[networkingv1alpha.NetworkInterfaceLocationLabel],
+		"a service resolves its members by this label, so the cell has to write it")
+}
+
+// Compute describes the claim it creates, and a consumer selects the members of
+// a service by what it wrote. Those keys only reach a service if they travel to
+// the interface.
+func TestInterfaceCarriesTheClaimsConsumerLabels(t *testing.T) {
+	s := newScenario(t, true, []networkingv1alpha.IPFamily{networkingv1alpha.IPv4Protocol})
+
+	s.createClaim("propagating", networkingv1alpha.NetworkInterfaceClaimSpec{
+		InterfaceName: "eth0",
+		IPFamilies:    []networkingv1alpha.IPFamily{networkingv1alpha.IPv4Protocol},
+		ReclaimPolicy: networkingv1alpha.NetworkInterfaceReclaimPolicyDelete,
+	})
+	s.labelClaim("propagating", map[string]string{
+		"compute.datumapis.com/workload-name": "api",
+		"app":                                 "storefront",
+		networkingv1alpha.NetworkInterfaceLocationLabel: "somewhere-else",
+	})
+	s.reconcile(s.getClaim("propagating"))
+
+	iface, err := s.getInterface("propagating")
+	require.NoError(t, err)
+	require.Equal(t, "api", iface.Labels["compute.datumapis.com/workload-name"])
+	require.NotContains(t, iface.Labels, "app",
+		"only the allow-listed prefixes travel, so a consumer key cannot collide with a platform one")
+	require.Equal(t, testLocationName,
+		iface.Labels[networkingv1alpha.NetworkInterfaceLocationLabel],
+		"the cell knows where the interface is; the claim does not get to say")
+}
+
+// A label the claim drops has to leave the interface too. Left behind, it keeps
+// the interface a member of a service the workload has left.
+func TestInterfaceLosesAConsumerLabelTheClaimDropped(t *testing.T) {
+	s := newScenario(t, true, []networkingv1alpha.IPFamily{networkingv1alpha.IPv4Protocol})
+
+	s.createClaim("relabelled", networkingv1alpha.NetworkInterfaceClaimSpec{
+		InterfaceName: "eth0",
+		IPFamilies:    []networkingv1alpha.IPFamily{networkingv1alpha.IPv4Protocol},
+		ReclaimPolicy: networkingv1alpha.NetworkInterfaceReclaimPolicyDelete,
+	})
+	s.labelClaim("relabelled", map[string]string{
+		"compute.datumapis.com/workload-name": "api",
+	})
+	s.reconcile(s.getClaim("relabelled"))
+
+	stale, err := s.getInterface("relabelled")
+	require.NoError(t, err)
+	require.Equal(t, "api", stale.Labels["compute.datumapis.com/workload-name"])
+
+	relabelled := s.getClaim("relabelled")
+	delete(relabelled.Labels, "compute.datumapis.com/workload-name")
+	require.NoError(t, s.client.Update(s.ctx, relabelled))
+	s.reconcile(s.getClaim("relabelled"))
+
+	iface, err := s.getInterface("relabelled")
+	require.NoError(t, err)
+	require.NotContains(t, iface.Labels, "compute.datumapis.com/workload-name")
+}
+
+// A settled claim must not rewrite the interface on every pass.
+func TestASettledInterfaceIsNotRelabelled(t *testing.T) {
+	s := newScenario(t, true, []networkingv1alpha.IPFamily{networkingv1alpha.IPv4Protocol})
+
+	s.createClaim("settled", networkingv1alpha.NetworkInterfaceClaimSpec{
+		InterfaceName: "eth0",
+		IPFamilies:    []networkingv1alpha.IPFamily{networkingv1alpha.IPv4Protocol},
+		ReclaimPolicy: networkingv1alpha.NetworkInterfaceReclaimPolicyDelete,
+	})
+	s.labelClaim("settled", map[string]string{
+		"compute.datumapis.com/workload-name": "api",
+	})
+	s.reconcile(s.getClaim("settled"))
+
+	first, err := s.getInterface("settled")
+	require.NoError(t, err)
+
+	s.reconcile(s.getClaim("settled"))
+
+	second, err := s.getInterface("settled")
+	require.NoError(t, err)
+	require.Equal(t, first.ResourceVersion, second.ResourceVersion)
 }

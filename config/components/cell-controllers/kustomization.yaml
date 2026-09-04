@@ -2,21 +2,21 @@ apiVersion: kustomize.config.k8s.io/v1alpha1
 kind: Component
 
 resources:
-  - deployment.yaml
-  - metrics_service.yaml
+- deployment.yaml
+- metrics_service.yaml
 
 # A component's transformers apply to the parent's whole accumulation, so this
 # matches a name only the cell Deployment carries. Overlays pinning
 # ghcr.io/datum-cloud/network-services-operator still reach both Deployments:
 # their transformer runs after this one has resolved the name.
 images:
-  - name: network-services-operator-cell
-    newName: ghcr.io/datum-cloud/network-services-operator
-    newTag: latest
+- name: network-services-operator-cell
+  newName: ghcr.io/datum-cloud/network-services-operator
+  newTag: 8e1bd29
 
 configMapGenerator:
-  - name: cell-config
-    files:
-      - config.yaml
-    options:
-      disableNameSuffixHash: true
+- files:
+  - config.yaml
+  name: cell-config
+  options:
+    disableNameSuffixHash: true

@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 )
@@ -90,7 +91,63 @@ func TestHTTPProxyCRDBackendExclusivity(t *testing.T) {
 		assert.Truef(t, apierrors.IsInvalid(err), "expected an Invalid error, got %v", err)
 	})
 
-	t.Run("neither endpoint nor instance is rejected", func(t *testing.T) {
+	t.Run("networkService alone is valid", func(t *testing.T) {
+		proxy := backendProxy("backend-networkservice-only", networkingv1alpha.HTTPProxyRuleBackend{
+			NetworkService: &networkingv1alpha.NetworkServiceBackendRef{Name: "storefront", Port: "http"},
+		})
+		require.NoError(t, create(t, proxy))
+	})
+
+	t.Run("networkService with endpoint is rejected", func(t *testing.T) {
+		proxy := backendProxy("backend-networkservice-endpoint", networkingv1alpha.HTTPProxyRuleBackend{
+			Endpoint:       "https://api.example.com",
+			NetworkService: &networkingv1alpha.NetworkServiceBackendRef{Name: "storefront", Port: "http"},
+		})
+		err := create(t, proxy)
+		require.Error(t, err)
+		assert.Truef(t, apierrors.IsInvalid(err), "expected an Invalid error, got %v", err)
+	})
+
+	t.Run("networkService with connector is rejected", func(t *testing.T) {
+		proxy := backendProxy("backend-networkservice-connector", networkingv1alpha.HTTPProxyRuleBackend{
+			Connector:      &networkingv1alpha.ConnectorReference{Name: "test-connector"},
+			NetworkService: &networkingv1alpha.NetworkServiceBackendRef{Name: "storefront", Port: "http"},
+		})
+		err := create(t, proxy)
+		require.Error(t, err)
+		assert.Truef(t, apierrors.IsInvalid(err), "expected an Invalid error, got %v", err)
+	})
+
+	t.Run("networkService with instance is rejected", func(t *testing.T) {
+		proxy := backendProxy("backend-networkservice-instance", networkingv1alpha.HTTPProxyRuleBackend{
+			Instance:       &networkingv1alpha.InstanceBackendRef{Name: "vpc-pod-1", Port: 8080},
+			NetworkService: &networkingv1alpha.NetworkServiceBackendRef{Name: "storefront", Port: "http"},
+		})
+		err := create(t, proxy)
+		require.Error(t, err)
+		assert.Truef(t, apierrors.IsInvalid(err), "expected an Invalid error, got %v", err)
+	})
+
+	t.Run("networkService with backend tls is rejected", func(t *testing.T) {
+		proxy := backendProxy("backend-networkservice-tls", networkingv1alpha.HTTPProxyRuleBackend{
+			NetworkService: &networkingv1alpha.NetworkServiceBackendRef{Name: "storefront", Port: "http"},
+			TLS:            &networkingv1alpha.HTTPProxyBackendTLS{Hostname: ptr.To("origin.example.com")},
+		})
+		err := create(t, proxy)
+		require.Error(t, err)
+		assert.Truef(t, apierrors.IsInvalid(err), "expected an Invalid error, got %v", err)
+		assert.Contains(t, err.Error(), "backend TLS is not supported for networkService backends")
+	})
+
+	t.Run("endpoint with backend tls stays valid", func(t *testing.T) {
+		proxy := backendProxy("backend-endpoint-tls", networkingv1alpha.HTTPProxyRuleBackend{
+			Endpoint: "https://203.0.113.10",
+			TLS:      &networkingv1alpha.HTTPProxyBackendTLS{Hostname: ptr.To("origin.example.com")},
+		})
+		require.NoError(t, create(t, proxy))
+	})
+
+	t.Run("neither endpoint nor instance nor networkService is rejected", func(t *testing.T) {
 		proxy := backendProxy("backend-neither", networkingv1alpha.HTTPProxyRuleBackend{
 			Connector: &networkingv1alpha.ConnectorReference{Name: "test-connector"},
 		})

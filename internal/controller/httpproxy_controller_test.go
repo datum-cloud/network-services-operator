@@ -3725,3 +3725,375 @@ func TestHTTPProxyReconcileUnprogrammableHostname(t *testing.T) {
 	err := fakeClient.Get(ctx, client.ObjectKeyFromObject(httpProxy), httpRoute)
 	assert.True(t, apierrors.IsNotFound(err), "no HTTPRoute should be written for an unprogrammable proxy")
 }
+
+func networkServiceTestScheme(t *testing.T) *runtime.Scheme {
+	t.Helper()
+
+	testScheme := runtime.NewScheme()
+	require.NoError(t, scheme.AddToScheme(testScheme))
+	require.NoError(t, gatewayv1.Install(testScheme))
+	require.NoError(t, discoveryv1.AddToScheme(testScheme))
+	require.NoError(t, networkingv1alpha.AddToScheme(testScheme))
+
+	return testScheme
+}
+
+func newNetworkService() *networkingv1alpha.NetworkService {
+	return &networkingv1alpha.NetworkService{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "test", Name: "storefront"},
+		Spec: networkingv1alpha.NetworkServiceSpec{
+			NetworkInterfaces: networkingv1alpha.NetworkServiceInterfaceSelector{
+				Selector: metav1.LabelSelector{
+					MatchLabels: map[string]string{"app": "storefront"},
+				},
+			},
+			Ports: []networkingv1alpha.NetworkServicePort{
+				{Name: "http", Port: 8080, Protocol: networkingv1alpha.NetworkServiceProtocolTCP},
+			},
+		},
+	}
+}
+
+func newNetworkServiceMember(name, location string, holderAvailable bool, opts ...func(*networkingv1alpha.NetworkInterface)) *networkingv1alpha.NetworkInterface {
+	holderStatus := metav1.ConditionFalse
+	if holderAvailable {
+		holderStatus = metav1.ConditionTrue
+	}
+
+	member := &networkingv1alpha.NetworkInterface{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "test",
+			Name:      name,
+			Labels: map[string]string{
+				"app": "storefront",
+				networkingv1alpha.NetworkInterfaceLocationLabel: location,
+			},
+		},
+		Spec: networkingv1alpha.NetworkInterfaceSpec{
+			Network:  networkingv1alpha.LocalNetworkRef{Name: "default"},
+			ClaimRef: &networkingv1alpha.NetworkInterfaceClaimRef{Name: name},
+		},
+		Status: networkingv1alpha.NetworkInterfaceStatus{
+			Phase: networkingv1alpha.NetworkInterfacePhaseBound,
+			Conditions: []metav1.Condition{{
+				Type:               networkingv1alpha.NetworkInterfaceHolderAvailable,
+				Status:             holderStatus,
+				Reason:             "Test",
+				LastTransitionTime: metav1.Now(),
+			}},
+		},
+	}
+
+	for _, opt := range opts {
+		opt(member)
+	}
+
+	return member
+}
+
+func withExternalAddress(address string) func(*networkingv1alpha.NetworkInterface) {
+	return func(member *networkingv1alpha.NetworkInterface) {
+		member.Spec.ExternalAddresses = append(member.Spec.ExternalAddresses, networkingv1alpha.NetworkInterfaceExternalAddress{
+			Family:  networkingv1alpha.IPv4Protocol,
+			Address: address,
+			Class:   "public-ipv4",
+		})
+	}
+}
+
+func withInterfaceAddress(address string) func(*networkingv1alpha.NetworkInterface) {
+	return func(member *networkingv1alpha.NetworkInterface) {
+		member.Spec.Addresses = append(member.Spec.Addresses, networkingv1alpha.NetworkInterfaceAddress{
+			Family:  networkingv1alpha.IPv4Protocol,
+			Address: address,
+			Primary: true,
+		})
+	}
+}
+
+// released is a retained interface no claim holds any more. It keeps its labels
+// and its addresses, and nothing answers on them.
+func released() func(*networkingv1alpha.NetworkInterface) {
+	return func(member *networkingv1alpha.NetworkInterface) {
+		member.Spec.ClaimRef = nil
+		member.Status.Phase = networkingv1alpha.NetworkInterfacePhaseAvailable
+	}
+}
+
+func newNetworkServiceProxy() *networkingv1alpha.HTTPProxy {
+	return newHTTPProxy(func(h *networkingv1alpha.HTTPProxy) {
+		h.Spec.Rules[0].Backends[0] = networkingv1alpha.HTTPProxyRuleBackend{
+			NetworkService: &networkingv1alpha.NetworkServiceBackendRef{Name: "storefront", Port: "http"},
+		}
+	})
+}
+
+// TestHTTPProxyCollectDesiredResourcesNetworkService covers the networkService
+// backend kind separately from TestHTTPProxyCollectDesiredResources, whose
+// shared post-loop assertions assume one synthesized EndpointSlice carrying a
+// single FQDN endpoint.
+func TestHTTPProxyCollectDesiredResourcesNetworkService(t *testing.T) {
+	operatorConfig := config.NetworkServicesOperator{
+		Gateway: config.GatewayConfig{
+			TargetDomain: "example.com",
+		},
+		HTTPProxy: config.HTTPProxyConfig{
+			GatewayClassName: "test",
+		},
+	}
+
+	reconciler := &HTTPProxyReconciler{Config: operatorConfig}
+	testScheme := networkServiceTestScheme(t)
+
+	t.Run("resolves members in two locations into zoned endpoints", func(t *testing.T) {
+		httpProxy := newNetworkServiceProxy()
+
+		cl := fake.NewClientBuilder().
+			WithScheme(testScheme).
+			WithObjects(
+				newNetworkService(),
+				newNetworkServiceMember("dfw-1", "dfw", true, withExternalAddress("203.0.113.10"), withInterfaceAddress("10.128.0.2/32")),
+				newNetworkServiceMember("dfw-2", "dfw", true, withInterfaceAddress("198.51.100.5/32")),
+				newNetworkServiceMember("sjc-1", "sjc", false, withInterfaceAddress("192.0.2.7/32")),
+				newNetworkServiceMember("dfw-retired", "dfw", true, withInterfaceAddress("198.51.100.40/32"), released()),
+				newNetworkServiceMember("other-1", "dfw", true, withInterfaceAddress("198.51.100.30/32"), func(m *networkingv1alpha.NetworkInterface) {
+					m.Labels["app"] = "not-storefront"
+				}),
+			).
+			Build()
+
+		desiredResources, err := reconciler.collectDesiredResources(context.Background(), cl, httpProxy)
+		require.NoError(t, err)
+		require.Nil(t, desiredResources.partialProgramming)
+
+		require.Len(t, desiredResources.endpointSlices, 1)
+		endpointSlice := desiredResources.endpointSlices[0]
+
+		assert.Equal(t, "test", endpointSlice.Namespace)
+		assert.Equal(t, "test-0-0", endpointSlice.Name)
+		assert.Equal(t, discoveryv1.AddressTypeIPv4, endpointSlice.AddressType)
+		assert.Equal(t, "test-0-0", endpointSlice.Labels[discoveryv1.LabelServiceName])
+		assert.Equal(t, "storefront", endpointSlice.Labels[NetworkServiceBackendLabel])
+
+		require.Len(t, endpointSlice.Ports, 1)
+		assert.EqualValues(t, 8080, ptr.Deref(endpointSlice.Ports[0].Port, 0))
+		assert.Equal(t, "httpproxy-0-0", ptr.Deref(endpointSlice.Ports[0].Name, ""))
+
+		require.Len(t, endpointSlice.Endpoints, 3)
+
+		// dfw-1 also holds an external address. An edge reaches a member over
+		// the fabric, so only the address inside the network is published.
+		assert.Equal(t, []string{"10.128.0.2"}, endpointSlice.Endpoints[0].Addresses)
+		for _, endpoint := range endpointSlice.Endpoints {
+			assert.NotContains(t, endpoint.Addresses, "203.0.113.10",
+				"an external address must never be published: an edge dialling one leaves the fabric")
+		}
+		assert.Equal(t, "dfw", ptr.Deref(endpointSlice.Endpoints[0].Zone, ""))
+		assert.True(t, ptr.Deref(endpointSlice.Endpoints[0].Conditions.Ready, false))
+
+		// The prefix length is dropped.
+		assert.Equal(t, []string{"198.51.100.5"}, endpointSlice.Endpoints[1].Addresses)
+		assert.Equal(t, "dfw", ptr.Deref(endpointSlice.Endpoints[1].Zone, ""))
+
+		assert.Equal(t, []string{"192.0.2.7"}, endpointSlice.Endpoints[2].Addresses)
+		assert.Equal(t, "sjc", ptr.Deref(endpointSlice.Endpoints[2].Zone, ""))
+		assert.False(t, ptr.Deref(endpointSlice.Endpoints[2].Conditions.Ready, true),
+			"a member whose holder does not report itself available must not be ready")
+		assert.False(t, ptr.Deref(endpointSlice.Endpoints[2].Conditions.Serving, true),
+			"a member whose holder does not report itself available must not be serving")
+
+		for _, endpoint := range endpointSlice.Endpoints {
+			assert.NotContains(t, endpoint.Addresses, "203.0.113.40",
+				"an interface no workload holds is retired capacity and cannot be an endpoint")
+		}
+
+		require.Len(t, desiredResources.httpRoute.Spec.Rules, 1)
+		backendRefs := desiredResources.httpRoute.Spec.Rules[0].BackendRefs
+		require.Len(t, backendRefs, 1)
+		assert.Equal(t, "discovery.k8s.io", string(ptr.Deref(backendRefs[0].Group, "")))
+		assert.Equal(t, "EndpointSlice", string(ptr.Deref(backendRefs[0].Kind, "")))
+		assert.Equal(t, "test-0-0", string(backendRefs[0].Name))
+		assert.EqualValues(t, 8080, ptr.Deref(backendRefs[0].Port, 0))
+	})
+
+	t.Run("the holder condition drives endpoint ready and serving", func(t *testing.T) {
+		httpProxy := newNetworkServiceProxy()
+
+		member := newNetworkServiceMember("dfw-1", "dfw", false, withInterfaceAddress("10.128.0.2/32"))
+		cl := fake.NewClientBuilder().
+			WithScheme(testScheme).
+			WithObjects(newNetworkService(), member).
+			WithStatusSubresource(member).
+			Build()
+
+		endpointConditions := func() discoveryv1.EndpointConditions {
+			desiredResources, err := reconciler.collectDesiredResources(context.Background(), cl, httpProxy)
+			require.NoError(t, err)
+			require.Len(t, desiredResources.endpointSlices, 1)
+			require.Len(t, desiredResources.endpointSlices[0].Endpoints, 1)
+			return desiredResources.endpointSlices[0].Endpoints[0].Conditions
+		}
+
+		conditions := endpointConditions()
+		assert.False(t, ptr.Deref(conditions.Ready, true))
+		assert.False(t, ptr.Deref(conditions.Serving, true))
+
+		var current networkingv1alpha.NetworkInterface
+		require.NoError(t, cl.Get(context.Background(), client.ObjectKeyFromObject(member), &current))
+		apimeta.SetStatusCondition(&current.Status.Conditions, metav1.Condition{
+			Type:   networkingv1alpha.NetworkInterfaceHolderAvailable,
+			Status: metav1.ConditionTrue,
+			Reason: "Test",
+		})
+		require.NoError(t, cl.Status().Update(context.Background(), &current))
+
+		conditions = endpointConditions()
+		assert.True(t, ptr.Deref(conditions.Ready, false),
+			"a holder reporting itself available must take the endpoint out of draining")
+		assert.True(t, ptr.Deref(conditions.Serving, false))
+		assert.False(t, ptr.Deref(conditions.Terminating, true))
+	})
+
+	t.Run("shards members beyond the per-slice limit and reports partial programming", func(t *testing.T) {
+		httpProxy := newNetworkServiceProxy()
+
+		objects := make([]client.Object, 0, 151)
+		objects = append(objects, newNetworkService())
+		for i := range 150 {
+			objects = append(objects, newNetworkServiceMember(
+				fmt.Sprintf("member-%03d", i), "dfw", true,
+				withInterfaceAddress(fmt.Sprintf("10.128.%d.%d/32", i/254, i%254+1)),
+			))
+		}
+
+		cl := fake.NewClientBuilder().WithScheme(testScheme).WithObjects(objects...).Build()
+
+		desiredResources, err := reconciler.collectDesiredResources(context.Background(), cl, httpProxy)
+		require.NoError(t, err)
+
+		require.Len(t, desiredResources.endpointSlices, 2)
+		assert.Equal(t, "test-0-0", desiredResources.endpointSlices[0].Name)
+		assert.Len(t, desiredResources.endpointSlices[0].Endpoints, maxEndpointsPerSlice)
+		assert.Equal(t, "test-0-0-1", desiredResources.endpointSlices[1].Name)
+		assert.Len(t, desiredResources.endpointSlices[1].Endpoints, 50)
+
+		for _, endpointSlice := range desiredResources.endpointSlices {
+			assert.Equal(t, "test-0-0", endpointSlice.Labels[discoveryv1.LabelServiceName],
+				"every shard must be discoverable as one service's endpoints")
+		}
+
+		require.NotNil(t, desiredResources.partialProgramming)
+		assert.Equal(t, networkingv1alpha.HTTPProxyReasonNetworkServiceMembersUnreferenced,
+			desiredResources.partialProgramming.reason)
+	})
+
+	// Deliberate: a member-less service keeps its slice rather than losing it.
+	// See the comment in networkServiceEndpointSlices — the rule's backendRef
+	// names this slice, and TestProcessDownstreamHTTPRouteRulesEmptyEndpointSlice
+	// pins what the Gateway controller does with it either way.
+	t.Run("a service with no members still yields the slice its backendRef names", func(t *testing.T) {
+		httpProxy := newNetworkServiceProxy()
+
+		cl := fake.NewClientBuilder().WithScheme(testScheme).WithObjects(newNetworkService()).Build()
+
+		desiredResources, err := reconciler.collectDesiredResources(context.Background(), cl, httpProxy)
+		require.NoError(t, err)
+		require.Len(t, desiredResources.endpointSlices, 1,
+			"withholding the slice would leave the rule's backendRef dangling")
+		assert.Empty(t, desiredResources.endpointSlices[0].Endpoints)
+		assert.Nil(t, desiredResources.partialProgramming)
+
+		require.Len(t, desiredResources.httpRoute.Spec.Rules, 1)
+		backendRefs := desiredResources.httpRoute.Spec.Rules[0].BackendRefs
+		require.Len(t, backendRefs, 1)
+		assert.Equal(t, desiredResources.endpointSlices[0].Name, string(backendRefs[0].Name))
+
+		require.Len(t, desiredResources.endpointSlices[0].Ports, 1,
+			"the port must survive so the Gateway controller can match the backendRef port")
+		assert.EqualValues(t, 8080, ptr.Deref(desiredResources.endpointSlices[0].Ports[0].Port, 0))
+	})
+
+	t.Run("missing NetworkService fails with errNetworkServiceBackendNotFound", func(t *testing.T) {
+		httpProxy := newNetworkServiceProxy()
+
+		cl := fake.NewClientBuilder().WithScheme(testScheme).Build()
+		_, err := reconciler.collectDesiredResources(context.Background(), cl, httpProxy)
+		require.Error(t, err)
+
+		var notFound *errNetworkServiceBackendNotFound
+		require.ErrorAs(t, err, &notFound)
+		assert.Contains(t, notFound.Error(), `NetworkService "storefront" not found`)
+	})
+
+	t.Run("missing port fails with errNetworkServiceBackendNotFound", func(t *testing.T) {
+		httpProxy := newHTTPProxy(func(h *networkingv1alpha.HTTPProxy) {
+			h.Spec.Rules[0].Backends[0] = networkingv1alpha.HTTPProxyRuleBackend{
+				NetworkService: &networkingv1alpha.NetworkServiceBackendRef{Name: "storefront", Port: "grpc"},
+			}
+		})
+
+		cl := fake.NewClientBuilder().WithScheme(testScheme).WithObjects(newNetworkService()).Build()
+		_, err := reconciler.collectDesiredResources(context.Background(), cl, httpProxy)
+		require.Error(t, err)
+
+		var notFound *errNetworkServiceBackendNotFound
+		require.ErrorAs(t, err, &notFound)
+		assert.Contains(t, notFound.Error(), `has no port named "grpc"`)
+	})
+}
+
+// TestHTTPProxyReconcileNetworkServiceBackendNotFound verifies that a
+// networkService backend naming a service that does not exist surfaces as a
+// Programmed=False condition with its own reason and a prompt requeue, rather
+// than a bare generic requeue.
+func TestHTTPProxyReconcileNetworkServiceBackendNotFound(t *testing.T) {
+	logger := zap.New(zap.UseFlagOptions(&zap.Options{Development: true}))
+	ctx := log.IntoContext(context.Background(), logger)
+
+	testScheme := networkServiceTestScheme(t)
+	require.NoError(t, envoygatewayv1alpha1.AddToScheme(testScheme))
+	require.NoError(t, networkingv1alpha1.AddToScheme(testScheme))
+
+	testConfig := config.NetworkServicesOperator{
+		HTTPProxy: config.HTTPProxyConfig{
+			GatewayClassName: "test-gateway-class",
+		},
+		Gateway: config.GatewayConfig{
+			ControllerName: gatewayv1.GatewayController("test-gateway-class"),
+			TargetDomain:   "example.com",
+		},
+	}
+
+	httpProxy := newNetworkServiceProxy()
+	controllerutil.AddFinalizer(httpProxy, httpProxyFinalizer)
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(testScheme).
+		WithObjects(httpProxy).
+		WithStatusSubresource(httpProxy).
+		Build()
+
+	reconciler := &HTTPProxyReconciler{
+		mgr:    &fakeMockManager{cl: fakeClient},
+		Config: testConfig,
+	}
+
+	req := mcreconcile.Request{
+		Request: reconcile.Request{
+			NamespacedName: client.ObjectKeyFromObject(httpProxy),
+		},
+		ClusterName: "test-cluster",
+	}
+
+	result, err := reconciler.Reconcile(ctx, req)
+	require.NoError(t, err)
+	assert.Equal(t, retryAfterConflict, result.RequeueAfter)
+
+	var updated networkingv1alpha.HTTPProxy
+	require.NoError(t, fakeClient.Get(ctx, client.ObjectKeyFromObject(httpProxy), &updated))
+
+	programmed := apimeta.FindStatusCondition(updated.Status.Conditions, networkingv1alpha.HTTPProxyConditionProgrammed)
+	require.NotNil(t, programmed)
+	assert.Equal(t, metav1.ConditionFalse, programmed.Status)
+	assert.Equal(t, networkingv1alpha.HTTPProxyReasonNetworkServiceBackendNotFound, programmed.Reason)
+}

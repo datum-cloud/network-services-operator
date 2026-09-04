@@ -227,7 +227,7 @@ func (r *NetworkInterfaceClaimReconciler) fulfill(
 		return ctrl.Result{}, err
 	}
 
-	if err := r.syncInterface(ctx, cl, iface, claim, &networkContext); err != nil {
+	if err := r.syncInterface(ctx, cl, iface, claim, &networkContext, location); err != nil {
 		var refused *bindingRefused
 		if errors.As(err, &refused) {
 			return r.reject(ctx, cl, claim, refused.reason, refused.message)
@@ -262,7 +262,7 @@ func (r *NetworkInterfaceClaimReconciler) resolveProject(
 
 func resolveProjectRouting(
 	ctx context.Context,
-	cl client.Client,
+	cl client.Reader,
 	namespaceName string,
 ) (projectRouting, error) {
 	var namespace corev1.Namespace
@@ -294,7 +294,7 @@ func resolveProjectRouting(
 // names.
 func resolveProjectOrCluster(
 	ctx context.Context,
-	cl client.Client,
+	cl client.Reader,
 	namespaceName string,
 ) (projectRouting, error) {
 	routing, err := resolveProjectRouting(ctx, cl, namespaceName)
@@ -560,6 +560,7 @@ func (r *NetworkInterfaceClaimReconciler) bindInterface(
 	iface.Namespace = interfaceKey.Namespace
 	iface.Name = interfaceKey.Name
 	iface.Annotations = map[string]string{allocationClaimAnnotation: claim.Name}
+	iface.Labels = propagatedInterfaceLabels(claim, location)
 	iface.Finalizers = []string{networkInterfaceFinalizer}
 	iface.Spec = networkingv1alpha.NetworkInterfaceSpec{
 		Network:        networkingv1alpha.LocalNetworkRef{Name: networkContext.Spec.Network.Name},
@@ -989,17 +990,28 @@ func (r *NetworkInterfaceClaimReconciler) publishClaimStatus(
 	return nil
 }
 
-// syncGateways writes each address's gateway onto the interface once the
-// location has a subnet. A provider configures a NIC from the interface alone,
-// so the gateway has to live there and not only on the claim's status copy.
+// syncInterface converges the parts of an interface derived from something
+// other than itself: the gateway each address routes through once the location
+// has a subnet, and the labels a consumer selects the interface by.
 func (r *NetworkInterfaceClaimReconciler) syncInterface(
 	ctx context.Context,
 	cl client.Client,
 	iface *networkingv1alpha.NetworkInterface,
 	claim *networkingv1alpha.NetworkInterfaceClaim,
 	networkContext *networkingv1alpha.NetworkContext,
+	location networkingv1alpha.LocationReference,
 ) error {
 	changed := false
+
+	if labels, updated := replaceOwnedLabels(
+		iface.Labels,
+		propagatedInterfaceLabels(claim, location),
+		consumerLabelPrefixes,
+		[]string{networkingv1alpha.NetworkInterfaceLocationLabel},
+	); updated {
+		iface.Labels = labels
+		changed = true
+	}
 
 	// MTU follows the network, and the primary address follows the claim's
 	// first family. Both are derived, and an adopted interface carries whatever
@@ -1246,12 +1258,14 @@ func seedDataPlaneConditions(conditions *[]metav1.Condition, generation int64) {
 }
 
 // seedInterfaceDataPlaneConditions is the same seeding for the interface's own
-// copies of the two conditions.
+// copies of those conditions, plus the one the holder owns.
 func seedInterfaceDataPlaneConditions(conditions *[]metav1.Condition, generation int64) {
 	seedCondition(conditions, networkingv1alpha.NetworkInterfacePrepared, generation,
 		"Waiting for the data plane to prepare the attachment")
 	seedCondition(conditions, networkingv1alpha.NetworkInterfaceProgrammed, generation,
 		"Waiting for the data plane to report the attachment")
+	seedCondition(conditions, networkingv1alpha.NetworkInterfaceHolderAvailable, generation,
+		"Waiting for the holder to report itself available to serve")
 }
 
 func seedCondition(conditions *[]metav1.Condition, conditionType string, generation int64, message string) {
@@ -1375,14 +1389,48 @@ func markInterfaceAvailable(
 	cl client.Client,
 	iface *networkingv1alpha.NetworkInterface,
 ) error {
-	if iface.Status.Phase == networkingv1alpha.NetworkInterfacePhaseAvailable {
+	unbound := iface.Status.Phase == networkingv1alpha.NetworkInterfacePhaseAvailable
+	if unbound && !clearHolderAvailable(&iface.Status.Conditions, iface.Generation) {
 		return nil
 	}
+
 	iface.Status.Phase = networkingv1alpha.NetworkInterfacePhaseAvailable
+	clearHolderAvailable(&iface.Status.Conditions, iface.Generation)
+
 	if err := cl.Status().Update(ctx, iface); err != nil {
 		return fmt.Errorf("failed updating network interface status: %w", err)
 	}
 	return nil
+}
+
+// clearHolderAvailable takes back the departed holder's word, because a
+// retained interface outlives the holder that reported it and the next one to
+// bind is a different holder that has said nothing yet. Leaving the last True
+// in place would hand the new holder a service's traffic before it is serving.
+//
+// This is the only value NSO ever writes: it seeds and clears Unknown, and the
+// holder alone writes True or False.
+//
+// Every reset must stay on a path that also produces an event on the claim. A
+// holder watches the claim it owns, not the interface behind it, so a reset
+// written out-of-band reaches nothing and the holder sits on Unknown until some
+// unrelated cause wakes it. Both callers are claim releases, which satisfies
+// this; a new caller that is not would have to arrange the wakeup itself.
+func clearHolderAvailable(conditions *[]metav1.Condition, generation int64) bool {
+	current := apimeta.FindStatusCondition(*conditions, networkingv1alpha.NetworkInterfaceHolderAvailable)
+	if current != nil && current.Status == metav1.ConditionUnknown &&
+		current.Reason == networkingv1alpha.NetworkInterfaceReasonHolderReleased {
+		return false
+	}
+
+	apimeta.SetStatusCondition(conditions, metav1.Condition{
+		Type:               networkingv1alpha.NetworkInterfaceHolderAvailable,
+		Status:             metav1.ConditionUnknown,
+		Reason:             networkingv1alpha.NetworkInterfaceReasonHolderReleased,
+		ObservedGeneration: generation,
+		Message:            "No holder holds the interface",
+	})
+	return true
 }
 
 func (r *NetworkInterfaceClaimReconciler) releaseIPClaims(

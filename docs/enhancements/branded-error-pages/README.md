@@ -180,6 +180,7 @@ gateway:
   errorPage:
     enabled: true
     bodyPath: /etc/datum/error-pages/error-5xx.html  # optional; falls back to embedded default
+    offlineBodyPath: /etc/datum/error-pages/error-offline.html  # optional; served when the edge has no healthy upstream
     minStatusCode: 500
 ```
 

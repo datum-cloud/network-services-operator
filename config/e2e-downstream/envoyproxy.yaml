@@ -21,12 +21,8 @@ spec:
         # See config/dev/downstream_resources/downstream-gateway.yaml for why
         # the VPC-ingress VRF/SRv6 sidecar (#855) has to go in via a
         # StrategicMerge patch on spec.template.spec.containers rather than a
-        # native EnvoyDeployment field.
-        #
-        # TODO(#856): sidecar binary is a placeholder pending #855 — using
-        # busybox/sleep instead of a nonexistent image so this manifest stays
-        # deployable by task test-infra:up in the meantime. Swap the
-        # image/command for #855's real binary once it's published.
+        # native EnvoyDeployment field, and for what this sidecar can and
+        # cannot do from inside the Envoy pod's own network namespace.
         patch:
           type: StrategicMerge
           value:
@@ -35,10 +31,14 @@ spec:
                 spec:
                   containers:
                     - name: vpc-vrf-sidecar
-                      image: busybox:1.36
-                      command: ["sleep", "infinity"]
+                      image: ghcr.io/datum-cloud/galactic-vrf:v0.0.0-main
+                      args:
+                        - --metrics-port=9182
                       securityContext:
+                        runAsUser: 0
                         capabilities:
+                          drop:
+                            - ALL
                           add:
                             - NET_ADMIN
                             # See config/dev/downstream_resources/downstream-gateway.yaml
@@ -50,13 +50,63 @@ spec:
                             # NET_ADMIN alone doesn't cover the bpf() syscalls that
                             # requires.
                             - BPF
+                        allowPrivilegeEscalation: false
+                        readOnlyRootFilesystem: true
+                      resources:
+                        requests:
+                          cpu: 5m
+                          memory: 32Mi
+                        limits:
+                          memory: 64Mi
                       volumeMounts:
+                        - name: vpc-vrf-lock
+                          mountPath: /var/lib/cni/galactic-vrf
+                        # Envoy Gateway sets automountServiceAccountToken:
+                        # false on the pods it generates, so nothing projects a
+                        # token and the sidecar's in-cluster config fails at
+                        # startup. Mount one here and only here: Envoy is
+                        # internet-facing and that default-off is deliberate,
+                        # and a volume the proxy container does not mount is
+                        # not reachable from it.
+                        - name: vpc-vrf-kube-api-access
+                          mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+                          readOnly: true
                         - name: bpf-fs
                           mountPath: /sys/fs/bpf
         pod:
           volumes:
             - name: coraza-waf
               emptyDir: {}
+            # internal/plumbing/vrf's cross-process flock directory. The
+            # image is distroless:nonroot, so the binary cannot create it
+            # under a read-only root; mount it at the literal path the
+            # constant names.
+            - name: vpc-vrf-lock
+              emptyDir: {}
+            # The token the kubelet would have projected had Envoy Gateway not
+            # disabled automounting. No audience on purpose: an omitted
+            # audience is the API server's own default, which is what the local
+            # apiserver validates against, so naming one is a way to break this
+            # rather than harden it. 3607s is the kubelet default and sits well
+            # above the apiserver's 600s floor; the file is rotated in place.
+            - name: vpc-vrf-kube-api-access
+              projected:
+                defaultMode: 420
+                sources:
+                  - serviceAccountToken:
+                      path: token
+                      expirationSeconds: 3607
+                  - configMap:
+                      name: kube-root-ca.crt
+                      items:
+                        - key: ca.crt
+                          path: ca.crt
+                  - downwardAPI:
+                      items:
+                        - fieldRef:
+                            apiVersion: v1
+                            fieldPath: metadata.namespace
+                          path: namespace
             - name: bpf-fs
               # Same convention as galactic's own config/galactic-router,
               # config/galactic-gateway DaemonSets. `Directory` (not
@@ -155,3 +205,34 @@ spec:
     kind: EnvoyProxy
     name: datum-downstream-gateway
     namespace: datum-downstream-gateway
+---
+# The VRF sidecar's desired state is a cluster-scoped EndpointSlice watch. Its
+# informer cache never syncs without this, and the binary's own RBAC pre-flight
+# says so at startup. Read-only: it never writes an EndpointSlice.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: vpc-vrf-sidecar-endpointslice-viewer
+rules:
+  - apiGroups: ["discovery.k8s.io"]
+    resources: ["endpointslices"]
+    verbs: ["get", "list", "watch"]
+---
+# Envoy Gateway names the proxy ServiceAccount after a hash of the merged
+# GatewayClass, so it cannot be named here. Every ServiceAccount in this
+# namespace is Envoy Gateway's own control plane or a proxy it provisioned.
+# Binding the group rather than a name is what keeps this correct when that
+# hash moves: the pre-flight check logs and continues, so a binding that missed
+# would leave the sidecar running and watching nothing.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: vpc-vrf-sidecar-endpointslice-viewer
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: vpc-vrf-sidecar-endpointslice-viewer
+subjects:
+  - kind: Group
+    apiGroup: rbac.authorization.k8s.io
+    name: system:serviceaccounts:datum-downstream-gateway

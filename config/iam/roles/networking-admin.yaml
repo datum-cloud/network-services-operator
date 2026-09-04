@@ -23,3 +23,7 @@ spec:
     - networking.datumapis.com/networkinterfaceclaims.patch
     - networking.datumapis.com/networkinterfaceclaims.delete
     - networking.datumapis.com/networkinterfaces.delete
+    - networking.datumapis.com/networkservices.create
+    - networking.datumapis.com/networkservices.update
+    - networking.datumapis.com/networkservices.patch
+    - networking.datumapis.com/networkservices.delete

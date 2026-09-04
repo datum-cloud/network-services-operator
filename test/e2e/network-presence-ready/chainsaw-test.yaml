@@ -23,6 +23,9 @@ spec:
               kind: Namespace
               metadata:
                 name: presence-ready-project
+                labels:
+                  meta.datumapis.com/upstream-cluster-name: cluster-project-alpha
+                  meta.datumapis.com/upstream-namespace: default
         - apply:
             resource:
               apiVersion: v1
@@ -52,12 +55,8 @@ spec:
               spec:
                 ipam:
                   mode: Auto
-                # IPv4 only: a network carrying no IPv6 needs no address space of
-                # its own, so its presence is ready as soon as it exists. With
-                # IPv6 the presence waits on an allocation this environment has no
-                # pool for, and readiness could only be faked.
                 ipFamilies:
-                  - IPv4
+                  - IPv6
                 mtu: 8000
 
     - name: Declare that the network is needed in the location
@@ -92,7 +91,7 @@ spec:
         spec, because propagation to a location strips status.
       try:
         - assert:
-            timeout: 1m
+            timeout: 2m
             resource:
               apiVersion: networking.datumapis.com/v1alpha
               kind: NetworkContext
@@ -110,7 +109,7 @@ spec:
                 location:
                   name: presence-ready-loc
                 ipFamilies:
-                  - IPv4
+                  - IPv6
                 mtu: 8000
         - assert:
             resource:
@@ -128,13 +127,13 @@ spec:
         namespace the context lives in rather than the hub namespace the binding
         was written to.
 
-        This network carries no IPv6, so its presence is ready on creation and
-        the binding never passes through NetworkContextNotReady. Covering that
-        intermediate state needs a network whose presence waits on an address
-        allocation, which needs an IPAM pool for this project.
+        Every network carries IPv6, so this presence waits on an address
+        allocation and the binding passes through NetworkContextNotReady on its
+        way to ready. The project namespace routes at project-alpha for exactly
+        that reason: without a pool the presence could never become ready.
       try:
         - assert:
-            timeout: 1m
+            timeout: 2m
             resource:
               apiVersion: networking.datumapis.com/v1alpha
               kind: NetworkBinding
@@ -153,7 +152,7 @@ spec:
             kind: NetworkBinding
             name: presence-ready-consumer
             namespace: presence-ready-hub
-            timeout: 1m
+            timeout: 2m
             for:
               condition:
                 name: Ready

@@ -23,6 +23,9 @@ spec:
               kind: Namespace
               metadata:
                 name: presence-rebind-project
+                labels:
+                  meta.datumapis.com/upstream-cluster-name: cluster-project-alpha
+                  meta.datumapis.com/upstream-namespace: default
         - apply:
             resource:
               apiVersion: v1
@@ -53,7 +56,7 @@ spec:
                 ipam:
                   mode: Auto
                 ipFamilies:
-                  - IPv4
+                  - IPv6
 
     - name: Make the network present in the location
       try:
@@ -77,7 +80,7 @@ spec:
                   kind: LoadBalancer
                   name: presence-rebind-consumer
         - assert:
-            timeout: 1m
+            timeout: 2m
             resource:
               apiVersion: networking.datumapis.com/v1alpha
               kind: NetworkContext
@@ -89,7 +92,7 @@ spec:
                   - type: Ready
                     status: "True"
         - assert:
-            timeout: 1m
+            timeout: 2m
             resource:
               apiVersion: networking.datumapis.com/v1alpha
               kind: NetworkBinding
@@ -172,7 +175,7 @@ spec:
                   kind: LoadBalancer
                   name: presence-rebind-replacement
         - assert:
-            timeout: 1m
+            timeout: 2m
             resource:
               apiVersion: networking.datumapis.com/v1alpha
               kind: NetworkBinding

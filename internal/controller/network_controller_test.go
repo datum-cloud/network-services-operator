@@ -491,10 +491,10 @@ func TestNetworkReadyFallsWhenARangeCannotBeReleased(t *testing.T) {
 	require.Equal(t, networkingv1alpha.NetworkReasonRangeOccupied, ready.Reason)
 }
 
-// Nothing is allocated for a network that did not ask for IPv6, so there is
-// nothing for it to wait on. Leaving Ready absent would leave the listing's
-// readiness column permanently blank, which reads the same as broken.
-func TestNetworkWithoutIPv6IsReady(t *testing.T) {
+// A network carrying no IPv6 cannot run anything, and admission only stops new
+// ones. The networks that predate it are found by reading Ready, so Ready has
+// to say so rather than call the network fine.
+func TestNetworkWithoutIPv6IsNotReady(t *testing.T) {
 	s := newNetworkScenario(t, newFakeIPAM(t))
 
 	s.createNetwork(networkingv1alpha.IPv4Protocol)
@@ -504,9 +504,25 @@ func TestNetworkWithoutIPv6IsReady(t *testing.T) {
 
 	ready := s.readyCondition()
 	require.NotNil(t, ready)
+	require.Equal(t, metav1.ConditionFalse, ready.Status)
+	require.Equal(t, networkingv1alpha.NetworkReadyReasonIPv6Required, ready.Reason)
+	require.Contains(t, ready.Message, "spec.ipFamilies")
+}
+
+// A dual-stack network carries IPv6, so it is addressed and ready exactly as a
+// single-stack IPv6 one is.
+func TestDualStackNetworkIsAddressed(t *testing.T) {
+	s := newNetworkScenario(t, newFakeIPAM(t))
+
+	s.createNetwork(networkingv1alpha.IPv6Protocol, networkingv1alpha.IPv4Protocol)
+	s.reconcile()
+
+	require.NotNil(t, s.get().Status.IPAM)
+
+	ready := s.readyCondition()
+	require.NotNil(t, ready)
 	require.Equal(t, metav1.ConditionTrue, ready.Status)
 	require.Equal(t, networkingv1alpha.NetworkReadyReasonReady, ready.Reason)
-	require.Contains(t, ready.Message, "claims no address space")
 }
 
 // A policy-mode network is addressed by what an operator creates in it, not by

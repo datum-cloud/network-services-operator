@@ -1,0 +1,101 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+#
+# A network that carries no IPv6 can never run a workload, so it is refused at
+# admission rather than accepted and left to fail at placement.
+#
+# The refusal lives in an admission webhook rather than in the CRD schema. A
+# schema rule would run on every write, including status writes, and would
+# therefore gag the operator's own report on the networks that predate it. That
+# is only provable against a deployed webhook, which is what this scenario is
+# for: unit tests exercise the rule, and this exercises the wiring.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: network-ipv4-refused
+spec:
+  cluster: nso-standard
+  steps:
+    - name: An IPv4-only network is refused at admission
+      try:
+        - apply:
+            expect:
+              - check:
+                  ($error != null): true
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Network
+              metadata:
+                name: ipv4-refused
+                namespace: default
+              spec:
+                ipam:
+                  mode: Auto
+                ipFamilies:
+                  - IPv4
+        - script:
+            content: |
+              set -eu
+              if kubectl -n default get network ipv4-refused >/dev/null 2>&1; then
+                echo "the refused network was created anyway"
+                exit 1
+              fi
+
+    - name: A network carrying IPv6 alongside IPv4 is admitted
+      description: |
+        The rule is that a network must carry IPv6, not that it must carry
+        nothing else. Dual-stack networks work and are not what this refuses.
+      try:
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Network
+              metadata:
+                name: ipv4-refused-dual
+                namespace: default
+              spec:
+                ipam:
+                  mode: Auto
+                ipFamilies:
+                  - IPv6
+                  - IPv4
+
+    - name: A working network may not be narrowed to IPv4
+      description: |
+        Removing IPv6 from a network that carries it turns a network that works
+        into one that cannot, which is the same outcome the create rule exists
+        to prevent.
+      try:
+        - patch:
+            expect:
+              - check:
+                  ($error != null): true
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Network
+              metadata:
+                name: ipv4-refused-dual
+                namespace: default
+              spec:
+                ipFamilies:
+                  - IPv4
+        - assert:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Network
+              metadata:
+                name: ipv4-refused-dual
+                namespace: default
+              spec:
+                ipFamilies:
+                  - IPv6
+                  - IPv4
+
+    - name: Remove the network
+      try:
+        - delete:
+            timeout: 120s
+            ref:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Network
+              name: ipv4-refused-dual
+              namespace: default

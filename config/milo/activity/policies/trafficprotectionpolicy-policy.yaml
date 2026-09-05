@@ -1,5 +1,5 @@
 # ActivityPolicy for TrafficProtectionPolicy resources (networking.datumapis.com).
-# Product noun is "traffic protection". Display text is the load balancer hostname.
+# Product noun is "traffic protection". Display text is the load balancer name.
 #
 # Prefer display-* / activity-* annotations stamped at admission. Fall back to
 # spec.mode and spec.targetRefs[0].name. Create/update rules require a 2xx

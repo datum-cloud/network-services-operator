@@ -38,6 +38,6 @@ func TestHTTPProxyCustomDefaulter_Default(t *testing.T) {
 	}
 
 	require.NoError(t, (&HTTPProxyCustomDefaulter{}).Default(context.Background(), proxy))
-	assert.Equal(t, "app.example.com", proxy.Annotations[display.AnnotationDisplayName])
+	assert.Equal(t, "alb", proxy.Annotations[display.AnnotationDisplayName])
 	assert.Equal(t, "https://origin.example.com", proxy.Annotations[display.AnnotationDisplayValue])
 }

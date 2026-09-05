@@ -18,7 +18,7 @@ import (
 	"go.datum.net/network-services-operator/internal/display"
 )
 
-func TestTrafficProtectionPolicyDefaulter_DefaultUsesHTTPProxyHostname(t *testing.T) {
+func TestTrafficProtectionPolicyDefaulter_DefaultUsesHTTPProxyName(t *testing.T) {
 	t.Parallel()
 
 	scheme := runtime.NewScheme()
@@ -49,7 +49,7 @@ func TestTrafficProtectionPolicyDefaulter_DefaultUsesHTTPProxyHostname(t *testin
 	policy := tppPolicy()
 
 	displayName := lookupTPPDisplayName(context.Background(), cl, policy)
-	assert.Equal(t, "app.example.com", displayName)
+	assert.Equal(t, "alb", displayName)
 
 	require.NoError(t, (&TrafficProtectionPolicyDefaulter{}).Default(context.Background(), policy))
 	assert.Equal(t, "alb", policy.Annotations[display.AnnotationDisplayName])

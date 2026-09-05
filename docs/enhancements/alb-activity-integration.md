@@ -21,7 +21,7 @@ events, so those transitions never reach the timeline.
 ## Goals
 
 - Product nouns: **load balancer** and **traffic protection**
-- Display text is the hostname, not the resource name
+- Display text is the load balancer name (`metadata.name`)
 - Update summaries name the logical change (hostname added, backend changed,
   mode changed)
 - Async failures and first-ready are visible
@@ -38,24 +38,24 @@ events, so those transitions never reach the timeline.
 
 | Timestamp | Activity |
 |-----------|----------|
-| 10:00:00 | user@example.com created load balancer app.example.com pointing to https://origin.example.com |
-| 10:00:01 | app.example.com is waiting for domain verification |
-| 10:00:30 | TLS certificate issued for app.example.com |
-| 10:00:31 | Load balancer app.example.com is live |
-| 10:02:00 | user@example.com added hostname api.example.com to load balancer app.example.com |
-| 10:03:00 | user@example.com updated load balancer app.example.com to point to https://new-origin.example.com |
-| 10:04:00 | user@example.com enabled traffic protection on app.example.com in Observe mode |
-| 10:05:00 | user@example.com changed traffic protection on app.example.com from Observe to Enforce |
-| 10:05:02 | Traffic protection is live on app.example.com |
+| 10:00:00 | user@example.com created load balancer test-alb pointing to https://origin.example.com |
+| 10:00:01 | test-alb is waiting for domain verification |
+| 10:00:30 | TLS certificate issued for test-alb |
+| 10:00:31 | Load balancer test-alb is live |
+| 10:02:00 | user@example.com added a custom hostname api.example.com to test-alb |
+| 10:03:00 | user@example.com updated load balancer test-alb to point to https://new-origin.example.com |
+| 10:04:00 | user@example.com enabled traffic protection on test-alb in Observe mode |
+| 10:05:00 | user@example.com changed traffic protection on test-alb from Observe to Enforce |
+| 10:05:02 | Traffic protection is live on test-alb |
 
 ### Error Scenario
 
 | Timestamp | Activity |
 |-----------|----------|
-| 10:00:00 | user@example.com created load balancer www.example.com pointing to https://origin.example.com |
-| 10:00:01 | Hostname www.example.com is already in use |
-| 10:00:05 | Failed to issue TLS certificate for www.example.com |
-| 10:00:06 | Failed to program DNS for www.example.com |
+| 10:00:00 | user@example.com created load balancer test-alb pointing to https://origin.example.com |
+| 10:00:01 | A hostname on test-alb is already in use |
+| 10:00:05 | Failed to issue TLS certificate for test-alb |
+| 10:00:06 | Failed to program DNS for test-alb |
 
 ## Design Details
 
@@ -73,7 +73,7 @@ in `internal/display`.
 
 | Annotation | Example | Set by |
 |------------|---------|--------|
-| `networking.datumapis.com/display-name` | `app.example.com` | Mutating webhook |
+| `networking.datumapis.com/display-name` | `test-alb` | Mutating webhook |
 | `networking.datumapis.com/display-value` | `https://origin.example.com` | Mutating webhook |
 | `networking.datumapis.com/activity-change` | `added` / `removed` / `updated` | Mutating webhook on update |
 | `networking.datumapis.com/activity-field` | `hostname` / `backend` / `rule` / `mode` / `exclusions` / `sampling` / `paranoia` | Same |
@@ -90,7 +90,7 @@ HTTPProxy diffs (old spec vs new):
 
 TPP diffs:
 
-- Create display-name from the attached HTTPProxy hostnames when resolvable,
+- Create display-name from the attached HTTPProxy name when resolvable,
   else the target Gateway/HTTPRoute name; display-value is mode
 - Mode / sampling / exclusions / paranoia → `activity-field` + old/new value
 - Missing owner is non-fatal; policy fallbacks still fire
@@ -129,11 +129,11 @@ internal/controller/alb_activity_events.go
 Custom Activity objects from controllers, or admission webhooks that create
 activities. Both duplicate the Activity Service. We use ActivityPolicy + Events,
 with a mutating webhook only to stamp display annotations so create audits see
-hostnames and backends.
+the load balancer name and backends.
 
 ## Open Questions
 
-1. Portal may still show resource ids in detail views; summary link text is the
-   hostname.
+1. HTTPProxy has no pretty display-name field, so activity copy uses
+   `metadata.name`. Hostnames stay on `activity-name` for add/remove.
 2. Later ALB features add a new `activity-field` and policy rules — do not
    invent a second scheme.

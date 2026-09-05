@@ -25,7 +25,7 @@ func TestTPPPolicy_Fixtures(t *testing.T) {
 				"verb":          "create",
 				"requestObject": map[string]any{"spec": map[string]any{"mode": "Observe"}},
 				"responseObject": map[string]any{"metadata": map[string]any{"annotations": map[string]any{
-					"networking.datumapis.com/display-name":  "app.example.com",
+					"networking.datumapis.com/display-name":  "alb",
 					"networking.datumapis.com/display-value": "Observe",
 				}}},
 				"objectRef":      map[string]any{"name": "waf"},
@@ -41,7 +41,7 @@ func TestTPPPolicy_Fixtures(t *testing.T) {
 				"objectRef":     map[string]any{"name": "waf"},
 				"requestObject": map[string]any{"spec": map[string]any{"mode": "Enforce"}},
 				"responseObject": map[string]any{"metadata": map[string]any{"annotations": map[string]any{
-					"networking.datumapis.com/display-name":   "app.example.com",
+					"networking.datumapis.com/display-name":   "alb",
 					"networking.datumapis.com/activity-field": "mode",
 					"networking.datumapis.com/activity-value": "Observe to Enforce",
 				}}},
@@ -55,7 +55,7 @@ func TestTPPPolicy_Fixtures(t *testing.T) {
 				"user": map[string]any{"username": "alice@example.com"},
 				"verb": "delete",
 				"responseObject": map[string]any{"metadata": map[string]any{"annotations": map[string]any{
-					"networking.datumapis.com/display-name": "app.example.com",
+					"networking.datumapis.com/display-name": "alb",
 				}}},
 				"objectRef": map[string]any{"name": "waf"},
 			},
@@ -74,7 +74,7 @@ func TestTPPPolicy_Fixtures(t *testing.T) {
 		assert.Equal(t, "programmed-related", firstMatchingEventRule(t, pol, map[string]any{
 			"reason": "Programmed",
 			"metadata": map[string]any{"annotations": map[string]any{
-				"networking.datumapis.com/display-name": "app.example.com",
+				"networking.datumapis.com/display-name": "alb",
 			}},
 			"regarding": map[string]any{"name": "waf"},
 			"related":   map[string]any{"name": "alb", "kind": "HTTPProxy"},

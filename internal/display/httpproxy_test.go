@@ -25,7 +25,7 @@ func TestComputeHTTPProxyActivityDiff(t *testing.T) {
 	}{
 		{
 			name: "hostname added",
-			old:  proxyWith("app.example.com", "https://origin.example.com", "/"),
+			old:  proxyWith("https://origin.example.com", "/"),
 			new:  proxyWithHostnames([]string{"app.example.com", "api.example.com"}, "https://origin.example.com", "/"),
 			want: ActivityDiff{
 				Change: ActivityChangeAdded,
@@ -37,7 +37,7 @@ func TestComputeHTTPProxyActivityDiff(t *testing.T) {
 		{
 			name: "hostname removed",
 			old:  proxyWithHostnames([]string{"app.example.com", "api.example.com"}, "https://origin.example.com", "/"),
-			new:  proxyWith("app.example.com", "https://origin.example.com", "/"),
+			new:  proxyWith("https://origin.example.com", "/"),
 			want: ActivityDiff{
 				Change: ActivityChangeRemoved,
 				Field:  ActivityFieldHostname,
@@ -47,29 +47,29 @@ func TestComputeHTTPProxyActivityDiff(t *testing.T) {
 		},
 		{
 			name: "backend changed",
-			old:  proxyWith("app.example.com", "https://origin.example.com", "/"),
-			new:  proxyWith("app.example.com", "https://new-origin.example.com", "/"),
+			old:  proxyWith("https://origin.example.com", "/"),
+			new:  proxyWith("https://new-origin.example.com", "/"),
 			want: ActivityDiff{
 				Change: ActivityChangeUpdated,
 				Field:  ActivityFieldBackend,
-				Name:   "app.example.com",
+				Name:   "alb",
 				Value:  "https://new-origin.example.com",
 			},
 		},
 		{
 			name: "rule path changed",
-			old:  proxyWith("app.example.com", "https://origin.example.com", "/"),
-			new:  proxyWith("app.example.com", "https://origin.example.com", "/api"),
+			old:  proxyWith("https://origin.example.com", "/"),
+			new:  proxyWith("https://origin.example.com", "/api"),
 			want: ActivityDiff{
 				Change: ActivityChangeUpdated,
 				Field:  ActivityFieldRule,
-				Name:   "app.example.com",
+				Name:   "alb",
 				Value:  "https://origin.example.com",
 			},
 		},
 		{
 			name: "mixed hostname and backend",
-			old:  proxyWith("app.example.com", "https://origin.example.com", "/"),
+			old:  proxyWith("https://origin.example.com", "/"),
 			new:  proxyWithHostnames([]string{"app.example.com", "api.example.com"}, "https://other.example.com", "/"),
 			want: ActivityDiff{
 				Change: ActivityChangeUpdated,
@@ -79,8 +79,8 @@ func TestComputeHTTPProxyActivityDiff(t *testing.T) {
 		},
 		{
 			name: "unchanged",
-			old:  proxyWith("app.example.com", "https://origin.example.com", "/"),
-			new:  proxyWith("app.example.com", "https://origin.example.com", "/"),
+			old:  proxyWith("https://origin.example.com", "/"),
+			new:  proxyWith("https://origin.example.com", "/"),
 			want: ActivityDiff{},
 		},
 	}
@@ -96,22 +96,23 @@ func TestComputeHTTPProxyActivityDiff(t *testing.T) {
 func TestEnsureHTTPProxyAnnotations(t *testing.T) {
 	t.Parallel()
 
-	proxy := proxyWith("app.example.com", "https://origin.example.com", "/")
+	proxy := proxyWith("https://origin.example.com", "/")
 	require.True(t, EnsureHTTPProxyAnnotations(proxy, nil))
-	assert.Equal(t, "app.example.com", proxy.Annotations[AnnotationDisplayName])
+	assert.Equal(t, "alb", proxy.Annotations[AnnotationDisplayName])
 	assert.Equal(t, "https://origin.example.com", proxy.Annotations[AnnotationDisplayValue])
 	assert.NotContains(t, proxy.Annotations, AnnotationActivityChange)
 
-	old := proxyWith("app.example.com", "https://origin.example.com", "/")
+	old := proxyWith("https://origin.example.com", "/")
 	updated := proxyWithHostnames([]string{"app.example.com", "api.example.com"}, "https://origin.example.com", "/")
 	require.True(t, EnsureHTTPProxyAnnotations(updated, old))
+	assert.Equal(t, "alb", updated.Annotations[AnnotationDisplayName])
 	assert.Equal(t, ActivityChangeAdded, updated.Annotations[AnnotationActivityChange])
 	assert.Equal(t, ActivityFieldHostname, updated.Annotations[AnnotationActivityField])
 	assert.Equal(t, "api.example.com", updated.Annotations[AnnotationActivityName])
 }
 
-func proxyWith(hostname, endpoint, path string) *networkingv1alpha.HTTPProxy {
-	return proxyWithHostnames([]string{hostname}, endpoint, path)
+func proxyWith(endpoint, path string) *networkingv1alpha.HTTPProxy {
+	return proxyWithHostnames([]string{"app.example.com"}, endpoint, path)
 }
 
 func proxyWithHostnames(hostnames []string, endpoint, path string) *networkingv1alpha.HTTPProxy {

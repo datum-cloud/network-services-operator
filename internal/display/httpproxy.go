@@ -16,7 +16,7 @@ func HTTPProxyDisplayName(proxy *networkingv1alpha.HTTPProxy) string {
 	if proxy == nil {
 		return ""
 	}
-	return joinHostnames(proxy.Spec.Hostnames)
+	return proxy.Name
 }
 
 func HTTPProxyDisplayValue(proxy *networkingv1alpha.HTTPProxy) string {
@@ -99,10 +99,6 @@ func ComputeHTTPProxyActivityDiff(oldProxy, newProxy *networkingv1alpha.HTTPProx
 			Value:  backendValue(newProxy),
 		}
 	}
-}
-
-func joinHostnames(hostnames []gatewayv1.Hostname) string {
-	return strings.Join(hostnameStrings(hostnames), ", ")
 }
 
 func hostnameStrings(hostnames []gatewayv1.Hostname) []string {

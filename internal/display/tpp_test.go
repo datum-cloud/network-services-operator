@@ -73,16 +73,16 @@ func TestEnsureTPPAnnotations(t *testing.T) {
 	t.Parallel()
 
 	policy := tppWith(networkingv1alpha.TrafficProtectionPolicyObserve, 100, nil)
-	require.True(t, EnsureTPPAnnotations(policy, nil, "app.example.com"))
-	assert.Equal(t, "app.example.com", policy.Annotations[AnnotationDisplayName])
+	require.True(t, EnsureTPPAnnotations(policy, nil, "alb"))
+	assert.Equal(t, "alb", policy.Annotations[AnnotationDisplayName])
 	assert.Equal(t, "Observe", policy.Annotations[AnnotationDisplayValue])
 
 	old := tppWith(networkingv1alpha.TrafficProtectionPolicyObserve, 100, nil)
 	updated := tppWith(networkingv1alpha.TrafficProtectionPolicyEnforce, 100, nil)
-	require.True(t, EnsureTPPAnnotations(updated, old, "app.example.com"))
+	require.True(t, EnsureTPPAnnotations(updated, old, "alb"))
 	assert.Equal(t, ActivityFieldMode, updated.Annotations[AnnotationActivityField])
 	assert.Equal(t, "Observe to Enforce", updated.Annotations[AnnotationActivityValue])
-	assert.Equal(t, "app.example.com", updated.Annotations[AnnotationActivityName])
+	assert.Equal(t, "alb", updated.Annotations[AnnotationActivityName])
 }
 
 func tppWith(mode networkingv1alpha.TrafficProtectionPolicyMode, sampling int, exclusions *networkingv1alpha.OWASPRuleExclusions) *networkingv1alpha.TrafficProtectionPolicy {

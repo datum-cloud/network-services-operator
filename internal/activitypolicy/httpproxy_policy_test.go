@@ -82,7 +82,7 @@ func TestHTTPProxyPolicy_Fixtures(t *testing.T) {
 	pol := loadPolicy(t, "config/milo/activity/policies/httpproxy-policy.yaml")
 
 	displayAnns := map[string]any{
-		"networking.datumapis.com/display-name":  "app.example.com",
+		"networking.datumapis.com/display-name":  "alb",
 		"networking.datumapis.com/display-value": "https://origin.example.com",
 	}
 
@@ -104,8 +104,8 @@ func TestHTTPProxyPolicy_Fixtures(t *testing.T) {
 			},
 		},
 		{
-			name:     "create hostname fallback",
-			wantRule: "create-hostname-backend",
+			name:     "create name fallback",
+			wantRule: "create-name-backend",
 			audit: map[string]any{
 				"user": map[string]any{"username": "alice@example.com"},
 				"verb": "create",
@@ -127,7 +127,7 @@ func TestHTTPProxyPolicy_Fixtures(t *testing.T) {
 				"objectRef":     map[string]any{"name": "alb"},
 				"requestObject": map[string]any{"spec": map[string]any{"hostnames": []any{"app.example.com", "api.example.com"}}},
 				"responseObject": map[string]any{"metadata": map[string]any{"annotations": map[string]any{
-					"networking.datumapis.com/display-name":    "app.example.com, api.example.com",
+					"networking.datumapis.com/display-name":    "alb",
 					"networking.datumapis.com/activity-change": "added",
 					"networking.datumapis.com/activity-field":  "hostname",
 					"networking.datumapis.com/activity-name":   "api.example.com",
@@ -144,7 +144,7 @@ func TestHTTPProxyPolicy_Fixtures(t *testing.T) {
 				"objectRef":     map[string]any{"name": "alb"},
 				"requestObject": map[string]any{"spec": map[string]any{"hostnames": []any{"app.example.com"}}},
 				"responseObject": map[string]any{"metadata": map[string]any{"annotations": map[string]any{
-					"networking.datumapis.com/display-name":   "app.example.com",
+					"networking.datumapis.com/display-name":   "alb",
 					"networking.datumapis.com/activity-field": "backend",
 					"networking.datumapis.com/activity-value": "https://new-origin.example.com",
 				}}},
@@ -188,7 +188,7 @@ func TestHTTPProxyPolicy_Fixtures(t *testing.T) {
 		assert.Equal(t, "programmed", firstMatchingEventRule(t, pol, map[string]any{
 			"reason": "Programmed",
 			"metadata": map[string]any{"annotations": map[string]any{
-				"networking.datumapis.com/display-name": "app.example.com",
+				"networking.datumapis.com/display-name": "alb",
 			}},
 			"regarding": map[string]any{"name": "alb"},
 		}))

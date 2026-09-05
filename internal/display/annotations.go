@@ -9,6 +9,7 @@ const (
 	AnnotationActivityField  = "networking.datumapis.com/activity-field"
 	AnnotationActivityName   = "networking.datumapis.com/activity-name"
 	AnnotationActivityValue  = "networking.datumapis.com/activity-value"
+	AnnotationChosenName     = "app.kubernetes.io/name"
 )
 
 const (

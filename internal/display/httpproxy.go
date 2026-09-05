@@ -16,6 +16,9 @@ func HTTPProxyDisplayName(proxy *networkingv1alpha.HTTPProxy) string {
 	if proxy == nil {
 		return ""
 	}
+	if name := strings.TrimSpace(proxy.Annotations[AnnotationChosenName]); name != "" {
+		return name
+	}
 	return proxy.Name
 }
 

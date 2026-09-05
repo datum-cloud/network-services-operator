@@ -111,6 +111,22 @@ func TestEnsureHTTPProxyAnnotations(t *testing.T) {
 	assert.Equal(t, "api.example.com", updated.Annotations[AnnotationActivityName])
 }
 
+func TestHTTPProxyDisplayName(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, "alb", HTTPProxyDisplayName(proxyWith("https://origin.example.com", "/")))
+
+	named := proxyWith("https://origin.example.com", "/")
+	named.Annotations = map[string]string{AnnotationChosenName: "Test ALB"}
+	assert.Equal(t, "Test ALB", HTTPProxyDisplayName(named))
+	require.True(t, EnsureHTTPProxyAnnotations(named, nil))
+	assert.Equal(t, "Test ALB", named.Annotations[AnnotationDisplayName])
+
+	blank := proxyWith("https://origin.example.com", "/")
+	blank.Annotations = map[string]string{AnnotationChosenName: "  "}
+	assert.Equal(t, "alb", HTTPProxyDisplayName(blank))
+}
+
 func proxyWith(endpoint, path string) *networkingv1alpha.HTTPProxy {
 	return proxyWithHostnames([]string{"app.example.com"}, endpoint, path)
 }

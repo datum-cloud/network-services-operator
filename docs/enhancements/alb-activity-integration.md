@@ -21,7 +21,7 @@ events, so those transitions never reach the timeline.
 ## Goals
 
 - Product nouns: **load balancer** and **traffic protection**
-- Display text is the load balancer name (`metadata.name`)
+- Display text is the portal chosen name, then the resource name
 - Update summaries name the logical change (hostname added, backend changed,
   mode changed)
 - Async failures and first-ready are visible
@@ -73,7 +73,7 @@ in `internal/display`.
 
 | Annotation | Example | Set by |
 |------------|---------|--------|
-| `networking.datumapis.com/display-name` | `test-alb` | Mutating webhook |
+| `networking.datumapis.com/display-name` | `Test ALB` | Mutating webhook |
 | `networking.datumapis.com/display-value` | `https://origin.example.com` | Mutating webhook |
 | `networking.datumapis.com/activity-change` | `added` / `removed` / `updated` | Mutating webhook on update |
 | `networking.datumapis.com/activity-field` | `hostname` / `backend` / `rule` / `mode` / `exclusions` / `sampling` / `paranoia` | Same |
@@ -133,7 +133,8 @@ the load balancer name and backends.
 
 ## Open Questions
 
-1. HTTPProxy has no pretty display-name field, so activity copy uses
-   `metadata.name`. Hostnames stay on `activity-name` for add/remove.
+1. Display text prefers the portal chosen name
+   (`app.kubernetes.io/name`), then `metadata.name`. Hostnames stay on
+   `activity-name` for add/remove.
 2. Later ALB features add a new `activity-field` and policy rules — do not
    invent a second scheme.

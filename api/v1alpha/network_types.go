@@ -72,11 +72,18 @@ const (
 
 	// NetworkReady reports whether the network holds everything it needs to be
 	// used. A network addressed from the tenant pool is ready once IPAM holds
-	// its range; one that claims no address space has nothing to wait for.
+	// its range; one that claims no address space has nothing to wait for. A
+	// network carrying no IPv6 is never ready, because nothing placed on it can
+	// be addressed at all.
 	NetworkReady = "Ready"
 
 	// NetworkReadyReasonReady means the network is ready for use.
 	NetworkReadyReasonReady = "Ready"
+
+	// NetworkReadyReasonIPv6Required means the network carries no IPv6. The
+	// platform addresses workloads over IPv6, so nothing placed on such a
+	// network can be given an address, and no amount of waiting changes that.
+	NetworkReadyReasonIPv6Required = "IPv6Required"
 
 	// NetworkReasonProjectNamespaceNotFound means the namespace the platform
 	// provisions with a project is absent from its control plane, so nothing

@@ -140,6 +140,7 @@ func TestWebhookRegistrations_RegistersEveryWebhook(t *testing.T) {
 		"HTTPProxy",
 		"HTTPRoute",
 		"HTTPRouteFilter",
+		"Network",
 		"SecurityPolicy",
 		"TrafficProtectionPolicy",
 	}

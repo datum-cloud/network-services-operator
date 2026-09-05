@@ -69,16 +69,20 @@ const KindHTTPRoute = "HTTPRoute"
 const KindService = "Service"
 const KindEndpointSlice = "EndpointSlice"
 
-// VPCPodTenantIDLabel is the label galactic-cni (#854) is expected to set on
-// the EndpointSlice it publishes for a VPC pod, identifying the owning
-// tenant. Its presence on an EndpointSlice an instance HTTPProxy backend
-// references (api/v1alpha.InstanceBackendRef) tells this controller to route
-// straight through to the pod's real address instead of synthesizing a
-// ClusterIP Service — Envoy needs a real endpoint address for the
-// tenant-VRF/SRv6 socket-bind mechanism (#855) to work.
+// VPCPodTenantIDLabel is the label galactic-cni (#854) sets on the
+// EndpointSlice it publishes for a VPC pod, identifying the owning tenant.
+// Its presence on an EndpointSlice an instance HTTPProxy backend references
+// (api/v1alpha.InstanceBackendRef) tells this controller to route straight
+// through to the pod's real address instead of synthesizing a ClusterIP
+// Service — Envoy needs a real endpoint address for the tenant-VRF/SRv6
+// socket-bind mechanism (#855) to work.
 //
-// TODO(#856): label name/schema unconfirmed with #854 — placeholder pending
-// their implementation.
+// Confirmed against galactic's own source of truth
+// (internal/crdnames.LabelTenantID) — same name, and same value shape:
+// galactic's crdnames.TenantIdentifier(vpc, vpcAttachment), an unencoded
+// "<vpc>-<vpcAttachment>" join. The extension server's vrfDeviceName
+// (internal/extensionserver/mutate/vpcpod.go) depends on that exact shape
+// to recover vpc from this label's value.
 const VPCPodTenantIDLabel = "galactic.datum.net/tenant-id"
 
 // GatewayReconciler reconciles a Gateway object

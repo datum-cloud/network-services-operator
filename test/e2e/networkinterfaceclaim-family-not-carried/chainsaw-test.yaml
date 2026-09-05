@@ -3,12 +3,11 @@
 # A claim asking for a family its network does not carry fails, naming the
 # family, and allocates nothing.
 #
-# Network.spec.ipFamilies and a claim's both default to [IPv6], so the mismatch
-# is no longer what a default claim on a default network produces. It is what a
-# default claim on a network narrowed to IPv4 produces, so the network here says
-# IPv4 explicitly. The check is NSO's own — it compares the two specs before it
-# ever reaches IPAM — so a green result here says nothing about IPAM and
-# everything about NSO refusing to ask for space it knows is wrong.
+# Every network carries IPv6 — a network without it is refused at admission —
+# so the mismatch is a claim that asks for IPv4 on one that carries only IPv6.
+# The check is NSO's own — it compares the two specs before it ever reaches
+# IPAM — so a green result here says nothing about IPAM and everything about NSO
+# refusing to ask for space it knows is wrong.
 #
 # A second claim on the SAME network, differing only in the family it asks for,
 # allocates for real. It is the control that gives the absence its meaning: an
@@ -42,10 +41,10 @@ spec:
                 location:
                   name: us-central-1
                 ipFamilies:
-                  - IPv4
+                  - IPv6
                 mtu: 1460
 
-    - name: A default claim on an IPv4-only network is refused
+    - name: A claim asking for IPv4 on an IPv6 network is refused
       try:
         - create:
             resource:
@@ -58,7 +57,7 @@ spec:
                 ipam:
                   mode: Auto
                 ipFamilies:
-                  - IPv4
+                  - IPv6
         - assert:
             resource:
               apiVersion: networking.datumapis.com/v1alpha
@@ -68,7 +67,7 @@ spec:
                 namespace: ipam-e2e-alpha
               spec:
                 ipFamilies:
-                  - IPv4
+                  - IPv6
         - create:
             resource:
               apiVersion: networking.datumapis.com/v1alpha
@@ -79,6 +78,8 @@ spec:
               spec:
                 network:
                   name: nic-family-net
+                ipFamilies:
+                  - IPv4
         - assert:
             timeout: 120s
             resource:
@@ -89,14 +90,14 @@ spec:
                 namespace: ipam-e2e-alpha
               spec:
                 ipFamilies:
-                  - IPv6
+                  - IPv4
               status:
                 (conditions[?type == 'Bound'] | [0]):
                   status: "False"
                   reason: AddressFamilyNotCarried
                 (conditions[?type == 'Allocated'] | [0].status): "False"
                 (conditions[?type == 'Ready'] | [0].status): "False"
-                (contains(conditions[?type == 'Bound'] | [0].message, 'IPv6')): true
+                (contains(conditions[?type == 'Bound'] | [0].message, 'IPv4')): true
       catch:
         - script:
             content: |
@@ -106,7 +107,8 @@ spec:
     - name: The same network satisfies the family it does carry
       description: |
         The positive control. Identical to the refused claim but for the family
-        it asks for.
+        it asks for, which here is the default the claim would have taken
+        anyway.
       try:
         - create:
             resource:
@@ -119,7 +121,7 @@ spec:
                 network:
                   name: nic-family-net
                 ipFamilies:
-                  - IPv4
+                  - IPv6
         - assert:
             timeout: 120s
             resource:
@@ -146,7 +148,7 @@ spec:
               claims=$(ipam get ipclaim -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}')
               echo "project-alpha IPClaims: $(echo $claims)"
 
-              echo "$claims" | grep -qx 'nic-family-canary-f-ipv4' \
+              echo "$claims" | grep -qx 'nic-family-canary-f-ipv6' \
                 || { echo "the canary's IPClaim is not visible in project-alpha — this suite cannot see allocations, so it cannot prove their absence"; exit 1; }
 
               for found in $(echo "$claims" | grep -E '^nic-family-mismatch-' || true); do

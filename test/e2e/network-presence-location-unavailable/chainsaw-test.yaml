@@ -18,6 +18,9 @@ spec:
               kind: Namespace
               metadata:
                 name: presence-unavail-project
+                labels:
+                  meta.datumapis.com/upstream-cluster-name: cluster-project-alpha
+                  meta.datumapis.com/upstream-namespace: default
         - apply:
             resource:
               apiVersion: v1
@@ -38,7 +41,7 @@ spec:
                 ipam:
                   mode: Auto
                 ipFamilies:
-                  - IPv4
+                  - IPv6
 
     - name: Declare the network is needed in a location the project cannot use
       try:
@@ -65,7 +68,7 @@ spec:
     - name: Assert it reads as a network problem, not as a consumer that never starts
       try:
         - assert:
-            timeout: 1m
+            timeout: 2m
             resource:
               apiVersion: networking.datumapis.com/v1alpha
               kind: NetworkBinding

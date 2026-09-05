@@ -41,6 +41,7 @@ spec:
                 location:
                   name: us-central-1
                 ipFamilies:
+                  - IPv6
                   - IPv4
                 mtu: 1460
 
@@ -57,6 +58,7 @@ spec:
                 ipam:
                   mode: Auto
                 ipFamilies:
+                  - IPv6
                   - IPv4
         - create:
             resource:

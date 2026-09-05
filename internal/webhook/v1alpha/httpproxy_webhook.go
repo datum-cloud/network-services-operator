@@ -4,6 +4,7 @@ package v1alpha
 
 import (
 	"context"
+	"encoding/json"
 
 	"k8s.io/apimachinery/pkg/api/errors"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -11,10 +12,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 
+	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
+	"go.datum.net/network-services-operator/internal/display"
 	"go.datum.net/network-services-operator/internal/validation"
 	webhookutil "go.datum.net/network-services-operator/internal/webhook"
-
-	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 )
 
 // nolint:unused
@@ -23,7 +24,32 @@ import (
 func SetupHTTPProxyWebhookWithManager(mgr mcmanager.Manager) error {
 	return ctrl.NewWebhookManagedBy(mgr.GetLocalManager(), &networkingv1alpha.HTTPProxy{}).
 		WithValidator(&HTTPProxyCustomValidator{mgr: mgr}).
+		WithDefaulter(&HTTPProxyCustomDefaulter{}).
 		Complete()
+}
+
+// +kubebuilder:webhook:path=/mutate-networking-datumapis-com-v1alpha-httpproxy,mutating=true,failurePolicy=fail,sideEffects=None,groups=networking.datumapis.com,resources=httpproxies,verbs=create;update,versions=v1alpha,name=mhttpproxy-v1alpha.kb.io,admissionReviewVersions=v1
+
+type HTTPProxyCustomDefaulter struct{}
+
+var _ admission.Defaulter[*networkingv1alpha.HTTPProxy] = &HTTPProxyCustomDefaulter{}
+
+func (d *HTTPProxyCustomDefaulter) Default(ctx context.Context, httpProxy *networkingv1alpha.HTTPProxy) error {
+	_ = display.EnsureHTTPProxyAnnotations(httpProxy, oldHTTPProxy(ctx))
+	return nil
+}
+
+func oldHTTPProxy(ctx context.Context) *networkingv1alpha.HTTPProxy {
+	req, err := admission.RequestFromContext(ctx)
+	if err != nil || len(req.OldObject.Raw) == 0 {
+		return nil
+	}
+	var old networkingv1alpha.HTTPProxy
+	if err := json.Unmarshal(req.OldObject.Raw, &old); err != nil {
+		logf.FromContext(ctx).V(1).Info("skipping HTTPProxy activity annotations; failed to decode OldObject", "error", err)
+		return nil
+	}
+	return &old
 }
 
 // +kubebuilder:webhook:path=/validate-networking-datumapis-com-v1alpha-httpproxy,mutating=false,failurePolicy=fail,sideEffects=None,groups=networking.datumapis.com,resources=httpproxies,verbs=create;update,versions=v1alpha,name=vhttpproxy-v1alpha.kb.io,admissionReviewVersions=v1

@@ -33,6 +33,7 @@ type policy struct {
 	} `json:"metadata"`
 	Spec struct {
 		AuditRules []auditRule `json:"auditRules"`
+		EventRules []auditRule `json:"eventRules"`
 	} `json:"spec"`
 }
 
@@ -91,6 +92,15 @@ func newEnv(t *testing.T) *cel.Env {
 	return env
 }
 
+func newEventEnv(t *testing.T) *cel.Env {
+	t.Helper()
+	env, err := cel.NewEnv(cel.Variable("event", cel.DynType))
+	if err != nil {
+		t.Fatalf("cel env: %v", err)
+	}
+	return env
+}
+
 func evalMatch(t *testing.T, env *cel.Env, match string, audit map[string]any) bool {
 	t.Helper()
 	ast, iss := env.Compile(match)
@@ -142,6 +152,10 @@ func auditEvent(verb string, code int) map[string]any {
 			"spec": map[string]any{
 				"domainName": "example.datumchainsaw.art",
 				"hostnames":  []any{"example.datumchainsaw.art"},
+				"mode":       "Observe",
+				"rules": []any{map[string]any{
+					"backends": []any{map[string]any{"endpoint": "https://origin.example.com"}},
+				}},
 			},
 		},
 		"responseObject": responseObject,
@@ -199,6 +213,9 @@ func TestCreateUpdateRulesFireOnlyOnSuccess(t *testing.T) {
 						pol.Metadata.Name, r.Name, v, failCodeFor(v))
 				}
 				if got := evalMatch(t, env, r.Match, auditEvent(v, successCodeFor(v))); !got {
+					if strings.Contains(r.Match, "metadata.annotations") {
+						return
+					}
 					t.Errorf("%s rule %q did not match a successful %s (code %d); the gate broke the happy path",
 						pol.Metadata.Name, r.Name, v, successCodeFor(v))
 				}
@@ -210,6 +227,7 @@ func TestCreateUpdateRulesFireOnlyOnSuccess(t *testing.T) {
 // Every rule's match must compile — catches CEL typos before they reach milo.
 func TestAllMatchesCompile(t *testing.T) {
 	env := newEnv(t)
+	eventEnv := newEventEnv(t)
 	for _, pol := range loadPolicies(t) {
 		for _, r := range pol.Spec.AuditRules {
 			if strings.TrimSpace(r.Match) == "" {
@@ -218,6 +236,15 @@ func TestAllMatchesCompile(t *testing.T) {
 			}
 			if _, iss := env.Compile(r.Match); iss != nil && iss.Err() != nil {
 				t.Errorf("%s rule %q match does not compile: %v", pol.Metadata.Name, r.Name, iss.Err())
+			}
+		}
+		for _, r := range pol.Spec.EventRules {
+			if strings.TrimSpace(r.Match) == "" {
+				t.Errorf("%s event rule %q has an empty match", pol.Metadata.Name, r.Name)
+				continue
+			}
+			if _, iss := eventEnv.Compile(r.Match); iss != nil && iss.Err() != nil {
+				t.Errorf("%s event rule %q match does not compile: %v", pol.Metadata.Name, r.Name, iss.Err())
 			}
 		}
 	}

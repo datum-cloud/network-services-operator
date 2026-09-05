@@ -523,6 +523,9 @@ func webhookRegistrations(mgr mcmanager.Manager, serverConfig config.NetworkServ
 		{"HTTPProxy", true, func() error {
 			return networkingv1alphawebhooks.SetupHTTPProxyWebhookWithManager(mgr)
 		}},
+		{"TrafficProtectionPolicy", true, func() error {
+			return networkingv1alphawebhooks.SetupTrafficProtectionPolicyWebhookWithManager(mgr)
+		}},
 		{"Domain", true, func() error {
 			return networkingv1alphawebhooks.SetupDomainWebhookWithManager(mgr)
 		}},

@@ -141,6 +141,7 @@ func TestWebhookRegistrations_RegistersEveryWebhook(t *testing.T) {
 		"HTTPRoute",
 		"HTTPRouteFilter",
 		"SecurityPolicy",
+		"TrafficProtectionPolicy",
 	}
 
 	got := registeredNames(webhookRegistrations(nil, config.NetworkServicesOperator{}))

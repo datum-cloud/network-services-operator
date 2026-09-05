@@ -1,9 +1,10 @@
 # ActivityPolicy for TrafficProtectionPolicy resources (networking.datumapis.com).
-# Defines how TrafficProtectionPolicy CRUD operations appear in activity timelines.
+# Product noun is "traffic protection". Display text is the load balancer name.
 #
-# TrafficProtectionPolicy attaches traffic rules (rate limiting, DDoS protection)
-# to Gateway and HTTPRoute resources. It has no user-facing display name beyond
-# the resource name. All rules exclude system users to suppress reconciliation noise.
+# Prefer display-* / activity-* annotations stamped at admission. Fall back to
+# spec.mode and spec.targetRefs[0].name. Create/update rules require a 2xx
+# response. Update rules require requestObject.spec so metadata-only patches
+# are silent. Event links prefer event.related (the HTTPProxy) when present.
 apiVersion: activity.miloapis.com/v1alpha1
 kind: ActivityPolicy
 metadata:
@@ -14,32 +15,67 @@ spec:
     kind: TrafficProtectionPolicy
 
   auditRules:
-    # TrafficProtectionPolicy creation with spec available
-    - name: create
-      match: "!audit.user.username.startsWith('system:') && audit.verb == 'create' && has(audit.requestObject.spec) && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
-      summary: "{{ actor }} created traffic protection policy {{ link(audit.responseObject.metadata.name, audit.objectRef) }}"
+    - name: create-annotated
+      match: "!audit.user.username.startsWith('system:') && audit.verb == 'create' && has(audit.requestObject.spec) && has(audit.responseObject.metadata.annotations) && 'networking.datumapis.com/display-name' in audit.responseObject.metadata.annotations && 'networking.datumapis.com/display-value' in audit.responseObject.metadata.annotations && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
+      summary: "{{ actor }} enabled traffic protection on {{ link(audit.responseObject.metadata.annotations['networking.datumapis.com/display-name'], audit.objectRef) }} in {{ audit.responseObject.metadata.annotations['networking.datumapis.com/display-value'] }} mode"
 
-    # TrafficProtectionPolicy creation fallback (no spec)
+    - name: create-mode
+      match: "!audit.user.username.startsWith('system:') && audit.verb == 'create' && has(audit.requestObject.spec) && has(audit.requestObject.spec.mode) && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
+      summary: "{{ actor }} enabled traffic protection {{ link(audit.objectRef.name, audit.objectRef) }} in {{ audit.requestObject.spec.mode }} mode"
+
     - name: create-fallback
       match: "!audit.user.username.startsWith('system:') && audit.verb == 'create' && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
-      summary: "{{ actor }} created {{ link('a traffic protection policy', audit.objectRef) }}"
+      summary: "{{ actor }} enabled {{ link('traffic protection', audit.objectRef) }}"
 
-    # TrafficProtectionPolicy deletion with responseObject.spec available (response contains the deleted resource)
-    - name: delete
-      match: "!audit.user.username.startsWith('system:') && audit.verb == 'delete' && has(audit.responseObject.spec)"
-      summary: "{{ actor }} deleted traffic protection policy {{ audit.objectRef.name }}"
+    - name: delete-annotated
+      match: "!audit.user.username.startsWith('system:') && audit.verb == 'delete' && has(audit.responseObject.metadata.annotations) && 'networking.datumapis.com/display-name' in audit.responseObject.metadata.annotations"
+      summary: "{{ actor }} removed traffic protection from {{ audit.responseObject.metadata.annotations['networking.datumapis.com/display-name'] }}"
 
-    # TrafficProtectionPolicy deletion fallback (no spec on response)
     - name: delete-fallback
       match: "!audit.user.username.startsWith('system:') && audit.verb == 'delete'"
-      summary: "{{ actor }} deleted a traffic protection policy"
+      summary: "{{ actor }} removed traffic protection"
 
-    # TrafficProtectionPolicy update with spec available - excludes status subresource
-    - name: update
-      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && has(audit.requestObject.spec) && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
-      summary: "{{ actor }} updated traffic protection policy {{ link(audit.objectRef.name, audit.objectRef) }}"
+    - name: update-mode
+      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && has(audit.requestObject.spec) && has(audit.responseObject.metadata.annotations) && 'networking.datumapis.com/activity-field' in audit.responseObject.metadata.annotations && audit.responseObject.metadata.annotations['networking.datumapis.com/activity-field'] == 'mode' && 'networking.datumapis.com/display-name' in audit.responseObject.metadata.annotations && 'networking.datumapis.com/activity-value' in audit.responseObject.metadata.annotations && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
+      summary: "{{ actor }} changed traffic protection on {{ link(audit.responseObject.metadata.annotations['networking.datumapis.com/display-name'], audit.objectRef) }} from {{ audit.responseObject.metadata.annotations['networking.datumapis.com/activity-value'] }}"
 
-    # TrafficProtectionPolicy update fallback (no spec)
+    - name: update-sampling
+      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && has(audit.requestObject.spec) && has(audit.responseObject.metadata.annotations) && 'networking.datumapis.com/activity-field' in audit.responseObject.metadata.annotations && audit.responseObject.metadata.annotations['networking.datumapis.com/activity-field'] == 'sampling' && 'networking.datumapis.com/display-name' in audit.responseObject.metadata.annotations && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
+      summary: "{{ actor }} changed traffic protection sampling on {{ link(audit.responseObject.metadata.annotations['networking.datumapis.com/display-name'], audit.objectRef) }} to {{ audit.responseObject.metadata.annotations['networking.datumapis.com/activity-value'] }}"
+
+    - name: update-exclusions
+      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && has(audit.requestObject.spec) && has(audit.responseObject.metadata.annotations) && 'networking.datumapis.com/activity-field' in audit.responseObject.metadata.annotations && audit.responseObject.metadata.annotations['networking.datumapis.com/activity-field'] == 'exclusions' && 'networking.datumapis.com/display-name' in audit.responseObject.metadata.annotations && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
+      summary: "{{ actor }} updated traffic protection exclusions on {{ link(audit.responseObject.metadata.annotations['networking.datumapis.com/display-name'], audit.objectRef) }}"
+
+    - name: update-annotated
+      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && has(audit.requestObject.spec) && has(audit.responseObject.metadata.annotations) && 'networking.datumapis.com/display-name' in audit.responseObject.metadata.annotations && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
+      summary: "{{ actor }} updated traffic protection on {{ link(audit.responseObject.metadata.annotations['networking.datumapis.com/display-name'], audit.objectRef) }}"
+
+    - name: update-mode-spec
+      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && has(audit.requestObject.spec) && has(audit.requestObject.spec.mode) && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
+      summary: "{{ actor }} updated traffic protection {{ link(audit.objectRef.name, audit.objectRef) }} to {{ audit.requestObject.spec.mode }} mode"
+
     - name: update-fallback
-      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
-      summary: "{{ actor }} updated {{ link('a traffic protection policy', audit.objectRef) }}"
+      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && has(audit.requestObject.spec) && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
+      summary: "{{ actor }} updated {{ link('traffic protection', audit.objectRef) }}"
+
+  eventRules:
+    - name: programmed-related
+      match: "event.reason == 'Programmed' && has(event.related) && event.related.name != ''"
+      summary: "Traffic protection is live on {{ link(event.metadata.annotations['networking.datumapis.com/display-name'], event.related) }}"
+
+    - name: programmed
+      match: "event.reason == 'Programmed'"
+      summary: "Traffic protection is live on {{ link(event.metadata.annotations['networking.datumapis.com/display-name'], event.regarding) }}"
+
+    - name: programming-failed-related
+      match: "event.reason == 'ProgrammingFailed' && has(event.related) && event.related.name != ''"
+      summary: "Traffic protection failed to program on {{ link(event.metadata.annotations['networking.datumapis.com/display-name'], event.related) }}"
+
+    - name: programming-failed
+      match: "event.reason == 'ProgrammingFailed'"
+      summary: "Traffic protection failed to program on {{ link(event.metadata.annotations['networking.datumapis.com/display-name'], event.regarding) }}"
+
+    - name: waiting-for-certificates
+      match: "event.reason == 'WaitingForCertificates'"
+      summary: "Traffic protection on {{ link(event.metadata.annotations['networking.datumapis.com/display-name'], event.regarding) }} is waiting for TLS certificates"

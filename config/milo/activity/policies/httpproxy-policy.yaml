@@ -1,10 +1,10 @@
 # ActivityPolicy for HTTPProxy resources (networking.datumapis.com).
-# Defines how HTTPProxy CRUD operations appear in activity timelines.
+# Product noun is "load balancer". Display text is the resource name.
 #
-# HTTPProxy spec.hostnames is a list, so we use the first element when available
-# to give users a recognisable display string (e.g. "app.example.com").
-# Fallback uses the resource name. All rules exclude system users to suppress
-# controller reconciliation noise.
+# Prefer display-* / activity-* annotations stamped at admission. Fall back to
+# metadata.name / objectRef.name and spec.rules[0].backends[0].endpoint.
+# Create/update rules require a 2xx response. Update rules require
+# requestObject.spec so metadata-only patches are silent.
 apiVersion: activity.miloapis.com/v1alpha1
 kind: ActivityPolicy
 metadata:
@@ -15,32 +15,91 @@ spec:
     kind: HTTPProxy
 
   auditRules:
-    # HTTPProxy creation with spec.hostnames available - use first hostname as display text
-    - name: create
-      match: "!audit.user.username.startsWith('system:') && audit.verb == 'create' && has(audit.requestObject.spec) && has(audit.requestObject.spec.hostnames) && size(audit.requestObject.spec.hostnames) > 0 && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
-      summary: "{{ actor }} created HTTP proxy {{ link(string(audit.requestObject.spec.hostnames[0]), audit.objectRef) }}"
+    - name: create-annotated-backend
+      match: "!audit.user.username.startsWith('system:') && audit.verb == 'create' && has(audit.requestObject.spec) && has(audit.responseObject.metadata.annotations) && 'networking.datumapis.com/display-name' in audit.responseObject.metadata.annotations && 'networking.datumapis.com/display-value' in audit.responseObject.metadata.annotations && audit.responseObject.metadata.annotations['networking.datumapis.com/display-value'] != '' && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
+      summary: "{{ actor }} created load balancer {{ link(audit.responseObject.metadata.annotations['networking.datumapis.com/display-name'], audit.objectRef) }} pointing to {{ audit.responseObject.metadata.annotations['networking.datumapis.com/display-value'] }}"
 
-    # HTTPProxy creation fallback (no spec or no hostnames)
+    - name: create-annotated
+      match: "!audit.user.username.startsWith('system:') && audit.verb == 'create' && has(audit.requestObject.spec) && has(audit.responseObject.metadata.annotations) && 'networking.datumapis.com/display-name' in audit.responseObject.metadata.annotations && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
+      summary: "{{ actor }} created load balancer {{ link(audit.responseObject.metadata.annotations['networking.datumapis.com/display-name'], audit.objectRef) }}"
+
+    - name: create-name-backend
+      match: "!audit.user.username.startsWith('system:') && audit.verb == 'create' && has(audit.requestObject.spec) && has(audit.objectRef.name) && has(audit.requestObject.spec.rules) && size(audit.requestObject.spec.rules) > 0 && has(audit.requestObject.spec.rules[0].backends) && size(audit.requestObject.spec.rules[0].backends) > 0 && has(audit.requestObject.spec.rules[0].backends[0].endpoint) && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
+      summary: "{{ actor }} created load balancer {{ link(audit.objectRef.name, audit.objectRef) }} pointing to {{ audit.requestObject.spec.rules[0].backends[0].endpoint }}"
+
+    - name: create-name
+      match: "!audit.user.username.startsWith('system:') && audit.verb == 'create' && has(audit.requestObject.spec) && has(audit.objectRef.name) && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
+      summary: "{{ actor }} created load balancer {{ link(audit.objectRef.name, audit.objectRef) }}"
+
     - name: create-fallback
       match: "!audit.user.username.startsWith('system:') && audit.verb == 'create' && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
-      summary: "{{ actor }} created {{ link('an HTTP proxy', audit.objectRef) }}"
+      summary: "{{ actor }} created {{ link('a load balancer', audit.objectRef) }}"
 
-    # HTTPProxy deletion with responseObject.spec.hostnames available
-    - name: delete
-      match: "!audit.user.username.startsWith('system:') && audit.verb == 'delete' && has(audit.responseObject.spec) && has(audit.responseObject.spec.hostnames) && size(audit.responseObject.spec.hostnames) > 0"
-      summary: "{{ actor }} deleted HTTP proxy {{ string(audit.responseObject.spec.hostnames[0]) }}"
+    - name: delete-annotated
+      match: "!audit.user.username.startsWith('system:') && audit.verb == 'delete' && has(audit.responseObject.metadata.annotations) && 'networking.datumapis.com/display-name' in audit.responseObject.metadata.annotations"
+      summary: "{{ actor }} deleted load balancer {{ audit.responseObject.metadata.annotations['networking.datumapis.com/display-name'] }}"
 
-    # HTTPProxy deletion fallback (no spec on response)
+    - name: delete-name
+      match: "!audit.user.username.startsWith('system:') && audit.verb == 'delete' && has(audit.objectRef.name)"
+      summary: "{{ actor }} deleted load balancer {{ audit.objectRef.name }}"
+
     - name: delete-fallback
       match: "!audit.user.username.startsWith('system:') && audit.verb == 'delete'"
-      summary: "{{ actor }} deleted an HTTP proxy"
+      summary: "{{ actor }} deleted a load balancer"
 
-    # HTTPProxy update with spec.hostnames available - excludes status subresource
-    - name: update
-      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && has(audit.requestObject.spec) && has(audit.requestObject.spec.hostnames) && size(audit.requestObject.spec.hostnames) > 0 && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
-      summary: "{{ actor }} updated HTTP proxy {{ link(string(audit.requestObject.spec.hostnames[0]), audit.objectRef) }}"
+    - name: update-hostname-added
+      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && has(audit.requestObject.spec) && has(audit.responseObject.metadata.annotations) && 'networking.datumapis.com/activity-change' in audit.responseObject.metadata.annotations && audit.responseObject.metadata.annotations['networking.datumapis.com/activity-change'] == 'added' && audit.responseObject.metadata.annotations['networking.datumapis.com/activity-field'] == 'hostname' && 'networking.datumapis.com/activity-name' in audit.responseObject.metadata.annotations && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
+      summary: "{{ actor }} added a custom hostname {{ audit.responseObject.metadata.annotations['networking.datumapis.com/activity-name'] }} to {{ link(audit.responseObject.metadata.annotations['networking.datumapis.com/display-name'], audit.objectRef) }}"
 
-    # HTTPProxy update fallback (no spec or no hostnames)
+    - name: update-hostname-removed
+      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && has(audit.requestObject.spec) && has(audit.responseObject.metadata.annotations) && 'networking.datumapis.com/activity-change' in audit.responseObject.metadata.annotations && audit.responseObject.metadata.annotations['networking.datumapis.com/activity-change'] == 'removed' && audit.responseObject.metadata.annotations['networking.datumapis.com/activity-field'] == 'hostname' && 'networking.datumapis.com/activity-name' in audit.responseObject.metadata.annotations && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
+      summary: "{{ actor }} removed hostname {{ audit.responseObject.metadata.annotations['networking.datumapis.com/activity-name'] }} from {{ audit.responseObject.metadata.annotations['networking.datumapis.com/display-name'] }}"
+
+    - name: update-backend
+      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && has(audit.requestObject.spec) && has(audit.responseObject.metadata.annotations) && 'networking.datumapis.com/activity-field' in audit.responseObject.metadata.annotations && audit.responseObject.metadata.annotations['networking.datumapis.com/activity-field'] == 'backend' && 'networking.datumapis.com/display-name' in audit.responseObject.metadata.annotations && 'networking.datumapis.com/activity-value' in audit.responseObject.metadata.annotations && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
+      summary: "{{ actor }} updated load balancer {{ link(audit.responseObject.metadata.annotations['networking.datumapis.com/display-name'], audit.objectRef) }} to point to {{ audit.responseObject.metadata.annotations['networking.datumapis.com/activity-value'] }}"
+
+    - name: update-rule
+      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && has(audit.requestObject.spec) && has(audit.responseObject.metadata.annotations) && 'networking.datumapis.com/activity-field' in audit.responseObject.metadata.annotations && audit.responseObject.metadata.annotations['networking.datumapis.com/activity-field'] == 'rule' && 'networking.datumapis.com/display-name' in audit.responseObject.metadata.annotations && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
+      summary: "{{ actor }} updated routing on load balancer {{ link(audit.responseObject.metadata.annotations['networking.datumapis.com/display-name'], audit.objectRef) }}"
+
+    - name: update-annotated
+      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && has(audit.requestObject.spec) && has(audit.responseObject.metadata.annotations) && 'networking.datumapis.com/display-name' in audit.responseObject.metadata.annotations && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
+      summary: "{{ actor }} updated load balancer {{ link(audit.responseObject.metadata.annotations['networking.datumapis.com/display-name'], audit.objectRef) }}"
+
+    - name: update-name
+      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && has(audit.requestObject.spec) && has(audit.objectRef.name) && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
+      summary: "{{ actor }} updated load balancer {{ link(audit.objectRef.name, audit.objectRef) }}"
+
     - name: update-fallback
-      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
-      summary: "{{ actor }} updated {{ link('an HTTP proxy', audit.objectRef) }}"
+      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && has(audit.requestObject.spec) && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
+      summary: "{{ actor }} updated {{ link('a load balancer', audit.objectRef) }}"
+
+  eventRules:
+    - name: programmed
+      match: "event.reason == 'Programmed'"
+      summary: "Load balancer {{ link(event.metadata.annotations['networking.datumapis.com/display-name'], event.regarding) }} is live"
+
+    - name: programming-failed
+      match: "event.reason == 'ProgrammingFailed'"
+      summary: "Load balancer {{ link(event.metadata.annotations['networking.datumapis.com/display-name'], event.regarding) }} failed to program"
+
+    - name: hostname-in-use
+      match: "event.reason == 'HostnameInUse'"
+      summary: "A hostname on {{ link(event.metadata.annotations['networking.datumapis.com/display-name'], event.regarding) }} is already in use"
+
+    - name: hostnames-unverified
+      match: "event.reason == 'HostnamesUnverified'"
+      summary: "{{ link(event.metadata.annotations['networking.datumapis.com/display-name'], event.regarding) }} is waiting for domain verification"
+
+    - name: certificate-issued
+      match: "event.reason == 'CertificateIssued'"
+      summary: "TLS certificate issued for {{ link(event.metadata.annotations['networking.datumapis.com/display-name'], event.regarding) }}"
+
+    - name: certificate-failed
+      match: "event.reason == 'CertificateFailed'"
+      summary: "Failed to issue TLS certificate for {{ link(event.metadata.annotations['networking.datumapis.com/display-name'], event.regarding) }}"
+
+    - name: dns-record-failed
+      match: "event.reason == 'DNSRecordFailed'"
+      summary: "Failed to program DNS for {{ link(event.metadata.annotations['networking.datumapis.com/display-name'], event.regarding) }}"

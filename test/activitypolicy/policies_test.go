@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/google/cel-go/cel"
+	activityv1alpha1 "go.miloapis.com/activity/pkg/apis/activity/v1alpha1"
 	"sigs.k8s.io/yaml"
 )
 
@@ -21,23 +22,7 @@ import (
 
 const policiesGlob = "../../config/milo/activity/policies/*-policy.yaml"
 
-type auditRule struct {
-	Name    string `json:"name"`
-	Match   string `json:"match"`
-	Summary string `json:"summary"`
-}
-
-type policy struct {
-	Metadata struct {
-		Name string `json:"name"`
-	} `json:"metadata"`
-	Spec struct {
-		AuditRules []auditRule `json:"auditRules"`
-		EventRules []auditRule `json:"eventRules"`
-	} `json:"spec"`
-}
-
-func loadPolicies(t *testing.T) []policy {
+func loadPolicies(t *testing.T) []activityv1alpha1.ActivityPolicy {
 	t.Helper()
 	paths, err := filepath.Glob(policiesGlob)
 	if err != nil {
@@ -46,18 +31,18 @@ func loadPolicies(t *testing.T) []policy {
 	if len(paths) == 0 {
 		t.Fatalf("no policy files matched %q", policiesGlob)
 	}
-	policies := make([]policy, 0, len(paths))
+	policies := make([]activityv1alpha1.ActivityPolicy, 0, len(paths))
 	for _, p := range paths {
 		b, err := os.ReadFile(p)
 		if err != nil {
 			t.Fatalf("read %s: %v", p, err)
 		}
-		var pol policy
+		var pol activityv1alpha1.ActivityPolicy
 		if err := yaml.Unmarshal(b, &pol); err != nil {
 			t.Fatalf("unmarshal %s: %v", p, err)
 		}
-		if pol.Metadata.Name == "" {
-			pol.Metadata.Name = filepath.Base(p)
+		if pol.Name == "" {
+			pol.Name = filepath.Base(p)
 		}
 		policies = append(policies, pol)
 	}
@@ -186,10 +171,10 @@ func TestCreateUpdateRulesGateOn2xx(t *testing.T) {
 			if v != "create" && v != "update" {
 				continue
 			}
-			t.Run(pol.Metadata.Name+"/"+r.Name, func(t *testing.T) {
+			t.Run(pol.Name+"/"+r.Name, func(t *testing.T) {
 				if !gatesOn2xx(r.Match) {
 					t.Errorf("%s rule %q (%s) is not gated on a 2xx response:\n  %s",
-						pol.Metadata.Name, r.Name, v, r.Match)
+						pol.Name, r.Name, v, r.Match)
 				}
 			})
 		}
@@ -207,17 +192,17 @@ func TestCreateUpdateRulesFireOnlyOnSuccess(t *testing.T) {
 			if v != "create" && v != "update" {
 				continue
 			}
-			t.Run(pol.Metadata.Name+"/"+r.Name, func(t *testing.T) {
+			t.Run(pol.Name+"/"+r.Name, func(t *testing.T) {
 				if got := evalMatch(t, env, r.Match, auditEvent(v, failCodeFor(v))); got {
 					t.Errorf("%s rule %q matched a failed %s (code %d); it would DLQ / emit a false activity",
-						pol.Metadata.Name, r.Name, v, failCodeFor(v))
+						pol.Name, r.Name, v, failCodeFor(v))
 				}
 				if got := evalMatch(t, env, r.Match, auditEvent(v, successCodeFor(v))); !got {
 					if strings.Contains(r.Match, "metadata.annotations") {
 						return
 					}
 					t.Errorf("%s rule %q did not match a successful %s (code %d); the gate broke the happy path",
-						pol.Metadata.Name, r.Name, v, successCodeFor(v))
+						pol.Name, r.Name, v, successCodeFor(v))
 				}
 			})
 		}
@@ -231,20 +216,20 @@ func TestAllMatchesCompile(t *testing.T) {
 	for _, pol := range loadPolicies(t) {
 		for _, r := range pol.Spec.AuditRules {
 			if strings.TrimSpace(r.Match) == "" {
-				t.Errorf("%s rule %q has an empty match", pol.Metadata.Name, r.Name)
+				t.Errorf("%s rule %q has an empty match", pol.Name, r.Name)
 				continue
 			}
 			if _, iss := env.Compile(r.Match); iss != nil && iss.Err() != nil {
-				t.Errorf("%s rule %q match does not compile: %v", pol.Metadata.Name, r.Name, iss.Err())
+				t.Errorf("%s rule %q match does not compile: %v", pol.Name, r.Name, iss.Err())
 			}
 		}
 		for _, r := range pol.Spec.EventRules {
 			if strings.TrimSpace(r.Match) == "" {
-				t.Errorf("%s event rule %q has an empty match", pol.Metadata.Name, r.Name)
+				t.Errorf("%s event rule %q has an empty match", pol.Name, r.Name)
 				continue
 			}
 			if _, iss := eventEnv.Compile(r.Match); iss != nil && iss.Err() != nil {
-				t.Errorf("%s event rule %q match does not compile: %v", pol.Metadata.Name, r.Name, iss.Err())
+				t.Errorf("%s event rule %q match does not compile: %v", pol.Name, r.Name, iss.Err())
 			}
 		}
 	}

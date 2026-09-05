@@ -11,37 +11,23 @@ import (
 	"github.com/google/cel-go/cel"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	activityv1alpha1 "go.miloapis.com/activity/pkg/apis/activity/v1alpha1"
 	"sigs.k8s.io/yaml"
 )
 
-type activityPolicy struct {
-	Spec struct {
-		AuditRules []struct {
-			Name    string `json:"name"`
-			Match   string `json:"match"`
-			Summary string `json:"summary"`
-		} `json:"auditRules"`
-		EventRules []struct {
-			Name    string `json:"name"`
-			Match   string `json:"match"`
-			Summary string `json:"summary"`
-		} `json:"eventRules"`
-	} `json:"spec"`
-}
-
-func loadPolicy(t *testing.T, rel string) activityPolicy {
+func loadPolicy(t *testing.T, rel string) activityv1alpha1.ActivityPolicy {
 	t.Helper()
 	_, file, _, ok := runtime.Caller(0)
 	require.True(t, ok)
 	root := filepath.Clean(filepath.Join(filepath.Dir(file), "../.."))
 	data, err := os.ReadFile(filepath.Join(root, rel))
 	require.NoError(t, err)
-	var pol activityPolicy
+	var pol activityv1alpha1.ActivityPolicy
 	require.NoError(t, yaml.Unmarshal(data, &pol))
 	return pol
 }
 
-func firstMatchingEventRule(t *testing.T, pol activityPolicy, event map[string]any) string {
+func firstMatchingEventRule(t *testing.T, pol activityv1alpha1.ActivityPolicy, event map[string]any) string {
 	t.Helper()
 	env, err := cel.NewEnv(cel.Variable("event", cel.DynType))
 	require.NoError(t, err)
@@ -59,7 +45,7 @@ func firstMatchingEventRule(t *testing.T, pol activityPolicy, event map[string]a
 	return ""
 }
 
-func firstMatchingAuditRule(t *testing.T, pol activityPolicy, audit map[string]any) string {
+func firstMatchingAuditRule(t *testing.T, pol activityv1alpha1.ActivityPolicy, audit map[string]any) string {
 	t.Helper()
 	env, err := cel.NewEnv(cel.Variable("audit", cel.DynType))
 	require.NoError(t, err)

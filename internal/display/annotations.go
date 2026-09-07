@@ -19,13 +19,16 @@ const (
 )
 
 const (
-	ActivityFieldHostname   = "hostname"
-	ActivityFieldBackend    = "backend"
-	ActivityFieldRule       = "rule"
-	ActivityFieldMode       = "mode"
-	ActivityFieldExclusions = "exclusions"
-	ActivityFieldSampling   = "sampling"
-	ActivityFieldParanoia   = "paranoia"
+	ActivityFieldHostname    = "hostname"
+	ActivityFieldBackend     = "backend"
+	ActivityFieldHostHeader  = "host-header"
+	ActivityFieldForceHTTPS  = "force-https"
+	ActivityFieldDisplayName = "display-name"
+	ActivityFieldRule        = "rule"
+	ActivityFieldMode        = "mode"
+	ActivityFieldExclusions  = "exclusions"
+	ActivityFieldSampling    = "sampling"
+	ActivityFieldParanoia    = "paranoia"
 )
 
 type ActivityDiff struct {

@@ -122,6 +122,59 @@ func TestHTTPProxyPolicy_Fixtures(t *testing.T) {
 			},
 		},
 		{
+			name:     "update host header added",
+			wantRule: "update-host-header-added",
+			audit: map[string]any{
+				"user":          map[string]any{"username": "alice@example.com"},
+				"verb":          "patch",
+				"objectRef":     map[string]any{"name": "alb"},
+				"requestObject": map[string]any{"spec": map[string]any{"hostnames": []any{"app.example.com"}}},
+				"responseObject": map[string]any{"metadata": map[string]any{"annotations": map[string]any{
+					"networking.datumapis.com/display-name":    "alb",
+					"networking.datumapis.com/activity-change": "added",
+					"networking.datumapis.com/activity-field":  "host-header",
+					"networking.datumapis.com/activity-value":  "origin.internal",
+				}}},
+				"responseStatus": map[string]any{"code": 200},
+			},
+		},
+		{
+			name:     "update force https enabled",
+			wantRule: "update-force-https-enabled",
+			audit: map[string]any{
+				"user":          map[string]any{"username": "alice@example.com"},
+				"verb":          "patch",
+				"objectRef":     map[string]any{"name": "alb"},
+				"requestObject": map[string]any{"spec": map[string]any{"hostnames": []any{"app.example.com"}}},
+				"responseObject": map[string]any{"metadata": map[string]any{"annotations": map[string]any{
+					"networking.datumapis.com/display-name":    "alb",
+					"networking.datumapis.com/activity-change": "added",
+					"networking.datumapis.com/activity-field":  "force-https",
+					"networking.datumapis.com/activity-value":  "enabled",
+				}}},
+				"responseStatus": map[string]any{"code": 200},
+			},
+		},
+		{
+			name:     "update display name",
+			wantRule: "update-display-name",
+			audit: map[string]any{
+				"user":      map[string]any{"username": "alice@example.com"},
+				"verb":      "patch",
+				"objectRef": map[string]any{"name": "alb"},
+				"requestObject": map[string]any{"metadata": map[string]any{"annotations": map[string]any{
+					"app.kubernetes.io/name": "Test Activities",
+				}}},
+				"responseObject": map[string]any{"metadata": map[string]any{"annotations": map[string]any{
+					"networking.datumapis.com/display-name":   "Test Activities",
+					"networking.datumapis.com/activity-field": "display-name",
+					"networking.datumapis.com/activity-name":  "alb",
+					"networking.datumapis.com/activity-value": "Test Activities",
+				}}},
+				"responseStatus": map[string]any{"code": 200},
+			},
+		},
+		{
 			name:     "update backend",
 			wantRule: "update-backend",
 			audit: map[string]any{

@@ -68,6 +68,72 @@ func TestComputeHTTPProxyActivityDiff(t *testing.T) {
 			},
 		},
 		{
+			name: "host header added",
+			old:  proxyWith("https://origin.example.com", "/"),
+			new:  proxyWithHostHeader("https://origin.example.com", "/", "origin.internal"),
+			want: ActivityDiff{
+				Change: ActivityChangeAdded,
+				Field:  ActivityFieldHostHeader,
+				Name:   "alb",
+				Value:  "origin.internal",
+			},
+		},
+		{
+			name: "host header removed",
+			old:  proxyWithHostHeader("https://origin.example.com", "/", "origin.internal"),
+			new:  proxyWith("https://origin.example.com", "/"),
+			want: ActivityDiff{
+				Change: ActivityChangeRemoved,
+				Field:  ActivityFieldHostHeader,
+				Name:   "origin.internal",
+				Value:  "origin.internal",
+			},
+		},
+		{
+			name: "force https enabled",
+			old:  proxyWith("https://origin.example.com", "/"),
+			new:  proxyWithForceHTTPS("https://origin.example.com", "/"),
+			want: ActivityDiff{
+				Change: ActivityChangeAdded,
+				Field:  ActivityFieldForceHTTPS,
+				Name:   "alb",
+				Value:  "enabled",
+			},
+		},
+		{
+			name: "force https disabled",
+			old:  proxyWithForceHTTPS("https://origin.example.com", "/"),
+			new:  proxyWith("https://origin.example.com", "/"),
+			want: ActivityDiff{
+				Change: ActivityChangeRemoved,
+				Field:  ActivityFieldForceHTTPS,
+				Name:   "alb",
+				Value:  "disabled",
+			},
+		},
+		{
+			name: "display name changed",
+			old:  proxyWith("https://origin.example.com", "/"),
+			new:  proxyWithChosenName("Test Activities", "https://origin.example.com", "/"),
+			want: ActivityDiff{
+				Change: ActivityChangeUpdated,
+				Field:  ActivityFieldDisplayName,
+				Name:   "alb",
+				Value:  "Test Activities",
+			},
+		},
+		{
+			name: "host header changed",
+			old:  proxyWithHostHeader("https://origin.example.com", "/", "origin.internal"),
+			new:  proxyWithHostHeader("https://origin.example.com", "/", "other.internal"),
+			want: ActivityDiff{
+				Change: ActivityChangeUpdated,
+				Field:  ActivityFieldHostHeader,
+				Name:   "alb",
+				Value:  "other.internal",
+			},
+		},
+		{
 			name: "mixed hostname and backend",
 			old:  proxyWith("https://origin.example.com", "/"),
 			new:  proxyWithHostnames([]string{"app.example.com", "api.example.com"}, "https://other.example.com", "/"),
@@ -129,6 +195,52 @@ func TestHTTPProxyDisplayName(t *testing.T) {
 
 func proxyWith(endpoint, path string) *networkingv1alpha.HTTPProxy {
 	return proxyWithHostnames([]string{"app.example.com"}, endpoint, path)
+}
+
+func proxyWithChosenName(chosenName, endpoint, path string) *networkingv1alpha.HTTPProxy {
+	proxy := proxyWith(endpoint, path)
+	proxy.Annotations = map[string]string{AnnotationChosenName: chosenName}
+	return proxy
+}
+
+func proxyWithForceHTTPS(endpoint, path string) *networkingv1alpha.HTTPProxy {
+	proxy := proxyWith(endpoint, path)
+	redirect := networkingv1alpha.HTTPProxyRule{
+		Matches: []gatewayv1.HTTPRouteMatch{{
+			Path: &gatewayv1.HTTPPathMatch{
+				Type:  ptr.To(gatewayv1.PathMatchPathPrefix),
+				Value: ptr.To("/"),
+			},
+			Headers: []gatewayv1.HTTPHeaderMatch{{
+				Name:  "x-forwarded-proto",
+				Type:  ptr.To(gatewayv1.HeaderMatchExact),
+				Value: "http",
+			}},
+		}},
+		Filters: []gatewayv1.HTTPRouteFilter{{
+			Type: gatewayv1.HTTPRouteFilterRequestRedirect,
+			RequestRedirect: &gatewayv1.HTTPRequestRedirectFilter{
+				Scheme:     ptr.To("https"),
+				StatusCode: ptr.To(301),
+			},
+		}},
+	}
+	proxy.Spec.Rules = append([]networkingv1alpha.HTTPProxyRule{redirect}, proxy.Spec.Rules...)
+	return proxy
+}
+
+func proxyWithHostHeader(endpoint, path, hostHeader string) *networkingv1alpha.HTTPProxy {
+	proxy := proxyWith(endpoint, path)
+	proxy.Spec.Rules[0].Filters = []gatewayv1.HTTPRouteFilter{{
+		Type: gatewayv1.HTTPRouteFilterRequestHeaderModifier,
+		RequestHeaderModifier: &gatewayv1.HTTPHeaderFilter{
+			Set: []gatewayv1.HTTPHeader{{
+				Name:  "Host",
+				Value: hostHeader,
+			}},
+		},
+	}}
+	return proxy
 }
 
 func proxyWithHostnames(hostnames []string, endpoint, path string) *networkingv1alpha.HTTPProxy {

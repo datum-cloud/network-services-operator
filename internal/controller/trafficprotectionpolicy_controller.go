@@ -100,6 +100,7 @@ type certificateReadinessResult struct {
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=trafficprotectionpolicies,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=trafficprotectionpolicies/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=trafficprotectionpolicies/finalizers,verbs=update
+// +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups=cert-manager.io,resources=certificates,verbs=get;list;watch
 
 func (r *TrafficProtectionPolicyReconciler) Reconcile(ctx context.Context, req NamespaceReconcileRequest) (ctrl.Result, error) {
@@ -439,6 +440,7 @@ func (r *TrafficProtectionPolicyReconciler) updateTPPAncestorsStatus(
 		}
 
 		if !equality.Semantic.DeepEqual(originalPolicy.Status, policy.Status) {
+			emitTPPActivityEvents(ctx, upstreamClient, policy.TrafficProtectionPolicy, &originalPolicy)
 			originalPolicy.Status = policy.Status
 			if err := upstreamClient.Status().Update(ctx, &originalPolicy); err != nil {
 				return fmt.Errorf("failed to update status for trafficprotectionpolicy %s/%s: %w", policy.Namespace, policy.Name, err)

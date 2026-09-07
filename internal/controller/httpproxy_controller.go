@@ -123,6 +123,7 @@ const (
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=httpproxies,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=httpproxies/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=httpproxies/finalizers,verbs=update
+// +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=connectors,verbs=get;list;watch
 // +kubebuilder:rbac:groups=gateway.envoyproxy.io,resources=httproutefilters,verbs=get;list;watch;create;update;patch;delete
 // HTTPProxy controller reads cert-manager Certificate resources in the downstream cluster for status; ensure downstream role has cert-manager.io/certificates get;list;watch.
@@ -197,6 +198,7 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 		}
 
 		if !equality.Semantic.DeepEqual(httpProxy.Status, httpProxyCopy.Status) {
+			emitHTTPProxyActivityEvents(ctx, cl.GetClient(), httpProxyCopy, httpProxy.Status.Conditions)
 			httpProxy.Status = httpProxyCopy.Status
 			if statusErr := cl.GetClient().Status().Update(ctx, &httpProxy); statusErr != nil {
 				err = errors.Join(err, fmt.Errorf("failed updating httpproxy status: %w", statusErr))

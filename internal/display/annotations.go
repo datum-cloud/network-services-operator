@@ -25,10 +25,10 @@ const (
 	ActivityFieldForceHTTPS  = "force-https"
 	ActivityFieldDisplayName = "display-name"
 	ActivityFieldRule        = "rule"
-	ActivityFieldMode       = "mode"
-	ActivityFieldExclusions = "exclusions"
-	ActivityFieldSampling   = "sampling"
-	ActivityFieldParanoia   = "paranoia"
+	ActivityFieldMode        = "mode"
+	ActivityFieldExclusions  = "exclusions"
+	ActivityFieldSampling    = "sampling"
+	ActivityFieldParanoia    = "paranoia"
 )
 
 type ActivityDiff struct {

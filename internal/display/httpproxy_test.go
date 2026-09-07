@@ -70,7 +70,7 @@ func TestComputeHTTPProxyActivityDiff(t *testing.T) {
 		{
 			name: "host header added",
 			old:  proxyWith("https://origin.example.com", "/"),
-			new:  proxyWithHostHeader("https://origin.example.com", "/", "origin.internal"),
+			new:  proxyWithHostHeader("origin.internal"),
 			want: ActivityDiff{
 				Change: ActivityChangeAdded,
 				Field:  ActivityFieldHostHeader,
@@ -80,7 +80,7 @@ func TestComputeHTTPProxyActivityDiff(t *testing.T) {
 		},
 		{
 			name: "host header removed",
-			old:  proxyWithHostHeader("https://origin.example.com", "/", "origin.internal"),
+			old:  proxyWithHostHeader("origin.internal"),
 			new:  proxyWith("https://origin.example.com", "/"),
 			want: ActivityDiff{
 				Change: ActivityChangeRemoved,
@@ -92,7 +92,7 @@ func TestComputeHTTPProxyActivityDiff(t *testing.T) {
 		{
 			name: "force https enabled",
 			old:  proxyWith("https://origin.example.com", "/"),
-			new:  proxyWithForceHTTPS("https://origin.example.com", "/"),
+			new:  proxyWithForceHTTPS(),
 			want: ActivityDiff{
 				Change: ActivityChangeAdded,
 				Field:  ActivityFieldForceHTTPS,
@@ -102,7 +102,7 @@ func TestComputeHTTPProxyActivityDiff(t *testing.T) {
 		},
 		{
 			name: "force https disabled",
-			old:  proxyWithForceHTTPS("https://origin.example.com", "/"),
+			old:  proxyWithForceHTTPS(),
 			new:  proxyWith("https://origin.example.com", "/"),
 			want: ActivityDiff{
 				Change: ActivityChangeRemoved,
@@ -114,7 +114,7 @@ func TestComputeHTTPProxyActivityDiff(t *testing.T) {
 		{
 			name: "display name changed",
 			old:  proxyWith("https://origin.example.com", "/"),
-			new:  proxyWithChosenName("Test Activities", "https://origin.example.com", "/"),
+			new:  proxyWithChosenName("Test Activities"),
 			want: ActivityDiff{
 				Change: ActivityChangeUpdated,
 				Field:  ActivityFieldDisplayName,
@@ -124,8 +124,8 @@ func TestComputeHTTPProxyActivityDiff(t *testing.T) {
 		},
 		{
 			name: "host header changed",
-			old:  proxyWithHostHeader("https://origin.example.com", "/", "origin.internal"),
-			new:  proxyWithHostHeader("https://origin.example.com", "/", "other.internal"),
+			old:  proxyWithHostHeader("origin.internal"),
+			new:  proxyWithHostHeader("other.internal"),
 			want: ActivityDiff{
 				Change: ActivityChangeUpdated,
 				Field:  ActivityFieldHostHeader,
@@ -197,14 +197,14 @@ func proxyWith(endpoint, path string) *networkingv1alpha.HTTPProxy {
 	return proxyWithHostnames([]string{"app.example.com"}, endpoint, path)
 }
 
-func proxyWithChosenName(chosenName, endpoint, path string) *networkingv1alpha.HTTPProxy {
-	proxy := proxyWith(endpoint, path)
+func proxyWithChosenName(chosenName string) *networkingv1alpha.HTTPProxy {
+	proxy := proxyWith("https://origin.example.com", "/")
 	proxy.Annotations = map[string]string{AnnotationChosenName: chosenName}
 	return proxy
 }
 
-func proxyWithForceHTTPS(endpoint, path string) *networkingv1alpha.HTTPProxy {
-	proxy := proxyWith(endpoint, path)
+func proxyWithForceHTTPS() *networkingv1alpha.HTTPProxy {
+	proxy := proxyWith("https://origin.example.com", "/")
 	redirect := networkingv1alpha.HTTPProxyRule{
 		Matches: []gatewayv1.HTTPRouteMatch{{
 			Path: &gatewayv1.HTTPPathMatch{
@@ -229,8 +229,8 @@ func proxyWithForceHTTPS(endpoint, path string) *networkingv1alpha.HTTPProxy {
 	return proxy
 }
 
-func proxyWithHostHeader(endpoint, path, hostHeader string) *networkingv1alpha.HTTPProxy {
-	proxy := proxyWith(endpoint, path)
+func proxyWithHostHeader(hostHeader string) *networkingv1alpha.HTTPProxy {
+	proxy := proxyWith("https://origin.example.com", "/")
 	proxy.Spec.Rules[0].Filters = []gatewayv1.HTTPRouteFilter{{
 		Type: gatewayv1.HTTPRouteFilterRequestHeaderModifier,
 		RequestHeaderModifier: &gatewayv1.HTTPHeaderFilter{

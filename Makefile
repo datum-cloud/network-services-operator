@@ -94,6 +94,32 @@ lint-fix: golangci-lint ## Run golangci-lint linter and perform fixes
 build: manifests generate fmt vet ## Build manager binary.
 	go build -o bin/network-services cmd/main.go
 
+##@ datumctl plugin
+
+PLUGIN_VERSION ?= $(shell git describe --tags --dirty --always 2>/dev/null || echo dev)
+DATUMCTL_PLUGIN_DIR ?= $(HOME)/.datumctl/plugins
+
+.PHONY: build-plugin
+build-plugin: $(LOCALBIN) ## Build the datumctl-alb plugin binary into bin/.
+	go build -ldflags "-X main.version=$(PLUGIN_VERSION)" -o $(LOCALBIN)/datumctl-alb ./cmd/datumctl-alb
+
+.PHONY: install-plugin
+install-plugin: build-plugin ## Install the datumctl-alb plugin into ~/.datumctl/plugins.
+	mkdir -p $(DATUMCTL_PLUGIN_DIR)
+	install -m 0755 $(LOCALBIN)/datumctl-alb $(DATUMCTL_PLUGIN_DIR)/alb
+	@echo "Installed $(DATUMCTL_PLUGIN_DIR)/alb ($(PLUGIN_VERSION)); try 'datumctl alb --help'"
+
+GORELEASER ?= goreleaser
+
+.PHONY: release-plugin-snapshot
+release-plugin-snapshot: ## Build the plugin release archives locally into dist/ (no publish).
+	@command -v $(GORELEASER) >/dev/null 2>&1 || { \
+		echo "goreleaser is not installed. Install it (e.g. 'brew install goreleaser') or set GORELEASER=<path>."; \
+		exit 1; \
+	}
+	$(GORELEASER) release --config .goreleaser-plugin.yaml --snapshot --clean
+
+
 .PHONY: run
 run: manifests generate fmt vet ## Run a controller from your host.
 	go run ./cmd/main.go manager --health-probe-bind-address=0 --server-config=./config/dev/config.yaml

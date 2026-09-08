@@ -138,6 +138,7 @@ func auditEvent(verb string, code int) map[string]any {
 				"domainName": "example.datumchainsaw.art",
 				"hostnames":  []any{"example.datumchainsaw.art"},
 				"mode":       "Observe",
+				"basicAuth":  map[string]any{"users": map[string]any{"name": "obj-1-basic-auth"}},
 				"rules": []any{map[string]any{
 					"backends": []any{map[string]any{"endpoint": "https://origin.example.com"}},
 				}},

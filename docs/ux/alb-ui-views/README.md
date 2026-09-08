@@ -2,7 +2,8 @@
 
 These mockups are the experience we want the cloud portal to ship for
 Application Load Balancer. Treat this folder as the shared visual target.
-Implementation lives in the portal, not in this operator.
+Implementation lives in the portal, not in this operator. The editable
+Pencil source is [alb-updates.pen](alb-updates.pen).
 
 The resource header, status, and tabs (Overview, Configuration, Backends,
 Metrics, Logs, Activity) stay consistent across views. Overview is the default

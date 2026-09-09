@@ -36,6 +36,9 @@ spec:
     - jsonPath: .status.conditions[?(@.type=="Programmed")].status
       name: Programmed
       type: string
+    - jsonPath: .status.conditions[?(@.type=="HolderAvailable")].status
+      name: HolderAvailable
+      type: string
     name: v1alpha
     schema:
       openAPIV3Schema:
@@ -278,6 +281,11 @@ spec:
                 reason: Pending
                 status: Unknown
                 type: Programmed
+              - lastTransitionTime: "1970-01-01T00:00:00Z"
+                message: Waiting for controller
+                reason: Pending
+                status: Unknown
+                type: HolderAvailable
             description: |-
               NetworkInterfaceStatus defines the observed state of NetworkInterface: which
               claim holds it, what realizes it on the data plane, and whether programming
@@ -315,6 +323,8 @@ spec:
                   conditions report the current state of the interface. Allocated means every
                   address is held. Prepared means the data plane is ready for a workload to
                   consume it. Programmed means the data plane carries the addresses.
+                  HolderAvailable means whatever holds the interface reports itself available
+                  to serve, and it is the only one of the four a service reads.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.

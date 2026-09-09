@@ -76,7 +76,7 @@ var (
 			Name: "nso_gateway_programmed_total",
 			Help: "1 if the downstream Gateway has Programmed=True, 0 otherwise. Sum for fleet-wide programmed count.",
 		},
-		[]string{jsonKeyNamespace, jsonKeyName},
+		[]string{metricLabelProject, jsonKeyNamespace, jsonKeyName},
 	)
 
 	// certificateServiceFailuresTotal counts every certificate-service step that
@@ -110,14 +110,14 @@ var (
 	// is removed from the Gateway, or the Gateway is deleted.
 	//
 	// Use sum(nso_gateway_listener_cert_withheld) to count how many listeners are
-	// currently dark across the fleet, or filter by namespace/name/listener/hostname
-	// to find the specific affected object during an incident.
+	// currently dark across the fleet, or filter by project/namespace/name/
+	// listener/hostname to find the specific affected object during an incident.
 	gatewayListenerCertWithheld = promauto.With(ctrlmetrics.Registry).NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "nso_gateway_listener_cert_withheld",
 			Help: "1 when a Gateway listener is withheld from the downstream because its TLS certificate is unusable, 0 after it recovers.",
 		},
-		[]string{jsonKeyNamespace, jsonKeyName, metricLabelListener, metricLabelHostname, metricLabelReason},
+		[]string{metricLabelProject, jsonKeyNamespace, jsonKeyName, metricLabelListener, metricLabelHostname, metricLabelReason},
 	)
 
 	// gatewayListenerCertGatingTotal counts every reconcile cycle in which a
@@ -128,7 +128,7 @@ var (
 			Name: "nso_gateway_listener_cert_gating_total",
 			Help: "Total reconcile cycles in which a Gateway listener was withheld because its TLS certificate was unusable.",
 		},
-		[]string{jsonKeyNamespace, jsonKeyName, metricLabelListener, metricLabelHostname, metricLabelReason},
+		[]string{metricLabelProject, jsonKeyNamespace, jsonKeyName, metricLabelListener, metricLabelHostname, metricLabelReason},
 	)
 
 	// gatewayListenerCertExpiryTime is the Unix timestamp (seconds) at which a
@@ -143,7 +143,7 @@ var (
 			Name: "nso_gateway_listener_cert_expiry_time",
 			Help: "Unix timestamp when the managed TLS certificate for this Gateway listener expires. Only present when the certificate is healthy.",
 		},
-		[]string{jsonKeyNamespace, jsonKeyName, metricLabelListener, metricLabelHostname, metricLabelSecret},
+		[]string{metricLabelProject, jsonKeyNamespace, jsonKeyName, metricLabelListener, metricLabelHostname, metricLabelSecret},
 	)
 
 	// gatewayListenerCertManaged counts the total number of Gateway listeners
@@ -155,7 +155,7 @@ var (
 			Name: "nso_gateway_listener_cert_managed",
 			Help: "1 for each Gateway listener whose TLS certificate is managed and evaluated by NSO, regardless of health.",
 		},
-		[]string{jsonKeyNamespace, jsonKeyName, metricLabelListener, metricLabelHostname},
+		[]string{metricLabelProject, jsonKeyNamespace, jsonKeyName, metricLabelListener, metricLabelHostname},
 	)
 
 	cellLocationIdentitySource = promauto.With(ctrlmetrics.Registry).NewGaugeVec(

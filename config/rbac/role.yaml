@@ -292,6 +292,7 @@ rules:
   - networkinterfaces/status
   - networkpolicies/status
   - networks/status
+  - networkservices/status
   - subnetclaims/status
   - subnets/status
   - trafficprotectionpolicies/status
@@ -305,6 +306,7 @@ rules:
   - connectorclasses
   - locationbindings
   - locations
+  - networkservices
   verbs:
   - get
   - list

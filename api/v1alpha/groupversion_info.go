@@ -44,6 +44,8 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 		&NetworkInterfaceClaimList{},
 		&NetworkPolicy{},
 		&NetworkPolicyList{},
+		&NetworkService{},
+		&NetworkServiceList{},
 		&ServingLocation{},
 		&ServingLocationList{},
 		&Subnet{},

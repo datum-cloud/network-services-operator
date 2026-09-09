@@ -655,6 +655,8 @@ spec:
                 value: ($downstreamGatewayClass)
             content: |
               set -eu
+              ROOT="$(git rev-parse --show-toplevel)"
+              . "${ROOT}/test/e2e-edge/_steps/envoy-admin.sh"
               ok=""
               reached=""
               for i in $(seq 1 24); do
@@ -665,32 +667,14 @@ spec:
                 if [ -z "${POD}" ]; then
                   echo "attempt ${i}: no Ready proxy pod yet"; sleep 5; continue
                 fi
-                LOCAL_PORT=$((19100 + i))
-                PF_LOG=$(mktemp)
-                kubectl -n datum-downstream-gateway port-forward "pod/${POD}" \
-                  "${LOCAL_PORT}:${ADMIN_PORT}" >"${PF_LOG}" 2>&1 &
-                PF_PID=$!
-                PF_READY=""
-                for j in $(seq 1 20); do
-                  if grep -q "Forwarding from" "${PF_LOG}" 2>/dev/null; then PF_READY="yes"; break; fi
-                  kill -0 ${PF_PID} 2>/dev/null || break
-                  sleep 0.5
-                done
-                DUMP=""
-                if [ -n "${PF_READY}" ]; then
-                  DUMP=$(curl -s --max-time 20 "http://127.0.0.1:${LOCAL_PORT}/config_dump" || true)
-                fi
-                kill ${PF_PID} 2>/dev/null || true
-                wait ${PF_PID} 2>/dev/null || true
-                rm -f "${PF_LOG}"
-                if [ -z "${PF_READY}" ] || [ -z "${DUMP}" ]; then
-                  echo "attempt ${i}: pod ${POD} admin fetch unavailable (port-forward ready=${PF_READY:-no}, bytes=$(printf '%s' "${DUMP}" | wc -c))"
+                if ! DUMP=$(envoy_admin_fetch datum-downstream-gateway "${POD}" "${ADMIN_PORT}" "/config_dump"); then
+                  echo "attempt ${i}: pod ${POD} admin fetch unavailable"
                   sleep 5; continue
                 fi
                 case "${DUMP}" in
-                  *'"@type"'*'config_dump'*) ;;
+                  *'"configs"'*ConfigDump*) ;;
                   *)
-                    echo "attempt ${i}: pod ${POD} response is not an Envoy config dump (bytes=$(printf '%s' "${DUMP}" | wc -c))"
+                    echo "attempt ${i}: pod ${POD} response is not an Envoy config dump"
                     printf '%s' "${DUMP}" | head -c 400
                     echo
                     sleep 5; continue
@@ -733,16 +717,20 @@ spec:
                 value: ($downstreamGatewayClass)
             content: |
               set -eu
+              ROOT="$(git rev-parse --show-toplevel)"
+              . "${ROOT}/test/e2e-edge/_steps/envoy-admin.sh"
               POD=$(kubectl -n datum-downstream-gateway get pods \
                 -l gateway.envoyproxy.io/owning-gatewayclass=${OWNING_GC} \
                 -o go-template='{{range $p := .items}}{{if not $p.metadata.deletionTimestamp}}{{range $p.status.conditions}}{{if (and (eq .type "Ready") (eq .status "True"))}}{{$p.metadata.name}}{{"\n"}}{{end}}{{end}}{{end}}{{end}}' \
                 2>/dev/null | head -n1 || true)
               [ -n "${POD}" ] || { echo "ERROR: no Ready proxy pod to inspect"; exit 1; }
               echo "fresh edge pod: ${POD}"
-              STATS=$(kubectl -n datum-downstream-gateway exec "${POD}" -c envoy -- \
-                curl -s "http://127.0.0.1:${ADMIN_PORT}/stats?filter=lds.update_rejected" 2>/dev/null || true)
+              if ! STATS=$(envoy_admin_fetch datum-downstream-gateway "${POD}" "${ADMIN_PORT}" "/stats?filter=lds.update_rejected"); then
+                echo "ERROR: could not reach the proxy admin API to read lds.update_rejected; this is a harness failure, not a listener outage"
+                exit 1
+              fi
               echo "--- lds.update_rejected ---"
-              echo "${STATS:-<none>}"
+              echo "${STATS}"
               REJECTED=$(printf '%s' "${STATS}" | awk -F': ' '/lds.update_rejected/ {s+=$2} END{print s+0}')
               echo "total lds.update_rejected: ${REJECTED}"
               if [ "${REJECTED}" -ne 0 ]; then

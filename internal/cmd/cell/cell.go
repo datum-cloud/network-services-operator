@@ -271,7 +271,7 @@ func controllerRegistrations(
 	ipamClients controller.IPAMClientFactory,
 	hubCluster cluster.Cluster,
 ) []namedSetup {
-	registrations := make([]namedSetup, 0, 4)
+	registrations := make([]namedSetup, 0, 5)
 	registrations = append(registrations,
 		namedSetup{"networkinterfaceclaim", func() (bool, error) {
 			return true, (&controller.NetworkInterfaceClaimReconciler{
@@ -297,6 +297,13 @@ func controllerRegistrations(
 	// nothing for weeks without saying so. Setup now rejects a missing hub.
 	registrations = append(registrations, namedSetup{"networkinterfacewriteback", func() (bool, error) {
 		return true, (&controller.NetworkInterfaceWriteBackReconciler{
+			Location:   serverConfig.Location,
+			HubCluster: hubCluster,
+		}).SetupWithManager(mgr)
+	}})
+
+	registrations = append(registrations, namedSetup{"vpcendpointslicewriteback", func() (bool, error) {
+		return true, (&controller.VPCEndpointSliceWriteBackReconciler{
 			Location:   serverConfig.Location,
 			HubCluster: hubCluster,
 		}).SetupWithManager(mgr)

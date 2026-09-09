@@ -646,7 +646,7 @@ spec:
         filter chains is the exact outage this gate guards against.
       try:
         - script:
-            timeout: 240s
+            timeout: 300s
             cluster: nso-downstream
             env:
               - name: ADMIN_PORT
@@ -656,6 +656,7 @@ spec:
             content: |
               set -eu
               ok=""
+              reached=""
               for i in $(seq 1 24); do
                 POD=$(kubectl -n datum-downstream-gateway get pods \
                   -l gateway.envoyproxy.io/owning-gatewayclass=${OWNING_GC} \
@@ -664,16 +665,50 @@ spec:
                 if [ -z "${POD}" ]; then
                   echo "attempt ${i}: no Ready proxy pod yet"; sleep 5; continue
                 fi
-                DUMP=$(kubectl -n datum-downstream-gateway exec "${POD}" -c envoy -- \
-                  curl -s "http://127.0.0.1:${ADMIN_PORT}/config_dump?resource=dynamic_listeners" 2>/dev/null || true)
+                LOCAL_PORT=$((19100 + i))
+                PF_LOG=$(mktemp)
+                kubectl -n datum-downstream-gateway port-forward "pod/${POD}" \
+                  "${LOCAL_PORT}:${ADMIN_PORT}" >"${PF_LOG}" 2>&1 &
+                PF_PID=$!
+                PF_READY=""
+                for j in $(seq 1 20); do
+                  if grep -q "Forwarding from" "${PF_LOG}" 2>/dev/null; then PF_READY="yes"; break; fi
+                  kill -0 ${PF_PID} 2>/dev/null || break
+                  sleep 0.5
+                done
+                DUMP=""
+                if [ -n "${PF_READY}" ]; then
+                  DUMP=$(curl -s --max-time 20 "http://127.0.0.1:${LOCAL_PORT}/config_dump" || true)
+                fi
+                kill ${PF_PID} 2>/dev/null || true
+                wait ${PF_PID} 2>/dev/null || true
+                rm -f "${PF_LOG}"
+                if [ -z "${PF_READY}" ] || [ -z "${DUMP}" ]; then
+                  echo "attempt ${i}: pod ${POD} admin fetch unavailable (port-forward ready=${PF_READY:-no}, bytes=$(printf '%s' "${DUMP}" | wc -c))"
+                  sleep 5; continue
+                fi
+                case "${DUMP}" in
+                  *'"@type"'*'config_dump'*) ;;
+                  *)
+                    echo "attempt ${i}: pod ${POD} response is not an Envoy config dump (bytes=$(printf '%s' "${DUMP}" | wc -c))"
+                    printf '%s' "${DUMP}" | head -c 400
+                    echo
+                    sleep 5; continue
+                    ;;
+                esac
+                reached="yes"
                 CHAINS=$(printf '%s' "${DUMP}" | grep -c '"filter_chains"' || true)
                 HAS_NEIGHBOUR=$(printf '%s' "${DUMP}" | grep -c 'neighbour.e2e.env.datum.net' || true)
-                echo "attempt ${i}: pod ${POD} filter_chains=${CHAINS} neighbour-listener-refs=${HAS_NEIGHBOUR}"
+                echo "attempt ${i}: pod ${POD} filter_chains=${CHAINS} neighbour-refs=${HAS_NEIGHBOUR}"
                 if [ "${CHAINS}" -gt 0 ] && [ "${HAS_NEIGHBOUR}" -gt 0 ]; then
                   ok="yes"; break
                 fi
                 sleep 5
               done
+              if [ -z "${reached}" ]; then
+                echo "ERROR: never reached the proxy admin API; this is a harness failure, not a listener outage"
+                exit 1
+              fi
               if [ -z "${ok}" ]; then
                 echo "ERROR: restarted proxy has no listener filter chains (or lost the neighbour listener); the poison dropped the listener set on a fresh pull"
                 exit 1

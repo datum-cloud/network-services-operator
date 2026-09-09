@@ -145,6 +145,7 @@ const (
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=connectors,verbs=get;list;watch
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkservices,verbs=get;list;watch
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkinterfaces,verbs=get;list;watch
+// +kubebuilder:rbac:groups=discovery.k8s.io,resources=endpointslices,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=gateway.envoyproxy.io,resources=httproutefilters,verbs=get;list;watch;create;update;patch;delete
 // HTTPProxy controller reads cert-manager Certificate resources in the downstream cluster for status; ensure downstream role has cert-manager.io/certificates get;list;watch.
 
@@ -361,73 +362,8 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 
 	logger.Info("processed httproute", jsonKeyName, httpRoute.Name, "result", result)
 
-	for _, desiredEndpointSlice := range desiredResources.endpointSlices {
-		endpointSlice := desiredEndpointSlice.DeepCopy()
-
-		existingEndpointSlice := &discoveryv1.EndpointSlice{}
-		err = cl.GetClient().Get(ctx, client.ObjectKeyFromObject(endpointSlice), existingEndpointSlice)
-		switch {
-		case apierrors.IsNotFound(err):
-		case err != nil:
-			return ctrl.Result{}, fmt.Errorf("failed to get endpointslice: %w", err)
-		case existingEndpointSlice.AddressType != desiredEndpointSlice.AddressType &&
-			!hasControllerConflict(existingEndpointSlice, &httpProxy):
-			if err := cl.GetClient().Delete(ctx, existingEndpointSlice); err != nil && !apierrors.IsNotFound(err) {
-				if apierrors.IsConflict(err) {
-					return ctrl.Result{RequeueAfter: retryAfterConflict}, nil
-				}
-				return ctrl.Result{}, fmt.Errorf("failed to delete endpointslice for address type change: %w", err)
-			}
-		}
-
-		result, err := controllerutil.CreateOrUpdate(ctx, cl.GetClient(), endpointSlice, func() error {
-			if hasControllerConflict(endpointSlice, &httpProxy) {
-				// return already exists error - an endpointslice exists with the name we want to
-				// use, but it's owned by a different resource.
-				return apierrors.NewAlreadyExists(discoveryv1.Resource("EndpointSlice"), endpointSlice.Name)
-			}
-
-			if err := controllerutil.SetControllerReference(&httpProxy, endpointSlice, cl.GetScheme()); err != nil {
-				return fmt.Errorf("failed to set controller reference on endpointslice: %w", err)
-			}
-
-			endpointSlice.AddressType = desiredEndpointSlice.AddressType
-			endpointSlice.Endpoints = desiredEndpointSlice.Endpoints
-			endpointSlice.Ports = desiredEndpointSlice.Ports
-
-			endpointSlice.Labels = mergeLabels(endpointSlice.Labels, desiredEndpointSlice.Labels)
-
-			// Keep the backend cert hostname annotation in sync. The gateway
-			// controller reads this to build the BackendTLSPolicy when the
-			// URLRewrite filter carries a user Host override instead of the
-			// real backend FQDN.
-			if v, ok := desiredEndpointSlice.Annotations[BackendCertHostnameAnnotation]; ok {
-				if endpointSlice.Annotations == nil {
-					endpointSlice.Annotations = map[string]string{}
-				}
-				endpointSlice.Annotations[BackendCertHostnameAnnotation] = v
-			} else {
-				delete(endpointSlice.Annotations, BackendCertHostnameAnnotation)
-			}
-			return nil
-		})
-
-		if err != nil {
-			if apierrors.IsAlreadyExists(err) {
-				programmedCondition.Status = metav1.ConditionFalse
-				programmedCondition.Reason = networkingv1alpha.HTTPProxyReasonConflict
-				programmedCondition.Message = fmt.Sprintf("Underlying EndpointSlice with the name %q already exists and is owned by a different resource.", endpointSlice.Name)
-				return ctrl.Result{}, nil
-			}
-
-			if apierrors.IsConflict(err) {
-				return ctrl.Result{RequeueAfter: retryAfterConflict}, nil
-			}
-
-			return ctrl.Result{}, fmt.Errorf("failed to create or update endpointslice: %w", err)
-		}
-
-		logger.Info("processed endpointslice", "result", result, jsonKeyName, desiredEndpointSlice.Name)
+	if result, halt, err := r.reconcileEndpointSlices(ctx, cl, &httpProxy, desiredResources.endpointSlices, programmedCondition); halt || err != nil {
+		return result, err
 	}
 
 	// Gate connector EPP emission behind the feature flag. When disabled the
@@ -503,7 +439,7 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 		apimeta.RemoveStatusCondition(&httpProxyCopy.Status.Conditions, networkingv1alpha.HTTPProxyConditionConnectorMetadataProgrammed)
 	}
 
-	applyPartialProgramming(desiredResources.partialProgramming, programmedCondition)
+	applyPartialProgramming(ctx, desiredResources.partialProgramming, programmedCondition)
 
 	r.reconcileHTTPProxyHostnameStatus(ctx, cl.GetClient(), gateway, httpProxyCopy, string(req.ClusterName))
 
@@ -525,15 +461,142 @@ func mergeLabels(existing, desired map[string]string) map[string]string {
 
 // applyPartialProgramming reports resources that were programmed without
 // everything the spec asked for, so a partial result is never mistaken for a
-// complete one.
-func applyPartialProgramming(partial *partialProgramming, programmedCondition *metav1.Condition) {
+// complete one. It only ever downgrades a programmed condition: an earlier
+// stage that already reports the proxy unprogrammed names the thing to fix
+// first, and the partial result resurfaces once that clears.
+func applyPartialProgramming(ctx context.Context, partial *partialProgramming, programmedCondition *metav1.Condition) {
 	if partial == nil {
+		return
+	}
+
+	if programmedCondition.Status != metav1.ConditionTrue {
+		log.FromContext(ctx).Info("partial programming withheld behind an earlier condition",
+			"reason", partial.reason, "behind", programmedCondition.Reason)
 		return
 	}
 
 	programmedCondition.Status = metav1.ConditionFalse
 	programmedCondition.Reason = partial.reason
 	programmedCondition.Message = partial.message
+}
+
+func (r *HTTPProxyReconciler) reconcileEndpointSlices(
+	ctx context.Context,
+	cl cluster.Cluster,
+	httpProxy *networkingv1alpha.HTTPProxy,
+	desired []*discoveryv1.EndpointSlice,
+	programmedCondition *metav1.Condition,
+) (ctrl.Result, bool, error) {
+	logger := log.FromContext(ctx)
+
+	for _, desiredEndpointSlice := range desired {
+		endpointSlice := desiredEndpointSlice.DeepCopy()
+
+		existingEndpointSlice := &discoveryv1.EndpointSlice{}
+		err := cl.GetClient().Get(ctx, client.ObjectKeyFromObject(endpointSlice), existingEndpointSlice)
+		switch {
+		case apierrors.IsNotFound(err):
+		case err != nil:
+			return ctrl.Result{}, true, fmt.Errorf("failed to get endpointslice: %w", err)
+		case existingEndpointSlice.AddressType != desiredEndpointSlice.AddressType &&
+			!hasControllerConflict(existingEndpointSlice, httpProxy):
+			if err := cl.GetClient().Delete(ctx, existingEndpointSlice); err != nil && !apierrors.IsNotFound(err) {
+				if apierrors.IsConflict(err) {
+					return ctrl.Result{RequeueAfter: retryAfterConflict}, true, nil
+				}
+				return ctrl.Result{}, true, fmt.Errorf("failed to delete endpointslice for address type change: %w", err)
+			}
+		}
+
+		result, err := controllerutil.CreateOrUpdate(ctx, cl.GetClient(), endpointSlice, func() error {
+			if hasControllerConflict(endpointSlice, httpProxy) {
+				// return already exists error - an endpointslice exists with the name we want to
+				// use, but it's owned by a different resource.
+				return apierrors.NewAlreadyExists(discoveryv1.Resource("EndpointSlice"), endpointSlice.Name)
+			}
+
+			if err := controllerutil.SetControllerReference(httpProxy, endpointSlice, cl.GetScheme()); err != nil {
+				return fmt.Errorf("failed to set controller reference on endpointslice: %w", err)
+			}
+
+			endpointSlice.AddressType = desiredEndpointSlice.AddressType
+			endpointSlice.Endpoints = desiredEndpointSlice.Endpoints
+			endpointSlice.Ports = desiredEndpointSlice.Ports
+
+			endpointSlice.Labels = mergeLabels(endpointSlice.Labels, desiredEndpointSlice.Labels)
+
+			// Keep the backend cert hostname annotation in sync. The gateway
+			// controller reads this to build the BackendTLSPolicy when the
+			// URLRewrite filter carries a user Host override instead of the
+			// real backend FQDN.
+			if v, ok := desiredEndpointSlice.Annotations[BackendCertHostnameAnnotation]; ok {
+				if endpointSlice.Annotations == nil {
+					endpointSlice.Annotations = map[string]string{}
+				}
+				endpointSlice.Annotations[BackendCertHostnameAnnotation] = v
+			} else {
+				delete(endpointSlice.Annotations, BackendCertHostnameAnnotation)
+			}
+			return nil
+		})
+
+		if err != nil {
+			if apierrors.IsAlreadyExists(err) {
+				programmedCondition.Status = metav1.ConditionFalse
+				programmedCondition.Reason = networkingv1alpha.HTTPProxyReasonConflict
+				programmedCondition.Message = fmt.Sprintf("Underlying EndpointSlice with the name %q already exists and is owned by a different resource.", endpointSlice.Name)
+				return ctrl.Result{}, true, nil
+			}
+
+			if apierrors.IsConflict(err) {
+				return ctrl.Result{RequeueAfter: retryAfterConflict}, true, nil
+			}
+
+			return ctrl.Result{}, true, fmt.Errorf("failed to create or update endpointslice: %w", err)
+		}
+
+		logger.Info("processed endpointslice", "result", result, jsonKeyName, desiredEndpointSlice.Name)
+	}
+
+	if err := pruneEndpointSlices(ctx, cl.GetClient(), httpProxy, desired); err != nil {
+		return ctrl.Result{}, true, err
+	}
+
+	return ctrl.Result{}, false, nil
+}
+
+func pruneEndpointSlices(
+	ctx context.Context,
+	cl client.Client,
+	httpProxy *networkingv1alpha.HTTPProxy,
+	desired []*discoveryv1.EndpointSlice,
+) error {
+	var existing discoveryv1.EndpointSliceList
+	if err := cl.List(ctx, &existing, client.InNamespace(httpProxy.Namespace)); err != nil {
+		return fmt.Errorf("failed listing endpointslices: %w", err)
+	}
+
+	desiredNames := make(map[string]struct{}, len(desired))
+	for _, endpointSlice := range desired {
+		desiredNames[endpointSlice.Name] = struct{}{}
+	}
+
+	for i := range existing.Items {
+		endpointSlice := &existing.Items[i]
+		if _, ok := desiredNames[endpointSlice.Name]; ok {
+			continue
+		}
+		if !endpointSlice.DeletionTimestamp.IsZero() || !metav1.IsControlledBy(endpointSlice, httpProxy) {
+			continue
+		}
+
+		if err := cl.Delete(ctx, endpointSlice); err != nil && !apierrors.IsNotFound(err) {
+			return fmt.Errorf("failed deleting endpointslice %q: %w", endpointSlice.Name, err)
+		}
+		log.FromContext(ctx).Info("pruned endpointslice", jsonKeyName, endpointSlice.Name)
+	}
+
+	return nil
 }
 
 func (r *HTTPProxyReconciler) reconcileHTTPProxyHostnameStatus(
@@ -1034,6 +1097,16 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 						message: fmt.Sprintf(
 							"NetworkService %q resolved %d members across %d EndpointSlices; only the %d members in %q are being served",
 							backend.NetworkService.Name, len(resolved.endpoints), len(shards), maxEndpointsPerSlice, baseName,
+						),
+					}
+				}
+
+				if len(resolved.unaddressable) > 0 && partial == nil {
+					partial = &partialProgramming{
+						reason: networkingv1alpha.HTTPProxyReasonNetworkServiceMembersUnaddressable,
+						message: fmt.Sprintf(
+							"NetworkService %q publishes %s addresses; %d members hold none and are not being served: %s",
+							backend.NetworkService.Name, resolved.addressType, len(resolved.unaddressable), strings.Join(resolved.unaddressable, ", "),
 						),
 					}
 				}

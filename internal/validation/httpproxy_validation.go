@@ -134,9 +134,9 @@ func validateHTTPProxyRuleBackends(rule networkingv1alpha.HTTPProxyRule, fldPath
 func validateHTTPProxyRuleBackend(backend networkingv1alpha.HTTPProxyRuleBackend, fldPath *field.Path) field.ErrorList {
 	allErrs := field.ErrorList{}
 
-	// instance backends don't use the endpoint field at all — see the instance
-	// validation block below instead.
-	if backend.Instance == nil {
+	// instance and networkService backends don't use the endpoint field at all
+	// — see their own validation blocks below instead.
+	if backend.Instance == nil && backend.NetworkService == nil {
 		allErrs = append(allErrs, validateHTTPProxyRuleBackendEndpoint(backend, fldPath)...)
 	}
 
@@ -165,6 +165,26 @@ func validateHTTPProxyRuleBackend(backend networkingv1alpha.HTTPProxyRuleBackend
 		} else {
 			for _, msg := range validation.IsDNS1123Subdomain(backend.Instance.Name) {
 				allErrs = append(allErrs, field.Invalid(instanceFieldPath, backend.Instance.Name, msg))
+			}
+		}
+	}
+
+	if backend.NetworkService != nil {
+		nameFieldPath := fldPath.Child("networkService", "name")
+		if backend.NetworkService.Name == "" {
+			allErrs = append(allErrs, field.Required(nameFieldPath, "network service name is required"))
+		} else {
+			for _, msg := range validation.IsDNS1123Subdomain(backend.NetworkService.Name) {
+				allErrs = append(allErrs, field.Invalid(nameFieldPath, backend.NetworkService.Name, msg))
+			}
+		}
+
+		portFieldPath := fldPath.Child("networkService", "port")
+		if backend.NetworkService.Port == "" {
+			allErrs = append(allErrs, field.Required(portFieldPath, "network service port name is required"))
+		} else {
+			for _, msg := range validation.IsDNS1123Label(backend.NetworkService.Port) {
+				allErrs = append(allErrs, field.Invalid(portFieldPath, backend.NetworkService.Port, msg))
 			}
 		}
 	}

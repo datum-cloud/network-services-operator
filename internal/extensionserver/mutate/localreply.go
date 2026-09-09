@@ -35,6 +35,11 @@ type LocalReplyConfig struct {
 	// BodyHTML is the inline HTML served as the local-reply body. Envoy command
 	// operators such as %RESPONSE_CODE% are substituted at response time.
 	BodyHTML string
+	// OfflineBodyHTML is the inline HTML served instead of BodyHTML when Envoy
+	// had no healthy upstream to send the request to (response flag UH), which
+	// is what a NetworkService with no serving members looks like at the edge.
+	// Empty means the generic BodyHTML answers those responses too.
+	OfflineBodyHTML string
 	// ContentType is the Content-Type set on the branded response
 	// (e.g. "text/html; charset=UTF-8").
 	ContentType string
@@ -51,7 +56,9 @@ type LocalReplyConfig struct {
 // The branded body replaces only the response body and content-type; the
 // original HTTP status code is preserved (StatusCode left nil on the mapper).
 // A status_code_filter gates the rewrite to responses >= MinStatusCode, backed
-// by a runtime key so it can be disabled in an emergency.
+// by a runtime key so it can be disabled in an emergency. Responses Envoy
+// flagged as having no healthy upstream get the offline body instead, when one
+// is configured; when one is not, they fall through to the generic body.
 //
 // Returns the number of HCMs mutated.
 //
@@ -117,42 +124,88 @@ func InjectLocalReplyConfig(l *listenerv3.Listener, cfg *LocalReplyConfig) (int,
 	return mutated, nil
 }
 
-// buildLocalReplyConfig builds the Envoy local_reply_config carrying a single
-// response mapper: match any response with status >= MinStatusCode (gated by a
-// runtime key) and override the body with the branded HTML. StatusCode is left
-// nil on the mapper so the original response code is preserved.
+// noHealthyUpstreamFlag is Envoy's response flag for "the load balancer had no
+// healthy host to pick", which is what the edge reports for a NetworkService
+// whose members are all unhealthy — but only once panic mode is off for that
+// cluster. With the 50% default panic threshold Envoy ignores health and
+// forwards anyway, reporting UF/UT (connect failure/timeout) instead, which is
+// indistinguishable from a genuinely broken backend. It is also what an empty
+// cluster reports, so a service with no members at all lands here too.
+const noHealthyUpstreamFlag = "UH"
+
+// buildLocalReplyConfig builds the Envoy local_reply_config. Envoy walks the
+// mappers in order and the first match wins, so the specific offline mapper —
+// no healthy upstream — is placed before the generic one. StatusCode is left
+// nil on every mapper so the original response code is preserved.
+//
+// The offline mapper is omitted entirely when no offline body is configured, so
+// those responses fall through to the generic page rather than to nothing.
 func buildLocalReplyConfig(cfg *LocalReplyConfig) *hcmv3.LocalReplyConfig {
 	minStatus := cfg.MinStatusCode
 	if minStatus == 0 {
 		minStatus = defaultMinStatusCode
 	}
-	return &hcmv3.LocalReplyConfig{
-		Mappers: []*hcmv3.ResponseMapper{{
+
+	statusFilter := func() *accesslogv3.AccessLogFilter {
+		return &accesslogv3.AccessLogFilter{
+			FilterSpecifier: &accesslogv3.AccessLogFilter_StatusCodeFilter{
+				StatusCodeFilter: &accesslogv3.StatusCodeFilter{
+					Comparison: &accesslogv3.ComparisonFilter{
+						Op: accesslogv3.ComparisonFilter_GE,
+						Value: &corev3.RuntimeUInt32{
+							DefaultValue: minStatus,
+							RuntimeKey:   cfg.RuntimeKey,
+						},
+					},
+				},
+			},
+		}
+	}
+
+	body := func(html string) *corev3.SubstitutionFormatString {
+		return &corev3.SubstitutionFormatString{
+			ContentType: cfg.ContentType,
+			Format: &corev3.SubstitutionFormatString_TextFormatSource{
+				TextFormatSource: &corev3.DataSource{
+					Specifier: &corev3.DataSource_InlineString{InlineString: escapeEnvoyFormatLiterals(html)},
+				},
+			},
+		}
+	}
+
+	var mappers []*hcmv3.ResponseMapper
+
+	if cfg.OfflineBodyHTML != "" {
+		// Anded with the same status-code filter as the generic mapper so the
+		// runtime key stays a single kill switch for all branding, and so the
+		// offline page can never attach to a non-5xx response.
+		mappers = append(mappers, &hcmv3.ResponseMapper{
 			Filter: &accesslogv3.AccessLogFilter{
-				FilterSpecifier: &accesslogv3.AccessLogFilter_StatusCodeFilter{
-					StatusCodeFilter: &accesslogv3.StatusCodeFilter{
-						Comparison: &accesslogv3.ComparisonFilter{
-							Op: accesslogv3.ComparisonFilter_GE,
-							Value: &corev3.RuntimeUInt32{
-								DefaultValue: minStatus,
-								RuntimeKey:   cfg.RuntimeKey,
+				FilterSpecifier: &accesslogv3.AccessLogFilter_AndFilter{
+					AndFilter: &accesslogv3.AndFilter{
+						Filters: []*accesslogv3.AccessLogFilter{
+							statusFilter(),
+							{
+								FilterSpecifier: &accesslogv3.AccessLogFilter_ResponseFlagFilter{
+									ResponseFlagFilter: &accesslogv3.ResponseFlagFilter{
+										Flags: []string{noHealthyUpstreamFlag},
+									},
+								},
 							},
 						},
 					},
 				},
 			},
-			// StatusCode left nil => preserve the original code; only the body
-			// and content-type are replaced.
-			BodyFormatOverride: &corev3.SubstitutionFormatString{
-				ContentType: cfg.ContentType,
-				Format: &corev3.SubstitutionFormatString_TextFormatSource{
-					TextFormatSource: &corev3.DataSource{
-						Specifier: &corev3.DataSource_InlineString{InlineString: escapeEnvoyFormatLiterals(cfg.BodyHTML)},
-					},
-				},
-			},
-		}},
+			BodyFormatOverride: body(cfg.OfflineBodyHTML),
+		})
 	}
+
+	mappers = append(mappers, &hcmv3.ResponseMapper{
+		Filter:             statusFilter(),
+		BodyFormatOverride: body(cfg.BodyHTML),
+	})
+
+	return &hcmv3.LocalReplyConfig{Mappers: mappers}
 }
 
 // envoyBodyAllowedCommands is the allowlist of Envoy substitution command
@@ -254,9 +307,11 @@ func ValidateLocalReplyConfig(cfg *LocalReplyConfig) error {
 	if _, err := anypb.New(lrc); err != nil {
 		return fmt.Errorf("marshal local_reply_config: %w", err)
 	}
-	body := lrc.GetMappers()[0].GetBodyFormatOverride().GetTextFormatSource().GetInlineString()
-	if err := assertEnvoyFormatSafe(body); err != nil {
-		return fmt.Errorf("assembled error-page body is not Envoy-safe: %w", err)
+	for i, mapper := range lrc.GetMappers() {
+		body := mapper.GetBodyFormatOverride().GetTextFormatSource().GetInlineString()
+		if err := assertEnvoyFormatSafe(body); err != nil {
+			return fmt.Errorf("assembled error-page body for mapper %d is not Envoy-safe: %w", i, err)
+		}
 	}
 	return nil
 }

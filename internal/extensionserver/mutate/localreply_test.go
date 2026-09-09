@@ -304,3 +304,132 @@ func TestValidateLocalReplyConfig(t *testing.T) {
 		assert.NoError(t, assertEnvoyFormatSafe("code %RESPONSE_CODE% ok"))
 	})
 }
+
+const testOfflineBodyHTML = "<!DOCTYPE html><html><body>service offline %RESPONSE_CODE%</body></html>"
+
+// offlineFlags returns the response flags the mapper at index i matches on, or
+// nil when it does not filter on response flags at all.
+func offlineFlags(mapper *hcmv3.ResponseMapper) []string {
+	for _, f := range mapper.GetFilter().GetAndFilter().GetFilters() {
+		if rff := f.GetResponseFlagFilter(); rff != nil {
+			return rff.GetFlags()
+		}
+	}
+	return nil
+}
+
+// TestInjectLocalReplyConfig_OfflineMapperFirst pins the ordering Envoy depends
+// on: it takes the first matching mapper, so the no-healthy-upstream mapper has
+// to precede the generic one or the generic page always wins.
+func TestInjectLocalReplyConfig_OfflineMapperFirst(t *testing.T) {
+	cfg := testLocalReplyConfig()
+	cfg.OfflineBodyHTML = testOfflineBodyHTML
+	l := listenerWithHCM(t, "user-chain")
+
+	n, err := InjectLocalReplyConfig(l, cfg)
+	require.NoError(t, err)
+	require.Equal(t, 1, n)
+
+	mappers := hcmFromFilter(t, l.FilterChains[0].Filters[0]).GetLocalReplyConfig().GetMappers()
+	require.Len(t, mappers, 2, "want the offline mapper plus the generic fallback")
+
+	offline := mappers[0]
+	assert.Equal(t, []string{"UH"}, offlineFlags(offline), "first mapper must match no-healthy-upstream")
+	assert.Equal(t, testOfflineBodyHTML, offline.GetBodyFormatOverride().GetTextFormatSource().GetInlineString())
+	assert.Nil(t, offline.GetStatusCode(), "offline mapper must preserve the original status code")
+
+	// The offline mapper is also gated on the status-code filter, so the runtime
+	// key stays a single kill switch for every branded reply.
+	var gated bool
+	for _, f := range offline.GetFilter().GetAndFilter().GetFilters() {
+		if scf := f.GetStatusCodeFilter(); scf != nil {
+			gated = true
+			assert.Equal(t, accesslogv3.ComparisonFilter_GE, scf.GetComparison().GetOp())
+			assert.Equal(t, uint32(500), scf.GetComparison().GetValue().GetDefaultValue())
+			assert.Equal(t, testRuntimeKey, scf.GetComparison().GetValue().GetRuntimeKey())
+		}
+	}
+	assert.True(t, gated, "offline mapper must also carry the status-code filter")
+
+	generic := mappers[1]
+	assert.Nil(t, offlineFlags(generic), "generic mapper must not filter on response flags")
+	require.NotNil(t, generic.GetFilter().GetStatusCodeFilter(), "generic mapper keeps the plain status-code filter")
+	assert.Equal(t, testBodyHTML, generic.GetBodyFormatOverride().GetTextFormatSource().GetInlineString())
+}
+
+// TestInjectLocalReplyConfig_MissingOfflineBodyFallsThrough covers the safety
+// property: with no offline page configured, no-healthy-upstream responses get
+// the generic page. A missing body must never be an error — the downstream hook
+// runs failOpen:false, so erroring here would stall xDS fleet-wide.
+func TestInjectLocalReplyConfig_MissingOfflineBodyFallsThrough(t *testing.T) {
+	cfg := testLocalReplyConfig()
+	cfg.OfflineBodyHTML = ""
+	l := listenerWithHCM(t, "user-chain")
+
+	n, err := InjectLocalReplyConfig(l, cfg)
+	require.NoError(t, err, "a missing offline body must never error")
+	require.Equal(t, 1, n)
+
+	mappers := hcmFromFilter(t, l.FilterChains[0].Filters[0]).GetLocalReplyConfig().GetMappers()
+	require.Len(t, mappers, 1, "no offline body means no offline mapper")
+	assert.Nil(t, offlineFlags(mappers[0]))
+	body := mappers[0].GetBodyFormatOverride().GetTextFormatSource().GetInlineString()
+	assert.Equal(t, testBodyHTML, body, "offline responses fall through to the generic page")
+	assert.NotEmpty(t, body, "the response is never empty")
+
+	assert.NoError(t, ValidateLocalReplyConfig(cfg))
+}
+
+// TestInjectLocalReplyConfig_OfflineIdempotent re-runs injection over an HCM
+// that already carries a config, which happens whenever EG re-translates.
+func TestInjectLocalReplyConfig_OfflineIdempotent(t *testing.T) {
+	cfg := testLocalReplyConfig()
+	cfg.OfflineBodyHTML = testOfflineBodyHTML
+	l := listenerWithHCM(t, "user-chain")
+
+	n1, err := InjectLocalReplyConfig(l, cfg)
+	require.NoError(t, err)
+	require.Equal(t, 1, n1)
+
+	n2, err := InjectLocalReplyConfig(l, cfg)
+	require.NoError(t, err)
+	assert.Equal(t, 0, n2, "second pass must leave the existing config alone")
+
+	mappers := hcmFromFilter(t, l.FilterChains[0].Filters[0]).GetLocalReplyConfig().GetMappers()
+	require.Len(t, mappers, 2, "mappers must not accumulate on re-injection")
+	assert.Equal(t, []string{"UH"}, offlineFlags(mappers[0]))
+}
+
+// TestEmbeddedOfflinePageIsEnvoySafe mirrors the generic page's guard: the
+// offline page's literal CSS percents must survive escaping, or the listener is
+// rejected fleet-wide.
+func TestEmbeddedOfflinePageIsEnvoySafe(t *testing.T) {
+	raw := assets.DefaultErrorOfflineHTML
+	require.Contains(t, raw, "height: 100%;", "test premise: raw page has an unescaped percent")
+
+	escaped := escapeEnvoyFormatLiterals(raw)
+	assert.Contains(t, escaped, "height: 100%%;")
+	assert.Equal(t, 1, strings.Count(escaped, "%RESPONSE_CODE%"))
+	assert.NoError(t, assertEnvoyFormatSafe(escaped))
+
+	cfg := testLocalReplyConfig()
+	cfg.BodyHTML = assets.DefaultError5xxHTML
+	cfg.OfflineBodyHTML = assets.DefaultErrorOfflineHTML
+	assert.NoError(t, ValidateLocalReplyConfig(cfg))
+}
+
+// TestValidateLocalReplyConfig_RejectsUnsafeOfflineBody proves the validator
+// inspects every mapper, not just the first.
+func TestValidateLocalReplyConfig_RejectsUnsafeOfflineBody(t *testing.T) {
+	assert.Error(t, assertEnvoyFormatSafe("%NOT_A_COMMAND%"))
+
+	cfg := testLocalReplyConfig()
+	cfg.OfflineBodyHTML = "offline %NOT_A_COMMAND%"
+	// Escaping neutralises it, so the assembled config is still safe to push.
+	assert.NoError(t, ValidateLocalReplyConfig(cfg))
+
+	lrc := buildLocalReplyConfig(cfg)
+	require.Len(t, lrc.GetMappers(), 2)
+	assert.Equal(t, "offline %%NOT_A_COMMAND%%",
+		lrc.GetMappers()[0].GetBodyFormatOverride().GetTextFormatSource().GetInlineString())
+}

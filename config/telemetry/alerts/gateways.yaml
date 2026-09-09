@@ -18,6 +18,8 @@ spec:
       labels:
         severity: critical
         slo_violation: "true"
+        service: network-services
+        team: sre
       annotations:
         summary: "Gateway {{ $labels.resource_name }} is taking longer than 60 seconds to reach Ready status"
         description: "Gateway {{ $labels.resource_name }} in namespace {{ $labels.resource_namespace }} has been in creation state for {{ $value }} seconds without reaching Ready status (Accepted=True AND Programmed=True), which exceeds the 60-second SLO threshold."
@@ -28,6 +30,8 @@ spec:
       for: 5m
       labels:
         severity: critical
+        service: network-services
+        team: sre
       annotations:
         summary: "EnvoyPatchPolicy {{ $labels.name }} failed to program"
         description: "EnvoyPatchPolicy {{ $labels.name }} in namespace {{ $labels.namespace }} has been unable to apply its xDS patch for over 5 minutes (reason: {{ $labels.reason }}). Customer traffic on affected gateways may be impacted."
@@ -46,54 +50,11 @@ spec:
       labels:
         severity: critical
         slo_violation: "true"
+        service: network-services
+        team: sre
       annotations:
         summary: "Gateway {{ $labels.resource_name }} has been degraded for over 60 seconds"
         description: "Gateway {{ $labels.resource_name }} in namespace {{ $labels.resource_namespace }} has been in a degraded state for over 60 seconds without recovering, which exceeds the 60-second SLO threshold."
-
-  # Controller reconcile-error alerts detect when the gateway controller is
-  # failing to write downstream Gateway objects. A high error ratio means updates
-  # are being rejected by the API server (e.g. invalid objects), the controller
-  # is hot-looping, and the stale configuration stays programmed at the edge.
-  - name: nso-gateway-controller-health
-    interval: 30s
-    rules:
-    # Fires when more than 20% of gateway controller reconcile attempts are
-    # failing over a 10-minute window, sustained for 15 minutes. A common cause
-    # is a downstream Gateway object failing CRD validation (e.g. all listeners
-    # withheld leaves spec.listeners empty, which is rejected as Required value).
-    # While this fires, controller changes are not reaching the edge.
-    - alert: GatewayControllerReconcileErrorRatioHigh
-      expr: |
-        (
-          sum without(result) (rate(controller_runtime_reconcile_total{controller="gateway",result="error"}[10m]))
-          /
-          sum without(result) (rate(controller_runtime_reconcile_total{controller="gateway"}[10m]))
-        ) > 0.2
-      for: 15m
-      labels:
-        severity: warning
-      annotations:
-        summary: "Gateway controller reconcile error ratio is {{ $value | humanizePercentage }} (threshold 20%)"
-        description: "More than 20% of gateway controller reconcile attempts are failing. The controller cannot write downstream Gateway objects — changes are not reaching the edge and the stale configuration stays programmed. Common causes: a downstream Gateway fails CRD validation (e.g. zero listeners after cert withholding empties the list), an API server admission error, or a permissions regression. Check controller logs for 'Reconciler error' entries on the 'gateway' controller."
-        runbook_url: "https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/gateway-controller-health.md#gatewaycontrollerreconcileerrorratiohigh"
-
-    # Fires at a critical threshold when more than 50% of reconciles are failing,
-    # sustained for 10 minutes. At this rate the controller has essentially
-    # stopped applying changes — treat as an active outage for gateway programming.
-    - alert: GatewayControllerReconcileErrorRatioCritical
-      expr: |
-        (
-          sum without(result) (rate(controller_runtime_reconcile_total{controller="gateway",result="error"}[10m]))
-          /
-          sum without(result) (rate(controller_runtime_reconcile_total{controller="gateway"}[10m]))
-        ) > 0.5
-      for: 10m
-      labels:
-        severity: critical
-      annotations:
-        summary: "Gateway controller reconcile error ratio is {{ $value | humanizePercentage }} (threshold 50%) — edge programming is stalled"
-        description: "More than 50% of gateway controller reconcile attempts are failing. The controller has effectively stopped programming downstream gateways — this is an active outage for any gateway changes (new listeners, cert updates, connector changes). Check controller logs for 'Reconciler error' entries. See GatewayControllerReconcileErrorRatioHigh for initial diagnosis."
-        runbook_url: "https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/gateway-controller-health.md#gatewaycontrollerreconcileerrorratiocritical"
 
   # TLS certificate health alerts fire on nso_* metrics emitted directly by the
   # NSO operator and extension server. They are available in the same Prometheus
@@ -115,6 +76,8 @@ spec:
       for: 5m
       labels:
         severity: warning
+        service: network-services
+        team: sre
       annotations:
         summary: "Gateway listener {{ $labels.namespace }}/{{ $labels.name }}/{{ $labels.listener }} has an unusable TLS certificate"
         description: "NSO has withheld listener {{ $labels.listener }} (hostname {{ $labels.hostname }}) on Gateway {{ $labels.name }} in namespace {{ $labels.namespace }} because its TLS certificate is unusable (reason: {{ $labels.reason }}). The customer cannot serve HTTPS on this hostname. Check the cert-manager Certificate and Secret in the downstream cluster."
@@ -130,6 +93,8 @@ spec:
       for: 1h
       labels:
         severity: warning
+        service: network-services
+        team: sre
       annotations:
         summary: "TLS certificate for Gateway listener {{ $labels.namespace }}/{{ $labels.name }}/{{ $labels.listener }} expires in less than 7 days"
         description: "The cert-manager Certificate for listener {{ $labels.listener }} (hostname {{ $labels.hostname }}, secret {{ $labels.secret }}) on Gateway {{ $labels.name }} in namespace {{ $labels.namespace }} expires within 7 days. cert-manager should renew it automatically, but renewal fails if the domain's DNS no longer points to Datum. Verify the Certificate is Ready=True in the downstream cluster."
@@ -146,6 +111,8 @@ spec:
       for: 2m
       labels:
         severity: warning
+        service: network-services
+        team: sre
       annotations:
         summary: "Extension server is dropping {{ $value }} broken certificate(s) to protect the edge listener"
         description: "The extension server is dropping {{ $value }} broken certificate(s) from the configuration it sends to the edge gateway. Check extension server logs for 'pruned invalid TLS chains' to find the affected hostnames. If GatewayListenerCertUnusable is also firing, both layers of protection are working as expected. If only this alert fires, the controller may have missed the listener."
@@ -162,6 +129,8 @@ spec:
       for: 2m
       labels:
         severity: critical
+        service: network-services
+        team: sre
       annotations:
         summary: "{{ $value }} edge listener(s) have every TLS certificate broken and cannot be protected"
         description: "The extension server left {{ $value }} edge listener(s) untouched because every certificate on them is broken. It never removes a listener entirely, so the edge will reject the configuration update for those listeners (EnvoyListenerUpdateRejected confirms it). This means the controller did not withhold the listener before it reached the edge. Check extension server logs for 'listeners_left_intact' and why the controller did not withhold the listener."

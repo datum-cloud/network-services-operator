@@ -30,3 +30,5 @@ resources:
   - leases.yaml
   - securitypolicies.yaml
   - trafficprotectionpolicies.yaml
+  - networkinterfaces.yaml
+  - networkinterfaceclaims.yaml

@@ -275,6 +275,77 @@ func TestHTTPProxyCollectDesiredResources(t *testing.T) {
 			},
 		},
 		{
+			name: "user Host header override is lowercased for URLRewrite",
+			httpProxy: newHTTPProxy(func(h *networkingv1alpha.HTTPProxy) {
+				h.Spec.Rules[0].Filters = []gatewayv1.HTTPRouteFilter{
+					{
+						Type: gatewayv1.HTTPRouteFilterRequestHeaderModifier,
+						RequestHeaderModifier: &gatewayv1.HTTPHeaderFilter{
+							Set: []gatewayv1.HTTPHeader{
+								{Name: "Host", Value: "Coffee.Example.Internal"},
+							},
+						},
+					},
+				}
+			}),
+			assert: func(t *testing.T, httpProxy *networkingv1alpha.HTTPProxy, desiredResources *desiredHTTPProxyResources) {
+				// URLRewrite.Hostname is a PreciseHostname, which accepts
+				// lower case only. Host headers compare case-insensitively,
+				// so lowercasing preserves what the user asked for.
+				routeRule := desiredResources.httpRoute.Spec.Rules[0]
+				var urlRewrite *gatewayv1.HTTPURLRewriteFilter
+				for _, f := range routeRule.Filters {
+					if f.Type == gatewayv1.HTTPRouteFilterURLRewrite {
+						urlRewrite = f.URLRewrite
+					}
+				}
+				if assert.NotNil(t, urlRewrite) {
+					assert.Equal(t, "coffee.example.internal", string(ptr.Deref(urlRewrite.Hostname, "")))
+				}
+			},
+		},
+		{
+			name: "backend tls.hostname is lowercased for URLRewrite and the cert annotation",
+			httpProxy: newHTTPProxy(func(h *networkingv1alpha.HTTPProxy) {
+				h.Spec.Rules[0].Filters = nil
+				h.Spec.Rules[0].Backends[0].Endpoint = "https://192.168.1.1"
+				h.Spec.Rules[0].Backends[0].TLS = &networkingv1alpha.HTTPProxyBackendTLS{
+					Hostname: ptr.To("Coffee.Example.Internal"),
+				}
+			}),
+			assert: func(t *testing.T, httpProxy *networkingv1alpha.HTTPProxy, desiredResources *desiredHTTPProxyResources) {
+				routeRule := desiredResources.httpRoute.Spec.Rules[0]
+				var urlRewrite *gatewayv1.HTTPURLRewriteFilter
+				for _, f := range routeRule.Filters {
+					if f.Type == gatewayv1.HTTPRouteFilterURLRewrite {
+						urlRewrite = f.URLRewrite
+					}
+				}
+				if assert.NotNil(t, urlRewrite) {
+					assert.Equal(t, "coffee.example.internal", string(ptr.Deref(urlRewrite.Hostname, "")))
+				}
+				if assert.Len(t, desiredResources.endpointSlices, 1) {
+					assert.Equal(t,
+						"coffee.example.internal",
+						desiredResources.endpointSlices[0].Annotations[BackendCertHostnameAnnotation],
+					)
+				}
+			},
+		},
+		{
+			name: "endpoint hostname is lowercased for URLRewrite",
+			httpProxy: newHTTPProxy(func(h *networkingv1alpha.HTTPProxy) {
+				h.Spec.Rules[0].Filters = nil
+				h.Spec.Rules[0].Backends[0].Endpoint = "http://WWW.Example.Com"
+			}),
+			assert: func(t *testing.T, httpProxy *networkingv1alpha.HTTPProxy, desiredResources *desiredHTTPProxyResources) {
+				routeRule := desiredResources.httpRoute.Spec.Rules[0]
+				if assert.Len(t, routeRule.Filters, 1) {
+					assert.Equal(t, "www.example.com", string(ptr.Deref(routeRule.Filters[0].URLRewrite.Hostname, "")))
+				}
+			},
+		},
+		{
 			name: "user Host header override on FQDN backend rewrites URLRewrite hostname",
 			httpProxy: newHTTPProxy(func(h *networkingv1alpha.HTTPProxy) {
 				h.Spec.Rules[0].Filters = []gatewayv1.HTTPRouteFilter{
@@ -508,6 +579,131 @@ func TestHTTPProxyCollectDesiredResources(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestHTTPProxyCollectDesiredResourcesInstance covers the instance backend
+// kind separately from TestHTTPProxyCollectDesiredResources: that table's
+// shared post-loop assertions hardcode a 1:1 backend-to-synthesized-
+// EndpointSlice relationship, which an instance backend (zero synthesized
+// slices, by design) would violate before its own assertions ever ran.
+func TestHTTPProxyCollectDesiredResourcesInstance(t *testing.T) {
+	operatorConfig := config.NetworkServicesOperator{
+		Gateway: config.GatewayConfig{
+			TargetDomain: "example.com",
+		},
+		HTTPProxy: config.HTTPProxyConfig{
+			GatewayClassName: "test",
+		},
+	}
+
+	reconciler := &HTTPProxyReconciler{Config: operatorConfig}
+
+	t.Run("resolves the referenced EndpointSlice without synthesizing one", func(t *testing.T) {
+		httpProxy := newHTTPProxy(func(h *networkingv1alpha.HTTPProxy) {
+			h.Spec.Rules[0].Backends[0] = networkingv1alpha.HTTPProxyRuleBackend{
+				Instance: &networkingv1alpha.InstanceBackendRef{Name: "vpc-pod-1", Port: 8080},
+			}
+		})
+
+		referenced := &discoveryv1.EndpointSlice{
+			ObjectMeta:  metav1.ObjectMeta{Namespace: httpProxy.Namespace, Name: "vpc-pod-1"},
+			AddressType: discoveryv1.AddressTypeIPv6,
+		}
+
+		cl := fake.NewClientBuilder().WithScheme(scheme.Scheme).WithObjects(referenced).Build()
+		desiredResources, err := reconciler.collectDesiredResources(context.Background(), cl, httpProxy)
+		require.NoError(t, err)
+
+		assert.Empty(t, desiredResources.endpointSlices, "vpcPod backend must not synthesize an EndpointSlice")
+
+		require.Len(t, desiredResources.httpRoute.Spec.Rules, 1)
+		backendRefs := desiredResources.httpRoute.Spec.Rules[0].BackendRefs
+		require.Len(t, backendRefs, 1)
+		assert.Equal(t, "EndpointSlice", string(ptr.Deref(backendRefs[0].Kind, "")))
+		assert.Equal(t, "discovery.k8s.io", string(ptr.Deref(backendRefs[0].Group, "")))
+		assert.Equal(t, "vpc-pod-1", string(backendRefs[0].Name))
+		assert.EqualValues(t, 8080, ptr.Deref(backendRefs[0].Port, 0))
+	})
+
+	t.Run("missing referenced EndpointSlice fails with errInstanceBackendNotFound", func(t *testing.T) {
+		httpProxy := newHTTPProxy(func(h *networkingv1alpha.HTTPProxy) {
+			h.Spec.Rules[0].Backends[0] = networkingv1alpha.HTTPProxyRuleBackend{
+				Instance: &networkingv1alpha.InstanceBackendRef{Name: "does-not-exist", Port: 8080},
+			}
+		})
+
+		cl := fake.NewClientBuilder().WithScheme(scheme.Scheme).Build()
+		_, err := reconciler.collectDesiredResources(context.Background(), cl, httpProxy)
+		require.Error(t, err)
+
+		var notFound *errInstanceBackendNotFound
+		assert.ErrorAs(t, err, &notFound)
+	})
+}
+
+// TestHTTPProxyReconcileInstanceBackendNotFound verifies that an instance backend
+// referencing a nonexistent EndpointSlice surfaces as a Programmed=False
+// condition with a dedicated reason, and requeues promptly (the referenced
+// pod may simply not have started yet) rather than bubbling up as a bare
+// generic requeue.
+func TestHTTPProxyReconcileInstanceBackendNotFound(t *testing.T) {
+	logger := zap.New(zap.UseFlagOptions(&zap.Options{Development: true}))
+	ctx := log.IntoContext(context.Background(), logger)
+
+	testScheme := runtime.NewScheme()
+	assert.NoError(t, scheme.AddToScheme(testScheme))
+	assert.NoError(t, gatewayv1.Install(testScheme))
+	assert.NoError(t, envoygatewayv1alpha1.AddToScheme(testScheme))
+	assert.NoError(t, discoveryv1.AddToScheme(testScheme))
+	assert.NoError(t, networkingv1alpha.AddToScheme(testScheme))
+	assert.NoError(t, networkingv1alpha1.AddToScheme(testScheme))
+
+	testConfig := config.NetworkServicesOperator{
+		HTTPProxy: config.HTTPProxyConfig{
+			GatewayClassName: "test-gateway-class",
+		},
+		Gateway: config.GatewayConfig{
+			ControllerName: gatewayv1.GatewayController("test-gateway-class"),
+			TargetDomain:   "example.com",
+		},
+	}
+
+	httpProxy := newHTTPProxy(func(h *networkingv1alpha.HTTPProxy) {
+		controllerutil.AddFinalizer(h, httpProxyFinalizer)
+		h.Spec.Rules[0].Backends[0] = networkingv1alpha.HTTPProxyRuleBackend{
+			Instance: &networkingv1alpha.InstanceBackendRef{Name: "does-not-exist", Port: 8080},
+		}
+	})
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(testScheme).
+		WithObjects(httpProxy).
+		WithStatusSubresource(httpProxy).
+		Build()
+
+	reconciler := &HTTPProxyReconciler{
+		mgr:    &fakeMockManager{cl: fakeClient},
+		Config: testConfig,
+	}
+
+	req := mcreconcile.Request{
+		Request: reconcile.Request{
+			NamespacedName: client.ObjectKeyFromObject(httpProxy),
+		},
+		ClusterName: "test-cluster",
+	}
+
+	result, err := reconciler.Reconcile(ctx, req)
+	require.NoError(t, err)
+	assert.Equal(t, retryAfterConflict, result.RequeueAfter)
+
+	var updated networkingv1alpha.HTTPProxy
+	require.NoError(t, fakeClient.Get(ctx, client.ObjectKeyFromObject(httpProxy), &updated))
+
+	programmed := apimeta.FindStatusCondition(updated.Status.Conditions, networkingv1alpha.HTTPProxyConditionProgrammed)
+	require.NotNil(t, programmed)
+	assert.Equal(t, metav1.ConditionFalse, programmed.Status)
+	assert.Equal(t, networkingv1alpha.HTTPProxyReasonInstanceBackendNotFound, programmed.Reason)
 }
 
 //nolint:gocyclo
@@ -3456,4 +3652,76 @@ func makeHostnameStatus(hostname string, status metav1.ConditionStatus, transiti
 			},
 		},
 	}
+}
+
+// An HTTPProxy stored before the hostname checks existed, or admitted while the
+// webhook was unavailable, cannot be programmed. It must report that on its own
+// status rather than failing every reconcile where only the operator can see it.
+func TestHTTPProxyReconcileUnprogrammableHostname(t *testing.T) {
+	testScheme := runtime.NewScheme()
+	require.NoError(t, scheme.AddToScheme(testScheme))
+	require.NoError(t, gatewayv1.Install(testScheme))
+	require.NoError(t, envoygatewayv1alpha1.AddToScheme(testScheme))
+	require.NoError(t, discoveryv1.AddToScheme(testScheme))
+	require.NoError(t, networkingv1alpha.AddToScheme(testScheme))
+	require.NoError(t, networkingv1alpha1.AddToScheme(testScheme))
+
+	httpProxy := newHTTPProxy(func(h *networkingv1alpha.HTTPProxy) {
+		h.Spec.Rules[0].Filters = []gatewayv1.HTTPRouteFilter{
+			{
+				Type: gatewayv1.HTTPRouteFilterRequestHeaderModifier,
+				RequestHeaderModifier: &gatewayv1.HTTPHeaderFilter{
+					Set: []gatewayv1.HTTPHeader{
+						{Name: "Host", Value: "example.com:8080"},
+					},
+				},
+			},
+		}
+	})
+
+	namespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
+		Name: httpProxy.Namespace,
+		UID:  uuid.NewUUID(),
+	}}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(testScheme).
+		WithObjects(httpProxy, namespace).
+		WithStatusSubresource(httpProxy).
+		Build()
+
+	reconciler := &HTTPProxyReconciler{
+		mgr: &fakeMockManager{cl: fakeClient},
+		Config: config.NetworkServicesOperator{
+			HTTPProxy: config.HTTPProxyConfig{GatewayClassName: "test-gateway-class"},
+			Gateway:   config.GatewayConfig{TargetDomain: "example.com"},
+		},
+		DownstreamCluster: &fakeCluster{cl: fake.NewClientBuilder().WithScheme(testScheme).Build()},
+	}
+
+	ctx := log.IntoContext(context.Background(), zap.New(zap.UseFlagOptions(&zap.Options{Development: true})))
+	req := mcreconcile.Request{
+		Request:     reconcile.Request{NamespacedName: client.ObjectKeyFromObject(httpProxy)},
+		ClusterName: "test-cluster",
+	}
+
+	// Twice: the first pass adds the finalizer, the second reports on it.
+	for range 2 {
+		_, err := reconciler.Reconcile(ctx, req)
+		require.NoError(t, err, "an unprogrammable proxy must not fail the reconcile")
+	}
+
+	updated := &networkingv1alpha.HTTPProxy{}
+	require.NoError(t, fakeClient.Get(ctx, client.ObjectKeyFromObject(httpProxy), updated))
+
+	accepted := apimeta.FindStatusCondition(updated.Status.Conditions, networkingv1alpha.HTTPProxyConditionAccepted)
+	require.NotNil(t, accepted)
+	assert.Equal(t, metav1.ConditionFalse, accepted.Status)
+	assert.Equal(t, networkingv1alpha.HTTPProxyReasonInvalid, accepted.Reason)
+	assert.Contains(t, accepted.Message, "requestHeaderModifier.set[0].value",
+		"the message must name the field the user wrote")
+
+	httpRoute := &gatewayv1.HTTPRoute{}
+	err := fakeClient.Get(ctx, client.ObjectKeyFromObject(httpProxy), httpRoute)
+	assert.True(t, apierrors.IsNotFound(err), "no HTTPRoute should be written for an unprogrammable proxy")
 }

@@ -510,6 +510,107 @@ spec:
               kubectl get dnsendpoints -n $DOWNSTREAM_NAMESPACE -o yaml
               kubectl get svc -n $DOWNSTREAM_NAMESPACE -o yaml
 
+    # After the Gateway is Accepted and has claimed test.e2e.env.datum.net,
+    # provision a ready DNSZone + matching Domain nameservers so the Gateway
+    # DNS controller creates a DNSRecordSet. Assert the owner name is relative
+    # to the zone (test), while CNAME content remains an absolute FQDN.
+    - name: Assert Gateway DNSRecordSet uses relative owner name
+      try:
+        - create:
+            cluster: nso-standard
+            resource:
+              apiVersion: dns.networking.miloapis.com/v1alpha1
+              kind: DNSZone
+              metadata:
+                name: e2e-env-datum-net
+              spec:
+                domainName: e2e.env.datum.net
+                dnsZoneClassName: default
+
+        - description: |
+            Simulate a programmed Datum DNS zone. dns-operator is not running
+            in this e2e, so Accepted/Programmed and nameservers are patched.
+          script:
+            cluster: nso-standard
+            content: |
+              kubectl -n $NAMESPACE patch dnszone e2e-env-datum-net \
+                --subresource=status --type=merge \
+                -p '{"status":{"nameservers":["ns1.e2e.example.net","ns2.e2e.example.net"],"conditions":[{"type":"Accepted","status":"True","reason":"Accepted","message":"test","lastTransitionTime":"2025-02-24T23:59:09Z"},{"type":"Programmed","status":"True","reason":"Programmed","message":"test","lastTransitionTime":"2025-02-24T23:59:09Z"}]}}'
+
+        - description: |
+            Match Domain status.nameservers to the DNSZone so HasDNSAuthority
+            passes. Merge-patch only nameservers + nextRefreshAttempt (do not
+            touch conditions). Re-patch until the synthetic NS stick (guards
+            against in-flight RDAP refresh).
+          script:
+            cluster: nso-standard
+            timeout: 60s
+            content: |
+              patch_domain_ns() {
+                kubectl -n $NAMESPACE patch domain test-domain \
+                  --subresource=status --type=merge \
+                  -p '{"status":{"nameservers":[{"hostname":"ns1.e2e.example.net"},{"hostname":"ns2.e2e.example.net"}],"registration":{"nextRefreshAttempt":"2099-01-01T00:00:00Z"}}}'
+              }
+              patch_domain_ns
+              for i in $(seq 1 30); do
+                ns=$(kubectl -n $NAMESPACE get domain test-domain -o jsonpath='{.status.nameservers[*].hostname}')
+                case " $ns " in
+                  *"ns1.e2e.example.net"*)
+                    echo "Domain nameservers ready: $ns"
+                    exit 0
+                    ;;
+                esac
+                echo "Domain nameservers not ready yet (got: '$ns'); re-patching ($i/30)"
+                patch_domain_ns || true
+                sleep 2
+              done
+              echo "timed out waiting for synthetic Domain nameservers" >&2
+              kubectl -n $NAMESPACE get domain test-domain -o yaml >&2
+              exit 1
+
+        - description: |
+            Wait for the Gateway-managed DNSRecordSet and assert relative owner
+            name (test) plus absolute FQDN CNAME content. Deterministic name:
+            test-gateway-{sha256("test.e2e.env.datum.net")[:8]}.
+          script:
+            cluster: nso-standard
+            timeout: 120s
+            content: |
+              RS=test-gateway-f9ab7844
+              for i in $(seq 1 60); do
+                if kubectl -n $NAMESPACE get dnsrecordset "$RS" >/dev/null 2>&1; then
+                  name=$(kubectl -n $NAMESPACE get dnsrecordset "$RS" -o jsonpath='{.spec.records[0].name}')
+                  content=$(kubectl -n $NAMESPACE get dnsrecordset "$RS" -o jsonpath='{.spec.records[0].cname.content}')
+                  zone=$(kubectl -n $NAMESPACE get dnsrecordset "$RS" -o jsonpath='{.spec.dnsZoneRef.name}')
+                  rtype=$(kubectl -n $NAMESPACE get dnsrecordset "$RS" -o jsonpath='{.spec.recordType}')
+                  if [ "$name" = "test" ] && [ "$zone" = "e2e-env-datum-net" ] && [ "$rtype" = "CNAME" ] \
+                    && [ -n "$content" ] && [ "$content" != "." ]; then
+                    case "$content" in
+                      *.)
+                        echo "DNSRecordSet ok: name=$name type=$rtype content=$content"
+                        exit 0
+                        ;;
+                    esac
+                  fi
+                  echo "DNSRecordSet present but not ready (name='$name' type='$rtype' zone='$zone' content='$content') ($i/60)"
+                else
+                  echo "waiting for dnsrecordset/$RS ($i/60)"
+                fi
+                sleep 2
+              done
+              echo "timed out waiting for relative-owner DNSRecordSet" >&2
+              kubectl -n $NAMESPACE get dnsrecordsets -o yaml >&2
+              exit 1
+      catch:
+        - script:
+            cluster: nso-standard
+            content: |
+              kubectl -n network-services-operator-system logs -l app.kubernetes.io/name=network-services-operator
+              kubectl get domain test-domain -n $NAMESPACE -o yaml
+              kubectl get dnszone e2e-env-datum-net -n $NAMESPACE -o yaml
+              kubectl get dnsrecordsets -n $NAMESPACE -o yaml
+              kubectl get gateway test-gateway -n $NAMESPACE -o yaml
+
     - name: Provision HTTPRoute
       try:
         # Get the target namespace UID

@@ -2,6 +2,7 @@ package server
 
 import (
 	"sort"
+	"strconv"
 	"strings"
 
 	clusterv3 "github.com/envoyproxy/go-control-plane/envoy/config/cluster/v3"
@@ -19,12 +20,12 @@ const keySep = "##"
 
 // wafRouteKey is the identity of a route protected by a firewall:
 //
-//	<routeConfig>##<virtualHost>##<routeName>##<policyNamespace>/<policyName>/<mode>
+//	<routeConfig>##<virtualHost>##<routeName>##<policyNamespace>/<policyName>/<mode>/<generation>
 //
 // The governing policy is part of the identity, so a route protected by the
 // wrong policy produces a different identity and is caught as a mismatch.
-func wafRouteKey(rc, vh, rt, tppNS, tppName, mode string) string {
-	return strings.Join([]string{rc, vh, rt, tppNS + "/" + tppName + "/" + mode}, keySep)
+func wafRouteKey(rc, vh, rt, tppNS, tppName, mode string, generation int64) string {
+	return strings.Join([]string{rc, vh, rt, tppNS + "/" + tppName + "/" + mode + "/" + strconv.FormatInt(generation, 10)}, keySep)
 }
 
 // connectorRouteKey is the identity of a connector route (online or offline):
@@ -42,25 +43,26 @@ func listenerChainKey(listener, chain string) string {
 }
 
 // datumGatewayTPP returns the protection policy governing a route (namespace,
-// name, mode). ok is false when the route carries no such marker, meaning it is
-// not protected.
-func datumGatewayTPP(rt *routev3.Route) (ns, name, mode string, ok bool) {
+// name, mode, generation). ok is false when the route carries no such marker,
+// meaning it is not protected.
+func datumGatewayTPP(rt *routev3.Route) (ns, name, mode string, generation int64, ok bool) {
 	md := rt.GetMetadata()
 	if md == nil {
-		return "", "", "", false
+		return "", "", "", 0, false
 	}
 	dg := md.GetFilterMetadata()[datumGatewayMetaKey]
 	if dg == nil {
-		return "", "", "", false
+		return "", "", "", 0, false
 	}
 	res := dg.GetFields()["resources"].GetListValue()
 	if res == nil || len(res.GetValues()) == 0 {
-		return "", "", "", false
+		return "", "", "", 0, false
 	}
 	f := res.GetValues()[0].GetStructValue().GetFields()
 	return f["namespace"].GetStringValue(),
 		f["name"].GetStringValue(),
 		f["mode"].GetStringValue(),
+		int64(f["generation"].GetNumberValue()),
 		true
 }
 

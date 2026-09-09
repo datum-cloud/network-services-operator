@@ -1,0 +1,29 @@
+---
+# The identity Milo's aggregator presents to an aggregated apiserver. IPAM
+# verifies it against --requestheader-client-ca-file and only then believes the
+# X-Remote-User / X-Remote-Extra-* headers on the request — which is how the
+# project the URL named reaches IPAM as a tenant.
+#
+# Milo's bundle leaves --proxy-client-cert-file empty and ships no certificate
+# for it, because in production the aggregator's client identity comes from the
+# platform's own PKI. Supplying this is what makes remote aggregation work here.
+#
+# It chains to milo-ca-issuer, the CA the bundle's certificates component
+# bootstraps, so the one CA bundle the env hands out verifies this too.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: milo-front-proxy-client
+  namespace: milo-system
+spec:
+  secretName: milo-front-proxy-client
+  duration: 8760h
+  commonName: milo-front-proxy-client
+  usages:
+    - client auth
+    - digital signature
+    - key encipherment
+  issuerRef:
+    name: milo-ca-issuer
+    kind: Issuer
+    group: cert-manager.io

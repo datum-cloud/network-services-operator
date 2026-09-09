@@ -16,6 +16,7 @@ import (
 
 	"go.datum.net/network-services-operator/internal/config"
 	"go.datum.net/network-services-operator/internal/validation"
+	webhookutil "go.datum.net/network-services-operator/internal/webhook"
 )
 
 // SetupSecurityPolicyWebhookWithManager registers the webhook for SecurityPolicy in the manager.
@@ -60,6 +61,10 @@ func (v *SecurityPolicyCustomValidator) ValidateUpdate(ctx context.Context, oldS
 
 	log := logf.FromContext(ctx).WithValues("cluster", clusterName)
 	log.Info("Validating SecurityPolicy", "name", newSecurityPolicy.GetName(), "cluster", clusterName)
+
+	if webhookutil.SkipUpdateValidation(newSecurityPolicy, oldSecurityPolicy.Spec, newSecurityPolicy.Spec) {
+		return nil, nil
+	}
 
 	if errs := validation.ValidateSecurityPolicy(newSecurityPolicy, v.validationOpts); len(errs) > 0 {
 		return nil, apierrors.NewInvalid(oldSecurityPolicy.GetObjectKind().GroupVersionKind().GroupKind(), newSecurityPolicy.GetName(), errs)

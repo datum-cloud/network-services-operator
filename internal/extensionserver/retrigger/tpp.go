@@ -23,6 +23,15 @@
 // delete or a targetRef edit, clears the trigger annotation on every Gateway that
 // dropped out of the set. Removing the annotation is itself a Gateway change, so
 // EG re-translates against the now-empty cache and drops the orphaned WAF config.
+//
+// Programmed status is stamped only inside PostTranslateModify after a real EG
+// re-translate. A rollout of that status writer would otherwise leave idle
+// proxies stuck with an empty Programmed condition forever: Create reconciles
+// on startup re-stamp the same "<gen>" annotation value, which is a server-side
+// no-op, so EG never re-runs the hook. When edge-local Programmed is missing or
+// behind metadata.generation, the trigger value gains a per-process suffix so
+// the annotation actually changes once and existing proxies backfill without a
+// manual edit.
 
 package retrigger
 
@@ -31,8 +40,11 @@ import (
 	"fmt"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/go-logr/logr"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -44,6 +56,8 @@ import (
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 )
+
+const conditionTypeProgrammed = "Programmed"
 
 // tppTriggerAnnotationPrefix is the annotation key prefix patched onto a Gateway
 // to make Envoy Gateway re-translate after a TPP spec change. The owning TPP's
@@ -59,6 +73,11 @@ const tppTriggerAnnotationPrefix = "networking.datumapis.com/tpp-generation-"
 // out of the policy's target set so EG re-translates and drops the orphaned WAF.
 type TPPReconciler struct {
 	Client client.Client
+
+	// bootID disambiguates Programmed-backfill trigger values across process
+	// starts so a pre-existing "<gen>.programmed.*" annotation still changes
+	// when status has not yet been written.
+	bootID string
 
 	// mu guards lastTargets. Reconciles for distinct TPPs run concurrently, so
 	// the previous-target map needs its own lock (controller-runtime only
@@ -78,6 +97,44 @@ func tppTriggerAnnotationKey(tppName string) string {
 	return tppTriggerAnnotationPrefix + tppName
 }
 
+// triggerValue returns the annotation value stamped onto owning Gateways.
+// Steady state is the bare generation string. When edge-local Programmed is
+// missing or observedGeneration lags metadata.generation, a per-process suffix
+// forces the annotation to change even if it already equals the generation —
+// the Create-on-startup path that would otherwise be a no-op after a status
+// writer rollout.
+func (r *TPPReconciler) triggerValue(tpp *networkingv1alpha.TrafficProtectionPolicy) string {
+	gen := strconv.FormatInt(tpp.Generation, 10)
+	if tppProgrammedForGeneration(tpp) {
+		return gen
+	}
+	return gen + ".programmed." + r.ensureBootID()
+}
+
+func (r *TPPReconciler) ensureBootID() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.bootID == "" {
+		r.bootID = strconv.FormatInt(time.Now().UnixNano(), 36)
+	}
+	return r.bootID
+}
+
+// tppProgrammedForGeneration reports whether any ancestor already has
+// Programmed=True for at least this object's generation.
+func tppProgrammedForGeneration(tpp *networkingv1alpha.TrafficProtectionPolicy) bool {
+	for i := range tpp.Status.Ancestors {
+		cond := apimeta.FindStatusCondition(tpp.Status.Ancestors[i].Conditions, conditionTypeProgrammed)
+		if cond == nil {
+			continue
+		}
+		if cond.Status == metav1.ConditionTrue && cond.ObservedGeneration >= tpp.Generation {
+			return true
+		}
+	}
+	return false
+}
+
 // Reconcile stamps the TPP's observed generation onto the trigger annotation of
 // every Gateway it targets, and clears the annotation on every Gateway that
 // dropped out of its target set since the last reconcile (a removed targetRef,
@@ -88,9 +145,10 @@ func tppTriggerAnnotationKey(tppName string) string {
 // Gateway name), so the TPP→Gateway mapping is local and name-derived.
 //
 // Each Gateway patch is a merge patch with no preceding Get: an unchanged
-// generation (or clearing an already-absent annotation) is a server-side no-op
-// (no resourceVersion bump, no EG event), so it is naturally idempotent and
-// never triggers a spurious re-translation.
+// trigger value (or clearing an already-absent annotation) is a server-side
+// no-op (no resourceVersion bump, no EG event), so steady-state reconciles are
+// naturally idempotent. When Programmed is behind, triggerValue adds a
+// per-process suffix so the annotation changes once and EG re-translates.
 func (r *TPPReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 	annotationKey := tppTriggerAnnotationKey(req.Name)
@@ -105,7 +163,7 @@ func (r *TPPReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		return ctrl.Result{}, r.clearGateways(ctx, logger, req.NamespacedName, annotationKey, r.takeTargets(req.NamespacedName), "delete")
 	}
 
-	value := strconv.FormatInt(tpp.Generation, 10)
+	value := r.triggerValue(&tpp)
 
 	seen := make(map[string]struct{}, len(tpp.Spec.TargetRefs))
 	current := make([]string, 0, len(tpp.Spec.TargetRefs))
@@ -131,7 +189,7 @@ func (r *TPPReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 			continue
 		}
 		logger.Info("touched gateway to trigger EG re-translation",
-			"gateway", gwKey, "tpp", tpp.Name, "generation", value)
+			"gateway", gwKey, "tpp", tpp.Name, "trigger", value)
 	}
 
 	// Clear Gateways that were targeted last time but are not now. On any error
@@ -241,8 +299,10 @@ func removedTargets(prev []string, current map[string]struct{}) []string {
 // SetupWithManager registers the controller. It reconciles a TPP only when its
 // spec changes (generation bump) or it is deleted — the extension server reads
 // spec fields only (mode, targetRefs, ruleSets, sampling), so status/metadata
-// churn is ignored.
+// churn is ignored. Create-on-startup also drives Programmed backfill for idle
+// proxies whose trigger annotation already matches the current generation.
 func (r *TPPReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	_ = r.ensureBootID()
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&networkingv1alpha.TrafficProtectionPolicy{}, builder.WithPredicates(tppSpecChangedPredicate())).
 		Named("extension-server-gateway-retrigger-tpp").
@@ -250,10 +310,11 @@ func (r *TPPReconciler) SetupWithManager(mgr ctrl.Manager) error {
 }
 
 // tppSpecChangedPredicate admits creates (so TPPs already present when the
-// controller starts stamp their Gateways, and their target set is learned before
-// any later edit or delete), updates that bump the generation (any spec change:
-// mode flip, targetRef edit, ruleset/sampling change), and deletes (so a removed
-// policy's Gateways are re-translated against the now-empty cache).
+// controller starts stamp their Gateways — including a Programmed backfill
+// nudge when status is empty — and their target set is learned before any later
+// edit or delete), updates that bump the generation (any spec change: mode flip,
+// targetRef edit, ruleset/sampling change), and deletes (so a removed policy's
+// Gateways are re-translated against the now-empty cache).
 func tppSpecChangedPredicate() predicate.Predicate {
 	return predicate.Funcs{
 		CreateFunc: func(event.CreateEvent) bool { return true },

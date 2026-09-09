@@ -192,7 +192,7 @@ Core Rule Set (CRS).
 paranoia levels to use.<br/>
           <br/>
             <i>Validations</i>:<li>self.detection >= self.blocking: detection paranoia level must be greater than or equal to blocking paranoia level</li>
-            <i>Default</i>: map[]<br/>
+            <i>Default</i>: map[blocking:1 detection:1]<br/>
         </td>
         <td>false</td>
       </tr><tr>
@@ -528,6 +528,43 @@ PolicyAncestorStatus struct describes the status of.<br/>
         </td>
         <td>true</td>
       </tr><tr>
+        <td><b><a href="#trafficprotectionpolicystatusancestorsindexconditionsindex">conditions</a></b></td>
+        <td>[]object</td>
+        <td>
+          Conditions describes the status of the Policy with respect to the given Ancestor.
+
+<gateway:util:excludeFromCRD>
+
+Notes for implementors:
+
+Conditions are a listType `map`, which means that they function like a
+map with a key of the `type` field _in the k8s apiserver_.
+
+This means that implementations must obey some rules when updating this
+section.
+
+* Implementations MUST perform a read-modify-write cycle on this field
+  before modifying it. That is, when modifying this field, implementations
+  must be confident they have fetched the most recent version of this field,
+  and ensure that changes they make are on that recent version.
+* Implementations MUST NOT remove or reorder Conditions that they are not
+  directly responsible for. For example, if an implementation sees a Condition
+  with type `special.io/SomeField`, it MUST NOT remove, change or update that
+  Condition.
+* Implementations MUST always _merge_ changes into Conditions of the same Type,
+  rather than creating more than one Condition of the same Type.
+* Implementations MUST always update the `observedGeneration` field of the
+  Condition to the `metadata.generation` of the Gateway at the time of update creation.
+* If the `observedGeneration` of a Condition is _greater than_ the value the
+  implementation knows about, then it MUST NOT perform the update on that Condition,
+  but must wait for a future reconciliation and status update. (The assumption is that
+  the implementation's copy of the object is stale and an update will be re-triggered
+  if relevant.)
+
+</gateway:util:excludeFromCRD><br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
         <td><b>controllerName</b></td>
         <td>string</td>
         <td>
@@ -546,13 +583,6 @@ entries to status populated with their ControllerName are cleaned up when they a
 longer necessary.<br/>
         </td>
         <td>true</td>
-      </tr><tr>
-        <td><b><a href="#trafficprotectionpolicystatusancestorsindexconditionsindex">conditions</a></b></td>
-        <td>[]object</td>
-        <td>
-          Conditions describes the status of the Policy with respect to the given Ancestor.<br/>
-        </td>
-        <td>false</td>
       </tr></tbody>
 </table>
 

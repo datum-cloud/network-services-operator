@@ -4,38 +4,56 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/netip"
+	"slices"
 
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
+	mccontext "sigs.k8s.io/multicluster-runtime/pkg/context"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
+
+	ipamv1alpha1 "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 )
 
+const (
+	networkContextSubnetFinalizer = "networking.datumapis.com/networkcontext-subnet-release"
+
+	// privateSubnetClass is the class of tenant-private space, and the only
+	// subnet class the platform issues today.
+	privateSubnetClass = "private"
+)
+
 // NetworkContextReconciler reconciles a NetworkContext object
 type NetworkContextReconciler struct {
+	// IPAM is optional. Left nil, no subnet is claimed and a network context is
+	// reconciled exactly as it was before the operator reached IPAM at all.
+	IPAM IPAMClientFactory
+
+	// SubnetClass is the IPClass that hands out the range a network is
+	// addressed from in one location. Empty means the same as a nil IPAM:
+	// nothing is claimed.
+	SubnetClass string
+
 	mgr mcmanager.Manager
 }
 
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkcontexts,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkcontexts/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkcontexts/finalizers,verbs=update
+// +kubebuilder:rbac:groups=networking.datumapis.com,resources=subnets,verbs=get;list;watch;create;update;patch
+// +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
 
-// Reconcile is part of the main kubernetes reconciliation loop which aims to
-// move the current state of the cluster closer to the desired state.
-// TODO(user): Modify the Reconcile function to compare the state specified by
-// the NetworkContext object against the actual cluster state, and then
-// perform operations to make the cluster state reflect the state specified by
-// the user.
-//
-// For more details, check Reconcile and its Result here:
-// - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.19.1/pkg/reconcile
 func (r *NetworkContextReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx, "cluster", req.ClusterName)
 
@@ -44,36 +62,392 @@ func (r *NetworkContextReconciler) Reconcile(ctx context.Context, req mcreconcil
 		return ctrl.Result{}, err
 	}
 
+	// resolveProjectOrCluster names a project's own control plane from the cluster.
+	ctx = mccontext.WithCluster(ctx, req.ClusterName)
+
 	var networkContext networkingv1alpha.NetworkContext
 	if err := cl.GetClient().Get(ctx, req.NamespacedName, &networkContext); err != nil {
-		if apierrors.IsNotFound(err) {
-			return ctrl.Result{}, nil
-		}
-		return ctrl.Result{}, err
-	}
-
-	if !networkContext.DeletionTimestamp.IsZero() {
-		return ctrl.Result{}, nil
+		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
 	logger.Info("reconciling network context")
 	defer logger.Info("reconcile complete")
 
-	if apimeta.IsStatusConditionTrue(networkContext.Status.Conditions, networkingv1alpha.NetworkContextProgrammed) {
-		if apimeta.SetStatusCondition(&networkContext.Status.Conditions, metav1.Condition{
-			Type:               networkingv1alpha.NetworkContextReady,
-			Status:             metav1.ConditionTrue,
-			Reason:             networkingv1alpha.NetworkContextReadyReasonReady,
-			ObservedGeneration: networkContext.Generation,
-			Message:            "Network context is ready",
-		}) {
-			if err := cl.GetClient().Status().Update(ctx, &networkContext); err != nil {
-				return ctrl.Result{}, fmt.Errorf("failed updating network context status")
+	return r.reconcileNetworkContext(ctx, cl.GetClient(), &networkContext)
+}
+
+func (r *NetworkContextReconciler) reconcileNetworkContext(
+	ctx context.Context,
+	cl client.Client,
+	networkContext *networkingv1alpha.NetworkContext,
+) (ctrl.Result, error) {
+	if !networkContext.DeletionTimestamp.IsZero() {
+		// A context being deleted must stop saying the network is present here.
+		// Recovery keys on the deletion timestamp and never on this, but a
+		// consumer reading Ready=True off an object that is going away has been
+		// told something untrue.
+		if err := r.reportTerminating(ctx, cl, networkContext); err != nil {
+			return ctrl.Result{}, err
+		}
+
+		if !controllerutil.ContainsFinalizer(networkContext, networkContextSubnetFinalizer) {
+			return ctrl.Result{}, nil
+		}
+
+		if err := r.releaseSubnet(ctx, cl, networkContext); err != nil {
+			var occupied *rangeOccupied
+			if errors.As(err, &occupied) {
+				return r.reportSubnet(ctx, cl, networkContext,
+					networkingv1alpha.NetworkContextReasonRangeOccupied, occupied.message)
 			}
+			return ctrl.Result{}, err
+		}
+
+		controllerutil.RemoveFinalizer(networkContext, networkContextSubnetFinalizer)
+		if err := cl.Update(ctx, networkContext); err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed removing subnet finalizer: %w", err)
+		}
+		return ctrl.Result{}, nil
+	}
+
+	result, err := r.reconcileSubnet(ctx, cl, networkContext)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
+	return result, r.reportReady(ctx, cl, networkContext)
+}
+
+func (r *NetworkContextReconciler) reportTerminating(
+	ctx context.Context,
+	cl client.Client,
+	networkContext *networkingv1alpha.NetworkContext,
+) error {
+	if !apimeta.SetStatusCondition(&networkContext.Status.Conditions, metav1.Condition{
+		Type:               networkingv1alpha.NetworkContextReady,
+		Status:             metav1.ConditionFalse,
+		Reason:             networkingv1alpha.NetworkContextReadyReasonTerminating,
+		ObservedGeneration: networkContext.Generation,
+		Message:            "This network presence is being deleted",
+	}) {
+		return nil
+	}
+
+	if err := cl.Status().Update(ctx, networkContext); err != nil {
+		return fmt.Errorf("failed updating network context status: %w", err)
+	}
+	return nil
+}
+
+func (r *NetworkContextReconciler) reportReady(
+	ctx context.Context,
+	cl client.Client,
+	networkContext *networkingv1alpha.NetworkContext,
+) error {
+	if !setNetworkContextReady(networkContext) {
+		return nil
+	}
+
+	if err := cl.Status().Update(ctx, networkContext); err != nil {
+		return fmt.Errorf("failed updating network context status: %w", err)
+	}
+	return nil
+}
+
+// setNetworkContextReady derives Ready from the subnet this location is
+// addressed from. Allocation is the only thing a context waits on, so Ready
+// carries that condition's own reason rather than a second vocabulary for the
+// same failures.
+//
+// A location nothing is allocated for — no IPAM configured, no subnet class, or
+// a network carrying no IPv6 — has nothing outstanding and is present as soon as
+// it exists. IPAMAllocated is written only where an allocation was attempted, so
+// its absence is what says so.
+func setNetworkContextReady(networkContext *networkingv1alpha.NetworkContext) bool {
+	ready := metav1.Condition{
+		Type:               networkingv1alpha.NetworkContextReady,
+		Status:             metav1.ConditionTrue,
+		Reason:             networkingv1alpha.NetworkContextReadyReasonReady,
+		ObservedGeneration: networkContext.Generation,
+		Message:            "This location needs no address space of its own, so the network is present in it",
+	}
+
+	if allocated := apimeta.FindStatusCondition(
+		networkContext.Status.Conditions, networkingv1alpha.NetworkContextIPAMAllocated,
+	); allocated != nil {
+		ready.Message = allocated.Message
+		if allocated.Status != metav1.ConditionTrue {
+			ready.Status = allocated.Status
+			ready.Reason = allocated.Reason
 		}
 	}
 
-	return ctrl.Result{}, nil
+	return apimeta.SetStatusCondition(&networkContext.Status.Conditions, ready)
+}
+
+// reconcileSubnet holds the range this network is addressed from in this
+// location. A context is (network, location) and lives exactly as long as the
+// subnet does, so it is what owns it: without an owner the subnet is only ever
+// brought into being under the first endpoint that lands here, is invisible
+// until then, and is never given back.
+func (r *NetworkContextReconciler) reconcileSubnet(
+	ctx context.Context,
+	cl client.Client,
+	networkContext *networkingv1alpha.NetworkContext,
+) (ctrl.Result, error) {
+	if r.IPAM == nil || r.SubnetClass == "" || !networkContextCarriesIPv6(networkContext) {
+		return ctrl.Result{}, nil
+	}
+
+	routing, err := resolveProjectOrCluster(ctx, cl, networkContext.Namespace)
+	if err != nil {
+		var unresolvable *projectUnresolvable
+		if errors.As(err, &unresolvable) {
+			return r.reportSubnet(ctx, cl, networkContext,
+				networkingv1alpha.NetworkContextReasonProjectUnresolved, unresolvable.Error())
+		}
+		return ctrl.Result{}, err
+	}
+
+	ipamClient, err := r.IPAM.ClientForProject(routing.project)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed building IPAM client: %w", err)
+	}
+
+	if controllerutil.AddFinalizer(networkContext, networkContextSubnetFinalizer) {
+		if err := cl.Update(ctx, networkContext); err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed adding subnet finalizer: %w", err)
+		}
+	}
+
+	subnet, err := r.claimSubnet(ctx, ipamClient, routing, networkContext)
+	if err != nil {
+		var refused *bindingRefused
+		if errors.As(err, &refused) {
+			return r.reportSubnet(ctx, cl, networkContext, refused.reason, refused.message)
+		}
+		var failure *allocationFailure
+		if errors.As(err, &failure) {
+			return r.reportSubnet(ctx, cl, networkContext, string(failure.reason), failure.message)
+		}
+		return ctrl.Result{}, err
+	}
+
+	subnetName, err := r.publishSubnetObject(ctx, cl, networkContext, subnet)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
+	return ctrl.Result{}, r.publishSubnet(ctx, cl, networkContext, routing, subnet, subnetName)
+}
+
+func (r *NetworkContextReconciler) claimSubnet(
+	ctx context.Context,
+	ipamClient client.Client,
+	routing projectRouting,
+	networkContext *networkingv1alpha.NetworkContext,
+) (scopeRange, error) {
+	return holdScopeRange(ctx, ipamClient, routing, scopeRangeRequest{
+		className: r.SubnetClass,
+		claimName: networkContextSubnetClaimName(networkContext),
+		namespace: routing.projectNamespace,
+		scope: map[string]ipamv1alpha1.ScopeRef{
+			ipamScopeRoleNetwork: {
+				APIGroup: datumNetworkingAPIGroup,
+				Kind:     "Network",
+				Name:     networkContext.Spec.Network.Name,
+			},
+			ipamScopeRoleLocation: {
+				APIGroup: datumNetworkingAPIGroup,
+				Kind:     "Location",
+				Name:     networkContext.Spec.Location.Name,
+			},
+		},
+		subject:                 "this location",
+		namespaceNotFoundReason: networkingv1alpha.NetworkContextReasonProjectNamespaceNotFound,
+		rangeUnsupportedReason:  networkingv1alpha.NetworkContextReasonRangeUnsupported,
+	})
+}
+
+// publishSubnetObject writes the allocation onto the Subnet this location is
+// addressed from. The Subnet is the API a consumer already reads a location's
+// addressing from, and the gateway an interface is given is derived from it, so
+// the allocation lands there rather than becoming a second range on the context
+// that a reader would have to reconcile against it.
+func (r *NetworkContextReconciler) publishSubnetObject(
+	ctx context.Context,
+	cl client.Client,
+	networkContext *networkingv1alpha.NetworkContext,
+	held scopeRange,
+) (string, error) {
+	prefix, err := netip.ParsePrefix(held.cidr)
+	if err != nil {
+		return "", fmt.Errorf("IPAM held %q for this location, which is not a prefix: %w", held.cidr, err)
+	}
+	prefix = prefix.Masked()
+
+	subnet := &networkingv1alpha.Subnet{}
+	subnet.Namespace = networkContext.Namespace
+	subnet.Name = networkContextSubnetName(networkContext)
+
+	result, err := controllerutil.CreateOrUpdate(ctx, cl, subnet, func() error {
+		if subnet.Labels == nil {
+			subnet.Labels = map[string]string{}
+		}
+		subnet.Labels[networkingv1alpha.NetworkLabel] = networkContext.Spec.Network.Name
+		subnet.Labels[networkingv1alpha.LocationLabel] = networkContext.Spec.Location.Name
+
+		subnet.Spec.SubnetClass = privateSubnetClass
+		subnet.Spec.IPFamily = networkingv1alpha.IPv6Protocol
+		subnet.Spec.NetworkContext = networkingv1alpha.LocalNetworkContextRef{Name: networkContext.Name}
+		subnet.Spec.Location = networkContext.Spec.Location
+		subnet.Spec.StartAddress = prefix.Addr().String()
+		subnet.Spec.PrefixLength = int32(prefix.Bits())
+		return controllerutil.SetControllerReference(networkContext, subnet, cl.Scheme())
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed writing subnet %q: %w", subnet.Name, err)
+	}
+	if result != controllerutil.OperationResultNone {
+		log.FromContext(ctx).Info("published the location's subnet",
+			"subnet", subnet.Name, "range", held.cidr, "result", result)
+	}
+
+	return subnet.Name, nil
+}
+
+func (r *NetworkContextReconciler) publishSubnet(
+	ctx context.Context,
+	cl client.Client,
+	networkContext *networkingv1alpha.NetworkContext,
+	routing projectRouting,
+	held scopeRange,
+	subnetName string,
+) error {
+	allocated := &networkingv1alpha.NetworkContextIPAMStatus{
+		IPv6SubnetRef: &networkingv1alpha.LocalSubnetReference{Name: subnetName},
+		IPv6ClaimRef: &networkingv1alpha.NetworkPrefixRef{
+			Project:   routing.project,
+			Namespace: routing.projectNamespace,
+			ClaimName: networkContextSubnetClaimName(networkContext),
+			PoolName:  held.poolName,
+		},
+	}
+
+	changed := !equality.Semantic.DeepEqual(networkContext.Status.IPAM, allocated)
+	networkContext.Status.IPAM = allocated
+
+	if apimeta.SetStatusCondition(&networkContext.Status.Conditions, metav1.Condition{
+		Type:               networkingv1alpha.NetworkContextIPAMAllocated,
+		Status:             metav1.ConditionTrue,
+		Reason:             "Allocated",
+		ObservedGeneration: networkContext.Generation,
+		Message:            "This location is addressed from " + held.cidr,
+	}) {
+		changed = true
+	}
+
+	if !changed {
+		return nil
+	}
+
+	if err := cl.Status().Update(ctx, networkContext); err != nil {
+		return fmt.Errorf("failed updating network context status: %w", err)
+	}
+	return nil
+}
+
+// reportSubnet says why no subnet was allocated and comes back later. Nothing
+// watches IPAM or the namespace, so a condition that clears on its own has no
+// other way back.
+func (r *NetworkContextReconciler) reportSubnet(
+	ctx context.Context,
+	cl client.Client,
+	networkContext *networkingv1alpha.NetworkContext,
+	reason string,
+	message string,
+) (ctrl.Result, error) {
+	log.FromContext(ctx).Info("network context subnet cannot be allocated",
+		"reason", reason, "message", message)
+
+	if apimeta.SetStatusCondition(&networkContext.Status.Conditions, metav1.Condition{
+		Type:               networkingv1alpha.NetworkContextIPAMAllocated,
+		Status:             metav1.ConditionFalse,
+		Reason:             reason,
+		ObservedGeneration: networkContext.Generation,
+		Message:            message,
+	}) {
+		if err := cl.Status().Update(ctx, networkContext); err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed updating network context status: %w", err)
+		}
+	}
+	return ctrl.Result{RequeueAfter: rejectedClaimRetryInterval}, nil
+}
+
+// releaseSubnet gives back what this operator holds. The recorded reference is
+// what it releases against, because a namespace that stopped naming its project
+// must not turn into a context that cannot be deleted.
+func (r *NetworkContextReconciler) releaseSubnet(
+	ctx context.Context,
+	cl client.Client,
+	networkContext *networkingv1alpha.NetworkContext,
+) error {
+	if r.IPAM == nil {
+		return nil
+	}
+
+	ref := subnetClaimRef(networkContext)
+	if ref == nil {
+		routing, err := resolveProjectOrCluster(ctx, cl, networkContext.Namespace)
+		if err != nil {
+			log.FromContext(ctx).Info("network context holds no recorded subnet and names no project; releasing nothing",
+				"error", err.Error())
+			return nil
+		}
+		ref = &networkingv1alpha.NetworkPrefixRef{
+			Project:   routing.project,
+			Namespace: routing.projectNamespace,
+			ClaimName: networkContextSubnetClaimName(networkContext),
+		}
+	}
+
+	ipamClient, err := r.IPAM.ClientForProject(ref.Project)
+	if err != nil {
+		return fmt.Errorf("failed building IPAM client: %w", err)
+	}
+
+	if err := releaseScopeRange(ctx, ipamClient, ref.Namespace, ref.ClaimName); err != nil {
+		var occupied *rangeOccupied
+		if errors.As(err, &occupied) {
+			return &rangeOccupied{message: fmt.Sprintf(
+				"this location's subnet still has addresses allocated inside it: %s", occupied.message)}
+		}
+		return err
+	}
+	return nil
+}
+
+func subnetClaimRef(networkContext *networkingv1alpha.NetworkContext) *networkingv1alpha.NetworkPrefixRef {
+	if networkContext.Status.IPAM == nil {
+		return nil
+	}
+	ref := networkContext.Status.IPAM.IPv6ClaimRef
+	if ref == nil || ref.Project == "" || ref.ClaimName == "" {
+		return nil
+	}
+	return ref
+}
+
+func networkContextCarriesIPv6(networkContext *networkingv1alpha.NetworkContext) bool {
+	return slices.Contains(networkContext.Spec.IPFamilies, networkingv1alpha.IPv6Protocol)
+}
+
+func networkContextSubnetName(networkContext *networkingv1alpha.NetworkContext) string {
+	return networkContext.Name + "-ipv6"
+}
+
+func networkContextSubnetClaimName(networkContext *networkingv1alpha.NetworkContext) string {
+	return "networkcontext-" + string(networkContext.UID)
 }
 
 // SetupWithManager sets up the controller with the Manager.

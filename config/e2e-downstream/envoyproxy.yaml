@@ -18,12 +18,62 @@ spec:
     type: Kubernetes
     kubernetes:
       envoyDeployment:
+        # See config/dev/downstream_resources/downstream-gateway.yaml for why
+        # the VPC-ingress VRF/SRv6 sidecar (#855) has to go in via a
+        # StrategicMerge patch on spec.template.spec.containers rather than a
+        # native EnvoyDeployment field.
+        #
+        # TODO(#856): sidecar binary is a placeholder pending #855 — using
+        # busybox/sleep instead of a nonexistent image so this manifest stays
+        # deployable by task test-infra:up in the meantime. Swap the
+        # image/command for #855's real binary once it's published.
+        patch:
+          type: StrategicMerge
+          value:
+            spec:
+              template:
+                spec:
+                  containers:
+                    - name: vpc-vrf-sidecar
+                      image: busybox:1.36
+                      command: ["sleep", "infinity"]
+                      securityContext:
+                        capabilities:
+                          add:
+                            - NET_ADMIN
+                            # See config/dev/downstream_resources/downstream-gateway.yaml
+                            # for why: #855's sidecar opens a pinned eBPF map
+                            # (galactic's egress_route_table, via
+                            # internal/plumbing/srv6.RouteEgressAdd) since galactic
+                            # commit 8475bf9 replaced the netlink-native SEG6 encap
+                            # route (broken by CVE-2026-31668) with a TC-BPF one.
+                            # NET_ADMIN alone doesn't cover the bpf() syscalls that
+                            # requires.
+                            - BPF
+                      volumeMounts:
+                        - name: bpf-fs
+                          mountPath: /sys/fs/bpf
         pod:
           volumes:
             - name: coraza-waf
               emptyDir: {}
+            - name: bpf-fs
+              # Same convention as galactic's own config/galactic-router,
+              # config/galactic-gateway DaemonSets. `Directory` (not
+              # DirectoryOrCreate): fail loudly if bpffs isn't actually mounted at
+              # this host path, rather than masking the failure.
+              hostPath:
+                path: /sys/fs/bpf
+                type: Directory
         container:
           image: envoyproxy/envoy:contrib-v1.37.1
+          # Required for the vpcPod socket-bind mutation (#856 step 4) —
+          # SO_BINDTODEVICE needs CAP_NET_RAW on Envoy itself, separate from
+          # the sidecar's CAP_NET_ADMIN above.
+          securityContext:
+            capabilities:
+              add:
+                - NET_RAW
           volumeMounts:
             - name: coraza-waf
               mountPath: /opt/coraza-waf

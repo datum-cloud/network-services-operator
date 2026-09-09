@@ -136,6 +136,9 @@ spec:
 
                               For now, only a name reference is supported. In the future this can be
                               extended to selector-based matching to allow multiple connectors.
+
+                              Used together with endpoint (the tunnel's target address). Mutually
+                              exclusive with instance.
                             properties:
                               name:
                                 description: Name of the referenced Connector.
@@ -149,6 +152,9 @@ spec:
 
                               Supports http and https protocols, IPs or DNS addresses in the host, custom
                               ports, and paths.
+
+                              Required unless instance is set. When connector is also set, this is the
+                              tunnel's target address rather than a directly reachable backend.
                             type: string
                           filters:
                             description: |-
@@ -1561,6 +1567,32 @@ spec:
                             - message: URLRewrite filter cannot be repeated
                               rule: self.filter(f, f.type == 'URLRewrite').size()
                                 <= 1
+                          instance:
+                            description: |-
+                              Instance references an EndpointSlice published by galactic-cni for a pod
+                              running on a tenant VPC network. The referenced EndpointSlice is
+                              resolved and forwarded to as-is — it is never synthesized or mutated by
+                              this controller, since doing so would separate the pod address from the
+                              SID annotation the tenant-VRF/SRv6 mechanism depends on.
+
+                              Mutually exclusive with endpoint and connector.
+                            properties:
+                              name:
+                                description: |-
+                                  Name of the EndpointSlice galactic-cni publishes for the target pod.
+                                  Must exist in the same namespace as this HTTPProxy.
+                                type: string
+                              port:
+                                description: Port on the referenced EndpointSlice
+                                  to forward traffic to.
+                                format: int32
+                                maximum: 65535
+                                minimum: 1
+                                type: integer
+                            required:
+                            - name
+                            - port
+                            type: object
                           tls:
                             description: |-
                               TLS contains backend TLS configuration.
@@ -1585,9 +1617,12 @@ spec:
                                 minLength: 1
                                 type: string
                             type: object
-                        required:
-                        - endpoint
                         type: object
+                        x-kubernetes-validations:
+                        - message: endpoint is required unless instance is set, and
+                            instance is mutually exclusive with endpoint and connector
+                          rule: 'has(self.instance) ? (!has(self.endpoint) && !has(self.connector))
+                            : has(self.endpoint)'
                       maxItems: 1
                       minItems: 0
                       type: array

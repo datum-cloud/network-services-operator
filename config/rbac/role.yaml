@@ -41,6 +41,14 @@ rules:
   - patch
   - update
 - apiGroups:
+  - ""
+  - events.k8s.io
+  resources:
+  - events
+  verbs:
+  - create
+  - patch
+- apiGroups:
   - acme.cert-manager.io
   resources:
   - challenges
@@ -60,6 +68,14 @@ rules:
   - list
   - patch
   - update
+  - watch
+- apiGroups:
+  - cluster.karmada.io
+  resources:
+  - clusters
+  verbs:
+  - get
+  - list
   - watch
 - apiGroups:
   - coordination.k8s.io
@@ -175,6 +191,17 @@ rules:
   verbs:
   - update
 - apiGroups:
+  - gateway.envoyproxy.io
+  resources:
+  - backends/status
+  - backendtrafficpolicies/status
+  - httproutefilters/status
+  - securitypolicies/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
   - gateway.networking.k8s.io
   resources:
   - backendtlspolicies
@@ -218,8 +245,11 @@ rules:
   - httpproxies
   - networkbindings
   - networkcontexts
+  - networkinterfaceclaims
+  - networkinterfaces
   - networkpolicies
   - networks
+  - servinglocations
   - subnetclaims
   - subnets
   - trafficprotectionpolicies
@@ -240,6 +270,8 @@ rules:
   - httpproxies/finalizers
   - networkbindings/finalizers
   - networkcontexts/finalizers
+  - networkinterfaceclaims/finalizers
+  - networkinterfaces/finalizers
   - networkpolicies/finalizers
   - networks/finalizers
   - subnetclaims/finalizers
@@ -256,6 +288,8 @@ rules:
   - httpproxies/status
   - networkbindings/status
   - networkcontexts/status
+  - networkinterfaceclaims/status
+  - networkinterfaces/status
   - networkpolicies/status
   - networks/status
   - subnetclaims/status
@@ -269,7 +303,21 @@ rules:
   - networking.datumapis.com
   resources:
   - connectorclasses
+  - locationbindings
+  - locations
   verbs:
   - get
   - list
+  - watch
+- apiGroups:
+  - policy.karmada.io
+  resources:
+  - clusterpropagationpolicies
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
   - watch

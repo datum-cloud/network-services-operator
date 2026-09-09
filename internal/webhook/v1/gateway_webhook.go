@@ -21,6 +21,7 @@ import (
 	"go.datum.net/network-services-operator/internal/config"
 	gatewayutil "go.datum.net/network-services-operator/internal/util/gateway"
 	"go.datum.net/network-services-operator/internal/validation"
+	webhookutil "go.datum.net/network-services-operator/internal/webhook"
 )
 
 // nolint:unused
@@ -85,6 +86,10 @@ func (v *GatewayCustomValidator) ValidateCreate(ctx context.Context, gateway *ga
 
 // ValidateUpdate implements admission.Validator so a webhook will be registered for the type Gateway.
 func (v *GatewayCustomValidator) ValidateUpdate(ctx context.Context, oldGateway, newGateway *gatewayv1.Gateway) (admission.Warnings, error) {
+	if webhookutil.SkipUpdateValidation(newGateway, oldGateway.Spec, newGateway.Spec) {
+		return nil, nil
+	}
+
 	clusterName, ok := mccontext.ClusterFrom(ctx)
 	if !ok {
 		return nil, fmt.Errorf("expected a cluster name in the context")
@@ -98,11 +103,6 @@ func (v *GatewayCustomValidator) ValidateUpdate(ctx context.Context, oldGateway,
 
 	gatewaylog := logf.FromContext(ctx).WithValues("cluster", clusterName)
 	gatewaylog.Info("Validating Gateway", "name", newGateway.GetName())
-
-	if dt := newGateway.DeletionTimestamp; !dt.IsZero() {
-		// Gateway is deleting, let it go through
-		return nil, nil
-	}
 
 	if fieldErr, err := validateManagedGatewayClass(ctx, clusterClient, v.validationOpts.ControllerName, newGateway); err != nil {
 		return nil, err
@@ -162,17 +162,19 @@ func (d *GatewayCustomDefaulter) Default(ctx context.Context, gateway *gatewayv1
 	// UID of the resource, which is not available in a mutating webhook at time
 	// of creation.
 
-	if gateway.CreationTimestamp.IsZero() {
-		// Reject hostname-less tenant listeners here, before injecting the
-		// default listeners. The injected defaults share ports 80/443 with no
-		// hostname, so a colliding tenant listener would otherwise be rejected
-		// by the upstream CRD CEL (which runs before the validating webhook)
-		// with an opaque "must be unique" message instead of this one.
-		if errs := validation.ValidateTenantListenerHostnames(gateway); len(errs) > 0 {
-			return apierrors.NewInvalid(gateway.GetObjectKind().GroupVersionKind().GroupKind(), gateway.GetName(), errs)
-		}
+	// Reject hostname-less tenant listeners here, before injecting the
+	// default listeners. The injected defaults share ports 80/443 with no
+	// hostname, so a colliding tenant listener would otherwise be rejected
+	// by the upstream CRD CEL (which runs before the validating webhook)
+	// with an opaque "must be unique" message instead of this one.
+	if errs := validation.ValidateTenantListenerHostnames(gateway); len(errs) > 0 {
+		return apierrors.NewInvalid(gateway.GetObjectKind().GroupVersionKind().GroupKind(), gateway.GetName(), errs)
+	}
 
+	if gateway.CreationTimestamp.IsZero() {
 		gatewayutil.SetDefaultListeners(gateway, d.config.Gateway)
+	} else {
+		gatewayutil.RestoreMissingDefaultListeners(gateway, d.config.Gateway)
 	}
 
 	return nil

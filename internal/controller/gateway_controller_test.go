@@ -1203,6 +1203,213 @@ func TestEnsureDownstreamGatewayHTTPRoutes(t *testing.T) {
 
 }
 
+// TestProcessDownstreamHTTPRouteRulesVPCPodPassThrough verifies that a
+// backendRef naming a tenant-labeled EndpointSlice is passed straight
+// through to its downstream-native counterpart — no synthesized Service,
+// EndpointSlice, or BackendTLSPolicy, and no GC finalizer on the upstream
+// object, since its lifecycle belongs to galactic-cni, not this controller.
+func TestProcessDownstreamHTTPRouteRulesVPCPodPassThrough(t *testing.T) {
+	testScheme := runtime.NewScheme()
+	require.NoError(t, scheme.AddToScheme(testScheme))
+	require.NoError(t, gatewayv1.Install(testScheme))
+	require.NoError(t, discoveryv1.AddToScheme(testScheme))
+
+	upstreamNamespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "test", UID: uuid.NewUUID()}}
+	downstreamNamespaceName := fmt.Sprintf("ns-%s", upstreamNamespace.UID)
+
+	upstreamGateway := newGateway(config.NetworkServicesOperator{}, upstreamNamespace.Name, "test")
+	downstreamGateway := newGateway(config.NetworkServicesOperator{}, downstreamNamespaceName, "test")
+
+	upstreamEndpointSlice := &discoveryv1.EndpointSlice{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: upstreamNamespace.Name,
+			Name:      "vpc-pod-1",
+			Labels: map[string]string{
+				VPCPodTenantIDLabel: "tenant-1",
+			},
+		},
+		AddressType: discoveryv1.AddressTypeIPv6,
+		Ports: []discoveryv1.EndpointPort{
+			{Name: ptr.To("http"), Protocol: ptr.To(corev1.ProtocolTCP), Port: ptr.To(int32(8080))},
+		},
+	}
+
+	downstreamEndpointSlice := &discoveryv1.EndpointSlice{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: downstreamNamespaceName,
+			Name:      "vpc-pod-1",
+			Labels: map[string]string{
+				VPCPodTenantIDLabel: "tenant-1",
+			},
+		},
+		AddressType: discoveryv1.AddressTypeIPv6,
+		Endpoints: []discoveryv1.Endpoint{
+			{Addresses: []string{"fd00::1"}},
+		},
+		Ports: []discoveryv1.EndpointPort{
+			{Name: ptr.To("http"), Protocol: ptr.To(corev1.ProtocolTCP), Port: ptr.To(int32(8080))},
+		},
+	}
+
+	upstreamRoute := newHTTPRoute(upstreamNamespace.Name, "test", func(route *gatewayv1.HTTPRoute) {
+		route.Spec.Rules = []gatewayv1.HTTPRouteRule{
+			{
+				BackendRefs: []gatewayv1.HTTPBackendRef{
+					{
+						BackendRef: gatewayv1.BackendRef{
+							BackendObjectReference: gatewayv1.BackendObjectReference{
+								Group: ptr.To(gatewayv1.Group("discovery.k8s.io")),
+								Kind:  ptr.To(gatewayv1.Kind(KindEndpointSlice)),
+								Name:  gatewayv1.ObjectName(upstreamEndpointSlice.Name),
+								Port:  ptr.To(gatewayv1.PortNumber(8080)),
+							},
+						},
+					},
+				},
+			},
+		}
+	})
+
+	fakeUpstreamClient := fake.NewClientBuilder().
+		WithScheme(testScheme).
+		WithObjects(upstreamNamespace, upstreamGateway, upstreamEndpointSlice).
+		Build()
+
+	fakeDownstreamClient := fake.NewClientBuilder().
+		WithScheme(testScheme).
+		WithObjects(downstreamGateway, downstreamEndpointSlice).
+		Build()
+
+	reconciler := &GatewayReconciler{
+		DownstreamCluster: &fakeCluster{cl: fakeDownstreamClient},
+	}
+
+	downstreamStrategy := downstreamclient.NewMappedNamespaceResourceStrategy("test", fakeUpstreamClient, fakeDownstreamClient)
+
+	ctx := context.Background()
+	rules, downstreamResources, downstreamResourcesToDelete, err := reconciler.processDownstreamHTTPRouteRules(
+		ctx,
+		fakeUpstreamClient,
+		upstreamGateway,
+		*upstreamRoute,
+		downstreamGateway,
+		downstreamStrategy,
+	)
+	require.NoError(t, err)
+	assert.Empty(t, downstreamResources, "vpcPod pass-through must not synthesize a Service/EndpointSlice/BackendTLSPolicy")
+	assert.Empty(t, downstreamResourcesToDelete)
+
+	require.Len(t, rules, 1)
+	require.Len(t, rules[0].BackendRefs, 1)
+	backendRef := rules[0].BackendRefs[0]
+	assert.Equal(t, "EndpointSlice", string(ptr.Deref(backendRef.Kind, "")))
+	assert.Equal(t, downstreamNamespaceName, string(ptr.Deref(backendRef.Namespace, "")))
+	assert.Equal(t, "vpc-pod-1", string(backendRef.Name))
+	assert.EqualValues(t, 8080, ptr.Deref(backendRef.Port, 0))
+
+	// The upstream EndpointSlice must not have been mutated with the GC
+	// finalizer — its lifecycle belongs to galactic-cni, not this controller.
+	var updatedUpstreamEndpointSlice discoveryv1.EndpointSlice
+	require.NoError(t, fakeUpstreamClient.Get(ctx, client.ObjectKeyFromObject(upstreamEndpointSlice), &updatedUpstreamEndpointSlice))
+	assert.False(t, controllerutil.ContainsFinalizer(&updatedUpstreamEndpointSlice, gatewayControllerGCFinalizer))
+}
+
+// TestProcessDownstreamHTTPRouteRulesUnlabeledEndpointSliceUnaffected is a
+// regression guard: an EndpointSlice backendRef with no tenant-id label must
+// still go through the existing Service-synthesis path unchanged.
+func TestProcessDownstreamHTTPRouteRulesUnlabeledEndpointSliceUnaffected(t *testing.T) {
+	testScheme := runtime.NewScheme()
+	require.NoError(t, scheme.AddToScheme(testScheme))
+	require.NoError(t, gatewayv1.Install(testScheme))
+	require.NoError(t, discoveryv1.AddToScheme(testScheme))
+
+	upstreamNamespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "test", UID: uuid.NewUUID()}}
+	downstreamNamespaceName := fmt.Sprintf("ns-%s", upstreamNamespace.UID)
+
+	upstreamGateway := newGateway(config.NetworkServicesOperator{}, upstreamNamespace.Name, "test")
+	downstreamGateway := newGateway(config.NetworkServicesOperator{}, downstreamNamespaceName, "test")
+
+	upstreamEndpointSlice := &discoveryv1.EndpointSlice{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: upstreamNamespace.Name,
+			Name:      "test-0-0",
+		},
+		AddressType: discoveryv1.AddressTypeFQDN,
+		Endpoints: []discoveryv1.Endpoint{
+			{Addresses: []string{"backend.example.com"}},
+		},
+		Ports: []discoveryv1.EndpointPort{
+			{Name: ptr.To("http"), Protocol: ptr.To(corev1.ProtocolTCP), Port: ptr.To(int32(80))},
+		},
+	}
+
+	upstreamRoute := newHTTPRoute(upstreamNamespace.Name, "test", func(route *gatewayv1.HTTPRoute) {
+		route.Spec.Rules = []gatewayv1.HTTPRouteRule{
+			{
+				BackendRefs: []gatewayv1.HTTPBackendRef{
+					{
+						BackendRef: gatewayv1.BackendRef{
+							BackendObjectReference: gatewayv1.BackendObjectReference{
+								Group: ptr.To(gatewayv1.Group("discovery.k8s.io")),
+								Kind:  ptr.To(gatewayv1.Kind(KindEndpointSlice)),
+								Name:  gatewayv1.ObjectName(upstreamEndpointSlice.Name),
+								Port:  ptr.To(gatewayv1.PortNumber(80)),
+							},
+						},
+					},
+				},
+			},
+		}
+	})
+
+	fakeUpstreamClient := fake.NewClientBuilder().
+		WithScheme(testScheme).
+		WithObjects(upstreamNamespace, upstreamGateway, upstreamEndpointSlice).
+		Build()
+
+	fakeDownstreamClient := fake.NewClientBuilder().
+		WithScheme(testScheme).
+		WithObjects(downstreamGateway).
+		Build()
+
+	reconciler := &GatewayReconciler{
+		DownstreamCluster: &fakeCluster{cl: fakeDownstreamClient},
+	}
+
+	downstreamStrategy := downstreamclient.NewMappedNamespaceResourceStrategy("test", fakeUpstreamClient, fakeDownstreamClient)
+
+	ctx := context.Background()
+	rules, downstreamResources, _, err := reconciler.processDownstreamHTTPRouteRules(
+		ctx,
+		fakeUpstreamClient,
+		upstreamGateway,
+		*upstreamRoute,
+		downstreamGateway,
+		downstreamStrategy,
+	)
+	require.NoError(t, err)
+	require.Len(t, rules, 1)
+	require.Len(t, rules[0].BackendRefs, 1)
+	assert.Equal(t, "Service", string(ptr.Deref(rules[0].BackendRefs[0].Kind, "")))
+
+	// A Service + EndpointSlice pair must still be synthesized.
+	var serviceCount, endpointSliceCount int
+	for _, obj := range downstreamResources {
+		switch obj.(type) {
+		case *corev1.Service:
+			serviceCount++
+		case *discoveryv1.EndpointSlice:
+			endpointSliceCount++
+		}
+	}
+	assert.Equal(t, 1, serviceCount)
+	assert.Equal(t, 1, endpointSliceCount)
+
+	var updatedUpstreamEndpointSlice discoveryv1.EndpointSlice
+	require.NoError(t, fakeUpstreamClient.Get(ctx, client.ObjectKeyFromObject(upstreamEndpointSlice), &updatedUpstreamEndpointSlice))
+	assert.True(t, controllerutil.ContainsFinalizer(&updatedUpstreamEndpointSlice, gatewayControllerGCFinalizer))
+}
+
 func TestEnsureHostnamesClaimed(t *testing.T) {
 	testScheme := runtime.NewScheme()
 	assert.NoError(t, scheme.AddToScheme(testScheme))
@@ -1692,6 +1899,206 @@ func TestGetDesiredDownstreamGateway_UnclaimedHostnameSkipped(t *testing.T) {
 
 			assert.Empty(t, desired.Annotations, "desired gateway should have no cert-manager annotations")
 			assert.Len(t, desired.Spec.Listeners, tt.expectListeners, "downstream listener count")
+		})
+	}
+}
+
+// TestGetDesiredDownstreamGateway_NilHostnameSkipped covers the drop described
+// in #235: a listener whose hostname has not been stamped yet never reaches the
+// downstream gateway.
+func TestGetDesiredDownstreamGateway_NilHostnameSkipped(t *testing.T) {
+	logger := zap.New(zap.UseFlagOptions(&zap.Options{Development: true}))
+	ctx := log.IntoContext(context.Background(), logger)
+
+	reconciler := &GatewayReconciler{
+		Config: config.NetworkServicesOperator{
+			Gateway: config.GatewayConfig{
+				DownstreamGatewayClassName: "envoy",
+				TargetDomain:               "test-suite.com",
+			},
+		},
+	}
+
+	upstream := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-gw", Namespace: "default"},
+		Spec: gatewayv1.GatewaySpec{
+			Listeners: []gatewayv1.Listener{
+				{
+					Name:     gatewayutil.DefaultHTTPListenerName,
+					Port:     gatewayutil.DefaultHTTPPort,
+					Protocol: gatewayv1.HTTPProtocolType,
+				},
+				{
+					Name:     gatewayutil.DefaultHTTPSListenerName,
+					Port:     gatewayutil.DefaultHTTPSPort,
+					Protocol: gatewayv1.HTTPSProtocolType,
+					Hostname: ptr.To(gatewayv1.Hostname("test-gw.test-suite.com")),
+				},
+			},
+		},
+	}
+
+	desired := reconciler.getDesiredDownstreamGateway(ctx, upstream, []string{"test-gw.test-suite.com"}, nil)
+
+	require.Len(t, desired.Spec.Listeners, 1, "downstream listener count")
+	assert.Equal(t, gatewayv1.SectionName(gatewayutil.DefaultHTTPSListenerName), desired.Spec.Listeners[0].Name)
+}
+
+// TestReconcileGatewayStatus_DroppedListenerIsNotProgrammed guards #363: a
+// gateway carrying fewer listeners than the user asked for must never report
+// Programmed=True, whatever held the missing listener back.
+func TestReconcileGatewayStatus_DroppedListenerIsNotProgrammed(t *testing.T) {
+	logger := zap.New(zap.UseFlagOptions(&zap.Options{Development: true}))
+	ctx := log.IntoContext(context.Background(), logger)
+
+	testScheme := runtime.NewScheme()
+	require.NoError(t, scheme.AddToScheme(testScheme))
+	require.NoError(t, gatewayv1.Install(testScheme))
+
+	customListener := func(name gatewayv1.SectionName, hostname string) gatewayv1.Listener {
+		return gatewayv1.Listener{
+			Name:     name,
+			Port:     gatewayutil.DefaultHTTPSPort,
+			Protocol: gatewayv1.HTTPSProtocolType,
+			Hostname: ptr.To(gatewayv1.Hostname(hostname)),
+			TLS: &gatewayv1.ListenerTLSConfig{
+				Options: map[gatewayv1.AnnotationKey]gatewayv1.AnnotationValue{
+					certificateIssuerTLSOption: "letsencrypt",
+				},
+			},
+		}
+	}
+
+	nilHostnameListener := gatewayv1.Listener{
+		Name:     gatewayutil.DefaultHTTPListenerName,
+		Port:     gatewayutil.DefaultHTTPPort,
+		Protocol: gatewayv1.HTTPProtocolType,
+	}
+
+	healthyCert := listenerCertStatus{healthy: true}
+	unusableCert := listenerCertStatus{
+		reason:  gatewayv1.ListenerReasonInvalidCertificateRef,
+		message: "certificate is not ready",
+		pending: true,
+	}
+
+	tests := []struct {
+		name             string
+		listeners        []gatewayv1.Listener
+		claimedHostnames []string
+		certHealth       map[gatewayv1.SectionName]listenerCertStatus
+		expectStatus     metav1.ConditionStatus
+		expectReason     string
+	}{
+		{
+			name:             "every listener programmed",
+			listeners:        []gatewayv1.Listener{customListener("custom-https", "claimed.example.com")},
+			claimedHostnames: []string{"claimed.example.com"},
+			certHealth:       map[gatewayv1.SectionName]listenerCertStatus{"custom-https": healthyCert},
+			expectStatus:     metav1.ConditionTrue,
+			expectReason:     string(gatewayv1.GatewayReasonProgrammed),
+		},
+		{
+			name: "listener dropped for an unset hostname",
+			listeners: []gatewayv1.Listener{
+				nilHostnameListener,
+				customListener("custom-https", "claimed.example.com"),
+			},
+			claimedHostnames: []string{"claimed.example.com"},
+			certHealth:       map[gatewayv1.SectionName]listenerCertStatus{"custom-https": healthyCert},
+			expectStatus:     metav1.ConditionFalse,
+			expectReason:     string(gatewayv1.GatewayReasonListenersNotValid),
+		},
+		{
+			name:             "listener dropped for an unclaimed hostname",
+			listeners:        []gatewayv1.Listener{customListener("custom-https", "unclaimed.example.com")},
+			claimedHostnames: nil,
+			expectStatus:     metav1.ConditionFalse,
+			expectReason:     string(gatewayv1.GatewayReasonListenersNotValid),
+		},
+		{
+			name: "listener withheld by an unusable certificate",
+			listeners: []gatewayv1.Listener{
+				customListener("custom-https", "claimed.example.com"),
+				customListener("other-https", "other.example.com"),
+			},
+			claimedHostnames: []string{"claimed.example.com", "other.example.com"},
+			certHealth: map[gatewayv1.SectionName]listenerCertStatus{
+				"custom-https": unusableCert,
+				"other-https":  healthyCert,
+			},
+			expectStatus: metav1.ConditionFalse,
+			expectReason: string(gatewayv1.GatewayReasonPending),
+		},
+		{
+			name: "certificate and hostname drops report the hostname",
+			listeners: []gatewayv1.Listener{
+				customListener("custom-https", "claimed.example.com"),
+				customListener("other-https", "unclaimed.example.com"),
+			},
+			claimedHostnames: []string{"claimed.example.com"},
+			certHealth: map[gatewayv1.SectionName]listenerCertStatus{
+				"custom-https": unusableCert,
+			},
+			expectStatus: metav1.ConditionFalse,
+			expectReason: string(gatewayv1.GatewayReasonListenersNotValid),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reconciler := &GatewayReconciler{
+				Config: config.NetworkServicesOperator{
+					Gateway: config.GatewayConfig{
+						DownstreamGatewayClassName: "envoy",
+						TargetDomain:               "test-suite.com",
+					},
+				},
+			}
+
+			upstream := &gatewayv1.Gateway{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-gw", Namespace: "default"},
+				Spec:       gatewayv1.GatewaySpec{Listeners: tt.listeners},
+			}
+
+			downstream := &gatewayv1.Gateway{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-gw", Namespace: "downstream"},
+				Status: gatewayv1.GatewayStatus{
+					Conditions: []metav1.Condition{
+						{
+							Type:   string(gatewayv1.GatewayConditionAccepted),
+							Status: metav1.ConditionTrue,
+							Reason: string(gatewayv1.GatewayReasonAccepted),
+						},
+						{
+							Type:   string(gatewayv1.GatewayConditionProgrammed),
+							Status: metav1.ConditionTrue,
+							Reason: string(gatewayv1.GatewayReasonProgrammed),
+						},
+					},
+				},
+			}
+
+			upstreamClient := fake.NewClientBuilder().
+				WithScheme(testScheme).
+				WithObjects(upstream.DeepCopy()).
+				WithStatusSubresource(&gatewayv1.Gateway{}).
+				Build()
+
+			desired := reconciler.getDesiredDownstreamGateway(ctx, upstream, tt.claimedHostnames, tt.certHealth)
+			dropped := summarizeDroppedListeners(upstream, desired, tt.certHealth)
+
+			reconciler.reconcileGatewayStatus(ctx, upstreamClient, upstream, downstream, dropped)
+
+			programmed := apimeta.FindStatusCondition(upstream.Status.Conditions, string(gatewayv1.GatewayConditionProgrammed))
+			require.NotNil(t, programmed, "upstream Programmed condition")
+			assert.Equal(t, tt.expectStatus, programmed.Status, "Programmed status")
+			assert.Equal(t, tt.expectReason, programmed.Reason, "Programmed reason")
+
+			if len(desired.Spec.Listeners) < len(upstream.Spec.Listeners) {
+				assert.NotEqual(t, metav1.ConditionTrue, programmed.Status,
+					"a gateway missing a listener the user asked for must not report Programmed=True")
+			}
 		})
 	}
 }
@@ -2279,6 +2686,294 @@ func TestReconcileRequeuesWhenGatewayClassUnavailable(t *testing.T) {
 			require.NoError(t, err)
 			assert.Positive(t, result.RequeueAfter,
 				"initial reconcile must requeue so the gateway is retried once its GatewayClass is fixed")
+		})
+	}
+}
+
+func TestIsDatumManagedGatewayHostname(t *testing.T) {
+	const (
+		currentDomain = "datumproxy.net"
+		legacyDomain  = "prism.global.datum-dns.net"
+	)
+
+	gatewayUID := types.UID("11111111-1111-1111-1111-111111111111")
+	uidWithoutDashes := strings.ReplaceAll(string(gatewayUID), "-", "")
+
+	tests := []struct {
+		name                string
+		legacyTargetDomains []string
+		hostname            string
+		expected            bool
+	}{
+		{
+			name:     "uid hostname in current domain",
+			hostname: fmt.Sprintf("%s.%s", gatewayUID, currentDomain),
+			expected: true,
+		},
+		{
+			name:     "legacy uid format hostname in current domain",
+			hostname: fmt.Sprintf("%s.%s", uidWithoutDashes, currentDomain),
+			expected: true,
+		},
+		{
+			name:                "uid hostname in legacy domain",
+			legacyTargetDomains: []string{legacyDomain},
+			hostname:            fmt.Sprintf("%s.%s", gatewayUID, legacyDomain),
+			expected:            true,
+		},
+		{
+			name:                "legacy uid format hostname in legacy domain",
+			legacyTargetDomains: []string{legacyDomain},
+			hostname:            fmt.Sprintf("%s.%s", uidWithoutDashes, legacyDomain),
+			expected:            true,
+		},
+		{
+			name:                "v4 variant in legacy domain",
+			legacyTargetDomains: []string{legacyDomain},
+			hostname:            fmt.Sprintf("v4.%s.%s", uidWithoutDashes, legacyDomain),
+			expected:            true,
+		},
+		{
+			name:     "legacy domain hostname with empty legacy domain list",
+			hostname: fmt.Sprintf("%s.%s", uidWithoutDashes, legacyDomain),
+			expected: false,
+		},
+		{
+			name:                "custom hostname",
+			legacyTargetDomains: []string{legacyDomain},
+			hostname:            "app.example.com",
+			expected:            false,
+		},
+		{
+			name:                "another gateway uid in legacy domain",
+			legacyTargetDomains: []string{legacyDomain},
+			hostname:            fmt.Sprintf("22222222-2222-2222-2222-222222222222.%s", legacyDomain),
+			expected:            false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reconciler := &GatewayReconciler{
+				Config: config.NetworkServicesOperator{
+					Gateway: config.GatewayConfig{
+						TargetDomain:        currentDomain,
+						LegacyTargetDomains: tt.legacyTargetDomains,
+					},
+				},
+			}
+
+			gateway := &gatewayv1.Gateway{ObjectMeta: metav1.ObjectMeta{UID: gatewayUID}}
+
+			assert.Equal(t, tt.expected, reconciler.isDatumManagedGatewayHostname(gateway, tt.hostname))
+		})
+	}
+}
+
+func TestIsDatumManagedGatewayHostname_WordsHostnameInLegacyDomain(t *testing.T) {
+	const (
+		currentDomain = "datumproxy.net"
+		legacyDomain  = "prism.global.datum-dns.net"
+	)
+
+	gateway := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{UID: types.UID("11111111-1111-1111-1111-111111111111")},
+	}
+
+	legacyConfig := config.GatewayConfig{TargetDomain: legacyDomain}
+
+	reconciler := &GatewayReconciler{
+		Config: config.NetworkServicesOperator{
+			Gateway: config.GatewayConfig{
+				TargetDomain:        currentDomain,
+				LegacyTargetDomains: []string{legacyDomain},
+			},
+		},
+	}
+
+	assert.True(t, reconciler.isDatumManagedGatewayHostname(gateway, legacyConfig.GatewayDNSAddress(gateway)))
+}
+
+func TestEnsureHostnamesClaimed_LegacyTargetDomain(t *testing.T) {
+	testScheme := runtime.NewScheme()
+	require.NoError(t, scheme.AddToScheme(testScheme))
+	require.NoError(t, gatewayv1.Install(testScheme))
+	require.NoError(t, discoveryv1.AddToScheme(testScheme))
+	require.NoError(t, networkingv1alpha.AddToScheme(testScheme))
+
+	const legacyDomain = "prism.global.datum-dns.net"
+
+	upstreamNamespace := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: "test", UID: uuid.NewUUID()},
+	}
+
+	gatewayUID := types.UID("11111111-1111-1111-1111-111111111111")
+	legacyHostname := fmt.Sprintf("%s.%s", strings.ReplaceAll(string(gatewayUID), "-", ""), legacyDomain)
+
+	tests := []struct {
+		name                        string
+		legacyTargetDomains         []string
+		expectedClaimedHostnames    []string
+		expectedNotClaimedHostnames []string
+	}{
+		{
+			name:                        "legacy domain not configured leaves the hostname unclaimed",
+			expectedNotClaimedHostnames: []string{legacyHostname},
+		},
+		{
+			name:                     "legacy domain configured reclaims the hostname",
+			legacyTargetDomains:      []string{legacyDomain},
+			expectedClaimedHostnames: []string{legacyHostname},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			testConfig := config.NetworkServicesOperator{
+				Gateway: config.GatewayConfig{
+					DownstreamGatewayClassName:            "test-suite",
+					DownstreamHostnameAccountingNamespace: "default",
+					TargetDomain:                          "datumproxy.net",
+					LegacyTargetDomains:                   tt.legacyTargetDomains,
+				},
+			}
+
+			upstreamGateway := newGateway(testConfig, upstreamNamespace.Name, "test", func(g *gatewayv1.Gateway) {
+				g.UID = gatewayUID
+				g.Spec.Listeners = []gatewayv1.Listener{
+					{
+						Name:     gatewayutil.DefaultHTTPListenerName,
+						Port:     DefaultHTTPPort,
+						Protocol: gatewayv1.HTTPProtocolType,
+						Hostname: ptr.To(gatewayv1.Hostname(legacyHostname)),
+					},
+				}
+				g.Status.Addresses = []gatewayv1.GatewayStatusAddress{
+					{Type: ptr.To(gatewayv1.HostnameAddressType), Value: legacyHostname},
+				}
+			})
+
+			staleClaim := &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace:         testConfig.Gateway.DownstreamHostnameAccountingNamespace,
+					Name:              legacyHostname,
+					UID:               uuid.NewUUID(),
+					CreationTimestamp: metav1.Now(),
+				},
+				Data: map[string]string{"owner": "/test-suite/test/test"},
+			}
+
+			fakeUpstreamClient := fake.NewClientBuilder().
+				WithScheme(testScheme).
+				WithObjects(upstreamGateway, upstreamNamespace).
+				WithStatusSubresource(upstreamGateway).
+				Build()
+
+			downstreamGateway := &gatewayv1.Gateway{}
+
+			fakeDownstreamClient := fake.NewClientBuilder().
+				WithScheme(testScheme).
+				WithObjects(downstreamGateway, staleClaim).
+				WithStatusSubresource(&gatewayv1.Gateway{}).
+				Build()
+
+			reconciler := &GatewayReconciler{
+				mgr:               &fakeMockManager{cl: fakeUpstreamClient},
+				Config:            testConfig,
+				DownstreamCluster: &fakeCluster{cl: fakeDownstreamClient},
+			}
+
+			_, claimedHostnames, notClaimedHostnames, err := reconciler.ensureHostnamesClaimed(
+				context.Background(),
+				"test-suite",
+				fakeUpstreamClient,
+				upstreamGateway,
+				downstreamGateway,
+			)
+			require.NoError(t, err)
+
+			for _, hostname := range tt.expectedClaimedHostnames {
+				assert.Contains(t, claimedHostnames, hostname)
+			}
+			assert.EqualValues(t, tt.expectedNotClaimedHostnames, notClaimedHostnames)
+		})
+	}
+}
+
+func TestDeleteEndpointSliceOnAddressTypeChange(t *testing.T) {
+	testScheme := runtime.NewScheme()
+	require.NoError(t, scheme.AddToScheme(testScheme))
+	require.NoError(t, discoveryv1.AddToScheme(testScheme))
+
+	newSlice := func(addressType discoveryv1.AddressType, addresses ...string) *discoveryv1.EndpointSlice {
+		slice := &discoveryv1.EndpointSlice{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "route-abc-rule-0-backendref-0",
+				Namespace: "ns-test",
+			},
+			AddressType: addressType,
+		}
+		if len(addresses) > 0 {
+			slice.Endpoints = []discoveryv1.Endpoint{{Addresses: addresses}}
+		}
+		return slice
+	}
+
+	tests := []struct {
+		name        string
+		existing    *discoveryv1.EndpointSlice
+		desired     *discoveryv1.EndpointSlice
+		wantDeleted bool
+	}{
+		{
+			name:        "no existing slice",
+			desired:     newSlice(discoveryv1.AddressTypeIPv6, "fd20:0:2::1:0:0"),
+			wantDeleted: false,
+		},
+		{
+			name:        "address type unchanged",
+			existing:    newSlice(discoveryv1.AddressTypeIPv6, "fd20:0:2::1:0:0"),
+			desired:     newSlice(discoveryv1.AddressTypeIPv6, "fd20:0:2:1:0:1::"),
+			wantDeleted: false,
+		},
+		{
+			name:        "members drained, family falls back to IPv4",
+			existing:    newSlice(discoveryv1.AddressTypeIPv6, "fd20:0:2::1:0:0"),
+			desired:     newSlice(discoveryv1.AddressTypeIPv4),
+			wantDeleted: true,
+		},
+		{
+			name:        "backend flips IPv4 to IPv6",
+			existing:    newSlice(discoveryv1.AddressTypeIPv4, "10.0.0.1"),
+			desired:     newSlice(discoveryv1.AddressTypeIPv6, "fd20:0:2::1:0:0"),
+			wantDeleted: true,
+		},
+		{
+			name:        "backend flips FQDN to IPv6",
+			existing:    newSlice(discoveryv1.AddressTypeFQDN, "origin.example.com"),
+			desired:     newSlice(discoveryv1.AddressTypeIPv6, "fd20:0:2::1:0:0"),
+			wantDeleted: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			builder := fake.NewClientBuilder().WithScheme(testScheme)
+			if tt.existing != nil {
+				builder = builder.WithObjects(tt.existing.DeepCopy())
+			}
+			cl := builder.Build()
+
+			deleted, err := deleteEndpointSliceOnAddressTypeChange(context.Background(), cl, tt.desired.DeepCopy())
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantDeleted, deleted)
+
+			err = cl.Get(context.Background(), client.ObjectKeyFromObject(tt.desired), &discoveryv1.EndpointSlice{})
+			if tt.wantDeleted || tt.existing == nil {
+				assert.True(t, apierrors.IsNotFound(err), "slice should not be present, got %v", err)
+			} else {
+				assert.NoError(t, err, "slice should have been left in place")
+			}
 		})
 	}
 }

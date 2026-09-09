@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -16,9 +17,9 @@ import (
 )
 
 // NewManager creates a read-only single-cluster controller-runtime manager
-// that primes informer caches for the four resource types consumed by
+// that primes informer caches for the resource types consumed by
 // PostTranslateModify: TrafficProtectionPolicy, HTTPProxy, Connector,
-// and Namespace.
+// Namespace, and EndpointSlice.
 //
 // The extension server runs at the edge, co-located with Envoy Gateway. NSO
 // replicates TPP/HTTPProxy/Connector resources into the local edge cluster's
@@ -65,14 +66,19 @@ func NewManager(scheme *runtime.Scheme) (ctrl.Manager, error) {
 	return mgr, nil
 }
 
-// primeObjects returns the four resource types that BuildPolicyIndexFromClient
+// primeObjects returns the resource types that BuildPolicyIndexFromClient
 // reads. Defined once here so builder.go and any future wiring have a single
 // source of truth for the informer set.
+//
+// EndpointSlice was added for the vpcPod HTTPProxy backend (#856): resolving
+// the tenant-id label a vpcPod backend's referenced EndpointSlice carries
+// needs a local Get, same as the Connector lookup already does.
 func primeObjects() []client.Object {
 	return []client.Object{
 		&networkingv1alpha.TrafficProtectionPolicy{},
 		&networkingv1alpha.HTTPProxy{},
 		&networkingv1alpha1.Connector{},
 		&corev1.Namespace{},
+		&discoveryv1.EndpointSlice{},
 	}
 }

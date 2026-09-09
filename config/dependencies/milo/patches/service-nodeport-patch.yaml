@@ -1,0 +1,23 @@
+# NodePort because the chainsaw suites run on the HOST. They address IPAM by
+# project path, so they need Milo, and on macOS the kind node's cluster network
+# is not host-routable — config/tools/kind/upstream-cluster.yaml maps this port
+# through, the same way it already does for the Karmada apiserver. The bundle
+# ships a ClusterIP Service, which production reaches through a Gateway.
+#
+# JSON6902 rather than a strategic merge, and the whole ports list rather than
+# just nodePort: kustomize merges a Service's ports by `port` and drops the
+# nodePort field off the patch entry while doing it, so a strategic merge sets
+# `type: NodePort` and then lets the apiserver assign a random port. The failure
+# is silent — the Service is healthy, it is just not on 32450, so every
+# host-side caller times out.
+- op: replace
+  path: /spec/type
+  value: NodePort
+- op: replace
+  path: /spec/ports
+  value:
+    - name: https
+      port: 6443
+      protocol: TCP
+      targetPort: https
+      nodePort: 32450

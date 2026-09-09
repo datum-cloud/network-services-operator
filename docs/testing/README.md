@@ -80,6 +80,7 @@ edge clusters that serve traffic.
 | [`test/e2e-edge/README.md`](../../test/e2e-edge/README.md) | The real-traffic guarantees, scenario by scenario |
 | [`test/parity/README.md`](../../test/parity/README.md) | The parity check that catches silently-inert configuration |
 | [`config/federation/README.md`](../../config/federation/README.md) | Fanning configuration out to edge clusters |
+| [`e2e-version-pins.md`](e2e-version-pins.md) | Version pins in the prod-fidelity env — workarounds and deliberate prod-fidelity pins, with unpin criteria |
 
 > The design rationale that led here — the original audit of test-vs-production
 > gaps and the proposals for closing them — lives in the pull requests that

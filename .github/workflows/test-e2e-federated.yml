@@ -78,11 +78,10 @@ jobs:
       - name: Install pinned tools (kind, karmadactl, kustomize, cmctl, chainsaw)
         run: task test-infra:tools
 
+      # up stands up Karmada federation itself; running karmada-up again here
+      # fails on the NodePort the first init already took.
       - name: Bring up the two-cluster prod-fidelity env
         run: task test-infra:up
-
-      - name: Stand up Karmada federation
-        run: task test-infra:karmada-up
 
       - name: Run edge e2e scenarios
         run: task test-infra:e2e

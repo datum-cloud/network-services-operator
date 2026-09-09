@@ -14,6 +14,7 @@ import (
 
 	"go.datum.net/network-services-operator/internal/config"
 	"go.datum.net/network-services-operator/internal/validation"
+	webhookutil "go.datum.net/network-services-operator/internal/webhook"
 )
 
 // nolint:unused
@@ -56,6 +57,10 @@ func (v *HTTPRouteCustomValidator) ValidateCreate(ctx context.Context, httproute
 // ValidateUpdate implements admission.Validator so a webhook will be registered for the type HTTPRoute.
 func (v *HTTPRouteCustomValidator) ValidateUpdate(ctx context.Context, oldHTTPRoute, newHTTPRoute *gatewaynetworkingk8siov1.HTTPRoute) (admission.Warnings, error) {
 	logf.FromContext(ctx).Info("Validation for HTTPRoute upon update", "name", newHTTPRoute.GetName())
+
+	if webhookutil.SkipUpdateValidation(newHTTPRoute, oldHTTPRoute.Spec, newHTTPRoute.Spec) {
+		return nil, nil
+	}
 
 	if errs := validation.ValidateHTTPRoute(newHTTPRoute, v.validationOpts); len(errs) > 0 {
 		return nil, errors.NewInvalid(oldHTTPRoute.GetObjectKind().GroupVersionKind().GroupKind(), newHTTPRoute.GetName(), errs)

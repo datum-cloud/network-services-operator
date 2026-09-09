@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	envoygatewayv1alpha1 "github.com/envoyproxy/gateway/api/v1alpha1"
 	v1 "k8s.io/api/core/v1"
@@ -44,6 +45,7 @@ import (
 	conditionutil "go.datum.net/network-services-operator/internal/util/condition"
 	gatewayutil "go.datum.net/network-services-operator/internal/util/gateway"
 	"go.datum.net/network-services-operator/internal/util/resourcename"
+	"go.datum.net/network-services-operator/internal/validation"
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 )
 
@@ -62,7 +64,44 @@ type desiredHTTPProxyResources struct {
 	httpRouteFilters []*envoygatewayv1alpha1.HTTPRouteFilter
 }
 
+// errInstanceBackendNotFound is returned by collectDesiredResources when an
+// instance backend references an EndpointSlice that doesn't exist. Reconcile
+// detects it with errors.As and surfaces a Programmed=False condition
+// instead of a generic requeue.
+type errInstanceBackendNotFound struct {
+	name string
+}
+
+func (e *errInstanceBackendNotFound) Error() string {
+	return fmt.Sprintf("referenced EndpointSlice %q not found", e.name)
+}
+
+// collectDesiredResourcesErrorResult turns a collectDesiredResources error
+// into the (Result, error) Reconcile should return, or done=false if err is
+// nil and Reconcile should keep going. An instance backend referencing a
+// missing EndpointSlice gets its own Programmed=False condition and a short
+// requeue (the referenced pod may simply not have started yet) instead of a
+// bare generic requeue. Kept out of Reconcile as a single call so adding
+// this case doesn't grow Reconcile's own cyclomatic complexity.
+func collectDesiredResourcesErrorResult(err error, programmedCondition *metav1.Condition) (result ctrl.Result, retErr error, done bool) {
+	if err == nil {
+		return ctrl.Result{}, nil, false
+	}
+
+	var notFound *errInstanceBackendNotFound
+	if errors.As(err, &notFound) {
+		programmedCondition.Status = metav1.ConditionFalse
+		programmedCondition.Reason = networkingv1alpha.HTTPProxyReasonInstanceBackendNotFound
+		programmedCondition.Message = fmt.Sprintf("The HTTPProxy cannot be programmed: %s", notFound.Error())
+		return ctrl.Result{RequeueAfter: retryAfterConflict}, nil, true
+	}
+
+	return ctrl.Result{}, fmt.Errorf("failed to collect desired resources: %w", err), true
+}
+
 const httpProxyFinalizer = "networking.datumapis.com/httpproxy-cleanup"
+
+const retryAfterInvalid = 5 * time.Minute
 const connectorOfflineFilterPrefix = "connector-offline"
 
 // BackendCertHostnameAnnotation is set on the upstream EndpointSlice by the
@@ -84,6 +123,7 @@ const (
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=httpproxies,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=httpproxies/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=httpproxies/finalizers,verbs=update
+// +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=connectors,verbs=get;list;watch
 // +kubebuilder:rbac:groups=gateway.envoyproxy.io,resources=httproutefilters,verbs=get;list;watch;create;update;patch;delete
 // HTTPProxy controller reads cert-manager Certificate resources in the downstream cluster for status; ensure downstream role has cert-manager.io/certificates get;list;watch.
@@ -120,16 +160,6 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 
 	logger.Info("reconciling httpproxy")
 	defer logger.Info("reconcile complete")
-
-	if !controllerutil.ContainsFinalizer(&httpProxy, httpProxyFinalizer) {
-		controllerutil.AddFinalizer(&httpProxy, httpProxyFinalizer)
-		if err := cl.GetClient().Update(ctx, &httpProxy); err != nil {
-			if apierrors.IsConflict(err) {
-				return ctrl.Result{RequeueAfter: retryAfterConflict}, nil
-			}
-			return ctrl.Result{}, err
-		}
-	}
 
 	httpProxyCopy := httpProxy.DeepCopy()
 
@@ -168,6 +198,7 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 		}
 
 		if !equality.Semantic.DeepEqual(httpProxy.Status, httpProxyCopy.Status) {
+			emitHTTPProxyActivityEvents(ctx, cl.GetClient(), httpProxyCopy, httpProxy.Status.Conditions)
 			httpProxy.Status = httpProxyCopy.Status
 			if statusErr := cl.GetClient().Status().Update(ctx, &httpProxy); statusErr != nil {
 				err = errors.Join(err, fmt.Errorf("failed updating httpproxy status: %w", statusErr))
@@ -176,9 +207,31 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 		}
 	}()
 
+	if !controllerutil.ContainsFinalizer(&httpProxy, httpProxyFinalizer) {
+		controllerutil.AddFinalizer(&httpProxy, httpProxyFinalizer)
+		if updateErr := cl.GetClient().Update(ctx, &httpProxy); updateErr != nil {
+			if apierrors.IsConflict(updateErr) {
+				return ctrl.Result{RequeueAfter: retryAfterConflict}, nil
+			}
+			if apierrors.IsInvalid(updateErr) {
+				acceptedCondition.Reason = networkingv1alpha.HTTPProxyReasonInvalid
+				acceptedCondition.Message = fmt.Sprintf("The HTTPProxy cannot be programmed because its stored spec is rejected by validation: %s", updateErr.Error())
+				return ctrl.Result{RequeueAfter: retryAfterInvalid}, nil
+			}
+			return ctrl.Result{}, updateErr
+		}
+	}
+
+	if errs := validation.ValidateHTTPProxy(&httpProxy); len(errs) > 0 {
+		acceptedCondition.Status = metav1.ConditionFalse
+		acceptedCondition.Reason = networkingv1alpha.HTTPProxyReasonInvalid
+		acceptedCondition.Message = fmt.Sprintf("The HTTPProxy is invalid and cannot be programmed: %s", errs.ToAggregate())
+		return ctrl.Result{}, nil
+	}
+
 	desiredResources, err := r.collectDesiredResources(ctx, cl.GetClient(), &httpProxy)
-	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("failed to collect desired resources: %w", err)
+	if result, retErr, done := collectDesiredResourcesErrorResult(err, programmedCondition); done {
+		return result, retErr
 	}
 
 	// Maintain a Gateway for the HTTPProxy, handle conflicts in names by updating the
@@ -690,29 +743,9 @@ func httpProxyReferencesConnector(httpProxy *networkingv1alpha.HTTPProxy, connec
 	return false
 }
 
-// extractHostHeaderOverride returns the Host header value from a
-// RequestHeaderModifier filter, if present. Header names are matched
-// case-insensitively per RFC 7230. The returned bool indicates whether a
-// Host header override was found.
-//
-// Envoy Gateway does not accept Host header manipulation via
-// RequestHeaderModifier — it must go through URLRewrite.Hostname instead.
-// collectDesiredResources uses this helper to translate the user-facing
-// RequestHeaderModifier{Host} shape (which round-trips with datumctl and
-// the cloud portal) into the URLRewrite{Hostname} that Envoy actually
-// honours at egress.
 func extractHostHeaderOverride(filters []gatewayv1.HTTPRouteFilter) (string, bool) {
-	for _, filter := range filters {
-		if filter.Type != gatewayv1.HTTPRouteFilterRequestHeaderModifier || filter.RequestHeaderModifier == nil {
-			continue
-		}
-		for _, h := range filter.RequestHeaderModifier.Set {
-			if strings.EqualFold(string(h.Name), "Host") {
-				return h.Value, true
-			}
-		}
-	}
-	return "", false
+	override, found := gatewayutil.FindHostHeaderOverride(filters)
+	return override.Value, found
 }
 
 // stripHostFromRequestHeaderModifier returns the filter list with any
@@ -835,6 +868,39 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 		}
 
 		for backendIndex, backend := range rule.Backends {
+			if backend.Instance != nil {
+				// Reference the CNI-published EndpointSlice as-is — never
+				// synthesize one. Synthesizing would separate the pod
+				// address from the SID annotation the tenant-VRF/SRv6
+				// mechanism depends on staying joined to it.
+				//
+				// This Get requires an EndpointSlice named backend.Instance.Name
+				// to exist in the HTTPProxy's own (upstream) namespace — see
+				// api/v1alpha.InstanceBackendRef's doc comment for the open
+				// question of what's responsible for putting it there.
+				var referenced discoveryv1.EndpointSlice
+				key := client.ObjectKey{Namespace: httpProxy.Namespace, Name: backend.Instance.Name}
+				if err := cl.Get(ctx, key, &referenced); err != nil {
+					if apierrors.IsNotFound(err) {
+						return nil, &errInstanceBackendNotFound{name: backend.Instance.Name}
+					}
+					return nil, fmt.Errorf("failed getting instance backend endpointslice for backend %d in rule %d: %w", backendIndex, ruleIndex, err)
+				}
+
+				backendRefs[backendIndex] = gatewayv1.HTTPBackendRef{
+					BackendRef: gatewayv1.BackendRef{
+						BackendObjectReference: gatewayv1.BackendObjectReference{
+							Group: ptr.To(gatewayv1.Group("discovery.k8s.io")),
+							Kind:  ptr.To(gatewayv1.Kind("EndpointSlice")),
+							Name:  gatewayv1.ObjectName(backend.Instance.Name),
+							Port:  ptr.To(backend.Instance.Port),
+						},
+					},
+					Filters: backend.Filters,
+				}
+				continue
+			}
+
 			// Offline-connector handling differs by emission mode:
 			//
 			//   * EPP mode (legacy): emit a backend-less route rule. EG translates
@@ -949,10 +1015,10 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 				if backend.TLS == nil || backend.TLS.Hostname == nil || *backend.TLS.Hostname == "" {
 					return nil, fmt.Errorf("HTTPS endpoint with IP address requires tls.hostname for backend %d in rule %d", backendIndex, ruleIndex)
 				}
-				certHostname = *backend.TLS.Hostname
+				certHostname = gatewayutil.NormalizeHostname(*backend.TLS.Hostname)
 				rewriteHostname := certHostname
 				if hasUserHost {
-					rewriteHostname = userHostOverride
+					rewriteHostname = gatewayutil.NormalizeHostname(userHostOverride)
 				}
 				// Use tls.hostname (or the user override) for the Host header rewrite
 				hostnameRewriteFound := false
@@ -975,10 +1041,10 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 				// For FQDN endpoints, rewrite the Host header to match the
 				// backend hostname — or to the user's override if they set
 				// one via RequestHeaderModifier.
-				certHostname = host
-				rewriteHostname := host
+				certHostname = gatewayutil.NormalizeHostname(host)
+				rewriteHostname := certHostname
 				if hasUserHost {
-					rewriteHostname = userHostOverride
+					rewriteHostname = gatewayutil.NormalizeHostname(userHostOverride)
 				}
 				hostnameRewriteFound := false
 				for i, filter := range ruleFilters {

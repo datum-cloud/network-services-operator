@@ -113,6 +113,14 @@ as:
 	- topology.datum.net/city-code<br/>
         </td>
         <td>true</td>
+      </tr><tr>
+        <td><b><a href="#locationspeccoordinates">coordinates</a></b></td>
+        <td>object</td>
+        <td>
+          The geographic coordinates of the location, used by consumers that need
+to plot the location on a map.<br/>
+        </td>
+        <td>false</td>
       </tr></tbody>
 </table>
 
@@ -183,6 +191,45 @@ namespace.<br/>
         <td>string</td>
         <td>
           The GCP zone servicing the location<br/>
+        </td>
+        <td>true</td>
+      </tr></tbody>
+</table>
+
+
+### Location.spec.coordinates
+<sup><sup>[↩ Parent](#locationspec)</sup></sup>
+
+
+
+The geographic coordinates of the location, used by consumers that need
+to plot the location on a map.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>latitude</b></td>
+        <td>string</td>
+        <td>
+          Latitude in decimal degrees, in the range [-90, 90].<br/>
+          <br/>
+            <i>Validations</i>:<li>double(self) >= -90.0 && double(self) <= 90.0: latitude must be between -90 and 90</li>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>longitude</b></td>
+        <td>string</td>
+        <td>
+          Longitude in decimal degrees, in the range [-180, 180].<br/>
+          <br/>
+            <i>Validations</i>:<li>double(self) >= -180.0 && double(self) <= 180.0: longitude must be between -180 and 180</li>
         </td>
         <td>true</td>
       </tr></tbody>

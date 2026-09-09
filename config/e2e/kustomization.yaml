@@ -11,6 +11,7 @@ resources:
 components:
   - ../rbac_deployment
   - ../webhook
+  - ../components/cell-controllers
 
 configMapGenerator:
   - name: config
@@ -20,6 +21,71 @@ configMapGenerator:
 
 patches:
   - path: manager_webhook_patch.yaml
+  # A generator merge would replace the whole config.yaml key, and a
+  # `behavior: replace` generator cannot see a ConfigMap a component generated.
+  - target:
+      kind: ConfigMap
+      name: cell-config
+    patch: |-
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: cell-config
+      data:
+        config.yaml: |
+          apiVersion: apiserver.config.datumapis.com/v1alpha1
+          kind: CellControllerManager
+          metricsServer:
+            bindAddress: ":8443"
+          ipam:
+            kubeconfigPath: /etc/ipam-cluster/kubeconfig
+          federation:
+            kubeconfigPath: /etc/karmada-hub/kubeconfig
+          location:
+            name: us-central-1
+  - target:
+      kind: Deployment
+      name: cell-controller-manager
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: cell-controller-manager
+      spec:
+        template:
+          spec:
+            containers:
+              - name: manager
+                volumeMounts:
+                - name: karmada-hub-kubeconfig
+                  mountPath: /etc/karmada-hub
+            volumes:
+              # test-infra:karmada-hub-secret creates this after the cell is
+              # deployed, so the cell crashloops until it exists.
+              - name: karmada-hub-kubeconfig
+                secret:
+                  secretName: karmada-hub-kubeconfig
+                  optional: true
+  - target:
+      kind: Deployment
+      name: controller-manager
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: controller-manager
+      spec:
+        template:
+          spec:
+            containers:
+              - name: manager
+                resources:
+                  limits:
+                    cpu: "2"
+                    memory: 2Gi
+                  requests:
+                    cpu: 500m
+                    memory: 512Mi
   - target:
       kind: Deployment
       name: controller-manager
@@ -36,10 +102,23 @@ patches:
                 volumeMounts:
                 - name: downstream-cluster-kubeconfig
                   mountPath: /etc/downstream-cluster
+                - name: karmada-hub-kubeconfig
+                  mountPath: /etc/karmada-hub
+                - name: ipam-cluster-kubeconfig
+                  mountPath: /etc/ipam-cluster
             volumes:
               - name: downstream-cluster-kubeconfig
                 secret:
                   secretName: downstream-cluster-kubeconfig
+              - name: ipam-cluster-kubeconfig
+                secret:
+                  secretName: ipam-cluster-kubeconfig
+              # test-infra:karmada-hub-secret creates this after the manager
+              # is deployed, so the manager crashloops until it exists.
+              - name: karmada-hub-kubeconfig
+                secret:
+                  secretName: karmada-hub-kubeconfig
+                  optional: true
 
 replacements:
   - source: # Add cert-manager annotation to ValidatingWebhookConfiguration, MutatingWebhookConfiguration and CRDs

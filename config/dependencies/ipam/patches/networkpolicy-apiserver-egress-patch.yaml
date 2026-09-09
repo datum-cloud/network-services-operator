@@ -1,0 +1,26 @@
+# Let the apiserver reach the kube-apiserver by address rather than by
+# namespace.
+#
+# The base policy allows egress to :443/:6443 selected by
+# namespaceSelector (kube-system, default). That never matches in kind: a
+# connection to kubernetes.default.svc is DNATed to the node's own address,
+# which belongs to no pod and therefore to no namespace, so the rule selects
+# nothing and the traffic is dropped.
+#
+# The symptom is not a connection error. The apiserver comes up, serves TLS,
+# and then sits at "informer-sync failed: 2 informers not started yet:
+# [*v1.PriorityLevelConfiguration *v1.FlowSchema]" forever — readiness never
+# passes and the APIService stays MissingEndpoints. It presents as a flake
+# because a pod that happens to start before kindnet programs the policy syncs
+# its informers and stays healthy for the rest of its life.
+- op: add
+  path: /spec/egress/-
+  value:
+    to:
+      - ipBlock:
+          cidr: 0.0.0.0/0
+    ports:
+      - protocol: TCP
+        port: 6443
+      - protocol: TCP
+        port: 443

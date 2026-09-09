@@ -89,16 +89,38 @@ NetworkBindingSpec defines the desired state of NetworkBinding
         <td><b><a href="#networkbindingspeclocation">location</a></b></td>
         <td>object</td>
         <td>
-          The location of where a network binding exists.<br/>
+          The location of where a network binding exists.
+
+Immutable, for the same reason as spec.network.<br/>
+          <br/>
+            <i>Validations</i>:<li>self == oldSelf: spec.location is immutable</li>
         </td>
         <td>true</td>
       </tr><tr>
         <td><b><a href="#networkbindingspecnetwork">network</a></b></td>
         <td>object</td>
         <td>
-          The network that the binding is for.<br/>
+          The network that the binding is for.
+
+Immutable: a binding whose network changed is a declaration about a
+different presence. Delete and recreate instead, so the crossing is
+observable.<br/>
+          <br/>
+            <i>Validations</i>:<li>self == oldSelf: spec.network is immutable</li>
         </td>
         <td>true</td>
+      </tr><tr>
+        <td><b><a href="#networkbindingspecconsumer">consumer</a></b></td>
+        <td>object</td>
+        <td>
+          The resource that needs the network in this location.
+
+Nothing reads this to decide anything, and a binding is never held open
+because of it. It records who asked in a form that does not depend on the
+consumer being an object in this control plane, which is the only record
+for a consumer that cannot be an owner.<br/>
+        </td>
+        <td>false</td>
       </tr></tbody>
 </table>
 
@@ -109,6 +131,8 @@ NetworkBindingSpec defines the desired state of NetworkBinding
 
 
 The location of where a network binding exists.
+
+Immutable, for the same reason as spec.network.
 
 <table>
     <thead>
@@ -126,13 +150,6 @@ The location of where a network binding exists.
           Name of a datum location<br/>
         </td>
         <td>true</td>
-      </tr><tr>
-        <td><b>namespace</b></td>
-        <td>string</td>
-        <td>
-          Namespace for the datum location<br/>
-        </td>
-        <td>true</td>
       </tr></tbody>
 </table>
 
@@ -143,6 +160,10 @@ The location of where a network binding exists.
 
 
 The network that the binding is for.
+
+Immutable: a binding whose network changed is a declaration about a
+different presence. Delete and recreate instead, so the crossing is
+observable.
 
 <table>
     <thead>
@@ -167,6 +188,52 @@ The network that the binding is for.
           The network namespace.
 
 Defaults to the namespace for the type the reference is embedded in.<br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### NetworkBinding.spec.consumer
+<sup><sup>[↩ Parent](#networkbindingspec)</sup></sup>
+
+
+
+The resource that needs the network in this location.
+
+Nothing reads this to decide anything, and a binding is never held open
+because of it. It records who asked in a form that does not depend on the
+consumer being an object in this control plane, which is the only record
+for a consumer that cannot be an owner.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>kind</b></td>
+        <td>string</td>
+        <td>
+          Kind of the consumer.<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>name</b></td>
+        <td>string</td>
+        <td>
+          Name of the consumer.<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>apiGroup</b></td>
+        <td>string</td>
+        <td>
+          APIGroup of the consumer. Empty means the core group.<br/>
         </td>
         <td>false</td>
       </tr></tbody>

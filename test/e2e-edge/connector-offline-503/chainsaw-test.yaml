@@ -119,17 +119,10 @@ spec:
                 controllerName: gateway.networking.datumapis.com/external-global-proxy-controller
         # The HTTPProxy controller builds its gateway with the operator-configured
         # class (default "datum-external-global-proxy"), not our per-test class.
-        # That class must exist or the proxy's gateway waits for a controller
-        # forever. Cluster-scoped and shared, so apply is idempotent.
-        - apply:
-            cluster: nso-upstream
-            resource:
-              apiVersion: gateway.networking.k8s.io/v1
-              kind: GatewayClass
-              metadata:
-                name: datum-external-global-proxy
-              spec:
-                controllerName: gateway.networking.datumapis.com/external-global-proxy-controller
+        # The test environment provisions it; a scenario must not, because
+        # chainsaw would delete that shared class on cleanup while gateways still
+        # reference it, leaving them unable to shed their finalizer.
+        #
         # The downstream gateway class and its proxy are provisioned once by the
         # test environment; tests must not recreate them. Only ensure the
         # hostname-accounting namespace here.

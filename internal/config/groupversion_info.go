@@ -22,6 +22,7 @@ var (
 func addKnownTypes(scheme *runtime.Scheme) error {
 	scheme.AddKnownTypes(GroupVersion,
 		&NetworkServicesOperator{},
+		&CellControllerManager{},
 	)
 	metav1.AddToGroupVersion(scheme, GroupVersion)
 	return nil

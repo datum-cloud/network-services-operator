@@ -8,7 +8,35 @@ webhookServer:
 gateway:
   targetDomain: prism.e2e.env.datum.net
   downstreamGatewayClassName: datum-downstream-gateway-e2e
+  # Match production: the extension server configures every proxy, so NSO must
+  # not also emit its own patch policies.
+  eppEmissionEnabled: false
+  # Enable DNSRecordSet creation for claimed Gateway hostnames. Requires
+  # dns-operator CRDs installed via `task test-infra:dns-crds` (wired into
+  # test-infra:up) before the operator starts.
+  enableDNSIntegration: true
   permittedTLSOptions:
     gateway.networking.datumapis.com/certificate-issuer: []
+  # Resolve the `auto` issuer the defaulting webhook stamps on default-https to
+  # the e2e CA (config/e2e-downstream/issuer.yaml), as production resolves it to
+  # its ACME issuer. A gateway that declares no issuer of its own would
+  # otherwise get no certificate for that listener, and the listener would be
+  # withheld from the downstream gateway for the life of the test.
+  clusterIssuerMap:
+    auto: e2e-gateway-http
 downstreamResourceManagement:
   kubeconfigPath: /etc/downstream-cluster/kubeconfig
+ipam:
+  kubeconfigPath: /etc/ipam-cluster/kubeconfig
+  classes:
+    # The fixtures name their classes differently to the platform, which names
+    # its own datum-vpc-ipv6.
+    network: datum-network-v6
+    subnet: datum-subnet-v6
+networkPresence:
+  # Short enough that a scenario asserting a presence is torn down does not have
+  # to wait a minute, long enough to cover a workload being replaced.
+  unclaimedGracePeriod: 15s
+locationPublisher:
+  hubKubeconfigPath: /etc/karmada-hub/kubeconfig
+  safetyResyncPeriod: 1m

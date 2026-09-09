@@ -15,26 +15,29 @@ spec:
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .metadata.name
-      name: Name
+    - jsonPath: .status.ipam.ipv6Prefix
+      name: IPv6Prefix
+      type: string
+    - jsonPath: .status.conditions[?(@.type=='Ready')].status
+      name: Ready
+      type: string
+    - jsonPath: .status.conditions[?(@.type=='Ready')].reason
+      name: Reason
       type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
-    - jsonPath: .status.conditions[?(@.type==\"Ready\")].status
-      name: Ready
-      type: string
-    - jsonPath: .status.conditions[?(@.type==\"Ready\")].reason
-      name: Reason
+    - jsonPath: .spec.ipFamilies
+      name: IPFamilies
+      priority: 1
       type: string
     - jsonPath: .spec.ipam.mode
       name: IPAM
-      type: string
-    - jsonPath: .spec.ipFamilies
-      name: IPFamilies
+      priority: 1
       type: string
     - jsonPath: .spec.mtu
       name: MTU
+      priority: 1
       type: integer
     name: v1alpha
     schema:
@@ -63,8 +66,8 @@ spec:
             properties:
               ipFamilies:
                 default:
-                - IPv4
-                description: IP Families to permit on a network. Defaults to IPv4.
+                - IPv6
+                description: IP Families to permit on a network. Defaults to IPv6.
                 items:
                   enum:
                   - IPv4
@@ -102,6 +105,13 @@ spec:
             - ipam
             type: object
           status:
+            default:
+              conditions:
+              - lastTransitionTime: "1970-01-01T00:00:00Z"
+                message: Waiting for controller
+                reason: Pending
+                status: Unknown
+                type: Ready
             description: NetworkStatus defines the observed state of Network
             properties:
               conditions:
@@ -161,6 +171,40 @@ spec:
                   - type
                   type: object
                 type: array
+              ipam:
+                description: IPAM reports the address space IPAM holds for this network.
+                properties:
+                  ipv6Prefix:
+                    description: |-
+                      IPv6Prefix is the /48 this network was assigned from the platform's
+                      tenant ULA pool. Every subnet and endpoint address in the network is
+                      carved from it.
+                    type: string
+                  ipv6PrefixRef:
+                    description: |-
+                      IPv6PrefixRef names what holds the prefix in IPAM, so the allocation can
+                      be audited and released.
+                    properties:
+                      claimName:
+                        description: |-
+                          ClaimName is the IPClaim this operator holds against the prefix.
+                          Deleting it releases what the operator holds.
+                        type: string
+                      namespace:
+                        description: Namespace is the project namespace holding the
+                          claim.
+                        type: string
+                      poolName:
+                        description: |-
+                          PoolName is the IPPool IPAM provisioned for the prefix. Subnet and
+                          endpoint addresses are drawn from it.
+                        type: string
+                      project:
+                        description: Project is the control plane the objects live
+                          in.
+                        type: string
+                    type: object
+                type: object
             type: object
         required:
         - spec

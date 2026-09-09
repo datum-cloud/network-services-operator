@@ -13,3 +13,10 @@ nodes:
   - containerPort: 32443
     hostPort: 32443
     protocol: TCP
+  # Milo's NodePort, for the same reason. The chainsaw suites address IPAM by
+  # project control-plane path and run on the host, so they need to reach Milo;
+  # without this mapping they cannot, and every interface suite fails on a
+  # connection refused that looks nothing like a routing problem.
+  - containerPort: 32450
+    hostPort: 32450
+    protocol: TCP

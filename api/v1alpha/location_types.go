@@ -35,6 +35,33 @@ type LocationSpec struct {
 	//
 	// +kubebuilder:validation:Required
 	Provider LocationProvider `json:"provider"`
+
+	// The geographic coordinates of the location, used by consumers that need
+	// to plot the location on a map.
+	//
+	// +kubebuilder:validation:Optional
+	Coordinates *Coordinates `json:"coordinates,omitempty"`
+}
+
+// Coordinates describes a geographic point in decimal degrees (WGS 84).
+//
+// Latitude and longitude are serialized as strings rather than floats, per
+// Kubernetes API convention (float precision/serialization varies across
+// client languages).
+type Coordinates struct {
+	// Latitude in decimal degrees, in the range [-90, 90].
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Pattern=`^-?\d{1,2}(\.\d+)?$`
+	// +kubebuilder:validation:XValidation:message="latitude must be between -90 and 90",rule="double(self) >= -90.0 && double(self) <= 90.0"
+	Latitude string `json:"latitude"`
+
+	// Longitude in decimal degrees, in the range [-180, 180].
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Pattern=`^-?\d{1,3}(\.\d+)?$`
+	// +kubebuilder:validation:XValidation:message="longitude must be between -180 and 180",rule="double(self) >= -180.0 && double(self) <= 180.0"
+	Longitude string `json:"longitude"`
 }
 
 type LocationProvider struct {
@@ -74,8 +101,8 @@ type LocationStatus struct {
 // +kubebuilder:printcolumn:name="Class",type="string",JSONPath=".spec.locationClassName"
 // +kubebuilder:printcolumn:name="City",type="string",JSONPath=`.spec.topology.topology\.datum\.net/city-code`
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
-// +kubebuilder:printcolumn:name="Ready",type="string",JSONPath=`.status.conditions[?(@.type==\"Ready\")].status`
-// +kubebuilder:printcolumn:name="Reason",type="string",JSONPath=`.status.conditions[?(@.type==\"Ready\")].reason`
+// +kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].status"
+// +kubebuilder:printcolumn:name="Reason",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].reason"
 
 // Location is the Schema for the locations API.
 type Location struct {
@@ -100,9 +127,4 @@ type LocationReference struct {
 	//
 	// +kubebuilder:validation:Required
 	Name string `json:"name"`
-
-	// Namespace for the datum location
-	//
-	// +kubebuilder:validation:Required
-	Namespace string `json:"namespace"`
 }

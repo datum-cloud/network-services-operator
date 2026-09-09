@@ -1,0 +1,146 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+#
+# An instance holds an address, and the interface recording it exists only on
+# the cell that allocated it. A consumer reading their own control plane sees
+# nothing. This asserts the interface leaves the cell: it is published to the
+# federation hub, carrying what describes a NIC and none of the cell-internal
+# names, and it is collected again when the interface goes.
+#
+# The hub is where this stops. Handing the published copy on to a project
+# control plane is the projector's half, and it needs a project plane to write
+# into that this env does not stand up.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: networkinterface-project-visibility
+spec:
+  cluster: nso-standard
+  steps:
+    - name: Deliver the network's presence to this location
+      try:
+        - apply:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkContext
+              metadata:
+                name: nic-visible-net-us-central-1
+                namespace: ipam-e2e-alpha
+              spec:
+                network:
+                  name: nic-visible-net
+                location:
+                  name: us-central-1
+                ipFamilies:
+                  - IPv6
+                mtu: 1460
+
+    - name: A bound interface is published to the hub
+      try:
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Network
+              metadata:
+                name: nic-visible-net
+                namespace: ipam-e2e-alpha
+              spec:
+                ipam:
+                  mode: Auto
+                ipFamilies:
+                  - IPv6
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterfaceClaim
+              metadata:
+                name: nic-visible
+                namespace: ipam-e2e-alpha
+              spec:
+                network:
+                  name: nic-visible-net
+                ipFamilies:
+                  - IPv6
+        - assert:
+            timeout: 120s
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterfaceClaim
+              metadata:
+                name: nic-visible
+                namespace: ipam-e2e-alpha
+              status:
+                (conditions[?type == 'Allocated'] | [0].status): "True"
+        - assert:
+            cluster: nso-hub
+            timeout: 120s
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterface
+              metadata:
+                name: nic-visible
+                namespace: ipam-e2e-alpha
+                labels:
+                  networking.datumapis.com/network-interface-projection: "true"
+                  networking.datumapis.com/location: us-central-1
+                  networking.datumapis.com/held-by: nic-visible
+              spec:
+                network:
+                  name: nic-visible-net
+                interfaceName: eth0
+                mtu: 1460
+      catch:
+        - script:
+            content: |
+              kubectl -n ipam-e2e-alpha get networkinterfaceclaim,networkinterface -o yaml
+              kubectl -n network-services-operator-system logs -l app.kubernetes.io/component=cell-controller-manager --tail=100
+      cleanup:
+        - script:
+            content: |
+              set -u
+              IPAM=$(git rev-parse --show-toplevel)/hack/ipam-project-kubectl.sh
+              kubectl -n ipam-e2e-alpha delete networkinterfaceclaim nic-visible --ignore-not-found --timeout=60s
+              kubectl -n ipam-e2e-alpha delete networkinterface nic-visible --ignore-not-found --timeout=60s
+              "$IPAM" project-alpha -n default delete ipclaim nic-visible-f-ipv6 --ignore-not-found --timeout=60s
+
+    - name: The published copy carries nothing that names a cell object
+      description: |
+        A network context, an attachment and a VPC identifier all name objects
+        that exist only on the cell, and a claim does too. Publishing them would
+        hand a consumer references that resolve to nothing.
+      try:
+        - assert:
+            cluster: nso-hub
+            timeout: 60s
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterface
+              metadata:
+                name: nic-visible
+                namespace: ipam-e2e-alpha
+              spec:
+                (claimRef == null): true
+              status:
+                phase: Bound
+                (networkContextRef == null): true
+                (attachmentRef == null): true
+                (vpc == null): true
+                (conditions[?type == 'Allocated'] | [0].status): "True"
+
+    - name: Deleting the interface collects the published copy
+      try:
+        - delete:
+            timeout: 120s
+            ref:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterfaceClaim
+              name: nic-visible
+              namespace: ipam-e2e-alpha
+        - error:
+            cluster: nso-hub
+            timeout: 120s
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterface
+              metadata:
+                name: nic-visible
+                namespace: ipam-e2e-alpha

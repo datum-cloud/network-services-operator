@@ -39,10 +39,11 @@ func mkWAFRoute(t *testing.T, tppNS, tppName string) *routev3.Route {
 	meta, err := structpb.NewStruct(map[string]any{
 		"resources": []any{
 			map[string]any{
-				"kind":      "TrafficProtectionPolicy",
-				"namespace": tppNS,
-				"name":      tppName,
-				"mode":      "Observe",
+				"kind":       "TrafficProtectionPolicy",
+				"namespace":  tppNS,
+				"name":       tppName,
+				"mode":       "Observe",
+				"generation": float64(1),
 			},
 		},
 	})
@@ -130,7 +131,7 @@ func TestBuildProgrammedSet_AllFamilies(t *testing.T) {
 
 	ps := buildProgrammedSet(listeners, routes, clusters, corazaFilter, 2, 1, 0)
 
-	assert.Equal(t, []string{wafRouteKey("gw/https", "vh", "fwd", "proj-ns", "test-tpp", "Observe")},
+	assert.Equal(t, []string{wafRouteKey("gw/https", "vh", "fwd", "proj-ns", "test-tpp", "Observe", 1)},
 		ps.Keys[FamilyWAFRoute])
 	assert.Equal(t, 1, ps.Counts[FamilyWAFRoute])
 
@@ -240,7 +241,7 @@ func TestProgrammedSetHandler_ServesJSON(t *testing.T) {
 	var got ProgrammedSet
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
 	assert.Equal(t, uint64(1), got.BuildID)
-	assert.Equal(t, []string{wafRouteKey("gw/https", "vh", "fwd", "proj-a", "tpp-a", "Observe")},
+	assert.Equal(t, []string{wafRouteKey("gw/https", "vh", "fwd", "proj-a", "tpp-a", "Observe", 1)},
 		got.Keys[FamilyWAFRoute])
 }
 
@@ -343,7 +344,7 @@ func TestPostTranslateModify_RecordsProgrammedSet(t *testing.T) {
 
 	// The WAF route key must name the governing TPP (wrong-keyed oracle).
 	require.Len(t, ps.Keys[FamilyWAFRoute], 1)
-	assert.Contains(t, ps.Keys[FamilyWAFRoute][0], "test-project/test-tpp/Observe")
+	assert.Contains(t, ps.Keys[FamilyWAFRoute][0], "test-project/test-tpp/Observe/")
 }
 
 // TestPostTranslateModify_NoRecordingWhenDisabled proves the production default:

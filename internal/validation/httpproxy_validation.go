@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"strconv"
 
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/validation"
@@ -11,6 +12,12 @@ import (
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
+	gatewayutil "go.datum.net/network-services-operator/internal/util/gateway"
+)
+
+const (
+	minPortNumber = 1
+	maxPortNumber = 65535
 )
 
 func ValidateHTTPProxy(httpProxy *networkingv1alpha.HTTPProxy) field.ErrorList {
@@ -38,6 +45,47 @@ func ValidateHTTPProxy(httpProxy *networkingv1alpha.HTTPProxy) field.ErrorList {
 	return allErrs
 }
 
+// validateProgrammableHostname enforces the Gateway API PreciseHostname
+// constraints that apply once this value is synthesized into the generated
+// HTTPRoute. Case is not enforced: the controller lowercases the value, and
+// hostnames compare case-insensitively wherever it lands.
+func validateProgrammableHostname(hostname string, fldPath *field.Path) field.ErrorList {
+	allErrs := field.ErrorList{}
+
+	if gatewayutil.IsPreciseHostname(hostname) {
+		return allErrs
+	}
+
+	if host, port, err := net.SplitHostPort(hostname); err == nil && port != "" {
+		detail := fmt.Sprintf("must not include a port; use %q and set the port on the backend endpoint", host)
+		return append(allErrs, field.Invalid(fldPath, hostname, detail))
+	}
+
+	if len(hostname) > gatewayutil.MaxPreciseHostnameLength {
+		detail := fmt.Sprintf("must be no more than %d characters", gatewayutil.MaxPreciseHostnameLength)
+		return append(allErrs, field.Invalid(fldPath, hostname, detail))
+	}
+
+	detail := "must be a hostname consisting of lower case alphanumeric characters, '-' or '.', starting and ending with an alphanumeric character (e.g. 'example.com'); wildcards are not permitted"
+	return append(allErrs, field.Invalid(fldPath, hostname, detail))
+}
+
+// validateHostHeaderOverride checks a Host header set by a RequestHeaderModifier
+// filter. The controller carries this value into the generated route's
+// URLRewrite.Hostname, so it must satisfy the hostname constraints even though
+// the schema only sees it as a header value.
+func validateHostHeaderOverride(filters []gatewayv1.HTTPRouteFilter, fldPath *field.Path) field.ErrorList {
+	override, found := gatewayutil.FindHostHeaderOverride(filters)
+	if !found {
+		return field.ErrorList{}
+	}
+
+	hostHeaderPath := fldPath.Index(override.FilterIndex).
+		Child("requestHeaderModifier", "set").Index(override.SetIndex).Child("value")
+
+	return validateProgrammableHostname(override.Value, hostHeaderPath)
+}
+
 func validateHTTPProxyRules(httpProxy *networkingv1alpha.HTTPProxy, fldPath *field.Path) field.ErrorList {
 	allErrs := field.ErrorList{}
 
@@ -52,6 +100,7 @@ func validateHTTPProxyRule(rule networkingv1alpha.HTTPProxyRule, fldPath *field.
 	allErrs := field.ErrorList{}
 
 	allErrs = append(allErrs, validateFilters(rule.Filters, supportedHTTPRouteRuleFilters, fldPath.Child("filters"))...)
+	allErrs = append(allErrs, validateHostHeaderOverride(rule.Filters, fldPath.Child("filters"))...)
 	allErrs = append(allErrs, validateHTTPProxyRuleBackends(rule, fldPath.Child("backends"))...)
 
 	return allErrs
@@ -83,6 +132,52 @@ func validateHTTPProxyRuleBackends(rule networkingv1alpha.HTTPProxyRule, fldPath
 }
 
 func validateHTTPProxyRuleBackend(backend networkingv1alpha.HTTPProxyRuleBackend, fldPath *field.Path) field.ErrorList {
+	allErrs := field.ErrorList{}
+
+	// instance backends don't use the endpoint field at all — see the instance
+	// validation block below instead.
+	if backend.Instance == nil {
+		allErrs = append(allErrs, validateHTTPProxyRuleBackendEndpoint(backend, fldPath)...)
+	}
+
+	// tls.hostname becomes the generated route's URLRewrite.Hostname and the
+	// downstream BackendTLSPolicy hostname, so it carries the same constraints
+	// as any other hostname the user writes.
+	if backend.TLS != nil && backend.TLS.Hostname != nil && *backend.TLS.Hostname != "" {
+		allErrs = append(allErrs, validateProgrammableHostname(*backend.TLS.Hostname, fldPath.Child("tls", "hostname"))...)
+	}
+
+	if backend.Connector != nil {
+		connectorFieldPath := fldPath.Child("connector", "name")
+		if backend.Connector.Name == "" {
+			allErrs = append(allErrs, field.Required(connectorFieldPath, "connector name is required"))
+		} else {
+			for _, msg := range validation.IsDNS1123Label(backend.Connector.Name) {
+				allErrs = append(allErrs, field.Invalid(connectorFieldPath, backend.Connector.Name, msg))
+			}
+		}
+	}
+
+	if backend.Instance != nil {
+		instanceFieldPath := fldPath.Child("instance", "name")
+		if backend.Instance.Name == "" {
+			allErrs = append(allErrs, field.Required(instanceFieldPath, "instance name is required"))
+		} else {
+			for _, msg := range validation.IsDNS1123Subdomain(backend.Instance.Name) {
+				allErrs = append(allErrs, field.Invalid(instanceFieldPath, backend.Instance.Name, msg))
+			}
+		}
+	}
+
+	allErrs = append(allErrs, validateFilters(backend.Filters, supportedHTTPBackendRefFilters, fldPath.Child("filters"))...)
+	allErrs = append(allErrs, validateHostHeaderOverride(backend.Filters, fldPath.Child("filters"))...)
+	return allErrs
+}
+
+// validateHTTPProxyRuleBackendEndpoint validates the endpoint field. Only
+// called for endpoint/connector backends — instance backends don't carry an
+// endpoint URL at all.
+func validateHTTPProxyRuleBackendEndpoint(backend networkingv1alpha.HTTPProxyRuleBackend, fldPath *field.Path) field.ErrorList {
 	allErrs := field.ErrorList{}
 
 	endpointFieldPath := fldPath.Child("endpoint")
@@ -132,6 +227,19 @@ func validateHTTPProxyRuleBackend(backend networkingv1alpha.HTTPProxyRuleBackend
 			}
 		}
 
+		// The endpoint port is carried into a backendRef and an EndpointSlice,
+		// both of which enforce this range.
+		if port := u.Port(); port != "" {
+			portFieldPath := endpointFieldPath.Key("port")
+			portNumber, err := strconv.Atoi(port)
+			if err != nil {
+				allErrs = append(allErrs, field.Invalid(portFieldPath, port, "must be a number"))
+			} else if portNumber < minPortNumber || portNumber > maxPortNumber {
+				detail := fmt.Sprintf("must be between %d and %d, inclusive", minPortNumber, maxPortNumber)
+				allErrs = append(allErrs, field.Invalid(portFieldPath, port, detail))
+			}
+		}
+
 		if u.Path != "" {
 			allErrs = append(allErrs, field.Invalid(endpointFieldPath.Key("path"), u.Path, "endpoint must not have a path component"))
 		}
@@ -145,17 +253,5 @@ func validateHTTPProxyRuleBackend(backend networkingv1alpha.HTTPProxyRuleBackend
 		}
 	}
 
-	if backend.Connector != nil {
-		connectorFieldPath := fldPath.Child("connector", "name")
-		if backend.Connector.Name == "" {
-			allErrs = append(allErrs, field.Required(connectorFieldPath, "connector name is required"))
-		} else {
-			for _, msg := range validation.IsDNS1123Label(backend.Connector.Name) {
-				allErrs = append(allErrs, field.Invalid(connectorFieldPath, backend.Connector.Name, msg))
-			}
-		}
-	}
-
-	allErrs = append(allErrs, validateFilters(backend.Filters, supportedHTTPBackendRefFilters, fldPath.Child("filters"))...)
 	return allErrs
 }

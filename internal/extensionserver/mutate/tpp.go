@@ -159,11 +159,15 @@ func InjectCorazaListenerFilters(l *listenerv3.Listener, cfg *CorazaConfig) (int
 //  4. Finds the governing TPP from idx.TPPs (route-level wins over gateway-level).
 //  5. Writes typed_per_filter_config and datum-gateway metadata on governed routes.
 //
+// applied, when non-nil, is populated with "namespace/name" → generation for
+// each TPP successfully applied in this call.
+//
 // Returns the number of routes mutated (WAF-configured routes only).
 func ApplyTPPRouteConfig(
 	rc *routev3.RouteConfiguration,
 	idx *extcache.PolicyIndex,
 	cfg *CorazaConfig,
+	applied map[string]int64,
 ) (int, error) {
 	mutated := 0
 	for _, vh := range rc.GetVirtualHosts() {
@@ -214,6 +218,9 @@ func ApplyTPPRouteConfig(
 
 			if err := applyRouteWAFConfig(rt, governing, projectName, cfg); err != nil {
 				return mutated, fmt.Errorf("apply WAF config to route %q: %w", rt.GetName(), err)
+			}
+			if applied != nil {
+				applied[governing.Namespace+"/"+governing.Name] = governing.Generation
 			}
 			mutated++
 		}
@@ -411,6 +418,7 @@ func buildDatumGatewayMetadata(tpp *extcache.TPPInfo, projectName string) (*stru
 				egMetaFieldNamespace: tpp.Namespace,
 				egMetaFieldName:      tpp.Name,
 				"mode":               string(tpp.Mode),
+				"generation":         tpp.Generation,
 			},
 		},
 	})

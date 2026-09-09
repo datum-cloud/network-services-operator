@@ -50,8 +50,8 @@ Outside the portal, ALBs are raw YAML, and that YAML is the wrong unit of work.
 - Common path with no YAML: create, print hostname, attach a custom hostname.
 - Create and manage NetworkServices (selector + named ports), then point a
   route at one by name and port. Do not auto-create one from `alb create`.
-- Add and remove routes that have different backends, matching the upcoming
-  portal multi-backend UI.
+- Add and remove routes, and give a route one or more backends (URL and/or
+  NetworkService), matching the portal multi-backend UI.
 - Match portal create defaults and encoding so CLI-created ALBs stay
   form-editable.
 - Merge-safe updates: preserve connectors, sibling routes, and filters the
@@ -66,7 +66,6 @@ Outside the portal, ALBs are raw YAML, and that YAML is the wrong unit of work.
   service selector plus platform nearest-location ranking own that.
 - Instance (VPC EndpointSlice) backends as a user flag. NetworkService is the
   product wrapper.
-- Backend pools (several origins on one path). Still `MaxItems=1` per rule.
 - Connector assignment, URL rewrite, response headers, WAF sampling /
   thresholds / exclusions.
 - Metrics, logs, activity, PoP maps, caching, branded error pages.
@@ -80,7 +79,8 @@ Outside the portal, ALBs are raw YAML, and that YAML is the wrong unit of work.
 | Generated hostname | `status.canonicalHostname` |
 | Custom hostname | `spec.hostnames[]` + `status.hostnameStatuses[]` |
 | Default route | backend rule matching `/` |
-| Extra route | another `spec.rules[]` entry (path match + one backend) |
+| Extra route | another `spec.rules[]` entry (path match + backends) |
+| Backend pool | `spec.rules[].backends[]` — one or more per route |
 | NetworkService | `NetworkService` — label selector on interfaces + named ports |
 | URL origin | `backends[].endpoint` (+ optional `tls.hostname`) |
 | NetworkService origin | `backends[].networkService.{name,port}` — port is a **name** |
@@ -92,8 +92,9 @@ Outside the portal, ALBs are raw YAML, and that YAML is the wrong unit of work.
 | Basic auth | Envoy `SecurityPolicy` + Secret `{name}-basic-auth` (`{SHA}` htpasswd) |
 
 The user never names the Gateway. Endpoint, connector, instance, and
-networkService are mutually exclusive on one backend. NetworkService backends
-have no TLS — members are reached over plaintext HTTP.
+networkService are mutually exclusive **on one backend entry**. A route may
+list several entries (URL next to NetworkService is fine). NetworkService
+backends have no TLS — members are reached over plaintext HTTP.
 
 `-o json|yaml` emits the raw API objects. There is no fictional ALB CRD.
 
@@ -104,7 +105,8 @@ datumctl alb version
 
 datumctl alb list     [--status active|pending|error] [-o table|wide|json|yaml|name]
 datumctl alb create   <name>
-                      (--endpoint URL | --network-service NAME --port PORTNAME)
+                      [--endpoint URL]...
+                      [--network-service NAME --port PORTNAME]...
                       [--hostname FQDN]... [--display-name TEXT]
                       [--host-header HOST] [--tls-hostname HOST]
                       [--force-https|--no-force-https]
@@ -112,8 +114,8 @@ datumctl alb create   <name>
                       [--paranoia N] [--no-waf]
                       [--wait|--no-wait] [--timeout D] [--dry-run]
 datumctl alb describe <name>
-datumctl alb update   <name> [--endpoint URL] [--tls-hostname HOST]
-                      [--network-service NAME --port PORTNAME]
+datumctl alb update   <name> [--endpoint URL]... [--tls-hostname HOST]
+                      [--network-service NAME --port PORTNAME]...
                       [--display-name TEXT]
                       [--force-https|--no-force-https] [--dry-run]
 datumctl alb delete   <name> [--yes] [--dry-run]
@@ -127,8 +129,11 @@ datumctl alb network-service delete   <name> [--yes] [--dry-run]
 datumctl alb hostname add|remove|list <name> [<fqdn>]
 datumctl alb route    add|remove|list <name>
                       [--path PREFIX]
-                      (--endpoint URL | --network-service NAME --port PORTNAME)
+                      [--endpoint URL]...
+                      [--network-service NAME --port PORTNAME]...
                       [--tls-hostname HOST]
+datumctl alb backend  add|remove|list <name> [--path PREFIX]
+                      [--endpoint URL | --network-service NAME --port PORTNAME]
 datumctl alb waf      set|disable|describe <name> [--mode] [--paranoia]
 datumctl alb header   set|unset|list <name> [Name=value|Name]
 datumctl alb auth     set|unset|list <name> [--user] [--password-stdin]
@@ -143,9 +148,10 @@ text always says Application Load Balancer.
 **Nested verbs, not one `update` flag set.** NetworkService is its own noun
 (like `dns zone` vs `dns record`): create the service, then point the ALB at
 it. `alb create` owns the default `/` route, optional hostnames, Force HTTPS,
-and WAF defaults. Extra routes, hostnames, protection, headers, and auth are
-later dialogs. `update` only changes the default `/` route (and display name /
-Force HTTPS).
+and WAF defaults. Extra routes, backends on a route, hostnames, protection,
+headers, and auth are later dialogs. `update` replaces the default `/`
+route's backend **list** with the flags given (and display name / Force HTTPS).
+`backend add` is the additive path.
 
 **`<name>` is `metadata.name`.** `--display-name` writes `app.kubernetes.io/name`
 (max 50). Lookup by display name is **not in v1**.
@@ -155,13 +161,14 @@ Force HTTPS).
 ## Create
 
 Defaults copy the portal: Force HTTPS on, WAF Enforce at paranoia 1 (Relaxed),
-no custom hostnames, no Host override. Backend is required and exclusive:
-`--endpoint` **or** `--network-service` plus `--port`. Mixing them is a usage
-error.
+no custom hostnames, no Host override. At least one backend is required.
+`--endpoint` and `--network-service` may both appear: each flag group is one
+entry in the default `/` pool. `--endpoint` is repeatable. Each
+`--network-service` is paired with the `--port` that follows it.
 
 `--endpoint` is a URL. Missing scheme is a usage error. `https://<ip>`
-requires `--tls-hostname`. `--tls-hostname` is a usage error with
-`--network-service`.
+requires `--tls-hostname`. `--tls-hostname` applies to the URL backends on
+that command, never to a NetworkService entry.
 
 `--network-service` names an object in the same namespace. `--port` is the
 port **name** on that service (`http`, not `8080`). If it is missing, fail
@@ -220,15 +227,20 @@ shape.
 
 ## Routes and backends
 
-An HTTPProxy already allows up to 16 rules. One backend per rule
-(`MaxItems=1`). Multi-backend in the product is **multiple routes**, each
-with a different origin — the UI is gaining that; the CLI should match it,
-not treat extra rules as a form-locking escape hatch.
+A route is a path match plus a **pool** of backends. Several routes and
+several backends on one route are both first-class — write the design as if
+the old single-backend cap is gone.
 
 ```
 datumctl alb route list   my-app
 datumctl alb route add    my-app --path /api --endpoint https://api.example.com
-datumctl alb route add    my-app --path /    --network-service storefront --port http
+datumctl alb route add    my-app --path /checkout \
+  --endpoint https://a.example.com --endpoint https://b.example.com
+datumctl alb route add    my-app --path / \
+  --network-service storefront --port http \
+  --endpoint https://fallback.example.com
+datumctl alb backend add    my-app --path /api --endpoint https://api-2.example.com
+datumctl alb backend remove my-app --path /api --endpoint https://api.example.com
 datumctl alb route remove my-app --path /api
 ```
 
@@ -238,15 +250,20 @@ datumctl alb route remove my-app --path /api
   v1**.
 - Force HTTPS is a system rule (no backend). `route list` marks it; `remove`
   cannot delete it (`update --no-force-https` does).
-- `update --endpoint` / `--network-service` retargets the default `/` route
-  only. It must not wipe sibling routes, connectors, or unowned filters.
-- `route remove` of `/` is refused while other user routes exist, unless we
-  later add an explicit `--force`. Leaning refuse.
+- `update --endpoint` / `--network-service` **replaces** the default `/`
+  pool. It must not wipe sibling routes, connectors, or unowned filters.
+- `backend add` / `remove` change one entry in a path's pool. Removing the
+  last backend on a route is a usage error — `route remove` deletes the
+  route.
+- `route remove` of `/` is refused while other user routes exist. Leaning
+  refuse without `--force`.
 
-`describe` and `route list` print URL origins as URLs and NetworkService
-origins as `storefront:http`, never a synthesized address. Membership counts
-and nearest-location behaviour live on the NetworkService; the ALB does not
-re-explain them beyond a not-found / not-ready condition message.
+Equal split across a pool unless the API grows a weight field; `--weight` is
+then a flag on each backend group. **Open** until that field exists.
+
+`describe`, `route list`, and `backend list` print URL origins as URLs and
+NetworkService origins as `storefront:http`, never a synthesized address.
+Membership counts stay on the NetworkService object.
 
 `--instance` is not a flag. People who need a raw EndpointSlice keep
 `apply -f`.
@@ -273,24 +290,26 @@ spaces/colons, password ≥4, unique names. `set` replaces the whole list.
 
 ## Complexity
 
-Until the portal ships multi-route editing, extra routes may still classify
-as `advanced`. Once it does, extra routes and NetworkService backends must
-stay form-editable — the CLI writes the same shapes. `describe` can print
-class while it is still a useful warning.
+Until the portal ships multi-route / pool editing, extra routes may still
+classify as `advanced`. Once it does, extra routes, pools, and NetworkService
+backends must stay form-editable — the CLI writes the same shapes. `describe`
+can print class while it is still a useful warning.
 
-Merge-unsafe rule rebuilds (wiping sibling routes) error. Hostname / route
-add / waf / auth stay allowed. `--force` on unsafe merges is **open**,
-leaning refuse.
+Merge-unsafe rule rebuilds (wiping sibling routes or a pool the command did
+not name) error. Hostname / route add / backend add / waf / auth stay
+allowed. `--force` on unsafe merges is **open**, leaning refuse.
 
 Tests must include: NetworkService create from `--workload` and from
 `--selector`, URL default route, NetworkService default route, a second
-path route, a Connector-backed proxy left untouched by `update`, Force HTTPS
-surviving `route add`, and `alb create` refusing to invent a missing
+path route, a route with two URL backends plus one NetworkService, a
+Connector-backed proxy left untouched by `update`, Force HTTPS surviving
+`route add` / `backend add`, and `alb create` refusing to invent a missing
 NetworkService.
 
 ## Status and output
 
-List columns: name, display name, hostname, origin (URL or `name:port`),
+List columns: name, display name, hostname, origin (first backend, `+N`
+if the default route has a pool),
 protection, status, age. `Active` means `Programmed=True`. Hostnames show
 claimed / in use / unverified / DNS not delegated / external DNS / cert
 state. A missing NetworkService is `Error` with
@@ -303,8 +322,9 @@ generated hostname.
 ALB delete types the **object name**, refuses non-interactively without
 `--yes`, and states the cascade (TPP, basic auth, Datum DNS for custom
 hostnames). It does **not** delete referenced NetworkServices. Hostname
-remove / route remove / waf disable / auth unset are `y/N` and proceed when
-non-interactive.
+remove / route remove / backend remove / waf disable / auth unset are `y/N`
+and proceed when non-interactive.
+
 Every mutation has server-side `--dry-run`. Patches send `resourceVersion`
 and retry once on conflict.
 
@@ -325,25 +345,28 @@ object's `spec.ports[].name`. Catalog install is phase 2.
 - TPP `targetRefs` Gateway `{proxy name}`, group `gateway.networking.k8s.io`
 - Auth Secret `{name}-basic-auth`, `{SHA}` htpasswd
 - Create WAF: Enforce, blocking paranoia 1; disable = delete the policy
-- Merge updates preserve sibling routes, `connector`, and unowned filters
-- Client-side: exclusive backend flags; URL scheme; FQDN-or-IP origin; TLS
-  hostname for HTTPS IPs only; NetworkService port is a DNS label; hostname /
-  header / paranoia / auth rules above
+- Merge updates preserve sibling routes, sibling backends, `connector`, and
+  unowned filters
+- Client-side: at least one backend on create / route add; URL scheme;
+  FQDN-or-IP origin; TLS hostname for HTTPS IPs only; NetworkService port is
+  a DNS label; hostname / header / paranoia / auth rules above
 
 ## Phasing
 
 1. **Everyday loop** — ALB CRUD + wait-on-create, NetworkService CRUD,
-   hostname / route / waf / header / auth, URL and NetworkService backends,
-   version, safety, user guide. NetworkService commands error clearly if
-   the CRD is not on the cluster yet.
+   hostname / route / backend / waf / header / auth, URL and NetworkService
+   pools, version, safety, user guide. NetworkService commands error clearly
+   if the CRD is not on the cluster yet.
 2. **Catalog** — tagged plugin archives, `datumctl plugin install alb`.
-3. **Later, as APIs and portal exist** — connector assign, backend pools if
-   `MaxItems` lifts, WAF exclusions, multi-user auth, display-name lookup.
+3. **Later, as APIs and portal exist** — connector assign, backend weights
+   if the field lands, WAF exclusions, multi-user auth, display-name lookup.
 
 ## Open questions
 
 - **`hostname add --wait` in v1?** Leaning no; verification is human-paced.
-- **Refuse wiping sibling routes without `--force`?** Leaning yes.
+- **Refuse wiping sibling routes or an unnamed pool without `--force`?**
+  Leaning yes.
+- **Backend weights?** Equal split until the API has a weight field.
 - **Quota pre-flight vs admission error?** Skip unless the admission message
   is opaque.
 - **Password prompt on TTY?** `--password-stdin` is enough for v1 if tests

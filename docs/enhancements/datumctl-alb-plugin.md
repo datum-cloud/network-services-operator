@@ -22,8 +22,9 @@ Create, print the generated hostname, then attach custom hostnames, routes,
 traffic protection, request headers, and basic auth using the same payloads
 the portal writes, so a CLI-created ALB stays editable in the UI.
 
-The plugin **consumes** a `NetworkService` as a backend. It does not create,
-select, or manage membership of that object.
+A NetworkService is a separate noun in this plugin: create it, then point a
+route at it. The UI will grow the same create flow later; the CLI writes the
+payload first. `alb create` never invents a NetworkService on the side.
 
 ## Motivation
 
@@ -47,8 +48,8 @@ Outside the portal, ALBs are raw YAML, and that YAML is the wrong unit of work.
 
 - Present **Application Load Balancers**, not HTTPProxies.
 - Common path with no YAML: create, print hostname, attach a custom hostname.
-- Point a route at a URL **or** at an existing NetworkService (name + named
-  port). Never create the NetworkService.
+- Create and manage NetworkServices (selector + named ports), then point a
+  route at one by name and port. Do not auto-create one from `alb create`.
 - Add and remove routes that have different backends, matching the upcoming
   portal multi-backend UI.
 - Match portal create defaults and encoding so CLI-created ALBs stay
@@ -61,8 +62,8 @@ Outside the portal, ALBs are raw YAML, and that YAML is the wrong unit of work.
 
 - Replacing `datumctl apply -f`.
 - Domain / DNS zone CRUD (`datumctl dns`).
-- **NetworkService CRUD** — membership, selectors, ports, and readiness live
-  on that object. This plugin only names one that already exists.
+- Picking members by address, location weights, or failover order — the
+  service selector plus platform nearest-location ranking own that.
 - Instance (VPC EndpointSlice) backends as a user flag. NetworkService is the
   product wrapper.
 - Backend pools (several origins on one path). Still `MaxItems=1` per rule.
@@ -80,6 +81,7 @@ Outside the portal, ALBs are raw YAML, and that YAML is the wrong unit of work.
 | Custom hostname | `spec.hostnames[]` + `status.hostnameStatuses[]` |
 | Default route | backend rule matching `/` |
 | Extra route | another `spec.rules[]` entry (path match + one backend) |
+| NetworkService | `NetworkService` — label selector on interfaces + named ports |
 | URL origin | `backends[].endpoint` (+ optional `tls.hostname`) |
 | NetworkService origin | `backends[].networkService.{name,port}` — port is a **name** |
 | Connector | `backends[].connector` (show in v1, do not assign) |
@@ -116,6 +118,12 @@ datumctl alb update   <name> [--endpoint URL] [--tls-hostname HOST]
                       [--force-https|--no-force-https] [--dry-run]
 datumctl alb delete   <name> [--yes] [--dry-run]
 
+datumctl alb network-service list
+datumctl alb network-service create   <name> --workload NAME | --selector K=V...
+                                      --port NAME=NUMBER [--port NAME=NUMBER]...
+                                      [--dry-run]
+datumctl alb network-service describe <name>
+datumctl alb network-service delete   <name> [--yes] [--dry-run]
 datumctl alb hostname add|remove|list <name> [<fqdn>]
 datumctl alb route    add|remove|list <name>
                       [--path PREFIX]
@@ -127,14 +135,17 @@ datumctl alb auth     set|unset|list <name> [--user] [--password-stdin]
 ```
 
 Aliases: `ls`, `show`/`get`, `rm`. `protection` aliases `waf`.
+`network-service` aliases `nsvc`.
 
 **`alb` not `load-balancer` or `httpproxy`.** Portal routes are `/alb`; help
 text always says Application Load Balancer.
 
-**Nested verbs, not one `update` flag set.** Create owns the default `/`
-route, optional hostnames, Force HTTPS, and WAF defaults. Extra routes,
-hostnames, protection, headers, and auth are later dialogs. `update` only
-changes the default `/` route (and display name / Force HTTPS).
+**Nested verbs, not one `update` flag set.** NetworkService is its own noun
+(like `dns zone` vs `dns record`): create the service, then point the ALB at
+it. `alb create` owns the default `/` route, optional hostnames, Force HTTPS,
+and WAF defaults. Extra routes, hostnames, protection, headers, and auth are
+later dialogs. `update` only changes the default `/` route (and display name /
+Force HTTPS).
 
 **`<name>` is `metadata.name`.** `--display-name` writes `app.kubernetes.io/name`
 (max 50). Lookup by display name is **not in v1**.
@@ -152,10 +163,10 @@ error.
 requires `--tls-hostname`. `--tls-hostname` is a usage error with
 `--network-service`.
 
-`--network-service` names an existing object in the same namespace. `--port`
-is the port **name** on that service (`http`, not `8080`). If the service is
-missing, admission/controller will fail; the CLI should fail faster with a
-not-found and a fix that does **not** offer to create it.
+`--network-service` names an object in the same namespace. `--port` is the
+port **name** on that service (`http`, not `8080`). If it is missing, fail
+not-found with a fix that names `datumctl alb network-service create` — do
+not create it as a side effect of `alb create`.
 
 `--wait` is on for create, timeout 2m, until `status.canonicalHostname` is
 set. Do not wait for `Programmed`, `CertificatesReady`, or NetworkService
@@ -173,6 +184,39 @@ Both onboarding paths are first-class: CNAME at the generated hostname, or
 `hostname add` plus domain proof / Datum DNS. `hostname add` does **not** wait
 (leaning no `--wait` in v1). Remove warns that Datum-managed DNS records go
 with it. Unverified / `DNS not delegated` next steps point at `datumctl dns`.
+
+## NetworkService
+
+A NetworkService is the application: interfaces selected by label, named
+ports, nearest-location ranking. An ALB is the edge that points at it. The
+CLI (and later the UI) creates both; they stay two objects so several ALBs
+can share one service and deleting a load balancer does not delete membership.
+
+```
+datumctl alb network-service create storefront \
+  --workload storefront --port http=8080
+datumctl alb create my-app --network-service storefront --port http
+```
+
+`--workload NAME` is sugar for
+`compute.datumapis.com/workload-name=NAME`. `--selector K=V` (repeatable) is
+the raw matchLabels form. At least one of `--workload` or `--selector` is
+required; an empty selector is a usage error. `--port name=number` is
+repeatable (unique names and numbers). Protocol defaults to TCP.
+`trafficDistribution` is omitted so the API default (Nearest) applies — no
+flag in v1.
+
+Do not wait on create by default. Matching nothing (`NoMatchingInterfaces`)
+is the ordinary state of a service written before its workload. `describe`
+shows Ready / members / healthy / per-location serving. `--wait` on create,
+if added, waits for `Ready` with an explicit timeout, not for a member count.
+
+`delete` types the service name and refuses non-interactively without
+`--yes`. If any HTTPProxy in the namespace still names it as a backend, the
+prompt says so. It does not cascade-delete those ALBs.
+
+The UI create flow should write this same object. The CLI is not a private
+shape.
 
 ## Routes and backends
 
@@ -238,9 +282,11 @@ Merge-unsafe rule rebuilds (wiping sibling routes) error. Hostname / route
 add / waf / auth stay allowed. `--force` on unsafe merges is **open**,
 leaning refuse.
 
-Tests must include: URL default route, NetworkService default route, a
-second path route, a Connector-backed proxy left untouched by `update`, and
-the Force HTTPS rule surviving `route add`.
+Tests must include: NetworkService create from `--workload` and from
+`--selector`, URL default route, NetworkService default route, a second
+path route, a Connector-backed proxy left untouched by `update`, Force HTTPS
+surviving `route add`, and `alb create` refusing to invent a missing
+NetworkService.
 
 ## Status and output
 
@@ -254,10 +300,11 @@ state. A missing NetworkService is `Error` with
 protection, auth, custom hostnames, and a copyable `curl` against the
 generated hostname.
 
-Delete types the **object name**, refuses non-interactively without `--yes`,
-and states the cascade (TPP, basic auth, Datum DNS for custom hostnames). It
-does **not** delete referenced NetworkServices. Hostname remove / route
-remove / waf disable / auth unset are `y/N` and proceed when non-interactive.
+ALB delete types the **object name**, refuses non-interactively without
+`--yes`, and states the cascade (TPP, basic auth, Datum DNS for custom
+hostnames). It does **not** delete referenced NetworkServices. Hostname
+remove / route remove / waf disable / auth unset are `y/N` and proceed when
+non-interactive.
 Every mutation has server-side `--dry-run`. Patches send `resourceVersion`
 and retry once on conflict.
 
@@ -271,6 +318,8 @@ object's `spec.ports[].name`. Catalog install is phase 2.
 - Namespace `default`; display name `app.kubernetes.io/name`
 - Force HTTPS and Host override encoded as the portal adapter does
 - URL backend: `endpoint` + optional `tls.hostname`
+- NetworkService object: `spec.networkInterfaces.selector` + `spec.ports`;
+  omit `trafficDistribution`
 - NetworkService backend: `{name, port}` only — no `endpoint`, `connector`,
   `instance`, or `tls`
 - TPP `targetRefs` Gateway `{proxy name}`, group `gateway.networking.k8s.io`
@@ -283,10 +332,10 @@ object's `spec.ports[].name`. Catalog install is phase 2.
 
 ## Phasing
 
-1. **Everyday loop** — CRUD + wait-on-create, hostname / route / waf /
-   header / auth, URL and NetworkService consume, version, safety, user
-   guide. NetworkService flags no-op-error with a clear message if the CRD
-   is not on the cluster yet.
+1. **Everyday loop** — ALB CRUD + wait-on-create, NetworkService CRUD,
+   hostname / route / waf / header / auth, URL and NetworkService backends,
+   version, safety, user guide. NetworkService commands error clearly if
+   the CRD is not on the cluster yet.
 2. **Catalog** — tagged plugin archives, `datumctl plugin install alb`.
 3. **Later, as APIs and portal exist** — connector assign, backend pools if
    `MaxItems` lifts, WAF exclusions, multi-user auth, display-name lookup.

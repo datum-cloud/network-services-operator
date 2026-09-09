@@ -7,6 +7,11 @@
 # TrafficProtectionPolicy, HTTPProxy and Connector downstream, and the
 # extension server's cache reads them locally.
 #
+# Edge reachability: the control plane records, on the hub, which of a project's
+# workload addresses are behind a proxy, and the cells publishing into that
+# namespace read it to decide what to carry. It stops at the hub; no policy
+# carries it on.
+#
 # Network presence: a consumer writes a NetworkBinding on the hub, the control
 # plane manager turns every binding for a (network, location) pair into one
 # shared NetworkContext in the project control plane, the replicator mirrors
@@ -26,6 +31,7 @@
 # NetworkContext, Subnet, and ServingLocation on the local cluster.
 resources:
   # Gateway data plane
+  - ../bases/networking.datumapis.com_edgereachabilities.yaml
   - ../bases/networking.datumapis.com_trafficprotectionpolicies.yaml
   - ../bases/networking.datumapis.com_httpproxies.yaml
   - ../bases/networking.datumapis.com_connectors.yaml

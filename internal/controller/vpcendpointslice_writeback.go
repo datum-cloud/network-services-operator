@@ -54,6 +54,12 @@ const (
 // went while the cell could not see the hub. Nothing replays a deletion.
 const vpcEndpointSliceSweepInterval = 10 * time.Minute
 
+// vpcEndpointSliceResyncInterval paces the pass that acts on a change only the
+// hub saw. A pod put behind a proxy, or taken out from behind one, moves a
+// record on the hub and nothing in the cell. Without a pass of its own, a pod
+// would wait for an unrelated local event before the edge could reach it.
+const vpcEndpointSliceResyncInterval = time.Minute
+
 // VPCEndpointSliceWriteBackReconciler publishes the per-pod EndpointSlices
 // galactic-cni writes in a cell to the federation hub, so the propagation
 // policy already selecting EndpointSlices carries them to every gateway
@@ -76,6 +82,7 @@ type VPCEndpointSliceWriteBackReconciler struct {
 }
 
 // +kubebuilder:rbac:groups=discovery.k8s.io,resources=endpointslices,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=networking.datumapis.com,resources=edgereachabilities,verbs=get;list;watch
 
 func (r *VPCEndpointSliceWriteBackReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
 	cl, err := r.mgr.GetCluster(ctx, req.ClusterName)
@@ -88,7 +95,7 @@ func (r *VPCEndpointSliceWriteBackReconciler) Reconcile(ctx context.Context, req
 
 func (r *VPCEndpointSliceWriteBackReconciler) publish(
 	ctx context.Context,
-	cl client.Client,
+	cl client.Reader,
 	key client.ObjectKey,
 ) error {
 	logger := log.FromContext(ctx)
@@ -135,6 +142,21 @@ func (r *VPCEndpointSliceWriteBackReconciler) publish(
 		return nil
 	}
 
+	// A pod nothing serves through a proxy is a pod no edge has to reach, and
+	// carrying it puts one tenant's addresses on every other tenant's edge.
+	//
+	// Silence is not a withdrawal. A namespace the control plane has not
+	// answered for keeps whatever it already reaches: a route pulled out from
+	// under a pod that is still serving black-holes live traffic, while a route
+	// left up for a pod nothing sends to costs a table entry.
+	reachable, recorded, err := r.reachability(ctx, hub, slice.Namespace)
+	if err != nil {
+		return err
+	}
+	if recorded && !servesReachableAddress(&slice, reachable) {
+		return r.collect(ctx, hub, location, key)
+	}
+
 	// A copy exists to be federated onward. A slice whose namespace names no
 	// project cannot be routed and would leave an object nothing collects.
 	routing, err := resolveProjectRouting(ctx, cl, slice.Namespace)
@@ -165,6 +187,43 @@ func (r *VPCEndpointSliceWriteBackReconciler) publish(
 	}
 
 	return nil
+}
+
+// reachability reads the control plane's answer for a namespace: which of the
+// project's workload addresses are behind a proxy. The second return says
+// whether an answer exists at all, which no set of addresses can express.
+func (r *VPCEndpointSliceWriteBackReconciler) reachability(
+	ctx context.Context,
+	hub client.Reader,
+	namespace string,
+) (map[string]struct{}, bool, error) {
+	var record networkingv1alpha.EdgeReachability
+	key := client.ObjectKey{Namespace: namespace, Name: networkingv1alpha.EdgeReachabilityName}
+	if err := hub.Get(ctx, key, &record); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, false, nil
+		}
+		return nil, false, fmt.Errorf("failed reading edge reachability for %q: %w", namespace, err)
+	}
+
+	addresses := make(map[string]struct{}, len(record.Spec.Addresses))
+	for _, address := range record.Spec.Addresses {
+		addresses[address] = struct{}{}
+	}
+	return addresses, true, nil
+}
+
+// servesReachableAddress reports whether the slice describes an address the
+// control plane says something serves.
+func servesReachableAddress(slice *discoveryv1.EndpointSlice, reachable map[string]struct{}) bool {
+	for _, endpoint := range slice.Endpoints {
+		for _, address := range endpoint.Addresses {
+			if _, ok := reachable[address]; ok {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // isVPCPodEndpointSlice reports whether a slice is one galactic-cni published
@@ -369,6 +428,30 @@ func (r *VPCEndpointSliceWriteBackReconciler) sweep(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
+// resync republishes every vpc slice the cell holds, so a reachability record
+// that has changed on the hub is acted on without waiting for the pod to change.
+// publish decides both directions, so this both restores a copy that was
+// withheld and removes one that is no longer served.
+func (r *VPCEndpointSliceWriteBackReconciler) resync(ctx context.Context) error {
+	var held discoveryv1.EndpointSliceList
+	if err := r.localReader.List(ctx, &held, client.HasLabels{VPCPodTenantIDLabel}); err != nil {
+		return fmt.Errorf("failed listing vpc endpointslices: %w", err)
+	}
+
+	var errs []error
+	for i := range held.Items {
+		slice := &held.Items[i]
+		if isVPCEndpointSliceCopy(slice) {
+			continue
+		}
+		if err := r.publish(ctx, r.localReader, client.ObjectKeyFromObject(slice)); err != nil {
+			errs = append(errs, err)
+		}
+	}
+
+	return errors.Join(errs...)
+}
+
 func (r *VPCEndpointSliceWriteBackReconciler) location(ctx context.Context) (string, error) {
 	identity, err := ResolveLocationIdentity(ctx, r.localReader, r.Location)
 	if err != nil {
@@ -383,16 +466,23 @@ func (r *VPCEndpointSliceWriteBackReconciler) location(ctx context.Context) (str
 
 // Start runs the sweep on a timer for as long as the manager runs.
 func (r *VPCEndpointSliceWriteBackReconciler) Start(ctx context.Context) error {
-	ticker := time.NewTicker(vpcEndpointSliceSweepInterval)
-	defer ticker.Stop()
+	sweeps := time.NewTicker(vpcEndpointSliceSweepInterval)
+	defer sweeps.Stop()
+
+	resyncs := time.NewTicker(vpcEndpointSliceResyncInterval)
+	defer resyncs.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-ticker.C:
+		case <-sweeps.C:
 			if err := r.sweep(ctx); err != nil {
 				log.FromContext(ctx).Error(err, "failed sweeping published vpc endpointslices")
+			}
+		case <-resyncs.C:
+			if err := r.resync(ctx); err != nil {
+				log.FromContext(ctx).Error(err, "failed resyncing published vpc endpointslices")
 			}
 		}
 	}

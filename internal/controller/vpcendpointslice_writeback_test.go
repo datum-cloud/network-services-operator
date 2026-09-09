@@ -396,3 +396,111 @@ func TestALongPodNameStillPublishes(t *testing.T) {
 	require.NoError(t, r.writeBack.sweep(r.ctx))
 	require.NoError(t, r.hub.Get(r.ctx, client.ObjectKeyFromObject(&copied), &copied))
 }
+
+// recordEdgeReachability writes the control plane's answer for this namespace
+// onto the hub, which is where a cell reads it from.
+func (r *reachability) recordEdgeReachability(addresses ...string) {
+	r.t.Helper()
+
+	record := &networkingv1alpha.EdgeReachability{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: r.namespace,
+			Name:      networkingv1alpha.EdgeReachabilityName,
+		},
+		Spec: networkingv1alpha.EdgeReachabilitySpec{Addresses: addresses},
+	}
+	require.NoError(r.t, r.hub.Create(r.ctx, record))
+}
+
+// A namespace the control plane has not answered for keeps reaching what it
+// already reached. Treating silence as a withdrawal would pull the route out
+// from under every pod in a project the moment the record stopped arriving.
+func TestASliceIsPublishedWhileTheControlPlaneHasNotAnswered(t *testing.T) {
+	r := newReachability(t)
+	r.sliceOnCell()
+
+	r.publish(liveSliceName)
+
+	_, found := r.hubCopy()
+	require.True(t, found, "no answer is not an answer of no")
+}
+
+func TestASliceServingAProxyIsPublished(t *testing.T) {
+	r := newReachability(t)
+	r.sliceOnCell()
+	r.recordEdgeReachability("fd20:0:2::9:0:0", liveAddress)
+
+	r.publish(liveSliceName)
+
+	_, found := r.hubCopy()
+	require.True(t, found)
+}
+
+// The whole point: a pod nothing serves through a proxy is a pod no edge has
+// to reach, and carrying it puts one tenant's addresses on every other
+// tenant's edge.
+func TestASliceServingNoProxyIsNotPublished(t *testing.T) {
+	r := newReachability(t)
+	r.sliceOnCell()
+	r.recordEdgeReachability("fd20:0:2::9:0:0")
+
+	r.publish(liveSliceName)
+
+	_, found := r.hubCopy()
+	require.False(t, found, "a pod behind no proxy is not carried to the edge")
+}
+
+// A project that publishes nothing is a real answer, and it is the answer most
+// projects give.
+func TestAnEmptyAnswerWithdrawsEverything(t *testing.T) {
+	r := newReachability(t)
+	r.sliceOnCell()
+	r.recordEdgeReachability()
+
+	r.publish(liveSliceName)
+
+	_, found := r.hubCopy()
+	require.False(t, found)
+}
+
+// A proxy deleted, or a selector narrowed, leaves a copy behind that nothing
+// routes to. The next pass has to take it back down.
+func TestACopyIsCollectedWhenItStopsServingAProxy(t *testing.T) {
+	r := newReachability(t)
+	r.sliceOnCell()
+
+	r.publish(liveSliceName)
+	_, found := r.hubCopy()
+	require.True(t, found)
+
+	r.recordEdgeReachability()
+	r.publish(liveSliceName)
+
+	_, found = r.hubCopy()
+	require.False(t, found, "a copy nothing serves is collected")
+}
+
+// Nothing in a cell watches the hub, so a pod put behind a proxy has no local
+// event to act on. The resync is the only thing that brings it back.
+func TestTheResyncPublishesASliceThatHasJustBeenPutBehindAProxy(t *testing.T) {
+	r := newReachability(t)
+	r.sliceOnCell()
+	r.recordEdgeReachability()
+
+	r.publish(liveSliceName)
+	_, found := r.hubCopy()
+	require.False(t, found)
+
+	var record networkingv1alpha.EdgeReachability
+	require.NoError(t, r.hub.Get(r.ctx, client.ObjectKey{
+		Namespace: r.namespace,
+		Name:      networkingv1alpha.EdgeReachabilityName,
+	}, &record))
+	record.Spec.Addresses = []string{liveAddress}
+	require.NoError(t, r.hub.Update(r.ctx, &record))
+
+	require.NoError(t, r.writeBack.resync(r.ctx))
+
+	_, found = r.hubCopy()
+	require.True(t, found, "the resync is what acts on a change only the hub saw")
+}

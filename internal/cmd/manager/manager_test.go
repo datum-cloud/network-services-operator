@@ -23,6 +23,7 @@ var reconcilerControllerNames = map[string]string{
 	"ConnectorAdvertisementReconciler":             "connectoradvertisement",
 	"ConnectorReconciler":                          "connector",
 	"DomainReconciler":                             "domain",
+	"EdgeReachabilityReconciler":                   "edgereachability",
 	"GatewayClassReconciler":                       "gatewayclass",
 	"GatewayDownstreamCertificateSolverReconciler": "downstream-certificate-solver",
 	"GatewayDownstreamGCReconciler":                "gateway_downstream_resources",

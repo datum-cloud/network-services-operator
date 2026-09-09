@@ -18,43 +18,57 @@
 Balancers without exposing that an ALB is an `HTTPProxy`, a
 `TrafficProtectionPolicy`, an Envoy `SecurityPolicy`, and an htpasswd `Secret`.
 
-Create, print the generated hostname, then attach custom hostnames, traffic
-protection, request headers, and basic auth using the same payloads the portal
-writes, so a CLI-created ALB stays editable in the UI.
+Create, print the generated hostname, then attach custom hostnames, routes,
+traffic protection, request headers, and basic auth using the same payloads
+the portal writes, so a CLI-created ALB stays editable in the UI.
+
+The plugin **consumes** a `NetworkService` as a backend. It does not create,
+select, or manage membership of that object.
 
 ## Motivation
 
 Outside the portal, ALBs are raw YAML, and that YAML is the wrong unit of work.
 
-- Users think in load balancers. The API is four objects glued together by
+- Users think in load balancers. The API is several objects glued together by
   naming convention, plus a Gateway the user never sees.
 - Create is not done at HTTP 201. It is done when
   `status.canonicalHostname` exists, so the user can CNAME at
   `<uid>.datumproxy.net`.
+- Routes and backends are about to be first-class in the UI. A CLI that only
+  has `update --endpoint` will fight that the same way extra headers do today.
 - The portal already sends "advanced" header work to the CLI, then locks the
   form if the CLI writes filters it does not understand — or clobbers them on
   the next origin update.
 - `Accepted` / `Programmed` hide hostname conflicts, domain verification, DNS
-  authority, certificate challenges, and WAF `PartialFailure`.
+  authority, certificate challenges, WAF `PartialFailure`, and a missing
+  NetworkService.
 
 ## Goals
 
 - Present **Application Load Balancers**, not HTTPProxies.
 - Common path with no YAML: create, print hostname, attach a custom hostname.
-- Match portal create defaults and encoding so objects stay `simple` /
-  `host-only` and form-editable.
-- Merge-safe updates: preserve connectors, extra rules, and filters the CLI
-  did not create.
-- Surface hostname, cert, DNS, and protection state in product words.
+- Point a route at a URL **or** at an existing NetworkService (name + named
+  port). Never create the NetworkService.
+- Add and remove routes that have different backends, matching the upcoming
+  portal multi-backend UI.
+- Match portal create defaults and encoding so CLI-created ALBs stay
+  form-editable.
+- Merge-safe updates: preserve connectors, sibling routes, and filters the
+  CLI did not create.
+- Surface hostname, cert, DNS, protection, and backend kind in product words.
 
 ## Non-goals
 
 - Replacing `datumctl apply -f`.
-- Domain / DNS zone CRUD (`datumctl dns` already exists; this plugin points
-  at it).
+- Domain / DNS zone CRUD (`datumctl dns`).
+- **NetworkService CRUD** — membership, selectors, ports, and readiness live
+  on that object. This plugin only names one that already exists.
+- Instance (VPC EndpointSlice) backends as a user flag. NetworkService is the
+  product wrapper.
+- Backend pools (several origins on one path). Still `MaxItems=1` per rule.
+- Connector assignment, URL rewrite, response headers, WAF sampling /
+  thresholds / exclusions.
 - Metrics, logs, activity, PoP maps, caching, branded error pages.
-- Connector / instance backend assignment, backend pools, path matching, URL
-  rewrite, response headers, WAF sampling / thresholds / exclusions.
 
 ## Product model
 
@@ -64,16 +78,20 @@ Outside the portal, ALBs are raw YAML, and that YAML is the wrong unit of work.
 | Display name | `app.kubernetes.io/name` |
 | Generated hostname | `status.canonicalHostname` |
 | Custom hostname | `spec.hostnames[]` + `status.hostnameStatuses[]` |
-| Origin | `spec.rules[].backends[].endpoint` (+ optional `tls.hostname`) |
+| Default route | backend rule matching `/` |
+| Extra route | another `spec.rules[]` entry (path match + one backend) |
+| URL origin | `backends[].endpoint` (+ optional `tls.hostname`) |
+| NetworkService origin | `backends[].networkService.{name,port}` — port is a **name** |
 | Connector | `backends[].connector` (show in v1, do not assign) |
 | Force HTTPS | extra rule: `x-forwarded-proto: http` → HTTPS 301, no backends |
 | Host override | rule-level `RequestHeaderModifier` set `Host` |
-| Other request headers | same filter; portal treats the ALB as `advanced` |
+| Other request headers | same filter; portal may treat extra names as `advanced` |
 | Traffic protection | TPP targeting `Gateway/{proxy name}` |
 | Basic auth | Envoy `SecurityPolicy` + Secret `{name}-basic-auth` (`{SHA}` htpasswd) |
 
-The user never names the Gateway. The operator synthesizes it; the policy is
-named after the proxy because attachment is by that Gateway name.
+The user never names the Gateway. Endpoint, connector, instance, and
+networkService are mutually exclusive on one backend. NetworkService backends
+have no TLS — members are reached over plaintext HTTP.
 
 `-o json|yaml` emits the raw API objects. There is no fictional ALB CRD.
 
@@ -83,20 +101,26 @@ named after the proxy because attachment is by that Gateway name.
 datumctl alb version
 
 datumctl alb list     [--status active|pending|error] [-o table|wide|json|yaml|name]
-datumctl alb create   <name> --endpoint URL [--hostname FQDN]...
-                      [--display-name TEXT] [--host-header HOST]
-                      [--tls-hostname HOST]
+datumctl alb create   <name>
+                      (--endpoint URL | --network-service NAME --port PORTNAME)
+                      [--hostname FQDN]... [--display-name TEXT]
+                      [--host-header HOST] [--tls-hostname HOST]
                       [--force-https|--no-force-https]
                       [--waf-mode Enforce|Observe|Disabled]
                       [--paranoia N] [--no-waf]
                       [--wait|--no-wait] [--timeout D] [--dry-run]
 datumctl alb describe <name>
 datumctl alb update   <name> [--endpoint URL] [--tls-hostname HOST]
+                      [--network-service NAME --port PORTNAME]
                       [--display-name TEXT]
                       [--force-https|--no-force-https] [--dry-run]
 datumctl alb delete   <name> [--yes] [--dry-run]
 
 datumctl alb hostname add|remove|list <name> [<fqdn>]
+datumctl alb route    add|remove|list <name>
+                      [--path PREFIX]
+                      (--endpoint URL | --network-service NAME --port PORTNAME)
+                      [--tls-hostname HOST]
 datumctl alb waf      set|disable|describe <name> [--mode] [--paranoia]
 datumctl alb header   set|unset|list <name> [Name=value|Name]
 datumctl alb auth     set|unset|list <name> [--user] [--password-stdin]
@@ -107,34 +131,36 @@ Aliases: `ls`, `show`/`get`, `rm`. `protection` aliases `waf`.
 **`alb` not `load-balancer` or `httpproxy`.** Portal routes are `/alb`; help
 text always says Application Load Balancer.
 
-**Nested verbs, not one `update` flag set.** Create owns origin, optional
-hostnames, Force HTTPS, and WAF defaults. Hostnames, protection, headers, and
-auth are later portal dialogs and independent objects. `update` only changes
-the proxy document (origin, TLS hostname, display name, Force HTTPS).
+**Nested verbs, not one `update` flag set.** Create owns the default `/`
+route, optional hostnames, Force HTTPS, and WAF defaults. Extra routes,
+hostnames, protection, headers, and auth are later dialogs. `update` only
+changes the default `/` route (and display name / Force HTTPS).
 
-**`<name>` is `metadata.name`.** The portal generates a slug from a display
-name; scripts need a name they chose. `--display-name` writes the annotation
-(max 50 characters). Lookup by display name is **not in v1** (names are not
-unique).
+**`<name>` is `metadata.name`.** `--display-name` writes `app.kubernetes.io/name`
+(max 50). Lookup by display name is **not in v1**.
 
 **`version` is offline.** No credentials, no project, no entitlement.
 
 ## Create
 
-Defaults copy the portal dialog: Force HTTPS on, WAF Enforce at paranoia 1
-(Relaxed), no custom hostnames, no Host override. `--endpoint` is a URL
-(paste), not a protocol+host split. Missing scheme is a usage error.
-`https://<ip>` requires `--tls-hostname`. `--no-waf` skips the policy;
-`--waf-mode Disabled` is the same outcome.
+Defaults copy the portal: Force HTTPS on, WAF Enforce at paranoia 1 (Relaxed),
+no custom hostnames, no Host override. Backend is required and exclusive:
+`--endpoint` **or** `--network-service` plus `--port`. Mixing them is a usage
+error.
+
+`--endpoint` is a URL. Missing scheme is a usage error. `https://<ip>`
+requires `--tls-hostname`. `--tls-hostname` is a usage error with
+`--network-service`.
+
+`--network-service` names an existing object in the same namespace. `--port`
+is the port **name** on that service (`http`, not `8080`). If the service is
+missing, admission/controller will fail; the CLI should fail faster with a
+not-found and a fix that does **not** offer to create it.
 
 `--wait` is on for create, timeout 2m, until `status.canonicalHostname` is
-set. That is the string the user CNAMEs at. Do not wait for `Programmed` or
-`CertificatesReady` — those can lag or stay pending on an unverified custom
-hostname.
-
-`hostname add` does **not** wait. Verification can take hours; print
-conditions and a next step instead. `--wait` there is **open**, leaning no
-for v1.
+set. Do not wait for `Programmed`, `CertificatesReady`, or NetworkService
+`Ready` — the hostname is the product of create; an empty membership is an
+ordinary state of a service written before its workload.
 
 ## Hostnames
 
@@ -143,105 +169,132 @@ for v1.
 | Generated | `status.canonicalHostname` | Copy / CNAME. Never put it in `spec.hostnames`. |
 | Custom | `spec.hostnames[]` | Unique on the platform. Domain auto-created if missing. No wildcards. |
 
-Both onboarding paths are first-class: CNAME at the generated hostname (no
-`hostname add`), or `hostname add` plus domain proof / Datum DNS for a cert
-on `app.example.com`. Create success should offer both, not push custom
-hostnames as mandatory.
+Both onboarding paths are first-class: CNAME at the generated hostname, or
+`hostname add` plus domain proof / Datum DNS. `hostname add` does **not** wait
+(leaning no `--wait` in v1). Remove warns that Datum-managed DNS records go
+with it. Unverified / `DNS not delegated` next steps point at `datumctl dns`.
 
-`hostname remove` warns that Datum-managed DNS records for that name go with
-it. Conflicts use the server's message.
+## Routes and backends
 
-When a hostname is `DNS not delegated` or unverified, next steps point at
-`datumctl dns` rather than inventing a second delegation UI.
+An HTTPProxy already allows up to 16 rules. One backend per rule
+(`MaxItems=1`). Multi-backend in the product is **multiple routes**, each
+with a different origin — the UI is gaining that; the CLI should match it,
+not treat extra rules as a form-locking escape hatch.
 
-## Origins, headers, protection, auth
+```
+datumctl alb route list   my-app
+datumctl alb route add    my-app --path /api --endpoint https://api.example.com
+datumctl alb route add    my-app --path /    --network-service storefront --port http
+datumctl alb route remove my-app --path /api
+```
 
-**Origin.** One public URL (`MaxItems=1`). `update --endpoint` rebuilds the
-backend rule but **must** keep an existing connector, extra rules, and header
-`set` entries the CLI does not own. Replacing `spec.rules` wholesale detaches
-Connector-backed ALBs.
+- `--path` defaults to `/` on `route add` only when the ALB has no default
+  route yet. A second `/` is a conflict.
+- Path is prefix match in v1. Methods, headers, and exact-path are **not in
+  v1**.
+- Force HTTPS is a system rule (no backend). `route list` marks it; `remove`
+  cannot delete it (`update --no-force-https` does).
+- `update --endpoint` / `--network-service` retargets the default `/` route
+  only. It must not wipe sibling routes, connectors, or unowned filters.
+- `route remove` of `/` is refused while other user routes exist, unless we
+  later add an explicit `--force`. Leaning refuse.
+
+`describe` and `route list` print URL origins as URLs and NetworkService
+origins as `storefront:http`, never a synthesized address. Membership counts
+and nearest-location behaviour live on the NetworkService; the ALB does not
+re-explain them beyond a not-found / not-ready condition message.
+
+`--instance` is not a flag. People who need a raw EndpointSlice keep
+`apply -f`.
+
+## Headers, protection, auth
 
 **Force HTTPS** is the portal's exact redirect rule (`x-forwarded-proto: http`,
-301, no backends). Other redirects are left alone. Basic auth without Force
-HTTPS warns: credentials would be plaintext.
+301, no backends). Basic auth without it warns: credentials would be plaintext.
 
 **Headers.** `--host-header` / `header set Host=...` is the portal override
 (literal hostname, no wildcard, no IP). Non-Host `header set` is allowed and
-**warns** that the portal will lock the form (`advanced`). Unsetting the last
-non-Host header must return the object to `host-only` so the form unlocks.
-Refuse-all and silent-allow were both worse.
+**warns** if the portal still treats that as `advanced`. Unsetting the last
+non-Host header must return the object to `host-only`.
 
 **WAF.** `set` creates a same-named TPP targeting `Gateway/{name}`. `disable`
-deletes the policy (do not write `mode: Disabled`). Paranoia is blocking 1–4
-(Relaxed / Balanced / Strict / Maximum). `describe` shows portal readiness:
-Disabled, Pending, Monitoring, Protected, Error. Detection paranoia, sampling,
-thresholds, and exclusions are **not in v1**.
+deletes the policy. Paranoia is blocking 1–4 (Relaxed / Balanced / Strict /
+Maximum). Readiness: Disabled, Pending, Monitoring, Protected, Error.
+Sampling, thresholds, exclusions, detection paranoia: **not in v1**.
 
 **Auth.** `--password-stdin` required; `list` prints usernames never hashes.
-`{SHA}` htpasswd only (Envoy). Portal validation: one user minimum, username
-≤64 no spaces/colons, password ≥4, unique names. `set` replaces the whole
-user list (dialog save). `unset` deletes policy + secret. `auth add`/`remove`
-is **not in v1**.
+`{SHA}` htpasswd. Portal validation: one user minimum, username ≤64 no
+spaces/colons, password ≥4, unique names. `set` replaces the whole list.
+`unset` deletes policy + secret.
 
 ## Complexity
 
-Portal classes: `simple` (no backend-rule filters), `host-only` (exactly Host
-set), `advanced` (anything else) → form read-only.
+Until the portal ships multi-route editing, extra routes may still classify
+as `advanced`. Once it does, extra routes and NetworkService backends must
+stay form-editable — the CLI writes the same shapes. `describe` can print
+class while it is still a useful warning.
 
-Create and portal-equivalent edits stay simple/host-only. `describe` prints
-the class. Merge-unsafe rule rebuilds error unless we add `--force`
-(**open**, leaning: refuse unsafe merges; `hostname add` still allowed).
+Merge-unsafe rule rebuilds (wiping sibling routes) error. Hostname / route
+add / waf / auth stay allowed. `--force` on unsafe merges is **open**,
+leaning refuse.
 
-Tests must include a Connector-backed proxy and an advanced proxy, not only
-the simple case.
+Tests must include: URL default route, NetworkService default route, a
+second path route, a Connector-backed proxy left untouched by `update`, and
+the Force HTTPS rule surviving `route add`.
 
 ## Status and output
 
-List columns: name, display name, hostname, origin, protection, status, age.
-`Active` means `Programmed=True` (portal badge). Hostnames show claimed / in
-use / unverified / DNS not delegated / external DNS / cert state. Protection
-uses the portal readiness words, not CRD mode alone. Unknown reasons pass
-through raw.
+List columns: name, display name, hostname, origin (URL or `name:port`),
+protection, status, age. `Active` means `Programmed=True`. Hostnames show
+claimed / in use / unverified / DNS not delegated / external DNS / cert
+state. A missing NetworkService is `Error` with
+`NetworkServiceBackendNotFound`, not a generic pending.
 
-`describe` is the CLI overview: status, generated hostname, origin,
-protection, auth, custom hostnames, and next steps (including a copyable
-`curl` against the generated hostname).
+`describe` is the CLI overview: status, generated hostname, routes,
+protection, auth, custom hostnames, and a copyable `curl` against the
+generated hostname.
 
 Delete types the **object name**, refuses non-interactively without `--yes`,
-and states the cascade (TPP, basic auth, Datum DNS for custom hostnames).
-Hostname remove / waf disable / auth unset are `y/N` and proceed when
-non-interactive. Every mutation has server-side `--dry-run`. Patches send
-`resourceVersion` and retry once on conflict.
+and states the cascade (TPP, basic auth, Datum DNS for custom hostnames). It
+does **not** delete referenced NetworkServices. Hostname remove / route
+remove / waf disable / auth unset are `y/N` and proceed when non-interactive.
+Every mutation has server-side `--dry-run`. Patches send `resourceVersion`
+and retry once on conflict.
 
-Exit codes, `Error:` / `Fix:` rendering, entitlement
-(`networking.datumapis.com`), and completion of names match dns (`ALB_`
-symbols). Catalog install is phase 2; until then
-`datumctl plugin install datum-cloud/network-services-operator@<tag>`.
+Exit codes, `Error:` / `Fix:`, entitlement (`networking.datumapis.com`), and
+name completion match dns (`ALB_` symbols). Complete `--network-service`
+from NetworkService names in the namespace; complete `--port` from that
+object's `spec.ports[].name`. Catalog install is phase 2.
 
 ## Payload contract
 
 - Namespace `default`; display name `app.kubernetes.io/name`
 - Force HTTPS and Host override encoded as the portal adapter does
+- URL backend: `endpoint` + optional `tls.hostname`
+- NetworkService backend: `{name, port}` only — no `endpoint`, `connector`,
+  `instance`, or `tls`
 - TPP `targetRefs` Gateway `{proxy name}`, group `gateway.networking.k8s.io`
 - Auth Secret `{name}-basic-auth`, `{SHA}` htpasswd
 - Create WAF: Enforce, blocking paranoia 1; disable = delete the policy
-- Merge updates preserve `connector` and unowned filters
-- Client-side: URL scheme, FQDN-or-IP origin, TLS hostname for HTTPS IPs,
-  hostname/header/paranoia/auth rules above
+- Merge updates preserve sibling routes, `connector`, and unowned filters
+- Client-side: exclusive backend flags; URL scheme; FQDN-or-IP origin; TLS
+  hostname for HTTPS IPs only; NetworkService port is a DNS label; hostname /
+  header / paranoia / auth rules above
 
 ## Phasing
 
-1. **Everyday loop** — CRUD + wait-on-create, hostname / waf / header / auth,
-   version, safety, user guide.
+1. **Everyday loop** — CRUD + wait-on-create, hostname / route / waf /
+   header / auth, URL and NetworkService consume, version, safety, user
+   guide. NetworkService flags no-op-error with a clear message if the CRD
+   is not on the cluster yet.
 2. **Catalog** — tagged plugin archives, `datumctl plugin install alb`.
-3. **Configuration UX, as APIs and portal dialogs exist** — connectors,
-   backend pools, WAF exclusions, multi-user auth, display-name lookup.
+3. **Later, as APIs and portal exist** — connector assign, backend pools if
+   `MaxItems` lifts, WAF exclusions, multi-user auth, display-name lookup.
 
 ## Open questions
 
 - **`hostname add --wait` in v1?** Leaning no; verification is human-paced.
-- **Refuse advanced rule rebuilds without `--force`?** Leaning yes for
-  `spec.rules`; keep hostname/auth/waf edits.
+- **Refuse wiping sibling routes without `--force`?** Leaning yes.
 - **Quota pre-flight vs admission error?** Skip unless the admission message
   is opaque.
 - **Password prompt on TTY?** `--password-stdin` is enough for v1 if tests

@@ -139,14 +139,14 @@ var (
 	locationSourceTotal = promauto.With(ctrlmetrics.Registry).NewGauge(
 		prometheus.GaugeOpts{
 			Name: "nso_location_source_total",
-			Help: "Locations at the source that carry a city code and are therefore publishable.",
+			Help: "Locations at the source that carry a city code and are therefore publishable. Only the leader-elected publisher sets this; read with max(), never sum() or a bare selector.",
 		},
 	)
 
 	locationPublishedTotal = promauto.With(ctrlmetrics.Registry).NewGauge(
 		prometheus.GaugeOpts{
 			Name: "nso_location_published_total",
-			Help: "ServingLocations this publisher currently owns on the federation hub, excluding copies retained by a blocked removal.",
+			Help: "ServingLocations this publisher currently owns on the federation hub, excluding copies retained by a blocked removal. Only the leader-elected publisher sets this; read with max(), never sum() or a bare selector.",
 		},
 	)
 
@@ -155,7 +155,7 @@ var (
 	locationRetainedTotal = promauto.With(ctrlmetrics.Registry).NewGauge(
 		prometheus.GaugeOpts{
 			Name: "nso_location_retained_total",
-			Help: "Published ServingLocations retained because their removal is blocked. Alert on a threshold measured in days, not minutes.",
+			Help: "Published ServingLocations retained because their removal is blocked. Alert on a threshold measured in days, not minutes. Only the leader-elected publisher sets this; read with max(), never sum() or a bare selector.",
 		},
 	)
 

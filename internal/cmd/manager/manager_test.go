@@ -46,6 +46,7 @@ var reconcilerControllerNames = map[string]string{
 	"SubnetClaimReconciler":                        "subnetclaim",
 	"SubnetReconciler":                             "subnet",
 	"TrafficProtectionPolicyReconciler":            "trafficprotectionpolicy",
+	"VPCEndpointSliceWriteBackReconciler":          "vpcendpointslicewriteback",
 }
 
 func registeredNames(registrations []namedSetup) []string {

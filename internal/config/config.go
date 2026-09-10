@@ -1166,6 +1166,13 @@ type ErrorPageConfig struct {
 	// embedded default page is used instead.
 	BodyPath string `json:"bodyPath,omitempty"`
 
+	// OfflineBodyPath is an optional path to a file containing the HTML served
+	// when the edge had no healthy upstream to send the request to — a
+	// NetworkService with no serving members, for example. Same sourcing rules
+	// as BodyPath: empty, unreadable, or empty-on-disk falls back to the
+	// embedded offline page, which in turn falls back to the generic page.
+	OfflineBodyPath string `json:"offlineBodyPath,omitempty"`
+
 	// MinStatusCode is the inclusive lower bound for response status codes that
 	// receive the branded body. The original status code is always preserved.
 	//
@@ -1493,6 +1500,10 @@ func SetDefaults_GatewayResourceReplicatorConfig(obj *GatewayResourceReplicatorC
 		// serving the location.
 		{Group: networkingDatumAPIsGroup, Version: "v1alpha", Kind: "NetworkContext"},
 		{Group: networkingDatumAPIsGroup, Version: "v1alpha", Kind: "Subnet"},
+		// The network itself, so what allocates its identity on the fabric can
+		// be driven by the network and tell a deleted one from one required
+		// nowhere. Read on the hub; not carried on to a cell.
+		{Group: networkingDatumAPIsGroup, Version: "v1alpha", Kind: "Network"},
 	}
 }
 

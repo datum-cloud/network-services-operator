@@ -10,6 +10,7 @@ const (
 	KindTrafficProtectionPolicy = "TrafficProtectionPolicy"
 	KindHTTPProxy               = "HTTPProxy"
 	KindConnector               = "Connector"
+	KindNetwork                 = "Network"
 	KindNetworkContext          = "NetworkContext"
 	KindSubnet                  = "Subnet"
 )

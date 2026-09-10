@@ -519,6 +519,11 @@ const (
 	// slice are being served.
 	HTTPProxyReasonNetworkServiceMembersUnreferenced = "NetworkServiceMembersUnreferenced"
 
+	// HTTPProxyReasonNetworkServiceMembersUnaddressable indicates that a
+	// networkService backend resolved members holding no address of the family
+	// the service publishes. Those members are not being served.
+	HTTPProxyReasonNetworkServiceMembersUnaddressable = "NetworkServiceMembersUnaddressable"
+
 	// This reason is used with the "Accepted" and "Programmed"
 	// conditions when the status is "Unknown" and no controller has reconciled
 	// the HTTPProxy.

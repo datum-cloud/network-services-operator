@@ -779,6 +779,33 @@ func TestHTTPProxyReconcile(t *testing.T) {
 		assert                  func(t *testContext, cl client.Client, httpProxy *networkingv1alpha.HTTPProxy)
 	}{
 		{
+			name:            "sharded networkService reports partial programming once the gateway is programmed",
+			httpProxy:       newNetworkServiceProxy(),
+			existingObjects: append(networkServiceMembers(101), newNetworkService()),
+			postCreateGatewayStatus: func(g *gatewayv1.Gateway) {
+				setGatewayProgrammedWithDefaultHTTPSListener(g)
+			},
+			expectedConditions: []metav1.Condition{
+				{
+					Type:   networkingv1alpha.HTTPProxyConditionProgrammed,
+					Status: metav1.ConditionFalse,
+					Reason: networkingv1alpha.HTTPProxyReasonNetworkServiceMembersUnreferenced,
+				},
+			},
+		},
+		{
+			name:            "sharded networkService stays pending behind an unprogrammed gateway",
+			httpProxy:       newNetworkServiceProxy(),
+			existingObjects: append(networkServiceMembers(101), newNetworkService()),
+			expectedConditions: []metav1.Condition{
+				{
+					Type:   networkingv1alpha.HTTPProxyConditionProgrammed,
+					Status: metav1.ConditionFalse,
+					Reason: networkingv1alpha.HTTPProxyReasonPending,
+				},
+			},
+		},
+		{
 			name:              "connector backend creates envoy patch policy",
 			httpProxy:         connectorHTTPProxy,
 			downstreamObjects: connectorDownstreamObjects(connectorHTTPProxy),
@@ -3811,6 +3838,26 @@ func withInterfaceAddress(address string) func(*networkingv1alpha.NetworkInterfa
 	}
 }
 
+func withInterfaceIPv6Address(address string) func(*networkingv1alpha.NetworkInterface) {
+	return func(member *networkingv1alpha.NetworkInterface) {
+		member.Spec.Addresses = append(member.Spec.Addresses, networkingv1alpha.NetworkInterfaceAddress{
+			Family:  networkingv1alpha.IPv6Protocol,
+			Address: address,
+		})
+	}
+}
+
+func networkServiceMembers(count int) []client.Object {
+	members := make([]client.Object, 0, count)
+	for i := range count {
+		members = append(members, newNetworkServiceMember(
+			fmt.Sprintf("member-%03d", i), "dfw", true,
+			withInterfaceAddress(fmt.Sprintf("10.128.%d.%d/32", i/254, i%254+1)),
+		))
+	}
+	return members
+}
+
 // released is a retained interface no claim holds any more. It keeps its labels
 // and its addresses, and nothing answers on them.
 func released() func(*networkingv1alpha.NetworkInterface) {
@@ -3957,14 +4004,7 @@ func TestHTTPProxyCollectDesiredResourcesNetworkService(t *testing.T) {
 	t.Run("shards members beyond the per-slice limit and reports partial programming", func(t *testing.T) {
 		httpProxy := newNetworkServiceProxy()
 
-		objects := make([]client.Object, 0, 151)
-		objects = append(objects, newNetworkService())
-		for i := range 150 {
-			objects = append(objects, newNetworkServiceMember(
-				fmt.Sprintf("member-%03d", i), "dfw", true,
-				withInterfaceAddress(fmt.Sprintf("10.128.%d.%d/32", i/254, i%254+1)),
-			))
-		}
+		objects := append(networkServiceMembers(150), newNetworkService())
 
 		cl := fake.NewClientBuilder().WithScheme(testScheme).WithObjects(objects...).Build()
 
@@ -4001,6 +4041,8 @@ func TestHTTPProxyCollectDesiredResourcesNetworkService(t *testing.T) {
 		require.Len(t, desiredResources.endpointSlices, 1,
 			"withholding the slice would leave the rule's backendRef dangling")
 		assert.Empty(t, desiredResources.endpointSlices[0].Endpoints)
+		assert.Equal(t, discoveryv1.AddressTypeIPv6, desiredResources.endpointSlices[0].AddressType,
+			"an empty service publishes the platform's first family so refilling it does not flip the slice")
 		assert.Nil(t, desiredResources.partialProgramming)
 
 		require.Len(t, desiredResources.httpRoute.Spec.Rules, 1)
@@ -4011,6 +4053,79 @@ func TestHTTPProxyCollectDesiredResourcesNetworkService(t *testing.T) {
 		require.Len(t, desiredResources.endpointSlices[0].Ports, 1,
 			"the port must survive so the Gateway controller can match the backendRef port")
 		assert.EqualValues(t, 8080, ptr.Deref(desiredResources.endpointSlices[0].Ports[0].Port, 0))
+	})
+
+	t.Run("prefers IPv6 regardless of member order and reports the members it leaves behind", func(t *testing.T) {
+		httpProxy := newNetworkServiceProxy()
+
+		cl := fake.NewClientBuilder().
+			WithScheme(testScheme).
+			WithObjects(
+				newNetworkService(),
+				newNetworkServiceMember("a-1", "dfw", true, withInterfaceAddress("10.128.0.2/32")),
+				newNetworkServiceMember("b-1", "dfw", true, withInterfaceAddress("10.128.0.3/32"), withInterfaceIPv6Address("fd20:0:2::3/128")),
+			).
+			Build()
+
+		desiredResources, err := reconciler.collectDesiredResources(context.Background(), cl, httpProxy)
+		require.NoError(t, err)
+
+		require.Len(t, desiredResources.endpointSlices, 1)
+		endpointSlice := desiredResources.endpointSlices[0]
+		assert.Equal(t, discoveryv1.AddressTypeIPv6, endpointSlice.AddressType,
+			"the family must not depend on which member sorts first")
+		require.Len(t, endpointSlice.Endpoints, 1)
+		assert.Equal(t, []string{"fd20:0:2::3"}, endpointSlice.Endpoints[0].Addresses,
+			"a dual-stack member publishes its IPv6 address even when IPv4 is listed first")
+
+		require.NotNil(t, desiredResources.partialProgramming,
+			"a member dropped for lacking the service's family must be visible in status")
+		assert.Equal(t, networkingv1alpha.HTTPProxyReasonNetworkServiceMembersUnaddressable,
+			desiredResources.partialProgramming.reason)
+		assert.Contains(t, desiredResources.partialProgramming.message, "a-1")
+		assert.Contains(t, desiredResources.partialProgramming.message, "IPv6")
+	})
+
+	t.Run("IPv4-only membership publishes IPv4 with nothing left behind", func(t *testing.T) {
+		httpProxy := newNetworkServiceProxy()
+
+		cl := fake.NewClientBuilder().
+			WithScheme(testScheme).
+			WithObjects(
+				newNetworkService(),
+				newNetworkServiceMember("b-1", "dfw", true, withInterfaceAddress("10.128.0.3/32")),
+				newNetworkServiceMember("a-1", "dfw", true, withInterfaceAddress("10.128.0.2/32")),
+			).
+			Build()
+
+		desiredResources, err := reconciler.collectDesiredResources(context.Background(), cl, httpProxy)
+		require.NoError(t, err)
+
+		require.Len(t, desiredResources.endpointSlices, 1)
+		assert.Equal(t, discoveryv1.AddressTypeIPv4, desiredResources.endpointSlices[0].AddressType)
+		assert.Len(t, desiredResources.endpointSlices[0].Endpoints, 2)
+		assert.Nil(t, desiredResources.partialProgramming)
+	})
+
+	t.Run("shard overflow takes precedence over unaddressable members", func(t *testing.T) {
+		httpProxy := newNetworkServiceProxy()
+
+		objects := networkServiceMembers(101)
+		objects = append(objects, newNetworkService(),
+			newNetworkServiceMember("v6-only", "dfw", true, withInterfaceIPv6Address("fd20:0:2::9/128")))
+
+		cl := fake.NewClientBuilder().WithScheme(testScheme).WithObjects(objects...).Build()
+
+		desiredResources, err := reconciler.collectDesiredResources(context.Background(), cl, httpProxy)
+		require.NoError(t, err)
+
+		require.Len(t, desiredResources.endpointSlices, 1,
+			"one IPv6 member makes the service IPv6; the IPv4 members are left behind, not sharded")
+		assert.Equal(t, discoveryv1.AddressTypeIPv6, desiredResources.endpointSlices[0].AddressType)
+		require.NotNil(t, desiredResources.partialProgramming)
+		assert.Equal(t, networkingv1alpha.HTTPProxyReasonNetworkServiceMembersUnaddressable,
+			desiredResources.partialProgramming.reason)
+		assert.Contains(t, desiredResources.partialProgramming.message, "101 members")
 	})
 
 	t.Run("missing NetworkService fails with errNetworkServiceBackendNotFound", func(t *testing.T) {
@@ -4096,4 +4211,251 @@ func TestHTTPProxyReconcileNetworkServiceBackendNotFound(t *testing.T) {
 	require.NotNil(t, programmed)
 	assert.Equal(t, metav1.ConditionFalse, programmed.Status)
 	assert.Equal(t, networkingv1alpha.HTTPProxyReasonNetworkServiceBackendNotFound, programmed.Reason)
+}
+
+func TestApplyPartialProgramming(t *testing.T) {
+	partial := &partialProgramming{reason: "Partial", message: "only some of it"}
+
+	programmed := metav1.Condition{
+		Type:    networkingv1alpha.HTTPProxyConditionProgrammed,
+		Status:  metav1.ConditionTrue,
+		Reason:  networkingv1alpha.HTTPProxyReasonProgrammed,
+		Message: "The HTTPProxy has been programmed",
+	}
+	gatewayPending := metav1.Condition{
+		Type:    networkingv1alpha.HTTPProxyConditionProgrammed,
+		Status:  metav1.ConditionFalse,
+		Reason:  networkingv1alpha.HTTPProxyReasonPending,
+		Message: "The HTTPProxy has not been programmed",
+	}
+	patchPolicyPending := metav1.Condition{
+		Type:    networkingv1alpha.HTTPProxyConditionProgrammed,
+		Status:  metav1.ConditionFalse,
+		Reason:  networkingv1alpha.HTTPProxyReasonPending,
+		Message: "Downstream EnvoyPatchPolicy not found",
+	}
+
+	tests := []struct {
+		name      string
+		partial   *partialProgramming
+		condition metav1.Condition
+		want      metav1.Condition
+	}{
+		{
+			name:      "downgrades a programmed proxy",
+			partial:   partial,
+			condition: programmed,
+			want: metav1.Condition{
+				Type:    networkingv1alpha.HTTPProxyConditionProgrammed,
+				Status:  metav1.ConditionFalse,
+				Reason:  "Partial",
+				Message: "only some of it",
+			},
+		},
+		{
+			name:      "leaves an unprogrammed gateway's reason in place",
+			partial:   partial,
+			condition: gatewayPending,
+			want:      gatewayPending,
+		},
+		{
+			name:      "leaves a connector patch policy failure in place",
+			partial:   partial,
+			condition: patchPolicyPending,
+			want:      patchPolicyPending,
+		},
+		{
+			name:      "nothing partial changes nothing",
+			partial:   nil,
+			condition: programmed,
+			want:      programmed,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			condition := tt.condition
+			applyPartialProgramming(context.Background(), tt.partial, &condition)
+			assert.Equal(t, tt.want, condition)
+		})
+	}
+}
+
+func TestPruneEndpointSlices(t *testing.T) {
+	testScheme := networkServiceTestScheme(t)
+	httpProxy := newHTTPProxy()
+	otherProxy := newHTTPProxy(func(h *networkingv1alpha.HTTPProxy) { h.Name = "other" })
+
+	newSlice := func(name string, owner *networkingv1alpha.HTTPProxy, opts ...func(*discoveryv1.EndpointSlice)) *discoveryv1.EndpointSlice {
+		endpointSlice := &discoveryv1.EndpointSlice{
+			ObjectMeta:  metav1.ObjectMeta{Namespace: "test", Name: name},
+			AddressType: discoveryv1.AddressTypeIPv6,
+		}
+		if owner != nil {
+			require.NoError(t, controllerutil.SetControllerReference(owner, endpointSlice, testScheme))
+		}
+		for _, opt := range opts {
+			opt(endpointSlice)
+		}
+		return endpointSlice
+	}
+	deleting := func(endpointSlice *discoveryv1.EndpointSlice) {
+		endpointSlice.Finalizers = []string{"test"}
+		endpointSlice.DeletionTimestamp = ptr.To(metav1.Now())
+	}
+
+	cl := fake.NewClientBuilder().
+		WithScheme(testScheme).
+		WithObjects(
+			newSlice("test-0-0", httpProxy),
+			newSlice("test-0-0-1", httpProxy),
+			newSlice("test-1-0", httpProxy),
+			newSlice("other-0-0-1", otherProxy),
+			newSlice("vpc-pod-1", nil),
+			newSlice("test-0-0-2", httpProxy, deleting),
+		).
+		Build()
+
+	desired := []*discoveryv1.EndpointSlice{newSlice("test-0-0", httpProxy)}
+	require.NoError(t, pruneEndpointSlices(context.Background(), cl, httpProxy, desired))
+
+	var remaining discoveryv1.EndpointSliceList
+	require.NoError(t, cl.List(context.Background(), &remaining, client.InNamespace("test")))
+	names := make([]string, 0, len(remaining.Items))
+	for _, endpointSlice := range remaining.Items {
+		names = append(names, endpointSlice.Name)
+	}
+
+	assert.ElementsMatch(t, []string{"test-0-0", "other-0-0-1", "vpc-pod-1", "test-0-0-2"}, names,
+		"only slices this proxy controls, that are not desired and not already going, are pruned")
+}
+
+// TestHTTPProxyReconcileNetworkServiceShards drives a service across the shard
+// boundary in both directions and then off the networkService kind entirely,
+// pinning that shards beyond the first never outlive the membership that
+// needed them while the slice the rule's backendRef names is never touched.
+func TestHTTPProxyReconcileNetworkServiceShards(t *testing.T) {
+	logger := zap.New(zap.UseFlagOptions(&zap.Options{Development: true}))
+	ctx := log.IntoContext(context.Background(), logger)
+
+	testScheme := networkServiceTestScheme(t)
+	require.NoError(t, envoygatewayv1alpha1.AddToScheme(testScheme))
+	require.NoError(t, networkingv1alpha1.AddToScheme(testScheme))
+
+	testConfig := config.NetworkServicesOperator{
+		HTTPProxy: config.HTTPProxyConfig{
+			GatewayClassName: "test-gateway-class",
+		},
+		Gateway: config.GatewayConfig{
+			ControllerName:             gatewayv1.GatewayController("test-gateway-class"),
+			DownstreamGatewayClassName: "test-downstream-gateway-class",
+			TargetDomain:               "example.com",
+		},
+	}
+
+	httpProxy := newNetworkServiceProxy()
+	controllerutil.AddFinalizer(httpProxy, httpProxyFinalizer)
+
+	upstreamNamespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: httpProxy.Namespace}}
+	upstreamNamespace.SetUID(uuid.NewUUID())
+
+	gatewayClass := &gatewayv1.GatewayClass{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-gateway-class"},
+		Spec:       gatewayv1.GatewayClassSpec{ControllerName: testConfig.Gateway.ControllerName},
+	}
+	gatewayClass.SetCreationTimestamp(metav1.Now())
+
+	objects := append(networkServiceMembers(101), httpProxy, upstreamNamespace, gatewayClass, newNetworkService())
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(testScheme).
+		WithObjects(objects...).
+		WithStatusSubresource(httpProxy).
+		WithStatusSubresource(&gatewayv1.Gateway{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+				obj.SetUID(uuid.NewUUID())
+				obj.SetCreationTimestamp(metav1.Now())
+				return c.Create(ctx, obj, opts...)
+			},
+		}).
+		Build()
+
+	reconciler := &HTTPProxyReconciler{
+		mgr:               &fakeMockManager{cl: fakeClient},
+		Config:            testConfig,
+		DownstreamCluster: &fakeCluster{cl: fake.NewClientBuilder().WithScheme(testScheme).Build()},
+	}
+
+	req := mcreconcile.Request{
+		Request:     reconcile.Request{NamespacedName: client.ObjectKeyFromObject(httpProxy)},
+		ClusterName: "test-cluster",
+	}
+
+	reconcile := func() {
+		t.Helper()
+		for range 3 {
+			_, err := reconciler.Reconcile(ctx, req)
+			require.NoError(t, err)
+		}
+	}
+
+	ownedSlices := func() map[string]discoveryv1.EndpointSlice {
+		t.Helper()
+		var list discoveryv1.EndpointSliceList
+		require.NoError(t, fakeClient.List(ctx, &list, client.InNamespace(httpProxy.Namespace)))
+		owned := map[string]discoveryv1.EndpointSlice{}
+		for _, endpointSlice := range list.Items {
+			if metav1.IsControlledBy(&endpointSlice, httpProxy) {
+				owned[endpointSlice.Name] = endpointSlice
+			}
+		}
+		return owned
+	}
+
+	routeNamesShardZero := func() {
+		t.Helper()
+		var route gatewayv1.HTTPRoute
+		require.NoError(t, fakeClient.Get(ctx, client.ObjectKeyFromObject(httpProxy), &route))
+		require.Len(t, route.Spec.Rules, 1)
+		require.Len(t, route.Spec.Rules[0].BackendRefs, 1)
+		assert.Equal(t, "test-0-0", string(route.Spec.Rules[0].BackendRefs[0].Name))
+	}
+
+	reconcile()
+	owned := ownedSlices()
+	require.Len(t, owned, 2)
+	assert.Len(t, owned["test-0-0"].Endpoints, maxEndpointsPerSlice)
+	assert.Len(t, owned["test-0-0-1"].Endpoints, 1)
+	routeNamesShardZero()
+
+	for i := 50; i < 101; i++ {
+		member := newNetworkServiceMember(fmt.Sprintf("member-%03d", i), "dfw", true)
+		require.NoError(t, fakeClient.Delete(ctx, member))
+	}
+
+	reconcile()
+	owned = ownedSlices()
+	require.Len(t, owned, 1, "the shard membership no longer needs must not outlive it")
+	assert.Len(t, owned["test-0-0"].Endpoints, 50)
+	routeNamesShardZero()
+
+	for _, member := range networkServiceMembers(101)[50:] {
+		require.NoError(t, fakeClient.Create(ctx, member))
+	}
+
+	reconcile()
+	owned = ownedSlices()
+	require.Len(t, owned, 2, "membership crossing the boundary again brings the shard back")
+
+	var current networkingv1alpha.HTTPProxy
+	require.NoError(t, fakeClient.Get(ctx, client.ObjectKeyFromObject(httpProxy), &current))
+	current.Spec.Rules[0].Backends[0] = networkingv1alpha.HTTPProxyRuleBackend{Endpoint: "http://www.example.com"}
+	require.NoError(t, fakeClient.Update(ctx, &current))
+
+	reconcile()
+	owned = ownedSlices()
+	require.Len(t, owned, 1, "leaving the networkService kind must take its extra shards with it")
+	assert.Equal(t, discoveryv1.AddressTypeFQDN, owned["test-0-0"].AddressType)
+	routeNamesShardZero()
 }

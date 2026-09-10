@@ -1,0 +1,76 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.16.4
+  name: edgereachabilities.networking.datumapis.com
+spec:
+  group: networking.datumapis.com
+  names:
+    kind: EdgeReachability
+    listKind: EdgeReachabilityList
+    plural: edgereachabilities
+    singular: edgereachability
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.addresses.length()
+      name: Addresses
+      type: integer
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha
+    schema:
+      openAPIV3Schema:
+        description: |-
+          EdgeReachability records which of a project's workload addresses are behind
+          an HTTPProxy, so the platform carries a workload's location to the edges that
+          serve it and stops carrying it everywhere else.
+
+          It is written by the control plane onto the federation hub and read by the
+          cells publishing into it. No consumer creates or edits one, and nothing in a
+          project control plane holds one.
+
+          Absence of the record means the control plane has not answered for this
+          namespace yet, and a reader must keep publishing rather than treat silence as
+          a withdrawal. An empty list is the answer that withdraws.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              EdgeReachabilitySpec is the set of workload addresses in one project
+              namespace that an edge is expected to reach.
+            properties:
+              addresses:
+                description: |-
+                  addresses are the workload addresses currently behind a proxy, one entry
+                  per address, with no prefix length. An empty list is a real answer: it
+                  says the project publishes nothing, which is different from no record at
+                  all.
+                items:
+                  type: string
+                maxItems: 8192
+                type: array
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources: {}

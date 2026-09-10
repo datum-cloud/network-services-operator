@@ -182,3 +182,15 @@ rules:
   - envoypatchpolicies/status
   verbs:
   - get
+- apiGroups:
+  - networking.datumapis.com
+  resources:
+  - edgereachabilities
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch

@@ -26,6 +26,8 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 	scheme.AddKnownTypes(GroupVersion,
 		&Domain{},
 		&DomainList{},
+		&EdgeReachability{},
+		&EdgeReachabilityList{},
 		&HTTPProxy{},
 		&HTTPProxyList{},
 		&Location{},

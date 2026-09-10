@@ -3202,7 +3202,7 @@ func TestDeleteEndpointSliceOnAddressTypeChange(t *testing.T) {
 			wantDeleted: false,
 		},
 		{
-			name:        "members drained, family falls back to IPv4",
+			name:        "backend flips IPv6 to IPv4",
 			existing:    newSlice(discoveryv1.AddressTypeIPv6, "fd20:0:2::1:0:0"),
 			desired:     newSlice(discoveryv1.AddressTypeIPv4),
 			wantDeleted: true,

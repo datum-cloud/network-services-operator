@@ -46,9 +46,10 @@ func (e *errNetworkServiceBackendNotFound) Error() string {
 // resolvedNetworkService is a NetworkService's membership, expressed as the
 // endpoints a backend referencing it should forward to.
 type resolvedNetworkService struct {
-	port        int32
-	addressType discoveryv1.AddressType
-	endpoints   []discoveryv1.Endpoint
+	port          int32
+	addressType   discoveryv1.AddressType
+	endpoints     []discoveryv1.Endpoint
+	unaddressable []string
 }
 
 // resolveNetworkServiceBackend resolves a NetworkService and the named port on
@@ -94,10 +95,9 @@ func resolveNetworkServiceBackend(
 
 	resolved := &resolvedNetworkService{
 		port:        service.Spec.Ports[portIndex].Port,
-		addressType: discoveryv1.AddressTypeIPv4,
+		addressType: preferredAddressType(members),
 	}
 
-	addressTypeSet := false
 	for i := range members {
 		member := &members[i]
 
@@ -107,18 +107,9 @@ func resolveNetworkServiceBackend(
 			continue
 		}
 
-		if !addressTypeSet {
-			addressType, ok := addressTypeForAddress(candidates[0])
-			if !ok {
-				logger.Info("network service member holds an unparseable address", "networkService", ref.Name, "interface", member.Name)
-				continue
-			}
-			resolved.addressType = addressType
-			addressTypeSet = true
-		}
-
 		address, ok := addressOfType(candidates, resolved.addressType)
 		if !ok {
+			resolved.unaddressable = append(resolved.unaddressable, member.Name)
 			logger.Info("network service member holds no address of the service's family",
 				"networkService", ref.Name, "interface", member.Name, "addressType", resolved.addressType)
 			continue
@@ -145,6 +136,23 @@ func interfaceBackhaulAddresses(member *networkingv1alpha.NetworkInterface) []st
 		}
 	}
 	return addresses
+}
+
+func preferredAddressType(members []networkingv1alpha.NetworkInterface) discoveryv1.AddressType {
+	hasIPv4 := false
+	for i := range members {
+		candidates := interfaceBackhaulAddresses(&members[i])
+		if _, ok := addressOfType(candidates, discoveryv1.AddressTypeIPv6); ok {
+			return discoveryv1.AddressTypeIPv6
+		}
+		if _, ok := addressOfType(candidates, discoveryv1.AddressTypeIPv4); ok {
+			hasIPv4 = true
+		}
+	}
+	if hasIPv4 {
+		return discoveryv1.AddressTypeIPv4
+	}
+	return discoveryv1.AddressTypeIPv6
 }
 
 func addressTypeForAddress(address string) (discoveryv1.AddressType, bool) {

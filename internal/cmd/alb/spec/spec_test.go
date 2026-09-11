@@ -8,9 +8,11 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"k8s.io/utils/ptr"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
+	"go.datum.net/network-services-operator/internal/cmd/alb/util"
 	"go.datum.net/network-services-operator/internal/display"
 )
 
@@ -194,6 +196,7 @@ func TestRemoveRoute(t *testing.T) {
 	_, err = RemoveRoute(proxy, "/", false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "default route")
+	assert.Equal(t, util.ExitUsage, exitCode(t, err))
 
 	forced, err := RemoveRoute(proxy, "/", true)
 	require.NoError(t, err)
@@ -201,11 +204,134 @@ func TestRemoveRoute(t *testing.T) {
 
 	_, err = RemoveRoute(proxy, "/missing", false)
 	require.Error(t, err)
+	assert.Equal(t, util.ExitNotFound, exitCode(t, err))
 
 	proxy, err = RemoveRoute(proxy, "/api", false)
 	require.NoError(t, err)
 	assert.Len(t, UserRoutes(proxy), 1)
 	assert.True(t, ForceHTTPS(proxy))
+
+	onlyRedirect, err := RemoveRoute(proxy, "/", false)
+	require.NoError(t, err)
+	assert.Empty(t, UserRoutes(onlyRedirect))
+	_, err = RemoveRoute(onlyRedirect, "/", false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "Force HTTPS redirect")
+}
+
+func TestRemoveRouteRefusesLastRule(t *testing.T) {
+	t.Parallel()
+
+	proxy, err := BuildHTTPProxy(CreateInput{Name: "my-app", Backends: []BackendInput{urlBackend("https://origin.example.com")}})
+	require.NoError(t, err)
+	require.Len(t, proxy.Spec.Rules, 1)
+
+	_, err = RemoveRoute(proxy, "/", false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "last route")
+	assert.Equal(t, util.ExitUsage, exitCode(t, err))
+}
+
+func TestNormalizePath(t *testing.T) {
+	t.Parallel()
+
+	for in, want := range map[string]string{
+		"/":       "/",
+		"/api":    "/api",
+		"/api/":   "/api",
+		" /api/ ": "/api",
+	} {
+		got, err := NormalizePath(in)
+		require.NoError(t, err, in)
+		assert.Equal(t, want, got, in)
+	}
+	for _, bad := range []string{"", "api", "//", "/a//b", "/a b", "/a?x=1", "/a#b"} {
+		_, err := NormalizePath(bad)
+		require.Error(t, err, bad)
+		assert.Equal(t, util.ExitUsage, exitCode(t, err), bad)
+	}
+}
+
+func TestAdvancedRulesAreNotAddressable(t *testing.T) {
+	t.Parallel()
+
+	proxy := newProxy(t, urlBackend("https://origin.example.com"))
+	exact := networkingv1alpha.HTTPProxyRule{
+		Matches: []gatewayv1.HTTPRouteMatch{{
+			Path: &gatewayv1.HTTPPathMatch{Type: ptr.To(gatewayv1.PathMatchExact), Value: ptr.To("/exact")},
+		}},
+		Backends: []networkingv1alpha.HTTPProxyRuleBackend{{Endpoint: "https://exact.example.com"}},
+	}
+	headerOnly := networkingv1alpha.HTTPProxyRule{
+		Matches: []gatewayv1.HTTPRouteMatch{{
+			Headers: []gatewayv1.HTTPHeaderMatch{{Name: "x-tenant", Value: "a"}},
+		}},
+		Backends: []networkingv1alpha.HTTPProxyRuleBackend{{Endpoint: "https://tenant-a.example.com"}},
+	}
+	multi := networkingv1alpha.HTTPProxyRule{
+		Matches: []gatewayv1.HTTPRouteMatch{
+			{Path: &gatewayv1.HTTPPathMatch{Type: ptr.To(gatewayv1.PathMatchPathPrefix), Value: ptr.To("/a")}},
+			{Path: &gatewayv1.HTTPPathMatch{Type: ptr.To(gatewayv1.PathMatchPathPrefix), Value: ptr.To("/b")}},
+		},
+		Backends: []networkingv1alpha.HTTPProxyRuleBackend{{Endpoint: "https://ab.example.com"}},
+	}
+	proxy.Spec.Rules = append(proxy.Spec.Rules, exact, headerOnly, multi)
+
+	routes := UserRoutes(proxy)
+	require.Len(t, routes, 4)
+	assert.False(t, routes[0].Advanced)
+	for _, r := range routes[1:] {
+		assert.True(t, r.Advanced, r.Path)
+	}
+	assert.Equal(t, "exact /exact", routes[1].Path)
+	assert.Equal(t, "/ (+conditions)", routes[2].Path)
+	assert.Equal(t, "/a | /b", routes[3].Path)
+
+	updated, err := ReplaceRouteBackends(proxy, "/", []BackendInput{storefrontBackend()})
+	require.NoError(t, err)
+	assert.Equal(t, "https://tenant-a.example.com", updated.Spec.Rules[3].Backends[0].Endpoint)
+	assert.Equal(t, "storefront:http", OriginSummary(updated))
+
+	_, err = RemoveRoute(proxy, "/exact", false)
+	require.Error(t, err)
+	assert.Equal(t, util.ExitNotFound, exitCode(t, err))
+}
+
+func TestUserRedirectRuleIsNotForceHTTPS(t *testing.T) {
+	t.Parallel()
+
+	proxy := newProxy(t, urlBackend("https://origin.example.com"))
+	legacy := networkingv1alpha.HTTPProxyRule{
+		Matches: []gatewayv1.HTTPRouteMatch{{
+			Path: &gatewayv1.HTTPPathMatch{Type: ptr.To(gatewayv1.PathMatchPathPrefix), Value: ptr.To("/legacy")},
+		}},
+		Filters: []gatewayv1.HTTPRouteFilter{{
+			Type: gatewayv1.HTTPRouteFilterRequestRedirect,
+			RequestRedirect: &gatewayv1.HTTPRequestRedirectFilter{
+				Scheme:   ptr.To("https"),
+				Hostname: ptr.To(gatewayv1.PreciseHostname("new.example.com")),
+			},
+		}},
+	}
+	proxy.Spec.Rules = append(proxy.Spec.Rules, legacy)
+
+	assert.True(t, ForceHTTPS(proxy))
+	off := SetForceHTTPS(proxy, false)
+	assert.False(t, ForceHTTPS(off))
+	require.Len(t, off.Spec.Rules, 2)
+	assert.Equal(t, "/legacy", *off.Spec.Rules[1].Matches[0].Path.Value)
+
+	routes := UserRoutes(proxy)
+	require.Len(t, routes, 2)
+	assert.Equal(t, "/legacy", routes[1].Path)
+	assert.Empty(t, routes[1].Backends)
+}
+
+func exitCode(t *testing.T, err error) int {
+	t.Helper()
+	var cliErr *util.CLIError
+	require.ErrorAs(t, err, &cliErr)
+	return cliErr.Code()
 }
 
 func TestReplaceRouteBackendsLeavesSiblingsAlone(t *testing.T) {
@@ -282,11 +408,18 @@ func TestParseBackendFlags(t *testing.T) {
 	assert.Equal(t, "origin.example.com", backends[0].TLSHostname)
 	assert.Equal(t, "storefront", backends[2].NetworkService)
 	assert.Empty(t, backends[2].TLSHostname)
-	assert.Equal(t, []string{"storefront"}, NetworkServiceNames(backends))
 
 	_, err = ParseBackendFlags(BackendFlags{NetworkServices: []string{"storefront"}})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "matching --port")
+
+	_, err = ParseBackendFlags(BackendFlags{Ports: []string{"http"}})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--port only applies")
+
+	_, err = ParseBackendFlags(BackendFlags{Endpoints: []string{"https://a.example.com", "https://a.example.com/"}})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "more than once")
 
 	_, err = ParseBackendFlags(BackendFlags{Endpoints: []string{"origin.example.com"}})
 	require.Error(t, err)

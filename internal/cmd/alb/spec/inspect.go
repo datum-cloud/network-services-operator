@@ -16,7 +16,8 @@ func DefaultRoute(proxy *networkingv1alpha.HTTPProxy) *Route {
 	if rule == nil {
 		return nil
 	}
-	return &Route{Path: rulePath(*rule), Backends: rule.Backends}
+	path, simple := rulePath(*rule)
+	return &Route{Path: path, Backends: rule.Backends, Advanced: !simple}
 }
 
 func OriginSummary(proxy *networkingv1alpha.HTTPProxy) string {
@@ -102,7 +103,7 @@ func backendRuleIndex(proxy *networkingv1alpha.HTTPProxy) int {
 }
 
 func isForceHTTPSRedirectRule(rule networkingv1alpha.HTTPProxyRule) bool {
-	if len(rule.Backends) > 0 {
+	if len(rule.Backends) > 0 || !matchesPlainHTTP(rule.Matches) {
 		return false
 	}
 	for _, filter := range rule.Filters {
@@ -111,6 +112,17 @@ func isForceHTTPSRedirectRule(rule networkingv1alpha.HTTPProxyRule) bool {
 		}
 		if filter.RequestRedirect.Scheme != nil && *filter.RequestRedirect.Scheme == "https" {
 			return true
+		}
+	}
+	return false
+}
+
+func matchesPlainHTTP(matches []gatewayv1.HTTPRouteMatch) bool {
+	for _, match := range matches {
+		for _, header := range match.Headers {
+			if strings.EqualFold(string(header.Name), "x-forwarded-proto") && strings.EqualFold(header.Value, "http") {
+				return true
+			}
 		}
 	}
 	return false

@@ -19,6 +19,7 @@ type Route struct {
 	Path       string
 	Backends   []networkingv1alpha.HTTPProxyRuleBackend
 	ForceHTTPS bool
+	Advanced   bool
 }
 
 func Routes(proxy *networkingv1alpha.HTTPProxy) []Route {
@@ -27,10 +28,12 @@ func Routes(proxy *networkingv1alpha.HTTPProxy) []Route {
 	}
 	routes := make([]Route, 0, len(proxy.Spec.Rules))
 	for _, rule := range proxy.Spec.Rules {
+		path, simple := rulePath(rule)
 		routes = append(routes, Route{
-			Path:       rulePath(rule),
-			Backends:   rule.Backends,
+			Path:       path,
+			Backends:   append([]networkingv1alpha.HTTPProxyRuleBackend(nil), rule.Backends...),
 			ForceHTTPS: isForceHTTPSRedirectRule(rule),
+			Advanced:   !simple && !isForceHTTPSRedirectRule(rule),
 		})
 	}
 	return routes
@@ -46,6 +49,15 @@ func UserRoutes(proxy *networkingv1alpha.HTTPProxy) []Route {
 	return out
 }
 
+func FindRoute(proxy *networkingv1alpha.HTTPProxy, path string) (Route, bool) {
+	idx := routeIndex(proxy, path)
+	if idx < 0 {
+		return Route{}, false
+	}
+	rule := proxy.Spec.Rules[idx]
+	return Route{Path: path, Backends: append([]networkingv1alpha.HTTPProxyRuleBackend(nil), rule.Backends...)}, true
+}
+
 func NormalizePath(path string) (string, error) {
 	path = strings.TrimSpace(path)
 	if path == "" {
@@ -53,13 +65,17 @@ func NormalizePath(path string) (string, error) {
 			WithFix("name the route by its path prefix, for example:\n       --path /api")
 	}
 	if !strings.HasPrefix(path, "/") {
-		return "", util.UsageErrorf("path %q must start with /", path)
+		return "", util.UsageErrorf("path %q must start with /", path).
+			WithFix("for example:\n       --path /" + path)
 	}
-	if strings.ContainsAny(path, " ?#") {
-		return "", util.UsageErrorf("path %q must be a plain path prefix", path)
+	if strings.ContainsAny(path, " ?#") || strings.Contains(path, "//") {
+		return "", util.UsageErrorf("path %q must be a plain path prefix", path).
+			WithFix("use a single leading slash and no spaces, query, or fragment, for example:\n       --path /api")
 	}
-	if len(path) > 1 {
-		path = strings.TrimRight(path, "/")
+	if trimmed := strings.TrimRight(path, "/"); trimmed != "" {
+		path = trimmed
+	} else {
+		path = DefaultRoutePath
 	}
 	return path, nil
 }
@@ -77,8 +93,7 @@ func AddRoute(current *networkingv1alpha.HTTPProxy, path string, backends []Back
 		return nil, err
 	}
 	if len(backends) == 0 {
-		return nil, util.UsageErrorf("at least one backend is required").
-			WithFix("pass --endpoint URL, or --network-service NAME --port PORTNAME")
+		return nil, errNoBackends()
 	}
 	if routeIndex(current, path) >= 0 {
 		return nil, util.NewCLIError(util.ExitConflict, fmt.Sprintf("route %q already exists", path)).
@@ -100,17 +115,25 @@ func RemoveRoute(current *networkingv1alpha.HTTPProxy, path string, force bool) 
 	}
 	idx := routeIndex(current, path)
 	if idx < 0 {
-		return nil, routeNotFound(current, path)
+		if path == DefaultRoutePath && ForceHTTPS(current) {
+			return nil, util.NewCLIError(util.ExitNotFound, "the only / rule is the Force HTTPS redirect").
+				WithFix(fmt.Sprintf("turn it off with:\n       datumctl alb update %s --no-force-https", current.Name))
+		}
+		return nil, RouteNotFound(current, path)
 	}
 	if path == DefaultRoutePath && !force && len(UserRoutes(current)) > 1 {
-		return nil, util.NewCLIError(util.ExitInvalid, "the default route cannot be removed while other routes exist").
+		return nil, util.UsageErrorf("the default route cannot be removed while other routes exist").
 			WithFix("remove the other routes first, or pass --force to leave the load balancer with no default route")
+	}
+	if len(current.Spec.Rules) == 1 {
+		return nil, util.UsageErrorf("cannot remove the last route on %q", current.Name).
+			WithFix(fmt.Sprintf("replace its backends with route update, or delete the load balancer:\n       datumctl alb delete %s", current.Name))
 	}
 
 	updated := current.DeepCopy()
 	updated.Spec.Rules = append(updated.Spec.Rules[:idx], updated.Spec.Rules[idx+1:]...)
-	if len(updated.Spec.Rules) == 0 {
-		updated.Spec.Rules = nil
+	if err := validateProxy(updated); err != nil {
+		return nil, err
 	}
 	return updated, nil
 }
@@ -121,12 +144,11 @@ func ReplaceRouteBackends(current *networkingv1alpha.HTTPProxy, path string, bac
 		return nil, err
 	}
 	if len(backends) == 0 {
-		return nil, util.UsageErrorf("at least one backend is required").
-			WithFix("pass --endpoint URL, or --network-service NAME --port PORTNAME")
+		return nil, errNoBackends()
 	}
 	idx := routeIndex(current, path)
 	if idx < 0 {
-		return nil, routeNotFound(current, path)
+		return nil, RouteNotFound(current, path)
 	}
 
 	updated := current.DeepCopy()
@@ -144,9 +166,9 @@ func AddRouteBackend(current *networkingv1alpha.HTTPProxy, path string, backend 
 	}
 	idx := routeIndex(current, path)
 	if idx < 0 {
-		return nil, routeNotFound(current, path)
+		return nil, RouteNotFound(current, path)
 	}
-	candidate := toBackend(backend)
+	candidate := ToBackend(backend)
 	for _, existing := range current.Spec.Rules[idx].Backends {
 		if sameBackendTarget(existing, candidate) {
 			return nil, util.NewCLIError(util.ExitConflict,
@@ -169,10 +191,12 @@ func RemoveRouteBackend(current *networkingv1alpha.HTTPProxy, path string, backe
 	}
 	idx := routeIndex(current, path)
 	if idx < 0 {
-		return nil, routeNotFound(current, path)
+		return nil, RouteNotFound(current, path)
 	}
-	target := toBackend(backend)
-	rule := current.Spec.Rules[idx]
+	target := ToBackend(backend)
+
+	updated := current.DeepCopy()
+	rule := &updated.Spec.Rules[idx]
 	kept := make([]networkingv1alpha.HTTPProxyRuleBackend, 0, len(rule.Backends))
 	found := false
 	for _, existing := range rule.Backends {
@@ -191,9 +215,7 @@ func RemoveRouteBackend(current *networkingv1alpha.HTTPProxy, path string, backe
 		return nil, util.UsageErrorf("cannot remove the last backend on route %q", path).
 			WithFix(fmt.Sprintf("remove the route instead:\n       datumctl alb route remove %s --path %s", current.Name, path))
 	}
-
-	updated := current.DeepCopy()
-	updated.Spec.Rules[idx].Backends = kept
+	rule.Backends = kept
 	return updated, nil
 }
 
@@ -233,13 +255,50 @@ func newRouteRule(path string, backends []networkingv1alpha.HTTPProxyRuleBackend
 	return rule
 }
 
-func rulePath(rule networkingv1alpha.HTTPProxyRule) string {
-	for _, match := range rule.Matches {
-		if match.Path != nil && match.Path.Value != nil && *match.Path.Value != "" {
-			return *match.Path.Value
-		}
+func rulePath(rule networkingv1alpha.HTTPProxyRule) (path string, simple bool) {
+	switch len(rule.Matches) {
+	case 0:
+		return DefaultRoutePath, true
+	case 1:
+	default:
+		return describeMatches(rule.Matches), false
 	}
-	return DefaultRoutePath
+
+	match := rule.Matches[0]
+	if len(match.Headers) > 0 || len(match.QueryParams) > 0 || match.Method != nil {
+		return describeMatches(rule.Matches), false
+	}
+	if match.Path == nil {
+		return DefaultRoutePath, true
+	}
+	if match.Path.Type != nil && *match.Path.Type != gatewayv1.PathMatchPathPrefix {
+		return describeMatches(rule.Matches), false
+	}
+	if match.Path.Value == nil || *match.Path.Value == "" {
+		return DefaultRoutePath, true
+	}
+	return *match.Path.Value, true
+}
+
+func describeMatches(matches []gatewayv1.HTTPRouteMatch) string {
+	parts := make([]string, 0, len(matches))
+	for _, m := range matches {
+		part := DefaultRoutePath
+		if m.Path != nil && m.Path.Value != nil {
+			part = *m.Path.Value
+			if m.Path.Type != nil && *m.Path.Type != gatewayv1.PathMatchPathPrefix {
+				part = strings.ToLower(string(*m.Path.Type)) + " " + part
+			}
+		}
+		if m.Method != nil {
+			part = string(*m.Method) + " " + part
+		}
+		if len(m.Headers) > 0 || len(m.QueryParams) > 0 {
+			part += " (+conditions)"
+		}
+		parts = append(parts, part)
+	}
+	return strings.Join(parts, " | ")
 }
 
 func routeIndex(proxy *networkingv1alpha.HTTPProxy, path string) int {
@@ -250,14 +309,19 @@ func routeIndex(proxy *networkingv1alpha.HTTPProxy, path string) int {
 		if isForceHTTPSRedirectRule(rule) {
 			continue
 		}
-		if rulePath(rule) == path {
+		if rulePath, simple := rulePath(rule); simple && rulePath == path {
 			return i
 		}
 	}
 	return -1
 }
 
-func routeNotFound(proxy *networkingv1alpha.HTTPProxy, path string) error {
+func RouteNotFound(proxy *networkingv1alpha.HTTPProxy, path string) error {
 	return util.NewCLIError(util.ExitNotFound, fmt.Sprintf("route %q not found", path)).
 		WithFix(fmt.Sprintf("list routes with:\n       datumctl alb route list %s", proxy.Name))
+}
+
+func errNoBackends() error {
+	return util.UsageErrorf("at least one backend is required").
+		WithFix("pass --endpoint URL, or --network-service NAME --port PORTNAME")
 }

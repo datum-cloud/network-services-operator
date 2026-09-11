@@ -75,24 +75,9 @@ func mutateHostname(
 	mutate func(*networkingv1alpha.HTTPProxy, string) (*networkingv1alpha.HTTPProxy, error),
 	verb string,
 ) error {
-	c, err := newClient(util.ProjectFromCmd(cmd))
-	if err != nil {
-		return err
-	}
-	current, err := util.GetHTTPProxy(cmd.Context(), c, name)
-	if err != nil {
-		return err
-	}
-	updated, err := mutate(current, hostname)
-	if err != nil {
-		return err
-	}
-	dryRun, _ := cmd.Flags().GetBool("dry-run")
-	if err := patchProxy(cmd.Context(), c, current, updated, dryRun); err != nil {
-		return util.ClassifyError(fmt.Errorf("%s hostname on %q: %w", verb, name, err))
-	}
-	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Hostname %q %s on %q.\n", hostname, verb, name)
-	return nil
+	return mutateProxy(cmd, name, func(current *networkingv1alpha.HTTPProxy) (*networkingv1alpha.HTTPProxy, error) {
+		return mutate(current, hostname)
+	}, fmt.Sprintf("Hostname %q %s on %q.\n", hostname, verb, name))
 }
 
 func runHostnameList(cmd *cobra.Command, args []string) error {

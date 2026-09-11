@@ -73,7 +73,11 @@ datumctl alb route backend add my-app --path /api --endpoint https://api-2.examp
 datumctl alb route backend remove my-app --path /api --endpoint https://api.example.com
 ```
 
-Removing the last origin on a route is refused; remove the route instead. The default `/` route cannot be removed while other routes exist unless you pass `--force`. Force HTTPS shows in `route list` as a `system` route and is controlled by `alb update`, not `route remove`.
+Removing the last origin on a route is refused; remove the route instead. The default `/` route cannot be removed while other routes exist unless you pass `--force`, and the last remaining route cannot be removed at all. Force HTTPS shows in `route list` as a `system` route and is controlled by `alb update`, not `route remove`.
+
+Rules written outside this plugin with exact or regex path matches, header or method conditions, or several matches show as `advanced` in `route list`. The plugin leaves them alone; edit those with `datumctl apply -f`.
+
+Every mutation re-reads the load balancer, patches with its `resourceVersion`, and retries once if something else changed it in between.
 
 The API currently accepts one origin per route. The commands already take a pool so nothing changes when that cap lifts; until then the server rejects a second origin on the same path.
 
@@ -131,4 +135,4 @@ Delete also removes the attached traffic protection policy and basic auth config
 
 ## Output
 
-Every command accepts `-o table|wide|json|yaml|name`. `json` and `yaml` emit the underlying API objects.
+Every command accepts `-o table|wide|json|yaml|name`. `json` and `yaml` emit the underlying API objects. `list --status active|pending|error` narrows the table; `Active` means the platform has programmed the load balancer.

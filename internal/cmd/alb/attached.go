@@ -83,19 +83,38 @@ func deleteIfExists(ctx context.Context, c client.Client, obj client.Object, dry
 }
 
 func patchProxy(ctx context.Context, c client.Client, original, updated *networkingv1alpha.HTTPProxy, dryRun bool) error {
-	opts := []client.PatchOption{client.FieldOwner(util.FieldManager)}
-	if dryRun {
-		opts = append(opts, client.DryRunAll)
+	return c.Patch(ctx, updated, client.MergeFromWithOptions(original, client.MergeFromWithOptimisticLock{}), patchOpts(dryRun)...)
+}
+
+func patchProxyWithRetry(
+	ctx context.Context,
+	c client.Client,
+	name string,
+	mutate func(*networkingv1alpha.HTTPProxy) (*networkingv1alpha.HTTPProxy, error),
+	dryRun bool,
+) error {
+	for attempt := 0; ; attempt++ {
+		current, err := util.GetHTTPProxy(ctx, c, name)
+		if err != nil {
+			return err
+		}
+		updated, err := mutate(current)
+		if err != nil {
+			return err
+		}
+		err = patchProxy(ctx, c, current, updated, dryRun)
+		if err == nil {
+			return nil
+		}
+		if apierrors.IsConflict(err) && attempt == 0 {
+			continue
+		}
+		return err
 	}
-	return c.Patch(ctx, updated, client.MergeFrom(original), opts...)
 }
 
 func patchTPP(ctx context.Context, c client.Client, original, updated *networkingv1alpha.TrafficProtectionPolicy, dryRun bool) error {
-	opts := []client.PatchOption{client.FieldOwner(util.FieldManager)}
-	if dryRun {
-		opts = append(opts, client.DryRunAll)
-	}
-	return c.Patch(ctx, updated, client.MergeFrom(original), opts...)
+	return c.Patch(ctx, updated, client.MergeFromWithOptions(original, client.MergeFromWithOptimisticLock{}), patchOpts(dryRun)...)
 }
 
 func patchOpts(dryRun bool) []client.PatchOption {
@@ -116,18 +135,30 @@ func mutateProxy(
 	if err != nil {
 		return err
 	}
-	current, err := util.GetHTTPProxy(cmd.Context(), c, name)
-	if err != nil {
-		return err
-	}
-	updated, err := mutate(current)
-	if err != nil {
-		return err
-	}
 	dryRun, _ := cmd.Flags().GetBool("dry-run")
-	if err := patchProxy(cmd.Context(), c, current, updated, dryRun); err != nil {
-		return util.ClassifyError(fmt.Errorf("updating application load balancer %q: %w", name, err))
+	if err := patchProxyWithRetry(cmd.Context(), c, name, mutate, dryRun); err != nil {
+		return classifyProxyPatchError(name, err)
+	}
+	if dryRun {
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Application load balancer %q validated.\n", name)
+		return nil
 	}
 	_, _ = fmt.Fprint(cmd.OutOrStdout(), success)
 	return nil
+}
+
+func classifyProxyPatchError(name string, err error) error {
+	if tooMany := tooManyBackendsError(err); tooMany != nil {
+		return tooMany
+	}
+	return util.ClassifyError(fmt.Errorf("updating application load balancer %q: %w", name, err))
+}
+
+func tooManyBackendsError(err error) *util.CLIError {
+	if !apierrors.IsInvalid(err) || !strings.Contains(err.Error(), "backends: Too many") {
+		return nil
+	}
+	return util.NewCLIError(util.ExitInvalid, "the API currently allows one origin per route").
+		WithFix("keep one --endpoint or --network-service per route until multi-origin pools are enabled").
+		WithCause(err)
 }

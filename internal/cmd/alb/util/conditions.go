@@ -3,6 +3,8 @@
 package util
 
 import (
+	"strings"
+
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -10,12 +12,36 @@ import (
 )
 
 const (
-	StatusOK       = "OK"
+	StatusActive   = "Active"
 	StatusPending  = "Pending"
 	StatusError    = "Error"
 	StatusRejected = "Rejected"
 	StatusUnknown  = "Unknown"
 )
+
+func ParseStatusFilter(filter string) (string, error) {
+	filter = strings.ToLower(strings.TrimSpace(filter))
+	switch filter {
+	case "", "active", "pending", "error":
+		return filter, nil
+	}
+	return "", UsageErrorf("unknown status %q", filter).WithFix("use one of: active, pending, error")
+}
+
+func StatusMatchesFilter(status, filter string) bool {
+	switch filter {
+	case "":
+		return true
+	case "active":
+		return status == StatusActive
+	case "pending":
+		return status == StatusPending || status == StatusUnknown
+	case "error":
+		return status == StatusError || status == StatusRejected
+	default:
+		return false
+	}
+}
 
 func ProxyStatus(proxy *networkingv1alpha.HTTPProxy) (word, detail string) {
 	if proxy == nil {
@@ -34,13 +60,10 @@ func ProxyStatus(proxy *networkingv1alpha.HTTPProxy) (word, detail string) {
 
 	switch programmed.Status {
 	case metav1.ConditionTrue:
-		return StatusOK, firstNonEmpty(programmed.Message, "programmed")
+		return StatusActive, firstNonEmpty(programmed.Message, "programmed")
 	case metav1.ConditionFalse:
 		if programmed.Reason == networkingv1alpha.HTTPProxyReasonPending || programmed.Reason == "" {
 			return StatusPending, firstNonEmpty(programmed.Message, "waiting for the controller")
-		}
-		if programmed.Reason == networkingv1alpha.HTTPProxyReasonNetworkServiceBackendNotFound {
-			return StatusError, firstNonEmpty(programmed.Message, "a route points at a network service or port that does not exist")
 		}
 		return StatusError, firstNonEmpty(programmed.Message, programmed.Reason)
 	default:

@@ -22,15 +22,23 @@ func listCommand() *cobra.Command {
 		Aliases: []string{"ls"},
 		Short:   "List Application Load Balancers",
 		Example: `  datumctl alb list
+  datumctl alb list --status error
   datumctl alb list -o json`,
 		Args: cobra.NoArgs,
 		RunE: runList,
 	}
 	cmd.Flags().Bool("no-headers", false, "Omit column headers")
+	cmd.Flags().String("status", "", "Only show load balancers in this state: active, pending, or error")
+	_ = cmd.RegisterFlagCompletionFunc("status", util.CompleteEnum("active", "pending", "error"))
 	return cmd
 }
 
 func runList(cmd *cobra.Command, _ []string) error {
+	statusFlag, _ := cmd.Flags().GetString("status")
+	if _, err := util.ParseStatusFilter(statusFlag); err != nil {
+		return err
+	}
+
 	c, err := newClient(util.ProjectFromCmd(cmd))
 	if err != nil {
 		return err
@@ -39,6 +47,18 @@ func runList(cmd *cobra.Command, _ []string) error {
 	var list networkingv1alpha.HTTPProxyList
 	if err := c.List(cmd.Context(), &list, client.InNamespace(util.ResourceNamespace)); err != nil {
 		return util.ClassifyError(fmt.Errorf("listing application load balancers: %w", err))
+	}
+
+	statusFilter, _ := util.ParseStatusFilter(statusFlag)
+	if statusFilter != "" {
+		kept := list.Items[:0]
+		for i := range list.Items {
+			status, _ := util.ProxyStatus(&list.Items[i])
+			if util.StatusMatchesFilter(status, statusFilter) {
+				kept = append(kept, list.Items[i])
+			}
+		}
+		list.Items = kept
 	}
 
 	sort.Slice(list.Items, func(i, j int) bool {

@@ -27,8 +27,12 @@ type BackendFlags struct {
 }
 
 func ParseBackendFlags(flags BackendFlags) ([]BackendInput, error) {
-	if len(flags.NetworkServices) != len(flags.Ports) {
+	switch {
+	case len(flags.NetworkServices) > len(flags.Ports):
 		return nil, util.UsageErrorf("each --network-service needs a matching --port").
+			WithFix("for example:\n       --network-service storefront --port http")
+	case len(flags.Ports) > len(flags.NetworkServices):
+		return nil, util.UsageErrorf("--port only applies to --network-service backends").
 			WithFix("for example:\n       --network-service storefront --port http")
 	}
 
@@ -63,31 +67,25 @@ func ParseBackendFlags(flags BackendFlags) ([]BackendInput, error) {
 	if flags.TLSHostname != "" && len(flags.Endpoints) == 0 {
 		return nil, util.UsageErrorf("--tls-hostname only applies to --endpoint backends")
 	}
-	return backends, nil
-}
-
-func NetworkServiceNames(backends []BackendInput) []string {
-	var names []string
-	seen := map[string]bool{}
-	for _, b := range backends {
-		if b.NetworkService == "" || seen[b.NetworkService] {
-			continue
+	for i := range backends {
+		for j := 0; j < i; j++ {
+			if sameBackendTarget(ToBackend(backends[i]), ToBackend(backends[j])) {
+				return nil, util.UsageErrorf("backend %s is given more than once", FormatBackend(ToBackend(backends[i])))
+			}
 		}
-		seen[b.NetworkService] = true
-		names = append(names, b.NetworkService)
 	}
-	return names
+	return backends, nil
 }
 
 func toBackends(inputs []BackendInput) []networkingv1alpha.HTTPProxyRuleBackend {
 	out := make([]networkingv1alpha.HTTPProxyRuleBackend, 0, len(inputs))
 	for _, in := range inputs {
-		out = append(out, toBackend(in))
+		out = append(out, ToBackend(in))
 	}
 	return out
 }
 
-func toBackend(in BackendInput) networkingv1alpha.HTTPProxyRuleBackend {
+func ToBackend(in BackendInput) networkingv1alpha.HTTPProxyRuleBackend {
 	if in.NetworkService != "" {
 		return networkingv1alpha.HTTPProxyRuleBackend{
 			NetworkService: &networkingv1alpha.NetworkServiceBackendRef{Name: in.NetworkService, Port: in.Port},

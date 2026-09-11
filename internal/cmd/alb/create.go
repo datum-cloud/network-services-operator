@@ -117,6 +117,9 @@ func runCreate(cmd *cobra.Command, args []string) error {
 				WithFix("choose a different name, or describe the existing one:\n       datumctl alb describe " + name).
 				WithCause(err)
 		}
+		if tooMany := tooManyBackendsError(err); tooMany != nil {
+			return tooMany
+		}
 		return util.ClassifyError(fmt.Errorf("creating application load balancer %q: %w", name, err))
 	}
 

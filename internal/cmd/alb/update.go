@@ -7,6 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	"go.datum.net/network-services-operator/internal/cmd/alb/spec"
 	"go.datum.net/network-services-operator/internal/cmd/alb/util"
 )
@@ -69,30 +70,7 @@ func runUpdate(cmd *cobra.Command, args []string) error {
 			WithFix("pass --display-name, or --force-https/--no-force-https")
 	}
 
-	c, err := newClient(util.ProjectFromCmd(cmd))
-	if err != nil {
-		return err
-	}
-
-	current, err := util.GetHTTPProxy(cmd.Context(), c, args[0])
-	if err != nil {
-		return err
-	}
-
-	updated, err := spec.ApplyHTTPProxyUpdate(current, in)
-	if err != nil {
-		return err
-	}
-
-	dryRun, _ := cmd.Flags().GetBool("dry-run")
-	if err := patchProxy(cmd.Context(), c, current, updated, dryRun); err != nil {
-		return util.ClassifyError(fmt.Errorf("updating application load balancer %q: %w", args[0], err))
-	}
-
-	if dryRun {
-		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Application load balancer %q validated.\n", args[0])
-		return nil
-	}
-	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Application load balancer %q updated.\n", args[0])
-	return nil
+	return mutateProxy(cmd, args[0], func(current *networkingv1alpha.HTTPProxy) (*networkingv1alpha.HTTPProxy, error) {
+		return spec.ApplyHTTPProxyUpdate(current, in)
+	}, fmt.Sprintf("Application load balancer %q updated.\n", args[0]))
 }

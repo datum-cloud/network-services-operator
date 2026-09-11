@@ -63,7 +63,6 @@ func routeRemoveCommand() *cobra.Command {
 	cmd.Flags().String("path", "", "Path prefix of the route to remove")
 	cmd.Flags().Bool("force", false, "Remove the default route even when other routes remain")
 	cmd.Flags().Bool("dry-run", false, "Submit for server-side validation without updating")
-	_ = cmd.MarkFlagRequired("path")
 	return cmd
 }
 
@@ -96,7 +95,6 @@ left alone. To change a single origin, use "route backend add" or "remove".`,
 	addBackendFlags(cmd)
 	cmd.Flags().String("path", "", "Path prefix of the route to update")
 	cmd.Flags().Bool("dry-run", false, "Submit for server-side validation without updating")
-	_ = cmd.MarkFlagRequired("path")
 	return cmd
 }
 
@@ -123,7 +121,6 @@ func routeBackendAddCommand() *cobra.Command {
 	addBackendFlags(cmd)
 	cmd.Flags().String("path", "", "Path prefix of the route")
 	cmd.Flags().Bool("dry-run", false, "Submit for server-side validation without updating")
-	_ = cmd.MarkFlagRequired("path")
 	return cmd
 }
 
@@ -140,7 +137,6 @@ func routeBackendRemoveCommand() *cobra.Command {
 	addBackendFlags(cmd)
 	cmd.Flags().String("path", "", "Path prefix of the route")
 	cmd.Flags().Bool("dry-run", false, "Submit for server-side validation without updating")
-	_ = cmd.MarkFlagRequired("path")
 	return cmd
 }
 
@@ -165,26 +161,26 @@ func runRouteAdd(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	path, _ := cmd.Flags().GetString("path")
+	if strings.TrimSpace(path) != "" {
+		if path, err = spec.NormalizePath(path); err != nil {
+			return err
+		}
+	}
 	return mutateRoute(cmd, args[0], backends, func(current *networkingv1alpha.HTTPProxy) (*networkingv1alpha.HTTPProxy, error) {
 		return spec.AddRoute(current, path, backends)
 	}, fmt.Sprintf("Route %s added to %q.\n", displayPath(path), args[0]))
 }
 
 func runRouteRemove(cmd *cobra.Command, args []string) error {
-	path, _ := cmd.Flags().GetString("path")
+	path, err := pathFlag(cmd)
+	if err != nil {
+		return err
+	}
 	force, _ := cmd.Flags().GetBool("force")
 
-	if !util.AssumeYes(cmd) {
-		ok, err := util.ConfirmYesNo(cmd.InOrStdin(), cmd.ErrOrStderr(),
-			fmt.Sprintf("Remove route %s from %q?", path, args[0]), false)
-		if err != nil {
-			return err
-		}
-		if !ok {
-			return util.NewCLIError(util.ExitAborted, "aborted")
-		}
+	if err := confirmRouteChange(cmd, args[0], path, nil, fmt.Sprintf("Remove route %s from %q?", path, args[0])); err != nil {
+		return err
 	}
-
 	return mutateRoute(cmd, args[0], nil, func(current *networkingv1alpha.HTTPProxy) (*networkingv1alpha.HTTPProxy, error) {
 		return spec.RemoveRoute(current, path, force)
 	}, fmt.Sprintf("Route %s removed from %q.\n", path, args[0]))
@@ -195,7 +191,10 @@ func runRouteUpdate(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	path, _ := cmd.Flags().GetString("path")
+	path, err := pathFlag(cmd)
+	if err != nil {
+		return err
+	}
 	return mutateRoute(cmd, args[0], backends, func(current *networkingv1alpha.HTTPProxy) (*networkingv1alpha.HTTPProxy, error) {
 		return spec.ReplaceRouteBackends(current, path, backends)
 	}, fmt.Sprintf("Route %s on %q updated.\n", path, args[0]))
@@ -206,7 +205,10 @@ func runRouteBackendAdd(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	path, _ := cmd.Flags().GetString("path")
+	path, err := pathFlag(cmd)
+	if err != nil {
+		return err
+	}
 	return mutateRoute(cmd, args[0], []spec.BackendInput{backend}, func(current *networkingv1alpha.HTTPProxy) (*networkingv1alpha.HTTPProxy, error) {
 		return spec.AddRouteBackend(current, path, backend)
 	}, fmt.Sprintf("Origin added to route %s on %q.\n", path, args[0]))
@@ -217,22 +219,51 @@ func runRouteBackendRemove(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	path, _ := cmd.Flags().GetString("path")
-
-	if !util.AssumeYes(cmd) {
-		ok, err := util.ConfirmYesNo(cmd.InOrStdin(), cmd.ErrOrStderr(),
-			fmt.Sprintf("Remove origin from route %s on %q?", path, args[0]), false)
-		if err != nil {
-			return err
-		}
-		if !ok {
-			return util.NewCLIError(util.ExitAborted, "aborted")
-		}
+	path, err := pathFlag(cmd)
+	if err != nil {
+		return err
 	}
 
+	prompt := fmt.Sprintf("Remove origin %s from route %s on %q?", spec.FormatBackend(spec.ToBackend(backend)), path, args[0])
+	if err := confirmRouteChange(cmd, args[0], path, &backend, prompt); err != nil {
+		return err
+	}
 	return mutateRoute(cmd, args[0], nil, func(current *networkingv1alpha.HTTPProxy) (*networkingv1alpha.HTTPProxy, error) {
 		return spec.RemoveRouteBackend(current, path, backend)
 	}, fmt.Sprintf("Origin removed from route %s on %q.\n", path, args[0]))
+}
+
+func pathFlag(cmd *cobra.Command) (string, error) {
+	path, _ := cmd.Flags().GetString("path")
+	return spec.NormalizePath(path)
+}
+
+func confirmRouteChange(cmd *cobra.Command, name, path string, backend *spec.BackendInput, prompt string) error {
+	dryRun, _ := cmd.Flags().GetBool("dry-run")
+	if dryRun || util.AssumeYes(cmd) {
+		return nil
+	}
+
+	proxy, err := loadProxy(cmd, name)
+	if err != nil {
+		return err
+	}
+	if backend != nil {
+		if _, err := spec.RemoveRouteBackend(proxy, path, *backend); err != nil {
+			return err
+		}
+	} else if _, ok := spec.FindRoute(proxy, path); !ok {
+		return spec.RouteNotFound(proxy, path)
+	}
+
+	ok, err := util.ConfirmYesNo(cmd.InOrStdin(), cmd.ErrOrStderr(), prompt, false)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return util.NewCLIError(util.ExitAborted, "aborted")
+	}
+	return nil
 }
 
 func mutateRoute(
@@ -242,31 +273,16 @@ func mutateRoute(
 	mutate func(*networkingv1alpha.HTTPProxy) (*networkingv1alpha.HTTPProxy, error),
 	success string,
 ) error {
-	c, err := newClient(util.ProjectFromCmd(cmd))
-	if err != nil {
-		return err
+	if len(referenced) > 0 {
+		c, err := newClient(util.ProjectFromCmd(cmd))
+		if err != nil {
+			return err
+		}
+		if err := ensureNetworkServices(cmd.Context(), c, referenced); err != nil {
+			return err
+		}
 	}
-	current, err := util.GetHTTPProxy(cmd.Context(), c, name)
-	if err != nil {
-		return err
-	}
-	updated, err := mutate(current)
-	if err != nil {
-		return err
-	}
-	if err := ensureNetworkServices(cmd.Context(), c, referenced); err != nil {
-		return err
-	}
-	dryRun, _ := cmd.Flags().GetBool("dry-run")
-	if err := patchProxy(cmd.Context(), c, current, updated, dryRun); err != nil {
-		return util.ClassifyError(fmt.Errorf("updating routes on %q: %w", name, err))
-	}
-	if dryRun {
-		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Application load balancer %q validated.\n", name)
-		return nil
-	}
-	_, _ = fmt.Fprint(cmd.OutOrStdout(), success)
-	return nil
+	return mutateProxy(cmd, name, mutate, success)
 }
 
 func runRouteList(cmd *cobra.Command, args []string) error {
@@ -301,13 +317,31 @@ func runRouteList(cmd *cobra.Command, args []string) error {
 		_, _ = fmt.Fprintln(tw, "PATH\tORIGINS\tKIND")
 	}
 	for _, r := range routes {
-		if r.ForceHTTPS {
+		switch {
+		case r.ForceHTTPS:
 			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\n", r.Path, "redirect http → https", "system")
-			continue
+		case r.Advanced:
+			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\n", r.Path, formatBackends(r.Backends), "advanced")
+		default:
+			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\n", r.Path, formatBackends(r.Backends), backendKinds(r.Backends))
 		}
-		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\n", r.Path, formatBackends(r.Backends), backendKinds(r.Backends))
 	}
-	return tw.Flush()
+	if err := tw.Flush(); err != nil {
+		return err
+	}
+	if hasAdvancedRoute(routes) && !util.QuietFromCmd(cmd) {
+		_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "\nRoutes marked advanced use matches this plugin does not edit. Manage them with datumctl apply -f.")
+	}
+	return nil
+}
+
+func hasAdvancedRoute(routes []spec.Route) bool {
+	for _, r := range routes {
+		if r.Advanced {
+			return true
+		}
+	}
+	return false
 }
 
 func runRouteBackendList(cmd *cobra.Command, args []string) error {
@@ -323,17 +357,11 @@ func runRouteBackendList(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return err
 		}
-		var match []spec.Route
-		for _, r := range routes {
-			if r.Path == path {
-				match = append(match, r)
-			}
+		route, ok := spec.FindRoute(proxy, path)
+		if !ok {
+			return spec.RouteNotFound(proxy, path)
 		}
-		if len(match) == 0 {
-			return util.NewCLIError(util.ExitNotFound, fmt.Sprintf("route %q not found", path)).
-				WithFix(fmt.Sprintf("list routes with:\n       datumctl alb route list %s", args[0]))
-		}
-		routes = match
+		routes = []spec.Route{route}
 	}
 
 	format, err := util.ParseOutputFormat(util.OutputFromCmd(cmd))

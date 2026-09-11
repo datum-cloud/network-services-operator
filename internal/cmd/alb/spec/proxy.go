@@ -18,13 +18,15 @@ import (
 
 const (
 	gatewayKind = "Gateway"
+
+	DisplayNameAnnotation = "kubernetes.io/display-name"
+	MaxDisplayNameLength  = 50
 )
 
 type CreateInput struct {
 	Name        string
 	DisplayName string
-	Endpoint    string
-	TLSHostname string
+	Backends    []BackendInput
 	HostHeader  string
 	Hostnames   []string
 	ForceHTTPS  bool
@@ -32,20 +34,27 @@ type CreateInput struct {
 
 type UpdateInput struct {
 	DisplayName *string
-	Endpoint    *string
-	TLSHostname *string
 	ForceHTTPS  *bool
-	Hostnames   *[]string
 }
 
 func BuildHTTPProxy(in CreateInput) (*networkingv1alpha.HTTPProxy, error) {
 	if in.Name == "" {
 		return nil, util.UsageErrorf("name is required")
 	}
-	if in.Endpoint == "" {
-		return nil, util.UsageErrorf("endpoint is required").
-			WithFix("pass --endpoint, for example:\n       --endpoint https://origin.example.com")
+	if len(in.Backends) == 0 {
+		return nil, util.UsageErrorf("at least one backend is required").
+			WithFix("pass --endpoint URL, or --network-service NAME --port PORTNAME")
 	}
+
+	rules := make([]networkingv1alpha.HTTPProxyRule, 0, 2)
+	if in.ForceHTTPS {
+		rules = append(rules, forceHTTPSRule())
+	}
+	rule := newRouteRule(DefaultRoutePath, toBackends(in.Backends))
+	if hostHeader := strings.TrimSpace(in.HostHeader); hostHeader != "" {
+		rule.Filters = []gatewayv1.HTTPRouteFilter{hostHeaderFilter(hostHeader)}
+	}
+	rules = append(rules, rule)
 
 	proxy := &networkingv1alpha.HTTPProxy{
 		TypeMeta: metav1.TypeMeta{
@@ -58,13 +67,11 @@ func BuildHTTPProxy(in CreateInput) (*networkingv1alpha.HTTPProxy, error) {
 		},
 		Spec: networkingv1alpha.HTTPProxySpec{
 			Hostnames: toHostnames(in.Hostnames),
-			Rules:     buildRules(in.Endpoint, in.TLSHostname, in.HostHeader, in.ForceHTTPS, nil),
+			Rules:     rules,
 		},
 	}
-	if in.DisplayName != "" {
-		proxy.Annotations = map[string]string{
-			display.AnnotationChosenName: in.DisplayName,
-		}
+	if err := setDisplayName(proxy, in.DisplayName); err != nil {
+		return nil, err
 	}
 
 	if err := validateProxy(proxy); err != nil {
@@ -80,60 +87,47 @@ func ApplyHTTPProxyUpdate(current *networkingv1alpha.HTTPProxy, in UpdateInput) 
 
 	updated := current.DeepCopy()
 	if in.DisplayName != nil {
-		if updated.Annotations == nil {
-			updated.Annotations = map[string]string{}
-		}
-		name := strings.TrimSpace(*in.DisplayName)
-		if name == "" {
-			delete(updated.Annotations, display.AnnotationChosenName)
-		} else {
-			updated.Annotations[display.AnnotationChosenName] = name
-		}
-		if len(updated.Annotations) == 0 {
-			updated.Annotations = nil
+		if err := setDisplayName(updated, *in.DisplayName); err != nil {
+			return nil, err
 		}
 	}
-
-	if in.Hostnames != nil {
-		updated.Spec.Hostnames = toHostnames(*in.Hostnames)
-	}
-
-	rulesChanged := in.Endpoint != nil || in.TLSHostname != nil || in.ForceHTTPS != nil
-	if rulesChanged {
-		endpoint := Endpoint(updated)
-		if in.Endpoint != nil {
-			endpoint = *in.Endpoint
-		}
-		if endpoint == "" {
-			return nil, util.UsageErrorf("endpoint is required")
-		}
-
-		tlsHostname := TLSHostname(updated)
-		if in.TLSHostname != nil {
-			tlsHostname = strings.TrimSpace(*in.TLSHostname)
-		}
-
-		forceHTTPS := ForceHTTPS(updated)
-		if in.ForceHTTPS != nil {
-			forceHTTPS = *in.ForceHTTPS
-		}
-
-		connector := connectorRef(updated)
-		hostHeader := HostHeader(updated)
-		extraRules := extraRules(updated)
-		headerFilter := headerFilterWithoutHost(backendRule(updated))
-
-		rules := buildRules(endpoint, tlsHostname, hostHeader, forceHTTPS, connector)
-		if idx := backendRuleIndexFromRules(rules); idx >= 0 && headerFilter != nil {
-			rules[idx].Filters = mergeHeaderFilters(rules[idx].Filters, headerFilter)
-		}
-		updated.Spec.Rules = append(rules, extraRules...)
+	if in.ForceHTTPS != nil {
+		updated = SetForceHTTPS(updated, *in.ForceHTTPS)
 	}
 
 	if err := validateProxy(updated); err != nil {
 		return nil, err
 	}
 	return updated, nil
+}
+
+func setDisplayName(proxy *networkingv1alpha.HTTPProxy, name string) error {
+	name = strings.TrimSpace(name)
+	if len(name) > MaxDisplayNameLength {
+		return util.UsageErrorf("display name must be %d characters or fewer", MaxDisplayNameLength)
+	}
+	if proxy.Annotations == nil {
+		proxy.Annotations = map[string]string{}
+	}
+	if name == "" {
+		delete(proxy.Annotations, DisplayNameAnnotation)
+	} else {
+		proxy.Annotations[DisplayNameAnnotation] = name
+	}
+	if len(proxy.Annotations) == 0 {
+		proxy.Annotations = nil
+	}
+	return nil
+}
+
+func DisplayName(proxy *networkingv1alpha.HTTPProxy) string {
+	if proxy == nil {
+		return ""
+	}
+	if name := strings.TrimSpace(proxy.Annotations[DisplayNameAnnotation]); name != "" {
+		return name
+	}
+	return display.HTTPProxyDisplayName(proxy)
 }
 
 func AddHostname(current *networkingv1alpha.HTTPProxy, hostname string) (*networkingv1alpha.HTTPProxy, error) {
@@ -177,29 +171,6 @@ func RemoveHostname(current *networkingv1alpha.HTTPProxy, hostname string) (*net
 		updated.Spec.Hostnames = nil
 	}
 	return updated, nil
-}
-
-func buildRules(endpoint, tlsHostname, hostHeader string, forceHTTPS bool, connector *networkingv1alpha.ConnectorReference) []networkingv1alpha.HTTPProxyRule {
-	rules := make([]networkingv1alpha.HTTPProxyRule, 0, 2)
-	if forceHTTPS {
-		rules = append(rules, forceHTTPSRule())
-	}
-
-	backend := networkingv1alpha.HTTPProxyRuleBackend{
-		Endpoint:  endpoint,
-		Connector: connector,
-	}
-	if tlsHostname != "" {
-		backend.TLS = &networkingv1alpha.HTTPProxyBackendTLS{Hostname: ptr.To(tlsHostname)}
-	}
-
-	rule := networkingv1alpha.HTTPProxyRule{
-		Backends: []networkingv1alpha.HTTPProxyRuleBackend{backend},
-	}
-	if hostHeader = strings.TrimSpace(hostHeader); hostHeader != "" {
-		rule.Filters = []gatewayv1.HTTPRouteFilter{hostHeaderFilter(hostHeader)}
-	}
-	return append(rules, rule)
 }
 
 func forceHTTPSRule() networkingv1alpha.HTTPProxyRule {
@@ -250,38 +221,6 @@ func toHostnames(hostnames []string) []gatewayv1.Hostname {
 		out = append(out, gatewayv1.Hostname(h))
 	}
 	return out
-}
-
-func connectorRef(proxy *networkingv1alpha.HTTPProxy) *networkingv1alpha.ConnectorReference {
-	backend := backendOf(proxy)
-	if backend == nil || backend.Connector == nil {
-		return nil
-	}
-	copied := *backend.Connector
-	return &copied
-}
-
-func extraRules(proxy *networkingv1alpha.HTTPProxy) []networkingv1alpha.HTTPProxyRule {
-	if proxy == nil {
-		return nil
-	}
-	var extra []networkingv1alpha.HTTPProxyRule
-	for _, rule := range proxy.Spec.Rules {
-		if len(rule.Backends) > 0 || isForceHTTPSRedirectRule(rule) {
-			continue
-		}
-		extra = append(extra, rule)
-	}
-	return extra
-}
-
-func backendRuleIndexFromRules(rules []networkingv1alpha.HTTPProxyRule) int {
-	for i := range rules {
-		if len(rules[i].Backends) > 0 {
-			return i
-		}
-	}
-	return -1
 }
 
 func validateProxy(proxy *networkingv1alpha.HTTPProxy) error {

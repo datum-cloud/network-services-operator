@@ -182,26 +182,3 @@ func replaceHeaderModifier(filters []gatewayv1.HTTPRouteFilter, mod gatewayv1.HT
 	}
 	return out
 }
-
-func headerFilterWithoutHost(rule *networkingv1alpha.HTTPProxyRule) *gatewayv1.HTTPHeaderFilter {
-	if rule == nil {
-		return nil
-	}
-	mod := requestHeaderModifier(rule.Filters)
-	mod.Set = headersWithoutName(mod.Set, "Host")
-	if len(mod.Set) == 0 && len(mod.Add) == 0 && len(mod.Remove) == 0 {
-		return nil
-	}
-	return &mod
-}
-
-func mergeHeaderFilters(filters []gatewayv1.HTTPRouteFilter, extra *gatewayv1.HTTPHeaderFilter) []gatewayv1.HTTPRouteFilter {
-	if extra == nil {
-		return filters
-	}
-	mod := requestHeaderModifier(filters)
-	mod.Set = append(mod.Set, extra.Set...)
-	mod.Add = append(mod.Add, extra.Add...)
-	mod.Remove = append(mod.Remove, extra.Remove...)
-	return replaceHeaderModifier(filters, mod)
-}

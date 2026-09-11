@@ -11,19 +11,23 @@ import (
 
 	"go.datum.net/network-services-operator/internal/cmd/alb/spec"
 	"go.datum.net/network-services-operator/internal/cmd/alb/util"
-	"go.datum.net/network-services-operator/internal/display"
 )
 
 func createCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "create <name>",
 		Short: "Create an Application Load Balancer",
-		Long: `Create an Application Load Balancer in front of an origin.
+		Long: `Create an Application Load Balancer in front of one or more origins.
 
+Origins form the default "/" route. Pass --endpoint for a URL origin, or
+--network-service with --port to send traffic to an existing NetworkService.
 The command waits for Datum to assign a default hostname, because that is what
 you CNAME custom domains at. Pass --no-wait to return immediately.`,
 		Example: `  # Create a load balancer and print the generated hostname
   datumctl alb create my-app --endpoint https://origin.example.com
+
+  # Send traffic to an existing NetworkService
+  datumctl alb create my-app --network-service storefront --port http
 
   # Attach a custom hostname at create time
   datumctl alb create my-app --endpoint https://origin.example.com --hostname app.example.com
@@ -34,10 +38,9 @@ you CNAME custom domains at. Pass --no-wait to return immediately.`,
 		RunE: runCreate,
 	}
 
-	cmd.Flags().String("endpoint", "", "Origin URL (http or https)")
+	addBackendFlags(cmd)
 	cmd.Flags().StringArray("hostname", nil, "Custom hostname to attach (repeatable)")
 	cmd.Flags().String("host-header", "", "Host header to send to the origin")
-	cmd.Flags().String("tls-hostname", "", "Hostname used to verify TLS when the origin is an IP")
 	cmd.Flags().String("display-name", "", "Human-friendly name shown in the cloud portal")
 	cmd.Flags().Bool("force-https", true, "Redirect HTTP requests to HTTPS")
 	cmd.Flags().Bool("no-force-https", false, "Disable the HTTP to HTTPS redirect")
@@ -49,7 +52,6 @@ you CNAME custom domains at. Pass --no-wait to return immediately.`,
 	cmd.Flags().Duration("timeout", defaultWaitTime, "How long to wait for the generated hostname")
 	cmd.Flags().Bool("dry-run", false, "Submit for server-side validation without creating")
 
-	_ = cmd.MarkFlagRequired("endpoint")
 	_ = cmd.RegisterFlagCompletionFunc("waf-mode", util.CompleteEnum("Enforce", "Observe", "Disabled"))
 
 	return cmd
@@ -59,10 +61,12 @@ func runCreate(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
 	name := args[0]
 
-	endpoint, _ := cmd.Flags().GetString("endpoint")
+	backends, err := backendsFromFlags(cmd)
+	if err != nil {
+		return err
+	}
 	hostnames, _ := cmd.Flags().GetStringArray("hostname")
 	hostHeader, _ := cmd.Flags().GetString("host-header")
-	tlsHostname, _ := cmd.Flags().GetString("tls-hostname")
 	displayName, _ := cmd.Flags().GetString("display-name")
 	forceHTTPS, _ := cmd.Flags().GetBool("force-https")
 	noForceHTTPS, _ := cmd.Flags().GetBool("no-force-https")
@@ -84,8 +88,7 @@ func runCreate(cmd *cobra.Command, args []string) error {
 	proxy, err := spec.BuildHTTPProxy(spec.CreateInput{
 		Name:        name,
 		DisplayName: displayName,
-		Endpoint:    endpoint,
-		TLSHostname: tlsHostname,
+		Backends:    backends,
 		HostHeader:  hostHeader,
 		Hostnames:   hostnames,
 		ForceHTTPS:  forceHTTPS,
@@ -96,6 +99,10 @@ func runCreate(cmd *cobra.Command, args []string) error {
 
 	c, err := newClient(util.ProjectFromCmd(cmd))
 	if err != nil {
+		return err
+	}
+
+	if err := ensureNetworkServices(ctx, c, backends); err != nil {
 		return err
 	}
 
@@ -120,7 +127,7 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		}
 		tpp, err := spec.BuildTPP(spec.WAFInput{
 			ProxyName:   name,
-			DisplayName: display.HTTPProxyDisplayName(proxy),
+			DisplayName: spec.DisplayName(proxy),
 			Mode:        mode,
 			Paranoia:    paranoia,
 		})

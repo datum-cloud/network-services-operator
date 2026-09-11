@@ -62,14 +62,27 @@ func runDescribe(cmd *cobra.Command, args []string) error {
 	}
 	_, _ = fmt.Fprintf(out, "Age:                %s\n", util.RelativeAgeVerbose(proxy.CreationTimestamp))
 	_, _ = fmt.Fprintf(out, "Default hostname:   %s\n", util.OrDash(proxy.Status.CanonicalHostname))
-	_, _ = fmt.Fprintf(out, "Origin:             %s\n", util.OrDash(spec.Endpoint(proxy)))
-	if tls := spec.TLSHostname(proxy); tls != "" {
-		_, _ = fmt.Fprintf(out, "Origin TLS hostname:%s\n", tls)
-	}
 	if connector := spec.ConnectorName(proxy); connector != "" {
 		_, _ = fmt.Fprintf(out, "Connector:          %s\n", connector)
 	}
 	_, _ = fmt.Fprintf(out, "Force HTTPS:        %s\n", boolWord(spec.ForceHTTPS(proxy)))
+
+	routes := spec.UserRoutes(proxy)
+	if len(routes) == 0 {
+		_, _ = fmt.Fprintln(out, "Routes:             none")
+	} else {
+		_, _ = fmt.Fprintln(out, "Routes:")
+		for _, r := range routes {
+			_, _ = fmt.Fprintf(out, "  %s\n", r.Path)
+			for _, b := range r.Backends {
+				line := fmt.Sprintf("    %s (%s)", spec.FormatBackend(b), spec.BackendKind(b))
+				if b.TLS != nil && b.TLS.Hostname != nil && *b.TLS.Hostname != "" {
+					line += "  tls=" + *b.TLS.Hostname
+				}
+				_, _ = fmt.Fprintln(out, line)
+			}
+		}
+	}
 	_, _ = fmt.Fprintf(out, "Host header:        %s\n", util.OrDash(spec.HostHeader(proxy)))
 
 	set, add, remove := spec.ListRequestHeaders(proxy)
@@ -124,6 +137,10 @@ func runDescribe(cmd *cobra.Command, args []string) error {
 
 	if cond := apimeta.FindStatusCondition(proxy.Status.Conditions, networkingv1alpha.HTTPProxyConditionCertificatesReady); cond != nil {
 		_, _ = fmt.Fprintf(out, "Certificates:       %s (%s)\n", cond.Status, util.OrDash(cond.Reason))
+	}
+
+	if proxy.Status.CanonicalHostname != "" && !util.QuietFromCmd(cmd) {
+		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "\nTry it:\n  curl -I https://%s/\n", proxy.Status.CanonicalHostname)
 	}
 
 	return nil

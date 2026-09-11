@@ -36,10 +36,13 @@ Create waits for Datum to assign a default hostname (for example `<uid>.datumpro
 
 ```sh
 datumctl alb create my-app --endpoint https://origin.example.com
+datumctl alb create my-app --network-service storefront --port http
 datumctl alb create my-app --endpoint https://origin.example.com --hostname app.example.com
 datumctl alb create my-app --endpoint https://origin.example.com --no-wait
 datumctl alb create my-app --endpoint https://203.0.113.10 --tls-hostname origin.example.com
 ```
+
+Origins given at create time form the default `/` route. `--endpoint` is a URL and may repeat. `--network-service` names an existing NetworkService in the project and must be paired with the `--port` **name** that service declares (`http`, not `8080`). The plugin never creates, edits, or deletes a NetworkService; if the one you name does not exist, create fails with not-found.
 
 Defaults match the cloud portal:
 
@@ -48,6 +51,31 @@ Defaults match the cloud portal:
 - No custom hostnames are required
 
 Pass `--no-waf` to skip traffic protection, or `--waf-mode Observe` to log without blocking.
+
+## Routes and origins
+
+A route is a path prefix plus the pool of origins that serve it.
+
+```sh
+datumctl alb route list my-app
+datumctl alb route add my-app --path /api --endpoint https://api.example.com
+datumctl alb route add my-app --path /checkout \
+  --endpoint https://a.example.com --endpoint https://b.example.com
+datumctl alb route update my-app --path / --network-service storefront --port http
+datumctl alb route remove my-app --path /api
+```
+
+`route update` replaces every origin on that path and leaves other routes alone. To change a single origin:
+
+```sh
+datumctl alb route backend list my-app
+datumctl alb route backend add my-app --path /api --endpoint https://api-2.example.com
+datumctl alb route backend remove my-app --path /api --endpoint https://api.example.com
+```
+
+Removing the last origin on a route is refused; remove the route instead. The default `/` route cannot be removed while other routes exist unless you pass `--force`. Force HTTPS shows in `route list` as a `system` route and is controlled by `alb update`, not `route remove`.
+
+The API currently accepts one origin per route. The commands already take a pool so nothing changes when that cap lifts; until then the server rejects a second origin on the same path.
 
 ## Hostnames
 
@@ -92,12 +120,14 @@ Passwords are never printed. Usernames are stored in an htpasswd secret using SH
 ## Update and delete
 
 ```sh
-datumctl alb update my-app --endpoint https://new-origin.example.com
+datumctl alb update my-app --display-name "Production API"
 datumctl alb update my-app --no-force-https
 datumctl alb delete my-app --yes
 ```
 
-Delete also removes the attached traffic protection policy and basic auth configuration.
+`update` covers settings that apply to the whole load balancer: the display name (stored as `kubernetes.io/display-name`, 50 characters max) and Force HTTPS. Origins live on routes; passing `--endpoint` here points you at `route update`.
+
+Delete also removes the attached traffic protection policy and basic auth configuration. NetworkServices a route referenced are left in place.
 
 ## Output
 

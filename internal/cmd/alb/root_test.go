@@ -47,7 +47,7 @@ func TestCommandSilencesCobraOutput(t *testing.T) {
 
 func TestCommandTree(t *testing.T) {
 	root := Command()
-	want := []string{"create", "list", "describe", "update", "delete", "hostname", "waf", "header", "auth", "version"}
+	want := []string{"create", "list", "describe", "update", "delete", "hostname", "route", "waf", "header", "auth", "version"}
 	for _, name := range want {
 		assert.NotNil(t, root.Commands(), name)
 		found := false

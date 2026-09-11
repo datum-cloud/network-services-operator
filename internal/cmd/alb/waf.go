@@ -11,7 +11,6 @@ import (
 
 	"go.datum.net/network-services-operator/internal/cmd/alb/spec"
 	"go.datum.net/network-services-operator/internal/cmd/alb/util"
-	"go.datum.net/network-services-operator/internal/display"
 )
 
 func wafCommand() *cobra.Command {
@@ -99,7 +98,7 @@ func runWAFSet(cmd *cobra.Command, args []string) error {
 	if existing == nil {
 		tpp, err := spec.BuildTPP(spec.WAFInput{
 			ProxyName:   name,
-			DisplayName: display.HTTPProxyDisplayName(proxy),
+			DisplayName: spec.DisplayName(proxy),
 			Mode:        mode,
 			Paranoia:    paranoia,
 		})

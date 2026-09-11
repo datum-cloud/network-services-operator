@@ -14,7 +14,6 @@ import (
 
 	"go.datum.net/network-services-operator/internal/cmd/alb/spec"
 	"go.datum.net/network-services-operator/internal/cmd/alb/util"
-	"go.datum.net/network-services-operator/internal/display"
 )
 
 func authCommand() *cobra.Command {
@@ -103,7 +102,7 @@ func runAuthSet(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	policy := spec.BuildSecurityPolicy(name, display.HTTPProxyDisplayName(proxy))
+	policy := spec.BuildSecurityPolicy(name, spec.DisplayName(proxy))
 
 	opts := []client.CreateOption{client.FieldOwner(util.FieldManager)}
 	if dryRun {

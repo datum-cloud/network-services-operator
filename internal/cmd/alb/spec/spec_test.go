@@ -14,68 +14,289 @@ import (
 	"go.datum.net/network-services-operator/internal/display"
 )
 
+func urlBackend(endpoint string) BackendInput {
+	return BackendInput{Endpoint: endpoint}
+}
+
+func storefrontBackend() BackendInput {
+	return BackendInput{NetworkService: "storefront", Port: "http"}
+}
+
+func newProxy(t *testing.T, backends ...BackendInput) *networkingv1alpha.HTTPProxy {
+	t.Helper()
+	proxy, err := BuildHTTPProxy(CreateInput{Name: "my-app", Backends: backends, ForceHTTPS: true})
+	require.NoError(t, err)
+	return proxy
+}
+
 func TestBuildHTTPProxy(t *testing.T) {
 	t.Parallel()
 
 	proxy, err := BuildHTTPProxy(CreateInput{
 		Name:        "my-app",
 		DisplayName: "My App",
-		Endpoint:    "https://origin.example.com",
+		Backends:    []BackendInput{urlBackend("https://origin.example.com")},
 		HostHeader:  "origin.example.com",
 		Hostnames:   []string{"app.example.com"},
 		ForceHTTPS:  true,
 	})
 	require.NoError(t, err)
 	assert.Equal(t, "my-app", proxy.Name)
-	assert.Equal(t, "My App", proxy.Annotations[display.AnnotationChosenName])
+	assert.Equal(t, "My App", proxy.Annotations[DisplayNameAnnotation])
+	assert.NotContains(t, proxy.Annotations, display.AnnotationChosenName)
 	assert.Equal(t, []gatewayv1.Hostname{"app.example.com"}, proxy.Spec.Hostnames)
 	require.Len(t, proxy.Spec.Rules, 2)
 	assert.True(t, isForceHTTPSRedirectRule(proxy.Spec.Rules[0]))
+	assert.Nil(t, proxy.Spec.Rules[1].Matches)
 	assert.Equal(t, "https://origin.example.com", proxy.Spec.Rules[1].Backends[0].Endpoint)
 	assert.Equal(t, "origin.example.com", HostHeader(proxy))
 	assert.True(t, ForceHTTPS(proxy))
+	assert.Equal(t, "https://origin.example.com", OriginSummary(proxy))
 }
 
-func TestBuildHTTPProxyRequiresEndpoint(t *testing.T) {
+func TestBuildHTTPProxyNetworkServiceDefaultRoute(t *testing.T) {
+	t.Parallel()
+
+	proxy := newProxy(t, storefrontBackend())
+	backend := proxy.Spec.Rules[1].Backends[0]
+	require.NotNil(t, backend.NetworkService)
+	assert.Equal(t, "storefront", backend.NetworkService.Name)
+	assert.Equal(t, "http", backend.NetworkService.Port)
+	assert.Empty(t, backend.Endpoint)
+	assert.Nil(t, backend.TLS)
+	assert.Equal(t, "storefront:http", OriginSummary(proxy))
+}
+
+func TestBuildHTTPProxyRequiresBackend(t *testing.T) {
 	t.Parallel()
 	_, err := BuildHTTPProxy(CreateInput{Name: "my-app"})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "endpoint is required")
+	assert.Contains(t, err.Error(), "at least one backend is required")
 }
 
 func TestBuildHTTPProxyRejectsPath(t *testing.T) {
 	t.Parallel()
 	_, err := BuildHTTPProxy(CreateInput{
 		Name:     "my-app",
-		Endpoint: "https://origin.example.com/api",
+		Backends: []BackendInput{urlBackend("https://origin.example.com/api")},
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "path")
 }
 
-func TestApplyHTTPProxyUpdatePreservesConnectorAndHeaders(t *testing.T) {
+func TestDisplayNameFallsBackToPortalAnnotation(t *testing.T) {
 	t.Parallel()
 
-	current, err := BuildHTTPProxy(CreateInput{
-		Name:       "my-app",
-		Endpoint:   "https://origin.example.com",
-		HostHeader: "origin.example.com",
-		ForceHTTPS: true,
+	proxy := newProxy(t, urlBackend("https://origin.example.com"))
+	assert.Equal(t, "my-app", DisplayName(proxy))
+
+	proxy.Annotations = map[string]string{display.AnnotationChosenName: "Portal Name"}
+	assert.Equal(t, "Portal Name", DisplayName(proxy))
+
+	name := "CLI Name"
+	updated, err := ApplyHTTPProxyUpdate(proxy, UpdateInput{DisplayName: &name})
+	require.NoError(t, err)
+	assert.Equal(t, "CLI Name", DisplayName(updated))
+	assert.Equal(t, "Portal Name", updated.Annotations[display.AnnotationChosenName])
+
+	long := strings.Repeat("x", MaxDisplayNameLength+1)
+	_, err = ApplyHTTPProxyUpdate(proxy, UpdateInput{DisplayName: &long})
+	require.Error(t, err)
+}
+
+func TestApplyHTTPProxyUpdateLeavesConnectorAndRoutesAlone(t *testing.T) {
+	t.Parallel()
+
+	current := newProxy(t, urlBackend("https://origin.example.com"))
+	current.Spec.Rules[1].Backends[0].Connector = &networkingv1alpha.ConnectorReference{Name: "edge"}
+	current, err := SetRequestHeader(current, "X-Debug", "1")
+	require.NoError(t, err)
+	current, err = AddRoute(current, "/api", []BackendInput{urlBackend("https://api.example.com")})
+	require.NoError(t, err)
+
+	name := "Production"
+	updated, err := ApplyHTTPProxyUpdate(current, UpdateInput{DisplayName: &name})
+	require.NoError(t, err)
+	assert.Equal(t, "edge", ConnectorName(updated))
+	assert.Equal(t, current.Spec.Rules, updated.Spec.Rules)
+
+	off := false
+	updated, err = ApplyHTTPProxyUpdate(current, UpdateInput{ForceHTTPS: &off})
+	require.NoError(t, err)
+	assert.False(t, ForceHTTPS(updated))
+	assert.Len(t, UserRoutes(updated), 2)
+	assert.Equal(t, "edge", ConnectorName(updated))
+
+	on := true
+	updated, err = ApplyHTTPProxyUpdate(updated, UpdateInput{ForceHTTPS: &on})
+	require.NoError(t, err)
+	assert.True(t, isForceHTTPSRedirectRule(updated.Spec.Rules[0]))
+	assert.Len(t, updated.Spec.Rules, 3)
+}
+
+func TestAddRoute(t *testing.T) {
+	t.Parallel()
+
+	proxy := newProxy(t, urlBackend("https://origin.example.com"))
+
+	proxy, err := AddRoute(proxy, "/api", []BackendInput{urlBackend("https://api.example.com")})
+	require.NoError(t, err)
+	routes := UserRoutes(proxy)
+	require.Len(t, routes, 2)
+	assert.Equal(t, "/", routes[0].Path)
+	assert.Equal(t, "/api", routes[1].Path)
+	assert.True(t, ForceHTTPS(proxy))
+	assert.Equal(t, gatewayv1.PathMatchPathPrefix, *proxy.Spec.Rules[2].Matches[0].Path.Type)
+
+	_, err = AddRoute(proxy, "/api/", []BackendInput{urlBackend("https://api.example.com")})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "already exists")
+
+	_, err = AddRoute(proxy, "", []BackendInput{urlBackend("https://api.example.com")})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--path is required")
+
+	_, err = AddRoute(proxy, "api", []BackendInput{urlBackend("https://api.example.com")})
+	require.Error(t, err)
+
+	_, err = AddRoute(proxy, "/v2", nil)
+	require.Error(t, err)
+}
+
+func TestAddRouteDefaultsToRootWhenMissing(t *testing.T) {
+	t.Parallel()
+
+	proxy := newProxy(t, urlBackend("https://origin.example.com"))
+	proxy, err := RemoveRoute(proxy, "/", false)
+	require.NoError(t, err)
+	assert.Empty(t, UserRoutes(proxy))
+
+	proxy, err = AddRoute(proxy, "", []BackendInput{
+		storefrontBackend(),
+		urlBackend("https://fallback.example.com"),
 	})
 	require.NoError(t, err)
-	current.Spec.Rules[1].Backends[0].Connector = &networkingv1alpha.ConnectorReference{Name: "edge"}
+	routes := UserRoutes(proxy)
+	require.Len(t, routes, 1)
+	assert.Equal(t, "/", routes[0].Path)
+	require.Len(t, routes[0].Backends, 2)
+	assert.Equal(t, "storefront:http", FormatBackend(routes[0].Backends[0]))
+	assert.Equal(t, "storefront:http +1", OriginSummary(proxy))
+}
 
-	updated, err := SetRequestHeader(current, "X-Debug", "1")
+func TestRemoveRoute(t *testing.T) {
+	t.Parallel()
+
+	proxy := newProxy(t, urlBackend("https://origin.example.com"))
+	proxy, err := AddRoute(proxy, "/api", []BackendInput{urlBackend("https://api.example.com")})
 	require.NoError(t, err)
 
-	endpoint := "https://other.example.com"
-	updated, err = ApplyHTTPProxyUpdate(updated, UpdateInput{Endpoint: &endpoint})
+	_, err = RemoveRoute(proxy, "/", false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "default route")
+
+	forced, err := RemoveRoute(proxy, "/", true)
 	require.NoError(t, err)
-	assert.Equal(t, "https://other.example.com", Endpoint(updated))
-	assert.Equal(t, "edge", ConnectorName(updated))
-	assert.Equal(t, "origin.example.com", HostHeader(updated))
-	set, _, _ := ListRequestHeaders(updated)
-	require.GreaterOrEqual(t, len(set), 2)
+	assert.Len(t, UserRoutes(forced), 1)
+
+	_, err = RemoveRoute(proxy, "/missing", false)
+	require.Error(t, err)
+
+	proxy, err = RemoveRoute(proxy, "/api", false)
+	require.NoError(t, err)
+	assert.Len(t, UserRoutes(proxy), 1)
+	assert.True(t, ForceHTTPS(proxy))
+}
+
+func TestReplaceRouteBackendsLeavesSiblingsAlone(t *testing.T) {
+	t.Parallel()
+
+	proxy := newProxy(t, urlBackend("https://origin.example.com"))
+	proxy, err := SetRequestHeader(proxy, "Host", "origin.internal")
+	require.NoError(t, err)
+	proxy, err = AddRoute(proxy, "/api", []BackendInput{urlBackend("https://api.example.com")})
+	require.NoError(t, err)
+
+	proxy, err = ReplaceRouteBackends(proxy, "/api", []BackendInput{urlBackend("https://api-new.example.com")})
+	require.NoError(t, err)
+	routes := UserRoutes(proxy)
+	assert.Equal(t, "https://origin.example.com", FormatBackend(routes[0].Backends[0]))
+	assert.Equal(t, "https://api-new.example.com", FormatBackend(routes[1].Backends[0]))
+	assert.Equal(t, "origin.internal", HostHeader(proxy))
+
+	proxy, err = ReplaceRouteBackends(proxy, "/", []BackendInput{storefrontBackend()})
+	require.NoError(t, err)
+	assert.Equal(t, "storefront:http", OriginSummary(proxy))
+	assert.Equal(t, "origin.internal", HostHeader(proxy))
+
+	_, err = ReplaceRouteBackends(proxy, "/api", nil)
+	require.Error(t, err)
+}
+
+func TestRouteBackendAddRemove(t *testing.T) {
+	t.Parallel()
+
+	proxy := newProxy(t, urlBackend("https://a.example.com"))
+
+	proxy, err := AddRouteBackend(proxy, "/", urlBackend("https://b.example.com"))
+	require.NoError(t, err)
+	proxy, err = AddRouteBackend(proxy, "/", storefrontBackend())
+	require.NoError(t, err)
+	require.Len(t, UserRoutes(proxy)[0].Backends, 3)
+	assert.True(t, ForceHTTPS(proxy))
+	assert.Equal(t, "https://a.example.com +2", OriginSummary(proxy))
+
+	_, err = AddRouteBackend(proxy, "/", urlBackend("https://b.example.com/"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "already on route")
+
+	_, err = AddRouteBackend(proxy, "/api", urlBackend("https://c.example.com"))
+	require.Error(t, err)
+
+	proxy, err = RemoveRouteBackend(proxy, "/", urlBackend("https://a.example.com"))
+	require.NoError(t, err)
+	proxy, err = RemoveRouteBackend(proxy, "/", storefrontBackend())
+	require.NoError(t, err)
+	require.Len(t, UserRoutes(proxy)[0].Backends, 1)
+
+	_, err = RemoveRouteBackend(proxy, "/", urlBackend("https://a.example.com"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "is not on route")
+
+	_, err = RemoveRouteBackend(proxy, "/", urlBackend("https://b.example.com"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "last backend")
+}
+
+func TestParseBackendFlags(t *testing.T) {
+	t.Parallel()
+
+	backends, err := ParseBackendFlags(BackendFlags{
+		Endpoints:       []string{"https://a.example.com", "https://203.0.113.10"},
+		NetworkServices: []string{"storefront"},
+		Ports:           []string{"http"},
+		TLSHostname:     "origin.example.com",
+	})
+	require.NoError(t, err)
+	require.Len(t, backends, 3)
+	assert.Equal(t, "origin.example.com", backends[0].TLSHostname)
+	assert.Equal(t, "storefront", backends[2].NetworkService)
+	assert.Empty(t, backends[2].TLSHostname)
+	assert.Equal(t, []string{"storefront"}, NetworkServiceNames(backends))
+
+	_, err = ParseBackendFlags(BackendFlags{NetworkServices: []string{"storefront"}})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "matching --port")
+
+	_, err = ParseBackendFlags(BackendFlags{Endpoints: []string{"origin.example.com"}})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no scheme")
+
+	_, err = ParseBackendFlags(BackendFlags{NetworkServices: []string{"storefront"}, Ports: []string{"http"}, TLSHostname: "x"})
+	require.Error(t, err)
+
+	_, err = ParseBackendFlags(BackendFlags{})
+	require.Error(t, err)
 }
 
 func TestHostnameAddRemove(t *testing.T) {
@@ -83,7 +304,7 @@ func TestHostnameAddRemove(t *testing.T) {
 
 	proxy, err := BuildHTTPProxy(CreateInput{
 		Name:     "my-app",
-		Endpoint: "https://origin.example.com",
+		Backends: []BackendInput{urlBackend("https://origin.example.com")},
 	})
 	require.NoError(t, err)
 
@@ -104,7 +325,7 @@ func TestRequestHeaders(t *testing.T) {
 
 	proxy, err := BuildHTTPProxy(CreateInput{
 		Name:     "my-app",
-		Endpoint: "https://origin.example.com",
+		Backends: []BackendInput{urlBackend("https://origin.example.com")},
 	})
 	require.NoError(t, err)
 

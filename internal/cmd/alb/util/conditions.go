@@ -39,6 +39,9 @@ func ProxyStatus(proxy *networkingv1alpha.HTTPProxy) (word, detail string) {
 		if programmed.Reason == networkingv1alpha.HTTPProxyReasonPending || programmed.Reason == "" {
 			return StatusPending, firstNonEmpty(programmed.Message, "waiting for the controller")
 		}
+		if programmed.Reason == networkingv1alpha.HTTPProxyReasonNetworkServiceBackendNotFound {
+			return StatusError, firstNonEmpty(programmed.Message, "a route points at a network service or port that does not exist")
+		}
 		return StatusError, firstNonEmpty(programmed.Message, programmed.Reason)
 	default:
 		return StatusPending, firstNonEmpty(programmed.Message, "waiting for the controller")

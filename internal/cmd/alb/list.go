@@ -81,9 +81,9 @@ func printProxyTable(w io.Writer, items []networkingv1alpha.HTTPProxy, wafModes 
 
 	if !noHeaders {
 		if wide {
-			_, _ = fmt.Fprintln(tw, "NAME\tDISPLAY NAME\tENDPOINT\tHOSTNAME\tHOSTNAMES\tHOST HEADER\tFORCE HTTPS\tWAF\tSTATUS\tAGE")
+			_, _ = fmt.Fprintln(tw, "NAME\tDISPLAY NAME\tHOSTNAME\tORIGIN\tROUTES\tHOSTNAMES\tHOST HEADER\tFORCE HTTPS\tWAF\tSTATUS\tAGE")
 		} else {
-			_, _ = fmt.Fprintln(tw, "NAME\tENDPOINT\tHOSTNAME\tSTATUS\tWAF\tAGE")
+			_, _ = fmt.Fprintln(tw, "NAME\tDISPLAY NAME\tHOSTNAME\tORIGIN\tWAF\tSTATUS\tAGE")
 		}
 	}
 
@@ -91,13 +91,14 @@ func printProxyTable(w io.Writer, items []networkingv1alpha.HTTPProxy, wafModes 
 		p := &items[i]
 		status, _ := util.ProxyStatus(p)
 		hostname, _ := util.TruncateCell(p.Status.CanonicalHostname, 40)
-		endpoint, _ := util.TruncateCell(spec.Endpoint(p), 40)
+		origin, _ := util.TruncateCell(spec.OriginSummary(p), 40)
 		if wide {
-			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\n",
 				p.Name,
 				util.OrDash(spec.DisplayName(p)),
-				util.OrDash(endpoint),
 				util.OrDash(hostname),
+				util.OrDash(origin),
+				len(spec.UserRoutes(p)),
 				util.OrDash(strings.Join(spec.Hostnames(p), ",")),
 				util.OrDash(spec.HostHeader(p)),
 				boolWord(spec.ForceHTTPS(p)),
@@ -107,12 +108,13 @@ func printProxyTable(w io.Writer, items []networkingv1alpha.HTTPProxy, wafModes 
 			)
 			continue
 		}
-		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			p.Name,
-			util.OrDash(endpoint),
+			util.OrDash(spec.DisplayName(p)),
 			util.OrDash(hostname),
-			status,
+			util.OrDash(origin),
 			util.OrDash(wafModes[p.Name]),
+			status,
 			util.RelativeAge(p.CreationTimestamp),
 		)
 	}

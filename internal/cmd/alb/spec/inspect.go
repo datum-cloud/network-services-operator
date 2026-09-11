@@ -3,39 +3,43 @@
 package spec
 
 import (
+	"fmt"
 	"strings"
 
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
-	"go.datum.net/network-services-operator/internal/display"
 )
 
-func DisplayName(proxy *networkingv1alpha.HTTPProxy) string {
-	return display.HTTPProxyDisplayName(proxy)
-}
-
-func Endpoint(proxy *networkingv1alpha.HTTPProxy) string {
-	if backend := backendOf(proxy); backend != nil {
-		return backend.Endpoint
+func DefaultRoute(proxy *networkingv1alpha.HTTPProxy) *Route {
+	rule := backendRule(proxy)
+	if rule == nil {
+		return nil
 	}
-	return ""
+	return &Route{Path: rulePath(*rule), Backends: rule.Backends}
 }
 
-func TLSHostname(proxy *networkingv1alpha.HTTPProxy) string {
-	backend := backendOf(proxy)
-	if backend == nil || backend.TLS == nil || backend.TLS.Hostname == nil {
+func OriginSummary(proxy *networkingv1alpha.HTTPProxy) string {
+	route := DefaultRoute(proxy)
+	if route == nil || len(route.Backends) == 0 {
 		return ""
 	}
-	return *backend.TLS.Hostname
+	summary := FormatBackend(route.Backends[0])
+	if extra := len(route.Backends) - 1; extra > 0 {
+		summary += fmt.Sprintf(" +%d", extra)
+	}
+	return summary
 }
 
 func ConnectorName(proxy *networkingv1alpha.HTTPProxy) string {
-	backend := backendOf(proxy)
-	if backend == nil || backend.Connector == nil {
-		return ""
+	for _, rule := range proxy.Spec.Rules {
+		for _, backend := range rule.Backends {
+			if backend.Connector != nil {
+				return backend.Connector.Name
+			}
+		}
 	}
-	return backend.Connector.Name
+	return ""
 }
 
 func HostHeader(proxy *networkingv1alpha.HTTPProxy) string {
@@ -74,29 +78,20 @@ func Hostnames(proxy *networkingv1alpha.HTTPProxy) []string {
 	return out
 }
 
-func backendOf(proxy *networkingv1alpha.HTTPProxy) *networkingv1alpha.HTTPProxyRuleBackend {
-	rule := backendRule(proxy)
-	if rule == nil || len(rule.Backends) == 0 {
-		return nil
-	}
-	return &rule.Backends[0]
-}
-
 func backendRule(proxy *networkingv1alpha.HTTPProxy) *networkingv1alpha.HTTPProxyRule {
-	if proxy == nil {
+	idx := backendRuleIndex(proxy)
+	if idx < 0 {
 		return nil
 	}
-	for i := range proxy.Spec.Rules {
-		if len(proxy.Spec.Rules[i].Backends) > 0 {
-			return &proxy.Spec.Rules[i]
-		}
-	}
-	return nil
+	return &proxy.Spec.Rules[idx]
 }
 
 func backendRuleIndex(proxy *networkingv1alpha.HTTPProxy) int {
 	if proxy == nil {
 		return -1
+	}
+	if idx := routeIndex(proxy, DefaultRoutePath); idx >= 0 {
+		return idx
 	}
 	for i := range proxy.Spec.Rules {
 		if len(proxy.Spec.Rules[i].Backends) > 0 {

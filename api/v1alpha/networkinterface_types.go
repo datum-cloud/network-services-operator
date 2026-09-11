@@ -36,7 +36,7 @@ const (
 // by the consumer, carried by the operator, and acted on by whoever realizes
 // the interface.
 //
-// +kubebuilder:validation:Enum=Netns;Hypervisor
+// +kubebuilder:validation:Enum=Netns;Hypervisor;HypervisorDeclared
 type NetworkInterfaceAttachmentMode string
 
 const (
@@ -48,6 +48,15 @@ const (
 	// hypervisor as a device rather than placed in a namespace, which is what a
 	// virtual machine or microVM guest expects.
 	NetworkInterfaceAttachmentModeHypervisor NetworkInterfaceAttachmentMode = "Hypervisor"
+
+	// NetworkInterfaceAttachmentModeHypervisorDeclared also hands the interface
+	// to a hypervisor as a device. It differs from Hypervisor in who tells the
+	// hypervisor that the device exists. Under Hypervisor the hypervisor finds
+	// the device itself from what the node publishes. Under HypervisorDeclared
+	// the realizer states the device, its addresses, and its MTU to the
+	// hypervisor directly. A guest whose hypervisor reads no node state needs
+	// this mode.
+	NetworkInterfaceAttachmentModeHypervisorDeclared NetworkInterfaceAttachmentMode = "HypervisorDeclared"
 )
 
 // NetworkInterfacePhase reports whether an interface is held by a claim.
@@ -282,7 +291,9 @@ type NetworkInterfaceSpec struct {
 	//
 	// Netns places the interface in the workload's network namespace. Hypervisor
 	// hands it to a hypervisor as a device, which is what a virtual machine or
-	// microVM guest needs.
+	// microVM guest needs. HypervisorDeclared also hands it to a hypervisor, and
+	// additionally has the realizer state the device to that hypervisor instead
+	// of letting it discover the device from the node.
 	//
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:default="Netns"

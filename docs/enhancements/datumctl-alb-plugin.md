@@ -126,7 +126,7 @@ datumctl alb network-service create   <name> --workload NAME | --selector K=V...
 datumctl alb network-service describe <name>
 datumctl alb network-service delete   <name> [--yes] [--dry-run]
 datumctl alb hostname add|remove|list <name> [<fqdn>]
-datumctl alb route    add|remove|list <name>
+datumctl alb route    add|remove|list|update <name>
                       [--path PREFIX]
                       [--endpoint URL]...
                       [--network-service NAME --port PORTNAME]...
@@ -151,7 +151,7 @@ the load balancer. `alb create` owns the default `/` route, optional
 hostnames, Force HTTPS, and WAF defaults. Extra routes, backends on a route,
 hostnames, protection, headers, and auth are later dialogs. `update` is
 ALB-wide only: display name and Force HTTPS. Changing a pool is
-`route add` or `route backend add`.
+`route update --path` (replace) or `route backend add` / `remove` (one entry).
 
 **`<name>` is `metadata.name`.** `--display-name` writes `app.kubernetes.io/name`
 (max 50). Lookup by display name is **not in v1**.
@@ -241,6 +241,9 @@ datumctl alb route add    my-app --path / \
   --endpoint https://fallback.example.com
 datumctl alb route backend add    my-app --path /api --endpoint https://api-2.example.com
 datumctl alb route backend remove my-app --path /api --endpoint https://api.example.com
+datumctl alb route update my-app --path / \
+  --network-service storefront --port http
+datumctl alb route update my-app --path /api --endpoint https://api-new.example.com
 datumctl alb route remove my-app --path /api
 ```
 
@@ -250,8 +253,11 @@ datumctl alb route remove my-app --path /api
   v1**.
 - Force HTTPS is a system rule (no backend). `route list` marks it; `remove`
   cannot delete it (`update --no-force-https` does).
-- `update` does not take backends. With more than one route there is no
+- `alb update` does not take backends. With more than one route there is no
   single origin to replace; guessing `/` would silently miss `/api`.
+- `route update --path` **replaces that path's backend list** with the
+  flags given. `--path` is required. At least one backend is required. Other
+  routes are left alone.
 - `route backend add` / `remove` change one entry in that path's pool.
   `--path` is required. `route backend list` without `--path` lists every
   route. Removing the last backend on a route is a usage error —
@@ -304,8 +310,9 @@ Tests must include: NetworkService create from `--workload` and from
 `--selector`, URL default route, NetworkService default route, a second
 path route, a route with two URL backends plus one NetworkService, a
 Connector-backed proxy left untouched by `update --display-name`, Force
-HTTPS surviving `route add` / `route backend add`, `update` refusing
-backend flags, and `alb create` refusing to invent a missing NetworkService.
+HTTPS surviving `route add` / `route backend add`, `alb update` refusing
+backend flags, `route update --path /api` leaving `/` alone, and
+`alb create` refusing to invent a missing NetworkService.
 
 ## Status and output
 
@@ -348,7 +355,8 @@ object's `spec.ports[].name`. Catalog install is phase 2.
 - Create WAF: Enforce, blocking paranoia 1; disable = delete the policy
 - Merge updates preserve sibling routes, sibling backends, `connector`, and
   unowned filters
-- Client-side: at least one backend on create / route add; URL scheme;
+- Client-side: at least one backend on create / route add / route update;
+  URL scheme;
   FQDN-or-IP origin; TLS hostname for HTTPS IPs only; NetworkService port is
   a DNS label; hostname / header / paranoia / auth rules above
 

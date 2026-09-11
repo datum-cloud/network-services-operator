@@ -1900,6 +1900,18 @@ func TestAttachmentModeReachesTheInterface(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, networkingv1alpha.NetworkInterfaceAttachmentModeNetns,
 		defaulted.Spec.AttachmentMode, "a claim that states no mode gets a namespace interface")
+
+	s.reconcile(s.createClaim("declared-eth0", networkingv1alpha.NetworkInterfaceClaimSpec{
+		InterfaceName:  "eth0",
+		AttachmentMode: networkingv1alpha.NetworkInterfaceAttachmentModeHypervisorDeclared,
+		IPFamilies:     []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol},
+		ReclaimPolicy:  networkingv1alpha.NetworkInterfaceReclaimPolicyDelete,
+	}))
+
+	declared, err := s.getInterface("declared-eth0")
+	require.NoError(t, err)
+	require.Equal(t, networkingv1alpha.NetworkInterfaceAttachmentModeHypervisorDeclared,
+		declared.Spec.AttachmentMode, "the mode is carried verbatim from the claim")
 }
 
 // The data plane owns Programmed, status.vpc and status.attachmentRef on the

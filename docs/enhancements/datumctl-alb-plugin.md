@@ -76,7 +76,7 @@ Outside the portal, ALBs are raw YAML, and that YAML is the wrong unit of work.
 | Product | Stored as |
 |---|---|
 | Load balancer | `HTTPProxy` in `default` |
-| Display name | `app.kubernetes.io/name` |
+| Display name | `kubernetes.io/display-name` |
 | Generated hostname | `status.canonicalHostname` |
 | Custom hostname | `spec.hostnames[]` + `status.hostnameStatuses[]` |
 | Default route | backend rule matching `/` |
@@ -153,8 +153,13 @@ hostnames, protection, headers, and auth are later dialogs. `update` is
 ALB-wide only: display name and Force HTTPS. Changing a pool is
 `route update --path` (replace) or `route backend add` / `remove` (one entry).
 
-**`<name>` is `metadata.name`.** `--display-name` writes `app.kubernetes.io/name`
-(max 50). Lookup by display name is **not in v1**.
+**`<name>` is `metadata.name`.** `--display-name` writes
+`kubernetes.io/display-name` (max 50). That is the platform key, not
+`app.kubernetes.io/name` (what the portal still stamps today) and not
+`networking.datumapis.com/display-name` (activity product noun `"alb"`).
+`list` / `describe` read `kubernetes.io/display-name` first, then
+`app.kubernetes.io/name`, so portal-created ALBs still show a name until
+the UI catches up. Lookup by display name is **not in v1**.
 
 **`version` is offline.** No credentials, no project, no entitlement.
 
@@ -343,7 +348,7 @@ object's `spec.ports[].name`. Catalog install is phase 2.
 
 ## Payload contract
 
-- Namespace `default`; display name `app.kubernetes.io/name`
+- Namespace `default`; display name `kubernetes.io/display-name`
 - Force HTTPS and Host override encoded as the portal adapter does
 - URL backend: `endpoint` + optional `tls.hostname`
 - NetworkService object: `spec.networkInterfaces.selector` + `spec.ports`;

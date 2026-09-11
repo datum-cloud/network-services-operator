@@ -32,3 +32,4 @@ resources:
   - trafficprotectionpolicies.yaml
   - networkinterfaces.yaml
   - networkinterfaceclaims.yaml
+  - networkservices.yaml

@@ -19,6 +19,7 @@ resources:
 - bases/networking.datumapis.com_networkinterfaces.yaml
 - bases/networking.datumapis.com_networkinterfaceclaims.yaml
 - bases/networking.datumapis.com_servinglocations.yaml
+- bases/networking.datumapis.com_networkservices.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:

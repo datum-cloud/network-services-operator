@@ -1593,12 +1593,44 @@ spec:
                             - name
                             - port
                             type: object
+                          networkService:
+                            description: |-
+                              NetworkService references a NetworkService in the same namespace, and one
+                              of the ports it declares. Every member the service resolves to becomes an
+                              endpoint of this backend, so instances appearing, disappearing, and moving
+                              between locations need no edit here.
+
+                              Mutually exclusive with endpoint, connector and instance.
+                            properties:
+                              name:
+                                description: |-
+                                  Name of the referenced NetworkService. Must exist in the same namespace as
+                                  this HTTPProxy.
+                                maxLength: 253
+                                minLength: 1
+                                type: string
+                              port:
+                                description: |-
+                                  Port names a port declared in the referenced service's spec.ports, rather
+                                  than giving a number, so the reference survives a change to the port the
+                                  members answer on.
+                                maxLength: 63
+                                minLength: 1
+                                pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                                type: string
+                            required:
+                            - name
+                            - port
+                            type: object
                           tls:
                             description: |-
                               TLS contains backend TLS configuration.
 
                               When the backend endpoint uses HTTPS with an IP address, the Hostname field
                               must be specified for TLS certificate validation.
+
+                              Not supported for networkService backends, which are always reached over
+                              plaintext HTTP.
                             properties:
                               hostname:
                                 description: |-
@@ -1619,10 +1651,15 @@ spec:
                             type: object
                         type: object
                         x-kubernetes-validations:
-                        - message: endpoint is required unless instance is set, and
-                            instance is mutually exclusive with endpoint and connector
-                          rule: 'has(self.instance) ? (!has(self.endpoint) && !has(self.connector))
-                            : has(self.endpoint)'
+                        - message: endpoint is required unless instance or networkService
+                            is set; instance and networkService are mutually exclusive
+                            with each other and with endpoint and connector
+                          rule: 'has(self.instance) ? (!has(self.endpoint) && !has(self.connector)
+                            && !has(self.networkService)) : (has(self.networkService)
+                            ? (!has(self.endpoint) && !has(self.connector)) : has(self.endpoint))'
+                        - message: backend TLS is not supported for networkService
+                            backends
+                          rule: 'has(self.networkService) ? !has(self.tls) : true'
                       maxItems: 1
                       minItems: 0
                       type: array

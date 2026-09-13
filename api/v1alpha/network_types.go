@@ -30,10 +30,15 @@ type NetworkSpec struct {
 
 	// Network MTU. May be between 1300 and 8856.
 	//
+	// Defaults to 1440. Traffic between locations is encapsulated with a
+	// 40-byte outer IPv6 header, and some provider paths drop larger frames
+	// without returning Packet Too Big, so a larger MTU can hang connections
+	// instead of fragmenting or failing fast.
+	//
 	// +kubebuilder:validation:Minimum=1300
 	// +kubebuilder:validation:Maximum=8856
 	// +kubebuilder:validation:Optional
-	// +kubebuilder:default=1460
+	// +kubebuilder:default=1440
 	MTU int32 `json:"mtu,omitempty"`
 }
 

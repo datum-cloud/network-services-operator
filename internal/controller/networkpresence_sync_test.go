@@ -68,7 +68,7 @@ func drainPresenceEvents(t *testing.T, events chan event.GenericEvent) []client.
 func TestNetworkPresenceSyncEnqueuesANetworkEditAgainstAReadyContext(t *testing.T) {
 	s := newPresenceScenario(t, presenceOptions{
 		families: []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol},
-		mtu:      1460,
+		mtu:      1440,
 	})
 	s.createBinding("consumer-a")
 	s.reconcile()

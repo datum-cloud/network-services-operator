@@ -106,10 +106,15 @@ NetworkSpec defines the desired state of a Network
         <td><b>mtu</b></td>
         <td>integer</td>
         <td>
-          Network MTU. May be between 1300 and 8856.<br/>
+          Network MTU. May be between 1300 and 8856.
+
+Defaults to 1440. Traffic between locations is encapsulated with a
+40-byte outer IPv6 header, and some provider paths drop larger frames
+without returning Packet Too Big, so a larger MTU can hang connections
+instead of fragmenting or failing fast.<br/>
           <br/>
             <i>Format</i>: int32<br/>
-            <i>Default</i>: 1460<br/>
+            <i>Default</i>: 1440<br/>
             <i>Minimum</i>: 1300<br/>
             <i>Maximum</i>: 8856<br/>
         </td>

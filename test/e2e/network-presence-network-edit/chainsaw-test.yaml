@@ -48,7 +48,7 @@ spec:
                   mode: Auto
                 ipFamilies:
                   - IPv6
-                mtu: 1460
+                mtu: 1440
 
     - name: Make the network present in the location
       try:
@@ -80,7 +80,7 @@ spec:
                 name: presence-edit-net-presence-edit-loc
                 namespace: presence-edit-project
               spec:
-                mtu: 1460
+                mtu: 1440
                 ipFamilies:
                   - IPv6
 

@@ -40,7 +40,7 @@ spec:
                 ipFamilies:
                   - IPv6
                   - IPv4
-                mtu: 1460
+                mtu: 1440
         - apply:
             resource:
               apiVersion: networking.datumapis.com/v1alpha
@@ -56,7 +56,7 @@ spec:
                 ipFamilies:
                   - IPv6
                   - IPv4
-                mtu: 1460
+                mtu: 1440
 
     - name: A claim in an unlabelled namespace is refused
       try:

@@ -17,7 +17,7 @@ func networkWithFamilies(families ...networkingv1alpha.IPFamily) *networkingv1al
 		Spec: networkingv1alpha.NetworkSpec{
 			IPAM:       networkingv1alpha.NetworkIPAM{Mode: networkingv1alpha.NetworkIPAMModeAuto},
 			IPFamilies: families,
-			MTU:        1460,
+			MTU:        1440,
 		},
 	}
 }

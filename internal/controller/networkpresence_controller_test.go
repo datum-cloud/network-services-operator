@@ -118,7 +118,7 @@ func newPresenceScenario(t *testing.T, opts presenceOptions) *presenceScenario {
 		}
 		mtu := opts.mtu
 		if mtu == 0 {
-			mtu = 1460
+			mtu = 1440
 		}
 
 		network := &networkingv1alpha.Network{}
@@ -450,7 +450,7 @@ func TestNetworkPresenceLeavesTheReplicatedHubCopyAlone(t *testing.T) {
 	replicated.Spec.Network = networkingv1alpha.LocalNetworkRef{Name: s.networkName}
 	replicated.Spec.Location = networkingv1alpha.LocationReference{Name: s.locationName}
 	replicated.Spec.IPFamilies = []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol}
-	replicated.Spec.MTU = 1460
+	replicated.Spec.MTU = 1440
 	require.NoError(t, s.hub.Create(s.ctx, replicated))
 
 	s.reconcile()
@@ -546,14 +546,14 @@ func TestNetworkPresenceIsTornDownByTheLastConsumerGoingAway(t *testing.T) {
 func TestNetworkPresenceConvergesOnANetworkEdit(t *testing.T) {
 	s := newPresenceScenario(t, presenceOptions{
 		families: []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol},
-		mtu:      1460,
+		mtu:      1440,
 	})
 	s.createBinding("consumer-a")
 	s.reconcile()
 
 	networkContext, ok := s.networkContext()
 	require.True(t, ok)
-	require.Equal(t, int32(1460), networkContext.Spec.MTU)
+	require.Equal(t, int32(1440), networkContext.Spec.MTU)
 	generationBefore := networkContext.Spec.NetworkGeneration
 
 	s.network.Spec.MTU = 8856

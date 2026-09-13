@@ -42,7 +42,7 @@ spec:
                   name: us-central-1
                 ipFamilies:
                   - IPv6
-                mtu: 1460
+                mtu: 1440
 
     - name: A claim asking for IPv4 on an IPv6 network is refused
       try:

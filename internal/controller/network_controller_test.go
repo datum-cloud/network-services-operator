@@ -93,7 +93,7 @@ func (s *networkScenario) createNetwork(families ...networkingv1alpha.IPFamily) 
 	network.Spec = networkingv1alpha.NetworkSpec{
 		IPAM:       networkingv1alpha.NetworkIPAM{Mode: networkingv1alpha.NetworkIPAMModeAuto},
 		IPFamilies: families,
-		MTU:        1460,
+		MTU:        1440,
 	}
 	require.NoError(s.t, s.client.Create(s.ctx, network))
 	return network

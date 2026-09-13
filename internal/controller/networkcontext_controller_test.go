@@ -86,7 +86,7 @@ func (s *networkContextScenario) createContext(families ...networkingv1alpha.IPF
 		Network:    networkingv1alpha.LocalNetworkRef{Name: testNetworkName},
 		Location:   networkingv1alpha.LocationReference{Name: testLocationName},
 		IPFamilies: families,
-		MTU:        1460,
+		MTU:        1440,
 	}
 	require.NoError(s.t, s.client.Create(s.ctx, networkContext))
 	return networkContext
@@ -296,7 +296,7 @@ func TestNetworkContextSubnetLiesInsideTheNetworkRange(t *testing.T) {
 	network.Spec = networkingv1alpha.NetworkSpec{
 		IPAM:       networkingv1alpha.NetworkIPAM{Mode: networkingv1alpha.NetworkIPAMModeAuto},
 		IPFamilies: []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol},
-		MTU:        1460,
+		MTU:        1440,
 	}
 	require.NoError(t, s.client.Create(s.ctx, network))
 
@@ -580,7 +580,7 @@ func TestDeletingANetworkTakesDownTheLocationsHoldingItsSubnets(t *testing.T) {
 	network.Spec = networkingv1alpha.NetworkSpec{
 		IPAM:       networkingv1alpha.NetworkIPAM{Mode: networkingv1alpha.NetworkIPAMModeAuto},
 		IPFamilies: []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol},
-		MTU:        1460,
+		MTU:        1440,
 	}
 	require.NoError(t, s.client.Create(s.ctx, network))
 
@@ -639,7 +639,7 @@ func TestANetworkTakesDownOnlyItsOwnLocations(t *testing.T) {
 		network.Spec = networkingv1alpha.NetworkSpec{
 			IPAM:       networkingv1alpha.NetworkIPAM{Mode: networkingv1alpha.NetworkIPAMModeAuto},
 			IPFamilies: []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol},
-			MTU:        1460,
+			MTU:        1440,
 		}
 		require.NoError(t, cl.Create(ctx, network))
 		return network

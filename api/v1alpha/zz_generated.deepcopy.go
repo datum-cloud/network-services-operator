@@ -536,6 +536,11 @@ func (in *HTTPProxyRuleBackend) DeepCopyInto(out *HTTPProxyRuleBackend) {
 		*out = new(HTTPProxyBackendTLS)
 		(*in).DeepCopyInto(*out)
 	}
+	if in.Weight != nil {
+		in, out := &in.Weight, &out.Weight
+		*out = new(int32)
+		**out = **in
+	}
 	if in.Filters != nil {
 		in, out := &in.Filters, &out.Filters
 		*out = make([]apisv1.HTTPRouteFilter, len(*in))

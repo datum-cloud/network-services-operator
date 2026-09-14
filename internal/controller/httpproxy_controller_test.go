@@ -581,6 +581,57 @@ func TestHTTPProxyCollectDesiredResources(t *testing.T) {
 	}
 }
 
+// TestHTTPProxyCollectDesiredResourcesMultipleBackends covers weighted
+// load balancing across more than one backend, separately from
+// TestHTTPProxyCollectDesiredResources: that table's shared post-loop
+// assertions hardcode a 1:1 backend-to-synthesized-EndpointSlice
+// relationship, which N backends would violate before its own assertions
+// ever ran.
+func TestHTTPProxyCollectDesiredResourcesMultipleBackends(t *testing.T) {
+	operatorConfig := config.NetworkServicesOperator{
+		Gateway: config.GatewayConfig{
+			TargetDomain: "example.com",
+		},
+		HTTPProxy: config.HTTPProxyConfig{
+			GatewayClassName: "test",
+		},
+	}
+
+	reconciler := &HTTPProxyReconciler{Config: operatorConfig}
+
+	t.Run("weights and endpoint slices are keyed per backend", func(t *testing.T) {
+		httpProxy := newHTTPProxy(func(h *networkingv1alpha.HTTPProxy) {
+			h.Spec.Rules[0].Backends = []networkingv1alpha.HTTPProxyRuleBackend{
+				{Endpoint: "http://a.example.com", Weight: ptr.To(int32(3))},
+				{Endpoint: "http://b.example.com", Weight: ptr.To(int32(1))},
+				{Endpoint: "http://c.example.com"},
+			}
+		})
+
+		cl := fake.NewClientBuilder().WithScheme(scheme.Scheme).Build()
+		desiredResources, err := reconciler.collectDesiredResources(context.Background(), cl, httpProxy)
+		require.NoError(t, err)
+
+		routeRule := desiredResources.httpRoute.Spec.Rules[0]
+		endpointSlices := desiredResources.endpointSlices
+
+		if assert.Len(t, routeRule.BackendRefs, 3) {
+			assert.EqualValues(t, 3, ptr.Deref(routeRule.BackendRefs[0].Weight, 0))
+			assert.EqualValues(t, 1, ptr.Deref(routeRule.BackendRefs[1].Weight, 0))
+			assert.Nil(t, routeRule.BackendRefs[2].Weight, "unset weight should pass through as nil, letting Gateway API apply its own default")
+		}
+
+		if assert.Len(t, endpointSlices, 3) {
+			assert.Equal(t, "test-0-0", endpointSlices[0].Name)
+			assert.Equal(t, "test-0-1", endpointSlices[1].Name)
+			assert.Equal(t, "test-0-2", endpointSlices[2].Name)
+			assert.Equal(t, "a.example.com", endpointSlices[0].Endpoints[0].Addresses[0])
+			assert.Equal(t, "b.example.com", endpointSlices[1].Endpoints[0].Addresses[0])
+			assert.Equal(t, "c.example.com", endpointSlices[2].Endpoints[0].Addresses[0])
+		}
+	})
+}
+
 // TestHTTPProxyCollectDesiredResourcesInstance covers the instance backend
 // kind separately from TestHTTPProxyCollectDesiredResources: that table's
 // shared post-loop assertions hardcode a 1:1 backend-to-synthesized-

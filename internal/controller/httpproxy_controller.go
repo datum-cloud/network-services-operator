@@ -1037,14 +1037,6 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 		backendRefs := make([]gatewayv1.HTTPBackendRef, len(rule.Backends))
 		offlineRuleSet := false
 
-		// Validation will prevent this from occurring, unless the maximum items for
-		// backends is adjusted. The following error has been placed here so that
-		// if/when that occurs, we're sure to address obvious programming changes
-		// required (which should happen anyways, but just to be safe...).
-		if len(rule.Backends) > 1 {
-			return nil, fmt.Errorf("invalid number of backends for rule - expected 1 got %d", len(rule.Backends))
-		}
-
 		for backendIndex, backend := range rule.Backends {
 			if backend.Instance != nil {
 				// Reference the CNI-published EndpointSlice as-is — never
@@ -1073,6 +1065,7 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 							Name:  gatewayv1.ObjectName(backend.Instance.Name),
 							Port:  ptr.To(backend.Instance.Port),
 						},
+						Weight: backend.Weight,
 					},
 					Filters: backend.Filters,
 				}
@@ -1119,6 +1112,7 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 							Name:  gatewayv1.ObjectName(shards[0].Name),
 							Port:  ptr.To(resolved.port),
 						},
+						Weight: backend.Weight,
 					},
 					Filters: backend.Filters,
 				}
@@ -1336,6 +1330,7 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 						Name:  gatewayv1.ObjectName(endpointSlice.Name),
 						Port:  ptr.To(gatewayv1.PortNumber(backendPort)),
 					},
+					Weight: backend.Weight,
 				},
 				Filters: backend.Filters,
 			}

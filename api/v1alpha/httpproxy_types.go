@@ -69,6 +69,7 @@ type HTTPProxySpec struct {
 // +kubebuilder:validation:XValidation:message="When using URLRewrite filter with path.replacePrefixMatch, exactly one PathPrefix match must be specified",rule="(has(self.filters) && self.filters.exists_one(f, has(f.urlRewrite) && has(f.urlRewrite.path) && f.urlRewrite.path.type == 'ReplacePrefixMatch' && has(f.urlRewrite.path.replacePrefixMatch))) ? ((size(self.matches) != 1 || !has(self.matches[0].path) || self.matches[0].path.type != 'PathPrefix') ? false : true) : true"
 // +kubebuilder:validation:XValidation:message="Within backends, when using RequestRedirect filter with path.replacePrefixMatch, exactly one PathPrefix match must be specified",rule="(has(self.backends) && self.backends.exists_one(b, (has(b.filters) && b.filters.exists_one(f, has(f.requestRedirect) && has(f.requestRedirect.path) && f.requestRedirect.path.type == 'ReplacePrefixMatch' && has(f.requestRedirect.path.replacePrefixMatch))) )) ? ((size(self.matches) != 1 || !has(self.matches[0].path) || self.matches[0].path.type != 'PathPrefix') ? false : true) : true"
 // +kubebuilder:validation:XValidation:message="Within backends, When using URLRewrite filter with path.replacePrefixMatch, exactly one PathPrefix match must be specified",rule="(has(self.backends) && self.backends.exists_one(b, (has(b.filters) && b.filters.exists_one(f, has(f.urlRewrite) && has(f.urlRewrite.path) && f.urlRewrite.path.type == 'ReplacePrefixMatch' && has(f.urlRewrite.path.replacePrefixMatch))) )) ? ((size(self.matches) != 1 || !has(self.matches[0].path) || self.matches[0].path.type != 'PathPrefix') ? false : true) : true"
+// +kubebuilder:validation:XValidation:message="a connector backend must be the only backend in its rule",rule="self.backends.exists(b, has(b.connector)) ? size(self.backends) == 1 : true"
 type HTTPProxyRule struct {
 	// Name is the name of the route rule. This name MUST be unique within a Route
 	// if it is set.
@@ -103,12 +104,13 @@ type HTTPProxyRule struct {
 	// Backends defines the backend(s) where matching requests should be
 	// sent.
 	//
-	// Note: While this field is a list, only a single element is permitted at
-	// this time due to underlying Gateway limitations. Once addressed, MaxItems
-	// will be increased to allow for multiple backends on any given route.
+	// When more than one backend is specified, requests are weighted load
+	// balanced across all of them (see the weight field on each backend). A
+	// connector backend must be the only backend in the rule — connectors do
+	// not support weighted load balancing across multiple backends today.
 	//
 	// +kubebuilder:validation:MinItems=0
-	// +kubebuilder:validation:MaxItems=1
+	// +kubebuilder:validation:MaxItems=16
 	Backends []HTTPProxyRuleBackend `json:"backends,omitempty"`
 }
 
@@ -168,6 +170,19 @@ type HTTPProxyRuleBackend struct {
 	//
 	// +kubebuilder:validation:Optional
 	TLS *HTTPProxyBackendTLS `json:"tls,omitempty"`
+
+	// Weight specifies the proportion of requests forwarded to this backend,
+	// relative to the sum of weights across all backends in the rule.
+	// Follows the same semantics as the Gateway API's HTTPBackendRef.weight:
+	// computed as weight/(sum of all weights in the rule); a weight of 0
+	// means no traffic is forwarded to this backend; if unspecified, weight
+	// defaults to 1.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default=1
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=1000000
+	Weight *int32 `json:"weight,omitempty"`
 
 	// Filters defined at this level should be executed if and only if the
 	// request is being forwarded to the backend defined here.

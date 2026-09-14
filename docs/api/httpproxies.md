@@ -176,9 +176,10 @@ backends.
           Backends defines the backend(s) where matching requests should be
 sent.
 
-Note: While this field is a list, only a single element is permitted at
-this time due to underlying Gateway limitations. Once addressed, MaxItems
-will be increased to allow for multiple backends on any given route.<br/>
+When more than one backend is specified, requests are weighted load
+balanced across all of them (see the weight field on each backend). A
+connector backend must be the only backend in the rule — connectors do
+not support weighted load balancing across multiple backends today.<br/>
         </td>
         <td>false</td>
       </tr><tr>
@@ -308,6 +309,23 @@ must be specified for TLS certificate validation.
 
 Not supported for networkService backends, which are always reached over
 plaintext HTTP.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>weight</b></td>
+        <td>integer</td>
+        <td>
+          Weight specifies the proportion of requests forwarded to this backend,
+relative to the sum of weights across all backends in the rule.
+Follows the same semantics as the Gateway API's HTTPBackendRef.weight:
+computed as weight/(sum of all weights in the rule); a weight of 0
+means no traffic is forwarded to this backend; if unspecified, weight
+defaults to 1.<br/>
+          <br/>
+            <i>Format</i>: int32<br/>
+            <i>Default</i>: 1<br/>
+            <i>Minimum</i>: 0<br/>
+            <i>Maximum</i>: 1e+06<br/>
         </td>
         <td>false</td>
       </tr></tbody>

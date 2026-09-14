@@ -26,3 +26,10 @@ go.work.sum
 
 bin/
 config/**/charts
+
+# UI consumer/provider plugins (own package.json/build per plugin)
+ui/**/node_modules/
+ui/**/dist/
+
+# Module Federation diagnostics / typegen cache
+ui/**/.mf/

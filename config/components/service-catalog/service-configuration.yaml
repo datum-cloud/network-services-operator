@@ -6,6 +6,21 @@ spec:
   phase: Published
   serviceRef:
     name: networking-datumapis-com
+  # Consumer-side portal plugin (cloud-portal): a read-only Networks list.
+  # Hosted internally only — config/components/consumer-ui-plugin (folded
+  # into the cell's own Deployment set), never fronted by a public
+  # Gateway/HTTPRoute. cloud-portal's server is the only caller, over this
+  # in-cluster Service DNS name; the browser never talks to the plugin
+  # origin directly. Cluster-local DNS means this same value is correct in
+  # every environment config/cell deploys to (no per-env override needed).
+  #
+  # No caBundle needed: the plugin's CSI-issued server cert chains to
+  # datum-control-plane-ca, which cloud-portal's Bun runtime already trusts
+  # platform-wide via NODE_EXTRA_CA_CERTS, same as compute's consumer plugin.
+  userInterface:
+    consumer:
+      assets:
+        baseURL: https://network-services-operator-consumer-ui-plugin.network-services-operator-system.svc.cluster.local
   # A service whose configuration lists no supported location class is skipped
   # when locations are offered to a project, so without this the service is
   # live but reaches no consumer's location list.

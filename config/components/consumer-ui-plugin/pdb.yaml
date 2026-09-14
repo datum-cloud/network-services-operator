@@ -1,0 +1,14 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  labels:
+    app.kubernetes.io/instance: network-services-operator-consumer-ui-plugin
+    app.kubernetes.io/name: network-services-operator-consumer-ui-plugin
+  name: network-services-operator-consumer-ui-plugin-pdb
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: frontend
+      app.kubernetes.io/instance: network-services-operator-consumer-ui-plugin
+      app.kubernetes.io/name: network-services-operator-consumer-ui-plugin

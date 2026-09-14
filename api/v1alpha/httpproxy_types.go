@@ -58,7 +58,79 @@ type HTTPProxySpec struct {
 	// +kubebuilder:validation:XValidation:message="Rule name must be unique within the route",rule="self.all(l1, !has(l1.name) || self.exists_one(l2, has(l2.name) && l1.name == l2.name))"
 	// +kubebuilder:validation:XValidation:message="While 16 rules and 64 matches per rule are allowed, the total number of matches across all rules in a route must be less than 128",rule="(self.size() > 0 ? self[0].matches.size() : 0) + (self.size() > 1 ? self[1].matches.size() : 0) + (self.size() > 2 ? self[2].matches.size() : 0) + (self.size() > 3 ? self[3].matches.size() : 0) + (self.size() > 4 ? self[4].matches.size() : 0) + (self.size() > 5 ? self[5].matches.size() : 0) + (self.size() > 6 ? self[6].matches.size() : 0) + (self.size() > 7 ? self[7].matches.size() : 0) + (self.size() > 8 ? self[8].matches.size() : 0) + (self.size() > 9 ? self[9].matches.size() : 0) + (self.size() > 10 ? self[10].matches.size() : 0) + (self.size() > 11 ? self[11].matches.size() : 0) + (self.size() > 12 ? self[12].matches.size() : 0) + (self.size() > 13 ? self[13].matches.size() : 0) + (self.size() > 14 ? self[14].matches.size() : 0) + (self.size() > 15 ? self[15].matches.size() : 0) <= 128"
 	Rules []HTTPProxyRule `json:"rules,omitempty"`
+
+	// LoadBalancer selects the algorithm used to distribute requests across
+	// every rule's backends, whenever a rule has more than one. It applies
+	// to the whole HTTPProxy rather than to an individual rule. If unset,
+	// Envoy's own default algorithm applies.
+	//
+	// +kubebuilder:validation:Optional
+	LoadBalancer *HTTPProxyLoadBalancer `json:"loadBalancer,omitempty"`
 }
+
+// HTTPProxyLoadBalancer selects the algorithm Envoy uses to distribute
+// requests across an HTTPProxy's backends.
+//
+// +kubebuilder:validation:XValidation:message="consistentHash is required when type is ConsistentHash, and forbidden otherwise",rule="(self.type == 'ConsistentHash') == has(self.consistentHash)"
+type HTTPProxyLoadBalancer struct {
+	// Type selects the load balancing algorithm.
+	//
+	// RoundRobin cycles through backends in order. Random picks a backend
+	// uniformly at random. LeastRequest picks the backend with the fewest
+	// active requests, biased toward spreading load evenly under uneven
+	// latency. ConsistentHash routes requests that hash the same way (see
+	// consistentHash) to the same backend, so the same client keeps
+	// landing on the same backend so long as the backend set is stable.
+	//
+	// +kubebuilder:validation:Required
+	Type HTTPProxyLoadBalancerType `json:"type"`
+
+	// ConsistentHash configures what part of the request is hashed to pick
+	// a backend. Required when type is ConsistentHash, and forbidden
+	// otherwise.
+	//
+	// +kubebuilder:validation:Optional
+	ConsistentHash *HTTPProxyConsistentHash `json:"consistentHash,omitempty"`
+}
+
+// +kubebuilder:validation:Enum=RoundRobin;Random;LeastRequest;ConsistentHash
+type HTTPProxyLoadBalancerType string
+
+const (
+	HTTPProxyLoadBalancerTypeRoundRobin     HTTPProxyLoadBalancerType = "RoundRobin"
+	HTTPProxyLoadBalancerTypeRandom         HTTPProxyLoadBalancerType = "Random"
+	HTTPProxyLoadBalancerTypeLeastRequest   HTTPProxyLoadBalancerType = "LeastRequest"
+	HTTPProxyLoadBalancerTypeConsistentHash HTTPProxyLoadBalancerType = "ConsistentHash"
+)
+
+// HTTPProxyConsistentHash configures hash-based backend selection.
+//
+// +kubebuilder:validation:XValidation:message="header is required when type is Header, and forbidden otherwise",rule="(self.type == 'Header') == has(self.header)"
+type HTTPProxyConsistentHash struct {
+	// Type selects what part of the request is hashed to pick a backend.
+	//
+	// SourceIP hashes the client's source IP address. Header hashes the
+	// value of the request header named in the header field.
+	//
+	// +kubebuilder:validation:Required
+	Type HTTPProxyConsistentHashType `json:"type"`
+
+	// Header names the request header to hash on. Required when type is
+	// Header, and forbidden otherwise.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=256
+	Header *string `json:"header,omitempty"`
+}
+
+// +kubebuilder:validation:Enum=SourceIP;Header
+type HTTPProxyConsistentHashType string
+
+const (
+	HTTPProxyConsistentHashTypeSourceIP HTTPProxyConsistentHashType = "SourceIP"
+	HTTPProxyConsistentHashTypeHeader   HTTPProxyConsistentHashType = "Header"
+)
 
 // HTTPProxyRule defines semantics for matching an HTTP request based on
 // conditions (matches), processing it (filters), and forwarding the request to

@@ -518,6 +518,50 @@ func TestHTTPProxyCollectDesiredResources(t *testing.T) {
 				}
 			},
 		},
+		{
+			name:      "no load balancer set leaves the httproute unannotated",
+			httpProxy: newHTTPProxy(),
+			assert: func(t *testing.T, httpProxy *networkingv1alpha.HTTPProxy, desiredResources *desiredHTTPProxyResources) {
+				_, ok := desiredResources.httpRoute.Annotations[LoadBalancerAnnotation]
+				assert.False(t, ok)
+			},
+		},
+		{
+			name: "round robin load balancer is encoded onto the httproute",
+			httpProxy: newHTTPProxy(func(h *networkingv1alpha.HTTPProxy) {
+				h.Spec.LoadBalancer = &networkingv1alpha.HTTPProxyLoadBalancer{
+					Type: networkingv1alpha.HTTPProxyLoadBalancerTypeRoundRobin,
+				}
+			}),
+			assert: func(t *testing.T, httpProxy *networkingv1alpha.HTTPProxy, desiredResources *desiredHTTPProxyResources) {
+				encoded, ok := desiredResources.httpRoute.Annotations[LoadBalancerAnnotation]
+				require.True(t, ok)
+
+				var decoded networkingv1alpha.HTTPProxyLoadBalancer
+				require.NoError(t, json.Unmarshal([]byte(encoded), &decoded))
+				assert.Equal(t, *httpProxy.Spec.LoadBalancer, decoded)
+			},
+		},
+		{
+			name: "consistent hash load balancer is encoded onto the httproute",
+			httpProxy: newHTTPProxy(func(h *networkingv1alpha.HTTPProxy) {
+				h.Spec.LoadBalancer = &networkingv1alpha.HTTPProxyLoadBalancer{
+					Type: networkingv1alpha.HTTPProxyLoadBalancerTypeConsistentHash,
+					ConsistentHash: &networkingv1alpha.HTTPProxyConsistentHash{
+						Type:   networkingv1alpha.HTTPProxyConsistentHashTypeHeader,
+						Header: ptr.To("x-session-id"),
+					},
+				}
+			}),
+			assert: func(t *testing.T, httpProxy *networkingv1alpha.HTTPProxy, desiredResources *desiredHTTPProxyResources) {
+				encoded, ok := desiredResources.httpRoute.Annotations[LoadBalancerAnnotation]
+				require.True(t, ok)
+
+				var decoded networkingv1alpha.HTTPProxyLoadBalancer
+				require.NoError(t, json.Unmarshal([]byte(encoded), &decoded))
+				assert.Equal(t, *httpProxy.Spec.LoadBalancer, decoded)
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -704,6 +748,82 @@ func TestHTTPProxyReconcileInstanceBackendNotFound(t *testing.T) {
 	require.NotNil(t, programmed)
 	assert.Equal(t, metav1.ConditionFalse, programmed.Status)
 	assert.Equal(t, networkingv1alpha.HTTPProxyReasonInstanceBackendNotFound, programmed.Reason)
+}
+
+// TestHTTPProxyReconcileLoadBalancerAnnotationUpdates guards against a
+// regression where controllerutil.CreateOrUpdate's mutate closure only
+// re-synced the httproute's Spec on every reconcile, never its
+// ObjectMeta.Annotations — meaning LoadBalancerAnnotation would only ever
+// get set at object creation, and adding spec.loadBalancer to an HTTPProxy
+// that already had a programmed httproute would silently do nothing.
+func TestHTTPProxyReconcileLoadBalancerAnnotationUpdates(t *testing.T) {
+	testScheme := runtime.NewScheme()
+	require.NoError(t, scheme.AddToScheme(testScheme))
+	require.NoError(t, gatewayv1.Install(testScheme))
+	require.NoError(t, envoygatewayv1alpha1.AddToScheme(testScheme))
+	require.NoError(t, discoveryv1.AddToScheme(testScheme))
+	require.NoError(t, networkingv1alpha.AddToScheme(testScheme))
+	require.NoError(t, networkingv1alpha1.AddToScheme(testScheme))
+
+	testConfig := config.NetworkServicesOperator{
+		HTTPProxy: config.HTTPProxyConfig{
+			GatewayClassName: "test-gateway-class",
+		},
+		Gateway: config.GatewayConfig{
+			ControllerName: gatewayv1.GatewayController("test-gateway-class"),
+			TargetDomain:   "example.com",
+		},
+	}
+
+	httpProxy := newHTTPProxy(func(h *networkingv1alpha.HTTPProxy) {
+		controllerutil.AddFinalizer(h, httpProxyFinalizer)
+	})
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(testScheme).
+		WithObjects(httpProxy).
+		WithStatusSubresource(httpProxy).
+		Build()
+
+	reconciler := &HTTPProxyReconciler{
+		mgr:    &fakeMockManager{cl: fakeClient},
+		Config: testConfig,
+	}
+
+	req := mcreconcile.Request{
+		Request: reconcile.Request{
+			NamespacedName: client.ObjectKeyFromObject(httpProxy),
+		},
+		ClusterName: "test-cluster",
+	}
+
+	ctx := context.Background()
+
+	_, err := reconciler.Reconcile(ctx, req)
+	require.NoError(t, err)
+
+	var route gatewayv1.HTTPRoute
+	require.NoError(t, fakeClient.Get(ctx, client.ObjectKeyFromObject(httpProxy), &route))
+	_, ok := route.Annotations[LoadBalancerAnnotation]
+	assert.False(t, ok, "httproute must not carry the annotation before spec.loadBalancer is set")
+
+	var toUpdate networkingv1alpha.HTTPProxy
+	require.NoError(t, fakeClient.Get(ctx, client.ObjectKeyFromObject(httpProxy), &toUpdate))
+	toUpdate.Spec.LoadBalancer = &networkingv1alpha.HTTPProxyLoadBalancer{
+		Type: networkingv1alpha.HTTPProxyLoadBalancerTypeRandom,
+	}
+	require.NoError(t, fakeClient.Update(ctx, &toUpdate))
+
+	_, err = reconciler.Reconcile(ctx, req)
+	require.NoError(t, err)
+
+	require.NoError(t, fakeClient.Get(ctx, client.ObjectKeyFromObject(httpProxy), &route))
+	encoded, ok := route.Annotations[LoadBalancerAnnotation]
+	require.True(t, ok, "httproute must pick up the annotation on the reconcile after spec.loadBalancer is set, not only at creation")
+
+	var decoded networkingv1alpha.HTTPProxyLoadBalancer
+	require.NoError(t, json.Unmarshal([]byte(encoded), &decoded))
+	assert.Equal(t, *toUpdate.Spec.LoadBalancer, decoded)
 }
 
 //nolint:gocyclo

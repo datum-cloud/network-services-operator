@@ -112,6 +112,66 @@ spec:
                   type: string
                 maxItems: 16
                 type: array
+              loadBalancer:
+                description: |-
+                  LoadBalancer selects the algorithm used to distribute requests across
+                  every rule's backends, whenever a rule has more than one. It applies
+                  to the whole HTTPProxy rather than to an individual rule. If unset,
+                  Envoy's own default algorithm applies.
+                properties:
+                  consistentHash:
+                    description: |-
+                      ConsistentHash configures what part of the request is hashed to pick
+                      a backend. Required when type is ConsistentHash, and forbidden
+                      otherwise.
+                    properties:
+                      header:
+                        description: |-
+                          Header names the request header to hash on. Required when type is
+                          Header, and forbidden otherwise.
+                        maxLength: 256
+                        minLength: 1
+                        type: string
+                      type:
+                        description: |-
+                          Type selects what part of the request is hashed to pick a backend.
+
+                          SourceIP hashes the client's source IP address. Header hashes the
+                          value of the request header named in the header field.
+                        enum:
+                        - SourceIP
+                        - Header
+                        type: string
+                    required:
+                    - type
+                    type: object
+                    x-kubernetes-validations:
+                    - message: header is required when type is Header, and forbidden
+                        otherwise
+                      rule: (self.type == 'Header') == has(self.header)
+                  type:
+                    description: |-
+                      Type selects the load balancing algorithm.
+
+                      RoundRobin cycles through backends in order. Random picks a backend
+                      uniformly at random. LeastRequest picks the backend with the fewest
+                      active requests, biased toward spreading load evenly under uneven
+                      latency. ConsistentHash routes requests that hash the same way (see
+                      consistentHash) to the same backend, so the same client keeps
+                      landing on the same backend so long as the backend set is stable.
+                    enum:
+                    - RoundRobin
+                    - Random
+                    - LeastRequest
+                    - ConsistentHash
+                    type: string
+                required:
+                - type
+                type: object
+                x-kubernetes-validations:
+                - message: consistentHash is required when type is ConsistentHash,
+                    and forbidden otherwise
+                  rule: (self.type == 'ConsistentHash') == has(self.consistentHash)
               rules:
                 description: Rules are a list of HTTP matchers, filters and actions.
                 items:

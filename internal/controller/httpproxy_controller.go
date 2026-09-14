@@ -4,6 +4,7 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -129,6 +130,14 @@ const connectorOfflineFilterPrefix = "connector-offline"
 // FQDN even when URLRewrite.Hostname has been redirected to a user-supplied
 // Host header override.
 const BackendCertHostnameAnnotation = "networking.datumapis.com/backend-cert-hostname"
+
+// LoadBalancerAnnotation carries an HTTPProxy's spec.loadBalancer, JSON
+// encoded, on the upstream HTTPRoute this controller synthesizes. The
+// gateway controller reads it back off that HTTPRoute to build the
+// downstream BackendTrafficPolicy, since load balancing policy must target
+// the downstream/dataplane cluster this (upstream-only) controller has no
+// access to.
+const LoadBalancerAnnotation = "networking.datumapis.com/load-balancer"
 
 const (
 	SchemeHTTP  = "http"
@@ -343,6 +352,7 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 			return fmt.Errorf("failed to set controller on httproute: %w", err)
 		}
 
+		httpRoute.Annotations = desiredResources.httpRoute.Annotations
 		httpRoute.Spec = desiredResources.httpRoute.Spec
 
 		return nil
@@ -1011,10 +1021,20 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 		})
 	}
 
+	httpRouteAnnotations := map[string]string{}
+	if httpProxy.Spec.LoadBalancer != nil {
+		encoded, err := json.Marshal(httpProxy.Spec.LoadBalancer)
+		if err != nil {
+			return nil, fmt.Errorf("failed encoding load balancer for httproute annotation: %w", err)
+		}
+		httpRouteAnnotations[LoadBalancerAnnotation] = string(encoded)
+	}
+
 	httpRoute := &gatewayv1.HTTPRoute{
 		ObjectMeta: metav1.ObjectMeta{
-			Namespace: httpProxy.Namespace,
-			Name:      httpProxy.Name,
+			Namespace:   httpProxy.Namespace,
+			Name:        httpProxy.Name,
+			Annotations: httpRouteAnnotations,
 		},
 		Spec: gatewayv1.HTTPRouteSpec{
 			CommonRouteSpec: gatewayv1.CommonRouteSpec{

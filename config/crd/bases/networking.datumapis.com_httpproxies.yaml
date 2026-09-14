@@ -3440,8 +3440,8 @@ spec:
                       || self.matches[0].path.type != ''PathPrefix'') ? false : true)
                       : true'
                   - message: a connector backend must be the only backend in its rule
-                    rule: 'self.backends.exists(b, has(b.connector)) ? size(self.backends)
-                      == 1 : true'
+                    rule: '(has(self.backends) && self.backends.exists(b, has(b.connector)))
+                      ? size(self.backends) == 1 : true'
                 maxItems: 16
                 minItems: 1
                 type: array

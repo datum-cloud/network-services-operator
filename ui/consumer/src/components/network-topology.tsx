@@ -29,24 +29,16 @@ import { useEffect, useRef, useState } from 'react';
 const WIDTH = 960;
 const HEIGHT = 380;
 const CENTER = { x: 380, y: HEIGHT / 2 };
-// Horizontal/vertical radii are deliberately different (an ellipse, not a
-// circle): a wide fan reads better on this canvas, but a large radius applied
-// to sin() at a wide angle would push nodes past the top/bottom edge. Bounding
-// the vertical radius separately keeps every node on-canvas regardless of how
-// many locations there are.
+// An ellipse, not a circle: a wide fan reads better here, but applying a
+// large radius to sin() at a wide angle would push nodes past the top/bottom
+// edge, so the vertical radius is bounded separately.
 const LOCATION_RADIUS = { x: 220, y: 95 };
 const WORKLOAD_RADIUS = { x: 160, y: 80 };
 const MAX_LOCATION_ARC_DEGREES = 140;
 const LOCATION_ARC_STEP_DEGREES = 40;
-// A wider per-item angle than locations get: workload nodes are smaller, but
-// there are usually more of them sharing one location, so they need more
-// total arc to stay legible.
 const MAX_WORKLOAD_ARC_DEGREES = 150;
 const WORKLOAD_ARC_STEP_DEGREES = 45;
 
-// Gateways fan out to the LEFT of the hub (angle centered on 180°) — the
-// mirror image of the location fan on the right — so the diagram reads
-// left-to-right as inbound customer traffic flowing toward the network.
 const GATEWAY_RADIUS = { x: 180, y: 100 };
 const GATEWAY_BASE_ANGLE = 180;
 const MAX_GATEWAY_ARC_DEGREES = 100;
@@ -87,9 +79,6 @@ interface LocationNode {
 }
 
 export function layout(subnets: Subnet[], interfaces: NetworkInterface[]): LocationNode[] {
-  // Fan locations out to the right of the hub rather than in a full circle —
-  // a full circle wastes the canvas and clips at the top/bottom when there is
-  // only one location, which is the common case.
   const arcSpan = subnets.length <= 1 ? 0 : Math.min(MAX_LOCATION_ARC_DEGREES, LOCATION_ARC_STEP_DEGREES * (subnets.length - 1));
   const angleStep = subnets.length <= 1 ? 0 : arcSpan / (subnets.length - 1);
   const startAngle = -arcSpan / 2;
@@ -126,13 +115,6 @@ interface GatewayNode {
   position: { x: number; y: number };
 }
 
-/**
- * The names of NetworkServices whose networkInterfaceSelector matches at
- * least one of this network's own NetworkInterfaces — i.e. NetworkServices
- * that actually resolve to members on this network, not some other one.
- * NetworkService carries no network reference of its own (see the comment on
- * networkServiceResourceSchema), so this is the only way to tell.
- */
 export function networkServiceNamesOnNetwork(
   networkServices: NetworkService[],
   interfaces: NetworkInterface[]
@@ -144,7 +126,6 @@ export function networkServiceNamesOnNetwork(
   );
 }
 
-/** Fans HTTPProxies out to the left of the hub, mirroring layout()'s location fan on the right. */
 export function gatewayLayout(httpProxies: HTTPProxy[]): GatewayNode[] {
   const arcSpan =
     httpProxies.length <= 1
@@ -159,7 +140,6 @@ export function gatewayLayout(httpProxies: HTTPProxy[]): GatewayNode[] {
   }));
 }
 
-/** Copies `value` to the clipboard, swapping to a checkmark for 2s to confirm — see cli-section.tsx's CommandBlock for the same pattern. */
 function CopyButton({ value, label }: { value: string; label: string }) {
   const [copied, copy] = useCopyToClipboard();
 
@@ -174,7 +154,6 @@ function CopyButton({ value, label }: { value: string; label: string }) {
   );
 }
 
-/** Popover body for a gateway (HTTPProxy) node — see NodeLabel's `popover` prop. */
 function GatewayInfo({ proxy }: { proxy: HTTPProxy }) {
   const hostname = proxy.hostnames[0] ?? proxy.canonicalHostname;
 
@@ -199,7 +178,6 @@ function GatewayInfo({ proxy }: { proxy: HTTPProxy }) {
   );
 }
 
-/** Popover body for a workload (NetworkInterface) node — see NodeLabel's `popover` prop. */
 function WorkloadInfo({ iface }: { iface: NetworkInterface }) {
   return (
     <div className="space-y-2 text-sm" data-testid="workload-info-popover">
@@ -236,7 +214,6 @@ function NodeLabel({
   label: string;
   labelWidth?: number;
   bold?: boolean;
-  /** When set, the node becomes clickable and opens this content in a popover. */
   popover?: React.ReactNode;
 }) {
   const circle = (
@@ -258,8 +235,8 @@ function NodeLabel({
               type="button"
               className="focus-visible:ring-ring cursor-pointer rounded-full focus-visible:ring-2 focus-visible:outline-none"
               aria-label={`${label} details`}
-              // Stops a click here from also being read as the start of a
-              // canvas drag by NetworkTopology's pan handler.
+              // Stops a click here from also starting a canvas drag via the
+              // pan handler in NetworkTopology.
               onPointerDown={(e) => e.stopPropagation()}>
               {circle}
             </button>
@@ -296,19 +273,16 @@ export function NetworkTopology({
   const { data: httpProxies } = useHTTPProxies(projectId);
   const { data: networkServices } = useNetworkServices(projectId);
 
-  // A state-backed callback ref, not useRef: this component returns null
-  // (see below) until subnets load, so the viewport div doesn't exist on the
-  // first render or two. A plain ref's effect would run once against that
-  // still-null ref and never retry, leaving the wheel listener never
-  // attached — this re-runs the effect the moment the div actually mounts.
+  // State-backed, not useRef: this component returns null until subnets
+  // load, so a plain ref's effect would run once against a still-null ref
+  // and never retry. This re-runs the effect once the div actually mounts.
   const [viewportEl, setViewportEl] = useState<HTMLDivElement | null>(null);
   const dragRef = useRef<{ startX: number; startY: number; originX: number; originY: number } | null>(null);
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
 
-  // Wheel is bound as a native listener (rather than onWheel) so
-  // preventDefault reliably stops the page from scrolling while zooming —
-  // React's synthetic wheel handler doesn't always get to call it in time.
+  // Native listener, not onWheel: React's synthetic handler doesn't always
+  // call preventDefault in time to stop the page from scrolling while zooming.
   useEffect(() => {
     if (!viewportEl) return;
     const handleWheel = (e: WheelEvent) => {
@@ -339,11 +313,9 @@ export function NetworkTopology({
   if (!subnets || subnets.length === 0) return null;
 
   const nodes = layout(subnets, interfaces ?? []);
-  // Only proxies wired to a NetworkService that actually resolves to a member
-  // on THIS network count as fronting it — an HTTPProxy backed by a
-  // Connector, a raw Endpoint, or an Instance is serving something else
-  // entirely, and a NetworkService can just as easily belong to another
-  // network the project happens to also have.
+  // Only proxies wired to a NetworkService that resolves to a member on THIS
+  // network count as fronting it: a NetworkService can belong to another
+  // network the project also has.
   const servingNames = networkServiceNamesOnNetwork(networkServices ?? [], interfaces ?? []);
   const gateways = gatewayLayout(
     (httpProxies ?? []).filter((proxy) => proxy.networkServiceNames.some((name) => servingNames.has(name)))

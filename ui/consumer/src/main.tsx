@@ -4,12 +4,6 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { MemoryRouter, Route, Routes } from 'react-router';
 
-// Standalone preview only. Wraps the page in a MemoryRouter so `useParams()`
-// resolves the same params the host mount would supply, and a
-// QueryClientProvider so the data hooks run — exactly what the host provides
-// in production. Data calls hit /api/proxy/... which 404s standalone (no
-// portal proxy), so the page shows its error state; that's expected here.
-// Run the full portal to see live data.
 const queryClient = new QueryClient();
 
 const base = '/project/:projectId/services/:serviceSlug';

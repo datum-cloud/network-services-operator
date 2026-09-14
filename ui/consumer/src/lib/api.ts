@@ -17,18 +17,10 @@ import type {
 import type { HTTPProxy, Network, NetworkInterface, NetworkService, Subnet } from '../schema';
 import { useMutation, useQueryClient, type UseMutationResult, useQuery, type UseQueryResult } from '@tanstack/react-query';
 
-/**
- * Query keys are NAMESPACED under the canonical plugin id. Plugin queries
- * share the host's single QueryCache (flat global key namespace), so
- * prefixing with the plugin id prevents collisions with host keys or other
- * plugins' keys.
- */
 export const PLUGIN_ID = 'network.networking.datumapis.com';
 
-/** Live-ish polling interval — the v1 substitute for watch-stream updates. */
 const REFETCH_INTERVAL_MS = 10_000;
 
-/** Thrown for non-ok proxy responses; carries the HTTP status for 403 handling. */
 export class ApiError extends Error {
   status: number;
 
@@ -40,13 +32,10 @@ export class ApiError extends Error {
 }
 
 function getProjectScopedBase(projectId: string): string {
-  // Project-scoped control-plane path, forwarded server-side by /api/proxy
-  // with the user's token. Mirrors compute/ui/consumer's lib/api.ts.
   return `/api/proxy/apis/resourcemanager.miloapis.com/v1alpha1/projects/${encodeURIComponent(projectId)}/control-plane`;
 }
 
-// NOTE: v1alpha, NOT v1alpha1 — verified against
-// api/v1alpha/groupversion_info.go in this repo.
+// v1alpha, NOT v1alpha1 — verified against api/v1alpha/groupversion_info.go.
 const NETWORKS_PATH = '/apis/networking.datumapis.com/v1alpha/namespaces/default/networks';
 const SUBNETS_PATH = '/apis/networking.datumapis.com/v1alpha/namespaces/default/subnets';
 const NETWORKINTERFACES_PATH = '/apis/networking.datumapis.com/v1alpha/namespaces/default/networkinterfaces';
@@ -71,7 +60,6 @@ async function proxyDelete(projectId: string, path: string, describe: string): P
       const body = (await res.json()) as { message?: string };
       if (body.message) message = body.message;
     } catch {
-      // response body wasn't JSON; fall back to the generic message above
     }
     throw new ApiError(res.status, message);
   }
@@ -88,7 +76,7 @@ export function useNetworks(projectId: string | undefined): UseQueryResult<Netwo
     enabled: !!projectId,
     queryFn: () => fetchNetworks(projectId as string),
     refetchInterval: REFETCH_INTERVAL_MS,
-    retry: false, // RBAC failures shouldn't retry-storm
+    retry: false,
   });
 }
 
@@ -161,12 +149,9 @@ async function fetchNetworkServices(projectId: string): Promise<NetworkService[]
   return toNetworkServiceList(body.items ?? []);
 }
 
-/**
- * No networkName param: a NetworkService's resolved network is never written
- * back onto it (only computed in-memory by the controller from its selector
- * match against NetworkInterfaces), so there is no field to filter on. This
- * lists every service in the project.
- */
+// No networkName param: a NetworkService's resolved network is never written
+// back onto it, so there's no field to filter on. This lists every service
+// in the project.
 export function useNetworkServices(
   projectId: string | undefined
 ): UseQueryResult<NetworkService[], ApiError> {
@@ -184,12 +169,9 @@ async function fetchHTTPProxies(projectId: string): Promise<HTTPProxy[]> {
   return toHTTPProxyList(body.items ?? []);
 }
 
-/**
- * No networkName param: an HTTPProxy's backend (endpoint, connector, or
- * instance) never references a Network, so there is no field to filter on —
- * same limitation as useNetworkServices. This lists every proxy in the
- * project; the topology diagram treats them all as fronting this network.
- */
+// No networkName param, same limitation as useNetworkServices: an
+// HTTPProxy's backend never references a Network. This lists every proxy in
+// the project; the topology diagram treats them all as candidates.
 export function useHTTPProxies(projectId: string | undefined): UseQueryResult<HTTPProxy[], ApiError> {
   return useQuery({
     queryKey: [PLUGIN_ID, 'httpProxies', projectId],
@@ -224,7 +206,6 @@ async function enableIPv6({ projectId, network }: EnableIPv6Args): Promise<void>
       const body = (await res.json()) as { message?: string };
       if (body.message) message = body.message;
     } catch {
-      // response body wasn't JSON; fall back to the generic message above
     }
     throw new ApiError(res.status, message);
   }
@@ -274,7 +255,6 @@ async function createNetwork(projectId: string, input: CreateNetworkInput): Prom
       const body = (await res.json()) as { message?: string };
       if (body.message) message = body.message;
     } catch {
-      // response body wasn't JSON; fall back to the generic message above
     }
     throw new ApiError(res.status, message);
   }
@@ -304,10 +284,9 @@ export function useDeleteNetwork(
         `delete network ${name}`
       ),
     onSuccess: (_data, name) => {
-      // Drop it from the cached list immediately — invalidate alone only
-      // marks the query stale, so a caller that navigates straight to the
-      // list right after this resolves would still render the deleted
-      // network until the background refetch lands.
+      // Invalidate alone only marks the query stale, so a caller navigating
+      // straight to the list would still render the deleted network until
+      // the background refetch lands. Drop it from cache immediately instead.
       queryClient.setQueryData<Network[]>([PLUGIN_ID, 'networks', projectId], (networks) =>
         networks?.filter((n) => n.name !== name)
       );
@@ -350,7 +329,6 @@ async function createNetworkService(
       const body = (await res.json()) as { message?: string };
       if (body.message) message = body.message;
     } catch {
-      // response body wasn't JSON; fall back to the generic message above
     }
     throw new ApiError(res.status, message);
   }

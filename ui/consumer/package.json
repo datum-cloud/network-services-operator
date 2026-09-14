@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "Network Services Operator Portal Plugin: read-only Network list, a Module Federation remote reading data exclusively through the portal's Milo control-plane proxy. Network creation stays in datumctl (CLI-first).",
+  "description": "Network Services Operator Portal Plugin: a Module Federation remote listing and managing a project's Networks and NetworkServices exclusively through the portal's Milo control-plane proxy.",
   "scripts": {
     "dev": "vite",
     "preview": "vite preview",

@@ -367,7 +367,6 @@ export interface RawHTTPProxyList {
   items?: RawHTTPProxy[];
 }
 
-/** The distinct NetworkServices named by a proxy's rules' `networkService` backends. */
 function toNetworkServiceNames(spec: RawHTTPProxySpec | undefined): string[] {
   const names = (spec?.rules ?? []).flatMap((rule) =>
     (rule.backends ?? []).flatMap((backend) => (backend.networkService?.name ? [backend.networkService.name] : []))

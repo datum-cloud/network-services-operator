@@ -1,10 +1,3 @@
-/**
- * Minimal static file server for the built plugin bundle (dist/), with TLS
- * termination via Bun.serve's native tls option. Internal-only — no Gateway
- * fronts this service, so the only client is cloud-portal's own server (see
- * Dockerfile for why TLS is required regardless). Cert/key come from the
- * cert-manager CSI volume mounted by the Deployment.
- */
 import { join, normalize } from "node:path";
 
 const DIST_DIR = join(import.meta.dir, "dist");
@@ -18,7 +11,7 @@ Bun.serve({
   },
   async fetch(req) {
     const url = new URL(req.url);
-    // Strip any leading slashes/.. segments so requests can't escape DIST_DIR.
+    // Strip any leading ../ segments so a request can't escape DIST_DIR.
     const path = normalize(url.pathname).replace(/^(\.\.[/\\])+/, "");
     const file = Bun.file(join(DIST_DIR, path));
 

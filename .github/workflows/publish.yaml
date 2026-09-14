@@ -22,9 +22,6 @@ jobs:
       platforms: linux/amd64,linux/arm64
     secrets: inherit
 
-  # Deployed as a Component (config/components/consumer-ui-plugin) folded
-  # into the cell's own kustomize bundle/Flux Kustomization — no separate
-  # bundle for this image. Mirrors compute's consumer-ui-plugin publishing.
   publish-consumer-ui-plugin-image:
     permissions:
       id-token: write

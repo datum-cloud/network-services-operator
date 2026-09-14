@@ -4,7 +4,6 @@ import { Icon } from '@datum-cloud/datum-ui/icons';
 import { Skeleton } from '@datum-cloud/datum-ui/skeleton';
 import { LockIcon, ServerCrashIcon } from 'lucide-react';
 
-/** Content-area placeholder only (table skeleton). No page chrome. */
 export function LoadingSkeleton() {
   return (
     <div data-testid="networking-plugin-loading" className="flex flex-col gap-4">
@@ -56,10 +55,6 @@ export function ErrorState({ error, onRetry }: { error: unknown; onRetry: () => 
   );
 }
 
-/**
- * Renders the restricted state for a 403 `ApiError`, otherwise the generic
- * error state. Call once `error` is truthy — keep page chrome outside.
- */
 export function ErrorOrRestrictedState({
   error,
   restrictedMessage,

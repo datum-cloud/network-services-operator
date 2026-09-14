@@ -37,9 +37,6 @@ export default function NetworkDetail() {
   const location = useLocation();
 
   const projectHref = projectId ? `/project/${projectId}` : '/';
-  // Relative to the current route rather than reconstructed from `serviceSlug`
-  // (which the host route may not even carry) — mirrors network-table.tsx's
-  // use of `location.pathname` for the forward link to this same page.
   const networksHref = location.pathname.replace(/\/[^/]+$/, '') || '/';
 
   return (

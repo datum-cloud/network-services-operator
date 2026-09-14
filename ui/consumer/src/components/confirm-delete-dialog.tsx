@@ -13,7 +13,6 @@ export function ConfirmDeleteDialog({
   title: React.ReactNode;
   description: React.ReactNode;
   confirmLabel?: string;
-  /** Should throw to keep the dialog open (e.g. after surfacing a toast). */
   onConfirm: () => Promise<void>;
 }) {
   const [open, setOpen] = useState(false);

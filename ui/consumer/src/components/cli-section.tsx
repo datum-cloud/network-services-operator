@@ -72,10 +72,6 @@ export function SectionCard({
   );
 }
 
-/**
- * Shared shell for the plugin's full-width banners: icon + title/description
- * on the left, an actions slot on the right.
- */
 export function Banner({
   icon,
   title,
@@ -103,7 +99,6 @@ export function Banner({
   );
 }
 
-/** Banner pointing users at the datumctl CLI docs — shown wherever a resource is CLI-managed only. */
 export function CliBanner({ title, description }: { title: string; description: string }) {
   return (
     <Banner
@@ -134,7 +129,6 @@ export function CliBanner({ title, description }: { title: string; description: 
   );
 }
 
-/** The "Create a network" / "List networks" datumctl pointer cards shown on the empty state. */
 export function NetworkCliSections({ projectId }: { projectId: string | undefined }) {
   return (
     <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-2">

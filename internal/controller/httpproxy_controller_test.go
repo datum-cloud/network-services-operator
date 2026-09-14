@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -305,6 +306,30 @@ func TestHTTPProxyCollectDesiredResources(t *testing.T) {
 			},
 		},
 		{
+			name: "user Host header override on a plain HTTP IP backend is rewritten via URLRewrite",
+			httpProxy: newHTTPProxy(func(h *networkingv1alpha.HTTPProxy) {
+				h.Spec.Rules[0].Backends[0].Endpoint = "http://192.168.1.1:8080"
+				h.Spec.Rules[0].Backends[0].Filters = []gatewayv1.HTTPRouteFilter{
+					{
+						Type: gatewayv1.HTTPRouteFilterRequestHeaderModifier,
+						RequestHeaderModifier: &gatewayv1.HTTPHeaderFilter{
+							Set: []gatewayv1.HTTPHeader{
+								{Name: "Host", Value: "please.override.me"},
+							},
+						},
+					},
+				}
+			}),
+			assert: func(t *testing.T, httpProxy *networkingv1alpha.HTTPProxy, desiredResources *desiredHTTPProxyResources) {
+				routeRule := desiredResources.httpRoute.Spec.Rules[0]
+				assert.Equal(t, "please.override.me", string(ptr.Deref(findURLRewriteHostname(routeRule.Filters), "")))
+				assert.Empty(t, routeRule.BackendRefs[0].Filters)
+				if assert.Len(t, desiredResources.endpointSlices, 1) {
+					assert.NotContains(t, desiredResources.endpointSlices[0].Annotations, BackendCertHostnameAnnotation)
+				}
+			},
+		},
+		{
 			name: "backend tls.hostname is lowercased for URLRewrite and the cert annotation",
 			httpProxy: newHTTPProxy(func(h *networkingv1alpha.HTTPProxy) {
 				h.Spec.Rules[0].Filters = nil
@@ -579,6 +604,91 @@ func TestHTTPProxyCollectDesiredResources(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestHTTPProxyCollectDesiredResourcesConnectorHostOverride covers the
+// connector backend separately: with EPP emission disabled no Connector
+// lookup is needed, and the shared table's implicit-rewrite expectations do
+// not apply to tunnelled backends.
+func TestHTTPProxyCollectDesiredResourcesConnectorHostOverride(t *testing.T) {
+	operatorConfig := config.NetworkServicesOperator{
+		Gateway: config.GatewayConfig{
+			TargetDomain:       "example.com",
+			EPPEmissionEnabled: ptr.To(false),
+		},
+		HTTPProxy: config.HTTPProxyConfig{
+			GatewayClassName: "test",
+		},
+	}
+
+	reconciler := &HTTPProxyReconciler{Config: operatorConfig}
+	cl := fake.NewClientBuilder().WithScheme(scheme.Scheme).Build()
+
+	hostOverride := gatewayv1.HTTPRouteFilter{
+		Type: gatewayv1.HTTPRouteFilterRequestHeaderModifier,
+		RequestHeaderModifier: &gatewayv1.HTTPHeaderFilter{
+			Set: []gatewayv1.HTTPHeader{
+				{Name: "Host", Value: "Please.Override.Me"},
+			},
+		},
+	}
+
+	withConnector := func(h *networkingv1alpha.HTTPProxy) {
+		h.Spec.Rules[0].Backends[0].Connector = &networkingv1alpha.ConnectorReference{Name: "connector-1"}
+	}
+
+	t.Run("rule-level override becomes URLRewrite.Hostname", func(t *testing.T) {
+		httpProxy := newHTTPProxy(withConnector, func(h *networkingv1alpha.HTTPProxy) {
+			h.Spec.Rules[0].Filters = append(h.Spec.Rules[0].Filters, hostOverride)
+		})
+
+		desired, err := reconciler.collectDesiredResources(context.Background(), cl, httpProxy)
+		require.NoError(t, err)
+
+		routeRule := desired.httpRoute.Spec.Rules[0]
+		assert.Equal(t, "please.override.me", string(ptr.Deref(findURLRewriteHostname(routeRule.Filters), "")))
+		for _, f := range routeRule.Filters {
+			if f.RequestHeaderModifier != nil {
+				for _, h := range f.RequestHeaderModifier.Set {
+					assert.False(t, strings.EqualFold("Host", string(h.Name)), "Host must be stripped from RequestHeaderModifier")
+				}
+			}
+		}
+		if assert.Len(t, desired.endpointSlices, 1) {
+			assert.NotContains(t, desired.endpointSlices[0].Annotations, BackendCertHostnameAnnotation)
+		}
+	})
+
+	t.Run("backend-level override becomes URLRewrite.Hostname", func(t *testing.T) {
+		httpProxy := newHTTPProxy(withConnector, func(h *networkingv1alpha.HTTPProxy) {
+			h.Spec.Rules[0].Backends[0].Filters = []gatewayv1.HTTPRouteFilter{hostOverride}
+		})
+
+		desired, err := reconciler.collectDesiredResources(context.Background(), cl, httpProxy)
+		require.NoError(t, err)
+
+		routeRule := desired.httpRoute.Spec.Rules[0]
+		assert.Equal(t, "please.override.me", string(ptr.Deref(findURLRewriteHostname(routeRule.Filters), "")))
+		assert.Empty(t, routeRule.BackendRefs[0].Filters)
+	})
+
+	t.Run("no override leaves the tunnelled Host untouched", func(t *testing.T) {
+		httpProxy := newHTTPProxy(withConnector)
+
+		desired, err := reconciler.collectDesiredResources(context.Background(), cl, httpProxy)
+		require.NoError(t, err)
+
+		assert.Nil(t, findURLRewriteHostname(desired.httpRoute.Spec.Rules[0].Filters))
+	})
+}
+
+func findURLRewriteHostname(filters []gatewayv1.HTTPRouteFilter) *gatewayv1.PreciseHostname {
+	for _, f := range filters {
+		if f.Type == gatewayv1.HTTPRouteFilterURLRewrite && f.URLRewrite != nil {
+			return f.URLRewrite.Hostname
+		}
+	}
+	return nil
 }
 
 // TestHTTPProxyCollectDesiredResourcesInstance covers the instance backend

@@ -1274,6 +1274,8 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 				if rewriteHostname == "" {
 					rewriteHostname = certHostname
 				}
+			} else if backend.Connector != nil && net.ParseIP(host) == nil {
+				certHostname = gatewayutil.NormalizeHostname(host)
 			}
 
 			if rewriteHostname != "" {

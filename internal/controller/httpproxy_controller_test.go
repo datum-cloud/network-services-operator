@@ -655,6 +655,21 @@ func TestHTTPProxyCollectDesiredResourcesConnectorHostOverride(t *testing.T) {
 			}
 		}
 		if assert.Len(t, desired.endpointSlices, 1) {
+			assert.Equal(t, "www.example.com", desired.endpointSlices[0].Annotations[BackendCertHostnameAnnotation])
+		}
+	})
+
+	t.Run("IP origin records no cert hostname", func(t *testing.T) {
+		httpProxy := newHTTPProxy(withConnector, func(h *networkingv1alpha.HTTPProxy) {
+			h.Spec.Rules[0].Backends[0].Endpoint = "https://192.168.1.1"
+			h.Spec.Rules[0].Filters = append(h.Spec.Rules[0].Filters, hostOverride)
+		})
+
+		desired, err := reconciler.collectDesiredResources(context.Background(), cl, httpProxy)
+		require.NoError(t, err)
+
+		assert.Equal(t, "please.override.me", string(ptr.Deref(findURLRewriteHostname(desired.httpRoute.Spec.Rules[0].Filters), "")))
+		if assert.Len(t, desired.endpointSlices, 1) {
 			assert.NotContains(t, desired.endpointSlices[0].Annotations, BackendCertHostnameAnnotation)
 		}
 	})

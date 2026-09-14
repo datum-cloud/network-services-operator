@@ -959,6 +959,28 @@ func stripHostFromRequestHeaderModifier(filters []gatewayv1.HTTPRouteFilter) []g
 	return out
 }
 
+// reconcileRuleRewriteHostname records the Host-rewrite hostname a backend
+// needs applied to its rule's URLRewrite filter, and errors if an earlier
+// backend in the same rule already settled on a different one. The
+// URLRewrite filter lives on the HTTPRouteRule, not the individual
+// backendRef, so it applies to every weighted backend in the rule alike —
+// backends that disagree on the target hostname cannot be expressed in a
+// single rule.
+func reconcileRuleRewriteHostname(agreed *string, have *bool, hostname string, ruleIndex, backendIndex int) error {
+	if !*have {
+		*agreed = hostname
+		*have = true
+		return nil
+	}
+	if *agreed != hostname {
+		return fmt.Errorf(
+			"backend %d in rule %d needs Host header rewritten to %q, which conflicts with another backend in the same rule that needs %q; backends sharing a rule must resolve to the same Host rewrite target",
+			backendIndex, ruleIndex, hostname, *agreed,
+		)
+	}
+	return nil
+}
+
 func (r *HTTPProxyReconciler) collectDesiredResources(
 	ctx context.Context,
 	cl client.Client,
@@ -1036,6 +1058,26 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 		ruleFilters := slices.Clone(rule.Filters)
 		backendRefs := make([]gatewayv1.HTTPBackendRef, len(rule.Backends))
 		offlineRuleSet := false
+
+		// A rule-level Host override applies uniformly to every backend in
+		// the rule, so it's resolved and stripped once here rather than
+		// inside the backend loop below — extracting it from ruleFilters
+		// per-backend would find nothing on the second and later backends,
+		// since the first backend to see it would already have stripped it
+		// from the shared slice.
+		ruleHostOverride, hasRuleHostOverride := extractHostHeaderOverride(rule.Filters)
+		if hasRuleHostOverride {
+			ruleFilters = stripHostFromRequestHeaderModifier(ruleFilters)
+		}
+
+		// The Host-rewrite URLRewrite filter this rule ends up with is
+		// rule-scoped in the Gateway API — it cannot vary per weighted
+		// backend. Every backend that needs a rewrite must agree on the
+		// same target hostname; reconcileRuleRewriteHostname enforces that
+		// and errors instead of silently applying only the last backend's
+		// hostname to all of them.
+		var agreedRewriteHostname string
+		var haveAgreedRewriteHostname bool
 
 		for backendIndex, backend := range rule.Backends {
 			if backend.Instance != nil {
@@ -1210,12 +1252,11 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 			// URLRewrite.Hostname value Envoy will honour at egress, then
 			// strip the now-redundant Host entry from the RequestHeaderModifier
 			// so EG doesn't see the conflicting combination.
-			userHostOverride, hasUserHost := extractHostHeaderOverride(ruleFilters)
+			userHostOverride, hasUserHost := ruleHostOverride, hasRuleHostOverride
 			if !hasUserHost {
 				userHostOverride, hasUserHost = extractHostHeaderOverride(backend.Filters)
 			}
 			if hasUserHost {
-				ruleFilters = stripHostFromRequestHeaderModifier(ruleFilters)
 				backend.Filters = stripHostFromRequestHeaderModifier(backend.Filters)
 			}
 
@@ -1238,22 +1279,8 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 				if hasUserHost {
 					rewriteHostname = gatewayutil.NormalizeHostname(userHostOverride)
 				}
-				// Use tls.hostname (or the user override) for the Host header rewrite
-				hostnameRewriteFound := false
-				for i, filter := range ruleFilters {
-					if filter.Type == gatewayv1.HTTPRouteFilterURLRewrite {
-						ruleFilters[i].URLRewrite.Hostname = ptr.To(gatewayv1.PreciseHostname(rewriteHostname))
-						hostnameRewriteFound = true
-						break
-					}
-				}
-				if !hostnameRewriteFound {
-					ruleFilters = append(ruleFilters, gatewayv1.HTTPRouteFilter{
-						Type: gatewayv1.HTTPRouteFilterURLRewrite,
-						URLRewrite: &gatewayv1.HTTPURLRewriteFilter{
-							Hostname: ptr.To(gatewayv1.PreciseHostname(rewriteHostname)),
-						},
-					})
+				if err := reconcileRuleRewriteHostname(&agreedRewriteHostname, &haveAgreedRewriteHostname, rewriteHostname, ruleIndex, backendIndex); err != nil {
+					return nil, err
 				}
 			} else if !isIPAddress && backend.Connector == nil {
 				// For FQDN endpoints, rewrite the Host header to match the
@@ -1264,22 +1291,8 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 				if hasUserHost {
 					rewriteHostname = gatewayutil.NormalizeHostname(userHostOverride)
 				}
-				hostnameRewriteFound := false
-				for i, filter := range ruleFilters {
-					if filter.Type == gatewayv1.HTTPRouteFilterURLRewrite {
-						ruleFilters[i].URLRewrite.Hostname = ptr.To(gatewayv1.PreciseHostname(rewriteHostname))
-						hostnameRewriteFound = true
-						break
-					}
-				}
-
-				if !hostnameRewriteFound {
-					ruleFilters = append(ruleFilters, gatewayv1.HTTPRouteFilter{
-						Type: gatewayv1.HTTPRouteFilterURLRewrite,
-						URLRewrite: &gatewayv1.HTTPURLRewriteFilter{
-							Hostname: ptr.To(gatewayv1.PreciseHostname(rewriteHostname)),
-						},
-					})
+				if err := reconcileRuleRewriteHostname(&agreedRewriteHostname, &haveAgreedRewriteHostname, rewriteHostname, ruleIndex, backendIndex); err != nil {
+					return nil, err
 				}
 			}
 
@@ -1338,6 +1351,25 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 
 		if offlineRuleSet {
 			continue
+		}
+
+		if haveAgreedRewriteHostname {
+			hostnameRewriteFound := false
+			for i, filter := range ruleFilters {
+				if filter.Type == gatewayv1.HTTPRouteFilterURLRewrite {
+					ruleFilters[i].URLRewrite.Hostname = ptr.To(gatewayv1.PreciseHostname(agreedRewriteHostname))
+					hostnameRewriteFound = true
+					break
+				}
+			}
+			if !hostnameRewriteFound {
+				ruleFilters = append(ruleFilters, gatewayv1.HTTPRouteFilter{
+					Type: gatewayv1.HTTPRouteFilterURLRewrite,
+					URLRewrite: &gatewayv1.HTTPURLRewriteFilter{
+						Hostname: ptr.To(gatewayv1.PreciseHostname(agreedRewriteHostname)),
+					},
+				})
+			}
 		}
 
 		desiredRouteRules[ruleIndex] = gatewayv1.HTTPRouteRule{

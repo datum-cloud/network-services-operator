@@ -599,12 +599,12 @@ func TestHTTPProxyCollectDesiredResourcesMultipleBackends(t *testing.T) {
 
 	reconciler := &HTTPProxyReconciler{Config: operatorConfig}
 
-	t.Run("weights and endpoint slices are keyed per backend", func(t *testing.T) {
+	t.Run("weights and endpoint slices are keyed per backend, sharing one Host rewrite", func(t *testing.T) {
 		httpProxy := newHTTPProxy(func(h *networkingv1alpha.HTTPProxy) {
 			h.Spec.Rules[0].Backends = []networkingv1alpha.HTTPProxyRuleBackend{
-				{Endpoint: "http://a.example.com", Weight: ptr.To(int32(3))},
-				{Endpoint: "http://b.example.com", Weight: ptr.To(int32(1))},
-				{Endpoint: "http://c.example.com"},
+				{Endpoint: "https://198.51.100.1", Weight: ptr.To(int32(3)), TLS: &networkingv1alpha.HTTPProxyBackendTLS{Hostname: ptr.To("shared.example.com")}},
+				{Endpoint: "https://198.51.100.2", Weight: ptr.To(int32(1)), TLS: &networkingv1alpha.HTTPProxyBackendTLS{Hostname: ptr.To("shared.example.com")}},
+				{Endpoint: "https://198.51.100.3", TLS: &networkingv1alpha.HTTPProxyBackendTLS{Hostname: ptr.To("shared.example.com")}},
 			}
 		})
 
@@ -625,9 +625,78 @@ func TestHTTPProxyCollectDesiredResourcesMultipleBackends(t *testing.T) {
 			assert.Equal(t, "test-0-0", endpointSlices[0].Name)
 			assert.Equal(t, "test-0-1", endpointSlices[1].Name)
 			assert.Equal(t, "test-0-2", endpointSlices[2].Name)
-			assert.Equal(t, "a.example.com", endpointSlices[0].Endpoints[0].Addresses[0])
-			assert.Equal(t, "b.example.com", endpointSlices[1].Endpoints[0].Addresses[0])
-			assert.Equal(t, "c.example.com", endpointSlices[2].Endpoints[0].Addresses[0])
+			assert.Equal(t, "198.51.100.1", endpointSlices[0].Endpoints[0].Addresses[0])
+			assert.Equal(t, "198.51.100.2", endpointSlices[1].Endpoints[0].Addresses[0])
+			assert.Equal(t, "198.51.100.3", endpointSlices[2].Endpoints[0].Addresses[0])
+		}
+
+		// Every backend agrees on the same rewrite hostname, so the rule
+		// carries exactly one URLRewrite filter applying it uniformly —
+		// this is the only shape Gateway API's rule-scoped filter can
+		// express for a weighted set of backends.
+		urlRewriteCount := 0
+		for _, filter := range routeRule.Filters {
+			if filter.Type != gatewayv1.HTTPRouteFilterURLRewrite {
+				continue
+			}
+			urlRewriteCount++
+			assert.Equal(t, "shared.example.com", string(ptr.Deref(filter.URLRewrite.Hostname, "")))
+		}
+		assert.Equal(t, 1, urlRewriteCount)
+	})
+
+	t.Run("backends disagreeing on Host rewrite target return an error", func(t *testing.T) {
+		httpProxy := newHTTPProxy(func(h *networkingv1alpha.HTTPProxy) {
+			h.Spec.Rules[0].Backends = []networkingv1alpha.HTTPProxyRuleBackend{
+				{Endpoint: "http://a.example.com"},
+				{Endpoint: "http://b.example.com"},
+			}
+		})
+
+		cl := fake.NewClientBuilder().WithScheme(scheme.Scheme).Build()
+		_, err := reconciler.collectDesiredResources(context.Background(), cl, httpProxy)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "conflicts with another backend in the same rule")
+	})
+
+	t.Run("a rule-level Host override applies to every backend, not just the first", func(t *testing.T) {
+		httpProxy := newHTTPProxy(func(h *networkingv1alpha.HTTPProxy) {
+			h.Spec.Rules[0].Filters = []gatewayv1.HTTPRouteFilter{
+				{
+					Type: gatewayv1.HTTPRouteFilterRequestHeaderModifier,
+					RequestHeaderModifier: &gatewayv1.HTTPHeaderFilter{
+						Set: []gatewayv1.HTTPHeader{
+							{Name: "Host", Value: "override.example.com"},
+						},
+					},
+				},
+			}
+			h.Spec.Rules[0].Backends = []networkingv1alpha.HTTPProxyRuleBackend{
+				{Endpoint: "http://a.example.com"},
+				{Endpoint: "http://b.example.com"},
+			}
+		})
+
+		cl := fake.NewClientBuilder().WithScheme(scheme.Scheme).Build()
+		desiredResources, err := reconciler.collectDesiredResources(context.Background(), cl, httpProxy)
+		require.NoError(t, err)
+
+		routeRule := desiredResources.httpRoute.Spec.Rules[0]
+
+		urlRewriteCount := 0
+		for _, filter := range routeRule.Filters {
+			if filter.Type != gatewayv1.HTTPRouteFilterURLRewrite {
+				continue
+			}
+			urlRewriteCount++
+			assert.Equal(t, "override.example.com", string(ptr.Deref(filter.URLRewrite.Hostname, "")))
+		}
+		assert.Equal(t, 1, urlRewriteCount, "the rule-level Host override must survive processing every backend, not just the first")
+
+		for _, filter := range routeRule.Filters {
+			if filter.Type == gatewayv1.HTTPRouteFilterRequestHeaderModifier {
+				assert.NotContains(t, filter.RequestHeaderModifier.Set, gatewayv1.HTTPHeader{Name: "Host", Value: "override.example.com"})
+			}
 		}
 	})
 }

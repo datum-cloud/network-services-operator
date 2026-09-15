@@ -135,6 +135,18 @@ field and do not require additional configuration by the user.
 Wildcard hostnames are not supported at this time.<br/>
         </td>
         <td>false</td>
+      </tr><tr>
+        <td><b><a href="#httpproxyspecloadbalancer">loadBalancer</a></b></td>
+        <td>object</td>
+        <td>
+          LoadBalancer selects the algorithm used to distribute requests across
+every rule's backends, whenever a rule has more than one. It applies
+to the whole HTTPProxy rather than to an individual rule. If unset,
+Envoy's own default algorithm applies.<br/>
+          <br/>
+            <i>Validations</i>:<li>(self.type == 'ConsistentHash') == has(self.consistentHash): consistentHash is required when type is ConsistentHash, and forbidden otherwise</li>
+        </td>
+        <td>false</td>
       </tr></tbody>
 </table>
 
@@ -164,9 +176,10 @@ backends.
           Backends defines the backend(s) where matching requests should be
 sent.
 
-Note: While this field is a list, only a single element is permitted at
-this time due to underlying Gateway limitations. Once addressed, MaxItems
-will be increased to allow for multiple backends on any given route.<br/>
+When more than one backend is specified, requests are weighted load
+balanced across all of them (see the weight field on each backend). A
+connector backend must be the only backend in the rule — connectors do
+not support weighted load balancing across multiple backends today.<br/>
         </td>
         <td>false</td>
       </tr><tr>
@@ -296,6 +309,23 @@ must be specified for TLS certificate validation.
 
 Not supported for networkService backends, which are always reached over
 plaintext HTTP.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>weight</b></td>
+        <td>integer</td>
+        <td>
+          Weight specifies the proportion of requests forwarded to this backend,
+relative to the sum of weights across all backends in the rule.
+Follows the same semantics as the Gateway API's HTTPBackendRef.weight:
+computed as weight/(sum of all weights in the rule); a weight of 0
+means no traffic is forwarded to this backend; if unspecified, weight
+defaults to 1.<br/>
+          <br/>
+            <i>Format</i>: int32<br/>
+            <i>Default</i>: 1<br/>
+            <i>Minimum</i>: 0<br/>
+            <i>Maximum</i>: 1e+06<br/>
         </td>
         <td>false</td>
       </tr></tbody>
@@ -4270,6 +4300,98 @@ documentation to determine the supported dialect.<br/>
           <br/>
             <i>Enum</i>: Exact, RegularExpression<br/>
             <i>Default</i>: Exact<br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### HTTPProxy.spec.loadBalancer
+<sup><sup>[↩ Parent](#httpproxyspec)</sup></sup>
+
+
+
+LoadBalancer selects the algorithm used to distribute requests across
+every rule's backends, whenever a rule has more than one. It applies
+to the whole HTTPProxy rather than to an individual rule. If unset,
+Envoy's own default algorithm applies.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>type</b></td>
+        <td>enum</td>
+        <td>
+          Type selects the load balancing algorithm.
+
+RoundRobin cycles through backends in order. Random picks a backend
+uniformly at random. LeastRequest picks the backend with the fewest
+active requests, biased toward spreading load evenly under uneven
+latency. ConsistentHash routes requests that hash the same way (see
+consistentHash) to the same backend, so the same client keeps
+landing on the same backend so long as the backend set is stable.<br/>
+          <br/>
+            <i>Enum</i>: RoundRobin, Random, LeastRequest, ConsistentHash<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b><a href="#httpproxyspecloadbalancerconsistenthash">consistentHash</a></b></td>
+        <td>object</td>
+        <td>
+          ConsistentHash configures what part of the request is hashed to pick
+a backend. Required when type is ConsistentHash, and forbidden
+otherwise.<br/>
+          <br/>
+            <i>Validations</i>:<li>(self.type == 'Header') == has(self.header): header is required when type is Header, and forbidden otherwise</li>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### HTTPProxy.spec.loadBalancer.consistentHash
+<sup><sup>[↩ Parent](#httpproxyspecloadbalancer)</sup></sup>
+
+
+
+ConsistentHash configures what part of the request is hashed to pick
+a backend. Required when type is ConsistentHash, and forbidden
+otherwise.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>type</b></td>
+        <td>enum</td>
+        <td>
+          Type selects what part of the request is hashed to pick a backend.
+
+SourceIP hashes the client's source IP address. Header hashes the
+value of the request header named in the header field.<br/>
+          <br/>
+            <i>Enum</i>: SourceIP, Header<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>header</b></td>
+        <td>string</td>
+        <td>
+          Header names the request header to hash on. Required when type is
+Header, and forbidden otherwise.<br/>
         </td>
         <td>false</td>
       </tr></tbody>

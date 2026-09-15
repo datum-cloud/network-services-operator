@@ -4,6 +4,7 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -129,6 +130,14 @@ const connectorOfflineFilterPrefix = "connector-offline"
 // FQDN even when URLRewrite.Hostname has been redirected to a user-supplied
 // Host header override.
 const BackendCertHostnameAnnotation = "networking.datumapis.com/backend-cert-hostname"
+
+// LoadBalancerAnnotation carries an HTTPProxy's spec.loadBalancer, JSON
+// encoded, on the upstream HTTPRoute this controller synthesizes. The
+// gateway controller reads it back off that HTTPRoute to build the
+// downstream BackendTrafficPolicy, since load balancing policy must target
+// the downstream/dataplane cluster this (upstream-only) controller has no
+// access to.
+const LoadBalancerAnnotation = "networking.datumapis.com/load-balancer"
 
 const (
 	SchemeHTTP  = "http"
@@ -343,6 +352,7 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 			return fmt.Errorf("failed to set controller on httproute: %w", err)
 		}
 
+		httpRoute.Annotations = desiredResources.httpRoute.Annotations
 		httpRoute.Spec = desiredResources.httpRoute.Spec
 
 		return nil
@@ -979,6 +989,28 @@ func setURLRewriteHostname(filters []gatewayv1.HTTPRouteFilter, hostname string)
 	})
 }
 
+// reconcileRuleRewriteHostname records the Host-rewrite hostname a backend
+// needs applied to its rule's URLRewrite filter, and errors if an earlier
+// backend in the same rule already settled on a different one. The
+// URLRewrite filter lives on the HTTPRouteRule, not the individual
+// backendRef, so it applies to every weighted backend in the rule alike —
+// backends that disagree on the target hostname cannot be expressed in a
+// single rule.
+func reconcileRuleRewriteHostname(agreed *string, have *bool, hostname string, ruleIndex, backendIndex int) error {
+	if !*have {
+		*agreed = hostname
+		*have = true
+		return nil
+	}
+	if *agreed != hostname {
+		return fmt.Errorf(
+			"backend %d in rule %d needs Host header rewritten to %q, which conflicts with another backend in the same rule that needs %q; backends sharing a rule must resolve to the same Host rewrite target",
+			backendIndex, ruleIndex, hostname, *agreed,
+		)
+	}
+	return nil
+}
+
 func (r *HTTPProxyReconciler) collectDesiredResources(
 	ctx context.Context,
 	cl client.Client,
@@ -1031,10 +1063,20 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 		})
 	}
 
+	httpRouteAnnotations := map[string]string{}
+	if httpProxy.Spec.LoadBalancer != nil {
+		encoded, err := json.Marshal(httpProxy.Spec.LoadBalancer)
+		if err != nil {
+			return nil, fmt.Errorf("failed encoding load balancer for httproute annotation: %w", err)
+		}
+		httpRouteAnnotations[LoadBalancerAnnotation] = string(encoded)
+	}
+
 	httpRoute := &gatewayv1.HTTPRoute{
 		ObjectMeta: metav1.ObjectMeta{
-			Namespace: httpProxy.Namespace,
-			Name:      httpProxy.Name,
+			Namespace:   httpProxy.Namespace,
+			Name:        httpProxy.Name,
+			Annotations: httpRouteAnnotations,
 		},
 		Spec: gatewayv1.HTTPRouteSpec{
 			CommonRouteSpec: gatewayv1.CommonRouteSpec{
@@ -1057,13 +1099,25 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 		backendRefs := make([]gatewayv1.HTTPBackendRef, len(rule.Backends))
 		offlineRuleSet := false
 
-		// Validation will prevent this from occurring, unless the maximum items for
-		// backends is adjusted. The following error has been placed here so that
-		// if/when that occurs, we're sure to address obvious programming changes
-		// required (which should happen anyways, but just to be safe...).
-		if len(rule.Backends) > 1 {
-			return nil, fmt.Errorf("invalid number of backends for rule - expected 1 got %d", len(rule.Backends))
+		// A rule-level Host override applies uniformly to every backend in
+		// the rule, so it's resolved and stripped once here rather than
+		// inside the backend loop below — extracting it from ruleFilters
+		// per-backend would find nothing on the second and later backends,
+		// since the first backend to see it would already have stripped it
+		// from the shared slice.
+		ruleHostOverride, hasRuleHostOverride := extractHostHeaderOverride(rule.Filters)
+		if hasRuleHostOverride {
+			ruleFilters = stripHostFromRequestHeaderModifier(ruleFilters)
 		}
+
+		// The Host-rewrite URLRewrite filter this rule ends up with is
+		// rule-scoped in the Gateway API — it cannot vary per weighted
+		// backend. Every backend that needs a rewrite must agree on the
+		// same target hostname; reconcileRuleRewriteHostname enforces that
+		// and errors instead of silently applying only the last backend's
+		// hostname to all of them.
+		var agreedRewriteHostname string
+		var haveAgreedRewriteHostname bool
 
 		for backendIndex, backend := range rule.Backends {
 			if backend.Instance != nil {
@@ -1093,6 +1147,7 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 							Name:  gatewayv1.ObjectName(backend.Instance.Name),
 							Port:  ptr.To(backend.Instance.Port),
 						},
+						Weight: backend.Weight,
 					},
 					Filters: backend.Filters,
 				}
@@ -1139,6 +1194,7 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 							Name:  gatewayv1.ObjectName(shards[0].Name),
 							Port:  ptr.To(resolved.port),
 						},
+						Weight: backend.Weight,
 					},
 					Filters: backend.Filters,
 				}
@@ -1236,12 +1292,11 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 			// URLRewrite.Hostname value Envoy will honour at egress, then
 			// strip the now-redundant Host entry from the RequestHeaderModifier
 			// so EG doesn't see the conflicting combination.
-			userHostOverride, hasUserHost := extractHostHeaderOverride(ruleFilters)
+			userHostOverride, hasUserHost := ruleHostOverride, hasRuleHostOverride
 			if !hasUserHost {
 				userHostOverride, hasUserHost = extractHostHeaderOverride(backend.Filters)
 			}
 			if hasUserHost {
-				ruleFilters = stripHostFromRequestHeaderModifier(ruleFilters)
 				backend.Filters = stripHostFromRequestHeaderModifier(backend.Filters)
 			}
 
@@ -1279,7 +1334,9 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 			}
 
 			if rewriteHostname != "" {
-				ruleFilters = setURLRewriteHostname(ruleFilters, rewriteHostname)
+				if err := reconcileRuleRewriteHostname(&agreedRewriteHostname, &haveAgreedRewriteHostname, rewriteHostname, ruleIndex, backendIndex); err != nil {
+					return nil, err
+				}
 			}
 
 			epAnnotations := map[string]string{}
@@ -1329,6 +1386,7 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 						Name:  gatewayv1.ObjectName(endpointSlice.Name),
 						Port:  ptr.To(gatewayv1.PortNumber(backendPort)),
 					},
+					Weight: backend.Weight,
 				},
 				Filters: backend.Filters,
 			}
@@ -1336,6 +1394,10 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 
 		if offlineRuleSet {
 			continue
+		}
+
+		if haveAgreedRewriteHostname {
+			ruleFilters = setURLRewriteHostname(ruleFilters, agreedRewriteHostname)
 		}
 
 		desiredRouteRules[ruleIndex] = gatewayv1.HTTPRouteRule{

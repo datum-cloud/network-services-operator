@@ -9,7 +9,7 @@ spec:
   userInterface:
     consumer:
       assets:
-        baseURL: https://network-services-operator-consumer-ui-plugin.network-services-operator-system.svc.cluster.local
+        baseURL: https://network-services-operator-consumer-ui-plugin.datum-system.svc.cluster.local
   # A service whose configuration lists no supported location class is skipped
   # when locations are offered to a project, so without this the service is
   # live but reaches no consumer's location list.

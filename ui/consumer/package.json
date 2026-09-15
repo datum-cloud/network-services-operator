@@ -1,0 +1,42 @@
+{
+  "name": "@datum-cloud/network-services-portal-plugin",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Network Services Operator Portal Plugin: a Module Federation remote listing and managing a project's Networks and NetworkServices exclusively through the portal's Milo control-plane proxy.",
+  "scripts": {
+    "dev": "vite",
+    "preview": "vite preview",
+    "build": "vite build",
+    "typecheck": "tsc --noEmit",
+    "lint": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@datum-cloud/datum-ui": "^2.5.0",
+    "@tanstack/react-query": "5.101.4",
+    "date-fns": "^4.1.0",
+    "date-fns-tz": "^3.2.0",
+    "lucide-react": "^1.21.0",
+    "motion": "^12",
+    "react": "19.2.8",
+    "react-day-picker": "^10",
+    "react-dom": "19.2.8",
+    "react-number-format": "^5.4.5",
+    "react-router": "7.18.0",
+    "sonner": "^2.0.7",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@module-federation/vite": "^1.16.16",
+    "@testing-library/jest-dom": "^6.6.3",
+    "@testing-library/react": "^16.1.0",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.2.0",
+    "jsdom": "^25.0.1",
+    "typescript": "^6.0.3",
+    "vite": "^7.3.5",
+    "vitest": "^3.0.0"
+  }
+}

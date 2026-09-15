@@ -12,3 +12,5 @@ resources:
 components:
   - ../rbac_deployment
   - ../components/cell-controllers
+  - ../components/service-catalog
+  - ../components/consumer-ui-plugin

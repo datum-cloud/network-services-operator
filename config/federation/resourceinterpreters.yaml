@@ -232,3 +232,35 @@ spec:
           end
           return desiredObj
         end
+---
+apiVersion: config.karmada.io/v1alpha1
+kind: ResourceInterpreterCustomization
+metadata:
+  name: gateway.envoyproxy.io-securitypolicy
+spec:
+  target:
+    apiVersion: gateway.envoyproxy.io/v1alpha1
+    kind: SecurityPolicy
+  customizations:
+    statusAggregation:
+      luaScript: >
+        function AggregateStatus(desiredObj, statusItems)
+          if statusItems == nil or #statusItems == 0 then
+            return desiredObj
+          end
+          if desiredObj.status == nil then
+            desiredObj.status = {}
+          end
+
+          local item = statusItems[1]
+          if item == nil or item.status == nil then
+            return desiredObj
+          end
+
+          -- TODO(jreese) implement proper aggregation logic. Would be good to
+          -- think through how to represent propagation status across clusters.
+          if item.status.ancestors ~= nil then
+            desiredObj.status.ancestors = item.status.ancestors
+          end
+          return desiredObj
+        end

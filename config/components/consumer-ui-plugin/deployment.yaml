@@ -2,17 +2,17 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   labels:
-    app.kubernetes.io/instance: network-services-operator-consumer-ui-plugin
-    app.kubernetes.io/name: network-services-operator-consumer-ui-plugin
-  name: network-services-operator-consumer-ui-plugin
+    app.kubernetes.io/instance: consumer-ui-plugin
+    app.kubernetes.io/name: consumer-ui-plugin
+  name: consumer-ui-plugin
 spec:
   replicas: 2
   revisionHistoryLimit: 5
   selector:
     matchLabels:
       app.kubernetes.io/component: frontend
-      app.kubernetes.io/instance: network-services-operator-consumer-ui-plugin
-      app.kubernetes.io/name: network-services-operator-consumer-ui-plugin
+      app.kubernetes.io/instance: consumer-ui-plugin
+      app.kubernetes.io/name: consumer-ui-plugin
   strategy:
     rollingUpdate:
       maxSurge: 1
@@ -22,8 +22,8 @@ spec:
     metadata:
       labels:
         app.kubernetes.io/component: frontend
-        app.kubernetes.io/instance: network-services-operator-consumer-ui-plugin
-        app.kubernetes.io/name: network-services-operator-consumer-ui-plugin
+        app.kubernetes.io/instance: consumer-ui-plugin
+        app.kubernetes.io/name: consumer-ui-plugin
     spec:
       automountServiceAccountToken: false
       securityContext:
@@ -41,10 +41,10 @@ spec:
           labelSelector:
             matchLabels:
               app.kubernetes.io/component: frontend
-              app.kubernetes.io/instance: network-services-operator-consumer-ui-plugin
-              app.kubernetes.io/name: network-services-operator-consumer-ui-plugin
+              app.kubernetes.io/instance: consumer-ui-plugin
+              app.kubernetes.io/name: consumer-ui-plugin
       containers:
-        - name: network-services-operator-consumer-ui-plugin
+        - name: consumer-ui-plugin
           image: ghcr.io/datum-cloud/network-services-operator-consumer-ui-plugin:latest
           imagePullPolicy: Always
           ports:
@@ -92,7 +92,7 @@ spec:
             driver: csi.cert-manager.io
             readOnly: true
             volumeAttributes:
-              csi.cert-manager.io/dns-names: "network-services-operator-consumer-ui-plugin.network-services-operator-system.svc,network-services-operator-consumer-ui-plugin.network-services-operator-system.svc.cluster.local"
+              csi.cert-manager.io/dns-names: "network-services-operator-consumer-ui-plugin.datum-system.svc,network-services-operator-consumer-ui-plugin.datum-system.svc.cluster.local"
               csi.cert-manager.io/fs-group: "1000"
               csi.cert-manager.io/issuer-kind: ClusterIssuer
               csi.cert-manager.io/issuer-name: datum-control-plane

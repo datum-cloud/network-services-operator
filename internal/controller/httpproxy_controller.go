@@ -969,6 +969,26 @@ func stripHostFromRequestHeaderModifier(filters []gatewayv1.HTTPRouteFilter) []g
 	return out
 }
 
+// setURLRewriteHostname sets Hostname on the rule's existing URLRewrite
+// filter, or appends one when the rule has none.
+func setURLRewriteHostname(filters []gatewayv1.HTTPRouteFilter, hostname string) []gatewayv1.HTTPRouteFilter {
+	precise := ptr.To(gatewayv1.PreciseHostname(hostname))
+	for i, filter := range filters {
+		if filter.Type != gatewayv1.HTTPRouteFilterURLRewrite {
+			continue
+		}
+		if filters[i].URLRewrite == nil {
+			filters[i].URLRewrite = &gatewayv1.HTTPURLRewriteFilter{}
+		}
+		filters[i].URLRewrite.Hostname = precise
+		return filters
+	}
+	return append(filters, gatewayv1.HTTPRouteFilter{
+		Type:       gatewayv1.HTTPRouteFilterURLRewrite,
+		URLRewrite: &gatewayv1.HTTPURLRewriteFilter{Hostname: precise},
+	})
+}
+
 // reconcileRuleRewriteHostname records the Host-rewrite hostname a backend
 // needs applied to its rule's URLRewrite filter, and errors if an earlier
 // backend in the same rule already settled on a different one. The
@@ -1287,6 +1307,10 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 			// annotation and read by the gateway controller) is used for
 			// BackendTLSPolicy SAN validation against the real backend.
 			var certHostname string
+			var rewriteHostname string
+			if hasUserHost {
+				rewriteHostname = gatewayutil.NormalizeHostname(userHostOverride)
+			}
 
 			// For HTTPS endpoints with IP addresses, require tls.hostname for certificate validation
 			// and use it as the Host header for the upstream request.
@@ -1295,22 +1319,21 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 					return nil, fmt.Errorf("HTTPS endpoint with IP address requires tls.hostname for backend %d in rule %d", backendIndex, ruleIndex)
 				}
 				certHostname = gatewayutil.NormalizeHostname(*backend.TLS.Hostname)
-				rewriteHostname := certHostname
-				if hasUserHost {
-					rewriteHostname = gatewayutil.NormalizeHostname(userHostOverride)
-				}
-				if err := reconcileRuleRewriteHostname(&agreedRewriteHostname, &haveAgreedRewriteHostname, rewriteHostname, ruleIndex, backendIndex); err != nil {
-					return nil, err
+				if rewriteHostname == "" {
+					rewriteHostname = certHostname
 				}
 			} else if !isIPAddress && backend.Connector == nil {
 				// For FQDN endpoints, rewrite the Host header to match the
-				// backend hostname — or to the user's override if they set
-				// one via RequestHeaderModifier.
+				// backend hostname unless the user supplied an override.
 				certHostname = gatewayutil.NormalizeHostname(host)
-				rewriteHostname := certHostname
-				if hasUserHost {
-					rewriteHostname = gatewayutil.NormalizeHostname(userHostOverride)
+				if rewriteHostname == "" {
+					rewriteHostname = certHostname
 				}
+			} else if backend.Connector != nil && net.ParseIP(host) == nil {
+				certHostname = gatewayutil.NormalizeHostname(host)
+			}
+
+			if rewriteHostname != "" {
 				if err := reconcileRuleRewriteHostname(&agreedRewriteHostname, &haveAgreedRewriteHostname, rewriteHostname, ruleIndex, backendIndex); err != nil {
 					return nil, err
 				}
@@ -1374,22 +1397,7 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 		}
 
 		if haveAgreedRewriteHostname {
-			hostnameRewriteFound := false
-			for i, filter := range ruleFilters {
-				if filter.Type == gatewayv1.HTTPRouteFilterURLRewrite {
-					ruleFilters[i].URLRewrite.Hostname = ptr.To(gatewayv1.PreciseHostname(agreedRewriteHostname))
-					hostnameRewriteFound = true
-					break
-				}
-			}
-			if !hostnameRewriteFound {
-				ruleFilters = append(ruleFilters, gatewayv1.HTTPRouteFilter{
-					Type: gatewayv1.HTTPRouteFilterURLRewrite,
-					URLRewrite: &gatewayv1.HTTPURLRewriteFilter{
-						Hostname: ptr.To(gatewayv1.PreciseHostname(agreedRewriteHostname)),
-					},
-				})
-			}
+			ruleFilters = setURLRewriteHostname(ruleFilters, agreedRewriteHostname)
 		}
 
 		desiredRouteRules[ruleIndex] = gatewayv1.HTTPRouteRule{

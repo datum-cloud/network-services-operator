@@ -54,6 +54,48 @@ spec:
           spec:
             description: Spec defines the desired state of an HTTPProxy.
             properties:
+              healthCheck:
+                description: |-
+                  HealthCheck configures how backends are considered healthy. It applies
+                  to every backend on the HTTPProxy. If unset, Envoy treats every
+                  endpoint as healthy.
+                properties:
+                  passive:
+                    description: |-
+                      Passive configures Envoy outlier detection: consecutive 5xx responses
+                      eject an endpoint from load balancing for a growing period, then
+                      Envoy re-admits it. Unset keeps every endpoint eligible.
+                    properties:
+                      baseEjectionTime:
+                        default: 30s
+                        description: |-
+                          BaseEjectionTime is how long an endpoint stays ejected after its
+                          first streak of failures. Later ejections multiply this duration.
+                          Defaults to 30s. Envoy re-admits the endpoint when the period
+                          elapses; it does not replace the instance.
+                        pattern: ^([0-9]{1,5}(h|m|s|ms)){1,4}$
+                        type: string
+                      consecutive5xxErrors:
+                        default: 5
+                        description: |-
+                          Consecutive5xxErrors is the number of consecutive 5xx responses that
+                          eject an endpoint. Defaults to 5.
+                        format: int32
+                        minimum: 1
+                        type: integer
+                      maxEjectionPercent:
+                        default: 50
+                        description: |-
+                          MaxEjectionPercent is the maximum percentage of endpoints in a
+                          backend that may be ejected at once. Defaults to 50. Must be at
+                          least 1 so a single-endpoint backend can still be ejected. This
+                          limit is per backend, not across every backend on the HTTPProxy.
+                        format: int32
+                        maximum: 100
+                        minimum: 1
+                        type: integer
+                    type: object
+                type: object
               hostnames:
                 description: |-
                   Hostnames defines a set of hostnames that should match against the HTTP

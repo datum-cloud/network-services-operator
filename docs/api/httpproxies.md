@@ -96,6 +96,15 @@ Spec defines the desired state of an HTTPProxy.
         </td>
         <td>true</td>
       </tr><tr>
+        <td><b><a href="#httpproxyspechealthcheck">healthCheck</a></b></td>
+        <td>object</td>
+        <td>
+          HealthCheck configures how backends are considered healthy. It applies
+to every backend on the HTTPProxy. If unset, Envoy treats every
+endpoint as healthy.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
         <td><b>hostnames</b></td>
         <td>[]string</td>
         <td>
@@ -4300,6 +4309,98 @@ documentation to determine the supported dialect.<br/>
           <br/>
             <i>Enum</i>: Exact, RegularExpression<br/>
             <i>Default</i>: Exact<br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### HTTPProxy.spec.healthCheck
+<sup><sup>[↩ Parent](#httpproxyspec)</sup></sup>
+
+
+
+HealthCheck configures how backends are considered healthy. It applies
+to every backend on the HTTPProxy. If unset, Envoy treats every
+endpoint as healthy.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b><a href="#httpproxyspechealthcheckpassive">passive</a></b></td>
+        <td>object</td>
+        <td>
+          Passive configures Envoy outlier detection: consecutive 5xx responses
+eject an endpoint from load balancing for a growing period, then
+Envoy re-admits it. Unset keeps every endpoint eligible.<br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### HTTPProxy.spec.healthCheck.passive
+<sup><sup>[↩ Parent](#httpproxyspechealthcheck)</sup></sup>
+
+
+
+Passive configures Envoy outlier detection: consecutive 5xx responses
+eject an endpoint from load balancing for a growing period, then
+Envoy re-admits it. Unset keeps every endpoint eligible.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>baseEjectionTime</b></td>
+        <td>string</td>
+        <td>
+          BaseEjectionTime is how long an endpoint stays ejected after its
+first streak of failures. Later ejections multiply this duration.
+Defaults to 30s. Envoy re-admits the endpoint when the period
+elapses; it does not replace the instance.<br/>
+          <br/>
+            <i>Default</i>: 30s<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>consecutive5xxErrors</b></td>
+        <td>integer</td>
+        <td>
+          Consecutive5xxErrors is the number of consecutive 5xx responses that
+eject an endpoint. Defaults to 5.<br/>
+          <br/>
+            <i>Format</i>: int32<br/>
+            <i>Default</i>: 5<br/>
+            <i>Minimum</i>: 1<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>maxEjectionPercent</b></td>
+        <td>integer</td>
+        <td>
+          MaxEjectionPercent is the maximum percentage of endpoints in a
+backend that may be ejected at once. Defaults to 50. Must be at
+least 1 so a single-endpoint backend can still be ejected. This
+limit is per backend, not across every backend on the HTTPProxy.<br/>
+          <br/>
+            <i>Format</i>: int32<br/>
+            <i>Default</i>: 50<br/>
+            <i>Minimum</i>: 1<br/>
+            <i>Maximum</i>: 100<br/>
         </td>
         <td>false</td>
       </tr></tbody>

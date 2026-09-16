@@ -66,6 +66,13 @@ type HTTPProxySpec struct {
 	//
 	// +kubebuilder:validation:Optional
 	LoadBalancer *HTTPProxyLoadBalancer `json:"loadBalancer,omitempty"`
+
+	// HealthCheck configures how backends are considered healthy. It applies
+	// to every backend on the HTTPProxy. If unset, Envoy treats every
+	// endpoint as healthy.
+	//
+	// +kubebuilder:validation:Optional
+	HealthCheck *HTTPProxyHealthCheck `json:"healthCheck,omitempty"`
 }
 
 // HTTPProxyLoadBalancer selects the algorithm Envoy uses to distribute
@@ -131,6 +138,67 @@ const (
 	HTTPProxyConsistentHashTypeSourceIP HTTPProxyConsistentHashType = "SourceIP"
 	HTTPProxyConsistentHashTypeHeader   HTTPProxyConsistentHashType = "Header"
 )
+
+// HTTPProxyHealthCheck configures backend health checking for an HTTPProxy.
+// Active probes are not supported yet; only passive (outlier) detection
+// can be set.
+type HTTPProxyHealthCheck struct {
+	// Passive configures Envoy outlier detection: consecutive 5xx responses
+	// eject an endpoint from load balancing for a growing period, then
+	// Envoy re-admits it. Unset keeps every endpoint eligible.
+	//
+	// +kubebuilder:validation:Optional
+	Passive *HTTPProxyPassiveHealthCheck `json:"passive,omitempty"`
+}
+
+const (
+	// DefaultPassiveConsecutive5xxErrors is the number of consecutive 5xx
+	// responses that eject an endpoint when consecutive5xxErrors is unset.
+	DefaultPassiveConsecutive5xxErrors int32 = 5
+
+	// DefaultPassiveBaseEjectionTime is the first ejection duration when
+	// baseEjectionTime is unset. Later ejections multiply this value.
+	DefaultPassiveBaseEjectionTime gatewayv1.Duration = "30s"
+
+	// DefaultPassiveMaxEjectionPercent is the maximum share of a backend's
+	// endpoints that may be ejected at once when maxEjectionPercent is unset.
+	DefaultPassiveMaxEjectionPercent int32 = 50
+)
+
+// HTTPProxyPassiveHealthCheck configures Envoy outlier detection for every
+// backend on the HTTPProxy.
+//
+// maxEjectionPercent applies per backend (each Envoy cluster), not across
+// the HTTPProxy's named backends as a single pool.
+type HTTPProxyPassiveHealthCheck struct {
+	// Consecutive5xxErrors is the number of consecutive 5xx responses that
+	// eject an endpoint. Defaults to 5.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default=5
+	// +kubebuilder:validation:Minimum=1
+	Consecutive5xxErrors *int32 `json:"consecutive5xxErrors,omitempty"`
+
+	// BaseEjectionTime is how long an endpoint stays ejected after its
+	// first streak of failures. Later ejections multiply this duration.
+	// Defaults to 30s. Envoy re-admits the endpoint when the period
+	// elapses; it does not replace the instance.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default="30s"
+	BaseEjectionTime *gatewayv1.Duration `json:"baseEjectionTime,omitempty"`
+
+	// MaxEjectionPercent is the maximum percentage of endpoints in a
+	// backend that may be ejected at once. Defaults to 50. Must be at
+	// least 1 so a single-endpoint backend can still be ejected. This
+	// limit is per backend, not across every backend on the HTTPProxy.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default=50
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=100
+	MaxEjectionPercent *int32 `json:"maxEjectionPercent,omitempty"`
+}
 
 // HTTPProxyRule defines semantics for matching an HTTP request based on
 // conditions (matches), processing it (filters), and forwarding the request to

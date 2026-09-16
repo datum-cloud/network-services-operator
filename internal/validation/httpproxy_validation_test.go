@@ -488,6 +488,111 @@ func TestValidateHTTPProxy(t *testing.T) {
 				field.Invalid(field.NewPath("spec", "rules").Index(0).Child("backends").Index(0).Child("instance", "name"), "Invalid", ""),
 			},
 		},
+		"passive health check is valid": {
+			proxy: &networkingv1alpha.HTTPProxy{
+				Spec: networkingv1alpha.HTTPProxySpec{
+					HealthCheck: &networkingv1alpha.HTTPProxyHealthCheck{
+						Passive: &networkingv1alpha.HTTPProxyPassiveHealthCheck{
+							Consecutive5xxErrors: ptr.To(int32(5)),
+							BaseEjectionTime:     ptr.To(gatewayv1.Duration("30s")),
+							MaxEjectionPercent:   ptr.To(int32(50)),
+						},
+					},
+					Rules: []networkingv1alpha.HTTPProxyRule{
+						{
+							Backends: []networkingv1alpha.HTTPProxyRuleBackend{
+								{Endpoint: "https://api.example.com"},
+							},
+						},
+					},
+				},
+			},
+			expectedErrors: field.ErrorList{},
+		},
+		"passive health check base ejection time too low": {
+			proxy: &networkingv1alpha.HTTPProxy{
+				Spec: networkingv1alpha.HTTPProxySpec{
+					HealthCheck: &networkingv1alpha.HTTPProxyHealthCheck{
+						Passive: &networkingv1alpha.HTTPProxyPassiveHealthCheck{
+							BaseEjectionTime: ptr.To(gatewayv1.Duration("500ms")),
+						},
+					},
+					Rules: []networkingv1alpha.HTTPProxyRule{
+						{
+							Backends: []networkingv1alpha.HTTPProxyRuleBackend{
+								{Endpoint: "https://api.example.com"},
+							},
+						},
+					},
+				},
+			},
+			expectedErrors: field.ErrorList{
+				field.Invalid(field.NewPath("spec", "healthCheck", "passive", "baseEjectionTime"), "", ""),
+			},
+		},
+		"passive health check base ejection time invalid": {
+			proxy: &networkingv1alpha.HTTPProxy{
+				Spec: networkingv1alpha.HTTPProxySpec{
+					HealthCheck: &networkingv1alpha.HTTPProxyHealthCheck{
+						Passive: &networkingv1alpha.HTTPProxyPassiveHealthCheck{
+							BaseEjectionTime: ptr.To(gatewayv1.Duration("not-a-duration")),
+						},
+					},
+					Rules: []networkingv1alpha.HTTPProxyRule{
+						{
+							Backends: []networkingv1alpha.HTTPProxyRuleBackend{
+								{Endpoint: "https://api.example.com"},
+							},
+						},
+					},
+				},
+			},
+			expectedErrors: field.ErrorList{
+				field.Invalid(field.NewPath("spec", "healthCheck", "passive", "baseEjectionTime"), "", ""),
+			},
+		},
+		"passive health check consecutive 5xx below one": {
+			proxy: &networkingv1alpha.HTTPProxy{
+				Spec: networkingv1alpha.HTTPProxySpec{
+					HealthCheck: &networkingv1alpha.HTTPProxyHealthCheck{
+						Passive: &networkingv1alpha.HTTPProxyPassiveHealthCheck{
+							Consecutive5xxErrors: ptr.To(int32(0)),
+						},
+					},
+					Rules: []networkingv1alpha.HTTPProxyRule{
+						{
+							Backends: []networkingv1alpha.HTTPProxyRuleBackend{
+								{Endpoint: "https://api.example.com"},
+							},
+						},
+					},
+				},
+			},
+			expectedErrors: field.ErrorList{
+				field.Invalid(field.NewPath("spec", "healthCheck", "passive", "consecutive5xxErrors"), "", ""),
+			},
+		},
+		"passive health check max ejection percent below one": {
+			proxy: &networkingv1alpha.HTTPProxy{
+				Spec: networkingv1alpha.HTTPProxySpec{
+					HealthCheck: &networkingv1alpha.HTTPProxyHealthCheck{
+						Passive: &networkingv1alpha.HTTPProxyPassiveHealthCheck{
+							MaxEjectionPercent: ptr.To(int32(0)),
+						},
+					},
+					Rules: []networkingv1alpha.HTTPProxyRule{
+						{
+							Backends: []networkingv1alpha.HTTPProxyRuleBackend{
+								{Endpoint: "https://api.example.com"},
+							},
+						},
+					},
+				},
+			},
+			expectedErrors: field.ErrorList{
+				field.Invalid(field.NewPath("spec", "healthCheck", "passive", "maxEjectionPercent"), "", ""),
+			},
+		},
 	}
 
 	for name, scenario := range scenarios {

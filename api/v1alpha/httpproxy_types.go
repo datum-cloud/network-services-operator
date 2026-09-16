@@ -147,6 +147,8 @@ type HTTPProxyHealthCheck struct {
 	// eject an endpoint from load balancing for a growing period, then
 	// Envoy re-admits it. Unset keeps every endpoint eligible.
 	//
+	// See: https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/upstream/outlier.html
+	//
 	// +kubebuilder:validation:Optional
 	Passive *HTTPProxyPassiveHealthCheck `json:"passive,omitempty"`
 }
@@ -170,6 +172,8 @@ const (
 //
 // maxEjectionPercent applies per backend (each Envoy cluster), not across
 // the HTTPProxy's named backends as a single pool.
+//
+// See: https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/upstream/outlier.html
 type HTTPProxyPassiveHealthCheck struct {
 	// Consecutive5xxErrors is the number of consecutive 5xx responses that
 	// eject an endpoint. Defaults to 5.

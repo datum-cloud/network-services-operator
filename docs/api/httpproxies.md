@@ -4339,7 +4339,9 @@ endpoint as healthy.
         <td>
           Passive configures Envoy outlier detection: consecutive 5xx responses
 eject an endpoint from load balancing for a growing period, then
-Envoy re-admits it. Unset keeps every endpoint eligible.<br/>
+Envoy re-admits it. Unset keeps every endpoint eligible.
+
+See: https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/upstream/outlier.html<br/>
         </td>
         <td>false</td>
       </tr></tbody>
@@ -4354,6 +4356,8 @@ Envoy re-admits it. Unset keeps every endpoint eligible.<br/>
 Passive configures Envoy outlier detection: consecutive 5xx responses
 eject an endpoint from load balancing for a growing period, then
 Envoy re-admits it. Unset keeps every endpoint eligible.
+
+See: https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/upstream/outlier.html
 
 <table>
     <thead>

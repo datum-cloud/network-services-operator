@@ -1,0 +1,55 @@
+name: Release Plugin
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  release-plugin:
+    name: Build and attach the plugin archives
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Clone the code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --config .goreleaser-plugin.yaml --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  update-plugin-index:
+    name: Open the catalog PR
+    needs: [release-plugin]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Mint a catalog token from the release bot app
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.RELEASE_BOT_APP_ID }}
+          private-key: ${{ secrets.RELEASE_BOT_APP_PRIVATE_KEY }}
+          repositories: datumctl-plugins
+
+      - name: Update the alb plugin manifest
+        uses: datum-cloud/actions/update-plugin-index@v1.21.0
+        with:
+          index-repo: datum-cloud/datumctl-plugins
+          plugin-name: alb
+          version: ${{ github.event.release.tag_name }}
+          token: ${{ steps.app-token.outputs.token }}

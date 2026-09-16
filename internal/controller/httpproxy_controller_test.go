@@ -9,11 +9,13 @@ import (
 	"testing"
 	"time"
 
+	"errors"
 	envoygatewayv1alpha1 "github.com/envoyproxy/gateway/api/v1alpha1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
+
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -27,6 +29,7 @@ import (
 	"k8s.io/client-go/tools/events"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -81,7 +84,11 @@ func TestHTTPProxyCollectDesiredResources(t *testing.T) {
 				for ruleIndex, proxyRule := range httpProxy.Spec.Rules {
 					routeRule := httpRoute.Spec.Rules[ruleIndex]
 					assert.Len(t, routeRule.Filters, len(proxyRule.Filters))
-					assert.Equal(t, "www.example.com", string(ptr.Deref(routeRule.Filters[0].URLRewrite.Hostname, "")))
+					// The rule's own URLRewrite keeps its path rewrite and is
+					// left without a hostname: the Host rewrite is per-backend.
+					assert.NotNil(t, routeRule.Filters[0].URLRewrite.Path)
+					assert.Nil(t, routeRule.Filters[0].URLRewrite.Hostname)
+					assert.Equal(t, "www.example.com", string(ptr.Deref(backendRefRewriteHostname(routeRule, 0), "")))
 				}
 			},
 		},
@@ -95,11 +102,11 @@ func TestHTTPProxyCollectDesiredResources(t *testing.T) {
 
 				for ruleIndex := range httpProxy.Spec.Rules {
 					routeRule := httpRoute.Spec.Rules[ruleIndex]
-					if assert.Len(t, routeRule.Filters, 1) {
-						urlRewriteFilter := routeRule.Filters[0]
-						assert.Equal(t, gatewayv1.HTTPRouteFilterURLRewrite, urlRewriteFilter.Type)
-						assert.Equal(t, "www.example.com", string(ptr.Deref(routeRule.Filters[0].URLRewrite.Hostname, "")))
-					}
+					// Nothing is added to the rule: a rule with no filters of
+					// its own stays that way, and the Host rewrite lands on
+					// the backend it applies to.
+					assert.Empty(t, routeRule.Filters)
+					assert.Equal(t, "www.example.com", string(ptr.Deref(backendRefRewriteHostname(routeRule, 0), "")))
 				}
 			},
 		},
@@ -257,12 +264,8 @@ func TestHTTPProxyCollectDesiredResources(t *testing.T) {
 				for ruleIndex := range httpProxy.Spec.Rules {
 					routeRule := httpRoute.Spec.Rules[ruleIndex]
 
-					// Verify URLRewrite filter has the TLS hostname
-					if assert.Len(t, routeRule.Filters, 1) {
-						urlRewriteFilter := routeRule.Filters[0]
-						assert.Equal(t, gatewayv1.HTTPRouteFilterURLRewrite, urlRewriteFilter.Type)
-						assert.Equal(t, "api.example.com", string(ptr.Deref(urlRewriteFilter.URLRewrite.Hostname, "")))
-					}
+					// The TLS hostname is what the backend's Host is rewritten to.
+					assert.Equal(t, "api.example.com", string(ptr.Deref(backendRefRewriteHostname(routeRule, 0), "")))
 
 					for backendRefIndex := range routeRule.BackendRefs {
 						backendRefIndexMsg := fmt.Sprintf("backendRef index %d", backendRefIndex)
@@ -294,14 +297,9 @@ func TestHTTPProxyCollectDesiredResources(t *testing.T) {
 				// lower case only. Host headers compare case-insensitively,
 				// so lowercasing preserves what the user asked for.
 				routeRule := desiredResources.httpRoute.Spec.Rules[0]
-				var urlRewrite *gatewayv1.HTTPURLRewriteFilter
-				for _, f := range routeRule.Filters {
-					if f.Type == gatewayv1.HTTPRouteFilterURLRewrite {
-						urlRewrite = f.URLRewrite
-					}
-				}
-				if assert.NotNil(t, urlRewrite) {
-					assert.Equal(t, "coffee.example.internal", string(ptr.Deref(urlRewrite.Hostname, "")))
+				hostname := backendRefRewriteHostname(routeRule, 0)
+				if assert.NotNil(t, hostname) {
+					assert.Equal(t, "coffee.example.internal", string(ptr.Deref(hostname, "")))
 				}
 			},
 		},
@@ -322,8 +320,10 @@ func TestHTTPProxyCollectDesiredResources(t *testing.T) {
 			}),
 			assert: func(t *testing.T, httpProxy *networkingv1alpha.HTTPProxy, desiredResources *desiredHTTPProxyResources) {
 				routeRule := desiredResources.httpRoute.Spec.Rules[0]
-				assert.Equal(t, "please.override.me", string(ptr.Deref(findURLRewriteHostname(routeRule.Filters), "")))
-				assert.Empty(t, routeRule.BackendRefs[0].Filters)
+				// The rule keeps its own path rewrite untouched.
+				assert.Len(t, routeRule.Filters, 1)
+				assert.Nil(t, routeRule.Filters[0].URLRewrite.Hostname)
+				assert.Equal(t, "please.override.me", string(ptr.Deref(backendRefRewriteHostname(routeRule, 0), "")))
 				if assert.Len(t, desiredResources.endpointSlices, 1) {
 					assert.NotContains(t, desiredResources.endpointSlices[0].Annotations, BackendCertHostnameAnnotation)
 				}
@@ -340,14 +340,9 @@ func TestHTTPProxyCollectDesiredResources(t *testing.T) {
 			}),
 			assert: func(t *testing.T, httpProxy *networkingv1alpha.HTTPProxy, desiredResources *desiredHTTPProxyResources) {
 				routeRule := desiredResources.httpRoute.Spec.Rules[0]
-				var urlRewrite *gatewayv1.HTTPURLRewriteFilter
-				for _, f := range routeRule.Filters {
-					if f.Type == gatewayv1.HTTPRouteFilterURLRewrite {
-						urlRewrite = f.URLRewrite
-					}
-				}
-				if assert.NotNil(t, urlRewrite) {
-					assert.Equal(t, "coffee.example.internal", string(ptr.Deref(urlRewrite.Hostname, "")))
+				hostname := backendRefRewriteHostname(routeRule, 0)
+				if assert.NotNil(t, hostname) {
+					assert.Equal(t, "coffee.example.internal", string(ptr.Deref(hostname, "")))
 				}
 				if assert.Len(t, desiredResources.endpointSlices, 1) {
 					assert.Equal(t,
@@ -365,9 +360,8 @@ func TestHTTPProxyCollectDesiredResources(t *testing.T) {
 			}),
 			assert: func(t *testing.T, httpProxy *networkingv1alpha.HTTPProxy, desiredResources *desiredHTTPProxyResources) {
 				routeRule := desiredResources.httpRoute.Spec.Rules[0]
-				if assert.Len(t, routeRule.Filters, 1) {
-					assert.Equal(t, "www.example.com", string(ptr.Deref(routeRule.Filters[0].URLRewrite.Hostname, "")))
-				}
+				assert.Empty(t, routeRule.Filters)
+				assert.Equal(t, "www.example.com", string(ptr.Deref(backendRefRewriteHostname(routeRule, 0), "")))
 			},
 		},
 		{
@@ -389,11 +383,7 @@ func TestHTTPProxyCollectDesiredResources(t *testing.T) {
 				// URLRewrite must carry the user's Host value (Envoy's
 				// host_rewrite_literal); RequestHeaderModifier{Host} must
 				// have been stripped (EG rejects it on Host).
-				var urlRewrite *gatewayv1.HTTPRouteFilter
 				for i := range routeRule.Filters {
-					if routeRule.Filters[i].Type == gatewayv1.HTTPRouteFilterURLRewrite {
-						urlRewrite = &routeRule.Filters[i]
-					}
 					if routeRule.Filters[i].Type == gatewayv1.HTTPRouteFilterRequestHeaderModifier &&
 						routeRule.Filters[i].RequestHeaderModifier != nil {
 						for _, h := range routeRule.Filters[i].RequestHeaderModifier.Set {
@@ -401,8 +391,9 @@ func TestHTTPProxyCollectDesiredResources(t *testing.T) {
 						}
 					}
 				}
-				if assert.NotNil(t, urlRewrite, "URLRewrite must be present to express the Host rewrite") {
-					assert.Equal(t, "example.internal", string(ptr.Deref(urlRewrite.URLRewrite.Hostname, "")))
+				hostname := backendRefRewriteHostname(routeRule, 0)
+				if assert.NotNil(t, hostname, "URLRewrite must be present to express the Host rewrite") {
+					assert.Equal(t, "example.internal", string(ptr.Deref(hostname, "")))
 				}
 				// Cert hostname must be the real backend FQDN, not the user override.
 				if assert.Len(t, desiredResources.endpointSlices, 1) {
@@ -427,14 +418,8 @@ func TestHTTPProxyCollectDesiredResources(t *testing.T) {
 			}),
 			assert: func(t *testing.T, httpProxy *networkingv1alpha.HTTPProxy, desiredResources *desiredHTTPProxyResources) {
 				routeRule := desiredResources.httpRoute.Spec.Rules[0]
-				foundURLRewriteWithOverride := false
-				for _, f := range routeRule.Filters {
-					if f.Type == gatewayv1.HTTPRouteFilterURLRewrite &&
-						string(ptr.Deref(f.URLRewrite.Hostname, "")) == "example.internal" {
-						foundURLRewriteWithOverride = true
-					}
-				}
-				assert.True(t, foundURLRewriteWithOverride, "URLRewrite must use the user's value (case-insensitive Host match)")
+				assert.Equal(t, "example.internal", string(ptr.Deref(backendRefRewriteHostname(routeRule, 0), "")),
+					"URLRewrite must use the user's value (case-insensitive Host match)")
 			},
 		},
 		{
@@ -454,14 +439,9 @@ func TestHTTPProxyCollectDesiredResources(t *testing.T) {
 			}),
 			assert: func(t *testing.T, httpProxy *networkingv1alpha.HTTPProxy, desiredResources *desiredHTTPProxyResources) {
 				routeRule := desiredResources.httpRoute.Spec.Rules[0]
-				var urlRewrite *gatewayv1.HTTPRouteFilter
-				for i := range routeRule.Filters {
-					if routeRule.Filters[i].Type == gatewayv1.HTTPRouteFilterURLRewrite {
-						urlRewrite = &routeRule.Filters[i]
-					}
-				}
-				if assert.NotNil(t, urlRewrite) {
-					assert.Equal(t, "example.internal", string(ptr.Deref(urlRewrite.URLRewrite.Hostname, "")))
+				hostname := backendRefRewriteHostname(routeRule, 0)
+				if assert.NotNil(t, hostname) {
+					assert.Equal(t, "example.internal", string(ptr.Deref(hostname, "")))
 				}
 				// Backend-level filter should have Host stripped too.
 				for _, br := range routeRule.BackendRefs {
@@ -495,15 +475,10 @@ func TestHTTPProxyCollectDesiredResources(t *testing.T) {
 			}),
 			assert: func(t *testing.T, httpProxy *networkingv1alpha.HTTPProxy, desiredResources *desiredHTTPProxyResources) {
 				routeRule := desiredResources.httpRoute.Spec.Rules[0]
-				var urlRewrite *gatewayv1.HTTPRouteFilter
-				for i := range routeRule.Filters {
-					if routeRule.Filters[i].Type == gatewayv1.HTTPRouteFilterURLRewrite {
-						urlRewrite = &routeRule.Filters[i]
-					}
-				}
-				if assert.NotNil(t, urlRewrite) {
+				hostname := backendRefRewriteHostname(routeRule, 0)
+				if assert.NotNil(t, hostname) {
 					// URLRewrite carries the user's Host override.
-					assert.Equal(t, "example.internal", string(ptr.Deref(urlRewrite.URLRewrite.Hostname, "")))
+					assert.Equal(t, "example.internal", string(ptr.Deref(hostname, "")))
 				}
 				// Cert hostname annotation must carry the real cert SAN (tls.hostname).
 				if assert.Len(t, desiredResources.endpointSlices, 1) {
@@ -699,23 +674,21 @@ func TestHTTPProxyCollectDesiredResourcesMultipleBackends(t *testing.T) {
 			assert.Equal(t, "198.51.100.3", endpointSlices[2].Endpoints[0].Addresses[0])
 		}
 
-		// Every backend agrees on the same rewrite hostname, so the rule
-		// carries exactly one URLRewrite filter applying it uniformly —
-		// this is the only shape Gateway API's rule-scoped filter can
-		// express for a weighted set of backends.
-		urlRewriteCount := 0
-		for _, filter := range routeRule.Filters {
-			if filter.Type != gatewayv1.HTTPRouteFilterURLRewrite {
-				continue
-			}
-			urlRewriteCount++
-			assert.Equal(t, "shared.example.com", string(ptr.Deref(filter.URLRewrite.Hostname, "")))
+		// Each backend carries its own Host rewrite. They happen to agree
+		// here, but they are written per-backend either way.
+		for i := range routeRule.BackendRefs {
+			assert.Equal(t, "shared.example.com", string(ptr.Deref(backendRefRewriteHostname(routeRule, i), "")),
+				"backendRef %d", i)
 		}
-		assert.Equal(t, 1, urlRewriteCount)
 	})
 
-	t.Run("backends disagreeing on Host rewrite target return an error", func(t *testing.T) {
+	// Weighted load balancing across separate origins is the point of
+	// allowing more than one backend, and each origin needs its own Host.
+	// This used to be rejected, because the Host rewrite was rule-scoped and
+	// could not vary per backend.
+	t.Run("backends on different hostnames each get their own Host rewrite", func(t *testing.T) {
 		httpProxy := newHTTPProxy(func(h *networkingv1alpha.HTTPProxy) {
+			h.Spec.Rules[0].Filters = nil
 			h.Spec.Rules[0].Backends = []networkingv1alpha.HTTPProxyRuleBackend{
 				{Endpoint: "http://a.example.com"},
 				{Endpoint: "http://b.example.com"},
@@ -723,9 +696,17 @@ func TestHTTPProxyCollectDesiredResourcesMultipleBackends(t *testing.T) {
 		})
 
 		cl := fake.NewClientBuilder().WithScheme(scheme.Scheme).Build()
-		_, err := reconciler.collectDesiredResources(context.Background(), cl, httpProxy)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "conflicts with another backend in the same rule")
+		desiredResources, err := reconciler.collectDesiredResources(context.Background(), cl, httpProxy)
+		require.NoError(t, err)
+
+		routeRule := desiredResources.httpRoute.Spec.Rules[0]
+		if assert.Len(t, routeRule.BackendRefs, 2) {
+			assert.Equal(t, "a.example.com", string(ptr.Deref(backendRefRewriteHostname(routeRule, 0), "")))
+			assert.Equal(t, "b.example.com", string(ptr.Deref(backendRefRewriteHostname(routeRule, 1), "")))
+		}
+		// Nothing rule-scoped is synthesized; there is no single hostname
+		// that would be correct for both.
+		assert.Empty(t, routeRule.Filters)
 	})
 
 	t.Run("a rule-level Host override applies to every backend, not just the first", func(t *testing.T) {
@@ -752,15 +733,12 @@ func TestHTTPProxyCollectDesiredResourcesMultipleBackends(t *testing.T) {
 
 		routeRule := desiredResources.httpRoute.Spec.Rules[0]
 
-		urlRewriteCount := 0
-		for _, filter := range routeRule.Filters {
-			if filter.Type != gatewayv1.HTTPRouteFilterURLRewrite {
-				continue
+		if assert.Len(t, routeRule.BackendRefs, 2) {
+			for i := range routeRule.BackendRefs {
+				assert.Equal(t, "override.example.com", string(ptr.Deref(backendRefRewriteHostname(routeRule, i), "")),
+					"the rule-level Host override must reach every backend, not just the first")
 			}
-			urlRewriteCount++
-			assert.Equal(t, "override.example.com", string(ptr.Deref(filter.URLRewrite.Hostname, "")))
 		}
-		assert.Equal(t, 1, urlRewriteCount, "the rule-level Host override must survive processing every backend, not just the first")
 
 		for _, filter := range routeRule.Filters {
 			if filter.Type == gatewayv1.HTTPRouteFilterRequestHeaderModifier {
@@ -810,7 +788,7 @@ func TestHTTPProxyCollectDesiredResourcesConnectorHostOverride(t *testing.T) {
 		require.NoError(t, err)
 
 		routeRule := desired.httpRoute.Spec.Rules[0]
-		assert.Equal(t, "please.override.me", string(ptr.Deref(findURLRewriteHostname(routeRule.Filters), "")))
+		assert.Equal(t, "please.override.me", string(ptr.Deref(backendRefRewriteHostname(routeRule, 0), "")))
 		for _, f := range routeRule.Filters {
 			if f.RequestHeaderModifier != nil {
 				for _, h := range f.RequestHeaderModifier.Set {
@@ -832,7 +810,8 @@ func TestHTTPProxyCollectDesiredResourcesConnectorHostOverride(t *testing.T) {
 		desired, err := reconciler.collectDesiredResources(context.Background(), cl, httpProxy)
 		require.NoError(t, err)
 
-		assert.Equal(t, "please.override.me", string(ptr.Deref(findURLRewriteHostname(desired.httpRoute.Spec.Rules[0].Filters), "")))
+		assert.Equal(t, "please.override.me",
+			string(ptr.Deref(backendRefRewriteHostname(desired.httpRoute.Spec.Rules[0], 0), "")))
 		if assert.Len(t, desired.endpointSlices, 1) {
 			assert.NotContains(t, desired.endpointSlices[0].Annotations, BackendCertHostnameAnnotation)
 		}
@@ -847,8 +826,10 @@ func TestHTTPProxyCollectDesiredResourcesConnectorHostOverride(t *testing.T) {
 		require.NoError(t, err)
 
 		routeRule := desired.httpRoute.Spec.Rules[0]
-		assert.Equal(t, "please.override.me", string(ptr.Deref(findURLRewriteHostname(routeRule.Filters), "")))
-		assert.Empty(t, routeRule.BackendRefs[0].Filters)
+		// The override arrived on the backend and stays there, now as a
+		// URLRewrite rather than the RequestHeaderModifier{Host} the user
+		// wrote, which Envoy Gateway rejects.
+		assert.Equal(t, "please.override.me", string(ptr.Deref(backendRefRewriteHostname(routeRule, 0), "")))
 	})
 
 	t.Run("no override leaves the tunnelled Host untouched", func(t *testing.T) {
@@ -857,8 +838,18 @@ func TestHTTPProxyCollectDesiredResourcesConnectorHostOverride(t *testing.T) {
 		desired, err := reconciler.collectDesiredResources(context.Background(), cl, httpProxy)
 		require.NoError(t, err)
 
-		assert.Nil(t, findURLRewriteHostname(desired.httpRoute.Spec.Rules[0].Filters))
+		routeRule := desired.httpRoute.Spec.Rules[0]
+		assert.Nil(t, findURLRewriteHostname(routeRule.Filters))
+		assert.Nil(t, backendRefRewriteHostname(routeRule, 0))
 	})
+}
+
+// backendRefRewriteHostname reads the Host rewrite off a backendRef. The
+// rewrite is per-backend so that backends on different hostnames can share a
+// rule; the rule's own URLRewrite carries only route-scoped concerns such as
+// a path rewrite.
+func backendRefRewriteHostname(rule gatewayv1.HTTPRouteRule, backendIndex int) *gatewayv1.PreciseHostname {
+	return findURLRewriteHostname(rule.BackendRefs[backendIndex].Filters)
 }
 
 func findURLRewriteHostname(filters []gatewayv1.HTTPRouteFilter) *gatewayv1.PreciseHostname {
@@ -4823,4 +4814,60 @@ func TestHTTPProxyReconcileNetworkServiceShards(t *testing.T) {
 	require.Len(t, owned, 1, "leaving the networkService kind must take its extra shards with it")
 	assert.Equal(t, discoveryv1.AddressTypeFQDN, owned["test-0-0"].AddressType)
 	routeNamesShardZero()
+}
+
+// TestCollectDesiredResourcesErrorResult covers what an operator is told when
+// collecting desired resources fails. The two recognised backend-missing
+// cases carry their own reason; everything else has to at least say what went
+// wrong, or the resource reports the generic "has not been programmed"
+// default however it failed and the cause is visible only in controller logs.
+func TestCollectDesiredResourcesErrorResult(t *testing.T) {
+	newCondition := func() *metav1.Condition {
+		return &metav1.Condition{
+			Type:    networkingv1alpha.HTTPProxyConditionProgrammed,
+			Status:  metav1.ConditionFalse,
+			Reason:  networkingv1alpha.HTTPProxyReasonPending,
+			Message: "The HTTPProxy has not been programmed",
+		}
+	}
+
+	t.Run("no error leaves the condition alone and continues", func(t *testing.T) {
+		condition := newCondition()
+		result, err, done := collectDesiredResourcesErrorResult(nil, condition)
+
+		assert.False(t, done)
+		assert.NoError(t, err)
+		assert.Equal(t, ctrl.Result{}, result)
+		assert.Equal(t, "The HTTPProxy has not been programmed", condition.Message)
+	})
+
+	t.Run("a missing instance backend gets its own reason and a requeue", func(t *testing.T) {
+		condition := newCondition()
+		result, err, done := collectDesiredResourcesErrorResult(&errInstanceBackendNotFound{name: "slice-1"}, condition)
+
+		assert.True(t, done)
+		// Swallowed deliberately: the pod may simply not have started yet,
+		// so this requeues rather than erroring.
+		assert.NoError(t, err)
+		assert.Equal(t, retryAfterConflict, result.RequeueAfter)
+		assert.Equal(t, networkingv1alpha.HTTPProxyReasonInstanceBackendNotFound, condition.Reason)
+		assert.Contains(t, condition.Message, "slice-1")
+	})
+
+	t.Run("any other failure still reaches the condition", func(t *testing.T) {
+		condition := newCondition()
+		result, err, done := collectDesiredResourcesErrorResult(errors.New("boom"), condition)
+
+		assert.True(t, done)
+		// Returned so controller-runtime requeues with backoff.
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "boom")
+		assert.Equal(t, ctrl.Result{}, result)
+
+		assert.Contains(t, condition.Message, "boom",
+			"the operator must be able to see the cause without reading controller logs")
+		// Pending, not Invalid: this path cannot tell a permanent
+		// configuration problem from a read that will succeed on retry.
+		assert.Equal(t, networkingv1alpha.HTTPProxyReasonPending, condition.Reason)
+	})
 }

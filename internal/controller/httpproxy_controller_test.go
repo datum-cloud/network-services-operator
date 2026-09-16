@@ -587,6 +587,44 @@ func TestHTTPProxyCollectDesiredResources(t *testing.T) {
 				assert.Equal(t, *httpProxy.Spec.LoadBalancer, decoded)
 			},
 		},
+		{
+			name:      "no health check set leaves the httproute unannotated",
+			httpProxy: newHTTPProxy(),
+			assert: func(t *testing.T, httpProxy *networkingv1alpha.HTTPProxy, desiredResources *desiredHTTPProxyResources) {
+				_, ok := desiredResources.httpRoute.Annotations[HealthCheckAnnotation]
+				assert.False(t, ok)
+			},
+		},
+		{
+			name: "passive health check is encoded onto the httproute",
+			httpProxy: newHTTPProxy(func(h *networkingv1alpha.HTTPProxy) {
+				h.Spec.HealthCheck = &networkingv1alpha.HTTPProxyHealthCheck{
+					Passive: &networkingv1alpha.HTTPProxyPassiveHealthCheck{
+						Consecutive5xxErrors: ptr.To(int32(5)),
+						BaseEjectionTime:     ptr.To(gatewayv1.Duration("30s")),
+						MaxEjectionPercent:   ptr.To(int32(50)),
+					},
+				}
+			}),
+			assert: func(t *testing.T, httpProxy *networkingv1alpha.HTTPProxy, desiredResources *desiredHTTPProxyResources) {
+				encoded, ok := desiredResources.httpRoute.Annotations[HealthCheckAnnotation]
+				require.True(t, ok)
+
+				var decoded networkingv1alpha.HTTPProxyHealthCheck
+				require.NoError(t, json.Unmarshal([]byte(encoded), &decoded))
+				assert.Equal(t, *httpProxy.Spec.HealthCheck, decoded)
+			},
+		},
+		{
+			name: "health check without passive leaves the httproute unannotated",
+			httpProxy: newHTTPProxy(func(h *networkingv1alpha.HTTPProxy) {
+				h.Spec.HealthCheck = &networkingv1alpha.HTTPProxyHealthCheck{}
+			}),
+			assert: func(t *testing.T, httpProxy *networkingv1alpha.HTTPProxy, desiredResources *desiredHTTPProxyResources) {
+				_, ok := desiredResources.httpRoute.Annotations[HealthCheckAnnotation]
+				assert.False(t, ok)
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1069,6 +1107,107 @@ func TestHTTPProxyReconcileLoadBalancerAnnotationUpdates(t *testing.T) {
 	var decoded networkingv1alpha.HTTPProxyLoadBalancer
 	require.NoError(t, json.Unmarshal([]byte(encoded), &decoded))
 	assert.Equal(t, *toUpdate.Spec.LoadBalancer, decoded)
+}
+
+// TestHTTPProxyReconcileHealthCheckAnnotationUpdates guards the same
+// CreateOrUpdate annotation-resync path as the load balancer test, for
+// spec.healthCheck.
+func TestHTTPProxyReconcileHealthCheckAnnotationUpdates(t *testing.T) {
+	testScheme := runtime.NewScheme()
+	require.NoError(t, scheme.AddToScheme(testScheme))
+	require.NoError(t, gatewayv1.Install(testScheme))
+	require.NoError(t, envoygatewayv1alpha1.AddToScheme(testScheme))
+	require.NoError(t, discoveryv1.AddToScheme(testScheme))
+	require.NoError(t, networkingv1alpha.AddToScheme(testScheme))
+	require.NoError(t, networkingv1alpha1.AddToScheme(testScheme))
+
+	testConfig := config.NetworkServicesOperator{
+		HTTPProxy: config.HTTPProxyConfig{
+			GatewayClassName: "test-gateway-class",
+		},
+		Gateway: config.GatewayConfig{
+			ControllerName: gatewayv1.GatewayController("test-gateway-class"),
+			TargetDomain:   "example.com",
+		},
+	}
+
+	httpProxy := newHTTPProxy(func(h *networkingv1alpha.HTTPProxy) {
+		controllerutil.AddFinalizer(h, httpProxyFinalizer)
+	})
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(testScheme).
+		WithObjects(httpProxy).
+		WithStatusSubresource(httpProxy).
+		Build()
+
+	reconciler := &HTTPProxyReconciler{
+		mgr:    &fakeMockManager{cl: fakeClient},
+		Config: testConfig,
+	}
+
+	req := mcreconcile.Request{
+		Request: reconcile.Request{
+			NamespacedName: client.ObjectKeyFromObject(httpProxy),
+		},
+		ClusterName: "test-cluster",
+	}
+
+	ctx := context.Background()
+
+	_, err := reconciler.Reconcile(ctx, req)
+	require.NoError(t, err)
+
+	var route gatewayv1.HTTPRoute
+	require.NoError(t, fakeClient.Get(ctx, client.ObjectKeyFromObject(httpProxy), &route))
+	_, ok := route.Annotations[HealthCheckAnnotation]
+	assert.False(t, ok, "httproute must not carry the annotation before spec.healthCheck is set")
+
+	var toUpdate networkingv1alpha.HTTPProxy
+	require.NoError(t, fakeClient.Get(ctx, client.ObjectKeyFromObject(httpProxy), &toUpdate))
+	toUpdate.Spec.HealthCheck = &networkingv1alpha.HTTPProxyHealthCheck{
+		Passive: &networkingv1alpha.HTTPProxyPassiveHealthCheck{
+			Consecutive5xxErrors: ptr.To(int32(3)),
+			BaseEjectionTime:     ptr.To(gatewayv1.Duration("15s")),
+			MaxEjectionPercent:   ptr.To(int32(25)),
+		},
+	}
+	require.NoError(t, fakeClient.Update(ctx, &toUpdate))
+
+	_, err = reconciler.Reconcile(ctx, req)
+	require.NoError(t, err)
+
+	require.NoError(t, fakeClient.Get(ctx, client.ObjectKeyFromObject(httpProxy), &route))
+	encoded, ok := route.Annotations[HealthCheckAnnotation]
+	require.True(t, ok, "httproute must pick up the annotation on the reconcile after spec.healthCheck is set, not only at creation")
+
+	var decoded networkingv1alpha.HTTPProxyHealthCheck
+	require.NoError(t, json.Unmarshal([]byte(encoded), &decoded))
+	assert.Equal(t, *toUpdate.Spec.HealthCheck, decoded)
+
+	require.NoError(t, fakeClient.Get(ctx, client.ObjectKeyFromObject(httpProxy), &toUpdate))
+	toUpdate.Spec.HealthCheck.Passive.MaxEjectionPercent = ptr.To(int32(10))
+	require.NoError(t, fakeClient.Update(ctx, &toUpdate))
+
+	_, err = reconciler.Reconcile(ctx, req)
+	require.NoError(t, err)
+
+	require.NoError(t, fakeClient.Get(ctx, client.ObjectKeyFromObject(httpProxy), &route))
+	encoded, ok = route.Annotations[HealthCheckAnnotation]
+	require.True(t, ok)
+	require.NoError(t, json.Unmarshal([]byte(encoded), &decoded))
+	assert.Equal(t, *toUpdate.Spec.HealthCheck, decoded)
+
+	require.NoError(t, fakeClient.Get(ctx, client.ObjectKeyFromObject(httpProxy), &toUpdate))
+	toUpdate.Spec.HealthCheck = nil
+	require.NoError(t, fakeClient.Update(ctx, &toUpdate))
+
+	_, err = reconciler.Reconcile(ctx, req)
+	require.NoError(t, err)
+
+	require.NoError(t, fakeClient.Get(ctx, client.ObjectKeyFromObject(httpProxy), &route))
+	_, ok = route.Annotations[HealthCheckAnnotation]
+	assert.False(t, ok, "httproute must drop the annotation when spec.healthCheck is cleared")
 }
 
 //nolint:gocyclo

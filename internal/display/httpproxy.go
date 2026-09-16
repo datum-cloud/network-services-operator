@@ -62,34 +62,35 @@ func ComputeHTTPProxyActivityDiff(oldProxy, newProxy *networkingv1alpha.HTTPProx
 	forceHTTPSChanged := forceHTTPSEnabled(oldProxy) != forceHTTPSEnabled(newProxy)
 	displayNameChanged := HTTPProxyDisplayName(oldProxy) != HTTPProxyDisplayName(newProxy)
 	rulesChanged := !equality.Semantic.DeepEqual(ruleSignatures(oldProxy), ruleSignatures(newProxy))
+	healthCheckChanged := !equality.Semantic.DeepEqual(oldProxy.Spec.HealthCheck, newProxy.Spec.HealthCheck)
 
-	specQuiet := !hostnamesChanged && !backendsChanged && !hostHeaderChanged && !forceHTTPSChanged && !rulesChanged
+	specQuiet := !hostnamesChanged && !backendsChanged && !hostHeaderChanged && !forceHTTPSChanged && !rulesChanged && !healthCheckChanged
 
 	switch {
-	case hostnamesChanged && !backendsChanged && !hostHeaderChanged && !forceHTTPSChanged && !rulesChanged && len(removed) == 0 && len(added) > 0:
+	case hostnamesChanged && !backendsChanged && !hostHeaderChanged && !forceHTTPSChanged && !rulesChanged && !healthCheckChanged && len(removed) == 0 && len(added) > 0:
 		return ActivityDiff{
 			Change: ActivityChangeAdded,
 			Field:  ActivityFieldHostname,
 			Name:   strings.Join(added, ", "),
 			Value:  backendValue(newProxy),
 		}
-	case hostnamesChanged && !backendsChanged && !hostHeaderChanged && !forceHTTPSChanged && !rulesChanged && len(added) == 0 && len(removed) > 0:
+	case hostnamesChanged && !backendsChanged && !hostHeaderChanged && !forceHTTPSChanged && !rulesChanged && !healthCheckChanged && len(added) == 0 && len(removed) > 0:
 		return ActivityDiff{
 			Change: ActivityChangeRemoved,
 			Field:  ActivityFieldHostname,
 			Name:   strings.Join(removed, ", "),
 			Value:  backendValue(oldProxy),
 		}
-	case backendsChanged && !hostnamesChanged && !hostHeaderChanged && !forceHTTPSChanged && !rulesChanged:
+	case backendsChanged && !hostnamesChanged && !hostHeaderChanged && !forceHTTPSChanged && !rulesChanged && !healthCheckChanged:
 		return ActivityDiff{
 			Change: ActivityChangeUpdated,
 			Field:  ActivityFieldBackend,
 			Name:   HTTPProxyDisplayName(newProxy),
 			Value:  backendValue(newProxy),
 		}
-	case hostHeaderChanged && !hostnamesChanged && !backendsChanged && !forceHTTPSChanged && !rulesChanged:
+	case hostHeaderChanged && !hostnamesChanged && !backendsChanged && !forceHTTPSChanged && !rulesChanged && !healthCheckChanged:
 		return hostHeaderDiff(oldProxy, newProxy)
-	case forceHTTPSChanged && !hostnamesChanged && !backendsChanged && !hostHeaderChanged && !rulesChanged:
+	case forceHTTPSChanged && !hostnamesChanged && !backendsChanged && !hostHeaderChanged && !rulesChanged && !healthCheckChanged:
 		return forceHTTPSDiff(newProxy)
 	case displayNameChanged && specQuiet:
 		return ActivityDiff{
@@ -98,13 +99,15 @@ func ComputeHTTPProxyActivityDiff(oldProxy, newProxy *networkingv1alpha.HTTPProx
 			Name:   HTTPProxyDisplayName(oldProxy),
 			Value:  HTTPProxyDisplayName(newProxy),
 		}
-	case rulesChanged && !hostnamesChanged && !backendsChanged && !hostHeaderChanged && !forceHTTPSChanged:
+	case rulesChanged && !hostnamesChanged && !backendsChanged && !hostHeaderChanged && !forceHTTPSChanged && !healthCheckChanged:
 		return ActivityDiff{
 			Change: ActivityChangeUpdated,
 			Field:  ActivityFieldRule,
 			Name:   HTTPProxyDisplayName(newProxy),
 			Value:  backendValue(newProxy),
 		}
+	case healthCheckChanged && !hostnamesChanged && !backendsChanged && !hostHeaderChanged && !forceHTTPSChanged && !rulesChanged:
+		return healthCheckDiff(oldProxy, newProxy)
 	case specQuiet && !displayNameChanged:
 		return ActivityDiff{}
 	default:
@@ -304,6 +307,38 @@ func forceHTTPSDiff(newProxy *networkingv1alpha.HTTPProxy) ActivityDiff {
 		Name:   HTTPProxyDisplayName(newProxy),
 		Value:  "disabled",
 	}
+}
+
+func healthCheckDiff(oldProxy, newProxy *networkingv1alpha.HTTPProxy) ActivityDiff {
+	oldPassive := healthCheckPassive(oldProxy)
+	newPassive := healthCheckPassive(newProxy)
+	switch {
+	case !oldPassive && newPassive:
+		return ActivityDiff{
+			Change: ActivityChangeAdded,
+			Field:  ActivityFieldHealthCheck,
+			Name:   HTTPProxyDisplayName(newProxy),
+			Value:  "enabled",
+		}
+	case oldPassive && !newPassive:
+		return ActivityDiff{
+			Change: ActivityChangeRemoved,
+			Field:  ActivityFieldHealthCheck,
+			Name:   HTTPProxyDisplayName(newProxy),
+			Value:  "disabled",
+		}
+	default:
+		return ActivityDiff{
+			Change: ActivityChangeUpdated,
+			Field:  ActivityFieldHealthCheck,
+			Name:   HTTPProxyDisplayName(newProxy),
+			Value:  "updated",
+		}
+	}
+}
+
+func healthCheckPassive(proxy *networkingv1alpha.HTTPProxy) bool {
+	return proxy != nil && proxy.Spec.HealthCheck != nil && proxy.Spec.HealthCheck.Passive != nil
 }
 
 func ruleSignatures(proxy *networkingv1alpha.HTTPProxy) []string {

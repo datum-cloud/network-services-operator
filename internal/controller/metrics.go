@@ -2,13 +2,17 @@
 
 // Package controller defines and registers Prometheus metrics for NSO's
 // gateway operator controllers. All metrics use the "nso_" prefix and are
-// registered against prometheus.DefaultRegisterer, which is the same registry
-// that controller-runtime exposes at /metrics. No separate registry is used.
+// registered against controller-runtime's metrics.Registry, which is the
+// registry the manager serves at /metrics. The process-wide
+// prometheus.DefaultRegisterer is deliberately not used: the manager never
+// serves it, so anything registered there is defined but never exported.
 package controller
 
 import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
+
+	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 )
 
 // Metric label name constants for TLS certificate health metrics.
@@ -25,7 +29,7 @@ const (
 var (
 	// missingAllocationsTotal counts addresses no IPClaim holds. IPAM may give
 	// the same address to another claim.
-	missingAllocationsTotal = promauto.NewCounterVec(
+	missingAllocationsTotal = promauto.With(ctrlmetrics.Registry).NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "nso_network_interface_missing_allocations_total",
 			Help: "Total addresses advertised by a NetworkInterface with no IPClaim holding them, by project.",
@@ -39,7 +43,7 @@ var (
 	// resourceVersion is stale (concurrent writes). The controller-runtime retries
 	// automatically, so conflicts are not fatal — but a rising rate indicates the
 	// replication path is saturated under high churn.
-	replicatorConflictsTotal = promauto.NewCounterVec(
+	replicatorConflictsTotal = promauto.With(ctrlmetrics.Registry).NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "nso_replicator_conflicts_total",
 			Help: "Total resource-version conflicts encountered by the gateway-resource-replicator controller, by resource kind.",
@@ -51,7 +55,7 @@ var (
 	// upstream resource to the downstream cluster (CreateOrUpdate). Labeled by
 	// resource kind and outcome (success | error) so per-family latency
 	// regressions are attributable.
-	replicatorSyncDuration = promauto.NewHistogramVec(
+	replicatorSyncDuration = promauto.With(ctrlmetrics.Registry).NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name:    "nso_replicator_sync_duration_seconds",
 			Help:    "Duration of a single downstream resource sync (CreateOrUpdate) by resource kind and outcome.",
@@ -67,12 +71,12 @@ var (
 	// A value below the total gateway count indicates partial fleet failure —
 	// either data-plane capacity exhaustion or a config programming failure for
 	// the unprogrammed gateways.
-	gatewayProgrammedTotal = promauto.NewGaugeVec(
+	gatewayProgrammedTotal = promauto.With(ctrlmetrics.Registry).NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "nso_gateway_programmed_total",
 			Help: "1 if the downstream Gateway has Programmed=True, 0 otherwise. Sum for fleet-wide programmed count.",
 		},
-		[]string{jsonKeyNamespace, jsonKeyName},
+		[]string{metricLabelProject, jsonKeyNamespace, jsonKeyName},
 	)
 
 	// gatewayListenerCertWithheld is 1 for each upstream Gateway listener that NSO
@@ -81,25 +85,25 @@ var (
 	// is removed from the Gateway, or the Gateway is deleted.
 	//
 	// Use sum(nso_gateway_listener_cert_withheld) to count how many listeners are
-	// currently dark across the fleet, or filter by namespace/name/listener/hostname
-	// to find the specific affected object during an incident.
-	gatewayListenerCertWithheld = promauto.NewGaugeVec(
+	// currently dark across the fleet, or filter by project/namespace/name/
+	// listener/hostname to find the specific affected object during an incident.
+	gatewayListenerCertWithheld = promauto.With(ctrlmetrics.Registry).NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "nso_gateway_listener_cert_withheld",
 			Help: "1 when a Gateway listener is withheld from the downstream because its TLS certificate is unusable, 0 after it recovers.",
 		},
-		[]string{jsonKeyNamespace, jsonKeyName, metricLabelListener, metricLabelHostname, metricLabelReason},
+		[]string{metricLabelProject, jsonKeyNamespace, jsonKeyName, metricLabelListener, metricLabelHostname, metricLabelReason},
 	)
 
 	// gatewayListenerCertGatingTotal counts every reconcile cycle in which a
 	// Gateway listener is withheld due to an unusable certificate. A rising rate
 	// means new cert failures are arriving, not just that existing ones persist.
-	gatewayListenerCertGatingTotal = promauto.NewCounterVec(
+	gatewayListenerCertGatingTotal = promauto.With(ctrlmetrics.Registry).NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "nso_gateway_listener_cert_gating_total",
 			Help: "Total reconcile cycles in which a Gateway listener was withheld because its TLS certificate was unusable.",
 		},
-		[]string{jsonKeyNamespace, jsonKeyName, metricLabelListener, metricLabelHostname, metricLabelReason},
+		[]string{metricLabelProject, jsonKeyNamespace, jsonKeyName, metricLabelListener, metricLabelHostname, metricLabelReason},
 	)
 
 	// gatewayListenerCertExpiryTime is the Unix timestamp (seconds) at which a
@@ -109,53 +113,53 @@ var (
 	//
 	// Query time-to-expiry in days:
 	//   (nso_gateway_listener_cert_expiry_time - time()) / 86400
-	gatewayListenerCertExpiryTime = promauto.NewGaugeVec(
+	gatewayListenerCertExpiryTime = promauto.With(ctrlmetrics.Registry).NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "nso_gateway_listener_cert_expiry_time",
 			Help: "Unix timestamp when the managed TLS certificate for this Gateway listener expires. Only present when the certificate is healthy.",
 		},
-		[]string{jsonKeyNamespace, jsonKeyName, metricLabelListener, metricLabelHostname, metricLabelSecret},
+		[]string{metricLabelProject, jsonKeyNamespace, jsonKeyName, metricLabelListener, metricLabelHostname, metricLabelSecret},
 	)
 
 	// gatewayListenerCertManaged counts the total number of Gateway listeners
 	// that NSO evaluates for certificate health each reconcile. Together with
 	// gatewayListenerCertWithheld this gives the fraction of managed listeners
 	// that are currently serving (the SLI ratio).
-	gatewayListenerCertManaged = promauto.NewGaugeVec(
+	gatewayListenerCertManaged = promauto.With(ctrlmetrics.Registry).NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "nso_gateway_listener_cert_managed",
 			Help: "1 for each Gateway listener whose TLS certificate is managed and evaluated by NSO, regardless of health.",
 		},
-		[]string{jsonKeyNamespace, jsonKeyName, metricLabelListener, metricLabelHostname},
+		[]string{metricLabelProject, jsonKeyNamespace, jsonKeyName, metricLabelListener, metricLabelHostname},
 	)
 
 	// locationSourceTotal and locationPublishedTotal are sampled in one pass.
 	// The difference between them is the count of locations not published:
 	//   nso_location_source_total - nso_location_published_total
-	locationSourceTotal = promauto.NewGauge(
+	locationSourceTotal = promauto.With(ctrlmetrics.Registry).NewGauge(
 		prometheus.GaugeOpts{
 			Name: "nso_location_source_total",
-			Help: "Locations at the source that carry a city code and are therefore publishable.",
+			Help: "Locations at the source that carry a city code and are therefore publishable. Only the leader-elected publisher sets this; read with max(), never sum() or a bare selector.",
 		},
 	)
 
-	locationPublishedTotal = promauto.NewGauge(
+	locationPublishedTotal = promauto.With(ctrlmetrics.Registry).NewGauge(
 		prometheus.GaugeOpts{
 			Name: "nso_location_published_total",
-			Help: "ServingLocations this publisher currently owns on the federation hub, excluding copies retained by a blocked removal.",
+			Help: "ServingLocations this publisher currently owns on the federation hub, excluding copies retained by a blocked removal. Only the leader-elected publisher sets this; read with max(), never sum() or a bare selector.",
 		},
 	)
 
 	// locationRetainedTotal counts copies kept because their removal is
 	// blocked. They are excluded from locationPublishedTotal.
-	locationRetainedTotal = promauto.NewGauge(
+	locationRetainedTotal = promauto.With(ctrlmetrics.Registry).NewGauge(
 		prometheus.GaugeOpts{
 			Name: "nso_location_retained_total",
-			Help: "Published ServingLocations retained because their removal is blocked. Alert on a threshold measured in days, not minutes.",
+			Help: "Published ServingLocations retained because their removal is blocked. Alert on a threshold measured in days, not minutes. Only the leader-elected publisher sets this; read with max(), never sum() or a bare selector.",
 		},
 	)
 
-	locationPublishTimestamp = promauto.NewGaugeVec(
+	locationPublishTimestamp = promauto.With(ctrlmetrics.Registry).NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "nso_location_publish_timestamp_seconds",
 			Help: "Unix timestamp at which this location's published content last changed.",
@@ -163,7 +167,7 @@ var (
 		[]string{metricLabelLocation},
 	)
 
-	locationRemovalBlocked = promauto.NewGaugeVec(
+	locationRemovalBlocked = promauto.With(ctrlmetrics.Registry).NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "nso_location_removal_blocked",
 			Help: "1 while a published ServingLocation is retained because its removal guard refuses the delete, by reason.",
@@ -171,7 +175,7 @@ var (
 		[]string{metricLabelLocation, metricLabelReason},
 	)
 
-	locationMatchedClusters = promauto.NewGaugeVec(
+	locationMatchedClusters = promauto.With(ctrlmetrics.Registry).NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "nso_location_matched_clusters",
 			Help: "Ready hub clusters labelled for this location. Zero means the generated policy places the copy nowhere.",
@@ -179,7 +183,7 @@ var (
 		[]string{metricLabelLocation},
 	)
 
-	locationPublishMismatch = promauto.NewGaugeVec(
+	locationPublishMismatch = promauto.With(ctrlmetrics.Registry).NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "nso_location_publish_mismatch",
 			Help: "1 while a source Location cannot be published, by reason. A refusal is reported, never silently skipped.",
@@ -187,7 +191,7 @@ var (
 		[]string{metricLabelLocation, metricLabelReason},
 	)
 
-	locationPublisherConflictsTotal = promauto.NewCounterVec(
+	locationPublisherConflictsTotal = promauto.With(ctrlmetrics.Registry).NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "nso_location_publisher_conflicts_total",
 			Help: "Conflicts observed by the location publisher, by location and reason.",
@@ -195,7 +199,7 @@ var (
 		[]string{metricLabelLocation, metricLabelReason},
 	)
 
-	cellLocationIdentitySource = promauto.NewGaugeVec(
+	cellLocationIdentitySource = promauto.With(ctrlmetrics.Registry).NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "nso_cell_location_identity_source",
 			Help: "1 for the source this cell resolved its location identity from (Delivered or Configured).",
@@ -203,7 +207,7 @@ var (
 		[]string{metricLabelSource, metricLabelLocation},
 	)
 
-	cellLocationIdentityMismatch = promauto.NewGaugeVec(
+	cellLocationIdentityMismatch = promauto.With(ctrlmetrics.Registry).NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "nso_cell_location_identity_mismatch",
 			Help: "1 while a cell's delivered ServingLocation disagrees with its configured location. Delivered wins; the disagreement is still wrong.",
@@ -211,7 +215,7 @@ var (
 		[]string{metricLabelLocation},
 	)
 
-	cellLocationIdentityWaiting = promauto.NewGaugeVec(
+	cellLocationIdentityWaiting = promauto.With(ctrlmetrics.Registry).NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "nso_cell_location_identity_waiting",
 			Help: "1 while a cell cannot name the location it serves, by reason.",

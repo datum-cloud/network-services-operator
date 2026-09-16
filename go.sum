@@ -453,8 +453,6 @@ github.com/microsoft/go-mssqldb v1.10.0/go.mod h1:mnG7lGa9iYJbzJqGCXyuQCegStKMr3
 github.com/miekg/dns v1.1.46/go.mod h1:e3IlAVfNqAllflbibAZEWOXOQ+Ynzk/dDozDxY7XnME=
 github.com/miekg/dns v1.1.72 h1:vhmr+TF2A3tuoGNkLDFK9zi36F2LS+hKTRW0Uf8kbzI=
 github.com/miekg/dns v1.1.72/go.mod h1:+EuEPhdHOsfk6Wk5TT2CzssZdqkmFhf8r+aVyDEToIs=
-github.com/milo-os/ipam v0.3.2-0.20260819234259-2f31bea79f62 h1:Tm44p0Fq+Ld2CcQvmvhfB6UigvMSUGG8DRXegF5W43Q=
-github.com/milo-os/ipam v0.3.2-0.20260819234259-2f31bea79f62/go.mod h1:Jj7xg4lJi9psE0+4PuOg/GQOG8rG13h112xYoM994rc=
 github.com/mitchellh/copystructure v1.2.0 h1:vpKXTN4ewci03Vljg/q9QvCGUDttBOGBIa15WveJJGw=
 github.com/mitchellh/copystructure v1.2.0/go.mod h1:qLl+cE2AmVv+CoeAwDPye/v+N2HKCj9FbZEVFJRxO9s=
 github.com/mitchellh/go-homedir v1.1.0 h1:lukF9ziXFxDFPkA1vsr5zpc1XuPDn/wFntq5mG+4E0Y=
@@ -693,6 +691,8 @@ go.miloapis.com/activity v0.7.1 h1:e2c4xVISMA10QQJwPv8pT8U1T1xS3eTGhy8FJHXOKvY=
 go.miloapis.com/activity v0.7.1/go.mod h1:Sh2Irbq6siJcfq17nLjHvm4JHN/2Csc5YCHB+ycz20c=
 go.miloapis.com/dns-operator v0.5.1 h1:3HmturI/Opl+l4/KurN6B0/XEeVefoSvYU0ewcZ8BZ8=
 go.miloapis.com/dns-operator v0.5.1/go.mod h1:yQSBOx1ZhSzZgg5RyNKyNHfZgjXRKhxkcGD+jvbebQE=
+go.miloapis.com/ipam v0.4.0 h1:U+mg3RMFXj0c2eQ0Lm15CI0bYBPFDqy8IsGLN8v/eGs=
+go.miloapis.com/ipam v0.4.0/go.mod h1:Jj7xg4lJi9psE0+4PuOg/GQOG8rG13h112xYoM994rc=
 go.miloapis.com/milo v0.28.4-0.20260629130346-79689376fe11 h1:gWqYe5aYpRn7jFUo2hxSsvj0KHC2xFzK2RGCcd3ClHg=
 go.miloapis.com/milo v0.28.4-0.20260629130346-79689376fe11/go.mod h1:p9O2kk194mvoL8rhqjwb+LWB+GIyY4vQqiTowwibVWo=
 go.mongodb.org/mongo-driver v1.11.4/go.mod h1:PTSz5yu21bkT/wXpkS7WR5f0ddqw5quethTUn9WM+2g=

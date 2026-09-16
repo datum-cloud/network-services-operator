@@ -1286,6 +1286,16 @@ type ClusterSettingsValidationOptions struct {
 	//
 	// +default=1024
 	HTTP2MaxConcurrentStreams uint32
+
+	// Minimum duration a host must stay ejected under passive health checks.
+	//
+	// +default="1s"
+	HealthCheckMinBaseEjectionTime *metav1.Duration
+
+	// Minimum interval between passive health check evaluations.
+	//
+	// +default="1s"
+	HealthCheckMinInterval *metav1.Duration
 }
 
 type HTTPRouteFilterValidationOptions struct {

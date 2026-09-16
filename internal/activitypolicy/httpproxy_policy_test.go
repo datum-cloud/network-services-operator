@@ -191,6 +191,57 @@ func TestHTTPProxyPolicy_Fixtures(t *testing.T) {
 			},
 		},
 		{
+			name:     "update health check enabled",
+			wantRule: "update-health-check-enabled",
+			audit: map[string]any{
+				"user":          map[string]any{"username": "alice@example.com"},
+				"verb":          "patch",
+				"objectRef":     map[string]any{"name": "alb"},
+				"requestObject": map[string]any{"spec": map[string]any{"healthCheck": map[string]any{"passive": map[string]any{}}}},
+				"responseObject": map[string]any{"metadata": map[string]any{"annotations": map[string]any{
+					"networking.datumapis.com/display-name":    "alb",
+					"networking.datumapis.com/activity-change": "added",
+					"networking.datumapis.com/activity-field":  "health-check",
+					"networking.datumapis.com/activity-value":  "enabled",
+				}}},
+				"responseStatus": map[string]any{"code": 200},
+			},
+		},
+		{
+			name:     "update health check disabled",
+			wantRule: "update-health-check-disabled",
+			audit: map[string]any{
+				"user":          map[string]any{"username": "alice@example.com"},
+				"verb":          "patch",
+				"objectRef":     map[string]any{"name": "alb"},
+				"requestObject": map[string]any{"spec": map[string]any{}},
+				"responseObject": map[string]any{"metadata": map[string]any{"annotations": map[string]any{
+					"networking.datumapis.com/display-name":    "alb",
+					"networking.datumapis.com/activity-change": "removed",
+					"networking.datumapis.com/activity-field":  "health-check",
+					"networking.datumapis.com/activity-value":  "disabled",
+				}}},
+				"responseStatus": map[string]any{"code": 200},
+			},
+		},
+		{
+			name:     "update health check",
+			wantRule: "update-health-check",
+			audit: map[string]any{
+				"user":          map[string]any{"username": "alice@example.com"},
+				"verb":          "patch",
+				"objectRef":     map[string]any{"name": "alb"},
+				"requestObject": map[string]any{"spec": map[string]any{"healthCheck": map[string]any{"passive": map[string]any{"maxEjectionPercent": 25}}}},
+				"responseObject": map[string]any{"metadata": map[string]any{"annotations": map[string]any{
+					"networking.datumapis.com/display-name":    "alb",
+					"networking.datumapis.com/activity-change": "updated",
+					"networking.datumapis.com/activity-field":  "health-check",
+					"networking.datumapis.com/activity-value":  "updated",
+				}}},
+				"responseStatus": map[string]any{"code": 200},
+			},
+		},
+		{
 			name:     "metadata-only patch is silent",
 			wantRule: "",
 			audit: map[string]any{

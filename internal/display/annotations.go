@@ -29,6 +29,7 @@ const (
 	ActivityFieldExclusions  = "exclusions"
 	ActivityFieldSampling    = "sampling"
 	ActivityFieldParanoia    = "paranoia"
+	ActivityFieldHealthCheck = "health-check"
 )
 
 type ActivityDiff struct {

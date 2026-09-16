@@ -5,10 +5,12 @@ import (
 	"net"
 	"net/url"
 	"strconv"
+	"time"
 
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/validation/field"
+	"k8s.io/utils/ptr"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
@@ -41,6 +43,27 @@ func ValidateHTTPProxy(httpProxy *networkingv1alpha.HTTPProxy) field.ErrorList {
 	}
 
 	allErrs = append(allErrs, validateHTTPProxyRules(httpProxy, field.NewPath("spec", "rules"))...)
+	allErrs = append(allErrs, validateHTTPProxyHealthCheck(httpProxy.Spec.HealthCheck, field.NewPath("spec", "healthCheck"))...)
+
+	return allErrs
+}
+
+func validateHTTPProxyHealthCheck(healthCheck *networkingv1alpha.HTTPProxyHealthCheck, fldPath *field.Path) field.ErrorList {
+	if healthCheck == nil || healthCheck.Passive == nil {
+		return nil
+	}
+
+	allErrs := field.ErrorList{}
+	passivePath := fldPath.Child("passive")
+	if v := healthCheck.Passive.Consecutive5xxErrors; v != nil && *v < 1 {
+		allErrs = append(allErrs, field.Invalid(passivePath.Child("consecutive5xxErrors"), *v, "must be at least 1"))
+	}
+	if v := healthCheck.Passive.BaseEjectionTime; v != nil {
+		allErrs = append(allErrs, validateGatewayDuration(passivePath.Child("baseEjectionTime"), v, ptr.To(time.Second), nil)...)
+	}
+	if v := healthCheck.Passive.MaxEjectionPercent; v != nil && (*v < 1 || *v > 100) {
+		allErrs = append(allErrs, field.Invalid(passivePath.Child("maxEjectionPercent"), *v, "must be between 1 and 100, inclusive"))
+	}
 
 	return allErrs
 }

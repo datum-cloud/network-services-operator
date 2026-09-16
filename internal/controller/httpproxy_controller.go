@@ -150,6 +150,14 @@ const BackendCertHostnameAnnotation = "networking.datumapis.com/backend-cert-hos
 // access to.
 const LoadBalancerAnnotation = "networking.datumapis.com/load-balancer"
 
+// HealthCheckAnnotation carries an HTTPProxy's spec.healthCheck, JSON
+// encoded, on the upstream HTTPRoute this controller synthesizes. The
+// gateway controller reads it back off that HTTPRoute to build the
+// downstream BackendTrafficPolicy, since health-check policy must target
+// the downstream/dataplane cluster this (upstream-only) controller has no
+// access to.
+const HealthCheckAnnotation = "networking.datumapis.com/health-check"
+
 const (
 	SchemeHTTP  = "http"
 	SchemeHTTPS = "https"
@@ -1063,6 +1071,13 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 			return nil, fmt.Errorf("failed encoding load balancer for httproute annotation: %w", err)
 		}
 		httpRouteAnnotations[LoadBalancerAnnotation] = string(encoded)
+	}
+	if httpProxy.Spec.HealthCheck != nil && httpProxy.Spec.HealthCheck.Passive != nil {
+		encoded, err := json.Marshal(httpProxy.Spec.HealthCheck)
+		if err != nil {
+			return nil, fmt.Errorf("failed encoding health check for httproute annotation: %w", err)
+		}
+		httpRouteAnnotations[HealthCheckAnnotation] = string(encoded)
 	}
 
 	httpRoute := &gatewayv1.HTTPRoute{

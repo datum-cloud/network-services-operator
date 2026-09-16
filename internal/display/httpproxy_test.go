@@ -149,6 +149,41 @@ func TestComputeHTTPProxyActivityDiff(t *testing.T) {
 			new:  proxyWith("https://origin.example.com", "/"),
 			want: ActivityDiff{},
 		},
+		{
+			name: "passive health checks enabled",
+			old:  proxyWith("https://origin.example.com", "/"),
+			new:  proxyWithPassiveHealthCheck(),
+			want: ActivityDiff{
+				Change: ActivityChangeAdded,
+				Field:  ActivityFieldHealthCheck,
+				Name:   "alb",
+				Value:  "enabled",
+			},
+		},
+		{
+			name: "passive health checks disabled",
+			old:  proxyWithPassiveHealthCheck(),
+			new:  proxyWith("https://origin.example.com", "/"),
+			want: ActivityDiff{
+				Change: ActivityChangeRemoved,
+				Field:  ActivityFieldHealthCheck,
+				Name:   "alb",
+				Value:  "disabled",
+			},
+		},
+		{
+			name: "passive health checks updated",
+			old:  proxyWithPassiveHealthCheck(),
+			new: proxyWithPassiveHealthCheck(func(p *networkingv1alpha.HTTPProxy) {
+				p.Spec.HealthCheck.Passive.MaxEjectionPercent = ptr.To(int32(25))
+			}),
+			want: ActivityDiff{
+				Change: ActivityChangeUpdated,
+				Field:  ActivityFieldHealthCheck,
+				Name:   "alb",
+				Value:  "updated",
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -175,6 +210,13 @@ func TestEnsureHTTPProxyAnnotations(t *testing.T) {
 	assert.Equal(t, ActivityChangeAdded, updated.Annotations[AnnotationActivityChange])
 	assert.Equal(t, ActivityFieldHostname, updated.Annotations[AnnotationActivityField])
 	assert.Equal(t, "api.example.com", updated.Annotations[AnnotationActivityName])
+
+	oldHealth := proxyWith("https://origin.example.com", "/")
+	enabled := proxyWithPassiveHealthCheck()
+	require.True(t, EnsureHTTPProxyAnnotations(enabled, oldHealth))
+	assert.Equal(t, ActivityChangeAdded, enabled.Annotations[AnnotationActivityChange])
+	assert.Equal(t, ActivityFieldHealthCheck, enabled.Annotations[AnnotationActivityField])
+	assert.Equal(t, "enabled", enabled.Annotations[AnnotationActivityValue])
 }
 
 func TestHTTPProxyDisplayName(t *testing.T) {
@@ -240,6 +282,21 @@ func proxyWithHostHeader(hostHeader string) *networkingv1alpha.HTTPProxy {
 			}},
 		},
 	}}
+	return proxy
+}
+
+func proxyWithPassiveHealthCheck(opts ...func(*networkingv1alpha.HTTPProxy)) *networkingv1alpha.HTTPProxy {
+	proxy := proxyWith("https://origin.example.com", "/")
+	proxy.Spec.HealthCheck = &networkingv1alpha.HTTPProxyHealthCheck{
+		Passive: &networkingv1alpha.HTTPProxyPassiveHealthCheck{
+			Consecutive5xxErrors: ptr.To(int32(5)),
+			BaseEjectionTime:     ptr.To(gatewayv1.Duration("30s")),
+			MaxEjectionPercent:   ptr.To(int32(50)),
+		},
+	}
+	for _, opt := range opts {
+		opt(proxy)
+	}
 	return proxy
 }
 

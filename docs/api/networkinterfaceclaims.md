@@ -149,7 +149,9 @@ Omit this field for ordinary private addressing, which is the common case.<br/>
           attachmentMode is how the guest consumes this interface. Netns places it in
 the workload's network namespace, which is what an ordinary container
 expects. Hypervisor hands it to a hypervisor as a device, which is what a
-virtual machine or microVM guest needs.
+virtual machine or microVM guest needs. HypervisorDeclared also hands it
+to a hypervisor, and additionally has the realizer state the device to
+that hypervisor instead of letting it discover the device from the node.
 
 It is copied to the bound interface and never interpreted here. Whoever
 realizes the interface decides what each mode means on its data plane.
@@ -157,8 +159,22 @@ realizes the interface decides what each mode means on its data plane.
 Immutable, because the guest and the attachment are both built against it.<br/>
           <br/>
             <i>Validations</i>:<li>self == oldSelf: attachmentMode is immutable and cannot be changed after creation</li>
-            <i>Enum</i>: Netns, Hypervisor<br/>
+            <i>Enum</i>: Netns, Hypervisor, HypervisorDeclared<br/>
             <i>Default</i>: Netns<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b><a href="#networkinterfaceclaimspecegress">egress</a></b></td>
+        <td>object</td>
+        <td>
+          egress is what this interface reaches outside the platform. Only
+Inherit is accepted, which follows the network's declaration.
+
+The field is reserved so the default is settled before consumers depend
+on it: an interface written today records Inherit, so accepting Enabled
+and Disabled later changes no existing interface.<br/>
+          <br/>
+            <i>Default</i>: map[internet:map[mode:Inherit]]<br/>
         </td>
         <td>false</td>
       </tr><tr>
@@ -305,6 +321,73 @@ prefix length serve it. A class never names a pool, a prefix length, or a
 CIDR, so a class cannot be used to ask for a particular address.<br/>
         </td>
         <td>true</td>
+      </tr></tbody>
+</table>
+
+
+### NetworkInterfaceClaim.spec.egress
+<sup><sup>[↩ Parent](#networkinterfaceclaimspec)</sup></sup>
+
+
+
+egress is what this interface reaches outside the platform. Only
+Inherit is accepted, which follows the network's declaration.
+
+The field is reserved so the default is settled before consumers depend
+on it: an interface written today records Inherit, so accepting Enabled
+and Disabled later changes no existing interface.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b><a href="#networkinterfaceclaimspecegressinternet">internet</a></b></td>
+        <td>object</td>
+        <td>
+          internet is whether this interface reaches destinations outside the
+platform.<br/>
+          <br/>
+            <i>Default</i>: map[mode:Inherit]<br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### NetworkInterfaceClaim.spec.egress.internet
+<sup><sup>[↩ Parent](#networkinterfaceclaimspecegress)</sup></sup>
+
+
+
+internet is whether this interface reaches destinations outside the
+platform.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>mode</b></td>
+        <td>enum</td>
+        <td>
+          mode is whether this interface reaches the internet. Only Inherit is
+accepted, which follows the network's declaration.<br/>
+          <br/>
+            <i>Enum</i>: Inherit<br/>
+            <i>Default</i>: Inherit<br/>
+        </td>
+        <td>false</td>
       </tr></tbody>
 </table>
 

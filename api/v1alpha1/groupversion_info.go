@@ -46,6 +46,8 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 		&ConnectorAdvertisementList{},
 		&ConnectorClass{},
 		&ConnectorClassList{},
+		&InternetEgressClass{},
+		&InternetEgressClassList{},
 	)
 	metav1.AddToGroupVersion(scheme, GroupVersion)
 	return nil

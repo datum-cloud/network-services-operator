@@ -131,6 +131,35 @@ spec:
                 - message: attachmentMode is immutable and cannot be changed after
                     creation
                   rule: self == oldSelf
+              egress:
+                default:
+                  internet:
+                    mode: Inherit
+                description: |-
+                  egress is what this interface reaches outside the platform. Only
+                  Inherit is accepted, which follows the network's declaration.
+
+                  The field is reserved so the default is settled before consumers depend
+                  on it: an interface written today records Inherit, so accepting Enabled
+                  and Disabled later changes no existing interface.
+                properties:
+                  internet:
+                    default:
+                      mode: Inherit
+                    description: |-
+                      internet is whether this interface reaches destinations outside the
+                      platform.
+                    properties:
+                      mode:
+                        default: Inherit
+                        description: |-
+                          mode is whether this interface reaches the internet. Only Inherit is
+                          accepted, which follows the network's declaration.
+                        enum:
+                        - Inherit
+                        type: string
+                    type: object
+                type: object
               interfaceName:
                 default: eth0
                 description: |-

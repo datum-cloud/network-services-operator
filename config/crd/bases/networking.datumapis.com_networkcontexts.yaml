@@ -170,6 +170,65 @@ spec:
                   - type
                   type: object
                 type: array
+              egress:
+                description: |-
+                  Egress reports what the network reaches outside the platform from this
+                  location. Egress is realized per location, so a network present in two
+                  locations reports an answer on each context rather than one answer on
+                  the network.
+                properties:
+                  internet:
+                    description: Internet reports the internet egress realized for
+                      this location.
+                    properties:
+                      dns64Prefix:
+                        description: |-
+                          DNS64Prefix is the prefix the platform's resolver synthesizes addresses
+                          under for names publishing no IPv6 record. Reaching an IPv4 destination
+                          by name works only for instances using a resolver that shares this
+                          prefix with the translator.
+                        maxLength: 43
+                        type: string
+                      sourceAddresses:
+                        description: |-
+                          SourceAddresses are the addresses translation writes onto outbound
+                          packets from this location, with the reliance each one carries.
+                        items:
+                          description: InternetEgressSourceAddress is one address
+                            outbound traffic leaves on.
+                          properties:
+                            address:
+                              description: |-
+                                Address is the source address translation writes, without a prefix
+                                length.
+                              maxLength: 39
+                              minLength: 1
+                              type: string
+                            family:
+                              description: Family is the address family of this source
+                                address.
+                              enum:
+                              - IPv4
+                              - IPv6
+                              type: string
+                            stability:
+                              description: |-
+                                Stability states how far a consumer may rely on this address before
+                                they act on it. It is the consumer-side projection of the serving
+                                class's sharing.
+                              enum:
+                              - None
+                              - Network
+                              type: string
+                          required:
+                          - address
+                          - family
+                          - stability
+                          type: object
+                        maxItems: 16
+                        type: array
+                    type: object
+                type: object
               ipam:
                 description: |-
                   IPAM reports the address space IPAM holds for this network in this

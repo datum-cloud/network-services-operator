@@ -40,6 +40,69 @@ type NetworkSpec struct {
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:default=1440
 	MTU int32 `json:"mtu,omitempty"`
+
+	// Egress declares what instances on this network reach outside the
+	// platform. Omitting it reaches nothing outside the platform.
+	//
+	// +kubebuilder:validation:Optional
+	Egress *NetworkEgress `json:"egress,omitempty"`
+}
+
+// NetworkEgress declares the outbound paths a network carries.
+type NetworkEgress struct {
+	// Internet declares whether instances on this network reach destinations
+	// outside the platform, and which address families they reach.
+	//
+	// +kubebuilder:validation:Optional
+	Internet *NetworkInternetEgress `json:"internet,omitempty"`
+}
+
+// NetworkInternetEgressMode is whether a network reaches the internet.
+//
+// +kubebuilder:validation:Enum=Enabled;Disabled
+type NetworkInternetEgressMode string
+
+const (
+	// NetworkInternetEgressEnabled lets instances on the network reach
+	// destinations outside the platform.
+	NetworkInternetEgressEnabled NetworkInternetEgressMode = "Enabled"
+
+	// NetworkInternetEgressDisabled reaches no destination outside the
+	// platform. A change to Disabled takes effect on interfaces that attach
+	// afterwards.
+	NetworkInternetEgressDisabled NetworkInternetEgressMode = "Disabled"
+)
+
+// NetworkInternetEgress declares internet access for every instance on a
+// network. The first phase decides it for the whole network, not per interface.
+type NetworkInternetEgress struct {
+	// Mode is whether instances on this network reach the internet. Egress is
+	// a capability to opt into: a path nobody asked for is a path nobody is
+	// accountable for.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default=Disabled
+	Mode NetworkInternetEgressMode `json:"mode,omitempty"`
+
+	// Reach are the destination address families instances call. It names
+	// destinations, never a translation mechanism, so an IPv6 network listing
+	// IPv4 states that its instances call IPv4-only services and leaves the
+	// platform to answer with translation and a matching resolver.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=2
+	// +kubebuilder:validation:XValidation:message="Each address family may be listed at most once",rule="self.all(f, self.exists_one(g, g == f))"
+	Reach []IPFamily `json:"reach,omitempty"`
+
+	// Class is the InternetEgressClass serving this network. Omitting it
+	// selects the default class, which is the common case. A consumer never
+	// names an address class, an address pool, or an address.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	Class string `json:"class,omitempty"`
 }
 
 type NetworkIPAMMode string

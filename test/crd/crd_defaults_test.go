@@ -30,6 +30,7 @@ import (
 	gatewayv1alpha2 "sigs.k8s.io/gateway-api/apis/v1alpha2"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
+	networkingv1alpha1 "go.datum.net/network-services-operator/api/v1alpha1"
 )
 
 // testClient is nil when KUBEBUILDER_ASSETS is unset (plain `go test` without
@@ -54,6 +55,10 @@ func TestMain(m *testing.M) {
 
 	scheme := runtime.NewScheme()
 	if err := networkingv1alpha.AddToScheme(scheme); err != nil {
+		fmt.Fprintf(os.Stderr, "add scheme: %v\n", err)
+		os.Exit(1)
+	}
+	if err := networkingv1alpha1.AddToScheme(scheme); err != nil {
 		fmt.Fprintf(os.Stderr, "add scheme: %v\n", err)
 		os.Exit(1)
 	}

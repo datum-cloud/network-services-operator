@@ -82,9 +82,13 @@ type NetworkContextInternetEgress struct {
 	// to reach, copied from the network and narrowed to what the serving class
 	// reaches.
 	//
+	// Only IPv6 is accepted, because a projection may not carry what its
+	// source cannot declare.
+	//
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:validation:MinItems=1
 	// +kubebuilder:validation:MaxItems=2
+	// +kubebuilder:validation:XValidation:message="Only IPv6 is accepted; reaching IPv4 destinations needs a resolver and a translator sharing a prefix, and the platform pairs neither",rule="self.all(f, f == 'IPv6')"
 	// +kubebuilder:validation:XValidation:message="Each address family may be listed at most once",rule="self.all(f, self.exists_one(g, g == f))"
 	Reach []IPFamily `json:"reach,omitempty"`
 

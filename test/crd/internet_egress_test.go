@@ -74,7 +74,7 @@ func TestNetworkKeepsExplicitEgressMode(t *testing.T) {
 
 	network := egressNetwork("egress-enabled", &networkingv1alpha.NetworkInternetEgress{
 		Mode:  networkingv1alpha.NetworkInternetEgressEnabled,
-		Reach: []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol, networkingv1alpha.IPv4Protocol},
+		Reach: []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol},
 		Class: "shared",
 	})
 	require.NoError(t, cl.Create(ctx, network))
@@ -84,9 +84,9 @@ func TestNetworkKeepsExplicitEgressMode(t *testing.T) {
 	require.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(network), &got))
 	assert.Equal(t, networkingv1alpha.NetworkInternetEgressEnabled, got.Spec.Egress.Internet.Mode)
 	assert.Equal(t, "shared", got.Spec.Egress.Internet.Class)
-	assert.Equal(t, []networkingv1alpha.IPFamily{
-		networkingv1alpha.IPv6Protocol, networkingv1alpha.IPv4Protocol,
-	}, got.Spec.Egress.Internet.Reach)
+	assert.Equal(t,
+		[]networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol},
+		got.Spec.Egress.Internet.Reach)
 }
 
 // TestNetworkRejectsUnknownEgressMode asserts the mode enum turns away a value
@@ -113,7 +113,7 @@ func TestNetworkRejectsRepeatedReachFamily(t *testing.T) {
 	network := egressNetwork("egress-repeated-reach", &networkingv1alpha.NetworkInternetEgress{
 		Mode: networkingv1alpha.NetworkInternetEgressEnabled,
 		Reach: []networkingv1alpha.IPFamily{
-			networkingv1alpha.IPv4Protocol, networkingv1alpha.IPv4Protocol,
+			networkingv1alpha.IPv6Protocol, networkingv1alpha.IPv6Protocol,
 		},
 	})
 	err := cl.Create(ctx, network)
@@ -122,22 +122,62 @@ func TestNetworkRejectsRepeatedReachFamily(t *testing.T) {
 	assert.Contains(t, err.Error(), "spec.egress.internet.reach")
 }
 
-// TestNetworkReachNeedNotBeCarried pins that reach names destinations rather
-// than the families the network holds. An IPv6-only network reaching IPv4 is
-// the case the design exists for, so no rule may require reach to be a subset
-// of ipFamilies.
-func TestNetworkReachNeedNotBeCarried(t *testing.T) {
+// TestNetworkReachNeedNotMatchIPFamilies pins that reach names destinations
+// rather than the families the network holds, demonstrated inside the values
+// reach accepts today: a dual-stack network reaching only IPv6 is valid. No
+// rule may tie reach to ipFamilies in either direction, and widening reach
+// must not introduce one.
+func TestNetworkReachNeedNotMatchIPFamilies(t *testing.T) {
 	cl := requireEnv(t)
 	ctx := context.Background()
 
-	network := egressNetwork("egress-reach-v4-on-v6", &networkingv1alpha.NetworkInternetEgress{
+	network := egressNetwork("egress-reach-narrower", &networkingv1alpha.NetworkInternetEgress{
+		Mode:  networkingv1alpha.NetworkInternetEgressEnabled,
+		Reach: []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol},
+	})
+	network.Spec.IPFamilies = []networkingv1alpha.IPFamily{
+		networkingv1alpha.IPv6Protocol, networkingv1alpha.IPv4Protocol,
+	}
+	require.NoError(t, cl.Create(ctx, network),
+		"reach must be free to name fewer families than the network carries")
+	t.Cleanup(func() { _ = cl.Delete(ctx, network) })
+}
+
+// TestNetworkRejectsIPv4Reach asserts IPv4 reach is refused rather than
+// accepted and silently not delivered. It needs a resolver and a translator
+// sharing a prefix, and the platform pairs neither. A network written today
+// records IPv6, so accepting IPv4 later changes no existing network.
+func TestNetworkRejectsIPv4Reach(t *testing.T) {
+	cl := requireEnv(t)
+	ctx := context.Background()
+
+	network := egressNetwork("egress-reach-v4", &networkingv1alpha.NetworkInternetEgress{
 		Mode:  networkingv1alpha.NetworkInternetEgressEnabled,
 		Reach: []networkingv1alpha.IPFamily{networkingv1alpha.IPv4Protocol},
 	})
-	network.Spec.IPFamilies = []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol}
-	require.NoError(t, cl.Create(ctx, network),
-		"an IPv6 network must be allowed to reach IPv4 destinations")
-	t.Cleanup(func() { _ = cl.Delete(ctx, network) })
+	err := cl.Create(ctx, network)
+	require.Error(t, err, "IPv4 reach must be withheld until NAT64 is in place")
+	assert.Truef(t, apierrors.IsInvalid(err), "expected an Invalid error, got %v", err)
+	assert.Contains(t, err.Error(), "spec.egress.internet.reach")
+	assert.Contains(t, err.Error(), "Only IPv6 is accepted")
+}
+
+// TestNetworkRejectsIPv4AlongsideIPv6Reach asserts the withholding is not
+// escaped by listing IPv4 next to a family the platform does deliver.
+func TestNetworkRejectsIPv4AlongsideIPv6Reach(t *testing.T) {
+	cl := requireEnv(t)
+	ctx := context.Background()
+
+	network := egressNetwork("egress-reach-dual", &networkingv1alpha.NetworkInternetEgress{
+		Mode: networkingv1alpha.NetworkInternetEgressEnabled,
+		Reach: []networkingv1alpha.IPFamily{
+			networkingv1alpha.IPv6Protocol, networkingv1alpha.IPv4Protocol,
+		},
+	})
+	err := cl.Create(ctx, network)
+	require.Error(t, err, "IPv4 must be refused even beside IPv6")
+	assert.Truef(t, apierrors.IsInvalid(err), "expected an Invalid error, got %v", err)
+	assert.Contains(t, err.Error(), "spec.egress.internet.reach")
 }
 
 func egressClaim(
@@ -241,9 +281,7 @@ func TestInternetEgressClassRoundTripsOperatorFields(t *testing.T) {
 	class := egressClass("shared", networkingv1alpha.InternetEgressClassSpec{
 		ControllerName: "networking.datumapis.com/cell-egress",
 		Sharing:        networkingv1alpha.InternetEgressSharingShared,
-		Reach: []networkingv1alpha.IPFamily{
-			networkingv1alpha.IPv6Protocol, networkingv1alpha.IPv4Protocol,
-		},
+		Reach:          []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol},
 		ParametersRef: &networkingv1alpha.InternetEgressClassParametersRef{
 			Group: "network.datumapis.com",
 			Kind:  "EgressShardParameters",
@@ -429,7 +467,7 @@ func TestNetworkContextEgressIntentRoundTrips(t *testing.T) {
 
 	networkContext := egressContext("egress-intent", &networkingv1alpha.NetworkContextInternetEgress{
 		Mode:      networkingv1alpha.NetworkInternetEgressEnabled,
-		Reach:     []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol, networkingv1alpha.IPv4Protocol},
+		Reach:     []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol},
 		ClassName: "shared",
 		Sharing:   networkingv1alpha.InternetEgressSharingShared,
 		ParametersRef: &networkingv1alpha.InternetEgressClassParametersRef{
@@ -447,9 +485,7 @@ func TestNetworkContextEgressIntentRoundTrips(t *testing.T) {
 	internet := got.Spec.Egress.Internet
 	require.NotNil(t, internet)
 	assert.Equal(t, networkingv1alpha.NetworkInternetEgressEnabled, internet.Mode)
-	assert.Equal(t, []networkingv1alpha.IPFamily{
-		networkingv1alpha.IPv6Protocol, networkingv1alpha.IPv4Protocol,
-	}, internet.Reach)
+	assert.Equal(t, []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol}, internet.Reach)
 	assert.Equal(t, "shared", internet.ClassName)
 	assert.Equal(t, networkingv1alpha.InternetEgressSharingShared, internet.Sharing)
 	require.NotNil(t, internet.ParametersRef)
@@ -504,6 +540,38 @@ func TestNetworkContextRejectsRepeatedEgressIntentReach(t *testing.T) {
 	})
 	err := cl.Create(ctx, networkContext)
 	require.Error(t, err, "a repeated reach family must be rejected")
+	assert.Truef(t, apierrors.IsInvalid(err), "expected an Invalid error, got %v", err)
+	assert.Contains(t, err.Error(), "spec.egress.internet.reach")
+}
+
+// TestInternetEgressClassRejectsIPv4Reach asserts an operator cannot define a
+// class advertising IPv4, which would promise what no component delivers.
+func TestInternetEgressClassRejectsIPv4Reach(t *testing.T) {
+	cl := requireEnv(t)
+	ctx := context.Background()
+
+	class := egressClass("reach-v4", networkingv1alpha.InternetEgressClassSpec{
+		Sharing: networkingv1alpha.InternetEgressSharingShared,
+		Reach:   []networkingv1alpha.IPFamily{networkingv1alpha.IPv4Protocol},
+	})
+	err := cl.Create(ctx, class)
+	require.Error(t, err, "a class may not advertise IPv4 reach")
+	assert.Truef(t, apierrors.IsInvalid(err), "expected an Invalid error, got %v", err)
+	assert.Contains(t, err.Error(), "spec.reach")
+}
+
+// TestNetworkContextRejectsIPv4EgressIntentReach asserts the projection cannot
+// carry what its source cannot declare.
+func TestNetworkContextRejectsIPv4EgressIntentReach(t *testing.T) {
+	cl := requireEnv(t)
+	ctx := context.Background()
+
+	networkContext := egressContext("egress-intent-reach-v4", &networkingv1alpha.NetworkContextInternetEgress{
+		Mode:  networkingv1alpha.NetworkInternetEgressEnabled,
+		Reach: []networkingv1alpha.IPFamily{networkingv1alpha.IPv4Protocol},
+	})
+	err := cl.Create(ctx, networkContext)
+	require.Error(t, err, "a projected IPv4 reach must be rejected")
 	assert.Truef(t, apierrors.IsInvalid(err), "expected an Invalid error, got %v", err)
 	assert.Contains(t, err.Error(), "spec.egress.internet.reach")
 }

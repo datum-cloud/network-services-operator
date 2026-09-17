@@ -103,9 +103,13 @@ InternetEgressClass.<br/>
         <td>
           Reach are the destination address families a network on this class
 reaches. The class names destinations, never the translation that
-delivers them.<br/>
+delivers them.
+
+Only IPv6 is accepted. A class advertising IPv4 would promise what no
+component in the platform can deliver, so the value is withheld until a
+resolver and a translator sharing a prefix are paired.<br/>
           <br/>
-            <i>Validations</i>:<li>self.all(f, self.exists_one(g, g == f)): Each address family may be listed at most once</li>
+            <i>Validations</i>:<li>self.all(f, f == 'IPv6'): Only IPv6 is accepted; reaching IPv4 destinations needs a resolver and a translator sharing a prefix, and the platform pairs neither</li><li>self.all(f, self.exists_one(g, g == f)): Each address family may be listed at most once</li>
             <i>Enum</i>: IPv4, IPv6<br/>
         </td>
         <td>true</td>

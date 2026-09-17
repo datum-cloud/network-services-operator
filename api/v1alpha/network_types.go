@@ -85,13 +85,19 @@ type NetworkInternetEgress struct {
 	Mode NetworkInternetEgressMode `json:"mode,omitempty"`
 
 	// Reach are the destination address families instances call. It names
-	// destinations, never a translation mechanism, so an IPv6 network listing
-	// IPv4 states that its instances call IPv4-only services and leaves the
-	// platform to answer with translation and a matching resolver.
+	// destinations, never a translation mechanism, so the platform answers a
+	// family with whatever translation and resolution that family needs.
+	//
+	// Only IPv6 is accepted. Reaching IPv4 destinations needs a resolver and a
+	// translator sharing a prefix, and the platform pairs neither, so IPv4 is
+	// withheld rather than accepted and silently not delivered. A network
+	// written today records IPv6, so accepting IPv4 later changes no existing
+	// network.
 	//
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:validation:MinItems=1
 	// +kubebuilder:validation:MaxItems=2
+	// +kubebuilder:validation:XValidation:message="Only IPv6 is accepted; reaching IPv4 destinations needs a resolver and a translator sharing a prefix, and the platform pairs neither",rule="self.all(f, f == 'IPv6')"
 	// +kubebuilder:validation:XValidation:message="Each address family may be listed at most once",rule="self.all(f, self.exists_one(g, g == f))"
 	Reach []IPFamily `json:"reach,omitempty"`
 

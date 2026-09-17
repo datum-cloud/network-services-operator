@@ -246,11 +246,16 @@ accountable for.<br/>
         <td>[]enum</td>
         <td>
           Reach are the destination address families instances call. It names
-destinations, never a translation mechanism, so an IPv6 network listing
-IPv4 states that its instances call IPv4-only services and leaves the
-platform to answer with translation and a matching resolver.<br/>
+destinations, never a translation mechanism, so the platform answers a
+family with whatever translation and resolution that family needs.
+
+Only IPv6 is accepted. Reaching IPv4 destinations needs a resolver and a
+translator sharing a prefix, and the platform pairs neither, so IPv4 is
+withheld rather than accepted and silently not delivered. A network
+written today records IPv6, so accepting IPv4 later changes no existing
+network.<br/>
           <br/>
-            <i>Validations</i>:<li>self.all(f, self.exists_one(g, g == f)): Each address family may be listed at most once</li>
+            <i>Validations</i>:<li>self.all(f, f == 'IPv6'): Only IPv6 is accepted; reaching IPv4 destinations needs a resolver and a translator sharing a prefix, and the platform pairs neither</li><li>self.all(f, self.exists_one(g, g == f)): Each address family may be listed at most once</li>
             <i>Enum</i>: IPv4, IPv6<br/>
         </td>
         <td>false</td>

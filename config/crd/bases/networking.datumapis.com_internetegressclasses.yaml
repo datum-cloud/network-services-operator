@@ -95,6 +95,10 @@ spec:
                   Reach are the destination address families a network on this class
                   reaches. The class names destinations, never the translation that
                   delivers them.
+
+                  Only IPv6 is accepted. A class advertising IPv4 would promise what no
+                  component in the platform can deliver, so the value is withheld until a
+                  resolver and a translator sharing a prefix are paired.
                 items:
                   enum:
                   - IPv4
@@ -104,6 +108,10 @@ spec:
                 minItems: 1
                 type: array
                 x-kubernetes-validations:
+                - message: Only IPv6 is accepted; reaching IPv4 destinations needs
+                    a resolver and a translator sharing a prefix, and the platform
+                    pairs neither
+                  rule: self.all(f, f == 'IPv6')
                 - message: Each address family may be listed at most once
                   rule: self.all(f, self.exists_one(g, g == f))
               sharing:

@@ -296,9 +296,12 @@ in the class's controllerName interprets it.<br/>
         <td>
           Reach are the destination address families this location is instructed
 to reach, copied from the network and narrowed to what the serving class
-reaches.<br/>
+reaches.
+
+Only IPv6 is accepted, because a projection may not carry what its
+source cannot declare.<br/>
           <br/>
-            <i>Validations</i>:<li>self.all(f, self.exists_one(g, g == f)): Each address family may be listed at most once</li>
+            <i>Validations</i>:<li>self.all(f, f == 'IPv6'): Only IPv6 is accepted; reaching IPv4 destinations needs a resolver and a translator sharing a prefix, and the platform pairs neither</li><li>self.all(f, self.exists_one(g, g == f)): Each address family may be listed at most once</li>
             <i>Enum</i>: IPv4, IPv6<br/>
         </td>
         <td>false</td>

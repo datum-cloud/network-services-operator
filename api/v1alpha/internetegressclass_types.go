@@ -79,9 +79,14 @@ type InternetEgressClassSpec struct {
 	// reaches. The class names destinations, never the translation that
 	// delivers them.
 	//
+	// Only IPv6 is accepted. A class advertising IPv4 would promise what no
+	// component in the platform can deliver, so the value is withheld until a
+	// resolver and a translator sharing a prefix are paired.
+	//
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinItems=1
 	// +kubebuilder:validation:MaxItems=2
+	// +kubebuilder:validation:XValidation:message="Only IPv6 is accepted; reaching IPv4 destinations needs a resolver and a translator sharing a prefix, and the platform pairs neither",rule="self.all(f, f == 'IPv6')"
 	// +kubebuilder:validation:XValidation:message="Each address family may be listed at most once",rule="self.all(f, self.exists_one(g, g == f))"
 	Reach []IPFamily `json:"reach"`
 

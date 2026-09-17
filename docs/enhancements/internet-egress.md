@@ -114,9 +114,13 @@ spec:
       reach: [IPv6, IPv4]
 ```
 
-Instances on this network reach IPv6 destinations directly. Those instances reach IPv4
-destinations through translation that the consumer never configures. The consumer creates
-no gateway resource, writes no route, and requests no address.
+**A network reaches no internet destination until a consumer enables egress.** `mode`
+defaults to `Disabled`, so egress is a capability a consumer opts into rather than one they
+discover. An outbound path that a consumer never asked for is one nobody is accountable for.
+
+Instances on a network with egress enabled reach IPv6 destinations directly. Those instances
+reach IPv4 destinations through translation that the consumer never configures. The
+consumer creates no gateway resource, writes no route, and requests no address.
 
 The declaration applies to every instance on the network. A consumer cannot enable internet
 access for one instance and disable it for another in the first phase.
@@ -323,10 +327,11 @@ This design depends on four items that it does not deliver:
 
 ## Drawbacks
 
-**The useful default is unsafe today.** An IPv6-only network without egress reaches nothing,
-so `Enabled` is the default that serves consumers. `Enabled` also opens an outbound path on
-every new network. The platform must therefore default to `Disabled` until it can rate limit
-and attribute egress, which makes the common case require an explicit field.
+**The safe default is not the useful one.** An IPv6-only network without egress reaches
+nothing, so a consumer who wants the ordinary case must write a field to get it. The
+platform accepts that cost: defaulting to `Enabled` would open an outbound path on every
+network that anyone creates, before the platform can rate limit that path or attribute what
+leaves it.
 
 **The API promises less than its name suggests.** A field named `egress.internet` reads as a
 guarantee of reachability. The first version delivers a shared path with no capacity
@@ -371,12 +376,10 @@ internet.
 2. **What identifies an interface to the data plane when per-interface control ships?** The
    node currently installs one route per network, and a per-interface route needs an
    identifier that the attachment already carries.
-3. **Does the platform default to `Enabled` or `Disabled` at launch?** `Enabled` serves
-   consumers and remains unsafe until egress is rate limited and attributable.
-4. **Does the platform revive the existing per-attachment egress policy type as the internal
+3. **Does the platform revive the existing per-attachment egress policy type as the internal
    representation, or replace it?** Two code comments describe the type as superseded, and
    no design supersedes it.
-5. **What does a consumer read when shared capacity is exhausted?** Today a consumer reads
+4. **What does a consumer read when shared capacity is exhausted?** Today a consumer reads
    nothing and observes failed connections. Answering this question requires per-network
    accounting that no component performs.
 

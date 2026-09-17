@@ -17,6 +17,7 @@ latest-milestone: "v0.x"
   - [Constraints and caveats](#constraints-and-caveats)
 - [Design details](#design-details)
   - [Network API changes](#network-api-changes)
+  - [The internet egress class](#the-internet-egress-class)
   - [Reporting per location](#reporting-per-location)
   - [Programming the data plane](#programming-the-data-plane)
   - [Allocating the egress address](#allocating-the-egress-address)
@@ -197,17 +198,55 @@ resolver do not reach IPv4 destinations by name.
 |---|---|---|---|
 | `egress.internet.mode` | `Enabled` or `Disabled` | See [Drawbacks](#drawbacks) | Mutable |
 | `egress.internet.reach` | `[]IPFamily` | The network's `ipFamilies` | May exceed `ipFamilies` |
-| `egress.internet.addressClass` | `string` | Platform default class | Names a class, not a pool |
+| `egress.internet.class` | `string` | The default class | Names an `InternetEgressClass` |
 
 The `reach` field may name a family that the network does not carry. Naming IPv4 on an IPv6
 network is the primary use case. The field may not name a family that the platform cannot
 translate to, and validation rejects such a value.
 
-The `addressClass` field ships in the first version even though the platform offers one
-class. The field is the extension point for a dedicated or consumer-supplied address. The
-addressing service already decides which classes a project may name. Validation rejects an
+The `class` field names an `InternetEgressClass`. A consumer who omits the field receives
+the default class, so the common case names no class at all. Validation rejects an
 unavailable class as absent rather than as forbidden, so that validation does not enumerate
 platform resources.
+
+A consumer never names an address class, an address pool, or an address. Those are
+addressing-service concepts, and a consumer who had to name one would be configuring the
+platform rather than declaring an outcome.
+
+### The internet egress class
+
+`InternetEgressClass` is a cluster-scoped resource that an operator defines and a consumer
+names. The resource follows the pattern that `ConnectorClass` already establishes in this
+API group: the class carries the consumer contract and names a controller, and
+implementation detail sits behind a parameters reference.
+
+| Field | Type | Notes |
+|---|---|---|
+| `controllerName` | `string` | The controller that realizes this class |
+| `sharing` | `Shared` or `Dedicated` | Whether networks share one egress address |
+| `reach` | `[]IPFamily` | The destination families this class can deliver |
+| `parametersRef` | object reference | Implementation configuration |
+
+The `sharing` field earns the class its place in the design. The field is the operator-side
+decision whose consumer-side projection is `stability`: `Shared` produces `stability: None`,
+and `Dedicated` produces `stability: Network`. One decision produces both the platform
+behavior and the guidance a consumer reads.
+
+The parameters reference points at a resource in the implementing component's API group. The
+parameters carry which address class the egress address is allocated from, which locator the
+data plane allocates identifiers from, and how the implementation selects the resources that
+serve the class. None of those facts belong in a resource that a consumer reads.
+
+The reference runs in one direction. The class names its controller, and the implementation
+watches for classes naming it; no data-plane resource references the class. Keeping the
+reference one-directional lets the data-plane API group stay independent of this one.
+
+An operator marks one class as the default by annotation, which is how the addressing
+service already handles the same problem.
+
+**`InternetEgressClass` does not filter traffic.** The resource decides how a network reaches
+the internet, not which destinations a network may reach. Security groups decide the second
+question, and the name is explicit so that the two are not confused.
 
 ### Reporting per location
 
@@ -258,18 +297,19 @@ documents that behavior. The contract in this design ends at the attachment.
 ### Allocating the egress address
 
 The egress address is publicly routable, unlike every address a network holds today. The
-addressing service allocates the egress address from an address class, which gives the
-platform three properties:
+addressing service allocates the egress address from the address class that the egress
+class's parameters name, which gives the platform three properties:
 
 - The platform accounts for the address.
 - The platform cannot allocate the address twice.
-- The platform reclaims the address when the last network using it goes away.
+- The platform reclaims the address when the resource holding it goes away.
 
-Two consequences follow. First, the platform allocates a shared address once per location
-rather than once per network, because per-network blocks exhaust a public aggregate long
-before networks exhaust it. That allocation model is why `stability` reports `None` in the
-first stage. Second, the platform retains the address across restarts, because a consumer
-cannot rely on an address that changes when a process restarts.
+**No network claims an egress address.** Under `sharing: Shared`, one address serves every
+network the class places on the same data-plane resource, because per-network blocks exhaust
+a public aggregate long before networks exhaust it. The address therefore belongs to that
+resource and outlives every network using it, which is why `stability` reports `None`. The
+platform also retains the address across restarts, because a consumer cannot rely on an
+address that changes when a process restarts.
 
 ### Reporting failure
 

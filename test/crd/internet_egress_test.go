@@ -469,6 +469,65 @@ func TestNetworkInterfaceRejectsRepeatedEgressFamily(t *testing.T) {
 	assert.Truef(t, apierrors.IsInvalid(err), "expected an Invalid error, got %v", err)
 }
 
+// TestClaimMirrorsEgressAddresses asserts the claim can carry the same egress
+// block the interface reports, which is where a consumer reading one object
+// finds it. The schema has to accept the interface's type unchanged for the
+// mirror to be a copy rather than a translation.
+func TestClaimMirrorsEgressAddresses(t *testing.T) {
+	cl := requireEnv(t)
+	ctx := context.Background()
+
+	claim := &networkingv1alpha.NetworkInterfaceClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: "egress-mirror", Namespace: "default"},
+		Spec: networkingv1alpha.NetworkInterfaceClaimSpec{
+			Network: networkingv1alpha.LocalNetworkRef{Name: "some-network"},
+		},
+	}
+	require.NoError(t, cl.Create(ctx, claim))
+	t.Cleanup(func() { _ = cl.Delete(ctx, claim) })
+
+	claim.Status.Egress = &networkingv1alpha.NetworkInterfaceEgressStatus{
+		Internet: &networkingv1alpha.NetworkInterfaceInternetEgressStatus{
+			SourceAddresses: []networkingv1alpha.InternetEgressSourceAddress{{
+				Family:    networkingv1alpha.IPv6Protocol,
+				Address:   "2001:db8:f00d::100",
+				Stability: networkingv1alpha.InternetEgressAddressStabilityNone,
+			}},
+		},
+	}
+	require.NoError(t, cl.Status().Update(ctx, claim))
+
+	var got networkingv1alpha.NetworkInterfaceClaim
+	require.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(claim), &got))
+	require.NotNil(t, got.Status.Egress)
+	require.NotNil(t, got.Status.Egress.Internet)
+	require.Len(t, got.Status.Egress.Internet.SourceAddresses, 1)
+	assert.Equal(t, "2001:db8:f00d::100", got.Status.Egress.Internet.SourceAddresses[0].Address)
+	assert.Equal(t,
+		networkingv1alpha.InternetEgressAddressStabilityNone,
+		got.Status.Egress.Internet.SourceAddresses[0].Stability)
+}
+
+// TestClaimKeepsAbsentEgressAbsent asserts the schema stamps no egress block
+// onto a claim nothing has mirrored one onto.
+func TestClaimKeepsAbsentEgressAbsent(t *testing.T) {
+	cl := requireEnv(t)
+	ctx := context.Background()
+
+	claim := &networkingv1alpha.NetworkInterfaceClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: "egress-mirror-absent", Namespace: "default"},
+		Spec: networkingv1alpha.NetworkInterfaceClaimSpec{
+			Network: networkingv1alpha.LocalNetworkRef{Name: "some-network"},
+		},
+	}
+	require.NoError(t, cl.Create(ctx, claim))
+	t.Cleanup(func() { _ = cl.Delete(ctx, claim) })
+
+	var got networkingv1alpha.NetworkInterfaceClaim
+	require.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(claim), &got))
+	assert.Nil(t, got.Status.Egress)
+}
+
 // TestNetworkContextReportsNoEgressAddress asserts the network reports no
 // address at all. A network-level answer cannot be attributed to the interface
 // whose traffic it describes, so the schema prunes one written anyway rather

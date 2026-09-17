@@ -1930,6 +1930,11 @@ func (in *NetworkInterfaceClaimStatus) DeepCopyInto(out *NetworkInterfaceClaimSt
 		*out = make([]NetworkInterfaceExternalAddress, len(*in))
 		copy(*out, *in)
 	}
+	if in.Egress != nil {
+		in, out := &in.Egress, &out.Egress
+		*out = new(NetworkInterfaceEgressStatus)
+		(*in).DeepCopyInto(*out)
+	}
 	if in.Conditions != nil {
 		in, out := &in.Conditions, &out.Conditions
 		*out = make([]v1.Condition, len(*in))

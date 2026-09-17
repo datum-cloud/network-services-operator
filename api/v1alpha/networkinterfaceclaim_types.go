@@ -291,6 +291,14 @@ type NetworkInterfaceClaimStatus struct {
 	// +kubebuilder:validation:Optional
 	ExternalAddresses []NetworkInterfaceExternalAddress `json:"externalAddresses,omitempty"`
 
+	// egress reports what the bound interface reaches outside the platform. It
+	// is copied from the interface, which remains the source of truth, so a
+	// consumer reads their egress address off the same object they read their
+	// addresses from.
+	//
+	// +kubebuilder:validation:Optional
+	Egress *NetworkInterfaceEgressStatus `json:"egress,omitempty"`
+
 	// conditions report the current state of the claim. Wait on Ready, which is
 	// true once the claim is bound, its addresses are allocated, the data plane
 	// is prepared for a workload, and the data plane carries the addresses.

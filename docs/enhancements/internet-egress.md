@@ -267,7 +267,7 @@ The network services operator does not program the data plane. The operator reco
 where the components that program the data plane already read.
 
 ```
-Network                 Consumer intent        mode, reach, addressClass
+Network                 Consumer intent        mode, reach, class
         |  per location
         v
 NetworkContext          Result per location    egress addresses, resolver prefix

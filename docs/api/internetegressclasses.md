@@ -118,7 +118,7 @@ resolver and a translator sharing a prefix are paired.<br/>
         <td>enum</td>
         <td>
           Sharing is the operator-side decision a consumer reads back as
-stability on a network context: Shared reports None, and Dedicated
+stability on a network interface: Shared reports None, and Dedicated
 reports Network.<br/>
           <br/>
             <i>Enum</i>: Shared, Dedicated<br/>

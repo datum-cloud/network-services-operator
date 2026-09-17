@@ -117,7 +117,7 @@ spec:
               sharing:
                 description: |-
                   Sharing is the operator-side decision a consumer reads back as
-                  stability on a network context: Shared reports None, and Dedicated
+                  stability on a network interface: Shared reports None, and Dedicated
                   reports Network.
                 enum:
                 - Shared

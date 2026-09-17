@@ -350,37 +350,41 @@ func TestInternetEgressClassRejectsEmptyReach(t *testing.T) {
 	assert.Contains(t, err.Error(), "spec.reach")
 }
 
-// TestNetworkContextReportsEgressAddresses asserts the status a consumer reads
-// their egress address from round-trips, including the stability that decides
-// whether allow-listing it is safe.
-func TestNetworkContextReportsEgressAddresses(t *testing.T) {
+// egressInterface builds a NetworkInterface holding only what the schema
+// requires, so a status write is the only thing a test varies.
+func egressInterface(name string) *networkingv1alpha.NetworkInterface {
+	return &networkingv1alpha.NetworkInterface{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+		Spec: networkingv1alpha.NetworkInterfaceSpec{
+			Network: networkingv1alpha.LocalNetworkRef{Name: "some-network"},
+		},
+	}
+}
+
+// TestNetworkInterfaceReportsEgressAddresses asserts the status a consumer
+// reads their egress address from round-trips, including the stability that
+// decides whether allow-listing it is safe.
+func TestNetworkInterfaceReportsEgressAddresses(t *testing.T) {
 	cl := requireEnv(t)
 	ctx := context.Background()
 
-	networkContext := &networkingv1alpha.NetworkContext{
-		ObjectMeta: metav1.ObjectMeta{Name: "egress-status", Namespace: "default"},
-		Spec: networkingv1alpha.NetworkContextSpec{
-			Network:  networkingv1alpha.LocalNetworkRef{Name: "some-network"},
-			Location: networkingv1alpha.LocationReference{Name: "loc"},
-		},
-	}
-	require.NoError(t, cl.Create(ctx, networkContext))
-	t.Cleanup(func() { _ = cl.Delete(ctx, networkContext) })
+	iface := egressInterface("egress-status")
+	require.NoError(t, cl.Create(ctx, iface))
+	t.Cleanup(func() { _ = cl.Delete(ctx, iface) })
 
-	networkContext.Status.Egress = &networkingv1alpha.NetworkContextEgressStatus{
-		Internet: &networkingv1alpha.NetworkContextInternetEgressStatus{
+	iface.Status.Egress = &networkingv1alpha.NetworkInterfaceEgressStatus{
+		Internet: &networkingv1alpha.NetworkInterfaceInternetEgressStatus{
 			SourceAddresses: []networkingv1alpha.InternetEgressSourceAddress{{
 				Family:    networkingv1alpha.IPv6Protocol,
 				Address:   "2001:db8:f00d::100",
 				Stability: networkingv1alpha.InternetEgressAddressStabilityNone,
 			}},
-			DNS64Prefix: "64:ff9b::/96",
 		},
 	}
-	require.NoError(t, cl.Status().Update(ctx, networkContext))
+	require.NoError(t, cl.Status().Update(ctx, iface))
 
-	var got networkingv1alpha.NetworkContext
-	require.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(networkContext), &got))
+	var got networkingv1alpha.NetworkInterface
+	require.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(iface), &got))
 	require.NotNil(t, got.Status.Egress)
 	require.NotNil(t, got.Status.Egress.Internet)
 	require.Len(t, got.Status.Egress.Internet.SourceAddresses, 1)
@@ -388,18 +392,93 @@ func TestNetworkContextReportsEgressAddresses(t *testing.T) {
 	assert.Equal(t,
 		networkingv1alpha.InternetEgressAddressStabilityNone,
 		got.Status.Egress.Internet.SourceAddresses[0].Stability)
-	assert.Equal(t, "64:ff9b::/96", got.Status.Egress.Internet.DNS64Prefix)
 }
 
-// TestNetworkContextRejectsUnknownStability asserts the field carrying the
+// TestNetworkInterfaceRejectsUnknownStability asserts the field carrying the
 // allow-listing contract cannot hold a third value a consumer has no reading
 // for.
-func TestNetworkContextRejectsUnknownStability(t *testing.T) {
+func TestNetworkInterfaceRejectsUnknownStability(t *testing.T) {
+	cl := requireEnv(t)
+	ctx := context.Background()
+
+	iface := egressInterface("egress-bad-stability")
+	require.NoError(t, cl.Create(ctx, iface))
+	t.Cleanup(func() { _ = cl.Delete(ctx, iface) })
+
+	iface.Status.Egress = &networkingv1alpha.NetworkInterfaceEgressStatus{
+		Internet: &networkingv1alpha.NetworkInterfaceInternetEgressStatus{
+			SourceAddresses: []networkingv1alpha.InternetEgressSourceAddress{{
+				Family:    networkingv1alpha.IPv4Protocol,
+				Address:   "198.51.100.7",
+				Stability: networkingv1alpha.InternetEgressAddressStability("Location"),
+			}},
+		},
+	}
+	err := cl.Status().Update(ctx, iface)
+	require.Error(t, err, "a stability outside the enum must be rejected")
+	assert.Truef(t, apierrors.IsInvalid(err), "expected an Invalid error, got %v", err)
+	assert.Contains(t, err.Error(), "stability")
+}
+
+// TestNetworkInterfaceKeepsAbsentEgressAbsent asserts the schema stamps no
+// egress block onto an interface nothing has reported an address for. An empty
+// list would read as an answer, and no answer exists until a shard publishes
+// one.
+func TestNetworkInterfaceKeepsAbsentEgressAbsent(t *testing.T) {
+	cl := requireEnv(t)
+	ctx := context.Background()
+
+	iface := egressInterface("egress-unreported")
+	require.NoError(t, cl.Create(ctx, iface))
+	t.Cleanup(func() { _ = cl.Delete(ctx, iface) })
+
+	var got networkingv1alpha.NetworkInterface
+	require.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(iface), &got))
+	assert.Nil(t, got.Status.Egress)
+}
+
+// TestNetworkInterfaceRejectsRepeatedEgressFamily asserts the apiserver keeps
+// one source address per family. A consumer reads the entry for the family
+// their destination uses, so two entries for one family have no reading.
+func TestNetworkInterfaceRejectsRepeatedEgressFamily(t *testing.T) {
+	cl := requireEnv(t)
+	ctx := context.Background()
+
+	iface := egressInterface("egress-repeated-family")
+	require.NoError(t, cl.Create(ctx, iface))
+	t.Cleanup(func() { _ = cl.Delete(ctx, iface) })
+
+	iface.Status.Egress = &networkingv1alpha.NetworkInterfaceEgressStatus{
+		Internet: &networkingv1alpha.NetworkInterfaceInternetEgressStatus{
+			SourceAddresses: []networkingv1alpha.InternetEgressSourceAddress{
+				{
+					Family:    networkingv1alpha.IPv6Protocol,
+					Address:   "2001:db8:f00d::100",
+					Stability: networkingv1alpha.InternetEgressAddressStabilityNone,
+				},
+				{
+					Family:    networkingv1alpha.IPv6Protocol,
+					Address:   "2001:db8:f00d::101",
+					Stability: networkingv1alpha.InternetEgressAddressStabilityNone,
+				},
+			},
+		},
+	}
+	err := cl.Status().Update(ctx, iface)
+	require.Error(t, err, "two source addresses for one family must be rejected")
+	assert.Truef(t, apierrors.IsInvalid(err), "expected an Invalid error, got %v", err)
+}
+
+// TestNetworkContextReportsNoEgressAddress asserts the network reports no
+// address at all. A network-level answer cannot be attributed to the interface
+// whose traffic it describes, so the schema prunes one written anyway rather
+// than storing a fact with no reader.
+func TestNetworkContextReportsNoEgressAddress(t *testing.T) {
 	cl := requireEnv(t)
 	ctx := context.Background()
 
 	networkContext := &networkingv1alpha.NetworkContext{
-		ObjectMeta: metav1.ObjectMeta{Name: "egress-bad-stability", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: "egress-no-status", Namespace: "default"},
 		Spec: networkingv1alpha.NetworkContextSpec{
 			Network:  networkingv1alpha.LocalNetworkRef{Name: "some-network"},
 			Location: networkingv1alpha.LocationReference{Name: "loc"},
@@ -408,19 +487,38 @@ func TestNetworkContextRejectsUnknownStability(t *testing.T) {
 	require.NoError(t, cl.Create(ctx, networkContext))
 	t.Cleanup(func() { _ = cl.Delete(ctx, networkContext) })
 
-	networkContext.Status.Egress = &networkingv1alpha.NetworkContextEgressStatus{
-		Internet: &networkingv1alpha.NetworkContextInternetEgressStatus{
-			SourceAddresses: []networkingv1alpha.InternetEgressSourceAddress{{
-				Family:    networkingv1alpha.IPv4Protocol,
-				Address:   "198.51.100.7",
-				Stability: networkingv1alpha.InternetEgressAddressStability("Location"),
-			}},
+	written := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": networkingv1alpha.GroupVersion.String(),
+		"kind":       "NetworkContext",
+		"metadata": map[string]any{
+			"name":            networkContext.Name,
+			"namespace":       networkContext.Namespace,
+			"resourceVersion": networkContext.ResourceVersion,
 		},
-	}
-	err := cl.Status().Update(ctx, networkContext)
-	require.Error(t, err, "a stability outside the enum must be rejected")
-	assert.Truef(t, apierrors.IsInvalid(err), "expected an Invalid error, got %v", err)
-	assert.Contains(t, err.Error(), "stability")
+		"status": map[string]any{
+			"egress": map[string]any{
+				"internet": map[string]any{
+					"sourceAddresses": []any{map[string]any{
+						"family":    string(networkingv1alpha.IPv6Protocol),
+						"address":   "2001:db8:f00d::100",
+						"stability": string(networkingv1alpha.InternetEgressAddressStabilityNone),
+					}},
+					"dns64Prefix": "64:ff9b::/96",
+				},
+			},
+		},
+	}}
+	require.NoError(t, cl.Status().Update(ctx, written))
+
+	var got unstructured.Unstructured
+	got.SetGroupVersionKind(networkContext.GroupVersionKind())
+	got.SetAPIVersion(networkingv1alpha.GroupVersion.String())
+	got.SetKind("NetworkContext")
+	require.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(networkContext), &got))
+
+	egress, found, err := unstructured.NestedMap(got.Object, "status", "egress")
+	require.NoError(t, err)
+	assert.Falsef(t, found, "status.egress must be pruned, got %v", egress)
 }
 
 func egressContext(

@@ -369,12 +369,53 @@ type NetworkInterfaceStatus struct {
 	// +kubebuilder:validation:Optional
 	VPC string `json:"vpc,omitempty"`
 
+	// egress reports what this interface reaches outside the platform.
+	//
+	// +kubebuilder:validation:Optional
+	Egress *NetworkInterfaceEgressStatus `json:"egress,omitempty"`
+
 	// conditions report the current state of the interface. Allocated means every
 	// address is held. Prepared means the data plane is ready for a workload to
 	// consume it. Programmed means the data plane carries the addresses.
 	// HolderAvailable means whatever holds the interface reports itself available
 	// to serve, and it is the only one of the four a service reads.
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+}
+
+// NetworkInterfaceEgressStatus reports the outbound paths realized for one
+// interface.
+type NetworkInterfaceEgressStatus struct {
+	// internet reports the internet egress realized for this interface.
+	//
+	// +kubebuilder:validation:Optional
+	Internet *NetworkInterfaceInternetEgressStatus `json:"internet,omitempty"`
+}
+
+// NetworkInterfaceInternetEgressStatus reports the source addresses this
+// interface's outbound traffic leaves on.
+//
+// It omits how the platform delivers egress — which node carries the traffic,
+// how translation state is partitioned, which other networks share the path —
+// because a consumer cannot act on those facts and some of them describe other
+// consumers.
+type NetworkInterfaceInternetEgressStatus struct {
+	// sourceAddresses are the addresses translation writes onto outbound
+	// packets from this interface, with the reliance each one carries.
+	//
+	// A consumer whose destination needs an allow-list reads the answer here,
+	// on the interface traffic leaves from, rather than on the network. The
+	// network declares the intent; the interface is what carries it.
+	//
+	// An absent list means nothing has reported an address for this interface.
+	// It does not mean the interface reaches nothing: whether the network
+	// asked for egress is on the network, and whether the location could
+	// provide it is the network context's InternetEgressReady condition.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MaxItems=2
+	// +listType=map
+	// +listMapKey=family
+	SourceAddresses []InternetEgressSourceAddress `json:"sourceAddresses,omitempty"`
 }
 
 // +kubebuilder:object:root=true

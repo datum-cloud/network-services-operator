@@ -387,16 +387,6 @@ NetworkContextStatus defines the observed state of NetworkContext
         </td>
         <td>false</td>
       </tr><tr>
-        <td><b><a href="#networkcontextstatusegress">egress</a></b></td>
-        <td>object</td>
-        <td>
-          Egress reports what the network reaches outside the platform from this
-location. Egress is realized per location, so a network present in two
-locations reports an answer on each context rather than one answer on
-the network.<br/>
-        </td>
-        <td>false</td>
-      </tr><tr>
         <td><b><a href="#networkcontextstatusipam">ipam</a></b></td>
         <td>object</td>
         <td>
@@ -481,122 +471,6 @@ with respect to the current state of the instance.<br/>
             <i>Minimum</i>: 0<br/>
         </td>
         <td>false</td>
-      </tr></tbody>
-</table>
-
-
-### NetworkContext.status.egress
-<sup><sup>[↩ Parent](#networkcontextstatus)</sup></sup>
-
-
-
-Egress reports what the network reaches outside the platform from this
-location. Egress is realized per location, so a network present in two
-locations reports an answer on each context rather than one answer on
-the network.
-
-<table>
-    <thead>
-        <tr>
-            <th>Name</th>
-            <th>Type</th>
-            <th>Description</th>
-            <th>Required</th>
-        </tr>
-    </thead>
-    <tbody><tr>
-        <td><b><a href="#networkcontextstatusegressinternet">internet</a></b></td>
-        <td>object</td>
-        <td>
-          Internet reports the internet egress realized for this location.<br/>
-        </td>
-        <td>false</td>
-      </tr></tbody>
-</table>
-
-
-### NetworkContext.status.egress.internet
-<sup><sup>[↩ Parent](#networkcontextstatusegress)</sup></sup>
-
-
-
-Internet reports the internet egress realized for this location.
-
-<table>
-    <thead>
-        <tr>
-            <th>Name</th>
-            <th>Type</th>
-            <th>Description</th>
-            <th>Required</th>
-        </tr>
-    </thead>
-    <tbody><tr>
-        <td><b>dns64Prefix</b></td>
-        <td>string</td>
-        <td>
-          DNS64Prefix is the prefix the platform's resolver synthesizes addresses
-under for names publishing no IPv6 record. Reaching an IPv4 destination
-by name works only for instances using a resolver that shares this
-prefix with the translator.<br/>
-        </td>
-        <td>false</td>
-      </tr><tr>
-        <td><b><a href="#networkcontextstatusegressinternetsourceaddressesindex">sourceAddresses</a></b></td>
-        <td>[]object</td>
-        <td>
-          SourceAddresses are the addresses translation writes onto outbound
-packets from this location, with the reliance each one carries.<br/>
-        </td>
-        <td>false</td>
-      </tr></tbody>
-</table>
-
-
-### NetworkContext.status.egress.internet.sourceAddresses[index]
-<sup><sup>[↩ Parent](#networkcontextstatusegressinternet)</sup></sup>
-
-
-
-InternetEgressSourceAddress is one address outbound traffic leaves on.
-
-<table>
-    <thead>
-        <tr>
-            <th>Name</th>
-            <th>Type</th>
-            <th>Description</th>
-            <th>Required</th>
-        </tr>
-    </thead>
-    <tbody><tr>
-        <td><b>address</b></td>
-        <td>string</td>
-        <td>
-          Address is the source address translation writes, without a prefix
-length.<br/>
-        </td>
-        <td>true</td>
-      </tr><tr>
-        <td><b>family</b></td>
-        <td>enum</td>
-        <td>
-          Family is the address family of this source address.<br/>
-          <br/>
-            <i>Enum</i>: IPv4, IPv6<br/>
-        </td>
-        <td>true</td>
-      </tr><tr>
-        <td><b>stability</b></td>
-        <td>enum</td>
-        <td>
-          Stability states how far a consumer may rely on this address before
-they act on it. It is the consumer-side projection of the serving
-class's sharing.<br/>
-          <br/>
-            <i>Enum</i>: None, Network<br/>
-        </td>
-        <td>true</td>
       </tr></tbody>
 </table>
 

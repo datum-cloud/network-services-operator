@@ -10,11 +10,6 @@
 # outcomes that are acceptable to a user: the value is programmed, or the write
 # is refused with a message naming the field they wrote.
 #
-# The rewrite is asserted on the backendRef rather than the rule: it is
-# per-backend so that backends on different hostnames can share a rule, and
-# Envoy Gateway maps a backendRef-scoped URLRewrite onto the weighted
-# cluster's HostRewriteLiteral.
-#
 # The proxy's own gateway uses the operator-configured class
 # ("datum-external-global-proxy"), which the test environment provisions. A
 # scenario must not provision it: chainsaw would then delete that shared,
@@ -67,7 +62,7 @@ spec:
               metadata:
                 name: mixed-case-host
               spec:
-                (rules[0].backendRefs[0].filters[?type == 'URLRewrite'] | [0].urlRewrite.hostname): coffee.e2e.env.datum.net
+                (rules[0].filters[?type == 'URLRewrite'] | [0].urlRewrite.hostname): coffee.e2e.env.datum.net
         - assert:
             timeout: 120s
             cluster: nso-standard
@@ -150,7 +145,7 @@ spec:
               metadata:
                 name: mixed-case-tls-hostname
               spec:
-                (rules[0].backendRefs[0].filters[?type == 'URLRewrite'] | [0].urlRewrite.hostname): coffee.e2e.env.datum.net
+                (rules[0].filters[?type == 'URLRewrite'] | [0].urlRewrite.hostname): coffee.e2e.env.datum.net
         - apply:
             cluster: nso-standard
             expect:

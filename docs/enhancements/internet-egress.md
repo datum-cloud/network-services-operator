@@ -157,10 +157,8 @@ status:
 
 The `stability` field carries the contract:
 
-| Value | Meaning | Consumer guidance |
-|---|---|---|
-| `None` | The address may change, and other networks share it | Do not allow-list the address |
-| `Network` | The address belongs to this network and persists | Allow-listing the address is safe |
+- `None`: the address may change, and other networks share it. Do not allow-list it.
+- `Network`: the address belongs to this network and persists. Allow-listing it is safe.
 
 A consumer who allow-lists a shared address admits traffic from other networks and loses
 access when the address changes. The `stability` field states both risks before the
@@ -198,12 +196,22 @@ resolver do not reach IPv4 destinations by name.
 names. The resource follows the pattern that `ConnectorClass` already establishes in this
 API group.
 
-| Field | Notes |
-|---|---|
-| `controllerName` | The controller that realizes the class |
-| `sharing` | `Shared` or `Dedicated` |
-| `reach` | The destination families the class delivers |
-| `parametersRef` | Implementation configuration |
+```yaml
+apiVersion: networking.datumapis.com/v1alpha
+kind: InternetEgressClass
+metadata:
+  name: shared
+  annotations:
+    networking.datumapis.com/is-default-class: "true"
+spec:
+  controllerName: networking.datumapis.com/cell-egress
+  sharing: Shared
+  reach: [IPv6, IPv4]
+  parametersRef:
+    group: network.datumapis.com
+    kind: EgressShardParameters
+    name: shared-ipv6
+```
 
 The `sharing` field is the operator-side decision whose consumer-side projection is
 `stability`: `Shared` produces `None`, and `Dedicated` produces `Network`.
@@ -273,14 +281,12 @@ traffic it carried, because no component recorded which networks it served.
 
 ### Reporting failure
 
-The network context carries an `InternetEgressReady` condition:
+The network context carries an `InternetEgressReady` condition, with four reasons:
 
-| Reason | Meaning |
-|---|---|
-| `Ready` | Instances in this location reach the declared destinations |
-| `AddressUnavailable` | The platform allocated no egress address for this location |
-| `Unavailable` | No component in this location provides egress |
-| `Degraded` | Egress works for some declared families and not for others |
+- `Ready`: instances in this location reach the declared destinations.
+- `AddressUnavailable`: the platform allocated no egress address for this location.
+- `Unavailable`: no component in this location provides egress.
+- `Degraded`: egress works for some declared families and not for others.
 
 Each reason states a fact about the consumer's network. The condition omits the specific
 cause, such as the failing component, node, or allocation, because a consumer cannot act on

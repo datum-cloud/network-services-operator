@@ -2536,6 +2536,7 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 					downstreamResources = append(downstreamResources, downstreamEndpointSlice)
 
 					backendObjectReference := gatewayv1.BackendObjectReference{
+						Group:     ptr.To(gatewayv1.Group("")),
 						Namespace: ptr.To(gatewayv1.Namespace(downstreamGateway.Namespace)),
 						Kind:      ptr.To(gatewayv1.Kind(KindService)),
 						Name:      gatewayv1.ObjectName(downstreamService.Name),

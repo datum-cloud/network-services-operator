@@ -22,6 +22,7 @@ latest-milestone: "v0.x"
   - [Allocating the egress address](#allocating-the-egress-address)
   - [Reporting failure](#reporting-failure)
   - [Disabling egress](#disabling-egress)
+  - [Reserving the interface field](#reserving-the-interface-field)
 - [Dependencies](#dependencies)
 - [Drawbacks](#drawbacks)
 - [Alternatives](#alternatives)
@@ -78,6 +79,8 @@ exclusive to their network.
 - Report an inability to provide egress on a resource that consumers already read.
 - Accept a dedicated egress address, and later a consumer-supplied address, without an API
   break.
+- Fix the interface-level default now, so that adding per-interface control later does not
+  change what an existing interface means.
 
 ### Non-goals
 
@@ -87,6 +90,9 @@ exclusive to their network.
   design covers outbound traffic only.
 - **Selecting a specific egress address.** A dedicated or consumer-supplied address is a
   later stage. This design reserves the field for that stage.
+- **Controlling egress per interface.** The first phase decides internet access for a whole
+  network. A later phase decides it per interface. [Reserving the interface
+  field](#reserving-the-interface-field) explains what ships now.
 - **Defining the translation.** The data plane owns how it translates a packet. This design
   defines what a consumer requests and what the node receives.
 
@@ -112,6 +118,9 @@ spec:
 Instances on this network reach IPv6 destinations directly. Those instances reach IPv4
 destinations through translation that the consumer never configures. The consumer creates
 no gateway resource, writes no route, and requests no address.
+
+The declaration applies to every instance on the network. A consumer cannot enable internet
+access for one instance and disable it for another in the first phase.
 
 ### Naming destinations instead of mechanisms
 
@@ -285,6 +294,27 @@ that attach after the change. Withdrawing egress from a running instance is the 
 as changing any other programmed property of a live attachment, and this design does not
 solve it.
 
+### Reserving the interface field
+
+`NetworkInterfaceClaimSpec` gains `egress.internet.mode`, and validation accepts one value:
+
+| Value | Accepted in the first phase | Meaning |
+|---|---|---|
+| `Inherit` | Yes | The interface follows the network's declaration |
+| `Enabled` | No | The interface reaches the internet regardless of the network |
+| `Disabled` | No | The interface reaches no internet destination |
+
+Reserving the field settles the default before consumers depend on it. An interface written
+today records `Inherit`, so adding `Enabled` and `Disabled` later changes no existing
+interface and reclassifies no existing behavior. Adding the field later instead of now would
+also be backward compatible, but it would force the platform to choose a default for
+interfaces that already exist, and the safe choice at that point is the one this design can
+record today.
+
+The data plane cannot honor `Enabled` or `Disabled` on an interface yet. A node installs one
+egress route per network, not per interface. Widening the accepted values therefore depends
+on per-interface routing in the data plane, which no component implements.
+
 ## Dependencies
 
 This design depends on four items that it does not deliver:
@@ -345,8 +375,9 @@ internet.
 1. **Does `reach: [IPv4]` oblige the platform to provide the resolver?** If a consumer must
    configure their own resolver, the field promises reachability that the platform does not
    deliver.
-2. **Does the first version include a per-interface override?** The data plane cannot honor
-   a per-interface override today.
+2. **What identifies an interface to the data plane when per-interface control ships?** The
+   node currently installs one route per network, and a per-interface route needs an
+   identifier that the attachment already carries.
 3. **Does the platform default to `Enabled` or `Disabled` at launch?** `Enabled` serves
    consumers and remains unsafe until egress is rate limited and attributable.
 4. **Does the platform revive the existing per-attachment egress policy type as the internal

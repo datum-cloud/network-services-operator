@@ -16,12 +16,9 @@ latest-milestone: "v0.x"
   - [Reporting the egress address](#reporting-the-egress-address)
   - [Constraints and caveats](#constraints-and-caveats)
 - [Design details](#design-details)
-  - [Network API changes](#network-api-changes)
   - [The internet egress class](#the-internet-egress-class)
   - [Reporting per location](#reporting-per-location)
-  - [Programming the data plane](#programming-the-data-plane)
   - [Realizing egress in a cell](#realizing-egress-in-a-cell)
-  - [Allocating the egress address](#allocating-the-egress-address)
   - [Reporting failure](#reporting-failure)
   - [Disabling egress](#disabling-egress)
   - [Reserving the interface field](#reserving-the-interface-field)
@@ -124,6 +121,10 @@ no gateway resource, writes no route, and requests no address.
 The declaration applies to every instance on the network. A consumer cannot enable internet
 access for one instance and disable it for another in the first phase.
 
+A consumer who needs a particular kind of egress names an `InternetEgressClass` on
+`egress.internet.class`. Omitting the field selects the default class, so the common case
+names nothing. A consumer never names an address class, an address pool, or an address.
+
 ### Naming destinations instead of mechanisms
 
 The `reach` field names destination address families. The field does not name a translation
@@ -191,122 +192,43 @@ resolver do not reach IPv4 destinations by name.
 
 ## Design details
 
-### Network API changes
-
-`NetworkSpec` gains an `egress` field:
-
-| Field | Type | Default | Notes |
-|---|---|---|---|
-| `egress.internet.mode` | `Enabled` or `Disabled` | See [Drawbacks](#drawbacks) | Mutable |
-| `egress.internet.reach` | `[]IPFamily` | The network's `ipFamilies` | May exceed `ipFamilies` |
-| `egress.internet.class` | `string` | The default class | Names an `InternetEgressClass` |
-
-The `reach` field may name a family that the network does not carry. Naming IPv4 on an IPv6
-network is the primary use case. The field may not name a family that the platform cannot
-translate to, and validation rejects such a value.
-
-The `class` field names an `InternetEgressClass`. A consumer who omits the field receives
-the default class, so the common case names no class at all. Validation rejects an
-unavailable class as absent rather than as forbidden, so that validation does not enumerate
-platform resources.
-
-A consumer never names an address class, an address pool, or an address. Those are
-addressing-service concepts, and a consumer who had to name one would be configuring the
-platform rather than declaring an outcome.
-
 ### The internet egress class
 
 `InternetEgressClass` is a cluster-scoped resource that an operator defines and a consumer
 names. The resource follows the pattern that `ConnectorClass` already establishes in this
-API group: the class carries the consumer contract and names a controller, and
-implementation detail sits behind a parameters reference.
+API group.
 
-| Field | Type | Notes |
-|---|---|---|
-| `controllerName` | `string` | The controller that realizes this class |
-| `sharing` | `Shared` or `Dedicated` | Whether networks share one egress address |
-| `reach` | `[]IPFamily` | The destination families this class can deliver |
-| `parametersRef` | object reference | Implementation configuration |
+| Field | Notes |
+|---|---|
+| `controllerName` | The controller that realizes the class |
+| `sharing` | `Shared` or `Dedicated` |
+| `reach` | The destination families the class delivers |
+| `parametersRef` | Implementation configuration |
 
-The `sharing` field earns the class its place in the design. The field is the operator-side
-decision whose consumer-side projection is `stability`: `Shared` produces `stability: None`,
-and `Dedicated` produces `stability: Network`. One decision produces both the platform
-behavior and the guidance a consumer reads.
+The `sharing` field is the operator-side decision whose consumer-side projection is
+`stability`: `Shared` produces `None`, and `Dedicated` produces `Network`.
 
-The parameters reference points at a resource in the implementing component's API group. The
-parameters carry which address class the egress address is allocated from, which locator the
-data plane allocates identifiers from, and how the implementation selects the resources that
-serve the class. None of those facts belong in a resource that a consumer reads.
+The parameters name the address class that the egress address comes from, the locator that
+the data plane allocates identifiers from, and how the implementation selects the resources
+serving the class. The reference runs one way. The class names its controller, and no
+data-plane resource references the class, which lets the data-plane API group stay
+independent of this one.
 
-The reference runs in one direction. The class names its controller, and the implementation
-watches for classes naming it; no data-plane resource references the class. Keeping the
-reference one-directional lets the data-plane API group stay independent of this one.
-
-An operator marks one class as the default by annotation, which is how the addressing
-service already handles the same problem.
-
-**`InternetEgressClass` does not filter traffic.** The resource decides how a network reaches
-the internet, not which destinations a network may reach. Security groups decide the second
-question, and the name is explicit so that the two are not confused.
+An operator marks one class as the default by annotation. The class decides how a network
+reaches the internet, not which destinations a network may reach.
 
 ### Reporting per location
 
-The platform realizes egress per location. A network present in two locations reaches the
-internet from two places and receives two egress addresses.
-
-The network resource therefore holds the declaration, and each network context reports the
-result for its location. An interface's status carries the address for the location that
-runs the instance, which answers the question a consumer asks when they inspect an instance.
-
-Reporting one address on the network would produce one of two errors. The status would
-present one location's address as global, or the status would list two addresses that the
-consumer cannot attribute to a location.
-
-### Programming the data plane
-
-The network services operator does not program the data plane. The operator records intent
-where the components that program the data plane already read.
-
-```
-Network                 Consumer intent        mode, reach, class
-        |  per location
-        v
-NetworkContext          Result per location    egress addresses, resolver prefix
-        |  realized by
-        v
-VPCAttachment           Node instruction       egress enabled for this VPC
-        |  attaches to
-        v
-VPC                     Data plane             per-network egress route
-```
-
-The attachment carries the handoff. An infrastructure provider already writes the attachment
-as intent before the pod exists, and the node already reports on it. The attachment already
-carries the network's identity in the fabric. The node therefore learns that a network
-reaches the internet from the same resource that supplies every other fact about the
-interface. The node installs an egress route into that network's routing context, or
-installs no route.
-
-A per-network instruction replaces a per-node setting, which is what gives `Disabled` an
-effect. A node that installs one route for every network cannot express a network that
-requires no route.
-
-The data plane owns what happens to a packet after the node applies the route, including how
-it translates the packet, how it stores state, and how a reply returns. The data plane
-documents that behavior. The contract in this design ends at the attachment.
+The platform realizes egress per location, so a network present in two locations receives two
+egress addresses. The network holds the declaration, and each network context reports the
+result for its location. Reporting one address on the network would either present one
+location's answer as global or list two addresses that a consumer cannot attribute.
 
 ### Realizing egress in a cell
 
 An **egress shard** is the data-plane resource that translates outbound packets for the
-networks an egress class places on it. A shard runs on one node. A cell runs one or more
-shards.
-
-A cell holds four things that this design depends on:
-
-- **Network contexts**, which record each network's presence in the cell.
-- **Egress shards**, one for each node that performs translation.
-- **A cell controller**, which claims addresses and binds networks to shards.
-- **Attachments**, which carry the per-network instruction to a node.
+networks that a class places on it. A shard runs on one node, and a cell runs one or more
+shards. A cell controller claims addresses and binds networks to shards.
 
 ```
   cell controller
@@ -319,61 +241,35 @@ A cell holds four things that this design depends on:
 ```
 
 **The cell controller claims the address, not the shard.** A shard runs on every translating
-node, sits inside the data path's blast radius, and runs on hardware at the edge of the
-network. Making a shard an addressing-service client would place platform credentials on
-every such node and put an allocation request near the path that attaches a workload. The
-cell controller claims the address and writes it into the shard's spec. The shard reads the
-spec, programs the data plane, and reports status. That split matches the contract that
-attachments already follow: a controller writes intent, and a node reports what it carries.
+node and on hardware at the edge of the network. Making a shard an addressing-service client
+would place platform credentials on every such node and put an allocation request near the
+path that attaches a workload. The controller writes the address into the shard's spec, and
+the shard programs the data plane and reports status, which is the split that attachments
+already follow.
 
-**A shard holds no list of the networks it serves.** The data plane identifies a network
-from an identifier that the packet itself carries, which a node stamps when it attaches an
-interface. Binding a network to a shard therefore means telling that network's nodes which
-shard to send to. A shard needs no notification when a network binds or unbinds, and the
-binding is realized entirely on the node that attaches the interface.
-
-The platform realizes egress in eight steps:
-
-1. An operator creates an egress class naming a controller, a sharing mode, and parameters.
-2. An operator creates an egress shard for each translating node in the cell.
-3. The cell controller claims an address for each shard and writes the address into the
-   shard's spec.
-4. The shard programs the data plane, reports status, and advertises the address.
-5. A consumer enables egress on a network.
-6. The cell controller binds that network's context to a shard serving the requested class.
-7. The infrastructure provider records the bound shard on the attachment.
-8. The node installs an egress route for that network toward the bound shard.
-
-**The data plane requires three changes.** Today an operator supplies a shard's address as
-process configuration, and the shard echoes the value into its status; the address must
-become spec that a controller writes. Today a node holds one list of shards and installs a
-route toward the first reachable entry for every network on the node; the instruction must
-become per-network, or `Disabled` has no effect. Today an operator also chooses each shard's
-data-plane identifier by hand, and choosing a value that a node already uses silently
-diverts that node's traffic; the addressing service should allocate the identifier for the
-same reason it allocates the address.
-
-Explicit binding is also what makes failover possible. A shard that fails today drops the
-traffic it carried, and no component reassigns the networks it served, because no component
-recorded which networks those were. Once a binding is a recorded fact, reassignment is a
-controller updating attachments.
-
-### Allocating the egress address
-
-The egress address is publicly routable, unlike every address a network holds today. The
-addressing service allocates the egress address from the address class that the egress
-class's parameters name, which gives the platform three properties:
-
-- The platform accounts for the address.
-- The platform cannot allocate the address twice.
-- The platform reclaims the address when the resource holding it goes away.
+**A shard holds no list of the networks it serves.** A node stamps an identifier that each
+packet carries, so binding a network to a shard means telling that network's nodes which
+shard to send to. A shard needs no notification when a network binds or unbinds.
 
 **No network claims an egress address.** Under `sharing: Shared`, one address serves every
-network the class places on the same data-plane resource, because per-network blocks exhaust
-a public aggregate long before networks exhaust it. The address therefore belongs to that
-resource and outlives every network using it, which is why `stability` reports `None`. The
-platform also retains the address across restarts, because a consumer cannot rely on an
-address that changes when a process restarts.
+network that the class places on a shard, because per-network blocks exhaust a public
+aggregate long before networks exhaust it. The address belongs to the shard, outlives every
+network using it, and survives a restart.
+
+The infrastructure provider records the bound shard on the attachment, which already carries
+the network's identity to the node before a pod exists. The node installs an egress route
+for that network toward that shard, or installs no route.
+
+**The data plane requires three changes.** An operator supplies a shard's address as process
+configuration and the shard echoes the value into status; the address must become spec that
+a controller writes. A node holds one list of shards and routes every network on it toward
+the first reachable entry; the instruction must become per-network, or `Disabled` has no
+effect. An operator also chooses each shard's data-plane identifier by hand, and a value
+that a node already uses silently diverts that node's traffic; the addressing service should
+allocate the identifier.
+
+Explicit binding is also what makes failover possible. A shard that fails today drops the
+traffic it carried, because no component recorded which networks it served.
 
 ### Reporting failure
 
@@ -387,37 +283,24 @@ The network context carries an `InternetEgressReady` condition:
 | `Degraded` | Egress works for some declared families and not for others |
 
 Each reason states a fact about the consumer's network. The condition omits the specific
-cause, such as the failing component, node, or allocation. A consumer cannot act on those
-causes, and reporting them tells a consumer where the platform runs their workload.
-Operator events and operator alerts carry the specific cause.
+cause, such as the failing component, node, or allocation, because a consumer cannot act on
+those causes and reporting them tells a consumer where the platform runs their workload.
+Operator events carry the specific cause.
 
 ### Disabling egress
 
-Setting `mode: Disabled` removes the egress route. The change takes effect on interfaces
-that attach after the change. Withdrawing egress from a running instance is the same problem
-as changing any other programmed property of a live attachment, and this design does not
-solve it.
+Setting `mode: Disabled` removes the egress route, and the change takes effect on interfaces
+that attach afterwards. Withdrawing egress from a running instance is the same problem as
+changing any other programmed property of a live attachment, and this design does not solve
+it.
 
 ### Reserving the interface field
 
-`NetworkInterfaceClaimSpec` gains `egress.internet.mode`, and validation accepts one value:
-
-| Value | Accepted in the first phase | Meaning |
-|---|---|---|
-| `Inherit` | Yes | The interface follows the network's declaration |
-| `Enabled` | No | The interface reaches the internet regardless of the network |
-| `Disabled` | No | The interface reaches no internet destination |
-
-Reserving the field settles the default before consumers depend on it. An interface written
-today records `Inherit`, so adding `Enabled` and `Disabled` later changes no existing
-interface and reclassifies no existing behavior. Adding the field later instead of now would
-also be backward compatible, but it would force the platform to choose a default for
-interfaces that already exist, and the safe choice at that point is the one this design can
-record today.
-
-The data plane cannot honor `Enabled` or `Disabled` on an interface yet. A node installs one
-egress route per network, not per interface. Widening the accepted values therefore depends
-on per-interface routing in the data plane, which no component implements.
+`NetworkInterfaceClaimSpec` gains `egress.internet.mode`, and validation accepts only
+`Inherit`, which follows the network's declaration. Reserving the field settles the default
+before consumers depend on it: an interface written today records `Inherit`, so accepting
+`Enabled` and `Disabled` later changes no existing interface. Widening the accepted values
+depends on per-interface routing, which no component implements.
 
 ## Dependencies
 

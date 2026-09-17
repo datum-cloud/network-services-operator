@@ -27,7 +27,7 @@ spec:
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
-    name: v1alpha1
+    name: v1alpha
     schema:
       openAPIV3Schema:
         description: |-
@@ -67,8 +67,9 @@ spec:
                 type: string
               parametersRef:
                 description: |-
-                  ParametersRef names the configuration the implementation serving this
-                  class reads.
+                  ParametersRef names the configuration the controller serving this class
+                  reads, such as the address class an egress address is drawn from. Its
+                  type is defined by that controller.
                 properties:
                   group:
                     description: Group of the referent.
@@ -95,7 +96,6 @@ spec:
                   reaches. The class names destinations, never the translation that
                   delivers them.
                 items:
-                  description: IPFamily is an address family a class reaches.
                   enum:
                   - IPv4
                   - IPv6

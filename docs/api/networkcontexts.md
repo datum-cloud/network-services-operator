@@ -100,6 +100,21 @@ NetworkContextSpec defines the desired state of NetworkContext
         </td>
         <td>true</td>
       </tr><tr>
+        <td><b><a href="#networkcontextspecegress">egress</a></b></td>
+        <td>object</td>
+        <td>
+          Egress is what the network reaches outside the platform from this
+location, projected from the Network and resolved against the serving
+class. Propagation to a cell carries spec and not status, so the
+instruction a cell acts on lives here and the result it reports lives in
+status.
+
+A reader that finds this unset must refuse rather than assume: a context
+written before this field existed carries nothing, which is not the same
+as a network that reaches nothing.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
         <td><b>ipFamilies</b></td>
         <td>[]enum</td>
         <td>
@@ -185,6 +200,160 @@ The attached network
         <td>string</td>
         <td>
           The network name<br/>
+        </td>
+        <td>true</td>
+      </tr></tbody>
+</table>
+
+
+### NetworkContext.spec.egress
+<sup><sup>[↩ Parent](#networkcontextspec)</sup></sup>
+
+
+
+Egress is what the network reaches outside the platform from this
+location, projected from the Network and resolved against the serving
+class. Propagation to a cell carries spec and not status, so the
+instruction a cell acts on lives here and the result it reports lives in
+status.
+
+A reader that finds this unset must refuse rather than assume: a context
+written before this field existed carries nothing, which is not the same
+as a network that reaches nothing.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b><a href="#networkcontextspecegressinternet">internet</a></b></td>
+        <td>object</td>
+        <td>
+          Internet is the internet egress this location is instructed to provide.<br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### NetworkContext.spec.egress.internet
+<sup><sup>[↩ Parent](#networkcontextspecegress)</sup></sup>
+
+
+
+Internet is the internet egress this location is instructed to provide.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>className</b></td>
+        <td>string</td>
+        <td>
+          ClassName is the InternetEgressClass resolved for this network,
+including the case where the network named none and the default class
+was selected. It is written resolved so class selection stays with the
+single writer that reads the classes, and a location never repeats it.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>mode</b></td>
+        <td>enum</td>
+        <td>
+          Mode is whether instances in this location reach the internet, copied
+from the network.
+
+It carries no default. A defaulted Disabled could not be told apart from
+a field never projected, and a reader that cannot tell those apart must
+refuse rather than withdraw egress a consumer asked for.<br/>
+          <br/>
+            <i>Enum</i>: Enabled, Disabled<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b><a href="#networkcontextspecegressinternetparametersref">parametersRef</a></b></td>
+        <td>object</td>
+        <td>
+          ParametersRef is the serving class's parametersRef, passed through
+verbatim. Nothing on the path between the class and the controller named
+in the class's controllerName interprets it.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>reach</b></td>
+        <td>[]enum</td>
+        <td>
+          Reach are the destination address families this location is instructed
+to reach, copied from the network and narrowed to what the serving class
+reaches.<br/>
+          <br/>
+            <i>Validations</i>:<li>self.all(f, self.exists_one(g, g == f)): Each address family may be listed at most once</li>
+            <i>Enum</i>: IPv4, IPv6<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>sharing</b></td>
+        <td>enum</td>
+        <td>
+          Sharing is the serving class's sharing, carried so a location can report
+the stability a consumer reads back on status without reading the class
+itself.<br/>
+          <br/>
+            <i>Enum</i>: Shared, Dedicated<br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### NetworkContext.spec.egress.internet.parametersRef
+<sup><sup>[↩ Parent](#networkcontextspecegressinternet)</sup></sup>
+
+
+
+ParametersRef is the serving class's parametersRef, passed through
+verbatim. Nothing on the path between the class and the controller named
+in the class's controllerName interprets it.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>group</b></td>
+        <td>string</td>
+        <td>
+          Group of the referent.<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>kind</b></td>
+        <td>string</td>
+        <td>
+          Kind of the referent.<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>name</b></td>
+        <td>string</td>
+        <td>
+          Name of the referent.<br/>
         </td>
         <td>true</td>
       </tr></tbody>

@@ -172,7 +172,11 @@ Inherit is accepted, which follows the network's declaration.
 
 The field is reserved so the default is settled before consumers depend
 on it: an interface written today records Inherit, so accepting Enabled
-and Disabled later changes no existing interface.<br/>
+and Disabled later changes no existing interface.
+
+Unlike the rest of this spec it is mutable. No address is allocated
+against it, and a rule pinning the only accepted value would have to be
+dropped again when per-interface control widens the enum.<br/>
           <br/>
             <i>Default</i>: map[internet:map[mode:Inherit]]<br/>
         </td>
@@ -336,6 +340,10 @@ Inherit is accepted, which follows the network's declaration.
 The field is reserved so the default is settled before consumers depend
 on it: an interface written today records Inherit, so accepting Enabled
 and Disabled later changes no existing interface.
+
+Unlike the rest of this spec it is mutable. No address is allocated
+against it, and a rule pinning the only accepted value would have to be
+dropped again when per-interface control widens the enum.
 
 <table>
     <thead>

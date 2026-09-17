@@ -1,19 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-package v1alpha1
+package v1alpha
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-)
-
-// IPFamily is an address family a class reaches.
-//
-// +kubebuilder:validation:Enum=IPv4;IPv6
-type IPFamily string
-
-const (
-	IPv4Protocol IPFamily = "IPv4"
-	IPv6Protocol IPFamily = "IPv6"
 )
 
 // InternetEgressClassDefaultAnnotation marks the class a network gets when it
@@ -37,9 +27,11 @@ const (
 	InternetEgressSharingDedicated InternetEgressSharing = "Dedicated"
 )
 
-// InternetEgressClassParametersRef names the implementation-specific
-// configuration serving a class, such as the address class an egress address is
-// drawn from.
+// InternetEgressClassParametersRef names the configuration serving a class.
+//
+// The referenced type is implementation-defined and owned by the controller
+// named in controllerName. Nothing here interprets it, validates its kind, or
+// depends on the group it lives in.
 //
 // The reference runs one way: the class names its parameters, and no
 // data-plane resource names the class.
@@ -93,8 +85,9 @@ type InternetEgressClassSpec struct {
 	// +kubebuilder:validation:XValidation:message="Each address family may be listed at most once",rule="self.all(f, self.exists_one(g, g == f))"
 	Reach []IPFamily `json:"reach"`
 
-	// ParametersRef names the configuration the implementation serving this
-	// class reads.
+	// ParametersRef names the configuration the controller serving this class
+	// reads, such as the address class an egress address is drawn from. Its
+	// type is defined by that controller.
 	//
 	// +kubebuilder:validation:Optional
 	ParametersRef *InternetEgressClassParametersRef `json:"parametersRef,omitempty"`

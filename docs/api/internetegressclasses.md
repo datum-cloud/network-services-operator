@@ -2,9 +2,9 @@
 
 Packages:
 
-- [networking.datumapis.com/v1alpha1](#networkingdatumapiscomv1alpha1)
+- [networking.datumapis.com/v1alpha](#networkingdatumapiscomv1alpha)
 
-# networking.datumapis.com/v1alpha1
+# networking.datumapis.com/v1alpha
 
 Resource Types:
 
@@ -14,7 +14,7 @@ Resource Types:
 
 
 ## InternetEgressClass
-<sup><sup>[↩ Parent](#networkingdatumapiscomv1alpha1 )</sup></sup>
+<sup><sup>[↩ Parent](#networkingdatumapiscomv1alpha )</sup></sup>
 
 
 
@@ -39,7 +39,7 @@ reach.
     <tbody><tr>
       <td><b>apiVersion</b></td>
       <td>string</td>
-      <td>networking.datumapis.com/v1alpha1</td>
+      <td>networking.datumapis.com/v1alpha</td>
       <td>true</td>
       </tr>
       <tr>
@@ -124,8 +124,9 @@ reports Network.<br/>
         <td><b><a href="#internetegressclassspecparametersref">parametersRef</a></b></td>
         <td>object</td>
         <td>
-          ParametersRef names the configuration the implementation serving this
-class reads.<br/>
+          ParametersRef names the configuration the controller serving this class
+reads, such as the address class an egress address is drawn from. Its
+type is defined by that controller.<br/>
         </td>
         <td>false</td>
       </tr></tbody>
@@ -137,8 +138,9 @@ class reads.<br/>
 
 
 
-ParametersRef names the configuration the implementation serving this
-class reads.
+ParametersRef names the configuration the controller serving this class
+reads, such as the address class an egress address is drawn from. Its
+type is defined by that controller.
 
 <table>
     <thead>

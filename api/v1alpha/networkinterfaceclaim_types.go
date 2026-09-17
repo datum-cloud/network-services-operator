@@ -223,6 +223,10 @@ type NetworkInterfaceClaimSpec struct {
 	// on it: an interface written today records Inherit, so accepting Enabled
 	// and Disabled later changes no existing interface.
 	//
+	// Unlike the rest of this spec it is mutable. No address is allocated
+	// against it, and a rule pinning the only accepted value would have to be
+	// dropped again when per-interface control widens the enum.
+	//
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:default={internet:{mode:Inherit}}
 	Egress *NetworkInterfaceClaimEgress `json:"egress,omitempty"`

@@ -191,8 +191,8 @@ resources:
   domain: datumapis.com
   group: networking
   kind: InternetEgressClass
-  path: go.datum.net/network-services-operator/api/v1alpha1
-  version: v1alpha1
+  path: go.datum.net/network-services-operator/api/v1alpha
+  version: v1alpha
 - api:
     crdVersion: v1
     namespaced: true

@@ -33,3 +33,4 @@ resources:
   - networkinterfaces.yaml
   - networkinterfaceclaims.yaml
   - networkservices.yaml
+  - internetegressclasses.yaml

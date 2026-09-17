@@ -1,0 +1,15 @@
+apiVersion: networking.datumapis.com/v1alpha
+kind: InternetEgressClass
+metadata:
+  labels:
+    app.kubernetes.io/name: network-services-operator
+    app.kubernetes.io/managed-by: kustomize
+  annotations:
+    networking.datumapis.com/is-default-class: "true"
+  name: internetegressclass-sample
+spec:
+  controllerName: networking.datumapis.com/cell-egress
+  sharing: Shared
+  reach:
+    - IPv6
+    - IPv4

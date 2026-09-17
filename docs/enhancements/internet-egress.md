@@ -4,87 +4,97 @@ stage: alpha
 latest-milestone: "v0.x"
 ---
 
-# An internet a network can reach
+# Internet egress for a network
 
 - [Summary](#summary)
 - [Motivation](#motivation)
   - [Goals](#goals)
-  - [Non-Goals](#non-goals)
+  - [Non-goals](#non-goals)
 - [Proposal](#proposal)
-  - [What it feels like](#what-it-feels-like)
-  - [Which internet, not which translation](#which-internet-not-which-translation)
-  - [What a consumer can see](#what-a-consumer-can-see)
-  - [Notes/Constraints/Caveats](#notesconstraintscaveats)
-- [Design Details](#design-details)
-  - [What a network declares](#what-a-network-declares)
-  - [What a network context reports](#what-a-network-context-reports)
-  - [Reaching the data plane](#reaching-the-data-plane)
-  - [Where the egress address comes from](#where-the-egress-address-comes-from)
-  - [Failure, reported as itself](#failure-reported-as-itself)
-  - [Turning it off](#turning-it-off)
-- [What this depends on](#what-this-depends-on)
+  - [Declaring internet access](#declaring-internet-access)
+  - [Naming destinations instead of mechanisms](#naming-destinations-instead-of-mechanisms)
+  - [Reporting the egress address](#reporting-the-egress-address)
+  - [Constraints and caveats](#constraints-and-caveats)
+- [Design details](#design-details)
+  - [Network API changes](#network-api-changes)
+  - [Reporting per location](#reporting-per-location)
+  - [Programming the data plane](#programming-the-data-plane)
+  - [Allocating the egress address](#allocating-the-egress-address)
+  - [Reporting failure](#reporting-failure)
+  - [Disabling egress](#disabling-egress)
+- [Dependencies](#dependencies)
 - [Drawbacks](#drawbacks)
 - [Alternatives](#alternatives)
-- [Open Questions](#open-questions)
+- [Open questions](#open-questions)
 - [References](#references)
 
 ## Summary
 
-A network's address space is private. Nothing a consumer can write today says that the
-instances on it may reach the internet, and an instance on an IPv6-only network — which is
-every network by default — cannot reach an IPv4-only destination at all.
+This document proposes **internet egress** for a network. Internet egress is outbound
+traffic from instances on a network to destinations outside the platform.
 
-This document adds one capability to a network: **`spec.egress.internet`**, which says
-whether instances on this network reach the internet and which internet they reach. A
-consumer names the outcome they want; the platform chooses the translation, allocates the
-source address, and reports back what that address turned out to be.
+A network holds private addresses. No field lets a consumer declare that instances on the
+network reach the internet. Every network carries IPv6 by default, and an instance holding
+only an IPv6 address cannot reach an IPv4-only destination.
 
-The data plane that performs the translation already exists. What is missing is the noun a
-consumer writes and the contract that carries it to the node, which is what this proposes.
+This design adds one field group to the network resource. A consumer declares whether
+instances reach the internet and which address families those instances reach. The platform
+selects the translation mechanism, allocates a source address, and reports that address to
+the consumer.
+
+**Audience:** engineers working on the network services operator, the compute service, and
+the network data plane. This document assumes you understand networks, network contexts,
+and network interfaces.
+
+**Terminology:** *address translation* rewrites the source address of an outbound packet so
+that replies return to the platform. An *egress address* is the source address that
+translation writes. An *address class* is a named policy that the addressing service
+allocates addresses from.
 
 ## Motivation
 
-**An IPv6-only instance can reach almost nothing.** A network defaults to IPv6 and an
-IPv4-only network is rejected outright, so the default instance has a private IPv6 address
-and no path to an IPv4 destination. Most of the internet a workload actually calls — package
-registries, payment APIs, webhooks — is still reachable only over IPv4.
+Three problems motivate this design.
 
-**Internet access is an operator's decision, not a consumer's.** Whether tenants on a node
-reach the internet is a deployment-time setting on that node. It is all or nothing for
-everything on it, invisible to the consumer, and not expressible per network. A consumer
-cannot turn it on, cannot turn it off, and cannot tell whether it is on.
+**An IPv6-only instance reaches almost nothing.** A network defaults to IPv6, and the
+platform rejects an IPv4-only network. The default instance therefore holds a private IPv6
+address and no path to an IPv4 destination. Most services that a workload calls, such as
+package registries and payment APIs, still accept only IPv4.
 
-**Nobody can see the address they leave from.** A consumer whose destination requires an
-allow-list has no field to read. They discover the address by making a request and looking
-at the other end, and they have no way to know whether it is stable, exclusively theirs, or
-about to change.
+**An operator decides internet access, not a consumer.** Today an operator sets internet
+access on a node at deployment time. The setting applies to every network on that node. A
+consumer cannot enable it, cannot disable it, and cannot read whether an operator enabled
+it.
+
+**No consumer can read their egress address.** A consumer whose destination requires an
+allow-list has no field to read. That consumer discovers the address by sending a request
+and inspecting the far end. The consumer cannot tell whether the address is stable or
+exclusive to their network.
 
 ### Goals
 
-- One field on a network that decides whether its instances reach the internet.
-- Let a consumer on an IPv6 network reach IPv4 destinations without naming a mechanism.
-- Report the source address a consumer's traffic leaves from, and how much they may rely
-  on it.
-- Report inability to provide egress as a condition on the object a consumer already reads.
-- Leave room for a dedicated, and later a consumer-supplied, egress address without an API
+- Let a consumer declare on one resource whether instances on a network reach the internet.
+- Let an instance on an IPv6 network reach IPv4 destinations without naming a mechanism.
+- Report the egress address and report how far a consumer may rely on that address.
+- Report an inability to provide egress on a resource that consumers already read.
+- Accept a dedicated egress address, and later a consumer-supplied address, without an API
   break.
 
-### Non-Goals
+### Non-goals
 
-- **Filtering destinations.** This decides whether a network reaches the internet at all.
-  Which destinations it may reach is a security group, and belongs in that design.
-- **Inbound reachability.** An address reachable from outside is `externalAddresses` on an
-  interface; this is the outbound direction only.
-- **Choosing an egress address.** A dedicated or consumer-supplied address is a later stage
-  this shape makes room for, not something proposed here.
-- **Owning the translation.** How a packet is translated belongs to the data plane; this
-  defines only what a consumer asks for and what the node is told.
+- **Filtering destinations.** This design decides whether a network reaches the internet.
+  Security groups decide which destinations a network reaches.
+- **Inbound reachability.** External addresses on an interface handle inbound traffic. This
+  design covers outbound traffic only.
+- **Selecting a specific egress address.** A dedicated or consumer-supplied address is a
+  later stage. This design reserves the field for that stage.
+- **Defining the translation.** The data plane owns how it translates a packet. This design
+  defines what a consumer requests and what the node receives.
 
 ## Proposal
 
-### What it feels like
+### Declaring internet access
 
-A consumer writes a network and says their workloads reach the internet.
+A consumer declares internet access on the network:
 
 ```yaml
 apiVersion: networking.datumapis.com/v1alpha
@@ -99,26 +109,28 @@ spec:
       reach: [IPv6, IPv4]
 ```
 
-Instances on that network reach IPv6 destinations directly and IPv4 destinations through
-translation the consumer never configures. Nothing else changes: no gateway object to
-create, no route to write, no address to request.
+Instances on this network reach IPv6 destinations directly. Those instances reach IPv4
+destinations through translation that the consumer never configures. The consumer creates
+no gateway resource, writes no route, and requests no address.
 
-### Which internet, not which translation
+### Naming destinations instead of mechanisms
 
-`reach` names destinations, not mechanisms. `IPv4` on an IPv6 network means "my workloads
-call IPv4-only services" — the platform answers with address translation and a resolver that
-returns synthesized addresses for names that have no IPv6 record. A consumer who has to
-learn the difference between translating IPv6-to-IPv6 and IPv6-to-IPv4 has been handed an
-implementation detail they cannot act on.
+The `reach` field names destination address families. The field does not name a translation
+mechanism.
 
-This also keeps the field honest across changes. Replacing the translation mechanism, or
-giving a network real IPv4 addresses instead of translating for it, changes what the platform
-does and not what the consumer wrote.
+Setting `reach: [IPv4]` on an IPv6 network states that instances call IPv4-only services.
+The platform answers that request with address translation and with a resolver that returns
+synthesized addresses for names that publish no IPv6 record. A consumer cannot act on the
+difference between IPv6-to-IPv6 and IPv6-to-IPv4 translation, so the API does not expose
+that difference.
 
-### What a consumer can see
+Naming destinations also keeps the field accurate across future changes. The platform can
+replace a translation mechanism, or assign real IPv4 addresses instead of translating. Both
+changes alter platform behavior and leave the consumer's declaration correct.
 
-A consumer reads the address their traffic leaves from, and **how much they may depend on
-it**:
+### Reporting the egress address
+
+The status reports the egress address and reports how far a consumer may rely on it:
 
 ```yaml
 status:
@@ -131,201 +143,222 @@ status:
       dns64Prefix: 64:ff9b::/96
 ```
 
-`stability` is the field that matters. `None` means the address may change and is not
-exclusively this network's, so allow-listing it at a destination will eventually break and
-will let in traffic that is not theirs. When a network can hold its own egress address, the
-same field reads `Network` and the guidance inverts — without a new field, and without any
-value that was previously true becoming a lie.
+The `stability` field carries the contract:
 
-What a consumer does **not** see is every fact about how egress is delivered: which node
-carries their traffic, how translation state is partitioned, or what else shares the path.
-None of it is actionable, some of it describes their neighbours, and all of it constrains
-the platform's ability to change.
-
-### Notes/Constraints/Caveats
-
-**The first stage shares an address.** One address serves every network reaching the
-internet through the same place. This is why `stability: None` exists and why it must be
-reported rather than glossed over: a consumer who allow-lists a shared address has been
-misled by the API, not by their own mistake.
-
-**Shared capacity is shared.** Translation state and port space are finite and, at this
-stage, common. A network generating heavy connection churn can degrade another's, and there
-is no per-network signal telling the affected consumer why their connections failed. This
-is a gap this design names rather than solves — a fabricated limit field would be worse
-than an absent one.
-
-**Reaching the IPv4 internet requires the resolver to agree.** Synthesized addresses only
-work if the resolver instances use and the translator on the path share a prefix. A network
-whose instances use their own resolver will not reach IPv4 destinations by name.
-
-## Design Details
-
-### What a network declares
-
-`NetworkSpec` gains `egress`:
-
-| Field | Type | Notes |
+| Value | Meaning | Consumer guidance |
 |---|---|---|
-| `egress.internet.mode` | `Enabled` \| `Disabled` | Defaulted, written explicitly, mutable |
-| `egress.internet.reach` | `[]IPFamily` | Defaults to the network's `ipFamilies` |
-| `egress.internet.addressClass` | `string` | Optional; names an address class, not a pool or address |
+| `None` | The address may change, and other networks share it | Do not allow-list the address |
+| `Network` | The address belongs to this network and persists | Allow-listing the address is safe |
 
-`reach` may name a family the network does not carry — that is the point of `IPv4` on an
-IPv6 network. It may not name a family the platform cannot translate to, which is a
-validation against the classes available to the project.
+A consumer who allow-lists a shared address admits traffic from other networks and loses
+access when the address changes. The `stability` field states both risks before the
+consumer acts.
 
-`addressClass` exists from the first version even while one class is available, because it
-is the seam a dedicated or consumer-supplied address arrives through. Which classes a
-project may name is already decided by the addressing service; a class the project cannot
-use is rejected as absent rather than as forbidden, so that validation does not enumerate
-what the platform has.
+A later stage gives a network its own egress address. That stage changes `stability` from
+`None` to `Network`. No field changes, and no previously reported value becomes incorrect.
 
-### What a network context reports
+The status omits facts about how the platform delivers egress, including which node carries
+the traffic, how the platform partitions translation state, and which other networks share
+the path. A consumer cannot act on those facts. Some of those facts describe other
+consumers.
 
-Egress is realized **per location**. A network present in two locations reaches the internet
-from two different places with two different source addresses, so `sourceAddresses` belongs
-on the network's presence in a location and not on the network. Reporting one address on the
-network would either present one location's answer as global or concatenate two answers
-into a list a consumer cannot attribute.
+### Constraints and caveats
 
-The network keeps the declaration; each `NetworkContext` reports the answer for its location,
-and an interface's status carries the address for the location its instance is actually in —
-which is the one a consumer running `kubectl get instance` is asking about.
+**The first stage shares one egress address.** One address serves every network that reaches
+the internet from the same location. The `stability` field reports this constraint rather
+than hiding it.
 
-### Reaching the data plane
+**Networks share translation capacity.** Translation state and port space are finite, and
+the first stage shares both. A network that opens many connections degrades another network
+on the same path. No per-network signal tells the affected consumer why connections failed.
+This design names the gap and does not close it. A fabricated limit field would mislead
+consumers more than an absent field does.
 
-NSO does not program the data plane. It decides intent and records it where the components
-that do program it already read.
+**Reaching IPv4 destinations by name requires a matching resolver.** Synthesized addresses
+work only when the resolver and the translator share a prefix. Instances that use their own
+resolver do not reach IPv4 destinations by name.
+
+## Design details
+
+### Network API changes
+
+`NetworkSpec` gains an `egress` field:
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `egress.internet.mode` | `Enabled` or `Disabled` | See [Drawbacks](#drawbacks) | Mutable |
+| `egress.internet.reach` | `[]IPFamily` | The network's `ipFamilies` | May exceed `ipFamilies` |
+| `egress.internet.addressClass` | `string` | Platform default class | Names a class, not a pool |
+
+The `reach` field may name a family that the network does not carry. Naming IPv4 on an IPv6
+network is the primary use case. The field may not name a family that the platform cannot
+translate to, and validation rejects such a value.
+
+The `addressClass` field ships in the first version even though the platform offers one
+class. The field is the extension point for a dedicated or consumer-supplied address. The
+addressing service already decides which classes a project may name. Validation rejects an
+unavailable class as absent rather than as forbidden, so that validation does not enumerate
+platform resources.
+
+### Reporting per location
+
+The platform realizes egress per location. A network present in two locations reaches the
+internet from two places and receives two egress addresses.
+
+The network resource therefore holds the declaration, and each network context reports the
+result for its location. An interface's status carries the address for the location that
+runs the instance, which answers the question a consumer asks when they inspect an instance.
+
+Reporting one address on the network would produce one of two errors. The status would
+present one location's address as global, or the status would list two addresses that the
+consumer cannot attribute to a location.
+
+### Programming the data plane
+
+The network services operator does not program the data plane. The operator records intent
+where the components that program the data plane already read.
 
 ```
-Network                 the consumer's intent   mode, reach, addressClass
-        │  per location
-        ▼
-NetworkContext          the answer here         source addresses, translation prefix
-        │  realized by
-        ▼
-VPCAttachment           egress on this VPC      what the node is told
-        │  attaches to
-        ▼
-VPC                     the data plane          per-network egress route
+Network                 Consumer intent        mode, reach, addressClass
+        |  per location
+        v
+NetworkContext          Result per location    egress addresses, resolver prefix
+        |  realized by
+        v
+VPCAttachment           Node instruction       egress enabled for this VPC
+        |  attaches to
+        v
+VPC                     Data plane             per-network egress route
 ```
 
-The attachment is the handoff. It is already the object written as intent before a pod
-exists and reported on by the node, and it already carries the network's identity in the
-fabric — so the node learns that *this* network reaches the internet from the same object
-that tells it everything else about the interface. The node installs the egress route into
-that network's routing context, or does not.
+The attachment carries the handoff. An infrastructure provider already writes the attachment
+as intent before the pod exists, and the node already reports on it. The attachment already
+carries the network's identity in the fabric. The node therefore learns that a network
+reaches the internet from the same resource that supplies every other fact about the
+interface. The node installs an egress route into that network's routing context, or
+installs no route.
 
-This replaces a node-wide setting with a per-network one, which is what makes `Disabled`
-mean anything. A route installed for every network on a node cannot express a network that
-should not have one.
+A per-network instruction replaces a per-node setting, which is what gives `Disabled` an
+effect. A node that installs one route for every network cannot express a network that
+requires no route.
 
-What the node does with the packet after that — how it translates, how it keeps state, how
-a reply finds its way back — belongs to the data plane and is documented with it. The
-contract this design owns ends at the attachment.
+The data plane owns what happens to a packet after the node applies the route, including how
+it translates the packet, how it stores state, and how a reply returns. The data plane
+documents that behavior. The contract in this design ends at the attachment.
 
-### Where the egress address comes from
+### Allocating the egress address
 
-The source address is publicly routable, which makes it unlike every address a network
-holds today. It is allocated from an address class the same way every other address is, so
-that it is accounted for, cannot be double-allocated, and is reclaimed when the last network
-using it goes away.
+The egress address is publicly routable, unlike every address a network holds today. The
+addressing service allocates the egress address from an address class, which gives the
+platform three properties:
 
-Two properties follow. A shared address is allocated **once per location**, not per network,
-because per-network blocks of public space exhaust the aggregate long before the networks
-do — which is why `stability: None` is the honest first answer. And the address is retained
-across restarts, because a source address that changes when a process restarts is one no
-consumer can build on even briefly.
+- The platform accounts for the address.
+- The platform cannot allocate the address twice.
+- The platform reclaims the address when the last network using it goes away.
 
-### Failure, reported as itself
+Two consequences follow. First, the platform allocates a shared address once per location
+rather than once per network, because per-network blocks exhaust a public aggregate long
+before networks exhaust it. That allocation model is why `stability` reports `None` in the
+first stage. Second, the platform retains the address across restarts, because a consumer
+cannot rely on an address that changes when a process restarts.
 
-`InternetEgressReady` on the network context:
+### Reporting failure
+
+The network context carries an `InternetEgressReady` condition:
 
 | Reason | Meaning |
 |---|---|
-| `Ready` | Instances in this location reach the declared internet |
-| `AddressUnavailable` | No egress address could be allocated for this location |
-| `Unavailable` | Nothing in this location can currently provide egress |
-| `Degraded` | Egress is provided, but not for every declared family |
+| `Ready` | Instances in this location reach the declared destinations |
+| `AddressUnavailable` | The platform allocated no egress address for this location |
+| `Unavailable` | No component in this location provides egress |
+| `Degraded` | Egress works for some declared families and not for others |
 
-A consumer is told what is true of their network. The specific cause — which component,
-which node, which allocation — is an operator's event and an operator's alert, because a
-consumer can act on none of it and reading it tells them where they are running.
+Each reason states a fact about the consumer's network. The condition omits the specific
+cause, such as the failing component, node, or allocation. A consumer cannot act on those
+causes, and reporting them tells a consumer where the platform runs their workload.
+Operator events and operator alerts carry the specific cause.
 
-### Turning it off
+### Disabling egress
 
-`mode: Disabled` removes the route and takes effect on interfaces attached afterwards.
-Withdrawing egress from a running instance is the same problem as changing any other
-programmed property of a live attachment and is deliberately not solved here.
+Setting `mode: Disabled` removes the egress route. The change takes effect on interfaces
+that attach after the change. Withdrawing egress from a running instance is the same problem
+as changing any other programmed property of a live attachment, and this design does not
+solve it.
 
-## What this depends on
+## Dependencies
 
-- **A public address class.** Public address space must be allocatable before egress can be
-  provisioned anywhere but a lab. Nothing allocates it today.
-- **Per-network egress in the data plane.** The route must be installable per network rather
-  than per node, or `Disabled` cannot be honoured.
-- **A resolver that agrees with the translator**, before `reach: [IPv4]` can be offered.
-- **Rate limiting and per-network attribution.** Both are launch blockers independent of
-  this API, and the second is why the capacity gap above cannot yet be reported.
+This design depends on four items that it does not deliver:
+
+1. **A public address class.** The platform must allocate public address space before egress
+   ships outside a lab. No component allocates it today.
+2. **A per-network egress route.** The data plane must install the route per network rather
+   than per node. Without that change, `Disabled` has no effect.
+3. **A resolver that matches the translator.** The platform must pair both before it offers
+   `reach: [IPv4]`.
+4. **Rate limiting and per-network attribution.** Both block launch independently of this
+   API. The absence of attribution is why this design cannot report the capacity gap.
 
 ## Drawbacks
 
-**It defaults to on.** An IPv6-only network with egress disabled is inert, so the useful
-default is `Enabled` — which means every new network is an open outbound path. That is only
-safe once egress can be rate limited and attributed, and until then the default must be
-`Disabled` even though it makes the common case require a field.
+**The useful default is unsafe today.** An IPv6-only network without egress reaches nothing,
+so `Enabled` is the default that serves consumers. `Enabled` also opens an outbound path on
+every new network. The platform must therefore default to `Disabled` until it can rate limit
+and attribute egress, which makes the common case require an explicit field.
 
-**It promises less than it looks like it promises.** A field named `egress.internet` reads
-like a guarantee of reachability, while the first version delivers a shared, unattributed
-path with no capacity guarantee. `stability` carries that caveat, but it carries it in one
-field of a status a consumer may not read.
+**The API promises less than its name suggests.** A field named `egress.internet` reads as a
+guarantee of reachability. The first version delivers a shared path with no capacity
+guarantee. The `stability` field carries that caveat, and it carries the caveat in a status
+field that a consumer may not read.
 
-**It adds a second place networks differ.** A network already varies by address family; it
-now also varies by what it can reach, and a workload portable between two networks is
-portable only if both were declared the same way.
+**Networks gain a second axis of variation.** A network already varies by address family. A
+network now also varies by what it reaches. A workload moves between two networks only when
+a consumer declared both networks the same way.
 
 ## Alternatives
 
-**A gateway object attached to a network.** The familiar shape from other clouds: an
-internet gateway created and associated. Rejected because it makes a consumer create and
-wire an object to express one boolean, and the association carries no configuration that
-the network could not carry directly. It becomes worth revisiting if egress ever needs
-properties of its own — a bandwidth tier, a dedicated address pool — that a field cannot
-hold.
+**Attach a gateway resource to a network.** Other clouds use this shape: a consumer creates
+an internet gateway and associates it with a network. This design rejects that shape because
+it requires a consumer to create and wire a resource to express one boolean, and because the
+association carries no configuration that the network cannot carry. The shape becomes
+preferable if egress gains properties of its own, such as a bandwidth tier or a dedicated
+address pool.
 
-**A per-interface setting only.** More precise, and it defeats the common case: a consumer
-wanting internet access for a workload would set it on every interface of every instance.
-A network-level declaration with a per-interface override later is the same expressiveness
-with a usable default.
+**Set internet access per interface only.** A per-interface field is more precise. A field
+on the interface also forces a consumer to set internet access on every interface of every
+instance. A network-level declaration with a later per-interface override offers the same
+precision and a usable default.
 
-**An existing per-attachment egress policy type.** A type of this shape exists in the fabric
-API group and is wired to nothing. Its vocabulary is fabric identities a consumer never
-sees, which makes it a plausible internal representation of this decision and not a
-consumer-facing API. Whether it is revived for that purpose or replaced is an open question
-below.
+**Reuse the existing per-attachment egress policy type.** A type of this shape exists in the
+fabric API group, and no component reads it. The type names fabric identities that a
+consumer never sees, which makes it a candidate internal representation rather than a
+consumer-facing API. [Open questions](#open-questions) covers whether the platform revives
+or replaces that type.
 
-**Giving networks real public addresses instead.** No translation, no shared address, no
-capacity coupling. It requires far more public address space than translation does and a
-different security posture, and it does not remove the need for this field — a network would
-still declare whether it reaches the internet.
+**Assign public addresses to networks instead of translating.** Direct assignment removes
+translation, the shared address, and the capacity coupling. Direct assignment also requires
+far more public address space and a different security posture. Direct assignment does not
+remove the need for this field, because a network still declares whether it reaches the
+internet.
 
-## Open Questions
+## Open questions
 
 1. **Does `reach: [IPv4]` oblige the platform to provide the resolver?** If a consumer must
-   configure their own, the field promises reachability the platform does not deliver.
-2. **Is a per-interface override in scope for the first version?** It is the one part of
-   this that the data plane cannot honour today.
-3. **Default `Enabled` or `Disabled` at launch?** `Enabled` is the useful default and is
-   unsafe until egress is rate limited and attributable.
-4. **Is the existing per-attachment egress policy type revived as the internal
-   representation, or replaced?** It is described as superseded, but nothing supersedes it.
-5. **What does a consumer see when shared capacity is exhausted?** Today, failed connections
-   and no explanation. Answering this needs per-network accounting that does not exist.
+   configure their own resolver, the field promises reachability that the platform does not
+   deliver.
+2. **Does the first version include a per-interface override?** The data plane cannot honor
+   a per-interface override today.
+3. **Does the platform default to `Enabled` or `Disabled` at launch?** `Enabled` serves
+   consumers and remains unsafe until egress is rate limited and attributable.
+4. **Does the platform revive the existing per-attachment egress policy type as the internal
+   representation, or replace it?** Two code comments describe the type as superseded, and
+   no design supersedes it.
+5. **What does a consumer read when shared capacity is exhausted?** Today a consumer reads
+   nothing and observes failed connections. Answering this question requires per-network
+   accounting that no component performs.
 
 ## References
 
-- [A network in every location it is used](network-in-every-location.md) — the presence
-  this reports per-location egress on
+- [A network in every location it is used](network-in-every-location.md) — the per-location
+  presence that reports egress results
 - [A network interface a workload can be handed](network-interfaces.md) — the interface and
-  attachment contract this extends
+  attachment contract that this design extends

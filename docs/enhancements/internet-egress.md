@@ -20,6 +20,7 @@ latest-milestone: "v0.x"
   - [The internet egress class](#the-internet-egress-class)
   - [Reporting per location](#reporting-per-location)
   - [Programming the data plane](#programming-the-data-plane)
+  - [Realizing egress in a cell](#realizing-egress-in-a-cell)
   - [Allocating the egress address](#allocating-the-egress-address)
   - [Reporting failure](#reporting-failure)
   - [Disabling egress](#disabling-egress)
@@ -294,6 +295,69 @@ The data plane owns what happens to a packet after the node applies the route, i
 it translates the packet, how it stores state, and how a reply returns. The data plane
 documents that behavior. The contract in this design ends at the attachment.
 
+### Realizing egress in a cell
+
+An **egress shard** is the data-plane resource that translates outbound packets for the
+networks an egress class places on it. A shard runs on one node. A cell runs one or more
+shards.
+
+A cell holds four things that this design depends on:
+
+- **Network contexts**, which record each network's presence in the cell.
+- **Egress shards**, one for each node that performs translation.
+- **A cell controller**, which claims addresses and binds networks to shards.
+- **Attachments**, which carry the per-network instruction to a node.
+
+```
+  cell controller
+        |
+        +--  claims one address for each shard  ------>  IPAM
+        |
+        +--  writes that address into a shard spec  -->  EgressShard    ->  translation
+        |
+        +--  binds a network to a shard  ------------->  VPCAttachment  ->  egress route
+```
+
+**The cell controller claims the address, not the shard.** A shard runs on every translating
+node, sits inside the data path's blast radius, and runs on hardware at the edge of the
+network. Making a shard an addressing-service client would place platform credentials on
+every such node and put an allocation request near the path that attaches a workload. The
+cell controller claims the address and writes it into the shard's spec. The shard reads the
+spec, programs the data plane, and reports status. That split matches the contract that
+attachments already follow: a controller writes intent, and a node reports what it carries.
+
+**A shard holds no list of the networks it serves.** The data plane identifies a network
+from an identifier that the packet itself carries, which a node stamps when it attaches an
+interface. Binding a network to a shard therefore means telling that network's nodes which
+shard to send to. A shard needs no notification when a network binds or unbinds, and the
+binding is realized entirely on the node that attaches the interface.
+
+The platform realizes egress in eight steps:
+
+1. An operator creates an egress class naming a controller, a sharing mode, and parameters.
+2. An operator creates an egress shard for each translating node in the cell.
+3. The cell controller claims an address for each shard and writes the address into the
+   shard's spec.
+4. The shard programs the data plane, reports status, and advertises the address.
+5. A consumer enables egress on a network.
+6. The cell controller binds that network's context to a shard serving the requested class.
+7. The infrastructure provider records the bound shard on the attachment.
+8. The node installs an egress route for that network toward the bound shard.
+
+**The data plane requires three changes.** Today an operator supplies a shard's address as
+process configuration, and the shard echoes the value into its status; the address must
+become spec that a controller writes. Today a node holds one list of shards and installs a
+route toward the first reachable entry for every network on the node; the instruction must
+become per-network, or `Disabled` has no effect. Today an operator also chooses each shard's
+data-plane identifier by hand, and choosing a value that a node already uses silently
+diverts that node's traffic; the addressing service should allocate the identifier for the
+same reason it allocates the address.
+
+Explicit binding is also what makes failover possible. A shard that fails today drops the
+traffic it carried, and no component reassigns the networks it served, because no component
+recorded which networks those were. Once a binding is a recorded fact, reassignment is a
+controller updating attachments.
+
 ### Allocating the egress address
 
 The egress address is publicly routable, unlike every address a network holds today. The
@@ -433,3 +497,5 @@ internet.
   presence that reports egress results
 - [A network interface a workload can be handed](network-interfaces.md) — the interface and
   attachment contract that this design extends
+- [Cell controller manager](cell-controller-manager.md) — the controller that claims egress
+  addresses and binds networks to shards

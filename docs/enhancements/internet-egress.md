@@ -58,7 +58,9 @@ Three problems motivate this design.
 **An IPv6-only instance reaches almost nothing.** A network defaults to IPv6, and the
 platform rejects an IPv4-only network. The default instance therefore holds a private IPv6
 address and no path to an IPv4 destination. Most services that a workload calls, such as
-package registries and payment APIs, still accept only IPv4.
+package registries and payment APIs, still accept only IPv4. Phase one does not solve this
+problem: it delivers IPv6-to-IPv6 egress, and an instance still cannot reach an IPv4-only
+destination until phase two adds `reach: [IPv4]`.
 
 **An operator decides internet access, not a consumer.** Today an operator sets internet
 access on a node at deployment time. The setting applies to every network on that node. A
@@ -83,6 +85,8 @@ exclusive to their network.
 
 ### Non-goals
 
+- **Reaching IPv4 destinations.** Phase one validates only `reach: [IPv6]`. Widening `reach`
+  to accept `IPv4` is phase two, once the platform pairs a resolver with the translator.
 - **Filtering destinations.** This design decides whether a network reaches the internet.
   Security groups decide which destinations a network reaches.
 - **Inbound reachability.** External addresses on an interface handle inbound traffic. This
@@ -111,16 +115,17 @@ spec:
   egress:
     internet:
       mode: Enabled
-      reach: [IPv6, IPv4]
+      reach: [IPv6]
 ```
 
 **A network reaches no internet destination until a consumer enables egress.** `mode`
 defaults to `Disabled`, so egress is a capability a consumer opts into rather than one they
 discover. An outbound path that a consumer never asked for is one nobody is accountable for.
 
-Instances on a network with egress enabled reach IPv6 destinations directly. Those instances
-reach IPv4 destinations through translation that the consumer never configures. The
-consumer creates no gateway resource, writes no route, and requests no address.
+Instances on a network with egress enabled reach IPv6 destinations directly. Phase one stops
+there; phase two lets those instances reach IPv4 destinations through translation that the
+consumer never configures. The consumer creates no gateway resource, writes no route, and
+requests no address.
 
 The declaration applies to every instance on the network. A consumer cannot enable internet
 access for one instance and disable it for another in the first phase.
@@ -134,11 +139,11 @@ names nothing. A consumer never names an address class, an address pool, or an a
 The `reach` field names destination address families. The field does not name a translation
 mechanism.
 
-Setting `reach: [IPv4]` on an IPv6 network states that instances call IPv4-only services.
-The platform answers that request with address translation and with a resolver that returns
-synthesized addresses for names that publish no IPv6 record. A consumer cannot act on the
-difference between IPv6-to-IPv6 and IPv6-to-IPv4 translation, so the API does not expose
-that difference.
+Setting `reach: [IPv4]` on an IPv6 network will state that instances call IPv4-only
+services, once phase two admits the value. The platform will answer that request with
+address translation and with a resolver that returns synthesized addresses for names that
+publish no IPv6 record. A consumer will not be able to act on the difference between
+IPv6-to-IPv6 and IPv6-to-IPv4 translation, so the API will not expose that difference.
 
 Naming destinations also keeps the field accurate across future changes. The platform can
 replace a translation mechanism, or assign real IPv4 addresses instead of translating. Both
@@ -210,9 +215,9 @@ metadata:
 spec:
   controllerName: networking.datumapis.com/cell-egress
   sharing: Shared
-  reach: [IPv6, IPv4]
+  reach: [IPv6]
   parametersRef:
-    group: network.datumapis.com
+    group: cloud.datumapis.com
     kind: EgressShardParameters
     name: shared-ipv6
 ```
@@ -292,6 +297,11 @@ The network context carries an `InternetEgressReady` condition, with four reason
 - `Unavailable`: no component in this location provides egress.
 - `Degraded`: egress works for some declared families and not for others.
 
+`Degraded` needs a network that declares two families to distinguish partial failure from
+total failure. Phase one validates only `reach: [IPv6]`, so no network context reports
+`Degraded` until phase two lets a network declare `IPv4` alongside `IPv6`. Its absence now
+is expected, not a bug.
+
 Each reason states a fact about the consumer's network. The condition omits the specific
 cause, such as the failing component, node, or allocation, because a consumer cannot act on
 those causes and reporting them tells a consumer where the platform runs their workload.
@@ -320,8 +330,11 @@ This design depends on four items that it does not deliver:
    ships outside a lab. No component allocates it today.
 2. **A per-network egress route.** The data plane must install the route per network rather
    than per node. Without that change, `Disabled` has no effect.
-3. **A resolver that matches the translator.** The platform must pair both before it offers
-   `reach: [IPv4]`.
+3. **A resolver that matches the translator.** The platform must pair both before it accepts
+   `reach: [IPv4]`. Until then, validation on the network, the network context, and the
+   egress class refuses the value, with the message "Only IPv6 is accepted; reaching IPv4
+   destinations needs a resolver and a translator sharing a prefix, and the platform pairs
+   neither."
 4. **Rate limiting and per-network attribution.** Both block launch independently of this
    API. The absence of attribution is why this design cannot report the capacity gap.
 

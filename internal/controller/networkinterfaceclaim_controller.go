@@ -971,6 +971,7 @@ func (r *NetworkInterfaceClaimReconciler) publishClaimStatus(
 	claim.Status.Addresses = append([]networkingv1alpha.NetworkInterfaceAddress(nil), iface.Spec.Addresses...)
 	claim.Status.NetworkInterfaceRef = &networkingv1alpha.LocalNetworkInterfaceRef{Name: iface.Name}
 	claim.Status.ExternalAddresses = append([]networkingv1alpha.NetworkInterfaceExternalAddress(nil), iface.Spec.ExternalAddresses...)
+	claim.Status.Egress = iface.Status.Egress.DeepCopy()
 
 	apimeta.SetStatusCondition(&claim.Status.Conditions, metav1.Condition{
 		Type:               networkingv1alpha.NetworkInterfaceClaimBound,

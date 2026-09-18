@@ -752,3 +752,44 @@ func TestNetworkContextRejectsIPv4EgressIntentReach(t *testing.T) {
 	assert.Truef(t, apierrors.IsInvalid(err), "expected an Invalid error, got %v", err)
 	assert.Contains(t, err.Error(), "spec.egress.internet.reach")
 }
+
+// TestNetworkContextRejectsDedicatedEgressIntentSharing asserts the projection
+// cannot carry a sharing no class can declare. Dedicated needs capacity the
+// platform cannot yet provision, and a projected value nothing upstream can
+// emit would be a request no location could serve.
+func TestNetworkContextRejectsDedicatedEgressIntentSharing(t *testing.T) {
+	cl := requireEnv(t)
+	ctx := context.Background()
+
+	networkContext := egressContext("egress-intent-dedicated", &networkingv1alpha.NetworkContextInternetEgress{
+		Mode:    networkingv1alpha.NetworkInternetEgressEnabled,
+		Reach:   []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol},
+		Sharing: networkingv1alpha.InternetEgressSharingDedicated,
+	})
+	err := cl.Create(ctx, networkContext)
+	require.Error(t, err, "a projected dedicated sharing must be rejected")
+	assert.Truef(t, apierrors.IsInvalid(err), "expected an Invalid error, got %v", err)
+	assert.Contains(t, err.Error(), "spec.egress.internet.sharing")
+	assert.Contains(t, err.Error(), "Only Shared is accepted")
+}
+
+// TestNetworkContextAcceptsEgressIntentWithoutSharing pins that the rule
+// refusing Dedicated does not also refuse an unset sharing. The field is
+// optional because a context written before it existed carries none, and a
+// reader must be able to tell that apart from a sharing it was given.
+func TestNetworkContextAcceptsEgressIntentWithoutSharing(t *testing.T) {
+	cl := requireEnv(t)
+	ctx := context.Background()
+
+	networkContext := egressContext("egress-intent-no-sharing", &networkingv1alpha.NetworkContextInternetEgress{
+		Mode:  networkingv1alpha.NetworkInternetEgressEnabled,
+		Reach: []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol},
+	})
+	require.NoError(t, cl.Create(ctx, networkContext),
+		"an unset sharing must stay writable, not be caught by the Shared-only rule")
+	t.Cleanup(func() { _ = cl.Delete(ctx, networkContext) })
+
+	var got networkingv1alpha.NetworkContext
+	require.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(networkContext), &got))
+	assert.Empty(t, got.Spec.Egress.Internet.Sharing, "no sharing may be defaulted onto the projection")
+}

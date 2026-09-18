@@ -106,7 +106,11 @@ type NetworkContextInternetEgress struct {
 	// the stability a consumer reads back on status without reading the class
 	// itself.
 	//
+	// Only Shared is accepted, because a projection may not carry what its
+	// source cannot declare.
+	//
 	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:XValidation:message="Only Shared is accepted; dedicated egress needs capacity the platform cannot yet provision, so a class asking for it would wait indefinitely rather than fail",rule="self == 'Shared'"
 	Sharing InternetEgressSharing `json:"sharing,omitempty"`
 
 	// ParametersRef is the serving class's parametersRef, passed through

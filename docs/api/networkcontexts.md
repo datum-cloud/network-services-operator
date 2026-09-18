@@ -311,8 +311,12 @@ source cannot declare.<br/>
         <td>
           Sharing is the serving class's sharing, carried so a location can report
 the stability a consumer reads back on status without reading the class
-itself.<br/>
+itself.
+
+Only Shared is accepted, because a projection may not carry what its
+source cannot declare.<br/>
           <br/>
+            <i>Validations</i>:<li>self == 'Shared': Only Shared is accepted; dedicated egress needs capacity the platform cannot yet provision, so a class asking for it would wait indefinitely rather than fail</li>
             <i>Enum</i>: Shared, Dedicated<br/>
         </td>
         <td>false</td>

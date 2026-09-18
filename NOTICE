@@ -8502,7 +8502,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ## go.miloapis.com/ipam/pkg/apis/ipam
 
 * Name: go.miloapis.com/ipam/pkg/apis/ipam
-* Version: v0.3.2-0.20260819234259-2f31bea79f62
+* Version: v0.4.0
 * License: Unknown
 
 ```
@@ -8512,7 +8512,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ## go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1
 
 * Name: go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1
-* Version: v0.3.2-0.20260819234259-2f31bea79f62
+* Version: v0.4.0
 * License: Unknown
 
 ```
@@ -8522,7 +8522,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ## go.miloapis.com/ipam/pkg/ipamerrors
 
 * Name: go.miloapis.com/ipam/pkg/ipamerrors
-* Version: v0.3.2-0.20260819234259-2f31bea79f62
+* Version: v0.4.0
 * License: Unknown
 
 ```

@@ -335,6 +335,26 @@ func TestInternetEgressClassRequiresSharing(t *testing.T) {
 	assert.Contains(t, err.Error(), "spec.sharing")
 }
 
+// TestInternetEgressClassRejectsDedicatedSharing asserts dedicated egress is
+// refused rather than accepted and left waiting. It needs capacity the
+// platform cannot yet provision, so a class asking for it would never be
+// served. A class written today records Shared, so accepting Dedicated later
+// changes no existing class.
+func TestInternetEgressClassRejectsDedicatedSharing(t *testing.T) {
+	cl := requireEnv(t)
+	ctx := context.Background()
+
+	class := egressClass("sharing-dedicated", networkingv1alpha.InternetEgressClassSpec{
+		Sharing: networkingv1alpha.InternetEgressSharingDedicated,
+		Reach:   []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol},
+	})
+	err := cl.Create(ctx, class)
+	require.Error(t, err, "dedicated sharing must be withheld until the capacity exists")
+	assert.Truef(t, apierrors.IsInvalid(err), "expected an Invalid error, got %v", err)
+	assert.Contains(t, err.Error(), "spec.sharing")
+	assert.Contains(t, err.Error(), "Only Shared is accepted")
+}
+
 // TestInternetEgressClassRejectsEmptyReach asserts a class that reaches nothing
 // cannot be defined, since nothing a network declares could be served by it.
 func TestInternetEgressClassRejectsEmptyReach(t *testing.T) {
@@ -342,7 +362,7 @@ func TestInternetEgressClassRejectsEmptyReach(t *testing.T) {
 	ctx := context.Background()
 
 	class := egressClass("no-reach", networkingv1alpha.InternetEgressClassSpec{
-		Sharing: networkingv1alpha.InternetEgressSharingDedicated,
+		Sharing: networkingv1alpha.InternetEgressSharingShared,
 	})
 	err := cl.Create(ctx, class)
 	require.Error(t, err, "reach must be required and non-empty")

@@ -119,8 +119,14 @@ resolver and a translator sharing a prefix are paired.<br/>
         <td>
           Sharing is the operator-side decision a consumer reads back as
 stability on a network interface: Shared reports None, and Dedicated
-reports Network.<br/>
+reports Network.
+
+Only Shared is accepted. Dedicated needs capacity the platform cannot
+yet provision, so a class asking for it would wait indefinitely rather
+than fail. A class written today records Shared, so accepting Dedicated
+later changes no existing class.<br/>
           <br/>
+            <i>Validations</i>:<li>self == 'Shared': Only Shared is accepted; dedicated egress needs capacity the platform cannot yet provision, so a class asking for it would wait indefinitely rather than fail</li>
             <i>Enum</i>: Shared, Dedicated<br/>
         </td>
         <td>true</td>

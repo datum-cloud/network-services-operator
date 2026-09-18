@@ -119,10 +119,20 @@ spec:
                   Sharing is the operator-side decision a consumer reads back as
                   stability on a network interface: Shared reports None, and Dedicated
                   reports Network.
+
+                  Only Shared is accepted. Dedicated needs capacity the platform cannot
+                  yet provision, so a class asking for it would wait indefinitely rather
+                  than fail. A class written today records Shared, so accepting Dedicated
+                  later changes no existing class.
                 enum:
                 - Shared
                 - Dedicated
                 type: string
+                x-kubernetes-validations:
+                - message: Only Shared is accepted; dedicated egress needs capacity
+                    the platform cannot yet provision, so a class asking for it would
+                    wait indefinitely rather than fail
+                  rule: self == 'Shared'
             required:
             - controllerName
             - reach

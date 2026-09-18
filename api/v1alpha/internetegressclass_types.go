@@ -112,7 +112,13 @@ type InternetEgressClassSpec struct {
 	// stability on a network interface: Shared reports None, and Dedicated
 	// reports Network.
 	//
+	// Only Shared is accepted. Dedicated needs capacity the platform cannot
+	// yet provision, so a class asking for it would wait indefinitely rather
+	// than fail. A class written today records Shared, so accepting Dedicated
+	// later changes no existing class.
+	//
 	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:XValidation:message="Only Shared is accepted; dedicated egress needs capacity the platform cannot yet provision, so a class asking for it would wait indefinitely rather than fail",rule="self == 'Shared'"
 	Sharing InternetEgressSharing `json:"sharing"`
 
 	// Reach are the destination address families a network on this class

@@ -93,6 +93,14 @@ NetworkSpec defines the desired state of a Network
         </td>
         <td>true</td>
       </tr><tr>
+        <td><b><a href="#networkspecegress">egress</a></b></td>
+        <td>object</td>
+        <td>
+          Egress declares what instances on this network reach outside the
+platform. Omitting it reaches nothing outside the platform.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
         <td><b>ipFamilies</b></td>
         <td>[]enum</td>
         <td>
@@ -160,6 +168,95 @@ IPAM settings for the network.
         <td>string</td>
         <td>
           IPv6 range to use in auto mode networks. Defaults to a /48 allocated from `fd20::/20`.<br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### Network.spec.egress
+<sup><sup>[↩ Parent](#networkspec)</sup></sup>
+
+
+
+Egress declares what instances on this network reach outside the
+platform. Omitting it reaches nothing outside the platform.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b><a href="#networkspecegressinternet">internet</a></b></td>
+        <td>object</td>
+        <td>
+          Internet declares whether instances on this network reach destinations
+outside the platform, and which address families they reach.<br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### Network.spec.egress.internet
+<sup><sup>[↩ Parent](#networkspecegress)</sup></sup>
+
+
+
+Internet declares whether instances on this network reach destinations
+outside the platform, and which address families they reach.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>class</b></td>
+        <td>string</td>
+        <td>
+          Class is the InternetEgressClass serving this network. Omitting it
+selects the default class, which is the common case. A consumer never
+names an address class, an address pool, or an address.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>mode</b></td>
+        <td>enum</td>
+        <td>
+          Mode is whether instances on this network reach the internet. Egress is
+a capability to opt into: a path nobody asked for is a path nobody is
+accountable for.<br/>
+          <br/>
+            <i>Enum</i>: Enabled, Disabled<br/>
+            <i>Default</i>: Disabled<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>reach</b></td>
+        <td>[]enum</td>
+        <td>
+          Reach are the destination address families instances call. It names
+destinations, never a translation mechanism, so the platform answers a
+family with whatever translation and resolution that family needs.
+
+Only IPv6 is accepted. Reaching IPv4 destinations needs a resolver and a
+translator sharing a prefix, and the platform pairs neither, so IPv4 is
+withheld rather than accepted and silently not delivered. A network
+written today records IPv6, so accepting IPv4 later changes no existing
+network.<br/>
+          <br/>
+            <i>Validations</i>:<li>self.all(f, f == 'IPv6'): Only IPv6 is accepted; reaching IPv4 destinations needs a resolver and a translator sharing a prefix, and the platform pairs neither</li><li>self.all(f, self.exists_one(g, g == f)): Each address family may be listed at most once</li>
+            <i>Enum</i>: IPv4, IPv6<br/>
         </td>
         <td>false</td>
       </tr></tbody>

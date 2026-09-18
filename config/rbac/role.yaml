@@ -305,6 +305,7 @@ rules:
   - networking.datumapis.com
   resources:
   - connectorclasses
+  - internetegressclasses
   - locationbindings
   - locations
   - networkservices

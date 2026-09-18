@@ -336,6 +336,55 @@ type NetworkInterfaceSpec struct {
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:default="Delete"
 	ReclaimPolicy NetworkInterfaceReclaimPolicy `json:"reclaimPolicy,omitempty"`
+
+	// egress is what this interface reaches outside the platform. It comes from
+	// the claim, and the operator carries it without interpreting it, so a
+	// realizer reads the intent beside the result it is reported against.
+	//
+	// Only Inherit is accepted, which follows the network's declaration. An
+	// interface written today records Inherit, so accepting Enabled and Disabled
+	// later changes no existing interface.
+	//
+	// Mutable, because the claim's declaration is. An interface adopted from
+	// before the field existed carries none until its claim is reconciled.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default={internet:{mode:Inherit}}
+	Egress *NetworkInterfaceEgress `json:"egress,omitempty"`
+}
+
+// NetworkInterfaceEgress declares the outbound paths an interface carries.
+type NetworkInterfaceEgress struct {
+	// internet is whether this interface reaches destinations outside the
+	// platform.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default={mode:Inherit}
+	Internet *NetworkInterfaceInternetEgress `json:"internet,omitempty"`
+}
+
+// NetworkInterfaceInternetEgressMode is whether an interface reaches the
+// internet.
+//
+// +kubebuilder:validation:Enum=Inherit
+type NetworkInterfaceInternetEgressMode string
+
+const (
+	// NetworkInterfaceInternetEgressInherit follows the network's declaration.
+	// It is the only accepted value: per-interface control depends on
+	// per-interface routing, which no component implements.
+	NetworkInterfaceInternetEgressInherit NetworkInterfaceInternetEgressMode = "Inherit"
+)
+
+// NetworkInterfaceInternetEgress carries per-interface internet access from the
+// claim that asked for it.
+type NetworkInterfaceInternetEgress struct {
+	// mode is whether this interface reaches the internet. Only Inherit is
+	// accepted, which follows the network's declaration.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default=Inherit
+	Mode NetworkInterfaceInternetEgressMode `json:"mode,omitempty"`
 }
 
 // NetworkInterfaceStatus defines the observed state of NetworkInterface: which
@@ -369,12 +418,53 @@ type NetworkInterfaceStatus struct {
 	// +kubebuilder:validation:Optional
 	VPC string `json:"vpc,omitempty"`
 
+	// egress reports what this interface reaches outside the platform.
+	//
+	// +kubebuilder:validation:Optional
+	Egress *NetworkInterfaceEgressStatus `json:"egress,omitempty"`
+
 	// conditions report the current state of the interface. Allocated means every
 	// address is held. Prepared means the data plane is ready for a workload to
 	// consume it. Programmed means the data plane carries the addresses.
 	// HolderAvailable means whatever holds the interface reports itself available
 	// to serve, and it is the only one of the four a service reads.
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+}
+
+// NetworkInterfaceEgressStatus reports the outbound paths realized for one
+// interface.
+type NetworkInterfaceEgressStatus struct {
+	// internet reports the internet egress realized for this interface.
+	//
+	// +kubebuilder:validation:Optional
+	Internet *NetworkInterfaceInternetEgressStatus `json:"internet,omitempty"`
+}
+
+// NetworkInterfaceInternetEgressStatus reports the source addresses this
+// interface's outbound traffic leaves on.
+//
+// It omits how the platform delivers egress — which node carries the traffic,
+// how translation state is partitioned, which other networks share the path —
+// because a consumer cannot act on those facts and some of them describe other
+// consumers.
+type NetworkInterfaceInternetEgressStatus struct {
+	// sourceAddresses are the addresses translation writes onto outbound
+	// packets from this interface, with the reliance each one carries.
+	//
+	// A consumer whose destination needs an allow-list reads the answer here,
+	// on the interface traffic leaves from, rather than on the network. The
+	// network declares the intent; the interface is what carries it.
+	//
+	// An absent list means nothing has reported an address for this interface.
+	// It does not mean the interface reaches nothing: whether the network
+	// asked for egress is on the network, and whether the location could
+	// provide it is the network context's InternetEgressReady condition.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MaxItems=2
+	// +listType=map
+	// +listMapKey=family
+	SourceAddresses []InternetEgressSourceAddress `json:"sourceAddresses,omitempty"`
 }
 
 // +kubebuilder:object:root=true

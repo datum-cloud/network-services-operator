@@ -131,9 +131,11 @@ claim, and the operator carries it without interpreting it.
 
 Netns places the interface in the workload's network namespace. Hypervisor
 hands it to a hypervisor as a device, which is what a virtual machine or
-microVM guest needs.<br/>
+microVM guest needs. HypervisorDeclared also hands it to a hypervisor, and
+additionally has the realizer state the device to that hypervisor instead
+of letting it discover the device from the node.<br/>
           <br/>
-            <i>Enum</i>: Netns, Hypervisor<br/>
+            <i>Enum</i>: Netns, Hypervisor, HypervisorDeclared<br/>
             <i>Default</i>: Netns<br/>
         </td>
         <td>false</td>
@@ -143,6 +145,24 @@ microVM guest needs.<br/>
         <td>
           claimRef is the claim currently holding this interface. It is empty while a
 retained interface waits, unbound, for a claim of its name to return.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b><a href="#networkinterfacespecegress">egress</a></b></td>
+        <td>object</td>
+        <td>
+          egress is what this interface reaches outside the platform. It comes from
+the claim, and the operator carries it without interpreting it, so a
+realizer reads the intent beside the result it is reported against.
+
+Only Inherit is accepted, which follows the network's declaration. An
+interface written today records Inherit, so accepting Enabled and Disabled
+later changes no existing interface.
+
+Mutable, because the claim's declaration is. An interface adopted from
+before the field existed carries none until its claim is reconciled.<br/>
+          <br/>
+            <i>Default</i>: map[internet:map[mode:Inherit]]<br/>
         </td>
         <td>false</td>
       </tr><tr>
@@ -328,6 +348,77 @@ replacement instance binds this same interface and its addresses.<br/>
 </table>
 
 
+### NetworkInterface.spec.egress
+<sup><sup>[↩ Parent](#networkinterfacespec)</sup></sup>
+
+
+
+egress is what this interface reaches outside the platform. It comes from
+the claim, and the operator carries it without interpreting it, so a
+realizer reads the intent beside the result it is reported against.
+
+Only Inherit is accepted, which follows the network's declaration. An
+interface written today records Inherit, so accepting Enabled and Disabled
+later changes no existing interface.
+
+Mutable, because the claim's declaration is. An interface adopted from
+before the field existed carries none until its claim is reconciled.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b><a href="#networkinterfacespecegressinternet">internet</a></b></td>
+        <td>object</td>
+        <td>
+          internet is whether this interface reaches destinations outside the
+platform.<br/>
+          <br/>
+            <i>Default</i>: map[mode:Inherit]<br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### NetworkInterface.spec.egress.internet
+<sup><sup>[↩ Parent](#networkinterfacespecegress)</sup></sup>
+
+
+
+internet is whether this interface reaches destinations outside the
+platform.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>mode</b></td>
+        <td>enum</td>
+        <td>
+          mode is whether this interface reaches the internet. Only Inherit is
+accepted, which follows the network's declaration.<br/>
+          <br/>
+            <i>Enum</i>: Inherit<br/>
+            <i>Default</i>: Inherit<br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
 ### NetworkInterface.spec.externalAddresses[index]
 <sup><sup>[↩ Parent](#networkinterfacespec)</sup></sup>
 
@@ -414,6 +505,13 @@ address is held. Prepared means the data plane is ready for a workload to
 consume it. Programmed means the data plane carries the addresses.
 HolderAvailable means whatever holds the interface reports itself available
 to serve, and it is the only one of the four a service reads.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b><a href="#networkinterfacestatusegress">egress</a></b></td>
+        <td>object</td>
+        <td>
+          egress reports what this interface reaches outside the platform.<br/>
         </td>
         <td>false</td>
       </tr><tr>
@@ -565,6 +663,118 @@ with respect to the current state of the instance.<br/>
             <i>Minimum</i>: 0<br/>
         </td>
         <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### NetworkInterface.status.egress
+<sup><sup>[↩ Parent](#networkinterfacestatus)</sup></sup>
+
+
+
+egress reports what this interface reaches outside the platform.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b><a href="#networkinterfacestatusegressinternet">internet</a></b></td>
+        <td>object</td>
+        <td>
+          internet reports the internet egress realized for this interface.<br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### NetworkInterface.status.egress.internet
+<sup><sup>[↩ Parent](#networkinterfacestatusegress)</sup></sup>
+
+
+
+internet reports the internet egress realized for this interface.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b><a href="#networkinterfacestatusegressinternetsourceaddressesindex">sourceAddresses</a></b></td>
+        <td>[]object</td>
+        <td>
+          sourceAddresses are the addresses translation writes onto outbound
+packets from this interface, with the reliance each one carries.
+
+A consumer whose destination needs an allow-list reads the answer here,
+on the interface traffic leaves from, rather than on the network. The
+network declares the intent; the interface is what carries it.
+
+An absent list means nothing has reported an address for this interface.
+It does not mean the interface reaches nothing: whether the network
+asked for egress is on the network, and whether the location could
+provide it is the network context's InternetEgressReady condition.<br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### NetworkInterface.status.egress.internet.sourceAddresses[index]
+<sup><sup>[↩ Parent](#networkinterfacestatusegressinternet)</sup></sup>
+
+
+
+InternetEgressSourceAddress is one address outbound traffic leaves on.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>address</b></td>
+        <td>string</td>
+        <td>
+          Address is the source address translation writes, without a prefix
+length.<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>family</b></td>
+        <td>enum</td>
+        <td>
+          Family is the address family of this source address.<br/>
+          <br/>
+            <i>Enum</i>: IPv4, IPv6<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>stability</b></td>
+        <td>enum</td>
+        <td>
+          Stability states how far a consumer may rely on this address before
+they act on it. It is the consumer-side projection of the serving
+class's sharing.<br/>
+          <br/>
+            <i>Enum</i>: None, Network<br/>
+        </td>
+        <td>true</td>
       </tr></tbody>
 </table>
 

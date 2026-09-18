@@ -174,6 +174,39 @@ spec:
                 required:
                 - name
                 type: object
+              egress:
+                default:
+                  internet:
+                    mode: Inherit
+                description: |-
+                  egress is what this interface reaches outside the platform. It comes from
+                  the claim, and the operator carries it without interpreting it, so a
+                  realizer reads the intent beside the result it is reported against.
+
+                  Only Inherit is accepted, which follows the network's declaration. An
+                  interface written today records Inherit, so accepting Enabled and Disabled
+                  later changes no existing interface.
+
+                  Mutable, because the claim's declaration is. An interface adopted from
+                  before the field existed carries none until its claim is reconciled.
+                properties:
+                  internet:
+                    default:
+                      mode: Inherit
+                    description: |-
+                      internet is whether this interface reaches destinations outside the
+                      platform.
+                    properties:
+                      mode:
+                        default: Inherit
+                        description: |-
+                          mode is whether this interface reaches the internet. Only Inherit is
+                          accepted, which follows the network's declaration.
+                        enum:
+                        - Inherit
+                        type: string
+                    type: object
+                type: object
               externalAddresses:
                 description: |-
                   externalAddresses are the addresses the interface is reachable at from
@@ -383,6 +416,66 @@ spec:
                   - type
                   type: object
                 type: array
+              egress:
+                description: egress reports what this interface reaches outside the
+                  platform.
+                properties:
+                  internet:
+                    description: internet reports the internet egress realized for
+                      this interface.
+                    properties:
+                      sourceAddresses:
+                        description: |-
+                          sourceAddresses are the addresses translation writes onto outbound
+                          packets from this interface, with the reliance each one carries.
+
+                          A consumer whose destination needs an allow-list reads the answer here,
+                          on the interface traffic leaves from, rather than on the network. The
+                          network declares the intent; the interface is what carries it.
+
+                          An absent list means nothing has reported an address for this interface.
+                          It does not mean the interface reaches nothing: whether the network
+                          asked for egress is on the network, and whether the location could
+                          provide it is the network context's InternetEgressReady condition.
+                        items:
+                          description: InternetEgressSourceAddress is one address
+                            outbound traffic leaves on.
+                          properties:
+                            address:
+                              description: |-
+                                Address is the source address translation writes, without a prefix
+                                length.
+                              maxLength: 39
+                              minLength: 1
+                              type: string
+                            family:
+                              description: Family is the address family of this source
+                                address.
+                              enum:
+                              - IPv4
+                              - IPv6
+                              type: string
+                            stability:
+                              description: |-
+                                Stability states how far a consumer may rely on this address before
+                                they act on it. It is the consumer-side projection of the serving
+                                class's sharing.
+                              enum:
+                              - None
+                              - Network
+                              type: string
+                          required:
+                          - address
+                          - family
+                          - stability
+                          type: object
+                        maxItems: 2
+                        type: array
+                        x-kubernetes-list-map-keys:
+                        - family
+                        x-kubernetes-list-type: map
+                    type: object
+                type: object
               networkContextRef:
                 description: |-
                   networkContextRef is the network's presence in this location, resolved or

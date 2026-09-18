@@ -64,6 +64,62 @@ spec:
           spec:
             description: NetworkSpec defines the desired state of a Network
             properties:
+              egress:
+                description: |-
+                  Egress declares what instances on this network reach outside the
+                  platform. Omitting it reaches nothing outside the platform.
+                properties:
+                  internet:
+                    description: |-
+                      Internet declares whether instances on this network reach destinations
+                      outside the platform, and which address families they reach.
+                    properties:
+                      class:
+                        description: |-
+                          Class is the InternetEgressClass serving this network. Omitting it
+                          selects the default class, which is the common case. A consumer never
+                          names an address class, an address pool, or an address.
+                        maxLength: 253
+                        minLength: 1
+                        type: string
+                      mode:
+                        default: Disabled
+                        description: |-
+                          Mode is whether instances on this network reach the internet. Egress is
+                          a capability to opt into: a path nobody asked for is a path nobody is
+                          accountable for.
+                        enum:
+                        - Enabled
+                        - Disabled
+                        type: string
+                      reach:
+                        description: |-
+                          Reach are the destination address families instances call. It names
+                          destinations, never a translation mechanism, so the platform answers a
+                          family with whatever translation and resolution that family needs.
+
+                          Only IPv6 is accepted. Reaching IPv4 destinations needs a resolver and a
+                          translator sharing a prefix, and the platform pairs neither, so IPv4 is
+                          withheld rather than accepted and silently not delivered. A network
+                          written today records IPv6, so accepting IPv4 later changes no existing
+                          network.
+                        items:
+                          enum:
+                          - IPv4
+                          - IPv6
+                          type: string
+                        maxItems: 2
+                        minItems: 1
+                        type: array
+                        x-kubernetes-validations:
+                        - message: Only IPv6 is accepted; reaching IPv4 destinations
+                            needs a resolver and a translator sharing a prefix, and
+                            the platform pairs neither
+                          rule: self.all(f, f == 'IPv6')
+                        - message: Each address family may be listed at most once
+                          rule: self.all(f, self.exists_one(g, g == f))
+                    type: object
+                type: object
               ipFamilies:
                 default:
                 - IPv6

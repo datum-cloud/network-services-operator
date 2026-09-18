@@ -149,7 +149,9 @@ Omit this field for ordinary private addressing, which is the common case.<br/>
           attachmentMode is how the guest consumes this interface. Netns places it in
 the workload's network namespace, which is what an ordinary container
 expects. Hypervisor hands it to a hypervisor as a device, which is what a
-virtual machine or microVM guest needs.
+virtual machine or microVM guest needs. HypervisorDeclared also hands it
+to a hypervisor, and additionally has the realizer state the device to
+that hypervisor instead of letting it discover the device from the node.
 
 It is copied to the bound interface and never interpreted here. Whoever
 realizes the interface decides what each mode means on its data plane.
@@ -157,8 +159,26 @@ realizes the interface decides what each mode means on its data plane.
 Immutable, because the guest and the attachment are both built against it.<br/>
           <br/>
             <i>Validations</i>:<li>self == oldSelf: attachmentMode is immutable and cannot be changed after creation</li>
-            <i>Enum</i>: Netns, Hypervisor<br/>
+            <i>Enum</i>: Netns, Hypervisor, HypervisorDeclared<br/>
             <i>Default</i>: Netns<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b><a href="#networkinterfaceclaimspecegress">egress</a></b></td>
+        <td>object</td>
+        <td>
+          egress is what this interface reaches outside the platform. Only
+Inherit is accepted, which follows the network's declaration.
+
+The field is reserved so the default is settled before consumers depend
+on it: an interface written today records Inherit, so accepting Enabled
+and Disabled later changes no existing interface.
+
+Unlike the rest of this spec it is mutable. No address is allocated
+against it, and a rule pinning the only accepted value would have to be
+dropped again when per-interface control widens the enum.<br/>
+          <br/>
+            <i>Default</i>: map[internet:map[mode:Inherit]]<br/>
         </td>
         <td>false</td>
       </tr><tr>
@@ -309,6 +329,77 @@ CIDR, so a class cannot be used to ask for a particular address.<br/>
 </table>
 
 
+### NetworkInterfaceClaim.spec.egress
+<sup><sup>[↩ Parent](#networkinterfaceclaimspec)</sup></sup>
+
+
+
+egress is what this interface reaches outside the platform. Only
+Inherit is accepted, which follows the network's declaration.
+
+The field is reserved so the default is settled before consumers depend
+on it: an interface written today records Inherit, so accepting Enabled
+and Disabled later changes no existing interface.
+
+Unlike the rest of this spec it is mutable. No address is allocated
+against it, and a rule pinning the only accepted value would have to be
+dropped again when per-interface control widens the enum.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b><a href="#networkinterfaceclaimspecegressinternet">internet</a></b></td>
+        <td>object</td>
+        <td>
+          internet is whether this interface reaches destinations outside the
+platform.<br/>
+          <br/>
+            <i>Default</i>: map[mode:Inherit]<br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### NetworkInterfaceClaim.spec.egress.internet
+<sup><sup>[↩ Parent](#networkinterfaceclaimspecegress)</sup></sup>
+
+
+
+internet is whether this interface reaches destinations outside the
+platform.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>mode</b></td>
+        <td>enum</td>
+        <td>
+          mode is whether this interface reaches the internet. Only Inherit is
+accepted, which follows the network's declaration.<br/>
+          <br/>
+            <i>Enum</i>: Inherit<br/>
+            <i>Default</i>: Inherit<br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
 ### NetworkInterfaceClaim.status
 <sup><sup>[↩ Parent](#networkinterfaceclaim)</sup></sup>
 
@@ -344,6 +435,16 @@ truth.<br/>
           conditions report the current state of the claim. Wait on Ready, which is
 true once the claim is bound, its addresses are allocated, the data plane
 is prepared for a workload, and the data plane carries the addresses.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b><a href="#networkinterfaceclaimstatusegress">egress</a></b></td>
+        <td>object</td>
+        <td>
+          egress reports what the bound interface reaches outside the platform. It
+is copied from the interface, which remains the source of truth, so a
+consumer reads their egress address off the same object they read their
+addresses from.<br/>
         </td>
         <td>false</td>
       </tr><tr>
@@ -515,6 +616,121 @@ with respect to the current state of the instance.<br/>
             <i>Minimum</i>: 0<br/>
         </td>
         <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### NetworkInterfaceClaim.status.egress
+<sup><sup>[↩ Parent](#networkinterfaceclaimstatus)</sup></sup>
+
+
+
+egress reports what the bound interface reaches outside the platform. It
+is copied from the interface, which remains the source of truth, so a
+consumer reads their egress address off the same object they read their
+addresses from.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b><a href="#networkinterfaceclaimstatusegressinternet">internet</a></b></td>
+        <td>object</td>
+        <td>
+          internet reports the internet egress realized for this interface.<br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### NetworkInterfaceClaim.status.egress.internet
+<sup><sup>[↩ Parent](#networkinterfaceclaimstatusegress)</sup></sup>
+
+
+
+internet reports the internet egress realized for this interface.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b><a href="#networkinterfaceclaimstatusegressinternetsourceaddressesindex">sourceAddresses</a></b></td>
+        <td>[]object</td>
+        <td>
+          sourceAddresses are the addresses translation writes onto outbound
+packets from this interface, with the reliance each one carries.
+
+A consumer whose destination needs an allow-list reads the answer here,
+on the interface traffic leaves from, rather than on the network. The
+network declares the intent; the interface is what carries it.
+
+An absent list means nothing has reported an address for this interface.
+It does not mean the interface reaches nothing: whether the network
+asked for egress is on the network, and whether the location could
+provide it is the network context's InternetEgressReady condition.<br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### NetworkInterfaceClaim.status.egress.internet.sourceAddresses[index]
+<sup><sup>[↩ Parent](#networkinterfaceclaimstatusegressinternet)</sup></sup>
+
+
+
+InternetEgressSourceAddress is one address outbound traffic leaves on.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>address</b></td>
+        <td>string</td>
+        <td>
+          Address is the source address translation writes, without a prefix
+length.<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>family</b></td>
+        <td>enum</td>
+        <td>
+          Family is the address family of this source address.<br/>
+          <br/>
+            <i>Enum</i>: IPv4, IPv6<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>stability</b></td>
+        <td>enum</td>
+        <td>
+          Stability states how far a consumer may rely on this address before
+they act on it. It is the consumer-side projection of the serving
+class's sharing.<br/>
+          <br/>
+            <i>Enum</i>: None, Network<br/>
+        </td>
+        <td>true</td>
       </tr></tbody>
 </table>
 

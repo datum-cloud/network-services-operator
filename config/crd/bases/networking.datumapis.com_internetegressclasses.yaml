@@ -1,0 +1,150 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.16.4
+  name: internetegressclasses.networking.datumapis.com
+spec:
+  group: networking.datumapis.com
+  names:
+    kind: InternetEgressClass
+    listKind: InternetEgressClassList
+    plural: internetegressclasses
+    singular: internetegressclass
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.controllerName
+      name: Controller
+      type: string
+    - jsonPath: .spec.sharing
+      name: Sharing
+      type: string
+    - jsonPath: .spec.reach
+      name: Reach
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha
+    schema:
+      openAPIV3Schema:
+        description: |-
+          InternetEgressClass is the Schema for the internetegressclasses API.
+
+          An operator defines a class and a consumer names it on a network. The class
+          decides how a network reaches the internet, not which destinations it may
+          reach.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: Spec defines the desired state of an InternetEgressClass
+            properties:
+              controllerName:
+                default: networking.datumapis.com/cell-egress
+                description: |-
+                  ControllerName is the name of the controller responsible for this
+                  InternetEgressClass.
+                maxLength: 253
+                minLength: 1
+                type: string
+              parametersRef:
+                description: |-
+                  ParametersRef names the configuration the controller serving this class
+                  reads, such as the address class an egress address is drawn from. Its
+                  type is defined by that controller.
+                properties:
+                  group:
+                    description: Group of the referent.
+                    maxLength: 253
+                    type: string
+                  kind:
+                    description: Kind of the referent.
+                    maxLength: 63
+                    minLength: 1
+                    type: string
+                  name:
+                    description: Name of the referent.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                required:
+                - group
+                - kind
+                - name
+                type: object
+              reach:
+                description: |-
+                  Reach are the destination address families a network on this class
+                  reaches. The class names destinations, never the translation that
+                  delivers them.
+
+                  Only IPv6 is accepted. A class advertising IPv4 would promise what no
+                  component in the platform can deliver, so the value is withheld until a
+                  resolver and a translator sharing a prefix are paired.
+                items:
+                  enum:
+                  - IPv4
+                  - IPv6
+                  type: string
+                maxItems: 2
+                minItems: 1
+                type: array
+                x-kubernetes-validations:
+                - message: Only IPv6 is accepted; reaching IPv4 destinations needs
+                    a resolver and a translator sharing a prefix, and the platform
+                    pairs neither
+                  rule: self.all(f, f == 'IPv6')
+                - message: Each address family may be listed at most once
+                  rule: self.all(f, self.exists_one(g, g == f))
+              sharing:
+                description: |-
+                  Sharing is the operator-side decision a consumer reads back as
+                  stability on a network interface: Shared reports None, and Dedicated
+                  reports Network.
+
+                  Only Shared is accepted. Dedicated needs capacity the platform cannot
+                  yet provision, so a class asking for it would wait indefinitely rather
+                  than fail. A class written today records Shared, so accepting Dedicated
+                  later changes no existing class.
+                enum:
+                - Shared
+                - Dedicated
+                type: string
+                x-kubernetes-validations:
+                - message: Only Shared is accepted; dedicated egress needs capacity
+                    the platform cannot yet provision, so a class asking for it would
+                    wait indefinitely rather than fail
+                  rule: self == 'Shared'
+            required:
+            - controllerName
+            - reach
+            - sharing
+            type: object
+          status:
+            description: Status defines the observed state of an InternetEgressClass
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

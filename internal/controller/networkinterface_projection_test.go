@@ -397,6 +397,33 @@ func TestHolderAvailableReachesTheProjectCopy(t *testing.T) {
 	require.False(t, meta.IsStatusConditionTrue(copied.Status.Conditions, networkingv1alpha.NetworkInterfaceHolderAvailable))
 }
 
+// TestEgressIntentReachesTheProjectControlPlane asserts the copy a consumer
+// reads carries the egress intent beside the address it is reported against,
+// and that the copy stops changing once it has it. The schema defaults the
+// field on the copy, so a projection that dropped it would differ from its
+// source on every pass and rewrite the copy forever.
+func TestEgressIntentReachesTheProjectControlPlane(t *testing.T) {
+	v := newVisibility(t)
+	v.interfaceOnCell()
+
+	v.publish()
+	v.handToProject()
+
+	copied, found := v.projectCopy()
+	require.True(t, found)
+	require.NotNil(t, copied.Spec.Egress)
+	require.NotNil(t, copied.Spec.Egress.Internet)
+	require.Equal(t,
+		networkingv1alpha.NetworkInterfaceInternetEgressInherit,
+		copied.Spec.Egress.Internet.Mode)
+
+	before := copied.ResourceVersion
+	v.handToProject()
+	copied, _ = v.projectCopy()
+	require.Equal(t, before, copied.ResourceVersion,
+		"a copy that already carries the intent must not be rewritten")
+}
+
 func TestEditingACopyDoesNotSurvive(t *testing.T) {
 	v := newVisibility(t)
 	v.interfaceOnCell()

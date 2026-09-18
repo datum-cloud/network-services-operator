@@ -1914,6 +1914,34 @@ func TestAttachmentModeReachesTheInterface(t *testing.T) {
 		declared.Spec.AttachmentMode, "the mode is carried verbatim from the claim")
 }
 
+// A realizer reads the interface alone, so the egress a consumer declared has
+// to reach it beside the address it is reported against. Egress is also the one
+// value a bound claim may change, so a later edit has to reach it too.
+func TestEgressReachesTheInterface(t *testing.T) {
+	s := newScenario(t, true, []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol})
+
+	claim := s.createClaim("egress-eth0", networkingv1alpha.NetworkInterfaceClaimSpec{
+		InterfaceName: "eth0",
+		IPFamilies:    []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol},
+		ReclaimPolicy: networkingv1alpha.NetworkInterfaceReclaimPolicyDelete,
+	})
+	s.reconcile(claim)
+
+	iface, err := s.getInterface("egress-eth0")
+	require.NoError(t, err)
+	require.NotNil(t, iface.Spec.Egress, "the declaration has to reach the interface")
+	require.NotNil(t, iface.Spec.Egress.Internet)
+	require.Equal(t, networkingv1alpha.NetworkInterfaceInternetEgressInherit,
+		iface.Spec.Egress.Internet.Mode, "the mode is carried verbatim from the claim")
+
+	before := iface.ResourceVersion
+	s.reconcile(claim)
+	iface, err = s.getInterface("egress-eth0")
+	require.NoError(t, err)
+	require.Equal(t, before, iface.ResourceVersion,
+		"an interface already carrying the declaration must not be rewritten")
+}
+
 // The data plane owns Programmed, status.vpc and status.attachmentRef on the
 // interface. Every NSO path that writes interface status has to leave all three
 // where it found them, including a rebind after Retain.
@@ -2228,4 +2256,79 @@ func TestASettledInterfaceIsNotRelabelled(t *testing.T) {
 	second, err := s.getInterface("settled")
 	require.NoError(t, err)
 	require.Equal(t, first.ResourceVersion, second.ResourceVersion)
+}
+
+// A consumer reads the egress address off the claim, and so does compute when
+// it surfaces an instance's interfaces. The claim repeats what the interface
+// reports, the way it already repeats the interface's addresses, so the value
+// lands on an object its readers already watch.
+func TestClaimMirrorsInterfaceEgress(t *testing.T) {
+	s := newScenario(t, true, []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol})
+
+	spec := networkingv1alpha.NetworkInterfaceClaimSpec{
+		InterfaceName: "eth0",
+		IPFamilies:    []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol},
+		ReclaimPolicy: networkingv1alpha.NetworkInterfaceReclaimPolicyDelete,
+	}
+	s.reconcile(s.createClaim("slot-0-eth0", spec))
+
+	require.Nil(t, s.getClaim("slot-0-eth0").Status.Egress,
+		"an interface reporting no address must leave the claim reporting none")
+
+	reportEgress := func(address string, stability networkingv1alpha.InternetEgressAddressStability) {
+		t.Helper()
+		iface, err := s.getInterface("slot-0-eth0")
+		require.NoError(t, err)
+		iface.Status.Egress = &networkingv1alpha.NetworkInterfaceEgressStatus{
+			Internet: &networkingv1alpha.NetworkInterfaceInternetEgressStatus{
+				SourceAddresses: []networkingv1alpha.InternetEgressSourceAddress{{
+					Family:    networkingv1alpha.IPv6Protocol,
+					Address:   address,
+					Stability: stability,
+				}},
+			},
+		}
+		require.NoError(t, s.client.Status().Update(s.ctx, iface))
+	}
+
+	// Stand in for the reporter reading the attachment in the cell.
+	reportEgress("2001:db8:f00d::100", networkingv1alpha.InternetEgressAddressStabilityNone)
+	s.reconcile(s.getClaim("slot-0-eth0"))
+
+	mirrored := s.getClaim("slot-0-eth0").Status.Egress
+	require.NotNil(t, mirrored)
+	require.NotNil(t, mirrored.Internet)
+	require.Len(t, mirrored.Internet.SourceAddresses, 1)
+	require.Equal(t, "2001:db8:f00d::100", mirrored.Internet.SourceAddresses[0].Address)
+	require.Equal(t, networkingv1alpha.InternetEgressAddressStabilityNone,
+		mirrored.Internet.SourceAddresses[0].Stability)
+
+	reportEgress("2001:db8:f00d::200", networkingv1alpha.InternetEgressAddressStabilityNetwork)
+	s.reconcile(s.getClaim("slot-0-eth0"))
+
+	moved := s.getClaim("slot-0-eth0").Status.Egress
+	require.NotNil(t, moved)
+	require.Len(t, moved.Internet.SourceAddresses, 1)
+	require.Equal(t, "2001:db8:f00d::200", moved.Internet.SourceAddresses[0].Address,
+		"an address the provider changed has to reach the claim")
+	require.Equal(t, networkingv1alpha.InternetEgressAddressStabilityNetwork,
+		moved.Internet.SourceAddresses[0].Stability)
+}
+
+// A claim that binds nothing reports no egress and fails no reconcile. The
+// mirror runs where the claim's addresses are published, which is a path a
+// claim with no interface never reaches.
+func TestClaimWithNoInterfaceReportsNoEgress(t *testing.T) {
+	s := newScenario(t, true, []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol})
+
+	claim := s.createClaim("slot-0-eth0", networkingv1alpha.NetworkInterfaceClaimSpec{
+		InterfaceName: "eth0",
+		IPFamilies:    []networkingv1alpha.IPFamily{networkingv1alpha.IPv4Protocol},
+		ReclaimPolicy: networkingv1alpha.NetworkInterfaceReclaimPolicyDelete,
+	})
+	s.reconcile(claim)
+
+	_, err := s.getInterface("slot-0-eth0")
+	require.True(t, apierrors.IsNotFound(err), "the claim must not have bound an interface")
+	require.Nil(t, s.getClaim("slot-0-eth0").Status.Egress)
 }

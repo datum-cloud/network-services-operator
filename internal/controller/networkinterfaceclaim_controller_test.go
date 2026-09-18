@@ -1914,6 +1914,34 @@ func TestAttachmentModeReachesTheInterface(t *testing.T) {
 		declared.Spec.AttachmentMode, "the mode is carried verbatim from the claim")
 }
 
+// A realizer reads the interface alone, so the egress a consumer declared has
+// to reach it beside the address it is reported against. Egress is also the one
+// value a bound claim may change, so a later edit has to reach it too.
+func TestEgressReachesTheInterface(t *testing.T) {
+	s := newScenario(t, true, []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol})
+
+	claim := s.createClaim("egress-eth0", networkingv1alpha.NetworkInterfaceClaimSpec{
+		InterfaceName: "eth0",
+		IPFamilies:    []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol},
+		ReclaimPolicy: networkingv1alpha.NetworkInterfaceReclaimPolicyDelete,
+	})
+	s.reconcile(claim)
+
+	iface, err := s.getInterface("egress-eth0")
+	require.NoError(t, err)
+	require.NotNil(t, iface.Spec.Egress, "the declaration has to reach the interface")
+	require.NotNil(t, iface.Spec.Egress.Internet)
+	require.Equal(t, networkingv1alpha.NetworkInterfaceInternetEgressInherit,
+		iface.Spec.Egress.Internet.Mode, "the mode is carried verbatim from the claim")
+
+	before := iface.ResourceVersion
+	s.reconcile(claim)
+	iface, err = s.getInterface("egress-eth0")
+	require.NoError(t, err)
+	require.Equal(t, before, iface.ResourceVersion,
+		"an interface already carrying the declaration must not be rewritten")
+}
+
 // The data plane owns Programmed, status.vpc and status.attachmentRef on the
 // interface. Every NSO path that writes interface status has to leave all three
 // where it found them, including a rebind after Retain.

@@ -148,6 +148,24 @@ retained interface waits, unbound, for a claim of its name to return.<br/>
         </td>
         <td>false</td>
       </tr><tr>
+        <td><b><a href="#networkinterfacespecegress">egress</a></b></td>
+        <td>object</td>
+        <td>
+          egress is what this interface reaches outside the platform. It comes from
+the claim, and the operator carries it without interpreting it, so a
+realizer reads the intent beside the result it is reported against.
+
+Only Inherit is accepted, which follows the network's declaration. An
+interface written today records Inherit, so accepting Enabled and Disabled
+later changes no existing interface.
+
+Mutable, because the claim's declaration is. An interface adopted from
+before the field existed carries none until its claim is reconciled.<br/>
+          <br/>
+            <i>Default</i>: map[internet:map[mode:Inherit]]<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
         <td><b><a href="#networkinterfacespecexternaladdressesindex">externalAddresses</a></b></td>
         <td>[]object</td>
         <td>
@@ -326,6 +344,77 @@ interface. A claim name stays with the workload slot it serves, so a
 replacement instance binds this same interface and its addresses.<br/>
         </td>
         <td>true</td>
+      </tr></tbody>
+</table>
+
+
+### NetworkInterface.spec.egress
+<sup><sup>[↩ Parent](#networkinterfacespec)</sup></sup>
+
+
+
+egress is what this interface reaches outside the platform. It comes from
+the claim, and the operator carries it without interpreting it, so a
+realizer reads the intent beside the result it is reported against.
+
+Only Inherit is accepted, which follows the network's declaration. An
+interface written today records Inherit, so accepting Enabled and Disabled
+later changes no existing interface.
+
+Mutable, because the claim's declaration is. An interface adopted from
+before the field existed carries none until its claim is reconciled.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b><a href="#networkinterfacespecegressinternet">internet</a></b></td>
+        <td>object</td>
+        <td>
+          internet is whether this interface reaches destinations outside the
+platform.<br/>
+          <br/>
+            <i>Default</i>: map[mode:Inherit]<br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### NetworkInterface.spec.egress.internet
+<sup><sup>[↩ Parent](#networkinterfacespecegress)</sup></sup>
+
+
+
+internet is whether this interface reaches destinations outside the
+platform.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>mode</b></td>
+        <td>enum</td>
+        <td>
+          mode is whether this interface reaches the internet. Only Inherit is
+accepted, which follows the network's declaration.<br/>
+          <br/>
+            <i>Enum</i>: Inherit<br/>
+            <i>Default</i>: Inherit<br/>
+        </td>
+        <td>false</td>
       </tr></tbody>
 </table>
 

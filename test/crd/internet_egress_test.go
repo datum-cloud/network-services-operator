@@ -381,6 +381,66 @@ func egressInterface(name string) *networkingv1alpha.NetworkInterface {
 	}
 }
 
+// TestInterfaceEgressDefaultsToInherit asserts the intent the claim declares is
+// recorded beside the result it is reported against, so a realizer reads one
+// object rather than following the claim.
+func TestInterfaceEgressDefaultsToInherit(t *testing.T) {
+	cl := requireEnv(t)
+	ctx := context.Background()
+
+	iface := egressInterface("iface-egress-default")
+	require.NoError(t, cl.Create(ctx, iface))
+	t.Cleanup(func() { _ = cl.Delete(ctx, iface) })
+
+	var got networkingv1alpha.NetworkInterface
+	require.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(iface), &got))
+	require.NotNil(t, got.Spec.Egress, "the reserved block must be recorded, not left absent")
+	require.NotNil(t, got.Spec.Egress.Internet)
+	assert.Equal(t,
+		networkingv1alpha.NetworkInterfaceInternetEgressInherit,
+		got.Spec.Egress.Internet.Mode)
+}
+
+// TestInterfaceRejectsNonInheritEgressMode asserts an interface accepts no more
+// than the claim it is carried from does.
+func TestInterfaceRejectsNonInheritEgressMode(t *testing.T) {
+	cl := requireEnv(t)
+	ctx := context.Background()
+
+	for _, mode := range []string{"Enabled", "Disabled"} {
+		t.Run(mode, func(t *testing.T) {
+			iface := egressInterface("iface-egress-" + mode)
+			iface.Spec.Egress = &networkingv1alpha.NetworkInterfaceEgress{
+				Internet: &networkingv1alpha.NetworkInterfaceInternetEgress{
+					Mode: networkingv1alpha.NetworkInterfaceInternetEgressMode(mode),
+				},
+			}
+			err := cl.Create(ctx, iface)
+			require.Errorf(t, err, "only Inherit may be accepted, %s must not be", mode)
+			assert.Truef(t, apierrors.IsInvalid(err), "expected an Invalid error, got %v", err)
+			assert.Contains(t, err.Error(), "spec.egress.internet.mode")
+		})
+	}
+}
+
+// TestInterfaceEgressIsMutable asserts the field follows a claim that changes,
+// unlike the rest of what the claim carries onto an interface.
+func TestInterfaceEgressIsMutable(t *testing.T) {
+	cl := requireEnv(t)
+	ctx := context.Background()
+
+	iface := egressInterface("iface-egress-mutable")
+	require.NoError(t, cl.Create(ctx, iface))
+	t.Cleanup(func() { _ = cl.Delete(ctx, iface) })
+
+	iface.Spec.Egress = &networkingv1alpha.NetworkInterfaceEgress{
+		Internet: &networkingv1alpha.NetworkInterfaceInternetEgress{
+			Mode: networkingv1alpha.NetworkInterfaceInternetEgressInherit,
+		},
+	}
+	require.NoError(t, cl.Update(ctx, iface))
+}
+
 // TestNetworkInterfaceReportsEgressAddresses asserts the status a consumer
 // reads their egress address from round-trips, including the stability that
 // decides whether allow-listing it is safe.

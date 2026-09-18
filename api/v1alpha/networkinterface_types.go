@@ -336,6 +336,55 @@ type NetworkInterfaceSpec struct {
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:default="Delete"
 	ReclaimPolicy NetworkInterfaceReclaimPolicy `json:"reclaimPolicy,omitempty"`
+
+	// egress is what this interface reaches outside the platform. It comes from
+	// the claim, and the operator carries it without interpreting it, so a
+	// realizer reads the intent beside the result it is reported against.
+	//
+	// Only Inherit is accepted, which follows the network's declaration. An
+	// interface written today records Inherit, so accepting Enabled and Disabled
+	// later changes no existing interface.
+	//
+	// Mutable, because the claim's declaration is. An interface adopted from
+	// before the field existed carries none until its claim is reconciled.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default={internet:{mode:Inherit}}
+	Egress *NetworkInterfaceEgress `json:"egress,omitempty"`
+}
+
+// NetworkInterfaceEgress declares the outbound paths an interface carries.
+type NetworkInterfaceEgress struct {
+	// internet is whether this interface reaches destinations outside the
+	// platform.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default={mode:Inherit}
+	Internet *NetworkInterfaceInternetEgress `json:"internet,omitempty"`
+}
+
+// NetworkInterfaceInternetEgressMode is whether an interface reaches the
+// internet.
+//
+// +kubebuilder:validation:Enum=Inherit
+type NetworkInterfaceInternetEgressMode string
+
+const (
+	// NetworkInterfaceInternetEgressInherit follows the network's declaration.
+	// It is the only accepted value: per-interface control depends on
+	// per-interface routing, which no component implements.
+	NetworkInterfaceInternetEgressInherit NetworkInterfaceInternetEgressMode = "Inherit"
+)
+
+// NetworkInterfaceInternetEgress carries per-interface internet access from the
+// claim that asked for it.
+type NetworkInterfaceInternetEgress struct {
+	// mode is whether this interface reaches the internet. Only Inherit is
+	// accepted, which follows the network's declaration.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default=Inherit
+	Mode NetworkInterfaceInternetEgressMode `json:"mode,omitempty"`
 }
 
 // NetworkInterfaceStatus defines the observed state of NetworkInterface: which

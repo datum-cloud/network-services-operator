@@ -12,7 +12,7 @@ type LocationBindingSpec struct {
 	// LocationRef references the canonical cluster-scoped Location object.
 	LocationRef corev1.LocalObjectReference `json:"locationRef"`
 
-	// LocationClassName mirrors spec.locationClassName from the referenced Location.
+	// LocationClassName mirrors spec.locationClassRef.name from the referenced Location.
 	LocationClassName string `json:"locationClassName,omitempty"`
 
 	// DisplayName is a human-readable label for the location.
@@ -47,6 +47,10 @@ type LocationBindingStatus struct {
 // cluster-scoped projection of a cluster-scoped Location into a project's
 // virtual control plane, created once the location's class is supported, the
 // Location is Ready, and the corresponding ServiceAvailability is Available.
+//
+// Deprecated: read the Location projected into the project control plane by
+// locations.miloapis.com instead. This kind is still served, and still written
+// by the service catalog, only until its remaining consumers move.
 type LocationBinding struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

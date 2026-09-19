@@ -12,6 +12,8 @@ import (
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
+	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
+
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	"go.datum.net/network-services-operator/internal/config"
 )
@@ -46,7 +48,7 @@ func (r *NetworkContextHoldReconciler) Reconcile(ctx context.Context, req mcreco
 func (r *NetworkContextHoldReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	r.mgr = mgr
 
-	location := networkingv1alpha.LocationReference{
+	location := locationsv1alpha1.LocationReference{
 		Name: r.Location.Name,
 	}
 

@@ -40,6 +40,7 @@ import (
 
 	ipamv1alpha1 "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
 	"go.miloapis.com/ipam/pkg/ipamerrors"
+	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	"go.datum.net/network-services-operator/internal/config"
@@ -397,9 +398,13 @@ func startNetworkInterfaceEnv(t *testing.T) (client.Client, *rest.Config) {
 	testScheme := runtime.NewScheme()
 	require.NoError(t, clientgoscheme.AddToScheme(testScheme))
 	require.NoError(t, networkingv1alpha.AddToScheme(testScheme))
+	require.NoError(t, locationsv1alpha1.AddToScheme(testScheme))
 
 	env := &envtest.Environment{
-		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "config", "crd", "bases")},
+		CRDDirectoryPaths: []string{
+			filepath.Join("..", "..", "config", "crd", "bases"),
+			filepath.Join("..", "..", "config", "crd", "locations"),
+		},
 		ErrorIfCRDPathMissing: true,
 	}
 	cfg, err := env.Start()
@@ -490,7 +495,7 @@ func (s *scenario) createNetworkContext(
 	networkContext.Name = s.networkContextName(network)
 	networkContext.Spec = networkingv1alpha.NetworkContextSpec{
 		Network: networkingv1alpha.LocalNetworkRef{Name: network},
-		Location: networkingv1alpha.LocationReference{
+		Location: locationsv1alpha1.LocationReference{
 			Name: testLocationName,
 		},
 		IPFamilies: families,
@@ -500,7 +505,7 @@ func (s *scenario) createNetworkContext(
 }
 
 func (s *scenario) networkContextName(network string) string {
-	return networkContextName(network, networkingv1alpha.LocationReference{
+	return networkContextName(network, locationsv1alpha1.LocationReference{
 		Name: testLocationName,
 	})
 }
@@ -581,7 +586,7 @@ func (s *scenario) createSubnet(
 	subnet.Spec = networkingv1alpha.SubnetSpec{
 		SubnetClass:    "private",
 		NetworkContext: networkingv1alpha.LocalNetworkContextRef{Name: contextName},
-		Location: networkingv1alpha.LocationReference{
+		Location: locationsv1alpha1.LocationReference{
 			Name: testLocationName,
 		},
 		IPFamily:     family,

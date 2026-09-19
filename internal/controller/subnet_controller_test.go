@@ -13,6 +13,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
+
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 )
 
@@ -36,7 +38,7 @@ func TestSubnetPublishesTheRangeItsSpecCarries(t *testing.T) {
 		SubnetClass:    privateSubnetClass,
 		IPFamily:       networkingv1alpha.IPv6Protocol,
 		NetworkContext: networkingv1alpha.LocalNetworkContextRef{Name: "vpc-us-central-1"},
-		Location:       networkingv1alpha.LocationReference{Name: testLocationName},
+		Location:       locationsv1alpha1.LocationReference{Name: testLocationName},
 		StartAddress:   "fd20:1000:1:2::",
 		PrefixLength:   64,
 	}
@@ -66,11 +68,11 @@ func TestSubnetWithoutARangeIsStillAllocatedFromItsLocation(t *testing.T) {
 	namespace.Name = "ns-" + sanitizeName(strings.ToLower(t.Name()))
 	require.NoError(t, cl.Create(ctx, namespace))
 
-	location := &networkingv1alpha.Location{}
+	location := &locationsv1alpha1.Location{}
 	location.Name = "dfw"
-	location.Spec = networkingv1alpha.LocationSpec{
-		LocationClassName: "datum-managed",
-		Topology:          map[string]string{networkingv1alpha.TopologyCityCodeKey: "DFW"},
+	location.Spec = locationsv1alpha1.LocationSpec{
+		LocationClassRef: locationsv1alpha1.LocationClassReference{Name: "datum-managed"},
+		Topology:         map[string]string{locationsv1alpha1.TopologyCityCodeKey: "DFW"},
 	}
 	require.NoError(t, cl.Create(ctx, location))
 
@@ -79,7 +81,7 @@ func TestSubnetWithoutARangeIsStillAllocatedFromItsLocation(t *testing.T) {
 	networkContext.Name = "vpc-dfw"
 	networkContext.Spec = networkingv1alpha.NetworkContextSpec{
 		Network:  networkingv1alpha.LocalNetworkRef{Name: testNetworkName},
-		Location: networkingv1alpha.LocationReference{Name: location.Name},
+		Location: locationsv1alpha1.LocationReference{Name: location.Name},
 	}
 	require.NoError(t, cl.Create(ctx, networkContext))
 	apimeta.SetStatusCondition(&networkContext.Status.Conditions, metav1.Condition{
@@ -97,7 +99,7 @@ func TestSubnetWithoutARangeIsStillAllocatedFromItsLocation(t *testing.T) {
 		SubnetClass:    privateSubnetClass,
 		IPFamily:       networkingv1alpha.IPv4Protocol,
 		NetworkContext: networkingv1alpha.LocalNetworkContextRef{Name: networkContext.Name},
-		Location:       networkingv1alpha.LocationReference{Name: location.Name},
+		Location:       locationsv1alpha1.LocationReference{Name: location.Name},
 	}
 	require.NoError(t, cl.Create(ctx, subnet))
 

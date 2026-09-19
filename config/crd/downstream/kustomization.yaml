@@ -18,7 +18,7 @@
 # that context and its Subnet onto the hub, and Karmada propagates both to the
 # cells serving the location. The cell controller manager then serves
 # NetworkInterfaceClaims against them. ServingLocation is federated the same
-# way.
+# way, and its CRD comes from milo-os/locations rather than this repo.
 #
 # The Network itself is mirrored onto the hub as well, so what allocates a
 # network's identity on the fabric is driven by the network rather than by the
@@ -36,8 +36,9 @@ resources:
   - ../bases/networking.datumapis.com_httpproxies.yaml
   - ../bases/networking.datumapis.com_connectors.yaml
 
-  # Location identity, federated to cells
-  - ../bases/networking.datumapis.com_servinglocations.yaml
+  # Location identity, federated to cells. Owned by milo-os/locations; vendored
+  # here because infra applies this path to the cells that read it.
+  - ../locations/locations.miloapis.com_servinglocations.yaml
 
   # Network presence: hub stores bindings and mirrored contexts, cells receive
   # the contexts for the locations they serve

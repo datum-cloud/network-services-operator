@@ -4,6 +4,8 @@ package v1alpha
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
 )
 
 // NetworkContextSpec defines the desired state of NetworkContext
@@ -16,7 +18,7 @@ type NetworkContextSpec struct {
 	// The location of where a network context exists.
 	//
 	// +kubebuilder:validation:Required
-	Location LocationReference `json:"location,omitempty"`
+	Location locationsv1alpha1.LocationReference `json:"location,omitempty"`
 
 	// IP families the network carries, projected from the Network.
 	//

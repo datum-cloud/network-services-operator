@@ -23,7 +23,13 @@ gateway:
   # config/extension-server/deployment.yaml). When the file is absent or empty,
   # the page compiled into the operator image is used as the fallback — content
   # problems never block xDS or fail startup.
+  #
+  # offlineBodyPath is the page served when the edge had no healthy upstream to
+  # send the request to, which is what a NetworkService with no serving members
+  # looks like. Same fallback rules; when neither the file nor the embedded page
+  # is usable, those responses get the generic page above.
   errorPage:
     enabled: true
     bodyPath: /etc/datum/error-pages/error-5xx.html
+    offlineBodyPath: /etc/datum/error-pages/error-offline.html
     minStatusCode: 500

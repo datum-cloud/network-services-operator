@@ -23,6 +23,7 @@ var reconcilerControllerNames = map[string]string{
 	"ConnectorAdvertisementReconciler":             "connectoradvertisement",
 	"ConnectorReconciler":                          "connector",
 	"DomainReconciler":                             "domain",
+	"EdgeReachabilityReconciler":                   "edgereachability",
 	"GatewayClassReconciler":                       "gatewayclass",
 	"GatewayDownstreamCertificateSolverReconciler": "downstream-certificate-solver",
 	"GatewayDownstreamGCReconciler":                "gateway_downstream_resources",
@@ -42,9 +43,11 @@ var reconcilerControllerNames = map[string]string{
 	"NetworkPresenceReconciler":                    "networkpresence",
 	"NetworkPresenceSyncReconciler":                "networkpresencesync",
 	"NetworkReconciler":                            "network",
+	"NetworkServiceReconciler":                     "networkservice",
 	"SubnetClaimReconciler":                        "subnetclaim",
 	"SubnetReconciler":                             "subnet",
 	"TrafficProtectionPolicyReconciler":            "trafficprotectionpolicy",
+	"VPCEndpointSliceWriteBackReconciler":          "vpcendpointslicewriteback",
 }
 
 func registeredNames(registrations []namedSetup) []string {
@@ -137,7 +140,9 @@ func TestWebhookRegistrations_RegistersEveryWebhook(t *testing.T) {
 		"HTTPProxy",
 		"HTTPRoute",
 		"HTTPRouteFilter",
+		"Network",
 		"SecurityPolicy",
+		"TrafficProtectionPolicy",
 	}
 
 	got := registeredNames(webhookRegistrations(nil, config.NetworkServicesOperator{}))

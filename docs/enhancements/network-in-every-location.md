@@ -560,7 +560,7 @@ spec:
   ipFamilies:
     - IPv6
     - IPv4
-  mtu: 1460
+  mtu: 1440
 
   # The Network generation these were read from. An operator comparing this to
   # the Network answers "has this location caught up" without guessing.

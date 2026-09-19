@@ -20,6 +20,7 @@ import (
 	"google.golang.org/protobuf/types/known/anypb"
 	"google.golang.org/protobuf/types/known/structpb"
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -38,6 +39,7 @@ func testServerScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
 	s := runtime.NewScheme()
 	require.NoError(t, corev1.AddToScheme(s))
+	require.NoError(t, discoveryv1.AddToScheme(s))
 	require.NoError(t, networkingv1alpha.AddToScheme(s))
 	require.NoError(t, networkingv1alpha1.AddToScheme(s))
 	return s

@@ -20,6 +20,7 @@ resources:
 # Owned by milo-os/locations. Served here because the NetworkPresence
 # controller reads the Location projected into each project control plane.
 - locations
+- bases/networking.datumapis.com_networkservices.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:

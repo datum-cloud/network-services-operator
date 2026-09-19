@@ -32,7 +32,7 @@ spec:
                   name: us-central-1
                 ipFamilies:
                   - IPv6
-                mtu: 1460
+                mtu: 1440
 
     - name: A bound interface is published to the hub
       try:
@@ -87,7 +87,7 @@ spec:
                 network:
                   name: nic-visible-net
                 interfaceName: eth0
-                mtu: 1460
+                mtu: 1440
       catch:
         - script:
             content: |

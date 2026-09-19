@@ -5,10 +5,12 @@ import (
 	"net"
 	"net/url"
 	"strconv"
+	"time"
 
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/validation/field"
+	"k8s.io/utils/ptr"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
@@ -41,6 +43,27 @@ func ValidateHTTPProxy(httpProxy *networkingv1alpha.HTTPProxy) field.ErrorList {
 	}
 
 	allErrs = append(allErrs, validateHTTPProxyRules(httpProxy, field.NewPath("spec", "rules"))...)
+	allErrs = append(allErrs, validateHTTPProxyHealthCheck(httpProxy.Spec.HealthCheck, field.NewPath("spec", "healthCheck"))...)
+
+	return allErrs
+}
+
+func validateHTTPProxyHealthCheck(healthCheck *networkingv1alpha.HTTPProxyHealthCheck, fldPath *field.Path) field.ErrorList {
+	if healthCheck == nil || healthCheck.Passive == nil {
+		return nil
+	}
+
+	allErrs := field.ErrorList{}
+	passivePath := fldPath.Child("passive")
+	if v := healthCheck.Passive.Consecutive5xxErrors; v != nil && *v < 1 {
+		allErrs = append(allErrs, field.Invalid(passivePath.Child("consecutive5xxErrors"), *v, "must be at least 1"))
+	}
+	if v := healthCheck.Passive.BaseEjectionTime; v != nil {
+		allErrs = append(allErrs, validateGatewayDuration(passivePath.Child("baseEjectionTime"), v, ptr.To(time.Second), nil)...)
+	}
+	if v := healthCheck.Passive.MaxEjectionPercent; v != nil && (*v < 1 || *v > 100) {
+		allErrs = append(allErrs, field.Invalid(passivePath.Child("maxEjectionPercent"), *v, "must be between 1 and 100, inclusive"))
+	}
 
 	return allErrs
 }
@@ -134,9 +157,9 @@ func validateHTTPProxyRuleBackends(rule networkingv1alpha.HTTPProxyRule, fldPath
 func validateHTTPProxyRuleBackend(backend networkingv1alpha.HTTPProxyRuleBackend, fldPath *field.Path) field.ErrorList {
 	allErrs := field.ErrorList{}
 
-	// instance backends don't use the endpoint field at all — see the instance
-	// validation block below instead.
-	if backend.Instance == nil {
+	// instance and networkService backends don't use the endpoint field at all
+	// — see their own validation blocks below instead.
+	if backend.Instance == nil && backend.NetworkService == nil {
 		allErrs = append(allErrs, validateHTTPProxyRuleBackendEndpoint(backend, fldPath)...)
 	}
 
@@ -165,6 +188,26 @@ func validateHTTPProxyRuleBackend(backend networkingv1alpha.HTTPProxyRuleBackend
 		} else {
 			for _, msg := range validation.IsDNS1123Subdomain(backend.Instance.Name) {
 				allErrs = append(allErrs, field.Invalid(instanceFieldPath, backend.Instance.Name, msg))
+			}
+		}
+	}
+
+	if backend.NetworkService != nil {
+		nameFieldPath := fldPath.Child("networkService", "name")
+		if backend.NetworkService.Name == "" {
+			allErrs = append(allErrs, field.Required(nameFieldPath, "network service name is required"))
+		} else {
+			for _, msg := range validation.IsDNS1123Subdomain(backend.NetworkService.Name) {
+				allErrs = append(allErrs, field.Invalid(nameFieldPath, backend.NetworkService.Name, msg))
+			}
+		}
+
+		portFieldPath := fldPath.Child("networkService", "port")
+		if backend.NetworkService.Port == "" {
+			allErrs = append(allErrs, field.Required(portFieldPath, "network service port name is required"))
+		} else {
+			for _, msg := range validation.IsDNS1123Label(backend.NetworkService.Port) {
+				allErrs = append(allErrs, field.Invalid(portFieldPath, backend.NetworkService.Port, msg))
 			}
 		}
 	}

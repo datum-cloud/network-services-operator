@@ -526,8 +526,14 @@ func webhookRegistrations(mgr mcmanager.Manager, serverConfig config.NetworkServ
 		{"HTTPProxy", true, func() error {
 			return networkingv1alphawebhooks.SetupHTTPProxyWebhookWithManager(mgr)
 		}},
+		{"TrafficProtectionPolicy", true, func() error {
+			return networkingv1alphawebhooks.SetupTrafficProtectionPolicyWebhookWithManager(mgr)
+		}},
 		{"Domain", true, func() error {
 			return networkingv1alphawebhooks.SetupDomainWebhookWithManager(mgr)
+		}},
+		{"Network", true, func() error {
+			return networkingv1alphawebhooks.SetupNetworkWebhookWithManager(mgr)
 		}},
 		{"BackendTrafficPolicy", true, func() error {
 			return webhookgatewayv1alpha1.SetupBackendTrafficPolicyWebhookWithManager(mgr, serverConfig)
@@ -648,6 +654,17 @@ func controllerRegistrations(
 		}},
 		{"networkpolicy", true, func() error {
 			return (&controller.NetworkPolicyReconciler{}).SetupWithManager(mgr)
+		}},
+		{"networkservice", true, func() error {
+			return (&controller.NetworkServiceReconciler{}).SetupWithManager(mgr)
+		}},
+		// Which workloads are behind a proxy is only answerable in a project
+		// control plane, and only a cell can act on it. The record this writes to
+		// the hub is what carries the answer between them.
+		{"edgereachability", true, func() error {
+			return (&controller.EdgeReachabilityReconciler{
+				DownstreamCluster: deps.downstreamCluster,
+			}).SetupWithManager(mgr)
 		}},
 		{"subnet", true, func() error {
 			return (&controller.SubnetReconciler{}).SetupWithManager(mgr)

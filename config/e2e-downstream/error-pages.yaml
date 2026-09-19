@@ -1,6 +1,8 @@
-# Branded 5xx error page, mounted at /etc/datum/error-pages. The body carries a
-# known marker so the suite can tell the branded page apart from the proxy's
-# default 5xx body by content.
+# Branded error pages, mounted at /etc/datum/error-pages. Both bodies carry a
+# known marker so the suite can tell a branded page apart from the proxy's
+# default 5xx body by content. The offline body answers a 5xx Envoy raised
+# because it had no healthy upstream, which is how the suite's dead-backend
+# route fails; the generic body answers every other 5xx.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -13,4 +15,11 @@ data:
     <html>
       <head><title>Service Unavailable</title></head>
       <body><h1>This service is temporarily unavailable.</h1></body>
+    </html>
+  error-offline.html: |
+    <!-- X-Datum-Branded-Page: v1 -->
+    <!DOCTYPE html>
+    <html>
+      <head><title>Application Offline</title></head>
+      <body><h1>This application is not serving right now.</h1></body>
     </html>

@@ -168,6 +168,16 @@ func SetObjectDefaults_NetworkServicesOperator(in *NetworkServicesOperator) {
 	if in.Gateway.ExtensionAPIValidationOptions.BackendTrafficPolicies.ClusterSettings.HTTP2MaxConcurrentStreams == 0 {
 		in.Gateway.ExtensionAPIValidationOptions.BackendTrafficPolicies.ClusterSettings.HTTP2MaxConcurrentStreams = 1024
 	}
+	if in.Gateway.ExtensionAPIValidationOptions.BackendTrafficPolicies.ClusterSettings.HealthCheckMinBaseEjectionTime == nil {
+		if err := json.Unmarshal([]byte(`"1s"`), &in.Gateway.ExtensionAPIValidationOptions.BackendTrafficPolicies.ClusterSettings.HealthCheckMinBaseEjectionTime); err != nil {
+			panic(err)
+		}
+	}
+	if in.Gateway.ExtensionAPIValidationOptions.BackendTrafficPolicies.ClusterSettings.HealthCheckMinInterval == nil {
+		if err := json.Unmarshal([]byte(`"1s"`), &in.Gateway.ExtensionAPIValidationOptions.BackendTrafficPolicies.ClusterSettings.HealthCheckMinInterval); err != nil {
+			panic(err)
+		}
+	}
 	if in.Gateway.ExtensionAPIValidationOptions.HTTPRouteFilters.MaxInlineBodySize == 0 {
 		in.Gateway.ExtensionAPIValidationOptions.HTTPRouteFilters.MaxInlineBodySize = 1024
 	}
@@ -264,6 +274,16 @@ func SetObjectDefaults_NetworkServicesOperator(in *NetworkServicesOperator) {
 	}
 	if in.Gateway.ExtensionAPIValidationOptions.SecurityPolicies.ClusterSettings.HTTP2MaxConcurrentStreams == 0 {
 		in.Gateway.ExtensionAPIValidationOptions.SecurityPolicies.ClusterSettings.HTTP2MaxConcurrentStreams = 1024
+	}
+	if in.Gateway.ExtensionAPIValidationOptions.SecurityPolicies.ClusterSettings.HealthCheckMinBaseEjectionTime == nil {
+		if err := json.Unmarshal([]byte(`"1s"`), &in.Gateway.ExtensionAPIValidationOptions.SecurityPolicies.ClusterSettings.HealthCheckMinBaseEjectionTime); err != nil {
+			panic(err)
+		}
+	}
+	if in.Gateway.ExtensionAPIValidationOptions.SecurityPolicies.ClusterSettings.HealthCheckMinInterval == nil {
+		if err := json.Unmarshal([]byte(`"1s"`), &in.Gateway.ExtensionAPIValidationOptions.SecurityPolicies.ClusterSettings.HealthCheckMinInterval); err != nil {
+			panic(err)
+		}
 	}
 	SetDefaults_GatewayResourceReplicatorConfig(&in.Gateway.ResourceReplicator)
 	if in.Gateway.MaxConcurrentReconciles == 0 {

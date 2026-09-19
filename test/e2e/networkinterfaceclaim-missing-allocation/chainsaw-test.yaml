@@ -41,8 +41,9 @@ spec:
                 location:
                   name: us-central-1
                 ipFamilies:
+                  - IPv6
                   - IPv4
-                mtu: 1460
+                mtu: 1440
 
     - name: A claim binds and holds one address
       try:
@@ -57,6 +58,7 @@ spec:
                 ipam:
                   mode: Auto
                 ipFamilies:
+                  - IPv6
                   - IPv4
         - create:
             resource:

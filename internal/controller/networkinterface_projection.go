@@ -47,10 +47,15 @@ func projectedInterface(source *networkingv1alpha.NetworkInterface, location str
 }
 
 func projectionLabels(source *networkingv1alpha.NetworkInterface, location string) map[string]string {
-	labels := map[string]string{
-		networkingv1alpha.NetworkInterfaceProjectionLabel:      "true",
-		networkingv1alpha.NetworkInterfaceSourceNamespaceLabel: source.Namespace,
+	labels := map[string]string{}
+	for key, value := range source.Labels {
+		if hasAnyPrefix(key, consumerLabelPrefixes) {
+			labels[key] = value
+		}
 	}
+
+	labels[networkingv1alpha.NetworkInterfaceProjectionLabel] = "true"
+	labels[networkingv1alpha.NetworkInterfaceSourceNamespaceLabel] = source.Namespace
 
 	if location != "" {
 		labels[networkingv1alpha.NetworkInterfaceLocationLabel] = location
@@ -71,6 +76,10 @@ func isProjection(iface *networkingv1alpha.NetworkInterface) bool {
 // writeProjection converges a copy onto what the source says. The copy is
 // overwritten in full on every pass, so an edit to it never survives and never
 // reaches the source: no controller reads a copy to decide anything.
+//
+// A label the source has dropped is removed from the copy rather than left in
+// place. A copy is selected by its labels, so one the source no longer carries
+// is a member of a service the interface has left.
 func writeProjection(
 	ctx context.Context,
 	cl client.Client,
@@ -84,11 +93,11 @@ func writeProjection(
 	}
 
 	if _, err := controllerutil.CreateOrUpdate(ctx, cl, copied, func() error {
-		if copied.Labels == nil {
-			copied.Labels = map[string]string{}
-		}
-		maps.Copy(copied.Labels, desired.Labels)
-		maps.Copy(copied.Labels, extraLabels)
+		wanted := map[string]string{}
+		maps.Copy(wanted, desired.Labels)
+		maps.Copy(wanted, extraLabels)
+
+		copied.Labels, _ = replaceOwnedLabels(copied.Labels, wanted, platformLabelPrefixes, nil)
 		copied.Spec = *desired.Spec.DeepCopy()
 		if owner != nil {
 			return owner(copied)

@@ -96,6 +96,15 @@ Spec defines the desired state of an HTTPProxy.
         </td>
         <td>true</td>
       </tr><tr>
+        <td><b><a href="#httpproxyspechealthcheck">healthCheck</a></b></td>
+        <td>object</td>
+        <td>
+          HealthCheck configures how backends are considered healthy. It applies
+to every backend on the HTTPProxy. If unset, Envoy treats every
+endpoint as healthy.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
         <td><b>hostnames</b></td>
         <td>[]string</td>
         <td>
@@ -135,6 +144,18 @@ field and do not require additional configuration by the user.
 Wildcard hostnames are not supported at this time.<br/>
         </td>
         <td>false</td>
+      </tr><tr>
+        <td><b><a href="#httpproxyspecloadbalancer">loadBalancer</a></b></td>
+        <td>object</td>
+        <td>
+          LoadBalancer selects the algorithm used to distribute requests across
+every rule's backends, whenever a rule has more than one. It applies
+to the whole HTTPProxy rather than to an individual rule. If unset,
+Envoy's own default algorithm applies.<br/>
+          <br/>
+            <i>Validations</i>:<li>(self.type == 'ConsistentHash') == has(self.consistentHash): consistentHash is required when type is ConsistentHash, and forbidden otherwise</li>
+        </td>
+        <td>false</td>
       </tr></tbody>
 </table>
 
@@ -164,9 +185,10 @@ backends.
           Backends defines the backend(s) where matching requests should be
 sent.
 
-Note: While this field is a list, only a single element is permitted at
-this time due to underlying Gateway limitations. Once addressed, MaxItems
-will be increased to allow for multiple backends on any given route.<br/>
+When more than one backend is specified, requests are weighted load
+balanced across all of them (see the weight field on each backend). A
+connector backend must be the only backend in the rule — connectors do
+not support weighted load balancing across multiple backends today.<br/>
         </td>
         <td>false</td>
       </tr><tr>
@@ -274,13 +296,45 @@ Mutually exclusive with endpoint and connector.<br/>
         </td>
         <td>false</td>
       </tr><tr>
+        <td><b><a href="#httpproxyspecrulesindexbackendsindexnetworkservice">networkService</a></b></td>
+        <td>object</td>
+        <td>
+          NetworkService references a NetworkService in the same namespace, and one
+of the ports it declares. Every member the service resolves to becomes an
+endpoint of this backend, so instances appearing, disappearing, and moving
+between locations need no edit here.
+
+Mutually exclusive with endpoint, connector and instance.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
         <td><b><a href="#httpproxyspecrulesindexbackendsindextls">tls</a></b></td>
         <td>object</td>
         <td>
           TLS contains backend TLS configuration.
 
 When the backend endpoint uses HTTPS with an IP address, the Hostname field
-must be specified for TLS certificate validation.<br/>
+must be specified for TLS certificate validation.
+
+Not supported for networkService backends, which are always reached over
+plaintext HTTP.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>weight</b></td>
+        <td>integer</td>
+        <td>
+          Weight specifies the proportion of requests forwarded to this backend,
+relative to the sum of weights across all backends in the rule.
+Follows the same semantics as the Gateway API's HTTPBackendRef.weight:
+computed as weight/(sum of all weights in the rule); a weight of 0
+means no traffic is forwarded to this backend; if unspecified, weight
+defaults to 1.<br/>
+          <br/>
+            <i>Format</i>: int32<br/>
+            <i>Default</i>: 1<br/>
+            <i>Minimum</i>: 0<br/>
+            <i>Maximum</i>: 1e+06<br/>
         </td>
         <td>false</td>
       </tr></tbody>
@@ -2137,6 +2191,48 @@ Must exist in the same namespace as this HTTPProxy.<br/>
 </table>
 
 
+### HTTPProxy.spec.rules[index].backends[index].networkService
+<sup><sup>[↩ Parent](#httpproxyspecrulesindexbackendsindex)</sup></sup>
+
+
+
+NetworkService references a NetworkService in the same namespace, and one
+of the ports it declares. Every member the service resolves to becomes an
+endpoint of this backend, so instances appearing, disappearing, and moving
+between locations need no edit here.
+
+Mutually exclusive with endpoint, connector and instance.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>name</b></td>
+        <td>string</td>
+        <td>
+          Name of the referenced NetworkService. Must exist in the same namespace as
+this HTTPProxy.<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>port</b></td>
+        <td>string</td>
+        <td>
+          Port names a port declared in the referenced service's spec.ports, rather
+than giving a number, so the reference survives a change to the port the
+members answer on.<br/>
+        </td>
+        <td>true</td>
+      </tr></tbody>
+</table>
+
+
 ### HTTPProxy.spec.rules[index].backends[index].tls
 <sup><sup>[↩ Parent](#httpproxyspecrulesindexbackendsindex)</sup></sup>
 
@@ -2146,6 +2242,9 @@ TLS contains backend TLS configuration.
 
 When the backend endpoint uses HTTPS with an IP address, the Hostname field
 must be specified for TLS certificate validation.
+
+Not supported for networkService backends, which are always reached over
+plaintext HTTP.
 
 <table>
     <thead>
@@ -4210,6 +4309,194 @@ documentation to determine the supported dialect.<br/>
           <br/>
             <i>Enum</i>: Exact, RegularExpression<br/>
             <i>Default</i>: Exact<br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### HTTPProxy.spec.healthCheck
+<sup><sup>[↩ Parent](#httpproxyspec)</sup></sup>
+
+
+
+HealthCheck configures how backends are considered healthy. It applies
+to every backend on the HTTPProxy. If unset, Envoy treats every
+endpoint as healthy.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b><a href="#httpproxyspechealthcheckpassive">passive</a></b></td>
+        <td>object</td>
+        <td>
+          Passive configures Envoy outlier detection: consecutive 5xx responses
+eject an endpoint from load balancing for a growing period, then
+Envoy re-admits it. Unset keeps every endpoint eligible.
+
+See: https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/upstream/outlier.html<br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### HTTPProxy.spec.healthCheck.passive
+<sup><sup>[↩ Parent](#httpproxyspechealthcheck)</sup></sup>
+
+
+
+Passive configures Envoy outlier detection: consecutive 5xx responses
+eject an endpoint from load balancing for a growing period, then
+Envoy re-admits it. Unset keeps every endpoint eligible.
+
+See: https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/upstream/outlier.html
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>baseEjectionTime</b></td>
+        <td>string</td>
+        <td>
+          BaseEjectionTime is how long an endpoint stays ejected after its
+first streak of failures. Later ejections multiply this duration.
+Defaults to 30s. Envoy re-admits the endpoint when the period
+elapses; it does not replace the instance.<br/>
+          <br/>
+            <i>Default</i>: 30s<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>consecutive5xxErrors</b></td>
+        <td>integer</td>
+        <td>
+          Consecutive5xxErrors is the number of consecutive 5xx responses that
+eject an endpoint. Defaults to 5.<br/>
+          <br/>
+            <i>Format</i>: int32<br/>
+            <i>Default</i>: 5<br/>
+            <i>Minimum</i>: 1<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>maxEjectionPercent</b></td>
+        <td>integer</td>
+        <td>
+          MaxEjectionPercent is the maximum percentage of endpoints in a
+backend that may be ejected at once. Defaults to 50. Must be at
+least 1 so a single-endpoint backend can still be ejected. This
+limit is per backend, not across every backend on the HTTPProxy.<br/>
+          <br/>
+            <i>Format</i>: int32<br/>
+            <i>Default</i>: 50<br/>
+            <i>Minimum</i>: 1<br/>
+            <i>Maximum</i>: 100<br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### HTTPProxy.spec.loadBalancer
+<sup><sup>[↩ Parent](#httpproxyspec)</sup></sup>
+
+
+
+LoadBalancer selects the algorithm used to distribute requests across
+every rule's backends, whenever a rule has more than one. It applies
+to the whole HTTPProxy rather than to an individual rule. If unset,
+Envoy's own default algorithm applies.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>type</b></td>
+        <td>enum</td>
+        <td>
+          Type selects the load balancing algorithm.
+
+RoundRobin cycles through backends in order. Random picks a backend
+uniformly at random. LeastRequest picks the backend with the fewest
+active requests, biased toward spreading load evenly under uneven
+latency. ConsistentHash routes requests that hash the same way (see
+consistentHash) to the same backend, so the same client keeps
+landing on the same backend so long as the backend set is stable.<br/>
+          <br/>
+            <i>Enum</i>: RoundRobin, Random, LeastRequest, ConsistentHash<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b><a href="#httpproxyspecloadbalancerconsistenthash">consistentHash</a></b></td>
+        <td>object</td>
+        <td>
+          ConsistentHash configures what part of the request is hashed to pick
+a backend. Required when type is ConsistentHash, and forbidden
+otherwise.<br/>
+          <br/>
+            <i>Validations</i>:<li>(self.type == 'Header') == has(self.header): header is required when type is Header, and forbidden otherwise</li>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### HTTPProxy.spec.loadBalancer.consistentHash
+<sup><sup>[↩ Parent](#httpproxyspecloadbalancer)</sup></sup>
+
+
+
+ConsistentHash configures what part of the request is hashed to pick
+a backend. Required when type is ConsistentHash, and forbidden
+otherwise.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>type</b></td>
+        <td>enum</td>
+        <td>
+          Type selects what part of the request is hashed to pick a backend.
+
+SourceIP hashes the client's source IP address. Header hashes the
+value of the request header named in the header field.<br/>
+          <br/>
+            <i>Enum</i>: SourceIP, Header<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>header</b></td>
+        <td>string</td>
+        <td>
+          Header names the request header to hash on. Required when type is
+Header, and forbidden otherwise.<br/>
         </td>
         <td>false</td>
       </tr></tbody>

@@ -76,7 +76,7 @@ a provider needs to configure a NIC without reading any other resource.<br/>
 claim holds it, what realizes it on the data plane, and whether programming
 has succeeded.<br/>
           <br/>
-            <i>Default</i>: map[conditions:[map[lastTransitionTime:1970-01-01T00:00:00Z message:Waiting for controller reason:Pending status:Unknown type:Allocated] map[lastTransitionTime:1970-01-01T00:00:00Z message:Waiting for controller reason:Pending status:Unknown type:Prepared] map[lastTransitionTime:1970-01-01T00:00:00Z message:Waiting for controller reason:Pending status:Unknown type:Programmed]]]<br/>
+            <i>Default</i>: map[conditions:[map[lastTransitionTime:1970-01-01T00:00:00Z message:Waiting for controller reason:Pending status:Unknown type:Allocated] map[lastTransitionTime:1970-01-01T00:00:00Z message:Waiting for controller reason:Pending status:Unknown type:Prepared] map[lastTransitionTime:1970-01-01T00:00:00Z message:Waiting for controller reason:Pending status:Unknown type:Programmed] map[lastTransitionTime:1970-01-01T00:00:00Z message:Waiting for controller reason:Pending status:Unknown type:HolderAvailable]]]<br/>
         </td>
         <td>false</td>
       </tr></tbody>
@@ -411,7 +411,9 @@ provider sets it once an attachment exists.<br/>
         <td>
           conditions report the current state of the interface. Allocated means every
 address is held. Prepared means the data plane is ready for a workload to
-consume it. Programmed means the data plane carries the addresses.<br/>
+consume it. Programmed means the data plane carries the addresses.
+HolderAvailable means whatever holds the interface reports itself available
+to serve, and it is the only one of the four a service reads.<br/>
         </td>
         <td>false</td>
       </tr><tr>

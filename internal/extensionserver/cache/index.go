@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/url"
 	"sort"
 	"strconv"
@@ -120,6 +121,13 @@ func populateFromClient(ctx context.Context, cl client.Client, idx *PolicyIndex,
 		extmetrics.TPPCacheGeneration.WithLabelValues(info.Namespace, info.Name).Set(float64(info.Generation))
 	}
 
+	// --- EndpointSlices → VRF-binding lookups ---
+	var sliceList discoveryv1.EndpointSliceList
+	if err := cl.List(ctx, &sliceList); err != nil {
+		return fmt.Errorf("list EndpointSlices: %w", err)
+	}
+	tenantByAddress, addressesByOwner := endpointSliceAddressMaps(&sliceList)
+
 	// --- HTTPProxies → ConnectorInfo ---
 	var proxyList networkingv1alpha.HTTPProxyList
 	if err := cl.List(ctx, &proxyList); err != nil {
@@ -135,7 +143,7 @@ func populateFromClient(ctx context.Context, cl client.Client, idx *PolicyIndex,
 			effectiveNS = proxy.Namespace
 		}
 		for ruleIndex, rule := range proxy.Spec.Rules {
-			for _, backend := range rule.Backends {
+			for backendIndex, backend := range rule.Backends {
 				switch {
 				case backend.Connector != nil:
 					targetHost, targetPort, err := parseEndpoint(backend.Endpoint)
@@ -198,11 +206,125 @@ func populateFromClient(ctx context.Context, cl client.Client, idx *PolicyIndex,
 					}
 
 					idx.VPCPods[key] = VPCPodInfo{TenantID: endpointSlice.Labels[VPCPodTenantIDLabel]}
+
+				case backend.NetworkService != nil:
+					key := VPCPodKey{
+						UpstreamNS:    effectiveNS,
+						HTTPProxyName: proxy.Name,
+						RuleIndex:     ruleIndex,
+					}
+
+					// A networkService backend names no EndpointSlice, so
+					// its tenant is joined by member address instead. The
+					// slice the HTTPProxy controller synthesized for this
+					// backend is named for the proxy and the rule/backend
+					// position, which is what makes it addressable from the
+					// replica alone.
+					owner := client.ObjectKey{
+						Namespace: proxy.Namespace,
+						Name:      fmt.Sprintf("%s-%d-%d", proxy.Name, ruleIndex, backendIndex),
+					}
+
+					idx.VPCPods[key] = VPCPodInfo{
+						TenantID: tenantForAddresses(addressesByOwner[owner], tenantByAddress),
+					}
 				}
 			}
 		}
 	}
 	return nil
+}
+
+// endpointSliceAddressMaps builds the two lookups a networkService backend's
+// VRF binding is resolved through, in one pass over the cluster's
+// EndpointSlices.
+//
+// tenantByAddress maps a member address to the tenant galactic labelled that
+// address's own slice with. An edge holds both the slices galactic publishes
+// for workloads it hosts and the copies federated in from other cells, so a
+// member resolves from any edge, not only the one it runs on.
+//
+// addressesByOwner maps a synthesized backend slice to the member addresses
+// its downstream copy carries. The copy is what exists at an edge, and it
+// names its origin through UpstreamOwnerNameLabel — without which the
+// lookup would need the copy's own UID-derived name.
+//
+// Addresses are canonicalised on both sides so the join survives the two
+// sources spelling one IPv6 address differently.
+func endpointSliceAddressMaps(sliceList *discoveryv1.EndpointSliceList) (
+	tenantByAddress map[string]string,
+	addressesByOwner map[client.ObjectKey][]string,
+) {
+	tenantByAddress = make(map[string]string)
+	addressesByOwner = make(map[client.ObjectKey][]string)
+
+	for i := range sliceList.Items {
+		slice := &sliceList.Items[i]
+		tenantID := slice.Labels[VPCPodTenantIDLabel]
+		owner := slice.Labels[downstreamclient.UpstreamOwnerNameLabel]
+		if tenantID == "" && owner == "" {
+			continue
+		}
+
+		ownerKey := client.ObjectKey{Namespace: slice.Namespace, Name: owner}
+		for _, endpoint := range slice.Endpoints {
+			for _, rawAddress := range endpoint.Addresses {
+				address := canonicalAddress(rawAddress)
+				if address == "" {
+					continue
+				}
+				if tenantID != "" {
+					tenantByAddress[address] = tenantID
+				}
+				if owner != "" {
+					addressesByOwner[ownerKey] = append(addressesByOwner[ownerKey], address)
+				}
+			}
+		}
+	}
+
+	return tenantByAddress, addressesByOwner
+}
+
+// canonicalAddress normalises an endpoint address so two spellings of one
+// IPv6 address compare equal. Returns "" for anything unparseable.
+func canonicalAddress(address string) string {
+	ip := net.ParseIP(address)
+	if ip == nil {
+		return ""
+	}
+	return ip.String()
+}
+
+// tenantForAddresses resolves the one tenant every member of a networkService
+// backend sits behind.
+//
+// A VRF binding is a property of the whole Envoy cluster rather than of an
+// individual endpoint, so a backend whose members span more than one VPC has
+// no correct answer and is given none — binding to either VPC's device would
+// black-hole the other's members. Members that resolve to no tenant are
+// skipped rather than treated as a conflict: a slice that has not federated
+// in yet must not unbind the members that have.
+func tenantForAddresses(addresses []string, tenantByAddress map[string]string) string {
+	var vpc, tenantID string
+	for _, address := range addresses {
+		candidate, ok := tenantByAddress[address]
+		if !ok {
+			continue
+		}
+		candidateVPC, ok := TenantVPC(candidate)
+		if !ok {
+			continue
+		}
+		if vpc == "" {
+			vpc, tenantID = candidateVPC, candidate
+			continue
+		}
+		if candidateVPC != vpc {
+			return ""
+		}
+	}
+	return tenantID
 }
 
 // connectorLiveness determines whether a connector is online and, if so, its

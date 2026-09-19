@@ -35,8 +35,9 @@ spec:
                 location:
                   name: us-central-1
                 ipFamilies:
+                  - IPv6
                   - IPv4
-                mtu: 1460
+                mtu: 1440
 
     - name: A claim naming datum-public-v4 binds
       try:
@@ -51,6 +52,7 @@ spec:
                 ipam:
                   mode: Auto
                 ipFamilies:
+                  - IPv6
                   - IPv4
         - create:
             resource:

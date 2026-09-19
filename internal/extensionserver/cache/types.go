@@ -5,6 +5,8 @@
 package cache
 
 import (
+	"strings"
+
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	"sigs.k8s.io/gateway-api/apis/v1alpha2"
 )
@@ -106,19 +108,36 @@ type ConnectorKey struct {
 	RuleIndex     int
 }
 
-// VPCPodTenantIDLabel is the label galactic-cni (#854) is expected to set on
-// the EndpointSlice it publishes for a VPC pod. Deliberately duplicated
-// rather than imported from internal/controller.VPCPodTenantIDLabel — the
-// extension server and controller packages are kept decoupled, and this
-// value is itself an unconfirmed placeholder pending #854's implementation.
+// VPCPodTenantIDLabel is the label galactic sets on every EndpointSlice it
+// publishes for a VPC workload, carrying the "<vpc>-<vpcAttachment>" tenant
+// identifier. Matches crdnames.LabelTenantID in datum-cloud/galactic.
+// Deliberately duplicated rather than imported from
+// internal/controller.VPCPodTenantIDLabel — the extension server and
+// controller packages are kept decoupled.
 const VPCPodTenantIDLabel = "galactic.datum.net/tenant-id"
+
+// TenantVPC returns the VPC half of a "<vpc>-<vpcAttachment>" tenant
+// identifier. galactic names a VRF device by the VPC alone, so every
+// attachment landing on one VPC shares a single device and the attachment
+// half is never part of the name. Both halves are base62 and so can never
+// contain the separator themselves, which makes the split unambiguous.
+//
+// Mirrors crdnames.ParseTenantIdentifier in datum-cloud/galactic.
+func TenantVPC(tenantID string) (string, bool) {
+	vpc, vpcAttachment, found := strings.Cut(tenantID, "-")
+	if !found || vpc == "" || vpcAttachment == "" {
+		return "", false
+	}
+	return vpc, true
+}
 
 // VPCPodInfo holds the fields the mutation layer needs to bind an Envoy
 // cluster's outbound socket to a tenant's VRF device.
 type VPCPodInfo struct {
-	// TenantID is read from VPCPodTenantIDLabel on the referenced
-	// EndpointSlice. Empty when the EndpointSlice is missing, unreadable, or
-	// carries no tenant-id label — callers must treat that as "skip
+	// TenantID is the "<vpc>-<vpcAttachment>" identifier galactic labels an
+	// EndpointSlice with — read directly off the slice an instance backend
+	// names, or joined by member address for a networkService backend. Empty
+	// when no tenant could be resolved; callers must treat that as "skip
 	// mutation," never bind to a zero-value device name.
 	TenantID string
 }

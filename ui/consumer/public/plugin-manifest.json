@@ -1,0 +1,53 @@
+{
+  "name": "network.networking.datumapis.com",
+  "version": "0.1.0",
+  "sdk": { "name": "@datum-cloud/portal-plugin-sdk", "range": "^1.0.0" },
+  "remoteEntry": "remoteEntry.js",
+  "exposedModules": {
+    "NetworkList": "./src/pages/network-list.tsx",
+    "NetworkDetail": "./src/pages/network-detail.tsx"
+  },
+  "extensions": [
+    {
+      "type": "portal.nav/project",
+      "properties": {
+        "id": "networks",
+        "title": "Galactic VPC",
+        "icon": "network",
+        "path": "networks",
+        "order": 10,
+        "section": "connect"
+      }
+    },
+    {
+      "type": "portal.page/project",
+      "properties": {
+        "path": "networks",
+        "component": { "$codeRef": "NetworkList" }
+      },
+      "requirements": {
+        "permissions": [
+          { "group": "networking.datumapis.com", "resource": "networks", "verb": "list" },
+          { "group": "networking.datumapis.com", "resource": "networks", "verb": "create" }
+        ]
+      }
+    },
+    {
+      "type": "portal.page/project",
+      "properties": {
+        "path": "networks/:networkName",
+        "component": { "$codeRef": "NetworkDetail" }
+      },
+      "requirements": {
+        "permissions": [
+          { "group": "networking.datumapis.com", "resource": "networks", "verb": "get" },
+          { "group": "networking.datumapis.com", "resource": "networks", "verb": "update" },
+          { "group": "networking.datumapis.com", "resource": "networks", "verb": "delete" },
+          { "group": "networking.datumapis.com", "resource": "networkservices", "verb": "list" },
+          { "group": "networking.datumapis.com", "resource": "networkservices", "verb": "create" },
+          { "group": "networking.datumapis.com", "resource": "networkservices", "verb": "delete" }
+        ]
+      }
+    }
+  ]
+}

@@ -14,6 +14,9 @@ spec:
               kind: Namespace
               metadata:
                 name: presence-edit-project
+                labels:
+                  meta.datumapis.com/upstream-cluster-name: cluster-project-alpha
+                  meta.datumapis.com/upstream-namespace: default
         - apply:
             resource:
               apiVersion: v1
@@ -45,8 +48,8 @@ spec:
                 ipam:
                   mode: Auto
                 ipFamilies:
-                  - IPv4
-                mtu: 1460
+                  - IPv6
+                mtu: 1440
 
     - name: Make the network present in the location
       try:
@@ -70,7 +73,7 @@ spec:
                   kind: LoadBalancer
                   name: presence-edit-consumer
         - assert:
-            timeout: 1m
+            timeout: 2m
             resource:
               apiVersion: networking.datumapis.com/v1alpha
               kind: NetworkContext
@@ -78,9 +81,9 @@ spec:
                 name: presence-edit-net-presence-edit-loc
                 namespace: presence-edit-project
               spec:
-                mtu: 1460
+                mtu: 1440
                 ipFamilies:
-                  - IPv4
+                  - IPv6
 
     - name: Edit the network
       description: |
@@ -98,8 +101,8 @@ spec:
               spec:
                 mtu: 8856
                 ipFamilies:
-                  - IPv4
                   - IPv6
+                  - IPv4
 
     - name: Assert the location learns
       try:
@@ -114,6 +117,6 @@ spec:
               spec:
                 mtu: 8856
                 ipFamilies:
-                  - IPv4
                   - IPv6
+                  - IPv4
 

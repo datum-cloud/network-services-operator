@@ -242,6 +242,7 @@ rules:
   - connectoradvertisements
   - connectors
   - domains
+  - edgereachabilities
   - httpproxies
   - networkbindings
   - networkcontexts
@@ -291,6 +292,7 @@ rules:
   - networkinterfaces/status
   - networkpolicies/status
   - networks/status
+  - networkservices/status
   - subnetclaims/status
   - subnets/status
   - trafficprotectionpolicies/status
@@ -302,6 +304,7 @@ rules:
   - networking.datumapis.com
   resources:
   - connectorclasses
+  - networkservices
   verbs:
   - get
   - list

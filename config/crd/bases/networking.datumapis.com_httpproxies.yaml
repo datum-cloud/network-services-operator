@@ -54,6 +54,50 @@ spec:
           spec:
             description: Spec defines the desired state of an HTTPProxy.
             properties:
+              healthCheck:
+                description: |-
+                  HealthCheck configures how backends are considered healthy. It applies
+                  to every backend on the HTTPProxy. If unset, Envoy treats every
+                  endpoint as healthy.
+                properties:
+                  passive:
+                    description: |-
+                      Passive configures Envoy outlier detection: consecutive 5xx responses
+                      eject an endpoint from load balancing for a growing period, then
+                      Envoy re-admits it. Unset keeps every endpoint eligible.
+
+                      See: https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/upstream/outlier.html
+                    properties:
+                      baseEjectionTime:
+                        default: 30s
+                        description: |-
+                          BaseEjectionTime is how long an endpoint stays ejected after its
+                          first streak of failures. Later ejections multiply this duration.
+                          Defaults to 30s. Envoy re-admits the endpoint when the period
+                          elapses; it does not replace the instance.
+                        pattern: ^([0-9]{1,5}(h|m|s|ms)){1,4}$
+                        type: string
+                      consecutive5xxErrors:
+                        default: 5
+                        description: |-
+                          Consecutive5xxErrors is the number of consecutive 5xx responses that
+                          eject an endpoint. Defaults to 5.
+                        format: int32
+                        minimum: 1
+                        type: integer
+                      maxEjectionPercent:
+                        default: 50
+                        description: |-
+                          MaxEjectionPercent is the maximum percentage of endpoints in a
+                          backend that may be ejected at once. Defaults to 50. Must be at
+                          least 1 so a single-endpoint backend can still be ejected. This
+                          limit is per backend, not across every backend on the HTTPProxy.
+                        format: int32
+                        maximum: 100
+                        minimum: 1
+                        type: integer
+                    type: object
+                type: object
               hostnames:
                 description: |-
                   Hostnames defines a set of hostnames that should match against the HTTP
@@ -112,6 +156,66 @@ spec:
                   type: string
                 maxItems: 16
                 type: array
+              loadBalancer:
+                description: |-
+                  LoadBalancer selects the algorithm used to distribute requests across
+                  every rule's backends, whenever a rule has more than one. It applies
+                  to the whole HTTPProxy rather than to an individual rule. If unset,
+                  Envoy's own default algorithm applies.
+                properties:
+                  consistentHash:
+                    description: |-
+                      ConsistentHash configures what part of the request is hashed to pick
+                      a backend. Required when type is ConsistentHash, and forbidden
+                      otherwise.
+                    properties:
+                      header:
+                        description: |-
+                          Header names the request header to hash on. Required when type is
+                          Header, and forbidden otherwise.
+                        maxLength: 256
+                        minLength: 1
+                        type: string
+                      type:
+                        description: |-
+                          Type selects what part of the request is hashed to pick a backend.
+
+                          SourceIP hashes the client's source IP address. Header hashes the
+                          value of the request header named in the header field.
+                        enum:
+                        - SourceIP
+                        - Header
+                        type: string
+                    required:
+                    - type
+                    type: object
+                    x-kubernetes-validations:
+                    - message: header is required when type is Header, and forbidden
+                        otherwise
+                      rule: (self.type == 'Header') == has(self.header)
+                  type:
+                    description: |-
+                      Type selects the load balancing algorithm.
+
+                      RoundRobin cycles through backends in order. Random picks a backend
+                      uniformly at random. LeastRequest picks the backend with the fewest
+                      active requests, biased toward spreading load evenly under uneven
+                      latency. ConsistentHash routes requests that hash the same way (see
+                      consistentHash) to the same backend, so the same client keeps
+                      landing on the same backend so long as the backend set is stable.
+                    enum:
+                    - RoundRobin
+                    - Random
+                    - LeastRequest
+                    - ConsistentHash
+                    type: string
+                required:
+                - type
+                type: object
+                x-kubernetes-validations:
+                - message: consistentHash is required when type is ConsistentHash,
+                    and forbidden otherwise
+                  rule: (self.type == 'ConsistentHash') == has(self.consistentHash)
               rules:
                 description: Rules are a list of HTTP matchers, filters and actions.
                 items:
@@ -125,9 +229,10 @@ spec:
                         Backends defines the backend(s) where matching requests should be
                         sent.
 
-                        Note: While this field is a list, only a single element is permitted at
-                        this time due to underlying Gateway limitations. Once addressed, MaxItems
-                        will be increased to allow for multiple backends on any given route.
+                        When more than one backend is specified, requests are weighted load
+                        balanced across all of them (see the weight field on each backend). A
+                        connector backend must be the only backend in the rule — connectors do
+                        not support weighted load balancing across multiple backends today.
                       items:
                         properties:
                           connector:
@@ -1593,12 +1698,44 @@ spec:
                             - name
                             - port
                             type: object
+                          networkService:
+                            description: |-
+                              NetworkService references a NetworkService in the same namespace, and one
+                              of the ports it declares. Every member the service resolves to becomes an
+                              endpoint of this backend, so instances appearing, disappearing, and moving
+                              between locations need no edit here.
+
+                              Mutually exclusive with endpoint, connector and instance.
+                            properties:
+                              name:
+                                description: |-
+                                  Name of the referenced NetworkService. Must exist in the same namespace as
+                                  this HTTPProxy.
+                                maxLength: 253
+                                minLength: 1
+                                type: string
+                              port:
+                                description: |-
+                                  Port names a port declared in the referenced service's spec.ports, rather
+                                  than giving a number, so the reference survives a change to the port the
+                                  members answer on.
+                                maxLength: 63
+                                minLength: 1
+                                pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                                type: string
+                            required:
+                            - name
+                            - port
+                            type: object
                           tls:
                             description: |-
                               TLS contains backend TLS configuration.
 
                               When the backend endpoint uses HTTPS with an IP address, the Hostname field
                               must be specified for TLS certificate validation.
+
+                              Not supported for networkService backends, which are always reached over
+                              plaintext HTTP.
                             properties:
                               hostname:
                                 description: |-
@@ -1617,13 +1754,31 @@ spec:
                                 minLength: 1
                                 type: string
                             type: object
+                          weight:
+                            default: 1
+                            description: |-
+                              Weight specifies the proportion of requests forwarded to this backend,
+                              relative to the sum of weights across all backends in the rule.
+                              Follows the same semantics as the Gateway API's HTTPBackendRef.weight:
+                              computed as weight/(sum of all weights in the rule); a weight of 0
+                              means no traffic is forwarded to this backend; if unspecified, weight
+                              defaults to 1.
+                            format: int32
+                            maximum: 1000000
+                            minimum: 0
+                            type: integer
                         type: object
                         x-kubernetes-validations:
-                        - message: endpoint is required unless instance is set, and
-                            instance is mutually exclusive with endpoint and connector
-                          rule: 'has(self.instance) ? (!has(self.endpoint) && !has(self.connector))
-                            : has(self.endpoint)'
-                      maxItems: 1
+                        - message: endpoint is required unless instance or networkService
+                            is set; instance and networkService are mutually exclusive
+                            with each other and with endpoint and connector
+                          rule: 'has(self.instance) ? (!has(self.endpoint) && !has(self.connector)
+                            && !has(self.networkService)) : (has(self.networkService)
+                            ? (!has(self.endpoint) && !has(self.connector)) : has(self.endpoint))'
+                        - message: backend TLS is not supported for networkService
+                            backends
+                          rule: 'has(self.networkService) ? !has(self.tls) : true'
+                      maxItems: 16
                       minItems: 0
                       type: array
                     filters:
@@ -3328,6 +3483,9 @@ spec:
                       )) ? ((size(self.matches) != 1 || !has(self.matches[0].path)
                       || self.matches[0].path.type != ''PathPrefix'') ? false : true)
                       : true'
+                  - message: a connector backend must be the only backend in its rule
+                    rule: '(has(self.backends) && self.backends.exists(b, has(b.connector)))
+                      ? size(self.backends) == 1 : true'
                 maxItems: 16
                 minItems: 1
                 type: array

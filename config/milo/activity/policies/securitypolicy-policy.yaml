@@ -1,0 +1,40 @@
+# ActivityPolicy for SecurityPolicy resources (gateway.envoyproxy.io).
+# Product noun is "basic authentication". The portal names the policy after
+# the load balancer. Prefer display-name when the client stamps it.
+apiVersion: activity.miloapis.com/v1alpha1
+kind: ActivityPolicy
+metadata:
+  name: gateway.envoyproxy.io-securitypolicy
+spec:
+  resource:
+    apiGroup: gateway.envoyproxy.io
+    kind: SecurityPolicy
+
+  auditRules:
+    - name: create-annotated
+      match: "!audit.user.username.startsWith('system:') && audit.verb == 'create' && has(audit.requestObject.spec) && has(audit.requestObject.spec.basicAuth) && has(audit.responseObject.metadata.annotations) && 'networking.datumapis.com/display-name' in audit.responseObject.metadata.annotations && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
+      summary: "{{ actor }} enabled basic authentication on {{ link(audit.responseObject.metadata.annotations['networking.datumapis.com/display-name'], audit.objectRef) }}"
+
+    - name: create-basic-auth
+      match: "!audit.user.username.startsWith('system:') && audit.verb == 'create' && has(audit.requestObject.spec) && has(audit.requestObject.spec.basicAuth) && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
+      summary: "{{ actor }} enabled basic authentication on {{ link(audit.objectRef.name, audit.objectRef) }}"
+
+    - name: create-fallback
+      match: "!audit.user.username.startsWith('system:') && audit.verb == 'create' && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
+      summary: "{{ actor }} enabled {{ link('basic authentication', audit.objectRef) }}"
+
+    - name: delete-annotated
+      match: "!audit.user.username.startsWith('system:') && audit.verb == 'delete' && has(audit.responseObject.metadata.annotations) && 'networking.datumapis.com/display-name' in audit.responseObject.metadata.annotations"
+      summary: "{{ actor }} removed basic authentication from {{ audit.responseObject.metadata.annotations['networking.datumapis.com/display-name'] }}"
+
+    - name: delete-fallback
+      match: "!audit.user.username.startsWith('system:') && audit.verb == 'delete'"
+      summary: "{{ actor }} removed basic authentication"
+
+    - name: update-annotated
+      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && has(audit.requestObject.spec) && has(audit.responseObject.metadata.annotations) && 'networking.datumapis.com/display-name' in audit.responseObject.metadata.annotations && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
+      summary: "{{ actor }} updated basic authentication on {{ link(audit.responseObject.metadata.annotations['networking.datumapis.com/display-name'], audit.objectRef) }}"
+
+    - name: update-fallback
+      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && has(audit.requestObject.spec) && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
+      summary: "{{ actor }} updated basic authentication on {{ link(audit.objectRef.name, audit.objectRef) }}"

@@ -80,6 +80,10 @@ test-conformance:
 		--infra-kubeconfig $(TMPDIR)/.kind-nso-infra.yaml \
 		--gateway-class=$(GATEWAY_CONFORMANCE_CLASS) $(GATEWAY_CONFORMANCE_FLAGS)
 
+.PHONY: notice
+notice: go-licenses ## Regenerate the NOTICE file of third-party licenses.
+	$(GO_LICENSES) report ./... --ignore go.datum.net/network-services-operator --template hack/notice.tmpl > NOTICE
+
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter
 	$(GOLANGCI_LINT) run
@@ -186,6 +190,7 @@ GOLANGCI_LINT = $(LOCALBIN)/golangci-lint
 CRDOC ?= $(LOCALBIN)/crdoc
 CHAINSAW ?= $(LOCALBIN)/chainsaw
 CMCTL ?= $(LOCALBIN)/cmctl
+GO_LICENSES ?= $(LOCALBIN)/go-licenses
 
 ## Tool Versions
 KUSTOMIZE_VERSION ?= v5.5.0
@@ -208,6 +213,9 @@ CHAINSAW_VERSION ?= v0.2.15
 
 # renovate: datasource=go depName=github.com/cert-manager/cmctl/v2
 CMCTL_VERSION ?= v2.1.1
+
+# renovate: datasource=go depName=github.com/google/go-licenses
+GO_LICENSES_VERSION ?= v1.6.0
 
 .PHONY: kustomize
 kustomize: $(KUSTOMIZE) ## Download kustomize locally if necessary.
@@ -249,6 +257,10 @@ chainsaw: ## Find or download chainsaw
 .PHONY: cmctl
 cmctl: ## Find or download cmctl
 	$(call go-install-tool,$(CMCTL),github.com/cert-manager/cmctl/v2,$(CMCTL_VERSION))
+
+.PHONY: go-licenses
+go-licenses: ## Find or download go-licenses
+	$(call go-install-tool,$(GO_LICENSES),github.com/google/go-licenses,$(GO_LICENSES_VERSION))
 
 # go-install-tool will 'go install' any package with custom target and name of binary, if it doesn't exist
 # $1 - target path with name of binary

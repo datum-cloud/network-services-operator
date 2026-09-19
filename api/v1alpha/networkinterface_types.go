@@ -36,7 +36,7 @@ const (
 // by the consumer, carried by the operator, and acted on by whoever realizes
 // the interface.
 //
-// +kubebuilder:validation:Enum=Netns;Hypervisor
+// +kubebuilder:validation:Enum=Netns;Hypervisor;HypervisorDeclared
 type NetworkInterfaceAttachmentMode string
 
 const (
@@ -48,6 +48,15 @@ const (
 	// hypervisor as a device rather than placed in a namespace, which is what a
 	// virtual machine or microVM guest expects.
 	NetworkInterfaceAttachmentModeHypervisor NetworkInterfaceAttachmentMode = "Hypervisor"
+
+	// NetworkInterfaceAttachmentModeHypervisorDeclared also hands the interface
+	// to a hypervisor as a device. It differs from Hypervisor in who tells the
+	// hypervisor that the device exists. Under Hypervisor the hypervisor finds
+	// the device itself from what the node publishes. Under HypervisorDeclared
+	// the realizer states the device, its addresses, and its MTU to the
+	// hypervisor directly. A guest whose hypervisor reads no node state needs
+	// this mode.
+	NetworkInterfaceAttachmentModeHypervisorDeclared NetworkInterfaceAttachmentMode = "HypervisorDeclared"
 )
 
 // NetworkInterfacePhase reports whether an interface is held by a claim.
@@ -86,6 +95,40 @@ const (
 	// created, so anything that withholds the workload until it is true waits for
 	// something its own waiting prevents.
 	NetworkInterfaceProgrammed = "Programmed"
+
+	// NetworkInterfaceHolderAvailable reports that whatever holds this interface
+	// says it is available to serve. It is written by the holder named in the
+	// held-by label, and the networking operator has no idea what a holder is.
+	//
+	// The operator only ever writes it Unknown: it seeds it when it creates the
+	// interface, and takes the departed holder's word back when a retained
+	// interface is unbound. True and False are the holder's alone.
+	//
+	// This is the condition a service reads to decide whether a member takes
+	// traffic. It says nothing about the interface: an interface with every
+	// address allocated and programmed still carries this false while whatever
+	// is behind it is starting, failing, or shutting down.
+	//
+	// Unrelated to status.phase, which reports whether a claim holds the
+	// interface at all. A phase of Available means no claim holds it, which is
+	// the opposite of anything being available to serve.
+	NetworkInterfaceHolderAvailable = "HolderAvailable"
+)
+
+const (
+	// NetworkInterfaceReasonHolderAvailable is what a holder reports on
+	// HolderAvailable once it is serving.
+	NetworkInterfaceReasonHolderAvailable = "HolderAvailable"
+
+	// NetworkInterfaceReasonHolderUnavailable is what a holder reports on
+	// HolderAvailable while it is starting, failing, or shutting down.
+	NetworkInterfaceReasonHolderUnavailable = "HolderUnavailable"
+
+	// NetworkInterfaceReasonHolderReleased is the operator taking back a
+	// departed holder's word when a retained interface is unbound. A retained
+	// interface outlives its holder, and the next claim of its name is a
+	// different holder that has said nothing yet.
+	NetworkInterfaceReasonHolderReleased = "HolderReleased"
 )
 
 // NetworkInterfaceAddress is an address the interface holds inside its network.
@@ -248,7 +291,9 @@ type NetworkInterfaceSpec struct {
 	//
 	// Netns places the interface in the workload's network namespace. Hypervisor
 	// hands it to a hypervisor as a device, which is what a virtual machine or
-	// microVM guest needs.
+	// microVM guest needs. HypervisorDeclared also hands it to a hypervisor, and
+	// additionally has the realizer state the device to that hypervisor instead
+	// of letting it discover the device from the node.
 	//
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:default="Netns"
@@ -327,6 +372,8 @@ type NetworkInterfaceStatus struct {
 	// conditions report the current state of the interface. Allocated means every
 	// address is held. Prepared means the data plane is ready for a workload to
 	// consume it. Programmed means the data plane carries the addresses.
+	// HolderAvailable means whatever holds the interface reports itself available
+	// to serve, and it is the only one of the four a service reads.
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 
@@ -351,6 +398,7 @@ type NetworkInterfaceStatus struct {
 // +kubebuilder:printcolumn:name="Allocated",type=string,JSONPath=`.status.conditions[?(@.type=="Allocated")].status`
 // +kubebuilder:printcolumn:name="Prepared",type=string,JSONPath=`.status.conditions[?(@.type=="Prepared")].status`
 // +kubebuilder:printcolumn:name="Programmed",type=string,JSONPath=`.status.conditions[?(@.type=="Programmed")].status`
+// +kubebuilder:printcolumn:name="HolderAvailable",type=string,JSONPath=`.status.conditions[?(@.type=="HolderAvailable")].status`
 type NetworkInterface struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
@@ -358,7 +406,7 @@ type NetworkInterface struct {
 	// +kubebuilder:validation:Required
 	Spec NetworkInterfaceSpec `json:"spec,omitempty"`
 
-	// +kubebuilder:default={conditions:{{type:"Allocated",status:"Unknown",reason:"Pending", message:"Waiting for controller", lastTransitionTime: "1970-01-01T00:00:00Z"},{type:"Prepared",status:"Unknown",reason:"Pending", message:"Waiting for controller", lastTransitionTime: "1970-01-01T00:00:00Z"},{type:"Programmed",status:"Unknown",reason:"Pending", message:"Waiting for controller", lastTransitionTime: "1970-01-01T00:00:00Z"}}}
+	// +kubebuilder:default={conditions:{{type:"Allocated",status:"Unknown",reason:"Pending", message:"Waiting for controller", lastTransitionTime: "1970-01-01T00:00:00Z"},{type:"Prepared",status:"Unknown",reason:"Pending", message:"Waiting for controller", lastTransitionTime: "1970-01-01T00:00:00Z"},{type:"Programmed",status:"Unknown",reason:"Pending", message:"Waiting for controller", lastTransitionTime: "1970-01-01T00:00:00Z"},{type:"HolderAvailable",status:"Unknown",reason:"Pending", message:"Waiting for controller", lastTransitionTime: "1970-01-01T00:00:00Z"}}}
 	Status NetworkInterfaceStatus `json:"status,omitempty"`
 }
 

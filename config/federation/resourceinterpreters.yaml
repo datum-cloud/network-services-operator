@@ -200,35 +200,3 @@ spec:
           end
           return desiredObj
         end
----
-apiVersion: config.karmada.io/v1alpha1
-kind: ResourceInterpreterCustomization
-metadata:
-  name: externaldns.k8s.io-dnsendpoint
-spec:
-  target:
-    apiVersion: externaldns.k8s.io/v1alpha1
-    kind: DNSEndpoint
-  customizations:
-    statusAggregation:
-      luaScript: >
-        function AggregateStatus(desiredObj, statusItems)
-          if statusItems == nil or #statusItems == 0 then
-            return desiredObj
-          end
-          if desiredObj.status == nil then
-            desiredObj.status = {}
-          end
-
-          local item = statusItems[1]
-          if item == nil or item.status == nil then
-            return desiredObj
-          end
-
-          -- TODO(jreese) implement proper aggregation logic. Would be good to
-          -- think through how to represent propagation status across clusters.
-          if item.status.observedGeneration ~= nil then
-            desiredObj.status.observedGeneration = item.status.observedGeneration
-          end
-          return desiredObj
-        end

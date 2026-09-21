@@ -403,7 +403,7 @@ func startNetworkInterfaceEnv(t *testing.T) (client.Client, *rest.Config) {
 	env := &envtest.Environment{
 		CRDDirectoryPaths: []string{
 			filepath.Join("..", "..", "config", "crd", "bases"),
-			filepath.Join("..", "..", "config", "crd", "locations"),
+			filepath.Join("..", "..", "bin", "crds", "locations"),
 		},
 		ErrorIfCRDPathMissing: true,
 	}

@@ -154,6 +154,7 @@ tasks:
       # the downstream gateway (it needs its own CRDs present).
       - task: eg-crds
       - task: downstream-crds
+      - task: locations-crds
       - task: downstream-namespaces
       - task: cert-manager-upstream
       - task: cert-manager-downstream
@@ -418,6 +419,13 @@ tasks:
       - |
         {{.KUSTOMIZE}} build --load-restrictor LoadRestrictionsNone config/crd/downstream | \
           kubectl --context {{.DOWNSTREAM_CTX}} apply -f -
+
+  locations-crds:
+    desc: "Install the locations service CRDs (Location / ServingLocation) on both clusters, pinned to the revision go.mod depends on. The manager reads Location upstream; the cell controller manager and the replicator read ServingLocation downstream."
+    cmds:
+      - echo "📜 installing locations CRDs (upstream + downstream)"
+      - '{{.KUSTOMIZE}} build config/tools/locations-crds | kubectl --context {{.UPSTREAM_CTX}} apply -f -'
+      - '{{.KUSTOMIZE}} build config/tools/locations-crds | kubectl --context {{.DOWNSTREAM_CTX}} apply -f -'
 
   external-dns:
     desc: "Install external-dns CRDs (DNSEndpoint) on the downstream cluster."
@@ -1047,6 +1055,11 @@ tasks:
       # be removed.
       - |
         {{.KUSTOMIZE}} build --load-restrictor LoadRestrictionsNone config/crd/downstream | \
+          kubectl --kubeconfig {{.KARMADA_KUBECONFIG}} --context karmada-apiserver apply -f -
+      # ServingLocation is federated through the hub too, and the locations
+      # service, not config/crd/downstream, owns its CRD.
+      - |
+        {{.KUSTOMIZE}} build config/tools/locations-crds | \
           kubectl --kubeconfig {{.KARMADA_KUBECONFIG}} --context karmada-apiserver apply -f -
       - |
         kubectl --kubeconfig {{.KARMADA_KUBECONFIG}} --context karmada-apiserver \

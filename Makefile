@@ -60,8 +60,13 @@ fmt: ## Run go fmt against code.
 vet: ## Run go vet against code.
 	go vet ./...
 
+.PHONY: locations-crds
+locations-crds: kustomize ## Render the locations service CRDs envtest installs.
+	mkdir -p $(LOCALBIN)/crds/locations
+	$(KUSTOMIZE) build config/tools/locations-crds -o $(LOCALBIN)/crds/locations
+
 .PHONY: test
-test: manifests generate fmt vet envtest ## Run tests.
+test: manifests generate fmt vet envtest locations-crds ## Run tests.
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" go test $$(go list ./... | grep -v /e2e) -timeout 20m -coverprofile cover.out
 
 # The e2e suite runs against the two-cluster prod-fidelity env; bring it up and

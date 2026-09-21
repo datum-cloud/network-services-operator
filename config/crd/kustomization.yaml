@@ -17,9 +17,6 @@ resources:
 - bases/networking.datumapis.com_connectorclasses.yaml
 - bases/networking.datumapis.com_networkinterfaces.yaml
 - bases/networking.datumapis.com_networkinterfaceclaims.yaml
-# Owned by milo-os/locations. Served here because the NetworkPresence
-# controller reads the Location projected into each project control plane.
-- locations
 - bases/networking.datumapis.com_networkservices.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 

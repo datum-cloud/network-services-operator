@@ -36,10 +36,10 @@ resource in the policy above goes to *every* labelled edge cluster, and a
 location must reach exactly the one cell that serves it. Karmada has no
 primitive joining a resource label to a cluster label, so that needs one policy
 per location, selecting one `ServingLocation` by name and targeting
-`topology.datum.net/location` on the cluster. NSO's location publisher generates
-those policies; do not add them here. Adding a location selector to the policy
-above does not work either: that policy has a single placement, so anything in
-it lands on every cluster.
+`topology.datum.net/location` on the cluster. The locations service
+(`milo-os/locations`) generates those policies; do not add them here. Adding a
+location selector to the policy above does not work either: that policy has a
+single placement, so anything in it lands on every cluster.
 
 ## Implementation
 

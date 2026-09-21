@@ -26,6 +26,7 @@ require (
 	github.com/stretchr/testify v1.11.1
 	go.miloapis.com/activity v0.7.1
 	go.miloapis.com/dns-operator v0.5.1
+	go.miloapis.com/locations v0.0.0-20260825185141-507ac2cbd48c
 	go.miloapis.com/milo v0.28.4-0.20260629130346-79689376fe11
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.67.0
 	go.opentelemetry.io/otel v1.44.0
@@ -273,7 +274,7 @@ require (
 	go.etcd.io/etcd/api/v3 v3.6.8 // indirect
 	go.etcd.io/etcd/client/pkg/v3 v3.6.8 // indirect
 	go.etcd.io/etcd/client/v3 v3.6.8 // indirect
-	go.miloapis.com/ipam v0.3.2-0.20260813184449-4fac0aa96194
+	go.miloapis.com/ipam v0.4.0
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/contrib/exporters/autoexport v0.67.0 // indirect
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.69.0 // indirect
@@ -325,5 +326,3 @@ require (
 	sigs.k8s.io/randfill v1.0.0 // indirect
 	sigs.k8s.io/structured-merge-diff/v6 v6.3.2 // indirect
 )
-
-replace go.miloapis.com/ipam => github.com/milo-os/ipam v0.3.2-0.20260819234259-2f31bea79f62

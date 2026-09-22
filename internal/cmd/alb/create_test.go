@@ -87,6 +87,65 @@ func TestCreateWithNetworkService(t *testing.T) {
 	assert.Len(t, services.Items, 1)
 }
 
+func TestCreateDerivesNameFromDisplayName(t *testing.T) {
+	scheme, err := util.NewScheme()
+	require.NoError(t, err)
+	c := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	restore := withTestClient(c)
+	defer restore()
+
+	root := Command()
+	root.SetArgs([]string{
+		"create",
+		"--display-name", "Customer API",
+		"--endpoint", "https://origin.example.com",
+		"--project", "demo",
+		"--no-waf",
+		"--no-wait",
+	})
+	var out bytes.Buffer
+	root.SetOut(&out)
+	root.SetErr(io.Discard)
+
+	require.NoError(t, root.Execute())
+
+	list := &networkingv1alpha.HTTPProxyList{}
+	require.NoError(t, c.List(context.Background(), list))
+	require.Len(t, list.Items, 1)
+	got := &list.Items[0]
+	assert.Regexp(t, `^customer-api-[a-z0-9]{6}$`, got.Name)
+	assert.Equal(t, "Customer API", got.Annotations["kubernetes.io/display-name"])
+	assert.Contains(t, out.String(), got.Name)
+}
+
+func TestCreateRequiresDisplayNameWhenNameOmitted(t *testing.T) {
+	scheme, err := util.NewScheme()
+	require.NoError(t, err)
+	c := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	restore := withTestClient(c)
+	defer restore()
+
+	root := Command()
+	root.SetArgs([]string{
+		"create",
+		"--endpoint", "https://origin.example.com",
+		"--project", "demo",
+		"--no-waf",
+		"--no-wait",
+	})
+	root.SetOut(io.Discard)
+	root.SetErr(io.Discard)
+
+	err = root.Execute()
+	require.Error(t, err)
+	var cliErr *util.CLIError
+	require.ErrorAs(t, err, &cliErr)
+	assert.Equal(t, util.ExitUsage, cliErr.Code())
+	assert.Contains(t, err.Error(), "display name is required")
+}
+
 func TestCreateRefusesMissingNetworkService(t *testing.T) {
 	scheme, err := util.NewScheme()
 	require.NoError(t, err)

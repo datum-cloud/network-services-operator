@@ -108,7 +108,7 @@ backends have no TLS — members are reached over plaintext HTTP.
 datumctl alb version
 
 datumctl alb list     [--status active|pending|error] [-o table|wide|json|yaml|name]
-datumctl alb create   <name>
+datumctl alb create   [name]
                       [--endpoint URL]...
                       [--network-service NAME --port PORTNAME]...
                       [--hostname FQDN]... [--display-name TEXT]
@@ -151,13 +151,15 @@ headers, and auth are later dialogs. `update` is ALB-wide only: display name
 and Force HTTPS. Changing a pool is `route update --path` (replace) or
 `route backend add` / `remove` (one entry).
 
-**`<name>` is `metadata.name`.** `--display-name` writes
-`kubernetes.io/display-name` (max 50). That is the platform key, not
-`app.kubernetes.io/name` (what the portal still stamps today) and not
-`networking.datumapis.com/display-name` (activity product noun `"alb"`).
-`list` / `describe` read `kubernetes.io/display-name` first, then
-`app.kubernetes.io/name`, so portal-created ALBs still show a name until
-the UI catches up. Lookup by display name is **not in v1**.
+**`<name>` is `metadata.name`.** Omit it and pass `--display-name` to derive a
+DNS-safe name the same way the portal does (kebab-case plus a six-character
+random suffix, max 30). `--display-name` writes `kubernetes.io/display-name`
+(max 50). That is the platform key, not `app.kubernetes.io/name` (what the
+portal still stamps today) and not `networking.datumapis.com/display-name`
+(activity product noun `"alb"`). `list` / `describe` read
+`kubernetes.io/display-name` first, then `app.kubernetes.io/name`, so
+portal-created ALBs still show a name until the UI catches up. Lookup by
+display name is **not in v1**.
 
 **`version` is offline.** No credentials, no project, no entitlement.
 

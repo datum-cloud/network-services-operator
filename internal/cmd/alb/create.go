@@ -15,16 +15,22 @@ import (
 
 func createCommand() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "create <name>",
+		Use:   "create [name]",
 		Short: "Create an Application Load Balancer",
 		Long: `Create an Application Load Balancer in front of one or more origins.
 
 Origins form the default "/" route. Pass --endpoint for a URL origin, or
 --network-service with --port to send traffic to an existing NetworkService.
 The command waits for Datum to assign a default hostname, because that is what
-you CNAME custom domains at. Pass --no-wait to return immediately.`,
+you CNAME custom domains at. Pass --no-wait to return immediately.
+
+Omit the name and pass --display-name to derive a DNS-safe object name the same
+way the cloud portal does (kebab-case plus a short random suffix).`,
 		Example: `  # Create a load balancer and print the generated hostname
   datumctl alb create my-app --endpoint https://origin.example.com
+
+  # Derive the object name from a display name
+  datumctl alb create --display-name "Customer API" --endpoint https://origin.example.com
 
   # Send traffic to an existing NetworkService
   datumctl alb create my-app --network-service storefront --port http
@@ -34,7 +40,7 @@ you CNAME custom domains at. Pass --no-wait to return immediately.`,
 
   # Validate against the API server without creating anything
   datumctl alb create my-app --endpoint https://origin.example.com --dry-run`,
-		Args: cobra.ExactArgs(1),
+		Args: cobra.MaximumNArgs(1),
 		RunE: runCreate,
 	}
 
@@ -59,7 +65,6 @@ you CNAME custom domains at. Pass --no-wait to return immediately.`,
 
 func runCreate(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
-	name := args[0]
 
 	backends, err := backendsFromFlags(cmd)
 	if err != nil {
@@ -83,6 +88,17 @@ func runCreate(cmd *cobra.Command, args []string) error {
 
 	if noWait {
 		waitFlag = false
+	}
+
+	name := ""
+	if len(args) == 1 {
+		name = args[0]
+	} else {
+		generated, err := spec.NameFromDisplayName(displayName)
+		if err != nil {
+			return err
+		}
+		name = generated
 	}
 
 	proxy, err := spec.BuildHTTPProxy(spec.CreateInput{

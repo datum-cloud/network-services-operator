@@ -36,6 +36,7 @@ Create waits for Datum to assign a default hostname (for example `<uid>.datumpro
 
 ```sh
 datumctl alb create my-app --endpoint https://origin.example.com
+datumctl alb create --display-name "Customer API" --endpoint https://origin.example.com
 datumctl alb create my-app --network-service storefront --port http
 datumctl alb create my-app --endpoint https://origin.example.com --hostname app.example.com
 datumctl alb create my-app --endpoint https://origin.example.com --no-wait
@@ -43,6 +44,8 @@ datumctl alb create my-app --endpoint https://203.0.113.10 --tls-hostname origin
 ```
 
 Origins given at create time form the default `/` route. `--endpoint` is a URL and may repeat. `--network-service` names an existing NetworkService in the project and must be paired with the `--port` **name** that service declares (`http`, not `8080`). The plugin never creates, edits, or deletes a NetworkService; if the one you name does not exist, create fails with not-found.
+
+Omit the object name and pass `--display-name` to derive a DNS-safe name the same way the cloud portal does (kebab-case plus a short random suffix). The printed create message shows the name that was used.
 
 Defaults match the cloud portal:
 

@@ -160,7 +160,7 @@ func tooManyBackendsError(err error) *util.CLIError {
 	if !apierrors.IsInvalid(err) || !strings.Contains(err.Error(), "backends: Too many") {
 		return nil
 	}
-	return util.NewCLIError(util.ExitInvalid, "the API currently allows one origin per route").
-		WithFix("keep one --endpoint or --network-service per route until multi-origin pools are enabled").
+	return util.NewCLIError(util.ExitInvalid, "a route takes at most 16 origins").
+		WithFix("remove an origin from this route, or split the pool across routes").
 		WithCause(err)
 }

@@ -269,6 +269,21 @@ spaces/colons, password ≥4, unique names. `set` replaces the whole list.
 
 ## Complexity
 
+**Corrected against the portal's code.** The portal classifies a proxy as
+`advanced` only on more than one rule carrying backends, or on a filter it did
+not write. It never inspects `matches`, and it does not count backends within a
+rule. More importantly, `advanced` does not lock the form: it disables one Edit
+button and quietly freezes the Host header field. The origin editor stays
+enabled, and saving it rebuilds the rule list from the three fields the portal
+models — dropping extra routes, extra backends and their weights, path matches
+and per-backend filters, and reporting success.
+
+So the risk is not a locked form, it is silent loss. Anything this plugin writes
+beyond one route with one origin survives hostname, protection and auth edits in
+the portal, and does not survive an origin, TLS or redirect edit. The portal's
+own routes-and-pools editor is built and unmerged; when it ships, per-route
+`readOnly` becomes its escape hatch and this section should be revisited.
+
 Until the portal ships multi-route / pool editing, extra routes may still
 classify as `advanced`. Once it does, extra routes, pools, and NetworkService
 backends must stay form-editable — the CLI writes the same shapes. `describe`

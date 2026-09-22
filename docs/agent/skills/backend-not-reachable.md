@@ -47,6 +47,44 @@ The fix is theirs: start the workload behind it, or correct what the service
 selects. Retired capacity reads exactly like capacity that never existed, so a
 workload that was deleted looks the same as one never created.
 
+## Several origins on one route
+
+A route takes up to 16 origins and splits traffic across them. One rule decides
+whether that works: **every origin in a route must agree on the Host header sent
+upstream.**
+
+- Origins that are network services need no Host rewrite, so a pool of those is
+  fine.
+- A URL origin takes its Host from its own hostname, so two URL origins on
+  different hostnames conflict.
+
+When they conflict, the load balancer does not reject the change. It goes on
+serving what it published last and says why in the status message, with the
+reason still reading as though it were merely waiting. That is the case
+`alb_diagnose` reports separately — if the message begins with the load balancer
+not being able to be published, nothing is in flight and waiting will not help.
+
+There are two ways round it and one of them is a trap:
+
+- **Give each origin its own route.** Safe.
+- **Set a Host override on the route.** This makes the origins agree, and it
+  publishes — but every origin then receives the same Host. Any origin that
+  serves by hostname (Vercel, Netlify, Fly.io, Cloudflare Pages) will answer the
+  wrong site or a 404. It looks like it worked, which is what makes it worse
+  than the error.
+
+A connector origin has to be the only origin in its route.
+
+## Before you suggest editing in the console
+
+The console edits one route with one origin. Once a load balancer has more than
+that, changing its origin, TLS or redirect settings there rebuilds the route list
+from the few fields the console models and drops the rest — extra routes, extra
+origins, weights, path matches — and reports success.
+
+So after adding a route or a second origin, say plainly: hostnames, protection
+and auth stay safe to edit in the console; origin, TLS and redirect do not.
+
 ## The rest
 
 | Reason | What it means | Whose |

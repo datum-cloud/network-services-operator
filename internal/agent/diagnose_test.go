@@ -329,3 +329,54 @@ func TestNotStartedIsAnAnswerButTheWeakestOne(t *testing.T) {
 	assert.Equal(t, networkingv1alpha.HTTPProxyReasonNetworkServiceBackendNotFound, d2.RootCause.Reason,
 		"a named cause outranks 'nothing has run yet'")
 }
+
+// TestACannotProgramPendingIsNotSomethingToWaitFor is the case a naive reading
+// gets exactly backwards.
+//
+// The controller reports a configuration it cannot assemble with the same
+// Pending reason it uses for work it has not started, and the load balancer
+// goes on serving what it published last. So the change looks accepted, is not
+// applied, and the only thing that says so is a message. Telling the customer
+// to wait is wrong advice that sounds reassuring; nothing is coming.
+func TestACannotProgramPendingIsNotSomethingToWaitFor(t *testing.T) {
+	conflict := "The HTTPProxy cannot be programmed: backend 1 in rule 0 needs Host header " +
+		"rewritten to \"b.example.com\", which conflicts with another backend in the same rule " +
+		"that needs \"a.example.com\"; backends sharing a rule must resolve to the same Host " +
+		"rewrite target. Set a Host header override on the rule so every backend agrees, or give " +
+		"each backend its own rule"
+
+	p := healthyProxy()
+	p.Status.Conditions = []metav1.Condition{
+		cond(networkingv1alpha.HTTPProxyConditionAccepted, networkingv1alpha.HTTPProxyReasonAccepted, metav1.ConditionTrue, ago(time.Hour)),
+		{
+			Type:               networkingv1alpha.HTTPProxyConditionProgrammed,
+			Status:             metav1.ConditionFalse,
+			Reason:             networkingv1alpha.HTTPProxyReasonPending,
+			Message:            conflict,
+			LastTransitionTime: ago(3 * time.Hour),
+		},
+	}
+
+	d := diagnose(t, &fakeReader{proxies: []networkingv1alpha.HTTPProxy{p}})
+
+	require.NotNil(t, d.RootCause)
+	assert.Equal(t, ReasonCannotProgram, d.RootCause.Reason,
+		"the message says Datum gave up, so this is not the same Pending as work not yet started")
+	assert.Equal(t, ActionabilityUser, d.RootCause.Actionability,
+		"a conflict in the settings is the customer's to resolve")
+	assert.NotEqual(t, ActionabilityTransient, d.RootCause.Actionability)
+
+	assert.Contains(t, strings.Join(d.NextSteps, " "), "Waiting will not clear it")
+	assert.Contains(t, d.RootCause.Message, "conflicts with another backend",
+		"the real cause is in the message and has to survive into the answer")
+
+	// The ordinary Pending must still read as something to wait for.
+	p2 := healthyProxy()
+	p2.Status.Conditions = []metav1.Condition{
+		cond(networkingv1alpha.HTTPProxyConditionProgrammed, networkingv1alpha.HTTPProxyReasonPending, metav1.ConditionFalse, ago(time.Minute)),
+	}
+	d2 := diagnose(t, &fakeReader{proxies: []networkingv1alpha.HTTPProxy{p2}})
+	require.NotNil(t, d2.RootCause)
+	assert.Equal(t, networkingv1alpha.HTTPProxyReasonPending, d2.RootCause.Reason)
+	assert.Equal(t, ActionabilityTransient, d2.RootCause.Actionability)
+}

@@ -261,11 +261,12 @@ const (
 )
 
 func newCause(object, hostname string, c metav1.Condition, created metav1.Time, level int, now time.Time) Cause {
+	_, reason := effectiveReason(c)
 	cause := Cause{
 		Object:        object,
 		Hostname:      hostname,
 		ConditionType: c.Type,
-		Reason:        c.Reason,
+		Reason:        reason,
 		Message:       c.Message,
 		Level:         level,
 	}
@@ -275,7 +276,7 @@ func newCause(object, hostname string, c metav1.Condition, created metav1.Time, 
 		cause.InStateFor = humanDuration(d)
 	}
 
-	info, ok := ExplainReason(c.Type, c.Reason)
+	info, ok := ExplainReason(effectiveReason(c))
 	if !ok {
 		// An uncatalogued reason still travels: a bare code the customer can
 		// escalate with beats silence. TestCatalogCoversEveryInScopeAPIReason
@@ -345,6 +346,20 @@ func sinceCreation(created metav1.Time, now time.Time) time.Duration {
 		return 0
 	}
 	return d
+}
+
+// effectiveReason resolves the condition to the reason that actually explains
+// it. It is the API's own reason in every case but one: the controller reports
+// a configuration it cannot assemble with the same Pending it uses for work it
+// has not started yet, and the difference lives in the message. Told apart,
+// they call for opposite advice — wait, or change the settings.
+func effectiveReason(c metav1.Condition) (conditionType, reason string) {
+	if c.Type == networkingv1alpha.HTTPProxyConditionProgrammed &&
+		c.Reason == networkingv1alpha.HTTPProxyReasonPending &&
+		strings.HasPrefix(strings.TrimSpace(c.Message), cannotProgramPrefix) {
+		return c.Type, ReasonCannotProgram
+	}
+	return c.Type, c.Reason
 }
 
 func conditionOf(conditions []metav1.Condition, conditionType string) *metav1.Condition {

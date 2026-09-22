@@ -96,6 +96,15 @@ Three more traps, each of which produces a confident wrong answer:
   issued. `Pending` on a hostname's `DNSRecordProgrammed` means the record is
   not written. Always pass the condition type to `alb_reason_explain`; a reason
   on its own is ambiguous and the tool will say so.
+- **One reason means two things on the *same* condition, and only the message
+  tells them apart.** `Pending` on `Programmed` normally means not published
+  yet, so wait. But when the message begins
+  `The HTTPProxy cannot be programmed:`
+  Datum has decided it cannot assemble these settings at all. The load
+  balancer keeps serving what it published last, so the change looks accepted
+  and never takes effect, and waiting does nothing. `alb_diagnose` reports
+  that case separately; if you are reading raw status, read the message
+  before you tell anyone to wait.
 
 ## 5. Three things status does not tell you
 
@@ -174,10 +183,12 @@ that is not issued is usually a symptom of DNS that has not landed.
 Each of these is one paragraph on purpose. It is not enough to answer from: when
 a question lands in one of them, load the skill.
 
-- **Routes and origins.** A route is a path prefix and a pool of origins. An
-  origin is a URL, or a network service named with one of its declared port
-  names — a name like `http`, never a number. Datum never invents a missing
-  service. → `backend-not-reachable`
+- **Routes and origins.** A route is a path prefix and a pool of up to 16
+  origins, with traffic split across them. An origin is a URL, or a network
+  service named with one of its declared port names — a name like `http`, never
+  a number. Datum never invents a missing service. Origins in one route must
+  agree on the Host header sent upstream, which is the one thing that decides
+  whether a pool works. → `backend-not-reachable`
 - **Hostnames.** Claim, ownership, DNS record, certificate, in that order. →
   `hostname-not-working`
 - **Domain ownership.** A DNS record with an exact name and value, which must be
@@ -196,7 +207,29 @@ a question lands in one of them, load the skill.
 - **Anything not working, and you do not yet know which of the above.** →
   `alb-not-serving`
 
-## 10. Changing a load balancer
+## 10. What the console can and cannot edit
+
+The console edits one route with one origin. It has no way to show a second
+route, a second origin, a path match or a per-origin filter, and it does not say
+that they are there.
+
+It does not refuse the edit either. Changing the origin, Force HTTPS, HSTS, the
+TLS hostname or the Host header in the console rebuilds the whole route list
+from the few fields it models, so anything beyond its shape is dropped and the
+save reports success.
+
+This matters whenever you help someone add a route or a second origin. Tell them
+which console edits stay safe afterwards:
+
+- **Safe:** custom hostnames, traffic protection, and a username and password.
+  None of those touch the routes.
+- **Destructive:** anything on the origin, TLS or redirect controls.
+
+Two smaller differences: protection here takes paranoia 1 to 4 and the console
+offers only 1 and 2, and a load balancer made outside the console shows its
+object name there rather than its display name.
+
+## 11. Changing a load balancer
 
 This service publishes no tool that changes anything. Every tool here reads.
 
@@ -210,7 +243,7 @@ Things this service never writes, whatever the request: a network service, a
 domain, a DNS zone, and a password. Basic auth passwords are set from the
 command line so they never enter a conversation.
 
-## 11. What the tools give you
+## 12. What the tools give you
 
 | Tool | Use it for |
 |---|---|

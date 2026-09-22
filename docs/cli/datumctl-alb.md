@@ -82,7 +82,16 @@ Rules written outside this plugin with exact or regex path matches, header or me
 
 Every mutation re-reads the load balancer, patches with its `resourceVersion`, and retries once if something else changed it in between.
 
-The API currently accepts one origin per route. The commands already take a pool so nothing changes when that cap lifts; until then the server rejects a second origin on the same path.
+A route takes up to 16 origins, and traffic is split across them. One constraint decides whether a pool works today:
+
+**Origins in the same route must agree on the Host header sent upstream.** A NetworkService origin needs no Host rewrite, so pools of those work. A URL origin takes its Host from its own hostname, so two URL origins on different hostnames conflict, and the load balancer refuses to publish the change — it keeps serving what it published last and says why in the status message rather than failing the write.
+
+There are two ways round it, and one of them is a trap:
+
+- **Give each origin its own route.** Safe.
+- **Set a Host override on the route** with `alb header set`. This makes the origins agree and publishes — but it sends the same Host to all of them, so any origin that routes by hostname (Vercel, Netlify, Fly.io, Cloudflare Pages) answers the wrong site or a 404. It looks like it worked.
+
+A connector origin must be the only origin in its route.
 
 ## Hostnames
 
@@ -123,7 +132,25 @@ datumctl alb header list my-app
 datumctl alb header unset my-app X-Debug
 ```
 
-`--host-header` on `create` is the same Host override the portal offers. Additional headers are allowed here; the portal treats those load balancers as advanced and shows them read-only.
+`--host-header` on `create` is the same Host override the portal offers. Additional headers are allowed here.
+
+## What the portal does with what this writes
+
+The portal edits one route with one origin. It has no concept of a second route, a second origin, a path match, or a per-origin filter — it cannot show them, and it does not warn you that they are there.
+
+**It does not lock the form.** Editing the origin, Force HTTPS, HSTS, the TLS hostname or the Host header rebuilds the whole rule list from the three fields the portal models, and sends it as a merge patch. Anything this plugin wrote that the portal does not represent is dropped: extra routes, extra origins and their weights, path matches, per-origin filters. The save succeeds and reports success.
+
+So on a load balancer with more than the portal's shape:
+
+- **Safe in the portal:** custom hostnames, traffic protection, and basic auth. Those edits do not touch the rules.
+- **Destructive in the portal:** anything on the origin, TLS or redirect cards.
+
+Use `datumctl alb` for a load balancer that has routes or pools, and keep portal edits to hostnames, protection and auth until the portal's own routes editor ships.
+
+Two smaller differences worth knowing:
+
+- Traffic protection here takes paranoia 1 to 4; the portal offers only 1 and 2. Setting 3 or 4 is fine, the portal just cannot change it.
+- The portal shows a load balancer's display name from its own annotation, which this plugin does not write. A load balancer created here shows its object name in the portal until you rename it there.
 
 ## Basic authentication
 

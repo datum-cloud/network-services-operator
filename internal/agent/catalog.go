@@ -138,6 +138,16 @@ type ReasonInfo struct {
 	ExpectedWithin string `json:"expectedWithin,omitempty"`
 }
 
+// ReasonCannotProgram is a reason this package derives rather than one the API
+// declares. The controller reports a configuration it cannot assemble with the
+// same Pending reason it uses for work it has not started, and only the message
+// tells them apart. Giving the second case its own name is what lets it carry
+// its own explanation, its own actionability and its own test.
+const ReasonCannotProgram = "CannotProgram"
+
+// cannotProgramPrefix is what the controller puts in front of the real cause.
+const cannotProgramPrefix = "The HTTPProxy cannot be programmed:"
+
 // Key identifies a catalog entry.
 type Key struct {
 	ConditionType string
@@ -176,13 +186,37 @@ var catalog = []ReasonInfo{
 		ExpectedDuration: windowControlPlaneRead,
 	},
 	{
-		Reason:           networkingv1alpha.HTTPProxyReasonPending,
-		ConditionType:    networkingv1alpha.HTTPProxyConditionProgrammed,
-		Actionability:    ActionabilityTransient,
-		Scope:            ScopeAllTraffic,
-		Explanation:      "Datum has taken this load balancer's settings but has not published them yet.",
+		Reason:        networkingv1alpha.HTTPProxyReasonPending,
+		ConditionType: networkingv1alpha.HTTPProxyConditionProgrammed,
+		Actionability: ActionabilityTransient,
+		Scope:         ScopeAllTraffic,
+		Explanation: "Datum has taken this load balancer's settings but has not published them yet. " +
+			"Read the status message before telling anyone to wait: this same reason is also used " +
+			"when Datum has decided it cannot publish the settings at all, and in that case waiting " +
+			"never clears it.",
 		Remediation:      remediationWait,
 		ExpectedDuration: windowControlPlaneRead,
+	},
+	// The same reason with a different meaning, told apart by the message. The
+	// controller keeps the reason at Pending on purpose — a failure to assemble
+	// the configuration can as easily be a read that succeeds on retry as a
+	// permanent mistake, and the reason should not claim to know which. The
+	// message does know, so the walk reads it.
+	//
+	// This one matters more than most: the load balancer goes on serving the
+	// configuration it published last, so the change looks accepted, is not
+	// applied, and says so only in a message nobody reads.
+	{
+		Reason:        ReasonCannotProgram,
+		ConditionType: networkingv1alpha.HTTPProxyConditionProgrammed,
+		Actionability: ActionabilityUser,
+		Scope:         ScopeAllTraffic,
+		Explanation: "Datum could not assemble this load balancer's settings into something it can " +
+			"serve, so it is still serving whatever it published last. The change was accepted and " +
+			"has not taken effect.",
+		Remediation: "The status message names the conflict. Waiting will not clear it — the " +
+			"settings have to change.",
+		Skill: SkillNotServing,
 	},
 	{
 		Reason:        networkingv1alpha.HTTPProxyReasonInvalid,

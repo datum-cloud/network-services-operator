@@ -209,7 +209,7 @@ spec:
     uid: 8c1d…
   interfaceName: eth0
   attachmentMode: Hypervisor
-  mtu: 1460
+  mtu: 1440
   reclaimPolicy: Retain
   addresses:
     - family: IPv6   address: fd20:a1b:2c3d:1:0:1::/96   gateway: fd20:a1b:2c3d:1::1   primary: true
@@ -362,7 +362,7 @@ spec:
   interfaceName: eth0
 
   # Resolved from Network.spec.mtu, so a provider never reads the network.
-  mtu: 1460
+  mtu: 1440
 
   # The addresses inside the network. One entry per family, exactly one primary.
   # For IPv6 this is the endpoint's whole /96 block, not a single address; the

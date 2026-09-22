@@ -130,7 +130,9 @@ type NetworkInterfaceClaimSpec struct {
 	// attachmentMode is how the guest consumes this interface. Netns places it in
 	// the workload's network namespace, which is what an ordinary container
 	// expects. Hypervisor hands it to a hypervisor as a device, which is what a
-	// virtual machine or microVM guest needs.
+	// virtual machine or microVM guest needs. HypervisorDeclared also hands it
+	// to a hypervisor, and additionally has the realizer state the device to
+	// that hypervisor instead of letting it discover the device from the node.
 	//
 	// It is copied to the bound interface and never interpreted here. Whoever
 	// realizes the interface decides what each mode means on its data plane.

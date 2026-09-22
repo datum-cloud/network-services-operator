@@ -154,6 +154,7 @@ tasks:
       # the downstream gateway (it needs its own CRDs present).
       - task: eg-crds
       - task: downstream-crds
+      - task: locations-crds
       - task: downstream-namespaces
       - task: cert-manager-upstream
       - task: cert-manager-downstream
@@ -202,7 +203,6 @@ tasks:
       # this and neither can federate without it, so both wait in
       # ContainerCreating until it lands here.
       - task: karmada-hub-secret
-      - task: location-fixtures
       - task: link-clusters
       - task: wait-ready
       - echo "🎉 test-infra:up complete. Run 'task test-infra:smoke' to confirm M2."
@@ -419,6 +419,13 @@ tasks:
       - |
         {{.KUSTOMIZE}} build --load-restrictor LoadRestrictionsNone config/crd/downstream | \
           kubectl --context {{.DOWNSTREAM_CTX}} apply -f -
+
+  locations-crds:
+    desc: "Install the locations service CRDs (Location / ServingLocation) on both clusters, pinned to the revision go.mod depends on. The manager reads Location upstream; the cell controller manager and the replicator read ServingLocation downstream."
+    cmds:
+      - echo "📜 installing locations CRDs (upstream + downstream)"
+      - '{{.KUSTOMIZE}} build config/tools/locations-crds | kubectl --context {{.UPSTREAM_CTX}} apply -f -'
+      - '{{.KUSTOMIZE}} build config/tools/locations-crds | kubectl --context {{.DOWNSTREAM_CTX}} apply -f -'
 
   external-dns:
     desc: "Install external-dns CRDs (DNSEndpoint) on the downstream cluster."
@@ -1049,15 +1056,15 @@ tasks:
       - |
         {{.KUSTOMIZE}} build --load-restrictor LoadRestrictionsNone config/crd/downstream | \
           kubectl --kubeconfig {{.KARMADA_KUBECONFIG}} --context karmada-apiserver apply -f -
+      # ServingLocation is federated through the hub too, and the locations
+      # service, not config/crd/downstream, owns its CRD.
+      - |
+        {{.KUSTOMIZE}} build config/tools/locations-crds | \
+          kubectl --kubeconfig {{.KARMADA_KUBECONFIG}} --context karmada-apiserver apply -f -
       - |
         kubectl --kubeconfig {{.KARMADA_KUBECONFIG}} --context karmada-apiserver \
           apply -f test/e2e/fixtures/ipam/namespaces.yaml
       - echo "✅ karmada-up complete. Karmada apiserver kubeconfig at {{.KARMADA_KUBECONFIG}}"
-
-  location-fixtures:
-    desc: "Seed the anchor Location the location-federation scenarios rely on. It keeps the source Location list non-empty, which the publisher requires before it will prune."
-    cmds:
-      - kubectl --context {{.UPSTREAM_CTX}} apply -f test/e2e/fixtures/location/anchor.yaml
 
   karmada-hub-secret:
     desc: "Publish the Karmada apiserver kubeconfig to the upstream cluster as karmada-hub-kubeconfig, rewritten to the in-cluster Service address the NSO manager pod can reach."

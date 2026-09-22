@@ -4,6 +4,8 @@ package v1alpha
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
 )
 
 // SubnetClaimSpec defines the desired state of SubnetClaim
@@ -21,7 +23,7 @@ type SubnetClaimSpec struct {
 	// The location which a subnet claim is associated with
 	//
 	// +kubebuilder:validation:Required
-	Location LocationReference `json:"location,omitempty"`
+	Location locationsv1alpha1.LocationReference `json:"location,omitempty"`
 
 	// The IP family of a subnet claim
 	//

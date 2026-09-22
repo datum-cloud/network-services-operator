@@ -1,0 +1,10 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# The Location and ServingLocation CRDs the manager and the cell controller
+# manager read. milo-os/locations owns them and installs them in every real
+# environment; envtest and the test-infra clusters take them from here.
+#
+# Pinned to the revision go.mod depends on. Update both together.
+resources:
+  - https://github.com/milo-os/locations//config/base/crd?ref=507ac2cbd48c0228f09baea64199882eca91e865

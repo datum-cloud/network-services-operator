@@ -92,7 +92,7 @@ spec:
                   name: us-central-1
                 ipFamilies:
                   - IPv4
-                mtu: 1460
+                mtu: 1440
 
     - name: Three claims bind and their interfaces carry what a service selects
       description: |
@@ -717,7 +717,7 @@ spec:
                   name: us-central-1
                 ipFamilies:
                   - IPv4
-                mtu: 1460
+                mtu: 1440
         - create:
             resource:
               apiVersion: networking.datumapis.com/v1alpha

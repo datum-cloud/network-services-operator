@@ -37,7 +37,7 @@ spec:
                 ipFamilies:
                   - IPv4
                   - IPv6
-                mtu: 1460
+                mtu: 1440
 
     - name: Create a dual-stack network
       try:

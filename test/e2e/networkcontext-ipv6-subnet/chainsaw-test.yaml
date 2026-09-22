@@ -50,7 +50,7 @@ spec:
                   name: us-central-1
                 ipFamilies:
                   - IPv6
-                mtu: 1460
+                mtu: 1440
         - assert:
             timeout: 120s
             resource:

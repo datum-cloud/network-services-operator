@@ -5,6 +5,7 @@ package controller
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"fmt"
 	"slices"
 	"strconv"
@@ -2411,7 +2412,6 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 	logger := log.FromContext(ctx)
 
 	networkServiceBackend := false
-	synthesizedBackend := false
 
 	for ruleIdx, rule := range upstreamRoute.Spec.Rules {
 		var backendRefs []gatewayv1.HTTPBackendRef
@@ -2492,7 +2492,6 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 						return nil, nil, nil, fmt.Errorf("port not found in upstream endpointslice")
 					}
 
-					synthesizedBackend = true
 					if upstreamEndpointSlice.Labels[NetworkServiceBackendLabel] != "" {
 						networkServiceBackend = true
 					}
@@ -2537,6 +2536,7 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 					downstreamResources = append(downstreamResources, downstreamEndpointSlice)
 
 					backendObjectReference := gatewayv1.BackendObjectReference{
+						Group:     ptr.To(gatewayv1.Group("")),
 						Namespace: ptr.To(gatewayv1.Namespace(downstreamGateway.Namespace)),
 						Kind:      ptr.To(gatewayv1.Kind(KindService)),
 						Name:      gatewayv1.ObjectName(downstreamService.Name),
@@ -2647,26 +2647,149 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 		})
 	}
 
-	// Only routes that go through the Service-synthesis path can ever have been
-	// given this policy, so only those need it removed when their backends stop
-	// being networkService ones.
-	if synthesizedBackend {
-		panicPolicy, err := r.networkServicePanicThresholdPolicy(ctx, upstreamRoute, downstreamGateway, downstreamStrategy)
+	loadBalancer, err := loadBalancerFromUpstreamRoute(upstreamRoute)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	passiveHealthCheck, err := passiveHealthCheckFromUpstreamRoute(upstreamRoute)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	// A route needs the policy whenever it has a networkService backend, a
+	// load balancer choice, or passive health checks. Otherwise delete any
+	// previously synthesized policy. Downstream delete ignores NotFound, so
+	// this is safe for routes that never had one — including instance and
+	// VPC-pod backends, which never take the Service-synthesis path and
+	// would otherwise keep outlier detection after health checks are
+	// removed.
+	if networkServiceBackend || loadBalancer != nil || passiveHealthCheck != nil {
+		policy, err := r.backendTrafficPolicy(ctx, upstreamRoute, downstreamGateway, downstreamStrategy, networkServiceBackend, loadBalancer, passiveHealthCheck)
 		if err != nil {
 			return nil, nil, nil, err
 		}
-		if networkServiceBackend {
-			downstreamResources = append(downstreamResources, panicPolicy)
-		} else {
-			downstreamResourcesToDelete = append(downstreamResourcesToDelete, panicPolicy)
-		}
+		downstreamResources = append(downstreamResources, policy)
+	} else {
+		downstreamResourcesToDelete = append(downstreamResourcesToDelete, &envoygatewayv1alpha1.BackendTrafficPolicy{
+			ObjectMeta: metav1.ObjectMeta{
+				Namespace: downstreamGateway.Namespace,
+				Name:      fmt.Sprintf("route-%s-panic-threshold", upstreamRoute.UID),
+			},
+		})
 	}
 
 	return rules, downstreamResources, downstreamResourcesToDelete, nil
 }
 
-// networkServicePanicThresholdPolicy builds the BackendTrafficPolicy that turns
-// Envoy's panic threshold off for a route carrying a networkService backend.
+// loadBalancerFromUpstreamRoute decodes the HTTPProxy load balancer choice
+// the httpproxy controller encodes onto the upstream HTTPRoute it
+// synthesizes (see LoadBalancerAnnotation), or returns nil if the route
+// carries none — either because the owning HTTPProxy left it unset, or the
+// route wasn't synthesized from an HTTPProxy at all.
+func loadBalancerFromUpstreamRoute(upstreamRoute gatewayv1.HTTPRoute) (*envoygatewayv1alpha1.LoadBalancer, error) {
+	encoded, ok := upstreamRoute.Annotations[LoadBalancerAnnotation]
+	if !ok {
+		return nil, nil
+	}
+
+	var lb networkingv1alpha.HTTPProxyLoadBalancer
+	if err := json.Unmarshal([]byte(encoded), &lb); err != nil {
+		return nil, fmt.Errorf("failed decoding %s annotation on httproute %q: %w", LoadBalancerAnnotation, upstreamRoute.Name, err)
+	}
+
+	envoyLoadBalancer := &envoygatewayv1alpha1.LoadBalancer{}
+	switch lb.Type {
+	case networkingv1alpha.HTTPProxyLoadBalancerTypeRoundRobin:
+		envoyLoadBalancer.Type = envoygatewayv1alpha1.RoundRobinLoadBalancerType
+	case networkingv1alpha.HTTPProxyLoadBalancerTypeRandom:
+		envoyLoadBalancer.Type = envoygatewayv1alpha1.RandomLoadBalancerType
+	case networkingv1alpha.HTTPProxyLoadBalancerTypeLeastRequest:
+		envoyLoadBalancer.Type = envoygatewayv1alpha1.LeastRequestLoadBalancerType
+	case networkingv1alpha.HTTPProxyLoadBalancerTypeConsistentHash:
+		if lb.ConsistentHash == nil {
+			return nil, fmt.Errorf("httproute %q: consistentHash is required when type is ConsistentHash", upstreamRoute.Name)
+		}
+		consistentHash := &envoygatewayv1alpha1.ConsistentHash{}
+		switch lb.ConsistentHash.Type {
+		case networkingv1alpha.HTTPProxyConsistentHashTypeSourceIP:
+			consistentHash.Type = envoygatewayv1alpha1.SourceIPConsistentHashType
+		case networkingv1alpha.HTTPProxyConsistentHashTypeHeader:
+			if lb.ConsistentHash.Header == nil || *lb.ConsistentHash.Header == "" {
+				return nil, fmt.Errorf("httproute %q: consistentHash.header is required when consistentHash.type is Header", upstreamRoute.Name)
+			}
+			// Headers (plural) is the non-deprecated form; a single-entry
+			// list carries the same one-header hash our user-facing API
+			// exposes.
+			consistentHash.Type = envoygatewayv1alpha1.HeadersConsistentHashType
+			consistentHash.Headers = []*envoygatewayv1alpha1.Header{{Name: *lb.ConsistentHash.Header}}
+		default:
+			return nil, fmt.Errorf("httproute %q: unsupported consistentHash type %q", upstreamRoute.Name, lb.ConsistentHash.Type)
+		}
+		envoyLoadBalancer.Type = envoygatewayv1alpha1.ConsistentHashLoadBalancerType
+		envoyLoadBalancer.ConsistentHash = consistentHash
+	default:
+		return nil, fmt.Errorf("httproute %q: unsupported load balancer type %q", upstreamRoute.Name, lb.Type)
+	}
+
+	return envoyLoadBalancer, nil
+}
+
+// passiveHealthCheckFromUpstreamRoute decodes the HTTPProxy health check the
+// httpproxy controller encodes onto the upstream HTTPRoute it synthesizes
+// (see HealthCheckAnnotation). It returns nil when the route carries none,
+// or when healthCheck is set without passive — active probes are not
+// supported. Unset knobs take the Datum defaults (5 consecutive 5xx, 30s
+// base ejection, 50% max ejected). AlwaysEjectOneEndpoint is forced on so
+// a single-endpoint backend can actually be ejected.
+func passiveHealthCheckFromUpstreamRoute(upstreamRoute gatewayv1.HTTPRoute) (*envoygatewayv1alpha1.PassiveHealthCheck, error) {
+	encoded, ok := upstreamRoute.Annotations[HealthCheckAnnotation]
+	if !ok {
+		return nil, nil
+	}
+
+	var healthCheck networkingv1alpha.HTTPProxyHealthCheck
+	if err := json.Unmarshal([]byte(encoded), &healthCheck); err != nil {
+		return nil, fmt.Errorf("failed decoding %s annotation on httproute %q: %w", HealthCheckAnnotation, upstreamRoute.Name, err)
+	}
+	if healthCheck.Passive == nil {
+		return nil, nil
+	}
+
+	passive := healthCheck.Passive
+	consecutive := uint32(networkingv1alpha.DefaultPassiveConsecutive5xxErrors)
+	if passive.Consecutive5xxErrors != nil {
+		if *passive.Consecutive5xxErrors < 1 {
+			return nil, fmt.Errorf("httproute %q: consecutive5xxErrors must be at least 1", upstreamRoute.Name)
+		}
+		consecutive = uint32(*passive.Consecutive5xxErrors)
+	}
+	baseEjection := networkingv1alpha.DefaultPassiveBaseEjectionTime
+	if passive.BaseEjectionTime != nil {
+		baseEjection = *passive.BaseEjectionTime
+	}
+	maxEjected := networkingv1alpha.DefaultPassiveMaxEjectionPercent
+	if passive.MaxEjectionPercent != nil {
+		if *passive.MaxEjectionPercent < 1 || *passive.MaxEjectionPercent > 100 {
+			return nil, fmt.Errorf("httproute %q: maxEjectionPercent must be between 1 and 100, inclusive", upstreamRoute.Name)
+		}
+		maxEjected = *passive.MaxEjectionPercent
+	}
+
+	return &envoygatewayv1alpha1.PassiveHealthCheck{
+		Consecutive5xxErrors:   ptr.To(consecutive),
+		BaseEjectionTime:       ptr.To(baseEjection),
+		MaxEjectionPercent:     ptr.To(maxEjected),
+		AlwaysEjectOneEndpoint: ptr.To(true),
+	}, nil
+}
+
+// backendTrafficPolicy builds the single BackendTrafficPolicy a route needs:
+// the panic-threshold override for a networkService backend, the HTTPProxy's
+// chosen load balancer algorithm, passive health checks, or any combination.
+// Those live as sibling fields on the same Envoy Gateway ClusterSettings, and
+// Envoy Gateway only expects one BackendTrafficPolicy per route/target, so
+// they are merged into one object rather than created as competing policies.
 //
 // Panic mode exists because active health checking can be wrong at scale: below
 // the 50% default Envoy ignores health and spreads load over every member
@@ -2680,25 +2803,46 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 //
 // Envoy Gateway's policy API attaches BackendTrafficPolicy to routes and
 // gateways, never to a backend, so the policy is route-scoped even though the
-// intent is per-backend. That is harmless for the other backend kinds sharing a
-// route: none of them carry health state (no active health checking, no outlier
-// detection), so every one of their endpoints is healthy and the panic
-// threshold is never consulted at all.
-func (r *GatewayReconciler) networkServicePanicThresholdPolicy(
+// panic-threshold intent is per-backend. Outlier detection is also
+// cluster-scoped: maxEjectionPercent applies to each backend's endpoints, not
+// across named backends as one pool. Panic threshold 0 still fail-closes when
+// outlier detection has ejected every remaining member.
+func (r *GatewayReconciler) backendTrafficPolicy(
 	ctx context.Context,
 	upstreamRoute gatewayv1.HTTPRoute,
 	downstreamGateway *gatewayv1.Gateway,
 	downstreamStrategy downstreamclient.ResourceStrategy,
+	networkServiceBackend bool,
+	loadBalancer *envoygatewayv1alpha1.LoadBalancer,
+	passiveHealthCheck *envoygatewayv1alpha1.PassiveHealthCheck,
 ) (*envoygatewayv1alpha1.BackendTrafficPolicy, error) {
 	downstreamRouteMeta, err := downstreamStrategy.ObjectMetaFromUpstreamObject(ctx, &upstreamRoute)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get downstream httproute object metadata: %w", err)
 	}
 
+	clusterSettings := envoygatewayv1alpha1.ClusterSettings{
+		LoadBalancer: loadBalancer,
+	}
+	if networkServiceBackend || passiveHealthCheck != nil {
+		healthCheck := &envoygatewayv1alpha1.HealthCheck{
+			Passive: passiveHealthCheck,
+		}
+		if networkServiceBackend {
+			healthCheck.PanicThreshold = ptr.To(uint32(0))
+		}
+		clusterSettings.HealthCheck = healthCheck
+	}
+
 	return &envoygatewayv1alpha1.BackendTrafficPolicy{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: downstreamGateway.Namespace,
-			Name:      fmt.Sprintf("route-%s-panic-threshold", upstreamRoute.UID),
+			// Keeping the "-panic-threshold" suffix, despite this object now
+			// carrying more than that one setting, keeps the identity of
+			// already-deployed policies stable across the upgrade that added
+			// loadBalancer — renaming would orphan them instead of updating
+			// them in place.
+			Name: fmt.Sprintf("route-%s-panic-threshold", upstreamRoute.UID),
 		},
 		Spec: envoygatewayv1alpha1.BackendTrafficPolicySpec{
 			PolicyTargetReferences: envoygatewayv1alpha1.PolicyTargetReferences{
@@ -2710,11 +2854,7 @@ func (r *GatewayReconciler) networkServicePanicThresholdPolicy(
 					},
 				}},
 			},
-			ClusterSettings: envoygatewayv1alpha1.ClusterSettings{
-				HealthCheck: &envoygatewayv1alpha1.HealthCheck{
-					PanicThreshold: ptr.To(uint32(0)),
-				},
-			},
+			ClusterSettings: clusterSettings,
 		},
 	}, nil
 }

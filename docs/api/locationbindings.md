@@ -26,6 +26,10 @@ cluster-scoped projection of a cluster-scoped Location into a project's
 virtual control plane, created once the location's class is supported, the
 Location is Ready, and the corresponding ServiceAvailability is Available.
 
+Deprecated: read the Location projected into the project control plane by
+locations.miloapis.com instead. This kind is still served, and still written
+by the service catalog, only until its remaining consumers move.
+
 <table>
     <thead>
         <tr>
@@ -104,7 +108,7 @@ LocationBindingSpec defines the desired state of LocationBinding.
         <td><b>locationClassName</b></td>
         <td>string</td>
         <td>
-          LocationClassName mirrors spec.locationClassName from the referenced Location.<br/>
+          LocationClassName mirrors spec.locationClassRef.name from the referenced Location.<br/>
         </td>
         <td>false</td>
       </tr><tr>

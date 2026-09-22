@@ -60,8 +60,13 @@ fmt: ## Run go fmt against code.
 vet: ## Run go vet against code.
 	go vet ./...
 
+.PHONY: locations-crds
+locations-crds: kustomize ## Render the locations service CRDs envtest installs.
+	mkdir -p $(LOCALBIN)/crds/locations
+	$(KUSTOMIZE) build config/tools/locations-crds -o $(LOCALBIN)/crds/locations
+
 .PHONY: test
-test: manifests generate fmt vet envtest ## Run tests.
+test: manifests generate fmt vet envtest locations-crds ## Run tests.
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" go test $$(go list ./... | grep -v /e2e) -timeout 20m -coverprofile cover.out
 
 # The e2e suite runs against the two-cluster prod-fidelity env; bring it up and
@@ -79,6 +84,10 @@ test-conformance:
 	go test ./test/conformance/gatewayapi -tags=conformance,e2e -count=1 -v \
 		--infra-kubeconfig $(TMPDIR)/.kind-nso-infra.yaml \
 		--gateway-class=$(GATEWAY_CONFORMANCE_CLASS) $(GATEWAY_CONFORMANCE_FLAGS)
+
+.PHONY: notice
+notice: go-licenses ## Regenerate the NOTICE file of third-party licenses.
+	$(GO_LICENSES) report ./... --ignore go.datum.net/network-services-operator --template hack/notice.tmpl > NOTICE
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter
@@ -212,6 +221,7 @@ GOLANGCI_LINT = $(LOCALBIN)/golangci-lint
 CRDOC ?= $(LOCALBIN)/crdoc
 CHAINSAW ?= $(LOCALBIN)/chainsaw
 CMCTL ?= $(LOCALBIN)/cmctl
+GO_LICENSES ?= $(LOCALBIN)/go-licenses
 
 ## Tool Versions
 KUSTOMIZE_VERSION ?= v5.5.0
@@ -234,6 +244,9 @@ CHAINSAW_VERSION ?= v0.2.15
 
 # renovate: datasource=go depName=github.com/cert-manager/cmctl/v2
 CMCTL_VERSION ?= v2.1.1
+
+# renovate: datasource=go depName=github.com/google/go-licenses
+GO_LICENSES_VERSION ?= v1.6.0
 
 .PHONY: kustomize
 kustomize: $(KUSTOMIZE) ## Download kustomize locally if necessary.
@@ -276,6 +289,10 @@ chainsaw: ## Find or download chainsaw
 cmctl: ## Find or download cmctl
 	$(call go-install-tool,$(CMCTL),github.com/cert-manager/cmctl/v2,$(CMCTL_VERSION))
 
+.PHONY: go-licenses
+go-licenses: ## Find or download go-licenses
+	$(call go-install-tool,$(GO_LICENSES),github.com/google/go-licenses,$(GO_LICENSES_VERSION))
+
 # go-install-tool will 'go install' any package with custom target and name of binary, if it doesn't exist
 # $1 - target path with name of binary
 # $2 - package url which can be installed
@@ -302,7 +319,7 @@ api-docs: crdoc kustomize
 	TMP_DIR=$$(mktemp -d) ; \
 	$(KUSTOMIZE) build $$TMP_MANIFEST_DIR -o $$TMP_DIR ;\
 	mkdir -p docs/api ;\
-	for crdmanifest in $$TMP_DIR/*; do \
+	for crdmanifest in $$TMP_DIR/*.networking.datumapis.com.yaml; do \
 	  filename="$$(basename -s .networking.datumapis.com.yaml $$crdmanifest)" ;\
 	  filename="$${filename#apiextensions.k8s.io_v1_customresourcedefinition_}" ;\
 	  $(CRDOC) --resources $$crdmanifest --output docs/api/$$filename.md ;\

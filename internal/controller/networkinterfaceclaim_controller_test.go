@@ -40,6 +40,7 @@ import (
 
 	ipamv1alpha1 "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
 	"go.miloapis.com/ipam/pkg/ipamerrors"
+	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	"go.datum.net/network-services-operator/internal/config"
@@ -397,9 +398,13 @@ func startNetworkInterfaceEnv(t *testing.T) (client.Client, *rest.Config) {
 	testScheme := runtime.NewScheme()
 	require.NoError(t, clientgoscheme.AddToScheme(testScheme))
 	require.NoError(t, networkingv1alpha.AddToScheme(testScheme))
+	require.NoError(t, locationsv1alpha1.AddToScheme(testScheme))
 
 	env := &envtest.Environment{
-		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "config", "crd", "bases")},
+		CRDDirectoryPaths: []string{
+			filepath.Join("..", "..", "config", "crd", "bases"),
+			filepath.Join("..", "..", "bin", "crds", "locations"),
+		},
 		ErrorIfCRDPathMissing: true,
 	}
 	cfg, err := env.Start()
@@ -447,7 +452,7 @@ func newScenario(t *testing.T, labelled bool, networkFamilies []networkingv1alph
 	network.Spec = networkingv1alpha.NetworkSpec{
 		IPAM:       networkingv1alpha.NetworkIPAM{Mode: networkingv1alpha.NetworkIPAMModeAuto},
 		IPFamilies: networkFamilies,
-		MTU:        1460,
+		MTU:        1440,
 	}
 	require.NoError(t, cl.Create(ctx, network))
 
@@ -471,7 +476,7 @@ func newScenario(t *testing.T, labelled bool, networkFamilies []networkingv1alph
 	// The claim reconciler runs in a cell and reads the propagated context, not
 	// the network. Families are set explicitly throughout so each case names the
 	// families it exercises rather than inheriting either default.
-	s.createNetworkContext("default", networkFamilies, 1460)
+	s.createNetworkContext("default", networkFamilies, 1440)
 
 	return s
 }
@@ -490,7 +495,7 @@ func (s *scenario) createNetworkContext(
 	networkContext.Name = s.networkContextName(network)
 	networkContext.Spec = networkingv1alpha.NetworkContextSpec{
 		Network: networkingv1alpha.LocalNetworkRef{Name: network},
-		Location: networkingv1alpha.LocationReference{
+		Location: locationsv1alpha1.LocationReference{
 			Name: testLocationName,
 		},
 		IPFamilies: families,
@@ -500,7 +505,7 @@ func (s *scenario) createNetworkContext(
 }
 
 func (s *scenario) networkContextName(network string) string {
-	return networkContextName(network, networkingv1alpha.LocationReference{
+	return networkContextName(network, locationsv1alpha1.LocationReference{
 		Name: testLocationName,
 	})
 }
@@ -581,7 +586,7 @@ func (s *scenario) createSubnet(
 	subnet.Spec = networkingv1alpha.SubnetSpec{
 		SubnetClass:    "private",
 		NetworkContext: networkingv1alpha.LocalNetworkContextRef{Name: contextName},
-		Location: networkingv1alpha.LocationReference{
+		Location: locationsv1alpha1.LocationReference{
 			Name: testLocationName,
 		},
 		IPFamily:     family,
@@ -642,7 +647,7 @@ func TestNetworkInterfaceClaimBindsDualStack(t *testing.T) {
 
 	iface, err := s.getInterface("web-0-eth0")
 	require.NoError(t, err)
-	require.Equal(t, int32(1460), iface.Spec.MTU)
+	require.Equal(t, int32(1440), iface.Spec.MTU)
 	require.Equal(t, "eth0", iface.Spec.InterfaceName)
 	require.Equal(t, networkingv1alpha.NetworkInterfacePhaseBound, iface.Status.Phase)
 	require.NotNil(t, iface.Spec.ClaimRef)
@@ -1176,10 +1181,10 @@ func TestAdoptionRefusesAnInterfaceOnAnotherNetwork(t *testing.T) {
 	other.Spec = networkingv1alpha.NetworkSpec{
 		IPAM:       networkingv1alpha.NetworkIPAM{Mode: networkingv1alpha.NetworkIPAMModeAuto},
 		IPFamilies: []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol},
-		MTU:        1460,
+		MTU:        1440,
 	}
 	require.NoError(t, s.client.Create(s.ctx, other))
-	s.createNetworkContext("other", []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol}, 1460)
+	s.createNetworkContext("other", []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol}, 1440)
 
 	spec := networkingv1alpha.NetworkInterfaceClaimSpec{
 		InterfaceName: "eth0",
@@ -1669,7 +1674,7 @@ func TestNetworkInterfaceClaimTakesMTUFromTheNetworkContext(t *testing.T) {
 	iface, err := s.getInterface("jumbo")
 	require.NoError(t, err)
 	require.Equal(t, int32(1500), iface.Spec.MTU,
-		"the context carries the MTU, and the network the cell cannot read carries 1460")
+		"the context carries the MTU, and the network the cell cannot read carries 1440")
 }
 
 // A network that has not reached the location is a different answer from a
@@ -1900,6 +1905,18 @@ func TestAttachmentModeReachesTheInterface(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, networkingv1alpha.NetworkInterfaceAttachmentModeNetns,
 		defaulted.Spec.AttachmentMode, "a claim that states no mode gets a namespace interface")
+
+	s.reconcile(s.createClaim("declared-eth0", networkingv1alpha.NetworkInterfaceClaimSpec{
+		InterfaceName:  "eth0",
+		AttachmentMode: networkingv1alpha.NetworkInterfaceAttachmentModeHypervisorDeclared,
+		IPFamilies:     []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol},
+		ReclaimPolicy:  networkingv1alpha.NetworkInterfaceReclaimPolicyDelete,
+	}))
+
+	declared, err := s.getInterface("declared-eth0")
+	require.NoError(t, err)
+	require.Equal(t, networkingv1alpha.NetworkInterfaceAttachmentModeHypervisorDeclared,
+		declared.Spec.AttachmentMode, "the mode is carried verbatim from the claim")
 }
 
 // The data plane owns Programmed, status.vpc and status.attachmentRef on the

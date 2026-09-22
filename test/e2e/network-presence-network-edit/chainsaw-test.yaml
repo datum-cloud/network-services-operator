@@ -28,14 +28,15 @@ spec:
                   meta.datumapis.com/upstream-namespace: presence-edit-project
         - apply:
             resource:
-              apiVersion: networking.datumapis.com/v1alpha
-              kind: LocationBinding
+              apiVersion: locations.miloapis.com/v1alpha1
+              kind: Location
               metadata:
                 name: presence-edit-loc
               spec:
-                locationRef:
-                  name: presence-edit-loc
-                locationClassName: datum-managed
+                locationClassRef:
+                  name: datum-managed
+                topology:
+                  topology.datum.net/city-code: IAD
         - apply:
             resource:
               apiVersion: networking.datumapis.com/v1alpha
@@ -48,7 +49,7 @@ spec:
                   mode: Auto
                 ipFamilies:
                   - IPv6
-                mtu: 1460
+                mtu: 1440
 
     - name: Make the network present in the location
       try:
@@ -80,7 +81,7 @@ spec:
                 name: presence-edit-net-presence-edit-loc
                 namespace: presence-edit-project
               spec:
-                mtu: 1460
+                mtu: 1440
                 ipFamilies:
                   - IPv6
 

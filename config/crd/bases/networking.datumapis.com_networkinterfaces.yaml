@@ -150,10 +150,13 @@ spec:
 
                   Netns places the interface in the workload's network namespace. Hypervisor
                   hands it to a hypervisor as a device, which is what a virtual machine or
-                  microVM guest needs.
+                  microVM guest needs. HypervisorDeclared also hands it to a hypervisor, and
+                  additionally has the realizer state the device to that hypervisor instead
+                  of letting it discover the device from the node.
                 enum:
                 - Netns
                 - Hypervisor
+                - HypervisorDeclared
                 type: string
               claimRef:
                 description: |-

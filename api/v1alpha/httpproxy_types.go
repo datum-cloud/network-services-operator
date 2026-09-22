@@ -58,6 +58,150 @@ type HTTPProxySpec struct {
 	// +kubebuilder:validation:XValidation:message="Rule name must be unique within the route",rule="self.all(l1, !has(l1.name) || self.exists_one(l2, has(l2.name) && l1.name == l2.name))"
 	// +kubebuilder:validation:XValidation:message="While 16 rules and 64 matches per rule are allowed, the total number of matches across all rules in a route must be less than 128",rule="(self.size() > 0 ? self[0].matches.size() : 0) + (self.size() > 1 ? self[1].matches.size() : 0) + (self.size() > 2 ? self[2].matches.size() : 0) + (self.size() > 3 ? self[3].matches.size() : 0) + (self.size() > 4 ? self[4].matches.size() : 0) + (self.size() > 5 ? self[5].matches.size() : 0) + (self.size() > 6 ? self[6].matches.size() : 0) + (self.size() > 7 ? self[7].matches.size() : 0) + (self.size() > 8 ? self[8].matches.size() : 0) + (self.size() > 9 ? self[9].matches.size() : 0) + (self.size() > 10 ? self[10].matches.size() : 0) + (self.size() > 11 ? self[11].matches.size() : 0) + (self.size() > 12 ? self[12].matches.size() : 0) + (self.size() > 13 ? self[13].matches.size() : 0) + (self.size() > 14 ? self[14].matches.size() : 0) + (self.size() > 15 ? self[15].matches.size() : 0) <= 128"
 	Rules []HTTPProxyRule `json:"rules,omitempty"`
+
+	// LoadBalancer selects the algorithm used to distribute requests across
+	// every rule's backends, whenever a rule has more than one. It applies
+	// to the whole HTTPProxy rather than to an individual rule. If unset,
+	// Envoy's own default algorithm applies.
+	//
+	// +kubebuilder:validation:Optional
+	LoadBalancer *HTTPProxyLoadBalancer `json:"loadBalancer,omitempty"`
+
+	// HealthCheck configures how backends are considered healthy. It applies
+	// to every backend on the HTTPProxy. If unset, Envoy treats every
+	// endpoint as healthy.
+	//
+	// +kubebuilder:validation:Optional
+	HealthCheck *HTTPProxyHealthCheck `json:"healthCheck,omitempty"`
+}
+
+// HTTPProxyLoadBalancer selects the algorithm Envoy uses to distribute
+// requests across an HTTPProxy's backends.
+//
+// +kubebuilder:validation:XValidation:message="consistentHash is required when type is ConsistentHash, and forbidden otherwise",rule="(self.type == 'ConsistentHash') == has(self.consistentHash)"
+type HTTPProxyLoadBalancer struct {
+	// Type selects the load balancing algorithm.
+	//
+	// RoundRobin cycles through backends in order. Random picks a backend
+	// uniformly at random. LeastRequest picks the backend with the fewest
+	// active requests, biased toward spreading load evenly under uneven
+	// latency. ConsistentHash routes requests that hash the same way (see
+	// consistentHash) to the same backend, so the same client keeps
+	// landing on the same backend so long as the backend set is stable.
+	//
+	// +kubebuilder:validation:Required
+	Type HTTPProxyLoadBalancerType `json:"type"`
+
+	// ConsistentHash configures what part of the request is hashed to pick
+	// a backend. Required when type is ConsistentHash, and forbidden
+	// otherwise.
+	//
+	// +kubebuilder:validation:Optional
+	ConsistentHash *HTTPProxyConsistentHash `json:"consistentHash,omitempty"`
+}
+
+// +kubebuilder:validation:Enum=RoundRobin;Random;LeastRequest;ConsistentHash
+type HTTPProxyLoadBalancerType string
+
+const (
+	HTTPProxyLoadBalancerTypeRoundRobin     HTTPProxyLoadBalancerType = "RoundRobin"
+	HTTPProxyLoadBalancerTypeRandom         HTTPProxyLoadBalancerType = "Random"
+	HTTPProxyLoadBalancerTypeLeastRequest   HTTPProxyLoadBalancerType = "LeastRequest"
+	HTTPProxyLoadBalancerTypeConsistentHash HTTPProxyLoadBalancerType = "ConsistentHash"
+)
+
+// HTTPProxyConsistentHash configures hash-based backend selection.
+//
+// +kubebuilder:validation:XValidation:message="header is required when type is Header, and forbidden otherwise",rule="(self.type == 'Header') == has(self.header)"
+type HTTPProxyConsistentHash struct {
+	// Type selects what part of the request is hashed to pick a backend.
+	//
+	// SourceIP hashes the client's source IP address. Header hashes the
+	// value of the request header named in the header field.
+	//
+	// +kubebuilder:validation:Required
+	Type HTTPProxyConsistentHashType `json:"type"`
+
+	// Header names the request header to hash on. Required when type is
+	// Header, and forbidden otherwise.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=256
+	Header *string `json:"header,omitempty"`
+}
+
+// +kubebuilder:validation:Enum=SourceIP;Header
+type HTTPProxyConsistentHashType string
+
+const (
+	HTTPProxyConsistentHashTypeSourceIP HTTPProxyConsistentHashType = "SourceIP"
+	HTTPProxyConsistentHashTypeHeader   HTTPProxyConsistentHashType = "Header"
+)
+
+// HTTPProxyHealthCheck configures backend health checking for an HTTPProxy.
+// Active probes are not supported yet; only passive (outlier) detection
+// can be set.
+type HTTPProxyHealthCheck struct {
+	// Passive configures Envoy outlier detection: consecutive 5xx responses
+	// eject an endpoint from load balancing for a growing period, then
+	// Envoy re-admits it. Unset keeps every endpoint eligible.
+	//
+	// See: https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/upstream/outlier.html
+	//
+	// +kubebuilder:validation:Optional
+	Passive *HTTPProxyPassiveHealthCheck `json:"passive,omitempty"`
+}
+
+const (
+	// DefaultPassiveConsecutive5xxErrors is the number of consecutive 5xx
+	// responses that eject an endpoint when consecutive5xxErrors is unset.
+	DefaultPassiveConsecutive5xxErrors int32 = 5
+
+	// DefaultPassiveBaseEjectionTime is the first ejection duration when
+	// baseEjectionTime is unset. Later ejections multiply this value.
+	DefaultPassiveBaseEjectionTime gatewayv1.Duration = "30s"
+
+	// DefaultPassiveMaxEjectionPercent is the maximum share of a backend's
+	// endpoints that may be ejected at once when maxEjectionPercent is unset.
+	DefaultPassiveMaxEjectionPercent int32 = 50
+)
+
+// HTTPProxyPassiveHealthCheck configures Envoy outlier detection for every
+// backend on the HTTPProxy.
+//
+// maxEjectionPercent applies per backend (each Envoy cluster), not across
+// the HTTPProxy's named backends as a single pool.
+//
+// See: https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/upstream/outlier.html
+type HTTPProxyPassiveHealthCheck struct {
+	// Consecutive5xxErrors is the number of consecutive 5xx responses that
+	// eject an endpoint. Defaults to 5.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default=5
+	// +kubebuilder:validation:Minimum=1
+	Consecutive5xxErrors *int32 `json:"consecutive5xxErrors,omitempty"`
+
+	// BaseEjectionTime is how long an endpoint stays ejected after its
+	// first streak of failures. Later ejections multiply this duration.
+	// Defaults to 30s. Envoy re-admits the endpoint when the period
+	// elapses; it does not replace the instance.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default="30s"
+	BaseEjectionTime *gatewayv1.Duration `json:"baseEjectionTime,omitempty"`
+
+	// MaxEjectionPercent is the maximum percentage of endpoints in a
+	// backend that may be ejected at once. Defaults to 50. Must be at
+	// least 1 so a single-endpoint backend can still be ejected. This
+	// limit is per backend, not across every backend on the HTTPProxy.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default=50
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=100
+	MaxEjectionPercent *int32 `json:"maxEjectionPercent,omitempty"`
 }
 
 // HTTPProxyRule defines semantics for matching an HTTP request based on
@@ -69,6 +213,7 @@ type HTTPProxySpec struct {
 // +kubebuilder:validation:XValidation:message="When using URLRewrite filter with path.replacePrefixMatch, exactly one PathPrefix match must be specified",rule="(has(self.filters) && self.filters.exists_one(f, has(f.urlRewrite) && has(f.urlRewrite.path) && f.urlRewrite.path.type == 'ReplacePrefixMatch' && has(f.urlRewrite.path.replacePrefixMatch))) ? ((size(self.matches) != 1 || !has(self.matches[0].path) || self.matches[0].path.type != 'PathPrefix') ? false : true) : true"
 // +kubebuilder:validation:XValidation:message="Within backends, when using RequestRedirect filter with path.replacePrefixMatch, exactly one PathPrefix match must be specified",rule="(has(self.backends) && self.backends.exists_one(b, (has(b.filters) && b.filters.exists_one(f, has(f.requestRedirect) && has(f.requestRedirect.path) && f.requestRedirect.path.type == 'ReplacePrefixMatch' && has(f.requestRedirect.path.replacePrefixMatch))) )) ? ((size(self.matches) != 1 || !has(self.matches[0].path) || self.matches[0].path.type != 'PathPrefix') ? false : true) : true"
 // +kubebuilder:validation:XValidation:message="Within backends, When using URLRewrite filter with path.replacePrefixMatch, exactly one PathPrefix match must be specified",rule="(has(self.backends) && self.backends.exists_one(b, (has(b.filters) && b.filters.exists_one(f, has(f.urlRewrite) && has(f.urlRewrite.path) && f.urlRewrite.path.type == 'ReplacePrefixMatch' && has(f.urlRewrite.path.replacePrefixMatch))) )) ? ((size(self.matches) != 1 || !has(self.matches[0].path) || self.matches[0].path.type != 'PathPrefix') ? false : true) : true"
+// +kubebuilder:validation:XValidation:message="a connector backend must be the only backend in its rule",rule="(has(self.backends) && self.backends.exists(b, has(b.connector))) ? size(self.backends) == 1 : true"
 type HTTPProxyRule struct {
 	// Name is the name of the route rule. This name MUST be unique within a Route
 	// if it is set.
@@ -103,12 +248,13 @@ type HTTPProxyRule struct {
 	// Backends defines the backend(s) where matching requests should be
 	// sent.
 	//
-	// Note: While this field is a list, only a single element is permitted at
-	// this time due to underlying Gateway limitations. Once addressed, MaxItems
-	// will be increased to allow for multiple backends on any given route.
+	// When more than one backend is specified, requests are weighted load
+	// balanced across all of them (see the weight field on each backend). A
+	// connector backend must be the only backend in the rule — connectors do
+	// not support weighted load balancing across multiple backends today.
 	//
 	// +kubebuilder:validation:MinItems=0
-	// +kubebuilder:validation:MaxItems=1
+	// +kubebuilder:validation:MaxItems=16
 	Backends []HTTPProxyRuleBackend `json:"backends,omitempty"`
 }
 
@@ -168,6 +314,19 @@ type HTTPProxyRuleBackend struct {
 	//
 	// +kubebuilder:validation:Optional
 	TLS *HTTPProxyBackendTLS `json:"tls,omitempty"`
+
+	// Weight specifies the proportion of requests forwarded to this backend,
+	// relative to the sum of weights across all backends in the rule.
+	// Follows the same semantics as the Gateway API's HTTPBackendRef.weight:
+	// computed as weight/(sum of all weights in the rule); a weight of 0
+	// means no traffic is forwarded to this backend; if unspecified, weight
+	// defaults to 1.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default=1
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=1000000
+	Weight *int32 `json:"weight,omitempty"`
 
 	// Filters defined at this level should be executed if and only if the
 	// request is being forwarded to the backend defined here.

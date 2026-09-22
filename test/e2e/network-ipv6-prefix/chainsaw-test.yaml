@@ -122,7 +122,7 @@ spec:
                   name: us-central-1
                 ipFamilies:
                   - IPv6
-                mtu: 1460
+                mtu: 1440
         - create:
             resource:
               apiVersion: networking.datumapis.com/v1alpha

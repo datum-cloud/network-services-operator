@@ -18,7 +18,7 @@
 # that context and its Subnet onto the hub, and Karmada propagates both to the
 # cells serving the location. The cell controller manager then serves
 # NetworkInterfaceClaims against them. ServingLocation is federated the same
-# way.
+# way, but its CRD is installed by the locations service, not this bundle.
 #
 # The Network itself is mirrored onto the hub as well, so what allocates a
 # network's identity on the fabric is driven by the network rather than by the
@@ -28,16 +28,14 @@
 #
 # The cell set is derived from what the cell controller manager watches
 # (internal/cmd/cell/cell.go): NetworkInterfaceClaim, NetworkInterface,
-# NetworkContext, Subnet, and ServingLocation on the local cluster.
+# NetworkContext and Subnet on the local cluster. It also watches
+# ServingLocation, which the locations service installs.
 resources:
   # Gateway data plane
   - ../bases/networking.datumapis.com_edgereachabilities.yaml
   - ../bases/networking.datumapis.com_trafficprotectionpolicies.yaml
   - ../bases/networking.datumapis.com_httpproxies.yaml
   - ../bases/networking.datumapis.com_connectors.yaml
-
-  # Location identity, federated to cells
-  - ../bases/networking.datumapis.com_servinglocations.yaml
 
   # Network presence: hub stores bindings and mirrored contexts, cells receive
   # the contexts for the locations they serve

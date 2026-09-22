@@ -26,6 +26,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
+	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
+
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	"go.datum.net/network-services-operator/internal/config"
 	"go.datum.net/network-services-operator/internal/downstreamclient"
@@ -85,11 +87,17 @@ var planes = sync.OnceValues(func() ([]client.Client, error) {
 	if err := networkingv1alpha.AddToScheme(testScheme); err != nil {
 		return nil, err
 	}
+	if err := locationsv1alpha1.AddToScheme(testScheme); err != nil {
+		return nil, err
+	}
 
 	clients := make([]client.Client, 0, 2)
 	for range 2 {
 		env := &envtest.Environment{
-			CRDDirectoryPaths:     []string{filepath.Join("..", "..", "config", "crd", "bases")},
+			CRDDirectoryPaths: []string{
+				filepath.Join("..", "..", "config", "crd", "bases"),
+				filepath.Join("..", "..", "bin", "crds", "locations"),
+			},
 			ErrorIfCRDPathMissing: true,
 		}
 		cfg, err := env.Start()
@@ -193,7 +201,7 @@ func (v *visibility) interfaceOnCell() *networkingv1alpha.NetworkInterface {
 		Network:       networkingv1alpha.LocalNetworkRef{Name: "default"},
 		ClaimRef:      &networkingv1alpha.NetworkInterfaceClaimRef{Name: name},
 		InterfaceName: "eth0",
-		MTU:           1460,
+		MTU:           1440,
 		Addresses: []networkingv1alpha.NetworkInterfaceAddress{{
 			Family:  networkingv1alpha.IPv6Protocol,
 			Address: "fd20:1abc:2def:1::/96",
@@ -286,7 +294,7 @@ func TestInterfaceReachesTheProjectControlPlane(t *testing.T) {
 
 	require.Equal(t, "default", copied.Spec.Network.Name)
 	require.Equal(t, "eth0", copied.Spec.InterfaceName)
-	require.Equal(t, int32(1460), copied.Spec.MTU)
+	require.Equal(t, int32(1440), copied.Spec.MTU)
 	require.Equal(t, "fd20:1abc:2def:1::/96", copied.Spec.Addresses[0].Address)
 	require.Equal(t, "fd20:1abc:2def:1::1", copied.Spec.Addresses[0].Gateway)
 	require.Equal(t, "198.51.100.11", copied.Spec.ExternalAddresses[0].Address)
@@ -411,11 +419,11 @@ func TestEditingACopyDoesNotSurvive(t *testing.T) {
 	v.handToProject()
 
 	copied, _ = v.projectCopy()
-	require.Equal(t, int32(1460), copied.Spec.MTU, "the cell stays the only writer")
+	require.Equal(t, int32(1440), copied.Spec.MTU, "the cell stays the only writer")
 
 	var onCell networkingv1alpha.NetworkInterface
 	require.NoError(t, v.cell.Get(v.ctx, client.ObjectKey{Namespace: v.cellNamespace, Name: boundInterfaceName}, &onCell))
-	require.Equal(t, int32(1460), onCell.Spec.MTU, "an edit to a copy never reaches the cell")
+	require.Equal(t, int32(1440), onCell.Spec.MTU, "an edit to a copy never reaches the cell")
 }
 
 func TestDeletingOnTheCellRemovesBothCopies(t *testing.T) {

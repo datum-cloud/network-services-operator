@@ -8,6 +8,7 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -15,6 +16,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 )
 
 // inScopeAPIFiles are the api/v1alpha files whose condition reasons reach a
@@ -191,4 +194,51 @@ func TestAmbiguousReasonsAreExplainedPerConditionType(t *testing.T) {
 
 	require.Contains(t, ambiguous, "Pending",
 		"Pending is ambiguous in this API; if it stopped being so, this test is no longer guarding anything")
+}
+
+// TestCatalogPairsReasonsWithTheConditionsThatCarryThem closes the gap
+// TestCatalogCoversEveryInScopeAPIReason leaves open.
+//
+// That test proves every reason has an entry. It cannot prove the entry names
+// the condition the controllers actually set the reason on, and a mispaired
+// entry is invisible: ExplainReason simply misses, the walk falls back to the
+// uncatalogued path, and the customer gets "Datum reported something this
+// assistant does not have an explanation for" for a reason that is catalogued.
+//
+// The controllers are the authority, so this reads them. A reason assigned to a
+// condition variable named programmedCondition belongs on Programmed.
+func TestCatalogPairsReasonsWithTheConditionsThatCarryThem(t *testing.T) {
+	src, err := os.ReadFile(filepath.Join("..", "controller", "httpproxy_controller.go"))
+	require.NoError(t, err)
+
+	// `<something>Condition.Reason = networkingv1alpha.<ReasonConst>`
+	assignment := regexp.MustCompile(`(\w+)Condition\.Reason = networkingv1alpha\.(\w+)`)
+
+	conditionTypeOf := map[string]string{
+		"accepted":   networkingv1alpha.HTTPProxyConditionAccepted,
+		"programmed": networkingv1alpha.HTTPProxyConditionProgrammed,
+	}
+
+	constToValue := map[string]string{}
+	for value, constName := range apiReasons(t) {
+		constToValue[constName] = value
+	}
+
+	checked := 0
+	for _, m := range assignment.FindAllStringSubmatch(string(src), -1) {
+		conditionType, ok := conditionTypeOf[strings.ToLower(m[1])]
+		if !ok {
+			continue
+		}
+		reason, ok := constToValue[m[2]]
+		if !ok {
+			continue
+		}
+		checked++
+		if _, found := ExplainReason(conditionType, reason); !found {
+			t.Errorf("the controller sets %s on %s, but the catalog has no entry for that pair; "+
+				"a mispaired entry reads as an uncatalogued reason at runtime", reason, conditionType)
+		}
+	}
+	require.Greater(t, checked, 5, "parsed almost no assignments; the pattern has drifted from the controller")
 }

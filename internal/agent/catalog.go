@@ -214,7 +214,7 @@ var catalog = []ReasonInfo{
 	// ------------------------------------------------- routes and origins
 	{
 		Reason:        networkingv1alpha.HTTPProxyReasonNetworkServiceBackendNotFound,
-		ConditionType: networkingv1alpha.HTTPProxyConditionAccepted,
+		ConditionType: networkingv1alpha.HTTPProxyConditionProgrammed,
 		Actionability: ActionabilityUser,
 		Scope:         ScopeAllTraffic,
 		Explanation: "A route on this load balancer sends traffic to a network service that does " +
@@ -226,7 +226,7 @@ var catalog = []ReasonInfo{
 	},
 	{
 		Reason:        networkingv1alpha.HTTPProxyReasonInstanceBackendNotFound,
-		ConditionType: networkingv1alpha.HTTPProxyConditionAccepted,
+		ConditionType: networkingv1alpha.HTTPProxyConditionProgrammed,
 		Actionability: ActionabilityUser,
 		Scope:         ScopeAllTraffic,
 		Explanation: "A route on this load balancer points straight at a set of machine addresses " +
@@ -719,10 +719,26 @@ var aggregateKeys = map[Key]struct{}{
 	{networkingv1alpha.HTTPProxyConditionCertificatesReady, networkingv1alpha.CertificatesReadyReasonCertificatesFailed}:   {},
 	{networkingv1alpha.HTTPProxyConditionHostnamesVerified, networkingv1alpha.UnverifiedHostnamesPresent}:                  {},
 	{networkingv1alpha.HTTPProxyConditionHostnamesInUse, networkingv1alpha.HostnameInUseReason}:                            {},
-	{networkingv1alpha.HTTPProxyConditionAccepted, networkingv1alpha.HTTPProxyReasonPending}:                               {},
-	{networkingv1alpha.HTTPProxyConditionProgrammed, networkingv1alpha.HTTPProxyReasonPending}:                             {},
 	// Cross-object: the cause is on the Domain, not here.
 	{networkingv1alpha.HostnameConditionDNSRecordProgrammed, networkingv1alpha.DNSRecordReasonDomainNotVerified}: {},
+}
+
+// notStartedKeys are the conditions that say nothing has run yet.
+//
+// These are causes — "Datum has not looked at this yet" is the honest answer
+// when it is true, and suppressing it reports a load balancer that has never
+// been evaluated as having no faults. But they are the least specific answer
+// there is, so they rank behind any cause that names something.
+var notStartedKeys = map[Key]struct{}{
+	{networkingv1alpha.HTTPProxyConditionAccepted, networkingv1alpha.HTTPProxyReasonPending}:   {},
+	{networkingv1alpha.HTTPProxyConditionProgrammed, networkingv1alpha.HTTPProxyReasonPending}: {},
+}
+
+// IsNotStarted reports whether a condition says nothing has run yet, rather
+// than naming something that went wrong.
+func IsNotStarted(conditionType, reason string) bool {
+	_, ok := notStartedKeys[Key{ConditionType: conditionType, Reason: reason}]
+	return ok
 }
 
 // IsAggregate reports whether a condition reports over a set without naming a

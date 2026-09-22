@@ -168,7 +168,7 @@ func runCreate(cmd *cobra.Command, args []string) error {
 
 	if !waitFlag {
 		_, _ = fmt.Fprintf(out, "Application load balancer %q created.\n", name)
-		if !util.QuietFromCmd(cmd) {
+		if !plugincli.QuietFromCmd(cmd) {
 			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "\nNext steps:\n  datumctl alb describe %s\n", name)
 		}
 		return nil
@@ -185,7 +185,7 @@ func runCreate(cmd *cobra.Command, args []string) error {
 
 	_, _ = fmt.Fprintf(out, "Application load balancer %q created.\n", name)
 	_, _ = fmt.Fprintf(out, "Hostname: %s\n", hostname)
-	if !util.QuietFromCmd(cmd) {
+	if !plugincli.QuietFromCmd(cmd) {
 		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "\nNext steps:\n  datumctl alb hostname add %s <custom-hostname>\n  datumctl alb describe %s\n", name, name)
 	}
 	return nil

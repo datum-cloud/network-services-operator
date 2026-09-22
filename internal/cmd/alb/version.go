@@ -10,6 +10,8 @@ import (
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	"go.datum.net/network-services-operator/internal/cmd/alb/util"
+
+	"go.datum.net/network-services-operator/internal/cmd/alb/plugincli"
 )
 
 var Version = "dev"
@@ -44,7 +46,7 @@ func versionCommand() *cobra.Command {
 				Platform:   runtime.GOOS + "/" + runtime.GOARCH,
 			}
 
-			format, err := util.ParseOutputFormat(util.OutputFromCmd(cmd),
+			format, err := util.ParseOutputFormat(plugincli.OutputFromCmd(cmd),
 				util.OutputTable, util.OutputWide, util.OutputJSON, util.OutputYAML)
 			if err != nil {
 				return err

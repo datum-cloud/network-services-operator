@@ -41,7 +41,7 @@ func runDescribe(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	format, err := util.ParseOutputFormat(util.OutputFromCmd(cmd),
+	format, err := util.ParseOutputFormat(plugincli.OutputFromCmd(cmd),
 		util.OutputTable, util.OutputWide, util.OutputJSON, util.OutputYAML)
 	if err != nil {
 		return err
@@ -149,7 +149,7 @@ func runDescribe(cmd *cobra.Command, args []string) error {
 		_, _ = fmt.Fprintf(out, "Certificates:       %s (%s)\n", cond.Status, util.OrDash(cond.Reason))
 	}
 
-	if proxy.Status.CanonicalHostname != "" && !util.QuietFromCmd(cmd) {
+	if proxy.Status.CanonicalHostname != "" && !plugincli.QuietFromCmd(cmd) {
 		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "\nTry it:\n  curl -I https://%s/\n", proxy.Status.CanonicalHostname)
 	}
 

@@ -82,3 +82,20 @@ func OrgFromCmd(cmd *cobra.Command) string {
 	org, _ := cmd.Root().PersistentFlags().GetString("org")
 	return org
 }
+
+func OutputFromCmd(cmd *cobra.Command) string {
+	if f := cmd.Root().PersistentFlags().Lookup("output"); f != nil {
+		return f.Value.String()
+	}
+	return string(util.OutputTable)
+}
+
+func QuietFromCmd(cmd *cobra.Command) bool {
+	quiet, _ := cmd.Root().PersistentFlags().GetBool("quiet")
+	return quiet
+}
+
+func AssumeYes(cmd *cobra.Command) bool {
+	yes, _ := cmd.Root().PersistentFlags().GetBool("yes")
+	return yes
+}

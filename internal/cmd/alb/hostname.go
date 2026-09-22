@@ -92,7 +92,7 @@ func runHostnameList(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	format, err := util.ParseOutputFormat(util.OutputFromCmd(cmd))
+	format, err := util.ParseOutputFormat(plugincli.OutputFromCmd(cmd))
 	if err != nil {
 		return err
 	}

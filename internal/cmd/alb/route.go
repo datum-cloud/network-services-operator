@@ -242,7 +242,7 @@ func pathFlag(cmd *cobra.Command) (string, error) {
 
 func confirmRouteChange(cmd *cobra.Command, name, path string, backend *spec.BackendInput, prompt string) error {
 	dryRun, _ := cmd.Flags().GetBool("dry-run")
-	if dryRun || util.AssumeYes(cmd) {
+	if dryRun || plugincli.AssumeYes(cmd) {
 		return nil
 	}
 
@@ -293,7 +293,7 @@ func runRouteList(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	format, err := util.ParseOutputFormat(util.OutputFromCmd(cmd))
+	format, err := util.ParseOutputFormat(plugincli.OutputFromCmd(cmd))
 	if err != nil {
 		return err
 	}
@@ -331,7 +331,7 @@ func runRouteList(cmd *cobra.Command, args []string) error {
 	if err := tw.Flush(); err != nil {
 		return err
 	}
-	if hasAdvancedRoute(routes) && !util.QuietFromCmd(cmd) {
+	if hasAdvancedRoute(routes) && !plugincli.QuietFromCmd(cmd) {
 		_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "\nRoutes marked advanced use matches this plugin does not edit. Manage them with datumctl apply -f.")
 	}
 	return nil
@@ -366,7 +366,7 @@ func runRouteBackendList(cmd *cobra.Command, args []string) error {
 		routes = []spec.Route{route}
 	}
 
-	format, err := util.ParseOutputFormat(util.OutputFromCmd(cmd))
+	format, err := util.ParseOutputFormat(plugincli.OutputFromCmd(cmd))
 	if err != nil {
 		return err
 	}

@@ -66,7 +66,7 @@ func runList(cmd *cobra.Command, _ []string) error {
 		return list.Items[i].Name < list.Items[j].Name
 	})
 
-	format, err := util.ParseOutputFormat(util.OutputFromCmd(cmd))
+	format, err := util.ParseOutputFormat(plugincli.OutputFromCmd(cmd))
 	if err != nil {
 		return err
 	}
@@ -86,7 +86,7 @@ func runList(cmd *cobra.Command, _ []string) error {
 
 	if len(list.Items) == 0 {
 		_, _ = fmt.Fprintln(out, "No application load balancers found.")
-		if !util.QuietFromCmd(cmd) {
+		if !plugincli.QuietFromCmd(cmd) {
 			_, _ = fmt.Fprint(cmd.ErrOrStderr(), "\nNext steps:\n  datumctl alb create <name> --endpoint https://origin.example.com\n")
 		}
 		return nil

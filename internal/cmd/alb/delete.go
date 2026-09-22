@@ -40,7 +40,7 @@ func runDelete(cmd *cobra.Command, args []string) error {
 	name := args[0]
 	dryRun, _ := cmd.Flags().GetBool("dry-run")
 
-	if !util.AssumeYes(cmd) && !dryRun {
+	if !plugincli.AssumeYes(cmd) && !dryRun {
 		ok, err := util.ConfirmTyped(
 			cmd.InOrStdin(),
 			cmd.ErrOrStderr(),

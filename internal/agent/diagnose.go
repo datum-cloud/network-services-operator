@@ -12,6 +12,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
+	"go.datum.net/network-services-operator/internal/cmd/alb/spec"
 )
 
 // Confidence says how much the answer is worth, separately from who has to act.
@@ -203,7 +204,7 @@ func diagnoseProxy(
 ) *Diagnosis {
 	d := &Diagnosis{
 		LoadBalancer:      proxy.Name,
-		DisplayName:       displayName(proxy),
+		DisplayName:       spec.DisplayName(proxy),
 		GeneratedHostname: proxy.Status.CanonicalHostname,
 		ObjectAge:         humanDuration(sinceCreation(proxy.CreationTimestamp, now)),
 	}
@@ -344,18 +345,6 @@ func sinceCreation(created metav1.Time, now time.Time) time.Duration {
 		return 0
 	}
 	return d
-}
-
-func displayName(proxy *networkingv1alpha.HTTPProxy) string {
-	for _, key := range []string{"kubernetes.io/display-name", "app.kubernetes.io/name"} {
-		if v := proxy.Annotations[key]; v != "" {
-			return v
-		}
-		if v := proxy.Labels[key]; v != "" {
-			return v
-		}
-	}
-	return ""
 }
 
 func conditionOf(conditions []metav1.Condition, conditionType string) *metav1.Condition {

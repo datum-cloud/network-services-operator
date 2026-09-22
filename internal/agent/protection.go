@@ -4,7 +4,6 @@ package agent
 
 import (
 	"context"
-	"strings"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	"go.datum.net/network-services-operator/internal/cmd/alb/spec"
@@ -34,7 +33,7 @@ func protectionFor(
 
 	for i := range policies {
 		policy := &policies[i]
-		if !guards(policy, proxy.Name) {
+		if !spec.TPPTargetsProxy(policy, proxy.Name) {
 			continue
 		}
 		return ProtectionView{
@@ -45,18 +44,4 @@ func protectionFor(
 		}
 	}
 	return ProtectionView{}
-}
-
-// guards reports whether a policy protects this load balancer.
-//
-// The reference is to the object Datum builds from the load balancer, which
-// always carries the load balancer's own name — the customer never names it and
-// never sees it, so matching on the name is matching on the load balancer.
-func guards(policy *networkingv1alpha.TrafficProtectionPolicy, proxyName string) bool {
-	for _, ref := range policy.Spec.TargetRefs {
-		if strings.EqualFold(string(ref.Kind), "Gateway") && string(ref.Name) == proxyName {
-			return true
-		}
-	}
-	return false
 }

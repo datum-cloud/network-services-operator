@@ -19,6 +19,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/grpc-ecosystem/go-grpc-middleware/providers/prometheus v1.1.0
 	github.com/grpc-ecosystem/go-grpc-middleware/v2 v2.3.3
+	github.com/modelcontextprotocol/go-sdk v1.7.0
 	github.com/onsi/ginkgo/v2 v2.28.1
 	github.com/openrdap/rdap v0.9.1
 	github.com/prometheus/client_golang v1.23.2
@@ -54,6 +55,9 @@ require (
 	github.com/clipperhouse/uax29/v2 v2.7.0 // indirect
 	github.com/go-openapi/swag/cmdutils v0.25.4 // indirect
 	github.com/go-openapi/swag/netutils v0.25.4 // indirect
+	github.com/google/jsonschema-go v0.4.3 // indirect
+	github.com/segmentio/encoding v0.5.4 // indirect
+	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 )
 
 require (

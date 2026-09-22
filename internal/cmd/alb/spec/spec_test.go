@@ -441,16 +441,23 @@ func TestHostnameAddRemove(t *testing.T) {
 	})
 	require.NoError(t, err)
 
+	assert.Empty(t, HostnamesSummary(proxy))
+
 	proxy, err = AddHostname(proxy, "app.example.com")
 	require.NoError(t, err)
 	assert.Equal(t, []string{"app.example.com"}, Hostnames(proxy))
+	assert.Equal(t, "app.example.com", HostnamesSummary(proxy))
+
+	proxy, err = AddHostname(proxy, "www.example.com")
+	require.NoError(t, err)
+	assert.Equal(t, "app.example.com +1", HostnamesSummary(proxy))
 
 	_, err = AddHostname(proxy, "app.example.com")
 	require.Error(t, err)
 
 	proxy, err = RemoveHostname(proxy, "app.example.com")
 	require.NoError(t, err)
-	assert.Empty(t, Hostnames(proxy))
+	assert.Equal(t, "www.example.com", HostnamesSummary(proxy))
 }
 
 func TestRequestHeaders(t *testing.T) {

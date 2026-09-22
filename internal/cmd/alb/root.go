@@ -86,6 +86,7 @@ func Command() *cobra.Command {
 		deleteCommand(),
 		hostnameCommand(),
 		routeCommand(),
+		logsCommand(),
 		wafCommand(),
 		headerCommand(),
 		authCommand(),

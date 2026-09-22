@@ -32,6 +32,18 @@ func OriginSummary(proxy *networkingv1alpha.HTTPProxy) string {
 	return summary
 }
 
+func HostnamesSummary(proxy *networkingv1alpha.HTTPProxy) string {
+	names := Hostnames(proxy)
+	if len(names) == 0 {
+		return ""
+	}
+	summary := names[0]
+	if extra := len(names) - 1; extra > 0 {
+		summary += fmt.Sprintf(" +%d", extra)
+	}
+	return summary
+}
+
 func ConnectorName(proxy *networkingv1alpha.HTTPProxy) string {
 	for _, rule := range proxy.Spec.Rules {
 		for _, backend := range rule.Backends {

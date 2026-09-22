@@ -62,6 +62,28 @@ func runDescribe(cmd *cobra.Command, args []string) error {
 	}
 	_, _ = fmt.Fprintf(out, "Age:                %s\n", util.RelativeAgeVerbose(proxy.CreationTimestamp))
 	_, _ = fmt.Fprintf(out, "Default hostname:   %s\n", util.OrDash(proxy.Status.CanonicalHostname))
+	hostnames := spec.Hostnames(proxy)
+	if len(hostnames) == 0 {
+		_, _ = fmt.Fprintln(out, "Custom hostnames:   none")
+	} else {
+		statusByName := map[string]networkingv1alpha.HostnameStatus{}
+		for _, hs := range proxy.Status.HostnameStatuses {
+			statusByName[hs.Hostname] = hs
+		}
+		_, _ = fmt.Fprintln(out, "Custom hostnames:")
+		for _, name := range hostnames {
+			if hs, ok := statusByName[name]; ok {
+				_, _ = fmt.Fprintf(out, "  %s  available=%s  dns=%s  cert=%s\n",
+					name,
+					util.ConditionStatus(hs.Conditions, networkingv1alpha.HostnameConditionAvailable),
+					util.ConditionStatus(hs.Conditions, networkingv1alpha.HostnameConditionDNSRecordProgrammed),
+					util.ConditionStatus(hs.Conditions, networkingv1alpha.HostnameConditionCertificateReady),
+				)
+				continue
+			}
+			_, _ = fmt.Fprintf(out, "  %s\n", name)
+		}
+	}
 	if connector := spec.ConnectorName(proxy); connector != "" {
 		_, _ = fmt.Fprintf(out, "Connector:          %s\n", connector)
 	}
@@ -96,20 +118,6 @@ func runDescribe(cmd *cobra.Command, args []string) error {
 		}
 		for _, h := range remove {
 			_, _ = fmt.Fprintf(out, "  remove %s\n", h)
-		}
-	}
-
-	hostnames := spec.Hostnames(proxy)
-	_, _ = fmt.Fprintf(out, "Custom hostnames:   %s\n", util.OrDash(strings.Join(hostnames, ", ")))
-	if len(proxy.Status.HostnameStatuses) > 0 {
-		_, _ = fmt.Fprintln(out, "Hostname status:")
-		for _, hs := range proxy.Status.HostnameStatuses {
-			_, _ = fmt.Fprintf(out, "  %s  available=%s  dns=%s  cert=%s\n",
-				hs.Hostname,
-				util.ConditionStatus(hs.Conditions, networkingv1alpha.HostnameConditionAvailable),
-				util.ConditionStatus(hs.Conditions, networkingv1alpha.HostnameConditionDNSRecordProgrammed),
-				util.ConditionStatus(hs.Conditions, networkingv1alpha.HostnameConditionCertificateReady),
-			)
 		}
 	}
 

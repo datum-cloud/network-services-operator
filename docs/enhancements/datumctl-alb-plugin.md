@@ -71,7 +71,9 @@ Outside the portal, ALBs are raw YAML, and that YAML is the wrong unit of work.
   product wrapper.
 - Connector assignment, URL rewrite, response headers, WAF sampling /
   thresholds / exclusions.
-- Metrics, logs, activity, PoP maps, caching, branded error pages.
+- Metrics, activity, PoP maps, caching, branded error pages.
+- **Activity / audit logs.** Access logs for a load balancer are in scope
+  (`alb logs`); control-plane activity is not.
 
 ## Product model
 
@@ -128,6 +130,9 @@ datumctl alb route    add|remove|list|update <name>
                       [--tls-hostname HOST]
 datumctl alb route backend add|remove|list <name> --path PREFIX
                       [--endpoint URL | --network-service NAME --port PORTNAME]
+datumctl alb logs     <name> [--since D] [--limit N]
+                      [--method M]... [--code C]... [--host H]...
+                      [--follow] [-o table|wide|json|yaml]
 datumctl alb waf      set|disable|describe <name> [--mode] [--paranoia]
 datumctl alb header   set|unset|list <name> [Name=value|Name]
 datumctl alb auth     set|unset|list <name> [--user] [--password-stdin]
@@ -280,16 +285,21 @@ backend flags, `route update --path /api` leaving `/` alone, and
 
 ## Status and output
 
-List columns: name, display name, hostname, origin (first backend, `+N`
-if the default route has a pool),
-protection, status, age. `Active` means `Programmed=True`. Hostnames show
-claimed / in use / unverified / DNS not delegated / external DNS / cert
-state. A missing NetworkService is `Error` with
+List columns: name, display name, hostname (generated), custom (first
+attached hostname, `+N` when more), origin (first backend, `+N` if the
+default route has a pool), protection, status, age. `Active` means
+`Programmed=True`. `describe` lists each custom hostname with available /
+DNS / cert condition status. A missing NetworkService is `Error` with
 `NetworkServiceBackendNotFound`, not a generic pending.
 
 `describe` is the CLI overview: status, generated hostname, routes,
 protection, auth, custom hostnames, and a copyable `curl` against the
 generated hostname.
+
+`alb logs` queries the project o11y Loki `query_range` API with the same
+`route_name=~"httproute/[^/]+/<proxy>/.*"` pin the portal uses. Method and
+response code filter in LogQL; host filters client-side. `--follow` polls
+(no live tail).
 
 ALB delete types the **object name**, refuses non-interactively without
 `--yes`, and states the cascade (TPP, basic auth, Datum DNS for custom
@@ -325,9 +335,9 @@ object's `spec.ports[].name`. Catalog install is phase 2.
 ## Phasing
 
 1. **Everyday loop** — ALB CRUD + wait-on-create, hostname / route / route
-   backend / waf / header / auth, URL and NetworkService backends, version,
-   safety, user guide. `--network-service` errors clearly if the CRD is not
-   on the cluster yet.
+   backend / waf / header / auth / access logs, URL and NetworkService
+   backends, version, safety, user guide. `--network-service` errors
+   clearly if the CRD is not on the cluster yet.
 2. **Catalog** — tagged plugin archives, `datumctl plugin install alb`.
 3. **Later, as APIs and portal exist** — connector assign, backend weights
    if the field lands, WAF exclusions, multi-user auth, display-name lookup.

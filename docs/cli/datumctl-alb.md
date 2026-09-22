@@ -89,7 +89,18 @@ datumctl alb hostname list my-app
 datumctl alb hostname remove my-app app.example.com
 ```
 
-The default hostname is assigned by the platform and shown by `describe`. Custom hostnames must be unique on the platform and are verified through `Domain` resources.
+The default hostname is assigned by the platform and shown by `describe`. Custom hostnames must be unique on the platform and are verified through `Domain` resources. `list` shows the generated hostname and a `CUSTOM` summary (first attached name, `+N` when there are more); `describe` prints each custom hostname with available / DNS / cert status.
+
+## Access logs
+
+```sh
+datumctl alb logs my-app
+datumctl alb logs my-app --since 1h --limit 50
+datumctl alb logs my-app --method GET --code 500 --code 502
+datumctl alb logs my-app --host app.example.com --follow
+```
+
+Rows come from the same project logs API the cloud portal uses, pinned to this load balancer. `--method` and `--code` filter in the query; `--host` filters after fetch. `--follow` polls for new lines (there is no live tail). `-o wide` adds request id and upstream.
 
 ## Traffic protection
 

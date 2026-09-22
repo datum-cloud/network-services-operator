@@ -34,14 +34,14 @@ func ProjectControlPlaneURL(apiHost, projectID string) string {
 		apiHost, resourceManagerGroup, resourceManagerVersion, projectID)
 }
 
-func NewClient(project string) (client.Client, error) {
+func RestConfig(project string) (*rest.Config, error) {
 	if project == "" {
 		return nil, NewCLIError(ExitUsage, "no project set").
 			WithFix("pass --project, or set a default with:\n       datumctl config set project <name>")
 	}
 
-	ctx := plugin.Context()
-	if ctx.APIHost == "" {
+	pctx := plugin.Context()
+	if pctx.APIHost == "" {
 		return nil, NewCLIError(ExitUnavailable, "DATUM_API_HOST is not set").
 			WithFix("run this through datumctl:\n       datumctl alb ...")
 	}
@@ -53,17 +53,24 @@ func NewClient(project string) (client.Client, error) {
 			WithCause(err)
 	}
 
-	scheme, err := NewScheme()
-	if err != nil {
-		return nil, err
-	}
-
-	cfg := &rest.Config{
-		Host:            ProjectControlPlaneURL(ctx.APIHost, project),
+	return &rest.Config{
+		Host:            ProjectControlPlaneURL(pctx.APIHost, project),
 		BearerToken:     token,
 		UserAgent:       UserAgent(),
 		TLSClientConfig: tlsClientConfig(),
 		Timeout:         RequestTimeout,
+	}, nil
+}
+
+func NewClient(project string) (client.Client, error) {
+	cfg, err := RestConfig(project)
+	if err != nil {
+		return nil, err
+	}
+
+	scheme, err := NewScheme()
+	if err != nil {
+		return nil, err
 	}
 
 	c, err := client.New(cfg, client.Options{Scheme: scheme})

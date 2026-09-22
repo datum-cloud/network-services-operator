@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"sort"
-	"strings"
 
 	"github.com/spf13/cobra"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -101,37 +100,44 @@ func printProxyTable(w io.Writer, items []networkingv1alpha.HTTPProxy, wafModes 
 
 	if !noHeaders {
 		if wide {
-			_, _ = fmt.Fprintln(tw, "NAME\tDISPLAY NAME\tHOSTNAME\tORIGIN\tROUTES\tHOSTNAMES\tHOST HEADER\tFORCE HTTPS\tWAF\tSTATUS\tAGE")
+			_, _ = fmt.Fprintln(tw, "NAME\tDISPLAY NAME\tHOSTNAME\tCUSTOM\tORIGIN\tROUTES\tWAF\tSTATUS\tAGE")
 		} else {
-			_, _ = fmt.Fprintln(tw, "NAME\tDISPLAY NAME\tHOSTNAME\tORIGIN\tWAF\tSTATUS\tAGE")
+			_, _ = fmt.Fprintln(tw, "NAME\tDISPLAY NAME\tHOSTNAME\tCUSTOM\tORIGIN\tWAF\tSTATUS\tAGE")
 		}
+	}
+
+	nameWidth, cellWidth := 28, 28
+	if wide {
+		nameWidth, cellWidth = 24, 24
 	}
 
 	for i := range items {
 		p := &items[i]
 		status, _ := util.ProxyStatus(p)
-		hostname, _ := util.TruncateCell(p.Status.CanonicalHostname, 40)
-		origin, _ := util.TruncateCell(spec.OriginSummary(p), 40)
+		name, _ := util.TruncateCell(p.Name, nameWidth)
+		display, _ := util.TruncateCell(spec.DisplayName(p), cellWidth)
+		hostname, _ := util.TruncateCell(p.Status.CanonicalHostname, cellWidth)
+		custom, _ := util.TruncateCell(spec.HostnamesSummary(p), cellWidth)
+		origin, _ := util.TruncateCell(spec.OriginSummary(p), cellWidth)
 		if wide {
-			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\n",
-				p.Name,
-				util.OrDash(spec.DisplayName(p)),
+			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\n",
+				name,
+				util.OrDash(display),
 				util.OrDash(hostname),
+				util.OrDash(custom),
 				util.OrDash(origin),
 				len(spec.UserRoutes(p)),
-				util.OrDash(strings.Join(spec.Hostnames(p), ",")),
-				util.OrDash(spec.HostHeader(p)),
-				boolWord(spec.ForceHTTPS(p)),
 				util.OrDash(wafModes[p.Name]),
 				status,
 				util.RelativeAge(p.CreationTimestamp),
 			)
 			continue
 		}
-		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			p.Name,
-			util.OrDash(spec.DisplayName(p)),
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			name,
+			util.OrDash(display),
 			util.OrDash(hostname),
+			util.OrDash(custom),
 			util.OrDash(origin),
 			util.OrDash(wafModes[p.Name]),
 			status,

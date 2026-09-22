@@ -42,8 +42,3 @@ resources; the namespace and downstream CRDs should each have one owner. Keep
 pruning disabled until that inventory transition is verified, including on any
 version that could be rolled back to. This change does not delete old,
 unused control-plane CRDs from cells.
-
-`make test-manifests` renders the separately owned bundles with both the default
-namespace and Datum infra's override. It rejects overlapping inventories and
-checks that the cell's required NSO APIs remain in the downstream bundle. The
-same test runs under `make test` in CI.

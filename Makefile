@@ -103,6 +103,14 @@ lint-fix: golangci-lint ## Run golangci-lint linter and perform fixes
 build: manifests generate fmt vet ## Build manager binary.
 	go build -o bin/network-services cmd/main.go
 
+.PHONY: build-alb-mcp
+build-alb-mcp: $(LOCALBIN) ## Build the alb-mcp server binary into bin/.
+	go build -o $(LOCALBIN)/alb-mcp ./cmd/alb-mcp
+
+.PHONY: run-alb-mcp
+run-alb-mcp: ## Run alb-mcp against the control plane KUBECONFIG names.
+	go run ./cmd/alb-mcp
+
 ##@ datumctl plugin
 
 PLUGIN_VERSION ?= $(shell git describe --tags --dirty --always 2>/dev/null || echo dev)

@@ -17,8 +17,12 @@ RUN go mod download
 
 # Copy the go source
 COPY cmd/main.go cmd/main.go
+COPY cmd/alb-mcp/ cmd/alb-mcp/
 COPY api/ api/
 COPY internal/ internal/
+# The knowledge and skills alb-mcp serves are embedded into it, so they are
+# source, not documentation that can be left out of the build.
+COPY docs/agent/ docs/agent/
 
 # Build
 # the GOARCH has not a default value to allow the binary be built according to the host where the command
@@ -33,6 +37,18 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build \
       -X main.buildDate=${BUILD_DATE}" \
     -o network-services cmd/main.go
 
+# The MCP server ships in the same image as a second binary, selected with
+# `command: [/alb-mcp]`. It reads the same API types and the same product
+# decoding as the manager and the alb plugin, so a separate image would only
+# add a second thing to keep in step.
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build \
+    -ldflags "-s -w \
+      -X main.version=${VERSION} \
+      -X main.gitCommit=${GIT_COMMIT} \
+      -X main.gitTreeState=${GIT_TREE_STATE} \
+      -X main.buildDate=${BUILD_DATE}" \
+    -o alb-mcp ./cmd/alb-mcp
+
 # Use distroless as minimal base image to package the manager binary.
 # static-debian12:nonroot is explicit about the Debian variant to avoid silent
 # drift if the :nonroot alias resolves to a different Debian release in future.
@@ -43,6 +59,7 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build \
 FROM gcr.io/distroless/static-debian12:nonroot
 WORKDIR /
 COPY --from=builder /workspace/network-services .
+COPY --from=builder /workspace/alb-mcp .
 USER 65532:65532
 
 ENTRYPOINT ["/network-services"]

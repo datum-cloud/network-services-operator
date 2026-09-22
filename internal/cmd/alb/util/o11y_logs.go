@@ -101,7 +101,7 @@ func QueryLogs(ctx context.Context, cfg *rest.Config, q LogsQuery) ([]LogEntry, 
 	if err != nil {
 		return nil, ClassifyError(fmt.Errorf("querying access logs: %w", err))
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 	if err != nil {

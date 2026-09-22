@@ -133,7 +133,7 @@ func TestListCountsWorkingHostnames(t *testing.T) {
 
 	r := &fakeReader{
 		proxies: []networkingv1alpha.HTTPProxy{p},
-		domains: []networkingv1alpha.Domain{verifiedDomain("example.com")},
+		domains: []networkingv1alpha.Domain{verifiedDomain()},
 	}
 	_, out, err := albList(depsFor(r))(context.Background(), nil, ListInput{})
 	require.NoError(t, err)

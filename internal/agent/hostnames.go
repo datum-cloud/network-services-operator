@@ -20,7 +20,6 @@ import (
 func hostnameProgress(
 	proxy *networkingv1alpha.HTTPProxy,
 	domains []networkingv1alpha.Domain,
-	now time.Time,
 ) []HostnameProgress {
 	var out []HostnameProgress
 
@@ -30,7 +29,7 @@ func hostnameProgress(
 
 	for i := range proxy.Status.HostnameStatuses {
 		hs := proxy.Status.HostnameStatuses[i]
-		out = append(out, customHostnameProgress(hs, domains, now))
+		out = append(out, customHostnameProgress(hs, domains))
 	}
 	return out
 }
@@ -60,7 +59,6 @@ func generatedHostnameProgress(hostname string) HostnameProgress {
 func customHostnameProgress(
 	hs networkingv1alpha.HostnameStatus,
 	domains []networkingv1alpha.Domain,
-	now time.Time,
 ) HostnameProgress {
 	p := HostnameProgress{Hostname: hs.Hostname}
 

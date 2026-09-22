@@ -15,9 +15,10 @@ import (
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 )
 
-func diagnose(t *testing.T, r *fakeReader, name string) *Diagnosis {
+// diagnose walks the load balancer every test in this file builds.
+func diagnose(t *testing.T, r *fakeReader) *Diagnosis {
 	t.Helper()
-	d, err := DiagnoseAt(context.Background(), r, "default", name, testNow)
+	d, err := DiagnoseAt(context.Background(), r, "default", "my-app", testNow)
 	require.NoError(t, err)
 	return d
 }
@@ -28,7 +29,7 @@ func diagnose(t *testing.T, r *fakeReader, name string) *Diagnosis {
 // health is a wrong answer that reads like a right one.
 func TestGreenStatusIsUnverifiedNotWorking(t *testing.T) {
 	r := &fakeReader{proxies: []networkingv1alpha.HTTPProxy{healthyProxy()}}
-	d := diagnose(t, r, "my-app")
+	d := diagnose(t, r)
 
 	assert.Nil(t, d.RootCause)
 	assert.True(t, d.Serving)
@@ -62,9 +63,9 @@ func TestAggregateIsNeverTheAnswer(t *testing.T) {
 
 	r := &fakeReader{
 		proxies: []networkingv1alpha.HTTPProxy{p},
-		domains: []networkingv1alpha.Domain{verifiedDomain("example.com")},
+		domains: []networkingv1alpha.Domain{verifiedDomain()},
 	}
-	d := diagnose(t, r, "my-app")
+	d := diagnose(t, r)
 
 	require.NotNil(t, d.RootCause)
 	assert.NotEqual(t, networkingv1alpha.DNSRecordsProgrammedReasonPartialFailure, d.RootCause.Reason,
@@ -92,9 +93,9 @@ func TestHostnameCollisionIsFoundNotFilteredOut(t *testing.T) {
 
 	r := &fakeReader{
 		proxies: []networkingv1alpha.HTTPProxy{p},
-		domains: []networkingv1alpha.Domain{verifiedDomain("example.com")},
+		domains: []networkingv1alpha.Domain{verifiedDomain()},
 	}
-	d := diagnose(t, r, "my-app")
+	d := diagnose(t, r)
 
 	require.NotNil(t, d.RootCause, "a hostname collision must not be filtered out as healthy")
 	assert.Equal(t, networkingv1alpha.HostnameAvailableReasonInUse, d.RootCause.Reason)
@@ -121,9 +122,9 @@ func TestCustomerRunsTheirOwnDNSIsNotAFault(t *testing.T) {
 		})
 		r := &fakeReader{
 			proxies: []networkingv1alpha.HTTPProxy{p},
-			domains: []networkingv1alpha.Domain{verifiedDomain("example.com")},
+			domains: []networkingv1alpha.Domain{verifiedDomain()},
 		}
-		d := diagnose(t, r, "my-app")
+		d := diagnose(t, r)
 
 		assert.Nil(t, d.RootCause, "%s is not a fault", reason)
 		step := stepNamed(t, d, "app.example.com", StepDNSRecord)
@@ -138,7 +139,7 @@ func TestCustomerRunsTheirOwnDNSIsNotAFault(t *testing.T) {
 // not keep a silent workaround, and this failing is how anyone finds out.
 func TestGeneratedHostnameDNSStepIsNotReported(t *testing.T) {
 	r := &fakeReader{proxies: []networkingv1alpha.HTTPProxy{healthyProxy()}}
-	d := diagnose(t, r, "my-app")
+	d := diagnose(t, r)
 
 	step := stepNamed(t, d, "abc123.datumproxy.net", StepDNSRecord)
 	assert.Equal(t, StepNotReported, step.State)
@@ -158,7 +159,7 @@ func TestOwnershipIsReadFromTheDomain(t *testing.T) {
 		},
 	})
 
-	unverified := verifiedDomain("example.com")
+	unverified := verifiedDomain()
 	unverified.Status.Conditions = []metav1.Condition{
 		cond(networkingv1alpha.DomainConditionVerified, networkingv1alpha.DomainReasonVerificationRecordNotFound, metav1.ConditionFalse, ago(2*time.Hour)),
 	}
@@ -172,7 +173,7 @@ func TestOwnershipIsReadFromTheDomain(t *testing.T) {
 		proxies: []networkingv1alpha.HTTPProxy{p},
 		domains: []networkingv1alpha.Domain{unverified},
 	}
-	d := diagnose(t, r, "my-app")
+	d := diagnose(t, r)
 
 	step := stepNamed(t, d, "app.example.com", StepOwnership)
 	assert.Equal(t, StepFailed, step.State)
@@ -202,9 +203,9 @@ func TestWidestBlastRadiusWins(t *testing.T) {
 
 	r := &fakeReader{
 		proxies: []networkingv1alpha.HTTPProxy{p},
-		domains: []networkingv1alpha.Domain{verifiedDomain("example.com")},
+		domains: []networkingv1alpha.Domain{verifiedDomain()},
 	}
-	d := diagnose(t, r, "my-app")
+	d := diagnose(t, r)
 
 	require.NotNil(t, d.RootCause)
 	assert.Equal(t, ScopeAllTraffic, d.RootCause.Scope)
@@ -220,7 +221,7 @@ func TestUnreadEvidenceDegradesConfidence(t *testing.T) {
 		proxies:    []networkingv1alpha.HTTPProxy{healthyProxy()},
 		domainsErr: assertAnError{},
 	}
-	d := diagnose(t, r, "my-app")
+	d := diagnose(t, r)
 
 	assert.Equal(t, ConfidencePartial, d.Confidence)
 	assert.NotEmpty(t, d.Unread)
@@ -232,7 +233,7 @@ func TestUnreadEvidenceDegradesConfidence(t *testing.T) {
 // with none is common and no condition anywhere says so.
 func TestNoProtectionIsSurfaced(t *testing.T) {
 	r := &fakeReader{proxies: []networkingv1alpha.HTTPProxy{healthyProxy()}}
-	d := diagnose(t, r, "my-app")
+	d := diagnose(t, r)
 
 	assert.False(t, d.Protection.Attached)
 	assert.Contains(t, strings.Join(d.NextSteps, " "), "Nothing is inspecting traffic")
@@ -241,7 +242,7 @@ func TestNoProtectionIsSurfaced(t *testing.T) {
 		proxies:  []networkingv1alpha.HTTPProxy{healthyProxy()},
 		policies: []networkingv1alpha.TrafficProtectionPolicy{tppFor("my-app", "Enforce")},
 	}
-	d2 := diagnose(t, withTPP, "my-app")
+	d2 := diagnose(t, withTPP)
 	assert.True(t, d2.Protection.Attached)
 	assert.Equal(t, "Enforce", d2.Protection.Mode)
 	assert.NotContains(t, strings.Join(d2.NextSteps, " "), "Nothing is inspecting traffic")
@@ -258,7 +259,7 @@ func TestEpochTimestampDoesNotStallAFreshLoadBalancer(t *testing.T) {
 	}
 
 	r := &fakeReader{proxies: []networkingv1alpha.HTTPProxy{p}}
-	d := diagnose(t, r, "my-app")
+	d := diagnose(t, r)
 
 	require.NotNil(t, d.RootCause)
 	assert.Equal(t, ActionabilityTransient, d.RootCause.Actionability,
@@ -271,7 +272,9 @@ type assertAnError struct{}
 
 func (assertAnError) Error() string { return "reading domains failed" }
 
-func verifiedDomain(name string) networkingv1alpha.Domain {
+// verifiedDomain is the domain behind every custom hostname these tests use.
+func verifiedDomain() networkingv1alpha.Domain {
+	const name = "example.com"
 	return networkingv1alpha.Domain{
 		ObjectMeta: metav1.ObjectMeta{Name: strings.ReplaceAll(name, ".", "-"), Namespace: "default"},
 		Spec:       networkingv1alpha.DomainSpec{DomainName: name},
@@ -309,7 +312,7 @@ func TestNotStartedIsAnAnswerButTheWeakestOne(t *testing.T) {
 		cond(networkingv1alpha.HTTPProxyConditionAccepted, networkingv1alpha.HTTPProxyReasonPending, metav1.ConditionUnknown, ago(1*time.Minute)),
 	}
 	r := &fakeReader{proxies: []networkingv1alpha.HTTPProxy{p}}
-	d := diagnose(t, r, "my-app")
+	d := diagnose(t, r)
 
 	require.NotNil(t, d.RootCause, "a load balancer nothing has evaluated is not healthy")
 	assert.Equal(t, networkingv1alpha.HTTPProxyReasonPending, d.RootCause.Reason)
@@ -320,7 +323,7 @@ func TestNotStartedIsAnAnswerButTheWeakestOne(t *testing.T) {
 		networkingv1alpha.HTTPProxyReasonNetworkServiceBackendNotFound,
 		metav1.ConditionFalse, ago(1*time.Minute)))
 	r2 := &fakeReader{proxies: []networkingv1alpha.HTTPProxy{p}}
-	d2 := diagnose(t, r2, "my-app")
+	d2 := diagnose(t, r2)
 
 	require.NotNil(t, d2.RootCause)
 	assert.Equal(t, networkingv1alpha.HTTPProxyReasonNetworkServiceBackendNotFound, d2.RootCause.Reason,

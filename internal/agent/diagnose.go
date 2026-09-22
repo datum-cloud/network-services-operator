@@ -209,7 +209,7 @@ func diagnoseProxy(
 		ObjectAge:         humanDuration(sinceCreation(proxy.CreationTimestamp, now)),
 	}
 
-	var causes []Cause
+	causes := make([]Cause, 0, len(proxy.Status.Conditions)+len(proxy.Status.HostnameStatuses))
 	causes = append(causes, proxyCauses(proxy, now)...)
 
 	domains, err := r.ListDomains(ctx, namespace)
@@ -217,7 +217,7 @@ func diagnoseProxy(
 		d.Unread = append(d.Unread, "the domains behind this load balancer's hostnames could not be read, so nothing here explains a hostname that is not verified")
 	}
 
-	d.Hostnames = hostnameProgress(proxy, domains, now)
+	d.Hostnames = hostnameProgress(proxy, domains)
 	causes = append(causes, hostnameCauses(proxy, d.Hostnames, now)...)
 
 	d.Protection = protectionFor(ctx, r, namespace, proxy, d)

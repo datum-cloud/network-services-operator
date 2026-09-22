@@ -117,7 +117,7 @@ func buildView(
 	if err != nil {
 		domains = nil
 	}
-	v.Hostnames = hostnameProgress(proxy, domains, now)
+	v.Hostnames = hostnameProgress(proxy, domains)
 
 	if policies, err := r.ListProtectionPolicies(ctx, namespace); err == nil {
 		for i := range policies {

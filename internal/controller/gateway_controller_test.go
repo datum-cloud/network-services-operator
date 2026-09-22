@@ -2428,6 +2428,19 @@ func TestReissueFailedCertificate(t *testing.T) {
 		return &t
 	}
 
+	issued := func(notBefore, notAfter time.Duration) func(*cmv1.Certificate) {
+		return func(c *cmv1.Certificate) {
+			nb := metav1.NewTime(time.Now().Add(notBefore))
+			na := metav1.NewTime(time.Now().Add(notAfter))
+			c.Status.NotBefore = &nb
+			c.Status.NotAfter = &na
+			c.Status.Conditions = append(c.Status.Conditions, cmv1.CertificateCondition{
+				Type:   cmv1.CertificateConditionReady,
+				Status: cmmeta.ConditionTrue,
+			})
+		}
+	}
+
 	tests := []struct {
 		name            string
 		cert            *cmv1.Certificate
@@ -2515,6 +2528,56 @@ func TestReissueFailedCertificate(t *testing.T) {
 			expectDeleted:   false,
 			expectGWChanged: false,
 			expectGWCount:   0,
+		},
+		{
+			name: "failed renewal on a serving cert — never deleted",
+			cert: newCert("my-cert", issued(-14*24*time.Hour, 76*24*time.Hour), func(c *cmv1.Certificate) {
+				c.Status.LastFailureTime = failedAt(10 * time.Minute)
+			}),
+			gateway:       newGW(nil),
+			retryInterval: 5 * time.Minute,
+			maxRetries:    3,
+			expectDeleted: false,
+			expectRequeue: false,
+			expectGWCount: 0,
+		},
+		{
+			name: "serving cert clears a stale reissuance count",
+			cert: newCert("my-cert", issued(-14*24*time.Hour, 76*24*time.Hour), func(c *cmv1.Certificate) {
+				c.Status.LastFailureTime = failedAt(10 * time.Minute)
+			}),
+			gateway: newGW(map[string]string{
+				reissuanceAnnotationKey("my-cert"): "2",
+			}),
+			retryInterval:   5 * time.Minute,
+			maxRetries:      3,
+			expectDeleted:   false,
+			expectGWChanged: true,
+			expectGWCount:   0,
+		},
+		{
+			name: "expired cert past retry interval — still deleted",
+			cert: newCert("my-cert", issued(-91*24*time.Hour, -time.Hour), func(c *cmv1.Certificate) {
+				c.Status.LastFailureTime = failedAt(10 * time.Minute)
+			}),
+			gateway:         newGW(nil),
+			retryInterval:   5 * time.Minute,
+			maxRetries:      3,
+			expectDeleted:   true,
+			expectGWChanged: true,
+			expectGWCount:   1,
+		},
+		{
+			name: "cert not yet valid — still deleted",
+			cert: newCert("my-cert", issued(time.Hour, 90*24*time.Hour), func(c *cmv1.Certificate) {
+				c.Status.LastFailureTime = failedAt(10 * time.Minute)
+			}),
+			gateway:         newGW(nil),
+			retryInterval:   5 * time.Minute,
+			maxRetries:      3,
+			expectDeleted:   true,
+			expectGWChanged: true,
+			expectGWCount:   1,
 		},
 		{
 			name: "default config values — uses 5m interval and 3 max retries",

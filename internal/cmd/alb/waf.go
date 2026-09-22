@@ -168,8 +168,11 @@ func runWAFDescribe(cmd *cobra.Command, args []string) error {
 	}
 	out := cmd.OutOrStdout()
 	if tpp == nil {
-		if format == util.OutputJSON || format == util.OutputYAML {
+		switch format {
+		case util.OutputJSON:
 			return util.PrintJSON(out, map[string]any{"enabled": false})
+		case util.OutputYAML:
+			return util.PrintYAML(out, map[string]any{"enabled": false})
 		}
 		_, _ = fmt.Fprintln(out, "Traffic protection: off")
 		return nil

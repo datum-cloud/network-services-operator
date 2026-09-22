@@ -13,6 +13,8 @@ import (
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	"go.datum.net/network-services-operator/internal/cmd/alb/spec"
 	"go.datum.net/network-services-operator/internal/cmd/alb/util"
+
+	"go.datum.net/network-services-operator/internal/cmd/alb/plugincli"
 )
 
 func listCommand() *cobra.Command {
@@ -28,7 +30,7 @@ func listCommand() *cobra.Command {
 	}
 	cmd.Flags().Bool("no-headers", false, "Omit column headers")
 	cmd.Flags().String("status", "", "Only show load balancers in this state: active, pending, or error")
-	_ = cmd.RegisterFlagCompletionFunc("status", util.CompleteEnum("active", "pending", "error"))
+	_ = cmd.RegisterFlagCompletionFunc("status", plugincli.CompleteEnum("active", "pending", "error"))
 	return cmd
 }
 
@@ -38,7 +40,7 @@ func runList(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	c, err := newClient(util.ProjectFromCmd(cmd))
+	c, err := newClient(plugincli.ProjectFromCmd(cmd))
 	if err != nil {
 		return err
 	}

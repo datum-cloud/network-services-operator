@@ -15,6 +15,8 @@ import (
 
 	"go.datum.net/network-services-operator/internal/cmd/alb/spec"
 	"go.datum.net/network-services-operator/internal/cmd/alb/util"
+
+	"go.datum.net/network-services-operator/internal/cmd/alb/plugincli"
 )
 
 func logsCommand() *cobra.Command {
@@ -28,7 +30,7 @@ Balancer. Rows come from the project logs API, pinned to this load balancer.`,
   datumctl alb logs my-app --method GET --code 500 --code 502
   datumctl alb logs my-app --follow`,
 		Args:              cobra.ExactArgs(1),
-		ValidArgsFunction: util.CompleteALBNames,
+		ValidArgsFunction: plugincli.CompleteALBNames,
 		RunE:              runLogs,
 	}
 
@@ -62,7 +64,7 @@ func runLogs(cmd *cobra.Command, args []string) error {
 		return util.UsageErrorf("--limit must be %d or fewer", util.MaxLogsLimit)
 	}
 
-	project := util.ProjectFromCmd(cmd)
+	project := plugincli.ProjectFromCmd(cmd)
 	c, err := newClient(project)
 	if err != nil {
 		return err
@@ -71,7 +73,7 @@ func runLogs(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	cfg, err := util.RestConfig(project)
+	cfg, err := plugincli.RestConfig(project)
 	if err != nil {
 		return err
 	}

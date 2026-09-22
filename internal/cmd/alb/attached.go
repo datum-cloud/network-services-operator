@@ -18,6 +18,8 @@ import (
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	"go.datum.net/network-services-operator/internal/cmd/alb/spec"
 	"go.datum.net/network-services-operator/internal/cmd/alb/util"
+
+	"go.datum.net/network-services-operator/internal/cmd/alb/plugincli"
 )
 
 func findTPPForProxy(ctx context.Context, c client.Client, proxyName string) (*networkingv1alpha.TrafficProtectionPolicy, error) {
@@ -131,7 +133,7 @@ func mutateProxy(
 	mutate func(*networkingv1alpha.HTTPProxy) (*networkingv1alpha.HTTPProxy, error),
 	success string,
 ) error {
-	c, err := newClient(util.ProjectFromCmd(cmd))
+	c, err := newClient(plugincli.ProjectFromCmd(cmd))
 	if err != nil {
 		return err
 	}

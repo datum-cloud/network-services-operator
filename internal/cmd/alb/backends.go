@@ -10,6 +10,8 @@ import (
 
 	"go.datum.net/network-services-operator/internal/cmd/alb/spec"
 	"go.datum.net/network-services-operator/internal/cmd/alb/util"
+
+	"go.datum.net/network-services-operator/internal/cmd/alb/plugincli"
 )
 
 func addBackendFlags(cmd *cobra.Command) {
@@ -18,8 +20,8 @@ func addBackendFlags(cmd *cobra.Command) {
 	cmd.Flags().StringArray("port", nil, "Named port on the preceding --network-service")
 	cmd.Flags().String("tls-hostname", "", "Hostname used to verify TLS when an --endpoint origin is an IP")
 
-	_ = cmd.RegisterFlagCompletionFunc("network-service", util.CompleteNetworkServiceNames)
-	_ = cmd.RegisterFlagCompletionFunc("port", util.CompleteNetworkServicePorts)
+	_ = cmd.RegisterFlagCompletionFunc("network-service", plugincli.CompleteNetworkServiceNames)
+	_ = cmd.RegisterFlagCompletionFunc("port", plugincli.CompleteNetworkServicePorts)
 }
 
 func backendFlagsChanged(cmd *cobra.Command) bool {

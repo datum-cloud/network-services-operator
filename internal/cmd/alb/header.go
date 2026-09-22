@@ -10,6 +10,8 @@ import (
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	"go.datum.net/network-services-operator/internal/cmd/alb/spec"
 	"go.datum.net/network-services-operator/internal/cmd/alb/util"
+
+	"go.datum.net/network-services-operator/internal/cmd/alb/plugincli"
 )
 
 func headerCommand() *cobra.Command {
@@ -29,7 +31,7 @@ func headerSetCommand() *cobra.Command {
 		Example: `  datumctl alb header set my-app Host=origin.example.com
   datumctl alb header set my-app X-Debug=1`,
 		Args:              cobra.ExactArgs(2),
-		ValidArgsFunction: util.CompleteALBNames,
+		ValidArgsFunction: plugincli.CompleteALBNames,
 		RunE:              runHeaderSet,
 	}
 	cmd.Flags().Bool("add", false, "Add the header instead of replacing an existing value")
@@ -44,7 +46,7 @@ func headerUnsetCommand() *cobra.Command {
 		Short:             "Remove a request header override",
 		Example:           `  datumctl alb header unset my-app Host`,
 		Args:              cobra.ExactArgs(2),
-		ValidArgsFunction: util.CompleteALBNames,
+		ValidArgsFunction: plugincli.CompleteALBNames,
 		RunE:              runHeaderUnset,
 	}
 	cmd.Flags().Bool("dry-run", false, "Submit for server-side validation without updating")
@@ -57,7 +59,7 @@ func headerListCommand() *cobra.Command {
 		Aliases:           []string{"ls"},
 		Short:             "List request header overrides",
 		Args:              cobra.ExactArgs(1),
-		ValidArgsFunction: util.CompleteALBNames,
+		ValidArgsFunction: plugincli.CompleteALBNames,
 		RunE:              runHeaderList,
 	}
 }
@@ -84,7 +86,7 @@ func runHeaderUnset(cmd *cobra.Command, args []string) error {
 }
 
 func runHeaderList(cmd *cobra.Command, args []string) error {
-	c, err := newClient(util.ProjectFromCmd(cmd))
+	c, err := newClient(plugincli.ProjectFromCmd(cmd))
 	if err != nil {
 		return err
 	}

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-package util
+package plugincli
 
 import (
 	"time"
@@ -10,6 +10,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
+
+	"go.datum.net/network-services-operator/internal/cmd/alb/util"
 )
 
 const CompletionTimeout = 3 * time.Second
@@ -26,7 +28,7 @@ func CompleteALBNames(cmd *cobra.Command, args []string, _ string) ([]string, co
 		}
 
 		var list networkingv1alpha.HTTPProxyList
-		if err := c.List(cmd.Context(), &list, client.InNamespace(ResourceNamespace)); err != nil {
+		if err := c.List(cmd.Context(), &list, client.InNamespace(util.ResourceNamespace)); err != nil {
 			return nil
 		}
 
@@ -46,7 +48,7 @@ func CompleteNetworkServiceNames(cmd *cobra.Command, _ []string, _ string) ([]st
 		}
 
 		var list networkingv1alpha.NetworkServiceList
-		if err := c.List(cmd.Context(), &list, client.InNamespace(ResourceNamespace)); err != nil {
+		if err := c.List(cmd.Context(), &list, client.InNamespace(util.ResourceNamespace)); err != nil {
 			return nil
 		}
 
@@ -72,7 +74,7 @@ func CompleteNetworkServicePorts(cmd *cobra.Command, _ []string, _ string) ([]st
 		}
 
 		service := &networkingv1alpha.NetworkService{}
-		key := types.NamespacedName{Namespace: ResourceNamespace, Name: serviceName}
+		key := types.NamespacedName{Namespace: util.ResourceNamespace, Name: serviceName}
 		if err := c.Get(cmd.Context(), key, service); err != nil {
 			return nil
 		}

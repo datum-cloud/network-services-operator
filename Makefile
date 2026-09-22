@@ -69,6 +69,10 @@ locations-crds: kustomize ## Render the locations service CRDs envtest installs.
 test: manifests generate fmt vet envtest locations-crds ## Run tests.
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" go test $$(go list ./... | grep -v /e2e) -timeout 20m -coverprofile cover.out
 
+.PHONY: test-manifests
+test-manifests: kustomize ## Check the ownership of separately reconciled cell bundles.
+	KUSTOMIZE="$(KUSTOMIZE)" go test ./test/manifests -count=1
+
 # The e2e suite runs against the two-cluster prod-fidelity env; bring it up and
 # run it with `task test-infra:up` then `task test-infra:test-e2e`
 # (Taskfile.test-infra.yml).

@@ -104,10 +104,9 @@ NetworkContextSpec defines the desired state of NetworkContext
         <td>object</td>
         <td>
           Egress is what the network reaches outside the platform from this
-location, projected from the Network and resolved against the serving
-class. Propagation to a cell carries spec and not status, so the
-instruction a cell acts on lives here and the result it reports lives in
-status.
+location, projected from the Network. Propagation to a cell carries spec
+and not status, so the instruction a cell acts on lives here and the
+result it reports lives in status.
 
 A reader that finds this unset must refuse rather than assume: a context
 written before this field existed carries nothing, which is not the same
@@ -212,10 +211,9 @@ The attached network
 
 
 Egress is what the network reaches outside the platform from this
-location, projected from the Network and resolved against the serving
-class. Propagation to a cell carries spec and not status, so the
-instruction a cell acts on lives here and the result it reports lives in
-status.
+location, projected from the Network. Propagation to a cell carries spec
+and not status, so the instruction a cell acts on lives here and the
+result it reports lives in status.
 
 A reader that finds this unset must refuse rather than assume: a context
 written before this field existed carries nothing, which is not the same
@@ -258,16 +256,6 @@ Internet is the internet egress this location is instructed to provide.
         </tr>
     </thead>
     <tbody><tr>
-        <td><b>className</b></td>
-        <td>string</td>
-        <td>
-          ClassName is the InternetEgressClass resolved for this network,
-including the case where the network named none and the default class
-was selected. It is written resolved so class selection stays with the
-single writer that reads the classes, and a location never repeats it.<br/>
-        </td>
-        <td>false</td>
-      </tr><tr>
         <td><b>mode</b></td>
         <td>enum</td>
         <td>
@@ -282,21 +270,11 @@ refuse rather than withdraw egress a consumer asked for.<br/>
         </td>
         <td>false</td>
       </tr><tr>
-        <td><b><a href="#networkcontextspecegressinternetparametersref">parametersRef</a></b></td>
-        <td>object</td>
-        <td>
-          ParametersRef is the serving class's parametersRef, passed through
-verbatim. Nothing on the path between the class and the controller named
-in the class's controllerName interprets it.<br/>
-        </td>
-        <td>false</td>
-      </tr><tr>
         <td><b>reach</b></td>
         <td>[]enum</td>
         <td>
           Reach are the destination address families this location is instructed
-to reach, copied from the network and narrowed to what the serving class
-reaches.
+to reach, copied from the network.
 
 Only IPv6 is accepted, because a projection may not carry what its
 source cannot declare.<br/>
@@ -305,64 +283,6 @@ source cannot declare.<br/>
             <i>Enum</i>: IPv4, IPv6<br/>
         </td>
         <td>false</td>
-      </tr><tr>
-        <td><b>sharing</b></td>
-        <td>enum</td>
-        <td>
-          Sharing is the serving class's sharing, carried so a location can report
-the stability a consumer reads back on status without reading the class
-itself.
-
-Only Shared is accepted, because a projection may not carry what its
-source cannot declare.<br/>
-          <br/>
-            <i>Validations</i>:<li>self == 'Shared': Only Shared is accepted; dedicated egress needs capacity the platform cannot yet provision, so a class asking for it would wait indefinitely rather than fail</li>
-            <i>Enum</i>: Shared, Dedicated<br/>
-        </td>
-        <td>false</td>
-      </tr></tbody>
-</table>
-
-
-### NetworkContext.spec.egress.internet.parametersRef
-<sup><sup>[↩ Parent](#networkcontextspecegressinternet)</sup></sup>
-
-
-
-ParametersRef is the serving class's parametersRef, passed through
-verbatim. Nothing on the path between the class and the controller named
-in the class's controllerName interprets it.
-
-<table>
-    <thead>
-        <tr>
-            <th>Name</th>
-            <th>Type</th>
-            <th>Description</th>
-            <th>Required</th>
-        </tr>
-    </thead>
-    <tbody><tr>
-        <td><b>group</b></td>
-        <td>string</td>
-        <td>
-          Group of the referent.<br/>
-        </td>
-        <td>true</td>
-      </tr><tr>
-        <td><b>kind</b></td>
-        <td>string</td>
-        <td>
-          Kind of the referent.<br/>
-        </td>
-        <td>true</td>
-      </tr><tr>
-        <td><b>name</b></td>
-        <td>string</td>
-        <td>
-          Name of the referent.<br/>
-        </td>
-        <td>true</td>
       </tr></tbody>
 </table>
 

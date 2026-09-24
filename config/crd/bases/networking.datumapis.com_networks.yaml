@@ -74,14 +74,6 @@ spec:
                       Internet declares whether instances on this network reach destinations
                       outside the platform, and which address families they reach.
                     properties:
-                      class:
-                        description: |-
-                          Class is the InternetEgressClass serving this network. Omitting it
-                          selects the default class, which is the common case. A consumer never
-                          names an address class, an address pool, or an address.
-                        maxLength: 253
-                        minLength: 1
-                        type: string
                       mode:
                         default: Disabled
                         description: |-

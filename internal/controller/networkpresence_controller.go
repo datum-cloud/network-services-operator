@@ -85,7 +85,6 @@ type NetworkPresenceReconciler struct {
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkbindings/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkcontexts,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=locationbindings,verbs=get;list;watch
-// +kubebuilder:rbac:groups=networking.datumapis.com,resources=internetegressclasses,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
 
 // Reconcile is keyed on the presence, not on the binding that triggered it: the

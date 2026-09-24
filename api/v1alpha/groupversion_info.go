@@ -30,8 +30,6 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 		&EdgeReachabilityList{},
 		&HTTPProxy{},
 		&HTTPProxyList{},
-		&InternetEgressClass{},
-		&InternetEgressClassList{},
 		&Location{},
 		&LocationList{},
 		&LocationBinding{},

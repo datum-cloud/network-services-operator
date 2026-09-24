@@ -221,15 +221,6 @@ outside the platform, and which address families they reach.
         </tr>
     </thead>
     <tbody><tr>
-        <td><b>class</b></td>
-        <td>string</td>
-        <td>
-          Class is the InternetEgressClass serving this network. Omitting it
-selects the default class, which is the common case. A consumer never
-names an address class, an address pool, or an address.<br/>
-        </td>
-        <td>false</td>
-      </tr><tr>
         <td><b>mode</b></td>
         <td>enum</td>
         <td>

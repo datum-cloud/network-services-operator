@@ -51,9 +51,10 @@ const (
 // REST mapper, so a provider's API group stays independent of this one.
 //
 // Nothing is derived here. The stability a consumer reads is the provider's,
-// resolved from the class serving the network, and an attachment publishing no
-// address leaves the interface reporting none: a wrong egress address is worse
-// than an absent one, because a consumer allow-lists it at their destination.
+// stated for the shard on the node the interface attached to, and an attachment
+// publishing no address leaves the interface reporting none: a wrong egress
+// address is worse than an absent one, because a consumer allow-lists it at
+// their destination.
 type NetworkInterfaceEgressReconciler struct {
 	mgr mcmanager.Manager
 }

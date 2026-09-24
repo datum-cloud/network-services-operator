@@ -84,7 +84,6 @@ type NetworkPresenceReconciler struct {
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkbindings,verbs=get;list;watch;delete
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkbindings/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkcontexts,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkcontexts/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=locationbindings,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
 
@@ -321,14 +320,7 @@ func (r *NetworkPresenceReconciler) ensure(
 		return false, err
 	}
 
-	// Egress is resolved before anything is written, because an intent that
-	// names no class is one no location can act on and none of it may be
-	// projected half-resolved.
-	egress, err := resolveInternetEgress(ctx, projectClient, &network)
-	var egressUnavailable *internetEgressUnavailable
-	if err != nil && !errors.As(err, &egressUnavailable) {
-		return false, err
-	}
+	egress := projectInternetEgress(&network)
 
 	networkContext, err := r.project(ctx, req, projectClient, routing, &pair, &network, egress)
 	if err != nil {
@@ -341,10 +333,6 @@ func (r *NetworkPresenceReconciler) ensure(
 			return true, r.report(ctx, holders, nil, refusal(
 				networkingv1alpha.NetworkBindingReasonNetworkContextTerminating, terminating.Error()))
 		}
-		return false, err
-	}
-
-	if err := r.reportEgress(ctx, projectClient, networkContext, egressUnavailable); err != nil {
 		return false, err
 	}
 
@@ -362,10 +350,7 @@ func (r *NetworkPresenceReconciler) ensure(
 			"Network context is not ready."))
 	}
 
-	// Nothing watches a class, so an unresolved one is retried on the same
-	// interval a refusal is: an operator defining the default class is
-	// otherwise invisible here.
-	return egressUnavailable != nil, r.report(ctx, holders, ref, metav1.Condition{
+	return false, r.report(ctx, holders, ref, metav1.Condition{
 		Type:    networkingv1alpha.NetworkBindingReady,
 		Status:  metav1.ConditionTrue,
 		Reason:  networkingv1alpha.NetworkBindingReasonNetworkContextReady,
@@ -471,37 +456,6 @@ func (r *NetworkPresenceReconciler) project(
 	}
 
 	return networkContext, nil
-}
-
-// reportEgress tells a consumer why this location was instructed to provide no
-// egress. It writes nothing otherwise: once the intent is carried, what the
-// location realized is the location's answer to report, and this controller
-// cannot know it.
-func (r *NetworkPresenceReconciler) reportEgress(
-	ctx context.Context,
-	projectClient client.Client,
-	networkContext *networkingv1alpha.NetworkContext,
-	unavailable *internetEgressUnavailable,
-) error {
-	if unavailable == nil {
-		return nil
-	}
-
-	if !apimeta.SetStatusCondition(&networkContext.Status.Conditions, metav1.Condition{
-		Type:               networkingv1alpha.NetworkContextInternetEgressReady,
-		Status:             metav1.ConditionFalse,
-		Reason:             networkingv1alpha.NetworkContextInternetEgressReasonUnavailable,
-		Message:            unavailable.Error(),
-		ObservedGeneration: networkContext.Generation,
-	}) {
-		return nil
-	}
-
-	if err := projectClient.Status().Update(ctx, networkContext); err != nil {
-		return fmt.Errorf("failed reporting internet egress on network context %q: %w",
-			networkContext.Name, err)
-	}
-	return nil
 }
 
 // networkContextTerminating says the presence for this pair still exists and is

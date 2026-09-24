@@ -75,7 +75,3 @@ spec:
     - name: programming-failed
       match: "event.reason == 'ProgrammingFailed'"
       summary: "Traffic protection failed to program on {{ link(event.metadata.annotations['networking.datumapis.com/display-name'], event.regarding) }}"
-
-    - name: waiting-for-certificates
-      match: "event.reason == 'WaitingForCertificates'"
-      summary: "Traffic protection on {{ link(event.metadata.annotations['networking.datumapis.com/display-name'], event.regarding) }} is waiting for TLS certificates"

@@ -120,13 +120,6 @@ spec:
       matchExpressions:
       - key: meta.datumapis.com/upstream-cluster-name
         operator: Exists
-  - apiVersion: gateway.envoyproxy.io/v1alpha1
-    kind: EnvoyPatchPolicy
-    # TODO(jreese) get labels on these patch policies
-    # labelSelector:
-    #   matchExpressions:
-    #   - key: meta.datumapis.com/upstream-cluster-name
-    #     operator: Exists
 
   # Network Services Operator CRDs (replicated for the extension server)
   - apiVersion: networking.datumapis.com/v1alpha1

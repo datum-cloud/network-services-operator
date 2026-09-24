@@ -153,7 +153,6 @@ rules:
   - backendtrafficpolicies
   - httproutefilters
   - securitypolicies
-  - envoypatchpolicies
   verbs:
   - create
   - delete
@@ -169,7 +168,6 @@ rules:
   - backendtrafficpolicies/finalizers
   - httproutefilters/finalizers
   - securitypolicies/finalizers
-  - envoypatchpolicies/finalizers
   verbs:
   - update
 - apiGroups:
@@ -179,7 +177,6 @@ rules:
   - backendtrafficpolicies/status
   - httproutefilters/status
   - securitypolicies/status
-  - envoypatchpolicies/status
   verbs:
   - get
 - apiGroups:

@@ -173,7 +173,7 @@ implement the sidecar or the CNI plugin.
   **downstream-native** (published directly in the edge cluster where Envoy
   and the VPC pod's node both live) — it has no upstream counterpart to
   replicate from. Confirmed by a full sweep of `internal/downstreamclient/`
-  and every downstream watch in this repo (`Certificate`, `EnvoyPatchPolicy`,
+  and every downstream watch in this repo (`Certificate`,
   `DNSRecordSet`): every one maps back through labels NSO itself stamped on
   an object *it created* as a replica of something upstream. There is
   genuinely **no existing precedent** for reading a downstream object NSO did

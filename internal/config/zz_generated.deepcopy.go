@@ -435,11 +435,6 @@ func (in *GatewayConfig) DeepCopyInto(out *GatewayConfig) {
 		*out = new(bool)
 		**out = **in
 	}
-	if in.EPPEmissionEnabled != nil {
-		in, out := &in.EPPEmissionEnabled, &out.EPPEmissionEnabled
-		*out = new(bool)
-		**out = **in
-	}
 	out.CertificateReissuance = in.CertificateReissuance
 }
 

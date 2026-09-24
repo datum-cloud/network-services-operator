@@ -898,15 +898,6 @@ type GatewayConfig struct {
 	// +default=5
 	MaxConcurrentReconciles int `json:"maxConcurrentReconciles,omitempty"`
 
-	// EPPEmissionEnabled controls whether NSO's controllers emit EnvoyPatchPolicy
-	// objects. Set to false when the extension server is handling xDS mutation so
-	// that EPPs are no longer created or deleted by these controllers. Rollback =
-	// set to true (or omit, which defaults to true).
-	//
-	// When false: NSO emits ZERO EPPs and does NOT delete EPPs it did not create.
-	// When true (default): EPP emission proceeds as today.
-	EPPEmissionEnabled *bool `json:"eppEmissionEnabled,omitempty" yaml:"eppEmissionEnabled,omitempty"`
-
 	// CertificateReissuance controls how the gateway controller handles
 	// failed certificate issuance for custom hostnames. When a Certificate
 	// is stuck in a failed state, the controller deletes and recreates it
@@ -950,17 +941,6 @@ func (c *GatewayConfig) ShouldDeleteErroredChallenges() bool {
 		return true // default enabled
 	}
 	return *c.DeleteErroredChallenges
-}
-
-// IsEPPEmissionEnabled returns whether the operator should emit EnvoyPatchPolicy
-// objects. Defaults to true when not explicitly configured, preserving backward
-// compatibility. Set gateway.eppEmissionEnabled=false in the operator config to
-// disable EPP emission once the extension server is handling xDS mutation.
-func (c *GatewayConfig) IsEPPEmissionEnabled() bool {
-	if c.EPPEmissionEnabled == nil {
-		return true // default: EPP emission on
-	}
-	return *c.EPPEmissionEnabled
 }
 
 // GetRetryInterval returns the configured retry interval for certificate

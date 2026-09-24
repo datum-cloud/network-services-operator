@@ -27,11 +27,6 @@ const (
 	versionV1Alpha1 = "v1alpha1"
 )
 
-// Envoy xDS type URL constants.
-const (
-	routeConfigurationTypeURL = "type.googleapis.com/envoy.config.route.v3.RouteConfiguration"
-)
-
 // JSON/map field key constants used in Envoy proxy configuration and condition maps.
 const (
 	jsonKeyName        = "name"

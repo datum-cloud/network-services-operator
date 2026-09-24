@@ -1,7 +1,7 @@
 // Package server implements the Envoy Gateway extension-server gRPC contract
 // for the NSO production extension server. It applies TrafficProtectionPolicy
 // WAF and Connector tunnel mutations to the full post-translation xDS snapshot
-// via the PostTranslateModify hook, replacing the EnvoyPatchPolicy approach.
+// via the PostTranslateModify hook.
 package server
 
 import (
@@ -86,8 +86,7 @@ const ProgrammedSetEndpointPath = programmedSetEndpointPath
 // Secrets are passed through unchanged — the response replaces EG's entire
 // resource set, so every list must be present in the response.
 //
-// Mutation ordering (must match NSO EPP ordering to preserve config-dump
-// parity for the A/B gate):
+// Mutation ordering:
 //  1. InjectCorazaListenerFilters — inject disabled Coraza into ALL HCMs.
 //  2. ApplyTPPRouteConfig         — per-route WAF config for governed routes.
 //  3. ReplaceConnectorClusters    — replace online-connector clusters with
@@ -249,7 +248,7 @@ func (s *Server) PostTranslateModify(
 	// --- Connector family ---
 	// Replace clusters BEFORE adding CONNECT routes so route wiring sees the
 	// final cluster set. Apply connector routes AFTER TPP so CONNECT routes
-	// do not receive Coraza per-route config (matching NSO EPP ordering).
+	// do not receive Coraza per-route config.
 	_, connClustersSpan := tr.Start(mctx, "connector.clusters")
 	replaced, connOffline, err = mutate.ReplaceConnectorClusters(
 		clusters, idx, s.cfg.ConnectorInternalListener,

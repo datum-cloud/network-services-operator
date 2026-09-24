@@ -97,7 +97,7 @@ func (c *mappedNamespaceResourceStrategy) ensureDownstreamNamespace(ctx context.
 		// DEFENSIVE GUARD (single-cluster mode): when upstreamClusterName is empty
 		// the label value would be "cluster-", which the apiserver rejects as an
 		// invalid label value, failing the namespace CreateOrUpdate and blocking
-		// any downstream write (e.g. the per-policy WAF EnvoyPatchPolicy). This is
+		// any downstream write. This is
 		// hit because the TrafficProtectionPolicy controller's enqueue handlers do
 		// not propagate ClusterName (unlike controllers using mcreconcile.Request).
 		// Band-aid: only stamp the label when we actually have a cluster name; the

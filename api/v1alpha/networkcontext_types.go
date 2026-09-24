@@ -43,10 +43,9 @@ type NetworkContextSpec struct {
 	NetworkGeneration int64 `json:"networkGeneration,omitempty"`
 
 	// Egress is what the network reaches outside the platform from this
-	// location, projected from the Network and resolved against the serving
-	// class. Propagation to a cell carries spec and not status, so the
-	// instruction a cell acts on lives here and the result it reports lives in
-	// status.
+	// location, projected from the Network. Propagation to a cell carries spec
+	// and not status, so the instruction a cell acts on lives here and the
+	// result it reports lives in status.
 	//
 	// A reader that finds this unset must refuse rather than assume: a context
 	// written before this field existed carries nothing, which is not the same
@@ -65,8 +64,9 @@ type NetworkContextEgress struct {
 }
 
 // NetworkContextInternetEgress instructs one location to provide internet
-// egress. Every field is resolved before it is written here, so nothing
-// reading it selects a class, picks a default, or interprets parameters.
+// egress. It carries the network's declaration and nothing else: translation
+// runs on the node an instance attaches to, so a location has nothing to
+// select and nothing to interpret.
 type NetworkContextInternetEgress struct {
 	// Mode is whether instances in this location reach the internet, copied
 	// from the network.
@@ -79,8 +79,7 @@ type NetworkContextInternetEgress struct {
 	Mode NetworkInternetEgressMode `json:"mode,omitempty"`
 
 	// Reach are the destination address families this location is instructed
-	// to reach, copied from the network and narrowed to what the serving class
-	// reaches.
+	// to reach, copied from the network.
 	//
 	// Only IPv6 is accepted, because a projection may not carry what its
 	// source cannot declare.
@@ -91,34 +90,6 @@ type NetworkContextInternetEgress struct {
 	// +kubebuilder:validation:XValidation:message="Only IPv6 is accepted; reaching IPv4 destinations needs a resolver and a translator sharing a prefix, and the platform pairs neither",rule="self.all(f, f == 'IPv6')"
 	// +kubebuilder:validation:XValidation:message="Each address family may be listed at most once",rule="self.all(f, self.exists_one(g, g == f))"
 	Reach []IPFamily `json:"reach,omitempty"`
-
-	// ClassName is the InternetEgressClass resolved for this network,
-	// including the case where the network named none and the default class
-	// was selected. It is written resolved so class selection stays with the
-	// single writer that reads the classes, and a location never repeats it.
-	//
-	// +kubebuilder:validation:Optional
-	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:MaxLength=253
-	ClassName string `json:"className,omitempty"`
-
-	// Sharing is the serving class's sharing, carried so a location can report
-	// the stability a consumer reads back on status without reading the class
-	// itself.
-	//
-	// Only Shared is accepted, because a projection may not carry what its
-	// source cannot declare.
-	//
-	// +kubebuilder:validation:Optional
-	// +kubebuilder:validation:XValidation:message="Only Shared is accepted; dedicated egress needs capacity the platform cannot yet provision, so a class asking for it would wait indefinitely rather than fail",rule="self == 'Shared'"
-	Sharing InternetEgressSharing `json:"sharing,omitempty"`
-
-	// ParametersRef is the serving class's parametersRef, passed through
-	// verbatim. Nothing on the path between the class and the controller named
-	// in the class's controllerName interprets it.
-	//
-	// +kubebuilder:validation:Optional
-	ParametersRef *InternetEgressClassParametersRef `json:"parametersRef,omitempty"`
 }
 
 // NetworkContextStatus defines the observed state of NetworkContext

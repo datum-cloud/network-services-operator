@@ -75,7 +75,6 @@ func TestNetworkKeepsExplicitEgressMode(t *testing.T) {
 	network := egressNetwork("egress-enabled", &networkingv1alpha.NetworkInternetEgress{
 		Mode:  networkingv1alpha.NetworkInternetEgressEnabled,
 		Reach: []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol},
-		Class: "shared",
 	})
 	require.NoError(t, cl.Create(ctx, network))
 	t.Cleanup(func() { _ = cl.Delete(ctx, network) })
@@ -83,7 +82,6 @@ func TestNetworkKeepsExplicitEgressMode(t *testing.T) {
 	var got networkingv1alpha.Network
 	require.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(network), &got))
 	assert.Equal(t, networkingv1alpha.NetworkInternetEgressEnabled, got.Spec.Egress.Internet.Mode)
-	assert.Equal(t, "shared", got.Spec.Egress.Internet.Class)
 	assert.Equal(t,
 		[]networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol},
 		got.Spec.Egress.Internet.Reach)
@@ -232,142 +230,6 @@ func TestClaimRejectsNonInheritEgressMode(t *testing.T) {
 			assert.Contains(t, err.Error(), "spec.egress.internet.mode")
 		})
 	}
-}
-
-func egressClass(name string, spec networkingv1alpha.InternetEgressClassSpec) *networkingv1alpha.InternetEgressClass {
-	if spec.ControllerName == "" {
-		spec.ControllerName = "networking.datumapis.com/cell-egress"
-	}
-	return &networkingv1alpha.InternetEgressClass{
-		ObjectMeta: metav1.ObjectMeta{Name: name},
-		Spec:       spec,
-	}
-}
-
-// TestInternetEgressClassDefaultsController asserts a class written without a
-// controller name gets one, the way ConnectorClass does. The object is built
-// unstructured because a typed client sends controllerName as an empty string,
-// which the apiserver treats as a value supplied rather than one omitted.
-func TestInternetEgressClassDefaultsController(t *testing.T) {
-	cl := requireEnv(t)
-	ctx := context.Background()
-
-	class := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": networkingv1alpha.GroupVersion.String(),
-		"kind":       "InternetEgressClass",
-		"metadata": map[string]any{
-			"name": "controller-default",
-		},
-		"spec": map[string]any{
-			"sharing": string(networkingv1alpha.InternetEgressSharingShared),
-			"reach":   []any{string(networkingv1alpha.IPv6Protocol)},
-		},
-	}}
-	require.NoError(t, cl.Create(ctx, class))
-	t.Cleanup(func() { _ = cl.Delete(ctx, class) })
-
-	var got networkingv1alpha.InternetEgressClass
-	require.NoError(t, cl.Get(ctx, client.ObjectKey{Name: "controller-default"}, &got))
-	assert.Equal(t, "networking.datumapis.com/cell-egress", got.Spec.ControllerName)
-}
-
-// TestInternetEgressClassRoundTripsOperatorFields asserts the class registers
-// cluster-scoped and keeps the default-class annotation, the sharing an
-// operator chose, and the parameters its implementation reads.
-func TestInternetEgressClassRoundTripsOperatorFields(t *testing.T) {
-	cl := requireEnv(t)
-	ctx := context.Background()
-
-	class := egressClass("shared", networkingv1alpha.InternetEgressClassSpec{
-		ControllerName: "networking.datumapis.com/cell-egress",
-		Sharing:        networkingv1alpha.InternetEgressSharingShared,
-		Reach:          []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol},
-		ParametersRef: &networkingv1alpha.InternetEgressClassParametersRef{
-			Group: "network.datumapis.com",
-			Kind:  "EgressShardParameters",
-			Name:  "shared-ipv6",
-		},
-	})
-	class.Annotations = map[string]string{
-		networkingv1alpha.InternetEgressClassDefaultAnnotation: "true",
-	}
-	require.NoError(t, cl.Create(ctx, class))
-	t.Cleanup(func() { _ = cl.Delete(ctx, class) })
-
-	var got networkingv1alpha.InternetEgressClass
-	require.NoError(t, cl.Get(ctx, client.ObjectKey{Name: class.Name}, &got))
-	assert.Equal(t, "networking.datumapis.com/cell-egress", got.Spec.ControllerName)
-	assert.Equal(t, networkingv1alpha.InternetEgressSharingShared, got.Spec.Sharing)
-	assert.Equal(t, "true",
-		got.Annotations[networkingv1alpha.InternetEgressClassDefaultAnnotation])
-	require.NotNil(t, got.Spec.ParametersRef)
-	assert.Equal(t, "shared-ipv6", got.Spec.ParametersRef.Name)
-}
-
-// TestInternetEgressClassRejectsUnknownSharing asserts sharing carries only the
-// two values a consumer's stability is projected from.
-func TestInternetEgressClassRejectsUnknownSharing(t *testing.T) {
-	cl := requireEnv(t)
-	ctx := context.Background()
-
-	class := egressClass("bad-sharing", networkingv1alpha.InternetEgressClassSpec{
-		Sharing: networkingv1alpha.InternetEgressSharing("Pooled"),
-		Reach:   []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol},
-	})
-	err := cl.Create(ctx, class)
-	require.Error(t, err, "a sharing value outside the enum must be rejected")
-	assert.Truef(t, apierrors.IsInvalid(err), "expected an Invalid error, got %v", err)
-	assert.Contains(t, err.Error(), "spec.sharing")
-}
-
-// TestInternetEgressClassRequiresSharing asserts an operator states the sharing
-// a class hands out rather than inheriting one the API picked for them.
-func TestInternetEgressClassRequiresSharing(t *testing.T) {
-	cl := requireEnv(t)
-	ctx := context.Background()
-
-	class := egressClass("no-sharing", networkingv1alpha.InternetEgressClassSpec{
-		Reach: []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol},
-	})
-	err := cl.Create(ctx, class)
-	require.Error(t, err, "sharing must be required")
-	assert.Truef(t, apierrors.IsInvalid(err), "expected an Invalid error, got %v", err)
-	assert.Contains(t, err.Error(), "spec.sharing")
-}
-
-// TestInternetEgressClassRejectsDedicatedSharing asserts dedicated egress is
-// refused rather than accepted and left waiting. It needs capacity the
-// platform cannot yet provision, so a class asking for it would never be
-// served. A class written today records Shared, so accepting Dedicated later
-// changes no existing class.
-func TestInternetEgressClassRejectsDedicatedSharing(t *testing.T) {
-	cl := requireEnv(t)
-	ctx := context.Background()
-
-	class := egressClass("sharing-dedicated", networkingv1alpha.InternetEgressClassSpec{
-		Sharing: networkingv1alpha.InternetEgressSharingDedicated,
-		Reach:   []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol},
-	})
-	err := cl.Create(ctx, class)
-	require.Error(t, err, "dedicated sharing must be withheld until the capacity exists")
-	assert.Truef(t, apierrors.IsInvalid(err), "expected an Invalid error, got %v", err)
-	assert.Contains(t, err.Error(), "spec.sharing")
-	assert.Contains(t, err.Error(), "Only Shared is accepted")
-}
-
-// TestInternetEgressClassRejectsEmptyReach asserts a class that reaches nothing
-// cannot be defined, since nothing a network declares could be served by it.
-func TestInternetEgressClassRejectsEmptyReach(t *testing.T) {
-	cl := requireEnv(t)
-	ctx := context.Background()
-
-	class := egressClass("no-reach", networkingv1alpha.InternetEgressClassSpec{
-		Sharing: networkingv1alpha.InternetEgressSharingShared,
-	})
-	err := cl.Create(ctx, class)
-	require.Error(t, err, "reach must be required and non-empty")
-	assert.Truef(t, apierrors.IsInvalid(err), "expected an Invalid error, got %v", err)
-	assert.Contains(t, err.Error(), "spec.reach")
 }
 
 // egressInterface builds a NetworkInterface holding only what the schema
@@ -703,15 +565,8 @@ func TestNetworkContextEgressIntentRoundTrips(t *testing.T) {
 	ctx := context.Background()
 
 	networkContext := egressContext("egress-intent", &networkingv1alpha.NetworkContextInternetEgress{
-		Mode:      networkingv1alpha.NetworkInternetEgressEnabled,
-		Reach:     []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol},
-		ClassName: "shared",
-		Sharing:   networkingv1alpha.InternetEgressSharingShared,
-		ParametersRef: &networkingv1alpha.InternetEgressClassParametersRef{
-			Group: "network.datumapis.com",
-			Kind:  "EgressShardParameters",
-			Name:  "shared-ipv6",
-		},
+		Mode:  networkingv1alpha.NetworkInternetEgressEnabled,
+		Reach: []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol},
 	})
 	require.NoError(t, cl.Create(ctx, networkContext))
 	t.Cleanup(func() { _ = cl.Delete(ctx, networkContext) })
@@ -723,44 +578,6 @@ func TestNetworkContextEgressIntentRoundTrips(t *testing.T) {
 	require.NotNil(t, internet)
 	assert.Equal(t, networkingv1alpha.NetworkInternetEgressEnabled, internet.Mode)
 	assert.Equal(t, []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol}, internet.Reach)
-	assert.Equal(t, "shared", internet.ClassName)
-	assert.Equal(t, networkingv1alpha.InternetEgressSharingShared, internet.Sharing)
-	require.NotNil(t, internet.ParametersRef)
-	assert.Equal(t, "network.datumapis.com", internet.ParametersRef.Group)
-	assert.Equal(t, "EgressShardParameters", internet.ParametersRef.Kind)
-	assert.Equal(t, "shared-ipv6", internet.ParametersRef.Name)
-}
-
-// TestNetworkContextRejectsUnknownEgressIntentMode asserts the projected mode
-// carries the same two values the network's does.
-func TestNetworkContextRejectsUnknownEgressIntentMode(t *testing.T) {
-	cl := requireEnv(t)
-	ctx := context.Background()
-
-	networkContext := egressContext("egress-intent-bad-mode", &networkingv1alpha.NetworkContextInternetEgress{
-		Mode: networkingv1alpha.NetworkInternetEgressMode("Inherit"),
-	})
-	err := cl.Create(ctx, networkContext)
-	require.Error(t, err, "a mode outside the enum must be rejected")
-	assert.Truef(t, apierrors.IsInvalid(err), "expected an Invalid error, got %v", err)
-	assert.Contains(t, err.Error(), "spec.egress.internet.mode")
-}
-
-// TestNetworkContextRejectsUnknownEgressIntentSharing asserts the sharing a
-// location reports stability from holds only the two values it is projected
-// from.
-func TestNetworkContextRejectsUnknownEgressIntentSharing(t *testing.T) {
-	cl := requireEnv(t)
-	ctx := context.Background()
-
-	networkContext := egressContext("egress-intent-bad-sharing", &networkingv1alpha.NetworkContextInternetEgress{
-		Mode:    networkingv1alpha.NetworkInternetEgressEnabled,
-		Sharing: networkingv1alpha.InternetEgressSharing("Pooled"),
-	})
-	err := cl.Create(ctx, networkContext)
-	require.Error(t, err, "a sharing value outside the enum must be rejected")
-	assert.Truef(t, apierrors.IsInvalid(err), "expected an Invalid error, got %v", err)
-	assert.Contains(t, err.Error(), "spec.egress.internet.sharing")
 }
 
 // TestNetworkContextRejectsRepeatedEgressIntentReach asserts the projected
@@ -781,22 +598,6 @@ func TestNetworkContextRejectsRepeatedEgressIntentReach(t *testing.T) {
 	assert.Contains(t, err.Error(), "spec.egress.internet.reach")
 }
 
-// TestInternetEgressClassRejectsIPv4Reach asserts an operator cannot define a
-// class advertising IPv4, which would promise what no component delivers.
-func TestInternetEgressClassRejectsIPv4Reach(t *testing.T) {
-	cl := requireEnv(t)
-	ctx := context.Background()
-
-	class := egressClass("reach-v4", networkingv1alpha.InternetEgressClassSpec{
-		Sharing: networkingv1alpha.InternetEgressSharingShared,
-		Reach:   []networkingv1alpha.IPFamily{networkingv1alpha.IPv4Protocol},
-	})
-	err := cl.Create(ctx, class)
-	require.Error(t, err, "a class may not advertise IPv4 reach")
-	assert.Truef(t, apierrors.IsInvalid(err), "expected an Invalid error, got %v", err)
-	assert.Contains(t, err.Error(), "spec.reach")
-}
-
 // TestNetworkContextRejectsIPv4EgressIntentReach asserts the projection cannot
 // carry what its source cannot declare.
 func TestNetworkContextRejectsIPv4EgressIntentReach(t *testing.T) {
@@ -811,45 +612,4 @@ func TestNetworkContextRejectsIPv4EgressIntentReach(t *testing.T) {
 	require.Error(t, err, "a projected IPv4 reach must be rejected")
 	assert.Truef(t, apierrors.IsInvalid(err), "expected an Invalid error, got %v", err)
 	assert.Contains(t, err.Error(), "spec.egress.internet.reach")
-}
-
-// TestNetworkContextRejectsDedicatedEgressIntentSharing asserts the projection
-// cannot carry a sharing no class can declare. Dedicated needs capacity the
-// platform cannot yet provision, and a projected value nothing upstream can
-// emit would be a request no location could serve.
-func TestNetworkContextRejectsDedicatedEgressIntentSharing(t *testing.T) {
-	cl := requireEnv(t)
-	ctx := context.Background()
-
-	networkContext := egressContext("egress-intent-dedicated", &networkingv1alpha.NetworkContextInternetEgress{
-		Mode:    networkingv1alpha.NetworkInternetEgressEnabled,
-		Reach:   []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol},
-		Sharing: networkingv1alpha.InternetEgressSharingDedicated,
-	})
-	err := cl.Create(ctx, networkContext)
-	require.Error(t, err, "a projected dedicated sharing must be rejected")
-	assert.Truef(t, apierrors.IsInvalid(err), "expected an Invalid error, got %v", err)
-	assert.Contains(t, err.Error(), "spec.egress.internet.sharing")
-	assert.Contains(t, err.Error(), "Only Shared is accepted")
-}
-
-// TestNetworkContextAcceptsEgressIntentWithoutSharing pins that the rule
-// refusing Dedicated does not also refuse an unset sharing. The field is
-// optional because a context written before it existed carries none, and a
-// reader must be able to tell that apart from a sharing it was given.
-func TestNetworkContextAcceptsEgressIntentWithoutSharing(t *testing.T) {
-	cl := requireEnv(t)
-	ctx := context.Background()
-
-	networkContext := egressContext("egress-intent-no-sharing", &networkingv1alpha.NetworkContextInternetEgress{
-		Mode:  networkingv1alpha.NetworkInternetEgressEnabled,
-		Reach: []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol},
-	})
-	require.NoError(t, cl.Create(ctx, networkContext),
-		"an unset sharing must stay writable, not be caught by the Shared-only rule")
-	t.Cleanup(func() { _ = cl.Delete(ctx, networkContext) })
-
-	var got networkingv1alpha.NetworkContext
-	require.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(networkContext), &got))
-	assert.Empty(t, got.Spec.Egress.Internet.Sharing, "no sharing may be defaulted onto the projection")
 }

@@ -455,8 +455,8 @@ spec:
 
                           An absent list means nothing has reported an address for this interface.
                           It does not mean the interface reaches nothing: whether the network
-                          asked for egress is on the network, and whether the location could
-                          provide it is the network context's InternetEgressReady condition.
+                          asked for egress is on the network, and whether the node could provide
+                          it is this interface's InternetEgressReady condition.
                         items:
                           description: InternetEgressSourceAddress is one address
                             outbound traffic leaves on.
@@ -478,8 +478,7 @@ spec:
                             stability:
                               description: |-
                                 Stability states how far a consumer may rely on this address before
-                                they act on it. It is the consumer-side projection of the serving
-                                class's sharing.
+                                they act on it.
                               enum:
                               - None
                               - Network

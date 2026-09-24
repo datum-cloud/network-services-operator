@@ -100,15 +100,6 @@ type NetworkInternetEgress struct {
 	// +kubebuilder:validation:XValidation:message="Only IPv6 is accepted; reaching IPv4 destinations needs a resolver and a translator sharing a prefix, and the platform pairs neither",rule="self.all(f, f == 'IPv6')"
 	// +kubebuilder:validation:XValidation:message="Each address family may be listed at most once",rule="self.all(f, self.exists_one(g, g == f))"
 	Reach []IPFamily `json:"reach,omitempty"`
-
-	// Class is the InternetEgressClass serving this network. Omitting it
-	// selects the default class, which is the common case. A consumer never
-	// names an address class, an address pool, or an address.
-	//
-	// +kubebuilder:validation:Optional
-	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:MaxLength=253
-	Class string `json:"class,omitempty"`
 }
 
 type NetworkIPAMMode string

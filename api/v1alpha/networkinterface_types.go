@@ -131,6 +131,31 @@ const (
 	NetworkInterfaceReasonHolderReleased = "HolderReleased"
 )
 
+const (
+	// NetworkInterfaceInternetEgressReady reports whether this interface's
+	// outbound traffic reaches the destinations its network declared. It lives
+	// on the interface because translation runs on the node the interface
+	// attached to, so one interface can be served while another on the same
+	// network is not.
+	NetworkInterfaceInternetEgressReady = "InternetEgressReady"
+
+	// NetworkInterfaceInternetEgressReasonReady means this interface reaches
+	// the declared destinations.
+	NetworkInterfaceInternetEgressReasonReady = "Ready"
+
+	// NetworkInterfaceInternetEgressReasonAddressUnavailable means the node
+	// serving this interface has no egress address to translate to.
+	NetworkInterfaceInternetEgressReasonAddressUnavailable = "AddressUnavailable"
+
+	// NetworkInterfaceInternetEgressReasonUnavailable means nothing on the
+	// node serving this interface provides egress.
+	NetworkInterfaceInternetEgressReasonUnavailable = "Unavailable"
+
+	// NetworkInterfaceInternetEgressReasonDegraded means egress works for some
+	// declared address families and not for others.
+	NetworkInterfaceInternetEgressReasonDegraded = "Degraded"
+)
+
 // NetworkInterfaceAddress is an address the interface holds inside its network.
 // These are the addresses configured on the NIC itself, and they always carry a
 // prefix length.
@@ -457,8 +482,8 @@ type NetworkInterfaceInternetEgressStatus struct {
 	//
 	// An absent list means nothing has reported an address for this interface.
 	// It does not mean the interface reaches nothing: whether the network
-	// asked for egress is on the network, and whether the location could
-	// provide it is the network context's InternetEgressReady condition.
+	// asked for egress is on the network, and whether the node could provide
+	// it is this interface's InternetEgressReady condition.
 	//
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:validation:MaxItems=2

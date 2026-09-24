@@ -723,8 +723,8 @@ network declares the intent; the interface is what carries it.
 
 An absent list means nothing has reported an address for this interface.
 It does not mean the interface reaches nothing: whether the network
-asked for egress is on the network, and whether the location could
-provide it is the network context's InternetEgressReady condition.<br/>
+asked for egress is on the network, and whether the node could provide
+it is this interface's InternetEgressReady condition.<br/>
         </td>
         <td>false</td>
       </tr></tbody>
@@ -769,8 +769,7 @@ length.<br/>
         <td>enum</td>
         <td>
           Stability states how far a consumer may rely on this address before
-they act on it. It is the consumer-side projection of the serving
-class's sharing.<br/>
+they act on it.<br/>
           <br/>
             <i>Enum</i>: None, Network<br/>
         </td>

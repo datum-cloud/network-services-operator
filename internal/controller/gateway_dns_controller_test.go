@@ -769,6 +769,81 @@ func TestEnsureDNSRecordSets_UpdateExistingRecord(t *testing.T) {
 	assert.Equal(t, ".", string(updatedRS.Spec.Records[0].CNAME.Content[len(updatedRS.Spec.Records[0].CNAME.Content)-1]))
 }
 
+func TestEnsureDNSRecordSets_SkipsGatewayAddressHostnames(t *testing.T) {
+	cases := []struct {
+		name   string
+		apex   bool
+		rrType dnsv1alpha1.RRType
+	}{
+		{name: "CNAME below a non-apex domain", apex: false, rrType: dnsv1alpha1.RRTypeCNAME},
+		{name: "ALIAS under an apex domain", apex: true, rrType: dnsv1alpha1.RRTypeALIAS},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			const ns = "test-ns"
+			ctx := log.IntoContext(context.Background(), zap.New())
+			s := newDNSTestScheme(t)
+
+			testConfig := config.NetworkServicesOperator{
+				Gateway: config.GatewayConfig{
+					TargetDomain:         "gateways.test.local",
+					EnableDNSIntegration: true,
+				},
+			}
+
+			gw := newTestGatewayForDNS(ns, "my-gw")
+			canonical := testConfig.Gateway.GatewayDNSAddress(gw)
+			v4 := "v4." + canonical
+			v6 := "v6." + canonical
+			custom := "app.gateways.test.local"
+
+			domain := newVerifiedDNSZoneDomain(ns, "gateways.test.local", tc.apex)
+			zone := newDNSZone(ns, "gateways-zone", "gateways.test.local")
+
+			// A record set an earlier reconcile wrote at the v4. address.
+			staleName := dnsRecordSetName(gw.Name, v4)
+			stale := &dnsv1alpha1.DNSRecordSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: ns,
+					Name:      staleName,
+					Labels: map[string]string{
+						labelManagedBy:     labelManagedByValue,
+						labelDNSManaged:    labelValueTrue,
+						labelDNSSourceKind: KindGateway,
+						labelDNSSourceName: gw.Name,
+						labelDNSSourceNS:   ns,
+					},
+					Annotations: map[string]string{annotationDNSHostname: v4},
+				},
+				Spec: buildDesiredDNSRecordSetSpec(v4, canonical, *zone, tc.rrType),
+			}
+
+			allObjects := []client.Object{gw, domain, zone, stale}
+			for _, obj := range allObjects {
+				if obj.GetUID() == "" {
+					obj.SetUID(uuid.NewUUID())
+				}
+				obj.SetCreationTimestamp(metav1.Now())
+			}
+
+			cl := buildFakeUpstreamClientForDNS(s, allObjects...)
+			reconciler := newDNSReconciler(testConfig)
+
+			statuses, result := reconciler.ensureDNSRecordSets(ctx, cl, gw, []string{canonical, custom, v4, v6})
+			require.NoError(t, result.Err)
+
+			require.Len(t, statuses, 1, "only the custom hostname is Gateway DNS's to program")
+			assert.Equal(t, custom, statuses[0].Hostname)
+
+			var list dnsv1alpha1.DNSRecordSetList
+			require.NoError(t, cl.List(ctx, &list, client.InNamespace(ns)))
+			require.Len(t, list.Items, 1, "the stale v4. record set is collected and no v6. one is written")
+			assert.Equal(t, dnsRecordSetName(gw.Name, custom), list.Items[0].Name)
+			assert.Equal(t, tc.rrType, list.Items[0].Spec.RecordType, "the custom hostname keeps the type its domain calls for")
+		})
+	}
+}
+
 // ---------------------------------------------------------------------------
 // TestGarbageCollectDNSRecordSets
 // ---------------------------------------------------------------------------

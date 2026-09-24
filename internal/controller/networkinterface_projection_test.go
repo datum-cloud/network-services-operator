@@ -21,6 +21,7 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/events"
 	"k8s.io/client-go/tools/record"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
@@ -192,13 +193,28 @@ func newVisibility(t *testing.T) *visibility {
 // shape the claim controller leaves behind.
 func (v *visibility) interfaceOnCell() *networkingv1alpha.NetworkInterface {
 	v.t.Helper()
+	return v.interfaceOnCellForNetwork("default")
+}
+
+// networkInProject writes another network a consumer can move an instance onto.
+func (v *visibility) networkInProject(name string) {
+	v.t.Helper()
+	network := &networkingv1alpha.Network{}
+	network.Name = name
+	network.Namespace = v.projectNamespace
+	network.Spec.IPAM.Mode = networkingv1alpha.NetworkIPAMModeAuto
+	require.NoError(v.t, v.project.Create(v.ctx, network))
+}
+
+func (v *visibility) interfaceOnCellForNetwork(network string) *networkingv1alpha.NetworkInterface {
+	v.t.Helper()
 	name := boundInterfaceName
 
 	iface := &networkingv1alpha.NetworkInterface{}
 	iface.Name = name
 	iface.Namespace = v.cellNamespace
 	iface.Spec = networkingv1alpha.NetworkInterfaceSpec{
-		Network:       networkingv1alpha.LocalNetworkRef{Name: "default"},
+		Network:       networkingv1alpha.LocalNetworkRef{Name: network},
 		ClaimRef:      &networkingv1alpha.NetworkInterfaceClaimRef{Name: name},
 		InterfaceName: "eth0",
 		MTU:           1440,
@@ -236,20 +252,57 @@ func (v *visibility) interfaceOnCell() *networkingv1alpha.NetworkInterface {
 	return iface
 }
 
+// holdOnCell puts on the interface the finalizer the claim controller holds it
+// with, so deleting it leaves it on its way out rather than gone at once.
+func (v *visibility) holdOnCell(iface *networkingv1alpha.NetworkInterface) {
+	v.t.Helper()
+	iface.Finalizers = append(iface.Finalizers, networkInterfaceFinalizer)
+	require.NoError(v.t, v.cell.Update(v.ctx, iface))
+}
+
+func (v *visibility) releaseOnCell(iface *networkingv1alpha.NetworkInterface) {
+	v.t.Helper()
+	var held networkingv1alpha.NetworkInterface
+	require.NoError(v.t, v.cell.Get(v.ctx, client.ObjectKeyFromObject(iface), &held))
+	held.Finalizers = nil
+	require.NoError(v.t, v.cell.Update(v.ctx, &held))
+}
+
 func (v *visibility) publish() {
 	v.t.Helper()
-	name := boundInterfaceName
-	require.NoError(v.t, v.writeBack.publish(v.ctx, v.cell, client.ObjectKey{
-		Namespace: v.cellNamespace, Name: name,
-	}))
+	require.NoError(v.t, v.publishErr())
+}
+
+func (v *visibility) publishErr() error {
+	v.t.Helper()
+	return v.writeBack.publish(v.ctx, v.cell, client.ObjectKey{
+		Namespace: v.cellNamespace, Name: boundInterfaceName,
+	})
+}
+
+// reconcileHub runs the projector's own entry point rather than its inner
+// projection, which is the only way the hold it takes on a published interface
+// is exercised.
+func (v *visibility) reconcileHub() error {
+	v.t.Helper()
+	_, err := v.projector.Reconcile(v.ctx, ctrl.Request{NamespacedName: client.ObjectKey{
+		Namespace: v.cellNamespace, Name: boundInterfaceName,
+	}})
+	return err
 }
 
 func (v *visibility) handToProject() {
 	v.t.Helper()
-	name := boundInterfaceName
+	require.NoError(v.t, v.handToProjectErr())
+}
+
+func (v *visibility) handToProjectErr() error {
+	v.t.Helper()
 	var published networkingv1alpha.NetworkInterface
-	require.NoError(v.t, v.hub.Get(v.ctx, client.ObjectKey{Namespace: v.cellNamespace, Name: name}, &published))
-	require.NoError(v.t, v.projector.project(v.ctx, &published))
+	require.NoError(v.t, v.hub.Get(v.ctx, client.ObjectKey{
+		Namespace: v.cellNamespace, Name: boundInterfaceName,
+	}, &published))
+	return v.projector.project(v.ctx, &published)
 }
 
 func (v *visibility) collect(name string) {
@@ -622,4 +675,134 @@ func TestACopyLosesALabelItsSourceDropped(t *testing.T) {
 		"nothing holds the interface any more")
 	require.NotContains(t, copied.Labels, "compute.datumapis.com/workload-name")
 	require.Equal(t, testLocationName, copied.Labels[networkingv1alpha.NetworkInterfaceLocationLabel])
+}
+
+// A replacement reuses the name its predecessor was published under on purpose,
+// and it can land on another network. The copy a consumer reads is collected
+// before the name is written again: the network a copy names cannot be moved, so
+// a copy that outlived its interface would hold the name against every
+// replacement that followed.
+func TestARecreatedInterfaceOnAnotherNetworkTakesTheName(t *testing.T) {
+	v := newVisibility(t)
+	v.networkInProject("net-b")
+
+	first := v.interfaceOnCell()
+	v.holdOnCell(first)
+	v.publish()
+	require.NoError(t, v.reconcileHub())
+
+	copied, found := v.projectCopy()
+	require.True(t, found)
+	require.Equal(t, "default", copied.Spec.Network.Name)
+
+	// The interface goes the way the claim controller releases one: held by its own
+	// finalizer, so the write-back sees it on its way out.
+	require.NoError(t, v.cell.Delete(v.ctx, first))
+
+	v.publish()
+	published, found := v.hubCopy(boundInterfaceName)
+	require.True(t, found, "the published copy is held for the copy it handed to the project")
+	require.False(t, published.DeletionTimestamp.IsZero())
+
+	require.NoError(t, v.reconcileHub())
+	_, found = v.projectCopy()
+	require.False(t, found, "the copy a consumer reads goes before the name is reused")
+	_, found = v.hubCopy(boundInterfaceName)
+	require.False(t, found)
+
+	v.releaseOnCell(first)
+
+	second := v.interfaceOnCellForNetwork("net-b")
+	require.NotEqual(t, first.UID, second.UID)
+
+	// Nothing is left holding the name, so the replacement converges without
+	// anything having to be taken from it.
+	v.publish()
+	require.NoError(t, v.reconcileHub())
+
+	published, found = v.hubCopy(boundInterfaceName)
+	require.True(t, found)
+	require.Equal(t, "net-b", published.Spec.Network.Name, "the published copy follows the interface")
+
+	copied, found = v.projectCopy()
+	require.True(t, found, "a consumer sees the interface behind the instance they have now")
+	require.Equal(t, "net-b", copied.Spec.Network.Name)
+	require.Len(t, copied.OwnerReferences, 1)
+	require.Equal(t, "net-b", copied.OwnerReferences[0].Name, "the copy follows the network it belongs to")
+}
+
+// A replacement that stays on its network is the ordinary case, and the slot is
+// converged rather than emptied and remade.
+func TestARecreatedInterfaceOnTheSameNetworkKeepsItsCopy(t *testing.T) {
+	v := newVisibility(t)
+
+	first := v.interfaceOnCell()
+	v.publish()
+	v.handToProject()
+
+	before, found := v.projectCopy()
+	require.True(t, found)
+
+	require.NoError(t, v.cell.Delete(v.ctx, first))
+	v.interfaceOnCell()
+
+	v.publish()
+	v.handToProject()
+
+	after, found := v.projectCopy()
+	require.True(t, found)
+	require.Equal(t, before.UID, after.UID, "a copy nothing needs to remake is not remade")
+}
+
+// An interface that is not a copy is the only thing that could be holding a name
+// for a reason. Taking the name from it would delete something a consumer made.
+func TestAnInterfaceThatIsNotACopyKeepsItsName(t *testing.T) {
+	v := newVisibility(t)
+	v.interfaceOnCell()
+	v.publish()
+
+	theirs := &networkingv1alpha.NetworkInterface{}
+	theirs.Name = boundInterfaceName
+	theirs.Namespace = v.projectNamespace
+	theirs.Spec.Network = networkingv1alpha.LocalNetworkRef{Name: "default"}
+	theirs.Spec.InterfaceName = "eth7"
+	require.NoError(t, v.project.Create(v.ctx, theirs))
+
+	require.Error(t, v.handToProjectErr(), "the slot is not the projector's to take")
+
+	kept, found := v.projectCopy()
+	require.True(t, found)
+	require.Equal(t, "eth7", kept.Spec.InterfaceName)
+	require.Equal(t, theirs.UID, kept.UID)
+}
+
+// Nothing replays a deletion, so the copy a project holds has to be collected
+// while the interface it was published from is still there to say where it went.
+func TestAPublishedInterfaceIsHeldUntilItsCopyIsCollected(t *testing.T) {
+	v := newVisibility(t)
+	v.interfaceOnCell()
+	v.publish()
+
+	require.NoError(t, v.reconcileHub())
+
+	published, found := v.hubCopy(boundInterfaceName)
+	require.True(t, found)
+	require.Contains(t, published.Finalizers, networkInterfaceProjectionFinalizer)
+	_, found = v.projectCopy()
+	require.True(t, found)
+
+	require.NoError(t, v.hub.Delete(v.ctx, published))
+
+	published, found = v.hubCopy(boundInterfaceName)
+	require.True(t, found, "the published copy is held until its copy is gone")
+	require.False(t, published.DeletionTimestamp.IsZero())
+	_, found = v.projectCopy()
+	require.True(t, found)
+
+	require.NoError(t, v.reconcileHub())
+
+	_, found = v.projectCopy()
+	require.False(t, found, "the copy a consumer reads goes with the interface")
+	_, found = v.hubCopy(boundInterfaceName)
+	require.False(t, found, "the hold is released once nothing is left behind")
 }

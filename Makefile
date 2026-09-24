@@ -103,6 +103,10 @@ lint-fix: golangci-lint ## Run golangci-lint linter and perform fixes
 build: manifests generate fmt vet ## Build manager binary.
 	go build -o bin/network-services cmd/main.go
 
+.PHONY: build-network-plugin
+build-network-plugin: ## Build the datumctl network plugin binary.
+	go build -o bin/datumctl-network ./cmd/datumctl-network
+
 .PHONY: run
 run: manifests generate fmt vet ## Run a controller from your host.
 	go run ./cmd/main.go manager --health-probe-bind-address=0 --server-config=./config/dev/config.yaml

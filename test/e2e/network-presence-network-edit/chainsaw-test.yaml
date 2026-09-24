@@ -102,7 +102,6 @@ spec:
                 mtu: 8856
                 ipFamilies:
                   - IPv6
-                  - IPv4
 
     - name: Assert the location learns
       try:
@@ -118,5 +117,4 @@ spec:
                 mtu: 8856
                 ipFamilies:
                   - IPv6
-                  - IPv4
 

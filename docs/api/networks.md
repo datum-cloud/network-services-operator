@@ -96,7 +96,11 @@ NetworkSpec defines the desired state of a Network
         <td><b>ipFamilies</b></td>
         <td>[]enum</td>
         <td>
-          IP Families to permit on a network. Defaults to IPv6.<br/>
+          IP Families to permit on a network. Defaults to IPv6.
+
+Networks are IPv6-only: a new network, or a change that adds IPv4 to an
+existing one, is refused if this lists IPv4. IPv4 remains in the schema
+so networks created before this rule stay writable.<br/>
           <br/>
             <i>Enum</i>: IPv4, IPv6<br/>
             <i>Default</i>: [IPv6]<br/>
@@ -152,7 +156,9 @@ IPAM settings for the network.
         <td><b>ipv4Range</b></td>
         <td>string</td>
         <td>
-          IPv4 range to use in auto mode networks. Defaults to 10.128.0.0/9.<br/>
+          Not accepted. Networks are IPv6-only, so a new network, or a change that
+sets this on an existing one, is refused. It remains in the schema so
+networks created before this rule stay writable.<br/>
         </td>
         <td>false</td>
       </tr><tr>

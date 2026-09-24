@@ -33,8 +33,9 @@ func TestNetworkValidateCreate(t *testing.T) {
 	}{
 		{name: "IPv6", families: []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol}},
 		{
-			name:     "dual-stack",
-			families: []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol, networkingv1alpha.IPv4Protocol},
+			name:      "dual-stack",
+			families:  []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol, networkingv1alpha.IPv4Protocol},
+			wantError: true,
 		},
 		{
 			name:      "IPv4 only",
@@ -62,11 +63,17 @@ func TestNetworkValidateUpdate(t *testing.T) {
 
 	v4 := []networkingv1alpha.IPFamily{networkingv1alpha.IPv4Protocol}
 	v6 := []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol}
+	dual := []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol, networkingv1alpha.IPv4Protocol}
+	withFinalizer := func(n *networkingv1alpha.Network) *networkingv1alpha.Network {
+		n.Finalizers = []string{"networking.datumapis.com/network-controller"}
+		return n
+	}
 
 	tests := []struct {
 		name      string
 		old       []networkingv1alpha.IPFamily
 		updated   []networkingv1alpha.IPFamily
+		oldObj    func() *networkingv1alpha.Network
 		mutate    func(updated *networkingv1alpha.Network)
 		wantError bool
 	}{
@@ -98,6 +105,27 @@ func TestNetworkValidateUpdate(t *testing.T) {
 			},
 		},
 		{
+			name:    "a finalizer is removed from a dual-stack network being deleted",
+			oldObj:  func() *networkingv1alpha.Network { return withFinalizer(networkWithFamilies(dual...)) },
+			old:     dual,
+			updated: dual,
+			mutate: func(updated *networkingv1alpha.Network) {
+				updated.DeletionTimestamp = &metav1.Time{Time: metav1.Now().Time}
+			},
+		},
+		{
+			name:    "a finalizer is removed from an IPv4 network that is not being deleted",
+			oldObj:  func() *networkingv1alpha.Network { return withFinalizer(networkWithFamilies(v4...)) },
+			old:     v4,
+			updated: v4,
+		},
+		{
+			name:      "a working network adds IPv4",
+			old:       v6,
+			updated:   dual,
+			wantError: true,
+		},
+		{
 			name:      "a working network is narrowed to IPv4",
 			old:       v6,
 			updated:   v4,
@@ -112,7 +140,12 @@ func TestNetworkValidateUpdate(t *testing.T) {
 				test.mutate(updated)
 			}
 
-			_, err := validator.ValidateUpdate(ctx, networkWithFamilies(test.old...), updated)
+			old := networkWithFamilies(test.old...)
+			if test.oldObj != nil {
+				old = test.oldObj()
+			}
+
+			_, err := validator.ValidateUpdate(ctx, old, updated)
 			if test.wantError && err == nil {
 				t.Fatal("expected the update to be refused")
 			}

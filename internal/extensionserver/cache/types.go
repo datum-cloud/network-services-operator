@@ -46,10 +46,11 @@ type PolicyIndex struct {
 	// single-cluster dev with no cluster name configured).
 	ProjectNames map[string]string
 
-	// TPPs maps upstream namespace names to the list of
+	// TPPs maps downstream replica namespace names to the list of
 	// TrafficProtectionPolicies in that namespace, sorted by creation
-	// timestamp then name to match NSO reconciler precedence order.
-	// Accumulated across all engaged clusters.
+	// timestamp then name to match NSO reconciler precedence order. Replica
+	// namespace names are unique across projects on an edge; upstream project
+	// namespaces are not (they are commonly all "default").
 	TPPs map[string][]TPPInfo
 
 	// Connectors maps (upstreamNS, httpProxyName, ruleIndex) to ConnectorInfo.
@@ -100,7 +101,8 @@ type ConnectorKey struct {
 	// UpstreamNS is the effective upstream namespace name resolved from the
 	// HTTPProxy's UpstreamOwnerNamespaceLabel (two-cluster) or proxy.Namespace
 	// (single-cluster). It matches the value stored in DStoUS and the key used
-	// for idx.TPPs, keeping WAF and Connector resolution consistent.
+	// for connector resolution. TPPs are keyed by downstream replica namespace
+	// instead, because that is the tenant-unique identity used by Envoy.
 	UpstreamNS    string
 	HTTPProxyName string
 	RuleIndex     int

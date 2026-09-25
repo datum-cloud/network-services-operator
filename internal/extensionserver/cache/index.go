@@ -100,15 +100,10 @@ func populateFromClient(ctx context.Context, cl client.Client, idx *PolicyIndex,
 	})
 	for i := range tppList.Items {
 		tpp := &tppList.Items[i]
-		// Resolve the effective upstream namespace for indexing. In the two-cluster
-		// edge topology, replica TPPs carry UpstreamOwnerNamespaceLabel pointing to
-		// the true upstream namespace name (matching the DStoUS value resolved above).
-		// In single-cluster (no label), fall back to tpp.Namespace which is the
-		// upstream namespace name directly.
-		effectiveNS := tpp.Labels[downstreamclient.UpstreamOwnerNamespaceLabel]
-		if effectiveNS == "" {
-			effectiveNS = tpp.Namespace
-		}
+		// Index policies by their downstream replica namespace. Replica namespace
+		// names are unique across projects on an edge; upstream project
+		// namespaces are not (they are commonly all "default"), so indexing by
+		// the upstream namespace label would let policies collide across tenants.
 		info := TPPInfo{
 			Namespace:  tpp.Namespace,
 			Name:       tpp.Name,
@@ -117,7 +112,7 @@ func populateFromClient(ctx context.Context, cl client.Client, idx *PolicyIndex,
 			TargetRefs: tpp.Spec.TargetRefs,
 			Directives: computeCorazaDirectives(tpp, baseDirectives),
 		}
-		idx.TPPs[effectiveNS] = append(idx.TPPs[effectiveNS], info)
+		idx.TPPs[tpp.Namespace] = append(idx.TPPs[tpp.Namespace], info)
 		extmetrics.TPPCacheGeneration.WithLabelValues(info.Namespace, info.Name).Set(float64(info.Generation))
 	}
 

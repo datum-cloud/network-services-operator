@@ -282,7 +282,7 @@ func TestBuildPolicyIndexFromClient_NSReverseMap_ReplicaNamespaceDistinctUID(t *
 			"(old code only keyed by edge-own-uid, which never matched the dsNS from VH metadata)")
 	assert.Equal(t, upstreamNSName, resolvedUpstream,
 		"label-based resolution: dsNS maps to the upstream namespace name from "+
-			"UpstreamOwnerNamespaceLabel, enabling idx.TPPs[upstreamNS] to find policies")
+			"UpstreamOwnerNamespaceLabel, while TPPs are looked up under the replica namespace")
 
 	// The edge-UID-derived key must NOT be present: with the label path the
 	// fallback UID keying is skipped, keeping DStoUS clean.
@@ -293,10 +293,8 @@ func TestBuildPolicyIndexFromClient_NSReverseMap_ReplicaNamespaceDistinctUID(t *
 
 // TestBuildPolicyIndexFromClient_LabelBasedTPPAndConnectorResolution verifies
 // the full label-based index path: a replica namespace, replica TPP, and replica
-// HTTPProxy all carry UpstreamOwnerNamespaceLabel, and all three are indexed
-// consistently under the upstream namespace name so that route→policy resolution
-// (dsNS → upstreamNS → TPPs[upstreamNS] / Connectors[{upstreamNS,...}]) works
-// in the two-cluster edge topology.
+// HTTPProxy all carry UpstreamOwnerNamespaceLabel. TPPs are scoped to the
+// downstream replica namespace, while connectors retain their upstream key.
 func TestBuildPolicyIndexFromClient_LabelBasedTPPAndConnectorResolution(t *testing.T) {
 	const (
 		upstreamNSName = "real-project"
@@ -370,11 +368,10 @@ func TestBuildPolicyIndexFromClient_LabelBasedTPPAndConnectorResolution(t *testi
 	assert.Equal(t, upstreamNSName, resolvedNS,
 		"DStoUS must map replica namespace name to upstream namespace label value")
 
-	// TPP indexed by upstreamNSName (from label), not by replicaNSName.
-	tpps := idx.TPPs[upstreamNSName]
-	assert.Len(t, tpps, 1, "TPP must be indexed under the upstream namespace name from its label")
-	assert.Empty(t, idx.TPPs[replicaNSName],
-		"TPP must NOT be indexed under the replica namespace name")
+	// TPP is indexed by the tenant-unique replica namespace, not by the
+	// upstream namespace label (which is commonly "default" for every project).
+	tpps := idx.TPPs[replicaNSName]
+	assert.Len(t, tpps, 1, "TPP must be indexed under its replica namespace")
 
 	// Connector indexed by upstreamNSName (from proxy label).
 	key := ConnectorKey{UpstreamNS: upstreamNSName, HTTPProxyName: proxyName, RuleIndex: 0}
@@ -383,12 +380,39 @@ func TestBuildPolicyIndexFromClient_LabelBasedTPPAndConnectorResolution(t *testi
 	assert.True(t, info.Online)
 	assert.Equal(t, "backend.example.com", info.TargetHost)
 
-	// Simulate the full route resolution: dsNS → upstreamNS → policies.
-	// This is what ApplyTPPRouteConfig and ReplaceConnectorClusters do.
+	// Simulate the full route resolution: dsNS → policies, while connectors
+	// continue to use dsNS → upstreamNS.
 	assert.Equal(t, upstreamNSName, idx.DStoUS[replicaNSName],
 		"route resolution chain: dsNS → upstreamNS must work end-to-end")
-	assert.Len(t, idx.TPPs[idx.DStoUS[replicaNSName]], 1,
-		"full chain: idx.TPPs[idx.DStoUS[dsNS]] must find the replica TPP")
+	assert.Len(t, idx.TPPs[replicaNSName], 1,
+		"full chain: idx.TPPs[dsNS] must find the replica TPP")
+}
+
+func TestBuildPolicyIndexFromClient_TPPsStayScopedToReplicaNamespace(t *testing.T) {
+	scheme := indexTestScheme(t)
+	const upstreamNamespace = "default"
+
+	// Two projects both use upstream namespace "default". Their replica
+	// namespaces are the tenant-unique identity available to Envoy.
+	nsA := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
+		Name:   "ns-project-a",
+		Labels: map[string]string{downstreamclient.UpstreamOwnerNamespaceLabel: upstreamNamespace},
+	}}
+	nsB := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
+		Name:   "ns-project-b",
+		Labels: map[string]string{downstreamclient.UpstreamOwnerNamespaceLabel: upstreamNamespace},
+	}}
+	tppA := newTPP("ns-project-a", "test", withOWASPCRS(5, 4, 1, 1))
+	tppB := newTPP("ns-project-b", "test", withOWASPCRS(7, 4, 2, 2))
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(nsA, nsB, tppA, tppB).Build()
+
+	idx, err := BuildPolicyIndexFromClient(context.Background(), cl, nil)
+	require.NoError(t, err)
+	assert.Equal(t, "default", idx.DStoUS["ns-project-a"])
+	assert.Equal(t, "default", idx.DStoUS["ns-project-b"])
+	assert.Len(t, idx.TPPs["ns-project-a"], 1)
+	assert.Len(t, idx.TPPs["ns-project-b"], 1)
+	assert.Empty(t, idx.TPPs["default"], "upstream namespace must not be a shared TPP bucket")
 }
 
 // =============================================================================
@@ -1291,30 +1315,26 @@ func TestParseEndpoint_InvalidPort_ReturnsError(t *testing.T) {
 }
 
 // =============================================================================
-// Namespace name collision — latent multi-cluster risk
+// Replica namespace collision — invalid topology
 // =============================================================================
 
-// TestPopulateFromClient_NamespaceNameCollision_LatentRisk documents and locks
-// the assumption that upstream namespace names are globally unique across all
+// TestPopulateFromClient_SameReplicaNamespaceAccumulates documents the
+// assumption that downstream replica namespace names are unique across all
 // engaged clusters.
 //
-// PolicyIndex.TPPs is keyed by upstream namespace NAME (a string), not by a
-// (clusterName, namespaceName) tuple. BuildPolicyIndex calls populateFromClient
-// once per engaged cluster, accumulating all clusters' policies into a single
-// flat map.
+// PolicyIndex.TPPs is keyed by downstream replica namespace NAME (a string),
+// not by a (clusterName, namespaceName) tuple. BuildPolicyIndex calls
+// populateFromClient once per engaged cluster, accumulating all clusters'
+// policies into a single flat map.
 //
-// In Datum's Milo architecture, project namespace names are derived from
-// globally-unique project identifiers, making cross-cluster namespace name
-// collisions impossible in practice. However, if this assumption were ever
-// violated (e.g., a future naming change), TPPs from two different project
-// clusters with the same namespace name would silently accumulate into the same
-// PolicyIndex.TPPs key, causing policies from one project to govern traffic
-// for another.
+// Replica namespace names are derived from upstream identity and should be
+// unique. If this assumption is violated, policies from two replicas would
+// accumulate into the same key and selection would be ambiguous.
 //
 // This test LOCKS the accumulation behavior so that any future change to the
 // keying strategy produces a clear test failure, prompting a review.
-func TestPopulateFromClient_NamespaceNameCollision_LatentRisk(t *testing.T) {
-	const sharedNSName = "shared-namespace" // same name, two simulated clusters
+func TestPopulateFromClient_SameReplicaNamespaceAccumulates(t *testing.T) {
+	const sharedNSName = "shared-replica-namespace" // same name, two simulated clusters
 
 	scheme := indexTestScheme(t)
 
@@ -1323,7 +1343,7 @@ func TestPopulateFromClient_NamespaceNameCollision_LatentRisk(t *testing.T) {
 	clA := fake.NewClientBuilder().WithScheme(scheme).WithObjects(tppA).Build()
 
 	// "Cluster B" fake client: has tpp-b in sharedNSName (different cluster,
-	// same namespace name — the latent collision scenario).
+	// same replica namespace name — an invalid topology).
 	tppB := newTPP(sharedNSName, "tpp-from-cluster-b", withOWASPCRS(7, 4, 2, 2))
 	clB := fake.NewClientBuilder().WithScheme(scheme).WithObjects(tppB).Build()
 
@@ -1337,16 +1357,12 @@ func TestPopulateFromClient_NamespaceNameCollision_LatentRisk(t *testing.T) {
 	require.NoError(t, populateFromClient(context.Background(), clA, idx, nil))
 	require.NoError(t, populateFromClient(context.Background(), clB, idx, nil))
 
-	// LATENT RISK DOCUMENTED HERE: both TPPs end up in the same namespace key.
-	// In production (Milo architecture) this is safe because namespace names are
-	// globally unique. If that ever changes, this assertion will still pass but the
-	// comment warns that the behavior is dangerous.
+	// Both TPPs end up in the same replica namespace key. Production replica
+	// namespaces must therefore remain unique.
 	tpps := idx.TPPs[sharedNSName]
 	assert.Len(t, tpps, 2,
 		"cross-cluster TPPs with the same namespace name accumulate into one slice — "+
-			"this is SAFE only because Datum's Milo namespace names are globally unique. "+
-			"If cross-cluster namespace collisions become possible, PolicyIndex must be "+
-			"redesigned to key by (clusterName, namespaceName).")
+			"replica namespace names must be unique for policy selection to remain unambiguous")
 
 	// Verify both TPPs are present (order depends on sort, but both must exist).
 	names := make([]string, 0, len(tpps))

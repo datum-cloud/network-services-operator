@@ -123,8 +123,8 @@ build-plugin: $(LOCALBIN) ## Build the datumctl-alb plugin binary into bin/.
 .PHONY: install-plugin
 install-plugin: build-plugin ## Install the datumctl-alb plugin into ~/.datumctl/plugins.
 	mkdir -p $(DATUMCTL_PLUGIN_DIR)
-	install -m 0755 $(LOCALBIN)/datumctl-alb $(DATUMCTL_PLUGIN_DIR)/alb
-	@echo "Installed $(DATUMCTL_PLUGIN_DIR)/alb ($(PLUGIN_VERSION)); try 'datumctl alb --help'"
+	install -m 0755 $(LOCALBIN)/datumctl-alb $(DATUMCTL_PLUGIN_DIR)/datumctl-alb
+	@echo "Installed $(DATUMCTL_PLUGIN_DIR)/datumctl-alb ($(PLUGIN_VERSION)); try 'datumctl alb --help'"
 
 GORELEASER ?= goreleaser
 

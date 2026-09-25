@@ -35,6 +35,7 @@ var reconcilerControllerNames = map[string]string{
 	"NetworkContextReconciler":                     "networkcontext",
 	"NetworkContextHoldReconciler":                 "networkcontexthold",
 	"NetworkInterfaceClaimReconciler":              "networkinterfaceclaim",
+	"NetworkInterfaceEgressReconciler":             "networkinterfaceegress",
 	"NetworkInterfaceProjectionGCReconciler":       "networkinterfaceprojectiongc",
 	"NetworkInterfaceProjector":                    "networkinterfaceprojector",
 	"NetworkInterfaceReconciler":                   "networkinterface",

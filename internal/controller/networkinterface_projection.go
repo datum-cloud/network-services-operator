@@ -42,6 +42,7 @@ func projectedInterface(source *networkingv1alpha.NetworkInterface, location str
 		},
 		Status: networkingv1alpha.NetworkInterfaceStatus{
 			Phase:      source.Status.Phase,
+			Egress:     source.Status.Egress.DeepCopy(),
 			Conditions: append([]metav1.Condition(nil), source.Status.Conditions...),
 		},
 	}

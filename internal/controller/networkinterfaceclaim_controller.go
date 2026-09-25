@@ -14,6 +14,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -572,6 +573,7 @@ func (r *NetworkInterfaceClaimReconciler) bindInterface(
 		AttachmentMode: claim.Spec.AttachmentMode,
 		MTU:            networkContext.Spec.MTU,
 		ReclaimPolicy:  claim.Spec.ReclaimPolicy,
+		Egress:         interfaceEgressFromClaim(claim),
 	}
 
 	for _, entry := range allocated {
@@ -974,6 +976,7 @@ func (r *NetworkInterfaceClaimReconciler) publishClaimStatus(
 	claim.Status.Addresses = append([]networkingv1alpha.NetworkInterfaceAddress(nil), iface.Spec.Addresses...)
 	claim.Status.NetworkInterfaceRef = &networkingv1alpha.LocalNetworkInterfaceRef{Name: iface.Name}
 	claim.Status.ExternalAddresses = append([]networkingv1alpha.NetworkInterfaceExternalAddress(nil), iface.Spec.ExternalAddresses...)
+	claim.Status.Egress = iface.Status.Egress.DeepCopy()
 
 	apimeta.SetStatusCondition(&claim.Status.Conditions, metav1.Condition{
 		Type:               networkingv1alpha.NetworkInterfaceClaimBound,
@@ -1028,6 +1031,14 @@ func (r *NetworkInterfaceClaimReconciler) syncInterface(
 		iface.Spec.AttachmentMode = claim.Spec.AttachmentMode
 		changed = true
 	}
+	// Egress is the one thing a claim may change after it is bound, so the
+	// interface follows it rather than keeping what it was created with. A
+	// claim carrying none leaves the interface's own default alone.
+	if wanted := interfaceEgressFromClaim(claim); wanted != nil &&
+		!apiequality.Semantic.DeepEqual(iface.Spec.Egress, wanted) {
+		iface.Spec.Egress = wanted
+		changed = true
+	}
 	for i := range iface.Spec.Addresses {
 		primary := iface.Spec.Addresses[i].Family == claim.Spec.IPFamilies[0]
 		if iface.Spec.Addresses[i].Primary != primary {
@@ -1048,6 +1059,24 @@ func (r *NetworkInterfaceClaimReconciler) syncInterface(
 		return fmt.Errorf("failed updating network interface: %w", err)
 	}
 	return nil
+}
+
+// interfaceEgressFromClaim carries a claim's egress declaration onto the
+// interface it holds. The two carry separate types because the interface may
+// come to record what the declaration resolved to, which a claim never states.
+func interfaceEgressFromClaim(
+	claim *networkingv1alpha.NetworkInterfaceClaim,
+) *networkingv1alpha.NetworkInterfaceEgress {
+	if claim.Spec.Egress == nil || claim.Spec.Egress.Internet == nil {
+		return nil
+	}
+
+	return &networkingv1alpha.NetworkInterfaceEgress{
+		Internet: &networkingv1alpha.NetworkInterfaceInternetEgress{
+			Mode: networkingv1alpha.NetworkInterfaceInternetEgressMode(
+				claim.Spec.Egress.Internet.Mode),
+		},
+	}
 }
 
 func (r *NetworkInterfaceClaimReconciler) applyGateways(

@@ -274,7 +274,7 @@ func controllerRegistrations(
 	ipamClients controller.IPAMClientFactory,
 	hubCluster cluster.Cluster,
 ) []namedSetup {
-	registrations := make([]namedSetup, 0, 5)
+	registrations := make([]namedSetup, 0, 6)
 	registrations = append(registrations,
 		namedSetup{"networkinterfaceclaim", func() (bool, error) {
 			return true, (&controller.NetworkInterfaceClaimReconciler{
@@ -287,6 +287,9 @@ func controllerRegistrations(
 				Location: serverConfig.Location,
 				IPAM:     ipamClients,
 			}).SetupWithManager(mgr)
+		}},
+		namedSetup{"networkinterfaceegress", func() (bool, error) {
+			return true, (&controller.NetworkInterfaceEgressReconciler{}).SetupWithManager(mgr)
 		}},
 		namedSetup{"networkcontexthold", func() (bool, error) {
 			return true, (&controller.NetworkContextHoldReconciler{

@@ -322,7 +322,9 @@ func (r *NetworkPresenceReconciler) ensure(
 		return false, err
 	}
 
-	networkContext, err := r.project(ctx, req, projectClient, routing, &pair, &network)
+	egress := projectInternetEgress(&network)
+
+	networkContext, err := r.project(ctx, req, projectClient, routing, &pair, &network, egress)
 	if err != nil {
 		// A context being deleted is not a context. Adopting it would hand every
 		// consumer a reference to an object that is about to go, and the
@@ -401,6 +403,7 @@ func (r *NetworkPresenceReconciler) project(
 	routing projectRouting,
 	pair *networkingv1alpha.NetworkBindingSpec,
 	network *networkingv1alpha.Network,
+	egress *networkingv1alpha.NetworkContextInternetEgress,
 ) (*networkingv1alpha.NetworkContext, error) {
 	networkContext := &networkingv1alpha.NetworkContext{}
 	networkContext.Namespace = routing.projectNamespace
@@ -432,6 +435,17 @@ func (r *NetworkPresenceReconciler) project(
 		networkContext.Spec.IPFamilies = append([]networkingv1alpha.IPFamily(nil), network.Spec.IPFamilies...)
 		networkContext.Spec.MTU = network.Spec.MTU
 		networkContext.Spec.NetworkGeneration = network.Generation
+
+		// Egress is written only when it resolved. An intent already carried is
+		// left where it is rather than withdrawn: a class that cannot be read
+		// this pass is not a consumer asking for their traffic to stop, and
+		// withdrawing it would take the location's egress route away.
+		if egress != nil {
+			if networkContext.Spec.Egress == nil {
+				networkContext.Spec.Egress = &networkingv1alpha.NetworkContextEgress{}
+			}
+			networkContext.Spec.Egress.Internet = egress.DeepCopy()
+		}
 
 		return controllerutil.SetControllerReference(network, networkContext, projectClient.Scheme())
 	})

@@ -833,3 +833,48 @@ func TestAPublishedInterfaceIsHeldUntilItsCopyIsCollected(t *testing.T) {
 	_, found = v.hubCopy(boundInterfaceName)
 	require.False(t, found, "the hold is released once nothing is left behind")
 }
+
+// The egress address is the one thing on this status a consumer acts on: they
+// allow-list it at their destination. It has to survive both hops out of the
+// cell, or the fact exists only where the consumer cannot read it.
+func TestEgressAddressReachesTheProjectControlPlane(t *testing.T) {
+	v := newVisibility(t)
+	iface := v.interfaceOnCell()
+
+	iface.Status.Egress = &networkingv1alpha.NetworkInterfaceEgressStatus{
+		Internet: &networkingv1alpha.NetworkInterfaceInternetEgressStatus{
+			SourceAddresses: []networkingv1alpha.InternetEgressSourceAddress{{
+				Family:    networkingv1alpha.IPv6Protocol,
+				Address:   "2001:db8:f00d::100",
+				Stability: networkingv1alpha.InternetEgressAddressStabilityNone,
+			}},
+		},
+	}
+	require.NoError(t, v.cell.Status().Update(v.ctx, iface))
+
+	v.publish()
+	v.handToProject()
+
+	copied, found := v.projectCopy()
+	require.True(t, found)
+	require.NotNil(t, copied.Status.Egress)
+	require.NotNil(t, copied.Status.Egress.Internet)
+	require.Len(t, copied.Status.Egress.Internet.SourceAddresses, 1)
+	require.Equal(t, "2001:db8:f00d::100", copied.Status.Egress.Internet.SourceAddresses[0].Address)
+	require.Equal(t, networkingv1alpha.InternetEgressAddressStabilityNone,
+		copied.Status.Egress.Internet.SourceAddresses[0].Stability)
+}
+
+// An interface nothing has reported an address for publishes no egress block.
+// An empty block on the copy reads as an answer a consumer may act on.
+func TestCopyReportsNoEgressWhenTheCellReportsNone(t *testing.T) {
+	v := newVisibility(t)
+	v.interfaceOnCell()
+
+	v.publish()
+	v.handToProject()
+
+	copied, found := v.projectCopy()
+	require.True(t, found)
+	require.Nil(t, copied.Status.Egress)
+}

@@ -39,14 +39,14 @@ vars:
   # version is paired with it deliberately, also matching production.
   ENVOY_GATEWAY_VERSION: v1.7.4
   EG_SDK_VERSION: v1.8.1
-  # Multi-arch WAF image — the same filter as the production edge, but it also
-  # loads natively on arm64 dev hosts. The data plane references this image.
-  CORAZA_WAF_IMAGE: ghcr.io/datum-labs/coraza-envoy-go-filter/coraza-waf:v1.3.0-multiarch.1
+  # The production edge WAF image, which the data plane references. It is
+  # amd64-only.
+  CORAZA_WAF_IMAGE: ghcr.io/datum-labs/coraza-envoy-go-filter/coraza-waf:v2.0.4
   # CONNECT-proxy stand-in for the connector-tunnel scenario, built from
   # test/e2e-edge/_fixtures/connector-tunnel and loaded into the downstream cluster.
   CONNECT_PROXY_IMAGE: connect-proxy:e2e
-  # The WAF is enabled by default since the multi-arch image loads on every
-  # architecture. Set CORAZA_DISABLED=true only to deliberately skip the WAF.
+  # The WAF is enabled by default, matching production. Set CORAZA_DISABLED=true
+  # on arm64 hosts, where the amd64-only WAF filter cannot load.
   CORAZA_DISABLED: '{{.CORAZA_DISABLED | default "false"}}'
   # Karmada-bundled kube-apiserver, pinned to production.
   KARMADA_APISERVER_VERSION: v1.33.2

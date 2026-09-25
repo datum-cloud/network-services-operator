@@ -116,7 +116,7 @@ spec:
                 path: /sys/fs/bpf
                 type: Directory
         container:
-          image: envoyproxy/envoy:contrib-v1.37.1
+          image: envoyproxy/envoy:contrib-v1.39.1
           # Required for the vpcPod socket-bind mutation (#856 step 4) —
           # SO_BINDTODEVICE needs CAP_NET_RAW on Envoy itself, separate from
           # the sidecar's CAP_NET_ADMIN above.
@@ -129,10 +129,9 @@ spec:
               mountPath: /opt/coraza-waf
         initContainers:
           - name: coraza-waf
-            # Multi-arch build of the same WAF filter as the production edge. The
-            # multi-arch image loads natively on arm64 dev hosts as well as on
-            # amd64 CI and production — same filter, same rules.
-            image: ghcr.io/datum-labs/coraza-envoy-go-filter/coraza-waf:v1.3.0-multiarch.1
+            # The production edge WAF image. It is amd64-only, so arm64 dev
+            # hosts run the environment with CORAZA_DISABLED=true.
+            image: ghcr.io/datum-labs/coraza-envoy-go-filter/coraza-waf:v2.0.4
             imagePullPolicy: IfNotPresent
             command:
               - cp

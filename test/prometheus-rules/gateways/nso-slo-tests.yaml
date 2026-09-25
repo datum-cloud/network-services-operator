@@ -22,6 +22,8 @@ tests:
           - exp_labels:
               severity: critical
               slo_violation: "true"
+              service: network-services
+              team: sre
               resourcemanager_datumapis_com_project_name: test-project
               resource_namespace: test-ns
               resource_name: test-gateway
@@ -63,6 +65,8 @@ tests:
           - exp_labels:
               severity: critical
               slo_violation: "true"
+              service: network-services
+              team: sre
               resourcemanager_datumapis_com_project_name: test-project
               resource_namespace: test-ns
               resource_name: degraded-gateway

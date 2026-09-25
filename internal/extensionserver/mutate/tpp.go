@@ -178,14 +178,14 @@ func ApplyTPPRouteConfig(
 		}
 
 		// Resolve upstream namespace from downstream-ns→upstream-ns map.
-		upstreamNS, ok := idx.DStoUS[dsNS]
+		_, ok := idx.DStoUS[dsNS]
 		if !ok {
 			// VH is not NSO-owned; skip.
 			continue
 		}
 
 		projectName := idx.ProjectNames[dsNS]
-		tpps := idx.TPPs[upstreamNS]
+		tpps := idx.TPPs[dsNS]
 
 		// Gateway-level governing TPP (no SectionName scoping in P1; see design §2.2 C5).
 		gwTPP := findGatewayTPP(tpps, gwName)

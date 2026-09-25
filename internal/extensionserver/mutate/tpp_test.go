@@ -149,7 +149,7 @@ func policyIndex(tpps ...extcache.TPPInfo) *extcache.PolicyIndex {
 	return &extcache.PolicyIndex{
 		DStoUS:       map[string]string{"ns-abc-123": "test-project"},
 		ProjectNames: map[string]string{"ns-abc-123": "test-project"},
-		TPPs:         map[string][]extcache.TPPInfo{"test-project": tpps},
+		TPPs:         map[string][]extcache.TPPInfo{"ns-abc-123": tpps},
 		Connectors:   make(map[extcache.ConnectorKey]extcache.ConnectorInfo),
 	}
 }
@@ -310,6 +310,33 @@ func TestApplyTPPRouteConfig_GoverningGatewayTPP_AnnotatesRoutes(t *testing.T) {
 			strings.Contains(tpfc.GetTypeUrl(), "golang.v3alpha.ConfigsPerRoute"),
 			"route %q tpfc type url = %q", rt.Name, tpfc.GetTypeUrl())
 	}
+}
+
+func TestApplyTPPRouteConfig_DoesNotCrossProjectTPPNamespaces(t *testing.T) {
+	cfg := testCorazaConfig()
+	correct := tppTargetingGateway("correct-project-policy", "smoke-gw")
+	wrong := tppTargetingGateway("wrong-project-policy", "smoke-gw")
+	idx := &extcache.PolicyIndex{
+		DStoUS:       map[string]string{"ns-abc-123": "default"},
+		ProjectNames: map[string]string{"ns-abc-123": "project-a"},
+		TPPs: map[string][]extcache.TPPInfo{
+			"ns-abc-123": {correct},
+			// This represents another project, whose upstream namespace is also
+			// default and whose policy has the same Gateway name.
+			"default": {wrong},
+		},
+		Connectors: make(map[extcache.ConnectorKey]extcache.ConnectorInfo),
+	}
+
+	route := &routev3.Route{Name: "r0"}
+	rc := &routev3.RouteConfiguration{VirtualHosts: []*routev3.VirtualHost{buildVHWithGatewayMeta(route)}}
+	n, err := ApplyTPPRouteConfig(rc, idx, cfg, nil)
+	require.NoError(t, err)
+	assert.Equal(t, 1, n)
+
+	resources := route.GetMetadata().GetFilterMetadata()[datumGatewayMetadataKey].GetFields()["resources"].GetListValue().GetValues()
+	require.Len(t, resources, 1)
+	assert.Equal(t, "correct-project-policy", resources[0].GetStructValue().GetFields()["name"].GetStringValue())
 }
 
 func TestApplyTPPRouteConfig_NoEGMetadata_Skipped(t *testing.T) {

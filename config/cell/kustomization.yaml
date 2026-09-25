@@ -3,9 +3,10 @@ kind: Kustomization
 
 namespace: network-services-operator-system
 
+# The platform owns the namespace and installs crd/downstream plus the
+# locations service's CRDs before this controller bundle. Keeping those
+# prerequisites out of this render gives each resource one reconciler.
 resources:
-  - namespace.yaml
-  - ../crd
   - ../rbac
   - service_account.yaml
 

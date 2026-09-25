@@ -75,15 +75,25 @@ func ReplaceConnectorClusters(
 //   - Online (replaced) connector: prepend a CONNECT upgrade route targeting the
 //     replaced cluster and append a unique per-connector domain to VH domains.
 //   - Offline connector: prepend a CONNECT direct_response 503 (tunnel-control
-//     clients) and rewrite the user-facing forwarding routes to a 503
-//     direct_response (see the offline branch for why).
+//     clients) and rewrite the user-facing forwarding routes (see the offline
+//     branch for why).
 //
-// Returns the number of VirtualHosts mutated and the number of forwarding
-// routes converted to a tunnel-offline direct_response.
+// brandedOffline selects what a user reaching an offline tunnel gets. When the
+// branded error page is configured, the user-facing routes forward to the
+// shared endpoint-less cluster, which makes Envoy set the UH response flag the
+// offline page selects on. When it is not, they keep the deterministic 503
+// direct_response, which is what they have always returned.
+//
+// The CONNECT route is unaffected either way: it answers the connector agent,
+// not a browser, and a terse body is the right answer there.
+//
+// Returns the number of VirtualHosts mutated and the number of user-facing
+// forwarding routes rewritten.
 func ApplyConnectorRoutes(
 	rc *routev3.RouteConfiguration,
 	idx *extcache.PolicyIndex,
 	replaced, offline map[string]*extcache.ConnectorInfo,
+	brandedOffline bool,
 ) (mutated, converted int, err error) {
 	for _, vh := range rc.GetVirtualHosts() {
 		// Find any connector cluster referenced by routes in this VH.
@@ -129,16 +139,31 @@ func ApplyConnectorRoutes(
 			}
 			vh.Routes = append([]*routev3.Route{newRoute}, vh.Routes...)
 
-			// Route user traffic to a deterministic 503 instead of the
-			// endpoint-less offline cluster, which would yield a generic
-			// no_healthy_upstream plus retry/cluster-stat noise. Replacing only
-			// the Action oneof preserves each route's match/metadata; idempotent
-			// because direct_responses carry no cluster to re-match.
+			// Move user traffic off the connector's own endpoint-less cluster,
+			// which would otherwise report retry and connect failures against a
+			// per-connector cluster. Replacing only the Action oneof preserves
+			// each route's match/metadata; idempotent because neither
+			// replacement carries the connector cluster to re-match.
+			//
+			// With branding on, the shared endpoint-less cluster is the target,
+			// because a direct_response short-circuits before the router filter
+			// and so never carries the UH flag the offline page selects on. The
+			// cluster is shared, so this adds no per-connector data-plane stats.
+			// With branding off, a deterministic 503 remains the better answer
+			// than Envoy's generic no_healthy_upstream text.
 			for _, rt := range vh.GetRoutes() {
 				if routeCluster(rt) != connectorCluster {
 					continue
 				}
-				if derr := setRouteDirectResponse(rt, 503, offlineResponseBody); derr != nil {
+				if brandedOffline {
+					rt.Action = &routev3.Route_Route{
+						Route: &routev3.RouteAction{
+							ClusterSpecifier: &routev3.RouteAction_Cluster{
+								Cluster: OfflineTunnelClusterName,
+							},
+						},
+					}
+				} else if derr := setRouteDirectResponse(rt, 503, offlineResponseBody); derr != nil {
 					return mutated, converted, fmt.Errorf("convert offline forward route for %q: %w", vh.GetName(), derr)
 				}
 				converted++

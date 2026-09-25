@@ -245,6 +245,12 @@ func (s *Server) PostTranslateModify(
 	}
 	s.markTPPsProgrammed(ctx, appliedTPPs)
 
+	// Whether the branded error page is configured at all. Both the connector
+	// offline path and the empty-backend path route user traffic to the shared
+	// endpoint-less cluster only when there is a page to serve; with no page,
+	// each keeps the answer it gave before.
+	brandedOffline := !s.cfg.LocalReply.Disabled && s.cfg.LocalReply.OfflineBodyHTML != ""
+
 	// --- Connector family ---
 	// Replace clusters BEFORE adding CONNECT routes so route wiring sees the
 	// final cluster set. Apply connector routes AFTER TPP so CONNECT routes
@@ -267,7 +273,7 @@ func (s *Server) PostTranslateModify(
 
 	_, connRoutesSpan := tr.Start(mctx, "connector.routes")
 	for _, rc := range routes {
-		n, offlineRt, mutErr := mutate.ApplyConnectorRoutes(rc, idx, replaced, connOffline)
+		n, offlineRt, mutErr := mutate.ApplyConnectorRoutes(rc, idx, replaced, connOffline, brandedOffline)
 		if mutErr != nil {
 			s.log.Error("apply connector routes", "route_config", rc.GetName(), "err", mutErr)
 			connRoutesSpan.RecordError(mutErr)
@@ -287,6 +293,51 @@ func (s *Server) PostTranslateModify(
 		attribute.Int("routes.connector_offline", offlineRtCount),
 	)
 	connRoutesSpan.End()
+
+	// --- Empty backend family (#502) ---
+	// EG collapses a route whose backend has no ready endpoints to a bodiless
+	// 503 direct_response, which short-circuits before the router filter and so
+	// carries no UH flag for the branded offline page to match. Point those
+	// routes at a shared endpoint-less cluster instead, which restores the flag.
+	// Runs after the connector family so connector-offline routes already carry
+	// their body and are therefore not mistaken for EG's collapse.
+	//
+	// Gated on the branded page being configured: with no offline page to
+	// serve, rewriting would only trade EG's deterministic 503 for Envoy's
+	// generic no_healthy_upstream and buy nothing.
+	var emptyBackendCount int
+	if brandedOffline {
+		_, emptyBackendSpan := tr.Start(mctx, "emptybackend.routes")
+		for _, rc := range routes {
+			emptyBackendCount += mutate.RouteEmptyBackendsToOfflineCluster(rc)
+		}
+		// Each family has its own shared sink, added only when something points
+		// at it, so the data-plane stats say which reason a request hit.
+		wanted := map[string]bool{
+			mutate.OfflineBackendClusterName: emptyBackendCount > 0,
+			mutate.OfflineTunnelClusterName:  offlineRtCount > 0,
+		}
+		for name, needed := range wanted {
+			if !needed {
+				continue
+			}
+			var ebErr error
+			clusters, _, ebErr = mutate.EnsureOfflineCluster(clusters, name)
+			if ebErr != nil {
+				s.log.Error("ensure offline backend cluster", "err", ebErr)
+				emptyBackendSpan.RecordError(ebErr)
+				emptyBackendSpan.End()
+				mspan.RecordError(ebErr)
+				mspan.End()
+				extmetrics.PhaseDuration.WithLabelValues("mutate").Observe(time.Since(mutStart).Seconds())
+				hspan.RecordError(ebErr)
+				outcome = outcomeError
+				return nil, ebErr
+			}
+		}
+		emptyBackendSpan.SetAttributes(attribute.Int("routes.empty_backend", emptyBackendCount))
+		emptyBackendSpan.End()
+	}
 
 	// --- VPC pod family (#856) ---
 	// Binds a vpcPod backend's cluster to its tenant's VRF device
@@ -367,6 +418,7 @@ func (s *Server) PostTranslateModify(
 	extmetrics.ConnectorClustersTotal.Add(float64(len(replaced)))
 	extmetrics.ConnectorRoutesTotal.Add(float64(vhCount))
 	extmetrics.ConnectorOfflineRoutesTotal.Add(float64(offlineRtCount))
+	extmetrics.EmptyBackendRoutesTotal.Add(float64(emptyBackendCount))
 
 	// In the test environment, record what this build changed so a test can later
 	// confirm the proxy is running exactly that. This only reads the configuration
@@ -390,6 +442,7 @@ func (s *Server) PostTranslateModify(
 		"vhosts_connector_applied", vhCount,
 		"connector_offline_routes", offlineRtCount,
 		"clusters_vpcpod_bound", vpcPodCount,
+		"routes_empty_backend", emptyBackendCount,
 	)
 
 	return &pb.PostTranslateModifyResponse{

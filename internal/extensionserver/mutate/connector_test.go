@@ -207,7 +207,7 @@ func TestApplyConnectorRoutes_Online_PrependsCONNECTRouteAndAppendsUniqueDomain(
 		},
 	}
 
-	n, converted, err := ApplyConnectorRoutes(rc, idx, replaced, offline)
+	n, converted, err := ApplyConnectorRoutes(rc, idx, replaced, offline, false)
 	require.NoError(t, err)
 	assert.Equal(t, 1, n, "one VH should be mutated")
 	assert.Equal(t, 0, converted, "online connector must not convert any forwarding routes")
@@ -257,7 +257,7 @@ func TestApplyConnectorRoutes_Online_DomainAppendIsIdempotent(t *testing.T) {
 		},
 	}
 
-	_, _, err := ApplyConnectorRoutes(rc, idx, replaced, offline)
+	_, _, err := ApplyConnectorRoutes(rc, idx, replaced, offline, false)
 	require.NoError(t, err)
 
 	// Synthetic domain must not be duplicated.
@@ -295,7 +295,7 @@ func TestApplyConnectorRoutes_Online_NoDomainCollisionAcrossConnectors(t *testin
 		},
 	}
 
-	_, _, err := ApplyConnectorRoutes(rc, &extcache.PolicyIndex{}, replaced, offline)
+	_, _, err := ApplyConnectorRoutes(rc, &extcache.PolicyIndex{}, replaced, offline, false)
 	require.NoError(t, err)
 
 	// No domain may appear more than once across the whole route config.
@@ -333,7 +333,7 @@ func TestApplyConnectorRoutes_Offline_Prepends503Route_NoDomain(t *testing.T) {
 		},
 	}
 
-	n, converted, err := ApplyConnectorRoutes(rc, idx, replaced, offline)
+	n, converted, err := ApplyConnectorRoutes(rc, idx, replaced, offline, false)
 	require.NoError(t, err)
 	assert.Equal(t, 1, n, "offline VH must be mutated (503 route prepended)")
 	assert.Equal(t, 1, converted, "the user-facing forwarding route must be converted to a direct_response")
@@ -404,7 +404,7 @@ func TestApplyConnectorRoutes_Offline_PreservesMatchAndUntouchedRoute(t *testing
 		},
 	}
 
-	_, converted, err := ApplyConnectorRoutes(rc, idx, replaced, offline)
+	_, converted, err := ApplyConnectorRoutes(rc, idx, replaced, offline, false)
 	require.NoError(t, err)
 	assert.Equal(t, 1, converted, "only the connector forwarding route must be converted")
 
@@ -447,12 +447,12 @@ func TestApplyConnectorRoutes_Offline_Idempotent(t *testing.T) {
 		},
 	}
 
-	_, converted1, err := ApplyConnectorRoutes(rc, idx, replaced, offline)
+	_, converted1, err := ApplyConnectorRoutes(rc, idx, replaced, offline, false)
 	require.NoError(t, err)
 	assert.Equal(t, 1, converted1, "first pass converts the forwarding route")
 
 	// Second pass: the cluster is gone from all routes, so nothing converts.
-	_, converted2, err := ApplyConnectorRoutes(rc, idx, replaced, offline)
+	_, converted2, err := ApplyConnectorRoutes(rc, idx, replaced, offline, false)
 	require.NoError(t, err)
 	assert.Equal(t, 0, converted2, "second pass must not re-convert any route")
 
@@ -483,7 +483,7 @@ func TestApplyConnectorRoutes_NoConnector_VHUntouched(t *testing.T) {
 		},
 	}
 
-	n, converted, err := ApplyConnectorRoutes(rc, idx, replaced, offline)
+	n, converted, err := ApplyConnectorRoutes(rc, idx, replaced, offline, false)
 	require.NoError(t, err)
 	assert.Equal(t, 0, n, "VH with non-connector cluster must not be mutated")
 	assert.Equal(t, 0, converted, "no forwarding routes converted when no connector present")
@@ -498,8 +498,57 @@ func TestApplyConnectorRoutes_EmptyRouteConfiguration_NoOp(t *testing.T) {
 
 	rc := &routev3.RouteConfiguration{Name: "empty"}
 
-	n, converted, err := ApplyConnectorRoutes(rc, idx, replaced, offline)
+	n, converted, err := ApplyConnectorRoutes(rc, idx, replaced, offline, false)
 	require.NoError(t, err)
 	assert.Equal(t, 0, n)
 	assert.Equal(t, 0, converted)
+}
+
+// With the branded page configured, an offline connector's user-facing routes
+// must forward to the shared endpoint-less cluster rather than answer with a
+// direct_response, because only the forwarded request carries the UH flag the
+// offline page selects on.
+func TestApplyConnectorRoutes_Offline_BrandedRoutesToTunnelCluster(t *testing.T) {
+	idx := connectorPolicyIndex(false)
+	clusterName := testClusterName()
+
+	offlineInfo := &extcache.ConnectorInfo{Online: false, TargetHost: testTargetHost, TargetPort: testTargetPort}
+	replaced := map[string]*extcache.ConnectorInfo{}
+	offline := map[string]*extcache.ConnectorInfo{clusterName: offlineInfo}
+
+	connRoute := routeTargeting(clusterName)
+	connRoute.Match = &routev3.RouteMatch{PathSpecifier: &routev3.RouteMatch_Prefix{Prefix: "/"}}
+	connRoute.TypedPerFilterConfig = map[string]*anypb.Any{
+		"envoy.filters.http.cors": {TypeUrl: "type.googleapis.com/example.Cfg"},
+	}
+
+	rc := &routev3.RouteConfiguration{
+		VirtualHosts: []*routev3.VirtualHost{
+			{Name: "vh", Domains: []string{"app.local.test"}, Routes: []*routev3.Route{connRoute}},
+		},
+	}
+
+	_, converted, err := ApplyConnectorRoutes(rc, idx, replaced, offline, true)
+	require.NoError(t, err)
+	assert.Equal(t, 1, converted)
+
+	vh := rc.VirtualHosts[0]
+	require.Len(t, vh.Routes, 2, "connect_matcher route prepended to the original")
+
+	// The CONNECT route answers the connector agent, not a browser, so it keeps
+	// its terse direct_response either way.
+	gotConnect := vh.Routes[0]
+	require.NotNil(t, gotConnect.GetDirectResponse(), "CONNECT route must stay a direct_response")
+	assert.Equal(t, offlineResponseBody,
+		gotConnect.GetDirectResponse().GetBody().GetInlineString())
+
+	gotUser := vh.Routes[1]
+	assert.Nil(t, gotUser.GetDirectResponse(), "user route must not be a direct_response")
+	assert.Equal(t, OfflineTunnelClusterName, routeCluster(gotUser),
+		"user route must forward to the shared offline-tunnel cluster")
+	assert.NotEqual(t, OfflineBackendClusterName, routeCluster(gotUser),
+		"an offline tunnel must not share the empty-backend sink")
+	assert.Equal(t, "/", gotUser.GetMatch().GetPrefix(), "prefix match must be preserved")
+	assert.Contains(t, gotUser.GetTypedPerFilterConfig(), "envoy.filters.http.cors",
+		"typed_per_filter_config must be preserved on the rewritten route")
 }

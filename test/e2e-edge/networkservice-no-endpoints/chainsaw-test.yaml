@@ -1,0 +1,298 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+#
+# A NetworkService with no members leaves the proxy in front of it looking
+# healthy while nothing can be served through it.
+#
+# This is the repro for issue #502. Two shapes of the same state are covered:
+#
+#   * never populated — the selector matches nothing, so MembersResolved is
+#     false for NoMatchingInterfaces from the moment the service is written.
+#
+#   * drained — a service that resolved a real member, served a real 200
+#     through the edge, and then lost its member when the claim went away.
+#     This is the transition production hit.
+#
+# What is being captured in both shapes is the gap between what the platform
+# reports and what a user gets: the HTTPProxy stays Accepted and Programmed,
+# the downstream Service and EndpointSlice exist, and the request fails.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: networkservice-no-endpoints
+spec:
+  concurrent: false
+  cluster: nso-upstream
+  namespaceTemplate:
+    metadata:
+      labels:
+        meta.datumapis.com/upstream-cluster-name: cluster-project-alpha
+        meta.datumapis.com/upstream-namespace: default
+  bindings:
+    - name: downstreamGatewayClass
+      value: datum-downstream-gateway-e2e
+    - name: envoyNamespace
+      value: datum-downstream-gateway
+    - name: downstreamNode
+      value: nso-downstream-control-plane
+    - name: adminLocalPort
+      value: "19903"
+    - name: boundAddressFile
+      value: /tmp/nsvc-empty-bound-addresses
+  steps:
+    - name: A service whose selector matches nothing does not resolve members
+      description: |
+        The plain shape of the bug. Nothing holds the label, so the service
+        reports NoMatchingInterfaces and summarises zero of everything.
+      try:
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkService
+              metadata:
+                name: empty-svc
+              spec:
+                networkInterfaces:
+                  selector:
+                    matchLabels:
+                      compute.datumapis.com/workload-name: nothing-holds-this
+                ports:
+                  - name: http
+                    port: 8080
+        - assert:
+            timeout: 120s
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkService
+              metadata:
+                name: empty-svc
+              status:
+                summary:
+                  locations: 0
+                  members: 0
+                  healthy: 0
+                (conditions[?type == 'MembersResolved'] | [0].status): "False"
+                (conditions[?type == 'MembersResolved'] | [0].reason): NoMatchingInterfaces
+                (conditions[?type == 'Ready'] | [0].status): "False"
+                (conditions[?type == 'Ready'] | [0].reason): NoMatchingInterfaces
+        - script:
+            content: |
+              echo "--- networkservice empty-svc"
+              kubectl -n "$NAMESPACE" get networkservice empty-svc -o yaml
+
+    - name: An HTTPProxy over the empty service reports itself healthy
+      description: |
+        The heart of #502. The proxy has nowhere to send a request and says
+        nothing about it: Accepted and Programmed both stay true, and the
+        hostname is published as if the service were serving.
+      try:
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: HTTPProxy
+              metadata:
+                name: empty-proxy
+              spec:
+                rules:
+                  - matches:
+                      - path:
+                          type: PathPrefix
+                          value: /
+                    backends:
+                      - networkService:
+                          name: empty-svc
+                          port: http
+        - script:
+            timeout: 300s
+            content: |
+              set -eu
+              for i in $(seq 1 40); do
+                H=$(kubectl -n "$NAMESPACE" get httpproxy empty-proxy \
+                  -o jsonpath='{.status.canonicalHostname}' 2>/dev/null || true)
+                if [ -n "${H}" ]; then echo "canonical hostname: ${H}"; break; fi
+                echo "waiting for HTTPProxy canonicalHostname... ${i}" >&2
+                sleep 5
+              done
+              echo "--- httpproxy empty-proxy status"
+              kubectl -n "$NAMESPACE" get httpproxy empty-proxy -o yaml
+        - assert:
+            timeout: 120s
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: HTTPProxy
+              metadata:
+                name: empty-proxy
+              status:
+                (conditions[?type == 'Accepted'] | [0].status): "True"
+                (conditions[?type == 'Programmed'] | [0].status): "True"
+
+    - name: The upstream EndpointSlice is present and carries no endpoints
+      description: |
+        The slice is deliberately written empty rather than withheld, so the
+        Gateway controller's reference stays resolvable. It is also what makes
+        the state invisible: the object exists and looks well-formed.
+      try:
+        - script:
+            timeout: 120s
+            content: |
+              set -eu
+              for i in $(seq 1 24); do
+                if kubectl -n "$NAMESPACE" get endpointslice empty-proxy-0-0 >/dev/null 2>&1; then
+                  break
+                fi
+                sleep 5
+              done
+              echo "--- upstream endpointslice"
+              kubectl -n "$NAMESPACE" get endpointslice empty-proxy-0-0 -o yaml
+              n=$(kubectl -n "$NAMESPACE" get endpointslice empty-proxy-0-0 \
+                -o jsonpath='{.endpoints}' | tr -d '[:space:]')
+              [ -z "$n" ] || [ "$n" = "[]" ] || [ "$n" = "null" ] \
+                || { echo "ERROR: slice carries endpoints: $n"; exit 1; }
+              echo "OK: the slice exists and carries no endpoints"
+
+    - name: The downstream Service is headless and its slice is empty
+      description: |
+        What the edge cluster actually holds. The Service is written headless
+        with no selector, so nothing in that cluster will ever fill it in; the
+        only endpoints it can have are the ones mirrored from upstream, and
+        there are none.
+      try:
+        - script:
+            skipCommandOutput: true
+            skipLogOutput: true
+            content: |
+              kubectl -n "$NAMESPACE" get httproute empty-proxy \
+                -o jsonpath='{.spec.rules[0].backendRefs[0].name}'
+            outputs:
+              - name: upstreamSliceName
+                value: ($stdout)
+        - script:
+            cluster: nso-downstream
+            timeout: 300s
+            env:
+              - name: ENVOY_NS
+                value: ($envoyNamespace)
+              - name: UPSTREAM_SLICE
+                value: ($upstreamSliceName)
+            content: |
+              set -eu
+              echo "upstream slice the route names: ${UPSTREAM_SLICE}"
+              NAME=""
+              for i in $(seq 1 30); do
+                NAME=$(kubectl get endpointslice -A \
+                  -l "meta.datumapis.com/upstream-name=${UPSTREAM_SLICE}" \
+                  -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+                DS_NS=$(kubectl get endpointslice -A \
+                  -l "meta.datumapis.com/upstream-name=${UPSTREAM_SLICE}" \
+                  -o jsonpath='{.items[0].metadata.namespace}' 2>/dev/null || true)
+                [ -n "$NAME" ] && break
+                echo "attempt ${i}: no mirrored downstream slice yet"
+                sleep 5
+              done
+              [ -n "$NAME" ] || { echo "ERROR: nothing mirrored downstream"; exit 1; }
+
+              echo "the mapped downstream namespace: ${DS_NS}"
+              echo "--- downstream service ${NAME}"
+              kubectl -n "$DS_NS" get svc "$NAME" -o yaml
+              echo "--- downstream endpointslice ${NAME}"
+              kubectl -n "$DS_NS" get endpointslice "$NAME" -o yaml
+
+              ip=$(kubectl -n "$DS_NS" get svc "$NAME" -o jsonpath='{.spec.clusterIP}')
+              [ "$ip" = "None" ] || { echo "ERROR: downstream service clusterIP is ${ip}, want None"; exit 1; }
+              sel=$(kubectl -n "$DS_NS" get svc "$NAME" -o jsonpath='{.spec.selector}')
+              [ -z "$sel" ] || { echo "ERROR: downstream service carries selector ${sel}"; exit 1; }
+              eps=$(kubectl -n "$DS_NS" get endpointslice "$NAME" \
+                -o jsonpath='{.endpoints}' | tr -d '[:space:]')
+              [ -z "$eps" ] || [ "$eps" = "[]" ] || [ "$eps" = "null" ] \
+                || { echo "ERROR: downstream slice carries endpoints: $eps"; exit 1; }
+              echo "OK: headless service, no selector, zero endpoints"
+
+    - name: What the downstream Gateway and HTTPRoute say about it
+      description: |
+        Captured rather than asserted: whether anything in the Gateway API
+        surfaces the unresolvable backend, and under which condition and
+        reason, is exactly the question #502 asks.
+      try:
+        - script:
+            cluster: nso-downstream
+            env:
+              - name: ENVOY_NS
+                value: ($envoyNamespace)
+              - name: OWNING_GC
+                value: ($downstreamGatewayClass)
+            content: |
+              set -eu
+              echo "--- downstream gateways"
+              kubectl get gateway -A -o yaml
+              echo "--- downstream httproutes"
+              kubectl get httproute -A -o yaml
+              echo "--- every route condition, whatever its type"
+              kubectl get httproute -A -o json \
+                | python3 -c '
+              import json,sys
+              d=json.load(sys.stdin)
+              for r in d.get("items",[]):
+                  for p in r.get("status",{}).get("parents",[]):
+                      for c in p.get("conditions",[]):
+                          print(r["metadata"]["name"], c["type"], c["status"], c.get("reason"), "|", c.get("message"))
+              '
+
+    - name: A real request to the empty proxy
+      description: |
+        The verdict a user gets. Whatever the control plane reports, this is
+        the response.
+      try:
+        - script:
+            skipCommandOutput: true
+            skipLogOutput: true
+            content: |
+              kubectl -n "$NAMESPACE" get httpproxy empty-proxy -o jsonpath='{.status.canonicalHostname}'
+            outputs:
+              - name: proxyHostname
+                value: ($stdout)
+        - apply:
+            cluster: nso-downstream
+            resource:
+              apiVersion: v1
+              kind: Pod
+              metadata:
+                name: empty-conntest
+                namespace: default
+              spec:
+                containers:
+                  - name: curl
+                    image: curlimages/curl:8.11.1
+                    command: ["sleep", "infinity"]
+                    resources:
+                      requests:
+                        cpu: 50m
+                        memory: 64Mi
+                      limits:
+                        cpu: 100m
+                        memory: 128Mi
+                terminationGracePeriodSeconds: 0
+        - script:
+            cluster: nso-downstream
+            timeout: 480s
+            env:
+              - name: HOST
+                value: ($proxyHostname)
+              - name: OWNING_GC
+                value: ($downstreamGatewayClass)
+              - name: ENVOY_NS
+                value: ($envoyNamespace)
+            content: |
+              set -eu
+              kubectl -n default wait pod/empty-conntest --for=condition=Ready --timeout=240s
+              IP=$(kubectl get svc -n "$ENVOY_NS" \
+                -l "gateway.envoyproxy.io/owning-gatewayclass=${OWNING_GC}" \
+                -o jsonpath='{.items[0].spec.clusterIP}')
+              echo "proxy hostname ${HOST} at edge ${IP}"
+              echo "--- full response"
+              kubectl -n default exec empty-conntest -- \
+                curl -ksS -i --max-time 20 --resolve "${HOST}:80:${IP}" "http://${HOST}/get"
+      cleanup:
+        - script:
+            cluster: nso-downstream
+            content: |
+              kubectl -n default delete pod empty-conntest \
+                --ignore-not-found --force --grace-period=0 || true

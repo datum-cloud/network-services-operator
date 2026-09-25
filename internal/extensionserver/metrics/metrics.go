@@ -175,6 +175,18 @@ var (
 		},
 	)
 
+	// EmptyBackendRoutesTotal counts total routes Envoy Gateway collapsed to a
+	// bodiless 503 direct_response (backend Service present, no ready
+	// endpoints) that were rewritten to forward to the shared endpoint-less
+	// cluster, across all hook invocations. Each increment = one route that now
+	// answers with the branded offline page instead of the generic error page.
+	EmptyBackendRoutesTotal = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "nso_extension_empty_backend_routes_total",
+			Help: "Total routes with no ready endpoints rewritten to the shared offline backend cluster across all hook invocations.",
+		},
+	)
+
 	// VPCPodSocketBindTotal counts total clusters patched with a VRF
 	// SO_BINDTODEVICE socket option for a vpcPod HTTPProxy backend (#856),
 	// across all hook invocations.

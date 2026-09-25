@@ -288,6 +288,42 @@ func (s *Server) PostTranslateModify(
 	)
 	connRoutesSpan.End()
 
+	// --- Empty backend family (#502) ---
+	// EG collapses a route whose backend has no ready endpoints to a bodiless
+	// 503 direct_response, which short-circuits before the router filter and so
+	// carries no UH flag for the branded offline page to match. Point those
+	// routes at a shared endpoint-less cluster instead, which restores the flag.
+	// Runs after the connector family so connector-offline routes already carry
+	// their body and are therefore not mistaken for EG's collapse.
+	//
+	// Gated on the branded page being configured: with no offline page to
+	// serve, rewriting would only trade EG's deterministic 503 for Envoy's
+	// generic no_healthy_upstream and buy nothing.
+	var emptyBackendCount int
+	if !s.cfg.LocalReply.Disabled && s.cfg.LocalReply.OfflineBodyHTML != "" {
+		_, emptyBackendSpan := tr.Start(mctx, "emptybackend.routes")
+		for _, rc := range routes {
+			emptyBackendCount += mutate.RouteEmptyBackendsToOfflineCluster(rc)
+		}
+		if emptyBackendCount > 0 {
+			var ebErr error
+			clusters, _, ebErr = mutate.EnsureOfflineBackendCluster(clusters)
+			if ebErr != nil {
+				s.log.Error("ensure offline backend cluster", "err", ebErr)
+				emptyBackendSpan.RecordError(ebErr)
+				emptyBackendSpan.End()
+				mspan.RecordError(ebErr)
+				mspan.End()
+				extmetrics.PhaseDuration.WithLabelValues("mutate").Observe(time.Since(mutStart).Seconds())
+				hspan.RecordError(ebErr)
+				outcome = outcomeError
+				return nil, ebErr
+			}
+		}
+		emptyBackendSpan.SetAttributes(attribute.Int("routes.empty_backend", emptyBackendCount))
+		emptyBackendSpan.End()
+	}
+
 	// --- VPC pod family (#856) ---
 	// Binds a vpcPod backend's cluster to its tenant's VRF device
 	// (SO_BINDTODEVICE) so the shared multi-tenant Envoy fleet resolves the
@@ -367,6 +403,7 @@ func (s *Server) PostTranslateModify(
 	extmetrics.ConnectorClustersTotal.Add(float64(len(replaced)))
 	extmetrics.ConnectorRoutesTotal.Add(float64(vhCount))
 	extmetrics.ConnectorOfflineRoutesTotal.Add(float64(offlineRtCount))
+	extmetrics.EmptyBackendRoutesTotal.Add(float64(emptyBackendCount))
 
 	// In the test environment, record what this build changed so a test can later
 	// confirm the proxy is running exactly that. This only reads the configuration
@@ -390,6 +427,7 @@ func (s *Server) PostTranslateModify(
 		"vhosts_connector_applied", vhCount,
 		"connector_offline_routes", offlineRtCount,
 		"clusters_vpcpod_bound", vpcPodCount,
+		"routes_empty_backend", emptyBackendCount,
 	)
 
 	return &pb.PostTranslateModifyResponse{

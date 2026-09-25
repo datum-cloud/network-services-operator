@@ -38,6 +38,7 @@ func projectedInterface(source *networkingv1alpha.NetworkInterface, location str
 			Addresses:         append([]networkingv1alpha.NetworkInterfaceAddress(nil), source.Spec.Addresses...),
 			ExternalAddresses: append([]networkingv1alpha.NetworkInterfaceExternalAddress(nil), source.Spec.ExternalAddresses...),
 			ReclaimPolicy:     source.Spec.ReclaimPolicy,
+			Egress:            source.Spec.Egress.DeepCopy(),
 		},
 		Status: networkingv1alpha.NetworkInterfaceStatus{
 			Phase:      source.Status.Phase,

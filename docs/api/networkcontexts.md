@@ -100,6 +100,20 @@ NetworkContextSpec defines the desired state of NetworkContext
         </td>
         <td>true</td>
       </tr><tr>
+        <td><b><a href="#networkcontextspecegress">egress</a></b></td>
+        <td>object</td>
+        <td>
+          Egress is what the network reaches outside the platform from this
+location, projected from the Network. Propagation to a cell carries spec
+and not status, so the instruction a cell acts on lives here and the
+result it reports lives in status.
+
+A reader that finds this unset must refuse rather than assume: a context
+written before this field existed carries nothing, which is not the same
+as a network that reaches nothing.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
         <td><b>ipFamilies</b></td>
         <td>[]enum</td>
         <td>
@@ -187,6 +201,88 @@ The attached network
           The network name<br/>
         </td>
         <td>true</td>
+      </tr></tbody>
+</table>
+
+
+### NetworkContext.spec.egress
+<sup><sup>[↩ Parent](#networkcontextspec)</sup></sup>
+
+
+
+Egress is what the network reaches outside the platform from this
+location, projected from the Network. Propagation to a cell carries spec
+and not status, so the instruction a cell acts on lives here and the
+result it reports lives in status.
+
+A reader that finds this unset must refuse rather than assume: a context
+written before this field existed carries nothing, which is not the same
+as a network that reaches nothing.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b><a href="#networkcontextspecegressinternet">internet</a></b></td>
+        <td>object</td>
+        <td>
+          Internet is the internet egress this location is instructed to provide.<br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### NetworkContext.spec.egress.internet
+<sup><sup>[↩ Parent](#networkcontextspecegress)</sup></sup>
+
+
+
+Internet is the internet egress this location is instructed to provide.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>mode</b></td>
+        <td>enum</td>
+        <td>
+          Mode is whether instances in this location reach the internet, copied
+from the network.
+
+It carries no default. A defaulted Disabled could not be told apart from
+a field never projected, and a reader that cannot tell those apart must
+refuse rather than withdraw egress a consumer asked for.<br/>
+          <br/>
+            <i>Enum</i>: Enabled, Disabled<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>reach</b></td>
+        <td>[]enum</td>
+        <td>
+          Reach are the destination address families this location is instructed
+to reach, copied from the network.
+
+Only IPv6 is accepted, because a projection may not carry what its
+source cannot declare.<br/>
+          <br/>
+            <i>Validations</i>:<li>self.all(f, f == 'IPv6'): Only IPv6 is accepted; reaching IPv4 destinations needs a resolver and a translator sharing a prefix, and the platform pairs neither</li><li>self.all(f, self.exists_one(g, g == f)): Each address family may be listed at most once</li>
+            <i>Enum</i>: IPv4, IPv6<br/>
+        </td>
+        <td>false</td>
       </tr></tbody>
 </table>
 

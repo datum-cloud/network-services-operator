@@ -4,14 +4,29 @@ The `alb` plugin for [`datumctl`](https://github.com/datum-cloud/datumctl) lets 
 
 ## Install the plugin
 
-The plugin is not in the Datum catalog yet. Until it is, install a release archive from this repository:
+The plugin is not in the Datum catalog yet, and `datumctl plugin install` cannot reach it in the meantime: that command derives the archive name from the repository name, so it looks for `datumctl-network-services-operator_*` and this repository publishes `datumctl-alb_*`. Install it by hand until the catalog lists it.
+
+From a checkout:
 
 ```sh
-datumctl plugin install datum-cloud/network-services-operator@<tag>
+make install-plugin
 datumctl alb version
 ```
 
-Before any release exists, build it and trust it on your PATH:
+From a release, once one exists, picking the archive for your platform:
+
+```sh
+gh release download <tag> --repo datum-cloud/network-services-operator \
+  --pattern 'datumctl-alb_Darwin_arm64.tar.gz'
+tar -xzf datumctl-alb_Darwin_arm64.tar.gz
+mkdir -p ~/.datumctl/plugins
+install -m 0755 datumctl-alb ~/.datumctl/plugins/datumctl-alb
+datumctl alb version
+```
+
+Keep the `datumctl-alb` filename. A binary in that directory named plain `alb` is refused, because datumctl only runs a short-named plugin it has an install record for, and `datumctl plugin trust` does not write one.
+
+A copy on your `PATH` works too, and there trust is what unblocks it:
 
 ```sh
 make build-plugin
@@ -19,28 +34,23 @@ cp bin/datumctl-alb ~/bin/            # anywhere on PATH
 datumctl plugin trust alb
 ```
 
-The trust step is required: datumctl blocks an unmanaged `datumctl-*` binary until you allow it, because running one hands it a credentials helper.
+datumctl refuses to run an unmanaged `datumctl-*` binary until you allow it, because running one hands it a credentials helper. Trust records the path and a hash of the binary, so rebuild it and you trust it again.
 
 ### Getting it into the catalog
 
-`datumctl plugin install alb` reads the official index at
-[datum-cloud/datumctl-plugins](https://github.com/datum-cloud/datumctl-plugins),
-which pins every archive by SHA256 and re-verifies them in CI. So the entry
-cannot be written before the release it points at exists. Three steps, in order:
+`datumctl plugin install alb` reads the official index at [datum-cloud/datumctl-plugins](https://github.com/datum-cloud/datumctl-plugins), which pins every archive by SHA256 and re-verifies them in CI. So the entry cannot be written before the release it points at exists. Three steps, in order:
 
-1. **Publish a release.** `release-plugin.yml` runs on `release: published` and
-   attaches the archives and `checksums.txt`.
-2. **Add the `datumctl-plugin` topic** to this repository, which the index
-   requires of a submitted plugin.
-3. **Open `plugins/alb.yaml`** against the index. Generate it from the release
-   rather than by hand, so the hashes are the ones users will actually download:
+1. **Publish a release.** `release-plugin.yml` runs on `release: published` and attaches the archives and `checksums.txt`.
+2. **Add the `datumctl-plugin` topic** to this repository, which the index requires of a submitted plugin.
+3. **Open `plugins/alb.yaml`** against the index. Generate it from the release rather than by hand, so the hashes are the ones users will actually download:
 
    ```sh
    hack/alb-catalog-entry.sh v0.29.0 > alb.yaml
    ```
 
-   It refuses to emit a partial entry, since one that lists four platforms
-   installs cleanly on those and fails on the fifth.
+   It refuses to emit a partial entry, since one that lists four platforms installs cleanly on those and fails on the fifth.
+
+Only that first entry is manual. Every release after it updates the index on its own: `release-plugin.yml` calls `datum-cloud/actions/update-plugin-index`, which rewrites the version and all five checksums in an existing `plugins/alb.yaml` and opens the PR. It does not create the file, and fails the release job while it is absent.
 
 `datumctl alb version` needs no login, no project, and no network, so run it first whenever something else fails.
 

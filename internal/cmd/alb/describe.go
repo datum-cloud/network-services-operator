@@ -12,6 +12,8 @@ import (
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	"go.datum.net/network-services-operator/internal/cmd/alb/spec"
 	"go.datum.net/network-services-operator/internal/cmd/alb/util"
+
+	"go.datum.net/network-services-operator/internal/cmd/alb/plugincli"
 )
 
 func describeCommand() *cobra.Command {
@@ -22,14 +24,14 @@ func describeCommand() *cobra.Command {
 		Example: `  datumctl alb describe my-app
   datumctl alb describe my-app -o yaml`,
 		Args:              cobra.ExactArgs(1),
-		ValidArgsFunction: util.CompleteALBNames,
+		ValidArgsFunction: plugincli.CompleteALBNames,
 		RunE:              runDescribe,
 	}
 	return cmd
 }
 
 func runDescribe(cmd *cobra.Command, args []string) error {
-	c, err := newClient(util.ProjectFromCmd(cmd))
+	c, err := newClient(plugincli.ProjectFromCmd(cmd))
 	if err != nil {
 		return err
 	}
@@ -39,7 +41,7 @@ func runDescribe(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	format, err := util.ParseOutputFormat(util.OutputFromCmd(cmd),
+	format, err := util.ParseOutputFormat(plugincli.OutputFromCmd(cmd),
 		util.OutputTable, util.OutputWide, util.OutputJSON, util.OutputYAML)
 	if err != nil {
 		return err
@@ -147,7 +149,7 @@ func runDescribe(cmd *cobra.Command, args []string) error {
 		_, _ = fmt.Fprintf(out, "Certificates:       %s (%s)\n", cond.Status, util.OrDash(cond.Reason))
 	}
 
-	if proxy.Status.CanonicalHostname != "" && !util.QuietFromCmd(cmd) {
+	if proxy.Status.CanonicalHostname != "" && !plugincli.QuietFromCmd(cmd) {
 		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "\nTry it:\n  curl -I https://%s/\n", proxy.Status.CanonicalHostname)
 	}
 

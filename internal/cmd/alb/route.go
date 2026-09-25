@@ -12,6 +12,8 @@ import (
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	"go.datum.net/network-services-operator/internal/cmd/alb/spec"
 	"go.datum.net/network-services-operator/internal/cmd/alb/util"
+
+	"go.datum.net/network-services-operator/internal/cmd/alb/plugincli"
 )
 
 func routeCommand() *cobra.Command {
@@ -41,7 +43,7 @@ func routeAddCommand() *cobra.Command {
     --endpoint https://a.example.com --endpoint https://b.example.com
   datumctl alb route add my-app --path / --network-service storefront --port http`,
 		Args:              cobra.ExactArgs(1),
-		ValidArgsFunction: util.CompleteALBNames,
+		ValidArgsFunction: plugincli.CompleteALBNames,
 		RunE:              runRouteAdd,
 	}
 	addBackendFlags(cmd)
@@ -57,7 +59,7 @@ func routeRemoveCommand() *cobra.Command {
 		Short:             "Remove a route",
 		Example:           `  datumctl alb route remove my-app --path /api`,
 		Args:              cobra.ExactArgs(1),
-		ValidArgsFunction: util.CompleteALBNames,
+		ValidArgsFunction: plugincli.CompleteALBNames,
 		RunE:              runRouteRemove,
 	}
 	cmd.Flags().String("path", "", "Path prefix of the route to remove")
@@ -73,7 +75,7 @@ func routeListCommand() *cobra.Command {
 		Short:             "List routes and their origins",
 		Example:           `  datumctl alb route list my-app`,
 		Args:              cobra.ExactArgs(1),
-		ValidArgsFunction: util.CompleteALBNames,
+		ValidArgsFunction: plugincli.CompleteALBNames,
 		RunE:              runRouteList,
 	}
 	cmd.Flags().Bool("no-headers", false, "Omit column headers")
@@ -89,7 +91,7 @@ left alone. To change a single origin, use "route backend add" or "remove".`,
 		Example: `  datumctl alb route update my-app --path / --network-service storefront --port http
   datumctl alb route update my-app --path /api --endpoint https://api-new.example.com`,
 		Args:              cobra.ExactArgs(1),
-		ValidArgsFunction: util.CompleteALBNames,
+		ValidArgsFunction: plugincli.CompleteALBNames,
 		RunE:              runRouteUpdate,
 	}
 	addBackendFlags(cmd)
@@ -115,7 +117,7 @@ func routeBackendAddCommand() *cobra.Command {
 		Example: `  datumctl alb route backend add my-app --path /api --endpoint https://api-2.example.com
   datumctl alb route backend add my-app --path / --network-service storefront --port http`,
 		Args:              cobra.ExactArgs(1),
-		ValidArgsFunction: util.CompleteALBNames,
+		ValidArgsFunction: plugincli.CompleteALBNames,
 		RunE:              runRouteBackendAdd,
 	}
 	addBackendFlags(cmd)
@@ -131,7 +133,7 @@ func routeBackendRemoveCommand() *cobra.Command {
 		Short:             "Remove one origin from a route",
 		Example:           `  datumctl alb route backend remove my-app --path /api --endpoint https://api.example.com`,
 		Args:              cobra.ExactArgs(1),
-		ValidArgsFunction: util.CompleteALBNames,
+		ValidArgsFunction: plugincli.CompleteALBNames,
 		RunE:              runRouteBackendRemove,
 	}
 	addBackendFlags(cmd)
@@ -147,7 +149,7 @@ func routeBackendListCommand() *cobra.Command {
 		Example: `  datumctl alb route backend list my-app --path /api
   datumctl alb route backend list my-app`,
 		Args:              cobra.ExactArgs(1),
-		ValidArgsFunction: util.CompleteALBNames,
+		ValidArgsFunction: plugincli.CompleteALBNames,
 		RunE:              runRouteBackendList,
 	}
 	cmd.Flags().String("path", "", "Only show origins on this route")
@@ -240,7 +242,7 @@ func pathFlag(cmd *cobra.Command) (string, error) {
 
 func confirmRouteChange(cmd *cobra.Command, name, path string, backend *spec.BackendInput, prompt string) error {
 	dryRun, _ := cmd.Flags().GetBool("dry-run")
-	if dryRun || util.AssumeYes(cmd) {
+	if dryRun || plugincli.AssumeYes(cmd) {
 		return nil
 	}
 
@@ -274,7 +276,7 @@ func mutateRoute(
 	success string,
 ) error {
 	if len(referenced) > 0 {
-		c, err := newClient(util.ProjectFromCmd(cmd))
+		c, err := newClient(plugincli.ProjectFromCmd(cmd))
 		if err != nil {
 			return err
 		}
@@ -291,7 +293,7 @@ func runRouteList(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	format, err := util.ParseOutputFormat(util.OutputFromCmd(cmd))
+	format, err := util.ParseOutputFormat(plugincli.OutputFromCmd(cmd))
 	if err != nil {
 		return err
 	}
@@ -329,7 +331,7 @@ func runRouteList(cmd *cobra.Command, args []string) error {
 	if err := tw.Flush(); err != nil {
 		return err
 	}
-	if hasAdvancedRoute(routes) && !util.QuietFromCmd(cmd) {
+	if hasAdvancedRoute(routes) && !plugincli.QuietFromCmd(cmd) {
 		_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "\nRoutes marked advanced use matches this plugin does not edit. Manage them with datumctl apply -f.")
 	}
 	return nil
@@ -364,7 +366,7 @@ func runRouteBackendList(cmd *cobra.Command, args []string) error {
 		routes = []spec.Route{route}
 	}
 
-	format, err := util.ParseOutputFormat(util.OutputFromCmd(cmd))
+	format, err := util.ParseOutputFormat(plugincli.OutputFromCmd(cmd))
 	if err != nil {
 		return err
 	}
@@ -410,7 +412,7 @@ func printBackendTable(w io.Writer, routes []spec.Route, noHeaders bool) error {
 }
 
 func loadProxy(cmd *cobra.Command, name string) (*networkingv1alpha.HTTPProxy, error) {
-	c, err := newClient(util.ProjectFromCmd(cmd))
+	c, err := newClient(plugincli.ProjectFromCmd(cmd))
 	if err != nil {
 		return nil, err
 	}

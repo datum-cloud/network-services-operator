@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-package util
+package plugincli
 
 import (
 	"context"
@@ -16,6 +16,8 @@ import (
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"go.datum.net/network-services-operator/internal/cmd/alb/util"
 )
 
 const (
@@ -83,10 +85,10 @@ func EnsureNetworkingEntitlement(ctx context.Context, project string, in io.Read
 		if apimeta.IsNoMatchError(err) {
 			return promptAndRequestEntitlement(ctx, project, wc, in, out)
 		}
-		if classified := ClassifyError(err); classified.Code() != ExitError {
+		if classified := util.ClassifyError(err); classified.Code() != util.ExitError {
 			return classified
 		}
-		return NewCLIError(ExitUnavailable,
+		return util.NewCLIError(util.ExitUnavailable,
 			fmt.Sprintf("checking the networking service entitlement for project %q: %v", project, err)).
 			WithFix("verify you are logged in (datumctl login) and the project is reachable.").
 			WithCause(err)
@@ -98,7 +100,7 @@ func EnsureNetworkingEntitlement(ctx context.Context, project string, in io.Read
 	case entitlementPhasePendingApproval:
 		return pendingApprovalErr(project)
 	case entitlementPhaseRejected:
-		return NewCLIError(ExitForbidden,
+		return util.NewCLIError(util.ExitForbidden,
 			fmt.Sprintf("the networking entitlement request for project %q was rejected", project)).
 			WithFix(fmt.Sprintf("submit a new request with:\n       datumctl services enable %s --wait", networkingServiceIdentifier))
 	}
@@ -107,18 +109,17 @@ func EnsureNetworkingEntitlement(ctx context.Context, project string, in io.Read
 }
 
 func promptAndRequestEntitlement(ctx context.Context, project string, wc client.WithWatch, in io.Reader, out io.Writer) error {
-	if NonInteractive(in) {
+	if util.NonInteractive(in) {
 		return notEnabledErr(project)
 	}
 
 	_, _ = fmt.Fprintf(out, "Networking is not enabled for project %q.\n", project)
-	_, _ = fmt.Fprint(out, "Would you like to enable it now? [y/N]: ")
 
-	answer, err := readLine(in)
+	yes, err := util.ConfirmYesNo(in, out, "Would you like to enable it now?", false)
 	if err != nil {
 		return err
 	}
-	if !isAffirmative(answer) {
+	if !yes {
 		return notEnabledErr(project)
 	}
 
@@ -127,10 +128,10 @@ func promptAndRequestEntitlement(ctx context.Context, project string, wc client.
 	entitlement := newEntitlementObject()
 	if err := wc.Create(ctx, entitlement); err != nil {
 		if !apierrors.IsAlreadyExists(err) {
-			if classified := ClassifyError(err); classified.Code() != ExitError {
+			if classified := util.ClassifyError(err); classified.Code() != util.ExitError {
 				return classified
 			}
-			return NewCLIError(ExitUnavailable,
+			return util.NewCLIError(util.ExitUnavailable,
 				fmt.Sprintf("enabling networking for project %q: %v", project, err)).
 				WithCause(err)
 		}
@@ -171,7 +172,7 @@ func promptAndRequestEntitlement(ctx context.Context, project string, wc client.
 				_, _ = fmt.Fprintf(out, "Networking enabled for project %q.\n\n", project)
 				return nil
 			case entitlementPhaseRejected:
-				return NewCLIError(ExitForbidden,
+				return util.NewCLIError(util.ExitForbidden,
 					fmt.Sprintf("the networking entitlement request for project %q was rejected", project)).
 					WithFix(fmt.Sprintf("submit a new request with:\n       datumctl services enable %s --wait", networkingServiceIdentifier))
 			case entitlementPhasePendingApproval:
@@ -183,13 +184,13 @@ func promptAndRequestEntitlement(ctx context.Context, project string, wc client.
 	}
 }
 
-func notEnabledErr(project string) *CLIError {
-	return NewCLIError(ExitForbidden, fmt.Sprintf("Networking is not enabled for project %q", project)).
+func notEnabledErr(project string) *util.CLIError {
+	return util.NewCLIError(util.ExitForbidden, fmt.Sprintf("Networking is not enabled for project %q", project)).
 		WithFix(fmt.Sprintf("enable it with:\n       datumctl services enable %s --wait", networkingServiceIdentifier))
 }
 
-func pendingApprovalErr(project string) *CLIError {
-	return NewCLIError(ExitForbidden, fmt.Sprintf("Networking for project %q is not active yet", project)).
+func pendingApprovalErr(project string) *util.CLIError {
+	return util.NewCLIError(util.ExitForbidden, fmt.Sprintf("Networking for project %q is not active yet", project)).
 		WithFix(fmt.Sprintf("wait for it to activate with:\n       datumctl services enable %s --wait\n"+
 			"       or check the status with:\n       datumctl services list", networkingServiceIdentifier))
 }
@@ -215,28 +216,28 @@ func entitlementPhase(obj *unstructured.Unstructured) string {
 func newEntitlementClient(project string) (client.WithWatch, error) {
 	pluginCtx := plugin.Context()
 	if pluginCtx.APIHost == "" {
-		return nil, NewCLIError(ExitUnavailable,
+		return nil, util.NewCLIError(util.ExitUnavailable,
 			"cannot check the networking service entitlement: DATUM_API_HOST is not set").
 			WithFix("run this through datumctl:\n       datumctl alb ...")
 	}
 
 	token, err := plugin.Token()
 	if err != nil {
-		return nil, NewCLIError(ExitUnavailable, fmt.Sprintf("getting credentials: %v", err)).
+		return nil, util.NewCLIError(util.ExitUnavailable, fmt.Sprintf("getting credentials: %v", err)).
 			WithFix("re-run `datumctl login` and try again.").
 			WithCause(err)
 	}
 
 	cfg := &rest.Config{
-		Host:            ProjectControlPlaneURL(pluginCtx.APIHost, project),
+		Host:            util.ProjectControlPlaneURL(pluginCtx.APIHost, project),
 		BearerToken:     token,
-		UserAgent:       UserAgent(),
+		UserAgent:       util.UserAgent(),
 		TLSClientConfig: tlsClientConfig(),
 	}
 
 	wc, err := client.NewWithWatch(cfg, client.Options{})
 	if err != nil {
-		return nil, NewCLIError(ExitUnavailable, fmt.Sprintf("building entitlement client: %v", err)).WithCause(err)
+		return nil, util.NewCLIError(util.ExitUnavailable, fmt.Sprintf("building entitlement client: %v", err)).WithCause(err)
 	}
 	return wc, nil
 }

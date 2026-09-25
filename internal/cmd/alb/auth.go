@@ -14,6 +14,8 @@ import (
 
 	"go.datum.net/network-services-operator/internal/cmd/alb/spec"
 	"go.datum.net/network-services-operator/internal/cmd/alb/util"
+
+	"go.datum.net/network-services-operator/internal/cmd/alb/plugincli"
 )
 
 func authCommand() *cobra.Command {
@@ -32,7 +34,7 @@ func authSetCommand() *cobra.Command {
 		Example: `  echo 'secret' | datumctl alb auth set my-app --user admin --password-stdin
   datumctl alb auth set my-app --user admin --user editor --password-stdin`,
 		Args:              cobra.ExactArgs(1),
-		ValidArgsFunction: util.CompleteALBNames,
+		ValidArgsFunction: plugincli.CompleteALBNames,
 		RunE:              runAuthSet,
 	}
 	cmd.Flags().StringArray("user", nil, "Username to admit (repeatable)")
@@ -48,7 +50,7 @@ func authUnsetCommand() *cobra.Command {
 		Aliases:           []string{"disable", "rm"},
 		Short:             "Disable basic authentication",
 		Args:              cobra.ExactArgs(1),
-		ValidArgsFunction: util.CompleteALBNames,
+		ValidArgsFunction: plugincli.CompleteALBNames,
 		RunE:              runAuthUnset,
 	}
 	cmd.Flags().Bool("dry-run", false, "Submit for server-side validation without deleting")
@@ -61,7 +63,7 @@ func authListCommand() *cobra.Command {
 		Aliases:           []string{"ls"},
 		Short:             "List basic auth usernames",
 		Args:              cobra.ExactArgs(1),
-		ValidArgsFunction: util.CompleteALBNames,
+		ValidArgsFunction: plugincli.CompleteALBNames,
 		RunE:              runAuthList,
 	}
 }
@@ -87,7 +89,7 @@ func runAuthSet(cmd *cobra.Command, args []string) error {
 		users = append(users, spec.BasicAuthUser{Username: username, Password: password})
 	}
 
-	c, err := newClient(util.ProjectFromCmd(cmd))
+	c, err := newClient(plugincli.ProjectFromCmd(cmd))
 	if err != nil {
 		return err
 	}
@@ -144,7 +146,7 @@ func runAuthUnset(cmd *cobra.Command, args []string) error {
 	name := args[0]
 	dryRun, _ := cmd.Flags().GetBool("dry-run")
 
-	c, err := newClient(util.ProjectFromCmd(cmd))
+	c, err := newClient(plugincli.ProjectFromCmd(cmd))
 	if err != nil {
 		return err
 	}
@@ -178,7 +180,7 @@ func runAuthUnset(cmd *cobra.Command, args []string) error {
 }
 
 func runAuthList(cmd *cobra.Command, args []string) error {
-	c, err := newClient(util.ProjectFromCmd(cmd))
+	c, err := newClient(plugincli.ProjectFromCmd(cmd))
 	if err != nil {
 		return err
 	}

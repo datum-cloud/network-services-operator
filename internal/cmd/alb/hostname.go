@@ -11,6 +11,8 @@ import (
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	"go.datum.net/network-services-operator/internal/cmd/alb/spec"
 	"go.datum.net/network-services-operator/internal/cmd/alb/util"
+
+	"go.datum.net/network-services-operator/internal/cmd/alb/plugincli"
 )
 
 func hostnameCommand() *cobra.Command {
@@ -29,7 +31,7 @@ func hostnameAddCommand() *cobra.Command {
 		Short:             "Attach a custom hostname",
 		Example:           `  datumctl alb hostname add my-app app.example.com`,
 		Args:              cobra.ExactArgs(2),
-		ValidArgsFunction: util.CompleteALBNames,
+		ValidArgsFunction: plugincli.CompleteALBNames,
 		RunE:              runHostnameAdd,
 	}
 	cmd.Flags().Bool("dry-run", false, "Submit for server-side validation without updating")
@@ -43,7 +45,7 @@ func hostnameRemoveCommand() *cobra.Command {
 		Short:             "Detach a custom hostname",
 		Example:           `  datumctl alb hostname remove my-app app.example.com`,
 		Args:              cobra.ExactArgs(2),
-		ValidArgsFunction: util.CompleteALBNames,
+		ValidArgsFunction: plugincli.CompleteALBNames,
 		RunE:              runHostnameRemove,
 	}
 	cmd.Flags().Bool("dry-run", false, "Submit for server-side validation without updating")
@@ -56,7 +58,7 @@ func hostnameListCommand() *cobra.Command {
 		Aliases:           []string{"ls"},
 		Short:             "List hostnames on an Application Load Balancer",
 		Args:              cobra.ExactArgs(1),
-		ValidArgsFunction: util.CompleteALBNames,
+		ValidArgsFunction: plugincli.CompleteALBNames,
 		RunE:              runHostnameList,
 	}
 }
@@ -81,7 +83,7 @@ func mutateHostname(
 }
 
 func runHostnameList(cmd *cobra.Command, args []string) error {
-	c, err := newClient(util.ProjectFromCmd(cmd))
+	c, err := newClient(plugincli.ProjectFromCmd(cmd))
 	if err != nil {
 		return err
 	}
@@ -90,7 +92,7 @@ func runHostnameList(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	format, err := util.ParseOutputFormat(util.OutputFromCmd(cmd))
+	format, err := util.ParseOutputFormat(plugincli.OutputFromCmd(cmd))
 	if err != nil {
 		return err
 	}

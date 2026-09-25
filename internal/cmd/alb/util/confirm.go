@@ -8,7 +8,6 @@ import (
 	"os"
 	"strings"
 
-	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )
 
@@ -21,11 +20,6 @@ func NonInteractive(in io.Reader) bool {
 		return false
 	}
 	return !term.IsTerminal(int(f.Fd()))
-}
-
-func AssumeYes(cmd *cobra.Command) bool {
-	yes, _ := cmd.Root().PersistentFlags().GetBool("yes")
-	return yes
 }
 
 func ConfirmYesNo(in io.Reader, out io.Writer, prompt string, defaultYes bool) (bool, error) {

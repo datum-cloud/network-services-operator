@@ -11,6 +11,8 @@ import (
 
 	"go.datum.net/network-services-operator/internal/cmd/alb/spec"
 	"go.datum.net/network-services-operator/internal/cmd/alb/util"
+
+	"go.datum.net/network-services-operator/internal/cmd/alb/plugincli"
 )
 
 func wafCommand() *cobra.Command {
@@ -30,13 +32,13 @@ func wafSetCommand() *cobra.Command {
 		Example: `  datumctl alb waf set my-app --mode Enforce --paranoia 1
   datumctl alb waf set my-app --mode Observe --paranoia 2`,
 		Args:              cobra.ExactArgs(1),
-		ValidArgsFunction: util.CompleteALBNames,
+		ValidArgsFunction: plugincli.CompleteALBNames,
 		RunE:              runWAFSet,
 	}
 	cmd.Flags().String("mode", "Enforce", "Traffic protection mode: Enforce, Observe, or Disabled")
 	cmd.Flags().Int("paranoia", 1, "OWASP CRS paranoia level (1-4)")
 	cmd.Flags().Bool("dry-run", false, "Submit for server-side validation without updating")
-	_ = cmd.RegisterFlagCompletionFunc("mode", util.CompleteEnum("Enforce", "Observe", "Disabled"))
+	_ = cmd.RegisterFlagCompletionFunc("mode", plugincli.CompleteEnum("Enforce", "Observe", "Disabled"))
 	return cmd
 }
 
@@ -45,7 +47,7 @@ func wafDisableCommand() *cobra.Command {
 		Use:               "disable <name>",
 		Short:             "Remove traffic protection",
 		Args:              cobra.ExactArgs(1),
-		ValidArgsFunction: util.CompleteALBNames,
+		ValidArgsFunction: plugincli.CompleteALBNames,
 		RunE:              runWAFDisable,
 	}
 	cmd.Flags().Bool("dry-run", false, "Submit for server-side validation without deleting")
@@ -58,7 +60,7 @@ func wafDescribeCommand() *cobra.Command {
 		Aliases:           []string{"show", "get"},
 		Short:             "Show traffic protection settings",
 		Args:              cobra.ExactArgs(1),
-		ValidArgsFunction: util.CompleteALBNames,
+		ValidArgsFunction: plugincli.CompleteALBNames,
 		RunE:              runWAFDescribe,
 	}
 }
@@ -74,7 +76,7 @@ func runWAFSet(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	c, err := newClient(util.ProjectFromCmd(cmd))
+	c, err := newClient(plugincli.ProjectFromCmd(cmd))
 	if err != nil {
 		return err
 	}
@@ -127,7 +129,7 @@ func runWAFDisable(cmd *cobra.Command, args []string) error {
 	name := args[0]
 	dryRun, _ := cmd.Flags().GetBool("dry-run")
 
-	c, err := newClient(util.ProjectFromCmd(cmd))
+	c, err := newClient(plugincli.ProjectFromCmd(cmd))
 	if err != nil {
 		return err
 	}
@@ -147,7 +149,7 @@ func runWAFDisable(cmd *cobra.Command, args []string) error {
 }
 
 func runWAFDescribe(cmd *cobra.Command, args []string) error {
-	c, err := newClient(util.ProjectFromCmd(cmd))
+	c, err := newClient(plugincli.ProjectFromCmd(cmd))
 	if err != nil {
 		return err
 	}
@@ -159,15 +161,18 @@ func runWAFDescribe(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	format, err := util.ParseOutputFormat(util.OutputFromCmd(cmd),
+	format, err := util.ParseOutputFormat(plugincli.OutputFromCmd(cmd),
 		util.OutputTable, util.OutputWide, util.OutputJSON, util.OutputYAML)
 	if err != nil {
 		return err
 	}
 	out := cmd.OutOrStdout()
 	if tpp == nil {
-		if format == util.OutputJSON || format == util.OutputYAML {
+		switch format {
+		case util.OutputJSON:
 			return util.PrintJSON(out, map[string]any{"enabled": false})
+		case util.OutputYAML:
+			return util.PrintYAML(out, map[string]any{"enabled": false})
 		}
 		_, _ = fmt.Fprintln(out, "Traffic protection: off")
 		return nil

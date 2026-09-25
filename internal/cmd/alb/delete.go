@@ -15,6 +15,8 @@ import (
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	"go.datum.net/network-services-operator/internal/cmd/alb/spec"
 	"go.datum.net/network-services-operator/internal/cmd/alb/util"
+
+	"go.datum.net/network-services-operator/internal/cmd/alb/plugincli"
 )
 
 func deleteCommand() *cobra.Command {
@@ -27,7 +29,7 @@ and basic auth configuration.`,
 		Example: `  datumctl alb delete my-app
   datumctl alb delete my-app --yes`,
 		Args:              cobra.ExactArgs(1),
-		ValidArgsFunction: util.CompleteALBNames,
+		ValidArgsFunction: plugincli.CompleteALBNames,
 		RunE:              runDelete,
 	}
 	cmd.Flags().Bool("dry-run", false, "Submit for server-side validation without deleting")
@@ -38,7 +40,7 @@ func runDelete(cmd *cobra.Command, args []string) error {
 	name := args[0]
 	dryRun, _ := cmd.Flags().GetBool("dry-run")
 
-	if !util.AssumeYes(cmd) && !dryRun {
+	if !plugincli.AssumeYes(cmd) && !dryRun {
 		ok, err := util.ConfirmTyped(
 			cmd.InOrStdin(),
 			cmd.ErrOrStderr(),
@@ -53,7 +55,7 @@ func runDelete(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	c, err := newClient(util.ProjectFromCmd(cmd))
+	c, err := newClient(plugincli.ProjectFromCmd(cmd))
 	if err != nil {
 		return err
 	}

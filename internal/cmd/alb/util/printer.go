@@ -8,7 +8,6 @@ import (
 	"io"
 	"strings"
 
-	"github.com/spf13/cobra"
 	"sigs.k8s.io/yaml"
 )
 
@@ -75,16 +74,4 @@ func OrDash(s string) string {
 		return emDash
 	}
 	return s
-}
-
-func OutputFromCmd(cmd *cobra.Command) string {
-	if f := cmd.Root().PersistentFlags().Lookup("output"); f != nil {
-		return f.Value.String()
-	}
-	return string(OutputTable)
-}
-
-func QuietFromCmd(cmd *cobra.Command) bool {
-	quiet, _ := cmd.Root().PersistentFlags().GetBool("quiet")
-	return quiet
 }

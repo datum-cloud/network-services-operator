@@ -11,6 +11,8 @@ import (
 	"go.datum.net/datumctl/plugin"
 
 	"go.datum.net/network-services-operator/internal/cmd/alb/util"
+
+	"go.datum.net/network-services-operator/internal/cmd/alb/plugincli"
 )
 
 const short = "Manage Application Load Balancers on Datum Cloud"
@@ -31,9 +33,9 @@ var entitlementSkip = map[string]bool{
 	cobra.ShellCompNoDescRequestCmd: true,
 }
 
-var newClient = util.NewClient
+var newClient = plugincli.NewClient
 
-var ensureEntitlement = util.EnsureNetworkingEntitlement
+var ensureEntitlement = plugincli.EnsureNetworkingEntitlement
 
 func Command() *cobra.Command {
 	root := plugin.NewRootCmd("alb", short)
@@ -52,9 +54,9 @@ func Command() *cobra.Command {
 	root.PersistentFlags().BoolP("yes", "y", false, "Skip confirmation prompts")
 
 	_ = root.RegisterFlagCompletionFunc("output",
-		util.CompleteEnum("table", "wide", "json", "yaml", "name"))
+		plugincli.CompleteEnum("table", "wide", "json", "yaml", "name"))
 	_ = root.RegisterFlagCompletionFunc("color",
-		util.CompleteEnum("auto", "always", "never"))
+		plugincli.CompleteEnum("auto", "always", "never"))
 
 	root.SetFlagErrorFunc(func(cmd *cobra.Command, err error) error {
 		return util.UsageErrorf("%s", err.Error()).
@@ -75,7 +77,7 @@ func Command() *cobra.Command {
 		if skipsEntitlement(cmd) {
 			return nil
 		}
-		return ensureEntitlement(cmd.Context(), util.ProjectFromCmd(cmd), cmd.InOrStdin(), cmd.ErrOrStderr())
+		return ensureEntitlement(cmd.Context(), plugincli.ProjectFromCmd(cmd), cmd.InOrStdin(), cmd.ErrOrStderr())
 	}
 
 	root.AddCommand(

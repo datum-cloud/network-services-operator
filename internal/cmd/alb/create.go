@@ -11,6 +11,8 @@ import (
 
 	"go.datum.net/network-services-operator/internal/cmd/alb/spec"
 	"go.datum.net/network-services-operator/internal/cmd/alb/util"
+
+	"go.datum.net/network-services-operator/internal/cmd/alb/plugincli"
 )
 
 func createCommand() *cobra.Command {
@@ -58,7 +60,7 @@ way the cloud portal does (kebab-case plus a short random suffix).`,
 	cmd.Flags().Duration("timeout", defaultWaitTime, "How long to wait for the generated hostname")
 	cmd.Flags().Bool("dry-run", false, "Submit for server-side validation without creating")
 
-	_ = cmd.RegisterFlagCompletionFunc("waf-mode", util.CompleteEnum("Enforce", "Observe", "Disabled"))
+	_ = cmd.RegisterFlagCompletionFunc("waf-mode", plugincli.CompleteEnum("Enforce", "Observe", "Disabled"))
 
 	return cmd
 }
@@ -113,7 +115,7 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	c, err := newClient(util.ProjectFromCmd(cmd))
+	c, err := newClient(plugincli.ProjectFromCmd(cmd))
 	if err != nil {
 		return err
 	}
@@ -166,7 +168,7 @@ func runCreate(cmd *cobra.Command, args []string) error {
 
 	if !waitFlag {
 		_, _ = fmt.Fprintf(out, "Application load balancer %q created.\n", name)
-		if !util.QuietFromCmd(cmd) {
+		if !plugincli.QuietFromCmd(cmd) {
 			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "\nNext steps:\n  datumctl alb describe %s\n", name)
 		}
 		return nil
@@ -183,7 +185,7 @@ func runCreate(cmd *cobra.Command, args []string) error {
 
 	_, _ = fmt.Fprintf(out, "Application load balancer %q created.\n", name)
 	_, _ = fmt.Fprintf(out, "Hostname: %s\n", hostname)
-	if !util.QuietFromCmd(cmd) {
+	if !plugincli.QuietFromCmd(cmd) {
 		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "\nNext steps:\n  datumctl alb hostname add %s <custom-hostname>\n  datumctl alb describe %s\n", name, name)
 	}
 	return nil

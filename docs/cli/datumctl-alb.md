@@ -4,21 +4,14 @@ The `alb` plugin for [`datumctl`](https://github.com/datum-cloud/datumctl) lets 
 
 ## Install the plugin
 
-Install it from the official Datum plugin catalog, then confirm that `datumctl` found it:
-
-```console
-$ datumctl plugin install alb
-Installed alb v0.1.0 from datum  [official]
-
-$ datumctl alb version
-datumctl-alb v0.1.0 (Networking API networking.datumapis.com/v1alpha)
-```
-
-Until the catalog lists the plugin, install a release archive from this repository:
+The plugin is not in the Datum catalog yet, so install a release archive from this repository:
 
 ```sh
 datumctl plugin install datum-cloud/network-services-operator@<tag>
+datumctl alb version
 ```
+
+When the catalog lists it, `datumctl plugin install alb` will work instead.
 
 `datumctl alb version` needs no login, no project, and no network, so run it first whenever something else fails.
 
@@ -82,7 +75,18 @@ Rules written outside this plugin with exact or regex path matches, header or me
 
 Every mutation re-reads the load balancer, patches with its `resourceVersion`, and retries once if something else changed it in between.
 
-The API currently accepts one origin per route. The commands already take a pool so nothing changes when that cap lifts; until then the server rejects a second origin on the same path.
+A route takes up to 16 origins, and traffic is split across them. One constraint decides whether a pool works today:
+
+**Origins in the same route must agree on the Host header sent upstream.** A NetworkService origin needs no Host rewrite, so pools of those work. A URL origin takes its Host from its own hostname, so two URL origins on different hostnames conflict.
+
+When they do, **this command still succeeds.** The conflict is caught when the platform tries to publish the change, not when you make it, so you get an exit code of zero and a success line. The load balancer goes on serving what it published last, and `describe` then shows `Error` with the conflict in the message. Run `describe` after adding a second URL origin.
+
+There are two ways round it, and one of them is a trap:
+
+- **Give each origin its own route.** Safe.
+- **Set a Host override on the route** with `alb header set`. This makes the origins agree and publishes — but it sends the same Host to all of them, so any origin that routes by hostname (Vercel, Netlify, Fly.io, Cloudflare Pages) answers the wrong site or a 404. It looks like it worked.
+
+A connector origin must be the only origin in its route.
 
 ## Hostnames
 
@@ -92,7 +96,7 @@ datumctl alb hostname list my-app
 datumctl alb hostname remove my-app app.example.com
 ```
 
-The default hostname is assigned by the platform and shown by `describe`. Custom hostnames must be unique on the platform and are verified through `Domain` resources. `list` shows the generated hostname and a `CUSTOM` summary (first attached name, `+N` when there are more); `describe` prints each custom hostname with available / DNS / cert status.
+The generated hostname is assigned by the platform and shown by `describe`. Custom hostnames must be unique on the platform, and ownership of their domain is verified separately — this plugin does not create or read the domain, so use `datumctl get domains` to see verification state. `hostname remove` does not ask for confirmation. `list` shows the generated hostname and a `CUSTOM` summary (first attached name, `+N` when there are more); `describe` prints each custom hostname with available / DNS / cert status.
 
 ## Access logs
 
@@ -114,6 +118,10 @@ datumctl alb waf describe my-app
 datumctl alb waf disable my-app
 ```
 
+`tpp` is an alias for `waf`. `--paranoia` sets both the blocking and the detection level to the same value, and takes 1 to 4; the cloud portal offers only 1 and 2, so a policy set to 3 or 4 here cannot be changed there.
+
+`waf disable` deletes the policy without asking.
+
 ## Request headers
 
 ```sh
@@ -123,7 +131,25 @@ datumctl alb header list my-app
 datumctl alb header unset my-app X-Debug
 ```
 
-`--host-header` on `create` is the same Host override the portal offers. Additional headers are allowed here; the portal treats those load balancers as advanced and shows them read-only.
+`--host-header` on `create` is the same Host override the portal offers. Additional headers are allowed here.
+
+## What the portal does with what this writes
+
+The portal edits one route with one origin. It has no concept of a second route, a second origin, a path match, or a per-origin filter — it cannot show them, and it does not warn you that they are there.
+
+**It does not lock the form.** Editing the origin, Force HTTPS, HSTS, the TLS hostname or the Host header rebuilds the whole rule list from the three fields the portal models, and sends it as a merge patch. Anything this plugin wrote that the portal does not represent is dropped: extra routes, extra origins and their weights, path matches, per-origin filters. The save succeeds and reports success.
+
+So on a load balancer with more than the portal's shape:
+
+- **Safe in the portal:** custom hostnames, traffic protection, and basic auth. Those edits do not touch the rules.
+- **Destructive in the portal:** anything on the origin, TLS or redirect cards.
+
+Use `datumctl alb` for a load balancer that has routes or pools, and keep portal edits to hostnames, protection and auth until the portal's own routes editor ships.
+
+Two smaller differences worth knowing:
+
+- Traffic protection here takes paranoia 1 to 4; the portal offers only 1 and 2. Setting 3 or 4 is fine, the portal just cannot change it.
+- The portal shows a load balancer's display name from its own annotation, which this plugin does not write. A load balancer created here shows its object name in the portal until you rename it there.
 
 ## Basic authentication
 
@@ -133,7 +159,31 @@ datumctl alb auth list my-app
 datumctl alb auth unset my-app
 ```
 
-Passwords are never printed. Usernames are stored in an htpasswd secret using SHA hashes, matching Envoy Gateway.
+Passwords are never printed. Usernames are stored in an htpasswd secret using SHA-1 hashes, matching Envoy Gateway.
+
+Three things worth knowing:
+
+- **Every `--user` in one command gets the same password.** The password is read once from stdin. Distinct passwords per user are not possible here.
+- **`set` replaces the whole user list**, it does not merge. Pass every user you want to keep.
+- `unset` removes the policy and the secret together.
+
+## Previewing a change
+
+Every command that writes takes `--dry-run`, which sends the change to the API for validation and discards it:
+
+```sh
+datumctl alb route add my-app --path /api --endpoint https://api.example.com --dry-run
+datumctl alb delete my-app --dry-run
+```
+
+Other flags every command takes: `-y`/`--yes` to skip a confirmation, `-q`/`--quiet` to drop the next-steps footer, and `-v`/`--verbose` to print the underlying cause of an error.
+
+Failures print an exit code with a name — `exit status 6 # ALB_INVALID`. The names are `ALB_USAGE` (2), `ALB_FORBIDDEN` (3), `ALB_NOT_FOUND` (4), `ALB_CONFLICT` (5), `ALB_INVALID` (6), `ALB_UNAVAILABLE` (8) and `ALB_ABORTED` (9).
+
+Two things to know if you script this:
+
+- **`create` can exit non-zero having created the load balancer.** With `--wait` (the default) a timeout waiting for the hostname is an error, but the load balancer exists. Re-running `create` then fails on the name. Check with `describe` before retrying, or pass `--no-wait`.
+- **Confirmation prompts assume yes when there is no terminal.** `route remove` and `route backend remove` proceed in a pipeline or CI. Only `delete` refuses without `--yes`.
 
 ## Update and delete
 
@@ -149,4 +199,8 @@ Delete also removes the attached traffic protection policy and basic auth config
 
 ## Output
 
-Every command accepts `-o table|wide|json|yaml|name`. `json` and `yaml` emit the underlying API objects. `list --status active|pending|error` narrows the table; `Active` means the platform has programmed the load balancer.
+`list` accepts `-o table|wide|json|yaml|name`. `describe`, `logs`, `waf describe` and `version` accept the same minus `name`. `header list` and `auth list`, and every command that writes, print prose and ignore `-o`.
+
+`json` and `yaml` emit the underlying API objects, with one exception: `route backend list` emits a path-and-origins shape of its own.
+
+`list --status active|pending|error` narrows the table; `Active` means the platform has programmed the load balancer.

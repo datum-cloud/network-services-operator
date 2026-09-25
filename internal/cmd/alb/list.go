@@ -13,6 +13,8 @@ import (
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	"go.datum.net/network-services-operator/internal/cmd/alb/spec"
 	"go.datum.net/network-services-operator/internal/cmd/alb/util"
+
+	"go.datum.net/network-services-operator/internal/cmd/alb/plugincli"
 )
 
 func listCommand() *cobra.Command {
@@ -28,7 +30,7 @@ func listCommand() *cobra.Command {
 	}
 	cmd.Flags().Bool("no-headers", false, "Omit column headers")
 	cmd.Flags().String("status", "", "Only show load balancers in this state: active, pending, or error")
-	_ = cmd.RegisterFlagCompletionFunc("status", util.CompleteEnum("active", "pending", "error"))
+	_ = cmd.RegisterFlagCompletionFunc("status", plugincli.CompleteEnum("active", "pending", "error"))
 	return cmd
 }
 
@@ -38,7 +40,7 @@ func runList(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	c, err := newClient(util.ProjectFromCmd(cmd))
+	c, err := newClient(plugincli.ProjectFromCmd(cmd))
 	if err != nil {
 		return err
 	}
@@ -64,7 +66,7 @@ func runList(cmd *cobra.Command, _ []string) error {
 		return list.Items[i].Name < list.Items[j].Name
 	})
 
-	format, err := util.ParseOutputFormat(util.OutputFromCmd(cmd))
+	format, err := util.ParseOutputFormat(plugincli.OutputFromCmd(cmd))
 	if err != nil {
 		return err
 	}
@@ -84,7 +86,7 @@ func runList(cmd *cobra.Command, _ []string) error {
 
 	if len(list.Items) == 0 {
 		_, _ = fmt.Fprintln(out, "No application load balancers found.")
-		if !util.QuietFromCmd(cmd) {
+		if !plugincli.QuietFromCmd(cmd) {
 			_, _ = fmt.Fprint(cmd.ErrOrStderr(), "\nNext steps:\n  datumctl alb create <name> --endpoint https://origin.example.com\n")
 		}
 		return nil

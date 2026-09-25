@@ -10,6 +10,8 @@ import (
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	"go.datum.net/network-services-operator/internal/cmd/alb/spec"
 	"go.datum.net/network-services-operator/internal/cmd/alb/util"
+
+	"go.datum.net/network-services-operator/internal/cmd/alb/plugincli"
 )
 
 func updateCommand() *cobra.Command {
@@ -23,7 +25,7 @@ Origins belong to routes. Change them with "datumctl alb route update" or
 		Example: `  datumctl alb update my-app --display-name "Production API"
   datumctl alb update my-app --no-force-https`,
 		Args:              cobra.ExactArgs(1),
-		ValidArgsFunction: util.CompleteALBNames,
+		ValidArgsFunction: plugincli.CompleteALBNames,
 		RunE:              runUpdate,
 	}
 

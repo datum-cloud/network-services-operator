@@ -58,7 +58,19 @@ func (r *NetworkInterfaceWriteBackReconciler) Reconcile(ctx context.Context, req
 		return ctrl.Result{}, err
 	}
 
-	return ctrl.Result{}, r.publish(ctx, cl.GetClient(), req.NamespacedName)
+	// A name held by a copy that is being torn down is a state to come back to,
+	// not a reconcile that failed.
+	if err := r.publish(ctx, cl.GetClient(), req.NamespacedName); err != nil {
+		var held *projectionSlotHeld
+		if errors.As(err, &held) {
+			log.FromContext(ctx).Info("waiting for the copy holding this name to finish being torn down",
+				"copy", held.key.String())
+			return ctrl.Result{RequeueAfter: projectionSlotRetry}, nil
+		}
+		return ctrl.Result{}, err
+	}
+
+	return ctrl.Result{}, nil
 }
 
 func (r *NetworkInterfaceWriteBackReconciler) publish(

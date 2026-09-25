@@ -22,14 +22,13 @@ import (
 )
 
 const (
-	EventReasonProgrammed             = "Programmed"
-	EventReasonProgrammingFailed      = "ProgrammingFailed"
-	EventReasonHostnameInUse          = "HostnameInUse"
-	EventReasonHostnamesUnverified    = "HostnamesUnverified"
-	EventReasonCertificateIssued      = "CertificateIssued"
-	EventReasonCertificateFailed      = "CertificateFailed"
-	EventReasonDNSRecordFailed        = "DNSRecordFailed"
-	EventReasonWaitingForCertificates = "WaitingForCertificates"
+	EventReasonProgrammed          = "Programmed"
+	EventReasonProgrammingFailed   = "ProgrammingFailed"
+	EventReasonHostnameInUse       = "HostnameInUse"
+	EventReasonHostnamesUnverified = "HostnamesUnverified"
+	EventReasonCertificateIssued   = "CertificateIssued"
+	EventReasonCertificateFailed   = "CertificateFailed"
+	EventReasonDNSRecordFailed     = "DNSRecordFailed"
 )
 
 const albActivityReportingController = "networking.datumapis.com/network-services-operator"
@@ -144,8 +143,8 @@ func emitTPPActivityEvents(
 		related = &ref
 	}
 
-	prevAccepted, prevProgrammed := tppAncestorConditions(original)
-	currAccepted, currProgrammed := tppAncestorConditions(policy)
+	prevProgrammed := tppProgrammedCondition(original)
+	currProgrammed := tppProgrammedCondition(policy)
 
 	var events []albActivityEvent
 	if programmedBecameTrueConditions(prevProgrammed, currProgrammed) {
@@ -161,14 +160,6 @@ func emitTPPActivityEvents(
 			Type:    corev1.EventTypeWarning,
 			Reason:  EventReasonProgrammingFailed,
 			Note:    conditionNote(currProgrammed, "Traffic protection failed to program"),
-			Related: related,
-		})
-	}
-	if tppWaitingForCertificatesFirstTime(prevAccepted, currAccepted) {
-		events = append(events, albActivityEvent{
-			Type:    corev1.EventTypeNormal,
-			Reason:  EventReasonWaitingForCertificates,
-			Note:    fmt.Sprintf("Traffic protection on %s is waiting for TLS certificates", displayName),
 			Related: related,
 		})
 	}
@@ -299,18 +290,18 @@ func dnsRecordFailed(previous, current []metav1.Condition) bool {
 	return prev == nil || prev.Status != metav1.ConditionFalse || prev.Reason != curr.Reason
 }
 
-func tppAncestorConditions(policy *networkingv1alpha.TrafficProtectionPolicy) (accepted, programmed *metav1.Condition) {
+func tppProgrammedCondition(policy *networkingv1alpha.TrafficProtectionPolicy) *metav1.Condition {
 	if policy == nil {
-		return nil, nil
+		return nil
 	}
 	for i := range policy.Status.Ancestors {
-		accepted = meta.FindStatusCondition(policy.Status.Ancestors[i].Conditions, string(gatewayv1.PolicyConditionAccepted))
-		programmed = meta.FindStatusCondition(policy.Status.Ancestors[i].Conditions, conditionTypeProgrammed)
+		accepted := meta.FindStatusCondition(policy.Status.Ancestors[i].Conditions, string(gatewayv1.PolicyConditionAccepted))
+		programmed := meta.FindStatusCondition(policy.Status.Ancestors[i].Conditions, conditionTypeProgrammed)
 		if accepted != nil || programmed != nil {
-			return accepted, programmed
+			return programmed
 		}
 	}
-	return nil, nil
+	return nil
 }
 
 func tppProgrammingFailed(prev, curr *metav1.Condition) bool {
@@ -321,16 +312,6 @@ func tppProgrammingFailed(prev, curr *metav1.Condition) bool {
 		return prev == nil || prev.Reason != curr.Reason || prev.Status != metav1.ConditionFalse
 	}
 	return prev != nil && prev.Status == metav1.ConditionTrue
-}
-
-func tppWaitingForCertificatesFirstTime(prev, curr *metav1.Condition) bool {
-	if curr == nil || curr.Status != metav1.ConditionFalse || curr.Reason != string(PolicyReasonWaitingForCertificates) {
-		return false
-	}
-	if prev == nil {
-		return true
-	}
-	return prev.Reason != string(PolicyReasonWaitingForCertificates)
 }
 
 func conditionMessage(conditions []metav1.Condition, condType, fallback string) string {

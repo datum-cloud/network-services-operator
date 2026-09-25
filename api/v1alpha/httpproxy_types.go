@@ -508,10 +508,6 @@ const (
 	// is in use by another resource.
 	HTTPProxyConditionHostnamesInUse = "HostnamesInUse"
 
-	// This condition is true when connector metadata has been programmed
-	// via the downstream EnvoyPatchPolicy.
-	HTTPProxyConditionConnectorMetadataProgrammed = "ConnectorMetadataProgrammed"
-
 	// This condition is true when all HTTPS hostnames have ready TLS certificates.
 	HTTPProxyConditionCertificatesReady = "CertificatesReady"
 )
@@ -651,9 +647,6 @@ const (
 
 	// HTTPProxyReasonProgrammed indicates that the HTTP proxy has been programmed.
 	HTTPProxyReasonProgrammed = "Programmed"
-
-	// HTTPProxyReasonConnectorMetadataApplied indicates connector metadata has been applied.
-	HTTPProxyReasonConnectorMetadataApplied = "ConnectorMetadataApplied"
 
 	// HTTPProxyReasonInvalid indicates that the HTTP proxy's stored spec is
 	// rejected by current validation rules, so the operator cannot program it.

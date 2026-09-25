@@ -104,7 +104,7 @@ HTTPProxy reasons: `Programmed`, `ProgrammingFailed`, `HostnameInUse`,
 `HostnamesUnverified`, `CertificateIssued`, `CertificateFailed`,
 `DNSRecordFailed`.
 
-TPP reasons: `Programmed`, `ProgrammingFailed`, `WaitingForCertificates`.
+TPP reasons: `Programmed`, `ProgrammingFailed`.
 
 TPP events set `related` to the owning HTTPProxy when found so timeline links
 open the load balancer.

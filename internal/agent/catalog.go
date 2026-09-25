@@ -238,12 +238,6 @@ var catalog = []ReasonInfo{
 		Remediation:   remediationEscalate,
 		Skill:         SkillNotServing,
 	},
-	{
-		Reason:        networkingv1alpha.HTTPProxyReasonConnectorMetadataApplied,
-		ConditionType: networkingv1alpha.HTTPProxyConditionConnectorMetadataProgrammed,
-		Actionability: ActionabilityInformational,
-		Explanation:   "The private connection this load balancer sends traffic over is set up.",
-	},
 
 	// ------------------------------------------------- routes and origins
 	{

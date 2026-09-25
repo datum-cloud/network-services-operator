@@ -95,18 +95,6 @@ func TestHTTPProxyActivityEvents(t *testing.T) {
 	}
 }
 
-func TestTPPWaitingForCertificatesFirstTime(t *testing.T) {
-	t.Parallel()
-
-	waiting := &metav1.Condition{
-		Type:   string(networkingv1alpha.HTTPProxyConditionAccepted),
-		Status: metav1.ConditionFalse,
-		Reason: string(PolicyReasonWaitingForCertificates),
-	}
-	assert.True(t, tppWaitingForCertificatesFirstTime(nil, waiting))
-	assert.False(t, tppWaitingForCertificatesFirstTime(waiting, waiting))
-}
-
 func TestTPPProgrammingFailed(t *testing.T) {
 	t.Parallel()
 

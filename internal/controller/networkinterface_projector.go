@@ -32,6 +32,16 @@ type NetworkInterfaceProjector struct {
 	hub client.Client
 }
 
+// networkInterfaceProjectionFinalizer holds a published interface on the hub
+// until the copy it was handed to a project has been collected.
+//
+// Nothing replays a deletion. A published interface that simply vanished would
+// take with it the labels naming the project its copy went to, leaving a copy
+// that describes an interface that no longer exists and no event anywhere able
+// to say where it is. Holding the original until its copy is gone means the one
+// controller that knows both planes does the cleanup while it still can.
+const networkInterfaceProjectionFinalizer = "networking.datumapis.com/networkinterface-projection"
+
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkinterfaces,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkinterfaces/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networks,verbs=get;list;watch
@@ -39,16 +49,39 @@ type NetworkInterfaceProjector struct {
 func (r *NetworkInterfaceProjector) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var published networkingv1alpha.NetworkInterface
 	if err := r.hub.Get(ctx, req.NamespacedName, &published); err != nil {
-		// A published interface that has gone leaves nothing here to route by.
-		// The project-plane collector is what removes what it left behind.
+		// A published interface that has finished going leaves nothing here to
+		// route by. Its copy was collected while it was still held, under the
+		// finalizer below.
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	if !isProjection(&published) || !published.DeletionTimestamp.IsZero() {
+	if !isProjection(&published) {
 		return ctrl.Result{}, nil
 	}
 
-	return ctrl.Result{}, r.project(ctx, &published)
+	if !published.DeletionTimestamp.IsZero() {
+		return ctrl.Result{}, r.teardown(ctx, &published)
+	}
+
+	if controllerutil.AddFinalizer(&published, networkInterfaceProjectionFinalizer) {
+		if err := r.hub.Update(ctx, &published); err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed holding the published interface for its copy: %w", err)
+		}
+	}
+
+	// A name held by a copy that is being torn down is a state to come back to,
+	// not a reconcile that failed.
+	if err := r.project(ctx, &published); err != nil {
+		var held *projectionSlotHeld
+		if errors.As(err, &held) {
+			log.FromContext(ctx).Info("waiting for the copy holding this name to finish being torn down",
+				"copy", held.key.String())
+			return ctrl.Result{RequeueAfter: projectionSlotRetry}, nil
+		}
+		return ctrl.Result{}, err
+	}
+
+	return ctrl.Result{}, nil
 }
 
 func (r *NetworkInterfaceProjector) project(
@@ -102,6 +135,48 @@ func (r *NetworkInterfaceProjector) project(
 	}
 
 	return writeProjection(ctx, projectClient, namespace, desired, nil, owner)
+}
+
+// teardown collects the copy a published interface on its way out was handed to
+// a project, then lets the original go.
+func (r *NetworkInterfaceProjector) teardown(
+	ctx context.Context,
+	published *networkingv1alpha.NetworkInterface,
+) error {
+	if !controllerutil.ContainsFinalizer(published, networkInterfaceProjectionFinalizer) {
+		return nil
+	}
+
+	project := downstreamclient.UpstreamClusterNameFromLabel(
+		published.Labels[downstreamclient.UpstreamOwnerClusterNameLabel])
+	namespace := published.Labels[downstreamclient.UpstreamOwnerNamespaceLabel]
+
+	// An interface naming no project was never handed to one, and a project the
+	// manager no longer engages has no control plane left holding a copy. Neither
+	// leaves anything to collect, and neither may hold the original open.
+	if project != "" && namespace != "" {
+		projectClient, err := r.Projects.ClientForProject(ctx, project)
+		switch {
+		case err == nil:
+			key := client.ObjectKey{Namespace: namespace, Name: published.Name}
+			if err := collectProjection(ctx, projectClient, key); err != nil {
+				return err
+			}
+		case errors.Is(err, multicluster.ErrClusterNotFound):
+			log.FromContext(ctx).Info("releasing a published interface whose project is no longer engaged",
+				"project", project)
+		default:
+			return fmt.Errorf("failed reaching project %q: %w", project, err)
+		}
+	}
+
+	if controllerutil.RemoveFinalizer(published, networkInterfaceProjectionFinalizer) {
+		if err := r.hub.Update(ctx, published); err != nil {
+			return fmt.Errorf("failed releasing the published interface: %w", err)
+		}
+	}
+
+	return nil
 }
 
 // SetupWithManager registers the projector against the hub the manager runs in.

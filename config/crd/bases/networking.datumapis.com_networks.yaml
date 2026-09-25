@@ -115,7 +115,12 @@ spec:
               ipFamilies:
                 default:
                 - IPv6
-                description: IP Families to permit on a network. Defaults to IPv6.
+                description: |-
+                  IP Families to permit on a network. Defaults to IPv6.
+
+                  Networks are IPv6-only: a new network, or a change that adds IPv4 to an
+                  existing one, is refused if this lists IPv4. IPv4 remains in the schema
+                  so networks created before this rule stay writable.
                 items:
                   enum:
                   - IPv4
@@ -126,8 +131,10 @@ spec:
                 description: IPAM settings for the network.
                 properties:
                   ipv4Range:
-                    description: IPv4 range to use in auto mode networks. Defaults
-                      to 10.128.0.0/9.
+                    description: |-
+                      Not accepted. Networks are IPv6-only, so a new network, or a change that
+                      sets this on an existing one, is refused. It remains in the schema so
+                      networks created before this rule stay writable.
                     type: string
                   ipv6Range:
                     description: IPv6 range to use in auto mode networks. Defaults

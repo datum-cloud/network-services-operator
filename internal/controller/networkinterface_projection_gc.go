@@ -20,11 +20,16 @@ import (
 // NetworkInterfaceProjectionGCReconciler removes an interface copy from a
 // project control plane once nothing is published behind it.
 //
-// It is the projector's other half, and it exists because the projector is
-// keyed on the published copy: an object that has gone carries no labels, so
-// nothing on the hub can say which project a vanished copy belonged to. Keying
-// on the copy instead answers that from the copy itself, and it also brings a
-// copy back that somebody deleted by hand.
+// It is the projector's backstop rather than its cleanup path: the projector
+// holds a published interface until its copy is collected, so the ordinary
+// deletion never reaches here. What does reach here is a copy that outlived a
+// deletion nothing was there to hold, and a copy somebody deleted by hand, both
+// of which are answered from the copy itself.
+//
+// It asks only whether anything is published behind a copy. It deliberately does
+// not compare what the copy was published from: it reads the hub through a cache
+// that lags, and a copy that had just been replaced would look superseded to a
+// lagging read, so identity is the writer's question and presence is this one's.
 type NetworkInterfaceProjectionGCReconciler struct {
 	Projects ProjectClusterResolver
 

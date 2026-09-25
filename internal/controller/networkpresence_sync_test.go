@@ -14,6 +14,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
+	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
+
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 )
 
@@ -120,7 +122,7 @@ func TestNetworkPresenceSyncEnqueuesEveryPresenceOfTheNetworkOnce(t *testing.T) 
 	other.Namespace = s.hubNamespace
 	other.Name = "consumer-elsewhere"
 	other.Spec.Network = networkingv1alpha.NetworkRef{Name: "another-network"}
-	other.Spec.Location = networkingv1alpha.LocationReference{Name: s.locationName}
+	other.Spec.Location = locationsv1alpha1.LocationReference{Name: s.locationName}
 	require.NoError(t, s.hub.Create(s.ctx, other))
 
 	events := make(chan event.GenericEvent, 8)

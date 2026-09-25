@@ -43,7 +43,7 @@ func NewNetworkPresenceEvents() chan event.GenericEvent {
 // owns it when something it is derived from changes.
 //
 // NetworkPresenceReconciler is level-triggered on the hub and reads a Network, a
-// LocationBinding and a NetworkContext that all live in a project control plane
+// projected Location and a NetworkContext that all live in a project control plane
 // it does not watch. A network edited after a location already carries it, or a
 // context that finished being deleted, are both invisible there.
 //

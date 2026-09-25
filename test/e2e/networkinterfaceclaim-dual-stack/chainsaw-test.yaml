@@ -39,7 +39,10 @@ spec:
                   - IPv6
                 mtu: 1440
 
-    - name: Create a dual-stack network
+    - name: Create the network
+      description: |
+        New networks are IPv6-only, so the dual-stack context above stands for a
+        network that predates that rule.
       try:
         - create:
             resource:
@@ -52,7 +55,6 @@ spec:
                 ipam:
                   mode: Auto
                 ipFamilies:
-                  - IPv4
                   - IPv6
 
     - name: A dual-stack claim binds and publishes one address per family

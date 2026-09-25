@@ -120,6 +120,18 @@ func (c *mappedNamespaceResourceStrategy) ensureDownstreamNamespace(ctx context.
 	return downstreamNamespace, nil
 }
 
+// UpstreamOwnerClusterNameLabel carries the multicluster provider's name for
+// the upstream cluster, encoded as UpstreamClusterNameFromLabel's inverse.
+//
+// What that name refers to depends on the discovery mode (see
+// initializeClusterDiscovery in internal/cmd/manager):
+//
+//   - Milo provider: the project name. The provider keys clusters by the name of
+//     the cluster-scoped Project it discovered them from, so this label already
+//     records the project that owns a downstream resource. Nothing else in the
+//     operator needs to be consulted, and no project UID is available.
+//   - Single-cluster provider: the literal "single", which names a deployment
+//     cluster and no project.
 const (
 	UpstreamOwnerClusterNameLabel = "meta.datumapis.com/upstream-cluster-name"
 	UpstreamOwnerGroupLabel       = "meta.datumapis.com/upstream-group"
@@ -130,7 +142,8 @@ const (
 
 // UpstreamClusterNameFromLabel decodes the upstream cluster name from the value
 // of UpstreamOwnerClusterNameLabel, reversing the encoding applied when the
-// label is written ("cluster-" prefix, slashes encoded as underscores).
+// label is written ("cluster-" prefix, slashes encoded as underscores). What the
+// decoded name refers to is documented on UpstreamOwnerClusterNameLabel.
 //
 // It also tolerates labels written before the cluster name format changed in
 // #196: those carried a leading slash (e.g. "/project", encoded as

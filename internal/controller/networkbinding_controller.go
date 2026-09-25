@@ -21,6 +21,8 @@ import (
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
+	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
+
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 )
 
@@ -226,6 +228,6 @@ func networkContextNameForBinding(binding *networkingv1alpha.NetworkBinding) str
 	return networkContextName(binding.Spec.Network.Name, binding.Spec.Location)
 }
 
-func networkContextName(network string, location networkingv1alpha.LocationReference) string {
+func networkContextName(network string, location locationsv1alpha1.LocationReference) string {
 	return fmt.Sprintf("%s-%s", network, location.Name)
 }

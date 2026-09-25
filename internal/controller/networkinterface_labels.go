@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
+	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
 )
 
 // consumerLabelPrefixes are the prefixes a claim's own labels travel to its
@@ -44,7 +45,7 @@ func hasAnyPrefix(key string, prefixes []string) bool {
 // cell holds the interface.
 func propagatedInterfaceLabels(
 	claim *networkingv1alpha.NetworkInterfaceClaim,
-	location networkingv1alpha.LocationReference,
+	location locationsv1alpha1.LocationReference,
 ) map[string]string {
 	propagated := map[string]string{}
 	for key, value := range claim.Labels {

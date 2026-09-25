@@ -90,7 +90,6 @@ spec:
                   mode: Auto
                 ipFamilies:
                   - IPv6
-                  - IPv4
         - create:
             resource:
               apiVersion: networking.datumapis.com/v1alpha
@@ -103,7 +102,6 @@ spec:
                   mode: Auto
                 ipFamilies:
                   - IPv6
-                  - IPv4
         - create:
             resource:
               apiVersion: networking.datumapis.com/v1alpha
@@ -116,7 +114,6 @@ spec:
                   mode: Auto
                 ipFamilies:
                   - IPv6
-                  - IPv4
         - create:
             resource:
               apiVersion: networking.datumapis.com/v1alpha

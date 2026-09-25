@@ -4,6 +4,8 @@ package v1alpha
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
 )
 
 // NetworkBindingSpec defines the desired state of NetworkBinding
@@ -24,7 +26,7 @@ type NetworkBindingSpec struct {
 	//
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="spec.location is immutable"
-	Location LocationReference `json:"location,omitempty"`
+	Location locationsv1alpha1.LocationReference `json:"location,omitempty"`
 
 	// The resource that needs the network in this location.
 	//

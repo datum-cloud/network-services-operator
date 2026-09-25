@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -27,6 +28,7 @@ import (
 	"k8s.io/client-go/tools/events"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -4962,4 +4964,79 @@ func TestHTTPProxyReconcileNetworkServiceShards(t *testing.T) {
 	require.Len(t, owned, 1, "leaving the networkService kind must take its extra shards with it")
 	assert.Equal(t, discoveryv1.AddressTypeFQDN, owned["test-0-0"].AddressType)
 	routeNamesShardZero()
+}
+
+// TestCollectDesiredResourcesErrorResult covers what an operator is told when
+// collecting desired resources fails. The two recognised backend-missing cases
+// carry their own reason; everything else has to at least say what went wrong,
+// or the resource reports the generic "has not been programmed" default
+// however it failed and the cause is visible only in controller logs.
+func TestCollectDesiredResourcesErrorResult(t *testing.T) {
+	newCondition := func() *metav1.Condition {
+		return &metav1.Condition{
+			Type:    networkingv1alpha.HTTPProxyConditionProgrammed,
+			Status:  metav1.ConditionFalse,
+			Reason:  networkingv1alpha.HTTPProxyReasonPending,
+			Message: "The HTTPProxy has not been programmed",
+		}
+	}
+
+	t.Run("no error leaves the condition alone and continues", func(t *testing.T) {
+		condition := newCondition()
+		result, err, done := collectDesiredResourcesErrorResult(nil, condition)
+
+		assert.False(t, done)
+		assert.NoError(t, err)
+		assert.Equal(t, ctrl.Result{}, result)
+		assert.Equal(t, "The HTTPProxy has not been programmed", condition.Message)
+	})
+
+	t.Run("a missing instance backend gets its own reason and a requeue", func(t *testing.T) {
+		condition := newCondition()
+		result, err, done := collectDesiredResourcesErrorResult(&errInstanceBackendNotFound{name: "slice-1"}, condition)
+
+		assert.True(t, done)
+		// Swallowed deliberately: the pod may simply not have started yet, so
+		// this requeues rather than erroring.
+		assert.NoError(t, err)
+		assert.Equal(t, retryAfterConflict, result.RequeueAfter)
+		assert.Equal(t, networkingv1alpha.HTTPProxyReasonInstanceBackendNotFound, condition.Reason)
+		assert.Contains(t, condition.Message, "slice-1")
+	})
+
+	t.Run("any other failure still reaches the condition", func(t *testing.T) {
+		condition := newCondition()
+		result, err, done := collectDesiredResourcesErrorResult(errors.New("boom"), condition)
+
+		assert.True(t, done)
+		// Returned so controller-runtime requeues with backoff.
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "boom")
+		assert.Equal(t, ctrl.Result{}, result)
+
+		assert.Contains(t, condition.Message, "boom",
+			"the operator must be able to see the cause without reading controller logs")
+		// Pending, not Invalid: this path cannot tell a permanent
+		// configuration problem from a read that will succeed on retry.
+		assert.Equal(t, networkingv1alpha.HTTPProxyReasonPending, condition.Reason)
+	})
+}
+
+// The Host rewrite is rule-scoped in the Gateway API and cannot vary per
+// weighted backend, so backends on different hostnames are refused rather
+// than having one backend's hostname silently applied to all of them. The
+// message has to carry the way out, since it is what an operator sees on the
+// Programmed condition.
+func TestReconcileRuleRewriteHostnameConflictExplainsItself(t *testing.T) {
+	var agreed string
+	var have bool
+
+	require.NoError(t, reconcileRuleRewriteHostname(&agreed, &have, "a.example.com", 0, 0))
+
+	err := reconcileRuleRewriteHostname(&agreed, &have, "b.example.com", 0, 1)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "a.example.com")
+	assert.Contains(t, err.Error(), "b.example.com")
+	assert.Contains(t, err.Error(), "Host header override",
+		"the error must name a way out, not just state the conflict")
 }

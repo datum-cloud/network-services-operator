@@ -17,6 +17,8 @@ import (
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
+	"go.miloapis.com/locations/pkg/locationidentity"
+
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	"go.datum.net/network-services-operator/internal/config"
 	"go.datum.net/network-services-operator/internal/downstreamclient"
@@ -48,6 +50,7 @@ type NetworkInterfaceWriteBackReconciler struct {
 
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkinterfaces,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkinterfaces/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=locations.miloapis.com,resources=servinglocations,verbs=get;list;watch
 
 func (r *NetworkInterfaceWriteBackReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
 	cl, err := r.mgr.GetCluster(ctx, req.ClusterName)
@@ -55,7 +58,19 @@ func (r *NetworkInterfaceWriteBackReconciler) Reconcile(ctx context.Context, req
 		return ctrl.Result{}, err
 	}
 
-	return ctrl.Result{}, r.publish(ctx, cl.GetClient(), req.NamespacedName)
+	// A name held by a copy that is being torn down is a state to come back to,
+	// not a reconcile that failed.
+	if err := r.publish(ctx, cl.GetClient(), req.NamespacedName); err != nil {
+		var held *projectionSlotHeld
+		if errors.As(err, &held) {
+			log.FromContext(ctx).Info("waiting for the copy holding this name to finish being torn down",
+				"copy", held.key.String())
+			return ctrl.Result{RequeueAfter: projectionSlotRetry}, nil
+		}
+		return ctrl.Result{}, err
+	}
+
+	return ctrl.Result{}, nil
 }
 
 func (r *NetworkInterfaceWriteBackReconciler) publish(
@@ -168,9 +183,9 @@ func (r *NetworkInterfaceWriteBackReconciler) sweep(ctx context.Context) error {
 }
 
 func (r *NetworkInterfaceWriteBackReconciler) location(ctx context.Context) (string, error) {
-	identity, err := ResolveLocationIdentity(ctx, r.localReader, r.Location)
+	identity, err := resolveLocationIdentity(ctx, r.localReader, r.Location)
 	if err != nil {
-		var unresolved *LocationUnresolved
+		var unresolved *locationidentity.LocationUnresolved
 		if errors.As(err, &unresolved) {
 			return "", nil
 		}

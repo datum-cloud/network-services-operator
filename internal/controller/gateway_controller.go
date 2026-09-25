@@ -688,6 +688,19 @@ func certIsReady(cert *cmv1.Certificate) bool {
 	return false
 }
 
+// certIsServing reports whether a Certificate holds a certificate that is
+// usable right now: issued, started, and not yet expired. A Certificate with no
+// expiry recorded has never issued one.
+func certIsServing(cert *cmv1.Certificate, now time.Time) bool {
+	if !certIsReady(cert) {
+		return false
+	}
+	if cert.Status.NotBefore != nil && cert.Status.NotBefore.After(now) {
+		return false
+	}
+	return cert.Status.NotAfter != nil && cert.Status.NotAfter.After(now)
+}
+
 // These messages are shown to customers, so they stay plain and name the
 // hostname affected.
 
@@ -1119,6 +1132,18 @@ func (r *GatewayReconciler) reissueFailedCertificate(
 			logger.V(1).Info("cleared reissuance count for healthy Certificate", "certificate", certName)
 			gatewayChanged = true
 		}
+		return 0, gatewayChanged
+	}
+
+	if certIsServing(cert, time.Now()) {
+		if clearReissuanceCount(downstreamGateway, certName) {
+			gatewayChanged = true
+		}
+		logger.V(1).Info("Certificate failed but is still serving, deferring to renewal",
+			"certificate", certName,
+			"lastFailureTime", cert.Status.LastFailureTime.Time,
+			"notAfter", cert.Status.NotAfter.Time,
+		)
 		return 0, gatewayChanged
 	}
 

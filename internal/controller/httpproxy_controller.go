@@ -115,6 +115,17 @@ func collectDesiredResourcesErrorResult(err error, programmedCondition *metav1.C
 		return ctrl.Result{RequeueAfter: retryAfterConflict}, nil, true
 	}
 
+	// Anything else still requeues with backoff, but say why on the
+	// condition as well as in the logs. Without this the resource reports
+	// only the generic "has not been programmed" default however it failed,
+	// so a configuration mistake is indistinguishable from a transient one
+	// and the actual cause is visible solely to whoever can read controller
+	// logs.
+	//
+	// The reason stays Pending rather than becoming Invalid: a collect
+	// failure can as easily be a read that succeeds on retry as a permanent
+	// configuration problem, and the reason should not claim to know which.
+	programmedCondition.Message = fmt.Sprintf("The HTTPProxy cannot be programmed: %s", err)
 	return ctrl.Result{}, fmt.Errorf("failed to collect desired resources: %w", err), true
 }
 
@@ -1012,7 +1023,9 @@ func reconcileRuleRewriteHostname(agreed *string, have *bool, hostname string, r
 	}
 	if *agreed != hostname {
 		return fmt.Errorf(
-			"backend %d in rule %d needs Host header rewritten to %q, which conflicts with another backend in the same rule that needs %q; backends sharing a rule must resolve to the same Host rewrite target",
+			"backend %d in rule %d needs Host header rewritten to %q, which conflicts with another backend in the same rule that needs %q; "+
+				"backends sharing a rule must resolve to the same Host rewrite target. "+
+				"Set a Host header override on the rule so every backend agrees, or give each backend its own rule",
 			backendIndex, ruleIndex, hostname, *agreed,
 		)
 	}

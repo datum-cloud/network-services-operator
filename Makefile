@@ -60,8 +60,13 @@ fmt: ## Run go fmt against code.
 vet: ## Run go vet against code.
 	go vet ./...
 
+.PHONY: locations-crds
+locations-crds: kustomize ## Render the locations service CRDs envtest installs.
+	mkdir -p $(LOCALBIN)/crds/locations
+	$(KUSTOMIZE) build config/tools/locations-crds -o $(LOCALBIN)/crds/locations
+
 .PHONY: test
-test: manifests generate fmt vet envtest ## Run tests.
+test: manifests generate fmt vet envtest locations-crds ## Run tests.
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" go test $$(go list ./... | grep -v /e2e) -timeout 20m -coverprofile cover.out
 
 # The e2e suite runs against the two-cluster prod-fidelity env; bring it up and
@@ -97,6 +102,40 @@ lint-fix: golangci-lint ## Run golangci-lint linter and perform fixes
 .PHONY: build
 build: manifests generate fmt vet ## Build manager binary.
 	go build -o bin/network-services cmd/main.go
+
+.PHONY: build-alb-mcp
+build-alb-mcp: $(LOCALBIN) ## Build the alb-mcp server binary into bin/.
+	go build -o $(LOCALBIN)/alb-mcp ./cmd/alb-mcp
+
+.PHONY: run-alb-mcp
+run-alb-mcp: ## Run alb-mcp against the control plane KUBECONFIG names.
+	go run ./cmd/alb-mcp
+
+##@ datumctl plugin
+
+PLUGIN_VERSION ?= $(shell git describe --tags --dirty --always 2>/dev/null || echo dev)
+DATUMCTL_PLUGIN_DIR ?= $(HOME)/.datumctl/plugins
+
+.PHONY: build-plugin
+build-plugin: $(LOCALBIN) ## Build the datumctl-alb plugin binary into bin/.
+	go build -ldflags "-X main.version=$(PLUGIN_VERSION)" -o $(LOCALBIN)/datumctl-alb ./cmd/datumctl-alb
+
+.PHONY: install-plugin
+install-plugin: build-plugin ## Install the datumctl-alb plugin into ~/.datumctl/plugins.
+	mkdir -p $(DATUMCTL_PLUGIN_DIR)
+	install -m 0755 $(LOCALBIN)/datumctl-alb $(DATUMCTL_PLUGIN_DIR)/alb
+	@echo "Installed $(DATUMCTL_PLUGIN_DIR)/alb ($(PLUGIN_VERSION)); try 'datumctl alb --help'"
+
+GORELEASER ?= goreleaser
+
+.PHONY: release-plugin-snapshot
+release-plugin-snapshot: ## Build the plugin release archives locally into dist/ (no publish).
+	@command -v $(GORELEASER) >/dev/null 2>&1 || { \
+		echo "goreleaser is not installed. Install it (e.g. 'brew install goreleaser') or set GORELEASER=<path>."; \
+		exit 1; \
+	}
+	$(GORELEASER) release --config .goreleaser-plugin.yaml --snapshot --clean
+
 
 .PHONY: run
 run: manifests generate fmt vet ## Run a controller from your host.
@@ -288,7 +327,7 @@ api-docs: crdoc kustomize
 	TMP_DIR=$$(mktemp -d) ; \
 	$(KUSTOMIZE) build $$TMP_MANIFEST_DIR -o $$TMP_DIR ;\
 	mkdir -p docs/api ;\
-	for crdmanifest in $$TMP_DIR/*; do \
+	for crdmanifest in $$TMP_DIR/*.networking.datumapis.com.yaml; do \
 	  filename="$$(basename -s .networking.datumapis.com.yaml $$crdmanifest)" ;\
 	  filename="$${filename#apiextensions.k8s.io_v1_customresourcedefinition_}" ;\
 	  $(CRDOC) --resources $$crdmanifest --output docs/api/$$filename.md ;\

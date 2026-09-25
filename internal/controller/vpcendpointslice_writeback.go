@@ -28,6 +28,7 @@ import (
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	"go.datum.net/network-services-operator/internal/config"
 	"go.datum.net/network-services-operator/internal/downstreamclient"
+	"go.miloapis.com/locations/pkg/locationidentity"
 )
 
 const (
@@ -453,9 +454,9 @@ func (r *VPCEndpointSliceWriteBackReconciler) resync(ctx context.Context) error 
 }
 
 func (r *VPCEndpointSliceWriteBackReconciler) location(ctx context.Context) (string, error) {
-	identity, err := ResolveLocationIdentity(ctx, r.localReader, r.Location)
+	identity, err := resolveLocationIdentity(ctx, r.localReader, r.Location)
 	if err != nil {
-		var unresolved *LocationUnresolved
+		var unresolved *locationidentity.LocationUnresolved
 		if errors.As(err, &unresolved) {
 			return "", nil
 		}

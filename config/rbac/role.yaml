@@ -41,14 +41,6 @@ rules:
   - patch
   - update
 - apiGroups:
-  - ""
-  - events.k8s.io
-  resources:
-  - events
-  verbs:
-  - create
-  - patch
-- apiGroups:
   - acme.cert-manager.io
   resources:
   - challenges
@@ -73,14 +65,6 @@ rules:
   - cloud.datumapis.com
   resources:
   - vpcattachments
-  verbs:
-  - get
-  - list
-  - watch
-- apiGroups:
-  - cluster.karmada.io
-  resources:
-  - clusters
   verbs:
   - get
   - list
@@ -149,6 +133,13 @@ rules:
   - get
   - list
   - watch
+- apiGroups:
+  - events.k8s.io
+  resources:
+  - events
+  verbs:
+  - create
+  - patch
 - apiGroups:
   - externaldns.k8s.io
   resources:
@@ -245,6 +236,15 @@ rules:
   - patch
   - update
 - apiGroups:
+  - locations.miloapis.com
+  resources:
+  - locations
+  - servinglocations
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
   - networking.datumapis.com
   resources:
   - connectoradvertisements
@@ -258,7 +258,6 @@ rules:
   - networkinterfaces
   - networkpolicies
   - networks
-  - servinglocations
   - subnetclaims
   - subnets
   - trafficprotectionpolicies
@@ -313,22 +312,8 @@ rules:
   - networking.datumapis.com
   resources:
   - connectorclasses
-  - locationbindings
-  - locations
   - networkservices
   verbs:
   - get
   - list
-  - watch
-- apiGroups:
-  - policy.karmada.io
-  resources:
-  - clusterpropagationpolicies
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
   - watch

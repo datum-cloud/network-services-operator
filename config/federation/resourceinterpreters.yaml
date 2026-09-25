@@ -204,11 +204,11 @@ spec:
 apiVersion: config.karmada.io/v1alpha1
 kind: ResourceInterpreterCustomization
 metadata:
-  name: externaldns.k8s.io-dnsendpoint
+  name: gateway.envoyproxy.io-securitypolicy
 spec:
   target:
-    apiVersion: externaldns.k8s.io/v1alpha1
-    kind: DNSEndpoint
+    apiVersion: gateway.envoyproxy.io/v1alpha1
+    kind: SecurityPolicy
   customizations:
     statusAggregation:
       luaScript: >
@@ -225,10 +225,8 @@ spec:
             return desiredObj
           end
 
-          -- TODO(jreese) implement proper aggregation logic. Would be good to
-          -- think through how to represent propagation status across clusters.
-          if item.status.observedGeneration ~= nil then
-            desiredObj.status.observedGeneration = item.status.observedGeneration
+          if item.status.ancestors ~= nil then
+            desiredObj.status.ancestors = item.status.ancestors
           end
           return desiredObj
         end

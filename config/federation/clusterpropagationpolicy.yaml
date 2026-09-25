@@ -155,12 +155,3 @@ spec:
       matchExpressions:
       - key: meta.datumapis.com/upstream-cluster-name
         operator: Exists
-
-  # External DNS
-  - apiVersion: externaldns.k8s.io/v1alpha1
-    kind: DNSEndpoint
-    # TODO(jreese) get labels on these
-    # labelSelector:
-    #   matchExpressions:
-    #   - key: meta.datumapis.com/upstream-cluster-name
-    #     operator: Exists

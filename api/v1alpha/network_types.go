@@ -24,6 +24,10 @@ type NetworkSpec struct {
 
 	// IP Families to permit on a network. Defaults to IPv6.
 	//
+	// Networks are IPv6-only: a new network, or a change that adds IPv4 to an
+	// existing one, is refused if this lists IPv4. IPv4 remains in the schema
+	// so networks created before this rule stay writable.
+	//
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:default={IPv6}
 	IPFamilies []IPFamily `json:"ipFamilies,omitempty"`
@@ -119,7 +123,9 @@ type NetworkIPAM struct {
 	// +kubebuilder:validation:Enum=Auto;Policy
 	Mode NetworkIPAMMode `json:"mode"`
 
-	// IPv4 range to use in auto mode networks. Defaults to 10.128.0.0/9.
+	// Not accepted. Networks are IPv6-only, so a new network, or a change that
+	// sets this on an existing one, is refused. It remains in the schema so
+	// networks created before this rule stay writable.
 	//
 	// +kubebuilder:validation:Optional
 	IPV4Range *string `json:"ipv4Range,omitempty"`

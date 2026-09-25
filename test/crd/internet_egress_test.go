@@ -14,6 +14,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
+	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
 )
 
 func egressNetwork(name string, internet *networkingv1alpha.NetworkInternetEgress) *networkingv1alpha.Network {
@@ -482,7 +483,7 @@ func TestNetworkContextReportsNoEgressAddress(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "egress-no-status", Namespace: "default"},
 		Spec: networkingv1alpha.NetworkContextSpec{
 			Network:  networkingv1alpha.LocalNetworkRef{Name: "some-network"},
-			Location: networkingv1alpha.LocationReference{Name: "loc"},
+			Location: locationsv1alpha1.LocationReference{Name: "loc"},
 		},
 	}
 	require.NoError(t, cl.Create(ctx, networkContext))
@@ -530,7 +531,7 @@ func egressContext(
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
 		Spec: networkingv1alpha.NetworkContextSpec{
 			Network:  networkingv1alpha.LocalNetworkRef{Name: "some-network"},
-			Location: networkingv1alpha.LocationReference{Name: "loc"},
+			Location: locationsv1alpha1.LocationReference{Name: "loc"},
 		},
 	}
 	if internet != nil {

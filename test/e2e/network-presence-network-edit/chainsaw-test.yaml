@@ -28,14 +28,15 @@ spec:
                   meta.datumapis.com/upstream-namespace: presence-edit-project
         - apply:
             resource:
-              apiVersion: networking.datumapis.com/v1alpha
-              kind: LocationBinding
+              apiVersion: locations.miloapis.com/v1alpha1
+              kind: Location
               metadata:
                 name: presence-edit-loc
               spec:
-                locationRef:
-                  name: presence-edit-loc
-                locationClassName: datum-managed
+                locationClassRef:
+                  name: datum-managed
+                topology:
+                  topology.datum.net/city-code: IAD
         - apply:
             resource:
               apiVersion: networking.datumapis.com/v1alpha
@@ -101,7 +102,6 @@ spec:
                 mtu: 8856
                 ipFamilies:
                   - IPv6
-                  - IPv4
 
     - name: Assert the location learns
       try:
@@ -117,5 +117,4 @@ spec:
                 mtu: 8856
                 ipFamilies:
                   - IPv6
-                  - IPv4
 

@@ -58,7 +58,6 @@ spec:
                 ipam:
                   mode: Auto
                 ipFamilies:
-                  - IPv4
                   - IPv6
         - create:
             resource:

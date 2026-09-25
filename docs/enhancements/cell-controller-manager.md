@@ -42,6 +42,12 @@ The boundary is what a controller *writes*, not what it reads. Gateway, domain, 
 
 `config/cell` sets no `namePrefix`. The cell's resource names are short enough to stay inside the 63-character limit on Service names, which the prefixed form exceeded.
 
+The [cell bundle](../../config/cell/README.md) contains only controller resources.
+Its namespace is supplied by the platform, NSO APIs come from `config/crd/downstream`,
+and Location/ServingLocation come from the locations service. Those prerequisites
+must be ready before the cell controllers reconcile; they are not re-owned by
+the controller bundle.
+
 The component gives the cell Deployment its own image name so the component's image transformer, which applies to the parent's whole accumulation, cannot rewrite the control-plane Deployment.
 
 `location` is optional and the component sets none. A cell learns which location it is from the `ServingLocation` delivered to it, and falls back to `location` only when none has been delivered; with neither, it reports a waiting state on the claims it cannot fulfil rather than failing to start. An overlay pinning a location replaces the whole ConfigMap: two cells sharing a location both fulfil and both release the same claims' addresses, and nothing detects it.

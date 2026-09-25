@@ -3,33 +3,48 @@ groups:
   interval: 30s
   rules:
   - alert: GatewayNotReadySLOViolation
-    expr: |
-      sum(time() - datum_cloud_networking_gateway_created) by (resourcemanager_datumapis_com_project_name, resource_namespace, resource_name) > 60
-      unless (
-        sum(datum_cloud_networking_gateway_status{type=~"Accepted|Programmed"} == 1) by (resourcemanager_datumapis_com_project_name, resource_namespace, resource_name) == 2
-      )
+    expr: "(\n  sum(time() - datum_cloud_networking_gateway_created) by (resourcemanager_datumapis_com_project_name, resource_namespace, resource_name) > 60\n  unless (\n    sum(datum_cloud_networking_gateway_status{type=~\"\
+      Accepted|Programmed\"} == 1) by (resourcemanager_datumapis_com_project_name, resource_namespace, resource_name) == 2\n  )\n)\nunless (\n  (\n    max by (resourcemanager_datumapis_com_project_name,\
+      \ resource_namespace, resource_name) (time() - datum_cloud_networking_gateway_created) > 604800\n  )\n  unless (\n    sum by (resourcemanager_datumapis_com_project_name, resource_namespace, resource_name)\
+      \ (\n      max by (resourcemanager_datumapis_com_project_name, resource_namespace, resource_name, type) (\n        max_over_time(datum_cloud_networking_gateway_status{type=~\"Accepted|Programmed\"\
+      }[7d])\n      )\n    ) == 2\n  )\n)\n"
     for: 0s
     labels:
       severity: critical
-      slo_violation: "true"
+      slo_violation: 'true'
+      service: network-services
+      team: sre
     annotations:
-      summary: "Gateway {{ $labels.resource_name }} is taking longer than 60 seconds to reach Ready status"
-      description: "Gateway {{ $labels.resource_name }} in namespace {{ $labels.resource_namespace }} has been in creation state for {{ $value }} seconds without reaching Ready status (Accepted=True AND Programmed=True), which exceeds the 60-second SLO threshold."
-
+      summary: Gateway {{ $labels.resource_name }} is taking longer than 60 seconds to reach Ready status
+      description: Gateway {{ $labels.resource_name }} in namespace {{ $labels.resource_namespace }} has been in creation state for {{ $value }} seconds without reaching Ready status (Accepted=True AND
+        Programmed=True), which exceeds the 60-second SLO threshold.
   - alert: GatewayDegradedSLOViolation
-    expr: |
-      (
-        sum(time() - datum_cloud_networking_gateway_status_condition_last_transition_time{type=~"Accepted|Programmed", status="False"})
-        by (resourcemanager_datumapis_com_project_name, resource_namespace, resource_name)
-      ) > 60
-      and (
-        sum(datum_cloud_networking_gateway_status{type=~"Accepted|Programmed"} == 1)
-        by (resourcemanager_datumapis_com_project_name, resource_namespace, resource_name) < 2
-      )
+    expr: "(\n  (\n    sum(time() - datum_cloud_networking_gateway_status_condition_last_transition_time{type=~\"Accepted|Programmed\", status=\"False\"})\n    by (resourcemanager_datumapis_com_project_name,\
+      \ resource_namespace, resource_name)\n  ) > 60\n  and (\n    sum(datum_cloud_networking_gateway_status{type=~\"Accepted|Programmed\"} == 1)\n    by (resourcemanager_datumapis_com_project_name, resource_namespace,\
+      \ resource_name) < 2\n  )\n)\nunless (\n  (\n    max by (resourcemanager_datumapis_com_project_name, resource_namespace, resource_name) (time() - datum_cloud_networking_gateway_created) > 604800\n\
+      \  )\n  unless (\n    sum by (resourcemanager_datumapis_com_project_name, resource_namespace, resource_name) (\n      max by (resourcemanager_datumapis_com_project_name, resource_namespace, resource_name,\
+      \ type) (\n        max_over_time(datum_cloud_networking_gateway_status{type=~\"Accepted|Programmed\"}[7d])\n      )\n    ) == 2\n  )\n)\n"
     for: 0s
     labels:
       severity: critical
-      slo_violation: "true"
+      slo_violation: 'true'
+      service: network-services
+      team: sre
     annotations:
-      summary: "Gateway {{ $labels.resource_name }} has been degraded for over 60 seconds"
-      description: "Gateway {{ $labels.resource_name }} in namespace {{ $labels.resource_namespace }} has been in a degraded state for over 60 seconds without recovering, which exceeds the 60-second SLO threshold."
+      summary: Gateway {{ $labels.resource_name }} has been degraded for over 60 seconds
+      description: Gateway {{ $labels.resource_name }} in namespace {{ $labels.resource_namespace }} has been in a degraded state for over 60 seconds without recovering, which exceeds the 60-second SLO
+        threshold.
+  - alert: GatewayNeverProgrammed
+    expr: "(\n  max by (resourcemanager_datumapis_com_project_name, resource_namespace, resource_name) (time() - datum_cloud_networking_gateway_created) > 604800\n)\nunless (\n  sum by (resourcemanager_datumapis_com_project_name,\
+      \ resource_namespace, resource_name) (\n    max by (resourcemanager_datumapis_com_project_name, resource_namespace, resource_name, type) (\n      max_over_time(datum_cloud_networking_gateway_status{type=~\"\
+      Accepted|Programmed\"}[7d])\n    )\n  ) == 2\n)\n"
+    for: 1h
+    labels:
+      service: network-services
+      severity: info
+      team: delivery
+    annotations:
+      description: Gateway {{ $labels.resource_name }} in namespace {{ $labels.resource_namespace }} was created {{ $value }} seconds ago and has not been both Accepted and Programmed at any point in the
+        last 7 days. It no longer pages, because a 60-second readiness objective cannot be met retroactively, but it is still broken and still counts against the readiness SLO.
+      runbook_url: https://github.com/datum-cloud/infra/blob/main/docs/runbooks/gateway-never-programmed.md
+      summary: Gateway {{ $labels.resource_name }} has never reached Ready and has stopped paging

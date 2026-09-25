@@ -1,0 +1,21 @@
+# Cluster-internal only: the assistant reaches /mcp over this Service's DNS
+# name, and no Gateway or HTTPRoute fronts it. The pod serves plain HTTP and the
+# network layer owns transport security.
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app.kubernetes.io/instance: alb-mcp
+    app.kubernetes.io/name: alb-mcp
+  name: alb-mcp
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      protocol: TCP
+  selector:
+    app.kubernetes.io/component: mcp-server
+    app.kubernetes.io/instance: alb-mcp
+    app.kubernetes.io/name: alb-mcp

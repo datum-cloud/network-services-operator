@@ -245,6 +245,12 @@ func (s *Server) PostTranslateModify(
 	}
 	s.markTPPsProgrammed(ctx, appliedTPPs)
 
+	// Whether the branded error page is configured at all. Both the connector
+	// offline path and the empty-backend path route user traffic to the shared
+	// endpoint-less cluster only when there is a page to serve; with no page,
+	// each keeps the answer it gave before.
+	brandedOffline := !s.cfg.LocalReply.Disabled && s.cfg.LocalReply.OfflineBodyHTML != ""
+
 	// --- Connector family ---
 	// Replace clusters BEFORE adding CONNECT routes so route wiring sees the
 	// final cluster set. Apply connector routes AFTER TPP so CONNECT routes
@@ -267,7 +273,7 @@ func (s *Server) PostTranslateModify(
 
 	_, connRoutesSpan := tr.Start(mctx, "connector.routes")
 	for _, rc := range routes {
-		n, offlineRt, mutErr := mutate.ApplyConnectorRoutes(rc, idx, replaced, connOffline)
+		n, offlineRt, mutErr := mutate.ApplyConnectorRoutes(rc, idx, replaced, connOffline, brandedOffline)
 		if mutErr != nil {
 			s.log.Error("apply connector routes", "route_config", rc.GetName(), "err", mutErr)
 			connRoutesSpan.RecordError(mutErr)
@@ -300,14 +306,23 @@ func (s *Server) PostTranslateModify(
 	// serve, rewriting would only trade EG's deterministic 503 for Envoy's
 	// generic no_healthy_upstream and buy nothing.
 	var emptyBackendCount int
-	if !s.cfg.LocalReply.Disabled && s.cfg.LocalReply.OfflineBodyHTML != "" {
+	if brandedOffline {
 		_, emptyBackendSpan := tr.Start(mctx, "emptybackend.routes")
 		for _, rc := range routes {
 			emptyBackendCount += mutate.RouteEmptyBackendsToOfflineCluster(rc)
 		}
-		if emptyBackendCount > 0 {
+		// Each family has its own shared sink, added only when something points
+		// at it, so the data-plane stats say which reason a request hit.
+		wanted := map[string]bool{
+			mutate.OfflineBackendClusterName: emptyBackendCount > 0,
+			mutate.OfflineTunnelClusterName:  offlineRtCount > 0,
+		}
+		for name, needed := range wanted {
+			if !needed {
+				continue
+			}
 			var ebErr error
-			clusters, _, ebErr = mutate.EnsureOfflineBackendCluster(clusters)
+			clusters, _, ebErr = mutate.EnsureOfflineCluster(clusters, name)
 			if ebErr != nil {
 				s.log.Error("ensure offline backend cluster", "err", ebErr)
 				emptyBackendSpan.RecordError(ebErr)

@@ -163,15 +163,14 @@ var (
 	)
 
 	// ConnectorOfflineRoutesTotal counts total user-facing forwarding routes
-	// rewritten to a tunnel-offline 503 direct_response across all hook
-	// invocations. Each increment = one route that previously targeted an
-	// endpoint-less offline-connector cluster and now returns a deterministic
-	// 503 (instead of Envoy's generic 503 no_healthy_upstream). Use rate()/sum()
-	// to derive per-build averages.
+	// moved off an offline connector's own cluster across all hook invocations.
+	// With the branded error page configured they are pointed at the shared
+	// endpoint-less cluster, so the user gets the offline page; without it they
+	// return a deterministic 503. Use rate()/sum() to derive per-build averages.
 	ConnectorOfflineRoutesTotal = promauto.NewCounter(
 		prometheus.CounterOpts{
 			Name: "nso_extension_connector_offline_routes_total",
-			Help: "Total user-facing forwarding routes rewritten to a tunnel-offline 503 direct_response across all hook invocations.",
+			Help: "Total user-facing forwarding routes moved off an offline connector cluster across all hook invocations.",
 		},
 	)
 

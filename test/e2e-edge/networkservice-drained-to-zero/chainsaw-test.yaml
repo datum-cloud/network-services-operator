@@ -1,0 +1,330 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+#
+# The transition production hit in issue #502: a NetworkService that was
+# serving loses its last member.
+#
+# A service resolves one member, a server answers at that member's allocated
+# address, and a real request through the edge comes back 200. The claim is
+# then released — the equivalent of the workload behind it going to zero — and
+# the same request is sent again.
+#
+# The question this holds open is what changes when that happens. The service's
+# own status does change. Whether anything on the HTTPProxy, on the downstream
+# Gateway, or on the downstream HTTPRoute changes with it is the gap, and both
+# responses are printed side by side so the difference is the record.
+#
+# The member address is bound on the downstream node and served by a
+# host-network pod, exactly as in ../networkservice-endpoints — there is no
+# compute in this environment, so nothing answers at an allocated address on
+# its own.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: networkservice-drained-to-zero
+spec:
+  concurrent: false
+  cluster: nso-upstream
+  namespaceTemplate:
+    metadata:
+      labels:
+        meta.datumapis.com/upstream-cluster-name: cluster-project-alpha
+        meta.datumapis.com/upstream-namespace: default
+  bindings:
+    - name: downstreamGatewayClass
+      value: datum-downstream-gateway-e2e
+    - name: envoyNamespace
+      value: datum-downstream-gateway
+    - name: downstreamNode
+      value: nso-downstream-control-plane
+    - name: boundAddressFile
+      value: /tmp/nsvc-drain-bound-addresses
+  steps:
+    - name: Deliver the network's presence to this location
+      try:
+        - apply:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkContext
+              metadata:
+                name: drain-net-us-central-1
+              spec:
+                network:
+                  name: drain-net
+                location:
+                  name: us-central-1
+                ipFamilies:
+                  - IPv4
+                mtu: 1440
+
+    - name: One claim binds and its interface carries what a service selects
+      try:
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Network
+              metadata:
+                name: drain-net
+              spec:
+                ipam:
+                  mode: Auto
+                ipFamilies:
+                  - IPv6
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterfaceClaim
+              metadata:
+                name: drain-member-1
+                labels:
+                  compute.datumapis.com/workload-name: drain
+              spec:
+                network:
+                  name: drain-net
+                ipFamilies:
+                  - IPv4
+        - script:
+            timeout: 300s
+            content: |
+              set -eu
+              kubectl -n "$NAMESPACE" wait networkinterfaceclaim drain-member-1 \
+                --for=condition=Bound --timeout=150s
+              kubectl -n "$NAMESPACE" wait networkinterfaceclaim drain-member-1 \
+                --for=condition=Allocated --timeout=150s
+              kubectl -n "$NAMESPACE" patch networkinterface drain-member-1 \
+                --subresource=status --type=merge -p \
+                '{"status":{"conditions":[{"type":"HolderAvailable","status":"True","reason":"HolderAvailable","message":"Reported by the scenario in place of a workload instance","lastTransitionTime":"2026-01-01T00:00:00Z"}]}}'
+
+    - name: The service resolves its one member
+      try:
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkService
+              metadata:
+                name: drain-svc
+              spec:
+                networkInterfaces:
+                  selector:
+                    matchLabels:
+                      compute.datumapis.com/workload-name: drain
+                ports:
+                  - name: http
+                    port: 8080
+        - assert:
+            timeout: 120s
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkService
+              metadata:
+                name: drain-svc
+              status:
+                summary:
+                  locations: 1
+                  members: 1
+                  healthy: 1
+                (conditions[?type == 'Ready'] | [0].status): "True"
+
+    - name: Make the member answer at its allocated address
+      try:
+        - script:
+            env:
+              - name: NODE
+                value: ($downstreamNode)
+              - name: BOUND_FILE
+                value: ($boundAddressFile)
+            content: |
+              set -eu
+              : > "${BOUND_FILE}.${NAMESPACE}"
+              addr=$(kubectl -n "$NAMESPACE" get networkinterfaceclaim drain-member-1 \
+                -o jsonpath='{.status.addresses[0].address}')
+              echo "binding ${addr} on ${NODE}"
+              docker exec "$NODE" ip addr add "$addr" dev lo
+              echo "$addr" >> "${BOUND_FILE}.${NAMESPACE}"
+        - apply:
+            cluster: nso-downstream
+            file: ../_fixtures/network-service-member.yaml
+        - script:
+            cluster: nso-downstream
+            timeout: 300s
+            content: |
+              kubectl -n default wait pod/network-service-member --for=condition=Ready --timeout=240s
+      cleanup:
+        - script:
+            env:
+              - name: NODE
+                value: ($downstreamNode)
+              - name: BOUND_FILE
+                value: ($boundAddressFile)
+            content: |
+              set -u
+              if [ -f "${BOUND_FILE}.${NAMESPACE}" ]; then
+                while read -r addr; do
+                  [ -n "$addr" ] || continue
+                  docker exec "$NODE" ip addr del "$addr" dev lo || true
+                done < "${BOUND_FILE}.${NAMESPACE}"
+                rm -f "${BOUND_FILE}.${NAMESPACE}"
+              fi
+        - script:
+            cluster: nso-downstream
+            content: |
+              kubectl -n default delete pod network-service-member drain-conntest \
+                --ignore-not-found --force --grace-period=0 || true
+
+    - name: The proxy over it serves a real 200
+      try:
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: HTTPProxy
+              metadata:
+                name: drain-proxy
+              spec:
+                rules:
+                  - matches:
+                      - path:
+                          type: PathPrefix
+                          value: /
+                    backends:
+                      - networkService:
+                          name: drain-svc
+                          port: http
+        - script:
+            timeout: 300s
+            content: |
+              set -eu
+              for i in $(seq 1 40); do
+                H=$(kubectl -n "$NAMESPACE" get httpproxy drain-proxy \
+                  -o jsonpath='{.status.canonicalHostname}' 2>/dev/null || true)
+                if [ -n "${H}" ]; then echo "canonical hostname: ${H}"; exit 0; fi
+                sleep 5
+              done
+              echo "ERROR: HTTPProxy never published a canonicalHostname" >&2
+              exit 1
+        - script:
+            skipCommandOutput: true
+            skipLogOutput: true
+            content: |
+              kubectl -n "$NAMESPACE" get httpproxy drain-proxy -o jsonpath='{.status.canonicalHostname}'
+            outputs:
+              - name: proxyHostname
+                value: ($stdout)
+        - apply:
+            cluster: nso-downstream
+            resource:
+              apiVersion: v1
+              kind: Pod
+              metadata:
+                name: drain-conntest
+                namespace: default
+              spec:
+                containers:
+                  - name: curl
+                    image: curlimages/curl:8.11.1
+                    command: ["sleep", "infinity"]
+                    resources:
+                      requests:
+                        cpu: 50m
+                        memory: 64Mi
+                      limits:
+                        cpu: 100m
+                        memory: 128Mi
+                terminationGracePeriodSeconds: 0
+        - script:
+            cluster: nso-downstream
+            timeout: 480s
+            env:
+              - name: HOST
+                value: ($proxyHostname)
+              - name: OWNING_GC
+                value: ($downstreamGatewayClass)
+              - name: ENVOY_NS
+                value: ($envoyNamespace)
+            content: |
+              set -eu
+              kubectl -n default wait pod/drain-conntest --for=condition=Ready --timeout=240s
+              IP=$(kubectl get svc -n "$ENVOY_NS" \
+                -l "gateway.envoyproxy.io/owning-gatewayclass=${OWNING_GC}" \
+                -o jsonpath='{.items[0].spec.clusterIP}')
+              ok=""
+              for i in $(seq 1 30); do
+                code=$(kubectl -n default exec drain-conntest -- \
+                  curl -ksS -o /dev/null -w '%{http_code}' --max-time 15 \
+                  --resolve "${HOST}:80:${IP}" "http://${HOST}/get" 2>/dev/null || true)
+                echo "attempt ${i}: ${code}"
+                if [ "${code}" = "200" ]; then ok="yes"; break; fi
+                sleep 5
+              done
+              [ -n "$ok" ] || { echo "ERROR: the member never served"; exit 1; }
+              echo "BEFORE: the proxy serves 200 from its one member"
+
+    - name: The workload goes to zero
+      description: |
+        The claim is released, which retires the interface. Nothing else is
+        touched: no edit to the service, the proxy, or anything downstream.
+      try:
+        - delete:
+            ref:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterfaceClaim
+              name: drain-member-1
+        - assert:
+            timeout: 180s
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkService
+              metadata:
+                name: drain-svc
+              status:
+                summary:
+                  locations: 0
+                  members: 0
+                  healthy: 0
+                (conditions[?type == 'MembersResolved'] | [0].status): "False"
+                (conditions[?type == 'MembersResolved'] | [0].reason): NoMatchingInterfaces
+        - script:
+            content: |
+              echo "--- networkservice after the drain"
+              kubectl -n "$NAMESPACE" get networkservice drain-svc -o yaml
+              echo "--- httpproxy after the drain"
+              kubectl -n "$NAMESPACE" get httpproxy drain-proxy -o yaml
+              echo "--- upstream endpointslice after the drain"
+              kubectl -n "$NAMESPACE" get endpointslice drain-proxy-0-0 -o yaml
+
+    - name: The same request after the drain
+      try:
+        - script:
+            skipCommandOutput: true
+            skipLogOutput: true
+            content: |
+              kubectl -n "$NAMESPACE" get httpproxy drain-proxy -o jsonpath='{.status.canonicalHostname}'
+            outputs:
+              - name: proxyHostname
+                value: ($stdout)
+        - script:
+            cluster: nso-downstream
+            timeout: 300s
+            env:
+              - name: HOST
+                value: ($proxyHostname)
+              - name: OWNING_GC
+                value: ($downstreamGatewayClass)
+              - name: ENVOY_NS
+                value: ($envoyNamespace)
+            content: |
+              set -eu
+              IP=$(kubectl get svc -n "$ENVOY_NS" \
+                -l "gateway.envoyproxy.io/owning-gatewayclass=${OWNING_GC}" \
+                -o jsonpath='{.items[0].spec.clusterIP}')
+              echo "--- full response after the drain"
+              kubectl -n default exec drain-conntest -- \
+                curl -ksS -i --max-time 20 --resolve "${HOST}:80:${IP}" "http://${HOST}/get" || true
+              echo "--- downstream route conditions after the drain"
+              kubectl get httproute -A -o json \
+                | python3 -c '
+              import json,sys
+              d=json.load(sys.stdin)
+              for r in d.get("items",[]):
+                  for p in r.get("status",{}).get("parents",[]):
+                      for c in p.get("conditions",[]):
+                          print(r["metadata"]["name"], c["type"], c["status"], c.get("reason"), "|", c.get("message"))
+              '

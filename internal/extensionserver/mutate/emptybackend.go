@@ -8,12 +8,20 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 )
 
-// OfflineBackendClusterName is the single endpoint-less cluster every route
-// whose backend has no ready endpoints is pointed at. One shared cluster rather
-// than one per backend: an endpoint-less cluster carries ~108 resident stats in
-// the data plane, so a per-backend cluster would scale that by the number of
-// idle services, while a shared one keeps it constant.
-const OfflineBackendClusterName = "datum-offline-backend"
+// The endpoint-less clusters user traffic is pointed at when its backend cannot
+// serve. One shared cluster per reason rather than one per backend or per
+// connector: an endpoint-less cluster carries ~108 resident stats in the data
+// plane, so per-backend clusters would scale that by the number of idle
+// services, while these two keep it constant.
+//
+// The two reasons stay apart so the data-plane stats say which one a request
+// hit, and so the parity scanner can tell the families apart.
+const (
+	// OfflineBackendClusterName serves a backend with no ready endpoints.
+	OfflineBackendClusterName = "datum-offline-backend"
+	// OfflineTunnelClusterName serves an offline connector tunnel.
+	OfflineTunnelClusterName = "datum-offline-tunnel"
+)
 
 // emptyBackendStatus is the status Envoy Gateway collapses a route to when the
 // backend Service exists but has no ready endpoints. It is the only collapse
@@ -23,7 +31,7 @@ const OfflineBackendClusterName = "datum-offline-backend"
 // ready endpoints exist".
 const emptyBackendStatus = 503
 
-// EnsureOfflineBackendCluster appends the shared endpoint-less cluster to the
+// EnsureOfflineCluster appends the named shared endpoint-less cluster to the
 // xDS cluster set if it is not already present, returning the (possibly
 // extended) set and whether it added one.
 //
@@ -31,9 +39,9 @@ const emptyBackendStatus = 503
 // fails at host selection, so Envoy answers 503 with the UH (no healthy
 // upstream) response flag and never attempts a connection. UH is what the
 // branded offline page keys on; see buildLocalReplyConfig in localreply.go.
-func EnsureOfflineBackendCluster(clusters []*clusterv3.Cluster) ([]*clusterv3.Cluster, bool, error) {
+func EnsureOfflineCluster(clusters []*clusterv3.Cluster, name string) ([]*clusterv3.Cluster, bool, error) {
 	for _, c := range clusters {
-		if c.GetName() == OfflineBackendClusterName {
+		if c.GetName() == name {
 			return clusters, false, nil
 		}
 	}
@@ -43,11 +51,11 @@ func EnsureOfflineBackendCluster(clusters []*clusterv3.Cluster) ([]*clusterv3.Cl
   "type": "STATIC",
   "connect_timeout": "1s",
   "load_assignment": { "cluster_name": %q, "endpoints": [] }
-}`, OfflineBackendClusterName, OfflineBackendClusterName)
+}`, name, name)
 
 	c := &clusterv3.Cluster{}
 	if err := protojson.Unmarshal([]byte(j), c); err != nil {
-		return clusters, false, fmt.Errorf("unmarshal offline backend cluster JSON: %w", err)
+		return clusters, false, fmt.Errorf("unmarshal offline cluster %q JSON: %w", name, err)
 	}
 	return append(clusters, c), true, nil
 }

@@ -134,10 +134,10 @@ func TestRouteEmptyBackendsIsIdempotent(t *testing.T) {
 	}
 }
 
-func TestEnsureOfflineBackendCluster(t *testing.T) {
-	clusters, added, err := EnsureOfflineBackendCluster(nil)
+func TestEnsureOfflineCluster(t *testing.T) {
+	clusters, added, err := EnsureOfflineCluster(nil, OfflineBackendClusterName)
 	if err != nil {
-		t.Fatalf("EnsureOfflineBackendCluster: %v", err)
+		t.Fatalf("EnsureOfflineCluster: %v", err)
 	}
 	if !added {
 		t.Fatal("added = false on an empty cluster set, want true")
@@ -159,14 +159,37 @@ func TestEnsureOfflineBackendCluster(t *testing.T) {
 		t.Errorf("len(endpoints) = %d, want 0", len(eps))
 	}
 
-	again, added, err := EnsureOfflineBackendCluster(clusters)
+	again, added, err := EnsureOfflineCluster(clusters, OfflineBackendClusterName)
 	if err != nil {
-		t.Fatalf("EnsureOfflineBackendCluster (second call): %v", err)
+		t.Fatalf("EnsureOfflineCluster (second call): %v", err)
 	}
 	if added {
 		t.Error("added = true on a set that already has the cluster, want false")
 	}
 	if len(again) != 1 {
 		t.Errorf("len(clusters) = %d after second call, want 1", len(again))
+	}
+}
+
+// The two sinks must stay distinct. A shared name would make the parity scanner
+// count an idle backend as an offline tunnel.
+func TestEnsureOfflineClusterKeepsTheTwoSinksApart(t *testing.T) {
+	if OfflineBackendClusterName == OfflineTunnelClusterName {
+		t.Fatal("the empty-backend and offline-tunnel sinks share a name")
+	}
+
+	clusters, _, err := EnsureOfflineCluster(nil, OfflineBackendClusterName)
+	if err != nil {
+		t.Fatalf("EnsureOfflineCluster: %v", err)
+	}
+	clusters, added, err := EnsureOfflineCluster(clusters, OfflineTunnelClusterName)
+	if err != nil {
+		t.Fatalf("EnsureOfflineCluster: %v", err)
+	}
+	if !added {
+		t.Fatal("added = false for the second sink, want true")
+	}
+	if len(clusters) != 2 {
+		t.Fatalf("len(clusters) = %d, want 2", len(clusters))
 	}
 }

@@ -135,7 +135,7 @@ func buildProgrammedSet(
 				if isConnectRoute(rt) {
 					add(FamilyConnectorRoute, connectorRouteKey(rcName, vhName, rt.GetName()))
 				}
-				if isOfflineDirectResponse(rt) {
+				if isOfflineRoute(rt) {
 					add(FamilyConnectorOffline, connectorRouteKey(rcName, vhName, rt.GetName()))
 				}
 			}

@@ -1,0 +1,68 @@
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+#
+# Release configuration for the datumctl-alb plugin binary ONLY.
+#
+#   goreleaser release --config .goreleaser-plugin.yaml --clean
+#
+# Asset names must match the matrix datumctl expects:
+#
+#   datumctl-alb_Linux_x86_64.tar.gz    datumctl-alb_Darwin_x86_64.tar.gz
+#   datumctl-alb_Linux_arm64.tar.gz     datumctl-alb_Darwin_arm64.tar.gz
+#   datumctl-alb_Windows_x86_64.zip     checksums.txt
+version: 2
+
+project_name: datumctl-alb
+
+builds:
+  - id: datumctl-alb
+    binary: datumctl-alb
+    main: ./cmd/datumctl-alb
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+    ldflags:
+      - "-X main.version=v{{ .Version }}"
+
+archives:
+  - id: datumctl-alb
+    ids:
+      - datumctl-alb
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    files:
+      - none*
+    wrap_in_directory: false
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- title .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "386" }}i386
+      {{- else }}{{ .Arch }}{{ end }}
+
+checksum:
+  name_template: "checksums.txt"
+
+release:
+  mode: append
+  prerelease: auto
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"

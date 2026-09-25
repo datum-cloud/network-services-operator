@@ -4,14 +4,43 @@ The `alb` plugin for [`datumctl`](https://github.com/datum-cloud/datumctl) lets 
 
 ## Install the plugin
 
-The plugin is not in the Datum catalog yet, so install a release archive from this repository:
+The plugin is not in the Datum catalog yet. Until it is, install a release archive from this repository:
 
 ```sh
 datumctl plugin install datum-cloud/network-services-operator@<tag>
 datumctl alb version
 ```
 
-When the catalog lists it, `datumctl plugin install alb` will work instead.
+Before any release exists, build it and trust it on your PATH:
+
+```sh
+make build-plugin
+cp bin/datumctl-alb ~/bin/            # anywhere on PATH
+datumctl plugin trust alb
+```
+
+The trust step is required: datumctl blocks an unmanaged `datumctl-*` binary until you allow it, because running one hands it a credentials helper.
+
+### Getting it into the catalog
+
+`datumctl plugin install alb` reads the official index at
+[datum-cloud/datumctl-plugins](https://github.com/datum-cloud/datumctl-plugins),
+which pins every archive by SHA256 and re-verifies them in CI. So the entry
+cannot be written before the release it points at exists. Three steps, in order:
+
+1. **Publish a release.** `release-plugin.yml` runs on `release: published` and
+   attaches the archives and `checksums.txt`.
+2. **Add the `datumctl-plugin` topic** to this repository, which the index
+   requires of a submitted plugin.
+3. **Open `plugins/alb.yaml`** against the index. Generate it from the release
+   rather than by hand, so the hashes are the ones users will actually download:
+
+   ```sh
+   hack/alb-catalog-entry.sh v0.29.0 > alb.yaml
+   ```
+
+   It refuses to emit a partial entry, since one that lists four platforms
+   installs cleanly on those and fails on the fifth.
 
 `datumctl alb version` needs no login, no project, and no network, so run it first whenever something else fails.
 

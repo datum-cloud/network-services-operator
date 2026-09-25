@@ -173,7 +173,7 @@ spec:
                 path: /sys/fs/bpf
                 type: Directory
         container:
-          image: envoyproxy/envoy:contrib-v1.35.0
+          image: envoyproxy/envoy:contrib-v1.39.1
           # Required for the vpcPod socket-bind mutation (#856 step 4) to
           # succeed: SO_BINDTODEVICE requires CAP_NET_RAW on the process
           # making the setsockopt call, which is Envoy itself, not the
@@ -188,7 +188,7 @@ spec:
               mountPath: /opt/coraza-waf
         initContainers:
           - name: coraza-waf
-            image: ghcr.io/datum-labs/coraza-envoy-go-filter/coraza-waf:v1.3.0-alpha10
+            image: ghcr.io/datum-labs/coraza-envoy-go-filter/coraza-waf:v2.0.4
             imagePullPolicy: IfNotPresent
             command:
               - cp

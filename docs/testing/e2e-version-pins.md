@@ -21,4 +21,5 @@ tracked here so no pin lingers unexamined. See #278.
 | --- | --- | --- | --- | --- |
 | Envoy Gateway + SDK | `v1.7.4` + SDK `v1.8.1` | `Taskfile.test-infra.yml:40-41`, `config/tools/envoy-gateway-downstream/kustomization.yaml:9` | EG 1.8 does not program merged gateways served through the extension manager (waf-gw stays with empty status); 1.7.4 matches production. | Production moves off EG 1.7.4. |
 | kindest/node | `v1.35.5` | `Taskfile.test-infra.yml:37` | Exact production edge node image. | Production Kubernetes upgrade. |
-| coraza-waf | `v1.3.0-multiarch.1` | `Taskfile.test-infra.yml:44` | Production WAF filter, multi-arch so it also loads on arm64 dev hosts. | Production WAF image changes. |
+| Envoy proxy | `contrib-v1.39.1` | `config/e2e-downstream/envoyproxy.yaml:119` | Exact production edge proxy image. | Production edge Envoy image changes. |
+| coraza-waf | `v2.0.4` | `Taskfile.test-infra.yml:44`, `config/e2e-downstream/envoyproxy.yaml:134` | Exact production WAF filter. | Production WAF image changes. |

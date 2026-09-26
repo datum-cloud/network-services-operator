@@ -28,6 +28,17 @@ const maxEndpointsPerSlice = 100
 // EndpointSlice was generated from.
 const NetworkServiceBackendLabel = "networking.datumapis.com/network-service"
 
+// AttachedToGroupLabel, AttachedToKindLabel, and AttachedToNameLabel carry the
+// consumer resource every member of an EndpointSlice is attached to, taken from
+// each member's NetworkInterface spec.attachedTo. They are stamped only when
+// every member agrees on the same reference. A slice whose members disagree
+// carries none of the three, and a reader treats their absence as unknown.
+const (
+	AttachedToGroupLabel = "networking.datumapis.com/attached-to-group"
+	AttachedToKindLabel  = "networking.datumapis.com/attached-to-kind"
+	AttachedToNameLabel  = "networking.datumapis.com/attached-to-name"
+)
+
 // errNetworkServiceBackendNotFound is returned when a networkService backend
 // names a NetworkService that does not exist, or a port that service does not
 // declare.
@@ -193,7 +204,42 @@ func networkServiceEndpoint(member *networkingv1alpha.NetworkInterface, address 
 		endpoint.Zone = ptr.To(zone)
 	}
 
+	if ref := member.Spec.AttachedTo; ref != nil {
+		endpoint.TargetRef = &corev1.ObjectReference{
+			APIVersion: ref.APIGroup,
+			Kind:       ref.Kind,
+			Name:       ref.Name,
+			Namespace:  member.Namespace,
+		}
+	}
+
 	return endpoint
+}
+
+// agreedAttachedTo returns the one consumer reference every endpoint is
+// attached to, or nil when the set is empty, any endpoint carries none, or two
+// endpoints carry different ones. A slice-level label is only correct when the
+// whole slice speaks with one voice, so a mixed set is reported as no agreement
+// and the reader treats the absent labels as unknown.
+func agreedAttachedTo(endpoints []discoveryv1.Endpoint) *corev1.ObjectReference {
+	if len(endpoints) == 0 {
+		return nil
+	}
+	var agreed *corev1.ObjectReference
+	for i := range endpoints {
+		ref := endpoints[i].TargetRef
+		if ref == nil {
+			return nil
+		}
+		if agreed == nil {
+			agreed = ref
+			continue
+		}
+		if ref.APIVersion != agreed.APIVersion || ref.Kind != agreed.Kind || ref.Name != agreed.Name {
+			return nil
+		}
+	}
+	return agreed
 }
 
 // networkServiceEndpointSlices shards a service's endpoints across as many
@@ -216,20 +262,29 @@ func networkServiceEndpointSlices(
 		},
 	}
 
+	agreed := agreedAttachedTo(resolved.endpoints)
+
 	newSlice := func(shard int, endpoints []discoveryv1.Endpoint) *discoveryv1.EndpointSlice {
 		name := baseName
 		if shard > 0 {
 			name = fmt.Sprintf("%s-%d", baseName, shard)
 		}
 
+		labels := map[string]string{
+			discoveryv1.LabelServiceName: baseName,
+			NetworkServiceBackendLabel:   serviceName,
+		}
+		if agreed != nil {
+			labels[AttachedToGroupLabel] = agreed.APIVersion
+			labels[AttachedToKindLabel] = agreed.Kind
+			labels[AttachedToNameLabel] = agreed.Name
+		}
+
 		return &discoveryv1.EndpointSlice{
 			ObjectMeta: metav1.ObjectMeta{
 				Namespace: namespace,
 				Name:      name,
-				Labels: map[string]string{
-					discoveryv1.LabelServiceName: baseName,
-					NetworkServiceBackendLabel:   serviceName,
-				},
+				Labels:    labels,
 			},
 			AddressType: resolved.addressType,
 			Endpoints:   endpoints,

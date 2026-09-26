@@ -308,6 +308,16 @@ func (s *Server) PostTranslateModify(
 	}
 	extmetrics.VPCPodSocketBindTotal.Add(float64(vpcPodCount))
 
+	// --- Upstream metadata family ---
+	// Stamps the consumer resource a rule's backend is attached to into that
+	// rule's cluster metadata, so the edge access log can report the upstream a
+	// request was proxied to. Independent of the families above; a cluster may
+	// carry this alongside a connector or vpcPod mutation.
+	_, upstreamMetaSpan := tr.Start(mctx, "upstreammeta.clusters")
+	upstreamMetaCount := mutate.ApplyUpstreamMetadata(clusters, idx)
+	upstreamMetaSpan.SetAttributes(attribute.Int("clusters.upstream_meta_stamped", upstreamMetaCount))
+	upstreamMetaSpan.End()
+
 	mspan.End()
 
 	extmetrics.PhaseDuration.WithLabelValues("mutate").Observe(time.Since(mutStart).Seconds())
@@ -390,6 +400,7 @@ func (s *Server) PostTranslateModify(
 		"vhosts_connector_applied", vhCount,
 		"connector_offline_routes", offlineRtCount,
 		"clusters_vpcpod_bound", vpcPodCount,
+		"clusters_upstream_meta_stamped", upstreamMetaCount,
 	)
 
 	return &pb.PostTranslateModifyResponse{

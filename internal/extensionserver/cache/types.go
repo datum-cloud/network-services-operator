@@ -62,6 +62,14 @@ type PolicyIndex struct {
 	// populated for HTTPProxy rules that have a vpcPod backend. Accumulated
 	// across all engaged clusters, same shape as Connectors.
 	VPCPods map[VPCPodKey]VPCPodInfo
+
+	// UpstreamRefs maps (upstreamNS, httpProxyName, ruleIndex) to the consumer
+	// resource the rule's backend is attached to, read from the attached-to
+	// labels the HTTPProxy controller stamps on the rule's EndpointSlice when its
+	// members agree. Only populated when the slice carries all three labels;
+	// absent when members disagree or nothing set the labels, which the mutation
+	// layer reads as unknown.
+	UpstreamRefs map[UpstreamRefKey]UpstreamRef
 }
 
 // TPPInfo holds the fields of a TrafficProtectionPolicy needed by the
@@ -148,4 +156,48 @@ type VPCPodKey struct {
 	UpstreamNS    string
 	HTTPProxyName string
 	RuleIndex     int
+}
+
+// AttachedTo label keys, duplicated from
+// internal/controller.AttachedToGroupLabel and its siblings rather than
+// imported, to keep the extension server and controller packages decoupled the
+// same way VPCPodTenantIDLabel is.
+const (
+	AttachedToGroupLabel = "networking.datumapis.com/attached-to-group"
+	AttachedToKindLabel  = "networking.datumapis.com/attached-to-kind"
+	AttachedToNameLabel  = "networking.datumapis.com/attached-to-name"
+)
+
+// UpstreamRef names the consumer resource an HTTPProxy rule's backend is
+// attached to. It is read from the attached-to labels on the rule's
+// EndpointSlice and written into the Envoy cluster's datum-gateway
+// filter_metadata so the access log can report the upstream a request was
+// proxied to.
+type UpstreamRef struct {
+	APIGroup string
+	Kind     string
+	Name     string
+}
+
+// UpstreamRefKey uniquely identifies an HTTPProxy rule whose EndpointSlice
+// carries attached-to labels. Same shape and namespace-keying rationale as
+// ConnectorKey.
+type UpstreamRefKey struct {
+	UpstreamNS    string
+	HTTPProxyName string
+	RuleIndex     int
+}
+
+// UpstreamRefFromLabels reads the three attached-to labels and returns the
+// reference they name, or ok=false unless all three are present. Members that
+// disagree leave the labels off entirely, so a partial set is treated the same
+// as none.
+func UpstreamRefFromLabels(labels map[string]string) (UpstreamRef, bool) {
+	group := labels[AttachedToGroupLabel]
+	kind := labels[AttachedToKindLabel]
+	name := labels[AttachedToNameLabel]
+	if group == "" || kind == "" || name == "" {
+		return UpstreamRef{}, false
+	}
+	return UpstreamRef{APIGroup: group, Kind: kind, Name: name}, true
 }

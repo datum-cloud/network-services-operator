@@ -142,6 +142,37 @@ spec:
                     == 1
                 - message: Only one address may be held per address family
                   rule: self.all(a, self.exists_one(b, b.family == a.family))
+              attachedTo:
+                description: |-
+                  attachedTo names the consumer resource this interface is attached to, such
+                  as a compute Instance. It comes from the claim, and the operator carries it
+                  without interpreting it, the same way the held-by label and the
+                  HolderAvailable condition name the holder without knowing what a holder is.
+                  The holder surface says a holder exists and whether it serves; this says
+                  what the holder is, so a reader tracing traffic to a member can name the
+                  backend behind it.
+                properties:
+                  apiGroup:
+                    description: apiGroup is the API group of the referent, such as
+                      compute.datumapis.com.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                  kind:
+                    description: kind is the kind of the referent, such as Instance.
+                    maxLength: 63
+                    minLength: 1
+                    type: string
+                  name:
+                    description: name is the name of the referent.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                required:
+                - apiGroup
+                - kind
+                - name
+                type: object
               attachmentMode:
                 default: Netns
                 description: |-

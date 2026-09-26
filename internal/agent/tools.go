@@ -4,13 +4,16 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	"go.datum.net/network-services-operator/internal/cmd/alb/spec"
+	"go.datum.net/network-services-operator/internal/cmd/alb/util"
 )
 
 // The tools this service publishes to an assistant.
@@ -25,10 +28,11 @@ import (
 // several services in one conversation without them colliding. The capability
 // document registers the prefixed names.
 const (
-	ToolList          = "alb_list"
-	ToolGet           = "alb_get"
-	ToolDiagnose      = "alb_diagnose"
-	ToolReasonExplain = "alb_reason_explain"
+	ToolList           = "alb_list"
+	ToolGet            = "alb_get"
+	ToolDiagnose       = "alb_diagnose"
+	ToolReasonExplain  = "alb_reason_explain"
+	ToolTrafficSummary = "alb_traffic_summary"
 )
 
 // ToolDeps is what one request's tool calls operate over: where to read from,
@@ -36,6 +40,10 @@ const (
 type ToolDeps struct {
 	Reader    Reader
 	Namespace string
+	// Logs reads access logs, and may be nil. A project entitled to load
+	// balancers is not necessarily entitled to observability, so its absence is
+	// reported as a capability the project lacks rather than as an error.
+	Logs LogReader
 }
 
 // DepsFor resolves the dependencies for a tool call. A function rather than a
@@ -92,6 +100,19 @@ func RegisterTools(s *mcp.Server, deps DepsFor) {
 			"returns every meaning it has and you must pick by condition type. Call with no arguments " +
 			"to list everything. Read-only.",
 	}, albReasonExplain(deps))
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:  ToolTrafficSummary,
+		Title: "Summarise traffic to a load balancer",
+		Description: "Summarise the requests that actually reached an Application Load Balancer " +
+			"over a time window: how many, the response-code breakdown, the edge's own response " +
+			"flags, which hostnames were asked for, and a sample of recent lines. This is the only " +
+			"evidence that a load balancer is really serving — its status reports configuration, " +
+			"not reachability, so use this to settle a diagnosis that came back unverified. " +
+			"**No traffic is not a fault**: a load balancer nobody has called looks exactly like " +
+			"one that is broken, so never report an empty result as a diagnosis. Filters by " +
+			"method, response code and hostname. Read-only.",
+	}, albTrafficSummary(deps))
 }
 
 // ---------------------------------------------------------------- alb_list
@@ -295,5 +316,82 @@ func albReasonExplain(deps DepsFor) mcp.ToolHandlerFor[ReasonExplainInput, Reaso
 					in.Reason),
 			}, nil
 		}
+	}
+}
+
+// --------------------------------------------------- alb_traffic_summary
+
+type TrafficSummaryInput struct {
+	Name        string   `json:"name" jsonschema:"the load balancer's name"`
+	Since       string   `json:"since,omitempty" jsonschema:"how far back to look, as a duration like 30m or 6h; defaults to 1h"`
+	Method      []string `json:"method,omitempty" jsonschema:"only requests using these HTTP methods"`
+	Code        []string `json:"code,omitempty" jsonschema:"only responses with these status codes"`
+	Host        []string `json:"host,omitempty" jsonschema:"only requests asking for these hostnames"`
+	SampleLimit int      `json:"sampleLimit,omitempty" jsonschema:"how many example lines to return alongside the counts; defaults to 20"`
+}
+
+type TrafficSummaryOutput struct {
+	Summary TrafficSummary `json:"summary"`
+}
+
+const (
+	defaultTrafficWindow = time.Hour
+	maxTrafficWindow     = 24 * time.Hour
+	defaultSampleLimit   = 20
+	maxSampleLimit       = 50
+)
+
+func albTrafficSummary(deps DepsFor) mcp.ToolHandlerFor[TrafficSummaryInput, TrafficSummaryOutput] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in TrafficSummaryInput) (*mcp.CallToolResult, TrafficSummaryOutput, error) {
+		d, err := deps(ctx)
+		if err != nil {
+			return nil, TrafficSummaryOutput{}, err
+		}
+		if in.Name == "" {
+			return nil, TrafficSummaryOutput{}, fmt.Errorf("name is required")
+		}
+
+		if d.Logs == nil {
+			return nil, TrafficSummaryOutput{Summary: TrafficSummary{
+				LoadBalancer:      in.Name,
+				UnavailableReason: "This project does not have access logs available.",
+			}}, nil
+		}
+
+		window := defaultTrafficWindow
+		if in.Since != "" {
+			parsed, err := time.ParseDuration(in.Since)
+			if err != nil || parsed <= 0 {
+				return nil, TrafficSummaryOutput{}, fmt.Errorf(
+					"since must be a duration like 30m or 6h, not %q", in.Since)
+			}
+			window = min(parsed, maxTrafficWindow)
+		}
+
+		sample := defaultSampleLimit
+		if in.SampleLimit > 0 {
+			sample = min(in.SampleLimit, maxSampleLimit)
+		}
+
+		entries, err := d.Logs.QueryALBLogs(ctx, ALBLogQuery{
+			ProxyName: in.Name,
+			Since:     window,
+			Limit:     util.MaxLogsLimit,
+			Methods:   in.Method,
+			Codes:     in.Code,
+		})
+		if err != nil {
+			if errors.Is(err, errLogsUnavailable) {
+				return nil, TrafficSummaryOutput{Summary: TrafficSummary{
+					LoadBalancer:      in.Name,
+					UnavailableReason: plainMessage(err),
+				}}, nil
+			}
+			return nil, TrafficSummaryOutput{}, err
+		}
+
+		return nil, TrafficSummaryOutput{
+			Summary: summariseTraffic(in.Name, entries, in.Host, sample, window),
+		}, nil
 	}
 }

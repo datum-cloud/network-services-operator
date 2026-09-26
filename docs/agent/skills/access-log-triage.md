@@ -4,6 +4,24 @@ Use when status reports nothing wrong and requests still fail, when you need to
 know whether a load balancer is serving at all, or when traffic protection may
 be blocking real users.
 
+## Reading them
+
+`alb_traffic_summary` returns counts first and examples second: how many
+requests arrived, the response-code breakdown, the edge's own response flags,
+which hostnames were asked for, and a sample of recent lines.
+
+Narrow it when you are hunting something specific:
+
+- `code` when chasing a particular failure
+- `host` when a customer has several hostnames and only one misbehaves
+- `since` no wider than you need — a wide window on a busy load balancer buries
+  the thing you are looking for
+
+If the project cannot show logs at all, the result says so rather than failing.
+That is a property of the project, not a fault of the load balancer, and the
+person can still look with `datumctl alb logs <name>` or the Logs tab in the
+console.
+
 ## Why this matters more here than elsewhere
 
 A load balancer's status describes its configuration. It does not describe a
@@ -47,6 +65,18 @@ do not explain the proxy that produced it.
 **Hosts** tell you which hostname requests actually used. A customer who thinks
 they are testing a custom hostname and whose requests all show the generated one
 has a DNS problem, not a load balancer problem.
+
+## Traffic is not metrics
+
+The traffic summary counts what is in one window. It is not a rate, a trend, or
+a percentile, and there is no tool here that gives you those. If someone wants
+request rates over time, latency percentiles, or the traffic protection
+breakdown, say you cannot read those and point at the Metrics tab for that load
+balancer in the console.
+
+Never derive a trend by calling the summary twice with different windows and
+comparing. The counts are capped, so the comparison is between two truncations
+and the conclusion can be exactly backwards.
 
 ## Narrowing
 

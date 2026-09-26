@@ -313,6 +313,49 @@ func TestValidateHTTPRoute(t *testing.T) {
 				field.NotSupported(field.NewPath("spec", "rules").Index(0).Child("backendRefs").Index(0).Child("filters").Index(0).Child("type"), "RequestMirror", []string{}),
 			},
 		},
+		"backendRef URLRewrite may rewrite hostname but not path": {
+			route: &gatewayv1.HTTPRoute{
+				Spec: gatewayv1.HTTPRouteSpec{
+					Rules: []gatewayv1.HTTPRouteRule{{
+						BackendRefs: []gatewayv1.HTTPBackendRef{
+							{
+								BackendRef: gatewayv1.BackendRef{BackendObjectReference: gatewayv1.BackendObjectReference{
+									Group: ptr.To(gatewayv1.Group("discovery.k8s.io")),
+									Kind:  ptr.To(gatewayv1.Kind("EndpointSlice")),
+									Name:  "blue",
+									Port:  ptr.To(gatewayv1.PortNumber(443)),
+								}},
+								Filters: []gatewayv1.HTTPRouteFilter{{
+									Type:       gatewayv1.HTTPRouteFilterURLRewrite,
+									URLRewrite: &gatewayv1.HTTPURLRewriteFilter{Hostname: ptr.To(gatewayv1.PreciseHostname("blue.example.com"))},
+								}},
+							},
+							{
+								BackendRef: gatewayv1.BackendRef{BackendObjectReference: gatewayv1.BackendObjectReference{
+									Group: ptr.To(gatewayv1.Group("discovery.k8s.io")),
+									Kind:  ptr.To(gatewayv1.Kind("EndpointSlice")),
+									Name:  "green",
+									Port:  ptr.To(gatewayv1.PortNumber(443)),
+								}},
+								Filters: []gatewayv1.HTTPRouteFilter{{
+									Type: gatewayv1.HTTPRouteFilterURLRewrite,
+									URLRewrite: &gatewayv1.HTTPURLRewriteFilter{
+										Hostname: ptr.To(gatewayv1.PreciseHostname("green.example.com")),
+										Path: &gatewayv1.HTTPPathModifier{
+											Type:            gatewayv1.FullPathHTTPPathModifier,
+											ReplaceFullPath: ptr.To("/green"),
+										},
+									},
+								}},
+							},
+						},
+					}},
+				},
+			},
+			expectedErrors: field.ErrorList{
+				field.Forbidden(field.NewPath("spec", "rules").Index(0).Child("backendRefs").Index(1).Child("filters").Index(0).Child("urlRewrite", "path"), ""),
+			},
+		},
 		"service backend requires opt-in": {
 			route: &gatewayv1.HTTPRoute{
 				Spec: gatewayv1.HTTPRouteSpec{

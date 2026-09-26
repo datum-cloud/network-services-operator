@@ -933,28 +933,47 @@ func setURLRewriteHostname(filters []gatewayv1.HTTPRouteFilter, hostname string)
 	})
 }
 
-// reconcileRuleRewriteHostname records the Host-rewrite hostname a backend
-// needs applied to its rule's URLRewrite filter, and errors if an earlier
-// backend in the same rule already settled on a different one. The
-// URLRewrite filter lives on the HTTPRouteRule, not the individual
-// backendRef, so it applies to every weighted backend in the rule alike —
-// backends that disagree on the target hostname cannot be expressed in a
-// single rule.
-func reconcileRuleRewriteHostname(agreed *string, have *bool, hostname string, ruleIndex, backendIndex int) error {
-	if !*have {
-		*agreed = hostname
-		*have = true
-		return nil
+func clearURLRewriteHostname(filters []gatewayv1.HTTPRouteFilter) []gatewayv1.HTTPRouteFilter {
+	out := make([]gatewayv1.HTTPRouteFilter, 0, len(filters))
+	for _, filter := range filters {
+		if filter.Type == gatewayv1.HTTPRouteFilterURLRewrite {
+			if filter.URLRewrite == nil || filter.URLRewrite.Path == nil {
+				continue
+			}
+			rewrite := *filter.URLRewrite
+			rewrite.Hostname = nil
+			filter.URLRewrite = &rewrite
+		}
+		out = append(out, filter)
 	}
-	if *agreed != hostname {
-		return fmt.Errorf(
-			"backend %d in rule %d needs Host header rewritten to %q, which conflicts with another backend in the same rule that needs %q; "+
-				"backends sharing a rule must resolve to the same Host rewrite target. "+
-				"Set a Host header override on the rule so every backend agrees, or give each backend its own rule",
-			backendIndex, ruleIndex, hostname, *agreed,
-		)
+	return out
+}
+
+func applyRewriteHostnames(ruleFilters []gatewayv1.HTTPRouteFilter, backendRefs []gatewayv1.HTTPBackendRef, rewriteHostnames []string) []gatewayv1.HTTPRouteFilter {
+	distinct := sets.New[string]()
+	for _, hostname := range rewriteHostnames {
+		if hostname != "" {
+			distinct.Insert(hostname)
+		}
 	}
-	return nil
+
+	switch distinct.Len() {
+	case 0:
+		return ruleFilters
+	case 1:
+		return setURLRewriteHostname(ruleFilters, sets.List(distinct)[0])
+	}
+
+	for i, hostname := range rewriteHostnames {
+		if hostname == "" {
+			continue
+		}
+		backendRefs[i].Filters = append(slices.Clone(backendRefs[i].Filters), gatewayv1.HTTPRouteFilter{
+			Type:       gatewayv1.HTTPRouteFilterURLRewrite,
+			URLRewrite: &gatewayv1.HTTPURLRewriteFilter{Hostname: ptr.To(gatewayv1.PreciseHostname(hostname))},
+		})
+	}
+	return clearURLRewriteHostname(ruleFilters)
 }
 
 func (r *HTTPProxyReconciler) collectDesiredResources(
@@ -1062,14 +1081,7 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 			ruleFilters = stripHostFromRequestHeaderModifier(ruleFilters)
 		}
 
-		// The Host-rewrite URLRewrite filter this rule ends up with is
-		// rule-scoped in the Gateway API — it cannot vary per weighted
-		// backend. Every backend that needs a rewrite must agree on the
-		// same target hostname; reconcileRuleRewriteHostname enforces that
-		// and errors instead of silently applying only the last backend's
-		// hostname to all of them.
-		var agreedRewriteHostname string
-		var haveAgreedRewriteHostname bool
+		rewriteHostnames := make([]string, len(rule.Backends))
 
 		for backendIndex, backend := range rule.Backends {
 			if backend.Instance != nil {
@@ -1245,11 +1257,7 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 				certHostname = gatewayutil.NormalizeHostname(host)
 			}
 
-			if rewriteHostname != "" {
-				if err := reconcileRuleRewriteHostname(&agreedRewriteHostname, &haveAgreedRewriteHostname, rewriteHostname, ruleIndex, backendIndex); err != nil {
-					return nil, err
-				}
-			}
+			rewriteHostnames[backendIndex] = rewriteHostname
 
 			epAnnotations := map[string]string{}
 			if certHostname != "" {
@@ -1304,9 +1312,7 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 			}
 		}
 
-		if haveAgreedRewriteHostname {
-			ruleFilters = setURLRewriteHostname(ruleFilters, agreedRewriteHostname)
-		}
+		ruleFilters = applyRewriteHostnames(ruleFilters, backendRefs, rewriteHostnames)
 
 		desiredRouteRules[ruleIndex] = gatewayv1.HTTPRouteRule{
 			Name:        rule.Name,

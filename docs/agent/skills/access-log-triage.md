@@ -4,6 +4,23 @@ Use when status reports nothing wrong and requests still fail, when you need to
 know whether a load balancer is serving at all, or when traffic protection may
 be blocking real users.
 
+## You cannot read these yourself
+
+This service publishes no tool for access logs. Do not imply you looked, and do
+not treat the gap as a fault — it is a capability that has not been built yet.
+
+Say so, and hand over the two ways the person can look:
+
+```
+datumctl alb logs <name> --since 1h
+datumctl alb logs <name> --since 1h --code 502 -o wide
+```
+
+or the Logs tab for that load balancer in the console.
+
+Then use the rest of this skill to interpret what they bring back. That is the
+part you are good at and they are not.
+
 ## Why this matters more here than elsewhere
 
 A load balancer's status describes its configuration. It does not describe a

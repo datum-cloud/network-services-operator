@@ -39,11 +39,16 @@ question about the customer's own DNS. If that works and their custom hostname
 does not, the problem is DNS, not the load balancer — go to
 `hostname-not-working`.
 
-`alb_traffic_summary` is the other half: it shows what actually arrived. Note
-that **no traffic is not a fault**. A load balancer nobody has called looks
-exactly like one that is broken, so never read an empty result as a diagnosis.
-Say that nothing has reached it, and that this is expected if nothing has been
-pointed at it yet.
+Access logs are the other half, since they show what actually arrived — but
+**you cannot read them.** This service publishes no tool for them. Say so
+plainly rather than implying you looked, and hand over the two ways the person
+can look themselves: `datumctl alb logs <name> --since 1h`, or the Logs tab for
+that load balancer in the console.
+
+When they come back with what they saw, remember that **no traffic is not a
+fault**. A load balancer nobody has called looks exactly like one that is
+broken, so an empty result is not a diagnosis — it means nothing has reached
+it, which is expected if nothing has been pointed at it yet.
 
 ## When it stops being propagation
 

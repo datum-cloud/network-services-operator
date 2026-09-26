@@ -8,6 +8,14 @@ resources:
 components:
   - ../webhook
 
+patches:
+  - patch: |-
+      $patch: delete
+      apiVersion: resourcemetrics.miloapis.com/v1alpha1
+      kind: ResourceMetricsPolicy
+      metadata:
+        name: networking-metrics
+
 replacements:
   - source: # Add cert-manager annotation to ValidatingWebhookConfiguration, MutatingWebhookConfiguration and CRDs
       kind: Certificate

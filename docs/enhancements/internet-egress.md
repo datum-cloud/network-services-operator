@@ -324,13 +324,20 @@ The contract between the three components is small enough to state as a table.
 | `EgressShard.spec` | operator (first stage) | shard, node agent, claim binder |
 | `EgressShard.status` | shard | claim binder |
 | attachment `status.node` | infrastructure provider, from the node's advertisement | claim binder |
-| `EgressShardClaim` | infrastructure provider | infrastructure provider, network services operator |
+| `EgressShardClaim` | infrastructure provider | node agent, infrastructure provider |
 | attachment `status.egress` | infrastructure provider, from the bound shard | network services operator |
 | `NetworkInterface.status.egress` | network services operator | consumer, compute |
 
-Two rules hold the contract together. `EgressShard.spec` has exactly one writer, and the
-shard writes only status. The attachment stanza is the only channel from the control plane to
-the attaching plugin, and it carries a declaration, never a shard identity.
+Three rules hold the contract together. `EgressShard.spec` has exactly one writer, and the
+shard writes only status. The attachment stanza is the channel from the control plane to the
+attaching plugin, and it carries a declaration, never a shard identity. The claim is the
+channel from the control plane to the running node, and it lives in the network API, which
+the node already depends on, so the node never reads the infrastructure provider's API.
+
+The claim exists per attachment while the attachment's network declares egress and the
+attachment has reported its node. The infrastructure provider creates it when both hold and
+deletes it when either stops, so a node reads presence, never a mode: a VRF with a claim
+routes toward the node's shard, and a VRF without one does not.
 
 ### Reporting failure
 
@@ -355,15 +362,23 @@ causes. Operator events carry the specific cause.
 
 ### Changing egress on a live network
 
-Switching `mode` on a network with running instances re-renders each attachment's stanza.
-The plugin that reads the stanza runs only when an instance attaches, so the change reaches a
-running instance through the node agent's existing sweep, which re-resolves each VRF's egress
-route on a fixed interval. That sweep reads node configuration today and must also read the
-per-attachment declaration, which [Dependencies](#dependencies) lists.
+Switching `mode` on a network with running instances re-renders each attachment's stanza,
+which only the next attach reads. The change reaches a running instance through the claim.
+The infrastructure provider creates or deletes each attachment's `EgressShardClaim` as the
+network context's mode changes, and the node agent lists the claims naming its node on its
+existing sweep, installing the egress route for a claimed VRF and withdrawing it from an
+unclaimed one.
 
-Until the sweep reads the declaration, a change takes effect on interfaces that attach
-afterwards, and a running instance keeps the route it attached with. The window is bounded by
-the sweep interval once the dependency lands.
+The instance is never touched. The route lives in a table the node owns, so adding or
+removing it changes nothing on the interface, and a toggle takes effect within one sweep
+interval, 30 seconds today, without a restart.
+
+A route written at attach time is left alone for a grace period before the sweep will
+withdraw it, because the claim is recorded after the attach returns. That period bounds how
+long an instance keeps egress on a node whose claim never appears.
+
+Flows already translated by the shard keep flowing until they expire. Disabling egress
+stops new flows within one sweep; it does not cut established ones.
 
 ### Reserving the interface field
 
@@ -388,11 +403,10 @@ This design depends on six items that it does not deliver:
 3. **A shard configured from its object.** The shard reads its identity from process
    configuration today and echoes it into status. It must read spec, so that the object an
    operator writes is the object the shard runs.
-4. **A node agent that reads its shard and the per-attachment declaration.** The agent
-   derives the node's shard list from a deployment-time setting today, and its sweep
-   re-resolves every VRF from that list. It must derive the list from the node's
-   `EgressShard`, and the sweep must honor each attachment's `mode`, or
-   [changing egress on a live network](#changing-egress-on-a-live-network) has no effect.
+4. **A node agent that reads its shard.** The agent derives the node's shard list from a
+   deployment-time setting today. It must derive the list from the node's `EgressShard`, so
+   that the object an operator writes is the object the node routes toward. The sweep that
+   follows claims is delivered with this design and does not depend on this item.
 5. **A resolver that matches the translator.** The platform must pair both before it accepts
    `reach: [IPv4]`. Until then, validation on the network and the network context refuses the
    value, with the message "Only IPv6 is accepted; reaching IPv4 destinations needs a

@@ -178,6 +178,7 @@ func TestEveryToolIsRegisteredAndDescribed(t *testing.T) {
 
 	want := map[string]bool{
 		ToolList: false, ToolGet: false, ToolDiagnose: false, ToolReasonExplain: false,
+		ToolTrafficSummary: false,
 	}
 	for _, tool := range serverTools(t, s) {
 		if _, ok := want[tool.Name]; !ok {

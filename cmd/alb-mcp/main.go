@@ -211,11 +211,21 @@ func depsFromRequest(r *http.Request, baseConfig *rest.Config) agent.DepsFor {
 					"header. %s", projectHeader, misconfiguredClientNote)
 		}
 
-		c, err := clientForToken(baseConfig, token, project)
+		cfg, err := clientConfig(baseConfig, token, project)
 		if err != nil {
 			return agent.ToolDeps{}, err
 		}
-		return agent.ToolDeps{Reader: agent.NewClientReader(c), Namespace: util.ResourceNamespace}, nil
+		c, err := clientFor(cfg)
+		if err != nil {
+			return agent.ToolDeps{}, err
+		}
+		// Access logs read through the same config, so they carry the same
+		// caller and the same project, and no second credential exists here.
+		return agent.ToolDeps{
+			Reader:    agent.NewClientReader(c),
+			Namespace: util.ResourceNamespace,
+			Logs:      agent.NewClientLogReader(cfg),
+		}, nil
 	}
 }
 
@@ -253,14 +263,9 @@ func clientConfig(baseConfig *rest.Config, token, project string) (*rest.Config,
 	return cfg, nil
 }
 
-// clientForToken builds a client that reads project's control plane as the
-// bearer of token.
-func clientForToken(baseConfig *rest.Config, token, project string) (client.Client, error) {
-	cfg, err := clientConfig(baseConfig, token, project)
-	if err != nil {
-		return nil, err
-	}
-
+// clientFor builds a client reading through cfg, which carries the caller's own
+// credentials and their project.
+func clientFor(cfg *rest.Config) (client.Client, error) {
 	scheme, err := util.NewScheme()
 	if err != nil {
 		return nil, err

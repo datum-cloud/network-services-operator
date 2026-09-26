@@ -754,18 +754,79 @@ func TestHTTPProxyCollectDesiredResourcesMultipleBackends(t *testing.T) {
 		assert.Equal(t, 1, urlRewriteCount)
 	})
 
-	t.Run("backends disagreeing on Host rewrite target return an error", func(t *testing.T) {
+	t.Run("backends on different hostnames each carry their own Host rewrite", func(t *testing.T) {
 		httpProxy := newHTTPProxy(func(h *networkingv1alpha.HTTPProxy) {
+			h.Spec.Rules[0].Filters = []gatewayv1.HTTPRouteFilter{
+				{
+					Type: gatewayv1.HTTPRouteFilterURLRewrite,
+					URLRewrite: &gatewayv1.HTTPURLRewriteFilter{
+						Hostname: ptr.To(gatewayv1.PreciseHostname("pool.example.com")),
+						Path: &gatewayv1.HTTPPathModifier{
+							Type:            gatewayv1.FullPathHTTPPathModifier,
+							ReplaceFullPath: ptr.To("/shop"),
+						},
+					},
+				},
+			}
 			h.Spec.Rules[0].Backends = []networkingv1alpha.HTTPProxyRuleBackend{
-				{Endpoint: "http://a.example.com"},
-				{Endpoint: "http://b.example.com"},
+				{Endpoint: "https://storefront-blue.fly.dev", Weight: ptr.To(int32(95))},
+				{Endpoint: "https://storefront-green.fly.dev", Weight: ptr.To(int32(5))},
+				{Endpoint: "http://198.51.100.9", Weight: ptr.To(int32(0))},
 			}
 		})
 
 		cl := fake.NewClientBuilder().WithScheme(scheme.Scheme).Build()
-		_, err := reconciler.collectDesiredResources(context.Background(), cl, httpProxy)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "conflicts with another backend in the same rule")
+		desiredResources, err := reconciler.collectDesiredResources(context.Background(), cl, httpProxy)
+		require.NoError(t, err)
+
+		routeRule := desiredResources.httpRoute.Spec.Rules[0]
+		require.Len(t, routeRule.BackendRefs, 3)
+		assert.Equal(t, "storefront-blue.fly.dev", string(ptr.Deref(findURLRewriteHostname(routeRule.BackendRefs[0].Filters), "")))
+		assert.Equal(t, "storefront-green.fly.dev", string(ptr.Deref(findURLRewriteHostname(routeRule.BackendRefs[1].Filters), "")))
+		assert.Empty(t, routeRule.BackendRefs[2].Filters)
+
+		require.Len(t, routeRule.Filters, 1)
+		assert.Nil(t, routeRule.Filters[0].URLRewrite.Hostname, "a rule-level Host rewrite alongside per-backend ones would be emitted too")
+		assert.Equal(t, "/shop", ptr.Deref(routeRule.Filters[0].URLRewrite.Path.ReplaceFullPath, ""))
+		assert.Equal(t, "pool.example.com", string(ptr.Deref(httpProxy.Spec.Rules[0].Filters[0].URLRewrite.Hostname, "")), "the HTTPProxy spec must not be mutated")
+	})
+
+	t.Run("a backend Host override applies to that backend only", func(t *testing.T) {
+		httpProxy := newHTTPProxy(func(h *networkingv1alpha.HTTPProxy) {
+			h.Spec.Rules[0].Backends = []networkingv1alpha.HTTPProxyRuleBackend{
+				{Endpoint: "https://a.example.com"},
+				{
+					Endpoint: "https://b.example.com",
+					Filters: []gatewayv1.HTTPRouteFilter{
+						{
+							Type: gatewayv1.HTTPRouteFilterRequestHeaderModifier,
+							RequestHeaderModifier: &gatewayv1.HTTPHeaderFilter{
+								Set: []gatewayv1.HTTPHeader{
+									{Name: "Host", Value: "canary.example.com"},
+									{Name: "X-Canary", Value: "true"},
+								},
+							},
+						},
+					},
+				},
+			}
+		})
+
+		cl := fake.NewClientBuilder().WithScheme(scheme.Scheme).Build()
+		desiredResources, err := reconciler.collectDesiredResources(context.Background(), cl, httpProxy)
+		require.NoError(t, err)
+
+		routeRule := desiredResources.httpRoute.Spec.Rules[0]
+		assert.Nil(t, findURLRewriteHostname(routeRule.Filters))
+		assert.Equal(t, "a.example.com", string(ptr.Deref(findURLRewriteHostname(routeRule.BackendRefs[0].Filters), "")))
+		assert.Equal(t, "canary.example.com", string(ptr.Deref(findURLRewriteHostname(routeRule.BackendRefs[1].Filters), "")))
+
+		if assert.Len(t, routeRule.BackendRefs[1].Filters, 2) {
+			assert.Equal(t, []gatewayv1.HTTPHeader{{Name: "X-Canary", Value: "true"}}, routeRule.BackendRefs[1].Filters[0].RequestHeaderModifier.Set)
+		}
+		if assert.Len(t, desiredResources.endpointSlices, 2) {
+			assert.Equal(t, "b.example.com", desiredResources.endpointSlices[1].Annotations[BackendCertHostnameAnnotation])
+		}
 	})
 
 	t.Run("a rule-level Host override applies to every backend, not just the first", func(t *testing.T) {
@@ -3925,23 +3986,4 @@ func TestCollectDesiredResourcesErrorResult(t *testing.T) {
 		// configuration problem from a read that will succeed on retry.
 		assert.Equal(t, networkingv1alpha.HTTPProxyReasonPending, condition.Reason)
 	})
-}
-
-// The Host rewrite is rule-scoped in the Gateway API and cannot vary per
-// weighted backend, so backends on different hostnames are refused rather
-// than having one backend's hostname silently applied to all of them. The
-// message has to carry the way out, since it is what an operator sees on the
-// Programmed condition.
-func TestReconcileRuleRewriteHostnameConflictExplainsItself(t *testing.T) {
-	var agreed string
-	var have bool
-
-	require.NoError(t, reconcileRuleRewriteHostname(&agreed, &have, "a.example.com", 0, 0))
-
-	err := reconcileRuleRewriteHostname(&agreed, &have, "b.example.com", 0, 1)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "a.example.com")
-	assert.Contains(t, err.Error(), "b.example.com")
-	assert.Contains(t, err.Error(), "Host header override",
-		"the error must name a way out, not just state the conflict")
 }

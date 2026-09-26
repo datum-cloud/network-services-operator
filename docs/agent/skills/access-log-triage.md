@@ -4,22 +4,23 @@ Use when status reports nothing wrong and requests still fail, when you need to
 know whether a load balancer is serving at all, or when traffic protection may
 be blocking real users.
 
-## You cannot read these yourself
+## Reading them
 
-This service publishes no tool for access logs. Do not imply you looked, and do
-not treat the gap as a fault — it is a capability that has not been built yet.
+`alb_traffic_summary` returns counts first and examples second: how many
+requests arrived, the response-code breakdown, the edge's own response flags,
+which hostnames were asked for, and a sample of recent lines.
 
-Say so, and hand over the two ways the person can look:
+Narrow it when you are hunting something specific:
 
-```
-datumctl alb logs <name> --since 1h
-datumctl alb logs <name> --since 1h --code 502 -o wide
-```
+- `code` when chasing a particular failure
+- `host` when a customer has several hostnames and only one misbehaves
+- `since` no wider than you need — a wide window on a busy load balancer buries
+  the thing you are looking for
 
-or the Logs tab for that load balancer in the console.
-
-Then use the rest of this skill to interpret what they bring back. That is the
-part you are good at and they are not.
+If the project cannot show logs at all, the result says so rather than failing.
+That is a property of the project, not a fault of the load balancer, and the
+person can still look with `datumctl alb logs <name>` or the Logs tab in the
+console.
 
 ## Why this matters more here than elsewhere
 

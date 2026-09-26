@@ -686,6 +686,31 @@ func TestNetworkInterfaceClaimBindsDualStack(t *testing.T) {
 		"Ready requires Prepared and Programmed, which nothing reports yet")
 }
 
+func TestNetworkInterfaceClaimProjectsAttachedTo(t *testing.T) {
+	s := newScenario(t, true,
+		[]networkingv1alpha.IPFamily{networkingv1alpha.IPv4Protocol},
+		publicV4Class())
+
+	attachedTo := &networkingv1alpha.AttachedToRef{
+		APIGroup: "compute.datumapis.com",
+		Kind:     "Instance",
+		Name:     "web-0",
+	}
+
+	claim := s.createClaim("web-0-eth0", networkingv1alpha.NetworkInterfaceClaimSpec{
+		InterfaceName: "eth0",
+		IPFamilies:    []networkingv1alpha.IPFamily{networkingv1alpha.IPv4Protocol},
+		ReclaimPolicy: networkingv1alpha.NetworkInterfaceReclaimPolicyDelete,
+		AttachedTo:    attachedTo,
+	})
+	s.reconcile(claim)
+
+	iface, err := s.getInterface("web-0-eth0")
+	require.NoError(t, err)
+	require.Equal(t, attachedTo, iface.Spec.AttachedTo,
+		"the claim's attachedTo is projected onto the bound interface")
+}
+
 func TestNetworkInterfaceClaimFailsClosedWithoutProject(t *testing.T) {
 	s := newScenario(t, false, []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol})
 

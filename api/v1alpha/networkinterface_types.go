@@ -260,6 +260,38 @@ type NetworkInterfaceAttachmentRef struct {
 	Name string `json:"name"`
 }
 
+// AttachedToRef names the consumer resource an interface is attached to, such
+// as a compute Instance. It is authored by whoever creates the claim, carried
+// onto the bound interface, and never interpreted here: the networking operator
+// has no idea what an Instance is, and the reference is opaque to it.
+//
+// It is distinct from NetworkInterfaceAttachmentRef, which the provider writes
+// to record the data-plane resource realizing the interface. This one names the
+// consumer-side thing the interface belongs to, so an operator reading an access
+// log can tell which backend served a request.
+type AttachedToRef struct {
+	// apiGroup is the API group of the referent, such as compute.datumapis.com.
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	APIGroup string `json:"apiGroup"`
+
+	// kind is the kind of the referent, such as Instance.
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	Kind string `json:"kind"`
+
+	// name is the name of the referent.
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	Name string `json:"name"`
+}
+
 // NetworkInterfaceSpec defines the desired state of NetworkInterface. It is
 // written by the operator when a claim is fulfilled, and it carries everything
 // a provider needs to configure a NIC without reading any other resource.
@@ -336,6 +368,17 @@ type NetworkInterfaceSpec struct {
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:default="Delete"
 	ReclaimPolicy NetworkInterfaceReclaimPolicy `json:"reclaimPolicy,omitempty"`
+
+	// attachedTo names the consumer resource this interface is attached to, such
+	// as a compute Instance. It comes from the claim, and the operator carries it
+	// without interpreting it, the same way the held-by label and the
+	// HolderAvailable condition name the holder without knowing what a holder is.
+	// The holder surface says a holder exists and whether it serves; this says
+	// what the holder is, so a reader tracing traffic to a member can name the
+	// backend behind it.
+	//
+	// +kubebuilder:validation:Optional
+	AttachedTo *AttachedToRef `json:"attachedTo,omitempty"`
 }
 
 // NetworkInterfaceStatus defines the observed state of NetworkInterface: which

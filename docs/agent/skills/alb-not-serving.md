@@ -36,7 +36,7 @@ Read `confidence` before you say anything reassuring.
   **nothing reports whether the edge can actually serve it**. Do not say it is
   working. Say what is and is not known, then settle it: a request against the
   generated hostname, or `alb_traffic_summary` to see whether anything is
-  arriving. Load `edge-propagation` if it was created recently.
+  arriving at all. Load `edge-propagation` if it was created recently.
 - `partial` means some evidence could not be read. The `unread` list says what.
   Say so rather than presenting a thin answer as a complete one.
 

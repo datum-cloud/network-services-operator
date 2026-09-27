@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -131,3 +132,40 @@ func scanDoc(t *testing.T, where, text string) {
 
 // backticked matches an inline code span or a fenced block.
 var backticked = regexp.MustCompile("(?s)```.*?```|`[^`\n]*`")
+
+// TestPublishedDocsOnlyNameToolsThatExist closes the hole behind a real
+// incident: the skills told the assistant to call alb_traffic_summary, which
+// was designed and then deliberately deferred, and nothing caught that the
+// documents still promised it.
+//
+// The failure is worse than a missing feature. The assistant loads the skill,
+// finds no such tool, and has to account for it — so it reports the skill as
+// broken and files a capability gap, when the only thing actually wrong is that
+// we told it something untrue.
+func TestPublishedDocsOnlyNameToolsThatExist(t *testing.T) {
+	registered := map[string]bool{}
+	s := mcp.NewServer(&mcp.Implementation{Name: "test", Version: "0"}, nil)
+	RegisterTools(s, depsFor(&fakeReader{}))
+	for _, tool := range serverTools(t, s) {
+		registered[tool.Name] = true
+	}
+	require.NotEmpty(t, registered)
+
+	named := regexp.MustCompile(`\balb_[a-z_]+\b`)
+
+	check := func(where, body string) {
+		for _, m := range named.FindAllString(body, -1) {
+			assert.True(t, registered[m],
+				"%s tells the assistant to call %q, which this service does not publish; "+
+					"either implement it or stop naming it", where, m)
+		}
+	}
+
+	b, err := agentdocs.FS.ReadFile(agentdocs.KnowledgeFile)
+	require.NoError(t, err)
+	check(agentdocs.KnowledgeFile, string(b))
+
+	for name, body := range skillFiles(t) {
+		check("skill "+name, body)
+	}
+}

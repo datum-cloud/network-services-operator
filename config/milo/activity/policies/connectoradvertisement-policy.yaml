@@ -8,6 +8,9 @@
 apiVersion: activity.miloapis.com/v1alpha1
 kind: ActivityPolicy
 metadata:
+  labels:
+    meta.datumapis.com/service: network-services
+    meta.datumapis.com/team: delivery
   name: networking.datumapis.com-connectoradvertisement
 spec:
   resource:

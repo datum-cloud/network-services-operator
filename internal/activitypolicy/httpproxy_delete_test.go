@@ -3,8 +3,9 @@
 package activitypolicy_test
 
 import (
-	"github.com/stretchr/testify/require"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestHTTPProxyDeleteOutcomes(t *testing.T) {

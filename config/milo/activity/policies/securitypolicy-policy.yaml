@@ -1,6 +1,8 @@
 # ActivityPolicy for SecurityPolicy resources (gateway.envoyproxy.io).
 # Product noun is "basic authentication". The portal names the policy after
 # the load balancer. Prefer display-name when the client stamps it.
+# Updates accept spec-bearing objects and JSON Patch operations that change spec;
+# metadata-only patches and test operations are silent.
 apiVersion: activity.miloapis.com/v1alpha1
 kind: ActivityPolicy
 metadata:
@@ -32,9 +34,9 @@ spec:
       summary: "{{ actor }} removed basic authentication"
 
     - name: update-annotated
-      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && has(audit.requestObject.spec) && has(audit.responseObject.metadata.annotations) && 'networking.datumapis.com/display-name' in audit.responseObject.metadata.annotations && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
+      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && (type(audit.requestObject) == map ? has(audit.requestObject.spec) : type(audit.requestObject) == list && audit.requestObject.exists(patch, patch.op in ['add', 'remove', 'replace', 'copy', 'move'] && (patch.path == '' || patch.path == '/spec' || patch.path.startsWith('/spec/') || (patch.op == 'move' && (patch.from == '/spec' || patch.from.startsWith('/spec/')))))) && has(audit.responseObject.metadata.annotations) && 'networking.datumapis.com/display-name' in audit.responseObject.metadata.annotations && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
       summary: "{{ actor }} updated basic authentication on {{ link(audit.responseObject.metadata.annotations['networking.datumapis.com/display-name'], audit.objectRef) }}"
 
     - name: update-fallback
-      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && has(audit.requestObject.spec) && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
+      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && (type(audit.requestObject) == map ? has(audit.requestObject.spec) : type(audit.requestObject) == list && audit.requestObject.exists(patch, patch.op in ['add', 'remove', 'replace', 'copy', 'move'] && (patch.path == '' || patch.path == '/spec' || patch.path.startsWith('/spec/') || (patch.op == 'move' && (patch.from == '/spec' || patch.from.startsWith('/spec/')))))) && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
       summary: "{{ actor }} updated basic authentication on {{ link(audit.objectRef.name, audit.objectRef) }}"

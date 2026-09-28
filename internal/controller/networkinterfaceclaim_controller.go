@@ -14,6 +14,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -542,6 +543,7 @@ func (r *NetworkInterfaceClaimReconciler) bindInterface(
 		}
 
 		existing.Spec.ClaimRef = &networkingv1alpha.NetworkInterfaceClaimRef{Name: claim.Name}
+		existing.Spec.AttachedTo = claim.Spec.AttachedTo
 		controllerutil.AddFinalizer(&existing, networkInterfaceFinalizer)
 		if err := cl.Update(ctx, &existing); err != nil {
 			return nil, fmt.Errorf("failed binding network interface: %w", err)
@@ -572,6 +574,7 @@ func (r *NetworkInterfaceClaimReconciler) bindInterface(
 		AttachmentMode: claim.Spec.AttachmentMode,
 		MTU:            networkContext.Spec.MTU,
 		ReclaimPolicy:  claim.Spec.ReclaimPolicy,
+		AttachedTo:     claim.Spec.AttachedTo,
 	}
 
 	for _, entry := range allocated {
@@ -1026,6 +1029,10 @@ func (r *NetworkInterfaceClaimReconciler) syncInterface(
 	// An interface adopted from before the field existed carries none.
 	if claim.Spec.AttachmentMode != "" && iface.Spec.AttachmentMode != claim.Spec.AttachmentMode {
 		iface.Spec.AttachmentMode = claim.Spec.AttachmentMode
+		changed = true
+	}
+	if !equality.Semantic.DeepEqual(iface.Spec.AttachedTo, claim.Spec.AttachedTo) {
+		iface.Spec.AttachedTo = claim.Spec.AttachedTo
 		changed = true
 	}
 	for i := range iface.Spec.Addresses {

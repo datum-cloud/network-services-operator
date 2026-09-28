@@ -74,7 +74,7 @@ it. To change one of those fields, delete the claim and create a new one,
 accepting that the workload gets new addresses unless the interface is
 retained.<br/>
           <br/>
-            <i>Validations</i>:<li>has(self.networkInterfaceName) == has(oldSelf.networkInterfaceName) && (!has(self.networkInterfaceName) || self.networkInterfaceName == oldSelf.networkInterfaceName): networkInterfaceName is immutable and cannot be set, changed, or cleared after creation</li><li>has(self.addresses) == has(oldSelf.addresses) && (!has(self.addresses) || self.addresses == oldSelf.addresses): addresses is immutable and cannot be set, changed, or cleared after creation</li>
+            <i>Validations</i>:<li>has(self.networkInterfaceName) == has(oldSelf.networkInterfaceName) && (!has(self.networkInterfaceName) || self.networkInterfaceName == oldSelf.networkInterfaceName): networkInterfaceName is immutable and cannot be set, changed, or cleared after creation</li><li>has(self.addresses) == has(oldSelf.addresses) && (!has(self.addresses) || self.addresses == oldSelf.addresses): addresses is immutable and cannot be set, changed, or cleared after creation</li><li>has(self.attachedTo) == has(oldSelf.attachedTo) && (!has(self.attachedTo) || self.attachedTo == oldSelf.attachedTo): attachedTo is immutable and cannot be set, changed, or cleared after creation</li>
         </td>
         <td>true</td>
       </tr><tr>
@@ -143,13 +143,31 @@ Omit this field for ordinary private addressing, which is the common case.<br/>
         </td>
         <td>false</td>
       </tr><tr>
+        <td><b><a href="#networkinterfaceclaimspecattachedto">attachedTo</a></b></td>
+        <td>object</td>
+        <td>
+          attachedTo names the consumer resource this interface is attached to, such
+as a compute Instance. It is set by whoever creates the claim.
+
+It is copied to the bound interface and never interpreted here. The
+networking operator has no idea what an Instance is; it carries the
+reference so a reader tracing traffic to a member can name the backend
+behind it.
+
+Immutable, because a bound interface's attachment does not move to a
+different consumer resource.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
         <td><b>attachmentMode</b></td>
         <td>enum</td>
         <td>
           attachmentMode is how the guest consumes this interface. Netns places it in
 the workload's network namespace, which is what an ordinary container
 expects. Hypervisor hands it to a hypervisor as a device, which is what a
-virtual machine or microVM guest needs.
+virtual machine or microVM guest needs. HypervisorDeclared also hands it
+to a hypervisor, and additionally has the realizer state the device to
+that hypervisor instead of letting it discover the device from the node.
 
 It is copied to the bound interface and never interpreted here. Whoever
 realizes the interface decides what each mode means on its data plane.
@@ -157,7 +175,7 @@ realizes the interface decides what each mode means on its data plane.
 Immutable, because the guest and the attachment are both built against it.<br/>
           <br/>
             <i>Validations</i>:<li>self == oldSelf: attachmentMode is immutable and cannot be changed after creation</li>
-            <i>Enum</i>: Netns, Hypervisor<br/>
+            <i>Enum</i>: Netns, Hypervisor, HypervisorDeclared<br/>
             <i>Default</i>: Netns<br/>
         </td>
         <td>false</td>
@@ -303,6 +321,56 @@ a private one.
 A class names a kind of address, and the platform decides which pool and
 prefix length serve it. A class never names a pool, a prefix length, or a
 CIDR, so a class cannot be used to ask for a particular address.<br/>
+        </td>
+        <td>true</td>
+      </tr></tbody>
+</table>
+
+
+### NetworkInterfaceClaim.spec.attachedTo
+<sup><sup>[↩ Parent](#networkinterfaceclaimspec)</sup></sup>
+
+
+
+attachedTo names the consumer resource this interface is attached to, such
+as a compute Instance. It is set by whoever creates the claim.
+
+It is copied to the bound interface and never interpreted here. The
+networking operator has no idea what an Instance is; it carries the
+reference so a reader tracing traffic to a member can name the backend
+behind it.
+
+Immutable, because a bound interface's attachment does not move to a
+different consumer resource.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>apiGroup</b></td>
+        <td>string</td>
+        <td>
+          apiGroup is the API group of the referent, such as compute.datumapis.com.<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>kind</b></td>
+        <td>string</td>
+        <td>
+          kind is the kind of the referent, such as Instance.<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>name</b></td>
+        <td>string</td>
+        <td>
+          name is the name of the referent.<br/>
         </td>
         <td>true</td>
       </tr></tbody>

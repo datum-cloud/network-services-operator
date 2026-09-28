@@ -951,6 +951,72 @@ func TestBuildPolicyIndexFromClient_VPCPodResolution_TenantIDFromLabel(t *testin
 	assert.Equal(t, tenantID, info.TenantID)
 }
 
+func TestBuildPolicyIndexFromClient_UpstreamRefFromInstanceSliceLabels(t *testing.T) {
+	const (
+		upstreamNS = "test-project"
+		proxyName  = "my-proxy"
+		podSlice   = "vpc-pod-1"
+	)
+	scheme := indexTestScheme(t)
+
+	proxy := newVPCPodHTTPProxy(upstreamNS, podSlice)
+	endpointSlice := &discoveryv1.EndpointSlice{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      podSlice,
+			Namespace: upstreamNS,
+			Labels: map[string]string{
+				AttachedToGroupLabel: "compute.datumapis.com",
+				AttachedToKindLabel:  "Instance",
+				AttachedToNameLabel:  "web-0",
+			},
+		},
+	}
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(proxy, endpointSlice).
+		Build()
+
+	idx, err := BuildPolicyIndexFromClient(context.Background(), cl, nil)
+	require.NoError(t, err)
+
+	ref, ok := idx.UpstreamRefs[UpstreamRefKey{UpstreamNS: upstreamNS, HTTPProxyName: proxyName, RuleIndex: 0}]
+	require.True(t, ok, "attached-to labels must populate UpstreamRefs")
+	assert.Equal(t, UpstreamRef{APIGroup: "compute.datumapis.com", Kind: "Instance", Name: "web-0"}, ref)
+}
+
+func TestBuildPolicyIndexFromClient_UpstreamRefAbsentWhenLabelsIncomplete(t *testing.T) {
+	const (
+		upstreamNS = "other-project"
+		proxyName  = "my-proxy"
+		podSlice   = "vpc-pod-1"
+	)
+	scheme := indexTestScheme(t)
+
+	proxy := newVPCPodHTTPProxy(upstreamNS, podSlice)
+	endpointSlice := &discoveryv1.EndpointSlice{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      podSlice,
+			Namespace: upstreamNS,
+			Labels: map[string]string{
+				AttachedToGroupLabel: "compute.datumapis.com",
+				AttachedToKindLabel:  "Instance",
+			},
+		},
+	}
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(proxy, endpointSlice).
+		Build()
+
+	idx, err := BuildPolicyIndexFromClient(context.Background(), cl, nil)
+	require.NoError(t, err)
+
+	_, ok := idx.UpstreamRefs[UpstreamRefKey{UpstreamNS: upstreamNS, HTTPProxyName: proxyName, RuleIndex: 0}]
+	assert.False(t, ok, "an incomplete label set names no upstream reference")
+}
+
 func TestBuildPolicyIndexFromClient_VPCPodResolution_MissingEndpointSlice_EmptyTenantID(t *testing.T) {
 	// HTTPProxy references a vpcPod EndpointSlice that doesn't exist. Production
 	// behavior: cl.Get returns NotFound → VPCPodInfo{} (empty TenantID), so

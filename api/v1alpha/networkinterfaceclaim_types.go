@@ -102,6 +102,7 @@ type NetworkInterfaceAddressRequest struct {
 //
 // +kubebuilder:validation:XValidation:message="networkInterfaceName is immutable and cannot be set, changed, or cleared after creation",rule="has(self.networkInterfaceName) == has(oldSelf.networkInterfaceName) && (!has(self.networkInterfaceName) || self.networkInterfaceName == oldSelf.networkInterfaceName)"
 // +kubebuilder:validation:XValidation:message="addresses is immutable and cannot be set, changed, or cleared after creation",rule="has(self.addresses) == has(oldSelf.addresses) && (!has(self.addresses) || self.addresses == oldSelf.addresses)"
+// +kubebuilder:validation:XValidation:message="attachedTo is immutable and cannot be set, changed, or cleared after creation",rule="has(self.attachedTo) == has(oldSelf.attachedTo) && (!has(self.attachedTo) || self.attachedTo == oldSelf.attachedTo)"
 type NetworkInterfaceClaimSpec struct {
 	// network is the network the interface attaches to. The network must already
 	// exist in the same namespace as the claim.
@@ -215,6 +216,20 @@ type NetworkInterfaceClaimSpec struct {
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
 	NetworkInterfaceName string `json:"networkInterfaceName,omitempty"`
+
+	// attachedTo names the consumer resource this interface is attached to, such
+	// as a compute Instance. It is set by whoever creates the claim.
+	//
+	// It is copied to the bound interface and never interpreted here. The
+	// networking operator has no idea what an Instance is; it carries the
+	// reference so a reader tracing traffic to a member can name the backend
+	// behind it.
+	//
+	// Immutable, because a bound interface's attachment does not move to a
+	// different consumer resource.
+	//
+	// +kubebuilder:validation:Optional
+	AttachedTo *AttachedToRef `json:"attachedTo,omitempty"`
 }
 
 // NetworkInterfaceClaimStatus defines the observed state of

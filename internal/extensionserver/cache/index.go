@@ -39,6 +39,7 @@ func BuildPolicyIndexFromClient(ctx context.Context, cl client.Client, baseDirec
 		TPPs:         make(map[string][]TPPInfo),
 		Connectors:   make(map[ConnectorKey]ConnectorInfo),
 		VPCPods:      make(map[VPCPodKey]VPCPodInfo),
+		UpstreamRefs: make(map[UpstreamRefKey]UpstreamRef),
 	}
 	if err := populateFromClient(ctx, cl, idx, baseDirectives); err != nil {
 		return nil, err
@@ -121,7 +122,7 @@ func populateFromClient(ctx context.Context, cl client.Client, idx *PolicyIndex,
 	if err := cl.List(ctx, &sliceList); err != nil {
 		return fmt.Errorf("list EndpointSlices: %w", err)
 	}
-	tenantByAddress, addressesByOwner := endpointSliceAddressMaps(&sliceList)
+	tenantByAddress, addressesByOwner, attachedToByOwner := endpointSliceAddressMaps(&sliceList)
 
 	// --- HTTPProxies → ConnectorInfo ---
 	var proxyList networkingv1alpha.HTTPProxyList
@@ -202,6 +203,10 @@ func populateFromClient(ctx context.Context, cl client.Client, idx *PolicyIndex,
 
 					idx.VPCPods[key] = VPCPodInfo{TenantID: endpointSlice.Labels[VPCPodTenantIDLabel]}
 
+					if ref, ok := UpstreamRefFromLabels(endpointSlice.Labels); ok {
+						idx.UpstreamRefs[UpstreamRefKey(key)] = ref
+					}
+
 				case backend.NetworkService != nil:
 					key := VPCPodKey{
 						UpstreamNS:    effectiveNS,
@@ -223,6 +228,10 @@ func populateFromClient(ctx context.Context, cl client.Client, idx *PolicyIndex,
 					idx.VPCPods[key] = VPCPodInfo{
 						TenantID: tenantForAddresses(addressesByOwner[owner], tenantByAddress),
 					}
+
+					if ref, ok := attachedToByOwner[owner]; ok {
+						idx.UpstreamRefs[UpstreamRefKey(key)] = ref
+					}
 				}
 			}
 		}
@@ -230,9 +239,9 @@ func populateFromClient(ctx context.Context, cl client.Client, idx *PolicyIndex,
 	return nil
 }
 
-// endpointSliceAddressMaps builds the two lookups a networkService backend's
-// VRF binding is resolved through, in one pass over the cluster's
-// EndpointSlices.
+// endpointSliceAddressMaps builds the lookups a networkService backend's VRF
+// binding and upstream reference are resolved through, in one pass over the
+// cluster's EndpointSlices.
 //
 // tenantByAddress maps a member address to the tenant galactic labelled that
 // address's own slice with. An edge holds both the slices galactic publishes
@@ -249,9 +258,11 @@ func populateFromClient(ctx context.Context, cl client.Client, idx *PolicyIndex,
 func endpointSliceAddressMaps(sliceList *discoveryv1.EndpointSliceList) (
 	tenantByAddress map[string]string,
 	addressesByOwner map[client.ObjectKey][]string,
+	attachedToByOwner map[client.ObjectKey]UpstreamRef,
 ) {
 	tenantByAddress = make(map[string]string)
 	addressesByOwner = make(map[client.ObjectKey][]string)
+	attachedToByOwner = make(map[client.ObjectKey]UpstreamRef)
 
 	for i := range sliceList.Items {
 		slice := &sliceList.Items[i]
@@ -262,6 +273,11 @@ func endpointSliceAddressMaps(sliceList *discoveryv1.EndpointSliceList) (
 		}
 
 		ownerKey := client.ObjectKey{Namespace: slice.Namespace, Name: owner}
+		if owner != "" {
+			if ref, ok := UpstreamRefFromLabels(slice.Labels); ok {
+				attachedToByOwner[ownerKey] = ref
+			}
+		}
 		for _, endpoint := range slice.Endpoints {
 			for _, rawAddress := range endpoint.Addresses {
 				address := canonicalAddress(rawAddress)
@@ -278,7 +294,7 @@ func endpointSliceAddressMaps(sliceList *discoveryv1.EndpointSliceList) (
 		}
 	}
 
-	return tenantByAddress, addressesByOwner
+	return tenantByAddress, addressesByOwner, attachedToByOwner
 }
 
 // canonicalAddress normalises an endpoint address so two spellings of one

@@ -108,6 +108,40 @@ spec:
                 x-kubernetes-validations:
                 - message: Each address class may be requested at most once
                   rule: self.all(a, self.exists_one(b, b.class == a.class))
+              attachedTo:
+                description: |-
+                  attachedTo names the consumer resource this interface is attached to, such
+                  as a compute Instance. It is set by whoever creates the claim.
+
+                  It is copied to the bound interface and never interpreted here. The
+                  networking operator has no idea what an Instance is; it carries the
+                  reference so a reader tracing traffic to a member can name the backend
+                  behind it.
+
+                  Immutable, because a bound interface's attachment does not move to a
+                  different consumer resource.
+                properties:
+                  apiGroup:
+                    description: apiGroup is the API group of the referent, such as
+                      compute.datumapis.com.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                  kind:
+                    description: kind is the kind of the referent, such as Instance.
+                    maxLength: 63
+                    minLength: 1
+                    type: string
+                  name:
+                    description: name is the name of the referent.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                required:
+                - apiGroup
+                - kind
+                - name
+                type: object
               attachmentMode:
                 default: Netns
                 description: |-
@@ -249,6 +283,10 @@ spec:
                 after creation
               rule: has(self.addresses) == has(oldSelf.addresses) && (!has(self.addresses)
                 || self.addresses == oldSelf.addresses)
+            - message: attachedTo is immutable and cannot be set, changed, or cleared
+                after creation
+              rule: has(self.attachedTo) == has(oldSelf.attachedTo) && (!has(self.attachedTo)
+                || self.attachedTo == oldSelf.attachedTo)
           status:
             default:
               conditions:

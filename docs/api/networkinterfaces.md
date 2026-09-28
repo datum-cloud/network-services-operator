@@ -123,6 +123,19 @@ length and, once the location has a subnet, the gateway to route through.<br/>
         </td>
         <td>false</td>
       </tr><tr>
+        <td><b><a href="#networkinterfacespecattachedto">attachedTo</a></b></td>
+        <td>object</td>
+        <td>
+          attachedTo names the consumer resource this interface is attached to, such
+as a compute Instance. It comes from the claim, and the operator carries it
+without interpreting it, the same way the held-by label and the
+HolderAvailable condition name the holder without knowing what a holder is.
+The holder surface says a holder exists and whether it serves; this says
+what the holder is, so a reader tracing traffic to a member can name the
+backend behind it.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
         <td><b>attachmentMode</b></td>
         <td>enum</td>
         <td>
@@ -131,9 +144,11 @@ claim, and the operator carries it without interpreting it.
 
 Netns places the interface in the workload's network namespace. Hypervisor
 hands it to a hypervisor as a device, which is what a virtual machine or
-microVM guest needs.<br/>
+microVM guest needs. HypervisorDeclared also hands it to a hypervisor, and
+additionally has the realizer state the device to that hypervisor instead
+of letting it discover the device from the node.<br/>
           <br/>
-            <i>Enum</i>: Netns, Hypervisor<br/>
+            <i>Enum</i>: Netns, Hypervisor, HypervisorDeclared<br/>
             <i>Default</i>: Netns<br/>
         </td>
         <td>false</td>
@@ -294,6 +309,53 @@ family. It is the address of the first family the claim listed in
 spec.ipFamilies.<br/>
         </td>
         <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### NetworkInterface.spec.attachedTo
+<sup><sup>[↩ Parent](#networkinterfacespec)</sup></sup>
+
+
+
+attachedTo names the consumer resource this interface is attached to, such
+as a compute Instance. It comes from the claim, and the operator carries it
+without interpreting it, the same way the held-by label and the
+HolderAvailable condition name the holder without knowing what a holder is.
+The holder surface says a holder exists and whether it serves; this says
+what the holder is, so a reader tracing traffic to a member can name the
+backend behind it.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>apiGroup</b></td>
+        <td>string</td>
+        <td>
+          apiGroup is the API group of the referent, such as compute.datumapis.com.<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>kind</b></td>
+        <td>string</td>
+        <td>
+          kind is the kind of the referent, such as Instance.<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>name</b></td>
+        <td>string</td>
+        <td>
+          name is the name of the referent.<br/>
+        </td>
+        <td>true</td>
       </tr></tbody>
 </table>
 

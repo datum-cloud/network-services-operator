@@ -3,8 +3,9 @@
 #
 # Prefer display-* / activity-* annotations stamped at admission. Fall back to
 # spec.mode and spec.targetRefs[0].name. Create/update rules require a 2xx
-# response. Update rules require requestObject.spec so metadata-only patches
-# are silent. Event links prefer event.related (the HTTPProxy) when present.
+# response. Updates accept spec-bearing objects and JSON Patch operations that
+# change spec; metadata-only patches and test operations are silent.
+# Event links prefer event.related (the HTTPProxy) when present.
 apiVersion: activity.miloapis.com/v1alpha1
 kind: ActivityPolicy
 metadata:
@@ -39,27 +40,27 @@ spec:
       summary: "{{ actor }} removed traffic protection"
 
     - name: update-mode
-      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && has(audit.requestObject.spec) && has(audit.responseObject.metadata.annotations) && 'networking.datumapis.com/activity-field' in audit.responseObject.metadata.annotations && audit.responseObject.metadata.annotations['networking.datumapis.com/activity-field'] == 'mode' && 'networking.datumapis.com/display-name' in audit.responseObject.metadata.annotations && 'networking.datumapis.com/activity-value' in audit.responseObject.metadata.annotations && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
+      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && (type(audit.requestObject) == map ? has(audit.requestObject.spec) : type(audit.requestObject) == list && audit.requestObject.exists(patch, patch.op in ['add', 'remove', 'replace', 'copy', 'move'] && (patch.path == '' || patch.path == '/spec' || patch.path.startsWith('/spec/') || (patch.op == 'move' && (patch.from == '/spec' || patch.from.startsWith('/spec/')))))) && has(audit.responseObject.metadata.annotations) && 'networking.datumapis.com/activity-field' in audit.responseObject.metadata.annotations && audit.responseObject.metadata.annotations['networking.datumapis.com/activity-field'] == 'mode' && 'networking.datumapis.com/display-name' in audit.responseObject.metadata.annotations && 'networking.datumapis.com/activity-value' in audit.responseObject.metadata.annotations && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
       summary: "{{ actor }} changed traffic protection on {{ link(audit.responseObject.metadata.annotations['networking.datumapis.com/display-name'], audit.objectRef) }} from {{ audit.responseObject.metadata.annotations['networking.datumapis.com/activity-value'] }}"
 
     - name: update-sampling
-      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && has(audit.requestObject.spec) && has(audit.responseObject.metadata.annotations) && 'networking.datumapis.com/activity-field' in audit.responseObject.metadata.annotations && audit.responseObject.metadata.annotations['networking.datumapis.com/activity-field'] == 'sampling' && 'networking.datumapis.com/display-name' in audit.responseObject.metadata.annotations && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
+      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && (type(audit.requestObject) == map ? has(audit.requestObject.spec) : type(audit.requestObject) == list && audit.requestObject.exists(patch, patch.op in ['add', 'remove', 'replace', 'copy', 'move'] && (patch.path == '' || patch.path == '/spec' || patch.path.startsWith('/spec/') || (patch.op == 'move' && (patch.from == '/spec' || patch.from.startsWith('/spec/')))))) && has(audit.responseObject.metadata.annotations) && 'networking.datumapis.com/activity-field' in audit.responseObject.metadata.annotations && audit.responseObject.metadata.annotations['networking.datumapis.com/activity-field'] == 'sampling' && 'networking.datumapis.com/display-name' in audit.responseObject.metadata.annotations && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
       summary: "{{ actor }} changed traffic protection sampling on {{ link(audit.responseObject.metadata.annotations['networking.datumapis.com/display-name'], audit.objectRef) }} to {{ audit.responseObject.metadata.annotations['networking.datumapis.com/activity-value'] }}"
 
     - name: update-exclusions
-      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && has(audit.requestObject.spec) && has(audit.responseObject.metadata.annotations) && 'networking.datumapis.com/activity-field' in audit.responseObject.metadata.annotations && audit.responseObject.metadata.annotations['networking.datumapis.com/activity-field'] == 'exclusions' && 'networking.datumapis.com/display-name' in audit.responseObject.metadata.annotations && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
+      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && (type(audit.requestObject) == map ? has(audit.requestObject.spec) : type(audit.requestObject) == list && audit.requestObject.exists(patch, patch.op in ['add', 'remove', 'replace', 'copy', 'move'] && (patch.path == '' || patch.path == '/spec' || patch.path.startsWith('/spec/') || (patch.op == 'move' && (patch.from == '/spec' || patch.from.startsWith('/spec/')))))) && has(audit.responseObject.metadata.annotations) && 'networking.datumapis.com/activity-field' in audit.responseObject.metadata.annotations && audit.responseObject.metadata.annotations['networking.datumapis.com/activity-field'] == 'exclusions' && 'networking.datumapis.com/display-name' in audit.responseObject.metadata.annotations && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
       summary: "{{ actor }} updated traffic protection exclusions on {{ link(audit.responseObject.metadata.annotations['networking.datumapis.com/display-name'], audit.objectRef) }}"
 
     - name: update-annotated
-      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && has(audit.requestObject.spec) && has(audit.responseObject.metadata.annotations) && 'networking.datumapis.com/display-name' in audit.responseObject.metadata.annotations && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
+      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && (type(audit.requestObject) == map ? has(audit.requestObject.spec) : type(audit.requestObject) == list && audit.requestObject.exists(patch, patch.op in ['add', 'remove', 'replace', 'copy', 'move'] && (patch.path == '' || patch.path == '/spec' || patch.path.startsWith('/spec/') || (patch.op == 'move' && (patch.from == '/spec' || patch.from.startsWith('/spec/')))))) && has(audit.responseObject.metadata.annotations) && 'networking.datumapis.com/display-name' in audit.responseObject.metadata.annotations && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
       summary: "{{ actor }} updated traffic protection on {{ link(audit.responseObject.metadata.annotations['networking.datumapis.com/display-name'], audit.objectRef) }}"
 
     - name: update-mode-spec
-      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && has(audit.requestObject.spec) && has(audit.requestObject.spec.mode) && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
+      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && (type(audit.requestObject) == map && has(audit.requestObject.spec)) && has(audit.requestObject.spec.mode) && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
       summary: "{{ actor }} updated traffic protection {{ link(audit.objectRef.name, audit.objectRef) }} to {{ audit.requestObject.spec.mode }} mode"
 
     - name: update-fallback
-      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && has(audit.requestObject.spec) && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
+      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && (type(audit.requestObject) == map ? has(audit.requestObject.spec) : type(audit.requestObject) == list && audit.requestObject.exists(patch, patch.op in ['add', 'remove', 'replace', 'copy', 'move'] && (patch.path == '' || patch.path == '/spec' || patch.path.startsWith('/spec/') || (patch.op == 'move' && (patch.from == '/spec' || patch.from.startsWith('/spec/')))))) && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
       summary: "{{ actor }} updated {{ link('traffic protection', audit.objectRef) }}"
 
   eventRules:

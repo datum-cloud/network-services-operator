@@ -215,37 +215,65 @@ backend takes no Host rewrite, so customers on Datum compute are unaffected.
 
 Each origin needs the upstream `Host` header rewritten to its own hostname, or
 the origin cannot tell which site is being asked for. The controller expresses
-that as a `URLRewrite` filter on the `HTTPRouteRule`, which the Gateway API
-applies to every backend in the rule alike. Two backends wanting different
-values cannot both be satisfied, so the controller refuses the pair rather than
-silently applying one origin's hostname to both.
+that as a `URLRewrite` filter on the `HTTPRouteRule`, which applies to every
+backend in the rule alike. Two backends wanting different values cannot both be
+satisfied, so the controller refuses the pair rather than silently applying one
+origin's hostname to both.
 
-Envoy itself has no such limitation: a weighted cluster carries its own
-`host_rewrite_literal`. The obstacle is reaching it. Gateway API's validating
-webhook permits only `ExtensionRef`, `RequestHeaderModifier` and
-`ResponseHeaderModifier` on a backend reference, and none can carry a literal
-Host — `RequestHeaderModifier` is forbidden from touching `Host`, and Envoy
-Gateway's own filter offers no literal hostname option.
+Nothing below the controller shares that limitation. Envoy gives each weighted
+cluster its own `host_rewrite_literal`, and Envoy Gateway has accepted a
+hostname `URLRewrite` on an individual backend reference since v1.7.0,
+translating it onto that weighted cluster. The edge runs v1.7.4.
+
+What stops the controller from using it is this repository's own HTTPRoute
+admission webhook, which permits only `RequestHeaderModifier`,
+`ResponseHeaderModifier` and `ExtensionRef` on a backend reference. It
+validates every HTTPRoute in the project control plane, including the ones the
+HTTPProxy controller generates.
 
 ## Proposal
 
-Add a literal hostname modifier to Envoy Gateway's `HTTPRouteFilter`, then
-reference it per backend so each origin carries its own Host rewrite.
+Move the Host rewrite onto each backend reference when a rule's backends need
+different ones, and let the webhook admit it.
 
-Envoy Gateway supports and tests everything else this needs. Gateway API's
-admission webhook permits an `ExtensionRef` filter on a backend reference,
-`processExtensionRefHTTPFilter` routes it into `DestinationFilters.URLRewrite`,
-and `xds/translator/route.go` maps that onto the weighted cluster's
-`HostRewriteLiteral`. Its fixture
-`http-route-weighted-backend-with-url-rewrite` shows the shape wanted: two
-weighted clusters, each with its own `hostRewriteLiteral`.
+- When every backend that needs a rewrite agrees, the rule keeps its single
+  rule-scoped rewrite exactly as today, so existing load balancers are
+  untouched.
+- When they differ, each such backend reference carries its own
+  `URLRewrite{hostname}`, and any rule-level hostname rewrite is dropped so the
+  two never coexist. A rule-level path rewrite is kept.
+- The HTTPRoute webhook admits `URLRewrite` on a backend reference, hostname
+  only, matching what Envoy Gateway supports there. The filters a user may set
+  on an HTTPProxy backend are unchanged, so the generated rewrite cannot be
+  contradicted by a user-supplied one.
 
-The one gap is that `HTTPHostnameModifier` offers `Header` and `Backend` but no
-literal, so there is no way to say "rewrite to this hostname" for a single
-backend. Closing it is a change to one enum and its translation.
+No upstream change is needed. Translating the storefront split with
+`egctl x translate` against Envoy Gateway v1.7.4 produces the intended shape:
 
-Rules whose backends agree keep the rule-scoped rewrite exactly as today, so
-existing load balancers are untouched.
+```yaml
+weightedClusters:
+  clusters:
+  - hostRewriteLiteral: storefront-blue.fly.dev
+    name: httproute/default/storefront/rule/0/backend/0
+    weight: 95
+  - hostRewriteLiteral: storefront-green.fly.dev
+    name: httproute/default/storefront/rule/0/backend/1
+    weight: 5
+```
+
+An earlier revision of this document proposed adding a literal hostname
+modifier to Envoy Gateway's `HTTPRouteFilter`, on the premise that Gateway API's
+webhook refused `URLRewrite` on a backend reference. Gateway API v1.5 ships no
+such webhook; the refusal was ours.
+
+### Why not `type: Backend`
+
+Envoy Gateway's `HTTPRouteFilter` can already rewrite Host to the selected
+upstream's DNS name, via Envoy's `auto_host_rewrite`. Applied at the rule, it
+would give each FQDN origin its own Host without any per-backend filter. It
+cannot express a user's Host override on one backend, or the `tls.hostname` an
+HTTPS origin addressed by IP needs, so it covers only part of the table above.
+The per-backend rewrite covers all of it.
 
 ### Why not patch the generated configuration
 
@@ -259,63 +287,59 @@ weights inside it, and `host_rewrite_literal` has no per-locality form — so in
 the shape we generate there is nowhere to attach a per-backend rewrite, and a
 patch aimed at one matches nothing.
 
-The topology can be forced by giving each backend a filter, since any
-backend-level filter switches Envoy Gateway to a cluster per backend. That
-stacks two mechanisms — one to change the shape of generated configuration, one
-to exploit the shape it changed into — on internals no API contract covers,
-failing with every origin receiving the wrong Host. Not worth owning.
-
 Evidence and the fixture cross-reference behind this are in
 [network-services-operator#473](https://github.com/datum-cloud/network-services-operator/issues/473).
 
 ## Alternatives considered
 
-**Wait for Gateway API to drop the webhook restriction.** The CRD's own
-validation already permits what the webhook refuses, and the webhook is
-deprecated in favour of CEL, so this may resolve on its own. Not something to
-plan around.
+**Add a literal hostname modifier upstream.** The earlier proposal. It would
+work, but it waits on an Envoy Gateway release for something the version we
+run already supports.
 
 **Document the limitation and reject the configuration clearly.** The cheapest
-option, and worth doing regardless — network-services-operator#469 makes the
-refusal visible on the resource instead of only in controller logs. It does not
-give anyone the feature.
+option — network-services-operator#469 makes the refusal visible on the
+resource instead of only in controller logs. It does not give anyone the
+feature.
 
 **Require one rule per origin.** Backends in separate rules are matched, not
 weighted, so this cannot express "5% of the same traffic". It is a different
 feature.
 
+## Consequences
+
+### Rules whose origins differ get a cluster per backend
+
+Any backend-level filter makes Envoy Gateway emit a weighted cluster per
+backend instead of one merged cluster. That is what carries the per-backend
+rewrite, and it only happens for rules that could not be programmed before.
+
+It changes one behaviour on the version the edge runs. Envoy picks among
+weighted clusters per request, and Envoy Gateway v1.7.4 does not hash that
+choice, so a `ConsistentHash` load balancer keeps a client on one endpoint
+within an origin but not on the same origin. A canary sees a client's requests
+split by weight rather than pinned to one side.
+
+### Two paths
+
+Rules whose backends agree keep the rule-scoped rewrite; rules whose backends
+differ use per-backend rewrites. The cost is two shapes of generated route to
+reason about. The benefit is that no existing load balancer's configuration
+changes.
+
 ## Open questions
 
-### What happens when a rewrite does not take effect
+### Session affinity across origins
 
-Settle this first: the failure mode is a wrong answer rather than an outage.
-
-If the per-backend filter is missing, unresolvable or silently ignored, the
-route still splits traffic but without the rewrite, so origins receive requests
-addressed to the load balancer's own hostname and answer 404 or serve the wrong
-site.
-
-The proposal is to refuse rather than degrade — do not widen traffic to a
-backend whose rewrite is not in place, and say so on the resource — but that
-needs agreeing rather than assuming.
-
-### One path or two
-
-The proposal keeps the rule-scoped rewrite for backends that agree and uses
-per-backend filters only for those that do not, leaving existing load balancers
-untouched. The cost is two code paths and two behaviours to maintain
-indefinitely.
-
-### What to do until the upstream change lands
-
-This does not ship until an upstream release carries the modifier. Wait, carry
-a patched Envoy Gateway, or ship network-services-operator#469's clearer
-refusal and treat the capability as known-missing meanwhile. The third is
-honest but leaves the gap open for a release cycle or more.
+Whether a canary needs a client pinned to one origin before this ships. Envoy
+Gateway v1.8.4 and v1.9.0 set `use_hash_policy` on weighted clusters whenever
+the route has a hash policy, which pins it. The edge was rolled back to v1.7.4
+over an OIDC regression in v1.8, so affinity across origins arrives with the
+next Envoy Gateway upgrade rather than with this change.
 
 ## Known issues
 
-Adjacent, though independent of this proposal: a rule-level Host override takes
-precedence over a backend-level one, so the less specific wins and "this Host
-for the pool, except the canary" cannot be expressed. Per-backend overrides
-work on their own, so it only bites when both are set.
+A rule-level Host override takes precedence over a backend-level one, so the
+less specific wins. With per-backend rewrites in place, "this Host for the
+pool, except the canary" is now expressible on the data plane; what stops it is
+that precedence in the controller. Reversing it would change the Host sent by
+any existing proxy that sets both, so it is left as a separate decision.

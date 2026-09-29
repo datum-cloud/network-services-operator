@@ -103,6 +103,10 @@ var supportedHTTPBackendRefFilters = sets.New(
 	gatewayv1.HTTPRouteFilterExtensionRef,
 )
 
+var supportedHTTPRouteBackendRefFilters = supportedHTTPBackendRefFilters.Clone().Insert(
+	gatewayv1.HTTPRouteFilterURLRewrite,
+)
+
 func validateFilters(filters []gatewayv1.HTTPRouteFilter, supportedFilters sets.Set[gatewayv1.HTTPRouteFilterType], fldPath *field.Path) field.ErrorList {
 	allErrs := field.ErrorList{}
 
@@ -148,7 +152,12 @@ func validateHTTPBackendRef(route *gatewayv1.HTTPRoute, backendRef gatewayv1.HTT
 	// Do I need to validate the name?
 
 	allErrs = append(allErrs, validateBackendObjectReference(route, backendRef.BackendObjectReference, fldPath, opts)...)
-	allErrs = append(allErrs, validateFilters(backendRef.Filters, supportedHTTPBackendRefFilters, fldPath.Child("filters"))...)
+	allErrs = append(allErrs, validateFilters(backendRef.Filters, supportedHTTPRouteBackendRefFilters, fldPath.Child("filters"))...)
+	for i, filter := range backendRef.Filters {
+		if filter.URLRewrite != nil && filter.URLRewrite.Path != nil {
+			allErrs = append(allErrs, field.Forbidden(fldPath.Child("filters").Index(i).Child("urlRewrite", "path"), "only hostname may be rewritten on a backendRef"))
+		}
+	}
 	return allErrs
 }
 

@@ -273,6 +273,30 @@ func TestValidateHTTPProxy(t *testing.T) {
 			},
 			expectedErrors: field.ErrorList{},
 		},
+		"backend URLRewrite is not accepted": {
+			proxy: &networkingv1alpha.HTTPProxy{
+				Spec: networkingv1alpha.HTTPProxySpec{
+					Rules: []networkingv1alpha.HTTPProxyRule{
+						{
+							Backends: []networkingv1alpha.HTTPProxyRuleBackend{
+								{
+									Endpoint: "https://www.example.com",
+									Filters: []gatewayv1.HTTPRouteFilter{
+										{
+											Type:       gatewayv1.HTTPRouteFilterURLRewrite,
+											URLRewrite: &gatewayv1.HTTPURLRewriteFilter{Hostname: ptr.To(gatewayv1.PreciseHostname("canary.example.com"))},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			expectedErrors: field.ErrorList{
+				field.NotSupported(backendPath().Child("filters").Index(0).Child("type"), gatewayv1.HTTPRouteFilterURLRewrite, []string{}),
+			},
+		},
 		"HTTPProxy name too long": {
 			proxy: &networkingv1alpha.HTTPProxy{
 				ObjectMeta: metav1.ObjectMeta{

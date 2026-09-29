@@ -23,6 +23,7 @@ const (
 	connectorInternalTransport = "envoy.transport_sockets.internal_upstream"
 	hcmNetworkFilterName       = "envoy.filters.network.http_connection_manager"
 	offlineBodyMarker          = "Tunnel not online"
+	offlineTunnelCluster       = "datum-offline-tunnel"
 )
 
 // ScanActual scans the proxy's live configuration and assembles what it
@@ -72,7 +73,7 @@ func scanRouteConfig(rc *routev3.RouteConfiguration, act *Actual) {
 				act.Keys[FamilyConnectorRoute] = append(act.Keys[FamilyConnectorRoute],
 					connectorRouteKey(rcName, vhName, rt.GetName()))
 			}
-			if isOfflineDirectResponse(rt) {
+			if isOfflineRoute(rt) {
 				act.Keys[FamilyConnectorOffline] = append(act.Keys[FamilyConnectorOffline],
 					connectorRouteKey(rcName, vhName, rt.GetName()))
 			}
@@ -143,12 +144,15 @@ func isConnectRoute(rt *routev3.Route) bool {
 	return false
 }
 
-func isOfflineDirectResponse(rt *routev3.Route) bool {
-	dr := rt.GetDirectResponse()
-	if dr == nil {
-		return false
+// isOfflineRoute reports whether a route is part of the connector offline path,
+// which has two shapes: the CONNECT route keeps a terse direct_response, while
+// user-facing routes forward to the endpoint-less cluster.
+func isOfflineRoute(rt *routev3.Route) bool {
+	if ra := rt.GetRoute(); ra != nil {
+		return ra.GetCluster() == offlineTunnelCluster
 	}
-	if dr.GetStatus() != 503 {
+	dr := rt.GetDirectResponse()
+	if dr == nil || dr.GetStatus() != 503 {
 		return false
 	}
 	return dr.GetBody().GetInlineString() == offlineBodyMarker

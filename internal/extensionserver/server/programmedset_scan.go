@@ -80,23 +80,25 @@ func isConnectRoute(rt *routev3.Route) bool {
 	return false
 }
 
-// isOfflineDirectResponse reports whether a route directly returns the
-// tunnel-offline 503 response, covering both the dedicated offline route and
-// user-facing routes rewritten to it.
-func isOfflineDirectResponse(rt *routev3.Route) bool {
-	dr := rt.GetDirectResponse()
-	if dr == nil {
-		return false
+// isOfflineRoute reports whether a route is part of the connector offline path,
+// which has two shapes: the CONNECT route keeps a terse direct_response, while
+// user-facing routes forward to the endpoint-less cluster.
+func isOfflineRoute(rt *routev3.Route) bool {
+	if ra := rt.GetRoute(); ra != nil {
+		return ra.GetCluster() == offlineTunnelCluster
 	}
-	if dr.GetStatus() != 503 {
+	dr := rt.GetDirectResponse()
+	if dr == nil || dr.GetStatus() != 503 {
 		return false
 	}
 	return dr.GetBody().GetInlineString() == offlineBodyMarker
 }
 
-// offlineBodyMarker is the response body the connector offline path writes,
-// duplicated here so the scanner needs no import dependency.
-const offlineBodyMarker = "Tunnel not online"
+// Duplicated from the mutate package so the scanner needs no import dependency.
+const (
+	offlineBodyMarker    = "Tunnel not online"
+	offlineTunnelCluster = "datum-offline-tunnel"
+)
 
 // isReplacedConnectorCluster reports whether a connector cluster has been
 // replaced with its tunnel form. A cluster that has not been replaced means the

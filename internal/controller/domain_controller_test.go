@@ -356,6 +356,61 @@ func TestDomainVerification(t *testing.T) {
 			},
 		},
 		{
+			name:           "dnszone waiting on verification verifies apex domain",
+			reconcileCount: 2,
+			domain: newDomain(upstreamNamespace.Name, "dnszone-pending", func(domain *networkingv1alpha.Domain) {
+				domain.Status.Verification = &networkingv1alpha.DomainVerificationStatus{
+					NextVerificationAttempt: metav1.Time{Time: time.Unix(0, 0)},
+				}
+			}),
+			objects: []client.Object{pendingDNSZone(upstreamNamespace.Name, "zone-pending", "dnszone-pending")},
+			registryLookupDomain: func(ctx context.Context, domain string, opts registrydata.LookupOptions) (*registrydata.DomainResult, error) {
+				return &registrydata.DomainResult{
+					Registration: &networkingv1alpha.Registration{},
+					Nameservers:  []networkingv1alpha.Nameserver{{Hostname: "ns1.provider.net."}},
+				}, nil
+			},
+			assert: func(t *testing.T, domain *networkingv1alpha.Domain, _ ctrl.Result) {
+				assert.True(t, domain.Status.Apex)
+				assert.True(t, apimeta.IsStatusConditionTrue(domain.Status.Conditions, networkingv1alpha.DomainConditionVerified))
+				assert.True(t, apimeta.IsStatusConditionTrue(domain.Status.Conditions, networkingv1alpha.DomainConditionVerifiedDNSZone))
+			},
+		},
+		{
+			name:           "dnszone waiting on verification does not verify subdomain",
+			reconcileCount: 2,
+			domain: newDomain(upstreamNamespace.Name, "dnszone-pending-sub", func(domain *networkingv1alpha.Domain) {
+				domain.Spec.DomainName = "app.example.com"
+				domain.Status.Verification = &networkingv1alpha.DomainVerificationStatus{
+					NextVerificationAttempt: metav1.Time{Time: time.Unix(0, 0)},
+				}
+			}),
+			lookupTXT: func(ctx context.Context, name string) ([]string, error) {
+				return nil, &net.DNSError{IsNotFound: true}
+			},
+			httpGet: func(ctx context.Context, url string) ([]byte, *http.Response, error) {
+				return nil, &http.Response{StatusCode: http.StatusNotFound}, nil
+			},
+			objects: []client.Object{pendingDNSZone(upstreamNamespace.Name, "zone-pending-sub", "dnszone-pending-sub")},
+			// The subdomain has no delegation of its own, so the lookup reports
+			// the parent's nameservers, which match the shared zone nameservers.
+			registryLookupDomain: func(ctx context.Context, domain string, opts registrydata.LookupOptions) (*registrydata.DomainResult, error) {
+				return &registrydata.DomainResult{
+					Registration: &networkingv1alpha.Registration{},
+					Nameservers:  []networkingv1alpha.Nameserver{{Hostname: "ns1.provider.net."}},
+				}, nil
+			},
+			assert: func(t *testing.T, domain *networkingv1alpha.Domain, _ ctrl.Result) {
+				assert.False(t, domain.Status.Apex)
+				assert.False(t, apimeta.IsStatusConditionTrue(domain.Status.Conditions, networkingv1alpha.DomainConditionVerified))
+				cond := apimeta.FindStatusCondition(domain.Status.Conditions, networkingv1alpha.DomainConditionVerifiedDNSZone)
+				if assert.NotNil(t, cond) {
+					assert.Equal(t, metav1.ConditionFalse, cond.Status)
+					assert.Equal(t, networkingv1alpha.DomainReasonDNSZoneNotReady, cond.Reason)
+				}
+			},
+		},
+		{
 			name: "http token not found",
 			lookupTXT: func(ctx context.Context, name string) ([]string, error) {
 				return []string{}, &net.DNSError{IsNotFound: true}
@@ -581,6 +636,29 @@ func TestValidDomainGate_InvalidApex_SetsConditionAndSkipsFlows(t *testing.T) {
 	}
 	if got.Status.Registration != nil {
 		assert.True(t, got.Status.Registration.NextRefreshAttempt.IsZero())
+	}
+}
+
+// pendingDNSZone returns a DNSZone the DNS operator is holding back until the
+// named Domain is verified: Accepted=False with the waiting reason, never
+// Programmed, and nameservers published from its class.
+func pendingDNSZone(namespace, name, domainName string) *unstructured.Unstructured {
+	return &unstructured.Unstructured{
+		Object: map[string]any{
+			"apiVersion": "dns.networking.miloapis.com/v1alpha1",
+			"kind":       "DNSZone",
+			"metadata": map[string]any{
+				"name":      name,
+				"namespace": namespace,
+			},
+			"status": map[string]any{
+				"nameservers": []any{"ns1.provider.net.", "ns2.provider.net."},
+				"conditions": []any{
+					map[string]any{"type": "Accepted", "status": "False", "reason": dnsZoneReasonPendingDomainVerification},
+				},
+				"domainRef": map[string]any{"name": domainName},
+			},
+		},
 	}
 }
 

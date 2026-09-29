@@ -389,12 +389,17 @@ func (r *DomainReconciler) attemptDNSZoneVerification(
 	// Evaluate zones; any one matching is sufficient
 	sawNotReady := false
 	sawReady := false
+	sawPendingSubdomain := false
 	for _, z := range zones {
 		zoneName := z.GetName()
 
-		// Must be Accepted=True and Programmed=True
+		// Must be Accepted=True and Programmed=True, or held back by the DNS
+		// operator until this Domain is verified. The DNS operator won't serve
+		// a zone for an unverified domain, so a zone waiting on verification
+		// never becomes Programmed; requiring that would deadlock.
 		accepted := false
 		programmed := false
+		pendingVerification := false
 		if conds, found, _ := unstructured.NestedSlice(z.Object, jsonKeyStatus, "conditions"); found {
 			for _, c := range conds {
 				cm, ok := c.(map[string]any)
@@ -406,12 +411,24 @@ func (r *DomainReconciler) attemptDNSZoneVerification(
 				if ct == conditionTypeAccepted && cs == certManagerConditionStatusTrue {
 					accepted = true
 				}
+				if ct == conditionTypeAccepted && cs != certManagerConditionStatusTrue {
+					reason, _ := cm["reason"].(string)
+					pendingVerification = reason == dnsZoneReasonPendingDomainVerification
+				}
 				if ct == conditionTypeProgrammed && cs == certManagerConditionStatusTrue {
 					programmed = true
 				}
 			}
 		}
-		if !accepted || !programmed {
+		// A waiting zone only counts at the apex. Every zone shares the same
+		// nameservers, and a subdomain with no delegation of its own reports its
+		// parent's nameservers. Without this check, anyone could verify
+		// sub.example.com once example.com was delegated to Datum.
+		if pendingVerification && !domainStatus.Apex {
+			sawPendingSubdomain = true
+			continue
+		}
+		if !pendingVerification && (!accepted || !programmed) {
 			sawNotReady = true
 			// Keep evaluating other zones in case one is ready.
 			continue
@@ -447,6 +464,11 @@ func (r *DomainReconciler) attemptDNSZoneVerification(
 	if sawNotReady && !sawReady {
 		verifiedDNSZoneCondition.Reason = networkingv1alpha.DomainReasonDNSZoneNotReady
 		verifiedDNSZoneCondition.Message = "DNSZone exists but is not yet Accepted and Programmed"
+	}
+	if sawPendingSubdomain && !sawReady {
+		verifiedDNSZoneCondition.Reason = networkingv1alpha.DomainReasonDNSZoneNotReady
+		verifiedDNSZoneCondition.Message = "Nameserver delegation verifies only a registered domain; " +
+			"verify this subdomain with the TXT record or HTTP token, or verify its parent domain"
 	}
 }
 

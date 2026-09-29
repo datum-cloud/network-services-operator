@@ -52,6 +52,10 @@ const (
 	conditionTypeProgrammed = "Programmed"
 )
 
+// dnsZoneReasonPendingDomainVerification is the Accepted=False reason the DNS
+// operator sets on a DNSZone it holds back until its Domain is verified.
+const dnsZoneReasonPendingDomainVerification = "PendingDomainVerification"
+
 // cert-manager condition status values used when parsing unstructured Certificate objects.
 const (
 	certManagerConditionStatusTrue = "True"

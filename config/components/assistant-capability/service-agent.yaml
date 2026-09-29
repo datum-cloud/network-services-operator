@@ -1,0 +1,21 @@
+# The agent a customer's assistant talks to when they ask about this service.
+#
+# Published means customers can get it. The content it offers lives in
+# service-agent-configuration.yaml, so this object rarely changes.
+apiVersion: services.miloapis.com/v1alpha1
+kind: ServiceAgent
+metadata:
+  name: networking-alb-agent
+  labels:
+    app.kubernetes.io/name: networking-alb-agent
+    app.kubernetes.io/part-of: networking.datumapis.com
+spec:
+  # The catalog entry in ../service-catalog/service.yaml.
+  serviceRef:
+    name: networking-datumapis-com
+  phase: Published
+  displayName: Application Load Balancer diagnostics
+  description: |
+    Answers questions about a project's load balancers and diagnoses why one is not
+    serving: reads proxies, domains and traffic policies, walks their conditions to a
+    root cause, and helps plan a new one.

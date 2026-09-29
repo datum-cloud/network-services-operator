@@ -1,0 +1,101 @@
+# What this service's agent offers a customer: docs to read, tools to call, and
+# guides to follow.
+#
+# New versions ship as new objects rather than edits to this one, so it is always
+# clear which content a customer actually saw. The newest Published one wins.
+#
+# The catalog copies this into every entitled project, where the assistant reads
+# it. Nothing here entitles anyone on its own.
+#
+# The MCP endpoint points straight at this service's in-cluster address, which is
+# fine in staging. Production needs it changed to the AI gateway: going direct
+# there means the call is not billed, does not carry the customer's identity, and
+# will simply be refused.
+#
+# The tool list is the approved one. Anything not named is never offered to the
+# assistant, even if the server serves it. Only the name and description of each
+# guide reach the assistant; the guide itself is fetched when it is relevant.
+apiVersion: services.miloapis.com/v1alpha1
+kind: ServiceAgentConfiguration
+metadata:
+  name: networking-alb-agent-v1
+  labels:
+    app.kubernetes.io/name: networking-alb-agent
+    app.kubernetes.io/part-of: networking.datumapis.com
+spec:
+  serviceAgentRef:
+    name: networking-alb-agent
+  phase: Published
+  version: v1
+  reportingProject: datum-cloud
+  knowledge:
+    sources:
+    - type: LLMDocs
+      title: Application Load Balancer model and how to read its status
+      url: http://network-services-operator-alb-mcp.datum-system.svc.cluster.local:8080/llms-full.txt
+    concepts:
+    - gvk:
+        group: networking.datumapis.com
+        kind: HTTPProxy
+      summary: 'An Application Load Balancer. The one object a customer creates and edits: its hostnames, its routes and the origins behind them, Force HTTPS and any Host override. Its top-level conditions aggregate over a set of hostnames and name no member, so a cause is found in status.hostnameStatuses rather than read off the top.'
+    - gvk:
+        group: networking.datumapis.com
+        kind: Domain
+      summary: 'A domain a customer has proven they own. This is where ownership actually lives: the per-hostname Verified condition is declared but never written, so a hostname''s ownership step is read from here.'
+    - gvk:
+        group: networking.datumapis.com
+        kind: TrafficProtectionPolicy
+      summary: 'Traffic protection for one load balancer: Observe logs, Enforce blocks, paranoia 1 to 4 sets how strict. Nothing on the load balancer reports whether one is attached, and a load balancer with none is common.'
+    - gvk:
+        group: networking.datumapis.com
+        kind: NetworkService
+      summary: A service a route can send traffic to, named with one of its declared port names. Referenced by a load balancer, never created by one.
+  tools:
+    mcpServers:
+    - name: alb
+      endpoint: http://network-services-operator-alb-mcp.datum-system.svc.cluster.local:8080/mcp
+      toolSelector:
+        include:
+        - alb_list
+        - alb_get
+        - alb_diagnose
+        - alb_reason_explain
+        - alb_traffic_summary
+      mutating: []
+  skills:
+  - name: alb-not-serving
+    description: Triage an Application Load Balancer that is not working, from symptom to root cause and who has to act
+    source: http://network-services-operator-alb-mcp.datum-system.svc.cluster.local:8080/runbooks/alb-not-serving.md
+  - name: hostname-not-working
+    description: Work a hostname that does not reach a load balancer through claim, ownership, DNS record and certificate, in the order each gates the next
+    source: http://network-services-operator-alb-mcp.datum-system.svc.cluster.local:8080/runbooks/hostname-not-working.md
+  - name: domain-verification
+    description: 'Prove ownership of a domain: the exact record to create, and why RecordNotFound is usually not a typo'
+    source: http://network-services-operator-alb-mcp.datum-system.svc.cluster.local:8080/runbooks/domain-verification.md
+  - name: dns-delegation
+    description: Decide whether Datum answers DNS for a domain or the customer does, and handle DNSAuthorityMissing and nameserver mismatches
+    source: http://network-services-operator-alb-mcp.datum-system.svc.cluster.local:8080/runbooks/dns-delegation.md
+  - name: certificate-not-issued
+    description: Tell a certificate that is the cause from one that is a symptom of DNS that has not landed
+    source: http://network-services-operator-alb-mcp.datum-system.svc.cluster.local:8080/runbooks/certificate-not-issued.md
+  - name: backend-not-reachable
+    description: 'Diagnose origins that cannot be reached: a missing network service or port name, a selector matching nothing, locations out of rotation'
+    source: http://network-services-operator-alb-mcp.datum-system.svc.cluster.local:8080/runbooks/backend-not-reachable.md
+  - name: edge-propagation
+    description: Handle a load balancer that reports ready but is not serving, and know when that stops being propagation
+    source: http://network-services-operator-alb-mcp.datum-system.svc.cluster.local:8080/runbooks/edge-propagation.md
+  - name: traffic-protection-triage
+    description: Traffic protection that is off, not attached, or blocking real traffic, and how to turn it on without breaking a live site
+    source: http://network-services-operator-alb-mcp.datum-system.svc.cluster.local:8080/runbooks/traffic-protection-triage.md
+  - name: access-log-triage
+    description: 'Read what actually arrived: response codes, response flags, and why no traffic is not a fault'
+    source: http://network-services-operator-alb-mcp.datum-system.svc.cluster.local:8080/runbooks/access-log-triage.md
+  - name: alb-create
+    description: 'Create a load balancer: prerequisites, what is settled at create, and render, plan, show, confirm, then apply'
+    source: http://network-services-operator-alb-mcp.datum-system.svc.cluster.local:8080/runbooks/alb-create.md
+  authority:
+    reads:
+    - gvk:
+        group: networking.datumapis.com
+        kind: '*'
+    maxTaskDurationSeconds: 60

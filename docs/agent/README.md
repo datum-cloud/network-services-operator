@@ -40,6 +40,35 @@ every project turn and which act as the caller: `resources_list` and
 and `resources_apply` for the change itself. The plan token and the confirmation
 step live there, once, for every service.
 
+## Registration
+
+Publishing the content above is only half of it — an assistant has to be told it
+exists, and only for customers entitled to this service. Two objects in
+`config/components/assistant-capability/` do that:
+
+| Object | Role |
+|---|---|
+| `ServiceAgent` | The agent a customer's assistant talks to. Published means customers can get it. |
+| `ServiceAgentConfiguration` | What it offers: the knowledge URL, the approved tool list, and the ten guides. |
+
+Adding a guide under `skills/` and registering it are one change in one
+repository. It used to be neither — the same content lived as raw JSON in the
+infra repository, mounted into the assistant as a fixture file, where this team
+neither reviewed nor versioned it, and where every project got it whether
+entitled or not.
+
+Two things are worth knowing:
+
+- **Content changes ship as a new configuration object, not an edit.** The
+  newest Published one wins. That is what lets us say which version a customer
+  actually saw.
+- **Nothing here writes into customer projects.** The service catalog copies the
+  content into each entitled project, as the object the assistant reads there.
+  Entitlement decides who gets it; nothing here does.
+
+Both objects are applied to the Milo control plane alongside
+`config/components/service-catalog/`.
+
 ## HTTP surface
 
 One process answers everything the capability document points at:

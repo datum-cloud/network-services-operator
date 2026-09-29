@@ -164,9 +164,7 @@ var (
 
 	// ConnectorOfflineRoutesTotal counts total user-facing forwarding routes
 	// moved off an offline connector's own cluster across all hook invocations.
-	// With the branded error page configured they are pointed at the shared
-	// endpoint-less cluster, so the user gets the offline page; without it they
-	// return a deterministic 503. Use rate()/sum() to derive per-build averages.
+	// Use rate()/sum() to derive per-build averages.
 	ConnectorOfflineRoutesTotal = promauto.NewCounter(
 		prometheus.CounterOpts{
 			Name: "nso_extension_connector_offline_routes_total",
@@ -174,11 +172,10 @@ var (
 		},
 	)
 
-	// EmptyBackendRoutesTotal counts total routes Envoy Gateway collapsed to a
-	// bodiless 503 direct_response (backend Service present, no ready
-	// endpoints) that were rewritten to forward to the shared endpoint-less
-	// cluster, across all hook invocations. Each increment = one route that now
-	// answers with the branded offline page instead of the generic error page.
+	// EmptyBackendRoutesTotal counts total routes with no ready endpoints
+	// pointed at the shared offline backend cluster across all hook
+	// invocations. Each increment is one route that now answers with the
+	// branded offline page instead of the generic error page.
 	EmptyBackendRoutesTotal = promauto.NewCounter(
 		prometheus.CounterOpts{
 			Name: "nso_extension_empty_backend_routes_total",

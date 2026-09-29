@@ -91,9 +91,8 @@ func TestRouteEmptyBackendsToOfflineCluster(t *testing.T) {
 	}
 }
 
-// A rewritten route must keep everything the route carried besides its action —
-// most importantly the Coraza per-route config a governed route holds, which
-// lives in typed_per_filter_config.
+// A governed route's WAF config lives in typed_per_filter_config and must
+// survive the rewrite.
 func TestRouteEmptyBackendsPreservesRouteState(t *testing.T) {
 	perFilter, err := anypb.New(&routev3.FilterConfig{})
 	if err != nil {
@@ -153,8 +152,8 @@ func TestEnsureOfflineCluster(t *testing.T) {
 	if c.GetType() != clusterv3.Cluster_STATIC {
 		t.Errorf("type = %v, want STATIC", c.GetType())
 	}
-	// The empty endpoint list is the whole point: it is what makes Envoy fail
-	// host selection and set the UH flag the offline page matches on.
+	// The empty endpoint list is what makes Envoy fail host selection and set
+	// the UH flag the offline page matches on.
 	if eps := c.GetLoadAssignment().GetEndpoints(); len(eps) != 0 {
 		t.Errorf("len(endpoints) = %d, want 0", len(eps))
 	}
@@ -171,8 +170,8 @@ func TestEnsureOfflineCluster(t *testing.T) {
 	}
 }
 
-// The two sinks must stay distinct. A shared name would make the parity scanner
-// count an idle backend as an offline tunnel.
+// A shared name would make the parity scanner count an idle backend as an
+// offline tunnel.
 func TestEnsureOfflineClusterKeepsTheTwoSinksApart(t *testing.T) {
 	if OfflineBackendClusterName == OfflineTunnelClusterName {
 		t.Fatal("the empty-backend and offline-tunnel sinks share a name")

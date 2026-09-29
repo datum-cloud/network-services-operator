@@ -1,22 +1,13 @@
 # yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
 #
-# The transition production hit in issue #502: a NetworkService that was
-# serving loses its last member.
-#
-# A service resolves one member, a server answers at that member's allocated
-# address, and a real request through the edge comes back 200. The claim is
-# then released — the equivalent of the workload behind it going to zero — and
-# the same request is sent again.
-#
-# The question this holds open is what changes when that happens. The service's
-# own status does change. Whether anything on the HTTPProxy, on the downstream
-# Gateway, or on the downstream HTTPRoute changes with it is the gap, and both
-# responses are printed side by side so the difference is the record.
+# A NetworkService that was serving loses its last member. The service resolves
+# one member, a real request through the edge returns 200, the claim is then
+# released, and the same request is sent again. Both responses are printed so
+# the difference is the record.
 #
 # The member address is bound on the downstream node and served by a
-# host-network pod, exactly as in ../networkservice-endpoints — there is no
-# compute in this environment, so nothing answers at an allocated address on
-# its own.
+# host-network pod, as in ../networkservice-endpoints, because this environment
+# has no compute to answer at an allocated address on its own.
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:

@@ -1,20 +1,7 @@
 # yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
 #
-# A NetworkService with no members leaves the proxy in front of it looking
-# healthy while nothing can be served through it.
-#
-# This is the repro for issue #502. Two shapes of the same state are covered:
-#
-#   * never populated — the selector matches nothing, so MembersResolved is
-#     false for NoMatchingInterfaces from the moment the service is written.
-#
-#   * drained — a service that resolved a real member, served a real 200
-#     through the edge, and then lost its member when the claim went away.
-#     This is the transition production hit.
-#
-# What is being captured in both shapes is the gap between what the platform
-# reports and what a user gets: the HTTPProxy stays Accepted and Programmed,
-# the downstream Service and EndpointSlice exist, and the request fails.
+# A NetworkService whose selector matches nothing leaves the proxy in front of
+# it Accepted and Programmed while no request can be served through it.
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:

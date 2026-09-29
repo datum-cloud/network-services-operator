@@ -504,10 +504,8 @@ func TestApplyConnectorRoutes_EmptyRouteConfiguration_NoOp(t *testing.T) {
 	assert.Equal(t, 0, converted)
 }
 
-// With the branded page configured, an offline connector's user-facing routes
-// must forward to the shared endpoint-less cluster rather than answer with a
-// direct_response, because only the forwarded request carries the UH flag the
-// offline page selects on.
+// Only a forwarded request carries the UH flag the offline page selects on, so
+// with the branded page configured the user-facing routes must forward.
 func TestApplyConnectorRoutes_Offline_BrandedRoutesToTunnelCluster(t *testing.T) {
 	idx := connectorPolicyIndex(false)
 	clusterName := testClusterName()

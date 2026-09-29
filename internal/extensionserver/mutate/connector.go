@@ -78,14 +78,10 @@ func ReplaceConnectorClusters(
 //     clients) and rewrite the user-facing forwarding routes (see the offline
 //     branch for why).
 //
-// brandedOffline selects what a user reaching an offline tunnel gets. When the
-// branded error page is configured, the user-facing routes forward to the
-// shared endpoint-less cluster, which makes Envoy set the UH response flag the
-// offline page selects on. When it is not, they keep the deterministic 503
-// direct_response, which is what they have always returned.
-//
-// The CONNECT route is unaffected either way: it answers the connector agent,
-// not a browser, and a terse body is the right answer there.
+// brandedOffline selects what a user reaching an offline tunnel gets: the
+// shared endpoint-less cluster when there is a branded error page to serve,
+// otherwise the deterministic 503 they have always returned. The CONNECT route
+// is unaffected either way, since it answers the connector agent, not a browser.
 //
 // Returns the number of VirtualHosts mutated and the number of user-facing
 // forwarding routes rewritten.
@@ -139,18 +135,11 @@ func ApplyConnectorRoutes(
 			}
 			vh.Routes = append([]*routev3.Route{newRoute}, vh.Routes...)
 
-			// Move user traffic off the connector's own endpoint-less cluster,
-			// which would otherwise report retry and connect failures against a
-			// per-connector cluster. Replacing only the Action oneof preserves
-			// each route's match/metadata; idempotent because neither
-			// replacement carries the connector cluster to re-match.
-			//
-			// With branding on, the shared endpoint-less cluster is the target,
-			// because a direct_response short-circuits before the router filter
-			// and so never carries the UH flag the offline page selects on. The
-			// cluster is shared, so this adds no per-connector data-plane stats.
-			// With branding off, a deterministic 503 remains the better answer
-			// than Envoy's generic no_healthy_upstream text.
+			// Move user traffic off the connector's own endpoint-less
+			// cluster, which would otherwise report retry and connect
+			// failures against a per-connector cluster. Replacing only the
+			// Action oneof preserves each route's match and metadata, and
+			// neither replacement leaves the connector cluster to re-match.
 			for _, rt := range vh.GetRoutes() {
 				if routeCluster(rt) != connectorCluster {
 					continue

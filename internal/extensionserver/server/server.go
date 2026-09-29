@@ -245,10 +245,9 @@ func (s *Server) PostTranslateModify(
 	}
 	s.markTPPsProgrammed(ctx, appliedTPPs)
 
-	// Whether the branded error page is configured at all. Both the connector
-	// offline path and the empty-backend path route user traffic to the shared
-	// endpoint-less cluster only when there is a page to serve; with no page,
-	// each keeps the answer it gave before.
+	// Both offline paths below route user traffic to an endpoint-less cluster
+	// only when there is a page to serve. With no page, each keeps the answer
+	// it gave before.
 	brandedOffline := !s.cfg.LocalReply.Disabled && s.cfg.LocalReply.OfflineBodyHTML != ""
 
 	// --- Connector family ---
@@ -295,24 +294,17 @@ func (s *Server) PostTranslateModify(
 	connRoutesSpan.End()
 
 	// --- Empty backend family (#502) ---
-	// EG collapses a route whose backend has no ready endpoints to a bodiless
-	// 503 direct_response, which short-circuits before the router filter and so
-	// carries no UH flag for the branded offline page to match. Point those
-	// routes at a shared endpoint-less cluster instead, which restores the flag.
 	// Runs after the connector family so connector-offline routes already carry
-	// their body and are therefore not mistaken for EG's collapse.
-	//
-	// Gated on the branded page being configured: with no offline page to
-	// serve, rewriting would only trade EG's deterministic 503 for Envoy's
-	// generic no_healthy_upstream and buy nothing.
+	// their body and are not mistaken for EG's own collapse.
 	var emptyBackendCount int
 	if brandedOffline {
 		_, emptyBackendSpan := tr.Start(mctx, "emptybackend.routes")
 		for _, rc := range routes {
 			emptyBackendCount += mutate.RouteEmptyBackendsToOfflineCluster(rc)
 		}
-		// Each family has its own shared sink, added only when something points
-		// at it, so the data-plane stats say which reason a request hit.
+		// Each family gets its own sink so the data-plane stats say which
+		// reason a request hit, and an endpoint-less cluster costs ~108
+		// resident stats, so both are shared and added only when used.
 		wanted := map[string]bool{
 			mutate.OfflineBackendClusterName: emptyBackendCount > 0,
 			mutate.OfflineTunnelClusterName:  offlineRtCount > 0,

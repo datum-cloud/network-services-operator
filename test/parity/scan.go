@@ -144,11 +144,9 @@ func isConnectRoute(rt *routev3.Route) bool {
 	return false
 }
 
-// isOfflineRoute reports whether a route is part of the connector offline path.
-// That path produces two shapes, so both count: the CONNECT route answering the
-// connector agent keeps a terse direct_response, while user-facing routes
-// forward to the shared endpoint-less cluster when the branded error page is
-// configured, so that the response carries the flag the offline page needs.
+// isOfflineRoute reports whether a route is part of the connector offline path,
+// which has two shapes: the CONNECT route keeps a terse direct_response, while
+// user-facing routes forward to the endpoint-less cluster.
 func isOfflineRoute(rt *routev3.Route) bool {
 	if ra := rt.GetRoute(); ra != nil {
 		return ra.GetCluster() == offlineTunnelCluster

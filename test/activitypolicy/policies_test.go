@@ -117,12 +117,14 @@ func evalMatch(t *testing.T, env *cel.Env, match string, audit map[string]any) b
 // carries a metav1.Status (no metadata.name, no spec), as the API server sends
 // on a rejected write.
 func auditEvent(verb string, code int) map[string]any {
-	return auditEventURI(verb, code, "/apis/networking.datumapis.com/v1alpha/namespaces/default/objects/obj-1")
+	return auditEventURI(verb, code, objectURI)
 }
+
+const objectURI = "/apis/networking.datumapis.com/v1alpha/namespaces/default/objects/obj-1"
 
 // dryRunEvent is a successful request made with ?dryRun=All.
 func dryRunEvent(verb string) map[string]any {
-	return auditEventURI(verb, successCodeFor(verb), "/apis/networking.datumapis.com/v1alpha/namespaces/default/objects/obj-1?dryRun=All&fieldManager=kubectl-client-side-apply")
+	return auditEventURI(verb, successCodeFor(verb), objectURI+"?dryRun=All&fieldManager=kubectl-client-side-apply")
 }
 
 func auditEventURI(verb string, code int, uri string) map[string]any {

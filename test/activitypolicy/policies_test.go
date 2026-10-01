@@ -12,13 +12,14 @@ import (
 )
 
 // These tests guard the ActivityPolicy audit rules under
-// config/milo/activity/policies against a single defect with two symptoms:
-// create/update rules that fire on FAILED (non-2xx) requests. On a rejected
-// request the audit responseObject is a metav1.Status, so a summary that
-// dereferences audit.responseObject.<leaf> throws and the event is lost to the
-// DLQ (DLQSlowLeak); the same rule also emits a false "created"/"updated"
-// activity for an attempt that never succeeded. The fix gates every create and
-// update rule's match on audit.responseStatus.code in [200,300).
+// config/milo/activity/policies against write rules that fire on requests that
+// changed nothing. On a rejected request the audit responseObject is a
+// metav1.Status, so a summary that dereferences audit.responseObject.<leaf>
+// throws and the event is lost to the DLQ (DLQSlowLeak); the same rule also
+// emits a false "created"/"updated"/"deleted" activity for an attempt that
+// never succeeded. A dry run (?dryRun=All) succeeds but persists nothing. Every
+// create, update and delete rule's match therefore gates on
+// audit.responseStatus.code in [200,300) and on the request not being a dry run.
 
 const policiesGlob = "../../config/milo/activity/policies/*-policy.yaml"
 
@@ -64,13 +65,17 @@ func verbOf(match string) string {
 }
 
 func gatesOn2xx(match string) bool {
-	return strings.Contains(match, "audit.responseStatus.code >= 200") &&
+	return strings.Contains(match, "has(audit.responseStatus.code) && audit.responseStatus.code >= 200") &&
 		strings.Contains(match, "audit.responseStatus.code < 300")
+}
+
+func skipsDryRun(match string) bool {
+	return strings.Contains(match, "audit.requestURI.contains('dryRun=')")
 }
 
 func newEnv(t *testing.T) *cel.Env {
 	t.Helper()
-	env, err := cel.NewEnv(cel.Variable("audit", cel.DynType))
+	env, err := cel.NewEnv(cel.Variable("audit", cel.MapType(cel.StringType, cel.DynType)))
 	if err != nil {
 		t.Fatalf("cel env: %v", err)
 	}
@@ -96,7 +101,7 @@ func evalMatch(t *testing.T, env *cel.Env, match string, audit map[string]any) b
 	if err != nil {
 		t.Fatalf("program %q: %v", match, err)
 	}
-	out, _, err := prg.Eval(map[string]any{"audit": audit})
+	out, _, err := prg.Eval(map[string]any{"audit": withDefaults(audit)})
 	if err != nil {
 		t.Fatalf("eval %q: %v", match, err)
 	}
@@ -112,6 +117,17 @@ func evalMatch(t *testing.T, env *cel.Env, match string, audit map[string]any) b
 // carries a metav1.Status (no metadata.name, no spec), as the API server sends
 // on a rejected write.
 func auditEvent(verb string, code int) map[string]any {
+	return auditEventURI(verb, code, objectURI)
+}
+
+const objectURI = "/apis/networking.datumapis.com/v1alpha/namespaces/default/objects/obj-1"
+
+// dryRunEvent is a successful request made with ?dryRun=All.
+func dryRunEvent(verb string) map[string]any {
+	return auditEventURI(verb, successCodeFor(verb), objectURI+"?dryRun=All&fieldManager=kubectl-client-side-apply")
+}
+
+func auditEventURI(verb string, code int, uri string) map[string]any {
 	var responseObject map[string]any
 	if code >= 200 && code < 300 {
 		responseObject = map[string]any{
@@ -147,6 +163,7 @@ func auditEvent(verb string, code int) map[string]any {
 		"responseObject": responseObject,
 		"objectRef":      map[string]any{"name": "obj-1"},
 		"responseStatus": map[string]any{"code": code},
+		"requestURI":     uri,
 	}
 }
 
@@ -164,12 +181,12 @@ func successCodeFor(verb string) int {
 	return 200
 }
 
-// Structural guard: every create/update rule must gate on a 2xx response.
-func TestCreateUpdateRulesGateOn2xx(t *testing.T) {
+// Structural guard: every write rule must gate on a 2xx response and skip dry runs.
+func TestWriteRulesGateOnOutcome(t *testing.T) {
 	for _, pol := range loadPolicies(t) {
 		for _, r := range pol.Spec.AuditRules {
 			v := verbOf(r.Match)
-			if v != "create" && v != "update" {
+			if v == "other" {
 				continue
 			}
 			t.Run(pol.Name+"/"+r.Name, func(t *testing.T) {
@@ -177,26 +194,35 @@ func TestCreateUpdateRulesGateOn2xx(t *testing.T) {
 					t.Errorf("%s rule %q (%s) is not gated on a 2xx response:\n  %s",
 						pol.Name, r.Name, v, r.Match)
 				}
+				if !skipsDryRun(r.Match) {
+					t.Errorf("%s rule %q (%s) does not skip dry-run requests:\n  %s",
+						pol.Name, r.Name, v, r.Match)
+				}
 			})
 		}
 	}
 }
 
-// Semantic guard: create/update rules must NOT match a failed request, and MUST
-// still match the successful one — the two properties that fix the DLQ leak and
-// the false-activity emission together.
-func TestCreateUpdateRulesFireOnlyOnSuccess(t *testing.T) {
+// Semantic guard: write rules must NOT match a failed or dry-run request, and
+// MUST still match the successful one — the properties that fix the DLQ leak
+// and the false-activity emission together.
+func TestWriteRulesFireOnlyOnSuccess(t *testing.T) {
 	env := newEnv(t)
 	for _, pol := range loadPolicies(t) {
 		for _, r := range pol.Spec.AuditRules {
 			v := verbOf(r.Match)
-			if v != "create" && v != "update" {
+			if v == "other" {
 				continue
 			}
 			t.Run(pol.Name+"/"+r.Name, func(t *testing.T) {
-				if got := evalMatch(t, env, r.Match, auditEvent(v, failCodeFor(v))); got {
-					t.Errorf("%s rule %q matched a failed %s (code %d); it would DLQ / emit a false activity",
-						pol.Name, r.Name, v, failCodeFor(v))
+				for _, code := range []int{failCodeFor(v), 404, 422, 500} {
+					if got := evalMatch(t, env, r.Match, auditEvent(v, code)); got {
+						t.Errorf("%s rule %q matched a failed %s (code %d); it would DLQ / emit a false activity",
+							pol.Name, r.Name, v, code)
+					}
+				}
+				if got := evalMatch(t, env, r.Match, dryRunEvent(v)); got {
+					t.Errorf("%s rule %q matched a dry-run %s; nothing was persisted", pol.Name, r.Name, v)
 				}
 				if got := evalMatch(t, env, r.Match, auditEvent(v, successCodeFor(v))); !got {
 					if strings.Contains(r.Match, "metadata.annotations") {
@@ -234,4 +260,19 @@ func TestAllMatchesCompile(t *testing.T) {
 			}
 		}
 	}
+}
+
+// withDefaults mirrors the processor's BuildAuditVars, which sets absent
+// top-level objects to empty maps before evaluating a rule.
+func withDefaults(audit map[string]any) map[string]any {
+	out := make(map[string]any, len(audit))
+	for k, v := range audit {
+		out[k] = v
+	}
+	for _, field := range []string{"objectRef", "user", "responseStatus", "responseObject", "requestObject"} {
+		if _, ok := out[field]; !ok {
+			out[field] = map[string]any{}
+		}
+	}
+	return out
 }

@@ -52,8 +52,9 @@ func TestTPPPolicy_Fixtures(t *testing.T) {
 			name:     "delete annotated",
 			wantRule: "delete-annotated",
 			audit: map[string]any{
-				"user": map[string]any{"username": "alice@example.com"},
-				"verb": "delete",
+				"user":           map[string]any{"username": "alice@example.com"},
+				"verb":           "delete",
+				"responseStatus": map[string]any{"code": 200},
 				"responseObject": map[string]any{"metadata": map[string]any{"annotations": map[string]any{
 					"networking.datumapis.com/display-name": "alb",
 				}}},

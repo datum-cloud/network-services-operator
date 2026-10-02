@@ -17,6 +17,7 @@ import (
 
 	cmv1 "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
 	cmmeta "github.com/cert-manager/cert-manager/pkg/apis/meta/v1"
+	"github.com/prometheus/client_golang/prometheus"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
@@ -339,8 +340,35 @@ func (r *GatewayReconciler) ensureListenerTLSCertificates(
 	}
 
 	requeueSooner(r.certificateServiceRequeue(upstreamGateway.UID, failed, now, issues))
+	r.forgetRemovedListeners(upstreamGateway)
 
 	return result, issues
+}
+
+// forgetRemovedListeners drops the failure series and tracker entries of
+// listeners the gateway no longer has, so a removed hostname stops reporting.
+func (r *GatewayReconciler) forgetRemovedListeners(upstreamGateway *gatewayv1.Gateway) {
+	current := sets.New[gatewayv1.SectionName]()
+	for _, l := range upstreamGateway.Spec.Listeners {
+		current.Insert(l.Name)
+	}
+	if previous, ok := r.certificateServiceListeners.Load(upstreamGateway.UID); ok {
+		for listener := range previous.(sets.Set[gatewayv1.SectionName]) {
+			if current.Has(listener) {
+				continue
+			}
+			certificateServiceFailuresTotal.DeletePartialMatch(prometheus.Labels{
+				jsonKeyNamespace: upstreamGateway.Namespace, jsonKeyName: upstreamGateway.Name, metricLabelListener: string(listener),
+			})
+			if rejected, ok := r.certificateServiceRejections.Load(upstreamGateway.UID); ok {
+				delete(rejected.(map[gatewayv1.SectionName]bool), listener)
+			}
+			if backoff, ok := r.certificateServiceFailures.Load(upstreamGateway.UID); ok {
+				delete(backoff.(certificateServiceBackoff).issues, listener)
+			}
+		}
+	}
+	r.certificateServiceListeners.Store(upstreamGateway.UID, current)
 }
 
 var errTLSCertificateNotOwned = errors.New("TLSCertificate exists but is not controlled by this Gateway")

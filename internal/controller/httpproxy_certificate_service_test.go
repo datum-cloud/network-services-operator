@@ -159,7 +159,7 @@ func TestBuildCertificateStatusesCertificateService(t *testing.T) {
 			name:     "Ready but the issued Secret could not be taken and nothing serves is a provisioning failure",
 			upstream: []client.Object{tlsCert(metav1.Condition{Type: certificatesv1alpha1.ConditionReady, Status: metav1.ConditionTrue})},
 			listenerConditions: []metav1.Condition{{
-				Type: listenerConditionCertificateRenewalBlocked, Status: metav1.ConditionTrue, Reason: listenerReasonRenewalFailing, Message: "We couldn't request a TLS certificate for app.example.com just now",
+				Type: listenerConditionCertificateIssuanceBlocked, Status: metav1.ConditionTrue, Reason: listenerReasonIssuanceFailing, Message: "We couldn't request a TLS certificate for app.example.com just now",
 			}},
 			downstream:  nil,
 			wantStatus:  metav1.ConditionFalse,

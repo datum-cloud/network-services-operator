@@ -103,6 +103,7 @@ type GatewayReconciler struct {
 
 	certificateServiceFailures   sync.Map
 	certificateServiceRejections sync.Map
+	certificateServiceListeners  sync.Map
 }
 
 // +kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;update;patch;delete
@@ -407,6 +408,7 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 				status.renewalBlocked = message
 			} else {
 				status.message = message
+				status.issuanceBlocked = true
 			}
 			listenerCertHealth[name] = status
 		}
@@ -539,10 +541,15 @@ type listenerCertStatus struct {
 	// serves cannot be replaced and why, so the customer hears about it before
 	// the expiry turns it into an outage.
 	renewalBlocked string
+	// issuanceBlocked, when set on an unhealthy listener, says the certificate
+	// step itself failed rather than issuance merely being underway.
+	issuanceBlocked bool
 }
 
 const listenerConditionCertificateRenewalBlocked = "CertificateRenewalBlocked"
 const listenerReasonRenewalFailing = "RenewalFailing"
+const listenerConditionCertificateIssuanceBlocked = "CertificateIssuanceBlocked"
+const listenerReasonIssuanceFailing = "IssuanceFailing"
 
 // clearListenerCertMetrics removes every certificate-health gauge series for a
 // gateway. Used both before re-recording each reconcile and on gateway deletion
@@ -1841,6 +1848,7 @@ func (r *GatewayReconciler) finalizeGateway(
 	clearListenerCertMetrics(upstreamGateway.Namespace, upstreamGateway.Name)
 	r.certificateServiceFailures.Delete(upstreamGateway.UID)
 	r.certificateServiceRejections.Delete(upstreamGateway.UID)
+	r.certificateServiceListeners.Delete(upstreamGateway.UID)
 	certificateServiceFailuresTotal.DeletePartialMatch(prometheus.Labels{jsonKeyNamespace: upstreamGateway.Namespace, jsonKeyName: upstreamGateway.Name})
 
 	// Clean up DNS records created by this gateway
@@ -2234,6 +2242,17 @@ func (r *GatewayReconciler) ensureDownstreamGatewayHTTPRoutes(
 			})
 		} else {
 			apimeta.RemoveStatusCondition(&status.Conditions, listenerConditionCertificateRenewalBlocked)
+		}
+		if certStatus, gated := listenerCertHealth[listener.Name]; gated && !certStatus.healthy && certStatus.issuanceBlocked {
+			apimeta.SetStatusCondition(&status.Conditions, metav1.Condition{
+				Type:               listenerConditionCertificateIssuanceBlocked,
+				Status:             metav1.ConditionTrue,
+				Reason:             listenerReasonIssuanceFailing,
+				Message:            certStatus.message,
+				ObservedGeneration: upstreamGateway.Generation,
+			})
+		} else {
+			apimeta.RemoveStatusCondition(&status.Conditions, listenerConditionCertificateIssuanceBlocked)
 		}
 
 		listenerStatus = append(listenerStatus, status)

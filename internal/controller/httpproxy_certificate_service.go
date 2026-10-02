@@ -58,6 +58,11 @@ func (r *HTTPProxyReconciler) tlsCertificateReadyCondition(
 		if blocked != nil && blocked.Status != metav1.ConditionTrue {
 			blocked = nil
 		}
+		if blocked == nil {
+			if issuance := apimeta.FindStatusCondition(listenerConditions, listenerConditionCertificateIssuanceBlocked); issuance != nil && issuance.Status == metav1.ConditionTrue {
+				blocked = issuance
+			}
+		}
 
 		switch {
 		case serving.healthy && (condition.Status != metav1.ConditionTrue || blocked != nil):

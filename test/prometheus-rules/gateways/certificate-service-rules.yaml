@@ -1,0 +1,21 @@
+groups:
+- name: nso-certificate-service
+  interval: 30s
+  rules:
+  # Fires when a wildcard hostname's certificate cannot be issued or renewed
+  # through the certificate service. The hostname may still serve its previous
+  # certificate, so this fires weeks before that certificate expires.
+  - alert: CertificateServiceIssuanceFailing
+    expr: |
+      max by (namespace, name, listener, reason) (nso_certificate_service_listener_failing) > 0
+      or
+      sum by (namespace, name, listener, reason) (increase(nso_certificate_service_failures_total[1h])) > 0
+    for: 2h
+    labels:
+      severity: warning
+      service: network-services
+      team: sre
+    annotations:
+      summary: "Certificate for Gateway listener {{ $labels.namespace }}/{{ $labels.name }}/{{ $labels.listener }} cannot be issued or renewed"
+      description: "The certificate service has been failing to issue or renew the certificate for listener {{ $labels.listener }} on Gateway {{ $labels.name }} in namespace {{ $labels.namespace }} for over two hours (reason: {{ $labels.reason }}). The listener's CertificateRenewalBlocked or CertificateIssuanceBlocked condition says why."
+      runbook_url: "https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/gateway-tls-certificates.md#certificateserviceissuancefailing"

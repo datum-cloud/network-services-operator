@@ -87,6 +87,38 @@ renewal depends on it.
 customer-driven gating event — no platform fix. If renewal is failing for a
 platform reason, fix the issuer / ACME path so cert-manager can renew.
 
+## CertificateServiceIssuanceFailing
+
+**Meaning.** A wildcard hostname's certificate has not been issued or renewed by
+the certificate service for over two hours. Only wildcard hostnames use the
+service; exact hostnames stay on cert-manager and are covered by the alerts
+above.
+
+**Impact.** If the listener still serves a certificate, none yet: it carries
+`CertificateRenewalBlocked` and keeps serving until that certificate expires. If
+it serves nothing, it carries `CertificateIssuanceBlocked` and the wildcard is
+unavailable.
+
+**Diagnose.** The `reason` label says where it failed:
+
+| Reason | Where |
+|---|---|
+| `Rejected`, `Refused` | The service refused the request; the condition message carries its reason |
+| `IssuanceFailed`, `NotReady` | The service accepted it but the ACME order failed or never completed |
+| `RenewalOverdue` | The served certificate is past its renewal point and nothing newer arrived |
+| `MaterialRefused`, `UntrustedChain`, `NamespaceRefused` | The operator refused what the service issued |
+| `StepFailed`, `NotOwned` | The operator could not reach the service, or the request name is taken |
+
+Read the TLSCertificate in the project, named after the gateway and listener:
+
+```sh
+kubectl -n <namespace> get tlscertificates -o yaml
+```
+
+**Remediate.** A refusal or a missing DNS delegation record is for the customer.
+An ACME failure, a refused or untrusted chain, or a step failure is a platform
+fault in the certificate service or the operator's access to it.
+
 ## TLSBackstopPruningChains
 
 **Meaning.** The extension server is actively dropping broken certificates from

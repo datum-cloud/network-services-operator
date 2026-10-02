@@ -292,6 +292,10 @@ func SetObjectDefaults_NetworkServicesOperator(in *NetworkServicesOperator) {
 	if in.Gateway.CertificateReissuance.MaxRetries == 0 {
 		in.Gateway.CertificateReissuance.MaxRetries = 3
 	}
+	SetDefaults_CertificateServiceConfig(&in.Gateway.CertificateService)
+	if in.Gateway.CertificateService.SecretNamespace == "" {
+		in.Gateway.CertificateService.SecretNamespace = "certificates-system"
+	}
 	if in.HTTPProxy.GatewayClassName == "" {
 		in.HTTPProxy.GatewayClassName = "datum-external-global-proxy"
 	}

@@ -23,10 +23,11 @@ const http01SolverLabel = "meta.datumapis.com/http01-solver"
 // http01SolverRoute names one ACME HTTP-01 answer to publish on a downstream
 // gateway: GET /.well-known/acme-challenge/<token> returns <key>.
 type http01SolverRoute struct {
-	name   string
-	token  string
-	key    string
-	labels map[string]string
+	name      string
+	token     string
+	key       string
+	hostnames []gatewayv1.Hostname
+	labels    map[string]string
 }
 
 func (s http01SolverRoute) objectLabels() map[string]string {
@@ -94,6 +95,7 @@ func ensureHTTP01SolverRoutes(
 		}
 		httpRoute.Labels = solver.objectLabels()
 		httpRoute.Spec = gatewayv1.HTTPRouteSpec{
+			Hostnames: solver.hostnames,
 			CommonRouteSpec: gatewayv1.CommonRouteSpec{
 				ParentRefs: []gatewayv1.ParentReference{
 					{

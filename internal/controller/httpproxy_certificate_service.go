@@ -5,6 +5,8 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strings"
+	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
@@ -36,6 +38,8 @@ func (r *HTTPProxyReconciler) tlsCertificateReadyCondition(
 	upstreamNamespace string,
 	certName string,
 	legacyName string,
+	secretName string,
+	hostname string,
 	generation int64,
 ) metav1.Condition {
 	condition := metav1.Condition{
@@ -48,6 +52,13 @@ func (r *HTTPProxyReconciler) tlsCertificateReadyCondition(
 	switch {
 	case err == nil:
 		condition.Status, condition.Reason, condition.Message = tlsCertificateReadyState(&cert)
+		if condition.Status != metav1.ConditionTrue {
+			if serving := servingSecretHealth(ctx, downstreamClient, downstreamNamespace, secretName, hostname, time.Now()); serving.healthy {
+				condition.Status = metav1.ConditionTrue
+				condition.Reason = networkingv1alpha.CertificateReadyReasonCertificateIssued
+				condition.Message = "Certificate is ready; a renewal is in progress"
+			}
+		}
 		return condition
 	case !apierrors.IsNotFound(err):
 		condition.Status = metav1.ConditionUnknown
@@ -103,10 +114,23 @@ func tlsCertificateReadyState(cert *certificatesv1alpha1.TLSCertificate) (metav1
 		if issuing.Message != "" {
 			message = fmt.Sprintf("%s (%s)", certificateProvisioningMessage, issuing.Message)
 		}
-		return metav1.ConditionFalse, networkingv1alpha.CertificateReadyReasonChallengeInProgress, message
+		return metav1.ConditionFalse, networkingv1alpha.CertificateReadyReasonChallengeInProgress, message + requiredDNSRecordsHint(cert)
 	}
 
-	return metav1.ConditionFalse, networkingv1alpha.CertificateReadyReasonPending, certificateProvisioningMessage
+	return metav1.ConditionFalse, networkingv1alpha.CertificateReadyReasonPending, certificateProvisioningMessage + requiredDNSRecordsHint(cert)
+}
+
+// requiredDNSRecordsHint tells the customer which records issuance is waiting
+// on, when the service has named any.
+func requiredDNSRecordsHint(cert *certificatesv1alpha1.TLSCertificate) string {
+	records := make([]string, 0, len(cert.Status.RequiredDNSRecords))
+	for _, record := range cert.Status.RequiredDNSRecords {
+		records = append(records, fmt.Sprintf("%s %s %s", record.Name, record.Type, record.Content))
+	}
+	if len(records) == 0 {
+		return ""
+	}
+	return ". Publish these DNS records to continue: " + strings.Join(records, "; ")
 }
 
 // enqueueHTTPProxyForTLSCertificate follows TLSCertificate -> Gateway ->

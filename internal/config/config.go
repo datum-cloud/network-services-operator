@@ -930,6 +930,18 @@ type CertificateServiceConfig struct {
 	// where it keeps the service-side copy of each issued Secret. Empty
 	// means the cluster this operator runs in.
 	KubeconfigPath string `json:"kubeconfigPath,omitempty"`
+
+	// SecretNamespace is the only namespace on that cluster a TLSCertificate's
+	// serviceSecretRef may point into; a reference anywhere else is refused.
+	//
+	// +default="certificates-system"
+	SecretNamespace string `json:"secretNamespace,omitempty"`
+}
+
+func SetDefaults_CertificateServiceConfig(obj *CertificateServiceConfig) {
+	if obj.SecretNamespace == "" {
+		obj.SecretNamespace = "certificates-system"
+	}
 }
 
 // RestConfig returns the connection to the certificate service's cluster.
@@ -1528,6 +1540,9 @@ func (c *GatewayConfig) validate() error {
 	}
 	if c.CertificateService.Enabled && c.DisableHostnameVerification {
 		errs = append(errs, errors.New("certificateService.enabled requires hostname verification: the certificate service issues for any hostname it is handed"))
+	}
+	if c.CertificateService.Enabled && strings.TrimSpace(c.CertificateService.SecretNamespace) == "" {
+		errs = append(errs, errors.New("certificateService.secretNamespace is required when certificateService.enabled"))
 	}
 	return errors.Join(errs...)
 }

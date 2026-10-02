@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	cmv1 "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
@@ -99,6 +100,8 @@ type GatewayReconciler struct {
 	// the service-side copy of each issued Secret lives. Required when
 	// Config.Gateway.CertificateService.Enabled.
 	CertificateServiceReader client.Reader
+
+	certificateServiceFailures sync.Map
 }
 
 // +kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;update;patch;delete
@@ -380,9 +383,12 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 		}
 	}
 
-	var certResult Result
+	var certificateServiceRequeue time.Duration
 	if r.Config.Gateway.CertificateService.Enabled {
-		certResult = r.ensureListenerTLSCertificates(
+		// The service is a dependency of issuance, not of routing: whatever it
+		// does, DNS, status and routes below still reconcile, and a listener
+		// that could not be served tells the customer why.
+		certResult, issues := r.ensureListenerTLSCertificates(
 			ctx,
 			upstreamClient,
 			upstreamGateway,
@@ -391,8 +397,15 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 			downstreamStrategy,
 			claimedHostnames,
 		)
+		for name, message := range issues {
+			if status, gated := listenerCertHealth[name]; gated && !status.healthy {
+				status.message = message
+				listenerCertHealth[name] = status
+			}
+		}
+		certificateServiceRequeue = certResult.RequeueAfter
 	} else {
-		certResult = r.ensureListenerCertificates(
+		certResult := r.ensureListenerCertificates(
 			ctx,
 			upstreamGateway,
 			downstreamGateway,
@@ -400,9 +413,10 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 			downstreamStrategy,
 			claimedHostnames,
 		)
-	}
-	if certResult.ShouldReturn() {
-		return certResult.Merge(result), nil
+		if certResult.ShouldReturn() {
+			return certResult.Merge(result), nil
+		}
+		r.cleanupCertificateServiceLeftovers(ctx, upstreamClient, upstreamGateway, downstreamGateway, downstreamClient)
 	}
 
 	dnsResult := r.ensureDownstreamGatewayDNSEndpoints(
@@ -467,6 +481,9 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 			result.RequeueAfter = max(result.RequeueAfter, 1*time.Minute)
 			break
 		}
+	}
+	if certificateServiceRequeue > 0 && (result.RequeueAfter == 0 || certificateServiceRequeue < result.RequeueAfter) {
+		result.RequeueAfter = certificateServiceRequeue
 	}
 
 	addresses := make([]gatewayv1.GatewayStatusAddress, 0, len(targetDomainHostnames))
@@ -636,6 +653,9 @@ func (r *GatewayReconciler) listenerCertHealth(
 	var cert cmv1.Certificate
 	if err := downstreamClient.Get(ctx, client.ObjectKey{Namespace: downstreamNamespace, Name: certName}, &cert); err != nil {
 		if apierrors.IsNotFound(err) {
+			if status, handedOver, _ := handedOverSecretHealth(ctx, downstreamClient, downstreamNamespace, secretName, hostname, now); handedOver && status.healthy {
+				return status
+			}
 			return listenerCertStatus{
 				reason:     gatewayv1.ListenerReasonInvalidCertificateRef,
 				message:    certIssuanceFailingMessage(hostname),
@@ -1045,6 +1065,10 @@ func (r *GatewayReconciler) ensureListenerCertificates(
 
 		isNew := cert.CreationTimestamp.IsZero()
 		if isNew {
+			if status, handedOver, renewalDue := handedOverSecretHealth(ctx, downstreamClient, downstreamGateway.Namespace, secretName, hostname, time.Now()); handedOver && status.healthy && !renewalDue {
+				logger.Info("keeping certificate-service issued Secret until it is due for renewal", "secret", secretName, "hostname", hostname)
+				continue
+			}
 			if err := downstreamStrategy.SetControllerReference(ctx, upstreamGateway, cert); err != nil {
 				result.Err = fmt.Errorf("failed to set strategy reference on Certificate %s: %w", certName, err)
 				return result

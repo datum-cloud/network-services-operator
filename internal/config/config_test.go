@@ -216,12 +216,17 @@ func TestGatewayConfig_ValidateCertificateService(t *testing.T) {
 		},
 		{
 			name:    "enabled with hostname verification validates",
+			gateway: GatewayConfig{CertificateService: CertificateServiceConfig{Enabled: true, SecretNamespace: "certificates-system"}},
+		},
+		{
+			name:    "enabled without a secret namespace is rejected",
 			gateway: GatewayConfig{CertificateService: CertificateServiceConfig{Enabled: true}},
+			wantSub: "certificateService.secretNamespace is required",
 		},
 		{
 			name: "enabled without hostname verification is rejected",
 			gateway: GatewayConfig{
-				CertificateService:          CertificateServiceConfig{Enabled: true},
+				CertificateService:          CertificateServiceConfig{Enabled: true, SecretNamespace: "certificates-system"},
 				DisableHostnameVerification: true,
 			},
 			wantSub: "certificateService.enabled requires hostname verification",
@@ -253,5 +258,8 @@ func TestSetObjectDefaults_CertificateService(t *testing.T) {
 	}
 	if cfg.Gateway.CertificateService.KubeconfigPath != "" {
 		t.Errorf("certificateService.kubeconfigPath should default to empty, got %q", cfg.Gateway.CertificateService.KubeconfigPath)
+	}
+	if got, want := cfg.Gateway.CertificateService.SecretNamespace, "certificates-system"; got != want {
+		t.Errorf("certificateService.secretNamespace = %q, want %q", got, want)
 	}
 }

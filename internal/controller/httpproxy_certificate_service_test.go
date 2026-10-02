@@ -5,6 +5,7 @@ package controller
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -65,9 +66,17 @@ func TestBuildCertificateStatusesCertificateService(t *testing.T) {
 		return cert
 	}
 
+	crt, key := generateTLSKeyPair(t, "app.example.com", time.Now().Add(-time.Hour), time.Now().Add(30*24*time.Hour))
+	servingSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Namespace: downstreamNamespaceName, Name: listenerCertificateSecretName("my-proxy", "https-hostname-0")},
+		Type:       corev1.SecretTypeTLS,
+		Data:       map[string][]byte{"tls.crt": crt, "tls.key": key},
+	}
+
 	tests := []struct {
 		name        string
 		upstream    []client.Object
+		mutate      func(*certificatesv1alpha1.TLSCertificate)
 		downstream  []client.Object
 		wantStatus  metav1.ConditionStatus
 		wantReason  string
@@ -104,6 +113,26 @@ func TestBuildCertificateStatusesCertificateService(t *testing.T) {
 			wantReason: networkingv1alpha.CertificateReadyReasonPending,
 		},
 		{
+			name: "Issuing with required DNS records names them for the customer",
+			upstream: []client.Object{tlsCert(
+				metav1.Condition{Type: certificatesv1alpha1.ConditionIssuing, Status: metav1.ConditionTrue, Reason: "OrderInFlight"},
+			), nil}[:1],
+			mutate: func(c *certificatesv1alpha1.TLSCertificate) {
+				c.Status.RequiredDNSRecords = []certificatesv1alpha1.RequiredDNSRecord{{Name: "_acme-challenge.app.example.com", Type: "CNAME", Content: "abc.acme-dns.example.net", Purpose: certificatesv1alpha1.DNSRecordPurposeCertificate}}
+			},
+			wantStatus:  metav1.ConditionFalse,
+			wantReason:  networkingv1alpha.CertificateReadyReasonChallengeInProgress,
+			wantMessage: certificateProvisioningMessage + ". Publish these DNS records to continue: _acme-challenge.app.example.com CNAME abc.acme-dns.example.net",
+		},
+		{
+			name:        "not Ready yet but a serving downstream Secret keeps the hostname ready",
+			upstream:    []client.Object{tlsCert(metav1.Condition{Type: certificatesv1alpha1.ConditionIssuing, Status: metav1.ConditionTrue})},
+			downstream:  []client.Object{servingSecret},
+			wantStatus:  metav1.ConditionTrue,
+			wantReason:  networkingv1alpha.CertificateReadyReasonCertificateIssued,
+			wantMessage: "Certificate is ready; a renewal is in progress",
+		},
+		{
 			name:       "no TLSCertificate yet but a ready legacy Certificate answers",
 			downstream: []client.Object{legacyReady()},
 			wantStatus: metav1.ConditionTrue,
@@ -121,6 +150,9 @@ func TestBuildCertificateStatusesCertificateService(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
+			if tt.mutate != nil {
+				tt.mutate(tt.upstream[0].(*certificatesv1alpha1.TLSCertificate))
+			}
 			upstreamClient := fake.NewClientBuilder().WithScheme(testScheme).WithObjects(ns).WithObjects(tt.upstream...).Build()
 			downstreamClient := fake.NewClientBuilder().WithScheme(testScheme).WithObjects(tt.downstream...).Build()
 

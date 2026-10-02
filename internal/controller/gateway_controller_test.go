@@ -1767,7 +1767,7 @@ func TestEnsureHostnamesClaimed(t *testing.T) {
 				slices.Sort(expectedClaimedHostnames)
 				assert.EqualValues(t, expectedVerifiedHostnames, verifiedHostnames, "expected verified hostnames mismatch")
 				assert.EqualValues(t, expectedClaimedHostnames, claimedHostnames, "expected claimed hostnames mistmatch")
-				assert.EqualValues(t, tt.expectedNotClaimedHostnames, notClaimedHostnames, "expected not claimed hostnames mismatch")
+				assert.EqualValues(t, tt.expectedNotClaimedHostnames, refusedHostnames(notClaimedHostnames), "expected not claimed hostnames mismatch")
 			}
 
 			updatedUpstreamGateway := &gatewayv1.Gateway{}
@@ -2962,7 +2962,7 @@ func TestEnsureHostnamesClaimed_LegacyTargetDomain(t *testing.T) {
 			for _, hostname := range tt.expectedClaimedHostnames {
 				assert.Contains(t, claimedHostnames, hostname)
 			}
-			assert.EqualValues(t, tt.expectedNotClaimedHostnames, notClaimedHostnames)
+			assert.EqualValues(t, tt.expectedNotClaimedHostnames, refusedHostnames(notClaimedHostnames))
 		})
 	}
 }

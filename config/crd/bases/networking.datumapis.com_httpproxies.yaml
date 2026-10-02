@@ -3705,6 +3705,66 @@ spec:
                       x-kubernetes-list-map-keys:
                       - type
                       x-kubernetes-list-type: map
+                    dnsRecords:
+                      description: |-
+                        DNSRecords lists every DNS record this hostname depends on, who publishes
+                        it, and whether it is in place. A record is Present only once it takes
+                        effect on the Internet. Records the user publishes stay listed while the
+                        hostname needs them, so this list alone says what is left to do.
+                      items:
+                        description: HostnameDNSRecord is one DNS record a hostname
+                          depends on.
+                        properties:
+                          content:
+                            description: Content is the value the record must hold.
+                            maxLength: 512
+                            type: string
+                          managedBy:
+                            description: |-
+                              ManagedBy says who publishes the record: the user at their DNS provider,
+                              or the platform in a Datum DNS zone that serves the domain.
+                            enum:
+                            - User
+                            - Platform
+                            type: string
+                          name:
+                            description: Name is the fully qualified name of the record,
+                              without a trailing dot.
+                            maxLength: 253
+                            type: string
+                          purpose:
+                            description: Purpose says what the record is for.
+                            enum:
+                            - Routing
+                            - Certificate
+                            - Ownership
+                            type: string
+                          state:
+                            description: State says whether the record is in place.
+                            enum:
+                            - Present
+                            - Missing
+                            type: string
+                          type:
+                            description: |-
+                              Type is the DNS record type. ALIAS stands for a CNAME at a zone apex,
+                              which DNS providers offer as ALIAS, ANAME or CNAME flattening.
+                            enum:
+                            - CNAME
+                            - ALIAS
+                            - TXT
+                            type: string
+                        required:
+                        - content
+                        - managedBy
+                        - name
+                        - purpose
+                        - state
+                        - type
+                        type: object
+                      maxItems: 16
+                      type: array
+                      x-kubernetes-list-type: atomic
                     hostname:
                       description: |-
                         Hostname is the fully qualified domain name being tracked.

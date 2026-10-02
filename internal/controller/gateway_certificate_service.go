@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"regexp"
 	"slices"
@@ -120,25 +121,68 @@ func (r *GatewayReconciler) listenerIssuerResolvable(upstreamGateway *gatewayv1.
 	return issuer != autoIssuerSentinel || r.resolveAutoIssuer(upstreamGateway) != ""
 }
 
-// certificateServiceRequeue hands back the delay before the next attempt for a
-// gateway whose certificate-service step failed, doubling per consecutive
-// failure, and forgets the gateway once a pass succeeds.
-func (r *GatewayReconciler) certificateServiceRequeue(gateway types.UID, failed bool) time.Duration {
+// certificateServiceBackoff is what the step remembers about a gateway whose
+// last pass failed: how many in a row, when it may try again, and what it told
+// the listeners, so an event-driven reconcile inside the window repeats the
+// message rather than the calls.
+type certificateServiceBackoff struct {
+	attempts  int
+	nextTry   time.Time
+	message   string
+	listeners []gatewayv1.SectionName
+}
+
+// certificateServiceRequeue records the outcome of a pass and hands back the
+// delay before the next attempt, doubling per consecutive failure up to a cap,
+// and forgets the gateway once a pass succeeds.
+func (r *GatewayReconciler) certificateServiceRequeue(gateway types.UID, failed bool, now time.Time, issues map[gatewayv1.SectionName]string) time.Duration {
 	if !failed {
 		r.certificateServiceFailures.Delete(gateway)
 		return 0
 	}
 	attempts := 1
 	if previous, ok := r.certificateServiceFailures.Load(gateway); ok {
-		attempts = previous.(int) + 1
+		attempts = previous.(certificateServiceBackoff).attempts + 1
 	}
-	r.certificateServiceFailures.Store(gateway, attempts)
 	delay := certificateServiceBackoffBase << (attempts - 1)
 	if attempts > 10 || delay > certificateServiceBackoffMax {
 		delay = certificateServiceBackoffMax
 	}
+	backoff := certificateServiceBackoff{attempts: attempts, nextTry: now.Add(delay)}
+	for listener, message := range issues {
+		backoff.listeners = append(backoff.listeners, listener)
+		backoff.message = message
+	}
+	r.certificateServiceFailures.Store(gateway, backoff)
 	return delay
 }
+
+// certificateServiceInBackoff reports whether the gateway's last failure is
+// still cooling off, and if so the listeners it concerned and how long is left.
+func (r *GatewayReconciler) certificateServiceInBackoff(gateway types.UID, now time.Time) (certificateServiceBackoff, time.Duration, bool) {
+	previous, ok := r.certificateServiceFailures.Load(gateway)
+	if !ok {
+		return certificateServiceBackoff{}, 0, false
+	}
+	backoff := previous.(certificateServiceBackoff)
+	if !now.Before(backoff.nextTry) {
+		return backoff, 0, false
+	}
+	return backoff, backoff.nextTry.Sub(now), true
+}
+
+func recordCertificateServiceFailure(gateway *gatewayv1.Gateway, listener gatewayv1.SectionName, reason string) {
+	certificateServiceFailuresTotal.WithLabelValues(gateway.Namespace, gateway.Name, string(listener), reason).Inc()
+}
+
+const (
+	certificateServiceReasonStepFailed       = "StepFailed"
+	certificateServiceReasonNotOwned         = "NotOwned"
+	certificateServiceReasonRejected         = "Rejected"
+	certificateServiceReasonNamespaceRefused = "NamespaceRefused"
+	certificateServiceReasonMaterialRefused  = "MaterialRefused"
+	certificateServiceReasonTokenRefused     = "TokenRefused"
+)
 
 func certificateServiceUnavailableMessage(hostname string) string {
 	return fmt.Sprintf("We couldn't request a TLS certificate for %s just now and will keep trying. HTTPS for this hostname stays as it is in the meantime.", hostname)
@@ -180,7 +224,16 @@ func (r *GatewayReconciler) ensureListenerTLSCertificates(
 	fail := func(l gatewayv1.Listener, hostname string, err error) {
 		logger.Error(err, "certificate service step failed", "listener", l.Name, "hostname", hostname)
 		issues[l.Name] = certificateServiceUnavailableMessage(hostname)
+		recordCertificateServiceFailure(upstreamGateway, l.Name, certificateServiceReasonStepFailed)
 		failed = true
+	}
+
+	if backoff, remaining, cooling := r.certificateServiceInBackoff(upstreamGateway.UID, now); cooling {
+		for _, listener := range backoff.listeners {
+			issues[listener] = backoff.message
+		}
+		requeueSooner(remaining)
+		return result, issues
 	}
 
 	for _, l := range upstreamGateway.Spec.Listeners {
@@ -215,6 +268,9 @@ func (r *GatewayReconciler) ensureListenerTLSCertificates(
 
 		cert, state, err := r.ensureTLSCertificate(ctx, upstreamClient, upstreamGateway, certName, secretName, hostname)
 		if err != nil {
+			if errors.Is(err, errTLSCertificateNotOwned) {
+				recordCertificateServiceFailure(upstreamGateway, l.Name, certificateServiceReasonNotOwned)
+			}
 			fail(l, hostname, err)
 			continue
 		}
@@ -232,15 +288,17 @@ func (r *GatewayReconciler) ensureListenerTLSCertificates(
 		liveSolvers.Insert(solvers...)
 		if rejected != "" {
 			issues[l.Name] = rejected
+			recordCertificateServiceFailure(upstreamGateway, l.Name, certificateServiceReasonTokenRefused)
 		}
 
-		mirrored, rejected, err := r.mirrorTLSCertificateSecret(ctx, downstreamStrategy, upstreamGateway, downstreamGateway, cert, secretName, hostname, now)
+		mirrored, refusal, err := r.mirrorTLSCertificateSecret(ctx, downstreamStrategy, upstreamGateway, downstreamGateway, cert, secretName, hostname, now)
 		if err != nil {
 			fail(l, hostname, err)
 			continue
 		}
-		if rejected != "" {
-			issues[l.Name] = rejected
+		if refusal.reason != "" {
+			issues[l.Name] = refusal.message
+			recordCertificateServiceFailure(upstreamGateway, l.Name, refusal.reason)
 		}
 		if mirrored {
 			requeueSooner(tlsCertificateMirrorAdmitDelay)
@@ -260,10 +318,21 @@ func (r *GatewayReconciler) ensureListenerTLSCertificates(
 		failed = true
 	}
 
-	requeueSooner(r.certificateServiceRequeue(upstreamGateway.UID, failed))
+	requeueSooner(r.certificateServiceRequeue(upstreamGateway.UID, failed, now, issues))
 
 	return result, issues
 }
+
+var errTLSCertificateNotOwned = errors.New("TLSCertificate exists but is not controlled by this Gateway")
+
+// mirrorRefusal says why issued material was not taken, for the customer and
+// for the failure counter.
+type mirrorRefusal struct {
+	reason  string
+	message string
+}
+
+func (m mirrorRefusal) String() string { return m.reason }
 
 type tlsCertificateState int
 
@@ -314,7 +383,7 @@ func (r *GatewayReconciler) ensureTLSCertificate(
 	}
 
 	if !metav1.IsControlledBy(cert, upstreamGateway) {
-		return nil, tlsCertificateSettled, fmt.Errorf("TLSCertificate %s exists but is not controlled by Gateway %s", certName, upstreamGateway.Name)
+		return nil, tlsCertificateSettled, fmt.Errorf("%w: %s", errTLSCertificateNotOwned, certName)
 	}
 
 	if !cert.DeletionTimestamp.IsZero() {
@@ -407,24 +476,24 @@ func (r *GatewayReconciler) mirrorTLSCertificateSecret(
 	secretName string,
 	hostname string,
 	now time.Time,
-) (mirrored bool, rejected string, err error) {
+) (mirrored bool, refusal mirrorRefusal, err error) {
 	logger := log.FromContext(ctx)
 
 	if !apimeta.IsStatusConditionTrue(cert.Status.Conditions, certificatesv1alpha1.ConditionReady) {
-		return false, "", nil
+		return false, mirrorRefusal{}, nil
 	}
 	ref := cert.Status.ServiceSecretRef
 	if ref == nil || ref.Name == "" {
 		logger.Info("TLSCertificate is Ready without a service-side Secret reference", "tlscertificate", cert.Name)
-		return false, "", nil
+		return false, mirrorRefusal{}, nil
 	}
 	if ref.Namespace != r.Config.Gateway.CertificateService.SecretNamespace {
 		logger.Info("refusing service-side Secret outside the certificate service namespace",
 			"tlscertificate", cert.Name, "namespace", ref.Namespace, "expected", r.Config.Gateway.CertificateService.SecretNamespace)
-		return false, certificateServiceUnavailableMessage(hostname), nil
+		return false, mirrorRefusal{reason: certificateServiceReasonNamespaceRefused, message: certificateServiceUnavailableMessage(hostname)}, nil
 	}
 	if r.CertificateServiceReader == nil {
-		return false, "", fmt.Errorf("certificate service enabled without a client for its cluster")
+		return false, mirrorRefusal{}, fmt.Errorf("certificate service enabled without a client for its cluster")
 	}
 
 	downstreamClient := downstreamStrategy.GetClient()
@@ -435,10 +504,10 @@ func (r *GatewayReconciler) mirrorTLSCertificateSecret(
 		},
 	}
 	if err := downstreamClient.Get(ctx, client.ObjectKeyFromObject(mirror), mirror); client.IgnoreNotFound(err) != nil {
-		return false, "", fmt.Errorf("failed to get Secret %s: %w", secretName, err)
+		return false, mirrorRefusal{}, fmt.Errorf("failed to get Secret %s: %w", secretName, err)
 	}
 	if mirrorHoldsIssuance(mirror, cert) {
-		return false, "", nil
+		return false, mirrorRefusal{}, nil
 	}
 
 	var source corev1.Secret
@@ -446,15 +515,15 @@ func (r *GatewayReconciler) mirrorTLSCertificateSecret(
 	if err := r.CertificateServiceReader.Get(ctx, sourceKey, &source); err != nil {
 		if apierrors.IsNotFound(err) {
 			logger.Info("TLSCertificate is Ready but its service-side Secret is not readable yet", "tlscertificate", cert.Name, "secret", sourceKey)
-			return false, "", nil
+			return false, mirrorRefusal{}, nil
 		}
-		return false, "", fmt.Errorf("failed to get service-side Secret %s for TLSCertificate %s: %w", sourceKey, cert.Name, err)
+		return false, mirrorRefusal{}, fmt.Errorf("failed to get service-side Secret %s for TLSCertificate %s: %w", sourceKey, cert.Name, err)
 	}
 
 	if err := validateIssuedMaterial(source.Data["tls.crt"], source.Data["tls.key"], hostname, now); err != nil {
 		logger.Info("refusing service-side Secret that does not hold a usable certificate for the hostname",
 			"tlscertificate", cert.Name, "secret", sourceKey, "reason", err.Error())
-		return false, certificateServiceUnavailableMessage(hostname), nil
+		return false, mirrorRefusal{reason: certificateServiceReasonMaterialRefused, message: certificateServiceUnavailableMessage(hostname)}, nil
 	}
 
 	op, err := controllerutil.CreateOrUpdate(ctx, downstreamClient, mirror, func() error {
@@ -475,13 +544,13 @@ func (r *GatewayReconciler) mirrorTLSCertificateSecret(
 		return nil
 	})
 	if err != nil {
-		return false, "", fmt.Errorf("failed to mirror Secret %s: %w", secretName, err)
+		return false, mirrorRefusal{}, fmt.Errorf("failed to mirror Secret %s: %w", secretName, err)
 	}
 	if op != controllerutil.OperationResultNone {
 		logger.Info("issued Secret mirrored downstream", "secret", secretName, "operation", op)
 	}
 
-	return op != controllerutil.OperationResultNone, "", nil
+	return op != controllerutil.OperationResultNone, mirrorRefusal{}, nil
 }
 
 // mirrorHoldsIssuance reports whether the downstream Secret already carries the
@@ -553,18 +622,38 @@ func (r *GatewayReconciler) ownedLegacyCertificate(
 	return &legacy, nil
 }
 
+// legacyHoldWhileIssuing bounds how long a cert-manager renewal in flight can
+// defer the hand-over; past it the renewal is taken as stuck.
+const legacyHoldWhileIssuing = 24 * time.Hour
+
+// legacyHandOverFloor is the remaining lifetime below which the hand-over goes
+// ahead whatever cert-manager is doing, so the service has time to issue.
+const legacyHandOverFloor = 7 * 24 * time.Hour
+
 // legacyCertificateHolds reports whether a cert-manager Certificate should keep
 // its hostname for now: it is serving and not yet within the switch lead of its
-// renewal time, or cert-manager is mid-renewal and must not be interrupted. The
-// returned duration is when to look again.
+// renewal time, or cert-manager is mid-renewal and must not be interrupted. A
+// renewal that has failed, has been in flight for too long, or has too little
+// lifetime left to wait for does not hold. The returned duration is when to
+// look again.
 func legacyCertificateHolds(cert *cmv1.Certificate, now time.Time) (bool, time.Duration) {
 	if !certIsServing(cert, now) {
 		return false, 0
 	}
+	if cert.Status.NotAfter != nil && cert.Status.NotAfter.Sub(now) < legacyHandOverFloor {
+		return false, 0
+	}
 	for _, c := range cert.Status.Conditions {
-		if c.Type == cmv1.CertificateConditionIssuing && c.Status == cmmeta.ConditionTrue {
-			return true, 10 * time.Minute
+		if c.Type != cmv1.CertificateConditionIssuing || c.Status != cmmeta.ConditionTrue {
+			continue
 		}
+		if cert.Status.LastFailureTime != nil {
+			return false, 0
+		}
+		if !c.LastTransitionTime.IsZero() && now.Sub(c.LastTransitionTime.Time) > legacyHoldWhileIssuing {
+			return false, 0
+		}
+		return true, 10 * time.Minute
 	}
 	if cert.Status.RenewalTime == nil {
 		return false, 0
@@ -749,6 +838,18 @@ func (r *GatewayReconciler) cleanupCertificateServiceLeftovers(
 	if err := r.deleteStaleTLSCertificates(ctx, upstreamClient, upstreamGateway, sets.New[string]()); err != nil {
 		logger.Error(err, "failed to remove TLSCertificates after rollback")
 	}
+
+	for i := range handedOver.Items {
+		secret := &handedOver.Items[i]
+		var legacy cmv1.Certificate
+		if err := downstreamClient.Get(ctx, client.ObjectKey{Namespace: secret.Namespace, Name: secret.Name}, &legacy); err != nil || !certIsReady(&legacy) {
+			continue
+		}
+		delete(secret.Labels, tlsCertificateManagedLabel)
+		if err := downstreamClient.Update(ctx, secret); err != nil {
+			logger.Error(err, "failed to clear hand-over marker after cert-manager retook the Secret", "secret", secret.Name)
+		}
+	}
 }
 
 // handedOverSecretHealth reports whether the listener's downstream Secret was
@@ -873,11 +974,20 @@ func (r *GatewayReconciler) listenerTLSCertificateHealth(
 		}
 	}
 
+	rejected := apimeta.FindStatusCondition(cert.Status.Conditions, certificatesv1alpha1.ConditionAccepted)
+	if rejected != nil && rejected.Status != metav1.ConditionFalse {
+		rejected = nil
+	}
+
 	if secretStatus.healthy {
+		if rejected != nil {
+			secretStatus.renewalBlocked = tlsCertificateRejectedMessage(hostname, rejected.Message)
+			recordCertificateServiceFailure(upstreamGateway, listenerName, certificateServiceReasonRejected)
+		}
 		return secretStatus
 	}
 
-	if accepted := apimeta.FindStatusCondition(cert.Status.Conditions, certificatesv1alpha1.ConditionAccepted); accepted != nil && accepted.Status == metav1.ConditionFalse {
+	if accepted := rejected; accepted != nil {
 		return listenerCertStatus{
 			reason:     gatewayv1.ListenerReasonInvalidCertificateRef,
 			message:    tlsCertificateRejectedMessage(hostname, accepted.Message),

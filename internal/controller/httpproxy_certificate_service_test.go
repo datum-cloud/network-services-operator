@@ -74,13 +74,14 @@ func TestBuildCertificateStatusesCertificateService(t *testing.T) {
 	}
 
 	tests := []struct {
-		name        string
-		upstream    []client.Object
-		mutate      func(*certificatesv1alpha1.TLSCertificate)
-		downstream  []client.Object
-		wantStatus  metav1.ConditionStatus
-		wantReason  string
-		wantMessage string
+		name               string
+		upstream           []client.Object
+		mutate             func(*certificatesv1alpha1.TLSCertificate)
+		listenerConditions []metav1.Condition
+		downstream         []client.Object
+		wantStatus         metav1.ConditionStatus
+		wantReason         string
+		wantMessage        string
 	}{
 		{
 			name:       "Ready maps to CertificateIssued",
@@ -133,6 +134,26 @@ func TestBuildCertificateStatusesCertificateService(t *testing.T) {
 			wantMessage: "Certificate is ready; a renewal is in progress",
 		},
 		{
+			name: "Accepted=False with a serving downstream Secret reports RenewalFailing but stays ready",
+			upstream: []client.Object{tlsCert(metav1.Condition{
+				Type: certificatesv1alpha1.ConditionAccepted, Status: metav1.ConditionFalse, Reason: "DeniedDomain", Message: "names under datum.net are denied",
+			})},
+			downstream:  []client.Object{servingSecret},
+			wantStatus:  metav1.ConditionTrue,
+			wantReason:  networkingv1alpha.CertificateReadyReasonRenewalFailing,
+			wantMessage: "Certificate is ready but cannot be renewed: names under datum.net are denied",
+		},
+		{
+			name:     "a blocked renewal the gateway reports surfaces as RenewalFailing",
+			upstream: []client.Object{tlsCert(metav1.Condition{Type: certificatesv1alpha1.ConditionReady, Status: metav1.ConditionTrue})},
+			listenerConditions: []metav1.Condition{{
+				Type: listenerConditionCertificateRenewalBlocked, Status: metav1.ConditionTrue, Reason: listenerReasonRenewalFailing, Message: "We couldn't request a TLS certificate for app.example.com just now",
+			}},
+			wantStatus:  metav1.ConditionTrue,
+			wantReason:  networkingv1alpha.CertificateReadyReasonRenewalFailing,
+			wantMessage: "Certificate is ready but cannot be renewed: We couldn't request a TLS certificate for app.example.com just now",
+		},
+		{
 			name:       "no TLSCertificate yet but a ready legacy Certificate answers",
 			downstream: []client.Object{legacyReady()},
 			wantStatus: metav1.ConditionTrue,
@@ -164,7 +185,11 @@ func TestBuildCertificateStatusesCertificateService(t *testing.T) {
 				DownstreamCluster: &clusterWithClient{c: downstreamClient, scheme: testScheme},
 			}
 
-			got := r.buildCertificateStatuses(context.Background(), upstreamClient, "local", gateway, httpProxy)
+			gw := gateway.DeepCopy()
+			if tt.listenerConditions != nil {
+				gw.Status.Listeners = []gatewayv1.ListenerStatus{{Name: "https-hostname-0", Conditions: tt.listenerConditions}}
+			}
+			got := r.buildCertificateStatuses(context.Background(), upstreamClient, "local", gw, httpProxy)
 			require.Len(t, got, 1)
 			assert.Equal(t, "app.example.com", got[0].Hostname)
 			cond := apimeta.FindStatusCondition(got[0].Conditions, networkingv1alpha.HostnameConditionCertificateReady)

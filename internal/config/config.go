@@ -946,6 +946,19 @@ func SetDefaults_CertificateServiceConfig(obj *CertificateServiceConfig) {
 
 // RestConfig returns the connection to the certificate service's cluster.
 func (c *CertificateServiceConfig) RestConfig() (*rest.Config, error) {
+	cfg, err := c.restConfig()
+	if err != nil {
+		return nil, err
+	}
+	cfg.Timeout = certificateServiceRequestTimeout
+	return cfg, nil
+}
+
+// certificateServiceRequestTimeout bounds each read of the service cluster, so
+// a hung connection there cannot stall a gateway reconcile.
+const certificateServiceRequestTimeout = 10 * time.Second
+
+func (c *CertificateServiceConfig) restConfig() (*rest.Config, error) {
 	if c.KubeconfigPath != "" {
 		return clientcmd.BuildConfigFromFlags("", c.KubeconfigPath)
 	}

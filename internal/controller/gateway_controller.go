@@ -398,10 +398,16 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 			claimedHostnames,
 		)
 		for name, message := range issues {
-			if status, gated := listenerCertHealth[name]; gated && !status.healthy {
-				status.message = message
-				listenerCertHealth[name] = status
+			status, gated := listenerCertHealth[name]
+			if !gated {
+				continue
 			}
+			if status.healthy {
+				status.renewalBlocked = message
+			} else {
+				status.message = message
+			}
+			listenerCertHealth[name] = status
 		}
 		certificateServiceRequeue = certResult.RequeueAfter
 	} else {
@@ -528,7 +534,14 @@ type listenerCertStatus struct {
 	// Carried here so the expiry gauge can be labelled with the secret name
 	// without recomputing it outside listenerCertHealth.
 	secretName string
+	// renewalBlocked, when set on a healthy listener, says the certificate it
+	// serves cannot be replaced and why, so the customer hears about it before
+	// the expiry turns it into an outage.
+	renewalBlocked string
 }
+
+const listenerConditionCertificateRenewalBlocked = "CertificateRenewalBlocked"
+const listenerReasonRenewalFailing = "RenewalFailing"
 
 // clearListenerCertMetrics removes every certificate-health gauge series for a
 // gateway. Used both before re-recording each reconcile and on gateway deletion
@@ -1825,6 +1838,7 @@ func (r *GatewayReconciler) finalizeGateway(
 	gatewayProgrammedTotal.DeleteLabelValues(upstreamGateway.Namespace, upstreamGateway.Name)
 	// Clear this gateway's cert-health series now that it is gone.
 	clearListenerCertMetrics(upstreamGateway.Namespace, upstreamGateway.Name)
+	r.certificateServiceFailures.Delete(upstreamGateway.UID)
 
 	// Clean up DNS records created by this gateway
 	if r.Config.Gateway.EnableDNSIntegration {
@@ -2206,6 +2220,16 @@ func (r *GatewayReconciler) ensureDownstreamGatewayHTTPRoutes(
 		apimeta.SetStatusCondition(&status.Conditions, acceptedCondition)
 		apimeta.SetStatusCondition(&status.Conditions, programmedCondition)
 		apimeta.SetStatusCondition(&status.Conditions, resolvedRefsCondition)
+
+		if certStatus, gated := listenerCertHealth[listener.Name]; gated && certStatus.healthy && certStatus.renewalBlocked != "" {
+			apimeta.SetStatusCondition(&status.Conditions, metav1.Condition{
+				Type:               listenerConditionCertificateRenewalBlocked,
+				Status:             metav1.ConditionTrue,
+				Reason:             listenerReasonRenewalFailing,
+				Message:            certStatus.renewalBlocked,
+				ObservedGeneration: upstreamGateway.Generation,
+			})
+		}
 
 		listenerStatus = append(listenerStatus, status)
 	}

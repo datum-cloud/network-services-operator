@@ -83,6 +83,19 @@ var (
 	// Use sum(nso_gateway_listener_cert_withheld) to count how many listeners are
 	// currently dark across the fleet, or filter by namespace/name/listener/hostname
 	// to find the specific affected object during an incident.
+	// certificateServiceFailuresTotal counts every certificate-service step that
+	// could not do its work for a listener, by reason, whether or not the
+	// listener still serves a certificate. A hostname can serve for weeks on its
+	// previous certificate while every attempt to replace it fails; this is the
+	// signal that says so before the expiry does.
+	certificateServiceFailuresTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "nso_certificate_service_failures_total",
+			Help: "Total certificate-service steps that failed for a Gateway listener, by reason.",
+		},
+		[]string{jsonKeyNamespace, jsonKeyName, metricLabelListener, metricLabelReason},
+	)
+
 	gatewayListenerCertWithheld = promauto.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "nso_gateway_listener_cert_withheld",

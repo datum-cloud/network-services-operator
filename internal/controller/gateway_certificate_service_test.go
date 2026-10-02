@@ -11,6 +11,8 @@ import (
 	cmv1 "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
 	cmmeta "github.com/cert-manager/cert-manager/pkg/apis/meta/v1"
 	envoygatewayv1alpha1 "github.com/envoyproxy/gateway/api/v1alpha1"
+	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
@@ -25,6 +27,7 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
@@ -204,6 +207,7 @@ func TestEnsureDownstreamGatewayCertificateService(t *testing.T) {
 		upstreamObjects   func(gw *gatewayv1.Gateway) []client.Object
 		downstreamObjects func() []client.Object
 		serviceObjects    []client.Object
+		serviceForbidden  bool
 		assert            func(t *testing.T, e env, upstreamGateway, downstreamGateway *gatewayv1.Gateway)
 	}{
 		{
@@ -472,6 +476,62 @@ func TestEnsureDownstreamGatewayCertificateService(t *testing.T) {
 			},
 		},
 		{
+			name: "a rejection while the previous certificate serves is reported as a blocked renewal",
+			upstreamObjects: func(gw *gatewayv1.Gateway) []client.Object {
+				return []client.Object{newTLSCertificate(gw, certName, func(c *certificatesv1alpha1.TLSCertificate) {
+					apimeta.SetStatusCondition(&c.Status.Conditions, metav1.Condition{
+						Type: certificatesv1alpha1.ConditionAccepted, Status: metav1.ConditionFalse, Reason: "DeniedDomain", Message: "names under datum.net are denied",
+					})
+				})}
+			},
+			downstreamObjects: func() []client.Object {
+				secret := tlsSecret(downstreamNamespaceName, secretName, legacyCertPEM, legacyKeyPEM)
+				secret.Labels = map[string]string{tlsCertificateManagedLabel: labelValueTrue}
+				return []client.Object{secret}
+			},
+			assert: func(t *testing.T, e env, upstreamGateway, downstreamGateway *gatewayv1.Gateway) {
+				assert.NotNil(t, gatewayutil.GetListenerByName(downstreamGateway.Spec.Listeners, listenerName), "the listener keeps serving")
+				assertListenerRenewalBlocked(t, upstreamGateway, listenerName, "names under datum.net are denied")
+				assert.GreaterOrEqual(t, counterValue(t, certificateServiceFailuresTotal, upstreamNamespace.Name, gatewayName, string(listenerName), certificateServiceReasonRejected), 1.0)
+			},
+		},
+		{
+			name: "a forbidden service-side read while the previous certificate serves is reported as a blocked renewal",
+			upstreamObjects: func(gw *gatewayv1.Gateway) []client.Object {
+				return []client.Object{newTLSCertificate(gw, certName, readyStatus)}
+			},
+			downstreamObjects: func() []client.Object {
+				return []client.Object{tlsSecret(downstreamNamespaceName, secretName, legacyCertPEM, legacyKeyPEM)}
+			},
+			serviceForbidden: true,
+			assert: func(t *testing.T, e env, upstreamGateway, downstreamGateway *gatewayv1.Gateway) {
+				assert.NotNil(t, gatewayutil.GetListenerByName(downstreamGateway.Spec.Listeners, listenerName), "the listener keeps serving")
+				assertListenerRenewalBlocked(t, upstreamGateway, listenerName, "keep trying")
+				assert.Equal(t, certificateServiceBackoffBase, e.result.RequeueAfter)
+				assert.GreaterOrEqual(t, counterValue(t, certificateServiceFailuresTotal, upstreamNamespace.Name, gatewayName, string(listenerName), certificateServiceReasonStepFailed), 1.0)
+			},
+		},
+		{
+			name: "refused material while the previous certificate serves is reported as a blocked renewal",
+			upstreamObjects: func(gw *gatewayv1.Gateway) []client.Object {
+				return []client.Object{newTLSCertificate(gw, certName, readyStatus)}
+			},
+			downstreamObjects: func() []client.Object {
+				return []client.Object{tlsSecret(downstreamNamespaceName, secretName, legacyCertPEM, legacyKeyPEM)}
+			},
+			serviceObjects: func() []client.Object {
+				crt, key := generateTLSKeyPair(t, "other.example.com", now.Add(-time.Hour), now.Add(60*24*time.Hour))
+				return []client.Object{tlsSecret(serviceNS, serviceSecret, crt, key)}
+			}(),
+			assert: func(t *testing.T, e env, upstreamGateway, downstreamGateway *gatewayv1.Gateway) {
+				var secret corev1.Secret
+				require.NoError(t, e.downstream.Get(context.Background(), client.ObjectKey{Namespace: downstreamNamespaceName, Name: secretName}, &secret))
+				assert.Equal(t, legacyCertPEM, secret.Data["tls.crt"])
+				assertListenerRenewalBlocked(t, upstreamGateway, listenerName, "keep trying")
+				assert.GreaterOrEqual(t, counterValue(t, certificateServiceFailuresTotal, upstreamNamespace.Name, gatewayName, string(listenerName), certificateServiceReasonMaterialRefused), 1.0)
+			},
+		},
+		{
 			name: "refuses expired service-side material and keeps the serving Secret",
 			upstreamObjects: func(gw *gatewayv1.Gateway) []client.Object {
 				return []client.Object{newTLSCertificate(gw, certName, readyStatus)}
@@ -562,10 +622,17 @@ func TestEnsureDownstreamGatewayCertificateService(t *testing.T) {
 				WithStatusSubresource(&gatewayv1.Gateway{}, &cmv1.Certificate{}).
 				Build()
 
-			fakeServiceClient := fake.NewClientBuilder().
+			serviceBuilder := fake.NewClientBuilder().
 				WithScheme(testScheme).
-				WithObjects(tt.serviceObjects...).
-				Build()
+				WithObjects(tt.serviceObjects...)
+			if tt.serviceForbidden {
+				serviceBuilder = serviceBuilder.WithInterceptorFuncs(interceptor.Funcs{
+					Get: func(context.Context, client.WithWatch, client.ObjectKey, client.Object, ...client.GetOption) error {
+						return apierrors.NewForbidden(corev1.Resource("secrets"), serviceSecret, nil)
+					},
+				})
+			}
+			fakeServiceClient := serviceBuilder.Build()
 
 			ctx := log.IntoContext(context.Background(), logger)
 
@@ -597,6 +664,32 @@ func TestEnsureDownstreamGatewayCertificateService(t *testing.T) {
 	}
 }
 
+func assertListenerRenewalBlocked(t *testing.T, gateway *gatewayv1.Gateway, listener gatewayv1.SectionName, want string) {
+	t.Helper()
+	for _, ls := range gateway.Status.Listeners {
+		if ls.Name != listener {
+			continue
+		}
+		resolved := apimeta.FindStatusCondition(ls.Conditions, string(gatewayv1.ListenerConditionResolvedRefs))
+		require.NotNil(t, resolved)
+		assert.Equal(t, metav1.ConditionTrue, resolved.Status, "the listener itself stays resolved")
+		blocked := apimeta.FindStatusCondition(ls.Conditions, listenerConditionCertificateRenewalBlocked)
+		require.NotNil(t, blocked, "a blocked renewal is reported while the listener serves")
+		assert.Equal(t, metav1.ConditionTrue, blocked.Status)
+		assert.Equal(t, listenerReasonRenewalFailing, blocked.Reason)
+		assert.Contains(t, blocked.Message, want)
+		return
+	}
+	t.Fatalf("listener %s not found in status", listener)
+}
+
+func counterValue(t *testing.T, vec *prometheus.CounterVec, labels ...string) float64 {
+	t.Helper()
+	var m dto.Metric
+	require.NoError(t, vec.WithLabelValues(labels...).Write(&m))
+	return m.GetCounter().GetValue()
+}
+
 func assertListenerMessageContains(t *testing.T, gateway *gatewayv1.Gateway, listener gatewayv1.SectionName, want string) {
 	t.Helper()
 	for _, ls := range gateway.Status.Listeners {
@@ -626,15 +719,100 @@ func TestTLSCertificateName(t *testing.T) {
 func TestCertificateServiceRequeueBackoff(t *testing.T) {
 	r := &GatewayReconciler{}
 	uid := types.UID("gw")
-	assert.Equal(t, 5*time.Second, r.certificateServiceRequeue(uid, true))
-	assert.Equal(t, 10*time.Second, r.certificateServiceRequeue(uid, true))
-	assert.Equal(t, 20*time.Second, r.certificateServiceRequeue(uid, true))
+	now := time.Now()
+	issues := map[gatewayv1.SectionName]string{"https-0": "trying"}
+	assert.Equal(t, 5*time.Second, r.certificateServiceRequeue(uid, true, now, issues))
+	assert.Equal(t, 10*time.Second, r.certificateServiceRequeue(uid, true, now, issues))
+	assert.Equal(t, 20*time.Second, r.certificateServiceRequeue(uid, true, now, issues))
 	for range 10 {
-		r.certificateServiceRequeue(uid, true)
+		r.certificateServiceRequeue(uid, true, now, issues)
 	}
-	assert.Equal(t, certificateServiceBackoffMax, r.certificateServiceRequeue(uid, true))
-	assert.Zero(t, r.certificateServiceRequeue(uid, false))
-	assert.Equal(t, 5*time.Second, r.certificateServiceRequeue(uid, true), "a success resets the backoff")
+	assert.Equal(t, certificateServiceBackoffMax, r.certificateServiceRequeue(uid, true, now, issues))
+
+	backoff, remaining, cooling := r.certificateServiceInBackoff(uid, now.Add(time.Minute))
+	assert.True(t, cooling, "an event inside the window repeats the message instead of the calls")
+	assert.Equal(t, []gatewayv1.SectionName{"https-0"}, backoff.listeners)
+	assert.Equal(t, "trying", backoff.message)
+	assert.Equal(t, certificateServiceBackoffMax-time.Minute, remaining)
+	_, _, cooling = r.certificateServiceInBackoff(uid, now.Add(certificateServiceBackoffMax))
+	assert.False(t, cooling)
+
+	assert.Zero(t, r.certificateServiceRequeue(uid, false, now, nil))
+	assert.Equal(t, 5*time.Second, r.certificateServiceRequeue(uid, true, now, issues), "a success resets the backoff")
+	_, _, cooling = r.certificateServiceInBackoff(types.UID("other"), now)
+	assert.False(t, cooling)
+}
+
+func TestTLSCertificateNameGolden(t *testing.T) {
+	for _, tt := range []struct{ gateway, listener, want string }{
+		{"gw", "https-0", "gw-https-0-bb35a504d1"},
+		{"a-b", "c", "a-b-c-4e84717d75"},
+		{"a", "b-c", "a-b-c-b88f83c840"},
+		{"my.dotted.gateway.name.that.is.long.enough.to.be.cut", "https-0", "my-dotted-gateway-name-that-is-long-enough-to-be-cut-c30f01e877"},
+		{"a-gateway-with-a-deliberately-very-long-name-for-this-test", "https-hostname-with-a-long-name-0", "a-gateway-with-a-deliberately-very-long-name-for-thi-8c34270044"},
+	} {
+		assert.Equal(t, tt.want, tlsCertificateName(tt.gateway, gatewayv1.SectionName(tt.listener)))
+	}
+}
+
+func TestValidateIssuedMaterialWildcard(t *testing.T) {
+	now := time.Now()
+	wildcardCrt, wildcardKey := generateTLSKeyPair(t, "*.example.com", now.Add(-time.Hour), now.Add(24*time.Hour))
+	apexCrt, apexKey := generateTLSKeyPair(t, "example.com", now.Add(-time.Hour), now.Add(24*time.Hour))
+
+	assert.NoError(t, validateIssuedMaterial(wildcardCrt, wildcardKey, "*.example.com", now))
+	assert.NoError(t, validateIssuedMaterial(wildcardCrt, wildcardKey, "app.example.com", now))
+	assert.Error(t, validateIssuedMaterial(wildcardCrt, wildcardKey, "example.com", now), "a wildcard does not cover the apex")
+	assert.Error(t, validateIssuedMaterial(apexCrt, apexKey, "*.example.com", now), "an apex certificate does not cover a wildcard listener")
+}
+
+func TestLegacyCertificateHolds(t *testing.T) {
+	now := time.Now()
+	base := func() *cmv1.Certificate {
+		return &cmv1.Certificate{Status: cmv1.CertificateStatus{
+			NotBefore:   &metav1.Time{Time: now.Add(-30 * 24 * time.Hour)},
+			NotAfter:    &metav1.Time{Time: now.Add(60 * 24 * time.Hour)},
+			RenewalTime: &metav1.Time{Time: now.Add(-time.Hour)},
+			Conditions:  []cmv1.CertificateCondition{{Type: cmv1.CertificateConditionReady, Status: cmmeta.ConditionTrue}},
+		}}
+	}
+	issuing := func(since time.Time) cmv1.CertificateCondition {
+		return cmv1.CertificateCondition{Type: cmv1.CertificateConditionIssuing, Status: cmmeta.ConditionTrue, LastTransitionTime: &metav1.Time{Time: since}}
+	}
+
+	cert := base()
+	cert.Status.Conditions = append(cert.Status.Conditions, issuing(now.Add(-time.Hour)))
+	holds, recheck := legacyCertificateHolds(cert, now)
+	assert.True(t, holds, "a fresh renewal in flight is left to finish")
+	assert.Equal(t, 10*time.Minute, recheck)
+
+	cert = base()
+	cert.Status.Conditions = append(cert.Status.Conditions, issuing(now.Add(-25*time.Hour)))
+	holds, _ = legacyCertificateHolds(cert, now)
+	assert.False(t, holds, "a renewal in flight for over a day is stuck")
+
+	cert = base()
+	cert.Status.Conditions = append(cert.Status.Conditions, issuing(now.Add(-time.Hour)))
+	cert.Status.LastFailureTime = &metav1.Time{Time: now.Add(-10 * time.Minute)}
+	holds, _ = legacyCertificateHolds(cert, now)
+	assert.False(t, holds, "a renewal that has failed does not hold")
+
+	cert = base()
+	cert.Status.Conditions = append(cert.Status.Conditions, issuing(now.Add(-time.Hour)))
+	cert.Status.NotAfter = &metav1.Time{Time: now.Add(5 * 24 * time.Hour)}
+	holds, _ = legacyCertificateHolds(cert, now)
+	assert.False(t, holds, "under a week of lifetime hands over regardless")
+
+	cert = base()
+	cert.Status.RenewalTime = &metav1.Time{Time: now.Add(10 * 24 * time.Hour)}
+	holds, recheck = legacyCertificateHolds(cert, now)
+	assert.True(t, holds)
+	assert.InDelta(t, (10*24*time.Hour - tlsCertificateSwitchLead).Seconds(), recheck.Seconds(), 1)
+
+	cert = base()
+	cert.Status.Conditions = []cmv1.CertificateCondition{{Type: cmv1.CertificateConditionReady, Status: cmmeta.ConditionFalse, Reason: "Failed"}}
+	holds, _ = legacyCertificateHolds(cert, now)
+	assert.False(t, holds, "a certificate that is not serving never holds")
 }
 
 func TestCertificateServiceCRDAbsentDoesNotBlockGateway(t *testing.T) {
@@ -805,7 +983,7 @@ func TestCertificateServiceRollbackKeepsHandedOverSecret(t *testing.T) {
 				WithStatusSubresource(upstreamGateway).Build()
 			fakeDownstreamClient := fake.NewClientBuilder().WithScheme(testScheme).
 				WithObjects(downstreamGateway, handedOver, solverRoute, solverFilter).
-				WithStatusSubresource(&gatewayv1.Gateway{}).Build()
+				WithStatusSubresource(&gatewayv1.Gateway{}, &cmv1.Certificate{}).Build()
 
 			reconciler := &GatewayReconciler{
 				mgr:               &fakeMockManager{cl: fakeUpstreamClient},
@@ -832,6 +1010,17 @@ func TestCertificateServiceRollbackKeepsHandedOverSecret(t *testing.T) {
 			assert.NoError(t, fakeUpstreamClient.Get(ctx, client.ObjectKey{Namespace: upstreamNamespace.Name, Name: "foreign"}, &certificatesv1alpha1.TLSCertificate{}), "a TLSCertificate the gateway does not control stays")
 			assert.True(t, apierrors.IsNotFound(fakeDownstreamClient.Get(ctx, client.ObjectKey{Namespace: downstreamNamespaceName, Name: solverName}, &gatewayv1.HTTPRoute{})), "leftover solver routes are removed")
 			assert.True(t, apierrors.IsNotFound(fakeDownstreamClient.Get(ctx, client.ObjectKey{Namespace: downstreamNamespaceName, Name: solverName}, &envoygatewayv1alpha1.HTTPRouteFilter{})))
+
+			if tt.wantCertificate {
+				var legacy cmv1.Certificate
+				require.NoError(t, fakeDownstreamClient.Get(ctx, client.ObjectKey{Namespace: downstreamNamespaceName, Name: legacyName}, &legacy))
+				legacy.Status.Conditions = []cmv1.CertificateCondition{{Type: cmv1.CertificateConditionReady, Status: cmmeta.ConditionTrue}}
+				require.NoError(t, fakeDownstreamClient.Status().Update(ctx, &legacy))
+				reconciler.cleanupCertificateServiceLeftovers(ctx, fakeUpstreamClient, upstreamGateway, downstreamGateway, fakeDownstreamClient)
+				var secret corev1.Secret
+				require.NoError(t, fakeDownstreamClient.Get(ctx, client.ObjectKey{Namespace: downstreamNamespaceName, Name: secretName}, &secret))
+				assert.NotContains(t, secret.Labels, tlsCertificateManagedLabel, "the hand-over marker goes once cert-manager has the Secret back")
+			}
 		})
 	}
 }

@@ -1517,7 +1517,7 @@ func (r *HTTPProxyReconciler) buildCertificateStatuses(
 		certName := resourcename.GetValidDNS1123Name(fmt.Sprintf("%s-%s", gateway.Name, l.Name))
 
 		if r.Config.Gateway.CertificateService.Enabled {
-			apimeta.SetStatusCondition(&hs.Conditions, r.tlsCertificateReadyCondition(ctx, upstreamClient, downstreamClient, downstreamNamespaceName, gateway.Namespace, tlsCertificateName(gateway.Name, l.Name), certName, listenerCertificateSecretName(gateway.Name, l.Name), hostname, httpProxy.Generation))
+			apimeta.SetStatusCondition(&hs.Conditions, r.tlsCertificateReadyCondition(ctx, upstreamClient, downstreamClient, downstreamNamespaceName, gateway.Namespace, tlsCertificateName(gateway.Name, l.Name), certName, listenerCertificateSecretName(gateway.Name, l.Name), hostname, listenerStatusConditions(gateway, l.Name), httpProxy.Generation))
 			statuses = append(statuses, hs)
 			continue
 		}
@@ -1582,6 +1582,17 @@ func (r *HTTPProxyReconciler) buildCertificateStatuses(
 	}
 
 	return statuses
+}
+
+// listenerStatusConditions returns the conditions the gateway reports for one
+// of its listeners, or nil.
+func listenerStatusConditions(gateway *gatewayv1.Gateway, listener gatewayv1.SectionName) []metav1.Condition {
+	for _, ls := range gateway.Status.Listeners {
+		if ls.Name == listener {
+			return ls.Conditions
+		}
+	}
+	return nil
 }
 
 // getCertificateReadyConditionReason returns the reason and message for the

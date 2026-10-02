@@ -905,6 +905,42 @@ type GatewayConfig struct {
 	// the deletion through the entire chain (CertificateRequest, Order,
 	// Challenge, solver resources).
 	CertificateReissuance CertificateReissuanceConfig `json:"certificateReissuance,omitempty"`
+
+	// CertificateService hands per-hostname certificate issuance to the Milo
+	// certificate service. When enabled, the gateway controller requests a
+	// TLSCertificate in the project control plane for each custom hostname,
+	// serves its HTTP-01 challenges on the downstream gateway, and mirrors the
+	// issued Secret downstream, instead of creating a cert-manager Certificate
+	// on the downstream cluster.
+	CertificateService CertificateServiceConfig `json:"certificateService,omitempty"`
+}
+
+// +k8s:deepcopy-gen=true
+
+// CertificateServiceConfig controls consumption of the Milo certificate
+// service (certificates.miloapis.com).
+type CertificateServiceConfig struct {
+	// Enabled switches custom hostname certificate issuance from downstream
+	// cert-manager Certificates to upstream TLSCertificates.
+	//
+	// Defaults to false.
+	Enabled bool `json:"enabled,omitempty"`
+
+	// KubeconfigPath reaches the cluster the certificate service runs on,
+	// where it keeps the service-side copy of each issued Secret. Empty
+	// means the cluster this operator runs in.
+	KubeconfigPath string `json:"kubeconfigPath,omitempty"`
+}
+
+// RestConfig returns the connection to the certificate service's cluster.
+func (c *CertificateServiceConfig) RestConfig() (*rest.Config, error) {
+	if c.KubeconfigPath != "" {
+		return clientcmd.BuildConfigFromFlags("", c.KubeconfigPath)
+	}
+	if cfg, err := rest.InClusterConfig(); err == nil {
+		return cfg, nil
+	}
+	return ctrl.GetConfig()
 }
 
 // +k8s:deepcopy-gen=true
@@ -1489,6 +1525,9 @@ func (c *GatewayConfig) validate() error {
 			errs = append(errs, fmt.Errorf("legacyTargetDomains[%d] is a duplicate entry %q", i, domain))
 		}
 		seen = append(seen, domain)
+	}
+	if c.CertificateService.Enabled && c.DisableHostnameVerification {
+		errs = append(errs, errors.New("certificateService.enabled requires hostname verification: the certificate service issues for any hostname it is handed"))
 	}
 	return errors.Join(errs...)
 }

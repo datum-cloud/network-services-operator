@@ -42,6 +42,7 @@ import (
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	networkingv1alpha1 "go.datum.net/network-services-operator/api/v1alpha1"
+	certificatesv1alpha1 "go.datum.net/network-services-operator/internal/certificates/v1alpha1"
 	"go.datum.net/network-services-operator/internal/config"
 	downstreamclient "go.datum.net/network-services-operator/internal/downstreamclient"
 	conditionutil "go.datum.net/network-services-operator/internal/util/condition"
@@ -761,6 +762,13 @@ func (r *HTTPProxyReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 		)
 		downstreamCertificateClusterSource, _, _ := downstreamCertificateSource.ForCluster("", r.DownstreamCluster)
 		builder = builder.WatchesRawSource(downstreamCertificateClusterSource)
+	}
+
+	if r.Config.Gateway.CertificateService.Enabled {
+		builder = builder.Watches(
+			&certificatesv1alpha1.TLSCertificate{},
+			r.enqueueHTTPProxyForTLSCertificate,
+		)
 	}
 
 	return builder.
@@ -1507,6 +1515,13 @@ func (r *HTTPProxyReconciler) buildCertificateStatuses(
 		}
 
 		certName := resourcename.GetValidDNS1123Name(fmt.Sprintf("%s-%s", gateway.Name, l.Name))
+
+		if r.Config.Gateway.CertificateService.Enabled {
+			apimeta.SetStatusCondition(&hs.Conditions, r.tlsCertificateReadyCondition(ctx, upstreamClient, downstreamClient, downstreamNamespaceName, gateway.Namespace, tlsCertificateName(gateway.Name, l.Name), certName, httpProxy.Generation))
+			statuses = append(statuses, hs)
+			continue
+		}
+
 		certificate := newUnstructuredForGVK(certificateGVK)
 		certKey := client.ObjectKey{Namespace: downstreamNamespaceName, Name: certName}
 

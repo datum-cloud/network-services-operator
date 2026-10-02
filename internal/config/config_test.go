@@ -204,3 +204,54 @@ func TestGatewayConfig_ManagedTargetDomains(t *testing.T) {
 		}
 	}
 }
+
+func TestGatewayConfig_ValidateCertificateService(t *testing.T) {
+	tests := []struct {
+		name    string
+		gateway GatewayConfig
+		wantSub string
+	}{
+		{
+			name: "disabled by default validates",
+		},
+		{
+			name:    "enabled with hostname verification validates",
+			gateway: GatewayConfig{CertificateService: CertificateServiceConfig{Enabled: true}},
+		},
+		{
+			name: "enabled without hostname verification is rejected",
+			gateway: GatewayConfig{
+				CertificateService:          CertificateServiceConfig{Enabled: true},
+				DisableHostnameVerification: true,
+			},
+			wantSub: "certificateService.enabled requires hostname verification",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &NetworkServicesOperator{Gateway: tt.gateway}
+			err := cfg.Validate()
+			if tt.wantSub == "" {
+				if err != nil {
+					t.Fatalf("expected nil, got %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantSub) {
+				t.Fatalf("expected error containing %q, got %v", tt.wantSub, err)
+			}
+		})
+	}
+}
+
+func TestSetObjectDefaults_CertificateService(t *testing.T) {
+	cfg := &NetworkServicesOperator{}
+	SetObjectDefaults_NetworkServicesOperator(cfg)
+	if cfg.Gateway.CertificateService.Enabled {
+		t.Error("certificateService.enabled should default to false")
+	}
+	if cfg.Gateway.CertificateService.KubeconfigPath != "" {
+		t.Errorf("certificateService.kubeconfigPath should default to empty, got %q", cfg.Gateway.CertificateService.KubeconfigPath)
+	}
+}

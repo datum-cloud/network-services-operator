@@ -15,6 +15,7 @@ import (
 	cmv1 "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
 	cmmeta "github.com/cert-manager/cert-manager/pkg/apis/meta/v1"
 	envoygatewayv1alpha1 "github.com/envoyproxy/gateway/api/v1alpha1"
+	"github.com/go-logr/logr"
 	"github.com/prometheus/client_golang/prometheus"
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
@@ -45,6 +46,7 @@ import (
 	mcsource "sigs.k8s.io/multicluster-runtime/pkg/source"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
+	certificatesv1alpha1 "go.datum.net/network-services-operator/internal/certificates/v1alpha1"
 	"go.datum.net/network-services-operator/internal/config"
 	downstreamclient "go.datum.net/network-services-operator/internal/downstreamclient"
 	gatewayutil "go.datum.net/network-services-operator/internal/util/gateway"
@@ -92,6 +94,11 @@ type GatewayReconciler struct {
 	Config config.NetworkServicesOperator
 
 	DownstreamCluster cluster.Cluster
+
+	// CertificateServiceReader reads the certificate service's cluster, where
+	// the service-side copy of each issued Secret lives. Required when
+	// Config.Gateway.CertificateService.Enabled.
+	CertificateServiceReader client.Reader
 }
 
 // +kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;update;patch;delete
@@ -304,13 +311,25 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 	// reissueFailedCertificate): this path is read-only and gates on any
 	// unusable cert, re-issuance mutates and fires only on cert-manager
 	// hard-fail (LastFailureTime). See #260.
-	listenerCertHealth := r.evaluateListenerCertHealth(
-		ctx,
-		downstreamClient,
-		downstreamGateway.Namespace,
-		upstreamGateway,
-		claimedHostnames,
-	)
+	var listenerCertHealth map[gatewayv1.SectionName]listenerCertStatus
+	if r.Config.Gateway.CertificateService.Enabled {
+		listenerCertHealth = r.evaluateListenerTLSCertificateHealth(
+			ctx,
+			upstreamClient,
+			downstreamClient,
+			downstreamGateway.Namespace,
+			upstreamGateway,
+			claimedHostnames,
+		)
+	} else {
+		listenerCertHealth = r.evaluateListenerCertHealth(
+			ctx,
+			downstreamClient,
+			downstreamGateway.Namespace,
+			upstreamGateway,
+			claimedHostnames,
+		)
+	}
 
 	desiredDownstreamGateway := r.getDesiredDownstreamGateway(
 		ctx,
@@ -361,14 +380,27 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 		}
 	}
 
-	certResult := r.ensureListenerCertificates(
-		ctx,
-		upstreamGateway,
-		downstreamGateway,
-		downstreamClient,
-		downstreamStrategy,
-		claimedHostnames,
-	)
+	var certResult Result
+	if r.Config.Gateway.CertificateService.Enabled {
+		certResult = r.ensureListenerTLSCertificates(
+			ctx,
+			upstreamClient,
+			upstreamGateway,
+			downstreamGateway,
+			downstreamClient,
+			downstreamStrategy,
+			claimedHostnames,
+		)
+	} else {
+		certResult = r.ensureListenerCertificates(
+			ctx,
+			upstreamGateway,
+			downstreamGateway,
+			downstreamClient,
+			downstreamStrategy,
+			claimedHostnames,
+		)
+	}
 	if certResult.ShouldReturn() {
 		return certResult.Merge(result), nil
 	}
@@ -534,43 +566,53 @@ func (r *GatewayReconciler) evaluateListenerCertHealth(
 		status := r.listenerCertHealth(ctx, downstreamClient, downstreamNamespace, upstreamGateway.Name, l.Name, hostname, now)
 		health[l.Name] = status
 
-		// Mark this listener as managed regardless of its health, so the
-		// SLI ratio (withheld / managed) can be computed fleet-wide.
-		gatewayListenerCertManaged.WithLabelValues(
-			upstreamGateway.Namespace, upstreamGateway.Name, string(l.Name), hostname,
-		).Set(1)
-
-		if !status.healthy {
-			logArgs := []any{
-				"listener", l.Name, "hostname", hostname,
-				"reason", status.reason, "message", status.message,
-			}
-			// Include the expiry timestamp when available so log queries can
-			// identify exactly when the cert stopped being valid.
-			if status.notAfter != nil {
-				logArgs = append(logArgs, "cert_not_after", status.notAfter.UTC().Format(time.RFC3339))
-			}
-			logger.Info("listener certificate unhealthy", logArgs...)
-
-			gatewayListenerCertWithheld.WithLabelValues(
-				upstreamGateway.Namespace, upstreamGateway.Name,
-				string(l.Name), hostname, string(status.reason),
-			).Set(1)
-			gatewayListenerCertGatingTotal.WithLabelValues(
-				upstreamGateway.Namespace, upstreamGateway.Name,
-				string(l.Name), hostname, string(status.reason),
-			).Inc()
-		} else if status.notAfter != nil {
-			// Record the expiry timestamp for healthy certs so operators can
-			// alert before the next expiry rather than after.
-			gatewayListenerCertExpiryTime.WithLabelValues(
-				upstreamGateway.Namespace, upstreamGateway.Name,
-				string(l.Name), hostname, status.secretName,
-			).Set(float64(status.notAfter.Unix()))
-		}
+		recordListenerCertHealth(logger, upstreamGateway, l.Name, hostname, status)
 	}
 
 	return health
+}
+
+// recordListenerCertHealth publishes one listener's certificate health as
+// metrics and logs, the same way for every issuance path.
+func recordListenerCertHealth(
+	logger logr.Logger,
+	upstreamGateway *gatewayv1.Gateway,
+	listenerName gatewayv1.SectionName,
+	hostname string,
+	status listenerCertStatus,
+) {
+	gatewayListenerCertManaged.WithLabelValues(
+		upstreamGateway.Namespace, upstreamGateway.Name, string(listenerName), hostname,
+	).Set(1)
+
+	if !status.healthy {
+		logArgs := []any{
+			"listener", listenerName, "hostname", hostname,
+			"reason", status.reason, "message", status.message,
+		}
+		// Include the expiry timestamp when available so log queries can
+		// identify exactly when the cert stopped being valid.
+		if status.notAfter != nil {
+			logArgs = append(logArgs, "cert_not_after", status.notAfter.UTC().Format(time.RFC3339))
+		}
+		logger.Info("listener certificate unhealthy", logArgs...)
+
+		gatewayListenerCertWithheld.WithLabelValues(
+			upstreamGateway.Namespace, upstreamGateway.Name,
+			string(listenerName), hostname, string(status.reason),
+		).Set(1)
+		gatewayListenerCertGatingTotal.WithLabelValues(
+			upstreamGateway.Namespace, upstreamGateway.Name,
+			string(listenerName), hostname, string(status.reason),
+		).Inc()
+	} else if status.notAfter != nil {
+		// Record the expiry timestamp for healthy certs so operators can
+		// alert before the next expiry rather than after.
+		gatewayListenerCertExpiryTime.WithLabelValues(
+			upstreamGateway.Namespace, upstreamGateway.Name,
+			string(listenerName), hostname, status.secretName,
+		).Set(float64(status.notAfter.Unix()))
+	}
 }
 
 // listenerCertHealth reports whether a single listener's certificate can be
@@ -637,9 +679,26 @@ func (r *GatewayReconciler) listenerCertHealth(
 		}
 	}
 
-	// Finally, load the stored certificate and key and confirm they match and
-	// are still valid. This catches a broken or mismatched certificate that
-	// would otherwise be served and break HTTPS for the listener.
+	if secretStatus := listenerSecretHealth(ctx, downstreamClient, downstreamNamespace, secretName, hostname, now); !secretStatus.healthy {
+		return secretStatus
+	}
+
+	return listenerCertStatus{healthy: true, notAfter: cert.Status.NotAfter, secretName: secretName}
+}
+
+// listenerSecretHealth loads the stored certificate and key and confirms they
+// match and are still valid, catching a broken or mismatched certificate that
+// would otherwise be served and break HTTPS for the listener.
+func listenerSecretHealth(
+	ctx context.Context,
+	downstreamClient client.Client,
+	downstreamNamespace string,
+	secretName string,
+	hostname string,
+	now time.Time,
+) listenerCertStatus {
+	logger := log.FromContext(ctx)
+
 	var secret corev1.Secret
 	if err := downstreamClient.Get(ctx, client.ObjectKey{Namespace: downstreamNamespace, Name: secretName}, &secret); err != nil {
 		if apierrors.IsNotFound(err) {
@@ -675,7 +734,11 @@ func (r *GatewayReconciler) listenerCertHealth(
 		}
 	}
 
-	return listenerCertStatus{healthy: true, notAfter: cert.Status.NotAfter, secretName: secretName}
+	status := listenerCertStatus{healthy: true, secretName: secretName}
+	if leaf := keyPair.Leaf; leaf != nil {
+		status.notAfter = &metav1.Time{Time: leaf.NotAfter}
+	}
+	return status
 }
 
 // certIsReady reports whether a cert-manager Certificate has Ready=True.
@@ -2997,6 +3060,13 @@ func (r *GatewayReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 				&dnsv1alpha1.DNSRecordSet{},
 				r.listGatewaysForDNSRecordSetFunc,
 			)
+	}
+
+	if r.Config.Gateway.CertificateService.Enabled {
+		builder = builder.Watches(
+			&certificatesv1alpha1.TLSCertificate{},
+			r.listGatewaysForTLSCertificateFunc,
+		)
 	}
 
 	return builder.

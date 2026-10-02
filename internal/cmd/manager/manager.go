@@ -44,6 +44,7 @@ import (
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	networkingv1alpha1 "go.datum.net/network-services-operator/api/v1alpha1"
+	certificatesv1alpha1 "go.datum.net/network-services-operator/internal/certificates/v1alpha1"
 	"go.datum.net/network-services-operator/internal/cmd/clusterdiscovery"
 	"go.datum.net/network-services-operator/internal/config"
 	"go.datum.net/network-services-operator/internal/controller"
@@ -76,6 +77,7 @@ func init() {
 	utilruntime.Must(cmv1.AddToScheme(scheme))
 	utilruntime.Must(dnsv1alpha1.AddToScheme(scheme))
 	utilruntime.Must(ipamv1alpha1.AddToScheme(scheme))
+	utilruntime.Must(certificatesv1alpha1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
 
@@ -384,11 +386,18 @@ func NewCommand(build BuildInfo) *cobra.Command {
 				os.Exit(1)
 			}
 
+			certificateServiceReader, err := newCertificateServiceReader(serverConfig.Gateway)
+			if err != nil {
+				setupLog.Error(err, "unable to build certificate service client")
+				os.Exit(1)
+			}
+
 			registeredControllers, err := setupControllers(mgr, serverConfig, controllerDeps{
-				downstreamCluster: downstreamCluster,
-				singletonManager:  singletonControllerMgr,
-				irohDownstream:    irohDownstream,
-				ipamClients:       ipamClients,
+				downstreamCluster:        downstreamCluster,
+				singletonManager:         singletonControllerMgr,
+				irohDownstream:           irohDownstream,
+				ipamClients:              ipamClients,
+				certificateServiceReader: certificateServiceReader,
 			})
 			if err != nil {
 				setupLog.Error(err, "unable to set up controllers")
@@ -561,10 +570,26 @@ func setupWebhooks(mgr mcmanager.Manager, serverConfig config.NetworkServicesOpe
 // controllerDeps carries the clients and managers that controllers are wired
 // against. Fields are only populated for the sets that need them.
 type controllerDeps struct {
-	downstreamCluster cluster.Cluster
-	singletonManager  manager.Manager
-	irohDownstream    cluster.Cluster
-	ipamClients       controller.IPAMClientFactory
+	downstreamCluster        cluster.Cluster
+	singletonManager         manager.Manager
+	irohDownstream           cluster.Cluster
+	ipamClients              controller.IPAMClientFactory
+	certificateServiceReader client.Reader
+}
+
+// newCertificateServiceReader returns an uncached client for the cluster the
+// certificate service keeps its issued Secrets on, or nil when the service is
+// not consumed. Uncached so the operator never holds an informer over every
+// Secret on that cluster.
+func newCertificateServiceReader(gatewayConfig config.GatewayConfig) (client.Reader, error) {
+	if !gatewayConfig.CertificateService.Enabled {
+		return nil, nil
+	}
+	restConfig, err := gatewayConfig.CertificateService.RestConfig()
+	if err != nil {
+		return nil, fmt.Errorf("unable to load certificate service kubeconfig: %w", err)
+	}
+	return client.New(restConfig, client.Options{Scheme: scheme})
 }
 
 // newIPAMClientFactory returns nil when no IPAM connection is configured. A
@@ -680,8 +705,9 @@ func controllerRegistrations(
 		}},
 		{"gateway", true, func() error {
 			return (&controller.GatewayReconciler{
-				Config:            serverConfig,
-				DownstreamCluster: deps.downstreamCluster,
+				Config:                   serverConfig,
+				DownstreamCluster:        deps.downstreamCluster,
+				CertificateServiceReader: deps.certificateServiceReader,
 			}).SetupWithManager(mgr)
 		}},
 		{"gatewayclass", true, func() error {

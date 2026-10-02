@@ -4725,6 +4725,16 @@ Must be a valid RFC 1123 hostname without a trailing dot.<br/>
 Standard condition types include Verified and DNSRecordProgrammed.<br/>
         </td>
         <td>false</td>
+      </tr><tr>
+        <td><b><a href="#httpproxystatushostnamestatusesindexdnsrecordsindex">dnsRecords</a></b></td>
+        <td>[]object</td>
+        <td>
+          DNSRecords lists every DNS record this hostname depends on, who publishes
+it, and whether it is in place. A record is Present only once it takes
+effect on the Internet. Records the user publishes stay listed while the
+hostname needs them, so this list alone says what is left to do.<br/>
+        </td>
+        <td>false</td>
       </tr></tbody>
 </table>
 
@@ -4802,5 +4812,77 @@ with respect to the current state of the instance.<br/>
             <i>Minimum</i>: 0<br/>
         </td>
         <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### HTTPProxy.status.hostnameStatuses[index].dnsRecords[index]
+<sup><sup>[↩ Parent](#httpproxystatushostnamestatusesindex)</sup></sup>
+
+
+
+HostnameDNSRecord is one DNS record a hostname depends on.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>content</b></td>
+        <td>string</td>
+        <td>
+          Content is the value the record must hold.<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>managedBy</b></td>
+        <td>enum</td>
+        <td>
+          ManagedBy says who publishes the record: the user at their DNS provider,
+or the platform in a Datum DNS zone that serves the domain.<br/>
+          <br/>
+            <i>Enum</i>: User, Platform<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>name</b></td>
+        <td>string</td>
+        <td>
+          Name is the fully qualified name of the record, without a trailing dot.<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>purpose</b></td>
+        <td>enum</td>
+        <td>
+          Purpose says what the record is for.<br/>
+          <br/>
+            <i>Enum</i>: Routing, Certificate, Ownership<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>state</b></td>
+        <td>enum</td>
+        <td>
+          State says whether the record is in place.<br/>
+          <br/>
+            <i>Enum</i>: Present, Missing<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>type</b></td>
+        <td>enum</td>
+        <td>
+          Type is the DNS record type. ALIAS stands for a CNAME at a zone apex,
+which DNS providers offer as ALIAS, ANAME or CNAME flattening.<br/>
+          <br/>
+            <i>Enum</i>: CNAME, ALIAS, TXT<br/>
+        </td>
+        <td>true</td>
       </tr></tbody>
 </table>

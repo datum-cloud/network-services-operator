@@ -444,7 +444,102 @@ type HostnameStatus struct {
 	// +listMapKey=type
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// DNSRecords lists every DNS record this hostname depends on, who publishes
+	// it, and whether it is in place. A record is Present only once it takes
+	// effect on the Internet. Records the user publishes stay listed while the
+	// hostname needs them, so this list alone says what is left to do.
+	//
+	// +listType=atomic
+	// +kubebuilder:validation:MaxItems=16
+	// +optional
+	DNSRecords []HostnameDNSRecord `json:"dnsRecords,omitempty"`
 }
+
+// HostnameDNSRecord is one DNS record a hostname depends on.
+type HostnameDNSRecord struct {
+	// Name is the fully qualified name of the record, without a trailing dot.
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MaxLength=253
+	Name string `json:"name"`
+
+	// Type is the DNS record type. ALIAS stands for a CNAME at a zone apex,
+	// which DNS providers offer as ALIAS, ANAME or CNAME flattening.
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Enum=CNAME;ALIAS;TXT
+	Type string `json:"type"`
+
+	// Content is the value the record must hold.
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MaxLength=512
+	Content string `json:"content"`
+
+	// Purpose says what the record is for.
+	//
+	// +kubebuilder:validation:Required
+	Purpose HostnameDNSRecordPurpose `json:"purpose"`
+
+	// ManagedBy says who publishes the record: the user at their DNS provider,
+	// or the platform in a Datum DNS zone that serves the domain.
+	//
+	// +kubebuilder:validation:Required
+	ManagedBy HostnameDNSRecordManager `json:"managedBy"`
+
+	// State says whether the record is in place.
+	//
+	// +kubebuilder:validation:Required
+	State HostnameDNSRecordState `json:"state"`
+}
+
+// HostnameDNSRecordPurpose says what a DNS record is for.
+//
+// +kubebuilder:validation:Enum=Routing;Certificate;Ownership
+type HostnameDNSRecordPurpose string
+
+const (
+	// HostnameDNSRecordPurposeRouting points the hostname at the platform.
+	HostnameDNSRecordPurposeRouting HostnameDNSRecordPurpose = "Routing"
+
+	// HostnameDNSRecordPurposeCertificate delegates the ACME DNS challenge for
+	// the hostname to the platform, so certificates issue before traffic moves.
+	HostnameDNSRecordPurposeCertificate HostnameDNSRecordPurpose = "Certificate"
+
+	// HostnameDNSRecordPurposeOwnership proves ownership of the hostname's
+	// domain. It is listed until the domain is verified.
+	HostnameDNSRecordPurposeOwnership HostnameDNSRecordPurpose = "Ownership"
+)
+
+// HostnameDNSRecordManager says who publishes a DNS record.
+//
+// +kubebuilder:validation:Enum=User;Platform
+type HostnameDNSRecordManager string
+
+const (
+	// HostnameDNSRecordManagedByUser means the user publishes the record at
+	// their DNS provider.
+	HostnameDNSRecordManagedByUser HostnameDNSRecordManager = "User"
+
+	// HostnameDNSRecordManagedByPlatform means the platform publishes the record
+	// in a Datum DNS zone that serves the domain.
+	HostnameDNSRecordManagedByPlatform HostnameDNSRecordManager = "Platform"
+)
+
+// HostnameDNSRecordState says whether a DNS record is in place.
+//
+// +kubebuilder:validation:Enum=Present;Missing
+type HostnameDNSRecordState string
+
+const (
+	// HostnameDNSRecordPresent means the record takes effect on the Internet.
+	HostnameDNSRecordPresent HostnameDNSRecordState = "Present"
+
+	// HostnameDNSRecordMissing means the record is absent, wrong, or held in a
+	// zone that does not serve the domain.
+	HostnameDNSRecordMissing HostnameDNSRecordState = "Missing"
+)
 
 // HTTPProxyStatus defines the observed state of HTTPProxy.
 type HTTPProxyStatus struct {

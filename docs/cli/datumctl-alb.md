@@ -137,6 +137,24 @@ datumctl alb hostname remove my-app app.example.com
 
 The generated hostname is assigned by the platform and shown by `describe`. Custom hostnames must be unique on the platform, and ownership of their domain is verified separately — this plugin does not create or read the domain, so use `datumctl get domains` to see verification state. `hostname remove` does not ask for confirmation. `list` shows the generated hostname and a `CUSTOM` summary (first attached name, `+N` when there are more); `describe` prints each custom hostname with available / DNS / cert status.
 
+### Wildcards
+
+```sh
+datumctl alb hostname add my-app '*.s3.example.com'
+datumctl alb describe my-app
+```
+
+Quote the wildcard so the shell leaves the `*` alone. A wildcard serves every name beneath its base and reserves them for your project; its certificate covers names one label down. The platform admits it only where wildcards are enabled and only once `s3.example.com`, or a parent, is verified by its DNS TXT record — a domain verified over HTTP or through a Datum DNS zone does not count. `hostname add` does not wait: a refused wildcard shows its reason under the hostname in `describe`.
+
+`describe` ends with the DNS records still to publish, read from the load balancer's status: the routing CNAME, the `_acme-challenge` certificate CNAME, and the domain's ownership TXT, each once. Records the platform publishes in a Datum DNS zone are listed apart, and a domain whose registry does not yet delegate to Datum DNS gets a `DNS not delegated` hint that points at the certificate record.
+
+```
+DNS records to publish:
+  NAME                             TYPE    CONTENT                            PURPOSE
+  *.s3.example.com                 CNAME   ruth-fourth-hrkgk.datumproxy.net   Routing
+  _acme-challenge.s3.example.com   CNAME   k3f9q2x7.acme-dns.example.net      Certificate
+```
+
 ## Access logs
 
 ```sh

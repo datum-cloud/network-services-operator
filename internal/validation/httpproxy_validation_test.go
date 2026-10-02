@@ -624,7 +624,7 @@ func TestValidateHTTPProxy(t *testing.T) {
 			if scenario.proxy.Name == "" {
 				scenario.proxy.Name = "test"
 			}
-			errs := ValidateHTTPProxy(scenario.proxy)
+			errs := ValidateHTTPProxy(scenario.proxy, HTTPProxyValidationOptions{})
 			delta := cmp.Diff(scenario.expectedErrors, errs, cmpopts.IgnoreFields(field.Error{}, "BadValue", "Detail"))
 			if delta != "" {
 				t.Errorf("Testcase %s - expected errors '%v', got '%v', diff: '%v'", name, scenario.expectedErrors, errs, delta)

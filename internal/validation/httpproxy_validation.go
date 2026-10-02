@@ -22,7 +22,13 @@ const (
 	maxPortNumber = 65535
 )
 
-func ValidateHTTPProxy(httpProxy *networkingv1alpha.HTTPProxy) field.ErrorList {
+// HTTPProxyValidationOptions carries the operator settings that change what an
+// HTTPProxy may declare.
+type HTTPProxyValidationOptions struct {
+	Hostnames HostnameOptions
+}
+
+func ValidateHTTPProxy(httpProxy *networkingv1alpha.HTTPProxy, opts HTTPProxyValidationOptions) field.ErrorList {
 
 	allErrs := field.ErrorList{}
 
@@ -30,7 +36,7 @@ func ValidateHTTPProxy(httpProxy *networkingv1alpha.HTTPProxy) field.ErrorList {
 	hostnames := sets.New[gatewayv1.Hostname]()
 	for i, hostname := range httpProxy.Spec.Hostnames {
 		hostnamePath := hostnamesPath.Index(i).Child("hostname")
-		allErrs = append(allErrs, validation.IsFullyQualifiedDomainName(hostnamePath, string(hostname))...)
+		allErrs = append(allErrs, ValidateCustomHostname(hostnamePath, string(hostname), opts.Hostnames)...)
 		if hostnames.Has(hostname) {
 			allErrs = append(allErrs, field.Duplicate(hostnamePath, hostname))
 		} else {

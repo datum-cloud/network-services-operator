@@ -13,6 +13,7 @@ import (
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
+	"go.datum.net/network-services-operator/internal/config"
 	"go.datum.net/network-services-operator/internal/display"
 	"go.datum.net/network-services-operator/internal/validation"
 	webhookutil "go.datum.net/network-services-operator/internal/webhook"
@@ -21,9 +22,9 @@ import (
 // nolint:unused
 
 // SetupHTTPProxyWebhookWithManager registers the webhook for HTTPProxy in the manager.
-func SetupHTTPProxyWebhookWithManager(mgr mcmanager.Manager) error {
+func SetupHTTPProxyWebhookWithManager(mgr mcmanager.Manager, gatewayConfig config.GatewayConfig) error {
 	return ctrl.NewWebhookManagedBy(mgr.GetLocalManager(), &networkingv1alpha.HTTPProxy{}).
-		WithValidator(&HTTPProxyCustomValidator{mgr: mgr}).
+		WithValidator(&HTTPProxyCustomValidator{mgr: mgr, opts: validation.HTTPProxyValidationOptions{Hostnames: validation.CustomHostnameOptions(gatewayConfig)}}).
 		WithDefaulter(&HTTPProxyCustomDefaulter{}).
 		Complete()
 }
@@ -55,7 +56,8 @@ func oldHTTPProxy(ctx context.Context) *networkingv1alpha.HTTPProxy {
 // +kubebuilder:webhook:path=/validate-networking-datumapis-com-v1alpha-httpproxy,mutating=false,failurePolicy=fail,sideEffects=None,groups=networking.datumapis.com,resources=httpproxies,verbs=create;update,versions=v1alpha,name=vhttpproxy-v1alpha.kb.io,admissionReviewVersions=v1
 
 type HTTPProxyCustomValidator struct {
-	mgr mcmanager.Manager
+	mgr  mcmanager.Manager
+	opts validation.HTTPProxyValidationOptions
 }
 
 var _ admission.Validator[*networkingv1alpha.HTTPProxy] = &HTTPProxyCustomValidator{}
@@ -72,7 +74,7 @@ func (v *HTTPProxyCustomValidator) ValidateCreate(ctx context.Context, httpProxy
 	//
 	// For now, validate any HTTPProxy based on this operator's validation rules.
 
-	if errs := validation.ValidateHTTPProxy(httpProxy); len(errs) > 0 {
+	if errs := validation.ValidateHTTPProxy(httpProxy, v.opts); len(errs) > 0 {
 		return nil, errors.NewInvalid(httpProxy.GetObjectKind().GroupVersionKind().GroupKind(), httpProxy.GetName(), errs)
 	}
 
@@ -89,7 +91,7 @@ func (v *HTTPProxyCustomValidator) ValidateUpdate(ctx context.Context, oldHTTPPr
 		return nil, nil
 	}
 
-	if errs := validation.ValidateHTTPProxy(newHTTPProxy); len(errs) > 0 {
+	if errs := validation.ValidateHTTPProxy(newHTTPProxy, v.opts); len(errs) > 0 {
 		return nil, errors.NewInvalid(oldHTTPProxy.GetObjectKind().GroupVersionKind().GroupKind(), newHTTPProxy.GetName(), errs)
 	}
 

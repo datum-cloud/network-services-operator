@@ -302,7 +302,7 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 		return result, nil
 	}
 
-	verifiedHostnames, claimedHostnames, notClaimedHostnames, err := r.ensureHostnamesClaimed(
+	verifiedHostnames, claimedHostnames, hostnameRefusals, err := r.ensureHostnamesClaimed(
 		ctx,
 		upstreamClusterName,
 		upstreamClient,
@@ -473,7 +473,7 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 		downstreamGateway,
 		downstreamStrategy,
 		verifiedHostnames,
-		notClaimedHostnames,
+		hostnameRefusals,
 		listenerCertHealth,
 	)
 
@@ -1414,9 +1414,9 @@ func (r *GatewayReconciler) ensureHostnamesClaimed(
 	upstreamClient client.Client,
 	upstreamGateway *gatewayv1.Gateway,
 	downstreamGateway *gatewayv1.Gateway,
-) (verifiedHostnames, claimedHostnames []string, notClaimedHostnames map[string]string, err error) {
+) (verifiedHostnames, claimedHostnames []string, refusals map[string]hostnameRefusal, err error) {
 
-	verifiedHostnames, err = r.ensureHostnameVerification(ctx, upstreamClient, upstreamGateway, downstreamGateway)
+	verifiedHostnames, refusals, err = r.ensureHostnameVerification(ctx, upstreamClient, upstreamGateway, downstreamGateway)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -1425,7 +1425,6 @@ func (r *GatewayReconciler) ensureHostnamesClaimed(
 
 	upstreamGatewayReferenceName := fmt.Sprintf("%s/%s/%s", upstreamClusterName, upstreamGateway.Namespace, upstreamGateway.Name)
 	project := hostnameClaimProject(upstreamClusterName)
-	notClaimedHostnames = map[string]string{}
 
 	// Track each hostname in a ConfigMap in the downstream control plane.
 	// This will need to be adjusted as the number of hostnames grows to be large,
@@ -1450,7 +1449,7 @@ func (r *GatewayReconciler) ensureHostnamesClaimed(
 
 		claimExists := !hostnameConfigMap.CreationTimestamp.IsZero()
 		if claimExists && hostnameConfigMap.Data[jsonKeyOwner] != upstreamGatewayReferenceName {
-			notClaimedHostnames[hostname] = hostnameInUseMessage(hostname)
+			refusals[hostname] = hostnameInUseRefusal(hostname)
 			continue
 		}
 
@@ -1464,7 +1463,7 @@ func (r *GatewayReconciler) ensureHostnamesClaimed(
 				return nil, nil, nil, err
 			}
 			if conflict.found() {
-				notClaimedHostnames[hostname] = subtreeConflictMessage(hostname, conflict)
+				refusals[hostname] = hostnameRefusal{reason: networkingv1alpha.HostnameInUseReason, message: subtreeConflictMessage(hostname, conflict)}
 				continue
 			}
 		}
@@ -1490,7 +1489,7 @@ func (r *GatewayReconciler) ensureHostnamesClaimed(
 
 			if err := downstreamClient.Create(ctx, &hostnameConfigMap); err != nil {
 				if apierrors.IsConflict(err) {
-					notClaimedHostnames[hostname] = hostnameInUseMessage(hostname)
+					refusals[hostname] = hostnameInUseRefusal(hostname)
 					continue
 				}
 				return nil, nil, nil, err
@@ -1531,11 +1530,14 @@ func (r *GatewayReconciler) ensureHostnamesClaimed(
 
 	slices.Sort(claimedHostnames)
 
-	return verifiedHostnames, claimedHostnames, notClaimedHostnames, nil
+	return verifiedHostnames, claimedHostnames, refusals, nil
 }
 
-func hostnameInUseMessage(hostname string) string {
-	return fmt.Sprintf("The hostname %q is already attached to a resource.", hostname)
+func hostnameInUseRefusal(hostname string) hostnameRefusal {
+	return hostnameRefusal{
+		reason:  networkingv1alpha.HostnameInUseReason,
+		message: fmt.Sprintf("The hostname %q is already attached to a resource.", hostname),
+	}
 }
 
 func (r *GatewayReconciler) isDatumManagedGatewayHostname(upstreamGateway *gatewayv1.Gateway, hostname string) bool {
@@ -1577,9 +1579,10 @@ func (r *GatewayReconciler) ensureHostnameVerification(
 	upstreamClient client.Client,
 	upstreamGateway *gatewayv1.Gateway,
 	downstreamGateway *gatewayv1.Gateway,
-) ([]string, error) {
+) ([]string, map[string]hostnameRefusal, error) {
 	logger := log.FromContext(ctx)
 
+	refusals := map[string]hostnameRefusal{}
 	gatewayDefaultHostname := r.gatewayCanonicalHostname(upstreamGateway)
 
 	// Get a unique set of hostnames currently declared on the upstream gateway.
@@ -1640,7 +1643,7 @@ func (r *GatewayReconciler) ensureHostnameVerification(
 	if r.Config.Gateway.DisableHostnameVerification {
 		verifiedHostnamesSlice := hostnames.UnsortedList()
 		slices.Sort(verifiedHostnamesSlice)
-		return verifiedHostnamesSlice, nil
+		return verifiedHostnamesSlice, refusals, nil
 	}
 
 	// List all Domains in the same namespace as the upstream gateway. A field
@@ -1649,7 +1652,7 @@ func (r *GatewayReconciler) ensureHostnameVerification(
 
 	var domainList networkingv1alpha.DomainList
 	if err := upstreamClient.List(ctx, &domainList, client.InNamespace(upstreamGateway.Namespace)); err != nil {
-		return nil, fmt.Errorf("failed listing domains: %w", err)
+		return nil, nil, fmt.Errorf("failed listing domains: %w", err)
 	}
 
 	logger.Info("processing domains in same namespace", "domain_count", len(domainList.Items))
@@ -1658,6 +1661,27 @@ func (r *GatewayReconciler) ensureHostnameVerification(
 	for _, hostname := range hostnames.UnsortedList() {
 		// Gateway DNS address hostname is exempt from verification
 		if addressHostnames.Has(hostname) {
+			continue
+		}
+
+		if strings.HasPrefix(hostname, "*.") {
+			verifiedHostnames.Delete(hostname)
+			if !r.Config.Gateway.CertificateService.Enabled {
+				refusals[hostname] = hostnameRefusal{
+					reason:  networkingv1alpha.HostnameVerifiedReasonWildcardNotSupported,
+					message: fmt.Sprintf("The wildcard %q cannot be served: wildcard hostnames are not available on this platform.", hostname),
+				}
+				continue
+			}
+			ownership := checkWildcardOwnership(hostname, domainList.Items)
+			if ownership.proven {
+				verifiedHostnames.Insert(hostname)
+				continue
+			}
+			refusals[hostname] = ownership.refusal
+			if ownership.createDomain != "" {
+				domainsToCreate.Insert(ownership.createDomain)
+			}
 			continue
 		}
 		foundMatchingDomain := false
@@ -1702,7 +1726,7 @@ func (r *GatewayReconciler) ensureHostnameVerification(
 			}
 
 			if err := upstreamClient.Create(ctx, domain); client.IgnoreAlreadyExists(err) != nil {
-				return nil, fmt.Errorf("failed creating domain: %w", err)
+				return nil, nil, fmt.Errorf("failed creating domain: %w", err)
 			}
 
 			logger.Info("domain created", "domain", domain.Name)
@@ -1712,7 +1736,7 @@ func (r *GatewayReconciler) ensureHostnameVerification(
 	verifiedHostnamesSlice := verifiedHostnames.UnsortedList()
 	slices.Sort(verifiedHostnamesSlice)
 
-	return verifiedHostnamesSlice, nil
+	return verifiedHostnamesSlice, refusals, nil
 }
 
 // gatewayCanonicalHostname returns the managed canonical hostname for a gateway.
@@ -2052,7 +2076,7 @@ func (r *GatewayReconciler) ensureDownstreamGatewayHTTPRoutes(
 	downstreamGateway *gatewayv1.Gateway,
 	downstreamStrategy downstreamclient.ResourceStrategy,
 	verifiedHostnames []string,
-	notClaimedHostnames map[string]string,
+	refusals map[string]hostnameRefusal,
 	listenerCertHealth map[gatewayv1.SectionName]listenerCertStatus,
 ) (result Result) {
 	logger := log.FromContext(ctx)
@@ -2147,7 +2171,7 @@ func (r *GatewayReconciler) ensureDownstreamGatewayHTTPRoutes(
 		result = result.Merge(httpRouteResult)
 	}
 
-	logger.Info("updating listener status", "verified_hostnames", verifiedHostnames, "not_claimed_hostnames", notClaimedHostnames)
+	logger.Info("updating listener status", "verified_hostnames", verifiedHostnames, "refused_hostnames", len(refusals))
 
 	currentListenerStatus := map[gatewayv1.SectionName]gatewayv1.ListenerStatus{}
 	for _, listener := range upstreamGateway.Status.Listeners {
@@ -2202,20 +2226,25 @@ func (r *GatewayReconciler) ensureDownstreamGatewayHTTPRoutes(
 
 		if listener.Hostname != nil {
 
+			refusal, refused := refusals[string(*listener.Hostname)]
 			if !slices.Contains(verifiedHostnames, string(*listener.Hostname)) {
 				hostnameProblem = true
 				acceptedCondition.Status = metav1.ConditionFalse
 				acceptedCondition.Reason = networkingv1alpha.UnverifiedHostnamesPresent
 				acceptedCondition.Message = fmt.Sprintf("The hostname %q has not been verified. Check status of Domains in the same namespace.", *listener.Hostname)
+				if refused {
+					acceptedCondition.Reason = refusal.reason
+					acceptedCondition.Message = refusal.message
+				}
 
 				programmedCondition.Status = metav1.ConditionFalse
 				programmedCondition.Reason = acceptedCondition.Reason
 				programmedCondition.Message = acceptedCondition.Message
-			} else if message, refused := notClaimedHostnames[string(*listener.Hostname)]; refused {
+			} else if refused {
 				hostnameProblem = true
 				acceptedCondition.Status = metav1.ConditionFalse
-				acceptedCondition.Reason = networkingv1alpha.HostnameInUseReason
-				acceptedCondition.Message = message
+				acceptedCondition.Reason = refusal.reason
+				acceptedCondition.Message = refusal.message
 
 				programmedCondition.Status = metav1.ConditionFalse
 				programmedCondition.Reason = acceptedCondition.Reason

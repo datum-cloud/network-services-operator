@@ -1414,7 +1414,7 @@ func (r *GatewayReconciler) ensureHostnamesClaimed(
 	upstreamClient client.Client,
 	upstreamGateway *gatewayv1.Gateway,
 	downstreamGateway *gatewayv1.Gateway,
-) (verifiedHostnames, claimedHostnames, notClaimedHostnames []string, err error) {
+) (verifiedHostnames, claimedHostnames []string, notClaimedHostnames map[string]string, err error) {
 
 	verifiedHostnames, err = r.ensureHostnameVerification(ctx, upstreamClient, upstreamGateway, downstreamGateway)
 	if err != nil {
@@ -1424,6 +1424,8 @@ func (r *GatewayReconciler) ensureHostnamesClaimed(
 	downstreamClient := r.DownstreamCluster.GetClient()
 
 	upstreamGatewayReferenceName := fmt.Sprintf("%s/%s/%s", upstreamClusterName, upstreamGateway.Namespace, upstreamGateway.Name)
+	project := hostnameClaimProject(upstreamClusterName)
+	notClaimedHostnames = map[string]string{}
 
 	// Track each hostname in a ConfigMap in the downstream control plane.
 	// This will need to be adjusted as the number of hostnames grows to be large,
@@ -1438,7 +1440,7 @@ func (r *GatewayReconciler) ensureHostnamesClaimed(
 
 		objectKey := client.ObjectKey{
 			Namespace: r.Config.Gateway.DownstreamHostnameAccountingNamespace,
-			Name:      hostname,
+			Name:      hostnameClaimName(hostname),
 		}
 
 		var hostnameConfigMap corev1.ConfigMap
@@ -1446,13 +1448,34 @@ func (r *GatewayReconciler) ensureHostnamesClaimed(
 			return nil, nil, nil, err
 		}
 
-		if hostnameConfigMap.CreationTimestamp.IsZero() {
+		claimExists := !hostnameConfigMap.CreationTimestamp.IsZero()
+		if claimExists && hostnameConfigMap.Data[jsonKeyOwner] != upstreamGatewayReferenceName {
+			notClaimedHostnames[hostname] = hostnameInUseMessage(hostname)
+			continue
+		}
+
+		if r.Config.Gateway.CertificateService.Enabled {
+			var existing *corev1.ConfigMap
+			if claimExists {
+				existing = &hostnameConfigMap
+			}
+			conflict, err := subtreeClaimConflicts(ctx, downstreamClient, objectKey.Namespace, project, hostname, existing)
+			if err != nil {
+				return nil, nil, nil, err
+			}
+			if conflict.found() {
+				notClaimedHostnames[hostname] = subtreeConflictMessage(hostname, conflict)
+				continue
+			}
+		}
+
+		if !claimExists {
 			hostnameConfigMap = corev1.ConfigMap{
 				ObjectMeta: metav1.ObjectMeta{
 					Namespace: objectKey.Namespace,
 					Name:      objectKey.Name,
 					Labels: map[string]string{
-						downstreamclient.UpstreamOwnerClusterNameLabel: fmt.Sprintf("cluster-%s", strings.ReplaceAll(upstreamClusterName, "/", "_")),
+						downstreamclient.UpstreamOwnerClusterNameLabel: project,
 						downstreamclient.UpstreamOwnerNamespaceLabel:   upstreamGateway.Namespace,
 						downstreamclient.UpstreamOwnerNameLabel:        upstreamGateway.Name,
 					},
@@ -1461,17 +1484,17 @@ func (r *GatewayReconciler) ensureHostnamesClaimed(
 					jsonKeyOwner: upstreamGatewayReferenceName,
 				},
 			}
+			if objectKey.Name != hostname {
+				hostnameConfigMap.Data[jsonKeyHostname] = hostname
+			}
 
 			if err := downstreamClient.Create(ctx, &hostnameConfigMap); err != nil {
 				if apierrors.IsConflict(err) {
-					notClaimedHostnames = append(notClaimedHostnames, hostname)
+					notClaimedHostnames[hostname] = hostnameInUseMessage(hostname)
 					continue
 				}
 				return nil, nil, nil, err
 			}
-		} else if hostnameConfigMap.Data[jsonKeyOwner] != upstreamGatewayReferenceName {
-			notClaimedHostnames = append(notClaimedHostnames, hostname)
-			continue
 		}
 
 		claimedHostnames = append(claimedHostnames, hostname)
@@ -1496,7 +1519,7 @@ func (r *GatewayReconciler) ensureHostnamesClaimed(
 
 	if len(hostnameConfigMapList.Items) > 0 {
 		for _, configMap := range hostnameConfigMapList.Items {
-			if slices.Contains(claimedHostnames, configMap.Name) {
+			if slices.Contains(claimedHostnames, claimedHostname(&configMap)) {
 				// Still in use
 				continue
 			}
@@ -1509,6 +1532,10 @@ func (r *GatewayReconciler) ensureHostnamesClaimed(
 	slices.Sort(claimedHostnames)
 
 	return verifiedHostnames, claimedHostnames, notClaimedHostnames, nil
+}
+
+func hostnameInUseMessage(hostname string) string {
+	return fmt.Sprintf("The hostname %q is already attached to a resource.", hostname)
 }
 
 func (r *GatewayReconciler) isDatumManagedGatewayHostname(upstreamGateway *gatewayv1.Gateway, hostname string) bool {
@@ -2025,7 +2052,7 @@ func (r *GatewayReconciler) ensureDownstreamGatewayHTTPRoutes(
 	downstreamGateway *gatewayv1.Gateway,
 	downstreamStrategy downstreamclient.ResourceStrategy,
 	verifiedHostnames []string,
-	notClaimedHostnames []string,
+	notClaimedHostnames map[string]string,
 	listenerCertHealth map[gatewayv1.SectionName]listenerCertStatus,
 ) (result Result) {
 	logger := log.FromContext(ctx)
@@ -2184,11 +2211,11 @@ func (r *GatewayReconciler) ensureDownstreamGatewayHTTPRoutes(
 				programmedCondition.Status = metav1.ConditionFalse
 				programmedCondition.Reason = acceptedCondition.Reason
 				programmedCondition.Message = acceptedCondition.Message
-			} else if slices.Contains(notClaimedHostnames, string(*listener.Hostname)) {
+			} else if message, refused := notClaimedHostnames[string(*listener.Hostname)]; refused {
 				hostnameProblem = true
 				acceptedCondition.Status = metav1.ConditionFalse
 				acceptedCondition.Reason = networkingv1alpha.HostnameInUseReason
-				acceptedCondition.Message = fmt.Sprintf("The hostname %q is already attached to a resource.", *listener.Hostname)
+				acceptedCondition.Message = message
 
 				programmedCondition.Status = metav1.ConditionFalse
 				programmedCondition.Reason = acceptedCondition.Reason
@@ -3046,6 +3073,17 @@ func (r *GatewayReconciler) passThroughVPCPodBackendRef(
 // SetupWithManager sets up the controller with the Manager.
 func (r *GatewayReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	r.mgr = mgr
+
+	if r.Config.Gateway.CertificateService.Enabled {
+		if err := r.DownstreamCluster.GetFieldIndexer().IndexField(
+			context.Background(),
+			&corev1.ConfigMap{},
+			hostnameClaimAncestorIndex,
+			hostnameClaimAncestorIndexFunc(r.Config.Gateway.DownstreamHostnameAccountingNamespace),
+		); err != nil {
+			return fmt.Errorf("failed to index hostname claims: %w", err)
+		}
+	}
 
 	downstreamGatewaySource := mcsource.TypedKind(
 		&gatewayv1.Gateway{},

@@ -631,6 +631,7 @@ func TestEnsureDownstreamGatewayCertificateService(t *testing.T) {
 
 			fakeDownstreamClient := fake.NewClientBuilder().
 				WithScheme(testScheme).
+				WithIndex(&corev1.ConfigMap{}, hostnameClaimAncestorIndex, hostnameClaimAncestorIndexFunc("default")).
 				WithObjects(downstreamObjects...).
 				WithStatusSubresource(&gatewayv1.Gateway{}, &cmv1.Certificate{}).
 				Build()
@@ -866,6 +867,7 @@ func TestCertificateServiceLeavesExactHostnamesOnCertManager(t *testing.T) {
 		}
 	}
 	downstream := fake.NewClientBuilder().WithScheme(testScheme).
+		WithIndex(&corev1.ConfigMap{}, hostnameClaimAncestorIndex, hostnameClaimAncestorIndexFunc("default")).
 		WithStatusSubresource(&gatewayv1.Gateway{}, &cmv1.Certificate{}).
 		WithInterceptorFuncs(interceptor.Funcs{
 			Create: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
@@ -985,7 +987,7 @@ func TestCertificateServiceOneFailingListenerDoesNotDelayOthers(t *testing.T) {
 				return cl.Create(ctx, obj, opts...)
 			},
 		}).Build()
-	downstream := fake.NewClientBuilder().WithScheme(testScheme).WithStatusSubresource(&gatewayv1.Gateway{}).Build()
+	downstream := fake.NewClientBuilder().WithScheme(testScheme).WithIndex(&corev1.ConfigMap{}, hostnameClaimAncestorIndex, hostnameClaimAncestorIndexFunc("default")).WithStatusSubresource(&gatewayv1.Gateway{}).Build()
 	issuedCrt, issuedKey := ca.issue(t, healthy, now.Add(-time.Hour), now.Add(60*24*time.Hour))
 	service := fake.NewClientBuilder().WithScheme(testScheme).Build()
 
@@ -1183,7 +1185,7 @@ func TestCertificateServiceCRDAbsentDoesNotBlockGateway(t *testing.T) {
 	fakeUpstreamClient := fake.NewClientBuilder().WithScheme(withoutCertificates).
 		WithObjects(upstreamGateway, upstreamNamespace, domain, gatewayClass, route).
 		WithStatusSubresource(upstreamGateway, route).Build()
-	fakeDownstreamClient := fake.NewClientBuilder().WithScheme(downstreamScheme).WithStatusSubresource(&gatewayv1.Gateway{}).Build()
+	fakeDownstreamClient := fake.NewClientBuilder().WithScheme(downstreamScheme).WithIndex(&corev1.ConfigMap{}, hostnameClaimAncestorIndex, hostnameClaimAncestorIndexFunc("default")).WithStatusSubresource(&gatewayv1.Gateway{}).Build()
 
 	reconciler := &GatewayReconciler{
 		mgr:                      &fakeMockManager{cl: fakeUpstreamClient},
@@ -1261,7 +1263,7 @@ func TestCertificateServiceRenewalBlockedClearsOnRecovery(t *testing.T) {
 	fakeUpstreamClient := fake.NewClientBuilder().WithScheme(testScheme).
 		WithObjects(upstreamGateway, upstreamNamespace, domain, gatewayClass, cert).
 		WithStatusSubresource(upstreamGateway, cert).Build()
-	fakeDownstreamClient := fake.NewClientBuilder().WithScheme(testScheme).WithObjects(serving).WithStatusSubresource(&gatewayv1.Gateway{}).Build()
+	fakeDownstreamClient := fake.NewClientBuilder().WithScheme(testScheme).WithObjects(serving).WithIndex(&corev1.ConfigMap{}, hostnameClaimAncestorIndex, hostnameClaimAncestorIndexFunc("default")).WithStatusSubresource(&gatewayv1.Gateway{}).Build()
 
 	forbidden := true
 	serviceClient := fake.NewClientBuilder().WithScheme(testScheme).WithObjects(issued).WithInterceptorFuncs(interceptor.Funcs{

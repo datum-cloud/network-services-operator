@@ -224,7 +224,9 @@ func toHostnames(hostnames []string) []gatewayv1.Hostname {
 }
 
 func validateProxy(proxy *networkingv1alpha.HTTPProxy) error {
-	errs := validation.ValidateHTTPProxy(proxy, validation.HTTPProxyValidationOptions{})
+	errs := validation.ValidateHTTPProxy(proxy, validation.HTTPProxyValidationOptions{
+		Hostnames: validation.HostnameOptions{AllowWildcards: true},
+	})
 	if len(errs) == 0 {
 		return nil
 	}

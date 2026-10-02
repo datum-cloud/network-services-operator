@@ -118,13 +118,13 @@ func pendingDomain(name, token string) *networkingv1alpha.Domain {
 	}
 }
 
-func dns01Certificate(gatewayName string, listener gatewayv1.SectionName, delegationReady bool, records ...certificatesv1alpha1.RequiredDNSRecord) *certificatesv1alpha1.TLSCertificate {
+func dns01Certificate(delegationReady bool, records ...certificatesv1alpha1.RequiredDNSRecord) *certificatesv1alpha1.TLSCertificate {
 	status := metav1.ConditionFalse
 	if delegationReady {
 		status = metav1.ConditionTrue
 	}
 	return &certificatesv1alpha1.TLSCertificate{
-		ObjectMeta: metav1.ObjectMeta{Namespace: "test-ns", Name: tlsCertificateName(gatewayName, listener)},
+		ObjectMeta: metav1.ObjectMeta{Namespace: "test-ns", Name: tlsCertificateName("s3", "https-hostname-0")},
 		Status: certificatesv1alpha1.TLSCertificateStatus{
 			Issuance:           certificatesv1alpha1.ChallengeTypeDNS01,
 			DelegationTarget:   "k3f9q2x7.acme-dns.example.net",
@@ -224,11 +224,20 @@ func TestBuildDNSRecordStatuses(t *testing.T) {
 			},
 		},
 		{
+			name:        "an exact hostname never lists a certificate record, since cert-manager issues it",
+			hostnames:   []string{"www.example.com"},
+			objects:     []client.Object{verifiedDomain("example.com"), dns01Certificate(false)},
+			wantRecheck: true,
+			assert: func(t *testing.T, statuses []networkingv1alpha.HostnameStatus) {
+				assert.NotContains(t, recordsByPurpose(statuses, "www.example.com"), networkingv1alpha.HostnameDNSRecordPurposeCertificate)
+			},
+		},
+		{
 			name:      "a wildcard routes when a name beneath it resolves to the canonical hostname",
 			hostnames: []string{"*.s3.example.com"},
 			objects: []client.Object{
 				verifiedDomain("example.com"),
-				dns01Certificate("s3", "https-hostname-0", true),
+				dns01Certificate(true),
 			},
 			dns: fakeDNS{cnames: map[string]string{"datum-routing-probe.s3.example.com.": testCanonicalHostname + "."}},
 			assert: func(t *testing.T, statuses []networkingv1alpha.HostnameStatus) {
@@ -270,7 +279,7 @@ func TestBuildDNSRecordStatuses(t *testing.T) {
 			hostnames: []string{"*.s3.example.com"},
 			objects: []client.Object{
 				verifiedDomain("example.com"),
-				dns01Certificate("s3", "https-hostname-0", false, certificatesv1alpha1.RequiredDNSRecord{
+				dns01Certificate(false, certificatesv1alpha1.RequiredDNSRecord{
 					Name: "_acme-challenge.s3.example.com", Type: "CNAME", Content: "k3f9q2x7.acme-dns.example.net.", Purpose: certificatesv1alpha1.DNSRecordPurposeCertificate,
 				}),
 			},
@@ -287,7 +296,7 @@ func TestBuildDNSRecordStatuses(t *testing.T) {
 			objects: []client.Object{
 				verifiedDomain("example.com"),
 				func() client.Object {
-					c := dns01Certificate("s3", "https-hostname-0", false, certificatesv1alpha1.RequiredDNSRecord{
+					c := dns01Certificate(false, certificatesv1alpha1.RequiredDNSRecord{
 						Name: "_acme-challenge.victim.example.org", Type: "CNAME", Content: "attacker.example.net", Purpose: certificatesv1alpha1.DNSRecordPurposeCertificate,
 					})
 					c.Status.Issuance = certificatesv1alpha1.ChallengeTypeHTTP01

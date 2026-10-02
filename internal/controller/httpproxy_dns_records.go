@@ -165,7 +165,7 @@ func (r *HTTPProxyReconciler) buildDNSRecordStatuses(
 			records = append(records, routing)
 		}
 
-		if listener, ok := httpsListeners[hostname]; ok {
+		if listener, ok := httpsListeners[hostname]; ok && isSingleLabelWildcard(hostname) {
 			records = append(records, r.certificateRecords(ctx, cl, gateway, listener, hostname)...)
 		}
 

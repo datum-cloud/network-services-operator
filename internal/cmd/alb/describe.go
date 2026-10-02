@@ -81,10 +81,14 @@ func runDescribe(cmd *cobra.Command, args []string) error {
 					util.ConditionStatus(hs.Conditions, networkingv1alpha.HostnameConditionDNSRecordProgrammed),
 					util.ConditionStatus(hs.Conditions, networkingv1alpha.HostnameConditionCertificateReady),
 				)
+				if problem := hostnameProblem(hs); problem != "" {
+					_, _ = fmt.Fprintf(out, "    %s\n", problem)
+				}
 				continue
 			}
 			_, _ = fmt.Fprintf(out, "  %s\n", name)
 		}
+		writePendingRecords(out, collectPendingRecords(proxy, hostnames))
 	}
 	if connector := spec.ConnectorName(proxy); connector != "" {
 		_, _ = fmt.Fprintf(out, "Connector:          %s\n", connector)

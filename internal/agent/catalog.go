@@ -324,6 +324,26 @@ var hostnameCatalog = []ReasonInfo{
 		Skill: SkillHostnameNotWorking,
 	},
 	{
+		Reason:        networkingv1alpha.HostnameVerifiedReasonDNSVerificationRequired,
+		ConditionType: networkingv1alpha.HostnameConditionVerified,
+		Actionability: ActionabilityUser,
+		Scope:         ScopeOneHostname,
+		Explanation: "This wildcard hostname needs proof, by a DNS TXT record, that you control the domain " +
+			"beneath it. Proof over HTTP or through a Datum DNS zone does not cover every name a wildcard serves.",
+		Remediation: "Publish the TXT record the status message names, on the Domain it names. " +
+			"Once that Domain is verified by DNS, the wildcard is admitted on its own.",
+		Skill: SkillDomainVerification,
+	},
+	{
+		Reason:        networkingv1alpha.HostnameVerifiedReasonWildcardNotSupported,
+		ConditionType: networkingv1alpha.HostnameConditionVerified,
+		Actionability: ActionabilityUser,
+		Scope:         ScopeOneHostname,
+		Explanation:   "Wildcard hostnames are not available on this platform, so this hostname will not serve.",
+		Remediation:   "Replace the wildcard with the exact hostnames you need.",
+		Skill:         SkillHostnameNotWorking,
+	},
+	{
 		Reason:        networkingv1alpha.CertificatesReadyReasonAllCertificatesReady,
 		ConditionType: networkingv1alpha.HTTPProxyConditionCertificatesReady,
 		Actionability: ActionabilityInformational,

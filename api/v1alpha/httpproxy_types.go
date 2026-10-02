@@ -44,7 +44,12 @@ type HTTPProxySpec struct {
 	// HTTPProxy. In such cases, these will be listed in the `status.hostnames`
 	// field and do not require additional configuration by the user.
 	//
-	// Wildcard hostnames are not supported at this time.
+	// A hostname may start with a single wildcard label, as in
+	// `*.s3.example.com`, where the platform offers wildcards. A wildcard
+	// matches names one or more labels beneath its base, its certificate
+	// covers names exactly one label beneath, and it needs its base or a parent
+	// verified by DNS TXT record. A wildcard reserves every name beneath it for
+	// its project.
 	//
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:validation:MaxItems=16
@@ -631,6 +636,26 @@ const (
 	// HostnameConditionCertificateReady tracks whether a TLS certificate has been
 	// provisioned for this hostname (cert-manager Certificate in the downstream cluster).
 	HostnameConditionCertificateReady = "CertificateReady"
+)
+
+// Reasons for HostnameConditionVerified.
+const (
+	// HostnameVerifiedReasonVerified indicates a verified Domain covers the
+	// hostname.
+	HostnameVerifiedReasonVerified = "Verified"
+
+	// HostnameVerifiedReasonPendingVerification indicates no verified Domain
+	// covers the hostname yet.
+	HostnameVerifiedReasonPendingVerification = "PendingVerification"
+
+	// HostnameVerifiedReasonDNSVerificationRequired indicates a wildcard
+	// hostname whose base, or a parent of it, has not been verified by DNS TXT
+	// record. Other proofs do not cover every name beneath a wildcard.
+	HostnameVerifiedReasonDNSVerificationRequired = "DNSVerificationRequired"
+
+	// HostnameVerifiedReasonWildcardNotSupported indicates a wildcard hostname
+	// on a platform that does not offer wildcards.
+	HostnameVerifiedReasonWildcardNotSupported = "WildcardNotSupported"
 )
 
 // Reasons for HostnameConditionCertificateReady.

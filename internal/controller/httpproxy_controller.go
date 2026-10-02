@@ -260,7 +260,7 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 		}
 	}
 
-	if errs := validation.ValidateHTTPProxy(&httpProxy); len(errs) > 0 {
+	if errs := validation.ValidateHTTPProxy(&httpProxy, validation.HTTPProxyValidationOptions{Hostnames: validation.CustomHostnameOptions(r.Config.Gateway)}); len(errs) > 0 {
 		acceptedCondition.Status = metav1.ConditionFalse
 		acceptedCondition.Reason = networkingv1alpha.HTTPProxyReasonInvalid
 		acceptedCondition.Message = fmt.Sprintf("The HTTPProxy is invalid and cannot be programmed: %s", errs.ToAggregate())
@@ -605,6 +605,7 @@ func (r *HTTPProxyReconciler) reconcileHTTPProxyHostnameStatus(
 	nonAcceptedHostnames := sets.New[string]()
 	inUseHostnames := sets.New[string]()
 	inUseMessages := map[string]string{}
+	unverified := map[string]metav1.Condition{}
 	for _, listener := range gateway.Spec.Listeners {
 		if listener.Hostname == nil {
 			// Should only happen shortly after creation, before the default hostnames
@@ -627,6 +628,7 @@ func (r *HTTPProxyReconciler) reconcileHTTPProxyHostnameStatus(
 				inUseMessages[string(*listener.Hostname)] = listenerAcceptedCondition.Message
 			} else {
 				nonAcceptedHostnames.Insert(string(*listener.Hostname))
+				unverified[string(*listener.Hostname)] = *listenerAcceptedCondition
 			}
 		} else {
 			nonAcceptedHostnames.Insert(string(*listener.Hostname))
@@ -692,8 +694,12 @@ func (r *HTTPProxyReconciler) reconcileHTTPProxyHostnameStatus(
 	dnsStatuses := r.buildDNSStatuses(ctx, cl, gateway, httpProxyCopy.Generation)
 	certificateStatuses := r.buildCertificateStatuses(ctx, cl, clusterName, gateway, httpProxyCopy)
 	dnsRecordStatuses, recheckRouting := r.buildDNSRecordStatuses(ctx, cl, gateway, httpProxyCopy)
+	var verificationStatuses []networkingv1alpha.HostnameStatus
+	if r.Config.Gateway.CertificateService.Enabled {
+		verificationStatuses = buildVerificationStatuses(httpProxyCopy, acceptedHostnames, inUseHostnames, unverified)
+	}
 	previousHostnameStatuses := httpProxyCopy.Status.HostnameStatuses
-	httpProxyCopy.Status.HostnameStatuses = mergeHostnameStatuses(availabilityStatuses, dnsStatuses, certificateStatuses, dnsRecordStatuses)
+	httpProxyCopy.Status.HostnameStatuses = mergeHostnameStatuses(availabilityStatuses, verificationStatuses, dnsStatuses, certificateStatuses, dnsRecordStatuses)
 	preserveHostnameConditionTransitions(httpProxyCopy.Status.HostnameStatuses, previousHostnameStatuses)
 
 	r.setCertificatesReadyCondition(httpProxyCopy, certificateStatuses, gateway)
@@ -1397,6 +1403,44 @@ func buildAvailabilityStatuses(
 		statuses = append(statuses, hs)
 	}
 
+	return statuses
+}
+
+// buildVerificationStatuses reports, per custom hostname, whether its
+// ownership is proven, and if not, the gateway's reason: a wildcard without
+// DNS proof says so rather than reading like any unverified hostname.
+func buildVerificationStatuses(
+	httpProxy *networkingv1alpha.HTTPProxy,
+	accepted sets.Set[gatewayv1.Hostname],
+	inUse sets.Set[string],
+	unverified map[string]metav1.Condition,
+) []networkingv1alpha.HostnameStatus {
+	statuses := make([]networkingv1alpha.HostnameStatus, 0, len(httpProxy.Spec.Hostnames))
+	for _, hostname := range httpProxy.Spec.Hostnames {
+		condition := metav1.Condition{
+			Type:               networkingv1alpha.HostnameConditionVerified,
+			ObservedGeneration: httpProxy.Generation,
+		}
+		listenerCondition, refused := unverified[string(hostname)]
+		switch {
+		case accepted.Has(hostname) || inUse.Has(string(hostname)):
+			condition.Status = metav1.ConditionTrue
+			condition.Reason = networkingv1alpha.HostnameVerifiedReasonVerified
+			condition.Message = "Ownership of this hostname is verified"
+		case refused:
+			condition.Status = metav1.ConditionFalse
+			condition.Reason = listenerCondition.Reason
+			if condition.Reason == networkingv1alpha.UnverifiedHostnamesPresent {
+				condition.Reason = networkingv1alpha.HostnameVerifiedReasonPendingVerification
+			}
+			condition.Message = listenerCondition.Message
+		default:
+			continue
+		}
+		hs := networkingv1alpha.HostnameStatus{Hostname: string(hostname)}
+		apimeta.SetStatusCondition(&hs.Conditions, condition)
+		statuses = append(statuses, hs)
+	}
 	return statuses
 }
 

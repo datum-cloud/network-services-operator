@@ -35,6 +35,7 @@ func SetupGatewayWebhookWithManager(mgr mcmanager.Manager, config config.Network
 		ValidProtocolTypes:         config.Gateway.ValidProtocolTypes,
 		GatewayDNSAddressFunc:      config.Gateway.GatewayDNSAddress,
 		SkipHostnameFQDNValidation: config.Gateway.DisableHostnameVerification,
+		Hostnames:                  validation.CustomHostnameOptions(config.Gateway),
 	}
 
 	return ctrl.NewWebhookManagedBy(mgr.GetLocalManager(), &gatewayv1.Gateway{}).

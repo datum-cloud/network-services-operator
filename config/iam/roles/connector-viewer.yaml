@@ -10,6 +10,7 @@ spec:
   includedPermissions:
     - networking.datumapis.com/connectors.list
     - networking.datumapis.com/connectors.get
+    - networking.datumapis.com/connectors/status.get
     - networking.datumapis.com/connectors.watch
     - networking.datumapis.com/connectoradvertisements.list
     - networking.datumapis.com/connectoradvertisements.get

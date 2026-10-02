@@ -13,6 +13,8 @@ spec:
     - networking.datumapis.com/connectors.create
     - networking.datumapis.com/connectors.update
     - networking.datumapis.com/connectors.patch
+    - networking.datumapis.com/connectors/status.update
+    - networking.datumapis.com/connectors/status.patch
     - networking.datumapis.com/connectors.delete
     - networking.datumapis.com/connectoradvertisements.create
     - networking.datumapis.com/connectoradvertisements.update

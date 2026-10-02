@@ -407,7 +407,8 @@ spec:
                 value: ($downstreamGateway.status.addresses[?contains(value, ':')].value)
 
         # Ensure DNSEndpoint is defined and that targets match the addresses
-        # provisioned to the downstream gateway.
+        # provisioned to the downstream gateway. Apex only: v4./v6. aliases are
+        # owned by Gateway DNS as CNAMEs (see #315), not ExternalDNS A/AAAA.
         - assert:
             # timeout: 5s
             cluster: nso-infra
@@ -424,14 +425,6 @@ spec:
                     recordType: A
                     recordTTL: 300
                   - dnsName: ($primaryHostname)
-                    targets: ($downstreamGatewayV6Addresses)
-                    recordType: AAAA
-                    recordTTL: 300
-                  - dnsName: ($v4IPFamilyHostname)
-                    targets: ($downstreamGatewayV4Addresses)
-                    recordType: A
-                    recordTTL: 300
-                  - dnsName: ($v6IPFamilyHostname)
                     targets: ($downstreamGatewayV6Addresses)
                     recordType: AAAA
                     recordTTL: 300

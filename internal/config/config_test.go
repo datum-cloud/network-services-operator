@@ -1,6 +1,8 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -231,6 +233,11 @@ func TestGatewayConfig_ValidateCertificateService(t *testing.T) {
 			},
 			wantSub: "certificateService.enabled requires hostname verification",
 		},
+		{
+			name:    "a trusted roots file without chain verification is rejected",
+			gateway: GatewayConfig{CertificateService: CertificateServiceConfig{Enabled: true, SecretNamespace: "certificates-system", TrustedRootsFile: "/roots.pem"}},
+			wantSub: "certificateService.trustedRootsFile requires certificateService.verifyChain",
+		},
 	}
 
 	for _, tt := range tests {
@@ -261,5 +268,28 @@ func TestSetObjectDefaults_CertificateService(t *testing.T) {
 	}
 	if got, want := cfg.Gateway.CertificateService.SecretNamespace, "certificates-system"; got != want {
 		t.Errorf("certificateService.secretNamespace = %q, want %q", got, want)
+	}
+	if cfg.Gateway.CertificateService.VerifyChain {
+		t.Error("certificateService.verifyChain should default to false")
+	}
+}
+
+func TestCertificateServiceConfig_TrustedRoots(t *testing.T) {
+	off := CertificateServiceConfig{TrustedRootsFile: "/does/not/exist"}
+	if pool, err := off.TrustedRoots(); pool != nil || err != nil {
+		t.Fatalf("verification off should load nothing, got %v, %v", pool, err)
+	}
+
+	system := CertificateServiceConfig{VerifyChain: true}
+	if pool, err := system.TrustedRoots(); pool != nil || err != nil {
+		t.Fatalf("no roots file means the system roots, got %v, %v", pool, err)
+	}
+
+	empty := filepath.Join(t.TempDir(), "empty.pem")
+	if err := os.WriteFile(empty, []byte("not a certificate"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (&CertificateServiceConfig{VerifyChain: true, TrustedRootsFile: empty}).TrustedRoots(); err == nil {
+		t.Fatal("a roots file with no certificates should be refused")
 	}
 }

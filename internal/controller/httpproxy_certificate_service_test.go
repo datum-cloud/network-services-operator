@@ -35,20 +35,23 @@ func TestBuildCertificateStatusesCertificateService(t *testing.T) {
 	require.NoError(t, networkingv1alpha.AddToScheme(testScheme))
 	require.NoError(t, certificatesv1alpha1.AddToScheme(testScheme))
 
+	const wildcard = "*.shop.example.com"
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "test-ns", UID: types.UID("ns-uid")}}
 	downstreamNamespaceName := "ns-" + string(ns.UID)
 
-	gateway := &gatewayv1.Gateway{
-		ObjectMeta: metav1.ObjectMeta{Name: "my-proxy", Namespace: ns.Name},
-		Spec: gatewayv1.GatewaySpec{Listeners: []gatewayv1.Listener{{
-			Name:     "https-hostname-0",
-			Protocol: gatewayv1.HTTPSProtocolType,
-			Hostname: ptr.To(gatewayv1.Hostname("app.example.com")),
-		}}},
+	newGatewayFor := func(hostname string) *gatewayv1.Gateway {
+		return &gatewayv1.Gateway{
+			ObjectMeta: metav1.ObjectMeta{Name: "my-proxy", Namespace: ns.Name},
+			Spec: gatewayv1.GatewaySpec{Listeners: []gatewayv1.Listener{{
+				Name:     "https-hostname-0",
+				Protocol: gatewayv1.HTTPSProtocolType,
+				Hostname: ptr.To(gatewayv1.Hostname(hostname)),
+			}}},
+		}
 	}
 	httpProxy := &networkingv1alpha.HTTPProxy{
 		ObjectMeta: metav1.ObjectMeta{Name: "my-proxy", Namespace: ns.Name, Generation: 3},
-		Spec:       networkingv1alpha.HTTPProxySpec{Hostnames: []gatewayv1.Hostname{"app.example.com"}},
+		Spec:       networkingv1alpha.HTTPProxySpec{Hostnames: []gatewayv1.Hostname{wildcard, "app.example.com"}},
 	}
 	certName := tlsCertificateName("my-proxy", "https-hostname-0")
 
@@ -66,7 +69,7 @@ func TestBuildCertificateStatusesCertificateService(t *testing.T) {
 		return cert
 	}
 
-	crt, key := generateTLSKeyPair(t, "app.example.com", time.Now().Add(-time.Hour), time.Now().Add(30*24*time.Hour))
+	crt, key := generateTLSKeyPair(t, wildcard, time.Now().Add(-time.Hour), time.Now().Add(30*24*time.Hour))
 	servingSecret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Namespace: downstreamNamespaceName, Name: listenerCertificateSecretName("my-proxy", "https-hostname-0")},
 		Type:       corev1.SecretTypeTLS,
@@ -75,6 +78,7 @@ func TestBuildCertificateStatusesCertificateService(t *testing.T) {
 
 	tests := []struct {
 		name               string
+		hostname           string
 		upstream           []client.Object
 		mutate             func(*certificatesv1alpha1.TLSCertificate)
 		listenerConditions []metav1.Condition
@@ -120,11 +124,11 @@ func TestBuildCertificateStatusesCertificateService(t *testing.T) {
 				metav1.Condition{Type: certificatesv1alpha1.ConditionIssuing, Status: metav1.ConditionTrue, Reason: "OrderInFlight"},
 			), nil}[:1],
 			mutate: func(c *certificatesv1alpha1.TLSCertificate) {
-				c.Status.RequiredDNSRecords = []certificatesv1alpha1.RequiredDNSRecord{{Name: "_acme-challenge.app.example.com", Type: "CNAME", Content: "abc.acme-dns.example.net", Purpose: certificatesv1alpha1.DNSRecordPurposeCertificate}}
+				c.Status.RequiredDNSRecords = []certificatesv1alpha1.RequiredDNSRecord{{Name: "_acme-challenge.shop.example.com", Type: "CNAME", Content: "abc.acme-dns.example.net", Purpose: certificatesv1alpha1.DNSRecordPurposeCertificate}}
 			},
 			wantStatus:  metav1.ConditionFalse,
 			wantReason:  networkingv1alpha.CertificateReadyReasonChallengeInProgress,
-			wantMessage: certificateProvisioningMessage + ". Publish these DNS records to continue: _acme-challenge.app.example.com CNAME abc.acme-dns.example.net",
+			wantMessage: certificateProvisioningMessage + ". Publish these DNS records to continue: _acme-challenge.shop.example.com CNAME abc.acme-dns.example.net",
 		},
 		{
 			name:        "not Ready yet but a serving downstream Secret keeps the hostname ready",
@@ -149,22 +153,22 @@ func TestBuildCertificateStatusesCertificateService(t *testing.T) {
 			upstream:   []client.Object{tlsCert(metav1.Condition{Type: certificatesv1alpha1.ConditionReady, Status: metav1.ConditionTrue})},
 			downstream: []client.Object{servingSecret},
 			listenerConditions: []metav1.Condition{{
-				Type: listenerConditionCertificateRenewalBlocked, Status: metav1.ConditionTrue, Reason: listenerReasonRenewalFailing, Message: "We couldn't request a TLS certificate for app.example.com just now",
+				Type: listenerConditionCertificateRenewalBlocked, Status: metav1.ConditionTrue, Reason: listenerReasonRenewalFailing, Message: "We couldn't request a TLS certificate for *.shop.example.com just now",
 			}},
 			wantStatus:  metav1.ConditionTrue,
 			wantReason:  networkingv1alpha.CertificateReadyReasonRenewalFailing,
-			wantMessage: "Certificate is ready but cannot be renewed: We couldn't request a TLS certificate for app.example.com just now",
+			wantMessage: "Certificate is ready but cannot be renewed: We couldn't request a TLS certificate for *.shop.example.com just now",
 		},
 		{
 			name:     "Ready but the issued Secret could not be taken and nothing serves is a provisioning failure",
 			upstream: []client.Object{tlsCert(metav1.Condition{Type: certificatesv1alpha1.ConditionReady, Status: metav1.ConditionTrue})},
 			listenerConditions: []metav1.Condition{{
-				Type: listenerConditionCertificateIssuanceBlocked, Status: metav1.ConditionTrue, Reason: listenerReasonIssuanceFailing, Message: "We couldn't request a TLS certificate for app.example.com just now",
+				Type: listenerConditionCertificateIssuanceBlocked, Status: metav1.ConditionTrue, Reason: listenerReasonIssuanceFailing, Message: "We couldn't request a TLS certificate for *.shop.example.com just now",
 			}},
 			downstream:  nil,
 			wantStatus:  metav1.ConditionFalse,
 			wantReason:  networkingv1alpha.CertificateReadyReasonProvisioningFailed,
-			wantMessage: "We couldn't request a TLS certificate for app.example.com just now",
+			wantMessage: "We couldn't request a TLS certificate for *.shop.example.com just now",
 		},
 		{
 			name:        "Ready but not yet mirrored is pending, not issued",
@@ -174,10 +178,21 @@ func TestBuildCertificateStatusesCertificateService(t *testing.T) {
 			wantMessage: "The certificate has been issued and is being applied to this hostname",
 		},
 		{
-			name:       "no TLSCertificate yet but a ready legacy Certificate answers",
+			name:       "an exact hostname is answered by its cert-manager Certificate, never a TLSCertificate",
+			hostname:   "app.example.com",
+			upstream:   []client.Object{tlsCert(metav1.Condition{Type: certificatesv1alpha1.ConditionAccepted, Status: metav1.ConditionFalse, Reason: "DeniedDomain"})},
 			downstream: []client.Object{legacyReady()},
 			wantStatus: metav1.ConditionTrue,
 			wantReason: networkingv1alpha.CertificateReadyReasonCertificateIssued,
+		},
+		{
+			name: "no TLSCertificate because the request was refused is a provisioning failure",
+			listenerConditions: []metav1.Condition{{
+				Type: listenerConditionCertificateIssuanceBlocked, Status: metav1.ConditionTrue, Reason: listenerReasonIssuanceFailing, Message: "A TLS certificate cannot be issued for *.shop.example.com: names under datum.net are denied",
+			}},
+			wantStatus:  metav1.ConditionFalse,
+			wantReason:  networkingv1alpha.CertificateReadyReasonProvisioningFailed,
+			wantMessage: "A TLS certificate cannot be issued for *.shop.example.com: names under datum.net are denied",
 		},
 		{
 			name:        "nothing requested yet is Pending",
@@ -205,13 +220,17 @@ func TestBuildCertificateStatusesCertificateService(t *testing.T) {
 				DownstreamCluster: &clusterWithClient{c: downstreamClient, scheme: testScheme},
 			}
 
-			gw := gateway.DeepCopy()
+			hostname := tt.hostname
+			if hostname == "" {
+				hostname = wildcard
+			}
+			gw := newGatewayFor(hostname)
 			if tt.listenerConditions != nil {
 				gw.Status.Listeners = []gatewayv1.ListenerStatus{{Name: "https-hostname-0", Conditions: tt.listenerConditions}}
 			}
 			got := r.buildCertificateStatuses(context.Background(), upstreamClient, "local", gw, httpProxy)
 			require.Len(t, got, 1)
-			assert.Equal(t, "app.example.com", got[0].Hostname)
+			assert.Equal(t, hostname, got[0].Hostname)
 			cond := apimeta.FindStatusCondition(got[0].Conditions, networkingv1alpha.HostnameConditionCertificateReady)
 			require.NotNil(t, cond)
 			assert.Equal(t, tt.wantStatus, cond.Status)

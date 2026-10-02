@@ -4,6 +4,7 @@ package managercmd
 
 import (
 	"context"
+	"crypto/x509"
 	"errors"
 	"flag"
 	"fmt"
@@ -391,6 +392,11 @@ func NewCommand(build BuildInfo) *cobra.Command {
 				setupLog.Error(err, "unable to build certificate service client")
 				os.Exit(1)
 			}
+			certificateServiceRoots, err := serverConfig.Gateway.CertificateService.TrustedRoots()
+			if err != nil {
+				setupLog.Error(err, "unable to load certificate service trusted roots")
+				os.Exit(1)
+			}
 
 			registeredControllers, err := setupControllers(mgr, serverConfig, controllerDeps{
 				downstreamCluster:        downstreamCluster,
@@ -398,6 +404,7 @@ func NewCommand(build BuildInfo) *cobra.Command {
 				irohDownstream:           irohDownstream,
 				ipamClients:              ipamClients,
 				certificateServiceReader: certificateServiceReader,
+				certificateServiceRoots:  certificateServiceRoots,
 			})
 			if err != nil {
 				setupLog.Error(err, "unable to set up controllers")
@@ -575,6 +582,7 @@ type controllerDeps struct {
 	irohDownstream           cluster.Cluster
 	ipamClients              controller.IPAMClientFactory
 	certificateServiceReader client.Reader
+	certificateServiceRoots  *x509.CertPool
 }
 
 // newCertificateServiceReader returns an uncached client for the cluster the
@@ -708,6 +716,7 @@ func controllerRegistrations(
 				Config:                   serverConfig,
 				DownstreamCluster:        deps.downstreamCluster,
 				CertificateServiceReader: deps.certificateServiceReader,
+				CertificateServiceRoots:  deps.certificateServiceRoots,
 			}).SetupWithManager(mgr)
 		}},
 		{"gatewayclass", true, func() error {

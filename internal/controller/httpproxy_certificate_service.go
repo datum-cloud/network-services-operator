@@ -26,10 +26,9 @@ import (
 
 const certificateProvisioningMessage = "We're provisioning and applying a certificate to this hostname - it may take a few minutes"
 
-// tlsCertificateReadyCondition derives a hostname's CertificateReady condition
-// from its TLSCertificate in the project control plane. A listener still served
-// by a cert-manager Certificate that is not yet due for renewal has no
-// TLSCertificate, so that Certificate answers for it until the switch.
+// tlsCertificateReadyCondition derives a wildcard hostname's CertificateReady
+// condition from its TLSCertificate in the project control plane, the Secret
+// serving it, and what the gateway reports about its listener.
 func (r *HTTPProxyReconciler) tlsCertificateReadyCondition(
 	ctx context.Context,
 	upstreamClient client.Client,
@@ -37,7 +36,6 @@ func (r *HTTPProxyReconciler) tlsCertificateReadyCondition(
 	downstreamNamespace string,
 	upstreamNamespace string,
 	certName string,
-	legacyName string,
 	secretName string,
 	hostname string,
 	listenerConditions []metav1.Condition,
@@ -48,76 +46,62 @@ func (r *HTTPProxyReconciler) tlsCertificateReadyCondition(
 		ObservedGeneration: generation,
 	}
 
+	blocked := apimeta.FindStatusCondition(listenerConditions, listenerConditionCertificateRenewalBlocked)
+	if blocked != nil && blocked.Status != metav1.ConditionTrue {
+		blocked = nil
+	}
+	if blocked == nil {
+		if issuance := apimeta.FindStatusCondition(listenerConditions, listenerConditionCertificateIssuanceBlocked); issuance != nil && issuance.Status == metav1.ConditionTrue {
+			blocked = issuance
+		}
+	}
+
 	var cert certificatesv1alpha1.TLSCertificate
 	err := upstreamClient.Get(ctx, client.ObjectKey{Namespace: upstreamNamespace, Name: certName}, &cert)
 	switch {
-	case err == nil:
-		condition.Status, condition.Reason, condition.Message = tlsCertificateReadyState(&cert)
-		serving := servingSecretHealth(ctx, downstreamClient, downstreamNamespace, secretName, hostname, time.Now())
-		blocked := apimeta.FindStatusCondition(listenerConditions, listenerConditionCertificateRenewalBlocked)
-		if blocked != nil && blocked.Status != metav1.ConditionTrue {
-			blocked = nil
-		}
-		if blocked == nil {
-			if issuance := apimeta.FindStatusCondition(listenerConditions, listenerConditionCertificateIssuanceBlocked); issuance != nil && issuance.Status == metav1.ConditionTrue {
-				blocked = issuance
-			}
-		}
-
-		switch {
-		case serving.healthy && (condition.Status != metav1.ConditionTrue || blocked != nil):
-			condition.Status = metav1.ConditionTrue
-			condition.Reason = networkingv1alpha.CertificateReadyReasonCertificateIssued
-			condition.Message = "Certificate is ready; a renewal is in progress"
-			if blocked != nil {
-				condition.Reason = networkingv1alpha.CertificateReadyReasonRenewalFailing
-				condition.Message = "Certificate is ready but cannot be renewed: " + blocked.Message
-			} else if accepted := apimeta.FindStatusCondition(cert.Status.Conditions, certificatesv1alpha1.ConditionAccepted); accepted != nil && accepted.Status == metav1.ConditionFalse {
-				condition.Reason = networkingv1alpha.CertificateReadyReasonRenewalFailing
-				condition.Message = "Certificate is ready but cannot be renewed"
-				if accepted.Message != "" {
-					condition.Message += ": " + accepted.Message
-				}
-			}
-		case !serving.healthy && blocked != nil:
-			condition.Status = metav1.ConditionFalse
+	case apierrors.IsNotFound(err):
+		condition.Status = metav1.ConditionFalse
+		condition.Reason = networkingv1alpha.CertificateReadyReasonPending
+		condition.Message = certificateProvisioningMessage
+		if blocked != nil {
 			condition.Reason = networkingv1alpha.CertificateReadyReasonProvisioningFailed
 			condition.Message = blocked.Message
-		case !serving.healthy && condition.Status == metav1.ConditionTrue:
-			condition.Status = metav1.ConditionFalse
-			condition.Reason = networkingv1alpha.CertificateReadyReasonPending
-			condition.Message = "The certificate has been issued and is being applied to this hostname"
 		}
 		return condition
-	case !apierrors.IsNotFound(err):
+	case err != nil:
 		condition.Status = metav1.ConditionUnknown
 		condition.Reason = networkingv1alpha.CertificateReadyReasonPending
 		condition.Message = fmt.Sprintf("Failed to get certificate: %v", err)
 		return condition
 	}
 
-	legacy := newUnstructuredForGVK(certificateGVK)
-	if err := downstreamClient.Get(ctx, client.ObjectKey{Namespace: downstreamNamespace, Name: legacyName}, legacy); err == nil {
-		ready, readyErr := isCertificateReady(legacy)
-		switch {
-		case readyErr != nil:
-			condition.Status = metav1.ConditionUnknown
-			condition.Reason = networkingv1alpha.CertificateReadyReasonPending
-			condition.Message = fmt.Sprintf("Failed to check certificate status: %v", readyErr)
-		case ready:
-			condition.Status = metav1.ConditionTrue
-			condition.Reason = networkingv1alpha.CertificateReadyReasonCertificateIssued
-			condition.Message = "Certificate is ready"
-		default:
-			condition.Status = metav1.ConditionFalse
-			condition.Reason, condition.Message = getCertificateReadyConditionReason(legacy)
-		}
-		return condition
-	}
+	condition.Status, condition.Reason, condition.Message = tlsCertificateReadyState(&cert)
+	serving, _ := servingSecretHealth(ctx, downstreamClient, downstreamNamespace, secretName, hostname, time.Now())
 
-	condition.Status = metav1.ConditionFalse
-	condition.Reason = networkingv1alpha.CertificateReadyReasonPending
-	condition.Message = certificateProvisioningMessage
+	switch {
+	case serving.healthy && (condition.Status != metav1.ConditionTrue || blocked != nil):
+		condition.Status = metav1.ConditionTrue
+		condition.Reason = networkingv1alpha.CertificateReadyReasonCertificateIssued
+		condition.Message = "Certificate is ready; a renewal is in progress"
+		if blocked != nil {
+			condition.Reason = networkingv1alpha.CertificateReadyReasonRenewalFailing
+			condition.Message = "Certificate is ready but cannot be renewed: " + blocked.Message
+		} else if accepted := apimeta.FindStatusCondition(cert.Status.Conditions, certificatesv1alpha1.ConditionAccepted); accepted != nil && accepted.Status == metav1.ConditionFalse {
+			condition.Reason = networkingv1alpha.CertificateReadyReasonRenewalFailing
+			condition.Message = "Certificate is ready but cannot be renewed"
+			if accepted.Message != "" {
+				condition.Message += ": " + accepted.Message
+			}
+		}
+	case !serving.healthy && blocked != nil:
+		condition.Status = metav1.ConditionFalse
+		condition.Reason = networkingv1alpha.CertificateReadyReasonProvisioningFailed
+		condition.Message = blocked.Message
+	case !serving.healthy && condition.Status == metav1.ConditionTrue:
+		condition.Status = metav1.ConditionFalse
+		condition.Reason = networkingv1alpha.CertificateReadyReasonPending
+		condition.Message = "The certificate has been issued and is being applied to this hostname"
+	}
 	return condition
 }
 

@@ -1516,8 +1516,8 @@ func (r *HTTPProxyReconciler) buildCertificateStatuses(
 
 		certName := resourcename.GetValidDNS1123Name(fmt.Sprintf("%s-%s", gateway.Name, l.Name))
 
-		if r.Config.Gateway.CertificateService.Enabled {
-			apimeta.SetStatusCondition(&hs.Conditions, r.tlsCertificateReadyCondition(ctx, upstreamClient, downstreamClient, downstreamNamespaceName, gateway.Namespace, tlsCertificateName(gateway.Name, l.Name), certName, listenerCertificateSecretName(gateway.Name, l.Name), hostname, listenerStatusConditions(gateway, l.Name), httpProxy.Generation))
+		if r.Config.Gateway.CertificateService.Enabled && isSingleLabelWildcard(hostname) {
+			apimeta.SetStatusCondition(&hs.Conditions, r.tlsCertificateReadyCondition(ctx, upstreamClient, downstreamClient, downstreamNamespaceName, gateway.Namespace, tlsCertificateName(gateway.Name, l.Name), listenerCertificateSecretName(gateway.Name, l.Name), hostname, listenerStatusConditions(gateway, l.Name), httpProxy.Generation))
 			statuses = append(statuses, hs)
 			continue
 		}

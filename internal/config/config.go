@@ -3,6 +3,7 @@ package config
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"os"
@@ -906,12 +907,11 @@ type GatewayConfig struct {
 	// Challenge, solver resources).
 	CertificateReissuance CertificateReissuanceConfig `json:"certificateReissuance,omitempty"`
 
-	// CertificateService hands per-hostname certificate issuance to the Milo
-	// certificate service. When enabled, the gateway controller requests a
-	// TLSCertificate in the project control plane for each custom hostname,
-	// serves its HTTP-01 challenges on the downstream gateway, and mirrors the
-	// issued Secret downstream, instead of creating a cert-manager Certificate
-	// on the downstream cluster.
+	// CertificateService hands certificate issuance for wildcard hostnames to
+	// the Milo certificate service. When enabled, the gateway controller
+	// requests a DNS-01 TLSCertificate in the project control plane for each
+	// single-label wildcard listener and mirrors the issued Secret downstream.
+	// Exact hostnames stay on cert-manager either way.
 	CertificateService CertificateServiceConfig `json:"certificateService,omitempty"`
 }
 
@@ -920,8 +920,8 @@ type GatewayConfig struct {
 // CertificateServiceConfig controls consumption of the Milo certificate
 // service (certificates.miloapis.com).
 type CertificateServiceConfig struct {
-	// Enabled switches custom hostname certificate issuance from downstream
-	// cert-manager Certificates to upstream TLSCertificates.
+	// Enabled issues certificates for wildcard hostnames through upstream
+	// TLSCertificates.
 	//
 	// Defaults to false.
 	Enabled bool `json:"enabled,omitempty"`
@@ -936,6 +936,33 @@ type CertificateServiceConfig struct {
 	//
 	// +default="certificates-system"
 	SecretNamespace string `json:"secretNamespace,omitempty"`
+
+	// VerifyChain refuses issued material whose chain does not build to
+	// TrustedRootsFile, or to the system roots when that is empty.
+	//
+	// Defaults to false.
+	VerifyChain bool `json:"verifyChain,omitempty"`
+
+	// TrustedRootsFile is a PEM bundle of the roots an issued chain must
+	// build to when VerifyChain is set.
+	TrustedRootsFile string `json:"trustedRootsFile,omitempty"`
+}
+
+// TrustedRoots returns the roots an issued chain must build to, or nil when
+// chain verification is off or uses the system roots.
+func (c *CertificateServiceConfig) TrustedRoots() (*x509.CertPool, error) {
+	if !c.VerifyChain || c.TrustedRootsFile == "" {
+		return nil, nil
+	}
+	data, err := os.ReadFile(c.TrustedRootsFile)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read trusted roots: %w", err)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(data) {
+		return nil, fmt.Errorf("trusted roots file %s holds no certificates", c.TrustedRootsFile)
+	}
+	return pool, nil
 }
 
 func SetDefaults_CertificateServiceConfig(obj *CertificateServiceConfig) {
@@ -1556,6 +1583,9 @@ func (c *GatewayConfig) validate() error {
 	}
 	if c.CertificateService.Enabled && strings.TrimSpace(c.CertificateService.SecretNamespace) == "" {
 		errs = append(errs, errors.New("certificateService.secretNamespace is required when certificateService.enabled"))
+	}
+	if c.CertificateService.TrustedRootsFile != "" && !c.CertificateService.VerifyChain {
+		errs = append(errs, errors.New("certificateService.trustedRootsFile requires certificateService.verifyChain"))
 	}
 	return errors.Join(errs...)
 }

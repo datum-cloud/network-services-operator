@@ -5,6 +5,7 @@ package controller
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"slices"
@@ -16,7 +17,6 @@ import (
 	cmv1 "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
 	cmmeta "github.com/cert-manager/cert-manager/pkg/apis/meta/v1"
 	envoygatewayv1alpha1 "github.com/envoyproxy/gateway/api/v1alpha1"
-	"github.com/go-logr/logr"
 	"github.com/prometheus/client_golang/prometheus"
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
@@ -101,9 +101,14 @@ type GatewayReconciler struct {
 	// Config.Gateway.CertificateService.Enabled.
 	CertificateServiceReader client.Reader
 
-	certificateServiceFailures   sync.Map
-	certificateServiceRejections sync.Map
-	certificateServiceListeners  sync.Map
+	// CertificateServiceRoots are the roots an issued chain must verify
+	// against when Config.Gateway.CertificateService.VerifyChain is set. Nil
+	// means the system roots.
+	CertificateServiceRoots *x509.CertPool
+
+	certificateServiceFailures  sync.Map
+	certificateServiceStates    sync.Map
+	certificateServiceListeners sync.Map
 }
 
 // +kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;update;patch;delete
@@ -316,25 +321,14 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 	// reissueFailedCertificate): this path is read-only and gates on any
 	// unusable cert, re-issuance mutates and fires only on cert-manager
 	// hard-fail (LastFailureTime). See #260.
-	var listenerCertHealth map[gatewayv1.SectionName]listenerCertStatus
-	if r.Config.Gateway.CertificateService.Enabled {
-		listenerCertHealth = r.evaluateListenerTLSCertificateHealth(
-			ctx,
-			upstreamClient,
-			downstreamClient,
-			downstreamGateway.Namespace,
-			upstreamGateway,
-			claimedHostnames,
-		)
-	} else {
-		listenerCertHealth = r.evaluateListenerCertHealth(
-			ctx,
-			downstreamClient,
-			downstreamGateway.Namespace,
-			upstreamGateway,
-			claimedHostnames,
-		)
-	}
+	listenerCertHealth := r.evaluateListenerCertHealth(
+		ctx,
+		upstreamClient,
+		downstreamClient,
+		downstreamGateway.Namespace,
+		upstreamGateway,
+		claimedHostnames,
+	)
 
 	desiredDownstreamGateway := r.getDesiredDownstreamGateway(
 		ctx,
@@ -390,12 +384,11 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 		// The service is a dependency of issuance, not of routing: whatever it
 		// does, DNS, status and routes below still reconcile, and a listener
 		// that could not be served tells the customer why.
-		certResult, issues := r.ensureListenerTLSCertificates(
+		serviceResult, issues := r.ensureListenerTLSCertificates(
 			ctx,
 			upstreamClient,
 			upstreamGateway,
 			downstreamGateway,
-			downstreamClient,
 			downstreamStrategy,
 			claimedHostnames,
 		)
@@ -412,20 +405,21 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 			}
 			listenerCertHealth[name] = status
 		}
-		certificateServiceRequeue = certResult.RequeueAfter
+		certificateServiceRequeue = serviceResult.RequeueAfter
 	} else {
-		certResult := r.ensureListenerCertificates(
-			ctx,
-			upstreamGateway,
-			downstreamGateway,
-			downstreamClient,
-			downstreamStrategy,
-			claimedHostnames,
-		)
-		if certResult.ShouldReturn() {
-			return certResult.Merge(result), nil
-		}
-		r.cleanupCertificateServiceLeftovers(ctx, upstreamClient, upstreamGateway, downstreamGateway, downstreamClient)
+		clearCertificateServiceFailing(upstreamGateway)
+	}
+
+	certResult := r.ensureListenerCertificates(
+		ctx,
+		upstreamGateway,
+		downstreamGateway,
+		downstreamClient,
+		downstreamStrategy,
+		claimedHostnames,
+	)
+	if certResult.ShouldReturn() {
+		return certResult.Merge(result), nil
 	}
 
 	dnsResult := r.ensureDownstreamGatewayDNSEndpoints(
@@ -569,6 +563,7 @@ func clearListenerCertMetrics(namespace, name string) {
 // is left out so it is never gated.
 func (r *GatewayReconciler) evaluateListenerCertHealth(
 	ctx context.Context,
+	upstreamClient client.Client,
 	downstreamClient client.Client,
 	downstreamNamespace string,
 	upstreamGateway *gatewayv1.Gateway,
@@ -601,56 +596,51 @@ func (r *GatewayReconciler) evaluateListenerCertHealth(
 			continue
 		}
 
-		status := r.listenerCertHealth(ctx, downstreamClient, downstreamNamespace, upstreamGateway.Name, l.Name, hostname, now)
+		var status listenerCertStatus
+		if _, service := r.listenerUsesCertificateService(l, claimedHostnames); service {
+			status = r.listenerTLSCertificateHealth(ctx, upstreamClient, downstreamClient, downstreamNamespace, upstreamGateway, l.Name, hostname, now)
+		} else {
+			status = r.listenerCertHealth(ctx, downstreamClient, downstreamNamespace, upstreamGateway.Name, l.Name, hostname, now)
+		}
 		health[l.Name] = status
 
-		recordListenerCertHealth(logger, upstreamGateway, l.Name, hostname, status)
+		// Mark this listener as managed regardless of its health, so the
+		// SLI ratio (withheld / managed) can be computed fleet-wide.
+		gatewayListenerCertManaged.WithLabelValues(
+			upstreamGateway.Namespace, upstreamGateway.Name, string(l.Name), hostname,
+		).Set(1)
+
+		if !status.healthy {
+			logArgs := []any{
+				"listener", l.Name, "hostname", hostname,
+				"reason", status.reason, "message", status.message,
+			}
+			// Include the expiry timestamp when available so log queries can
+			// identify exactly when the cert stopped being valid.
+			if status.notAfter != nil {
+				logArgs = append(logArgs, "cert_not_after", status.notAfter.UTC().Format(time.RFC3339))
+			}
+			logger.Info("listener certificate unhealthy", logArgs...)
+
+			gatewayListenerCertWithheld.WithLabelValues(
+				upstreamGateway.Namespace, upstreamGateway.Name,
+				string(l.Name), hostname, string(status.reason),
+			).Set(1)
+			gatewayListenerCertGatingTotal.WithLabelValues(
+				upstreamGateway.Namespace, upstreamGateway.Name,
+				string(l.Name), hostname, string(status.reason),
+			).Inc()
+		} else if status.notAfter != nil {
+			// Record the expiry timestamp for healthy certs so operators can
+			// alert before the next expiry rather than after.
+			gatewayListenerCertExpiryTime.WithLabelValues(
+				upstreamGateway.Namespace, upstreamGateway.Name,
+				string(l.Name), hostname, status.secretName,
+			).Set(float64(status.notAfter.Unix()))
+		}
 	}
 
 	return health
-}
-
-// recordListenerCertHealth publishes one listener's certificate health as
-// metrics and logs, the same way for every issuance path.
-func recordListenerCertHealth(
-	logger logr.Logger,
-	upstreamGateway *gatewayv1.Gateway,
-	listenerName gatewayv1.SectionName,
-	hostname string,
-	status listenerCertStatus,
-) {
-	gatewayListenerCertManaged.WithLabelValues(
-		upstreamGateway.Namespace, upstreamGateway.Name, string(listenerName), hostname,
-	).Set(1)
-
-	if !status.healthy {
-		logArgs := []any{
-			"listener", listenerName, "hostname", hostname,
-			"reason", status.reason, "message", status.message,
-		}
-		// Include the expiry timestamp when available so log queries can
-		// identify exactly when the cert stopped being valid.
-		if status.notAfter != nil {
-			logArgs = append(logArgs, "cert_not_after", status.notAfter.UTC().Format(time.RFC3339))
-		}
-		logger.Info("listener certificate unhealthy", logArgs...)
-
-		gatewayListenerCertWithheld.WithLabelValues(
-			upstreamGateway.Namespace, upstreamGateway.Name,
-			string(listenerName), hostname, string(status.reason),
-		).Set(1)
-		gatewayListenerCertGatingTotal.WithLabelValues(
-			upstreamGateway.Namespace, upstreamGateway.Name,
-			string(listenerName), hostname, string(status.reason),
-		).Inc()
-	} else if status.notAfter != nil {
-		// Record the expiry timestamp for healthy certs so operators can
-		// alert before the next expiry rather than after.
-		gatewayListenerCertExpiryTime.WithLabelValues(
-			upstreamGateway.Namespace, upstreamGateway.Name,
-			string(listenerName), hostname, status.secretName,
-		).Set(float64(status.notAfter.Unix()))
-	}
 }
 
 // listenerCertHealth reports whether a single listener's certificate can be
@@ -674,9 +664,6 @@ func (r *GatewayReconciler) listenerCertHealth(
 	var cert cmv1.Certificate
 	if err := downstreamClient.Get(ctx, client.ObjectKey{Namespace: downstreamNamespace, Name: certName}, &cert); err != nil {
 		if apierrors.IsNotFound(err) {
-			if status, handedOver, _ := handedOverSecretHealth(ctx, downstreamClient, downstreamNamespace, secretName, hostname, now); handedOver && status.healthy {
-				return status
-			}
 			return listenerCertStatus{
 				reason:     gatewayv1.ListenerReasonInvalidCertificateRef,
 				message:    certIssuanceFailingMessage(hostname),
@@ -1047,6 +1034,9 @@ func (r *GatewayReconciler) ensureListenerCertificates(
 		if hasSharedSecret && (strings.HasSuffix(hostname, wildcardSuffix) || hostname == r.Config.Gateway.TargetDomain) {
 			continue
 		}
+		if _, service := r.listenerUsesCertificateService(l, claimedHostnames); service {
+			continue
+		}
 
 		// Apply ClusterIssuerMap translation first — this is the admin-level
 		// override (e.g. mapping the `auto` sentinel to a real ClusterIssuer
@@ -1086,10 +1076,6 @@ func (r *GatewayReconciler) ensureListenerCertificates(
 
 		isNew := cert.CreationTimestamp.IsZero()
 		if isNew {
-			if status, handedOver, renewalDue := handedOverSecretHealth(ctx, downstreamClient, downstreamGateway.Namespace, secretName, hostname, time.Now()); handedOver && status.healthy && !renewalDue {
-				logger.Info("keeping certificate-service issued Secret until it is due for renewal", "secret", secretName, "hostname", hostname)
-				continue
-			}
 			if err := downstreamStrategy.SetControllerReference(ctx, upstreamGateway, cert); err != nil {
 				result.Err = fmt.Errorf("failed to set strategy reference on Certificate %s: %w", certName, err)
 				return result
@@ -1846,10 +1832,7 @@ func (r *GatewayReconciler) finalizeGateway(
 	gatewayProgrammedTotal.DeleteLabelValues(upstreamGateway.Namespace, upstreamGateway.Name)
 	// Clear this gateway's cert-health series now that it is gone.
 	clearListenerCertMetrics(upstreamGateway.Namespace, upstreamGateway.Name)
-	r.certificateServiceFailures.Delete(upstreamGateway.UID)
-	r.certificateServiceRejections.Delete(upstreamGateway.UID)
-	r.certificateServiceListeners.Delete(upstreamGateway.UID)
-	certificateServiceFailuresTotal.DeletePartialMatch(prometheus.Labels{jsonKeyNamespace: upstreamGateway.Namespace, jsonKeyName: upstreamGateway.Name})
+	r.forgetGateway(upstreamGateway)
 
 	// Clean up DNS records created by this gateway
 	if r.Config.Gateway.EnableDNSIntegration {

@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"regexp"
@@ -15,8 +16,6 @@ import (
 	"strings"
 	"time"
 
-	cmv1 "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
-	cmmeta "github.com/cert-manager/cert-manager/pkg/apis/meta/v1"
 	"github.com/prometheus/client_golang/prometheus"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -41,13 +40,6 @@ import (
 // +kubebuilder:rbac:groups=certificates.miloapis.com,resources=tlscertificates,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=certificates.miloapis.com,resources=tlscertificates/status,verbs=get
 
-const tlsCertificateSolverLabel = "networking.datumapis.com/tlscertificate-solver"
-
-// tlsCertificateManagedLabel marks a downstream Secret the certificate service
-// path owns: either handed over from cert-manager at the switch or written by
-// the mirror. The cert-manager path reads it to avoid reissuing on rollback.
-const tlsCertificateManagedLabel = "networking.datumapis.com/certificate-service"
-
 const KindTLSCertificate = "TLSCertificate"
 
 // tlsCertificateMirrorAdmitDelay is how soon the listener is re-evaluated after
@@ -55,17 +47,22 @@ const KindTLSCertificate = "TLSCertificate"
 // mirror in the same pass.
 const tlsCertificateMirrorAdmitDelay = time.Second
 
-// tlsCertificateSwitchLead is how far ahead of cert-manager's own renewal time
-// a hostname moves to the service, so the two never order for the same name.
-const tlsCertificateSwitchLead = 48 * time.Hour
-
 const (
 	certificateServiceBackoffBase = 5 * time.Second
 	certificateServiceBackoffMax  = 5 * time.Minute
-	legacyRecheckMax              = 6 * time.Hour
-)
 
-var acmeTokenPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{16,128}$`)
+	// certificateServiceRecheck is how often a wildcard listener is looked at
+	// again without any event, so a renewal that quietly stalls is noticed.
+	certificateServiceRecheck = time.Hour
+
+	// tlsCertificateIssueGrace is how long a TLSCertificate may stay not Ready
+	// before it is reported as failing rather than in progress.
+	tlsCertificateIssueGrace = time.Hour
+
+	// renewalOverdueDivisor sets the share of a served certificate's lifetime
+	// below which its renewal is overdue. The service renews with a third left.
+	renewalOverdueDivisor = 4
+)
 
 var nonDNSLabelChars = regexp.MustCompile(`[^a-z0-9-]+`)
 
@@ -88,9 +85,11 @@ func tlsCertificateName(gatewayName string, listenerName gatewayv1.SectionName) 
 	return prefix + "-" + suffix
 }
 
-func tlsCertificateSolverName(certName, token string) string {
-	sum := sha256.Sum256([]byte(token))
-	return fmt.Sprintf("%s-acme-%s", certName, hex.EncodeToString(sum[:])[:10])
+// isSingleLabelWildcard reports whether a hostname is a wildcard over exactly
+// one label, the only shape the certificate service is used for.
+func isSingleLabelWildcard(hostname string) bool {
+	base, ok := strings.CutPrefix(hostname, "*.")
+	return ok && base != "" && !strings.Contains(base, "*")
 }
 
 // listenerWantsOwnCertificate reports whether a listener is one the controller
@@ -111,6 +110,20 @@ func (r *GatewayReconciler) listenerWantsOwnCertificate(l gatewayv1.Listener, cl
 	return hostname, true
 }
 
+// listenerUsesCertificateService reports whether the certificate service, not
+// cert-manager, issues for this listener: only wildcard hostnames, and only
+// while the service is enabled. Every exact hostname stays on cert-manager.
+func (r *GatewayReconciler) listenerUsesCertificateService(l gatewayv1.Listener, claimedHostnames []string) (string, bool) {
+	if !r.Config.Gateway.CertificateService.Enabled {
+		return "", false
+	}
+	hostname, wanted := r.listenerWantsOwnCertificate(l, claimedHostnames)
+	if !wanted || !isSingleLabelWildcard(hostname) {
+		return "", false
+	}
+	return hostname, true
+}
+
 // listenerIssuerResolvable applies the same rule the cert-manager path does to
 // the certificate-issuer option: an `auto` that maps to nothing and inherits
 // from no other listener leaves the listener un-programmed.
@@ -122,44 +135,47 @@ func (r *GatewayReconciler) listenerIssuerResolvable(upstreamGateway *gatewayv1.
 	return issuer != autoIssuerSentinel || r.resolveAutoIssuer(upstreamGateway) != ""
 }
 
-// certificateServiceBackoff is what the step remembers about a gateway whose
+// certificateServiceKey identifies one listener of one gateway. An empty
+// listener stands for the gateway-wide cleanup.
+type certificateServiceKey struct {
+	gateway  types.UID
+	listener gatewayv1.SectionName
+}
+
+// certificateServiceBackoff is what the step remembers about a listener whose
 // last pass failed: how many in a row, when it may try again, and what it told
-// the listeners, so an event-driven reconcile inside the window repeats the
+// the customer, so an event-driven reconcile inside the window repeats the
 // message rather than the calls.
 type certificateServiceBackoff struct {
 	attempts int
 	nextTry  time.Time
-	issues   map[gatewayv1.SectionName]string
+	issue    certificateServiceIssue
 }
 
-// certificateServiceRequeue records the outcome of a pass and hands back the
-// delay before the next attempt, doubling per consecutive failure up to a cap,
-// and forgets the gateway once a pass succeeds.
-func (r *GatewayReconciler) certificateServiceRequeue(gateway types.UID, failed bool, now time.Time, issues map[gatewayv1.SectionName]string) time.Duration {
+// certificateServiceRequeue records the outcome of a listener's pass and hands
+// back the delay before the next attempt, doubling per consecutive failure up
+// to a cap, and forgets the listener once a pass succeeds.
+func (r *GatewayReconciler) certificateServiceRequeue(key certificateServiceKey, failed bool, now time.Time, issue certificateServiceIssue) time.Duration {
 	if !failed {
-		r.certificateServiceFailures.Delete(gateway)
+		r.certificateServiceFailures.Delete(key)
 		return 0
 	}
 	attempts := 1
-	if previous, ok := r.certificateServiceFailures.Load(gateway); ok {
+	if previous, ok := r.certificateServiceFailures.Load(key); ok {
 		attempts = previous.(certificateServiceBackoff).attempts + 1
 	}
 	delay := certificateServiceBackoffBase << (attempts - 1)
 	if attempts > 10 || delay > certificateServiceBackoffMax {
 		delay = certificateServiceBackoffMax
 	}
-	backoff := certificateServiceBackoff{attempts: attempts, nextTry: now.Add(delay), issues: make(map[gatewayv1.SectionName]string, len(issues))}
-	for listener, message := range issues {
-		backoff.issues[listener] = message
-	}
-	r.certificateServiceFailures.Store(gateway, backoff)
+	r.certificateServiceFailures.Store(key, certificateServiceBackoff{attempts: attempts, nextTry: now.Add(delay), issue: issue})
 	return delay
 }
 
-// certificateServiceInBackoff reports whether the gateway's last failure is
-// still cooling off, and if so the listeners it concerned and how long is left.
-func (r *GatewayReconciler) certificateServiceInBackoff(gateway types.UID, now time.Time) (certificateServiceBackoff, time.Duration, bool) {
-	previous, ok := r.certificateServiceFailures.Load(gateway)
+// certificateServiceInBackoff reports whether the listener's last failure is
+// still cooling off, and if so what it was told and how long is left.
+func (r *GatewayReconciler) certificateServiceInBackoff(key certificateServiceKey, now time.Time) (certificateServiceBackoff, time.Duration, bool) {
+	previous, ok := r.certificateServiceFailures.Load(key)
 	if !ok {
 		return certificateServiceBackoff{}, 0, false
 	}
@@ -174,175 +190,213 @@ func recordCertificateServiceFailure(gateway *gatewayv1.Gateway, listener gatewa
 	certificateServiceFailuresTotal.WithLabelValues(gateway.Namespace, gateway.Name, string(listener), reason).Inc()
 }
 
-// recordCertificateServiceRejection counts a service rejection once per
-// transition into the rejected state, since the rejection is read back on every
-// pass for as long as it lasts.
-func (r *GatewayReconciler) recordCertificateServiceRejection(gateway *gatewayv1.Gateway, listener gatewayv1.SectionName, rejected bool) {
-	key := gateway.UID
-	current := map[gatewayv1.SectionName]bool{}
-	if previous, ok := r.certificateServiceRejections.Load(key); ok {
-		for k, v := range previous.(map[gatewayv1.SectionName]bool) {
-			current[k] = v
-		}
+// recordCertificateServiceState counts a TLSCertificate failure once per
+// transition into it, since the same failure is read back on every pass for
+// as long as it lasts. An empty reason means the listener is healthy.
+func (r *GatewayReconciler) recordCertificateServiceState(gateway *gatewayv1.Gateway, listener gatewayv1.SectionName, reason string) {
+	key := certificateServiceKey{gateway: gateway.UID, listener: listener}
+	previous, _ := r.certificateServiceStates.Load(key)
+	if reason != "" && previous != reason {
+		recordCertificateServiceFailure(gateway, listener, reason)
 	}
-	if rejected && !current[listener] {
-		recordCertificateServiceFailure(gateway, listener, certificateServiceReasonRejected)
+	if reason == "" {
+		r.certificateServiceStates.Delete(key)
+		return
 	}
-	if rejected {
-		current[listener] = true
-	} else {
-		delete(current, listener)
-	}
-	r.certificateServiceRejections.Store(key, current)
+	r.certificateServiceStates.Store(key, reason)
 }
 
 const (
 	certificateServiceReasonStepFailed       = "StepFailed"
 	certificateServiceReasonNotOwned         = "NotOwned"
+	certificateServiceReasonRefused          = "Refused"
 	certificateServiceReasonRejected         = "Rejected"
+	certificateServiceReasonIssuanceFailed   = "IssuanceFailed"
+	certificateServiceReasonNotReady         = "NotReady"
+	certificateServiceReasonRenewalOverdue   = "RenewalOverdue"
 	certificateServiceReasonNamespaceRefused = "NamespaceRefused"
 	certificateServiceReasonMaterialRefused  = "MaterialRefused"
-	certificateServiceReasonTokenRefused     = "TokenRefused"
+	certificateServiceReasonUntrustedChain   = "UntrustedChain"
 )
 
 func certificateServiceUnavailableMessage(hostname string) string {
 	return fmt.Sprintf("We couldn't request a TLS certificate for %s just now and will keep trying. HTTPS for this hostname stays as it is in the meantime.", hostname)
 }
 
+func certificateRequestRefusedMessage(hostname, detail string) string {
+	return fmt.Sprintf("A TLS certificate cannot be issued for %s: %s", hostname, detail)
+}
+
+func certificateRequestNotOwnedMessage(hostname string) string {
+	return fmt.Sprintf("A TLS certificate cannot be requested for %s because another resource holds the certificate request this hostname would use.", hostname)
+}
+
+func certificateMaterialRefusedMessage(hostname string) string {
+	return fmt.Sprintf("The TLS certificate issued for %s did not pass our checks and was not applied. HTTPS for this hostname stays as it is in the meantime.", hostname)
+}
+
 func certificateBeingReplacedMessage(hostname string) string {
 	return fmt.Sprintf("The TLS certificate request for %s is being replaced. HTTPS for this hostname stays as it is in the meantime.", hostname)
 }
 
+func certificateRenewalOverdueMessage(hostname string, notAfter time.Time) string {
+	return fmt.Sprintf("The TLS certificate for %s expires on %s and has not been renewed.", hostname, notAfter.UTC().Format(time.DateOnly))
+}
+
+func certificateNotIssuedMessage(hostname, detail string) string {
+	if detail == "" {
+		return fmt.Sprintf("The TLS certificate for %s has not been issued after more than an hour.", hostname)
+	}
+	return fmt.Sprintf("The TLS certificate for %s has not been issued: %s", hostname, detail)
+}
+
+// certificateServiceIssue is what one listener's pass could not do: the
+// counter reason and the message for the customer.
+type certificateServiceIssue struct {
+	reason  string
+	message string
+}
+
 // ensureListenerTLSCertificates is the certificate-service counterpart of
-// ensureListenerCertificates: one TLSCertificate per custom hostname in the
-// project control plane, its HTTP-01 challenges answered on the downstream
-// gateway, and its issued Secret mirrored downstream under the name the
-// listener references. Nothing here fails the gateway reconcile: a listener
-// whose step failed keeps whatever Secret it has, the failure is returned as a
-// message for its status, and the whole step retries with backoff.
+// ensureListenerCertificates for wildcard listeners: one TLSCertificate each in
+// the project control plane, issued over DNS-01, and its issued Secret
+// mirrored downstream under the name the listener references. Nothing here
+// fails the gateway reconcile: a listener whose step failed keeps whatever
+// Secret it has, the failure is returned as a message for its status, and that
+// listener alone retries with backoff.
 func (r *GatewayReconciler) ensureListenerTLSCertificates(
 	ctx context.Context,
 	upstreamClient client.Client,
 	upstreamGateway *gatewayv1.Gateway,
 	downstreamGateway *gatewayv1.Gateway,
-	downstreamClient client.Client,
 	downstreamStrategy downstreamclient.ResourceStrategy,
 	claimedHostnames []string,
 ) (result Result, issues map[gatewayv1.SectionName]string) {
 	logger := log.FromContext(ctx)
 	now := time.Now()
 	issues = make(map[gatewayv1.SectionName]string)
+	failing := make(map[gatewayv1.SectionName]string)
 	desiredCerts := sets.New[string]()
-	legacyKeep := sets.New[string]()
-	liveSolvers := sets.New[string]()
-	failed := false
 
 	requeueSooner := func(d time.Duration) {
 		if d > 0 && (result.RequeueAfter == 0 || d < result.RequeueAfter) {
 			result.RequeueAfter = d
 		}
 	}
-	fail := func(l gatewayv1.Listener, hostname string, err error) {
-		logger.Error(err, "certificate service step failed", "listener", l.Name, "hostname", hostname)
-		issues[l.Name] = certificateServiceUnavailableMessage(hostname)
-		recordCertificateServiceFailure(upstreamGateway, l.Name, certificateServiceReasonStepFailed)
-		failed = true
-	}
-
-	if backoff, remaining, cooling := r.certificateServiceInBackoff(upstreamGateway.UID, now); cooling {
-		for listener, message := range backoff.issues {
-			issues[listener] = message
-		}
-		requeueSooner(remaining)
-		return result, issues
-	}
 
 	for _, l := range upstreamGateway.Spec.Listeners {
-		hostname, wanted := r.listenerWantsOwnCertificate(l, claimedHostnames)
-		if !wanted || !r.listenerIssuerResolvable(upstreamGateway, l) {
+		hostname, ok := r.listenerUsesCertificateService(l, claimedHostnames)
+		if !ok || !r.listenerIssuerResolvable(upstreamGateway, l) {
 			continue
 		}
-
-		legacyName := listenerCertificateName(upstreamGateway.Name, l.Name)
 		certName := tlsCertificateName(upstreamGateway.Name, l.Name)
-		secretName := listenerCertificateSecretName(upstreamGateway.Name, l.Name)
-
-		legacy, err := r.ownedLegacyCertificate(ctx, downstreamClient, upstreamGateway, downstreamGateway, legacyName)
-		if err != nil {
-			fail(l, hostname, err)
-			continue
-		}
-		if legacy != nil {
-			if holds, recheck := legacyCertificateHolds(legacy, now); holds {
-				legacyKeep.Insert(legacyName)
-				requeueSooner(min(recheck, legacyRecheckMax))
-				continue
-			}
-			logger.Info("legacy certificate nearing renewal, switching hostname to the certificate service", "certificate", legacyName, "hostname", hostname)
-			if err := r.retireLegacyCertificate(ctx, downstreamStrategy, upstreamGateway, legacy, secretName); err != nil {
-				fail(l, hostname, err)
-				continue
-			}
-		}
-
 		desiredCerts.Insert(certName)
+		requeueSooner(certificateServiceRecheck)
 
-		cert, state, err := r.ensureTLSCertificate(ctx, upstreamClient, upstreamGateway, certName, secretName, hostname)
+		key := certificateServiceKey{gateway: upstreamGateway.UID, listener: l.Name}
+		if backoff, remaining, cooling := r.certificateServiceInBackoff(key, now); cooling {
+			issues[l.Name] = backoff.issue.message
+			failing[l.Name] = backoff.issue.reason
+			requeueSooner(remaining)
+			continue
+		}
+
+		mirrored, issue, err := r.ensureListenerTLSCertificate(ctx, upstreamClient, upstreamGateway, downstreamGateway, downstreamStrategy, l.Name, certName, hostname, now)
 		if err != nil {
-			if errors.Is(err, errTLSCertificateNotOwned) {
-				recordCertificateServiceFailure(upstreamGateway, l.Name, certificateServiceReasonNotOwned)
+			logger.Error(err, "certificate service step failed", "listener", l.Name, "hostname", hostname)
+			if issue == nil {
+				issue = &certificateServiceIssue{reason: certificateServiceReasonStepFailed, message: certificateServiceUnavailableMessage(hostname)}
 			}
-			fail(l, hostname, err)
+		}
+		if issue != nil {
+			issues[l.Name] = issue.message
+			failing[l.Name] = issue.reason
+			recordCertificateServiceFailure(upstreamGateway, l.Name, issue.reason)
+			requeueSooner(r.certificateServiceRequeue(key, true, now, *issue))
 			continue
 		}
-		if state != tlsCertificateSettled {
-			issues[l.Name] = certificateBeingReplacedMessage(hostname)
-			failed = true
-			continue
-		}
-
-		solvers, rejected, err := r.serveTLSCertificateChallenges(ctx, downstreamClient, downstreamGateway, cert, hostname)
-		if err != nil {
-			fail(l, hostname, err)
-			continue
-		}
-		liveSolvers.Insert(solvers...)
-		if rejected != "" {
-			issues[l.Name] = rejected
-			recordCertificateServiceFailure(upstreamGateway, l.Name, certificateServiceReasonTokenRefused)
-		}
-
-		mirrored, refusal, err := r.mirrorTLSCertificateSecret(ctx, downstreamStrategy, upstreamGateway, downstreamGateway, cert, secretName, hostname, now)
-		if err != nil {
-			fail(l, hostname, err)
-			continue
-		}
-		if refusal.reason != "" {
-			issues[l.Name] = refusal.message
-			recordCertificateServiceFailure(upstreamGateway, l.Name, refusal.reason)
+		r.certificateServiceRequeue(key, false, now, certificateServiceIssue{})
+		if state, ok := r.certificateServiceStates.Load(key); ok {
+			failing[l.Name] = state.(string)
 		}
 		if mirrored {
 			requeueSooner(tlsCertificateMirrorAdmitDelay)
 		}
 	}
 
-	if err := r.deleteStaleTLSCertificates(ctx, upstreamClient, upstreamGateway, desiredCerts); err != nil {
+	cleanupKey := certificateServiceKey{gateway: upstreamGateway.UID}
+	if _, remaining, cooling := r.certificateServiceInBackoff(cleanupKey, now); cooling {
+		requeueSooner(remaining)
+	} else if err := r.deleteStaleTLSCertificates(ctx, upstreamClient, upstreamGateway, desiredCerts); err != nil {
 		logger.Error(err, "failed to clean up TLSCertificates")
-		failed = true
-	}
-	if err := r.deleteStaleLegacyCertificates(ctx, downstreamClient, upstreamGateway, downstreamGateway, legacyKeep); err != nil {
-		logger.Error(err, "failed to clean up legacy Certificates")
-		failed = true
-	}
-	if err := r.deleteStaleTLSCertificateSolvers(ctx, downstreamClient, downstreamGateway, liveSolvers); err != nil {
-		logger.Error(err, "failed to clean up HTTP-01 solvers")
-		failed = true
+		requeueSooner(r.certificateServiceRequeue(cleanupKey, true, now, certificateServiceIssue{}))
+	} else {
+		r.certificateServiceRequeue(cleanupKey, false, now, certificateServiceIssue{})
 	}
 
-	requeueSooner(r.certificateServiceRequeue(upstreamGateway.UID, failed, now, issues))
 	r.forgetRemovedListeners(upstreamGateway)
+	publishCertificateServiceFailing(upstreamGateway, failing)
 
 	return result, issues
+}
+
+// publishCertificateServiceFailing replaces the gateway's failing-listener
+// series with the listeners failing now, so one that recovered or left the
+// service stops reporting.
+func publishCertificateServiceFailing(upstreamGateway *gatewayv1.Gateway, failing map[gatewayv1.SectionName]string) {
+	clearCertificateServiceFailing(upstreamGateway)
+	for listener, reason := range failing {
+		certificateServiceListenerFailing.WithLabelValues(upstreamGateway.Namespace, upstreamGateway.Name, string(listener), reason).Set(1)
+	}
+}
+
+func clearCertificateServiceFailing(upstreamGateway *gatewayv1.Gateway) {
+	certificateServiceListenerFailing.DeletePartialMatch(prometheus.Labels{jsonKeyNamespace: upstreamGateway.Namespace, jsonKeyName: upstreamGateway.Name})
+}
+
+// ensureListenerTLSCertificate does one listener's pass: request or confirm
+// its TLSCertificate, then mirror what the service issued. An issue says what
+// the customer is told; an error alone is a transient step failure.
+func (r *GatewayReconciler) ensureListenerTLSCertificate(
+	ctx context.Context,
+	upstreamClient client.Client,
+	upstreamGateway *gatewayv1.Gateway,
+	downstreamGateway *gatewayv1.Gateway,
+	downstreamStrategy downstreamclient.ResourceStrategy,
+	listenerName gatewayv1.SectionName,
+	certName string,
+	hostname string,
+	now time.Time,
+) (bool, *certificateServiceIssue, error) {
+	secretName := listenerCertificateSecretName(upstreamGateway.Name, listenerName)
+
+	cert, state, err := r.ensureTLSCertificate(ctx, upstreamClient, upstreamGateway, certName, secretName, hostname)
+	switch {
+	case errors.Is(err, errTLSCertificateNotOwned):
+		return false, &certificateServiceIssue{reason: certificateServiceReasonNotOwned, message: certificateRequestNotOwnedMessage(hostname)}, err
+	case err != nil:
+		if detail, refused := requestRefusal(err); refused {
+			return false, &certificateServiceIssue{reason: certificateServiceReasonRefused, message: certificateRequestRefusedMessage(hostname, detail)}, err
+		}
+		return false, nil, err
+	case state != tlsCertificateSettled:
+		return false, &certificateServiceIssue{reason: certificateServiceReasonStepFailed, message: certificateBeingReplacedMessage(hostname)}, nil
+	}
+
+	return r.mirrorTLSCertificateSecret(ctx, downstreamStrategy, upstreamGateway, downstreamGateway, cert, secretName, hostname, now)
+}
+
+// requestRefusal reports whether the API refused the request itself rather
+// than failing to process it, and the reason it gave.
+func requestRefusal(err error) (string, bool) {
+	if !apierrors.IsInvalid(err) && !apierrors.IsForbidden(err) && !apierrors.IsBadRequest(err) {
+		return "", false
+	}
+	var status apierrors.APIStatus
+	if errors.As(err, &status) && status.Status().Message != "" {
+		return status.Status().Message, true
+	}
+	return err.Error(), true
 }
 
 // forgetRemovedListeners drops the failure series and tracker entries of
@@ -360,27 +414,35 @@ func (r *GatewayReconciler) forgetRemovedListeners(upstreamGateway *gatewayv1.Ga
 			certificateServiceFailuresTotal.DeletePartialMatch(prometheus.Labels{
 				jsonKeyNamespace: upstreamGateway.Namespace, jsonKeyName: upstreamGateway.Name, metricLabelListener: string(listener),
 			})
-			if rejected, ok := r.certificateServiceRejections.Load(upstreamGateway.UID); ok {
-				delete(rejected.(map[gatewayv1.SectionName]bool), listener)
-			}
-			if backoff, ok := r.certificateServiceFailures.Load(upstreamGateway.UID); ok {
-				delete(backoff.(certificateServiceBackoff).issues, listener)
-			}
+			key := certificateServiceKey{gateway: upstreamGateway.UID, listener: listener}
+			r.certificateServiceStates.Delete(key)
+			r.certificateServiceFailures.Delete(key)
 		}
 	}
 	r.certificateServiceListeners.Store(upstreamGateway.UID, current)
 }
 
-var errTLSCertificateNotOwned = errors.New("TLSCertificate exists but is not controlled by this Gateway")
-
-// mirrorRefusal says why issued material was not taken, for the customer and
-// for the failure counter.
-type mirrorRefusal struct {
-	reason  string
-	message string
+// forgetGateway drops everything the certificate service step remembers about
+// a gateway that is gone.
+func (r *GatewayReconciler) forgetGateway(upstreamGateway *gatewayv1.Gateway) {
+	r.certificateServiceStates.Range(func(k, _ any) bool {
+		if k.(certificateServiceKey).gateway == upstreamGateway.UID {
+			r.certificateServiceStates.Delete(k)
+		}
+		return true
+	})
+	r.certificateServiceFailures.Range(func(k, _ any) bool {
+		if k.(certificateServiceKey).gateway == upstreamGateway.UID {
+			r.certificateServiceFailures.Delete(k)
+		}
+		return true
+	})
+	r.certificateServiceListeners.Delete(upstreamGateway.UID)
+	certificateServiceFailuresTotal.DeletePartialMatch(prometheus.Labels{jsonKeyNamespace: upstreamGateway.Namespace, jsonKeyName: upstreamGateway.Name})
+	clearCertificateServiceFailing(upstreamGateway)
 }
 
-func (m mirrorRefusal) String() string { return m.reason }
+var errTLSCertificateNotOwned = errors.New("TLSCertificate exists but is not controlled by this Gateway")
 
 type tlsCertificateState int
 
@@ -403,7 +465,7 @@ func (r *GatewayReconciler) ensureTLSCertificate(
 
 	desiredSpec := certificatesv1alpha1.TLSCertificateSpec{
 		DNSNames:   []certificatesv1alpha1.DNSName{certificatesv1alpha1.DNSName(hostname)},
-		Issuance:   certificatesv1alpha1.IssuanceModeAuto,
+		Issuance:   certificatesv1alpha1.IssuanceModeDNS01,
 		SecretName: secretName,
 	}
 
@@ -458,63 +520,13 @@ func (r *GatewayReconciler) ensureTLSCertificate(
 	return cert, tlsCertificateSettled, nil
 }
 
-// serveTLSCertificateChallenges publishes every pending HTTP-01 challenge the
-// service reports for the hostname this listener claimed and returns the solver
-// names for every such challenge still in status, so a challenge that has moved
-// on to Valid keeps its answer until the service drops it. A challenge for any
-// other name, or with a token that is not an ACME token, is not ours to answer,
-// whatever status says.
-func (r *GatewayReconciler) serveTLSCertificateChallenges(
-	ctx context.Context,
-	downstreamClient client.Client,
-	downstreamGateway *gatewayv1.Gateway,
-	cert *certificatesv1alpha1.TLSCertificate,
-	hostname string,
-) (live []string, rejected string, err error) {
-	logger := log.FromContext(ctx)
-
-	for _, challenge := range cert.Status.Challenges {
-		if challenge.Type != certificatesv1alpha1.ChallengeTypeHTTP01 {
-			continue
-		}
-		if challenge.DNSName != hostname {
-			logger.Info("ignoring HTTP-01 challenge for a hostname this listener did not claim",
-				"tlscertificate", cert.Name, "claimed", hostname, "challenge_dns_name", challenge.DNSName)
-			continue
-		}
-		if !acmeTokenPattern.MatchString(challenge.Token) {
-			logger.Info("ignoring HTTP-01 challenge whose token is not an ACME token", "tlscertificate", cert.Name, "hostname", hostname)
-			rejected = certificateServiceUnavailableMessage(hostname)
-			continue
-		}
-		name := tlsCertificateSolverName(cert.Name, challenge.Token)
-		live = append(live, name)
-
-		if challenge.State != certificatesv1alpha1.ChallengeStatePending {
-			continue
-		}
-
-		err := ensureHTTP01SolverRoutes(ctx, downstreamClient, downstreamClient.Scheme(), downstreamGateway, downstreamGateway, http01SolverRoute{
-			name:      name,
-			token:     challenge.Token,
-			key:       challenge.Key,
-			hostnames: []gatewayv1.Hostname{gatewayv1.Hostname(hostname)},
-			labels:    map[string]string{tlsCertificateSolverLabel: cert.Name},
-		})
-		if err != nil {
-			return nil, "", fmt.Errorf("failed to serve HTTP-01 challenge for TLSCertificate %s: %w", cert.Name, err)
-		}
-	}
-
-	return live, rejected, nil
-}
-
 // mirrorTLSCertificateSecret copies the service-side issued Secret, read with
 // the operator's own credentials from the configured service namespace, into
 // the downstream gateway namespace under the listener's secret name, stamped
 // with the upstream-owner labels the federation policy selects. The material is
-// parsed, matched, checked against the hostname and its expiry before it may
-// replace what is serving; the project-namespace copy is never read.
+// parsed, matched, checked against the hostname, its expiry and, when
+// configured, the trusted roots before it may replace what is serving; the
+// project-namespace copy is never read.
 func (r *GatewayReconciler) mirrorTLSCertificateSecret(
 	ctx context.Context,
 	downstreamStrategy downstreamclient.ResourceStrategy,
@@ -524,24 +536,28 @@ func (r *GatewayReconciler) mirrorTLSCertificateSecret(
 	secretName string,
 	hostname string,
 	now time.Time,
-) (mirrored bool, refusal mirrorRefusal, err error) {
+) (bool, *certificateServiceIssue, error) {
 	logger := log.FromContext(ctx)
 
 	if !apimeta.IsStatusConditionTrue(cert.Status.Conditions, certificatesv1alpha1.ConditionReady) {
-		return false, mirrorRefusal{}, nil
+		return false, nil, nil
 	}
 	ref := cert.Status.ServiceSecretRef
 	if ref == nil || ref.Name == "" {
 		logger.Info("TLSCertificate is Ready without a service-side Secret reference", "tlscertificate", cert.Name)
-		return false, mirrorRefusal{}, nil
+		return false, nil, nil
 	}
 	if ref.Namespace != r.Config.Gateway.CertificateService.SecretNamespace {
 		logger.Info("refusing service-side Secret outside the certificate service namespace",
 			"tlscertificate", cert.Name, "namespace", ref.Namespace, "expected", r.Config.Gateway.CertificateService.SecretNamespace)
-		return false, mirrorRefusal{reason: certificateServiceReasonNamespaceRefused, message: certificateServiceUnavailableMessage(hostname)}, nil
+		return false, &certificateServiceIssue{reason: certificateServiceReasonNamespaceRefused, message: certificateMaterialRefusedMessage(hostname)}, nil
 	}
 	if r.CertificateServiceReader == nil {
-		return false, mirrorRefusal{}, fmt.Errorf("certificate service enabled without a client for its cluster")
+		return false, nil, fmt.Errorf("certificate service enabled without a client for its cluster")
+	}
+	roots, err := r.certificateServiceRoots()
+	if err != nil {
+		return false, nil, fmt.Errorf("failed to load trusted roots: %w", err)
 	}
 
 	downstreamClient := downstreamStrategy.GetClient()
@@ -552,10 +568,10 @@ func (r *GatewayReconciler) mirrorTLSCertificateSecret(
 		},
 	}
 	if err := downstreamClient.Get(ctx, client.ObjectKeyFromObject(mirror), mirror); client.IgnoreNotFound(err) != nil {
-		return false, mirrorRefusal{}, fmt.Errorf("failed to get Secret %s: %w", secretName, err)
+		return false, nil, fmt.Errorf("failed to get Secret %s: %w", secretName, err)
 	}
 	if mirrorHoldsIssuance(mirror, cert) {
-		return false, mirrorRefusal{}, nil
+		return false, nil, nil
 	}
 
 	var source corev1.Secret
@@ -563,15 +579,22 @@ func (r *GatewayReconciler) mirrorTLSCertificateSecret(
 	if err := r.CertificateServiceReader.Get(ctx, sourceKey, &source); err != nil {
 		if apierrors.IsNotFound(err) {
 			logger.Info("TLSCertificate is Ready but its service-side Secret is not readable yet", "tlscertificate", cert.Name, "secret", sourceKey)
-			return false, mirrorRefusal{}, nil
+			return false, nil, nil
 		}
-		return false, mirrorRefusal{}, fmt.Errorf("failed to get service-side Secret %s for TLSCertificate %s: %w", sourceKey, cert.Name, err)
+		return false, nil, fmt.Errorf("failed to get service-side Secret %s for TLSCertificate %s: %w", sourceKey, cert.Name, err)
 	}
 
 	if err := validateIssuedMaterial(source.Data["tls.crt"], source.Data["tls.key"], hostname, now); err != nil {
 		logger.Info("refusing service-side Secret that does not hold a usable certificate for the hostname",
 			"tlscertificate", cert.Name, "secret", sourceKey, "reason", err.Error())
-		return false, mirrorRefusal{reason: certificateServiceReasonMaterialRefused, message: certificateServiceUnavailableMessage(hostname)}, nil
+		return false, &certificateServiceIssue{reason: certificateServiceReasonMaterialRefused, message: certificateMaterialRefusedMessage(hostname)}, nil
+	}
+	if roots != nil {
+		if err := verifyIssuedChain(source.Data["tls.crt"], hostname, roots, now); err != nil {
+			logger.Info("refusing service-side Secret whose chain is not trusted",
+				"tlscertificate", cert.Name, "secret", sourceKey, "reason", err.Error())
+			return false, &certificateServiceIssue{reason: certificateServiceReasonUntrustedChain, message: certificateMaterialRefusedMessage(hostname)}, nil
+		}
 	}
 
 	op, err := controllerutil.CreateOrUpdate(ctx, downstreamClient, mirror, func() error {
@@ -581,7 +604,6 @@ func (r *GatewayReconciler) mirrorTLSCertificateSecret(
 		if err := downstreamStrategy.SetControllerReference(ctx, upstreamGateway, mirror); err != nil {
 			return fmt.Errorf("failed to set strategy reference on Secret %s: %w", secretName, err)
 		}
-		mirror.Labels[tlsCertificateManagedLabel] = labelValueTrue
 		mirror.Data = map[string][]byte{
 			"tls.crt": source.Data["tls.crt"],
 			"tls.key": source.Data["tls.key"],
@@ -592,20 +614,32 @@ func (r *GatewayReconciler) mirrorTLSCertificateSecret(
 		return nil
 	})
 	if err != nil {
-		return false, mirrorRefusal{}, fmt.Errorf("failed to mirror Secret %s: %w", secretName, err)
+		return false, nil, fmt.Errorf("failed to mirror Secret %s: %w", secretName, err)
 	}
 	if op != controllerutil.OperationResultNone {
 		logger.Info("issued Secret mirrored downstream", "secret", secretName, "operation", op)
 	}
 
-	return op != controllerutil.OperationResultNone, mirrorRefusal{}, nil
+	return op != controllerutil.OperationResultNone, nil, nil
+}
+
+// certificateServiceRoots returns the roots an issued chain must verify
+// against, or nil when chain verification is off.
+func (r *GatewayReconciler) certificateServiceRoots() (*x509.CertPool, error) {
+	if !r.Config.Gateway.CertificateService.VerifyChain {
+		return nil, nil
+	}
+	if r.CertificateServiceRoots != nil {
+		return r.CertificateServiceRoots, nil
+	}
+	return x509.SystemCertPool()
 }
 
 // mirrorHoldsIssuance reports whether the downstream Secret already carries the
 // issuance the TLSCertificate describes, so the service cluster is not read
 // again for it.
 func mirrorHoldsIssuance(mirror *corev1.Secret, cert *certificatesv1alpha1.TLSCertificate) bool {
-	if mirror.CreationTimestamp.IsZero() || mirror.Labels[tlsCertificateManagedLabel] != labelValueTrue || cert.Status.NotAfter == nil {
+	if mirror.CreationTimestamp.IsZero() || cert.Status.NotAfter == nil {
 		return false
 	}
 	leaf, err := parseLeafCertificate(mirror.Data["tls.crt"], mirror.Data["tls.key"])
@@ -648,143 +682,40 @@ func validateIssuedMaterial(certPEM, keyPEM []byte, hostname string, now time.Ti
 	return nil
 }
 
-// ownedLegacyCertificate returns the listener's cert-manager Certificate from
-// the downstream cluster when one exists and belongs to this gateway.
-func (r *GatewayReconciler) ownedLegacyCertificate(
-	ctx context.Context,
-	downstreamClient client.Client,
-	upstreamGateway *gatewayv1.Gateway,
-	downstreamGateway *gatewayv1.Gateway,
-	certName string,
-) (*cmv1.Certificate, error) {
-	var legacy cmv1.Certificate
-	if err := downstreamClient.Get(ctx, client.ObjectKey{Namespace: downstreamGateway.Namespace, Name: certName}, &legacy); err != nil {
-		if apierrors.IsNotFound(err) {
-			return nil, nil
+// verifyIssuedChain checks that the PEM chain, leaf first, builds to one of
+// the trusted roots for server authentication on the hostname.
+func verifyIssuedChain(certPEM []byte, hostname string, roots *x509.CertPool, now time.Time) error {
+	var chain []*x509.Certificate
+	for rest := certPEM; ; {
+		var block *pem.Block
+		block, rest = pem.Decode(rest)
+		if block == nil {
+			break
 		}
-		return nil, fmt.Errorf("failed to get Certificate %s: %w", certName, err)
-	}
-	if !certificateOwnedByGateway(&legacy, upstreamGateway, downstreamGateway) {
-		return nil, nil
-	}
-	return &legacy, nil
-}
-
-// legacyHoldWhileIssuing bounds how long a cert-manager renewal in flight can
-// defer the hand-over; past it the renewal is taken as stuck.
-const legacyHoldWhileIssuing = 24 * time.Hour
-
-// legacyHandOverFloor is the remaining lifetime below which the hand-over goes
-// ahead whatever cert-manager is doing, so the service has time to issue.
-const legacyHandOverFloor = 7 * 24 * time.Hour
-
-// legacyCertificateHolds reports whether a cert-manager Certificate should keep
-// its hostname for now: it is serving and not yet within the switch lead of its
-// renewal time, or cert-manager is mid-renewal and must not be interrupted. A
-// renewal that has failed, has been in flight for too long, or has too little
-// lifetime left to wait for does not hold. The returned duration is when to
-// look again.
-func legacyCertificateHolds(cert *cmv1.Certificate, now time.Time) (bool, time.Duration) {
-	if !certIsServing(cert, now) {
-		return false, 0
-	}
-	if cert.Status.NotAfter != nil && cert.Status.NotAfter.Sub(now) < legacyHandOverFloor {
-		return false, 0
-	}
-	for _, c := range cert.Status.Conditions {
-		if c.Type != cmv1.CertificateConditionIssuing || c.Status != cmmeta.ConditionTrue {
+		if block.Type != "CERTIFICATE" {
 			continue
 		}
-		if cert.Status.LastFailureTime != nil {
-			return false, 0
+		c, err := x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			return fmt.Errorf("failed to parse certificate chain: %w", err)
 		}
-		if !c.LastTransitionTime.IsZero() && now.Sub(c.LastTransitionTime.Time) > legacyHoldWhileIssuing {
-			return false, 0
-		}
-		return true, 10 * time.Minute
+		chain = append(chain, c)
 	}
-	if cert.Status.RenewalTime == nil {
-		return false, 0
+	if len(chain) == 0 {
+		return fmt.Errorf("secret holds no certificate")
 	}
-	switchAt := cert.Status.RenewalTime.Add(-tlsCertificateSwitchLead)
-	if now.Before(switchAt) {
-		return true, switchAt.Sub(now)
+	intermediates := x509.NewCertPool()
+	for _, c := range chain[1:] {
+		intermediates.AddCert(c)
 	}
-	return false, 0
-}
-
-// retireLegacyCertificate hands the listener over to the service: the Secret
-// gains the gateway's own owner so cert-manager's owner reference no longer
-// takes it along and the hand-over label the cert-manager path honours on
-// rollback, then the Certificate goes so cert-manager does not renew a
-// hostname the service is about to issue for.
-func (r *GatewayReconciler) retireLegacyCertificate(
-	ctx context.Context,
-	downstreamStrategy downstreamclient.ResourceStrategy,
-	upstreamGateway *gatewayv1.Gateway,
-	legacy *cmv1.Certificate,
-	secretName string,
-) error {
-	downstreamClient := downstreamStrategy.GetClient()
-
-	var secret corev1.Secret
-	err := downstreamClient.Get(ctx, client.ObjectKey{Namespace: legacy.Namespace, Name: secretName}, &secret)
-	switch {
-	case apierrors.IsNotFound(err):
-	case err != nil:
-		return fmt.Errorf("failed to get Secret %s: %w", secretName, err)
-	default:
-		if err := downstreamStrategy.SetControllerReference(ctx, upstreamGateway, &secret); err != nil {
-			return fmt.Errorf("failed to set strategy reference on Secret %s: %w", secretName, err)
-		}
-		secret.Labels[tlsCertificateManagedLabel] = labelValueTrue
-		if err := downstreamClient.Update(ctx, &secret); err != nil {
-			return fmt.Errorf("failed to keep Secret %s past its Certificate: %w", secretName, err)
-		}
-	}
-
-	if err := downstreamClient.Delete(ctx, legacy, client.Preconditions{UID: &legacy.UID}); client.IgnoreNotFound(err) != nil {
-		return fmt.Errorf("failed to delete legacy Certificate %s: %w", legacy.Name, err)
-	}
-	return nil
-}
-
-// deleteStaleLegacyCertificates removes the gateway's cert-manager Certificates
-// for listeners that no longer carry one, mirroring what the cert-manager path
-// does for removed hostnames.
-func (r *GatewayReconciler) deleteStaleLegacyCertificates(
-	ctx context.Context,
-	downstreamClient client.Client,
-	upstreamGateway *gatewayv1.Gateway,
-	downstreamGateway *gatewayv1.Gateway,
-	legacyKeep sets.Set[string],
-) error {
-	logger := log.FromContext(ctx)
-
-	var certList cmv1.CertificateList
-	if err := downstreamClient.List(ctx, &certList, client.InNamespace(downstreamGateway.Namespace)); err != nil {
-		return fmt.Errorf("failed to list Certificates: %w", err)
-	}
-
-	for i := range certList.Items {
-		cert := &certList.Items[i]
-		if legacyKeep.Has(cert.Name) || !certificateOwnedByGateway(cert, upstreamGateway, downstreamGateway) {
-			continue
-		}
-		logger.Info("deleting stale Certificate", "certificate", cert.Name)
-		if err := downstreamClient.Delete(ctx, cert); client.IgnoreNotFound(err) != nil {
-			return fmt.Errorf("failed to delete stale Certificate %s: %w", cert.Name, err)
-		}
-	}
-
-	return nil
-}
-
-func certificateOwnedByGateway(cert *cmv1.Certificate, upstreamGateway, downstreamGateway *gatewayv1.Gateway) bool {
-	ownedByStrategy := cert.Labels[downstreamclient.UpstreamOwnerKindLabel] == KindGateway &&
-		cert.Labels[downstreamclient.UpstreamOwnerNameLabel] == upstreamGateway.Name &&
-		cert.Labels[downstreamclient.UpstreamOwnerNamespaceLabel] == upstreamGateway.Namespace
-	return ownedByStrategy || metav1.IsControlledBy(cert, downstreamGateway)
+	_, err := chain[0].Verify(x509.VerifyOptions{
+		DNSName:       hostname,
+		Roots:         roots,
+		Intermediates: intermediates,
+		CurrentTime:   now,
+		KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	})
+	return err
 }
 
 // deleteStaleTLSCertificates removes TLSCertificates this gateway controls that
@@ -817,151 +748,10 @@ func (r *GatewayReconciler) deleteStaleTLSCertificates(
 	return nil
 }
 
-func (r *GatewayReconciler) deleteStaleTLSCertificateSolvers(
-	ctx context.Context,
-	downstreamClient client.Client,
-	downstreamGateway *gatewayv1.Gateway,
-	liveSolvers sets.Set[string],
-) error {
-	logger := log.FromContext(ctx)
-
-	var routes gatewayv1.HTTPRouteList
-	if err := downstreamClient.List(ctx, &routes,
-		client.InNamespace(downstreamGateway.Namespace),
-		client.HasLabels{tlsCertificateSolverLabel},
-	); err != nil {
-		return fmt.Errorf("failed to list TLSCertificate solver routes: %w", err)
-	}
-
-	for i := range routes.Items {
-		route := &routes.Items[i]
-		if liveSolvers.Has(route.Name) || !metav1.IsControlledBy(route, downstreamGateway) {
-			continue
-		}
-		logger.Info("removing finished HTTP-01 solver", "solver", route.Name)
-		if err := deleteHTTP01SolverRoutes(ctx, downstreamClient, route.Namespace, route.Name); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-// cleanupCertificateServiceLeftovers runs on the cert-manager path for a
-// gateway that was once on the service: it drops the solver routes and the
-// TLSCertificates this gateway controls, so the service stops renewing names
-// cert-manager has taken back. Nothing here fails the reconcile, and the
-// project control plane is only asked about TLSCertificates when a handed-over
-// Secret shows the gateway was ever on the service.
-func (r *GatewayReconciler) cleanupCertificateServiceLeftovers(
-	ctx context.Context,
-	upstreamClient client.Client,
-	upstreamGateway *gatewayv1.Gateway,
-	downstreamGateway *gatewayv1.Gateway,
-	downstreamClient client.Client,
-) {
-	logger := log.FromContext(ctx)
-
-	if err := r.deleteStaleTLSCertificateSolvers(ctx, downstreamClient, downstreamGateway, sets.New[string]()); err != nil {
-		logger.Error(err, "failed to remove certificate service solvers after rollback")
-	}
-
-	var handedOver corev1.SecretList
-	if err := downstreamClient.List(ctx, &handedOver,
-		client.InNamespace(downstreamGateway.Namespace),
-		client.MatchingLabels{
-			tlsCertificateManagedLabel:                   labelValueTrue,
-			downstreamclient.UpstreamOwnerKindLabel:      KindGateway,
-			downstreamclient.UpstreamOwnerNameLabel:      upstreamGateway.Name,
-			downstreamclient.UpstreamOwnerNamespaceLabel: upstreamGateway.Namespace,
-		},
-	); err != nil {
-		logger.Error(err, "failed to list handed-over Secrets after rollback")
-		return
-	}
-	if len(handedOver.Items) == 0 {
-		return
-	}
-
-	if err := r.deleteStaleTLSCertificates(ctx, upstreamClient, upstreamGateway, sets.New[string]()); err != nil {
-		logger.Error(err, "failed to remove TLSCertificates after rollback")
-	}
-
-	for i := range handedOver.Items {
-		secret := &handedOver.Items[i]
-		var legacy cmv1.Certificate
-		if err := downstreamClient.Get(ctx, client.ObjectKey{Namespace: secret.Namespace, Name: secret.Name}, &legacy); err != nil || !certIsReady(&legacy) {
-			continue
-		}
-		delete(secret.Labels, tlsCertificateManagedLabel)
-		if err := downstreamClient.Update(ctx, secret); err != nil {
-			logger.Error(err, "failed to clear hand-over marker after cert-manager retook the Secret", "secret", secret.Name)
-		}
-	}
-}
-
-// handedOverSecretHealth reports whether the listener's downstream Secret was
-// handed to or written by the certificate service and still holds a usable
-// certificate for the hostname. renewalDue says the certificate is in the last
-// third of its life, where cert-manager would renew it anyway.
-func handedOverSecretHealth(
-	ctx context.Context,
-	downstreamClient client.Client,
-	downstreamNamespace string,
-	secretName string,
-	hostname string,
-	now time.Time,
-) (status listenerCertStatus, handedOver bool, renewalDue bool) {
-	var secret corev1.Secret
-	if err := downstreamClient.Get(ctx, client.ObjectKey{Namespace: downstreamNamespace, Name: secretName}, &secret); err != nil {
-		return listenerCertStatus{}, false, false
-	}
-	if secret.Labels[tlsCertificateManagedLabel] != labelValueTrue {
-		return listenerCertStatus{}, false, false
-	}
-	leaf, err := parseLeafCertificate(secret.Data["tls.crt"], secret.Data["tls.key"])
-	if err != nil || leaf.VerifyHostname(hostname) != nil || now.Before(leaf.NotBefore) || !leaf.NotAfter.After(now.Add(listenerCertExpiryMargin)) {
-		return listenerCertStatus{}, true, true
-	}
-	lifetime := leaf.NotAfter.Sub(leaf.NotBefore)
-	renewalDue = !now.Before(leaf.NotAfter.Add(-lifetime / 3))
-	return listenerCertStatus{healthy: true, secretName: secretName, notAfter: &metav1.Time{Time: leaf.NotAfter}}, true, renewalDue
-}
-
-// evaluateListenerTLSCertificateHealth is evaluateListenerCertHealth for the
-// certificate-service path: conditions come from the upstream TLSCertificate,
-// the served material from the mirrored downstream Secret.
-func (r *GatewayReconciler) evaluateListenerTLSCertificateHealth(
-	ctx context.Context,
-	upstreamClient client.Client,
-	downstreamClient client.Client,
-	downstreamNamespace string,
-	upstreamGateway *gatewayv1.Gateway,
-	claimedHostnames []string,
-) map[gatewayv1.SectionName]listenerCertStatus {
-	logger := log.FromContext(ctx)
-	health := make(map[gatewayv1.SectionName]listenerCertStatus)
-	now := time.Now()
-
-	clearListenerCertMetrics(upstreamGateway.Namespace, upstreamGateway.Name)
-
-	for _, l := range upstreamGateway.Spec.Listeners {
-		hostname, wanted := r.listenerWantsOwnCertificate(l, claimedHostnames)
-		if !wanted {
-			continue
-		}
-
-		status := r.listenerTLSCertificateHealth(ctx, upstreamClient, downstreamClient, downstreamNamespace, upstreamGateway, l.Name, hostname, now)
-		health[l.Name] = status
-		recordListenerCertHealth(logger, upstreamGateway, l.Name, hostname, status)
-	}
-
-	return health
-}
-
 // servingSecretHealth is listenerSecretHealth plus a check that the leaf
 // actually covers the hostname, so a listener whose hostname changed cannot
-// keep serving the previous name's certificate.
+// keep serving the previous name's certificate. It also returns the served
+// leaf when there is one.
 func servingSecretHealth(
 	ctx context.Context,
 	downstreamClient client.Client,
@@ -969,26 +759,74 @@ func servingSecretHealth(
 	secretName string,
 	hostname string,
 	now time.Time,
-) listenerCertStatus {
+) (listenerCertStatus, *x509.Certificate) {
 	status := listenerSecretHealth(ctx, downstreamClient, downstreamNamespace, secretName, hostname, now)
 	if !status.healthy {
-		return status
+		return status, nil
 	}
 	var secret corev1.Secret
 	if err := downstreamClient.Get(ctx, client.ObjectKey{Namespace: downstreamNamespace, Name: secretName}, &secret); err != nil {
-		return listenerCertStatus{reason: gatewayv1.ListenerReasonInvalidCertificateRef, message: certMissingMessage(hostname), pending: true, secretName: secretName}
+		return listenerCertStatus{reason: gatewayv1.ListenerReasonInvalidCertificateRef, message: certMissingMessage(hostname), pending: true, secretName: secretName}, nil
 	}
 	if err := validateIssuedMaterial(secret.Data["tls.crt"], secret.Data["tls.key"], hostname, now); err != nil {
-		return listenerCertStatus{reason: gatewayv1.ListenerReasonInvalidCertificateRef, message: certMissingMessage(hostname), secretName: secretName}
+		return listenerCertStatus{reason: gatewayv1.ListenerReasonInvalidCertificateRef, message: certMissingMessage(hostname), secretName: secretName}, nil
 	}
-	return status
+	leaf, err := parseLeafCertificate(secret.Data["tls.crt"], secret.Data["tls.key"])
+	if err != nil {
+		return status, nil
+	}
+	return status, leaf
+}
+
+// renewalOverdue reports whether a served certificate is well past the point
+// it should have been replaced, whatever the TLSCertificate's status says.
+func renewalOverdue(leaf *x509.Certificate, now time.Time) bool {
+	if leaf == nil {
+		return false
+	}
+	lifetime := leaf.NotAfter.Sub(leaf.NotBefore)
+	return leaf.NotAfter.Sub(now) < lifetime/renewalOverdueDivisor
+}
+
+// tlsCertificateFailure says why a TLSCertificate is not producing a usable
+// certificate, as a counter reason and the service's own explanation, or ""
+// while it is healthy, still within its grace, or waiting on DNS records the
+// customer has to publish.
+func tlsCertificateFailure(cert *certificatesv1alpha1.TLSCertificate, now time.Time) (string, string) {
+	if accepted := apimeta.FindStatusCondition(cert.Status.Conditions, certificatesv1alpha1.ConditionAccepted); accepted != nil && accepted.Status == metav1.ConditionFalse {
+		return certificateServiceReasonRejected, accepted.Message
+	}
+	if !cert.DeletionTimestamp.IsZero() {
+		return "", ""
+	}
+	if issuing := apimeta.FindStatusCondition(cert.Status.Conditions, certificatesv1alpha1.ConditionIssuing); issuing != nil &&
+		issuing.Status == metav1.ConditionFalse && issuing.Reason == "IssuanceFailed" {
+		return certificateServiceReasonIssuanceFailed, issuing.Message
+	}
+	ready := apimeta.FindStatusCondition(cert.Status.Conditions, certificatesv1alpha1.ConditionReady)
+	if ready != nil && ready.Status == metav1.ConditionTrue {
+		return "", ""
+	}
+	if delegation := apimeta.FindStatusCondition(cert.Status.Conditions, certificatesv1alpha1.ConditionDNSDelegationReady); delegation != nil && delegation.Status == metav1.ConditionFalse {
+		return "", ""
+	}
+	since := cert.CreationTimestamp.Time
+	detail := ""
+	if ready != nil {
+		since = ready.LastTransitionTime.Time
+		detail = ready.Message
+	}
+	if since.IsZero() || now.Sub(since) < tlsCertificateIssueGrace {
+		return "", ""
+	}
+	return certificateServiceReasonNotReady, detail
 }
 
 // listenerTLSCertificateHealth keeps a listener serving whenever its downstream
-// Secret holds a usable certificate, whatever the TLSCertificate is doing: a
-// renewal in flight or a first issuance replacing a legacy certificate must
-// not take HTTPS down. Only when nothing usable is downstream do the
-// TLSCertificate's conditions decide what the customer is told.
+// Secret holds a usable certificate, whatever the TLSCertificate is doing. A
+// replacement that is failing, stalled or overdue is reported as a blocked
+// renewal while the listener serves, and as blocked issuance when nothing does,
+// and counted once per transition.
 func (r *GatewayReconciler) listenerTLSCertificateHealth(
 	ctx context.Context,
 	upstreamClient client.Client,
@@ -1004,14 +842,19 @@ func (r *GatewayReconciler) listenerTLSCertificateHealth(
 	certName := tlsCertificateName(upstreamGateway.Name, listenerName)
 	secretName := listenerCertificateSecretName(upstreamGateway.Name, listenerName)
 
-	secretStatus := servingSecretHealth(ctx, downstreamClient, downstreamNamespace, secretName, hostname, now)
+	secretStatus, leaf := servingSecretHealth(ctx, downstreamClient, downstreamNamespace, secretName, hostname, now)
 
 	var cert certificatesv1alpha1.TLSCertificate
 	if err := upstreamClient.Get(ctx, client.ObjectKey{Namespace: upstreamGateway.Namespace, Name: certName}, &cert); err != nil {
 		if !apierrors.IsNotFound(err) {
 			logger.Error(err, "failed to get listener TLSCertificate", "tlscertificate", certName)
 		}
-		r.recordCertificateServiceRejection(upstreamGateway, listenerName, false)
+		reason := ""
+		if secretStatus.healthy && renewalOverdue(leaf, now) {
+			reason = certificateServiceReasonRenewalOverdue
+			secretStatus.renewalBlocked = certificateRenewalOverdueMessage(hostname, leaf.NotAfter)
+		}
+		r.recordCertificateServiceState(upstreamGateway, listenerName, reason)
 		if secretStatus.healthy {
 			return secretStatus
 		}
@@ -1023,25 +866,39 @@ func (r *GatewayReconciler) listenerTLSCertificateHealth(
 		}
 	}
 
-	rejected := apimeta.FindStatusCondition(cert.Status.Conditions, certificatesv1alpha1.ConditionAccepted)
-	if rejected != nil && rejected.Status != metav1.ConditionFalse {
-		rejected = nil
+	reason, detail := tlsCertificateFailure(&cert, now)
+	if reason == "" && secretStatus.healthy && renewalOverdue(leaf, now) {
+		reason = certificateServiceReasonRenewalOverdue
 	}
-
-	r.recordCertificateServiceRejection(upstreamGateway, listenerName, rejected != nil)
+	r.recordCertificateServiceState(upstreamGateway, listenerName, reason)
 
 	if secretStatus.healthy {
-		if rejected != nil {
-			secretStatus.renewalBlocked = tlsCertificateRejectedMessage(hostname, rejected.Message)
+		switch reason {
+		case "":
+		case certificateServiceReasonRenewalOverdue:
+			secretStatus.renewalBlocked = certificateRenewalOverdueMessage(hostname, leaf.NotAfter)
+		case certificateServiceReasonRejected:
+			secretStatus.renewalBlocked = tlsCertificateRejectedMessage(hostname, detail)
+		default:
+			secretStatus.renewalBlocked = certificateNotIssuedMessage(hostname, detail)
 		}
 		return secretStatus
 	}
 
-	if accepted := rejected; accepted != nil {
+	switch reason {
+	case certificateServiceReasonRejected:
 		return listenerCertStatus{
 			reason:     gatewayv1.ListenerReasonInvalidCertificateRef,
-			message:    tlsCertificateRejectedMessage(hostname, accepted.Message),
+			message:    tlsCertificateRejectedMessage(hostname, detail),
 			secretName: secretName,
+		}
+	case certificateServiceReasonIssuanceFailed, certificateServiceReasonNotReady:
+		return listenerCertStatus{
+			reason:          gatewayv1.ListenerReasonInvalidCertificateRef,
+			message:         certificateNotIssuedMessage(hostname, detail),
+			pending:         true,
+			issuanceBlocked: true,
+			secretName:      secretName,
 		}
 	}
 

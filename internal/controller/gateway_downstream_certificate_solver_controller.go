@@ -3,14 +3,18 @@ package controller
 import (
 	"context"
 	"fmt"
+	"net/http"
 
+	envoygatewayv1alpha1 "github.com/envoyproxy/gateway/api/v1alpha1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
@@ -156,13 +160,94 @@ func (r *GatewayDownstreamCertificateSolverReconciler) Reconcile(ctx context.Con
 
 	logger.Info("Successfully retrieved key and token from cert-manager Challenge for downstream certificate")
 
-	if err := ensureHTTP01SolverRoutes(ctx, cl, r.DownstreamCluster.GetScheme(), challenge, &gateway, http01SolverRoute{
-		name:  challenge.GetName(),
-		token: token,
-		key:   key,
-	}); err != nil {
-		return ctrl.Result{}, err
+	// Create HTTPRouteFilter with inline direct response
+	httpRouteFilter := &envoygatewayv1alpha1.HTTPRouteFilter{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: req.Namespace,
+			Name:      challenge.GetName(),
+		},
 	}
+
+	if err := controllerutil.SetControllerReference(challenge, httpRouteFilter, r.DownstreamCluster.GetScheme()); err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to set controller reference on HTTPRouteFilter: %w", err)
+	}
+
+	result, err := controllerutil.CreateOrUpdate(ctx, cl, httpRouteFilter, func() error {
+		httpRouteFilter.Labels = map[string]string{
+			"meta.datumapis.com/http01-solver": labelValueTrue,
+		}
+		httpRouteFilter.Spec = envoygatewayv1alpha1.HTTPRouteFilterSpec{
+			DirectResponse: &envoygatewayv1alpha1.HTTPDirectResponseFilter{
+				ContentType: ptr.To("text/plain"),
+				StatusCode:  ptr.To(http.StatusOK),
+				Body: &envoygatewayv1alpha1.CustomResponseBody{
+					Type:   ptr.To(envoygatewayv1alpha1.ResponseValueTypeInline),
+					Inline: ptr.To(key),
+				},
+			},
+		}
+
+		return nil
+	})
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to create or update HTTPRouteFilter: %w", err)
+	}
+	logger.Info("HTTPRouteFilter reconciled", "result", result)
+
+	// Attach HTTPRoute at expected path with direct response filter
+	httpRoute := &gatewayv1.HTTPRoute{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: req.Namespace,
+			Name:      challenge.GetName(),
+		},
+	}
+
+	if err := controllerutil.SetControllerReference(challenge, httpRoute, r.DownstreamCluster.GetScheme()); err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to set controller reference on HTTPRoute: %w", err)
+	}
+
+	result, err = controllerutil.CreateOrUpdate(ctx, cl, httpRoute, func() error {
+		httpRoute.Labels = map[string]string{
+			"meta.datumapis.com/http01-solver": labelValueTrue,
+		}
+		httpRoute.Spec = gatewayv1.HTTPRouteSpec{
+			CommonRouteSpec: gatewayv1.CommonRouteSpec{
+				ParentRefs: []gatewayv1.ParentReference{
+					{
+						Name: gatewayv1.ObjectName(gateway.GetName()),
+					},
+				},
+			},
+			Rules: []gatewayv1.HTTPRouteRule{
+				{
+					Matches: []gatewayv1.HTTPRouteMatch{
+						{
+							Path: &gatewayv1.HTTPPathMatch{
+								Type:  ptr.To(gatewayv1.PathMatchExact),
+								Value: ptr.To(fmt.Sprintf("/.well-known/acme-challenge/%s", token)),
+							},
+						},
+					},
+					Filters: []gatewayv1.HTTPRouteFilter{
+						{
+							Type: gatewayv1.HTTPRouteFilterExtensionRef,
+							ExtensionRef: &gatewayv1.LocalObjectReference{
+								Group: envoygatewayv1alpha1.GroupName,
+								Kind:  envoygatewayv1alpha1.KindHTTPRouteFilter,
+								Name:  gatewayv1.ObjectName(httpRouteFilter.GetName()),
+							},
+						},
+					},
+				},
+			},
+		}
+
+		return nil
+	})
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to create or update HTTPRoute: %w", err)
+	}
+	logger.Info("HTTPRoute reconciled", "result", result)
 
 	return ctrl.Result{}, nil
 }

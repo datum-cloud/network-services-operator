@@ -604,6 +604,7 @@ func (r *HTTPProxyReconciler) reconcileHTTPProxyHostnameStatus(
 	acceptedHostnames := sets.New[gatewayv1.Hostname]()
 	nonAcceptedHostnames := sets.New[string]()
 	inUseHostnames := sets.New[string]()
+	inUseMessages := map[string]string{}
 	for _, listener := range gateway.Spec.Listeners {
 		if listener.Hostname == nil {
 			// Should only happen shortly after creation, before the default hostnames
@@ -623,6 +624,7 @@ func (r *HTTPProxyReconciler) reconcileHTTPProxyHostnameStatus(
 				acceptedHostnames.Insert(*listener.Hostname)
 			} else if listenerAcceptedCondition.Reason == networkingv1alpha.HostnameInUseReason {
 				inUseHostnames.Insert(string(*listener.Hostname))
+				inUseMessages[string(*listener.Hostname)] = listenerAcceptedCondition.Message
 			} else {
 				nonAcceptedHostnames.Insert(string(*listener.Hostname))
 			}
@@ -684,6 +686,9 @@ func (r *HTTPProxyReconciler) reconcileHTTPProxyHostnameStatus(
 
 	// Build per-hostname statuses
 	availabilityStatuses := buildAvailabilityStatuses(acceptedHostnames, inUseHostnames, httpProxyCopy.Generation)
+	if r.Config.Gateway.CertificateService.Enabled {
+		explainInUseHostnames(availabilityStatuses, inUseMessages)
+	}
 	dnsStatuses := r.buildDNSStatuses(ctx, cl, gateway, httpProxyCopy.Generation)
 	certificateStatuses := r.buildCertificateStatuses(ctx, cl, clusterName, gateway, httpProxyCopy)
 	dnsRecordStatuses, recheckRouting := r.buildDNSRecordStatuses(ctx, cl, gateway, httpProxyCopy)
@@ -1393,6 +1398,24 @@ func buildAvailabilityStatuses(
 	}
 
 	return statuses
+}
+
+// explainInUseHostnames carries the gateway's reason a hostname could not be
+// claimed onto its Available condition, so a hostname refused for sitting
+// under another project's wildcard says so.
+func explainInUseHostnames(statuses []networkingv1alpha.HostnameStatus, messages map[string]string) {
+	for i := range statuses {
+		message := messages[statuses[i].Hostname]
+		if message == "" {
+			continue
+		}
+		for j := range statuses[i].Conditions {
+			c := &statuses[i].Conditions[j]
+			if c.Type == networkingv1alpha.HostnameConditionAvailable && c.Reason == networkingv1alpha.HostnameAvailableReasonInUse {
+				c.Message = message
+			}
+		}
+	}
 }
 
 // buildDNSStatuses queries DNSRecordSets owned by the Gateway and builds

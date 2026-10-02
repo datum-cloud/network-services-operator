@@ -126,10 +126,9 @@ func (r *GatewayReconciler) listenerIssuerResolvable(upstreamGateway *gatewayv1.
 // the listeners, so an event-driven reconcile inside the window repeats the
 // message rather than the calls.
 type certificateServiceBackoff struct {
-	attempts  int
-	nextTry   time.Time
-	message   string
-	listeners []gatewayv1.SectionName
+	attempts int
+	nextTry  time.Time
+	issues   map[gatewayv1.SectionName]string
 }
 
 // certificateServiceRequeue records the outcome of a pass and hands back the
@@ -148,10 +147,9 @@ func (r *GatewayReconciler) certificateServiceRequeue(gateway types.UID, failed 
 	if attempts > 10 || delay > certificateServiceBackoffMax {
 		delay = certificateServiceBackoffMax
 	}
-	backoff := certificateServiceBackoff{attempts: attempts, nextTry: now.Add(delay)}
+	backoff := certificateServiceBackoff{attempts: attempts, nextTry: now.Add(delay), issues: make(map[gatewayv1.SectionName]string, len(issues))}
 	for listener, message := range issues {
-		backoff.listeners = append(backoff.listeners, listener)
-		backoff.message = message
+		backoff.issues[listener] = message
 	}
 	r.certificateServiceFailures.Store(gateway, backoff)
 	return delay
@@ -173,6 +171,28 @@ func (r *GatewayReconciler) certificateServiceInBackoff(gateway types.UID, now t
 
 func recordCertificateServiceFailure(gateway *gatewayv1.Gateway, listener gatewayv1.SectionName, reason string) {
 	certificateServiceFailuresTotal.WithLabelValues(gateway.Namespace, gateway.Name, string(listener), reason).Inc()
+}
+
+// recordCertificateServiceRejection counts a service rejection once per
+// transition into the rejected state, since the rejection is read back on every
+// pass for as long as it lasts.
+func (r *GatewayReconciler) recordCertificateServiceRejection(gateway *gatewayv1.Gateway, listener gatewayv1.SectionName, rejected bool) {
+	key := gateway.UID
+	current := map[gatewayv1.SectionName]bool{}
+	if previous, ok := r.certificateServiceRejections.Load(key); ok {
+		for k, v := range previous.(map[gatewayv1.SectionName]bool) {
+			current[k] = v
+		}
+	}
+	if rejected && !current[listener] {
+		recordCertificateServiceFailure(gateway, listener, certificateServiceReasonRejected)
+	}
+	if rejected {
+		current[listener] = true
+	} else {
+		delete(current, listener)
+	}
+	r.certificateServiceRejections.Store(key, current)
 }
 
 const (
@@ -229,8 +249,8 @@ func (r *GatewayReconciler) ensureListenerTLSCertificates(
 	}
 
 	if backoff, remaining, cooling := r.certificateServiceInBackoff(upstreamGateway.UID, now); cooling {
-		for _, listener := range backoff.listeners {
-			issues[listener] = backoff.message
+		for listener, message := range backoff.issues {
+			issues[listener] = message
 		}
 		requeueSooner(remaining)
 		return result, issues
@@ -963,6 +983,7 @@ func (r *GatewayReconciler) listenerTLSCertificateHealth(
 		if !apierrors.IsNotFound(err) {
 			logger.Error(err, "failed to get listener TLSCertificate", "tlscertificate", certName)
 		}
+		r.recordCertificateServiceRejection(upstreamGateway, listenerName, false)
 		if secretStatus.healthy {
 			return secretStatus
 		}
@@ -979,10 +1000,11 @@ func (r *GatewayReconciler) listenerTLSCertificateHealth(
 		rejected = nil
 	}
 
+	r.recordCertificateServiceRejection(upstreamGateway, listenerName, rejected != nil)
+
 	if secretStatus.healthy {
 		if rejected != nil {
 			secretStatus.renewalBlocked = tlsCertificateRejectedMessage(hostname, rejected.Message)
-			recordCertificateServiceFailure(upstreamGateway, listenerName, certificateServiceReasonRejected)
 		}
 		return secretStatus
 	}

@@ -101,7 +101,8 @@ type GatewayReconciler struct {
 	// Config.Gateway.CertificateService.Enabled.
 	CertificateServiceReader client.Reader
 
-	certificateServiceFailures sync.Map
+	certificateServiceFailures   sync.Map
+	certificateServiceRejections sync.Map
 }
 
 // +kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;update;patch;delete
@@ -1839,6 +1840,8 @@ func (r *GatewayReconciler) finalizeGateway(
 	// Clear this gateway's cert-health series now that it is gone.
 	clearListenerCertMetrics(upstreamGateway.Namespace, upstreamGateway.Name)
 	r.certificateServiceFailures.Delete(upstreamGateway.UID)
+	r.certificateServiceRejections.Delete(upstreamGateway.UID)
+	certificateServiceFailuresTotal.DeletePartialMatch(prometheus.Labels{jsonKeyNamespace: upstreamGateway.Namespace, jsonKeyName: upstreamGateway.Name})
 
 	// Clean up DNS records created by this gateway
 	if r.Config.Gateway.EnableDNSIntegration {
@@ -2229,6 +2232,8 @@ func (r *GatewayReconciler) ensureDownstreamGatewayHTTPRoutes(
 				Message:            certStatus.renewalBlocked,
 				ObservedGeneration: upstreamGateway.Generation,
 			})
+		} else {
+			apimeta.RemoveStatusCondition(&status.Conditions, listenerConditionCertificateRenewalBlocked)
 		}
 
 		listenerStatus = append(listenerStatus, status)

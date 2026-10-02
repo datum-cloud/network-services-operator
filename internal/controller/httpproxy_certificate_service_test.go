@@ -86,6 +86,7 @@ func TestBuildCertificateStatusesCertificateService(t *testing.T) {
 		{
 			name:       "Ready maps to CertificateIssued",
 			upstream:   []client.Object{tlsCert(metav1.Condition{Type: certificatesv1alpha1.ConditionReady, Status: metav1.ConditionTrue})},
+			downstream: []client.Object{servingSecret},
 			wantStatus: metav1.ConditionTrue,
 			wantReason: networkingv1alpha.CertificateReadyReasonCertificateIssued,
 		},
@@ -144,14 +145,33 @@ func TestBuildCertificateStatusesCertificateService(t *testing.T) {
 			wantMessage: "Certificate is ready but cannot be renewed: names under datum.net are denied",
 		},
 		{
-			name:     "a blocked renewal the gateway reports surfaces as RenewalFailing",
-			upstream: []client.Object{tlsCert(metav1.Condition{Type: certificatesv1alpha1.ConditionReady, Status: metav1.ConditionTrue})},
+			name:       "a blocked renewal the gateway reports surfaces as RenewalFailing",
+			upstream:   []client.Object{tlsCert(metav1.Condition{Type: certificatesv1alpha1.ConditionReady, Status: metav1.ConditionTrue})},
+			downstream: []client.Object{servingSecret},
 			listenerConditions: []metav1.Condition{{
 				Type: listenerConditionCertificateRenewalBlocked, Status: metav1.ConditionTrue, Reason: listenerReasonRenewalFailing, Message: "We couldn't request a TLS certificate for app.example.com just now",
 			}},
 			wantStatus:  metav1.ConditionTrue,
 			wantReason:  networkingv1alpha.CertificateReadyReasonRenewalFailing,
 			wantMessage: "Certificate is ready but cannot be renewed: We couldn't request a TLS certificate for app.example.com just now",
+		},
+		{
+			name:     "Ready but the issued Secret could not be taken and nothing serves is a provisioning failure",
+			upstream: []client.Object{tlsCert(metav1.Condition{Type: certificatesv1alpha1.ConditionReady, Status: metav1.ConditionTrue})},
+			listenerConditions: []metav1.Condition{{
+				Type: listenerConditionCertificateRenewalBlocked, Status: metav1.ConditionTrue, Reason: listenerReasonRenewalFailing, Message: "We couldn't request a TLS certificate for app.example.com just now",
+			}},
+			downstream:  nil,
+			wantStatus:  metav1.ConditionFalse,
+			wantReason:  networkingv1alpha.CertificateReadyReasonProvisioningFailed,
+			wantMessage: "We couldn't request a TLS certificate for app.example.com just now",
+		},
+		{
+			name:        "Ready but not yet mirrored is pending, not issued",
+			upstream:    []client.Object{tlsCert(metav1.Condition{Type: certificatesv1alpha1.ConditionReady, Status: metav1.ConditionTrue})},
+			wantStatus:  metav1.ConditionFalse,
+			wantReason:  networkingv1alpha.CertificateReadyReasonPending,
+			wantMessage: "The certificate has been issued and is being applied to this hostname",
 		},
 		{
 			name:       "no TLSCertificate yet but a ready legacy Certificate answers",

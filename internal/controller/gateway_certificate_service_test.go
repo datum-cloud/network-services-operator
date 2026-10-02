@@ -720,8 +720,11 @@ func TestCertificateServiceRequeueBackoff(t *testing.T) {
 	r := &GatewayReconciler{}
 	uid := types.UID("gw")
 	now := time.Now()
-	issues := map[gatewayv1.SectionName]string{"https-0": "trying"}
+	issues := map[gatewayv1.SectionName]string{"https-0": "trying", "https-1": "other"}
 	assert.Equal(t, 5*time.Second, r.certificateServiceRequeue(uid, true, now, issues))
+	kept, _, _ := r.certificateServiceInBackoff(uid, now)
+	assert.Equal(t, "other", kept.issues["https-1"], "each listener keeps its own message")
+	issues = map[gatewayv1.SectionName]string{"https-0": "trying"}
 	assert.Equal(t, 10*time.Second, r.certificateServiceRequeue(uid, true, now, issues))
 	assert.Equal(t, 20*time.Second, r.certificateServiceRequeue(uid, true, now, issues))
 	for range 10 {
@@ -731,8 +734,7 @@ func TestCertificateServiceRequeueBackoff(t *testing.T) {
 
 	backoff, remaining, cooling := r.certificateServiceInBackoff(uid, now.Add(time.Minute))
 	assert.True(t, cooling, "an event inside the window repeats the message instead of the calls")
-	assert.Equal(t, []gatewayv1.SectionName{"https-0"}, backoff.listeners)
-	assert.Equal(t, "trying", backoff.message)
+	assert.Equal(t, map[gatewayv1.SectionName]string{"https-0": "trying"}, backoff.issues)
 	assert.Equal(t, certificateServiceBackoffMax-time.Minute, remaining)
 	_, _, cooling = r.certificateServiceInBackoff(uid, now.Add(certificateServiceBackoffMax))
 	assert.False(t, cooling)
@@ -1023,4 +1025,152 @@ func TestCertificateServiceRollbackKeepsHandedOverSecret(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestCertificateServiceRenewalBlockedClearsOnRecovery(t *testing.T) {
+	testScheme := newCertificateServiceTestScheme(t)
+	logger := zap.New(zap.UseFlagOptions(&zap.Options{Development: true}))
+	ctx := log.IntoContext(context.Background(), logger)
+
+	upstreamNamespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "recovery", UID: uuid.NewUUID()}}
+	downstreamNamespaceName := "ns-" + string(upstreamNamespace.UID)
+	const hostname = "custom.example.com"
+	const gatewayName = "recovery-gw"
+	const listenerName = gatewayv1.SectionName("https-hostname-0")
+	const serviceNS = "certificates-system"
+	secretName := listenerCertificateSecretName(gatewayName, listenerName)
+	certName := tlsCertificateName(gatewayName, listenerName)
+
+	testCfg := config.NetworkServicesOperator{Gateway: config.GatewayConfig{
+		DownstreamGatewayClassName:            "test-suite",
+		DownstreamHostnameAccountingNamespace: "default",
+		TargetDomain:                          "test-suite.com",
+		DefaultListenerTLSSecretName:          "wildcard-test-suite-tls",
+		IPFamilies:                            []networkingv1alpha.IPFamily{networkingv1alpha.IPv4Protocol},
+		ListenerTLSOptions:                    map[gatewayv1.AnnotationKey]gatewayv1.AnnotationValue{gatewayv1.AnnotationKey(certificateIssuerTLSOption): "test-issuer"},
+		CertificateService:                    config.CertificateServiceConfig{Enabled: true, SecretNamespace: serviceNS},
+	}}
+	upstreamGateway := newGateway(testCfg, upstreamNamespace.Name, gatewayName, func(g *gatewayv1.Gateway) {
+		g.Spec.Listeners = append(g.Spec.Listeners, gatewayv1.Listener{
+			Name: listenerName, Protocol: gatewayv1.HTTPSProtocolType, Port: DefaultHTTPSPort,
+			Hostname: ptr.To(gatewayv1.Hostname(hostname)),
+			TLS: &gatewayv1.ListenerTLSConfig{Mode: ptr.To(gatewayv1.TLSModeTerminate), Options: map[gatewayv1.AnnotationKey]gatewayv1.AnnotationValue{
+				gatewayv1.AnnotationKey(certificateIssuerTLSOption): "test-issuer",
+			}},
+		})
+	})
+	domain := newDomain(upstreamNamespace.Name, hostname, func(d *networkingv1alpha.Domain) {
+		d.Spec.DomainName = hostname
+		apimeta.SetStatusCondition(&d.Status.Conditions, metav1.Condition{Type: networkingv1alpha.DomainConditionVerified, Status: metav1.ConditionTrue})
+	})
+	gatewayClass := &gatewayv1.GatewayClass{ObjectMeta: metav1.ObjectMeta{Name: "test"}, Spec: gatewayv1.GatewayClassSpec{ControllerName: "test"}}
+
+	now := time.Now()
+	servingCrt, servingKey := generateTLSKeyPair(t, hostname, now.Add(-time.Hour), now.Add(60*24*time.Hour))
+	issuedCrt, issuedKey := generateTLSKeyPair(t, hostname, now.Add(-time.Hour), now.Add(90*24*time.Hour))
+
+	cert := &certificatesv1alpha1.TLSCertificate{
+		ObjectMeta: metav1.ObjectMeta{Namespace: upstreamNamespace.Name, Name: certName},
+		Spec:       certificatesv1alpha1.TLSCertificateSpec{DNSNames: []certificatesv1alpha1.DNSName{hostname}, Issuance: certificatesv1alpha1.IssuanceModeAuto, SecretName: secretName},
+		Status: certificatesv1alpha1.TLSCertificateStatus{
+			NotAfter:         &metav1.Time{Time: now.Add(90 * 24 * time.Hour)},
+			ServiceSecretRef: &certificatesv1alpha1.ServiceSecretReference{Namespace: serviceNS, Name: "issued"},
+			Conditions:       []metav1.Condition{{Type: certificatesv1alpha1.ConditionReady, Status: metav1.ConditionTrue, Reason: "Issued"}},
+		},
+	}
+	require.NoError(t, controllerutil.SetControllerReference(upstreamGateway, cert, testScheme))
+	serving := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: downstreamNamespaceName, Name: secretName}, Type: corev1.SecretTypeTLS, Data: map[string][]byte{"tls.crt": servingCrt, "tls.key": servingKey}}
+	issued := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: serviceNS, Name: "issued"}, Type: corev1.SecretTypeTLS, Data: map[string][]byte{"tls.crt": issuedCrt, "tls.key": issuedKey}}
+	for _, obj := range []client.Object{domain, gatewayClass, cert, serving, issued} {
+		obj.SetUID(uuid.NewUUID())
+		obj.SetCreationTimestamp(metav1.Now())
+	}
+
+	fakeUpstreamClient := fake.NewClientBuilder().WithScheme(testScheme).
+		WithObjects(upstreamGateway, upstreamNamespace, domain, gatewayClass, cert).
+		WithStatusSubresource(upstreamGateway, cert).Build()
+	fakeDownstreamClient := fake.NewClientBuilder().WithScheme(testScheme).WithObjects(serving).WithStatusSubresource(&gatewayv1.Gateway{}).Build()
+
+	forbidden := true
+	serviceClient := fake.NewClientBuilder().WithScheme(testScheme).WithObjects(issued).WithInterceptorFuncs(interceptor.Funcs{
+		Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if forbidden {
+				return apierrors.NewForbidden(corev1.Resource("secrets"), key.Name, nil)
+			}
+			return cl.Get(ctx, key, obj, opts...)
+		},
+	}).Build()
+
+	reconciler := &GatewayReconciler{
+		mgr:                      &fakeMockManager{cl: fakeUpstreamClient},
+		Config:                   testCfg,
+		DownstreamCluster:        &fakeCluster{cl: fakeDownstreamClient},
+		CertificateServiceReader: serviceClient,
+	}
+	downstreamStrategy := downstreamclient.NewMappedNamespaceResourceStrategy("test", fakeUpstreamClient, fakeDownstreamClient)
+	reconciler.prepareUpstreamGateway(upstreamGateway)
+
+	reconcile := func() *gatewayv1.Gateway {
+		var current gatewayv1.Gateway
+		require.NoError(t, fakeUpstreamClient.Get(ctx, client.ObjectKeyFromObject(upstreamGateway), &current))
+		result, _ := reconciler.ensureDownstreamGateway(ctx, "test", fakeUpstreamClient, &current, downstreamStrategy)
+		require.NoError(t, result.Err)
+		_, err := result.Complete(ctx)
+		require.NoError(t, err)
+		require.NoError(t, fakeUpstreamClient.Get(ctx, client.ObjectKeyFromObject(upstreamGateway), &current))
+
+		var claims corev1.ConfigMapList
+		require.NoError(t, fakeDownstreamClient.List(ctx, &claims, client.InNamespace(testCfg.Gateway.DownstreamHostnameAccountingNamespace)))
+		for i := range claims.Items {
+			stampCreated(t, ctx, fakeDownstreamClient, &claims.Items[i])
+		}
+		var downstreamGateways gatewayv1.GatewayList
+		require.NoError(t, fakeDownstreamClient.List(ctx, &downstreamGateways, client.InNamespace(downstreamNamespaceName)))
+		for i := range downstreamGateways.Items {
+			stampCreated(t, ctx, fakeDownstreamClient, &downstreamGateways.Items[i])
+		}
+		return &current
+	}
+
+	first := reconcile()
+	assertListenerRenewalBlocked(t, first, listenerName, "keep trying")
+	assert.Equal(t, 1.0, counterValue(t, certificateServiceFailuresTotal, upstreamNamespace.Name, gatewayName, string(listenerName), certificateServiceReasonStepFailed))
+
+	forbidden = false
+	reconciler.certificateServiceFailures.Delete(upstreamGateway.UID)
+	second := reconcile()
+	for _, ls := range second.Status.Listeners {
+		if ls.Name == listenerName {
+			assert.Nil(t, apimeta.FindStatusCondition(ls.Conditions, listenerConditionCertificateRenewalBlocked), "a recovered renewal no longer reads as blocked")
+		}
+	}
+	var mirror corev1.Secret
+	require.NoError(t, fakeDownstreamClient.Get(ctx, client.ObjectKey{Namespace: downstreamNamespaceName, Name: secretName}, &mirror))
+	assert.Equal(t, issuedCrt, mirror.Data["tls.crt"], "the issued certificate replaces the serving one once readable")
+	assert.Equal(t, 1.0, counterValue(t, certificateServiceFailuresTotal, upstreamNamespace.Name, gatewayName, string(listenerName), certificateServiceReasonStepFailed), "a success adds nothing")
+}
+
+func TestCertificateServiceRejectionCountedPerTransition(t *testing.T) {
+	r := &GatewayReconciler{}
+	gw := &gatewayv1.Gateway{ObjectMeta: metav1.ObjectMeta{Namespace: "count", Name: "gw", UID: uuid.NewUUID()}}
+	before := counterValue(t, certificateServiceFailuresTotal, "count", "gw", "https-0", certificateServiceReasonRejected)
+	r.recordCertificateServiceRejection(gw, "https-0", true)
+	r.recordCertificateServiceRejection(gw, "https-0", true)
+	r.recordCertificateServiceRejection(gw, "https-0", true)
+	assert.Equal(t, before+1, counterValue(t, certificateServiceFailuresTotal, "count", "gw", "https-0", certificateServiceReasonRejected))
+	r.recordCertificateServiceRejection(gw, "https-0", false)
+	r.recordCertificateServiceRejection(gw, "https-0", true)
+	assert.Equal(t, before+2, counterValue(t, certificateServiceFailuresTotal, "count", "gw", "https-0", certificateServiceReasonRejected), "a new rejection after recovery counts again")
+}
+
+// stampCreated gives an object the fake client created a creation timestamp,
+// which the real API server sets and the controller reads to tell a fresh
+// object from an existing one.
+func stampCreated(t *testing.T, ctx context.Context, cl client.Client, obj client.Object) {
+	t.Helper()
+	if created := obj.GetCreationTimestamp(); !created.IsZero() {
+		return
+	}
+	obj.SetCreationTimestamp(metav1.Now())
+	require.NoError(t, cl.Update(ctx, obj))
 }

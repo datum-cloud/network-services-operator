@@ -133,7 +133,12 @@ spec:
                   HTTPProxy. In such cases, these will be listed in the `status.hostnames`
                   field and do not require additional configuration by the user.
 
-                  Wildcard hostnames are not supported at this time.
+                  A hostname may start with a single wildcard label, as in
+                  `*.s3.example.com`, where the platform offers wildcards. A wildcard
+                  matches names one or more labels beneath its base, its certificate
+                  covers names exactly one label beneath, and it needs its base or a parent
+                  verified by DNS TXT record. A wildcard reserves every name beneath it for
+                  its project.
                 items:
                   description: |-
                     Hostname is the fully qualified domain name of a network host. This matches

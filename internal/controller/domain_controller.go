@@ -312,6 +312,9 @@ func (r *DomainReconciler) reconcileVerification(ctx context.Context, reader cli
 					apimeta.RemoveStatusCondition(&domainStatus.Conditions, networkingv1alpha.DomainConditionVerifiedDNS)
 					apimeta.RemoveStatusCondition(&domainStatus.Conditions, networkingv1alpha.DomainConditionVerifiedHTTP)
 					apimeta.RemoveStatusCondition(&domainStatus.Conditions, networkingv1alpha.DomainConditionVerifiedDNSZone)
+					if r.Config.Gateway.CertificateService.Enabled {
+						recordVerificationMethod(domainStatus, verifiedDNSCondition, verifiedHTTPCondition)
+					}
 					// When verified, no future verification timer is needed
 					nextAttempt = time.Time{}
 				}
@@ -333,6 +336,19 @@ func (r *DomainReconciler) reconcileVerification(ctx context.Context, reader cli
 	domain.Status = *domainStatus
 
 	return nextAttempt
+}
+
+// recordVerificationMethod keeps the condition for the method that proved
+// ownership, so a consumer can tell DNS proof from HTTP proof after the
+// verification scaffolding is cleared. DNS wins when both passed.
+func recordVerificationMethod(domainStatus *networkingv1alpha.DomainStatus, verifiedDNS, verifiedHTTP *metav1.Condition) {
+	if verifiedDNS.Status == metav1.ConditionTrue {
+		apimeta.SetStatusCondition(&domainStatus.Conditions, *verifiedDNS)
+		return
+	}
+	if verifiedHTTP.Status == metav1.ConditionTrue {
+		apimeta.SetStatusCondition(&domainStatus.Conditions, *verifiedHTTP)
+	}
 }
 
 var dnsZoneListGVK = schema.GroupVersionKind{

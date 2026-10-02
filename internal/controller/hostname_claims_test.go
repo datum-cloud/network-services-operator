@@ -105,9 +105,10 @@ func claimHostnames(t *testing.T, enabled bool, project string, downstream clien
 		&networkingv1alpha.Domain{
 			ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "example.com"},
 			Spec:       networkingv1alpha.DomainSpec{DomainName: "example.com"},
-			Status: networkingv1alpha.DomainStatus{Conditions: []metav1.Condition{{
-				Type: networkingv1alpha.DomainConditionVerified, Status: metav1.ConditionTrue, Reason: networkingv1alpha.DomainReasonVerified,
-			}}},
+			Status: networkingv1alpha.DomainStatus{Conditions: []metav1.Condition{
+				{Type: networkingv1alpha.DomainConditionVerified, Status: metav1.ConditionTrue, Reason: networkingv1alpha.DomainReasonVerified},
+				{Type: networkingv1alpha.DomainConditionVerifiedDNS, Status: metav1.ConditionTrue, Reason: networkingv1alpha.DomainReasonVerified},
+			}},
 		},
 	).Build()
 
@@ -121,8 +122,12 @@ func claimHostnames(t *testing.T, enabled bool, project string, downstream clien
 	}
 
 	gw := claimingGateway(hostnames...)
-	_, all, refused, err := r.ensureHostnamesClaimed(context.Background(), project, upstream, gw, &gatewayv1.Gateway{})
+	_, all, refusals, err := r.ensureHostnamesClaimed(context.Background(), project, upstream, gw, &gatewayv1.Gateway{})
 	require.NoError(t, err)
+	refused = map[string]string{}
+	for h, refusal := range refusals {
+		refused[h] = refusal.message
+	}
 	for _, h := range all {
 		if !strings.HasSuffix(h, ".datumproxy.net") {
 			claimed = append(claimed, h)
@@ -259,7 +264,7 @@ func TestSubtreeAwareHostnameClaims(t *testing.T) {
 	})
 }
 
-func refusedHostnames(refusals map[string]string) []string {
+func refusedHostnames[V any](refusals map[string]V) []string {
 	if len(refusals) == 0 {
 		return nil
 	}

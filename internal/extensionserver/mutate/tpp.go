@@ -3,6 +3,7 @@ package mutate
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	xdstypev3 "github.com/cncf/xds/go/xds/type/v3"
@@ -156,7 +157,7 @@ func InjectCorazaListenerFilters(l *listenerv3.Listener, cfg *CorazaConfig) (int
 //  1. Extracts the EG filter_metadata["envoy-gateway"] gateway resource ref.
 //  2. Resolves the upstream namespace via idx.DStoUS.
 //  3. Stamps project_name into datum-gateway route metadata on every NSO-owned route.
-//  4. Finds the governing TPP from idx.TPPs (route-level wins over gateway-level).
+//  4. Finds the governing TPP from idx.TPPs (rule-level wins over route-level, which wins over gateway-level).
 //  5. Writes typed_per_filter_config and datum-gateway metadata on governed routes.
 //
 // applied, when non-nil, is populated with "namespace/name" → generation for
@@ -204,11 +205,8 @@ func ApplyTPPRouteConfig(
 				continue
 			}
 
-			// Check for a route-level TPP (HTTPRoute targeting) — takes precedence.
 			_, _, routeName, _ := extractEGResource(rt.GetMetadata())
-			routeTPP := findRouteTPP(tpps, routeName)
-
-			governing := routeTPP
+			governing := findRouteTPP(tpps, routeName, routeRuleName(rt, dsNS, routeName, idx))
 			if governing == nil {
 				governing = gwTPP
 			}
@@ -295,20 +293,58 @@ func findGatewayTPP(tpps []extcache.TPPInfo, gatewayName string) *extcache.TPPIn
 	return nil
 }
 
-// findRouteTPP returns the first TPP in tpps whose TargetRefs includes an
-// HTTPRoute target matching routeName.
-func findRouteTPP(tpps []extcache.TPPInfo, routeName string) *extcache.TPPInfo {
+func routeRuleName(rt *routev3.Route, dsNS, routeName string, idx *extcache.PolicyIndex) string {
+	if routeName == "" {
+		return ""
+	}
+	ruleIndex, ok := routeRuleIndex(rt, dsNS, routeName)
+	if !ok {
+		return ""
+	}
+	names := idx.HTTPProxyRules[extcache.HTTPProxyKey{Namespace: dsNS, Name: routeName}]
+	if ruleIndex >= len(names) {
+		return ""
+	}
+	return names[ruleIndex]
+}
+
+func routeRuleIndex(rt *routev3.Route, dsNS, routeName string) (int, bool) {
+	if ns, name, i, ok := parseConnectorClusterName(routeCluster(rt)); ok && ns == dsNS && name == routeName {
+		return i, true
+	}
+	parts := strings.Split(rt.GetName(), "/")
+	if len(parts) < 5 || parts[0] != "httproute" || parts[1] != dsNS || parts[2] != routeName || parts[3] != "rule" {
+		return 0, false
+	}
+	i, err := strconv.Atoi(parts[4])
+	if err != nil || i < 0 {
+		return 0, false
+	}
+	return i, true
+}
+
+func findRouteTPP(tpps []extcache.TPPInfo, routeName, ruleName string) *extcache.TPPInfo {
 	if routeName == "" {
 		return nil
 	}
+	var routeLevel *extcache.TPPInfo
 	for i := range tpps {
 		for _, ref := range tpps[i].TargetRefs {
-			if string(ref.Kind) == kindHTTPRoute && string(ref.Name) == routeName {
+			if string(ref.Kind) != kindHTTPRoute || string(ref.Name) != routeName {
+				continue
+			}
+			if ref.SectionName == nil || *ref.SectionName == "" {
+				if routeLevel == nil {
+					routeLevel = &tpps[i]
+				}
+				continue
+			}
+			if ruleName != "" && string(*ref.SectionName) == ruleName {
 				return &tpps[i]
 			}
 		}
 	}
-	return nil
+	return routeLevel
 }
 
 // --- EG metadata extraction ---

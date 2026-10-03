@@ -4,6 +4,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/uuid"
@@ -44,6 +46,7 @@ func TestCollectTrafficProtectionPolicyAttachments(t *testing.T) {
 		name                      string
 		gateways                  []gatewayv1.Gateway
 		httpRoutes                []gatewayv1.HTTPRoute
+		httpProxies               []networkingv1alpha.HTTPProxy
 		trafficProtectionPolicies []networkingv1alpha.TrafficProtectionPolicy
 		assert                    func(t *testContext, policyAttachments []policyAttachment)
 	}{
@@ -362,6 +365,7 @@ func TestCollectTrafficProtectionPolicyAttachments(t *testing.T) {
 				tppContexts,
 				tt.gateways,
 				tt.httpRoutes,
+				tt.httpProxies,
 			)
 
 			testCtx := &testContext{
@@ -952,4 +956,101 @@ func newTrafficProtectionPolicy(
 	}
 
 	return tpp
+}
+
+func TestTrafficProtectionPolicySectionResolvesAgainstHTTPProxy(t *testing.T) {
+	operatorConfig := config.NetworkServicesOperator{}
+
+	newProxy := func(name string, ruleNames ...string) networkingv1alpha.HTTPProxy {
+		proxy := networkingv1alpha.HTTPProxy{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: name}}
+		for _, n := range ruleNames {
+			proxy.Spec.Rules = append(proxy.Spec.Rules, networkingv1alpha.HTTPProxyRule{Name: ptr.To(gatewayv1.SectionName(n))})
+		}
+		return proxy
+	}
+	routeOwnedBy := func(name, proxyName string) gatewayv1.HTTPRoute {
+		route := newHTTPRoute("default", name)
+		route.OwnerReferences = []metav1.OwnerReference{{
+			APIVersion: networkingv1alpha.GroupVersion.String(),
+			Kind:       "HTTPProxy",
+			Name:       proxyName,
+			Controller: ptr.To(true),
+		}}
+		return *route
+	}
+
+	tests := []struct {
+		name         string
+		route        gatewayv1.HTTPRoute
+		proxies      []networkingv1alpha.HTTPProxy
+		section      string
+		wantAccepted bool
+	}{
+		{
+			name:         "same-named proxy has the rule",
+			route:        *newHTTPRoute("default", "alb"),
+			proxies:      []networkingv1alpha.HTTPProxy{newProxy("alb", "exempt", "protected")},
+			section:      "protected",
+			wantAccepted: true,
+		},
+		{
+			name:         "owning proxy has the rule",
+			route:        routeOwnedBy("route-1", "alb"),
+			proxies:      []networkingv1alpha.HTTPProxy{newProxy("alb", "protected")},
+			section:      "protected",
+			wantAccepted: true,
+		},
+		{
+			name:    "proxy lacks the rule",
+			route:   *newHTTPRoute("default", "alb"),
+			proxies: []networkingv1alpha.HTTPProxy{newProxy("alb", "exempt")},
+			section: "protected",
+		},
+		{
+			name:    "no proxy",
+			route:   *newHTTPRoute("default", "alb"),
+			section: "protected",
+		},
+		{
+			name:    "unrelated proxy is not consulted",
+			route:   *newHTTPRoute("default", "alb"),
+			proxies: []networkingv1alpha.HTTPProxy{newProxy("other", "protected")},
+			section: "protected",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			proxiesByName := map[string]*networkingv1alpha.HTTPProxy{}
+			for i := range tt.proxies {
+				proxiesByName[tt.proxies[i].Name] = &tt.proxies[i]
+			}
+			route := tt.route
+			routeMap := map[client.ObjectKey]*policyRouteTargetContext{
+				client.ObjectKeyFromObject(&route): {
+					HTTPRoute:      &route,
+					proxyRuleNames: httpProxyRuleNames(&route, proxiesByName),
+				},
+			}
+			policy := &policyContext{TrafficProtectionPolicy: ptr.To(newTrafficProtectionPolicy("default", "tpp-1"))}
+			targetRef := gatewayv1alpha2.LocalPolicyTargetReferenceWithSectionName{
+				LocalPolicyTargetReference: gatewayv1.LocalPolicyTargetReference{Kind: "HTTPRoute", Name: gatewayv1.ObjectName(route.Name)},
+				SectionName:                ptr.To(gatewayv1.SectionName(tt.section)),
+			}
+
+			reconciler := &TrafficProtectionPolicyReconciler{Config: operatorConfig}
+			reconciler.processTrafficProtectionPolicyForHTTPRoute(t.Context(), routeMap, nil, nil, policy, targetRef)
+
+			require.Len(t, policy.Status.Ancestors, 1)
+			cond := apimeta.FindStatusCondition(policy.Status.Ancestors[0].Conditions, string(gatewayv1.PolicyConditionAccepted))
+			require.NotNil(t, cond)
+			if tt.wantAccepted {
+				assert.Equal(t, metav1.ConditionTrue, cond.Status)
+				assert.Equal(t, string(gatewayv1.PolicyReasonAccepted), cond.Reason)
+			} else {
+				assert.Equal(t, metav1.ConditionFalse, cond.Status)
+				assert.Equal(t, string(gatewayv1.PolicyReasonTargetNotFound), cond.Reason)
+			}
+		})
+	}
 }

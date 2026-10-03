@@ -53,6 +53,12 @@ type PolicyIndex struct {
 	// namespaces are not (they are commonly all "default").
 	TPPs map[string][]TPPInfo
 
+	// HTTPProxyRules maps (downstream replica namespace, httpProxyName) to the
+	// rule names of that HTTPProxy, indexed by rule position. Entries are empty
+	// strings for unnamed rules. Envoy Gateway numbers HTTPRoute rules in the
+	// same order, so the position is the rule index in route and cluster names.
+	HTTPProxyRules map[HTTPProxyKey][]string
+
 	// Connectors maps (upstreamNS, httpProxyName, ruleIndex) to ConnectorInfo.
 	// Only populated for HTTPProxy rules that have a Connector backend.
 	// Accumulated across all engaged clusters.
@@ -62,6 +68,11 @@ type PolicyIndex struct {
 	// populated for HTTPProxy rules that have a vpcPod backend. Accumulated
 	// across all engaged clusters, same shape as Connectors.
 	VPCPods map[VPCPodKey]VPCPodInfo
+}
+
+type HTTPProxyKey struct {
+	Namespace string
+	Name      string
 }
 
 // TPPInfo holds the fields of a TrafficProtectionPolicy needed by the

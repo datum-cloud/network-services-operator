@@ -34,11 +34,12 @@ import (
 // they are prepended to every policy's per-rule directive list.
 func BuildPolicyIndexFromClient(ctx context.Context, cl client.Client, baseDirectives []string) (*PolicyIndex, error) {
 	idx := &PolicyIndex{
-		DStoUS:       make(map[string]string),
-		ProjectNames: make(map[string]string),
-		TPPs:         make(map[string][]TPPInfo),
-		Connectors:   make(map[ConnectorKey]ConnectorInfo),
-		VPCPods:      make(map[VPCPodKey]VPCPodInfo),
+		DStoUS:         make(map[string]string),
+		ProjectNames:   make(map[string]string),
+		TPPs:           make(map[string][]TPPInfo),
+		HTTPProxyRules: make(map[HTTPProxyKey][]string),
+		Connectors:     make(map[ConnectorKey]ConnectorInfo),
+		VPCPods:        make(map[VPCPodKey]VPCPodInfo),
 	}
 	if err := populateFromClient(ctx, cl, idx, baseDirectives); err != nil {
 		return nil, err
@@ -133,6 +134,13 @@ func populateFromClient(ctx context.Context, cl client.Client, idx *PolicyIndex,
 		// Resolve the effective upstream namespace for the ConnectorKey, consistent
 		// with TPP indexing above. In two-cluster replica HTTPProxies carry
 		// UpstreamOwnerNamespaceLabel; in single-cluster fall back to proxy.Namespace.
+		ruleNames := make([]string, len(proxy.Spec.Rules))
+		for i, rule := range proxy.Spec.Rules {
+			if rule.Name != nil {
+				ruleNames[i] = string(*rule.Name)
+			}
+		}
+		idx.HTTPProxyRules[HTTPProxyKey{Namespace: proxy.Namespace, Name: proxy.Name}] = ruleNames
 		effectiveNS := proxy.Labels[downstreamclient.UpstreamOwnerNamespaceLabel]
 		if effectiveNS == "" {
 			effectiveNS = proxy.Namespace

@@ -1,6 +1,7 @@
 package mutate
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -604,4 +605,190 @@ func TestApplyTPPRouteConfig_RouteLevelTPPWins(t *testing.T) {
 		"route-level TPP name must appear in datum-gateway metadata")
 	// Route-level TPP mode is Enforce.
 	assert.Equal(t, string(networkingv1alpha.TrafficProtectionPolicyEnforce), entry["mode"].GetStringValue())
+}
+
+const sectionTestProxy = "alb"
+
+func sectionTPP(name string, mode networkingv1alpha.TrafficProtectionPolicyMode, section *string) extcache.TPPInfo {
+	ref := gatewayv1alpha2.LocalPolicyTargetReferenceWithSectionName{
+		LocalPolicyTargetReference: gatewayv1.LocalPolicyTargetReference{
+			Kind: "HTTPRoute",
+			Name: gatewayv1.ObjectName(sectionTestProxy),
+		},
+	}
+	if section != nil {
+		ref.SectionName = (*gatewayv1.SectionName)(section)
+	}
+	return extcache.TPPInfo{
+		Namespace:  "test-project",
+		Name:       name,
+		Generation: 1,
+		Mode:       mode,
+		TargetRefs: []gatewayv1alpha2.LocalPolicyTargetReferenceWithSectionName{ref},
+		Directives: []string{"SecRuleEngine On"},
+	}
+}
+
+func envoyRoute(t *testing.T, name, cluster string) *routev3.Route {
+	t.Helper()
+	rt := &routev3.Route{
+		Name: name,
+		Metadata: &corev3.Metadata{FilterMetadata: map[string]*structpb.Struct{
+			envoyGatewayMetadataKey: buildEGMetadataStruct("HTTPRoute", "ns-abc-123", sectionTestProxy),
+		}},
+	}
+	if cluster != "" {
+		rt.Action = &routev3.Route_Route{Route: &routev3.RouteAction{
+			ClusterSpecifier: &routev3.RouteAction_Cluster{Cluster: cluster},
+		}}
+	}
+	return rt
+}
+
+func governingTPPName(rt *routev3.Route) string {
+	md := rt.GetMetadata().GetFilterMetadata()[datumGatewayMetadataKey]
+	res := md.GetFields()["resources"].GetListValue().GetValues()
+	if len(res) == 0 {
+		return ""
+	}
+	return res[0].GetStructValue().GetFields()["name"].GetStringValue()
+}
+
+func TestApplyTPPRouteConfig_SectionScoping(t *testing.T) {
+	const proxy = sectionTestProxy
+	str := func(s string) *string { return &s }
+	enforce := networkingv1alpha.TrafficProtectionPolicyEnforce
+	observe := networkingv1alpha.TrafficProtectionPolicyObserve
+
+	routeName := func(rule int) string {
+		return fmt.Sprintf("httproute/ns-abc-123/%s/rule/%d/match/0/app_example_com", proxy, rule)
+	}
+	cluster := func(rule int) string {
+		return fmt.Sprintf("httproute/ns-abc-123/%s/rule/%d", proxy, rule)
+	}
+
+	tests := []struct {
+		name  string
+		rules []string
+		tpps  []extcache.TPPInfo
+		want  [3]string
+	}{
+		{
+			name:  "section-scoped applies only to its rule index",
+			rules: []string{"exempt", "protected", "other"},
+			tpps:  []extcache.TPPInfo{sectionTPP("sec", enforce, str("protected"))},
+			want:  [3]string{"", "sec", ""},
+		},
+		{
+			name:  "section-scoped applies to a redirect-only rule without a cluster",
+			rules: []string{"exempt", "protected", "redirect"},
+			tpps:  []extcache.TPPInfo{sectionTPP("sec", enforce, str("redirect"))},
+			want:  [3]string{"", "", "sec"},
+		},
+		{
+			name:  "route-level applies to all rules",
+			rules: []string{"exempt", "protected", "other"},
+			tpps:  []extcache.TPPInfo{sectionTPP("route", enforce, nil)},
+			want:  [3]string{"route", "route", "route"},
+		},
+		{
+			name:  "rule-level beats route-level regardless of order",
+			rules: []string{"exempt", "protected", "other"},
+			tpps: []extcache.TPPInfo{
+				sectionTPP("route", observe, nil),
+				sectionTPP("sec", enforce, str("protected")),
+			},
+			want: [3]string{"route", "sec", "route"},
+		},
+		{
+			name:  "rule-level beats gateway-level",
+			rules: []string{"exempt", "protected", "other"},
+			tpps: []extcache.TPPInfo{
+				tppTargetingGateway("gw", "smoke-gw"),
+				sectionTPP("sec", enforce, str("protected")),
+			},
+			want: [3]string{"gw", "sec", "gw"},
+		},
+		{
+			name:  "unresolvable section applies to nothing",
+			rules: []string{"exempt", "protected", "other"},
+			tpps:  []extcache.TPPInfo{sectionTPP("sec", enforce, str("missing"))},
+			want:  [3]string{"", "", ""},
+		},
+		{
+			name:  "unresolvable section never widens to other rules but gateway-level still governs",
+			rules: []string{"exempt", "protected", "other"},
+			tpps: []extcache.TPPInfo{
+				tppTargetingGateway("gw", "smoke-gw"),
+				sectionTPP("sec", enforce, str("missing")),
+			},
+			want: [3]string{"gw", "gw", "gw"},
+		},
+		{
+			name:  "unknown HTTPProxy applies section to nothing",
+			rules: nil,
+			tpps:  []extcache.TPPInfo{sectionTPP("sec", enforce, str("protected"))},
+			want:  [3]string{"", "", ""},
+		},
+		{
+			name:  "unnamed rules are not matched by a named section",
+			rules: []string{"", "protected", ""},
+			tpps:  []extcache.TPPInfo{sectionTPP("sec", enforce, str("protected"))},
+			want:  [3]string{"", "sec", ""},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			idx := policyIndex(tt.tpps...)
+			if tt.rules != nil {
+				idx.HTTPProxyRules = map[extcache.HTTPProxyKey][]string{
+					{Namespace: "ns-abc-123", Name: proxy}: tt.rules,
+				}
+			}
+
+			routes := []*routev3.Route{
+				envoyRoute(t, routeName(0), cluster(0)),
+				envoyRoute(t, routeName(1), cluster(1)),
+				envoyRoute(t, routeName(2), ""),
+			}
+			rc := &routev3.RouteConfiguration{VirtualHosts: []*routev3.VirtualHost{buildVHWithGatewayMeta(routes...)}}
+
+			_, err := ApplyTPPRouteConfig(rc, idx, testCorazaConfig(), nil)
+			require.NoError(t, err)
+			for i, rt := range routes {
+				assert.Equal(t, tt.want[i], governingTPPName(rt), "rule %d", i)
+			}
+		})
+	}
+}
+
+func TestRouteRuleIndex(t *testing.T) {
+	tests := []struct {
+		name      string
+		routeName string
+		cluster   string
+		wantIdx   int
+		wantOK    bool
+	}{
+		{name: "from cluster", routeName: "unrelated", cluster: "httproute/ns-abc-123/alb/rule/3", wantIdx: 3, wantOK: true},
+		{name: "from route name", routeName: "httproute/ns-abc-123/alb/rule/2/match/1/host", wantIdx: 2, wantOK: true},
+		{name: "route name without host", routeName: "httproute/ns-abc-123/alb/rule/12/match/0", wantIdx: 12, wantOK: true},
+		{name: "cluster of another route", routeName: "x", cluster: "httproute/ns-abc-123/other/rule/1"},
+		{name: "route name of another namespace", routeName: "httproute/other/alb/rule/1/match/0"},
+		{name: "non-numeric index", routeName: "httproute/ns-abc-123/alb/rule/x/match/0"},
+		{name: "negative index", routeName: "httproute/ns-abc-123/alb/rule/-1/match/0"},
+		{name: "not an httproute", routeName: "tcproute/ns-abc-123/alb/rule/1"},
+		{name: "empty", routeName: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rt := envoyRoute(t, tt.routeName, tt.cluster)
+			got, ok := routeRuleIndex(rt, "ns-abc-123", sectionTestProxy)
+			assert.Equal(t, tt.wantOK, ok)
+			if tt.wantOK {
+				assert.Equal(t, tt.wantIdx, got)
+			}
+		})
+	}
 }

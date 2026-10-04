@@ -15,6 +15,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	networkingv1alpha1 "go.datum.net/network-services-operator/api/v1alpha1"
@@ -1663,4 +1664,41 @@ func TestBuildPolicyIndexFromClient_NetworkService_NoGalacticSliceLeavesTenantEm
 
 	info := idx.VPCPods[VPCPodKey{UpstreamNS: upstreamNS, HTTPProxyName: "my-proxy", RuleIndex: 0}]
 	assert.Empty(t, info.TenantID)
+}
+
+func TestBuildPolicyIndexFromClient_HTTPProxyRuleNames(t *testing.T) {
+	scheme := indexTestScheme(t)
+	name := func(s string) *gatewayv1.SectionName { return (*gatewayv1.SectionName)(&s) }
+
+	tests := []struct {
+		name  string
+		rules []networkingv1alpha.HTTPProxyRule
+		want  []string
+	}{
+		{name: "no rules", rules: nil, want: []string{}},
+		{
+			name:  "all named",
+			rules: []networkingv1alpha.HTTPProxyRule{{Name: name("exempt")}, {Name: name("protected")}},
+			want:  []string{"exempt", "protected"},
+		},
+		{
+			name:  "unnamed rule keeps its position",
+			rules: []networkingv1alpha.HTTPProxyRule{{}, {Name: name("second")}},
+			want:  []string{"", "second"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			proxy := &networkingv1alpha.HTTPProxy{
+				ObjectMeta: metav1.ObjectMeta{Name: "alb", Namespace: "ns-abc"},
+				Spec:       networkingv1alpha.HTTPProxySpec{Rules: tt.rules},
+			}
+			cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(proxy).Build()
+
+			idx, err := BuildPolicyIndexFromClient(context.Background(), cl, nil)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, idx.HTTPProxyRules[HTTPProxyKey{Namespace: "ns-abc", Name: "alb"}])
+			assert.NotContains(t, idx.HTTPProxyRules, HTTPProxyKey{Namespace: "other", Name: "alb"})
+		})
+	}
 }

@@ -7,9 +7,11 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -25,6 +27,7 @@ import (
 func SetupTrafficProtectionPolicyWebhookWithManager(mgr mcmanager.Manager) error {
 	return ctrl.NewWebhookManagedBy(mgr.GetLocalManager(), &networkingv1alpha.TrafficProtectionPolicy{}).
 		WithDefaulter(&TrafficProtectionPolicyDefaulter{mgr: mgr}).
+		WithValidator(&TrafficProtectionPolicyValidator{mgr: mgr}).
 		Complete()
 }
 
@@ -43,14 +46,21 @@ func (d *TrafficProtectionPolicyDefaulter) Default(ctx context.Context, policy *
 }
 
 func (d *TrafficProtectionPolicyDefaulter) clusterClient(ctx context.Context) client.Client {
-	if d == nil || d.mgr == nil {
+	if d == nil {
+		return nil
+	}
+	return webhookClusterClient(ctx, d.mgr)
+}
+
+func webhookClusterClient(ctx context.Context, mgr mcmanager.Manager) client.Client {
+	if mgr == nil {
 		return nil
 	}
 	clusterName, ok := mccontext.ClusterFrom(ctx)
 	if !ok {
-		return d.mgr.GetLocalManager().GetClient()
+		return mgr.GetLocalManager().GetClient()
 	}
-	cluster, err := d.mgr.GetCluster(ctx, clusterName)
+	cluster, err := mgr.GetCluster(ctx, clusterName)
 	if err != nil {
 		return nil
 	}
@@ -126,4 +136,72 @@ func httpProxyByName(ctx context.Context, cl client.Client, key types.Namespaced
 		return nil
 	}
 	return &proxy
+}
+
+// +kubebuilder:webhook:path=/validate-networking-datumapis-com-v1alpha-trafficprotectionpolicy,mutating=false,failurePolicy=fail,sideEffects=None,groups=networking.datumapis.com,resources=trafficprotectionpolicies,verbs=create;update,versions=v1alpha,name=vtrafficprotectionpolicy-v1alpha.kb.io,admissionReviewVersions=v1
+
+type TrafficProtectionPolicyValidator struct {
+	mgr mcmanager.Manager
+}
+
+var _ admission.Validator[*networkingv1alpha.TrafficProtectionPolicy] = &TrafficProtectionPolicyValidator{}
+
+func (v *TrafficProtectionPolicyValidator) ValidateCreate(ctx context.Context, policy *networkingv1alpha.TrafficProtectionPolicy) (admission.Warnings, error) {
+	return v.validateSectionNames(ctx, policy)
+}
+
+func (v *TrafficProtectionPolicyValidator) ValidateUpdate(ctx context.Context, oldPolicy, newPolicy *networkingv1alpha.TrafficProtectionPolicy) (admission.Warnings, error) {
+	if equality.Semantic.DeepEqual(oldPolicy.Spec.TargetRefs, newPolicy.Spec.TargetRefs) {
+		return nil, nil
+	}
+	return v.validateSectionNames(ctx, newPolicy)
+}
+
+func (v *TrafficProtectionPolicyValidator) ValidateDelete(context.Context, *networkingv1alpha.TrafficProtectionPolicy) (admission.Warnings, error) {
+	return nil, nil
+}
+
+func (v *TrafficProtectionPolicyValidator) validateSectionNames(ctx context.Context, policy *networkingv1alpha.TrafficProtectionPolicy) (admission.Warnings, error) {
+	cl := webhookClusterClient(ctx, v.mgr)
+	if cl == nil {
+		return nil, nil
+	}
+	return v.validateSectionNamesWithClient(ctx, cl, policy)
+}
+
+func (v *TrafficProtectionPolicyValidator) validateSectionNamesWithClient(ctx context.Context, cl client.Client, policy *networkingv1alpha.TrafficProtectionPolicy) (admission.Warnings, error) {
+	var warnings admission.Warnings
+	var errs field.ErrorList
+	for i, ref := range policy.Spec.TargetRefs {
+		if ref.Kind != "HTTPRoute" || ref.SectionName == nil {
+			continue
+		}
+		path := field.NewPath("spec", "targetRefs").Index(i).Child("sectionName")
+
+		proxy := httpProxyByName(ctx, cl, types.NamespacedName{Namespace: policy.Namespace, Name: string(ref.Name)})
+		if proxy == nil {
+			warnings = append(warnings, fmt.Sprintf("%s: HTTPProxy %q was not found, so rule %q could not be verified", path, ref.Name, *ref.SectionName))
+			continue
+		}
+
+		hasRule := false
+		ruleNames := make([]string, 0, len(proxy.Spec.Rules))
+		for _, rule := range proxy.Spec.Rules {
+			if rule.Name == nil {
+				continue
+			}
+			ruleNames = append(ruleNames, string(*rule.Name))
+			if *rule.Name == *ref.SectionName {
+				hasRule = true
+			}
+		}
+		if !hasRule {
+			errs = append(errs, field.NotFound(path, fmt.Sprintf("%s (HTTPProxy %q has rules %v)", *ref.SectionName, ref.Name, ruleNames)))
+		}
+	}
+
+	if len(errs) > 0 {
+		return warnings, apierrors.NewInvalid(policy.GroupVersionKind().GroupKind(), policy.Name, errs)
+	}
+	return warnings, nil
 }

@@ -607,11 +607,13 @@ func TestApplyTPPRouteConfig_RouteLevelTPPWins(t *testing.T) {
 	assert.Equal(t, string(networkingv1alpha.TrafficProtectionPolicyEnforce), entry["mode"].GetStringValue())
 }
 
-func sectionTPP(name string, mode networkingv1alpha.TrafficProtectionPolicyMode, routeName string, section *string) extcache.TPPInfo {
+const sectionTestProxy = "alb"
+
+func sectionTPP(name string, mode networkingv1alpha.TrafficProtectionPolicyMode, section *string) extcache.TPPInfo {
 	ref := gatewayv1alpha2.LocalPolicyTargetReferenceWithSectionName{
 		LocalPolicyTargetReference: gatewayv1.LocalPolicyTargetReference{
 			Kind: "HTTPRoute",
-			Name: gatewayv1.ObjectName(routeName),
+			Name: gatewayv1.ObjectName(sectionTestProxy),
 		},
 	}
 	if section != nil {
@@ -627,12 +629,12 @@ func sectionTPP(name string, mode networkingv1alpha.TrafficProtectionPolicyMode,
 	}
 }
 
-func envoyRoute(t *testing.T, name, cluster, routeName string) *routev3.Route {
+func envoyRoute(t *testing.T, name, cluster string) *routev3.Route {
 	t.Helper()
 	rt := &routev3.Route{
 		Name: name,
 		Metadata: &corev3.Metadata{FilterMetadata: map[string]*structpb.Struct{
-			envoyGatewayMetadataKey: buildEGMetadataStruct("HTTPRoute", "ns-abc-123", routeName),
+			envoyGatewayMetadataKey: buildEGMetadataStruct("HTTPRoute", "ns-abc-123", sectionTestProxy),
 		}},
 	}
 	if cluster != "" {
@@ -653,7 +655,7 @@ func governingTPPName(rt *routev3.Route) string {
 }
 
 func TestApplyTPPRouteConfig_SectionScoping(t *testing.T) {
-	const proxy = "alb"
+	const proxy = sectionTestProxy
 	str := func(s string) *string { return &s }
 	enforce := networkingv1alpha.TrafficProtectionPolicyEnforce
 	observe := networkingv1alpha.TrafficProtectionPolicyObserve
@@ -674,27 +676,27 @@ func TestApplyTPPRouteConfig_SectionScoping(t *testing.T) {
 		{
 			name:  "section-scoped applies only to its rule index",
 			rules: []string{"exempt", "protected", "other"},
-			tpps:  []extcache.TPPInfo{sectionTPP("sec", enforce, proxy, str("protected"))},
+			tpps:  []extcache.TPPInfo{sectionTPP("sec", enforce, str("protected"))},
 			want:  [3]string{"", "sec", ""},
 		},
 		{
 			name:  "section-scoped applies to a redirect-only rule without a cluster",
 			rules: []string{"exempt", "protected", "redirect"},
-			tpps:  []extcache.TPPInfo{sectionTPP("sec", enforce, proxy, str("redirect"))},
+			tpps:  []extcache.TPPInfo{sectionTPP("sec", enforce, str("redirect"))},
 			want:  [3]string{"", "", "sec"},
 		},
 		{
 			name:  "route-level applies to all rules",
 			rules: []string{"exempt", "protected", "other"},
-			tpps:  []extcache.TPPInfo{sectionTPP("route", enforce, proxy, nil)},
+			tpps:  []extcache.TPPInfo{sectionTPP("route", enforce, nil)},
 			want:  [3]string{"route", "route", "route"},
 		},
 		{
 			name:  "rule-level beats route-level regardless of order",
 			rules: []string{"exempt", "protected", "other"},
 			tpps: []extcache.TPPInfo{
-				sectionTPP("route", observe, proxy, nil),
-				sectionTPP("sec", enforce, proxy, str("protected")),
+				sectionTPP("route", observe, nil),
+				sectionTPP("sec", enforce, str("protected")),
 			},
 			want: [3]string{"route", "sec", "route"},
 		},
@@ -703,14 +705,14 @@ func TestApplyTPPRouteConfig_SectionScoping(t *testing.T) {
 			rules: []string{"exempt", "protected", "other"},
 			tpps: []extcache.TPPInfo{
 				tppTargetingGateway("gw", "smoke-gw"),
-				sectionTPP("sec", enforce, proxy, str("protected")),
+				sectionTPP("sec", enforce, str("protected")),
 			},
 			want: [3]string{"gw", "sec", "gw"},
 		},
 		{
 			name:  "unresolvable section applies to nothing",
 			rules: []string{"exempt", "protected", "other"},
-			tpps:  []extcache.TPPInfo{sectionTPP("sec", enforce, proxy, str("missing"))},
+			tpps:  []extcache.TPPInfo{sectionTPP("sec", enforce, str("missing"))},
 			want:  [3]string{"", "", ""},
 		},
 		{
@@ -718,20 +720,20 @@ func TestApplyTPPRouteConfig_SectionScoping(t *testing.T) {
 			rules: []string{"exempt", "protected", "other"},
 			tpps: []extcache.TPPInfo{
 				tppTargetingGateway("gw", "smoke-gw"),
-				sectionTPP("sec", enforce, proxy, str("missing")),
+				sectionTPP("sec", enforce, str("missing")),
 			},
 			want: [3]string{"gw", "gw", "gw"},
 		},
 		{
 			name:  "unknown HTTPProxy applies section to nothing",
 			rules: nil,
-			tpps:  []extcache.TPPInfo{sectionTPP("sec", enforce, proxy, str("protected"))},
+			tpps:  []extcache.TPPInfo{sectionTPP("sec", enforce, str("protected"))},
 			want:  [3]string{"", "", ""},
 		},
 		{
 			name:  "unnamed rules are not matched by a named section",
 			rules: []string{"", "protected", ""},
-			tpps:  []extcache.TPPInfo{sectionTPP("sec", enforce, proxy, str("protected"))},
+			tpps:  []extcache.TPPInfo{sectionTPP("sec", enforce, str("protected"))},
 			want:  [3]string{"", "sec", ""},
 		},
 	}
@@ -746,9 +748,9 @@ func TestApplyTPPRouteConfig_SectionScoping(t *testing.T) {
 			}
 
 			routes := []*routev3.Route{
-				envoyRoute(t, routeName(0), cluster(0), proxy),
-				envoyRoute(t, routeName(1), cluster(1), proxy),
-				envoyRoute(t, routeName(2), "", proxy),
+				envoyRoute(t, routeName(0), cluster(0)),
+				envoyRoute(t, routeName(1), cluster(1)),
+				envoyRoute(t, routeName(2), ""),
 			}
 			rc := &routev3.RouteConfiguration{VirtualHosts: []*routev3.VirtualHost{buildVHWithGatewayMeta(routes...)}}
 
@@ -781,8 +783,8 @@ func TestRouteRuleIndex(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			rt := envoyRoute(t, tt.routeName, tt.cluster, "alb")
-			got, ok := routeRuleIndex(rt, "ns-abc-123", "alb")
+			rt := envoyRoute(t, tt.routeName, tt.cluster)
+			got, ok := routeRuleIndex(rt, "ns-abc-123", sectionTestProxy)
 			assert.Equal(t, tt.wantOK, ok)
 			if tt.wantOK {
 				assert.Equal(t, tt.wantIdx, got)

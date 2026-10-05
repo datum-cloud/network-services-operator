@@ -540,6 +540,18 @@ var dnsAndCertCatalog = []ReasonInfo{
 			"status message.",
 		Skill: SkillCertificateNotIssued,
 	},
+	{
+		Reason:        networkingv1alpha.CertificateReadyReasonRenewalFailing,
+		ConditionType: networkingv1alpha.HostnameConditionCertificateReady,
+		Actionability: ActionabilityUser,
+		Scope:         ScopeOneHostname,
+		Explanation: "HTTPS still works on this hostname's current certificate, but the replacement " +
+			"cannot be issued. When the current certificate expires HTTPS will fail.",
+		Remediation: "The status message says what blocked the renewal. If it names the hostname " +
+			"itself, check that it still resolves publicly to this load balancer; otherwise " +
+			"it is a platform issue and support can see the same message.",
+		Skill: SkillCertificateNotIssued,
+	},
 }
 
 // domainCatalog covers the Domain behind a custom hostname. This is where

@@ -75,6 +75,31 @@ var (
 		[]string{jsonKeyNamespace, jsonKeyName},
 	)
 
+	// certificateServiceFailuresTotal counts every certificate-service step that
+	// could not do its work for a wildcard listener, and every transition of its
+	// TLSCertificate into a failing state, by reason, whether or not the listener
+	// still serves a certificate. A hostname can serve for weeks on its previous
+	// certificate while every attempt to replace it fails; this is the signal
+	// that says so before the expiry does.
+	certificateServiceFailuresTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "nso_certificate_service_failures_total",
+			Help: "Total certificate-service failures for a Gateway listener, by reason.",
+		},
+		[]string{jsonKeyNamespace, jsonKeyName, metricLabelListener, metricLabelReason},
+	)
+
+	// certificateServiceListenerFailing is 1 for each wildcard listener whose
+	// certificate cannot currently be issued or renewed, labelled with why. The
+	// series goes when the listener recovers, leaves the service, or is removed.
+	certificateServiceListenerFailing = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "nso_certificate_service_listener_failing",
+			Help: "1 while a Gateway listener's certificate-service issuance or renewal is failing, by reason.",
+		},
+		[]string{jsonKeyNamespace, jsonKeyName, metricLabelListener, metricLabelReason},
+	)
+
 	// gatewayListenerCertWithheld is 1 for each upstream Gateway listener that NSO
 	// is currently withholding from the downstream because its TLS certificate is
 	// unusable. The series for a listener is removed when the listener recovers,

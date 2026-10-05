@@ -100,9 +100,9 @@ func verificationMethodPhrase(domain *networkingv1alpha.Domain) string {
 }
 
 func registrableDomain(hostname string) string {
-	parts := strings.Split(hostname, ".")
-	if len(parts) < 2 {
+	apex, err := registeredApex(hostname)
+	if err != nil {
 		return hostname
 	}
-	return strings.Join(parts[len(parts)-2:], ".")
+	return apex
 }

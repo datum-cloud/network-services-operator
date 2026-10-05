@@ -234,3 +234,17 @@ func TestOwnershipRecordForWildcards(t *testing.T) {
 	_, ok = ownershipRecord("*.s3.example.com", []networkingv1alpha.Domain{domainProvenBy("example.com", networkingv1alpha.DomainConditionVerifiedDNS), pending})
 	assert.False(t, ok)
 }
+
+func TestCheckWildcardOwnershipCreatesTheRegisteredDomain(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]string{
+		"*.s3.example.com":     "example.com",
+		"*.s3.example.co.uk":   "example.co.uk",
+		"*.example.co.uk":      "example.co.uk",
+		"*.a.b.example.com.au": "example.com.au",
+	}
+	for hostname, want := range tests {
+		assert.Equal(t, want, checkWildcardOwnership(hostname, nil).createDomain, hostname)
+	}
+}

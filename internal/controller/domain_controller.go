@@ -4,6 +4,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -662,11 +663,18 @@ func (r *DomainReconciler) reconcileRegistration(ctx context.Context, d *network
 	// Registry data lookup (RDAP/WHOIS/DNS + caching + rate limiting)
 	opts := registrydata.LookupOptions{ForceRefresh: expedite}
 	res, lookupErr := r.registryClient.LookupDomain(ctxLookup, d.Spec.DomainName, opts)
+	var nsLookupErr *registrydata.NameserverLookupError
+	nameserversUnknown := errors.As(lookupErr, &nsLookupErr)
 	if res != nil {
 		if res.Registration != nil {
 			st.Registration = res.Registration
 		}
-		st.Nameservers = res.Nameservers
+		if !nameserversUnknown {
+			st.Nameservers = res.Nameservers
+		}
+	}
+	if nameserversUnknown {
+		logger.Info("keeping the last known nameservers", "domain", d.Spec.DomainName, "reason", lookupErr.Error())
 	}
 	if st.Registration == nil {
 		st.Registration = &networkingv1alpha.Registration{}

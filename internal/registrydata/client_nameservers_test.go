@@ -153,3 +153,92 @@ func TestLookupDomain_IgnoresAWholeResultCachedUnderTheRegisteredDomain(t *testi
 
 	require.ElementsMatch(t, parentNS, lookupHosts(t, c, "example.com"))
 }
+
+var (
+	servfail = &net.DNSError{Err: "server misbehaving", IsTemporary: true}
+	timedOut = &net.DNSError{Err: "i/o timeout", IsTimeout: true, IsTemporary: true}
+)
+
+func TestLookupDomain_AFailedNSQueryIsAnErrorNotTheParentsNameservers(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		lookup   string
+		failures map[string]error
+	}{
+		{name: "server failure at the name", lookup: "shop.example.com", failures: map[string]error{"shop.example.com.": servfail}},
+		{name: "timeout at the name", lookup: "shop.example.com", failures: map[string]error{"shop.example.com.": timedOut}},
+		{name: "server failure at a parent label", lookup: "cart.shop.example.com", failures: map[string]error{"shop.example.com.": servfail}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var rdapQueries atomic.Int64
+			c := newRDAPTestClient(t, &rdapQueries)
+			stubDNS(c, nil, tt.failures)
+
+			res, err := c.LookupDomain(context.Background(), tt.lookup, LookupOptions{})
+			var nsErr *NameserverLookupError
+			require.ErrorAs(t, err, &nsErr)
+			require.NotNil(t, res)
+			require.NotNil(t, res.Registration)
+			require.Equal(t, "example.com", res.Registration.Domain)
+			require.Empty(t, res.Nameservers)
+		})
+	}
+}
+
+func TestLookupDomain_NameserversRecoverOnceDNSAnswers(t *testing.T) {
+	t.Parallel()
+
+	var rdapQueries atomic.Int64
+	c := newRDAPTestClient(t, &rdapQueries)
+	stubDNS(c, nil, map[string]error{"shop.example.com.": servfail})
+	_, err := c.LookupDomain(context.Background(), "shop.example.com", LookupOptions{})
+	require.Error(t, err)
+
+	stubDNS(c, map[string][]string{"shop.example.com.": childNS}, nil)
+	require.ElementsMatch(t, childNS, lookupHosts(t, c, "shop.example.com"))
+}
+
+func TestLookupDomain_WHOISDomainTakesItsNameserversFromDNS(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		answers  map[string][]string
+		failures map[string]error
+		wantErr  bool
+	}{
+		{name: "DNS answers", answers: map[string][]string{"example.com.": parentNS}},
+		{name: "DNS fails", failures: map[string]error{"example.com.": servfail}, wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			srv, base := newTLSRegistryAndRDAPServer(t, "net", nil)
+			c := newTestRegistryClient(t, srv, base)
+			c.whoisFetch = func(ctx context.Context, query, host string) (string, error) {
+				if host == c.cfg.WhoisBootstrapHost {
+					return IAMABootstrapResponse, nil
+				}
+				return testRegistrarResponse, nil
+			}
+			stubDNS(c, tt.answers, tt.failures)
+
+			res, err := c.LookupDomain(context.Background(), "example.com", LookupOptions{})
+			if tt.wantErr {
+				var nsErr *NameserverLookupError
+				require.ErrorAs(t, err, &nsErr)
+				require.NotNil(t, res.Registration)
+				require.Empty(t, res.Nameservers)
+				return
+			}
+			require.NoError(t, err)
+			require.ElementsMatch(t, parentNS, nameserverHosts(t, res))
+		})
+	}
+}

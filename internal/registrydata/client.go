@@ -131,7 +131,10 @@ func (c *client) LookupDomain(ctx context.Context, domain string, opts LookupOpt
 		if regErr != nil {
 			return nil, regErr
 		}
-		hosts := c.nameserverHostsFor(ctx, domainNorm, apex, reg)
+		hosts, nsErr := c.nameserverHostsFor(ctx, domainNorm, apex, reg)
+		if nsErr != nil {
+			return newDomainResult(reg), &NameserverLookupError{Name: domainNorm, Err: nsErr}
+		}
 		return c.resolveNameservers(ctx, reg, hosts)
 	})
 	if err != nil {
@@ -330,26 +333,29 @@ func (c *client) lookupRegistrationFresh(ctx context.Context, apex string) (*reg
 	return res, nil
 }
 
-func (c *client) nameserverHostsFor(ctx context.Context, name, apex string, reg *registrationResult) []string {
-	if strings.EqualFold(name, apex) {
-		if len(reg.Nameservers) > 0 {
-			return reg.Nameservers
+func (c *client) nameserverHostsFor(ctx context.Context, name, apex string, reg *registrationResult) ([]string, error) {
+	if !strings.EqualFold(name, apex) {
+		delegated, hosts, err := c.delegatedZoneNS(ctx, name, apex)
+		if err != nil {
+			return nil, err
 		}
-		_, hosts := c.delegatedZoneNS(ctx, apex, apex)
-		return hosts
-	}
-	if delegated, hosts := c.delegatedZoneNS(ctx, name, apex); delegated && len(hosts) > 0 {
-		return hosts
+		if delegated && len(hosts) > 0 {
+			return hosts, nil
+		}
 	}
 	if len(reg.Nameservers) > 0 {
-		return reg.Nameservers
+		return reg.Nameservers, nil
 	}
-	_, hosts := c.delegatedZoneNS(ctx, apex, apex)
-	return hosts
+	_, hosts, err := c.delegatedZoneNS(ctx, apex, apex)
+	return hosts, err
+}
+
+func newDomainResult(reg *registrationResult) *DomainResult {
+	return &DomainResult{Registration: reg.Registration.DeepCopy(), Source: reg.Source, ProviderKey: reg.ProviderKey}
 }
 
 func (c *client) resolveNameservers(ctx context.Context, reg *registrationResult, hosts []string) (*DomainResult, error) {
-	res := &DomainResult{Registration: reg.Registration.DeepCopy(), Source: reg.Source, ProviderKey: reg.ProviderKey}
+	res := newDomainResult(reg)
 	nameservers := make([]networkingv1alpha.Nameserver, 0, len(hosts))
 	for _, h := range hosts {
 		ns := networkingv1alpha.Nameserver{Hostname: normalizeHostname(h)}
@@ -481,7 +487,7 @@ func (c *client) lookupIPRegistrantFresh(ctx context.Context, ip string) (*IPReg
 	return &IPRegistrantResult{IP: net.ParseIP(ip), Registrant: name, ProviderKey: providerKey}, nil
 }
 
-func (c *client) delegatedZoneNS(ctx context.Context, fqdn, apex string) (delegated bool, hosts []string) {
+func (c *client) delegatedZoneNS(ctx context.Context, fqdn, apex string) (delegated bool, hosts []string, err error) {
 	trimDot := func(s string) string { return strings.TrimSuffix(s, ".") }
 	addDot := func(s string) string {
 		if s == "" || strings.HasSuffix(s, ".") {
@@ -495,6 +501,9 @@ func (c *client) delegatedZoneNS(ctx context.Context, fqdn, apex string) (delega
 
 	for {
 		recs, err := c.lookupNS(ctx, addDot(cur))
+		if err != nil && !isNotFound(err) {
+			return false, nil, fmt.Errorf("NS query for %s: %w", cur, err)
+		}
 		if err == nil && len(recs) > 0 {
 			out := make([]string, 0, len(recs))
 			for _, rr := range recs {
@@ -502,7 +511,7 @@ func (c *client) delegatedZoneNS(ctx context.Context, fqdn, apex string) (delega
 					out = append(out, trimDot(rr.Host))
 				}
 			}
-			return cur != apex, out
+			return cur != apex, out, nil
 		}
 		if cur == apex {
 			break
@@ -513,7 +522,12 @@ func (c *client) delegatedZoneNS(ctx context.Context, fqdn, apex string) (delega
 			break
 		}
 	}
-	return false, nil
+	return false, nil, nil
+}
+
+func isNotFound(err error) bool {
+	var dnsErr *net.DNSError
+	return errors.As(err, &dnsErr) && dnsErr.IsNotFound
 }
 
 func (c *client) fetchRegistrationWhois(ctx context.Context, apex string) (*networkingv1alpha.Registration, string, error) {

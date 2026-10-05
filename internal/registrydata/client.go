@@ -34,9 +34,10 @@ type client struct {
 	lookupNS func(ctx context.Context, name string) ([]*net.NS, error)
 	lookupIP func(ctx context.Context, name string) ([]net.IPAddr, error)
 
-	domainSF singleflight.Group
-	nsSF     singleflight.Group
-	ipSF     singleflight.Group
+	domainSF       singleflight.Group
+	registrationSF singleflight.Group
+	nsSF           singleflight.Group
+	ipSF           singleflight.Group
 }
 
 func NewClient(cfg Config) (Client, error) {
@@ -124,31 +125,14 @@ func (c *client) LookupDomain(ctx context.Context, domain string, opts LookupOpt
 	if err != nil {
 		return nil, err
 	}
-	cacheKey := "domain:" + apex
 
-	if !opts.ForceRefresh {
-		var cached DomainResult
-		if found, err := c.cache.Get(cacheKey, &cached); err != nil {
-			return nil, err
-		} else if found {
-			return &cached, nil
+	v, err, _ := c.domainSF.Do(domainNorm, func() (any, error) {
+		reg, regErr := c.lookupRegistration(ctx, apex, opts)
+		if regErr != nil {
+			return nil, regErr
 		}
-	}
-
-	v, err, _ := c.domainSF.Do(cacheKey, func() (any, error) {
-		if !opts.ForceRefresh {
-			var cached DomainResult
-			if found, err := c.cache.Get(cacheKey, &cached); err != nil {
-				return nil, err
-			} else if found {
-				return &cached, nil
-			}
-		}
-		res, lookupErr := c.lookupDomainFresh(ctx, domainNorm, apex)
-		if lookupErr == nil && res != nil {
-			_ = c.cache.Set(cacheKey, res, c.cfg.CacheTTLs.Domain)
-		}
-		return res, lookupErr
+		hosts := c.nameserverHostsFor(ctx, domainNorm, apex, reg)
+		return c.resolveNameservers(ctx, reg, hosts)
 	})
 	if err != nil {
 		if res, ok := v.(*DomainResult); ok && res != nil {
@@ -264,9 +248,48 @@ func (v *nameserverCacheValue) toResult(ttl time.Duration) *NameserverResult {
 	return out
 }
 
-func (c *client) lookupDomainFresh(ctx context.Context, domainNorm, apex string) (*DomainResult, error) {
-	isApex := strings.EqualFold(domainNorm, apex)
+type registrationResult struct {
+	Registration *networkingv1alpha.Registration `json:"registration,omitempty"`
+	Nameservers  []string                        `json:"nameservers,omitempty"`
+	Source       string                          `json:"source"`
+	ProviderKey  string                          `json:"providerKey"`
+}
 
+func (c *client) lookupRegistration(ctx context.Context, apex string, opts LookupOptions) (*registrationResult, error) {
+	cacheKey := "registration:" + apex
+
+	if !opts.ForceRefresh {
+		var cached registrationResult
+		if found, err := c.cache.Get(cacheKey, &cached); err != nil {
+			return nil, err
+		} else if found {
+			return &cached, nil
+		}
+	}
+
+	v, err, _ := c.registrationSF.Do(cacheKey, func() (any, error) {
+		if !opts.ForceRefresh {
+			var cached registrationResult
+			if found, err := c.cache.Get(cacheKey, &cached); err != nil {
+				return nil, err
+			} else if found {
+				return &cached, nil
+			}
+		}
+		reg, err := c.lookupRegistrationFresh(ctx, apex)
+		if err != nil {
+			return nil, err
+		}
+		_ = c.cache.Set(cacheKey, reg, c.cfg.CacheTTLs.Domain)
+		return reg, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return v.(*registrationResult), nil
+}
+
+func (c *client) lookupRegistrationFresh(ctx context.Context, apex string) (*registrationResult, error) {
 	// Attempt RDAP first.
 	rdapRes, rdapErr := c.lookupDomainRDAP(ctx, apex)
 	useWHOIS := false
@@ -283,60 +306,52 @@ func (c *client) lookupDomainFresh(ctx context.Context, domainNorm, apex string)
 		useWHOIS = true
 	}
 
-	var reg *networkingv1alpha.Registration
-	providerKey := ""
-	source := ""
-	suggestedDelay := time.Duration(0)
-	var apexNS []string
-
-	if !useWHOIS {
-		r := mapRDAPDomainToRegistration(*rdapRes.domain)
-		r.Source = rdapSource
-		reg = &r
-		providerKey = rdapRes.providerKey
-		source = rdapSource
-		// Registry from bootstrap URL host.
-		if providerKey != "" {
-			reg.Registry = &networkingv1alpha.RegistryInfo{Name: providerKey, URL: "https://" + providerKey}
-		}
-		for _, ns := range rdapRes.domain.Nameservers {
-			if ns.LDHName != "" {
-				apexNS = append(apexNS, normalizeHostname(ns.LDHName))
-			}
-		}
-	} else {
+	if useWHOIS {
 		wreg, whoisProvider, whoisErr := c.fetchRegistrationWhois(ctx, apex)
 		if whoisErr != nil {
 			return nil, whoisErr
 		}
 		wreg.Source = whoisSource
-		reg = wreg
-		providerKey = whoisProvider
-		source = whoisSource
+		return &registrationResult{Registration: wreg, Source: whoisSource, ProviderKey: whoisProvider}, nil
 	}
 
-	// Nameserver selection (apex vs delegated subdomain).
-	var nsHosts []string
-	if isApex {
-		if source == rdapSource && len(apexNS) > 0 {
-			nsHosts = apexNS
-		} else {
-			_, nsHosts = c.delegatedZoneNS(ctx, apex, apex)
-		}
-	} else {
-		if delegated, delegatedNS := c.delegatedZoneNS(ctx, domainNorm, apex); delegated && len(delegatedNS) > 0 {
-			nsHosts = delegatedNS
-		} else {
-			if source == rdapSource && len(apexNS) > 0 {
-				nsHosts = apexNS
-			} else {
-				_, nsHosts = c.delegatedZoneNS(ctx, apex, apex)
-			}
+	reg := mapRDAPDomainToRegistration(*rdapRes.domain)
+	reg.Source = rdapSource
+	// Registry from bootstrap URL host.
+	if rdapRes.providerKey != "" {
+		reg.Registry = &networkingv1alpha.RegistryInfo{Name: rdapRes.providerKey, URL: "https://" + rdapRes.providerKey}
+	}
+	res := &registrationResult{Registration: &reg, Source: rdapSource, ProviderKey: rdapRes.providerKey}
+	for _, ns := range rdapRes.domain.Nameservers {
+		if ns.LDHName != "" {
+			res.Nameservers = append(res.Nameservers, normalizeHostname(ns.LDHName))
 		}
 	}
+	return res, nil
+}
 
-	nameservers := make([]networkingv1alpha.Nameserver, 0, len(nsHosts))
-	for _, h := range nsHosts {
+func (c *client) nameserverHostsFor(ctx context.Context, name, apex string, reg *registrationResult) []string {
+	if strings.EqualFold(name, apex) {
+		if len(reg.Nameservers) > 0 {
+			return reg.Nameservers
+		}
+		_, hosts := c.delegatedZoneNS(ctx, apex, apex)
+		return hosts
+	}
+	if delegated, hosts := c.delegatedZoneNS(ctx, name, apex); delegated && len(hosts) > 0 {
+		return hosts
+	}
+	if len(reg.Nameservers) > 0 {
+		return reg.Nameservers
+	}
+	_, hosts := c.delegatedZoneNS(ctx, apex, apex)
+	return hosts
+}
+
+func (c *client) resolveNameservers(ctx context.Context, reg *registrationResult, hosts []string) (*DomainResult, error) {
+	res := &DomainResult{Registration: reg.Registration.DeepCopy(), Source: reg.Source, ProviderKey: reg.ProviderKey}
+	nameservers := make([]networkingv1alpha.Nameserver, 0, len(hosts))
+	for _, h := range hosts {
 		ns := networkingv1alpha.Nameserver{Hostname: normalizeHostname(h)}
 		nsRes, err := c.LookupNameserver(ctx, ns.Hostname, LookupOptions{})
 		if err != nil {
@@ -351,9 +366,9 @@ func (c *client) lookupDomainFresh(ctx context.Context, domainNorm, apex string)
 			if ipErr != nil {
 				// Preserve partial data but bubble the error so controllers can schedule a retry.
 				if rl, ok := ipErr.(*RateLimitedError); ok {
-					suggestedDelay = maxD(suggestedDelay, rl.RetryAfter)
+					res.SuggestedDelay = maxD(res.SuggestedDelay, rl.RetryAfter)
 				}
-				res := &DomainResult{Registration: reg, Nameservers: append(nameservers, ns), Source: source, ProviderKey: providerKey, SuggestedDelay: suggestedDelay}
+				res.Nameservers = append(nameservers, ns)
 				return res, ipErr
 			}
 			if ipRes != nil && ipRes.Registrant != "" {
@@ -363,8 +378,7 @@ func (c *client) lookupDomainFresh(ctx context.Context, domainNorm, apex string)
 		}
 		nameservers = append(nameservers, ns)
 	}
-
-	res := &DomainResult{Registration: reg, Nameservers: nameservers, Source: source, ProviderKey: providerKey, SuggestedDelay: suggestedDelay}
+	res.Nameservers = nameservers
 	return res, nil
 }
 

@@ -215,6 +215,54 @@ type NetworkInterfaceClaimSpec struct {
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
 	NetworkInterfaceName string `json:"networkInterfaceName,omitempty"`
+
+	// egress is what this interface reaches outside the platform. Only
+	// Inherit is accepted, which follows the network's declaration.
+	//
+	// The field is reserved so the default is settled before consumers depend
+	// on it: an interface written today records Inherit, so accepting Enabled
+	// and Disabled later changes no existing interface.
+	//
+	// Unlike the rest of this spec it is mutable. No address is allocated
+	// against it, and a rule pinning the only accepted value would have to be
+	// dropped again when per-interface control widens the enum.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default={internet:{mode:Inherit}}
+	Egress *NetworkInterfaceClaimEgress `json:"egress,omitempty"`
+}
+
+// NetworkInterfaceClaimEgress declares the outbound paths an interface carries.
+type NetworkInterfaceClaimEgress struct {
+	// internet is whether this interface reaches destinations outside the
+	// platform.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default={mode:Inherit}
+	Internet *NetworkInterfaceClaimInternetEgress `json:"internet,omitempty"`
+}
+
+// NetworkInterfaceClaimInternetEgressMode is whether an interface reaches the
+// internet.
+//
+// +kubebuilder:validation:Enum=Inherit
+type NetworkInterfaceClaimInternetEgressMode string
+
+const (
+	// NetworkInterfaceClaimInternetEgressInherit follows the network's
+	// declaration. It is the only accepted value: per-interface control
+	// depends on per-interface routing, which no component implements.
+	NetworkInterfaceClaimInternetEgressInherit NetworkInterfaceClaimInternetEgressMode = "Inherit"
+)
+
+// NetworkInterfaceClaimInternetEgress reserves per-interface internet access.
+type NetworkInterfaceClaimInternetEgress struct {
+	// mode is whether this interface reaches the internet. Only Inherit is
+	// accepted, which follows the network's declaration.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default=Inherit
+	Mode NetworkInterfaceClaimInternetEgressMode `json:"mode,omitempty"`
 }
 
 // NetworkInterfaceClaimStatus defines the observed state of
@@ -242,6 +290,14 @@ type NetworkInterfaceClaimStatus struct {
 	//
 	// +kubebuilder:validation:Optional
 	ExternalAddresses []NetworkInterfaceExternalAddress `json:"externalAddresses,omitempty"`
+
+	// egress reports what the bound interface reaches outside the platform. It
+	// is copied from the interface, which remains the source of truth, so a
+	// consumer reads their egress address off the same object they read their
+	// addresses from.
+	//
+	// +kubebuilder:validation:Optional
+	Egress *NetworkInterfaceEgressStatus `json:"egress,omitempty"`
 
 	// conditions report the current state of the claim. Wait on Ready, which is
 	// true once the claim is bound, its addresses are allocated, the data plane

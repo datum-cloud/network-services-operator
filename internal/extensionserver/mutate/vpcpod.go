@@ -34,15 +34,14 @@ const (
 // everything past that: it creates the VRF device and installs the SRv6
 // encapsulation routes into it from the same EndpointSlices this binding is
 // resolved through. Envoy never sees, parses, or carries a segment
-// identifier. Clusters are matched by name using the same
-// "httproute/<dsNS>/<proxyName>/rule/<idx>" pattern parseConnectorClusterName
-// already relies on for connector clusters — EG names every HTTPRoute-rule
-// cluster this way, not just connector ones.
+// identifier. Clusters are matched by the name EG gives them: one per rule,
+// "httproute/<dsNS>/<proxyName>/rule/<idx>", or one per backend,
+// "httproute/<dsNS>/<proxyName>/rule/<idx>/backend/<i>".
 //
 // Returns the number of clusters mutated.
 func ApplyVPCPodSocketBind(clusters []*clusterv3.Cluster, idx *extcache.PolicyIndex) (mutated int, err error) {
 	for _, cl := range clusters {
-		dsNS, proxyName, ruleIndex, ok := parseConnectorClusterName(cl.GetName())
+		dsNS, proxyName, ruleIndex, backendIndex, ok := parseRouteClusterName(cl.GetName())
 		if !ok {
 			continue
 		}
@@ -52,11 +51,21 @@ func ApplyVPCPodSocketBind(clusters []*clusterv3.Cluster, idx *extcache.PolicyIn
 			continue
 		}
 
-		info, ok := idx.VPCPods[extcache.VPCPodKey{
-			UpstreamNS:    upstreamNS,
-			HTTPProxyName: proxyName,
-			RuleIndex:     ruleIndex,
-		}]
+		var info extcache.VPCPodInfo
+		if backendIndex == ruleCluster {
+			info, ok = idx.VPCPods[extcache.VPCPodKey{
+				UpstreamNS:    upstreamNS,
+				HTTPProxyName: proxyName,
+				RuleIndex:     ruleIndex,
+			}]
+		} else {
+			info, ok = idx.VPCPodBackends[extcache.VPCPodBackendKey{
+				UpstreamNS:    upstreamNS,
+				HTTPProxyName: proxyName,
+				RuleIndex:     ruleIndex,
+				BackendIndex:  backendIndex,
+			}]
+		}
 		if !ok || info.TenantID == "" {
 			// No vpcPod backend on this rule, or the referenced EndpointSlice
 			// was missing/unlabeled — never bind to a zero-value device name.

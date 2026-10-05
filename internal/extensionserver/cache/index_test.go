@@ -1702,3 +1702,156 @@ func TestBuildPolicyIndexFromClient_HTTPProxyRuleNames(t *testing.T) {
 		})
 	}
 }
+
+func newMultiBackendHTTPProxy(backends ...networkingv1alpha.HTTPProxyRuleBackend) *networkingv1alpha.HTTPProxy {
+	return &networkingv1alpha.HTTPProxy{
+		ObjectMeta: metav1.ObjectMeta{Name: "my-proxy", Namespace: nsvcTestNS},
+		Spec: networkingv1alpha.HTTPProxySpec{
+			Rules: []networkingv1alpha.HTTPProxyRule{{Backends: backends}},
+		},
+	}
+}
+
+func networkServiceBackend(name string) networkingv1alpha.HTTPProxyRuleBackend {
+	return networkingv1alpha.HTTPProxyRuleBackend{
+		NetworkService: &networkingv1alpha.NetworkServiceBackendRef{Name: name, Port: "http"},
+	}
+}
+
+func namedMemberEndpointSlice(name, upstreamName string, addresses ...string) *discoveryv1.EndpointSlice {
+	slice := newMemberEndpointSlice(upstreamName, addresses...)
+	slice.Name = name
+	return slice
+}
+
+func TestBuildPolicyIndexFromClient_NetworkService_MultipleBackendsResolvedPerBackend(t *testing.T) {
+	const (
+		upstreamNS = "test-project"
+		tenantA    = "2wJqT7d-9xKp2Qm"
+		tenantB    = "2wJqT7d-4bNr8Zt"
+	)
+	scheme := indexTestScheme(t)
+
+	proxy := newMultiBackendHTTPProxy(networkServiceBackend("service-a"), networkServiceBackend("service-b"))
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(
+			proxy,
+			namedMemberEndpointSlice("members-a", "my-proxy-0-0", "fd20:0:13::1:0:0"),
+			namedMemberEndpointSlice("members-b", "my-proxy-0-1", "fd20:0:13::2:0:0"),
+			newGalacticEndpointSlice("vpc-pod-a", tenantA, "fd20:0:13::1:0:0"),
+			newGalacticEndpointSlice("vpc-pod-b", tenantB, "fd20:0:13::2:0:0"),
+		).
+		Build()
+
+	idx, err := BuildPolicyIndexFromClient(context.Background(), cl, nil)
+	require.NoError(t, err)
+
+	backend := func(i int) VPCPodInfo {
+		return idx.VPCPodBackends[VPCPodBackendKey{UpstreamNS: upstreamNS, HTTPProxyName: "my-proxy", RuleIndex: 0, BackendIndex: i}]
+	}
+	assert.Equal(t, tenantA, backend(0).TenantID)
+	assert.Equal(t, tenantB, backend(1).TenantID)
+
+	rule := idx.VPCPods[VPCPodKey{UpstreamNS: upstreamNS, HTTPProxyName: "my-proxy", RuleIndex: 0}]
+	vpc, ok := TenantVPC(rule.TenantID)
+	require.True(t, ok)
+	assert.Equal(t, "2wJqT7d", vpc)
+}
+
+func TestBuildPolicyIndexFromClient_NetworkService_UnresolvedLaterBackendKeepsRuleBound(t *testing.T) {
+	const (
+		upstreamNS = "test-project"
+		tenantID   = "2wJqT7d-9xKp2Qm"
+	)
+	scheme := indexTestScheme(t)
+
+	proxy := newMultiBackendHTTPProxy(networkServiceBackend("service-a"), networkServiceBackend("service-b"))
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(
+			proxy,
+			namedMemberEndpointSlice("members-a", "my-proxy-0-0", "fd20:0:13::1:0:0"),
+			namedMemberEndpointSlice("members-b", "my-proxy-0-1", "fd20:0:13::2:0:0"),
+			newGalacticEndpointSlice("vpc-pod-a", tenantID, "fd20:0:13::1:0:0"),
+		).
+		Build()
+
+	idx, err := BuildPolicyIndexFromClient(context.Background(), cl, nil)
+	require.NoError(t, err)
+
+	rule, ok := idx.VPCPods[VPCPodKey{UpstreamNS: upstreamNS, HTTPProxyName: "my-proxy", RuleIndex: 0}]
+	require.True(t, ok)
+	assert.Equal(t, tenantID, rule.TenantID)
+
+	second, ok := idx.VPCPodBackends[VPCPodBackendKey{UpstreamNS: upstreamNS, HTTPProxyName: "my-proxy", RuleIndex: 0, BackendIndex: 1}]
+	require.True(t, ok)
+	assert.Empty(t, second.TenantID)
+}
+
+func TestBuildPolicyIndexFromClient_NetworkService_BackendsSpanningVPCsLeaveRuleUnbound(t *testing.T) {
+	const (
+		upstreamNS = "test-project"
+		tenantA    = "2wJqT7d-9xKp2Qm"
+		tenantB    = "8mLwQ2c-3hRt6Yk"
+	)
+	scheme := indexTestScheme(t)
+
+	proxy := newMultiBackendHTTPProxy(networkServiceBackend("service-a"), networkServiceBackend("service-b"))
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(
+			proxy,
+			namedMemberEndpointSlice("members-a", "my-proxy-0-0", "fd20:0:13::1:0:0"),
+			namedMemberEndpointSlice("members-b", "my-proxy-0-1", "fd20:0:14::1:0:0"),
+			newGalacticEndpointSlice("vpc-pod-a", tenantA, "fd20:0:13::1:0:0"),
+			newGalacticEndpointSlice("vpc-pod-b", tenantB, "fd20:0:14::1:0:0"),
+		).
+		Build()
+
+	idx, err := BuildPolicyIndexFromClient(context.Background(), cl, nil)
+	require.NoError(t, err)
+
+	rule, ok := idx.VPCPods[VPCPodKey{UpstreamNS: upstreamNS, HTTPProxyName: "my-proxy", RuleIndex: 0}]
+	require.True(t, ok)
+	assert.Empty(t, rule.TenantID)
+
+	assert.Equal(t, tenantA, idx.VPCPodBackends[VPCPodBackendKey{UpstreamNS: upstreamNS, HTTPProxyName: "my-proxy", RuleIndex: 0, BackendIndex: 0}].TenantID)
+	assert.Equal(t, tenantB, idx.VPCPodBackends[VPCPodBackendKey{UpstreamNS: upstreamNS, HTTPProxyName: "my-proxy", RuleIndex: 0, BackendIndex: 1}].TenantID)
+}
+
+func TestBuildPolicyIndexFromClient_MissingInstanceSliceDoesNotUnbindRule(t *testing.T) {
+	const (
+		upstreamNS = "test-project"
+		tenantID   = "2wJqT7d-9xKp2Qm"
+	)
+	scheme := indexTestScheme(t)
+
+	proxy := newMultiBackendHTTPProxy(
+		networkServiceBackend("service-a"),
+		networkingv1alpha.HTTPProxyRuleBackend{
+			Instance: &networkingv1alpha.InstanceBackendRef{Name: "missing-pod", Port: 8080},
+		},
+	)
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(
+			proxy,
+			namedMemberEndpointSlice("members-a", "my-proxy-0-0", "fd20:0:13::1:0:0"),
+			newGalacticEndpointSlice("vpc-pod-a", tenantID, "fd20:0:13::1:0:0"),
+		).
+		Build()
+
+	idx, err := BuildPolicyIndexFromClient(context.Background(), cl, nil)
+	require.NoError(t, err)
+
+	assert.Equal(t, tenantID, idx.VPCPods[VPCPodKey{UpstreamNS: upstreamNS, HTTPProxyName: "my-proxy", RuleIndex: 0}].TenantID)
+
+	instance, ok := idx.VPCPodBackends[VPCPodBackendKey{UpstreamNS: upstreamNS, HTTPProxyName: "my-proxy", RuleIndex: 0, BackendIndex: 1}]
+	require.True(t, ok)
+	assert.Empty(t, instance.TenantID)
+}

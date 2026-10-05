@@ -40,6 +40,7 @@ func BuildPolicyIndexFromClient(ctx context.Context, cl client.Client, baseDirec
 		HTTPProxyRules: make(map[HTTPProxyKey][]string),
 		Connectors:     make(map[ConnectorKey]ConnectorInfo),
 		VPCPods:        make(map[VPCPodKey]VPCPodInfo),
+		VPCPodBackends: make(map[VPCPodBackendKey]VPCPodInfo),
 	}
 	if err := populateFromClient(ctx, cl, idx, baseDirectives); err != nil {
 		return nil, err
@@ -146,7 +147,14 @@ func populateFromClient(ctx context.Context, cl client.Client, idx *PolicyIndex,
 			effectiveNS = proxy.Namespace
 		}
 		for ruleIndex, rule := range proxy.Spec.Rules {
+			var ruleTenants []tenantResolution
 			for backendIndex, backend := range rule.Backends {
+				backendKey := VPCPodBackendKey{
+					UpstreamNS:    effectiveNS,
+					HTTPProxyName: proxy.Name,
+					RuleIndex:     ruleIndex,
+					BackendIndex:  backendIndex,
+				}
 				switch {
 				case backend.Connector != nil:
 					targetHost, targetPort, err := parseEndpoint(backend.Endpoint)
@@ -185,38 +193,24 @@ func populateFromClient(ctx context.Context, cl client.Client, idx *PolicyIndex,
 					}
 
 				case backend.Instance != nil:
-					key := VPCPodKey{
-						UpstreamNS:    effectiveNS,
-						HTTPProxyName: proxy.Name,
-						RuleIndex:     ruleIndex,
-					}
-
 					// The referenced EndpointSlice is expected in the same
 					// local (downstream) namespace this HTTPProxy replica
 					// lives in — galactic-cni (#854) publishes it directly
 					// into the edge cluster, same as this HTTPProxy replica
 					// itself, not into an upstream namespace.
+					var resolved tenantResolution
 					var endpointSlice discoveryv1.EndpointSlice
 					if lookupErr := cl.Get(ctx, client.ObjectKey{
 						Namespace: proxy.Namespace,
 						Name:      backend.Instance.Name,
-					}, &endpointSlice); lookupErr != nil {
-						// Missing or transient error: leave TenantID empty so
-						// ApplyVPCPodSocketBind skips mutation rather than
-						// binding to a zero-value device name.
-						idx.VPCPods[key] = VPCPodInfo{}
-						continue
+					}, &endpointSlice); lookupErr == nil {
+						resolved.tenantID = endpointSlice.Labels[VPCPodTenantIDLabel]
 					}
 
-					idx.VPCPods[key] = VPCPodInfo{TenantID: endpointSlice.Labels[VPCPodTenantIDLabel]}
+					idx.VPCPodBackends[backendKey] = VPCPodInfo{TenantID: resolved.tenantID}
+					ruleTenants = append(ruleTenants, resolved)
 
 				case backend.NetworkService != nil:
-					key := VPCPodKey{
-						UpstreamNS:    effectiveNS,
-						HTTPProxyName: proxy.Name,
-						RuleIndex:     ruleIndex,
-					}
-
 					// A networkService backend names no EndpointSlice, so
 					// its tenant is joined by member address instead. The
 					// slice the HTTPProxy controller synthesized for this
@@ -228,10 +222,18 @@ func populateFromClient(ctx context.Context, cl client.Client, idx *PolicyIndex,
 						Name:      fmt.Sprintf("%s-%d-%d", proxy.Name, ruleIndex, backendIndex),
 					}
 
-					idx.VPCPods[key] = VPCPodInfo{
-						TenantID: tenantForAddresses(addressesByOwner[owner], tenantByAddress),
-					}
+					resolved := tenantForAddresses(addressesByOwner[owner], tenantByAddress)
+					idx.VPCPodBackends[backendKey] = VPCPodInfo{TenantID: resolved.tenantID}
+					ruleTenants = append(ruleTenants, resolved)
 				}
+			}
+
+			if len(ruleTenants) > 0 {
+				idx.VPCPods[VPCPodKey{
+					UpstreamNS:    effectiveNS,
+					HTTPProxyName: proxy.Name,
+					RuleIndex:     ruleIndex,
+				}] = VPCPodInfo{TenantID: mergeTenants(ruleTenants).tenantID}
 			}
 		}
 	}
@@ -308,26 +310,41 @@ func canonicalAddress(address string) string {
 // black-hole the other's members. Members that resolve to no tenant are
 // skipped rather than treated as a conflict: a slice that has not federated
 // in yet must not unbind the members that have.
-func tenantForAddresses(addresses []string, tenantByAddress map[string]string) string {
-	var vpc, tenantID string
+func tenantForAddresses(addresses []string, tenantByAddress map[string]string) tenantResolution {
+	candidates := make([]tenantResolution, 0, len(addresses))
 	for _, address := range addresses {
-		candidate, ok := tenantByAddress[address]
-		if !ok {
-			continue
+		if candidate, ok := tenantByAddress[address]; ok {
+			candidates = append(candidates, tenantResolution{tenantID: candidate})
 		}
-		candidateVPC, ok := TenantVPC(candidate)
+	}
+	return mergeTenants(candidates)
+}
+
+type tenantResolution struct {
+	tenantID string
+	conflict bool
+}
+
+func mergeTenants(candidates []tenantResolution) tenantResolution {
+	var vpc string
+	var merged tenantResolution
+	for _, candidate := range candidates {
+		if candidate.conflict {
+			return tenantResolution{conflict: true}
+		}
+		candidateVPC, ok := TenantVPC(candidate.tenantID)
 		if !ok {
 			continue
 		}
 		if vpc == "" {
-			vpc, tenantID = candidateVPC, candidate
+			vpc, merged.tenantID = candidateVPC, candidate.tenantID
 			continue
 		}
 		if candidateVPC != vpc {
-			return ""
+			return tenantResolution{conflict: true}
 		}
 	}
-	return tenantID
+	return merged
 }
 
 // connectorLiveness determines whether a connector is online and, if so, its

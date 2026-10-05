@@ -42,6 +42,7 @@ import (
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	networkingv1alpha1 "go.datum.net/network-services-operator/api/v1alpha1"
+	certificatesv1alpha1 "go.datum.net/network-services-operator/internal/certificates/v1alpha1"
 	"go.datum.net/network-services-operator/internal/config"
 	downstreamclient "go.datum.net/network-services-operator/internal/downstreamclient"
 	conditionutil "go.datum.net/network-services-operator/internal/util/condition"
@@ -761,6 +762,13 @@ func (r *HTTPProxyReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 		)
 		downstreamCertificateClusterSource, _, _ := downstreamCertificateSource.ForCluster("", r.DownstreamCluster)
 		builder = builder.WatchesRawSource(downstreamCertificateClusterSource)
+	}
+
+	if r.Config.Gateway.CertificateService.Enabled {
+		builder = builder.Watches(
+			&certificatesv1alpha1.TLSCertificate{},
+			r.enqueueHTTPProxyForTLSCertificate,
+		)
 	}
 
 	return builder.
@@ -1507,6 +1515,13 @@ func (r *HTTPProxyReconciler) buildCertificateStatuses(
 		}
 
 		certName := resourcename.GetValidDNS1123Name(fmt.Sprintf("%s-%s", gateway.Name, l.Name))
+
+		if r.Config.Gateway.CertificateService.Enabled && isSingleLabelWildcard(hostname) {
+			apimeta.SetStatusCondition(&hs.Conditions, r.tlsCertificateReadyCondition(ctx, upstreamClient, downstreamClient, downstreamNamespaceName, gateway.Namespace, tlsCertificateName(gateway.Name, l.Name), listenerCertificateSecretName(gateway.Name, l.Name), hostname, listenerStatusConditions(gateway, l.Name), httpProxy.Generation))
+			statuses = append(statuses, hs)
+			continue
+		}
+
 		certificate := newUnstructuredForGVK(certificateGVK)
 		certKey := client.ObjectKey{Namespace: downstreamNamespaceName, Name: certName}
 
@@ -1567,6 +1582,17 @@ func (r *HTTPProxyReconciler) buildCertificateStatuses(
 	}
 
 	return statuses
+}
+
+// listenerStatusConditions returns the conditions the gateway reports for one
+// of its listeners, or nil.
+func listenerStatusConditions(gateway *gatewayv1.Gateway, listener gatewayv1.SectionName) []metav1.Condition {
+	for _, ls := range gateway.Status.Listeners {
+		if ls.Name == listener {
+			return ls.Conditions
+		}
+	}
+	return nil
 }
 
 // getCertificateReadyConditionReason returns the reason and message for the

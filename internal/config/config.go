@@ -3,6 +3,7 @@ package config
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"os"
@@ -905,6 +906,93 @@ type GatewayConfig struct {
 	// the deletion through the entire chain (CertificateRequest, Order,
 	// Challenge, solver resources).
 	CertificateReissuance CertificateReissuanceConfig `json:"certificateReissuance,omitempty"`
+
+	// CertificateService hands certificate issuance for wildcard hostnames to
+	// the Milo certificate service. When enabled, the gateway controller
+	// requests a DNS-01 TLSCertificate in the project control plane for each
+	// single-label wildcard listener and mirrors the issued Secret downstream.
+	// Exact hostnames stay on cert-manager either way.
+	CertificateService CertificateServiceConfig `json:"certificateService,omitempty"`
+}
+
+// +k8s:deepcopy-gen=true
+
+// CertificateServiceConfig controls consumption of the Milo certificate
+// service (certificates.miloapis.com).
+type CertificateServiceConfig struct {
+	// Enabled issues certificates for wildcard hostnames through upstream
+	// TLSCertificates.
+	//
+	// Defaults to false.
+	Enabled bool `json:"enabled,omitempty"`
+
+	// KubeconfigPath reaches the cluster the certificate service runs on,
+	// where it keeps each issued key pair. Empty means the cluster this
+	// operator runs in.
+	KubeconfigPath string `json:"kubeconfigPath,omitempty"`
+
+	// SecretNamespace is the namespace on that cluster holding the issued key
+	// pairs, each in a Secret named after its TLSCertificate's UID.
+	//
+	// +default="certificates-system"
+	SecretNamespace string `json:"secretNamespace,omitempty"`
+
+	// VerifyChain refuses issued material whose chain does not build to
+	// TrustedRootsFile, or to the system roots when that is empty.
+	//
+	// Defaults to false.
+	VerifyChain bool `json:"verifyChain,omitempty"`
+
+	// TrustedRootsFile is a PEM bundle of the roots an issued chain must
+	// build to when VerifyChain is set.
+	TrustedRootsFile string `json:"trustedRootsFile,omitempty"`
+}
+
+// TrustedRoots returns the roots an issued chain must build to, or nil when
+// chain verification is off or uses the system roots.
+func (c *CertificateServiceConfig) TrustedRoots() (*x509.CertPool, error) {
+	if !c.VerifyChain || c.TrustedRootsFile == "" {
+		return nil, nil
+	}
+	data, err := os.ReadFile(c.TrustedRootsFile)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read trusted roots: %w", err)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(data) {
+		return nil, fmt.Errorf("trusted roots file %s holds no certificates", c.TrustedRootsFile)
+	}
+	return pool, nil
+}
+
+func SetDefaults_CertificateServiceConfig(obj *CertificateServiceConfig) {
+	if obj.SecretNamespace == "" {
+		obj.SecretNamespace = "certificates-system"
+	}
+}
+
+// RestConfig returns the connection to the certificate service's cluster.
+func (c *CertificateServiceConfig) RestConfig() (*rest.Config, error) {
+	cfg, err := c.restConfig()
+	if err != nil {
+		return nil, err
+	}
+	cfg.Timeout = certificateServiceRequestTimeout
+	return cfg, nil
+}
+
+// certificateServiceRequestTimeout bounds each read of the service cluster, so
+// a hung connection there cannot stall a gateway reconcile.
+const certificateServiceRequestTimeout = 10 * time.Second
+
+func (c *CertificateServiceConfig) restConfig() (*rest.Config, error) {
+	if c.KubeconfigPath != "" {
+		return clientcmd.BuildConfigFromFlags("", c.KubeconfigPath)
+	}
+	if cfg, err := rest.InClusterConfig(); err == nil {
+		return cfg, nil
+	}
+	return ctrl.GetConfig()
 }
 
 // +k8s:deepcopy-gen=true
@@ -1489,6 +1577,15 @@ func (c *GatewayConfig) validate() error {
 			errs = append(errs, fmt.Errorf("legacyTargetDomains[%d] is a duplicate entry %q", i, domain))
 		}
 		seen = append(seen, domain)
+	}
+	if c.CertificateService.Enabled && c.DisableHostnameVerification {
+		errs = append(errs, errors.New("certificateService.enabled requires hostname verification: the certificate service issues for any hostname it is handed"))
+	}
+	if c.CertificateService.Enabled && strings.TrimSpace(c.CertificateService.SecretNamespace) == "" {
+		errs = append(errs, errors.New("certificateService.secretNamespace is required when certificateService.enabled"))
+	}
+	if c.CertificateService.TrustedRootsFile != "" && !c.CertificateService.VerifyChain {
+		errs = append(errs, errors.New("certificateService.trustedRootsFile requires certificateService.verifyChain"))
 	}
 	return errors.Join(errs...)
 }

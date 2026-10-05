@@ -551,6 +551,10 @@ const (
 
 	// CertificateReadyReasonChallengeInProgress indicates an ACME challenge is in progress.
 	CertificateReadyReasonChallengeInProgress = "ChallengeInProgress"
+
+	// CertificateReadyReasonRenewalFailing indicates the hostname still serves a
+	// valid certificate but its replacement cannot be issued; the message says why.
+	CertificateReadyReasonRenewalFailing = "RenewalFailing"
 )
 
 // Reasons for HostnameConditionAvailable.

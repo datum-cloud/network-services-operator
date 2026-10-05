@@ -1,0 +1,74 @@
+rule_files:
+  - certificate-service-rules.yaml
+
+evaluation_interval: 30s
+
+tests:
+  # A renewal that keeps failing raises the alert after two hours, even though
+  # the failure was counted only once when it began.
+  - interval: 1m
+    input_series:
+      - series: 'nso_certificate_service_listener_failing{namespace="customer-ns", name="my-gateway", listener="https-hostname-0", reason="IssuanceFailed"}'
+        values: '1+0x180'
+      - series: 'nso_certificate_service_failures_total{namespace="customer-ns", name="my-gateway", listener="https-hostname-0", reason="IssuanceFailed"}'
+        values: '1+0x180'
+    alert_rule_test:
+      - eval_time: 150m
+        alertname: CertificateServiceIssuanceFailing
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              service: network-services
+              team: sre
+              namespace: customer-ns
+              name: my-gateway
+              listener: https-hostname-0
+              reason: IssuanceFailed
+            exp_annotations:
+              summary: "Certificate for Gateway listener customer-ns/my-gateway/https-hostname-0 cannot be issued or renewed"
+              description: "The certificate service has been failing to issue or renew the certificate for listener https-hostname-0 on Gateway my-gateway in namespace customer-ns for over two hours (reason: IssuanceFailed). The listener's CertificateRenewalBlocked or CertificateIssuanceBlocked condition says why."
+              runbook_url: "https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/gateway-tls-certificates.md#certificateserviceissuancefailing"
+
+  # A step that keeps failing and retrying raises the alert from the counter alone.
+  - interval: 1m
+    input_series:
+      - series: 'nso_certificate_service_failures_total{namespace="customer-ns", name="my-gateway", listener="https-hostname-0", reason="StepFailed"}'
+        values: '0+1x180'
+    alert_rule_test:
+      - eval_time: 150m
+        alertname: CertificateServiceIssuanceFailing
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              service: network-services
+              team: sre
+              namespace: customer-ns
+              name: my-gateway
+              listener: https-hostname-0
+              reason: StepFailed
+            exp_annotations:
+              summary: "Certificate for Gateway listener customer-ns/my-gateway/https-hostname-0 cannot be issued or renewed"
+              description: "The certificate service has been failing to issue or renew the certificate for listener https-hostname-0 on Gateway my-gateway in namespace customer-ns for over two hours (reason: StepFailed). The listener's CertificateRenewalBlocked or CertificateIssuanceBlocked condition says why."
+              runbook_url: "https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/gateway-tls-certificates.md#certificateserviceissuancefailing"
+
+  # A failure that cleared within the hour does not alert.
+  - interval: 1m
+    input_series:
+      - series: 'nso_certificate_service_listener_failing{namespace="customer-ns", name="my-gateway", listener="https-hostname-0", reason="NotReady"}'
+        values: '1+0x30 _x150'
+      - series: 'nso_certificate_service_failures_total{namespace="customer-ns", name="my-gateway", listener="https-hostname-0", reason="NotReady"}'
+        values: '1+0x180'
+    alert_rule_test:
+      - eval_time: 150m
+        alertname: CertificateServiceIssuanceFailing
+        exp_alerts: []
+
+  # A failure younger than two hours does not alert yet.
+  - interval: 1m
+    input_series:
+      - series: 'nso_certificate_service_listener_failing{namespace="customer-ns", name="my-gateway", listener="https-hostname-0", reason="Rejected"}'
+        values: '1+0x90'
+    alert_rule_test:
+      - eval_time: 90m
+        alertname: CertificateServiceIssuanceFailing
+        exp_alerts: []

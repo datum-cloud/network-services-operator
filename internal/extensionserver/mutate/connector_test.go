@@ -503,3 +503,47 @@ func TestApplyConnectorRoutes_EmptyRouteConfiguration_NoOp(t *testing.T) {
 	assert.Equal(t, 0, n)
 	assert.Equal(t, 0, converted)
 }
+
+func TestParseRouteClusterName(t *testing.T) {
+	tests := []struct {
+		name        string
+		cluster     string
+		wantOK      bool
+		wantRule    int
+		wantBackend int
+	}{
+		{name: "rule cluster", cluster: "httproute/ns/proxy/rule/2", wantOK: true, wantRule: 2, wantBackend: ruleCluster},
+		{name: "backend cluster", cluster: "httproute/ns/proxy/rule/1/backend/3", wantOK: true, wantRule: 1, wantBackend: 3},
+		{name: "negative backend", cluster: "httproute/ns/proxy/rule/1/backend/-1"},
+		{name: "non-numeric backend", cluster: "httproute/ns/proxy/rule/1/backend/x"},
+		{name: "wrong backend segment", cluster: "httproute/ns/proxy/rule/1/setting/0"},
+		{name: "truncated backend", cluster: "httproute/ns/proxy/rule/1/backend"},
+		{name: "non-numeric rule", cluster: "httproute/ns/proxy/rule/x"},
+		{name: "other route kind", cluster: "grpcroute/ns/proxy/rule/0"},
+		{name: "unrelated", cluster: "infra-cluster"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dsNS, proxyName, ruleIndex, backendIndex, ok := parseRouteClusterName(tt.cluster)
+			require.Equal(t, tt.wantOK, ok)
+			if !tt.wantOK {
+				return
+			}
+			assert.Equal(t, "ns", dsNS)
+			assert.Equal(t, "proxy", proxyName)
+			assert.Equal(t, tt.wantRule, ruleIndex)
+			assert.Equal(t, tt.wantBackend, backendIndex)
+		})
+	}
+}
+
+func TestParseConnectorClusterName_RejectsBackendClusters(t *testing.T) {
+	_, _, _, ok := parseConnectorClusterName(testClusterName() + "/backend/0")
+	assert.False(t, ok)
+
+	dsNS, proxyName, ruleIndex, ok := parseConnectorClusterName(testClusterName())
+	require.True(t, ok)
+	assert.Equal(t, testDSNS, dsNS)
+	assert.Equal(t, testProxyName, proxyName)
+	assert.Zero(t, ruleIndex)
+}

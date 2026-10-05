@@ -294,3 +294,135 @@ func TestApplyVPCPodSocketBind_NetworkServiceBackendEndToEnd(t *testing.T) {
 	assert.Equal(t, "G002wJqT7dV", string(opts[0].GetBufValue()),
 		"must be the device galactic's sidecar creates for this VPC")
 }
+
+func TestApplyVPCPodSocketBind_BindsPerBackendClusters(t *testing.T) {
+	const otherTenantID = "8mLwQ2c-3hRt6Yk"
+	idx := &extcache.PolicyIndex{
+		DStoUS: map[string]string{testDSNS: testUpstreamNS},
+		VPCPodBackends: map[extcache.VPCPodBackendKey]extcache.VPCPodInfo{
+			{UpstreamNS: testUpstreamNS, HTTPProxyName: testProxyName, RuleIndex: 0, BackendIndex: 0}: {TenantID: testTenantID},
+			{UpstreamNS: testUpstreamNS, HTTPProxyName: testProxyName, RuleIndex: 0, BackendIndex: 1}: {TenantID: otherTenantID},
+			{UpstreamNS: testUpstreamNS, HTTPProxyName: testProxyName, RuleIndex: 0, BackendIndex: 2}: {},
+		},
+	}
+
+	clusters := []*clusterv3.Cluster{
+		{Name: testClusterName() + "/backend/0"},
+		{Name: testClusterName() + "/backend/1"},
+		{Name: testClusterName() + "/backend/2"},
+		{Name: testClusterName() + "/backend/3"},
+	}
+
+	mutated, err := ApplyVPCPodSocketBind(clusters, idx)
+	require.NoError(t, err)
+	assert.Equal(t, 2, mutated)
+
+	wantFirst, ok := vrfDeviceName(testTenantID)
+	require.True(t, ok)
+	wantSecond, ok := vrfDeviceName(otherTenantID)
+	require.True(t, ok)
+
+	assert.Equal(t, wantFirst, string(clusters[0].GetUpstreamBindConfig().GetSocketOptions()[0].GetBufValue()))
+	assert.Equal(t, wantSecond, string(clusters[1].GetUpstreamBindConfig().GetSocketOptions()[0].GetBufValue()))
+	assert.Nil(t, clusters[2].GetUpstreamBindConfig())
+	assert.Nil(t, clusters[3].GetUpstreamBindConfig())
+}
+
+func TestApplyVPCPodSocketBind_RuleWideEntryDoesNotBindBackendClusters(t *testing.T) {
+	idx := vpcPodPolicyIndex(testTenantID)
+
+	clusters := []*clusterv3.Cluster{{Name: testClusterName() + "/backend/0"}}
+
+	mutated, err := ApplyVPCPodSocketBind(clusters, idx)
+	require.NoError(t, err)
+	assert.Zero(t, mutated)
+	assert.Nil(t, clusters[0].GetUpstreamBindConfig())
+}
+
+func TestApplyVPCPodSocketBind_MultipleNetworkServiceBackendsEndToEnd(t *testing.T) {
+	const tenantID = "2wJqT7d-9xKp2Qm"
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	require.NoError(t, discoveryv1.AddToScheme(scheme))
+	require.NoError(t, networkingv1alpha.AddToScheme(scheme))
+	require.NoError(t, networkingv1alpha1.AddToScheme(scheme))
+
+	namespace := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   testDSNS,
+			Labels: map[string]string{downstreamclient.UpstreamOwnerNamespaceLabel: testUpstreamNS},
+		},
+	}
+
+	proxy := &networkingv1alpha.HTTPProxy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testProxyName,
+			Namespace: testDSNS,
+			Labels:    map[string]string{downstreamclient.UpstreamOwnerNamespaceLabel: testUpstreamNS},
+		},
+		Spec: networkingv1alpha.HTTPProxySpec{
+			Rules: []networkingv1alpha.HTTPProxyRule{
+				{
+					Backends: []networkingv1alpha.HTTPProxyRuleBackend{
+						{NetworkService: &networkingv1alpha.NetworkServiceBackendRef{Name: "service-a", Port: "http"}},
+						{NetworkService: &networkingv1alpha.NetworkServiceBackendRef{Name: "service-b", Port: "http"}},
+					},
+				},
+			},
+		},
+	}
+
+	memberSlice := func(name, owner, address string) *discoveryv1.EndpointSlice {
+		return &discoveryv1.EndpointSlice{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: testDSNS,
+				Labels:    map[string]string{downstreamclient.UpstreamOwnerNameLabel: owner},
+			},
+			AddressType: discoveryv1.AddressTypeIPv6,
+			Endpoints:   []discoveryv1.Endpoint{{Addresses: []string{address}}},
+		}
+	}
+	galacticSlice := func(name, address string) *discoveryv1.EndpointSlice {
+		return &discoveryv1.EndpointSlice{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: testDSNS,
+				Labels:    map[string]string{extcache.VPCPodTenantIDLabel: tenantID},
+			},
+			AddressType: discoveryv1.AddressTypeIPv6,
+			Endpoints:   []discoveryv1.Endpoint{{Addresses: []string{address}}},
+		}
+	}
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(
+			namespace,
+			proxy,
+			memberSlice("route-some-uid-rule-0-backendref-0", testProxyName+"-0-0", "fd20:0:13::1:0:0"),
+			memberSlice("route-some-uid-rule-0-backendref-1", testProxyName+"-0-1", "fd20:0:13::2:0:0"),
+			galacticSlice("vpc-us-central-1-pod-a", "fd20:0:13::1:0:0"),
+			galacticSlice("vpc-us-central-1-pod-b", "fd20:0:13::2:0:0"),
+		).
+		Build()
+
+	idx, err := extcache.BuildPolicyIndexFromClient(context.Background(), cl, nil)
+	require.NoError(t, err)
+
+	clusters := []*clusterv3.Cluster{
+		{Name: testClusterName() + "/backend/0"},
+		{Name: testClusterName() + "/backend/1"},
+	}
+
+	mutated, err := ApplyVPCPodSocketBind(clusters, idx)
+	require.NoError(t, err)
+	require.Equal(t, 2, mutated)
+
+	for _, cluster := range clusters {
+		opts := cluster.GetUpstreamBindConfig().GetSocketOptions()
+		require.Len(t, opts, 1, cluster.GetName())
+		assert.Equal(t, "G002wJqT7dV", string(opts[0].GetBufValue()), cluster.GetName())
+	}
+}

@@ -68,6 +68,8 @@ type PolicyIndex struct {
 	// populated for HTTPProxy rules that have a vpcPod backend. Accumulated
 	// across all engaged clusters, same shape as Connectors.
 	VPCPods map[VPCPodKey]VPCPodInfo
+
+	VPCPodBackends map[VPCPodBackendKey]VPCPodInfo
 }
 
 type HTTPProxyKey struct {
@@ -159,4 +161,11 @@ type VPCPodKey struct {
 	UpstreamNS    string
 	HTTPProxyName string
 	RuleIndex     int
+}
+
+type VPCPodBackendKey struct {
+	UpstreamNS    string
+	HTTPProxyName string
+	RuleIndex     int
+	BackendIndex  int
 }

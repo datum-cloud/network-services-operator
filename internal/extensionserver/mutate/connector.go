@@ -157,15 +157,35 @@ func ApplyConnectorRoutes(
 //
 // Returns the components and true if the name matches the expected pattern.
 func parseConnectorClusterName(name string) (dsNS, proxyName string, ruleIndex int, ok bool) {
+	dsNS, proxyName, ruleIndex, backendIndex, ok := parseRouteClusterName(name)
+	if !ok || backendIndex != ruleCluster {
+		return "", "", 0, false
+	}
+	return dsNS, proxyName, ruleIndex, true
+}
+
+const ruleCluster = -1
+
+func parseRouteClusterName(name string) (dsNS, proxyName string, ruleIndex, backendIndex int, ok bool) {
 	parts := strings.Split(name, "/")
-	if len(parts) != 5 || parts[0] != "httproute" || parts[3] != "rule" {
+	if (len(parts) != 5 && len(parts) != 7) || parts[0] != "httproute" || parts[3] != "rule" {
 		return
 	}
-	idx, err := strconv.Atoi(parts[4])
+	ruleIndex, err := strconv.Atoi(parts[4])
 	if err != nil {
 		return
 	}
-	return parts[1], parts[2], idx, true
+	backendIndex = ruleCluster
+	if len(parts) == 7 {
+		if parts[5] != "backend" {
+			return
+		}
+		backendIndex, err = strconv.Atoi(parts[6])
+		if err != nil || backendIndex < 0 {
+			return
+		}
+	}
+	return parts[1], parts[2], ruleIndex, backendIndex, true
 }
 
 // routeCluster returns the upstream cluster name a forwarding route targets.

@@ -1,0 +1,220 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+#
+# Section-scoped firewall policy.
+#
+# An HTTPProxy with two named rules ("exempt" on /anything/exempt and
+# "protected" on /) carries a TrafficProtectionPolicy whose targetRef names the
+# "protected" rule through sectionName. The policy must be Accepted, block a
+# SQLi probe on the protected rule with 403, and leave the exempt rule
+# untouched: the same probe on /anything/exempt must return 200.
+#
+# Assertions are on real HTTP responses from the edge, never on status alone,
+# because a policy can be accepted yet applied to the wrong routes. The
+# HTTPProxy is used (rather than a hand-built HTTPRoute) because rule names
+# live on the HTTPProxy; the project control plane's HTTPRoute CRD has no
+# rules[].name.
+#
+# Runs alone (concurrent: false) because it shares cluster-wide downstream
+# config with the other data-plane tests. Cluster names are inline; the
+# downstream gateway class is provisioned by the test environment.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: waf-section-scoping
+spec:
+  concurrent: false
+  cluster: nso-upstream
+  bindings:
+    - name: downstreamGatewayClass
+      value: datum-downstream-gateway-e2e
+  steps:
+    - name: Create the echo backend
+      try:
+        - apply:
+            cluster: nso-downstream
+            file: ../_fixtures/echo-backend.yaml
+        - apply:
+            cluster: nso-downstream
+            resource:
+              apiVersion: v1
+              kind: Namespace
+              metadata:
+                name: datum-downstream-gateway-hostnames
+        - assert:
+            cluster: nso-downstream
+            resource:
+              apiVersion: v1
+              kind: Pod
+              metadata:
+                name: echo-backend
+                namespace: default
+              status:
+                phase: Running
+
+    - name: Provision an HTTPProxy with two named rules and a section-scoped policy
+      try:
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: HTTPProxy
+              metadata:
+                name: sectioned-proxy
+              spec:
+                rules:
+                  - name: exempt
+                    matches:
+                      - path:
+                          type: PathPrefix
+                          value: /anything/exempt
+                    backends:
+                      - endpoint: http://echo-backend.default.svc.cluster.local:8080
+                  - name: protected
+                    matches:
+                      - path:
+                          type: PathPrefix
+                          value: /
+                    backends:
+                      - endpoint: http://echo-backend.default.svc.cluster.local:8080
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: TrafficProtectionPolicy
+              metadata:
+                name: protected-only
+              spec:
+                targetRefs:
+                  - group: gateway.networking.k8s.io
+                    kind: HTTPRoute
+                    name: sectioned-proxy
+                    sectionName: protected
+                mode: Enforce
+                ruleSets:
+                  - type: OWASPCoreRuleSet
+                    owaspCoreRuleSet: {}
+        - script:
+            timeout: 180s
+            content: |
+              set -eu
+              for i in $(seq 1 36); do
+                H=$(kubectl -n $NAMESPACE get httpproxy sectioned-proxy \
+                  -o jsonpath='{.status.canonicalHostname}' 2>/dev/null || true)
+                if [ -n "${H}" ]; then echo "canonical hostname: ${H}"; exit 0; fi
+                echo "waiting for HTTPProxy canonicalHostname... ${i}" >&2
+                sleep 5
+              done
+              echo "ERROR: HTTPProxy never published a canonicalHostname" >&2
+              exit 1
+        - script:
+            timeout: 120s
+            content: |
+              set -eu
+              for i in $(seq 1 24); do
+                S=$(kubectl -n $NAMESPACE get trafficprotectionpolicy protected-only \
+                  -o jsonpath='{.status.ancestors[0].conditions[?(@.type=="Accepted")].status}' 2>/dev/null || true)
+                if [ "${S}" = "True" ]; then echo "policy Accepted"; exit 0; fi
+                echo "waiting for policy Accepted (got '${S}')... ${i}" >&2
+                sleep 5
+              done
+              echo "ERROR: section-scoped policy was not Accepted" >&2
+              kubectl -n $NAMESPACE get trafficprotectionpolicy protected-only -o yaml >&2
+              exit 1
+      catch:
+        - script:
+            content: |
+              kubectl -n network-services-operator-system logs -l app.kubernetes.io/name=network-services-operator --tail=200
+              kubectl -n $NAMESPACE get httpproxy,httproute,trafficprotectionpolicy -o yaml
+
+    - name: Stand up the long-lived conntest client
+      try:
+        - create:
+            cluster: nso-downstream
+            resource:
+              apiVersion: v1
+              kind: Pod
+              metadata:
+                name: conntest
+                namespace: default
+              spec:
+                containers:
+                  - name: curl
+                    image: curlimages/curl:8.11.1
+                    command: ["sleep", "infinity"]
+                    resources:
+                      requests:
+                        cpu: 50m
+                        memory: 64Mi
+                      limits:
+                        cpu: 100m
+                        memory: 128Mi
+                terminationGracePeriodSeconds: 0
+        - assert:
+            cluster: nso-downstream
+            resource:
+              apiVersion: v1
+              kind: Pod
+              metadata:
+                name: conntest
+                namespace: default
+              status:
+                phase: Running
+
+    - name: The policy blocks the protected rule and leaves the exempt rule alone
+      description: |
+        Plain HTTP on port 80 is probed because the HTTPS listener has no issued
+        certificate in this environment; the firewall applies per route on both
+        listeners. Each probe retries until the edge has picked up the config.
+        The exempt path must return 200 even for the SQLi payload; the protected
+        path must return 403 for it and 200 for a benign request.
+      try:
+        - script:
+            timeout: 120s
+            skipCommandOutput: true
+            skipLogOutput: true
+            content: |
+              kubectl -n $NAMESPACE get httpproxy sectioned-proxy -o jsonpath='{.status.canonicalHostname}'
+            outputs:
+              - name: proxyHostname
+                value: ($stdout)
+        - script:
+            timeout: 420s
+            cluster: nso-downstream
+            env:
+              - name: HOST
+                value: ($proxyHostname)
+              - name: OWNING_GC
+                value: ($downstreamGatewayClass)
+            content: |
+              set -eu
+              IP=$(kubectl get svc -n datum-downstream-gateway \
+                -l gateway.envoyproxy.io/owning-gatewayclass=$OWNING_GC \
+                -o jsonpath='{.items[0].spec.clusterIP}')
+              echo "host: ${HOST} edge IP: ${IP}"
+              SQLI='id=1%27%20OR%20%271%27%3D%271'
+
+              probe() {
+                want="$1"; path="$2"
+                for i in $(seq 1 30); do
+                  code=$(kubectl -n default exec conntest -- \
+                    curl -ksS -o /dev/null -w '%{http_code}' --max-time 10 \
+                    --resolve "${HOST}:80:${IP}" \
+                    "http://${HOST}${path}" 2>/dev/null || true)
+                  echo "attempt ${i}: ${path} -> ${code} (want ${want})"
+                  [ "${code}" = "${want}" ] && return 0
+                  sleep 5
+                done
+                echo "ERROR: ${path} expected ${want}, last status ${code}"
+                return 1
+              }
+
+              probe 403 "/get?${SQLI}"
+              probe 200 "/get"
+              probe 200 "/anything/exempt?${SQLI}"
+              echo "OK: protected rule blocked, exempt rule untouched"
+      catch:
+        - script:
+            cluster: nso-downstream
+            env:
+              - name: OWNING_GC
+                value: ($downstreamGatewayClass)
+            content: |
+              kubectl -n datum-downstream-gateway logs -l gateway.envoyproxy.io/owning-gatewayclass=$OWNING_GC -c envoy --tail=100

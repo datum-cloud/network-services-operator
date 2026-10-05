@@ -18,6 +18,12 @@ spec:
     - patch
     - watch
     - use
+  subresources:
+    - name: status
+      permissions:
+        - get
+        - update
+        - patch
   parentResources:
     - apiGroup: resourcemanager.miloapis.com
       kind: Project

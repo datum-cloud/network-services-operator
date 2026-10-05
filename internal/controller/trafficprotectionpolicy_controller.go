@@ -60,6 +60,7 @@ const (
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=trafficprotectionpolicies,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=trafficprotectionpolicies/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=trafficprotectionpolicies/finalizers,verbs=update
+// +kubebuilder:rbac:groups=networking.datumapis.com,resources=httpproxies,verbs=get;list;watch
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups=cert-manager.io,resources=certificates,verbs=get;list;watch
 
@@ -106,7 +107,12 @@ func (r *TrafficProtectionPolicyReconciler) Reconcile(ctx context.Context, req N
 		return ctrl.Result{}, err
 	}
 
-	r.collectTrafficProtectionPolicyAttachments(ctx, trafficProtectionPolicies, upstreamGateways.Items, upstreamHTTPRoutes.Items)
+	var upstreamHTTPProxies networkingv1alpha.HTTPProxyList
+	if err := cl.GetClient().List(ctx, &upstreamHTTPProxies, client.InNamespace(req.Namespace)); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	r.collectTrafficProtectionPolicyAttachments(ctx, trafficProtectionPolicies, upstreamGateways.Items, upstreamHTTPRoutes.Items, upstreamHTTPProxies.Items)
 
 	r.setProgrammedConditionsFromDownstream(ctx, downstreamNamespaceName, trafficProtectionPolicies)
 
@@ -319,6 +325,7 @@ type policyGatewayTargetContext struct {
 
 type policyRouteTargetContext struct {
 	*gatewayv1.HTTPRoute
+	proxyRuleNames       sets.Set[string]
 	attached             bool
 	attachedToRouteRules sets.Set[string]
 }
@@ -328,6 +335,7 @@ func (r *TrafficProtectionPolicyReconciler) collectTrafficProtectionPolicyAttach
 	trafficProtectionPolicies []*policyContext,
 	upstreamGateways []gatewayv1.Gateway,
 	upstreamHTTPRoutes []gatewayv1.HTTPRoute,
+	upstreamHTTPProxies []networkingv1alpha.HTTPProxy,
 ) []policyAttachment {
 	logger := log.FromContext(ctx)
 
@@ -341,10 +349,16 @@ func (r *TrafficProtectionPolicyReconciler) collectTrafficProtectionPolicyAttach
 	routeMapSize := len(upstreamHTTPRoutes)
 	gatewayMapSize := len(upstreamGateways)
 
+	proxiesByName := make(map[string]*networkingv1alpha.HTTPProxy, len(upstreamHTTPProxies))
+	for i := range upstreamHTTPProxies {
+		proxiesByName[upstreamHTTPProxies[i].Name] = &upstreamHTTPProxies[i]
+	}
+
 	routeMap := make(map[client.ObjectKey]*policyRouteTargetContext, routeMapSize)
 	for i, route := range upstreamHTTPRoutes {
 		routeMap[client.ObjectKeyFromObject(&route)] = &policyRouteTargetContext{
-			HTTPRoute: &upstreamHTTPRoutes[i],
+			HTTPRoute:      &upstreamHTTPRoutes[i],
+			proxyRuleNames: httpProxyRuleNames(&upstreamHTTPRoutes[i], proxiesByName),
 		}
 	}
 
@@ -478,7 +492,7 @@ func (r *TrafficProtectionPolicyReconciler) processTrafficProtectionPolicyForHTT
 		}
 		route.attached = true
 	} else {
-		found := false
+		found := route.proxyRuleNames.Has(string(*targetRef.SectionName))
 		for _, r := range route.Spec.Rules {
 			if r.Name != nil && *r.Name == *targetRef.SectionName {
 				found = true
@@ -813,6 +827,7 @@ func (r *TrafficProtectionPolicyReconciler) SetupWithManager(mgr mcmanager.Manag
 		Watches(&networkingv1alpha.TrafficProtectionPolicy{}, EnqueueRequestForObjectNamespace).
 		Watches(&gatewayv1.Gateway{}, EnqueueRequestForObjectNamespace).
 		Watches(&gatewayv1.HTTPRoute{}, EnqueueRequestForObjectNamespace).
+		Watches(&networkingv1alpha.HTTPProxy{}, EnqueueRequestForObjectNamespace).
 		WatchesRawSource(downstreamTPPSource).
 		Named("trafficprotectionpolicy").
 		Complete(r)
@@ -879,4 +894,22 @@ func (r NamespaceReconcileRequest) Cluster() multicluster.ClusterName {
 func (r NamespaceReconcileRequest) WithCluster(name multicluster.ClusterName) NamespaceReconcileRequest {
 	r.ClusterName = name
 	return r
+}
+
+func httpProxyRuleNames(route *gatewayv1.HTTPRoute, proxiesByName map[string]*networkingv1alpha.HTTPProxy) sets.Set[string] {
+	proxyName := route.Name
+	if owner := metav1.GetControllerOf(route); owner != nil && owner.Kind == "HTTPProxy" {
+		proxyName = owner.Name
+	}
+	proxy, ok := proxiesByName[proxyName]
+	if !ok {
+		return nil
+	}
+	names := make(sets.Set[string])
+	for _, rule := range proxy.Spec.Rules {
+		if rule.Name != nil {
+			names.Insert(string(*rule.Name))
+		}
+	}
+	return names
 }

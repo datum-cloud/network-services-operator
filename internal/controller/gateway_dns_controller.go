@@ -82,12 +82,15 @@ func (r *GatewayReconciler) ensureDNSRecordSets(
 	desiredRecordSetNames := map[string]bool{}
 
 	for _, hostname := range claimedHostnames {
-		// Skip the platform-managed canonical hostname – it is handled by external-dns.
+		// Skip the platform-managed canonical (apex) hostname - ExternalDNS
+		// programs its A/AAAA via the downstream DNSEndpoint. v4./v6. aliases
+		// are NOT skipped: Gateway DNS owns those as CNAME/ALIAS records.
 		if hostname == canonicalHostname {
 			continue
 		}
 
 		hs := networkingv1alpha.HostnameStatus{Hostname: hostname}
+		recordSetName := dnsRecordSetName(upstreamGateway.Name, hostname)
 
 		// Get all possible zone names from most specific to least specific.
 		zoneNames := possibleZoneNames(hostname)
@@ -190,6 +193,9 @@ func (r *GatewayReconciler) ensureDNSRecordSets(
 
 			switch {
 			case unverifiedDomain != nil:
+				// Hostname is still claimed - retain any existing DNSRecordSet so a
+				// transient verification flap does not GC a record we still want.
+				desiredRecordSetNames[recordSetName] = true
 				apimeta.SetStatusCondition(&hs.Conditions, metav1.Condition{
 					Type:               networkingv1alpha.HostnameConditionDNSRecordProgrammed,
 					Status:             metav1.ConditionFalse,
@@ -198,6 +204,9 @@ func (r *GatewayReconciler) ensureDNSRecordSets(
 					ObservedGeneration: upstreamGateway.Generation,
 				})
 			case noAuthorityDomain != nil:
+				// Same retain rule for Domain NS flaps (HasDNSAuthority false): pause
+				// programming without deleting the Gateway's DNSRecordSet.
+				desiredRecordSetNames[recordSetName] = true
 				msg := fmt.Sprintf("Domain %q is verified but Datum DNS does not have authority", noAuthorityDomain.Name)
 				if noAuthorityZone != nil {
 					if !apimeta.IsStatusConditionTrue(noAuthorityZone.Status.Conditions, conditionTypeAccepted) ||
@@ -241,11 +250,12 @@ func (r *GatewayReconciler) ensureDNSRecordSets(
 			rrType = dnsv1alpha1.RRTypeALIAS
 		}
 
-		recordSetName := dnsRecordSetName(upstreamGateway.Name, hostname)
 		desiredRecordSetNames[recordSetName] = true
 
-		// Conflict detection: list existing DNSRecordSets with the same
-		// hostname annotation in this namespace that reference this zone.
+		// Conflict detection: any other DNSRecordSet claiming the same FQDN in
+		// this zone blocks programming - including peers with the same
+		// managed-by (e.g. a leftover ExternalDNS-shaped record that still
+		// carries dns.datumapis.com/managed).
 		var existingList dnsv1alpha1.DNSRecordSetList
 		if err := upstreamClient.List(ctx, &existingList,
 			client.InNamespace(upstreamGateway.Namespace),
@@ -257,21 +267,22 @@ func (r *GatewayReconciler) ensureDNSRecordSets(
 
 		for _, existing := range existingList.Items {
 			if existing.Name == recordSetName {
-				// This is our own record; skip conflict check.
 				continue
 			}
 			if existing.Annotations[annotationDNSHostname] == hostname &&
-				existing.Spec.DNSZoneRef.Name == dnsZone.Name &&
-				existing.Labels[labelManagedBy] != labelManagedByValue {
-				// Conflict: a record for this hostname exists that we don't own.
+				existing.Spec.DNSZoneRef.Name == dnsZone.Name {
+				managedBy := existing.Labels[labelManagedBy]
+				if managedBy == "" {
+					managedBy = "unknown"
+				}
 				conflictMsg := fmt.Sprintf(
 					"Existing DNSRecordSet %q for hostname %q is managed by %q",
-					existing.Name, hostname, existing.Labels[labelManagedBy],
+					existing.Name, hostname, managedBy,
 				)
 				logger.Info("DNS record conflict detected",
 					"hostname", hostname,
 					"conflicting_record", existing.Name,
-					"managed_by", existing.Labels[labelManagedBy],
+					"managed_by", managedBy,
 				)
 				apimeta.SetStatusCondition(&hs.Conditions, metav1.Condition{
 					Type:               networkingv1alpha.HostnameConditionDNSRecordProgrammed,

@@ -310,16 +310,23 @@ func (r *HTTPProxyReconciler) certificateRecords(
 }
 
 // ownershipRecord returns the TXT record that would verify the most specific
-// Domain covering the hostname, while no covering Domain is verified yet.
+// Domain covering the hostname, while no covering Domain proves it yet. A
+// wildcard needs a Domain verified by DNS; any verified Domain will do for an
+// exact hostname.
 func ownershipRecord(hostname string, domains []networkingv1alpha.Domain) (networkingv1alpha.HostnameDNSRecord, bool) {
+	base, wildcard := strings.CutPrefix(hostname, "*.")
 	var pending *networkingv1alpha.Domain
 	for i := range domains {
 		d := &domains[i]
-		if !domainCoversHostname(d.Spec.DomainName, hostname) {
+		if !domainCoversHostname(d.Spec.DomainName, base) {
 			continue
 		}
-		if apimeta.IsStatusConditionTrue(d.Status.Conditions, networkingv1alpha.DomainConditionVerified) {
+		verified := apimeta.IsStatusConditionTrue(d.Status.Conditions, networkingv1alpha.DomainConditionVerified)
+		if (wildcard && provenByDNS(d)) || (!wildcard && verified) {
 			return networkingv1alpha.HostnameDNSRecord{}, false
+		}
+		if verified {
+			continue
 		}
 		if d.Status.Verification == nil || d.Status.Verification.DNSRecord.Name == "" {
 			continue

@@ -116,8 +116,50 @@ func TestDomainVerification(t *testing.T) {
 		reconcileCount int
 		// registryLookupDomain allows a test to control Domain.status.nameservers via reconcileRegistration.
 		registryLookupDomain func(ctx context.Context, domain string, opts registrydata.LookupOptions) (*registrydata.DomainResult, error)
+		certificateService   bool
 		assert               func(t *testing.T, domain *networkingv1alpha.Domain, result ctrl.Result)
 	}{
+		{
+			name:               "dns record verification is remembered with the certificate service on",
+			certificateService: true,
+			lookupTXT: func(ctx context.Context, name string) ([]string, error) {
+				return []string{"test"}, nil
+			},
+			httpGet: func(ctx context.Context, url string) ([]byte, *http.Response, error) {
+				return []byte("test"), &http.Response{StatusCode: http.StatusOK}, nil
+			},
+			domain: newDomain(upstreamNamespace.Name, "dns-verify-remembered", func(domain *networkingv1alpha.Domain) {
+				domain.Status.Verification = &networkingv1alpha.DomainVerificationStatus{
+					DNSRecord: networkingv1alpha.DNSVerificationRecord{Name: "test", Type: "TXT", Content: "test"},
+					HTTPToken: networkingv1alpha.HTTPVerificationToken{URL: "test", Body: "test"},
+				}
+			}),
+			assert: func(t *testing.T, domain *networkingv1alpha.Domain, result ctrl.Result) {
+				assert.True(t, apimeta.IsStatusConditionTrue(domain.Status.Conditions, networkingv1alpha.DomainConditionVerified))
+				assert.True(t, apimeta.IsStatusConditionTrue(domain.Status.Conditions, networkingv1alpha.DomainConditionVerifiedDNS))
+				assert.Nil(t, apimeta.FindStatusCondition(domain.Status.Conditions, networkingv1alpha.DomainConditionVerifiedHTTP))
+				assert.Nil(t, domain.Status.Verification, "a verified domain must not show its verification scaffolding")
+			},
+		},
+		{
+			name:               "http token verification is remembered with the certificate service on",
+			certificateService: true,
+			lookupTXT: func(ctx context.Context, name string) ([]string, error) {
+				return []string{}, &net.DNSError{IsNotFound: true}
+			},
+			httpGet: func(ctx context.Context, url string) ([]byte, *http.Response, error) {
+				return []byte("test"), &http.Response{StatusCode: http.StatusOK}, nil
+			},
+			domain: newDomain(upstreamNamespace.Name, "http-verify-remembered", func(domain *networkingv1alpha.Domain) {
+				domain.Status.Verification = &networkingv1alpha.DomainVerificationStatus{
+					HTTPToken: networkingv1alpha.HTTPVerificationToken{URL: "test", Body: "test"},
+				}
+			}),
+			assert: func(t *testing.T, domain *networkingv1alpha.Domain, result ctrl.Result) {
+				assert.True(t, apimeta.IsStatusConditionTrue(domain.Status.Conditions, networkingv1alpha.DomainConditionVerifiedHTTP))
+				assert.Nil(t, apimeta.FindStatusCondition(domain.Status.Conditions, networkingv1alpha.DomainConditionVerifiedDNS))
+			},
+		},
 		{
 			name:   "verification details added to status",
 			domain: newDomain(upstreamNamespace.Name, "test"),
@@ -541,9 +583,11 @@ func TestDomainVerification(t *testing.T) {
 
 			mgr := &fakeMockManager{cl: fakeUpstreamClient}
 
+			reconcilerConfig := operatorConfig
+			reconcilerConfig.Gateway.CertificateService.Enabled = tt.certificateService
 			reconciler := &DomainReconciler{
 				mgr:    mgr,
-				Config: operatorConfig,
+				Config: reconcilerConfig,
 
 				timeNow:        tt.timeNow,
 				httpGet:        tt.httpGet,

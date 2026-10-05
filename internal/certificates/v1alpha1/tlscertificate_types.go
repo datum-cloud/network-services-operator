@@ -54,25 +54,12 @@ const (
 // does not verify that the project controls the names; the caller creates a
 // TLSCertificate only for names whose ownership it has already verified.
 type TLSCertificateSpec struct {
-	DNSNames   []DNSName    `json:"dnsNames"`
-	Issuance   IssuanceMode `json:"issuance,omitempty"`
-	SecretName string       `json:"secretName,omitempty"`
+	DNSNames []DNSName    `json:"dnsNames"`
+	Issuance IssuanceMode `json:"issuance,omitempty"`
 }
 
 // DNSName is a lowercase RFC 1123 hostname, optionally prefixed with "*.".
 type DNSName string
-
-// SecretReference names a Secret in the TLSCertificate's namespace.
-type SecretReference struct {
-	Name string `json:"name"`
-}
-
-// ServiceSecretReference locates the issued Secret on the cluster that runs
-// the certificate service.
-type ServiceSecretReference struct {
-	Namespace string `json:"namespace"`
-	Name      string `json:"name"`
-}
 
 // RequiredDNSRecord is a DNS record the name's owner must publish before
 // issuance can complete.
@@ -96,22 +83,20 @@ type ACMEChallenge struct {
 
 // TLSCertificateStatus defines the observed state of TLSCertificate.
 type TLSCertificateStatus struct {
-	Issuance           ChallengeType           `json:"issuance,omitempty"`
-	SecretRef          *SecretReference        `json:"secretRef,omitempty"`
-	ServiceSecretRef   *ServiceSecretReference `json:"serviceSecretRef,omitempty"`
-	DelegationTarget   string                  `json:"delegationTarget,omitempty"`
-	NotBefore          *metav1.Time            `json:"notBefore,omitempty"`
-	NotAfter           *metav1.Time            `json:"notAfter,omitempty"`
-	RenewalTime        *metav1.Time            `json:"renewalTime,omitempty"`
-	RequiredDNSRecords []RequiredDNSRecord     `json:"requiredDNSRecords,omitempty"`
-	Challenges         []ACMEChallenge         `json:"challenges,omitempty"`
-	Conditions         []metav1.Condition      `json:"conditions,omitempty"`
-	ObservedGeneration int64                   `json:"observedGeneration,omitempty"`
+	Issuance           ChallengeType       `json:"issuance,omitempty"`
+	DelegationTarget   string              `json:"delegationTarget,omitempty"`
+	NotBefore          *metav1.Time        `json:"notBefore,omitempty"`
+	NotAfter           *metav1.Time        `json:"notAfter,omitempty"`
+	RenewalTime        *metav1.Time        `json:"renewalTime,omitempty"`
+	RequiredDNSRecords []RequiredDNSRecord `json:"requiredDNSRecords,omitempty"`
+	Challenges         []ACMEChallenge     `json:"challenges,omitempty"`
+	Conditions         []metav1.Condition  `json:"conditions,omitempty"`
+	ObservedGeneration int64               `json:"observedGeneration,omitempty"`
 }
 
 // TLSCertificate requests a publicly trusted TLS certificate for a set of
-// hostnames and delivers it as a kubernetes.io/tls Secret in the same
-// namespace. Its name is at most 63 characters.
+// hostnames. The issued key pair stays on the service cluster and is never
+// written to the project. Its name is at most 63 characters.
 //
 // +kubebuilder:object:root=true
 type TLSCertificate struct {

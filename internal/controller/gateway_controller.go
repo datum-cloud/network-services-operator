@@ -97,7 +97,7 @@ type GatewayReconciler struct {
 	DownstreamCluster cluster.Cluster
 
 	// CertificateServiceReader reads the certificate service's cluster, where
-	// the service-side copy of each issued Secret lives. Required when
+	// each issued key pair is stored. Required when
 	// Config.Gateway.CertificateService.Enabled.
 	CertificateServiceReader client.Reader
 

@@ -207,16 +207,15 @@ func (r *GatewayReconciler) recordCertificateServiceState(gateway *gatewayv1.Gat
 }
 
 const (
-	certificateServiceReasonStepFailed       = "StepFailed"
-	certificateServiceReasonNotOwned         = "NotOwned"
-	certificateServiceReasonRefused          = "Refused"
-	certificateServiceReasonRejected         = "Rejected"
-	certificateServiceReasonIssuanceFailed   = "IssuanceFailed"
-	certificateServiceReasonNotReady         = "NotReady"
-	certificateServiceReasonRenewalOverdue   = "RenewalOverdue"
-	certificateServiceReasonNamespaceRefused = "NamespaceRefused"
-	certificateServiceReasonMaterialRefused  = "MaterialRefused"
-	certificateServiceReasonUntrustedChain   = "UntrustedChain"
+	certificateServiceReasonStepFailed      = "StepFailed"
+	certificateServiceReasonNotOwned        = "NotOwned"
+	certificateServiceReasonRefused         = "Refused"
+	certificateServiceReasonRejected        = "Rejected"
+	certificateServiceReasonIssuanceFailed  = "IssuanceFailed"
+	certificateServiceReasonNotReady        = "NotReady"
+	certificateServiceReasonRenewalOverdue  = "RenewalOverdue"
+	certificateServiceReasonMaterialRefused = "MaterialRefused"
+	certificateServiceReasonUntrustedChain  = "UntrustedChain"
 )
 
 func certificateServiceUnavailableMessage(hostname string) string {
@@ -370,7 +369,7 @@ func (r *GatewayReconciler) ensureListenerTLSCertificate(
 ) (bool, *certificateServiceIssue, error) {
 	secretName := listenerCertificateSecretName(upstreamGateway.Name, listenerName)
 
-	cert, state, err := r.ensureTLSCertificate(ctx, upstreamClient, upstreamGateway, certName, secretName, hostname)
+	cert, state, err := r.ensureTLSCertificate(ctx, upstreamClient, upstreamGateway, certName, hostname)
 	switch {
 	case errors.Is(err, errTLSCertificateNotOwned):
 		return false, &certificateServiceIssue{reason: certificateServiceReasonNotOwned, message: certificateRequestNotOwnedMessage(hostname)}, err
@@ -452,21 +451,20 @@ const (
 )
 
 // ensureTLSCertificate creates the listener's TLSCertificate or confirms the
-// existing one. dnsNames and secretName are immutable on the service's API, so
-// one of ours that no longer matches is deleted and requested again once it is
-// gone. One this gateway does not control is never touched.
+// existing one. dnsNames is immutable on the service's API, so one of ours that
+// no longer matches is deleted and requested again once it is gone. One this
+// gateway does not control is never touched.
 func (r *GatewayReconciler) ensureTLSCertificate(
 	ctx context.Context,
 	upstreamClient client.Client,
 	upstreamGateway *gatewayv1.Gateway,
-	certName, secretName, hostname string,
+	certName, hostname string,
 ) (*certificatesv1alpha1.TLSCertificate, tlsCertificateState, error) {
 	logger := log.FromContext(ctx)
 
 	desiredSpec := certificatesv1alpha1.TLSCertificateSpec{
-		DNSNames:   []certificatesv1alpha1.DNSName{certificatesv1alpha1.DNSName(hostname)},
-		Issuance:   certificatesv1alpha1.IssuanceModeDNS01,
-		SecretName: secretName,
+		DNSNames: []certificatesv1alpha1.DNSName{certificatesv1alpha1.DNSName(hostname)},
+		Issuance: certificatesv1alpha1.IssuanceModeDNS01,
 	}
 
 	cert := &certificatesv1alpha1.TLSCertificate{
@@ -500,7 +498,7 @@ func (r *GatewayReconciler) ensureTLSCertificate(
 		return cert, tlsCertificateReplacing, nil
 	}
 
-	if !slices.Equal(cert.Spec.DNSNames, desiredSpec.DNSNames) || cert.Spec.SecretName != desiredSpec.SecretName {
+	if !slices.Equal(cert.Spec.DNSNames, desiredSpec.DNSNames) {
 		logger.Info("TLSCertificate no longer matches its listener, requesting it again", "tlscertificate", certName, "hostname", hostname)
 		if err := upstreamClient.Delete(ctx, cert, client.Preconditions{UID: &cert.UID}); client.IgnoreNotFound(err) != nil {
 			return nil, tlsCertificateSettled, fmt.Errorf("failed to delete TLSCertificate %s: %w", certName, err)
@@ -520,13 +518,13 @@ func (r *GatewayReconciler) ensureTLSCertificate(
 	return cert, tlsCertificateSettled, nil
 }
 
-// mirrorTLSCertificateSecret copies the service-side issued Secret, read with
-// the operator's own credentials from the configured service namespace, into
-// the downstream gateway namespace under the listener's secret name, stamped
-// with the upstream-owner labels the federation policy selects. The material is
+// mirrorTLSCertificateSecret copies the service-side Secret holding the issued
+// key pair, read with the operator's own credentials from the configured
+// service namespace under the name the TLSCertificate's UID derives, into the
+// downstream gateway namespace under the listener's secret name, stamped with
+// the upstream-owner labels the federation policy selects. The material is
 // parsed, matched, checked against the hostname, its expiry and, when
-// configured, the trusted roots before it may replace what is serving; the
-// project-namespace copy is never read.
+// configured, the trusted roots before it may replace what is serving.
 func (r *GatewayReconciler) mirrorTLSCertificateSecret(
 	ctx context.Context,
 	downstreamStrategy downstreamclient.ResourceStrategy,
@@ -541,16 +539,6 @@ func (r *GatewayReconciler) mirrorTLSCertificateSecret(
 
 	if !apimeta.IsStatusConditionTrue(cert.Status.Conditions, certificatesv1alpha1.ConditionReady) {
 		return false, nil, nil
-	}
-	ref := cert.Status.ServiceSecretRef
-	if ref == nil || ref.Name == "" {
-		logger.Info("TLSCertificate is Ready without a service-side Secret reference", "tlscertificate", cert.Name)
-		return false, nil, nil
-	}
-	if ref.Namespace != r.Config.Gateway.CertificateService.SecretNamespace {
-		logger.Info("refusing service-side Secret outside the certificate service namespace",
-			"tlscertificate", cert.Name, "namespace", ref.Namespace, "expected", r.Config.Gateway.CertificateService.SecretNamespace)
-		return false, &certificateServiceIssue{reason: certificateServiceReasonNamespaceRefused, message: certificateMaterialRefusedMessage(hostname)}, nil
 	}
 	if r.CertificateServiceReader == nil {
 		return false, nil, fmt.Errorf("certificate service enabled without a client for its cluster")
@@ -575,7 +563,10 @@ func (r *GatewayReconciler) mirrorTLSCertificateSecret(
 	}
 
 	var source corev1.Secret
-	sourceKey := client.ObjectKey{Namespace: ref.Namespace, Name: ref.Name}
+	sourceKey := client.ObjectKey{
+		Namespace: r.Config.Gateway.CertificateService.SecretNamespace,
+		Name:      certificatesv1alpha1.StoredSecretName(cert.UID),
+	}
 	if err := r.CertificateServiceReader.Get(ctx, sourceKey, &source); err != nil {
 		if apierrors.IsNotFound(err) {
 			logger.Info("TLSCertificate is Ready but its service-side Secret is not readable yet", "tlscertificate", cert.Name, "secret", sourceKey)

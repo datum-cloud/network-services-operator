@@ -927,12 +927,12 @@ type CertificateServiceConfig struct {
 	Enabled bool `json:"enabled,omitempty"`
 
 	// KubeconfigPath reaches the cluster the certificate service runs on,
-	// where it keeps the service-side copy of each issued Secret. Empty
-	// means the cluster this operator runs in.
+	// where it keeps each issued key pair. Empty means the cluster this
+	// operator runs in.
 	KubeconfigPath string `json:"kubeconfigPath,omitempty"`
 
-	// SecretNamespace is the only namespace on that cluster a TLSCertificate's
-	// serviceSecretRef may point into; a reference anywhere else is refused.
+	// SecretNamespace is the namespace on that cluster holding the issued key
+	// pairs, each in a Secret named after its TLSCertificate's UID.
 	//
 	// +default="certificates-system"
 	SecretNamespace string `json:"secretNamespace,omitempty"`

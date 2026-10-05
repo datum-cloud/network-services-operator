@@ -106,13 +106,22 @@ unavailable.
 | `Rejected`, `Refused` | The service refused the request; the condition message carries its reason |
 | `IssuanceFailed`, `NotReady` | The service accepted it but the ACME order failed or never completed |
 | `RenewalOverdue` | The served certificate is past its renewal point and nothing newer arrived |
-| `MaterialRefused`, `UntrustedChain`, `NamespaceRefused` | The operator refused what the service issued |
+| `MaterialRefused`, `UntrustedChain` | The operator refused what the service issued |
 | `StepFailed`, `NotOwned` | The operator could not reach the service, or the request name is taken |
 
 Read the TLSCertificate in the project, named after the gateway and listener:
 
 ```sh
 kubectl -n <namespace> get tlscertificates -o yaml
+```
+
+The issued key pair never enters the project. It is on the service cluster, in
+the `secretNamespace` the operator is configured with, in a Secret named `tc-`
+plus the first 32 hex characters of the SHA-256 of the TLSCertificate's UID:
+
+```sh
+uid=$(kubectl -n <namespace> get tlscertificate <name> -o jsonpath='{.metadata.uid}')
+kubectl -n certificates-system get secret "tc-$(printf %s "$uid" | sha256sum | cut -c1-32)"
 ```
 
 **Remediate.** A refusal or a missing DNS delegation record is for the customer.

@@ -168,17 +168,18 @@ func TestEnsureDownstreamGatewayCertificateService(t *testing.T) {
 		listenerName    = gatewayv1.SectionName("https-hostname-0")
 		hostname        = "*.shop.example.com"
 		serviceNS       = "certificates-system"
-		serviceSecret   = "svc-secret"
 		upstreamCluster = "test"
 	)
 	certName := tlsCertificateName(gatewayName, listenerName)
 	secretName := listenerCertificateSecretName(gatewayName, listenerName)
+	certUID := uuid.NewUUID()
+	serviceSecret := certificatesv1alpha1.StoredSecretName(certUID)
 	testCfg := config.NetworkServicesOperator{Gateway: certificateServiceGatewayConfig()}
 	ca := newTestCA(t)
 
 	now := time.Now()
 	serviceCertPEM, serviceKeyPEM := ca.issue(t, hostname, now.Add(-time.Hour), now.Add(60*24*time.Hour))
-	projectCertPEM, projectKeyPEM := ca.issue(t, hostname, now.Add(-time.Hour), now.Add(60*24*time.Hour))
+	otherCertPEM, otherKeyPEM := ca.issue(t, hostname, now.Add(-time.Hour), now.Add(60*24*time.Hour))
 	servingCertPEM, servingKeyPEM := ca.issue(t, hostname, now.Add(-time.Hour), now.Add(60*24*time.Hour))
 
 	tlsSecret := func(namespace, name string, certPEM, keyPEM []byte) *corev1.Secret {
@@ -191,11 +192,10 @@ func TestEnsureDownstreamGatewayCertificateService(t *testing.T) {
 
 	newTLSCertificate := func(owner *gatewayv1.Gateway, name string, mutate func(*certificatesv1alpha1.TLSCertificate)) *certificatesv1alpha1.TLSCertificate {
 		cert := &certificatesv1alpha1.TLSCertificate{
-			ObjectMeta: metav1.ObjectMeta{Namespace: upstreamNamespace.Name, Name: name, UID: uuid.NewUUID()},
+			ObjectMeta: metav1.ObjectMeta{Namespace: upstreamNamespace.Name, Name: name, UID: certUID},
 			Spec: certificatesv1alpha1.TLSCertificateSpec{
-				DNSNames:   []certificatesv1alpha1.DNSName{hostname},
-				Issuance:   certificatesv1alpha1.IssuanceModeDNS01,
-				SecretName: secretName,
+				DNSNames: []certificatesv1alpha1.DNSName{hostname},
+				Issuance: certificatesv1alpha1.IssuanceModeDNS01,
 			},
 		}
 		if owner != nil {
@@ -210,8 +210,6 @@ func TestEnsureDownstreamGatewayCertificateService(t *testing.T) {
 	readyStatus := func(cert *certificatesv1alpha1.TLSCertificate) {
 		cert.Status.NotBefore = &metav1.Time{Time: now.Add(-time.Hour)}
 		cert.Status.NotAfter = &metav1.Time{Time: now.Add(60 * 24 * time.Hour)}
-		cert.Status.SecretRef = &certificatesv1alpha1.SecretReference{Name: secretName}
-		cert.Status.ServiceSecretRef = &certificatesv1alpha1.ServiceSecretReference{Namespace: serviceNS, Name: serviceSecret}
 		apimeta.SetStatusCondition(&cert.Status.Conditions, metav1.Condition{Type: certificatesv1alpha1.ConditionAccepted, Status: metav1.ConditionTrue, Reason: "Accepted"})
 		apimeta.SetStatusCondition(&cert.Status.Conditions, metav1.Condition{Type: certificatesv1alpha1.ConditionReady, Status: metav1.ConditionTrue, Reason: "Issued"})
 	}
@@ -244,7 +242,6 @@ func TestEnsureDownstreamGatewayCertificateService(t *testing.T) {
 				require.NoError(t, e.upstream.Get(ctx, client.ObjectKey{Namespace: upstreamNamespace.Name, Name: certName}, &cert))
 				assert.Equal(t, []certificatesv1alpha1.DNSName{hostname}, cert.Spec.DNSNames)
 				assert.Equal(t, certificatesv1alpha1.IssuanceModeDNS01, cert.Spec.Issuance)
-				assert.Equal(t, secretName, cert.Spec.SecretName)
 				assert.True(t, metav1.IsControlledBy(&cert, upstreamGateway), "TLSCertificate should be controlled by the upstream Gateway")
 
 				var legacy cmv1.CertificateList
@@ -276,12 +273,12 @@ func TestEnsureDownstreamGatewayCertificateService(t *testing.T) {
 		{
 			name: "mirrors the service-side Secret when Ready and admits the listener",
 			upstreamObjects: func(gw *gatewayv1.Gateway) []client.Object {
-				return []client.Object{
-					newTLSCertificate(gw, certName, readyStatus),
-					tlsSecret(upstreamNamespace.Name, secretName, projectCertPEM, projectKeyPEM),
-				}
+				return []client.Object{newTLSCertificate(gw, certName, readyStatus)}
 			},
-			serviceObjects: []client.Object{tlsSecret(serviceNS, serviceSecret, serviceCertPEM, serviceKeyPEM)},
+			serviceObjects: []client.Object{
+				tlsSecret(serviceNS, serviceSecret, serviceCertPEM, serviceKeyPEM),
+				tlsSecret(serviceNS, secretName, otherCertPEM, otherKeyPEM),
+			},
 			assert: func(t *testing.T, e env, upstreamGateway, downstreamGateway *gatewayv1.Gateway) {
 				ctx := context.Background()
 				var mirror corev1.Secret
@@ -289,7 +286,7 @@ func TestEnsureDownstreamGatewayCertificateService(t *testing.T) {
 				assert.Equal(t, corev1.SecretTypeTLS, mirror.Type)
 				assert.Equal(t, serviceCertPEM, mirror.Data["tls.crt"], "edge material comes from the service-side Secret")
 				assert.Equal(t, serviceKeyPEM, mirror.Data["tls.key"])
-				assert.NotEqual(t, projectCertPEM, mirror.Data["tls.crt"], "the project copy must never reach the edge")
+				assert.NotEqual(t, otherCertPEM, mirror.Data["tls.crt"], "only the Secret named after the TLSCertificate's UID is read")
 				assert.Equal(t, "cluster-"+upstreamCluster, mirror.Labels[downstreamclient.UpstreamOwnerClusterNameLabel])
 				assert.Equal(t, upstreamNamespace.Name, mirror.Labels[downstreamclient.UpstreamOwnerNamespaceLabel])
 				assert.Equal(t, KindGateway, mirror.Labels[downstreamclient.UpstreamOwnerKindLabel])
@@ -361,17 +358,13 @@ func TestEnsureDownstreamGatewayCertificateService(t *testing.T) {
 			},
 		},
 		{
-			name: "refuses a service-side Secret outside the service namespace",
+			name: "reads the stored Secret only from the service namespace",
 			upstreamObjects: func(gw *gatewayv1.Gateway) []client.Object {
-				return []client.Object{newTLSCertificate(gw, certName, func(c *certificatesv1alpha1.TLSCertificate) {
-					readyStatus(c)
-					c.Status.ServiceSecretRef.Namespace = "victim-namespace"
-				})}
+				return []client.Object{newTLSCertificate(gw, certName, readyStatus)}
 			},
 			serviceObjects: []client.Object{tlsSecret("victim-namespace", serviceSecret, serviceCertPEM, serviceKeyPEM)},
 			assert: func(t *testing.T, e env, upstreamGateway, downstreamGateway *gatewayv1.Gateway) {
 				assert.True(t, apierrors.IsNotFound(e.downstream.Get(context.Background(), client.ObjectKey{Namespace: downstreamNamespaceName, Name: secretName}, &corev1.Secret{})))
-				assert.GreaterOrEqual(t, counterValue(t, certificateServiceFailuresTotal, upstreamNamespace.Name, gatewayName, string(listenerName), certificateServiceReasonNamespaceRefused), 1.0)
 			},
 		},
 		{
@@ -379,7 +372,7 @@ func TestEnsureDownstreamGatewayCertificateService(t *testing.T) {
 			upstreamObjects: func(gw *gatewayv1.Gateway) []client.Object {
 				return []client.Object{newTLSCertificate(gw, certName, readyStatus)}
 			},
-			serviceObjects: []client.Object{tlsSecret(serviceNS, serviceSecret, serviceCertPEM, projectKeyPEM)},
+			serviceObjects: []client.Object{tlsSecret(serviceNS, serviceSecret, serviceCertPEM, otherKeyPEM)},
 			assert: func(t *testing.T, e env, upstreamGateway, downstreamGateway *gatewayv1.Gateway) {
 				assert.True(t, apierrors.IsNotFound(e.downstream.Get(context.Background(), client.ObjectKey{Namespace: downstreamNamespaceName, Name: secretName}, &corev1.Secret{})))
 			},
@@ -459,15 +452,15 @@ func TestEnsureDownstreamGatewayCertificateService(t *testing.T) {
 			upstreamObjects: func(gw *gatewayv1.Gateway) []client.Object {
 				return []client.Object{newTLSCertificate(gw, certName, func(c *certificatesv1alpha1.TLSCertificate) {
 					c.Status.Conditions = []metav1.Condition{{
-						Type: certificatesv1alpha1.ConditionReady, Status: metav1.ConditionFalse, Reason: "SecretConflict",
-						Message: `Secret "x" exists and is not managed by this TLSCertificate.`, LastTransitionTime: metav1.NewTime(now.Add(-2 * time.Hour)),
+						Type: certificatesv1alpha1.ConditionReady, Status: metav1.ConditionFalse, Reason: "Pending",
+						Message: "The certificate has not been issued yet.", LastTransitionTime: metav1.NewTime(now.Add(-2 * time.Hour)),
 					}}
 				})}
 			},
 			assert: func(t *testing.T, e env, upstreamGateway, downstreamGateway *gatewayv1.Gateway) {
 				blocked := listenerCondition(t, upstreamGateway, listenerName, listenerConditionCertificateIssuanceBlocked)
 				assert.Equal(t, metav1.ConditionTrue, blocked.Status)
-				assert.Contains(t, blocked.Message, "is not managed by this TLSCertificate")
+				assert.Contains(t, blocked.Message, "has not been issued yet")
 				assert.GreaterOrEqual(t, counterValue(t, certificateServiceFailuresTotal, upstreamNamespace.Name, gatewayName, string(listenerName), certificateServiceReasonNotReady), 1.0)
 				assert.Equal(t, 1.0, gaugeValue(t, certificateServiceListenerFailing, upstreamNamespace.Name, gatewayName, string(listenerName), certificateServiceReasonNotReady), "a lasting failure stays visible after its one count")
 			},
@@ -852,6 +845,7 @@ func TestCertificateServiceLeavesExactHostnamesOnCertManager(t *testing.T) {
 			Create: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
 				if cert, ok := obj.(*certificatesv1alpha1.TLSCertificate); ok {
 					tlsCertificateCreates.Add(1)
+					cert.UID = uuid.NewUUID()
 					for _, name := range cert.Spec.DNSNames {
 						requestedNames = append(requestedNames, string(name))
 					}
@@ -885,11 +879,7 @@ func TestCertificateServiceLeavesExactHostnamesOnCertManager(t *testing.T) {
 		}).Build()
 
 	issuedCrt, issuedKey := ca.issue(t, wildcard, now.Add(-time.Hour), now.Add(60*24*time.Hour))
-	service := fake.NewClientBuilder().WithScheme(testScheme).WithObjects(&corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Namespace: serviceNS, Name: "issued"},
-		Type:       corev1.SecretTypeTLS,
-		Data:       map[string][]byte{"tls.crt": issuedCrt, "tls.key": issuedKey},
-	}).Build()
+	service := fake.NewClientBuilder().WithScheme(testScheme).Build()
 
 	h := &certificateServiceHarness{
 		t: t, ctx: ctx, cfg: cfg, upstream: upstream, downstream: downstream, service: service, roots: ca.pool,
@@ -914,12 +904,16 @@ func TestCertificateServiceLeavesExactHostnamesOnCertManager(t *testing.T) {
 	var cert certificatesv1alpha1.TLSCertificate
 	require.NoError(t, upstream.Get(ctx, client.ObjectKey{Namespace: upstreamNamespace.Name, Name: tlsCertificateName(gatewayName, wildcardListenerName)}, &cert))
 	cert.Status = certificatesv1alpha1.TLSCertificateStatus{
-		NotBefore:        &metav1.Time{Time: now.Add(-time.Hour)},
-		NotAfter:         &metav1.Time{Time: now.Add(60 * 24 * time.Hour)},
-		ServiceSecretRef: &certificatesv1alpha1.ServiceSecretReference{Namespace: serviceNS, Name: "issued"},
-		Conditions:       []metav1.Condition{{Type: certificatesv1alpha1.ConditionReady, Status: metav1.ConditionTrue, Reason: "Issued", LastTransitionTime: metav1.Now()}},
+		NotBefore:  &metav1.Time{Time: now.Add(-time.Hour)},
+		NotAfter:   &metav1.Time{Time: now.Add(60 * 24 * time.Hour)},
+		Conditions: []metav1.Condition{{Type: certificatesv1alpha1.ConditionReady, Status: metav1.ConditionTrue, Reason: "Issued", LastTransitionTime: metav1.Now()}},
 	}
 	require.NoError(t, upstream.Status().Update(ctx, &cert))
+	require.NoError(t, service.Create(ctx, &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Namespace: serviceNS, Name: certificatesv1alpha1.StoredSecretName(cert.UID)},
+		Type:       corev1.SecretTypeTLS,
+		Data:       map[string][]byte{"tls.crt": issuedCrt, "tls.key": issuedKey},
+	}))
 	h.reconcile()
 	_, downstreamGateway, _ := h.reconcile()
 	assert.NotNil(t, gatewayutil.GetListenerByName(downstreamGateway.Spec.Listeners, wildcardListenerName), "the wildcard serves the service-issued certificate")
@@ -987,16 +981,13 @@ func TestCertificateServiceOneFailingListenerDoesNotDelayOthers(t *testing.T) {
 				if obj.GetName() == failingName {
 					return apierrors.NewServiceUnavailable("webhook unavailable")
 				}
+				obj.SetUID(uuid.NewUUID())
 				return cl.Create(ctx, obj, opts...)
 			},
 		}).Build()
 	downstream := fake.NewClientBuilder().WithScheme(testScheme).WithStatusSubresource(&gatewayv1.Gateway{}).Build()
 	issuedCrt, issuedKey := ca.issue(t, healthy, now.Add(-time.Hour), now.Add(60*24*time.Hour))
-	service := fake.NewClientBuilder().WithScheme(testScheme).WithObjects(&corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Namespace: serviceNS, Name: "issued"},
-		Type:       corev1.SecretTypeTLS,
-		Data:       map[string][]byte{"tls.crt": issuedCrt, "tls.key": issuedKey},
-	}).Build()
+	service := fake.NewClientBuilder().WithScheme(testScheme).Build()
 
 	h := &certificateServiceHarness{
 		t: t, ctx: ctx, cfg: cfg, upstream: upstream, downstream: downstream, service: service, roots: ca.pool,
@@ -1009,12 +1000,16 @@ func TestCertificateServiceOneFailingListenerDoesNotDelayOthers(t *testing.T) {
 	var cert certificatesv1alpha1.TLSCertificate
 	require.NoError(t, upstream.Get(ctx, client.ObjectKey{Namespace: upstreamNamespace.Name, Name: tlsCertificateName(gatewayName, healthyListener)}, &cert), "the healthy wildcard is requested in the same pass")
 	cert.Status = certificatesv1alpha1.TLSCertificateStatus{
-		NotBefore:        &metav1.Time{Time: now.Add(-time.Hour)},
-		NotAfter:         &metav1.Time{Time: now.Add(60 * 24 * time.Hour)},
-		ServiceSecretRef: &certificatesv1alpha1.ServiceSecretReference{Namespace: serviceNS, Name: "issued"},
-		Conditions:       []metav1.Condition{{Type: certificatesv1alpha1.ConditionReady, Status: metav1.ConditionTrue, Reason: "Issued", LastTransitionTime: metav1.Now()}},
+		NotBefore:  &metav1.Time{Time: now.Add(-time.Hour)},
+		NotAfter:   &metav1.Time{Time: now.Add(60 * 24 * time.Hour)},
+		Conditions: []metav1.Condition{{Type: certificatesv1alpha1.ConditionReady, Status: metav1.ConditionTrue, Reason: "Issued", LastTransitionTime: metav1.Now()}},
 	}
 	require.NoError(t, upstream.Status().Update(ctx, &cert))
+	require.NoError(t, service.Create(ctx, &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Namespace: serviceNS, Name: certificatesv1alpha1.StoredSecretName(cert.UID)},
+		Type:       corev1.SecretTypeTLS,
+		Data:       map[string][]byte{"tls.crt": issuedCrt, "tls.key": issuedKey},
+	}))
 
 	second, _, result := h.reconcile()
 	_, _, cooling := h.reconciler.certificateServiceInBackoff(certificateServiceKey{gateway: upstreamGateway.UID, listener: failingListener}, time.Now())
@@ -1248,20 +1243,20 @@ func TestCertificateServiceRenewalBlockedClearsOnRecovery(t *testing.T) {
 
 	cert := &certificatesv1alpha1.TLSCertificate{
 		ObjectMeta: metav1.ObjectMeta{Namespace: upstreamNamespace.Name, Name: certName},
-		Spec:       certificatesv1alpha1.TLSCertificateSpec{DNSNames: []certificatesv1alpha1.DNSName{hostname}, Issuance: certificatesv1alpha1.IssuanceModeDNS01, SecretName: secretName},
+		Spec:       certificatesv1alpha1.TLSCertificateSpec{DNSNames: []certificatesv1alpha1.DNSName{hostname}, Issuance: certificatesv1alpha1.IssuanceModeDNS01},
 		Status: certificatesv1alpha1.TLSCertificateStatus{
-			NotAfter:         &metav1.Time{Time: now.Add(90 * 24 * time.Hour)},
-			ServiceSecretRef: &certificatesv1alpha1.ServiceSecretReference{Namespace: serviceNS, Name: "issued"},
-			Conditions:       []metav1.Condition{{Type: certificatesv1alpha1.ConditionReady, Status: metav1.ConditionTrue, Reason: "Issued"}},
+			NotAfter:   &metav1.Time{Time: now.Add(90 * 24 * time.Hour)},
+			Conditions: []metav1.Condition{{Type: certificatesv1alpha1.ConditionReady, Status: metav1.ConditionTrue, Reason: "Issued"}},
 		},
 	}
 	require.NoError(t, controllerutil.SetControllerReference(upstreamGateway, cert, testScheme))
 	serving := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: downstreamNamespaceName, Name: secretName}, Type: corev1.SecretTypeTLS, Data: map[string][]byte{"tls.crt": servingCrt, "tls.key": servingKey}}
-	issued := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: serviceNS, Name: "issued"}, Type: corev1.SecretTypeTLS, Data: map[string][]byte{"tls.crt": issuedCrt, "tls.key": issuedKey}}
+	issued := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: serviceNS}, Type: corev1.SecretTypeTLS, Data: map[string][]byte{"tls.crt": issuedCrt, "tls.key": issuedKey}}
 	for _, obj := range []client.Object{domain, gatewayClass, cert, serving, issued} {
 		obj.SetUID(uuid.NewUUID())
 		obj.SetCreationTimestamp(metav1.Now())
 	}
+	issued.Name = certificatesv1alpha1.StoredSecretName(cert.UID)
 
 	fakeUpstreamClient := fake.NewClientBuilder().WithScheme(testScheme).
 		WithObjects(upstreamGateway, upstreamNamespace, domain, gatewayClass, cert).

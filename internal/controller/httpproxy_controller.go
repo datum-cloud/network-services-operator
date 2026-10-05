@@ -58,6 +58,8 @@ type HTTPProxyReconciler struct {
 	Config config.NetworkServicesOperator
 
 	DownstreamCluster cluster.Cluster
+
+	routing *routingObserver
 }
 
 type desiredHTTPProxyResources struct {
@@ -407,7 +409,9 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 
 	applyPartialProgramming(ctx, desiredResources.partialProgramming, programmedCondition)
 
-	r.reconcileHTTPProxyHostnameStatus(ctx, cl.GetClient(), gateway, httpProxyCopy, string(req.ClusterName))
+	if recheck := r.reconcileHTTPProxyHostnameStatus(ctx, cl.GetClient(), gateway, httpProxyCopy, string(req.ClusterName)); recheck {
+		return ctrl.Result{RequeueAfter: routingRecheckInterval}, nil
+	}
 
 	return ctrl.Result{}, nil
 }
@@ -571,21 +575,21 @@ func (r *HTTPProxyReconciler) reconcileHTTPProxyHostnameStatus(
 	gateway *gatewayv1.Gateway,
 	httpProxyCopy *networkingv1alpha.HTTPProxy,
 	clusterName string,
-) {
+) (recheckRouting bool) {
 	logger := log.FromContext(ctx)
 
 	gatewayAcceptedCondition := apimeta.FindStatusCondition(gateway.Status.Conditions, string(gatewayv1.GatewayConditionAccepted))
 	if gatewayAcceptedCondition == nil {
 		// Should never happen due to defaulting, but just in case
 		logger.Info("accepted condition not found on gateway")
-		return
+		return false
 	} else if gatewayAcceptedCondition.ObservedGeneration != gateway.Generation {
 		logger.Info(
 			"observed generation on accepted condition does not match generation on gateway, delaying processing",
 			"gateway_generation", gateway.Generation,
 			"condition_generation", gatewayAcceptedCondition.ObservedGeneration,
 		)
-		return
+		return false
 	}
 	logger.Info("updating hostname status")
 
@@ -682,16 +686,22 @@ func (r *HTTPProxyReconciler) reconcileHTTPProxyHostnameStatus(
 	availabilityStatuses := buildAvailabilityStatuses(acceptedHostnames, inUseHostnames, httpProxyCopy.Generation)
 	dnsStatuses := r.buildDNSStatuses(ctx, cl, gateway, httpProxyCopy.Generation)
 	certificateStatuses := r.buildCertificateStatuses(ctx, cl, clusterName, gateway, httpProxyCopy)
+	dnsRecordStatuses, recheckRouting := r.buildDNSRecordStatuses(ctx, cl, gateway, httpProxyCopy)
 	previousHostnameStatuses := httpProxyCopy.Status.HostnameStatuses
-	httpProxyCopy.Status.HostnameStatuses = mergeHostnameStatuses(availabilityStatuses, dnsStatuses, certificateStatuses)
+	httpProxyCopy.Status.HostnameStatuses = mergeHostnameStatuses(availabilityStatuses, dnsStatuses, certificateStatuses, dnsRecordStatuses)
 	preserveHostnameConditionTransitions(httpProxyCopy.Status.HostnameStatuses, previousHostnameStatuses)
 
 	r.setCertificatesReadyCondition(httpProxyCopy, certificateStatuses, gateway)
+
+	return recheckRouting
 }
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *HTTPProxyReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	r.mgr = mgr
+	if r.routing == nil {
+		r.routing = newRoutingObserver()
+	}
 
 	builder := mcbuilder.ControllerManagedBy(mgr).
 		For(&networkingv1alpha.HTTPProxy{}).
@@ -1744,6 +1754,7 @@ func mergeHostnameStatuses(statusSets ...[]networkingv1alpha.HostnameStatus) []n
 				for _, c := range hs.Conditions {
 					apimeta.SetStatusCondition(&existing.Conditions, c)
 				}
+				existing.DNSRecords = append(existing.DNSRecords, hs.DNSRecords...)
 			} else {
 				copy := hs
 				byHostname[hs.Hostname] = &copy

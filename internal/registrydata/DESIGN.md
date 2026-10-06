@@ -28,13 +28,14 @@ It also provides **caching** and **per-upstream-host rate limiting/backoff** wit
 
 The client caches at multiple granularities (so partial progress can be reused):
 
-- **Domain snapshot**: `domain:<apex>` → `DomainResult`
+- **Registration**: `registration:<apex>` → `registrationResult`, shared by every name under the registered domain
 - **Nameserver**: `ns:<hostname>` → `nameserverCacheValue`
 - **IP registrant**: `ipreg:<ip>` → `IPRegistrantResult`
 
 Important behavior:
 
-- The **domain snapshot** is cached only when `LookupDomain()` completes successfully.
+- The **registration** is cached only when the RDAP or WHOIS lookup succeeds.
+- A domain's **nameservers are not cached as a whole**. They belong to the name, not to the registered domain: a delegated subdomain has its own. So they are chosen for each name on every lookup.
 - Nameserver/IP caches can still be populated even if a later step fails.
 
 ### Rate limiting model
@@ -53,9 +54,11 @@ The limiter supports:
 
 - `LookupDomain(domain, opts)`:
   - normalizes input and computes **apex** (eTLD+1)
-  - uses cache + `singleflight` to avoid stampedes
-  - resolves **registration** via RDAP (fallback to WHOIS when bootstrap has no match)
-  - determines which nameservers to use (apex vs delegated zone)
+  - resolves the **registration** of the apex via RDAP (fallback to WHOIS when bootstrap has no match), with cache + `singleflight` to avoid stampedes
+  - chooses the **nameservers of the name**: it queries NS for the name, then for each parent label up to the apex, and takes the first answer. A delegated subdomain gets its own; a name with no delegation of its own gets the apex's, as RDAP lists them when it does. An apex whose RDAP record lists nameservers needs no NS query.
+  - only a "not found" answer moves the NS query up a label. If an NS query fails any other way (SERVFAIL, timeout), returns:
+    - a `DomainResult` with the registration and no nameservers
+    - a `*NameserverLookupError` (so controllers keep the nameservers they have and retry)
   - calls `LookupNameserver()` and then `LookupIPRegistrant()` for each IP
   - if an IP registrant lookup is rate limited, returns:
     - a **partial** `DomainResult`
@@ -74,12 +77,12 @@ The limiter supports:
 Controllers typically:
 
 - call `LookupDomain()`
-- write whatever result is available into status
+- write whatever result is available into status, but keep the nameservers they have when the error is `*NameserverLookupError`
 - if the error is `*RateLimitedError`, schedule a retry using `RetryAfter` (and optionally any `SuggestedDelay`)
 
 This means that on the next reconcile:
 
-- the **domain snapshot may not be cached** (if the prior call errored)
+- the **registration may not be cached** (if the prior call errored)
 - but **nameserver/IP caches** may already be filled, so only the remaining missing sub-requests tend to hit upstreams
 
 ### Mermaid diagrams
@@ -100,17 +103,15 @@ sequenceDiagram
   participant Whois as WHOIS Provider
 
   C->>R: LookupDomain(domain)
-  R->>Cache: Get(domain:<apex>)
-  alt domain cache hit
-    Cache-->>R: hit
-    R-->>C: DomainResult
-  else domain cache miss
-    R->>SF: Do(domain:<apex>)
-    SF->>Cache: Get(domain:<apex>)
+  R->>Cache: Get(registration:<apex>)
+  alt registration cache hit
+    Cache-->>R: registration
+  else registration cache miss
+    R->>SF: Do(registration:<apex>)
+    SF->>Cache: Get(registration:<apex>)
     alt singleflight secondary hit
       Cache-->>SF: hit
-      SF-->>R: DomainResult
-      R-->>C: DomainResult
+      SF-->>R: registration
     else fetch fresh
       SF->>Boot: Lookup(apex)
       Boot-->>SF: baseURL (provider host)
@@ -137,49 +138,58 @@ sequenceDiagram
           SF->>Whois: fetch apex
           Whois-->>SF: WHOIS body
         end
-
-        loop each nameserver host
-          SF->>R: LookupNameserver(host)
-          R->>Cache: Get(ns:<host>)
-          alt ns cache miss
-            R->>DNS: LookupIP(host)
-            DNS-->>R: IPs
-            R->>Cache: Set(ns:<host>)
-          end
-
-          loop each IP
-            SF->>R: LookupIPRegistrant(ip)
-            R->>Cache: Get(ipreg:<ip>)
-            alt ipreg cache miss
-              R->>Boot: Lookup(ip)
-              Boot-->>R: baseURL (provider host)
-              R->>Lim: Acquire(providerHost)
-              alt denied/429
-                R-->>SF: RateLimitedError (partial)
-                SF-->>R: return partial + error
-                R-->>C: partial result + RateLimitedError
-              else allowed
-                R->>RDAP: GET /ip/<ip>
-                RDAP-->>R: registrant
-                R->>Cache: Set(ipreg:<ip>)
-              end
-            end
-          end
-        end
-
-        SF->>Cache: Set(domain:<apex>)
-        SF-->>R: DomainResult
-        R-->>C: DomainResult
+        SF->>Cache: Set(registration:<apex>)
+        SF-->>R: registration
       end
     end
   end
+
+  Note over R,DNS: An apex whose RDAP record lists nameservers skips the NS queries
+  loop the name, then each parent label up to the apex
+    R->>DNS: LookupNS(label)
+    alt NS records
+      DNS-->>R: the name's nameservers
+    else not found
+      DNS-->>R: go up one label
+    else any other failure
+      DNS-->>R: error
+      R-->>C: registration + NameserverLookupError
+    end
+  end
+
+  loop each nameserver host
+    R->>Cache: Get(ns:<host>)
+    alt ns cache miss
+      R->>DNS: LookupIP(host)
+      DNS-->>R: IPs
+      R->>Cache: Set(ns:<host>)
+    end
+
+    loop each IP
+      R->>Cache: Get(ipreg:<ip>)
+      alt ipreg cache miss
+        R->>Boot: Lookup(ip)
+        Boot-->>R: baseURL (provider host)
+        R->>Lim: Acquire(providerHost)
+        alt denied/429
+          R-->>C: partial result + RateLimitedError
+        else allowed
+          R->>RDAP: GET /ip/<ip>
+          RDAP-->>R: registrant
+          R->>Cache: Set(ipreg:<ip>)
+        end
+      end
+    end
+  end
+
+  R-->>C: DomainResult
 ```
 
 #### Cache key namespaces
 
 ```mermaid
 flowchart LR
-  D[domain:<apex>]:::cache
+  REG[registration:<apex>]:::cache
   NS[ns:<hostname>]:::cache
   IP[ipreg:<ip>]:::cache
   RL[rl:<provider>]:::lim

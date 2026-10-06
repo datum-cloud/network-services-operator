@@ -294,34 +294,38 @@ func (r *GatewayReconciler) ensureListenerTLSCertificates(
 		certName := tlsCertificateName(upstreamGateway.Name, l.Name)
 		desiredCerts.Insert(certName)
 		requeueSooner(certificateServiceRecheck)
-		requeueSooner(wildcardEntitlementRecheck)
-
-		if entitled == nil && entitlementErr == nil {
-			allowed, err := r.wildcardEntitled(ctx, upstreamClusterName)
-			if err != nil {
-				logger.Error(err, "failed to read wildcard hostname entitlement, leaving certificates as they are", "project", upstreamClusterName)
-				entitlementErr = err
-			} else {
-				entitled = &allowed
-			}
-		}
-		if entitlementErr != nil {
+		holdsCertificate, err := r.listenerHoldsWildcardCertificate(ctx, upstreamClient, upstreamGateway, certName, hostname)
+		if err != nil {
+			logger.Error(err, "failed to read TLSCertificate", "listener", l.Name, "hostname", hostname)
 			issue := certificateServiceIssue{reason: certificateServiceReasonStepFailed, message: certificateServiceUnavailableMessage(hostname)}
 			issues[l.Name] = issue
 			failing[l.Name] = issue.reason
 			recordCertificateServiceFailure(upstreamGateway, l.Name, issue.reason)
+			requeueSooner(certificateServiceRecheck)
 			continue
 		}
-		if !*entitled {
-			revoked, err := r.revokeWildcardCertificate(ctx, upstreamClient, upstreamGateway, downstreamGateway, downstreamStrategy, certName, listenerCertificateSecretName(upstreamGateway.Name, l.Name))
-			if err != nil {
-				logger.Error(err, "failed to withdraw certificate for a project without wildcard entitlement", "listener", l.Name, "hostname", hostname)
+		if !holdsCertificate {
+			requeueSooner(wildcardEntitlementRecheck)
+			if entitled == nil && entitlementErr == nil {
+				allowed, err := r.wildcardEntitled(ctx, upstreamClusterName)
+				if err != nil {
+					logger.Error(err, "failed to read wildcard hostname entitlement, not requesting certificates", "project", upstreamClusterName)
+					entitlementErr = err
+				} else {
+					entitled = &allowed
+				}
 			}
-			if revoked || err != nil {
-				requeueSooner(tlsCertificateMirrorAdmitDelay)
+			if entitlementErr != nil {
+				issue := certificateServiceIssue{reason: certificateServiceReasonStepFailed, message: certificateServiceUnavailableMessage(hostname)}
+				issues[l.Name] = issue
+				failing[l.Name] = issue.reason
+				recordCertificateServiceFailure(upstreamGateway, l.Name, issue.reason)
+				continue
 			}
-			issues[l.Name] = certificateServiceIssue{reason: certificateServiceReasonWildcardNotEntitled, message: wildcardNotEntitledMessage(hostname)}
-			continue
+			if !*entitled {
+				issues[l.Name] = certificateServiceIssue{reason: certificateServiceReasonWildcardNotEntitled, message: wildcardNotEntitledMessage(hostname)}
+				continue
+			}
 		}
 
 		key := certificateServiceKey{gateway: upstreamGateway.UID, listener: l.Name}
@@ -371,48 +375,23 @@ func (r *GatewayReconciler) ensureListenerTLSCertificates(
 	return result, issues
 }
 
-// revokeWildcardCertificate withdraws what a listener's wildcard hostname was
-// issued: the TLSCertificate this gateway controls and the Secret mirrored
-// downstream, so the key stops being served. It reports whether anything was
-// removed.
-func (r *GatewayReconciler) revokeWildcardCertificate(
+func (r *GatewayReconciler) listenerHoldsWildcardCertificate(
 	ctx context.Context,
 	upstreamClient client.Client,
 	upstreamGateway *gatewayv1.Gateway,
-	downstreamGateway *gatewayv1.Gateway,
-	downstreamStrategy downstreamclient.ResourceStrategy,
-	certName string,
-	secretName string,
+	certName, hostname string,
 ) (bool, error) {
-	logger := log.FromContext(ctx)
-	removed := false
-
 	var cert certificatesv1alpha1.TLSCertificate
 	err := upstreamClient.Get(ctx, client.ObjectKey{Namespace: upstreamGateway.Namespace, Name: certName}, &cert)
 	switch {
 	case apierrors.IsNotFound(err):
+		return false, nil
 	case err != nil:
-		return removed, fmt.Errorf("failed to get TLSCertificate %s: %w", certName, err)
-	case metav1.IsControlledBy(&cert, upstreamGateway) && cert.DeletionTimestamp.IsZero():
-		if err := upstreamClient.Delete(ctx, &cert, client.Preconditions{UID: &cert.UID}); client.IgnoreNotFound(err) != nil {
-			return removed, fmt.Errorf("failed to delete TLSCertificate %s: %w", certName, err)
-		}
-		logger.Info("deleted TLSCertificate of a project without wildcard entitlement", "tlscertificate", certName)
-		removed = true
+		return false, fmt.Errorf("failed to get TLSCertificate %s: %w", certName, err)
 	}
-
-	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: downstreamGateway.Namespace, Name: secretName}}
-	err = downstreamStrategy.GetClient().Delete(ctx, secret)
-	switch {
-	case apierrors.IsNotFound(err):
-	case err != nil:
-		return removed, fmt.Errorf("failed to delete Secret %s: %w", secretName, err)
-	default:
-		logger.Info("deleted mirrored Secret of a project without wildcard entitlement", "secret", secretName)
-		removed = true
-	}
-
-	return removed, nil
+	return metav1.IsControlledBy(&cert, upstreamGateway) &&
+		cert.DeletionTimestamp.IsZero() &&
+		slices.Equal(cert.Spec.DNSNames, []certificatesv1alpha1.DNSName{certificatesv1alpha1.DNSName(hostname)}), nil
 }
 
 // publishCertificateServiceFailing replaces the gateway's failing-listener

@@ -380,3 +380,58 @@ func TestACannotProgramPendingIsNotSomethingToWaitFor(t *testing.T) {
 	assert.Equal(t, networkingv1alpha.HTTPProxyReasonPending, d2.RootCause.Reason)
 	assert.Equal(t, ActionabilityTransient, d2.RootCause.Actionability)
 }
+
+func wildcardDeniedProxy(aggregate string, since time.Duration) networkingv1alpha.HTTPProxy {
+	p := healthyProxy()
+	p.Status.Conditions = []metav1.Condition{
+		cond(networkingv1alpha.HTTPProxyConditionProgrammed, aggregate, metav1.ConditionFalse, ago(since)),
+	}
+	return withHostname(p, networkingv1alpha.HostnameStatus{
+		Hostname: "*.example.com",
+		Conditions: []metav1.Condition{
+			cond(networkingv1alpha.HostnameConditionCertificateReady, networkingv1alpha.CertificateReadyReasonWildcardNotEntitled, metav1.ConditionFalse, ago(time.Hour)),
+		},
+	})
+}
+
+func TestWildcardDenialOutranksTransientPending(t *testing.T) {
+	p := wildcardDeniedProxy(networkingv1alpha.HTTPProxyReasonPending, time.Minute)
+	d := diagnose(t, &fakeReader{
+		proxies: []networkingv1alpha.HTTPProxy{p},
+		domains: []networkingv1alpha.Domain{verifiedDomain()},
+	})
+
+	require.NotNil(t, d.RootCause)
+	assert.Equal(t, networkingv1alpha.CertificateReadyReasonWildcardNotEntitled, d.RootCause.Reason)
+	assert.Equal(t, ActionabilityPlatform, d.RootCause.Actionability)
+
+	steps := strings.Join(d.NextSteps, " ")
+	assert.Contains(t, steps, "Contact Datum")
+	assert.NotContains(t, strings.ToLower(steps), "normal and clears on its own")
+}
+
+func TestPendingAloneStillReadsAsTransient(t *testing.T) {
+	p := healthyProxy()
+	p.Status.Conditions = []metav1.Condition{
+		cond(networkingv1alpha.HTTPProxyConditionProgrammed, networkingv1alpha.HTTPProxyReasonPending, metav1.ConditionFalse, ago(time.Minute)),
+	}
+	d := diagnose(t, &fakeReader{proxies: []networkingv1alpha.HTTPProxy{p}})
+
+	require.NotNil(t, d.RootCause)
+	assert.Equal(t, networkingv1alpha.HTTPProxyReasonPending, d.RootCause.Reason)
+	assert.Equal(t, ActionabilityTransient, d.RootCause.Actionability)
+	assert.Contains(t, strings.ToLower(strings.Join(d.NextSteps, " ")), "clears on its own")
+}
+
+func TestWildcardDenialDoesNotOutrankAStableAllTrafficCause(t *testing.T) {
+	p := wildcardDeniedProxy(networkingv1alpha.HTTPProxyReasonNetworkServiceBackendNotFound, 15*time.Minute)
+	d := diagnose(t, &fakeReader{
+		proxies: []networkingv1alpha.HTTPProxy{p},
+		domains: []networkingv1alpha.Domain{verifiedDomain()},
+	})
+
+	require.NotNil(t, d.RootCause)
+	assert.Equal(t, networkingv1alpha.HTTPProxyReasonNetworkServiceBackendNotFound, d.RootCause.Reason)
+	require.NotEmpty(t, d.OtherCauses)
+	assert.Equal(t, networkingv1alpha.CertificateReadyReasonWildcardNotEntitled, d.OtherCauses[0].Reason)
+}

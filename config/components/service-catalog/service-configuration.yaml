@@ -86,6 +86,22 @@ spec:
         - httproute_name
         - httproute_namespace
         - project_name
+    - name: networking.datumapis.com/wildcard-hostnames
+      displayName: Wildcard hostnames
+      description: Wildcard custom hostnames a project is enabled to use.
+      kind: Gauge
+      unit: "1"
+  quota:
+    limits:
+      - name: wildcard-hostnames
+        displayName: Wildcard hostnames
+        description: Whether a project may use wildcard custom hostnames.
+        metric: networking.datumapis.com/wildcard-hostnames
+        consumerType:
+          apiGroup: resourcemanager.miloapis.com
+          kind: Project
+        unit: "1/{project}"
+        defaultLimit: 0
   billing:
     consumerDestinations:
       - monitoredResourceType: networking.datumapis.com/HTTPRoute

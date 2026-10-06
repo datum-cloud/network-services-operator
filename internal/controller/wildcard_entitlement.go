@@ -10,7 +10,6 @@ import (
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	quotav1alpha1 "go.miloapis.com/milo/pkg/apis/quota/v1alpha1"
 )
@@ -61,14 +60,12 @@ func (b *bucketWildcardEntitlements) WildcardEntitled(ctx context.Context, proje
 	return bucket.Status.Available > 0, nil
 }
 
-func (r *GatewayReconciler) wildcardEntitled(ctx context.Context, projectName string) bool {
+// wildcardEntitled reports whether the project may have wildcard hostnames. A
+// read error is returned rather than folded into "no": only a definite denial
+// may withdraw a certificate that is already serving.
+func (r *GatewayReconciler) wildcardEntitled(ctx context.Context, projectName string) (bool, error) {
 	if r.WildcardEntitlements == nil {
-		return false
+		return false, nil
 	}
-	entitled, err := r.WildcardEntitlements.WildcardEntitled(ctx, projectName)
-	if err != nil {
-		log.FromContext(ctx).Error(err, "failed to read wildcard hostname entitlement, treating project as not entitled", "project", projectName)
-		return false
-	}
-	return entitled
+	return r.WildcardEntitlements.WildcardEntitled(ctx, projectName)
 }

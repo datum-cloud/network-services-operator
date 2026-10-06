@@ -51,11 +51,20 @@ type ToolDeps struct {
 // server derives both from the HTTP request, tests supply them directly.
 type DepsFor func(context.Context) (ToolDeps, error)
 
+// readOnly annotates every tool here. "Read-only." in a description tells the
+// model; this tells the client, which can then call these without asking the
+// person to approve each read.
+func readOnly() *mcp.ToolAnnotations {
+	notDestructive := false
+	return &mcp.ToolAnnotations{ReadOnlyHint: true, DestructiveHint: &notDestructive, IdempotentHint: true}
+}
+
 // RegisterTools adds every tool to an MCP server.
 func RegisterTools(s *mcp.Server, deps DepsFor) {
 	mcp.AddTool(s, &mcp.Tool{
-		Name:  ToolList,
-		Title: "List load balancers",
+		Name:        ToolList,
+		Title:       "List load balancers",
+		Annotations: readOnly(),
 		Description: "List every Application Load Balancer in the project: whether it is serving, its " +
 			"generated hostname, how many custom hostnames are attached and how many of those are " +
 			"fully working, whether traffic protection is attached and in which mode, and — when " +
@@ -65,8 +74,9 @@ func RegisterTools(s *mcp.Server, deps DepsFor) {
 	}, albList(deps))
 
 	mcp.AddTool(s, &mcp.Tool{
-		Name:  ToolGet,
-		Title: "Get one load balancer",
+		Name:        ToolGet,
+		Title:       "Get one load balancer",
+		Annotations: readOnly(),
 		Description: "Get one Application Load Balancer assembled as the product rather than as the " +
 			"objects behind it: its generated hostname, every custom hostname with its progress " +
 			"(claimed, ownership proven, DNS record written, certificate issued), the routes and the " +
@@ -76,8 +86,9 @@ func RegisterTools(s *mcp.Server, deps DepsFor) {
 	}, albGet(deps))
 
 	mcp.AddTool(s, &mcp.Tool{
-		Name:  ToolDiagnose,
-		Title: "Diagnose a load balancer",
+		Name:        ToolDiagnose,
+		Title:       "Diagnose a load balancer",
+		Annotations: readOnly(),
 		Description: "Diagnose why an Application Load Balancer is not working. Walks the load " +
 			"balancer, every hostname, and the domain behind each, and returns the deepest condition " +
 			"that names a real cause — never an aggregate like PartialFailure or CertificatesPending, " +
@@ -90,8 +101,9 @@ func RegisterTools(s *mcp.Server, deps DepsFor) {
 	}, albDiagnose(deps))
 
 	mcp.AddTool(s, &mcp.Tool{
-		Name:  ToolReasonExplain,
-		Title: "Explain a condition reason",
+		Name:        ToolReasonExplain,
+		Title:       "Explain a condition reason",
+		Annotations: readOnly(),
 		Description: "Explain a load balancer condition reason: what it means in the customer's terms, " +
 			"whether it is user-actionable, a platform fault, transient or informational, how long a " +
 			"transient one should take, and what to do about it. Pass the condition type as well as " +
@@ -102,8 +114,9 @@ func RegisterTools(s *mcp.Server, deps DepsFor) {
 	}, albReasonExplain(deps))
 
 	mcp.AddTool(s, &mcp.Tool{
-		Name:  ToolTrafficSummary,
-		Title: "Summarise traffic to a load balancer",
+		Name:        ToolTrafficSummary,
+		Title:       "Summarise traffic to a load balancer",
+		Annotations: readOnly(),
 		Description: "Summarise the requests that actually reached an Application Load Balancer " +
 			"over a time window: how many, the response-code breakdown, the edge's own response " +
 			"flags, which hostnames were asked for, and a sample of recent lines. This is the only " +

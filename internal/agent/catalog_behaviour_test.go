@@ -3,6 +3,7 @@
 package agent
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -136,4 +137,46 @@ func TestEveryFailingReasonNamesSomebodyAndSomething(t *testing.T) {
 			assert.NotEmpty(t, info.Scope, "%s on %s does not say how much stops working", info.Reason, info.ConditionType)
 		}
 	}
+}
+
+func TestWildcardNotEntitledSendsTheCustomerToDatumNotDNS(t *testing.T) {
+	info, ok := ExplainReason(networkingv1alpha.HostnameConditionCertificateReady,
+		networkingv1alpha.CertificateReadyReasonWildcardNotEntitled)
+	require.True(t, ok)
+	assert.Equal(t, ActionabilityPlatform, info.Actionability)
+	assert.Equal(t, SkillCertificateNotIssued, info.Skill)
+	assert.Zero(t, info.ExpectedDuration, "waiting never clears a missing entitlement")
+
+	assert.Contains(t, info.Explanation, "not enabled for this project")
+	assert.Contains(t, info.Remediation, "Contact Datum")
+	assert.Contains(t, info.Remediation, "exact hostname")
+	assert.Contains(t, info.Remediation, "not working on this unless you ask")
+	for _, text := range []string{info.Explanation, info.Remediation} {
+		assert.NotContains(t, strings.ToLower(text), "dns first")
+		assert.NotContains(t, strings.ToLower(text), "resolves")
+		assert.NotContains(t, strings.ToLower(text), "wait")
+	}
+}
+
+func TestWildcardNotEntitledIsRenderedAsAPlatformCauseWithoutDNSAdvice(t *testing.T) {
+	c := metav1.Condition{
+		Type:   networkingv1alpha.HostnameConditionCertificateReady,
+		Status: metav1.ConditionFalse,
+		Reason: networkingv1alpha.CertificateReadyReasonWildcardNotEntitled,
+	}
+	cause := newCause("hostname/shop", "*.shop.example.com", c, metav1.Now(), levelHostname, time.Now())
+	assert.Equal(t, ActionabilityPlatform, cause.Actionability)
+	assert.Contains(t, cause.Remediation, "Contact Datum")
+	assert.NotContains(t, strings.ToLower(cause.Remediation), "dns")
+}
+
+func TestCertificateSkillHandlesWildcardNotEntitledBeforeDNS(t *testing.T) {
+	body := skillFiles(t)[SkillCertificateNotIssued]
+	wildcard := strings.Index(body, "WildcardNotEntitled")
+	dnsFirst := strings.Index(body, "Check DNS first")
+	require.NotEqual(t, -1, wildcard)
+	require.NotEqual(t, -1, dnsFirst)
+	assert.Less(t, wildcard, dnsFirst, "the wildcard exit must precede the DNS-first triage")
+	assert.Contains(t, body, "Do not check DNS")
+	assert.Contains(t, body, "contact Datum")
 }

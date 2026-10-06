@@ -3,6 +3,21 @@
 Use when a hostname's `certificate` step is not `ok`, or HTTPS fails on one
 hostname while HTTP works.
 
+## `WildcardNotEntitled` comes first
+
+If the hostname's reason is `WildcardNotEntitled`, stop here. Do not check DNS.
+
+The project is not enabled for wildcard hostnames, so no certificate is issued
+however the DNS is set up. The customer cannot fix this themselves, and Datum is
+not already working on it: nothing is broken on Datum's side, and nobody is
+alerted. Say plainly that wildcard hostnames are not enabled for their project,
+that they need to contact Datum to have them enabled, and that an exact hostname
+(for example `www.shop.example.com`) works without it. Do not send them to
+`dns-record`, `ownership-verified` or `dns-delegation`, and do not tell them to
+wait.
+
+For every other reason:
+
 ## Check DNS first, every time
 
 A certificate cannot be issued until the hostname resolves publicly to this load
@@ -22,6 +37,7 @@ Only when DNS is genuinely in place is the certificate itself the story.
 | `Pending` | Not issued yet. Normal shortly after a hostname is attached |
 | `ChallengeInProgress` | Being issued right now — the authority is checking the name points here |
 | `ProvisioningFailed` | An attempt failed |
+| `WildcardNotEntitled` | The project is not enabled for wildcard hostnames. Only Datum can enable it; not a DNS problem |
 | `CertificateIssued` | Done; HTTPS works |
 
 `ChallengeInProgress` is the encouraging one: the check is already running, which

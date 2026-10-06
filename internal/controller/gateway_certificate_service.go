@@ -276,6 +276,7 @@ func (r *GatewayReconciler) ensureListenerTLSCertificates(
 	now := time.Now()
 	issues = make(map[gatewayv1.SectionName]certificateServiceIssue)
 	var entitled *bool
+	var entitlementErr error
 	failing := make(map[gatewayv1.SectionName]string)
 	desiredCerts := sets.New[string]()
 
@@ -295,9 +296,21 @@ func (r *GatewayReconciler) ensureListenerTLSCertificates(
 		requeueSooner(certificateServiceRecheck)
 		requeueSooner(wildcardEntitlementRecheck)
 
-		if entitled == nil {
-			allowed := r.wildcardEntitled(ctx, upstreamClusterName)
-			entitled = &allowed
+		if entitled == nil && entitlementErr == nil {
+			allowed, err := r.wildcardEntitled(ctx, upstreamClusterName)
+			if err != nil {
+				logger.Error(err, "failed to read wildcard hostname entitlement, leaving certificates as they are", "project", upstreamClusterName)
+				entitlementErr = err
+			} else {
+				entitled = &allowed
+			}
+		}
+		if entitlementErr != nil {
+			issue := certificateServiceIssue{reason: certificateServiceReasonStepFailed, message: certificateServiceUnavailableMessage(hostname)}
+			issues[l.Name] = issue
+			failing[l.Name] = issue.reason
+			recordCertificateServiceFailure(upstreamGateway, l.Name, issue.reason)
+			continue
 		}
 		if !*entitled {
 			revoked, err := r.revokeWildcardCertificate(ctx, upstreamClient, upstreamGateway, downstreamGateway, downstreamStrategy, certName, listenerCertificateSecretName(upstreamGateway.Name, l.Name))

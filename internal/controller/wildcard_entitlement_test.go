@@ -100,11 +100,19 @@ func TestBucketWildcardEntitlements(t *testing.T) {
 	}
 }
 
-func TestWildcardEntitledTreatsErrorsAndMissingCheckerAsDenied(t *testing.T) {
+func TestWildcardEntitledMissingCheckerIsDeniedAndErrorsAreSurfaced(t *testing.T) {
 	ctx := context.Background()
-	assert.False(t, (&GatewayReconciler{}).wildcardEntitled(ctx, "p"))
-	assert.False(t, (&GatewayReconciler{WildcardEntitlements: fakeWildcardEntitlements{entitled: true, err: errors.New("boom")}}).wildcardEntitled(ctx, "p"))
-	assert.True(t, (&GatewayReconciler{WildcardEntitlements: fakeWildcardEntitlements{entitled: true}}).wildcardEntitled(ctx, "p"))
+
+	got, err := (&GatewayReconciler{}).wildcardEntitled(ctx, "p")
+	require.NoError(t, err)
+	assert.False(t, got)
+
+	_, err = (&GatewayReconciler{WildcardEntitlements: fakeWildcardEntitlements{entitled: true, err: errors.New("boom")}}).wildcardEntitled(ctx, "p")
+	require.Error(t, err, "a read error is not a denial")
+
+	got, err = (&GatewayReconciler{WildcardEntitlements: fakeWildcardEntitlements{entitled: true}}).wildcardEntitled(ctx, "p")
+	require.NoError(t, err)
+	assert.True(t, got)
 }
 
 type entitlementFixture struct {
@@ -224,7 +232,6 @@ func TestWildcardHostnameDeniedDoesNotCreateTLSCertificate(t *testing.T) {
 		checker WildcardEntitlementChecker
 	}{
 		{name: "no available allowance", checker: fakeWildcardEntitlements{entitled: false}},
-		{name: "bucket read fails", checker: fakeWildcardEntitlements{entitled: true, err: errors.New("milo unavailable")}},
 		{name: "no checker configured", checker: nil},
 	}
 	for _, tt := range tests {
@@ -302,4 +309,69 @@ func TestExactHostnamesNeverConsultEntitlement(t *testing.T) {
 
 	assert.Zero(t, calls)
 	assert.False(t, f.tlsCertificateExists(), "exact hostnames stay on cert-manager")
+}
+
+func TestWildcardEntitlementReadErrorLeavesServingCertificateAlone(t *testing.T) {
+	f := newEntitlementFixture(t, "*.shop.example.com", true, fakeWildcardEntitlements{err: errors.New("milo unavailable")})
+	require.True(t, f.tlsCertificateExists())
+	require.True(t, f.secretExists())
+
+	gateway, downstreamGateway, result := f.h.reconcile()
+
+	assert.True(t, f.tlsCertificateExists(), "an outage reading the entitlement must not delete the certificate")
+	assert.True(t, f.secretExists(), "nor the mirrored Secret that serves it")
+	for _, ls := range gateway.Status.Listeners {
+		for _, c := range ls.Conditions {
+			assert.NotEqual(t, certificateServiceReasonWildcardNotEntitled, c.Reason, "the customer is not told they lost access")
+		}
+	}
+	assert.Contains(t, listenerNames(downstreamGateway), f.listener, "the listener keeps serving downstream")
+	assert.Positive(t, result.RequeueAfter, "the check is retried")
+}
+
+func TestWildcardEntitlementReadErrorDoesNotIssueNewCertificate(t *testing.T) {
+	f := newEntitlementFixture(t, "*.shop.example.com", false, fakeWildcardEntitlements{err: errors.New("milo unavailable")})
+
+	gateway, _, result := f.h.reconcile()
+
+	assert.False(t, f.tlsCertificateExists(), "unknown entitlement does not grant access")
+	assert.False(t, f.secretExists())
+	for _, ls := range gateway.Status.Listeners {
+		for _, c := range ls.Conditions {
+			assert.NotEqual(t, certificateServiceReasonWildcardNotEntitled, c.Reason)
+		}
+	}
+	assert.Positive(t, result.RequeueAfter)
+}
+
+func TestWildcardEntitlementRecoversAfterReadError(t *testing.T) {
+	checker := &flakyEntitlement{err: errors.New("milo unavailable")}
+	f := newEntitlementFixture(t, "*.shop.example.com", true, checker)
+
+	f.h.reconcile()
+	require.True(t, f.tlsCertificateExists())
+
+	checker.err = nil
+	checker.value = false
+	f.h.reconcile()
+
+	assert.False(t, f.tlsCertificateExists(), "a definite denial after the outage still revokes")
+	assert.False(t, f.secretExists())
+}
+
+type flakyEntitlement struct {
+	value bool
+	err   error
+}
+
+func (m *flakyEntitlement) WildcardEntitled(context.Context, string) (bool, error) {
+	return m.value, m.err
+}
+
+func listenerNames(g *gatewayv1.Gateway) []gatewayv1.SectionName {
+	names := make([]gatewayv1.SectionName, 0, len(g.Spec.Listeners))
+	for _, l := range g.Spec.Listeners {
+		names = append(names, l.Name)
+	}
+	return names
 }

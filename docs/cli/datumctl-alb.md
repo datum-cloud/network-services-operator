@@ -155,6 +155,14 @@ DNS records to publish:
   _acme-challenge.s3.example.com   CNAME   k3f9q2x7.acme-dns.example.net      Certificate
 ```
 
+A wildcard is issued a certificate only for projects Datum has enabled for wildcard hostnames. Until then `describe` shows the reason under the hostname, and the cause is the project's enablement, not DNS. Contact Datum to enable wildcards, or attach an exact hostname instead.
+
+```
+Custom hostnames:
+  *.s3.example.com  available=True  dns=True  cert=False
+    Wildcard hostnames are not enabled for this project, so no certificate is issued. Contact Datum to enable them, or use an exact hostname.
+```
+
 ## Access logs
 
 ```sh

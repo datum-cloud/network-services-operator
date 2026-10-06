@@ -102,6 +102,20 @@ func TestHostnameProblemExplainsARefusedWildcard(t *testing.T) {
 	assert.Empty(t, hostnameProblem(networkingv1alpha.HostnameStatus{}))
 }
 
+func TestHostnameProblemExplainsAnUnentitledWildcard(t *testing.T) {
+	hs := networkingv1alpha.HostnameStatus{Conditions: []metav1.Condition{{
+		Type: networkingv1alpha.HostnameConditionCertificateReady, Status: metav1.ConditionFalse,
+		Reason: networkingv1alpha.CertificateReadyReasonWildcardNotEntitled, Message: "internal wording",
+	}}}
+	got := hostnameProblem(hs)
+	assert.Contains(t, got, "Wildcard hostnames are not enabled for this project")
+	assert.Contains(t, got, "Contact Datum to enable them, or use an exact hostname.")
+	assert.NotContains(t, got, "DNS")
+
+	hs.Conditions[0].Reason = networkingv1alpha.CertificateReadyReasonPending
+	assert.Empty(t, hostnameProblem(hs))
+}
+
 func TestHostnameAddAcceptsWildcards(t *testing.T) {
 	updated, err := spec.AddHostname(&networkingv1alpha.HTTPProxy{ObjectMeta: metav1.ObjectMeta{Name: "s3"}}, "*.S3.example.com")
 	if assert.NoError(t, err) {

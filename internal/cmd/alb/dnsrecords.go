@@ -96,6 +96,10 @@ func writePendingRecords(out io.Writer, pending pendingRecords) {
 // hostnameProblem returns why a custom hostname is held back, when its
 // ownership or claim was refused.
 func hostnameProblem(hs networkingv1alpha.HostnameStatus) string {
+	if c := apimeta.FindStatusCondition(hs.Conditions, networkingv1alpha.HostnameConditionCertificateReady); c != nil &&
+		c.Status == metav1.ConditionFalse && c.Reason == networkingv1alpha.CertificateReadyReasonWildcardNotEntitled {
+		return "Wildcard hostnames are not enabled for this project, so no certificate is issued. Contact Datum to enable them, or use an exact hostname."
+	}
 	for _, condType := range []string{networkingv1alpha.HostnameConditionVerified, networkingv1alpha.HostnameConditionAvailable} {
 		if c := apimeta.FindStatusCondition(hs.Conditions, condType); c != nil && c.Status == metav1.ConditionFalse && c.Message != "" {
 			return c.Message

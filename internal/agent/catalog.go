@@ -565,9 +565,11 @@ var dnsAndCertCatalog = []ReasonInfo{
 		ConditionType: networkingv1alpha.HostnameConditionCertificateReady,
 		Actionability: ActionabilityPlatform,
 		Scope:         ScopeOneHostname,
-		Explanation:   "Wildcard hostnames are not enabled for this project, so no certificate is issued and HTTPS will fail on this hostname.",
-		Remediation:   "Contact Datum to have wildcard hostnames enabled for the project, or use an exact hostname instead.",
-		Skill:         SkillCertificateNotIssued,
+		Explanation: "Wildcard hostnames are not enabled for this project, so no certificate is issued and HTTPS will fail on this hostname. " +
+			"Only Datum can enable them; nothing about your DNS or load balancer is wrong.",
+		Remediation: "Contact Datum to have wildcard hostnames enabled for the project, or use an exact hostname instead. " +
+			"Datum is not working on this unless you ask.",
+		Skill: SkillCertificateNotIssued,
 	},
 	{
 		Reason:        networkingv1alpha.CertificateReadyReasonRenewalFailing,

@@ -56,6 +56,13 @@ func (r *HTTPProxyReconciler) tlsCertificateReadyCondition(
 		}
 	}
 
+	if blocked != nil && blocked.Reason == certificateServiceReasonWildcardNotEntitled {
+		condition.Status = metav1.ConditionFalse
+		condition.Reason = networkingv1alpha.CertificateReadyReasonWildcardNotEntitled
+		condition.Message = blocked.Message
+		return condition
+	}
+
 	var cert certificatesv1alpha1.TLSCertificate
 	err := upstreamClient.Get(ctx, client.ObjectKey{Namespace: upstreamNamespace, Name: certName}, &cert)
 	switch {

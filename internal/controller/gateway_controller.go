@@ -3,6 +3,7 @@
 package controller
 
 import (
+	"cmp"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -105,6 +106,10 @@ type GatewayReconciler struct {
 	// against when Config.Gateway.CertificateService.VerifyChain is set. Nil
 	// means the system roots.
 	CertificateServiceRoots *x509.CertPool
+
+	// WildcardEntitlements decides whether a project may hold wildcard
+	// hostnames. Nil denies every project.
+	WildcardEntitlements WildcardEntitlementChecker
 
 	certificateServiceFailures  sync.Map
 	certificateServiceStates    sync.Map
@@ -386,21 +391,28 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 		// that could not be served tells the customer why.
 		serviceResult, issues := r.ensureListenerTLSCertificates(
 			ctx,
+			upstreamClusterName,
 			upstreamClient,
 			upstreamGateway,
 			downstreamGateway,
 			downstreamStrategy,
 			claimedHostnames,
 		)
-		for name, message := range issues {
+		for name, issue := range issues {
 			status, gated := listenerCertHealth[name]
 			if !gated {
 				continue
 			}
-			if status.healthy {
-				status.renewalBlocked = message
+			if issue.reason == certificateServiceReasonWildcardNotEntitled {
+				status.healthy = false
+				status.message = issue.message
+				status.issuanceBlocked = true
+				status.issuanceReason = issue.reason
+				status.renewalBlocked = ""
+			} else if status.healthy {
+				status.renewalBlocked = issue.message
 			} else {
-				status.message = message
+				status.message = issue.message
 				status.issuanceBlocked = true
 			}
 			listenerCertHealth[name] = status
@@ -538,6 +550,8 @@ type listenerCertStatus struct {
 	// issuanceBlocked, when set on an unhealthy listener, says the certificate
 	// step itself failed rather than issuance merely being underway.
 	issuanceBlocked bool
+	// issuanceReason overrides the reason on the issuance-blocked condition.
+	issuanceReason string
 }
 
 const listenerConditionCertificateRenewalBlocked = "CertificateRenewalBlocked"
@@ -2286,7 +2300,7 @@ func (r *GatewayReconciler) ensureDownstreamGatewayHTTPRoutes(
 			apimeta.SetStatusCondition(&status.Conditions, metav1.Condition{
 				Type:               listenerConditionCertificateIssuanceBlocked,
 				Status:             metav1.ConditionTrue,
-				Reason:             listenerReasonIssuanceFailing,
+				Reason:             cmp.Or(certStatus.issuanceReason, listenerReasonIssuanceFailing),
 				Message:            certStatus.message,
 				ObservedGeneration: upstreamGateway.Generation,
 			})

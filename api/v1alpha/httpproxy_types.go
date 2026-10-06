@@ -675,6 +675,10 @@ const (
 	// CertificateReadyReasonRenewalFailing indicates the hostname still serves a
 	// valid certificate but its replacement cannot be issued; the message says why.
 	CertificateReadyReasonRenewalFailing = "RenewalFailing"
+
+	// CertificateReadyReasonWildcardNotEntitled indicates the project is not
+	// enabled for wildcard hostnames, so no certificate is issued for it.
+	CertificateReadyReasonWildcardNotEntitled = "WildcardNotEntitled"
 )
 
 // Reasons for HostnameConditionAvailable.

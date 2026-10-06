@@ -654,6 +654,7 @@ func TestEnsureDownstreamGatewayCertificateService(t *testing.T) {
 				Config:                   testCfg,
 				DownstreamCluster:        &fakeCluster{cl: fakeDownstreamClient},
 				CertificateServiceReader: serviceBuilder.Build(),
+				WildcardEntitlements:     fakeWildcardEntitlements{entitled: true},
 				CertificateServiceRoots:  ca.pool,
 			}
 			downstreamStrategy := downstreamclient.NewMappedNamespaceResourceStrategy(upstreamCluster, fakeUpstreamClient, fakeDownstreamClient)
@@ -766,6 +767,7 @@ func (h *certificateServiceHarness) reconcile() (*gatewayv1.Gateway, *gatewayv1.
 			Config:                   h.cfg,
 			DownstreamCluster:        &fakeCluster{cl: h.downstream},
 			CertificateServiceReader: h.service,
+			WildcardEntitlements:     fakeWildcardEntitlements{entitled: true},
 			CertificateServiceRoots:  h.roots,
 		}
 	}
@@ -1192,6 +1194,7 @@ func TestCertificateServiceCRDAbsentDoesNotBlockGateway(t *testing.T) {
 		Config:                   testCfg,
 		DownstreamCluster:        &fakeCluster{cl: fakeDownstreamClient},
 		CertificateServiceReader: fake.NewClientBuilder().WithScheme(downstreamScheme).Build(),
+		WildcardEntitlements:     fakeWildcardEntitlements{entitled: true},
 	}
 	downstreamStrategy := downstreamclient.NewMappedNamespaceResourceStrategy("test", fakeUpstreamClient, fakeDownstreamClient)
 

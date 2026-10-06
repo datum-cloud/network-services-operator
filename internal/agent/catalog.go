@@ -561,6 +561,15 @@ var dnsAndCertCatalog = []ReasonInfo{
 		Skill: SkillCertificateNotIssued,
 	},
 	{
+		Reason:        networkingv1alpha.CertificateReadyReasonWildcardNotEntitled,
+		ConditionType: networkingv1alpha.HostnameConditionCertificateReady,
+		Actionability: ActionabilityPlatform,
+		Scope:         ScopeOneHostname,
+		Explanation:   "Wildcard hostnames are not enabled for this project, so no certificate is issued and HTTPS will fail on this hostname.",
+		Remediation:   "Contact Datum to have wildcard hostnames enabled for the project, or use an exact hostname instead.",
+		Skill:         SkillCertificateNotIssued,
+	},
+	{
 		Reason:        networkingv1alpha.CertificateReadyReasonRenewalFailing,
 		ConditionType: networkingv1alpha.HostnameConditionCertificateReady,
 		Actionability: ActionabilityUser,

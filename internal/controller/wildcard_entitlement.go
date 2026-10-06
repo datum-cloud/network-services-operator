@@ -60,9 +60,6 @@ func (b *bucketWildcardEntitlements) WildcardEntitled(ctx context.Context, proje
 	return bucket.Status.Available > 0, nil
 }
 
-// wildcardEntitled reports whether the project may have wildcard hostnames. A
-// read error is returned rather than folded into "no": only a definite denial
-// may withdraw a certificate that is already serving.
 func (r *GatewayReconciler) wildcardEntitled(ctx context.Context, projectName string) (bool, error) {
 	if r.WildcardEntitlements == nil {
 		return false, nil

@@ -123,6 +123,7 @@ type entitlementFixture struct {
 	listener     gatewayv1.SectionName
 	hostname     string
 	gateway      *gatewayv1.Gateway
+	ca           testCA
 }
 
 func newEntitlementFixture(t *testing.T, hostname string, withIssuance bool, checker WildcardEntitlementChecker) *entitlementFixture {
@@ -199,7 +200,7 @@ func newEntitlementFixture(t *testing.T, hostname string, withIssuance bool, che
 		WildcardEntitlements:     checker,
 		CertificateServiceRoots:  ca.pool,
 	}
-	return &entitlementFixture{h: h, downstreamNS: downstreamNamespaceName, secretName: secretName, certName: certName, listener: listenerName, hostname: hostname, gateway: upstreamGateway}
+	return &entitlementFixture{h: h, downstreamNS: downstreamNamespaceName, secretName: secretName, certName: certName, listener: listenerName, hostname: hostname, gateway: upstreamGateway, ca: ca}
 }
 
 func (f *entitlementFixture) tlsCertificateExists() bool {
@@ -276,29 +277,110 @@ func (m *mutableEntitlement) WildcardEntitled(context.Context, string) (bool, er
 	return m.value, nil
 }
 
-func TestWildcardHostnameRevocationRemovesCertificateAndSecret(t *testing.T) {
+func (f *entitlementFixture) assertServing(t *testing.T, gateway, downstreamGateway *gatewayv1.Gateway) {
+	t.Helper()
+	assert.True(t, f.tlsCertificateExists(), "the TLSCertificate is kept")
+	assert.True(t, f.secretExists(), "the mirrored Secret keeps serving")
+	assert.Contains(t, listenerNames(downstreamGateway), f.listener, "the listener keeps serving downstream")
+	for _, ls := range gateway.Status.Listeners {
+		if ls.Name != f.listener {
+			continue
+		}
+		for _, c := range ls.Conditions {
+			assert.NotEqual(t, certificateServiceReasonWildcardNotEntitled, c.Reason, "a serving certificate is not reported as not entitled")
+		}
+		assert.Nil(t, apimeta.FindStatusCondition(ls.Conditions, listenerConditionCertificateIssuanceBlocked))
+	}
+}
+
+func TestWildcardGrantRemovalKeepsServingCertificate(t *testing.T) {
 	entitled := &mutableEntitlement{value: true}
 	f := newEntitlementFixture(t, "*.shop.example.com", true, entitled)
 
 	f.h.reconcile()
 	require.True(t, f.tlsCertificateExists())
-	require.True(t, f.secretExists())
 
 	entitled.value = false
-	gateway, _, result := f.h.reconcile()
+	for range 3 {
+		gateway, downstreamGateway, _ := f.h.reconcile()
+		f.assertServing(t, gateway, downstreamGateway)
+	}
+}
 
-	assert.False(t, f.tlsCertificateExists(), "the TLSCertificate is deleted")
-	assert.False(t, f.secretExists(), "the mirrored Secret stops serving the key")
-	f.assertNotEntitled(t, gateway)
-	assert.LessOrEqual(t, result.RequeueAfter, tlsCertificateMirrorAdmitDelay, "the listener is withdrawn on the next pass")
+func TestWildcardGrantRemovalStillMirrorsRenewedCertificate(t *testing.T) {
+	entitled := &mutableEntitlement{value: true}
+	f := newEntitlementFixture(t, "*.shop.example.com", true, entitled)
+	f.h.reconcile()
+
+	var before corev1.Secret
+	require.NoError(t, f.h.downstream.Get(f.h.ctx, client.ObjectKey{Namespace: f.downstreamNS, Name: f.secretName}, &before))
+
+	var cert certificatesv1alpha1.TLSCertificate
+	require.NoError(t, f.h.upstream.Get(f.h.ctx, client.ObjectKey{Namespace: f.gateway.Namespace, Name: f.certName}, &cert))
+	now := time.Now()
+	crt, key := f.ca.issue(t, f.hostname, now.Add(-time.Minute), now.Add(90*24*time.Hour))
+	cert.Status.NotAfter = &metav1.Time{Time: now.Add(90 * 24 * time.Hour)}
+	require.NoError(t, f.h.upstream.Status().Update(f.h.ctx, &cert))
+	require.NoError(t, f.h.service.(client.Client).Update(f.h.ctx, &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "certificates-system", Name: certificatesv1alpha1.StoredSecretName(cert.UID)},
+		Type:       corev1.SecretTypeTLS,
+		Data:       map[string][]byte{"tls.crt": crt, "tls.key": key},
+	}))
+
+	entitled.value = false
+	f.h.reconcile()
+
+	var after corev1.Secret
+	require.NoError(t, f.h.downstream.Get(f.h.ctx, client.ObjectKey{Namespace: f.downstreamNS, Name: f.secretName}, &after))
+	assert.Equal(t, crt, after.Data["tls.crt"], "a renewal is still delivered after the grant is removed")
+	assert.NotEqual(t, before.Data["tls.crt"], after.Data["tls.crt"])
+}
+
+func TestWildcardGrantRemovalNeverConsultsEntitlementForServingCertificate(t *testing.T) {
+	calls := 0
+	f := newEntitlementFixture(t, "*.shop.example.com", true, fakeWildcardEntitlements{entitled: false, calls: &calls})
 
 	gateway, downstreamGateway, _ := f.h.reconcile()
-	assert.False(t, f.tlsCertificateExists(), "a repeated pass stays clean")
-	assert.False(t, f.secretExists())
+
+	f.assertServing(t, gateway, downstreamGateway)
+	assert.Zero(t, calls)
+}
+
+func TestWildcardGrantRemovalWithoutCertificateStillBlocksThenGrantIssues(t *testing.T) {
+	entitled := &mutableEntitlement{}
+	f := newEntitlementFixture(t, "*.shop.example.com", false, entitled)
+
+	gateway, _, _ := f.h.reconcile()
 	f.assertNotEntitled(t, gateway)
-	for _, l := range downstreamGateway.Spec.Listeners {
-		assert.NotEqual(t, f.listener, l.Name, "the downstream listener no longer references the key")
+
+	entitled.value = true
+	f.h.reconcile()
+	assert.True(t, f.tlsCertificateExists())
+
+	entitled.value = false
+	gateway, _, _ = f.h.reconcile()
+	assert.True(t, f.tlsCertificateExists(), "once requested the certificate stays")
+	for _, ls := range gateway.Status.Listeners {
+		for _, c := range ls.Conditions {
+			assert.NotEqual(t, certificateServiceReasonWildcardNotEntitled, c.Reason)
+		}
 	}
+}
+
+func TestWildcardGrantRemovalDoesNotKeepCertificateForChangedHostname(t *testing.T) {
+	entitled := &mutableEntitlement{value: true}
+	f := newEntitlementFixture(t, "*.shop.example.com", true, entitled)
+	f.h.reconcile()
+
+	var cert certificatesv1alpha1.TLSCertificate
+	require.NoError(t, f.h.upstream.Get(f.h.ctx, client.ObjectKey{Namespace: f.gateway.Namespace, Name: f.certName}, &cert))
+	cert.Spec.DNSNames = []certificatesv1alpha1.DNSName{"*.other.example.com"}
+	require.NoError(t, f.h.upstream.Update(f.h.ctx, &cert))
+
+	entitled.value = false
+	gateway, _, _ := f.h.reconcile()
+
+	f.assertNotEntitled(t, gateway)
 }
 
 func TestExactHostnamesNeverConsultEntitlement(t *testing.T) {
@@ -342,30 +424,6 @@ func TestWildcardEntitlementReadErrorDoesNotIssueNewCertificate(t *testing.T) {
 		}
 	}
 	assert.Positive(t, result.RequeueAfter)
-}
-
-func TestWildcardEntitlementRecoversAfterReadError(t *testing.T) {
-	checker := &flakyEntitlement{err: errors.New("milo unavailable")}
-	f := newEntitlementFixture(t, "*.shop.example.com", true, checker)
-
-	f.h.reconcile()
-	require.True(t, f.tlsCertificateExists())
-
-	checker.err = nil
-	checker.value = false
-	f.h.reconcile()
-
-	assert.False(t, f.tlsCertificateExists(), "a definite denial after the outage still revokes")
-	assert.False(t, f.secretExists())
-}
-
-type flakyEntitlement struct {
-	value bool
-	err   error
-}
-
-func (m *flakyEntitlement) WildcardEntitled(context.Context, string) (bool, error) {
-	return m.value, m.err
 }
 
 func listenerNames(g *gatewayv1.Gateway) []gatewayv1.SectionName {

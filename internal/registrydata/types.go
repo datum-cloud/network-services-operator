@@ -69,6 +69,19 @@ func (e *RateLimitedError) Error() string {
 	return "rate limited by " + e.Provider
 }
 
+type NameserverLookupError struct {
+	Name string
+	Err  error
+}
+
+func (e *NameserverLookupError) Error() string {
+	return "looking up the nameservers of " + e.Name + ": " + e.Err.Error()
+}
+
+func (e *NameserverLookupError) Unwrap() error {
+	return e.Err
+}
+
 // CacheBackend enumerates supported cache types.
 type CacheBackend string
 

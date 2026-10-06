@@ -82,8 +82,7 @@ func (r *GatewayReconciler) ensureDNSRecordSets(
 	desiredRecordSetNames := map[string]bool{}
 
 	for _, hostname := range claimedHostnames {
-		// Skip the platform-managed canonical hostname – it is handled by external-dns.
-		if hostname == canonicalHostname {
+		if r.isDatumManagedGatewayHostname(upstreamGateway, hostname) {
 			continue
 		}
 

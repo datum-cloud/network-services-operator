@@ -306,10 +306,24 @@ func newCause(object, hostname string, c metav1.Condition, created metav1.Time, 
 // protection fault above a dead origin, and answer "your WAF is not attached"
 // to someone whose site is returning nothing at all.
 func sortCauses(causes []Cause) {
+	denied := hasWildcardDenial(causes)
+	rank := func(c Cause) int {
+		if denied && c.Actionability == ActionabilityTransient {
+			return max(scopeRank(c.Scope), scopeRank(ScopeOneHostname))
+		}
+		return scopeRank(c.Scope)
+	}
 	sort.SliceStable(causes, func(i, j int) bool {
-		si, sj := scopeRank(causes[i].Scope), scopeRank(causes[j].Scope)
+		si, sj := rank(causes[i]), rank(causes[j])
 		if si != sj {
 			return si < sj
+		}
+		if denied {
+			ti := causes[i].Actionability == ActionabilityTransient
+			tj := causes[j].Actionability == ActionabilityTransient
+			if ti != tj {
+				return !ti
+			}
 		}
 		// "Nothing has run yet" is true but says nothing about what is wrong,
 		// so anything that names something outranks it.
@@ -320,6 +334,15 @@ func sortCauses(causes []Cause) {
 		}
 		return causes[i].Level > causes[j].Level
 	})
+}
+
+func hasWildcardDenial(causes []Cause) bool {
+	for _, c := range causes {
+		if c.Reason == networkingv1alpha.CertificateReadyReasonWildcardNotEntitled {
+			return true
+		}
+	}
+	return false
 }
 
 func scopeRank(s Scope) int {

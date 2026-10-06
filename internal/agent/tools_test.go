@@ -190,6 +190,10 @@ func TestEveryToolIsRegisteredAndDescribed(t *testing.T) {
 			"%s needs the alb_ prefix so it cannot collide with another service's tool", tool.Name)
 		assert.Contains(t, tool.Description, "Read-only.",
 			"%s must say it changes nothing", tool.Name)
+		if assert.NotNil(t, tool.Annotations, "%s has no annotations", tool.Name) {
+			assert.True(t, tool.Annotations.ReadOnlyHint,
+				"%s must tell the client it changes nothing, not only the model", tool.Name)
+		}
 	}
 	for name, found := range want {
 		assert.True(t, found, "%s was never registered", name)

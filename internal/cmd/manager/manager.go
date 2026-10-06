@@ -42,6 +42,7 @@ import (
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 	ipamv1alpha1 "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
 	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
+	quotav1alpha1 "go.miloapis.com/milo/pkg/apis/quota/v1alpha1"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	networkingv1alpha1 "go.datum.net/network-services-operator/api/v1alpha1"
@@ -79,6 +80,7 @@ func init() {
 	utilruntime.Must(dnsv1alpha1.AddToScheme(scheme))
 	utilruntime.Must(ipamv1alpha1.AddToScheme(scheme))
 	utilruntime.Must(certificatesv1alpha1.AddToScheme(scheme))
+	utilruntime.Must(quotav1alpha1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
 
@@ -398,6 +400,12 @@ func NewCommand(build BuildInfo) *cobra.Command {
 				os.Exit(1)
 			}
 
+			wildcardEntitlements, err := newWildcardEntitlementChecker(serverConfig)
+			if err != nil {
+				setupLog.Error(err, "unable to build wildcard entitlement client")
+				os.Exit(1)
+			}
+
 			registeredControllers, err := setupControllers(mgr, serverConfig, controllerDeps{
 				downstreamCluster:        downstreamCluster,
 				singletonManager:         singletonControllerMgr,
@@ -405,6 +413,7 @@ func NewCommand(build BuildInfo) *cobra.Command {
 				ipamClients:              ipamClients,
 				certificateServiceReader: certificateServiceReader,
 				certificateServiceRoots:  certificateServiceRoots,
+				wildcardEntitlements:     wildcardEntitlements,
 			})
 			if err != nil {
 				setupLog.Error(err, "unable to set up controllers")
@@ -583,6 +592,7 @@ type controllerDeps struct {
 	ipamClients              controller.IPAMClientFactory
 	certificateServiceReader client.Reader
 	certificateServiceRoots  *x509.CertPool
+	wildcardEntitlements     controller.WildcardEntitlementChecker
 }
 
 // newCertificateServiceReader returns an uncached client for the cluster the
@@ -598,6 +608,24 @@ func newCertificateServiceReader(gatewayConfig config.GatewayConfig) (client.Rea
 		return nil, fmt.Errorf("unable to load certificate service kubeconfig: %w", err)
 	}
 	return client.New(restConfig, client.Options{Scheme: scheme})
+}
+
+// newWildcardEntitlementChecker returns an uncached reader over the Milo root
+// control plane, where project quota buckets live, or nil when the certificate
+// service is not consumed.
+func newWildcardEntitlementChecker(serverConfig config.NetworkServicesOperator) (controller.WildcardEntitlementChecker, error) {
+	if !serverConfig.Gateway.CertificateService.Enabled {
+		return nil, nil
+	}
+	restConfig, err := serverConfig.Discovery.DiscoveryRestConfig()
+	if err != nil {
+		return nil, fmt.Errorf("unable to load Milo root kubeconfig: %w", err)
+	}
+	reader, err := client.New(restConfig, client.Options{Scheme: scheme})
+	if err != nil {
+		return nil, err
+	}
+	return controller.NewWildcardEntitlementChecker(reader), nil
 }
 
 // newIPAMClientFactory returns nil when no IPAM connection is configured. A
@@ -717,6 +745,7 @@ func controllerRegistrations(
 				DownstreamCluster:        deps.downstreamCluster,
 				CertificateServiceReader: deps.certificateServiceReader,
 				CertificateServiceRoots:  deps.certificateServiceRoots,
+				WildcardEntitlements:     deps.wildcardEntitlements,
 			}).SetupWithManager(mgr)
 		}},
 		{"gatewayclass", true, func() error {

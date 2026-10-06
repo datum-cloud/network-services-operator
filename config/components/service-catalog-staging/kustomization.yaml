@@ -8,3 +8,9 @@ patches:
       version: v1alpha1
       kind: ServiceConfiguration
       name: networking-datumapis-com
+  - path: service-configuration-wildcard-hostnames.yaml
+    target:
+      group: services.miloapis.com
+      version: v1alpha1
+      kind: ServiceConfiguration
+      name: networking-datumapis-com

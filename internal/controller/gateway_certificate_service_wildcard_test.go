@@ -151,6 +151,7 @@ func TestCertificateServiceWildcardHostname(t *testing.T) {
 			Config:                   cfg,
 			DownstreamCluster:        &fakeCluster{cl: downstream},
 			CertificateServiceReader: fake.NewClientBuilder().WithScheme(testScheme).WithObjects(service...).Build(),
+			WildcardEntitlements:     fakeWildcardEntitlements{entitled: true},
 		}
 
 		ctx := context.Background()

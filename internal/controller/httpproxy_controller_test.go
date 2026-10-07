@@ -4093,18 +4093,18 @@ func TestCollectDesiredResourcesErrorResult(t *testing.T) {
 		assert.Contains(t, condition.Message, "slice-1")
 	})
 
-	t.Run("any other failure still reaches the condition", func(t *testing.T) {
+	t.Run("any other failure is returned without its text reaching the condition", func(t *testing.T) {
 		condition := newCondition()
-		result, err, done := collectDesiredResourcesErrorResult(errors.New("boom"), condition)
+		result, err, done := collectDesiredResourcesErrorResult(errors.New("dial tcp 10.0.0.1:443"), condition)
 
 		assert.True(t, done)
 		// Returned so controller-runtime requeues with backoff.
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "boom")
+		assert.Contains(t, err.Error(), "10.0.0.1")
 		assert.Equal(t, ctrl.Result{}, result)
 
-		assert.Contains(t, condition.Message, "boom",
-			"the operator must be able to see the cause without reading controller logs")
+		assert.Equal(t, "The HTTPProxy has not been programmed", condition.Message,
+			"left at the default so the reconcile observation writes the fixed message")
 		// Pending, not Invalid: this path cannot tell a permanent
 		// configuration problem from a read that will succeed on retry.
 		assert.Equal(t, networkingv1alpha.HTTPProxyReasonPending, condition.Reason)

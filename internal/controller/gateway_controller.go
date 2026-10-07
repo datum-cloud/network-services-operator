@@ -2546,11 +2546,13 @@ func (r *GatewayReconciler) ensureDownstreamHTTPRoute(
 
 	// Update the upstream route's parent status information
 	var parentStatus *gatewayv1.RouteParentStatus
+	parentStatusIndex := -1
 	for i, parent := range upstreamRoute.Status.Parents {
 		if ptr.Deref(parent.ParentRef.Group, gatewayv1.GroupName) == gatewayv1.GroupName &&
 			ptr.Deref(parent.ParentRef.Kind, KindGateway) == KindGateway &&
 			string(parent.ParentRef.Name) == upstreamGateway.Name {
 			parentStatus = &upstreamRoute.Status.Parents[i]
+			parentStatusIndex = i
 			break
 		}
 	}
@@ -2609,11 +2611,19 @@ func (r *GatewayReconciler) ensureDownstreamHTTPRoute(
 		logger.Info("did not find downstream parent status for gateway")
 	}
 
-	if insertParentStatus && len(parentStatus.Conditions) > 0 {
+	removedParentStatus := false
+	switch {
+	case insertParentStatus && len(parentStatus.Conditions) > 0:
 		upstreamRoute.Status.Parents = append(upstreamRoute.Status.Parents, *parentStatus)
+	case !insertParentStatus && len(parentStatus.Conditions) == 0 &&
+		parentStatus.ControllerName == gatewayv1.GatewayController(upstreamGatewayClassControllerName):
+		upstreamRoute.Status.Parents = slices.Delete(upstreamRoute.Status.Parents, parentStatusIndex, parentStatusIndex+1)
+		removedParentStatus = true
 	}
 
-	result.AddStatusUpdate(upstreamClient, &upstreamRoute)
+	if len(upstreamRoute.Status.Parents) > 0 || removedParentStatus {
+		result.AddStatusUpdate(upstreamClient, &upstreamRoute)
+	}
 
 	logger.Info("downstream httproute processed", "operation_result", routeResult)
 

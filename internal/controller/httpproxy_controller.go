@@ -119,17 +119,9 @@ func collectDesiredResourcesErrorResult(err error, programmedCondition *metav1.C
 		return ctrl.Result{RequeueAfter: retryAfterConflict}, nil, true
 	}
 
-	// Anything else still requeues with backoff, but say why on the
-	// condition as well as in the logs. Without this the resource reports
-	// only the generic "has not been programmed" default however it failed,
-	// so a configuration mistake is indistinguishable from a transient one
-	// and the actual cause is visible solely to whoever can read controller
-	// logs.
-	//
 	// The reason stays Pending rather than becoming Invalid: a collect
 	// failure can as easily be a read that succeeds on retry as a permanent
 	// configuration problem, and the reason should not claim to know which.
-	programmedCondition.Message = fmt.Sprintf("The HTTPProxy cannot be programmed: %s", err)
 	return ctrl.Result{}, fmt.Errorf("failed to collect desired resources: %w", err), true
 }
 
@@ -232,18 +224,24 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 		Message:            "The HTTPProxy has not been programmed",
 	}
 
+	observation := beginHTTPProxyReconcile(req.ClusterName, &httpProxy)
+
 	defer func() {
+		observation.failed(ctx, err, acceptedCondition, programmedCondition)
 		apimeta.SetStatusCondition(&httpProxyCopy.Status.Conditions, *acceptedCondition)
 		apimeta.SetStatusCondition(&httpProxyCopy.Status.Conditions, *programmedCondition)
 
+		var statusErr error
 		if !equality.Semantic.DeepEqual(httpProxy.Status, httpProxyCopy.Status) {
 			emitHTTPProxyActivityEvents(ctx, cl.GetClient(), httpProxyCopy, httpProxy.Status.Conditions)
 			httpProxy.Status = httpProxyCopy.Status
-			if statusErr := cl.GetClient().Status().Update(ctx, &httpProxy); statusErr != nil {
+			if statusErr = cl.GetClient().Status().Update(ctx, &httpProxy); statusErr != nil {
+				observation.statusFailed(statusErr)
 				err = errors.Join(err, fmt.Errorf("failed updating httpproxy status: %w", statusErr))
 			}
 			logger.Info("httpproxy status updated")
 		}
+		observation.finished(programmedCondition, statusErr == nil)
 	}()
 
 	if !controllerutil.ContainsFinalizer(&httpProxy, httpProxyFinalizer) {
@@ -277,6 +275,7 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 	// Programmed condition with info about the conflict.
 
 	gateway := desiredResources.gateway.DeepCopy()
+	observation.step = httpProxyStepGateway
 
 	result, err := controllerutil.CreateOrUpdate(ctx, cl.GetClient(), gateway, func() error {
 		if hasControllerConflict(gateway, &httpProxy) {
@@ -328,6 +327,8 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 
 	// Maintain an HTTPRoute for all rules in the HTTPProxy
 
+	observation.step = httpProxyStepHTTPRouteFilter
+
 	if len(desiredResources.httpRouteFilters) == 0 {
 		if err := cleanupConnectorOfflineHTTPRouteFilter(ctx, cl.GetClient(), &httpProxy); err != nil {
 			return ctrl.Result{}, err
@@ -357,6 +358,7 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 	}
 
 	httpRoute := desiredResources.httpRoute.DeepCopy()
+	observation.step = httpProxyStepHTTPRoute
 
 	result, err = controllerutil.CreateOrUpdate(ctx, cl.GetClient(), httpRoute, func() error {
 		if hasControllerConflict(httpRoute, &httpProxy) {
@@ -393,10 +395,12 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 
 	logger.Info("processed httproute", jsonKeyName, httpRoute.Name, "result", result)
 
+	observation.step = httpProxyStepEndpointSlice
 	if result, halt, err := r.reconcileEndpointSlices(ctx, cl, &httpProxy, desiredResources.endpointSlices, acceptedCondition, programmedCondition); halt || err != nil {
 		return result, err
 	}
 
+	observation.step = httpProxyStepStatus
 	httpProxyCopy.Status.Addresses = gateway.Status.Addresses
 
 	if c := apimeta.FindStatusCondition(gateway.Status.Conditions, string(gatewayv1.GatewayConditionAccepted)); c != nil {
@@ -731,6 +735,9 @@ func (r *HTTPProxyReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	r.mgr = mgr
 	if r.routing == nil {
 		r.routing = newRoutingObserver()
+	}
+	if err := mgr.Add(httpProxyFleet); err != nil {
+		return fmt.Errorf("failed to add httpproxy metrics collector: %w", err)
 	}
 
 	builder := mcbuilder.ControllerManagedBy(mgr).

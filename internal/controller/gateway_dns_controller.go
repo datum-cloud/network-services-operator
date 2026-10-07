@@ -377,6 +377,11 @@ func (r *GatewayReconciler) ensureDNSRecordSets(
 	nextHostname:
 	}
 
+	if err := r.ensureDelegationRecordSets(ctx, upstreamClient, upstreamGateway, claimedHostnames, domainList.Items, desiredRecordSetNames); err != nil {
+		result.Err = err
+		return hostnameStatuses, result
+	}
+
 	// Garbage-collect stale DNSRecordSets that are no longer needed.
 	gcResult := r.garbageCollectDNSRecordSets(ctx, upstreamClient, upstreamGateway, desiredRecordSetNames)
 	if gcResult.ShouldReturn() {

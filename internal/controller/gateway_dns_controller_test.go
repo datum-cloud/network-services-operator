@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1339,4 +1340,138 @@ func TestEnsureDNSRecordSets_DNSIntegrationDisabled(t *testing.T) {
 	var list dnsv1alpha1.DNSRecordSetList
 	require.NoError(t, cl.List(ctx, &list, client.InNamespace(ns)))
 	assert.Empty(t, list.Items, "no DNSRecordSets should be created when DNS integration is disabled")
+}
+
+func TestEnsureDNSRecordSets_WildcardRecordType(t *testing.T) {
+	const ns = "test-ns"
+
+	testConfig := config.NetworkServicesOperator{
+		Gateway: config.GatewayConfig{
+			TargetDomain:         "gateways.test.local",
+			EnableDNSIntegration: true,
+		},
+	}
+
+	cases := []struct {
+		name     string
+		hostname string
+		apex     bool
+		want     dnsv1alpha1.RRType
+		wantName string
+	}{
+		{name: "wildcard under an apex domain", hostname: "*.app.example.com", apex: true, want: dnsv1alpha1.RRTypeCNAME, wantName: "*.app"},
+		{name: "wildcard under a non-apex domain", hostname: "*.app.example.com", apex: false, want: dnsv1alpha1.RRTypeCNAME, wantName: "*.app"},
+		{name: "exact hostname under an apex domain", hostname: "www.example.com", apex: true, want: dnsv1alpha1.RRTypeALIAS, wantName: "www"},
+		{name: "apex hostname", hostname: "example.com", apex: true, want: dnsv1alpha1.RRTypeALIAS, wantName: "@"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := log.IntoContext(context.Background(), zap.New())
+			gw := newTestGatewayForDNS(ns, "my-gw")
+			objs := []client.Object{gw, newVerifiedDNSZoneDomain(ns, "example.com", tc.apex), newDNSZone(ns, "example-com", "example.com")}
+			cl := buildFakeUpstreamClientForDNS(newDNSTestScheme(t), objs...)
+
+			_, result := newDNSReconciler(testConfig).ensureDNSRecordSets(ctx, cl, gw, []string{tc.hostname})
+			require.NoError(t, result.Err)
+
+			var rs dnsv1alpha1.DNSRecordSet
+			require.NoError(t, cl.Get(ctx, client.ObjectKey{Namespace: ns, Name: dnsRecordSetName(gw.Name, tc.hostname)}, &rs))
+			assert.Equal(t, tc.want, rs.Spec.RecordType)
+			require.Len(t, rs.Spec.Records, 1)
+			assert.Equal(t, tc.wantName, rs.Spec.Records[0].Name)
+			if tc.want == dnsv1alpha1.RRTypeCNAME {
+				require.NotNil(t, rs.Spec.Records[0].CNAME)
+				assert.Nil(t, rs.Spec.Records[0].ALIAS)
+			} else {
+				require.NotNil(t, rs.Spec.Records[0].ALIAS)
+				assert.Nil(t, rs.Spec.Records[0].CNAME)
+			}
+		})
+	}
+}
+
+func TestEnsureDNSRecordSets_WildcardSwitchesExistingALIASToCNAME(t *testing.T) {
+	const (
+		ns       = "test-ns"
+		hostname = "*.app.example.com"
+	)
+	ctx := log.IntoContext(context.Background(), zap.New())
+	testConfig := config.NetworkServicesOperator{
+		Gateway: config.GatewayConfig{
+			TargetDomain:         "gateways.test.local",
+			EnableDNSIntegration: true,
+		},
+	}
+
+	gw := newTestGatewayForDNS(ns, "my-gw")
+	zone := newDNSZone(ns, "example-com", "example.com")
+	existing := &dnsv1alpha1.DNSRecordSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: ns,
+			Name:      dnsRecordSetName(gw.Name, hostname),
+			UID:       uuid.NewUUID(),
+			Labels: map[string]string{
+				labelManagedBy:     labelManagedByValue,
+				labelDNSManaged:    labelValueTrue,
+				labelDNSSourceKind: KindGateway,
+				labelDNSSourceName: gw.Name,
+				labelDNSSourceNS:   ns,
+			},
+			Annotations: map[string]string{annotationDNSHostname: hostname},
+		},
+		Spec: buildDesiredDNSRecordSetSpec(hostname, testConfig.Gateway.GatewayDNSAddress(gw), *zone, dnsv1alpha1.RRTypeALIAS),
+	}
+	objs := []client.Object{gw, newVerifiedDNSZoneDomain(ns, "example.com", true), zone, existing}
+	for _, obj := range objs {
+		if obj.GetUID() == "" {
+			obj.SetUID(uuid.NewUUID())
+		}
+		obj.SetCreationTimestamp(metav1.Now())
+	}
+	cl := buildFakeUpstreamClientForDNS(newDNSTestScheme(t), objs...)
+
+	_, result := newDNSReconciler(testConfig).ensureDNSRecordSets(ctx, cl, gw, []string{hostname})
+	require.NoError(t, result.Err)
+
+	var list dnsv1alpha1.DNSRecordSetList
+	require.NoError(t, cl.List(ctx, &list, client.InNamespace(ns)))
+	require.Len(t, list.Items, 1)
+	rs := list.Items[0]
+	assert.Equal(t, existing.Name, rs.Name)
+	assert.Equal(t, dnsv1alpha1.RRTypeCNAME, rs.Spec.RecordType)
+	require.Len(t, rs.Spec.Records, 1)
+	assert.Equal(t, "*.app", rs.Spec.Records[0].Name)
+	require.NotNil(t, rs.Spec.Records[0].CNAME)
+	assert.Nil(t, rs.Spec.Records[0].ALIAS)
+}
+
+func TestWildcardRoutingRecordStatusMatchesWrittenType(t *testing.T) {
+	const hostname = "*.app.example.com"
+	ctx := log.IntoContext(context.Background(), zap.New())
+	testConfig := config.NetworkServicesOperator{
+		Gateway: config.GatewayConfig{
+			TargetDomain:         "datumproxy.net",
+			EnableDNSIntegration: true,
+			CertificateService:   config.CertificateServiceConfig{Enabled: true},
+		},
+	}
+
+	gw := dnsRecordsGateway(hostname)
+	gw.UID = uuid.NewUUID()
+	objs := []client.Object{gw, newVerifiedDNSZoneDomain(gw.Namespace, "example.com", true), newDNSZone(gw.Namespace, "example-com", "example.com")}
+	cl := buildFakeUpstreamClientForDNS(dnsRecordsTestScheme(t), objs...)
+
+	_, result := newDNSReconciler(testConfig).ensureDNSRecordSets(ctx, cl, gw, []string{hostname})
+	require.NoError(t, result.Err)
+
+	var rs dnsv1alpha1.DNSRecordSet
+	require.NoError(t, cl.Get(ctx, client.ObjectKey{Namespace: gw.Namespace, Name: dnsRecordSetName(gw.Name, hostname)}, &rs))
+
+	r := &HTTPProxyReconciler{Config: testConfig, routing: (&fakeDNS{}).observer(time.Now())}
+	statuses, _ := r.buildDNSRecordStatuses(ctx, cl, gw, dnsRecordsProxy(hostname))
+	got := recordsByPurpose(statuses, hostname)[networkingv1alpha.HostnameDNSRecordPurposeRouting]
+
+	assert.Equal(t, networkingv1alpha.HostnameDNSRecordManagedByPlatform, got.ManagedBy)
+	assert.Equal(t, string(dnsv1alpha1.RRTypeCNAME), got.Type)
+	assert.Equal(t, string(rs.Spec.RecordType), got.Type)
 }

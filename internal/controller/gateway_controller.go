@@ -2472,6 +2472,30 @@ func (r *GatewayReconciler) ensureDownstreamHTTPRoute(
 				obj.Spec = desiredDownstreamResource.(*gatewayv1.BackendTLSPolicy).Spec
 			case *envoygatewayv1alpha1.BackendTrafficPolicy:
 				obj.Spec = desiredDownstreamResource.(*envoygatewayv1alpha1.BackendTrafficPolicy).Spec
+
+				// Karmada's nso-resources ClusterPropagationPolicy only selects a
+				// BackendTrafficPolicy that carries the upstream cluster label.
+				// Without it the policy never leaves the federation control plane,
+				// and no edge applies its load balancer, passive health check or
+				// panic threshold. Copied from the downstream route here, rather
+				// than set on the desired object, so a policy created before this
+				// fix picks the labels up on its next reconcile.
+				labels := obj.GetLabels()
+				if labels == nil {
+					labels = map[string]string{}
+				}
+				for _, key := range []string{
+					downstreamclient.UpstreamOwnerClusterNameLabel,
+					downstreamclient.UpstreamOwnerGroupLabel,
+					downstreamclient.UpstreamOwnerKindLabel,
+					downstreamclient.UpstreamOwnerNameLabel,
+					downstreamclient.UpstreamOwnerNamespaceLabel,
+				} {
+					if v, ok := downstreamRoute.Labels[key]; ok {
+						labels[key] = v
+					}
+				}
+				obj.SetLabels(labels)
 			}
 			return nil
 		})

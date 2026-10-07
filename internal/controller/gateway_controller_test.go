@@ -1213,6 +1213,120 @@ func TestEnsureDownstreamGatewayHTTPRoutes(t *testing.T) {
 
 }
 
+// TestEnsureDownstreamHTTPRouteLabelsBackendTrafficPolicy verifies the
+// downstream BackendTrafficPolicy carries the upstream cluster label. Karmada's
+// nso-resources ClusterPropagationPolicy selects BackendTrafficPolicies by that
+// label, so an unlabeled policy never reaches an edge and its load balancer,
+// passive health check and panic threshold silently do nothing (#557).
+func TestEnsureDownstreamHTTPRouteLabelsBackendTrafficPolicy(t *testing.T) {
+	testScheme := runtime.NewScheme()
+	require.NoError(t, scheme.AddToScheme(testScheme))
+	require.NoError(t, gatewayv1.Install(testScheme))
+	require.NoError(t, discoveryv1.AddToScheme(testScheme))
+	require.NoError(t, envoygatewayv1alpha1.AddToScheme(testScheme))
+
+	testConfig := config.NetworkServicesOperator{
+		Gateway: config.GatewayConfig{
+			DownstreamGatewayClassName:            "test-suite",
+			DownstreamHostnameAccountingNamespace: "default",
+			TargetDomain:                          "test-suite.com",
+		},
+	}
+
+	upstreamNamespace := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test",
+			UID:  uuid.NewUUID(),
+		},
+	}
+	downstreamNamespaceName := fmt.Sprintf("ns-%s", upstreamNamespace.UID)
+
+	run := func(t *testing.T, existingDownstreamObjects func(route *gatewayv1.HTTPRoute) []client.Object) *envoygatewayv1alpha1.BackendTrafficPolicy {
+		upstreamGateway := newGateway(testConfig, upstreamNamespace.Name, "test")
+		route := newHTTPRoute(upstreamNamespace.Name, "route", func(route *gatewayv1.HTTPRoute) {
+			route.Spec.ParentRefs = []gatewayv1.ParentReference{{Name: "test"}}
+			route.Annotations = map[string]string{
+				HealthCheckAnnotation: `{"passive":{}}`,
+			}
+		})
+		route.SetCreationTimestamp(metav1.Now())
+
+		fakeUpstreamClient := fake.NewClientBuilder().
+			WithScheme(testScheme).
+			WithObjects(upstreamGateway, upstreamNamespace, route).
+			WithStatusSubresource(upstreamGateway, route).
+			Build()
+
+		downstreamGateway := newGateway(testConfig, downstreamNamespaceName, upstreamGateway.Name)
+		downstreamObjects := []client.Object{downstreamGateway}
+		if existingDownstreamObjects != nil {
+			downstreamObjects = append(downstreamObjects, existingDownstreamObjects(route)...)
+		}
+		fakeDownstreamClient := fake.NewClientBuilder().
+			WithScheme(testScheme).
+			WithObjects(downstreamObjects...).
+			WithStatusSubresource(downstreamGateway).
+			Build()
+
+		ctx := context.Background()
+		reconciler := &GatewayReconciler{
+			mgr:               &fakeMockManager{cl: fakeUpstreamClient},
+			DownstreamCluster: &fakeCluster{cl: fakeDownstreamClient},
+		}
+		downstreamStrategy := downstreamclient.NewMappedNamespaceResourceStrategy("test", fakeUpstreamClient, fakeDownstreamClient)
+
+		result := reconciler.ensureDownstreamGatewayHTTPRoutes(
+			ctx,
+			fakeUpstreamClient,
+			upstreamGateway,
+			"test",
+			downstreamGateway,
+			downstreamStrategy,
+			nil,
+			nil,
+			nil,
+		)
+		require.NoError(t, result.Err)
+
+		var policy envoygatewayv1alpha1.BackendTrafficPolicy
+		require.NoError(t, fakeDownstreamClient.Get(ctx, client.ObjectKey{
+			Namespace: downstreamNamespaceName,
+			Name:      fmt.Sprintf("route-%s-panic-threshold", route.UID),
+		}, &policy))
+		return &policy
+	}
+
+	assertPropagationLabels := func(t *testing.T, policy *envoygatewayv1alpha1.BackendTrafficPolicy) {
+		t.Helper()
+		assert.Equal(t, "cluster-test", policy.Labels[downstreamclient.UpstreamOwnerClusterNameLabel],
+			"Karmada only propagates a BackendTrafficPolicy with this label")
+		assert.Equal(t, KindHTTPRoute, policy.Labels[downstreamclient.UpstreamOwnerKindLabel])
+		assert.Equal(t, "route", policy.Labels[downstreamclient.UpstreamOwnerNameLabel])
+		assert.Equal(t, upstreamNamespace.Name, policy.Labels[downstreamclient.UpstreamOwnerNamespaceLabel])
+	}
+
+	t.Run("a new policy is labeled", func(t *testing.T) {
+		policy := run(t, nil)
+		require.NotNil(t, policy.Spec.HealthCheck)
+		require.NotNil(t, policy.Spec.HealthCheck.Passive)
+		assertPropagationLabels(t, policy)
+	})
+
+	t.Run("an existing unlabeled policy is labeled on its next reconcile", func(t *testing.T) {
+		policy := run(t, func(route *gatewayv1.HTTPRoute) []client.Object {
+			return []client.Object{&envoygatewayv1alpha1.BackendTrafficPolicy{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: downstreamNamespaceName,
+					Name:      fmt.Sprintf("route-%s-panic-threshold", route.UID),
+					Labels:    map[string]string{"unrelated": "kept"},
+				},
+			}}
+		})
+		assertPropagationLabels(t, policy)
+		assert.Equal(t, "kept", policy.Labels["unrelated"], "labels the operator doesn't own must survive")
+	})
+}
+
 // TestProcessDownstreamHTTPRouteRulesVPCPodPassThrough verifies that a
 // backendRef naming a tenant-labeled EndpointSlice is passed straight
 // through to its downstream-native counterpart — no synthesized Service,

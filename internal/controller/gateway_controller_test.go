@@ -1193,6 +1193,14 @@ func TestEnsureDownstreamGatewayHTTPRoutes(t *testing.T) {
 			_, err := result.Complete(ctx)
 			assert.NoError(t, err, "failed completing result")
 
+			var upstreamRoutes gatewayv1.HTTPRouteList
+			assert.NoError(t, fakeUpstreamClient.List(ctx, &upstreamRoutes))
+			for _, route := range upstreamRoutes.Items {
+				for _, parent := range route.Status.Parents {
+					assert.NotEmpty(t, parent.Conditions, "HTTPRoute %s has a parent status without conditions, which the HTTPRoute schema rejects", route.Name)
+				}
+			}
+
 			if tt.assert != nil {
 				updatedUpstreamGateway := &gatewayv1.Gateway{}
 

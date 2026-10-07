@@ -10,6 +10,7 @@ import (
 	"maps"
 	"net"
 	"net/url"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -316,6 +317,10 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 		if apierrors.IsConflict(err) {
 			return ctrl.Result{RequeueAfter: retryAfterConflict}, nil
 		}
+		if apierrors.IsInvalid(err) {
+			markDerivedResourceInvalid(ctx, acceptedCondition, "gateway", err)
+			return ctrl.Result{RequeueAfter: retryAfterInvalid}, nil
+		}
 		return ctrl.Result{}, fmt.Errorf("failed updating gateway resource: %w", err)
 	}
 
@@ -340,6 +345,10 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 			if err != nil {
 				if apierrors.IsConflict(err) {
 					return ctrl.Result{RequeueAfter: retryAfterConflict}, nil
+				}
+				if apierrors.IsInvalid(err) {
+					markDerivedResourceInvalid(ctx, acceptedCondition, "httproutefilter", err)
+					return ctrl.Result{RequeueAfter: retryAfterInvalid}, nil
 				}
 				return ctrl.Result{}, fmt.Errorf("failed updating httproutefilter resource: %w", err)
 			}
@@ -375,12 +384,16 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 		if apierrors.IsConflict(err) {
 			return ctrl.Result{RequeueAfter: retryAfterConflict}, nil
 		}
+		if apierrors.IsInvalid(err) {
+			markDerivedResourceInvalid(ctx, acceptedCondition, "httproute", err)
+			return ctrl.Result{RequeueAfter: retryAfterInvalid}, nil
+		}
 		return ctrl.Result{}, fmt.Errorf("failed updating httproute resource: %w", err)
 	}
 
 	logger.Info("processed httproute", jsonKeyName, httpRoute.Name, "result", result)
 
-	if result, halt, err := r.reconcileEndpointSlices(ctx, cl, &httpProxy, desiredResources.endpointSlices, programmedCondition); halt || err != nil {
+	if result, halt, err := r.reconcileEndpointSlices(ctx, cl, &httpProxy, desiredResources.endpointSlices, acceptedCondition, programmedCondition); halt || err != nil {
 		return result, err
 	}
 
@@ -455,6 +468,7 @@ func (r *HTTPProxyReconciler) reconcileEndpointSlices(
 	cl cluster.Cluster,
 	httpProxy *networkingv1alpha.HTTPProxy,
 	desired []*discoveryv1.EndpointSlice,
+	acceptedCondition *metav1.Condition,
 	programmedCondition *metav1.Condition,
 ) (ctrl.Result, bool, error) {
 	logger := log.FromContext(ctx)
@@ -520,6 +534,11 @@ func (r *HTTPProxyReconciler) reconcileEndpointSlices(
 
 			if apierrors.IsConflict(err) {
 				return ctrl.Result{RequeueAfter: retryAfterConflict}, true, nil
+			}
+
+			if apierrors.IsInvalid(err) {
+				markDerivedResourceInvalid(ctx, acceptedCondition, "endpointslice", err)
+				return ctrl.Result{RequeueAfter: retryAfterInvalid}, true, nil
 			}
 
 			return ctrl.Result{}, true, fmt.Errorf("failed to create or update endpointslice: %w", err)
@@ -1885,6 +1904,55 @@ func (r *HTTPProxyReconciler) cleanupDownstreamAnchor(
 	)
 
 	return downstreamStrategy.DeleteAnchorForObject(ctx, httpProxy)
+}
+
+func markDerivedResourceInvalid(ctx context.Context, acceptedCondition *metav1.Condition, step string, err error) {
+	log.FromContext(ctx).Info("derived resource rejected by validation", "step", step, "error", err.Error())
+	message, ok := derivedResourceInvalidMessage(err)
+	if !ok {
+		message = "The HTTPProxy cannot be programmed: a resource generated from it was rejected by validation"
+	}
+	acceptedCondition.Status = metav1.ConditionFalse
+	acceptedCondition.Reason = networkingv1alpha.HTTPProxyReasonDerivedResourceInvalid
+	acceptedCondition.Message = sanitizeConditionMessage(message)
+}
+
+func derivedResourceInvalidMessage(err error) (string, bool) {
+	var status apierrors.APIStatus
+	if !errors.As(err, &status) || status.Status().Details == nil {
+		return "", false
+	}
+	details := status.Status().Details
+
+	causes := make([]string, 0, len(details.Causes))
+	for _, cause := range details.Causes {
+		if cause.Field == "" || cause.Field == "<nil>" {
+			continue
+		}
+		causes = append(causes, fmt.Sprintf("%s: %s", cause.Field, cause.Message))
+	}
+	if len(causes) == 0 {
+		return "", false
+	}
+
+	kind := details.Kind
+	if kind == "" {
+		kind = "resource"
+	}
+	return fmt.Sprintf("The HTTPProxy cannot be programmed: the %s generated from it is invalid: %s", kind, strings.Join(causes, "; ")), true
+}
+
+const maxConditionMessageRunes = 512
+
+var conditionMessageURL = regexp.MustCompile(`[a-zA-Z][a-zA-Z0-9+.-]*://\S+`)
+
+func sanitizeConditionMessage(msg string) string {
+	msg = conditionMessageURL.ReplaceAllString(msg, "<redacted>")
+	msg = strings.Join(strings.Fields(msg), " ")
+	if runes := []rune(msg); len(runes) > maxConditionMessageRunes {
+		msg = string(runes[:maxConditionMessageRunes-1]) + "…"
+	}
+	return msg
 }
 
 func cleanupConnectorOfflineHTTPRouteFilter(ctx context.Context, cl client.Client, httpProxy *networkingv1alpha.HTTPProxy) error {

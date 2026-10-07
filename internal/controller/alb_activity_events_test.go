@@ -45,6 +45,18 @@ func TestHTTPProxyActivityEvents(t *testing.T) {
 			want:     []string{EventReasonProgrammingFailed},
 		},
 		{
+			name:     "derived resource rejected",
+			previous: []metav1.Condition{cond(networkingv1alpha.HTTPProxyConditionAccepted, metav1.ConditionFalse, networkingv1alpha.HTTPProxyReasonPending, 1)},
+			current:  []metav1.Condition{cond(networkingv1alpha.HTTPProxyConditionAccepted, metav1.ConditionFalse, networkingv1alpha.HTTPProxyReasonDerivedResourceInvalid, 1)},
+			want:     []string{EventReasonProgrammingFailed},
+		},
+		{
+			name:     "derived resource still rejected is silent",
+			previous: []metav1.Condition{cond(networkingv1alpha.HTTPProxyConditionAccepted, metav1.ConditionFalse, networkingv1alpha.HTTPProxyReasonDerivedResourceInvalid, 1)},
+			current:  []metav1.Condition{cond(networkingv1alpha.HTTPProxyConditionAccepted, metav1.ConditionFalse, networkingv1alpha.HTTPProxyReasonDerivedResourceInvalid, 1)},
+			want:     nil,
+		},
+		{
 			name:     "hostname in use",
 			previous: nil,
 			current:  []metav1.Condition{cond(networkingv1alpha.HTTPProxyConditionHostnamesInUse, metav1.ConditionTrue, networkingv1alpha.HostnameInUseReason, 1)},

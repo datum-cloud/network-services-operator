@@ -230,6 +230,16 @@ var catalog = []ReasonInfo{
 		Skill:       SkillNotServing,
 	},
 	{
+		Reason:        networkingv1alpha.HTTPProxyReasonDerivedResourceInvalid,
+		ConditionType: networkingv1alpha.HTTPProxyConditionAccepted,
+		Actionability: ActionabilityPlatform,
+		Scope:         ScopeAllTraffic,
+		Explanation: "This load balancer's settings are valid, but Datum generated a configuration " +
+			"from them that its own control plane rejected, so the change has not been published.",
+		Remediation: remediationEscalate,
+		Skill:       SkillNotServing,
+	},
+	{
 		Reason:        networkingv1alpha.HTTPProxyReasonConflict,
 		ConditionType: networkingv1alpha.HTTPProxyConditionProgrammed,
 		Actionability: ActionabilityPlatform,

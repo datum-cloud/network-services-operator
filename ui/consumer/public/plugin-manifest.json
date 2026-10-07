@@ -16,7 +16,10 @@
         "icon": "network",
         "path": "networks",
         "order": 10,
-        "section": "connect"
+        "section": "connect",
+        "children": [
+          { "title": "Networks", "path": "networks" }
+        ]
       }
     },
     {

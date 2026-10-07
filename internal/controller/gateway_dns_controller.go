@@ -236,7 +236,7 @@ func (r *GatewayReconciler) ensureDNSRecordSets(
 
 		// Determine the record type based on whether this hostname is an apex domain.
 		rrType := dnsv1alpha1.RRTypeCNAME
-		if domain.Status.Apex {
+		if domain.Status.Apex && !isWildcardHostname(hostname) {
 			rrType = dnsv1alpha1.RRTypeALIAS
 		}
 
@@ -544,6 +544,10 @@ func buildDesiredDNSRecordSet(
 			Name:      name,
 		},
 	}
+}
+
+func isWildcardHostname(hostname string) bool {
+	return strings.HasPrefix(hostname, "*.")
 }
 
 // relativeOwnerName returns the DNS owner name for hostname relative to

@@ -20,9 +20,11 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/uuid"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/events"
@@ -2214,6 +2216,127 @@ func TestHTTPProxyReconcileRequeuesPromptlyOnConflict(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 1, gatewayUpdateConflicts)
 	assert.Equal(t, retryAfterConflict, result.RequeueAfter)
+}
+
+func TestHTTPProxyReconcileReportsRejectedHTTPRoute(t *testing.T) {
+	logger := zap.New(zap.UseFlagOptions(&zap.Options{Development: true}))
+	ctx := log.IntoContext(context.Background(), logger)
+
+	testScheme := runtime.NewScheme()
+	assert.NoError(t, scheme.AddToScheme(testScheme))
+	assert.NoError(t, gatewayv1.Install(testScheme))
+	assert.NoError(t, envoygatewayv1alpha1.AddToScheme(testScheme))
+	assert.NoError(t, discoveryv1.AddToScheme(testScheme))
+	assert.NoError(t, networkingv1alpha.AddToScheme(testScheme))
+	assert.NoError(t, networkingv1alpha1.AddToScheme(testScheme))
+
+	testConfig := config.NetworkServicesOperator{
+		HTTPProxy: config.HTTPProxyConfig{
+			GatewayClassName: "test-gateway-class",
+		},
+		Gateway: config.GatewayConfig{
+			ControllerName: gatewayv1.GatewayController("test-gateway-class"),
+			TargetDomain:   "example.com",
+		},
+	}
+
+	httpProxy := newHTTPProxy(func(h *networkingv1alpha.HTTPProxy) {
+		controllerutil.AddFinalizer(h, httpProxyFinalizer)
+	})
+
+	rejectHTTPRoute := func(obj client.Object) error {
+		route, ok := obj.(*gatewayv1.HTTPRoute)
+		if !ok {
+			return nil
+		}
+		path := field.NewPath("spec", "rules").Index(0).Child("filters").Index(0).Child("type")
+		return apierrors.NewInvalid(
+			schema.GroupKind{Group: gatewayv1.GroupName, Kind: "HTTPRoute"},
+			route.Name,
+			field.ErrorList{field.NotSupported(path, route.Spec.Rules[0].Filters[0].Type, []string{"RequestHeaderModifier"})},
+		)
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(testScheme).
+		WithObjects(httpProxy).
+		WithStatusSubresource(httpProxy).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+				if err := rejectHTTPRoute(obj); err != nil {
+					return err
+				}
+				return c.Create(ctx, obj, opts...)
+			},
+			Update: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+				if err := rejectHTTPRoute(obj); err != nil {
+					return err
+				}
+				return c.Update(ctx, obj, opts...)
+			},
+		}).
+		Build()
+
+	reconciler := &HTTPProxyReconciler{
+		mgr:    &fakeMockManager{cl: fakeClient},
+		Config: testConfig,
+	}
+
+	req := mcreconcile.Request{
+		Request: reconcile.Request{
+			NamespacedName: client.ObjectKeyFromObject(httpProxy),
+		},
+		ClusterName: "test-cluster",
+	}
+
+	result, err := reconciler.Reconcile(ctx, req)
+	require.NoError(t, err)
+	assert.Equal(t, retryAfterInvalid, result.RequeueAfter)
+
+	var updated networkingv1alpha.HTTPProxy
+	require.NoError(t, fakeClient.Get(ctx, client.ObjectKeyFromObject(httpProxy), &updated))
+
+	accepted := apimeta.FindStatusCondition(updated.Status.Conditions, networkingv1alpha.HTTPProxyConditionAccepted)
+	require.NotNil(t, accepted)
+	assert.Equal(t, metav1.ConditionFalse, accepted.Status)
+	assert.Equal(t, networkingv1alpha.HTTPProxyReasonDerivedResourceInvalid, accepted.Reason)
+	assert.Contains(t, accepted.Message, "spec.rules[0].filters[0].type")
+}
+
+func TestDerivedResourceInvalidMessage(t *testing.T) {
+	statusCodePath := field.NewPath("spec", "rules").Index(0).Child("filters").Index(0).Child("requestRedirect", "statusCode")
+	rejected := apierrors.NewInvalid(
+		schema.GroupKind{Group: gatewayv1.GroupName, Kind: "HTTPRoute"},
+		"anycast-edge-info",
+		field.ErrorList{
+			field.NotSupported(statusCodePath, 308, []string{"301", "302"}),
+			field.Invalid(nil, nil, "some validation rules were not checked because the object was invalid"),
+		},
+	)
+
+	message, ok := derivedResourceInvalidMessage(fmt.Errorf("failed updating httproute resource: %w", rejected))
+	require.True(t, ok)
+	assert.Equal(t, `The HTTPProxy cannot be programmed: the HTTPRoute generated from it is invalid: spec.rules[0].filters[0].requestRedirect.statusCode: Unsupported value: 308: supported values: "301", "302"`, message)
+	assert.NotContains(t, message, "anycast-edge-info")
+	assert.NotContains(t, message, gatewayv1.GroupName)
+
+	_, ok = derivedResourceInvalidMessage(errors.New("connection refused"))
+	assert.False(t, ok)
+	_, ok = derivedResourceInvalidMessage(apierrors.NewInvalid(
+		schema.GroupKind{Group: gatewayv1.GroupName, Kind: "HTTPRoute"}, "anycast-edge-info", field.ErrorList{},
+	))
+	assert.False(t, ok)
+}
+
+func TestSanitizeConditionMessage(t *testing.T) {
+	assert.Equal(t, "see <redacted> for details", sanitizeConditionMessage("see https://example.com/a?b=c for\n\tdetails"))
+
+	capped := sanitizeConditionMessage(strings.Repeat("é", maxConditionMessageRunes+10))
+	assert.Equal(t, maxConditionMessageRunes, len([]rune(capped)))
+	assert.True(t, strings.HasSuffix(capped, "…"))
+
+	exact := strings.Repeat("a", maxConditionMessageRunes)
+	assert.Equal(t, exact, sanitizeConditionMessage(exact))
 }
 
 func setGatewayProgrammedWithDefaultHTTPSListener(g *gatewayv1.Gateway) {

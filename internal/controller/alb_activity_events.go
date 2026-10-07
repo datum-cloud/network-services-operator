@@ -226,9 +226,9 @@ func programmedBecameTrueConditions(prev, curr *metav1.Condition) bool {
 
 func programmingFailed(previous, current []metav1.Condition) bool {
 	if accepted := meta.FindStatusCondition(current, networkingv1alpha.HTTPProxyConditionAccepted); accepted != nil &&
-		accepted.Reason == networkingv1alpha.HTTPProxyReasonInvalid {
+		(accepted.Reason == networkingv1alpha.HTTPProxyReasonInvalid || accepted.Reason == networkingv1alpha.HTTPProxyReasonDerivedResourceInvalid) {
 		prevAccepted := meta.FindStatusCondition(previous, networkingv1alpha.HTTPProxyConditionAccepted)
-		return prevAccepted == nil || prevAccepted.Reason != networkingv1alpha.HTTPProxyReasonInvalid
+		return prevAccepted == nil || prevAccepted.Reason != accepted.Reason
 	}
 
 	prev := meta.FindStatusCondition(previous, networkingv1alpha.HTTPProxyConditionProgrammed)

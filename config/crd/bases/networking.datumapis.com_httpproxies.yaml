@@ -3,7 +3,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.16.4
+    controller-gen.kubebuilder.io/version: v0.20.0
   name: httpproxies.networking.datumapis.com
 spec:
   group: networking.datumapis.com
@@ -1665,6 +1665,8 @@ spec:
                                 but not both
                               rule: '!(self.exists(f, f.type == ''RequestRedirect'')
                                 && self.exists(f, f.type == ''URLRewrite''))'
+                            - message: CORS filter cannot be repeated
+                              rule: self.filter(f, f.type == 'CORS').size() <= 1
                             - message: RequestHeaderModifier filter cannot be repeated
                               rule: self.filter(f, f.type == 'RequestHeaderModifier').size()
                                 <= 1
@@ -3179,6 +3181,8 @@ spec:
                           but not both
                         rule: '!(self.exists(f, f.type == ''RequestRedirect'') &&
                           self.exists(f, f.type == ''URLRewrite''))'
+                      - message: CORS filter cannot be repeated
+                        rule: self.filter(f, f.type == 'CORS').size() <= 1
                       - message: RequestHeaderModifier filter cannot be repeated
                         rule: self.filter(f, f.type == 'RequestHeaderModifier').size()
                           <= 1

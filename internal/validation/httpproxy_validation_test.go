@@ -273,6 +273,130 @@ func TestValidateHTTPProxy(t *testing.T) {
 			},
 			expectedErrors: field.ErrorList{},
 		},
+		"RequestRedirect status code 301 accepted": {
+			proxy: &networkingv1alpha.HTTPProxy{
+				Spec: networkingv1alpha.HTTPProxySpec{
+					Rules: []networkingv1alpha.HTTPProxyRule{
+						{
+							Filters: []gatewayv1.HTTPRouteFilter{
+								{
+									Type: gatewayv1.HTTPRouteFilterRequestRedirect,
+									RequestRedirect: &gatewayv1.HTTPRequestRedirectFilter{
+										Scheme:     ptr.To("https"),
+										StatusCode: ptr.To(301),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			expectedErrors: field.ErrorList{},
+		},
+		"RequestRedirect status code 302 accepted": {
+			proxy: &networkingv1alpha.HTTPProxy{
+				Spec: networkingv1alpha.HTTPProxySpec{
+					Rules: []networkingv1alpha.HTTPProxyRule{
+						{
+							Filters: []gatewayv1.HTTPRouteFilter{
+								{
+									Type: gatewayv1.HTTPRouteFilterRequestRedirect,
+									RequestRedirect: &gatewayv1.HTTPRequestRedirectFilter{
+										Scheme:     ptr.To("https"),
+										StatusCode: ptr.To(302),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			expectedErrors: field.ErrorList{},
+		},
+		"RequestRedirect status code 303 accepted": {
+			proxy: &networkingv1alpha.HTTPProxy{
+				Spec: networkingv1alpha.HTTPProxySpec{
+					Rules: []networkingv1alpha.HTTPProxyRule{
+						{
+							Filters: []gatewayv1.HTTPRouteFilter{
+								{
+									Type: gatewayv1.HTTPRouteFilterRequestRedirect,
+									RequestRedirect: &gatewayv1.HTTPRequestRedirectFilter{
+										Scheme:     ptr.To("https"),
+										StatusCode: ptr.To(303),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			expectedErrors: field.ErrorList{},
+		},
+		"RequestRedirect status code 307 accepted": {
+			proxy: &networkingv1alpha.HTTPProxy{
+				Spec: networkingv1alpha.HTTPProxySpec{
+					Rules: []networkingv1alpha.HTTPProxyRule{
+						{
+							Filters: []gatewayv1.HTTPRouteFilter{
+								{
+									Type: gatewayv1.HTTPRouteFilterRequestRedirect,
+									RequestRedirect: &gatewayv1.HTTPRequestRedirectFilter{
+										Scheme:     ptr.To("https"),
+										StatusCode: ptr.To(307),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			expectedErrors: field.ErrorList{},
+		},
+		"RequestRedirect status code 308 accepted": {
+			proxy: &networkingv1alpha.HTTPProxy{
+				Spec: networkingv1alpha.HTTPProxySpec{
+					Rules: []networkingv1alpha.HTTPProxyRule{
+						{
+							Filters: []gatewayv1.HTTPRouteFilter{
+								{
+									Type: gatewayv1.HTTPRouteFilterRequestRedirect,
+									RequestRedirect: &gatewayv1.HTTPRequestRedirectFilter{
+										Scheme:     ptr.To("https"),
+										StatusCode: ptr.To(308),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			expectedErrors: field.ErrorList{},
+		},
+		"rule CORS filter accepted": {
+			proxy: &networkingv1alpha.HTTPProxy{
+				Spec: networkingv1alpha.HTTPProxySpec{
+					Rules: []networkingv1alpha.HTTPProxyRule{
+						{
+							Filters: []gatewayv1.HTTPRouteFilter{
+								{
+									Type: gatewayv1.HTTPRouteFilterCORS,
+									CORS: &gatewayv1.HTTPCORSFilter{
+										AllowOrigins: []gatewayv1.CORSOrigin{"https://example.com"},
+									},
+								},
+							},
+							Backends: []networkingv1alpha.HTTPProxyRuleBackend{
+								{
+									Endpoint: "https://www.example.com",
+								},
+							},
+						},
+					},
+				},
+			},
+			expectedErrors: field.ErrorList{},
+		},
 		"backend URLRewrite is not accepted": {
 			proxy: &networkingv1alpha.HTTPProxy{
 				Spec: networkingv1alpha.HTTPProxySpec{

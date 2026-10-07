@@ -2585,7 +2585,7 @@ func (r *GatewayReconciler) ensureDownstreamHTTPRoute(
 		logger.Info("did not find downstream parent status for gateway")
 	}
 
-	if insertParentStatus {
+	if insertParentStatus && len(parentStatus.Conditions) > 0 {
 		upstreamRoute.Status.Parents = append(upstreamRoute.Status.Parents, *parentStatus)
 	}
 

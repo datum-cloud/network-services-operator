@@ -124,6 +124,10 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	if err := requireVerifiedHostnames(ctx, c, cmd.ErrOrStderr(), hostnames); err != nil {
+		return err
+	}
+
 	createOpts := []client.CreateOption{client.FieldOwner(util.FieldManager)}
 	if dryRun {
 		createOpts = append(createOpts, client.DryRunAll)

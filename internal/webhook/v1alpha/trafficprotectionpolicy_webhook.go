@@ -22,6 +22,7 @@ import (
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	"go.datum.net/network-services-operator/internal/display"
+	webhookutil "go.datum.net/network-services-operator/internal/webhook"
 )
 
 func SetupTrafficProtectionPolicyWebhookWithManager(mgr mcmanager.Manager) error {
@@ -40,19 +41,19 @@ type TrafficProtectionPolicyDefaulter struct {
 var _ admission.Defaulter[*networkingv1alpha.TrafficProtectionPolicy] = &TrafficProtectionPolicyDefaulter{}
 
 func (d *TrafficProtectionPolicyDefaulter) Default(ctx context.Context, policy *networkingv1alpha.TrafficProtectionPolicy) error {
-	displayName := lookupTPPDisplayName(ctx, d.clusterClient(ctx), policy)
+	displayName := lookupTPPDisplayName(ctx, d.clusterReader(ctx), policy)
 	_ = display.EnsureTPPAnnotations(policy, oldTPP(ctx), displayName)
 	return nil
 }
 
-func (d *TrafficProtectionPolicyDefaulter) clusterClient(ctx context.Context) client.Client {
+func (d *TrafficProtectionPolicyDefaulter) clusterReader(ctx context.Context) client.Reader {
 	if d == nil {
 		return nil
 	}
-	return webhookClusterClient(ctx, d.mgr)
+	return webhookClusterReader(ctx, d.mgr)
 }
 
-func webhookClusterClient(ctx context.Context, mgr mcmanager.Manager) client.Client {
+func webhookClusterReader(ctx context.Context, mgr mcmanager.Manager) client.Reader {
 	if mgr == nil {
 		return nil
 	}
@@ -60,11 +61,11 @@ func webhookClusterClient(ctx context.Context, mgr mcmanager.Manager) client.Cli
 	if !ok {
 		return mgr.GetLocalManager().GetClient()
 	}
-	cluster, err := mgr.GetCluster(ctx, clusterName)
+	reader, err := webhookutil.ProjectReader(ctx, mgr, clusterName)
 	if err != nil {
 		return nil
 	}
-	return cluster.GetClient()
+	return reader
 }
 
 func oldTPP(ctx context.Context) *networkingv1alpha.TrafficProtectionPolicy {
@@ -80,7 +81,7 @@ func oldTPP(ctx context.Context) *networkingv1alpha.TrafficProtectionPolicy {
 	return &old
 }
 
-func lookupTPPDisplayName(ctx context.Context, cl client.Client, policy *networkingv1alpha.TrafficProtectionPolicy) string {
+func lookupTPPDisplayName(ctx context.Context, cl client.Reader, policy *networkingv1alpha.TrafficProtectionPolicy) string {
 	if cl == nil || policy == nil || len(policy.Spec.TargetRefs) == 0 {
 		return ""
 	}
@@ -120,14 +121,14 @@ func lookupTPPDisplayName(ctx context.Context, cl client.Client, policy *network
 	return display.HTTPProxyDisplayName(proxy)
 }
 
-func httpProxyFromOwner(ctx context.Context, cl client.Client, obj client.Object) *networkingv1alpha.HTTPProxy {
+func httpProxyFromOwner(ctx context.Context, cl client.Reader, obj client.Object) *networkingv1alpha.HTTPProxy {
 	if owner := metav1.GetControllerOf(obj); owner != nil && owner.Kind == "HTTPProxy" {
 		return httpProxyByName(ctx, cl, types.NamespacedName{Namespace: obj.GetNamespace(), Name: owner.Name})
 	}
 	return httpProxyByName(ctx, cl, types.NamespacedName{Namespace: obj.GetNamespace(), Name: obj.GetName()})
 }
 
-func httpProxyByName(ctx context.Context, cl client.Client, key types.NamespacedName) *networkingv1alpha.HTTPProxy {
+func httpProxyByName(ctx context.Context, cl client.Reader, key types.NamespacedName) *networkingv1alpha.HTTPProxy {
 	var proxy networkingv1alpha.HTTPProxy
 	if err := cl.Get(ctx, key, &proxy); err != nil {
 		if !apierrors.IsNotFound(err) {
@@ -162,14 +163,14 @@ func (v *TrafficProtectionPolicyValidator) ValidateDelete(context.Context, *netw
 }
 
 func (v *TrafficProtectionPolicyValidator) validateSectionNames(ctx context.Context, policy *networkingv1alpha.TrafficProtectionPolicy) (admission.Warnings, error) {
-	cl := webhookClusterClient(ctx, v.mgr)
+	cl := webhookClusterReader(ctx, v.mgr)
 	if cl == nil {
 		return nil, nil
 	}
 	return v.validateSectionNamesWithClient(ctx, cl, policy)
 }
 
-func (v *TrafficProtectionPolicyValidator) validateSectionNamesWithClient(ctx context.Context, cl client.Client, policy *networkingv1alpha.TrafficProtectionPolicy) (admission.Warnings, error) {
+func (v *TrafficProtectionPolicyValidator) validateSectionNamesWithClient(ctx context.Context, cl client.Reader, policy *networkingv1alpha.TrafficProtectionPolicy) (admission.Warnings, error) {
 	var warnings admission.Warnings
 	var errs field.ErrorList
 	for i, ref := range policy.Spec.TargetRefs {

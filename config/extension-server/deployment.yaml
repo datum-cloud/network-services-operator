@@ -159,9 +159,10 @@ spec:
               - key: ca.crt
                 path: ca.crt
         # Optional branded error-page content. The ConfigMap is created in the
-        # infrastructure (GitOps) repo and carries the key error-5xx.html. With
-        # optional: true the pod starts cleanly when it is absent, in which case
-        # the extension server serves the embedded default page.
+        # infrastructure (GitOps) repo and carries error-5xx.html and, when the
+        # offline page is branded too, error-offline.html. With optional: true
+        # the pod starts cleanly when it or either key is absent, in which case
+        # the extension server serves the embedded default page for that body.
         - name: error-pages
           configMap:
             name: envoy-error-pages
@@ -169,3 +170,5 @@ spec:
             items:
               - key: error-5xx.html
                 path: error-5xx.html
+              - key: error-offline.html
+                path: error-offline.html

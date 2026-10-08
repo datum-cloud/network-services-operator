@@ -3,7 +3,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.16.4
+    controller-gen.kubebuilder.io/version: v0.20.0
   name: httpproxies.networking.datumapis.com
 spec:
   group: networking.datumapis.com
@@ -54,6 +54,50 @@ spec:
           spec:
             description: Spec defines the desired state of an HTTPProxy.
             properties:
+              healthCheck:
+                description: |-
+                  HealthCheck configures how backends are considered healthy. It applies
+                  to every backend on the HTTPProxy. If unset, Envoy treats every
+                  endpoint as healthy.
+                properties:
+                  passive:
+                    description: |-
+                      Passive configures Envoy outlier detection: consecutive 5xx responses
+                      eject an endpoint from load balancing for a growing period, then
+                      Envoy re-admits it. Unset keeps every endpoint eligible.
+
+                      See: https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/upstream/outlier.html
+                    properties:
+                      baseEjectionTime:
+                        default: 30s
+                        description: |-
+                          BaseEjectionTime is how long an endpoint stays ejected after its
+                          first streak of failures. Later ejections multiply this duration.
+                          Defaults to 30s. Envoy re-admits the endpoint when the period
+                          elapses; it does not replace the instance.
+                        pattern: ^([0-9]{1,5}(h|m|s|ms)){1,4}$
+                        type: string
+                      consecutive5xxErrors:
+                        default: 5
+                        description: |-
+                          Consecutive5xxErrors is the number of consecutive 5xx responses that
+                          eject an endpoint. Defaults to 5.
+                        format: int32
+                        minimum: 1
+                        type: integer
+                      maxEjectionPercent:
+                        default: 50
+                        description: |-
+                          MaxEjectionPercent is the maximum percentage of endpoints in a
+                          backend that may be ejected at once. Defaults to 50. Must be at
+                          least 1 so a single-endpoint backend can still be ejected. This
+                          limit is per backend, not across every backend on the HTTPProxy.
+                        format: int32
+                        maximum: 100
+                        minimum: 1
+                        type: integer
+                    type: object
+                type: object
               hostnames:
                 description: |-
                   Hostnames defines a set of hostnames that should match against the HTTP
@@ -89,7 +133,12 @@ spec:
                   HTTPProxy. In such cases, these will be listed in the `status.hostnames`
                   field and do not require additional configuration by the user.
 
-                  Wildcard hostnames are not supported at this time.
+                  A hostname may start with a single wildcard label, as in
+                  `*.s3.example.com`, where the platform offers wildcards. A wildcard
+                  matches names one or more labels beneath its base, its certificate
+                  covers names exactly one label beneath, and it needs its base or a parent
+                  verified by DNS TXT record. A wildcard reserves every name beneath it for
+                  its project.
                 items:
                   description: |-
                     Hostname is the fully qualified domain name of a network host. This matches
@@ -112,6 +161,66 @@ spec:
                   type: string
                 maxItems: 16
                 type: array
+              loadBalancer:
+                description: |-
+                  LoadBalancer selects the algorithm used to distribute requests across
+                  every rule's backends, whenever a rule has more than one. It applies
+                  to the whole HTTPProxy rather than to an individual rule. If unset,
+                  Envoy's own default algorithm applies.
+                properties:
+                  consistentHash:
+                    description: |-
+                      ConsistentHash configures what part of the request is hashed to pick
+                      a backend. Required when type is ConsistentHash, and forbidden
+                      otherwise.
+                    properties:
+                      header:
+                        description: |-
+                          Header names the request header to hash on. Required when type is
+                          Header, and forbidden otherwise.
+                        maxLength: 256
+                        minLength: 1
+                        type: string
+                      type:
+                        description: |-
+                          Type selects what part of the request is hashed to pick a backend.
+
+                          SourceIP hashes the client's source IP address. Header hashes the
+                          value of the request header named in the header field.
+                        enum:
+                        - SourceIP
+                        - Header
+                        type: string
+                    required:
+                    - type
+                    type: object
+                    x-kubernetes-validations:
+                    - message: header is required when type is Header, and forbidden
+                        otherwise
+                      rule: (self.type == 'Header') == has(self.header)
+                  type:
+                    description: |-
+                      Type selects the load balancing algorithm.
+
+                      RoundRobin cycles through backends in order. Random picks a backend
+                      uniformly at random. LeastRequest picks the backend with the fewest
+                      active requests, biased toward spreading load evenly under uneven
+                      latency. ConsistentHash routes requests that hash the same way (see
+                      consistentHash) to the same backend, so the same client keeps
+                      landing on the same backend so long as the backend set is stable.
+                    enum:
+                    - RoundRobin
+                    - Random
+                    - LeastRequest
+                    - ConsistentHash
+                    type: string
+                required:
+                - type
+                type: object
+                x-kubernetes-validations:
+                - message: consistentHash is required when type is ConsistentHash,
+                    and forbidden otherwise
+                  rule: (self.type == 'ConsistentHash') == has(self.consistentHash)
               rules:
                 description: Rules are a list of HTTP matchers, filters and actions.
                 items:
@@ -125,9 +234,10 @@ spec:
                         Backends defines the backend(s) where matching requests should be
                         sent.
 
-                        Note: While this field is a list, only a single element is permitted at
-                        this time due to underlying Gateway limitations. Once addressed, MaxItems
-                        will be increased to allow for multiple backends on any given route.
+                        When more than one backend is specified, requests are weighted load
+                        balanced across all of them (see the weight field on each backend). A
+                        connector backend must be the only backend in the rule — connectors do
+                        not support weighted load balancing across multiple backends today.
                       items:
                         properties:
                           connector:
@@ -136,6 +246,9 @@ spec:
 
                               For now, only a name reference is supported. In the future this can be
                               extended to selector-based matching to allow multiple connectors.
+
+                              Used together with endpoint (the tunnel's target address). Mutually
+                              exclusive with instance.
                             properties:
                               name:
                                 description: Name of the referenced Connector.
@@ -149,6 +262,9 @@ spec:
 
                               Supports http and https protocols, IPs or DNS addresses in the host, custom
                               ports, and paths.
+
+                              Required unless instance is set. When connector is also set, this is the
+                              tunnel's target address rather than a directly reachable backend.
                             type: string
                           filters:
                             description: |-
@@ -1549,6 +1665,8 @@ spec:
                                 but not both
                               rule: '!(self.exists(f, f.type == ''RequestRedirect'')
                                 && self.exists(f, f.type == ''URLRewrite''))'
+                            - message: CORS filter cannot be repeated
+                              rule: self.filter(f, f.type == 'CORS').size() <= 1
                             - message: RequestHeaderModifier filter cannot be repeated
                               rule: self.filter(f, f.type == 'RequestHeaderModifier').size()
                                 <= 1
@@ -1561,12 +1679,70 @@ spec:
                             - message: URLRewrite filter cannot be repeated
                               rule: self.filter(f, f.type == 'URLRewrite').size()
                                 <= 1
+                          instance:
+                            description: |-
+                              Instance references an EndpointSlice published by galactic-cni for a pod
+                              running on a tenant VPC network. The referenced EndpointSlice is
+                              resolved and forwarded to as-is — it is never synthesized or mutated by
+                              this controller, since doing so would separate the pod address from the
+                              SID annotation the tenant-VRF/SRv6 mechanism depends on.
+
+                              Mutually exclusive with endpoint and connector.
+                            properties:
+                              name:
+                                description: |-
+                                  Name of the EndpointSlice galactic-cni publishes for the target pod.
+                                  Must exist in the same namespace as this HTTPProxy.
+                                type: string
+                              port:
+                                description: Port on the referenced EndpointSlice
+                                  to forward traffic to.
+                                format: int32
+                                maximum: 65535
+                                minimum: 1
+                                type: integer
+                            required:
+                            - name
+                            - port
+                            type: object
+                          networkService:
+                            description: |-
+                              NetworkService references a NetworkService in the same namespace, and one
+                              of the ports it declares. Every member the service resolves to becomes an
+                              endpoint of this backend, so instances appearing, disappearing, and moving
+                              between locations need no edit here.
+
+                              Mutually exclusive with endpoint, connector and instance.
+                            properties:
+                              name:
+                                description: |-
+                                  Name of the referenced NetworkService. Must exist in the same namespace as
+                                  this HTTPProxy.
+                                maxLength: 253
+                                minLength: 1
+                                type: string
+                              port:
+                                description: |-
+                                  Port names a port declared in the referenced service's spec.ports, rather
+                                  than giving a number, so the reference survives a change to the port the
+                                  members answer on.
+                                maxLength: 63
+                                minLength: 1
+                                pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                                type: string
+                            required:
+                            - name
+                            - port
+                            type: object
                           tls:
                             description: |-
                               TLS contains backend TLS configuration.
 
                               When the backend endpoint uses HTTPS with an IP address, the Hostname field
                               must be specified for TLS certificate validation.
+
+                              Not supported for networkService backends, which are always reached over
+                              plaintext HTTP.
                             properties:
                               hostname:
                                 description: |-
@@ -1585,10 +1761,31 @@ spec:
                                 minLength: 1
                                 type: string
                             type: object
-                        required:
-                        - endpoint
+                          weight:
+                            default: 1
+                            description: |-
+                              Weight specifies the proportion of requests forwarded to this backend,
+                              relative to the sum of weights across all backends in the rule.
+                              Follows the same semantics as the Gateway API's HTTPBackendRef.weight:
+                              computed as weight/(sum of all weights in the rule); a weight of 0
+                              means no traffic is forwarded to this backend; if unspecified, weight
+                              defaults to 1.
+                            format: int32
+                            maximum: 1000000
+                            minimum: 0
+                            type: integer
                         type: object
-                      maxItems: 1
+                        x-kubernetes-validations:
+                        - message: endpoint is required unless instance or networkService
+                            is set; instance and networkService are mutually exclusive
+                            with each other and with endpoint and connector
+                          rule: 'has(self.instance) ? (!has(self.endpoint) && !has(self.connector)
+                            && !has(self.networkService)) : (has(self.networkService)
+                            ? (!has(self.endpoint) && !has(self.connector)) : has(self.endpoint))'
+                        - message: backend TLS is not supported for networkService
+                            backends
+                          rule: 'has(self.networkService) ? !has(self.tls) : true'
+                      maxItems: 16
                       minItems: 0
                       type: array
                     filters:
@@ -2984,6 +3181,8 @@ spec:
                           but not both
                         rule: '!(self.exists(f, f.type == ''RequestRedirect'') &&
                           self.exists(f, f.type == ''URLRewrite''))'
+                      - message: CORS filter cannot be repeated
+                        rule: self.filter(f, f.type == 'CORS').size() <= 1
                       - message: RequestHeaderModifier filter cannot be repeated
                         rule: self.filter(f, f.type == 'RequestHeaderModifier').size()
                           <= 1
@@ -3293,6 +3492,9 @@ spec:
                       )) ? ((size(self.matches) != 1 || !has(self.matches[0].path)
                       || self.matches[0].path.type != ''PathPrefix'') ? false : true)
                       : true'
+                  - message: a connector backend must be the only backend in its rule
+                    rule: '(has(self.backends) && self.backends.exists(b, has(b.connector)))
+                      ? size(self.backends) == 1 : true'
                 maxItems: 16
                 minItems: 1
                 type: array
@@ -3512,6 +3714,66 @@ spec:
                       x-kubernetes-list-map-keys:
                       - type
                       x-kubernetes-list-type: map
+                    dnsRecords:
+                      description: |-
+                        DNSRecords lists every DNS record this hostname depends on, who publishes
+                        it, and whether it is in place. A record is Present only once it takes
+                        effect on the Internet. Records the user publishes stay listed while the
+                        hostname needs them, so this list alone says what is left to do.
+                      items:
+                        description: HostnameDNSRecord is one DNS record a hostname
+                          depends on.
+                        properties:
+                          content:
+                            description: Content is the value the record must hold.
+                            maxLength: 512
+                            type: string
+                          managedBy:
+                            description: |-
+                              ManagedBy says who publishes the record: the user at their DNS provider,
+                              or the platform in a Datum DNS zone that serves the domain.
+                            enum:
+                            - User
+                            - Platform
+                            type: string
+                          name:
+                            description: Name is the fully qualified name of the record,
+                              without a trailing dot.
+                            maxLength: 253
+                            type: string
+                          purpose:
+                            description: Purpose says what the record is for.
+                            enum:
+                            - Routing
+                            - Certificate
+                            - Ownership
+                            type: string
+                          state:
+                            description: State says whether the record is in place.
+                            enum:
+                            - Present
+                            - Missing
+                            type: string
+                          type:
+                            description: |-
+                              Type is the DNS record type. ALIAS stands for a CNAME at a zone apex,
+                              which DNS providers offer as ALIAS, ANAME or CNAME flattening.
+                            enum:
+                            - CNAME
+                            - ALIAS
+                            - TXT
+                            type: string
+                        required:
+                        - content
+                        - managedBy
+                        - name
+                        - purpose
+                        - state
+                        - type
+                        type: object
+                      maxItems: 16
+                      type: array
+                      x-kubernetes-list-type: atomic
                     hostname:
                       description: |-
                         Hostname is the fully qualified domain name being tracked.

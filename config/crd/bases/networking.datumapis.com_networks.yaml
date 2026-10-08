@@ -15,26 +15,29 @@ spec:
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .metadata.name
-      name: Name
+    - jsonPath: .status.ipam.ipv6Prefix
+      name: IPv6Prefix
+      type: string
+    - jsonPath: .status.conditions[?(@.type=='Ready')].status
+      name: Ready
+      type: string
+    - jsonPath: .status.conditions[?(@.type=='Ready')].reason
+      name: Reason
       type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
-    - jsonPath: .status.conditions[?(@.type==\"Ready\")].status
-      name: Ready
-      type: string
-    - jsonPath: .status.conditions[?(@.type==\"Ready\")].reason
-      name: Reason
+    - jsonPath: .spec.ipFamilies
+      name: IPFamilies
+      priority: 1
       type: string
     - jsonPath: .spec.ipam.mode
       name: IPAM
-      type: string
-    - jsonPath: .spec.ipFamilies
-      name: IPFamilies
+      priority: 1
       type: string
     - jsonPath: .spec.mtu
       name: MTU
+      priority: 1
       type: integer
     name: v1alpha
     schema:
@@ -63,8 +66,13 @@ spec:
             properties:
               ipFamilies:
                 default:
-                - IPv4
-                description: IP Families to permit on a network. Defaults to IPv4.
+                - IPv6
+                description: |-
+                  IP Families to permit on a network. Defaults to IPv6.
+
+                  Networks are IPv6-only: a new network, or a change that adds IPv4 to an
+                  existing one, is refused if this lists IPv4. IPv4 remains in the schema
+                  so networks created before this rule stay writable.
                 items:
                   enum:
                   - IPv4
@@ -75,8 +83,10 @@ spec:
                 description: IPAM settings for the network.
                 properties:
                   ipv4Range:
-                    description: IPv4 range to use in auto mode networks. Defaults
-                      to 10.128.0.0/9.
+                    description: |-
+                      Not accepted. Networks are IPv6-only, so a new network, or a change that
+                      sets this on an existing one, is refused. It remains in the schema so
+                      networks created before this rule stay writable.
                     type: string
                   ipv6Range:
                     description: IPv6 range to use in auto mode networks. Defaults
@@ -92,8 +102,14 @@ spec:
                 - mode
                 type: object
               mtu:
-                default: 1460
-                description: Network MTU. May be between 1300 and 8856.
+                default: 1440
+                description: |-
+                  Network MTU. May be between 1300 and 8856.
+
+                  Defaults to 1440. Traffic between locations is encapsulated with a
+                  40-byte outer IPv6 header, and some provider paths drop larger frames
+                  without returning Packet Too Big, so a larger MTU can hang connections
+                  instead of fragmenting or failing fast.
                 format: int32
                 maximum: 8856
                 minimum: 1300
@@ -102,6 +118,13 @@ spec:
             - ipam
             type: object
           status:
+            default:
+              conditions:
+              - lastTransitionTime: "1970-01-01T00:00:00Z"
+                message: Waiting for controller
+                reason: Pending
+                status: Unknown
+                type: Ready
             description: NetworkStatus defines the observed state of Network
             properties:
               conditions:
@@ -161,6 +184,40 @@ spec:
                   - type
                   type: object
                 type: array
+              ipam:
+                description: IPAM reports the address space IPAM holds for this network.
+                properties:
+                  ipv6Prefix:
+                    description: |-
+                      IPv6Prefix is the /48 this network was assigned from the platform's
+                      tenant ULA pool. Every subnet and endpoint address in the network is
+                      carved from it.
+                    type: string
+                  ipv6PrefixRef:
+                    description: |-
+                      IPv6PrefixRef names what holds the prefix in IPAM, so the allocation can
+                      be audited and released.
+                    properties:
+                      claimName:
+                        description: |-
+                          ClaimName is the IPClaim this operator holds against the prefix.
+                          Deleting it releases what the operator holds.
+                        type: string
+                      namespace:
+                        description: Namespace is the project namespace holding the
+                          claim.
+                        type: string
+                      poolName:
+                        description: |-
+                          PoolName is the IPPool IPAM provisioned for the prefix. Subnet and
+                          endpoint addresses are drawn from it.
+                        type: string
+                      project:
+                        description: Project is the control plane the objects live
+                          in.
+                        type: string
+                    type: object
+                type: object
             type: object
         required:
         - spec

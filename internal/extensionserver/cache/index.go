@@ -4,18 +4,21 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/url"
 	"sort"
 	"strconv"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	networkingv1alpha1 "go.datum.net/network-services-operator/api/v1alpha1"
 	"go.datum.net/network-services-operator/internal/downstreamclient"
+	extmetrics "go.datum.net/network-services-operator/internal/extensionserver/metrics"
 )
 
 // BuildPolicyIndexFromClient constructs the per-call in-memory policy index
@@ -31,10 +34,13 @@ import (
 // they are prepended to every policy's per-rule directive list.
 func BuildPolicyIndexFromClient(ctx context.Context, cl client.Client, baseDirectives []string) (*PolicyIndex, error) {
 	idx := &PolicyIndex{
-		DStoUS:       make(map[string]string),
-		ProjectNames: make(map[string]string),
-		TPPs:         make(map[string][]TPPInfo),
-		Connectors:   make(map[ConnectorKey]ConnectorInfo),
+		DStoUS:         make(map[string]string),
+		ProjectNames:   make(map[string]string),
+		TPPs:           make(map[string][]TPPInfo),
+		HTTPProxyRules: make(map[HTTPProxyKey][]string),
+		Connectors:     make(map[ConnectorKey]ConnectorInfo),
+		VPCPods:        make(map[VPCPodKey]VPCPodInfo),
+		VPCPodBackends: make(map[VPCPodBackendKey]VPCPodInfo),
 	}
 	if err := populateFromClient(ctx, cl, idx, baseDirectives); err != nil {
 		return nil, err
@@ -96,24 +102,28 @@ func populateFromClient(ctx context.Context, cl client.Client, idx *PolicyIndex,
 	})
 	for i := range tppList.Items {
 		tpp := &tppList.Items[i]
-		// Resolve the effective upstream namespace for indexing. In the two-cluster
-		// edge topology, replica TPPs carry UpstreamOwnerNamespaceLabel pointing to
-		// the true upstream namespace name (matching the DStoUS value resolved above).
-		// In single-cluster (no label), fall back to tpp.Namespace which is the
-		// upstream namespace name directly.
-		effectiveNS := tpp.Labels[downstreamclient.UpstreamOwnerNamespaceLabel]
-		if effectiveNS == "" {
-			effectiveNS = tpp.Namespace
-		}
+		// Index policies by their downstream replica namespace. Replica namespace
+		// names are unique across projects on an edge; upstream project
+		// namespaces are not (they are commonly all "default"), so indexing by
+		// the upstream namespace label would let policies collide across tenants.
 		info := TPPInfo{
 			Namespace:  tpp.Namespace,
 			Name:       tpp.Name,
+			Generation: tpp.Generation,
 			Mode:       tpp.Spec.Mode,
 			TargetRefs: tpp.Spec.TargetRefs,
 			Directives: computeCorazaDirectives(tpp, baseDirectives),
 		}
-		idx.TPPs[effectiveNS] = append(idx.TPPs[effectiveNS], info)
+		idx.TPPs[tpp.Namespace] = append(idx.TPPs[tpp.Namespace], info)
+		extmetrics.TPPCacheGeneration.WithLabelValues(info.Namespace, info.Name).Set(float64(info.Generation))
 	}
+
+	// --- EndpointSlices → VRF-binding lookups ---
+	var sliceList discoveryv1.EndpointSliceList
+	if err := cl.List(ctx, &sliceList); err != nil {
+		return fmt.Errorf("list EndpointSlices: %w", err)
+	}
+	tenantByAddress, addressesByOwner := endpointSliceAddressMaps(&sliceList)
 
 	// --- HTTPProxies → ConnectorInfo ---
 	var proxyList networkingv1alpha.HTTPProxyList
@@ -125,54 +135,216 @@ func populateFromClient(ctx context.Context, cl client.Client, idx *PolicyIndex,
 		// Resolve the effective upstream namespace for the ConnectorKey, consistent
 		// with TPP indexing above. In two-cluster replica HTTPProxies carry
 		// UpstreamOwnerNamespaceLabel; in single-cluster fall back to proxy.Namespace.
+		ruleNames := make([]string, len(proxy.Spec.Rules))
+		for i, rule := range proxy.Spec.Rules {
+			if rule.Name != nil {
+				ruleNames[i] = string(*rule.Name)
+			}
+		}
+		idx.HTTPProxyRules[HTTPProxyKey{Namespace: proxy.Namespace, Name: proxy.Name}] = ruleNames
 		effectiveNS := proxy.Labels[downstreamclient.UpstreamOwnerNamespaceLabel]
 		if effectiveNS == "" {
 			effectiveNS = proxy.Namespace
 		}
 		for ruleIndex, rule := range proxy.Spec.Rules {
-			for _, backend := range rule.Backends {
-				if backend.Connector == nil {
-					continue
-				}
-
-				targetHost, targetPort, err := parseEndpoint(backend.Endpoint)
-				if err != nil {
-					// Skip invalid endpoints; proxy admission should have caught them.
-					continue
-				}
-
-				key := ConnectorKey{
+			var ruleTenants []tenantResolution
+			for backendIndex, backend := range rule.Backends {
+				backendKey := VPCPodBackendKey{
 					UpstreamNS:    effectiveNS,
 					HTTPProxyName: proxy.Name,
 					RuleIndex:     ruleIndex,
+					BackendIndex:  backendIndex,
 				}
+				switch {
+				case backend.Connector != nil:
+					targetHost, targetPort, err := parseEndpoint(backend.Endpoint)
+					if err != nil {
+						// Skip invalid endpoints; proxy admission should have caught them.
+						continue
+					}
 
-				var connector networkingv1alpha1.Connector
-				if lookupErr := cl.Get(ctx, client.ObjectKey{
-					Namespace: proxy.Namespace,
-					Name:      backend.Connector.Name,
-				}, &connector); lookupErr != nil {
-					// Connector missing or transient error; treat as offline.
+					key := ConnectorKey{
+						UpstreamNS:    effectiveNS,
+						HTTPProxyName: proxy.Name,
+						RuleIndex:     ruleIndex,
+					}
+
+					var connector networkingv1alpha1.Connector
+					if lookupErr := cl.Get(ctx, client.ObjectKey{
+						Namespace: proxy.Namespace,
+						Name:      backend.Connector.Name,
+					}, &connector); lookupErr != nil {
+						// Connector missing or transient error; treat as offline.
+						idx.Connectors[key] = ConnectorInfo{
+							Online:     false,
+							TargetHost: targetHost,
+							TargetPort: targetPort,
+						}
+						continue
+					}
+
+					online, nodeID := connectorLiveness(&connector)
+
 					idx.Connectors[key] = ConnectorInfo{
-						Online:     false,
+						Online:     online,
 						TargetHost: targetHost,
 						TargetPort: targetPort,
+						NodeID:     nodeID,
 					}
-					continue
-				}
 
-				online, nodeID := connectorLiveness(&connector)
+				case backend.Instance != nil:
+					// The referenced EndpointSlice is expected in the same
+					// local (downstream) namespace this HTTPProxy replica
+					// lives in — galactic-cni (#854) publishes it directly
+					// into the edge cluster, same as this HTTPProxy replica
+					// itself, not into an upstream namespace.
+					var resolved tenantResolution
+					var endpointSlice discoveryv1.EndpointSlice
+					if lookupErr := cl.Get(ctx, client.ObjectKey{
+						Namespace: proxy.Namespace,
+						Name:      backend.Instance.Name,
+					}, &endpointSlice); lookupErr == nil {
+						resolved.tenantID = endpointSlice.Labels[VPCPodTenantIDLabel]
+					}
 
-				idx.Connectors[key] = ConnectorInfo{
-					Online:     online,
-					TargetHost: targetHost,
-					TargetPort: targetPort,
-					NodeID:     nodeID,
+					idx.VPCPodBackends[backendKey] = VPCPodInfo{TenantID: resolved.tenantID}
+					ruleTenants = append(ruleTenants, resolved)
+
+				case backend.NetworkService != nil:
+					// A networkService backend names no EndpointSlice, so
+					// its tenant is joined by member address instead. The
+					// slice the HTTPProxy controller synthesized for this
+					// backend is named for the proxy and the rule/backend
+					// position, which is what makes it addressable from the
+					// replica alone.
+					owner := client.ObjectKey{
+						Namespace: proxy.Namespace,
+						Name:      fmt.Sprintf("%s-%d-%d", proxy.Name, ruleIndex, backendIndex),
+					}
+
+					resolved := tenantForAddresses(addressesByOwner[owner], tenantByAddress)
+					idx.VPCPodBackends[backendKey] = VPCPodInfo{TenantID: resolved.tenantID}
+					ruleTenants = append(ruleTenants, resolved)
 				}
+			}
+
+			if len(ruleTenants) > 0 {
+				idx.VPCPods[VPCPodKey{
+					UpstreamNS:    effectiveNS,
+					HTTPProxyName: proxy.Name,
+					RuleIndex:     ruleIndex,
+				}] = VPCPodInfo{TenantID: mergeTenants(ruleTenants).tenantID}
 			}
 		}
 	}
 	return nil
+}
+
+// endpointSliceAddressMaps builds the two lookups a networkService backend's
+// VRF binding is resolved through, in one pass over the cluster's
+// EndpointSlices.
+//
+// tenantByAddress maps a member address to the tenant galactic labelled that
+// address's own slice with. An edge holds both the slices galactic publishes
+// for workloads it hosts and the copies federated in from other cells, so a
+// member resolves from any edge, not only the one it runs on.
+//
+// addressesByOwner maps a synthesized backend slice to the member addresses
+// its downstream copy carries. The copy is what exists at an edge, and it
+// names its origin through UpstreamOwnerNameLabel — without which the
+// lookup would need the copy's own UID-derived name.
+//
+// Addresses are canonicalised on both sides so the join survives the two
+// sources spelling one IPv6 address differently.
+func endpointSliceAddressMaps(sliceList *discoveryv1.EndpointSliceList) (
+	tenantByAddress map[string]string,
+	addressesByOwner map[client.ObjectKey][]string,
+) {
+	tenantByAddress = make(map[string]string)
+	addressesByOwner = make(map[client.ObjectKey][]string)
+
+	for i := range sliceList.Items {
+		slice := &sliceList.Items[i]
+		tenantID := slice.Labels[VPCPodTenantIDLabel]
+		owner := slice.Labels[downstreamclient.UpstreamOwnerNameLabel]
+		if tenantID == "" && owner == "" {
+			continue
+		}
+
+		ownerKey := client.ObjectKey{Namespace: slice.Namespace, Name: owner}
+		for _, endpoint := range slice.Endpoints {
+			for _, rawAddress := range endpoint.Addresses {
+				address := canonicalAddress(rawAddress)
+				if address == "" {
+					continue
+				}
+				if tenantID != "" {
+					tenantByAddress[address] = tenantID
+				}
+				if owner != "" {
+					addressesByOwner[ownerKey] = append(addressesByOwner[ownerKey], address)
+				}
+			}
+		}
+	}
+
+	return tenantByAddress, addressesByOwner
+}
+
+// canonicalAddress normalises an endpoint address so two spellings of one
+// IPv6 address compare equal. Returns "" for anything unparseable.
+func canonicalAddress(address string) string {
+	ip := net.ParseIP(address)
+	if ip == nil {
+		return ""
+	}
+	return ip.String()
+}
+
+// tenantForAddresses resolves the one tenant every member of a networkService
+// backend sits behind.
+//
+// A VRF binding is a property of the whole Envoy cluster rather than of an
+// individual endpoint, so a backend whose members span more than one VPC has
+// no correct answer and is given none — binding to either VPC's device would
+// black-hole the other's members. Members that resolve to no tenant are
+// skipped rather than treated as a conflict: a slice that has not federated
+// in yet must not unbind the members that have.
+func tenantForAddresses(addresses []string, tenantByAddress map[string]string) tenantResolution {
+	candidates := make([]tenantResolution, 0, len(addresses))
+	for _, address := range addresses {
+		if candidate, ok := tenantByAddress[address]; ok {
+			candidates = append(candidates, tenantResolution{tenantID: candidate})
+		}
+	}
+	return mergeTenants(candidates)
+}
+
+type tenantResolution struct {
+	tenantID string
+	conflict bool
+}
+
+func mergeTenants(candidates []tenantResolution) tenantResolution {
+	var vpc string
+	var merged tenantResolution
+	for _, candidate := range candidates {
+		if candidate.conflict {
+			return tenantResolution{conflict: true}
+		}
+		candidateVPC, ok := TenantVPC(candidate.tenantID)
+		if !ok {
+			continue
+		}
+		if vpc == "" {
+			vpc, merged.tenantID = candidateVPC, candidate.tenantID
+			continue
+		}
+		if candidateVPC != vpc {
+			return tenantResolution{conflict: true}
+		}
+	}
+	return merged
 }
 
 // connectorLiveness determines whether a connector is online and, if so, its

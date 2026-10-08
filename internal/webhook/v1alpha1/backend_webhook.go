@@ -15,6 +15,7 @@ import (
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 
 	"go.datum.net/network-services-operator/internal/validation"
+	webhookutil "go.datum.net/network-services-operator/internal/webhook"
 )
 
 // SetupBackendWebhookWithManager registers the webhook for Backend in the manager.
@@ -58,6 +59,10 @@ func (v *BackendCustomValidator) ValidateUpdate(ctx context.Context, oldBackend,
 
 	log := logf.FromContext(ctx).WithValues("cluster", clusterName)
 	log.Info("Validating Backend", "name", newBackend.GetName(), "cluster", clusterName)
+
+	if webhookutil.SkipUpdateValidation(newBackend, oldBackend.Spec, newBackend.Spec) {
+		return nil, nil
+	}
 
 	if errs := validation.ValidateBackend(newBackend); len(errs) > 0 {
 		return nil, apierrors.NewInvalid(oldBackend.GetObjectKind().GroupVersionKind().GroupKind(), newBackend.GetName(), errs)

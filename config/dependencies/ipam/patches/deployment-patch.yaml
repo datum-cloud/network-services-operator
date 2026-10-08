@@ -1,0 +1,24 @@
+---
+# The image is pulled from ghcr by digest, so IfNotPresent: the node fetches it
+# once and reuses it. Never would fail here — nothing side-loads the image any
+# more, and a digest-pinned reference cannot go stale, so there is nothing for
+# Always to re-check.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ipam-apiserver
+spec:
+  template:
+    spec:
+      initContainers:
+        - name: migrate
+          imagePullPolicy: IfNotPresent
+      containers:
+        - name: apiserver
+          imagePullPolicy: IfNotPresent
+          # No Milo quota backend in the kind/test-infra cluster — the
+          # quota.miloapis.com CRDs don't exist, so the quota plugin's informers
+          # would never sync and readyz would hang. Disable quota here.
+          env:
+            - name: ENABLE_QUOTA
+              value: "false"

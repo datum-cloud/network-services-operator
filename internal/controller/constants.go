@@ -10,6 +10,9 @@ const (
 	KindTrafficProtectionPolicy = "TrafficProtectionPolicy"
 	KindHTTPProxy               = "HTTPProxy"
 	KindConnector               = "Connector"
+	KindNetwork                 = "Network"
+	KindNetworkContext          = "NetworkContext"
+	KindSubnet                  = "Subnet"
 )
 
 // API group constants.
@@ -22,11 +25,6 @@ const (
 const (
 	versionV1Alpha  = "v1alpha"
 	versionV1Alpha1 = "v1alpha1"
-)
-
-// Envoy xDS type URL constants.
-const (
-	routeConfigurationTypeURL = "type.googleapis.com/envoy.config.route.v3.RouteConfiguration"
 )
 
 // JSON/map field key constants used in Envoy proxy configuration and condition maps.
@@ -53,6 +51,10 @@ const (
 	conditionTypeAccepted   = "Accepted"
 	conditionTypeProgrammed = "Programmed"
 )
+
+// dnsZoneReasonPendingDomainVerification is the Accepted=False reason the DNS
+// operator sets on a DNSZone it holds back until its Domain is verified.
+const dnsZoneReasonPendingDomainVerification = "PendingDomainVerification"
 
 // cert-manager condition status values used when parsing unstructured Certificate objects.
 const (

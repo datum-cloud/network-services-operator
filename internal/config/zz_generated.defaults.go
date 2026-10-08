@@ -15,8 +15,44 @@ import (
 // Public to allow building arbitrary schemes.
 // All generated defaulters are covering - they call all nested defaulters.
 func RegisterDefaults(scheme *runtime.Scheme) error {
+	scheme.AddTypeDefaultingFunc(&CellControllerManager{}, func(obj interface{}) { SetObjectDefaults_CellControllerManager(obj.(*CellControllerManager)) })
 	scheme.AddTypeDefaultingFunc(&NetworkServicesOperator{}, func(obj interface{}) { SetObjectDefaults_NetworkServicesOperator(obj.(*NetworkServicesOperator)) })
 	return nil
+}
+
+func SetObjectDefaults_CellControllerManager(in *CellControllerManager) {
+	SetDefaults_MetricsServerConfig(&in.MetricsServer)
+	SetDefaults_TLSConfig(&in.MetricsServer.TLS)
+	SetDefaults_DiscoveryConfig(&in.Discovery)
+	SetDefaults_LeaderElectionConfig(&in.LeaderElection)
+	SetDefaults_ClientConnectionConfig(&in.ControlPlaneClient)
+	if in.ControlPlaneClient.QPS == 0 {
+		in.ControlPlaneClient.QPS = 50
+	}
+	if in.ControlPlaneClient.Burst == 0 {
+		in.ControlPlaneClient.Burst = 100
+	}
+	SetDefaults_ClientConnectionConfig(&in.ProjectClient)
+	if in.ProjectClient.QPS == 0 {
+		in.ProjectClient.QPS = 50
+	}
+	if in.ProjectClient.Burst == 0 {
+		in.ProjectClient.Burst = 100
+	}
+	SetDefaults_ClientConnectionConfig(&in.IPAM.Client)
+	if in.IPAM.Client.QPS == 0 {
+		in.IPAM.Client.QPS = 50
+	}
+	if in.IPAM.Client.Burst == 0 {
+		in.IPAM.Client.Burst = 100
+	}
+	SetDefaults_ClientConnectionConfig(&in.Federation.Client)
+	if in.Federation.Client.QPS == 0 {
+		in.Federation.Client.QPS = 50
+	}
+	if in.Federation.Client.Burst == 0 {
+		in.Federation.Client.Burst = 100
+	}
 }
 
 func SetObjectDefaults_NetworkServicesOperator(in *NetworkServicesOperator) {
@@ -132,6 +168,16 @@ func SetObjectDefaults_NetworkServicesOperator(in *NetworkServicesOperator) {
 	if in.Gateway.ExtensionAPIValidationOptions.BackendTrafficPolicies.ClusterSettings.HTTP2MaxConcurrentStreams == 0 {
 		in.Gateway.ExtensionAPIValidationOptions.BackendTrafficPolicies.ClusterSettings.HTTP2MaxConcurrentStreams = 1024
 	}
+	if in.Gateway.ExtensionAPIValidationOptions.BackendTrafficPolicies.ClusterSettings.HealthCheckMinBaseEjectionTime == nil {
+		if err := json.Unmarshal([]byte(`"1s"`), &in.Gateway.ExtensionAPIValidationOptions.BackendTrafficPolicies.ClusterSettings.HealthCheckMinBaseEjectionTime); err != nil {
+			panic(err)
+		}
+	}
+	if in.Gateway.ExtensionAPIValidationOptions.BackendTrafficPolicies.ClusterSettings.HealthCheckMinInterval == nil {
+		if err := json.Unmarshal([]byte(`"1s"`), &in.Gateway.ExtensionAPIValidationOptions.BackendTrafficPolicies.ClusterSettings.HealthCheckMinInterval); err != nil {
+			panic(err)
+		}
+	}
 	if in.Gateway.ExtensionAPIValidationOptions.HTTPRouteFilters.MaxInlineBodySize == 0 {
 		in.Gateway.ExtensionAPIValidationOptions.HTTPRouteFilters.MaxInlineBodySize = 1024
 	}
@@ -229,12 +275,26 @@ func SetObjectDefaults_NetworkServicesOperator(in *NetworkServicesOperator) {
 	if in.Gateway.ExtensionAPIValidationOptions.SecurityPolicies.ClusterSettings.HTTP2MaxConcurrentStreams == 0 {
 		in.Gateway.ExtensionAPIValidationOptions.SecurityPolicies.ClusterSettings.HTTP2MaxConcurrentStreams = 1024
 	}
+	if in.Gateway.ExtensionAPIValidationOptions.SecurityPolicies.ClusterSettings.HealthCheckMinBaseEjectionTime == nil {
+		if err := json.Unmarshal([]byte(`"1s"`), &in.Gateway.ExtensionAPIValidationOptions.SecurityPolicies.ClusterSettings.HealthCheckMinBaseEjectionTime); err != nil {
+			panic(err)
+		}
+	}
+	if in.Gateway.ExtensionAPIValidationOptions.SecurityPolicies.ClusterSettings.HealthCheckMinInterval == nil {
+		if err := json.Unmarshal([]byte(`"1s"`), &in.Gateway.ExtensionAPIValidationOptions.SecurityPolicies.ClusterSettings.HealthCheckMinInterval); err != nil {
+			panic(err)
+		}
+	}
 	SetDefaults_GatewayResourceReplicatorConfig(&in.Gateway.ResourceReplicator)
 	if in.Gateway.MaxConcurrentReconciles == 0 {
 		in.Gateway.MaxConcurrentReconciles = 5
 	}
 	if in.Gateway.CertificateReissuance.MaxRetries == 0 {
 		in.Gateway.CertificateReissuance.MaxRetries = 3
+	}
+	SetDefaults_CertificateServiceConfig(&in.Gateway.CertificateService)
+	if in.Gateway.CertificateService.SecretNamespace == "" {
+		in.Gateway.CertificateService.SecretNamespace = "certificates-system"
 	}
 	if in.HTTPProxy.GatewayClassName == "" {
 		in.HTTPProxy.GatewayClassName = "datum-external-global-proxy"
@@ -359,4 +419,12 @@ func SetObjectDefaults_NetworkServicesOperator(in *NetworkServicesOperator) {
 	if in.ProjectClient.Burst == 0 {
 		in.ProjectClient.Burst = 100
 	}
+	SetDefaults_ClientConnectionConfig(&in.IPAM.Client)
+	if in.IPAM.Client.QPS == 0 {
+		in.IPAM.Client.QPS = 50
+	}
+	if in.IPAM.Client.Burst == 0 {
+		in.IPAM.Client.Burst = 100
+	}
+	SetDefaults_NetworkPresenceConfig(&in.NetworkPresence)
 }

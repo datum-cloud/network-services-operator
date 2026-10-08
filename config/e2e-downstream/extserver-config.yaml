@@ -19,3 +19,4 @@ data:
       errorPage:
         enabled: true
         bodyPath: /etc/datum/error-pages/error-5xx.html
+        offlineBodyPath: /etc/datum/error-pages/error-offline.html

@@ -19,6 +19,7 @@ import (
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 
 	"go.datum.net/network-services-operator/internal/validation"
+	webhookutil "go.datum.net/network-services-operator/internal/webhook"
 )
 
 // nolint:unused
@@ -74,6 +75,10 @@ func (v *BackendTLSPolicyCustomValidator) ValidateUpdate(ctx context.Context, ol
 	clusterName, ok := mccontext.ClusterFrom(ctx)
 	if !ok {
 		return nil, fmt.Errorf("expected a cluster name in the context")
+	}
+
+	if webhookutil.SkipUpdateValidation(newObj, oldObj.Object["spec"], newObj.Object["spec"]) {
+		return nil, nil
 	}
 
 	var backendTLSPolicy gatewayv1alpha3.BackendTLSPolicy

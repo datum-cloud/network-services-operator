@@ -3,11 +3,13 @@ package config
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"time"
 
 	words "go.datum.net/network-services-operator/internal/words"
@@ -85,6 +87,195 @@ type NetworkServicesOperator struct {
 	// ProjectClient configures the Kubernetes client connection used for both
 	// project discovery and per-project cluster connections.
 	ProjectClient ClientConnectionConfig `json:"projectClient,omitempty"`
+
+	// IPAM is how this manager reaches IPAM to claim a network's address space
+	// at creation. The cell controller manager reaches IPAM for interface
+	// addresses through its own CellControllerManager config; both are the same
+	// connection, configured once per manager that makes requests.
+	//
+	// Left unset, no address space is claimed and everything else reconciles
+	// unchanged.
+	IPAM IPAMConfig `json:"ipam,omitempty"`
+
+	// NetworkInterface is read by the cell controller manager, which takes its
+	// own CellControllerManager config. It is retained here so a config written
+	// before the split still decodes.
+	//
+	// Deprecated: configure the cell controller manager instead.
+	NetworkInterface NetworkInterfaceConfig `json:"networkInterface,omitempty"`
+
+	// NetworkPresence configures how a network's presence in a location is
+	// maintained.
+	NetworkPresence NetworkPresenceConfig `json:"networkPresence,omitempty"`
+}
+
+// +k8s:deepcopy-gen=true
+
+// NetworkPresenceConfig configures the controller that keeps one NetworkContext
+// per network and location, for as long as any consumer declares it is needed
+// there.
+type NetworkPresenceConfig struct {
+	// UnclaimedGracePeriod is how long a presence nothing declares any more is
+	// kept before it is torn down.
+	//
+	// This is a retention policy, not a race window. A location keeps the
+	// address space it was given for a day after the last consumer goes, so
+	// redeploying a workload neither loses the network in that location nor
+	// changes the prefix it is addressed from. Tearing the presence down and
+	// rebuilding it would do both, and would draw a different prefix.
+	//
+	// The cost is that a location which really is finished holds its prefix
+	// until the period expires. Deleting the Network itself is unaffected: the
+	// contexts are owned by it and go with it immediately.
+	//
+	// Defaults to 24 hours. Zero means the default.
+	UnclaimedGracePeriod metav1.Duration `json:"unclaimedGracePeriod,omitempty"`
+}
+
+func SetDefaults_NetworkPresenceConfig(obj *NetworkPresenceConfig) {
+	if obj.UnclaimedGracePeriod.Duration == 0 {
+		obj.UnclaimedGracePeriod = metav1.Duration{Duration: 24 * time.Hour}
+	}
+}
+
+func (c *NetworkPresenceConfig) validate() error {
+	if c.UnclaimedGracePeriod.Duration < 0 {
+		return errors.New("unclaimedGracePeriod must not be negative")
+	}
+	return nil
+}
+
+// +k8s:deepcopy-gen=true
+
+// +k8s:deepcopy-gen=true
+
+// IPAMConfig describes how the operator reaches the IPAM API server. One
+// connection serves every project: each request is addressed to a project's
+// control-plane path, so the operator's own identity is authorized against
+// that project.
+type IPAMConfig struct {
+	// KubeconfigPath is the path to a kubeconfig file pointing at the cluster
+	// serving the IPAM API. Mutually exclusive with inCluster; one of the two
+	// is required.
+	KubeconfigPath string `json:"kubeconfigPath,omitempty"`
+
+	// InCluster reaches the IPAM API through the operator's own kube-apiserver,
+	// for a deployment colocated with the cluster that aggregates
+	// ipam.miloapis.com. Mutually exclusive with kubeconfigPath.
+	InCluster bool `json:"inCluster,omitempty"`
+
+	// Client configures the Kubernetes client connection to the IPAM API
+	// server.
+	Client ClientConnectionConfig `json:"client,omitempty"`
+
+	// Classes names the IPClasses this operator asks IPAM for.
+	Classes IPAMClasses `json:"classes,omitempty"`
+}
+
+// +k8s:deepcopy-gen=true
+
+// IPAMClasses names the IPClasses the operator asks for by name. They are
+// configuration and not constants: the platform's classes and a test
+// environment's classes are different objects, and an operator deployed
+// against either has to name the ones it is pointed at.
+type IPAMClasses struct {
+	// Network is the class that hands out the range a network is addressed
+	// from. Unset, no range is claimed and a network is reconciled with no
+	// address space, the same as an unset IPAM connection.
+	//
+	// The per-endpoint class is not named here. It is reached through the
+	// subnet class's own chain, which IPAM resolves, so naming it would be
+	// restating something the service already knows.
+	Network string `json:"network,omitempty"`
+
+	// Subnet is the class that hands out the range a network is addressed from
+	// in one location. Unset, no subnet is claimed and a network context is
+	// reconciled with no address space of its own, the same as an unset IPAM
+	// connection. The subnet a location's endpoints are drawn from still comes
+	// into being under the first of them either way; naming the class is what
+	// gives it an owner that can report it and give it back.
+	Subnet string `json:"subnet,omitempty"`
+}
+
+func (c *IPAMConfig) validate() error {
+	switch {
+	case c.KubeconfigPath == "" && !c.InCluster:
+		return errors.New("one of kubeconfigPath or inCluster is required, otherwise the IPAM client targets the manager's own kube-apiserver, which serves no ipam.miloapis.com API")
+	case c.KubeconfigPath != "" && c.InCluster:
+		return errors.New("kubeconfigPath and inCluster are mutually exclusive")
+	}
+	return nil
+}
+
+func (c *IPAMConfig) RestConfig() (*rest.Config, error) {
+	var (
+		cfg *rest.Config
+		err error
+	)
+	if c.KubeconfigPath == "" {
+		cfg, err = ctrl.GetConfig()
+	} else {
+		cfg, err = clientcmd.BuildConfigFromFlags("", c.KubeconfigPath)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	c.Client.ApplyTo(cfg)
+	return cfg, nil
+}
+
+// +k8s:deepcopy-gen=true
+
+// FederationConfig names the federation hub a cell publishes to. It is the only
+// plane a cell and the control planes serving projects both reach.
+type FederationConfig struct {
+	// KubeconfigPath is the path to a kubeconfig file pointing at the hub.
+	// Required: a cell that cannot reach the hub cannot show a consumer the
+	// interface behind their instance.
+	KubeconfigPath string `json:"kubeconfigPath,omitempty"`
+
+	// Client configures the Kubernetes client connection to the hub.
+	Client ClientConnectionConfig `json:"client,omitempty"`
+}
+
+func (c *FederationConfig) validate() error {
+	if c.KubeconfigPath == "" {
+		return errors.New("kubeconfigPath is required, otherwise the cell publishes none of its network interfaces and a consumer never sees the interface behind their instance")
+	}
+	return nil
+}
+
+// RestConfig resolves the connection to the hub.
+func (c *FederationConfig) RestConfig() (*rest.Config, error) {
+	cfg, err := clientcmd.BuildConfigFromFlags("", c.KubeconfigPath)
+	if err != nil {
+		return nil, err
+	}
+
+	c.Client.ApplyTo(cfg)
+	return cfg, nil
+}
+
+// +k8s:deepcopy-gen=true
+
+// NetworkInterfaceConfig configures the NetworkInterfaceClaim controller.
+type NetworkInterfaceConfig struct {
+	// Deprecated: run the cell controller manager instead.
+	Enabled bool `json:"enabled,omitempty"`
+
+	// Location names the location this control plane serves. Run the cell
+	// controller manager instead.
+	Location LocationConfig `json:"location,omitempty"`
+}
+
+// +k8s:deepcopy-gen=true
+
+// LocationConfig names a Location. On a cell it is a fallback, used only while
+// no ServingLocation has been delivered to that cell.
+type LocationConfig struct {
+	// Name is the name of the Location, such as "us-east-1-iad".
+	Name string `json:"name,omitempty"`
 }
 
 // +k8s:deepcopy-gen=true
@@ -584,6 +775,12 @@ type GatewayConfig struct {
 	// DNS endpoints for gateways.
 	TargetDomain string `json:"targetDomain"`
 
+	// LegacyTargetDomains are domains that were previously used as the
+	// TargetDomain. Hostnames under these domains are still treated as
+	// platform managed gateway hostnames so that gateways programmed before a
+	// target domain change keep reconciling.
+	LegacyTargetDomains []string `json:"legacyTargetDomains,omitempty"`
+
 	// IPFamilies defines the IP families that should be enabled on gateways
 	// created by the operator.
 	//
@@ -702,15 +899,6 @@ type GatewayConfig struct {
 	// +default=5
 	MaxConcurrentReconciles int `json:"maxConcurrentReconciles,omitempty"`
 
-	// EPPEmissionEnabled controls whether NSO's controllers emit EnvoyPatchPolicy
-	// objects. Set to false when the extension server is handling xDS mutation so
-	// that EPPs are no longer created or deleted by these controllers. Rollback =
-	// set to true (or omit, which defaults to true).
-	//
-	// When false: NSO emits ZERO EPPs and does NOT delete EPPs it did not create.
-	// When true (default): EPP emission proceeds as today.
-	EPPEmissionEnabled *bool `json:"eppEmissionEnabled,omitempty" yaml:"eppEmissionEnabled,omitempty"`
-
 	// CertificateReissuance controls how the gateway controller handles
 	// failed certificate issuance for custom hostnames. When a Certificate
 	// is stuck in a failed state, the controller deletes and recreates it
@@ -718,6 +906,93 @@ type GatewayConfig struct {
 	// the deletion through the entire chain (CertificateRequest, Order,
 	// Challenge, solver resources).
 	CertificateReissuance CertificateReissuanceConfig `json:"certificateReissuance,omitempty"`
+
+	// CertificateService hands certificate issuance for wildcard hostnames to
+	// the Milo certificate service. When enabled, the gateway controller
+	// requests a DNS-01 TLSCertificate in the project control plane for each
+	// single-label wildcard listener and mirrors the issued Secret downstream.
+	// Exact hostnames stay on cert-manager either way.
+	CertificateService CertificateServiceConfig `json:"certificateService,omitempty"`
+}
+
+// +k8s:deepcopy-gen=true
+
+// CertificateServiceConfig controls consumption of the Milo certificate
+// service (certificates.miloapis.com).
+type CertificateServiceConfig struct {
+	// Enabled issues certificates for wildcard hostnames through upstream
+	// TLSCertificates.
+	//
+	// Defaults to false.
+	Enabled bool `json:"enabled,omitempty"`
+
+	// KubeconfigPath reaches the cluster the certificate service runs on,
+	// where it keeps each issued key pair. Empty means the cluster this
+	// operator runs in.
+	KubeconfigPath string `json:"kubeconfigPath,omitempty"`
+
+	// SecretNamespace is the namespace on that cluster holding the issued key
+	// pairs, each in a Secret named after its TLSCertificate's UID.
+	//
+	// +default="certificates-system"
+	SecretNamespace string `json:"secretNamespace,omitempty"`
+
+	// VerifyChain refuses issued material whose chain does not build to
+	// TrustedRootsFile, or to the system roots when that is empty.
+	//
+	// Defaults to false.
+	VerifyChain bool `json:"verifyChain,omitempty"`
+
+	// TrustedRootsFile is a PEM bundle of the roots an issued chain must
+	// build to when VerifyChain is set.
+	TrustedRootsFile string `json:"trustedRootsFile,omitempty"`
+}
+
+// TrustedRoots returns the roots an issued chain must build to, or nil when
+// chain verification is off or uses the system roots.
+func (c *CertificateServiceConfig) TrustedRoots() (*x509.CertPool, error) {
+	if !c.VerifyChain || c.TrustedRootsFile == "" {
+		return nil, nil
+	}
+	data, err := os.ReadFile(c.TrustedRootsFile)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read trusted roots: %w", err)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(data) {
+		return nil, fmt.Errorf("trusted roots file %s holds no certificates", c.TrustedRootsFile)
+	}
+	return pool, nil
+}
+
+func SetDefaults_CertificateServiceConfig(obj *CertificateServiceConfig) {
+	if obj.SecretNamespace == "" {
+		obj.SecretNamespace = "certificates-system"
+	}
+}
+
+// RestConfig returns the connection to the certificate service's cluster.
+func (c *CertificateServiceConfig) RestConfig() (*rest.Config, error) {
+	cfg, err := c.restConfig()
+	if err != nil {
+		return nil, err
+	}
+	cfg.Timeout = certificateServiceRequestTimeout
+	return cfg, nil
+}
+
+// certificateServiceRequestTimeout bounds each read of the service cluster, so
+// a hung connection there cannot stall a gateway reconcile.
+const certificateServiceRequestTimeout = 10 * time.Second
+
+func (c *CertificateServiceConfig) restConfig() (*rest.Config, error) {
+	if c.KubeconfigPath != "" {
+		return clientcmd.BuildConfigFromFlags("", c.KubeconfigPath)
+	}
+	if cfg, err := rest.InClusterConfig(); err == nil {
+		return cfg, nil
+	}
+	return ctrl.GetConfig()
 }
 
 // +k8s:deepcopy-gen=true
@@ -756,17 +1031,6 @@ func (c *GatewayConfig) ShouldDeleteErroredChallenges() bool {
 	return *c.DeleteErroredChallenges
 }
 
-// IsEPPEmissionEnabled returns whether the operator should emit EnvoyPatchPolicy
-// objects. Defaults to true when not explicitly configured, preserving backward
-// compatibility. Set gateway.eppEmissionEnabled=false in the operator config to
-// disable EPP emission once the extension server is handling xDS mutation.
-func (c *GatewayConfig) IsEPPEmissionEnabled() bool {
-	if c.EPPEmissionEnabled == nil {
-		return true // default: EPP emission on
-	}
-	return *c.EPPEmissionEnabled
-}
-
 // GetRetryInterval returns the configured retry interval for certificate
 // re-issuance, defaulting to 5 minutes.
 func (c *CertificateReissuanceConfig) GetRetryInterval() time.Duration {
@@ -786,9 +1050,26 @@ func (c *CertificateReissuanceConfig) GetMaxRetries() int {
 }
 
 func (c *GatewayConfig) GatewayDNSAddress(gateway *gatewayv1.Gateway) string {
+	return c.GatewayDNSAddressForDomain(gateway, c.TargetDomain)
+}
+
+func (c *GatewayConfig) GatewayDNSAddressForDomain(gateway *gatewayv1.Gateway, domain string) string {
 	seed := string(gateway.UID)
-	suffix := fmt.Sprintf(".%s", c.TargetDomain)
+	suffix := fmt.Sprintf(".%s", domain)
 	return words.WordsAndEntropy(suffix, seed)
+}
+
+// ManagedTargetDomains returns the current target domain followed by any
+// legacy target domains, with empty and duplicate entries removed.
+func (c *GatewayConfig) ManagedTargetDomains() []string {
+	domains := make([]string, 0, len(c.LegacyTargetDomains)+1)
+	for _, domain := range append([]string{c.TargetDomain}, c.LegacyTargetDomains...) {
+		if domain == "" || slices.Contains(domains, domain) {
+			continue
+		}
+		domains = append(domains, domain)
+	}
+	return domains
 }
 
 func (c *GatewayConfig) ConnectorTunnelListenerName() string {
@@ -860,6 +1141,13 @@ type ErrorPageConfig struct {
 	// containing the branded HTML. When empty, unreadable, or empty-on-disk, the
 	// embedded default page is used instead.
 	BodyPath string `json:"bodyPath,omitempty"`
+
+	// OfflineBodyPath is an optional path to a file containing the HTML served
+	// when the edge had no healthy upstream to send the request to — a
+	// NetworkService with no serving members, for example. Same sourcing rules
+	// as BodyPath: empty, unreadable, or empty-on-disk falls back to the
+	// embedded offline page, which in turn falls back to the generic page.
+	OfflineBodyPath string `json:"offlineBodyPath,omitempty"`
 
 	// MinStatusCode is the inclusive lower bound for response status codes that
 	// receive the branded body. The original status code is always preserved.
@@ -974,6 +1262,16 @@ type ClusterSettingsValidationOptions struct {
 	//
 	// +default=1024
 	HTTP2MaxConcurrentStreams uint32
+
+	// Minimum duration a host must stay ejected under passive health checks.
+	//
+	// +default="1s"
+	HealthCheckMinBaseEjectionTime *metav1.Duration
+
+	// Minimum interval between passive health check evaluations.
+	//
+	// +default="1s"
+	HealthCheckMinInterval *metav1.Duration
 }
 
 type HTTPRouteFilterValidationOptions struct {
@@ -1183,6 +1481,15 @@ func SetDefaults_GatewayResourceReplicatorConfig(obj *GatewayResourceReplicatorC
 		// Connector is propagated with status mirrored downstream so the
 		// extension server can check tunnel liveness (Status.Conditions[Ready]).
 		{Group: networkingDatumAPIsGroup, Version: "v1alpha1", Kind: "Connector"},
+		// A network's presence in a location and the range that location is
+		// addressed from. Written in the project control plane, read at the cell
+		// serving the location.
+		{Group: networkingDatumAPIsGroup, Version: "v1alpha", Kind: "NetworkContext"},
+		{Group: networkingDatumAPIsGroup, Version: "v1alpha", Kind: "Subnet"},
+		// The network itself, so what allocates its identity on the fabric can
+		// be driven by the network and tell a deleted one from one required
+		// nowhere. Read on the hub; not carried on to a cell.
+		{Group: networkingDatumAPIsGroup, Version: "v1alpha", Kind: "Network"},
 	}
 }
 
@@ -1246,7 +1553,41 @@ func (c *NetworkServicesOperator) Validate() error {
 	if err := c.Connector.Iroh.validate(); err != nil {
 		return fmt.Errorf("connector.iroh: %w", err)
 	}
+	if err := c.Gateway.validate(); err != nil {
+		return fmt.Errorf("gateway: %w", err)
+	}
+	if err := c.NetworkPresence.validate(); err != nil {
+		return fmt.Errorf("networkPresence: %w", err)
+	}
 	return nil
+}
+
+func (c *GatewayConfig) validate() error {
+	var errs []error
+	seen := make([]string, 0, len(c.LegacyTargetDomains))
+	for i, domain := range c.LegacyTargetDomains {
+		switch {
+		case strings.TrimSpace(domain) == "":
+			errs = append(errs, fmt.Errorf("legacyTargetDomains[%d] must not be empty", i))
+		case domain != strings.TrimSpace(domain) || strings.HasPrefix(domain, "."):
+			errs = append(errs, fmt.Errorf("legacyTargetDomains[%d] must be a bare domain, got %q", i, domain))
+		case domain == c.TargetDomain:
+			errs = append(errs, fmt.Errorf("legacyTargetDomains[%d] must not repeat targetDomain %q", i, domain))
+		case slices.Contains(seen, domain):
+			errs = append(errs, fmt.Errorf("legacyTargetDomains[%d] is a duplicate entry %q", i, domain))
+		}
+		seen = append(seen, domain)
+	}
+	if c.CertificateService.Enabled && c.DisableHostnameVerification {
+		errs = append(errs, errors.New("certificateService.enabled requires hostname verification: the certificate service issues for any hostname it is handed"))
+	}
+	if c.CertificateService.Enabled && strings.TrimSpace(c.CertificateService.SecretNamespace) == "" {
+		errs = append(errs, errors.New("certificateService.secretNamespace is required when certificateService.enabled"))
+	}
+	if c.CertificateService.TrustedRootsFile != "" && !c.CertificateService.VerifyChain {
+		errs = append(errs, errors.New("certificateService.trustedRootsFile requires certificateService.verifyChain"))
+	}
+	return errors.Join(errs...)
 }
 
 func (c *IrohConnectorConfig) validate() error {

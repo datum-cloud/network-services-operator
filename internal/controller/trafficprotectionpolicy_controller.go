@@ -4,20 +4,14 @@ package controller
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"slices"
 	"sort"
-	"strings"
-
-	envoygatewayv1alpha1 "github.com/envoyproxy/gateway/api/v1alpha1"
 
 	corev1 "k8s.io/api/core/v1"
-	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
 
@@ -25,7 +19,6 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/source"
@@ -40,8 +33,6 @@ import (
 	"go.datum.net/network-services-operator/internal/config"
 	downstreamclient "go.datum.net/network-services-operator/internal/downstreamclient"
 	gatewaystatus "go.datum.net/network-services-operator/internal/gatewayapi/status"
-	gatewayutil "go.datum.net/network-services-operator/internal/util/gateway"
-	"go.datum.net/network-services-operator/internal/util/resourcename"
 )
 
 // TrafficProtectionPolicyReconciler reconciles a TrafficProtectionPolicy object
@@ -53,55 +44,29 @@ type TrafficProtectionPolicyReconciler struct {
 }
 
 const (
-	// PolicyReasonWaitingForCertificates indicates that the policy is waiting
-	// for TLS certificates to become ready before EnvoyPatchPolicies can be created.
-	// In gateway-api v1.5.1, PolicyConditionReason moved from v1alpha2 to v1.
-	PolicyReasonWaitingForCertificates gatewayv1.PolicyConditionReason = "WaitingForCertificates"
-	// PolicyReasonWaitingForListenersProgrammed indicates that the policy is waiting
-	// for HTTPS listeners to be Programmed=True before EnvoyPatchPolicies can be created.
-	PolicyReasonWaitingForListenersProgrammed gatewayv1.PolicyConditionReason = "WaitingForListenersProgrammed"
+	// PolicyReasonProgrammed indicates the policy generation has been programmed
+	// on all edges that should serve it.
+	PolicyReasonProgrammed gatewayv1.PolicyConditionReason = "Programmed"
 
-	// tppEnvoyPatchPolicyPrefix is the name prefix for all EnvoyPatchPolicies
-	// written by the TrafficProtectionPolicy controller ("tpp-<gateway-name>").
-	// The stale-cleanup loop uses this prefix to skip EPPs owned by other
-	// controllers (e.g. the HTTPProxy connector controller uses "connector-<name>").
-	tppEnvoyPatchPolicyPrefix = "tpp-"
+	// PolicyReasonProgrammedPending indicates the policy has been accepted but
+	// edge programming for the current generation has not completed.
+	PolicyReasonProgrammedPending gatewayv1.PolicyConditionReason = "Pending"
 
-	// tppManagedLabel is stamped onto every EnvoyPatchPolicy created or updated
-	// by this controller. Once all existing EPPs have been reconciled and carry
-	// this label, the stale-cleanup loop can switch to a label-selector List
-	// instead of the current prefix check, removing the naming-convention
-	// dependency entirely.
-	tppManagedLabel = "networking.datumapis.com/managed-by-tpp-controller"
+	// PolicyReasonProgrammedPartialFailure indicates some but not all edges have
+	// programmed the current policy generation.
+	PolicyReasonProgrammedPartialFailure gatewayv1.PolicyConditionReason = "PartialFailure"
 )
-
-// certificateReadinessResult contains the result of checking certificate readiness
-// for HTTPS listeners.
-type certificateReadinessResult struct {
-	// AllReady indicates whether all required certificates are ready.
-	AllReady bool
-	// PendingListeners contains the names of listeners whose certificates are not ready.
-	PendingListeners []string
-}
 
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=trafficprotectionpolicies,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=trafficprotectionpolicies/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=trafficprotectionpolicies/finalizers,verbs=update
+// +kubebuilder:rbac:groups=networking.datumapis.com,resources=httpproxies,verbs=get;list;watch
+// +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups=cert-manager.io,resources=certificates,verbs=get;list;watch
 
 func (r *TrafficProtectionPolicyReconciler) Reconcile(ctx context.Context, req NamespaceReconcileRequest) (ctrl.Result, error) {
 	logger := log.FromContext(ctx, "cluster", req.ClusterName)
 	ctx = log.IntoContext(ctx, logger)
-
-	// Gate: global Coraza listener EPP (conflict C4: this global EPP must also
-	// be gated — easy to miss because it's at GatewayClass scope, not per-gateway).
-	// The extension server replaces it by injecting Coraza into all listeners
-	// in PostTranslateModify; when the flag is off, emit nothing.
-	if r.Config.Gateway.IsEPPEmissionEnabled() {
-		if err := r.ensureHTTPCorazaListenerFilter(ctx); err != nil {
-			return ctrl.Result{}, err
-		}
-	}
 
 	cl, err := r.mgr.GetCluster(ctx, req.ClusterName)
 	if err != nil {
@@ -142,111 +107,131 @@ func (r *TrafficProtectionPolicyReconciler) Reconcile(ctx context.Context, req N
 		return ctrl.Result{}, err
 	}
 
-	attachments := r.collectTrafficProtectionPolicyAttachments(ctx, trafficProtectionPolicies, upstreamGateways.Items, upstreamHTTPRoutes.Items)
-
-	// Gate all per-gateway EPP emission and its prerequisites behind the feature
-	// flag. The cert/listener readiness checks exist only to guard EPP creation
-	// (to avoid JSONPath selector failures before filter_chains are materialized),
-	// so they are also skipped when EPP emission is disabled.
-	// When the flag is OFF: NSO emits ZERO EPPs and does NOT delete any EPPs.
-	if r.Config.Gateway.IsEPPEmissionEnabled() {
-		// Check if all HTTPS listener certificates are ready before creating EnvoyPatchPolicies.
-		// This prevents JSONPath selector failures when Envoy Gateway hasn't materialized filter_chains.
-		certReadiness, err := r.checkHTTPSListenerCertificatesReady(ctx, downstreamNamespaceName, attachments)
-		if err != nil {
-			return ctrl.Result{}, fmt.Errorf("failed to check certificate readiness: %w", err)
-		}
-
-		if !certReadiness.AllReady {
-			logger.Info("waiting for TLS certificates to become ready", "pendingListeners", certReadiness.PendingListeners)
-			r.setWaitingForCertificatesConditions(trafficProtectionPolicies, certReadiness.PendingListeners)
-
-			if err := r.updateTPPAncestorsStatus(ctx, cl.GetClient(), trafficProtectionPolicies, originalTrafficProtectionPolicies); err != nil {
-				return ctrl.Result{}, err
-			}
-
-			// Certificate watch will trigger reconciliation when certificates become ready
-			return ctrl.Result{}, nil
-		}
-
-		listenerReadiness := r.checkHTTPSListenersProgrammed(attachments)
-		if !listenerReadiness.AllReady {
-			logger.Info("waiting for HTTPS listeners to become programmed", "pendingListeners", listenerReadiness.PendingListeners)
-			r.setWaitingForListenersProgrammedConditions(trafficProtectionPolicies, listenerReadiness.PendingListeners)
-
-			if err := r.updateTPPAncestorsStatus(ctx, cl.GetClient(), trafficProtectionPolicies, originalTrafficProtectionPolicies); err != nil {
-				return ctrl.Result{}, err
-			}
-
-			// Gateway/HTTPRoute watches will trigger reconciliation when listener status changes.
-			return ctrl.Result{}, nil
-		}
-
-		desiredPolicies, err := r.getDesiredEnvoyPatchPolicies(downstreamNamespaceName, attachments)
-		if err != nil {
-			return ctrl.Result{}, err
-		}
-
-		desiredPolicyNames := make(map[string]struct{}, len(desiredPolicies))
-		for _, desiredPolicy := range desiredPolicies {
-			desiredPolicyNames[desiredPolicy.Name] = struct{}{}
-
-			policy := envoygatewayv1alpha1.EnvoyPatchPolicy{ObjectMeta: metav1.ObjectMeta{
-				Namespace: desiredPolicy.Namespace,
-				Name:      desiredPolicy.Name,
-			}}
-
-			result, err := controllerutil.CreateOrUpdate(ctx, downstreamStrategy.GetClient(), &policy, func() error {
-				if policy.Labels == nil {
-					policy.Labels = make(map[string]string)
-				}
-				policy.Labels[tppManagedLabel] = labelValueTrue
-				policy.Spec = desiredPolicy.Spec
-				return nil
-			})
-			if err != nil {
-				return ctrl.Result{}, fmt.Errorf("failed to create or update envoypatchpolicy %s/%s: %w", policy.Namespace, policy.Name, err)
-			}
-			logger.Info("applied envoypatchpolicy to downstream cluster", jsonKeyNamespace, policy.Namespace, jsonKeyName, policy.Name, "result", result)
-		}
-
-		// Clean up stale EPPs. All EPPs written by this controller are named
-		// "tpp-<gateway-name>"; other controllers use different prefixes (e.g.
-		// "connector-<name>" from the HTTPProxy controller). Filtering by prefix
-		// avoids a label dependency and correctly handles deleted gateways whose EPP
-		// would be missed if we only iterated upstreamGateways.
-		// TODO: once all existing EPPs carry tppManagedLabel (stamped above on every
-		// CreateOrUpdate), switch this List to use a label selector and drop the
-		// prefix check.
-		var existingPolicies envoygatewayv1alpha1.EnvoyPatchPolicyList
-		if err := downstreamStrategy.GetClient().List(
-			ctx,
-			&existingPolicies,
-			client.InNamespace(downstreamNamespaceName),
-		); err != nil {
-			return ctrl.Result{}, fmt.Errorf("failed to list envoypatchpolicies: %w", err)
-		}
-
-		for i := range existingPolicies.Items {
-			existing := &existingPolicies.Items[i]
-			if !strings.HasPrefix(existing.Name, tppEnvoyPatchPolicyPrefix) {
-				continue
-			}
-			if _, ok := desiredPolicyNames[existing.Name]; ok {
-				continue
-			}
-			if err := downstreamStrategy.GetClient().Delete(ctx, existing); err != nil {
-				return ctrl.Result{}, fmt.Errorf("failed to delete stale envoypatchpolicy %s/%s: %w", existing.Namespace, existing.Name, err)
-			}
-			logger.Info("deleted stale envoypatchpolicy from downstream cluster", jsonKeyNamespace, existing.Namespace, jsonKeyName, existing.Name)
-		}
+	var upstreamHTTPProxies networkingv1alpha.HTTPProxyList
+	if err := cl.GetClient().List(ctx, &upstreamHTTPProxies, client.InNamespace(req.Namespace)); err != nil {
+		return ctrl.Result{}, err
 	}
+
+	r.collectTrafficProtectionPolicyAttachments(ctx, trafficProtectionPolicies, upstreamGateways.Items, upstreamHTTPRoutes.Items, upstreamHTTPProxies.Items)
+
+	r.setProgrammedConditionsFromDownstream(ctx, downstreamNamespaceName, trafficProtectionPolicies)
 
 	if err := r.updateTPPAncestorsStatus(ctx, cl.GetClient(), trafficProtectionPolicies, originalTrafficProtectionPolicies); err != nil {
 		return ctrl.Result{}, err
 	}
 
 	return ctrl.Result{}, nil
+}
+
+// setProgrammedConditionsFromDownstream mirrors edge-applied Programmed status
+// from the downstream (Karmada-aggregated) TPP onto each upstream ancestor.
+// Accepted remains attach-only; Programmed means the current generation is live
+// on all edges (AND aggregation encodes M/N in the message when partial).
+func (r *TrafficProtectionPolicyReconciler) setProgrammedConditionsFromDownstream(
+	ctx context.Context,
+	downstreamNamespaceName string,
+	policies []*policyContext,
+) {
+	logger := log.FromContext(ctx)
+	downstreamClient := r.DownstreamCluster.GetClient()
+	controllerName := string(r.Config.Gateway.ControllerName)
+
+	for _, policy := range policies {
+		downstreamTPP := &networkingv1alpha.TrafficProtectionPolicy{}
+		err := downstreamClient.Get(ctx, client.ObjectKey{
+			Namespace: downstreamNamespaceName,
+			Name:      policy.Name,
+		}, downstreamTPP)
+		if client.IgnoreNotFound(err) != nil {
+			logger.Error(err, "failed to get downstream trafficprotectionpolicy", "name", policy.Name, "namespace", downstreamNamespaceName)
+		}
+
+		for _, targetRef := range policy.Spec.TargetRefs {
+			ancestorRef := getAncestorRefForTarget(policy.Namespace, targetRef)
+			accepted := findAncestorCondition(policy.Status.Ancestors, controllerName, ancestorRef, string(gatewayv1.PolicyConditionAccepted))
+			if accepted == nil || accepted.Status != metav1.ConditionTrue {
+				continue
+			}
+
+			status, reason, message := programmedFromDownstream(downstreamTPP, err != nil, policy.Generation)
+			gatewaystatus.SetConditionForPolicyAncestor(
+				&policy.Status.PolicyStatus,
+				ancestorRef,
+				controllerName,
+				gatewayv1.PolicyConditionType(conditionTypeProgrammed),
+				status,
+				reason,
+				message,
+				policy.Generation,
+			)
+		}
+	}
+}
+
+// programmedFromDownstream derives the upstream Programmed condition from the
+// downstream (edge/Karmada-aggregated) TPP status. Karmada AND-aggregation
+// collapses per-edge feedback into ancestor Programmed conditions whose
+// messages carry M/N when partial.
+func programmedFromDownstream(
+	downstreamTPP *networkingv1alpha.TrafficProtectionPolicy,
+	missing bool,
+	desiredGeneration int64,
+) (metav1.ConditionStatus, gatewayv1.PolicyConditionReason, string) {
+	pendingMsg := fmt.Sprintf("Waiting for policy generation %d to be programmed on edges", desiredGeneration)
+	if missing || downstreamTPP == nil {
+		return metav1.ConditionFalse, PolicyReasonProgrammedPending, pendingMsg
+	}
+
+	var best *metav1.Condition
+	for i := range downstreamTPP.Status.Ancestors {
+		cond := apimeta.FindStatusCondition(downstreamTPP.Status.Ancestors[i].Conditions, conditionTypeProgrammed)
+		if cond == nil {
+			continue
+		}
+		if best == nil || cond.Status != metav1.ConditionTrue {
+			best = cond
+		}
+	}
+	if best == nil {
+		return metav1.ConditionFalse, PolicyReasonProgrammedPending, pendingMsg
+	}
+	if best.ObservedGeneration < desiredGeneration {
+		return metav1.ConditionFalse, PolicyReasonProgrammedPending, pendingMsg
+	}
+
+	message := best.Message
+	if message == "" {
+		message = fmt.Sprintf("Policy generation %d programmed on edges", desiredGeneration)
+	}
+
+	if best.Status == metav1.ConditionTrue {
+		return metav1.ConditionTrue, PolicyReasonProgrammed, message
+	}
+
+	reason := PolicyReasonProgrammedPending
+	if best.Reason == string(PolicyReasonProgrammedPartialFailure) {
+		reason = PolicyReasonProgrammedPartialFailure
+	}
+	return metav1.ConditionFalse, reason, message
+}
+
+func findAncestorCondition(
+	ancestors []gatewayv1.PolicyAncestorStatus,
+	controllerName string,
+	ancestorRef *gatewayv1alpha2.ParentReference,
+	conditionType string,
+) *metav1.Condition {
+	for i := range ancestors {
+		ancestor := &ancestors[i]
+		if string(ancestor.ControllerName) != controllerName {
+			continue
+		}
+		if !equality.Semantic.DeepEqual(ancestor.AncestorRef, *ancestorRef) {
+			continue
+		}
+		return apimeta.FindStatusCondition(ancestor.Conditions, conditionType)
+	}
+	return nil
 }
 
 func (r *TrafficProtectionPolicyReconciler) getTrafficProtectionPolicyContexts(
@@ -313,6 +298,7 @@ func (r *TrafficProtectionPolicyReconciler) updateTPPAncestorsStatus(
 		}
 
 		if !equality.Semantic.DeepEqual(originalPolicy.Status, policy.Status) {
+			emitTPPActivityEvents(ctx, upstreamClient, policy.TrafficProtectionPolicy, &originalPolicy)
 			originalPolicy.Status = policy.Status
 			if err := upstreamClient.Status().Update(ctx, &originalPolicy); err != nil {
 				return fmt.Errorf("failed to update status for trafficprotectionpolicy %s/%s: %w", policy.Namespace, policy.Name, err)
@@ -327,260 +313,6 @@ func (r *TrafficProtectionPolicyReconciler) updateTPPAncestorsStatus(
 
 }
 
-// checkHTTPSListenerCertificatesReady checks if all TLS certificates for HTTPS listeners
-// referenced by the policy attachments are ready. This ensures that EnvoyPatchPolicies
-// are not created until the filter_chains are materialized by Envoy Gateway.
-func (r *TrafficProtectionPolicyReconciler) checkHTTPSListenerCertificatesReady(
-	ctx context.Context,
-	downstreamNamespaceName string,
-	attachments []policyAttachment,
-) (*certificateReadinessResult, error) {
-	logger := log.FromContext(ctx)
-
-	// Collect unique HTTPS listeners from attachments, skipping default
-	// listeners that use a shared TLS secret (which is pre-provisioned and
-	// doesn't have a per-listener Certificate resource).
-	httpsListeners := make(map[string]struct{})
-	for _, attachment := range attachments {
-		if attachment.Listener != nil {
-			// Check if this specific listener is HTTPS
-			for _, l := range attachment.Gateway.Spec.Listeners {
-				if l.Name == *attachment.Listener && l.Protocol == gatewayv1.HTTPSProtocolType {
-					if gatewayutil.IsDefaultListener(l) && r.Config.Gateway.HasDefaultListenerTLSSecret() {
-						continue
-					}
-					certName := resourcename.GetValidDNS1123Name(fmt.Sprintf("%s-%s", attachment.Gateway.Name, l.Name))
-					httpsListeners[certName] = struct{}{}
-				}
-			}
-		} else {
-			// Policy targets all listeners on the gateway
-			for _, l := range attachment.Gateway.Spec.Listeners {
-				if l.Protocol == gatewayv1.HTTPSProtocolType {
-					if gatewayutil.IsDefaultListener(l) && r.Config.Gateway.HasDefaultListenerTLSSecret() {
-						continue
-					}
-					certName := resourcename.GetValidDNS1123Name(fmt.Sprintf("%s-%s", attachment.Gateway.Name, l.Name))
-					httpsListeners[certName] = struct{}{}
-				}
-			}
-		}
-	}
-
-	if len(httpsListeners) == 0 {
-		return &certificateReadinessResult{AllReady: true}, nil
-	}
-
-	var pendingListeners []string
-	downstreamClient := r.DownstreamCluster.GetClient()
-
-	for certName := range httpsListeners {
-		certificate := newUnstructuredForGVK(certificateGVK)
-		certKey := client.ObjectKey{
-			Namespace: downstreamNamespaceName,
-			Name:      certName,
-		}
-
-		if err := downstreamClient.Get(ctx, certKey, certificate); err != nil {
-			if apierrors.IsNotFound(err) {
-				logger.Info("certificate not found, waiting for it to be created", "certificate", certName)
-				pendingListeners = append(pendingListeners, certName)
-				continue
-			}
-			return nil, fmt.Errorf("failed to get certificate %s: %w", certName, err)
-		}
-
-		// Check if the certificate is ready
-		isReady, err := isCertificateReady(certificate)
-		if err != nil {
-			return nil, fmt.Errorf("failed to check if certificate %s is ready: %w", certName, err)
-		}
-
-		if !isReady {
-			logger.Info("certificate is not ready, waiting", "certificate", certName)
-			pendingListeners = append(pendingListeners, certName)
-		}
-	}
-
-	return &certificateReadinessResult{
-		AllReady:         len(pendingListeners) == 0,
-		PendingListeners: pendingListeners,
-	}, nil
-}
-
-// setWaitingForCertificatesConditions sets the Accepted=False condition with reason
-// WaitingForCertificates on all policies that have attachments to HTTPS listeners
-// that are waiting for certificates.
-func (r *TrafficProtectionPolicyReconciler) setWaitingForCertificatesConditions(
-	policies []*policyContext,
-	pendingListeners []string,
-) {
-	message := fmt.Sprintf("Waiting for TLS certificates to become ready: %s", strings.Join(pendingListeners, ", "))
-
-	for _, policy := range policies {
-		for _, targetRef := range policy.Spec.TargetRefs {
-			ancestorRef := getAncestorRefForTarget(policy.Namespace, targetRef)
-			gatewaystatus.SetConditionForPolicyAncestor(
-				&policy.Status.PolicyStatus,
-				ancestorRef,
-				string(r.Config.Gateway.ControllerName),
-				gatewayv1.PolicyConditionAccepted,
-				metav1.ConditionFalse,
-				PolicyReasonWaitingForCertificates,
-				message,
-				policy.Generation,
-			)
-		}
-	}
-}
-
-// checkHTTPSListenersProgrammed checks if all referenced HTTPS listeners are
-// Programmed=True on the upstream Gateway status.
-func (r *TrafficProtectionPolicyReconciler) checkHTTPSListenersProgrammed(
-	attachments []policyAttachment,
-) *certificateReadinessResult {
-	pendingListenersSet := sets.New[string]()
-
-	for _, attachment := range attachments {
-		if attachment.Listener != nil {
-			for _, l := range attachment.Gateway.Spec.Listeners {
-				if l.Name != *attachment.Listener || l.Protocol != gatewayv1.HTTPSProtocolType {
-					continue
-				}
-				if !gatewayListenerProgrammed(attachment.Gateway.Status.Listeners, l.Name) {
-					pendingListenersSet.Insert(fmt.Sprintf("%s/%s", attachment.Gateway.Name, l.Name))
-				}
-			}
-			continue
-		}
-
-		for _, l := range attachment.Gateway.Spec.Listeners {
-			if l.Protocol != gatewayv1.HTTPSProtocolType {
-				continue
-			}
-			if !gatewayListenerProgrammed(attachment.Gateway.Status.Listeners, l.Name) {
-				pendingListenersSet.Insert(fmt.Sprintf("%s/%s", attachment.Gateway.Name, l.Name))
-			}
-		}
-	}
-
-	pendingListeners := sets.List(pendingListenersSet)
-	sort.Strings(pendingListeners)
-
-	return &certificateReadinessResult{
-		AllReady:         len(pendingListeners) == 0,
-		PendingListeners: pendingListeners,
-	}
-}
-
-// setWaitingForListenersProgrammedConditions sets Accepted=False with reason
-// WaitingForListenersProgrammed while HTTPS listeners are not yet Programmed=True.
-func (r *TrafficProtectionPolicyReconciler) setWaitingForListenersProgrammedConditions(
-	policies []*policyContext,
-	pendingListeners []string,
-) {
-	message := fmt.Sprintf("Waiting for HTTPS listeners to become Programmed=True: %s", strings.Join(pendingListeners, ", "))
-
-	for _, policy := range policies {
-		for _, targetRef := range policy.Spec.TargetRefs {
-			ancestorRef := getAncestorRefForTarget(policy.Namespace, targetRef)
-			gatewaystatus.SetConditionForPolicyAncestor(
-				&policy.Status.PolicyStatus,
-				ancestorRef,
-				string(r.Config.Gateway.ControllerName),
-				gatewayv1.PolicyConditionAccepted,
-				metav1.ConditionFalse,
-				PolicyReasonWaitingForListenersProgrammed,
-				message,
-				policy.Generation,
-			)
-		}
-	}
-}
-
-func (r *TrafficProtectionPolicyReconciler) ensureHTTPCorazaListenerFilter(ctx context.Context) error {
-	envoyPatchPolicy := &envoygatewayv1alpha1.EnvoyPatchPolicy{
-		ObjectMeta: metav1.ObjectMeta{
-			Namespace: r.Config.Gateway.DownstreamGatewayNamespace,
-			Name:      "coraza-tcp-80",
-		},
-	}
-
-	corazaConfigBytes, err := r.getCorazaListenerFilterConfig()
-	if err != nil {
-		return err
-	}
-
-	result, err := controllerutil.CreateOrUpdate(ctx, r.DownstreamCluster.GetClient(), envoyPatchPolicy, func() error {
-		envoyPatchPolicy.Spec = envoygatewayv1alpha1.EnvoyPatchPolicySpec{
-			TargetRef: gatewayv1.LocalPolicyTargetReference{
-				Group: gatewayv1.GroupName,
-				Kind:  "GatewayClass",
-				Name:  gatewayv1.ObjectName(r.Config.Gateway.DownstreamGatewayClassName),
-			},
-			Type: envoygatewayv1alpha1.JSONPatchEnvoyPatchType,
-			JSONPatches: []envoygatewayv1alpha1.EnvoyJSONPatchConfig{
-				{
-					Type: "type.googleapis.com/envoy.config.listener.v3.Listener",
-					Name: fmt.Sprintf("tcp-%d", DefaultHTTPPort),
-					Operation: envoygatewayv1alpha1.JSONPatchOperation{
-						Op:    jsonPatchOpAdd,
-						Path:  ptr.To("/default_filter_chain/filters/0/typed_config/http_filters/0"),
-						Value: &apiextensionsv1.JSON{Raw: corazaConfigBytes},
-					},
-				},
-			},
-		}
-		return nil
-	})
-
-	if err != nil {
-		return fmt.Errorf("failed to create or update envoypatchpolicy for http listener: %w", err)
-	}
-
-	logger := log.FromContext(ctx)
-	logger.Info("ensured envoypatchpolicy for http listener", jsonKeyNamespace, envoyPatchPolicy.Namespace, jsonKeyName, envoyPatchPolicy.Name, "result", result)
-
-	return nil
-}
-
-func (r TrafficProtectionPolicyReconciler) getCorazaListenerFilterConfig() ([]byte, error) {
-	directiveBytes, err := json.Marshal(r.Config.Gateway.Coraza.ListenerDirectives)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal coraza directives: %w", err)
-	}
-
-	corazaConfig := map[string]any{
-		jsonKeyName: r.Config.Gateway.Coraza.FilterName,
-		"disabled":  true,
-		jsonKeyTypedConfig: map[string]any{
-			jsonKeyAtType:  "type.googleapis.com/envoy.extensions.filters.http.golang.v3alpha.Config",
-			"library_id":   r.Config.Gateway.Coraza.LibraryID,
-			"library_path": r.Config.Gateway.Coraza.LibraryPath,
-			"plugin_name":  r.Config.Gateway.Coraza.PluginName,
-			"plugin_config": map[string]any{
-				jsonKeyAtType: "type.googleapis.com/xds.type.v3.TypedStruct",
-				"value": map[string]any{
-					"log_format":                     "json",
-					"trace_route_metadata_extractor": r.Config.Gateway.Coraza.TraceRouteMetadataExtractor,
-					"directives": sanitizeJSONPath(fmt.Sprintf(`{
-						"coraza": {
-							"simple_directives": %s
-						}
-					}`, string(directiveBytes))),
-					"default_directive": "coraza",
-				},
-			},
-		},
-	}
-
-	corazaConfigBytes, err := json.Marshal(corazaConfig)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal coraza config: %w", err)
-	}
-	return corazaConfigBytes, nil
-}
-
 type policyContext struct {
 	*networkingv1alpha.TrafficProtectionPolicy
 }
@@ -593,6 +325,7 @@ type policyGatewayTargetContext struct {
 
 type policyRouteTargetContext struct {
 	*gatewayv1.HTTPRoute
+	proxyRuleNames       sets.Set[string]
 	attached             bool
 	attachedToRouteRules sets.Set[string]
 }
@@ -602,6 +335,7 @@ func (r *TrafficProtectionPolicyReconciler) collectTrafficProtectionPolicyAttach
 	trafficProtectionPolicies []*policyContext,
 	upstreamGateways []gatewayv1.Gateway,
 	upstreamHTTPRoutes []gatewayv1.HTTPRoute,
+	upstreamHTTPProxies []networkingv1alpha.HTTPProxy,
 ) []policyAttachment {
 	logger := log.FromContext(ctx)
 
@@ -615,10 +349,16 @@ func (r *TrafficProtectionPolicyReconciler) collectTrafficProtectionPolicyAttach
 	routeMapSize := len(upstreamHTTPRoutes)
 	gatewayMapSize := len(upstreamGateways)
 
+	proxiesByName := make(map[string]*networkingv1alpha.HTTPProxy, len(upstreamHTTPProxies))
+	for i := range upstreamHTTPProxies {
+		proxiesByName[upstreamHTTPProxies[i].Name] = &upstreamHTTPProxies[i]
+	}
+
 	routeMap := make(map[client.ObjectKey]*policyRouteTargetContext, routeMapSize)
 	for i, route := range upstreamHTTPRoutes {
 		routeMap[client.ObjectKeyFromObject(&route)] = &policyRouteTargetContext{
-			HTTPRoute: &upstreamHTTPRoutes[i],
+			HTTPRoute:      &upstreamHTTPRoutes[i],
+			proxyRuleNames: httpProxyRuleNames(&upstreamHTTPRoutes[i], proxiesByName),
 		}
 	}
 
@@ -752,7 +492,7 @@ func (r *TrafficProtectionPolicyReconciler) processTrafficProtectionPolicyForHTT
 		}
 		route.attached = true
 	} else {
-		found := false
+		found := route.proxyRuleNames.Has(string(*targetRef.SectionName))
 		for _, r := range route.Spec.Rules {
 			if r.Name != nil && *r.Name == *targetRef.SectionName {
 				found = true
@@ -980,256 +720,6 @@ func (r *TrafficProtectionPolicyReconciler) processTrafficProtectionPolicyForGat
 	return policyAttachments
 }
 
-func (r *TrafficProtectionPolicyReconciler) getDesiredEnvoyPatchPolicies(
-	downstreamNamespaceName string,
-	policyAttachments []policyAttachment,
-) ([]*envoygatewayv1alpha1.EnvoyPatchPolicy, error) {
-	attachmentsByGateway := make(map[string][]policyAttachment, len(policyAttachments))
-	gatewayKeys := make([]string, 0)
-
-	for _, attachment := range policyAttachments {
-		key := client.ObjectKeyFromObject(attachment.Gateway).String()
-		if _, ok := attachmentsByGateway[key]; !ok {
-			gatewayKeys = append(gatewayKeys, key)
-		}
-
-		attachmentsByGateway[key] = append(attachmentsByGateway[key], attachment)
-	}
-
-	sort.Strings(gatewayKeys)
-
-	desiredPolicies := make([]*envoygatewayv1alpha1.EnvoyPatchPolicy, 0, len(attachmentsByGateway))
-
-	for _, key := range gatewayKeys {
-		attachmentsForGateway := attachmentsByGateway[key]
-
-		tlsFilterChainsWithAttachments := sets.New[string]()
-
-		var jsonPatches []envoygatewayv1alpha1.EnvoyJSONPatchConfig
-		for _, policyAttachment := range attachmentsForGateway {
-			if len(policyAttachment.CorazaDirectives) == 0 {
-				// Shouldn't happen until other types of rulesets are added
-				continue
-			}
-			vhostConstraints := getVHostConstraintForGateway(downstreamNamespaceName, policyAttachment.Gateway)
-
-			if policyAttachment.Listener != nil {
-				vhostConstraints += fmt.Sprintf(` && @.metadata.filter_metadata["envoy-gateway"].resources[0].sectionName=="%s"`, *policyAttachment.Listener)
-			}
-
-			var routeConstraints string
-			if policyAttachment.Route != nil {
-				var sectionNameConstraint string
-				if policyAttachment.RuleSectionName != nil {
-					sectionNameConstraint = fmt.Sprintf(` && @.metadata.filter_metadata["envoy-gateway"].resources[0].sectionName=="%s"`, *policyAttachment.RuleSectionName)
-				}
-
-				routeConstraints = fmt.Sprintf(` && @.metadata.filter_metadata["envoy-gateway"].resources[0].kind=="%s" && @.metadata.filter_metadata["envoy-gateway"].resources[0].namespace=="%s" && @.metadata.filter_metadata["envoy-gateway"].resources[0].name=="%s"%s`,
-					KindHTTPRoute,
-					downstreamNamespaceName,
-					policyAttachment.Route.Name,
-					sectionNameConstraint,
-				)
-			}
-
-			httpRoutesJSONPath := sanitizeJSONPath(
-				// @.bogus is here to ensure a list is collected by the JSONPath parser,
-				// otherwise a single element is returned. Need to look into the
-				// implementation to see why this happens.
-				fmt.Sprintf(`..virtual_hosts[?(%s)]..routes[?(!@.bogus)%s]`,
-					vhostConstraints,
-					routeConstraints,
-				),
-			)
-
-			datumGatewayMetadata := map[string]any{
-				"resources": []map[string]any{
-					{
-						jsonKeyKind:      KindTrafficProtectionPolicy,
-						jsonKeyNamespace: policyAttachment.Policy.Namespace,
-						jsonKeyName:      policyAttachment.Policy.Name,
-						"mode":           policyAttachment.Policy.Spec.Mode,
-					},
-				},
-			}
-
-			datumGatewayMetadataBytes, err := json.Marshal(datumGatewayMetadata)
-			if err != nil {
-				return nil, fmt.Errorf("failed to marshal TrafficProtectionPolicy metadata: %w", err)
-			}
-
-			jsonPatches = append(jsonPatches, envoygatewayv1alpha1.EnvoyJSONPatchConfig{
-				Type: routeConfigurationTypeURL,
-				Name: fmt.Sprintf("http-%d", DefaultHTTPPort),
-				Operation: envoygatewayv1alpha1.JSONPatchOperation{
-					Op:       jsonPatchOpAdd,
-					JSONPath: ptr.To(httpRoutesJSONPath),
-					Path:     ptr.To("/metadata/filter_metadata/datum-gateway"),
-					Value:    &apiextensionsv1.JSON{Raw: datumGatewayMetadataBytes},
-				},
-			})
-
-			directiveBytes, err := json.Marshal(policyAttachment.CorazaDirectives)
-			if err != nil {
-				return nil, fmt.Errorf("failed to marshal coraza directives: %w", err)
-			}
-
-			corazaConfig := map[string]any{
-				jsonKeyAtType: "type.googleapis.com/envoy.extensions.filters.http.golang.v3alpha.ConfigsPerRoute",
-				"plugins_config": map[string]any{
-					r.Config.Gateway.Coraza.PluginName: map[string]any{
-						"config": map[string]any{
-							jsonKeyAtType: "type.googleapis.com/xds.type.v3.TypedStruct",
-							"value": map[string]any{
-								"log_format": "json",
-								"directives": sanitizeJSONPath(fmt.Sprintf(`{
-									"coraza": {
-										"simple_directives": %s
-									}
-								}`, string(directiveBytes))),
-								"default_directive": "coraza",
-							},
-						},
-					},
-				},
-			}
-
-			corazaConfigBytes, err := json.Marshal(corazaConfig)
-			if err != nil {
-				return nil, fmt.Errorf("failed to marshal coraza config: %w", err)
-			}
-
-			if policyAttachment.Listener == nil {
-				// Attach to all HTTP listeners on the gateway, only requires a single patch
-				// as there's a single RouteConfiguration for http-80
-				jsonPatches = append(jsonPatches, envoygatewayv1alpha1.EnvoyJSONPatchConfig{
-					Type: routeConfigurationTypeURL,
-					Name: fmt.Sprintf("http-%d", DefaultHTTPPort),
-					Operation: envoygatewayv1alpha1.JSONPatchOperation{
-						Op:       jsonPatchOpAdd,
-						JSONPath: ptr.To(httpRoutesJSONPath),
-						Path:     ptr.To(fmt.Sprintf("/typed_per_filter_config/%s", r.Config.Gateway.Coraza.FilterName)),
-						Value:    &apiextensionsv1.JSON{Raw: corazaConfigBytes},
-					},
-				})
-
-				// Attach to all TLS listeners on the gateway
-				for _, listener := range policyAttachment.Gateway.Spec.Listeners {
-					if listener.Protocol != gatewayv1.HTTPSProtocolType {
-						continue
-					}
-
-					listenerRouteConfigName := fmt.Sprintf("%s/%s/%s", downstreamNamespaceName, policyAttachment.Gateway.Name, listener.Name)
-					tlsFilterChainsWithAttachments.Insert(listenerRouteConfigName)
-
-					jsonPatches = append(jsonPatches, envoygatewayv1alpha1.EnvoyJSONPatchConfig{
-						Type: routeConfigurationTypeURL,
-						Name: listenerRouteConfigName,
-						Operation: envoygatewayv1alpha1.JSONPatchOperation{
-							Op:       jsonPatchOpAdd,
-							JSONPath: ptr.To(httpRoutesJSONPath),
-							Path:     ptr.To("/metadata/filter_metadata/datum-gateway"),
-							Value:    &apiextensionsv1.JSON{Raw: datumGatewayMetadataBytes},
-						},
-					})
-
-					jsonPatches = append(jsonPatches, envoygatewayv1alpha1.EnvoyJSONPatchConfig{
-						Type: routeConfigurationTypeURL,
-						Name: listenerRouteConfigName,
-						Operation: envoygatewayv1alpha1.JSONPatchOperation{
-							Op:       jsonPatchOpAdd,
-							JSONPath: ptr.To(httpRoutesJSONPath),
-							Path:     ptr.To(fmt.Sprintf("/typed_per_filter_config/%s", r.Config.Gateway.Coraza.FilterName)),
-							Value:    &apiextensionsv1.JSON{Raw: corazaConfigBytes},
-						},
-					})
-
-				}
-			} else {
-
-				var listener gatewayv1.Listener
-				for _, l := range policyAttachment.Gateway.Spec.Listeners {
-					if l.Name == *policyAttachment.Listener {
-						listener = l
-						break
-					}
-				}
-
-				listenerRouteConfigName := fmt.Sprintf("http-%d", DefaultHTTPPort)
-				if listener.Protocol == gatewayv1.HTTPSProtocolType {
-					listenerRouteConfigName = fmt.Sprintf("%s/%s/%s", downstreamNamespaceName, policyAttachment.Gateway.Name, *policyAttachment.Listener)
-					listenerRouteConfigName := fmt.Sprintf("%s/%s/%s", downstreamNamespaceName, policyAttachment.Gateway.Name, *policyAttachment.Listener)
-					tlsFilterChainsWithAttachments.Insert(listenerRouteConfigName)
-				}
-
-				jsonPatches = append(jsonPatches, envoygatewayv1alpha1.EnvoyJSONPatchConfig{
-					Type: routeConfigurationTypeURL,
-					Name: listenerRouteConfigName,
-					Operation: envoygatewayv1alpha1.JSONPatchOperation{
-						Op:       jsonPatchOpAdd,
-						JSONPath: ptr.To(httpRoutesJSONPath),
-						Path:     ptr.To(fmt.Sprintf("/typed_per_filter_config/%s", r.Config.Gateway.Coraza.FilterName)),
-						Value:    &apiextensionsv1.JSON{Raw: corazaConfigBytes},
-					},
-				})
-
-			}
-		}
-
-		// Process TLS filter chains with attachments
-
-		corazaConfigBytes, err := r.getCorazaListenerFilterConfig()
-		if err != nil {
-			return nil, err
-		}
-
-		for _, filterChainName := range sets.List(tlsFilterChainsWithAttachments) {
-			jsonPatches = append(jsonPatches, envoygatewayv1alpha1.EnvoyJSONPatchConfig{
-				Type: "type.googleapis.com/envoy.config.listener.v3.Listener",
-				Name: fmt.Sprintf("tcp-%d", DefaultHTTPSPort),
-				Operation: envoygatewayv1alpha1.JSONPatchOperation{
-					Op:       jsonPatchOpAdd,
-					JSONPath: ptr.To(fmt.Sprintf(`..filter_chains[?(@.name=="%s")]`, filterChainName)),
-					Path:     ptr.To("/filters/0/typed_config/http_filters/0"),
-					Value:    &apiextensionsv1.JSON{Raw: corazaConfigBytes},
-				},
-			})
-		}
-
-		if len(jsonPatches) == 0 {
-			continue
-		}
-
-		policyName := tppEnvoyPatchPolicyPrefix + attachmentsForGateway[0].Gateway.Name
-		desiredPolicies = append(desiredPolicies, &envoygatewayv1alpha1.EnvoyPatchPolicy{
-			ObjectMeta: metav1.ObjectMeta{
-				Namespace: downstreamNamespaceName,
-				Name:      policyName,
-			},
-			Spec: envoygatewayv1alpha1.EnvoyPatchPolicySpec{
-				TargetRef: gatewayv1.LocalPolicyTargetReference{
-					Group: gatewayv1.GroupName,
-					Kind:  "GatewayClass",
-					Name:  gatewayv1.ObjectName(r.Config.Gateway.DownstreamGatewayClassName),
-				},
-				Type:        envoygatewayv1alpha1.JSONPatchEnvoyPatchType,
-				JSONPatches: jsonPatches,
-			},
-		})
-	}
-
-	return desiredPolicies, nil
-}
-
-func getVHostConstraintForGateway(namespace string, gateway *gatewayv1.Gateway) string {
-	return fmt.Sprintf(
-		`@.metadata.filter_metadata["envoy-gateway"].resources[0].kind=="%s" && @.metadata.filter_metadata["envoy-gateway"].resources[0].namespace=="%s" && @.metadata.filter_metadata["envoy-gateway"].resources[0].name=="%s"`,
-		KindGateway,
-		namespace,
-		gateway.Name,
-	)
-}
-
 // paranoiaLevelsResolveError returns a resolve error when a policy's OWASP CRS
 // paranoia levels are inverted (detection below blocking). CRS rule 901500 fails
 // closed on this configuration and denies every request with HTTP 500 before any
@@ -1322,64 +812,50 @@ func (r *TrafficProtectionPolicyReconciler) getCorazaDirectivesForTrafficProtect
 	return directives
 }
 
-func sanitizeJSONPath(jsonPath string) string {
-	jsonPath = strings.ReplaceAll(jsonPath, "\n", "")
-	return strings.ReplaceAll(jsonPath, "\t", "")
-}
-
 // SetupWithManager sets up the controller with the Manager.
 func (r *TrafficProtectionPolicyReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	r.mgr = mgr
 
-	// Watch downstream Certificates for readiness changes
-	downstreamCertificateSource := source.TypedKind(
+	// Watch downstream TPP status so edge Programmed feedback requeues upstream.
+	downstreamTPPSource := source.TypedKind(
 		r.DownstreamCluster.GetCache(),
-		newUnstructuredForGVK(certificateGVK),
-		r.enqueuePoliciesForCertificate(),
+		&networkingv1alpha.TrafficProtectionPolicy{},
+		r.enqueuePoliciesForDownstreamTPP(),
 	)
 
 	return mcbuilder.TypedControllerManagedBy[NamespaceReconcileRequest](mgr).
 		Watches(&networkingv1alpha.TrafficProtectionPolicy{}, EnqueueRequestForObjectNamespace).
 		Watches(&gatewayv1.Gateway{}, EnqueueRequestForObjectNamespace).
 		Watches(&gatewayv1.HTTPRoute{}, EnqueueRequestForObjectNamespace).
-		WatchesRawSource(downstreamCertificateSource).
+		Watches(&networkingv1alpha.HTTPProxy{}, EnqueueRequestForObjectNamespace).
+		WatchesRawSource(downstreamTPPSource).
 		Named("trafficprotectionpolicy").
 		Complete(r)
 }
 
-// enqueuePoliciesForCertificate returns an event handler that enqueues a reconcile
-// request for the upstream namespace when a certificate becomes ready.
-func (r *TrafficProtectionPolicyReconciler) enqueuePoliciesForCertificate() handler.TypedEventHandler[*unstructured.Unstructured, NamespaceReconcileRequest] {
-	return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, cert *unstructured.Unstructured) []NamespaceReconcileRequest {
+// enqueuePoliciesForDownstreamTPP enqueues the upstream namespace when a
+// downstream TrafficProtectionPolicy status changes (edge Programmed feedback).
+func (r *TrafficProtectionPolicyReconciler) enqueuePoliciesForDownstreamTPP() handler.TypedEventHandler[*networkingv1alpha.TrafficProtectionPolicy, NamespaceReconcileRequest] {
+	return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, tpp *networkingv1alpha.TrafficProtectionPolicy) []NamespaceReconcileRequest {
 		logger := log.FromContext(ctx)
 
-		// Check if certificate is ready - only enqueue when it becomes ready
-		isReady, err := isCertificateReady(cert)
-		if err != nil || !isReady {
-			return nil
-		}
-
-		// Get the downstream namespace to find upstream owner labels
-		downstreamNamespaceName := cert.GetNamespace()
+		downstreamNamespaceName := tpp.GetNamespace()
 		var downstreamNamespace corev1.Namespace
 		if err := r.DownstreamCluster.GetClient().Get(ctx, client.ObjectKey{Name: downstreamNamespaceName}, &downstreamNamespace); err != nil {
-			logger.Error(err, "failed to get downstream namespace for certificate", "certificate", cert.GetName(), jsonKeyNamespace, downstreamNamespaceName)
+			logger.Error(err, "failed to get downstream namespace for trafficprotectionpolicy", "name", tpp.GetName(), jsonKeyNamespace, downstreamNamespaceName)
 			return nil
 		}
 
-		// Extract upstream namespace from labels
 		upstreamNamespace := downstreamNamespace.Labels[downstreamclient.UpstreamOwnerNamespaceLabel]
+		if upstreamNamespace == "" {
+			upstreamNamespace = tpp.Labels[downstreamclient.UpstreamOwnerNamespaceLabel]
+		}
 		if upstreamNamespace == "" {
 			return nil
 		}
 
-		// Extract the upstream cluster name so the reconciler can look up the
-		// cluster via mcsingle.Get (which requires clusterName == "single").
-		// The label value is "cluster-<name>" with "/" replaced by "_".
 		clusterLabel := downstreamNamespace.Labels[downstreamclient.UpstreamOwnerClusterNameLabel]
 		upstreamClusterName := multicluster.ClusterName(downstreamclient.UpstreamClusterNameFromLabel(clusterLabel))
-
-		logger.Info("certificate became ready, enqueueing reconcile", "certificate", cert.GetName(), "upstreamNamespace", upstreamNamespace)
 
 		return []NamespaceReconcileRequest{{
 			Namespace:   upstreamNamespace,
@@ -1418,4 +894,22 @@ func (r NamespaceReconcileRequest) Cluster() multicluster.ClusterName {
 func (r NamespaceReconcileRequest) WithCluster(name multicluster.ClusterName) NamespaceReconcileRequest {
 	r.ClusterName = name
 	return r
+}
+
+func httpProxyRuleNames(route *gatewayv1.HTTPRoute, proxiesByName map[string]*networkingv1alpha.HTTPProxy) sets.Set[string] {
+	proxyName := route.Name
+	if owner := metav1.GetControllerOf(route); owner != nil && owner.Kind == "HTTPProxy" {
+		proxyName = owner.Name
+	}
+	proxy, ok := proxiesByName[proxyName]
+	if !ok {
+		return nil
+	}
+	names := make(sets.Set[string])
+	for _, rule := range proxy.Spec.Rules {
+		if rule.Name != nil {
+			names.Insert(string(*rule.Name))
+		}
+	}
+	return names
 }

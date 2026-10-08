@@ -16,6 +16,7 @@ import (
 
 	"go.datum.net/network-services-operator/internal/config"
 	"go.datum.net/network-services-operator/internal/validation"
+	webhookutil "go.datum.net/network-services-operator/internal/webhook"
 )
 
 // SetupBackendTrafficPolicyWebhookWithManager registers the webhook for BackendTrafficPolicy in the manager.
@@ -60,6 +61,10 @@ func (v *BackendTrafficPolicyCustomValidator) ValidateUpdate(ctx context.Context
 
 	log := logf.FromContext(ctx).WithValues("cluster", clusterName)
 	log.Info("Validating BackendTrafficPolicy", "name", newBackendTrafficPolicy.GetName(), "cluster", clusterName)
+
+	if webhookutil.SkipUpdateValidation(newBackendTrafficPolicy, oldBackendTrafficPolicy.Spec, newBackendTrafficPolicy.Spec) {
+		return nil, nil
+	}
 
 	if errs := validation.ValidateBackendTrafficPolicy(newBackendTrafficPolicy, v.validationOpts); len(errs) > 0 {
 		return nil, apierrors.NewInvalid(oldBackendTrafficPolicy.GetObjectKind().GroupVersionKind().GroupKind(), newBackendTrafficPolicy.GetName(), errs)

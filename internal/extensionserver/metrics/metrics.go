@@ -121,6 +121,27 @@ var (
 		},
 	)
 
+	// TPPCacheGeneration is the TrafficProtectionPolicy generation currently in
+	// the extension-server informer cache on this edge. Compare with
+	// TPPAppliedGeneration to see sync vs translate lag.
+	TPPCacheGeneration = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "nso_extension_tpp_cache_generation",
+			Help: "TrafficProtectionPolicy generation currently in the extension-server informer cache on this edge.",
+		},
+		[]string{"namespace", "name"},
+	)
+
+	// TPPAppliedGeneration is the TrafficProtectionPolicy generation last
+	// successfully applied via PostTranslateModify on this edge.
+	TPPAppliedGeneration = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "nso_extension_tpp_applied_generation",
+			Help: "TrafficProtectionPolicy generation last successfully applied via PostTranslateModify on this edge.",
+		},
+		[]string{"namespace", "name"},
+	)
+
 	// ConnectorClustersTotal counts total connector backend cluster replacements
 	// across all hook invocations. One increment = one cluster replaced with a
 	// STATIC internal-upstream cluster.
@@ -151,6 +172,16 @@ var (
 		prometheus.CounterOpts{
 			Name: "nso_extension_connector_offline_routes_total",
 			Help: "Total user-facing forwarding routes rewritten to a tunnel-offline 503 direct_response across all hook invocations.",
+		},
+	)
+
+	// VPCPodSocketBindTotal counts total clusters patched with a VRF
+	// SO_BINDTODEVICE socket option for a vpcPod HTTPProxy backend (#856),
+	// across all hook invocations.
+	VPCPodSocketBindTotal = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "nso_extension_vpcpod_socket_bind_total",
+			Help: "Total clusters patched with a VRF SO_BINDTODEVICE socket option for a vpcPod HTTPProxy backend across all hook invocations.",
 		},
 	)
 

@@ -130,6 +130,87 @@ func TestValidateBackendTrafficPolicy(t *testing.T) {
 				field.Forbidden(field.NewPath("spec", "healthCheck", "active"), ""),
 			},
 		},
+		"passive healthcheck is permitted": {
+			backendTrafficPolicy: &envoygatewayv1alpha1.BackendTrafficPolicy{
+				Spec: envoygatewayv1alpha1.BackendTrafficPolicySpec{
+					ClusterSettings: envoygatewayv1alpha1.ClusterSettings{
+						HealthCheck: &envoygatewayv1alpha1.HealthCheck{
+							Passive: &envoygatewayv1alpha1.PassiveHealthCheck{
+								Consecutive5xxErrors: ptr.To(uint32(5)),
+								BaseEjectionTime:     ptr.To(gatewayv1.Duration("30s")),
+								MaxEjectionPercent:   ptr.To(int32(50)),
+							},
+						},
+					},
+				},
+			},
+			expectedErrors: field.ErrorList{},
+		},
+		"passive healthcheck base ejection time too low": {
+			backendTrafficPolicy: &envoygatewayv1alpha1.BackendTrafficPolicy{
+				Spec: envoygatewayv1alpha1.BackendTrafficPolicySpec{
+					ClusterSettings: envoygatewayv1alpha1.ClusterSettings{
+						HealthCheck: &envoygatewayv1alpha1.HealthCheck{
+							Passive: &envoygatewayv1alpha1.PassiveHealthCheck{
+								BaseEjectionTime: ptr.To(gatewayv1.Duration("500ms")),
+							},
+						},
+					},
+				},
+			},
+			expectedErrors: field.ErrorList{
+				field.Invalid(field.NewPath("spec", "healthCheck", "passive", "baseEjectionTime"), "", ""),
+			},
+		},
+		"passive healthcheck interval too low": {
+			backendTrafficPolicy: &envoygatewayv1alpha1.BackendTrafficPolicy{
+				Spec: envoygatewayv1alpha1.BackendTrafficPolicySpec{
+					ClusterSettings: envoygatewayv1alpha1.ClusterSettings{
+						HealthCheck: &envoygatewayv1alpha1.HealthCheck{
+							Passive: &envoygatewayv1alpha1.PassiveHealthCheck{
+								Interval: ptr.To(gatewayv1.Duration("500ms")),
+							},
+						},
+					},
+				},
+			},
+			expectedErrors: field.ErrorList{
+				field.Invalid(field.NewPath("spec", "healthCheck", "passive", "interval"), "", ""),
+			},
+		},
+		"passive healthcheck max ejection percent too high": {
+			backendTrafficPolicy: &envoygatewayv1alpha1.BackendTrafficPolicy{
+				Spec: envoygatewayv1alpha1.BackendTrafficPolicySpec{
+					ClusterSettings: envoygatewayv1alpha1.ClusterSettings{
+						HealthCheck: &envoygatewayv1alpha1.HealthCheck{
+							Passive: &envoygatewayv1alpha1.PassiveHealthCheck{
+								MaxEjectionPercent: ptr.To(int32(101)),
+							},
+						},
+					},
+				},
+			},
+			expectedErrors: field.ErrorList{
+				field.Invalid(field.NewPath("spec", "healthCheck", "passive", "maxEjectionPercent"), "", ""),
+			},
+		},
+		"passive healthcheck always eject with zero percent is rejected": {
+			backendTrafficPolicy: &envoygatewayv1alpha1.BackendTrafficPolicy{
+				Spec: envoygatewayv1alpha1.BackendTrafficPolicySpec{
+					ClusterSettings: envoygatewayv1alpha1.ClusterSettings{
+						HealthCheck: &envoygatewayv1alpha1.HealthCheck{
+							Passive: &envoygatewayv1alpha1.PassiveHealthCheck{
+								MaxEjectionPercent:     ptr.To(int32(0)),
+								AlwaysEjectOneEndpoint: ptr.To(true),
+							},
+						},
+					},
+				},
+			},
+			expectedErrors: field.ErrorList{
+				field.Invalid(field.NewPath("spec", "healthCheck", "passive", "maxEjectionPercent"), "", ""),
+			},
+		},
 		"tcp connect timeout too high": {
 			backendTrafficPolicy: &envoygatewayv1alpha1.BackendTrafficPolicy{
 				Spec: envoygatewayv1alpha1.BackendTrafficPolicySpec{

@@ -12,3 +12,5 @@ resources:
   - gateway-policy.yaml
   - httproute-policy.yaml
   - backendtlspolicy-policy.yaml
+  # gateway.envoyproxy.io kinds
+  - securitypolicy-policy.yaml

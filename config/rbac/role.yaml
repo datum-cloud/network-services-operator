@@ -62,6 +62,24 @@ rules:
   - update
   - watch
 - apiGroups:
+  - certificates.miloapis.com
+  resources:
+  - tlscertificates
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - certificates.miloapis.com
+  resources:
+  - tlscertificates/status
+  verbs:
+  - get
+- apiGroups:
   - coordination.k8s.io
   resources:
   - leases
@@ -126,6 +144,13 @@ rules:
   - list
   - watch
 - apiGroups:
+  - events.k8s.io
+  resources:
+  - events
+  verbs:
+  - create
+  - patch
+- apiGroups:
   - externaldns.k8s.io
   resources:
   - dnsendpoints
@@ -175,6 +200,17 @@ rules:
   verbs:
   - update
 - apiGroups:
+  - gateway.envoyproxy.io
+  resources:
+  - backends/status
+  - backendtrafficpolicies/status
+  - httproutefilters/status
+  - securitypolicies/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
   - gateway.networking.k8s.io
   resources:
   - backendtlspolicies
@@ -210,14 +246,26 @@ rules:
   - patch
   - update
 - apiGroups:
+  - locations.miloapis.com
+  resources:
+  - locations
+  - servinglocations
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
   - networking.datumapis.com
   resources:
   - connectoradvertisements
   - connectors
   - domains
+  - edgereachabilities
   - httpproxies
   - networkbindings
   - networkcontexts
+  - networkinterfaceclaims
+  - networkinterfaces
   - networkpolicies
   - networks
   - subnetclaims
@@ -240,6 +288,8 @@ rules:
   - httpproxies/finalizers
   - networkbindings/finalizers
   - networkcontexts/finalizers
+  - networkinterfaceclaims/finalizers
+  - networkinterfaces/finalizers
   - networkpolicies/finalizers
   - networks/finalizers
   - subnetclaims/finalizers
@@ -256,8 +306,11 @@ rules:
   - httpproxies/status
   - networkbindings/status
   - networkcontexts/status
+  - networkinterfaceclaims/status
+  - networkinterfaces/status
   - networkpolicies/status
   - networks/status
+  - networkservices/status
   - subnetclaims/status
   - subnets/status
   - trafficprotectionpolicies/status
@@ -269,6 +322,7 @@ rules:
   - networking.datumapis.com
   resources:
   - connectorclasses
+  - networkservices
   verbs:
   - get
   - list

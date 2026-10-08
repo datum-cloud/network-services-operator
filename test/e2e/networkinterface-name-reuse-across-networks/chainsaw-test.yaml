@@ -1,0 +1,237 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+#
+# A workload deleted and recreated under the same name holds the same interface
+# name: the name is a slot a replacement reuses on purpose. A replacement can
+# also land on a different network, and the network a published copy names cannot
+# be changed after it is created. So a copy that outlives the interface it was
+# published from holds the name against every replacement that follows, and the
+# replacement is never published at all.
+#
+# This asserts the copy is collected when its interface goes, that the name is
+# free afterwards, and that a replacement on another network is published under
+# it. The three together are what keep the name reusable.
+#
+# This covers the cell-to-hub hop. Handing a published copy on to a project
+# control plane is the projector's half: in this env the cell publishes to the
+# Karmada hub while the manager watches the cluster it is deployed on, so the
+# projector sees nothing here and the project-plane copy has no coverage.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: networkinterface-name-reuse-across-networks
+spec:
+  cluster: nso-standard
+  steps:
+    - name: Deliver both networks' presence to this location
+      description: |
+        Two networks, so the replacement can land on one its predecessor never
+        used. Each needs a presence at the location whose cell allocates the
+        address.
+      try:
+        - apply:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkContext
+              metadata:
+                name: nic-reuse-net-a-us-central-1
+                namespace: ipam-e2e-alpha
+              spec:
+                network:
+                  name: nic-reuse-net-a
+                location:
+                  name: us-central-1
+                ipFamilies:
+                  - IPv6
+                mtu: 1440
+        - apply:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkContext
+              metadata:
+                name: nic-reuse-net-b-us-central-1
+                namespace: ipam-e2e-alpha
+              spec:
+                network:
+                  name: nic-reuse-net-b
+                location:
+                  name: us-central-1
+                ipFamilies:
+                  - IPv6
+                mtu: 1440
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Network
+              metadata:
+                name: nic-reuse-net-a
+                namespace: ipam-e2e-alpha
+              spec:
+                ipam:
+                  mode: Auto
+                ipFamilies:
+                  - IPv6
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Network
+              metadata:
+                name: nic-reuse-net-b
+                namespace: ipam-e2e-alpha
+              spec:
+                ipam:
+                  mode: Auto
+                ipFamilies:
+                  - IPv6
+
+    - name: The first interface is published under its name
+      try:
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterfaceClaim
+              metadata:
+                name: nic-reuse
+                namespace: ipam-e2e-alpha
+              spec:
+                network:
+                  name: nic-reuse-net-a
+                ipFamilies:
+                  - IPv6
+        - assert:
+            timeout: 120s
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterfaceClaim
+              metadata:
+                name: nic-reuse
+                namespace: ipam-e2e-alpha
+              status:
+                (conditions[?type == 'Allocated'] | [0].status): "True"
+        - assert:
+            cluster: nso-hub
+            timeout: 120s
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterface
+              metadata:
+                name: nic-reuse
+                namespace: ipam-e2e-alpha
+                labels:
+                  networking.datumapis.com/network-interface-projection: "true"
+                  networking.datumapis.com/location: us-central-1
+              spec:
+                network:
+                  name: nic-reuse-net-a
+      catch:
+        - script:
+            content: |
+              kubectl -n ipam-e2e-alpha get networkinterfaceclaim,networkinterface -o yaml
+              kubectl -n network-services-operator-system logs -l app.kubernetes.io/component=cell-controller-manager --tail=100
+
+    - name: Releasing the interface frees the name
+      description: |
+        The copy goes with the interface it was published from. Nothing replays a
+        deletion, so a copy left behind here is a copy nothing would ever collect.
+      try:
+        - delete:
+            timeout: 120s
+            ref:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterfaceClaim
+              name: nic-reuse
+              namespace: ipam-e2e-alpha
+        - error:
+            cluster: nso-hub
+            timeout: 120s
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterface
+              metadata:
+                name: nic-reuse
+                namespace: ipam-e2e-alpha
+
+    - name: A replacement on the other network takes the name
+      description: |
+        The same claim name, and so the same interface name, on a network the
+        first interface never used. This is the case that wedged the name: the
+        copy that was there could not be moved onto the new network, and until it
+        was collected the replacement had nowhere to be published.
+      try:
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterfaceClaim
+              metadata:
+                name: nic-reuse
+                namespace: ipam-e2e-alpha
+              spec:
+                network:
+                  name: nic-reuse-net-b
+                ipFamilies:
+                  - IPv6
+        - assert:
+            timeout: 120s
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterfaceClaim
+              metadata:
+                name: nic-reuse
+                namespace: ipam-e2e-alpha
+              status:
+                (conditions[?type == 'Allocated'] | [0].status): "True"
+        - assert:
+            cluster: nso-hub
+            timeout: 120s
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterface
+              metadata:
+                name: nic-reuse
+                namespace: ipam-e2e-alpha
+                labels:
+                  networking.datumapis.com/network-interface-projection: "true"
+              spec:
+                network:
+                  name: nic-reuse-net-b
+      catch:
+        - script:
+            content: |
+              kubectl -n ipam-e2e-alpha get networkinterfaceclaim,networkinterface -o yaml
+              kubectl -n network-services-operator-system logs -l app.kubernetes.io/component=cell-controller-manager --tail=100
+
+    - name: Releasing the replacement leaves nothing behind
+      try:
+        - delete:
+            timeout: 120s
+            ref:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterfaceClaim
+              name: nic-reuse
+              namespace: ipam-e2e-alpha
+        - error:
+            cluster: nso-hub
+            timeout: 120s
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterface
+              metadata:
+                name: nic-reuse
+                namespace: ipam-e2e-alpha
+        - error:
+            timeout: 120s
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterface
+              metadata:
+                name: nic-reuse
+                namespace: ipam-e2e-alpha
+      cleanup:
+        - script:
+            content: |
+              set -u
+              IPAM=$(git rev-parse --show-toplevel)/hack/ipam-project-kubectl.sh
+              kubectl -n ipam-e2e-alpha delete networkinterfaceclaim nic-reuse --ignore-not-found --timeout=60s
+              kubectl -n ipam-e2e-alpha delete networkinterface nic-reuse --ignore-not-found --timeout=60s
+              "$IPAM" project-alpha -n default delete ipclaim nic-reuse-f-ipv6 --ignore-not-found --timeout=60s
+              kubectl -n ipam-e2e-alpha delete network nic-reuse-net-a nic-reuse-net-b --ignore-not-found --timeout=120s
+              kubectl -n ipam-e2e-alpha delete networkcontext nic-reuse-net-a-us-central-1 nic-reuse-net-b-us-central-1 --ignore-not-found --timeout=120s

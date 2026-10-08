@@ -129,29 +129,16 @@ func NewCommand() *cobra.Command {
 //
 // Injection itself is gated on ErrorPage.Enabled via the Disabled flag.
 func buildLocalReplyConfig(cfg config.ErrorPageConfig, log *slog.Logger) mutate.LocalReplyConfig {
-	body := extassets.DefaultError5xxHTML
-
-	if cfg.BodyPath != "" {
-		data, err := os.ReadFile(cfg.BodyPath)
-		switch {
-		case err != nil:
-			log.Warn("read error-page body override; using embedded default",
-				"path", cfg.BodyPath, "err", err)
-		case len(data) == 0:
-			log.Warn("error-page body override is empty; using embedded default",
-				"path", cfg.BodyPath)
-		default:
-			body = string(data)
-			log.Info("using error-page body override", "path", cfg.BodyPath, "bytes", len(data))
-		}
-	}
+	body := errorPageBody(cfg.BodyPath, extassets.DefaultError5xxHTML, log)
+	offlineBody := errorPageBody(cfg.OfflineBodyPath, extassets.DefaultErrorOfflineHTML, log)
 
 	lrConfig := mutate.LocalReplyConfig{
-		Disabled:      !cfg.Enabled,
-		MinStatusCode: cfg.MinStatusCode,
-		RuntimeKey:    cfg.RuntimeKey,
-		BodyHTML:      body,
-		ContentType:   cfg.ContentType,
+		Disabled:        !cfg.Enabled,
+		MinStatusCode:   cfg.MinStatusCode,
+		RuntimeKey:      cfg.RuntimeKey,
+		BodyHTML:        body,
+		OfflineBodyHTML: offlineBody,
+		ContentType:     cfg.ContentType,
 	}
 
 	// Validate before the config can reach the data plane. Escaping already makes
@@ -159,10 +146,19 @@ func buildLocalReplyConfig(cfg config.ErrorPageConfig, log *slog.Logger) mutate.
 	// allowlist ever regresses, fail loud here and fall back to a known-safe body
 	// instead of NACKing the xDS update fleet-wide on the failOpen:false hook.
 	if err := mutate.ValidateLocalReplyConfig(&lrConfig); err != nil {
-		if body != extassets.DefaultError5xxHTML {
-			log.Error("error-page body override failed validation; using embedded default",
-				"path", cfg.BodyPath, "err", err)
+		if body != extassets.DefaultError5xxHTML || offlineBody != extassets.DefaultErrorOfflineHTML {
+			log.Error("error-page body override failed validation; using embedded defaults",
+				"path", cfg.BodyPath, "offlinePath", cfg.OfflineBodyPath, "err", err)
 			lrConfig.BodyHTML = extassets.DefaultError5xxHTML
+			lrConfig.OfflineBodyHTML = extassets.DefaultErrorOfflineHTML
+			err = mutate.ValidateLocalReplyConfig(&lrConfig)
+		}
+		if err != nil {
+			// The offline page is the optional extra; drop it and keep the
+			// generic page rather than losing branding altogether.
+			log.Error("embedded offline error page failed validation; serving the generic page for offline responses",
+				"err", err)
+			lrConfig.OfflineBodyHTML = ""
 			err = mutate.ValidateLocalReplyConfig(&lrConfig)
 		}
 		if err != nil {
@@ -173,6 +169,28 @@ func buildLocalReplyConfig(cfg config.ErrorPageConfig, log *slog.Logger) mutate.
 	}
 
 	return lrConfig
+}
+
+// errorPageBody reads an error-page body override, falling back to the compiled
+// -in page when the path is unset, unreadable, or empty. It never fails: the
+// downstream extension hook runs with failOpen:false, so a content problem must
+// never be able to stall the data plane.
+func errorPageBody(path, embedded string, log *slog.Logger) string {
+	if path == "" {
+		return embedded
+	}
+
+	data, err := os.ReadFile(path)
+	switch {
+	case err != nil:
+		log.Warn("read error-page body override; using embedded default", "path", path, "err", err)
+	case len(data) == 0:
+		log.Warn("error-page body override is empty; using embedded default", "path", path)
+	default:
+		log.Info("using error-page body override", "path", path, "bytes", len(data))
+		return string(data)
+	}
+	return embedded
 }
 
 // run starts the extension server with the given options. It owns cache startup,

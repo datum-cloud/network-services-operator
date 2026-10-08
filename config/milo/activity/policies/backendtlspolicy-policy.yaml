@@ -7,6 +7,9 @@
 apiVersion: activity.miloapis.com/v1alpha1
 kind: ActivityPolicy
 metadata:
+  labels:
+    meta.datumapis.com/service: network-services
+    meta.datumapis.com/team: delivery
   name: gateway.networking.k8s.io-backendtlspolicy
 spec:
   resource:
@@ -16,30 +19,30 @@ spec:
   auditRules:
     # BackendTLSPolicy creation with spec available
     - name: create
-      match: "!audit.user.username.startsWith('system:') && audit.verb == 'create' && has(audit.requestObject.spec) && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
+      match: "!audit.user.username.startsWith('system:') && audit.verb == 'create' && has(audit.requestObject.spec) && has(audit.responseStatus.code) && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300 && !(has(audit.requestURI) && audit.requestURI.contains('dryRun='))"
       summary: "{{ actor }} created backend TLS policy {{ link(audit.responseObject.metadata.name, audit.objectRef) }}"
 
     # BackendTLSPolicy creation fallback (no spec)
     - name: create-fallback
-      match: "!audit.user.username.startsWith('system:') && audit.verb == 'create' && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
+      match: "!audit.user.username.startsWith('system:') && audit.verb == 'create' && has(audit.responseStatus.code) && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300 && !(has(audit.requestURI) && audit.requestURI.contains('dryRun='))"
       summary: "{{ actor }} created {{ link('a backend TLS policy', audit.objectRef) }}"
 
     # BackendTLSPolicy deletion with responseObject.spec available (response contains the deleted resource)
     - name: delete
-      match: "!audit.user.username.startsWith('system:') && audit.verb == 'delete' && has(audit.responseObject.spec)"
+      match: "!audit.user.username.startsWith('system:') && audit.verb == 'delete' && has(audit.responseObject.spec) && has(audit.responseStatus.code) && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300 && !(has(audit.requestURI) && audit.requestURI.contains('dryRun='))"
       summary: "{{ actor }} deleted backend TLS policy {{ audit.objectRef.name }}"
 
     # BackendTLSPolicy deletion fallback (no spec on response)
     - name: delete-fallback
-      match: "!audit.user.username.startsWith('system:') && audit.verb == 'delete'"
+      match: "!audit.user.username.startsWith('system:') && audit.verb == 'delete' && has(audit.responseStatus.code) && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300 && !(has(audit.requestURI) && audit.requestURI.contains('dryRun='))"
       summary: "{{ actor }} deleted a backend TLS policy"
 
     # BackendTLSPolicy update with spec available - excludes status subresource
     - name: update
-      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && has(audit.requestObject.spec) && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
+      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && (type(audit.requestObject) == map && has(audit.requestObject.spec)) && has(audit.responseStatus.code) && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300 && !(has(audit.requestURI) && audit.requestURI.contains('dryRun='))"
       summary: "{{ actor }} updated backend TLS policy {{ link(audit.objectRef.name, audit.objectRef) }}"
 
     # BackendTLSPolicy update fallback (no spec)
     - name: update-fallback
-      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
+      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && has(audit.responseStatus.code) && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300 && !(has(audit.requestURI) && audit.requestURI.contains('dryRun='))"
       summary: "{{ actor }} updated {{ link('a backend TLS policy', audit.objectRef) }}"

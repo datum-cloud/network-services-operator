@@ -58,7 +58,7 @@ func validateGatewayClusterSettings(clusterSettings envoygatewayv1alpha1.Cluster
 	}
 
 	allErrs = append(allErrs, validateGatewayClusterSettingsTCPKeepalive(clusterSettings.TCPKeepalive, fldPath.Child("tcpKeepalive"), opts)...)
-	allErrs = append(allErrs, validateGatewayClusterSettingsHealthCheck(clusterSettings.HealthCheck, fldPath.Child("healthCheck"))...)
+	allErrs = append(allErrs, validateGatewayClusterSettingsHealthCheck(clusterSettings.HealthCheck, fldPath.Child("healthCheck"), opts)...)
 	allErrs = append(allErrs, validateGatewayClusterSettingsTimeout(clusterSettings.Timeout, fldPath.Child("timeout"), opts)...)
 	allErrs = append(allErrs, validateGatewayClusterSettingsConnection(clusterSettings.Connection, fldPath.Child("connection"), opts)...)
 	allErrs = append(allErrs, validateGatewayClusterSettingsDNS(clusterSettings.DNS, fldPath.Child("dns"), opts)...)
@@ -105,7 +105,7 @@ func validateGatewayClusterSettingsTCPKeepalive(tcpKeepalive *envoygatewayv1alph
 	return allErrs
 }
 
-func validateGatewayClusterSettingsHealthCheck(healthCheck *envoygatewayv1alpha1.HealthCheck, fldPath *field.Path) field.ErrorList {
+func validateGatewayClusterSettingsHealthCheck(healthCheck *envoygatewayv1alpha1.HealthCheck, fldPath *field.Path, opts config.ClusterSettingsValidationOptions) field.ErrorList {
 	if healthCheck == nil {
 		return nil
 	}
@@ -114,6 +114,36 @@ func validateGatewayClusterSettingsHealthCheck(healthCheck *envoygatewayv1alpha1
 
 	if healthCheck.Active != nil {
 		allErrs = append(allErrs, field.Forbidden(fldPath.Child("active"), "active health checks are not permitted"))
+	}
+
+	allErrs = append(allErrs, validateGatewayClusterSettingsPassiveHealthCheck(healthCheck.Passive, fldPath.Child("passive"), opts)...)
+
+	return allErrs
+}
+
+func validateGatewayClusterSettingsPassiveHealthCheck(passive *envoygatewayv1alpha1.PassiveHealthCheck, fldPath *field.Path, opts config.ClusterSettingsValidationOptions) field.ErrorList {
+	if passive == nil {
+		return nil
+	}
+
+	allErrs := field.ErrorList{}
+
+	if v := passive.Interval; v != nil && opts.HealthCheckMinInterval != nil {
+		allErrs = append(allErrs, validateGatewayDuration(fldPath.Child("interval"), v, ptr.To(opts.HealthCheckMinInterval.Duration), nil)...)
+	}
+
+	if v := passive.BaseEjectionTime; v != nil && opts.HealthCheckMinBaseEjectionTime != nil {
+		allErrs = append(allErrs, validateGatewayDuration(fldPath.Child("baseEjectionTime"), v, ptr.To(opts.HealthCheckMinBaseEjectionTime.Duration), nil)...)
+	}
+
+	if passive.MaxEjectionPercent != nil {
+		minPercent := int32(0)
+		if ptr.Deref(passive.AlwaysEjectOneEndpoint, false) {
+			minPercent = 1
+		}
+		if *passive.MaxEjectionPercent < minPercent || *passive.MaxEjectionPercent > 100 {
+			allErrs = append(allErrs, field.Invalid(fldPath.Child("maxEjectionPercent"), *passive.MaxEjectionPercent, fmt.Sprintf("must be between %d and 100, inclusive", minPercent)))
+		}
 	}
 
 	return allErrs

@@ -5,6 +5,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	cellcmd "go.datum.net/network-services-operator/internal/cmd/cell"
 	managercmd "go.datum.net/network-services-operator/internal/cmd/manager"
 	extservercmd "go.datum.net/network-services-operator/internal/extensionserver/cmd"
 )
@@ -33,6 +34,7 @@ func main() {
 		GitTreeState: gitTreeState,
 		BuildDate:    buildDate,
 	}))
+	root.AddCommand(cellcmd.NewCommand())
 	root.AddCommand(extservercmd.NewCommand())
 	if err := root.Execute(); err != nil {
 		os.Exit(1)

@@ -62,7 +62,7 @@ NetworkContext is the Schema for the networkcontexts API
         <td>
           NetworkContextStatus defines the observed state of NetworkContext<br/>
           <br/>
-            <i>Default</i>: map[conditions:[map[lastTransitionTime:1970-01-01T00:00:00Z message:Waiting for controller reason:Pending status:Unknown type:Programmed] map[lastTransitionTime:1970-01-01T00:00:00Z message:Waiting for controller reason:Pending status:Unknown type:Ready]]]<br/>
+            <i>Default</i>: map[conditions:[map[lastTransitionTime:1970-01-01T00:00:00Z message:Waiting for controller reason:Pending status:Unknown type:Ready]]]<br/>
         </td>
         <td>false</td>
       </tr></tbody>
@@ -99,6 +99,40 @@ NetworkContextSpec defines the desired state of NetworkContext
           The attached network<br/>
         </td>
         <td>true</td>
+      </tr><tr>
+        <td><b>ipFamilies</b></td>
+        <td>[]enum</td>
+        <td>
+          IP families the network carries, projected from the Network.
+
+A reader that finds this unset must refuse rather than assume a family:
+a context written before this field existed carries nothing, which is not
+the same as a network that carries nothing.<br/>
+          <br/>
+            <i>Enum</i>: IPv4, IPv6<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>mtu</b></td>
+        <td>integer</td>
+        <td>
+          MTU of interfaces on the network, projected from the Network.<br/>
+          <br/>
+            <i>Format</i>: int32<br/>
+            <i>Minimum</i>: 1300<br/>
+            <i>Maximum</i>: 8856<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>networkGeneration</b></td>
+        <td>integer</td>
+        <td>
+          The Network generation the projected fields were read from, so an operator
+comparing this to the Network can tell whether this location has caught up.<br/>
+          <br/>
+            <i>Format</i>: int64<br/>
+        </td>
+        <td>false</td>
       </tr></tbody>
 </table>
 
@@ -124,13 +158,6 @@ The location of where a network context exists.
         <td>string</td>
         <td>
           Name of a datum location<br/>
-        </td>
-        <td>true</td>
-      </tr><tr>
-        <td><b>namespace</b></td>
-        <td>string</td>
-        <td>
-          Namespace for the datum location<br/>
         </td>
         <td>true</td>
       </tr></tbody>
@@ -185,6 +212,14 @@ NetworkContextStatus defines the observed state of NetworkContext
         <td>[]object</td>
         <td>
           Represents the observations of a network context's current state.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b><a href="#networkcontextstatusipam">ipam</a></b></td>
+        <td>object</td>
+        <td>
+          IPAM reports the address space IPAM holds for this network in this
+location.<br/>
         </td>
         <td>false</td>
       </tr></tbody>
@@ -264,5 +299,119 @@ with respect to the current state of the instance.<br/>
             <i>Minimum</i>: 0<br/>
         </td>
         <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### NetworkContext.status.ipam
+<sup><sup>[↩ Parent](#networkcontextstatus)</sup></sup>
+
+
+
+IPAM reports the address space IPAM holds for this network in this
+location.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b><a href="#networkcontextstatusipamipv6claimref">ipv6ClaimRef</a></b></td>
+        <td>object</td>
+        <td>
+          IPv6ClaimRef names what holds the /64 in IPAM. Deleting the claim it
+names releases what this operator holds.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b><a href="#networkcontextstatusipamipv6subnetref">ipv6SubnetRef</a></b></td>
+        <td>object</td>
+        <td>
+          IPv6SubnetRef names the Subnet publishing this location's /64.<br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### NetworkContext.status.ipam.ipv6ClaimRef
+<sup><sup>[↩ Parent](#networkcontextstatusipam)</sup></sup>
+
+
+
+IPv6ClaimRef names what holds the /64 in IPAM. Deleting the claim it
+names releases what this operator holds.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>claimName</b></td>
+        <td>string</td>
+        <td>
+          ClaimName is the IPClaim this operator holds against the prefix.
+Deleting it releases what the operator holds.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>namespace</b></td>
+        <td>string</td>
+        <td>
+          Namespace is the project namespace holding the claim.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>poolName</b></td>
+        <td>string</td>
+        <td>
+          PoolName is the IPPool IPAM provisioned for the prefix. Subnet and
+endpoint addresses are drawn from it.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>project</b></td>
+        <td>string</td>
+        <td>
+          Project is the control plane the objects live in.<br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### NetworkContext.status.ipam.ipv6SubnetRef
+<sup><sup>[↩ Parent](#networkcontextstatusipam)</sup></sup>
+
+
+
+IPv6SubnetRef names the Subnet publishing this location's /64.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>name</b></td>
+        <td>string</td>
+        <td>
+          <br/>
+        </td>
+        <td>true</td>
       </tr></tbody>
 </table>

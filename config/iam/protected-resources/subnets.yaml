@@ -16,6 +16,12 @@ spec:
     - patch
     - watch
     - delete
+  subresources:
+    - name: status
+      permissions:
+        - get
+        - update
+        - patch
   parentResources:
     - apiGroup: networking.datumapis.com
       kind: NetworkContext

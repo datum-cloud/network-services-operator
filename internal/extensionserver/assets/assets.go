@@ -14,3 +14,11 @@ import _ "embed"
 //
 //go:embed error-5xx-default.html
 var DefaultError5xxHTML string
+
+// DefaultErrorOfflineHTML is the compiled-in branded HTML served when the edge
+// has no healthy upstream to send a request to, which is what a NetworkService
+// with no serving members looks like from the data plane. Same fallback rules
+// as DefaultError5xxHTML.
+//
+//go:embed error-offline-default.html
+var DefaultErrorOfflineHTML string

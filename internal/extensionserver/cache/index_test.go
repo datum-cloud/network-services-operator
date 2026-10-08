@@ -10,10 +10,12 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	networkingv1alpha1 "go.datum.net/network-services-operator/api/v1alpha1"
@@ -26,6 +28,7 @@ func indexTestScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
 	s := runtime.NewScheme()
 	require.NoError(t, corev1.AddToScheme(s))
+	require.NoError(t, discoveryv1.AddToScheme(s))
 	require.NoError(t, networkingv1alpha.AddToScheme(s))
 	require.NoError(t, networkingv1alpha1.AddToScheme(s))
 	return s
@@ -145,6 +148,40 @@ func newOfflineConnector(ns, name string) *networkingv1alpha1.Connector {
 	}
 }
 
+// newVPCPodHTTPProxy builds an HTTPProxy with one rule that has a vpcPod
+// backend. The proxy name is fixed as "my-proxy", matching newHTTPProxy.
+func newVPCPodHTTPProxy(ns, vpcPodName string) *networkingv1alpha.HTTPProxy {
+	return &networkingv1alpha.HTTPProxy{
+		ObjectMeta: metav1.ObjectMeta{Name: "my-proxy", Namespace: ns},
+		Spec: networkingv1alpha.HTTPProxySpec{
+			Rules: []networkingv1alpha.HTTPProxyRule{
+				{
+					Backends: []networkingv1alpha.HTTPProxyRuleBackend{
+						{
+							Instance: &networkingv1alpha.InstanceBackendRef{
+								Name: vpcPodName,
+								Port: 8080,
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+// newTenantEndpointSlice builds an EndpointSlice carrying the tenant-id label
+// galactic-cni is expected to set.
+func newTenantEndpointSlice(ns, name, tenantID string) *discoveryv1.EndpointSlice {
+	return &discoveryv1.EndpointSlice{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: ns,
+			Labels:    map[string]string{VPCPodTenantIDLabel: tenantID},
+		},
+	}
+}
+
 // =============================================================================
 // NS reverse-map tests
 // =============================================================================
@@ -246,7 +283,7 @@ func TestBuildPolicyIndexFromClient_NSReverseMap_ReplicaNamespaceDistinctUID(t *
 			"(old code only keyed by edge-own-uid, which never matched the dsNS from VH metadata)")
 	assert.Equal(t, upstreamNSName, resolvedUpstream,
 		"label-based resolution: dsNS maps to the upstream namespace name from "+
-			"UpstreamOwnerNamespaceLabel, enabling idx.TPPs[upstreamNS] to find policies")
+			"UpstreamOwnerNamespaceLabel, while TPPs are looked up under the replica namespace")
 
 	// The edge-UID-derived key must NOT be present: with the label path the
 	// fallback UID keying is skipped, keeping DStoUS clean.
@@ -257,10 +294,8 @@ func TestBuildPolicyIndexFromClient_NSReverseMap_ReplicaNamespaceDistinctUID(t *
 
 // TestBuildPolicyIndexFromClient_LabelBasedTPPAndConnectorResolution verifies
 // the full label-based index path: a replica namespace, replica TPP, and replica
-// HTTPProxy all carry UpstreamOwnerNamespaceLabel, and all three are indexed
-// consistently under the upstream namespace name so that route→policy resolution
-// (dsNS → upstreamNS → TPPs[upstreamNS] / Connectors[{upstreamNS,...}]) works
-// in the two-cluster edge topology.
+// HTTPProxy all carry UpstreamOwnerNamespaceLabel. TPPs are scoped to the
+// downstream replica namespace, while connectors retain their upstream key.
 func TestBuildPolicyIndexFromClient_LabelBasedTPPAndConnectorResolution(t *testing.T) {
 	const (
 		upstreamNSName = "real-project"
@@ -334,11 +369,10 @@ func TestBuildPolicyIndexFromClient_LabelBasedTPPAndConnectorResolution(t *testi
 	assert.Equal(t, upstreamNSName, resolvedNS,
 		"DStoUS must map replica namespace name to upstream namespace label value")
 
-	// TPP indexed by upstreamNSName (from label), not by replicaNSName.
-	tpps := idx.TPPs[upstreamNSName]
-	assert.Len(t, tpps, 1, "TPP must be indexed under the upstream namespace name from its label")
-	assert.Empty(t, idx.TPPs[replicaNSName],
-		"TPP must NOT be indexed under the replica namespace name")
+	// TPP is indexed by the tenant-unique replica namespace, not by the
+	// upstream namespace label (which is commonly "default" for every project).
+	tpps := idx.TPPs[replicaNSName]
+	assert.Len(t, tpps, 1, "TPP must be indexed under its replica namespace")
 
 	// Connector indexed by upstreamNSName (from proxy label).
 	key := ConnectorKey{UpstreamNS: upstreamNSName, HTTPProxyName: proxyName, RuleIndex: 0}
@@ -347,12 +381,39 @@ func TestBuildPolicyIndexFromClient_LabelBasedTPPAndConnectorResolution(t *testi
 	assert.True(t, info.Online)
 	assert.Equal(t, "backend.example.com", info.TargetHost)
 
-	// Simulate the full route resolution: dsNS → upstreamNS → policies.
-	// This is what ApplyTPPRouteConfig and ReplaceConnectorClusters do.
+	// Simulate the full route resolution: dsNS → policies, while connectors
+	// continue to use dsNS → upstreamNS.
 	assert.Equal(t, upstreamNSName, idx.DStoUS[replicaNSName],
 		"route resolution chain: dsNS → upstreamNS must work end-to-end")
-	assert.Len(t, idx.TPPs[idx.DStoUS[replicaNSName]], 1,
-		"full chain: idx.TPPs[idx.DStoUS[dsNS]] must find the replica TPP")
+	assert.Len(t, idx.TPPs[replicaNSName], 1,
+		"full chain: idx.TPPs[dsNS] must find the replica TPP")
+}
+
+func TestBuildPolicyIndexFromClient_TPPsStayScopedToReplicaNamespace(t *testing.T) {
+	scheme := indexTestScheme(t)
+	const upstreamNamespace = "default"
+
+	// Two projects both use upstream namespace "default". Their replica
+	// namespaces are the tenant-unique identity available to Envoy.
+	nsA := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
+		Name:   "ns-project-a",
+		Labels: map[string]string{downstreamclient.UpstreamOwnerNamespaceLabel: upstreamNamespace},
+	}}
+	nsB := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
+		Name:   "ns-project-b",
+		Labels: map[string]string{downstreamclient.UpstreamOwnerNamespaceLabel: upstreamNamespace},
+	}}
+	tppA := newTPP("ns-project-a", "test", withOWASPCRS(5, 4, 1, 1))
+	tppB := newTPP("ns-project-b", "test", withOWASPCRS(7, 4, 2, 2))
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(nsA, nsB, tppA, tppB).Build()
+
+	idx, err := BuildPolicyIndexFromClient(context.Background(), cl, nil)
+	require.NoError(t, err)
+	assert.Equal(t, "default", idx.DStoUS["ns-project-a"])
+	assert.Equal(t, "default", idx.DStoUS["ns-project-b"])
+	assert.Len(t, idx.TPPs["ns-project-a"], 1)
+	assert.Len(t, idx.TPPs["ns-project-b"], 1)
+	assert.Empty(t, idx.TPPs["default"], "upstream namespace must not be a shared TPP bucket")
 }
 
 // =============================================================================
@@ -454,6 +515,7 @@ func TestBuildPolicyIndexFromClient_TPPFieldsPreserved(t *testing.T) {
 	scheme := indexTestScheme(t)
 
 	tpp := newTPP("test-ns", "my-tpp", func(tpp *networkingv1alpha.TrafficProtectionPolicy) {
+		tpp.Generation = 7
 		tpp.Spec.Mode = networkingv1alpha.TrafficProtectionPolicyEnforce
 		tpp.Spec.RuleSets = []networkingv1alpha.TrafficProtectionPolicyRuleSet{
 			{
@@ -481,6 +543,7 @@ func TestBuildPolicyIndexFromClient_TPPFieldsPreserved(t *testing.T) {
 	info := tpps[0]
 	assert.Equal(t, "test-ns", info.Namespace)
 	assert.Equal(t, "my-tpp", info.Name)
+	assert.Equal(t, int64(7), info.Generation)
 	assert.Equal(t, networkingv1alpha.TrafficProtectionPolicyEnforce, info.Mode)
 	assert.NotEmpty(t, info.Directives, "OWASP CRS rules must generate non-empty directives")
 }
@@ -863,6 +926,87 @@ func TestBuildPolicyIndexFromClient_ConnectorResolution_MissingConnector_Treated
 	assert.Empty(t, info.NodeID)
 }
 
+func TestBuildPolicyIndexFromClient_VPCPodResolution_TenantIDFromLabel(t *testing.T) {
+	const (
+		upstreamNS = "test-project"
+		proxyName  = "my-proxy"
+		podSlice   = "vpc-pod-1"
+		tenantID   = "tenant-1"
+	)
+	scheme := indexTestScheme(t)
+
+	proxy := newVPCPodHTTPProxy(upstreamNS, podSlice)
+	endpointSlice := newTenantEndpointSlice(upstreamNS, podSlice, tenantID)
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(proxy, endpointSlice).
+		Build()
+
+	idx, err := BuildPolicyIndexFromClient(context.Background(), cl, nil)
+	require.NoError(t, err)
+
+	key := VPCPodKey{UpstreamNS: upstreamNS, HTTPProxyName: proxyName, RuleIndex: 0}
+	info, ok := idx.VPCPods[key]
+	require.True(t, ok, "VPCPodKey {%s, %s, 0} must be present in index", upstreamNS, proxyName)
+	assert.Equal(t, tenantID, info.TenantID)
+}
+
+func TestBuildPolicyIndexFromClient_VPCPodResolution_MissingEndpointSlice_EmptyTenantID(t *testing.T) {
+	// HTTPProxy references a vpcPod EndpointSlice that doesn't exist. Production
+	// behavior: cl.Get returns NotFound → VPCPodInfo{} (empty TenantID), so
+	// ApplyVPCPodSocketBind skips mutation rather than binding to a
+	// zero-value device name.
+	const (
+		upstreamNS = "test-project"
+		proxyName  = "my-proxy"
+	)
+	scheme := indexTestScheme(t)
+
+	proxy := newVPCPodHTTPProxy(upstreamNS, "does-not-exist")
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(proxy).
+		Build()
+
+	idx, err := BuildPolicyIndexFromClient(context.Background(), cl, nil)
+	require.NoError(t, err)
+
+	key := VPCPodKey{UpstreamNS: upstreamNS, HTTPProxyName: proxyName, RuleIndex: 0}
+	info, ok := idx.VPCPods[key]
+	require.True(t, ok, "missing EndpointSlice must still produce a VPCPodInfo entry")
+	assert.Empty(t, info.TenantID)
+}
+
+func TestBuildPolicyIndexFromClient_VPCPodResolution_UnlabeledEndpointSlice_EmptyTenantID(t *testing.T) {
+	const (
+		upstreamNS = "test-project"
+		proxyName  = "my-proxy"
+		podSlice   = "vpc-pod-1"
+	)
+	scheme := indexTestScheme(t)
+
+	proxy := newVPCPodHTTPProxy(upstreamNS, podSlice)
+	// EndpointSlice exists but carries no tenant-id label.
+	endpointSlice := &discoveryv1.EndpointSlice{
+		ObjectMeta: metav1.ObjectMeta{Name: podSlice, Namespace: upstreamNS},
+	}
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(proxy, endpointSlice).
+		Build()
+
+	idx, err := BuildPolicyIndexFromClient(context.Background(), cl, nil)
+	require.NoError(t, err)
+
+	key := VPCPodKey{UpstreamNS: upstreamNS, HTTPProxyName: proxyName, RuleIndex: 0}
+	info, ok := idx.VPCPods[key]
+	require.True(t, ok)
+	assert.Empty(t, info.TenantID)
+}
+
 func TestBuildPolicyIndexFromClient_ConnectorResolution_MultipleRulesCorrectIndex(t *testing.T) {
 	// HTTPProxy with two rules, each with a connector backend at different rule indices.
 	const (
@@ -1172,30 +1316,26 @@ func TestParseEndpoint_InvalidPort_ReturnsError(t *testing.T) {
 }
 
 // =============================================================================
-// Namespace name collision — latent multi-cluster risk
+// Replica namespace collision — invalid topology
 // =============================================================================
 
-// TestPopulateFromClient_NamespaceNameCollision_LatentRisk documents and locks
-// the assumption that upstream namespace names are globally unique across all
+// TestPopulateFromClient_SameReplicaNamespaceAccumulates documents the
+// assumption that downstream replica namespace names are unique across all
 // engaged clusters.
 //
-// PolicyIndex.TPPs is keyed by upstream namespace NAME (a string), not by a
-// (clusterName, namespaceName) tuple. BuildPolicyIndex calls populateFromClient
-// once per engaged cluster, accumulating all clusters' policies into a single
-// flat map.
+// PolicyIndex.TPPs is keyed by downstream replica namespace NAME (a string),
+// not by a (clusterName, namespaceName) tuple. BuildPolicyIndex calls
+// populateFromClient once per engaged cluster, accumulating all clusters'
+// policies into a single flat map.
 //
-// In Datum's Milo architecture, project namespace names are derived from
-// globally-unique project identifiers, making cross-cluster namespace name
-// collisions impossible in practice. However, if this assumption were ever
-// violated (e.g., a future naming change), TPPs from two different project
-// clusters with the same namespace name would silently accumulate into the same
-// PolicyIndex.TPPs key, causing policies from one project to govern traffic
-// for another.
+// Replica namespace names are derived from upstream identity and should be
+// unique. If this assumption is violated, policies from two replicas would
+// accumulate into the same key and selection would be ambiguous.
 //
 // This test LOCKS the accumulation behavior so that any future change to the
 // keying strategy produces a clear test failure, prompting a review.
-func TestPopulateFromClient_NamespaceNameCollision_LatentRisk(t *testing.T) {
-	const sharedNSName = "shared-namespace" // same name, two simulated clusters
+func TestPopulateFromClient_SameReplicaNamespaceAccumulates(t *testing.T) {
+	const sharedNSName = "shared-replica-namespace" // same name, two simulated clusters
 
 	scheme := indexTestScheme(t)
 
@@ -1204,7 +1344,7 @@ func TestPopulateFromClient_NamespaceNameCollision_LatentRisk(t *testing.T) {
 	clA := fake.NewClientBuilder().WithScheme(scheme).WithObjects(tppA).Build()
 
 	// "Cluster B" fake client: has tpp-b in sharedNSName (different cluster,
-	// same namespace name — the latent collision scenario).
+	// same replica namespace name — an invalid topology).
 	tppB := newTPP(sharedNSName, "tpp-from-cluster-b", withOWASPCRS(7, 4, 2, 2))
 	clB := fake.NewClientBuilder().WithScheme(scheme).WithObjects(tppB).Build()
 
@@ -1218,16 +1358,12 @@ func TestPopulateFromClient_NamespaceNameCollision_LatentRisk(t *testing.T) {
 	require.NoError(t, populateFromClient(context.Background(), clA, idx, nil))
 	require.NoError(t, populateFromClient(context.Background(), clB, idx, nil))
 
-	// LATENT RISK DOCUMENTED HERE: both TPPs end up in the same namespace key.
-	// In production (Milo architecture) this is safe because namespace names are
-	// globally unique. If that ever changes, this assertion will still pass but the
-	// comment warns that the behavior is dangerous.
+	// Both TPPs end up in the same replica namespace key. Production replica
+	// namespaces must therefore remain unique.
 	tpps := idx.TPPs[sharedNSName]
 	assert.Len(t, tpps, 2,
 		"cross-cluster TPPs with the same namespace name accumulate into one slice — "+
-			"this is SAFE only because Datum's Milo namespace names are globally unique. "+
-			"If cross-cluster namespace collisions become possible, PolicyIndex must be "+
-			"redesigned to key by (clusterName, namespaceName).")
+			"replica namespace names must be unique for policy selection to remain unambiguous")
 
 	// Verify both TPPs are present (order depends on sort, but both must exist).
 	names := make([]string, 0, len(tpps))
@@ -1286,4 +1422,436 @@ func TestBuildPolicyIndexFromClient_FullIndex(t *testing.T) {
 	assert.Equal(t, "svc.internal", info.TargetHost)
 	assert.Equal(t, 8080, info.TargetPort)
 	assert.Equal(t, "node-xyz", info.NodeID)
+}
+
+// =============================================================================
+// networkService backend → tenant, joined by member address
+// =============================================================================
+
+// nsvcTestNS is the namespace every fixture in this section lives in. The
+// join under test is by address, not by namespace, so varying it would add
+// noise without adding coverage.
+const nsvcTestNS = "test-project"
+
+// newNetworkServiceHTTPProxy builds an HTTPProxy whose single rule has a
+// networkService backend at the given backend position, padded with connector
+// backends ahead of it so the position is genuinely exercised rather than
+// always being zero.
+func newNetworkServiceHTTPProxy(backendIndex int) *networkingv1alpha.HTTPProxy {
+	backends := make([]networkingv1alpha.HTTPProxyRuleBackend, backendIndex+1)
+	for i := range backendIndex {
+		backends[i] = networkingv1alpha.HTTPProxyRuleBackend{
+			Endpoint:  "http://filler.example.com:80",
+			Connector: &networkingv1alpha.ConnectorReference{Name: "filler"},
+		}
+	}
+	backends[backendIndex] = networkingv1alpha.HTTPProxyRuleBackend{
+		NetworkService: &networkingv1alpha.NetworkServiceBackendRef{
+			Name: "my-service",
+			Port: "http",
+		},
+	}
+
+	return &networkingv1alpha.HTTPProxy{
+		ObjectMeta: metav1.ObjectMeta{Name: "my-proxy", Namespace: nsvcTestNS},
+		Spec: networkingv1alpha.HTTPProxySpec{
+			Rules: []networkingv1alpha.HTTPProxyRule{{Backends: backends}},
+		},
+	}
+}
+
+// newMemberEndpointSlice builds the downstream copy of the EndpointSlice the
+// HTTPProxy controller synthesizes for a networkService backend: it carries
+// the member addresses and points back at its origin through
+// UpstreamOwnerNameLabel.
+func newMemberEndpointSlice(upstreamName string, addresses ...string) *discoveryv1.EndpointSlice {
+	endpoints := make([]discoveryv1.Endpoint, 0, len(addresses))
+	for _, address := range addresses {
+		endpoints = append(endpoints, discoveryv1.Endpoint{Addresses: []string{address}})
+	}
+
+	return &discoveryv1.EndpointSlice{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "route-some-uid-rule-0-backendref-0",
+			Namespace: nsvcTestNS,
+			Labels:    map[string]string{downstreamclient.UpstreamOwnerNameLabel: upstreamName},
+		},
+		AddressType: discoveryv1.AddressTypeIPv6,
+		Endpoints:   endpoints,
+	}
+}
+
+// newGalacticEndpointSlice builds one of the per-pod slices galactic
+// publishes: the tenant-id label plus the workload's tenant address.
+func newGalacticEndpointSlice(name, tenantID, address string) *discoveryv1.EndpointSlice {
+	slice := newTenantEndpointSlice(nsvcTestNS, name, tenantID)
+	slice.AddressType = discoveryv1.AddressTypeIPv6
+	slice.Endpoints = []discoveryv1.Endpoint{{Addresses: []string{address}}}
+	return slice
+}
+
+func TestBuildPolicyIndexFromClient_NetworkService_JoinsTenantByAddress(t *testing.T) {
+	const (
+		upstreamNS = "test-project"
+		proxyName  = "my-proxy"
+		tenantID   = "2wJqT7d-9xKp2Qm"
+	)
+	scheme := indexTestScheme(t)
+
+	proxy := newNetworkServiceHTTPProxy(0)
+	members := newMemberEndpointSlice("my-proxy-0-0", "fd20:0:2::1:0:0")
+	galactic := newGalacticEndpointSlice("vpc-us-central-1-pod-a", tenantID, "fd20:0:2::1:0:0")
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(proxy, members, galactic).
+		Build()
+
+	idx, err := BuildPolicyIndexFromClient(context.Background(), cl, nil)
+	require.NoError(t, err)
+
+	key := VPCPodKey{UpstreamNS: upstreamNS, HTTPProxyName: proxyName, RuleIndex: 0}
+	info, ok := idx.VPCPods[key]
+	require.True(t, ok, "a networkService backend must produce a VPCPodInfo entry")
+	assert.Equal(t, tenantID, info.TenantID)
+}
+
+func TestBuildPolicyIndexFromClient_NetworkService_JoinSurvivesIPv6Spelling(t *testing.T) {
+	// The two slices are written by different components and need not agree on
+	// how to spell one address. The join must be on the address, not its text.
+	const (
+		upstreamNS = "test-project"
+		tenantID   = "2wJqT7d-9xKp2Qm"
+	)
+	scheme := indexTestScheme(t)
+
+	proxy := newNetworkServiceHTTPProxy(0)
+	members := newMemberEndpointSlice("my-proxy-0-0", "fd20:0:2:0:0:1:0:0")
+	galactic := newGalacticEndpointSlice("vpc-us-central-1-pod-a", tenantID, "fd20:0:2::1:0:0")
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(proxy, members, galactic).
+		Build()
+
+	idx, err := BuildPolicyIndexFromClient(context.Background(), cl, nil)
+	require.NoError(t, err)
+
+	info := idx.VPCPods[VPCPodKey{UpstreamNS: upstreamNS, HTTPProxyName: "my-proxy", RuleIndex: 0}]
+	assert.Equal(t, tenantID, info.TenantID)
+}
+
+func TestBuildPolicyIndexFromClient_NetworkService_BackendPositionInSliceName(t *testing.T) {
+	// The synthesized slice is named for the backend's position in its rule, so
+	// a networkService backend that is not the first must still find its own
+	// members and not another backend's.
+	const (
+		upstreamNS = "test-project"
+		tenantID   = "2wJqT7d-9xKp2Qm"
+	)
+	scheme := indexTestScheme(t)
+
+	proxy := newNetworkServiceHTTPProxy(2)
+	members := newMemberEndpointSlice("my-proxy-0-2", "fd20:0:2::1:0:0")
+	galactic := newGalacticEndpointSlice("vpc-us-central-1-pod-a", tenantID, "fd20:0:2::1:0:0")
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(proxy, members, galactic).
+		Build()
+
+	idx, err := BuildPolicyIndexFromClient(context.Background(), cl, nil)
+	require.NoError(t, err)
+
+	info := idx.VPCPods[VPCPodKey{UpstreamNS: upstreamNS, HTTPProxyName: "my-proxy", RuleIndex: 0}]
+	assert.Equal(t, tenantID, info.TenantID)
+}
+
+func TestBuildPolicyIndexFromClient_NetworkService_UnfederatedMemberIgnored(t *testing.T) {
+	// One member's galactic slice has federated in, the other's has not. The
+	// missing one must not unbind the cluster — that would take working
+	// members offline for as long as propagation lags.
+	const (
+		upstreamNS = "test-project"
+		tenantID   = "2wJqT7d-9xKp2Qm"
+	)
+	scheme := indexTestScheme(t)
+
+	proxy := newNetworkServiceHTTPProxy(0)
+	members := newMemberEndpointSlice("my-proxy-0-0", "fd20:0:2::1:0:0", "fd20:0:2:1:0:1::")
+	galactic := newGalacticEndpointSlice("vpc-us-central-1-pod-a", tenantID, "fd20:0:2::1:0:0")
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(proxy, members, galactic).
+		Build()
+
+	idx, err := BuildPolicyIndexFromClient(context.Background(), cl, nil)
+	require.NoError(t, err)
+
+	info := idx.VPCPods[VPCPodKey{UpstreamNS: upstreamNS, HTTPProxyName: "my-proxy", RuleIndex: 0}]
+	assert.Equal(t, tenantID, info.TenantID)
+}
+
+func TestBuildPolicyIndexFromClient_NetworkService_MembersInOneVPCAcrossAttachments(t *testing.T) {
+	// galactic shares one VRF device across every attachment of a VPC, so
+	// members on different attachments of the same VPC are not a conflict.
+	const upstreamNS = "test-project"
+	scheme := indexTestScheme(t)
+
+	proxy := newNetworkServiceHTTPProxy(0)
+	members := newMemberEndpointSlice("my-proxy-0-0", "fd20:0:2::1:0:0", "fd20:0:2:1:0:1::")
+	first := newGalacticEndpointSlice("vpc-a", "2wJqT7d-9xKp2Qm", "fd20:0:2::1:0:0")
+	second := newGalacticEndpointSlice("vpc-b", "2wJqT7d-4bNr8Zt", "fd20:0:2:1:0:1::")
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(proxy, members, first, second).
+		Build()
+
+	idx, err := BuildPolicyIndexFromClient(context.Background(), cl, nil)
+	require.NoError(t, err)
+
+	info := idx.VPCPods[VPCPodKey{UpstreamNS: upstreamNS, HTTPProxyName: "my-proxy", RuleIndex: 0}]
+	require.NotEmpty(t, info.TenantID)
+
+	vpc, ok := TenantVPC(info.TenantID)
+	require.True(t, ok)
+	assert.Equal(t, "2wJqT7d", vpc, "both attachments resolve to the one shared VPC device")
+}
+
+func TestBuildPolicyIndexFromClient_NetworkService_MembersSpanningVPCsUnresolved(t *testing.T) {
+	// A socket bind is a property of the whole cluster. Members in two VPCs
+	// have no single correct device, so neither is chosen.
+	const upstreamNS = "test-project"
+	scheme := indexTestScheme(t)
+
+	proxy := newNetworkServiceHTTPProxy(0)
+	members := newMemberEndpointSlice("my-proxy-0-0", "fd20:0:2::1:0:0", "fd20:0:3::1:0:0")
+	first := newGalacticEndpointSlice("vpc-a", "2wJqT7d-9xKp2Qm", "fd20:0:2::1:0:0")
+	second := newGalacticEndpointSlice("vpc-b", "5hLm3Xc-9xKp2Qm", "fd20:0:3::1:0:0")
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(proxy, members, first, second).
+		Build()
+
+	idx, err := BuildPolicyIndexFromClient(context.Background(), cl, nil)
+	require.NoError(t, err)
+
+	key := VPCPodKey{UpstreamNS: upstreamNS, HTTPProxyName: "my-proxy", RuleIndex: 0}
+	info, ok := idx.VPCPods[key]
+	require.True(t, ok, "the entry must exist so the ambiguity is explicit, not absent")
+	assert.Empty(t, info.TenantID)
+}
+
+func TestBuildPolicyIndexFromClient_NetworkService_NoGalacticSliceLeavesTenantEmpty(t *testing.T) {
+	// A networkService whose members are ordinary addresses on no tenant VPC
+	// must never be bound to a VRF device.
+	const upstreamNS = "test-project"
+	scheme := indexTestScheme(t)
+
+	proxy := newNetworkServiceHTTPProxy(0)
+	members := newMemberEndpointSlice("my-proxy-0-0", "192.0.2.10")
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(proxy, members).
+		Build()
+
+	idx, err := BuildPolicyIndexFromClient(context.Background(), cl, nil)
+	require.NoError(t, err)
+
+	info := idx.VPCPods[VPCPodKey{UpstreamNS: upstreamNS, HTTPProxyName: "my-proxy", RuleIndex: 0}]
+	assert.Empty(t, info.TenantID)
+}
+
+func TestBuildPolicyIndexFromClient_HTTPProxyRuleNames(t *testing.T) {
+	scheme := indexTestScheme(t)
+	name := func(s string) *gatewayv1.SectionName { return (*gatewayv1.SectionName)(&s) }
+
+	tests := []struct {
+		name  string
+		rules []networkingv1alpha.HTTPProxyRule
+		want  []string
+	}{
+		{name: "no rules", rules: nil, want: []string{}},
+		{
+			name:  "all named",
+			rules: []networkingv1alpha.HTTPProxyRule{{Name: name("exempt")}, {Name: name("protected")}},
+			want:  []string{"exempt", "protected"},
+		},
+		{
+			name:  "unnamed rule keeps its position",
+			rules: []networkingv1alpha.HTTPProxyRule{{}, {Name: name("second")}},
+			want:  []string{"", "second"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			proxy := &networkingv1alpha.HTTPProxy{
+				ObjectMeta: metav1.ObjectMeta{Name: "alb", Namespace: "ns-abc"},
+				Spec:       networkingv1alpha.HTTPProxySpec{Rules: tt.rules},
+			}
+			cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(proxy).Build()
+
+			idx, err := BuildPolicyIndexFromClient(context.Background(), cl, nil)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, idx.HTTPProxyRules[HTTPProxyKey{Namespace: "ns-abc", Name: "alb"}])
+			assert.NotContains(t, idx.HTTPProxyRules, HTTPProxyKey{Namespace: "other", Name: "alb"})
+		})
+	}
+}
+
+func newMultiBackendHTTPProxy(backends ...networkingv1alpha.HTTPProxyRuleBackend) *networkingv1alpha.HTTPProxy {
+	return &networkingv1alpha.HTTPProxy{
+		ObjectMeta: metav1.ObjectMeta{Name: "my-proxy", Namespace: nsvcTestNS},
+		Spec: networkingv1alpha.HTTPProxySpec{
+			Rules: []networkingv1alpha.HTTPProxyRule{{Backends: backends}},
+		},
+	}
+}
+
+func networkServiceBackend(name string) networkingv1alpha.HTTPProxyRuleBackend {
+	return networkingv1alpha.HTTPProxyRuleBackend{
+		NetworkService: &networkingv1alpha.NetworkServiceBackendRef{Name: name, Port: "http"},
+	}
+}
+
+func namedMemberEndpointSlice(name, upstreamName string, addresses ...string) *discoveryv1.EndpointSlice {
+	slice := newMemberEndpointSlice(upstreamName, addresses...)
+	slice.Name = name
+	return slice
+}
+
+func TestBuildPolicyIndexFromClient_NetworkService_MultipleBackendsResolvedPerBackend(t *testing.T) {
+	const (
+		upstreamNS = "test-project"
+		tenantA    = "2wJqT7d-9xKp2Qm"
+		tenantB    = "2wJqT7d-4bNr8Zt"
+	)
+	scheme := indexTestScheme(t)
+
+	proxy := newMultiBackendHTTPProxy(networkServiceBackend("service-a"), networkServiceBackend("service-b"))
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(
+			proxy,
+			namedMemberEndpointSlice("members-a", "my-proxy-0-0", "fd20:0:13::1:0:0"),
+			namedMemberEndpointSlice("members-b", "my-proxy-0-1", "fd20:0:13::2:0:0"),
+			newGalacticEndpointSlice("vpc-pod-a", tenantA, "fd20:0:13::1:0:0"),
+			newGalacticEndpointSlice("vpc-pod-b", tenantB, "fd20:0:13::2:0:0"),
+		).
+		Build()
+
+	idx, err := BuildPolicyIndexFromClient(context.Background(), cl, nil)
+	require.NoError(t, err)
+
+	backend := func(i int) VPCPodInfo {
+		return idx.VPCPodBackends[VPCPodBackendKey{UpstreamNS: upstreamNS, HTTPProxyName: "my-proxy", RuleIndex: 0, BackendIndex: i}]
+	}
+	assert.Equal(t, tenantA, backend(0).TenantID)
+	assert.Equal(t, tenantB, backend(1).TenantID)
+
+	rule := idx.VPCPods[VPCPodKey{UpstreamNS: upstreamNS, HTTPProxyName: "my-proxy", RuleIndex: 0}]
+	vpc, ok := TenantVPC(rule.TenantID)
+	require.True(t, ok)
+	assert.Equal(t, "2wJqT7d", vpc)
+}
+
+func TestBuildPolicyIndexFromClient_NetworkService_UnresolvedLaterBackendKeepsRuleBound(t *testing.T) {
+	const (
+		upstreamNS = "test-project"
+		tenantID   = "2wJqT7d-9xKp2Qm"
+	)
+	scheme := indexTestScheme(t)
+
+	proxy := newMultiBackendHTTPProxy(networkServiceBackend("service-a"), networkServiceBackend("service-b"))
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(
+			proxy,
+			namedMemberEndpointSlice("members-a", "my-proxy-0-0", "fd20:0:13::1:0:0"),
+			namedMemberEndpointSlice("members-b", "my-proxy-0-1", "fd20:0:13::2:0:0"),
+			newGalacticEndpointSlice("vpc-pod-a", tenantID, "fd20:0:13::1:0:0"),
+		).
+		Build()
+
+	idx, err := BuildPolicyIndexFromClient(context.Background(), cl, nil)
+	require.NoError(t, err)
+
+	rule, ok := idx.VPCPods[VPCPodKey{UpstreamNS: upstreamNS, HTTPProxyName: "my-proxy", RuleIndex: 0}]
+	require.True(t, ok)
+	assert.Equal(t, tenantID, rule.TenantID)
+
+	second, ok := idx.VPCPodBackends[VPCPodBackendKey{UpstreamNS: upstreamNS, HTTPProxyName: "my-proxy", RuleIndex: 0, BackendIndex: 1}]
+	require.True(t, ok)
+	assert.Empty(t, second.TenantID)
+}
+
+func TestBuildPolicyIndexFromClient_NetworkService_BackendsSpanningVPCsLeaveRuleUnbound(t *testing.T) {
+	const (
+		upstreamNS = "test-project"
+		tenantA    = "2wJqT7d-9xKp2Qm"
+		tenantB    = "8mLwQ2c-3hRt6Yk"
+	)
+	scheme := indexTestScheme(t)
+
+	proxy := newMultiBackendHTTPProxy(networkServiceBackend("service-a"), networkServiceBackend("service-b"))
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(
+			proxy,
+			namedMemberEndpointSlice("members-a", "my-proxy-0-0", "fd20:0:13::1:0:0"),
+			namedMemberEndpointSlice("members-b", "my-proxy-0-1", "fd20:0:14::1:0:0"),
+			newGalacticEndpointSlice("vpc-pod-a", tenantA, "fd20:0:13::1:0:0"),
+			newGalacticEndpointSlice("vpc-pod-b", tenantB, "fd20:0:14::1:0:0"),
+		).
+		Build()
+
+	idx, err := BuildPolicyIndexFromClient(context.Background(), cl, nil)
+	require.NoError(t, err)
+
+	rule, ok := idx.VPCPods[VPCPodKey{UpstreamNS: upstreamNS, HTTPProxyName: "my-proxy", RuleIndex: 0}]
+	require.True(t, ok)
+	assert.Empty(t, rule.TenantID)
+
+	assert.Equal(t, tenantA, idx.VPCPodBackends[VPCPodBackendKey{UpstreamNS: upstreamNS, HTTPProxyName: "my-proxy", RuleIndex: 0, BackendIndex: 0}].TenantID)
+	assert.Equal(t, tenantB, idx.VPCPodBackends[VPCPodBackendKey{UpstreamNS: upstreamNS, HTTPProxyName: "my-proxy", RuleIndex: 0, BackendIndex: 1}].TenantID)
+}
+
+func TestBuildPolicyIndexFromClient_MissingInstanceSliceDoesNotUnbindRule(t *testing.T) {
+	const (
+		upstreamNS = "test-project"
+		tenantID   = "2wJqT7d-9xKp2Qm"
+	)
+	scheme := indexTestScheme(t)
+
+	proxy := newMultiBackendHTTPProxy(
+		networkServiceBackend("service-a"),
+		networkingv1alpha.HTTPProxyRuleBackend{
+			Instance: &networkingv1alpha.InstanceBackendRef{Name: "missing-pod", Port: 8080},
+		},
+	)
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(
+			proxy,
+			namedMemberEndpointSlice("members-a", "my-proxy-0-0", "fd20:0:13::1:0:0"),
+			newGalacticEndpointSlice("vpc-pod-a", tenantID, "fd20:0:13::1:0:0"),
+		).
+		Build()
+
+	idx, err := BuildPolicyIndexFromClient(context.Background(), cl, nil)
+	require.NoError(t, err)
+
+	assert.Equal(t, tenantID, idx.VPCPods[VPCPodKey{UpstreamNS: upstreamNS, HTTPProxyName: "my-proxy", RuleIndex: 0}].TenantID)
+
+	instance, ok := idx.VPCPodBackends[VPCPodBackendKey{UpstreamNS: upstreamNS, HTTPProxyName: "my-proxy", RuleIndex: 0, BackendIndex: 1}]
+	require.True(t, ok)
+	assert.Empty(t, instance.TenantID)
 }

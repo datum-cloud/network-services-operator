@@ -15,6 +15,10 @@ so an unusable certificate is handled in two layers:
 A certificate is "unusable" when it has expired, is not valid yet, is missing,
 its certificate and key do not match, or it has not been issued yet.
 
+For how a hostname becomes an issued cert in the first place — issuance paths,
+issuer selection, the downstream solver, and re-issuance — see
+[Gateway certificate issuance model](../gateway-certificate-issuance-model.md).
+
 Related: issue [#212](https://github.com/datum-cloud/network-services-operator/issues/212).
 The infra-side `EnvoyListenerUpdateRejected` alert fires when the edge actually
 rejects a listener update — the alerts here are designed to fire *before* that
@@ -82,6 +86,47 @@ renewal depends on it.
 **Remediate.** If renewal is failing because DNS moved away, this will become a
 customer-driven gating event — no platform fix. If renewal is failing for a
 platform reason, fix the issuer / ACME path so cert-manager can renew.
+
+## CertificateServiceIssuanceFailing
+
+**Meaning.** A wildcard hostname's certificate has not been issued or renewed by
+the certificate service for over two hours. Only wildcard hostnames use the
+service; exact hostnames stay on cert-manager and are covered by the alerts
+above.
+
+**Impact.** If the listener still serves a certificate, none yet: it carries
+`CertificateRenewalBlocked` and keeps serving until that certificate expires. If
+it serves nothing, it carries `CertificateIssuanceBlocked` and the wildcard is
+unavailable.
+
+**Diagnose.** The `reason` label says where it failed:
+
+| Reason | Where |
+|---|---|
+| `Rejected`, `Refused` | The service refused the request; the condition message carries its reason |
+| `IssuanceFailed`, `NotReady` | The service accepted it but the ACME order failed or never completed |
+| `RenewalOverdue` | The served certificate is past its renewal point and nothing newer arrived |
+| `MaterialRefused`, `UntrustedChain` | The operator refused what the service issued |
+| `StepFailed`, `NotOwned` | The operator could not reach the service, or the request name is taken |
+
+Read the TLSCertificate in the project, named after the gateway and listener:
+
+```sh
+kubectl -n <namespace> get tlscertificates -o yaml
+```
+
+The issued key pair never enters the project. It is on the service cluster, in
+the `secretNamespace` the operator is configured with, in a Secret named `tc-`
+plus the first 32 hex characters of the SHA-256 of the TLSCertificate's UID:
+
+```sh
+uid=$(kubectl -n <namespace> get tlscertificate <name> -o jsonpath='{.metadata.uid}')
+kubectl -n certificates-system get secret "tc-$(printf %s "$uid" | sha256sum | cut -c1-32)"
+```
+
+**Remediate.** A refusal or a missing DNS delegation record is for the customer.
+An ACME failure, a refused or untrusted chain, or a step failure is a platform
+fault in the certificate service or the operator's access to it.
 
 ## TLSBackstopPruningChains
 

@@ -1,6 +1,8 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -54,7 +56,9 @@ func TestNetworkServicesOperator_Validate_IrohEnabled(t *testing.T) {
 			if tt.mutate != nil {
 				tt.mutate(&iroh)
 			}
-			cfg := &NetworkServicesOperator{Connector: ConnectorConfig{Iroh: iroh}}
+			cfg := &NetworkServicesOperator{
+				Connector: ConnectorConfig{Iroh: iroh},
+			}
 			err := cfg.Validate()
 			if tt.wantSub == "" {
 				if err != nil {
@@ -108,5 +112,184 @@ func TestSetObjectDefaults_IrohConnectorConfig(t *testing.T) {
 	}
 	if iroh.DNSEnabled {
 		t.Error("DNSEnabled should default to false")
+	}
+}
+
+func TestGatewayConfig_ValidateLegacyTargetDomains(t *testing.T) {
+	tests := []struct {
+		name    string
+		gateway GatewayConfig
+		wantSub string
+	}{
+		{
+			name:    "empty list",
+			gateway: GatewayConfig{TargetDomain: "datumproxy.net"},
+		},
+		{
+			name: "legacy domain set",
+			gateway: GatewayConfig{
+				TargetDomain:        "datumproxy.net",
+				LegacyTargetDomains: []string{"prism.global.datum-dns.net"},
+			},
+		},
+		{
+			name: "empty entry",
+			gateway: GatewayConfig{
+				TargetDomain:        "datumproxy.net",
+				LegacyTargetDomains: []string{""},
+			},
+			wantSub: "must not be empty",
+		},
+		{
+			name: "leading dot",
+			gateway: GatewayConfig{
+				TargetDomain:        "datumproxy.net",
+				LegacyTargetDomains: []string{".prism.global.datum-dns.net"},
+			},
+			wantSub: "must be a bare domain",
+		},
+		{
+			name: "repeats target domain",
+			gateway: GatewayConfig{
+				TargetDomain:        "datumproxy.net",
+				LegacyTargetDomains: []string{"datumproxy.net"},
+			},
+			wantSub: "must not repeat targetDomain",
+		},
+		{
+			name: "duplicate entry",
+			gateway: GatewayConfig{
+				TargetDomain:        "datumproxy.net",
+				LegacyTargetDomains: []string{"prism.global.datum-dns.net", "prism.global.datum-dns.net"},
+			},
+			wantSub: "duplicate entry",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &NetworkServicesOperator{Gateway: tt.gateway}
+			err := cfg.Validate()
+
+			if tt.wantSub == "" {
+				if err != nil {
+					t.Fatalf("expected nil, got %v", err)
+				}
+				return
+			}
+
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", tt.wantSub)
+			}
+			if !strings.Contains(err.Error(), tt.wantSub) {
+				t.Fatalf("expected error containing %q, got %v", tt.wantSub, err)
+			}
+		})
+	}
+}
+
+func TestGatewayConfig_ManagedTargetDomains(t *testing.T) {
+	cfg := GatewayConfig{
+		TargetDomain:        "datumproxy.net",
+		LegacyTargetDomains: []string{"prism.global.datum-dns.net", ""},
+	}
+
+	got := cfg.ManagedTargetDomains()
+	want := []string{"datumproxy.net", "prism.global.datum-dns.net"}
+
+	if len(got) != len(want) {
+		t.Fatalf("expected %v, got %v", want, got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("expected %v, got %v", want, got)
+		}
+	}
+}
+
+func TestGatewayConfig_ValidateCertificateService(t *testing.T) {
+	tests := []struct {
+		name    string
+		gateway GatewayConfig
+		wantSub string
+	}{
+		{
+			name: "disabled by default validates",
+		},
+		{
+			name:    "enabled with hostname verification validates",
+			gateway: GatewayConfig{CertificateService: CertificateServiceConfig{Enabled: true, SecretNamespace: "certificates-system"}},
+		},
+		{
+			name:    "enabled without a secret namespace is rejected",
+			gateway: GatewayConfig{CertificateService: CertificateServiceConfig{Enabled: true}},
+			wantSub: "certificateService.secretNamespace is required",
+		},
+		{
+			name: "enabled without hostname verification is rejected",
+			gateway: GatewayConfig{
+				CertificateService:          CertificateServiceConfig{Enabled: true, SecretNamespace: "certificates-system"},
+				DisableHostnameVerification: true,
+			},
+			wantSub: "certificateService.enabled requires hostname verification",
+		},
+		{
+			name:    "a trusted roots file without chain verification is rejected",
+			gateway: GatewayConfig{CertificateService: CertificateServiceConfig{Enabled: true, SecretNamespace: "certificates-system", TrustedRootsFile: "/roots.pem"}},
+			wantSub: "certificateService.trustedRootsFile requires certificateService.verifyChain",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &NetworkServicesOperator{Gateway: tt.gateway}
+			err := cfg.Validate()
+			if tt.wantSub == "" {
+				if err != nil {
+					t.Fatalf("expected nil, got %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantSub) {
+				t.Fatalf("expected error containing %q, got %v", tt.wantSub, err)
+			}
+		})
+	}
+}
+
+func TestSetObjectDefaults_CertificateService(t *testing.T) {
+	cfg := &NetworkServicesOperator{}
+	SetObjectDefaults_NetworkServicesOperator(cfg)
+	if cfg.Gateway.CertificateService.Enabled {
+		t.Error("certificateService.enabled should default to false")
+	}
+	if cfg.Gateway.CertificateService.KubeconfigPath != "" {
+		t.Errorf("certificateService.kubeconfigPath should default to empty, got %q", cfg.Gateway.CertificateService.KubeconfigPath)
+	}
+	if got, want := cfg.Gateway.CertificateService.SecretNamespace, "certificates-system"; got != want {
+		t.Errorf("certificateService.secretNamespace = %q, want %q", got, want)
+	}
+	if cfg.Gateway.CertificateService.VerifyChain {
+		t.Error("certificateService.verifyChain should default to false")
+	}
+}
+
+func TestCertificateServiceConfig_TrustedRoots(t *testing.T) {
+	off := CertificateServiceConfig{TrustedRootsFile: "/does/not/exist"}
+	if pool, err := off.TrustedRoots(); pool != nil || err != nil {
+		t.Fatalf("verification off should load nothing, got %v, %v", pool, err)
+	}
+
+	system := CertificateServiceConfig{VerifyChain: true}
+	if pool, err := system.TrustedRoots(); pool != nil || err != nil {
+		t.Fatalf("no roots file means the system roots, got %v, %v", pool, err)
+	}
+
+	empty := filepath.Join(t.TempDir(), "empty.pem")
+	if err := os.WriteFile(empty, []byte("not a certificate"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (&CertificateServiceConfig{VerifyChain: true, TrustedRootsFile: empty}).TrustedRoots(); err == nil {
+		t.Fatal("a roots file with no certificates should be refused")
 	}
 }

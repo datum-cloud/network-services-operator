@@ -1,0 +1,43 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# The CloudNativePG operator, which runs IPAM's database.
+#
+# IPAM's own bundle installs CNPG at dependencies/postgres-operator as a Flux
+# HelmRelease. This env runs no Flux, so it takes the same chart through
+# kustomize --enable-helm — the way cert-manager is installed here — and skips
+# the HelmRelease. The name mirrors IPAM's so the correspondence is obvious.
+#
+# The operator installs CRDs and a webhook; nothing may apply a Cluster until
+# all three are live. task test-infra:cnpg-operator gates on that.
+#
+# Pinned rather than floating (IPAM's HelmRelease tracks "0.x"): a CI run should
+# not change underneath us because upstream published a release.
+
+resources:
+  - namespace.yaml
+
+helmCharts:
+  - name: cloudnative-pg
+    repo: https://cloudnative-pg.github.io/charts
+    # chart 0.29.0 == CloudNativePG 1.30.0
+    version: 0.29.0
+    releaseName: cnpg
+    namespace: cnpg-system
+    # The chart declares kubeVersion >=1.29. Rendering happens offline, where
+    # helm assumes a default Kubernetes far older than that and refuses the
+    # chart — so state the version this env actually runs (K8S_NODE_IMAGE in
+    # Taskfile.test-infra.yml). Bump both together.
+    kubeVersion: 1.35.5
+    valuesInline:
+      # One operator replica on a single-node kind; the default requests are
+      # sized for a real cluster and crowd the node alongside everything else
+      # this env runs.
+      replicaCount: 1
+      resources:
+        requests:
+          cpu: 50m
+          memory: 100Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi

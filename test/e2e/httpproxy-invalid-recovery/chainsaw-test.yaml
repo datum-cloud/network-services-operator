@@ -1,0 +1,260 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: httpproxy-invalid-recovery
+#
+# What this proves (network-services-operator#346):
+# The HTTPProxy validating webhook fires on `update` and re-validates the whole
+# object rather than the change being made. The operator's only writes to an
+# HTTPProxy are adding and removing finalizers — both plain, metadata-only
+# updates. So an object whose STORED spec violates a rule added after it was
+# written can no longer be touched by the operator at all:
+#
+#   1. The operator cannot add or remove its finalizers. It retries forever on
+#      capped backoff, a permanent floor under the controller error rate.
+#   2. `kubectl delete` parks the object in Terminating permanently, because
+#      removing the finalizer is revalidated against the still-invalid spec.
+#      Hand-patching metadata.finalizers is an update too, so that is denied as
+#      well — the object cannot be deleted by any means.
+#
+# The fix is to skip update validation when the spec did not change (and when
+# the object is deleting), so metadata-only writes are judged on the change
+# rather than on parts of the object nobody touched. This test asserts both
+# halves, and asserts that genuine spec writes are still rejected.
+#
+# Admission bypass (grandfathered-object injection):
+# The webhook rejects a direct write of an endpoint carrying a path component
+# (internal/validation/httpproxy_validation.go), so the invalid object cannot be
+# created outright. To reproduce an object persisted before the rule existed,
+# the injection step scopes this test's namespace out of the
+# vhttpproxy-v1alpha.kb.io webhook via a namespaceSelector, writes the invalid
+# spec, then restores the selector. The apiserver does not revalidate stored
+# objects, so the object survives exactly like a grandfathered one and
+# subsequent writes are rejected again.
+#
+# The injection deliberately leaves the finalizers in place. Stripping them
+# inside the bypass window is racy in the operator's favour: the operator
+# reacts in milliseconds while a ValidatingWebhookConfiguration edit takes
+# seconds to reach the apiserver's admission cache, so the operator re-adds the
+# finalizer before the wedge is re-armed and the test proves nothing. Judging
+# the operator's write directly — by making the same metadata-only write it
+# makes — is deterministic and needs no such window.
+#
+# The ValidatingWebhookConfiguration is cluster scoped and shared with every
+# other scenario in this suite. Every step that touches it restores it on the
+# way out, and step 1 carries a cleanup safety net that restores it and
+# force-strips the finalizer unconditionally, so a failing run cannot leave the
+# object wedged and the namespace undeletable.
+spec:
+  cluster: nso-standard
+  steps:
+    - name: Create a valid HTTPProxy and wait for its finalizers
+      try:
+        - apply:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: HTTPProxy
+              metadata:
+                name: wedged
+              spec:
+                rules:
+                  - backends:
+                      - endpoint: https://example.com
+        - description: >
+            Wait for both finalizers the operator places on an HTTPProxy — the
+            httpproxy controller's own and the resource replicator's. Both are
+            removed by plain updates, so both are wedged by #346.
+          script:
+            timeout: 3m
+            env:
+              - name: NS
+                value: ($namespace)
+            content: |
+              set -u
+              for i in $(seq 1 60); do
+                finalizers=$(kubectl get httpproxy wedged -n "${NS}" \
+                  -o jsonpath='{.metadata.finalizers}' 2>/dev/null || echo '')
+                echo "attempt ${i}: ${finalizers}"
+                case "${finalizers}" in
+                  *networking.datumapis.com/httpproxy-cleanup*)
+                    case "${finalizers}" in
+                      *gateway.networking.datumapis.com/gateway-resource-replicator*)
+                        exit 0
+                        ;;
+                    esac
+                    ;;
+                esac
+                sleep 3
+              done
+              echo "the operator never placed both finalizers on a valid HTTPProxy"
+              exit 1
+      cleanup:
+        - description: >
+            Safety net. Runs after every step regardless of where the test
+            failed, because step cleanups run in reverse order and this is the
+            first step. Restores the shared ValidatingWebhookConfiguration and
+            force-strips the finalizers, so a failure cannot leave the object in
+            Terminating and the namespace undeletable for the rest of the suite.
+          script:
+            timeout: 120s
+            env:
+              - name: NS
+                value: ($namespace)
+            content: |
+              set -u
+              vwc=network-services-operator-validating-webhook-configuration
+              hook=vhttpproxy-v1alpha.kb.io
+
+              idx=$(kubectl get validatingwebhookconfiguration "${vwc}" \
+                -o jsonpath='{range .webhooks[*]}{.name}{"\n"}{end}' \
+                | grep -n "^${hook}$" | cut -d: -f1)
+              idx=$((idx - 1))
+
+              kubectl patch validatingwebhookconfiguration "${vwc}" --type=json \
+                -p "[{\"op\":\"add\",\"path\":\"/webhooks/${idx}/namespaceSelector\",\"value\":{\"matchExpressions\":[{\"key\":\"kubernetes.io/metadata.name\",\"operator\":\"NotIn\",\"values\":[\"${NS}\"]}]}}]" || true
+              sleep 3
+
+              kubectl patch httpproxy wedged -n "${NS}" --type=merge \
+                -p '{"metadata":{"finalizers":[]}}' 2>/dev/null || true
+              kubectl delete httpproxy wedged -n "${NS}" --ignore-not-found --wait=false || true
+
+              kubectl patch validatingwebhookconfiguration "${vwc}" --type=json \
+                -p "[{\"op\":\"remove\",\"path\":\"/webhooks/${idx}/namespaceSelector\"}]" || true
+
+              echo "restored namespaceSelector for ${hook}:"
+              kubectl get validatingwebhookconfiguration "${vwc}" \
+                -o jsonpath="{.webhooks[${idx}].namespaceSelector}"
+              echo
+
+    - name: Inject a grandfathered invalid spec by bypassing admission
+      description: >
+        Scope this namespace out of the HTTPProxy validating webhook, write an
+        endpoint carrying a path component, then restore the webhook. The stored
+        object is now invalid under a rule that rejects every future write to it.
+      try:
+        - script:
+            timeout: 120s
+            env:
+              - name: NS
+                value: ($namespace)
+            content: |
+              set -eu
+              vwc=network-services-operator-validating-webhook-configuration
+              hook=vhttpproxy-v1alpha.kb.io
+
+              idx=$(kubectl get validatingwebhookconfiguration "${vwc}" \
+                -o jsonpath='{range .webhooks[*]}{.name}{"\n"}{end}' \
+                | grep -n "^${hook}$" | cut -d: -f1)
+              if [ -z "${idx}" ]; then
+                echo "webhook ${hook} not found in ${vwc}"
+                exit 1
+              fi
+              idx=$((idx - 1))
+              echo "webhook ${hook} is at index ${idx}"
+
+              restore() {
+                kubectl patch validatingwebhookconfiguration "${vwc}" --type=json \
+                  -p "[{\"op\":\"remove\",\"path\":\"/webhooks/${idx}/namespaceSelector\"}]" || true
+              }
+              trap restore EXIT
+
+              kubectl patch validatingwebhookconfiguration "${vwc}" --type=json \
+                -p "[{\"op\":\"add\",\"path\":\"/webhooks/${idx}/namespaceSelector\",\"value\":{\"matchExpressions\":[{\"key\":\"kubernetes.io/metadata.name\",\"operator\":\"NotIn\",\"values\":[\"${NS}\"]}]}}]"
+
+              injected=false
+              for i in $(seq 1 20); do
+                if kubectl patch httpproxy wedged -n "${NS}" --type=merge \
+                     -p '{"spec":{"rules":[{"backends":[{"endpoint":"https://example.com/get"}]}]}}'; then
+                  injected=true
+                  break
+                fi
+                echo "injection attempt ${i} failed (webhook cache lag?), retrying"
+                sleep 2
+              done
+
+              if [ "${injected}" != "true" ]; then
+                echo "failed to inject the invalid spec while the webhook was scoped out"
+                exit 1
+              fi
+
+              endpoint=$(kubectl get httpproxy wedged -n "${NS}" \
+                -o jsonpath='{.spec.rules[0].backends[0].endpoint}')
+              echo "injected endpoint: ${endpoint}"
+              if [ "${endpoint}" != "https://example.com/get" ]; then
+                echo "invalid spec not persisted as expected"
+                exit 1
+              fi
+
+        - description: >
+            Confirm the wedge is armed. A spec write must be rejected once the
+            webhook is back in scope — both before and after the fix, since the
+            fix only exempts updates that leave the spec untouched. If this ever
+            succeeds the injection did not take and the rest of the test proves
+            nothing.
+          script:
+            timeout: 90s
+            env:
+              - name: NS
+                value: ($namespace)
+            content: |
+              set -u
+              for i in $(seq 1 30); do
+                out=$(kubectl patch httpproxy wedged -n "${NS}" --type=merge \
+                  -p '{"spec":{"rules":[{"backends":[{"endpoint":"https://example.com/other"}]}]}}' 2>&1) && rc=0 || rc=1
+                if [ "${rc}" -ne 0 ]; then
+                  case "${out}" in
+                    *"endpoint must not have a path component"*)
+                      echo "wedge armed: ${out}"
+                      exit 0
+                      ;;
+                  esac
+                  echo "attempt ${i}: denied for an unexpected reason: ${out}"
+                else
+                  echo "attempt ${i}: spec write still admitted, webhook not yet re-scoped"
+                fi
+                sleep 2
+              done
+              echo "spec writes to the injected object are still admitted — the wedge was never armed"
+              exit 1
+
+    - name: A metadata-only update to an already-invalid object must be admitted
+      description: >
+        Failure mode 1 of #346, exercised with the same shape of write the
+        operator makes. Adding or removing a finalizer touches only metadata;
+        it must not be judged against the untouched, already-invalid spec.
+      try:
+        - script:
+            timeout: 60s
+            env:
+              - name: NS
+                value: ($namespace)
+            content: |
+              set -u
+              out=$(kubectl annotate httpproxy wedged -n "${NS}" \
+                nso-e2e/metadata-only-write=ok --overwrite 2>&1) && rc=0 || rc=1
+              echo "${out}"
+              if [ "${rc}" -ne 0 ]; then
+                echo "metadata-only update denied — the operator can neither add nor remove its finalizers (network-services-operator#346)"
+                exit 1
+              fi
+
+    - name: An object that is already invalid in storage must still be deletable
+      description: >
+        Failure mode 2 of #346. Removing the finalizer is a metadata-only update
+        as well, so deletion must run to completion rather than parking the
+        object in Terminating forever.
+      try:
+        - delete:
+            timeout: 3m
+            ref:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: HTTPProxy
+              name: wedged
+        - error:
+            timeout: 1m
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: HTTPProxy
+              metadata:
+                name: wedged

@@ -1,0 +1,17 @@
+# Admit the aggregator.
+#
+# The base policy admits ingress only from kube-system, which was right while
+# the kind apiserver was the thing aggregating IPAM. Milo is the aggregator now
+# and it runs in milo-system, so without this rule its proxied requests are
+# dropped.
+#
+# The symptom is worth knowing, because it does not look like a network problem:
+# Milo reports "error trying to reach service: dial tcp <ipam clusterIP>:443:
+# i/o timeout" and every request through a project control-plane path returns
+# 503, while IPAM itself is healthy, serving, and logging nothing at all.
+- op: add
+  path: /spec/ingress/0/from/-
+  value:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: milo-system

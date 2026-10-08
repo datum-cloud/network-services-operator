@@ -136,6 +136,18 @@ spec:
               status:
                 (conditions[?type == 'Programmed']):
                   - status: "True"
+        - assert:
+            # NSO#266: extension server must stamp Programmed on the edge TPP
+            # after a successful WAF apply (observedGeneration matches).
+            timeout: 3m
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: TrafficProtectionPolicy
+              metadata:
+                name: enforce-waf
+              status:
+                (ancestors[?conditions[?type == 'Programmed' && status == 'True']]):
+                  - (length(conditions[?type == 'Programmed' && status == 'True'])): 1
       catch:
         - script:
             timeout: 60s

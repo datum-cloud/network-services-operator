@@ -193,3 +193,18 @@ Key changes:
 - **Commit types**: feat, fix, refactor, docs, test, chore, perf, style, ci
 - **No watermarks** or co-author tags
 - **Focus on what/why**, not how
+- **Scope**: the 80-char hard-wrap applies to commit messages only. PR
+  descriptions, GitHub issues, and comments render as GitHub-flavored markdown —
+  do not hard-wrap them; let prose reflow naturally and only break lines where
+  markdown needs it (lists, tables, code fences).
+
+## GitHub PR / Issue / Comment Conventions
+
+The `datum-platform:pr-conventions` skill owns these rules for every repo, and
+this one adds nothing. Read it before drafting GitHub content.
+
+It carries the countable bar — a four-sentence summary, a four-checkbox test
+plan, no file paths or identifiers in the opening post, no hard-wrapped prose —
+and the writing rules behind it. The skill's `pr-op-gate` hook measures a body
+on `gh pr|issue create|edit` and blocks the post when it misses, naming the rule
+and the count that broke it.

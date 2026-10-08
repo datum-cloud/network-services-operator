@@ -3,12 +3,16 @@
 package controller
 
 import (
+	"cmp"
 	"context"
 	"crypto/tls"
+	"crypto/x509"
+	"encoding/json"
 	"fmt"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	cmv1 "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
@@ -44,6 +48,7 @@ import (
 	mcsource "sigs.k8s.io/multicluster-runtime/pkg/source"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
+	certificatesv1alpha1 "go.datum.net/network-services-operator/internal/certificates/v1alpha1"
 	"go.datum.net/network-services-operator/internal/config"
 	downstreamclient "go.datum.net/network-services-operator/internal/downstreamclient"
 	gatewayutil "go.datum.net/network-services-operator/internal/util/gateway"
@@ -69,12 +74,46 @@ const KindHTTPRoute = "HTTPRoute"
 const KindService = "Service"
 const KindEndpointSlice = "EndpointSlice"
 
+// VPCPodTenantIDLabel is the label galactic-cni (#854) sets on the
+// EndpointSlice it publishes for a VPC pod, identifying the owning tenant.
+// Its presence on an EndpointSlice an instance HTTPProxy backend references
+// (api/v1alpha.InstanceBackendRef) tells this controller to route straight
+// through to the pod's real address instead of synthesizing a ClusterIP
+// Service — Envoy needs a real endpoint address for the tenant-VRF/SRv6
+// socket-bind mechanism (#855) to work.
+//
+// Confirmed against galactic's own source of truth
+// (internal/crdnames.LabelTenantID) — same name, and same value shape:
+// galactic's crdnames.TenantIdentifier(vpc, vpcAttachment), an unencoded
+// "<vpc>-<vpcAttachment>" join. The extension server's vrfDeviceName
+// (internal/extensionserver/mutate/vpcpod.go) depends on that exact shape
+// to recover vpc from this label's value.
+const VPCPodTenantIDLabel = "galactic.datum.net/tenant-id"
+
 // GatewayReconciler reconciles a Gateway object
 type GatewayReconciler struct {
 	mgr    mcmanager.Manager
 	Config config.NetworkServicesOperator
 
 	DownstreamCluster cluster.Cluster
+
+	// CertificateServiceReader reads the certificate service's cluster, where
+	// each issued key pair is stored. Required when
+	// Config.Gateway.CertificateService.Enabled.
+	CertificateServiceReader client.Reader
+
+	// CertificateServiceRoots are the roots an issued chain must verify
+	// against when Config.Gateway.CertificateService.VerifyChain is set. Nil
+	// means the system roots.
+	CertificateServiceRoots *x509.CertPool
+
+	// WildcardEntitlements decides whether a project may hold wildcard
+	// hostnames. Nil denies every project.
+	WildcardEntitlements WildcardEntitlementChecker
+
+	certificateServiceFailures  sync.Map
+	certificateServiceStates    sync.Map
+	certificateServiceListeners sync.Map
 }
 
 // +kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;update;patch;delete
@@ -93,6 +132,9 @@ type GatewayReconciler struct {
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=backendtlspolicies,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=backendtlspolicies/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=backendtlspolicies/finalizers,verbs=update
+
+// +kubebuilder:rbac:groups=gateway.envoyproxy.io,resources=backendtrafficpolicies,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=gateway.envoyproxy.io,resources=backendtrafficpolicies/status,verbs=get;update;patch
 
 // +kubebuilder:rbac:groups=cert-manager.io,resources=certificates,verbs=get;list;watch;create;update;patch;delete
 
@@ -265,7 +307,7 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 		return result, nil
 	}
 
-	verifiedHostnames, claimedHostnames, notClaimedHostnames, err := r.ensureHostnamesClaimed(
+	verifiedHostnames, claimedHostnames, hostnameRefusals, err := r.ensureHostnamesClaimed(
 		ctx,
 		upstreamClusterName,
 		upstreamClient,
@@ -286,6 +328,7 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 	// hard-fail (LastFailureTime). See #260.
 	listenerCertHealth := r.evaluateListenerCertHealth(
 		ctx,
+		upstreamClient,
 		downstreamClient,
 		downstreamGateway.Namespace,
 		upstreamGateway,
@@ -299,7 +342,24 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 		listenerCertHealth,
 	)
 
-	if downstreamGateway.CreationTimestamp.IsZero() {
+	// A listener the user asked for that never reaches the downstream gateway
+	// makes the gateway dishonest about being programmed, whatever held it back.
+	// Derived from the listener set actually built, so a new reason to withhold
+	// one is covered without being enumerated here.
+	droppedListeners := summarizeDroppedListeners(
+		upstreamGateway,
+		desiredDownstreamGateway,
+		listenerCertHealth,
+	)
+
+	if len(desiredDownstreamGateway.Spec.Listeners) == 0 {
+		// The Gateway API requires at least one listener, so writing this would
+		// be rejected and end the reconcile before any status reached the user.
+		// Keep whatever is already serving and carry on, so the listener status
+		// below can say which hostname is unavailable and why.
+		log.FromContext(ctx).Info("no programmable listeners, leaving downstream gateway unchanged",
+			"upstream_listeners", len(upstreamGateway.Spec.Listeners))
+	} else if downstreamGateway.CreationTimestamp.IsZero() {
 		if err := downstreamStrategy.SetControllerReference(ctx, upstreamGateway, downstreamGateway); err != nil {
 			result.Err = fmt.Errorf("failed to set controller reference on downstream gateway: %w", err)
 			return result, nil
@@ -322,6 +382,44 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 				return result, nil
 			}
 		}
+	}
+
+	var certificateServiceRequeue time.Duration
+	if r.Config.Gateway.CertificateService.Enabled {
+		// The service is a dependency of issuance, not of routing: whatever it
+		// does, DNS, status and routes below still reconcile, and a listener
+		// that could not be served tells the customer why.
+		serviceResult, issues := r.ensureListenerTLSCertificates(
+			ctx,
+			upstreamClusterName,
+			upstreamClient,
+			upstreamGateway,
+			downstreamGateway,
+			downstreamStrategy,
+			claimedHostnames,
+		)
+		for name, issue := range issues {
+			status, gated := listenerCertHealth[name]
+			if !gated {
+				continue
+			}
+			if issue.reason == certificateServiceReasonWildcardNotEntitled {
+				status.healthy = false
+				status.message = issue.message
+				status.issuanceBlocked = true
+				status.issuanceReason = issue.reason
+				status.renewalBlocked = ""
+			} else if status.healthy {
+				status.renewalBlocked = issue.message
+			} else {
+				status.message = issue.message
+				status.issuanceBlocked = true
+			}
+			listenerCertHealth[name] = status
+		}
+		certificateServiceRequeue = serviceResult.RequeueAfter
+	} else {
+		clearCertificateServiceFailing(upstreamGateway)
 	}
 
 	certResult := r.ensureListenerCertificates(
@@ -370,6 +468,7 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 		upstreamClient,
 		upstreamGateway,
 		downstreamGateway,
+		droppedListeners,
 	)
 	if gatewayStatusResult.Err != nil || gatewayStatusResult.StopProcessing {
 		return gatewayStatusResult.Merge(result), nil
@@ -386,7 +485,7 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 		downstreamGateway,
 		downstreamStrategy,
 		verifiedHostnames,
-		notClaimedHostnames,
+		hostnameRefusals,
 		listenerCertHealth,
 	)
 
@@ -397,6 +496,9 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 			result.RequeueAfter = max(result.RequeueAfter, 1*time.Minute)
 			break
 		}
+	}
+	if certificateServiceRequeue > 0 && (result.RequeueAfter == 0 || certificateServiceRequeue < result.RequeueAfter) {
+		result.RequeueAfter = certificateServiceRequeue
 	}
 
 	addresses := make([]gatewayv1.GatewayStatusAddress, 0, len(targetDomainHostnames))
@@ -441,7 +543,21 @@ type listenerCertStatus struct {
 	// Carried here so the expiry gauge can be labelled with the secret name
 	// without recomputing it outside listenerCertHealth.
 	secretName string
+	// renewalBlocked, when set on a healthy listener, says the certificate it
+	// serves cannot be replaced and why, so the customer hears about it before
+	// the expiry turns it into an outage.
+	renewalBlocked string
+	// issuanceBlocked, when set on an unhealthy listener, says the certificate
+	// step itself failed rather than issuance merely being underway.
+	issuanceBlocked bool
+	// issuanceReason overrides the reason on the issuance-blocked condition.
+	issuanceReason string
 }
+
+const listenerConditionCertificateRenewalBlocked = "CertificateRenewalBlocked"
+const listenerReasonRenewalFailing = "RenewalFailing"
+const listenerConditionCertificateIssuanceBlocked = "CertificateIssuanceBlocked"
+const listenerReasonIssuanceFailing = "IssuanceFailing"
 
 // clearListenerCertMetrics removes every certificate-health gauge series for a
 // gateway. Used both before re-recording each reconcile and on gateway deletion
@@ -461,6 +577,7 @@ func clearListenerCertMetrics(namespace, name string) {
 // is left out so it is never gated.
 func (r *GatewayReconciler) evaluateListenerCertHealth(
 	ctx context.Context,
+	upstreamClient client.Client,
 	downstreamClient client.Client,
 	downstreamNamespace string,
 	upstreamGateway *gatewayv1.Gateway,
@@ -493,7 +610,12 @@ func (r *GatewayReconciler) evaluateListenerCertHealth(
 			continue
 		}
 
-		status := r.listenerCertHealth(ctx, downstreamClient, downstreamNamespace, upstreamGateway.Name, l.Name, hostname, now)
+		var status listenerCertStatus
+		if _, service := r.listenerUsesCertificateService(l, claimedHostnames); service {
+			status = r.listenerTLSCertificateHealth(ctx, upstreamClient, downstreamClient, downstreamNamespace, upstreamGateway, l.Name, hostname, now)
+		} else {
+			status = r.listenerCertHealth(ctx, downstreamClient, downstreamNamespace, upstreamGateway.Name, l.Name, hostname, now)
+		}
 		health[l.Name] = status
 
 		// Mark this listener as managed regardless of its health, so the
@@ -599,9 +721,26 @@ func (r *GatewayReconciler) listenerCertHealth(
 		}
 	}
 
-	// Finally, load the stored certificate and key and confirm they match and
-	// are still valid. This catches a broken or mismatched certificate that
-	// would otherwise be served and break HTTPS for the listener.
+	if secretStatus := listenerSecretHealth(ctx, downstreamClient, downstreamNamespace, secretName, hostname, now); !secretStatus.healthy {
+		return secretStatus
+	}
+
+	return listenerCertStatus{healthy: true, notAfter: cert.Status.NotAfter, secretName: secretName}
+}
+
+// listenerSecretHealth loads the stored certificate and key and confirms they
+// match and are still valid, catching a broken or mismatched certificate that
+// would otherwise be served and break HTTPS for the listener.
+func listenerSecretHealth(
+	ctx context.Context,
+	downstreamClient client.Client,
+	downstreamNamespace string,
+	secretName string,
+	hostname string,
+	now time.Time,
+) listenerCertStatus {
+	logger := log.FromContext(ctx)
+
 	var secret corev1.Secret
 	if err := downstreamClient.Get(ctx, client.ObjectKey{Namespace: downstreamNamespace, Name: secretName}, &secret); err != nil {
 		if apierrors.IsNotFound(err) {
@@ -637,7 +776,11 @@ func (r *GatewayReconciler) listenerCertHealth(
 		}
 	}
 
-	return listenerCertStatus{healthy: true, notAfter: cert.Status.NotAfter, secretName: secretName}
+	status := listenerCertStatus{healthy: true, secretName: secretName}
+	if leaf := keyPair.Leaf; leaf != nil {
+		status.notAfter = &metav1.Time{Time: leaf.NotAfter}
+	}
+	return status
 }
 
 // certIsReady reports whether a cert-manager Certificate has Ready=True.
@@ -648,6 +791,19 @@ func certIsReady(cert *cmv1.Certificate) bool {
 		}
 	}
 	return false
+}
+
+// certIsServing reports whether a Certificate holds a certificate that is
+// usable right now: issued, started, and not yet expired. A Certificate with no
+// expiry recorded has never issued one.
+func certIsServing(cert *cmv1.Certificate, now time.Time) bool {
+	if !certIsReady(cert) {
+		return false
+	}
+	if cert.Status.NotBefore != nil && cert.Status.NotBefore.After(now) {
+		return false
+	}
+	return cert.Status.NotAfter != nil && cert.Status.NotAfter.After(now)
 }
 
 // These messages are shown to customers, so they stay plain and name the
@@ -705,52 +861,53 @@ func (r *GatewayReconciler) getDesiredDownstreamGateway(
 				"upstream_listener_index", listenerIndex, "listener", l.Name)
 		}
 
+		if l.Hostname == nil {
+			logger.Info("skipping downstream gateway listener with unset hostname",
+				"upstream_listener_index", listenerIndex, "listener", l.Name)
+			continue
+		}
+
 		// Per-listener TLS decision: hostnames covered by the wildcard
 		// (*.targetDomain) reference the pre-provisioned shared secret;
 		// all others reference a per-listener secret populated by a
 		// Certificate resource created in ensureListenerCertificates.
-		hostnameUnderWildcard := false
-		if l.Hostname != nil {
-			h := string(*l.Hostname)
-			hostnameUnderWildcard = strings.HasSuffix(h, wildcardSuffix) || h == r.Config.Gateway.TargetDomain
-		}
+		hostname := string(*l.Hostname)
+		hostnameUnderWildcard := strings.HasSuffix(hostname, wildcardSuffix) || hostname == r.Config.Gateway.TargetDomain
 		useSharedTLS := hostnameUnderWildcard && r.Config.Gateway.HasDefaultListenerTLSSecret()
 
-		if l.Hostname != nil {
-			listenerCopy := l.DeepCopy()
-			if l.TLS != nil && l.TLS.Options[certificateIssuerTLSOption] != "" {
-				delete(listenerCopy.TLS.Options, certificateIssuerTLSOption)
+		listenerCopy := l.DeepCopy()
+		if l.TLS != nil && l.TLS.Options[certificateIssuerTLSOption] != "" {
+			delete(listenerCopy.TLS.Options, certificateIssuerTLSOption)
 
-				tlsMode := gatewayv1.TLSModeTerminate
-				if useSharedTLS {
-					listenerCopy.TLS = &gatewayv1.ListenerTLSConfig{
-						Mode: &tlsMode,
-						CertificateRefs: []gatewayv1.SecretObjectReference{
-							{
-								Group: ptr.To(gatewayv1.Group("")),
-								Kind:  ptr.To(gatewayv1.Kind("Secret")),
-								Name:  gatewayv1.ObjectName(r.Config.Gateway.DefaultListenerTLSSecretName),
-							},
+			tlsMode := gatewayv1.TLSModeTerminate
+			if useSharedTLS {
+				listenerCopy.TLS = &gatewayv1.ListenerTLSConfig{
+					Mode: &tlsMode,
+					CertificateRefs: []gatewayv1.SecretObjectReference{
+						{
+							Group: ptr.To(gatewayv1.Group("")),
+							Kind:  ptr.To(gatewayv1.Kind("Secret")),
+							Name:  gatewayv1.ObjectName(r.Config.Gateway.DefaultListenerTLSSecretName),
 						},
-					}
-				} else {
-					// Secret name must match the Certificate created by
-					// ensureListenerCertificates for this listener.
-					listenerCopy.TLS = &gatewayv1.ListenerTLSConfig{
-						Mode: &tlsMode,
-						CertificateRefs: []gatewayv1.SecretObjectReference{
-							{
-								Group: ptr.To(gatewayv1.Group("")),
-								Kind:  ptr.To(gatewayv1.Kind("Secret")),
-								Name:  gatewayv1.ObjectName(listenerCertificateSecretName(upstreamGateway.Name, l.Name)),
-							},
+					},
+				}
+			} else {
+				// Secret name must match the Certificate created by
+				// ensureListenerCertificates for this listener.
+				listenerCopy.TLS = &gatewayv1.ListenerTLSConfig{
+					Mode: &tlsMode,
+					CertificateRefs: []gatewayv1.SecretObjectReference{
+						{
+							Group: ptr.To(gatewayv1.Group("")),
+							Kind:  ptr.To(gatewayv1.Kind("Secret")),
+							Name:  gatewayv1.ObjectName(listenerCertificateSecretName(upstreamGateway.Name, l.Name)),
 						},
-					}
+					},
 				}
 			}
-
-			listeners = append(listeners, *listenerCopy)
 		}
+
+		listeners = append(listeners, *listenerCopy)
 	}
 
 	// TODO(jreese) get from "scheduler"
@@ -759,6 +916,48 @@ func (r *GatewayReconciler) getDesiredDownstreamGateway(
 	downstreamGateway.Spec.Listeners = listeners
 
 	return &downstreamGateway
+}
+
+// listenerDropReport names the spec listeners that never reached the downstream
+// gateway, and records whether an unusable certificate held back every one of
+// them.
+type listenerDropReport struct {
+	names           []gatewayv1.SectionName
+	allCertWithheld bool
+}
+
+// summarizeDroppedListeners compares the listeners the user asked for against
+// the ones the downstream gateway will carry. Working from the built set rather
+// than re-deriving each reason keeps a listener withheld by a future condition
+// from going unreported.
+func summarizeDroppedListeners(
+	upstreamGateway *gatewayv1.Gateway,
+	desiredDownstreamGateway *gatewayv1.Gateway,
+	listenerCertHealth map[gatewayv1.SectionName]listenerCertStatus,
+) listenerDropReport {
+	programmed := make(map[gatewayv1.SectionName]struct{}, len(desiredDownstreamGateway.Spec.Listeners))
+	for _, l := range desiredDownstreamGateway.Spec.Listeners {
+		programmed[l.Name] = struct{}{}
+	}
+
+	report := listenerDropReport{allCertWithheld: true}
+	for _, l := range upstreamGateway.Spec.Listeners {
+		if _, ok := programmed[l.Name]; ok {
+			continue
+		}
+
+		report.names = append(report.names, l.Name)
+
+		if status, gated := listenerCertHealth[l.Name]; !gated || status.healthy {
+			report.allCertWithheld = false
+		}
+	}
+
+	if len(report.names) == 0 {
+		report.allCertWithheld = false
+	}
+
+	return report
 }
 
 // listenerCertificateSecretName returns the deterministic Secret name that a
@@ -847,6 +1046,9 @@ func (r *GatewayReconciler) ensureListenerCertificates(
 			continue
 		}
 		if hasSharedSecret && (strings.HasSuffix(hostname, wildcardSuffix) || hostname == r.Config.Gateway.TargetDomain) {
+			continue
+		}
+		if _, service := r.listenerUsesCertificateService(l, claimedHostnames); service {
 			continue
 		}
 
@@ -1041,6 +1243,18 @@ func (r *GatewayReconciler) reissueFailedCertificate(
 		return 0, gatewayChanged
 	}
 
+	if certIsServing(cert, time.Now()) {
+		if clearReissuanceCount(downstreamGateway, certName) {
+			gatewayChanged = true
+		}
+		logger.V(1).Info("Certificate failed but is still serving, deferring to renewal",
+			"certificate", certName,
+			"lastFailureTime", cert.Status.LastFailureTime.Time,
+			"notAfter", cert.Status.NotAfter.Time,
+		)
+		return 0, gatewayChanged
+	}
+
 	retryCount := getReissuanceCount(downstreamGateway, certName)
 	maxRetries := reissuanceCfg.GetMaxRetries()
 	if retryCount >= maxRetries {
@@ -1124,6 +1338,7 @@ func (r *GatewayReconciler) reconcileGatewayStatus(
 	upstreamClient client.Client,
 	upstreamGateway *gatewayv1.Gateway,
 	downstreamGateway *gatewayv1.Gateway,
+	droppedListeners listenerDropReport,
 ) (result Result) {
 	logger := log.FromContext(ctx)
 
@@ -1150,16 +1365,34 @@ func (r *GatewayReconciler) reconcileGatewayStatus(
 
 	if c := apimeta.FindStatusCondition(downstreamGateway.Status.Conditions, string(gatewayv1.GatewayConditionProgrammed)); c != nil {
 		message := "The Gateway has not been programmed"
+		status := c.Status
+		reason := c.Reason
 		if c.Status == metav1.ConditionTrue {
 			message = "The Gateway has been programmed"
 			programmedReady = true
 		}
 
+		if len(droppedListeners.names) > 0 {
+			message = "One or more listeners could not be programmed. See the listener status for the reason."
+			reason = string(gatewayv1.GatewayReasonListenersNotValid)
+
+			// A listener waiting on a usable certificate is still missing from the
+			// edge, so the gateway is not programmed. It is reported apart from a
+			// listener dropped for any other reason because it clears on its own.
+			if droppedListeners.allCertWithheld {
+				message = "One or more listeners are waiting on a usable certificate. See the listener status for the reason."
+				reason = string(gatewayv1.GatewayReasonPending)
+			}
+
+			status = metav1.ConditionFalse
+			programmedReady = false
+		}
+
 		apimeta.SetStatusCondition(&upstreamGateway.Status.Conditions, metav1.Condition{
 			Message:            message,
 			Type:               string(gatewayv1.GatewayConditionProgrammed),
-			Reason:             c.Reason,
-			Status:             c.Status,
+			Reason:             reason,
+			Status:             status,
 			ObservedGeneration: upstreamGateway.Generation,
 		})
 
@@ -1195,9 +1428,9 @@ func (r *GatewayReconciler) ensureHostnamesClaimed(
 	upstreamClient client.Client,
 	upstreamGateway *gatewayv1.Gateway,
 	downstreamGateway *gatewayv1.Gateway,
-) (verifiedHostnames, claimedHostnames, notClaimedHostnames []string, err error) {
+) (verifiedHostnames, claimedHostnames []string, refusals map[string]hostnameRefusal, err error) {
 
-	verifiedHostnames, err = r.ensureHostnameVerification(ctx, upstreamClient, upstreamGateway, downstreamGateway)
+	verifiedHostnames, refusals, err = r.ensureHostnameVerification(ctx, upstreamClient, upstreamGateway, downstreamGateway)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -1205,6 +1438,7 @@ func (r *GatewayReconciler) ensureHostnamesClaimed(
 	downstreamClient := r.DownstreamCluster.GetClient()
 
 	upstreamGatewayReferenceName := fmt.Sprintf("%s/%s/%s", upstreamClusterName, upstreamGateway.Namespace, upstreamGateway.Name)
+	project := hostnameClaimProject(upstreamClusterName)
 
 	// Track each hostname in a ConfigMap in the downstream control plane.
 	// This will need to be adjusted as the number of hostnames grows to be large,
@@ -1219,7 +1453,7 @@ func (r *GatewayReconciler) ensureHostnamesClaimed(
 
 		objectKey := client.ObjectKey{
 			Namespace: r.Config.Gateway.DownstreamHostnameAccountingNamespace,
-			Name:      hostname,
+			Name:      hostnameClaimName(hostname),
 		}
 
 		var hostnameConfigMap corev1.ConfigMap
@@ -1227,13 +1461,34 @@ func (r *GatewayReconciler) ensureHostnamesClaimed(
 			return nil, nil, nil, err
 		}
 
-		if hostnameConfigMap.CreationTimestamp.IsZero() {
+		claimExists := !hostnameConfigMap.CreationTimestamp.IsZero()
+		if claimExists && hostnameConfigMap.Data[jsonKeyOwner] != upstreamGatewayReferenceName {
+			refusals[hostname] = hostnameInUseRefusal(hostname)
+			continue
+		}
+
+		if r.Config.Gateway.CertificateService.Enabled {
+			var existing *corev1.ConfigMap
+			if claimExists {
+				existing = &hostnameConfigMap
+			}
+			conflict, err := subtreeClaimConflicts(ctx, downstreamClient, objectKey.Namespace, project, hostname, existing)
+			if err != nil {
+				return nil, nil, nil, err
+			}
+			if conflict.found() {
+				refusals[hostname] = hostnameRefusal{reason: networkingv1alpha.HostnameInUseReason, message: subtreeConflictMessage(hostname, conflict)}
+				continue
+			}
+		}
+
+		if !claimExists {
 			hostnameConfigMap = corev1.ConfigMap{
 				ObjectMeta: metav1.ObjectMeta{
 					Namespace: objectKey.Namespace,
 					Name:      objectKey.Name,
 					Labels: map[string]string{
-						downstreamclient.UpstreamOwnerClusterNameLabel: fmt.Sprintf("cluster-%s", strings.ReplaceAll(upstreamClusterName, "/", "_")),
+						downstreamclient.UpstreamOwnerClusterNameLabel: project,
 						downstreamclient.UpstreamOwnerNamespaceLabel:   upstreamGateway.Namespace,
 						downstreamclient.UpstreamOwnerNameLabel:        upstreamGateway.Name,
 					},
@@ -1242,17 +1497,17 @@ func (r *GatewayReconciler) ensureHostnamesClaimed(
 					jsonKeyOwner: upstreamGatewayReferenceName,
 				},
 			}
+			if objectKey.Name != hostname {
+				hostnameConfigMap.Data[jsonKeyHostname] = hostname
+			}
 
 			if err := downstreamClient.Create(ctx, &hostnameConfigMap); err != nil {
 				if apierrors.IsConflict(err) {
-					notClaimedHostnames = append(notClaimedHostnames, hostname)
+					refusals[hostname] = hostnameInUseRefusal(hostname)
 					continue
 				}
 				return nil, nil, nil, err
 			}
-		} else if hostnameConfigMap.Data[jsonKeyOwner] != upstreamGatewayReferenceName {
-			notClaimedHostnames = append(notClaimedHostnames, hostname)
-			continue
 		}
 
 		claimedHostnames = append(claimedHostnames, hostname)
@@ -1277,7 +1532,7 @@ func (r *GatewayReconciler) ensureHostnamesClaimed(
 
 	if len(hostnameConfigMapList.Items) > 0 {
 		for _, configMap := range hostnameConfigMapList.Items {
-			if slices.Contains(claimedHostnames, configMap.Name) {
+			if slices.Contains(claimedHostnames, claimedHostname(&configMap)) {
 				// Still in use
 				continue
 			}
@@ -1289,19 +1544,32 @@ func (r *GatewayReconciler) ensureHostnamesClaimed(
 
 	slices.Sort(claimedHostnames)
 
-	return verifiedHostnames, claimedHostnames, notClaimedHostnames, nil
+	return verifiedHostnames, claimedHostnames, refusals, nil
+}
+
+func hostnameInUseRefusal(hostname string) hostnameRefusal {
+	return hostnameRefusal{
+		reason:  networkingv1alpha.HostnameInUseReason,
+		message: fmt.Sprintf("The hostname %q is already attached to a resource.", hostname),
+	}
 }
 
 func (r *GatewayReconciler) isDatumManagedGatewayHostname(upstreamGateway *gatewayv1.Gateway, hostname string) bool {
-	targetDomain := r.Config.Gateway.TargetDomain
 	gatewayUID := string(upstreamGateway.UID)
 	legacyUIDWithoutDashes := strings.ReplaceAll(gatewayUID, "-", "")
 
-	managedBaseHostnames := []string{
-		r.gatewayCanonicalHostname(upstreamGateway),
-		r.Config.Gateway.GatewayDNSAddress(upstreamGateway),
-		fmt.Sprintf("%s.%s", legacyUIDWithoutDashes, targetDomain),
-		fmt.Sprintf("%s.%s", gatewayUID, targetDomain),
+	targetDomains := r.Config.Gateway.ManagedTargetDomains()
+
+	managedBaseHostnames := make([]string, 0, 1+3*len(targetDomains))
+	managedBaseHostnames = append(managedBaseHostnames, r.gatewayCanonicalHostname(upstreamGateway))
+
+	for _, targetDomain := range targetDomains {
+		managedBaseHostnames = append(
+			managedBaseHostnames,
+			r.Config.Gateway.GatewayDNSAddressForDomain(upstreamGateway, targetDomain),
+			fmt.Sprintf("%s.%s", legacyUIDWithoutDashes, targetDomain),
+			fmt.Sprintf("%s.%s", gatewayUID, targetDomain),
+		)
 	}
 
 	for _, managedHostname := range managedBaseHostnames {
@@ -1325,9 +1593,10 @@ func (r *GatewayReconciler) ensureHostnameVerification(
 	upstreamClient client.Client,
 	upstreamGateway *gatewayv1.Gateway,
 	downstreamGateway *gatewayv1.Gateway,
-) ([]string, error) {
+) ([]string, map[string]hostnameRefusal, error) {
 	logger := log.FromContext(ctx)
 
+	refusals := map[string]hostnameRefusal{}
 	gatewayDefaultHostname := r.gatewayCanonicalHostname(upstreamGateway)
 
 	// Get a unique set of hostnames currently declared on the upstream gateway.
@@ -1388,7 +1657,7 @@ func (r *GatewayReconciler) ensureHostnameVerification(
 	if r.Config.Gateway.DisableHostnameVerification {
 		verifiedHostnamesSlice := hostnames.UnsortedList()
 		slices.Sort(verifiedHostnamesSlice)
-		return verifiedHostnamesSlice, nil
+		return verifiedHostnamesSlice, refusals, nil
 	}
 
 	// List all Domains in the same namespace as the upstream gateway. A field
@@ -1397,7 +1666,7 @@ func (r *GatewayReconciler) ensureHostnameVerification(
 
 	var domainList networkingv1alpha.DomainList
 	if err := upstreamClient.List(ctx, &domainList, client.InNamespace(upstreamGateway.Namespace)); err != nil {
-		return nil, fmt.Errorf("failed listing domains: %w", err)
+		return nil, nil, fmt.Errorf("failed listing domains: %w", err)
 	}
 
 	logger.Info("processing domains in same namespace", "domain_count", len(domainList.Items))
@@ -1406,6 +1675,27 @@ func (r *GatewayReconciler) ensureHostnameVerification(
 	for _, hostname := range hostnames.UnsortedList() {
 		// Gateway DNS address hostname is exempt from verification
 		if addressHostnames.Has(hostname) {
+			continue
+		}
+
+		if strings.HasPrefix(hostname, "*.") {
+			verifiedHostnames.Delete(hostname)
+			if !r.Config.Gateway.CertificateService.Enabled {
+				refusals[hostname] = hostnameRefusal{
+					reason:  networkingv1alpha.HostnameVerifiedReasonWildcardNotSupported,
+					message: fmt.Sprintf("The wildcard %q cannot be served: wildcard hostnames are not available on this platform.", hostname),
+				}
+				continue
+			}
+			ownership := checkWildcardOwnership(hostname, domainList.Items)
+			if ownership.proven {
+				verifiedHostnames.Insert(hostname)
+				continue
+			}
+			refusals[hostname] = ownership.refusal
+			if ownership.createDomain != "" {
+				domainsToCreate.Insert(ownership.createDomain)
+			}
 			continue
 		}
 		foundMatchingDomain := false
@@ -1450,7 +1740,7 @@ func (r *GatewayReconciler) ensureHostnameVerification(
 			}
 
 			if err := upstreamClient.Create(ctx, domain); client.IgnoreAlreadyExists(err) != nil {
-				return nil, fmt.Errorf("failed creating domain: %w", err)
+				return nil, nil, fmt.Errorf("failed creating domain: %w", err)
 			}
 
 			logger.Info("domain created", "domain", domain.Name)
@@ -1460,7 +1750,7 @@ func (r *GatewayReconciler) ensureHostnameVerification(
 	verifiedHostnamesSlice := verifiedHostnames.UnsortedList()
 	slices.Sort(verifiedHostnamesSlice)
 
-	return verifiedHostnamesSlice, nil
+	return verifiedHostnamesSlice, refusals, nil
 }
 
 // gatewayCanonicalHostname returns the managed canonical hostname for a gateway.
@@ -1475,7 +1765,7 @@ func (r *GatewayReconciler) gatewayCanonicalHostname(upstreamGateway *gatewayv1.
 func gatewayCanonicalHostnameForConfig(gatewayCfg config.GatewayConfig, gw *gatewayv1.Gateway) string {
 	if existing := managedGatewayHostnameFromStatus(
 		gw.Status.Addresses,
-		gatewayCfg.TargetDomain,
+		gatewayCfg.ManagedTargetDomains(),
 	); existing != "" {
 		return existing
 	}
@@ -1483,24 +1773,24 @@ func gatewayCanonicalHostnameForConfig(gatewayCfg config.GatewayConfig, gw *gate
 }
 
 // managedGatewayHostnameFromStatus returns the base hostname address (not v4/v6
-// variants) in the target domain from gateway status, if present.
+// variants) in one of the managed target domains from gateway status, if
+// present.
 func managedGatewayHostnameFromStatus(
 	addresses []gatewayv1.GatewayStatusAddress,
-	targetDomain string,
+	targetDomains []string,
 ) string {
-	suffix := "." + targetDomain
-
 	for _, addr := range addresses {
 		if ptr.Deref(addr.Type, "") != gatewayv1.HostnameAddressType {
-			continue
-		}
-		if addr.Value != targetDomain && !strings.HasSuffix(addr.Value, suffix) {
 			continue
 		}
 		if strings.HasPrefix(addr.Value, "v4.") || strings.HasPrefix(addr.Value, "v6.") {
 			continue
 		}
-		return addr.Value
+		for _, targetDomain := range targetDomains {
+			if addr.Value == targetDomain || strings.HasSuffix(addr.Value, "."+targetDomain) {
+				return addr.Value
+			}
+		}
 	}
 
 	return ""
@@ -1607,6 +1897,7 @@ func (r *GatewayReconciler) finalizeGateway(
 	gatewayProgrammedTotal.DeleteLabelValues(upstreamGateway.Namespace, upstreamGateway.Name)
 	// Clear this gateway's cert-health series now that it is gone.
 	clearListenerCertMetrics(upstreamGateway.Namespace, upstreamGateway.Name)
+	r.forgetGateway(upstreamGateway)
 
 	// Clean up DNS records created by this gateway
 	if r.Config.Gateway.EnableDNSIntegration {
@@ -1799,7 +2090,7 @@ func (r *GatewayReconciler) ensureDownstreamGatewayHTTPRoutes(
 	downstreamGateway *gatewayv1.Gateway,
 	downstreamStrategy downstreamclient.ResourceStrategy,
 	verifiedHostnames []string,
-	notClaimedHostnames []string,
+	refusals map[string]hostnameRefusal,
 	listenerCertHealth map[gatewayv1.SectionName]listenerCertStatus,
 ) (result Result) {
 	logger := log.FromContext(ctx)
@@ -1894,7 +2185,7 @@ func (r *GatewayReconciler) ensureDownstreamGatewayHTTPRoutes(
 		result = result.Merge(httpRouteResult)
 	}
 
-	logger.Info("updating listener status", "verified_hostnames", verifiedHostnames, "not_claimed_hostnames", notClaimedHostnames)
+	logger.Info("updating listener status", "verified_hostnames", verifiedHostnames, "refused_hostnames", len(refusals))
 
 	currentListenerStatus := map[gatewayv1.SectionName]gatewayv1.ListenerStatus{}
 	for _, listener := range upstreamGateway.Status.Listeners {
@@ -1949,20 +2240,25 @@ func (r *GatewayReconciler) ensureDownstreamGatewayHTTPRoutes(
 
 		if listener.Hostname != nil {
 
+			refusal, refused := refusals[string(*listener.Hostname)]
 			if !slices.Contains(verifiedHostnames, string(*listener.Hostname)) {
 				hostnameProblem = true
 				acceptedCondition.Status = metav1.ConditionFalse
 				acceptedCondition.Reason = networkingv1alpha.UnverifiedHostnamesPresent
 				acceptedCondition.Message = fmt.Sprintf("The hostname %q has not been verified. Check status of Domains in the same namespace.", *listener.Hostname)
+				if refused {
+					acceptedCondition.Reason = refusal.reason
+					acceptedCondition.Message = refusal.message
+				}
 
 				programmedCondition.Status = metav1.ConditionFalse
 				programmedCondition.Reason = acceptedCondition.Reason
 				programmedCondition.Message = acceptedCondition.Message
-			} else if slices.Contains(notClaimedHostnames, string(*listener.Hostname)) {
+			} else if refused {
 				hostnameProblem = true
 				acceptedCondition.Status = metav1.ConditionFalse
-				acceptedCondition.Reason = networkingv1alpha.HostnameInUseReason
-				acceptedCondition.Message = fmt.Sprintf("The hostname %q is already attached to a resource.", *listener.Hostname)
+				acceptedCondition.Reason = refusal.reason
+				acceptedCondition.Message = refusal.message
 
 				programmedCondition.Status = metav1.ConditionFalse
 				programmedCondition.Reason = acceptedCondition.Reason
@@ -1989,6 +2285,29 @@ func (r *GatewayReconciler) ensureDownstreamGatewayHTTPRoutes(
 		apimeta.SetStatusCondition(&status.Conditions, programmedCondition)
 		apimeta.SetStatusCondition(&status.Conditions, resolvedRefsCondition)
 
+		if certStatus, gated := listenerCertHealth[listener.Name]; gated && certStatus.healthy && certStatus.renewalBlocked != "" {
+			apimeta.SetStatusCondition(&status.Conditions, metav1.Condition{
+				Type:               listenerConditionCertificateRenewalBlocked,
+				Status:             metav1.ConditionTrue,
+				Reason:             listenerReasonRenewalFailing,
+				Message:            certStatus.renewalBlocked,
+				ObservedGeneration: upstreamGateway.Generation,
+			})
+		} else {
+			apimeta.RemoveStatusCondition(&status.Conditions, listenerConditionCertificateRenewalBlocked)
+		}
+		if certStatus, gated := listenerCertHealth[listener.Name]; gated && !certStatus.healthy && certStatus.issuanceBlocked {
+			apimeta.SetStatusCondition(&status.Conditions, metav1.Condition{
+				Type:               listenerConditionCertificateIssuanceBlocked,
+				Status:             metav1.ConditionTrue,
+				Reason:             cmp.Or(certStatus.issuanceReason, listenerReasonIssuanceFailing),
+				Message:            certStatus.message,
+				ObservedGeneration: upstreamGateway.Generation,
+			})
+		} else {
+			apimeta.RemoveStatusCondition(&status.Conditions, listenerConditionCertificateIssuanceBlocked)
+		}
+
 		listenerStatus = append(listenerStatus, status)
 	}
 
@@ -2001,6 +2320,28 @@ func (r *GatewayReconciler) ensureDownstreamGatewayHTTPRoutes(
 	}
 
 	return result
+}
+
+func deleteEndpointSliceOnAddressTypeChange(
+	ctx context.Context,
+	c client.Client,
+	desired *discoveryv1.EndpointSlice,
+) (bool, error) {
+	existing := &discoveryv1.EndpointSlice{}
+	err := c.Get(ctx, client.ObjectKeyFromObject(desired), existing)
+	switch {
+	case apierrors.IsNotFound(err):
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("failed to get downstream endpointslice: %w", err)
+	case existing.AddressType == desired.AddressType:
+		return false, nil
+	}
+
+	if err := c.Delete(ctx, existing); err != nil && !apierrors.IsNotFound(err) {
+		return false, fmt.Errorf("failed to delete downstream endpointslice for address type change: %w", err)
+	}
+	return true, nil
 }
 
 func (r *GatewayReconciler) ensureDownstreamHTTPRoute(
@@ -2074,6 +2415,18 @@ func (r *GatewayReconciler) ensureDownstreamHTTPRoute(
 			return result
 		}
 
+		if desiredSlice, ok := resource.(*discoveryv1.EndpointSlice); ok {
+			deleted, err := deleteEndpointSliceOnAddressTypeChange(ctx, downstreamClient, desiredSlice)
+			if err != nil {
+				result.Err = err
+				return result
+			}
+			if deleted {
+				result.RequeueAfter = 1 * time.Second
+				return result
+			}
+		}
+
 		desiredDownstreamResource := resource.DeepCopyObject()
 		resourceResult, err := controllerutil.CreateOrUpdate(ctx, downstreamClient, resource, func() error {
 			switch obj := resource.(type) {
@@ -2117,6 +2470,32 @@ func (r *GatewayReconciler) ensureDownstreamHTTPRoute(
 				obj.Ports = desiredEndpointSlice.Ports
 			case *gatewayv1.BackendTLSPolicy:
 				obj.Spec = desiredDownstreamResource.(*gatewayv1.BackendTLSPolicy).Spec
+			case *envoygatewayv1alpha1.BackendTrafficPolicy:
+				obj.Spec = desiredDownstreamResource.(*envoygatewayv1alpha1.BackendTrafficPolicy).Spec
+
+				// Karmada's nso-resources ClusterPropagationPolicy only selects a
+				// BackendTrafficPolicy that carries the upstream cluster label.
+				// Without it the policy never leaves the federation control plane,
+				// and no edge applies its load balancer, passive health check or
+				// panic threshold. Copied from the downstream route here, rather
+				// than set on the desired object, so a policy created before this
+				// fix picks the labels up on its next reconcile.
+				labels := obj.GetLabels()
+				if labels == nil {
+					labels = map[string]string{}
+				}
+				for _, key := range []string{
+					downstreamclient.UpstreamOwnerClusterNameLabel,
+					downstreamclient.UpstreamOwnerGroupLabel,
+					downstreamclient.UpstreamOwnerKindLabel,
+					downstreamclient.UpstreamOwnerNameLabel,
+					downstreamclient.UpstreamOwnerNamespaceLabel,
+				} {
+					if v, ok := downstreamRoute.Labels[key]; ok {
+						labels[key] = v
+					}
+				}
+				obj.SetLabels(labels)
 			}
 			return nil
 		})
@@ -2167,11 +2546,13 @@ func (r *GatewayReconciler) ensureDownstreamHTTPRoute(
 
 	// Update the upstream route's parent status information
 	var parentStatus *gatewayv1.RouteParentStatus
+	parentStatusIndex := -1
 	for i, parent := range upstreamRoute.Status.Parents {
 		if ptr.Deref(parent.ParentRef.Group, gatewayv1.GroupName) == gatewayv1.GroupName &&
 			ptr.Deref(parent.ParentRef.Kind, KindGateway) == KindGateway &&
 			string(parent.ParentRef.Name) == upstreamGateway.Name {
 			parentStatus = &upstreamRoute.Status.Parents[i]
+			parentStatusIndex = i
 			break
 		}
 	}
@@ -2230,11 +2611,19 @@ func (r *GatewayReconciler) ensureDownstreamHTTPRoute(
 		logger.Info("did not find downstream parent status for gateway")
 	}
 
-	if insertParentStatus {
+	removedParentStatus := false
+	switch {
+	case insertParentStatus && len(parentStatus.Conditions) > 0:
 		upstreamRoute.Status.Parents = append(upstreamRoute.Status.Parents, *parentStatus)
+	case !insertParentStatus && len(parentStatus.Conditions) == 0 &&
+		parentStatus.ControllerName == gatewayv1.GatewayController(upstreamGatewayClassControllerName):
+		upstreamRoute.Status.Parents = slices.Delete(upstreamRoute.Status.Parents, parentStatusIndex, parentStatusIndex+1)
+		removedParentStatus = true
 	}
 
-	result.AddStatusUpdate(upstreamClient, &upstreamRoute)
+	if len(upstreamRoute.Status.Parents) > 0 || removedParentStatus {
+		result.AddStatusUpdate(upstreamClient, &upstreamRoute)
+	}
 
 	logger.Info("downstream httproute processed", "operation_result", routeResult)
 
@@ -2269,6 +2658,8 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 
 	logger := log.FromContext(ctx)
 
+	networkServiceBackend := false
+
 	for ruleIdx, rule := range upstreamRoute.Spec.Rules {
 		var backendRefs []gatewayv1.HTTPBackendRef
 		for backendRefIdx, backendRef := range rule.BackendRefs {
@@ -2296,164 +2687,188 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 					return nil, nil, nil, fmt.Errorf("no port defined in backendRef")
 				}
 
-				if !controllerutil.ContainsFinalizer(&upstreamEndpointSlice, gatewayControllerGCFinalizer) {
-					controllerutil.AddFinalizer(&upstreamEndpointSlice, gatewayControllerGCFinalizer)
-					if err := upstreamClient.Update(ctx, &upstreamEndpointSlice); err != nil {
-						return nil, nil, nil, fmt.Errorf("failed to add finalizer to endpointslice: %w", err)
+				// An instance HTTPProxy backend (api/v1alpha.InstanceBackendRef)
+				// names a CNI-published EndpointSlice directly — never one
+				// this operator synthesized. Recognize it by the tenant-id
+				// label and route straight through to the pod's real
+				// address instead of behind a synthesized ClusterIP
+				// Service: Envoy needs a real endpoint address for the
+				// tenant-VRF/SRv6 socket-bind mechanism to work, and the
+				// pass-through slice must intercept here, before the
+				// finalizer stamp below — that stamp (and everything after
+				// it) assumes an object this controller owns the lifecycle
+				// of, which a CNI-published EndpointSlice never is.
+				if tenantID, ok := upstreamEndpointSlice.Labels[VPCPodTenantIDLabel]; ok && tenantID != "" {
+					passThroughRef, err := r.passThroughVPCPodBackendRef(ctx, downstreamGateway, backendRef)
+					if err != nil {
+						return nil, nil, nil, err
 					}
-				}
-
-				var ports []corev1.ServicePort
-				var appProtocol *string
-				var endpointPort *discoveryv1.EndpointPort
-				for _, port := range upstreamEndpointSlice.Ports {
-					ports = append(ports, corev1.ServicePort{
-						Name:        ptr.Deref(port.Name, ""),
-						Protocol:    ptr.Deref(port.Protocol, corev1.ProtocolTCP),
-						AppProtocol: port.AppProtocol,
-						Port:        *port.Port,
-					})
-
-					if *backendRef.Port == *port.Port {
-						if port.Name == nil {
-							// This should be protected by validation, but check just in case.
-							logger.Info("no port name defined in upstream endpointslice", "endpointslice", upstreamEndpointSlice.Name, "port", port)
-							return nil, nil, nil, fmt.Errorf("no port name defined in upstream endpointslice")
+					backendRefs = append(backendRefs, passThroughRef)
+				} else {
+					if !controllerutil.ContainsFinalizer(&upstreamEndpointSlice, gatewayControllerGCFinalizer) {
+						controllerutil.AddFinalizer(&upstreamEndpointSlice, gatewayControllerGCFinalizer)
+						if err := upstreamClient.Update(ctx, &upstreamEndpointSlice); err != nil {
+							return nil, nil, nil, fmt.Errorf("failed to add finalizer to endpointslice: %w", err)
 						}
-						appProtocol = port.AppProtocol
-						endpointPort = ptr.To(port)
 					}
-				}
 
-				if endpointPort == nil {
-					logger.Info("port not found in upstream endpointslice", "endpointslice", upstreamEndpointSlice.Name, "port", *backendRef.Port)
-					return nil, nil, nil, fmt.Errorf("port not found in upstream endpointslice")
-				}
+					var ports []corev1.ServicePort
+					var appProtocol *string
+					var endpointPort *discoveryv1.EndpointPort
+					for _, port := range upstreamEndpointSlice.Ports {
+						ports = append(ports, corev1.ServicePort{
+							Name:        ptr.Deref(port.Name, ""),
+							Protocol:    ptr.Deref(port.Protocol, corev1.ProtocolTCP),
+							AppProtocol: port.AppProtocol,
+							Port:        *port.Port,
+						})
 
-				// Construct a name to use for the service and endpointslice that the
-				// downstream backendRef will reference.
-				resourceName := fmt.Sprintf("route-%s-rule-%d-backendref-%d", upstreamRoute.UID, ruleIdx, backendRefIdx)
+						if *backendRef.Port == *port.Port {
+							if port.Name == nil {
+								// This should be protected by validation, but check just in case.
+								logger.Info("no port name defined in upstream endpointslice", "endpointslice", upstreamEndpointSlice.Name, "port", port)
+								return nil, nil, nil, fmt.Errorf("no port name defined in upstream endpointslice")
+							}
+							appProtocol = port.AppProtocol
+							endpointPort = ptr.To(port)
+						}
+					}
 
-				downstreamService := &corev1.Service{
-					ObjectMeta: metav1.ObjectMeta{
-						Namespace: downstreamGateway.Namespace,
-						Name:      resourceName,
-					},
-					Spec: corev1.ServiceSpec{
-						Type:                  corev1.ServiceTypeClusterIP,
-						ClusterIP:             clusterIPNone,
-						Ports:                 ports,
-						InternalTrafficPolicy: ptr.To(corev1.ServiceInternalTrafficPolicyCluster),
-						TrafficDistribution:   ptr.To(corev1.ServiceTrafficDistributionPreferClose),
-					},
-				}
-				downstreamResources = append(downstreamResources, downstreamService)
+					if endpointPort == nil {
+						logger.Info("port not found in upstream endpointslice", "endpointslice", upstreamEndpointSlice.Name, "port", *backendRef.Port)
+						return nil, nil, nil, fmt.Errorf("port not found in upstream endpointslice")
+					}
 
-				downstreamEndpointSlice := &discoveryv1.EndpointSlice{
-					ObjectMeta: metav1.ObjectMeta{
-						Namespace: downstreamGateway.Namespace,
-						Name:      resourceName,
-						Labels: map[string]string{
-							downstreamclient.UpstreamOwnerNameLabel: upstreamEndpointSlice.Name,
-							discoveryv1.LabelServiceName:            downstreamService.Name,
+					if upstreamEndpointSlice.Labels[NetworkServiceBackendLabel] != "" {
+						networkServiceBackend = true
+					}
+
+					// Construct a name to use for the service and endpointslice that the
+					// downstream backendRef will reference.
+					resourceName := fmt.Sprintf("route-%s-rule-%d-backendref-%d", upstreamRoute.UID, ruleIdx, backendRefIdx)
+
+					downstreamService := &corev1.Service{
+						ObjectMeta: metav1.ObjectMeta{
+							Namespace: downstreamGateway.Namespace,
+							Name:      resourceName,
 						},
-					},
-					AddressType: upstreamEndpointSlice.AddressType,
-					Endpoints:   upstreamEndpointSlice.Endpoints,
-					Ports:       upstreamEndpointSlice.Ports,
-				}
+						Spec: corev1.ServiceSpec{
+							Type:                  corev1.ServiceTypeClusterIP,
+							ClusterIP:             clusterIPNone,
+							Ports:                 ports,
+							InternalTrafficPolicy: ptr.To(corev1.ServiceInternalTrafficPolicyCluster),
+							TrafficDistribution:   ptr.To(corev1.ServiceTrafficDistributionPreferClose),
+						},
+					}
+					downstreamResources = append(downstreamResources, downstreamService)
 
-				if err := downstreamStrategy.SetControllerReference(ctx, &upstreamEndpointSlice, downstreamEndpointSlice); err != nil {
-					return nil, nil, nil, fmt.Errorf("failed to set controller reference on downstream endpointslice: %w", err)
-				}
-
-				downstreamResources = append(downstreamResources, downstreamEndpointSlice)
-
-				backendObjectReference := gatewayv1.BackendObjectReference{
-					Namespace: ptr.To(gatewayv1.Namespace(downstreamGateway.Namespace)),
-					Kind:      ptr.To(gatewayv1.Kind(KindService)),
-					Name:      gatewayv1.ObjectName(downstreamService.Name),
-					Port:      backendRef.Port,
-				}
-
-				downstreamHTTPBackendRef := gatewayv1.HTTPBackendRef{
-					BackendRef: gatewayv1.BackendRef{
-						Weight:                 backendRef.Weight,
-						BackendObjectReference: backendObjectReference,
-					},
-					Filters: backendRef.Filters,
-				}
-
-				backendRefs = append(backendRefs, downstreamHTTPBackendRef)
-
-				if appProtocol != nil && *appProtocol == SchemeHTTPS {
-					var hostname *gatewayv1.PreciseHostname
-
-					// Prefer the cert hostname recorded by the httpproxy
-					// controller on the upstream EndpointSlice. URLRewrite
-					// may now carry a user-supplied Host header override
-					// instead of the backend FQDN, so it's no longer a
-					// reliable source for BackendTLSPolicy SAN validation.
-					if v, ok := upstreamEndpointSlice.Annotations[BackendCertHostnameAnnotation]; ok && v != "" {
-						hostname = ptr.To(gatewayv1.PreciseHostname(v))
+					downstreamEndpointSlice := &discoveryv1.EndpointSlice{
+						ObjectMeta: metav1.ObjectMeta{
+							Namespace: downstreamGateway.Namespace,
+							Name:      resourceName,
+							Labels: map[string]string{
+								downstreamclient.UpstreamOwnerNameLabel: upstreamEndpointSlice.Name,
+								discoveryv1.LabelServiceName:            downstreamService.Name,
+							},
+						},
+						AddressType: upstreamEndpointSlice.AddressType,
+						Endpoints:   upstreamEndpointSlice.Endpoints,
+						Ports:       upstreamEndpointSlice.Ports,
 					}
 
-					// Fall back to looking at rule filters for a hostname
-					// (preserves behaviour for EndpointSlices that predate
-					// the annotation).
-					if hostname == nil {
-						for _, filter := range rule.Filters {
-							if filter.URLRewrite != nil {
-								hostname = filter.URLRewrite.Hostname
-								break
+					if err := downstreamStrategy.SetControllerReference(ctx, &upstreamEndpointSlice, downstreamEndpointSlice); err != nil {
+						return nil, nil, nil, fmt.Errorf("failed to set controller reference on downstream endpointslice: %w", err)
+					}
+
+					downstreamResources = append(downstreamResources, downstreamEndpointSlice)
+
+					backendObjectReference := gatewayv1.BackendObjectReference{
+						Group:     ptr.To(gatewayv1.Group("")),
+						Namespace: ptr.To(gatewayv1.Namespace(downstreamGateway.Namespace)),
+						Kind:      ptr.To(gatewayv1.Kind(KindService)),
+						Name:      gatewayv1.ObjectName(downstreamService.Name),
+						Port:      backendRef.Port,
+					}
+
+					downstreamHTTPBackendRef := gatewayv1.HTTPBackendRef{
+						BackendRef: gatewayv1.BackendRef{
+							Weight:                 backendRef.Weight,
+							BackendObjectReference: backendObjectReference,
+						},
+						Filters: backendRef.Filters,
+					}
+
+					backendRefs = append(backendRefs, downstreamHTTPBackendRef)
+
+					if appProtocol != nil && *appProtocol == SchemeHTTPS {
+						var hostname *gatewayv1.PreciseHostname
+
+						// Prefer the cert hostname recorded by the httpproxy
+						// controller on the upstream EndpointSlice. URLRewrite
+						// may now carry a user-supplied Host header override
+						// instead of the backend FQDN, so it's no longer a
+						// reliable source for BackendTLSPolicy SAN validation.
+						if v, ok := upstreamEndpointSlice.Annotations[BackendCertHostnameAnnotation]; ok && v != "" {
+							hostname = ptr.To(gatewayv1.PreciseHostname(v))
+						}
+
+						// Fall back to looking at rule filters for a hostname
+						// (preserves behaviour for EndpointSlices that predate
+						// the annotation).
+						if hostname == nil {
+							for _, filter := range rule.Filters {
+								if filter.URLRewrite != nil {
+									hostname = filter.URLRewrite.Hostname
+									break
+								}
 							}
 						}
-					}
 
-					if hostname == nil {
-						// TODO(jreese) set the RouteConditionResolvedRefs condition to
-						// False, as the hostname is not present.
-						return nil, nil, nil, fmt.Errorf("no hostname found in URLRewrite filters or EndpointSlice annotation on backendRef or Route %q", upstreamRoute.Name)
-					}
+						if hostname == nil {
+							// TODO(jreese) set the RouteConditionResolvedRefs condition to
+							// False, as the hostname is not present.
+							return nil, nil, nil, fmt.Errorf("no hostname found in URLRewrite filters or EndpointSlice annotation on backendRef or Route %q", upstreamRoute.Name)
+						}
 
-					// BackendTLSPolicy graduated from v1alpha3 to v1 in gateway-api v1.5.
-					backendTLSPolicy := &gatewayv1.BackendTLSPolicy{
-						ObjectMeta: metav1.ObjectMeta{
-							Namespace: downstreamGateway.Namespace,
-							Name:      resourceName,
-						},
-						Spec: gatewayv1.BackendTLSPolicySpec{
-							TargetRefs: []gatewayv1.LocalPolicyTargetReferenceWithSectionName{
-								// TODO(jreese): We may have multiple ports that we need to set
-								// the policy on.
-								{
-									LocalPolicyTargetReference: gatewayv1.LocalPolicyTargetReference{
-										Kind: gatewayv1.Kind(KindService),
-										Name: gatewayv1.ObjectName(downstreamService.Name),
+						// BackendTLSPolicy graduated from v1alpha3 to v1 in gateway-api v1.5.
+						backendTLSPolicy := &gatewayv1.BackendTLSPolicy{
+							ObjectMeta: metav1.ObjectMeta{
+								Namespace: downstreamGateway.Namespace,
+								Name:      resourceName,
+							},
+							Spec: gatewayv1.BackendTLSPolicySpec{
+								TargetRefs: []gatewayv1.LocalPolicyTargetReferenceWithSectionName{
+									// TODO(jreese): We may have multiple ports that we need to set
+									// the policy on.
+									{
+										LocalPolicyTargetReference: gatewayv1.LocalPolicyTargetReference{
+											Kind: gatewayv1.Kind(KindService),
+											Name: gatewayv1.ObjectName(downstreamService.Name),
+										},
+										SectionName: ptr.To(gatewayv1.SectionName(*endpointPort.Name)),
 									},
-									SectionName: ptr.To(gatewayv1.SectionName(*endpointPort.Name)),
+								},
+								Validation: gatewayv1.BackendTLSPolicyValidation{
+									WellKnownCACertificates: ptr.To(gatewayv1.WellKnownCACertificatesSystem),
+									Hostname:                *hostname,
 								},
 							},
-							Validation: gatewayv1.BackendTLSPolicyValidation{
-								WellKnownCACertificates: ptr.To(gatewayv1.WellKnownCACertificatesSystem),
-								Hostname:                *hostname,
-							},
-						},
-					}
+						}
 
-					downstreamResources = append(downstreamResources, backendTLSPolicy)
-				} else {
-					// The backend is not https, so any BackendTLSPolicy that may
-					// have been created by a previous reconcile (when the backend
-					// was https) must be removed. The policy name is deterministic
-					// from the route UID and backend indices, so we can target it
-					// directly without listing.
-					downstreamResourcesToDelete = append(downstreamResourcesToDelete, &gatewayv1.BackendTLSPolicy{
-						ObjectMeta: metav1.ObjectMeta{
-							Namespace: downstreamGateway.Namespace,
-							Name:      resourceName,
-						},
-					})
+						downstreamResources = append(downstreamResources, backendTLSPolicy)
+					} else {
+						// The backend is not https, so any BackendTLSPolicy that may
+						// have been created by a previous reconcile (when the backend
+						// was https) must be removed. The policy name is deterministic
+						// from the route UID and backend indices, so we can target it
+						// directly without listing.
+						downstreamResourcesToDelete = append(downstreamResourcesToDelete, &gatewayv1.BackendTLSPolicy{
+							ObjectMeta: metav1.ObjectMeta{
+								Namespace: downstreamGateway.Namespace,
+								Name:      resourceName,
+							},
+						})
+					}
 				}
 
 			case "Service":
@@ -2479,12 +2894,273 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 		})
 	}
 
+	loadBalancer, err := loadBalancerFromUpstreamRoute(upstreamRoute)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	passiveHealthCheck, err := passiveHealthCheckFromUpstreamRoute(upstreamRoute)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	// A route needs the policy whenever it has a networkService backend, a
+	// load balancer choice, or passive health checks. Otherwise delete any
+	// previously synthesized policy. Downstream delete ignores NotFound, so
+	// this is safe for routes that never had one — including instance and
+	// VPC-pod backends, which never take the Service-synthesis path and
+	// would otherwise keep outlier detection after health checks are
+	// removed.
+	if networkServiceBackend || loadBalancer != nil || passiveHealthCheck != nil {
+		policy, err := r.backendTrafficPolicy(ctx, upstreamRoute, downstreamGateway, downstreamStrategy, networkServiceBackend, loadBalancer, passiveHealthCheck)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		downstreamResources = append(downstreamResources, policy)
+	} else {
+		downstreamResourcesToDelete = append(downstreamResourcesToDelete, &envoygatewayv1alpha1.BackendTrafficPolicy{
+			ObjectMeta: metav1.ObjectMeta{
+				Namespace: downstreamGateway.Namespace,
+				Name:      fmt.Sprintf("route-%s-panic-threshold", upstreamRoute.UID),
+			},
+		})
+	}
+
 	return rules, downstreamResources, downstreamResourcesToDelete, nil
+}
+
+// loadBalancerFromUpstreamRoute decodes the HTTPProxy load balancer choice
+// the httpproxy controller encodes onto the upstream HTTPRoute it
+// synthesizes (see LoadBalancerAnnotation), or returns nil if the route
+// carries none — either because the owning HTTPProxy left it unset, or the
+// route wasn't synthesized from an HTTPProxy at all.
+func loadBalancerFromUpstreamRoute(upstreamRoute gatewayv1.HTTPRoute) (*envoygatewayv1alpha1.LoadBalancer, error) {
+	encoded, ok := upstreamRoute.Annotations[LoadBalancerAnnotation]
+	if !ok {
+		return nil, nil
+	}
+
+	var lb networkingv1alpha.HTTPProxyLoadBalancer
+	if err := json.Unmarshal([]byte(encoded), &lb); err != nil {
+		return nil, fmt.Errorf("failed decoding %s annotation on httproute %q: %w", LoadBalancerAnnotation, upstreamRoute.Name, err)
+	}
+
+	envoyLoadBalancer := &envoygatewayv1alpha1.LoadBalancer{}
+	switch lb.Type {
+	case networkingv1alpha.HTTPProxyLoadBalancerTypeRoundRobin:
+		envoyLoadBalancer.Type = envoygatewayv1alpha1.RoundRobinLoadBalancerType
+	case networkingv1alpha.HTTPProxyLoadBalancerTypeRandom:
+		envoyLoadBalancer.Type = envoygatewayv1alpha1.RandomLoadBalancerType
+	case networkingv1alpha.HTTPProxyLoadBalancerTypeLeastRequest:
+		envoyLoadBalancer.Type = envoygatewayv1alpha1.LeastRequestLoadBalancerType
+	case networkingv1alpha.HTTPProxyLoadBalancerTypeConsistentHash:
+		if lb.ConsistentHash == nil {
+			return nil, fmt.Errorf("httproute %q: consistentHash is required when type is ConsistentHash", upstreamRoute.Name)
+		}
+		consistentHash := &envoygatewayv1alpha1.ConsistentHash{}
+		switch lb.ConsistentHash.Type {
+		case networkingv1alpha.HTTPProxyConsistentHashTypeSourceIP:
+			consistentHash.Type = envoygatewayv1alpha1.SourceIPConsistentHashType
+		case networkingv1alpha.HTTPProxyConsistentHashTypeHeader:
+			if lb.ConsistentHash.Header == nil || *lb.ConsistentHash.Header == "" {
+				return nil, fmt.Errorf("httproute %q: consistentHash.header is required when consistentHash.type is Header", upstreamRoute.Name)
+			}
+			// Headers (plural) is the non-deprecated form; a single-entry
+			// list carries the same one-header hash our user-facing API
+			// exposes.
+			consistentHash.Type = envoygatewayv1alpha1.HeadersConsistentHashType
+			consistentHash.Headers = []*envoygatewayv1alpha1.Header{{Name: *lb.ConsistentHash.Header}}
+		default:
+			return nil, fmt.Errorf("httproute %q: unsupported consistentHash type %q", upstreamRoute.Name, lb.ConsistentHash.Type)
+		}
+		envoyLoadBalancer.Type = envoygatewayv1alpha1.ConsistentHashLoadBalancerType
+		envoyLoadBalancer.ConsistentHash = consistentHash
+	default:
+		return nil, fmt.Errorf("httproute %q: unsupported load balancer type %q", upstreamRoute.Name, lb.Type)
+	}
+
+	return envoyLoadBalancer, nil
+}
+
+// passiveHealthCheckFromUpstreamRoute decodes the HTTPProxy health check the
+// httpproxy controller encodes onto the upstream HTTPRoute it synthesizes
+// (see HealthCheckAnnotation). It returns nil when the route carries none,
+// or when healthCheck is set without passive — active probes are not
+// supported. Unset knobs take the Datum defaults (5 consecutive 5xx, 30s
+// base ejection, 50% max ejected). AlwaysEjectOneEndpoint is forced on so
+// a single-endpoint backend can actually be ejected.
+func passiveHealthCheckFromUpstreamRoute(upstreamRoute gatewayv1.HTTPRoute) (*envoygatewayv1alpha1.PassiveHealthCheck, error) {
+	encoded, ok := upstreamRoute.Annotations[HealthCheckAnnotation]
+	if !ok {
+		return nil, nil
+	}
+
+	var healthCheck networkingv1alpha.HTTPProxyHealthCheck
+	if err := json.Unmarshal([]byte(encoded), &healthCheck); err != nil {
+		return nil, fmt.Errorf("failed decoding %s annotation on httproute %q: %w", HealthCheckAnnotation, upstreamRoute.Name, err)
+	}
+	if healthCheck.Passive == nil {
+		return nil, nil
+	}
+
+	passive := healthCheck.Passive
+	consecutive := uint32(networkingv1alpha.DefaultPassiveConsecutive5xxErrors)
+	if passive.Consecutive5xxErrors != nil {
+		if *passive.Consecutive5xxErrors < 1 {
+			return nil, fmt.Errorf("httproute %q: consecutive5xxErrors must be at least 1", upstreamRoute.Name)
+		}
+		consecutive = uint32(*passive.Consecutive5xxErrors)
+	}
+	baseEjection := networkingv1alpha.DefaultPassiveBaseEjectionTime
+	if passive.BaseEjectionTime != nil {
+		baseEjection = *passive.BaseEjectionTime
+	}
+	maxEjected := networkingv1alpha.DefaultPassiveMaxEjectionPercent
+	if passive.MaxEjectionPercent != nil {
+		if *passive.MaxEjectionPercent < 1 || *passive.MaxEjectionPercent > 100 {
+			return nil, fmt.Errorf("httproute %q: maxEjectionPercent must be between 1 and 100, inclusive", upstreamRoute.Name)
+		}
+		maxEjected = *passive.MaxEjectionPercent
+	}
+
+	return &envoygatewayv1alpha1.PassiveHealthCheck{
+		Consecutive5xxErrors:   ptr.To(consecutive),
+		BaseEjectionTime:       ptr.To(baseEjection),
+		MaxEjectionPercent:     ptr.To(maxEjected),
+		AlwaysEjectOneEndpoint: ptr.To(true),
+	}, nil
+}
+
+// backendTrafficPolicy builds the single BackendTrafficPolicy a route needs:
+// the panic-threshold override for a networkService backend, the HTTPProxy's
+// chosen load balancer algorithm, passive health checks, or any combination.
+// Those live as sibling fields on the same Envoy Gateway ClusterSettings, and
+// Envoy Gateway only expects one BackendTrafficPolicy per route/target, so
+// they are merged into one object rather than created as competing policies.
+//
+// Panic mode exists because active health checking can be wrong at scale: below
+// the 50% default Envoy ignores health and spreads load over every member
+// rather than overload the few that still report healthy. A NetworkService's
+// health is not probed but declared — compute writes HolderAvailable from the
+// instance's own state — so zero healthy members is ground truth, not a
+// measurement artifact, and forwarding to a member that has said it is not
+// serving only buys the caller a connect timeout. With the threshold at zero
+// Envoy fails the request straight away and reports it as having no healthy
+// upstream, which is what the edge brands as an offline page.
+//
+// Envoy Gateway's policy API attaches BackendTrafficPolicy to routes and
+// gateways, never to a backend, so the policy is route-scoped even though the
+// panic-threshold intent is per-backend. Outlier detection is also
+// cluster-scoped: maxEjectionPercent applies to each backend's endpoints, not
+// across named backends as one pool. Panic threshold 0 still fail-closes when
+// outlier detection has ejected every remaining member.
+func (r *GatewayReconciler) backendTrafficPolicy(
+	ctx context.Context,
+	upstreamRoute gatewayv1.HTTPRoute,
+	downstreamGateway *gatewayv1.Gateway,
+	downstreamStrategy downstreamclient.ResourceStrategy,
+	networkServiceBackend bool,
+	loadBalancer *envoygatewayv1alpha1.LoadBalancer,
+	passiveHealthCheck *envoygatewayv1alpha1.PassiveHealthCheck,
+) (*envoygatewayv1alpha1.BackendTrafficPolicy, error) {
+	downstreamRouteMeta, err := downstreamStrategy.ObjectMetaFromUpstreamObject(ctx, &upstreamRoute)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get downstream httproute object metadata: %w", err)
+	}
+
+	clusterSettings := envoygatewayv1alpha1.ClusterSettings{
+		LoadBalancer: loadBalancer,
+	}
+	if networkServiceBackend || passiveHealthCheck != nil {
+		healthCheck := &envoygatewayv1alpha1.HealthCheck{
+			Passive: passiveHealthCheck,
+		}
+		if networkServiceBackend {
+			healthCheck.PanicThreshold = ptr.To(uint32(0))
+		}
+		clusterSettings.HealthCheck = healthCheck
+	}
+
+	return &envoygatewayv1alpha1.BackendTrafficPolicy{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: downstreamGateway.Namespace,
+			// Keeping the "-panic-threshold" suffix, despite this object now
+			// carrying more than that one setting, keeps the identity of
+			// already-deployed policies stable across the upgrade that added
+			// loadBalancer — renaming would orphan them instead of updating
+			// them in place.
+			Name: fmt.Sprintf("route-%s-panic-threshold", upstreamRoute.UID),
+		},
+		Spec: envoygatewayv1alpha1.BackendTrafficPolicySpec{
+			PolicyTargetReferences: envoygatewayv1alpha1.PolicyTargetReferences{
+				TargetRefs: []gatewayv1.LocalPolicyTargetReferenceWithSectionName{{
+					LocalPolicyTargetReference: gatewayv1.LocalPolicyTargetReference{
+						Group: gatewayv1.GroupName,
+						Kind:  KindHTTPRoute,
+						Name:  gatewayv1.ObjectName(downstreamRouteMeta.Name),
+					},
+				}},
+			},
+			ClusterSettings: clusterSettings,
+		},
+	}, nil
+}
+
+// passThroughVPCPodBackendRef resolves the downstream-native EndpointSlice
+// galactic-cni (#854) publishes for a VPC pod and passes the backendRef
+// through to it unmodified — no synthesized Service, no owner reference, no
+// finalizer. This object was never replicated from upstream (unlike every
+// other resource this controller manages downstream), so its lifecycle is
+// left entirely to galactic-cni: it comes and goes with the pod, and this
+// controller neither owns nor garbage-collects it.
+//
+// TODO(#856): this assumes galactic-cni publishes the EndpointSlice into the
+// same mapped downstream namespace this controller already computes
+// (downstreamGateway.Namespace) under the same name the upstream backendRef
+// carries. Neither assumption is confirmed with #854 — revisit once its
+// implementation lands.
+func (r *GatewayReconciler) passThroughVPCPodBackendRef(
+	ctx context.Context,
+	downstreamGateway *gatewayv1.Gateway,
+	backendRef gatewayv1.HTTPBackendRef,
+) (gatewayv1.HTTPBackendRef, error) {
+	var downstreamEndpointSlice discoveryv1.EndpointSlice
+	if err := r.DownstreamCluster.GetClient().Get(ctx, types.NamespacedName{
+		Namespace: downstreamGateway.Namespace,
+		Name:      string(backendRef.Name),
+	}, &downstreamEndpointSlice); err != nil {
+		return gatewayv1.HTTPBackendRef{}, fmt.Errorf("failed getting downstream vpcPod endpointslice: %w", err)
+	}
+
+	return gatewayv1.HTTPBackendRef{
+		BackendRef: gatewayv1.BackendRef{
+			Weight: backendRef.Weight,
+			BackendObjectReference: gatewayv1.BackendObjectReference{
+				Group:     ptr.To(gatewayv1.Group(discoveryv1.GroupName)),
+				Kind:      ptr.To(gatewayv1.Kind(KindEndpointSlice)),
+				Namespace: ptr.To(gatewayv1.Namespace(downstreamEndpointSlice.Namespace)),
+				Name:      gatewayv1.ObjectName(downstreamEndpointSlice.Name),
+				Port:      backendRef.Port,
+			},
+		},
+		Filters: backendRef.Filters,
+	}, nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *GatewayReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	r.mgr = mgr
+
+	if r.Config.Gateway.CertificateService.Enabled {
+		if err := r.DownstreamCluster.GetFieldIndexer().IndexField(
+			context.Background(),
+			&corev1.ConfigMap{},
+			hostnameClaimAncestorIndex,
+			hostnameClaimAncestorIndexFunc(r.Config.Gateway.DownstreamHostnameAccountingNamespace),
+		); err != nil {
+			return fmt.Errorf("failed to index hostname claims: %w", err)
+		}
+	}
 
 	downstreamGatewaySource := mcsource.TypedKind(
 		&gatewayv1.Gateway{},
@@ -2507,6 +3183,20 @@ func (r *GatewayReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 
 	downstreamCertificateClusterSource, _, _ := downstreamCertificateSource.ForCluster("", r.DownstreamCluster)
 
+	// TODO(#856): downstreamVPCPodEndpointSliceSource is the one piece of
+	// this integration with no existing precedent in this codebase — every
+	// other downstream watch here maps back through owner labels this
+	// operator itself stamped on an object it created; a CNI-published
+	// EndpointSlice carries neither. See
+	// listGatewaysForDownstreamVPCPodEndpointSlice's doc comment. Prototype
+	// this in isolation before leaning on it further.
+	downstreamVPCPodEndpointSliceSource := mcsource.Kind(
+		&discoveryv1.EndpointSlice{},
+		r.listGatewaysForDownstreamVPCPodEndpointSlice,
+	)
+
+	downstreamVPCPodEndpointSliceClusterSource, _, _ := downstreamVPCPodEndpointSliceSource.ForCluster("", r.DownstreamCluster)
+
 	builder := mcbuilder.ControllerManagedBy(mgr).
 		For(&gatewayv1.Gateway{}).
 		Watches(
@@ -2527,7 +3217,8 @@ func (r *GatewayReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 		).
 		WatchesRawSource(downstreamGatewayClusterSource).
 		WatchesRawSource(downstreamHTTPRouteClusterSource).
-		WatchesRawSource(downstreamCertificateClusterSource)
+		WatchesRawSource(downstreamCertificateClusterSource).
+		WatchesRawSource(downstreamVPCPodEndpointSliceClusterSource)
 
 	if r.Config.Gateway.EnableDNSIntegration {
 		builder = builder.
@@ -2539,6 +3230,13 @@ func (r *GatewayReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 				&dnsv1alpha1.DNSRecordSet{},
 				r.listGatewaysForDNSRecordSetFunc,
 			)
+	}
+
+	if r.Config.Gateway.CertificateService.Enabled {
+		builder = builder.Watches(
+			&certificatesv1alpha1.TLSCertificate{},
+			r.listGatewaysForTLSCertificateFunc,
+		)
 	}
 
 	return builder.
@@ -2602,6 +3300,66 @@ func (r *GatewayReconciler) listGatewaysAttachedByDownstreamHTTPRoute(clusterNam
 
 			}
 		}
+		return reqs
+	})
+}
+
+// listGatewaysForDownstreamVPCPodEndpointSlice enqueues every upstream
+// Gateway whose downstream mirror lives in the same namespace as a changed,
+// tenant-labeled EndpointSlice on the downstream cluster — a CNI-side pod
+// add/remove should re-trigger the owning Gateway's reconcile.
+//
+// TODO(#856): this is a placeholder, not a designed solution. Confirmed
+// during review that no other watch in this codebase reads a downstream
+// object it did not create and enqueues off it — every other downstream
+// watch here (see listGatewaysAttachedByDownstreamHTTPRoute above) maps
+// back through owner labels this operator itself stamped on an object it
+// created, which a CNI-published EndpointSlice never carries. Matching by
+// namespace co-location instead of a direct backendRef-name lookup is
+// deliberately coarse — it re-reconciles every downstream Gateway in the
+// namespace rather than only the one actually referencing this
+// EndpointSlice, trading precision for simplicity until this integration is
+// prototyped in isolation (see the plan's sequencing note).
+func (r *GatewayReconciler) listGatewaysForDownstreamVPCPodEndpointSlice(clusterName multicluster.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[*discoveryv1.EndpointSlice, mcreconcile.Request] {
+	return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, endpointSlice *discoveryv1.EndpointSlice) []mcreconcile.Request {
+		if _, ok := endpointSlice.Labels[VPCPodTenantIDLabel]; !ok {
+			return nil
+		}
+
+		logger := log.FromContext(ctx)
+
+		var downstreamGateways gatewayv1.GatewayList
+		if err := cl.GetClient().List(ctx, &downstreamGateways, client.InNamespace(endpointSlice.Namespace)); err != nil {
+			logger.Error(err, "failed to list downstream gateways for vpcPod endpointslice")
+			return nil
+		}
+
+		var reqs []mcreconcile.Request
+		for _, gateway := range downstreamGateways.Items {
+			upstreamNamespace, ok := gateway.Labels[downstreamclient.UpstreamOwnerNamespaceLabel]
+			if !ok {
+				continue
+			}
+			upstreamName, ok := gateway.Labels[downstreamclient.UpstreamOwnerNameLabel]
+			if !ok {
+				continue
+			}
+			upstreamClusterName, ok := gateway.Labels[downstreamclient.UpstreamOwnerClusterNameLabel]
+			if !ok {
+				continue
+			}
+
+			reqs = append(reqs, mcreconcile.Request{
+				Request: ctrl.Request{
+					NamespacedName: types.NamespacedName{
+						Namespace: upstreamNamespace,
+						Name:      upstreamName,
+					},
+				},
+				ClusterName: multicluster.ClusterName(downstreamclient.UpstreamClusterNameFromLabel(upstreamClusterName)),
+			})
+		}
+
 		return reqs
 	})
 }

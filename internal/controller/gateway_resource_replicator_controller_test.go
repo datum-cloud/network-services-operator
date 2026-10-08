@@ -1034,3 +1034,39 @@ func (f *replicatorFakeManager) GetProvider() multicluster.Provider   { return n
 func (f *replicatorFakeManager) Engage(context.Context, multicluster.ClusterName, cluster.Cluster) error {
 	return nil
 }
+
+// The hub needs the Network itself, not just the contexts that name it, so
+// what allocates a network's identity on the fabric can tell a network that was
+// deleted from one that is required nowhere right now.
+func TestNetworkIsReplicatedToTheHubWithoutBeingPlaced(t *testing.T) {
+	var replicatorConfig config.GatewayResourceReplicatorConfig
+	config.SetDefaults_GatewayResourceReplicatorConfig(&replicatorConfig)
+
+	networkGVK := schema.GroupVersionKind{
+		Group:   groupNetworkingDatumAPIs,
+		Version: versionV1Alpha,
+		Kind:    KindNetwork,
+	}
+
+	var replicated bool
+	for _, resource := range replicatorConfig.Resources {
+		if resource.Group == networkGVK.Group && resource.Version == networkGVK.Version && resource.Kind == networkGVK.Kind {
+			replicated = true
+			assert.Nil(t, resource.LabelSelector, "every Network is mirrored, not a labelled subset")
+		}
+	}
+	assert.True(t, replicated, "Network must be in the default replicated set")
+
+	cfg, ok := defaultReplicationResourceConfigs[gvkKey(networkGVK)]
+	assert.True(t, ok, "Network must have a replication config")
+	assert.True(t, cfg.skipUpstreamStatusSync,
+		"a Network's status is written by NSO's own controllers and must not be overwritten from the hub")
+	// Unlike NetworkContext and Subnet, no label is propagated: those carry
+	// location labels only because the per-location policies select on them to
+	// reach a cell. A Network is read on the hub and deliberately goes no
+	// further, so a label here would be an invitation to place it.
+	assert.Empty(t, cfg.propagatedLabels,
+		"the Network copy is read on the hub and is never placed onto a cell")
+	assert.False(t, cfg.mirrorStatusToAnnotation,
+		"nothing downstream reads a Network's status")
+}

@@ -10,45 +10,89 @@ spec:
     rules:
     - alert: GatewayNotReadySLOViolation
       expr: |
-        sum(time() - datum_cloud_networking_gateway_created) by (resourcemanager_datumapis_com_project_name, resource_namespace, resource_name) > 60
+        (
+          sum(time() - datum_cloud_networking_gateway_created) by (resourcemanager_datumapis_com_project_name, resource_namespace, resource_name) > 60
+          unless (
+            sum(datum_cloud_networking_gateway_status{type=~"Accepted|Programmed"} == 1) by (resourcemanager_datumapis_com_project_name, resource_namespace, resource_name) == 2
+          )
+        )
         unless (
-          sum(datum_cloud_networking_gateway_status{type=~"Accepted|Programmed"} == 1) by (resourcemanager_datumapis_com_project_name, resource_namespace, resource_name) == 2
+          (
+            max by (resourcemanager_datumapis_com_project_name, resource_namespace, resource_name) (time() - datum_cloud_networking_gateway_created) > 604800
+          )
+          unless (
+            sum by (resourcemanager_datumapis_com_project_name, resource_namespace, resource_name) (
+              max by (resourcemanager_datumapis_com_project_name, resource_namespace, resource_name, type) (
+                max_over_time(datum_cloud_networking_gateway_status{type=~"Accepted|Programmed"}[7d])
+              )
+            ) == 2
+          )
         )
       for: 0s
       labels:
         severity: critical
         slo_violation: "true"
+        service: network-services
+        team: sre
       annotations:
         summary: "Gateway {{ $labels.resource_name }} is taking longer than 60 seconds to reach Ready status"
         description: "Gateway {{ $labels.resource_name }} in namespace {{ $labels.resource_namespace }} has been in creation state for {{ $value }} seconds without reaching Ready status (Accepted=True AND Programmed=True), which exceeds the 60-second SLO threshold."
 
-    - alert: EnvoyPatchPolicyProgrammingFailed
-      expr: |
-        envoy_gateway_envoypatchpolicy_status_condition{type="Programmed"} == 0
-      for: 5m
-      labels:
-        severity: critical
-      annotations:
-        summary: "EnvoyPatchPolicy {{ $labels.name }} failed to program"
-        description: "EnvoyPatchPolicy {{ $labels.name }} in namespace {{ $labels.namespace }} has been unable to apply its xDS patch for over 5 minutes (reason: {{ $labels.reason }}). Customer traffic on affected gateways may be impacted."
-
     - alert: GatewayDegradedSLOViolation
       expr: |
         (
-          sum(time() - datum_cloud_networking_gateway_status_condition_last_transition_time{type=~"Accepted|Programmed", status="False"})
-          by (resourcemanager_datumapis_com_project_name, resource_namespace, resource_name)
-        ) > 60
-        and (
-          sum(datum_cloud_networking_gateway_status{type=~"Accepted|Programmed"} == 1)
-          by (resourcemanager_datumapis_com_project_name, resource_namespace, resource_name) < 2
+          (
+            sum(time() - datum_cloud_networking_gateway_status_condition_last_transition_time{type=~"Accepted|Programmed", status="False"})
+            by (resourcemanager_datumapis_com_project_name, resource_namespace, resource_name)
+          ) > 60
+          and (
+            sum(datum_cloud_networking_gateway_status{type=~"Accepted|Programmed"} == 1)
+            by (resourcemanager_datumapis_com_project_name, resource_namespace, resource_name) < 2
+          )
+        )
+        unless (
+          (
+            max by (resourcemanager_datumapis_com_project_name, resource_namespace, resource_name) (time() - datum_cloud_networking_gateway_created) > 604800
+          )
+          unless (
+            sum by (resourcemanager_datumapis_com_project_name, resource_namespace, resource_name) (
+              max by (resourcemanager_datumapis_com_project_name, resource_namespace, resource_name, type) (
+                max_over_time(datum_cloud_networking_gateway_status{type=~"Accepted|Programmed"}[7d])
+              )
+            ) == 2
+          )
         )
       for: 0s
       labels:
         severity: critical
         slo_violation: "true"
+        service: network-services
+        team: sre
       annotations:
         summary: "Gateway {{ $labels.resource_name }} has been degraded for over 60 seconds"
         description: "Gateway {{ $labels.resource_name }} in namespace {{ $labels.resource_namespace }} has been in a degraded state for over 60 seconds without recovering, which exceeds the 60-second SLO threshold."
+
+    - alert: GatewayNeverProgrammed
+      expr: |
+        (
+          max by (resourcemanager_datumapis_com_project_name, resource_namespace, resource_name) (time() - datum_cloud_networking_gateway_created) > 604800
+        )
+        unless (
+          sum by (resourcemanager_datumapis_com_project_name, resource_namespace, resource_name) (
+            max by (resourcemanager_datumapis_com_project_name, resource_namespace, resource_name, type) (
+              max_over_time(datum_cloud_networking_gateway_status{type=~"Accepted|Programmed"}[7d])
+            )
+          ) == 2
+        )
+      for: 1h
+      labels:
+        service: network-services
+        severity: info
+        team: delivery
+      annotations:
+        description: "Gateway {{ $labels.resource_name }} in namespace {{ $labels.resource_namespace }} was created {{ $value }} seconds ago and has not been both Accepted and Programmed at any point in the last 7 days. It no longer pages, because a 60-second readiness objective cannot be met retroactively, but it is still broken and still counts against the readiness SLO."
+        runbook_url: "https://github.com/datum-cloud/infra/blob/main/docs/runbooks/gateway-never-programmed.md"
+        summary: "Gateway {{ $labels.resource_name }} has never reached Ready and has stopped paging"
 
   # TLS certificate health alerts fire on nso_* metrics emitted directly by the
   # NSO operator and extension server. They are available in the same Prometheus
@@ -70,6 +114,8 @@ spec:
       for: 5m
       labels:
         severity: warning
+        service: network-services
+        team: sre
       annotations:
         summary: "Gateway listener {{ $labels.namespace }}/{{ $labels.name }}/{{ $labels.listener }} has an unusable TLS certificate"
         description: "NSO has withheld listener {{ $labels.listener }} (hostname {{ $labels.hostname }}) on Gateway {{ $labels.name }} in namespace {{ $labels.namespace }} because its TLS certificate is unusable (reason: {{ $labels.reason }}). The customer cannot serve HTTPS on this hostname. Check the cert-manager Certificate and Secret in the downstream cluster."
@@ -85,6 +131,8 @@ spec:
       for: 1h
       labels:
         severity: warning
+        service: network-services
+        team: sre
       annotations:
         summary: "TLS certificate for Gateway listener {{ $labels.namespace }}/{{ $labels.name }}/{{ $labels.listener }} expires in less than 7 days"
         description: "The cert-manager Certificate for listener {{ $labels.listener }} (hostname {{ $labels.hostname }}, secret {{ $labels.secret }}) on Gateway {{ $labels.name }} in namespace {{ $labels.namespace }} expires within 7 days. cert-manager should renew it automatically, but renewal fails if the domain's DNS no longer points to Datum. Verify the Certificate is Ready=True in the downstream cluster."
@@ -101,6 +149,8 @@ spec:
       for: 2m
       labels:
         severity: warning
+        service: network-services
+        team: sre
       annotations:
         summary: "Extension server is dropping {{ $value }} broken certificate(s) to protect the edge listener"
         description: "The extension server is dropping {{ $value }} broken certificate(s) from the configuration it sends to the edge gateway. Check extension server logs for 'pruned invalid TLS chains' to find the affected hostnames. If GatewayListenerCertUnusable is also firing, both layers of protection are working as expected. If only this alert fires, the controller may have missed the listener."
@@ -117,7 +167,30 @@ spec:
       for: 2m
       labels:
         severity: critical
+        service: network-services
+        team: sre
       annotations:
         summary: "{{ $value }} edge listener(s) have every TLS certificate broken and cannot be protected"
         description: "The extension server left {{ $value }} edge listener(s) untouched because every certificate on them is broken. It never removes a listener entirely, so the edge will reject the configuration update for those listeners (EnvoyListenerUpdateRejected confirms it). This means the controller did not withhold the listener before it reached the edge. Check extension server logs for 'listeners_left_intact' and why the controller did not withhold the listener."
         runbook_url: "https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/gateway-tls-certificates.md#tlsbackstoplistenerallcertsbroken"
+
+  - name: nso-certificate-service
+    interval: 30s
+    rules:
+    # Fires when a wildcard hostname's certificate cannot be issued or renewed
+    # through the certificate service. The hostname may still serve its previous
+    # certificate, so this fires weeks before that certificate expires.
+    - alert: CertificateServiceIssuanceFailing
+      expr: |
+        max by (namespace, name, listener, reason) (nso_certificate_service_listener_failing) > 0
+        or
+        sum by (namespace, name, listener, reason) (increase(nso_certificate_service_failures_total[1h])) > 0
+      for: 2h
+      labels:
+        severity: warning
+        service: network-services
+        team: sre
+      annotations:
+        summary: "Certificate for Gateway listener {{ $labels.namespace }}/{{ $labels.name }}/{{ $labels.listener }} cannot be issued or renewed"
+        description: "The certificate service has been failing to issue or renew the certificate for listener {{ $labels.listener }} on Gateway {{ $labels.name }} in namespace {{ $labels.namespace }} for over two hours (reason: {{ $labels.reason }}). The listener's CertificateRenewalBlocked or CertificateIssuanceBlocked condition says why."
+        runbook_url: "https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/gateway-tls-certificates.md#certificateserviceissuancefailing"

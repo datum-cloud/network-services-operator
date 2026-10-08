@@ -18,3 +18,14 @@ spec:
     - networking.datumapis.com/networks.delete
     - networking.datumapis.com/networks.patch
     - networking.datumapis.com/networks.use
+    - networking.datumapis.com/networkinterfaceclaims.create
+    - networking.datumapis.com/networkinterfaceclaims.update
+    - networking.datumapis.com/networkinterfaceclaims.patch
+    - networking.datumapis.com/networkinterfaceclaims.delete
+    - networking.datumapis.com/networkinterfaces.delete
+    - networking.datumapis.com/subnets.update
+    - networking.datumapis.com/subnets.patch
+    - networking.datumapis.com/networkservices.create
+    - networking.datumapis.com/networkservices.update
+    - networking.datumapis.com/networkservices.patch
+    - networking.datumapis.com/networkservices.delete

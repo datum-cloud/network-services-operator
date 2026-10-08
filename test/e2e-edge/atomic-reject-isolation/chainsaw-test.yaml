@@ -644,12 +644,16 @@ spec:
                 echo "SKIP: nackTestEnabled=false (awaiting confirmation the duplicate-localhost collision reaches the edge RDS)"
                 exit 0
               fi
+              ROOT="$(git rev-parse --show-toplevel)"
+              . "${ROOT}/test/e2e-edge/_steps/envoy-admin.sh"
               POD=$(kubectl get pods -n datum-downstream-gateway \
                 -l gateway.envoyproxy.io/owning-gatewayclass=${OWNING_GC} \
                 -o jsonpath='{.items[0].metadata.name}')
               echo "edge pod: ${POD}"
-              STATS=$(kubectl -n datum-downstream-gateway exec "${POD}" -c envoy -- \
-                curl -s "http://127.0.0.1:${ADMIN_PORT}/stats?filter=update_rejected" 2>/dev/null || true)
+              if ! STATS=$(envoy_admin_fetch datum-downstream-gateway "${POD}" "${ADMIN_PORT}" "/stats?filter=update_rejected"); then
+                echo "ERROR: could not reach the proxy admin API to read update_rejected; this is a harness failure, not a data-plane finding"
+                exit 1
+              fi
               echo "--- update_rejected stats ---"
               echo "${STATS}"
               # A genuine rejection must surface as a non-zero rejected-update

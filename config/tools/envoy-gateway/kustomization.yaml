@@ -12,7 +12,7 @@ helmCharts:
         envoyGateway:
           extensionApis:
             enableBackend: true
-            enableEnvoyPatchPolicy: true
+            enableEnvoyPatchPolicy: false
           runtimeFlags:
             enabled:
               - XDSNameSchemeV2

@@ -158,13 +158,6 @@ The location which a subnet claim is associated with
           Name of a datum location<br/>
         </td>
         <td>true</td>
-      </tr><tr>
-        <td><b>namespace</b></td>
-        <td>string</td>
-        <td>
-          Namespace for the datum location<br/>
-        </td>
-        <td>true</td>
       </tr></tbody>
 </table>
 

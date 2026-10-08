@@ -35,6 +35,10 @@ spec:
           cluster-scoped projection of a cluster-scoped Location into a project's
           virtual control plane, created once the location's class is supported, the
           Location is Ready, and the corresponding ServiceAvailability is Available.
+
+          Deprecated: read the Location projected into the project control plane by
+          locations.miloapis.com instead. This kind is still served, and still written
+          by the service catalog, only until its remaining consumers move.
         properties:
           apiVersion:
             description: |-
@@ -60,8 +64,8 @@ spec:
                 description: DisplayName is a human-readable label for the location.
                 type: string
               locationClassName:
-                description: LocationClassName mirrors spec.locationClassName from
-                  the referenced Location.
+                description: LocationClassName mirrors spec.locationClassRef.name
+                  from the referenced Location.
                 type: string
               locationRef:
                 description: LocationRef references the canonical cluster-scoped Location

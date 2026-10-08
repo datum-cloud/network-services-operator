@@ -193,6 +193,10 @@ type TrafficProtectionPolicyStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:shortName=tpp
+// +kubebuilder:printcolumn:name="Mode",type=string,JSONPath=`.spec.mode`
+// +kubebuilder:printcolumn:name="Accepted",type=string,JSONPath=`.status.ancestors[0].conditions[?(@.type=="Accepted")].status`
+// +kubebuilder:printcolumn:name="Programmed",type=string,JSONPath=`.status.ancestors[0].conditions[?(@.type=="Programmed")].status`
+// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // TrafficProtectionPolicy is the Schema for the trafficprotectionpolicies API.
 type TrafficProtectionPolicy struct {

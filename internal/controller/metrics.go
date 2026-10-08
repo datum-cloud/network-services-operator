@@ -17,9 +17,22 @@ const (
 	metricLabelHostname = "hostname"
 	metricLabelSecret   = "secret"
 	metricLabelReason   = "reason"
+	metricLabelProject  = "project"
+	metricLabelLocation = "location"
+	metricLabelSource   = "source"
 )
 
 var (
+	// missingAllocationsTotal counts addresses no IPClaim holds. IPAM may give
+	// the same address to another claim.
+	missingAllocationsTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "nso_network_interface_missing_allocations_total",
+			Help: "Total addresses advertised by a NetworkInterface with no IPClaim holding them, by project.",
+		},
+		[]string{metricLabelProject},
+	)
+
 	// replicatorConflictsTotal counts resource-version conflicts observed by the
 	// gateway-resource-replicator controller. Conflicts arise when the upstream or
 	// downstream API server rejects an update because the local object's
@@ -60,6 +73,31 @@ var (
 			Help: "1 if the downstream Gateway has Programmed=True, 0 otherwise. Sum for fleet-wide programmed count.",
 		},
 		[]string{jsonKeyNamespace, jsonKeyName},
+	)
+
+	// certificateServiceFailuresTotal counts every certificate-service step that
+	// could not do its work for a wildcard listener, and every transition of its
+	// TLSCertificate into a failing state, by reason, whether or not the listener
+	// still serves a certificate. A hostname can serve for weeks on its previous
+	// certificate while every attempt to replace it fails; this is the signal
+	// that says so before the expiry does.
+	certificateServiceFailuresTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "nso_certificate_service_failures_total",
+			Help: "Total certificate-service failures for a Gateway listener, by reason.",
+		},
+		[]string{jsonKeyNamespace, jsonKeyName, metricLabelListener, metricLabelReason},
+	)
+
+	// certificateServiceListenerFailing is 1 for each wildcard listener whose
+	// certificate cannot currently be issued or renewed, labelled with why. The
+	// series goes when the listener recovers, leaves the service, or is removed.
+	certificateServiceListenerFailing = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "nso_certificate_service_listener_failing",
+			Help: "1 while a Gateway listener's certificate-service issuance or renewal is failing, by reason.",
+		},
+		[]string{jsonKeyNamespace, jsonKeyName, metricLabelListener, metricLabelReason},
 	)
 
 	// gatewayListenerCertWithheld is 1 for each upstream Gateway listener that NSO
@@ -114,5 +152,29 @@ var (
 			Help: "1 for each Gateway listener whose TLS certificate is managed and evaluated by NSO, regardless of health.",
 		},
 		[]string{jsonKeyNamespace, jsonKeyName, metricLabelListener, metricLabelHostname},
+	)
+
+	cellLocationIdentitySource = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "nso_cell_location_identity_source",
+			Help: "1 for the source this cell resolved its location identity from (Delivered or Configured).",
+		},
+		[]string{metricLabelSource, metricLabelLocation},
+	)
+
+	cellLocationIdentityMismatch = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "nso_cell_location_identity_mismatch",
+			Help: "1 while a cell's delivered ServingLocation disagrees with its configured location. Delivered wins; the disagreement is still wrong.",
+		},
+		[]string{metricLabelLocation},
+	)
+
+	cellLocationIdentityWaiting = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "nso_cell_location_identity_waiting",
+			Help: "1 while a cell cannot name the location it serves, by reason.",
+		},
+		[]string{metricLabelReason},
 	)
 )

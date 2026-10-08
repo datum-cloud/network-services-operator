@@ -4,6 +4,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -312,6 +313,9 @@ func (r *DomainReconciler) reconcileVerification(ctx context.Context, reader cli
 					apimeta.RemoveStatusCondition(&domainStatus.Conditions, networkingv1alpha.DomainConditionVerifiedDNS)
 					apimeta.RemoveStatusCondition(&domainStatus.Conditions, networkingv1alpha.DomainConditionVerifiedHTTP)
 					apimeta.RemoveStatusCondition(&domainStatus.Conditions, networkingv1alpha.DomainConditionVerifiedDNSZone)
+					if r.Config.Gateway.CertificateService.Enabled {
+						recordVerificationMethod(domainStatus, verifiedDNSCondition, verifiedHTTPCondition)
+					}
 					// When verified, no future verification timer is needed
 					nextAttempt = time.Time{}
 				}
@@ -333,6 +337,19 @@ func (r *DomainReconciler) reconcileVerification(ctx context.Context, reader cli
 	domain.Status = *domainStatus
 
 	return nextAttempt
+}
+
+// recordVerificationMethod keeps the condition for the method that proved
+// ownership, so a consumer can tell DNS proof from HTTP proof after the
+// verification scaffolding is cleared. DNS wins when both passed.
+func recordVerificationMethod(domainStatus *networkingv1alpha.DomainStatus, verifiedDNS, verifiedHTTP *metav1.Condition) {
+	if verifiedDNS.Status == metav1.ConditionTrue {
+		apimeta.SetStatusCondition(&domainStatus.Conditions, *verifiedDNS)
+		return
+	}
+	if verifiedHTTP.Status == metav1.ConditionTrue {
+		apimeta.SetStatusCondition(&domainStatus.Conditions, *verifiedHTTP)
+	}
 }
 
 var dnsZoneListGVK = schema.GroupVersionKind{
@@ -389,12 +406,17 @@ func (r *DomainReconciler) attemptDNSZoneVerification(
 	// Evaluate zones; any one matching is sufficient
 	sawNotReady := false
 	sawReady := false
+	sawPendingSubdomain := false
 	for _, z := range zones {
 		zoneName := z.GetName()
 
-		// Must be Accepted=True and Programmed=True
+		// Must be Accepted=True and Programmed=True, or held back by the DNS
+		// operator until this Domain is verified. The DNS operator won't serve
+		// a zone for an unverified domain, so a zone waiting on verification
+		// never becomes Programmed; requiring that would deadlock.
 		accepted := false
 		programmed := false
+		pendingVerification := false
 		if conds, found, _ := unstructured.NestedSlice(z.Object, jsonKeyStatus, "conditions"); found {
 			for _, c := range conds {
 				cm, ok := c.(map[string]any)
@@ -406,12 +428,24 @@ func (r *DomainReconciler) attemptDNSZoneVerification(
 				if ct == conditionTypeAccepted && cs == certManagerConditionStatusTrue {
 					accepted = true
 				}
+				if ct == conditionTypeAccepted && cs != certManagerConditionStatusTrue {
+					reason, _ := cm["reason"].(string)
+					pendingVerification = reason == dnsZoneReasonPendingDomainVerification
+				}
 				if ct == conditionTypeProgrammed && cs == certManagerConditionStatusTrue {
 					programmed = true
 				}
 			}
 		}
-		if !accepted || !programmed {
+		// A waiting zone only counts at the apex. Every zone shares the same
+		// nameservers, and a subdomain with no delegation of its own reports its
+		// parent's nameservers. Without this check, anyone could verify
+		// sub.example.com once example.com was delegated to Datum.
+		if pendingVerification && !domainStatus.Apex {
+			sawPendingSubdomain = true
+			continue
+		}
+		if !pendingVerification && (!accepted || !programmed) {
 			sawNotReady = true
 			// Keep evaluating other zones in case one is ready.
 			continue
@@ -447,6 +481,11 @@ func (r *DomainReconciler) attemptDNSZoneVerification(
 	if sawNotReady && !sawReady {
 		verifiedDNSZoneCondition.Reason = networkingv1alpha.DomainReasonDNSZoneNotReady
 		verifiedDNSZoneCondition.Message = "DNSZone exists but is not yet Accepted and Programmed"
+	}
+	if sawPendingSubdomain && !sawReady {
+		verifiedDNSZoneCondition.Reason = networkingv1alpha.DomainReasonDNSZoneNotReady
+		verifiedDNSZoneCondition.Message = "Nameserver delegation verifies only a registered domain; " +
+			"verify this subdomain with the TXT record or HTTP token, or verify its parent domain"
 	}
 }
 
@@ -624,11 +663,18 @@ func (r *DomainReconciler) reconcileRegistration(ctx context.Context, d *network
 	// Registry data lookup (RDAP/WHOIS/DNS + caching + rate limiting)
 	opts := registrydata.LookupOptions{ForceRefresh: expedite}
 	res, lookupErr := r.registryClient.LookupDomain(ctxLookup, d.Spec.DomainName, opts)
+	var nsLookupErr *registrydata.NameserverLookupError
+	nameserversUnknown := errors.As(lookupErr, &nsLookupErr)
 	if res != nil {
 		if res.Registration != nil {
 			st.Registration = res.Registration
 		}
-		st.Nameservers = res.Nameservers
+		if !nameserversUnknown {
+			st.Nameservers = res.Nameservers
+		}
+	}
+	if nameserversUnknown {
+		logger.Info("keeping the last known nameservers", "domain", d.Spec.DomainName, "reason", lookupErr.Error())
 	}
 	if st.Registration == nil {
 		st.Registration = &networkingv1alpha.Registration{}

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
@@ -15,7 +14,7 @@ import (
 )
 
 const (
-	networkContextControllerNetworkUIDIndex = "networkContextControllerNetworkUIDIndex"
+	networkInterfaceClaimNetworkIndex = "networkInterfaceClaimNetworkIndex"
 
 	// dnsZoneDomainNameIndex is the field index name for DNSZone.spec.domainName.
 	dnsZoneDomainNameIndex = "spec.domainName"
@@ -23,27 +22,24 @@ const (
 
 func AddIndexers(ctx context.Context, mgr mcmanager.Manager) error {
 	return errors.Join(
-		addNetworkContextControllerIndexers(ctx, mgr),
+		addNetworkInterfaceClaimIndexers(ctx, mgr),
 	)
 }
 
-func addNetworkContextControllerIndexers(ctx context.Context, mgr mcmanager.Manager) error {
-	if err := mgr.GetFieldIndexer().IndexField(ctx, &networkingv1alpha.NetworkContext{}, networkContextControllerNetworkUIDIndex, networkContextControllerNetworkUIDIndexFunc); err != nil {
-		return fmt.Errorf("failed to add network context controller indexer %q: %w", networkContextControllerNetworkUIDIndex, err)
+func addNetworkInterfaceClaimIndexers(ctx context.Context, mgr mcmanager.Manager) error {
+	if err := mgr.GetFieldIndexer().IndexField(ctx, &networkingv1alpha.NetworkInterfaceClaim{}, networkInterfaceClaimNetworkIndex, networkInterfaceClaimNetworkIndexFunc); err != nil {
+		return fmt.Errorf("failed to add network interface claim indexer %q: %w", networkInterfaceClaimNetworkIndex, err)
 	}
 
 	return nil
 }
 
-func networkContextControllerNetworkUIDIndexFunc(o client.Object) []string {
-
-	if networkRef := metav1.GetControllerOf(o); networkRef != nil {
-		return []string{
-			string(networkRef.UID),
-		}
+func networkInterfaceClaimNetworkIndexFunc(o client.Object) []string {
+	claim, ok := o.(*networkingv1alpha.NetworkInterfaceClaim)
+	if !ok || claim.Spec.Network.Name == "" {
+		return nil
 	}
-
-	return nil
+	return []string{claim.Spec.Network.Name}
 }
 
 // TODO(jreese): I can't seem to get these indexers to function on the downstream

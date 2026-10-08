@@ -5,6 +5,8 @@
 package cache
 
 import (
+	"strings"
+
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	"sigs.k8s.io/gateway-api/apis/v1alpha2"
 )
@@ -36,26 +38,43 @@ type PolicyIndex struct {
 	// Values are upstream namespace names; they key into TPPs and Connectors.
 	DStoUS map[string]string
 
-	// ProjectNames maps downstream namespace names to the human-readable
-	// project name for that namespace. Derived from
-	// meta.datumapis.com/upstream-cluster-name on replica namespaces (value
-	// format: "cluster-<projectName>"). Empty string when the label is absent
-	// (e.g. single-cluster dev with no cluster name configured).
-	//
-	// TODO: replace with resourcemanager.miloapis.com/project-name once that
-	// label is available on project namespaces.
+	// ProjectNames maps downstream namespace names to the project name for that
+	// namespace, read from meta.datumapis.com/upstream-cluster-name on replica
+	// namespaces (value format: "cluster-<projectName>"). That label is the
+	// operator's record of the owning project; see UpstreamOwnerClusterNameLabel
+	// in internal/downstreamclient. Empty string when the label is absent (e.g.
+	// single-cluster dev with no cluster name configured).
 	ProjectNames map[string]string
 
-	// TPPs maps upstream namespace names to the list of
+	// TPPs maps downstream replica namespace names to the list of
 	// TrafficProtectionPolicies in that namespace, sorted by creation
-	// timestamp then name to match NSO reconciler precedence order.
-	// Accumulated across all engaged clusters.
+	// timestamp then name to match NSO reconciler precedence order. Replica
+	// namespace names are unique across projects on an edge; upstream project
+	// namespaces are not (they are commonly all "default").
 	TPPs map[string][]TPPInfo
+
+	// HTTPProxyRules maps (downstream replica namespace, httpProxyName) to the
+	// rule names of that HTTPProxy, indexed by rule position. Entries are empty
+	// strings for unnamed rules. Envoy Gateway numbers HTTPRoute rules in the
+	// same order, so the position is the rule index in route and cluster names.
+	HTTPProxyRules map[HTTPProxyKey][]string
 
 	// Connectors maps (upstreamNS, httpProxyName, ruleIndex) to ConnectorInfo.
 	// Only populated for HTTPProxy rules that have a Connector backend.
 	// Accumulated across all engaged clusters.
 	Connectors map[ConnectorKey]ConnectorInfo
+
+	// VPCPods maps (upstreamNS, httpProxyName, ruleIndex) to VPCPodInfo. Only
+	// populated for HTTPProxy rules that have a vpcPod backend. Accumulated
+	// across all engaged clusters, same shape as Connectors.
+	VPCPods map[VPCPodKey]VPCPodInfo
+
+	VPCPodBackends map[VPCPodBackendKey]VPCPodInfo
+}
+
+type HTTPProxyKey struct {
+	Namespace string
+	Name      string
 }
 
 // TPPInfo holds the fields of a TrafficProtectionPolicy needed by the
@@ -63,6 +82,7 @@ type PolicyIndex struct {
 type TPPInfo struct {
 	Namespace  string
 	Name       string
+	Generation int64
 	Mode       networkingv1alpha.TrafficProtectionPolicyMode
 	TargetRefs []v1alpha2.LocalPolicyTargetReferenceWithSectionName
 	// Directives is the pre-computed list of Coraza simple_directives for
@@ -94,8 +114,58 @@ type ConnectorKey struct {
 	// UpstreamNS is the effective upstream namespace name resolved from the
 	// HTTPProxy's UpstreamOwnerNamespaceLabel (two-cluster) or proxy.Namespace
 	// (single-cluster). It matches the value stored in DStoUS and the key used
-	// for idx.TPPs, keeping WAF and Connector resolution consistent.
+	// for connector resolution. TPPs are keyed by downstream replica namespace
+	// instead, because that is the tenant-unique identity used by Envoy.
 	UpstreamNS    string
 	HTTPProxyName string
 	RuleIndex     int
+}
+
+// VPCPodTenantIDLabel is the label galactic sets on every EndpointSlice it
+// publishes for a VPC workload, carrying the "<vpc>-<vpcAttachment>" tenant
+// identifier. Matches crdnames.LabelTenantID in datum-cloud/galactic.
+// Deliberately duplicated rather than imported from
+// internal/controller.VPCPodTenantIDLabel — the extension server and
+// controller packages are kept decoupled.
+const VPCPodTenantIDLabel = "galactic.datum.net/tenant-id"
+
+// TenantVPC returns the VPC half of a "<vpc>-<vpcAttachment>" tenant
+// identifier. galactic names a VRF device by the VPC alone, so every
+// attachment landing on one VPC shares a single device and the attachment
+// half is never part of the name. Both halves are base62 and so can never
+// contain the separator themselves, which makes the split unambiguous.
+//
+// Mirrors crdnames.ParseTenantIdentifier in datum-cloud/galactic.
+func TenantVPC(tenantID string) (string, bool) {
+	vpc, vpcAttachment, found := strings.Cut(tenantID, "-")
+	if !found || vpc == "" || vpcAttachment == "" {
+		return "", false
+	}
+	return vpc, true
+}
+
+// VPCPodInfo holds the fields the mutation layer needs to bind an Envoy
+// cluster's outbound socket to a tenant's VRF device.
+type VPCPodInfo struct {
+	// TenantID is the "<vpc>-<vpcAttachment>" identifier galactic labels an
+	// EndpointSlice with — read directly off the slice an instance backend
+	// names, or joined by member address for a networkService backend. Empty
+	// when no tenant could be resolved; callers must treat that as "skip
+	// mutation," never bind to a zero-value device name.
+	TenantID string
+}
+
+// VPCPodKey uniquely identifies an HTTPProxy rule that has a vpcPod backend.
+// Same shape and namespace-keying rationale as ConnectorKey.
+type VPCPodKey struct {
+	UpstreamNS    string
+	HTTPProxyName string
+	RuleIndex     int
+}
+
+type VPCPodBackendKey struct {
+	UpstreamNS    string
+	HTTPProxyName string
+	RuleIndex     int
+	BackendIndex  int
 }

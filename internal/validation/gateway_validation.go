@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"slices"
 
-	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/utils/ptr"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
@@ -103,7 +102,7 @@ func validateListeners(gateway *gatewayv1.Gateway, fldPath *field.Path, opts Gat
 		} else if l.Hostname == nil {
 			allErrs = append(allErrs, field.Required(listenerPath.Child("hostname"), fmt.Sprintf("must be set to %q or a custom hostname", opts.GatewayDNSAddressFunc(gateway))))
 		} else if !opts.SkipHostnameFQDNValidation {
-			allErrs = append(allErrs, validation.IsFullyQualifiedDomainName(listenerPath.Child("hostname"), string(*l.Hostname))...)
+			allErrs = append(allErrs, ValidateCustomHostname(listenerPath.Child("hostname"), string(*l.Hostname), opts.Hostnames)...)
 		}
 
 		if !slices.Contains(opts.ValidPortNumbers, int(l.Port)) {
@@ -187,6 +186,7 @@ type GatewayValidationOptions struct {
 	GatewayDNSAddressFunc      func(gateway *gatewayv1.Gateway) string
 	ClusterName                string
 	SkipHostnameFQDNValidation bool
+	Hostnames                  HostnameOptions
 }
 
 type validPortNumbers []int

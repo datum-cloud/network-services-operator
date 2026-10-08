@@ -44,8 +44,8 @@ func (r *GatewayClassReconciler) Reconcile(ctx context.Context, req mcreconcile.
 		return ctrl.Result{}, err
 	}
 
-	logger.Info("reconciling gatewayclass")
-	defer logger.Info("reconcile complete")
+	logger.V(1).Info("reconciling gatewayclass")
+	defer logger.V(1).Info("reconcile complete")
 
 	// Check if this GatewayClass should be handled by this controller
 	if gatewayClass.Spec.ControllerName != r.Config.Gateway.ControllerName {

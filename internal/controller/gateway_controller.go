@@ -146,7 +146,7 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 	logger := log.FromContext(ctx, "cluster", req.ClusterName, "namespace", req.Namespace, jsonKeyName, req.Name)
 	ctx = log.IntoContext(ctx, logger)
 
-	logger.Info("gateway reconcile dequeued")
+	logger.V(1).Info("gateway reconcile dequeued")
 
 	cl, err := r.mgr.GetCluster(ctx, req.ClusterName)
 	if err != nil {
@@ -154,7 +154,7 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 		return ctrl.Result{}, err
 	}
 
-	logger.Info("got cluster, fetching gateway")
+	logger.V(1).Info("got cluster, fetching gateway")
 
 	var gateway gatewayv1.Gateway
 	if err := cl.GetClient().Get(ctx, req.NamespacedName, &gateway); err != nil {
@@ -209,8 +209,8 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 		return ctrl.Result{}, nil
 	}
 
-	logger.Info("reconciling gateway")
-	defer logger.Info("reconcile complete")
+	logger.V(1).Info("reconciling gateway")
+	defer logger.V(1).Info("reconcile complete")
 
 	result, _ := r.ensureDownstreamGateway(ctx, string(req.ClusterName), cl.GetClient(), &gateway, downstreamStrategy)
 	if result.ShouldReturn() {
@@ -1652,7 +1652,7 @@ func (r *GatewayReconciler) ensureHostnameVerification(
 
 	verifiedHostnames.Insert(addressHostnames.UnsortedList()...)
 
-	logger.Info("collected verified hostnames from listener conditions", "hostnames", verifiedHostnames.UnsortedList())
+	logger.V(1).Info("collected verified hostnames from listener conditions", "hostnames", verifiedHostnames.UnsortedList())
 
 	if r.Config.Gateway.DisableHostnameVerification {
 		verifiedHostnamesSlice := hostnames.UnsortedList()
@@ -1669,7 +1669,7 @@ func (r *GatewayReconciler) ensureHostnameVerification(
 		return nil, nil, fmt.Errorf("failed listing domains: %w", err)
 	}
 
-	logger.Info("processing domains in same namespace", "domain_count", len(domainList.Items))
+	logger.V(1).Info("processing domains in same namespace", "domain_count", len(domainList.Items))
 
 	domainsToCreate := sets.New[string]()
 	for _, hostname := range hostnames.UnsortedList() {
@@ -2154,7 +2154,7 @@ func (r *GatewayReconciler) ensureDownstreamGatewayHTTPRoutes(
 		}
 	}
 
-	logger.Info("attached routes", "count", len(attachedRoutes))
+	logger.V(1).Info("attached routes", "count", len(attachedRoutes))
 
 	for _, route := range attachedRoutes {
 		if !route.DeletionTimestamp.IsZero() {
@@ -2185,7 +2185,7 @@ func (r *GatewayReconciler) ensureDownstreamGatewayHTTPRoutes(
 		result = result.Merge(httpRouteResult)
 	}
 
-	logger.Info("updating listener status", "verified_hostnames", verifiedHostnames, "refused_hostnames", len(refusals))
+	logger.V(1).Info("updating listener status", "verified_hostnames", verifiedHostnames, "refused_hostnames", len(refusals))
 
 	currentListenerStatus := map[gatewayv1.SectionName]gatewayv1.ListenerStatus{}
 	for _, listener := range upstreamGateway.Status.Listeners {
@@ -2316,7 +2316,7 @@ func (r *GatewayReconciler) ensureDownstreamGatewayHTTPRoutes(
 		upstreamGateway.Status.Listeners = listenerStatus
 		result.AddStatusUpdate(upstreamClient, upstreamGateway)
 	} else {
-		logger.Info("listener status unchanged")
+		logger.V(1).Info("listener status unchanged")
 	}
 
 	return result
@@ -2354,7 +2354,7 @@ func (r *GatewayReconciler) ensureDownstreamHTTPRoute(
 	upstreamRoute gatewayv1.HTTPRoute,
 ) (result Result) {
 	logger := log.FromContext(ctx)
-	logger.Info("processing httproute", jsonKeyName, upstreamRoute.Name)
+	logger.V(1).Info("processing httproute", jsonKeyName, upstreamRoute.Name)
 
 	downstreamClient := downstreamStrategy.GetClient()
 	downstreamRouteObjectMeta, err := downstreamStrategy.ObjectMetaFromUpstreamObject(ctx, &upstreamRoute)
@@ -2510,7 +2510,7 @@ func (r *GatewayReconciler) ensureDownstreamHTTPRoute(
 			return result
 		}
 
-		logger.Info("downstream resource processed",
+		logProcessed(logger, resourceResult, "downstream resource processed",
 			"operation_result", resourceResult,
 			jsonKeyKind, gvk.Kind,
 			"namespace", resource.GetNamespace(),
@@ -2625,7 +2625,7 @@ func (r *GatewayReconciler) ensureDownstreamHTTPRoute(
 		result.AddStatusUpdate(upstreamClient, &upstreamRoute)
 	}
 
-	logger.Info("downstream httproute processed", "operation_result", routeResult)
+	logProcessed(logger, routeResult, "downstream httproute processed", "operation_result", routeResult)
 
 	return result
 }

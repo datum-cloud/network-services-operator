@@ -57,8 +57,8 @@ func (r *ConnectorAdvertisementReconciler) Reconcile(ctx context.Context, req mc
 		return ctrl.Result{}, nil
 	}
 
-	logger.Info("reconciling connectoradvertisement")
-	defer logger.Info("reconcile complete")
+	logger.V(1).Info("reconciling connectoradvertisement")
+	defer logger.V(1).Info("reconcile complete")
 
 	originalStatus := advertisement.Status.DeepCopy()
 

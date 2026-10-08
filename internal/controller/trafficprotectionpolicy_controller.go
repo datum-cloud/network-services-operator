@@ -73,8 +73,8 @@ func (r *TrafficProtectionPolicyReconciler) Reconcile(ctx context.Context, req N
 		return ctrl.Result{}, err
 	}
 
-	logger.Info("reconciling trafficprotectionpolicies")
-	defer logger.Info("reconcile complete")
+	logger.V(1).Info("reconciling trafficprotectionpolicies")
+	defer logger.V(1).Info("reconcile complete")
 
 	downstreamStrategy := downstreamclient.NewMappedNamespaceResourceStrategy(string(req.ClusterName), cl.GetClient(), r.DownstreamCluster.GetClient())
 
@@ -304,7 +304,7 @@ func (r *TrafficProtectionPolicyReconciler) updateTPPAncestorsStatus(
 				return fmt.Errorf("failed to update status for trafficprotectionpolicy %s/%s: %w", policy.Namespace, policy.Name, err)
 			}
 		} else {
-			logger.Info("status unchanged, skipping update", "trafficprotectionpolicy", fmt.Sprintf("%s/%s", policy.Namespace, policy.Name))
+			logger.V(1).Info("status unchanged, skipping update", "trafficprotectionpolicy", fmt.Sprintf("%s/%s", policy.Namespace, policy.Name))
 		}
 
 	}
@@ -436,7 +436,7 @@ func (r *TrafficProtectionPolicyReconciler) collectTrafficProtectionPolicyAttach
 		}
 	}
 
-	logger.Info("collected traffic protection policies", "totalAttachments", len(policyAttachments))
+	logger.V(1).Info("collected traffic protection policies", "totalAttachments", len(policyAttachments))
 
 	return policyAttachments
 }

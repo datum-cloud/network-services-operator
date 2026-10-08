@@ -62,8 +62,8 @@ func (r *SubnetReconciler) Reconcile(ctx context.Context, req mcreconcile.Reques
 		return ctrl.Result{}, nil
 	}
 
-	logger.Info("reconciling subnet")
-	defer logger.Info("reconcile complete")
+	logger.V(1).Info("reconciling subnet")
+	defer logger.V(1).Info("reconcile complete")
 
 	return ctrl.Result{}, r.reconcileSubnet(ctx, cl.GetClient(), &subnet)
 }

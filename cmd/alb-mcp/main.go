@@ -48,6 +48,7 @@ import (
 
 	"go.datum.net/network-services-operator/internal/agent"
 	"go.datum.net/network-services-operator/internal/cmd/alb/util"
+	"go.datum.net/network-services-operator/internal/logging"
 )
 
 const (
@@ -78,11 +79,11 @@ func main() {
 	flag.StringVar(&addr, "addr", envOr("ALB_MCP_ADDR", ":8080"),
 		"address to serve MCP on")
 
-	opts := zap.Options{Development: true}
+	opts := zap.Options{}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
 
-	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+	ctrl.SetLogger(logging.New(&opts))
 
 	// GetConfig resolves the --kubeconfig flag controller-runtime registers,
 	// then KUBECONFIG, then in-cluster config, then ~/.kube/config. Only the

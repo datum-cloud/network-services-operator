@@ -72,8 +72,8 @@ func (r *DomainReconciler) Reconcile(ctx context.Context, req mcreconcile.Reques
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	logger.Info("reconciling domain")
-	defer logger.Info("reconcile complete")
+	logger.V(1).Info("reconciling domain")
+	defer logger.V(1).Info("reconcile complete")
 
 	origStatus := domain.Status.DeepCopy()
 

@@ -27,6 +27,7 @@ import (
 	"go.datum.net/network-services-operator/internal/cmd/clusterdiscovery"
 	"go.datum.net/network-services-operator/internal/config"
 	"go.datum.net/network-services-operator/internal/controller"
+	"go.datum.net/network-services-operator/internal/logging"
 )
 
 const leaderElectionID = "6a7d51cc.datumapis.com-cell"
@@ -66,7 +67,7 @@ func NewCommand() *cobra.Command {
 		fmt.Sprintf("Leader election ID. Defaults to %s.", leaderElectionID))
 	fs.StringVar(&serverConfigFile, "server-config", "", "path to the server config file")
 
-	opts := zap.Options{Development: true}
+	opts := zap.Options{}
 	opts.BindFlags(fs)
 
 	cmd := &cobra.Command{
@@ -74,7 +75,7 @@ func NewCommand() *cobra.Command {
 		Short: "Run the network-services-operator controller manager for a cell",
 		Args:  cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
-			ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+			ctrl.SetLogger(logging.New(&opts))
 
 			serverConfig, err := loadConfig(serverConfigFile)
 			if err != nil {

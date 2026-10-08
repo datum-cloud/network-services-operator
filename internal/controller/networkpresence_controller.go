@@ -118,8 +118,8 @@ func (r *NetworkPresenceReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return r.teardown(ctx, req)
 	}
 
-	logger.Info("reconciling network presence", "holders", len(holders))
-	defer logger.Info("reconcile complete")
+	logger.V(1).Info("reconciling network presence", "holders", len(holders))
+	defer logger.V(1).Info("reconcile complete")
 
 	refused, err := r.ensure(ctx, req, holders)
 	if err != nil {

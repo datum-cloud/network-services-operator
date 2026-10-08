@@ -17,7 +17,6 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
@@ -54,6 +53,10 @@ const (
 // vpcEndpointSliceSweepInterval paces the collection of copies whose source
 // went while the cell could not see the hub. Nothing replays a deletion.
 const vpcEndpointSliceSweepInterval = 10 * time.Minute
+
+// vpcEndpointSliceFieldManager owns the fields the write-back sets on a copy,
+// and no others.
+const vpcEndpointSliceFieldManager = "network-services-operator/vpc-endpointslice-writeback"
 
 // vpcEndpointSliceResyncInterval paces the pass that acts on a change only the
 // hub saw. A pod put behind a proxy, or taken out from behind one, moves a
@@ -304,8 +307,10 @@ func federatedEndpointSlice(
 }
 
 // writeFederatedEndpointSlice converges a copy onto what the source says. The
-// copy is overwritten in full on every pass, so an edit to it never survives
-// and never reaches the source.
+// copy is applied rather than updated, so the write-back owns exactly the
+// fields it sets: each pass restores them, a field the source drops leaves the
+// copy, and a label the hub writes to claim the copy for its propagation
+// policy is left in place. Removing that label makes the hub write it back.
 func writeFederatedEndpointSlice(
 	ctx context.Context,
 	cl client.Client,
@@ -331,14 +336,13 @@ func writeFederatedEndpointSlice(
 		return err
 	}
 
-	if _, err := controllerutil.CreateOrUpdate(ctx, cl, copied, func() error {
-		copied.Labels = desired.Labels
-		copied.Annotations = desired.Annotations
-		copied.AddressType = desired.AddressType
-		copied.Endpoints = desired.Endpoints
-		copied.Ports = desired.Ports
-		return nil
-	}); err != nil {
+	applied := desired.DeepCopy()
+	applied.TypeMeta = metav1.TypeMeta{APIVersion: discoveryv1.SchemeGroupVersion.String(), Kind: "EndpointSlice"}
+
+	// client.Apply is deprecated in favour of client.Client.Apply(), which needs
+	// a generated apply configuration; the copy is a typed EndpointSlice, as in
+	// iroh_dns_controller.go.
+	if err := cl.Patch(ctx, applied, client.Apply, client.FieldOwner(vpcEndpointSliceFieldManager), client.ForceOwnership); err != nil { //nolint:staticcheck // SA1019: see comment above
 		return fmt.Errorf("failed writing the vpc endpointslice copy: %w", err)
 	}
 

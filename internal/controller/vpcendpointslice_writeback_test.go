@@ -504,3 +504,49 @@ func TestTheResyncPublishesASliceThatHasJustBeenPutBehindAProxy(t *testing.T) {
 	_, found = r.hubCopy()
 	require.True(t, found, "the resync is what acts on a change only the hub saw")
 }
+
+// hubClaimLabel is the label Karmada writes onto every object its propagation
+// policy selects, and writes back whenever it is missing.
+const hubClaimLabel = "clusterpropagationpolicy.karmada.io/permanent-id"
+
+// The hub claims a copy by writing its own label onto it. A publish must leave
+// that label alone: removing it makes the hub write it back, so the copy would
+// change twice on every resync while its source does not change at all.
+func TestTheHubsClaimOnACopySurvivesThePublish(t *testing.T) {
+	r := newReachability(t)
+	r.sliceOnCell()
+	r.publish(liveSliceName)
+
+	claimed, found := r.hubCopy()
+	require.True(t, found, "the cell's slice reaches the hub")
+	claimed.Labels[hubClaimLabel] = "policy-id"
+	require.NoError(t, r.hub.Update(r.ctx, claimed))
+	afterClaim, _ := r.hubCopy()
+
+	r.publish(liveSliceName)
+
+	copied, _ := r.hubCopy()
+	require.Equal(t, "policy-id", copied.Labels[hubClaimLabel], "the hub's claim survives the publish")
+	require.Equal(t, afterClaim.ResourceVersion, copied.ResourceVersion,
+		"a publish with nothing new to carry writes nothing")
+}
+
+// A label the source stops carrying must leave the copy too, or the edge keeps
+// selecting on something the cell no longer says.
+func TestALabelTheSourceDropsLeavesTheCopy(t *testing.T) {
+	r := newReachability(t)
+	source := r.sliceOnCell()
+	source.Labels["example.com/extra"] = "yes"
+	require.NoError(t, r.cell.Update(r.ctx, source))
+	r.publish(liveSliceName)
+
+	copied, _ := r.hubCopy()
+	require.Equal(t, "yes", copied.Labels["example.com/extra"], "the label crosses first")
+
+	delete(source.Labels, "example.com/extra")
+	require.NoError(t, r.cell.Update(r.ctx, source))
+	r.publish(liveSliceName)
+
+	copied, _ = r.hubCopy()
+	require.NotContains(t, copied.Labels, "example.com/extra", "the dropped label leaves the copy")
+}

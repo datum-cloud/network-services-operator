@@ -1,12 +1,5 @@
-# Reset-resilient copy of the downstream Envoy Gateway install with the
-# prod-fidelity pins baked in (EG chart v1.7.4, extensionManager
-# maxMessageSize:256Mi, e2e certificateRef). This lives in an UNTRACKED dir so an
-# external `git reset --hard` on the shared branch cannot revert these settings
-# (it kept clobbering the tracked config/tools/envoy-gateway-downstream copy).
-#
-# The non-volatile siblings (namespace.yaml, nso-crd-rbac.yaml) are reused from
-# the tracked tool dir via relative path; only the kustomization itself (the
-# thing that got reset) is vendored here.
+# The downstream Envoy Gateway install for the e2e environment, with the
+# production edge's settings; see docs/testing/e2e-version-pins.md.
 resources:
   - namespace.yaml
   - nso-crd-rbac.yaml
@@ -15,11 +8,18 @@ helmCharts:
     includeCRDs: false
     namespace: datum-downstream-gateway
     releaseName: envoy-datum-downstream-gateway
-    # Prod EG version (rolled back from 1.8.1 for the OIDC regression). Pulled
-    # from the OCI repo so this dir needs no vendored chart.
-    version: v1.7.4
+    # The production edge version. Pulled from the OCI repo so this dir needs
+    # no vendored chart.
+    version: v1.9.2
     repo: oci://docker.io/envoyproxy
     valuesInline:
+      # The CRDs come from eg-crds. From v1.8.1 the chart also renders its
+      # safe-upgrades admission policy unless this is off.
+      crds:
+        enabled: false
+      # Each replica calls the extension server, as on the edge.
+      deployment:
+        replicas: 2
       config:
         envoyGateway:
           gateway:
@@ -30,6 +30,7 @@ helmCharts:
           runtimeFlags:
             enabled:
               - XDSNameSchemeV2
+              - PerResourceSystemCASecret
           provider:
             type: Kubernetes
             kubernetes:

@@ -3012,6 +3012,14 @@ func passiveHealthCheckFromUpstreamRoute(upstreamRoute gatewayv1.HTTPRoute) (*en
 // cluster-scoped: maxEjectionPercent applies to each backend's endpoints, not
 // across named backends as one pool. Panic threshold 0 still fail-closes when
 // outlier detection has ejected every remaining member.
+//
+// The policy merges into a tenant's own BackendTrafficPolicy on the Gateway
+// rather than replacing it. Envoy Gateway applies a route policy with no
+// MergeType instead of the Gateway's, so without the merge a tenant's rate
+// limit or circuit breaker silently stops applying the moment the load
+// balancer gains a networkService backend, an algorithm or health checks. With
+// no Gateway policy to merge into, Envoy Gateway applies this one as is. Where
+// both set a field, this one wins.
 func (r *GatewayReconciler) backendTrafficPolicy(
 	ctx context.Context,
 	upstreamRoute gatewayv1.HTTPRoute,
@@ -3059,6 +3067,7 @@ func (r *GatewayReconciler) backendTrafficPolicy(
 					},
 				}},
 			},
+			MergeType:       ptr.To(envoygatewayv1alpha1.StrategicMerge),
 			ClusterSettings: clusterSettings,
 		},
 	}, nil

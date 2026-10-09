@@ -36,8 +36,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
@@ -352,36 +354,10 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 		listenerCertHealth,
 	)
 
-	if len(desiredDownstreamGateway.Spec.Listeners) == 0 {
-		// The Gateway API requires at least one listener, so writing this would
-		// be rejected and end the reconcile before any status reached the user.
-		// Keep whatever is already serving and carry on, so the listener status
-		// below can say which hostname is unavailable and why.
-		log.FromContext(ctx).Info("no programmable listeners, leaving downstream gateway unchanged",
-			"upstream_listeners", len(upstreamGateway.Spec.Listeners))
-	} else if downstreamGateway.CreationTimestamp.IsZero() {
-		if err := downstreamStrategy.SetControllerReference(ctx, upstreamGateway, downstreamGateway); err != nil {
-			result.Err = fmt.Errorf("failed to set controller reference on downstream gateway: %w", err)
-			return result, nil
-		}
-
-		downstreamGateway.Annotations = desiredDownstreamGateway.Annotations
-		downstreamGateway.Spec = desiredDownstreamGateway.Spec
-
-		if err := downstreamClient.Create(ctx, downstreamGateway); err != nil {
-			result.Err = fmt.Errorf("failed creating downstream gateway: %w", err)
-			return result, nil
-		}
-	} else {
-		if !equality.Semantic.DeepEqual(downstreamGateway.Annotations, desiredDownstreamGateway.Annotations) ||
-			!equality.Semantic.DeepEqual(downstreamGateway.Spec, desiredDownstreamGateway.Spec) {
-			downstreamGateway.Annotations = desiredDownstreamGateway.Annotations
-			downstreamGateway.Spec = desiredDownstreamGateway.Spec
-			if err := downstreamClient.Update(ctx, downstreamGateway); err != nil {
-				result.Err = fmt.Errorf("failed updating downstream gateway: %w", err)
-				return result, nil
-			}
-		}
+	if err := writeDownstreamGateway(ctx, downstreamStrategy, upstreamGateway, downstreamGateway,
+		desiredDownstreamGateway.Spec, awaitsHostnameClaim(hostnameRefusals)); err != nil {
+		result.Err = err
+		return result, nil
 	}
 
 	var certificateServiceRequeue time.Duration
@@ -443,8 +419,8 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 	if dnsResult.Err != nil || dnsResult.StopProcessing {
 		return dnsResult.Merge(result), nil
 	}
-	// Carry RequeueAfter from dnsResult (e.g. IPs not yet available) without
-	// blocking downstream HTTPRoute creation or gateway status updates.
+	// Carry dnsResult without blocking downstream HTTPRoute creation or
+	// gateway status updates.
 	result = result.Merge(dnsResult)
 
 	hostnameStatuses, dnsProgramResult := r.ensureDNSRecordSets(
@@ -464,7 +440,6 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 	}
 
 	gatewayStatusResult := r.reconcileGatewayStatus(
-		ctx,
 		upstreamClient,
 		upstreamGateway,
 		downstreamGateway,
@@ -473,8 +448,7 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 	if gatewayStatusResult.Err != nil || gatewayStatusResult.StopProcessing {
 		return gatewayStatusResult.Merge(result), nil
 	}
-	// Carry RequeueAfter from gatewayStatusResult (e.g. downstream not yet programmed)
-	// without blocking HTTPRoute creation.
+	// Carry the status updates without blocking HTTPRoute creation.
 	result = result.Merge(gatewayStatusResult)
 
 	httpRouteResult := r.ensureDownstreamGatewayHTTPRoutes(
@@ -926,6 +900,52 @@ type listenerDropReport struct {
 	allCertWithheld bool
 }
 
+func writeDownstreamGateway(
+	ctx context.Context,
+	downstreamStrategy downstreamclient.ResourceStrategy,
+	upstreamGateway, downstreamGateway *gatewayv1.Gateway,
+	desired gatewayv1.GatewaySpec,
+	awaitingHostnameClaim bool,
+) error {
+	exists := !downstreamGateway.CreationTimestamp.IsZero()
+	if len(desired.Listeners) == 0 {
+		// The Gateway API requires at least one listener, so writing this would
+		// be rejected and end the reconcile before any status reached the user.
+		// Keep whatever is already serving; the reconcile carries on, so the
+		// listener status can say which hostname is unavailable and why.
+		log.FromContext(ctx).Info("no programmable listeners, leaving downstream gateway listeners unchanged",
+			"upstream_listeners", len(upstreamGateway.Spec.Listeners))
+		if !exists {
+			return nil
+		}
+		desired = downstreamGateway.Spec
+	}
+
+	stored := downstreamGateway.DeepCopy()
+	downstreamGateway.Spec = desired
+	markAwaitingHostnameClaim(downstreamGateway, awaitingHostnameClaim)
+
+	downstreamClient := downstreamStrategy.GetClient()
+	if !exists {
+		if err := downstreamStrategy.SetControllerReference(ctx, upstreamGateway, downstreamGateway); err != nil {
+			return fmt.Errorf("failed to set controller reference on downstream gateway: %w", err)
+		}
+		if err := downstreamClient.Create(ctx, downstreamGateway); err != nil {
+			return fmt.Errorf("failed creating downstream gateway: %w", err)
+		}
+		return nil
+	}
+
+	if equality.Semantic.DeepEqual(stored.Annotations, downstreamGateway.Annotations) &&
+		equality.Semantic.DeepEqual(stored.Spec, downstreamGateway.Spec) {
+		return nil
+	}
+	if err := downstreamClient.Update(ctx, downstreamGateway); err != nil {
+		return fmt.Errorf("failed updating downstream gateway: %w", err)
+	}
+	return nil
+}
+
 // summarizeDroppedListeners compares the listeners the user asked for against
 // the ones the downstream gateway will carry. Working from the built set rather
 // than re-deriving each reason keeps a listener withheld by a future condition
@@ -1334,22 +1354,17 @@ func clearReissuanceCount(gw *gatewayv1.Gateway, certName string) bool {
 }
 
 func (r *GatewayReconciler) reconcileGatewayStatus(
-	ctx context.Context,
 	upstreamClient client.Client,
 	upstreamGateway *gatewayv1.Gateway,
 	downstreamGateway *gatewayv1.Gateway,
 	droppedListeners listenerDropReport,
 ) (result Result) {
-	logger := log.FromContext(ctx)
-
-	acceptedReady := false
 	programmedReady := false
 
 	if c := apimeta.FindStatusCondition(downstreamGateway.Status.Conditions, string(gatewayv1.GatewayConditionAccepted)); c != nil {
 		message := "The Gateway has not been scheduled by Datum Gateway"
 		if c.Status == metav1.ConditionTrue {
 			message = "The Gateway has been scheduled by Datum Gateway"
-			acceptedReady = true
 		}
 
 		apimeta.SetStatusCondition(&upstreamGateway.Status.Conditions, metav1.Condition{
@@ -1407,17 +1422,6 @@ func (r *GatewayReconciler) reconcileGatewayStatus(
 		programmedValue = 1.0
 	}
 	gatewayProgrammedTotal.WithLabelValues(upstreamGateway.Namespace, upstreamGateway.Name).Set(programmedValue)
-
-	// If the downstream gateway hasn't been scheduled and programmed yet,
-	// requeue after a short delay. This handles cache-staleness races where
-	// the downstream watch fires before the cache reflects EG's status update
-	// (same pattern as the IP-address requeue in ensureDownstreamGatewayDNSEndpoints).
-	if !acceptedReady || !programmedReady {
-		logger.Info("downstream gateway not yet accepted/programmed, requeueing",
-			"accepted", acceptedReady, "programmed", programmedReady,
-			"downstream_conditions", len(downstreamGateway.Status.Conditions))
-		result.RequeueAfter = 5 * time.Second
-	}
 
 	return result
 }
@@ -1823,17 +1827,14 @@ func (r *GatewayReconciler) ensureDownstreamGatewayDNSEndpoints(
 		}
 	}
 
-	// Return early if no IP addresses were found. Requeue after a short delay
-	// so we don't rely solely on the downstream Gateway watch to re-trigger
-	// reconciliation (the watch may fire before the cache reflects the status
-	// update, leaving us with stale data on this cycle).
+	// Return early until the downstream Gateway has an address of each enabled
+	// family.
 	if (r.Config.Gateway.IPv4Enabled() && len(v4IPs) == 0) || (r.Config.Gateway.IPv6Enabled() && len(v6IPs) == 0) {
 		logger.Info(
 			"IP addresses not yet available on downstream gateway",
 			"ipv4", v4IPs, "ipv4_enabled", r.Config.Gateway.IPv4Enabled(),
 			"ipv6", v6IPs, "ipv6_enabled", r.Config.Gateway.IPv6Enabled(),
 		)
-		result.RequeueAfter = 5 * time.Second
 		return result
 	}
 
@@ -3119,6 +3120,24 @@ func (r *GatewayReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 		}
 	}
 
+	if err := r.DownstreamCluster.GetFieldIndexer().IndexField(
+		context.Background(),
+		&gatewayv1.Gateway{},
+		awaitingHostnameClaimIndex,
+		awaitingHostnameClaimIndexFunc,
+	); err != nil {
+		return fmt.Errorf("failed to index gateways awaiting a hostname claim: %w", err)
+	}
+
+	releasedHostnameClaimSource, _, err := mcsource.TypedKind(
+		&corev1.ConfigMap{},
+		r.listGatewaysAwaitingHostnameClaim,
+		hostnameClaimReleasePredicate(r.Config.Gateway.DownstreamHostnameAccountingNamespace),
+	).ForCluster("", r.DownstreamCluster)
+	if err != nil {
+		return fmt.Errorf("failed to watch released hostname claims: %w", err)
+	}
+
 	downstreamGatewaySource := mcsource.TypedKind(
 		&gatewayv1.Gateway{},
 		downstreamclient.TypedEnqueueRequestForUpstreamOwner[*gatewayv1.Gateway](&gatewayv1.Gateway{}),
@@ -3170,7 +3189,8 @@ func (r *GatewayReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 		WatchesRawSource(downstreamGatewayClusterSource).
 		WatchesRawSource(downstreamHTTPRouteClusterSource).
 		WatchesRawSource(downstreamCertificateClusterSource).
-		WatchesRawSource(downstreamVPCPodEndpointSliceClusterSource)
+		WatchesRawSource(downstreamVPCPodEndpointSliceClusterSource).
+		WatchesRawSource(releasedHostnameClaimSource)
 
 	if r.Config.Gateway.EnableDNSIntegration {
 		builder = builder.
@@ -3315,6 +3335,33 @@ func routeNamesEndpointSlice(route *gatewayv1.HTTPRoute, endpointSlice *discover
 		}
 	}
 	return false
+}
+
+func hostnameClaimReleasePredicate(namespace string) predicate.TypedPredicate[*corev1.ConfigMap] {
+	return predicate.TypedFuncs[*corev1.ConfigMap]{
+		CreateFunc:  func(event.TypedCreateEvent[*corev1.ConfigMap]) bool { return false },
+		UpdateFunc:  func(event.TypedUpdateEvent[*corev1.ConfigMap]) bool { return false },
+		GenericFunc: func(event.TypedGenericEvent[*corev1.ConfigMap]) bool { return false },
+		DeleteFunc: func(e event.TypedDeleteEvent[*corev1.ConfigMap]) bool {
+			return isHostnameClaim(e.Object, namespace)
+		},
+	}
+}
+
+func (r *GatewayReconciler) listGatewaysAwaitingHostnameClaim(clusterName multicluster.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[*corev1.ConfigMap, mcreconcile.Request] {
+	return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, _ *corev1.ConfigMap) []mcreconcile.Request {
+		var awaiting gatewayv1.GatewayList
+		if err := cl.GetClient().List(ctx, &awaiting, client.MatchingFields{awaitingHostnameClaimIndex: awaitingHostnameClaimValue}); err != nil {
+			log.FromContext(ctx).Error(err, "failed to list gateways awaiting a hostname claim")
+			return nil
+		}
+
+		reqs := make([]mcreconcile.Request, 0, len(awaiting.Items))
+		for i := range awaiting.Items {
+			reqs = append(reqs, downstreamclient.UpstreamOwnerRequest(&awaiting.Items[i]))
+		}
+		return reqs
+	})
 }
 
 // listGatewaysForEndpointSliceFunc creates an event handler that watches EndpointSlice changes

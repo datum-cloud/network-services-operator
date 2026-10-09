@@ -96,6 +96,7 @@ func TestEnsureDownstreamGateway(t *testing.T) {
 				}
 
 				assert.Len(t, upstreamGateway.Status.Addresses, 3)
+				assert.NotContains(t, downstreamGateway.Annotations, awaitingHostnameClaimAnnotation)
 			},
 		},
 		{
@@ -157,6 +158,8 @@ func TestEnsureDownstreamGateway(t *testing.T) {
 				},
 			},
 			assert: func(t *testing.T, upstreamGateway, downstreamGateway *gatewayv1.Gateway) {
+				assert.Equal(t, "true", downstreamGateway.Annotations[awaitingHostnameClaimAnnotation],
+					"a gateway refused a held hostname is marked so the claim's release reconciles it")
 
 				currentListenerStatus := map[gatewayv1.SectionName]gatewayv1.ListenerStatus{}
 				for _, listener := range upstreamGateway.Status.Listeners {
@@ -246,6 +249,8 @@ func TestEnsureDownstreamGateway(t *testing.T) {
 
 			_, err := result.Complete(ctx)
 			assert.NoError(t, err, "failed completing result")
+			assert.Zero(t, result.RequeueAfter,
+				"a gateway waiting on its downstream copy or a hostname is reconciled by a watch, not a timer")
 
 			if tt.assert != nil {
 				updatedUpstreamGateway := &gatewayv1.Gateway{}
@@ -2211,12 +2216,13 @@ func TestReconcileGatewayStatus_DroppedListenerIsNotProgrammed(t *testing.T) {
 			desired := reconciler.getDesiredDownstreamGateway(ctx, upstream, tt.claimedHostnames, tt.certHealth)
 			dropped := summarizeDroppedListeners(upstream, desired, tt.certHealth)
 
-			reconciler.reconcileGatewayStatus(ctx, upstreamClient, upstream, downstream, dropped)
+			result := reconciler.reconcileGatewayStatus(upstreamClient, upstream, downstream, dropped)
 
 			programmed := apimeta.FindStatusCondition(upstream.Status.Conditions, string(gatewayv1.GatewayConditionProgrammed))
 			require.NotNil(t, programmed, "upstream Programmed condition")
 			assert.Equal(t, tt.expectStatus, programmed.Status, "Programmed status")
 			assert.Equal(t, tt.expectReason, programmed.Reason, "Programmed reason")
+			assert.Zero(t, result.RequeueAfter, "a dropped listener waits on the watch of what it waits for")
 
 			if len(desired.Spec.Listeners) < len(upstream.Spec.Listeners) {
 				assert.NotEqual(t, metav1.ConditionTrue, programmed.Status,
@@ -2224,6 +2230,34 @@ func TestReconcileGatewayStatus_DroppedListenerIsNotProgrammed(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestReconcileGatewayStatus_DownstreamNotProgrammedIsNotPolled(t *testing.T) {
+	testScheme := runtime.NewScheme()
+	require.NoError(t, scheme.AddToScheme(testScheme))
+	require.NoError(t, gatewayv1.Install(testScheme))
+
+	upstream := &gatewayv1.Gateway{ObjectMeta: metav1.ObjectMeta{Name: "test-gw", Namespace: "default"}}
+	downstream := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-gw", Namespace: "downstream"},
+		Status: gatewayv1.GatewayStatus{Conditions: []metav1.Condition{
+			{Type: string(gatewayv1.GatewayConditionAccepted), Status: metav1.ConditionTrue, Reason: string(gatewayv1.GatewayReasonAccepted)},
+			{Type: string(gatewayv1.GatewayConditionProgrammed), Status: metav1.ConditionFalse, Reason: string(gatewayv1.GatewayReasonPending)},
+		}},
+	}
+	upstreamClient := fake.NewClientBuilder().
+		WithScheme(testScheme).
+		WithObjects(upstream.DeepCopy()).
+		WithStatusSubresource(&gatewayv1.Gateway{}).
+		Build()
+
+	reconciler := &GatewayReconciler{}
+	result := reconciler.reconcileGatewayStatus(upstreamClient, upstream, downstream, listenerDropReport{})
+
+	programmed := apimeta.FindStatusCondition(upstream.Status.Conditions, string(gatewayv1.GatewayConditionProgrammed))
+	require.NotNil(t, programmed, "upstream Programmed condition")
+	assert.Equal(t, metav1.ConditionFalse, programmed.Status)
+	assert.Zero(t, result.RequeueAfter)
 }
 
 // generateTLSKeyPair returns PEM-encoded cert and key bytes for hostname, with

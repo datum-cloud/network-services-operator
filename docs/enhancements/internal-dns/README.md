@@ -255,7 +255,7 @@ The initial guest contract supports one managed DNS context. A provider must rej
 
 ### Publication and lifecycle
 
-Products reserve names through `DNSRegistration` and publish eligible addresses through `DNSContribution`. A trusted issuer authorizes publishers through `DNSContributionGrant`; publication credentials cannot write grants or resolver access. Compute owns instance and service eligibility; Connect owns export eligibility. DNS and network services do not inspect Compute resources.
+Products reserve names through `DNSRegistration` and publish eligible addresses through `DNSRecordContribution`. A trusted issuer authorizes publishers through `DNSContributionGrant`; publication credentials cannot write grants or resolver access. Compute owns instance and service eligibility; Connect owns export eligibility. DNS and network services do not inspect Compute resources.
 
 Reconcile access, publication, and settings independently per project and region. Persist sequences, use conditional writes, and resume from committed state after takeover. Failure in one region must not block healthy regions. Replication and retries preserve expiry times.
 

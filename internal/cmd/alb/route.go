@@ -87,7 +87,9 @@ func routeUpdateCommand() *cobra.Command {
 		Use:   "update <name> --path PREFIX",
 		Short: "Replace the origins on a route",
 		Long: `Replace every origin on one route with the origins given. Other routes are
-left alone. To change a single origin, use "route backend add" or "remove".`,
+left alone. An origin that stays in the pool keeps its weight, TLS hostname
+and filters; new origins start at weight 1. To change a single origin, use
+"route backend add", "update" or "remove".`,
 		Example: `  datumctl alb route update my-app --path / --network-service storefront --port http
   datumctl alb route update my-app --path /api --endpoint https://api-new.example.com`,
 		Args:              cobra.ExactArgs(1),
@@ -106,7 +108,7 @@ func routeBackendCommand() *cobra.Command {
 		Aliases: []string{"backends", "origin", "origins"},
 		Short:   "Manage the origins on one route",
 	}
-	cmd.AddCommand(routeBackendAddCommand(), routeBackendRemoveCommand(), routeBackendListCommand())
+	cmd.AddCommand(routeBackendAddCommand(), routeBackendUpdateCommand(), routeBackendRemoveCommand(), routeBackendListCommand())
 	return cmd
 }
 
@@ -114,13 +116,38 @@ func routeBackendAddCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "add <name> --path PREFIX",
 		Short: "Add one origin to a route",
+		Long: `Add one origin to a route's pool. Requests are split across the pool by
+weight. Without --weight, the new origin gets the average weight of the
+origins already serving, so it joins with an even share.`,
 		Example: `  datumctl alb route backend add my-app --path /api --endpoint https://api-2.example.com
-  datumctl alb route backend add my-app --path / --network-service storefront --port http`,
+  datumctl alb route backend add my-app --path / --network-service storefront --port http
+  datumctl alb route backend add my-app --path / --endpoint https://canary.example.com --weight 5`,
 		Args:              cobra.ExactArgs(1),
 		ValidArgsFunction: plugincli.CompleteALBNames,
 		RunE:              runRouteBackendAdd,
 	}
 	addBackendFlags(cmd)
+	addWeightFlag(cmd, "Relative share of the route's requests, 0-1000000 (default: the pool's average weight)")
+	cmd.Flags().String("path", "", "Path prefix of the route")
+	cmd.Flags().Bool("dry-run", false, "Submit for server-side validation without updating")
+	return cmd
+}
+
+func routeBackendUpdateCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "update <name> --path PREFIX --weight N",
+		Short: "Change one origin's weight",
+		Long: `Change the weight of one origin on a route. Weights are relative: origins at
+1 and 3 get 25% and 75% of requests. A weight of 0 drains the origin, sending
+it no new requests, and keeps it in the pool.`,
+		Example: `  datumctl alb route backend update my-app --path / --endpoint https://canary.example.com --weight 10
+  datumctl alb route backend update my-app --path / --network-service storefront --port http --weight 0`,
+		Args:              cobra.ExactArgs(1),
+		ValidArgsFunction: plugincli.CompleteALBNames,
+		RunE:              runRouteBackendUpdate,
+	}
+	addBackendTargetFlags(cmd)
+	addWeightFlag(cmd, "Relative share of the route's requests, 0-1000000 (0 drains the origin)")
 	cmd.Flags().String("path", "", "Path prefix of the route")
 	cmd.Flags().Bool("dry-run", false, "Submit for server-side validation without updating")
 	return cmd
@@ -207,6 +234,9 @@ func runRouteBackendAdd(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	if backend.Weight, err = weightFromFlags(cmd); err != nil {
+		return err
+	}
 	path, err := pathFlag(cmd)
 	if err != nil {
 		return err
@@ -214,6 +244,28 @@ func runRouteBackendAdd(cmd *cobra.Command, args []string) error {
 	return mutateRoute(cmd, args[0], []spec.BackendInput{backend}, func(current *networkingv1alpha.HTTPProxy) (*networkingv1alpha.HTTPProxy, error) {
 		return spec.AddRouteBackend(current, path, backend)
 	}, fmt.Sprintf("Origin added to route %s on %q.\n", path, args[0]))
+}
+
+func runRouteBackendUpdate(cmd *cobra.Command, args []string) error {
+	backend, err := singleBackendFromFlags(cmd)
+	if err != nil {
+		return err
+	}
+	weight, err := weightFromFlags(cmd)
+	if err != nil {
+		return err
+	}
+	if weight == nil {
+		return util.UsageErrorf("nothing to update").
+			WithFix("pass --weight N")
+	}
+	path, err := pathFlag(cmd)
+	if err != nil {
+		return err
+	}
+	return mutateProxy(cmd, args[0], func(current *networkingv1alpha.HTTPProxy) (*networkingv1alpha.HTTPProxy, error) {
+		return spec.SetRouteBackendWeight(current, path, backend, *weight)
+	}, fmt.Sprintf("Origin on route %s of %q now has weight %d.\n", path, args[0], *weight))
 }
 
 func runRouteBackendRemove(cmd *cobra.Command, args []string) error {
@@ -397,15 +449,17 @@ func runRouteBackendList(cmd *cobra.Command, args []string) error {
 func printBackendTable(w io.Writer, routes []spec.Route, noHeaders bool) error {
 	tw := util.NewTabWriter(w)
 	if !noHeaders {
-		_, _ = fmt.Fprintln(tw, "PATH\tORIGIN\tKIND\tTLS HOSTNAME")
+		_, _ = fmt.Fprintln(tw, "PATH\tORIGIN\tKIND\tWEIGHT\tSHARE\tTLS HOSTNAME")
 	}
 	for _, r := range routes {
-		for _, b := range r.Backends {
+		shares := spec.ShareLabels(r.Backends)
+		for i, b := range r.Backends {
 			tls := ""
 			if b.TLS != nil && b.TLS.Hostname != nil {
 				tls = *b.TLS.Hostname
 			}
-			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", r.Path, spec.FormatBackend(b), spec.BackendKind(b), util.OrDash(tls))
+			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%s\t%s\n", r.Path, spec.FormatBackend(b), spec.BackendKind(b),
+				spec.BackendWeight(b), shares[i], util.OrDash(tls))
 		}
 	}
 	return tw.Flush()

@@ -23,7 +23,9 @@ func createCommand() *cobra.Command {
 
 Origins form the default "/" route. Pass --endpoint for a URL origin, or
 --network-service with --port to send traffic to an existing NetworkService.
-The command waits for Datum to assign a default hostname, because that is what
+Repeat either to split requests evenly across several origins; change their
+weights with "route backend update", and the algorithm or health checks with
+"alb update". The command waits for Datum to assign a default hostname, because that is what
 you CNAME custom domains at. Pass --no-wait to return immediately.
 
 Omit the name and pass --display-name to derive a DNS-safe object name the same
@@ -36,6 +38,9 @@ way the cloud portal does (kebab-case plus a short random suffix).`,
 
   # Send traffic to an existing NetworkService
   datumctl alb create my-app --network-service storefront --port http
+
+  # Split requests across two origins
+  datumctl alb create my-app --endpoint https://a.example.com --endpoint https://b.example.com
 
   # Attach a custom hostname at create time
   datumctl alb create my-app --endpoint https://origin.example.com --hostname app.example.com

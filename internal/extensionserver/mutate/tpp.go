@@ -160,15 +160,16 @@ func InjectCorazaListenerFilters(l *listenerv3.Listener, cfg *CorazaConfig) (int
 //  4. Finds the governing TPP from idx.TPPs (rule-level wins over route-level, which wins over gateway-level).
 //  5. Writes typed_per_filter_config and datum-gateway metadata on governed routes.
 //
-// applied, when non-nil, is populated with "namespace/name" → generation for
-// each TPP successfully applied in this call.
+// built, when non-nil, records every TPP whose target this route
+// configuration contains (see BuiltTPPs). Nothing is recorded when Coraza is
+// disabled, because then no policy is enforced.
 //
 // Returns the number of routes mutated (WAF-configured routes only).
 func ApplyTPPRouteConfig(
 	rc *routev3.RouteConfiguration,
 	idx *extcache.PolicyIndex,
 	cfg *CorazaConfig,
-	applied map[string]int64,
+	built BuiltTPPs,
 ) (int, error) {
 	mutated := 0
 	for _, vh := range rc.GetVirtualHosts() {
@@ -190,6 +191,9 @@ func ApplyTPPRouteConfig(
 
 		// Gateway-level governing TPP (no SectionName scoping in P1; see design §2.2 C5).
 		gwTPP := findGatewayTPP(tpps, gwName)
+		if !cfg.Disabled {
+			built.recordGateway(tpps, gwName)
+		}
 
 		for _, rt := range vh.GetRoutes() {
 			// Stamp project_name on every NSO-owned route so the Envoy access log
@@ -206,7 +210,9 @@ func ApplyTPPRouteConfig(
 			}
 
 			_, _, routeName, _ := extractEGResource(rt.GetMetadata())
-			governing := findRouteTPP(tpps, routeName, routeRuleName(rt, dsNS, routeName, idx))
+			ruleName := routeRuleName(rt, dsNS, routeName, idx)
+			built.recordRoute(tpps, routeName, ruleName)
+			governing := findRouteTPP(tpps, routeName, ruleName)
 			if governing == nil {
 				governing = gwTPP
 			}
@@ -216,9 +222,6 @@ func ApplyTPPRouteConfig(
 
 			if err := applyRouteWAFConfig(rt, governing, projectName, cfg); err != nil {
 				return mutated, fmt.Errorf("apply WAF config to route %q: %w", rt.GetName(), err)
-			}
-			if applied != nil {
-				applied[governing.Namespace+"/"+governing.Name] = governing.Generation
 			}
 			mutated++
 		}

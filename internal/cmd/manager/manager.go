@@ -727,7 +727,9 @@ func controllerRegistrations(
 			}).SetupWithManager(mgr)
 		}},
 		{"subnet", true, func() error {
-			return (&controller.SubnetReconciler{}).SetupWithManager(mgr)
+			return (&controller.SubnetReconciler{
+				RequireProgramming: serverConfig.Subnet.RequireProgramming,
+			}).SetupWithManager(mgr)
 		}},
 		{"subnetclaim", true, func() error {
 			return (&controller.SubnetClaimReconciler{}).SetupWithManager(mgr)

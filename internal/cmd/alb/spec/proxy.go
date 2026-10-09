@@ -33,8 +33,10 @@ type CreateInput struct {
 }
 
 type UpdateInput struct {
-	DisplayName *string
-	ForceHTTPS  *bool
+	DisplayName  *string
+	ForceHTTPS   *bool
+	LoadBalancer LoadBalancerInput
+	HealthCheck  HealthCheckInput
 }
 
 func BuildHTTPProxy(in CreateInput) (*networkingv1alpha.HTTPProxy, error) {
@@ -93,6 +95,20 @@ func ApplyHTTPProxyUpdate(current *networkingv1alpha.HTTPProxy, in UpdateInput) 
 	}
 	if in.ForceHTTPS != nil {
 		updated = SetForceHTTPS(updated, *in.ForceHTTPS)
+	}
+	if in.LoadBalancer.IsSet() {
+		lb, err := BuildLoadBalancer(in.LoadBalancer)
+		if err != nil {
+			return nil, err
+		}
+		updated.Spec.LoadBalancer = lb
+	}
+	if in.HealthCheck.IsSet() {
+		hc, err := ApplyHealthCheck(updated.Spec.HealthCheck, in.HealthCheck)
+		if err != nil {
+			return nil, err
+		}
+		updated.Spec.HealthCheck = hc
 	}
 
 	if err := validateProxy(updated); err != nil {

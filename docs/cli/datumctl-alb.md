@@ -100,13 +100,39 @@ datumctl alb route update my-app --path / --network-service storefront --port ht
 datumctl alb route remove my-app --path /api
 ```
 
-`route update` replaces every origin on that path and leaves other routes alone. To change a single origin:
+`route update` replaces every origin on that path and leaves other routes alone. An origin that stays in the pool keeps its weight, TLS hostname and filters. To change a single origin:
 
 ```sh
 datumctl alb route backend list my-app
 datumctl alb route backend add my-app --path /api --endpoint https://api-2.example.com
+datumctl alb route backend update my-app --path /api --endpoint https://api-2.example.com --weight 3
 datumctl alb route backend remove my-app --path /api --endpoint https://api.example.com
 ```
+
+### Weights
+
+Requests on a route are split across its origins by weight. Weights are relative: origins at 1 and 3 get 25% and 75%. An origin with no weight counts as 1. `route backend list` shows each origin's `WEIGHT` and `SHARE`, and `describe` shows them beside each origin once a route has more than one.
+
+- `route backend add --weight N` sets the new origin's weight. Without it, the origin gets the average weight of the pool, so adding one beside two origins at 50 gives it 50 rather than 1 (under 1%). A pool where no origin has a weight stays that way.
+- `route backend update --weight N` changes one origin in place. `--weight 0` drains it: it stays in the pool and gets no new requests.
+- A change that would leave every origin on a route at weight 0 is refused, because the route would then serve nothing.
+
+### Load balancing and health checks
+
+These apply to every route's origins, and are set with `alb update`:
+
+```sh
+datumctl alb update my-app --algorithm round-robin
+datumctl alb update my-app --hash-header X-User-ID
+datumctl alb update my-app --algorithm default
+datumctl alb update my-app --health-checks
+datumctl alb update my-app --consecutive-5xx 3 --base-ejection-time 1m --max-ejection-percent 50
+datumctl alb update my-app --no-health-checks
+```
+
+`--algorithm` takes `round-robin`, `random`, `least-request` or `consistent-hash`. `consistent-hash` keeps a client on one origin by hashing its source IP, or the header named by `--hash-header`, which implies `consistent-hash` on its own. `default` removes the setting, which leaves Envoy Gateway on least request; `describe` shows that as `least request (default)`.
+
+Passive health checks stop sending requests to an endpoint after a run of 5xx responses, then let it back in after the ejection time, which grows with each repeat. Any tuning flag turns them on and keeps the values already set. Unset values take the API defaults: 5 consecutive 5xx, 30s, and at most 50% of a backend's endpoints ejected at once. There are no active probes yet.
 
 Removing the last origin on a route is refused; remove the route instead. The default `/` route cannot be removed while other routes exist unless you pass `--force`, and the last remaining route cannot be removed at all. Force HTTPS shows in `route list` as a `system` route and is controlled by `alb update`, not `route remove`.
 
@@ -114,16 +140,9 @@ Rules written outside this plugin with exact or regex path matches, header or me
 
 Every mutation re-reads the load balancer, patches with its `resourceVersion`, and retries once if something else changed it in between.
 
-A route takes up to 16 origins, and traffic is split across them. One constraint decides whether a pool works today:
+A route takes up to 16 origins. Each URL origin is sent its own hostname as the Host header, so origins on different hostnames can share a route.
 
-**Origins in the same route must agree on the Host header sent upstream.** A NetworkService origin needs no Host rewrite, so pools of those work. A URL origin takes its Host from its own hostname, so two URL origins on different hostnames conflict.
-
-When they do, **this command still succeeds.** The conflict is caught when the platform tries to publish the change, not when you make it, so you get an exit code of zero and a success line. The load balancer goes on serving what it published last, and `describe` then shows `Error` with the conflict in the message. Run `describe` after adding a second URL origin.
-
-There are two ways round it, and one of them is a trap:
-
-- **Give each origin its own route.** Safe.
-- **Set a Host override on the route** with `alb header set`. This makes the origins agree and publishes — but it sends the same Host to all of them, so any origin that routes by hostname (Vercel, Netlify, Fly.io, Cloudflare Pages) answers the wrong site or a 404. It looks like it worked.
+A Host override on the route (`alb header set my-app Host=...`) is the exception: it sends the same Host to every origin, so in a pool spanning several hostnames any origin that routes by hostname (Vercel, Netlify, Fly.io, Cloudflare Pages) answers the wrong site or a 404. It looks like it worked.
 
 A connector origin must be the only origin in its route.
 
@@ -200,16 +219,9 @@ datumctl alb header unset my-app X-Debug
 
 ## What the portal does with what this writes
 
-The portal edits one route with one origin. It has no concept of a second route, a second origin, a path match, or a per-origin filter — it cannot show them, and it does not warn you that they are there.
+The portal manages one route: a pool of origins on `/`, with their weights, the load balancing algorithm and passive health checks. Those are the same fields this plugin writes, so either can change them.
 
-**It does not lock the form.** Editing the origin, Force HTTPS, HSTS, the TLS hostname or the Host header rebuilds the whole rule list from the three fields the portal models, and sends it as a merge patch. Anything this plugin wrote that the portal does not represent is dropped: extra routes, extra origins and their weights, path matches, per-origin filters. The save succeeds and reports success.
-
-So on a load balancer with more than the portal's shape:
-
-- **Safe in the portal:** custom hostnames, traffic protection, and basic auth. Those edits do not touch the rules.
-- **Destructive in the portal:** anything on the origin, TLS or redirect cards.
-
-Use `datumctl alb` for a load balancer that has routes or pools, and keep portal edits to hostnames, protection and auth until the portal's own routes editor ships.
+The portal has no concept of a second route, a path match, or a per-origin filter. When a load balancer has any of them it treats the pool as advanced and locks the origins, weights, algorithm, health checks, TLS, redirect and Host override, so it does not drop what it cannot show. Custom hostnames, traffic protection and basic auth stay editable there. Use `datumctl alb` for a load balancer with more than one route.
 
 Two smaller differences worth knowing:
 
@@ -258,7 +270,7 @@ datumctl alb update my-app --no-force-https
 datumctl alb delete my-app --yes
 ```
 
-`update` covers settings that apply to the whole load balancer: the display name (stored as `kubernetes.io/display-name`, 50 characters max) and Force HTTPS. Origins live on routes; passing `--endpoint` here points you at `route update`.
+`update` covers settings that apply to the whole load balancer: the display name (stored as `kubernetes.io/display-name`, 50 characters max), Force HTTPS, and the load balancing algorithm and health checks described under [Load balancing and health checks](#load-balancing-and-health-checks). Origins live on routes; passing `--endpoint` here points you at `route update`.
 
 Delete also removes the attached traffic protection policy and basic auth configuration. NetworkServices a route referenced are left in place.
 

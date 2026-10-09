@@ -22,6 +22,9 @@ it by Datum, or attached to it.
 | A custom hostname | `spec.hostnames[]`, with progress in `status.hostnameStatuses[]` |
 | A route | One entry in `spec.rules[]`: a path prefix and the origins serving it |
 | An origin | An entry in a route's `backends[]`: a URL, or a network service and a port name |
+| An origin's share of a route | `weight` on that origin, relative to the route's others; 1 when unset |
+| The load balancing algorithm | `spec.loadBalancer`, one setting for every route |
+| Health checks | `spec.healthCheck.passive`, one setting for every route |
 | Force HTTPS | An extra rule that redirects, with no origins behind it |
 | A Host override | A request header filter on a rule |
 | Traffic protection | A `TrafficProtectionPolicy` attached to the load balancer |
@@ -186,9 +189,9 @@ a question lands in one of them, load the skill.
 - **Routes and origins.** A route is a path prefix and a pool of up to 16
   origins, with traffic split across them. An origin is a URL, or a network
   service named with one of its declared port names — a name like `http`, never
-  a number. Datum never invents a missing service. Origins in one route must
-  agree on the Host header sent upstream, which is the one thing that decides
-  whether a pool works. → `backend-not-reachable`
+  a number. Datum never invents a missing service. Each origin has a weight,
+  and weight 0 drains it. How requests are spread (the algorithm) and passive
+  health checks are set once for the whole load balancer. → `backend-not-reachable`
 - **Hostnames.** Claim, ownership, DNS record, certificate, in that order. →
   `hostname-not-working`
 - **Domain ownership.** A DNS record with an exact name and value, which must be
@@ -209,21 +212,18 @@ a question lands in one of them, load the skill.
 
 ## 10. What the console can and cannot edit
 
-The console edits one route with one origin. It has no way to show a second
-route, a second origin, a path match or a per-origin filter, and it does not say
-that they are there.
+The console manages one route: a pool of origins on `/`, with their weights,
+the load balancing algorithm and passive health checks. Those are the same
+fields `datumctl alb` writes, so either can change them.
 
-It does not refuse the edit either. Changing the origin, Force HTTPS, HSTS, the
-TLS hostname or the Host header in the console rebuilds the whole route list
-from the few fields it models, so anything beyond its shape is dropped and the
-save reports success.
+It has no way to show a second route, a path match or a per-origin filter. When
+a load balancer has any of those, the console locks the origins, weights,
+algorithm, health checks, TLS, redirect and Host override and says to use
+`datumctl` instead, rather than dropping what it cannot show. Custom hostnames,
+traffic protection, and a username and password stay editable there.
 
-This matters whenever you help someone add a route or a second origin. Tell them
-which console edits stay safe afterwards:
-
-- **Safe:** custom hostnames, traffic protection, and a username and password.
-  None of those touch the routes.
-- **Destructive:** anything on the origin, TLS or redirect controls.
+So when you help someone add a second route or a path match, tell them the
+console's origin controls will lock afterwards, and that is expected.
 
 Two smaller differences: protection here takes paranoia 1 to 4 and the console
 offers only 1 and 2, and a load balancer made outside the console shows its
@@ -248,7 +248,7 @@ command line so they never enter a conversation.
 | Tool | Use it for |
 |---|---|
 | `alb_list` | Which load balancers exist and which need attention. Start here. |
-| `alb_get` | One load balancer assembled as the product: hostnames and their progress, routes and origins, protection, auth. |
+| `alb_get` | One load balancer assembled as the product: hostnames and their progress, routes and origins with their weights and shares, the algorithm, health checks, protection, auth. |
 | `alb_diagnose` | Why one is not working, walked to a cause that names something. |
 | `alb_reason_explain` | What a reason means. Pass the condition type with it. |
 | `alb_traffic_summary` | What actually reached it. The only evidence it is really serving. |

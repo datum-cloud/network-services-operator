@@ -80,7 +80,8 @@ func RegisterTools(s *mcp.Server, deps DepsFor) {
 		Description: "Get one Application Load Balancer assembled as the product rather than as the " +
 			"objects behind it: its generated hostname, every custom hostname with its progress " +
 			"(claimed, ownership proven, DNS record written, certificate issued), the routes and the " +
-			"origins behind each, Force HTTPS, any Host override, traffic protection mode and " +
+			"origins behind each with their weights and share of requests, the load balancing " +
+			"algorithm, passive health checks, Force HTTPS, any Host override, traffic protection mode and " +
 			"paranoia level, and whether basic auth is on and which usernames it accepts — never " +
 			"passwords or hashes. Use when you need the state rather than a diagnosis. Read-only.",
 	}, albGet(deps))

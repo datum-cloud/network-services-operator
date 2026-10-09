@@ -10,6 +10,7 @@ import (
 
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -434,6 +435,67 @@ func TestReplicatorMirrorsNSOPolicyTypesSkipsUpstreamStatusSync(t *testing.T) {
 			assert.NoError(t, upstreamClient.Get(ctx, client.ObjectKeyFromObject(upstreamObj), &upstreamAfter))
 			assert.Equal(t, upstreamObj.Object["status"], upstreamAfter.Object["status"],
 				"replicator must not clear or overwrite upstream NSO-set status")
+		})
+	}
+}
+
+// TestReplicatorStampsUpstreamGeneration verifies that a TrafficProtectionPolicy's
+// downstream copy carries the upstream generation, follows it when the upstream
+// spec changes, and that no other kind is stamped.
+func TestReplicatorStampsUpstreamGeneration(t *testing.T) {
+	for kind, wantStamp := range map[string]bool{"TrafficProtectionPolicy": true, "HTTPProxy": false} {
+		t.Run(kind, func(t *testing.T) {
+			gvk := schema.GroupVersionKind{Group: "networking.datumapis.com", Version: "v1alpha", Kind: kind}
+			scheme := runtime.NewScheme()
+			require.NoError(t, corev1.AddToScheme(scheme))
+			ctx := context.Background()
+
+			upstreamNs := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "test-suite", UID: types.UID("ns-uid")}}
+			upstreamObj := &unstructured.Unstructured{}
+			upstreamObj.SetGroupVersionKind(gvk)
+			upstreamObj.SetNamespace(upstreamNs.Name)
+			upstreamObj.SetName("test-policy")
+			upstreamObj.SetUID("policy-uid")
+			upstreamObj.SetGeneration(7)
+			upstreamObj.Object["spec"] = map[string]any{"mode": "Observe"}
+
+			upstreamClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(upstreamNs, upstreamObj.DeepCopy()).Build()
+			downstreamClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+			reconciler := newReplicatorForGVKTest(gvk, upstreamClient, downstreamClient, scheme)
+			req := GVKRequest{GVK: gvk, Request: mcreconcile.Request{
+				ClusterName: "upstream",
+				Request:     reconcile.Request{NamespacedName: client.ObjectKeyFromObject(upstreamObj)},
+			}}
+			stamp := func() (string, bool) {
+				var downstream unstructured.Unstructured
+				downstream.SetGroupVersionKind(gvk)
+				require.NoError(t, downstreamClient.Get(ctx, client.ObjectKey{Name: "test-policy", Namespace: "ns-ns-uid"}, &downstream))
+				v, ok := downstream.GetAnnotations()[networkingv1alpha1.UpstreamGenerationAnnotation]
+				return v, ok
+			}
+
+			for range 2 { // the first pass adds the finalizer, the second replicates
+				_, err := reconciler.Reconcile(ctx, req)
+				require.NoError(t, err)
+			}
+			got, ok := stamp()
+			if !wantStamp {
+				assert.False(t, ok, "only TrafficProtectionPolicy is stamped")
+				return
+			}
+			assert.Equal(t, "7", got)
+
+			// The upstream spec changes; the stamp follows in the same write as the spec.
+			var current unstructured.Unstructured
+			current.SetGroupVersionKind(gvk)
+			require.NoError(t, upstreamClient.Get(ctx, client.ObjectKeyFromObject(upstreamObj), &current))
+			current.Object["spec"] = map[string]any{"mode": "Enforce"}
+			current.SetGeneration(8)
+			require.NoError(t, upstreamClient.Update(ctx, &current))
+			_, err := reconciler.Reconcile(ctx, req)
+			require.NoError(t, err)
+			got, _ = stamp()
+			assert.Equal(t, "8", got)
 		})
 	}
 }

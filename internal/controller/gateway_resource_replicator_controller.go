@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -91,6 +92,11 @@ type replicationResourceConfig struct {
 	// the replicator must NOT overwrite or clear it.
 	skipUpstreamStatusSync bool
 
+	// stampUpstreamGeneration, when true, writes the upstream object's
+	// metadata.generation into the UpstreamGenerationAnnotation on the
+	// downstream object, in the same update as the spec.
+	stampUpstreamGeneration bool
+
 	// propagatedLabels names upstream labels to copy onto the downstream object.
 	// The downstream copy otherwise carries only the meta.datumapis.com/upstream-*
 	// labels the strategy stamps, and a federation policy selecting on anything
@@ -157,6 +163,9 @@ func initReplicationResourceConfigs() map[string]replicationResourceConfig {
 	for _, gvk := range policyGVKs {
 		configs[gvkKey(gvk)] = replicationResourceConfig{
 			skipUpstreamStatusSync: true,
+			// The TPP Programmed check compares the hub copy's upstream
+			// generation with the upstream policy's (NSO#266).
+			stampUpstreamGeneration: gvk.Kind == KindTrafficProtectionPolicy,
 		}
 	}
 
@@ -392,6 +401,10 @@ func (r *GatewayResourceReplicatorReconciler) ensureDownstreamResource(
 
 		propagateLabels(upstreamObj, downstreamObj, resource.replicationResourceConfig.propagatedLabels)
 
+		if resource.replicationResourceConfig.stampUpstreamGeneration {
+			setUpstreamGenerationAnnotation(downstreamObj, upstreamObj)
+		}
+
 		// Mirror the upstream status into an annotation on the downstream
 		// object's metadata. This is part of the same CreateOrUpdate Update, so it
 		// is persisted as ordinary metadata (which Karmada propagates to members)
@@ -457,6 +470,18 @@ func propagateLabels(upstreamObj, downstreamObj *unstructured.Unstructured, name
 		}
 	}
 	downstreamObj.SetLabels(downstreamLabels)
+}
+
+// setUpstreamGenerationAnnotation stamps the upstream object's generation on the
+// downstream object. It changes only when the upstream spec does, so it adds no
+// write of its own.
+func setUpstreamGenerationAnnotation(downstreamObj, upstreamObj *unstructured.Unstructured) {
+	annotations := downstreamObj.GetAnnotations()
+	if annotations == nil {
+		annotations = map[string]string{}
+	}
+	annotations[networkingv1alpha1.UpstreamGenerationAnnotation] = strconv.FormatInt(upstreamObj.GetGeneration(), 10)
+	downstreamObj.SetAnnotations(annotations)
 }
 
 // setUpstreamStatusAnnotation copies the upstream resource's full .status

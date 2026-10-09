@@ -1,7 +1,8 @@
 // Package metrics defines and registers Prometheus metrics for the NSO
 // extension server. All metrics use the "nso_extension_" prefix and are
-// registered against prometheus.DefaultRegisterer (which is also the registry
-// controller-runtime exposes via sigs.k8s.io/controller-runtime/pkg/metrics).
+// registered against prometheus.DefaultRegisterer. The extension server
+// registers and serves that registry itself via promhttp.Handler(); it is not
+// the registry controller-runtime exposes.
 //
 // Served by promhttp.Handler() on the /metrics path of the --health-addr HTTP
 // server in internal/extensionserver/cmd/run.go.

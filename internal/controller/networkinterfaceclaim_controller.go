@@ -14,6 +14,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -1021,6 +1022,10 @@ func (r *NetworkInterfaceClaimReconciler) syncInterface(
 	// its previous claim left behind.
 	if iface.Spec.MTU != networkContext.Spec.MTU {
 		iface.Spec.MTU = networkContext.Spec.MTU
+		changed = true
+	}
+	if !apiequality.Semantic.DeepEqual(iface.Spec.DNS, networkContext.Spec.DNS) {
+		iface.Spec.DNS = networkContext.Spec.DNS.DeepCopy()
 		changed = true
 	}
 	// An interface adopted from before the field existed carries none.

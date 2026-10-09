@@ -405,6 +405,11 @@ func NewCommand(build BuildInfo) *cobra.Command {
 				setupLog.Error(err, "unable to build wildcard entitlement client")
 				os.Exit(1)
 			}
+			projectIdentities, err := newProjectIdentityResolver(serverConfig)
+			if err != nil {
+				setupLog.Error(err, "unable to build project identity client")
+				os.Exit(1)
+			}
 
 			registeredControllers, err := setupControllers(mgr, serverConfig, controllerDeps{
 				downstreamCluster:        downstreamCluster,
@@ -414,6 +419,7 @@ func NewCommand(build BuildInfo) *cobra.Command {
 				certificateServiceReader: certificateServiceReader,
 				certificateServiceRoots:  certificateServiceRoots,
 				wildcardEntitlements:     wildcardEntitlements,
+				projectIdentities:        projectIdentities,
 			})
 			if err != nil {
 				setupLog.Error(err, "unable to set up controllers")
@@ -593,6 +599,22 @@ type controllerDeps struct {
 	certificateServiceReader client.Reader
 	certificateServiceRoots  *x509.CertPool
 	wildcardEntitlements     controller.WildcardEntitlementChecker
+	projectIdentities        controller.ProjectIdentityResolver
+}
+
+func newProjectIdentityResolver(serverConfig config.NetworkServicesOperator) (controller.ProjectIdentityResolver, error) {
+	if !serverConfig.InternalDNS.Enabled {
+		return nil, nil
+	}
+	restConfig, err := serverConfig.Discovery.DiscoveryRestConfig()
+	if err != nil {
+		return nil, err
+	}
+	reader, err := client.New(restConfig, client.Options{Scheme: scheme})
+	if err != nil {
+		return nil, err
+	}
+	return &controller.APIProjectIdentityResolver{Reader: reader}, nil
 }
 
 // newCertificateServiceReader returns an uncached client for the cluster the
@@ -696,6 +718,18 @@ func controllerRegistrations(
 			return (&controller.NetworkPresenceSyncReconciler{
 				Events: presenceEvents,
 			}).SetupWithManager(mgr, deps.singletonManager)
+		}},
+		{"internaldns-project", serverConfig.InternalDNS.Enabled, func() error {
+			return (&controller.InternalDNSProjectReconciler{
+				Config:   serverConfig.InternalDNS,
+				Projects: deps.projectIdentities,
+			}).SetupWithManager(mgr)
+		}},
+		{"internaldns-readiness", serverConfig.InternalDNS.Enabled, func() error {
+			return (&controller.InternalDNSReadinessReconciler{
+				Config:   serverConfig.InternalDNS,
+				Projects: controller.NewProjectClusterResolver(mgr),
+			}).SetupWithManager(deps.singletonManager)
 		}},
 		// The interfaces a cell publishes arrive on the hub, and only the
 		// multicluster manager reaches the project control planes they are for.

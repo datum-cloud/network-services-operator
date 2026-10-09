@@ -19,6 +19,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 
+	cloudv1alpha1 "go.datum.net/cloud/api/v1alpha1"
+	networkv1alpha1 "go.datum.net/network/api/v1alpha1"
 	ipamv1alpha1 "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
 	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
 
@@ -45,6 +47,8 @@ func init() {
 	utilruntime.Must(locationsv1alpha1.AddToScheme(scheme))
 	utilruntime.Must(networkingv1alpha1.AddToScheme(scheme))
 	utilruntime.Must(ipamv1alpha1.AddToScheme(scheme))
+	utilruntime.Must(cloudv1alpha1.AddToScheme(scheme))
+	utilruntime.Must(networkv1alpha1.AddToScheme(scheme))
 }
 
 // NewCommand builds the cell controller manager command.
@@ -279,7 +283,7 @@ func controllerRegistrations(
 	ipamClients controller.IPAMClientFactory,
 	hubCluster cluster.Cluster,
 ) []namedSetup {
-	registrations := make([]namedSetup, 0, 5)
+	registrations := make([]namedSetup, 0, 6)
 	registrations = append(registrations,
 		namedSetup{"networkinterfaceclaim", func() (bool, error) {
 			return true, (&controller.NetworkInterfaceClaimReconciler{
@@ -313,6 +317,16 @@ func controllerRegistrations(
 	registrations = append(registrations, namedSetup{"vpcendpointslicewriteback", func() (bool, error) {
 		return true, (&controller.VPCEndpointSliceWriteBackReconciler{
 			Location:   serverConfig.Location,
+			HubCluster: hubCluster,
+		}).SetupWithManager(mgr)
+	}})
+
+	registrations = append(registrations, namedSetup{"internaldns-cell", func() (bool, error) {
+		if !serverConfig.InternalDNS.Enabled {
+			return false, nil
+		}
+		return true, (&controller.InternalDNSCellReconciler{
+			Config:     serverConfig.InternalDNS,
 			HubCluster: hubCluster,
 		}).SetupWithManager(mgr)
 	}})

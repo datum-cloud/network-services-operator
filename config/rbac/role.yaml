@@ -80,6 +80,24 @@ rules:
   verbs:
   - get
 - apiGroups:
+  - cloud.datumapis.com
+  resources:
+  - vpcattachments
+  verbs:
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - cloud.datumapis.com
+  resources:
+  - vpcs
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
   - coordination.k8s.io
   resources:
   - leases
@@ -121,6 +139,8 @@ rules:
   - dns.networking.miloapis.com
   resources:
   - dnsrecordsets
+  - dnsresolveraccessbindings
+  - dnsresolvercontexts
   verbs:
   - create
   - delete
@@ -254,6 +274,25 @@ rules:
   - get
   - list
   - watch
+- apiGroups:
+  - network.datumapis.com
+  resources:
+  - serviceendpoints
+  - serviceroutepolicies
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - network.datumapis.com
+  resources:
+  - serviceroutepolicies/status
+  verbs:
+  - get
 - apiGroups:
   - networking.datumapis.com
   resources:

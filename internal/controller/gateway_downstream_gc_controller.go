@@ -116,7 +116,7 @@ func (r *GatewayDownstreamGCReconciler) Reconcile(ctx context.Context, req GVKRe
 					continue
 				}
 
-				resourceName := fmt.Sprintf("route-%s-rule-%d-backendref-%d", httpRoute.UID, ruleIdx, backendRefIdx)
+				resourceName := routeBackendResourceName(httpRoute, ruleIdx, backendRefIdx)
 
 				endpointSlice := &discoveryv1.EndpointSlice{}
 				if err := r.DownstreamCluster.GetClient().Get(ctx, client.ObjectKey{

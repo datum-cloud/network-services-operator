@@ -170,10 +170,7 @@ func (r *GatewayResourceReplicatorReconciler) holdSecurityPolicy(
 		}
 	}
 
-	upstreamCopy := upstreamObj.DeepCopy()
-	upstreamCopy.Object[jsonKeyStatus] = statusMap
-
-	if err := upstreamClient.Status().Update(ctx, upstreamCopy); err != nil {
+	if err := patchUpstreamStatus(ctx, upstreamClient, resource, upstreamObj, statusMap); err != nil {
 		if apierrors.IsNotFound(err) {
 			return nil
 		}

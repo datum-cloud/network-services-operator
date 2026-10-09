@@ -3140,13 +3140,8 @@ func (r *GatewayReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 
 	downstreamCertificateClusterSource, _, _ := downstreamCertificateSource.ForCluster("", r.DownstreamCluster)
 
-	// TODO(#856): downstreamVPCPodEndpointSliceSource is the one piece of
-	// this integration with no existing precedent in this codebase — every
-	// other downstream watch here maps back through owner labels this
-	// operator itself stamped on an object it created; a CNI-published
-	// EndpointSlice carries neither. See
-	// listGatewaysForDownstreamVPCPodEndpointSlice's doc comment. Prototype
-	// this in isolation before leaning on it further.
+	// A CNI-published EndpointSlice carries no owner labels of this operator,
+	// so it maps to Gateways through the downstream routes that name it.
 	downstreamVPCPodEndpointSliceSource := mcsource.Kind(
 		&discoveryv1.EndpointSlice{},
 		r.listGatewaysForDownstreamVPCPodEndpointSlice,
@@ -3242,41 +3237,42 @@ func (r *GatewayReconciler) listGatewaysAttachedByDownstreamHTTPRoute(clusterNam
 		logger := log.FromContext(ctx)
 		logger.Info("enqueueing upstream gateway for downstream httproute", jsonKeyName, httpRoute.Name)
 
-		var reqs []mcreconcile.Request
-		if _, ok := httpRoute.Labels[downstreamclient.UpstreamOwnerClusterNameLabel]; ok {
-			for _, parentRef := range httpRoute.Spec.ParentRefs {
-				reqs = append(reqs, mcreconcile.Request{
-					Request: ctrl.Request{
-						NamespacedName: types.NamespacedName{
-							Namespace: httpRoute.Labels[downstreamclient.UpstreamOwnerNamespaceLabel],
-							Name:      string(parentRef.Name),
-						},
-					},
-					ClusterName: multicluster.ClusterName(downstreamclient.UpstreamClusterNameFromLabel(httpRoute.Labels[downstreamclient.UpstreamOwnerClusterNameLabel])),
-				})
-
-			}
-		}
-		return reqs
+		return upstreamGatewaysForDownstreamHTTPRoute(httpRoute)
 	})
 }
 
-// listGatewaysForDownstreamVPCPodEndpointSlice enqueues every upstream
-// Gateway whose downstream mirror lives in the same namespace as a changed,
-// tenant-labeled EndpointSlice on the downstream cluster — a CNI-side pod
-// add/remove should re-trigger the owning Gateway's reconcile.
+// upstreamGatewaysForDownstreamHTTPRoute returns a request for each upstream
+// Gateway a downstream HTTPRoute's ParentRefs name, in the upstream cluster and
+// namespace its owner labels record. A route without the cluster label maps to
+// nothing.
+func upstreamGatewaysForDownstreamHTTPRoute(httpRoute *gatewayv1.HTTPRoute) []mcreconcile.Request {
+	clusterLabel, ok := httpRoute.Labels[downstreamclient.UpstreamOwnerClusterNameLabel]
+	if !ok {
+		return nil
+	}
+
+	var reqs []mcreconcile.Request
+	for _, parentRef := range httpRoute.Spec.ParentRefs {
+		reqs = append(reqs, mcreconcile.Request{
+			Request: ctrl.Request{
+				NamespacedName: types.NamespacedName{
+					Namespace: httpRoute.Labels[downstreamclient.UpstreamOwnerNamespaceLabel],
+					Name:      string(parentRef.Name),
+				},
+			},
+			ClusterName: multicluster.ClusterName(downstreamclient.UpstreamClusterNameFromLabel(clusterLabel)),
+		})
+	}
+	return reqs
+}
+
+// listGatewaysForDownstreamVPCPodEndpointSlice enqueues the upstream Gateways
+// whose downstream HTTPRoutes name a changed VPC pod EndpointSlice: only they
+// read it, through passThroughVPCPodBackendRef. The routes come from the
+// downstream HTTPRoute source's cache.
 //
-// TODO(#856): this is a placeholder, not a designed solution. Confirmed
-// during review that no other watch in this codebase reads a downstream
-// object it did not create and enqueues off it — every other downstream
-// watch here (see listGatewaysAttachedByDownstreamHTTPRoute above) maps
-// back through owner labels this operator itself stamped on an object it
-// created, which a CNI-published EndpointSlice never carries. Matching by
-// namespace co-location instead of a direct backendRef-name lookup is
-// deliberately coarse — it re-reconciles every downstream Gateway in the
-// namespace rather than only the one actually referencing this
-// EndpointSlice, trading precision for simplicity until this integration is
-// prototyped in isolation (see the plan's sequencing note).
+// A Gateway whose reconcile failed before its route named the slice is not
+// enqueued here; its error backoff retries it.
 func (r *GatewayReconciler) listGatewaysForDownstreamVPCPodEndpointSlice(clusterName multicluster.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[*discoveryv1.EndpointSlice, mcreconcile.Request] {
 	return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, endpointSlice *discoveryv1.EndpointSlice) []mcreconcile.Request {
 		if _, ok := endpointSlice.Labels[VPCPodTenantIDLabel]; !ok {
@@ -3285,40 +3281,40 @@ func (r *GatewayReconciler) listGatewaysForDownstreamVPCPodEndpointSlice(cluster
 
 		logger := log.FromContext(ctx)
 
-		var downstreamGateways gatewayv1.GatewayList
-		if err := cl.GetClient().List(ctx, &downstreamGateways, client.InNamespace(endpointSlice.Namespace)); err != nil {
-			logger.Error(err, "failed to list downstream gateways for vpcPod endpointslice")
+		var downstreamRoutes gatewayv1.HTTPRouteList
+		if err := cl.GetClient().List(ctx, &downstreamRoutes, client.InNamespace(endpointSlice.Namespace)); err != nil {
+			logger.Error(err, "failed to list downstream httproutes for vpcPod endpointslice")
 			return nil
 		}
 
 		var reqs []mcreconcile.Request
-		for _, gateway := range downstreamGateways.Items {
-			upstreamNamespace, ok := gateway.Labels[downstreamclient.UpstreamOwnerNamespaceLabel]
-			if !ok {
-				continue
+		for i := range downstreamRoutes.Items {
+			route := &downstreamRoutes.Items[i]
+			if routeNamesEndpointSlice(route, endpointSlice) {
+				reqs = append(reqs, upstreamGatewaysForDownstreamHTTPRoute(route)...)
 			}
-			upstreamName, ok := gateway.Labels[downstreamclient.UpstreamOwnerNameLabel]
-			if !ok {
-				continue
-			}
-			upstreamClusterName, ok := gateway.Labels[downstreamclient.UpstreamOwnerClusterNameLabel]
-			if !ok {
-				continue
-			}
-
-			reqs = append(reqs, mcreconcile.Request{
-				Request: ctrl.Request{
-					NamespacedName: types.NamespacedName{
-						Namespace: upstreamNamespace,
-						Name:      upstreamName,
-					},
-				},
-				ClusterName: multicluster.ClusterName(downstreamclient.UpstreamClusterNameFromLabel(upstreamClusterName)),
-			})
 		}
 
 		return reqs
 	})
+}
+
+// routeNamesEndpointSlice reports whether any of a route's backendRefs names
+// the EndpointSlice directly.
+func routeNamesEndpointSlice(route *gatewayv1.HTTPRoute, endpointSlice *discoveryv1.EndpointSlice) bool {
+	for _, rule := range route.Spec.Rules {
+		for _, backendRef := range rule.BackendRefs {
+			if ptr.Deref(backendRef.Group, "") != discoveryv1.GroupName ||
+				ptr.Deref(backendRef.Kind, "") != KindEndpointSlice {
+				continue
+			}
+			namespace := string(ptr.Deref(backendRef.Namespace, gatewayv1.Namespace(route.Namespace)))
+			if namespace == endpointSlice.Namespace && string(backendRef.Name) == endpointSlice.Name {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // listGatewaysForEndpointSliceFunc creates an event handler that watches EndpointSlice changes

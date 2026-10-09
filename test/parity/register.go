@@ -7,6 +7,7 @@ import (
 	_ "github.com/cncf/xds/go/xds/type/v3"
 	_ "github.com/envoyproxy/go-control-plane/contrib/envoy/extensions/filters/http/golang/v3alpha"
 	_ "github.com/envoyproxy/go-control-plane/envoy/extensions/access_loggers/file/v3"
+	_ "github.com/envoyproxy/go-control-plane/envoy/extensions/clusters/dns/v3"
 	_ "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/http/health_check/v3"
 	_ "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/http/router/v3"
 	_ "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/listener/tls_inspector/v3"

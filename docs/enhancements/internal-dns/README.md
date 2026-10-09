@@ -28,7 +28,7 @@ Tracking issue: [Internal DNS for Galactic VPC](https://github.com/datum-cloud/e
 
 ## Summary
 
-Resources attached to a virtual private cloud (VPC) receive private DNS names and resolver settings automatically. The network services operator (NSO) provisions VPC DNS access and carries resolver settings to workload providers. Product services publish their records and endpoint eligibility.
+Resources attached to a virtual private cloud (VPC) receive private DNS names and resolver settings automatically. Network services provision VPC DNS access and carry resolver settings to workload providers. Product services publish their records and endpoint eligibility.
 
 ## Motivation
 
@@ -49,7 +49,7 @@ Users need stable names for resources whose addresses and health change. Attachi
 
 ## Proposal
 
-NSO provisions one DNS context per enabled VPC and regional access wherever the network is used. The context selects the VPC's private zones. Workloads receive the well-known resolver address `fd53::53` through their network interfaces.
+Network services provision one DNS context per enabled VPC and regional access wherever the network is used. The context selects the VPC's private zones. Workloads receive the well-known resolver address `fd53::53` through their network interfaces.
 
 DNS allocates a managed namespace for automatic product names. Users can associate additional private zones and naming policies through the DNS API. Shared regional fleets serve many VPCs without per-VPC deployments.
 
@@ -83,7 +83,7 @@ The diagram identifies API ownership. Controllers use authenticated, project-sco
 ```mermaid
 flowchart TB
   Products[Product publishers] -->|Records and eligibility| P
-  NSO[NSO VPC DNS integration] -->|Context, access, and resolver settings| P
+  NetworkServices[Network services: VPC DNS integration] -->|Context, access, and resolver settings| P
   P["Consumer project API<br/>Network, NetworkContext, and DNS resources"]
   D["DNS service project API<br/>Publication state, fleet plans, and service VPC intent"]
   K["Karmada API<br/>NetworkBinding, projected NetworkContext, and placed intent"]
@@ -91,19 +91,19 @@ flowchart TB
   P -->|DNS reconciliation| D
   P -->|Network desired-state projection| K
   K -.->|Network presence reconciliation| P
-  NSO -->|Private-service intent| K
+  NetworkServices -->|Private-service intent| K
   D -->|Service network placement| K
   K -->|Placement and propagation| E
   D -->|Committed DNS updates through regional transport| E
   E -->|Interface resolver settings| Providers[Workload providers and guests]
 ```
 
-- **Consumer project:** Owns the logical network, location-scoped network contexts, DNS resources, and product publications. NSO owns DNS access intent; DNS owns serving status.
+- **Consumer project:** Owns the logical network, location-scoped network contexts, DNS resources, and product publications. Network services own DNS access intent; DNS owns serving status.
 - **DNS service project:** Owns shared serving plans, publication delivery, and the DNS service's VPC. DNS controllers consume DNS intent without reading product or networking APIs.
 - **Karmada:** Owns network-use declarations and propagates network and workload desired state. Resolver settings follow network presence; DNS publications use regional transport.
-- **Edge:** Owns local interfaces, private-service programming reports, and serving state. NSO derives interface settings from the propagated context; providers apply them to guests.
+- **Edge:** Owns local interfaces, private-service programming reports, and serving state. Network services derive interface settings from the propagated context; providers apply them to guests.
 
-A project UID and Network UID identify the VPC lifetime. Its network contexts share one DNS context. NSO maps locations to regions through trusted platform configuration; each active region has its own access binding in the project API.
+A project UID and Network UID identify the VPC lifetime. Its network contexts share one DNS context. Network services map locations to regions through trusted platform configuration; each active region has its own access binding in the project API.
 
 ### Network identity
 
@@ -136,7 +136,7 @@ DNS selects the context from the authorized service destination before cache loo
 
 ### API design
 
-These examples are proposed contracts. NSO fields below are additions requiring API implementation. DNS examples use the [DNS control-plane contract](https://github.com/datum-cloud/dns-operator/pull/229). UIDs and deadlines are illustrative; controllers write the generated objects and status.
+These examples are proposed contracts. Network services fields below are additions requiring API implementation. DNS examples use the [DNS control-plane contract](https://github.com/datum-cloud/dns-operator/pull/229). UIDs and deadlines are illustrative; controllers write the generated objects and status.
 
 #### Network policy and DNS access
 
@@ -158,7 +158,7 @@ kind: DNSResolverContext
 metadata:
   name: application
 spec:
-  # NSO derives this immutable identity from project UID and Network UID.
+  # Network services derive this immutable identity from project UID and Network UID.
   consumerID: "11111111-1111-4111-8111-111111111111/22222222-2222-4222-8222-222222222222"
   managedNamespace:
     # DNS allocates the default zone and suffix for product publishers.
@@ -182,7 +182,7 @@ spec:
   port: 53
   transports: [UDP, TCP]
   authorization:
-    # DNS issues the context epoch; NSO preserves it on renewals.
+    # DNS issues the context epoch; network services preserve it on renewals.
     writerEpoch: 3
     # Persist monotonic renewal sequences using conditional API writes.
     sequence: 27
@@ -190,11 +190,11 @@ spec:
     validUntil: "2026-10-09T20:05:00Z"
 ```
 
-NSO creates access only for an authorized network location. It coordinates the DNS binding with generic private-service intent that pins the consumer VPC lifetime and backend destination. Users and record publishers cannot authorize their own network access.
+Network services create access only for an authorized network location. They coordinate the DNS binding with generic private-service intent that pins the consumer VPC lifetime and backend destination. Users and record publishers cannot authorize their own network access.
 
 #### Resolver settings delivered to workloads
 
-NSO writes verified resolver settings into the project `NetworkContext.spec.dns`. Federation carries that desired state to the edge. The interface controller copies it into `NetworkInterface.spec.dns`; providers consume the interface rather than reading DNS or network-context APIs.
+Network services write verified resolver settings into the project `NetworkContext.spec.dns`. Federation carries that desired state to the edge. The interface controller copies it into `NetworkInterface.spec.dns`; providers consume the interface rather than reading DNS or network-context APIs.
 
 ```yaml
 apiVersion: networking.datumapis.com/v1alpha
@@ -207,7 +207,7 @@ spec:
   location:
     name: us-central-1
   dns:
-    # Proposed NSO-owned desired state, protected from consumer writes.
+    # Proposed desired state owned by network services, protected from consumer writes.
     contextRef:
       name: application
       uid: 33333333-3333-4333-8333-333333333333
@@ -247,7 +247,7 @@ spec:
     searches: [vpc-a7c9.project-p4e2.internal]
 ```
 
-Admission restricts resolver-settings writes to NSO and `DNSConfigured` reports to trusted providers. Authenticate source projects through project routing and protected federation metadata. Projections preserve source identity and fencing values; UIDs assigned to replicated copies cannot replace source lifetimes.
+Admission restricts resolver-settings writes to network services and `DNSConfigured` reports to trusted providers. Authenticate source projects through project routing and protected federation metadata. Projections preserve source identity and fencing values; UIDs assigned to replicated copies cannot replace source lifetimes.
 
 Publish settings only after DNS reports the access sequence ready and Galactic reports the corresponding policy generation programmed on required nodes. `NetworkContext` reports a proposed `DNSReady` condition separately from network readiness. Providers report `DNSConfigured` after applying current, unexpired settings, reconcile updates, and reject stale revisions.
 
@@ -255,7 +255,7 @@ The initial guest contract supports one managed DNS context. A provider must rej
 
 ### Publication and lifecycle
 
-Products reserve names through `DNSRegistration` and publish eligible addresses through `DNSContribution`. A trusted issuer authorizes publishers through `DNSContributionGrant`; publication credentials cannot write grants or resolver access. Compute owns instance and service eligibility; Connect owns export eligibility. DNS and NSO do not inspect Compute resources.
+Products reserve names through `DNSRegistration` and publish eligible addresses through `DNSContribution`. A trusted issuer authorizes publishers through `DNSContributionGrant`; publication credentials cannot write grants or resolver access. Compute owns instance and service eligibility; Connect owns export eligibility. DNS and network services do not inspect Compute resources.
 
 Reconcile access, publication, and settings independently per project and region. Persist sequences, use conditional writes, and resume from committed state after takeover. Failure in one region must not block healthy regions. Replication and retries preserve expiry times.
 
@@ -269,7 +269,7 @@ Gate VPC integration and product publication separately, disabled by default for
 
 ### Rollout, Upgrade and Rollback Planning
 
-Extend the shared NSO federation and DNS Kubernetes test environments. Release acceptance requires guest-default queries from two VPCs with overlapping names and addresses, over UDP and TCP. Test takeover, replay, API and broker outages, health withdrawal, deletion, and rollback. Public DNS must follow the configured resolution policy.
+Extend the shared network services federation and DNS Kubernetes test environments. Release acceptance requires guest-default queries from two VPCs with overlapping names and addresses, over UDP and TCP. Test takeover, replay, API and broker outages, health withdrawal, deletion, and rollback. Public DNS must follow the configured resolution policy.
 
 ### Monitoring Requirements
 

@@ -280,12 +280,6 @@ func run(o options) {
 		log.Error("set up connector re-translation controller", "err", err)
 		os.Exit(1)
 	}
-	// Symmetric arm for TrafficProtectionPolicy: a TPP is not EG-watched, so a
-	// mode/spec flip lands in the cache but never re-translates on its own.
-	if err := (&retrigger.TPPReconciler{Client: mgr.GetClient()}).SetupWithManager(mgr); err != nil {
-		log.Error("set up TPP re-translation controller", "err", err)
-		os.Exit(1)
-	}
 
 	// --- mTLS config ---
 	// LoadServerTLSConfig uses GetCertificate (re-reads on each handshake) so

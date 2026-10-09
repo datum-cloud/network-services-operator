@@ -1411,7 +1411,7 @@ func TestProcessDownstreamHTTPRouteRulesVPCPodPassThrough(t *testing.T) {
 	downstreamStrategy := downstreamclient.NewMappedNamespaceResourceStrategy("test", fakeUpstreamClient, fakeDownstreamClient)
 
 	ctx := context.Background()
-	rules, downstreamResources, downstreamResourcesToDelete, err := reconciler.processDownstreamHTTPRouteRules(
+	rules, downstreamResources, err := reconciler.processDownstreamHTTPRouteRules(
 		ctx,
 		fakeUpstreamClient,
 		upstreamGateway,
@@ -1421,9 +1421,6 @@ func TestProcessDownstreamHTTPRouteRulesVPCPodPassThrough(t *testing.T) {
 	)
 	require.NoError(t, err)
 	assert.Empty(t, downstreamResources, "vpcPod pass-through must not synthesize a Service/EndpointSlice/BackendTLSPolicy")
-	require.Len(t, downstreamResourcesToDelete, 1)
-	_, isPolicy := downstreamResourcesToDelete[0].(*envoygatewayv1alpha1.BackendTrafficPolicy)
-	assert.True(t, isPolicy, "a pass-through backend with no health checks must still drop a leftover BackendTrafficPolicy")
 
 	require.Len(t, rules, 1)
 	require.Len(t, rules[0].BackendRefs, 1)
@@ -1505,7 +1502,7 @@ func TestProcessDownstreamHTTPRouteRulesUnlabeledEndpointSliceUnaffected(t *test
 	downstreamStrategy := downstreamclient.NewMappedNamespaceResourceStrategy("test", fakeUpstreamClient, fakeDownstreamClient)
 
 	ctx := context.Background()
-	rules, downstreamResources, _, err := reconciler.processDownstreamHTTPRouteRules(
+	rules, downstreamResources, err := reconciler.processDownstreamHTTPRouteRules(
 		ctx,
 		fakeUpstreamClient,
 		upstreamGateway,
@@ -3182,7 +3179,7 @@ func TestProcessDownstreamHTTPRouteRulesEmptyEndpointSlice(t *testing.T) {
 	t.Run("an empty slice still resolves into a downstream service", func(t *testing.T) {
 		reconciler, upstreamClient, upstreamGateway, upstreamRoute, downstreamGateway, strategy := newFixture(t, true)
 
-		rules, downstreamResources, _, err := reconciler.processDownstreamHTTPRouteRules(
+		rules, downstreamResources, err := reconciler.processDownstreamHTTPRouteRules(
 			context.Background(),
 			upstreamClient,
 			upstreamGateway,
@@ -3221,7 +3218,7 @@ func TestProcessDownstreamHTTPRouteRulesEmptyEndpointSlice(t *testing.T) {
 	t.Run("a withheld slice fails the whole route loop", func(t *testing.T) {
 		reconciler, upstreamClient, upstreamGateway, upstreamRoute, downstreamGateway, strategy := newFixture(t, false)
 
-		_, _, _, err := reconciler.processDownstreamHTTPRouteRules(
+		_, _, err := reconciler.processDownstreamHTTPRouteRules(
 			context.Background(),
 			upstreamClient,
 			upstreamGateway,
@@ -3270,7 +3267,7 @@ func TestProcessDownstreamHTTPRouteRulesNetworkServicePanicThreshold(t *testing.
 		}
 	}
 
-	run := func(t *testing.T, slice *discoveryv1.EndpointSlice) ([]client.Object, []client.Object) {
+	run := func(t *testing.T, slice *discoveryv1.EndpointSlice) []client.Object {
 		t.Helper()
 
 		upstreamRoute := newHTTPRoute(upstreamNamespace.Name, "test", func(route *gatewayv1.HTTPRoute) {
@@ -3300,7 +3297,7 @@ func TestProcessDownstreamHTTPRouteRulesNetworkServicePanicThreshold(t *testing.
 		reconciler := &GatewayReconciler{DownstreamCluster: &fakeCluster{cl: fakeDownstreamClient}}
 		downstreamStrategy := downstreamclient.NewMappedNamespaceResourceStrategy("test", fakeUpstreamClient, fakeDownstreamClient)
 
-		_, resources, toDelete, err := reconciler.processDownstreamHTTPRouteRules(
+		_, resources, err := reconciler.processDownstreamHTTPRouteRules(
 			context.Background(),
 			fakeUpstreamClient,
 			upstreamGateway,
@@ -3309,7 +3306,7 @@ func TestProcessDownstreamHTTPRouteRulesNetworkServicePanicThreshold(t *testing.
 			downstreamStrategy,
 		)
 		require.NoError(t, err)
-		return resources, toDelete
+		return resources
 	}
 
 	findPolicy := func(objs []client.Object) *envoygatewayv1alpha1.BackendTrafficPolicy {
@@ -3326,7 +3323,7 @@ func TestProcessDownstreamHTTPRouteRulesNetworkServicePanicThreshold(t *testing.
 			NetworkServiceBackendLabel: "checkout",
 		})
 
-		resources, toDelete := run(t, slice)
+		resources := run(t, slice)
 
 		policy := findPolicy(resources)
 		require.NotNil(t, policy, "a networkService backend must get a BackendTrafficPolicy")
@@ -3340,16 +3337,14 @@ func TestProcessDownstreamHTTPRouteRulesNetworkServicePanicThreshold(t *testing.
 		assert.Equal(t, gatewayv1.Group(gatewayv1.GroupName), targetRef.Group)
 		assert.Equal(t, gatewayv1.Kind(KindHTTPRoute), targetRef.Kind)
 
-		assert.Nil(t, findPolicy(toDelete), "the policy must not be scheduled for deletion")
 	})
 
 	t.Run("other backends leave panic mode alone", func(t *testing.T) {
 		slice := newEndpointSlice("test-0-0", nil)
 
-		resources, toDelete := run(t, slice)
+		resources := run(t, slice)
 
 		assert.Nil(t, findPolicy(resources), "a plain backend must not get the policy")
-		require.NotNil(t, findPolicy(toDelete), "a route that lost its networkService backend must lose the policy")
 	})
 }
 
@@ -3383,7 +3378,7 @@ func TestProcessDownstreamHTTPRouteRulesLoadBalancer(t *testing.T) {
 		}
 	}
 
-	run := func(t *testing.T, slice *discoveryv1.EndpointSlice, annotations map[string]string) ([]client.Object, []client.Object, error) {
+	run := func(t *testing.T, slice *discoveryv1.EndpointSlice, annotations map[string]string) ([]client.Object, error) {
 		t.Helper()
 
 		upstreamRoute := newHTTPRoute(upstreamNamespace.Name, "test", func(route *gatewayv1.HTTPRoute) {
@@ -3414,7 +3409,7 @@ func TestProcessDownstreamHTTPRouteRulesLoadBalancer(t *testing.T) {
 		reconciler := &GatewayReconciler{DownstreamCluster: &fakeCluster{cl: fakeDownstreamClient}}
 		downstreamStrategy := downstreamclient.NewMappedNamespaceResourceStrategy("test", fakeUpstreamClient, fakeDownstreamClient)
 
-		_, resources, toDelete, err := reconciler.processDownstreamHTTPRouteRules(
+		_, resources, err := reconciler.processDownstreamHTTPRouteRules(
 			context.Background(),
 			fakeUpstreamClient,
 			upstreamGateway,
@@ -3422,7 +3417,7 @@ func TestProcessDownstreamHTTPRouteRulesLoadBalancer(t *testing.T) {
 			downstreamGateway,
 			downstreamStrategy,
 		)
-		return resources, toDelete, err
+		return resources, err
 	}
 
 	findPolicy := func(objs []client.Object) *envoygatewayv1alpha1.BackendTrafficPolicy {
@@ -3440,7 +3435,7 @@ func TestProcessDownstreamHTTPRouteRulesLoadBalancer(t *testing.T) {
 			LoadBalancerAnnotation: `{"type":"RoundRobin"}`,
 		}
 
-		resources, toDelete, err := run(t, slice, annotations)
+		resources, err := run(t, slice, annotations)
 		require.NoError(t, err)
 
 		policy := findPolicy(resources)
@@ -3449,7 +3444,6 @@ func TestProcessDownstreamHTTPRouteRulesLoadBalancer(t *testing.T) {
 		assert.Equal(t, envoygatewayv1alpha1.RoundRobinLoadBalancerType, policy.Spec.LoadBalancer.Type)
 		assert.Nil(t, policy.Spec.HealthCheck, "a plain backend must not get the panic threshold override")
 
-		assert.Nil(t, findPolicy(toDelete))
 	})
 
 	t.Run("a load balancer annotation and a networkService backend merge into one policy", func(t *testing.T) {
@@ -3460,7 +3454,7 @@ func TestProcessDownstreamHTTPRouteRulesLoadBalancer(t *testing.T) {
 			LoadBalancerAnnotation: `{"type":"ConsistentHash","consistentHash":{"type":"Header","header":"x-session-id"}}`,
 		}
 
-		resources, toDelete, err := run(t, slice, annotations)
+		resources, err := run(t, slice, annotations)
 		require.NoError(t, err)
 
 		policy := findPolicy(resources)
@@ -3477,7 +3471,6 @@ func TestProcessDownstreamHTTPRouteRulesLoadBalancer(t *testing.T) {
 		require.Len(t, policy.Spec.LoadBalancer.ConsistentHash.Headers, 1)
 		assert.Equal(t, "x-session-id", policy.Spec.LoadBalancer.ConsistentHash.Headers[0].Name)
 
-		assert.Nil(t, findPolicy(toDelete))
 	})
 
 	t.Run("a malformed annotation returns an error instead of silently ignoring it", func(t *testing.T) {
@@ -3486,18 +3479,17 @@ func TestProcessDownstreamHTTPRouteRulesLoadBalancer(t *testing.T) {
 			LoadBalancerAnnotation: `not valid json`,
 		}
 
-		_, _, err := run(t, slice, annotations)
+		_, err := run(t, slice, annotations)
 		require.Error(t, err)
 	})
 
-	t.Run("neither condition leaves no policy and schedules any existing one for deletion", func(t *testing.T) {
+	t.Run("neither condition produces no policy", func(t *testing.T) {
 		slice := newEndpointSlice("test-0-0", nil)
 
-		resources, toDelete, err := run(t, slice, nil)
+		resources, err := run(t, slice, nil)
 		require.NoError(t, err)
 
 		assert.Nil(t, findPolicy(resources))
-		require.NotNil(t, findPolicy(toDelete))
 	})
 }
 
@@ -3531,7 +3523,7 @@ func TestProcessDownstreamHTTPRouteRulesHealthCheck(t *testing.T) {
 		}
 	}
 
-	run := func(t *testing.T, slice *discoveryv1.EndpointSlice, annotations map[string]string) ([]client.Object, []client.Object, error) {
+	run := func(t *testing.T, slice *discoveryv1.EndpointSlice, annotations map[string]string) ([]client.Object, error) {
 		t.Helper()
 
 		upstreamRoute := newHTTPRoute(upstreamNamespace.Name, "test", func(route *gatewayv1.HTTPRoute) {
@@ -3562,7 +3554,7 @@ func TestProcessDownstreamHTTPRouteRulesHealthCheck(t *testing.T) {
 		reconciler := &GatewayReconciler{DownstreamCluster: &fakeCluster{cl: fakeDownstreamClient}}
 		downstreamStrategy := downstreamclient.NewMappedNamespaceResourceStrategy("test", fakeUpstreamClient, fakeDownstreamClient)
 
-		_, resources, toDelete, err := reconciler.processDownstreamHTTPRouteRules(
+		_, resources, err := reconciler.processDownstreamHTTPRouteRules(
 			context.Background(),
 			fakeUpstreamClient,
 			upstreamGateway,
@@ -3570,7 +3562,7 @@ func TestProcessDownstreamHTTPRouteRulesHealthCheck(t *testing.T) {
 			downstreamGateway,
 			downstreamStrategy,
 		)
-		return resources, toDelete, err
+		return resources, err
 	}
 
 	findPolicy := func(objs []client.Object) *envoygatewayv1alpha1.BackendTrafficPolicy {
@@ -3603,7 +3595,7 @@ func TestProcessDownstreamHTTPRouteRulesHealthCheck(t *testing.T) {
 			HealthCheckAnnotation: `{"passive":{}}`,
 		}
 
-		resources, toDelete, err := run(t, slice, annotations)
+		resources, err := run(t, slice, annotations)
 		require.NoError(t, err)
 
 		policy := findPolicy(resources)
@@ -3612,7 +3604,6 @@ func TestProcessDownstreamHTTPRouteRulesHealthCheck(t *testing.T) {
 		assert.Nil(t, policy.Spec.HealthCheck.PanicThreshold)
 		assert.Nil(t, policy.Spec.LoadBalancer)
 
-		assert.Nil(t, findPolicy(toDelete))
 	})
 
 	t.Run("explicit passive knobs are copied onto the policy", func(t *testing.T) {
@@ -3621,7 +3612,7 @@ func TestProcessDownstreamHTTPRouteRulesHealthCheck(t *testing.T) {
 			HealthCheckAnnotation: `{"passive":{"consecutive5xxErrors":3,"baseEjectionTime":"15s","maxEjectionPercent":25}}`,
 		}
 
-		resources, _, err := run(t, slice, annotations)
+		resources, err := run(t, slice, annotations)
 		require.NoError(t, err)
 
 		policy := findPolicy(resources)
@@ -3648,7 +3639,7 @@ func TestProcessDownstreamHTTPRouteRulesHealthCheck(t *testing.T) {
 			HealthCheckAnnotation:  `{"passive":{}}`,
 		}
 
-		resources, toDelete, err := run(t, slice, annotations)
+		resources, err := run(t, slice, annotations)
 		require.NoError(t, err)
 
 		policy := findPolicy(resources)
@@ -3662,7 +3653,6 @@ func TestProcessDownstreamHTTPRouteRulesHealthCheck(t *testing.T) {
 		require.NotNil(t, policy.Spec.LoadBalancer)
 		assert.Equal(t, envoygatewayv1alpha1.RoundRobinLoadBalancerType, policy.Spec.LoadBalancer.Type)
 
-		assert.Nil(t, findPolicy(toDelete))
 	})
 
 	t.Run("a malformed health check annotation returns an error instead of silently ignoring it", func(t *testing.T) {
@@ -3671,7 +3661,7 @@ func TestProcessDownstreamHTTPRouteRulesHealthCheck(t *testing.T) {
 			HealthCheckAnnotation: `not valid json`,
 		}
 
-		_, _, err := run(t, slice, annotations)
+		_, err := run(t, slice, annotations)
 		require.Error(t, err)
 	})
 
@@ -3681,11 +3671,10 @@ func TestProcessDownstreamHTTPRouteRulesHealthCheck(t *testing.T) {
 			HealthCheckAnnotation: `{}`,
 		}
 
-		resources, toDelete, err := run(t, slice, annotations)
+		resources, err := run(t, slice, annotations)
 		require.NoError(t, err)
 
 		assert.Nil(t, findPolicy(resources))
-		require.NotNil(t, findPolicy(toDelete))
 	})
 
 	t.Run("dropping passive while keeping load balancer and networkService leaves panic and algorithm", func(t *testing.T) {
@@ -3696,7 +3685,7 @@ func TestProcessDownstreamHTTPRouteRulesHealthCheck(t *testing.T) {
 			LoadBalancerAnnotation: `{"type":"RoundRobin"}`,
 		}
 
-		resources, toDelete, err := run(t, slice, annotations)
+		resources, err := run(t, slice, annotations)
 		require.NoError(t, err)
 
 		policy := findPolicy(resources)
@@ -3707,7 +3696,6 @@ func TestProcessDownstreamHTTPRouteRulesHealthCheck(t *testing.T) {
 		assert.Nil(t, policy.Spec.HealthCheck.Passive)
 		require.NotNil(t, policy.Spec.LoadBalancer)
 		assert.Equal(t, envoygatewayv1alpha1.RoundRobinLoadBalancerType, policy.Spec.LoadBalancer.Type)
-		assert.Nil(t, findPolicy(toDelete))
 	})
 
 	t.Run("consecutive5xxErrors below one is rejected", func(t *testing.T) {
@@ -3716,7 +3704,7 @@ func TestProcessDownstreamHTTPRouteRulesHealthCheck(t *testing.T) {
 			HealthCheckAnnotation: `{"passive":{"consecutive5xxErrors":0}}`,
 		}
 
-		_, _, err := run(t, slice, annotations)
+		_, err := run(t, slice, annotations)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "consecutive5xxErrors")
 	})
@@ -3727,7 +3715,7 @@ func TestProcessDownstreamHTTPRouteRulesHealthCheck(t *testing.T) {
 			HealthCheckAnnotation: `{"passive":{"maxEjectionPercent":0}}`,
 		}
 
-		_, _, err := run(t, slice, annotations)
+		_, err := run(t, slice, annotations)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "maxEjectionPercent")
 	})
@@ -3776,7 +3764,7 @@ func TestProcessDownstreamHTTPRouteRulesHealthCheckPassThrough(t *testing.T) {
 		},
 	}
 
-	run := func(t *testing.T, annotations map[string]string) ([]client.Object, []client.Object, error) {
+	run := func(t *testing.T, annotations map[string]string) ([]client.Object, error) {
 		t.Helper()
 
 		upstreamRoute := newHTTPRoute(upstreamNamespace.Name, "test", func(route *gatewayv1.HTTPRoute) {
@@ -3807,7 +3795,7 @@ func TestProcessDownstreamHTTPRouteRulesHealthCheckPassThrough(t *testing.T) {
 		reconciler := &GatewayReconciler{DownstreamCluster: &fakeCluster{cl: fakeDownstreamClient}}
 		downstreamStrategy := downstreamclient.NewMappedNamespaceResourceStrategy("test", fakeUpstreamClient, fakeDownstreamClient)
 
-		_, resources, toDelete, err := reconciler.processDownstreamHTTPRouteRules(
+		_, resources, err := reconciler.processDownstreamHTTPRouteRules(
 			context.Background(),
 			fakeUpstreamClient,
 			upstreamGateway,
@@ -3815,7 +3803,7 @@ func TestProcessDownstreamHTTPRouteRulesHealthCheckPassThrough(t *testing.T) {
 			downstreamGateway,
 			downstreamStrategy,
 		)
-		return resources, toDelete, err
+		return resources, err
 	}
 
 	findPolicy := func(objs []client.Object) *envoygatewayv1alpha1.BackendTrafficPolicy {
@@ -3828,7 +3816,7 @@ func TestProcessDownstreamHTTPRouteRulesHealthCheckPassThrough(t *testing.T) {
 	}
 
 	t.Run("a vpc-pod backend with passive checks gets a policy", func(t *testing.T) {
-		resources, toDelete, err := run(t, map[string]string{
+		resources, err := run(t, map[string]string{
 			HealthCheckAnnotation: `{"passive":{}}`,
 		})
 		require.NoError(t, err)
@@ -3839,15 +3827,13 @@ func TestProcessDownstreamHTTPRouteRulesHealthCheckPassThrough(t *testing.T) {
 		require.NotNil(t, policy.Spec.HealthCheck.Passive)
 		require.NotNil(t, policy.Spec.HealthCheck.Passive.AlwaysEjectOneEndpoint)
 		assert.True(t, *policy.Spec.HealthCheck.Passive.AlwaysEjectOneEndpoint)
-		assert.Nil(t, findPolicy(toDelete))
 	})
 
-	t.Run("removing health checks from a vpc-pod backend deletes the policy", func(t *testing.T) {
-		resources, toDelete, err := run(t, nil)
+	t.Run("a vpc-pod backend without health checks produces no policy", func(t *testing.T) {
+		resources, err := run(t, nil)
 		require.NoError(t, err)
 
 		assert.Nil(t, findPolicy(resources))
-		require.NotNil(t, findPolicy(toDelete), "a pass-through backend that lost health checks must still lose the policy")
 	})
 }
 

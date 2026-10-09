@@ -49,41 +49,75 @@ workload that was deleted looks the same as one never created.
 
 ## Several origins on one route
 
-A route takes up to 16 origins and splits traffic across them. One rule decides
-whether that works: **every origin in a route must agree on the Host header sent
-upstream.**
+A route takes up to 16 origins and splits requests across them by weight.
+Weights are relative: origins at 1 and 3 get 25% and 75%, and an origin with no
+weight counts as 1. `alb_get` gives each origin's `weight` and `share`.
 
-- Origins that are network services need no Host rewrite, so a pool of those is
-  fine.
-- A URL origin takes its Host from its own hostname, so two URL origins on
-  different hostnames conflict.
-
-When they conflict, the load balancer does not reject the change. It goes on
-serving what it published last and says why in the status message, with the
-reason still reading as though it were merely waiting. That is the case
-`alb_diagnose` reports separately — if the message begins with the load balancer
-not being able to be published, nothing is in flight and waiting will not help.
-
-There are two ways round it and one of them is a trap:
-
-- **Give each origin its own route.** Safe.
-- **Set a Host override on the route.** This makes the origins agree, and it
-  publishes — but every origin then receives the same Host. Any origin that
-  serves by hostname (Vercel, Netlify, Fly.io, Cloudflare Pages) will answer the
-  wrong site or a 404. It looks like it worked, which is what makes it worse
-  than the error.
+Each URL origin is sent its own hostname as the Host header, so origins on
+different hostnames can share a route. A Host override on the route is the
+trap: it sends the same Host to every origin, so in a pool spanning several
+hostnames any origin that serves by hostname (Vercel, Netlify, Fly.io,
+Cloudflare Pages) answers the wrong site or a 404. It looks like it worked.
 
 A connector origin has to be the only origin in its route.
 
+### Drained origins
+
+Weight 0 drains an origin: it stays in the pool and gets no requests. That is
+how someone takes an origin out without deleting it, so a drained origin is not
+a fault. But if `alb_get` marks a route `drained`, every origin on it is at 0.
+The route is published and serves nothing. Requests to it fail at the edge
+without reaching any origin, so their log lines have no upstream host. Nothing in
+the status says so. The fix is
+theirs: give an origin a weight above 0.
+
+### Load balancing and health checks
+
+Both are set once and apply to every route. `alb_get` reports them as
+`loadBalancing` and `healthChecks`.
+
+- **Algorithm.** Least request is the default when nothing is set. Round robin,
+  random and consistent hash are the alternatives. Consistent hash keeps a client
+  on one origin by its IP or by a header. If someone says one origin gets all of
+  a test's requests, check for consistent hash before anything else: a test run
+  from one machine has one IP.
+- **Passive health checks.** Off unless turned on. When on, an endpoint that
+  returns a run of 5xx responses (5 by default) stops getting requests for a
+  while (30s at first), then gets them again. It is ejected again if it is still
+  failing, for longer each time. At most half of an origin's endpoints are
+  ejected at once by default. There are no active probes. Datum does not request
+  a health path, so an origin that never gets requests is never judged.
+
+Checks act inside one origin. They move requests off a failing endpoint onto
+the same origin's other endpoints. A URL origin whose hostname resolves to
+several addresses has several endpoints, and so does a network service with
+several members. **They never move an origin's share to another origin.** The
+weights decide that, whatever the origin's health, so a broken origin keeps
+failing its share of requests with or without checks.
+
+What failures look like with checks on:
+
+- **Errors come in bursts.** A failing endpoint answers 5xx until it is ejected,
+  then those errors stop for the ejection time and come back when it returns.
+  That is the checks working, not an outage that comes and goes. The fix is the
+  endpoint.
+- **An origin with one endpoint, or with most of its endpoints failing.** Once
+  fewer than half of an origin's endpoints are left, what happens depends on the
+  route. If every origin on it is a URL, requests are spread over all the
+  origin's endpoints again, failing ones included, so the checks stop helping.
+  If any origin on the route is a network service, nothing is sent to the
+  failing endpoints and those requests fail at once with `UH`.
+
+To take a broken origin out of the split, drain it (weight 0) or remove it.
+
 ## Before you suggest editing in the console
 
-The console edits one route with one origin. Once a load balancer has more than
-that, changing its origin, TLS or redirect settings there rebuilds the route list
-from the few fields the console models and drops the rest — extra routes, extra
-origins, weights, path matches — and reports success.
-
-So after adding a route or a second origin, say plainly: hostnames, protection
-and auth stay safe to edit in the console; origin, TLS and redirect do not.
+The console manages the pool of origins on `/`, with weights, the algorithm and
+health checks, so pointing someone there for those is fine. Once a load balancer
+has a second route, a path match or a per-origin filter, the console refuses to
+edit its origins, TLS, redirect or Host override and says to use `datumctl`. That
+lock is expected. It protects what the console cannot show. Say so when you help
+someone add a route.
 
 ## The rest
 

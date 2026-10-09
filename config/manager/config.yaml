@@ -1,5 +1,19 @@
 apiVersion: apiserver.config.datumapis.com/v1alpha1
 kind: NetworkServicesOperator
+# Internal DNS is an alpha network integration and remains off until every
+# serving cell has matching service attachment configuration.
+internalDNS:
+  # Enables DNS context and regional access lifecycle management.
+  enabled: false
+  # Presents the same resolver address inside each consumer VPC.
+  # frontend: fd53::53
+  # Allocates one stable service destination from this prefix per DNS context.
+  # servicePrefix: fd70:100::/64
+  # Bounds each DNS authorization; Galactic accepts at most two minutes.
+  # accessLeaseDuration: 2m
+  # Selects the shared resolver attachments that serve authorized VPCs.
+  # producerAttachmentSelector:
+  #   service.datum.net/internal-dns: "true"
 gateway:
   targetDomain: example.com
   # enableDNSIntegration controls automatic DNSRecordSet creation for Gateway

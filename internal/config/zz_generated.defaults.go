@@ -53,6 +53,7 @@ func SetObjectDefaults_CellControllerManager(in *CellControllerManager) {
 	if in.Federation.Client.Burst == 0 {
 		in.Federation.Client.Burst = 100
 	}
+	SetDefaults_InternalDNSConfig(&in.InternalDNS)
 }
 
 func SetObjectDefaults_NetworkServicesOperator(in *NetworkServicesOperator) {
@@ -427,4 +428,5 @@ func SetObjectDefaults_NetworkServicesOperator(in *NetworkServicesOperator) {
 		in.IPAM.Client.Burst = 100
 	}
 	SetDefaults_NetworkPresenceConfig(&in.NetworkPresence)
+	SetDefaults_InternalDNSConfig(&in.InternalDNS)
 }

@@ -52,6 +52,94 @@ spec:
           spec:
             description: NetworkContextSpec defines the desired state of NetworkContext
             properties:
+              dns:
+                description: |-
+                  DNS contains resolver settings whose DNS authorization and private path
+                  have both been verified for this location.
+                properties:
+                  accessBindingRef:
+                    description: AccessBindingRef identifies the regional DNS authorization
+                      lifetime.
+                    properties:
+                      name:
+                        description: Name is the resource name in the network's namespace.
+                        minLength: 1
+                        type: string
+                      uid:
+                        description: |-
+                          UID prevents a resource recreated under the same name from inheriting
+                          resolver access.
+                        type: string
+                    required:
+                    - name
+                    - uid
+                    type: object
+                    x-kubernetes-validations:
+                    - message: uid must not be empty
+                      rule: self.uid.size() > 0
+                  contextRef:
+                    description: ContextRef identifies the DNS serving and namespace
+                      lifetime.
+                    properties:
+                      name:
+                        description: Name is the resource name in the network's namespace.
+                        minLength: 1
+                        type: string
+                      uid:
+                        description: |-
+                          UID prevents a resource recreated under the same name from inheriting
+                          resolver access.
+                        type: string
+                    required:
+                    - name
+                    - uid
+                    type: object
+                    x-kubernetes-validations:
+                    - message: uid must not be empty
+                      rule: self.uid.size() > 0
+                  nameservers:
+                    description: Nameservers are resolver addresses reachable from
+                      this network.
+                    items:
+                      type: string
+                    maxItems: 3
+                    minItems: 1
+                    type: array
+                    x-kubernetes-validations:
+                    - message: nameservers must contain IP addresses
+                      rule: self.all(n, isIP(n))
+                  searches:
+                    description: Searches contains DNS search suffixes allocated to
+                      this network.
+                    items:
+                      type: string
+                    maxItems: 6
+                    type: array
+                  sequence:
+                    description: Sequence is the exact DNS authorization revision
+                      these settings carry.
+                    format: int64
+                    minimum: 1
+                    type: integer
+                  validUntil:
+                    description: ValidUntil is the earliest DNS or network authorization
+                      deadline.
+                    format: date-time
+                    type: string
+                  writerEpoch:
+                    description: WriterEpoch fences a previous access writer after
+                      ownership changes.
+                    format: int64
+                    minimum: 1
+                    type: integer
+                required:
+                - accessBindingRef
+                - contextRef
+                - nameservers
+                - sequence
+                - validUntil
+                - writerEpoch
+                type: object
               ipFamilies:
                 description: |-
                   IP families the network carries, projected from the Network.
@@ -170,6 +258,80 @@ spec:
                   - type
                   type: object
                 type: array
+              dnsAccess:
+                description: |-
+                  DNSAccess identifies the current private path proof. DNSReady=True applies
+                  only to this exact context, binding revision, and deadline.
+                properties:
+                  accessBindingRef:
+                    description: AccessBindingRef identifies the DNS authorization
+                      used for the proof.
+                    properties:
+                      name:
+                        description: Name is the resource name in the network's namespace.
+                        minLength: 1
+                        type: string
+                      uid:
+                        description: |-
+                          UID prevents a resource recreated under the same name from inheriting
+                          resolver access.
+                        type: string
+                    required:
+                    - name
+                    - uid
+                    type: object
+                    x-kubernetes-validations:
+                    - message: uid must not be empty
+                      rule: self.uid.size() > 0
+                  contextRef:
+                    description: ContextRef identifies the DNS context used for the
+                      proof.
+                    properties:
+                      name:
+                        description: Name is the resource name in the network's namespace.
+                        minLength: 1
+                        type: string
+                      uid:
+                        description: |-
+                          UID prevents a resource recreated under the same name from inheriting
+                          resolver access.
+                        type: string
+                    required:
+                    - name
+                    - uid
+                    type: object
+                    x-kubernetes-validations:
+                    - message: uid must not be empty
+                      rule: self.uid.size() > 0
+                  sequence:
+                    description: Sequence is the exact ready DNS authorization revision.
+                    format: int64
+                    type: integer
+                  serviceDestination:
+                    description: ServiceDestination identifies this DNS context inside
+                      the shared service.
+                    type: string
+                    x-kubernetes-validations:
+                    - message: serviceDestination must be an IP address
+                      rule: isIP(self)
+                  validUntil:
+                    description: ValidUntil is the earliest verified network-programming
+                      deadline.
+                    format: date-time
+                    type: string
+                  writerEpoch:
+                    description: WriterEpoch is the DNS authorization writer fenced
+                      by the proof.
+                    format: int64
+                    type: integer
+                required:
+                - accessBindingRef
+                - contextRef
+                - sequence
+                - serviceDestination
+                - validUntil
+                - writerEpoch
+                type: object
               ipam:
                 description: |-
                   IPAM reports the address space IPAM holds for this network in this

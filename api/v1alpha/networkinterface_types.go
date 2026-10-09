@@ -113,6 +113,10 @@ const (
 	// interface at all. A phase of Available means no claim holds it, which is
 	// the opposite of anything being available to serve.
 	NetworkInterfaceHolderAvailable = "HolderAvailable"
+
+	// NetworkInterfaceDNSConfigured is reported by the provider after applying
+	// the current unexpired settings in spec.dns to the workload.
+	NetworkInterfaceDNSConfigured = "DNSConfigured"
 )
 
 const (
@@ -336,6 +340,13 @@ type NetworkInterfaceSpec struct {
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:default="Delete"
 	ReclaimPolicy NetworkInterfaceReclaimPolicy `json:"reclaimPolicy,omitempty"`
+
+	// dns contains verified resolver settings inherited from the network
+	// context. Providers remove expired settings and report DNSConfigured after
+	// applying the current revision.
+	//
+	// +kubebuilder:validation:Optional
+	DNS *NetworkDNSSettings `json:"dns,omitempty"`
 }
 
 // NetworkInterfaceStatus defines the observed state of NetworkInterface: which

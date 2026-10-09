@@ -64,6 +64,18 @@ spec:
           spec:
             description: NetworkSpec defines the desired state of a Network
             properties:
+              dns:
+                description: DNS configures private resolver access for the network.
+                properties:
+                  mode:
+                    description: |-
+                      Mode controls whether network services maintain private resolver access.
+                      An empty value uses Managed when the Internal DNS feature is enabled.
+                    enum:
+                    - Managed
+                    - Disabled
+                    type: string
+                type: object
               ipFamilies:
                 default:
                 - IPv6

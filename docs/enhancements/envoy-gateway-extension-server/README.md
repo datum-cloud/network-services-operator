@@ -634,51 +634,37 @@ user-facing `spec`) and distribute EG trigger semantics across the wrong layer.
 ### Reporting Programmed
 
 The Extension Server reports, on each edge copy of a TrafficProtectionPolicy,
-whether this edge has built the policy's current generation. Karmada aggregates
-the edges' reports, and NSO mirrors the result onto the tenant's policy.
+whether this edge built the policy's current generation. Karmada aggregates the
+edges' reports; NSO mirrors the result onto the tenant's policy.
 
-**What it means.** `Programmed` keeps the Gateway API meaning: configuration
-generated and
-["assumed to be ready soon in the underlying data plane"](https://github.com/kubernetes-sigs/gateway-api/blob/v1.6.2/apis/v1/gateway_types.go#L1130-L1160).
-A replica of Envoy Gateway on this edge built a configuration that contains the
-policy at that generation, and the hook returned it. It does not say that Envoy
-accepted the configuration: Envoy Gateway does not report an xDS rejection to an
-extension, and Gateway API reserves `Ready` for that guarantee because no
-implementation meets it. The alerts in [High Availability](#high-availability)
-catch rejections.
-
-**How replicas share it.** Every Extension Server replica writes, without a
-leader, and every Envoy Gateway replica calls the hook, so the builds the
-replicas see can differ for a moment. The report therefore follows the Gateway
-API rules for several writers on one policy
-([GEP-713](https://gateway-api.sigs.k8s.io/geps/gep-713/)), and the replicas
-converge:
-
-- It changes only the ancestors whose `controllerName` is the Extension
-  Server's.
-- A claim only advances. It never writes an older generation over a newer one,
-  so a replica that is behind cannot undo one that is ahead.
-- It removes a claim only on facts that every replica sees the same way: the
-  target left the policy's spec, the policy is invalid (inverted paranoia
-  levels), the target or its rule no longer exists, or the claim is for a
-  generation the policy never had (the policy was recreated with its status, as
-  a restore does). A build that lacks a target removes nothing.
-- It reads the policy before it writes, and retries on a conflict.
-
-**When it runs.** After each build the hook returns, and never after a build
-that failed or that Envoy Gateway stopped waiting for. It also runs when a fact
-that a removal depends on changes: a policy's spec, an HTTPProxy's rules, or the
-deletion of a Gateway or an HTTPRoute. It runs outside the hook call, so a slow
-API server does not delay a build.
-
-**Envoy Gateway and the status.** Envoy Gateway treats the status of an
-extension policy as its own, and its leader replaces the whole status. On the
-edge it has read-only access to TrafficProtectionPolicy, which keeps it from
-erasing this report. That access must stay read-only.
-
-**Cost.** A report writes only when a claim changes. Envoy Gateway keeps whole
-policy objects in its model, `resourceVersion` included, so each write causes
-one more rebuild at its next reconcile: about one per policy edit per edge.
+- **Meaning.** Gateway API's `Programmed`: configuration generated and
+  ["assumed to be ready soon in the underlying data plane"](https://github.com/kubernetes-sigs/gateway-api/blob/v1.6.2/apis/v1/gateway_types.go#L1130-L1160).
+  A replica of Envoy Gateway on this edge built a configuration with the policy
+  at that generation, and the hook returned it. Envoy's acceptance is not part
+  of it: Envoy Gateway reports no xDS rejection to an extension. Envoy's
+  `update_rejected` counters show rejections; see
+  [High Availability](#high-availability).
+- **Writers.** Every Extension Server replica writes, without a leader, and
+  every Envoy Gateway replica calls the hook. The report follows the
+  [GEP-713](https://gateway-api.sigs.k8s.io/geps/gep-713/) rules for several
+  writers, so the replicas converge:
+  - only the ancestors whose `controllerName` is the Extension Server's change;
+  - a claim only advances: an older generation never replaces a newer one;
+  - a claim is removed only when the target left the policy's spec, the policy
+    is invalid (inverted paranoia levels), the target or its rule no longer
+    exists, or the claim is for a generation the policy never had (a restore
+    recreated it with its status); a build that lacks a target removes nothing;
+  - the policy is read before each write, and the write retries on a conflict.
+- **Triggers.** Each build the hook returns, never a failed build or one Envoy
+  Gateway stopped waiting for; a change to a policy's spec or an HTTPProxy's
+  rules; the deletion of a Gateway or an HTTPRoute. The report runs outside the
+  hook call.
+- **Envoy Gateway's access.** Envoy Gateway's leader replaces the whole status of
+  an extension policy. Its read-only access to TrafficProtectionPolicy on the
+  edge keeps this report; that access must stay read-only.
+- **Cost.** A write only when a claim changes. Each write costs one more Envoy
+  Gateway rebuild at its next reconcile, because Envoy Gateway keeps
+  `resourceVersion` in its model: about one per policy edit per edge.
 
 ### Deployment Topology
 
@@ -712,7 +698,7 @@ identity, and the policy that fronts it.
 
 The re-translation controller (see [Triggering Re-translation on Policy
 Change](#triggering-re-translation-on-policy-change)) runs **inside** this
-process. It and the `Programmed` report are the two writers in an otherwise
+process. It and the `Programmed` report write in an otherwise
 read-only workload, and both run on every replica without leader election. The
 trigger's only write is an idempotent merge patch of an annotation, so concurrent
 replicas converge on the same value and the redundant patches are no-ops at the API

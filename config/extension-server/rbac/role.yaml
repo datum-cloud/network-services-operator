@@ -45,9 +45,8 @@ rules:
       - connectors/status
     verbs:
       - get
-  # Edge-local Programmed feedback for TrafficProtectionPolicy (NSO#266). Every
-  # replica writes only its own ancestors, never an older generation over a
-  # newer one; upstream NSO mirrors the Karmada-aggregated value to tenants.
+  # The edge's Programmed report on a TrafficProtectionPolicy; see the design
+  # document, "Reporting Programmed".
   - apiGroups:
       - networking.datumapis.com
     resources:

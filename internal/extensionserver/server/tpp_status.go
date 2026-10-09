@@ -43,9 +43,9 @@ const (
 //   - a claim is removed only on facts every replica sees alike: the target left
 //     the policy's spec, the policy is invalid (inverted paranoia levels), the
 //     target or its rule no longer exists, or the claim is for a generation the
-//     policy never had (it was recreated with its status, as a restore does). A build that lacks a target
-//     removes nothing: two replicas of Envoy Gateway, or a partial build, may
-//     lack one for a moment.
+//     policy never had (it was recreated with its status, as a restore does).
+//     A build that lacks a target removes nothing: replicas of Envoy Gateway,
+//     or a partial build, may lack one for a moment.
 //
 // Errors are logged; the next build or fact change reports again.
 func (s *Server) reportProgrammed(ctx context.Context, built mutate.BuiltTPPs) {
@@ -68,7 +68,7 @@ func (s *Server) reportProgrammed(ctx context.Context, built mutate.BuiltTPPs) {
 }
 
 // reportTPP rewrites the ancestors the extension server owns on one policy,
-// reading the policy again on a conflict with the other replica.
+// reading the policy again on a conflict with another replica.
 func (s *Server) reportTPP(ctx context.Context, key client.ObjectKey, built *mutate.BuiltTPP, targets targetIndex) error {
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		tpp := &networkingv1alpha.TrafficProtectionPolicy{}

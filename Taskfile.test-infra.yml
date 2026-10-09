@@ -39,9 +39,8 @@ vars:
   # version is paired with it deliberately, also matching production.
   ENVOY_GATEWAY_VERSION: v1.9.2
   EG_SDK_VERSION: v1.8.1
-  # The production edge WAF image, which the data plane references. It is
-  # amd64-only, so the data plane pins the proxy's amd64 build, and arm64 hosts
-  # run both under amd64 emulation.
+  # The production edge WAF image, which the data plane references. amd64-only;
+  # see docs/testing/e2e-version-pins.md.
   CORAZA_WAF_IMAGE: ghcr.io/datum-labs/coraza-envoy-go-filter/coraza-waf:v2.0.4
   # CONNECT-proxy stand-in for the connector-tunnel scenario, built from
   # test/e2e-edge/_fixtures/connector-tunnel and loaded into the downstream cluster.

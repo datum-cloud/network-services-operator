@@ -19,7 +19,7 @@ tracked here so no pin lingers unexamined. See #278.
 
 | Pin | Version | Where | Why | Unpin when |
 | --- | --- | --- | --- | --- |
-| Envoy Gateway + SDK | `v1.9.2` + SDK `v1.8.1` | `Taskfile.test-infra.yml:40-41`, `config/e2e-downstream/eg-downstream/kustomization.yaml:16`, `config/tools/envoy-gateway-downstream/kustomization.yaml:9` | The production edge's Envoy Gateway, with its runtime flags and two replicas. The SDK is the one production's extension server is built with. | Production edge Envoy Gateway changes. |
+| Envoy Gateway + SDK | `v1.9.2` + SDK `v1.8.1` | `Taskfile.test-infra.yml`, `config/e2e-downstream/eg-downstream/kustomization.yaml`, `config/tools/envoy-gateway-downstream/kustomization.yaml` | The production edge's Envoy Gateway, with its runtime flags and two replicas. The SDK is the one production's extension server is built with. | Production edge Envoy Gateway changes. |
 | kindest/node | `v1.35.5` | `Taskfile.test-infra.yml:37` | Exact production edge node image. | Production Kubernetes upgrade. |
-| Envoy proxy | `contrib-v1.39.1`, amd64 build by digest | `config/e2e-downstream/envoyproxy.yaml:122` | Exact production edge proxy image. Pinned to its amd64 build because the WAF filter is amd64-only and loads only into an amd64 Envoy; arm64 hosts run both under amd64 emulation. | Production edge Envoy image changes. |
-| coraza-waf | `v2.0.4` | `Taskfile.test-infra.yml:45`, `config/e2e-downstream/envoyproxy.yaml:137` | Exact production WAF filter. It is amd64-only. | Production WAF image changes. |
+| Envoy proxy | `contrib-v1.39.1`, amd64 build by digest | `config/e2e-downstream/envoyproxy.yaml`, `config/dev/downstream_resources/downstream-gateway.yaml` | Exact production edge proxy, amd64 build: the WAF filter is amd64-only and loads only into an amd64 Envoy. An arm64 host runs both under amd64 emulation. | Production edge Envoy image changes. |
+| coraza-waf | `v2.0.4` | `Taskfile.test-infra.yml`, `config/e2e-downstream/envoyproxy.yaml`, `config/dev/downstream_resources/downstream-gateway.yaml` | Exact production WAF filter. It is amd64-only. | Production WAF image changes. |

@@ -1,8 +1,5 @@
-# The downstream Envoy Gateway install the e2e environment applies, with the
-# production edge's settings: the chart version, the runtime flags, the replica
-# count and the extensionManager wiring, plus the e2e certificateRef. It is a
-# copy of config/tools/envoy-gateway-downstream, which eg-crds still reads for
-# the CRDs; namespace.yaml and nso-crd-rbac.yaml beside it are copies too.
+# The downstream Envoy Gateway install for the e2e environment, with the
+# production edge's settings; see docs/testing/e2e-version-pins.md.
 resources:
   - namespace.yaml
   - nso-crd-rbac.yaml
@@ -16,12 +13,11 @@ helmCharts:
     version: v1.9.2
     repo: oci://docker.io/envoyproxy
     valuesInline:
-      # As production: the CRDs come from eg-crds, and from v1.8.1 the chart
-      # renders its safe-upgrades admission policy unless this is off.
+      # The CRDs come from eg-crds. From v1.8.1 the chart also renders its
+      # safe-upgrades admission policy unless this is off.
       crds:
         enabled: false
-      # As production's edge (infra apps/network-services-operator/downstream/edge):
-      # two Envoy Gateway replicas, each calling the extension server.
+      # Each replica calls the extension server, as on the edge.
       deployment:
         replicas: 2
       config:
@@ -34,7 +30,6 @@ helmCharts:
           runtimeFlags:
             enabled:
               - XDSNameSchemeV2
-              # As production (infra apps/network-services-operator/downstream/base/envoy-gateway-operator.yaml).
               - PerResourceSystemCASecret
           provider:
             type: Kubernetes

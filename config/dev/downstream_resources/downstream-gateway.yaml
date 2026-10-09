@@ -173,7 +173,7 @@ spec:
                 path: /sys/fs/bpf
                 type: Directory
         container:
-          # amd64 build, as in config/e2e-downstream/envoyproxy.yaml: the WAF filter is amd64-only.
+          # amd64 build, for the amd64-only WAF filter; see docs/testing/e2e-version-pins.md.
           image: envoyproxy/envoy:contrib-v1.39.1@sha256:78824f3b2157f789f17632e1bd848ba86283bba4a16fc245cf6f8509f9041d89
           # Required for the vpcPod socket-bind mutation (#856 step 4) to
           # succeed: SO_BINDTODEVICE requires CAP_NET_RAW on the process

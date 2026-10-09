@@ -11,8 +11,8 @@
 # This is Envoy Gateway upstream behaviour (envoyproxy/gateway#6123, open) that
 # appeared in EG v1.8.0; v1.7.x and v1.9.2 fail safe with a per-route 5xx.
 #
-# This scenario is the EG-upgrade gate. It is GREEN on the pinned EG v1.9.2, as
-# on v1.7.4, and with the NSO guard shipped in #304. It flips RED only if Envoy
+# This scenario is the EG-upgrade gate. It is GREEN on a fail-safe version and
+# with the NSO guard shipped in #304. It flips RED only if Envoy
 # Gateway runs v1.8.x while envoyproxy/gateway#6123 is still unfixed — do not read "green"
 # as "the upstream bug is fixed". It asserts two independent protections:
 #
@@ -703,7 +703,7 @@ spec:
       description: |
         The v1.8.x symptom is a rejected listener update carrying "config must be
         present" for the config-less oauth2 filter, which drops the whole snapshot.
-        On the pinned v1.9.2, as on v1.7.4, there is no such rejection. Assert the listener-update
+        A fail-safe version has no such rejection. Assert the listener-update
         rejection counter is zero on the fresh proxy and the log carries no
         "config must be present".
       try:

@@ -101,6 +101,22 @@ func claimingGateway(hostnames ...string) *gatewayv1.Gateway {
 func claimHostnames(t *testing.T, enabled bool, project string, downstream client.Client, hostnames ...string) (claimed []string, refused map[string]string) {
 	t.Helper()
 
+	all, refusals := claimHostnameRefusals(t, enabled, project, downstream, hostnames...)
+	refused = map[string]string{}
+	for h, refusal := range refusals {
+		refused[h] = refusal.message
+	}
+	for _, h := range all {
+		if !strings.HasSuffix(h, ".datumproxy.net") {
+			claimed = append(claimed, h)
+		}
+	}
+	return claimed, refused
+}
+
+func claimHostnameRefusals(t *testing.T, enabled bool, project string, downstream client.Client, hostnames ...string) ([]string, map[string]hostnameRefusal) {
+	t.Helper()
+
 	upstream := fake.NewClientBuilder().WithScheme(claimsTestScheme(t)).WithObjects(
 		&networkingv1alpha.Domain{
 			ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "example.com"},
@@ -124,16 +140,7 @@ func claimHostnames(t *testing.T, enabled bool, project string, downstream clien
 	gw := claimingGateway(hostnames...)
 	_, all, refusals, err := r.ensureHostnamesClaimed(context.Background(), project, upstream, gw, &gatewayv1.Gateway{})
 	require.NoError(t, err)
-	refused = map[string]string{}
-	for h, refusal := range refusals {
-		refused[h] = refusal.message
-	}
-	for _, h := range all {
-		if !strings.HasSuffix(h, ".datumproxy.net") {
-			claimed = append(claimed, h)
-		}
-	}
-	return claimed, refused
+	return all, refusals
 }
 
 func TestSubtreeAwareHostnameClaims(t *testing.T) {
@@ -284,4 +291,30 @@ func TestExplainInUseHostnames(t *testing.T) {
 
 	require.Len(t, statuses, 1)
 	assert.Equal(t, "beneath a wildcard", statuses[0].Conditions[0].Message)
+}
+
+func TestAwaitsHostnameClaim(t *testing.T) {
+	assert.False(t, awaitsHostnameClaim(nil), "no refusal")
+	assert.True(t, awaitsHostnameClaim(map[string]hostnameRefusal{
+		"example.com": hostnameInUseRefusal("example.com"),
+	}), "another gateway holds the hostname")
+	assert.False(t, awaitsHostnameClaim(map[string]hostnameRefusal{
+		"*.example.com": {reason: networkingv1alpha.HostnameVerifiedReasonDNSVerificationRequired},
+	}), "a refusal a Domain change ends")
+}
+
+func TestSubtreeRefusalAwaitsAClaim(t *testing.T) {
+	t.Parallel()
+
+	earlier := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+
+	beneath := claimsDownstream(t, claimFor("project-a", "*.s3.example.com", earlier))
+	_, refusals := claimHostnameRefusals(t, true, "project-b", beneath, "bucket.s3.example.com")
+	require.Contains(t, refusals, "bucket.s3.example.com")
+	assert.True(t, awaitsHostnameClaim(refusals), "a name beneath another project's wildcard")
+
+	above := claimsDownstream(t, claimFor("project-a", "bucket.s3.example.com", earlier))
+	_, refusals = claimHostnameRefusals(t, true, "project-b", above, "*.s3.example.com")
+	require.Contains(t, refusals, "*.s3.example.com")
+	assert.True(t, awaitsHostnameClaim(refusals), "a wildcard over another project's name")
 }

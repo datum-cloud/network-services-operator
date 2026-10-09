@@ -818,6 +818,15 @@ func (r *HTTPProxyReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 		)
 	}
 
+	if r.Config.Gateway.EnableDNSIntegration {
+		// buildDNSStatuses copies each record set's Programmed condition into
+		// the hostname status, so a change to it must reconcile the HTTPProxy.
+		builder = builder.Watches(
+			&dnsv1alpha1.DNSRecordSet{},
+			enqueueDNSRecordSetSource,
+		)
+	}
+
 	return builder.
 		WithOptions(controller.TypedOptions[mcreconcile.Request]{
 			MaxConcurrentReconciles: r.Config.HTTPProxy.MaxConcurrentReconciles,

@@ -6,6 +6,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -80,5 +81,27 @@ func primeObjects() []client.Object {
 		&networkingv1alpha1.Connector{},
 		&corev1.Namespace{},
 		&discoveryv1.EndpointSlice{},
+		// Metadata only: the TPP Programmed report removes a claim when its
+		// target no longer exists, and needs nothing else of these objects.
+		GatewayMetadata(),
+		HTTPRouteMetadata(),
 	}
+}
+
+// GatewayMetadata and HTTPRouteMetadata are the metadata-only objects the
+// extension server caches for those kinds; list them with
+// GatewayAPIMetadataList.
+func GatewayMetadata() *metav1.PartialObjectMetadata { return gatewayAPIMetadata("Gateway") }
+
+func HTTPRouteMetadata() *metav1.PartialObjectMetadata { return gatewayAPIMetadata("HTTPRoute") }
+
+// GatewayAPIMetadataList is an empty metadata-only list of a Gateway API kind.
+func GatewayAPIMetadataList(kind string) *metav1.PartialObjectMetadataList {
+	return &metav1.PartialObjectMetadataList{TypeMeta: metav1.TypeMeta{APIVersion: gatewayAPIVersion, Kind: kind + "List"}}
+}
+
+const gatewayAPIVersion = "gateway.networking.k8s.io/v1"
+
+func gatewayAPIMetadata(kind string) *metav1.PartialObjectMetadata {
+	return &metav1.PartialObjectMetadata{TypeMeta: metav1.TypeMeta{APIVersion: gatewayAPIVersion, Kind: kind}}
 }

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	pb "github.com/envoyproxy/gateway/proto/extension"
+	"github.com/go-logr/logr"
 	"github.com/grpc-ecosystem/go-grpc-middleware/v2/interceptors/recovery"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/spf13/cobra"
@@ -197,6 +198,10 @@ func errorPageBody(path, embedded string, log *slog.Logger) string {
 // gRPC server lifecycle, and signal handling.
 func run(o options) {
 	log := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	// controller-runtime and its informers log through logr. Without this, an
+	// informer error such as a missing RBAC right is never printed, and the
+	// server only waits for its cache to sync.
+	ctrl.SetLogger(logr.FromSlogHandler(log.Handler()))
 
 	grpcAddr := o.grpcAddr
 	healthAddr := o.healthAddr
@@ -396,6 +401,17 @@ func run(o options) {
 			return fmt.Errorf("cache manager: %w", err)
 		}
 		return nil
+	})
+
+	// Report each successful build as Programmed on this edge, outside the
+	// hook call, and recheck the report's removals when a fact they rest on
+	// changes.
+	if err := extSrv.WatchReportFacts(gCtx, mgr.GetCache()); err != nil {
+		log.Error("watch report facts", "err", err)
+		os.Exit(1)
+	}
+	g.Go(func() error {
+		return extSrv.RunProgrammedReporter(gCtx)
 	})
 
 	// Wait for cache sync before accepting gRPC connections.

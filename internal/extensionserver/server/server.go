@@ -62,13 +62,25 @@ type Server struct {
 	// to prove it is running exactly that. Always non-nil; capturing it only reads
 	// what was already produced.
 	programmed *programmedRecorder
+
+	// reporter writes the edge's Programmed report after each successful
+	// build; RunProgrammedReporter runs it.
+	reporter *programmedReporter
 }
 
 // New returns a production extension server backed by the given cache client.
 // In production, cl is the ctrl.Manager.GetClient() from NewManager().
 // In tests, cl is a fake client pre-populated with the test objects.
 func New(cl client.Client, cfg ServerConfig, log *slog.Logger) *Server {
-	return &Server{client: cl, cfg: cfg, log: log, programmed: newProgrammedRecorder()}
+	s := &Server{client: cl, cfg: cfg, log: log, programmed: newProgrammedRecorder()}
+	s.reporter = newProgrammedReporter(s.reportProgrammed)
+	return s
+}
+
+// RunProgrammedReporter writes the edge's Programmed report for each build the
+// hook returns successfully, until ctx ends.
+func (s *Server) RunProgrammedReporter(ctx context.Context) error {
+	return s.reporter.run(ctx)
 }
 
 // ProgrammedSetHandler serves what the last build changed, so a test can confirm
@@ -217,9 +229,9 @@ func (s *Server) PostTranslateModify(
 	tppListenersSpan.End()
 
 	_, tppRoutesSpan := tr.Start(mctx, "tpp.routes")
-	appliedTPPs := map[string]int64{}
+	built := mutate.BuiltTPPs{}
 	for _, rc := range routes {
-		n, mutErr := mutate.ApplyTPPRouteConfig(rc, idx, &s.cfg.Coraza, appliedTPPs)
+		n, mutErr := mutate.ApplyTPPRouteConfig(rc, idx, &s.cfg.Coraza, built)
 		if mutErr != nil {
 			s.log.Error("apply tpp route config", "route_config", rc.GetName(), "err", mutErr)
 			tppRoutesSpan.RecordError(mutErr)
@@ -236,14 +248,13 @@ func (s *Server) PostTranslateModify(
 	tppRoutesSpan.SetAttributes(attribute.Int("routes.tpp_applied", tppCount))
 	tppRoutesSpan.End()
 
-	for key, gen := range appliedTPPs {
+	for key, b := range built {
 		ns, name, ok := splitNamespaceName(key)
 		if !ok {
 			continue
 		}
-		extmetrics.TPPAppliedGeneration.WithLabelValues(ns, name).Set(float64(gen))
+		extmetrics.TPPAppliedGeneration.WithLabelValues(ns, name).Set(float64(b.Generation))
 	}
-	s.markTPPsProgrammed(ctx, appliedTPPs)
 
 	// --- Connector family ---
 	// Replace clusters BEFORE adding CONNECT routes so route wiring sees the
@@ -391,6 +402,18 @@ func (s *Server) PostTranslateModify(
 		"connector_offline_routes", offlineRtCount,
 		"clusters_vpcpod_bound", vpcPodCount,
 	)
+
+	// Envoy Gateway gave up on this call (a deadline or a cancel), so it will
+	// not receive the build: return the error and report nothing.
+	if err := ctx.Err(); err != nil {
+		hspan.RecordError(err)
+		outcome = outcomeError
+		return nil, err
+	}
+
+	// Every error path has returned by now, so the build goes back to Envoy
+	// Gateway: report it as programmed on this edge.
+	s.reporter.submit(built)
 
 	return &pb.PostTranslateModifyResponse{
 		Clusters:  clusters,

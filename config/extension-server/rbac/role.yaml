@@ -45,9 +45,8 @@ rules:
       - connectors/status
     verbs:
       - get
-  # Edge-local Programmed feedback for TrafficProtectionPolicy (NSO#266). The
-  # extension server writes status only on the edge replica after a successful
-  # WAF apply; upstream NSO mirrors the Karmada-aggregated value to tenants.
+  # The edge's Programmed report on a TrafficProtectionPolicy; see the design
+  # document, "Reporting Programmed".
   - apiGroups:
       - networking.datumapis.com
     resources:
@@ -58,11 +57,22 @@ rules:
       - patch
   # The edge re-translation controller patches a trigger annotation onto
   # Gateways to make Envoy Gateway re-translate when a Connector's liveness
-  # changes.
+  # changes. The TPP Programmed report also caches Gateway and HTTPRoute
+  # metadata, to remove a claim when its target no longer exists.
   - apiGroups:
       - gateway.networking.k8s.io
     resources:
       - gateways
     verbs:
       - get
+      - list
+      - watch
       - patch
+  - apiGroups:
+      - gateway.networking.k8s.io
+    resources:
+      - httproutes
+    verbs:
+      - get
+      - list
+      - watch

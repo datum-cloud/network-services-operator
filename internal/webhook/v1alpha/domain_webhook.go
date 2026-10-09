@@ -19,7 +19,6 @@ import (
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
-	webhookutil "go.datum.net/network-services-operator/internal/webhook"
 )
 
 // nolint:unused
@@ -54,13 +53,14 @@ func (v *DomainCustomValidator) ValidateCreate(ctx context.Context, domain *netw
 		return nil, fmt.Errorf("expected a cluster name in the context")
 	}
 
-	upstreamReader, err := webhookutil.ProjectReader(ctx, v.mgr, clusterName)
+	upstreamCluster, err := v.mgr.GetCluster(ctx, clusterName)
 	if err != nil {
 		return nil, err
 	}
+	upstreamClient := upstreamCluster.GetClient()
 
 	var domains networkingv1alpha.DomainList
-	if err := upstreamReader.List(ctx, &domains, client.InNamespace(domain.GetNamespace())); err != nil {
+	if err := upstreamClient.List(ctx, &domains, client.InNamespace(domain.GetNamespace())); err != nil {
 		return nil, fmt.Errorf("failed to list Domains in namespace %q: %w", domain.GetNamespace(), err)
 	}
 
@@ -102,13 +102,14 @@ func (v *DomainCustomValidator) ValidateDelete(ctx context.Context, domain *netw
 	logger := logf.FromContext(ctx).WithValues("cluster", clusterName)
 	logger.Info("Validating Domain deletion", "name", domain.GetName(), "namespace", domain.GetNamespace())
 
-	upstreamReader, err := webhookutil.ProjectReader(ctx, v.mgr, clusterName)
+	upstreamCluster, err := v.mgr.GetCluster(ctx, clusterName)
 	if err != nil {
 		return nil, err
 	}
+	upstreamClient := upstreamCluster.GetClient()
 
 	var httpProxies networkingv1alpha.HTTPProxyList
-	if err := upstreamReader.List(ctx, &httpProxies, client.InNamespace(domain.GetNamespace())); err != nil {
+	if err := upstreamClient.List(ctx, &httpProxies, client.InNamespace(domain.GetNamespace())); err != nil {
 		return nil, fmt.Errorf("failed to list HTTPProxies in namespace %q: %w", domain.GetNamespace(), err)
 	}
 
@@ -146,7 +147,7 @@ func (v *DomainCustomValidator) ValidateDelete(ctx context.Context, domain *netw
 	// If the DNSZone CRD is not installed in the upstream cluster, skip this check.
 	zoneList := &unstructured.UnstructuredList{}
 	zoneList.SetGroupVersionKind(dnsZoneListGVK)
-	if err := upstreamReader.List(
+	if err := upstreamClient.List(
 		ctx,
 		zoneList,
 		client.InNamespace(domain.GetNamespace()),

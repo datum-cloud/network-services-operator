@@ -3,7 +3,7 @@
 # M2 functional confirmation for the prod-fidelity test-infra env.
 #
 # Drives an upstream Gateway + HTTPRoute through the production wiring — the
-# dedicated downstream Envoy Gateway (v1.7.4) + the NSO extension server
+# dedicated downstream Envoy Gateway + the NSO extension server
 # (failOpen:false, PostTranslateModify hook) on the real Coraza data plane — and
 # asserts a real HTTP 200 from the data plane. This is the path the default e2e
 # run never exercised (vanilla EG, no ext-server).

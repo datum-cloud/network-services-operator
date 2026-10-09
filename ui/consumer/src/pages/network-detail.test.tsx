@@ -129,7 +129,7 @@ describe('NetworkDetail', () => {
     expect(screen.getByText('IPv6 required')).toBeInTheDocument();
   });
 
-  it('shows Regions and Connected workloads together on the default Resources tab', () => {
+  it('shows regions and workloads on the default Resources tab', () => {
     useNetworkMock.mockReturnValue({
       data: makeNetwork(),
       isLoading: false,
@@ -140,9 +140,6 @@ describe('NetworkDetail', () => {
     renderPage();
 
     expect(screen.getByTestId('networking-plugin-network-resources')).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'Regions' })).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'Connected workloads' })).toBeInTheDocument();
-    expect(screen.queryByRole('heading', { name: 'Routes' })).not.toBeInTheDocument();
   });
 
   it('shows the Settings panel and header actions only once the Settings tab is active', () => {

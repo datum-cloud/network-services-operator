@@ -138,6 +138,7 @@ export const networkInterfaceResourceSchema = z.object({
   interfaceName: z.string().optional(),
   attachmentMode: z.string().optional(),
   workloadName: z.string().optional(),
+  instanceIndex: z.string().optional(),
   location: z.string().optional(),
   labels: z.record(z.string(), z.string()).default({}),
   phase: networkInterfacePhaseSchema.optional(),

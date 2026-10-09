@@ -257,6 +257,7 @@ const baseRawNetworkInterface: RawNetworkInterface = {
     creationTimestamp: '2026-08-25T14:18:34Z',
     labels: {
       'compute.datumapis.com/workload-name': 'storefront',
+      'compute.datumapis.com/instance-index': '2',
       'networking.datumapis.com/location': 'us-central-1',
     },
   },
@@ -292,6 +293,7 @@ describe('toNetworkInterface', () => {
       holderAvailableStatus: 'True',
       holderAvailableReason: 'HolderAvailable',
       workloadName: 'storefront',
+      instanceIndex: '2',
       location: 'us-central-1',
     });
     expect(iface.createdAt).toEqual(new Date('2026-08-25T14:18:34Z'));
@@ -305,6 +307,7 @@ describe('toNetworkInterface', () => {
     const iface = toNetworkInterface(raw);
 
     expect(iface.workloadName).toBeUndefined();
+    expect(iface.instanceIndex).toBeUndefined();
     expect(iface.location).toBeUndefined();
     expect(iface.labels).toEqual({});
   });

@@ -40,8 +40,8 @@ func (r *NetworkInterfaceReconciler) Reconcile(ctx context.Context, req mcreconc
 		return ctrl.Result{}, err
 	}
 
-	logger.Info("reconciling network interface")
-	defer logger.Info("reconcile complete")
+	logger.V(1).Info("reconciling network interface")
+	defer logger.V(1).Info("reconcile complete")
 
 	return ctrl.Result{}, r.reconcileInterface(ctx, cl.GetClient(), req.NamespacedName)
 }

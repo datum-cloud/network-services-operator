@@ -150,7 +150,7 @@ require (
 	github.com/go-gorp/gorp/v3 v3.1.0 // indirect
 	github.com/go-logfmt/logfmt v0.6.1 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
-	github.com/go-logr/zapr v1.3.0 // indirect
+	github.com/go-logr/zapr v1.3.0
 	github.com/go-ole/go-ole v1.3.0 // indirect
 	github.com/go-openapi/analysis v0.25.1 // indirect
 	github.com/go-openapi/errors v0.22.7 // indirect
@@ -291,7 +291,7 @@ require (
 	go.opentelemetry.io/otel/sdk/metric v1.44.0 // indirect
 	go.opentelemetry.io/proto/otlp v1.10.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
-	go.uber.org/zap v1.28.0 // indirect
+	go.uber.org/zap v1.28.0
 	go.yaml.in/yaml/v2 v2.4.4 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	golang.org/x/crypto v0.54.0 // indirect

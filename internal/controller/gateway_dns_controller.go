@@ -67,7 +67,7 @@ func (r *GatewayReconciler) ensureDNSRecordSets(
 	}
 
 	logger := log.FromContext(ctx)
-	logger.Info("ensuring DNS record sets", "claimed_hostname_count", len(claimedHostnames))
+	logger.V(1).Info("ensuring DNS record sets", "claimed_hostname_count", len(claimedHostnames))
 
 	canonicalHostname := r.gatewayCanonicalHostname(upstreamGateway)
 
@@ -228,7 +228,7 @@ func (r *GatewayReconciler) ensureDNSRecordSets(
 			continue
 		}
 
-		logger.Info("found matching zone for hostname",
+		logger.V(1).Info("found matching zone for hostname",
 			"hostname", hostname,
 			"zone", matchedZoneName,
 			"domain", domain.Name,

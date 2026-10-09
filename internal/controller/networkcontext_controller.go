@@ -70,8 +70,8 @@ func (r *NetworkContextReconciler) Reconcile(ctx context.Context, req mcreconcil
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	logger.Info("reconciling network context")
-	defer logger.Info("reconcile complete")
+	logger.V(1).Info("reconciling network context")
+	defer logger.V(1).Info("reconcile complete")
 
 	return r.reconcileNetworkContext(ctx, cl.GetClient(), &networkContext)
 }

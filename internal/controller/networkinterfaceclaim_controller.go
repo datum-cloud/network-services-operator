@@ -96,8 +96,8 @@ func (r *NetworkInterfaceClaimReconciler) Reconcile(ctx context.Context, req mcr
 		return ctrl.Result{}, err
 	}
 
-	logger.Info("reconciling network interface claim")
-	defer logger.Info("reconcile complete")
+	logger.V(1).Info("reconciling network interface claim")
+	defer logger.V(1).Info("reconcile complete")
 
 	return r.reconcileClaim(ctx, cl.GetClient(), cl.GetEventRecorder("networkinterfaceclaim-controller"), req.NamespacedName)
 }

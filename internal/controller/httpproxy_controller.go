@@ -203,8 +203,8 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 		return ctrl.Result{}, nil
 	}
 
-	logger.Info("reconciling httpproxy")
-	defer logger.Info("reconcile complete")
+	logger.V(1).Info("reconciling httpproxy")
+	defer logger.V(1).Info("reconcile complete")
 
 	httpProxyCopy := httpProxy.DeepCopy()
 
@@ -323,7 +323,7 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 		return ctrl.Result{}, fmt.Errorf("failed updating gateway resource: %w", err)
 	}
 
-	logger.Info("processed gateway", jsonKeyName, gateway.Name, "result", result)
+	logProcessed(logger, result, "processed gateway", jsonKeyName, gateway.Name, "result", result)
 
 	// Maintain an HTTPRoute for all rules in the HTTPProxy
 
@@ -353,7 +353,7 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 				}
 				return ctrl.Result{}, fmt.Errorf("failed updating httproutefilter resource: %w", err)
 			}
-			logger.Info("processed httproutefilter", jsonKeyName, httpRouteFilter.Name, "result", result)
+			logProcessed(logger, result, "processed httproutefilter", jsonKeyName, httpRouteFilter.Name, "result", result)
 		}
 	}
 
@@ -393,7 +393,7 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 		return ctrl.Result{}, fmt.Errorf("failed updating httproute resource: %w", err)
 	}
 
-	logger.Info("processed httproute", jsonKeyName, httpRoute.Name, "result", result)
+	logProcessed(logger, result, "processed httproute", jsonKeyName, httpRoute.Name, "result", result)
 
 	observation.step = httpProxyStepEndpointSlice
 	if result, halt, err := r.reconcileEndpointSlices(ctx, cl, &httpProxy, desiredResources.endpointSlices, acceptedCondition, programmedCondition); halt || err != nil {
@@ -404,7 +404,7 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 	httpProxyCopy.Status.Addresses = gateway.Status.Addresses
 
 	if c := apimeta.FindStatusCondition(gateway.Status.Conditions, string(gatewayv1.GatewayConditionAccepted)); c != nil {
-		logger.Info("gateway accepted status", "status", c.Status)
+		logger.V(1).Info("gateway accepted status", "status", c.Status)
 		if c.Status == metav1.ConditionTrue {
 			acceptedCondition.Status = metav1.ConditionTrue
 			acceptedCondition.Reason = networkingv1alpha.HTTPProxyReasonAccepted
@@ -548,7 +548,7 @@ func (r *HTTPProxyReconciler) reconcileEndpointSlices(
 			return ctrl.Result{}, true, fmt.Errorf("failed to create or update endpointslice: %w", err)
 		}
 
-		logger.Info("processed endpointslice", "result", result, jsonKeyName, desiredEndpointSlice.Name)
+		logProcessed(logger, result, "processed endpointslice", "result", result, jsonKeyName, desiredEndpointSlice.Name)
 	}
 
 	if err := pruneEndpointSlices(ctx, cl.GetClient(), httpProxy, desired); err != nil {
@@ -614,7 +614,7 @@ func (r *HTTPProxyReconciler) reconcileHTTPProxyHostnameStatus(
 		)
 		return false
 	}
-	logger.Info("updating hostname status")
+	logger.V(1).Info("updating hostname status")
 
 	// CanonicalHostname is the platform-managed hostname we create for the HTTPProxy.
 	httpProxyCopy.Status.CanonicalHostname = gatewayCanonicalHostnameForConfig(r.Config.Gateway, gateway)

@@ -267,8 +267,8 @@ func (r *GatewayResourceReplicatorReconciler) Reconcile(ctx context.Context, req
 		return ctrl.Result{}, err
 	}
 
-	logger.Info("reconciling resource")
-	defer logger.Info("reconcile complete")
+	logger.V(1).Info("reconciling resource")
+	defer logger.V(1).Info("reconcile complete")
 
 	downstreamStrategy := downstreamclient.NewMappedNamespaceResourceStrategy(string(req.ClusterName), upstreamClient, r.DownstreamCluster.GetClient())
 

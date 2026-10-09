@@ -37,16 +37,17 @@ vars:
   K8S_NODE_IMAGE: kindest/node:v1.35.5@sha256:ce977ae6d65918d0b58a5f8b5e940429c2ce42fa3a5619ec2bbc60b949c0ac95
   # Gateway control-plane version, matching production. The extension-server SDK
   # version is paired with it deliberately, also matching production.
-  ENVOY_GATEWAY_VERSION: v1.7.4
+  ENVOY_GATEWAY_VERSION: v1.9.2
   EG_SDK_VERSION: v1.8.1
   # The production edge WAF image, which the data plane references. It is
-  # amd64-only.
+  # amd64-only, so the data plane pins the proxy's amd64 build, and arm64 hosts
+  # run both under amd64 emulation.
   CORAZA_WAF_IMAGE: ghcr.io/datum-labs/coraza-envoy-go-filter/coraza-waf:v2.0.4
   # CONNECT-proxy stand-in for the connector-tunnel scenario, built from
   # test/e2e-edge/_fixtures/connector-tunnel and loaded into the downstream cluster.
   CONNECT_PROXY_IMAGE: connect-proxy:e2e
   # The WAF is enabled by default, matching production. Set CORAZA_DISABLED=true
-  # on arm64 hosts, where the amd64-only WAF filter cannot load.
+  # only to deliberately skip the WAF.
   CORAZA_DISABLED: '{{.CORAZA_DISABLED | default "false"}}'
   # Karmada-bundled kube-apiserver, pinned to production.
   KARMADA_APISERVER_VERSION: v1.33.2
@@ -145,7 +146,7 @@ tasks:
       - echo "tools ready in {{.REPO}}/bin"
 
   up:
-    desc: "Bring the canonical two-cluster prod-fidelity test env ONLINE (clusters + Milo + IPAM + EG v1.7.4 + ext-server + Coraza data plane + NSO manager). IPAM is aggregated into Milo and addressed by project control-plane path; read test/e2e/README-milo.md before treating this env as evidence about per-project AUTHORIZATION, which it does not test."
+    desc: "Bring the canonical two-cluster prod-fidelity test env ONLINE (clusters + Milo + IPAM + Envoy Gateway + ext-server + Coraza data plane + NSO manager). IPAM is aggregated into Milo and addressed by project control-plane path; read test/e2e/README-milo.md before treating this env as evidence about per-project AUTHORIZATION, which it does not test."
     cmds:
       - echo "🚀 test-infra:up — building nso-upstream + nso-downstream"
       - task: clusters
@@ -298,7 +299,8 @@ tasks:
   eg-crds:
     desc: "Install the full Gateway-API + Envoy Gateway CRD set (incl ReferenceGrant + EnvoyProxy) on the downstream cluster. The downstream EG chart sets includeCRDs:false, so CRDs are applied separately (matches prod, where CRDs are managed out-of-band)."
     vars:
-      EG_CRD_DIR: config/tools/envoy-gateway-downstream/charts/gateway-helm-{{.ENVOY_GATEWAY_VERSION}}/gateway-helm/crds
+      # From v1.9 the chart carries its CRDs in a crds subchart.
+      EG_CRD_DIR: config/tools/envoy-gateway-downstream/charts/gateway-helm-{{.ENVOY_GATEWAY_VERSION}}/gateway-helm/charts/crds/crds
     cmds:
       # The gateway-helm chart is gitignored (config/**/charts); vendor it first
       # so the CRD files below exist on a fresh checkout (e.g. CI). Output is
@@ -333,12 +335,11 @@ tasks:
         exit 1
 
   eg-downstream:
-    desc: "Install the dedicated downstream Envoy Gateway (v1.7.4) with the ext-server extensionManager wiring on the downstream cluster."
+    desc: "Install the dedicated downstream Envoy Gateway with the ext-server extensionManager wiring on the downstream cluster."
     cmds:
       - echo "🔧 installing downstream EG {{.ENVOY_GATEWAY_VERSION}} (+ extensionManager, failOpen:false, maxMessageSize:256Mi)"
-      # Build from the untracked config/e2e-downstream/eg-downstream copy, which
-      # bakes in the e2e pins, so a hard reset on the shared branch cannot revert
-      # them — it kept clobbering the tracked copy.
+      # Build from config/e2e-downstream/eg-downstream, which carries the
+      # production edge's settings.
       - '{{.KUSTOMIZE}} build --enable-helm config/e2e-downstream/eg-downstream | kubectl --context {{.DOWNSTREAM_CTX}} apply --server-side=true --force-conflicts -f -'
 
   load-coraza-waf:

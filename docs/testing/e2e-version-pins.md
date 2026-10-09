@@ -19,7 +19,7 @@ tracked here so no pin lingers unexamined. See #278.
 
 | Pin | Version | Where | Why | Unpin when |
 | --- | --- | --- | --- | --- |
-| Envoy Gateway + SDK | `v1.7.4` + SDK `v1.8.1` | `Taskfile.test-infra.yml:40-41`, `config/tools/envoy-gateway-downstream/kustomization.yaml:9` | EG 1.8 does not program merged gateways served through the extension manager (waf-gw stays with empty status); 1.7.4 matches production. | Production moves off EG 1.7.4. |
+| Envoy Gateway + SDK | `v1.9.2` + SDK `v1.8.1` | `Taskfile.test-infra.yml:40-41`, `config/e2e-downstream/eg-downstream/kustomization.yaml:16`, `config/tools/envoy-gateway-downstream/kustomization.yaml:9` | The production edge's Envoy Gateway, with its runtime flags and two replicas. The SDK is the one production's extension server is built with. | Production edge Envoy Gateway changes. |
 | kindest/node | `v1.35.5` | `Taskfile.test-infra.yml:37` | Exact production edge node image. | Production Kubernetes upgrade. |
-| Envoy proxy | `contrib-v1.39.1` | `config/e2e-downstream/envoyproxy.yaml:119` | Exact production edge proxy image. | Production edge Envoy image changes. |
-| coraza-waf | `v2.0.4` | `Taskfile.test-infra.yml:44`, `config/e2e-downstream/envoyproxy.yaml:134` | Exact production WAF filter. | Production WAF image changes. |
+| Envoy proxy | `contrib-v1.39.1`, amd64 build by digest | `config/e2e-downstream/envoyproxy.yaml:122` | Exact production edge proxy image. Pinned to its amd64 build because the WAF filter is amd64-only and loads only into an amd64 Envoy; arm64 hosts run both under amd64 emulation. | Production edge Envoy image changes. |
+| coraza-waf | `v2.0.4` | `Taskfile.test-infra.yml:45`, `config/e2e-downstream/envoyproxy.yaml:137` | Exact production WAF filter. It is amd64-only. | Production WAF image changes. |

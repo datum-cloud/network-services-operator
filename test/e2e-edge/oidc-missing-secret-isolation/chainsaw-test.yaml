@@ -9,11 +9,11 @@
 # already-running proxy keeps its last-good config and hides the damage; a fresh
 # proxy pod comes up serving nothing — every tenant on that proxy loses traffic.
 # This is Envoy Gateway upstream behaviour (envoyproxy/gateway#6123, open) that
-# appeared in EG v1.8.0; v1.7.x fails safe with a per-route 5xx.
+# appeared in EG v1.8.0; v1.7.x and v1.9.2 fail safe with a per-route 5xx.
 #
-# This scenario is the EG-upgrade gate. It is GREEN on the pinned EG v1.7.4 and
-# with the NSO guard shipped in #304. It flips RED only if Envoy Gateway is bumped
-# to v1.8.x while envoyproxy/gateway#6123 is still unfixed — do not read "green"
+# This scenario is the EG-upgrade gate. It is GREEN on the pinned EG v1.9.2, as
+# on v1.7.4, and with the NSO guard shipped in #304. It flips RED only if Envoy
+# Gateway runs v1.8.x while envoyproxy/gateway#6123 is still unfixed — do not read "green"
 # as "the upstream bug is fixed". It asserts two independent protections:
 #
 #   Arm 1 — the guard keeps the poison off the shared snapshot. NSO holds a
@@ -492,7 +492,7 @@ spec:
                         port: 8080
         # The poison: an OIDC policy whose clientSecret Secret is never created in
         # this namespace, so Envoy Gateway emits a config-less oauth2 listener
-        # filter. On EG v1.7.4 the route fails safe (per-route 5xx); on EG v1.8.x
+        # filter. On EG v1.7.4 and v1.9.2 the route fails safe (per-route 5xx); on EG v1.8.x
         # the whole listener snapshot is rejected on a fresh pull.
         - create:
             cluster: nso-downstream
@@ -595,8 +595,8 @@ spec:
 
     - name: Arm2 - the bad route fails on its own (per-route 5xx), not the whole gateway
       description: |
-        The poison is contained to its own route. On the fail-safe EG v1.7.4 the
-        config-less oauth2 filter makes the bad hostname return a 5xx while its
+        The poison is contained to its own route. On the fail-safe EG versions
+        (v1.7.4, v1.9.2) the bad hostname returns a 5xx while its
         neighbours keep serving. A 200 here would mean the broken policy was
         silently ignored (the poison never exercised); a working neighbour with a
         5xx bad route is the isolation this gate protects.
@@ -627,7 +627,7 @@ spec:
                 esac
                 sleep 5
               done
-              echo "ERROR: bad route never returned a 5xx (last ${last:-<none>}); expected the EG v1.7.x per-route fail-safe"
+              echo "ERROR: bad route never returned a 5xx (last ${last:-<none>}); expected the per-route fail-safe"
               exit 1
       catch:
         - script:
@@ -703,7 +703,7 @@ spec:
       description: |
         The v1.8.x symptom is a rejected listener update carrying "config must be
         present" for the config-less oauth2 filter, which drops the whole snapshot.
-        On the pinned v1.7.4 there is no such rejection. Assert the listener-update
+        On the pinned v1.9.2, as on v1.7.4, there is no such rejection. Assert the listener-update
         rejection counter is zero on the fresh proxy and the log carries no
         "config must be present".
       try:

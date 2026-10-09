@@ -1,12 +1,8 @@
-# Reset-resilient copy of the downstream Envoy Gateway install with the
-# prod-fidelity pins baked in (EG chart v1.7.4, extensionManager
-# maxMessageSize:256Mi, e2e certificateRef). This lives in an UNTRACKED dir so an
-# external `git reset --hard` on the shared branch cannot revert these settings
-# (it kept clobbering the tracked config/tools/envoy-gateway-downstream copy).
-#
-# The non-volatile siblings (namespace.yaml, nso-crd-rbac.yaml) are reused from
-# the tracked tool dir via relative path; only the kustomization itself (the
-# thing that got reset) is vendored here.
+# The downstream Envoy Gateway install the e2e environment applies, with the
+# production edge's settings: the chart version, the runtime flags, the replica
+# count and the extensionManager wiring, plus the e2e certificateRef. It is a
+# copy of config/tools/envoy-gateway-downstream, which eg-crds still reads for
+# the CRDs; namespace.yaml and nso-crd-rbac.yaml beside it are copies too.
 resources:
   - namespace.yaml
   - nso-crd-rbac.yaml
@@ -15,11 +11,19 @@ helmCharts:
     includeCRDs: false
     namespace: datum-downstream-gateway
     releaseName: envoy-datum-downstream-gateway
-    # Prod EG version (rolled back from 1.8.1 for the OIDC regression). Pulled
-    # from the OCI repo so this dir needs no vendored chart.
-    version: v1.7.4
+    # The production edge version. Pulled from the OCI repo so this dir needs
+    # no vendored chart.
+    version: v1.9.2
     repo: oci://docker.io/envoyproxy
     valuesInline:
+      # As production: the CRDs come from eg-crds, and from v1.8.1 the chart
+      # renders its safe-upgrades admission policy unless this is off.
+      crds:
+        enabled: false
+      # As production's edge (infra apps/network-services-operator/downstream/edge):
+      # two Envoy Gateway replicas, each calling the extension server.
+      deployment:
+        replicas: 2
       config:
         envoyGateway:
           gateway:
@@ -30,6 +34,8 @@ helmCharts:
           runtimeFlags:
             enabled:
               - XDSNameSchemeV2
+              # As production (infra apps/network-services-operator/downstream/base/envoy-gateway-operator.yaml).
+              - PerResourceSystemCASecret
           provider:
             type: Kubernetes
             kubernetes:

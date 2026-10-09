@@ -123,7 +123,7 @@ the others' fields.
 
 ## Rollout
 
-Each phase: staging, then production a day later.
+Each phase: staging, then production.
 
 ### Phase 1: HTTPProxy and the replicator
 

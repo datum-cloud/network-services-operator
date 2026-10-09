@@ -107,6 +107,19 @@ type NetworkServicesOperator struct {
 	// NetworkPresence configures how a network's presence in a location is
 	// maintained.
 	NetworkPresence NetworkPresenceConfig `json:"networkPresence,omitempty"`
+
+	// Subnet configures how a Subnet's readiness is decided.
+	Subnet SubnetConfig `json:"subnet,omitempty"`
+}
+
+// +k8s:deepcopy-gen=true
+
+// SubnetConfig configures the controller that reports a Subnet's readiness.
+type SubnetConfig struct {
+	// RequireProgramming holds a Subnet not ready until an infrastructure
+	// provider marks it Programmed. Leave it off where no provider programs
+	// subnets, and a Subnet is ready as soon as it is allocated.
+	RequireProgramming bool `json:"requireProgramming,omitempty"`
 }
 
 // +k8s:deepcopy-gen=true

@@ -25,6 +25,7 @@ stage: alpha
   - [Securing the Extension Server](#securing-the-extension-server)
   - [Sourcing Policy: How the Extension Server Knows What to Inject](#sourcing-policy-how-the-extension-server-knows-what-to-inject)
   - [Triggering Re-translation on Policy Change](#triggering-re-translation-on-policy-change)
+  - [Reporting Programmed](#reporting-programmed)
   - [Deployment Topology](#deployment-topology)
   - [High Availability](#high-availability)
   - [Reference Implementation](#reference-implementation)
@@ -462,9 +463,11 @@ following controls apply:
   the handshake.
 - **Least-privilege Kubernetes access.** The Extension Server reads the policy
   and status it consumes (Traffic Protection and Connector policy and their
-  status) and holds no write access to any of it; its
+  status), and the metadata of Gateways and HTTPRoutes; its
   [RBAC](https://kubernetes.io/docs/reference/access-authn-authz/rbac/) grants
-  read-only verbs on exactly those types. Its one write is the re-translation
+  read-only verbs on exactly those types. It writes two things: its own
+  `Programmed` entries in a Traffic Protection policy's status (see [Reporting
+  Programmed](#reporting-programmed)), and the re-translation
   trigger: `patch` on `Gateway` (see [Triggering Re-translation on Policy
   Change](#triggering-re-translation-on-policy-change)), scoped to that single
   resource and verb and used only to set a trigger annotation — it cannot mutate
@@ -628,6 +631,41 @@ loop. With modifications to preserve the nonce the loop can be bounded, but the
 required changes introduce an API anti-pattern (a platform bookkeeping counter in
 user-facing `spec`) and distribute EG trigger semantics across the wrong layer.
 
+### Reporting Programmed
+
+The Extension Server reports, on each edge copy of a TrafficProtectionPolicy,
+whether this edge built the policy's current generation. Karmada aggregates the
+edges' reports; NSO mirrors the result onto the tenant's policy.
+
+- **Meaning.** Gateway API's `Programmed`: configuration generated and
+  ["assumed to be ready soon in the underlying data plane"](https://github.com/kubernetes-sigs/gateway-api/blob/v1.6.2/apis/v1/gateway_types.go#L1130-L1160).
+  A replica of Envoy Gateway on this edge built a configuration with the policy
+  at that generation, and the hook returned it. Envoy's acceptance is not part
+  of it: Envoy Gateway reports no xDS rejection to an extension. Envoy's
+  `update_rejected` counters show rejections; see
+  [High Availability](#high-availability).
+- **Writers.** Every Extension Server replica writes, without a leader, and
+  every Envoy Gateway replica calls the hook. The report follows the
+  [GEP-713](https://gateway-api.sigs.k8s.io/geps/gep-713/) rules for several
+  writers, so the replicas converge:
+  - only the ancestors whose `controllerName` is the Extension Server's change;
+  - a claim only advances: an older generation never replaces a newer one;
+  - a claim is removed only when the target left the policy's spec, the policy
+    is invalid (inverted paranoia levels), the target or its rule no longer
+    exists, or the claim is for a generation the policy never had (a restore
+    recreated it with its status); a build that lacks a target removes nothing;
+  - the policy is read before each write, and the write retries on a conflict.
+- **Triggers.** Each build the hook returns, never a failed build or one Envoy
+  Gateway stopped waiting for; a change to a policy's spec or an HTTPProxy's
+  rules; the deletion of a Gateway or an HTTPRoute. The report runs outside the
+  hook call.
+- **Envoy Gateway's access.** Envoy Gateway's leader replaces the whole status of
+  an extension policy. Its read-only access to TrafficProtectionPolicy on the
+  edge keeps this report; that access must stay read-only.
+- **Cost.** A write only when a claim changes. Each write costs one more Envoy
+  Gateway rebuild at its next reconcile, because Envoy Gateway keeps
+  `resourceVersion` in its model: about one per policy edit per edge.
+
 ### Deployment Topology
 
 The Extension Server runs as a **distinct process from NSO's reconcilers**. The
@@ -660,10 +698,12 @@ identity, and the policy that fronts it.
 
 The re-translation controller (see [Triggering Re-translation on Policy
 Change](#triggering-re-translation-on-policy-change)) runs **inside** this
-process. It is the one writer in an otherwise read-only workload, and it runs on
-every replica without leader election: its only write is an idempotent merge patch
-of a trigger annotation, so concurrent replicas converge on the same value and the
-redundant patches are no-ops at the API server. Co-locating it here is deliberate
+process. It and the `Programmed` report write in an otherwise
+read-only workload, and both run on every replica without leader election. The
+trigger's only write is an idempotent merge patch of an annotation, so concurrent
+replicas converge on the same value and the redundant patches are no-ops at the API
+server; the report converges by the rules in [Reporting
+Programmed](#reporting-programmed). Co-locating it here is deliberate
 — it must observe the same informer cache the extension server translates against,
 which is what removes the cross-cluster ordering race a separate, project-side
 trigger would have.

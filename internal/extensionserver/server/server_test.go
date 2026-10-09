@@ -860,3 +860,85 @@ func TestPostTranslateModify_OfflineConnector_503Route(t *testing.T) {
 	assert.NotContains(t, vh.Domains, targetHost,
 		"offline connector must not append targetHost to VH domains")
 }
+
+// TestPostTranslateModify_ReportsOnlyASuccessfulBuild verifies that a build is
+// handed to the Programmed reporter only when the hook returns it to Envoy
+// Gateway. Every error path returns before the hand-over; the failing build
+// here fails on a malformed HCM, the one error a request alone can cause.
+func TestPostTranslateModify_ReportsOnlyASuccessfulBuild(t *testing.T) {
+	const (
+		ns     = "test-project"
+		gwName = "test-gw"
+	)
+	tpp := &networkingv1alpha.TrafficProtectionPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-tpp", Namespace: ns, Generation: 2},
+		Spec: networkingv1alpha.TrafficProtectionPolicySpec{
+			Mode: networkingv1alpha.TrafficProtectionPolicyEnforce,
+			TargetRefs: []gatewayv1alpha2.LocalPolicyTargetReferenceWithSectionName{{
+				LocalPolicyTargetReference: gatewayv1.LocalPolicyTargetReference{Kind: "Gateway", Name: gwName},
+			}},
+			// The fake client applies no CRD defaults, so the rule set the API
+			// server would default is spelled out.
+			RuleSets: []networkingv1alpha.TrafficProtectionPolicyRuleSet{{
+				Type: networkingv1alpha.TrafficProtectionPolicyOWASPCoreRuleSet,
+				OWASPCoreRuleSet: networkingv1alpha.OWASPCRS{
+					ParanoiaLevels:  networkingv1alpha.ParanoiaLevels{Blocking: 1, Detection: 1},
+					ScoreThresholds: networkingv1alpha.OWASPScoreThresholds{Inbound: 5, Outbound: 4},
+				},
+			}},
+		},
+	}
+	request := func(listener *listenerv3.Listener) *pb.PostTranslateModifyRequest {
+		return &pb.PostTranslateModifyRequest{
+			Listeners: []*listenerv3.Listener{listener},
+			Routes: []*routev3.RouteConfiguration{{
+				Name: "consumer-gw/test-gw/https",
+				VirtualHosts: []*routev3.VirtualHost{{
+					Name:     "vh",
+					Metadata: egGatewayMeta(t, ns, gwName),
+					Routes:   []*routev3.Route{{Name: "fwd"}},
+				}},
+			}},
+		}
+	}
+	newServer := func() *Server {
+		cl := fake.NewClientBuilder().
+			WithScheme(testServerScheme(t)).
+			WithObjects(&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}}, tpp).
+			Build()
+		return New(cl, testServerConfig(), discardLogger())
+	}
+
+	t.Run("a successful build is reported", func(t *testing.T) {
+		srv := newServer()
+		_, err := srv.PostTranslateModify(context.Background(), request(mkListenerWithHCM(t)))
+		require.NoError(t, err)
+
+		built, ok := srv.reporter.take()
+		require.True(t, ok, "a successful build must be handed to the reporter")
+		require.Contains(t, built, ns+"/test-tpp")
+		assert.Equal(t, int64(2), built[ns+"/test-tpp"].Generation)
+	})
+
+	t.Run("a build Envoy Gateway gave up on is not reported", func(t *testing.T) {
+		srv := newServer()
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		_, err := srv.PostTranslateModify(ctx, request(mkListenerWithHCM(t)))
+		require.ErrorIs(t, err, context.Canceled)
+
+		_, ok := srv.reporter.take()
+		assert.False(t, ok, "a build nobody receives must not be reported")
+	})
+
+	t.Run("a failed build is not reported", func(t *testing.T) {
+		broken := mkListenerWithHCM(t)
+		broken.FilterChains[0].Filters[0].GetTypedConfig().Value = []byte{0xff, 0xff} // an HCM that does not unmarshal
+		srv := newServer()
+		_, err := srv.PostTranslateModify(context.Background(), request(broken))
+		require.Error(t, err)
+
+		_, ok := srv.reporter.take()
+		assert.False(t, ok, "a failed build must not be reported")
+	})
+}

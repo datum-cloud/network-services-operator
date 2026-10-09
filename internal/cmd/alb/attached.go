@@ -137,6 +137,16 @@ func mutateProxy(
 	if err != nil {
 		return err
 	}
+	return mutateProxyWithClient(cmd, c, name, mutate, success)
+}
+
+func mutateProxyWithClient(
+	cmd *cobra.Command,
+	c client.Client,
+	name string,
+	mutate func(*networkingv1alpha.HTTPProxy) (*networkingv1alpha.HTTPProxy, error),
+	success string,
+) error {
 	dryRun, _ := cmd.Flags().GetBool("dry-run")
 	if err := patchProxyWithRetry(cmd.Context(), c, name, mutate, dryRun); err != nil {
 		return classifyProxyPatchError(name, err)

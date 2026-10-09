@@ -3334,6 +3334,9 @@ func TestProcessDownstreamHTTPRouteRulesNetworkServicePanicThreshold(t *testing.
 		require.NotNil(t, policy.Spec.HealthCheck.PanicThreshold)
 		assert.Equal(t, uint32(0), *policy.Spec.HealthCheck.PanicThreshold)
 		assert.Equal(t, downstreamNamespaceName, policy.Namespace)
+		require.NotNil(t, policy.Spec.MergeType,
+			"the policy must merge into a tenant's Gateway policy, or their rate limits and circuit breakers stop applying")
+		assert.Equal(t, envoygatewayv1alpha1.StrategicMerge, *policy.Spec.MergeType)
 
 		require.Len(t, policy.Spec.TargetRefs, 1)
 		targetRef := policy.Spec.TargetRefs[0]

@@ -5,7 +5,37 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
+
+func TestInternalDNSDefaultsRemainDisabled(t *testing.T) {
+	cfg := &NetworkServicesOperator{}
+	SetObjectDefaults_NetworkServicesOperator(cfg)
+	if cfg.InternalDNS.Enabled {
+		t.Fatal("internal DNS must require an explicit alpha feature gate")
+	}
+	if cfg.InternalDNS.Frontend != "fd53::53" || cfg.InternalDNS.ServicePrefix != "fd70:100::/64" ||
+		cfg.InternalDNS.AccessLeaseDuration.Duration != 2*time.Minute {
+		t.Fatalf("unexpected internal DNS defaults: %#v", cfg.InternalDNS)
+	}
+}
+
+func TestInternalDNSValidation(t *testing.T) {
+	cfg := InternalDNSConfig{
+		Enabled: true, Frontend: "fd53::53", ServicePrefix: "fd70:100::/64",
+		AccessLeaseDuration:        metav1.Duration{Duration: 2 * time.Minute},
+		ProducerAttachmentSelector: map[string]string{"service.datum.net/internal-dns": "true"},
+	}
+	if err := cfg.validate(); err != nil {
+		t.Fatalf("valid config rejected: %v", err)
+	}
+	cfg.AccessLeaseDuration = metav1.Duration{Duration: 2*time.Minute + time.Second}
+	if err := cfg.validate(); err == nil {
+		t.Fatal("authorization beyond Galactic's accepted deadline was allowed")
+	}
+}
 
 func TestNetworkServicesOperator_Validate_IrohDisabled(t *testing.T) {
 	// When DNSEnabled is false the rest of the iroh config is allowed to

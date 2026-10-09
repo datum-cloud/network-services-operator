@@ -2367,7 +2367,7 @@ func (r *GatewayReconciler) ensureDownstreamHTTPRoute(
 		ObjectMeta: downstreamRouteObjectMeta,
 	}
 
-	rules, downstreamResources, downstreamResourcesToDelete, err := r.processDownstreamHTTPRouteRules(
+	rules, downstreamResources, err := r.processDownstreamHTTPRouteRules(
 		ctx,
 		upstreamClient,
 		upstreamGateway,
@@ -2518,30 +2518,9 @@ func (r *GatewayReconciler) ensureDownstreamHTTPRoute(
 		)
 	}
 
-	// Delete downstream resources that were previously desired but no longer
-	// are. This catches cases like an HTTPProxy backend flipping from https to
-	// http, which should remove the BackendTLSPolicy that had been created for
-	// the previous state. Resources owned by the downstream HTTPRoute are
-	// garbage collected when the route is deleted, but that does not cover
-	// in-place transitions, so orphans must be cleaned up explicitly here.
-	for _, resource := range downstreamResourcesToDelete {
-		gvk, err := apiutil.GVKForObject(resource, downstreamClient.Scheme())
-		if err != nil {
-			result.Err = err
-			return result
-		}
-
-		if err := downstreamClient.Delete(ctx, resource); err != nil && !apierrors.IsNotFound(err) {
-			result.Err = fmt.Errorf("failed deleting stale downstream resource %s/%s: %w",
-				resource.GetNamespace(), resource.GetName(), err)
-			return result
-		}
-
-		logger.Info("stale downstream resource removed",
-			jsonKeyKind, gvk.Kind,
-			"namespace", resource.GetNamespace(),
-			jsonKeyName, resource.GetName(),
-		)
+	if err := deleteUnneededRouteObjects(ctx, downstreamClient, downstreamRoute, downstreamResources); err != nil {
+		result.Err = err
+		return result
 	}
 
 	// Update the upstream route's parent status information
@@ -2643,7 +2622,7 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 	upstreamRoute gatewayv1.HTTPRoute,
 	downstreamGateway *gatewayv1.Gateway,
 	downstreamStrategy downstreamclient.ResourceStrategy,
-) (rules []gatewayv1.HTTPRouteRule, downstreamResources []client.Object, downstreamResourcesToDelete []client.Object, err error) {
+) (rules []gatewayv1.HTTPRouteRule, downstreamResources []client.Object, err error) {
 
 	// We need to create a Service for each (BackendRef, EndpointSlice)
 	// combination as different backendRefs may use different hostnames in URL
@@ -2678,13 +2657,13 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 					Namespace: string(ptr.Deref(backendRef.Namespace, gatewayv1.Namespace(upstreamGateway.Namespace))),
 					Name:      string(backendRef.Name),
 				}, &upstreamEndpointSlice); err != nil {
-					return nil, nil, nil, err
+					return nil, nil, err
 				}
 
 				if backendRef.Port == nil {
 					// Should be protected by validation, but check just in case.
 					logger.Info("no port defined in backendRef", "backendRef", backendRef)
-					return nil, nil, nil, fmt.Errorf("no port defined in backendRef")
+					return nil, nil, fmt.Errorf("no port defined in backendRef")
 				}
 
 				// An instance HTTPProxy backend (api/v1alpha.InstanceBackendRef)
@@ -2701,14 +2680,14 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 				if tenantID, ok := upstreamEndpointSlice.Labels[VPCPodTenantIDLabel]; ok && tenantID != "" {
 					passThroughRef, err := r.passThroughVPCPodBackendRef(ctx, downstreamGateway, backendRef)
 					if err != nil {
-						return nil, nil, nil, err
+						return nil, nil, err
 					}
 					backendRefs = append(backendRefs, passThroughRef)
 				} else {
 					if !controllerutil.ContainsFinalizer(&upstreamEndpointSlice, gatewayControllerGCFinalizer) {
 						controllerutil.AddFinalizer(&upstreamEndpointSlice, gatewayControllerGCFinalizer)
 						if err := upstreamClient.Update(ctx, &upstreamEndpointSlice); err != nil {
-							return nil, nil, nil, fmt.Errorf("failed to add finalizer to endpointslice: %w", err)
+							return nil, nil, fmt.Errorf("failed to add finalizer to endpointslice: %w", err)
 						}
 					}
 
@@ -2727,7 +2706,7 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 							if port.Name == nil {
 								// This should be protected by validation, but check just in case.
 								logger.Info("no port name defined in upstream endpointslice", "endpointslice", upstreamEndpointSlice.Name, "port", port)
-								return nil, nil, nil, fmt.Errorf("no port name defined in upstream endpointslice")
+								return nil, nil, fmt.Errorf("no port name defined in upstream endpointslice")
 							}
 							appProtocol = port.AppProtocol
 							endpointPort = ptr.To(port)
@@ -2736,7 +2715,7 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 
 					if endpointPort == nil {
 						logger.Info("port not found in upstream endpointslice", "endpointslice", upstreamEndpointSlice.Name, "port", *backendRef.Port)
-						return nil, nil, nil, fmt.Errorf("port not found in upstream endpointslice")
+						return nil, nil, fmt.Errorf("port not found in upstream endpointslice")
 					}
 
 					if upstreamEndpointSlice.Labels[NetworkServiceBackendLabel] != "" {
@@ -2777,7 +2756,7 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 					}
 
 					if err := downstreamStrategy.SetControllerReference(ctx, &upstreamEndpointSlice, downstreamEndpointSlice); err != nil {
-						return nil, nil, nil, fmt.Errorf("failed to set controller reference on downstream endpointslice: %w", err)
+						return nil, nil, fmt.Errorf("failed to set controller reference on downstream endpointslice: %w", err)
 					}
 
 					downstreamResources = append(downstreamResources, downstreamEndpointSlice)
@@ -2827,7 +2806,7 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 						if hostname == nil {
 							// TODO(jreese) set the RouteConditionResolvedRefs condition to
 							// False, as the hostname is not present.
-							return nil, nil, nil, fmt.Errorf("no hostname found in URLRewrite filters or EndpointSlice annotation on backendRef or Route %q", upstreamRoute.Name)
+							return nil, nil, fmt.Errorf("no hostname found in URLRewrite filters or EndpointSlice annotation on backendRef or Route %q", upstreamRoute.Name)
 						}
 
 						// BackendTLSPolicy graduated from v1alpha3 to v1 in gateway-api v1.5.
@@ -2856,18 +2835,6 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 						}
 
 						downstreamResources = append(downstreamResources, backendTLSPolicy)
-					} else {
-						// The backend is not https, so any BackendTLSPolicy that may
-						// have been created by a previous reconcile (when the backend
-						// was https) must be removed. The policy name is deterministic
-						// from the route UID and backend indices, so we can target it
-						// directly without listing.
-						downstreamResourcesToDelete = append(downstreamResourcesToDelete, &gatewayv1.BackendTLSPolicy{
-							ObjectMeta: metav1.ObjectMeta{
-								Namespace: downstreamGateway.Namespace,
-								Name:      resourceName,
-							},
-						})
 					}
 				}
 
@@ -2896,37 +2863,27 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 
 	loadBalancer, err := loadBalancerFromUpstreamRoute(upstreamRoute)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 
 	passiveHealthCheck, err := passiveHealthCheckFromUpstreamRoute(upstreamRoute)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 
 	// A route needs the policy whenever it has a networkService backend, a
-	// load balancer choice, or passive health checks. Otherwise delete any
-	// previously synthesized policy. Downstream delete ignores NotFound, so
-	// this is safe for routes that never had one — including instance and
-	// VPC-pod backends, which never take the Service-synthesis path and
-	// would otherwise keep outlier detection after health checks are
-	// removed.
+	// load balancer choice, or passive health checks. A route that stops
+	// needing it loses it with every other object it no longer produces;
+	// see deleteUnneededRouteObjects.
 	if networkServiceBackend || loadBalancer != nil || passiveHealthCheck != nil {
 		policy, err := r.backendTrafficPolicy(ctx, upstreamRoute, downstreamGateway, downstreamStrategy, networkServiceBackend, loadBalancer, passiveHealthCheck)
 		if err != nil {
-			return nil, nil, nil, err
+			return nil, nil, err
 		}
 		downstreamResources = append(downstreamResources, policy)
-	} else {
-		downstreamResourcesToDelete = append(downstreamResourcesToDelete, &envoygatewayv1alpha1.BackendTrafficPolicy{
-			ObjectMeta: metav1.ObjectMeta{
-				Namespace: downstreamGateway.Namespace,
-				Name:      fmt.Sprintf("route-%s-panic-threshold", upstreamRoute.UID),
-			},
-		})
 	}
 
-	return rules, downstreamResources, downstreamResourcesToDelete, nil
+	return rules, downstreamResources, nil
 }
 
 // loadBalancerFromUpstreamRoute decodes the HTTPProxy load balancer choice

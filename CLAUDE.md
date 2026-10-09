@@ -71,7 +71,7 @@ Run `make help` for the full list. Most-used targets:
 ### Prod-Fidelity Test Environment (Taskfile)
 The e2e environment is two Kind clusters that mirror how the edge runs in
 production: an **upstream** cluster (`nso-upstream`) running the operator, and a
-**downstream** cluster (`nso-downstream`) running Envoy Gateway v1.7.4, the
+**downstream** cluster (`nso-downstream`) running the production edge's Envoy Gateway, the
 extension server + Coraza WAF data plane, cert-manager, and external-dns. It is
 defined in `Taskfile.test-infra.yml` and is what CI runs.
 

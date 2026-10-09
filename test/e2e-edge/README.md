@@ -62,8 +62,8 @@ operator holds such a policy back until its secret is present (so the poison
 never reaches the proxy), and — even if the poison is placed directly on the
 gateway — a neighbor's route keeps serving after the shared proxy is restarted
 cold, while the bad route fails on its own. This doubles as the Envoy Gateway
-upgrade gate: it is green on the pinned v1.7.4 and flips red only if EG is bumped
-to v1.8.x while the upstream bug is unfixed, so "green" never gets misread as
+upgrade gate: it is green on a fail-safe version (v1.7.x, v1.9.2) and flips red only if
+EG runs v1.8.x while the upstream bug is unfixed, so "green" never gets misread as
 "the upstream bug is fixed".
 
 ## Running them

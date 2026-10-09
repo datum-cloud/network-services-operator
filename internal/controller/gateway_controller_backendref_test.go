@@ -83,7 +83,7 @@ func TestProcessDownstreamHTTPRouteRules_BackendRefGroupIsSet(t *testing.T) {
 		DownstreamCluster: &fakeCluster{cl: downstreamClient},
 	}
 
-	rules, _, _, err := reconciler.processDownstreamHTTPRouteRules(
+	rules, _, err := reconciler.processDownstreamHTTPRouteRules(
 		context.Background(),
 		upstreamClient,
 		upstreamGateway,

@@ -659,7 +659,7 @@ func TestEnsureDownstreamGatewayCertificateService(t *testing.T) {
 			}
 			downstreamStrategy := downstreamclient.NewMappedNamespaceResourceStrategy(upstreamCluster, fakeUpstreamClient, fakeDownstreamClient)
 
-			reconciler.prepareUpstreamGateway(upstreamGateway)
+			prepareUpstreamGateway(reconciler, upstreamGateway)
 			result, downstreamGateway := reconciler.ensureDownstreamGateway(ctx, upstreamCluster, fakeUpstreamClient, upstreamGateway, downstreamStrategy)
 			require.NoError(t, result.Err)
 			_, err := result.Complete(ctx)
@@ -773,7 +773,7 @@ func (h *certificateServiceHarness) reconcile() (*gatewayv1.Gateway, *gatewayv1.
 	}
 	var current gatewayv1.Gateway
 	require.NoError(h.t, h.upstream.Get(h.ctx, h.gateway, &current))
-	h.reconciler.prepareUpstreamGateway(&current)
+	prepareUpstreamGateway(h.reconciler, &current)
 	strategy := downstreamclient.NewMappedNamespaceResourceStrategy("test", h.upstream, h.downstream)
 	result, downstreamGateway := h.reconciler.ensureDownstreamGateway(h.ctx, "test", h.upstream, &current, strategy)
 	require.NoError(h.t, result.Err)
@@ -1198,7 +1198,7 @@ func TestCertificateServiceCRDAbsentDoesNotBlockGateway(t *testing.T) {
 	}
 	downstreamStrategy := downstreamclient.NewMappedNamespaceResourceStrategy("test", fakeUpstreamClient, fakeDownstreamClient)
 
-	reconciler.prepareUpstreamGateway(upstreamGateway)
+	prepareUpstreamGateway(reconciler, upstreamGateway)
 	result, downstreamGateway := reconciler.ensureDownstreamGateway(ctx, "test", fakeUpstreamClient, upstreamGateway, downstreamStrategy)
 	require.NoError(t, result.Err, "a missing TLSCertificate API must not fail the gateway")
 	_, err := result.Complete(ctx)

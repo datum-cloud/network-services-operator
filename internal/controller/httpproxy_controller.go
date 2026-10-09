@@ -272,47 +272,15 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 	// Maintain a Gateway for the HTTPProxy, handle conflicts in names by updating the
 	// Programmed condition with info about the conflict.
 
-	gateway := desiredResources.gateway.DeepCopy()
 	observation.step = httpProxyStepGateway
 
-	result, err := controllerutil.CreateOrUpdate(ctx, cl.GetClient(), gateway, func() error {
-		if hasControllerConflict(gateway, &httpProxy) {
-			// return already exists error - a gateway exists with the name we want to
-			// use, but it's owned by a different resource.
-			return apierrors.NewAlreadyExists(gatewayv1.Resource(KindGateway), gateway.Name)
-		}
-
-		if err := controllerutil.SetControllerReference(&httpProxy, gateway, cl.GetScheme()); err != nil {
-			return fmt.Errorf("failed to set controller on gateway: %w", err)
-		}
-
-		// Special handling for default gateway listeners, as the hostnames will be
-		// updated by the controller. Only required on updates.
-		if !gateway.CreationTimestamp.IsZero() {
-			defaultHTTPListener := gatewayutil.GetListenerByName(gateway.Spec.Listeners, gatewayutil.DefaultHTTPListenerName)
-			if defaultHTTPListener != nil {
-				gatewayutil.SetListener(desiredResources.gateway, *defaultHTTPListener)
-			}
-
-			defaultHTTPSListener := gatewayutil.GetListenerByName(gateway.Spec.Listeners, gatewayutil.DefaultHTTPSListenerName)
-			if defaultHTTPSListener != nil {
-				gatewayutil.SetListener(desiredResources.gateway, *defaultHTTPSListener)
-			}
-		}
-
-		gateway.Spec = desiredResources.gateway.Spec
-
-		return nil
-	})
+	gateway, result, err := r.saveGateway(ctx, cl, &httpProxy, desiredResources.gateway)
 	if err != nil {
 		if apierrors.IsAlreadyExists(err) {
 			programmedCondition.Status = metav1.ConditionFalse
 			programmedCondition.Reason = networkingv1alpha.HTTPProxyReasonConflict
-			programmedCondition.Message = fmt.Sprintf("Underlying Gateway with the name %q already exists and is owned by a different resource.", gateway.Name)
+			programmedCondition.Message = fmt.Sprintf("Underlying Gateway with the name %q already exists and is owned by a different resource.", desiredResources.gateway.Name)
 			return ctrl.Result{}, nil
-		}
-		if apierrors.IsConflict(err) {
-			return ctrl.Result{RequeueAfter: retryAfterConflict}, nil
 		}
 		if apierrors.IsInvalid(err) {
 			markDerivedResourceInvalid(ctx, acceptedCondition, "gateway", err)

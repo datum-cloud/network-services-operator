@@ -42,6 +42,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
+	gatewayac "sigs.k8s.io/gateway-api/applyconfiguration/apis/v1"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mchandler "sigs.k8s.io/multicluster-runtime/pkg/handler"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
@@ -53,12 +54,16 @@ import (
 	certificatesv1alpha1 "go.datum.net/network-services-operator/internal/certificates/v1alpha1"
 	"go.datum.net/network-services-operator/internal/config"
 	downstreamclient "go.datum.net/network-services-operator/internal/downstreamclient"
+	"go.datum.net/network-services-operator/internal/util/finalizer"
 	gatewayutil "go.datum.net/network-services-operator/internal/util/gateway"
 	"go.datum.net/network-services-operator/internal/util/resourcename"
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 )
 
-const gatewayControllerFinalizer = "gateway.networking.datumapis.com/gateway-controller"
+const (
+	gatewayControllerName      = "gateway"
+	gatewayControllerFinalizer = "gateway.networking.datumapis.com/gateway-controller"
+)
 const gatewayControllerGCFinalizer = "gateway.networking.datumapis.com/gateway-controller-gc"
 const certificateIssuerTLSOption = "gateway.networking.datumapis.com/certificate-issuer"
 
@@ -192,8 +197,7 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 				return result.Complete(ctx)
 			}
 
-			controllerutil.RemoveFinalizer(&gateway, gatewayControllerFinalizer)
-			if err := cl.GetClient().Update(ctx, &gateway); err != nil {
+			if err := finalizer.Remove(ctx, cl.GetClient(), &gateway, gatewayControllerFinalizer, fieldOwner(gatewayControllerName)); err != nil {
 				return ctrl.Result{}, fmt.Errorf("failed to remove finalizer from gateway: %w", err)
 			}
 		}
@@ -201,9 +205,9 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 		return ctrl.Result{}, nil
 	}
 
-	if r.prepareUpstreamGateway(&gateway) {
+	if intent, missing := r.upstreamGatewayIntent(&gateway); missing {
 		logger.Info("preparing upstream gateway (adding finalizer/defaults)")
-		if err := cl.GetClient().Update(ctx, &gateway); err != nil {
+		if err := cl.GetClient().Apply(ctx, intent, client.FieldOwner(fieldOwner(gatewayControllerName)), client.ForceOwnership); err != nil {
 			logger.Error(err, "failed preparing upstream gateway")
 			return ctrl.Result{}, fmt.Errorf("failed preparing upstream gateway: %w", err)
 		}
@@ -222,33 +226,32 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 	return result.Complete(ctx)
 }
 
-// prepareUpstreamGateway adds a finalizer to the upstream gateway and ensures
-// that default listeners have their hostname fields set.
-func (r *GatewayReconciler) prepareUpstreamGateway(gateway *gatewayv1.Gateway) (needsUpdate bool) {
-	if !controllerutil.ContainsFinalizer(gateway, gatewayControllerFinalizer) {
-		controllerutil.AddFinalizer(gateway, gatewayControllerFinalizer)
-		needsUpdate = true
+// upstreamGatewayIntent is all the gateway controller owns on an upstream
+// gateway: its finalizer, and the canonical hostname on each default listener
+// whose hostname is empty or already canonical. A hostname someone else set
+// stays theirs. It reports whether the gateway lacks any of it. The webhook
+// cannot set the hostname, because it derives from the UID, which a create
+// does not yet have.
+func (r *GatewayReconciler) upstreamGatewayIntent(gateway *gatewayv1.Gateway) (*gatewayac.GatewayApplyConfiguration, bool) {
+	canonical := gatewayv1.Hostname(r.gatewayCanonicalHostname(gateway))
+	missing := !controllerutil.ContainsFinalizer(gateway, gatewayControllerFinalizer)
+	spec := gatewayac.GatewaySpec()
+	for _, name := range []gatewayv1.SectionName{gatewayutil.DefaultHTTPListenerName, gatewayutil.DefaultHTTPSListenerName} {
+		listener := gatewayutil.GetListenerByName(gateway.Spec.Listeners, name)
+		switch {
+		case listener == nil:
+			continue
+		case listener.Hostname == nil:
+			missing = true
+		case *listener.Hostname != canonical:
+			continue
+		}
+		spec.WithListeners(gatewayac.Listener().WithName(name).WithHostname(canonical))
 	}
-
-	// Ensure that the default listeners have hostnames set. This is not done in
-	// the defaulting webhook as the UID is not available, but we still want to
-	// let users create gateways without listeners and receive sane defaults.
-
-	gatewayDefaultHostname := ptr.To(gatewayv1.Hostname(r.gatewayCanonicalHostname(gateway)))
-
-	defaultHTTPListener := gatewayutil.GetListenerByName(gateway.Spec.Listeners, gatewayutil.DefaultHTTPListenerName)
-	if defaultHTTPListener != nil && defaultHTTPListener.Hostname == nil {
-		needsUpdate = true
-		defaultHTTPListener.Hostname = gatewayDefaultHostname
-	}
-
-	defaultHTTPSListener := gatewayutil.GetListenerByName(gateway.Spec.Listeners, gatewayutil.DefaultHTTPSListenerName)
-	if defaultHTTPSListener != nil && defaultHTTPSListener.Hostname == nil {
-		needsUpdate = true
-		defaultHTTPSListener.Hostname = gatewayDefaultHostname
-	}
-
-	return needsUpdate
+	return gatewayac.Gateway(gateway.Name, gateway.Namespace).
+		WithUID(gateway.UID).
+		WithFinalizers(gatewayControllerFinalizer).
+		WithSpec(spec), missing
 }
 
 func (r *GatewayReconciler) ensureDownstreamGateway(
@@ -486,7 +489,7 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 
 	if !equality.Semantic.DeepEqual(upstreamGateway.Status.Addresses, addresses) {
 		upstreamGateway.Status.Addresses = addresses
-		result.AddStatusUpdate(upstreamClient, upstreamGateway)
+		result.AddStatusPatch(upstreamClient, upstreamGateway, fieldOwner(gatewayControllerName))
 	}
 
 	return httpRouteResult.Merge(result), downstreamGateway
@@ -1375,7 +1378,7 @@ func (r *GatewayReconciler) reconcileGatewayStatus(
 			ObservedGeneration: upstreamGateway.Generation,
 		})
 
-		result.AddStatusUpdate(upstreamClient, upstreamGateway)
+		result.AddStatusPatch(upstreamClient, upstreamGateway, fieldOwner(gatewayControllerName))
 	}
 
 	if c := apimeta.FindStatusCondition(downstreamGateway.Status.Conditions, string(gatewayv1.GatewayConditionProgrammed)); c != nil {
@@ -1411,7 +1414,7 @@ func (r *GatewayReconciler) reconcileGatewayStatus(
 			ObservedGeneration: upstreamGateway.Generation,
 		})
 
-		result.AddStatusUpdate(upstreamClient, upstreamGateway)
+		result.AddStatusPatch(upstreamClient, upstreamGateway, fieldOwner(gatewayControllerName))
 	}
 
 	// Track per-gateway programmed state. Set 1 when programmed, 0 when not.
@@ -2315,7 +2318,7 @@ func (r *GatewayReconciler) ensureDownstreamGatewayHTTPRoutes(
 	if !equality.Semantic.DeepEqual(upstreamGateway.Status.Listeners, listenerStatus) {
 		logger.Info("listener status changes present")
 		upstreamGateway.Status.Listeners = listenerStatus
-		result.AddStatusUpdate(upstreamClient, upstreamGateway)
+		result.AddStatusPatch(upstreamClient, upstreamGateway, fieldOwner(gatewayControllerName))
 	} else {
 		logger.V(1).Info("listener status unchanged")
 	}
@@ -3228,7 +3231,7 @@ func (r *GatewayReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 		WithOptions(controller.TypedOptions[mcreconcile.Request]{
 			MaxConcurrentReconciles: r.Config.Gateway.MaxConcurrentReconciles,
 		}).
-		Named("gateway").Complete(r)
+		Named(gatewayControllerName).Complete(r)
 }
 
 // listGatewaysAttachedByHTTPRoute is a watch predicate which finds all Gateways mentioned

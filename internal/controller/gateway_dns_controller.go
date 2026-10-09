@@ -433,7 +433,7 @@ func (r *GatewayReconciler) reconcileDNSStatus(
 		})
 	}
 
-	result.AddStatusUpdate(upstreamClient, upstreamGateway)
+	result.AddStatusPatch(upstreamClient, upstreamGateway, fieldOwner(gatewayControllerName))
 	return result
 }
 

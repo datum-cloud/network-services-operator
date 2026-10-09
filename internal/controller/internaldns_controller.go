@@ -744,6 +744,7 @@ func renewalDelay(now time.Time, validUntil time.Time) time.Duration {
 
 func internalDNSIntentAnnotations() []string {
 	return []string{
+		InternalDNSRegionAnnotation,
 		InternalDNSContextNameAnnotation,
 		InternalDNSContextUIDAnnotation,
 		InternalDNSAccessNameAnnotation,

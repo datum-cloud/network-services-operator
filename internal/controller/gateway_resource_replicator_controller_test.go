@@ -1070,3 +1070,72 @@ func TestNetworkIsReplicatedToTheHubWithoutBeingPlaced(t *testing.T) {
 	assert.False(t, cfg.mirrorStatusToAnnotation,
 		"nothing downstream reads a Network's status")
 }
+
+func TestNetworkContextReplicationCarriesOnlyDNSIntentAnnotations(t *testing.T) {
+	configs := initReplicationResourceConfigs()
+	gvk := schema.GroupVersionKind{
+		Group: groupNetworkingDatumAPIs, Version: versionV1Alpha, Kind: KindNetworkContext,
+	}
+	cfg := configs[gvkKey(gvk)]
+	assert.ElementsMatch(t, internalDNSIntentAnnotations(), cfg.propagatedAnnotations)
+
+	upstream := &unstructured.Unstructured{}
+	upstream.SetAnnotations(map[string]string{
+		InternalDNSContextNameAnnotation: "resolver-a",
+		InternalDNSSequenceAnnotation:    "7",
+		"example.test/untrusted":         "discard",
+	})
+	downstream := &unstructured.Unstructured{}
+	downstream.SetAnnotations(map[string]string{
+		InternalDNSContextNameAnnotation: "stale",
+		InternalDNSAccessUIDAnnotation:   "removed-upstream",
+		"karmada.io/managed":             "preserve",
+	})
+
+	propagateAnnotations(upstream, downstream, cfg.propagatedAnnotations)
+	assert.Equal(t, "resolver-a", downstream.GetAnnotations()[InternalDNSContextNameAnnotation])
+	assert.Equal(t, "7", downstream.GetAnnotations()[InternalDNSSequenceAnnotation])
+	assert.NotContains(t, downstream.GetAnnotations(), InternalDNSAccessUIDAnnotation)
+	assert.NotContains(t, downstream.GetAnnotations(), "example.test/untrusted")
+	assert.Equal(t, "preserve", downstream.GetAnnotations()["karmada.io/managed"])
+}
+
+func TestNetworkContextReplicationProducesUsableDNSIntent(t *testing.T) {
+	gvk := schema.GroupVersionKind{
+		Group: groupNetworkingDatumAPIs, Version: versionV1Alpha, Kind: KindNetworkContext,
+	}
+	cfg := initReplicationResourceConfigs()[gvkKey(gvk)]
+	upstream := &unstructured.Unstructured{}
+	upstream.SetAnnotations(map[string]string{
+		InternalDNSRegionAnnotation:             "us-central1",
+		InternalDNSContextNameAnnotation:        "resolver-a",
+		InternalDNSContextUIDAnnotation:         "context-uid",
+		InternalDNSAccessNameAnnotation:         "access-a",
+		InternalDNSAccessUIDAnnotation:          "access-uid",
+		InternalDNSWriterEpochAnnotation:        "3",
+		InternalDNSSequenceAnnotation:           "7",
+		InternalDNSValidUntilAnnotation:         "2026-10-09T18:00:00Z",
+		InternalDNSServiceDestinationAnnotation: "fd70:100::1",
+		InternalDNSSuffixAnnotation:             "tenant.managed.internal",
+	})
+	downstream := &unstructured.Unstructured{}
+	propagateAnnotations(upstream, downstream, cfg.propagatedAnnotations)
+
+	annotations := downstream.GetAnnotations()
+	assert.Equal(t, "us-central1", annotations[InternalDNSRegionAnnotation])
+	assert.Equal(t, "fd70:100::1", annotations[InternalDNSServiceDestinationAnnotation])
+	settings, err := internalDNSSettingsFromAnnotations(annotations, "fd53::53")
+	assert.NoError(t, err)
+	if settings == nil {
+		t.Fatal("replicated DNS intent did not produce resolver settings")
+	}
+	assert.Equal(t, "resolver-a", settings.ContextRef.Name)
+	assert.Equal(t, types.UID("context-uid"), settings.ContextRef.UID)
+	assert.Equal(t, "access-a", settings.AccessBindingRef.Name)
+	assert.Equal(t, types.UID("access-uid"), settings.AccessBindingRef.UID)
+	assert.Equal(t, int64(3), settings.WriterEpoch)
+	assert.Equal(t, int64(7), settings.Sequence)
+	assert.True(t, settings.ValidUntil.Time.Equal(time.Date(2026, 10, 9, 18, 0, 0, 0, time.UTC)))
+	assert.Equal(t, []string{"fd53::53"}, settings.Nameservers)
+	assert.Equal(t, []string{"tenant.managed.internal"}, settings.Searches)
+}

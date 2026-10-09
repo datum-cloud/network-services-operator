@@ -1,7 +1,7 @@
 import { StatTile, StatTileGrid } from './stat-tiles';
 import { ErrorOrRestrictedState, LoadingSkeleton } from './states';
 import { useSubnets } from '../lib/api';
-import { readyStatusToBadgeType, subnetCidr, subnetReadyReasonToLabel, type Subnet } from '../schema';
+import { isSubnetUsable, readyStatusToBadgeType, subnetCidr, subnetReadyReasonToLabel, type Subnet } from '../schema';
 import { Badge } from '@datum-cloud/datum-ui/badge';
 import { EmptyContent } from '@datum-cloud/datum-ui/empty-content';
 import { Icon } from '@datum-cloud/datum-ui/icons';
@@ -17,7 +17,7 @@ import { formatDistanceToNowStrict } from 'date-fns';
 import { CircleCheckIcon, MapPinIcon, TriangleAlertIcon } from 'lucide-react';
 
 function readyBadgeLabel(subnet: Subnet): string {
-  if (subnet.readyStatus === 'True') return 'Ready';
+  if (isSubnetUsable(subnet)) return 'Ready';
   if (subnet.readyStatus === 'False') return subnetReadyReasonToLabel(subnet.readyReason);
   return 'Unknown';
 }
@@ -32,7 +32,9 @@ function LocationRow({ subnet }: { subnet: Subnet }) {
         {subnetCidr(subnet) ?? '—'}
       </TableCell>
       <TableCell>
-        <Badge type={readyStatusToBadgeType(subnet.readyStatus)} theme="light">
+        <Badge
+          type={readyStatusToBadgeType(isSubnetUsable(subnet) ? 'True' : subnet.readyStatus)}
+          theme="light">
           {readyBadgeLabel(subnet)}
         </Badge>
       </TableCell>
@@ -65,7 +67,7 @@ export function NetworkSubnets({
   }
 
   const total = subnets?.length ?? 0;
-  const ready = subnets?.filter((s) => s.readyStatus === 'True').length ?? 0;
+  const ready = subnets?.filter(isSubnetUsable).length ?? 0;
   const notReady = total - ready;
 
   if (total === 0) {

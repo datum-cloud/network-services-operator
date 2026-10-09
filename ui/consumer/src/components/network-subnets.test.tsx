@@ -23,6 +23,7 @@ function makeSubnet(overrides: Partial<Subnet> = {}): Subnet {
     startAddress: 'fd20:0:2::',
     prefixLength: 64,
     readyStatus: 'True',
+    allocated: true,
     ...overrides,
   };
 }
@@ -92,7 +93,7 @@ describe('NetworkSubnets', () => {
 
   it('shows plain-language reason text for a not-ready location, not the raw reason', () => {
     useSubnetsMock.mockReturnValue({
-      data: [makeSubnet({ readyStatus: 'False', readyReason: 'NotProgrammed' })],
+      data: [makeSubnet({ readyStatus: 'False', readyReason: 'NotProgrammed', allocated: false })],
       isLoading: false,
       error: null,
       refetch: vi.fn(),
@@ -108,7 +109,7 @@ describe('NetworkSubnets', () => {
     useSubnetsMock.mockReturnValue({
       data: [
         makeSubnet({ uid: '1', location: 'us-central-1', readyStatus: 'True' }),
-        makeSubnet({ uid: '2', location: 'us-east-1', readyStatus: 'False' }),
+        makeSubnet({ uid: '2', location: 'us-east-1', readyStatus: 'False', allocated: false }),
         makeSubnet({ uid: '3', location: 'eu-west-1', readyStatus: 'True' }),
       ],
       isLoading: false,
@@ -123,5 +124,23 @@ describe('NetworkSubnets', () => {
     expect(stats).toHaveTextContent('3');
     expect(stats).toHaveTextContent('2');
     expect(stats).toHaveTextContent('1');
+  });
+
+  it('shows a location with an allocated address range as ready, even before anything marks it programmed', () => {
+    useSubnetsMock.mockReturnValue({
+      data: [makeSubnet({ readyStatus: 'False', readyReason: 'NotProgrammed', allocated: true })],
+      isLoading: false,
+      error: null,
+      refetch: vi.fn(),
+    } as never);
+
+    render(<NetworkSubnets projectId="demo-project" networkName="default" />);
+
+    const row = screen.getByTestId('subnet-table-row');
+    expect(within(row).getByText('Ready')).toBeInTheDocument();
+    expect(screen.queryByText('Not yet programmed')).not.toBeInTheDocument();
+    const stats = screen.getByTestId('networking-plugin-subnet-stats');
+    expect(within(stats).getByText('of 1').previousElementSibling).toHaveTextContent('1');
+    expect(within(stats).getByText('not ready').previousElementSibling).toHaveTextContent('0');
   });
 });

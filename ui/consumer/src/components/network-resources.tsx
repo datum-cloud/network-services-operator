@@ -1,6 +1,5 @@
 import { NetworkInterfaces } from './network-interfaces';
 import { NetworkSubnets } from './network-subnets';
-import { NetworkTopology } from './network-topology';
 
 function ResourceSection({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -20,7 +19,6 @@ export function NetworkResources({
 }) {
   return (
     <div className="flex flex-col gap-10" data-testid="networking-plugin-network-resources">
-      <NetworkTopology projectId={projectId} networkName={networkName} />
       <ResourceSection title="Regions">
         <NetworkSubnets projectId={projectId} networkName={networkName} />
       </ResourceSection>

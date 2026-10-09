@@ -9,21 +9,18 @@ vi.mock('../lib/api', async () => {
     ...actual,
     useSubnets: vi.fn(),
     useNetworkInterfaces: vi.fn(),
-    useHTTPProxies: vi.fn(),
     useNetworkServices: vi.fn(),
   };
 });
 
 const useSubnetsMock = vi.mocked(api.useSubnets);
 const useNetworkInterfacesMock = vi.mocked(api.useNetworkInterfaces);
-const useHTTPProxiesMock = vi.mocked(api.useHTTPProxies);
 const useNetworkServicesMock = vi.mocked(api.useNetworkServices);
 const emptyResult = { data: [], isLoading: false, error: null, refetch: vi.fn() } as never;
 
 beforeEach(() => {
   useSubnetsMock.mockReset().mockReturnValue(emptyResult);
   useNetworkInterfacesMock.mockReset().mockReturnValue(emptyResult);
-  useHTTPProxiesMock.mockReset().mockReturnValue(emptyResult);
   useNetworkServicesMock.mockReset().mockReturnValue(emptyResult);
 });
 
@@ -39,5 +36,11 @@ describe('NetworkResources', () => {
     render(<NetworkResources projectId="demo-project" networkName="default" />);
 
     expect(screen.queryByRole('heading', { name: 'Routes' })).not.toBeInTheDocument();
+  });
+
+  it('leads with the region and workload tables, not a topology graph', () => {
+    render(<NetworkResources projectId="demo-project" networkName="default" />);
+
+    expect(screen.queryByTestId('networking-plugin-network-topology')).not.toBeInTheDocument();
   });
 });

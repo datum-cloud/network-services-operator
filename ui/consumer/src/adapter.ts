@@ -151,6 +151,7 @@ export function toSubnet(raw: RawSubnet): Subnet {
     readyStatus,
     readyReason: ready?.reason,
     readyMessage: ready?.message,
+    allocated: findCondition(conditions, 'Allocated')?.status === 'True',
   };
 }
 

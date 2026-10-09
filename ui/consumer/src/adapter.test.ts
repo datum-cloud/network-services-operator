@@ -178,6 +178,25 @@ describe('toSubnet', () => {
     expect(subnet.createdAt).toEqual(new Date('2026-08-25T14:18:34Z'));
   });
 
+  it('is not allocated when the Allocated condition is absent', () => {
+    expect(toSubnet(baseRawSubnet).allocated).toBe(false);
+  });
+
+  it('is allocated when the Allocated condition is True', () => {
+    const raw: RawSubnet = {
+      ...baseRawSubnet,
+      status: {
+        ...baseRawSubnet.status,
+        conditions: [
+          { type: 'Allocated', status: 'True', reason: 'PrefixAllocated' },
+          { type: 'Ready', status: 'False', reason: 'NotProgrammed' },
+        ],
+      },
+    };
+
+    expect(toSubnet(raw).allocated).toBe(true);
+  });
+
   it('prefers status.startAddress/prefixLength over spec when both are present', () => {
     const raw: RawSubnet = {
       ...baseRawSubnet,

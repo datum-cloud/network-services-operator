@@ -648,10 +648,17 @@ func (r *GatewayReconciler) listGatewaysForDNSZoneFunc(clusterName multicluster.
 }
 
 // listGatewaysForDNSRecordSetFunc returns a TypedEventHandler that enqueues
-// the owning Gateway whenever a DNSRecordSet changes. The owning gateway is
-// identified via the dns.datumapis.com/source-name and
-// dns.datumapis.com/source-namespace labels written by this controller.
-func (r *GatewayReconciler) listGatewaysForDNSRecordSetFunc(clusterName multicluster.ClusterName, _ cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
+// the owning Gateway whenever a DNSRecordSet changes.
+func (r *GatewayReconciler) listGatewaysForDNSRecordSetFunc(clusterName multicluster.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
+	return enqueueDNSRecordSetSource(clusterName, cl)
+}
+
+// enqueueDNSRecordSetSource returns a TypedEventHandler that enqueues the
+// Gateway a DNSRecordSet was written for, named by the
+// dns.datumapis.com/source-name and dns.datumapis.com/source-namespace labels
+// this operator writes. An HTTPProxy's Gateway carries the HTTPProxy's name, so
+// the same request also reaches the HTTPProxy controller.
+func enqueueDNSRecordSetSource(clusterName multicluster.ClusterName, _ cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
 	return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []mcreconcile.Request {
 		rs := obj.(*dnsv1alpha1.DNSRecordSet)
 		logger := log.FromContext(ctx)

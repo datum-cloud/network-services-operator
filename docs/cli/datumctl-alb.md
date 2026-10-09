@@ -221,7 +221,7 @@ datumctl alb header unset my-app X-Debug
 
 The portal manages one route: a pool of origins on `/`, with their weights, the load balancing algorithm and passive health checks. Those are the same fields this plugin writes, so either can change them.
 
-The portal has no concept of a second route, a path match, or a per-origin filter. When a load balancer has any of them it treats the pool as advanced and refuses to edit the rules, so it does not drop what it cannot show. Custom hostnames, traffic protection and basic auth stay editable there. Use `datumctl alb` for a load balancer with more than one route.
+The portal has no concept of a second route, a path match, or a per-origin filter. When a load balancer has any of them it treats the pool as advanced and locks the origins, weights, algorithm, health checks, TLS, redirect and Host override, so it does not drop what it cannot show. Custom hostnames, traffic protection and basic auth stay editable there. Use `datumctl alb` for a load balancer with more than one route.
 
 Two smaller differences worth knowing:
 

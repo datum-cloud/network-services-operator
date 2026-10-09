@@ -217,10 +217,10 @@ the load balancing algorithm and passive health checks. Those are the same
 fields `datumctl alb` writes, so either can change them.
 
 It has no way to show a second route, a path match or a per-origin filter. When
-a load balancer has any of those, the console refuses to edit the origins, TLS,
-redirect or Host override and says to use `datumctl` instead, rather than
-dropping what it cannot show. Custom hostnames, traffic protection, a username
-and password, the algorithm and health checks stay editable there.
+a load balancer has any of those, the console locks the origins, weights,
+algorithm, health checks, TLS, redirect and Host override and says to use
+`datumctl` instead, rather than dropping what it cannot show. Custom hostnames,
+traffic protection, and a username and password stay editable there.
 
 So when you help someone add a second route or a path match, tell them the
 console's origin controls will lock afterwards, and that is expected.

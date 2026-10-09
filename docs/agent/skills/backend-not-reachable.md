@@ -114,10 +114,11 @@ To take a broken origin out of the split, drain it (weight 0) or remove it.
 
 The console manages the pool of origins on `/`, with weights, the algorithm and
 health checks, so pointing someone there for those is fine. Once a load balancer
-has a second route, a path match or a per-origin filter, the console refuses to
-edit its origins, TLS, redirect or Host override and says to use `datumctl`. That
-lock is expected. It protects what the console cannot show. Say so when you help
-someone add a route.
+has a second route, a path match or a per-origin filter, the console locks all of
+that, along with TLS, redirect and the Host override, and says to use `datumctl`.
+That lock is expected. It protects what the console cannot show. Say so when you
+help someone add a route, and give them the `datumctl alb` commands for the
+algorithm and health checks instead.
 
 ## The rest
 

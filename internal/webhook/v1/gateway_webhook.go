@@ -60,12 +60,13 @@ func (v *GatewayCustomValidator) ValidateCreate(ctx context.Context, gateway *ga
 		return nil, fmt.Errorf("expected a cluster name in the context")
 	}
 
-	clusterReader, err := webhookutil.ProjectReader(ctx, v.mgr, clusterName)
+	cluster, err := v.mgr.GetCluster(ctx, clusterName)
 	if err != nil {
 		return nil, err
 	}
+	clusterClient := cluster.GetClient()
 
-	if fieldErr, err := validateManagedGatewayClass(ctx, clusterReader, v.validationOpts.ControllerName, gateway); err != nil {
+	if fieldErr, err := validateManagedGatewayClass(ctx, clusterClient, v.validationOpts.ControllerName, gateway); err != nil {
 		return nil, err
 	} else if fieldErr != nil {
 		return nil, apierrors.NewInvalid(gateway.GetObjectKind().GroupVersionKind().GroupKind(), gateway.GetName(), field.ErrorList{fieldErr})
@@ -95,15 +96,16 @@ func (v *GatewayCustomValidator) ValidateUpdate(ctx context.Context, oldGateway,
 		return nil, fmt.Errorf("expected a cluster name in the context")
 	}
 
-	clusterReader, err := webhookutil.ProjectReader(ctx, v.mgr, clusterName)
+	cluster, err := v.mgr.GetCluster(ctx, clusterName)
 	if err != nil {
 		return nil, err
 	}
+	clusterClient := cluster.GetClient()
 
 	gatewaylog := logf.FromContext(ctx).WithValues("cluster", clusterName)
 	gatewaylog.Info("Validating Gateway", "name", newGateway.GetName())
 
-	if fieldErr, err := validateManagedGatewayClass(ctx, clusterReader, v.validationOpts.ControllerName, newGateway); err != nil {
+	if fieldErr, err := validateManagedGatewayClass(ctx, clusterClient, v.validationOpts.ControllerName, newGateway); err != nil {
 		return nil, err
 	} else if fieldErr != nil {
 		return nil, apierrors.NewInvalid(oldGateway.GetObjectKind().GroupVersionKind().GroupKind(), newGateway.GetName(), field.ErrorList{fieldErr})
@@ -143,12 +145,13 @@ func (d *GatewayCustomDefaulter) Default(ctx context.Context, gateway *gatewayv1
 		return fmt.Errorf("expected a cluster name in the context")
 	}
 
-	clusterReader, err := webhookutil.ProjectReader(ctx, d.mgr, clusterName)
+	cluster, err := d.mgr.GetCluster(ctx, clusterName)
 	if err != nil {
 		return err
 	}
+	clusterClient := cluster.GetClient()
 
-	if shouldProcess, err := shouldProcess(ctx, clusterReader, d.config.Gateway.ControllerName, gateway); !shouldProcess || err != nil {
+	if shouldProcess, err := shouldProcess(ctx, clusterClient, d.config.Gateway.ControllerName, gateway); !shouldProcess || err != nil {
 		return err
 	}
 
@@ -180,12 +183,12 @@ func (d *GatewayCustomDefaulter) Default(ctx context.Context, gateway *gatewayv1
 
 func shouldProcess(
 	ctx context.Context,
-	clusterReader client.Reader,
+	clusterClient client.Client,
 	controllerName gatewayv1.GatewayController,
 	gateway *gatewayv1.Gateway,
 ) (bool, error) {
 	var gatewayClass gatewayv1.GatewayClass
-	if err := clusterReader.Get(ctx, types.NamespacedName{Name: string(gateway.Spec.GatewayClassName)}, &gatewayClass); err != nil {
+	if err := clusterClient.Get(ctx, types.NamespacedName{Name: string(gateway.Spec.GatewayClassName)}, &gatewayClass); err != nil {
 		if apierrors.IsNotFound(err) {
 			// No error if the GatewayClass is not found, it's not managed by the operator
 			logf.FromContext(ctx).Info("GatewayClass is not found, skipping validation", "name", gateway.Spec.GatewayClassName)
@@ -205,12 +208,12 @@ func shouldProcess(
 
 func validateManagedGatewayClass(
 	ctx context.Context,
-	clusterReader client.Reader,
+	clusterClient client.Client,
 	controllerName gatewayv1.GatewayController,
 	gateway *gatewayv1.Gateway,
 ) (*field.Error, error) {
 	var gatewayClasses gatewayv1.GatewayClassList
-	if err := clusterReader.List(ctx, &gatewayClasses); err != nil {
+	if err := clusterClient.List(ctx, &gatewayClasses); err != nil {
 		return nil, err
 	}
 

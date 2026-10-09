@@ -5,7 +5,9 @@ import (
 	"errors"
 	"time"
 
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -62,6 +64,14 @@ func (r Result) Complete(ctx context.Context) (ctrl.Result, error) {
 	if r.syncStatus != nil {
 		var errs []error
 		for obj, client := range r.syncStatus {
+			needsWrite, err := statusNeedsWrite(ctx, client, obj)
+			if err != nil {
+				errs = append(errs, err)
+				continue
+			}
+			if !needsWrite {
+				continue
+			}
 			if err := client.Status().Update(ctx, obj); err != nil {
 				if r.Err == nil && apierrors.IsConflict(err) {
 					r.RequeueAfter = 1 * time.Second
@@ -77,4 +87,28 @@ func (r Result) Complete(ctx context.Context) (ctrl.Result, error) {
 	}
 
 	return r.Result, r.Err
+}
+
+func statusNeedsWrite(ctx context.Context, c client.Client, desired client.Object) (bool, error) {
+	stored := desired.DeepCopyObject().(client.Object)
+	if err := c.Get(ctx, client.ObjectKeyFromObject(desired), stored); err != nil {
+		return true, nil
+	}
+	storedStatus, err := statusContent(stored)
+	if err != nil {
+		return false, err
+	}
+	desiredStatus, err := statusContent(desired)
+	if err != nil {
+		return false, err
+	}
+	return !equality.Semantic.DeepEqual(storedStatus, desiredStatus), nil
+}
+
+func statusContent(obj client.Object) (any, error) {
+	content, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
+	if err != nil {
+		return nil, err
+	}
+	return content["status"], nil
 }

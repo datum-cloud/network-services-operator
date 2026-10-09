@@ -38,6 +38,15 @@ var (
 // resource-agnostic and carries no bespoke schema.
 const UpstreamStatusAnnotation = "networking.datumapis.com/upstream-status"
 
+// UpstreamGenerationAnnotation carries a resource's upstream metadata.generation
+// to its downstream copy, written in the same update as the spec it belongs to.
+//
+// Each API server counts generation on its own, so a downstream copy's own
+// generation does not say which upstream spec it holds. A consumer that compares
+// the two, such as the TrafficProtectionPolicy Programmed check, reads this
+// annotation. Karmada propagates it to member clusters with the other metadata.
+const UpstreamGenerationAnnotation = "networking.datumapis.com/upstream-generation"
+
 func addKnownTypes(scheme *runtime.Scheme) error {
 	scheme.AddKnownTypes(GroupVersion,
 		&Connector{},

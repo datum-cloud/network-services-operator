@@ -178,6 +178,25 @@ describe('toSubnet', () => {
     expect(subnet.createdAt).toEqual(new Date('2026-08-25T14:18:34Z'));
   });
 
+  it('is not allocated when the Allocated condition is absent', () => {
+    expect(toSubnet(baseRawSubnet).allocated).toBe(false);
+  });
+
+  it('is allocated when the Allocated condition is True', () => {
+    const raw: RawSubnet = {
+      ...baseRawSubnet,
+      status: {
+        ...baseRawSubnet.status,
+        conditions: [
+          { type: 'Allocated', status: 'True', reason: 'PrefixAllocated' },
+          { type: 'Ready', status: 'False', reason: 'NotProgrammed' },
+        ],
+      },
+    };
+
+    expect(toSubnet(raw).allocated).toBe(true);
+  });
+
   it('prefers status.startAddress/prefixLength over spec when both are present', () => {
     const raw: RawSubnet = {
       ...baseRawSubnet,
@@ -238,6 +257,7 @@ const baseRawNetworkInterface: RawNetworkInterface = {
     creationTimestamp: '2026-08-25T14:18:34Z',
     labels: {
       'compute.datumapis.com/workload-name': 'storefront',
+      'compute.datumapis.com/instance-index': '2',
       'networking.datumapis.com/location': 'us-central-1',
     },
   },
@@ -273,6 +293,7 @@ describe('toNetworkInterface', () => {
       holderAvailableStatus: 'True',
       holderAvailableReason: 'HolderAvailable',
       workloadName: 'storefront',
+      instanceIndex: '2',
       location: 'us-central-1',
     });
     expect(iface.createdAt).toEqual(new Date('2026-08-25T14:18:34Z'));
@@ -286,6 +307,7 @@ describe('toNetworkInterface', () => {
     const iface = toNetworkInterface(raw);
 
     expect(iface.workloadName).toBeUndefined();
+    expect(iface.instanceIndex).toBeUndefined();
     expect(iface.location).toBeUndefined();
     expect(iface.labels).toEqual({});
   });

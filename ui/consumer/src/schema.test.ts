@@ -3,6 +3,7 @@ import {
   holderAvailableStatusToLabel,
   httpProxyProgrammedReasonToLabel,
   httpProxyProgrammedStatusToLabel,
+  isSubnetUsable,
   matchesLabelSelector,
   networkInterfacePrimaryAddress,
   networkListSchema,
@@ -160,11 +161,28 @@ describe('subnetReadyReasonToLabel', () => {
   });
 });
 
-describe('subnetCidr', () => {
-  function makeSubnet(overrides: Partial<Subnet>): Subnet {
-    return { uid: 'u', name: 'n', createdAt: new Date(), readyStatus: 'True', ...overrides };
-  }
+function makeSubnet(overrides: Partial<Subnet>): Subnet {
+  return { uid: 'u', name: 'n', createdAt: new Date(), readyStatus: 'True', allocated: false, ...overrides };
+}
 
+describe('isSubnetUsable', () => {
+  it('is usable when Ready is True', () => {
+    expect(isSubnetUsable(makeSubnet({ readyStatus: 'True' }))).toBe(true);
+  });
+
+  it('is usable when its prefix is allocated, even while Ready reports NotProgrammed', () => {
+    expect(
+      isSubnetUsable(makeSubnet({ readyStatus: 'False', readyReason: 'NotProgrammed', allocated: true }))
+    ).toBe(true);
+  });
+
+  it('is not usable when neither ready nor allocated', () => {
+    expect(isSubnetUsable(makeSubnet({ readyStatus: 'False' }))).toBe(false);
+    expect(isSubnetUsable(makeSubnet({ readyStatus: 'Unknown' }))).toBe(false);
+  });
+});
+
+describe('subnetCidr', () => {
   it('joins startAddress and prefixLength', () => {
     expect(subnetCidr(makeSubnet({ startAddress: 'fd20:0:2::', prefixLength: 64 }))).toBe(
       'fd20:0:2::/64'

@@ -151,6 +151,7 @@ export function toSubnet(raw: RawSubnet): Subnet {
     readyStatus,
     readyReason: ready?.reason,
     readyMessage: ready?.message,
+    allocated: findCondition(conditions, 'Allocated')?.status === 'True',
   };
 }
 
@@ -215,6 +216,7 @@ export function toNetworkInterface(raw: RawNetworkInterface): NetworkInterface {
     interfaceName: raw.spec?.interfaceName,
     attachmentMode: raw.spec?.attachmentMode,
     workloadName: labels['compute.datumapis.com/workload-name'],
+    instanceIndex: labels['compute.datumapis.com/instance-index'],
     location: labels['networking.datumapis.com/location'],
     labels,
     phase: toNetworkInterfacePhase(raw.status?.phase),

@@ -87,6 +87,7 @@ export const subnetResourceSchema = z.object({
   readyStatus: z.enum(['True', 'False', 'Unknown']),
   readyReason: z.string().optional(),
   readyMessage: z.string().optional(),
+  allocated: z.boolean().default(false),
 });
 
 export type Subnet = z.infer<typeof subnetResourceSchema>;
@@ -105,6 +106,10 @@ const SUBNET_READY_REASON_COPY: Record<string, string> = {
 export function subnetReadyReasonToLabel(reason: string | undefined): string {
   if (!reason) return 'Not ready';
   return SUBNET_READY_REASON_COPY[reason] ?? reason;
+}
+
+export function isSubnetUsable(subnet: Subnet): boolean {
+  return subnet.readyStatus === 'True' || subnet.allocated;
 }
 
 export function subnetCidr(subnet: Subnet): string | undefined {
@@ -133,6 +138,7 @@ export const networkInterfaceResourceSchema = z.object({
   interfaceName: z.string().optional(),
   attachmentMode: z.string().optional(),
   workloadName: z.string().optional(),
+  instanceIndex: z.string().optional(),
   location: z.string().optional(),
   labels: z.record(z.string(), z.string()).default({}),
   phase: networkInterfacePhaseSchema.optional(),

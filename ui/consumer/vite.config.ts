@@ -72,6 +72,7 @@ export default defineConfig({
         '@datum-cloud/datum-ui/checkbox': { singleton: true, requiredVersion: false },
         '@datum-cloud/datum-ui/dialog': { singleton: true, requiredVersion: false },
         '@datum-cloud/datum-ui/empty-content': { singleton: true, requiredVersion: false },
+        '@datum-cloud/datum-ui/grouped-table': { singleton: true, requiredVersion: false },
         '@datum-cloud/datum-ui/hooks': { singleton: true, requiredVersion: false },
         '@datum-cloud/datum-ui/icons': { singleton: true, requiredVersion: false },
         '@datum-cloud/datum-ui/input': { singleton: true, requiredVersion: false },

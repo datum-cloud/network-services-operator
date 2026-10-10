@@ -3129,8 +3129,9 @@ func TestEnsureHostnamesClaimed_LegacyTargetDomain(t *testing.T) {
 // with a cluster carrying no endpoints, which it answers 503 on.
 //
 // A missing slice does not resolve either: its backendRef lands on a
-// downstream Service that is never synthesized, so Envoy answers 500 for that
-// share, and the slice is reported for the route's ResolvedRefs condition.
+// synthesized Service without endpoints, so Envoy answers 503 for that share as
+// for an empty slice, and the slice is reported for the route's ResolvedRefs
+// condition.
 func TestProcessDownstreamHTTPRouteRulesEmptyEndpointSlice(t *testing.T) {
 	testScheme := runtime.NewScheme()
 	require.NoError(t, scheme.AddToScheme(testScheme))
@@ -3261,7 +3262,13 @@ func TestProcessDownstreamHTTPRouteRulesEmptyEndpointSlice(t *testing.T) {
 		)
 		require.NoError(t, err)
 		assert.Equal(t, []string{"test/test-0-0"}, unresolved)
-		assert.Empty(t, downstreamResources, "nothing is synthesized for a slice that does not exist")
+		require.Len(t, downstreamResources, 1, "only the Service is synthesized for a slice that does not exist")
+		service, ok := downstreamResources[0].(*corev1.Service)
+		require.True(t, ok, "expected a Service, got %T", downstreamResources[0])
+		assert.Equal(t, fmt.Sprintf("route-%s-rule-0-backendref-0", upstreamRoute.UID), service.Name)
+		assert.Equal(t, clusterIPNone, service.Spec.ClusterIP, "headless, so Envoy Gateway reads its EndpointSlices")
+		require.Len(t, service.Spec.Ports, 1)
+		assert.EqualValues(t, 8080, service.Spec.Ports[0].Port)
 
 		require.Len(t, rules, 1)
 		require.Len(t, rules[0].BackendRefs, 1)

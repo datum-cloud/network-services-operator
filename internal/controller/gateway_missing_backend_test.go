@@ -116,6 +116,17 @@ func (r *missingBackendRig) hubService(name gatewayv1.ObjectName) error {
 	return r.downstream.Get(r.ctx, client.ObjectKey{Namespace: r.hubGateway.Namespace, Name: string(name)}, &corev1.Service{})
 }
 
+func (r *missingBackendRig) hubServicePorts(name gatewayv1.ObjectName) []corev1.ServicePort {
+	r.t.Helper()
+	var service corev1.Service
+	require.NoError(r.t, r.downstream.Get(r.ctx, client.ObjectKey{Namespace: r.hubGateway.Namespace, Name: string(name)}, &service))
+	return service.Spec.Ports
+}
+
+func (r *missingBackendRig) hubSlice(name gatewayv1.ObjectName) error {
+	return r.downstream.Get(r.ctx, client.ObjectKey{Namespace: r.hubGateway.Namespace, Name: string(name)}, &discoveryv1.EndpointSlice{})
+}
+
 func (r *missingBackendRig) resolvedRefs(name string) *metav1.Condition {
 	r.t.Helper()
 	var route gatewayv1.HTTPRoute
@@ -164,8 +175,9 @@ func TestAMissingBackendLeavesTheRestOfTheGatewayConverging(t *testing.T) {
 	require.Len(t, hubMissing.Spec.Rules[0].BackendRefs, 1)
 	unresolvedRef := hubMissing.Spec.Rules[0].BackendRefs[0]
 	assert.Equal(t, KindService, string(ptr.Deref(unresolvedRef.Kind, "")))
-	err := rig.hubService(unresolvedRef.Name)
-	assert.Truef(t, apierrors.IsNotFound(err), "the missing backend's Service must not exist, got %v", err)
+	assert.NoError(t, rig.hubService(unresolvedRef.Name), "the missing backend lands on a Service")
+	err := rig.hubSlice(unresolvedRef.Name)
+	assert.Truef(t, apierrors.IsNotFound(err), "the Service has no endpoints, so the edge reads EndpointsNotFound, got %v", err)
 
 	servedRef := rig.hubRoute("served").Spec.Rules[0].BackendRefs[0]
 	assert.NoError(t, rig.hubService(servedRef.Name), "the route on the same Gateway still gets its backend")
@@ -191,7 +203,10 @@ func TestAMissingBackendLeavesTheRestOfTheGatewayConverging(t *testing.T) {
 
 	rig.reconcileRoutes()
 
-	assert.NoError(t, rig.hubService(unresolvedRef.Name), "once the slice exists, the same backendRef lands on a synthesized Service")
+	assert.NoError(t, rig.hubSlice(unresolvedRef.Name), "once the slice exists, the same Service gets its endpoints")
+	ports := rig.hubServicePorts(unresolvedRef.Name)
+	require.Len(t, ports, 1, "the placeholder port gives way to the slice's port")
+	assert.Equal(t, "http", ports[0].Name)
 	assert.NoError(t, rig.hubService(servedRef.Name))
 	condition = rig.resolvedRefs("missing")
 	require.NotNil(t, condition)
@@ -228,10 +243,11 @@ func TestMissingBackendsInARuleKeepTheirShares(t *testing.T) {
 		assert.Equal(t, weight, ptr.Deref(refs[i].Weight, 0), "backend %d keeps its weight", i)
 		assert.Equal(t, KindService, string(ptr.Deref(refs[i].Kind, "")))
 	}
-	assert.NoError(t, rig.hubService(refs[0].Name))
+	assert.NoError(t, rig.hubSlice(refs[0].Name))
 	for _, ref := range refs[1:] {
-		err := rig.hubService(ref.Name)
-		assert.Truef(t, apierrors.IsNotFound(err), "a missing backend's Service must not exist, got %v", err)
+		assert.NoError(t, rig.hubService(ref.Name))
+		err := rig.hubSlice(ref.Name)
+		assert.Truef(t, apierrors.IsNotFound(err), "a missing backend's Service has no endpoints, got %v", err)
 	}
 
 	condition := rig.resolvedRefs("split")
@@ -254,8 +270,11 @@ func TestASliceThatGoesAwayBecomesUnresolved(t *testing.T) {
 	rig.reconcileRoutes()
 
 	assert.Equal(t, ref, rig.hubRoute("served").Spec.Rules[0].BackendRefs[0], "the route keeps the same backendRef")
-	err := rig.hubService(ref.Name)
-	assert.Truef(t, apierrors.IsNotFound(err), "the gone slice's Service is removed, got %v", err)
+	err := rig.hubSlice(ref.Name)
+	assert.Truef(t, apierrors.IsNotFound(err), "the gone slice's endpoints are removed, got %v", err)
+	ports := rig.hubServicePorts(ref.Name)
+	require.Len(t, ports, 1, "the slice's port gives way to the placeholder")
+	assert.EqualValues(t, 8080, ports[0].Port)
 	condition := rig.resolvedRefs("served")
 	require.NotNil(t, condition)
 	assert.Equal(t, string(gatewayv1.RouteReasonBackendNotFound), condition.Reason)

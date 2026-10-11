@@ -47,12 +47,33 @@ type managerProjectClusterResolver struct {
 	mgr mcmanager.Manager
 }
 
+// projectReadiness is a provider that can tell whether a project still exists
+// and is ready.
+type projectReadiness interface {
+	ProjectReady(ctx context.Context, project string) (bool, error)
+}
+
+// ClientForProject answers multicluster.ErrClusterNotFound only for a project
+// that is gone. The provider answers not found also for a project it has not
+// registered yet, as after a restart; that one is an error to retry, because
+// the callers release what a gone project held.
 func (r *managerProjectClusterResolver) ClientForProject(ctx context.Context, project string) (client.Client, error) {
 	cl, err := r.mgr.GetCluster(ctx, multicluster.ClusterName(project))
-	if err != nil {
+	if err == nil {
+		return cl.GetClient(), nil
+	}
+	readiness, ok := r.mgr.GetProvider().(projectReadiness)
+	if !errors.Is(err, multicluster.ErrClusterNotFound) || !ok {
 		return nil, err
 	}
-	return cl.GetClient(), nil
+	ready, readErr := readiness.ProjectReady(ctx, project)
+	switch {
+	case readErr != nil:
+		return nil, fmt.Errorf("failed checking whether project %q is gone: %w", project, readErr)
+	case ready:
+		return nil, fmt.Errorf("project %q is not registered yet", project)
+	}
+	return nil, err
 }
 
 // NetworkPresenceReconciler maintains one NetworkContext per (project, network,

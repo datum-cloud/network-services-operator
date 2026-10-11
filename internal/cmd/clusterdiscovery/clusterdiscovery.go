@@ -1,10 +1,14 @@
 package clusterdiscovery
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
 
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
@@ -14,6 +18,8 @@ import (
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcsingle "sigs.k8s.io/multicluster-runtime/providers/single"
 
+	infrastructurev1alpha1 "go.miloapis.com/milo/pkg/apis/infrastructure/v1alpha1"
+	resourcemanagerv1alpha1 "go.miloapis.com/milo/pkg/apis/resourcemanager/v1alpha1"
 	multiclusterproviders "go.miloapis.com/milo/pkg/multicluster-runtime"
 	milomulticluster "go.miloapis.com/milo/pkg/multicluster-runtime/milo"
 
@@ -77,7 +83,10 @@ func Initialize(
 		// provider, so the provider runs on every replica. Started by the
 		// manager it would run on the elected leader only, and the readiness
 		// check below would then hold every other replica unready.
-		provider = milomulticluster.WithoutAutoStart(miloProvider)
+		provider = projectProvider{
+			Provider: milomulticluster.WithoutAutoStart(miloProvider),
+			ready:    projectReady(discoveryManager.GetClient(), discovery.InternalServiceDiscovery),
+		}
 		setup = func(mgr mcmanager.Manager) error {
 			if err := milomulticluster.EngageAlways(mgr, miloProvider); err != nil {
 				return fmt.Errorf("unable to start the datum project provider on every replica: %w", err)
@@ -115,5 +124,44 @@ func projectsRegistered(provider interface{ HasSynced() bool }) healthz.Checker 
 			return errors.New("projects found at start are not all registered yet")
 		}
 		return nil
+	}
+}
+
+// projectProvider is the Milo provider as the manager is given it, which can
+// also tell a project that is gone from one it has not registered yet: both
+// are not found.
+type projectProvider struct {
+	multicluster.Provider
+	ready func(ctx context.Context, project string) (bool, error)
+}
+
+// ProjectReady reports whether a project still exists and is ready.
+func (p projectProvider) ProjectReady(ctx context.Context, project string) (bool, error) {
+	return p.ready(ctx, project)
+}
+
+// projectReady reads a project the way the Milo provider decides to register
+// it and to let it go: the object exists and its readiness condition is true.
+// It reads through the client of the provider's own cache.
+func projectReady(reader client.Reader, internalServiceDiscovery bool) func(context.Context, string) (bool, error) {
+	gvk, conditionType := resourcemanagerv1alpha1.GroupVersion.WithKind("Project"), "Ready"
+	if internalServiceDiscovery {
+		gvk, conditionType = infrastructurev1alpha1.GroupVersion.WithKind("ProjectControlPlane"), "ControlPlaneReady"
+	}
+	return func(ctx context.Context, name string) (bool, error) {
+		var project unstructured.Unstructured
+		project.SetGroupVersionKind(gvk)
+		if err := reader.Get(ctx, client.ObjectKey{Name: name}, &project); err != nil {
+			return false, client.IgnoreNotFound(err)
+		}
+		var status struct {
+			Conditions []metav1.Condition `json:"conditions"`
+		}
+		if raw, ok := project.Object["status"].(map[string]any); ok {
+			if err := runtime.DefaultUnstructuredConverter.FromUnstructured(raw, &status); err != nil {
+				return false, fmt.Errorf("reading the conditions of %s %q: %w", gvk.Kind, name, err)
+			}
+		}
+		return apimeta.IsStatusConditionTrue(status.Conditions, conditionType), nil
 	}
 }

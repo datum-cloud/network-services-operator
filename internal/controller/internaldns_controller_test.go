@@ -69,11 +69,19 @@ func TestInternalDNSProjectLifecycleFencesAccess(t *testing.T) {
 	if err := cl.Get(ctx, client.ObjectKeyFromObject(dnsContext), dnsContext); err != nil {
 		t.Fatal(err)
 	}
+	domain, _, _ := unstructured.NestedString(dnsContext.Object, "spec", "managedNamespace", "domainSuffix")
+	if domain != internalDNSDefaultDomain {
+		t.Fatalf("network default domain = %q", domain)
+	}
 	dnsContext.SetUID("dns-context-uid")
+	dnsContext.SetGeneration(1)
+	if err := unstructured.SetNestedSlice(dnsContext.Object, []any{map[string]any{"type": "Ready", "status": "True", "observedGeneration": int64(1)}}, "status", "conditions"); err != nil {
+		t.Fatal(err)
+	}
 	if err := unstructured.SetNestedField(dnsContext.Object, int64(7), "status", "accessWriterEpoch"); err != nil {
 		t.Fatal(err)
 	}
-	if err := unstructured.SetNestedField(dnsContext.Object, "blue.internal", "status", "managedNamespace", "suffix"); err != nil {
+	if err := unstructured.SetNestedField(dnsContext.Object, internalDNSDefaultDomain, "status", "managedNamespace", "suffix"); err != nil {
 		t.Fatal(err)
 	}
 	if err := unstructured.SetNestedMap(dnsContext.Object, map[string]any{

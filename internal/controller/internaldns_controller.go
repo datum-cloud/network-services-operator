@@ -54,6 +54,7 @@ const (
 	internalDNSRegionTopologyKey = "topology.datum.net/region"
 	internalDNSRenewBefore       = 45 * time.Second
 	internalDNSRetryInterval     = 10 * time.Second
+	internalDNSDefaultDomain     = "datum.internal"
 )
 
 var (
@@ -189,7 +190,7 @@ func (r *InternalDNSProjectReconciler) reconcile(
 	suffix, _, _ := unstructured.NestedString(dnsContext.Object, "status", "managedNamespace", "suffix")
 	zoneName, _, _ := unstructured.NestedString(dnsContext.Object, "status", "managedNamespace", "dnsZoneRef", "name")
 	zoneUID, _, _ := unstructured.NestedString(dnsContext.Object, "status", "managedNamespace", "dnsZoneRef", "uid")
-	if dnsContext.GetUID() == "" || epoch < 1 || suffix == "" || zoneName == "" || zoneUID == "" {
+	if dnsContext.GetUID() == "" || epoch < 1 || suffix != internalDNSDefaultDomain || zoneName == "" || zoneUID == "" || !resolverContextReady(dnsContext) {
 		return ctrl.Result{RequeueAfter: internalDNSRetryInterval}, r.clearIntent(ctx, cl, networkContext)
 	}
 
@@ -266,6 +267,11 @@ func (r *InternalDNSProjectReconciler) ensureContext(
 		if ownedNetwork != string(network.UID) || existingConsumer != consumerID {
 			return nil, fmt.Errorf("DNSResolverContext %s/%s belongs to another network lifetime", network.Namespace, name)
 		}
+		domain, _, _ := unstructured.NestedString(current.Object, "spec", "managedNamespace", "domainSuffix")
+		enabled, _, _ := unstructured.NestedBool(current.Object, "spec", "managedNamespace", "enabled")
+		if domain != internalDNSDefaultDomain || !enabled {
+			return nil, fmt.Errorf("DNSResolverContext %s/%s does not request the network default domain", network.Namespace, name)
+		}
 		return current, nil
 	}
 
@@ -280,12 +286,26 @@ func (r *InternalDNSProjectReconciler) ensureContext(
 	}})
 	desired.Object["spec"] = map[string]any{
 		"consumerID":       consumerID,
-		"managedNamespace": map[string]any{"enabled": true},
+		"managedNamespace": map[string]any{"enabled": true, "domainSuffix": internalDNSDefaultDomain},
 	}
 	if err := cl.Create(ctx, desired); err != nil {
 		return nil, err
 	}
 	return desired, nil
+}
+
+func resolverContextReady(obj *unstructured.Unstructured) bool {
+	if !obj.GetDeletionTimestamp().IsZero() || obj.GetGeneration() < 1 {
+		return false
+	}
+	conditions, _, _ := unstructured.NestedSlice(obj.Object, "status", "conditions")
+	for _, raw := range conditions {
+		condition, _ := raw.(map[string]any)
+		if condition["type"] == "Ready" && condition["status"] == "True" && condition["observedGeneration"] == obj.GetGeneration() {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *InternalDNSProjectReconciler) ensureAccess(

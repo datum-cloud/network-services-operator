@@ -121,6 +121,41 @@ func TestInternalDNSProjectLifecycleFencesAccess(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertDNSIntent(t, ctx, cl, "first", "access-uid", "1")
+	originalStatus, _, _ := unstructured.NestedMap(dnsContext.Object, "status")
+	for _, invalid := range []struct {
+		path  []string
+		value any
+	}{
+		{path: []string{"status", "managedNamespace", "suffix"}, value: "different.internal"},
+		{path: []string{"status", "conditions"}, value: []any{map[string]any{"type": "Ready", "status": "True", "observedGeneration": int64(0)}}},
+	} {
+		if err := unstructured.SetNestedField(dnsContext.Object, invalid.value, invalid.path...); err != nil {
+			t.Fatal(err)
+		}
+		if err := cl.Update(ctx, dnsContext); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := r.reconcile(ctx, cl, "project", client.ObjectKeyFromObject(first)); err != nil {
+			t.Fatal(err)
+		}
+		current := &networkingv1alpha.NetworkContext{}
+		if err := cl.Get(ctx, client.ObjectKeyFromObject(first), current); err != nil {
+			t.Fatal(err)
+		}
+		if current.Annotations[InternalDNSSuffixAnnotation] != "" {
+			t.Fatalf("invalid DNS allocation remained published: %#v", current.Annotations)
+		}
+		if err := unstructured.SetNestedMap(dnsContext.Object, originalStatus, "status"); err != nil {
+			t.Fatal(err)
+		}
+		if err := cl.Update(ctx, dnsContext); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := r.reconcile(ctx, cl, "project", client.ObjectKeyFromObject(first)); err != nil {
+			t.Fatal(err)
+		}
+		assertDNSIntent(t, ctx, cl, "first", "access-uid", "1")
+	}
 
 	second := testNetworkContext("second", "context-2")
 	if err := cl.Create(ctx, second); err != nil {

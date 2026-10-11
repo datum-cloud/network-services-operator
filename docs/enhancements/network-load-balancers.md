@@ -14,6 +14,8 @@ latest-milestone: "v0.x"
   - [User Stories](#user-stories)
   - [Risks and Mitigations](#risks-and-mitigations)
 - [Design Details](#design-details)
+  - [Backend Health](#backend-health)
+  - [TLS](#tls)
   - [Route Controls](#route-controls)
 - [Production Readiness Review Questionnaire](#production-readiness-review-questionnaire)
 - [Implementation History](#implementation-history)
@@ -28,7 +30,8 @@ A project can publish a `NetworkService` on a public TCP or UDP port through a
 requests; a separate `NetworkLoadBalancerRoute` connects a listener to the
 service. Consumers choose distinct IPs in each location, one IP shared across
 locations, or both on the same listener. Status shows the allocated IPs and
-where each is announced.
+where each is announced. TCP listeners can pass encrypted traffic to the
+backend, and active health checks keep failed backends out of rotation.
 
 ## Motivation
 
@@ -41,6 +44,10 @@ location-specific address or a shared address reachable from several locations.
 
 - Publish a TCP or UDP `NetworkService` through a named listener and separate
   route.
+- Pass TLS through a TCP listener without requiring a certificate on the load
+  balancer, and actively check backend health before serving traffic.
+- Define managed TLS termination as a future listener mode for non-HTTP
+  applications.
 - Support per-location unicast and multi-location anycast address requests,
   including a mix of both on one load balancer.
 - Show allocated addresses and serving locations without releasing an address
@@ -51,9 +58,10 @@ location-specific address or a shared address reachable from several locations.
 
 ### Non-Goals
 
-- HTTP routing, TLS termination, or changing the current `HTTPProxy` API.
-- Active health probes, weighted backends, source-based matches, or
-  cross-location backend fallback in the first release.
+- HTTP routing, managed TLS termination, SNI routing, or changing the current
+  `HTTPProxy` API in the first release.
+- Weighted backends, source-based matches, or cross-location backend fallback
+  in the first release.
 - Requiring consumers to create Gateway API or Galactic resources.
 
 ## Proposal
@@ -79,12 +87,15 @@ location to `All` creates another unicast IP while the anycast IP stays stable.
   a single endpoint; the status shows which regions currently announce it.
 - If a region loses its serving backends, its IP remains allocated while its
   announcement is withdrawn.
+- An operator exposes a TLS application through a TCP listener; the backend
+  retains its certificate and the load balancer forwards the encrypted stream.
 
 ### Risks and Mitigations
 
 - **An announced IP without serving backends drops traffic.** Announce a
-  location only after its rule is programmed with usable backends; withdraw it
-  when the last usable backend disappears.
+  location only after its rule is programmed with healthy backends; withdraw it
+  when the last healthy backend disappears. Workload readiness alone does not
+  prove the application answers on its port.
 - **Reusing an anycast IP for another load balancer misroutes traffic.** Hold
   one globally unique allocation and propagate that allocation to every
   selected location.
@@ -93,6 +104,9 @@ location to `All` creates another unicast IP while the anycast IP stays stable.
 - **Overlapping routes could select different backends for the same flow.** When
   match-based routes are added, require one default and deterministic precedence
   or reject ambiguous overlaps.
+- **Probe failure can withdraw a healthy location.** Report probe errors
+  separately from an unhealthy backend and avoid making one probe runner a
+  single point of failure.
 
 ## Design Details
 
@@ -112,6 +126,9 @@ spec:
     - name: game
       port: 27015
       protocol: UDP
+    - name: health
+      port: 8080
+      protocol: TCP
 ---
 apiVersion: networking.datumapis.com/v1alpha
 kind: NetworkLoadBalancer
@@ -150,6 +167,10 @@ spec:
     - networkService:
         name: game
         port: game
+      healthCheck:
+        protocol: HTTP
+        port: health
+        path: /healthz
 ```
 
 `backends` is a list so a later weighted split or ordered failover does not
@@ -187,9 +208,9 @@ These IPs are illustrative. IPv6 is shown because Galactic's current public
 ingress packet path handles IPv6. IPv4 address requests need IPv4 ingress
 support before they can be served and must be rejected where unavailable. An
 allocation remains in status when a route or backend is unavailable; its
-announcement state changes instead. Load balancer
-conditions distinguish allocation and programming. Route conditions report
-attachment, backend resolution, and programming. `Ready` means at least one
+announcement state changes instead. Load balancer conditions distinguish
+allocation and programming. Route conditions report attachment, backend
+resolution, and programming. `Ready` means at least one
 selected location serves traffic; location status identifies any that do not.
 
 NSO resolves service membership, allocates IPs, selects eligible locations,
@@ -199,10 +220,37 @@ backends in the ingress location. The same anycast IP is installed in every
 selected cell; the control plane must not allocate one IP per cell for it.
 
 For UDP, packets from the same client address and port select the same backend
-while the backend set is unchanged. A backend change may move that flow;
-the first release offers no UDP session or draining guarantee. Backend
-availability initially follows `NetworkService` membership and its holder
-availability signal, not an active UDP probe.
+while the backend set is unchanged. A backend change may move that flow; the
+first release offers no UDP session or draining guarantee.
+
+### Backend Health
+
+Health checks are configured per route backend. A TCP backend defaults to a
+TCP connect probe on its serving port; it may instead name a TCP, HTTP, or
+HTTPS probe on another `NetworkService` port. A UDP backend must name a TCP,
+HTTP, or HTTPS health endpoint that reports whether the UDP application can
+serve. There is no generic UDP probe with reliable success semantics. Probe
+interval, timeout, and healthy and unhealthy thresholds have platform defaults
+and can be set on the health check.
+
+An endpoint serves only when its workload reports `HolderAvailable` and its
+active probe passes. Probes run from each serving location. The cell publishes
+one healthy backend set for all of its gateway nodes so anycast nodes make
+consistent selections. A location with no healthy backends withdraws its
+announcement but keeps its IP allocation. Status reports healthy backend
+counts and probe failures by location.
+
+### TLS
+
+A TCP listener forwards TLS bytes unchanged. The application terminates TLS,
+owns its certificate, and can use any TCP port. No TLS setting is needed on
+the first-release listener.
+
+A future `TLS` listener may terminate TLS with a certificate reference for
+non-HTTP applications. SNI-based dispatch would use a distinct TLS route
+capability. Both need a proxy-capable data plane and certificate lifecycle;
+Galactic's current DSR rule cannot terminate or inspect TLS. HTTP termination
+remains with `HTTPProxy`.
 
 ### Route Controls
 
@@ -224,11 +272,9 @@ candidates for later releases, after the single-backend catch-all route works:
 - **Client affinity:** Keep new flows from one client on a consistent
   backend when needed. Clients sharing a NAT IP can create uneven load.
 
-SNI-based TLS passthrough is a separate TLS route capability, not a match on an
-ordinary TCP route. Backend health checks belong with `NetworkService` or a
-backend policy. Connection draining, source-IP preservation, and PROXY protocol
-are delivery settings rather than route matches; they need their own data plane
-contracts. Galactic's current rule has a backend list but no weights, route
+Connection draining, source-IP preservation, and PROXY protocol are delivery
+settings rather than route matches; they need their own data plane contracts.
+Galactic's current rule has a backend list but no weights, route
 matches, or priority policy, so these controls need implementation before the
 API accepts them.
 
@@ -243,25 +289,27 @@ advertisements are gone.
 
 ### Rollout, Upgrade and Rollback Planning
 
-Start with single-location TCP and UDP, then test multi-location unicast and
-anycast. Exercise route updates, UDP flow stability, loss of the last backend,
-location removal, and withdrawal before IP release. Existing `NetworkService`
-and `HTTPProxy` behavior should be unaffected.
+Start with single-location TCP and UDP with active probes, then test
+multi-location unicast and anycast. Exercise route updates, UDP flow stability,
+probe failures, loss of the last backend, location removal, and withdrawal
+before IP release. Existing `NetworkService` and `HTTPProxy` behavior should
+be unaffected.
 
 ### Monitoring Requirements
 
-Operators need counts of allocated VIPs, programmed rules, and announced
-locations, plus failures to allocate, program, or withdraw. Consumers read
-load balancer and route conditions and the per-address announcement status.
+Operators need counts of allocated VIPs, programmed rules, healthy backends,
+and announced locations, plus failures to allocate, probe, program, or
+withdraw. Consumers read load balancer and route conditions, backend health,
+and per-address announcement status.
 
 ### Dependencies
 
 IPAM must provide globally unique anycast VIPs and location-specific unicast
 VIPs. NSO must allow UDP `NetworkService` ports and require the route listener
 and backend port protocols to match; `HTTPProxy` must continue to reject UDP
-backends. Selected cells need Galactic gateways, backend VIP bindings, and a
-way to report programming and announcement state. IPv4 VIPs additionally need
-Galactic IPv4 ingress support.
+backends. Selected cells need a health probe runner, Galactic gateways,
+backend VIP bindings, and a way to report programming and announcement state.
+IPv4 VIPs additionally need Galactic IPv4 ingress support.
 
 ### Scalability
 

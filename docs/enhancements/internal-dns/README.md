@@ -51,16 +51,16 @@ Users need stable names for resources whose addresses and health change. Attachi
 
 Network services provision one DNS context per enabled VPC and regional access wherever the network is used. The context selects the VPC's private zones. Workloads receive the well-known resolver address `fd53::53` through their network interfaces.
 
-DNS allocates a managed namespace for automatic product names. Users can associate additional private zones and naming policies through the DNS API. Shared regional fleets serve many VPCs without per-VPC deployments.
+Network services selects `datum.internal` as the default domain and requests a managed namespace from DNS. DNS allocates a separate zone for each context. Product services publish records in the allocated zone. Users can associate additional private zones and naming policies through the DNS API. Shared regional fleets serve many VPCs without per-VPC deployments.
 
 ### User stories
 
 A workload attaches to its VPC and receives resolver settings from its provider. The user queries the assigned names with the guest's default resolver:
 
 ```console
-$ dig +short AAAA web-01.instances.vpc-a7c9.project-p4e2.internal
+$ dig +short AAAA web-01-k7m2.datum.internal
 fd20:1::10
-$ dig +short AAAA database.exports.vpc-a7c9.project-p4e2.internal
+$ dig +short AAAA database.datum.internal
 fd20:1::20
 $ dig +short AAAA api.prod.internal
 fd20:1::30
@@ -161,8 +161,10 @@ spec:
   # Network services derive this immutable identity from project UID and Network UID.
   consumerID: "11111111-1111-4111-8111-111111111111/22222222-2222-4222-8222-222222222222"
   managedNamespace:
-    # DNS allocates the default zone and suffix for product publishers.
+    # Request a context-specific zone for automatic product records.
     enabled: true
+    # Network services owns the default domain policy; DNS allocates this apex.
+    domainSuffix: datum.internal
 ---
 apiVersion: dns.networking.miloapis.com/v1alpha1
 kind: DNSResolverAccessBinding
@@ -222,7 +224,7 @@ spec:
     # The private-service frontend uses this address inside the consumer VPC.
     nameservers: [fd53::53]
     # Use the DNS-allocated managed suffix for relative names.
-    searches: [vpc-a7c9.project-p4e2.internal]
+    searches: [datum.internal]
 ---
 apiVersion: networking.datumapis.com/v1alpha
 kind: NetworkInterface
@@ -244,7 +246,7 @@ spec:
     sequence: 27
     validUntil: "2026-10-09T20:05:00Z"
     nameservers: [fd53::53]
-    searches: [vpc-a7c9.project-p4e2.internal]
+    searches: [datum.internal]
 ```
 
 Admission restricts resolver-settings writes to network services and `DNSConfigured` reports to trusted providers. Authenticate source projects through project routing and protected federation metadata. Projections preserve source identity and fencing values; UIDs assigned to replicated copies cannot replace source lifetimes.

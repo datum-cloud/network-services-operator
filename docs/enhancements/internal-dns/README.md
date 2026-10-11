@@ -222,7 +222,7 @@ spec:
     # The deadline cannot exceed either DNS or network authorization.
     validUntil: "2026-10-09T20:05:00Z"
     # The private-service frontend uses this address inside the consumer VPC.
-    nameservers: [fd53::53]
+    nameservers: ["fd53::53"]
     # Use the DNS-allocated managed suffix for relative names.
     searches: [datum.internal]
 ---
@@ -245,7 +245,7 @@ spec:
     writerEpoch: 3
     sequence: 27
     validUntil: "2026-10-09T20:05:00Z"
-    nameservers: [fd53::53]
+    nameservers: ["fd53::53"]
     searches: [datum.internal]
 ```
 

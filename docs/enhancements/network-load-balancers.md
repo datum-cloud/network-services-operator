@@ -1,26 +1,95 @@
+---
+status: provisional
+stage: alpha
+latest-milestone: "v0.x"
+---
+
 # Network Load Balancers
 
-| | |
-|---|---|
-| **Status** | Proposed |
-| **Author** | Engineering |
-| **Created** | 2026-10-11 |
+- [Summary](#summary)
+- [Motivation](#motivation)
+  - [Goals](#goals)
+  - [Non-Goals](#non-goals)
+- [Proposal](#proposal)
+  - [User Stories](#user-stories)
+  - [Risks and Mitigations](#risks-and-mitigations)
+- [Design Details](#design-details)
+- [Production Readiness Review Questionnaire](#production-readiness-review-questionnaire)
+- [Implementation History](#implementation-history)
+- [Drawbacks](#drawbacks)
+- [Alternatives](#alternatives)
+- [Infrastructure Needed](#infrastructure-needed)
 
 ## Summary
 
-A project can expose a `NetworkService` on public TCP ports through a
-`NetworkLoadBalancer`. The load balancer owns listeners and public addresses; a
-separate `NetworkLoadBalancerRoute` connects a listener to a service. Each address
-request chooses whether the platform allocates one address per location or one
-address shared across locations.
+A project can publish a `NetworkService` on a public TCP port through a
+`NetworkLoadBalancer`. The load balancer owns listeners and public address
+requests; a separate `NetworkLoadBalancerRoute` connects a listener to the
+service. Consumers choose distinct IPs in each location, one IP shared across
+locations, or both on the same listener. Status shows the allocated IPs and
+where each is announced.
 
-The API is specific to Datum. It borrows the useful separation of listeners and
-routes from Gateway API without making consumers configure Gateway API objects.
+## Motivation
 
-## What a consumer writes
+`NetworkService` identifies workloads and their ports, but does not give them a
+public Layer 4 entry point. Consumers need a stable address and port without
+managing Galactic resources. They also need to choose whether clients use a
+location-specific address or a shared address reachable from several locations.
 
-This example publishes the same TCP service on a distinct IPv4 address in every
-eligible location and on one shared IPv4 address announced from all of them:
+### Goals
+
+- Publish a TCP `NetworkService` through a named listener and separate route.
+- Support per-location unicast and multi-location anycast address requests,
+  including a mix of both on one load balancer.
+- Show allocated addresses and serving locations without releasing an address
+  when its backends are temporarily unavailable.
+- Use an address request shape that can later serve Application Load Balancers.
+
+### Non-Goals
+
+- HTTP routing, TLS termination, or changing the current `HTTPProxy` API.
+- UDP, active health probes, weighted backends, source-based matches, or
+  cross-location backend fallback in the first release.
+- Requiring consumers to create Gateway API or Galactic resources.
+
+## Proposal
+
+A `NetworkLoadBalancer` names a network, requests addresses, and defines TCP
+listeners. Each listener names the address requests on which it serves. A
+`NetworkLoadBalancerRoute` attaches to a named listener and points to a named
+port on a `NetworkService`. The first release accepts one catch-all route per
+listener; a conflicting route reports a condition.
+
+`Unicast` allocates one IP per selected location. `Anycast` allocates one IP
+announced from all selected locations. These names describe addressing *across
+locations*: multiple edge nodes may announce an IP within one location.
+`locations.from: All` follows current and future eligible locations. An
+explicit `Names` selection limits the request to listed locations. Adding a
+location to `All` creates another unicast IP while the anycast IP stays stable.
+
+### User Stories
+
+- A game operator publishes the same TCP port on a different IP in each region
+  so clients can choose a region.
+- The operator also publishes one global IP on that listener so clients can use
+  a single endpoint; the status shows which regions currently announce it.
+- If a region loses its serving backends, its IP remains allocated while its
+  announcement is withdrawn.
+
+### Risks and Mitigations
+
+- **An announced IP without serving backends drops traffic.** Announce a
+  location only after its rule is programmed with usable backends; withdraw it
+  when the last usable backend disappears.
+- **Reusing an anycast IP for another load balancer misroutes traffic.** Hold
+  one globally unique allocation and propagate that allocation to every
+  selected location.
+- **An `All` request can expand over time.** Expose each added location and IP
+  in status, and bound the number of locations and addresses per load balancer.
+
+## Design Details
+
+The consumer-facing shape is:
 
 ```yaml
 apiVersion: networking.datumapis.com/v1alpha
@@ -76,27 +145,8 @@ spec:
       port: game
 ```
 
-`Unicast` allocates a different address for each selected location. `Anycast`
-allocates one address and announces it from each selected location. These modes
-describe the address *across locations*: within a location, more than one edge
-node may announce the same address. `locations.from: All` follows every current
-and future location eligible to serve this load balancer. A `Names` selector
-with explicit location names limits the request to those locations. Adding an
-eligible location to `All` allocates another unicast address, while the anycast
-address stays the same.
-
-A listener can name several address requests when they serve the same route.
-Consumers use separate listeners when addresses need different ports or routes.
-The route is a separate object so a service owner can change backends without
-changing address ownership or listener configuration. A route attaches to one
-named listener and initially has one `NetworkService` backend. Only one route
-may claim a listener in the first release; a conflicting route reports a
-condition rather than taking traffic unpredictably.
-
-## What a consumer reads
-
-The load balancer reports each allocated IP as one status entry, regardless of
-address mode. For two locations, the example above could report:
+The load balancer reports one entry per allocated IP. Unicast produces an entry
+per location; anycast produces one entry with several announcements:
 
 ```yaml
 status:
@@ -123,31 +173,79 @@ status:
           state: Announced
 ```
 
-These are illustrative addresses. An allocation remains visible when its route
-or backends are unavailable; its announcement state changes instead. Conditions
-on the load balancer distinguish address allocation and programming. Route
-conditions report attachment, backend resolution, and programming. `Ready`
-means at least one selected location is serving; per-location status shows which
-ones are not. A missing backend does not silently release a consumer's IP.
+These IPs are illustrative. An allocation remains in status when a route or
+backend is unavailable; its announcement state changes instead. Load balancer
+conditions distinguish allocation and programming. Route conditions report
+attachment, backend resolution, and programming. `Ready` means at least one
+selected location serves traffic; location status identifies any that do not.
 
-## Delivery scope
+NSO resolves service membership, allocates IPs, selects eligible locations,
+and reports status. Cell controllers turn resolved intent into Galactic
+`NetworkRule` and `ServiceVIPBinding` objects. The initial route uses healthy
+backends in the ingress location. The same anycast IP is installed in every
+selected cell; the control plane must not allocate one IP per cell for it.
 
-The first release forwards TCP connections to healthy members of a
-`NetworkService` in the ingress location. It supports one catch-all route per
-listener, per-location unicast, multi-location anycast, and their combination.
-The address allocation and location selection shape is intended for later use
-by Application Load Balancers too. `HTTPProxy` keeps its current API until that
-capability is implemented.
+## Production Readiness Review Questionnaire
 
-NSO must resolve the service's members, allocate VIPs, select eligible
-locations, and report status. Cell controllers translate the resolved intent
-into Galactic `NetworkRule` and `ServiceVIPBinding` objects. Galactic already
-supports VIP-to-backend TCP/UDP forwarding and announcements, but the controllers
-do not yet create these objects from project intent. Announcing a location must
-be gated on a programmed rule and serving backends; losing the last usable
-backend withdraws that location without releasing its address. Anycast needs
-one globally unique allocation propagated to every selected location.
+### Feature Enablement and Rollback
 
-UDP, explicit health probes, multiple weighted backends, source-based matches,
-cross-location backend fallback, and advanced routing policies require separate
-data plane and API work. They are not implied by the first route shape.
+Enable the feature only in locations with a capable Galactic gateway and IP
+pool. Disabling reconciliation alone must not strand announced IPs: rollback
+needs an ordered withdrawal and release path that preserves allocations until
+advertisements are gone.
+
+### Rollout, Upgrade and Rollback Planning
+
+Start with single-location TCP, then test multi-location unicast and anycast.
+Exercise route updates, loss of the last backend, location removal, and
+withdrawal before IP release. Existing `NetworkService` and `HTTPProxy`
+behavior should be unaffected.
+
+### Monitoring Requirements
+
+Operators need counts of allocated VIPs, programmed rules, and announced
+locations, plus failures to allocate, program, or withdraw. Consumers read
+load balancer and route conditions and the per-address announcement status.
+
+### Dependencies
+
+IPAM must provide globally unique anycast VIPs and location-specific unicast
+VIPs. Selected cells need Galactic gateways, backend VIP bindings, and a way
+to report programming and announcement state.
+
+### Scalability
+
+Bound listeners, routes, address requests, and selected locations. An `All`
+request adds an allocation and cell configuration when a new location becomes
+eligible; reconciliation must handle those additions without changing existing
+IPs.
+
+### Troubleshooting
+
+Report failures at the affected route, address request, and location. In
+particular, distinguish an address that is allocated but not announced from an
+address that could not be allocated.
+
+## Implementation History
+
+- 2026-10-11: Initial proposal.
+
+## Drawbacks
+
+Separate routes add an object to a simple single-backend setup. Unicast across
+many locations consumes an IP in each one, and anycast requires coordinated
+withdrawal across cells.
+
+## Alternatives
+
+- **Put exposure and backends on `NetworkService`.** This ties workload
+  membership to public address and listener lifecycle.
+- **Put the backend on each listener.** This is compact for one backend but
+  leaves no independent route lifecycle or place for future route policy.
+- **Expose Gateway API directly.** It adds concepts consumers do not need for
+  this use case and does not express Datum's location and address policies.
+
+## Infrastructure Needed
+
+Public VIP pools, cell-level programming and status propagation, and a
+multi-location traffic test environment are required before rollout.

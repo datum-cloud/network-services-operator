@@ -23,7 +23,7 @@ latest-milestone: "v0.x"
 
 ## Summary
 
-A project can publish a `NetworkService` on a public TCP port through a
+A project can publish a `NetworkService` on a public TCP or UDP port through a
 `NetworkLoadBalancer`. The load balancer owns listeners and public address
 requests; a separate `NetworkLoadBalancerRoute` connects a listener to the
 service. Consumers choose distinct IPs in each location, one IP shared across
@@ -39,7 +39,8 @@ location-specific address or a shared address reachable from several locations.
 
 ### Goals
 
-- Publish a TCP `NetworkService` through a named listener and separate route.
+- Publish a TCP or UDP `NetworkService` through a named listener and separate
+  route.
 - Support per-location unicast and multi-location anycast address requests,
   including a mix of both on one load balancer.
 - Show allocated addresses and serving locations without releasing an address
@@ -51,14 +52,14 @@ location-specific address or a shared address reachable from several locations.
 ### Non-Goals
 
 - HTTP routing, TLS termination, or changing the current `HTTPProxy` API.
-- UDP, active health probes, weighted backends, source-based matches, or
+- Active health probes, weighted backends, source-based matches, or
   cross-location backend fallback in the first release.
 - Requiring consumers to create Gateway API or Galactic resources.
 
 ## Proposal
 
 A `NetworkLoadBalancer` names a network, requests addresses, and defines TCP
-listeners. Each listener names the address requests on which it serves. A
+or UDP listeners. Each listener names the address requests on which it serves. A
 `NetworkLoadBalancerRoute` attaches to a named listener and points to a named
 port on a `NetworkService`. The first release accepts one catch-all route per
 listener; a conflicting route reports a condition.
@@ -72,7 +73,7 @@ location to `All` creates another unicast IP while the anycast IP stays stable.
 
 ### User Stories
 
-- A game operator publishes the same TCP port on a different IP in each region
+- A game operator publishes the same UDP port on a different IP in each region
   so clients can choose a region.
 - The operator also publishes one global IP on that listener so clients can use
   a single endpoint; the status shows which regions currently announce it.
@@ -110,7 +111,7 @@ spec:
   ports:
     - name: game
       port: 27015
-      protocol: TCP
+      protocol: UDP
 ---
 apiVersion: networking.datumapis.com/v1alpha
 kind: NetworkLoadBalancer
@@ -123,17 +124,17 @@ spec:
     addresses:
       - name: regional
         mode: Unicast
-        family: IPv4
+        family: IPv6
         locations:
           from: All
       - name: global
         mode: Anycast
-        family: IPv4
+        family: IPv6
         locations:
           from: All
   listeners:
     - name: game
-      protocol: TCP
+      protocol: UDP
       port: 27015
       addressRefs: [regional, global]
 ---
@@ -161,20 +162,20 @@ per location; anycast produces one entry with several announcements:
 status:
   addresses:
     - requestName: regional
-      family: IPv4
-      value: 192.0.2.10
+      family: IPv6
+      value: 2001:db8:100::10
       announcements:
         - location: us-central-1
           state: Announced
     - requestName: regional
-      family: IPv4
-      value: 192.0.2.11
+      family: IPv6
+      value: 2001:db8:200::11
       announcements:
         - location: eu-west-1
           state: Announced
     - requestName: global
-      family: IPv4
-      value: 198.51.100.20
+      family: IPv6
+      value: 2001:db8:300::20
       announcements:
         - location: us-central-1
           state: Announced
@@ -182,8 +183,11 @@ status:
           state: Announced
 ```
 
-These IPs are illustrative. An allocation remains in status when a route or
-backend is unavailable; its announcement state changes instead. Load balancer
+These IPs are illustrative. IPv6 is shown because Galactic's current public
+ingress packet path handles IPv6. IPv4 address requests need IPv4 ingress
+support before they can be served and must be rejected where unavailable. An
+allocation remains in status when a route or backend is unavailable; its
+announcement state changes instead. Load balancer
 conditions distinguish allocation and programming. Route conditions report
 attachment, backend resolution, and programming. `Ready` means at least one
 selected location serves traffic; location status identifies any that do not.
@@ -194,14 +198,21 @@ and reports status. Cell controllers turn resolved intent into Galactic
 backends in the ingress location. The same anycast IP is installed in every
 selected cell; the control plane must not allocate one IP per cell for it.
 
+For UDP, packets from the same client address and port select the same backend
+while the backend set is unchanged. A backend change may move that flow;
+the first release offers no UDP session or draining guarantee. Backend
+availability initially follows `NetworkService` membership and its holder
+availability signal, not an active UDP probe.
+
 ### Route Controls
 
 The listener selects destination IP, protocol, and port. The route selects a
-backend for each new connection. The following controls are candidates for
-later releases, after the single-backend catch-all route works:
+backend for each TCP connection or UDP flow. The following controls are
+candidates for later releases, after the single-backend catch-all route works:
 
-- **Weighted backends:** Split new connections among `NetworkService` backends
-  by weight. Existing connections do not move when weights change.
+- **Weighted backends:** Split new TCP connections or UDP flows among
+  `NetworkService` backends by weight. Changing weights must not interrupt
+  established TCP connections; UDP flow stability needs an explicit contract.
 - **Priority failover:** Use a standby backend when the preferred one lacks
   enough healthy members, with an explicit threshold.
 - **Backend locality:** Select `LocalOnly`, `PreferLocal`, or `Global` backends
@@ -210,7 +221,7 @@ later releases, after the single-backend catch-all route works:
 - **Source CIDR match:** Steer client networks to different backends. Multiple
   routes on one listener need a default and unambiguous precedence. This is
   traffic selection, not an access-control substitute.
-- **Client affinity:** Keep new connections from one client on a consistent
+- **Client affinity:** Keep new flows from one client on a consistent
   backend when needed. Clients sharing a NAT IP can create uneven load.
 
 SNI-based TLS passthrough is a separate TLS route capability, not a match on an
@@ -232,10 +243,10 @@ advertisements are gone.
 
 ### Rollout, Upgrade and Rollback Planning
 
-Start with single-location TCP, then test multi-location unicast and anycast.
-Exercise route updates, loss of the last backend, location removal, and
-withdrawal before IP release. Existing `NetworkService` and `HTTPProxy`
-behavior should be unaffected.
+Start with single-location TCP and UDP, then test multi-location unicast and
+anycast. Exercise route updates, UDP flow stability, loss of the last backend,
+location removal, and withdrawal before IP release. Existing `NetworkService`
+and `HTTPProxy` behavior should be unaffected.
 
 ### Monitoring Requirements
 
@@ -246,8 +257,11 @@ load balancer and route conditions and the per-address announcement status.
 ### Dependencies
 
 IPAM must provide globally unique anycast VIPs and location-specific unicast
-VIPs. Selected cells need Galactic gateways, backend VIP bindings, and a way
-to report programming and announcement state.
+VIPs. NSO must allow UDP `NetworkService` ports and require the route listener
+and backend port protocols to match; `HTTPProxy` must continue to reject UDP
+backends. Selected cells need Galactic gateways, backend VIP bindings, and a
+way to report programming and announcement state. IPv4 VIPs additionally need
+Galactic IPv4 ingress support.
 
 ### Scalability
 

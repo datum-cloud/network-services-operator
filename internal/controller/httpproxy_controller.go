@@ -47,6 +47,7 @@ import (
 	"go.datum.net/network-services-operator/internal/config"
 	downstreamclient "go.datum.net/network-services-operator/internal/downstreamclient"
 	conditionutil "go.datum.net/network-services-operator/internal/util/condition"
+	"go.datum.net/network-services-operator/internal/util/finalizer"
 	gatewayutil "go.datum.net/network-services-operator/internal/util/gateway"
 	"go.datum.net/network-services-operator/internal/util/resourcename"
 	"go.datum.net/network-services-operator/internal/validation"
@@ -125,7 +126,10 @@ func collectDesiredResourcesErrorResult(err error, programmedCondition *metav1.C
 	return ctrl.Result{}, fmt.Errorf("failed to collect desired resources: %w", err), true
 }
 
-const httpProxyFinalizer = "networking.datumapis.com/httpproxy-cleanup"
+const (
+	httpProxyControllerName = "httpproxy"
+	httpProxyFinalizer      = "networking.datumapis.com/httpproxy-cleanup"
+)
 
 const retryAfterInvalid = 5 * time.Minute
 const connectorOfflineFilterPrefix = "connector-offline"
@@ -195,8 +199,7 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 			if err := r.cleanupDownstreamAnchor(ctx, cl.GetClient(), string(req.ClusterName), &httpProxy); err != nil {
 				return ctrl.Result{}, err
 			}
-			controllerutil.RemoveFinalizer(&httpProxy, httpProxyFinalizer)
-			if err := cl.GetClient().Update(ctx, &httpProxy); err != nil {
+			if err := finalizer.Remove(ctx, cl.GetClient(), &httpProxy, httpProxyFinalizer, fieldOwner(httpProxyControllerName)); err != nil {
 				return ctrl.Result{}, err
 			}
 		}
@@ -234,8 +237,9 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 		var statusErr error
 		if !equality.Semantic.DeepEqual(httpProxy.Status, httpProxyCopy.Status) {
 			emitHTTPProxyActivityEvents(ctx, cl.GetClient(), httpProxyCopy, httpProxy.Status.Conditions)
+			saved := httpProxy.DeepCopy()
 			httpProxy.Status = httpProxyCopy.Status
-			if statusErr = cl.GetClient().Status().Update(ctx, &httpProxy); statusErr != nil {
+			if statusErr = cl.GetClient().Status().Patch(ctx, &httpProxy, client.MergeFrom(saved), client.FieldOwner(fieldOwner(httpProxyControllerName))); statusErr != nil {
 				observation.statusFailed(statusErr)
 				err = errors.Join(err, fmt.Errorf("failed updating httpproxy status: %w", statusErr))
 			}
@@ -244,19 +248,13 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 		observation.finished(programmedCondition, statusErr == nil)
 	}()
 
-	if !controllerutil.ContainsFinalizer(&httpProxy, httpProxyFinalizer) {
-		controllerutil.AddFinalizer(&httpProxy, httpProxyFinalizer)
-		if updateErr := cl.GetClient().Update(ctx, &httpProxy); updateErr != nil {
-			if apierrors.IsConflict(updateErr) {
-				return ctrl.Result{RequeueAfter: retryAfterConflict}, nil
-			}
-			if apierrors.IsInvalid(updateErr) {
-				acceptedCondition.Reason = networkingv1alpha.HTTPProxyReasonInvalid
-				acceptedCondition.Message = fmt.Sprintf("The HTTPProxy cannot be programmed because its stored spec is rejected by validation: %s", updateErr.Error())
-				return ctrl.Result{RequeueAfter: retryAfterInvalid}, nil
-			}
-			return ctrl.Result{}, updateErr
+	if addErr := finalizer.Add(ctx, cl.GetClient(), &httpProxy, httpProxyFinalizer, fieldOwner(httpProxyControllerName)); addErr != nil {
+		if apierrors.IsInvalid(addErr) {
+			acceptedCondition.Reason = networkingv1alpha.HTTPProxyReasonInvalid
+			acceptedCondition.Message = fmt.Sprintf("The HTTPProxy cannot be programmed because its stored spec is rejected by validation: %s", addErr.Error())
+			return ctrl.Result{RequeueAfter: retryAfterInvalid}, nil
 		}
+		return ctrl.Result{}, addErr
 	}
 
 	if errs := validation.ValidateHTTPProxy(&httpProxy, validation.HTTPProxyValidationOptions{Hostnames: validation.CustomHostnameOptions(r.Config.Gateway)}); len(errs) > 0 {
@@ -831,7 +829,7 @@ func (r *HTTPProxyReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 		WithOptions(controller.TypedOptions[mcreconcile.Request]{
 			MaxConcurrentReconciles: r.Config.HTTPProxy.MaxConcurrentReconciles,
 		}).
-		Named("httpproxy").Complete(r)
+		Named(httpProxyControllerName).Complete(r)
 }
 
 // enqueueHTTPProxiesForNetworkServiceMembership enqueues the HTTPProxies in the

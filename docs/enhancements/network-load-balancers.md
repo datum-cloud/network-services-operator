@@ -14,6 +14,7 @@ latest-milestone: "v0.x"
   - [User Stories](#user-stories)
   - [Risks and Mitigations](#risks-and-mitigations)
 - [Design Details](#design-details)
+  - [Route Controls](#route-controls)
 - [Production Readiness Review Questionnaire](#production-readiness-review-questionnaire)
 - [Implementation History](#implementation-history)
 - [Drawbacks](#drawbacks)
@@ -44,6 +45,8 @@ location-specific address or a shared address reachable from several locations.
 - Show allocated addresses and serving locations without releasing an address
   when its backends are temporarily unavailable.
 - Use an address request shape that can later serve Application Load Balancers.
+- Leave room for common L4 traffic controls without requiring them in the first
+  release.
 
 ### Non-Goals
 
@@ -86,6 +89,9 @@ location to `All` creates another unicast IP while the anycast IP stays stable.
   selected location.
 - **An `All` request can expand over time.** Expose each added location and IP
   in status, and bound the number of locations and addresses per load balancer.
+- **Overlapping routes could select different backends for the same flow.** When
+  match-based routes are added, require one default and deterministic precedence
+  or reject ambiguous overlaps.
 
 ## Design Details
 
@@ -139,11 +145,14 @@ spec:
   parentRef:
     name: game
     listener: game
-  backend:
-    networkService:
-      name: game
-      port: game
+  backends:
+    - networkService:
+        name: game
+        port: game
 ```
+
+`backends` is a list so a later weighted split or ordered failover does not
+require replacing the field. The first release requires exactly one entry.
 
 The load balancer reports one entry per allocated IP. Unicast produces an entry
 per location; anycast produces one entry with several announcements:
@@ -184,6 +193,33 @@ and reports status. Cell controllers turn resolved intent into Galactic
 `NetworkRule` and `ServiceVIPBinding` objects. The initial route uses healthy
 backends in the ingress location. The same anycast IP is installed in every
 selected cell; the control plane must not allocate one IP per cell for it.
+
+### Route Controls
+
+The listener selects destination IP, protocol, and port. The route selects a
+backend for each new connection. The following controls are candidates for
+later releases, after the single-backend catch-all route works:
+
+- **Weighted backends:** Split new connections among `NetworkService` backends
+  by weight. Existing connections do not move when weights change.
+- **Priority failover:** Use a standby backend when the preferred one lacks
+  enough healthy members, with an explicit threshold.
+- **Backend locality:** Select `LocalOnly`, `PreferLocal`, or `Global` backends
+  relative to the ingress location. This does not change which locations
+  announce the VIP. Cross-location forwarding needs a verified DSR return path.
+- **Source CIDR match:** Steer client networks to different backends. Multiple
+  routes on one listener need a default and unambiguous precedence. This is
+  traffic selection, not an access-control substitute.
+- **Client affinity:** Keep new connections from one client on a consistent
+  backend when needed. Clients sharing a NAT IP can create uneven load.
+
+SNI-based TLS passthrough is a separate TLS route capability, not a match on an
+ordinary TCP route. Backend health checks belong with `NetworkService` or a
+backend policy. Connection draining, source-IP preservation, and PROXY protocol
+are delivery settings rather than route matches; they need their own data plane
+contracts. Galactic's current rule has a backend list but no weights, route
+matches, or priority policy, so these controls need implementation before the
+API accepts them.
 
 ## Production Readiness Review Questionnaire
 

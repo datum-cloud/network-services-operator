@@ -2438,27 +2438,23 @@ func (r *GatewayReconciler) ensureDownstreamHTTPRoute(
 				obj.Spec.InternalTrafficPolicy = desired.Spec.InternalTrafficPolicy
 				obj.Spec.TrafficDistribution = desired.Spec.TrafficDistribution
 
-				// Merge ports by name rather than overwriting the slice, so
-				// server-defaulted fields like TargetPort are preserved. All other
+				// Match ports by name rather than overwriting the slice, so
+				// server-defaulted fields like TargetPort are preserved on a port
+				// that stays, and drop a port desired no longer holds. All other
 				// user-controlled fields (Port, Protocol, AppProtocol) must be copied
 				// from desired so changes to the upstream HTTPProxy backend (e.g.
 				// flipping the origin scheme from https to http) propagate to the
 				// downstream Service.
+				ports := make([]corev1.ServicePort, 0, len(desired.Spec.Ports))
 				for _, dp := range desired.Spec.Ports {
-					found := false
-					for i, ep := range obj.Spec.Ports {
-						if ep.Name == dp.Name {
-							obj.Spec.Ports[i].Port = dp.Port
-							obj.Spec.Ports[i].Protocol = dp.Protocol
-							obj.Spec.Ports[i].AppProtocol = dp.AppProtocol
-							found = true
-							break
-						}
+					if i := slices.IndexFunc(obj.Spec.Ports, func(ep corev1.ServicePort) bool { return ep.Name == dp.Name }); i >= 0 {
+						kept := obj.Spec.Ports[i]
+						kept.Port, kept.Protocol, kept.AppProtocol = dp.Port, dp.Protocol, dp.AppProtocol
+						dp = kept
 					}
-					if !found {
-						obj.Spec.Ports = append(obj.Spec.Ports, dp)
-					}
+					ports = append(ports, dp)
 				}
+				obj.Spec.Ports = ports
 			case *discoveryv1.EndpointSlice:
 				desiredEndpointSlice := desiredDownstreamResource.(*discoveryv1.EndpointSlice)
 				// Since endpointslices get duplicated for routes, add them as a controller
@@ -2630,7 +2626,8 @@ func (r *GatewayReconciler) ensureDownstreamHTTPRoute(
 // processDownstreamHTTPRouteRules is a helper function that processes the
 // rules of an HTTPRoute and returns the rules, the downstream resources that
 // need to be created or updated, and the EndpointSlices the route names that
-// do not exist. Their backendRefs are still written and resolve to nothing.
+// do not exist. Their backendRefs are still written, to a Service without
+// endpoints.
 func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 	ctx context.Context,
 	upstreamClient client.Client,
@@ -2673,6 +2670,12 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 					Namespace: string(ptr.Deref(backendRef.Namespace, gatewayv1.Namespace(upstreamGateway.Namespace))),
 					Name:      string(backendRef.Name),
 				}
+				if backendRef.Port == nil {
+					// Should be protected by validation, but check just in case.
+					logger.Info("no port defined in backendRef", "backendRef", backendRef)
+					return nil, nil, nil, fmt.Errorf("no port defined in backendRef")
+				}
+
 				var upstreamEndpointSlice discoveryv1.EndpointSlice
 				if err := upstreamClient.Get(ctx, sliceKey, &upstreamEndpointSlice); err != nil {
 					if !apierrors.IsNotFound(err) {
@@ -2680,14 +2683,11 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 					}
 					logger.V(1).Info("backend endpointslice not found", "endpointslice", sliceKey.String())
 					unresolved = append(unresolved, sliceKey.String())
+					downstreamResources = append(downstreamResources, headlessService(downstreamGateway.Namespace, resourceName, []corev1.ServicePort{
+						{Port: *backendRef.Port, Protocol: corev1.ProtocolTCP},
+					}))
 					backendRefs = append(backendRefs, serviceBackendRef(downstreamGateway.Namespace, resourceName, backendRef))
 					continue
-				}
-
-				if backendRef.Port == nil {
-					// Should be protected by validation, but check just in case.
-					logger.Info("no port defined in backendRef", "backendRef", backendRef)
-					return nil, nil, nil, fmt.Errorf("no port defined in backendRef")
 				}
 
 				// An instance HTTPProxy backend (api/v1alpha.InstanceBackendRef)
@@ -2742,19 +2742,7 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 						networkServiceBackend = true
 					}
 
-					downstreamService := &corev1.Service{
-						ObjectMeta: metav1.ObjectMeta{
-							Namespace: downstreamGateway.Namespace,
-							Name:      resourceName,
-						},
-						Spec: corev1.ServiceSpec{
-							Type:                  corev1.ServiceTypeClusterIP,
-							ClusterIP:             clusterIPNone,
-							Ports:                 ports,
-							InternalTrafficPolicy: ptr.To(corev1.ServiceInternalTrafficPolicyCluster),
-							TrafficDistribution:   ptr.To(corev1.ServiceTrafficDistributionPreferClose),
-						},
-					}
+					downstreamService := headlessService(downstreamGateway.Namespace, resourceName, ports)
 					downstreamResources = append(downstreamResources, downstreamService)
 
 					downstreamEndpointSlice := &discoveryv1.EndpointSlice{
@@ -2884,6 +2872,19 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 	}
 
 	return rules, downstreamResources, unresolved, nil
+}
+
+func headlessService(namespace, name string, ports []corev1.ServicePort) *corev1.Service {
+	return &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: name},
+		Spec: corev1.ServiceSpec{
+			Type:                  corev1.ServiceTypeClusterIP,
+			ClusterIP:             clusterIPNone,
+			Ports:                 ports,
+			InternalTrafficPolicy: ptr.To(corev1.ServiceInternalTrafficPolicyCluster),
+			TrafficDistribution:   ptr.To(corev1.ServiceTrafficDistributionPreferClose),
+		},
+	}
 }
 
 func serviceBackendRef(namespace, name string, backendRef gatewayv1.HTTPBackendRef) gatewayv1.HTTPBackendRef {

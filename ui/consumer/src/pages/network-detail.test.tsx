@@ -124,7 +124,8 @@ describe('NetworkDetail', () => {
 
     expect(screen.getAllByText('prod-net').length).toBeGreaterThanOrEqual(2);
     expect(screen.getByText('2001:db8::/48 · IPv6')).toBeInTheDocument();
-    for (const tab of ['Overview', 'Resources', 'Services', 'Configuration']) {
+    expect(tabs().queryByText('Resources')).not.toBeInTheDocument();
+    for (const tab of ['Overview', 'Services', 'Configuration']) {
       expect(tabs().getByText(tab)).toBeInTheDocument();
     }
   });
@@ -136,6 +137,7 @@ describe('NetworkDetail', () => {
 
     expect(screen.getByTestId('networking-plugin-network-overview')).toBeInTheDocument();
     expect(screen.getByText('Network is ready')).toBeInTheDocument();
+    expect(screen.getByTestId('networking-plugin-network-resources')).toBeInTheDocument();
   });
 
   it('shows plain-language reason text on the Overview when not ready', () => {
@@ -150,9 +152,9 @@ describe('NetworkDetail', () => {
   it('opens a tab directly from its URL', () => {
     loaded();
 
-    renderPage(`${DETAIL_PATH}/resources`);
+    renderPage(`${DETAIL_PATH}/configuration`);
 
-    expect(screen.getByTestId('networking-plugin-network-resources')).toBeInTheDocument();
+    expect(screen.getByText('Resource name')).toBeInTheDocument();
   });
 
   it('navigates between tabs by URL', () => {

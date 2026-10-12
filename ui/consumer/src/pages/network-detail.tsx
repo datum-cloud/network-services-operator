@@ -1,5 +1,4 @@
 import { NetworkOverview } from '../components/network-overview';
-import { NetworkResources } from '../components/network-resources';
 import { NetworkServices } from '../components/network-services';
 import { NetworkConfiguration } from '../components/network-configuration';
 import { PluginTabs } from '../components/plugin-tabs';
@@ -33,7 +32,6 @@ interface DetailHrefs {
   project: string;
   networks: string;
   overview: string;
-  resources: string;
   services: string;
   configuration: string;
 }
@@ -58,7 +56,6 @@ function useDetailHrefs(projectId: string | undefined): DetailHrefs {
     project: projectId ? `/project/${projectId}` : '/',
     networks: overview.replace(/\/[^/]+$/, '') || '/',
     overview,
-    resources: `${overview}/resources`,
     services: `${overview}/services`,
     configuration: `${overview}/configuration`,
   };
@@ -108,7 +105,6 @@ function DetailLayout() {
         testId="networking-plugin-network-tabs"
         tabs={[
           { label: 'Overview', href: hrefs.overview },
-          { label: 'Resources', href: hrefs.resources },
           { label: 'Services', href: hrefs.services },
           { label: 'Configuration', href: hrefs.configuration },
         ]}
@@ -132,13 +128,8 @@ function DetailLayout() {
 }
 
 function OverviewTab() {
-  const { network, projectId, hrefs } = useNetworkOutlet();
-  return <NetworkOverview network={network} projectId={projectId} resourcesHref={hrefs.resources} />;
-}
-
-function ResourcesTab() {
   const { network, projectId } = useNetworkOutlet();
-  return <NetworkResources projectId={projectId} networkName={network.name} />;
+  return <NetworkOverview network={network} projectId={projectId} />;
 }
 
 function ServicesTab() {
@@ -168,7 +159,6 @@ export default function NetworkDetail() {
     <Routes>
       <Route element={<DetailLayout />}>
         <Route index element={<OverviewTab />} />
-        <Route path="resources" element={<ResourcesTab />} />
         <Route path="services" element={<ServicesTab />} />
         <Route path="configuration" element={<ConfigurationTab />} />
         <Route path="*" element={<NotFoundTab />} />

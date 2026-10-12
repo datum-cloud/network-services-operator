@@ -42,6 +42,7 @@ import (
 	"go.datum.net/network-services-operator/internal/config"
 	downstreamclient "go.datum.net/network-services-operator/internal/downstreamclient"
 	"go.datum.net/network-services-operator/internal/util/finalizer"
+	"go.datum.net/network-services-operator/internal/util/status"
 )
 
 const (
@@ -616,28 +617,26 @@ func (r *GatewayResourceReplicatorReconciler) clearUpstreamStatusIfNeeded(
 	return nil
 }
 
-// patchUpstreamStatus saves status as the whole status of upstreamObj, or
-// removes the status when it is empty. The replicator is the only writer of
-// these statuses, so a merge patch without resourceVersion is safe.
+// patchUpstreamStatus saves desired as the whole status of upstreamObj, or
+// removes the status when desired is empty. The replicator is the only writer
+// of these statuses, so a merge patch without resourceVersion is safe.
 func patchUpstreamStatus(
 	ctx context.Context,
 	upstreamClient client.Client,
 	resource replicationResource,
 	upstreamObj *unstructured.Unstructured,
-	status map[string]any,
+	desired map[string]any,
 ) error {
-	saved := upstreamObj.DeepCopy()
+	modified := upstreamObj.DeepCopy()
 	if resource.replicationResourceConfig.statusGVK != nil {
-		saved.SetGroupVersionKind(*resource.replicationResourceConfig.statusGVK)
+		modified.SetGroupVersionKind(*resource.replicationResourceConfig.statusGVK)
 	}
-	modified := saved.DeepCopy()
-	if len(status) == 0 {
+	if len(desired) == 0 {
 		delete(modified.Object, jsonKeyStatus)
 	} else {
-		modified.Object[jsonKeyStatus] = status
+		modified.Object[jsonKeyStatus] = desired
 	}
-	return upstreamClient.Status().Patch(ctx, modified, client.MergeFrom(saved),
-		client.FieldOwner(fieldOwner(gatewayResourceReplicatorControllerName)))
+	return status.Patch(ctx, upstreamClient, modified, upstreamObj, fieldOwner(gatewayResourceReplicatorControllerName))
 }
 
 func filterConditionMessagesInStatus(status map[string]any, handlers conditionReasonHandlers) {

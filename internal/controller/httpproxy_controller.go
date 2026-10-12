@@ -50,6 +50,7 @@ import (
 	"go.datum.net/network-services-operator/internal/util/finalizer"
 	gatewayutil "go.datum.net/network-services-operator/internal/util/gateway"
 	"go.datum.net/network-services-operator/internal/util/resourcename"
+	"go.datum.net/network-services-operator/internal/util/status"
 	"go.datum.net/network-services-operator/internal/validation"
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 )
@@ -239,7 +240,7 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 			emitHTTPProxyActivityEvents(ctx, cl.GetClient(), httpProxyCopy, httpProxy.Status.Conditions)
 			saved := httpProxy.DeepCopy()
 			httpProxy.Status = httpProxyCopy.Status
-			if statusErr = cl.GetClient().Status().Patch(ctx, &httpProxy, client.MergeFrom(saved), client.FieldOwner(fieldOwner(httpProxyControllerName))); statusErr != nil {
+			if statusErr = status.Patch(ctx, cl.GetClient(), &httpProxy, saved, fieldOwner(httpProxyControllerName)); statusErr != nil {
 				observation.statusFailed(statusErr)
 				err = errors.Join(err, fmt.Errorf("failed updating httpproxy status: %w", statusErr))
 			}

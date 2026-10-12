@@ -126,6 +126,7 @@ algorithm and health checks instead.
 |---|---|---|
 | `MultipleNetworks` | The service selects things on more than one network, and a service covers one | Theirs — narrow the selector |
 | `NoServingLocations` | Every location it has something in is out of rotation | Datum's |
+| `NetworkServiceBackendUnsupportedProtocol` | The HTTPProxy names a UDP port; point it at a TCP port on the NetworkService | Theirs |
 | `NetworkServiceMembersUnreferenced` | More members than Datum is currently sending traffic to; it serves, but not from all | Datum's |
 | `NetworkServiceMembersUnaddressable` | Some members have no address of the kind the service hands out | Theirs |
 

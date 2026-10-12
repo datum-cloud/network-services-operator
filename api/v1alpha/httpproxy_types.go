@@ -415,9 +415,9 @@ type NetworkServiceBackendRef struct {
 	// +kubebuilder:validation:MaxLength=253
 	Name string `json:"name"`
 
-	// Port names a port declared in the referenced service's spec.ports, rather
-	// than giving a number, so the reference survives a change to the port the
-	// members answer on.
+	// Port names a TCP port declared in the referenced service's spec.ports,
+	// rather than giving a number, so the reference survives a change to the
+	// port the members answer on. UDP ports cannot serve HTTPProxy traffic.
 	//
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
@@ -796,6 +796,10 @@ const (
 	// networkService backend references a NetworkService that does not exist, or
 	// a port name that service does not declare.
 	HTTPProxyReasonNetworkServiceBackendNotFound = "NetworkServiceBackendNotFound"
+
+	// HTTPProxyReasonNetworkServiceBackendUnsupportedProtocol indicates that a
+	// networkService backend references a port that does not carry TCP.
+	HTTPProxyReasonNetworkServiceBackendUnsupportedProtocol = "NetworkServiceBackendUnsupportedProtocol"
 
 	// HTTPProxyReasonNetworkServiceMembersUnreferenced indicates that a
 	// networkService backend resolved more members than a single EndpointSlice

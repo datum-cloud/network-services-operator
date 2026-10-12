@@ -44,6 +44,8 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 		&NetworkInterfaceClaimList{},
 		&NetworkLoadBalancer{},
 		&NetworkLoadBalancerList{},
+		&NetworkLoadBalancerCellIntent{},
+		&NetworkLoadBalancerCellIntentList{},
 		&NetworkLoadBalancerRoute{},
 		&NetworkLoadBalancerRouteList{},
 		&NetworkPolicy{},

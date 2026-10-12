@@ -59,6 +59,7 @@ type networkLoadBalancerRouteEndpoint struct {
 	Address         string
 	Port            int32
 	Weight          int32
+	Probe           networkingv1alpha.NetworkLoadBalancerCellIntentProbe
 }
 
 type networkLoadBalancerRouteReferenceError struct {
@@ -254,12 +255,21 @@ func resolveNetworkLoadBalancerRouteBackends(
 		if weight == 0 {
 			continue
 		}
+		probe := networkingv1alpha.NetworkLoadBalancerCellIntentProbe{Protocol: "TCP", Port: port.Port}
+		if check := backend.HealthCheck; check != nil {
+			probe.Protocol = check.Protocol
+			probe.Path = check.Path
+			if check.Port != "" {
+				probeIndex := slices.IndexFunc(service.Spec.Ports, func(p networkingv1alpha.NetworkServicePort) bool { return p.Name == check.Port })
+				probe.Port = service.Spec.Ports[probeIndex].Port
+			}
+		}
 		for i := range members {
 			member := &members[i]
 			location := member.Labels[networkingv1alpha.NetworkInterfaceLocationLabel]
 			sourceNamespace := member.Labels[networkingv1alpha.NetworkInterfaceSourceNamespaceLabel]
 			sourceUID := member.Labels[networkingv1alpha.NetworkInterfaceSourceUIDLabel]
-			if !isProjection(member) || sourceNamespace == "" || sourceUID == "" ||
+			if !isProjection(member) || member.Status.Phase != networkingv1alpha.NetworkInterfacePhaseBound || sourceNamespace == "" || sourceUID == "" ||
 				location == "" || !routeLocationSelected(parent, listener, location) || !isServiceMemberHealthy(member) {
 				continue
 			}
@@ -276,6 +286,7 @@ func resolveNetworkLoadBalancerRouteBackends(
 				Address:         address,
 				Port:            port.Port,
 				Weight:          weight,
+				Probe:           probe,
 			})
 		}
 	}

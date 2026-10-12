@@ -46,4 +46,5 @@ resources:
   # Network interface claim path, served on cells
   - ../bases/networking.datumapis.com_networkinterfaceclaims.yaml
   - ../bases/networking.datumapis.com_networkinterfaces.yaml
+  - ../bases/networking.datumapis.com_networkloadbalancercellintents.yaml
   - ../bases/networking.datumapis.com_subnets.yaml

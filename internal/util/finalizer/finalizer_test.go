@@ -141,7 +141,7 @@ func TestFinalizer(t *testing.T) {
 
 		require.Error(t, Add(ctx, c, cm, theirs, myOwner))
 		require.True(t, apierrors.IsNotFound(c.Get(ctx, client.ObjectKeyFromObject(cm), &corev1.ConfigMap{})))
-		require.True(t, apierrors.IsNotFound(Remove(ctx, c, cm, mine, myOwner)))
+		require.NoError(t, Remove(ctx, c, cm, mine, myOwner), "an object already gone holds no finalizer")
 	})
 
 	t.Run("an object created again under the same name is not touched", func(t *testing.T) {

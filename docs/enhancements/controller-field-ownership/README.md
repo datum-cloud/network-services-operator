@@ -89,6 +89,7 @@ A rejected save is retried with a growing delay, up to 1000 s
 | its finalizer, added | server-side apply of the finalizer with the object's UID | cert-manager ([#8519](https://github.com/cert-manager/cert-manager/pull/8519)) |
 | its finalizer, removed | a JSON patch that tests the entry, then removes it | kubernetes-csi [external-attacher](https://github.com/kubernetes-csi/external-attacher/blob/v4.13.0/pkg/controller/util.go#L262-L294) |
 | a status no other controller writes: HTTPProxy, the replicator's upstream statuses, Gateway | a merge patch from the stored status | controller-runtime `client.MergeFrom` |
+| labels, spec and status of an object no other controller writes: the NetworkInterface copies on the project control planes and on the hub | a create, or a merge patch from the stored object; then its status as above | controller-runtime `client.MergeFrom` |
 | its conditions on a status two controllers write | server-side apply of only its own condition types | [cert-manager](https://github.com/cert-manager/cert-manager/blob/v1.21.2/design/20220118.server-side-apply.md#L206-L215) |
 | its fields of a spec two controllers write (the Gateway) | server-side apply of only its own fields | cert-manager's [cainjector](https://github.com/cert-manager/cert-manager/blob/v1.21.2/pkg/controller/cainjector/reconciler.go#L131-L135); Gateway API's apply configurations |
 | a Gateway listener it no longer wants | a JSON patch that tests each listener's name, then removes it | an apply cannot remove an entry another field manager shares ([kubernetes#128102](https://github.com/kubernetes/kubernetes/issues/128102)) |
@@ -103,6 +104,7 @@ Rules:
 6. Every apply to an existing object carries the object's UID, so a deleted object is never re-created.
 7. A finalizer's field manager applies nothing else to the object.
 8. A tested patch that fails answers `422 Invalid` with no cause, the same code and reason as a validation failure. The finalizer add is an apply, which cannot lose that race; the listener removal reads the Gateway again and reports `Invalid` only when no listener moved.
+9. A controller that does not watch what it writes reads it through the API reader before a save computed from it. Its cache lags its own last save, and no event corrects a decision made from the lag until the source changes again. The NetworkInterface copies are the case. controller-runtime keeps that reader for this: *"only when the cached client does not fit your use case"* ([`cluster.go` L70-L73](https://github.com/kubernetes-sigs/controller-runtime/blob/v0.24.1/pkg/cluster/cluster.go#L70-L73)).
 
 **Objects saved before this change need no migration.** Their fields are recorded under `manager` and
 `network-services`, names every controller shares. The patches change one entry whoever recorded it; the merge
@@ -134,8 +136,8 @@ Each phase ships as one release: staging, then production. Phases 3 to 5 start w
 | 2 | the Gateway: the HTTPProxy controller's spec; the gateway controller's finalizer, default hostnames and status | [#305](https://github.com/datum-cloud/network-services-operator/issues/305) |
 | 3 | HTTPRoute, HTTPRouteFilter, EndpointSlice | [#601](https://github.com/datum-cloud/network-services-operator/issues/601) |
 | 3 | Connector and TrafficProtectionPolicy status | [#602](https://github.com/datum-cloud/network-services-operator/issues/602) |
-| 3 | Network, NetworkContext, Subnet, NetworkInterface | [#603](https://github.com/datum-cloud/network-services-operator/issues/603) |
-| 4 | saves on the Karmada hub | [#604](https://github.com/datum-cloud/network-services-operator/issues/604) |
+| 3 | Network, NetworkContext, Subnet, NetworkInterface, and the NetworkInterface copies on the project control planes and on the hub | [#603](https://github.com/datum-cloud/network-services-operator/issues/603) |
+| 4 | saves on the Karmada hub, except the NetworkInterface copies | [#604](https://github.com/datum-cloud/network-services-operator/issues/604) |
 | 5 | the shared field-manager entries, conflict retries and helpers the old saves leave behind | [#605](https://github.com/datum-cloud/network-services-operator/issues/605) |
 
 ### Each phase is done when

@@ -21,7 +21,7 @@ export function PluginTabs({ tabs, testId }: { tabs: PluginTab[]; testId?: strin
   }, [pathname, tabs]);
 
   return (
-    <div className="border-border -mx-4 border-b px-4 md:-mx-9 md:px-9" data-testid={testId}>
+    <div className="border-border -mx-4 border-b px-4 md:-mx-6 md:px-6" data-testid={testId}>
       <Tabs value={activeHref} className="gap-0">
         <TabsList variant="line">
           {tabs.map((tab) => (

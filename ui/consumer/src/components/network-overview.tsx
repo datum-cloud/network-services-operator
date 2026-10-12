@@ -99,7 +99,7 @@ function HealthStrip({
             <span className="text-muted-foreground text-xs">{detail}</span>
           </div>
         </div>
-        {!loading && (
+        {!loading && groups.length > 0 && (
           <div className="flex flex-wrap items-center gap-2 sm:justify-end">
             <Chip tone={regionsDown > 0 ? 'warning' : 'muted'} icon={MapPinIcon}>
               {regionsDown > 0

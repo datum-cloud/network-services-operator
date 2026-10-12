@@ -95,7 +95,7 @@ describe('NetworkServices', () => {
 
     render(<NetworkServices projectId="demo-project" networkName="default" />);
 
-    expect(screen.getByText(/you don't have any services yet/)).toBeInTheDocument();
+    expect(screen.getByText(/No services yet/)).toBeInTheDocument();
     expect(screen.queryByTestId('networking-plugin-service-table')).not.toBeInTheDocument();
   });
 

@@ -1,5 +1,5 @@
 import { SortableHeader } from './sortable-header';
-import { ErrorOrRestrictedState, LoadingSkeleton } from './states';
+import { ErrorOrRestrictedState, LoadingSkeleton, SectionEmpty } from './states';
 import { StatusBadge } from './status-badge';
 import {
   computeWorkloadHref,
@@ -22,7 +22,6 @@ import {
 import { Card, CardContent } from '@datum-cloud/datum-ui/card';
 import type { DataTableFeatures } from '@datum-cloud/datum-ui/data-table';
 import { DateTime } from '@datum-cloud/datum-ui/date-time';
-import { EmptyContent } from '@datum-cloud/datum-ui/empty-content';
 import { GroupedTable } from '@datum-cloud/datum-ui/grouped-table';
 import { Icon } from '@datum-cloud/datum-ui/icons';
 import { Text } from '@datum-cloud/datum-ui/typography';
@@ -263,9 +262,10 @@ function ResourcesBody({
 
   if (groups.length === 0) {
     return (
-      <EmptyContent
-        title="this network isn't present anywhere yet"
-        subtitle="A network shows up in a region once something is deployed there. Deploy a workload on this network to see it here, with its address and whether it's serving traffic."
+      <SectionEmpty
+        testId="networking-plugin-resources-empty"
+        title="Not in any region yet"
+        description="A network appears in a region once a workload on it is deployed there. Each instance then shows up here with its address and whether it's serving."
       />
     );
   }
@@ -301,10 +301,13 @@ function ResourcesBody({
             defaultExpanded="all"
             getRowId={(iface) => iface.uid || iface.name}
             empty={
-              <EmptyContent
-                title="no workloads on this network yet"
-                subtitle="This network has an address range in each region above. Deploy a workload on it to see each instance here, with its address and whether it's serving traffic."
-              />
+              <div className="flex flex-col items-center gap-1 py-8 text-center">
+                <p className="text-sm font-medium">No workloads yet</p>
+                <p className="text-muted-foreground max-w-md text-sm">
+                  This network has an address range in each region above. Deploy a workload on it to
+                  see its instances here.
+                </p>
+              </div>
             }
             enableSorting
             className="usage-summary-grouped-table min-w-0 [&>div:last-child]:rounded-none [&>div:last-child]:border-0"

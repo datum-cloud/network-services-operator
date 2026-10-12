@@ -136,6 +136,6 @@ describe('NetworkOverview', () => {
   it('shows an empty resources state before anything is deployed', () => {
     renderOverview();
 
-    expect(screen.getByText(/this network isn't present anywhere yet/)).toBeInTheDocument();
+    expect(screen.getByText(/Not in any region yet/)).toBeInTheDocument();
   });
 });

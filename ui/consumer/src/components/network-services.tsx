@@ -2,7 +2,7 @@ import { ConfirmDeleteDialog } from './confirm-delete-dialog';
 import { CreateNetworkServiceDialog } from './create-network-service-dialog';
 import { SortableHeader } from './sortable-header';
 import { StatTile, StatTileGrid } from './stat-tiles';
-import { ErrorOrRestrictedState, LoadingSkeleton } from './states';
+import { ErrorOrRestrictedState, LoadingSkeleton, SectionEmpty } from './states';
 import { StatusBadge } from './status-badge';
 import { useDeleteNetworkService, useNetworkServices } from '../lib/api';
 import {
@@ -17,7 +17,6 @@ import {
   type DataTableFeatures,
 } from '@datum-cloud/datum-ui/data-table';
 import { DateTime } from '@datum-cloud/datum-ui/date-time';
-import { EmptyContent } from '@datum-cloud/datum-ui/empty-content';
 import { MoreActions, type ActionItem } from '@datum-cloud/datum-ui/more-actions';
 import { toast } from '@datum-cloud/datum-ui/toast';
 import type { ColumnDef } from '@tanstack/react-table';
@@ -172,7 +171,9 @@ function ServiceTable({
         <div className="overflow-hidden rounded-lg border" data-testid="networking-plugin-service-table">
           <DataTable.Content
             emptyMessage={
-              <EmptyContent title="Try adjusting your search" className="w-full rounded-none border-0" />
+              <p className="text-muted-foreground py-8 text-center text-sm">
+                No services match your search.
+              </p>
             }
           />
         </div>
@@ -227,12 +228,12 @@ export function NetworkServices({
 
   if (total === 0) {
     return (
-      <div className="flex flex-col items-center gap-4" data-testid="networking-plugin-network-services">
-        <EmptyContent
-          title="you don't have any services yet"
-          subtitle="A NetworkService names a set of interfaces by label and load-balances traffic across every region they run in. Declare one to see it here."
+      <div data-testid="networking-plugin-network-services">
+        <SectionEmpty
+          title="No services yet"
+          description="A service load-balances traffic across a workload's instances in every region they run in."
+          action={<CreateNetworkServiceDialog projectId={projectId} networkName={networkName} />}
         />
-        <CreateNetworkServiceDialog projectId={projectId} networkName={networkName} />
       </div>
     );
   }

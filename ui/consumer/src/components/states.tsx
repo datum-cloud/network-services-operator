@@ -67,3 +67,25 @@ export function ErrorOrRestrictedState({
   }
   return <ErrorState error={error} onRetry={onRetry} />;
 }
+
+export function SectionEmpty({
+  title,
+  description,
+  action,
+  testId,
+}: {
+  title: string;
+  description?: string;
+  action?: React.ReactNode;
+  testId?: string;
+}) {
+  return (
+    <Card size="sm" data-testid={testId}>
+      <CardContent className="flex flex-col items-center gap-1 py-8 text-center">
+        <p className="text-sm font-medium">{title}</p>
+        {description && <p className="text-muted-foreground max-w-md text-sm">{description}</p>}
+        {action && <div className="mt-3">{action}</div>}
+      </CardContent>
+    </Card>
+  );
+}

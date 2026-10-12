@@ -10,7 +10,6 @@ import {
   type DataTableFeatures,
 } from '@datum-cloud/datum-ui/data-table';
 import { DateTime } from '@datum-cloud/datum-ui/date-time';
-import { EmptyContent } from '@datum-cloud/datum-ui/empty-content';
 import { MoreActions, type ActionItem } from '@datum-cloud/datum-ui/more-actions';
 import { toast } from '@datum-cloud/datum-ui/toast';
 import type { ColumnDef } from '@tanstack/react-table';
@@ -180,10 +179,9 @@ export function NetworkTable({
             onRowClick={(network) => navigate(`${basePath}/${encodeURIComponent(network.name)}`)}
             rowClassName="cursor-pointer"
             emptyMessage={
-              <EmptyContent
-                title="Try adjusting your search"
-                className="w-full rounded-none border-0"
-              />
+              <p className="text-muted-foreground py-8 text-center text-sm">
+                No networks match your search.
+              </p>
             }
           />
         </div>

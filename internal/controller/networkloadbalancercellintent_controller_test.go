@@ -89,18 +89,16 @@ func TestCellIntentPublishesAndWithdrawsWithoutDeletingHold(t *testing.T) {
 	}
 }
 
-func TestCellIntentRequiresFreshAllocationAndSelectedAnycastLocation(t *testing.T) {
+func TestCellIntentRequiresFreshPerLocationAllocation(t *testing.T) {
 	ctx := context.Background()
 	route := testLoadBalancerRoute("storefront", time.Unix(10, 0))
 	parent := testRouteLoadBalancer()
 	parent.UID = types.UID("parent-1")
 	parent.Generation = 5
-	parent.Spec.Exposure.Addresses[0].Mode = networkingv1alpha.NetworkLoadBalancerAddressModeAnycast
 	parent.Status.Addresses = []networkingv1alpha.NetworkLoadBalancerAddressStatus{
 		allocatedCellIntentAddress("2001:db8::1", 4),
 	}
 	parent.Status.Addresses[0].Location = ""
-	parent.Status.Addresses[0].Locations = []networkingv1alpha.NetworkLoadBalancerAddressLocationStatus{{Name: "dfw"}}
 	cl := fake.NewClientBuilder().WithScheme(networkServiceTestScheme(t)).
 		WithObjects(route, parent, readyIntentNetwork(),
 			testRouteNetworkService(), testRouteMember("member", true, "fd00::1/128")).Build()
@@ -112,9 +110,23 @@ func TestCellIntentRequiresFreshAllocationAndSelectedAnycastLocation(t *testing.
 	require.NoError(t, cl.Update(ctx, parent))
 	desired, err = buildNetworkLoadBalancerCellIntents(ctx, cl, "project", "hub", route)
 	require.NoError(t, err)
+	require.Empty(t, desired)
+
+	parent.Status.Addresses[0].Location = "dfw"
+	require.NoError(t, cl.Update(ctx, parent))
+	desired, err = buildNetworkLoadBalancerCellIntents(ctx, cl, "project", "hub", route)
+	require.NoError(t, err)
 	require.Len(t, desired, 1)
 	require.Equal(t, "dfw", desired[0].Spec.Location)
 	require.Equal(t, networkingv1alpha.NetworkLoadBalancerCellIntentValidate, desired[0].Spec.State)
+
+	duplicate := allocatedCellIntentAddress("2001:db8::1", 5)
+	duplicate.Location = "ord"
+	parent.Status.Addresses = append(parent.Status.Addresses, duplicate)
+	require.NoError(t, cl.Update(ctx, parent))
+	desired, err = buildNetworkLoadBalancerCellIntents(ctx, cl, "project", "hub", route)
+	require.NoError(t, err)
+	require.Empty(t, desired)
 }
 
 func readyIntentNetwork() *networkingv1alpha.Network {

@@ -150,6 +150,19 @@ func buildNetworkLoadBalancerCellIntents(ctx context.Context, cl client.Client, 
 		if err != nil {
 			return nil, err
 		}
+		sharedVIPs := map[string]bool{}
+		seenVIPs := map[string]bool{}
+		for _, allocation := range parent.Status.Addresses {
+			vip, parseErr := netip.ParseAddr(allocation.Value)
+			if parseErr != nil {
+				continue
+			}
+			address := vip.String()
+			if seenVIPs[address] {
+				sharedVIPs[address] = true
+			}
+			seenVIPs[address] = true
+		}
 		for _, addressRef := range listener.AddressRefs {
 			requestIndex := slices.IndexFunc(parent.Spec.Exposure.Addresses, func(a networkingv1alpha.NetworkLoadBalancerAddressRequest) bool { return a.Name == addressRef })
 			if requestIndex < 0 {
@@ -166,63 +179,51 @@ func buildNetworkLoadBalancerCellIntents(ctx context.Context, cl client.Client, 
 					continue
 				}
 				vip, parseErr := netip.ParseAddr(allocation.Value)
-				if parseErr != nil || !vip.Is6() || vip.Is4In6() || vip.Zone() != "" || !vip.IsGlobalUnicast() {
+				if parseErr != nil || !vip.Is6() || vip.Is4In6() || vip.Zone() != "" || !vip.IsGlobalUnicast() ||
+					allocation.Location == "" || sharedVIPs[vip.String()] {
 					continue
 				}
-				locations := []string{allocation.Location}
-				if request.Mode == networkingv1alpha.NetworkLoadBalancerAddressModeAnycast {
-					if allocation.Location != "" {
-						continue
-					}
-					locations = nil
-					for _, selected := range allocation.Locations {
-						locations = append(locations, selected.Name)
-					}
-				} else if allocation.Location == "" {
+				location := allocation.Location
+				if request.Locations.From == networkingv1alpha.NetworkLoadBalancerLocationSourceNames && !slices.Contains(request.Locations.Names, location) {
 					continue
 				}
-				for _, location := range locations {
-					if location == "" || request.Locations.From == networkingv1alpha.NetworkLoadBalancerLocationSourceNames && !slices.Contains(request.Locations.Names, location) {
+				intent := networkingv1alpha.NetworkLoadBalancerCellIntent{ObjectMeta: metav1.ObjectMeta{
+					Namespace: hubNamespace,
+					Labels: map[string]string{
+						downstreamclient.UpstreamOwnerClusterNameLabel: "cluster-" + strings.ReplaceAll(project, "/", "_"),
+						downstreamclient.UpstreamOwnerNamespaceLabel:   route.Namespace,
+						nlbIntentRouteUIDLabel:                         string(route.UID),
+						networkingv1alpha.LocationLabel:                location,
+					},
+				}, Spec: networkingv1alpha.NetworkLoadBalancerCellIntentSpec{
+					Source: networkingv1alpha.NetworkLoadBalancerCellIntentSource{
+						ProjectCluster: project, Namespace: route.Namespace, RouteName: route.Name,
+						RouteUID: string(route.UID), RouteGeneration: route.Generation,
+						ParentName: parent.Name, ParentUID: string(parent.UID), ParentGeneration: parent.Generation,
+						ListenerName: listener.Name, AddressRequest: addressRef,
+					},
+					Location: location, NetworkName: parent.Spec.NetworkRef.Name,
+					VIP: vip.String(), Protocol: listener.Protocol, ListenerPort: listener.Port,
+					State: networkingv1alpha.NetworkLoadBalancerCellIntentWithdrawn,
+				}}
+				for _, endpoint := range endpoints {
+					if endpoint.Location != location {
 						continue
 					}
-					intent := networkingv1alpha.NetworkLoadBalancerCellIntent{ObjectMeta: metav1.ObjectMeta{
-						Namespace: hubNamespace,
-						Labels: map[string]string{
-							downstreamclient.UpstreamOwnerClusterNameLabel: "cluster-" + strings.ReplaceAll(project, "/", "_"),
-							downstreamclient.UpstreamOwnerNamespaceLabel:   route.Namespace,
-							nlbIntentRouteUIDLabel:                         string(route.UID),
-							networkingv1alpha.LocationLabel:                location,
-						},
-					}, Spec: networkingv1alpha.NetworkLoadBalancerCellIntentSpec{
-						Source: networkingv1alpha.NetworkLoadBalancerCellIntentSource{
-							ProjectCluster: project, Namespace: route.Namespace, RouteName: route.Name,
-							RouteUID: string(route.UID), RouteGeneration: route.Generation,
-							ParentName: parent.Name, ParentUID: string(parent.UID), ParentGeneration: parent.Generation,
-							ListenerName: listener.Name, AddressRequest: addressRef,
-						},
-						Location: location, NetworkName: parent.Spec.NetworkRef.Name,
-						VIP: vip.String(), Protocol: listener.Protocol, ListenerPort: listener.Port,
-						State: networkingv1alpha.NetworkLoadBalancerCellIntentWithdrawn,
-					}}
-					for _, endpoint := range endpoints {
-						if endpoint.Location != location {
-							continue
-						}
-						intent.Spec.Backends = append(intent.Spec.Backends, networkingv1alpha.NetworkLoadBalancerCellIntentBackend{
-							SourceNamespace: endpoint.SourceNamespace, SourceName: endpoint.Interface,
-							SourceUID: endpoint.SourceUID, Address: endpoint.Address, Port: endpoint.Port,
-							Weight: endpoint.Weight, Probe: endpoint.Probe,
-						})
-					}
-					if len(intent.Spec.Backends) > 1024 {
-						intent.Spec.Backends = nil
-					}
-					if len(intent.Spec.Backends) != 0 {
-						intent.Spec.State = networkingv1alpha.NetworkLoadBalancerCellIntentValidate
-					}
-					intent.Name = networkLoadBalancerCellIntentName(intent.Spec)
-					desired = append(desired, intent)
+					intent.Spec.Backends = append(intent.Spec.Backends, networkingv1alpha.NetworkLoadBalancerCellIntentBackend{
+						SourceNamespace: endpoint.SourceNamespace, SourceName: endpoint.Interface,
+						SourceUID: endpoint.SourceUID, Address: endpoint.Address, Port: endpoint.Port,
+						Weight: endpoint.Weight, Probe: endpoint.Probe,
+					})
 				}
+				if len(intent.Spec.Backends) > 1024 {
+					intent.Spec.Backends = nil
+				}
+				if len(intent.Spec.Backends) != 0 {
+					intent.Spec.State = networkingv1alpha.NetworkLoadBalancerCellIntentValidate
+				}
+				intent.Name = networkLoadBalancerCellIntentName(intent.Spec)
+				desired = append(desired, intent)
 			}
 		}
 	}

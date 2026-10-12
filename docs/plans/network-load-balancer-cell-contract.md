@@ -33,7 +33,8 @@ provide that guarantee.
 An intent is published only for the oldest route on an existing listener with
 resolved backend references, a ready network, and an allocated IPv6 address
 whose `Allocated=True` condition observed the current load balancer
-generation. An anycast address produces one intent per selected location.
+generation. Every published address names one location; an empty location or
+an address shared by two allocation entries is excluded.
 The source interface namespace and UID come from the projected interface;
 the cell must verify them against live state. The published shape is:
 

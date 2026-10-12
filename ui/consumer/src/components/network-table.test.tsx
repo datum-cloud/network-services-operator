@@ -11,40 +11,6 @@ vi.mock('../lib/api', async () => {
   return { ...actual, useDeleteNetwork: vi.fn() };
 });
 
-vi.mock('@datum-cloud/datum-ui/more-actions', async () => {
-  const { useState } = await import('react');
-  type Action = {
-    label: string;
-    hidden?: boolean | ((row: unknown) => boolean);
-    onClick: (row: unknown) => void;
-  };
-  return {
-    MoreActions: ({ row, actions }: { row: unknown; actions: Action[] }) => {
-      const [open, setOpen] = useState(false);
-      const visible = actions.filter((a) =>
-        typeof a.hidden === 'function' ? !a.hidden(row) : !a.hidden
-      );
-      return (
-        <>
-          <button type="button" aria-label="Actions" onClick={() => setOpen(!open)} />
-          {open &&
-            visible.map((a) => (
-              <button
-                key={a.label}
-                type="button"
-                onClick={() => {
-                  a.onClick(row);
-                  setOpen(false);
-                }}>
-                {a.label}
-              </button>
-            ))}
-        </>
-      );
-    },
-  };
-});
-
 const useDeleteNetworkMock = vi.mocked(api.useDeleteNetwork);
 const deleteMock = vi.fn();
 

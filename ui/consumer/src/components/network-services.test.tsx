@@ -109,7 +109,7 @@ describe('NetworkServices', () => {
 
     render(<NetworkServices projectId="demo-project" networkName="default" />);
 
-    const row = screen.getByTestId('network-service-table-row');
+    const row = screen.getByText('storefront').closest('tr') as HTMLElement;
     expect(within(row).getByText('storefront')).toBeInTheDocument();
     expect(within(row).getByText('http:8080')).toBeInTheDocument();
     expect(within(row).getByText('2')).toBeInTheDocument();
@@ -174,14 +174,12 @@ describe('NetworkServices', () => {
 
     render(<NetworkServices projectId="demo-project" networkName="default" />);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Delete storefront' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Actions for storefront' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
 
     fireEvent.change(await screen.findByPlaceholderText('Type in here...'), {
-
       target: { value: 'DELETE' },
-
     });
-
     const dialogButtons = await screen.findAllByRole('button', { name: 'Delete' });
     fireEvent.click(dialogButtons[dialogButtons.length - 1]);
 

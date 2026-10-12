@@ -38,7 +38,7 @@
     {
       "type": "portal.page/project",
       "properties": {
-        "path": "networks/:networkName",
+        "path": "networks/:networkName/*",
         "component": { "$codeRef": "NetworkDetail" }
       },
       "requirements": {

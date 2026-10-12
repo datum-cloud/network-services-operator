@@ -49,7 +49,7 @@ export function groupByRegion(subnets: Subnet[], interfaces: NetworkInterface[])
   return [...groups.values()].sort((a, b) => a.region.localeCompare(b.region));
 }
 
-function regionStatus(subnet: Subnet | undefined): { label: string; usable: boolean } {
+export function regionStatus(subnet: Subnet | undefined): { label: string; usable: boolean } {
   if (!subnet) return { label: 'Unknown', usable: false };
   if (isSubnetUsable(subnet)) return { label: 'Ready', usable: true };
   if (subnet.readyStatus === 'False') {

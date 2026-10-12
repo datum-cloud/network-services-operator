@@ -1,6 +1,7 @@
 import { useCreateNetworkService, useNetworkInterfaces } from '../lib/api';
 import { Button } from '@datum-cloud/datum-ui/button';
 import { Dialog } from '@datum-cloud/datum-ui/dialog';
+import { Icon } from '@datum-cloud/datum-ui/icons';
 import { Input } from '@datum-cloud/datum-ui/input';
 import { InputNumber } from '@datum-cloud/datum-ui/input-number';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@datum-cloud/datum-ui/select';
@@ -113,7 +114,8 @@ export function CreateNetworkServiceDialog({
         if (!next) reset();
       }}>
       <Dialog.Trigger asChild>
-        <Button type="primary" icon={<PlusIcon size={16} />}>
+        <Button type="primary" theme="solid" size="small" className="w-full sm:w-auto">
+          <Icon icon={PlusIcon} className="size-4" />
           Create service
         </Button>
       </Dialog.Trigger>
@@ -204,10 +206,15 @@ export function CreateNetworkServiceDialog({
             {error && <span className="text-sm text-red-500">{error}</span>}
           </Dialog.Body>
           <Dialog.Footer>
-            <Button type="secondary" htmlType="button" onClick={() => setOpen(false)} disabled={mutation.isPending}>
+            <Button
+              type="quaternary"
+              theme="borderless"
+              htmlType="button"
+              onClick={() => setOpen(false)}
+              disabled={mutation.isPending}>
               Cancel
             </Button>
-            <Button type="primary" htmlType="submit" loading={mutation.isPending}>
+            <Button type="primary" theme="solid" htmlType="submit" loading={mutation.isPending}>
               Create service
             </Button>
           </Dialog.Footer>

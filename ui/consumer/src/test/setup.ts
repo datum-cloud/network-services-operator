@@ -1,4 +1,7 @@
 import '@testing-library/jest-dom/vitest';
+import { vi } from 'vitest';
+
+vi.mock('@datum-cloud/datum-ui/more-actions', () => import('./more-actions'));
 
 if (typeof globalThis.ResizeObserver === 'undefined') {
   globalThis.ResizeObserver = class {

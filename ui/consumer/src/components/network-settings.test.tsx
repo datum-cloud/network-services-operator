@@ -116,11 +116,8 @@ describe('NetworkSettings', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Delete network' }));
 
     fireEvent.change(await screen.findByPlaceholderText('Type in here...'), {
-
       target: { value: 'DELETE' },
-
     });
-
     const dialogButtons = await screen.findAllByRole('button', { name: 'Delete' });
     fireEvent.click(dialogButtons[dialogButtons.length - 1]);
 

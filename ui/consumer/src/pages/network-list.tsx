@@ -17,7 +17,7 @@ import { Icon } from '@datum-cloud/datum-ui/icons';
 import { PageTitle } from '@datum-cloud/datum-ui/page-title';
 import { HomeIcon, PlusIcon } from 'lucide-react';
 import { useState } from 'react';
-import { useParams } from 'react-router';
+import { Link, useParams } from 'react-router';
 
 export default function NetworkList() {
   const { projectId } = useParams<{ projectId: string; serviceSlug: string }>();
@@ -32,8 +32,10 @@ export default function NetworkList() {
       <Breadcrumb className="min-w-0 overflow-x-auto">
         <BreadcrumbList className="flex-nowrap">
           <BreadcrumbItem>
-            <BreadcrumbLink href={projectHref}>
-              <Icon icon={HomeIcon} size={16} />
+            <BreadcrumbLink asChild>
+              <Link to={projectHref}>
+                <Icon icon={HomeIcon} size={16} />
+              </Link>
             </BreadcrumbLink>
           </BreadcrumbItem>
           <BreadcrumbSeparator />

@@ -1,7 +1,9 @@
 import { ConfirmDeleteDialog } from './confirm-delete-dialog';
 import { CreateNetworkServiceDialog } from './create-network-service-dialog';
+import { SortableHeader } from './sortable-header';
 import { StatTile, StatTileGrid } from './stat-tiles';
 import { ErrorOrRestrictedState, LoadingSkeleton } from './states';
+import { StatusBadge } from './status-badge';
 import { useDeleteNetworkService, useNetworkServices } from '../lib/api';
 import {
   networkServiceMembersResolvedStatusToLabel,
@@ -9,85 +11,191 @@ import {
   readyStatusToBadgeType,
   type NetworkService,
 } from '../schema';
-import { Badge } from '@datum-cloud/datum-ui/badge';
-import { Button } from '@datum-cloud/datum-ui/button';
-import { EmptyContent } from '@datum-cloud/datum-ui/empty-content';
-import { Icon } from '@datum-cloud/datum-ui/icons';
 import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@datum-cloud/datum-ui/table';
+  DataTable,
+  useDataTablePagination,
+  type DataTableFeatures,
+} from '@datum-cloud/datum-ui/data-table';
+import { DateTime } from '@datum-cloud/datum-ui/date-time';
+import { EmptyContent } from '@datum-cloud/datum-ui/empty-content';
+import { MoreActions, type ActionItem } from '@datum-cloud/datum-ui/more-actions';
 import { toast } from '@datum-cloud/datum-ui/toast';
-import { formatDistanceToNowStrict } from 'date-fns';
-import { CircleCheckIcon, ShareIcon, Trash2Icon, TriangleAlertIcon, UsersIcon } from 'lucide-react';
+import type { ColumnDef } from '@tanstack/react-table';
+import { CircleCheckIcon, ShareIcon, TriangleAlertIcon, UsersIcon } from 'lucide-react';
+import { useMemo, useState } from 'react';
 
-function ServiceRow({
-  service,
+type ServiceColumn = ColumnDef<DataTableFeatures, NetworkService, unknown>;
+
+function formatPorts(service: NetworkService): string {
+  return service.ports.length > 0 ? service.ports.map((p) => `${p.name}:${p.port}`).join(', ') : '—';
+}
+
+function matchesSearch(service: NetworkService, search: string): boolean {
+  const needle = search.trim().toLowerCase();
+  if (!needle) return true;
+  return `${service.name} ${formatPorts(service)}`.toLowerCase().includes(needle);
+}
+
+function ConditionalPagination() {
+  const { pageCount } = useDataTablePagination();
+  if (pageCount <= 1) return null;
+  return <DataTable.Pagination className="datum-ui-data-table__pagination" />;
+}
+
+function Muted({ children, mono }: { children: React.ReactNode; mono?: boolean }) {
+  return (
+    <span className={mono ? 'text-muted-foreground font-mono text-xs' : 'text-muted-foreground'}>
+      {children}
+    </span>
+  );
+}
+
+function ServiceTable({
+  services,
   projectId,
+  networkName,
 }: {
-  service: NetworkService;
+  services: NetworkService[];
   projectId: string | undefined;
+  networkName: string | undefined;
 }) {
+  const [deleteTarget, setDeleteTarget] = useState<NetworkService>();
   const deleteMutation = useDeleteNetworkService(projectId);
 
-  return (
-    <TableRow data-testid="network-service-table-row">
-      <TableCell>
-        <span className="font-mono text-sm">{service.name}</span>
-      </TableCell>
-      <TableCell className="text-muted-foreground font-mono text-sm">
-        {service.ports.length > 0
-          ? service.ports.map((p) => `${p.name}:${p.port}`).join(', ')
-          : '—'}
-      </TableCell>
-      <TableCell className="text-muted-foreground">{service.summary.locations}</TableCell>
-      <TableCell className="text-muted-foreground">{service.summary.members}</TableCell>
-      <TableCell className="text-muted-foreground">{service.summary.healthy}</TableCell>
-      <TableCell>
-        <Badge type={readyStatusToBadgeType(service.membersResolvedStatus)} theme="light">
-          {networkServiceMembersResolvedStatusToLabel(
-            service.membersResolvedStatus,
-            service.membersResolvedReason
-          )}
-        </Badge>
-      </TableCell>
-      <TableCell>
-        <Badge type={readyStatusToBadgeType(service.readyStatus)} theme="light">
-          {networkServiceReadyStatusToLabel(service.readyStatus, service.readyReason)}
-        </Badge>
-      </TableCell>
-      <TableCell className="text-muted-foreground">
-        {formatDistanceToNowStrict(service.createdAt, { addSuffix: true })}
-      </TableCell>
-      <TableCell>
-        <ConfirmDeleteDialog
-          trigger={
-            <Button
-              type="secondary"
-              theme="outline"
-              size="icon"
-              aria-label={`Delete ${service.name}`}
-              icon={<Trash2Icon size={14} />}
+  const columns = useMemo<ServiceColumn[]>(() => {
+    const actions: ActionItem<NetworkService>[] = [
+      { key: 'delete', label: 'Delete', variant: 'destructive', onClick: setDeleteTarget },
+    ];
+    return [
+      {
+        id: 'name',
+        accessorKey: 'name',
+        header: ({ column }) => <SortableHeader column={column} title="Name" />,
+        cell: ({ row }) => <span className="font-medium">{row.original.name}</span>,
+      },
+      {
+        id: 'ports',
+        header: 'Ports',
+        enableSorting: false,
+        cell: ({ row }) => <Muted mono>{formatPorts(row.original)}</Muted>,
+      },
+      {
+        id: 'regions',
+        accessorFn: (service) => service.summary.locations,
+        header: ({ column }) => <SortableHeader column={column} title="Regions" />,
+        cell: ({ row }) => <Muted>{row.original.summary.locations}</Muted>,
+      },
+      {
+        id: 'members',
+        accessorFn: (service) => service.summary.members,
+        header: ({ column }) => <SortableHeader column={column} title="Members" />,
+        cell: ({ row }) => <Muted>{row.original.summary.members}</Muted>,
+      },
+      {
+        id: 'healthy',
+        accessorFn: (service) => service.summary.healthy,
+        header: ({ column }) => <SortableHeader column={column} title="Healthy" />,
+        cell: ({ row }) => <Muted>{row.original.summary.healthy}</Muted>,
+      },
+      {
+        id: 'resolved',
+        header: 'Resolved',
+        enableSorting: false,
+        cell: ({ row }) => (
+          <StatusBadge type={readyStatusToBadgeType(row.original.membersResolvedStatus)}>
+            {networkServiceMembersResolvedStatusToLabel(
+              row.original.membersResolvedStatus,
+              row.original.membersResolvedReason
+            )}
+          </StatusBadge>
+        ),
+      },
+      {
+        id: 'ready',
+        header: 'Ready',
+        enableSorting: false,
+        cell: ({ row }) => (
+          <StatusBadge type={readyStatusToBadgeType(row.original.readyStatus)}>
+            {networkServiceReadyStatusToLabel(row.original.readyStatus, row.original.readyReason)}
+          </StatusBadge>
+        ),
+      },
+      {
+        id: 'createdAt',
+        accessorFn: (service) => service.createdAt.getTime(),
+        header: ({ column }) => <SortableHeader column={column} title="Created" />,
+        cell: ({ row }) => (
+          <DateTime
+            date={row.original.createdAt}
+            variant="relative"
+            className="text-muted-foreground text-sm"
+          />
+        ),
+      },
+      {
+        id: 'actions',
+        header: '',
+        enableSorting: false,
+        size: 48,
+        cell: ({ row }) => (
+          <div data-slot="dt-row-actions" className="inline-flex">
+            <MoreActions
+              row={row.original}
+              actions={actions}
+              sheetTitle={`Actions for ${row.original.name}`}
+              className="size-6 border"
+              iconClassName="size-3.5"
             />
-          }
-          title={`Delete ${service.name}?`}
-          description="This stops load-balancing traffic to its members. This can't be undone."
-          onConfirm={async () => {
-            try {
-              await deleteMutation.mutateAsync(service.name);
-              toast.success(`Deleted service ${service.name}`);
-            } catch (err) {
-              toast.error((err as Error).message);
-              throw err;
+          </div>
+        ),
+      },
+    ];
+  }, []);
+
+  return (
+    <>
+      <DataTable.Client
+        data={services}
+        columns={columns}
+        getRowId={(service) => service.uid || service.name}
+        defaultSort={[{ id: 'name', desc: false }]}
+        searchFn={matchesSearch}
+        className="space-y-4">
+        <div className="flex w-full flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <DataTable.Search placeholder="Search services" className="w-full sm:max-w-xs" />
+          <CreateNetworkServiceDialog projectId={projectId} networkName={networkName} />
+        </div>
+        <p className="text-muted-foreground text-xs">
+          Services in this project — not limited to this network. A service's resolved network
+          isn't recorded anywhere queryable, so this list can't be filtered to just this one.
+        </p>
+        <div className="overflow-hidden rounded-lg border" data-testid="networking-plugin-service-table">
+          <DataTable.Content
+            emptyMessage={
+              <EmptyContent title="Try adjusting your search" className="w-full rounded-none border-0" />
             }
-          }}
-        />
-      </TableCell>
-    </TableRow>
+          />
+        </div>
+        <ConditionalPagination />
+      </DataTable.Client>
+
+      <ConfirmDeleteDialog
+        open={deleteTarget !== undefined}
+        onOpenChange={(open) => !open && setDeleteTarget(undefined)}
+        title={`Delete service ${deleteTarget?.name ?? ''}?`}
+        description="This stops load-balancing traffic to its members. This can't be undone."
+        onConfirm={async () => {
+          if (!deleteTarget) return;
+          try {
+            await deleteMutation.mutateAsync(deleteTarget.name);
+            toast.success(`Deleted service ${deleteTarget.name}`);
+          } catch (err) {
+            toast.error((err as Error).message);
+            throw err;
+          }
+        }}
+      />
+    </>
   );
 }
 
@@ -131,71 +239,13 @@ export function NetworkServices({
 
   return (
     <div className="flex flex-col gap-6" data-testid="networking-plugin-network-services">
-      <div className="flex justify-end">
-        <CreateNetworkServiceDialog projectId={projectId} networkName={networkName} />
-      </div>
       <StatTileGrid testId="networking-plugin-service-stats">
         <StatTile icon={ShareIcon} label="Total services" value={total} caption="in project" />
         <StatTile icon={CircleCheckIcon} label="Ready" value={ready} caption={`of ${total}`} />
         <StatTile icon={TriangleAlertIcon} label="Not ready" value={notReady} caption="needs attention" />
         <StatTile icon={UsersIcon} label="Members" value={totalMembers} caption="across all services" />
       </StatTileGrid>
-
-      <div
-        className="border-border overflow-hidden rounded-lg border"
-        data-testid="networking-plugin-service-table">
-        <div className="flex flex-col gap-1 border-b p-4">
-          <div className="flex items-center gap-2">
-            <Icon icon={ShareIcon} size={16} />
-            <span className="text-sm font-medium">Services</span>
-            <Badge type="muted" theme="light">
-              {total}
-            </Badge>
-          </div>
-          <p className="text-muted-foreground text-xs">
-            Services in this project — not limited to this network. A service's resolved network
-            isn't recorded anywhere queryable, so this list can't be filtered to just this one.
-          </p>
-        </div>
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead className="text-muted-foreground text-xs font-medium tracking-wide uppercase">
-                Name
-              </TableHead>
-              <TableHead className="text-muted-foreground text-xs font-medium tracking-wide uppercase">
-                Ports
-              </TableHead>
-              <TableHead className="text-muted-foreground text-xs font-medium tracking-wide uppercase">
-                Regions
-              </TableHead>
-              <TableHead className="text-muted-foreground text-xs font-medium tracking-wide uppercase">
-                Members
-              </TableHead>
-              <TableHead className="text-muted-foreground text-xs font-medium tracking-wide uppercase">
-                Healthy
-              </TableHead>
-              <TableHead className="text-muted-foreground text-xs font-medium tracking-wide uppercase">
-                Resolved
-              </TableHead>
-              <TableHead className="text-muted-foreground text-xs font-medium tracking-wide uppercase">
-                Ready
-              </TableHead>
-              <TableHead className="text-muted-foreground text-xs font-medium tracking-wide uppercase">
-                Age
-              </TableHead>
-              <TableHead className="text-muted-foreground text-xs font-medium tracking-wide uppercase">
-                <span className="sr-only">Actions</span>
-              </TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {services?.map((service) => (
-              <ServiceRow key={service.uid || service.name} service={service} projectId={projectId} />
-            ))}
-          </TableBody>
-        </Table>
-      </div>
+      <ServiceTable services={services ?? []} projectId={projectId} networkName={networkName} />
     </div>
   );
 }

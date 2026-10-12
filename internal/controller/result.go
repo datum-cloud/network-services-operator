@@ -7,10 +7,11 @@ import (
 
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"go.datum.net/network-services-operator/internal/util/status"
 )
 
 type Result struct {
@@ -110,38 +111,30 @@ func (r Result) Complete(ctx context.Context) (ctrl.Result, error) {
 	return r.Result, r.Err
 }
 
-// storedStatus reads the stored status of desired and reports whether it
-// differs. An object it cannot read is written, so the write reports why.
-func storedStatus(ctx context.Context, c client.Client, desired client.Object) (stored any, needsWrite bool, err error) {
+// storedStatus reads the object desired was computed for and reports whether
+// its status differs. An object it cannot read is written, so the write
+// reports why.
+func storedStatus(ctx context.Context, c client.Client, desired client.Object) (stored client.Object, needsWrite bool, err error) {
 	live := desired.DeepCopyObject().(client.Object)
 	if err := c.Get(ctx, client.ObjectKeyFromObject(desired), live); err != nil {
 		return nil, true, nil
 	}
-	if stored, err = statusContent(live); err != nil {
+	liveStatus, err := statusContent(live)
+	if err != nil {
 		return nil, false, err
 	}
 	desiredStatus, err := statusContent(desired)
 	if err != nil {
 		return nil, false, err
 	}
-	return stored, !equality.Semantic.DeepEqual(stored, desiredStatus), nil
+	return live, !equality.Semantic.DeepEqual(liveStatus, desiredStatus), nil
 }
 
-func (s statusSave) write(ctx context.Context, obj client.Object, stored any) error {
+func (s statusSave) write(ctx context.Context, obj, stored client.Object) error {
 	if s.fieldOwner == "" {
 		return s.client.Status().Update(ctx, obj)
 	}
-	content, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
-	if err != nil {
-		return err
-	}
-	from := &unstructured.Unstructured{Object: content}
-	if stored == nil {
-		delete(from.Object, "status")
-	} else {
-		from.Object["status"] = stored
-	}
-	return s.client.Status().Patch(ctx, obj, client.MergeFrom(from), client.FieldOwner(s.fieldOwner))
+	return status.Patch(ctx, s.client, obj, stored, s.fieldOwner)
 }
 
 func statusContent(obj client.Object) (any, error) {

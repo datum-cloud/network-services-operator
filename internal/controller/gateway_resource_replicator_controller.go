@@ -326,9 +326,6 @@ func (r *GatewayResourceReplicatorReconciler) finalizeResource(
 		}
 
 		if err := finalizer.Remove(ctx, upstreamClient, upstreamObj, gatewayResourceReplicatorFinalizer, fieldOwner(gatewayResourceReplicatorControllerName)); err != nil {
-			if apierrors.IsNotFound(err) {
-				return ctrl.Result{}, nil
-			}
 			return ctrl.Result{}, fmt.Errorf("failed to remove finalizer from %s/%s: %w", upstreamObj.GetNamespace(), upstreamObj.GetName(), err)
 		}
 	}

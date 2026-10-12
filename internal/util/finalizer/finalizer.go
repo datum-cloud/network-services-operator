@@ -41,7 +41,8 @@ func Add(ctx context.Context, c client.Client, obj client.Object, name, fieldOwn
 // Remove removes name from obj's finalizers if obj carries it, and updates obj
 // from the response. The patch tests that the entry is still where obj has it;
 // if another writer moved it, the API server rejects the patch and the caller
-// reads again.
+// reads again. An object already gone holds no finalizer, so Remove returns
+// nil for it.
 func Remove(ctx context.Context, c client.Client, obj client.Object, name, fieldOwner string) error {
 	if !controllerutil.ContainsFinalizer(obj, name) {
 		return nil
@@ -50,5 +51,5 @@ func Remove(ctx context.Context, c client.Client, obj client.Object, name, field
 	if err != nil {
 		return err
 	}
-	return c.Patch(ctx, obj, client.RawPatch(types.JSONPatchType, patch), client.FieldOwner(fieldOwner))
+	return client.IgnoreNotFound(c.Patch(ctx, obj, client.RawPatch(types.JSONPatchType, patch), client.FieldOwner(fieldOwner)))
 }

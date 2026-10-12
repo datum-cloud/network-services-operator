@@ -1,0 +1,181 @@
+rule_files:
+  - nso-slo-rules.yaml
+
+evaluation_interval: 30s
+
+tests:
+  # Accepted, and Programmed False for 600 seconds: fires.
+  - interval: 1m
+    input_series:
+      - series: 'datum_cloud_networking_trafficprotectionpolicy_created{resourcemanager_datumapis_com_project_name="p", resource_namespace="ns", resource_name="waf"}'
+        values: '0x10'
+      - series: 'datum_cloud_networking_trafficprotectionpolicy_status_ancestor_accepted{resourcemanager_datumapis_com_project_name="p", resource_namespace="ns", resource_name="waf", ancestor_kind="Gateway", ancestor_name="gw-a"}'
+        values: '1x10'
+      - series: 'datum_cloud_networking_trafficprotectionpolicy_status_ancestor_programmed{resourcemanager_datumapis_com_project_name="p", resource_namespace="ns", resource_name="waf", ancestor_kind="Gateway", ancestor_name="gw-a"}'
+        values: '0x10'
+      - series: 'datum_cloud_networking_trafficprotectionpolicy_status_ancestor_programmed_last_transition_time{resourcemanager_datumapis_com_project_name="p", resource_namespace="ns", resource_name="waf", ancestor_kind="Gateway", ancestor_name="gw-a"}'
+        values: '0x10'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: TrafficProtectionPolicyNotProgrammedSLOViolation
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              subject: p/ns/waf
+              subject_kind: TrafficProtectionPolicy
+              subject_name: waf
+              subject_namespace: ns
+              subject_group: networking.datumapis.com
+              slo_violation: "true"
+              service: network-services
+              team: sre
+              resourcemanager_datumapis_com_project_name: p
+              resource_namespace: ns
+              resource_name: waf
+              ancestor_kind: Gateway
+              ancestor_name: gw-a
+            exp_annotations:
+              summary: "TrafficProtectionPolicy waf is not programmed on Gateway gw-a"
+              description: "TrafficProtectionPolicy waf in namespace ns is Accepted on Gateway gw-a, and its Programmed condition has been False for 600 seconds. An edge that holds the policy has not built its current generation."
+
+  # Programmed False for 120 seconds: inside the threshold, does not fire.
+  - interval: 1m
+    input_series:
+      - series: 'datum_cloud_networking_trafficprotectionpolicy_created{resourcemanager_datumapis_com_project_name="p", resource_namespace="ns", resource_name="waf"}'
+        values: '0x10'
+      - series: 'datum_cloud_networking_trafficprotectionpolicy_status_ancestor_accepted{resourcemanager_datumapis_com_project_name="p", resource_namespace="ns", resource_name="waf", ancestor_kind="Gateway", ancestor_name="gw-a"}'
+        values: '1x10'
+      - series: 'datum_cloud_networking_trafficprotectionpolicy_status_ancestor_programmed{resourcemanager_datumapis_com_project_name="p", resource_namespace="ns", resource_name="waf", ancestor_kind="Gateway", ancestor_name="gw-a"}'
+        values: '0x10'
+      - series: 'datum_cloud_networking_trafficprotectionpolicy_status_ancestor_programmed_last_transition_time{resourcemanager_datumapis_com_project_name="p", resource_namespace="ns", resource_name="waf", ancestor_kind="Gateway", ancestor_name="gw-a"}'
+        values: '480x10'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: TrafficProtectionPolicyNotProgrammedSLOViolation
+        exp_alerts: []
+
+  # Programmed True: does not fire.
+  - interval: 1m
+    input_series:
+      - series: 'datum_cloud_networking_trafficprotectionpolicy_created{resourcemanager_datumapis_com_project_name="p", resource_namespace="ns", resource_name="waf"}'
+        values: '0x10'
+      - series: 'datum_cloud_networking_trafficprotectionpolicy_status_ancestor_accepted{resourcemanager_datumapis_com_project_name="p", resource_namespace="ns", resource_name="waf", ancestor_kind="Gateway", ancestor_name="gw-a"}'
+        values: '1x10'
+      - series: 'datum_cloud_networking_trafficprotectionpolicy_status_ancestor_programmed{resourcemanager_datumapis_com_project_name="p", resource_namespace="ns", resource_name="waf", ancestor_kind="Gateway", ancestor_name="gw-a"}'
+        values: '1x10'
+      - series: 'datum_cloud_networking_trafficprotectionpolicy_status_ancestor_programmed_last_transition_time{resourcemanager_datumapis_com_project_name="p", resource_namespace="ns", resource_name="waf", ancestor_kind="Gateway", ancestor_name="gw-a"}'
+        values: '0x10'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: TrafficProtectionPolicyNotProgrammedSLOViolation
+        exp_alerts: []
+
+  # A target that is not Accepted, such as a deleted one, has no Programmed condition: does not fire.
+  # The second target keeps a stale Programmed series; it does not fire either.
+  - interval: 1m
+    input_series:
+      - series: 'datum_cloud_networking_trafficprotectionpolicy_created{resourcemanager_datumapis_com_project_name="p", resource_namespace="ns", resource_name="waf"}'
+        values: '0x10'
+      - series: 'datum_cloud_networking_trafficprotectionpolicy_status_ancestor_accepted{resourcemanager_datumapis_com_project_name="p", resource_namespace="ns", resource_name="waf", ancestor_kind="HTTPRoute", ancestor_name="gone"}'
+        values: '0x10'
+      - series: 'datum_cloud_networking_trafficprotectionpolicy_status_ancestor_accepted{resourcemanager_datumapis_com_project_name="p", resource_namespace="ns", resource_name="waf", ancestor_kind="Gateway", ancestor_name="gw-gone"}'
+        values: '0x10'
+      - series: 'datum_cloud_networking_trafficprotectionpolicy_status_ancestor_programmed{resourcemanager_datumapis_com_project_name="p", resource_namespace="ns", resource_name="waf", ancestor_kind="Gateway", ancestor_name="gw-gone"}'
+        values: '0x10'
+      - series: 'datum_cloud_networking_trafficprotectionpolicy_status_ancestor_programmed_last_transition_time{resourcemanager_datumapis_com_project_name="p", resource_namespace="ns", resource_name="waf", ancestor_kind="Gateway", ancestor_name="gw-gone"}'
+        values: '0x10'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: TrafficProtectionPolicyNotProgrammedSLOViolation
+        exp_alerts: []
+
+  # Two targets of one policy: only the target that is not programmed fires.
+  - interval: 1m
+    input_series:
+      - series: 'datum_cloud_networking_trafficprotectionpolicy_created{resourcemanager_datumapis_com_project_name="p", resource_namespace="ns", resource_name="waf"}'
+        values: '0x10'
+      - series: 'datum_cloud_networking_trafficprotectionpolicy_status_ancestor_accepted{resourcemanager_datumapis_com_project_name="p", resource_namespace="ns", resource_name="waf", ancestor_kind="Gateway", ancestor_name="gw-a"}'
+        values: '1x10'
+      - series: 'datum_cloud_networking_trafficprotectionpolicy_status_ancestor_programmed{resourcemanager_datumapis_com_project_name="p", resource_namespace="ns", resource_name="waf", ancestor_kind="Gateway", ancestor_name="gw-a"}'
+        values: '1x10'
+      - series: 'datum_cloud_networking_trafficprotectionpolicy_status_ancestor_programmed_last_transition_time{resourcemanager_datumapis_com_project_name="p", resource_namespace="ns", resource_name="waf", ancestor_kind="Gateway", ancestor_name="gw-a"}'
+        values: '0x10'
+      - series: 'datum_cloud_networking_trafficprotectionpolicy_status_ancestor_accepted{resourcemanager_datumapis_com_project_name="p", resource_namespace="ns", resource_name="waf", ancestor_kind="Gateway", ancestor_name="gw-b", ancestor_section="https"}'
+        values: '1x10'
+      - series: 'datum_cloud_networking_trafficprotectionpolicy_status_ancestor_programmed{resourcemanager_datumapis_com_project_name="p", resource_namespace="ns", resource_name="waf", ancestor_kind="Gateway", ancestor_name="gw-b", ancestor_section="https"}'
+        values: '0x10'
+      - series: 'datum_cloud_networking_trafficprotectionpolicy_status_ancestor_programmed_last_transition_time{resourcemanager_datumapis_com_project_name="p", resource_namespace="ns", resource_name="waf", ancestor_kind="Gateway", ancestor_name="gw-b", ancestor_section="https"}'
+        values: '0x10'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: TrafficProtectionPolicyNotProgrammedSLOViolation
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              subject: p/ns/waf
+              subject_kind: TrafficProtectionPolicy
+              subject_name: waf
+              subject_namespace: ns
+              subject_group: networking.datumapis.com
+              slo_violation: "true"
+              service: network-services
+              team: sre
+              resourcemanager_datumapis_com_project_name: p
+              resource_namespace: ns
+              resource_name: waf
+              ancestor_kind: Gateway
+              ancestor_name: gw-b
+              ancestor_section: https
+            exp_annotations:
+              summary: "TrafficProtectionPolicy waf is not programmed on Gateway gw-b"
+              description: "TrafficProtectionPolicy waf in namespace ns is Accepted on Gateway gw-b, and its Programmed condition has been False for 600 seconds. An edge that holds the policy has not built its current generation."
+
+  # Older than 7 days and not programmed at any time in the last 7 days: stops paging, as Gateways do.
+  - interval: 1h
+    input_series:
+      - series: 'datum_cloud_networking_trafficprotectionpolicy_created{resourcemanager_datumapis_com_project_name="p", resource_namespace="ns", resource_name="waf"}'
+        values: '-691200x200'
+      - series: 'datum_cloud_networking_trafficprotectionpolicy_status_ancestor_accepted{resourcemanager_datumapis_com_project_name="p", resource_namespace="ns", resource_name="waf", ancestor_kind="Gateway", ancestor_name="gw-a"}'
+        values: '1x200'
+      - series: 'datum_cloud_networking_trafficprotectionpolicy_status_ancestor_programmed{resourcemanager_datumapis_com_project_name="p", resource_namespace="ns", resource_name="waf", ancestor_kind="Gateway", ancestor_name="gw-a"}'
+        values: '0x200'
+      - series: 'datum_cloud_networking_trafficprotectionpolicy_status_ancestor_programmed_last_transition_time{resourcemanager_datumapis_com_project_name="p", resource_namespace="ns", resource_name="waf", ancestor_kind="Gateway", ancestor_name="gw-a"}'
+        values: '-691200x200'
+    alert_rule_test:
+      - eval_time: 169h
+        alertname: TrafficProtectionPolicyNotProgrammedSLOViolation
+        exp_alerts: []
+
+  # Older than 7 days, programmed earlier this week, not programmed since hour 101: fires.
+  - interval: 1h
+    input_series:
+      - series: 'datum_cloud_networking_trafficprotectionpolicy_created{resourcemanager_datumapis_com_project_name="p", resource_namespace="ns", resource_name="waf"}'
+        values: '-691200x200'
+      - series: 'datum_cloud_networking_trafficprotectionpolicy_status_ancestor_accepted{resourcemanager_datumapis_com_project_name="p", resource_namespace="ns", resource_name="waf", ancestor_kind="Gateway", ancestor_name="gw-a"}'
+        values: '1x200'
+      - series: 'datum_cloud_networking_trafficprotectionpolicy_status_ancestor_programmed{resourcemanager_datumapis_com_project_name="p", resource_namespace="ns", resource_name="waf", ancestor_kind="Gateway", ancestor_name="gw-a"}'
+        values: '1x100 0x99'
+      - series: 'datum_cloud_networking_trafficprotectionpolicy_status_ancestor_programmed_last_transition_time{resourcemanager_datumapis_com_project_name="p", resource_namespace="ns", resource_name="waf", ancestor_kind="Gateway", ancestor_name="gw-a"}'
+        values: '0x100 363600x99'
+    alert_rule_test:
+      - eval_time: 169h
+        alertname: TrafficProtectionPolicyNotProgrammedSLOViolation
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              subject: p/ns/waf
+              subject_kind: TrafficProtectionPolicy
+              subject_name: waf
+              subject_namespace: ns
+              subject_group: networking.datumapis.com
+              slo_violation: "true"
+              service: network-services
+              team: sre
+              resourcemanager_datumapis_com_project_name: p
+              resource_namespace: ns
+              resource_name: waf
+              ancestor_kind: Gateway
+              ancestor_name: gw-a
+            exp_annotations:
+              summary: "TrafficProtectionPolicy waf is not programmed on Gateway gw-a"
+              description: "TrafficProtectionPolicy waf in namespace ns is Accepted on Gateway gw-a, and its Programmed condition has been False for 244800 seconds. An edge that holds the policy has not built its current generation."

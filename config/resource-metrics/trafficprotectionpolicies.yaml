@@ -52,3 +52,42 @@ spec:
               ancestor_kind: [ancestorRef, kind]
               ancestor_name: [ancestorRef, name]
               ancestor_namespace: [ancestorRef, namespace]
+      - name: "status_ancestor_accepted"
+        help: "Accepted condition of each ancestor: 1 for True, 0 for False or Unknown"
+        each:
+          type: Gauge
+          gauge:
+            path: [status, ancestors]
+            labelsFromPath:
+              ancestor_group: [ancestorRef, group]
+              ancestor_kind: [ancestorRef, kind]
+              ancestor_name: [ancestorRef, name]
+              ancestor_namespace: [ancestorRef, namespace]
+              ancestor_section: [ancestorRef, sectionName]
+            valueFrom: [conditions, "[type=Accepted]", status]
+      - name: "status_ancestor_programmed"
+        help: "Programmed condition of each ancestor: 1 for True, 0 for False or Unknown"
+        each:
+          type: Gauge
+          gauge:
+            path: [status, ancestors]
+            labelsFromPath:
+              ancestor_group: [ancestorRef, group]
+              ancestor_kind: [ancestorRef, kind]
+              ancestor_name: [ancestorRef, name]
+              ancestor_namespace: [ancestorRef, namespace]
+              ancestor_section: [ancestorRef, sectionName]
+            valueFrom: [conditions, "[type=Programmed]", status]
+      - name: "status_ancestor_programmed_last_transition_time"
+        help: "Last transition time of each ancestor's Programmed condition"
+        each:
+          type: Gauge
+          gauge:
+            path: [status, ancestors]
+            labelsFromPath:
+              ancestor_group: [ancestorRef, group]
+              ancestor_kind: [ancestorRef, kind]
+              ancestor_name: [ancestorRef, name]
+              ancestor_namespace: [ancestorRef, namespace]
+              ancestor_section: [ancestorRef, sectionName]
+            valueFrom: [conditions, "[type=Programmed]", lastTransitionTime]

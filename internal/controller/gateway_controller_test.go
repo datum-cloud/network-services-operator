@@ -237,7 +237,7 @@ func TestEnsureDownstreamGateway(t *testing.T) {
 
 			downstreamStrategy := downstreamclient.NewMappedNamespaceResourceStrategy("test", fakeUpstreamClient, fakeDownstreamClient)
 
-			reconciler.prepareUpstreamGateway(tt.upstreamGateway)
+			prepareUpstreamGateway(reconciler, tt.upstreamGateway)
 			result, downstreamGateway := reconciler.ensureDownstreamGateway(
 				ctx,
 				"test-suite",
@@ -290,8 +290,8 @@ func TestPrepareUpstreamGateway_UsesExistingCanonicalHostname(t *testing.T) {
 		Config: testConfig,
 	}
 
-	needsUpdate := reconciler.prepareUpstreamGateway(gateway)
-	assert.True(t, needsUpdate, "gateway should be updated to assign listener hostnames")
+	missing := prepareUpstreamGateway(reconciler, gateway)
+	assert.True(t, missing, "gateway should be updated to assign listener hostnames")
 
 	defaultHTTPListener := gatewayutil.GetListenerByName(gateway.Spec.Listeners, gatewayutil.DefaultHTTPListenerName)
 	require.NotNil(t, defaultHTTPListener)
@@ -690,7 +690,7 @@ func TestEnsureDownstreamGatewayWildcardCert(t *testing.T) {
 
 			downstreamStrategy := downstreamclient.NewMappedNamespaceResourceStrategy("test", fakeUpstreamClient, fakeDownstreamClient)
 
-			reconciler.prepareUpstreamGateway(tt.upstreamGateway)
+			prepareUpstreamGateway(reconciler, tt.upstreamGateway)
 			result, downstreamGateway := reconciler.ensureDownstreamGateway(
 				ctx,
 				"test-suite",
@@ -938,7 +938,7 @@ func TestListenerCertificateHealthGating(t *testing.T) {
 			}
 			downstreamStrategy := downstreamclient.NewMappedNamespaceResourceStrategy("test", fakeUpstreamClient, fakeDownstreamClient)
 
-			reconciler.prepareUpstreamGateway(upstreamGateway)
+			prepareUpstreamGateway(reconciler, upstreamGateway)
 			result, downstreamGateway := reconciler.ensureDownstreamGateway(
 				ctx, "test-suite", fakeUpstreamClient, upstreamGateway, downstreamStrategy,
 			)
@@ -1416,7 +1416,7 @@ func TestProcessDownstreamHTTPRouteRulesVPCPodPassThrough(t *testing.T) {
 	downstreamStrategy := downstreamclient.NewMappedNamespaceResourceStrategy("test", fakeUpstreamClient, fakeDownstreamClient)
 
 	ctx := context.Background()
-	rules, downstreamResources, err := reconciler.processDownstreamHTTPRouteRules(
+	rules, downstreamResources, _, err := reconciler.processDownstreamHTTPRouteRules(
 		ctx,
 		fakeUpstreamClient,
 		upstreamGateway,
@@ -1507,7 +1507,7 @@ func TestProcessDownstreamHTTPRouteRulesUnlabeledEndpointSliceUnaffected(t *test
 	downstreamStrategy := downstreamclient.NewMappedNamespaceResourceStrategy("test", fakeUpstreamClient, fakeDownstreamClient)
 
 	ctx := context.Background()
-	rules, downstreamResources, err := reconciler.processDownstreamHTTPRouteRules(
+	rules, downstreamResources, _, err := reconciler.processDownstreamHTTPRouteRules(
 		ctx,
 		fakeUpstreamClient,
 		upstreamGateway,
@@ -3128,10 +3128,10 @@ func TestEnsureHostnamesClaimed_LegacyTargetDomain(t *testing.T) {
 // synthesized, the backendRef becomes a Service reference, and Envoy is left
 // with a cluster carrying no endpoints, which it answers 503 on.
 //
-// A missing slice does not resolve, and does not fail quietly: the Get returns
-// NotFound and processDownstreamHTTPRouteRules propagates it. The caller
-// abandons the whole route loop on the first error, so withholding the slice
-// would take every other HTTPProxy on the Gateway down with it.
+// A missing slice does not resolve either: its backendRef lands on a
+// synthesized Service without endpoints, so Envoy answers 503 for that share as
+// for an empty slice, and the slice is reported for the route's ResolvedRefs
+// condition.
 func TestProcessDownstreamHTTPRouteRulesEmptyEndpointSlice(t *testing.T) {
 	testScheme := runtime.NewScheme()
 	require.NoError(t, scheme.AddToScheme(testScheme))
@@ -3213,7 +3213,7 @@ func TestProcessDownstreamHTTPRouteRulesEmptyEndpointSlice(t *testing.T) {
 	t.Run("an empty slice still resolves into a downstream service", func(t *testing.T) {
 		reconciler, upstreamClient, upstreamGateway, upstreamRoute, downstreamGateway, strategy := newFixture(t, true)
 
-		rules, downstreamResources, err := reconciler.processDownstreamHTTPRouteRules(
+		rules, downstreamResources, _, err := reconciler.processDownstreamHTTPRouteRules(
 			context.Background(),
 			upstreamClient,
 			upstreamGateway,
@@ -3249,10 +3249,10 @@ func TestProcessDownstreamHTTPRouteRulesEmptyEndpointSlice(t *testing.T) {
 		assert.Equal(t, downstreamService.Name, downstreamSlice.Labels[discoveryv1.LabelServiceName])
 	})
 
-	t.Run("a withheld slice fails the whole route loop", func(t *testing.T) {
+	t.Run("a missing slice is an unresolved backend", func(t *testing.T) {
 		reconciler, upstreamClient, upstreamGateway, upstreamRoute, downstreamGateway, strategy := newFixture(t, false)
 
-		_, _, err := reconciler.processDownstreamHTTPRouteRules(
+		rules, downstreamResources, unresolved, err := reconciler.processDownstreamHTTPRouteRules(
 			context.Background(),
 			upstreamClient,
 			upstreamGateway,
@@ -3260,8 +3260,23 @@ func TestProcessDownstreamHTTPRouteRulesEmptyEndpointSlice(t *testing.T) {
 			downstreamGateway,
 			strategy,
 		)
-		require.Error(t, err)
-		assert.Truef(t, apierrors.IsNotFound(err), "expected a NotFound error, got %v", err)
+		require.NoError(t, err)
+		assert.Equal(t, []string{"test/test-0-0"}, unresolved)
+		require.Len(t, downstreamResources, 1, "only the Service is synthesized for a slice that does not exist")
+		service, ok := downstreamResources[0].(*corev1.Service)
+		require.True(t, ok, "expected a Service, got %T", downstreamResources[0])
+		assert.Equal(t, fmt.Sprintf("route-%s-rule-0-backendref-0", upstreamRoute.UID), service.Name)
+		assert.Equal(t, clusterIPNone, service.Spec.ClusterIP, "headless, so Envoy Gateway reads its EndpointSlices")
+		require.Len(t, service.Spec.Ports, 1)
+		assert.EqualValues(t, 8080, service.Spec.Ports[0].Port)
+
+		require.Len(t, rules, 1)
+		require.Len(t, rules[0].BackendRefs, 1)
+		backendRef := rules[0].BackendRefs[0]
+		assert.Equal(t, KindService, string(ptr.Deref(backendRef.Kind, "")))
+		assert.Equal(t, downstreamGateway.Namespace, string(ptr.Deref(backendRef.Namespace, "")))
+		assert.Equal(t, fmt.Sprintf("route-%s-rule-0-backendref-0", upstreamRoute.UID), string(backendRef.Name))
+		assert.EqualValues(t, 8080, ptr.Deref(backendRef.Port, 0))
 	})
 }
 
@@ -3331,7 +3346,7 @@ func TestProcessDownstreamHTTPRouteRulesNetworkServicePanicThreshold(t *testing.
 		reconciler := &GatewayReconciler{DownstreamCluster: &fakeCluster{cl: fakeDownstreamClient}}
 		downstreamStrategy := downstreamclient.NewMappedNamespaceResourceStrategy("test", fakeUpstreamClient, fakeDownstreamClient)
 
-		_, resources, err := reconciler.processDownstreamHTTPRouteRules(
+		_, resources, _, err := reconciler.processDownstreamHTTPRouteRules(
 			context.Background(),
 			fakeUpstreamClient,
 			upstreamGateway,
@@ -3365,6 +3380,9 @@ func TestProcessDownstreamHTTPRouteRulesNetworkServicePanicThreshold(t *testing.
 		require.NotNil(t, policy.Spec.HealthCheck.PanicThreshold)
 		assert.Equal(t, uint32(0), *policy.Spec.HealthCheck.PanicThreshold)
 		assert.Equal(t, downstreamNamespaceName, policy.Namespace)
+		require.NotNil(t, policy.Spec.MergeType,
+			"the policy must merge into a tenant's Gateway policy, or their rate limits and circuit breakers stop applying")
+		assert.Equal(t, envoygatewayv1alpha1.StrategicMerge, *policy.Spec.MergeType)
 
 		require.Len(t, policy.Spec.TargetRefs, 1)
 		targetRef := policy.Spec.TargetRefs[0]
@@ -3443,7 +3461,7 @@ func TestProcessDownstreamHTTPRouteRulesLoadBalancer(t *testing.T) {
 		reconciler := &GatewayReconciler{DownstreamCluster: &fakeCluster{cl: fakeDownstreamClient}}
 		downstreamStrategy := downstreamclient.NewMappedNamespaceResourceStrategy("test", fakeUpstreamClient, fakeDownstreamClient)
 
-		_, resources, err := reconciler.processDownstreamHTTPRouteRules(
+		_, resources, _, err := reconciler.processDownstreamHTTPRouteRules(
 			context.Background(),
 			fakeUpstreamClient,
 			upstreamGateway,
@@ -3588,7 +3606,7 @@ func TestProcessDownstreamHTTPRouteRulesHealthCheck(t *testing.T) {
 		reconciler := &GatewayReconciler{DownstreamCluster: &fakeCluster{cl: fakeDownstreamClient}}
 		downstreamStrategy := downstreamclient.NewMappedNamespaceResourceStrategy("test", fakeUpstreamClient, fakeDownstreamClient)
 
-		_, resources, err := reconciler.processDownstreamHTTPRouteRules(
+		_, resources, _, err := reconciler.processDownstreamHTTPRouteRules(
 			context.Background(),
 			fakeUpstreamClient,
 			upstreamGateway,
@@ -3829,7 +3847,7 @@ func TestProcessDownstreamHTTPRouteRulesHealthCheckPassThrough(t *testing.T) {
 		reconciler := &GatewayReconciler{DownstreamCluster: &fakeCluster{cl: fakeDownstreamClient}}
 		downstreamStrategy := downstreamclient.NewMappedNamespaceResourceStrategy("test", fakeUpstreamClient, fakeDownstreamClient)
 
-		_, resources, err := reconciler.processDownstreamHTTPRouteRules(
+		_, resources, _, err := reconciler.processDownstreamHTTPRouteRules(
 			context.Background(),
 			fakeUpstreamClient,
 			upstreamGateway,
@@ -3947,4 +3965,15 @@ func TestDeleteEndpointSliceOnAddressTypeChange(t *testing.T) {
 			}
 		})
 	}
+}
+
+// prepareUpstreamGateway sets on gw, in memory, what the gateway controller's
+// apply sets on the server, and reports whether gw lacked any of it.
+func prepareUpstreamGateway(r *GatewayReconciler, gw *gatewayv1.Gateway) bool {
+	intent, missing := r.upstreamGatewayIntent(gw)
+	controllerutil.AddFinalizer(gw, gatewayControllerFinalizer)
+	for _, l := range intent.Spec.Listeners {
+		gatewayutil.GetListenerByName(gw.Spec.Listeners, *l.Name).Hostname = l.Hostname
+	}
+	return missing
 }

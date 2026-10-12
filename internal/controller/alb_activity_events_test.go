@@ -7,6 +7,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 )
@@ -127,5 +128,31 @@ func condGen(condType string, status metav1.ConditionStatus, reason string, gen 
 		Status:             status,
 		Reason:             reason,
 		ObservedGeneration: gen,
+	}
+}
+
+func TestTPPProgrammedCondition(t *testing.T) {
+	ancestor := func(conditions ...metav1.Condition) gatewayv1.PolicyAncestorStatus {
+		return gatewayv1.PolicyAncestorStatus{Conditions: conditions}
+	}
+	notAccepted := metav1.Condition{Type: string(gatewayv1.PolicyConditionAccepted), Status: metav1.ConditionFalse, Reason: string(gatewayv1.PolicyReasonTargetNotFound)}
+	live := metav1.Condition{Type: conditionTypeProgrammed, Status: metav1.ConditionTrue, Reason: string(PolicyReasonProgrammed)}
+	partial := metav1.Condition{Type: conditionTypeProgrammed, Status: metav1.ConditionFalse, Reason: string(PolicyReasonProgrammedPartialFailure)}
+
+	tests := map[string]struct {
+		ancestors []gatewayv1.PolicyAncestorStatus
+		want      *metav1.Condition
+	}{
+		"no target programmed":                  {ancestors: []gatewayv1.PolicyAncestorStatus{ancestor(notAccepted)}},
+		"a first target that is not accepted":   {ancestors: []gatewayv1.PolicyAncestorStatus{ancestor(notAccepted), ancestor(live)}, want: &live},
+		"one target not programmed, after one":  {ancestors: []gatewayv1.PolicyAncestorStatus{ancestor(live), ancestor(partial)}, want: &partial},
+		"one target not programmed, before one": {ancestors: []gatewayv1.PolicyAncestorStatus{ancestor(partial), ancestor(live)}, want: &partial},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			policy := &networkingv1alpha.TrafficProtectionPolicy{}
+			policy.Status.Ancestors = tt.ancestors
+			assert.Equal(t, tt.want, tppProgrammedCondition(policy))
+		})
 	}
 }

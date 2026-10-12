@@ -106,7 +106,7 @@ func NewCommand() *cobra.Command {
 				os.Exit(1)
 			}
 
-			runnables, provider, err := clusterdiscovery.Initialize(
+			runnables, provider, setupDiscovery, err := clusterdiscovery.Initialize(
 				serverConfig.Discovery,
 				serverConfig.ProjectClient,
 				deploymentCluster,
@@ -134,6 +134,11 @@ func NewCommand() *cobra.Command {
 			})
 			if err != nil {
 				setupLog.Error(err, "unable to start manager")
+				os.Exit(1)
+			}
+
+			if err := setupDiscovery(mgr); err != nil {
+				setupLog.Error(err, "unable to set up cluster discovery")
 				os.Exit(1)
 			}
 

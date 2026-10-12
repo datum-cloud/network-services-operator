@@ -182,6 +182,10 @@ export function useHTTPProxies(projectId: string | undefined): UseQueryResult<HT
   });
 }
 
+export function computeWorkloadHref(projectId: string, workloadName: string): string {
+  return `/project/${projectId}/services/compute-datumapis-com/${encodeURIComponent(workloadName)}`;
+}
+
 interface EnableIPv6Args {
   projectId: string;
   network: Network;

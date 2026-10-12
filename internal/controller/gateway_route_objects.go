@@ -29,6 +29,10 @@ var routeObjectLists = []func() client.ObjectList{
 	func() client.ObjectList { return &envoygatewayv1alpha1.BackendTrafficPolicyList{} },
 }
 
+func routeBackendResourceName(route *gatewayv1.HTTPRoute, ruleIdx, backendRefIdx int) string {
+	return fmt.Sprintf("route-%s-rule-%d-backendref-%d", route.UID, ruleIdx, backendRefIdx)
+}
+
 // deleteUnneededRouteObjects deletes the downstream objects the route controls
 // that desired no longer holds: those of a removed rule or backend, and a
 // policy the route stopped needing. Owner garbage collection removes them only

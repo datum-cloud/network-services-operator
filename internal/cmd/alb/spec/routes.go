@@ -152,7 +152,10 @@ func ReplaceRouteBackends(current *networkingv1alpha.HTTPProxy, path string, bac
 	}
 
 	updated := current.DeepCopy()
-	updated.Spec.Rules[idx].Backends = toBackends(backends)
+	updated.Spec.Rules[idx].Backends = carryBackendSettings(current.Spec.Rules[idx].Backends, toBackends(backends))
+	if err := checkRouteServesTraffic(updated.Spec.Rules[idx].Backends, path); err != nil {
+		return nil, err
+	}
 	if err := validateProxy(updated); err != nil {
 		return nil, err
 	}
@@ -174,6 +177,9 @@ func AddRouteBackend(current *networkingv1alpha.HTTPProxy, path string, backend 
 			return nil, util.NewCLIError(util.ExitConflict,
 				fmt.Sprintf("backend %s is already on route %q", FormatBackend(candidate), path))
 		}
+	}
+	if candidate.Weight == nil {
+		candidate.Weight = suggestedWeight(current.Spec.Rules[idx].Backends)
 	}
 
 	updated := current.DeepCopy()
@@ -215,8 +221,87 @@ func RemoveRouteBackend(current *networkingv1alpha.HTTPProxy, path string, backe
 		return nil, util.UsageErrorf("cannot remove the last backend on route %q", path).
 			WithFix(fmt.Sprintf("remove the route instead:\n       datumctl alb route remove %s --path %s", current.Name, path))
 	}
+	if err := checkRouteServesTraffic(kept, path); err != nil {
+		return nil, err
+	}
 	rule.Backends = kept
 	return updated, nil
+}
+
+// SetRouteBackendWeight changes one origin's weight and leaves the rest of
+// the pool as it is.
+func SetRouteBackendWeight(current *networkingv1alpha.HTTPProxy, path string, backend BackendInput, weight int32) (*networkingv1alpha.HTTPProxy, error) {
+	if err := ValidateWeight(weight); err != nil {
+		return nil, err
+	}
+	path, err := NormalizePath(path)
+	if err != nil {
+		return nil, err
+	}
+	idx := routeIndex(current, path)
+	if idx < 0 {
+		return nil, RouteNotFound(current, path)
+	}
+	target := ToBackend(backend)
+
+	updated := current.DeepCopy()
+	rule := &updated.Spec.Rules[idx]
+	found := false
+	for i := range rule.Backends {
+		if sameBackendTarget(rule.Backends[i], target) {
+			rule.Backends[i].Weight = ptr.To(weight)
+			found = true
+		}
+	}
+	if !found {
+		return nil, util.NewCLIError(util.ExitNotFound,
+			fmt.Sprintf("backend %s is not on route %q", FormatBackend(target), path)).
+			WithFix(fmt.Sprintf("list the route's backends with:\n       datumctl alb route backend list %s --path %s", current.Name, path))
+	}
+	if err := checkRouteServesTraffic(rule.Backends, path); err != nil {
+		return nil, err
+	}
+	if err := validateProxy(updated); err != nil {
+		return nil, err
+	}
+	return updated, nil
+}
+
+// carryBackendSettings keeps what a replaced pool knew about an origin that is
+// still in it: its weight, its TLS hostname and its filters, unless the new
+// entry sets them itself. Replacing the origins on a route shouldn't reset a
+// weight the portal or "route backend update" set.
+func carryBackendSettings(previous, next []networkingv1alpha.HTTPProxyRuleBackend) []networkingv1alpha.HTTPProxyRuleBackend {
+	for i := range next {
+		for _, old := range previous {
+			if !sameBackendTarget(old, next[i]) {
+				continue
+			}
+			if next[i].Weight == nil {
+				next[i].Weight = old.Weight
+			}
+			if next[i].TLS == nil && old.TLS != nil {
+				next[i].TLS = old.TLS.DeepCopy()
+			}
+			if len(next[i].Filters) == 0 && len(old.Filters) > 0 {
+				next[i].Filters = append(next[i].Filters, old.Filters...)
+			}
+			break
+		}
+	}
+	return next
+}
+
+// checkRouteServesTraffic refuses a pool whose weights are all 0. The API
+// accepts it, but the route then answers every request with an error.
+func checkRouteServesTraffic(backends []networkingv1alpha.HTTPProxyRuleBackend, path string) error {
+	for _, b := range backends {
+		if BackendWeight(b) > 0 {
+			return nil
+		}
+	}
+	return util.UsageErrorf("every origin on route %q would have weight 0, so the route would serve no traffic", path).
+		WithFix("give at least one origin a weight above 0, or remove the route")
 }
 
 func SetForceHTTPS(current *networkingv1alpha.HTTPProxy, enabled bool) *networkingv1alpha.HTTPProxy {

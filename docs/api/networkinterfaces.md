@@ -131,9 +131,11 @@ claim, and the operator carries it without interpreting it.
 
 Netns places the interface in the workload's network namespace. Hypervisor
 hands it to a hypervisor as a device, which is what a virtual machine or
-microVM guest needs.<br/>
+microVM guest needs. HypervisorDeclared also hands it to a hypervisor, and
+additionally has the realizer state the device to that hypervisor instead
+of letting it discover the device from the node.<br/>
           <br/>
-            <i>Enum</i>: Netns, Hypervisor<br/>
+            <i>Enum</i>: Netns, Hypervisor, HypervisorDeclared<br/>
             <i>Default</i>: Netns<br/>
         </td>
         <td>false</td>

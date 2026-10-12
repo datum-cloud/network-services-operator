@@ -41,9 +41,14 @@ import (
 	networkingv1alpha1 "go.datum.net/network-services-operator/api/v1alpha1"
 	"go.datum.net/network-services-operator/internal/config"
 	downstreamclient "go.datum.net/network-services-operator/internal/downstreamclient"
+	"go.datum.net/network-services-operator/internal/util/finalizer"
+	"go.datum.net/network-services-operator/internal/util/status"
 )
 
-const gatewayResourceReplicatorFinalizer = "gateway.networking.datumapis.com/gateway-resource-replicator"
+const (
+	gatewayResourceReplicatorControllerName = "gateway_resource_replicator"
+	gatewayResourceReplicatorFinalizer      = "gateway.networking.datumapis.com/gateway-resource-replicator"
+)
 
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=trafficprotectionpolicies,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=trafficprotectionpolicies/finalizers,verbs=update
@@ -286,8 +291,7 @@ func (r *GatewayResourceReplicatorReconciler) Reconcile(ctx context.Context, req
 	}
 
 	if !controllerutil.ContainsFinalizer(upstreamObj, gatewayResourceReplicatorFinalizer) {
-		controllerutil.AddFinalizer(upstreamObj, gatewayResourceReplicatorFinalizer)
-		if err := upstreamClient.Update(ctx, upstreamObj); err != nil {
+		if err := finalizer.Add(ctx, upstreamClient, upstreamObj, gatewayResourceReplicatorFinalizer, fieldOwner(gatewayResourceReplicatorControllerName)); err != nil {
 			if apierrors.IsNotFound(err) {
 				return ctrl.Result{}, nil
 			}
@@ -322,8 +326,7 @@ func (r *GatewayResourceReplicatorReconciler) finalizeResource(
 			}
 		}
 
-		controllerutil.RemoveFinalizer(upstreamObj, gatewayResourceReplicatorFinalizer)
-		if err := upstreamClient.Update(ctx, upstreamObj); err != nil {
+		if err := finalizer.Remove(ctx, upstreamClient, upstreamObj, gatewayResourceReplicatorFinalizer, fieldOwner(gatewayResourceReplicatorControllerName)); err != nil {
 			if apierrors.IsNotFound(err) {
 				return ctrl.Result{}, nil
 			}
@@ -564,19 +567,7 @@ func (r *GatewayResourceReplicatorReconciler) syncUpstreamStatus(
 		return nil
 	}
 
-	upstreamCopy := upstreamObj.DeepCopy()
-
-	if len(statusMap) == 0 {
-		delete(upstreamCopy.Object, jsonKeyStatus)
-	} else {
-		upstreamCopy.Object[jsonKeyStatus] = statusMap
-	}
-
-	if resource.replicationResourceConfig.statusGVK != nil {
-		upstreamCopy.SetGroupVersionKind(*resource.replicationResourceConfig.statusGVK)
-	}
-
-	if err := upstreamClient.Status().Update(ctx, upstreamCopy); err != nil {
+	if err := patchUpstreamStatus(ctx, upstreamClient, resource, upstreamObj, statusMap); err != nil {
 		if apierrors.IsNotFound(err) {
 			return nil
 		}
@@ -609,13 +600,7 @@ func (r *GatewayResourceReplicatorReconciler) clearUpstreamStatusIfNeeded(
 		return nil
 	}
 
-	upstreamCopy := upstreamObj.DeepCopy()
-	delete(upstreamCopy.Object, jsonKeyStatus)
-	if resource.replicationResourceConfig.statusGVK != nil {
-		upstreamCopy.SetGroupVersionKind(*resource.replicationResourceConfig.statusGVK)
-	}
-
-	if err := upstreamClient.Status().Update(ctx, upstreamCopy); err != nil {
+	if err := patchUpstreamStatus(ctx, upstreamClient, resource, upstreamObj, nil); err != nil {
 		if apierrors.IsNotFound(err) {
 			return nil
 		}
@@ -630,6 +615,28 @@ func (r *GatewayResourceReplicatorReconciler) clearUpstreamStatusIfNeeded(
 	)
 
 	return nil
+}
+
+// patchUpstreamStatus saves desired as the whole status of upstreamObj, or
+// removes the status when desired is empty. The replicator is the only writer
+// of these statuses, so a merge patch without resourceVersion is safe.
+func patchUpstreamStatus(
+	ctx context.Context,
+	upstreamClient client.Client,
+	resource replicationResource,
+	upstreamObj *unstructured.Unstructured,
+	desired map[string]any,
+) error {
+	modified := upstreamObj.DeepCopy()
+	if resource.replicationResourceConfig.statusGVK != nil {
+		modified.SetGroupVersionKind(*resource.replicationResourceConfig.statusGVK)
+	}
+	if len(desired) == 0 {
+		delete(modified.Object, jsonKeyStatus)
+	} else {
+		modified.Object[jsonKeyStatus] = desired
+	}
+	return status.Patch(ctx, upstreamClient, modified, upstreamObj, fieldOwner(gatewayResourceReplicatorControllerName))
 }
 
 func filterConditionMessagesInStatus(status map[string]any, handlers conditionReasonHandlers) {
@@ -873,7 +880,7 @@ func (r *GatewayResourceReplicatorReconciler) SetupWithManager(mgr mcmanager.Man
 
 	r.resources = resources
 
-	return builder.Named("gateway_resource_replicator").Complete(r)
+	return builder.Named(gatewayResourceReplicatorControllerName).Complete(r)
 }
 
 func newUnstructuredForGVK(gvk schema.GroupVersionKind) *unstructured.Unstructured {

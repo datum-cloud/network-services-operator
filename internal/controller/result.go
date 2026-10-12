@@ -10,6 +10,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"go.datum.net/network-services-operator/internal/util/status"
 )
 
 type Result struct {
@@ -24,7 +26,15 @@ type Result struct {
 	// Watch to trigger a future reconciliation call.
 	StopProcessing bool
 
-	syncStatus map[client.Object]client.Client
+	syncStatus map[client.Object]statusSave
+}
+
+// statusSave is how Complete saves one object's status. An empty fieldOwner
+// saves it with an Update locked to the resourceVersion the object was read
+// at; a field owner saves it with a merge patch from the stored status.
+type statusSave struct {
+	client     client.Client
+	fieldOwner string
 }
 
 func (r *Result) Merge(other Result) Result {
@@ -39,7 +49,7 @@ func (r *Result) Merge(other Result) Result {
 	}
 	if other.syncStatus != nil {
 		if r.syncStatus == nil {
-			r.syncStatus = make(map[client.Object]client.Client)
+			r.syncStatus = make(map[client.Object]statusSave)
 		}
 		for k, v := range other.syncStatus {
 			r.syncStatus[k] = v
@@ -49,11 +59,23 @@ func (r *Result) Merge(other Result) Result {
 	return *r
 }
 
+// AddStatusUpdate saves obj's status locked to the read it was computed from,
+// for a status that several reconciles write into one list.
 func (r *Result) AddStatusUpdate(c client.Client, obj client.Object) {
+	r.addStatusSave(obj, statusSave{client: c})
+}
+
+// AddStatusPatch saves obj's status with a merge patch under fieldOwner, for
+// a status that only this controller writes.
+func (r *Result) AddStatusPatch(c client.Client, obj client.Object, fieldOwner string) {
+	r.addStatusSave(obj, statusSave{client: c, fieldOwner: fieldOwner})
+}
+
+func (r *Result) addStatusSave(obj client.Object, save statusSave) {
 	if r.syncStatus == nil {
-		r.syncStatus = make(map[client.Object]client.Client)
+		r.syncStatus = make(map[client.Object]statusSave)
 	}
-	r.syncStatus[obj] = c
+	r.syncStatus[obj] = save
 }
 
 func (r Result) ShouldReturn() bool {
@@ -63,8 +85,8 @@ func (r Result) ShouldReturn() bool {
 func (r Result) Complete(ctx context.Context) (ctrl.Result, error) {
 	if r.syncStatus != nil {
 		var errs []error
-		for obj, client := range r.syncStatus {
-			needsWrite, err := statusNeedsWrite(ctx, client, obj)
+		for obj, save := range r.syncStatus {
+			stored, needsWrite, err := storedStatus(ctx, save.client, obj)
 			if err != nil {
 				errs = append(errs, err)
 				continue
@@ -72,7 +94,7 @@ func (r Result) Complete(ctx context.Context) (ctrl.Result, error) {
 			if !needsWrite {
 				continue
 			}
-			if err := client.Status().Update(ctx, obj); err != nil {
+			if err := save.write(ctx, obj, stored); err != nil {
 				if r.Err == nil && apierrors.IsConflict(err) {
 					r.RequeueAfter = 1 * time.Second
 				} else {
@@ -89,20 +111,30 @@ func (r Result) Complete(ctx context.Context) (ctrl.Result, error) {
 	return r.Result, r.Err
 }
 
-func statusNeedsWrite(ctx context.Context, c client.Client, desired client.Object) (bool, error) {
-	stored := desired.DeepCopyObject().(client.Object)
-	if err := c.Get(ctx, client.ObjectKeyFromObject(desired), stored); err != nil {
-		return true, nil
+// storedStatus reads the object desired was computed for and reports whether
+// its status differs. An object it cannot read is written, so the write
+// reports why.
+func storedStatus(ctx context.Context, c client.Client, desired client.Object) (stored client.Object, needsWrite bool, err error) {
+	live := desired.DeepCopyObject().(client.Object)
+	if err := c.Get(ctx, client.ObjectKeyFromObject(desired), live); err != nil {
+		return nil, true, nil
 	}
-	storedStatus, err := statusContent(stored)
+	liveStatus, err := statusContent(live)
 	if err != nil {
-		return false, err
+		return nil, false, err
 	}
 	desiredStatus, err := statusContent(desired)
 	if err != nil {
-		return false, err
+		return nil, false, err
 	}
-	return !equality.Semantic.DeepEqual(storedStatus, desiredStatus), nil
+	return live, !equality.Semantic.DeepEqual(liveStatus, desiredStatus), nil
+}
+
+func (s statusSave) write(ctx context.Context, obj, stored client.Object) error {
+	if s.fieldOwner == "" {
+		return s.client.Status().Update(ctx, obj)
+	}
+	return status.Patch(ctx, s.client, obj, stored, s.fieldOwner)
 }
 
 func statusContent(obj client.Object) (any, error) {

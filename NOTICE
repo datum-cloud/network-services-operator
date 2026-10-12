@@ -9827,7 +9827,7 @@ For more information on this, and how to apply and follow the GNU AGPL, see
 ## go.miloapis.com/milo/pkg
 
 * Name: go.miloapis.com/milo/pkg
-* Version: v0.31.0
+* Version: v0.36.2
 * License: AGPL-3.0
 
 ```
@@ -18049,9 +18049,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ```
 
-## sigs.k8s.io/gateway-api/apis/v1
+## sigs.k8s.io/gateway-api
 
-* Name: sigs.k8s.io/gateway-api/apis/v1
+* Name: sigs.k8s.io/gateway-api
 * Version: v1.5.1
 * License: Apache-2.0
 

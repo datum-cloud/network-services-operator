@@ -89,6 +89,18 @@ test-conformance:
 notice: go-licenses ## Regenerate the NOTICE file of third-party licenses.
 	$(GO_LICENSES) report ./... --ignore go.datum.net/network-services-operator --template hack/notice.tmpl > NOTICE
 
+# Covers every committed file a generator here writes. locations-crds writes
+# only into bin/. git status, not git diff, so a generated file that was never
+# committed fails too.
+.PHONY: verify-generated
+verify-generated: manifests generate api-docs notice ## Fail if a committed generated file differs from what the pinned tools produce.
+	@if [ -n "$$(git status --porcelain)" ]; then \
+		git status --short; \
+		git --no-pager diff; \
+		echo "Generated files are out of date. Run 'make manifests generate api-docs notice' and commit the result." >&2; \
+		exit 1; \
+	fi
+
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter
 	$(GOLANGCI_LINT) run

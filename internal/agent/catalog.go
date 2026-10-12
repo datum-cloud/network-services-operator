@@ -263,6 +263,16 @@ var catalog = []ReasonInfo{
 		Skill: SkillBackendNotReachable,
 	},
 	{
+		Reason:        networkingv1alpha.HTTPProxyReasonNetworkServiceBackendUnsupportedProtocol,
+		ConditionType: networkingv1alpha.HTTPProxyConditionProgrammed,
+		Actionability: ActionabilityUser,
+		Scope:         ScopeAllTraffic,
+		Explanation: "A route on this load balancer names a UDP port on a network service. " +
+			"Application load balancer origins require TCP, so this change has not been published.",
+		Remediation: "Point the route at a named TCP port on the network service.",
+		Skill:       SkillBackendNotReachable,
+	},
+	{
 		Reason:        networkingv1alpha.HTTPProxyReasonInstanceBackendNotFound,
 		ConditionType: networkingv1alpha.HTTPProxyConditionProgrammed,
 		Actionability: ActionabilityUser,

@@ -52,6 +52,8 @@ func TestCellIntentPublishesAndWithdrawsWithoutDeletingHold(t *testing.T) {
 	require.Len(t, first.Items, 1)
 	require.Equal(t, networkingv1alpha.NetworkLoadBalancerCellIntentValidate, first.Items[0].Spec.State)
 	require.Equal(t, "2001:db8::1", first.Items[0].Spec.VIP)
+	require.Equal(t, networkingv1alpha.IPv6Protocol, first.Items[0].Spec.VIPFamily)
+	require.Equal(t, networkingv1alpha.IPv6Protocol, first.Items[0].Spec.Backends[0].Family)
 	require.Equal(t, "project", first.Items[0].Spec.Source.ProjectCluster)
 	require.Equal(t, "route-1", first.Items[0].Spec.Source.RouteUID)
 	require.Equal(t, "cell-test", first.Items[0].Spec.Backends[0].SourceNamespace)
@@ -125,6 +127,25 @@ func TestCellIntentRequiresFreshPerLocationAllocation(t *testing.T) {
 	parent.Status.Addresses = append(parent.Status.Addresses, duplicate)
 	require.NoError(t, cl.Update(ctx, parent))
 	desired, err = buildNetworkLoadBalancerCellIntents(ctx, cl, "project", "hub", route)
+	require.NoError(t, err)
+	require.Empty(t, desired)
+}
+
+func TestCellIntentRejectsUnsupportedVIPFamily(t *testing.T) {
+	ctx := context.Background()
+	route := testLoadBalancerRoute("storefront", time.Unix(10, 0))
+	parent := testRouteLoadBalancer()
+	parent.UID = types.UID("parent-1")
+	parent.Generation = 5
+	parent.Spec.Exposure.Addresses[0].Family = networkingv1alpha.IPv4Protocol
+	allocation := allocatedCellIntentAddress("192.0.2.10", parent.Generation)
+	allocation.Family = networkingv1alpha.IPv4Protocol
+	parent.Status.Addresses = []networkingv1alpha.NetworkLoadBalancerAddressStatus{allocation}
+	cl := fake.NewClientBuilder().WithScheme(networkServiceTestScheme(t)).
+		WithObjects(route, parent, readyIntentNetwork(), testRouteNetworkService(),
+			testRouteMember("member", true, "fd00::1/128")).Build()
+
+	desired, err := buildNetworkLoadBalancerCellIntents(ctx, cl, "project", "hub", route)
 	require.NoError(t, err)
 	require.Empty(t, desired)
 }

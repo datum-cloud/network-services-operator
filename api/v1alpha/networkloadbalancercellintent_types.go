@@ -48,6 +48,9 @@ type NetworkLoadBalancerCellIntentBackend struct {
 	SourceName string `json:"sourceName"`
 	// +kubebuilder:validation:MinLength=1
 	SourceUID string `json:"sourceUID"`
+	// Family identifies the backend transport address independently of the
+	// public VIP family. IPv4 ingress can use an IPv6 backend through a proxy.
+	Family IPFamily `json:"family"`
 	// +kubebuilder:validation:MinLength=1
 	Address string                             `json:"address"`
 	Port    int32                              `json:"port"`
@@ -59,13 +62,16 @@ type NetworkLoadBalancerCellIntentBackend struct {
 // The cell must independently verify the live interface, attachment, and VPC.
 // +kubebuilder:validation:XValidation:message="Validate needs backends; Withdrawn must have none",rule="self.state == 'Validate' ? has(self.backends) && size(self.backends) > 0 : !has(self.backends) || size(self.backends) == 0"
 type NetworkLoadBalancerCellIntentSpec struct {
-	Source       NetworkLoadBalancerCellIntentSource `json:"source"`
-	Location     string                              `json:"location"`
-	NetworkName  string                              `json:"networkName"`
-	VIP          string                              `json:"vip"`
-	Protocol     NetworkLoadBalancerProtocol         `json:"protocol"`
-	ListenerPort int32                               `json:"listenerPort"`
-	State        NetworkLoadBalancerCellIntentState  `json:"state"`
+	Source      NetworkLoadBalancerCellIntentSource `json:"source"`
+	Location    string                              `json:"location"`
+	NetworkName string                              `json:"networkName"`
+	// VIPFamily selects the ingress packet path. It may differ from a backend's
+	// family; the serving cell must support that family pair before programming.
+	VIPFamily    IPFamily                           `json:"vipFamily"`
+	VIP          string                             `json:"vip"`
+	Protocol     NetworkLoadBalancerProtocol        `json:"protocol"`
+	ListenerPort int32                              `json:"listenerPort"`
+	State        NetworkLoadBalancerCellIntentState `json:"state"`
 	// +kubebuilder:validation:MaxItems=1024
 	Backends []NetworkLoadBalancerCellIntentBackend `json:"backends,omitempty"`
 }

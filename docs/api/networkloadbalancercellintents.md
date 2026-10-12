@@ -138,6 +138,16 @@ from an explicit withdrawal. Neither state authorizes traffic programming.<br/>
         </td>
         <td>true</td>
       </tr><tr>
+        <td><b>vipFamily</b></td>
+        <td>enum</td>
+        <td>
+          VIPFamily selects the ingress packet path. It may differ from a backend's
+family; the serving cell must support that family pair before programming.<br/>
+          <br/>
+            <i>Enum</i>: IPv4, IPv6<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
         <td><b><a href="#networkloadbalancercellintentspecbackendsindex">backends</a></b></td>
         <td>[]object</td>
         <td>
@@ -263,6 +273,16 @@ from an explicit withdrawal. Neither state authorizes traffic programming.<br/>
         <td>string</td>
         <td>
           <br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>family</b></td>
+        <td>enum</td>
+        <td>
+          Family identifies the backend transport address independently of the
+public VIP family. IPv4 ingress can use an IPv6 backend through a proxy.<br/>
+          <br/>
+            <i>Enum</i>: IPv4, IPv6<br/>
         </td>
         <td>true</td>
       </tr><tr>

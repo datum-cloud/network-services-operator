@@ -170,7 +170,10 @@ func buildNetworkLoadBalancerCellIntents(ctx context.Context, cl client.Client, 
 			}
 			request := parent.Spec.Exposure.Addresses[requestIndex]
 			for _, allocation := range parent.Status.Addresses {
-				if allocation.RequestName != addressRef || allocation.Family != networkingv1alpha.IPv6Protocol || allocation.Value == "" ||
+				// The public API and ingress path currently support only IPv6. Keep
+				// the family explicit in the cell contract for future IPv4 VIPs.
+				if allocation.RequestName != addressRef || allocation.Family != request.Family ||
+					allocation.Family != networkingv1alpha.IPv6Protocol || allocation.Value == "" ||
 					allocation.ClaimRef == nil || allocation.ClaimRef.Name == "" {
 					continue
 				}
@@ -203,7 +206,7 @@ func buildNetworkLoadBalancerCellIntents(ctx context.Context, cl client.Client, 
 						ListenerName: listener.Name, AddressRequest: addressRef,
 					},
 					Location: location, NetworkName: parent.Spec.NetworkRef.Name,
-					VIP: vip.String(), Protocol: listener.Protocol, ListenerPort: listener.Port,
+					VIPFamily: allocation.Family, VIP: vip.String(), Protocol: listener.Protocol, ListenerPort: listener.Port,
 					State: networkingv1alpha.NetworkLoadBalancerCellIntentWithdrawn,
 				}}
 				for _, endpoint := range endpoints {
@@ -212,7 +215,8 @@ func buildNetworkLoadBalancerCellIntents(ctx context.Context, cl client.Client, 
 					}
 					intent.Spec.Backends = append(intent.Spec.Backends, networkingv1alpha.NetworkLoadBalancerCellIntentBackend{
 						SourceNamespace: endpoint.SourceNamespace, SourceName: endpoint.Interface,
-						SourceUID: endpoint.SourceUID, Address: endpoint.Address, Port: endpoint.Port,
+						SourceUID: endpoint.SourceUID, Family: networkingv1alpha.IPv6Protocol,
+						Address: endpoint.Address, Port: endpoint.Port,
 						Weight: endpoint.Weight, Probe: endpoint.Probe,
 					})
 				}

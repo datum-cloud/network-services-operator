@@ -40,7 +40,8 @@ func testRouteLoadBalancer() *networkingv1alpha.NetworkLoadBalancer {
 		Spec: networkingv1alpha.NetworkLoadBalancerSpec{
 			NetworkRef: networkingv1alpha.LocalNetworkRef{Name: "default"},
 			Exposure: networkingv1alpha.NetworkLoadBalancerExposure{Addresses: []networkingv1alpha.NetworkLoadBalancerAddressRequest{{
-				Name: "regional", Locations: networkingv1alpha.NetworkLoadBalancerLocationSelection{From: networkingv1alpha.NetworkLoadBalancerLocationSourceAll},
+				Name: "regional", Family: networkingv1alpha.IPv6Protocol,
+				Locations: networkingv1alpha.NetworkLoadBalancerLocationSelection{From: networkingv1alpha.NetworkLoadBalancerLocationSourceAll},
 			}}},
 			Listeners: []networkingv1alpha.NetworkLoadBalancerListener{{
 				Name: "tcp", Protocol: networkingv1alpha.NetworkLoadBalancerProtocolTCP, Port: 443, AddressRefs: []string{"regional"},

@@ -29,7 +29,7 @@ require (
 	go.miloapis.com/activity v0.7.1
 	go.miloapis.com/dns-operator v0.5.1
 	go.miloapis.com/locations v0.0.0-20260825185141-507ac2cbd48c
-	go.miloapis.com/milo v0.31.0
+	go.miloapis.com/milo v0.36.2
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.67.0
 	go.opentelemetry.io/otel v1.44.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.44.0

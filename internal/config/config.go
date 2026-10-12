@@ -164,9 +164,6 @@ type InternalDNSConfig struct {
 	// ServicePrefix allocates a stable service-side destination per DNS context.
 	ServicePrefix string `json:"servicePrefix,omitempty"`
 
-	// AccessLeaseDuration bounds each DNS access authorization.
-	AccessLeaseDuration metav1.Duration `json:"accessLeaseDuration,omitempty"`
-
 	// ProducerAttachmentSelector selects shared DNS service attachments.
 	ProducerAttachmentSelector map[string]string `json:"producerAttachmentSelector,omitempty"`
 }
@@ -178,9 +175,7 @@ func SetDefaults_InternalDNSConfig(obj *InternalDNSConfig) {
 	if obj.ServicePrefix == "" {
 		obj.ServicePrefix = "fd70:100::/64"
 	}
-	if obj.AccessLeaseDuration.Duration == 0 {
-		obj.AccessLeaseDuration = metav1.Duration{Duration: 2 * time.Minute}
-	}
+
 }
 
 func (c *InternalDNSConfig) validate() error {
@@ -194,12 +189,6 @@ func (c *InternalDNSConfig) validate() error {
 	prefix, err := netip.ParsePrefix(c.ServicePrefix)
 	if err != nil || !prefix.Addr().Is6() || prefix.Bits() > 64 {
 		return fmt.Errorf("servicePrefix must be an IPv6 prefix of /64 or larger, got %q", c.ServicePrefix)
-	}
-	if c.AccessLeaseDuration.Duration <= 0 {
-		return errors.New("accessLeaseDuration must be positive")
-	}
-	if c.AccessLeaseDuration.Duration > 2*time.Minute {
-		return errors.New("accessLeaseDuration must not exceed Galactic's two minute authorization limit")
 	}
 	if len(c.ProducerAttachmentSelector) == 0 {
 		return errors.New("producerAttachmentSelector is required")

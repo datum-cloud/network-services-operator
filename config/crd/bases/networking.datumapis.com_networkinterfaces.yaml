@@ -244,11 +244,6 @@ spec:
                     format: int64
                     minimum: 1
                     type: integer
-                  validUntil:
-                    description: ValidUntil is the earliest DNS or network authorization
-                      deadline.
-                    format: date-time
-                    type: string
                   writerEpoch:
                     description: WriterEpoch fences a previous access writer after
                       ownership changes.
@@ -260,7 +255,6 @@ spec:
                 - contextRef
                 - nameservers
                 - sequence
-                - validUntil
                 - writerEpoch
                 type: object
               externalAddresses:

@@ -10,7 +10,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
@@ -361,14 +360,12 @@ func TestInterfaceReachesTheProjectControlPlane(t *testing.T) {
 }
 
 func TestProjectedInterfaceCarriesDNSFence(t *testing.T) {
-	validUntil := metav1.NewTime(time.Date(2026, time.October, 9, 12, 1, 0, 0, time.UTC))
 	source := &networkingv1alpha.NetworkInterface{Spec: networkingv1alpha.NetworkInterfaceSpec{
 		DNS: &networkingv1alpha.NetworkDNSSettings{
 			ContextRef:       networkingv1alpha.NetworkDNSObjectReference{Name: "resolver", UID: "resolver-uid"},
 			AccessBindingRef: networkingv1alpha.NetworkDNSObjectReference{Name: "access", UID: "access-uid"},
 			WriterEpoch:      4,
 			Sequence:         9,
-			ValidUntil:       validUntil,
 			Nameservers:      []string{"fd53::53"},
 			Searches:         []string{"blue.internal"},
 		},

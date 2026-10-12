@@ -26,7 +26,7 @@ require (
 	github.com/stretchr/testify v1.11.1
 	go.datum.net/cloud v0.1.1-0.20260918213150-260f797bbc5c
 	go.datum.net/datumctl v0.18.1
-	go.datum.net/network v0.3.1-0.20261009013235-5e00bde12789
+	go.datum.net/network v0.4.1-0.20261012232803-f3b1d90d0806
 	go.miloapis.com/activity v0.7.1
 	go.miloapis.com/dns-operator v0.5.1
 	go.miloapis.com/locations v0.0.1

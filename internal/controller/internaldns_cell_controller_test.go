@@ -46,7 +46,7 @@ func TestPolicyProgrammedRequiresExactCurrentNodeReports(t *testing.T) {
 			ServiceRef:     networkv1alpha1.ServiceEndpointReference{Name: endpoint.Name},
 			ConsumerVPCRef: &networkv1alpha1.ServiceRouteVPCReference{Name: "blue", UID: "vpc-uid"},
 			Frontend:       &networkv1alpha1.ServiceRouteFrontend{Address: "fd53::53"},
-			Authorization:  &networkv1alpha1.ServiceRouteAuthorization{ValidUntil: deadline},
+			Authorization:  &networkv1alpha1.ServiceRouteAuthorization{Persistent: true},
 			AttachmentSelector: metav1.LabelSelector{MatchLabels: map[string]string{
 				internalDNSConsumerVPCLabel: "vpc-uid",
 			}},
@@ -85,20 +85,6 @@ func TestPolicyProgrammedRequiresExactCurrentNodeReports(t *testing.T) {
 	policy.Status.Nodes[0].ValidUntil = metav1.NewTime(now.Add(-time.Second))
 	if _, ready := policyProgrammed(policy, endpoint, attachments, "vpc-fabric-id", now); ready {
 		t.Fatal("expired node report was accepted")
-	}
-}
-
-func TestNetworkAuthorizationDeadlineNeverOutlivesDNS(t *testing.T) {
-	t.Parallel()
-	now := time.Date(2026, time.October, 9, 12, 0, 0, 0, time.UTC)
-	dnsDeadline := now.Add(time.Minute)
-	policy := &networkv1alpha1.ServiceRoutePolicy{Spec: networkv1alpha1.ServiceRoutePolicySpec{
-		Authorization: &networkv1alpha1.ServiceRouteAuthorization{
-			ValidUntil: metav1.NewTime(now.Add(90 * time.Second)),
-		},
-	}}
-	if got := networkAuthorizationDeadline(policy, now, dnsDeadline); !got.Equal(dnsDeadline) {
-		t.Fatalf("authorization deadline = %v, want DNS deadline %v", got, dnsDeadline)
 	}
 }
 

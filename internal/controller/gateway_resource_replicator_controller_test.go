@@ -1114,7 +1114,6 @@ func TestNetworkContextReplicationProducesUsableDNSIntent(t *testing.T) {
 		InternalDNSAccessUIDAnnotation:          "access-uid",
 		InternalDNSWriterEpochAnnotation:        "3",
 		InternalDNSSequenceAnnotation:           "7",
-		InternalDNSValidUntilAnnotation:         "2026-10-09T18:00:00Z",
 		InternalDNSServiceDestinationAnnotation: "fd70:100::1",
 		InternalDNSSuffixAnnotation:             "tenant.managed.internal",
 	})
@@ -1135,7 +1134,6 @@ func TestNetworkContextReplicationProducesUsableDNSIntent(t *testing.T) {
 	assert.Equal(t, types.UID("access-uid"), settings.AccessBindingRef.UID)
 	assert.Equal(t, int64(3), settings.WriterEpoch)
 	assert.Equal(t, int64(7), settings.Sequence)
-	assert.True(t, settings.ValidUntil.Time.Equal(time.Date(2026, 10, 9, 18, 0, 0, 0, time.UTC)))
 	assert.Equal(t, []string{"fd53::53"}, settings.Nameservers)
 	assert.Equal(t, []string{"tenant.managed.internal"}, settings.Searches)
 }

@@ -43,7 +43,6 @@ const (
 	InternalDNSAccessUIDAnnotation          = "networking.datumapis.com/internal-dns-access-uid"
 	InternalDNSWriterEpochAnnotation        = "networking.datumapis.com/internal-dns-writer-epoch"
 	InternalDNSSequenceAnnotation           = "networking.datumapis.com/internal-dns-sequence"
-	InternalDNSValidUntilAnnotation         = "networking.datumapis.com/internal-dns-valid-until"
 	InternalDNSServiceDestinationAnnotation = "networking.datumapis.com/internal-dns-service-destination"
 	InternalDNSSuffixAnnotation             = "networking.datumapis.com/internal-dns-suffix"
 	InternalDNSRegionAnnotation             = "networking.datumapis.com/internal-dns-region"
@@ -52,7 +51,6 @@ const (
 	internalDNSOwnerProjectUIDAnnotation = "networking.datumapis.com/internal-dns-project-uid"
 
 	internalDNSRegionTopologyKey = "topology.datum.net/region"
-	internalDNSRenewBefore       = 45 * time.Second
 	internalDNSRetryInterval     = 10 * time.Second
 	internalDNSDefaultDomain     = "datum.internal"
 )
@@ -168,7 +166,7 @@ func (r *InternalDNSProjectReconciler) reconcile(
 		return ctrl.Result{}, r.disable(ctx, cl, networkContext, network)
 	}
 	if region == "" {
-		return ctrl.Result{RequeueAfter: internalDNSRetryInterval}, r.clearIntent(ctx, cl, networkContext)
+		return ctrl.Result{RequeueAfter: internalDNSRetryInterval}, nil
 	}
 
 	if controllerutil.AddFinalizer(networkContext, internalDNSFinalizer) {
@@ -191,7 +189,7 @@ func (r *InternalDNSProjectReconciler) reconcile(
 	zoneName, _, _ := unstructured.NestedString(dnsContext.Object, "status", "managedNamespace", "dnsZoneRef", "name")
 	zoneUID, _, _ := unstructured.NestedString(dnsContext.Object, "status", "managedNamespace", "dnsZoneRef", "uid")
 	if dnsContext.GetUID() == "" || epoch < 1 || suffix != internalDNSDefaultDomain || zoneName == "" || zoneUID == "" || !resolverContextReady(dnsContext) {
-		return ctrl.Result{RequeueAfter: internalDNSRetryInterval}, r.clearIntent(ctx, cl, networkContext)
+		return ctrl.Result{RequeueAfter: internalDNSRetryInterval}, nil
 	}
 
 	destination, err := internalDNSDestination(r.Config.ServicePrefix, dnsContext.GetUID())
@@ -203,14 +201,10 @@ func (r *InternalDNSProjectReconciler) reconcile(
 		return ctrl.Result{}, err
 	}
 	if !ready {
-		return ctrl.Result{RequeueAfter: internalDNSRetryInterval}, r.clearIntent(ctx, cl, networkContext)
+		return ctrl.Result{RequeueAfter: internalDNSRetryInterval}, nil
 	}
 
 	sequence, _, _ := unstructured.NestedInt64(binding.Object, "spec", "authorization", "sequence")
-	validUntil, err := objectTime(binding, "spec", "authorization", "validUntil")
-	if err != nil {
-		return ctrl.Result{}, err
-	}
 	if err := r.publishIntent(ctx, cl, networkContext, map[string]string{
 		InternalDNSContextNameAnnotation:        dnsContext.GetName(),
 		InternalDNSContextUIDAnnotation:         string(dnsContext.GetUID()),
@@ -218,7 +212,6 @@ func (r *InternalDNSProjectReconciler) reconcile(
 		InternalDNSAccessUIDAnnotation:          string(binding.GetUID()),
 		InternalDNSWriterEpochAnnotation:        strconv.FormatInt(epoch, 10),
 		InternalDNSSequenceAnnotation:           strconv.FormatInt(sequence, 10),
-		InternalDNSValidUntilAnnotation:         validUntil.UTC().Format(time.RFC3339Nano),
 		InternalDNSServiceDestinationAnnotation: destination,
 		InternalDNSSuffixAnnotation:             suffix,
 		InternalDNSRegionAnnotation:             region,
@@ -226,7 +219,7 @@ func (r *InternalDNSProjectReconciler) reconcile(
 		return ctrl.Result{}, err
 	}
 
-	return ctrl.Result{RequeueAfter: renewalDelay(r.now(), validUntil)}, nil
+	return ctrl.Result{RequeueAfter: internalDNSRetryInterval}, nil
 }
 
 func (r *InternalDNSProjectReconciler) now() time.Time {
@@ -324,7 +317,6 @@ func (r *InternalDNSProjectReconciler) ensureAccess(
 	if err != nil && !apierrors.IsNotFound(err) {
 		return nil, false, err
 	}
-	now := r.now()
 	sequence := int64(1)
 	if err == nil {
 		if current.GetAnnotations()[internalDNSOwnerNetworkUIDAnnotation] != string(network.UID) {
@@ -332,14 +324,7 @@ func (r *InternalDNSProjectReconciler) ensureAccess(
 		}
 		if accessBindingMatches(current, dnsContext, region, destination, epoch) {
 			sequence, _, _ = unstructured.NestedInt64(current.Object, "spec", "authorization", "sequence")
-			validUntil, _ := objectTime(current, "spec", "authorization", "validUntil")
-			if bindingReady(current, sequence) && validUntil.After(now.Add(internalDNSRenewBefore)) {
-				return current, true, nil
-			}
-			if validUntil.After(now) && !bindingReady(current, sequence) {
-				return current, false, nil
-			}
-			sequence++
+			return current, bindingReady(current, sequence), nil
 		} else {
 			currentEpoch, _, _ := unstructured.NestedInt64(current.Object, "spec", "authorization", "writerEpoch")
 			currentContextUID, _, _ := unstructured.NestedString(current.Object, "spec", "contextRef", "uid")
@@ -350,7 +335,6 @@ func (r *InternalDNSProjectReconciler) ensureAccess(
 		}
 	}
 
-	validUntil := metav1.NewTime(now.Add(r.Config.AccessLeaseDuration.Duration).UTC())
 	desiredSpec := map[string]any{
 		"contextRef":    map[string]any{"name": dnsContext.GetName(), "uid": string(dnsContext.GetUID())},
 		"region":        region,
@@ -360,7 +344,6 @@ func (r *InternalDNSProjectReconciler) ensureAccess(
 		"authorization": map[string]any{
 			"writerEpoch": epoch,
 			"sequence":    sequence,
-			"validUntil":  validUntil.Format(time.RFC3339Nano),
 		},
 	}
 	annotations := current.GetAnnotations()
@@ -578,27 +561,26 @@ func (r *InternalDNSReadinessReconciler) publish(
 		})
 	}
 
-	now := time.Now()
-	if r.Now != nil {
-		now = r.Now()
-	}
 	access := hubContext.Status.DNSAccess
 	ready := apimeta.IsStatusConditionTrue(hubContext.Status.Conditions, networkingv1alpha.NetworkContextDNSReady)
-	if !ready || !dnsAccessMatches(intent, access) || access == nil || !access.ValidUntil.After(now) {
-		err := r.updateProject(ctx, cl, projectContext, nil, metav1.Condition{
-			Type: networkingv1alpha.NetworkContextDNSReady, Status: metav1.ConditionFalse,
+	if !ready || !dnsAccessMatches(intent, access) || access == nil {
+		settings := projectContext.Spec.DNS
+		if !equalDNSSettings(settings, intent) {
+			settings = nil
+		}
+		err := r.updateProject(ctx, cl, projectContext, settings, metav1.Condition{
+			Type: networkingv1alpha.NetworkContextDNSReady, Status: metav1.ConditionUnknown,
 			Reason:  networkingv1alpha.NetworkContextDNSReadyReasonNetworkPathNotReady,
-			Message: "The current DNS authorization has no complete, unexpired network programming proof",
+			Message: "Current network programming health is unavailable",
 		})
 		return ctrl.Result{RequeueAfter: internalDNSRetryInterval}, err
 	}
-	intent.ValidUntil = access.ValidUntil
 	err = r.updateProject(ctx, cl, projectContext, intent, metav1.Condition{
 		Type: networkingv1alpha.NetworkContextDNSReady, Status: metav1.ConditionTrue,
 		Reason:  networkingv1alpha.NetworkContextDNSReadyReasonReady,
 		Message: "DNS authorization and private network programming are current",
 	})
-	return ctrl.Result{RequeueAfter: renewalDelay(now, access.ValidUntil.Time)}, err
+	return ctrl.Result{RequeueAfter: internalDNSRetryInterval}, err
 }
 
 func (r *InternalDNSReadinessReconciler) updateProject(
@@ -646,9 +628,8 @@ func internalDNSSettingsFromAnnotations(
 	accessUID := annotations[InternalDNSAccessUIDAnnotation]
 	epoch, epochErr := strconv.ParseInt(annotations[InternalDNSWriterEpochAnnotation], 10, 64)
 	sequence, sequenceErr := strconv.ParseInt(annotations[InternalDNSSequenceAnnotation], 10, 64)
-	validUntil, timeErr := time.Parse(time.RFC3339Nano, annotations[InternalDNSValidUntilAnnotation])
 	if contextName == "" || contextUID == "" || accessName == "" || accessUID == "" ||
-		epochErr != nil || sequenceErr != nil || timeErr != nil {
+		epochErr != nil || sequenceErr != nil {
 		return nil, errors.New("DNS access intent is incomplete")
 	}
 	settings := &networkingv1alpha.NetworkDNSSettings{
@@ -656,7 +637,6 @@ func internalDNSSettingsFromAnnotations(
 		AccessBindingRef: networkingv1alpha.NetworkDNSObjectReference{Name: accessName, UID: types.UID(accessUID)},
 		WriterEpoch:      epoch,
 		Sequence:         sequence,
-		ValidUntil:       metav1.NewTime(validUntil),
 		Nameservers:      []string{frontend},
 	}
 	if suffix := annotations[InternalDNSSuffixAnnotation]; suffix != "" {
@@ -678,7 +658,7 @@ func equalDNSSettings(a, b *networkingv1alpha.NetworkDNSSettings) bool {
 		return a == nil && b == nil
 	}
 	return a.ContextRef == b.ContextRef && a.AccessBindingRef == b.AccessBindingRef &&
-		a.WriterEpoch == b.WriterEpoch && a.Sequence == b.Sequence && a.ValidUntil.Equal(&b.ValidUntil) &&
+		a.WriterEpoch == b.WriterEpoch && a.Sequence == b.Sequence &&
 		strings.Join(a.Nameservers, "\x00") == strings.Join(b.Nameservers, "\x00") &&
 		strings.Join(a.Searches, "\x00") == strings.Join(b.Searches, "\x00")
 }
@@ -734,32 +714,12 @@ func unstructuredConditionTrue(obj *unstructured.Unstructured, conditionType str
 	return false
 }
 
-func objectTime(obj *unstructured.Unstructured, fields ...string) (time.Time, error) {
-	text, found, err := unstructured.NestedString(obj.Object, fields...)
-	if err != nil || !found {
-		return time.Time{}, fmt.Errorf("%s has no %s", obj.GetName(), strings.Join(fields, "."))
-	}
-	value, err := time.Parse(time.RFC3339Nano, text)
-	if err != nil {
-		return time.Time{}, fmt.Errorf("%s has invalid %s: %w", obj.GetName(), strings.Join(fields, "."), err)
-	}
-	return value, nil
-}
-
 func newInternalDNSObject(gvk schema.GroupVersionKind, namespace, name string) *unstructured.Unstructured {
 	obj := &unstructured.Unstructured{}
 	obj.SetGroupVersionKind(gvk)
 	obj.SetNamespace(namespace)
 	obj.SetName(name)
 	return obj
-}
-
-func renewalDelay(now time.Time, validUntil time.Time) time.Duration {
-	delay := validUntil.Sub(now) - internalDNSRenewBefore
-	if delay < time.Second {
-		return time.Second
-	}
-	return delay
 }
 
 func internalDNSIntentAnnotations() []string {
@@ -771,7 +731,6 @@ func internalDNSIntentAnnotations() []string {
 		InternalDNSAccessUIDAnnotation,
 		InternalDNSWriterEpochAnnotation,
 		InternalDNSSequenceAnnotation,
-		InternalDNSValidUntilAnnotation,
 		InternalDNSServiceDestinationAnnotation,
 		InternalDNSSuffixAnnotation,
 	}

@@ -28,9 +28,7 @@ import (
 )
 
 const (
-	internalDNSConsumerVPCLabel   = "networking.datumapis.com/internal-dns-vpc-uid"
-	internalDNSNetworkLease       = 90 * time.Second
-	internalDNSNetworkRenewBefore = 45 * time.Second
+	internalDNSConsumerVPCLabel = "networking.datumapis.com/internal-dns-vpc-uid"
 )
 
 type InternalDNSCellReconciler struct {
@@ -68,32 +66,25 @@ func (r *InternalDNSCellReconciler) reconcile(
 	settings, err := internalDNSSettingsFromAnnotations(networkContext.Annotations, r.Config.Frontend)
 	serviceDestination := networkContext.Annotations[InternalDNSServiceDestinationAnnotation]
 	region := networkContext.Annotations[InternalDNSRegionAnnotation]
-	if err != nil || serviceDestination == "" || region == "" || !settings.ValidUntil.After(r.now()) ||
+	if err != nil || serviceDestination == "" || region == "" ||
 		!networkContext.DeletionTimestamp.IsZero() {
 		if cleanupErr := r.cleanup(ctx, cl, networkContext); cleanupErr != nil {
 			return ctrl.Result{}, cleanupErr
 		}
 		return ctrl.Result{RequeueAfter: internalDNSRetryInterval}, r.report(ctx, networkContext, nil, metav1.Condition{
 			Type: networkingv1alpha.NetworkContextDNSReady, Status: metav1.ConditionFalse,
-			Reason:  networkingv1alpha.NetworkContextDNSReadyReasonAuthorizationExpired,
-			Message: "No current DNS access authorization is available",
+			Reason:  networkingv1alpha.NetworkContextDNSReadyReasonAccessAbsent,
+			Message: "No DNS access configuration is available",
 		})
 	}
 
 	vpc, consumerAttachments, err := r.consumerVPC(ctx, cl, networkContext)
 	if err != nil {
-		cleanupErr := r.cleanup(ctx, cl, networkContext)
-		if reportErr := r.report(ctx, networkContext, nil, metav1.Condition{
-			Type: networkingv1alpha.NetworkContextDNSReady, Status: metav1.ConditionFalse,
+		return ctrl.Result{RequeueAfter: internalDNSRetryInterval}, r.report(ctx, networkContext, nil, metav1.Condition{
+			Type: networkingv1alpha.NetworkContextDNSReady, Status: metav1.ConditionUnknown,
 			Reason:  networkingv1alpha.NetworkContextDNSReadyReasonNetworkIdentityAbsent,
 			Message: err.Error(),
-		}); reportErr != nil {
-			return ctrl.Result{}, errors.Join(cleanupErr, reportErr)
-		}
-		if cleanupErr != nil {
-			return ctrl.Result{}, cleanupErr
-		}
-		return ctrl.Result{RequeueAfter: internalDNSRetryInterval}, nil
+		})
 	}
 	for _, attachment := range consumerAttachments {
 		if attachment.Labels[internalDNSConsumerVPCLabel] == string(vpc.UID) {
@@ -109,7 +100,6 @@ func (r *InternalDNSCellReconciler) reconcile(
 		}
 	}
 
-	deadline := minTime(settings.ValidUntil.Time, r.now().Add(internalDNSNetworkLease))
 	var attachments cloudv1alpha1.VPCAttachmentList
 	if err := cl.List(ctx, &attachments); err != nil {
 		return ctrl.Result{}, err
@@ -119,20 +109,19 @@ func (r *InternalDNSCellReconciler) reconcile(
 		attachmentPointers = append(attachmentPointers, &attachments.Items[i])
 	}
 
-	proofUntil := deadline
 	for _, protocol := range []networkv1alpha1.NetworkRuleProtocol{
 		networkv1alpha1.NetworkRuleProtocolUDP, networkv1alpha1.NetworkRuleProtocolTCP,
 	} {
 		endpoint, policy, err := r.ensureServicePath(
-			ctx, cl, networkContext, vpc, protocol, serviceDestination, region, deadline,
+			ctx, cl, networkContext, vpc, protocol, serviceDestination, region,
 		)
 		if err != nil {
 			return ctrl.Result{}, err
 		}
-		until, ready := policyProgrammed(policy, endpoint, attachmentPointers, vpc.Status.VPC, r.now())
+		_, ready := policyProgrammed(policy, endpoint, attachmentPointers, vpc.Status.VPC, r.now())
 		if !ready {
 			if err := r.report(ctx, networkContext, nil, metav1.Condition{
-				Type: networkingv1alpha.NetworkContextDNSReady, Status: metav1.ConditionFalse,
+				Type: networkingv1alpha.NetworkContextDNSReady, Status: metav1.ConditionUnknown,
 				Reason:  networkingv1alpha.NetworkContextDNSReadyReasonNetworkPathNotReady,
 				Message: "Galactic has not acknowledged the current DNS service path on every required node",
 			}); err != nil {
@@ -140,7 +129,6 @@ func (r *InternalDNSCellReconciler) reconcile(
 			}
 			return ctrl.Result{RequeueAfter: internalDNSRetryInterval}, nil
 		}
-		proofUntil = minTime(proofUntil, until)
 	}
 
 	access := &networkingv1alpha.NetworkDNSAccessStatus{
@@ -148,7 +136,6 @@ func (r *InternalDNSCellReconciler) reconcile(
 		AccessBindingRef:   settings.AccessBindingRef,
 		WriterEpoch:        settings.WriterEpoch,
 		Sequence:           settings.Sequence,
-		ValidUntil:         metav1.NewTime(proofUntil.UTC()),
 		ServiceDestination: serviceDestination,
 	}
 	if err := r.report(ctx, networkContext, access, metav1.Condition{
@@ -158,7 +145,7 @@ func (r *InternalDNSCellReconciler) reconcile(
 	}); err != nil {
 		return ctrl.Result{}, err
 	}
-	return ctrl.Result{RequeueAfter: renewalDelay(r.now(), proofUntil)}, nil
+	return ctrl.Result{RequeueAfter: internalDNSRetryInterval}, nil
 }
 
 func (r *InternalDNSCellReconciler) now() time.Time {
@@ -219,7 +206,6 @@ func (r *InternalDNSCellReconciler) ensureServicePath(
 	protocol networkv1alpha1.NetworkRuleProtocol,
 	destination string,
 	region string,
-	deadline time.Time,
 ) (*networkv1alpha1.ServiceEndpoint, *networkv1alpha1.ServiceRoutePolicy, error) {
 	name := boundedDNSName(networkContext.Name+"-dns-"+string(protocol), string(networkContext.UID)+"/"+string(protocol))
 	endpoint := &networkv1alpha1.ServiceEndpoint{ObjectMeta: metav1.ObjectMeta{
@@ -241,12 +227,11 @@ func (r *InternalDNSCellReconciler) ensureServicePath(
 		Namespace: networkContext.Namespace, Name: name,
 	}}
 	_, err = controllerutil.CreateOrUpdate(ctx, cl, policy, func() error {
-		activeDeadline := networkAuthorizationDeadline(policy, r.now(), deadline)
 		policy.Spec = networkv1alpha1.ServiceRoutePolicySpec{
 			ServiceRef:     networkv1alpha1.ServiceEndpointReference{Name: endpoint.Name},
 			ConsumerVPCRef: &networkv1alpha1.ServiceRouteVPCReference{Name: vpc.Name, UID: string(vpc.UID)},
 			Frontend:       &networkv1alpha1.ServiceRouteFrontend{Address: r.Config.Frontend},
-			Authorization:  &networkv1alpha1.ServiceRouteAuthorization{ValidUntil: metav1.NewTime(activeDeadline.UTC())},
+			Authorization:  &networkv1alpha1.ServiceRouteAuthorization{Persistent: true},
 			AttachmentSelector: metav1.LabelSelector{MatchLabels: map[string]string{
 				internalDNSConsumerVPCLabel: string(vpc.UID),
 			}},
@@ -261,21 +246,6 @@ func (r *InternalDNSCellReconciler) ensureServicePath(
 	return endpoint, policy, nil
 }
 
-func networkAuthorizationDeadline(
-	policy *networkv1alpha1.ServiceRoutePolicy,
-	now time.Time,
-	dnsValidUntil time.Time,
-) time.Time {
-	if policy.Spec.Authorization != nil {
-		validUntil := policy.Spec.Authorization.ValidUntil.Time
-		if validUntil.After(now.Add(internalDNSNetworkRenewBefore)) &&
-			!validUntil.After(dnsValidUntil) && !validUntil.After(now.Add(internalDNSNetworkLease)) {
-			return validUntil
-		}
-	}
-	return minTime(now.Add(internalDNSNetworkLease), dnsValidUntil)
-}
-
 func policyProgrammed(
 	policy *networkv1alpha1.ServiceRoutePolicy,
 	endpoint *networkv1alpha1.ServiceEndpoint,
@@ -285,14 +255,14 @@ func policyProgrammed(
 ) (time.Time, bool) {
 	if policy.UID == "" || endpoint.UID == "" || policy.Status.ObservedGeneration != policy.Generation ||
 		!apimeta.IsStatusConditionTrue(policy.Status.Conditions, networkv1alpha1.ConditionTypeServiceRouteAccepted) ||
-		policy.Spec.Authorization == nil || !policy.Spec.Authorization.ValidUntil.After(now) {
+		policy.Spec.Authorization == nil || !policy.Spec.Authorization.Persistent {
 		return time.Time{}, false
 	}
 	plan, err := dnsaccess.ProgrammingPlan(policy, endpoint, attachments, consumerVPCIdentity)
 	if err != nil {
 		return time.Time{}, false
 	}
-	validUntil := policy.Spec.Authorization.ValidUntil.Time
+	validUntil := now.Add(time.Minute)
 	for _, node := range plan.Nodes {
 		matched := 0
 		for _, report := range policy.Status.Nodes {
@@ -327,7 +297,9 @@ func (r *InternalDNSCellReconciler) report(
 		return client.IgnoreNotFound(err)
 	}
 	patch := client.MergeFrom(current.DeepCopy())
-	current.Status.DNSAccess = access
+	if access != nil || condition.Status != metav1.ConditionUnknown {
+		current.Status.DNSAccess = access
+	}
 	condition.ObservedGeneration = current.Generation
 	apimeta.SetStatusCondition(&current.Status.Conditions, condition)
 	return hub.Status().Patch(ctx, current, patch)

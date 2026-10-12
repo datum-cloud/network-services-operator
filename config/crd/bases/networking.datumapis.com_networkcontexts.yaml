@@ -121,11 +121,6 @@ spec:
                     format: int64
                     minimum: 1
                     type: integer
-                  validUntil:
-                    description: ValidUntil is the earliest DNS or network authorization
-                      deadline.
-                    format: date-time
-                    type: string
                   writerEpoch:
                     description: WriterEpoch fences a previous access writer after
                       ownership changes.
@@ -137,7 +132,6 @@ spec:
                 - contextRef
                 - nameservers
                 - sequence
-                - validUntil
                 - writerEpoch
                 type: object
               ipFamilies:
@@ -314,11 +308,6 @@ spec:
                     x-kubernetes-validations:
                     - message: serviceDestination must be an IP address
                       rule: isIP(self)
-                  validUntil:
-                    description: ValidUntil is the earliest verified network-programming
-                      deadline.
-                    format: date-time
-                    type: string
                   writerEpoch:
                     description: WriterEpoch is the DNS authorization writer fenced
                       by the proof.
@@ -329,7 +318,6 @@ spec:
                 - contextRef
                 - sequence
                 - serviceDestination
-                - validUntil
                 - writerEpoch
                 type: object
               ipam:

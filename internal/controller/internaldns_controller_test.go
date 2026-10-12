@@ -8,6 +8,7 @@ import (
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -56,7 +57,6 @@ func TestInternalDNSProjectLifecycleFencesAccess(t *testing.T) {
 	r := &InternalDNSProjectReconciler{
 		Config: config.InternalDNSConfig{
 			Frontend: "fd53::53", ServicePrefix: "fd70:100::/64",
-			AccessLeaseDuration: metav1.Duration{Duration: 2 * time.Minute},
 		},
 		Projects: fixedProjectIdentity("project-uid"),
 		Now:      func() time.Time { return now },
@@ -142,8 +142,8 @@ func TestInternalDNSProjectLifecycleFencesAccess(t *testing.T) {
 		if err := cl.Get(ctx, client.ObjectKeyFromObject(first), current); err != nil {
 			t.Fatal(err)
 		}
-		if current.Annotations[InternalDNSSuffixAnnotation] != "" {
-			t.Fatalf("invalid DNS allocation remained published: %#v", current.Annotations)
+		if current.Annotations[InternalDNSSuffixAnnotation] != "datum.internal" {
+			t.Fatalf("unavailable allocation observation withdrew DNS intent: %#v", current.Annotations)
 		}
 		if err := unstructured.SetNestedMap(dnsContext.Object, originalStatus, "status"); err != nil {
 			t.Fatal(err)
@@ -186,15 +186,15 @@ func TestInternalDNSProjectLifecycleFencesAccess(t *testing.T) {
 	if err := cl.Get(ctx, client.ObjectKey{Namespace: "tenant", Name: "first"}, current); err != nil {
 		t.Fatal(err)
 	}
-	if current.Annotations[InternalDNSAccessUIDAnnotation] != "" {
-		t.Fatalf("expired access remained published: %#v", current.Annotations)
+	if current.Annotations[InternalDNSAccessUIDAnnotation] != "access-uid" {
+		t.Fatalf("persistent access was withdrawn: %#v", current.Annotations)
 	}
 	if err := cl.Get(ctx, client.ObjectKey{Namespace: "tenant", Name: bindingName}, binding); err != nil {
 		t.Fatal(err)
 	}
 	sequence, _, _ := unstructured.NestedInt64(binding.Object, "spec", "authorization", "sequence")
-	if sequence != 2 {
-		t.Fatalf("renewed sequence = %d, want 2", sequence)
+	if sequence != 1 {
+		t.Fatalf("unchanged access sequence = %d, want 1", sequence)
 	}
 	secondCurrent := &networkingv1alpha.NetworkContext{}
 	if err := cl.Get(ctx, client.ObjectKey{Namespace: "tenant", Name: "second"}, secondCurrent); err != nil {
@@ -211,7 +211,7 @@ func TestInternalDNSProjectLifecycleFencesAccess(t *testing.T) {
 	}
 }
 
-func TestInternalDNSReadinessRequiresExactUnexpiredProof(t *testing.T) {
+func TestInternalDNSReadinessPreservesAppliedSettings(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	now := time.Date(2026, time.October, 9, 12, 0, 0, 0, time.UTC)
@@ -230,7 +230,6 @@ func TestInternalDNSReadinessRequiresExactUnexpiredProof(t *testing.T) {
 		AccessBindingRef: networkingv1alpha.NetworkDNSObjectReference{Name: "access", UID: "access-uid"},
 		WriterEpoch:      4,
 		Sequence:         9,
-		ValidUntil:       metav1.NewTime(now.Add(time.Minute)),
 	}
 	hubContext.Status.Conditions = []metav1.Condition{{
 		Type: networkingv1alpha.NetworkContextDNSReady, Status: metav1.ConditionTrue,
@@ -259,11 +258,12 @@ func TestInternalDNSReadinessRequiresExactUnexpiredProof(t *testing.T) {
 	if err := cl.Get(ctx, client.ObjectKeyFromObject(projectContext), current); err != nil {
 		t.Fatal(err)
 	}
-	if current.Spec.DNS != nil {
-		t.Fatalf("settings survived mismatched proof: %#v", current.Spec.DNS)
+	if current.Spec.DNS == nil {
+		t.Fatal("observation mismatch withdrew applied resolver settings")
 	}
 
 	hubContext.Status.DNSAccess.Sequence = 9
+	hubContext.Status.Conditions[0].Status = metav1.ConditionUnknown
 	r.Now = func() time.Time { return now.Add(2 * time.Minute) }
 	if _, err := r.publish(ctx, cl, current, hubContext); err != nil {
 		t.Fatal(err)
@@ -271,8 +271,11 @@ func TestInternalDNSReadinessRequiresExactUnexpiredProof(t *testing.T) {
 	if err := cl.Get(ctx, client.ObjectKeyFromObject(projectContext), current); err != nil {
 		t.Fatal(err)
 	}
-	if current.Spec.DNS != nil {
-		t.Fatalf("settings survived proof expiry: %#v", current.Spec.DNS)
+	if current.Spec.DNS == nil {
+		t.Fatal("resolver settings expired")
+	}
+	if condition := apimeta.FindStatusCondition(current.Status.Conditions, networkingv1alpha.NetworkContextDNSReady); condition == nil || condition.Status != metav1.ConditionUnknown {
+		t.Fatalf("unavailable observation was not reported: %#v", current.Status.Conditions)
 	}
 }
 
@@ -295,13 +298,11 @@ func TestAccessBindingWriterEpochChangeStartsNewFence(t *testing.T) {
 		"queryIdentity": map[string]any{"type": "DestinationAddress", "value": "fd70:100::10"},
 		"authorization": map[string]any{
 			"writerEpoch": int64(7), "sequence": int64(12),
-			"validUntil": now.Add(time.Minute).Format(time.RFC3339Nano),
 		},
 	}
 	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(binding).Build()
 	r := &InternalDNSProjectReconciler{
-		Config: config.InternalDNSConfig{AccessLeaseDuration: metav1.Duration{Duration: 2 * time.Minute}},
-		Now:    func() time.Time { return now },
+		Now: func() time.Time { return now },
 	}
 
 	_, ready, err := r.ensureAccess(ctx, cl, network, "project-uid", dnsContext, "us-central", "fd70:100::10", 8)
@@ -334,7 +335,7 @@ func testNetworkContext(name string, uid types.UID) *networkingv1alpha.NetworkCo
 	}
 }
 
-func testDNSIntent(validUntil time.Time) map[string]string {
+func testDNSIntent(_ time.Time) map[string]string {
 	return map[string]string{
 		InternalDNSContextNameAnnotation:        "resolver",
 		InternalDNSContextUIDAnnotation:         "resolver-uid",
@@ -342,7 +343,6 @@ func testDNSIntent(validUntil time.Time) map[string]string {
 		InternalDNSAccessUIDAnnotation:          "access-uid",
 		InternalDNSWriterEpochAnnotation:        "4",
 		InternalDNSSequenceAnnotation:           "9",
-		InternalDNSValidUntilAnnotation:         validUntil.Format(time.RFC3339Nano),
 		InternalDNSSuffixAnnotation:             "blue.internal",
 		InternalDNSRegionAnnotation:             "us-central",
 		InternalDNSServiceDestinationAnnotation: "fd70:100::10",

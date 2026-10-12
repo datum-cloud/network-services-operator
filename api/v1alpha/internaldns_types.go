@@ -3,7 +3,6 @@
 package v1alpha
 
 import (
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 )
 
@@ -62,9 +61,6 @@ type NetworkDNSSettings struct {
 	// +kubebuilder:validation:Minimum=1
 	Sequence int64 `json:"sequence"`
 
-	// ValidUntil is the earliest DNS or network authorization deadline.
-	ValidUntil metav1.Time `json:"validUntil"`
-
 	// Nameservers are resolver addresses reachable from this network.
 	//
 	// +kubebuilder:validation:MinItems=1
@@ -92,9 +88,6 @@ type NetworkDNSAccessStatus struct {
 	// Sequence is the exact ready DNS authorization revision.
 	Sequence int64 `json:"sequence"`
 
-	// ValidUntil is the earliest verified network-programming deadline.
-	ValidUntil metav1.Time `json:"validUntil"`
-
 	// ServiceDestination identifies this DNS context inside the shared service.
 	//
 	// +kubebuilder:validation:XValidation:rule="isIP(self)",message="serviceDestination must be an IP address"
@@ -107,11 +100,10 @@ const (
 	NetworkContextDNSReadyReasonReady                 = "Ready"
 	NetworkContextDNSReadyReasonDisabled              = "Disabled"
 	NetworkContextDNSReadyReasonPending               = "Pending"
-	NetworkContextDNSReadyReasonAuthorizationExpired  = "AuthorizationExpired"
+	NetworkContextDNSReadyReasonAccessAbsent          = "AccessAbsent"
 	NetworkContextDNSReadyReasonNetworkPathNotReady   = "NetworkPathNotReady"
 	NetworkContextDNSReadyReasonNetworkIdentityAbsent = "NetworkIdentityAbsent"
 
 	NetworkInterfaceDNSConfiguredReasonApplied                     = "Applied"
-	NetworkInterfaceDNSConfiguredReasonExpired                     = "Expired"
 	NetworkInterfaceDNSConfiguredReasonUnsupportedMultipleContexts = "UnsupportedMultipleContexts"
 )

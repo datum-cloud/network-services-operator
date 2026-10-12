@@ -222,13 +222,6 @@ func (r *InternalDNSProjectReconciler) reconcile(
 	return ctrl.Result{RequeueAfter: internalDNSRetryInterval}, nil
 }
 
-func (r *InternalDNSProjectReconciler) now() time.Time {
-	if r.Now != nil {
-		return r.Now()
-	}
-	return time.Now()
-}
-
 func (r *InternalDNSProjectReconciler) region(
 	ctx context.Context,
 	cl client.Client,

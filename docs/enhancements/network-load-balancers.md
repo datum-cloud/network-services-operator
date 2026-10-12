@@ -14,6 +14,7 @@ latest-milestone: "v0.x"
   - [User Stories](#user-stories)
   - [Risks and Mitigations](#risks-and-mitigations)
 - [Design Details](#design-details)
+  - [IPv4 Ingress Data Plane](#ipv4-ingress-data-plane)
   - [Backend Health](#backend-health)
   - [TLS](#tls)
   - [Gateway API L4 Compatibility](#gateway-api-l4-compatibility)
@@ -223,11 +224,13 @@ status:
           status: "True"
 ```
 
-These IPs are illustrative. IPv6 is shown because Galactic's current public
-ingress packet path handles IPv6. IPv4 address requests need IPv4 ingress
-support before they can be served and must be rejected where unavailable. An
-allocation remains in status when a route or backend is unavailable; its
-announcement state changes instead. Load balancer conditions distinguish
+These IPs are illustrative. The first NLB release accepts IPv6 address
+requests because Galactic's current public ingress packet path handles IPv6.
+The cell intent carries the public VIP family and each backend address family
+separately. IPv4 requests remain rejected until the IPv4 ingress path and its
+capability checks are ready. An allocation remains in status when a route or
+backend is unavailable; its announcement state changes instead. Load balancer
+conditions distinguish
 allocation and programming. Route conditions report attachment, backend
 resolution, and programming. `Ready` means at least one
 selected location serves traffic; location status identifies any that do not.
@@ -243,6 +246,39 @@ selected location and shares that location's IP among its serving cells.
 For UDP, packets from the same client address and port select the same backend
 while the backend set is unchanged. A backend change may move that flow; the
 first release offers no UDP session or draining guarantee.
+
+### IPv4 Ingress Data Plane
+
+An IPv4 public VIP can front a service whose workload address is IPv6. The
+ingress family and backend family are separate properties of cell intent. The
+cell validates the VIP, every backend address, and their declared families
+before programming traffic. An unsupported family pair remains unprogrammed
+and unannounced, with a specific reason in status. IPv4 address requests stay
+disabled in the consumer API until serving cells advertise this capability.
+
+The IPv4 gateway path needs an IPv4 listener and flow table for TCP and UDP.
+Its flow identity includes the original destination VIP, protocol, port, and
+client tuple, so two VIPs that target the same backend cannot merge into one
+flow. For an IPv4 client and IPv6 backend, use a stateful L4 proxy: it accepts
+the IPv4 connection or UDP flow, opens an IPv6 backend flow, and sends replies
+through the same state. The current IPv6 DSR forwarding path cannot supply
+this cross-family return path. The proxy contract must specify what source
+address the backend sees; client address delivery, if offered, needs an
+explicit mechanism and cannot be assumed from DSR behavior.
+
+The IPv4 path must handle IPv4 and IPv6 checksums, MTU and fragmentation,
+ICMP errors, TCP resets and timeouts, and UDP flow expiry in both directions.
+IPv4 VIPs receive distinct per-location /32 announcements, gated by healthy
+backends and successful programming. Withdrawal completes before IPAM releases
+an address. A location reports IPv4 and IPv6 programming and announcement
+independently, so failure of one family does not hide the state of the other.
+
+Rollout requires a public IPv4 IPAM class, family-aware cell and Galactic
+programming, and a capability signal from every serving gateway in a location.
+CI must exercise IPv4 TCP and UDP ingress to IPv6 backends and replies, two
+VIPs targeting the same backend port, backend health changes, and announcement
+withdrawal. Only then should admission accept IPv4 and allow a listener to
+reference both IPv4 and IPv6 address requests.
 
 ### Backend Health
 
@@ -424,7 +460,9 @@ listener and backend port protocols to match; `HTTPProxy` must continue to
 reject UDP backends. Selected cells need a health probe runner, Galactic
 gateways, backend VIP bindings, and a way to report programming and
 announcement state.
-IPv4 VIPs additionally need Galactic IPv4 ingress support.
+IPv4 VIPs additionally need a public IPv4 pool, family-aware cell intent,
+Galactic IPv4 ingress and cross-family proxy support, and a serving capability
+gate before API admission is enabled.
 SNI routing and managed TLS need a proxy-capable edge path, hostname ownership
 verification, and certificate issuance and distribution.
 Gateway API parity also needs an attachment/grant model, Service backend

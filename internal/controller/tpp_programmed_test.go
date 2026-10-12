@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -358,4 +359,43 @@ func TestReconcileWithoutADownstreamCopyIsPending(t *testing.T) {
 	require.NotNil(t, programmed)
 	assert.Equal(t, metav1.ConditionFalse, programmed.Status)
 	assert.Equal(t, string(PolicyReasonProgrammedPending), programmed.Reason)
+}
+
+// TestProgrammedMatchesTheRefShapesTheHubWrites decodes each ancestorRef shape
+// found on production's hub on 2026-10-12, as the aggregation wrote it: a
+// Gateway, an HTTPRoute, and an HTTPRoute rule named by sectionName. Each must
+// match the ref the controller builds for its target.
+func TestProgrammedMatchesTheRefShapesTheHubWrites(t *testing.T) {
+	t.Parallel()
+
+	route := gatewayv1alpha2.LocalPolicyTargetReferenceWithSectionName{
+		LocalPolicyTargetReference: gatewayv1.LocalPolicyTargetReference{
+			Group: gatewayv1.GroupName, Kind: KindHTTPRoute, Name: "route",
+		},
+	}
+	tests := []struct {
+		name   string
+		ref    string
+		target gatewayv1alpha2.LocalPolicyTargetReferenceWithSectionName
+	}{
+		{"Gateway", `{"group":"gateway.networking.k8s.io","kind":"Gateway","name":"gw","namespace":"%s"}`, gatewayTarget("gw")},
+		{"HTTPRoute", `{"group":"gateway.networking.k8s.io","kind":"HTTPRoute","name":"route","namespace":"%s"}`, route},
+		{"HTTPRoute rule", `{"group":"gateway.networking.k8s.io","kind":"HTTPRoute","name":"route","namespace":"%s","sectionName":"other"}`,
+			sectionTarget(KindHTTPRoute, "route", "other")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			raw := fmt.Sprintf(`{"ancestorRef":`+tt.ref+`,"conditions":[{"lastTransitionTime":"2026-10-09T18:51:25Z",`+
+				`"message":"3/3 edges programmed generation 3","observedGeneration":3,"reason":"Programmed","status":"True",`+
+				`"type":"Programmed"}],"controllerName":"networking.datumapis.com/envoy-gateway-extension-server"}`, tppTestDownstreamNamespace)
+			var ancestor gatewayv1.PolicyAncestorStatus
+			require.NoError(t, json.Unmarshal([]byte(raw), &ancestor))
+
+			ref := getAncestorRefForTarget(tppTestDownstreamNamespace, tt.target)
+			status, reason, _ := programmedFromDownstream(downstreamTPP(3, "7", ancestor), ref, 7)
+			assert.Equal(t, metav1.ConditionTrue, status)
+			assert.Equal(t, PolicyReasonProgrammed, reason)
+		})
+	}
 }

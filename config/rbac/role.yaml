@@ -290,6 +290,7 @@ rules:
   - networkcontexts/finalizers
   - networkinterfaceclaims/finalizers
   - networkinterfaces/finalizers
+  - networkloadbalancerroutes/finalizers
   - networkpolicies/finalizers
   - networks/finalizers
   - subnetclaims/finalizers
@@ -323,10 +324,30 @@ rules:
   - networking.datumapis.com
   resources:
   - connectorclasses
-  - networkloadbalancerroutes
   - networkloadbalancers
   - networkservices
   verbs:
   - get
   - list
+  - watch
+- apiGroups:
+  - networking.datumapis.com
+  resources:
+  - networkloadbalancercellintents
+  verbs:
+  - create
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - networking.datumapis.com
+  resources:
+  - networkloadbalancerroutes
+  verbs:
+  - get
+  - list
+  - patch
+  - update
   - watch

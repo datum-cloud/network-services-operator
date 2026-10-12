@@ -56,8 +56,8 @@ spec:
                   addresses:
                     items:
                       description: |-
-                        NetworkLoadBalancerAddressRequest reserves public addresses independently of
-                        whether a route has healthy backends.
+                        NetworkLoadBalancerAddressRequest reserves one public address per selected
+                        location, independently of whether a route has healthy backends.
                       properties:
                         family:
                           allOf:
@@ -94,14 +94,6 @@ spec:
                           - message: names must be set only when from is Names
                             rule: 'self.from == ''Names'' ? has(self.names) && size(self.names)
                               > 0 : !has(self.names)'
-                        mode:
-                          description: |-
-                            NetworkLoadBalancerAddressMode determines whether selected locations receive
-                            separate IPs or announce one shared IP.
-                          enum:
-                          - Unicast
-                          - Anycast
-                          type: string
                         name:
                           maxLength: 63
                           minLength: 1
@@ -110,7 +102,6 @@ spec:
                       required:
                       - family
                       - locations
-                      - mode
                       - name
                       type: object
                     maxItems: 16
@@ -195,9 +186,8 @@ spec:
               addresses:
                 items:
                   description: |-
-                    NetworkLoadBalancerAddressStatus describes one allocation. Unicast entries
-                    have a location; anycast entries have an empty location and share one value
-                    across the locations below.
+                    NetworkLoadBalancerAddressStatus describes one allocation for one selected
+                    location. Its address is distinct from allocations in other locations.
                   properties:
                     claimRef:
                       description: NetworkLoadBalancerIPClaimRef identifies the claim
@@ -216,8 +206,9 @@ spec:
                       type: object
                     conditions:
                       description: |-
-                        Conditions include Allocated with observedGeneration. An entry with no
-                        value reports a pending or failed allocation for this request/location.
+                        Conditions include Allocated, Programmed, and Announced with
+                        observedGeneration. An entry with no value reports a pending or failed
+                        allocation for this request/location.
                       items:
                         description: Condition contains details for one aspect of
                           the current state of this API Resource.
@@ -283,86 +274,8 @@ spec:
                       - IPv6
                       type: string
                     location:
+                      minLength: 1
                       type: string
-                    locations:
-                      items:
-                        description: |-
-                          NetworkLoadBalancerAddressLocationStatus reports data plane progress for one
-                          selected location. Announced is true only after programming is confirmed.
-                        properties:
-                          conditions:
-                            description: Conditions include Programmed and Announced
-                              with observedGeneration.
-                            items:
-                              description: Condition contains details for one aspect
-                                of the current state of this API Resource.
-                              properties:
-                                lastTransitionTime:
-                                  description: |-
-                                    lastTransitionTime is the last time the condition transitioned from one status to another.
-                                    This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
-                                  format: date-time
-                                  type: string
-                                message:
-                                  description: |-
-                                    message is a human readable message indicating details about the transition.
-                                    This may be an empty string.
-                                  maxLength: 32768
-                                  type: string
-                                observedGeneration:
-                                  description: |-
-                                    observedGeneration represents the .metadata.generation that the condition was set based upon.
-                                    For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
-                                    with respect to the current state of the instance.
-                                  format: int64
-                                  minimum: 0
-                                  type: integer
-                                reason:
-                                  description: |-
-                                    reason contains a programmatic identifier indicating the reason for the condition's last transition.
-                                    Producers of specific condition types may define expected values and meanings for this field,
-                                    and whether the values are considered a guaranteed API.
-                                    The value should be a CamelCase string.
-                                    This field may not be empty.
-                                  maxLength: 1024
-                                  minLength: 1
-                                  pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
-                                  type: string
-                                status:
-                                  description: status of the condition, one of True,
-                                    False, Unknown.
-                                  enum:
-                                  - "True"
-                                  - "False"
-                                  - Unknown
-                                  type: string
-                                type:
-                                  description: type of condition in CamelCase or in
-                                    foo.example.com/CamelCase.
-                                  maxLength: 316
-                                  pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
-                                  type: string
-                              required:
-                              - lastTransitionTime
-                              - message
-                              - reason
-                              - status
-                              - type
-                              type: object
-                            type: array
-                            x-kubernetes-list-map-keys:
-                            - type
-                            x-kubernetes-list-type: map
-                          name:
-                            type: string
-                        required:
-                        - name
-                        type: object
-                      maxItems: 64
-                      type: array
-                      x-kubernetes-list-map-keys:
-                      - name
-                      x-kubernetes-list-type: map
                     requestName:
                       type: string
                     value:

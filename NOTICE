@@ -18049,9 +18049,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ```
 
-## sigs.k8s.io/gateway-api/apis/v1
+## sigs.k8s.io/gateway-api
 
-* Name: sigs.k8s.io/gateway-api/apis/v1
+* Name: sigs.k8s.io/gateway-api
 * Version: v1.5.1
 * License: Apache-2.0
 

@@ -104,6 +104,22 @@ describe('NetworkDetail', () => {
     expect(tabs().getByText('Overview')).toBeInTheDocument();
   });
 
+  it('shows a skeleton shaped like the tab being loaded', () => {
+    useNetworkMock.mockReturnValue({
+      data: undefined,
+      isLoading: true,
+      error: null,
+      refetch: vi.fn(),
+    } as never);
+
+    const { unmount } = renderPage();
+    expect(screen.getByTestId('networking-plugin-loading')).toHaveAttribute('data-skeleton', 'overview');
+    unmount();
+
+    renderPage(`${DETAIL_PATH}/configuration`);
+    expect(screen.getByTestId('networking-plugin-loading')).toHaveAttribute('data-skeleton', 'configuration');
+  });
+
   it('shows the restricted state on a 403 ApiError', () => {
     useNetworkMock.mockReturnValue({
       data: undefined,

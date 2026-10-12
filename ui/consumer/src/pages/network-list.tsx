@@ -2,7 +2,8 @@ import { NetworkCliSections } from '../components/cli-section';
 import { CreateNetworkDialog } from '../components/create-network-dialog';
 import { NetworkStats } from '../components/network-stats';
 import { NetworkTable } from '../components/network-table';
-import { ErrorOrRestrictedState, LoadingSkeleton } from '../components/states';
+import { NetworkListSkeleton } from '../components/skeletons';
+import { ErrorOrRestrictedState } from '../components/states';
 import { useNetworks } from '../lib/api';
 import {
   Breadcrumb,
@@ -58,7 +59,7 @@ export default function NetworkList() {
         }
       />
 
-      {isLoading && <LoadingSkeleton />}
+      {isLoading && <NetworkListSkeleton />}
 
       {!isLoading && error && (
         <ErrorOrRestrictedState

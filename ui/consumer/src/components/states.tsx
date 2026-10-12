@@ -2,19 +2,7 @@ import { ApiError } from '../lib/api';
 import { Button } from '@datum-cloud/datum-ui/button';
 import { Card, CardContent } from '@datum-cloud/datum-ui/card';
 import { Icon } from '@datum-cloud/datum-ui/icons';
-import { Skeleton } from '@datum-cloud/datum-ui/skeleton';
 import { LockIcon, ServerCrashIcon } from 'lucide-react';
-
-export function LoadingSkeleton() {
-  return (
-    <div data-testid="networking-plugin-loading" className="flex flex-col gap-4">
-      <Skeleton className="h-10 w-full rounded-lg" />
-      <Skeleton className="h-14 w-full rounded-lg" />
-      <Skeleton className="h-14 w-full rounded-lg" />
-      <Skeleton className="h-14 w-full rounded-lg" />
-    </div>
-  );
-}
 
 export function RestrictedState({ message }: { message: string }) {
   return (

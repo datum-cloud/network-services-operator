@@ -1,5 +1,6 @@
 import { SortableHeader } from './sortable-header';
-import { ErrorOrRestrictedState, LoadingSkeleton, SectionEmpty } from './states';
+import { ResourcesSkeleton } from './skeletons';
+import { ErrorOrRestrictedState, SectionEmpty } from './states';
 import { StatusBadge } from './status-badge';
 import {
   computeWorkloadHref,
@@ -242,7 +243,7 @@ function ResourcesBody({
   const interfacesQuery = useNetworkInterfaces(projectId, networkName);
   const { data: services } = useNetworkServices(projectId);
 
-  if (subnetsQuery.isLoading || interfacesQuery.isLoading) return <LoadingSkeleton />;
+  if (subnetsQuery.isLoading || interfacesQuery.isLoading) return <ResourcesSkeleton />;
 
   const error = subnetsQuery.error ?? interfacesQuery.error;
   if (error) {

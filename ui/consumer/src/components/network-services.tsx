@@ -2,7 +2,8 @@ import { ConfirmDeleteDialog } from './confirm-delete-dialog';
 import { CreateNetworkServiceDialog } from './create-network-service-dialog';
 import { SortableHeader } from './sortable-header';
 import { StatTile, StatTileGrid } from './stat-tiles';
-import { ErrorOrRestrictedState, LoadingSkeleton, SectionEmpty } from './states';
+import { ServicesSkeleton } from './skeletons';
+import { ErrorOrRestrictedState, SectionEmpty } from './states';
 import { StatusBadge } from './status-badge';
 import { useDeleteNetworkService, useNetworkServices } from '../lib/api';
 import {
@@ -209,7 +210,7 @@ export function NetworkServices({
 }) {
   const { data: services, isLoading, error, refetch } = useNetworkServices(projectId);
 
-  if (isLoading) return <LoadingSkeleton />;
+  if (isLoading) return <ServicesSkeleton />;
 
   if (error) {
     return (

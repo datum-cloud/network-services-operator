@@ -48,11 +48,7 @@ func TestNetworkLoadBalancerAdmission(t *testing.T) {
 		Spec: networkingv1alpha.NetworkLoadBalancerSpec{
 			NetworkRef: networkingv1alpha.LocalNetworkRef{Name: "default"},
 			Exposure: networkingv1alpha.NetworkLoadBalancerExposure{Addresses: []networkingv1alpha.NetworkLoadBalancerAddressRequest{{
-				Name: "regional", Mode: networkingv1alpha.NetworkLoadBalancerAddressModeUnicast,
-				Family:    networkingv1alpha.IPFamily("IPv6"),
-				Locations: networkingv1alpha.NetworkLoadBalancerLocationSelection{From: networkingv1alpha.NetworkLoadBalancerLocationSourceAll},
-			}, {
-				Name: "global", Mode: networkingv1alpha.NetworkLoadBalancerAddressModeAnycast,
+				Name:      "regional",
 				Family:    networkingv1alpha.IPFamily("IPv6"),
 				Locations: networkingv1alpha.NetworkLoadBalancerLocationSelection{From: networkingv1alpha.NetworkLoadBalancerLocationSourceAll},
 			}}},
@@ -97,7 +93,7 @@ func TestNetworkLoadBalancerAdmission(t *testing.T) {
 				require.NoError(t, err)
 				lb.Status.Addresses = []networkingv1alpha.NetworkLoadBalancerAddressStatus{
 					{RequestName: "regional", Location: "us-east-1", Family: networkingv1alpha.IPFamily("IPv6"), Value: "2001:db8::10"},
-					{RequestName: "global", Location: "", Family: networkingv1alpha.IPFamily("IPv6"), Value: ""},
+					{RequestName: "regional", Location: "us-west-1", Family: networkingv1alpha.IPFamily("IPv6"), Value: "2001:db8::20"},
 				}
 				require.NoError(t, k8sClient.Status().Update(context.Background(), lb))
 			} else {

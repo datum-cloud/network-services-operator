@@ -4,6 +4,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"sort"
@@ -116,27 +117,33 @@ func (r *TrafficProtectionPolicyReconciler) Reconcile(ctx context.Context, req N
 
 	r.collectTrafficProtectionPolicyAttachments(ctx, trafficProtectionPolicies, upstreamGateways.Items, upstreamHTTPRoutes.Items, upstreamHTTPProxies.Items)
 
-	r.setProgrammedConditionsFromDownstream(ctx, downstreamNamespaceName, trafficProtectionPolicies)
+	readErr := r.setProgrammedConditionsFromDownstream(ctx, downstreamNamespaceName, trafficProtectionPolicies)
 
 	if err := r.updateTPPAncestorsStatus(ctx, cl.GetClient(), trafficProtectionPolicies, originalTrafficProtectionPolicies); err != nil {
 		return ctrl.Result{}, err
 	}
 
-	return ctrl.Result{}, nil
+	// A downstream copy that could not be read left its policy's Programmed as it was; retry it.
+	return ctrl.Result{}, readErr
 }
 
 // setProgrammedConditionsFromDownstream sets Programmed on each accepted target
 // from the matching ancestor of the downstream (Karmada-aggregated) TPP, and
 // removes it from a target that is not accepted.
+//
+// A downstream copy that does not exist reads Pending. A read that fails for any
+// other reason leaves that policy's Programmed as it was, because a status is
+// never derived from a failed read, and the error is returned so the reconcile
+// is retried.
 func (r *TrafficProtectionPolicyReconciler) setProgrammedConditionsFromDownstream(
 	ctx context.Context,
 	downstreamNamespaceName string,
 	policies []*policyContext,
-) {
-	logger := log.FromContext(ctx)
+) error {
 	downstreamClient := r.DownstreamCluster.GetClient()
 	controllerName := string(r.Config.Gateway.ControllerName)
 
+	var readErrs []error
 	for _, policy := range policies {
 		downstreamTPP := &networkingv1alpha.TrafficProtectionPolicy{}
 		err := downstreamClient.Get(ctx, client.ObjectKey{
@@ -144,7 +151,8 @@ func (r *TrafficProtectionPolicyReconciler) setProgrammedConditionsFromDownstrea
 			Name:      policy.Name,
 		}, downstreamTPP)
 		if client.IgnoreNotFound(err) != nil {
-			logger.Error(err, "failed to get downstream trafficprotectionpolicy", "name", policy.Name, "namespace", downstreamNamespaceName)
+			readErrs = append(readErrs, fmt.Errorf("failed to get downstream trafficprotectionpolicy %s/%s: %w", downstreamNamespaceName, policy.Name, err))
+			continue
 		}
 		if err != nil {
 			downstreamTPP = nil
@@ -172,6 +180,7 @@ func (r *TrafficProtectionPolicyReconciler) setProgrammedConditionsFromDownstrea
 			)
 		}
 	}
+	return errors.Join(readErrs...)
 }
 
 // programmedFromDownstream derives one target's upstream Programmed condition

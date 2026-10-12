@@ -12,6 +12,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	gatewayv1alpha2 "sigs.k8s.io/gateway-api/apis/v1alpha2"
@@ -44,6 +45,13 @@ type tppReconcileFixture struct {
 
 func newTPPReconcileFixture(t *testing.T, upstreamObjs []client.Object, downstreamObjs ...client.Object) *tppReconcileFixture {
 	t.Helper()
+	return newTPPReconcileFixtureWithDownstreamFuncs(t, interceptor.Funcs{}, upstreamObjs, downstreamObjs...)
+}
+
+// newTPPReconcileFixtureWithDownstreamFuncs is newTPPReconcileFixture with
+// funcs intercepting the downstream client.
+func newTPPReconcileFixtureWithDownstreamFuncs(t *testing.T, funcs interceptor.Funcs, upstreamObjs []client.Object, downstreamObjs ...client.Object) *tppReconcileFixture {
+	t.Helper()
 	scheme := runtime.NewScheme()
 	require.NoError(t, corev1.AddToScheme(scheme))
 	require.NoError(t, eventsv1.AddToScheme(scheme))
@@ -55,7 +63,7 @@ func newTPPReconcileFixture(t *testing.T, upstreamObjs []client.Object, downstre
 		WithObjects(append(upstreamObjs, namespace)...).
 		WithStatusSubresource(&networkingv1alpha.TrafficProtectionPolicy{}).
 		Build()
-	downstream := fake.NewClientBuilder().WithScheme(scheme).WithObjects(downstreamObjs...).Build()
+	downstream := fake.NewClientBuilder().WithScheme(scheme).WithObjects(downstreamObjs...).WithInterceptorFuncs(funcs).Build()
 
 	reconciler := &TrafficProtectionPolicyReconciler{
 		Config:            config.NetworkServicesOperator{Gateway: config.GatewayConfig{ControllerName: testControllerName}},

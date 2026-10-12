@@ -1,16 +1,21 @@
 package controller
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	eventsv1 "k8s.io/api/events/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	gatewayv1alpha2 "sigs.k8s.io/gateway-api/apis/v1alpha2"
 
@@ -291,4 +296,66 @@ func TestReconcileMissingTargetIsNotAccepted(t *testing.T) {
 		assert.Equal(t, string(target.Kind)+` "`+string(target.Name)+`" not found`, accepted.Message, target.Name)
 		assert.Nil(t, ancestorCondition(t, ancestors, target, conditionTypeProgrammed), target.Name)
 	}
+}
+
+// TestReconcileKeepsProgrammedWhenTheDownstreamReadFails checks that a read of
+// the downstream copy that fails, other than NotFound, leaves the target's
+// Programmed as it was, sends no activity event, and returns the error so the
+// reconcile is retried.
+func TestReconcileKeepsProgrammedWhenTheDownstreamReadFails(t *testing.T) {
+	target := gatewayTarget("gw-a")
+	since := metav1.NewTime(time.Date(2026, time.October, 1, 0, 0, 0, 0, time.UTC))
+	programmed := metav1.Condition{
+		Type: conditionTypeProgrammed, Status: metav1.ConditionTrue, Reason: string(PolicyReasonProgrammed),
+		Message: "Policy generation 7 programmed on edges", ObservedGeneration: 7, LastTransitionTime: since,
+	}
+	accepted := metav1.Condition{
+		Type: string(gatewayv1.PolicyConditionAccepted), Status: metav1.ConditionTrue, Reason: "Accepted",
+		ObservedGeneration: 7, LastTransitionTime: since,
+	}
+	policy := upstreamPolicy(7, []gatewayv1alpha2.LocalPolicyTargetReferenceWithSectionName{target}, gatewayv1.PolicyAncestorStatus{
+		AncestorRef:    *getAncestorRefForTarget(tppTestNamespace, target),
+		ControllerName: gatewayv1.GatewayController(testControllerName),
+		Conditions:     []metav1.Condition{accepted, programmed},
+	})
+	failGet := interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if _, ok := obj.(*networkingv1alpha.TrafficProtectionPolicy); ok {
+				return errors.New("connection refused")
+			}
+			return c.Get(ctx, key, obj, opts...)
+		},
+	}
+	f := newTPPReconcileFixtureWithDownstreamFuncs(t, failGet, []client.Object{policy, upstreamGateway()},
+		downstreamTPP(3, "7", aggregatedAncestor(tppTestDownstreamNamespace, "gw-a", metav1.ConditionTrue, "Programmed", 3, "")))
+
+	_, err := f.reconciler.Reconcile(t.Context(), NamespaceReconcileRequest{Namespace: tppTestNamespace, ClusterName: "upstream"})
+	require.ErrorContains(t, err, "connection refused")
+
+	var got networkingv1alpha.TrafficProtectionPolicy
+	require.NoError(t, f.upstream.Get(t.Context(), client.ObjectKey{Namespace: tppTestNamespace, Name: "tpp-1"}, &got))
+	cond := ancestorCondition(t, got.Status.Ancestors, target, conditionTypeProgrammed)
+	require.NotNil(t, cond)
+	assert.Equal(t, programmed.Status, cond.Status)
+	assert.Equal(t, programmed.Reason, cond.Reason)
+	assert.Equal(t, programmed.Message, cond.Message)
+	assert.True(t, since.Equal(&cond.LastTransitionTime), "lastTransitionTime %s", cond.LastTransitionTime)
+
+	var events eventsv1.EventList
+	require.NoError(t, f.upstream.List(t.Context(), &events))
+	assert.Empty(t, events.Items)
+}
+
+// TestReconcileWithoutADownstreamCopyIsPending checks that a downstream copy
+// that does not exist reads Pending, with no error.
+func TestReconcileWithoutADownstreamCopyIsPending(t *testing.T) {
+	target := gatewayTarget("gw-a")
+	f := newTPPReconcileFixture(t, []client.Object{
+		upstreamPolicy(7, []gatewayv1alpha2.LocalPolicyTargetReferenceWithSectionName{target}), upstreamGateway(),
+	})
+
+	programmed := ancestorCondition(t, f.reconcile(t), target, conditionTypeProgrammed)
+	require.NotNil(t, programmed)
+	assert.Equal(t, metav1.ConditionFalse, programmed.Status)
+	assert.Equal(t, string(PolicyReasonProgrammedPending), programmed.Reason)
 }

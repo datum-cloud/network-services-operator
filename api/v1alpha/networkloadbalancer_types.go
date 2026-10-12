@@ -11,16 +11,6 @@ const (
 	NetworkLoadBalancerAnnounced  = "Announced"
 )
 
-// NetworkLoadBalancerAddressMode determines whether selected locations receive
-// separate IPs or announce one shared IP.
-// +kubebuilder:validation:Enum=Unicast;Anycast
-type NetworkLoadBalancerAddressMode string
-
-const (
-	NetworkLoadBalancerAddressModeUnicast NetworkLoadBalancerAddressMode = "Unicast"
-	NetworkLoadBalancerAddressModeAnycast NetworkLoadBalancerAddressMode = "Anycast"
-)
-
 // NetworkLoadBalancerLocationSource selects locations by name or follows all
 // eligible locations as they become available.
 // +kubebuilder:validation:Enum=All;Names
@@ -53,17 +43,14 @@ type NetworkLoadBalancerLocationSelection struct {
 	Names []string `json:"names,omitempty"`
 }
 
-// NetworkLoadBalancerAddressRequest reserves public addresses independently of
-// whether a route has healthy backends.
+// NetworkLoadBalancerAddressRequest reserves one public address per selected
+// location, independently of whether a route has healthy backends.
 type NetworkLoadBalancerAddressRequest struct {
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=63
 	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
 	Name string `json:"name"`
-
-	// +kubebuilder:validation:Required
-	Mode NetworkLoadBalancerAddressMode `json:"mode"`
 
 	// IPv4 ingress is not supported by this API version.
 	// +kubebuilder:validation:Required
@@ -134,37 +121,22 @@ type NetworkLoadBalancerIPClaimRef struct {
 	Name      string `json:"name"`
 }
 
-// NetworkLoadBalancerAddressLocationStatus reports data plane progress for one
-// selected location. Announced is true only after programming is confirmed.
-type NetworkLoadBalancerAddressLocationStatus struct {
-	Name string `json:"name"`
-
-	// Conditions include Programmed and Announced with observedGeneration.
-	// +listType=map
-	// +listMapKey=type
-	Conditions []metav1.Condition `json:"conditions,omitempty"`
-}
-
-// NetworkLoadBalancerAddressStatus describes one allocation. Unicast entries
-// have a location; anycast entries have an empty location and share one value
-// across the locations below.
+// NetworkLoadBalancerAddressStatus describes one allocation for one selected
+// location. Its address is distinct from allocations in other locations.
 type NetworkLoadBalancerAddressStatus struct {
-	RequestName string                         `json:"requestName"`
-	Location    string                         `json:"location"`
-	Family      IPFamily                       `json:"family"`
-	Value       string                         `json:"value"`
-	ClaimRef    *NetworkLoadBalancerIPClaimRef `json:"claimRef,omitempty"`
+	RequestName string `json:"requestName"`
+	// +kubebuilder:validation:MinLength=1
+	Location string                         `json:"location"`
+	Family   IPFamily                       `json:"family"`
+	Value    string                         `json:"value"`
+	ClaimRef *NetworkLoadBalancerIPClaimRef `json:"claimRef,omitempty"`
 
-	// Conditions include Allocated with observedGeneration. An entry with no
-	// value reports a pending or failed allocation for this request/location.
+	// Conditions include Allocated, Programmed, and Announced with
+	// observedGeneration. An entry with no value reports a pending or failed
+	// allocation for this request/location.
 	// +listType=map
 	// +listMapKey=type
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
-
-	// +kubebuilder:validation:MaxItems=64
-	// +listType=map
-	// +listMapKey=name
-	Locations []NetworkLoadBalancerAddressLocationStatus `json:"locations,omitempty"`
 }
 
 // NetworkLoadBalancerStatus distinguishes address allocation from programming

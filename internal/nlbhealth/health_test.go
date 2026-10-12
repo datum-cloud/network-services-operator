@@ -103,7 +103,9 @@ func TestProbeRequiresVPCDialerAndRejectsUnsafeTarget(t *testing.T) {
 	require.ErrorContains(t, (Prober{}).Probe(context.Background(), "vpc-1", target), "VPC-aware")
 	prober := Prober{DialContext: func(context.Context, string, string, string) (net.Conn, error) {
 		a, b := net.Pipe()
-		b.Close()
+		if err := b.Close(); err != nil {
+			return nil, err
+		}
 		return a, nil
 	}}
 	require.NoError(t, prober.Probe(context.Background(), "vpc-1", target))

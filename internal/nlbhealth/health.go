@@ -96,7 +96,7 @@ func (p Prober) Probe(ctx context.Context, fabricVPCID string, target networking
 		if err != nil {
 			return err
 		}
-		defer response.Body.Close()
+		defer func() { _ = response.Body.Close() }()
 		if response.StatusCode < 200 || response.StatusCode >= 300 {
 			return fmt.Errorf("probe returned HTTP %d", response.StatusCode)
 		}
@@ -167,7 +167,7 @@ func HealthyTargets(health *networkingv1alpha.NetworkLoadBalancerBackendHealth, 
 			status.RouteUID != health.Spec.RouteRef.UID || status.RouteGeneration != health.Spec.RouteRef.Generation ||
 			status.TargetFingerprint != TargetFingerprint(target) || status.LastProbeTime.IsZero() ||
 			status.LastProbeTime.After(now) || !status.ValidUntil.After(now) ||
-			status.ValidUntil.Time.Sub(status.LastProbeTime.Time) > ResultLifetime {
+			status.ValidUntil.Sub(status.LastProbeTime.Time) > ResultLifetime {
 			continue
 		}
 		eligible = append(eligible, target)

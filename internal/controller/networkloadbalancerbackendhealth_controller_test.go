@@ -64,7 +64,9 @@ func TestBackendHealthReconcileRequiresLiveSourceAndVPCDialer(t *testing.T) {
 			require.Equal(t, "vpc-1", vpc)
 			dials++
 			a, b := net.Pipe()
-			b.Close()
+			if err := b.Close(); err != nil {
+				return nil, err
+			}
 			return a, nil
 		}},
 	}

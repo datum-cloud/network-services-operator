@@ -4,6 +4,9 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
+	"maps"
+	"slices"
 	"testing"
 	"time"
 
@@ -104,6 +107,57 @@ func TestResultCompleteWritesOnlyAChangedStatus(t *testing.T) {
 			assert.Equal(t, tt.wantWrites, writes, "status writes")
 			assert.Equal(t, tt.wantErr, err != nil, "error: %v", err)
 			assert.Equal(t, tt.wantResult, res.RequeueAfter)
+		})
+	}
+}
+
+func TestResultCompletePatchesOnlyTheStatus(t *testing.T) {
+	for _, tt := range []struct {
+		name        string
+		stored      *gatewayv1.Gateway
+		wantPatches int
+	}{
+		{"unchanged: not written", resultTestGateway(metav1.ConditionTrue), 0},
+		{"changed: patched", resultTestGateway(metav1.ConditionFalse), 1},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			testScheme := runtime.NewScheme()
+			require.NoError(t, scheme.AddToScheme(testScheme))
+			require.NoError(t, gatewayv1.Install(testScheme))
+			var patches []map[string]any
+			updates := 0
+			cl := fake.NewClientBuilder().WithScheme(testScheme).WithStatusSubresource(&gatewayv1.Gateway{}).
+				WithObjects(tt.stored).
+				WithInterceptorFuncs(interceptor.Funcs{
+					SubResourcePatch: func(ctx context.Context, c client.Client, subResource string, obj client.Object, patch client.Patch, opts ...client.SubResourcePatchOption) error {
+						data, err := patch.Data(obj)
+						require.NoError(t, err)
+						var body map[string]any
+						require.NoError(t, json.Unmarshal(data, &body))
+						patches = append(patches, body)
+						return c.SubResource(subResource).Patch(ctx, obj, patch, opts...)
+					},
+					SubResourceUpdate: func(ctx context.Context, c client.Client, subResource string, obj client.Object, opts ...client.SubResourceUpdateOption) error {
+						updates++
+						return c.SubResource(subResource).Update(ctx, obj, opts...)
+					},
+				}).Build()
+
+			desired := resultTestGateway(metav1.ConditionTrue)
+			desired.ResourceVersion = "stale"
+			var result Result
+			result.AddStatusPatch(cl, desired, "network-services/test")
+			_, err := result.Complete(context.Background())
+
+			require.NoError(t, err)
+			assert.Zero(t, updates)
+			require.Len(t, patches, tt.wantPatches)
+			for _, body := range patches {
+				assert.Equal(t, []string{"status"}, slices.Collect(maps.Keys(body)), "only the status is sent, without resourceVersion")
+			}
+			stored := &gatewayv1.Gateway{}
+			require.NoError(t, cl.Get(context.Background(), client.ObjectKeyFromObject(desired), stored))
+			assert.True(t, apimeta.IsStatusConditionTrue(stored.Status.Conditions, string(gatewayv1.GatewayConditionProgrammed)))
 		})
 	}
 }

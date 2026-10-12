@@ -134,7 +134,7 @@ func (r *claimRig) reconcileOnce() *gatewayv1.Gateway {
 	r.t.Helper()
 	var current gatewayv1.Gateway
 	require.NoError(r.t, r.upstream.Get(r.ctx, r.gateway, &current))
-	r.reconciler.prepareUpstreamGateway(&current)
+	prepareUpstreamGateway(r.reconciler, &current)
 	result, downstreamGateway := r.reconciler.ensureDownstreamGateway(r.ctx, "test-suite", r.upstream, &current, r.strategy)
 	require.NoError(r.t, result.Err)
 	_, err := result.Complete(r.ctx)

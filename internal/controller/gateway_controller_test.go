@@ -237,7 +237,7 @@ func TestEnsureDownstreamGateway(t *testing.T) {
 
 			downstreamStrategy := downstreamclient.NewMappedNamespaceResourceStrategy("test", fakeUpstreamClient, fakeDownstreamClient)
 
-			reconciler.prepareUpstreamGateway(tt.upstreamGateway)
+			prepareUpstreamGateway(reconciler, tt.upstreamGateway)
 			result, downstreamGateway := reconciler.ensureDownstreamGateway(
 				ctx,
 				"test-suite",
@@ -290,8 +290,8 @@ func TestPrepareUpstreamGateway_UsesExistingCanonicalHostname(t *testing.T) {
 		Config: testConfig,
 	}
 
-	needsUpdate := reconciler.prepareUpstreamGateway(gateway)
-	assert.True(t, needsUpdate, "gateway should be updated to assign listener hostnames")
+	missing := prepareUpstreamGateway(reconciler, gateway)
+	assert.True(t, missing, "gateway should be updated to assign listener hostnames")
 
 	defaultHTTPListener := gatewayutil.GetListenerByName(gateway.Spec.Listeners, gatewayutil.DefaultHTTPListenerName)
 	require.NotNil(t, defaultHTTPListener)
@@ -690,7 +690,7 @@ func TestEnsureDownstreamGatewayWildcardCert(t *testing.T) {
 
 			downstreamStrategy := downstreamclient.NewMappedNamespaceResourceStrategy("test", fakeUpstreamClient, fakeDownstreamClient)
 
-			reconciler.prepareUpstreamGateway(tt.upstreamGateway)
+			prepareUpstreamGateway(reconciler, tt.upstreamGateway)
 			result, downstreamGateway := reconciler.ensureDownstreamGateway(
 				ctx,
 				"test-suite",
@@ -938,7 +938,7 @@ func TestListenerCertificateHealthGating(t *testing.T) {
 			}
 			downstreamStrategy := downstreamclient.NewMappedNamespaceResourceStrategy("test", fakeUpstreamClient, fakeDownstreamClient)
 
-			reconciler.prepareUpstreamGateway(upstreamGateway)
+			prepareUpstreamGateway(reconciler, upstreamGateway)
 			result, downstreamGateway := reconciler.ensureDownstreamGateway(
 				ctx, "test-suite", fakeUpstreamClient, upstreamGateway, downstreamStrategy,
 			)
@@ -3965,4 +3965,15 @@ func TestDeleteEndpointSliceOnAddressTypeChange(t *testing.T) {
 			}
 		})
 	}
+}
+
+// prepareUpstreamGateway sets on gw, in memory, what the gateway controller's
+// apply sets on the server, and reports whether gw lacked any of it.
+func prepareUpstreamGateway(r *GatewayReconciler, gw *gatewayv1.Gateway) bool {
+	intent, missing := r.upstreamGatewayIntent(gw)
+	controllerutil.AddFinalizer(gw, gatewayControllerFinalizer)
+	for _, l := range intent.Spec.Listeners {
+		gatewayutil.GetListenerByName(gw.Spec.Listeners, *l.Name).Hostname = l.Hostname
+	}
+	return missing
 }

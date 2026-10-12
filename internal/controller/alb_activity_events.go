@@ -15,7 +15,6 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
-	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	"go.datum.net/network-services-operator/internal/display"
@@ -290,18 +289,27 @@ func dnsRecordFailed(previous, current []metav1.Condition) bool {
 	return prev == nil || prev.Status != metav1.ConditionFalse || prev.Reason != curr.Reason
 }
 
+// tppProgrammedCondition returns the policy's Programmed condition across its
+// targets: the first that is not True, or else the first True one. A target
+// that is not accepted has none.
 func tppProgrammedCondition(policy *networkingv1alpha.TrafficProtectionPolicy) *metav1.Condition {
 	if policy == nil {
 		return nil
 	}
+	var programmed *metav1.Condition
 	for i := range policy.Status.Ancestors {
-		accepted := meta.FindStatusCondition(policy.Status.Ancestors[i].Conditions, string(gatewayv1.PolicyConditionAccepted))
-		programmed := meta.FindStatusCondition(policy.Status.Ancestors[i].Conditions, conditionTypeProgrammed)
-		if accepted != nil || programmed != nil {
-			return programmed
+		cond := meta.FindStatusCondition(policy.Status.Ancestors[i].Conditions, conditionTypeProgrammed)
+		if cond == nil {
+			continue
+		}
+		if cond.Status != metav1.ConditionTrue {
+			return cond
+		}
+		if programmed == nil {
+			programmed = cond
 		}
 	}
-	return nil
+	return programmed
 }
 
 func tppProgrammingFailed(prev, curr *metav1.Condition) bool {

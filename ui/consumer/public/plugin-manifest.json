@@ -12,7 +12,7 @@
       "type": "portal.nav/project",
       "properties": {
         "id": "networks",
-        "title": "Galactic VPC",
+        "title": "VPC",
         "icon": "network",
         "path": "networks",
         "order": 10,

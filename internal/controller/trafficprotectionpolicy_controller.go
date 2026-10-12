@@ -279,23 +279,9 @@ func (r *TrafficProtectionPolicyReconciler) updateTPPAncestorsStatus(
 		}
 
 		// Remove any ancestorRefs owned by this controller that are no longer targeted
-		for i, ancestor := range policy.Status.Ancestors {
-			if ancestor.ControllerName != r.Config.Gateway.ControllerName {
-				continue
-			}
-
-			found := false
-			for _, targetRef := range policy.Spec.TargetRefs {
-				ancestorRef := getAncestorRefForTarget(policy.Namespace, targetRef)
-				if equality.Semantic.DeepEqual(ancestor.AncestorRef, *ancestorRef) {
-					found = true
-				}
-			}
-
-			if !found {
-				policy.Status.Ancestors = append(policy.Status.Ancestors[:i], policy.Status.Ancestors[i+1:]...)
-			}
-		}
+		policy.Status.Ancestors = slices.DeleteFunc(policy.Status.Ancestors, func(ancestor gatewayv1.PolicyAncestorStatus) bool {
+			return ancestor.ControllerName == r.Config.Gateway.ControllerName && !targetsAncestor(policy, ancestor.AncestorRef)
+		})
 
 		if !equality.Semantic.DeepEqual(originalPolicy.Status, policy.Status) {
 			emitTPPActivityEvents(ctx, upstreamClient, policy.TrafficProtectionPolicy, &originalPolicy)
@@ -311,6 +297,16 @@ func (r *TrafficProtectionPolicyReconciler) updateTPPAncestorsStatus(
 
 	return nil
 
+}
+
+// targetsAncestor reports whether one of the policy's targetRefs is ancestorRef.
+func targetsAncestor(policy *policyContext, ancestorRef gatewayv1alpha2.ParentReference) bool {
+	for _, targetRef := range policy.Spec.TargetRefs {
+		if equality.Semantic.DeepEqual(ancestorRef, *getAncestorRefForTarget(policy.Namespace, targetRef)) {
+			return true
+		}
+	}
+	return false
 }
 
 type policyContext struct {

@@ -179,6 +179,11 @@ type IPAMConfig struct {
 // environment's classes are different objects, and an operator deployed
 // against either has to name the ones it is pointed at.
 type IPAMClasses struct {
+	// PublicIPv6 is the globally unique address class used for public load
+	// balancer VIPs. Its backing class must share one platform-wide pool with
+	// uniqueWithin unset, including when projects use source classes.
+	PublicIPv6 string `json:"publicIPv6,omitempty"`
+
 	// Network is the class that hands out the range a network is addressed
 	// from. Unset, no range is claimed and a network is reconciled with no
 	// address space, the same as an unset IPAM connection.

@@ -59,7 +59,7 @@ afterEach(() => {
 
 async function openDialog() {
   fireEvent.click(screen.getByRole('button', { name: 'Create service' }));
-  return screen.findAllByRole('button', { name: 'Create service' });
+  return screen.findByRole('dialog');
 }
 
 function selectWorkload(name: string) {
@@ -72,7 +72,7 @@ describe('CreateNetworkServiceDialog', () => {
     renderDialog();
     await openDialog();
     expect(screen.getByText('Create a service')).toBeInTheDocument();
-    expect(screen.getByPlaceholderText('storefront')).toBeInTheDocument();
+    expect(screen.getByPlaceholderText('e.g. storefront')).toBeInTheDocument();
     expect(screen.getByText('Select a workload')).toBeInTheDocument();
   });
 
@@ -89,9 +89,9 @@ describe('CreateNetworkServiceDialog', () => {
 
   it('requires a workload and a port before submitting', async () => {
     renderDialog();
-    const buttons = await openDialog();
-    fireEvent.change(screen.getByPlaceholderText('storefront'), { target: { value: 'my-svc' } });
-    fireEvent.click(buttons[buttons.length - 1]);
+    await openDialog();
+    fireEvent.change(screen.getByPlaceholderText('e.g. storefront'), { target: { value: 'my-svc' } });
+    fireEvent.click(await screen.findByRole('button', { name: 'Create' }));
 
     expect(screen.getByText(/Select the workload/)).toBeInTheDocument();
   }, SELECT_TEST_TIMEOUT);
@@ -101,12 +101,12 @@ describe('CreateNetworkServiceDialog', () => {
     globalThis.fetch = fetchMock as unknown as typeof fetch;
 
     renderDialog();
-    const buttons = await openDialog();
-    fireEvent.change(screen.getByPlaceholderText('storefront'), { target: { value: 'my-svc' } });
+    await openDialog();
+    fireEvent.change(screen.getByPlaceholderText('e.g. storefront'), { target: { value: 'my-svc' } });
     selectWorkload('storefront');
-    fireEvent.change(screen.getByPlaceholderText('http'), { target: { value: 'http' } });
-    fireEvent.change(screen.getByPlaceholderText('8080'), { target: { value: '8080' } });
-    fireEvent.click(buttons[buttons.length - 1]);
+    fireEvent.change(screen.getByPlaceholderText('e.g. http'), { target: { value: 'http' } });
+    fireEvent.change(screen.getByPlaceholderText('e.g. 8080'), { target: { value: '8080' } });
+    fireEvent.click(await screen.findByRole('button', { name: 'Create' }));
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
@@ -124,12 +124,12 @@ describe('CreateNetworkServiceDialog', () => {
       .mockResolvedValue({ ok: false, status: 409, json: async () => ({ message: 'already exists' }) }) as unknown as typeof fetch;
 
     renderDialog();
-    const buttons = await openDialog();
-    fireEvent.change(screen.getByPlaceholderText('storefront'), { target: { value: 'dup' } });
+    await openDialog();
+    fireEvent.change(screen.getByPlaceholderText('e.g. storefront'), { target: { value: 'dup' } });
     selectWorkload('checkout');
-    fireEvent.change(screen.getByPlaceholderText('http'), { target: { value: 'http' } });
-    fireEvent.change(screen.getByPlaceholderText('8080'), { target: { value: '8080' } });
-    fireEvent.click(buttons[buttons.length - 1]);
+    fireEvent.change(screen.getByPlaceholderText('e.g. http'), { target: { value: 'http' } });
+    fireEvent.change(screen.getByPlaceholderText('e.g. 8080'), { target: { value: '8080' } });
+    fireEvent.click(await screen.findByRole('button', { name: 'Create' }));
 
     await waitFor(() => expect(screen.getByText('Create a service')).toBeInTheDocument());
   }, SELECT_TEST_TIMEOUT);

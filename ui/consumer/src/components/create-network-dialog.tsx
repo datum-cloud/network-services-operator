@@ -1,16 +1,31 @@
 import { useCreateNetwork } from '../lib/api';
 import { Button } from '@datum-cloud/datum-ui/button';
-import { Checkbox } from '@datum-cloud/datum-ui/checkbox';
-import { Dialog } from '@datum-cloud/datum-ui/dialog';
+import { Form } from '@datum-cloud/datum-ui/form';
+import { ConformAdapter } from '@datum-cloud/datum-ui/form/adapters/conform';
 import { Icon } from '@datum-cloud/datum-ui/icons';
-import { Input } from '@datum-cloud/datum-ui/input';
-import { InputNumber } from '@datum-cloud/datum-ui/input-number';
 import { toast } from '@datum-cloud/datum-ui/toast';
 import { PlusIcon } from 'lucide-react';
 import { useState } from 'react';
+import { z } from 'zod';
 
-const NAME_PATTERN = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/;
-const DEFAULT_MTU = 1460;
+const DEFAULT_MTU = 1440;
+
+const NAME_MESSAGE =
+  'Lowercase letters, numbers, and hyphens only. Must start and end with a letter or number.';
+
+const schema = z.object({
+  name: z
+    .string({ error: 'Name is required.' })
+    .max(63, 'At most 63 characters.')
+    .regex(/^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/, NAME_MESSAGE),
+  includeIPv4: z.boolean().optional(),
+  mtu: z
+    .number({ error: 'Enter a whole number.' })
+    .int('Enter a whole number.')
+    .min(1300, 'Must be between 1300 and 8856.')
+    .max(8856, 'Must be between 1300 and 8856.')
+    .optional(),
+});
 
 export function CreateNetworkDialog({
   projectId,
@@ -24,43 +39,24 @@ export function CreateNetworkDialog({
   showTrigger?: boolean;
 }) {
   const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
+  const mutation = useCreateNetwork(projectId);
+
   const open = controlledOpen ?? uncontrolledOpen;
   const setOpen = (next: boolean) => {
     setUncontrolledOpen(next);
     onOpenChange?.(next);
   };
-  const [name, setName] = useState('');
-  const [includeIPv4, setIncludeIPv4] = useState(false);
-  const [mtu, setMtu] = useState<number | undefined>(undefined);
-  const [nameError, setNameError] = useState<string | undefined>(undefined);
-  const mutation = useCreateNetwork(projectId);
 
-  const reset = () => {
-    setName('');
-    setIncludeIPv4(false);
-    setMtu(undefined);
-    setNameError(undefined);
-  };
-
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-
-    if (!NAME_PATTERN.test(name)) {
-      setNameError('Lowercase letters, numbers, and hyphens only. Must start and end with a letter or number.');
-      return;
-    }
-    setNameError(undefined);
-
+  const handleSubmit = (data: z.infer<typeof schema>) => {
     mutation.mutate(
       {
-        name,
-        ipFamilies: includeIPv4 ? ['IPv4', 'IPv6'] : ['IPv6'],
-        mtu,
+        name: data.name,
+        ipFamilies: data.includeIPv4 ? ['IPv4', 'IPv6'] : ['IPv6'],
+        mtu: data.mtu,
       },
       {
         onSuccess: () => {
-          toast.success(`Created network ${name}`);
-          reset();
+          toast.success(`Created network ${data.name}`);
           setOpen(false);
         },
         onError: (error) => {
@@ -71,72 +67,47 @@ export function CreateNetworkDialog({
   };
 
   return (
-    <Dialog
-      open={open}
-      onOpenChange={(next) => {
-        setOpen(next);
-        if (!next) reset();
-      }}>
+    <>
       {showTrigger && (
-        <Dialog.Trigger asChild>
-          <Button type="primary" theme="solid" size="small" className="w-full sm:w-auto">
-            <Icon icon={PlusIcon} className="size-4" />
-            Create network
-          </Button>
-        </Dialog.Trigger>
+        <Button
+          type="primary"
+          theme="solid"
+          size="small"
+          className="w-full sm:w-auto"
+          onClick={() => setOpen(true)}>
+          <Icon icon={PlusIcon} className="size-4" />
+          Create network
+        </Button>
       )}
-      <Dialog.Content>
-        <Dialog.Header
+      <ConformAdapter>
+        <Form.Dialog
+          open={open}
+          onOpenChange={setOpen}
           title="Create a network"
           description="The platform addresses workloads over IPv6, so every network carries it. Add IPv4 alongside it for dual-stack."
-        />
-        <form onSubmit={handleSubmit}>
-          <Dialog.Body className="flex flex-col gap-4 px-5">
-            <label className="flex flex-col gap-1.5">
-              <span className="text-sm font-medium">Name</span>
-              <Input
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="my-network"
-                autoFocus
-              />
-              {nameError && <span className="text-sm text-red-500">{nameError}</span>}
-            </label>
-
-            <label className="flex items-center gap-2">
-              <Checkbox checked={includeIPv4} onCheckedChange={(v) => setIncludeIPv4(v === true)} />
-              <span className="text-sm">Also carry IPv4 (dual-stack)</span>
-            </label>
-
-            <label className="flex flex-col gap-1.5">
-              <span className="text-sm font-medium">MTU</span>
-              <InputNumber
-                value={mtu}
-                onValueChange={setMtu}
-                placeholder={String(DEFAULT_MTU)}
-                min={1300}
-                max={8856}
-              />
-              <span className="text-muted-foreground text-xs">
-                Between 1300 and 8856. Defaults to {DEFAULT_MTU}.
-              </span>
-            </label>
-          </Dialog.Body>
-          <Dialog.Footer>
-            <Button
-              type="quaternary"
-              theme="borderless"
-              htmlType="button"
-              onClick={() => setOpen(false)}
-              disabled={mutation.isPending}>
-              Cancel
-            </Button>
-            <Button type="primary" theme="solid" htmlType="submit" loading={mutation.isPending}>
-              Create network
-            </Button>
-          </Dialog.Footer>
-        </form>
-      </Dialog.Content>
-    </Dialog>
+          schema={schema}
+          onSubmit={handleSubmit}
+          loading={mutation.isPending}
+          submitText="Create"
+          submitTextLoading="Creating..."
+          className="w-full focus:ring-0 focus:outline-none sm:max-w-xl">
+          <div className="divide-border space-y-0 divide-y *:px-5 *:py-5 [&>*:first-child]:pt-0 [&>*:last-child]:pb-0">
+            <Form.Field name="name" label="Name" required>
+              <Form.Input autoFocus placeholder="e.g. my-network" />
+            </Form.Field>
+            <Form.Field
+              name="mtu"
+              label="MTU"
+              tooltip="Maximum transmission unit. Traffic between regions is encapsulated, so a larger MTU can stall connections on some paths."
+              description={`Between 1300 and 8856. Defaults to ${DEFAULT_MTU}.`}>
+              <Form.Input type="number" inputMode="numeric" placeholder={String(DEFAULT_MTU)} />
+            </Form.Field>
+            <Form.Field name="includeIPv4">
+              <Form.Checkbox label="Also carry IPv4 (dual-stack)" />
+            </Form.Field>
+          </div>
+        </Form.Dialog>
+      </ConformAdapter>
+    </>
   );
 }

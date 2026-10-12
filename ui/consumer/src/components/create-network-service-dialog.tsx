@@ -1,25 +1,107 @@
 import { useCreateNetworkService, useNetworkInterfaces } from '../lib/api';
 import { Button } from '@datum-cloud/datum-ui/button';
-import { Dialog } from '@datum-cloud/datum-ui/dialog';
+import { Form } from '@datum-cloud/datum-ui/form';
+import { ConformAdapter } from '@datum-cloud/datum-ui/form/adapters/conform';
 import { Icon } from '@datum-cloud/datum-ui/icons';
-import { Input } from '@datum-cloud/datum-ui/input';
-import { InputNumber } from '@datum-cloud/datum-ui/input-number';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@datum-cloud/datum-ui/select';
 import { toast } from '@datum-cloud/datum-ui/toast';
-import { PlusIcon, XIcon } from 'lucide-react';
+import { PlusIcon, Trash2Icon } from 'lucide-react';
 import { useState } from 'react';
+import { z } from 'zod';
 
 const NAME_PATTERN = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/;
+const NAME_MESSAGE = 'Lowercase letters, numbers, and hyphens, starting and ending with a letter or number.';
 
 const WORKLOAD_NAME_LABEL = 'compute.datumapis.com/workload-name';
 
-interface PortRow {
-  name: string;
-  port: number | undefined;
-}
+const portSchema = z.object({
+  name: z.string({ error: 'Name the port.' }).regex(NAME_PATTERN, NAME_MESSAGE),
+  port: z
+    .number({ error: 'Enter a port number.' })
+    .int('Enter a whole number.')
+    .min(1, 'Must be between 1 and 65535.')
+    .max(65535, 'Must be between 1 and 65535.'),
+});
 
-function emptyPortRow(): PortRow {
-  return { name: '', port: undefined };
+const schema = z.object({
+  name: z.string({ error: 'Name is required.' }).regex(NAME_PATTERN, NAME_MESSAGE),
+  workloadName: z.string({ error: 'Select the workload this service should route to.' }),
+  ports: z
+    .array(portSchema)
+    .min(1, 'Add at least one port this service answers on.')
+    .superRefine((ports, ctx) => {
+      const seenNames = new Set<string>();
+      const seenNumbers = new Set<number>();
+      ports.forEach((p, i) => {
+        if (seenNames.has(p.name)) {
+          ctx.addIssue({ code: 'custom', path: [i, 'name'], message: 'Port names must be unique.' });
+        }
+        if (seenNumbers.has(p.port)) {
+          ctx.addIssue({ code: 'custom', path: [i, 'port'], message: 'Port numbers must be unique.' });
+        }
+        seenNames.add(p.name);
+        seenNumbers.add(p.port);
+      });
+    }),
+});
+
+type CreateServiceValues = z.infer<typeof schema>;
+
+const DEFAULT_VALUES = { ports: [{ name: '', port: undefined }] } as unknown as Partial<CreateServiceValues>;
+
+function PortsField() {
+  return (
+    <Form.FieldArray name="ports">
+      {({ fields, append, remove }) => (
+        <div className="flex flex-col gap-3">
+          <div className="flex flex-col gap-1">
+            <span className="text-foreground/80 text-xs font-semibold">
+              Ports <span className="text-destructive/80">*</span>
+            </span>
+            <span className="text-muted-foreground text-xs">
+              The ports members answer on. A backend referencing this service names one by port name.
+            </span>
+          </div>
+          <div className="flex flex-col gap-2">
+            {fields.map((field, index) => (
+              <div key={field.key} className="flex items-start gap-2">
+                <Form.Field name={`ports.${index}.name`} className="flex-1">
+                  <Form.Input placeholder="e.g. http" aria-label={`Port ${index + 1} name`} />
+                </Form.Field>
+                <Form.Field name={`ports.${index}.port`} className="flex-1">
+                  <Form.Input
+                    type="number"
+                    inputMode="numeric"
+                    placeholder="e.g. 8080"
+                    aria-label={`Port ${index + 1} number`}
+                  />
+                </Form.Field>
+                <Button
+                  htmlType="button"
+                  type="quaternary"
+                  theme="borderless"
+                  size="icon"
+                  aria-label={`Remove port ${index + 1}`}
+                  disabled={fields.length === 1}
+                  onClick={() => remove(index)}>
+                  <Icon icon={Trash2Icon} className="size-4" />
+                </Button>
+              </div>
+            ))}
+          </div>
+          <Button
+            htmlType="button"
+            type="quaternary"
+            theme="outline"
+            size="small"
+            className="w-fit"
+            onClick={() => append({ name: '', port: undefined })}>
+            <Icon icon={PlusIcon} className="size-4" />
+            Add port
+          </Button>
+        </div>
+      )}
+    </Form.FieldArray>
+  );
 }
 
 export function CreateNetworkServiceDialog({
@@ -30,10 +112,6 @@ export function CreateNetworkServiceDialog({
   networkName: string | undefined;
 }) {
   const [open, setOpen] = useState(false);
-  const [name, setName] = useState('');
-  const [workloadName, setWorkloadName] = useState('');
-  const [ports, setPorts] = useState<PortRow[]>([emptyPortRow()]);
-  const [error, setError] = useState<string | undefined>(undefined);
   const mutation = useCreateNetworkService(projectId);
   const { data: interfaces } = useNetworkInterfaces(projectId, networkName);
 
@@ -41,62 +119,16 @@ export function CreateNetworkServiceDialog({
     ...new Set((interfaces ?? []).map((iface) => iface.workloadName).filter((w): w is string => !!w)),
   ].sort();
 
-  const reset = () => {
-    setName('');
-    setWorkloadName('');
-    setPorts([emptyPortRow()]);
-    setError(undefined);
-  };
-
-  const updatePort = (index: number, field: keyof PortRow, value: string | number | undefined) => {
-    setPorts((rows) => rows.map((row, i) => (i === index ? { ...row, [field]: value } : row)));
-  };
-
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-
-    if (!NAME_PATTERN.test(name)) {
-      setError('Name must be lowercase letters, numbers, and hyphens, starting and ending with a letter or number.');
-      return;
-    }
-
-    if (!workloadName) {
-      setError('Select the workload this service should route to.');
-      return;
-    }
-
-    const filledPorts = ports.filter((p) => p.name.trim() && p.port);
-    if (filledPorts.length === 0) {
-      setError('Add at least one port this service answers on.');
-      return;
-    }
-    if (!filledPorts.every((p) => NAME_PATTERN.test(p.name.trim()))) {
-      setError('Port names must be lowercase letters, numbers, and hyphens.');
-      return;
-    }
-    const portNames = filledPorts.map((p) => p.name.trim());
-    const portNumbers = filledPorts.map((p) => p.port);
-    if (new Set(portNames).size !== portNames.length) {
-      setError('Port names must be unique.');
-      return;
-    }
-    if (new Set(portNumbers).size !== portNumbers.length) {
-      setError('Port numbers must be unique.');
-      return;
-    }
-
-    setError(undefined);
-
+  const handleSubmit = (data: CreateServiceValues) => {
     mutation.mutate(
       {
-        name,
-        matchLabels: { [WORKLOAD_NAME_LABEL]: workloadName },
-        ports: filledPorts.map((p) => ({ name: p.name.trim(), port: p.port as number })),
+        name: data.name,
+        matchLabels: { [WORKLOAD_NAME_LABEL]: data.workloadName },
+        ports: data.ports,
       },
       {
         onSuccess: () => {
-          toast.success(`Created service ${name}`);
-          reset();
+          toast.success(`Created service ${data.name}`);
           setOpen(false);
         },
         onError: (err) => {
@@ -107,119 +139,50 @@ export function CreateNetworkServiceDialog({
   };
 
   return (
-    <Dialog
-      open={open}
-      onOpenChange={(next) => {
-        setOpen(next);
-        if (!next) reset();
-      }}>
-      <Dialog.Trigger asChild>
-        <Button type="primary" theme="solid" size="small" className="w-full sm:w-auto">
-          <Icon icon={PlusIcon} className="size-4" />
-          Create service
-        </Button>
-      </Dialog.Trigger>
-      <Dialog.Content>
-        <Dialog.Header
+    <>
+      <Button
+        type="primary"
+        theme="solid"
+        size="small"
+        className="w-full sm:w-auto"
+        onClick={() => setOpen(true)}>
+        <Icon icon={PlusIcon} className="size-4" />
+        Create service
+      </Button>
+      <ConformAdapter>
+        <Form.Dialog
+          open={open}
+          onOpenChange={setOpen}
           title="Create a service"
           description="A service selects network interfaces by label and load-balances traffic across every location they run in."
-        />
-        <form onSubmit={handleSubmit}>
-          <Dialog.Body className="flex flex-col gap-5 px-5">
-            <label className="flex flex-col gap-1.5">
-              <span className="text-sm font-medium">Name</span>
-              <Input
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="storefront"
-                autoFocus
-              />
-            </label>
-
-            <label className="flex flex-col gap-1.5">
-              <span className="text-sm font-medium">Workload</span>
-              <span className="text-muted-foreground text-xs">
-                The service routes to every interface belonging to this workload.
-              </span>
-              <Select value={workloadName} onValueChange={setWorkloadName}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Select a workload" />
-                </SelectTrigger>
-                <SelectContent>
-                  {workloadOptions.map((w) => (
-                    <SelectItem key={w} value={w}>
-                      {w}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </label>
-
-            <div className="flex flex-col gap-1.5">
-              <span className="text-sm font-medium">Ports</span>
-              <span className="text-muted-foreground text-xs">
-                The ports members answer on. A backend referencing this service names one by port
-                name.
-              </span>
-              <div className="flex flex-col gap-2">
-                {ports.map((row, i) => (
-                  <div key={i} className="flex items-center gap-2">
-                    <Input
-                      value={row.name}
-                      onChange={(e) => updatePort(i, 'name', e.target.value)}
-                      placeholder="http"
-                      className="flex-1"
-                    />
-                    <InputNumber
-                      value={row.port}
-                      onValueChange={(v) => updatePort(i, 'port', v)}
-                      placeholder="8080"
-                      min={1}
-                      max={65535}
-                      className="flex-1"
-                    />
-                    <Button
-                      type="secondary"
-                      theme="outline"
-                      size="icon"
-                      htmlType="button"
-                      aria-label="Remove port"
-                      onClick={() => setPorts((rows) => rows.filter((_, idx) => idx !== i))}
-                      disabled={ports.length === 1}
-                      icon={<XIcon size={14} />}
-                    />
-                  </div>
+          schema={schema}
+          defaultValues={DEFAULT_VALUES}
+          onSubmit={handleSubmit}
+          loading={mutation.isPending}
+          submitText="Create"
+          submitTextLoading="Creating..."
+          className="w-full focus:ring-0 focus:outline-none sm:max-w-xl">
+          <div className="divide-border space-y-0 divide-y *:px-5 *:py-5 [&>*:first-child]:pt-0 [&>*:last-child]:pb-0">
+            <Form.Field name="name" label="Name" required>
+              <Form.Input autoFocus placeholder="e.g. storefront" />
+            </Form.Field>
+            <Form.Field
+              name="workloadName"
+              label="Workload"
+              required
+              description="The service routes to every interface belonging to this workload.">
+              <Form.Select placeholder="Select a workload">
+                {workloadOptions.map((w) => (
+                  <Form.SelectItem key={w} value={w}>
+                    {w}
+                  </Form.SelectItem>
                 ))}
-              </div>
-              <Button
-                type="secondary"
-                theme="outline"
-                size="xs"
-                htmlType="button"
-                icon={<PlusIcon size={14} />}
-                onClick={() => setPorts((rows) => [...rows, emptyPortRow()])}
-                className="self-start">
-                Add port
-              </Button>
-            </div>
-
-            {error && <span className="text-sm text-red-500">{error}</span>}
-          </Dialog.Body>
-          <Dialog.Footer>
-            <Button
-              type="quaternary"
-              theme="borderless"
-              htmlType="button"
-              onClick={() => setOpen(false)}
-              disabled={mutation.isPending}>
-              Cancel
-            </Button>
-            <Button type="primary" theme="solid" htmlType="submit" loading={mutation.isPending}>
-              Create service
-            </Button>
-          </Dialog.Footer>
-        </form>
-      </Dialog.Content>
-    </Dialog>
+              </Form.Select>
+            </Form.Field>
+            <PortsField />
+          </div>
+        </Form.Dialog>
+      </ConformAdapter>
+    </>
   );
 }

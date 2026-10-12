@@ -1,0 +1,65 @@
+import { Button } from '@datum-cloud/datum-ui/button';
+import { Card, CardContent } from '@datum-cloud/datum-ui/card';
+import { Icon } from '@datum-cloud/datum-ui/icons';
+import { Text } from '@datum-cloud/datum-ui/typography';
+import { TriangleAlertIcon } from 'lucide-react';
+
+export function DangerCard({
+  title = 'Warning: This Action is Irreversible',
+  description = 'This action cannot be undone. Once deleted, the resource and all associated data will be permanently removed.',
+  deleteText = 'Delete',
+  loading = false,
+  disabled = false,
+  actionHidden = false,
+  onDelete,
+  'data-e2e': dataE2e,
+  children,
+}: {
+  title?: string;
+  description?: string | React.ReactNode;
+  deleteText?: string;
+  loading?: boolean;
+  disabled?: boolean;
+  actionHidden?: boolean;
+  onDelete: () => void;
+  'data-e2e'?: string;
+  children?: React.ReactNode;
+}) {
+  const isDisabled = loading || disabled;
+  return (
+    <Card size="sm" className="border-destructive relative overflow-hidden">
+      {children}
+      <CardContent className="flex flex-col items-end justify-between gap-4 md:flex-row md:items-center md:justify-between md:gap-2">
+        <div className="flex items-center gap-8">
+          <Icon
+            icon={TriangleAlertIcon}
+            size={34}
+            className="text-destructive hidden self-start stroke-1 sm:block"
+          />
+          <div className="text-destructive flex max-w-xl flex-col gap-2">
+            <Text weight="semibold">{title}</Text>
+            <Text size="2xs" className="leading-relaxed">
+              {description}
+            </Text>
+          </div>
+        </div>
+        {!actionHidden && (
+          <div className="flex w-full justify-end md:w-auto">
+            <Button
+              htmlType="button"
+              type="danger"
+              theme="solid"
+              size="xs"
+              className="w-full md:w-auto"
+              data-e2e={dataE2e}
+              disabled={isDisabled}
+              loading={loading}
+              onClick={onDelete}>
+              {loading ? 'Deleting...' : deleteText}
+            </Button>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}

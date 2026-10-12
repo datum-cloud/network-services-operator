@@ -13,6 +13,8 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@conform-to/react": "^1.21.0",
+    "@conform-to/zod": "^1.21.0",
     "@datum-cloud/datum-ui": "^3.5.0",
     "@tanstack/react-query": "5.101.4",
     "date-fns": "^4.1.0",

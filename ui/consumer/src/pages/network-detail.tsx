@@ -1,7 +1,7 @@
 import { NetworkOverview } from '../components/network-overview';
 import { NetworkResources } from '../components/network-resources';
 import { NetworkServices } from '../components/network-services';
-import { NetworkSettings } from '../components/network-settings';
+import { NetworkConfiguration } from '../components/network-configuration';
 import { PluginTabs } from '../components/plugin-tabs';
 import { ErrorOrRestrictedState, LoadingSkeleton } from '../components/states';
 import { useNetwork } from '../lib/api';
@@ -150,7 +150,7 @@ function ConfigurationTab() {
   const { network, projectId, hrefs } = useNetworkOutlet();
   const navigate = useNavigate();
   return (
-    <NetworkSettings
+    <NetworkConfiguration
       network={network}
       projectId={projectId}
       onDeleted={() => navigate(hrefs.networks)}

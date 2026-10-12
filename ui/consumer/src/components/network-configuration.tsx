@@ -6,7 +6,6 @@ import { FieldLabel } from './field-label';
 import { StatusBadge } from './status-badge';
 import { useDeleteNetwork, useUpdateNetwork } from '../lib/api';
 import { readyStatusToBadgeType, readyStatusToLabel, type Network } from '../schema';
-import { Badge } from '@datum-cloud/datum-ui/badge';
 import { Button } from '@datum-cloud/datum-ui/button';
 import {
   Card,
@@ -267,9 +266,9 @@ function IPConfigurationCard({
           <span className="flex flex-wrap items-center gap-2">
             {network.ipFamilies.length > 0 ? (
               network.ipFamilies.map((family) => (
-                <Badge key={family} type="muted" theme="light">
+                <StatusBadge key={family} type="muted">
                   {family}
-                </Badge>
+                </StatusBadge>
               ))
             ) : (
               <Empty />

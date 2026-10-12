@@ -152,9 +152,9 @@ function IPConfigurationCard({ network }: { network: Network }) {
               network.ipFamilies.length > 0 ? (
                 <span className="flex gap-2">
                   {network.ipFamilies.map((family) => (
-                    <Badge key={family} type="muted" theme="light">
+                    <StatusBadge key={family} type="muted">
                       {family}
-                    </Badge>
+                    </StatusBadge>
                   ))}
                 </span>
               ) : (

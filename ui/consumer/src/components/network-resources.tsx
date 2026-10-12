@@ -1,4 +1,6 @@
+import { SortableHeader } from './sortable-header';
 import { ErrorOrRestrictedState, LoadingSkeleton } from './states';
+import { StatusBadge } from './status-badge';
 import {
   computeWorkloadHref,
   useNetworkInterfaces,
@@ -17,7 +19,7 @@ import {
   type NetworkService,
   type Subnet,
 } from '../schema';
-import { Badge } from '@datum-cloud/datum-ui/badge';
+import { Card, CardContent } from '@datum-cloud/datum-ui/card';
 import type { DataTableFeatures } from '@datum-cloud/datum-ui/data-table';
 import { DateTime } from '@datum-cloud/datum-ui/date-time';
 import { EmptyContent } from '@datum-cloud/datum-ui/empty-content';
@@ -97,11 +99,11 @@ function Summary({ groups }: { groups: RegionGroup[] }) {
 function RegionTitle({ group }: { group: RegionGroup }) {
   return (
     <span className="flex items-center gap-2" data-testid="region-row">
-      <Icon icon={MapPinIcon} size={14} />
-      <Text size="sm" weight="medium">
+      <Icon icon={MapPinIcon} size={14} className="text-muted-foreground" />
+      <Text size="xs" weight="medium">
         {group.region}
       </Text>
-      <Text size="sm" textColor="muted" code>
+      <Text size="xs" textColor="muted" className="font-mono">
         {(group.subnet && subnetCidr(group.subnet)) ?? '—'}
       </Text>
     </span>
@@ -112,12 +114,12 @@ function RegionMeta({ group }: { group: RegionGroup }) {
   const status = regionStatus(group.subnet);
   return (
     <span className="flex items-center gap-3" data-testid="region-meta">
-      <Text size="sm" textColor="muted">
+      <Text size="xs" textColor="muted">
         {plural(group.interfaces.length, 'instance', 'instances')}
       </Text>
-      <Badge type={status.usable ? 'success' : group.subnet ? 'danger' : 'muted'} theme="light">
+      <StatusBadge type={status.usable ? 'success' : group.subnet ? 'danger' : 'muted'}>
         {status.label}
-      </Badge>
+      </StatusBadge>
     </span>
   );
 }
@@ -136,14 +138,14 @@ function WorkloadCell({
       {projectId && iface.workloadName ? (
         <Link
           to={computeWorkloadHref(projectId, iface.workloadName)}
-          className="text-sm underline underline-offset-2">
+          className="font-medium hover:underline">
           {iface.workloadName}
         </Link>
       ) : (
-        <Text size="sm">{iface.workloadName ?? iface.name}</Text>
+        <Text className="font-medium">{iface.workloadName ?? iface.name}</Text>
       )}
       {showIndex && iface.instanceIndex !== undefined && (
-        <Text size="sm" textColor="muted">
+        <Text textColor="muted">
           {' '}
           · instance {iface.instanceIndex}
         </Text>
@@ -154,6 +156,12 @@ function WorkloadCell({
 
 type InterfaceColumn = ColumnDef<DataTableFeatures, NetworkInterface, unknown>;
 
+const STATUS_SORT_RANK: Record<NetworkInterface['holderAvailableStatus'], number> = {
+  False: 0,
+  Unknown: 1,
+  True: 2,
+};
+
 function resourceColumns(
   projectId: string | undefined,
   servicesByInterface: Map<NetworkInterface, string[]>,
@@ -163,6 +171,7 @@ function resourceColumns(
   const servicesColumn: InterfaceColumn = {
     id: 'services',
     header: 'Services',
+    enableSorting: false,
     cell: ({ row }) => {
       const names = servicesByInterface.get(row.original) ?? [];
       return (
@@ -175,7 +184,8 @@ function resourceColumns(
   return [
     {
       id: 'workload',
-      header: 'Workload',
+      accessorFn: (iface) => `${iface.workloadName ?? iface.name}/${iface.instanceIndex ?? 0}`,
+      header: ({ column }) => <SortableHeader column={column} title="Workload" />,
       cell: ({ row }) => (
         <WorkloadCell iface={row.original} projectId={projectId} showIndex={hasSiblings(row.original)} />
       ),
@@ -183,8 +193,9 @@ function resourceColumns(
     {
       id: 'address',
       header: 'Address',
+      enableSorting: false,
       cell: ({ row }) => (
-        <Text size="sm" textColor="muted" code>
+        <Text size="xs" textColor="muted" className="font-mono">
           {networkInterfacePrimaryAddress(row.original) ?? '—'}
         </Text>
       ),
@@ -192,20 +203,23 @@ function resourceColumns(
     ...(showServices ? [servicesColumn] : []),
     {
       id: 'status',
-      header: 'Status',
+      accessorFn: (iface) => STATUS_SORT_RANK[iface.holderAvailableStatus],
+      sortDescFirst: false,
+      header: ({ column }) => <SortableHeader column={column} title="Status" />,
       size: 140,
       cell: ({ row }) => (
-        <Badge type={readyStatusToBadgeType(row.original.holderAvailableStatus)} theme="light">
+        <StatusBadge type={readyStatusToBadgeType(row.original.holderAvailableStatus)}>
           {holderAvailableStatusToLabel(
             row.original.holderAvailableStatus,
             row.original.holderAvailableReason
           )}
-        </Badge>
+        </StatusBadge>
       ),
     },
     {
       id: 'age',
-      header: 'Age',
+      accessorFn: (iface) => iface.createdAt.getTime(),
+      header: ({ column }) => <SortableHeader column={column} title="Created" />,
       size: 140,
       cell: ({ row }) => (
         <DateTime
@@ -270,26 +284,37 @@ function ResourcesBody({
   return (
     <>
       <Summary groups={groups} />
-      <div data-testid="networking-plugin-resources-table">
-        <GroupedTable<NetworkInterface>
-          columns={resourceColumns(projectId, servicesByInterface, showServices, hasSiblings)}
-          groups={groups.map((group) => ({
-            id: group.region,
-            title: <RegionTitle group={group} />,
-            meta: <RegionMeta group={group} />,
-            rows: group.interfaces,
-          }))}
-          defaultExpanded="all"
-          getRowId={(iface) => iface.uid || iface.name}
-          empty={
-            <EmptyContent
-              title="no workloads on this network yet"
-              subtitle="This network has an address range in each region above. Deploy a workload on it to see each instance here, with its address and whether it's serving traffic."
-            />
-          }
-          groupHeaderClassName="bg-muted/40"
-        />
-      </div>
+      <Card
+        size="sm"
+        sectioned
+        className="min-w-0 overflow-hidden"
+        data-testid="networking-plugin-resources-table">
+        <CardContent padding="none">
+          <GroupedTable<NetworkInterface>
+            columns={resourceColumns(projectId, servicesByInterface, showServices, hasSiblings)}
+            groups={groups.map((group) => ({
+              id: group.region,
+              title: <RegionTitle group={group} />,
+              meta: <RegionMeta group={group} />,
+              rows: group.interfaces,
+            }))}
+            defaultExpanded="all"
+            getRowId={(iface) => iface.uid || iface.name}
+            empty={
+              <EmptyContent
+                title="no workloads on this network yet"
+                subtitle="This network has an address range in each region above. Deploy a workload on it to see each instance here, with its address and whether it's serving traffic."
+              />
+            }
+            enableSorting
+            className="usage-summary-grouped-table min-w-0 [&>div:last-child]:rounded-none [&>div:last-child]:border-0"
+            tableClassName="[&_th:not(:last-child)]:border-r [&_th]:border-border [&_td:first-child]:pl-4 [&_td:last-child]:pr-4 [&_th:first-child]:pl-4 [&_th:last-child]:pr-4 sm:[&_td:first-child]:pl-5 sm:[&_td:last-child]:pr-5 sm:[&_th:first-child]:pl-5 sm:[&_th:last-child]:pr-5"
+            headerRowClassName="bg-background hover:bg-background border-b border-border"
+            headerCellClassName="text-foreground h-10 text-xs font-medium"
+            groupHeaderClassName="bg-muted/40 text-foreground h-10 px-4 text-xs font-medium sm:px-5"
+          />
+        </CardContent>
+      </Card>
     </>
   );
 }

@@ -30,6 +30,8 @@ import (
 // comparison is the only thing that will.
 const networkInterfaceSweepInterval = 10 * time.Minute
 
+const networkInterfaceWriteBackControllerName = "networkinterface_writeback"
+
 // NetworkInterfaceWriteBackReconciler publishes a cell's interfaces to the
 // federation hub, which is the only plane both a cell and the control planes
 // serving projects can reach. It follows the path an Instance already takes out
@@ -78,12 +80,10 @@ func (r *NetworkInterfaceWriteBackReconciler) publish(
 	cl client.Client,
 	key client.ObjectKey,
 ) error {
-	hub := r.HubCluster.GetClient()
-
 	var iface networkingv1alpha.NetworkInterface
 	if err := cl.Get(ctx, key, &iface); err != nil {
 		if apierrors.IsNotFound(err) {
-			return collectProjection(ctx, hub, key)
+			return collectProjection(ctx, r.HubCluster, key)
 		}
 		return err
 	}
@@ -92,7 +92,7 @@ func (r *NetworkInterfaceWriteBackReconciler) publish(
 	// rather than when the original finishes releasing keeps a consumer from
 	// reading an address the cell has started handing back.
 	if !iface.DeletionTimestamp.IsZero() {
-		return collectProjection(ctx, hub, key)
+		return collectProjection(ctx, r.HubCluster, key)
 	}
 
 	// A copy exists to be handed to a project. An interface whose namespace
@@ -120,7 +120,8 @@ func (r *NetworkInterfaceWriteBackReconciler) publish(
 		downstreamclient.UpstreamOwnerNamespaceLabel:   routing.projectNamespace,
 	}
 
-	if err := writeProjection(ctx, hub, iface.Namespace, desired, routingLabels, nil); err != nil {
+	if err := writeProjection(ctx, r.HubCluster, fieldOwner(networkInterfaceWriteBackControllerName),
+		iface.Namespace, desired, routingLabels, nil); err != nil {
 		// The hub namespace is made by the federation that carries a project's
 		// work to this cell. Nothing here should invent one.
 		if apierrors.IsNotFound(err) {
@@ -174,7 +175,7 @@ func (r *NetworkInterfaceWriteBackReconciler) sweep(ctx context.Context) error {
 
 		logger.Info("collecting a published interface with no interface behind it",
 			"namespace", key.Namespace, jsonKeyName, key.Name)
-		if err := collectProjection(ctx, r.HubCluster.GetClient(), key); err != nil {
+		if err := collectProjection(ctx, r.HubCluster, key); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -226,6 +227,6 @@ func (r *NetworkInterfaceWriteBackReconciler) SetupWithManager(mgr mcmanager.Man
 
 	return mcbuilder.ControllerManagedBy(mgr).
 		For(&networkingv1alpha.NetworkInterface{}, mcbuilder.WithEngageWithLocalCluster(false)).
-		Named("networkinterface_writeback").
+		Named(networkInterfaceWriteBackControllerName).
 		Complete(r)
 }

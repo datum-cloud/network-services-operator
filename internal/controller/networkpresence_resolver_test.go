@@ -37,7 +37,7 @@ type readinessProvider struct {
 
 func (p readinessProvider) ProjectReady(context.Context, string) (bool, error) { return p.ready, p.err }
 
-func TestClientForProjectTellsAGoneProjectFromOneNotRegisteredYet(t *testing.T) {
+func TestClusterForProjectTellsAGoneProjectFromOneNotRegisteredYet(t *testing.T) {
 	notFound := fmt.Errorf("cluster p: %w", multicluster.ErrClusterNotFound)
 
 	for _, tc := range []struct {
@@ -54,7 +54,7 @@ func TestClientForProjectTellsAGoneProjectFromOneNotRegisteredYet(t *testing.T) 
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			resolver := NewProjectClusterResolver(&resolverManager{err: tc.err, provider: tc.provider})
-			_, err := resolver.ClientForProject(context.Background(), "p")
+			_, err := resolver.ClusterForProject(context.Background(), "p")
 			require.Error(t, err)
 			assert.Equal(t, tc.gone, errors.Is(err, multicluster.ErrClusterNotFound))
 		})

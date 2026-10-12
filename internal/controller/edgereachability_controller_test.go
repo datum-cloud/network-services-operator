@@ -54,7 +54,7 @@ func newExposure(t *testing.T) *exposure {
 		projectNamespace: namespace.Name,
 		hubNamespace:     hubNamespace.Name,
 		reconciler: &EdgeReachabilityReconciler{
-			DownstreamCluster: &hubFakeCluster{scheme: hubPlane.Scheme(), client: hubPlane},
+			DownstreamCluster: &planeCluster{scheme: hubPlane.Scheme(), client: hubPlane},
 		},
 	}
 }

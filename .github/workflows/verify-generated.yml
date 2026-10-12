@@ -1,0 +1,24 @@
+name: Verify Generated Files
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-generated:
+    name: Verify Generated Files
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone the code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '~1.26'
+
+      - name: Verify generated files
+        run: make verify-generated

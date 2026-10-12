@@ -71,7 +71,7 @@ The first two names represent automatic Compute and Connect publications. The th
 ### Risks and mitigations
 
 - Cross-VPC disclosure: authorize the VPC lifetime and service destination before lookup; test overlapping names and forged identities.
-- Stale configuration: preserve authorization deadlines through every projection and enforce expiry at the edge.
+- Stale configuration: preserve source lifetimes and version fences through every projection; explicit withdrawal removes access.
 - Ambiguous guest routing: qualify resolver selection for workloads with multiple network interfaces before enabling that configuration.
 
 ## Design Details
@@ -136,7 +136,7 @@ DNS selects the context from the authorized service destination before cache loo
 
 ### API design
 
-These examples are proposed contracts. Network services fields below are additions requiring API implementation. DNS examples use the [DNS control-plane contract](https://github.com/datum-cloud/dns-operator/pull/229). UIDs and deadlines are illustrative; controllers write the generated objects and status.
+These examples are proposed contracts. Network services fields below are additions requiring API implementation. DNS examples use the [DNS control-plane contract](https://github.com/datum-cloud/dns-operator/pull/229). UIDs and version values are illustrative; controllers write the generated objects and status.
 
 #### Network policy and DNS access
 
@@ -184,15 +184,13 @@ spec:
   port: 53
   transports: [UDP, TCP]
   authorization:
-    # DNS issues the context epoch; network services preserve it on renewals.
+    # DNS issues the context epoch; network services preserve it across projections.
     writerEpoch: 3
-    # Persist monotonic renewal sequences using conditional API writes.
+    # Advance the sequence when access intent changes; use conditional API writes.
     sequence: 27
-    # Preserve the authorization deadline during replication.
-    validUntil: "2026-10-09T20:05:00Z"
 ```
 
-Network services create access only for an authorized network location. They coordinate the DNS binding with generic private-service intent that pins the consumer VPC lifetime and backend destination. Users and record publishers cannot authorize their own network access.
+Network services create access only for an authorized network location. They coordinate the DNS binding with generic private-service intent that pins the consumer VPC lifetime and backend destination. RBAC controls who can publish network access intent. Galactic validates the pinned consumer VPC and supports persistent authorization for DNS private endpoints.
 
 #### Resolver settings delivered to workloads
 
@@ -219,8 +217,6 @@ spec:
       uid: 44444444-4444-4444-8444-444444444444
     writerEpoch: 3
     sequence: 27
-    # The deadline cannot exceed either DNS or network authorization.
-    validUntil: "2026-10-09T20:05:00Z"
     # The private-service frontend uses this address inside the consumer VPC.
     nameservers: ["fd53::53"]
     # Use the DNS-allocated managed suffix for relative names.
@@ -244,14 +240,17 @@ spec:
       uid: 44444444-4444-4444-8444-444444444444
     writerEpoch: 3
     sequence: 27
-    validUntil: "2026-10-09T20:05:00Z"
     nameservers: ["fd53::53"]
     searches: [datum.internal]
 ```
 
-Admission restricts resolver-settings writes to network services and `DNSConfigured` reports to trusted providers. Authenticate source projects through project routing and protected federation metadata. Projections preserve source identity and fencing values; UIDs assigned to replicated copies cannot replace source lifetimes.
+RBAC restricts resolver-settings writes to network services and configuration reports to trusted providers. Authenticate source projects through project routing and protected federation metadata. Projections preserve source identity and fencing values; UIDs assigned to replicated copies cannot replace source lifetimes.
 
-Publish settings only after DNS reports the access sequence ready and Galactic reports the corresponding policy generation programmed on required nodes. `NetworkContext` reports a proposed `DNSReady` condition separately from network readiness. Providers report `DNSConfigured` after applying current, unexpired settings, reconcile updates, and reject stale revisions.
+Galactic private-service policies use `authorization.persistent: true` and retain
+VPC identity checks. Deletion or a confirmed change to the selected VPC withdraws
+access. Missing programming observations retain the applied path.
+
+Publish settings only after DNS reports the access sequence ready and Galactic reports the corresponding policy generation programmed on required nodes. `NetworkContext` reports a proposed `DNSReady` condition separately from network readiness. Providers report `DNSConfigured` after applying current settings, reconcile updates, and reject stale revisions.
 
 The initial guest contract supports one managed DNS context. A provider must reject unsupported combinations of managed contexts across interfaces rather than merge private resolver settings. A transient failure must not redirect private queries to a public resolver.
 
@@ -259,9 +258,9 @@ The initial guest contract supports one managed DNS context. A provider must rej
 
 Products reserve names through `DNSRegistration` and publish eligible addresses through `DNSRecordContribution`. A trusted issuer authorizes publishers through `DNSContributionGrant`; publication credentials cannot write grants or resolver access. Compute owns instance and service eligibility; Connect owns export eligibility. DNS and network services do not inspect Compute resources.
 
-Reconcile access, publication, and settings independently per project and region. Persist sequences, use conditional writes, and resume from committed state after takeover. Failure in one region must not block healthy regions. Replication and retries preserve expiry times.
+Reconcile access, publication, and settings independently per project and region. Persist sequences, use conditional writes, and resume from committed state after takeover. Failure in one region must not block healthy regions. Replication and retries preserve lifetimes and version fences.
 
-Products withdraw unhealthy endpoints; DNS also expires contributions locally when publishers stop. Withdrawal bounds include cached-answer TTLs. Removing a location's last consumer clears its settings; removing the region's last consumer stops access renewal. Network deletion retires the DNS context. Recreated networks and retained interfaces cannot inherit retired authorization.
+Products explicitly withdraw unhealthy endpoints. Unavailable observations retain the last reported endpoint state. Withdrawal bounds include cached-answer TTLs. Removing a location's last consumer clears its settings; removing the region's last consumer withdraws access. Network deletion retires the DNS context. Recreated networks and retained interfaces cannot inherit retired authorization.
 
 ## Production Readiness Review Questionnaire
 
@@ -279,7 +278,7 @@ Measure renewal failures, settings age, guest-configuration time, and withdrawal
 
 ### Dependencies
 
-Require DNS serving and project APIs, authenticated clients, trusted federation metadata, Galactic private connectivity, and providers that refresh resolver settings. During API outages, authorization expires locally and unverified settings stay unready.
+Require DNS serving and project APIs, authenticated clients, trusted federation metadata, Galactic private connectivity, and providers that refresh resolver settings. During API outages, applied private-service access and resolver settings persist. New settings require verified programming; unavailable observations report unknown readiness.
 
 ### Scalability
 
@@ -287,7 +286,7 @@ Locations sharing a regional path share access. Interface settings scale with in
 
 ### Troubleshooting
 
-Inspect `DNSReady` and `DNSConfigured`, then correlate source project, context UID, access UID, epoch, sequence, and deadline. Querying an explicit resolver address does not verify guest configuration.
+Inspect `DNSReady` and `DNSConfigured`, then correlate source project, context UID, access UID, epoch and sequence. Querying an explicit resolver address does not verify guest configuration.
 
 ## Implementation History
 
@@ -295,7 +294,7 @@ This enhancement is provisional. Release acceptance criteria require qualificati
 
 ## Drawbacks
 
-Guest DNS readiness depends on both serving and private connectivity. Frequent lease renewals and interface updates consume API capacity and require bounded fan-out.
+Guest DNS readiness depends on both serving and private connectivity. Event-driven access changes and interface projection require bounded fan-out.
 
 ## Alternatives
 

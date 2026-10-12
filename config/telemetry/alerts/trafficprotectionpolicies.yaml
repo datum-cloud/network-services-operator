@@ -1,0 +1,52 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: nso-slo-trafficprotectionpolicies
+  namespace: nso-slo
+spec:
+  groups:
+  - name: nso-slo
+    interval: 30s
+    rules:
+    # One series per policy target. Programmed is True only when every edge
+    # that holds the policy has built its current generation, so a target that
+    # stays Accepted and not Programmed is an edge that missed a rebuild.
+    - alert: TrafficProtectionPolicyNotProgrammedSLOViolation
+      expr: |
+        (
+          max by (resourcemanager_datumapis_com_project_name, resource_namespace, resource_name, ancestor_kind, ancestor_name, ancestor_section) (
+            time() - datum_cloud_networking_trafficprotectionpolicy_status_ancestor_programmed_last_transition_time
+          ) > 300
+          and on (resourcemanager_datumapis_com_project_name, resource_namespace, resource_name, ancestor_kind, ancestor_name, ancestor_section)
+          max by (resourcemanager_datumapis_com_project_name, resource_namespace, resource_name, ancestor_kind, ancestor_name, ancestor_section) (
+            datum_cloud_networking_trafficprotectionpolicy_status_ancestor_programmed
+          ) == 0
+          and on (resourcemanager_datumapis_com_project_name, resource_namespace, resource_name, ancestor_kind, ancestor_name, ancestor_section)
+          max by (resourcemanager_datumapis_com_project_name, resource_namespace, resource_name, ancestor_kind, ancestor_name, ancestor_section) (
+            datum_cloud_networking_trafficprotectionpolicy_status_ancestor_accepted
+          ) == 1
+        )
+        unless on (resourcemanager_datumapis_com_project_name, resource_namespace, resource_name, ancestor_kind, ancestor_name, ancestor_section)
+        (
+          max by (resourcemanager_datumapis_com_project_name, resource_namespace, resource_name, ancestor_kind, ancestor_name, ancestor_section) (
+            max_over_time(datum_cloud_networking_trafficprotectionpolicy_status_ancestor_programmed[7d])
+          ) == 0
+          and on (resourcemanager_datumapis_com_project_name, resource_namespace, resource_name)
+          max by (resourcemanager_datumapis_com_project_name, resource_namespace, resource_name) (
+            time() - datum_cloud_networking_trafficprotectionpolicy_created
+          ) > 604800
+        )
+      for: 0s
+      labels:
+        severity: warning
+        subject: "{{ $labels.resourcemanager_datumapis_com_project_name }}/{{ $labels.resource_namespace }}/{{ $labels.resource_name }}"
+        subject_kind: TrafficProtectionPolicy
+        subject_name: "{{ $labels.resource_name }}"
+        subject_namespace: "{{ $labels.resource_namespace }}"
+        subject_group: networking.datumapis.com
+        slo_violation: "true"
+        service: network-services
+        team: sre
+      annotations:
+        summary: "TrafficProtectionPolicy {{ $labels.resource_name }} is not programmed on {{ $labels.ancestor_kind }} {{ $labels.ancestor_name }}"
+        description: "TrafficProtectionPolicy {{ $labels.resource_name }} in namespace {{ $labels.resource_namespace }} is Accepted on {{ $labels.ancestor_kind }} {{ $labels.ancestor_name }}, and its Programmed condition has been False for {{ $value }} seconds. An edge that holds the policy has not built its current generation."

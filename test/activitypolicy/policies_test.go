@@ -69,6 +69,12 @@ func gatesOn2xx(match string) bool {
 		strings.Contains(match, "audit.responseStatus.code < 300")
 }
 
+// matchesQuotaDenial reports whether a rule records a create that Milo's
+// quota admission rejected. These rules match a 403 on purpose.
+func matchesQuotaDenial(match string) bool {
+	return strings.Contains(match, "audit.annotations['quota.miloapis.com/outcome'] == 'denied'")
+}
+
 func skipsDryRun(match string) bool {
 	return strings.Contains(match, "audit.requestURI.contains('dryRun=')")
 }
@@ -186,7 +192,7 @@ func TestWriteRulesGateOnOutcome(t *testing.T) {
 	for _, pol := range loadPolicies(t) {
 		for _, r := range pol.Spec.AuditRules {
 			v := verbOf(r.Match)
-			if v == "other" {
+			if v == "other" || matchesQuotaDenial(r.Match) {
 				continue
 			}
 			t.Run(pol.Name+"/"+r.Name, func(t *testing.T) {
@@ -211,7 +217,7 @@ func TestWriteRulesFireOnlyOnSuccess(t *testing.T) {
 	for _, pol := range loadPolicies(t) {
 		for _, r := range pol.Spec.AuditRules {
 			v := verbOf(r.Match)
-			if v == "other" {
+			if v == "other" || matchesQuotaDenial(r.Match) {
 				continue
 			}
 			t.Run(pol.Name+"/"+r.Name, func(t *testing.T) {

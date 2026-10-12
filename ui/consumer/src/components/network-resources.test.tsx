@@ -119,7 +119,7 @@ describe('NetworkResources', () => {
   it('shows an empty state when the network is in no region and has no workloads', () => {
     render_();
 
-    expect(screen.getByText(/isn't present anywhere yet/)).toBeInTheDocument();
+    expect(screen.getByText(/Not in any region yet/)).toBeInTheDocument();
     expect(screen.queryByTestId('networking-plugin-resources-table')).not.toBeInTheDocument();
   });
 
@@ -238,7 +238,7 @@ describe('NetworkResources', () => {
     useSubnetsMock.mockReturnValue(result([makeSubnet()]));
     render_();
 
-    expect(screen.getByText(/no workloads on this network yet/)).toBeInTheDocument();
+    expect(screen.getByText(/No workloads yet/)).toBeInTheDocument();
     expect(screen.getByTestId('networking-plugin-resources-summary')).toHaveTextContent('1 region');
   });
 

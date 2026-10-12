@@ -186,12 +186,17 @@ export function computeWorkloadHref(projectId: string, workloadName: string): st
   return `/project/${projectId}/services/compute-datumapis-com/${encodeURIComponent(workloadName)}`;
 }
 
-interface EnableIPv6Args {
-  projectId: string;
-  network: Network;
+export interface NetworkSpecPatch {
+  ipFamilies?: ('IPv4' | 'IPv6')[];
+  mtu?: number;
 }
 
-async function enableIPv6({ projectId, network }: EnableIPv6Args): Promise<void> {
+async function patchNetwork(
+  projectId: string,
+  network: Network,
+  spec: NetworkSpecPatch,
+  action: string
+): Promise<void> {
   const url = `${getProjectScopedBase(projectId)}${NETWORKS_PATH}/${encodeURIComponent(network.name)}`;
   const res = await fetch(url, {
     method: 'PATCH',
@@ -201,11 +206,11 @@ async function enableIPv6({ projectId, network }: EnableIPv6Args): Promise<void>
     },
     body: JSON.stringify({
       metadata: { resourceVersion: network.resourceVersion },
-      spec: { ipFamilies: [...new Set([...network.ipFamilies, 'IPv6'])] },
+      spec,
     }),
   });
   if (!res.ok) {
-    let message = `Request failed (${res.status}): enable IPv6 on ${network.name}`;
+    let message = `Request failed (${res.status}): ${action} ${network.name}`;
     try {
       const body = (await res.json()) as { message?: string };
       if (body.message) message = body.message;
@@ -215,17 +220,42 @@ async function enableIPv6({ projectId, network }: EnableIPv6Args): Promise<void>
   }
 }
 
-export function useEnableIPv6(
-  projectId: string | undefined
-): UseMutationResult<void, ApiError, Network> {
+function useNetworkPatch<TInput>(
+  projectId: string | undefined,
+  toPatch: (input: TInput) => { network: Network; spec: NetworkSpecPatch; action: string }
+): UseMutationResult<void, ApiError, TInput> {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (network: Network) => enableIPv6({ projectId: projectId as string, network }),
-    onSuccess: (_data, network) => {
+    mutationFn: (input: TInput) => {
+      const { network, spec, action } = toPatch(input);
+      return patchNetwork(projectId as string, network, spec, action);
+    },
+    onSuccess: (_data, input) => {
+      const { network } = toPatch(input);
       void queryClient.invalidateQueries({ queryKey: [PLUGIN_ID, 'networks', projectId] });
       void queryClient.invalidateQueries({ queryKey: [PLUGIN_ID, 'network', projectId, network.name] });
     },
   });
+}
+
+export function useEnableIPv6(
+  projectId: string | undefined
+): UseMutationResult<void, ApiError, Network> {
+  return useNetworkPatch(projectId, (network: Network) => ({
+    network,
+    spec: { ipFamilies: [...new Set([...network.ipFamilies, 'IPv6' as const])] },
+    action: 'enable IPv6 on',
+  }));
+}
+
+export function useUpdateNetwork(
+  projectId: string | undefined
+): UseMutationResult<void, ApiError, { network: Network; spec: NetworkSpecPatch }> {
+  return useNetworkPatch(projectId, ({ network, spec }: { network: Network; spec: NetworkSpecPatch }) => ({
+    network,
+    spec,
+    action: 'update network',
+  }));
 }
 
 export interface CreateNetworkInput {

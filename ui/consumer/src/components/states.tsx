@@ -1,19 +1,8 @@
 import { ApiError } from '../lib/api';
+import { Button } from '@datum-cloud/datum-ui/button';
 import { Card, CardContent } from '@datum-cloud/datum-ui/card';
 import { Icon } from '@datum-cloud/datum-ui/icons';
-import { Skeleton } from '@datum-cloud/datum-ui/skeleton';
 import { LockIcon, ServerCrashIcon } from 'lucide-react';
-
-export function LoadingSkeleton() {
-  return (
-    <div data-testid="networking-plugin-loading" className="flex flex-col gap-4">
-      <Skeleton className="h-10 w-full rounded-lg" />
-      <Skeleton className="h-14 w-full rounded-lg" />
-      <Skeleton className="h-14 w-full rounded-lg" />
-      <Skeleton className="h-14 w-full rounded-lg" />
-    </div>
-  );
-}
 
 export function RestrictedState({ message }: { message: string }) {
   return (
@@ -43,12 +32,9 @@ export function ErrorState({ error, onRetry }: { error: unknown; onRetry: () => 
             <p className="text-sm font-semibold">Failed to load</p>
             <p className="text-muted-foreground mt-1 text-sm">{message}</p>
           </div>
-          <button
-            type="button"
-            onClick={onRetry}
-            className="border-border hover:bg-muted mt-1 rounded-md border px-3 py-1.5 text-sm font-medium transition-colors">
+          <Button type="secondary" theme="outline" size="small" htmlType="button" onClick={onRetry}>
             Retry
-          </button>
+          </Button>
         </CardContent>
       </Card>
     </div>
@@ -68,4 +54,26 @@ export function ErrorOrRestrictedState({
     return <RestrictedState message={restrictedMessage} />;
   }
   return <ErrorState error={error} onRetry={onRetry} />;
+}
+
+export function SectionEmpty({
+  title,
+  description,
+  action,
+  testId,
+}: {
+  title: string;
+  description?: string;
+  action?: React.ReactNode;
+  testId?: string;
+}) {
+  return (
+    <Card size="sm" data-testid={testId}>
+      <CardContent className="flex flex-col items-center gap-1 py-8 text-center">
+        <p className="text-sm font-medium">{title}</p>
+        {description && <p className="text-muted-foreground max-w-md text-sm">{description}</p>}
+        {action && <div className="mt-3">{action}</div>}
+      </CardContent>
+    </Card>
+  );
 }

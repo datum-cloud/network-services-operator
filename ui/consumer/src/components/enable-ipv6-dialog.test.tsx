@@ -22,7 +22,11 @@ function renderDialog(network: Network) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={client}>
-      <EnableIPv6Dialog projectId="demo-project" network={network} />
+      <EnableIPv6Dialog
+        projectId="demo-project"
+        network={network}
+        trigger={<button type="button">Enable IPv6</button>}
+      />
     </QueryClientProvider>
   );
 }

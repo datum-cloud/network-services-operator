@@ -1,14 +1,7 @@
-import { ErrorOrRestrictedState, ErrorState, LoadingSkeleton, RestrictedState } from './states';
+import { ErrorOrRestrictedState, ErrorState, RestrictedState } from './states';
 import { ApiError } from '../lib/api';
 import { render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
-
-describe('LoadingSkeleton', () => {
-  it('renders a content-only skeleton', () => {
-    render(<LoadingSkeleton />);
-    expect(screen.getByTestId('networking-plugin-loading')).toBeInTheDocument();
-  });
-});
 
 describe('RestrictedState', () => {
   it('renders the restricted message', () => {

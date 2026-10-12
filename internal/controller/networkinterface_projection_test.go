@@ -337,7 +337,7 @@ func (v *visibility) projectCopy() (*networkingv1alpha.NetworkInterface, bool) {
 
 func TestInterfaceReachesTheProjectControlPlane(t *testing.T) {
 	v := newVisibility(t)
-	v.interfaceOnCell()
+	source := v.interfaceOnCell()
 
 	v.publish()
 	v.handToProject()
@@ -357,6 +357,24 @@ func TestInterfaceReachesTheProjectControlPlane(t *testing.T) {
 
 	require.Equal(t, testLocationName, copied.Labels[networkingv1alpha.NetworkInterfaceLocationLabel])
 	require.Equal(t, boundInterfaceName, copied.Labels[networkingv1alpha.NetworkInterfaceHolderLabel])
+	require.Equal(t, v.cellNamespace, copied.Labels[networkingv1alpha.NetworkInterfaceSourceNamespaceLabel])
+	require.Equal(t, string(source.UID), copied.Labels[networkingv1alpha.NetworkInterfaceSourceUIDLabel])
+}
+
+func TestProjectedInterfaceSourceIdentityChangesWithUID(t *testing.T) {
+	source := &networkingv1alpha.NetworkInterface{ObjectMeta: metav1.ObjectMeta{
+		Namespace: "cell", Name: "nic", UID: "first",
+		Labels: map[string]string{networkingv1alpha.NetworkInterfaceSourceUIDLabel: "forged"},
+	}}
+	first := projectedInterface(source, "dfw")
+	require.Equal(t, "first", first.Labels[networkingv1alpha.NetworkInterfaceSourceUIDLabel])
+	source.UID = "second"
+	second := projectedInterface(source, "dfw")
+	require.Equal(t, "second", second.Labels[networkingv1alpha.NetworkInterfaceSourceUIDLabel])
+	require.Equal(t, "cell", second.Labels[networkingv1alpha.NetworkInterfaceSourceNamespaceLabel])
+	source.UID = ""
+	third := projectedInterface(source, "dfw")
+	require.NotContains(t, third.Labels, networkingv1alpha.NetworkInterfaceSourceUIDLabel)
 }
 
 func TestCopyDropsWhatOnlyMeansSomethingOnTheCell(t *testing.T) {

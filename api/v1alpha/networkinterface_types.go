@@ -439,4 +439,8 @@ const (
 	// published from, so a collector can find the source of a copy it is looking
 	// at.
 	NetworkInterfaceSourceNamespaceLabel = "networking.datumapis.com/source-namespace"
+
+	// NetworkInterfaceSourceUIDLabel identifies the exact cell interface behind
+	// a published copy. A replacement may reuse the name, but never the UID.
+	NetworkInterfaceSourceUIDLabel = "networking.datumapis.com/source-uid"
 )

@@ -29,18 +29,18 @@ latest-milestone: "v0.x"
 A project can publish a `NetworkService` on a public TCP or UDP port through a
 `NetworkLoadBalancer`. The load balancer owns listeners and public address
 requests; a separate `NetworkLoadBalancerRoute` connects a listener to the
-service. Consumers choose distinct IPs in each location, one IP shared across
-locations, or both on the same listener. Status shows the allocated IPs and
-where each is announced. Active health checks keep failed backends out of
-rotation. TLS listeners can route by SNI and either pass encryption to the
-backend or terminate it with a Datum-managed certificate.
+service. Each selected location receives a distinct public IP. Status shows
+the allocated IP and announcement state for each location. Active health
+checks keep failed backends out of rotation. TLS listeners can route by SNI and
+either pass encryption to the backend or terminate it with a Datum-managed
+certificate.
 
 ## Motivation
 
 `NetworkService` identifies workloads and their ports, but does not give them a
 public Layer 4 entry point. Consumers need a stable address and port without
-managing Galactic resources. They also need to choose whether clients use a
-location-specific address or a shared address reachable from several locations.
+managing Galactic resources. They also need stable addresses in the locations
+where their service runs.
 
 ### Goals
 
@@ -49,8 +49,8 @@ location-specific address or a shared address reachable from several locations.
 - Actively check backend health before serving traffic.
 - Support opaque TLS over TCP, SNI-based TLS passthrough, and managed TLS
   termination for non-HTTP applications.
-- Support per-location unicast and multi-location anycast address requests,
-  including a mix of both on one load balancer.
+- Allocate a distinct public address in each selected location, including
+  locations added after an `All` request is created.
 - Show allocated addresses and serving locations without releasing an address
   when its backends are temporarily unavailable.
 - Use an address request shape that can later serve Application Load Balancers.
@@ -63,6 +63,9 @@ location-specific address or a shared address reachable from several locations.
 
 - HTTP routing or changing the current `HTTPProxy` API.
 - Source-based matches or cross-location backend fallback in the first release.
+- Anycast or another single public IP shared across locations. A future Global
+  Services Load Balancer will own global entry points and cross-location
+  service behavior.
 - Requiring consumers to create Gateway API or Galactic resources.
 
 ## Proposal
@@ -83,19 +86,18 @@ Plain TCP listeners continue to carry TLS without inspecting it. The initial
 delivery can ship TCP/UDP routing and health checks before TLS listeners; the
 TLS API remains part of this enhancement.
 
-`Unicast` allocates one IP per selected location. `Anycast` allocates one IP
-announced from all selected locations. These names describe addressing *across
-locations*: multiple edge nodes may announce an IP within one location.
-`locations.from: All` follows current and future eligible locations. An
-explicit `Names` selection limits the request to listed locations. Adding a
-location to `All` creates another unicast IP while the anycast IP stays stable.
+Each selected location receives its own IP. Multiple edge nodes may announce
+that IP within the location. `locations.from: All` follows current and future
+eligible locations; an explicit `Names` selection limits the request to listed
+locations. Adding a location to `All` creates another IP without changing the
+existing location addresses.
 
 ### User Stories
 
 - A game operator publishes the same UDP port on a different IP in each region
   so clients can choose a region.
-- The operator also publishes one global IP on that listener so clients can use
-  a single endpoint; the status shows which regions currently announce it.
+- The operator adds a new region while existing regional client endpoints keep
+  their addresses.
 - If a region loses its serving backends, its IP remains allocated while its
   announcement is withdrawn.
 - An operator exposes a TLS application through a TCP listener; the backend
@@ -111,9 +113,8 @@ location to `All` creates another unicast IP while the anycast IP stays stable.
   location only after its rule is programmed with healthy backends; withdraw it
   when the last healthy backend disappears. Workload readiness alone does not
   prove the application answers on its port.
-- **Reusing an anycast IP for another load balancer misroutes traffic.** Hold
-  one globally unique allocation and propagate that allocation to every
-  selected location.
+- **Reusing a public IP for another load balancer misroutes traffic.** Allocate
+  every location address from a globally unique public pool.
 - **An `All` request can expand over time.** Expose each added location and IP
   in status, and bound the number of locations and addresses per load balancer.
 - **Overlapping routes could select different backends for the same flow.** Use
@@ -163,12 +164,6 @@ spec:
   exposure:
     addresses:
       - name: regional
-        mode: Unicast
-        family: IPv6
-        locations:
-          from: All
-      - name: global
-        mode: Anycast
         family: IPv6
         locations:
           from: All
@@ -176,7 +171,7 @@ spec:
     - name: game
       protocol: UDP
       port: 27015
-      addressRefs: [regional, global]
+      addressRefs: [regional]
 ---
 apiVersion: networking.datumapis.com/v1alpha
 kind: NetworkLoadBalancerRoute
@@ -203,32 +198,29 @@ weight and its share is rejected, as Gateway API requires. Failed health probes
 exclude individual endpoints while healthy endpoints remain. Status
 distinguishes resolution, endpoint availability, and health.
 
-The load balancer reports one entry per allocated IP. Unicast produces an entry
-per location; anycast produces one entry with several announcements:
+The load balancer reports one entry per requested location and allocated IP:
 
 ```yaml
 status:
   addresses:
     - requestName: regional
+      location: us-central-1
       family: IPv6
       value: 2001:db8:100::10
-      announcements:
-        - location: us-central-1
-          state: Announced
+      conditions:
+        - type: Allocated
+          status: "True"
+        - type: Announced
+          status: "True"
     - requestName: regional
+      location: eu-west-1
       family: IPv6
       value: 2001:db8:200::11
-      announcements:
-        - location: eu-west-1
-          state: Announced
-    - requestName: global
-      family: IPv6
-      value: 2001:db8:300::20
-      announcements:
-        - location: us-central-1
-          state: Announced
-        - location: eu-west-1
-          state: Announced
+      conditions:
+        - type: Allocated
+          status: "True"
+        - type: Announced
+          status: "True"
 ```
 
 These IPs are illustrative. IPv6 is shown because Galactic's current public
@@ -245,8 +237,8 @@ ready there.
 NSO resolves service membership, allocates IPs, selects eligible locations,
 and reports status. Cell controllers turn resolved intent into Galactic
 `NetworkRule` and `ServiceVIPBinding` objects. The initial route uses healthy
-backends in the ingress location. The same anycast IP is installed in every
-selected cell; the control plane must not allocate one IP per cell for it.
+backends in the ingress location. The control plane allocates one IP per
+selected location and shares that location's IP among its serving cells.
 
 For UDP, packets from the same client address and port select the same backend
 while the backend set is unchanged. A backend change may move that flow; the
@@ -264,7 +256,7 @@ and can be set on the health check.
 
 An endpoint serves only when its workload reports `HolderAvailable` and its
 active probe passes. Probes run from each serving location. The cell publishes
-one healthy backend set for all of its gateway nodes so anycast nodes make
+one healthy backend set for all gateway nodes in that location so they make
 consistent selections. A location with no healthy backends withdraws its
 announcement but keeps its IP allocation. Status reports healthy backend
 counts and probe failures by location.
@@ -351,7 +343,7 @@ tests and documenting any implementation-specific backend mapping.
 
 | Gateway API capability | Datum API behavior |
 | --- | --- |
-| Gateway addresses, named TCP/UDP/TLS listeners, ports and TLS mode | `NetworkLoadBalancer.exposure.addresses` and `listeners`; Datum additionally selects unicast/anycast and locations. |
+| Gateway addresses, named TCP/UDP/TLS listeners, ports and TLS mode | `NetworkLoadBalancer.exposure.addresses` and `listeners`; Datum additionally selects locations and allocates one address in each. |
 | TCPRoute and UDPRoute, listener attachment, backendRefs and weights | `NetworkLoadBalancerRoute.parentRefs` and weighted `backends`; one effective catch-all per TCP/UDP listener, with Gateway API precedence. |
 | TLSRoute SNI hostnames, wildcard matching and precedence | TLS listener `hostname` and route `sniHostnames`; passthrough and termination, including distinct TLS listeners on one port when hostnames do not conflict. |
 | TLS certificates and backend re-encryption | Listener managed certificate or Secret reference; route backend TLS with SNI and trust validation, corresponding to BackendTLSPolicy. |
@@ -410,11 +402,11 @@ advertisements are gone.
 ### Rollout, Upgrade and Rollback Planning
 
 Start with single-location TCP and UDP with weighted backends and active probes,
-then test multi-location unicast and anycast. Add SNI passthrough before managed TLS
-termination. Exercise route updates, UDP flow stability, probe failures, loss
-of the last backend, location removal, TLS certificate issuance and rotation,
-and withdrawal before IP release. Existing `NetworkService` and `HTTPProxy`
-behavior should be unaffected.
+then test multi-location operation with distinct addresses. Add SNI passthrough
+before managed TLS termination. Exercise route updates, UDP flow stability,
+probe failures, loss of the last backend, location removal, TLS certificate
+issuance and rotation, and withdrawal before IP release. Existing
+`NetworkService` and `HTTPProxy` behavior should be unaffected.
 
 ### Monitoring Requirements
 
@@ -426,11 +418,12 @@ announcement status.
 
 ### Dependencies
 
-IPAM must provide globally unique anycast VIPs and location-specific unicast
-VIPs. NSO must allow UDP `NetworkService` ports and require the route listener
-and backend port protocols to match; `HTTPProxy` must continue to reject UDP
-backends. Selected cells need a health probe runner, Galactic gateways,
-backend VIP bindings, and a way to report programming and announcement state.
+IPAM must provide globally unique public IPv6 VIPs, one for each selected
+location. NSO must allow UDP `NetworkService` ports and require the route
+listener and backend port protocols to match; `HTTPProxy` must continue to
+reject UDP backends. Selected cells need a health probe runner, Galactic
+gateways, backend VIP bindings, and a way to report programming and
+announcement state.
 IPv4 VIPs additionally need Galactic IPv4 ingress support.
 SNI routing and managed TLS need a proxy-capable edge path, hostname ownership
 verification, and certificate issuance and distribution.
@@ -455,12 +448,14 @@ address that could not be allocated.
 ## Implementation History
 
 - 2026-10-11: Initial proposal.
+- 2026-10-12: Scoped NLB addresses to one IP per selected location; deferred
+  global entry points to a separate Global Services Load Balancer concept.
 
 ## Drawbacks
 
-Separate routes add an object to a simple single-backend setup. Unicast across
-many locations consumes an IP in each one, and anycast requires coordinated
-withdrawal across cells.
+Separate routes add an object to a simple single-backend setup. Serving many
+locations consumes one public IP in each, and each IP requires coordinated
+withdrawal across the cells serving its location.
 
 ## Alternatives
 

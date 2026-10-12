@@ -123,7 +123,6 @@ func (r *NetworkLoadBalancerReconciler) reconcile(ctx context.Context, cl client
 		entry.RequestName = request.requestName
 		entry.Location = request.location
 		entry.Family = networkingv1alpha.IPv6Protocol
-		entry.Locations = mergeAddressLocations(entry.Locations, request.locations)
 		entry.ClaimRef = &networkingv1alpha.NetworkLoadBalancerIPClaimRef{
 			Project: routing.project, Namespace: routing.projectNamespace, Name: claimName,
 		}
@@ -188,9 +187,7 @@ func (r *NetworkLoadBalancerReconciler) reconcile(ctx context.Context, cl client
 
 type loadBalancerAddressRequest struct {
 	requestName string
-	mode        networkingv1alpha.NetworkLoadBalancerAddressMode
 	location    string
-	locations   []string
 	networkName string
 }
 
@@ -219,15 +216,9 @@ func (r *NetworkLoadBalancerReconciler) addressRequests(
 			names = append(names, address.Locations.Names...)
 		}
 		slices.Sort(names)
-		if address.Mode == networkingv1alpha.NetworkLoadBalancerAddressModeAnycast {
-			requests = append(requests, loadBalancerAddressRequest{
-				requestName: address.Name, mode: address.Mode, locations: names, networkName: lb.Spec.NetworkRef.Name,
-			})
-			continue
-		}
 		for _, name := range names {
 			requests = append(requests, loadBalancerAddressRequest{
-				requestName: address.Name, mode: address.Mode, location: name, locations: []string{name}, networkName: lb.Spec.NetworkRef.Name,
+				requestName: address.Name, location: name, networkName: lb.Spec.NetworkRef.Name,
 			})
 		}
 	}
@@ -235,7 +226,7 @@ func (r *NetworkLoadBalancerReconciler) addressRequests(
 }
 
 func loadBalancerClaimName(lb *networkingv1alpha.NetworkLoadBalancer, request loadBalancerAddressRequest) string {
-	identity := string(request.mode) + "\x00" + request.requestName + "\x00" + request.location
+	identity := request.requestName + "\x00" + request.location
 	sum := sha256.Sum256([]byte(identity))
 	return ipClaimName("nlb-"+string(lb.UID), request.requestName+"-"+hex.EncodeToString(sum[:8]))
 }
@@ -313,40 +304,8 @@ func priorAddressStatus(
 	return networkingv1alpha.NetworkLoadBalancerAddressStatus{}
 }
 
-func mergeAddressLocations(
-	old []networkingv1alpha.NetworkLoadBalancerAddressLocationStatus, wanted []string,
-) []networkingv1alpha.NetworkLoadBalancerAddressLocationStatus {
-	byName := make(map[string]networkingv1alpha.NetworkLoadBalancerAddressLocationStatus, len(old))
-	for _, location := range old {
-		byName[location.Name] = location
-	}
-	var result []networkingv1alpha.NetworkLoadBalancerAddressLocationStatus
-	for _, name := range wanted {
-		location, ok := byName[name]
-		if !ok {
-			location.Name = name
-		}
-		result = append(result, location)
-		delete(byName, name)
-	}
-	for _, location := range old {
-		if _, ok := byName[location.Name]; ok && apimeta.IsStatusConditionTrue(location.Conditions, networkingv1alpha.NetworkLoadBalancerAnnounced) {
-			result = append(result, location)
-		}
-	}
-	slices.SortFunc(result, func(a, b networkingv1alpha.NetworkLoadBalancerAddressLocationStatus) int {
-		return strings.Compare(a.Name, b.Name)
-	})
-	return result
-}
-
 func addressAnnounced(address networkingv1alpha.NetworkLoadBalancerAddressStatus) bool {
-	for _, location := range address.Locations {
-		if apimeta.IsStatusConditionTrue(location.Conditions, networkingv1alpha.NetworkLoadBalancerAnnounced) {
-			return true
-		}
-	}
-	return false
+	return apimeta.IsStatusConditionTrue(address.Conditions, networkingv1alpha.NetworkLoadBalancerAnnounced)
 }
 
 func (r *NetworkLoadBalancerReconciler) releaseOrphanedClaims(

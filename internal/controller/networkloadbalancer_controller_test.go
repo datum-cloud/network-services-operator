@@ -64,18 +64,18 @@ func newLoadBalancerAllocationScenario(t *testing.T) *loadBalancerAllocationScen
 	}}
 	lb.Spec.NetworkRef.Name = network.Name
 	lb.Spec.Exposure.Addresses = []networkingv1alpha.NetworkLoadBalancerAddressRequest{
-		{Name: "regional", Mode: networkingv1alpha.NetworkLoadBalancerAddressModeUnicast,
+		{Name: "regional",
 			Family: networkingv1alpha.IPv6Protocol, Locations: networkingv1alpha.NetworkLoadBalancerLocationSelection{
 				From: networkingv1alpha.NetworkLoadBalancerLocationSourceNames, Names: []string{"iad", "fra"},
 			}},
-		{Name: "global", Mode: networkingv1alpha.NetworkLoadBalancerAddressModeAnycast,
+		{Name: "edge",
 			Family: networkingv1alpha.IPv6Protocol, Locations: networkingv1alpha.NetworkLoadBalancerLocationSelection{
-				From: networkingv1alpha.NetworkLoadBalancerLocationSourceNames, Names: []string{"iad", "fra"},
+				From: networkingv1alpha.NetworkLoadBalancerLocationSourceNames, Names: []string{"iad"},
 			}},
 	}
 	lb.Spec.Listeners = []networkingv1alpha.NetworkLoadBalancerListener{{
 		Name: "web", Protocol: networkingv1alpha.NetworkLoadBalancerProtocolTCP, Port: 443,
-		AddressRefs: []string{"regional", "global"},
+		AddressRefs: []string{"regional", "edge"},
 	}}
 	locationIAD := &locationsv1alpha1.Location{ObjectMeta: metav1.ObjectMeta{Name: "iad"}}
 	locationFRA := &locationsv1alpha1.Location{ObjectMeta: metav1.ObjectMeta{Name: "fra"}}
@@ -107,7 +107,7 @@ func (s *loadBalancerAllocationScenario) claims() []ipamv1alpha1.IPClaim {
 	return list.Items
 }
 
-func TestNetworkLoadBalancerAllocationHoldsOneGlobalAndPerLocationAddresses(t *testing.T) {
+func TestNetworkLoadBalancerAllocationHoldsPerLocationAddresses(t *testing.T) {
 	s := newLoadBalancerAllocationScenario(t)
 	lb := s.reconcile()
 	require.Len(t, s.claims(), 3)
@@ -118,6 +118,7 @@ func TestNetworkLoadBalancerAllocationHoldsOneGlobalAndPerLocationAddresses(t *t
 		require.NotNil(t, claim.Spec.PrefixLength)
 		require.Equal(t, int32(128), *claim.Spec.PrefixLength)
 		require.Equal(t, ipamv1alpha1.ReclaimDelete, claim.Spec.ReclaimPolicy)
+		require.NotEmpty(t, claim.Spec.Scope[ipamScopeRoleLocation].Name)
 		claim.Status.AllocatedCIDR = fmt.Sprintf("2001:db8::%x/128", i+1)
 		require.NoError(t, s.ipam.Status().Update(s.ctx, &claim))
 	}
@@ -127,10 +128,7 @@ func TestNetworkLoadBalancerAllocationHoldsOneGlobalAndPerLocationAddresses(t *t
 	for _, address := range lb.Status.Addresses {
 		require.NotEmpty(t, address.Value)
 		require.True(t, apimeta.IsStatusConditionTrue(address.Conditions, networkingv1alpha.NetworkLoadBalancerAllocated))
-		if address.RequestName == "global" {
-			require.Empty(t, address.Location)
-			require.Len(t, address.Locations, 2)
-		}
+		require.NotEmpty(t, address.Location)
 	}
 	require.Len(t, s.claims(), 3)
 	require.Equal(t, lb.Status.Addresses, s.reconcile().Status.Addresses, "retry must reuse claims and addresses")
@@ -139,13 +137,13 @@ func TestNetworkLoadBalancerAllocationHoldsOneGlobalAndPerLocationAddresses(t *t
 func TestNetworkLoadBalancerClaimNamesKeepAddressIdentityDistinct(t *testing.T) {
 	lb := &networkingv1alpha.NetworkLoadBalancer{ObjectMeta: metav1.ObjectMeta{UID: types.UID("fixture")}}
 	a := loadBalancerClaimName(lb, loadBalancerAddressRequest{
-		requestName: "a-b", mode: networkingv1alpha.NetworkLoadBalancerAddressModeUnicast, location: "c",
+		requestName: "a-b", location: "c",
 	})
 	b := loadBalancerClaimName(lb, loadBalancerAddressRequest{
-		requestName: "a", mode: networkingv1alpha.NetworkLoadBalancerAddressModeUnicast, location: "b-c",
+		requestName: "a", location: "b-c",
 	})
 	c := loadBalancerClaimName(lb, loadBalancerAddressRequest{
-		requestName: "a-b", mode: networkingv1alpha.NetworkLoadBalancerAddressModeAnycast, location: "c",
+		requestName: "a-b", location: "d",
 	})
 	require.NotEqual(t, a, b)
 	require.NotEqual(t, a, c)
@@ -181,25 +179,21 @@ func TestNetworkLoadBalancerAllLocationsAddsRegionalClaimAsLocationsAppear(t *te
 	}
 	require.NoError(t, s.client.Update(s.ctx, &lb))
 	s.reconcile()
-	require.Len(t, s.claims(), 3)
+	require.Len(t, s.claims(), 4)
 	require.NoError(t, s.client.Create(s.ctx, &locationsv1alpha1.Location{
 		ObjectMeta: metav1.ObjectMeta{Name: "sea"},
 	}))
 	lb = s.reconcile()
-	require.Len(t, s.claims(), 4)
-	for _, address := range lb.Status.Addresses {
-		if address.RequestName == "global" {
-			require.Len(t, address.Locations, 3)
-		}
-	}
+	require.Len(t, s.claims(), 6)
+	require.Len(t, lb.Status.Addresses, 6)
 }
 
 func TestNetworkLoadBalancerRetainsAnnouncedAddressUntilWithdrawn(t *testing.T) {
 	s := newLoadBalancerAllocationScenario(t)
 	lb := s.reconcile()
 	for i := range lb.Status.Addresses {
-		if lb.Status.Addresses[i].RequestName == "global" {
-			apimeta.SetStatusCondition(&lb.Status.Addresses[i].Locations[0].Conditions, metav1.Condition{
+		if lb.Status.Addresses[i].RequestName == "edge" {
+			apimeta.SetStatusCondition(&lb.Status.Addresses[i].Conditions, metav1.Condition{
 				Type: networkingv1alpha.NetworkLoadBalancerAnnounced, Status: metav1.ConditionTrue,
 				Reason: "Published", Message: "BGP announcement active", ObservedGeneration: lb.Generation,
 			})
@@ -214,8 +208,8 @@ func TestNetworkLoadBalancerRetainsAnnouncedAddressUntilWithdrawn(t *testing.T) 
 	require.Len(t, lb.Status.Addresses, 3, "withdrawal must see the old address")
 
 	for i := range lb.Status.Addresses {
-		if lb.Status.Addresses[i].RequestName == "global" {
-			apimeta.SetStatusCondition(&lb.Status.Addresses[i].Locations[0].Conditions, metav1.Condition{
+		if lb.Status.Addresses[i].RequestName == "edge" {
+			apimeta.SetStatusCondition(&lb.Status.Addresses[i].Conditions, metav1.Condition{
 				Type: networkingv1alpha.NetworkLoadBalancerAnnounced, Status: metav1.ConditionFalse,
 				Reason: "Withdrawn", Message: "BGP announcement stopped", ObservedGeneration: lb.Generation,
 			})
@@ -231,8 +225,8 @@ func TestNetworkLoadBalancerDeletionWaitsForWithdrawal(t *testing.T) {
 	s := newLoadBalancerAllocationScenario(t)
 	lb := s.reconcile()
 	for i := range lb.Status.Addresses {
-		if lb.Status.Addresses[i].RequestName == "global" {
-			apimeta.SetStatusCondition(&lb.Status.Addresses[i].Locations[0].Conditions, metav1.Condition{
+		if lb.Status.Addresses[i].RequestName == "edge" {
+			apimeta.SetStatusCondition(&lb.Status.Addresses[i].Conditions, metav1.Condition{
 				Type: networkingv1alpha.NetworkLoadBalancerAnnounced, Status: metav1.ConditionTrue,
 				Reason: "Published", Message: "BGP announcement active", ObservedGeneration: lb.Generation,
 			})
@@ -245,8 +239,8 @@ func TestNetworkLoadBalancerDeletionWaitsForWithdrawal(t *testing.T) {
 	require.Len(t, s.claims(), 3)
 
 	for i := range lb.Status.Addresses {
-		if lb.Status.Addresses[i].RequestName == "global" {
-			apimeta.SetStatusCondition(&lb.Status.Addresses[i].Locations[0].Conditions, metav1.Condition{
+		if lb.Status.Addresses[i].RequestName == "edge" {
+			apimeta.SetStatusCondition(&lb.Status.Addresses[i].Conditions, metav1.Condition{
 				Type: networkingv1alpha.NetworkLoadBalancerAnnounced, Status: metav1.ConditionFalse,
 				Reason: "Withdrawn", Message: "BGP announcement stopped", ObservedGeneration: lb.Generation,
 			})

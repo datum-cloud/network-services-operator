@@ -12,14 +12,18 @@ import {
   BreadcrumbPage,
   BreadcrumbSeparator,
 } from '@datum-cloud/datum-ui/breadcrumb';
+import { EmptyContent } from '@datum-cloud/datum-ui/empty-content';
 import { Icon } from '@datum-cloud/datum-ui/icons';
 import { PageTitle } from '@datum-cloud/datum-ui/page-title';
-import { HomeIcon } from 'lucide-react';
+import { HomeIcon, PlusIcon } from 'lucide-react';
+import { useState } from 'react';
 import { useParams } from 'react-router';
 
 export default function NetworkList() {
   const { projectId } = useParams<{ projectId: string; serviceSlug: string }>();
   const { data: networks, isLoading, error, refetch } = useNetworks(projectId);
+  const [createOpen, setCreateOpen] = useState(false);
+  const isEmpty = !isLoading && !error && (networks?.length ?? 0) === 0;
 
   const projectHref = projectId ? `/project/${projectId}` : '/';
 
@@ -42,7 +46,14 @@ export default function NetworkList() {
       <PageTitle
         title="Networks"
         description="The networks your workloads and load balancers run on"
-        actions={<CreateNetworkDialog projectId={projectId} />}
+        actions={
+          <CreateNetworkDialog
+            projectId={projectId}
+            open={createOpen}
+            onOpenChange={setCreateOpen}
+            showTrigger={!isEmpty}
+          />
+        }
       />
 
       {isLoading && <LoadingSkeleton />}
@@ -55,8 +66,22 @@ export default function NetworkList() {
         />
       )}
 
-      {!isLoading && !error && (networks?.length ?? 0) === 0 && (
+      {isEmpty && (
         <div className="flex flex-col gap-6" data-testid="networking-plugin-network-empty">
+          <EmptyContent
+            title="let's create a network to get you started"
+            subtitle="Networks give your workloads and load balancers private IPv6 addressing across every region they run in."
+            className="w-full"
+            actions={[
+              {
+                label: 'New',
+                type: 'primary',
+                theme: 'solid',
+                icon: <Icon icon={PlusIcon} className="size-3" />,
+                onClick: () => setCreateOpen(true),
+              },
+            ]}
+          />
           <NetworkCliSections projectId={projectId} />
         </div>
       )}

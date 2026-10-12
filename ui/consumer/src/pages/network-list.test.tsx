@@ -3,7 +3,7 @@ import { ApiError } from '../lib/api';
 import * as api from '../lib/api';
 import type { Network } from '../schema';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -99,6 +99,21 @@ describe('NetworkList state machine', () => {
 
     expect(screen.getByTestId('networking-plugin-network-empty')).toBeInTheDocument();
     expect(screen.getAllByText(/datumctl/i).length).toBeGreaterThan(0);
+  });
+
+  it('opens the create dialog from the empty state', () => {
+    useNetworksMock.mockReturnValue({
+      data: [],
+      isLoading: false,
+      error: null,
+      refetch: vi.fn(),
+    } as never);
+
+    renderPage();
+
+    expect(screen.queryByRole('button', { name: 'Create network' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'New' }));
+    expect(screen.getByText('Create a network')).toBeInTheDocument();
   });
 
   it('shows the table when networks are present', () => {

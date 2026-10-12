@@ -2,6 +2,7 @@ import { useCreateNetwork } from '../lib/api';
 import { Button } from '@datum-cloud/datum-ui/button';
 import { Checkbox } from '@datum-cloud/datum-ui/checkbox';
 import { Dialog } from '@datum-cloud/datum-ui/dialog';
+import { Icon } from '@datum-cloud/datum-ui/icons';
 import { Input } from '@datum-cloud/datum-ui/input';
 import { InputNumber } from '@datum-cloud/datum-ui/input-number';
 import { toast } from '@datum-cloud/datum-ui/toast';
@@ -11,8 +12,23 @@ import { useState } from 'react';
 const NAME_PATTERN = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/;
 const DEFAULT_MTU = 1460;
 
-export function CreateNetworkDialog({ projectId }: { projectId: string | undefined }) {
-  const [open, setOpen] = useState(false);
+export function CreateNetworkDialog({
+  projectId,
+  open: controlledOpen,
+  onOpenChange,
+  showTrigger = true,
+}: {
+  projectId: string | undefined;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+  showTrigger?: boolean;
+}) {
+  const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
+  const open = controlledOpen ?? uncontrolledOpen;
+  const setOpen = (next: boolean) => {
+    setUncontrolledOpen(next);
+    onOpenChange?.(next);
+  };
   const [name, setName] = useState('');
   const [includeIPv4, setIncludeIPv4] = useState(false);
   const [mtu, setMtu] = useState<number | undefined>(undefined);
@@ -61,11 +77,14 @@ export function CreateNetworkDialog({ projectId }: { projectId: string | undefin
         setOpen(next);
         if (!next) reset();
       }}>
-      <Dialog.Trigger asChild>
-        <Button type="primary" icon={<PlusIcon size={16} />}>
-          Create network
-        </Button>
-      </Dialog.Trigger>
+      {showTrigger && (
+        <Dialog.Trigger asChild>
+          <Button type="primary" theme="solid" size="small" className="w-full sm:w-auto">
+            <Icon icon={PlusIcon} className="size-4" />
+            Create network
+          </Button>
+        </Dialog.Trigger>
+      )}
       <Dialog.Content>
         <Dialog.Header
           title="Create a network"
@@ -104,10 +123,15 @@ export function CreateNetworkDialog({ projectId }: { projectId: string | undefin
             </label>
           </Dialog.Body>
           <Dialog.Footer>
-            <Button type="secondary" htmlType="button" onClick={() => setOpen(false)} disabled={mutation.isPending}>
+            <Button
+              type="quaternary"
+              theme="borderless"
+              htmlType="button"
+              onClick={() => setOpen(false)}
+              disabled={mutation.isPending}>
               Cancel
             </Button>
-            <Button type="primary" htmlType="submit" loading={mutation.isPending}>
+            <Button type="primary" theme="solid" htmlType="submit" loading={mutation.isPending}>
               Create network
             </Button>
           </Dialog.Footer>

@@ -1,24 +1,23 @@
+import { ConfirmDeleteDialog } from './confirm-delete-dialog';
 import { EnableIPv6Dialog } from './enable-ipv6-dialog';
-import { readyReasonToLabel, readyStatusToBadgeType, type Network } from '../schema';
-import { Badge } from '@datum-cloud/datum-ui/badge';
-import { Icon } from '@datum-cloud/datum-ui/icons';
-import { InputGroup, InputGroupAddon, InputGroupInput } from '@datum-cloud/datum-ui/input-group';
+import { SortableHeader } from './sortable-header';
+import { StatusBadge } from './status-badge';
+import { useDeleteNetwork } from '../lib/api';
+import { readyStatusToBadgeType, readyStatusToLabel, type Network } from '../schema';
 import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@datum-cloud/datum-ui/table';
-import { cn } from '@datum-cloud/datum-ui/utils';
-import { formatDistanceToNowStrict } from 'date-fns';
-import { ArrowDownIcon, ArrowUpIcon, ChevronsUpDownIcon, NetworkIcon, SearchIcon } from 'lucide-react';
+  DataTable,
+  useDataTablePagination,
+  type DataTableFeatures,
+} from '@datum-cloud/datum-ui/data-table';
+import { DateTime } from '@datum-cloud/datum-ui/date-time';
+import { EmptyContent } from '@datum-cloud/datum-ui/empty-content';
+import { MoreActions, type ActionItem } from '@datum-cloud/datum-ui/more-actions';
+import { toast } from '@datum-cloud/datum-ui/toast';
+import type { ColumnDef } from '@tanstack/react-table';
 import { useMemo, useState } from 'react';
-import { useLocation, useNavigate } from 'react-router';
+import { Link, useLocation, useNavigate } from 'react-router';
 
-export type NetworkSortKey = 'name' | 'ready';
-export type SortDirection = 'asc' | 'desc';
+type NetworkColumn = ColumnDef<DataTableFeatures, Network, unknown>;
 
 const READY_SORT_RANK: Record<Network['readyStatus'], number> = {
   False: 0,
@@ -26,108 +25,31 @@ const READY_SORT_RANK: Record<Network['readyStatus'], number> = {
   True: 2,
 };
 
-function compareNetworks(a: Network, b: Network, key: NetworkSortKey): number {
-  if (key === 'name') return a.name.localeCompare(b.name);
-  return READY_SORT_RANK[a.readyStatus] - READY_SORT_RANK[b.readyStatus];
+function hasIPv6(network: Network): boolean {
+  return network.ipFamilies.includes('IPv6');
 }
 
-function readyBadgeLabel(network: Network): string {
-  if (network.readyStatus === 'True') return 'Ready';
-  if (network.readyStatus === 'False') return readyReasonToLabel(network.readyReason);
-  return 'Unknown';
+function matchesSearch(network: Network, search: string): boolean {
+  const needle = search.trim().toLowerCase();
+  if (!needle) return true;
+  return [network.name, network.ipv6Prefix, ...network.ipFamilies]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase()
+    .includes(needle);
 }
 
-function SortableHead({
-  label,
-  sortKey,
-  activeKey,
-  direction,
-  onSort,
-}: {
-  label: string;
-  sortKey: NetworkSortKey;
-  activeKey: NetworkSortKey;
-  direction: SortDirection;
-  onSort: (key: NetworkSortKey) => void;
-}) {
-  const isActive = activeKey === sortKey;
-  const icon = isActive ? (direction === 'asc' ? ArrowUpIcon : ArrowDownIcon) : ChevronsUpDownIcon;
+function ConditionalPagination() {
+  const { pageCount } = useDataTablePagination();
+  if (pageCount <= 1) return null;
+  return <DataTable.Pagination className="datum-ui-data-table__pagination" />;
+}
 
+function Muted({ children, mono }: { children: React.ReactNode; mono?: boolean }) {
   return (
-    <TableHead className="text-muted-foreground text-xs font-medium tracking-wide uppercase">
-      <button
-        type="button"
-        onClick={() => onSort(sortKey)}
-        className={cn(
-          'flex items-center gap-1 transition-colors',
-          isActive ? 'text-foreground' : 'hover:text-foreground'
-        )}
-        aria-label={`Sort by ${label}`}
-        aria-sort={isActive ? (direction === 'asc' ? 'ascending' : 'descending') : 'none'}>
-        {label}
-        <Icon icon={icon} size={14} />
-      </button>
-    </TableHead>
-  );
-}
-
-function PlainHead({ children, className }: { children: React.ReactNode; className?: string }) {
-  return (
-    <TableHead
-      className={cn('text-muted-foreground text-xs font-medium tracking-wide uppercase', className)}>
+    <span className={mono ? 'text-muted-foreground font-mono text-xs' : 'text-muted-foreground'}>
       {children}
-    </TableHead>
-  );
-}
-
-function NetworkRow({
-  network,
-  projectId,
-  onOpen,
-}: {
-  network: Network;
-  projectId: string | undefined;
-  onOpen: (name: string) => void;
-}) {
-  const needsIPv6 = !network.ipFamilies.includes('IPv6');
-
-  return (
-    <TableRow
-      data-testid="network-table-row"
-      className="hover:bg-muted/50 cursor-pointer"
-      onClick={() => onOpen(network.name)}>
-      <TableCell>
-        <div className="flex items-center gap-3">
-          <span className="bg-muted flex size-8 shrink-0 items-center justify-center rounded-md">
-            <Icon icon={NetworkIcon} size={16} className="text-muted-foreground" />
-          </span>
-          <span className="font-mono text-sm">{network.name}</span>
-        </div>
-      </TableCell>
-      <TableCell className="text-muted-foreground font-mono text-sm">
-        {network.ipv6Prefix ?? '—'}
-      </TableCell>
-      <TableCell>
-        <Badge type={readyStatusToBadgeType(network.readyStatus)} theme="light">
-          {readyBadgeLabel(network)}
-        </Badge>
-      </TableCell>
-      <TableCell className="text-muted-foreground">
-        {formatDistanceToNowStrict(network.createdAt, { addSuffix: true })}
-      </TableCell>
-      <TableCell className="text-muted-foreground">
-        {network.ipFamilies.length > 0 ? network.ipFamilies.join(', ') : '—'}
-      </TableCell>
-      <TableCell className="text-muted-foreground">
-        {network.ipamMode ?? '—'}
-      </TableCell>
-      <TableCell className="text-muted-foreground">
-        {network.mtu ?? '—'}
-      </TableCell>
-      <TableCell onClick={(e) => e.stopPropagation()}>
-        {needsIPv6 ? <EnableIPv6Dialog projectId={projectId} network={network} /> : null}
-      </TableCell>
-    </TableRow>
+    </span>
   );
 }
 
@@ -138,96 +60,159 @@ export function NetworkTable({
   networks: Network[];
   projectId?: string;
 }) {
-  const [sortKey, setSortKey] = useState<NetworkSortKey>('name');
-  const [direction, setDirection] = useState<SortDirection>('asc');
-  const [search, setSearch] = useState('');
   const navigate = useNavigate();
   const location = useLocation();
   const basePath = location.pathname.replace(/\/$/, '');
-  const handleOpen = (name: string) => navigate(`${basePath}/${name}`);
+  const [enableTarget, setEnableTarget] = useState<Network>();
+  const [deleteTarget, setDeleteTarget] = useState<Network>();
+  const deleteMutation = useDeleteNetwork(projectId);
 
-  const handleSort = (key: NetworkSortKey) => {
-    if (key === sortKey) {
-      setDirection((d) => (d === 'asc' ? 'desc' : 'asc'));
-    } else {
-      setSortKey(key);
-      setDirection('asc');
-    }
-  };
+  const columns = useMemo<NetworkColumn[]>(() => {
+    const href = (name: string) => `${basePath}/${encodeURIComponent(name)}`;
+    const actions: ActionItem<Network>[] = [
+      { key: 'view', label: 'View', onClick: (network) => navigate(href(network.name)) },
+      {
+        key: 'enable-ipv6',
+        label: 'Enable IPv6',
+        hidden: hasIPv6,
+        onClick: setEnableTarget,
+      },
+      {
+        key: 'delete',
+        label: 'Delete',
+        variant: 'destructive',
+        onClick: setDeleteTarget,
+      },
+    ];
 
-  const filtered = useMemo(() => {
-    const query = search.trim().toLowerCase();
-    if (!query) return networks;
-    return networks.filter((n) => n.name.toLowerCase().includes(query));
-  }, [networks, search]);
-
-  const sorted = useMemo(() => {
-    const copy = [...filtered];
-    copy.sort((a, b) => {
-      const cmp = compareNetworks(a, b, sortKey);
-      return direction === 'asc' ? cmp : -cmp;
-    });
-    return copy;
-  }, [filtered, sortKey, direction]);
+    return [
+      {
+        id: 'name',
+        accessorKey: 'name',
+        header: ({ column }) => <SortableHeader column={column} title="Name" />,
+        cell: ({ row }) => (
+          <Link
+            to={href(row.original.name)}
+            className="truncate font-medium hover:underline"
+            title={row.original.name}>
+            {row.original.name}
+          </Link>
+        ),
+      },
+      {
+        id: 'status',
+        accessorFn: (network) => READY_SORT_RANK[network.readyStatus],
+        sortDescFirst: false,
+        header: ({ column }) => <SortableHeader column={column} title="Status" />,
+        cell: ({ row }) => (
+          <StatusBadge type={readyStatusToBadgeType(row.original.readyStatus)}>
+            {readyStatusToLabel(row.original.readyStatus, row.original.readyReason)}
+          </StatusBadge>
+        ),
+      },
+      {
+        id: 'ipv6Prefix',
+        header: 'IPv6 prefix',
+        enableSorting: false,
+        cell: ({ row }) => <Muted mono>{row.original.ipv6Prefix ?? '—'}</Muted>,
+      },
+      {
+        id: 'ipFamilies',
+        header: 'IP families',
+        enableSorting: false,
+        cell: ({ row }) => (
+          <Muted>{row.original.ipFamilies.length > 0 ? row.original.ipFamilies.join(', ') : '—'}</Muted>
+        ),
+      },
+      {
+        id: 'mtu',
+        accessorFn: (network) => network.mtu ?? 0,
+        header: ({ column }) => <SortableHeader column={column} title="MTU" />,
+        cell: ({ row }) => <Muted>{row.original.mtu ?? '—'}</Muted>,
+      },
+      {
+        id: 'createdAt',
+        accessorFn: (network) => network.createdAt.getTime(),
+        header: ({ column }) => <SortableHeader column={column} title="Created" />,
+        cell: ({ row }) => (
+          <DateTime
+            date={row.original.createdAt}
+            variant="relative"
+            className="text-muted-foreground text-sm"
+          />
+        ),
+      },
+      {
+        id: 'actions',
+        header: '',
+        enableSorting: false,
+        size: 48,
+        cell: ({ row }) => (
+          <div data-slot="dt-row-actions" className="inline-flex">
+            <MoreActions
+              row={row.original}
+              actions={actions}
+              className="size-6 border"
+              iconClassName="size-3.5"
+            />
+          </div>
+        ),
+      },
+    ];
+  }, [basePath, navigate]);
 
   return (
-    <div className="border-border overflow-hidden rounded-lg border" data-testid="networking-plugin-network-table">
-      <div className="flex items-center justify-between gap-4 border-b p-4">
-        <div className="flex items-center gap-2">
-          <Icon icon={NetworkIcon} size={16} />
-          <span className="text-sm font-medium">Networks</span>
-          <Badge type="muted" theme="light">
-            {networks.length}
-          </Badge>
+    <>
+      <DataTable.Client
+        data={networks}
+        columns={columns}
+        getRowId={(network) => network.uid || network.name}
+        defaultSort={[{ id: 'name', desc: false }]}
+        searchFn={matchesSearch}
+        className="space-y-6">
+        <div className="flex w-full flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <DataTable.Search placeholder="Search networks" className="w-full sm:max-w-xs" />
         </div>
-        <InputGroup className="w-full max-w-xs">
-          <InputGroupAddon align="inline-start">
-            <Icon icon={SearchIcon} size={14} className="text-muted-foreground" />
-          </InputGroupAddon>
-          <InputGroupInput
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search networks..."
-            aria-label="Search networks"
+        <div
+          className="overflow-hidden rounded-lg border"
+          data-testid="networking-plugin-network-table">
+          <DataTable.Content
+            onRowClick={(network) => navigate(`${basePath}/${encodeURIComponent(network.name)}`)}
+            rowClassName="cursor-pointer"
+            emptyMessage={
+              <EmptyContent
+                title="Try adjusting your search"
+                className="w-full rounded-none border-0"
+              />
+            }
           />
-        </InputGroup>
-      </div>
-      <Table>
-        <TableHeader>
-          <TableRow>
-            <SortableHead
-              label="Name"
-              sortKey="name"
-              activeKey={sortKey}
-              direction={direction}
-              onSort={handleSort}
-            />
-            <PlainHead>IPv6 Prefix</PlainHead>
-            <SortableHead
-              label="Ready"
-              sortKey="ready"
-              activeKey={sortKey}
-              direction={direction}
-              onSort={handleSort}
-            />
-            <PlainHead>Age</PlainHead>
-            <PlainHead>IP Families</PlainHead>
-            <PlainHead>IPAM Mode</PlainHead>
-            <PlainHead>MTU</PlainHead>
-            <TableHead />
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {sorted.map((network) => (
-            <NetworkRow
-              key={network.uid || network.name}
-              network={network}
-              projectId={projectId}
-              onOpen={handleOpen}
-            />
-          ))}
-        </TableBody>
-      </Table>
-    </div>
+        </div>
+        <ConditionalPagination />
+      </DataTable.Client>
+
+      <EnableIPv6Dialog
+        projectId={projectId}
+        network={enableTarget}
+        open={enableTarget !== undefined}
+        onOpenChange={(open) => !open && setEnableTarget(undefined)}
+      />
+
+      <ConfirmDeleteDialog
+        open={deleteTarget !== undefined}
+        onOpenChange={(open) => !open && setDeleteTarget(undefined)}
+        title={`Delete network ${deleteTarget?.name ?? ''}?`}
+        description="This permanently deletes the network and everything provisioned on it. This can't be undone."
+        onConfirm={async () => {
+          if (!deleteTarget) return;
+          try {
+            await deleteMutation.mutateAsync(deleteTarget.name);
+            toast.success(`Deleted network ${deleteTarget.name}`);
+          } catch (err) {
+            toast.error((err as Error).message);
+            throw err;
+          }
+        }}
+      />
+    </>
   );
 }

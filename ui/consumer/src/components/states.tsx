@@ -1,4 +1,5 @@
 import { ApiError } from '../lib/api';
+import { Button } from '@datum-cloud/datum-ui/button';
 import { Card, CardContent } from '@datum-cloud/datum-ui/card';
 import { Icon } from '@datum-cloud/datum-ui/icons';
 import { Skeleton } from '@datum-cloud/datum-ui/skeleton';
@@ -43,12 +44,9 @@ export function ErrorState({ error, onRetry }: { error: unknown; onRetry: () => 
             <p className="text-sm font-semibold">Failed to load</p>
             <p className="text-muted-foreground mt-1 text-sm">{message}</p>
           </div>
-          <button
-            type="button"
-            onClick={onRetry}
-            className="border-border hover:bg-muted mt-1 rounded-md border px-3 py-1.5 text-sm font-medium transition-colors">
+          <Button type="secondary" theme="outline" size="small" htmlType="button" onClick={onRetry}>
             Retry
-          </button>
+          </Button>
         </CardContent>
       </Card>
     </div>

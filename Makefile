@@ -123,6 +123,14 @@ build-alb-mcp: $(LOCALBIN) ## Build the alb-mcp server binary into bin/.
 run-alb-mcp: ## Run alb-mcp against the control plane KUBECONFIG names.
 	go run ./cmd/alb-mcp
 
+.PHONY: build-network-mcp
+build-network-mcp: $(LOCALBIN) ## Build the network-mcp server binary into bin/.
+	go build -o $(LOCALBIN)/network-mcp ./cmd/network-mcp
+
+.PHONY: run-network-mcp
+run-network-mcp: ## Run network-mcp against the control plane KUBECONFIG names.
+	go run ./cmd/network-mcp
+
 ##@ datumctl plugin
 
 PLUGIN_VERSION ?= $(shell git describe --tags --dirty --always 2>/dev/null || echo dev)

@@ -1,0 +1,87 @@
+# What the network agent offers a customer: docs to read, tools to call, and
+# guides to follow.
+#
+# New versions ship as new objects rather than edits to this one, so it is always
+# clear which content a customer actually saw. The newest Published one wins.
+#
+# The MCP endpoint points straight at network-mcp's in-cluster address, which is
+# fine in staging. Production needs it changed to the AI gateway: going direct
+# there means the call is not billed, does not carry the customer's identity, and
+# will simply be refused.
+apiVersion: services.miloapis.com/v1alpha1
+kind: ServiceAgentConfiguration
+metadata:
+  name: networking-network-agent-v1
+  labels:
+    app.kubernetes.io/name: networking-network-agent
+    app.kubernetes.io/part-of: networking.datumapis.com
+spec:
+  serviceAgentRef:
+    name: networking-network-agent
+  phase: Published
+  version: v1
+  reportingProject: datum-cloud
+  knowledge:
+    sources:
+    - type: LLMDocs
+      title: Networks and network services, and how to read their status
+      url: http://network-services-operator-network-mcp.datum-system.svc.cluster.local:8080/llms-full.txt
+    concepts:
+    - gvk:
+        group: networking.datumapis.com
+        kind: Network
+      summary: 'A private, IPv6-only network a project''s workloads attach to. The customer creates it with a name and optionally an MTU; Datum assigns an IPv6 /48. It reaches a location only when a workload placed there attaches, so no locations is normal for a new one.'
+    - gvk:
+        group: networking.datumapis.com
+        kind: NetworkService
+      summary: 'A stable name for a workload''s instances on one network, selected by label, with named ports. Serves only instances that report themselves ready; a load balancer reaches it by service name and port name.'
+    - gvk:
+        group: networking.datumapis.com
+        kind: NetworkContext
+      summary: 'The network in one location, made by Datum when a workload there attaches. Never created by the customer. Its Ready condition carries the reason a location is not working.'
+    - gvk:
+        group: networking.datumapis.com
+        kind: NetworkInterface
+      summary: 'An instance''s address on a network, made by Datum. HolderAvailable is the instance''s own health, not the network''s.'
+  tools:
+    mcpServers:
+    - name: network
+      endpoint: http://network-services-operator-network-mcp.datum-system.svc.cluster.local:8080/mcp
+      toolSelector:
+        include:
+        - network_list
+        - network_get
+        - network_diagnose
+        - network_service_list
+        - network_service_diagnose
+        - network_reason_explain
+        - network_render
+      mutating: []
+  skills:
+  - name: network-create
+    description: 'Create a network: the one or two choices there are, why IPv4 is not one, and render, plan, show, confirm, then apply'
+    source: http://network-services-operator-network-mcp.datum-system.svc.cluster.local:8080/runbooks/network-create.md
+  - name: network-service-create
+    description: 'Create a network service for a workload: selecting its instances, naming ports, and render, plan, show, confirm, then apply'
+    source: http://network-services-operator-network-mcp.datum-system.svc.cluster.local:8080/runbooks/network-service-create.md
+  - name: network-not-ready
+    description: A network that is not ready, from IPv6Required (the customer's) to address allocation failures (Datum's)
+    source: http://network-services-operator-network-mcp.datum-system.svc.cluster.local:8080/runbooks/network-not-ready.md
+  - name: network-location-triage
+    description: A network not reaching a location, or one location's instances waiting on it while others are fine
+    source: http://network-services-operator-network-mcp.datum-system.svc.cluster.local:8080/runbooks/network-location-triage.md
+  - name: network-interface-triage
+    description: An instance's network interface not addressed, an IPv4 request on an IPv6-only network, or a kept interface refusing a workload
+    source: http://network-services-operator-network-mcp.datum-system.svc.cluster.local:8080/runbooks/network-interface-triage.md
+  - name: network-service-not-serving
+    description: A network service sending traffic nowhere, matching nothing, spanning two networks, or with no ready instances
+    source: http://network-services-operator-network-mcp.datum-system.svc.cluster.local:8080/runbooks/network-service-not-serving.md
+  - name: network-deletion-stuck
+    description: Deleting a network that does not finish because instances or kept interfaces still hold addresses in it
+    source: http://network-services-operator-network-mcp.datum-system.svc.cluster.local:8080/runbooks/network-deletion-stuck.md
+  authority:
+    reads:
+    - gvk:
+        group: networking.datumapis.com
+        kind: '*'
+    maxTaskDurationSeconds: 60

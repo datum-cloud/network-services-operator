@@ -200,7 +200,7 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 			if err := r.cleanupDownstreamAnchor(ctx, cl.GetClient(), string(req.ClusterName), &httpProxy); err != nil {
 				return ctrl.Result{}, err
 			}
-			if err := finalizer.Remove(ctx, cl.GetClient(), &httpProxy, httpProxyFinalizer, fieldOwner(httpProxyControllerName)); err != nil {
+			if err := finalizer.Remove(ctx, cl, &httpProxy, httpProxyFinalizer, fieldOwner(httpProxyControllerName)); err != nil {
 				return ctrl.Result{}, err
 			}
 		}

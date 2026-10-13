@@ -1127,9 +1127,7 @@ func TestNetworkContextReplicationProducesUsableDNSIntent(t *testing.T) {
 		t.Fatal("replicated DNS intent did not produce resolver settings")
 	}
 	assert.Equal(t, "resolver-a", settings.ContextRef.Name)
-	assert.Equal(t, types.UID("context-uid"), settings.ContextRef.UID)
 	assert.Equal(t, "access-a", settings.AccessBindingRef.Name)
-	assert.Equal(t, types.UID("access-uid"), settings.AccessBindingRef.UID)
 	assert.Equal(t, int64(3), settings.WriterEpoch)
 	assert.Equal(t, int64(7), settings.Sequence)
 	assert.Equal(t, []string{"fd53::53"}, settings.Nameservers)

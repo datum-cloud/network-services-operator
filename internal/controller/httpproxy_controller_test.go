@@ -2444,15 +2444,18 @@ func newHTTPProxy(opts ...func(*networkingv1alpha.HTTPProxy)) *networkingv1alpha
 type fakeMockManager struct {
 	mcmanager.Manager
 	cl client.Client
+	// reader is the clusters' API reader; cl when nil.
+	reader client.Reader
 }
 
 func (m *fakeMockManager) GetCluster(ctx context.Context, clusterName multicluster.ClusterName) (cluster.Cluster, error) {
-	return &fakeCluster{cl: m.cl}, nil
+	return &fakeCluster{cl: m.cl, reader: m.reader}, nil
 }
 
 type fakeCluster struct {
 	cluster.Cluster
-	cl client.Client
+	cl     client.Client
+	reader client.Reader
 }
 
 func (c *fakeCluster) GetClient() client.Client {
@@ -2460,6 +2463,9 @@ func (c *fakeCluster) GetClient() client.Client {
 }
 
 func (c *fakeCluster) GetAPIReader() client.Reader {
+	if c.reader != nil {
+		return c.reader
+	}
 	// In unit tests we use the same fake client as both cached and uncached readers.
 	return c.cl
 }

@@ -200,7 +200,7 @@ func TestCertificateServiceWildcardHostname(t *testing.T) {
 		var mirror corev1.Secret
 		require.NoError(t, o.downstream.Get(context.Background(), client.ObjectKey{Namespace: downstreamNamespaceName, Name: secretName}, &mirror))
 
-		health := o.reconciler.evaluateListenerCertHealth(context.Background(), o.upstream, o.downstream, downstreamNamespaceName, o.gateway, []string{wildcard})
+		health := o.reconciler.evaluateListenerCertHealth(context.Background(), "test-cluster", o.upstream, o.downstream, downstreamNamespaceName, o.gateway, []string{wildcard})
 		assert.True(t, health[listenerName].healthy, health[listenerName].message)
 		assert.NotNil(t, gatewayutil.GetListenerByName(o.gateway.Spec.Listeners, listenerName))
 	})

@@ -293,7 +293,7 @@ func TestEnsureDownstreamGatewayCertificateService(t *testing.T) {
 
 				assert.Equal(t, tlsCertificateMirrorAdmitDelay, e.result.RequeueAfter, "a fresh mirror asks for a prompt re-evaluation")
 
-				health := e.reconciler.evaluateListenerCertHealth(ctx, e.upstream, e.downstream, downstreamNamespaceName, upstreamGateway, []string{hostname})
+				health := e.reconciler.evaluateListenerCertHealth(ctx, "test-cluster", e.upstream, e.downstream, downstreamNamespaceName, upstreamGateway, []string{hostname})
 				status, gated := health[listenerName]
 				require.True(t, gated)
 				assert.True(t, status.healthy, "listener is admitted on the next pass: %s", status.message)

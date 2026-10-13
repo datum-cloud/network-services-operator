@@ -2216,7 +2216,7 @@ func TestReconcileGatewayStatus_DroppedListenerIsNotProgrammed(t *testing.T) {
 			desired := reconciler.getDesiredDownstreamGateway(ctx, upstream, tt.claimedHostnames, tt.certHealth)
 			dropped := summarizeDroppedListeners(upstream, desired, tt.certHealth)
 
-			result := reconciler.reconcileGatewayStatus(upstreamClient, upstream, downstream, dropped)
+			result := reconciler.reconcileGatewayStatus("test-cluster", upstreamClient, upstream, downstream, dropped)
 
 			programmed := apimeta.FindStatusCondition(upstream.Status.Conditions, string(gatewayv1.GatewayConditionProgrammed))
 			require.NotNil(t, programmed, "upstream Programmed condition")
@@ -2252,7 +2252,7 @@ func TestReconcileGatewayStatus_DownstreamNotProgrammedIsNotPolled(t *testing.T)
 		Build()
 
 	reconciler := &GatewayReconciler{}
-	result := reconciler.reconcileGatewayStatus(upstreamClient, upstream, downstream, listenerDropReport{})
+	result := reconciler.reconcileGatewayStatus("test-cluster", upstreamClient, upstream, downstream, listenerDropReport{})
 
 	programmed := apimeta.FindStatusCondition(upstream.Status.Conditions, string(gatewayv1.GatewayConditionProgrammed))
 	require.NotNil(t, programmed, "upstream Programmed condition")

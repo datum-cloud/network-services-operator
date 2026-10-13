@@ -141,7 +141,7 @@ func (r *InternalDNSCellReconciler) reconcile(
 	if err := r.report(ctx, networkContext, access, metav1.Condition{
 		Type: networkingv1alpha.NetworkContextDNSReady, Status: metav1.ConditionTrue,
 		Reason:  networkingv1alpha.NetworkContextDNSReadyReasonReady,
-		Message: "DNS authorization and Galactic programming are current",
+		Message: "DNS access version and Galactic programming are current",
 	}); err != nil {
 		return ctrl.Result{}, err
 	}

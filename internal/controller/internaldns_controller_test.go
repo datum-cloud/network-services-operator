@@ -78,7 +78,7 @@ func TestInternalDNSProjectLifecycleFencesAccess(t *testing.T) {
 	if err := unstructured.SetNestedSlice(dnsContext.Object, []any{map[string]any{"type": "Ready", "status": "True", "observedGeneration": int64(1)}}, "status", "conditions"); err != nil {
 		t.Fatal(err)
 	}
-	if err := unstructured.SetNestedField(dnsContext.Object, int64(7), "status", "accessWriterEpoch"); err != nil {
+	if err := unstructured.SetNestedField(dnsContext.Object, int64(7), "status", "accessEpoch"); err != nil {
 		t.Fatal(err)
 	}
 	if err := unstructured.SetNestedField(dnsContext.Object, internalDNSDefaultDomain, "status", "managedNamespace", "suffix"); err != nil {
@@ -192,7 +192,7 @@ func TestInternalDNSProjectLifecycleFencesAccess(t *testing.T) {
 	if err := cl.Get(ctx, client.ObjectKey{Namespace: "tenant", Name: bindingName}, binding); err != nil {
 		t.Fatal(err)
 	}
-	sequence, _, _ := unstructured.NestedInt64(binding.Object, "spec", "authorization", "sequence")
+	sequence, _, _ := unstructured.NestedInt64(binding.Object, "spec", "version", "sequence")
 	if sequence != 1 {
 		t.Fatalf("unchanged access sequence = %d, want 1", sequence)
 	}
@@ -297,8 +297,8 @@ func TestAccessBindingWriterEpochChangeStartsNewFence(t *testing.T) {
 		"contextRef":    map[string]any{"name": "resolver", "uid": "resolver-uid"},
 		"region":        "us-central",
 		"queryIdentity": map[string]any{"type": "DestinationAddress", "value": "fd70:100::10"},
-		"authorization": map[string]any{
-			"writerEpoch": int64(7), "sequence": int64(12),
+		"version": map[string]any{
+			"epoch": int64(7), "sequence": int64(12),
 		},
 	}
 	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(binding).Build()
@@ -316,8 +316,8 @@ func TestAccessBindingWriterEpochChangeStartsNewFence(t *testing.T) {
 	if err := cl.Get(ctx, client.ObjectKeyFromObject(binding), binding); err != nil {
 		t.Fatal(err)
 	}
-	epoch, _, _ := unstructured.NestedInt64(binding.Object, "spec", "authorization", "writerEpoch")
-	sequence, _, _ := unstructured.NestedInt64(binding.Object, "spec", "authorization", "sequence")
+	epoch, _, _ := unstructured.NestedInt64(binding.Object, "spec", "version", "epoch")
+	sequence, _, _ := unstructured.NestedInt64(binding.Object, "spec", "version", "sequence")
 	if epoch != 8 || sequence != 1 {
 		t.Fatalf("new fence = epoch %d sequence %d, want epoch 8 sequence 1", epoch, sequence)
 	}

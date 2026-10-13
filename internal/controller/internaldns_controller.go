@@ -182,7 +182,7 @@ func (r *InternalDNSProjectReconciler) reconcile(
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	epoch, _, _ := unstructured.NestedInt64(dnsContext.Object, "status", "accessWriterEpoch")
+	epoch, _, _ := unstructured.NestedInt64(dnsContext.Object, "status", "accessEpoch")
 	suffix, _, _ := unstructured.NestedString(dnsContext.Object, "status", "managedNamespace", "suffix")
 	zoneName, _, _ := unstructured.NestedString(dnsContext.Object, "status", "managedNamespace", "dnsZoneRef", "name")
 	if dnsContext.GetUID() == "" || epoch < 1 || suffix != internalDNSDefaultDomain || zoneName == "" || !resolverContextReady(dnsContext) {
@@ -201,7 +201,7 @@ func (r *InternalDNSProjectReconciler) reconcile(
 		return ctrl.Result{RequeueAfter: internalDNSRetryInterval}, nil
 	}
 
-	sequence, _, _ := unstructured.NestedInt64(binding.Object, "spec", "authorization", "sequence")
+	sequence, _, _ := unstructured.NestedInt64(binding.Object, "spec", "version", "sequence")
 	if err := r.publishIntent(ctx, cl, networkContext, map[string]string{
 		InternalDNSContextNameAnnotation:        dnsContext.GetName(),
 		InternalDNSAccessNameAnnotation:         binding.GetName(),
@@ -311,10 +311,10 @@ func (r *InternalDNSProjectReconciler) ensureAccess(
 			return nil, false, fmt.Errorf("DNSResolverAccessBinding %s/%s belongs to another network lifetime", network.Namespace, name)
 		}
 		if accessBindingMatches(current, dnsContext, region, destination, epoch) {
-			sequence, _, _ = unstructured.NestedInt64(current.Object, "spec", "authorization", "sequence")
+			sequence, _, _ = unstructured.NestedInt64(current.Object, "spec", "version", "sequence")
 			return current, bindingReady(current, sequence), nil
 		} else {
-			currentEpoch, _, _ := unstructured.NestedInt64(current.Object, "spec", "authorization", "writerEpoch")
+			currentEpoch, _, _ := unstructured.NestedInt64(current.Object, "spec", "version", "epoch")
 			currentContextUID, _, _ := unstructured.NestedString(current.Object, "spec", "contextRef", "uid")
 			if currentContextUID == string(dnsContext.GetUID()) && currentEpoch > epoch {
 				return nil, false, fmt.Errorf("DNSResolverAccessBinding %s/%s has writer epoch %d ahead of context epoch %d",
@@ -329,9 +329,9 @@ func (r *InternalDNSProjectReconciler) ensureAccess(
 		"queryIdentity": map[string]any{"type": "DestinationAddress", "value": destination},
 		"port":          int64(53),
 		"transports":    []any{"UDP", "TCP"},
-		"authorization": map[string]any{
-			"writerEpoch": epoch,
-			"sequence":    sequence,
+		"version": map[string]any{
+			"epoch":    epoch,
+			"sequence": sequence,
 		},
 	}
 	annotations := current.GetAnnotations()
@@ -374,7 +374,7 @@ func accessBindingMatches(
 	boundRegion, _, _ := unstructured.NestedString(binding.Object, "spec", "region")
 	identityType, _, _ := unstructured.NestedString(binding.Object, "spec", "queryIdentity", "type")
 	identityValue, _, _ := unstructured.NestedString(binding.Object, "spec", "queryIdentity", "value")
-	writerEpoch, _, _ := unstructured.NestedInt64(binding.Object, "spec", "authorization", "writerEpoch")
+	writerEpoch, _, _ := unstructured.NestedInt64(binding.Object, "spec", "version", "epoch")
 	return contextName == dnsContext.GetName() && contextUID == string(dnsContext.GetUID()) &&
 		boundRegion == region && identityType == "DestinationAddress" && identityValue == destination && writerEpoch == epoch
 }
@@ -565,7 +565,7 @@ func (r *InternalDNSReadinessReconciler) publish(
 	err = r.updateProject(ctx, cl, projectContext, intent, metav1.Condition{
 		Type: networkingv1alpha.NetworkContextDNSReady, Status: metav1.ConditionTrue,
 		Reason:  networkingv1alpha.NetworkContextDNSReadyReasonReady,
-		Message: "DNS authorization and private network programming are current",
+		Message: "DNS access version and private network programming are current",
 	})
 	return ctrl.Result{RequeueAfter: internalDNSRetryInterval}, err
 }

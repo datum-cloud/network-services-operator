@@ -146,6 +146,16 @@ install-plugin: build-plugin ## Install the datumctl-alb plugin into ~/.datumctl
 	install -m 0755 $(LOCALBIN)/datumctl-alb $(DATUMCTL_PLUGIN_DIR)/datumctl-alb
 	@echo "Installed $(DATUMCTL_PLUGIN_DIR)/datumctl-alb ($(PLUGIN_VERSION)); try 'datumctl alb --help'"
 
+.PHONY: build-network-plugin
+build-network-plugin: $(LOCALBIN) ## Build the datumctl-network plugin binary into bin/.
+	go build -ldflags "-X main.version=$(PLUGIN_VERSION)" -o $(LOCALBIN)/datumctl-network ./cmd/datumctl-network
+
+.PHONY: install-network-plugin
+install-network-plugin: build-network-plugin ## Install the datumctl-network plugin into ~/.datumctl/plugins.
+	mkdir -p $(DATUMCTL_PLUGIN_DIR)
+	install -m 0755 $(LOCALBIN)/datumctl-network $(DATUMCTL_PLUGIN_DIR)/datumctl-network
+	@echo "Installed $(DATUMCTL_PLUGIN_DIR)/datumctl-network ($(PLUGIN_VERSION)); try 'datumctl network --help'"
+
 GORELEASER ?= goreleaser
 
 .PHONY: release-plugin-snapshot

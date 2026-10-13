@@ -45,7 +45,7 @@ datumctl refuses to run an unmanaged `datumctl-*` binary until you allow it, bec
 3. **Open `plugins/alb.yaml`** against the index. Generate it from the release rather than by hand, so the hashes are the ones users will actually download:
 
    ```sh
-   hack/alb-catalog-entry.sh v0.29.0 > alb.yaml
+   hack/plugin-catalog-entry.sh alb v0.29.0 > alb.yaml
    ```
 
    It refuses to emit a partial entry, since one that lists four platforms installs cleanly on those and fails on the fifth.

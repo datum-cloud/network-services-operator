@@ -54,9 +54,9 @@ func serverTools(t *testing.T, s *mcp.Server) []*mcp.Tool {
 func diagnose(t *testing.T, r *fakeReader, name string) *NetworkDiagnosis {
 	t.Helper()
 	pinClock(t)
-	ne, err := networkEvidenceFor(context.Background(), depsFor(r), name)
+	d, err := DiagnoseNetwork(context.Background(), r, "default", name)
 	require.NoError(t, err)
-	return diagnoseNetwork(ne, testNow)
+	return d
 }
 
 func TestToolsAreReadOnly(t *testing.T) {
@@ -180,7 +180,7 @@ func TestAMissingNetworkNamedByAWorkloadIsReportedOnTheWorkload(t *testing.T) {
 
 func TestAnInterfaceClaimPointingAtAStepReportsTheStep(t *testing.T) {
 	claim := networkingv1alpha.NetworkInterfaceClaim{
-		ObjectMeta: meta("api-0-eth0", map[string]string{workloadNameLabel: "api"}),
+		ObjectMeta: meta("api-0-eth0", map[string]string{WorkloadNameLabel: "api"}),
 		Spec:       networkingv1alpha.NetworkInterfaceClaimSpec{Network: networkingv1alpha.LocalNetworkRef{Name: "default"}},
 		Status: networkingv1alpha.NetworkInterfaceClaimStatus{Conditions: []metav1.Condition{
 			cond("Bound", "AddressFamilyNotCarried", metav1.ConditionFalse, time.Hour),
@@ -257,9 +257,8 @@ func TestGetShowsLocationsWorkloadsServicesAndKeptInterfaces(t *testing.T) {
 		},
 		services: []networkingv1alpha.NetworkService{service("api", "api")},
 	}
-	ne, err := networkEvidenceFor(context.Background(), depsFor(r), "default")
+	v, err := Network(context.Background(), r, "default", "default")
 	require.NoError(t, err)
-	v := buildNetworkView(ne, testNow)
 
 	assert.Equal(t, "fd20:1::/48", v.IPv6Prefix)
 	assert.Equal(t, []string{"api"}, v.Workloads)
@@ -367,6 +366,6 @@ func TestRenderedServiceSelectsTheWorkloadByItsInterfaceLabel(t *testing.T) {
 	require.NoError(t, err)
 	spec := doc["spec"].(map[string]any)
 	sel := spec["networkInterfaces"].(map[string]any)["selector"].(map[string]any)
-	assert.Equal(t, map[string]any{workloadNameLabel: "api-backend"}, sel["matchLabels"])
+	assert.Equal(t, map[string]any{WorkloadNameLabel: "api-backend"}, sel["matchLabels"])
 	assert.Equal(t, []any{map[string]any{"name": "http", "port": float64(8080)}}, spec["ports"])
 }

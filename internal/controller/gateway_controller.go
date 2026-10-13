@@ -197,7 +197,7 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 				return result.Complete(ctx)
 			}
 
-			if err := finalizer.Remove(ctx, cl.GetClient(), &gateway, gatewayControllerFinalizer, fieldOwner(gatewayControllerName)); err != nil {
+			if err := finalizer.Remove(ctx, cl, &gateway, gatewayControllerFinalizer, fieldOwner(gatewayControllerName)); err != nil {
 				return ctrl.Result{}, fmt.Errorf("failed to remove finalizer from gateway: %w", err)
 			}
 		}

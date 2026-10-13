@@ -20,6 +20,7 @@ func oidcPolicy(namespace, name, secretName string) *unstructured.Unstructured {
 	obj.SetGroupVersionKind(testGVK)
 	obj.SetNamespace(namespace)
 	obj.SetName(name)
+	obj.SetUID(types.UID(namespace + "-" + name + "-uid"))
 	obj.SetFinalizers([]string{gatewayResourceReplicatorFinalizer})
 	obj.Object["spec"] = map[string]any{
 		"targetRefs": []any{

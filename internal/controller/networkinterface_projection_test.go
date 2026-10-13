@@ -192,7 +192,7 @@ func newVisibility(t *testing.T) *visibility {
 			HubCluster:  hubCluster,
 			localReader: cellPlane,
 		},
-		projector: &NetworkInterfaceProjector{Projects: resolver, hub: hubPlane},
+		projector: &NetworkInterfaceProjector{Projects: resolver, hub: hubCluster},
 		collector: &NetworkInterfaceProjectionGCReconciler{Projects: resolver, hub: hubPlane},
 	}
 }

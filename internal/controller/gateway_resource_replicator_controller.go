@@ -287,7 +287,7 @@ func (r *GatewayResourceReplicatorReconciler) Reconcile(ctx context.Context, req
 	downstreamStrategy := downstreamclient.NewMappedNamespaceResourceStrategy(string(req.ClusterName), upstreamClient, r.DownstreamCluster.GetClient())
 
 	if !upstreamObj.GetDeletionTimestamp().IsZero() {
-		return r.finalizeResource(ctx, resourceCfg, upstreamClient, upstreamObj, downstreamStrategy)
+		return r.finalizeResource(ctx, resourceCfg, upstreamCluster, upstreamObj, downstreamStrategy)
 	}
 
 	if !controllerutil.ContainsFinalizer(upstreamObj, gatewayResourceReplicatorFinalizer) {
@@ -311,7 +311,7 @@ func (r *GatewayResourceReplicatorReconciler) Reconcile(ctx context.Context, req
 func (r *GatewayResourceReplicatorReconciler) finalizeResource(
 	ctx context.Context,
 	resource replicationResource,
-	upstreamClient client.Client,
+	upstreamCluster finalizer.Cluster,
 	upstreamObj *unstructured.Unstructured,
 	downstreamStrategy downstreamclient.ResourceStrategy,
 ) (ctrl.Result, error) {
@@ -321,12 +321,12 @@ func (r *GatewayResourceReplicatorReconciler) finalizeResource(
 		}
 
 		if isSecurityPolicyGVK(resource.gvk) {
-			if err := r.reconcileReferencedSecretLabels(ctx, upstreamClient, resource.gvk, upstreamObj.GetNamespace()); err != nil {
+			if err := r.reconcileReferencedSecretLabels(ctx, upstreamCluster.GetClient(), resource.gvk, upstreamObj.GetNamespace()); err != nil {
 				return ctrl.Result{}, err
 			}
 		}
 
-		if err := finalizer.Remove(ctx, upstreamClient, upstreamObj, gatewayResourceReplicatorFinalizer, fieldOwner(gatewayResourceReplicatorControllerName)); err != nil {
+		if err := finalizer.Remove(ctx, upstreamCluster, upstreamObj, gatewayResourceReplicatorFinalizer, fieldOwner(gatewayResourceReplicatorControllerName)); err != nil {
 			return ctrl.Result{}, fmt.Errorf("failed to remove finalizer from %s/%s: %w", upstreamObj.GetNamespace(), upstreamObj.GetName(), err)
 		}
 	}

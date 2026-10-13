@@ -177,17 +177,9 @@ spec:
     uid: 33333333-3333-4333-8333-333333333333
   # A trusted location mapping selects the regional shared fleet.
   region: us-central-1
-  queryIdentity:
-    type: DestinationAddress
-    # Authorize the service-side destination, distinct from fd53::53.
-    value: fd70:100::10
-  port: 53
-  transports: [UDP, TCP]
-  version:
-    # DNS issues the context epoch; network services preserve it across projections.
-    epoch: 3
-    # Advance the sequence when access intent changes; use conditional API writes.
-    sequence: 27
+  # Map verified VPC traffic to this service-side destination.
+  # DNS serves port 53 over UDP and TCP.
+  destinationAddress: fd70:100::10
 ```
 
 Network services create access only for an authorized network location. They coordinate the DNS binding with generic private-service intent that pins the consumer VPC lifetime and backend destination. RBAC controls who can publish network access intent. Galactic validates the pinned consumer VPC and supports persistent authorization for DNS private endpoints.
@@ -210,11 +202,9 @@ spec:
     # Proposed desired state owned by network services, protected from consumer writes.
     contextRef:
       name: application
-    # Preserve source access identity and revision across control planes.
+    # Identify the regional DNS configuration across control planes.
     accessBindingRef:
       name: application-us-central-1
-    epoch: 3
-    sequence: 27
     # The private-service frontend uses this address inside the consumer VPC.
     nameservers: ["fd53::53"]
     # Use the DNS-allocated managed suffix for relative names.
@@ -248,7 +238,7 @@ Galactic private-service policies use `authorization.persistent: true` and retai
 VPC identity checks. Deletion or a confirmed change to the selected VPC withdraws
 access. Missing programming observations retain the applied path.
 
-Publish settings only after DNS reports the access sequence ready and Galactic reports the corresponding policy generation programmed on required nodes. `NetworkContext` reports a proposed `DNSReady` condition separately from network readiness. Providers report `DNSConfigured` after applying current settings, reconcile updates, and reject stale revisions.
+Publish settings only after DNS reports the current access binding generation ready and Galactic reports the corresponding policy generation programmed on required nodes. `NetworkContext` reports a proposed `DNSReady` condition separately from network readiness. Providers report `DNSConfigured` after applying current settings, reconcile updates, and reject stale revisions.
 
 The initial guest contract supports one managed DNS context. A provider must reject unsupported combinations of managed contexts across interfaces rather than merge private resolver settings. A transient failure must not redirect private queries to a public resolver.
 
@@ -256,7 +246,7 @@ The initial guest contract supports one managed DNS context. A provider must rej
 
 Products reserve names through `DNSRegistration` and publish eligible addresses through `DNSRecordContribution`. Project RBAC authorizes product publication; publisher credentials cannot program resolver access. Compute owns instance and service eligibility; Connect owns export eligibility. DNS and network services do not inspect Compute resources.
 
-Reconcile access, publication, and settings independently per project and region. Persist sequences, use conditional writes, and resume from committed state after takeover. Failure in one region must not block healthy regions. Replication and retries preserve lifetimes and version fences.
+Reconcile access, publication, and settings independently per project and region. Use conditional writes and resume reconciliation from stored intent after takeover. Failure in one region must not block healthy regions. Galactic verifies network lifetimes and current programming; DNS owns publication ordering.
 
 Products explicitly withdraw unhealthy endpoints. Unavailable observations retain the last reported endpoint state. Withdrawal bounds include cached-answer TTLs. Removing a location's last consumer clears its settings; removing the region's last consumer withdraws access. Network deletion retires the DNS context. Recreated networks and retained interfaces cannot inherit retired access mappings.
 

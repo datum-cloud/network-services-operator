@@ -638,17 +638,6 @@ func bindingReady(binding *unstructured.Unstructured) bool {
 	return found && observed == binding.GetGeneration() && resolverContextReady(binding)
 }
 
-func unstructuredConditionTrue(obj *unstructured.Unstructured, conditionType string) bool {
-	conditions, _, _ := unstructured.NestedSlice(obj.Object, "status", "conditions")
-	for _, raw := range conditions {
-		condition, _ := raw.(map[string]any)
-		if condition["type"] == conditionType && condition["status"] == "True" {
-			return true
-		}
-	}
-	return false
-}
-
 func newInternalDNSObject(gvk schema.GroupVersionKind, namespace, name string) *unstructured.Unstructured {
 	obj := &unstructured.Unstructured{}
 	obj.SetGroupVersionKind(gvk)

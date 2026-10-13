@@ -41,7 +41,6 @@ balancer reaches it by the service's name and a port name.`,
 		serviceCreateCommand(),
 		serviceUpdateCommand(),
 		serviceDeleteCommand(),
-		serviceDiagnoseCommand(),
 	)
 	return cmd
 }
@@ -120,7 +119,7 @@ func serviceDescribeCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:               "describe <name>",
 		Aliases:           []string{"get", "show"},
-		Short:             "Show a network service: what it selects, its ports, and where it is serving",
+		Short:             "Show a network service: what it selects, its ports, where it is serving, and why not",
 		Example:           `  datumctl network service describe api`,
 		Args:              cobra.ExactArgs(1),
 		ValidArgsFunction: plugincli.CompleteNetworkServiceNames,
@@ -182,39 +181,6 @@ func runServiceDescribe(cmd *cobra.Command, args []string) error {
 		_ = tw.Flush()
 	}
 	_, _ = fmt.Fprintf(out, "\nDiagnosis:\n  %s\n", d.Summary)
-	return nil
-}
-
-func serviceDiagnoseCommand() *cobra.Command {
-	return &cobra.Command{
-		Use:   "diagnose <name>",
-		Short: "Explain why a network service sends traffic nowhere",
-		Long: `Explain why a network service is not serving, or only serving from some
-locations: what it selects, which instances are not ready and what they report,
-and who has to act.`,
-		Example:           `  datumctl network service diagnose api`,
-		Args:              cobra.ExactArgs(1),
-		ValidArgsFunction: plugincli.CompleteNetworkServiceNames,
-		RunE:              runServiceDiagnose,
-	}
-}
-
-func runServiceDiagnose(cmd *cobra.Command, args []string) error {
-	format, err := outputFormat(cmd)
-	if err != nil {
-		return err
-	}
-	d, err := serviceDiagnosis(cmd, args[0])
-	if err != nil {
-		return err
-	}
-	out := cmd.OutOrStdout()
-	if done, err := printStructured(out, format, d); done {
-		return err
-	}
-	_, _ = fmt.Fprintf(out, "Network service %s: %s\n\n%s\n", d.Service,
-		map[bool]string{true: "Ready", false: "NotReady"}[d.Ready], d.Summary)
-	printCauses(out, d.RootCause, d.OtherCauses, d.Unreadable)
 	if len(d.NotServing) > 0 {
 		_, _ = fmt.Fprintln(out, "\nInstances not serving:")
 		tw := util.NewTabWriter(out)

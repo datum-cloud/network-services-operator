@@ -1,6 +1,6 @@
 # Manage networks with `datumctl network`
 
-The `network` plugin for [`datumctl`](https://github.com/datum-cloud/datumctl) manages networks, network services, and the network interfaces instances hold on them. It writes the same `Network` and `NetworkService` resources as the cloud portal, and its `describe` and `diagnose` output comes from the same code the Patch assistant uses, so the two never describe a network differently.
+The `network` plugin for [`datumctl`](https://github.com/datum-cloud/datumctl) manages networks, network services, and the network interfaces instances hold on them. It writes the same `Network` and `NetworkService` resources as the cloud portal, and its `describe` output comes from the same code the Patch assistant uses, so the two never describe a network differently.
 
 ## Install the plugin
 
@@ -78,12 +78,14 @@ Releasing a kept interface gives its addresses up for good. An interface a runni
 
 ## When something is not working
 
+`describe` ends with a one-line diagnosis that names the cause and who has to act, for a network or a service:
+
 ```sh
-datumctl network diagnose backend
-datumctl network service diagnose api
+datumctl network describe backend
+datumctl network service describe api
 ```
 
-Both walk every object behind the network or service and report the cause that names something: what it is on, the location and workload it affects, who has to act — you, Datum, or nobody yet — and what to do. A service whose instances are not ready is a workload problem, not a network one, and the output says which instances and what they report.
+A service's `describe` also lists the instances that are not serving and what they report. Those are usually a workload problem, not a network one.
 
 ## Output
 

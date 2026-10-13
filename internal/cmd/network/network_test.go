@@ -107,8 +107,8 @@ func iface(name, network, workload string, phase networkingv1alpha.NetworkInterf
 func TestCommandTree(t *testing.T) {
 	root := Command()
 	want := map[string][]string{
-		"list": nil, "describe": nil, "create": nil, "update": nil, "delete": nil, "diagnose": nil, "version": nil,
-		"service":   {"list", "describe", "create", "update", "delete", "diagnose"},
+		"list": nil, "describe": nil, "create": nil, "update": nil, "delete": nil, "version": nil,
+		"service":   {"list", "describe", "create", "update", "delete"},
 		"interface": {"list", "release"},
 	}
 	for name, subs := range want {
@@ -193,15 +193,26 @@ func TestDeleteOfAMissingNetworkIsNotFound(t *testing.T) {
 	assert.Contains(t, r.err, "datumctl network list")
 }
 
-func TestDiagnoseSaysWhoActs(t *testing.T) {
-	c := newTestClient(t, network("legacy", metav1.Condition{
-		Type: "Ready", Status: metav1.ConditionFalse, Reason: "IPv6Required", Message: "add IPv6",
-	}))
-	r := run(t, c, "", "diagnose", "legacy")
+func TestThereIsNoDiagnoseCommand(t *testing.T) {
+	r := run(t, newTestClient(t), "", "diagnose", "default")
+	assert.Equal(t, util.ExitUsage, r.code)
+	r = run(t, newTestClient(t), "", "service", "diagnose", "api")
+	assert.Equal(t, util.ExitUsage, r.code)
+}
+
+func TestServiceDescribeListsInstancesNotServing(t *testing.T) {
+	svc := service("api")
+	svc.Status.Conditions = []metav1.Condition{
+		{Type: "MembersResolved", Status: metav1.ConditionTrue, Reason: "Resolved"},
+		{Type: "Ready", Status: metav1.ConditionFalse, Reason: "NoServingLocations"},
+	}
+	down := iface("api-0", "default", "api", networkingv1alpha.NetworkInterfacePhaseBound)
+	down.Status.Conditions = []metav1.Condition{{Type: "HolderAvailable", Status: metav1.ConditionFalse, Reason: "HolderUnavailable"}}
+
+	r := run(t, newTestClient(t, svc, down), "", "service", "describe", "api")
 	require.Zero(t, r.code, r.err)
-	assert.Contains(t, r.out, "Ready=IPv6Required")
-	assert.Contains(t, r.out, "you — a change on your side fixes this")
-	assert.Contains(t, r.out, "Add IPv6")
+	assert.Contains(t, r.out, "Instances not serving:")
+	assert.Contains(t, r.out, "HolderUnavailable")
 }
 
 func TestListAndDescribe(t *testing.T) {

@@ -285,10 +285,10 @@ func waitForReady(cmd *cobra.Command, c client.Client, name string, timeout time
 		return nil
 	}
 	ce := util.NewCLIError(util.ExitUnavailable, fmt.Sprintf("network %q was not ready within %s", name, timeout)).
-		WithFix("see why with:\n       datumctl network diagnose " + name)
+		WithFix("see why with:\n       datumctl network describe " + name)
 	if last != nil {
 		ce = util.NewCLIError(util.ExitUnavailable, fmt.Sprintf("network %q was not ready within %s: %s",
-			name, timeout, last.Reason)).WithFix("see why with:\n       datumctl network diagnose " + name)
+			name, timeout, last.Reason)).WithFix("see why with:\n       datumctl network describe " + name)
 	}
 	return ce
 }
@@ -419,7 +419,7 @@ func runDelete(cmd *cobra.Command, args []string) error {
 	if len(v.Workloads) > 0 || len(v.KeptInterfaces) > 0 {
 		_, _ = fmt.Fprintf(out, "Network %q is being deleted. It is removed once the instances and kept interfaces "+
 			"on it let go of their addresses.\n", name)
-		nextSteps(cmd, "datumctl network diagnose "+name)
+		nextSteps(cmd, "datumctl network describe "+name)
 		return nil
 	}
 	_, _ = fmt.Fprintf(out, "Network %q deleted.\n", name)
@@ -439,40 +439,4 @@ func deletePrompt(v networkagent.NetworkView) string {
 		fmt.Fprintf(&b, "\n  Kept interfaces whose addresses are given up: %s", strings.Join(v.KeptInterfaces, ", "))
 	}
 	return b.String()
-}
-
-func diagnoseCommand() *cobra.Command {
-	return &cobra.Command{
-		Use:   "diagnose <name>",
-		Short: "Explain why a network, or a workload's use of it, is not working",
-		Long: `Walk a network, every location it has reached, each location's address range
-and every instance's network interface, and report the cause that names
-something: what it is, who has to act, and what to do.`,
-		Example:           `  datumctl network diagnose default`,
-		Args:              cobra.ExactArgs(1),
-		ValidArgsFunction: completeNetworkNames,
-		RunE:              runDiagnose,
-	}
-}
-
-func runDiagnose(cmd *cobra.Command, args []string) error {
-	format, err := outputFormat(cmd)
-	if err != nil {
-		return err
-	}
-	_, r, err := clients(cmd)
-	if err != nil {
-		return err
-	}
-	d, err := networkagent.DiagnoseNetwork(cmd.Context(), r, util.ResourceNamespace, args[0])
-	if err != nil {
-		return notFound("network", args[0], listNetworks, err)
-	}
-	out := cmd.OutOrStdout()
-	if done, err := printStructured(out, format, d); done {
-		return err
-	}
-	_, _ = fmt.Fprintf(out, "Network %s: %s\n\n%s\n", d.Network, readyWord(d.Ready, d.Deleting), d.Summary)
-	printCauses(out, d.RootCause, d.OtherCauses, d.Unreadable)
-	return nil
 }

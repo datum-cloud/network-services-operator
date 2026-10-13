@@ -96,6 +96,15 @@ func UnknownSubcommandError(cmd *cobra.Command, name string) *util.CLIError {
 func EnforceUsageExit(cmd *cobra.Command) {
 	cmd.SuggestionsMinimumDistance = 2
 
+	if cmd.HasSubCommands() && !cmd.Runnable() {
+		cmd.RunE = func(c *cobra.Command, args []string) error {
+			if len(args) > 0 {
+				return UnknownSubcommandError(c, args[0])
+			}
+			return c.Help()
+		}
+	}
+
 	switch {
 	case cmd.Args != nil:
 		inner := cmd.Args

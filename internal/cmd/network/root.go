@@ -49,7 +49,6 @@ ports, so a load balancer can send traffic to them.`
 		createCommand(),
 		updateCommand(),
 		deleteCommand(),
-		diagnoseCommand(),
 		serviceCommand(),
 		interfaceCommand(),
 		versionCommand(),

@@ -36,25 +36,33 @@ import (
 
 const boundInterfaceName = "hello-0-eth0"
 
-// hubFakeCluster wraps a client as the cluster.Cluster the write-back writes to.
-type hubFakeCluster struct {
+// planeCluster wraps a client as a cluster.Cluster: the hub the write-back
+// writes to, or a project's control plane. reader, when set, answers
+// GetAPIReader in place of the client.
+type planeCluster struct {
 	scheme *runtime.Scheme
 	client client.Client
+	reader client.Reader
 }
 
-func (c *hubFakeCluster) GetHTTPClient() *http.Client          { return &http.Client{} }
-func (c *hubFakeCluster) GetConfig() *rest.Config              { return &rest.Config{} }
-func (c *hubFakeCluster) GetCache() cache.Cache                { return nil }
-func (c *hubFakeCluster) GetScheme() *runtime.Scheme           { return c.scheme }
-func (c *hubFakeCluster) GetClient() client.Client             { return c.client }
-func (c *hubFakeCluster) GetFieldIndexer() client.FieldIndexer { return nil }
-func (c *hubFakeCluster) GetEventRecorderFor(string) record.EventRecorder {
+func (c *planeCluster) GetHTTPClient() *http.Client          { return &http.Client{} }
+func (c *planeCluster) GetConfig() *rest.Config              { return &rest.Config{} }
+func (c *planeCluster) GetCache() cache.Cache                { return nil }
+func (c *planeCluster) GetScheme() *runtime.Scheme           { return c.scheme }
+func (c *planeCluster) GetClient() client.Client             { return c.client }
+func (c *planeCluster) GetFieldIndexer() client.FieldIndexer { return nil }
+func (c *planeCluster) GetEventRecorderFor(string) record.EventRecorder {
 	return record.NewFakeRecorder(10)
 }
-func (c *hubFakeCluster) GetEventRecorder(string) events.EventRecorder { return nil }
-func (c *hubFakeCluster) GetRESTMapper() meta.RESTMapper               { return nil }
-func (c *hubFakeCluster) GetAPIReader() client.Reader                  { return c.client }
-func (c *hubFakeCluster) Start(context.Context) error                  { return nil }
+func (c *planeCluster) GetEventRecorder(string) events.EventRecorder { return nil }
+func (c *planeCluster) GetRESTMapper() meta.RESTMapper               { return nil }
+func (c *planeCluster) GetAPIReader() client.Reader {
+	if c.reader != nil {
+		return c.reader
+	}
+	return c.client
+}
+func (c *planeCluster) Start(context.Context) error { return nil }
 
 // visibility stands the three planes an interface crosses on two API servers.
 // The cell and the project control plane are separate clusters in production
@@ -168,7 +176,7 @@ func newVisibility(t *testing.T) *visibility {
 	network.Spec.IPAM.Mode = networkingv1alpha.NetworkIPAMModeAuto
 	require.NoError(t, cellPlane.Create(ctx, network))
 
-	hubCluster := &hubFakeCluster{scheme: hubPlane.Scheme(), client: hubPlane}
+	hubCluster := &planeCluster{scheme: hubPlane.Scheme(), client: hubPlane}
 	resolver := &staticProjectResolver{clients: map[string]client.Client{testProject: cellPlane}}
 
 	return &visibility{
@@ -621,7 +629,7 @@ func TestACopyGoesWhenItsNetworkDoes(t *testing.T) {
 	require.False(t, found)
 }
 
-var _ cluster.Cluster = &hubFakeCluster{}
+var _ cluster.Cluster = &planeCluster{}
 
 // A consumer selects the members of a network service by the keys whatever
 // created the claim wrote. They only reach a service if they reach the copy.

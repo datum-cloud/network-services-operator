@@ -15,6 +15,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
@@ -31,9 +32,9 @@ import (
 	"go.datum.net/network-services-operator/internal/downstreamclient"
 )
 
-// ProjectClusterResolver hands back a client for one project's control plane.
+// ProjectClusterResolver hands back one project's control plane.
 type ProjectClusterResolver interface {
-	ClientForProject(ctx context.Context, project string) (client.Client, error)
+	ClusterForProject(ctx context.Context, project string) (cluster.Cluster, error)
 }
 
 // NewProjectClusterResolver reaches project control planes through the clusters
@@ -53,14 +54,14 @@ type projectReadiness interface {
 	ProjectReady(ctx context.Context, project string) (bool, error)
 }
 
-// ClientForProject answers multicluster.ErrClusterNotFound only for a project
+// ClusterForProject answers multicluster.ErrClusterNotFound only for a project
 // that is gone. The provider answers not found also for a project it has not
 // registered yet, as after a restart; that one is an error to retry, because
 // the callers release what a gone project held.
-func (r *managerProjectClusterResolver) ClientForProject(ctx context.Context, project string) (client.Client, error) {
+func (r *managerProjectClusterResolver) ClusterForProject(ctx context.Context, project string) (cluster.Cluster, error) {
 	cl, err := r.mgr.GetCluster(ctx, multicluster.ClusterName(project))
 	if err == nil {
-		return cl.GetClient(), nil
+		return cl, nil
 	}
 	readiness, ok := r.mgr.GetProvider().(projectReadiness)
 	if !errors.Is(err, multicluster.ErrClusterNotFound) || !ok {
@@ -200,13 +201,14 @@ func (r *NetworkPresenceReconciler) teardown(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, err
 	}
 
-	projectClient, err := r.Projects.ClientForProject(ctx, routing.project)
+	projectCluster, err := r.Projects.ClusterForProject(ctx, routing.project)
 	if err != nil {
 		if errors.Is(err, multicluster.ErrClusterNotFound) {
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, fmt.Errorf("failed reaching project %q: %w", routing.project, err)
 	}
+	projectClient := projectCluster.GetClient()
 
 	var networkContext networkingv1alpha.NetworkContext
 	key := client.ObjectKey{Namespace: routing.projectNamespace, Name: req.Name}
@@ -302,7 +304,7 @@ func (r *NetworkPresenceReconciler) ensure(
 		return false, err
 	}
 
-	projectClient, err := r.Projects.ClientForProject(ctx, routing.project)
+	projectCluster, err := r.Projects.ClusterForProject(ctx, routing.project)
 	if err != nil {
 		if errors.Is(err, multicluster.ErrClusterNotFound) {
 			return true, r.report(ctx, holders, nil, refusal(
@@ -311,6 +313,7 @@ func (r *NetworkPresenceReconciler) ensure(
 		}
 		return false, fmt.Errorf("failed reaching project %q: %w", routing.project, err)
 	}
+	projectClient := projectCluster.GetClient()
 
 	var location locationsv1alpha1.Location
 	if err := projectClient.Get(ctx, client.ObjectKey{Name: pair.Location.Name}, &location); err != nil {

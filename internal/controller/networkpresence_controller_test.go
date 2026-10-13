@@ -16,6 +16,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/cluster"
 
 	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
 
@@ -28,14 +29,17 @@ import (
 // here; what the controller does with each is the same either way.
 type staticProjectResolver struct {
 	clients map[string]client.Client
+	readers map[string]client.Reader
 }
 
-func (r *staticProjectResolver) ClientForProject(_ context.Context, project string) (client.Client, error) {
+// ClusterForProject reads through the reader a test set for the project, else
+// through its client, which in these tests is not cached.
+func (r *staticProjectResolver) ClusterForProject(_ context.Context, project string) (cluster.Cluster, error) {
 	cl, ok := r.clients[project]
 	if !ok {
 		return nil, fmt.Errorf("cluster %q: %w", project, errProjectClusterNotFound)
 	}
-	return cl, nil
+	return &planeCluster{scheme: cl.Scheme(), client: cl, reader: r.readers[project]}, nil
 }
 
 var errProjectClusterNotFound = fmt.Errorf("cluster not found")

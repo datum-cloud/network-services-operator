@@ -213,7 +213,7 @@ spec:
     # Preserve source access identity and revision across control planes.
     accessBindingRef:
       name: application-us-central-1
-    writerEpoch: 3
+    epoch: 3
     sequence: 27
     # The private-service frontend uses this address inside the consumer VPC.
     nameservers: ["fd53::53"]

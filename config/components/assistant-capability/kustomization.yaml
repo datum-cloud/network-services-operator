@@ -1,5 +1,5 @@
-# This service's registration with the Patch assistant: the agent customers talk
-# to, and the docs, tools and guides it offers them.
+# This service's registrations with the Patch assistant: the agents customers
+# talk to, and the docs, tools and guides each offers them.
 #
 # Applied to the Milo control plane alongside ../service-catalog. The catalog
 # copies the content into each entitled project; entitlement decides who gets it.
@@ -9,3 +9,5 @@ kind: Component
 resources:
   - service-agent.yaml
   - service-agent-configuration.yaml
+  - network-service-agent.yaml
+  - network-service-agent-configuration.yaml

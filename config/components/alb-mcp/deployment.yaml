@@ -32,7 +32,7 @@ spec:
       # plane the server reads is deployment topology, so the deployer patches
       # in a kubeconfig volume and KUBECONFIG. Without one the binary refuses to
       # start rather than falling back to the local cluster's API server; see
-      # checkControlPlaneEndpoint in cmd/alb-mcp.
+      # CheckControlPlaneEndpoint in internal/mcpserver.
       serviceAccountName: alb-mcp
       securityContext:
         runAsNonRoot: true

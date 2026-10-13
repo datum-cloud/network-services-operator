@@ -1,0 +1,22 @@
+# The agent a customer's assistant talks to when they ask about their networks
+# and network services.
+#
+# Published means customers can get it. The content it offers lives in
+# network-service-agent-configuration.yaml, so this object rarely changes.
+apiVersion: services.miloapis.com/v1alpha1
+kind: ServiceAgent
+metadata:
+  name: networking-network-agent
+  labels:
+    app.kubernetes.io/name: networking-network-agent
+    app.kubernetes.io/part-of: networking.datumapis.com
+spec:
+  # The catalog entry in ../service-catalog/service.yaml.
+  serviceRef:
+    name: networking-datumapis-com
+  phase: Published
+  displayName: Networks and network services
+  description: |
+    Answers questions about a project's networks and network services, diagnoses
+    why a network is not ready in a location or a service sends traffic nowhere,
+    and helps plan a new network or service.

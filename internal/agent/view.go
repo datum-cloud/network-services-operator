@@ -9,6 +9,7 @@ import (
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
+	"go.datum.net/network-services-operator/internal/agenttime"
 	"go.datum.net/network-services-operator/internal/cmd/alb/spec"
 )
 
@@ -105,7 +106,7 @@ func buildView(
 		Name:              proxy.Name,
 		DisplayName:       spec.DisplayName(proxy),
 		GeneratedHostname: proxy.Status.CanonicalHostname,
-		Age:               humanDuration(sinceCreation(proxy.CreationTimestamp, now)),
+		Age:               agenttime.HumanDuration(sinceCreation(proxy.CreationTimestamp, now)),
 		ForceHTTPS:        spec.ForceHTTPS(proxy),
 		HostHeader:        spec.HostHeader(proxy),
 		LoadBalancing:     spec.LoadBalancingSummary(proxy),

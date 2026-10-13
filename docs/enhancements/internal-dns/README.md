@@ -194,7 +194,7 @@ Network services create access only for an authorized network location. They coo
 
 #### Resolver settings delivered to workloads
 
-Network services write verified resolver settings into the project `NetworkContext.spec.dns`. Federation carries that desired state to the edge. The interface controller copies it into `NetworkInterface.spec.dns`; providers consume the interface rather than reading DNS or network-context APIs.
+Network services own resolver configuration. `NetworkContext.spec.dns` carries the internal delivery configuration through federation. The interface controller reports effective addresses and search domains in `NetworkInterface.status.dns`. Consumers cannot override DNS settings on an interface. Providers apply the trusted configuration and report `DNSConfigured` through status.
 
 ```yaml
 apiVersion: networking.datumapis.com/v1alpha
@@ -210,11 +210,9 @@ spec:
     # Proposed desired state owned by network services, protected from consumer writes.
     contextRef:
       name: application
-      uid: 33333333-3333-4333-8333-333333333333
     # Preserve source access identity and revision across control planes.
     accessBindingRef:
       name: application-us-central-1
-      uid: 44444444-4444-4444-8444-444444444444
     writerEpoch: 3
     sequence: 27
     # The private-service frontend uses this address inside the consumer VPC.
@@ -230,21 +228,21 @@ spec:
   network:
     name: application
   interfaceName: eth0
-  # Proposed inherited settings have exactly the NetworkContext.dns shape.
+status:
+  # Report effective settings as read-only output.
   dns:
-    contextRef:
-      name: application
-      uid: 33333333-3333-4333-8333-333333333333
-    accessBindingRef:
-      name: application-us-central-1
-      uid: 44444444-4444-4444-8444-444444444444
-    writerEpoch: 3
-    sequence: 27
     nameservers: ["fd53::53"]
     searches: [datum.internal]
+  conditions:
+    # The provider confirms application of the effective settings.
+    - type: DNSConfigured
+      status: "True"
+      reason: Applied
+      message: Resolver settings are configured
+      lastTransitionTime: "2026-10-13T13:00:00Z"
 ```
 
-RBAC restricts resolver-settings writes to network services and configuration reports to trusted providers. Authenticate source projects through project routing and protected federation metadata. Projections preserve source identity and fencing values; UIDs assigned to replicated copies cannot replace source lifetimes.
+RBAC protects internal delivery resources and status writes. Interface status describes effective settings; it does not authorize provider actions. Providers use conditional status writes to confirm the settings they applied. Project routing and protected federation metadata retain the source identity across control planes.
 
 Galactic private-service policies use `authorization.persistent: true` and retain
 VPC identity checks. Deletion or a confirmed change to the selected VPC withdraws
@@ -274,7 +272,7 @@ Extend the shared network services federation and DNS Kubernetes test environmen
 
 ### Monitoring Requirements
 
-Measure renewal failures, settings age, guest-configuration time, and withdrawal latency. Users can inspect assigned names and DNS readiness. Operators trace context, access, route programming, interface, and serving reports.
+Measure reconciliation failures, guest-configuration time, and withdrawal latency. Users can inspect assigned names and DNS readiness. Operators trace context, access, route programming, interface, and serving reports.
 
 ### Dependencies
 
@@ -282,11 +280,11 @@ Require DNS serving and project APIs, authenticated clients, trusted federation 
 
 ### Scalability
 
-Locations sharing a regional path share access. Interface settings scale with interfaces; publications scale with endpoints. Qualify renewal throughput, controller sharding, and bounded search lists before increasing the canary cohort.
+Locations sharing a regional path share access. Interface settings scale with interfaces; publications scale with endpoints. Qualify reconciliation throughput, controller sharding, and bounded search lists before increasing the canary cohort.
 
 ### Troubleshooting
 
-Inspect `DNSReady` and `DNSConfigured`, then correlate source project, context UID, access UID, epoch and sequence. Querying an explicit resolver address does not verify guest configuration.
+Inspect `DNSReady` and `DNSConfigured`, then trace network, context, access, and route readiness. Querying an explicit resolver address does not verify guest configuration.
 
 ## Implementation History
 

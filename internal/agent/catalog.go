@@ -12,6 +12,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
+	"go.datum.net/network-services-operator/internal/agenttime"
 )
 
 // Actionability says who has to do something about a condition.
@@ -749,7 +750,7 @@ func init() {
 	byKey = make(map[Key]ReasonInfo, len(catalog))
 	byReason = make(map[string][]ReasonInfo, len(catalog))
 	for i := range catalog {
-		catalog[i].ExpectedWithin = humanDuration(catalog[i].ExpectedDuration)
+		catalog[i].ExpectedWithin = agenttime.HumanDuration(catalog[i].ExpectedDuration)
 		k := Key{ConditionType: catalog[i].ConditionType, Reason: catalog[i].Reason}
 		byKey[k] = catalog[i]
 		byReason[catalog[i].Reason] = append(byReason[catalog[i].Reason], catalog[i])
@@ -862,7 +863,7 @@ func ActionabilityAt(info ReasonInfo, lastTransition string, now time.Time) Acti
 	if info.Actionability != ActionabilityTransient || info.ExpectedDuration <= 0 {
 		return info.Actionability
 	}
-	elapsed, ok := age(lastTransition, now)
+	elapsed, ok := agenttime.Age(lastTransition, now)
 	if !ok || elapsed <= info.ExpectedDuration {
 		return info.Actionability
 	}

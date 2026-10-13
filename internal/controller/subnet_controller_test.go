@@ -4,6 +4,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -111,4 +112,76 @@ func TestSubnetWithoutARangeIsStillAllocatedFromItsLocation(t *testing.T) {
 	require.NotNil(t, subnet.Status.StartAddress)
 	require.Equal(t, "10.128.0.0", *subnet.Status.StartAddress)
 	require.Equal(t, int32(20), *subnet.Status.PrefixLength)
+}
+
+func TestSubnetReadiness(t *testing.T) {
+	tests := []struct {
+		name               string
+		requireProgramming bool
+		programmed         bool
+		wantStatus         metav1.ConditionStatus
+		wantReason         string
+	}{
+		{
+			name:       "allocated subnet is ready when nothing programs subnets",
+			wantStatus: metav1.ConditionTrue,
+			wantReason: networkingv1alpha.SubnetReadyReasonReady,
+		},
+		{
+			name:               "allocated subnet waits for a provider to program it",
+			requireProgramming: true,
+			wantStatus:         metav1.ConditionFalse,
+			wantReason:         networkingv1alpha.SubnetProgrammedReasonNotProgrammed,
+		},
+		{
+			name:               "programmed subnet is ready",
+			requireProgramming: true,
+			programmed:         true,
+			wantStatus:         metav1.ConditionTrue,
+			wantReason:         networkingv1alpha.SubnetReadyReasonReady,
+		},
+	}
+
+	cl, _ := startNetworkInterfaceEnv(t)
+	ctx := context.Background()
+
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			namespace := &corev1.Namespace{}
+			namespace.Name = fmt.Sprintf("ns-subnet-readiness-%d", i)
+			require.NoError(t, cl.Create(ctx, namespace))
+
+			subnet := &networkingv1alpha.Subnet{}
+			subnet.Namespace = namespace.Name
+			subnet.Name = "vpc-us-central-1-ipv6"
+			subnet.Spec = networkingv1alpha.SubnetSpec{
+				SubnetClass:    privateSubnetClass,
+				IPFamily:       networkingv1alpha.IPv6Protocol,
+				NetworkContext: networkingv1alpha.LocalNetworkContextRef{Name: "vpc-us-central-1"},
+				Location:       locationsv1alpha1.LocationReference{Name: testLocationName},
+				StartAddress:   "fd20:1000:1:2::",
+				PrefixLength:   64,
+			}
+			require.NoError(t, cl.Create(ctx, subnet))
+
+			if tt.programmed {
+				apimeta.SetStatusCondition(&subnet.Status.Conditions, metav1.Condition{
+					Type:    networkingv1alpha.SubnetProgrammed,
+					Status:  metav1.ConditionTrue,
+					Reason:  networkingv1alpha.SubnetProgrammedReasonProgrammed,
+					Message: "programmed",
+				})
+				require.NoError(t, cl.Status().Update(ctx, subnet))
+			}
+
+			reconciler := &SubnetReconciler{RequireProgramming: tt.requireProgramming}
+			require.NoError(t, reconciler.reconcileSubnet(ctx, cl, subnet))
+
+			require.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(subnet), subnet))
+			ready := apimeta.FindStatusCondition(subnet.Status.Conditions, networkingv1alpha.SubnetReady)
+			require.NotNil(t, ready)
+			require.Equal(t, tt.wantStatus, ready.Status)
+			require.Equal(t, tt.wantReason, ready.Reason)
+		})
+	}
 }

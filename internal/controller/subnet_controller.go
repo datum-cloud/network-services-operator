@@ -26,6 +26,8 @@ import (
 // SubnetReconciler reconciles a Subnet object
 type SubnetReconciler struct {
 	mgr mcmanager.Manager
+
+	RequireProgramming bool
 }
 
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=subnets,verbs=get;list;watch;create;update;patch;delete
@@ -157,24 +159,7 @@ func (r *SubnetReconciler) reconcileSubnet(
 		needsStatusUpdate = true
 	}
 
-	subnetProgrammed := apimeta.IsStatusConditionTrue(subnet.Status.Conditions, networkingv1alpha.SubnetProgrammed)
-
-	readyMessage := "Subnet is not yet programmed"
-	readyStatus := metav1.ConditionFalse
-	readyReason := networkingv1alpha.SubnetProgrammedReasonNotProgrammed
-	if subnetProgrammed {
-		readyStatus = metav1.ConditionTrue
-		readyReason = networkingv1alpha.SubnetReadyReasonReady
-		readyMessage = "Subnet is ready to use"
-	}
-
-	if apimeta.SetStatusCondition(&subnet.Status.Conditions, metav1.Condition{
-		Type:               networkingv1alpha.SubnetReady,
-		Status:             readyStatus,
-		Reason:             readyReason,
-		ObservedGeneration: subnet.Generation,
-		Message:            readyMessage,
-	}) {
+	if apimeta.SetStatusCondition(&subnet.Status.Conditions, r.readyCondition(subnet)) {
 		needsStatusUpdate = true
 	}
 
@@ -185,6 +170,24 @@ func (r *SubnetReconciler) reconcileSubnet(
 	}
 
 	return nil
+}
+
+func (r *SubnetReconciler) readyCondition(subnet *networkingv1alpha.Subnet) metav1.Condition {
+	ready := metav1.Condition{
+		Type:               networkingv1alpha.SubnetReady,
+		Status:             metav1.ConditionTrue,
+		Reason:             networkingv1alpha.SubnetReadyReasonReady,
+		ObservedGeneration: subnet.Generation,
+		Message:            "Subnet is ready to use",
+	}
+
+	if r.RequireProgramming && !apimeta.IsStatusConditionTrue(subnet.Status.Conditions, networkingv1alpha.SubnetProgrammed) {
+		ready.Status = metav1.ConditionFalse
+		ready.Reason = networkingv1alpha.SubnetProgrammedReasonNotProgrammed
+		ready.Message = "Subnet is not yet programmed"
+	}
+
+	return ready
 }
 
 // SetupWithManager sets up the controller with the Manager.

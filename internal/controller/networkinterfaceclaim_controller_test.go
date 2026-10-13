@@ -1711,6 +1711,8 @@ func TestNetworkInterfaceDNSIsReadOnlyAndFollowsTheNetwork(t *testing.T) {
 	require.Equal(t, []string{"fd53::53"}, iface.Status.DNS.Nameservers)
 	apimeta.SetStatusCondition(&iface.Status.Conditions, metav1.Condition{Type: networkingv1alpha.NetworkInterfaceDNSConfigured, Status: metav1.ConditionTrue, Reason: "Applied", LastTransitionTime: metav1.Now()})
 	require.NoError(t, s.client.Status().Update(s.ctx, iface))
+	contextObject, err = s.getNetworkContext()
+	require.NoError(t, err)
 	contextObject.Spec.DNS.Searches = []string{"apps.internal"}
 	require.NoError(t, s.client.Update(s.ctx, contextObject))
 	s.reconcile(claim)
@@ -1718,6 +1720,8 @@ func TestNetworkInterfaceDNSIsReadOnlyAndFollowsTheNetwork(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []string{"apps.internal"}, iface.Status.DNS.Searches)
 	require.Nil(t, apimeta.FindStatusCondition(iface.Status.Conditions, networkingv1alpha.NetworkInterfaceDNSConfigured))
+	contextObject, err = s.getNetworkContext()
+	require.NoError(t, err)
 	contextObject.Spec.DNS = nil
 	require.NoError(t, s.client.Update(s.ctx, contextObject))
 	s.reconcile(claim)

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Generate the datumctl catalog entry for the alb plugin from a published
-# release.
+# Generate the datumctl catalog entry for one of this repository's plugins (alb
+# or network) from a published release.
 #
 # The official catalog (datum-cloud/datumctl-plugins) pins every archive by
 # SHA256, and its CI re-verifies them, so the entry cannot be written before the
@@ -8,27 +8,35 @@
 # hashing anything locally: a locally built archive is not the artifact users
 # download, and pinning its hash would pass review and fail on install.
 #
-#   hack/alb-catalog-entry.sh v0.29.0 > alb.yaml
+#   hack/plugin-catalog-entry.sh alb v0.29.0 > alb.yaml
+#   hack/plugin-catalog-entry.sh network v0.33.0 > network.yaml
 #
-# Then open that as plugins/alb.yaml against datum-cloud/datumctl-plugins.
+# Then open that as plugins/<plugin>.yaml against datum-cloud/datumctl-plugins.
 set -euo pipefail
 
-TAG="${1:-}"
-REPO="${ALB_CATALOG_REPO:-datum-cloud/network-services-operator}"
+PLUGIN="${1:-}"
+TAG="${2:-}"
+REPO="${PLUGIN_CATALOG_REPO:-${ALB_CATALOG_REPO:-datum-cloud/network-services-operator}}"
 
-if [[ -z "$TAG" ]]; then
-  echo "usage: $0 <release-tag>   e.g. $0 v0.29.0" >&2
+case "$PLUGIN" in
+  alb) DESCRIPTION="Create and manage Application Load Balancers on Datum Cloud" ;;
+  network) DESCRIPTION="Create and manage networks and network services on Datum Cloud" ;;
+  *) PLUGIN="" ;;
+esac
+
+if [[ -z "$PLUGIN" || -z "$TAG" ]]; then
+  echo "usage: $0 <alb|network> <release-tag>   e.g. $0 alb v0.29.0" >&2
   exit 2
 fi
 
 # name_template in .goreleaser-plugin.yaml, and the os/arch datumctl selects on.
 # Keep the two in step: an archive named differently is silently absent here.
 PLATFORMS=(
-  "linux   amd64 datumctl-alb_Linux_x86_64.tar.gz"
-  "linux   arm64 datumctl-alb_Linux_arm64.tar.gz"
-  "darwin  amd64 datumctl-alb_Darwin_x86_64.tar.gz"
-  "darwin  arm64 datumctl-alb_Darwin_arm64.tar.gz"
-  "windows amd64 datumctl-alb_Windows_x86_64.zip"
+  "linux   amd64 datumctl-${PLUGIN}_Linux_x86_64.tar.gz"
+  "linux   arm64 datumctl-${PLUGIN}_Linux_arm64.tar.gz"
+  "darwin  amd64 datumctl-${PLUGIN}_Darwin_x86_64.tar.gz"
+  "darwin  arm64 datumctl-${PLUGIN}_Darwin_arm64.tar.gz"
+  "windows amd64 datumctl-${PLUGIN}_Windows_x86_64.zip"
 )
 
 SUMS="$(gh release view "$TAG" --repo "$REPO" --json assets \
@@ -49,9 +57,9 @@ cat <<HEADER
 apiVersion: datumctl.datum.net/v1alpha1
 kind: Plugin
 metadata:
-  name: alb
+  name: ${PLUGIN}
 spec:
-  shortDescription: Create and manage Application Load Balancers on Datum Cloud
+  shortDescription: ${DESCRIPTION}
   homepage: https://github.com/${REPO}
   version: ${TAG}
   platforms:
@@ -79,6 +87,6 @@ done
 # A partial entry installs cleanly on the platforms it lists and fails on the
 # rest, so refuse to emit one rather than leave the gap to review.
 if (( missing )); then
-  echo "error: entry is incomplete; not usable as plugins/alb.yaml" >&2
+  echo "error: entry is incomplete; not usable as plugins/${PLUGIN}.yaml" >&2
   exit 1
 fi

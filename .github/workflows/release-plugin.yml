@@ -53,3 +53,26 @@ jobs:
           plugin-name: alb
           version: ${{ github.event.release.tag_name }}
           token: ${{ steps.app-token.outputs.token }}
+
+      # The catalog update only edits a manifest that already exists, so the
+      # network plugin's first release is added to the catalog by hand. Until
+      # then this step is skipped rather than failing every release.
+      - name: Check the network plugin is in the catalog
+        id: network-listed
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          if gh api repos/datum-cloud/datumctl-plugins/contents/plugins/network.yaml --silent; then
+            echo "listed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "listed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Update the network plugin manifest
+        if: steps.network-listed.outputs.listed == 'true'
+        uses: datum-cloud/actions/update-plugin-index@v1.21.0
+        with:
+          index-repo: datum-cloud/datumctl-plugins
+          plugin-name: network
+          version: ${{ github.event.release.tag_name }}
+          token: ${{ steps.app-token.outputs.token }}

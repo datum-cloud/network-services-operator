@@ -1,14 +1,17 @@
 # yaml-language-server: $schema=https://goreleaser.com/static/schema.json
 #
-# Release configuration for the datumctl-alb plugin binary ONLY.
+# Release configuration for the datumctl plugin binaries ONLY: alb and network.
 #
 #   goreleaser release --config .goreleaser-plugin.yaml --clean
 #
-# Asset names must match the matrix datumctl expects:
+# Asset names must match the matrix datumctl expects, per plugin:
 #
-#   datumctl-alb_Linux_x86_64.tar.gz    datumctl-alb_Darwin_x86_64.tar.gz
-#   datumctl-alb_Linux_arm64.tar.gz     datumctl-alb_Darwin_arm64.tar.gz
-#   datumctl-alb_Windows_x86_64.zip     checksums.txt
+#   datumctl-<plugin>_Linux_x86_64.tar.gz    datumctl-<plugin>_Darwin_x86_64.tar.gz
+#   datumctl-<plugin>_Linux_arm64.tar.gz     datumctl-<plugin>_Darwin_arm64.tar.gz
+#   datumctl-<plugin>_Windows_x86_64.zip
+#
+# Both plugins share one checksums.txt, which is the file the catalog update
+# reads; a second goreleaser run would write a second one over it.
 version: 2
 
 project_name: datumctl-alb
@@ -17,6 +20,23 @@ builds:
   - id: datumctl-alb
     binary: datumctl-alb
     main: ./cmd/datumctl-alb
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+    ldflags:
+      - "-X main.version=v{{ .Version }}"
+  - id: datumctl-network
+    binary: datumctl-network
+    main: ./cmd/datumctl-network
     env:
       - CGO_ENABLED=0
     goos:
@@ -44,7 +64,23 @@ archives:
           - zip
     wrap_in_directory: false
     name_template: >-
-      {{ .ProjectName }}_
+      datumctl-alb_
+      {{- title .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "386" }}i386
+      {{- else }}{{ .Arch }}{{ end }}
+  - id: datumctl-network
+    ids:
+      - datumctl-network
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    wrap_in_directory: false
+    name_template: >-
+      datumctl-network_
       {{- title .Os }}_
       {{- if eq .Arch "amd64" }}x86_64
       {{- else if eq .Arch "386" }}i386

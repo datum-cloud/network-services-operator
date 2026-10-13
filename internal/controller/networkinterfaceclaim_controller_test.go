@@ -1685,7 +1685,7 @@ func TestNetworkInterfaceDNSIsReadOnlyAndFollowsTheNetwork(t *testing.T) {
 	contextObject.Spec.DNS = &networkingv1alpha.NetworkDNSSettings{
 		ContextRef:       networkingv1alpha.NetworkDNSObjectReference{Name: "resolver"},
 		AccessBindingRef: networkingv1alpha.NetworkDNSObjectReference{Name: "access"},
-		WriterEpoch:      1, Sequence: 1, Nameservers: []string{"fd53::53"}, Searches: []string{"datum.internal"},
+		Nameservers:      []string{"fd53::53"}, Searches: []string{"datum.internal"},
 	}
 	require.NoError(t, s.client.Update(s.ctx, contextObject))
 	claim := s.createClaim("dns-interface", networkingv1alpha.NetworkInterfaceClaimSpec{

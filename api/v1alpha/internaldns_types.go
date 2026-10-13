@@ -44,20 +44,10 @@ type NetworkDNSSettings struct {
 	// +kubebuilder:validation:Required
 	ContextRef NetworkDNSObjectReference `json:"contextRef"`
 
-	// AccessBindingRef identifies the regional DNS authorization lifetime.
+	// AccessBindingRef identifies the regional DNS configuration.
 	//
 	// +kubebuilder:validation:Required
 	AccessBindingRef NetworkDNSObjectReference `json:"accessBindingRef"`
-
-	// WriterEpoch fences a previous access writer after ownership changes.
-	//
-	// +kubebuilder:validation:Minimum=1
-	WriterEpoch int64 `json:"writerEpoch"`
-
-	// Sequence is the exact DNS authorization revision these settings carry.
-	//
-	// +kubebuilder:validation:Minimum=1
-	Sequence int64 `json:"sequence"`
 
 	// Nameservers are resolver addresses reachable from this network.
 	//
@@ -77,14 +67,8 @@ type NetworkDNSAccessStatus struct {
 	// ContextRef identifies the DNS context used for the proof.
 	ContextRef NetworkDNSObjectReference `json:"contextRef"`
 
-	// AccessBindingRef identifies the DNS authorization used for the proof.
+	// AccessBindingRef identifies the DNS configuration used for the proof.
 	AccessBindingRef NetworkDNSObjectReference `json:"accessBindingRef"`
-
-	// WriterEpoch is the DNS authorization writer fenced by the proof.
-	WriterEpoch int64 `json:"writerEpoch"`
-
-	// Sequence is the exact ready DNS authorization revision.
-	Sequence int64 `json:"sequence"`
 
 	// ServiceDestination identifies this DNS context inside the shared service.
 	//

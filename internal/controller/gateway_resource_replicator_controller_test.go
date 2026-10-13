@@ -1082,7 +1082,6 @@ func TestNetworkContextReplicationCarriesOnlyDNSIntentAnnotations(t *testing.T) 
 	upstream := &unstructured.Unstructured{}
 	upstream.SetAnnotations(map[string]string{
 		InternalDNSContextNameAnnotation: "resolver-a",
-		InternalDNSSequenceAnnotation:    "7",
 		"example.test/untrusted":         "discard",
 	})
 	downstream := &unstructured.Unstructured{}
@@ -1094,7 +1093,6 @@ func TestNetworkContextReplicationCarriesOnlyDNSIntentAnnotations(t *testing.T) 
 
 	propagateAnnotations(upstream, downstream, cfg.propagatedAnnotations)
 	assert.Equal(t, "resolver-a", downstream.GetAnnotations()[InternalDNSContextNameAnnotation])
-	assert.Equal(t, "7", downstream.GetAnnotations()[InternalDNSSequenceAnnotation])
 	assert.NotContains(t, downstream.GetAnnotations(), InternalDNSAccessNameAnnotation)
 	assert.NotContains(t, downstream.GetAnnotations(), "example.test/untrusted")
 	assert.Equal(t, "preserve", downstream.GetAnnotations()["karmada.io/managed"])
@@ -1110,8 +1108,6 @@ func TestNetworkContextReplicationProducesUsableDNSIntent(t *testing.T) {
 		InternalDNSRegionAnnotation:             "us-central1",
 		InternalDNSContextNameAnnotation:        "resolver-a",
 		InternalDNSAccessNameAnnotation:         "access-a",
-		InternalDNSWriterEpochAnnotation:        "3",
-		InternalDNSSequenceAnnotation:           "7",
 		InternalDNSServiceDestinationAnnotation: "fd70:100::1",
 		InternalDNSSuffixAnnotation:             "tenant.managed.internal",
 	})
@@ -1128,8 +1124,6 @@ func TestNetworkContextReplicationProducesUsableDNSIntent(t *testing.T) {
 	}
 	assert.Equal(t, "resolver-a", settings.ContextRef.Name)
 	assert.Equal(t, "access-a", settings.AccessBindingRef.Name)
-	assert.Equal(t, int64(3), settings.WriterEpoch)
-	assert.Equal(t, int64(7), settings.Sequence)
 	assert.Equal(t, []string{"fd53::53"}, settings.Nameservers)
 	assert.Equal(t, []string{"tenant.managed.internal"}, settings.Searches)
 }

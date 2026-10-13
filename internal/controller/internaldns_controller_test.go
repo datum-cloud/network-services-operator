@@ -78,9 +78,6 @@ func TestInternalDNSProjectLifecycleFencesAccess(t *testing.T) {
 	if err := unstructured.SetNestedSlice(dnsContext.Object, []any{map[string]any{"type": "Ready", "status": "True", "observedGeneration": int64(1)}}, "status", "conditions"); err != nil {
 		t.Fatal(err)
 	}
-	if err := unstructured.SetNestedField(dnsContext.Object, int64(7), "status", "accessEpoch"); err != nil {
-		t.Fatal(err)
-	}
 	if err := unstructured.SetNestedField(dnsContext.Object, internalDNSDefaultDomain, "status", "managedNamespace", "suffix"); err != nil {
 		t.Fatal(err)
 	}
@@ -102,14 +99,15 @@ func TestInternalDNSProjectLifecycleFencesAccess(t *testing.T) {
 		t.Fatal(err)
 	}
 	binding.SetUID("access-uid")
-	if err := unstructured.SetNestedField(binding.Object, int64(1), "status", "observedSequence"); err != nil {
+	binding.SetGeneration(1)
+	if err := unstructured.SetNestedField(binding.Object, int64(1), "status", "observedGeneration"); err != nil {
 		t.Fatal(err)
 	}
 	if err := unstructured.SetNestedField(binding.Object, "dns-binding-uid", "status", "bindingRef", "uid"); err != nil {
 		t.Fatal(err)
 	}
 	if err := unstructured.SetNestedSlice(binding.Object, []any{map[string]any{
-		"type": "Ready", "status": "True", "reason": "Ready",
+		"type": "Ready", "status": "True", "reason": "Ready", "observedGeneration": int64(1),
 	}}, "status", "conditions"); err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +118,7 @@ func TestInternalDNSProjectLifecycleFencesAccess(t *testing.T) {
 	if _, err := r.reconcile(ctx, cl, "project", client.ObjectKeyFromObject(first)); err != nil {
 		t.Fatal(err)
 	}
-	assertDNSIntent(t, ctx, cl, "first", bindingName, "1")
+	assertDNSIntent(t, ctx, cl, "first", bindingName)
 	originalStatus, _, _ := unstructured.NestedMap(dnsContext.Object, "status")
 	for _, invalid := range []struct {
 		path  []string
@@ -154,7 +152,7 @@ func TestInternalDNSProjectLifecycleFencesAccess(t *testing.T) {
 		if _, err := r.reconcile(ctx, cl, "project", client.ObjectKeyFromObject(first)); err != nil {
 			t.Fatal(err)
 		}
-		assertDNSIntent(t, ctx, cl, "first", bindingName, "1")
+		assertDNSIntent(t, ctx, cl, "first", bindingName)
 	}
 
 	second := testNetworkContext("second", "context-2")
@@ -164,7 +162,7 @@ func TestInternalDNSProjectLifecycleFencesAccess(t *testing.T) {
 	if _, err := r.reconcile(ctx, cl, "project", client.ObjectKeyFromObject(second)); err != nil {
 		t.Fatal(err)
 	}
-	assertDNSIntent(t, ctx, cl, "second", bindingName, "1")
+	assertDNSIntent(t, ctx, cl, "second", bindingName)
 	assertUnstructuredCount(t, ctx, cl, internalDNSContextGVK, "tenant", 1)
 	assertUnstructuredCount(t, ctx, cl, internalDNSAccessGVK, "tenant", 1)
 	firstCurrent := &networkingv1alpha.NetworkContext{}
@@ -192,9 +190,8 @@ func TestInternalDNSProjectLifecycleFencesAccess(t *testing.T) {
 	if err := cl.Get(ctx, client.ObjectKey{Namespace: "tenant", Name: bindingName}, binding); err != nil {
 		t.Fatal(err)
 	}
-	sequence, _, _ := unstructured.NestedInt64(binding.Object, "spec", "version", "sequence")
-	if sequence != 1 {
-		t.Fatalf("unchanged access sequence = %d, want 1", sequence)
+	if !bindingReady(binding) {
+		t.Fatal("unchanged access lost readiness")
 	}
 	secondCurrent := &networkingv1alpha.NetworkContext{}
 	if err := cl.Get(ctx, client.ObjectKey{Namespace: "tenant", Name: "second"}, secondCurrent); err != nil {
@@ -228,8 +225,6 @@ func TestInternalDNSReadinessPreservesAppliedSettings(t *testing.T) {
 	hubContext.Status.DNSAccess = &networkingv1alpha.NetworkDNSAccessStatus{
 		ContextRef:         networkingv1alpha.NetworkDNSObjectReference{Name: "resolver"},
 		AccessBindingRef:   networkingv1alpha.NetworkDNSObjectReference{Name: "access"},
-		WriterEpoch:        4,
-		Sequence:           9,
 		ServiceDestination: projectContext.Annotations[InternalDNSServiceDestinationAnnotation],
 	}
 	hubContext.Status.Conditions = []metav1.Condition{{
@@ -248,11 +243,11 @@ func TestInternalDNSReadinessPreservesAppliedSettings(t *testing.T) {
 	if err := cl.Get(ctx, client.ObjectKeyFromObject(projectContext), current); err != nil {
 		t.Fatal(err)
 	}
-	if current.Spec.DNS == nil || current.Spec.DNS.Sequence != 9 {
+	if current.Spec.DNS == nil || current.Spec.DNS.AccessBindingRef.Name != "access" {
 		t.Fatalf("verified settings were not published: %#v", current.Spec.DNS)
 	}
 
-	hubContext.Status.DNSAccess.Sequence = 8
+	hubContext.Status.DNSAccess.ServiceDestination = "fd70:100::11"
 	if _, err := r.publish(ctx, cl, current, hubContext); err != nil {
 		t.Fatal(err)
 	}
@@ -263,7 +258,7 @@ func TestInternalDNSReadinessPreservesAppliedSettings(t *testing.T) {
 		t.Fatal("observation mismatch withdrew applied resolver settings")
 	}
 
-	hubContext.Status.DNSAccess.Sequence = 9
+	hubContext.Status.DNSAccess.ServiceDestination = projectContext.Annotations[InternalDNSServiceDestinationAnnotation]
 	hubContext.Status.Conditions[0].Status = metav1.ConditionUnknown
 	r.Now = func() time.Time { return now.Add(2 * time.Minute) }
 	if _, err := r.publish(ctx, cl, current, hubContext); err != nil {
@@ -280,46 +275,60 @@ func TestInternalDNSReadinessPreservesAppliedSettings(t *testing.T) {
 	}
 }
 
-func TestAccessBindingWriterEpochChangeStartsNewFence(t *testing.T) {
+func TestRecreatedContextReplacesAccessBinding(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	now := time.Date(2026, time.October, 9, 12, 0, 0, 0, time.UTC)
 	scheme := runtime.NewScheme()
 	scheme.AddKnownTypeWithName(internalDNSAccessGVK, &unstructured.Unstructured{})
-	scheme.AddKnownTypeWithName(internalDNSAccessGVK.GroupVersion().WithKind("DNSResolverAccessBindingList"), &unstructured.UnstructuredList{})
 	network := &networkingv1alpha.Network{ObjectMeta: metav1.ObjectMeta{Namespace: "tenant", Name: "blue", UID: "network-uid"}}
 	dnsContext := newInternalDNSObject(internalDNSContextGVK, "tenant", "resolver")
-	dnsContext.SetUID("resolver-uid")
+	dnsContext.SetUID("new-context")
 	binding := newInternalDNSObject(internalDNSAccessGVK, "tenant", internalDNSRegionalName("resolver", "us-central"))
 	binding.SetUID("access-uid")
 	binding.SetAnnotations(map[string]string{internalDNSOwnerNetworkUIDAnnotation: string(network.UID)})
 	binding.Object["spec"] = map[string]any{
-		"contextRef":    map[string]any{"name": "resolver", "uid": "resolver-uid"},
-		"region":        "us-central",
-		"queryIdentity": map[string]any{"type": "DestinationAddress", "value": "fd70:100::10"},
-		"version": map[string]any{
-			"epoch": int64(7), "sequence": int64(12),
-		},
+		"contextRef": map[string]any{"name": "resolver", "uid": "old-context"},
+		"region":     "us-central", "destinationAddress": "fd70:100::10",
 	}
 	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(binding).Build()
-	r := &InternalDNSProjectReconciler{
-		Now: func() time.Time { return now },
-	}
-
-	_, ready, err := r.ensureAccess(ctx, cl, network, "project-uid", dnsContext, "us-central", "fd70:100::10", 8)
+	r := &InternalDNSProjectReconciler{}
+	_, ready, err := r.ensureAccess(ctx, cl, network, "project-uid", dnsContext, "us-central", "fd70:100::11")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if ready {
-		t.Fatal("a binding from the previous writer epoch was accepted")
+		t.Fatal("replaced access was reported ready")
 	}
-	if err := cl.Get(ctx, client.ObjectKeyFromObject(binding), binding); err != nil {
+	if err := cl.Get(ctx, client.ObjectKeyFromObject(binding), binding); !apierrors.IsNotFound(err) {
+		t.Fatalf("retired binding survived: %v", err)
+	}
+	current, ready, err := r.ensureAccess(ctx, cl, network, "project-uid", dnsContext, "us-central", "fd70:100::11")
+	if err != nil {
 		t.Fatal(err)
 	}
-	epoch, _, _ := unstructured.NestedInt64(binding.Object, "spec", "version", "epoch")
-	sequence, _, _ := unstructured.NestedInt64(binding.Object, "spec", "version", "sequence")
-	if epoch != 8 || sequence != 1 {
-		t.Fatalf("new fence = epoch %d sequence %d, want epoch 8 sequence 1", epoch, sequence)
+	if ready || !accessBindingMatches(current, dnsContext, "us-central", "fd70:100::11") {
+		t.Fatal("new context did not receive a pending access binding")
+	}
+}
+
+func TestAccessReadinessRequiresCurrentGeneration(t *testing.T) {
+	binding := newInternalDNSObject(internalDNSAccessGVK, "tenant", "access")
+	binding.SetGeneration(2)
+	binding.Object["status"] = map[string]any{"observedGeneration": int64(1), "conditions": []any{map[string]any{"type": "Ready", "status": "True", "observedGeneration": int64(1)}}}
+	if bindingReady(binding) {
+		t.Fatal("stale observation was accepted")
+	}
+	if err := unstructured.SetNestedField(binding.Object, int64(2), "status", "observedGeneration"); err != nil {
+		t.Fatal(err)
+	}
+	if bindingReady(binding) {
+		t.Fatal("stale condition was accepted")
+	}
+	if err := unstructured.SetNestedSlice(binding.Object, []any{map[string]any{"type": "Ready", "status": "True", "observedGeneration": int64(2)}}, "status", "conditions"); err != nil {
+		t.Fatal(err)
+	}
+	if !bindingReady(binding) {
+		t.Fatal("current observation was rejected")
 	}
 }
 
@@ -340,22 +349,19 @@ func testDNSIntent(_ time.Time) map[string]string {
 	return map[string]string{
 		InternalDNSContextNameAnnotation:        "resolver",
 		InternalDNSAccessNameAnnotation:         "access",
-		InternalDNSWriterEpochAnnotation:        "4",
-		InternalDNSSequenceAnnotation:           "9",
 		InternalDNSSuffixAnnotation:             "blue.internal",
 		InternalDNSRegionAnnotation:             "us-central",
 		InternalDNSServiceDestinationAnnotation: "fd70:100::10",
 	}
 }
 
-func assertDNSIntent(t *testing.T, ctx context.Context, cl client.Client, name, accessName, sequence string) {
+func assertDNSIntent(t *testing.T, ctx context.Context, cl client.Client, name, accessName string) {
 	t.Helper()
 	current := &networkingv1alpha.NetworkContext{}
 	if err := cl.Get(ctx, client.ObjectKey{Namespace: "tenant", Name: name}, current); err != nil {
 		t.Fatal(err)
 	}
-	if current.Annotations[InternalDNSAccessNameAnnotation] != accessName ||
-		current.Annotations[InternalDNSSequenceAnnotation] != sequence {
+	if current.Annotations[InternalDNSAccessNameAnnotation] != accessName {
 		t.Fatalf("unexpected DNS intent: %#v", current.Annotations)
 	}
 }

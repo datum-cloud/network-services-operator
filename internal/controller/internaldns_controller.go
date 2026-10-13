@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
-	"strconv"
 	"strings"
 	"time"
 
@@ -39,8 +38,6 @@ const (
 
 	InternalDNSContextNameAnnotation        = "networking.datumapis.com/internal-dns-context-name"
 	InternalDNSAccessNameAnnotation         = "networking.datumapis.com/internal-dns-access-name"
-	InternalDNSWriterEpochAnnotation        = "networking.datumapis.com/internal-dns-writer-epoch"
-	InternalDNSSequenceAnnotation           = "networking.datumapis.com/internal-dns-sequence"
 	InternalDNSServiceDestinationAnnotation = "networking.datumapis.com/internal-dns-service-destination"
 	InternalDNSSuffixAnnotation             = "networking.datumapis.com/internal-dns-suffix"
 	InternalDNSRegionAnnotation             = "networking.datumapis.com/internal-dns-region"
@@ -182,10 +179,9 @@ func (r *InternalDNSProjectReconciler) reconcile(
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	epoch, _, _ := unstructured.NestedInt64(dnsContext.Object, "status", "accessEpoch")
 	suffix, _, _ := unstructured.NestedString(dnsContext.Object, "status", "managedNamespace", "suffix")
 	zoneName, _, _ := unstructured.NestedString(dnsContext.Object, "status", "managedNamespace", "dnsZoneRef", "name")
-	if dnsContext.GetUID() == "" || epoch < 1 || suffix != internalDNSDefaultDomain || zoneName == "" || !resolverContextReady(dnsContext) {
+	if dnsContext.GetUID() == "" || suffix != internalDNSDefaultDomain || zoneName == "" || !resolverContextReady(dnsContext) {
 		return ctrl.Result{RequeueAfter: internalDNSRetryInterval}, nil
 	}
 
@@ -193,7 +189,7 @@ func (r *InternalDNSProjectReconciler) reconcile(
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	binding, ready, err := r.ensureAccess(ctx, cl, network, projectUID, dnsContext, region, destination, epoch)
+	binding, ready, err := r.ensureAccess(ctx, cl, network, projectUID, dnsContext, region, destination)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -201,12 +197,9 @@ func (r *InternalDNSProjectReconciler) reconcile(
 		return ctrl.Result{RequeueAfter: internalDNSRetryInterval}, nil
 	}
 
-	sequence, _, _ := unstructured.NestedInt64(binding.Object, "spec", "version", "sequence")
 	if err := r.publishIntent(ctx, cl, networkContext, map[string]string{
 		InternalDNSContextNameAnnotation:        dnsContext.GetName(),
 		InternalDNSAccessNameAnnotation:         binding.GetName(),
-		InternalDNSWriterEpochAnnotation:        strconv.FormatInt(epoch, 10),
-		InternalDNSSequenceAnnotation:           strconv.FormatInt(sequence, 10),
 		InternalDNSServiceDestinationAnnotation: destination,
 		InternalDNSSuffixAnnotation:             suffix,
 		InternalDNSRegionAnnotation:             region,
@@ -297,7 +290,6 @@ func (r *InternalDNSProjectReconciler) ensureAccess(
 	dnsContext *unstructured.Unstructured,
 	region string,
 	destination string,
-	epoch int64,
 ) (*unstructured.Unstructured, bool, error) {
 	name := internalDNSRegionalName(dnsContext.GetName(), region)
 	current := newInternalDNSObject(internalDNSAccessGVK, network.Namespace, name)
@@ -305,78 +297,45 @@ func (r *InternalDNSProjectReconciler) ensureAccess(
 	if err != nil && !apierrors.IsNotFound(err) {
 		return nil, false, err
 	}
-	sequence := int64(1)
 	if err == nil {
 		if current.GetAnnotations()[internalDNSOwnerNetworkUIDAnnotation] != string(network.UID) {
 			return nil, false, fmt.Errorf("DNSResolverAccessBinding %s/%s belongs to another network lifetime", network.Namespace, name)
 		}
-		if accessBindingMatches(current, dnsContext, region, destination, epoch) {
-			sequence, _, _ = unstructured.NestedInt64(current.Object, "spec", "version", "sequence")
-			return current, bindingReady(current, sequence), nil
-		} else {
-			currentEpoch, _, _ := unstructured.NestedInt64(current.Object, "spec", "version", "epoch")
-			currentContextUID, _, _ := unstructured.NestedString(current.Object, "spec", "contextRef", "uid")
-			if currentContextUID == string(dnsContext.GetUID()) && currentEpoch > epoch {
-				return nil, false, fmt.Errorf("DNSResolverAccessBinding %s/%s has writer epoch %d ahead of context epoch %d",
-					network.Namespace, name, currentEpoch, epoch)
-			}
+		if !current.GetDeletionTimestamp().IsZero() {
+			return current, false, nil
 		}
+		if accessBindingMatches(current, dnsContext, region, destination) {
+			return current, bindingReady(current), nil
+		}
+		uid, resourceVersion := current.GetUID(), current.GetResourceVersion()
+		return current, false, client.IgnoreNotFound(cl.Delete(ctx, current, client.Preconditions{UID: &uid, ResourceVersion: &resourceVersion}))
 	}
-
-	desiredSpec := map[string]any{
-		"contextRef":    map[string]any{"name": dnsContext.GetName(), "uid": string(dnsContext.GetUID())},
-		"region":        region,
-		"queryIdentity": map[string]any{"type": "DestinationAddress", "value": destination},
-		"port":          int64(53),
-		"transports":    []any{"UDP", "TCP"},
-		"version": map[string]any{
-			"epoch":    epoch,
-			"sequence": sequence,
-		},
+	current.Object["spec"] = map[string]any{
+		"contextRef":         map[string]any{"name": dnsContext.GetName(), "uid": string(dnsContext.GetUID())},
+		"region":             region,
+		"destinationAddress": destination,
 	}
-	annotations := current.GetAnnotations()
-	if annotations == nil {
-		annotations = map[string]string{}
-	}
-	annotations[internalDNSOwnerNetworkUIDAnnotation] = string(network.UID)
-	annotations[internalDNSOwnerProjectUIDAnnotation] = string(projectUID)
-	annotations[InternalDNSRegionAnnotation] = region
-	current.SetAnnotations(annotations)
+	current.SetAnnotations(map[string]string{
+		internalDNSOwnerNetworkUIDAnnotation: string(network.UID),
+		internalDNSOwnerProjectUIDAnnotation: string(projectUID),
+		InternalDNSRegionAnnotation:          region,
+	})
 	current.SetOwnerReferences([]metav1.OwnerReference{{
 		APIVersion: internalDNSContextGVK.GroupVersion().String(), Kind: internalDNSContextGVK.Kind,
 		Name: dnsContext.GetName(), UID: dnsContext.GetUID(), Controller: boolPtr(true), BlockOwnerDeletion: boolPtr(true),
 	}})
-	if apierrors.IsNotFound(err) {
-		current.Object["spec"] = desiredSpec
-		if err := cl.Create(ctx, current); err != nil {
-			return nil, false, err
-		}
-		return current, false, nil
-	}
-	if err := unstructured.SetNestedMap(current.Object, desiredSpec, "spec"); err != nil {
-		return nil, false, err
-	}
-	if err := cl.Update(ctx, current); err != nil {
+	if err := cl.Create(ctx, current); err != nil {
 		return nil, false, err
 	}
 	return current, false, nil
 }
 
-func accessBindingMatches(
-	binding *unstructured.Unstructured,
-	dnsContext *unstructured.Unstructured,
-	region string,
-	destination string,
-	epoch int64,
-) bool {
+func accessBindingMatches(binding *unstructured.Unstructured, dnsContext *unstructured.Unstructured, region, destination string) bool {
 	contextName, _, _ := unstructured.NestedString(binding.Object, "spec", "contextRef", "name")
 	contextUID, _, _ := unstructured.NestedString(binding.Object, "spec", "contextRef", "uid")
 	boundRegion, _, _ := unstructured.NestedString(binding.Object, "spec", "region")
-	identityType, _, _ := unstructured.NestedString(binding.Object, "spec", "queryIdentity", "type")
-	identityValue, _, _ := unstructured.NestedString(binding.Object, "spec", "queryIdentity", "value")
-	writerEpoch, _, _ := unstructured.NestedInt64(binding.Object, "spec", "version", "epoch")
-	return contextName == dnsContext.GetName() && contextUID == string(dnsContext.GetUID()) &&
-		boundRegion == region && identityType == "DestinationAddress" && identityValue == destination && writerEpoch == epoch
+	boundDestination, _, _ := unstructured.NestedString(binding.Object, "spec", "destinationAddress")
+	return contextName == dnsContext.GetName() && contextUID == string(dnsContext.GetUID()) && boundRegion == region && boundDestination == destination
 }
 
 func (r *InternalDNSProjectReconciler) disable(
@@ -565,7 +524,7 @@ func (r *InternalDNSReadinessReconciler) publish(
 	err = r.updateProject(ctx, cl, projectContext, intent, metav1.Condition{
 		Type: networkingv1alpha.NetworkContextDNSReady, Status: metav1.ConditionTrue,
 		Reason:  networkingv1alpha.NetworkContextDNSReadyReasonReady,
-		Message: "DNS access version and private network programming are current",
+		Message: "DNS configuration and private network programming are current",
 	})
 	return ctrl.Result{RequeueAfter: internalDNSRetryInterval}, err
 }
@@ -611,17 +570,12 @@ func internalDNSSettingsFromAnnotations(
 ) (*networkingv1alpha.NetworkDNSSettings, error) {
 	contextName := annotations[InternalDNSContextNameAnnotation]
 	accessName := annotations[InternalDNSAccessNameAnnotation]
-	epoch, epochErr := strconv.ParseInt(annotations[InternalDNSWriterEpochAnnotation], 10, 64)
-	sequence, sequenceErr := strconv.ParseInt(annotations[InternalDNSSequenceAnnotation], 10, 64)
-	if contextName == "" || accessName == "" ||
-		epochErr != nil || sequenceErr != nil {
+	if contextName == "" || accessName == "" {
 		return nil, errors.New("DNS access intent is incomplete")
 	}
 	settings := &networkingv1alpha.NetworkDNSSettings{
 		ContextRef:       networkingv1alpha.NetworkDNSObjectReference{Name: contextName},
 		AccessBindingRef: networkingv1alpha.NetworkDNSObjectReference{Name: accessName},
-		WriterEpoch:      epoch,
-		Sequence:         sequence,
 		Nameservers:      []string{frontend},
 	}
 	if suffix := annotations[InternalDNSSuffixAnnotation]; suffix != "" {
@@ -633,9 +587,7 @@ func internalDNSSettingsFromAnnotations(
 func dnsAccessMatches(settings *networkingv1alpha.NetworkDNSSettings, access *networkingv1alpha.NetworkDNSAccessStatus) bool {
 	return settings != nil && access != nil &&
 		settings.ContextRef == access.ContextRef &&
-		settings.AccessBindingRef == access.AccessBindingRef &&
-		settings.WriterEpoch == access.WriterEpoch &&
-		settings.Sequence == access.Sequence
+		settings.AccessBindingRef == access.AccessBindingRef
 }
 
 func equalDNSSettings(a, b *networkingv1alpha.NetworkDNSSettings) bool {
@@ -643,7 +595,6 @@ func equalDNSSettings(a, b *networkingv1alpha.NetworkDNSSettings) bool {
 		return a == nil && b == nil
 	}
 	return a.ContextRef == b.ContextRef && a.AccessBindingRef == b.AccessBindingRef &&
-		a.WriterEpoch == b.WriterEpoch && a.Sequence == b.Sequence &&
 		strings.Join(a.Nameservers, "\x00") == strings.Join(b.Nameservers, "\x00") &&
 		strings.Join(a.Searches, "\x00") == strings.Join(b.Searches, "\x00")
 }
@@ -682,9 +633,9 @@ func boundedDNSName(prefix, identity string) string {
 	return prefix + "-" + suffix
 }
 
-func bindingReady(binding *unstructured.Unstructured, sequence int64) bool {
-	observed, found, _ := unstructured.NestedInt64(binding.Object, "status", "observedSequence")
-	return found && observed == sequence && unstructuredConditionTrue(binding, "Ready")
+func bindingReady(binding *unstructured.Unstructured) bool {
+	observed, found, _ := unstructured.NestedInt64(binding.Object, "status", "observedGeneration")
+	return found && observed == binding.GetGeneration() && resolverContextReady(binding)
 }
 
 func unstructuredConditionTrue(obj *unstructured.Unstructured, conditionType string) bool {
@@ -711,8 +662,6 @@ func internalDNSIntentAnnotations() []string {
 		InternalDNSRegionAnnotation,
 		InternalDNSContextNameAnnotation,
 		InternalDNSAccessNameAnnotation,
-		InternalDNSWriterEpochAnnotation,
-		InternalDNSSequenceAnnotation,
 		InternalDNSServiceDestinationAnnotation,
 		InternalDNSSuffixAnnotation,
 	}

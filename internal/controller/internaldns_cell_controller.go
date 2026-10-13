@@ -134,14 +134,12 @@ func (r *InternalDNSCellReconciler) reconcile(
 	access := &networkingv1alpha.NetworkDNSAccessStatus{
 		ContextRef:         settings.ContextRef,
 		AccessBindingRef:   settings.AccessBindingRef,
-		WriterEpoch:        settings.WriterEpoch,
-		Sequence:           settings.Sequence,
 		ServiceDestination: serviceDestination,
 	}
 	if err := r.report(ctx, networkContext, access, metav1.Condition{
 		Type: networkingv1alpha.NetworkContextDNSReady, Status: metav1.ConditionTrue,
 		Reason:  networkingv1alpha.NetworkContextDNSReadyReasonReady,
-		Message: "DNS access version and Galactic programming are current",
+		Message: "DNS configuration and Galactic programming are current",
 	}); err != nil {
 		return ctrl.Result{}, err
 	}

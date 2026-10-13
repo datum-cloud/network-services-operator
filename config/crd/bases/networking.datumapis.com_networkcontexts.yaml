@@ -58,8 +58,7 @@ spec:
                   have both been verified for this location.
                 properties:
                   accessBindingRef:
-                    description: AccessBindingRef identifies the regional DNS authorization
-                      lifetime.
+                    description: AccessBindingRef identifies the regional DNS configuration.
                     properties:
                       name:
                         description: Name is the resource name in the network's namespace.
@@ -97,24 +96,10 @@ spec:
                       type: string
                     maxItems: 6
                     type: array
-                  sequence:
-                    description: Sequence is the exact DNS authorization revision
-                      these settings carry.
-                    format: int64
-                    minimum: 1
-                    type: integer
-                  writerEpoch:
-                    description: WriterEpoch fences a previous access writer after
-                      ownership changes.
-                    format: int64
-                    minimum: 1
-                    type: integer
                 required:
                 - accessBindingRef
                 - contextRef
                 - nameservers
-                - sequence
-                - writerEpoch
                 type: object
               ipFamilies:
                 description: |-
@@ -240,7 +225,7 @@ spec:
                   only to this exact context, binding revision, and deadline.
                 properties:
                   accessBindingRef:
-                    description: AccessBindingRef identifies the DNS authorization
+                    description: AccessBindingRef identifies the DNS configuration
                       used for the proof.
                     properties:
                       name:
@@ -261,10 +246,6 @@ spec:
                     required:
                     - name
                     type: object
-                  sequence:
-                    description: Sequence is the exact ready DNS authorization revision.
-                    format: int64
-                    type: integer
                   serviceDestination:
                     description: ServiceDestination identifies this DNS context inside
                       the shared service.
@@ -272,17 +253,10 @@ spec:
                     x-kubernetes-validations:
                     - message: serviceDestination must be an IP address
                       rule: isIP(self)
-                  writerEpoch:
-                    description: WriterEpoch is the DNS authorization writer fenced
-                      by the proof.
-                    format: int64
-                    type: integer
                 required:
                 - accessBindingRef
                 - contextRef
-                - sequence
                 - serviceDestination
-                - writerEpoch
                 type: object
               ipam:
                 description: |-

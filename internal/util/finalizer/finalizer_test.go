@@ -534,6 +534,9 @@ func removeAsToday(ctx context.Context, c client.Client, obj client.Object, name
 	return client.IgnoreNotFound(c.Patch(ctx, obj, client.RawPatch(types.JSONPatchType, patch), client.FieldOwner(fieldOwner)))
 }
 
+// The stress load: how many objects each round deletes, and how many rounds.
+const stressObjects, stressIterations = 50, 20
+
 // TestRemovalUnderConcurrency deletes many objects at once, each held by both
 // controllers and some also by a third manager or the garbage collector's
 // foregroundDeletion, while the two controllers remove their entries in random
@@ -541,95 +544,147 @@ func removeAsToday(ctx context.Context, c client.Client, obj client.Object, name
 // only what neither controller owns: none stuck, none removed wrongly. It
 // reports the 422s of today's removal and of this one on the same load.
 func TestRemovalUnderConcurrency(t *testing.T) {
-	const objects, iterations = 50, 20
 	base := startAPIServer(t)
 	ctx := context.Background()
 
-	run := func(t *testing.T, remove func(c client.Client, obj client.Object, name, owner string) error) int64 {
-		var rejected, wrong atomic.Int64
-		c := interceptor.NewClient(base, interceptor.Funcs{
-			Patch: func(ctx context.Context, w client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
-				if !removesOnlyItsOwn(patch, obj, opts) {
-					wrong.Add(1)
-				}
-				err := w.Patch(ctx, obj, patch, opts...)
-				if apierrors.IsInvalid(err) {
-					rejected.Add(1)
-				}
-				return err
-			},
-		})
-		random := rand.New(rand.NewPCG(1, 2))
-		for iteration := range iterations {
-			objs := make([]*corev1.ConfigMap, objects)
-			keeps := make([][]string, objects)
-			for i := range objs {
-				cm := held(t, base)
-				if i%3 == 0 {
-					require.NoError(t, Add(ctx, base, read(t, base, cm), third, thirdOwner))
-					keeps[i] = append(keeps[i], third)
-				}
-				policy := metav1.DeletePropagationBackground
-				if i%4 == 0 {
-					policy = metav1.DeletePropagationForeground
-					keeps[i] = append(keeps[i], metav1.FinalizerDeleteDependents)
-				}
-				require.NoError(t, base.Delete(ctx, read(t, base, cm), client.PropagationPolicy(policy)))
-				objs[i] = read(t, base, cm)
-			}
-			var wg sync.WaitGroup
-			for _, cm := range objs {
-				for _, remover := range random.Perm(2) {
-					name, owner := mine, myOwner
-					if remover == 1 {
-						name, owner = theirs, theirOwner
-					}
-					stale, repeats := cm.DeepCopy(), 1+random.IntN(3)
-					pause := time.Duration(random.IntN(3)) * time.Millisecond
-					wg.Go(func() {
-						time.Sleep(pause)
-						for range repeats {
-							for attempt := 0; attempt < 5; attempt++ {
-								err := remove(c, stale.DeepCopy(), name, owner)
-								if err == nil {
-									break
-								}
-								if !assert.True(t, apierrors.IsInvalid(err), "only a moved list may refuse a removal: %v", err) {
-									return
-								}
-								if apierrors.IsNotFound(base.Get(ctx, client.ObjectKeyFromObject(stale), stale)) {
-									break
-								}
-							}
-						}
-					})
-				}
-			}
-			wg.Wait()
-			require.Zero(t, wrong.Load(), "iteration %d: a patch removed an entry its caller does not own", iteration)
-			for i, cm := range objs {
-				live := &corev1.ConfigMap{}
-				err := base.Get(ctx, client.ObjectKeyFromObject(cm), live)
-				if len(keeps[i]) == 0 {
-					require.True(t, apierrors.IsNotFound(err), "iteration %d, object %d is stuck: %v", iteration, i, live.Finalizers)
-					continue
-				}
-				require.NoError(t, err, "iteration %d, object %d should still hold %v", iteration, i, keeps[i])
-				require.ElementsMatch(t, keeps[i], live.Finalizers, "iteration %d, object %d", iteration, i)
-			}
-		}
-		return rejected.Load()
-	}
-
 	alreadyRemoved := removed(outcomeAlreadyRemoved)
-	today := run(t, func(c client.Client, obj client.Object, name, owner string) error {
+	today := newStressLoad(base).run(ctx, t, func(c client.Client, obj client.Object, name, owner string) error {
 		return removeAsToday(ctx, c, obj, name, owner)
 	})
-	live := run(t, func(c client.Client, obj client.Object, name, owner string) error {
+	live := newStressLoad(base).run(ctx, t, func(c client.Client, obj client.Object, name, owner string) error {
 		return Remove(ctx, on(c, base), obj, name, owner)
 	})
 	t.Logf("422s on the same load: today's removal %d; with the live read %d (concurrent residual); "+
 		"stale-copy removals the live read ended without a write (already_removed, test/mine): %v",
 		today, live, removed(outcomeAlreadyRemoved)-alreadyRemoved)
 	require.Less(t, live, today, "the live read removes the stale-copy 422s")
+}
+
+// remover is one controller's removal under test: today's, or this package's.
+type remover func(c client.Client, obj client.Object, name, owner string) error
+
+// stressLoad is one run of the stress load against an API server: the client
+// whose patches are checked and counted, and the random order, the same for
+// every run.
+type stressLoad struct {
+	base            client.WithWatch
+	c               client.Client
+	random          *rand.Rand
+	rejected, wrong atomic.Int64
+}
+
+func newStressLoad(base client.WithWatch) *stressLoad {
+	l := &stressLoad{base: base, random: rand.New(rand.NewPCG(1, 2))}
+	l.c = interceptor.NewClient(base, interceptor.Funcs{Patch: l.patch})
+	return l
+}
+
+// patch counts a patch that removes an entry its caller does not own, and a
+// patch the API server rejects (422).
+func (l *stressLoad) patch(ctx context.Context, w client.WithWatch, obj client.Object, patch client.Patch,
+	opts ...client.PatchOption) error {
+	if !removesOnlyItsOwn(patch, obj, opts) {
+		l.wrong.Add(1)
+	}
+	err := w.Patch(ctx, obj, patch, opts...)
+	if apierrors.IsInvalid(err) {
+		l.rejected.Add(1)
+	}
+	return err
+}
+
+// run deletes the stress load's objects round by round, with remove as both
+// controllers' removal, checks every object after each round, and returns the
+// 422s.
+func (l *stressLoad) run(ctx context.Context, t *testing.T, remove remover) int64 {
+	for iteration := range stressIterations {
+		objs, keeps := seed(ctx, t, l.base)
+		l.removeConcurrently(ctx, t, objs, remove)
+		require.Zero(t, l.wrong.Load(), "iteration %d: a patch removed an entry its caller does not own", iteration)
+		checkLists(ctx, t, l.base, iteration, objs, keeps)
+	}
+	return l.rejected.Load()
+}
+
+// seed creates the round's objects, each held by both controllers; every third
+// also by a third manager, every fourth deleted in the foreground. It deletes
+// them, and returns the copies the controllers hold and what each object must
+// keep.
+func seed(ctx context.Context, t *testing.T, base client.WithWatch) ([]*corev1.ConfigMap, [][]string) {
+	objs := make([]*corev1.ConfigMap, stressObjects)
+	keeps := make([][]string, stressObjects)
+	for i := range objs {
+		cm := held(t, base)
+		if i%3 == 0 {
+			require.NoError(t, Add(ctx, base, read(t, base, cm), third, thirdOwner))
+			keeps[i] = append(keeps[i], third)
+		}
+		policy := metav1.DeletePropagationBackground
+		if i%4 == 0 {
+			policy = metav1.DeletePropagationForeground
+			keeps[i] = append(keeps[i], metav1.FinalizerDeleteDependents)
+		}
+		require.NoError(t, base.Delete(ctx, read(t, base, cm), client.PropagationPolicy(policy)))
+		objs[i] = read(t, base, cm)
+	}
+	return objs, keeps
+}
+
+// removeConcurrently has both controllers remove their entries from every
+// object at once, in random order, each from its stale copy and after a random
+// pause, repeating itself a random number of times.
+func (l *stressLoad) removeConcurrently(ctx context.Context, t *testing.T, objs []*corev1.ConfigMap, remove remover) {
+	var wg sync.WaitGroup
+	for _, cm := range objs {
+		for _, who := range l.random.Perm(2) {
+			name, owner := mine, myOwner
+			if who == 1 {
+				name, owner = theirs, theirOwner
+			}
+			stale, repeats := cm.DeepCopy(), 1+l.random.IntN(3)
+			pause := time.Duration(l.random.IntN(3)) * time.Millisecond
+			wg.Go(func() {
+				time.Sleep(pause)
+				l.removeRepeatedly(ctx, t, stale, name, owner, repeats, remove)
+			})
+		}
+	}
+	wg.Wait()
+}
+
+// removeRepeatedly is one controller's removal, repeated as requeues repeat it:
+// a refused removal reads its copy again and tries up to five times, and an
+// object already gone ends the attempts.
+func (l *stressLoad) removeRepeatedly(ctx context.Context, t *testing.T, stale *corev1.ConfigMap,
+	name, owner string, repeats int, remove remover) {
+	for range repeats {
+		for attempt := 0; attempt < 5; attempt++ {
+			err := remove(l.c, stale.DeepCopy(), name, owner)
+			if err == nil {
+				break
+			}
+			if !assert.True(t, apierrors.IsInvalid(err), "only a moved list may refuse a removal: %v", err) {
+				return
+			}
+			if apierrors.IsNotFound(l.base.Get(ctx, client.ObjectKeyFromObject(stale), stale)) {
+				break
+			}
+		}
+	}
+}
+
+// checkLists requires every object to end with exactly what it must keep, and
+// an object that keeps nothing to be gone.
+func checkLists(ctx context.Context, t *testing.T, base client.WithWatch, iteration int,
+	objs []*corev1.ConfigMap, keeps [][]string) {
+	for i, cm := range objs {
+		live := &corev1.ConfigMap{}
+		err := base.Get(ctx, client.ObjectKeyFromObject(cm), live)
+		if len(keeps[i]) == 0 {
+			require.True(t, apierrors.IsNotFound(err), "iteration %d, object %d is stuck: %v", iteration, i, live.Finalizers)
+			continue
+		}
+		require.NoError(t, err, "iteration %d, object %d should still hold %v", iteration, i, keeps[i])
+		require.ElementsMatch(t, keeps[i], live.Finalizers, "iteration %d, object %d", iteration, i)
+	}
 }

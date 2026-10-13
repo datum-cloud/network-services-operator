@@ -105,6 +105,7 @@ type NetworkSummary struct {
 	Reason        string        `json:"rootCauseReason,omitempty"`
 	Object        string        `json:"rootCauseObject,omitempty"`
 	For           string        `json:"rootCauseFor,omitempty"`
+	Age           string        `json:"age,omitempty"`
 }
 
 func summarizeNetwork(ne *networkEvidence, now time.Time) NetworkSummary {
@@ -115,6 +116,7 @@ func summarizeNetwork(ne *networkEvidence, now time.Time) NetworkSummary {
 		Deleting:  d.Deleting,
 		Workloads: len(workloadsOn(boundInterfaces(ne.interfaces))),
 		Services:  len(ne.services),
+		Age:       agenttime.HumanDuration(sinceCreation(ne.network, now)),
 	}
 	if ne.network.Status.IPAM != nil {
 		s.IPv6Prefix = ne.network.Status.IPAM.IPv6Prefix

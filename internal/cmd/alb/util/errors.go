@@ -26,25 +26,26 @@ const (
 	ExitAborted     = 9
 )
 
-const nameError = "ALB_ERROR"
-
 var exitCodeNames = map[int]string{
-	ExitOK:          "OK",
-	ExitError:       nameError,
-	ExitUsage:       "ALB_USAGE",
-	ExitForbidden:   "ALB_FORBIDDEN",
-	ExitNotFound:    "ALB_NOT_FOUND",
-	ExitConflict:    "ALB_CONFLICT",
-	ExitInvalid:     "ALB_INVALID",
-	ExitUnavailable: "ALB_UNAVAILABLE",
-	ExitAborted:     "ALB_ABORTED",
+	ExitError:       "ERROR",
+	ExitUsage:       "USAGE",
+	ExitForbidden:   "FORBIDDEN",
+	ExitNotFound:    "NOT_FOUND",
+	ExitConflict:    "CONFLICT",
+	ExitInvalid:     "INVALID",
+	ExitUnavailable: "UNAVAILABLE",
+	ExitAborted:     "ABORTED",
 }
 
 func ExitCodeName(code int) string {
-	if name, known := exitCodeNames[code]; known {
-		return name
+	if code == ExitOK {
+		return "OK"
 	}
-	return exitCodeNames[ExitError]
+	name, known := exitCodeNames[code]
+	if !known {
+		name = exitCodeNames[ExitError]
+	}
+	return brand.ExitPrefix + "_" + name
 }
 
 type CLIError struct {
@@ -99,7 +100,7 @@ func ClassifyError(err error) *CLIError {
 			WithCause(err)
 	case code == 403:
 		return NewCLIError(ExitForbidden, fmt.Sprintf("not authorized: %s", apiMessage(err))).
-			WithFix("verify the active org and project, and your access to Application Load Balancers.").
+			WithFix(fmt.Sprintf("verify the active org and project, and your access to %s.", brand.Product)).
 			WithCause(err)
 	case code == 404:
 		return NewCLIError(ExitNotFound, apiMessage(err)).WithCause(err)

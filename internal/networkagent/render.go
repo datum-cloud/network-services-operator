@@ -55,19 +55,7 @@ func networkRender(deps DepsFor) mcp.ToolHandlerFor[RenderInput, RenderOutput] {
 		if _, err := deps(ctx); err != nil {
 			return nil, RenderOutput{}, err
 		}
-		var (
-			doc   map[string]any
-			notes []string
-			err   error
-		)
-		switch in.Kind {
-		case KindNetwork:
-			doc, notes, err = renderNetwork(in)
-		case KindNetworkService:
-			doc, notes, err = renderService(in)
-		default:
-			err = fmt.Errorf("kind must be %s or %s, not %q", KindNetwork, KindNetworkService, in.Kind)
-		}
+		doc, notes, err := Render(in)
 		if err != nil {
 			return nil, RenderOutput{}, err
 		}
@@ -192,7 +180,7 @@ func renderService(in RenderInput) (map[string]any, []string, error) {
 		if errs := validation.IsValidLabelValue(in.Workload); len(errs) > 0 {
 			return nil, nil, fmt.Errorf("workload %q is not usable: %s", in.Workload, strings.Join(errs, "; "))
 		}
-		matchLabels = map[string]string{workloadNameLabel: in.Workload}
+		matchLabels = map[string]string{WorkloadNameLabel: in.Workload}
 		notes = append(notes, fmt.Sprintf("The service selects every instance of workload %q, in every "+
 			"location it runs, including ones added later.", in.Workload))
 	} else {

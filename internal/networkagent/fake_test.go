@@ -126,7 +126,7 @@ func boundInterface(name, location, workload string, serving bool) networkingv1a
 	}
 	return networkingv1alpha.NetworkInterface{
 		ObjectMeta: meta(name, map[string]string{
-			workloadNameLabel: workload,
+			WorkloadNameLabel: workload,
 			networkingv1alpha.NetworkInterfaceLocationLabel: location,
 		}),
 		Spec: networkingv1alpha.NetworkInterfaceSpec{Network: networkingv1alpha.LocalNetworkRef{Name: "default"}},
@@ -147,7 +147,7 @@ func service(name, workload string, conditions ...metav1.Condition) networkingv1
 		ObjectMeta: meta(name, nil),
 		Spec: networkingv1alpha.NetworkServiceSpec{
 			NetworkInterfaces: networkingv1alpha.NetworkServiceInterfaceSelector{
-				Selector: metav1.LabelSelector{MatchLabels: map[string]string{workloadNameLabel: workload}},
+				Selector: metav1.LabelSelector{MatchLabels: map[string]string{WorkloadNameLabel: workload}},
 			},
 			Ports: []networkingv1alpha.NetworkServicePort{{Name: "http", Port: 8080}},
 		},

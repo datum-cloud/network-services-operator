@@ -4,9 +4,7 @@ package networkagent
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"sort"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -128,20 +126,11 @@ func networkList(deps DepsFor) mcp.ToolHandlerFor[ListInput, ListOutput] {
 		if err != nil {
 			return nil, ListOutput{}, err
 		}
-		networks, err := d.Reader.ListNetworks(ctx, d.Namespace)
+		networks, err := Networks(ctx, d.Reader, d.Namespace)
 		if err != nil {
 			return nil, ListOutput{}, err
 		}
-		e := readAll(ctx, d.Reader, d.Namespace)
-		now := nowFunc()
-		out := ListOutput{Networks: make([]NetworkSummary, 0, len(networks))}
-		for i := range networks {
-			out.Networks = append(out.Networks, summarizeNetwork(e.forNetwork(&networks[i]), now))
-		}
-		sort.SliceStable(out.Networks, func(i, j int) bool {
-			return scopeRank(out.Networks[i].Scope) < scopeRank(out.Networks[j].Scope)
-		})
-		return nil, out, nil
+		return nil, ListOutput{Networks: networks}, nil
 	}
 }
 
@@ -155,11 +144,15 @@ type GetOutput struct {
 
 func networkGet(deps DepsFor) mcp.ToolHandlerFor[NameInput, GetOutput] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, in NameInput) (*mcp.CallToolResult, GetOutput, error) {
-		ne, err := networkEvidenceFor(ctx, deps, in.Name)
+		d, err := deps(ctx)
 		if err != nil {
 			return nil, GetOutput{}, err
 		}
-		return nil, GetOutput{Network: buildNetworkView(ne, nowFunc())}, nil
+		v, err := Network(ctx, d.Reader, d.Namespace, in.Name)
+		if err != nil {
+			return nil, GetOutput{}, err
+		}
+		return nil, GetOutput{Network: v}, nil
 	}
 }
 
@@ -169,27 +162,16 @@ type DiagnoseOutput struct {
 
 func networkDiagnose(deps DepsFor) mcp.ToolHandlerFor[NameInput, DiagnoseOutput] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, in NameInput) (*mcp.CallToolResult, DiagnoseOutput, error) {
-		ne, err := networkEvidenceFor(ctx, deps, in.Name)
+		d, err := deps(ctx)
 		if err != nil {
 			return nil, DiagnoseOutput{}, err
 		}
-		return nil, DiagnoseOutput{Diagnosis: diagnoseNetwork(ne, nowFunc())}, nil
+		diag, err := DiagnoseNetwork(ctx, d.Reader, d.Namespace, in.Name)
+		if err != nil {
+			return nil, DiagnoseOutput{}, err
+		}
+		return nil, DiagnoseOutput{Diagnosis: diag}, nil
 	}
-}
-
-func networkEvidenceFor(ctx context.Context, deps DepsFor, name string) (*networkEvidence, error) {
-	d, err := deps(ctx)
-	if err != nil {
-		return nil, err
-	}
-	if name == "" {
-		return nil, errors.New("name is required")
-	}
-	n, err := d.Reader.GetNetwork(ctx, d.Namespace, name)
-	if err != nil {
-		return nil, err
-	}
-	return readAll(ctx, d.Reader, d.Namespace).forNetwork(n), nil
 }
 
 type ServiceListOutput struct {
@@ -202,20 +184,11 @@ func serviceList(deps DepsFor) mcp.ToolHandlerFor[ListInput, ServiceListOutput] 
 		if err != nil {
 			return nil, ServiceListOutput{}, err
 		}
-		services, err := d.Reader.ListNetworkServices(ctx, d.Namespace)
+		services, err := Services(ctx, d.Reader, d.Namespace)
 		if err != nil {
 			return nil, ServiceListOutput{}, err
 		}
-		e := readAll(ctx, d.Reader, d.Namespace)
-		now := nowFunc()
-		out := ServiceListOutput{Services: make([]ServiceSummary, 0, len(services))}
-		for i := range services {
-			out.Services = append(out.Services, summarizeService(&services[i], e, now))
-		}
-		sort.SliceStable(out.Services, func(i, j int) bool {
-			return scopeRank(out.Services[i].Scope) < scopeRank(out.Services[j].Scope)
-		})
-		return nil, out, nil
+		return nil, ServiceListOutput{Services: services}, nil
 	}
 }
 
@@ -233,15 +206,11 @@ func serviceDiagnose(deps DepsFor) mcp.ToolHandlerFor[ServiceNameInput, ServiceD
 		if err != nil {
 			return nil, ServiceDiagnoseOutput{}, err
 		}
-		if in.Name == "" {
-			return nil, ServiceDiagnoseOutput{}, errors.New("name is required")
-		}
-		s, err := d.Reader.GetNetworkService(ctx, d.Namespace, in.Name)
+		diag, err := DiagnoseService(ctx, d.Reader, d.Namespace, in.Name)
 		if err != nil {
 			return nil, ServiceDiagnoseOutput{}, err
 		}
-		e := readAll(ctx, d.Reader, d.Namespace)
-		return nil, ServiceDiagnoseOutput{Diagnosis: diagnoseService(s, e, nowFunc())}, nil
+		return nil, ServiceDiagnoseOutput{Diagnosis: diag}, nil
 	}
 }
 

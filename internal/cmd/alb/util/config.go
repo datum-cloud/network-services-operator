@@ -44,5 +44,5 @@ func NewScheme() (*runtime.Scheme, error) {
 }
 
 func UserAgent() string {
-	return "datumctl-alb"
+	return "datumctl-" + brand.Command
 }

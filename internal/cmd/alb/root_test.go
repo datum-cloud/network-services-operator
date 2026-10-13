@@ -7,6 +7,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"go.datum.net/network-services-operator/internal/cmd/alb/plugincli"
 )
 
 func TestCommandFlags(t *testing.T) {
@@ -63,11 +65,11 @@ func TestCommandTree(t *testing.T) {
 
 func TestSkipsEntitlement(t *testing.T) {
 	root := Command()
-	assert.True(t, skipsEntitlement(root))
+	assert.True(t, plugincli.SkipsEntitlement(root))
 
 	for _, cmd := range root.Commands() {
 		if cmd.Name() == "version" {
-			assert.True(t, skipsEntitlement(cmd))
+			assert.True(t, plugincli.SkipsEntitlement(cmd))
 			return
 		}
 	}

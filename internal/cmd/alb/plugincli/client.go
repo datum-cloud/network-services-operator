@@ -32,7 +32,7 @@ func RestConfig(project string) (*rest.Config, error) {
 	pctx := plugin.Context()
 	if pctx.APIHost == "" {
 		return nil, util.NewCLIError(util.ExitUnavailable, "DATUM_API_HOST is not set").
-			WithFix("run this through datumctl:\n       datumctl alb ...")
+			WithFix(fmt.Sprintf("run this through datumctl:\n       datumctl %s ...", util.CurrentBrand().Command))
 	}
 
 	token, err := plugin.Token()

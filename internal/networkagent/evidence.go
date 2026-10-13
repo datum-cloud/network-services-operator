@@ -14,7 +14,7 @@ import (
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 )
 
-const workloadNameLabel = "compute.datumapis.com/workload-name"
+const WorkloadNameLabel = "compute.datumapis.com/workload-name"
 
 type evidence struct {
 	contexts   []networkingv1alpha.NetworkContext
@@ -132,7 +132,7 @@ func interfaceLocation(i *networkingv1alpha.NetworkInterface) string {
 }
 
 func workloadOf(obj metav1.Object) string {
-	return obj.GetLabels()[workloadNameLabel]
+	return obj.GetLabels()[WorkloadNameLabel]
 }
 
 func workloadsOn(interfaces []networkingv1alpha.NetworkInterface) []string {

@@ -183,9 +183,9 @@ spec:
     value: fd70:100::10
   port: 53
   transports: [UDP, TCP]
-  authorization:
+  version:
     # DNS issues the context epoch; network services preserve it across projections.
-    writerEpoch: 3
+    epoch: 3
     # Advance the sequence when access intent changes; use conditional API writes.
     sequence: 27
 ```
@@ -254,11 +254,11 @@ The initial guest contract supports one managed DNS context. A provider must rej
 
 ### Publication and lifecycle
 
-Products reserve names through `DNSRegistration` and publish eligible addresses through `DNSRecordContribution`. A trusted issuer authorizes publishers through `DNSContributionGrant`; publication credentials cannot write grants or resolver access. Compute owns instance and service eligibility; Connect owns export eligibility. DNS and network services do not inspect Compute resources.
+Products reserve names through `DNSRegistration` and publish eligible addresses through `DNSRecordContribution`. Project RBAC authorizes product publication; publisher credentials cannot program resolver access. Compute owns instance and service eligibility; Connect owns export eligibility. DNS and network services do not inspect Compute resources.
 
 Reconcile access, publication, and settings independently per project and region. Persist sequences, use conditional writes, and resume from committed state after takeover. Failure in one region must not block healthy regions. Replication and retries preserve lifetimes and version fences.
 
-Products explicitly withdraw unhealthy endpoints. Unavailable observations retain the last reported endpoint state. Withdrawal bounds include cached-answer TTLs. Removing a location's last consumer clears its settings; removing the region's last consumer withdraws access. Network deletion retires the DNS context. Recreated networks and retained interfaces cannot inherit retired authorization.
+Products explicitly withdraw unhealthy endpoints. Unavailable observations retain the last reported endpoint state. Withdrawal bounds include cached-answer TTLs. Removing a location's last consumer clears its settings; removing the region's last consumer withdraws access. Network deletion retires the DNS context. Recreated networks and retained interfaces cannot inherit retired access mappings.
 
 ## Production Readiness Review Questionnaire
 

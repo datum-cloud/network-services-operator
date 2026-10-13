@@ -39,7 +39,7 @@ Users need stable names for resources whose addresses and health change. Attachi
 - Resolve automatic resource names and multiple associated private zones within a VPC.
 - Preserve tenant isolation across projects, locations, and overlapping addresses.
 - Deliver resolver settings through the network-interface contract.
-- Withdraw expired access and ineligible endpoints during control-plane outages.
+- Retain applied DNS access during control-plane outages and withdraw it on explicit deletion.
 
 ### Non-Goals
 
@@ -266,7 +266,7 @@ Products explicitly withdraw unhealthy endpoints. Unavailable observations retai
 
 ### Feature Enablement and Rollback
 
-Gate VPC integration and product publication separately, disabled by default for alpha. Enable selected staging projects first. Withdrawal stops renewals, gates private paths, and removes guest settings through provider reconciliation. Stopping controllers alone does not remove guest settings.
+Gate VPC integration and product publication separately, disabled by default for alpha. Enable selected staging projects first. Explicit withdrawal removes private paths and guest settings through provider reconciliation. Withdraw access before disabling integration; stopping controllers retains applied settings and paths.
 
 ### Rollout, Upgrade and Rollback Planning
 

@@ -115,7 +115,7 @@ const (
 	NetworkInterfaceHolderAvailable = "HolderAvailable"
 
 	// NetworkInterfaceDNSConfigured is reported by the provider after applying
-	// the current unexpired settings in spec.dns to the workload.
+	// the current settings in spec.dns to the workload.
 	NetworkInterfaceDNSConfigured = "DNSConfigured"
 )
 
@@ -342,8 +342,7 @@ type NetworkInterfaceSpec struct {
 	ReclaimPolicy NetworkInterfaceReclaimPolicy `json:"reclaimPolicy,omitempty"`
 
 	// dns contains verified resolver settings inherited from the network
-	// context. Providers remove expired settings and report DNSConfigured after
-	// applying the current revision.
+	// context. Providers report DNSConfigured after applying the current revision.
 	//
 	// +kubebuilder:validation:Optional
 	DNS *NetworkDNSSettings `json:"dns,omitempty"`

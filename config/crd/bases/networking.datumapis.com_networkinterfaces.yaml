@@ -177,8 +177,7 @@ spec:
               dns:
                 description: |-
                   dns contains verified resolver settings inherited from the network
-                  context. Providers remove expired settings and report DNSConfigured after
-                  applying the current revision.
+                  context. Providers report DNSConfigured after applying the current revision.
                 properties:
                   accessBindingRef:
                     description: AccessBindingRef identifies the regional DNS authorization

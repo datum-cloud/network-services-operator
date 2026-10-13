@@ -340,18 +340,15 @@ type NetworkInterfaceSpec struct {
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:default="Delete"
 	ReclaimPolicy NetworkInterfaceReclaimPolicy `json:"reclaimPolicy,omitempty"`
-
-	// dns contains verified resolver settings inherited from the network
-	// context. Providers report DNSConfigured after applying the current revision.
-	//
-	// +kubebuilder:validation:Optional
-	DNS *NetworkDNSSettings `json:"dns,omitempty"`
 }
 
 // NetworkInterfaceStatus defines the observed state of NetworkInterface: which
 // claim holds it, what realizes it on the data plane, and whether programming
 // has succeeded.
 type NetworkInterfaceStatus struct {
+	// DNS contains effective resolver settings inherited from the network.
+	// +kubebuilder:validation:Optional
+	DNS *NetworkDNSResolverSettings `json:"dns,omitempty"`
 	// phase reports whether a claim holds the interface. Bound means the claim in
 	// spec.claimRef holds it. Available means it is retained and holding its
 	// addresses with no claim bound.

@@ -65,18 +65,9 @@ spec:
                         description: Name is the resource name in the network's namespace.
                         minLength: 1
                         type: string
-                      uid:
-                        description: |-
-                          UID prevents a resource recreated under the same name from inheriting
-                          resolver access.
-                        type: string
                     required:
                     - name
-                    - uid
                     type: object
-                    x-kubernetes-validations:
-                    - message: uid must not be empty
-                      rule: self.uid.size() > 0
                   contextRef:
                     description: ContextRef identifies the DNS serving and namespace
                       lifetime.
@@ -85,18 +76,9 @@ spec:
                         description: Name is the resource name in the network's namespace.
                         minLength: 1
                         type: string
-                      uid:
-                        description: |-
-                          UID prevents a resource recreated under the same name from inheriting
-                          resolver access.
-                        type: string
                     required:
                     - name
-                    - uid
                     type: object
-                    x-kubernetes-validations:
-                    - message: uid must not be empty
-                      rule: self.uid.size() > 0
                   nameservers:
                     description: Nameservers are resolver addresses reachable from
                       this network.
@@ -265,18 +247,9 @@ spec:
                         description: Name is the resource name in the network's namespace.
                         minLength: 1
                         type: string
-                      uid:
-                        description: |-
-                          UID prevents a resource recreated under the same name from inheriting
-                          resolver access.
-                        type: string
                     required:
                     - name
-                    - uid
                     type: object
-                    x-kubernetes-validations:
-                    - message: uid must not be empty
-                      rule: self.uid.size() > 0
                   contextRef:
                     description: ContextRef identifies the DNS context used for the
                       proof.
@@ -285,18 +258,9 @@ spec:
                         description: Name is the resource name in the network's namespace.
                         minLength: 1
                         type: string
-                      uid:
-                        description: |-
-                          UID prevents a resource recreated under the same name from inheriting
-                          resolver access.
-                        type: string
                     required:
                     - name
-                    - uid
                     type: object
-                    x-kubernetes-validations:
-                    - message: uid must not be empty
-                      rule: self.uid.size() > 0
                   sequence:
                     description: Sequence is the exact ready DNS authorization revision.
                     format: int64

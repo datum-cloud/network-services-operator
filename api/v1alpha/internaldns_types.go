@@ -2,10 +2,6 @@
 
 package v1alpha
 
-import (
-	"k8s.io/apimachinery/pkg/types"
-)
-
 // +kubebuilder:validation:Enum=Managed;Disabled
 type NetworkDNSMode string
 
@@ -23,20 +19,22 @@ type NetworkDNSPolicy struct {
 	Mode NetworkDNSMode `json:"mode,omitempty"`
 }
 
-// NetworkDNSObjectReference pins a DNS resource to its API-assigned lifetime.
-// +kubebuilder:validation:XValidation:rule="self.uid.size() > 0",message="uid must not be empty"
+// NetworkDNSObjectReference identifies a DNS resource by name.
 type NetworkDNSObjectReference struct {
 	// Name is the resource name in the network's namespace.
 	//
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
 	Name string `json:"name"`
+}
 
-	// UID prevents a resource recreated under the same name from inheriting
-	// resolver access.
-	//
-	// +kubebuilder:validation:Required
-	UID types.UID `json:"uid"`
+type NetworkDNSResolverSettings struct {
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=3
+	// +kubebuilder:validation:XValidation:rule="self.all(n, isIP(n))",message="nameservers must contain IP addresses"
+	Nameservers []string `json:"nameservers"`
+	// +kubebuilder:validation:MaxItems=6
+	Searches []string `json:"searches,omitempty"`
 }
 
 // NetworkDNSSettings are verified resolver settings inherited by interfaces.

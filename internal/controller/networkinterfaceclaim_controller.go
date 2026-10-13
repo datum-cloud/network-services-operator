@@ -1024,9 +1024,17 @@ func (r *NetworkInterfaceClaimReconciler) syncInterface(
 		iface.Spec.MTU = networkContext.Spec.MTU
 		changed = true
 	}
-	if !apiequality.Semantic.DeepEqual(iface.Spec.DNS, networkContext.Spec.DNS) {
-		iface.Spec.DNS = networkContext.Spec.DNS.DeepCopy()
-		changed = true
+	var dns *networkingv1alpha.NetworkDNSResolverSettings
+	if settings := networkContext.Spec.DNS; settings != nil {
+		dns = &networkingv1alpha.NetworkDNSResolverSettings{Nameservers: append([]string(nil), settings.Nameservers...), Searches: append([]string(nil), settings.Searches...)}
+	}
+	if !apiequality.Semantic.DeepEqual(iface.Status.DNS, dns) {
+		base := iface.DeepCopy()
+		iface.Status.DNS = dns
+		apimeta.RemoveStatusCondition(&iface.Status.Conditions, networkingv1alpha.NetworkInterfaceDNSConfigured)
+		if err := cl.Status().Patch(ctx, iface, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
+			return fmt.Errorf("publish interface resolver settings: %w", err)
+		}
 	}
 	// An interface adopted from before the field existed carries none.
 	if claim.Spec.AttachmentMode != "" && iface.Spec.AttachmentMode != claim.Spec.AttachmentMode {

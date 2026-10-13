@@ -174,88 +174,6 @@ spec:
                 required:
                 - name
                 type: object
-              dns:
-                description: |-
-                  dns contains verified resolver settings inherited from the network
-                  context. Providers report DNSConfigured after applying the current revision.
-                properties:
-                  accessBindingRef:
-                    description: AccessBindingRef identifies the regional DNS authorization
-                      lifetime.
-                    properties:
-                      name:
-                        description: Name is the resource name in the network's namespace.
-                        minLength: 1
-                        type: string
-                      uid:
-                        description: |-
-                          UID prevents a resource recreated under the same name from inheriting
-                          resolver access.
-                        type: string
-                    required:
-                    - name
-                    - uid
-                    type: object
-                    x-kubernetes-validations:
-                    - message: uid must not be empty
-                      rule: self.uid.size() > 0
-                  contextRef:
-                    description: ContextRef identifies the DNS serving and namespace
-                      lifetime.
-                    properties:
-                      name:
-                        description: Name is the resource name in the network's namespace.
-                        minLength: 1
-                        type: string
-                      uid:
-                        description: |-
-                          UID prevents a resource recreated under the same name from inheriting
-                          resolver access.
-                        type: string
-                    required:
-                    - name
-                    - uid
-                    type: object
-                    x-kubernetes-validations:
-                    - message: uid must not be empty
-                      rule: self.uid.size() > 0
-                  nameservers:
-                    description: Nameservers are resolver addresses reachable from
-                      this network.
-                    items:
-                      type: string
-                    maxItems: 3
-                    minItems: 1
-                    type: array
-                    x-kubernetes-validations:
-                    - message: nameservers must contain IP addresses
-                      rule: self.all(n, isIP(n))
-                  searches:
-                    description: Searches contains DNS search suffixes allocated to
-                      this network.
-                    items:
-                      type: string
-                    maxItems: 6
-                    type: array
-                  sequence:
-                    description: Sequence is the exact DNS authorization revision
-                      these settings carry.
-                    format: int64
-                    minimum: 1
-                    type: integer
-                  writerEpoch:
-                    description: WriterEpoch fences a previous access writer after
-                      ownership changes.
-                    format: int64
-                    minimum: 1
-                    type: integer
-                required:
-                - accessBindingRef
-                - contextRef
-                - nameservers
-                - sequence
-                - writerEpoch
-                type: object
               externalAddresses:
                 description: |-
                   externalAddresses are the addresses the interface is reachable at from
@@ -465,6 +383,27 @@ spec:
                   - type
                   type: object
                 type: array
+              dns:
+                description: DNS contains effective resolver settings inherited from
+                  the network.
+                properties:
+                  nameservers:
+                    items:
+                      type: string
+                    maxItems: 3
+                    minItems: 1
+                    type: array
+                    x-kubernetes-validations:
+                    - message: nameservers must contain IP addresses
+                      rule: self.all(n, isIP(n))
+                  searches:
+                    items:
+                      type: string
+                    maxItems: 6
+                    type: array
+                required:
+                - nameservers
+                type: object
               networkContextRef:
                 description: |-
                   networkContextRef is the network's presence in this location, resolved or

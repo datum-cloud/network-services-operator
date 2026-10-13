@@ -38,9 +38,7 @@ const (
 	internalDNSFinalizer = "networking.datumapis.com/internal-dns-access"
 
 	InternalDNSContextNameAnnotation        = "networking.datumapis.com/internal-dns-context-name"
-	InternalDNSContextUIDAnnotation         = "networking.datumapis.com/internal-dns-context-uid"
 	InternalDNSAccessNameAnnotation         = "networking.datumapis.com/internal-dns-access-name"
-	InternalDNSAccessUIDAnnotation          = "networking.datumapis.com/internal-dns-access-uid"
 	InternalDNSWriterEpochAnnotation        = "networking.datumapis.com/internal-dns-writer-epoch"
 	InternalDNSSequenceAnnotation           = "networking.datumapis.com/internal-dns-sequence"
 	InternalDNSServiceDestinationAnnotation = "networking.datumapis.com/internal-dns-service-destination"
@@ -187,8 +185,7 @@ func (r *InternalDNSProjectReconciler) reconcile(
 	epoch, _, _ := unstructured.NestedInt64(dnsContext.Object, "status", "accessWriterEpoch")
 	suffix, _, _ := unstructured.NestedString(dnsContext.Object, "status", "managedNamespace", "suffix")
 	zoneName, _, _ := unstructured.NestedString(dnsContext.Object, "status", "managedNamespace", "dnsZoneRef", "name")
-	zoneUID, _, _ := unstructured.NestedString(dnsContext.Object, "status", "managedNamespace", "dnsZoneRef", "uid")
-	if dnsContext.GetUID() == "" || epoch < 1 || suffix != internalDNSDefaultDomain || zoneName == "" || zoneUID == "" || !resolverContextReady(dnsContext) {
+	if dnsContext.GetUID() == "" || epoch < 1 || suffix != internalDNSDefaultDomain || zoneName == "" || !resolverContextReady(dnsContext) {
 		return ctrl.Result{RequeueAfter: internalDNSRetryInterval}, nil
 	}
 
@@ -207,9 +204,7 @@ func (r *InternalDNSProjectReconciler) reconcile(
 	sequence, _, _ := unstructured.NestedInt64(binding.Object, "spec", "authorization", "sequence")
 	if err := r.publishIntent(ctx, cl, networkContext, map[string]string{
 		InternalDNSContextNameAnnotation:        dnsContext.GetName(),
-		InternalDNSContextUIDAnnotation:         string(dnsContext.GetUID()),
 		InternalDNSAccessNameAnnotation:         binding.GetName(),
-		InternalDNSAccessUIDAnnotation:          string(binding.GetUID()),
 		InternalDNSWriterEpochAnnotation:        strconv.FormatInt(epoch, 10),
 		InternalDNSSequenceAnnotation:           strconv.FormatInt(sequence, 10),
 		InternalDNSServiceDestinationAnnotation: destination,
@@ -345,7 +340,6 @@ func (r *InternalDNSProjectReconciler) ensureAccess(
 	}
 	annotations[internalDNSOwnerNetworkUIDAnnotation] = string(network.UID)
 	annotations[internalDNSOwnerProjectUIDAnnotation] = string(projectUID)
-	annotations[InternalDNSContextUIDAnnotation] = string(dnsContext.GetUID())
 	annotations[InternalDNSRegionAnnotation] = region
 	current.SetAnnotations(annotations)
 	current.SetOwnerReferences([]metav1.OwnerReference{{
@@ -556,7 +550,7 @@ func (r *InternalDNSReadinessReconciler) publish(
 
 	access := hubContext.Status.DNSAccess
 	ready := apimeta.IsStatusConditionTrue(hubContext.Status.Conditions, networkingv1alpha.NetworkContextDNSReady)
-	if !ready || !dnsAccessMatches(intent, access) || access == nil {
+	if !ready || !dnsAccessMatches(intent, access) || access == nil || access.ServiceDestination != projectContext.Annotations[InternalDNSServiceDestinationAnnotation] {
 		settings := projectContext.Spec.DNS
 		if !equalDNSSettings(settings, intent) {
 			settings = nil
@@ -616,18 +610,16 @@ func internalDNSSettingsFromAnnotations(
 	frontend string,
 ) (*networkingv1alpha.NetworkDNSSettings, error) {
 	contextName := annotations[InternalDNSContextNameAnnotation]
-	contextUID := annotations[InternalDNSContextUIDAnnotation]
 	accessName := annotations[InternalDNSAccessNameAnnotation]
-	accessUID := annotations[InternalDNSAccessUIDAnnotation]
 	epoch, epochErr := strconv.ParseInt(annotations[InternalDNSWriterEpochAnnotation], 10, 64)
 	sequence, sequenceErr := strconv.ParseInt(annotations[InternalDNSSequenceAnnotation], 10, 64)
-	if contextName == "" || contextUID == "" || accessName == "" || accessUID == "" ||
+	if contextName == "" || accessName == "" ||
 		epochErr != nil || sequenceErr != nil {
 		return nil, errors.New("DNS access intent is incomplete")
 	}
 	settings := &networkingv1alpha.NetworkDNSSettings{
-		ContextRef:       networkingv1alpha.NetworkDNSObjectReference{Name: contextName, UID: types.UID(contextUID)},
-		AccessBindingRef: networkingv1alpha.NetworkDNSObjectReference{Name: accessName, UID: types.UID(accessUID)},
+		ContextRef:       networkingv1alpha.NetworkDNSObjectReference{Name: contextName},
+		AccessBindingRef: networkingv1alpha.NetworkDNSObjectReference{Name: accessName},
 		WriterEpoch:      epoch,
 		Sequence:         sequence,
 		Nameservers:      []string{frontend},
@@ -692,8 +684,7 @@ func boundedDNSName(prefix, identity string) string {
 
 func bindingReady(binding *unstructured.Unstructured, sequence int64) bool {
 	observed, found, _ := unstructured.NestedInt64(binding.Object, "status", "observedSequence")
-	bindingUID, _, _ := unstructured.NestedString(binding.Object, "status", "bindingRef", "uid")
-	return found && observed == sequence && bindingUID != "" && unstructuredConditionTrue(binding, "Ready")
+	return found && observed == sequence && unstructuredConditionTrue(binding, "Ready")
 }
 
 func unstructuredConditionTrue(obj *unstructured.Unstructured, conditionType string) bool {
@@ -719,9 +710,7 @@ func internalDNSIntentAnnotations() []string {
 	return []string{
 		InternalDNSRegionAnnotation,
 		InternalDNSContextNameAnnotation,
-		InternalDNSContextUIDAnnotation,
 		InternalDNSAccessNameAnnotation,
-		InternalDNSAccessUIDAnnotation,
 		InternalDNSWriterEpochAnnotation,
 		InternalDNSSequenceAnnotation,
 		InternalDNSServiceDestinationAnnotation,

@@ -85,7 +85,7 @@ func TestInternalDNSProjectLifecycleFencesAccess(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := unstructured.SetNestedMap(dnsContext.Object, map[string]any{
-		"name": "blue-internal", "uid": "zone-uid",
+		"name": "blue-internal",
 	}, "status", "managedNamespace", "dnsZoneRef"); err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +120,7 @@ func TestInternalDNSProjectLifecycleFencesAccess(t *testing.T) {
 	if _, err := r.reconcile(ctx, cl, "project", client.ObjectKeyFromObject(first)); err != nil {
 		t.Fatal(err)
 	}
-	assertDNSIntent(t, ctx, cl, "first", "access-uid", "1")
+	assertDNSIntent(t, ctx, cl, "first", bindingName, "1")
 	originalStatus, _, _ := unstructured.NestedMap(dnsContext.Object, "status")
 	for _, invalid := range []struct {
 		path  []string
@@ -154,7 +154,7 @@ func TestInternalDNSProjectLifecycleFencesAccess(t *testing.T) {
 		if _, err := r.reconcile(ctx, cl, "project", client.ObjectKeyFromObject(first)); err != nil {
 			t.Fatal(err)
 		}
-		assertDNSIntent(t, ctx, cl, "first", "access-uid", "1")
+		assertDNSIntent(t, ctx, cl, "first", bindingName, "1")
 	}
 
 	second := testNetworkContext("second", "context-2")
@@ -164,7 +164,7 @@ func TestInternalDNSProjectLifecycleFencesAccess(t *testing.T) {
 	if _, err := r.reconcile(ctx, cl, "project", client.ObjectKeyFromObject(second)); err != nil {
 		t.Fatal(err)
 	}
-	assertDNSIntent(t, ctx, cl, "second", "access-uid", "1")
+	assertDNSIntent(t, ctx, cl, "second", bindingName, "1")
 	assertUnstructuredCount(t, ctx, cl, internalDNSContextGVK, "tenant", 1)
 	assertUnstructuredCount(t, ctx, cl, internalDNSAccessGVK, "tenant", 1)
 	firstCurrent := &networkingv1alpha.NetworkContext{}
@@ -186,7 +186,7 @@ func TestInternalDNSProjectLifecycleFencesAccess(t *testing.T) {
 	if err := cl.Get(ctx, client.ObjectKey{Namespace: "tenant", Name: "first"}, current); err != nil {
 		t.Fatal(err)
 	}
-	if current.Annotations[InternalDNSAccessUIDAnnotation] != "access-uid" {
+	if current.Annotations[InternalDNSAccessNameAnnotation] != bindingName {
 		t.Fatalf("persistent access was withdrawn: %#v", current.Annotations)
 	}
 	if err := cl.Get(ctx, client.ObjectKey{Namespace: "tenant", Name: bindingName}, binding); err != nil {
@@ -226,10 +226,11 @@ func TestInternalDNSReadinessPreservesAppliedSettings(t *testing.T) {
 		WithObjects(projectContext).Build()
 	hubContext := projectContext.DeepCopy()
 	hubContext.Status.DNSAccess = &networkingv1alpha.NetworkDNSAccessStatus{
-		ContextRef:       networkingv1alpha.NetworkDNSObjectReference{Name: "resolver", UID: "resolver-uid"},
-		AccessBindingRef: networkingv1alpha.NetworkDNSObjectReference{Name: "access", UID: "access-uid"},
-		WriterEpoch:      4,
-		Sequence:         9,
+		ContextRef:         networkingv1alpha.NetworkDNSObjectReference{Name: "resolver"},
+		AccessBindingRef:   networkingv1alpha.NetworkDNSObjectReference{Name: "access"},
+		WriterEpoch:        4,
+		Sequence:           9,
+		ServiceDestination: projectContext.Annotations[InternalDNSServiceDestinationAnnotation],
 	}
 	hubContext.Status.Conditions = []metav1.Condition{{
 		Type: networkingv1alpha.NetworkContextDNSReady, Status: metav1.ConditionTrue,
@@ -338,9 +339,7 @@ func testNetworkContext(name string, uid types.UID) *networkingv1alpha.NetworkCo
 func testDNSIntent(_ time.Time) map[string]string {
 	return map[string]string{
 		InternalDNSContextNameAnnotation:        "resolver",
-		InternalDNSContextUIDAnnotation:         "resolver-uid",
 		InternalDNSAccessNameAnnotation:         "access",
-		InternalDNSAccessUIDAnnotation:          "access-uid",
 		InternalDNSWriterEpochAnnotation:        "4",
 		InternalDNSSequenceAnnotation:           "9",
 		InternalDNSSuffixAnnotation:             "blue.internal",
@@ -349,13 +348,13 @@ func testDNSIntent(_ time.Time) map[string]string {
 	}
 }
 
-func assertDNSIntent(t *testing.T, ctx context.Context, cl client.Client, name, uid, sequence string) {
+func assertDNSIntent(t *testing.T, ctx context.Context, cl client.Client, name, accessName, sequence string) {
 	t.Helper()
 	current := &networkingv1alpha.NetworkContext{}
 	if err := cl.Get(ctx, client.ObjectKey{Namespace: "tenant", Name: name}, current); err != nil {
 		t.Fatal(err)
 	}
-	if current.Annotations[InternalDNSAccessUIDAnnotation] != uid ||
+	if current.Annotations[InternalDNSAccessNameAnnotation] != accessName ||
 		current.Annotations[InternalDNSSequenceAnnotation] != sequence {
 		t.Fatalf("unexpected DNS intent: %#v", current.Annotations)
 	}

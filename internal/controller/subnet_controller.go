@@ -5,6 +5,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strconv"
 
 	"google.golang.org/protobuf/proto"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -12,19 +13,32 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/cluster"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	"sigs.k8s.io/controller-runtime/pkg/source"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
+	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
+	networkingv1alpha1 "go.datum.net/network-services-operator/api/v1alpha1"
+	"go.datum.net/network-services-operator/internal/downstreamclient"
 )
 
 // SubnetReconciler reconciles a Subnet object
 type SubnetReconciler struct {
+	// DownstreamCluster is the federation hub. The replicator mirrors a Subnet
+	// onto it, Karmada carries the copy to the cells serving the location, and
+	// the cells' data plane reports on their copies; Karmada aggregates those
+	// reports back onto the hub copy, which is the one place this controller
+	// can read what the cells said. Nil, as in tests, means nothing reports and
+	// Programmed is left as it is.
+	DownstreamCluster cluster.Cluster
+
 	mgr mcmanager.Manager
 }
 
@@ -65,13 +79,105 @@ func (r *SubnetReconciler) Reconcile(ctx context.Context, req mcreconcile.Reques
 	logger.V(1).Info("reconciling subnet")
 	defer logger.V(1).Info("reconcile complete")
 
-	return ctrl.Result{}, r.reconcileSubnet(ctx, cl.GetClient(), &subnet)
+	programmed, err := r.programmedFromCells(ctx, req.ClusterName, cl.GetClient(), &subnet)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
+	return ctrl.Result{}, r.reconcileSubnet(ctx, cl.GetClient(), &subnet, programmed)
 }
 
+// programmedFromCells reads the hub copy of the subnet and derives Programmed
+// from what the cells serving its location reported there. A missing copy
+// reads Pending. A read that fails for any other reason is returned, so the
+// reconcile is retried rather than a status derived from a failed read.
+//
+// It returns nil when there is no hub to read, and Programmed is then left as
+// it is.
+func (r *SubnetReconciler) programmedFromCells(
+	ctx context.Context,
+	clusterName multicluster.ClusterName,
+	upstreamClient client.Client,
+	subnet *networkingv1alpha.Subnet,
+) (*metav1.Condition, error) {
+	if r.DownstreamCluster == nil {
+		return nil, nil
+	}
+
+	strategy := downstreamclient.NewMappedNamespaceResourceStrategy(string(clusterName), upstreamClient, r.DownstreamCluster.GetClient())
+	hubNamespace, err := strategy.GetDownstreamNamespaceNameForUpstreamNamespace(ctx, subnet.Namespace)
+	if err != nil {
+		return nil, fmt.Errorf("failed resolving the hub namespace for subnet %s/%s: %w", subnet.Namespace, subnet.Name, err)
+	}
+
+	hubCopy := &networkingv1alpha.Subnet{}
+	if err := r.DownstreamCluster.GetClient().Get(ctx, client.ObjectKey{Namespace: hubNamespace, Name: subnet.Name}, hubCopy); err != nil {
+		if apierrors.IsNotFound(err) {
+			hubCopy = nil
+		} else {
+			return nil, fmt.Errorf("failed reading the hub copy of subnet %s/%s: %w", subnet.Namespace, subnet.Name, err)
+		}
+	}
+
+	condition := cellProgrammedCondition(hubCopy, subnet.Generation, subnet.Spec.Location.Name)
+	return &condition, nil
+}
+
+// cellProgrammedCondition derives the subnet's Programmed condition from its hub
+// copy, on which Karmada has aggregated what every cell serving the location
+// reported.
+//
+// Each API server counts generation on its own, so a cell reports for the
+// upstream generation the replicator stamped on the copy it was handed, and the
+// report is taken only while that is still the generation here. The message is
+// built from the reason and the location, never from the aggregated message:
+// that one counts cells, which are the platform's.
+func cellProgrammedCondition(hubCopy *networkingv1alpha.Subnet, upstreamGeneration int64, location string) metav1.Condition {
+	condition := metav1.Condition{
+		Type:               networkingv1alpha.SubnetProgrammed,
+		Status:             metav1.ConditionUnknown,
+		Reason:             networkingv1alpha.SubnetProgrammedReasonPending,
+		ObservedGeneration: upstreamGeneration,
+		Message:            fmt.Sprintf("Waiting for a cell serving %s to report on this address range", location),
+	}
+	if hubCopy == nil {
+		return condition
+	}
+
+	copied, err := strconv.ParseInt(hubCopy.Annotations[networkingv1alpha1.UpstreamGenerationAnnotation], 10, 64)
+	if err != nil || copied != upstreamGeneration {
+		return condition
+	}
+
+	reported := apimeta.FindStatusCondition(hubCopy.Status.Conditions, networkingv1alpha.SubnetProgrammed)
+	if reported == nil || reported.Status == metav1.ConditionUnknown || reported.ObservedGeneration != upstreamGeneration {
+		return condition
+	}
+
+	switch {
+	case reported.Status == metav1.ConditionTrue:
+		condition.Status = metav1.ConditionTrue
+		condition.Reason = networkingv1alpha.SubnetProgrammedReasonProgrammed
+		condition.Message = fmt.Sprintf("Address range is in place on the network in %s", location)
+	case reported.Reason == networkingv1alpha.SubnetProgrammedReasonProgrammingInProgress:
+		condition.Status = metav1.ConditionFalse
+		condition.Reason = networkingv1alpha.SubnetProgrammedReasonProgrammingInProgress
+		condition.Message = fmt.Sprintf("Address range is being put in place on the network in %s", location)
+	default:
+		condition.Status = metav1.ConditionFalse
+		condition.Reason = networkingv1alpha.SubnetProgrammedReasonNotProgrammed
+		condition.Message = fmt.Sprintf("Address range is not in place on the network in %s", location)
+	}
+	return condition
+}
+
+// reconcileSubnet publishes the subnet's range and derives Ready. programmed is
+// what the cells said, or nil to leave Programmed as it is.
 func (r *SubnetReconciler) reconcileSubnet(
 	ctx context.Context,
 	cl client.Client,
 	subnet *networkingv1alpha.Subnet,
+	programmed *metav1.Condition,
 ) error {
 	// TODO(jreese) finalizer work
 
@@ -157,6 +263,10 @@ func (r *SubnetReconciler) reconcileSubnet(
 		needsStatusUpdate = true
 	}
 
+	if programmed != nil && apimeta.SetStatusCondition(&subnet.Status.Conditions, *programmed) {
+		needsStatusUpdate = true
+	}
+
 	subnetProgrammed := apimeta.IsStatusConditionTrue(subnet.Status.Conditions, networkingv1alpha.SubnetProgrammed)
 
 	readyMessage := "Subnet is not yet programmed"
@@ -190,17 +300,35 @@ func (r *SubnetReconciler) reconcileSubnet(
 // SetupWithManager sets up the controller with the Manager.
 func (r *SubnetReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	r.mgr = mgr
-	return mcbuilder.ControllerManagedBy(mgr).
-		For(&networkingv1alpha.Subnet{},
-			mcbuilder.WithPredicates(
-				predicate.NewPredicateFuncs(func(object client.Object) bool {
-					// Don't bother processing subnets that are ready
-					o := object.(*networkingv1alpha.Subnet)
-					return !apimeta.IsStatusConditionTrue(o.Status.Conditions, networkingv1alpha.SubnetReady)
-				}),
-			),
-			mcbuilder.WithEngageWithLocalCluster(false),
-		).
-		Named("subnet").
-		Complete(r)
+	builder := mcbuilder.ControllerManagedBy(mgr).
+		For(&networkingv1alpha.Subnet{}, mcbuilder.WithEngageWithLocalCluster(false)).
+		Named("subnet")
+
+	// A cell's report lands on the hub copy. Ready follows it, both ways: a
+	// range a cell stops carrying is no longer ready here.
+	if r.DownstreamCluster != nil {
+		builder = builder.WatchesRawSource(source.TypedKind(
+			r.DownstreamCluster.GetCache(),
+			&networkingv1alpha.Subnet{},
+			handler.TypedEnqueueRequestsFromMapFunc(enqueueSubnetForHubCopy),
+		))
+	}
+
+	return builder.Complete(r)
+}
+
+// enqueueSubnetForHubCopy maps a hub copy back to the project subnet it
+// mirrors, by the labels the replicator stamps on every copy.
+func enqueueSubnetForHubCopy(_ context.Context, hubCopy *networkingv1alpha.Subnet) []mcreconcile.Request {
+	labels := hubCopy.GetLabels()
+	clusterLabel := labels[downstreamclient.UpstreamOwnerClusterNameLabel]
+	namespace := labels[downstreamclient.UpstreamOwnerNamespaceLabel]
+	name := labels[downstreamclient.UpstreamOwnerNameLabel]
+	if clusterLabel == "" || namespace == "" || name == "" {
+		return nil
+	}
+	return []mcreconcile.Request{{
+		ClusterName: multicluster.ClusterName(downstreamclient.UpstreamClusterNameFromLabel(clusterLabel)),
+		Request:     ctrl.Request{NamespacedName: client.ObjectKey{Namespace: namespace, Name: name}},
+	}}
 }

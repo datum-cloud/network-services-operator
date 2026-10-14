@@ -193,13 +193,18 @@ func initReplicationResourceConfigs() map[string]replicationResourceConfig {
 	// for the federation control plane to carry the rest of the way. Their status
 	// is NSO's own and must not be overwritten from downstream, and the location
 	// label is what the per-location propagation policy selects on.
+	//
+	// The Subnet copy also carries the upstream generation: the cells' data plane
+	// reports Programmed against it, and the subnet controller reads that report
+	// off the hub copy itself rather than through a wholesale status sync.
 	presenceGVKs := []schema.GroupVersionKind{
 		{Group: groupNetworkingDatumAPIs, Version: versionV1Alpha, Kind: KindNetworkContext},
 		{Group: groupNetworkingDatumAPIs, Version: versionV1Alpha, Kind: KindSubnet},
 	}
 	for _, gvk := range presenceGVKs {
 		configs[gvkKey(gvk)] = replicationResourceConfig{
-			skipUpstreamStatusSync: true,
+			skipUpstreamStatusSync:  true,
+			stampUpstreamGeneration: gvk.Kind == KindSubnet,
 			propagatedLabels: []string{
 				networkingv1alpha.LocationLabel,
 				networkingv1alpha.NetworkLabel,

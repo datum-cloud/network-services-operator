@@ -60,7 +60,7 @@ func NewClientLogReader(cfg *rest.Config) *ClientLogReader {
 func (r *ClientLogReader) QueryALBLogs(ctx context.Context, q ALBLogQuery) ([]util.LogEntry, error) {
 	end := time.Now()
 	entries, err := util.QueryLogs(ctx, r.Config, util.LogsQuery{
-		Query: spec.BuildAlbLogQL(q.ProxyName, q.Methods, q.Codes),
+		Query: spec.BuildAlbLogQL([]string{q.ProxyName}, q.Methods, q.Codes),
 		Start: end.Add(-q.Since),
 		End:   end,
 		Limit: q.Limit,

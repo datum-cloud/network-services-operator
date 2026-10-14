@@ -19,7 +19,7 @@ Narrow it when you are hunting something specific:
 
 If the project cannot show logs at all, the result says so rather than failing.
 That is a property of the project, not a fault of the load balancer, and the
-person can still look with `datumctl alb logs <name>` or the Logs tab in the
+person can still look with `datumctl alb logs [name...]` or the Logs tab in the
 console.
 
 ## Why this matters more here than elsewhere

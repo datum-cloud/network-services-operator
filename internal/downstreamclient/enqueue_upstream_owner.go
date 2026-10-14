@@ -108,15 +108,19 @@ func (e *enqueueRequestForOwner[object]) parseOwnerTypeGroupKind(scheme *runtime
 func (e *enqueueRequestForOwner[object]) getOwnerReconcileRequest(obj metav1.Object, result map[mcreconcile.Request]empty) {
 	labels := obj.GetLabels()
 	if labels[UpstreamOwnerKindLabel] == e.groupKind.Kind && labels[UpstreamOwnerGroupLabel] == e.groupKind.Group {
-		request := mcreconcile.Request{
-			Request: reconcile.Request{
-				NamespacedName: types.NamespacedName{
-					Name:      labels[UpstreamOwnerNameLabel],
-					Namespace: labels[UpstreamOwnerNamespaceLabel],
-				},
+		result[UpstreamOwnerRequest(obj)] = empty{}
+	}
+}
+
+func UpstreamOwnerRequest(obj metav1.Object) mcreconcile.Request {
+	labels := obj.GetLabels()
+	return mcreconcile.Request{
+		Request: reconcile.Request{
+			NamespacedName: types.NamespacedName{
+				Name:      labels[UpstreamOwnerNameLabel],
+				Namespace: labels[UpstreamOwnerNamespaceLabel],
 			},
-			ClusterName: multicluster.ClusterName(UpstreamClusterNameFromLabel(labels[UpstreamOwnerClusterNameLabel])),
-		}
-		result[request] = empty{}
+		},
+		ClusterName: multicluster.ClusterName(UpstreamClusterNameFromLabel(labels[UpstreamOwnerClusterNameLabel])),
 	}
 }

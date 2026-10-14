@@ -34,8 +34,9 @@ project, say this conversation only reaches the current one.
 
 ## What is settled at create and what is not
 
-Changeable later: display name, Force HTTPS, hostnames, routes, origins,
-traffic protection, headers, basic auth. Essentially everything.
+Changeable later: display name, Force HTTPS, hostnames, routes, origins and
+their weights, the load balancing algorithm, health checks, traffic protection,
+headers, basic auth. Essentially everything.
 
 Not changeable: the object's name. Derive it from a display name if they did not
 give one, and **carry the name you used forward** — if it was generated it
@@ -59,6 +60,13 @@ Say these rather than letting the customer discover them:
 
 - **Force HTTPS is on.** HTTP requests are redirected. This is almost always
   what they want; say it is on rather than leaving it implied.
+- **With several origins, requests split evenly by default.** Every origin
+  counts as weight 1 until one is set, and the algorithm is least request.
+  Passive health checks are off. Checks move requests between one origin's
+  endpoints, not between origins, so if they want resilience across several
+  addresses behind one origin, suggest turning them on
+  (`spec.healthCheck.passive: {}` takes the defaults). An origin that breaks
+  keeps its share either way until it is drained or removed.
 - **Traffic protection starts in a blocking mode at the lowest paranoia level.**
   If they are putting an existing, busy site behind this, recommend `Observe`
   first and moving to blocking once they have seen real traffic. Load

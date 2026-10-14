@@ -64,7 +64,21 @@ func hostnameListCommand() *cobra.Command {
 }
 
 func runHostnameAdd(cmd *cobra.Command, args []string) error {
-	return mutateHostname(cmd, args[0], args[1], spec.AddHostname, "attached")
+	name, hostname := args[0], args[1]
+	c, err := newClient(plugincli.ProjectFromCmd(cmd))
+	if err != nil {
+		return err
+	}
+	return mutateProxyWithClient(cmd, c, name, func(current *networkingv1alpha.HTTPProxy) (*networkingv1alpha.HTTPProxy, error) {
+		updated, err := spec.AddHostname(current, hostname)
+		if err != nil {
+			return nil, err
+		}
+		if err := requireVerifiedHostnames(cmd.Context(), c, cmd.ErrOrStderr(), []string{hostname}); err != nil {
+			return nil, err
+		}
+		return updated, nil
+	}, fmt.Sprintf("Hostname %q attached on %q.\n", hostname, name))
 }
 
 func runHostnameRemove(cmd *cobra.Command, args []string) error {

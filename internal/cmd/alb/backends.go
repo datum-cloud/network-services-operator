@@ -15,13 +15,35 @@ import (
 )
 
 func addBackendFlags(cmd *cobra.Command) {
+	addBackendTargetFlags(cmd)
+	cmd.Flags().String("tls-hostname", "", "Hostname used to verify TLS when an --endpoint origin is an IP")
+}
+
+// addBackendTargetFlags registers the flags that name an origin, without the
+// ones that configure it.
+func addBackendTargetFlags(cmd *cobra.Command) {
 	cmd.Flags().StringArray("endpoint", nil, "Origin URL, http or https (repeatable)")
 	cmd.Flags().StringArray("network-service", nil, "Existing NetworkService to send traffic to (repeatable, pair with --port)")
 	cmd.Flags().StringArray("port", nil, "Named port on the preceding --network-service")
-	cmd.Flags().String("tls-hostname", "", "Hostname used to verify TLS when an --endpoint origin is an IP")
 
 	_ = cmd.RegisterFlagCompletionFunc("network-service", plugincli.CompleteNetworkServiceNames)
 	_ = cmd.RegisterFlagCompletionFunc("port", plugincli.CompleteNetworkServicePorts)
+}
+
+func addWeightFlag(cmd *cobra.Command, usage string) {
+	cmd.Flags().Int32("weight", 0, usage)
+}
+
+// weightFromFlags is nil when --weight was not given.
+func weightFromFlags(cmd *cobra.Command) (*int32, error) {
+	if !cmd.Flags().Changed("weight") {
+		return nil, nil
+	}
+	weight, _ := cmd.Flags().GetInt32("weight")
+	if err := spec.ValidateWeight(weight); err != nil {
+		return nil, err
+	}
+	return &weight, nil
 }
 
 func backendFlagsChanged(cmd *cobra.Command) bool {

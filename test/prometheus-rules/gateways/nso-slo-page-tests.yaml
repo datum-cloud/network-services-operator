@@ -1,0 +1,640 @@
+# GatewayPlatformPartNotReady, the per-Gateway page on the platform's part. Written by gen_page_tests.py;
+# one case per input_series block, in this order:
+#   - one Gateway pages after 5 minutes, not before
+#   - ten Gateways are ten alerts; the route makes them one page
+#   - a customer listener only does not page
+#   - a custom listener named https does not page
+#   - a 3-minute dip does not page
+#   - repeated 3-minute dips do not page
+#   - recovery clears the page
+#   - Accepted False alone pages
+#   - a failure two exporter pods report is one alert
+#   - a Gateway being deleted does not page
+#   - a missing status does not page
+#   - a new Gateway pages 5 minutes after it turns 60 s old
+#   - not Accepted since more than 7 days, on a Gateway older than 7 days, does not page
+#   - older than 7 days and Accepted, its default listener breaks: pages
+#   - no controller: the default condition time is far older than the Gateway, which pages in its first 7 days
+rule_files:
+- nso-slo-rules.yaml
+evaluation_interval: 30s
+tests:
+- interval: 1m
+  input_series:
+  - series: datum_cloud_networking_gateway_created{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="gw-a"}
+    values: -120+0x20
+  - series: datum_cloud_networking_gateway_status{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="gw-a", type="Accepted"}
+    values: 1x20
+  - series: datum_cloud_networking_gateway_status_listener_programmed{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="gw-a", listener="default-http"}
+    values: 1x20
+  - series: datum_cloud_networking_gateway_status_listener_programmed{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="gw-a", listener="default-https"}
+    values: '0x20'
+  alert_rule_test:
+  - eval_time: 4m
+    alertname: GatewayPlatformPartNotReady
+    exp_alerts: []
+  - eval_time: 5m
+    alertname: GatewayPlatformPartNotReady
+    exp_alerts:
+    - exp_labels:
+        severity: critical
+        service: network-services
+        team: delivery
+        project: test-project
+        subject: test-project/test-ns/gw-a
+        subject_kind: Gateway
+        subject_name: gw-a
+        subject_namespace: test-ns
+        subject_group: gateway.networking.k8s.io
+        resourcemanager_datumapis_com_project_name: test-project
+        resource_namespace: test-ns
+        resource_name: gw-a
+      exp_annotations:
+        summary: Gateway gw-a is not accepted or does not serve its own hostname
+        description: Gateway gw-a in project test-project, namespace test-ns, is not Accepted, or a default listener, which serves the Gateway's own hostname with the platform's certificate, is not Programmed.
+        impact: The Gateway does not serve its own hostname.
+        runbook_url: https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/gateway-readiness.md#gatewayplatformpartnotready
+- interval: 1m
+  input_series:
+  - series: datum_cloud_networking_gateway_created{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="gw-00"}
+    values: -120+0x20
+  - series: datum_cloud_networking_gateway_status{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="gw-00", type="Accepted"}
+    values: 1x20
+  - series: datum_cloud_networking_gateway_status_listener_programmed{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="gw-00", listener="default-http"}
+    values: 1x20
+  - series: datum_cloud_networking_gateway_status_listener_programmed{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="gw-00", listener="default-https"}
+    values: '0x20'
+  - series: datum_cloud_networking_gateway_created{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="gw-01"}
+    values: -120+0x20
+  - series: datum_cloud_networking_gateway_status{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="gw-01", type="Accepted"}
+    values: 1x20
+  - series: datum_cloud_networking_gateway_status_listener_programmed{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="gw-01", listener="default-http"}
+    values: 1x20
+  - series: datum_cloud_networking_gateway_status_listener_programmed{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="gw-01", listener="default-https"}
+    values: '0x20'
+  - series: datum_cloud_networking_gateway_created{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="gw-02"}
+    values: -120+0x20
+  - series: datum_cloud_networking_gateway_status{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="gw-02", type="Accepted"}
+    values: 1x20
+  - series: datum_cloud_networking_gateway_status_listener_programmed{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="gw-02", listener="default-http"}
+    values: 1x20
+  - series: datum_cloud_networking_gateway_status_listener_programmed{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="gw-02", listener="default-https"}
+    values: '0x20'
+  - series: datum_cloud_networking_gateway_created{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="gw-03"}
+    values: -120+0x20
+  - series: datum_cloud_networking_gateway_status{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="gw-03", type="Accepted"}
+    values: 1x20
+  - series: datum_cloud_networking_gateway_status_listener_programmed{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="gw-03", listener="default-http"}
+    values: 1x20
+  - series: datum_cloud_networking_gateway_status_listener_programmed{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="gw-03", listener="default-https"}
+    values: '0x20'
+  - series: datum_cloud_networking_gateway_created{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="gw-04"}
+    values: -120+0x20
+  - series: datum_cloud_networking_gateway_status{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="gw-04", type="Accepted"}
+    values: 1x20
+  - series: datum_cloud_networking_gateway_status_listener_programmed{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="gw-04", listener="default-http"}
+    values: 1x20
+  - series: datum_cloud_networking_gateway_status_listener_programmed{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="gw-04", listener="default-https"}
+    values: '0x20'
+  - series: datum_cloud_networking_gateway_created{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="gw-05"}
+    values: -120+0x20
+  - series: datum_cloud_networking_gateway_status{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="gw-05", type="Accepted"}
+    values: 1x20
+  - series: datum_cloud_networking_gateway_status_listener_programmed{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="gw-05", listener="default-http"}
+    values: 1x20
+  - series: datum_cloud_networking_gateway_status_listener_programmed{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="gw-05", listener="default-https"}
+    values: '0x20'
+  - series: datum_cloud_networking_gateway_created{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="gw-06"}
+    values: -120+0x20
+  - series: datum_cloud_networking_gateway_status{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="gw-06", type="Accepted"}
+    values: 1x20
+  - series: datum_cloud_networking_gateway_status_listener_programmed{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="gw-06", listener="default-http"}
+    values: 1x20
+  - series: datum_cloud_networking_gateway_status_listener_programmed{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="gw-06", listener="default-https"}
+    values: '0x20'
+  - series: datum_cloud_networking_gateway_created{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="gw-07"}
+    values: -120+0x20
+  - series: datum_cloud_networking_gateway_status{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="gw-07", type="Accepted"}
+    values: 1x20
+  - series: datum_cloud_networking_gateway_status_listener_programmed{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="gw-07", listener="default-http"}
+    values: 1x20
+  - series: datum_cloud_networking_gateway_status_listener_programmed{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="gw-07", listener="default-https"}
+    values: '0x20'
+  - series: datum_cloud_networking_gateway_created{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="gw-08"}
+    values: -120+0x20
+  - series: datum_cloud_networking_gateway_status{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="gw-08", type="Accepted"}
+    values: 1x20
+  - series: datum_cloud_networking_gateway_status_listener_programmed{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="gw-08", listener="default-http"}
+    values: 1x20
+  - series: datum_cloud_networking_gateway_status_listener_programmed{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="gw-08", listener="default-https"}
+    values: '0x20'
+  - series: datum_cloud_networking_gateway_created{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="gw-09"}
+    values: -120+0x20
+  - series: datum_cloud_networking_gateway_status{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="gw-09", type="Accepted"}
+    values: 1x20
+  - series: datum_cloud_networking_gateway_status_listener_programmed{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="gw-09", listener="default-http"}
+    values: 1x20
+  - series: datum_cloud_networking_gateway_status_listener_programmed{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="gw-09", listener="default-https"}
+    values: '0x20'
+  alert_rule_test:
+  - eval_time: 5m
+    alertname: GatewayPlatformPartNotReady
+    exp_alerts:
+    - exp_labels:
+        severity: critical
+        service: network-services
+        team: delivery
+        project: test-project
+        subject: test-project/test-ns/gw-00
+        subject_kind: Gateway
+        subject_name: gw-00
+        subject_namespace: test-ns
+        subject_group: gateway.networking.k8s.io
+        resourcemanager_datumapis_com_project_name: test-project
+        resource_namespace: test-ns
+        resource_name: gw-00
+      exp_annotations:
+        summary: Gateway gw-00 is not accepted or does not serve its own hostname
+        description: Gateway gw-00 in project test-project, namespace test-ns, is not Accepted, or a default listener, which serves the Gateway's own hostname with the platform's certificate, is not Programmed.
+        impact: The Gateway does not serve its own hostname.
+        runbook_url: https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/gateway-readiness.md#gatewayplatformpartnotready
+    - exp_labels:
+        severity: critical
+        service: network-services
+        team: delivery
+        project: test-project
+        subject: test-project/test-ns/gw-01
+        subject_kind: Gateway
+        subject_name: gw-01
+        subject_namespace: test-ns
+        subject_group: gateway.networking.k8s.io
+        resourcemanager_datumapis_com_project_name: test-project
+        resource_namespace: test-ns
+        resource_name: gw-01
+      exp_annotations:
+        summary: Gateway gw-01 is not accepted or does not serve its own hostname
+        description: Gateway gw-01 in project test-project, namespace test-ns, is not Accepted, or a default listener, which serves the Gateway's own hostname with the platform's certificate, is not Programmed.
+        impact: The Gateway does not serve its own hostname.
+        runbook_url: https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/gateway-readiness.md#gatewayplatformpartnotready
+    - exp_labels:
+        severity: critical
+        service: network-services
+        team: delivery
+        project: test-project
+        subject: test-project/test-ns/gw-02
+        subject_kind: Gateway
+        subject_name: gw-02
+        subject_namespace: test-ns
+        subject_group: gateway.networking.k8s.io
+        resourcemanager_datumapis_com_project_name: test-project
+        resource_namespace: test-ns
+        resource_name: gw-02
+      exp_annotations:
+        summary: Gateway gw-02 is not accepted or does not serve its own hostname
+        description: Gateway gw-02 in project test-project, namespace test-ns, is not Accepted, or a default listener, which serves the Gateway's own hostname with the platform's certificate, is not Programmed.
+        impact: The Gateway does not serve its own hostname.
+        runbook_url: https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/gateway-readiness.md#gatewayplatformpartnotready
+    - exp_labels:
+        severity: critical
+        service: network-services
+        team: delivery
+        project: test-project
+        subject: test-project/test-ns/gw-03
+        subject_kind: Gateway
+        subject_name: gw-03
+        subject_namespace: test-ns
+        subject_group: gateway.networking.k8s.io
+        resourcemanager_datumapis_com_project_name: test-project
+        resource_namespace: test-ns
+        resource_name: gw-03
+      exp_annotations:
+        summary: Gateway gw-03 is not accepted or does not serve its own hostname
+        description: Gateway gw-03 in project test-project, namespace test-ns, is not Accepted, or a default listener, which serves the Gateway's own hostname with the platform's certificate, is not Programmed.
+        impact: The Gateway does not serve its own hostname.
+        runbook_url: https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/gateway-readiness.md#gatewayplatformpartnotready
+    - exp_labels:
+        severity: critical
+        service: network-services
+        team: delivery
+        project: test-project
+        subject: test-project/test-ns/gw-04
+        subject_kind: Gateway
+        subject_name: gw-04
+        subject_namespace: test-ns
+        subject_group: gateway.networking.k8s.io
+        resourcemanager_datumapis_com_project_name: test-project
+        resource_namespace: test-ns
+        resource_name: gw-04
+      exp_annotations:
+        summary: Gateway gw-04 is not accepted or does not serve its own hostname
+        description: Gateway gw-04 in project test-project, namespace test-ns, is not Accepted, or a default listener, which serves the Gateway's own hostname with the platform's certificate, is not Programmed.
+        impact: The Gateway does not serve its own hostname.
+        runbook_url: https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/gateway-readiness.md#gatewayplatformpartnotready
+    - exp_labels:
+        severity: critical
+        service: network-services
+        team: delivery
+        project: test-project
+        subject: test-project/test-ns/gw-05
+        subject_kind: Gateway
+        subject_name: gw-05
+        subject_namespace: test-ns
+        subject_group: gateway.networking.k8s.io
+        resourcemanager_datumapis_com_project_name: test-project
+        resource_namespace: test-ns
+        resource_name: gw-05
+      exp_annotations:
+        summary: Gateway gw-05 is not accepted or does not serve its own hostname
+        description: Gateway gw-05 in project test-project, namespace test-ns, is not Accepted, or a default listener, which serves the Gateway's own hostname with the platform's certificate, is not Programmed.
+        impact: The Gateway does not serve its own hostname.
+        runbook_url: https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/gateway-readiness.md#gatewayplatformpartnotready
+    - exp_labels:
+        severity: critical
+        service: network-services
+        team: delivery
+        project: test-project
+        subject: test-project/test-ns/gw-06
+        subject_kind: Gateway
+        subject_name: gw-06
+        subject_namespace: test-ns
+        subject_group: gateway.networking.k8s.io
+        resourcemanager_datumapis_com_project_name: test-project
+        resource_namespace: test-ns
+        resource_name: gw-06
+      exp_annotations:
+        summary: Gateway gw-06 is not accepted or does not serve its own hostname
+        description: Gateway gw-06 in project test-project, namespace test-ns, is not Accepted, or a default listener, which serves the Gateway's own hostname with the platform's certificate, is not Programmed.
+        impact: The Gateway does not serve its own hostname.
+        runbook_url: https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/gateway-readiness.md#gatewayplatformpartnotready
+    - exp_labels:
+        severity: critical
+        service: network-services
+        team: delivery
+        project: test-project
+        subject: test-project/test-ns/gw-07
+        subject_kind: Gateway
+        subject_name: gw-07
+        subject_namespace: test-ns
+        subject_group: gateway.networking.k8s.io
+        resourcemanager_datumapis_com_project_name: test-project
+        resource_namespace: test-ns
+        resource_name: gw-07
+      exp_annotations:
+        summary: Gateway gw-07 is not accepted or does not serve its own hostname
+        description: Gateway gw-07 in project test-project, namespace test-ns, is not Accepted, or a default listener, which serves the Gateway's own hostname with the platform's certificate, is not Programmed.
+        impact: The Gateway does not serve its own hostname.
+        runbook_url: https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/gateway-readiness.md#gatewayplatformpartnotready
+    - exp_labels:
+        severity: critical
+        service: network-services
+        team: delivery
+        project: test-project
+        subject: test-project/test-ns/gw-08
+        subject_kind: Gateway
+        subject_name: gw-08
+        subject_namespace: test-ns
+        subject_group: gateway.networking.k8s.io
+        resourcemanager_datumapis_com_project_name: test-project
+        resource_namespace: test-ns
+        resource_name: gw-08
+      exp_annotations:
+        summary: Gateway gw-08 is not accepted or does not serve its own hostname
+        description: Gateway gw-08 in project test-project, namespace test-ns, is not Accepted, or a default listener, which serves the Gateway's own hostname with the platform's certificate, is not Programmed.
+        impact: The Gateway does not serve its own hostname.
+        runbook_url: https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/gateway-readiness.md#gatewayplatformpartnotready
+    - exp_labels:
+        severity: critical
+        service: network-services
+        team: delivery
+        project: test-project
+        subject: test-project/test-ns/gw-09
+        subject_kind: Gateway
+        subject_name: gw-09
+        subject_namespace: test-ns
+        subject_group: gateway.networking.k8s.io
+        resourcemanager_datumapis_com_project_name: test-project
+        resource_namespace: test-ns
+        resource_name: gw-09
+      exp_annotations:
+        summary: Gateway gw-09 is not accepted or does not serve its own hostname
+        description: Gateway gw-09 in project test-project, namespace test-ns, is not Accepted, or a default listener, which serves the Gateway's own hostname with the platform's certificate, is not Programmed.
+        impact: The Gateway does not serve its own hostname.
+        runbook_url: https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/gateway-readiness.md#gatewayplatformpartnotready
+- interval: 1m
+  input_series:
+  - series: datum_cloud_networking_gateway_created{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="tenant"}
+    values: -120+0x20
+  - series: datum_cloud_networking_gateway_status{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="tenant", type="Accepted"}
+    values: 1x20
+  - series: datum_cloud_networking_gateway_status_listener_programmed{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="tenant", listener="default-http"}
+    values: 1x20
+  - series: datum_cloud_networking_gateway_status_listener_programmed{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="tenant", listener="default-https"}
+    values: 1x20
+  - series: datum_cloud_networking_gateway_status_listener_programmed{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="tenant", listener="https-hostname-0"}
+    values: '0x20'
+  alert_rule_test:
+  - eval_time: 6m
+    alertname: GatewayPlatformPartNotReady
+    exp_alerts: []
+- interval: 1m
+  input_series:
+  - series: datum_cloud_networking_gateway_created{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="named"}
+    values: -120+0x20
+  - series: datum_cloud_networking_gateway_status{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="named", type="Accepted"}
+    values: 1x20
+  - series: datum_cloud_networking_gateway_status_listener_programmed{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="named", listener="default-http"}
+    values: 1x20
+  - series: datum_cloud_networking_gateway_status_listener_programmed{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="named", listener="default-https"}
+    values: 1x20
+  - series: datum_cloud_networking_gateway_status_listener_programmed{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="named", listener="https"}
+    values: '0x20'
+  alert_rule_test:
+  - eval_time: 6m
+    alertname: GatewayPlatformPartNotReady
+    exp_alerts: []
+- interval: 1m
+  input_series:
+  - series: datum_cloud_networking_gateway_created{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="dip"}
+    values: -120+0x20
+  - series: datum_cloud_networking_gateway_status{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="dip", type="Accepted"}
+    values: 1x20
+  - series: datum_cloud_networking_gateway_status_listener_programmed{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="dip", listener="default-http"}
+    values: 1x20
+  - series: datum_cloud_networking_gateway_status_listener_programmed{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="dip", listener="default-https"}
+    values: 0 0 0 1 1 1 1 1 1 1 1
+  alert_rule_test:
+  - eval_time: 5m
+    alertname: GatewayPlatformPartNotReady
+    exp_alerts: []
+  - eval_time: 8m
+    alertname: GatewayPlatformPartNotReady
+    exp_alerts: []
+- interval: 1m
+  input_series:
+  - series: datum_cloud_networking_gateway_created{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="dips"}
+    values: -120+0x20
+  - series: datum_cloud_networking_gateway_status{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="dips", type="Accepted"}
+    values: 1x20
+  - series: datum_cloud_networking_gateway_status_listener_programmed{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="dips", listener="default-http"}
+    values: 1x20
+  - series: datum_cloud_networking_gateway_status_listener_programmed{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="dips", listener="default-https"}
+    values: 0 0 0 1 0 0 0 1 0 0 0 1 0 0 0 1
+  alert_rule_test:
+  - eval_time: 6m
+    alertname: GatewayPlatformPartNotReady
+    exp_alerts: []
+  - eval_time: 10m
+    alertname: GatewayPlatformPartNotReady
+    exp_alerts: []
+  - eval_time: 14m
+    alertname: GatewayPlatformPartNotReady
+    exp_alerts: []
+- interval: 1m
+  input_series:
+  - series: datum_cloud_networking_gateway_created{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="recovers"}
+    values: -120+0x20
+  - series: datum_cloud_networking_gateway_status{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="recovers", type="Accepted"}
+    values: 1x20
+  - series: datum_cloud_networking_gateway_status_listener_programmed{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="recovers", listener="default-http"}
+    values: 1x20
+  - series: datum_cloud_networking_gateway_status_listener_programmed{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="recovers", listener="default-https"}
+    values: 0 0 0 0 0 0 0 1 1 1 1
+  alert_rule_test:
+  - eval_time: 6m
+    alertname: GatewayPlatformPartNotReady
+    exp_alerts:
+    - exp_labels:
+        severity: critical
+        service: network-services
+        team: delivery
+        project: test-project
+        subject: test-project/test-ns/recovers
+        subject_kind: Gateway
+        subject_name: recovers
+        subject_namespace: test-ns
+        subject_group: gateway.networking.k8s.io
+        resourcemanager_datumapis_com_project_name: test-project
+        resource_namespace: test-ns
+        resource_name: recovers
+      exp_annotations:
+        summary: Gateway recovers is not accepted or does not serve its own hostname
+        description: Gateway recovers in project test-project, namespace test-ns, is not Accepted, or a default listener, which serves the Gateway's own hostname with the platform's certificate, is not
+          Programmed.
+        impact: The Gateway does not serve its own hostname.
+        runbook_url: https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/gateway-readiness.md#gatewayplatformpartnotready
+  - eval_time: 9m
+    alertname: GatewayPlatformPartNotReady
+    exp_alerts: []
+- interval: 1m
+  input_series:
+  - series: datum_cloud_networking_gateway_created{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="unaccepted"}
+    values: -120+0x20
+  - series: datum_cloud_networking_gateway_status{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="unaccepted", type="Accepted"}
+    values: '0x20'
+  alert_rule_test:
+  - eval_time: 5m
+    alertname: GatewayPlatformPartNotReady
+    exp_alerts:
+    - exp_labels:
+        severity: critical
+        service: network-services
+        team: delivery
+        project: test-project
+        subject: test-project/test-ns/unaccepted
+        subject_kind: Gateway
+        subject_name: unaccepted
+        subject_namespace: test-ns
+        subject_group: gateway.networking.k8s.io
+        resourcemanager_datumapis_com_project_name: test-project
+        resource_namespace: test-ns
+        resource_name: unaccepted
+      exp_annotations:
+        summary: Gateway unaccepted is not accepted or does not serve its own hostname
+        description: Gateway unaccepted in project test-project, namespace test-ns, is not Accepted, or a default listener, which serves the Gateway's own hostname with the platform's certificate, is not
+          Programmed.
+        impact: The Gateway does not serve its own hostname.
+        runbook_url: https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/gateway-readiness.md#gatewayplatformpartnotready
+- interval: 1m
+  input_series:
+  - series: datum_cloud_networking_gateway_created{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="two-pods", pod="a"}
+    values: -120+0x20
+  - series: datum_cloud_networking_gateway_status{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="two-pods", type="Accepted", pod="a"}
+    values: 1x20
+  - series: datum_cloud_networking_gateway_status_listener_programmed{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="two-pods", listener="default-http",
+      pod="a"}
+    values: 1x20
+  - series: datum_cloud_networking_gateway_status_listener_programmed{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="two-pods", listener="default-https",
+      pod="a"}
+    values: '0x20'
+  - series: datum_cloud_networking_gateway_created{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="two-pods", pod="b"}
+    values: -120+0x20
+  - series: datum_cloud_networking_gateway_status{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="two-pods", type="Accepted", pod="b"}
+    values: 1x20
+  - series: datum_cloud_networking_gateway_status_listener_programmed{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="two-pods", listener="default-http",
+      pod="b"}
+    values: 1x20
+  - series: datum_cloud_networking_gateway_status_listener_programmed{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="two-pods", listener="default-https",
+      pod="b"}
+    values: '0x20'
+  alert_rule_test:
+  - eval_time: 5m
+    alertname: GatewayPlatformPartNotReady
+    exp_alerts:
+    - exp_labels:
+        severity: critical
+        service: network-services
+        team: delivery
+        project: test-project
+        subject: test-project/test-ns/two-pods
+        subject_kind: Gateway
+        subject_name: two-pods
+        subject_namespace: test-ns
+        subject_group: gateway.networking.k8s.io
+        resourcemanager_datumapis_com_project_name: test-project
+        resource_namespace: test-ns
+        resource_name: two-pods
+      exp_annotations:
+        summary: Gateway two-pods is not accepted or does not serve its own hostname
+        description: Gateway two-pods in project test-project, namespace test-ns, is not Accepted, or a default listener, which serves the Gateway's own hostname with the platform's certificate, is not
+          Programmed.
+        impact: The Gateway does not serve its own hostname.
+        runbook_url: https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/gateway-readiness.md#gatewayplatformpartnotready
+- interval: 1m
+  input_series:
+  - series: datum_cloud_networking_gateway_created{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="deleting"}
+    values: -120+0x20
+  - series: datum_cloud_networking_gateway_status{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="deleting", type="Accepted"}
+    values: 1x20
+  - series: datum_cloud_networking_gateway_status_listener_programmed{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="deleting", listener="default-http"}
+    values: 1x20
+  - series: datum_cloud_networking_gateway_status_listener_programmed{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="deleting", listener="default-https"}
+    values: '0x20'
+  - series: datum_cloud_networking_gateway_deleted{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="deleting"}
+    values: '0x20'
+  alert_rule_test:
+  - eval_time: 6m
+    alertname: GatewayPlatformPartNotReady
+    exp_alerts: []
+- interval: 1m
+  input_series:
+  - series: datum_cloud_networking_gateway_created{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="no-status"}
+    values: -120+0x20
+  alert_rule_test:
+  - eval_time: 6m
+    alertname: GatewayPlatformPartNotReady
+    exp_alerts: []
+- interval: 1m
+  input_series:
+  - series: datum_cloud_networking_gateway_created{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="new"}
+    values: 0+0x20
+  - series: datum_cloud_networking_gateway_status{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="new", type="Accepted"}
+    values: 1x20
+  - series: datum_cloud_networking_gateway_status_listener_programmed{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="new", listener="default-http"}
+    values: 1x20
+  - series: datum_cloud_networking_gateway_status_listener_programmed{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="new", listener="default-https"}
+    values: '0x20'
+  alert_rule_test:
+  - eval_time: 6m
+    alertname: GatewayPlatformPartNotReady
+    exp_alerts: []
+  - eval_time: 7m
+    alertname: GatewayPlatformPartNotReady
+    exp_alerts:
+    - exp_labels:
+        severity: critical
+        service: network-services
+        team: delivery
+        project: test-project
+        subject: test-project/test-ns/new
+        subject_kind: Gateway
+        subject_name: new
+        subject_namespace: test-ns
+        subject_group: gateway.networking.k8s.io
+        resourcemanager_datumapis_com_project_name: test-project
+        resource_namespace: test-ns
+        resource_name: new
+      exp_annotations:
+        summary: Gateway new is not accepted or does not serve its own hostname
+        description: Gateway new in project test-project, namespace test-ns, is not Accepted, or a default listener, which serves the Gateway's own hostname with the platform's certificate, is not Programmed.
+        impact: The Gateway does not serve its own hostname.
+        runbook_url: https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/gateway-readiness.md#gatewayplatformpartnotready
+- interval: 1m
+  input_series:
+  - series: datum_cloud_networking_gateway_created{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="abandoned"}
+    values: -691200+0x20
+  - series: datum_cloud_networking_gateway_status{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="abandoned", type="Accepted"}
+    values: '0x20'
+  - series: datum_cloud_networking_gateway_status_condition_last_transition_time{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="abandoned", type="Accepted",
+      status="False"}
+    values: -691200+0x20
+  alert_rule_test:
+  - eval_time: 6m
+    alertname: GatewayPlatformPartNotReady
+    exp_alerts: []
+- interval: 1m
+  input_series:
+  - series: datum_cloud_networking_gateway_created{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="old"}
+    values: -691200+0x20
+  - series: datum_cloud_networking_gateway_status{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="old", type="Accepted"}
+    values: 1x20
+  - series: datum_cloud_networking_gateway_status_listener_programmed{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="old", listener="default-http"}
+    values: 1x20
+  - series: datum_cloud_networking_gateway_status_listener_programmed{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="old", listener="default-https"}
+    values: '0x20'
+  - series: datum_cloud_networking_gateway_status_condition_last_transition_time{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="old", type="Accepted",
+      status="True"}
+    values: -691200+0x20
+  alert_rule_test:
+  - eval_time: 5m
+    alertname: GatewayPlatformPartNotReady
+    exp_alerts:
+    - exp_labels:
+        severity: critical
+        service: network-services
+        team: delivery
+        project: test-project
+        subject: test-project/test-ns/old
+        subject_kind: Gateway
+        subject_name: old
+        subject_namespace: test-ns
+        subject_group: gateway.networking.k8s.io
+        resourcemanager_datumapis_com_project_name: test-project
+        resource_namespace: test-ns
+        resource_name: old
+      exp_annotations:
+        summary: Gateway old is not accepted or does not serve its own hostname
+        description: Gateway old in project test-project, namespace test-ns, is not Accepted, or a default listener, which serves the Gateway's own hostname with the platform's certificate, is not Programmed.
+        impact: The Gateway does not serve its own hostname.
+        runbook_url: https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/gateway-readiness.md#gatewayplatformpartnotready
+- interval: 1m
+  input_series:
+  - series: datum_cloud_networking_gateway_created{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="no-controller"}
+    values: -86400+0x20
+  - series: datum_cloud_networking_gateway_status{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="no-controller", type="Accepted"}
+    values: '0x20'
+  - series: datum_cloud_networking_gateway_status_condition_last_transition_time{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="no-controller", type="Accepted",
+      status="Unknown"}
+    values: -2592000+0x20
+  alert_rule_test:
+  - eval_time: 5m
+    alertname: GatewayPlatformPartNotReady
+    exp_alerts:
+    - exp_labels:
+        severity: critical
+        service: network-services
+        team: delivery
+        project: test-project
+        subject: test-project/test-ns/no-controller
+        subject_kind: Gateway
+        subject_name: no-controller
+        subject_namespace: test-ns
+        subject_group: gateway.networking.k8s.io
+        resourcemanager_datumapis_com_project_name: test-project
+        resource_namespace: test-ns
+        resource_name: no-controller
+      exp_annotations:
+        summary: Gateway no-controller is not accepted or does not serve its own hostname
+        description: Gateway no-controller in project test-project, namespace test-ns, is not Accepted, or a default listener, which serves the Gateway's own hostname with the platform's certificate, is
+          not Programmed.
+        impact: The Gateway does not serve its own hostname.
+        runbook_url: https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/gateway-readiness.md#gatewayplatformpartnotready

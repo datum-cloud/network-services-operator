@@ -15,6 +15,8 @@ import (
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
+	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	"go.datum.net/network-services-operator/internal/cmd/alb/spec"
@@ -50,6 +52,61 @@ func TestToolsAreReadOnly(t *testing.T) {
 	}
 	assert.Equal(t, 6, rt.NumMethod(),
 		"Reader grew a method; if it is a write, it does not belong here")
+}
+
+// TestGetReportsTheTrafficSplit pins that the assistant sees the same weights,
+// shares, algorithm and health checks as datumctl alb describe, and can tell a
+// route that is published but drained from one that serves.
+func TestGetReportsTheTrafficSplit(t *testing.T) {
+	pinClock(t)
+
+	proxy := healthyProxy()
+	proxy.Spec.Rules = []networkingv1alpha.HTTPProxyRule{
+		{
+			Backends: []networkingv1alpha.HTTPProxyRuleBackend{
+				{Endpoint: "https://a.example.com", Weight: ptr.To[int32](3)},
+				{NetworkService: &networkingv1alpha.NetworkServiceBackendRef{Name: "storefront", Port: "http"}},
+			},
+		},
+		{
+			Matches: []gatewayv1.HTTPRouteMatch{{Path: &gatewayv1.HTTPPathMatch{
+				Type: ptr.To(gatewayv1.PathMatchPathPrefix), Value: ptr.To("/old"),
+			}}},
+			Backends: []networkingv1alpha.HTTPProxyRuleBackend{
+				{Endpoint: "https://old.example.com", Weight: ptr.To[int32](0)},
+			},
+		},
+	}
+	proxy.Spec.LoadBalancer = &networkingv1alpha.HTTPProxyLoadBalancer{Type: networkingv1alpha.HTTPProxyLoadBalancerTypeRoundRobin}
+	proxy.Spec.HealthCheck = &networkingv1alpha.HTTPProxyHealthCheck{
+		Passive: &networkingv1alpha.HTTPProxyPassiveHealthCheck{Consecutive5xxErrors: ptr.To[int32](3)},
+	}
+
+	_, out, err := albGet(depsFor(&fakeReader{proxies: []networkingv1alpha.HTTPProxy{proxy}}))(
+		context.Background(), nil, GetInput{Name: "my-app"})
+	require.NoError(t, err)
+
+	lb := out.LoadBalancer
+	require.Len(t, lb.Routes, 2)
+	assert.Equal(t, []BackendView{
+		{Target: "https://a.example.com", Kind: "url", Weight: 3, Share: "75%"},
+		{Target: "storefront:http", Kind: "network-service", Weight: 1, Share: "25%"},
+	}, lb.Routes[0].Backends)
+	assert.False(t, lb.Routes[0].Drained)
+	assert.True(t, lb.Routes[1].Drained, "every origin at weight 0 serves nothing")
+	assert.Equal(t, "round robin", lb.LoadBalancing)
+	assert.Equal(t, "passive: eject after 3 consecutive 5xx for 30s, max 50% ejected", lb.HealthChecks)
+}
+
+func TestGetShowsTheDefaultsWhenNothingIsSet(t *testing.T) {
+	pinClock(t)
+
+	_, out, err := albGet(depsFor(&fakeReader{proxies: []networkingv1alpha.HTTPProxy{healthyProxy()}}))(
+		context.Background(), nil, GetInput{Name: "my-app"})
+	require.NoError(t, err)
+
+	assert.Equal(t, "least request (default)", out.LoadBalancer.LoadBalancing)
+	assert.Equal(t, "off", out.LoadBalancer.HealthChecks)
 }
 
 // TestGetReturnsUsernamesNeverHashes pins the one read in this package that

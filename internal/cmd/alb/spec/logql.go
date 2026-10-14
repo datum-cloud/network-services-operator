@@ -10,8 +10,8 @@ import (
 
 var lokiLabelEscape = regexp.MustCompile(`[.*+?^${}()|[\]\\]`)
 
-func BuildAlbLogQL(proxyName string, methods, codes []string) string {
-	pin := fmt.Sprintf(`route_name=~"%s"`, escapeLogQLQuoted(albRouteNameRegexp(proxyName)))
+func BuildAlbLogQL(proxyNames []string, methods, codes []string) string {
+	pin := fmt.Sprintf(`route_name=~"%s"`, escapeLogQLQuoted(albRouteNameRegexp(proxyNames)))
 	extras := make([]string, 0, len(methods)+len(codes))
 	extras = append(extras, logQLMatchers("method", methods)...)
 	extras = append(extras, logQLMatchers("response_code", codes)...)
@@ -21,8 +21,25 @@ func BuildAlbLogQL(proxyName string, methods, codes []string) string {
 	return "{" + pin + ", " + strings.Join(extras, ", ") + "}"
 }
 
-func albRouteNameRegexp(proxyName string) string {
-	return `httproute/[^/]+/` + escapeLogQLRegexp(proxyName) + `/.*`
+func albRouteNameRegexp(proxyNames []string) string {
+	names := make([]string, 0, len(proxyNames))
+	seen := map[string]bool{}
+	for _, n := range proxyNames {
+		n = strings.TrimSpace(n)
+		if n == "" || seen[n] {
+			continue
+		}
+		seen[n] = true
+		names = append(names, escapeLogQLRegexp(n))
+	}
+	switch len(names) {
+	case 0:
+		return `httproute/[^/]+/[^/]+/.*`
+	case 1:
+		return `httproute/[^/]+/` + names[0] + `/.*`
+	default:
+		return `httproute/[^/]+/(` + strings.Join(names, "|") + `)/.*`
+	}
 }
 
 func logQLMatchers(label string, values []string) []string {

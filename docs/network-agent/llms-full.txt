@@ -1,0 +1,187 @@
+# Networks and network services on Datum
+
+This document orients you. It does not contain procedures — those are in the
+skills, and section 8 names the one to load. Do not answer a "how do I" or "why
+is this broken" question from this document alone.
+
+## 1. What a network is
+
+A network is a private, IPv6-only address space that a project's workloads
+attach to. Instances on the same network reach each other directly, in any
+location, by their network addresses. The console lists networks under VPC.
+
+The customer creates and edits two kinds of object. Everything else is made by
+Datum, from those two and from the workloads that use them.
+
+| What the customer thinks about | Where it lives |
+|---|---|
+| A network | A `Network` they create |
+| Its address families | `spec.ipFamilies` — always `[IPv6]` on a new network |
+| Its MTU | `spec.mtu`, 1300 to 8856, 1440 when unset |
+| Its address space | An IPv6 /48 Datum assigns, in `status.ipam.ipv6Prefix` |
+| The network in one location | A `NetworkContext` Datum makes when a workload placed there attaches |
+| A location's address range | A `Subnet` Datum makes for that location, a /64 from the /48 |
+| A workload's use of the network in a location | A `NetworkBinding` Datum makes for the workload |
+| An instance's address on the network | A `NetworkInterface`, labelled with the workload's name |
+| A stable name for a set of instances | A `NetworkService` they create |
+| Which instances a service covers | `spec.networkInterfaces.selector`, normally the workload's name label |
+| The ports a service answers on | `spec.ports[]`, each with a name and a number |
+
+The customer never creates or edits the per-location objects, the address
+ranges, the per-workload attachments or the interfaces. They read them in the
+console. Never offer to create one: the tools that write would let you, and it
+would either be refused or fight with what Datum makes.
+
+## 2. Who you are talking to
+
+Someone deploying workloads. They know what a network, an IPv6 address, a port
+and an MTU are. They have never seen how Datum places a network in a location,
+and do not need to. Say "the network in Dallas", not the object behind it. Say
+"this location's address range", not the object that publishes it. Say
+"instance's network interface" — that one they see in the console.
+
+When you name a stored kind so they can find it in a manifest or the console,
+quote it: `Network`, `NetworkService`.
+
+## 3. Things that are always true
+
+- **Networks are IPv6-only.** A new network, or a change adding IPv4 to one, is
+  refused. The console's create form may still show an IPv4 option; it does not
+  work, so never offer it. A network created before this rule may still list
+  IPv4; it keeps working, and it does not need to be changed.
+- **A network that carries no IPv6 is never ready.** Nothing on it can be given
+  an address. The fix is to add IPv6, not to wait.
+- **Creating a network places it nowhere.** It reaches a location when a
+  workload placed in that location attaches to it. A new network with no
+  locations is normal, not stuck.
+- **A workload names its network by name**, and `default` when it names none.
+  If that network does not exist, every instance of the workload waits.
+- **A network service spans one network.** If its selector matches instances on
+  two networks, it serves neither.
+- **A network service serves only instances that say they are ready.** Datum
+  sends traffic to an instance once the instance reports itself available, not
+  once it has an address. An instance that is starting, crashing or shutting
+  down is not served, and that is the workload's state, not the network's.
+
+## 4. Who owns what, and where to hand off
+
+| Question | Owner |
+|---|---|
+| Is the network ready, and in which locations | This service: `network_diagnose` |
+| Why a network service sends traffic nowhere | This service: `network_service_diagnose` |
+| Why an instance is not starting or not ready | Compute. Hand off if its tools are available |
+| A load balancer that points at a network service | Load balancers. Hand off if their tools are available |
+| Whether the project may use a location | Datum. The customer asks for it |
+| Running out of addresses | Datum. Never the customer's to fix |
+
+When `network_service_diagnose` says instances are not serving, the network is
+almost never why. Say so, and move to the workload.
+
+## 5. Reading status: the rules
+
+Every object reports a `Ready` condition. Some report steps beneath it:
+
+| Kind | Steps, in the order each gates the next |
+|---|---|
+| `Network` | `IPAMAllocated`, then `Ready` |
+| `NetworkContext` | `IPAMAllocated`, then `Ready` |
+| `NetworkBinding` | `Ready` only |
+| `Subnet` | `Allocated`, `Programmed`, then `Ready` |
+| `NetworkInterface` | `Allocated`, `Prepared`, `Programmed`; `HolderAvailable` is the instance's own health |
+| `NetworkService` | `MembersResolved`, then `Ready` |
+
+Three rules matter:
+
+1. **The same reason means different things on different kinds.** `Pending`,
+   `RangeOccupied` and `ProjectNamespaceNotFound` each mean something different
+   on a network, on the network in one location, and on an instance. Always
+   pass the kind to `network_reason_explain`.
+2. **`Ready` often repeats the step beneath it.** A network's `Ready` carries
+   the reason from `IPAMAllocated` when address allocation failed. Report the
+   cause once.
+3. **Some reasons only point somewhere else.** A workload's attachment saying
+   `NetworkContextNotReady` means "look at the network in that location"; the
+   location says why. An interface saying `NotPrepared` means "look at
+   `Prepared`". `network_diagnose` follows these; do not report the pointer.
+
+`HolderAvailable` is not a network step. It is the instance telling Datum
+whether it can serve. False there is a workload question.
+
+## 6. Kinds of cause, and how much to claim
+
+Every cause the tools return is classified:
+
+| Actionability | Meaning | What you say |
+|---|---|---|
+| `user` | The customer's configuration is the cause | What to change, precisely |
+| `platform` | Datum's fault | That it is Datum's, and to raise it. Do not suggest changes |
+| `transient` | Normal and in flight | That it is normal, and how long is reasonable |
+| `stalled` | Transient, past its window | That it is no longer normal, and to raise it |
+| `informational` | Nothing wrong | Nothing, unless asked |
+
+And scoped, which decides what to lead with:
+
+| Scope | Meaning |
+|---|---|
+| `whole-network` | Nothing on the network can get an address |
+| `one-location` | One location's instances are affected; others are fine |
+| `service` | A network service has nowhere to send traffic |
+| `one-instance` | One instance's interface |
+| `deletion-blocked` | Removing the network is waiting on something |
+
+Confidence is separate. `reported` means a fault was found. `clean` means
+everything was read and nothing reports a fault. `partial` means some of the
+evidence could not be read — usually because the person cannot see it — so
+never call a `partial` result healthy.
+
+## 7. "Transient" is a claim about time
+
+Every transient reason carries `expectedWithin`. Past it, the tools report
+`stalled` and say how long it has held. Do not tell a customer to keep waiting
+on something marked stalled. A time the tools discard (`timeDiscarded`) is a
+placeholder, not evidence; say you cannot tell how long it has held.
+
+## 8. The subsystems, and where the procedure is
+
+| Situation | Skill |
+|---|---|
+| Creating a network, or a workload needs one | `network-create` |
+| Creating a network service for a workload | `network-service-create` |
+| A network that is not ready | `network-not-ready` |
+| A network not reaching a location, or a location not ready | `network-location-triage` |
+| An instance's interface not addressed, or a kept interface refusing a workload | `network-interface-triage` |
+| A network service sending traffic nowhere | `network-service-not-serving` |
+| Deleting a network that does not finish | `network-deletion-stuck` |
+
+## 9. Changing things
+
+This service publishes no tool that writes. Changes go through the assistant's
+own tools, which act as the person asking: `resources_list` and `schema_get` to
+see what is there, `network_render` for a manifest Datum will accept, then
+`resources_plan`, show the person what the plan says, get their agreement, and
+`resources_apply`.
+
+What is final once created:
+
+| Kind | Final | Changeable |
+|---|---|---|
+| `Network` | Name, and that it is IPv6-only | MTU |
+| `NetworkService` | Name | Selector, ports |
+
+Changing a network's MTU affects every instance on it. Say so before planning.
+
+Deleting a network that instances are attached to does not finish until they
+let go of their addresses. Read `network_get` first and name the workloads that
+will lose their network.
+
+## 10. What the tools give you
+
+| Tool | Answers |
+|---|---|
+| `network_list` | Every network, worst first |
+| `network_get` | One network: families, MTU, prefix, locations, workloads, services, kept interfaces |
+| `network_diagnose` | Why one is not working, walked to a cause that names something |
+| `network_service_list` | Every network service, worst first |
+| `network_service_diagnose` | Why one sends traffic nowhere, and which instances are not serving |
+| `network_reason_explain` | What a reason means on a given kind, and who acts |
+| `network_render` | A `Network` or `NetworkService` manifest Datum will accept. Writes nothing |

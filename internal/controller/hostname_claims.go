@@ -12,8 +12,11 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
+	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	downstreamclient "go.datum.net/network-services-operator/internal/downstreamclient"
 )
 
@@ -27,6 +30,12 @@ const jsonKeyHostname = "hostname"
 const wildcardClaimPrefix = "wildcard-"
 
 const maxNamedClaimConflicts = 5
+
+const (
+	awaitingHostnameClaimAnnotation = "networking.datumapis.com/awaiting-hostname-claim"
+	awaitingHostnameClaimValue      = "true"
+	awaitingHostnameClaimIndex      = "gateway.awaitingHostnameClaim"
+)
 
 // hostnameClaimName names the ConfigMap that claims a hostname. A wildcard
 // cannot be a ConfigMap name, so its claim is named from a hash of its base;
@@ -65,14 +74,42 @@ func hostnameAncestors(hostname string) []string {
 	}
 }
 
+func isHostnameClaim(cm *corev1.ConfigMap, namespace string) bool {
+	return cm.Namespace == namespace && cm.Data[jsonKeyOwner] != ""
+}
+
 func hostnameClaimAncestorIndexFunc(namespace string) client.IndexerFunc {
 	return func(obj client.Object) []string {
 		claim, ok := obj.(*corev1.ConfigMap)
-		if !ok || claim.Namespace != namespace || claim.Data[jsonKeyOwner] == "" {
+		if !ok || !isHostnameClaim(claim, namespace) {
 			return nil
 		}
 		return hostnameAncestors(claimedHostname(claim))
 	}
+}
+
+func awaitsHostnameClaim(refusals map[string]hostnameRefusal) bool {
+	for _, refusal := range refusals {
+		if refusal.reason == networkingv1alpha.HostnameInUseReason {
+			return true
+		}
+	}
+	return false
+}
+
+func awaitingHostnameClaimIndexFunc(obj client.Object) []string {
+	if obj.GetAnnotations()[awaitingHostnameClaimAnnotation] != awaitingHostnameClaimValue {
+		return nil
+	}
+	return []string{awaitingHostnameClaimValue}
+}
+
+func markAwaitingHostnameClaim(gateway *gatewayv1.Gateway, awaiting bool) {
+	if awaiting {
+		metav1.SetMetaDataAnnotation(&gateway.ObjectMeta, awaitingHostnameClaimAnnotation, awaitingHostnameClaimValue)
+		return
+	}
+	delete(gateway.Annotations, awaitingHostnameClaimAnnotation)
 }
 
 // claimPrecedes reports whether claim a was made before claim b. Two claims

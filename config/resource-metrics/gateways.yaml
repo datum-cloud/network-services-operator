@@ -62,6 +62,15 @@ spec:
               reason: ["reason"]
               status: ["status"]
             valueFrom: ["lastTransitionTime"]
+      - name: "status_listener_programmed"
+        help: "Programmed condition of each listener: 1 for True, 0 for False or Unknown"
+        each:
+          type: Gauge
+          gauge:
+            path: [status, listeners]
+            labelsFromPath:
+              listener: [name]
+            valueFrom: [conditions, "[type=Programmed]", status]
       - name: "custom_hostname"
         help: "Custom hostname defined on the gateway"
         errorLogV: 10

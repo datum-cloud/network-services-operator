@@ -24,15 +24,14 @@ describe('CreateNetworkDialog', () => {
     renderDialog();
     fireEvent.click(screen.getByRole('button', { name: 'Create network' }));
     expect(screen.getByText('Create a network')).toBeInTheDocument();
-    expect(screen.getByPlaceholderText('my-network')).toBeInTheDocument();
+    expect(screen.getByPlaceholderText('e.g. my-network')).toBeInTheDocument();
   });
 
   it('rejects an invalid name before submitting', async () => {
     renderDialog();
     fireEvent.click(screen.getByRole('button', { name: 'Create network' }));
-    fireEvent.change(screen.getByPlaceholderText('my-network'), { target: { value: 'Not Valid!' } });
-    const buttons = await screen.findAllByRole('button', { name: 'Create network' });
-    fireEvent.click(buttons[buttons.length - 1]);
+    fireEvent.change(screen.getByPlaceholderText('e.g. my-network'), { target: { value: 'Not Valid!' } });
+    fireEvent.click(await screen.findByRole('button', { name: 'Create' }));
 
     expect(screen.getByText(/Lowercase letters, numbers, and hyphens only/)).toBeInTheDocument();
   });
@@ -43,10 +42,9 @@ describe('CreateNetworkDialog', () => {
 
     renderDialog();
     fireEvent.click(screen.getByRole('button', { name: 'Create network' }));
-    fireEvent.change(screen.getByPlaceholderText('my-network'), { target: { value: 'my-net' } });
+    fireEvent.change(screen.getByPlaceholderText('e.g. my-network'), { target: { value: 'my-net' } });
     fireEvent.click(screen.getByText('Also carry IPv4 (dual-stack)'));
-    const buttons = await screen.findAllByRole('button', { name: 'Create network' });
-    fireEvent.click(buttons[buttons.length - 1]);
+    fireEvent.click(await screen.findByRole('button', { name: 'Create' }));
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
@@ -63,9 +61,8 @@ describe('CreateNetworkDialog', () => {
 
     renderDialog();
     fireEvent.click(screen.getByRole('button', { name: 'Create network' }));
-    fireEvent.change(screen.getByPlaceholderText('my-network'), { target: { value: 'dup' } });
-    const buttons = await screen.findAllByRole('button', { name: 'Create network' });
-    fireEvent.click(buttons[buttons.length - 1]);
+    fireEvent.change(screen.getByPlaceholderText('e.g. my-network'), { target: { value: 'dup' } });
+    fireEvent.click(await screen.findByRole('button', { name: 'Create' }));
 
     await waitFor(() => expect(screen.getByText('Create a network')).toBeInTheDocument());
   });

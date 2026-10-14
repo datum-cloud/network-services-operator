@@ -4,12 +4,17 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
@@ -22,6 +27,7 @@ import (
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	networkingv1alpha1 "go.datum.net/network-services-operator/api/v1alpha1"
+	"go.datum.net/network-services-operator/internal/util/status"
 )
 
 // ConnectorAdvertisementReconciler reconciles a ConnectorAdvertisement object
@@ -29,7 +35,10 @@ type ConnectorAdvertisementReconciler struct {
 	mgr mcmanager.Manager
 }
 
-const connectorAdvertisementConnectorRefIndex = "spec.connectorRef.name"
+const (
+	connectorAdvertisementControllerName    = "connectoradvertisement"
+	connectorAdvertisementConnectorRefIndex = "spec.connectorRef.name"
+)
 
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=connectoradvertisements,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=connectoradvertisements/status,verbs=get;update;patch
@@ -57,10 +66,10 @@ func (r *ConnectorAdvertisementReconciler) Reconcile(ctx context.Context, req mc
 		return ctrl.Result{}, nil
 	}
 
-	logger.Info("reconciling connectoradvertisement")
-	defer logger.Info("reconcile complete")
+	logger.V(1).Info("reconciling connectoradvertisement")
+	defer logger.V(1).Info("reconcile complete")
 
-	originalStatus := advertisement.Status.DeepCopy()
+	stored := advertisement.DeepCopy()
 
 	acceptedCondition := apimeta.FindStatusCondition(advertisement.Status.Conditions, networkingv1alpha1.ConnectorAdvertisementConditionAccepted)
 	if acceptedCondition == nil {
@@ -78,33 +87,31 @@ func (r *ConnectorAdvertisementReconciler) Reconcile(ctx context.Context, req mc
 	} else {
 		connector := &networkingv1alpha1.Connector{}
 		connectorKey := client.ObjectKey{Namespace: advertisement.Namespace, Name: advertisement.Spec.ConnectorRef.Name}
-		if err := cl.GetClient().Get(ctx, connectorKey, connector); err != nil {
-			if apierrors.IsNotFound(err) {
-				acceptedCondition.Status = metav1.ConditionFalse
-				acceptedCondition.Reason = networkingv1alpha1.ConnectorAdvertisementReasonConnectorNotFound
-				acceptedCondition.Message = fmt.Sprintf("Connector %q not found", advertisement.Spec.ConnectorRef.Name)
-				apimeta.SetStatusCondition(&advertisement.Status.Conditions, *acceptedCondition)
-			} else {
-				return ctrl.Result{}, err
-			}
-		} else {
-			if !metav1.IsControlledBy(&advertisement, connector) {
-				if err := controllerutil.SetControllerReference(connector, &advertisement, cl.GetScheme()); err != nil {
-					return ctrl.Result{}, err
-				}
-				if err := cl.GetClient().Update(ctx, &advertisement); err != nil {
-					return ctrl.Result{}, err
-				}
-			}
+		err := cl.GetClient().Get(ctx, connectorKey, connector)
+		if err == nil && !metav1.IsControlledBy(&advertisement, connector) {
+			err = handOverAdvertisement(ctx, cl, &advertisement, connector)
+		}
+		switch {
+		case apierrors.IsNotFound(err):
+			acceptedCondition.Status = metav1.ConditionFalse
+			acceptedCondition.Reason = networkingv1alpha1.ConnectorAdvertisementReasonConnectorNotFound
+			acceptedCondition.Message = fmt.Sprintf("Connector %q not found", connectorKey.Name)
+		case errors.Is(err, errConnectorDeleting):
+			acceptedCondition.Status = metav1.ConditionFalse
+			acceptedCondition.Reason = networkingv1alpha1.ConnectorAdvertisementReasonConnectorNotFound
+			acceptedCondition.Message = fmt.Sprintf("Connector %q is being deleted", connectorKey.Name)
+		case err != nil:
+			return ctrl.Result{}, err
+		default:
 			acceptedCondition.Status = metav1.ConditionTrue
 			acceptedCondition.Reason = networkingv1alpha1.ConnectorAdvertisementReasonAccepted
-			acceptedCondition.Message = "Connector reference resolved"
-			apimeta.SetStatusCondition(&advertisement.Status.Conditions, *acceptedCondition)
+			acceptedCondition.Message = fmt.Sprintf("Connector %q resolved", connector.Name)
 		}
+		apimeta.SetStatusCondition(&advertisement.Status.Conditions, *acceptedCondition)
 	}
 
-	if !equality.Semantic.DeepEqual(*originalStatus, advertisement.Status) {
-		if statusErr := cl.GetClient().Status().Update(ctx, &advertisement); statusErr != nil {
+	if !equality.Semantic.DeepEqual(stored.Status, advertisement.Status) {
+		if statusErr := status.Patch(ctx, cl.GetClient(), &advertisement, stored, fieldOwner(connectorAdvertisementControllerName)); statusErr != nil {
 			return ctrl.Result{}, fmt.Errorf("failed updating connectoradvertisement status: %w", statusErr)
 		}
 	}
@@ -166,6 +173,105 @@ func (r *ConnectorAdvertisementReconciler) SetupWithManager(mgr mcmanager.Manage
 				})
 			},
 		).
-		Named("connectoradvertisement").
+		Named(connectorAdvertisementControllerName).
 		Complete(r)
+}
+
+// errConnectorDeleting says the connector an advertisement names is being
+// deleted, so it may not take the advertisement over.
+var errConnectorDeleting = errors.New("connector is being deleted")
+
+// handOverAdvertisement makes connector the controller of advertisement, and
+// updates advertisement from the response. It drops every controller
+// reference to a Connector, so a re-pointed advertisement no longer goes with
+// its previous connector when the garbage collector deletes that one.
+//
+// It takes the cluster, not a client, so the connector is rechecked past the
+// cache first. The write is one JSON patch without a resourceVersion, so an
+// edit to any other field does not fail it. It tests that the advertisement
+// still names connector and still has the owner references it was read with;
+// if another writer changed either, the API server refuses the patch and the
+// next reconcile reads again.
+func handOverAdvertisement(
+	ctx context.Context,
+	cl cluster.Cluster,
+	advertisement *networkingv1alpha1.ConnectorAdvertisement,
+	connector *networkingv1alpha1.Connector,
+) error {
+	c := cl.GetClient()
+	connectorGVK, err := c.GroupVersionKindFor(connector)
+	if err != nil {
+		return err
+	}
+	if err := recheckConnector(ctx, cl.GetAPIReader(), connector, connectorGVK); err != nil {
+		return err
+	}
+	read := advertisement.GetOwnerReferences()
+	desired := advertisement.DeepCopy()
+	desired.SetOwnerReferences(withoutControllersOfKind(read, connectorGVK.GroupKind()))
+	// Refuses a controller of any other kind, as it always has.
+	if err := controllerutil.SetControllerReference(connector, desired, c.Scheme()); err != nil {
+		return err
+	}
+	patch, err := advertisementHandOverPatch(connector.Name, read, desired.GetOwnerReferences())
+	if err != nil {
+		return err
+	}
+	return c.Patch(ctx, advertisement, client.RawPatch(types.JSONPatchType, patch),
+		client.FieldOwner(fieldOwner(connectorAdvertisementControllerName)))
+}
+
+// recheckConnector reads connector's metadata past the cache, as Kubernetes'
+// controllers recheck an owner before it adopts (RecheckDeletionTimestamp in
+// k8s.io/kubernetes/pkg/controller, kubernetes/kubernetes#42639). It refuses a
+// connector that is being deleted, and one the cache holds under another UID:
+// one deleted and created again since. Either would leave the advertisement
+// for the garbage collector.
+func recheckConnector(ctx context.Context, reader client.Reader, connector *networkingv1alpha1.Connector, gvk schema.GroupVersionKind) error {
+	live := &metav1.PartialObjectMetadata{}
+	live.SetGroupVersionKind(gvk)
+	if err := reader.Get(ctx, client.ObjectKeyFromObject(connector), live); err != nil {
+		return err
+	}
+	if live.GetDeletionTimestamp() != nil {
+		return errConnectorDeleting
+	}
+	if live.GetUID() != connector.GetUID() {
+		return fmt.Errorf("connector %s has UID %s on the API server and %s in the cache",
+			client.ObjectKeyFromObject(connector), live.GetUID(), connector.GetUID())
+	}
+	return nil
+}
+
+// withoutControllersOfKind returns refs without the controller references to
+// an object of kind gk.
+func withoutControllersOfKind(refs []metav1.OwnerReference, gk schema.GroupKind) []metav1.OwnerReference {
+	kept := make([]metav1.OwnerReference, 0, len(refs))
+	for _, ref := range refs {
+		gv, err := schema.ParseGroupVersion(ref.APIVersion)
+		if err == nil && ptr.Deref(ref.Controller, false) && (schema.GroupKind{Group: gv.Group, Kind: ref.Kind}) == gk {
+			continue
+		}
+		kept = append(kept, ref)
+	}
+	return kept
+}
+
+// advertisementHandOverPatch returns a JSON patch (RFC 6902) that sets the
+// owner references to desired, if the spec still names connectorName and the
+// owner references are still read. An "add" replaces a member that exists.
+func advertisementHandOverPatch(connectorName string, read, desired []metav1.OwnerReference) ([]byte, error) {
+	const ownersPath = "/metadata/ownerReferences"
+	// An absent list is tested as null, which the API server's JSON patch
+	// (json-patch v4) accepts for a missing member. The null is spelt out
+	// because omitempty drops a nil.
+	var tested any = json.RawMessage("null")
+	if len(read) > 0 {
+		tested = read
+	}
+	return json.Marshal([]jsonPatchOperation{
+		{Op: "test", Path: "/spec/connectorRef/name", Value: connectorName},
+		{Op: "test", Path: ownersPath, Value: tested},
+		{Op: "add", Path: ownersPath, Value: desired},
+	})
 }

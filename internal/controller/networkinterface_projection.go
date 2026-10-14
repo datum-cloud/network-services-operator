@@ -12,9 +12,10 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/cluster"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
+	"go.datum.net/network-services-operator/internal/util/status"
 )
 
 // projectedInterface is the interface a consumer is shown. It carries what
@@ -97,11 +98,11 @@ func (e *projectionSlotHeld) Error() string {
 // inspectProjectionSlot reports the copy occupying a name.
 func inspectProjectionSlot(
 	ctx context.Context,
-	cl client.Client,
+	reader client.Reader,
 	key client.ObjectKey,
 ) (*networkingv1alpha.NetworkInterface, error) {
 	var occupant networkingv1alpha.NetworkInterface
-	if err := cl.Get(ctx, key, &occupant); err != nil {
+	if err := reader.Get(ctx, key, &occupant); err != nil {
 		if apierrors.IsNotFound(err) {
 			return nil, nil
 		}
@@ -146,13 +147,21 @@ func applyProjection(
 // overwritten in full on every pass, so an edit to it never survives and never
 // reaches the source: no controller reads a copy to decide anything.
 //
+// One controller writes each copy's labels, spec and status, so it saves them
+// without the copy's version: a merge patch from the stored copy, then one from
+// its stored status. The copy is read through the plane's API reader, not its
+// cache. The writer watches the source and not the copy, so a decision made
+// from a cached read older than its own last save would stand until the source
+// next changes.
+//
 // The name an interface is published under is one a replacement reuses. Nothing
 // here empties the name first, because the copy that held it is collected while
 // the interface it was published from is still there to say where it went, and a
 // replacement that arrives before that has finished waits for it.
 func writeProjection(
 	ctx context.Context,
-	cl client.Client,
+	plane cluster.Cluster,
+	fieldManager string,
 	namespace string,
 	desired *networkingv1alpha.NetworkInterface,
 	extraLabels map[string]string,
@@ -160,31 +169,46 @@ func writeProjection(
 ) error {
 	key := client.ObjectKey{Namespace: namespace, Name: desired.Name}
 
-	occupant, err := inspectProjectionSlot(ctx, cl, key)
+	cl := plane.GetClient()
+	stored, err := inspectProjectionSlot(ctx, plane.GetAPIReader(), key)
 	if err != nil {
 		return err
 	}
 	// A copy on its way out is not something to write through. What is left of it
 	// goes when its teardown finishes, and the name is free then.
-	if occupant != nil && !occupant.DeletionTimestamp.IsZero() {
+	if stored != nil && !stored.DeletionTimestamp.IsZero() {
 		return &projectionSlotHeld{key: key}
 	}
 
-	copied := &networkingv1alpha.NetworkInterface{
-		ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace},
+	copied := stored
+	if copied == nil {
+		copied = &networkingv1alpha.NetworkInterface{
+			ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace},
+		}
 	}
-	if _, err := controllerutil.CreateOrUpdate(ctx, cl, copied, func() error {
-		return applyProjection(copied, desired, extraLabels, owner)
-	}); err != nil {
+	base := copied.DeepCopy()
+	if err := applyProjection(copied, desired, extraLabels, owner); err != nil {
+		return err
+	}
+
+	switch {
+	case stored == nil:
+		err = cl.Create(ctx, copied, client.FieldOwner(fieldManager))
+	case !apiequality.Semantic.DeepEqual(base.ObjectMeta, copied.ObjectMeta) ||
+		!apiequality.Semantic.DeepEqual(base.Spec, copied.Spec):
+		err = cl.Patch(ctx, copied, client.MergeFrom(base), client.FieldOwner(fieldManager))
+	}
+	if err != nil {
 		return fmt.Errorf("failed writing the interface copy: %w", err)
 	}
 
+	// A create does not carry the status, so a new copy's is saved here too.
 	if apiequality.Semantic.DeepEqual(copied.Status, desired.Status) {
 		return nil
 	}
-
+	saved := copied.DeepCopy()
 	copied.Status = *desired.Status.DeepCopy()
-	if err := cl.Status().Update(ctx, copied); err != nil {
+	if err := status.Patch(ctx, cl, copied, saved, fieldManager); err != nil {
 		return fmt.Errorf("failed writing the interface copy status: %w", err)
 	}
 
@@ -194,9 +218,9 @@ func writeProjection(
 // collectProjection removes a copy, and only ever a copy. Nothing real depends
 // on a copy and a copy in a project control plane holds no finalizer, so
 // removing one cannot strand an address or hold a namespace open.
-func collectProjection(ctx context.Context, cl client.Client, key client.ObjectKey) error {
+func collectProjection(ctx context.Context, plane cluster.Cluster, key client.ObjectKey) error {
 	var copied networkingv1alpha.NetworkInterface
-	if err := cl.Get(ctx, key, &copied); err != nil {
+	if err := plane.GetAPIReader().Get(ctx, key, &copied); err != nil {
 		return client.IgnoreNotFound(err)
 	}
 
@@ -204,5 +228,5 @@ func collectProjection(ctx context.Context, cl client.Client, key client.ObjectK
 		return nil
 	}
 
-	return client.IgnoreNotFound(cl.Delete(ctx, &copied))
+	return client.IgnoreNotFound(plane.GetClient().Delete(ctx, &copied))
 }

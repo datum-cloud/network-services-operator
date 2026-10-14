@@ -1,15 +1,23 @@
 package mutate
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	clusterv3 "github.com/envoyproxy/go-control-plane/envoy/config/cluster/v3"
 	routev3 "github.com/envoyproxy/go-control-plane/envoy/config/route/v3"
 	"google.golang.org/protobuf/types/known/anypb"
 
+	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
+	networkingv1alpha1 "go.datum.net/network-services-operator/api/v1alpha1"
+	"go.datum.net/network-services-operator/internal/downstreamclient"
 	extcache "go.datum.net/network-services-operator/internal/extensionserver/cache"
 )
 
@@ -35,7 +43,7 @@ func connectorPolicyIndex(online bool) *extcache.PolicyIndex {
 		TPPs:   make(map[string][]extcache.TPPInfo),
 		Connectors: map[extcache.ConnectorKey]extcache.ConnectorInfo{
 			{
-				UpstreamNS:    testUpstreamNS,
+				Namespace:     testDSNS,
 				HTTPProxyName: testProxyName,
 				RuleIndex:     0,
 			}: {
@@ -546,4 +554,88 @@ func TestParseConnectorClusterName_RejectsBackendClusters(t *testing.T) {
 	assert.Equal(t, testDSNS, dsNS)
 	assert.Equal(t, testProxyName, proxyName)
 	assert.Zero(t, ruleIndex)
+}
+
+// TestReplaceConnectorClusters_SameProxyNameAcrossProjects is the Connector
+// counterpart of TestApplyVPCPodSocketBind_SameProxyNameAcrossProjects (#641):
+// two projects own an HTTPProxy with the same name, replicated from an
+// upstream namespace called "default", each fronting its own Connector. Each
+// project's cluster must tunnel to its own connector and target host, and an
+// offline connector in one project must not take the other project offline.
+func TestReplaceConnectorClusters_SameProxyNameAcrossProjects(t *testing.T) {
+	replicaLabels := map[string]string{downstreamclient.UpstreamOwnerNamespaceLabel: "default"}
+
+	project := func(ns, targetHost string, connector *networkingv1alpha1.Connector) []client.Object {
+		return []client.Object{
+			&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns, Labels: replicaLabels}},
+			&networkingv1alpha.HTTPProxy{
+				ObjectMeta: metav1.ObjectMeta{Name: collisionProxyName, Namespace: ns, Labels: replicaLabels},
+				Spec: networkingv1alpha.HTTPProxySpec{
+					Rules: []networkingv1alpha.HTTPProxyRule{{Backends: []networkingv1alpha.HTTPProxyRuleBackend{{
+						Endpoint:  "http://" + targetHost + ":9000",
+						Connector: &networkingv1alpha.ConnectorReference{Name: "conn"},
+					}}}},
+				},
+			},
+			connector,
+		}
+	}
+
+	ready := func(ns string, online bool, nodeID string) *networkingv1alpha1.Connector {
+		status := metav1.ConditionFalse
+		if online {
+			status = metav1.ConditionTrue
+		}
+		return &networkingv1alpha1.Connector{
+			ObjectMeta: metav1.ObjectMeta{Name: "conn", Namespace: ns},
+			Status: networkingv1alpha1.ConnectorStatus{
+				Conditions: []metav1.Condition{{
+					Type:               networkingv1alpha1.ConnectorConditionReady,
+					Status:             status,
+					Reason:             "Test",
+					LastTransitionTime: metav1.Now(),
+				}},
+				ConnectionDetails: &networkingv1alpha1.ConnectorConnectionDetails{
+					Type:      networkingv1alpha1.PublicKeyConnectorConnectionType,
+					PublicKey: &networkingv1alpha1.ConnectorConnectionDetailsPublicKey{Id: nodeID},
+				},
+			},
+		}
+	}
+
+	projectA := project(collisionNSA, "a.internal", ready(collisionNSA, true, "node-a"))
+	projectB := project(collisionNSB, "b.internal", ready(collisionNSB, false, "node-b"))
+
+	for _, order := range []struct {
+		name    string
+		objects []client.Object
+	}{
+		{"a then b", append(append([]client.Object{}, projectA...), projectB...)},
+		{"b then a", append(append([]client.Object{}, projectB...), projectA...)},
+	} {
+		t.Run(order.name, func(t *testing.T) {
+			cl := fake.NewClientBuilder().WithScheme(collisionTestScheme(t)).WithObjects(order.objects...).Build()
+			idx, err := extcache.BuildPolicyIndexFromClient(context.Background(), cl, nil)
+			require.NoError(t, err)
+
+			clusterA := "httproute/" + collisionNSA + "/" + collisionProxyName + "/rule/0"
+			clusterB := "httproute/" + collisionNSB + "/" + collisionProxyName + "/rule/0"
+			clusters := []*clusterv3.Cluster{{Name: clusterB}, {Name: clusterA}}
+
+			replaced, offline, err := ReplaceConnectorClusters(clusters, idx, testInternalListener)
+			require.NoError(t, err)
+
+			require.Contains(t, replaced, clusterA, "project A's online connector must be tunnelled")
+			assert.Equal(t, "a.internal", replaced[clusterA].TargetHost)
+			assert.Equal(t, "node-a", replaced[clusterA].NodeID)
+
+			require.Contains(t, offline, clusterB, "project B's offline connector must stay offline")
+			assert.Equal(t, "b.internal", offline[clusterB].TargetHost)
+
+			tunnel := clusters[1].GetLoadAssignment().GetEndpoints()[0].GetLbEndpoints()[0].GetMetadata().GetFilterMetadata()["tunnel"]
+			assert.Equal(t, "a.internal:9000", tunnel.GetFields()["address"].GetStringValue())
+			assert.Equal(t, "node-a", tunnel.GetFields()["endpoint_id"].GetStringValue())
+			assert.Nil(t, clusters[0].GetTransportSocket(), "project B's cluster must not be replaced")
+		})
+	}
 }

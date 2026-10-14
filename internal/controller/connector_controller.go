@@ -63,8 +63,8 @@ func (r *ConnectorReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 		return ctrl.Result{}, nil
 	}
 
-	logger.Info("reconciling connector")
-	defer logger.Info("reconcile complete")
+	logger.V(1).Info("reconciling connector")
+	defer logger.V(1).Info("reconcile complete")
 
 	originalStatus := connector.Status.DeepCopy()
 

@@ -85,7 +85,7 @@ spec:
           type: gauge
           metrics:
             - forEach: "has(object.status) && has(object.status.conditions) ? object.status.conditions : []"
-              value: "double(timestamp(item.lastTransitionTime).getSeconds())"
+              value: "double(int(timestamp(item.lastTransitionTime)))"
               labels:
                 - name: name
                   value: "object.metadata.name"
@@ -413,7 +413,7 @@ spec:
           type: gauge
           metrics:
             - forEach: "has(object.status) && has(object.status.conditions) ? object.status.conditions : []"
-              value: "double(timestamp(item.lastTransitionTime).getSeconds())"
+              value: "double(int(timestamp(item.lastTransitionTime)))"
               labels:
                 - name: name
                   value: "object.metadata.name"
@@ -535,7 +535,7 @@ spec:
           type: gauge
           metrics:
             - forEach: "has(object.status) && has(object.status.conditions) ? object.status.conditions : []"
-              value: "double(timestamp(item.lastTransitionTime).getSeconds())"
+              value: "double(int(timestamp(item.lastTransitionTime)))"
               labels:
                 - name: name
                   value: "object.metadata.name"
@@ -610,7 +610,7 @@ spec:
           help: "created timestamp"
           type: gauge
           metrics:
-            - value: "double(timestamp(object.metadata.creationTimestamp).getSeconds())"
+            - value: "double(int(timestamp(object.metadata.creationTimestamp)))"
               labels:
                 - name: name
                   value: "object.metadata.name"
@@ -629,7 +629,7 @@ spec:
           metrics:
             - value: |
                 has(object.metadata.deletionTimestamp) ?
-                  double(timestamp(object.metadata.deletionTimestamp).getSeconds()) : 0.0
+                  double(int(timestamp(object.metadata.deletionTimestamp))) : 0.0
               labels:
                 - name: name
                   value: "object.metadata.name"
@@ -671,7 +671,7 @@ spec:
           type: gauge
           metrics:
             - forEach: "has(object.status) && has(object.status.conditions) ? object.status.conditions : []"
-              value: "double(timestamp(item.lastTransitionTime).getSeconds())"
+              value: "double(int(timestamp(item.lastTransitionTime)))"
               labels:
                 - name: name
                   value: "object.metadata.name"
@@ -696,7 +696,7 @@ spec:
           metrics:
             - value: |
                 has(object.status) && has(object.status.verification) && has(object.status.verification.nextVerificationAttempt) ?
-                  double(timestamp(object.status.verification.nextVerificationAttempt).getSeconds()) : 0.0
+                  double(int(timestamp(object.status.verification.nextVerificationAttempt))) : 0.0
               labels:
                 - name: name
                   value: "object.metadata.name"
@@ -759,7 +759,7 @@ spec:
           help: "created timestamp"
           type: gauge
           metrics:
-            - value: "double(timestamp(object.metadata.creationTimestamp).getSeconds())"
+            - value: "double(int(timestamp(object.metadata.creationTimestamp)))"
               labels:
                 - name: name
                   value: "object.metadata.name"
@@ -778,7 +778,7 @@ spec:
           metrics:
             - value: |
                 has(object.metadata.deletionTimestamp) ?
-                  double(timestamp(object.metadata.deletionTimestamp).getSeconds()) : 0.0
+                  double(int(timestamp(object.metadata.deletionTimestamp))) : 0.0
               labels:
                 - name: name
                   value: "object.metadata.name"
@@ -820,7 +820,7 @@ spec:
           type: gauge
           metrics:
             - forEach: "has(object.status) && has(object.status.conditions) ? object.status.conditions : []"
-              value: "double(timestamp(item.lastTransitionTime).getSeconds())"
+              value: "double(int(timestamp(item.lastTransitionTime)))"
               labels:
                 - name: name
                   value: "object.metadata.name"
@@ -910,7 +910,7 @@ spec:
           help: "created timestamp"
           type: gauge
           metrics:
-            - value: "double(timestamp(object.metadata.creationTimestamp).getSeconds())"
+            - value: "double(int(timestamp(object.metadata.creationTimestamp)))"
               labels:
                 - name: name
                   value: "object.metadata.name"
@@ -929,7 +929,7 @@ spec:
           metrics:
             - value: |
                 has(object.metadata.deletionTimestamp) ?
-                  double(timestamp(object.metadata.deletionTimestamp).getSeconds()) : 0.0
+                  double(int(timestamp(object.metadata.deletionTimestamp))) : 0.0
               labels:
                 - name: name
                   value: "object.metadata.name"
@@ -971,7 +971,7 @@ spec:
           type: gauge
           metrics:
             - forEach: "has(object.status) && has(object.status.conditions) ? object.status.conditions : []"
-              value: "double(timestamp(item.lastTransitionTime).getSeconds())"
+              value: "double(int(timestamp(item.lastTransitionTime)))"
               labels:
                 - name: name
                   value: "object.metadata.name"
@@ -1059,7 +1059,7 @@ spec:
           help: "created timestamp"
           type: gauge
           metrics:
-            - value: "double(timestamp(object.metadata.creationTimestamp).getSeconds())"
+            - value: "double(int(timestamp(object.metadata.creationTimestamp)))"
               labels:
                 - name: name
                   value: "object.metadata.name"
@@ -1078,7 +1078,7 @@ spec:
           metrics:
             - value: |
                 has(object.metadata.deletionTimestamp) ?
-                  double(timestamp(object.metadata.deletionTimestamp).getSeconds()) : 0.0
+                  double(int(timestamp(object.metadata.deletionTimestamp))) : 0.0
               labels:
                 - name: name
                   value: "object.metadata.name"
@@ -1202,7 +1202,7 @@ spec:
           help: "created timestamp"
           type: gauge
           metrics:
-            - value: "double(timestamp(object.metadata.creationTimestamp).getSeconds())"
+            - value: "double(int(timestamp(object.metadata.creationTimestamp)))"
               labels:
                 - name: name
                   value: "object.metadata.name"
@@ -1221,7 +1221,7 @@ spec:
           metrics:
             - value: |
                 has(object.metadata.deletionTimestamp) ?
-                  double(timestamp(object.metadata.deletionTimestamp).getSeconds()) : 0.0
+                  double(int(timestamp(object.metadata.deletionTimestamp))) : 0.0
               labels:
                 - name: name
                   value: "object.metadata.name"
@@ -1313,7 +1313,7 @@ spec:
           help: "created timestamp"
           type: gauge
           metrics:
-            - value: "double(timestamp(object.metadata.creationTimestamp).getSeconds())"
+            - value: "double(int(timestamp(object.metadata.creationTimestamp)))"
               labels:
                 - name: name
                   value: "object.metadata.name"
@@ -1355,7 +1355,7 @@ spec:
           type: gauge
           metrics:
             - forEach: "has(object.status) && has(object.status.conditions) ? object.status.conditions : []"
-              value: "double(timestamp(item.lastTransitionTime).getSeconds())"
+              value: "double(int(timestamp(item.lastTransitionTime)))"
               labels:
                 - name: name
                   value: "object.metadata.name"
@@ -1424,7 +1424,7 @@ spec:
           help: "created timestamp"
           type: gauge
           metrics:
-            - value: "double(timestamp(object.metadata.creationTimestamp).getSeconds())"
+            - value: "double(int(timestamp(object.metadata.creationTimestamp)))"
               labels:
                 - name: name
                   value: "object.metadata.name"
@@ -1487,7 +1487,7 @@ spec:
           help: "created timestamp"
           type: gauge
           metrics:
-            - value: "double(timestamp(object.metadata.creationTimestamp).getSeconds())"
+            - value: "double(int(timestamp(object.metadata.creationTimestamp)))"
               labels:
                 - name: name
                   value: "object.metadata.name"
@@ -1575,7 +1575,7 @@ spec:
           help: "created timestamp"
           type: gauge
           metrics:
-            - value: "double(timestamp(object.metadata.creationTimestamp).getSeconds())"
+            - value: "double(int(timestamp(object.metadata.creationTimestamp)))"
               labels:
                 - name: name
                   value: "object.metadata.name"

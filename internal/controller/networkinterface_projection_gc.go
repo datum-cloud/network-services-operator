@@ -39,12 +39,12 @@ type NetworkInterfaceProjectionGCReconciler struct {
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkinterfaces,verbs=get;list;watch;delete
 
 func (r *NetworkInterfaceProjectionGCReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
-	projectClient, err := r.Projects.ClientForProject(ctx, string(req.ClusterName))
+	projectCluster, err := r.Projects.ClusterForProject(ctx, string(req.ClusterName))
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 
-	return ctrl.Result{}, r.collect(ctx, projectClient, req.NamespacedName)
+	return ctrl.Result{}, r.collect(ctx, projectCluster.GetClient(), req.NamespacedName)
 }
 
 func (r *NetworkInterfaceProjectionGCReconciler) collect(

@@ -71,8 +71,8 @@ func (r *NetworkBindingReconciler) Reconcile(ctx context.Context, req mcreconcil
 		return ctrl.Result{}, nil
 	}
 
-	logger.Info("reconciling network binding")
-	defer logger.Info("reconcile complete")
+	logger.V(1).Info("reconciling network binding")
+	defer logger.V(1).Info("reconcile complete")
 
 	readyCondition := metav1.Condition{
 		Type:               networkingv1alpha.NetworkBindingReady,

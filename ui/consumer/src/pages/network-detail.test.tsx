@@ -3,8 +3,8 @@ import { ApiError } from '../lib/api';
 import * as api from '../lib/api';
 import type { Network } from '../schema';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { MemoryRouter, Route, Routes } from 'react-router';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../lib/api', async () => {
@@ -25,15 +25,21 @@ const useDeleteNetworkMock = vi.mocked(api.useDeleteNetwork);
 
 const emptyListResult = { data: [], isLoading: false, error: null, refetch: vi.fn() } as never;
 
-function renderPage() {
+const DETAIL_PATH = '/project/demo-project/services/networking/networks/prod-net';
+
+function LocationDisplay() {
+  return <div data-testid="location-display">{useLocation().pathname}</div>;
+}
+
+function renderPage(path = DETAIL_PATH) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={client}>
-      <MemoryRouter
-        initialEntries={['/project/demo-project/services/networking/networks/prod-net']}>
+      <MemoryRouter initialEntries={[path]}>
+        <LocationDisplay />
         <Routes>
           <Route
-            path="/project/:projectId/services/:serviceSlug/networks/:networkName"
+            path="/project/:projectId/services/:serviceSlug/networks/:networkName/*"
             element={<NetworkDetail />}
           />
           <Route
@@ -72,7 +78,18 @@ beforeEach(() => {
 });
 
 describe('NetworkDetail', () => {
-  it('shows the loading skeleton while fetching', () => {
+  function loaded(overrides: Partial<Network> = {}) {
+    useNetworkMock.mockReturnValue({
+      data: makeNetwork(overrides),
+      isLoading: false,
+      error: null,
+      refetch: vi.fn(),
+    } as never);
+  }
+
+  const tabs = () => within(screen.getByTestId('networking-plugin-network-tabs'));
+
+  it('keeps the title and tabs mounted while the network loads', () => {
     useNetworkMock.mockReturnValue({
       data: undefined,
       isLoading: true,
@@ -83,6 +100,24 @@ describe('NetworkDetail', () => {
     renderPage();
 
     expect(screen.getByTestId('networking-plugin-loading')).toBeInTheDocument();
+    expect(screen.getAllByText('prod-net').length).toBeGreaterThanOrEqual(2);
+    expect(tabs().getByText('Overview')).toBeInTheDocument();
+  });
+
+  it('shows a skeleton shaped like the tab being loaded', () => {
+    useNetworkMock.mockReturnValue({
+      data: undefined,
+      isLoading: true,
+      error: null,
+      refetch: vi.fn(),
+    } as never);
+
+    const { unmount } = renderPage();
+    expect(screen.getByTestId('networking-plugin-loading')).toHaveAttribute('data-skeleton', 'overview');
+    unmount();
+
+    renderPage(`${DETAIL_PATH}/configuration`);
+    expect(screen.getByTestId('networking-plugin-loading')).toHaveAttribute('data-skeleton', 'configuration');
   });
 
   it('shows the restricted state on a 403 ApiError', () => {
@@ -98,84 +133,74 @@ describe('NetworkDetail', () => {
     expect(screen.getByTestId('networking-plugin-restricted')).toBeInTheDocument();
   });
 
-  it('shows the network name, Ready badge, and tab bar once loaded', () => {
-    useNetworkMock.mockReturnValue({
-      data: makeNetwork({ readyStatus: 'True' }),
-      isLoading: false,
-      error: null,
-      refetch: vi.fn(),
-    } as never);
+  it('shows the name, prefix, and every tab once loaded', () => {
+    loaded({ ipv6Prefix: '2001:db8::/48' });
 
     renderPage();
 
-    expect(screen.getByTestId('networking-plugin-network-detail')).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'prod-net' })).toBeInTheDocument();
-    expect(screen.getByText('Ready')).toBeInTheDocument();
-    for (const tab of ['Resources', 'Services', 'Settings']) {
-      expect(screen.getByRole('tab', { name: tab })).toBeInTheDocument();
+    expect(screen.getAllByText('prod-net').length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByText('2001:db8::/48 · IPv6')).toBeInTheDocument();
+    expect(tabs().queryByText('Resources')).not.toBeInTheDocument();
+    for (const tab of ['Overview', 'Services', 'Configuration']) {
+      expect(tabs().getByText(tab)).toBeInTheDocument();
     }
   });
 
-  it('shows plain-language reason text in the header badge when not ready', () => {
-    useNetworkMock.mockReturnValue({
-      data: makeNetwork({ readyStatus: 'False', readyReason: 'IPv6Required', ipFamilies: ['IPv4'] }),
-      isLoading: false,
-      error: null,
-      refetch: vi.fn(),
-    } as never);
+  it('lands on the Overview tab with the network health', () => {
+    loaded();
 
     renderPage();
 
-    expect(screen.getByText('IPv6 required')).toBeInTheDocument();
-  });
-
-  it('shows Regions and Connected workloads together on the default Resources tab', () => {
-    useNetworkMock.mockReturnValue({
-      data: makeNetwork(),
-      isLoading: false,
-      error: null,
-      refetch: vi.fn(),
-    } as never);
-
-    renderPage();
-
+    expect(screen.getByTestId('networking-plugin-network-overview')).toBeInTheDocument();
+    expect(screen.getByText('Network is ready')).toBeInTheDocument();
     expect(screen.getByTestId('networking-plugin-network-resources')).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'Regions' })).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'Connected workloads' })).toBeInTheDocument();
-    expect(screen.queryByRole('heading', { name: 'Routes' })).not.toBeInTheDocument();
   });
 
-  it('shows the Settings panel and header actions only once the Settings tab is active', () => {
-    useNetworkMock.mockReturnValue({
-      data: makeNetwork(),
-      isLoading: false,
-      error: null,
-      refetch: vi.fn(),
-    } as never);
+  it('shows plain-language reason text on the Overview when not ready', () => {
+    loaded({ readyStatus: 'False', readyReason: 'IPv6Required', ipFamilies: ['IPv4'] });
 
     renderPage();
 
-    expect(screen.queryByRole('button', { name: 'Save changes' })).not.toBeInTheDocument();
+    expect(screen.getAllByText('IPv6 required').length).toBeGreaterThan(0);
+    expect(screen.queryByText('IPv6Required')).not.toBeInTheDocument();
+  });
 
-    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Settings' }), { button: 0 });
+  it('opens a tab directly from its URL', () => {
+    loaded();
+
+    renderPage(`${DETAIL_PATH}/configuration`);
 
     expect(screen.getByText('Resource name')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Save changes' })).toBeDisabled();
   });
 
-  it('deletes the network from the settings Danger Zone and navigates back to the networks list', async () => {
-    useNetworkMock.mockReturnValue({
-      data: makeNetwork(),
-      isLoading: false,
-      error: null,
-      refetch: vi.fn(),
-    } as never);
+  it('navigates between tabs by URL', () => {
+    loaded();
 
     renderPage();
+    fireEvent.click(tabs().getByText('Configuration'));
 
-    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Settings' }), { button: 0 });
+    expect(screen.getByTestId('location-display')).toHaveTextContent(`${DETAIL_PATH}/configuration`);
+    expect(screen.getByText('Resource name')).toBeInTheDocument();
+  });
+
+  it('sends an unknown tab back to the Overview', () => {
+    loaded();
+
+    renderPage(`${DETAIL_PATH}/nope`);
+
+    expect(screen.getByTestId('location-display')).toHaveTextContent(new RegExp(`${DETAIL_PATH}$`));
+    expect(screen.getByTestId('networking-plugin-network-overview')).toBeInTheDocument();
+  });
+
+  it('deletes the network from Configuration and navigates back to the networks list', async () => {
+    loaded();
+
+    renderPage(`${DETAIL_PATH}/configuration`);
     fireEvent.click(screen.getByRole('button', { name: 'Delete network' }));
 
+    fireEvent.change(await screen.findByPlaceholderText('Type in here...'), {
+      target: { value: 'DELETE' },
+    });
     const dialogButtons = await screen.findAllByRole('button', { name: 'Delete' });
     fireEvent.click(dialogButtons[dialogButtons.length - 1]);
 

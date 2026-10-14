@@ -1,0 +1,136 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: connectoradvertisement-repoint
+#
+# What this proves (network-services-operator#571):
+# The desktop app re-points a tunnel's ConnectorAdvertisement to another
+# device's Connector with a merge patch of its spec. The operator must make the
+# new Connector the advertisement's controller, so the garbage collector deletes
+# the advertisement with the Connector it names and not with the previous one.
+# A second advertisement that stays on the previous Connector shows that the
+# garbage collector ran.
+spec:
+  cluster: nso-standard
+  steps:
+    - name: Create two connectors and two advertisements on the first
+      try:
+        - apply:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha1
+              kind: Connector
+              metadata:
+                name: laptop
+              spec:
+                connectorClassName: datum-connect
+        - apply:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha1
+              kind: Connector
+              metadata:
+                name: desktop
+              spec:
+                connectorClassName: datum-connect
+        - apply:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha1
+              kind: ConnectorAdvertisement
+              metadata:
+                name: tunnel
+              spec:
+                connectorRef:
+                  name: laptop
+        - apply:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha1
+              kind: ConnectorAdvertisement
+              metadata:
+                name: stays
+              spec:
+                connectorRef:
+                  name: laptop
+        - assert:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha1
+              kind: ConnectorAdvertisement
+              metadata:
+                name: tunnel
+                (ownerReferences[?controller && kind == 'Connector'].name): [laptop]
+              status:
+                (conditions[?type == 'Accepted'] | [0].status): "True"
+        - assert:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha1
+              kind: ConnectorAdvertisement
+              metadata:
+                name: stays
+                (ownerReferences[?controller && kind == 'Connector'].name): [laptop]
+              status:
+                (conditions[?type == 'Accepted'] | [0].status): "True"
+
+    - name: Re-point the tunnel as the desktop app does
+      try:
+        - script:
+            env:
+              - name: NS
+                value: ($namespace)
+            content: |
+              kubectl patch connectoradvertisement tunnel -n "${NS}" --type=merge \
+                -p '{"spec":{"connectorRef":{"name":"desktop"}}}'
+        - description: >
+            The new connector is the only connector that owns the
+            advertisement, and Accepted describes the re-pointed spec.
+          assert:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha1
+              kind: ConnectorAdvertisement
+              metadata:
+                name: tunnel
+                (ownerReferences[?kind == 'Connector'].name): [desktop]
+              ((status.conditions[?type == 'Accepted'] | [0].observedGeneration) == metadata.generation): true
+              (contains((status.conditions[?type == 'Accepted'] | [0].message), 'desktop')): true
+              status:
+                (conditions[?type == 'Accepted'] | [0].status): "True"
+
+    - name: Delete the first connector; only the advertisement still on it goes
+      try:
+        - delete:
+            ref:
+              apiVersion: networking.datumapis.com/v1alpha1
+              kind: Connector
+              name: laptop
+        - error:
+            timeout: 2m
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha1
+              kind: ConnectorAdvertisement
+              metadata:
+                name: stays
+        - description: >
+            The garbage collector works through dependents in parallel: give it
+            time to reach the tunnel, had the tunnel still been one.
+          sleep:
+            duration: 10s
+        - assert:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha1
+              kind: ConnectorAdvertisement
+              metadata:
+                name: tunnel
+                (ownerReferences[?kind == 'Connector'].name): [desktop]
+
+    - name: Delete the second connector; the re-pointed advertisement goes with it
+      try:
+        - delete:
+            ref:
+              apiVersion: networking.datumapis.com/v1alpha1
+              kind: Connector
+              name: desktop
+        - error:
+            timeout: 2m
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha1
+              kind: ConnectorAdvertisement
+              metadata:
+                name: tunnel

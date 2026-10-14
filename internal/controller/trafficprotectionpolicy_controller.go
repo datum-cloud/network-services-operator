@@ -4,9 +4,11 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"sort"
+	"strconv"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
@@ -30,6 +32,7 @@ import (
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
+	networkingv1alpha1 "go.datum.net/network-services-operator/api/v1alpha1"
 	"go.datum.net/network-services-operator/internal/config"
 	downstreamclient "go.datum.net/network-services-operator/internal/downstreamclient"
 	gatewaystatus "go.datum.net/network-services-operator/internal/gatewayapi/status"
@@ -73,8 +76,8 @@ func (r *TrafficProtectionPolicyReconciler) Reconcile(ctx context.Context, req N
 		return ctrl.Result{}, err
 	}
 
-	logger.Info("reconciling trafficprotectionpolicies")
-	defer logger.Info("reconcile complete")
+	logger.V(1).Info("reconciling trafficprotectionpolicies")
+	defer logger.V(1).Info("reconcile complete")
 
 	downstreamStrategy := downstreamclient.NewMappedNamespaceResourceStrategy(string(req.ClusterName), cl.GetClient(), r.DownstreamCluster.GetClient())
 
@@ -114,28 +117,33 @@ func (r *TrafficProtectionPolicyReconciler) Reconcile(ctx context.Context, req N
 
 	r.collectTrafficProtectionPolicyAttachments(ctx, trafficProtectionPolicies, upstreamGateways.Items, upstreamHTTPRoutes.Items, upstreamHTTPProxies.Items)
 
-	r.setProgrammedConditionsFromDownstream(ctx, downstreamNamespaceName, trafficProtectionPolicies)
+	readErr := r.setProgrammedConditionsFromDownstream(ctx, downstreamNamespaceName, trafficProtectionPolicies)
 
 	if err := r.updateTPPAncestorsStatus(ctx, cl.GetClient(), trafficProtectionPolicies, originalTrafficProtectionPolicies); err != nil {
 		return ctrl.Result{}, err
 	}
 
-	return ctrl.Result{}, nil
+	// A downstream copy that could not be read left its policy's Programmed as it was; retry it.
+	return ctrl.Result{}, readErr
 }
 
-// setProgrammedConditionsFromDownstream mirrors edge-applied Programmed status
-// from the downstream (Karmada-aggregated) TPP onto each upstream ancestor.
-// Accepted remains attach-only; Programmed means the current generation is live
-// on all edges (AND aggregation encodes M/N in the message when partial).
+// setProgrammedConditionsFromDownstream sets Programmed on each accepted target
+// from the matching ancestor of the downstream (Karmada-aggregated) TPP, and
+// removes it from a target that is not accepted.
+//
+// A downstream copy that does not exist reads Pending. A read that fails for any
+// other reason leaves that policy's Programmed as it was, because a status is
+// never derived from a failed read, and the error is returned so the reconcile
+// is retried.
 func (r *TrafficProtectionPolicyReconciler) setProgrammedConditionsFromDownstream(
 	ctx context.Context,
 	downstreamNamespaceName string,
 	policies []*policyContext,
-) {
-	logger := log.FromContext(ctx)
+) error {
 	downstreamClient := r.DownstreamCluster.GetClient()
 	controllerName := string(r.Config.Gateway.ControllerName)
 
+	var readErrs []error
 	for _, policy := range policies {
 		downstreamTPP := &networkingv1alpha.TrafficProtectionPolicy{}
 		err := downstreamClient.Get(ctx, client.ObjectKey{
@@ -143,17 +151,23 @@ func (r *TrafficProtectionPolicyReconciler) setProgrammedConditionsFromDownstrea
 			Name:      policy.Name,
 		}, downstreamTPP)
 		if client.IgnoreNotFound(err) != nil {
-			logger.Error(err, "failed to get downstream trafficprotectionpolicy", "name", policy.Name, "namespace", downstreamNamespaceName)
+			readErrs = append(readErrs, fmt.Errorf("failed to get downstream trafficprotectionpolicy %s/%s: %w", downstreamNamespaceName, policy.Name, err))
+			continue
+		}
+		if err != nil {
+			downstreamTPP = nil
 		}
 
 		for _, targetRef := range policy.Spec.TargetRefs {
 			ancestorRef := getAncestorRefForTarget(policy.Namespace, targetRef)
 			accepted := findAncestorCondition(policy.Status.Ancestors, controllerName, ancestorRef, string(gatewayv1.PolicyConditionAccepted))
 			if accepted == nil || accepted.Status != metav1.ConditionTrue {
+				removeAncestorCondition(policy.Status.Ancestors, controllerName, ancestorRef, conditionTypeProgrammed)
 				continue
 			}
 
-			status, reason, message := programmedFromDownstream(downstreamTPP, err != nil, policy.Generation)
+			downstreamAncestorRef := getAncestorRefForTarget(downstreamNamespaceName, targetRef)
+			status, reason, message := programmedFromDownstream(downstreamTPP, downstreamAncestorRef, policy.Generation)
 			gatewaystatus.SetConditionForPolicyAncestor(
 				&policy.Status.PolicyStatus,
 				ancestorRef,
@@ -166,53 +180,86 @@ func (r *TrafficProtectionPolicyReconciler) setProgrammedConditionsFromDownstrea
 			)
 		}
 	}
+	return errors.Join(readErrs...)
 }
 
-// programmedFromDownstream derives the upstream Programmed condition from the
-// downstream (edge/Karmada-aggregated) TPP status. Karmada AND-aggregation
-// collapses per-edge feedback into ancestor Programmed conditions whose
-// messages carry M/N when partial.
+// programmedFromDownstream derives one target's upstream Programmed condition
+// from the downstream TPP's ancestor for that target.
+//
+// Each API server counts generation on its own. The downstream ancestor reports
+// for the downstream generation, and the replicator's annotation names the
+// upstream generation that the downstream copy holds.
 func programmedFromDownstream(
 	downstreamTPP *networkingv1alpha.TrafficProtectionPolicy,
-	missing bool,
-	desiredGeneration int64,
+	downstreamAncestorRef *gatewayv1alpha2.ParentReference,
+	upstreamGeneration int64,
 ) (metav1.ConditionStatus, gatewayv1.PolicyConditionReason, string) {
-	pendingMsg := fmt.Sprintf("Waiting for policy generation %d to be programmed on edges", desiredGeneration)
-	if missing || downstreamTPP == nil {
+	pendingMsg := programmedMessage(PolicyReasonProgrammedPending, upstreamGeneration)
+	if downstreamTPP == nil {
 		return metav1.ConditionFalse, PolicyReasonProgrammedPending, pendingMsg
 	}
 
-	var best *metav1.Condition
-	for i := range downstreamTPP.Status.Ancestors {
-		cond := apimeta.FindStatusCondition(downstreamTPP.Status.Ancestors[i].Conditions, conditionTypeProgrammed)
-		if cond == nil {
-			continue
+	copied, err := strconv.ParseInt(downstreamTPP.Annotations[networkingv1alpha1.UpstreamGenerationAnnotation], 10, 64)
+	if err != nil || copied != upstreamGeneration {
+		return metav1.ConditionFalse, PolicyReasonProgrammedPending, pendingMsg
+	}
+
+	cond := findDownstreamProgrammed(downstreamTPP.Status.Ancestors, downstreamAncestorRef)
+	if cond == nil || cond.ObservedGeneration != downstreamTPP.Generation {
+		return metav1.ConditionFalse, PolicyReasonProgrammedPending, pendingMsg
+	}
+
+	switch {
+	case cond.Status == metav1.ConditionTrue:
+		return metav1.ConditionTrue, PolicyReasonProgrammed, programmedMessage(PolicyReasonProgrammed, upstreamGeneration)
+	case cond.Reason == string(PolicyReasonProgrammedPartialFailure):
+		return metav1.ConditionFalse, PolicyReasonProgrammedPartialFailure,
+			programmedMessage(PolicyReasonProgrammedPartialFailure, upstreamGeneration)
+	}
+	return metav1.ConditionFalse, PolicyReasonProgrammedPending, pendingMsg
+}
+
+// programmedMessage is the tenant's message for a Programmed reason. It is built
+// from the reason, never from the downstream condition's message: a message is
+// for people, and the downstream one counts edges, which are the platform's.
+func programmedMessage(reason gatewayv1.PolicyConditionReason, upstreamGeneration int64) string {
+	switch reason {
+	case PolicyReasonProgrammed:
+		return fmt.Sprintf("Policy generation %d programmed on edges", upstreamGeneration)
+	case PolicyReasonProgrammedPartialFailure:
+		return fmt.Sprintf("Policy generation %d programmed on some edges, not yet on all", upstreamGeneration)
+	default:
+		return fmt.Sprintf("Waiting for policy generation %d to be programmed on edges", upstreamGeneration)
+	}
+}
+
+// findDownstreamProgrammed returns the Programmed condition of the downstream
+// ancestor for ancestorRef. Karmada's aggregation writes every downstream
+// ancestor, so the controller name is not compared.
+func findDownstreamProgrammed(ancestors []gatewayv1.PolicyAncestorStatus, ancestorRef *gatewayv1alpha2.ParentReference) *metav1.Condition {
+	for i := range ancestors {
+		if equality.Semantic.DeepEqual(ancestors[i].AncestorRef, *ancestorRef) {
+			return apimeta.FindStatusCondition(ancestors[i].Conditions, conditionTypeProgrammed)
 		}
-		if best == nil || cond.Status != metav1.ConditionTrue {
-			best = cond
+	}
+	return nil
+}
+
+// removeAncestorCondition removes a condition from this controller's ancestor
+// for ancestorRef, so a condition the controller no longer computes does not
+// keep its last value.
+func removeAncestorCondition(
+	ancestors []gatewayv1.PolicyAncestorStatus,
+	controllerName string,
+	ancestorRef *gatewayv1alpha2.ParentReference,
+	conditionType string,
+) {
+	for i := range ancestors {
+		if string(ancestors[i].ControllerName) == controllerName &&
+			equality.Semantic.DeepEqual(ancestors[i].AncestorRef, *ancestorRef) {
+			apimeta.RemoveStatusCondition(&ancestors[i].Conditions, conditionType)
 		}
 	}
-	if best == nil {
-		return metav1.ConditionFalse, PolicyReasonProgrammedPending, pendingMsg
-	}
-	if best.ObservedGeneration < desiredGeneration {
-		return metav1.ConditionFalse, PolicyReasonProgrammedPending, pendingMsg
-	}
-
-	message := best.Message
-	if message == "" {
-		message = fmt.Sprintf("Policy generation %d programmed on edges", desiredGeneration)
-	}
-
-	if best.Status == metav1.ConditionTrue {
-		return metav1.ConditionTrue, PolicyReasonProgrammed, message
-	}
-
-	reason := PolicyReasonProgrammedPending
-	if best.Reason == string(PolicyReasonProgrammedPartialFailure) {
-		reason = PolicyReasonProgrammedPartialFailure
-	}
-	return metav1.ConditionFalse, reason, message
 }
 
 func findAncestorCondition(
@@ -279,23 +326,9 @@ func (r *TrafficProtectionPolicyReconciler) updateTPPAncestorsStatus(
 		}
 
 		// Remove any ancestorRefs owned by this controller that are no longer targeted
-		for i, ancestor := range policy.Status.Ancestors {
-			if ancestor.ControllerName != r.Config.Gateway.ControllerName {
-				continue
-			}
-
-			found := false
-			for _, targetRef := range policy.Spec.TargetRefs {
-				ancestorRef := getAncestorRefForTarget(policy.Namespace, targetRef)
-				if equality.Semantic.DeepEqual(ancestor.AncestorRef, *ancestorRef) {
-					found = true
-				}
-			}
-
-			if !found {
-				policy.Status.Ancestors = append(policy.Status.Ancestors[:i], policy.Status.Ancestors[i+1:]...)
-			}
-		}
+		policy.Status.Ancestors = slices.DeleteFunc(policy.Status.Ancestors, func(ancestor gatewayv1.PolicyAncestorStatus) bool {
+			return ancestor.ControllerName == r.Config.Gateway.ControllerName && !targetsAncestor(policy, ancestor.AncestorRef)
+		})
 
 		if !equality.Semantic.DeepEqual(originalPolicy.Status, policy.Status) {
 			emitTPPActivityEvents(ctx, upstreamClient, policy.TrafficProtectionPolicy, &originalPolicy)
@@ -304,13 +337,23 @@ func (r *TrafficProtectionPolicyReconciler) updateTPPAncestorsStatus(
 				return fmt.Errorf("failed to update status for trafficprotectionpolicy %s/%s: %w", policy.Namespace, policy.Name, err)
 			}
 		} else {
-			logger.Info("status unchanged, skipping update", "trafficprotectionpolicy", fmt.Sprintf("%s/%s", policy.Namespace, policy.Name))
+			logger.V(1).Info("status unchanged, skipping update", "trafficprotectionpolicy", fmt.Sprintf("%s/%s", policy.Namespace, policy.Name))
 		}
 
 	}
 
 	return nil
 
+}
+
+// targetsAncestor reports whether one of the policy's targetRefs is ancestorRef.
+func targetsAncestor(policy *policyContext, ancestorRef gatewayv1alpha2.ParentReference) bool {
+	for _, targetRef := range policy.Spec.TargetRefs {
+		if equality.Semantic.DeepEqual(ancestorRef, *getAncestorRefForTarget(policy.Namespace, targetRef)) {
+			return true
+		}
+	}
+	return false
 }
 
 type policyContext struct {
@@ -436,7 +479,7 @@ func (r *TrafficProtectionPolicyReconciler) collectTrafficProtectionPolicyAttach
 		}
 	}
 
-	logger.Info("collected traffic protection policies", "totalAttachments", len(policyAttachments))
+	logger.V(1).Info("collected traffic protection policies", "totalAttachments", len(policyAttachments))
 
 	return policyAttachments
 }
@@ -466,6 +509,7 @@ func (r *TrafficProtectionPolicyReconciler) processTrafficProtectionPolicyForHTT
 
 	route, ok := routeMap[routeKey]
 	if !ok {
+		setTargetNotFound(policy, targetRef, string(r.Config.Gateway.ControllerName))
 		return policyAttachments
 	}
 
@@ -592,6 +636,25 @@ func (r *TrafficProtectionPolicyReconciler) processTrafficProtectionPolicyForHTT
 	return policyAttachments
 }
 
+// setTargetNotFound sets Accepted=False with reason TargetNotFound. Without it,
+// a deleted target keeps its last Accepted condition.
+func setTargetNotFound(
+	policy *policyContext,
+	targetRef gatewayv1alpha2.LocalPolicyTargetReferenceWithSectionName,
+	controllerName string,
+) {
+	gatewaystatus.SetResolveErrorForPolicyAncestor(
+		&policy.Status.PolicyStatus,
+		getAncestorRefForTarget(policy.Namespace, targetRef),
+		controllerName,
+		policy.Generation,
+		&gatewaystatus.PolicyResolveError{
+			Reason:  gatewayv1.PolicyReasonTargetNotFound,
+			Message: fmt.Sprintf("%s %q not found", targetRef.Kind, targetRef.Name),
+		},
+	)
+}
+
 func getAncestorRefForTarget(namespace string, targetRef gatewayv1alpha2.LocalPolicyTargetReferenceWithSectionName) *gatewayv1alpha2.ParentReference {
 	return &gatewayv1alpha2.ParentReference{
 		Group:       ptr.To(targetRef.Group),
@@ -619,6 +682,7 @@ func (r *TrafficProtectionPolicyReconciler) processTrafficProtectionPolicyForGat
 	gateway, ok := gatewayMap[gatewayKey]
 	if !ok {
 		logger.Info("could not find gateway for parentRef", "parentRef", gatewayKey)
+		setTargetNotFound(policy, targetRef, string(r.Config.Gateway.ControllerName))
 		return policyAttachments
 	}
 

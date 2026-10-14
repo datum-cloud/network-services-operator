@@ -218,7 +218,7 @@ func newEntitlementClient(project string) (client.WithWatch, error) {
 	if pluginCtx.APIHost == "" {
 		return nil, util.NewCLIError(util.ExitUnavailable,
 			"cannot check the networking service entitlement: DATUM_API_HOST is not set").
-			WithFix("run this through datumctl:\n       datumctl alb ...")
+			WithFix(fmt.Sprintf("run this through datumctl:\n       datumctl %s ...", util.CurrentBrand().Command))
 	}
 
 	token, err := plugin.Token()

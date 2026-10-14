@@ -481,10 +481,11 @@ func (r *InternalDNSReadinessReconciler) Reconcile(ctx context.Context, req ctrl
 		}
 		return ctrl.Result{}, err
 	}
-	projectClient, err := r.Projects.ClientForProject(ctx, routing.project)
+	projectCluster, err := r.Projects.ClusterForProject(ctx, routing.project)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
+	projectClient := projectCluster.GetClient()
 	projectContext := &networkingv1alpha.NetworkContext{}
 	key := client.ObjectKey{Namespace: routing.projectNamespace, Name: hubContext.Name}
 	if err := projectClient.Get(ctx, key, projectContext); err != nil {

@@ -419,6 +419,13 @@ to serve, and it is the only one of the four a service reads.<br/>
         </td>
         <td>false</td>
       </tr><tr>
+        <td><b><a href="#networkinterfacestatusdns">dns</a></b></td>
+        <td>object</td>
+        <td>
+          DNS contains effective resolver settings inherited from the network.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
         <td><b><a href="#networkinterfacestatusnetworkcontextref">networkContextRef</a></b></td>
         <td>object</td>
         <td>
@@ -565,6 +572,42 @@ with respect to the current state of the instance.<br/>
           <br/>
             <i>Format</i>: int64<br/>
             <i>Minimum</i>: 0<br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### NetworkInterface.status.dns
+<sup><sup>[↩ Parent](#networkinterfacestatus)</sup></sup>
+
+
+
+DNS contains effective resolver settings inherited from the network.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>nameservers</b></td>
+        <td>[]string</td>
+        <td>
+          <br/>
+          <br/>
+            <i>Validations</i>:<li>self.all(n, isIP(n)): nameservers must contain IP addresses</li>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>searches</b></td>
+        <td>[]string</td>
+        <td>
+          <br/>
         </td>
         <td>false</td>
       </tr></tbody>

@@ -21,15 +21,19 @@ import (
 
 func logsCommand() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "logs <name>",
-		Short: "Show access logs for an Application Load Balancer",
-		Long: `Query the same access logs the cloud portal shows for an Application Load
-Balancer. Rows come from the project logs API, pinned to this load balancer.`,
-		Example: `  datumctl alb logs my-app
+		Use:   "logs [name...]",
+		Short: "Show access logs for Application Load Balancers",
+		Long: `Query the same access logs the cloud portal shows for Application Load
+Balancers. Rows come from the project logs API. With no name, logs from every
+load balancer in the project are shown together; pass one or more names to
+narrow them.`,
+		Example: `  datumctl alb logs
+  datumctl alb logs my-app
+  datumctl alb logs my-app other-app --code 502
   datumctl alb logs my-app --since 1h --limit 50
   datumctl alb logs my-app --method GET --code 500 --code 502
   datumctl alb logs my-app --follow`,
-		Args:              cobra.ExactArgs(1),
+		Args:              cobra.ArbitraryArgs,
 		ValidArgsFunction: plugincli.CompleteALBNames,
 		RunE:              runLogs,
 	}
@@ -45,7 +49,6 @@ Balancer. Rows come from the project logs API, pinned to this load balancer.`,
 }
 
 func runLogs(cmd *cobra.Command, args []string) error {
-	name := args[0]
 	since, _ := cmd.Flags().GetDuration("since")
 	limit, _ := cmd.Flags().GetInt("limit")
 	methods, _ := cmd.Flags().GetStringArray("method")
@@ -69,9 +72,12 @@ func runLogs(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := util.GetHTTPProxy(cmd.Context(), c, name); err != nil {
-		return err
+	for _, name := range args {
+		if _, err := util.GetHTTPProxy(cmd.Context(), c, name); err != nil {
+			return err
+		}
 	}
+	showProxy := len(args) != 1
 
 	cfg, err := plugincli.RestConfig(project)
 	if err != nil {
@@ -84,7 +90,7 @@ func runLogs(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	query := spec.BuildAlbLogQL(name, methods, codes)
+	query := spec.BuildAlbLogQL(args, methods, codes)
 	out := cmd.OutOrStdout()
 
 	if !follow {
@@ -92,7 +98,7 @@ func runLogs(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return err
 		}
-		return printLogs(out, filterLogsByHost(entries, hosts), format, noHeaders)
+		return printLogs(out, filterLogsByHost(entries, hosts), format, noHeaders, showProxy)
 	}
 
 	if format != util.OutputTable && format != util.OutputWide {
@@ -124,7 +130,7 @@ func runLogs(cmd *cobra.Command, args []string) error {
 		if len(fresh) == 0 {
 			return nil
 		}
-		if err := printLogs(out, fresh, format, headerPrinted); err != nil {
+		if err := printLogs(out, fresh, format, headerPrinted, showProxy); err != nil {
 			return err
 		}
 		headerPrinted = true
@@ -178,7 +184,7 @@ func filterLogsByHost(entries []util.LogEntry, hosts []string) []util.LogEntry {
 	return kept
 }
 
-func printLogs(w io.Writer, entries []util.LogEntry, format util.OutputFormat, noHeaders bool) error {
+func printLogs(w io.Writer, entries []util.LogEntry, format util.OutputFormat, noHeaders, showProxy bool) error {
 	sort.SliceStable(entries, func(i, j int) bool {
 		return entries[i].Time.After(entries[j].Time)
 	})
@@ -197,19 +203,28 @@ func printLogs(w io.Writer, entries []util.LogEntry, format util.OutputFormat, n
 
 	tw := util.NewTabWriter(w)
 	if !noHeaders {
+		prefix := "TIME\t"
+		if showProxy {
+			prefix += "PROXY\t"
+		}
 		if format == util.OutputWide {
-			_, _ = fmt.Fprintln(tw, "TIME\tMETHOD\tSTATUS\tPATH\tHOST\tDURATION\tREQUEST ID\tUPSTREAM")
+			_, _ = fmt.Fprintln(tw, prefix+"METHOD\tSTATUS\tPATH\tHOST\tDURATION\tREQUEST ID\tUPSTREAM")
 		} else {
-			_, _ = fmt.Fprintln(tw, "TIME\tMETHOD\tSTATUS\tPATH\tHOST\tDURATION")
+			_, _ = fmt.Fprintln(tw, prefix+"METHOD\tSTATUS\tPATH\tHOST\tDURATION")
 		}
 	}
 	for _, e := range entries {
 		path, _ := util.TruncateCell(e.Labels["path"], 48)
 		host, _ := util.TruncateCell(e.Labels["host"], 32)
+		prefix := e.Time.Local().Format("15:04:05") + "\t"
+		if showProxy {
+			proxy, _ := util.TruncateCell(e.Labels["proxy"], 32)
+			prefix += util.OrDash(proxy) + "\t"
+		}
 		if format == util.OutputWide {
 			upstream, _ := util.TruncateCell(e.Labels["upstream_host"], 32)
-			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-				e.Time.Local().Format("15:04:05"),
+			_, _ = fmt.Fprintf(tw, "%s%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+				prefix,
 				util.OrDash(e.Labels["method"]),
 				util.OrDash(e.Labels["response_code"]),
 				util.OrDash(path),
@@ -220,8 +235,8 @@ func printLogs(w io.Writer, entries []util.LogEntry, format util.OutputFormat, n
 			)
 			continue
 		}
-		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
-			e.Time.Local().Format("15:04:05"),
+		_, _ = fmt.Fprintf(tw, "%s%s\t%s\t%s\t%s\t%s\n",
+			prefix,
 			util.OrDash(e.Labels["method"]),
 			util.OrDash(e.Labels["response_code"]),
 			util.OrDash(path),

@@ -33,6 +33,7 @@ func TestFlattenLokiStreams(t *testing.T) {
 					"duration":              "12",
 					"requested_server_name": "app.example.com",
 					"k8s_pod_name":          "ignore-me",
+					"route_name":            "httproute/ns-1/my-app/rule/0/match/0/app_example_com",
 				},
 				Values: [][]string{
 					{"1700000000000000000", ""},
@@ -45,7 +46,9 @@ func TestFlattenLokiStreams(t *testing.T) {
 	assert.Equal(t, "200", entries[0].Labels["response_code"])
 	assert.Equal(t, "12ms", entries[0].Labels["duration"])
 	assert.Equal(t, "app.example.com", entries[0].Labels["host"])
+	assert.Equal(t, "my-app", entries[0].Labels["proxy"])
 	assert.NotContains(t, entries[0].Labels, "k8s_pod_name")
+	assert.NotContains(t, entries[0].Labels, "route_name")
 	assert.True(t, entries[0].Time.Equal(time.Unix(0, 1700000000000000000).UTC()))
 }
 

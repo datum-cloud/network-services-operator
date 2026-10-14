@@ -185,13 +185,14 @@ Custom hostnames:
 ## Access logs
 
 ```sh
-datumctl alb logs my-app
+datumctl alb logs
+datumctl alb logs my-app other-app --code 502
 datumctl alb logs my-app --since 1h --limit 50
 datumctl alb logs my-app --method GET --code 500 --code 502
 datumctl alb logs my-app --host app.example.com --follow
 ```
 
-Rows come from the same project logs API the cloud portal uses, pinned to this load balancer. `--method` and `--code` filter in the query; `--host` filters after fetch. `--follow` polls for new lines (there is no live tail). `-o wide` adds request id and upstream.
+Rows come from the same project logs API the cloud portal uses. With no name, logs from every load balancer in the project are aggregated and a `PROXY` column shows which one served each request; pass one or more names to narrow to those. `--method` and `--code` filter in the query; `--host` filters after fetch. `--follow` polls for new lines (there is no live tail). `-o wide` adds request id and upstream.
 
 ## Traffic protection
 

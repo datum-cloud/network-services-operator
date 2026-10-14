@@ -14,7 +14,9 @@ spec:
     - networking.datumapis.com/connectors.watch
     - networking.datumapis.com/connectoradvertisements.list
     - networking.datumapis.com/connectoradvertisements.get
+    - networking.datumapis.com/connectoradvertisements/status.get
     - networking.datumapis.com/connectoradvertisements.watch
     - networking.datumapis.com/connectorclasses.list
     - networking.datumapis.com/connectorclasses.get
+    - networking.datumapis.com/connectorclasses/status.get
     - networking.datumapis.com/connectorclasses.watch

@@ -13,6 +13,7 @@ agent in `../agent`. Connectors are not covered yet.
 | `skills/*.md` | Skills. Procedures, fetched on demand. |
 | `embed.go` | Embeds both into `cmd/network-mcp`. |
 | `../../internal/networkagent` | The reason catalog, the diagnosis walks and the tools. |
+| `../../pkg/networkagent` | A re-export of the tools for MCP servers outside this module. datum-mcp mounts them from here, so it runs the same diagnosis on a customer's machine that the assistant runs in-cluster. |
 | `../../internal/mcpserver` | Caller identity, project routing and document serving, shared with `alb-mcp`. |
 | `../../config/components/network-mcp` | The deployment. |
 | `../../config/components/assistant-capability/network-service-agent*.yaml` | Registration with the service catalog. |

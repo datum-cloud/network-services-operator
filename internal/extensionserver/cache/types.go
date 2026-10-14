@@ -16,14 +16,17 @@ import (
 // every PostTranslateModify call from the warm informer cache — no API
 // round-trips during hook processing.
 //
-// Keys use upstream namespace names (not cluster-qualified names) because in
-// Datum's Milo architecture project namespace names are globally unique across
-// clusters (they are derived from project identifiers). BuildPolicyIndex
-// merges data from all engaged clusters into this flat structure.
+// Per-proxy lookups are keyed by the downstream replica namespace the
+// HTTPProxy lives in on the edge (ns-<project-uid>). That name is unique per
+// tenant on an edge and is the namespace segment Envoy Gateway writes into
+// every cluster and route name, so a lookup from an xDS resource needs no
+// translation. The upstream project namespace is not usable as a key: every
+// project control plane names it "default", so two projects owning an
+// HTTPProxy of the same name would collide and the last one listed would win.
 type PolicyIndex struct {
 	// DStoUS maps the downstream namespace name (as it appears in EG VH
-	// filter_metadata) to the upstream namespace name used to key TPPs and
-	// Connectors. Two resolution strategies:
+	// filter_metadata) to the upstream namespace name it replicates. Two
+	// resolution strategies:
 	//
 	//   Two-cluster edge (production): replica namespaces carry
 	//   meta.datumapis.com/upstream-namespace stamped by mappednamespace.go.
@@ -35,7 +38,9 @@ type PolicyIndex struct {
 	//   same cluster. EG puts the plain namespace name in filter_metadata so
 	//   dsNS == ns.Name. Identity entry: ns.Name → ns.Name.
 	//
-	// Values are upstream namespace names; they key into TPPs and Connectors.
+	// Presence of a key marks a namespace the edge knows about; the mutation
+	// layer uses that to skip VirtualHosts that are not NSO-owned. No lookup
+	// in this index is keyed by the value.
 	DStoUS map[string]string
 
 	// ProjectNames maps downstream namespace names to the project name for that
@@ -59,14 +64,15 @@ type PolicyIndex struct {
 	// same order, so the position is the rule index in route and cluster names.
 	HTTPProxyRules map[HTTPProxyKey][]string
 
-	// Connectors maps (upstreamNS, httpProxyName, ruleIndex) to ConnectorInfo.
-	// Only populated for HTTPProxy rules that have a Connector backend.
-	// Accumulated across all engaged clusters.
+	// Connectors maps (downstream replica namespace, httpProxyName, ruleIndex)
+	// to ConnectorInfo. Only populated for HTTPProxy rules that have a
+	// Connector backend. Accumulated across all engaged clusters.
 	Connectors map[ConnectorKey]ConnectorInfo
 
-	// VPCPods maps (upstreamNS, httpProxyName, ruleIndex) to VPCPodInfo. Only
-	// populated for HTTPProxy rules that have a vpcPod backend. Accumulated
-	// across all engaged clusters, same shape as Connectors.
+	// VPCPods maps (downstream replica namespace, httpProxyName, ruleIndex) to
+	// VPCPodInfo. Only populated for HTTPProxy rules that have a vpcPod
+	// backend. Accumulated across all engaged clusters, same shape as
+	// Connectors.
 	VPCPods map[VPCPodKey]VPCPodInfo
 
 	VPCPodBackends map[VPCPodBackendKey]VPCPodInfo
@@ -108,15 +114,16 @@ type ConnectorInfo struct {
 }
 
 // ConnectorKey uniquely identifies an HTTPProxy rule that has a Connector
-// backend. In Datum's Milo architecture upstream namespace names are globally
-// unique, so no cluster qualifier is needed in the key.
+// backend.
 type ConnectorKey struct {
-	// UpstreamNS is the effective upstream namespace name resolved from the
-	// HTTPProxy's UpstreamOwnerNamespaceLabel (two-cluster) or proxy.Namespace
-	// (single-cluster). It matches the value stored in DStoUS and the key used
-	// for connector resolution. TPPs are keyed by downstream replica namespace
-	// instead, because that is the tenant-unique identity used by Envoy.
-	UpstreamNS    string
+	// Namespace is the namespace the HTTPProxy lives in on the edge: the
+	// replica namespace ns-<project-uid> in the two-cluster topology, or the
+	// proxy's own namespace in single-cluster mode. It is the namespace
+	// segment of the Envoy cluster name "httproute/<ns>/<proxy>/rule/<n>",
+	// and it is unique per tenant on an edge, which the upstream project
+	// namespace (commonly "default" for every project) is not. TPPs are keyed
+	// the same way.
+	Namespace     string
 	HTTPProxyName string
 	RuleIndex     int
 }
@@ -158,13 +165,16 @@ type VPCPodInfo struct {
 // VPCPodKey uniquely identifies an HTTPProxy rule that has a vpcPod backend.
 // Same shape and namespace-keying rationale as ConnectorKey.
 type VPCPodKey struct {
-	UpstreamNS    string
+	Namespace     string
 	HTTPProxyName string
 	RuleIndex     int
 }
 
+// VPCPodBackendKey identifies one backend of an HTTPProxy rule, matching the
+// per-backend cluster name "httproute/<ns>/<proxy>/rule/<n>/backend/<i>".
+// Same namespace-keying rationale as ConnectorKey.
 type VPCPodBackendKey struct {
-	UpstreamNS    string
+	Namespace     string
 	HTTPProxyName string
 	RuleIndex     int
 	BackendIndex  int

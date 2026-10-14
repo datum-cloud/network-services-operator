@@ -10,6 +10,7 @@ import (
 	discoveryv1 "k8s.io/api/discovery/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	clusterv3 "github.com/envoyproxy/go-control-plane/envoy/config/cluster/v3"
@@ -34,7 +35,7 @@ func vpcPodPolicyIndex(tenantID string) *extcache.PolicyIndex {
 		DStoUS: map[string]string{testDSNS: testUpstreamNS},
 		VPCPods: map[extcache.VPCPodKey]extcache.VPCPodInfo{
 			{
-				UpstreamNS:    testUpstreamNS,
+				Namespace:     testDSNS,
 				HTTPProxyName: testProxyName,
 				RuleIndex:     0,
 			}: {TenantID: tenantID},
@@ -300,9 +301,9 @@ func TestApplyVPCPodSocketBind_BindsPerBackendClusters(t *testing.T) {
 	idx := &extcache.PolicyIndex{
 		DStoUS: map[string]string{testDSNS: testUpstreamNS},
 		VPCPodBackends: map[extcache.VPCPodBackendKey]extcache.VPCPodInfo{
-			{UpstreamNS: testUpstreamNS, HTTPProxyName: testProxyName, RuleIndex: 0, BackendIndex: 0}: {TenantID: testTenantID},
-			{UpstreamNS: testUpstreamNS, HTTPProxyName: testProxyName, RuleIndex: 0, BackendIndex: 1}: {TenantID: otherTenantID},
-			{UpstreamNS: testUpstreamNS, HTTPProxyName: testProxyName, RuleIndex: 0, BackendIndex: 2}: {},
+			{Namespace: testDSNS, HTTPProxyName: testProxyName, RuleIndex: 0, BackendIndex: 0}: {TenantID: testTenantID},
+			{Namespace: testDSNS, HTTPProxyName: testProxyName, RuleIndex: 0, BackendIndex: 1}: {TenantID: otherTenantID},
+			{Namespace: testDSNS, HTTPProxyName: testProxyName, RuleIndex: 0, BackendIndex: 2}: {},
 		},
 	}
 
@@ -424,5 +425,139 @@ func TestApplyVPCPodSocketBind_MultipleNetworkServiceBackendsEndToEnd(t *testing
 		opts := cluster.GetUpstreamBindConfig().GetSocketOptions()
 		require.Len(t, opts, 1, cluster.GetName())
 		assert.Equal(t, "G002wJqT7dV", string(opts[0].GetBufValue()), cluster.GetName())
+	}
+}
+
+// collisionProjectVPCBackend returns the objects one project contributes to
+// the two-project collision scenario (#641): a replica namespace replicating
+// from upstream "default", an HTTPProxy named like the other project's, and
+// the EndpointSlices that resolve its single backend to tenantID. instance
+// selects the backend kind: an instance backend reads the tenant off the
+// slice it names, a networkService backend joins it by member address.
+func collisionProjectVPCBackend(ns, tenantID, address string, instance bool) []client.Object {
+	const instanceName = "milo-os-com-default-us-central-1-0"
+	replicaLabels := map[string]string{downstreamclient.UpstreamOwnerNamespaceLabel: "default"}
+
+	backend := networkingv1alpha.HTTPProxyRuleBackend{
+		NetworkService: &networkingv1alpha.NetworkServiceBackendRef{Name: "svc", Port: "http"},
+	}
+	if instance {
+		backend = networkingv1alpha.HTTPProxyRuleBackend{
+			Instance: &networkingv1alpha.InstanceBackendRef{Name: instanceName, Port: 4321},
+		}
+	}
+
+	objects := []client.Object{
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns, Labels: replicaLabels}},
+		&networkingv1alpha.HTTPProxy{
+			ObjectMeta: metav1.ObjectMeta{Name: collisionProxyName, Namespace: ns, Labels: replicaLabels},
+			Spec: networkingv1alpha.HTTPProxySpec{
+				Rules: []networkingv1alpha.HTTPProxyRule{{Backends: []networkingv1alpha.HTTPProxyRuleBackend{backend}}},
+			},
+		},
+		&discoveryv1.EndpointSlice{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      instanceName,
+				Namespace: ns,
+				Labels:    map[string]string{extcache.VPCPodTenantIDLabel: tenantID},
+			},
+			AddressType: discoveryv1.AddressTypeIPv6,
+			Endpoints:   []discoveryv1.Endpoint{{Addresses: []string{address}}},
+		},
+	}
+	if !instance {
+		objects = append(objects, &discoveryv1.EndpointSlice{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "route-rule-0-backendref-0",
+				Namespace: ns,
+				Labels:    map[string]string{downstreamclient.UpstreamOwnerNameLabel: collisionProxyName + "-0-0"},
+			},
+			AddressType: discoveryv1.AddressTypeIPv6,
+			Endpoints:   []discoveryv1.Endpoint{{Addresses: []string{address}}},
+		})
+	}
+	return objects
+}
+
+const (
+	collisionProxyName = "milo-os-com"
+	collisionNSA       = "ns-cb9bbac3"
+	collisionNSB       = "ns-4115fd8a"
+	collisionTenantA   = "2wJqT7d-9xKp2Qm"
+	collisionTenantB   = "5hLm3Xc-9xKp2Qm"
+	collisionDeviceA   = "G002wJqT7dV"
+	collisionDeviceB   = "G005hLm3XcV"
+)
+
+func collisionTestScheme(t *testing.T) *runtime.Scheme {
+	t.Helper()
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	require.NoError(t, discoveryv1.AddToScheme(scheme))
+	require.NoError(t, networkingv1alpha.AddToScheme(scheme))
+	require.NoError(t, networkingv1alpha1.AddToScheme(scheme))
+	return scheme
+}
+
+// TestApplyVPCPodSocketBind_SameProxyNameAcrossProjects reproduces #641: two
+// projects own an HTTPProxy with the same name, both replicated from an
+// upstream namespace called "default", each backed by a workload on its own
+// VPC. Each project's cluster must bind to its own VRF device, whichever
+// project the cache lists first and whichever cluster Envoy Gateway emits
+// first. Before the fix the index was keyed by the upstream namespace, so the
+// second project listed overwrote the first and one cluster was bound to the
+// other tenant's device.
+func TestApplyVPCPodSocketBind_SameProxyNameAcrossProjects(t *testing.T) {
+	for _, backend := range []struct {
+		name     string
+		instance bool
+	}{
+		{"instance", true},
+		{"networkService", false},
+	} {
+		t.Run(backend.name, func(t *testing.T) {
+			projectA := collisionProjectVPCBackend(collisionNSA, collisionTenantA, "fd20:0:e::1:0:0", backend.instance)
+			projectB := collisionProjectVPCBackend(collisionNSB, collisionTenantB, "fd20:0:30::1:0:0", backend.instance)
+
+			for _, order := range []struct {
+				name    string
+				objects []client.Object
+			}{
+				{"a then b", append(append([]client.Object{}, projectA...), projectB...)},
+				{"b then a", append(append([]client.Object{}, projectB...), projectA...)},
+			} {
+				t.Run(order.name, func(t *testing.T) {
+					cl := fake.NewClientBuilder().WithScheme(collisionTestScheme(t)).WithObjects(order.objects...).Build()
+					idx, err := extcache.BuildPolicyIndexFromClient(context.Background(), cl, nil)
+					require.NoError(t, err)
+
+					clusterA := "httproute/" + collisionNSA + "/" + collisionProxyName + "/rule/0"
+					clusterB := "httproute/" + collisionNSB + "/" + collisionProxyName + "/rule/0"
+					clusters := []*clusterv3.Cluster{
+						{Name: clusterB},
+						{Name: clusterA},
+						{Name: clusterA + "/backend/0"},
+						{Name: clusterB + "/backend/0"},
+					}
+
+					mutated, err := ApplyVPCPodSocketBind(clusters, idx)
+					require.NoError(t, err)
+					require.Equal(t, 4, mutated)
+
+					want := map[string]string{
+						clusterA:                collisionDeviceA,
+						clusterB:                collisionDeviceB,
+						clusterA + "/backend/0": collisionDeviceA,
+						clusterB + "/backend/0": collisionDeviceB,
+					}
+					for _, cluster := range clusters {
+						opts := cluster.GetUpstreamBindConfig().GetSocketOptions()
+						require.Len(t, opts, 1, cluster.GetName())
+						assert.Equal(t, want[cluster.GetName()], string(opts[0].GetBufValue()),
+							"%s must bind to its own project's VRF device", cluster.GetName())
+					}
+				})
+			}
+		})
 	}
 }

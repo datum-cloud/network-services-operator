@@ -1,9 +1,23 @@
 import { NetworkTable } from './network-table';
+import * as api from '../lib/api';
 import type { Network } from '../schema';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, useLocation } from 'react-router';
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+vi.mock('../lib/api', async () => {
+  const actual = await vi.importActual<typeof api>('../lib/api');
+  return { ...actual, useDeleteNetwork: vi.fn() };
+});
+
+const useDeleteNetworkMock = vi.mocked(api.useDeleteNetwork);
+const deleteMock = vi.fn();
+
+beforeEach(() => {
+  deleteMock.mockReset().mockResolvedValue(undefined);
+  useDeleteNetworkMock.mockReset().mockReturnValue({ mutateAsync: deleteMock } as never);
+});
 
 function LocationDisplay() {
   return <div data-testid="location-display">{useLocation().pathname}</div>;
@@ -31,74 +45,71 @@ function makeNetwork(overrides: Partial<Network>): Network {
   };
 }
 
+function bodyRows(): HTMLElement[] {
+  const table = within(screen.getByTestId('networking-plugin-network-table'));
+  return table.queryAllByRole('row').filter((row) => within(row).queryAllByRole('link').length > 0);
+}
+
+function rowNames(): string[] {
+  return bodyRows().map((row) => within(row).getByRole('link').textContent ?? '');
+}
+
+function rowFor(name: string): HTMLElement {
+  return screen.getByRole('link', { name }).closest('tr') as HTMLElement;
+}
+
+function openRowMenu(name: string) {
+  fireEvent.click(within(rowFor(name)).getByRole('button', { name: 'Actions' }));
+}
+
+const location = () => screen.getByTestId('location-display');
+
 describe('NetworkTable', () => {
-  it('renders zero rows', () => {
+  it('shows no rows when there are no networks', () => {
     renderTable(<NetworkTable networks={[]} />);
-    expect(screen.queryAllByTestId('network-table-row')).toHaveLength(0);
+    expect(bodyRows()).toHaveLength(0);
   });
 
-  it('renders one row', () => {
-    renderTable(<NetworkTable networks={[makeNetwork({ name: 'default' })]} />);
-    const rows = screen.getAllByTestId('network-table-row');
-    expect(rows).toHaveLength(1);
-    expect(within(rows[0]).getByText('default')).toBeInTheDocument();
+  it('renders a row per network, sorted by name', () => {
+    renderTable(
+      <NetworkTable
+        networks={[
+          makeNetwork({ name: 'zeta', uid: '1' }),
+          makeNetwork({ name: 'alpha', uid: '2' }),
+          makeNetwork({ name: 'mu', uid: '3' }),
+        ]}
+      />
+    );
+    expect(rowNames()).toEqual(['alpha', 'mu', 'zeta']);
   });
 
-  it('renders N rows', () => {
-    const networks = [
-      makeNetwork({ name: 'zeta', uid: '1' }),
-      makeNetwork({ name: 'alpha', uid: '2' }),
-      makeNetwork({ name: 'mu', uid: '3' }),
-    ];
-    renderTable(<NetworkTable networks={networks} />);
-    expect(screen.getAllByTestId('network-table-row')).toHaveLength(3);
+  it('reverses the name sort from the header', () => {
+    renderTable(
+      <NetworkTable
+        networks={[makeNetwork({ name: 'zeta', uid: '1' }), makeNetwork({ name: 'alpha', uid: '2' })]}
+      />
+    );
+    fireEvent.click(screen.getByRole('button', { name: /^Sort by Name/ }));
+    expect(rowNames()).toEqual(['zeta', 'alpha']);
   });
 
-  it('sorts by name ascending by default', () => {
-    const networks = [
-      makeNetwork({ name: 'zeta', uid: '1' }),
-      makeNetwork({ name: 'alpha', uid: '2' }),
-      makeNetwork({ name: 'mu', uid: '3' }),
-    ];
-    renderTable(<NetworkTable networks={networks} />);
-    const rows = screen.getAllByTestId('network-table-row');
-    expect(within(rows[0]).getByText('alpha')).toBeInTheDocument();
-    expect(within(rows[1]).getByText('mu')).toBeInTheDocument();
-    expect(within(rows[2]).getByText('zeta')).toBeInTheDocument();
-  });
-
-  it('reverses name sort on second click', () => {
-    const networks = [
-      makeNetwork({ name: 'zeta', uid: '1' }),
-      makeNetwork({ name: 'alpha', uid: '2' }),
-    ];
-    renderTable(<NetworkTable networks={networks} />);
-    const nameHeader = screen.getByLabelText('Sort by Name');
-    fireEvent.click(nameHeader);
-
-    const rows = screen.getAllByTestId('network-table-row');
-    expect(within(rows[0]).getByText('zeta')).toBeInTheDocument();
-    expect(within(rows[1]).getByText('alpha')).toBeInTheDocument();
-  });
-
-  it('sorts by Ready status: not-ready first, then unknown, then ready', () => {
-    const networks = [
-      makeNetwork({ name: 'ready-net', uid: '1', readyStatus: 'True' }),
-      makeNetwork({ name: 'unready-net', uid: '2', readyStatus: 'False', readyReason: 'IPv6Required' }),
-      makeNetwork({ name: 'unknown-net', uid: '3', readyStatus: 'Unknown' }),
-    ];
-    renderTable(<NetworkTable networks={networks} />);
-    const readyHeader = screen.getByLabelText('Sort by Ready');
-    fireEvent.click(readyHeader);
-
-    const rows = screen.getAllByTestId('network-table-row');
-    expect(within(rows[0]).getByText('unready-net')).toBeInTheDocument();
-    expect(within(rows[1]).getByText('unknown-net')).toBeInTheDocument();
-    expect(within(rows[2]).getByText('ready-net')).toBeInTheDocument();
+  it('sorts by status: not-ready first, then unknown, then ready', () => {
+    renderTable(
+      <NetworkTable
+        networks={[
+          makeNetwork({ name: 'ready-net', uid: '1', readyStatus: 'True' }),
+          makeNetwork({ name: 'unready-net', uid: '2', readyStatus: 'False', readyReason: 'IPv6Required' }),
+          makeNetwork({ name: 'unknown-net', uid: '3', readyStatus: 'Unknown' }),
+        ]}
+      />
+    );
+    fireEvent.click(screen.getByRole('button', { name: /^Sort by Status/ }));
+    expect(rowNames()).toEqual(['unready-net', 'unknown-net', 'ready-net']);
   });
 
   it('shows plain-language reason text for a not-ready network, not the raw reason', () => {
-    renderTable(<NetworkTable
+    renderTable(
+      <NetworkTable
         networks={[makeNetwork({ name: 'n', readyStatus: 'False', readyReason: 'IPv6Required' })]}
       />
     );
@@ -111,7 +122,30 @@ describe('NetworkTable', () => {
     expect(screen.getByText('Unknown')).toBeInTheDocument();
   });
 
-  it('shows an Enable IPv6 action only for a network missing IPv6', () => {
+  it('filters rows via the search box', async () => {
+    renderTable(
+      <NetworkTable
+        networks={[makeNetwork({ name: 'prod-net', uid: '1' }), makeNetwork({ name: 'staging-net', uid: '2' })]}
+      />
+    );
+    fireEvent.change(screen.getByPlaceholderText('Search networks'), { target: { value: 'prod' } });
+    await waitFor(() => expect(rowNames()).toEqual(['prod-net']));
+  });
+
+  it('opens the network when a row is clicked', () => {
+    renderTable(<NetworkTable networks={[makeNetwork({ name: 'prod-net' })]} />);
+    fireEvent.click(within(rowFor('prod-net')).getAllByRole('cell')[1]);
+    expect(location()).toHaveTextContent('/project/demo-project/services/networking/networks/prod-net');
+  });
+
+  it('opens the network from the View action', () => {
+    renderTable(<NetworkTable networks={[makeNetwork({ name: 'prod-net' })]} />);
+    openRowMenu('prod-net');
+    fireEvent.click(screen.getByRole('button', { name: 'View' }));
+    expect(location()).toHaveTextContent('/project/demo-project/services/networking/networks/prod-net');
+  });
+
+  it('offers Enable IPv6 only for a network missing IPv6', () => {
     renderTable(
       <NetworkTable
         networks={[
@@ -121,53 +155,28 @@ describe('NetworkTable', () => {
         projectId="demo-project"
       />
     );
-    const v4OnlyRow = screen.getByText('v4-only').closest('tr') as HTMLElement;
-    const dualStackRow = screen.getByText('dual-stack').closest('tr') as HTMLElement;
-    expect(within(v4OnlyRow).getByRole('button', { name: 'Enable IPv6' })).toBeInTheDocument();
-    expect(within(dualStackRow).queryByRole('button', { name: 'Enable IPv6' })).not.toBeInTheDocument();
-  });
+    openRowMenu('dual-stack');
+    expect(screen.queryByRole('button', { name: 'Enable IPv6' })).not.toBeInTheDocument();
+    openRowMenu('dual-stack');
 
-  it('filters rows by name via the search box', () => {
-    const networks = [
-      makeNetwork({ name: 'prod-net', uid: '1' }),
-      makeNetwork({ name: 'staging-net', uid: '2' }),
-    ];
-    renderTable(<NetworkTable networks={networks} />);
-    fireEvent.change(screen.getByLabelText('Search networks'), { target: { value: 'prod' } });
-
-    const rows = screen.getAllByTestId('network-table-row');
-    expect(rows).toHaveLength(1);
-    expect(within(rows[0]).getByText('prod-net')).toBeInTheDocument();
-  });
-
-  it('shows the total count regardless of the active filter', () => {
-    const networks = [
-      makeNetwork({ name: 'prod-net', uid: '1' }),
-      makeNetwork({ name: 'staging-net', uid: '2' }),
-    ];
-    renderTable(<NetworkTable networks={networks} />);
-    fireEvent.change(screen.getByLabelText('Search networks'), { target: { value: 'prod' } });
-
-    expect(screen.getByText('2')).toBeInTheDocument();
-  });
-
-  it('navigates to the network detail page when a row is clicked', () => {
-    renderTable(<NetworkTable networks={[makeNetwork({ name: 'prod-net' })]} />);
-    fireEvent.click(screen.getByTestId('network-table-row'));
-
-    expect(screen.getByTestId('location-display')).toHaveTextContent(
-      '/project/demo-project/services/networking/networks/prod-net'
-    );
-  });
-
-  it('does not navigate when the Enable IPv6 action is clicked', () => {
-    renderTable(
-      <NetworkTable networks={[makeNetwork({ name: 'v4-only', ipFamilies: ['IPv4'] })]} />
-    );
+    openRowMenu('v4-only');
     fireEvent.click(screen.getByRole('button', { name: 'Enable IPv6' }));
+    expect(screen.getByText(/Adds IPv6 to v4-only's address families/)).toBeInTheDocument();
+    expect(location()).toHaveTextContent(/\/networks$/);
+  });
 
-    expect(screen.getByTestId('location-display')).toHaveTextContent(
-      '/project/demo-project/services/networking/networks'
-    );
+  it('deletes a network from the row menu once DELETE is typed', async () => {
+    renderTable(<NetworkTable networks={[makeNetwork({ name: 'prod-net' })]} projectId="demo-project" />);
+    openRowMenu('prod-net');
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+
+    const dialog = within(await screen.findByRole('dialog'));
+    const confirm = dialog.getByRole('button', { name: 'Delete' });
+    expect(confirm).toBeDisabled();
+    fireEvent.change(dialog.getByPlaceholderText('Type in here...'), { target: { value: 'DELETE' } });
+    fireEvent.click(confirm);
+
+    await waitFor(() => expect(deleteMock).toHaveBeenCalledWith('prod-net'));
+    expect(location()).toHaveTextContent(/\/networks$/);
   });
 });

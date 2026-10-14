@@ -70,7 +70,7 @@ func newReachability(t *testing.T) *reachability {
 		namespace: namespace,
 		writeBack: &VPCEndpointSliceWriteBackReconciler{
 			Location:    config.LocationConfig{Name: testLocationName},
-			HubCluster:  &hubFakeCluster{scheme: hubPlane.Scheme(), client: hubPlane},
+			HubCluster:  &planeCluster{scheme: hubPlane.Scheme(), client: hubPlane},
 			localReader: cellPlane,
 		},
 	}

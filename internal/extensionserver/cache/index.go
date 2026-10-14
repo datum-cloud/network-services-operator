@@ -132,9 +132,11 @@ func populateFromClient(ctx context.Context, cl client.Client, idx *PolicyIndex,
 	}
 	for i := range proxyList.Items {
 		proxy := &proxyList.Items[i]
-		// Resolve the effective upstream namespace for the ConnectorKey, consistent
-		// with TPP indexing above. In two-cluster replica HTTPProxies carry
-		// UpstreamOwnerNamespaceLabel; in single-cluster fall back to proxy.Namespace.
+		// Key every per-rule lookup by proxy.Namespace, the replica namespace
+		// this HTTPProxy lives in on the edge, consistent with TPP indexing
+		// above. The upstream namespace label is deliberately not used: it is
+		// "default" for every project, so two projects with an HTTPProxy of the
+		// same name would overwrite each other's entry.
 		ruleNames := make([]string, len(proxy.Spec.Rules))
 		for i, rule := range proxy.Spec.Rules {
 			if rule.Name != nil {
@@ -142,15 +144,11 @@ func populateFromClient(ctx context.Context, cl client.Client, idx *PolicyIndex,
 			}
 		}
 		idx.HTTPProxyRules[HTTPProxyKey{Namespace: proxy.Namespace, Name: proxy.Name}] = ruleNames
-		effectiveNS := proxy.Labels[downstreamclient.UpstreamOwnerNamespaceLabel]
-		if effectiveNS == "" {
-			effectiveNS = proxy.Namespace
-		}
 		for ruleIndex, rule := range proxy.Spec.Rules {
 			var ruleTenants []tenantResolution
 			for backendIndex, backend := range rule.Backends {
 				backendKey := VPCPodBackendKey{
-					UpstreamNS:    effectiveNS,
+					Namespace:     proxy.Namespace,
 					HTTPProxyName: proxy.Name,
 					RuleIndex:     ruleIndex,
 					BackendIndex:  backendIndex,
@@ -164,7 +162,7 @@ func populateFromClient(ctx context.Context, cl client.Client, idx *PolicyIndex,
 					}
 
 					key := ConnectorKey{
-						UpstreamNS:    effectiveNS,
+						Namespace:     proxy.Namespace,
 						HTTPProxyName: proxy.Name,
 						RuleIndex:     ruleIndex,
 					}
@@ -230,7 +228,7 @@ func populateFromClient(ctx context.Context, cl client.Client, idx *PolicyIndex,
 
 			if len(ruleTenants) > 0 {
 				idx.VPCPods[VPCPodKey{
-					UpstreamNS:    effectiveNS,
+					Namespace:     proxy.Namespace,
 					HTTPProxyName: proxy.Name,
 					RuleIndex:     ruleIndex,
 				}] = VPCPodInfo{TenantID: mergeTenants(ruleTenants).tenantID}

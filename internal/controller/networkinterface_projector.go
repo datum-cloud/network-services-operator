@@ -10,6 +10,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
@@ -17,6 +18,7 @@ import (
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	"go.datum.net/network-services-operator/internal/downstreamclient"
+	"go.datum.net/network-services-operator/internal/util/finalizer"
 )
 
 // NetworkInterfaceProjector hands a cell's published interfaces to the project
@@ -29,7 +31,7 @@ import (
 type NetworkInterfaceProjector struct {
 	Projects ProjectClusterResolver
 
-	hub client.Client
+	hub cluster.Cluster
 }
 
 // networkInterfaceProjectionFinalizer holds a published interface on the hub
@@ -42,13 +44,15 @@ type NetworkInterfaceProjector struct {
 // controller that knows both planes does the cleanup while it still can.
 const networkInterfaceProjectionFinalizer = "networking.datumapis.com/networkinterface-projection"
 
+const networkInterfaceProjectorControllerName = "networkinterface_projector"
+
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkinterfaces,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkinterfaces/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networks,verbs=get;list;watch
 
 func (r *NetworkInterfaceProjector) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var published networkingv1alpha.NetworkInterface
-	if err := r.hub.Get(ctx, req.NamespacedName, &published); err != nil {
+	if err := r.hub.GetClient().Get(ctx, req.NamespacedName, &published); err != nil {
 		// A published interface that has finished going leaves nothing here to
 		// route by. Its copy was collected while it was still held, under the
 		// finalizer below.
@@ -63,10 +67,9 @@ func (r *NetworkInterfaceProjector) Reconcile(ctx context.Context, req ctrl.Requ
 		return ctrl.Result{}, r.teardown(ctx, &published)
 	}
 
-	if controllerutil.AddFinalizer(&published, networkInterfaceProjectionFinalizer) {
-		if err := r.hub.Update(ctx, &published); err != nil {
-			return ctrl.Result{}, fmt.Errorf("failed holding the published interface for its copy: %w", err)
-		}
+	if err := finalizer.Add(ctx, r.hub.GetClient(), &published, networkInterfaceProjectionFinalizer,
+		fieldOwner(networkInterfaceProjectorControllerName)); err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed holding the published interface for its copy: %w", err)
 	}
 
 	// A name held by a copy that is being torn down is a state to come back to,
@@ -98,7 +101,7 @@ func (r *NetworkInterfaceProjector) project(
 			published.Namespace, published.Name)
 	}
 
-	projectClient, err := r.Projects.ClientForProject(ctx, project)
+	projectCluster, err := r.Projects.ClusterForProject(ctx, project)
 	if err != nil {
 		// A project the manager no longer engages has no control plane to write
 		// to, and nothing to see the copy if it did.
@@ -109,6 +112,7 @@ func (r *NetworkInterfaceProjector) project(
 		}
 		return fmt.Errorf("failed reaching project %q: %w", project, err)
 	}
+	projectClient := projectCluster.GetClient()
 
 	key := client.ObjectKey{Namespace: namespace, Name: published.Name}
 
@@ -122,7 +126,7 @@ func (r *NetworkInterfaceProjector) project(
 		if apierrors.IsNotFound(err) {
 			logger.Info("collecting an interface copy whose network is gone",
 				"namespace", namespace, jsonKeyName, published.Name)
-			return collectProjection(ctx, projectClient, key)
+			return collectProjection(ctx, projectCluster, key)
 		}
 		return fmt.Errorf("failed reading network %q: %w", networkKey, err)
 	}
@@ -134,7 +138,8 @@ func (r *NetworkInterfaceProjector) project(
 		return controllerutil.SetOwnerReference(&network, copied, projectClient.Scheme())
 	}
 
-	return writeProjection(ctx, projectClient, namespace, desired, nil, owner)
+	return writeProjection(ctx, projectCluster, fieldOwner(networkInterfaceProjectorControllerName),
+		namespace, desired, nil, owner)
 }
 
 // teardown collects the copy a published interface on its way out was handed to
@@ -155,11 +160,11 @@ func (r *NetworkInterfaceProjector) teardown(
 	// manager no longer engages has no control plane left holding a copy. Neither
 	// leaves anything to collect, and neither may hold the original open.
 	if project != "" && namespace != "" {
-		projectClient, err := r.Projects.ClientForProject(ctx, project)
+		projectCluster, err := r.Projects.ClusterForProject(ctx, project)
 		switch {
 		case err == nil:
 			key := client.ObjectKey{Namespace: namespace, Name: published.Name}
-			if err := collectProjection(ctx, projectClient, key); err != nil {
+			if err := collectProjection(ctx, projectCluster, key); err != nil {
 				return err
 			}
 		case errors.Is(err, multicluster.ErrClusterNotFound):
@@ -170,10 +175,9 @@ func (r *NetworkInterfaceProjector) teardown(
 		}
 	}
 
-	if controllerutil.RemoveFinalizer(published, networkInterfaceProjectionFinalizer) {
-		if err := r.hub.Update(ctx, published); err != nil {
-			return fmt.Errorf("failed releasing the published interface: %w", err)
-		}
+	if err := finalizer.Remove(ctx, r.hub, published, networkInterfaceProjectionFinalizer,
+		fieldOwner(networkInterfaceProjectorControllerName)); err != nil {
+		return fmt.Errorf("failed releasing the published interface: %w", err)
 	}
 
 	return nil
@@ -181,10 +185,10 @@ func (r *NetworkInterfaceProjector) teardown(
 
 // SetupWithManager registers the projector against the hub the manager runs in.
 func (r *NetworkInterfaceProjector) SetupWithManager(mgr manager.Manager) error {
-	r.hub = mgr.GetClient()
+	r.hub = mgr
 
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&networkingv1alpha.NetworkInterface{}).
-		Named("networkinterface_projector").
+		Named(networkInterfaceProjectorControllerName).
 		Complete(r)
 }

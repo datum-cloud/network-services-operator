@@ -4,13 +4,11 @@ rule_files:
 evaluation_interval: 30s
 
 tests:
-  # Test for GatewayNotReadySLOViolation - Gateway created more than 60s ago but not ready
+  # GatewayNotReadySLOViolation: created 120 s ago, Accepted but not Programmed
   - interval: 1m
     input_series:
-      # Gateway created 120 seconds ago (eval_time 60s - 120s = timestamp -60)
       - series: 'datum_cloud_networking_gateway_created{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="test-gateway"}'
         values: '-60+0x3'
-      # Only has Accepted=1 status, missing Programmed
       - series: 'datum_cloud_networking_gateway_status{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="test-gateway", type="Accepted"}'
         values: '1+0x3'
       - series: 'datum_cloud_networking_gateway_status{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="test-gateway", type="Programmed"}'
@@ -20,24 +18,28 @@ tests:
         alertname: GatewayNotReadySLOViolation
         exp_alerts:
           - exp_labels:
-              severity: critical
-              slo_violation: "true"
+              severity: warning
               service: network-services
-              team: sre
+              team: delivery
+              project: test-project
+              subject_kind: Gateway
+              subject_group: gateway.networking.k8s.io
               resourcemanager_datumapis_com_project_name: test-project
               resource_namespace: test-ns
               resource_name: test-gateway
+              subject: test-project/test-ns/test-gateway
+              subject_name: test-gateway
+              subject_namespace: test-ns
             exp_annotations:
               summary: "Gateway test-gateway is taking longer than 60 seconds to reach Ready status"
               description: "Gateway test-gateway in namespace test-ns has been in creation state for 120 seconds without reaching Ready status (Accepted=True AND Programmed=True), which exceeds the 60-second SLO threshold."
+              runbook_url: "https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/gateway-readiness.md#gatewaynotreadysloviolation"
 
-  # Test for GatewayNotReadySLOViolation - Gateway ready (should NOT alert)
+  # GatewayNotReadySLOViolation: Ready, so no alert
   - interval: 1m
     input_series:
-      # Gateway created 120 seconds ago
       - series: 'datum_cloud_networking_gateway_created{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="ready-gateway"}'
         values: '-60+0x3'
-      # Both statuses are 1 (Ready)
       - series: 'datum_cloud_networking_gateway_status{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="ready-gateway", type="Accepted"}'
         values: '1+0x3'
       - series: 'datum_cloud_networking_gateway_status{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="ready-gateway", type="Programmed"}'
@@ -47,13 +49,11 @@ tests:
         alertname: GatewayNotReadySLOViolation
         exp_alerts: []
 
-  # Test for GatewayDegradedSLOViolation - Gateway degraded for more than 60s
+  # GatewayDegradedSLOViolation: Accepted went False 120 s ago
   - interval: 1m
     input_series:
-      # Transition to False 120 seconds ago (eval_time 60s - 120s = timestamp -60)
       - series: 'datum_cloud_networking_gateway_status_condition_last_transition_time{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="degraded-gateway", type="Accepted", status="False"}'
         values: '-60+0x3'
-      # Current status is False (0)
       - series: 'datum_cloud_networking_gateway_status{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="degraded-gateway", type="Accepted"}'
         values: '0+0x3'
       - series: 'datum_cloud_networking_gateway_status{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="degraded-gateway", type="Programmed"}'
@@ -63,21 +63,26 @@ tests:
         alertname: GatewayDegradedSLOViolation
         exp_alerts:
           - exp_labels:
-              severity: critical
-              slo_violation: "true"
+              severity: warning
               service: network-services
-              team: sre
+              team: delivery
+              project: test-project
+              subject_kind: Gateway
+              subject_group: gateway.networking.k8s.io
               resourcemanager_datumapis_com_project_name: test-project
               resource_namespace: test-ns
+              subject_namespace: test-ns
               resource_name: degraded-gateway
+              subject: test-project/test-ns/degraded-gateway
+              subject_name: degraded-gateway
             exp_annotations:
               summary: "Gateway degraded-gateway has been degraded for over 60 seconds"
               description: "Gateway degraded-gateway in namespace test-ns has been in a degraded state for over 60 seconds without recovering, which exceeds the 60-second SLO threshold."
+              runbook_url: "https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/gateway-readiness.md#gatewaydegradedsloviolation"
 
-  # Test for GatewayDegradedSLOViolation - Gateway functional (should NOT alert)
+  # GatewayDegradedSLOViolation: functional, so no alert
   - interval: 1m
     input_series:
-      # Both statuses are 1 (functional)
       - series: 'datum_cloud_networking_gateway_status{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="healthy-gateway", type="Accepted"}'
         values: '1+0x3'
       - series: 'datum_cloud_networking_gateway_status{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="healthy-gateway", type="Programmed"}'
@@ -87,19 +92,193 @@ tests:
         alertname: GatewayDegradedSLOViolation
         exp_alerts: []
 
-  # Edge case test - Gateway created exactly 60s ago (should NOT alert)
+  # Created exactly 60 s ago: no alert
   - interval: 1m
     input_series:
-      # Gateway created exactly 60 seconds ago (time() - created = 60)
-      # If eval_time is 1m (60s), then created should be 0
       - series: 'datum_cloud_networking_gateway_created{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="edge-case-gateway"}'
         values: '0+0x3'
-      # Only has Accepted
       - series: 'datum_cloud_networking_gateway_status{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="edge-case-gateway", type="Accepted"}'
         values: '1+0x3'
       - series: 'datum_cloud_networking_gateway_status{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="edge-case-gateway", type="Programmed"}'
         values: '0+0x3'
     alert_rule_test:
       - eval_time: 1m
+        alertname: GatewayNotReadySLOViolation
+        exp_alerts: []
+
+  # A Ready Gateway reported by two exporter pods: each condition counts once, so neither alert fires
+  - interval: 1m
+    input_series:
+      - series: 'datum_cloud_networking_gateway_created{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="two-pods", pod="a"}'
+        values: '-60+0x3'
+      - series: 'datum_cloud_networking_gateway_created{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="two-pods", pod="b"}'
+        values: '-60+0x3'
+      - series: 'datum_cloud_networking_gateway_status{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="two-pods", type="Accepted", pod="a"}'
+        values: '1+0x3'
+      - series: 'datum_cloud_networking_gateway_status{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="two-pods", type="Programmed", pod="a"}'
+        values: '1+0x3'
+      - series: 'datum_cloud_networking_gateway_status{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="two-pods", type="Accepted", pod="b"}'
+        values: '1+0x3'
+      - series: 'datum_cloud_networking_gateway_status{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="two-pods", type="Programmed", pod="b"}'
+        values: '1+0x3'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: GatewayNotReadySLOViolation
+        exp_alerts: []
+      - eval_time: 1m
+        alertname: GatewayDegradedSLOViolation
+        exp_alerts: []
+
+  # A failure both exporter pods report: one alert per Gateway, not one per pod
+  - interval: 1m
+    input_series:
+      - series: 'datum_cloud_networking_gateway_created{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="two-pods-down", pod="a"}'
+        values: '-60+0x3'
+      - series: 'datum_cloud_networking_gateway_created{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="two-pods-down", pod="b"}'
+        values: '-60+0x3'
+      - series: 'datum_cloud_networking_gateway_status{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="two-pods-down", type="Accepted", pod="a"}'
+        values: '1+0x3'
+      - series: 'datum_cloud_networking_gateway_status{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="two-pods-down", type="Programmed", pod="a"}'
+        values: '0+0x3'
+      - series: 'datum_cloud_networking_gateway_status{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="two-pods-down", type="Accepted", pod="b"}'
+        values: '1+0x3'
+      - series: 'datum_cloud_networking_gateway_status{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="two-pods-down", type="Programmed", pod="b"}'
+        values: '0+0x3'
+      - series: 'datum_cloud_networking_gateway_status_condition_last_transition_time{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="two-pods-down", type="Programmed", status="False", pod="a"}'
+        values: '-60+0x3'
+      - series: 'datum_cloud_networking_gateway_status_condition_last_transition_time{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="two-pods-down", type="Programmed", status="False", pod="b"}'
+        values: '-60+0x3'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: GatewayNotReadySLOViolation
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              service: network-services
+              team: delivery
+              project: test-project
+              subject_kind: Gateway
+              subject_group: gateway.networking.k8s.io
+              resourcemanager_datumapis_com_project_name: test-project
+              resource_namespace: test-ns
+              subject_namespace: test-ns
+              resource_name: two-pods-down
+              subject: test-project/test-ns/two-pods-down
+              subject_name: two-pods-down
+            exp_annotations:
+              summary: "Gateway two-pods-down is taking longer than 60 seconds to reach Ready status"
+              description: "Gateway two-pods-down in namespace test-ns has been in creation state for 120 seconds without reaching Ready status (Accepted=True AND Programmed=True), which exceeds the 60-second SLO threshold."
+              runbook_url: "https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/gateway-readiness.md#gatewaynotreadysloviolation"
+      - eval_time: 1m
+        alertname: GatewayDegradedSLOViolation
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              service: network-services
+              team: delivery
+              project: test-project
+              subject_kind: Gateway
+              subject_group: gateway.networking.k8s.io
+              resourcemanager_datumapis_com_project_name: test-project
+              resource_namespace: test-ns
+              subject_namespace: test-ns
+              resource_name: two-pods-down
+              subject: test-project/test-ns/two-pods-down
+              subject_name: two-pods-down
+            exp_annotations:
+              summary: "Gateway two-pods-down has been degraded for over 60 seconds"
+              description: "Gateway two-pods-down in namespace test-ns has been in a degraded state for over 60 seconds without recovering, which exceeds the 60-second SLO threshold."
+              runbook_url: "https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/gateway-readiness.md#gatewaydegradedsloviolation"
+
+  # The Gateway exists but its status is missing from the metrics (a scrape gap): no alert
+  - interval: 1m
+    input_series:
+      - series: 'datum_cloud_networking_gateway_created{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="no-status"}'
+        values: '-60+0x3'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: GatewayNotReadySLOViolation
+        exp_alerts: []
+      - eval_time: 1m
+        alertname: GatewayDegradedSLOViolation
+        exp_alerts: []
+
+  # A Gateway being deleted: no alert
+  - interval: 1m
+    input_series:
+      - series: 'datum_cloud_networking_gateway_created{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="deleting"}'
+        values: '-60+0x3'
+      - series: 'datum_cloud_networking_gateway_deleted{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="deleting"}'
+        values: '0+0x3'
+      - series: 'datum_cloud_networking_gateway_status{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="deleting", type="Accepted"}'
+        values: '1+0x3'
+      - series: 'datum_cloud_networking_gateway_status{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="deleting", type="Programmed"}'
+        values: '0+0x3'
+      - series: 'datum_cloud_networking_gateway_status_condition_last_transition_time{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="deleting", type="Programmed", status="False"}'
+        values: '-60+0x3'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: GatewayNotReadySLOViolation
+        exp_alerts: []
+      - eval_time: 1m
+        alertname: GatewayDegradedSLOViolation
+        exp_alerts: []
+
+  # Older than 7 days and not Ready at any point in them: GatewayNeverProgrammed's, so no alert here
+  - interval: 1h
+    input_series:
+      - series: 'datum_cloud_networking_gateway_created{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="abandoned"}'
+        values: '-86400+0x200'
+      - series: 'datum_cloud_networking_gateway_status{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="abandoned", type="Accepted"}'
+        values: '1+0x200'
+      - series: 'datum_cloud_networking_gateway_status{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="abandoned", type="Programmed"}'
+        values: '0+0x200'
+    alert_rule_test:
+      - eval_time: 7d
+        alertname: GatewayNotReadySLOViolation
+        exp_alerts: []
+
+  # Older than 7 days, Ready six days ago, broken since: it still warns
+  - interval: 1h
+    input_series:
+      - series: 'datum_cloud_networking_gateway_created{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="broke-this-week"}'
+        values: '-86400+0x200'
+      - series: 'datum_cloud_networking_gateway_status{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="broke-this-week", type="Accepted"}'
+        values: '1+0x200'
+      - series: 'datum_cloud_networking_gateway_status{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="broke-this-week", type="Programmed"}'
+        values: '1+0x24 0+0x176'
+    alert_rule_test:
+      - eval_time: 7d
+        alertname: GatewayNotReadySLOViolation
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              service: network-services
+              team: delivery
+              project: test-project
+              subject_kind: Gateway
+              subject_group: gateway.networking.k8s.io
+              resourcemanager_datumapis_com_project_name: test-project
+              resource_namespace: test-ns
+              subject_namespace: test-ns
+              resource_name: broke-this-week
+              subject: test-project/test-ns/broke-this-week
+              subject_name: broke-this-week
+            exp_annotations:
+              summary: "Gateway broke-this-week is taking longer than 60 seconds to reach Ready status"
+              description: "Gateway broke-this-week in namespace test-ns has been in creation state for 691200 seconds without reaching Ready status (Accepted=True AND Programmed=True), which exceeds the 60-second SLO threshold."
+              runbook_url: "https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/gateway-readiness.md#gatewaynotreadysloviolation"
+
+  # Recovery: Programmed again, so the alert clears
+  - interval: 1m
+    input_series:
+      - series: 'datum_cloud_networking_gateway_created{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="recovers"}'
+        values: '-60+0x5'
+      - series: 'datum_cloud_networking_gateway_status{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="recovers", type="Accepted"}'
+        values: '1+0x5'
+      - series: 'datum_cloud_networking_gateway_status{resourcemanager_datumapis_com_project_name="test-project", resource_namespace="test-ns", resource_name="recovers", type="Programmed"}'
+        values: '0 0 1 1 1 1'
+    alert_rule_test:
+      - eval_time: 4m
         alertname: GatewayNotReadySLOViolation
         exp_alerts: []

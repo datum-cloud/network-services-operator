@@ -8,13 +8,25 @@ spec:
   - name: nso-slo
     interval: 30s
     rules:
+    # A Gateway's readiness, one series per Gateway. Each condition is taken once (max by type), however many exporter
+    # pods report it, and only a Gateway whose status is reported can fire, so a gap in the metrics fires nothing.
+    # These warn the owner.
     - alert: GatewayNotReadySLOViolation
       expr: |
         (
-          sum(time() - datum_cloud_networking_gateway_created) by (resourcemanager_datumapis_com_project_name, resource_namespace, resource_name) > 60
-          unless (
-            sum(datum_cloud_networking_gateway_status{type=~"Accepted|Programmed"} == 1) by (resourcemanager_datumapis_com_project_name, resource_namespace, resource_name) == 2
+          (
+            max by (resourcemanager_datumapis_com_project_name, resource_namespace, resource_name) (time() - datum_cloud_networking_gateway_created) > 60
+            and on (resourcemanager_datumapis_com_project_name, resource_namespace, resource_name)
+            max by (resourcemanager_datumapis_com_project_name, resource_namespace, resource_name) (datum_cloud_networking_gateway_status{type=~"Accepted|Programmed"})
           )
+          unless on (resourcemanager_datumapis_com_project_name, resource_namespace, resource_name)
+          (
+            sum by (resourcemanager_datumapis_com_project_name, resource_namespace, resource_name) (
+              max by (resourcemanager_datumapis_com_project_name, resource_namespace, resource_name, type) (datum_cloud_networking_gateway_status{type=~"Accepted|Programmed"})
+            ) == 2
+          )
+          unless on (resourcemanager_datumapis_com_project_name, resource_namespace, resource_name)
+          datum_cloud_networking_gateway_deleted
         )
         unless (
           (
@@ -30,25 +42,36 @@ spec:
         )
       for: 0s
       labels:
-        severity: critical
-        slo_violation: "true"
+        severity: warning
         service: network-services
-        team: sre
+        team: delivery
+        project: "{{ $labels.resourcemanager_datumapis_com_project_name }}"
+        subject: "{{ $labels.resourcemanager_datumapis_com_project_name }}/{{ $labels.resource_namespace }}/{{ $labels.resource_name }}"
+        subject_kind: Gateway
+        subject_name: "{{ $labels.resource_name }}"
+        subject_namespace: "{{ $labels.resource_namespace }}"
+        subject_group: gateway.networking.k8s.io
       annotations:
         summary: "Gateway {{ $labels.resource_name }} is taking longer than 60 seconds to reach Ready status"
         description: "Gateway {{ $labels.resource_name }} in namespace {{ $labels.resource_namespace }} has been in creation state for {{ $value }} seconds without reaching Ready status (Accepted=True AND Programmed=True), which exceeds the 60-second SLO threshold."
+        runbook_url: "https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/gateway-readiness.md#gatewaynotreadysloviolation"
 
     - alert: GatewayDegradedSLOViolation
       expr: |
         (
           (
-            sum(time() - datum_cloud_networking_gateway_status_condition_last_transition_time{type=~"Accepted|Programmed", status="False"})
-            by (resourcemanager_datumapis_com_project_name, resource_namespace, resource_name)
-          ) > 60
-          and (
-            sum(datum_cloud_networking_gateway_status{type=~"Accepted|Programmed"} == 1)
-            by (resourcemanager_datumapis_com_project_name, resource_namespace, resource_name) < 2
+            max by (resourcemanager_datumapis_com_project_name, resource_namespace, resource_name) (
+              time() - datum_cloud_networking_gateway_status_condition_last_transition_time{type=~"Accepted|Programmed", status="False"}
+            ) > 60
           )
+          and on (resourcemanager_datumapis_com_project_name, resource_namespace, resource_name)
+          (
+            sum by (resourcemanager_datumapis_com_project_name, resource_namespace, resource_name) (
+              max by (resourcemanager_datumapis_com_project_name, resource_namespace, resource_name, type) (datum_cloud_networking_gateway_status{type=~"Accepted|Programmed"})
+            ) < 2
+          )
+          unless on (resourcemanager_datumapis_com_project_name, resource_namespace, resource_name)
+          datum_cloud_networking_gateway_deleted
         )
         unless (
           (
@@ -64,13 +87,64 @@ spec:
         )
       for: 0s
       labels:
-        severity: critical
-        slo_violation: "true"
+        severity: warning
         service: network-services
-        team: sre
+        team: delivery
+        project: "{{ $labels.resourcemanager_datumapis_com_project_name }}"
+        subject: "{{ $labels.resourcemanager_datumapis_com_project_name }}/{{ $labels.resource_namespace }}/{{ $labels.resource_name }}"
+        subject_kind: Gateway
+        subject_name: "{{ $labels.resource_name }}"
+        subject_namespace: "{{ $labels.resource_namespace }}"
+        subject_group: gateway.networking.k8s.io
       annotations:
         summary: "Gateway {{ $labels.resource_name }} has been degraded for over 60 seconds"
         description: "Gateway {{ $labels.resource_name }} in namespace {{ $labels.resource_namespace }} has been in a degraded state for over 60 seconds without recovering, which exceeds the 60-second SLO threshold."
+        runbook_url: "https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/gateway-readiness.md#gatewaydegradedsloviolation"
+
+    # The platform's part of a Gateway: Accepted, and the default listeners, which serve the Gateway's own hostname with
+    # the platform's certificate. A Gateway older than 7 days and not Accepted since more than 7 days ago is
+    # GatewayNeverProgrammed's; reading the condition's transition time keeps this rule off a 7-day range.
+    - alert: GatewayPlatformPartNotReady
+      expr: |
+        (
+          (
+            max by (resourcemanager_datumapis_com_project_name, resource_namespace, resource_name) (datum_cloud_networking_gateway_status{type="Accepted"}) == 0
+            or
+            min by (resourcemanager_datumapis_com_project_name, resource_namespace, resource_name) (
+              max by (resourcemanager_datumapis_com_project_name, resource_namespace, resource_name, listener) (
+                datum_cloud_networking_gateway_status_listener_programmed{listener=~"default-https?"}
+              )
+            ) == 0
+          )
+          and on (resourcemanager_datumapis_com_project_name, resource_namespace, resource_name)
+          max by (resourcemanager_datumapis_com_project_name, resource_namespace, resource_name) (time() - datum_cloud_networking_gateway_created) > 60
+        )
+        unless on (resourcemanager_datumapis_com_project_name, resource_namespace, resource_name)
+        datum_cloud_networking_gateway_deleted
+        unless on (resourcemanager_datumapis_com_project_name, resource_namespace, resource_name)
+        (
+          max by (resourcemanager_datumapis_com_project_name, resource_namespace, resource_name) (time() - datum_cloud_networking_gateway_created) > 604800
+          and on (resourcemanager_datumapis_com_project_name, resource_namespace, resource_name)
+          max by (resourcemanager_datumapis_com_project_name, resource_namespace, resource_name) (
+            time() - datum_cloud_networking_gateway_status_condition_last_transition_time{type="Accepted", status!="True"}
+          ) > 604800
+        )
+      for: 5m
+      labels:
+        severity: critical
+        service: network-services
+        team: delivery
+        project: "{{ $labels.resourcemanager_datumapis_com_project_name }}"
+        subject: "{{ $labels.resourcemanager_datumapis_com_project_name }}/{{ $labels.resource_namespace }}/{{ $labels.resource_name }}"
+        subject_kind: Gateway
+        subject_name: "{{ $labels.resource_name }}"
+        subject_namespace: "{{ $labels.resource_namespace }}"
+        subject_group: gateway.networking.k8s.io
+      annotations:
+        summary: "Gateway {{ $labels.resource_name }} is not accepted or does not serve its own hostname"
+        description: "Gateway {{ $labels.resource_name }} in project {{ $labels.resourcemanager_datumapis_com_project_name }}, namespace {{ $labels.resource_namespace }}, is not Accepted, or a default listener, which serves the Gateway's own hostname with the platform's certificate, is not Programmed."
+        impact: "The Gateway does not serve its own hostname."
+        runbook_url: "https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/gateway-readiness.md#gatewayplatformpartnotready"
 
     - alert: GatewayNeverProgrammed
       expr: |

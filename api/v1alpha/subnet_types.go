@@ -57,7 +57,10 @@ const (
 	// SubnetAllocated indicates that the subnet has been allocated a prefix
 	SubnetAllocated = "Allocated"
 
-	// SubnetProgrammed indicates that the subnet has been programmed
+	// SubnetProgrammed reports that the subnet's range is in place on the
+	// network in its location. The data plane of the cells serving the location
+	// writes it on the copy of the subnet they are handed, and the operator
+	// derives the condition here from what they reported.
 	SubnetProgrammed = "Programmed"
 
 	// SubnetReady indicates that the subnet is ready to use
@@ -73,6 +76,10 @@ const (
 
 	// SubnetProgrammedReasonProgrammed indicates that the subnet has been programmed
 	SubnetProgrammedReasonProgrammed = "Programmed"
+
+	// SubnetProgrammedReasonPending indicates that no cell serving the subnet's
+	// location has reported on it yet.
+	SubnetProgrammedReasonPending = "Pending"
 
 	// SubnetReadyReasonReady indicates that the subnet is ready to use
 	SubnetReadyReasonReady = "Ready"

@@ -50,6 +50,7 @@ import (
 	"go.datum.net/network-services-operator/internal/cmd/clusterdiscovery"
 	"go.datum.net/network-services-operator/internal/config"
 	"go.datum.net/network-services-operator/internal/controller"
+	"go.datum.net/network-services-operator/internal/logging"
 	networkingwebhook "go.datum.net/network-services-operator/internal/webhook"
 	networkinggatewayv1webhooks "go.datum.net/network-services-operator/internal/webhook/v1"
 	networkingv1alphawebhooks "go.datum.net/network-services-operator/internal/webhook/v1alpha"
@@ -158,9 +159,7 @@ func NewCommand(build BuildInfo) *cobra.Command {
 		"Leader election ID for controllers that watch the federation hub. When empty, it is derived from the enabled controller sets.",
 	)
 
-	opts := zap.Options{
-		Development: true,
-	}
+	opts := zap.Options{}
 
 	fs.StringVar(&serverConfigFile, "server-config", "", "path to the server config file")
 
@@ -172,7 +171,7 @@ func NewCommand(build BuildInfo) *cobra.Command {
 		Args:  cobra.NoArgs,
 		// nolint:gocyclo
 		RunE: func(_ *cobra.Command, _ []string) error {
-			ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+			ctrl.SetLogger(logging.New(&opts))
 
 			setupLog.Info("starting network-services-operator",
 				"version", build.Version,
@@ -228,7 +227,7 @@ func NewCommand(build BuildInfo) *cobra.Command {
 				os.Exit(1)
 			}
 
-			runnables, provider, err := clusterdiscovery.Initialize(serverConfig.Discovery, serverConfig.ProjectClient, deploymentCluster, scheme)
+			runnables, provider, setupDiscovery, err := clusterdiscovery.Initialize(serverConfig.Discovery, serverConfig.ProjectClient, deploymentCluster, scheme)
 			if err != nil {
 				setupLog.Error(err, "unable to initialize cluster discovery")
 				os.Exit(1)
@@ -321,6 +320,11 @@ func NewCommand(build BuildInfo) *cobra.Command {
 			}, mcManagerOptions...)
 			if err != nil {
 				setupLog.Error(err, "unable to start manager")
+				os.Exit(1)
+			}
+
+			if err := setupDiscovery(mgr); err != nil {
+				setupLog.Error(err, "unable to set up cluster discovery")
 				os.Exit(1)
 			}
 
@@ -752,7 +756,9 @@ func controllerRegistrations(
 			}).SetupWithManager(mgr)
 		}},
 		{"subnet", true, func() error {
-			return (&controller.SubnetReconciler{}).SetupWithManager(mgr)
+			return (&controller.SubnetReconciler{
+				DownstreamCluster: deps.downstreamCluster,
+			}).SetupWithManager(mgr)
 		}},
 		{"subnetclaim", true, func() error {
 			return (&controller.SubnetClaimReconciler{}).SetupWithManager(mgr)

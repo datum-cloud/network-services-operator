@@ -64,8 +64,8 @@ func (r *NetworkServiceReconciler) Reconcile(ctx context.Context, req mcreconcil
 
 	ctx = mccontext.WithCluster(ctx, req.ClusterName)
 
-	logger.Info("reconciling network service")
-	defer logger.Info("reconcile complete")
+	logger.V(1).Info("reconciling network service")
+	defer logger.V(1).Info("reconcile complete")
 
 	return ctrl.Result{}, r.reconcileService(ctx, cl.GetClient(), req.NamespacedName)
 }

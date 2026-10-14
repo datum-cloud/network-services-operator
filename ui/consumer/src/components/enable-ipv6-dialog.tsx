@@ -8,14 +8,27 @@ import { useState } from 'react';
 export function EnableIPv6Dialog({
   projectId,
   network,
+  trigger,
+  open: controlledOpen,
+  onOpenChange,
 }: {
   projectId: string | undefined;
-  network: Network;
+  network: Network | undefined;
+  trigger?: React.ReactNode;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
 }) {
-  const [open, setOpen] = useState(false);
+  const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
   const mutation = useEnableIPv6(projectId);
 
+  const open = controlledOpen ?? uncontrolledOpen;
+  const setOpen = (next: boolean) => {
+    setUncontrolledOpen(next);
+    onOpenChange?.(next);
+  };
+
   const handleConfirm = () => {
+    if (!network) return;
     mutation.mutate(network, {
       onSuccess: () => {
         toast.success(`IPv6 enabled on ${network.name}`);
@@ -28,22 +41,29 @@ export function EnableIPv6Dialog({
   };
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
-      <Dialog.Trigger asChild>
-        <Button type="secondary" size="xs">
-          Enable IPv6
-        </Button>
-      </Dialog.Trigger>
+    <Dialog open={open} onOpenChange={(next) => !mutation.isPending && setOpen(next)}>
+      {trigger && <Dialog.Trigger asChild>{trigger}</Dialog.Trigger>}
       <Dialog.Content>
         <Dialog.Header
           title="Enable IPv6 on this network"
-          description={`Adds IPv6 to ${network.name}'s address families. The platform addresses workloads over IPv6, so this is required before anything on this network can be given an address.`}
+          description={`Adds IPv6 to ${network?.name ?? 'this network'}'s address families. The platform addresses workloads over IPv6, so this is required before anything on this network can be given an address.`}
+          onClose={mutation.isPending ? undefined : () => setOpen(false)}
         />
         <Dialog.Footer>
-          <Button type="secondary" onClick={() => setOpen(false)} disabled={mutation.isPending}>
+          <Button
+            type="quaternary"
+            theme="borderless"
+            htmlType="button"
+            onClick={() => setOpen(false)}
+            disabled={mutation.isPending}>
             Cancel
           </Button>
-          <Button type="primary" onClick={handleConfirm} loading={mutation.isPending}>
+          <Button
+            type="primary"
+            theme="solid"
+            htmlType="button"
+            onClick={handleConfirm}
+            loading={mutation.isPending}>
             Enable IPv6
           </Button>
         </Dialog.Footer>

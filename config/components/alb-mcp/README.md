@@ -16,8 +16,8 @@ and why.
 ## Deployment
 
 This bundle carries no control-plane configuration. The server refuses to start
-against the cluster's own API server (see `checkControlPlaneEndpoint` in
-`cmd/alb-mcp/main.go`), so the deployer must patch in a kubeconfig volume naming
+against the cluster's own API server (see `CheckControlPlaneEndpoint` in
+`internal/mcpserver`), so the deployer must patch in a kubeconfig volume naming
 the Datum control-plane address and CA, and set `KUBECONFIG` to it.
 
 It is **not** applied by the operator's own deployment overlays. It is deployed

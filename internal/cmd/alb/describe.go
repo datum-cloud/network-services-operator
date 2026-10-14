@@ -102,8 +102,12 @@ func runDescribe(cmd *cobra.Command, args []string) error {
 		_, _ = fmt.Fprintln(out, "Routes:")
 		for _, r := range routes {
 			_, _ = fmt.Fprintf(out, "  %s\n", r.Path)
-			for _, b := range r.Backends {
+			shares := spec.ShareLabels(r.Backends)
+			for i, b := range r.Backends {
 				line := fmt.Sprintf("    %s (%s)", spec.FormatBackend(b), spec.BackendKind(b))
+				if len(r.Backends) > 1 || b.Weight != nil {
+					line += fmt.Sprintf("  weight=%d (%s)", spec.BackendWeight(b), shares[i])
+				}
 				if b.TLS != nil && b.TLS.Hostname != nil && *b.TLS.Hostname != "" {
 					line += "  tls=" + *b.TLS.Hostname
 				}
@@ -111,6 +115,8 @@ func runDescribe(cmd *cobra.Command, args []string) error {
 			}
 		}
 	}
+	_, _ = fmt.Fprintf(out, "Load balancing:     %s\n", spec.LoadBalancingSummary(proxy))
+	_, _ = fmt.Fprintf(out, "Health checks:      %s\n", spec.HealthCheckSummary(proxy))
 	_, _ = fmt.Fprintf(out, "Host header:        %s\n", util.OrDash(spec.HostHeader(proxy)))
 
 	set, add, remove := spec.ListRequestHeaders(proxy)

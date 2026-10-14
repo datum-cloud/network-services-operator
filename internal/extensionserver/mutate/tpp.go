@@ -155,7 +155,7 @@ func InjectCorazaListenerFilters(l *listenerv3.Listener, cfg *CorazaConfig) (int
 // ApplyTPPRouteConfig applies per-route WAF config for routes governed by a
 // TrafficProtectionPolicy. For each VirtualHost it:
 //  1. Extracts the EG filter_metadata["envoy-gateway"] gateway resource ref.
-//  2. Resolves the upstream namespace via idx.DStoUS.
+//  2. Skips the VirtualHost unless its namespace is known to idx.DStoUS.
 //  3. Stamps project_name into datum-gateway route metadata on every NSO-owned route.
 //  4. Finds the governing TPP from idx.TPPs (rule-level wins over route-level, which wins over gateway-level).
 //  5. Writes typed_per_filter_config and datum-gateway metadata on governed routes.

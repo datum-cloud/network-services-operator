@@ -155,7 +155,7 @@ func TestCertificateServiceWildcardHostname(t *testing.T) {
 		}
 
 		ctx := context.Background()
-		reconciler.prepareUpstreamGateway(upstreamGateway)
+		prepareUpstreamGateway(reconciler, upstreamGateway)
 		strategy := downstreamclient.NewMappedNamespaceResourceStrategy(upstreamCluster, upstream, downstream)
 		result, _ := reconciler.ensureDownstreamGateway(ctx, upstreamCluster, upstream, upstreamGateway, strategy)
 		require.NoError(t, result.Err)

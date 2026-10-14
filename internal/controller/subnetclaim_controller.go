@@ -60,8 +60,8 @@ func (r *SubnetClaimReconciler) Reconcile(ctx context.Context, req mcreconcile.R
 		return ctrl.Result{}, nil
 	}
 
-	logger.Info("reconciling subnet claim")
-	defer logger.Info("reconcile complete")
+	logger.V(1).Info("reconciling subnet claim")
+	defer logger.V(1).Info("reconcile complete")
 
 	// TODO(jreese) move to a network context level subnet allocator, instead of
 	// the 1:1 SubnetClaim:Subnet that's here right now.

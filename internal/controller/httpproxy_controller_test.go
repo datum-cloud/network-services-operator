@@ -22,9 +22,11 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/managedfields"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/uuid"
 	"k8s.io/apimachinery/pkg/util/validation/field"
+	clientgoapplyconfigurations "k8s.io/client-go/applyconfigurations"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/events"
@@ -41,6 +43,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
+	gatewayapplyconfiguration "sigs.k8s.io/gateway-api/applyconfiguration"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
@@ -1823,6 +1826,7 @@ func TestHTTPProxyReconcile(t *testing.T) {
 
 			fakeClientBuilder := fake.NewClientBuilder().
 				WithScheme(testScheme).
+				WithTypeConverters(gatewayapplyconfiguration.NewTypeConverter(testScheme), clientgoapplyconfigurations.NewTypeConverter(testScheme), managedfields.NewDeducedTypeConverter()).
 				WithObjects(initialObjects...).
 				WithStatusSubresource(initialObjects...).
 				WithStatusSubresource(&gatewayv1.Gateway{}).
@@ -2176,21 +2180,30 @@ func TestHTTPProxyReconcileRequeuesPromptlyOnConflict(t *testing.T) {
 		},
 	}
 
+	existingRoute := &gatewayv1.HTTPRoute{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              httpProxy.Name,
+			Namespace:         httpProxy.Namespace,
+			CreationTimestamp: metav1.Now(),
+			OwnerReferences:   existingGateway.OwnerReferences,
+		},
+	}
+
 	upstreamNamespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: httpProxy.Namespace}}
 	upstreamNamespace.SetUID(uuid.NewUUID())
 
-	gatewayUpdateConflicts := 0
+	routeUpdateConflicts := 0
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(testScheme).
-		WithObjects(httpProxy, upstreamNamespace, existingGateway).
+		WithObjects(httpProxy, upstreamNamespace, existingGateway, existingRoute).
 		WithStatusSubresource(httpProxy).
 		WithStatusSubresource(&gatewayv1.Gateway{}).
 		WithInterceptorFuncs(interceptor.Funcs{
 			Update: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
-				if _, ok := obj.(*gatewayv1.Gateway); ok && gatewayUpdateConflicts == 0 {
-					gatewayUpdateConflicts++
+				if _, ok := obj.(*gatewayv1.HTTPRoute); ok && routeUpdateConflicts == 0 {
+					routeUpdateConflicts++
 					return apierrors.NewConflict(
-						gatewayv1.Resource("gateways"),
+						gatewayv1.Resource("httproutes"),
 						obj.GetName(),
 						fmt.Errorf("the object has been modified; please apply your changes and try again"),
 					)
@@ -2214,7 +2227,7 @@ func TestHTTPProxyReconcileRequeuesPromptlyOnConflict(t *testing.T) {
 
 	result, err := reconciler.Reconcile(ctx, req)
 	require.NoError(t, err)
-	assert.Equal(t, 1, gatewayUpdateConflicts)
+	assert.Equal(t, 1, routeUpdateConflicts)
 	assert.Equal(t, retryAfterConflict, result.RequeueAfter)
 }
 
@@ -2431,15 +2444,18 @@ func newHTTPProxy(opts ...func(*networkingv1alpha.HTTPProxy)) *networkingv1alpha
 type fakeMockManager struct {
 	mcmanager.Manager
 	cl client.Client
+	// reader is the clusters' API reader; cl when nil.
+	reader client.Reader
 }
 
 func (m *fakeMockManager) GetCluster(ctx context.Context, clusterName multicluster.ClusterName) (cluster.Cluster, error) {
-	return &fakeCluster{cl: m.cl}, nil
+	return &fakeCluster{cl: m.cl, reader: m.reader}, nil
 }
 
 type fakeCluster struct {
 	cluster.Cluster
-	cl client.Client
+	cl     client.Client
+	reader client.Reader
 }
 
 func (c *fakeCluster) GetClient() client.Client {
@@ -2447,6 +2463,9 @@ func (c *fakeCluster) GetClient() client.Client {
 }
 
 func (c *fakeCluster) GetAPIReader() client.Reader {
+	if c.reader != nil {
+		return c.reader
+	}
 	// In unit tests we use the same fake client as both cached and uncached readers.
 	return c.cl
 }

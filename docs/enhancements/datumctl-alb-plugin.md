@@ -130,7 +130,7 @@ datumctl alb route    add|remove|list|update <name>
                       [--tls-hostname HOST]
 datumctl alb route backend add|remove|list <name> --path PREFIX
                       [--endpoint URL | --network-service NAME --port PORTNAME]
-datumctl alb logs     <name> [--since D] [--limit N]
+datumctl alb logs     [name...] [--since D] [--limit N]
                       [--method M]... [--code C]... [--host H]...
                       [--follow] [-o table|wide|json|yaml]
 datumctl alb waf      set|disable|describe <name> [--mode] [--paranoia]

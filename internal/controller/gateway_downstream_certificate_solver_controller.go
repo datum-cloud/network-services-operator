@@ -38,7 +38,7 @@ func (r *GatewayDownstreamCertificateSolverReconciler) Reconcile(ctx context.Con
 	logger := log.FromContext(ctx, "namespace", req.Namespace, "challenge", req.Name)
 	ctx = log.IntoContext(ctx, logger)
 
-	logger.Info("Reconciling ACME challenge solver")
+	logger.V(1).Info("Reconciling ACME challenge solver")
 
 	cl := r.DownstreamCluster.GetClient()
 

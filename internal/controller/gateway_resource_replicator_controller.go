@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -40,9 +41,14 @@ import (
 	networkingv1alpha1 "go.datum.net/network-services-operator/api/v1alpha1"
 	"go.datum.net/network-services-operator/internal/config"
 	downstreamclient "go.datum.net/network-services-operator/internal/downstreamclient"
+	"go.datum.net/network-services-operator/internal/util/finalizer"
+	"go.datum.net/network-services-operator/internal/util/status"
 )
 
-const gatewayResourceReplicatorFinalizer = "gateway.networking.datumapis.com/gateway-resource-replicator"
+const (
+	gatewayResourceReplicatorControllerName = "gateway_resource_replicator"
+	gatewayResourceReplicatorFinalizer      = "gateway.networking.datumapis.com/gateway-resource-replicator"
+)
 
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=trafficprotectionpolicies,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=trafficprotectionpolicies/finalizers,verbs=update
@@ -91,6 +97,11 @@ type replicationResourceConfig struct {
 	// managed by NSO's own controllers (not by a downstream controller), so
 	// the replicator must NOT overwrite or clear it.
 	skipUpstreamStatusSync bool
+
+	// stampUpstreamGeneration, when true, writes the upstream object's
+	// metadata.generation into the UpstreamGenerationAnnotation on the
+	// downstream object, in the same update as the spec.
+	stampUpstreamGeneration bool
 
 	// propagatedLabels names upstream labels to copy onto the downstream object.
 	// The downstream copy otherwise carries only the meta.datumapis.com/upstream-*
@@ -158,6 +169,9 @@ func initReplicationResourceConfigs() map[string]replicationResourceConfig {
 	for _, gvk := range policyGVKs {
 		configs[gvkKey(gvk)] = replicationResourceConfig{
 			skipUpstreamStatusSync: true,
+			// The TPP Programmed check compares the hub copy's upstream
+			// generation with the upstream policy's (NSO#266).
+			stampUpstreamGeneration: gvk.Kind == KindTrafficProtectionPolicy,
 		}
 	}
 
@@ -180,6 +194,10 @@ func initReplicationResourceConfigs() map[string]replicationResourceConfig {
 	// for the federation control plane to carry the rest of the way. Their status
 	// is NSO's own and must not be overwritten from downstream, and the location
 	// label is what the per-location propagation policy selects on.
+	//
+	// The Subnet copy also carries the upstream generation: the cells' data plane
+	// reports Programmed against it, and the subnet controller reads that report
+	// off the hub copy itself rather than through a wholesale status sync.
 	networkContextGVK := schema.GroupVersionKind{Group: groupNetworkingDatumAPIs, Version: versionV1Alpha, Kind: KindNetworkContext}
 	presenceGVKs := []schema.GroupVersionKind{
 		networkContextGVK,
@@ -187,7 +205,8 @@ func initReplicationResourceConfigs() map[string]replicationResourceConfig {
 	}
 	for _, gvk := range presenceGVKs {
 		configs[gvkKey(gvk)] = replicationResourceConfig{
-			skipUpstreamStatusSync: true,
+			skipUpstreamStatusSync:  true,
+			stampUpstreamGeneration: gvk.Kind == KindSubnet,
 			propagatedLabels: []string{
 				networkingv1alpha.LocationLabel,
 				networkingv1alpha.NetworkLabel,
@@ -272,18 +291,17 @@ func (r *GatewayResourceReplicatorReconciler) Reconcile(ctx context.Context, req
 		return ctrl.Result{}, err
 	}
 
-	logger.Info("reconciling resource")
-	defer logger.Info("reconcile complete")
+	logger.V(1).Info("reconciling resource")
+	defer logger.V(1).Info("reconcile complete")
 
 	downstreamStrategy := downstreamclient.NewMappedNamespaceResourceStrategy(string(req.ClusterName), upstreamClient, r.DownstreamCluster.GetClient())
 
 	if !upstreamObj.GetDeletionTimestamp().IsZero() {
-		return r.finalizeResource(ctx, resourceCfg, upstreamClient, upstreamObj, downstreamStrategy)
+		return r.finalizeResource(ctx, resourceCfg, upstreamCluster, upstreamObj, downstreamStrategy)
 	}
 
 	if !controllerutil.ContainsFinalizer(upstreamObj, gatewayResourceReplicatorFinalizer) {
-		controllerutil.AddFinalizer(upstreamObj, gatewayResourceReplicatorFinalizer)
-		if err := upstreamClient.Update(ctx, upstreamObj); err != nil {
+		if err := finalizer.Add(ctx, upstreamClient, upstreamObj, gatewayResourceReplicatorFinalizer, fieldOwner(gatewayResourceReplicatorControllerName)); err != nil {
 			if apierrors.IsNotFound(err) {
 				return ctrl.Result{}, nil
 			}
@@ -303,7 +321,7 @@ func (r *GatewayResourceReplicatorReconciler) Reconcile(ctx context.Context, req
 func (r *GatewayResourceReplicatorReconciler) finalizeResource(
 	ctx context.Context,
 	resource replicationResource,
-	upstreamClient client.Client,
+	upstreamCluster finalizer.Cluster,
 	upstreamObj *unstructured.Unstructured,
 	downstreamStrategy downstreamclient.ResourceStrategy,
 ) (ctrl.Result, error) {
@@ -313,16 +331,12 @@ func (r *GatewayResourceReplicatorReconciler) finalizeResource(
 		}
 
 		if isSecurityPolicyGVK(resource.gvk) {
-			if err := r.reconcileReferencedSecretLabels(ctx, upstreamClient, resource.gvk, upstreamObj.GetNamespace()); err != nil {
+			if err := r.reconcileReferencedSecretLabels(ctx, upstreamCluster.GetClient(), resource.gvk, upstreamObj.GetNamespace()); err != nil {
 				return ctrl.Result{}, err
 			}
 		}
 
-		controllerutil.RemoveFinalizer(upstreamObj, gatewayResourceReplicatorFinalizer)
-		if err := upstreamClient.Update(ctx, upstreamObj); err != nil {
-			if apierrors.IsNotFound(err) {
-				return ctrl.Result{}, nil
-			}
+		if err := finalizer.Remove(ctx, upstreamCluster, upstreamObj, gatewayResourceReplicatorFinalizer, fieldOwner(gatewayResourceReplicatorControllerName)); err != nil {
 			return ctrl.Result{}, fmt.Errorf("failed to remove finalizer from %s/%s: %w", upstreamObj.GetNamespace(), upstreamObj.GetName(), err)
 		}
 	}
@@ -397,6 +411,10 @@ func (r *GatewayResourceReplicatorReconciler) ensureDownstreamResource(
 
 		propagateLabels(upstreamObj, downstreamObj, resource.replicationResourceConfig.propagatedLabels)
 		propagateAnnotations(upstreamObj, downstreamObj, resource.replicationResourceConfig.propagatedAnnotations)
+
+		if resource.replicationResourceConfig.stampUpstreamGeneration {
+			setUpstreamGenerationAnnotation(downstreamObj, upstreamObj)
+		}
 
 		// Mirror the upstream status into an annotation on the downstream
 		// object's metadata. This is part of the same CreateOrUpdate Update, so it
@@ -486,6 +504,18 @@ func propagateAnnotations(upstreamObj, downstreamObj *unstructured.Unstructured,
 	downstreamObj.SetAnnotations(downstreamAnnotations)
 }
 
+// setUpstreamGenerationAnnotation stamps the upstream object's generation on the
+// downstream object. It changes only when the upstream spec does, so it adds no
+// write of its own.
+func setUpstreamGenerationAnnotation(downstreamObj, upstreamObj *unstructured.Unstructured) {
+	annotations := downstreamObj.GetAnnotations()
+	if annotations == nil {
+		annotations = map[string]string{}
+	}
+	annotations[networkingv1alpha1.UpstreamGenerationAnnotation] = strconv.FormatInt(upstreamObj.GetGeneration(), 10)
+	downstreamObj.SetAnnotations(annotations)
+}
+
 // setUpstreamStatusAnnotation copies the upstream resource's full .status
 // verbatim into the UpstreamStatusAnnotation on the downstream object's
 // metadata. It is the Karmada-friendly replacement for mirroring the status
@@ -566,19 +596,7 @@ func (r *GatewayResourceReplicatorReconciler) syncUpstreamStatus(
 		return nil
 	}
 
-	upstreamCopy := upstreamObj.DeepCopy()
-
-	if len(statusMap) == 0 {
-		delete(upstreamCopy.Object, jsonKeyStatus)
-	} else {
-		upstreamCopy.Object[jsonKeyStatus] = statusMap
-	}
-
-	if resource.replicationResourceConfig.statusGVK != nil {
-		upstreamCopy.SetGroupVersionKind(*resource.replicationResourceConfig.statusGVK)
-	}
-
-	if err := upstreamClient.Status().Update(ctx, upstreamCopy); err != nil {
+	if err := patchUpstreamStatus(ctx, upstreamClient, resource, upstreamObj, statusMap); err != nil {
 		if apierrors.IsNotFound(err) {
 			return nil
 		}
@@ -611,13 +629,7 @@ func (r *GatewayResourceReplicatorReconciler) clearUpstreamStatusIfNeeded(
 		return nil
 	}
 
-	upstreamCopy := upstreamObj.DeepCopy()
-	delete(upstreamCopy.Object, jsonKeyStatus)
-	if resource.replicationResourceConfig.statusGVK != nil {
-		upstreamCopy.SetGroupVersionKind(*resource.replicationResourceConfig.statusGVK)
-	}
-
-	if err := upstreamClient.Status().Update(ctx, upstreamCopy); err != nil {
+	if err := patchUpstreamStatus(ctx, upstreamClient, resource, upstreamObj, nil); err != nil {
 		if apierrors.IsNotFound(err) {
 			return nil
 		}
@@ -632,6 +644,28 @@ func (r *GatewayResourceReplicatorReconciler) clearUpstreamStatusIfNeeded(
 	)
 
 	return nil
+}
+
+// patchUpstreamStatus saves desired as the whole status of upstreamObj, or
+// removes the status when desired is empty. The replicator is the only writer
+// of these statuses, so a merge patch without resourceVersion is safe.
+func patchUpstreamStatus(
+	ctx context.Context,
+	upstreamClient client.Client,
+	resource replicationResource,
+	upstreamObj *unstructured.Unstructured,
+	desired map[string]any,
+) error {
+	modified := upstreamObj.DeepCopy()
+	if resource.replicationResourceConfig.statusGVK != nil {
+		modified.SetGroupVersionKind(*resource.replicationResourceConfig.statusGVK)
+	}
+	if len(desired) == 0 {
+		delete(modified.Object, jsonKeyStatus)
+	} else {
+		modified.Object[jsonKeyStatus] = desired
+	}
+	return status.Patch(ctx, upstreamClient, modified, upstreamObj, fieldOwner(gatewayResourceReplicatorControllerName))
 }
 
 func filterConditionMessagesInStatus(status map[string]any, handlers conditionReasonHandlers) {
@@ -875,7 +909,7 @@ func (r *GatewayResourceReplicatorReconciler) SetupWithManager(mgr mcmanager.Man
 
 	r.resources = resources
 
-	return builder.Named("gateway_resource_replicator").Complete(r)
+	return builder.Named(gatewayResourceReplicatorControllerName).Complete(r)
 }
 
 func newUnstructuredForGVK(gvk schema.GroupVersionKind) *unstructured.Unstructured {

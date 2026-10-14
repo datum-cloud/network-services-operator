@@ -41,13 +41,8 @@ func ReplaceConnectorClusters(
 			continue
 		}
 
-		upstreamNS, ok := idx.DStoUS[dsNS]
-		if !ok {
-			continue
-		}
-
 		key := extcache.ConnectorKey{
-			UpstreamNS:    upstreamNS,
+			Namespace:     dsNS,
 			HTTPProxyName: proxyName,
 			RuleIndex:     ruleIndex,
 		}

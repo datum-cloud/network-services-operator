@@ -12,6 +12,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
+	"go.datum.net/network-services-operator/internal/agenttime"
 	"go.datum.net/network-services-operator/internal/cmd/alb/spec"
 )
 
@@ -206,7 +207,7 @@ func diagnoseProxy(
 		LoadBalancer:      proxy.Name,
 		DisplayName:       spec.DisplayName(proxy),
 		GeneratedHostname: proxy.Status.CanonicalHostname,
-		ObjectAge:         humanDuration(sinceCreation(proxy.CreationTimestamp, now)),
+		ObjectAge:         agenttime.HumanDuration(sinceCreation(proxy.CreationTimestamp, now)),
 	}
 
 	causes := make([]Cause, 0, len(proxy.Status.Conditions)+len(proxy.Status.HostnameStatuses))
@@ -270,10 +271,10 @@ func newCause(object, hostname string, c metav1.Condition, created metav1.Time, 
 		Message:       c.Message,
 		Level:         level,
 	}
-	cause.InStateSince = transitionTime(c, created)
-	cause.TimeDiscarded = discardedTime(c, cause.InStateSince)
-	if d, ok := age(cause.InStateSince, now); ok {
-		cause.InStateFor = humanDuration(d)
+	cause.InStateSince = agenttime.TransitionTime(c, created)
+	cause.TimeDiscarded = agenttime.DiscardedTime(c, cause.InStateSince)
+	if d, ok := agenttime.Age(cause.InStateSince, now); ok {
+		cause.InStateFor = agenttime.HumanDuration(d)
 	}
 
 	info, ok := ExplainReason(effectiveReason(c))
@@ -361,7 +362,7 @@ func scopeRank(s Scope) int {
 }
 
 func sinceCreation(created metav1.Time, now time.Time) time.Duration {
-	if !plausible(created) {
+	if !agenttime.Plausible(created) {
 		return 0
 	}
 	d := now.Sub(created.Time)

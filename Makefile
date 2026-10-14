@@ -89,6 +89,18 @@ test-conformance:
 notice: go-licenses ## Regenerate the NOTICE file of third-party licenses.
 	$(GO_LICENSES) report ./... --ignore go.datum.net/network-services-operator --template hack/notice.tmpl > NOTICE
 
+# Covers every committed file a generator here writes. locations-crds writes
+# only into bin/. git status, not git diff, so a generated file that was never
+# committed fails too.
+.PHONY: verify-generated
+verify-generated: manifests generate api-docs notice ## Fail if a committed generated file differs from what the pinned tools produce.
+	@if [ -n "$$(git status --porcelain)" ]; then \
+		git status --short; \
+		git --no-pager diff; \
+		echo "Generated files are out of date. Run 'make manifests generate api-docs notice' and commit the result." >&2; \
+		exit 1; \
+	fi
+
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter
 	$(GOLANGCI_LINT) run
@@ -111,6 +123,14 @@ build-alb-mcp: $(LOCALBIN) ## Build the alb-mcp server binary into bin/.
 run-alb-mcp: ## Run alb-mcp against the control plane KUBECONFIG names.
 	go run ./cmd/alb-mcp
 
+.PHONY: build-network-mcp
+build-network-mcp: $(LOCALBIN) ## Build the network-mcp server binary into bin/.
+	go build -o $(LOCALBIN)/network-mcp ./cmd/network-mcp
+
+.PHONY: run-network-mcp
+run-network-mcp: ## Run network-mcp against the control plane KUBECONFIG names.
+	go run ./cmd/network-mcp
+
 ##@ datumctl plugin
 
 PLUGIN_VERSION ?= $(shell git describe --tags --dirty --always 2>/dev/null || echo dev)
@@ -125,6 +145,16 @@ install-plugin: build-plugin ## Install the datumctl-alb plugin into ~/.datumctl
 	mkdir -p $(DATUMCTL_PLUGIN_DIR)
 	install -m 0755 $(LOCALBIN)/datumctl-alb $(DATUMCTL_PLUGIN_DIR)/datumctl-alb
 	@echo "Installed $(DATUMCTL_PLUGIN_DIR)/datumctl-alb ($(PLUGIN_VERSION)); try 'datumctl alb --help'"
+
+.PHONY: build-network-plugin
+build-network-plugin: $(LOCALBIN) ## Build the datumctl-network plugin binary into bin/.
+	go build -ldflags "-X main.version=$(PLUGIN_VERSION)" -o $(LOCALBIN)/datumctl-network ./cmd/datumctl-network
+
+.PHONY: install-network-plugin
+install-network-plugin: build-network-plugin ## Install the datumctl-network plugin into ~/.datumctl/plugins.
+	mkdir -p $(DATUMCTL_PLUGIN_DIR)
+	install -m 0755 $(LOCALBIN)/datumctl-network $(DATUMCTL_PLUGIN_DIR)/datumctl-network
+	@echo "Installed $(DATUMCTL_PLUGIN_DIR)/datumctl-network ($(PLUGIN_VERSION)); try 'datumctl network --help'"
 
 GORELEASER ?= goreleaser
 

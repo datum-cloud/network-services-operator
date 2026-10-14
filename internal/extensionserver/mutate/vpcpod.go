@@ -46,21 +46,16 @@ func ApplyVPCPodSocketBind(clusters []*clusterv3.Cluster, idx *extcache.PolicyIn
 			continue
 		}
 
-		upstreamNS, ok := idx.DStoUS[dsNS]
-		if !ok {
-			continue
-		}
-
 		var info extcache.VPCPodInfo
 		if backendIndex == ruleCluster {
 			info, ok = idx.VPCPods[extcache.VPCPodKey{
-				UpstreamNS:    upstreamNS,
+				Namespace:     dsNS,
 				HTTPProxyName: proxyName,
 				RuleIndex:     ruleIndex,
 			}]
 		} else {
 			info, ok = idx.VPCPodBackends[extcache.VPCPodBackendKey{
-				UpstreamNS:    upstreamNS,
+				Namespace:     dsNS,
 				HTTPProxyName: proxyName,
 				RuleIndex:     ruleIndex,
 				BackendIndex:  backendIndex,

@@ -171,7 +171,18 @@ func pickAlbLogLabels(in map[string]string) map[string]string {
 	if host := logRequestHost(out); host != "" {
 		out["host"] = host
 	}
+	if proxy := logProxyName(in["route_name"]); proxy != "" {
+		out["proxy"] = proxy
+	}
 	return out
+}
+
+func logProxyName(routeName string) string {
+	parts := strings.SplitN(routeName, "/", 4)
+	if len(parts) < 3 || parts[0] != "httproute" {
+		return ""
+	}
+	return parts[2]
 }
 
 func logRequestHost(labels map[string]string) string {

@@ -47,43 +47,42 @@ export default defineConfig({
         './NetworkDetail': './src/pages/network-detail.tsx',
       },
       // Host-pinned singletons. requiredVersion tracks the host's majors
-      // (react 19, react-router 7, react-query 5). singleton:true guarantees
+      // (react 19, react-router 8, react-query 5). singleton:true guarantees
       // one instance — the host provides all of these, so plugin queries share
       // the host's QueryClient cache.
       shared: {
         react: { singleton: true, requiredVersion: '^19.0.0' },
         'react-dom': { singleton: true, requiredVersion: '^19.0.0' },
-        'react-router': { singleton: true, requiredVersion: '^7.0.0' },
+        'react-router': { singleton: true, requiredVersion: '^8.0.0' },
         '@tanstack/react-query': { singleton: true, requiredVersion: '^5.0.0' },
-        // Curated datum-ui subset shared by the host (see the host's
-        // federation-host.ts DATUM_UI_SHARED). requiredVersion:false — the
-        // host's copy always wins, which is what keeps styling identical to
-        // built-in pages; the local install is types + standalone fallback.
+        // datum-ui subpaths the host shares (cloud-portal's federation-host.ts
+        // DATUM_UI_SHARED). requiredVersion:false — the host's copy always
+        // wins, which keeps styling and context (e.g. the host-mounted
+        // <Toaster>) identical to built-in pages; the local install is types +
+        // standalone fallback.
         //
-        // Every datum-ui subpath this plugin imports MUST be listed here.
-        // Anything left out (e.g. `toast`) bundles its own copy with its own
-        // React context/portal root instead of the host's — for `toast`
-        // specifically, that means the plugin's toasts render into a
-        // <Toaster> the host never mounted and never appear at all.
+        // List every subpath this plugin imports that the host shares. A
+        // subpath the host doesn't share (e.g. `input-number`) still works but
+        // bundles its own copy, so leave it out rather than imply otherwise.
         '@datum-cloud/datum-ui/badge': { singleton: true, requiredVersion: false },
         '@datum-cloud/datum-ui/breadcrumb': { singleton: true, requiredVersion: false },
         '@datum-cloud/datum-ui/button': { singleton: true, requiredVersion: false },
         '@datum-cloud/datum-ui/card': { singleton: true, requiredVersion: false },
-        '@datum-cloud/datum-ui/checkbox': { singleton: true, requiredVersion: false },
+        '@datum-cloud/datum-ui/data-table': { singleton: true, requiredVersion: false },
+        '@datum-cloud/datum-ui/date-time': { singleton: true, requiredVersion: false },
         '@datum-cloud/datum-ui/dialog': { singleton: true, requiredVersion: false },
         '@datum-cloud/datum-ui/empty-content': { singleton: true, requiredVersion: false },
+        '@datum-cloud/datum-ui/grouped-table': { singleton: true, requiredVersion: false },
         '@datum-cloud/datum-ui/hooks': { singleton: true, requiredVersion: false },
         '@datum-cloud/datum-ui/icons': { singleton: true, requiredVersion: false },
         '@datum-cloud/datum-ui/input': { singleton: true, requiredVersion: false },
-        '@datum-cloud/datum-ui/input-group': { singleton: true, requiredVersion: false },
-        '@datum-cloud/datum-ui/input-number': { singleton: true, requiredVersion: false },
+        '@datum-cloud/datum-ui/label': { singleton: true, requiredVersion: false },
         '@datum-cloud/datum-ui/page-title': { singleton: true, requiredVersion: false },
-        '@datum-cloud/datum-ui/popover': { singleton: true, requiredVersion: false },
-        '@datum-cloud/datum-ui/select': { singleton: true, requiredVersion: false },
         '@datum-cloud/datum-ui/skeleton': { singleton: true, requiredVersion: false },
-        '@datum-cloud/datum-ui/table': { singleton: true, requiredVersion: false },
         '@datum-cloud/datum-ui/tabs': { singleton: true, requiredVersion: false },
         '@datum-cloud/datum-ui/toast': { singleton: true, requiredVersion: false },
+        '@datum-cloud/datum-ui/tooltip': { singleton: true, requiredVersion: false },
+        '@datum-cloud/datum-ui/typography': { singleton: true, requiredVersion: false },
         '@datum-cloud/datum-ui/utils': { singleton: true, requiredVersion: false },
       },
     }),

@@ -228,12 +228,15 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 		Message:            "The HTTPProxy has not been programmed",
 	}
 
+	dnsRecordsCondition := dnsRecordsUnread(httpProxy.Status.Conditions, httpProxy.Generation)
+
 	observation := beginHTTPProxyReconcile(req.ClusterName, &httpProxy)
 
 	defer func() {
 		observation.failed(ctx, err, acceptedCondition, programmedCondition)
 		apimeta.SetStatusCondition(&httpProxyCopy.Status.Conditions, *acceptedCondition)
 		apimeta.SetStatusCondition(&httpProxyCopy.Status.Conditions, *programmedCondition)
+		setDNSRecordsProgrammed(&httpProxyCopy.Status.Conditions, dnsRecordsCondition)
 
 		var statusErr error
 		if !equality.Semantic.DeepEqual(httpProxy.Status, httpProxyCopy.Status) {
@@ -392,6 +395,7 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 	}
 
 	applyPartialProgramming(ctx, desiredResources.partialProgramming, programmedCondition)
+	dnsRecordsCondition = dnsRecordsProgrammedFromGateway(gateway, httpProxy.Generation)
 
 	if recheck := r.reconcileHTTPProxyHostnameStatus(ctx, cl.GetClient(), gateway, httpProxyCopy, string(req.ClusterName)); recheck {
 		return ctrl.Result{RequeueAfter: routingRecheckInterval}, nil

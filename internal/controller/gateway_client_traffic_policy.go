@@ -14,6 +14,7 @@ import (
 
 	"go.datum.net/network-services-operator/internal/config"
 	downstreamclient "go.datum.net/network-services-operator/internal/downstreamclient"
+	"go.datum.net/network-services-operator/internal/util/resourcename"
 )
 
 // upstreamOwnerLabelKeys tie a downstream object to its upstream owner. The
@@ -59,7 +60,7 @@ func ensureDownstreamClientTrafficPolicy(
 	gateway *gatewayv1.Gateway,
 ) error {
 	policy := &envoygatewayv1alpha1.ClientTrafficPolicy{
-		ObjectMeta: metav1.ObjectMeta{Name: gateway.Name, Namespace: gateway.Namespace},
+		ObjectMeta: metav1.ObjectMeta{Name: clientTrafficPolicyName(gateway.Name), Namespace: gateway.Namespace},
 	}
 	targets := httpsListenerTargets(gateway)
 	if traffic.IsEmpty() || len(targets) == 0 {
@@ -78,6 +79,18 @@ func ensureDownstreamClientTrafficPolicy(
 		return fmt.Errorf("failed writing ClientTrafficPolicy %s/%s: %w", policy.Namespace, policy.Name, err)
 	}
 	return nil
+}
+
+// clientTrafficPolicySuffix keeps the operator's policy name apart from the
+// <gateway>-http3 that staging's Kyverno policy writes into the same namespace:
+// a name ending in it can never end in -http3, and the hash a long name gets
+// is hexadecimal, which cannot spell it either.
+const clientTrafficPolicySuffix = "-client-traffic"
+
+// clientTrafficPolicyName returns the name of a gateway's ClientTrafficPolicy,
+// within Kubernetes' 253-character limit.
+func clientTrafficPolicyName(gatewayName string) string {
+	return resourcename.GetValidDNS1123Name(gatewayName + clientTrafficPolicySuffix)
 }
 
 // httpsListenerTargets names each HTTPS listener of the gateway, in order.

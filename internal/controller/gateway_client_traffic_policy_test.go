@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	cmv1 "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
@@ -17,6 +18,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/uuid"
+	"k8s.io/apimachinery/pkg/util/validation"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -118,7 +120,7 @@ func TestDownstreamClientTrafficPolicy(t *testing.T) {
 	t.Run("NeverDeletesAPolicyItDoesNotControl", func(t *testing.T) {
 		gw := createDownstreamGateway(t, ctx, cl, "i", httpsListener("https"))
 		foreign := &envoygatewayv1alpha1.ClientTrafficPolicy{
-			ObjectMeta: metav1.ObjectMeta{Name: gw.Name, Namespace: gw.Namespace},
+			ObjectMeta: metav1.ObjectMeta{Name: policyKey(gw).Name, Namespace: gw.Namespace},
 			Spec: envoygatewayv1alpha1.ClientTrafficPolicySpec{
 				PolicyTargetReferences: envoygatewayv1alpha1.PolicyTargetReferences{
 					TargetRefs: []gatewayv1.LocalPolicyTargetReferenceWithSectionName{{
@@ -157,7 +159,7 @@ func TestEnsureDownstreamGatewayWritesClientTrafficPolicy(t *testing.T) {
 	downstream, gw := reconcileOneGatewayWithClientTraffic(t, traffic)
 
 	var policy envoygatewayv1alpha1.ClientTrafficPolicy
-	require.NoError(t, downstream.Get(context.Background(), client.ObjectKeyFromObject(gw), &policy))
+	require.NoError(t, downstream.Get(context.Background(), policyKey(gw), &policy))
 	assert.True(t, metav1.IsControlledBy(&policy, gw))
 	var https []string
 	for _, l := range gw.Spec.Listeners {
@@ -232,15 +234,43 @@ func httpsListener(name string) gatewayv1.Listener {
 func getClientTrafficPolicy(t *testing.T, ctx context.Context, cl client.Client, gw *gatewayv1.Gateway) *envoygatewayv1alpha1.ClientTrafficPolicy {
 	t.Helper()
 	var policy envoygatewayv1alpha1.ClientTrafficPolicy
-	require.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(gw), &policy))
+	require.NoError(t, cl.Get(ctx, policyKey(gw), &policy))
 	return &policy
 }
 
 func assertNoClientTrafficPolicy(t *testing.T, ctx context.Context, cl client.Client, gw *gatewayv1.Gateway) {
 	t.Helper()
 	var policy envoygatewayv1alpha1.ClientTrafficPolicy
-	err := cl.Get(ctx, client.ObjectKeyFromObject(gw), &policy)
+	err := cl.Get(ctx, policyKey(gw), &policy)
 	assert.True(t, apierrors.IsNotFound(err), "want no ClientTrafficPolicy, got %v", err)
+}
+
+// policyKey is where the operator keeps a gateway's ClientTrafficPolicy.
+func policyKey(gw *gatewayv1.Gateway) client.ObjectKey {
+	return client.ObjectKey{Namespace: gw.Namespace, Name: clientTrafficPolicyName(gw.Name)}
+}
+
+// Staging's Kyverno names its policy <gateway>-http3 in the same namespace, and
+// the federation propagates with conflictResolution: Overwrite. So no gateway's
+// policy name may equal another gateway's Kyverno name: Gateways web and
+// web-http3 would make the two writers rewrite one object forever.
+func TestClientTrafficPolicyName(t *testing.T) {
+	long := strings.Repeat("g", 253)
+	gateways := []string{"web", "web-http3", "a-client-traffic", long, long[:240] + "-http3"}
+	kyverno := map[string]bool{}
+	for _, g := range gateways {
+		kyverno[g+"-http3"] = true
+	}
+	seen := map[string]string{}
+	for _, g := range gateways {
+		name := clientTrafficPolicyName(g)
+		assert.LessOrEqual(t, len(name), 253, "a Kubernetes name holds at most 253 characters")
+		assert.Empty(t, validation.IsDNS1123Subdomain(name), "the name must be a DNS-1123 subdomain")
+		assert.False(t, kyverno[name], "gateway %q's policy %q takes a Kyverno policy's name", g, name)
+		assert.NotContains(t, seen, name, "two gateways share one policy name")
+		seen[name] = g
+	}
+	assert.Equal(t, "web-client-traffic", clientTrafficPolicyName("web"))
 }
 
 // sectionNames returns the listener names a policy targets on one Gateway, in order.

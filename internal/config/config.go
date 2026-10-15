@@ -14,6 +14,7 @@ import (
 
 	words "go.datum.net/network-services-operator/internal/words"
 
+	envoygatewayv1alpha1 "github.com/envoyproxy/gateway/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -835,6 +836,12 @@ type GatewayConfig struct {
 	// data plane.
 	ErrorPage ErrorPageConfig `json:"errorPage,omitempty"`
 
+	// DownstreamClientTraffic is written into a ClientTrafficPolicy on the HTTPS
+	// listeners of each downstream gateway, so each estate sets how the edge
+	// serves clients. With nothing set, no policy is written, and a policy the
+	// operator wrote before is deleted.
+	DownstreamClientTraffic DownstreamClientTrafficConfig `json:"downstreamClientTraffic,omitempty"`
+
 	// ValidPortNumbers is a list of port numbers that are permitted on gateway
 	// listeners.
 	//
@@ -1142,6 +1149,62 @@ type CorazaConfig struct {
 	// stored in Envoy routes to inject into trace span attributes. MUST return
 	// a map of string keys to values.
 	TraceRouteMetadataExtractor string `json:"traceRouteMetadataExtractor,omitempty"`
+}
+
+// +k8s:deepcopy-gen=true
+
+// DownstreamClientTrafficConfig holds the ClientTrafficPolicy fields the
+// operator sets on each downstream gateway's HTTPS listeners.
+//
+// It carries settings of a listener's own connection manager only. Merged
+// gateways share one socket per port, and a socket-wide setting such as a
+// buffer limit or TCP keepalive takes one value for all of them, so a
+// per-gateway value would be dropped without a status.
+type DownstreamClientTrafficConfig struct {
+	// HTTP2 sets the HTTP/2 windows and stream limits the edge offers clients.
+	// Envoy Gateway's defaults apply when it is unset.
+	// +optional
+	HTTP2 *envoygatewayv1alpha1.HTTP2Settings `json:"http2,omitempty"`
+
+	// HTTP3 turns on HTTP/3 for the listeners.
+	// +optional
+	HTTP3 *envoygatewayv1alpha1.HTTP3Settings `json:"http3,omitempty"`
+}
+
+// IsEmpty reports whether nothing is set, so no policy is written.
+func (c DownstreamClientTrafficConfig) IsEmpty() bool {
+	return c.HTTP2 == nil && c.HTTP3 == nil
+}
+
+// http2WindowMin and http2WindowMax bound an HTTP/2 window [bytes] as Envoy
+// validates it (HTTP2ProtocolOptions, config/core/v3/protocol.proto). Envoy
+// Gateway refuses a window outside them into the policy's status, which the
+// operator does not read, and the edge keeps its defaults.
+const (
+	http2WindowMin = 65535
+	http2WindowMax = 2147483647
+)
+
+// validate refuses an HTTP/2 window the edge would ignore without saying so.
+func (c DownstreamClientTrafficConfig) validate() error {
+	if c.HTTP2 == nil {
+		return nil
+	}
+	return errors.Join(
+		validateHTTP2Window("initialStreamWindowSize", c.HTTP2.InitialStreamWindowSize),
+		validateHTTP2Window("initialConnectionWindowSize", c.HTTP2.InitialConnectionWindowSize),
+	)
+}
+
+func validateHTTP2Window(field string, size *resource.Quantity) error {
+	if size == nil {
+		return nil
+	}
+	if v, ok := size.AsInt64(); !ok || v < http2WindowMin || v > http2WindowMax {
+		return fmt.Errorf("downstreamClientTraffic.http2.%s must be a whole number of bytes from %d to %d, got %s",
+			field, http2WindowMin, http2WindowMax, size.String())
+	}
+	return nil
 }
 
 // +k8s:deepcopy-gen=true
@@ -1586,6 +1649,33 @@ func (c *NetworkServicesOperator) Validate() error {
 }
 
 func (c *GatewayConfig) validate() error {
+	errs := c.legacyTargetDomainErrors()
+	if c.CertificateService.Enabled && c.DisableHostnameVerification {
+		errs = append(errs, errors.New("certificateService.enabled requires hostname verification: the certificate service issues for any hostname it is handed"))
+	}
+	if c.CertificateService.Enabled && strings.TrimSpace(c.CertificateService.SecretNamespace) == "" {
+		errs = append(errs, errors.New("certificateService.secretNamespace is required when certificateService.enabled"))
+	}
+	if c.CertificateService.TrustedRootsFile != "" && !c.CertificateService.VerifyChain {
+		errs = append(errs, errors.New("certificateService.trustedRootsFile requires certificateService.verifyChain"))
+	}
+	errs = append(errs, c.validateAuthorityLossGracePeriod())
+	errs = append(errs, c.DownstreamClientTraffic.validate())
+	return errors.Join(errs...)
+}
+
+// validateAuthorityLossGracePeriod refuses a negative period, which would turn the hold off without saying so;
+// zero is the documented way to turn it off.
+func (c *GatewayConfig) validateAuthorityLossGracePeriod() error {
+	if c.DNSAuthorityLossGracePeriod != nil && c.DNSAuthorityLossGracePeriod.Duration < 0 {
+		return errors.New("dnsAuthorityLossGracePeriod must not be negative")
+	}
+	return nil
+}
+
+// legacyTargetDomainErrors names each legacyTargetDomains entry that is empty,
+// not a bare domain, the targetDomain itself, or a duplicate.
+func (c *GatewayConfig) legacyTargetDomainErrors() []error {
 	var errs []error
 	seen := make([]string, 0, len(c.LegacyTargetDomains))
 	for i, domain := range c.LegacyTargetDomains {
@@ -1601,26 +1691,7 @@ func (c *GatewayConfig) validate() error {
 		}
 		seen = append(seen, domain)
 	}
-	if c.CertificateService.Enabled && c.DisableHostnameVerification {
-		errs = append(errs, errors.New("certificateService.enabled requires hostname verification: the certificate service issues for any hostname it is handed"))
-	}
-	if c.CertificateService.Enabled && strings.TrimSpace(c.CertificateService.SecretNamespace) == "" {
-		errs = append(errs, errors.New("certificateService.secretNamespace is required when certificateService.enabled"))
-	}
-	if c.CertificateService.TrustedRootsFile != "" && !c.CertificateService.VerifyChain {
-		errs = append(errs, errors.New("certificateService.trustedRootsFile requires certificateService.verifyChain"))
-	}
-	errs = append(errs, c.validateAuthorityLossGracePeriod())
-	return errors.Join(errs...)
-}
-
-// validateAuthorityLossGracePeriod refuses a negative period, which would turn the hold off without saying so;
-// zero is the documented way to turn it off.
-func (c *GatewayConfig) validateAuthorityLossGracePeriod() error {
-	if c.DNSAuthorityLossGracePeriod != nil && c.DNSAuthorityLossGracePeriod.Duration < 0 {
-		return errors.New("dnsAuthorityLossGracePeriod must not be negative")
-	}
-	return nil
+	return errs
 }
 
 func (c *IrohConnectorConfig) validate() error {

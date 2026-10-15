@@ -3574,6 +3574,8 @@ func TestHTTPProxyCollectDesiredResourcesNetworkService(t *testing.T) {
 		require.Len(t, endpointSlice.Ports, 1)
 		assert.EqualValues(t, 8080, ptr.Deref(endpointSlice.Ports[0].Port, 0))
 		assert.Equal(t, "httpproxy-0-0", ptr.Deref(endpointSlice.Ports[0].Name, ""))
+		assert.Equal(t, SchemeHTTP, ptr.Deref(endpointSlice.Ports[0].AppProtocol, ""),
+			"a port with no appProtocol keeps the edge speaking HTTP/1.1 to members")
 
 		require.Len(t, endpointSlice.Endpoints, 3)
 
@@ -3648,6 +3650,25 @@ func TestHTTPProxyCollectDesiredResourcesNetworkService(t *testing.T) {
 			"a holder reporting itself available must take the endpoint out of draining")
 		assert.True(t, ptr.Deref(conditions.Serving, false))
 		assert.False(t, ptr.Deref(conditions.Terminating, true))
+	})
+
+	t.Run("carries the port's appProtocol onto every shard", func(t *testing.T) {
+		httpProxy := newNetworkServiceProxy()
+
+		service := newNetworkService()
+		service.Spec.Ports[0].AppProtocol = ptr.To(networkingv1alpha.NetworkServiceAppProtocolH2C)
+		objects := append(networkServiceMembers(150), service)
+
+		cl := fake.NewClientBuilder().WithScheme(testScheme).WithObjects(objects...).Build()
+
+		desiredResources, err := reconciler.collectDesiredResources(context.Background(), cl, httpProxy)
+		require.NoError(t, err)
+
+		require.Len(t, desiredResources.endpointSlices, 2)
+		for _, endpointSlice := range desiredResources.endpointSlices {
+			require.Len(t, endpointSlice.Ports, 1)
+			assert.Equal(t, "kubernetes.io/h2c", ptr.Deref(endpointSlice.Ports[0].AppProtocol, ""))
+		}
 	})
 
 	t.Run("shards members beyond the per-slice limit and reports partial programming", func(t *testing.T) {

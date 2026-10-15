@@ -343,17 +343,18 @@ func TestRenderedNetworkIsIPv6OnlyAndAccepted(t *testing.T) {
 
 func TestRenderRefusesWhatAdmissionWould(t *testing.T) {
 	for name, in := range map[string]RenderInput{
-		"bad name":            {Kind: KindNetwork, Name: "Backend_1"},
-		"mtu too low":         {Kind: KindNetwork, Name: "n", MTU: 1200},
-		"mtu too high":        {Kind: KindNetwork, Name: "n", MTU: 9000},
-		"service field":       {Kind: KindNetwork, Name: "n", Workload: "api"},
-		"no selector":         {Kind: KindNetworkService, Name: "s", Ports: []RenderPort{{Name: "http", Port: 80}}},
-		"two selectors":       {Kind: KindNetworkService, Name: "s", Workload: "a", MatchLabels: map[string]string{"x": "y"}, Ports: []RenderPort{{Name: "http", Port: 80}}},
-		"no ports":            {Kind: KindNetworkService, Name: "s", Workload: "api"},
-		"duplicate port name": {Kind: KindNetworkService, Name: "s", Workload: "api", Ports: []RenderPort{{Name: "http", Port: 80}, {Name: "http", Port: 81}}},
-		"duplicate port":      {Kind: KindNetworkService, Name: "s", Workload: "api", Ports: []RenderPort{{Name: "a", Port: 80}, {Name: "b", Port: 80}}},
-		"bad port name":       {Kind: KindNetworkService, Name: "s", Workload: "api", Ports: []RenderPort{{Name: "HTTP", Port: 80}}},
-		"unknown kind":        {Kind: "Subnet", Name: "s"},
+		"bad name":             {Kind: KindNetwork, Name: "Backend_1"},
+		"mtu too low":          {Kind: KindNetwork, Name: "n", MTU: 1200},
+		"mtu too high":         {Kind: KindNetwork, Name: "n", MTU: 9000},
+		"service field":        {Kind: KindNetwork, Name: "n", Workload: "api"},
+		"no selector":          {Kind: KindNetworkService, Name: "s", Ports: []RenderPort{{Name: "http", Port: 80}}},
+		"two selectors":        {Kind: KindNetworkService, Name: "s", Workload: "a", MatchLabels: map[string]string{"x": "y"}, Ports: []RenderPort{{Name: "http", Port: 80}}},
+		"no ports":             {Kind: KindNetworkService, Name: "s", Workload: "api"},
+		"duplicate port name":  {Kind: KindNetworkService, Name: "s", Workload: "api", Ports: []RenderPort{{Name: "http", Port: 80}, {Name: "http", Port: 81}}},
+		"duplicate port":       {Kind: KindNetworkService, Name: "s", Workload: "api", Ports: []RenderPort{{Name: "a", Port: 80}, {Name: "b", Port: 80}}},
+		"bad port name":        {Kind: KindNetworkService, Name: "s", Workload: "api", Ports: []RenderPort{{Name: "HTTP", Port: 80}}},
+		"unknown app protocol": {Kind: KindNetworkService, Name: "s", Workload: "api", Ports: []RenderPort{{Name: "grpc", Port: 9090, AppProtocol: "grpc"}}},
+		"unknown kind":         {Kind: "Subnet", Name: "s"},
 	} {
 		_, _, err := render(t, in)
 		assert.Error(t, err, name)
@@ -368,4 +369,16 @@ func TestRenderedServiceSelectsTheWorkloadByItsInterfaceLabel(t *testing.T) {
 	sel := spec["networkInterfaces"].(map[string]any)["selector"].(map[string]any)
 	assert.Equal(t, map[string]any{WorkloadNameLabel: "api-backend"}, sel["matchLabels"])
 	assert.Equal(t, []any{map[string]any{"name": "http", "port": float64(8080)}}, spec["ports"])
+}
+
+func TestRenderedServiceCarriesAppProtocol(t *testing.T) {
+	for _, value := range []string{"h2c", "kubernetes.io/h2c"} {
+		doc, _, err := render(t, RenderInput{Kind: KindNetworkService, Name: "api", Workload: "api-backend",
+			Ports: []RenderPort{{Name: "http", Port: 8080}, {Name: "grpc", Port: 9090, AppProtocol: value}}})
+		require.NoError(t, err, value)
+		assert.Equal(t, []any{
+			map[string]any{"name": "http", "port": float64(8080)},
+			map[string]any{"name": "grpc", "port": float64(9090), "appProtocol": "kubernetes.io/h2c"},
+		}, doc["spec"].(map[string]any)["ports"], value)
+	}
 }

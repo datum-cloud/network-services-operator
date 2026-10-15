@@ -349,6 +349,24 @@ Unique within the service.<br/>
         </td>
         <td>true</td>
       </tr><tr>
+        <td><b>appProtocol</b></td>
+        <td>enum</td>
+        <td>
+          appProtocol is the HTTP version the edge uses to send requests to members
+on this port. The edge terminates TLS, so members serve plain HTTP either
+way.
+
+Leave it unset for HTTP/1.1, which suits most servers.
+
+Set kubernetes.io/h2c for servers that speak HTTP/2, such as gRPC servers.
+Every request on the port then reaches members as HTTP/2, even when the
+client sent HTTP/1.1. Most servers can't take WebSockets over HTTP/2, so
+serve those on a different port.<br/>
+          <br/>
+            <i>Enum</i>: kubernetes.io/h2c<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
         <td><b>protocol</b></td>
         <td>enum</td>
         <td>

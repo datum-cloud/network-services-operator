@@ -401,6 +401,16 @@ var hostnameCatalog = []ReasonInfo{
 		Remediation:   "Look at each hostname to see which one and why.",
 		Skill:         SkillHostnameNotWorking,
 	},
+	{
+		Reason:           networkingv1alpha.HTTPProxyReasonPending,
+		ConditionType:    networkingv1alpha.HTTPProxyConditionDNSRecordsProgrammed,
+		Actionability:    ActionabilityTransient,
+		Scope:            ScopeOneHostname,
+		Explanation:      "Datum has not yet reported the DNS records for this load balancer's current hostnames.",
+		Remediation:      remediationWait,
+		Skill:            SkillHostnameNotWorking,
+		ExpectedDuration: windowDNSRecord,
+	},
 
 	// --------------------------------------------- one hostname: claiming
 	{
@@ -797,6 +807,7 @@ func AllReasons() []ReasonInfo {
 // certificate" is not an answer anybody can act on.
 var aggregateKeys = map[Key]struct{}{
 	{networkingv1alpha.HTTPProxyConditionDNSRecordsProgrammed, networkingv1alpha.DNSRecordsProgrammedReasonPartialFailure}: {},
+	{networkingv1alpha.HTTPProxyConditionDNSRecordsProgrammed, networkingv1alpha.HTTPProxyReasonPending}:                   {},
 	{networkingv1alpha.HTTPProxyConditionCertificatesReady, networkingv1alpha.CertificatesReadyReasonCertificatesPending}:  {},
 	{networkingv1alpha.HTTPProxyConditionCertificatesReady, networkingv1alpha.CertificatesReadyReasonCertificatesFailed}:   {},
 	{networkingv1alpha.HTTPProxyConditionHostnamesVerified, networkingv1alpha.UnverifiedHostnamesPresent}:                  {},

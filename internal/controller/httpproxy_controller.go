@@ -236,7 +236,7 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 		observation.failed(ctx, err, acceptedCondition, programmedCondition)
 		apimeta.SetStatusCondition(&httpProxyCopy.Status.Conditions, *acceptedCondition)
 		apimeta.SetStatusCondition(&httpProxyCopy.Status.Conditions, *programmedCondition)
-		setDNSRecordsProgrammed(&httpProxyCopy.Status.Conditions, dnsRecordsCondition)
+		setDNSRecordsProgrammed(&httpProxyCopy.Status.Conditions, dnsRecordsCondition, httpProxyCopy.Status.HostnameStatuses)
 
 		var statusErr error
 		if !equality.Semantic.DeepEqual(httpProxy.Status, httpProxyCopy.Status) {

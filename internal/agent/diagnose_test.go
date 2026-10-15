@@ -75,6 +75,26 @@ func TestAggregateIsNeverTheAnswer(t *testing.T) {
 	assert.Contains(t, d.Summary, "app.example.com", "the answer must name the hostname")
 }
 
+// TestPendingDNSAggregateIsNotAFault covers the DNSRecordsProgrammed an
+// HTTPProxy carries as Unknown/Pending while its Gateway has not yet reported
+// on the current hostnames. Like PartialFailure it names no hostname, and
+// nothing has failed, so a load balancer that is otherwise healthy still reads
+// as serving, and the reason still has an explanation.
+func TestPendingDNSAggregateIsNotAFault(t *testing.T) {
+	p := healthyProxy()
+	p.Status.Conditions = append(p.Status.Conditions, cond(
+		networkingv1alpha.HTTPProxyConditionDNSRecordsProgrammed,
+		networkingv1alpha.HTTPProxyReasonPending,
+		metav1.ConditionUnknown, ago(2*time.Minute)))
+
+	d := diagnose(t, &fakeReader{proxies: []networkingv1alpha.HTTPProxy{p}})
+
+	assert.Nil(t, d.RootCause, "a pending aggregate is not an answer")
+	assert.True(t, d.Serving)
+	_, explained := ExplainReason(networkingv1alpha.HTTPProxyConditionDNSRecordsProgrammed, networkingv1alpha.HTTPProxyReasonPending)
+	assert.True(t, explained, "alb_explain_reason must answer the reason the HTTPProxy writes")
+}
+
 // TestHostnameCollisionIsFoundNotFilteredOut is the negative-polarity guard at
 // the walk level. HostnamesInUse is True when something is wrong, so a naive
 // "not True is failing" filter drops a collision entirely and reports health.

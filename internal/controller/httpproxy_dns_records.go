@@ -406,10 +406,27 @@ func dnsRecordsPending(generation int64) *metav1.Condition {
 }
 
 // setDNSRecordsProgrammed sets cond, or removes the condition when cond is nil.
-func setDNSRecordsProgrammed(conditions *[]metav1.Condition, cond *metav1.Condition) {
+// A Pending cond is removed too when no hostname has a DNS record: nothing is
+// pending, and a Gateway left with no Datum-managed hostname keeps the aggregate
+// it wrote for an earlier generation of itself, so it would stay Pending.
+func setDNSRecordsProgrammed(conditions *[]metav1.Condition, cond *metav1.Condition, hostnames []networkingv1alpha.HostnameStatus) {
+	if cond != nil && cond.Reason == networkingv1alpha.HTTPProxyReasonPending && !anyDNSRecord(hostnames) {
+		cond = nil
+	}
 	if cond == nil {
 		apimeta.RemoveStatusCondition(conditions, networkingv1alpha.HTTPProxyConditionDNSRecordsProgrammed)
 		return
 	}
 	apimeta.SetStatusCondition(conditions, *cond)
+}
+
+// anyDNSRecord reports whether a hostname carries a DNSRecordProgrammed
+// condition, which the HTTPProxy builds from its Gateway's DNS record sets.
+func anyDNSRecord(hostnames []networkingv1alpha.HostnameStatus) bool {
+	for _, hs := range hostnames {
+		if apimeta.FindStatusCondition(hs.Conditions, networkingv1alpha.HostnameConditionDNSRecordProgrammed) != nil {
+			return true
+		}
+	}
+	return false
 }

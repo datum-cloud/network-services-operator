@@ -77,8 +77,38 @@ func TestDNSRecordsUnread(t *testing.T) {
 
 func TestSetDNSRecordsProgrammedRemovesOnNil(t *testing.T) {
 	conditions := []metav1.Condition{dnsRecordsCondition(metav1.ConditionTrue, networkingv1alpha.DNSRecordsProgrammedReasonAllCreated, 1)}
-	setDNSRecordsProgrammed(&conditions, nil)
+	setDNSRecordsProgrammed(&conditions, nil, nil)
 	require.Empty(t, conditions)
+}
+
+// A Gateway left with no Datum-managed hostname keeps the aggregate it wrote
+// for an earlier generation, so the HTTPProxy decides Pending by its own
+// hostnames; anything the Gateway reports for its current generation is carried.
+func TestSetDNSRecordsProgrammedDropsPendingWithNoRecord(t *testing.T) {
+	withRecord := []networkingv1alpha.HostnameStatus{{Hostname: "app.example.test", Conditions: []metav1.Condition{{
+		Type: networkingv1alpha.HostnameConditionDNSRecordProgrammed, Status: metav1.ConditionTrue,
+		Reason: networkingv1alpha.DNSRecordReasonCreated,
+	}}}}
+	withoutRecord := []networkingv1alpha.HostnameStatus{{Hostname: "app.example.test"}}
+	allCreated := dnsRecordsCondition(metav1.ConditionTrue, networkingv1alpha.DNSRecordsProgrammedReasonAllCreated, proxyGeneration)
+	cases := []struct {
+		name      string
+		cond      *metav1.Condition
+		hostnames []networkingv1alpha.HostnameStatus
+		want      bool
+	}{
+		{"Pending, no hostname has a DNS record: removed", dnsRecordsPending(proxyGeneration), withoutRecord, false},
+		{"Pending, no hostname at all: removed", dnsRecordsPending(proxyGeneration), nil, false},
+		{"Pending, a hostname has a DNS record: kept", dnsRecordsPending(proxyGeneration), withRecord, true},
+		{"True, no hostname has a DNS record yet: kept", &allCreated, withoutRecord, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var conditions []metav1.Condition
+			setDNSRecordsProgrammed(&conditions, tc.cond, tc.hostnames)
+			require.Equal(t, tc.want, len(conditions) == 1)
+		})
+	}
 }
 
 func ptrTo(c metav1.Condition) *metav1.Condition { return &c }

@@ -19,10 +19,6 @@ import (
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 )
 
-// TestHTTPProxyReportsARefusedDNSRecord covers issue #537: one hostname's DNS
-// record set is refused while every listener is accepted. The HTTPProxy must
-// say so in a condition that names the hostname, and must report success once
-// the record set is programmed.
 // TestHTTPProxyCarriesItsGatewaysDNSRecordsCondition checks that an HTTPProxy
 // reports DNSRecordsProgrammed as its Gateway does, as it reports Accepted and
 // Programmed, while HostnamesVerified keeps reporting ownership (#537).
@@ -60,6 +56,37 @@ func TestHTTPProxyCarriesItsGatewaysDNSRecordsCondition(t *testing.T) {
 	// No hostname uses Datum-managed DNS: the Gateway reports no condition, nor does the HTTPProxy.
 	removeGatewayDNSRecords(t, ctx, c, gateway)
 	eventually(t, "no DNSRecordsProgrammed on the HTTPProxy once its Gateway reports none", func() bool {
+		return proxyCondition(ctx, c, key, networkingv1alpha.HTTPProxyConditionDNSRecordsProgrammed).Type == ""
+	})
+}
+
+// TestHTTPProxyDropsAPendingDNSRecordsConditionWithNoRecordLeft covers an
+// HTTPProxy that drops its last hostname using Datum-managed DNS. Its Gateway
+// then has no hostname statuses, skips its DNS aggregate and keeps the one it
+// wrote for an earlier generation of itself, while the record sets go. Nothing
+// is pending, so the HTTPProxy carries no DNSRecordsProgrammed.
+func TestHTTPProxyDropsAPendingDNSRecordsConditionWithNoRecordLeft(t *testing.T) {
+	if os.Getenv("KUBEBUILDER_ASSETS") == "" {
+		t.Skip("KUBEBUILDER_ASSETS unset; run via `make test` to exercise envtest")
+	}
+	log.SetLogger(zap.New(zap.UseDevMode(true)))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cfg, s := startDNSStatusEnv(t)
+	c, err := client.New(cfg, client.Options{Scheme: s})
+	require.NoError(t, err)
+	startHTTPProxyManager(t, ctx, cfg, s)
+
+	const ns, name, refused, served = "default", "proxy", "app.example.test", "www.example.test"
+	gateway := refusedRecordProxy(t, ctx, c, ns, name, refused, served)
+	key := client.ObjectKey{Namespace: ns, Name: name}
+
+	setGatewayDNSRecords(t, ctx, c, gateway, metav1.ConditionTrue, networkingv1alpha.DNSRecordsProgrammedReasonAllCreated, -1)
+	eventuallyProxyDNSRecords(t, ctx, c, key, metav1.ConditionUnknown, networkingv1alpha.HTTPProxyReasonPending)
+
+	require.NoError(t, c.DeleteAllOf(ctx, &dnsv1alpha1.DNSRecordSet{}, client.InNamespace(ns)))
+	eventually(t, "no DNSRecordsProgrammed on the HTTPProxy once none of its hostnames has a DNS record", func() bool {
 		return proxyCondition(ctx, c, key, networkingv1alpha.HTTPProxyConditionDNSRecordsProgrammed).Type == ""
 	})
 }

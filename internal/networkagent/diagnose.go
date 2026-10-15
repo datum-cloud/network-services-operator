@@ -10,6 +10,7 @@ import (
 
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	"go.datum.net/network-services-operator/internal/agenttime"
@@ -382,9 +383,10 @@ type MemberView struct {
 }
 
 type PortView struct {
-	Name     string `json:"name"`
-	Port     int32  `json:"port"`
-	Protocol string `json:"protocol,omitempty"`
+	Name        string `json:"name"`
+	Port        int32  `json:"port"`
+	Protocol    string `json:"protocol,omitempty"`
+	AppProtocol string `json:"appProtocol,omitempty"`
 }
 
 type ServiceDiagnosis struct {
@@ -419,7 +421,8 @@ func diagnoseService(s *networkingv1alpha.NetworkService, e *evidence, now time.
 		d.Selects = sel.String()
 	}
 	for _, p := range s.Spec.Ports {
-		d.Ports = append(d.Ports, PortView{Name: p.Name, Port: p.Port, Protocol: string(p.Protocol)})
+		d.Ports = append(d.Ports, PortView{Name: p.Name, Port: p.Port, Protocol: string(p.Protocol),
+			AppProtocol: string(ptr.Deref(p.AppProtocol, ""))})
 	}
 
 	causes := failingCauses(subject{

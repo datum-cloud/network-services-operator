@@ -13,6 +13,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
@@ -159,7 +160,11 @@ func runServiceDescribe(cmd *cobra.Command, args []string) error {
 
 	ports := make([]string, 0, len(d.Ports))
 	for _, p := range d.Ports {
-		ports = append(ports, fmt.Sprintf("%s → %d/%s", p.Name, p.Port, util.OrDash(p.Protocol)))
+		port := fmt.Sprintf("%s → %d/%s", p.Name, p.Port, util.OrDash(p.Protocol))
+		if p.AppProtocol != "" {
+			port += " (" + networkagent.AppProtocolLabel(p.AppProtocol) + ")"
+		}
+		ports = append(ports, port)
 	}
 	tw := util.NewTabWriter(out)
 	_, _ = fmt.Fprintf(tw, "Name:\t%s\n", d.Service)
@@ -200,21 +205,68 @@ func runServiceDescribe(cmd *cobra.Command, args []string) error {
 func addSelectorFlags(cmd *cobra.Command) {
 	cmd.Flags().String("workload", "", "Workload whose instances answer for the service")
 	cmd.Flags().StringToString("selector", nil, "Labels an instance's network interface must carry, e.g. app=api,tier=web; instead of --workload")
-	cmd.Flags().StringArray("port", nil, "Port as name:number, e.g. http:8080; repeat for more")
+	cmd.Flags().StringArray("port", nil, "Port as name:number, e.g. http:8080. For a port that speaks HTTP/2, "+
+		"which gRPC needs, use the long form: name=grpc,port=9090,app-protocol=h2c. Repeat for more")
 	cmd.MarkFlagsMutuallyExclusive("workload", "selector")
 }
 
 func parsePorts(raw []string) ([]networkagent.RenderPort, error) {
 	ports := make([]networkagent.RenderPort, 0, len(raw))
 	for _, p := range raw {
-		name, number, ok := strings.Cut(p, ":")
-		n, err := strconv.ParseInt(number, 10, 32)
-		if !ok || name == "" || err != nil {
-			return nil, util.UsageErrorf("--port %q must be name:number, e.g. http:8080", p)
+		port, err := parsePort(p)
+		if err != nil {
+			return nil, err
 		}
-		ports = append(ports, networkagent.RenderPort{Name: name, Port: int32(n)})
+		ports = append(ports, port)
 	}
 	return ports, nil
+}
+
+// parsePort reads the short form name:number or the long form
+// name=…,port=…,app-protocol=…, which carries what the short form cannot.
+func parsePort(raw string) (networkagent.RenderPort, error) {
+	usage := util.UsageErrorf("--port %q must be name:number, e.g. http:8080, "+
+		"or name=<name>,port=<number>,app-protocol=h2c", raw)
+
+	if !strings.Contains(raw, "=") {
+		name, number, ok := strings.Cut(raw, ":")
+		n, err := strconv.ParseInt(number, 10, 32)
+		if !ok || name == "" || err != nil {
+			return networkagent.RenderPort{}, usage
+		}
+		return networkagent.RenderPort{Name: name, Port: int32(n)}, nil
+	}
+
+	var port networkagent.RenderPort
+	seen := map[string]bool{}
+	for _, field := range strings.Split(raw, ",") {
+		key, value, ok := strings.Cut(field, "=")
+		if !ok || value == "" {
+			return networkagent.RenderPort{}, usage
+		}
+		if seen[key] {
+			return networkagent.RenderPort{}, util.UsageErrorf("--port %q sets %s twice", raw, key)
+		}
+		seen[key] = true
+		switch key {
+		case "name":
+			port.Name = value
+		case "port":
+			n, err := strconv.ParseInt(value, 10, 32)
+			if err != nil {
+				return networkagent.RenderPort{}, usage
+			}
+			port.Port = int32(n)
+		case "app-protocol":
+			port.AppProtocol = value
+		default:
+			return networkagent.RenderPort{}, util.UsageErrorf("--port %q has an unknown key %q: use name, port and app-protocol", raw, key)
+		}
+	}
+	if port.Name == "" || port.Port == 0 {
+		return networkagent.RenderPort{}, usage
+	}
+	return port, nil
 }
 
 func serviceCreateCommand() *cobra.Command {
@@ -228,7 +280,7 @@ including instances added later. It can be created before the workload exists
 and starts serving once instances report themselves ready. The name cannot be
 changed later.`,
 		Example: `  datumctl network service create api --workload api-backend --port http:8080
-  datumctl network service create web --selector app=web --port http:80 --port grpc:9090`,
+  datumctl network service create web --selector app=web --port http:80 --port name=grpc,port=9090,app-protocol=h2c`,
 		Args: cobra.ExactArgs(1),
 		RunE: runServiceCreate,
 	}
@@ -300,8 +352,9 @@ func serviceUpdateCommand() *cobra.Command {
 		Long: `Change what a network service selects, or its ports.
 
 --workload or --selector replaces what the service selects. --port replaces the
-whole port list, so name every port the service should keep. A load balancer
-pointing at a port name you remove stops reaching the service.`,
+whole port list, so name every port the service should keep, with its
+app-protocol if it has one. A load balancer pointing at a port name you remove
+stops reaching the service.`,
 		Example: `  datumctl network service update api --workload api-v2
   datumctl network service update api --port http:8080 --port metrics:9100`,
 		Args:              cobra.ExactArgs(1),
@@ -362,7 +415,12 @@ func runServiceUpdate(cmd *cobra.Command, args []string) error {
 	if cmd.Flags().Changed("port") {
 		svc.Spec.Ports = nil
 		for _, p := range in.Ports {
-			svc.Spec.Ports = append(svc.Spec.Ports, networkingv1alpha.NetworkServicePort{Name: p.Name, Port: p.Port})
+			port := networkingv1alpha.NetworkServicePort{Name: p.Name, Port: p.Port}
+			// Render has already validated the value.
+			if appProtocol, _ := networkagent.AppProtocol(p.AppProtocol); appProtocol != "" {
+				port.AppProtocol = ptr.To(networkingv1alpha.NetworkServiceAppProtocol(appProtocol))
+			}
+			svc.Spec.Ports = append(svc.Spec.Ports, port)
 		}
 	}
 

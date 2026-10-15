@@ -1,0 +1,43 @@
+# Stand-in for a workload instance that speaks only HTTP/2 without TLS, the way
+# a gRPC server behind the edge does.
+#
+# Answers the same way network-service-member.yaml does: host-network, on every
+# address bound on the node, so the edge reaches it at the members' allocated
+# addresses. The ports are unusual so they cannot collide with that member's
+# 8080 or anything else on the node.
+#
+# echo-basic is the Gateway API project's conformance backend. Its h2c listener
+# refuses HTTP/1.1 with 400 "Expected h2c request" and echoes an HTTP/2 request
+# with "proto": "HTTP/2.0", so the response alone says which HTTP version the
+# edge used.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: network-service-h2c-member
+  namespace: default
+  labels:
+    purpose: network-service-member
+spec:
+  hostNetwork: true
+  containers:
+    - name: backend
+      image: gcr.io/k8s-staging-gateway-api/echo-basic:v20240412-v1.0.0-394-g40c666fd
+      env:
+        - name: H2C_PORT
+          value: "19090"
+        # echo-basic always serves HTTP/1.1 as well; it is moved off its default
+        # 3000 and never addressed.
+        - name: HTTP_PORT
+          value: "19091"
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+      resources:
+        requests:
+          cpu: 10m
+          memory: 32Mi
+        limits:
+          cpu: 100m
+          memory: 64Mi
+  terminationGracePeriodSeconds: 0

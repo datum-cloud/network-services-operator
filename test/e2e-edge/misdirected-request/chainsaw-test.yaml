@@ -1,0 +1,355 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+#
+# A request for one site on another site's connection is answered 421.
+#
+# Hostnames on the edge share an IP and a certificate, so a browser reuses one
+# site's HTTP/2 or HTTP/3 connection for another. The request then arrives in the
+# first site's route configuration, which has no virtual host for it. Without
+# the extension server's catch-all that is a 404 the browser cannot recover
+# from; with it, a 421 tells the browser to retry on a connection of its own.
+#
+# Two gateways stand in for two tenants: one HTTPS listener each, both serving
+# the same certificate, merged onto the edge's port 443 as production merges
+# them. HTTP/1.1 exercises the same route configuration a reused HTTP/2 or
+# HTTP/3 connection does: TLS is negotiated for site A, the request names site B.
+#
+# The gateways are created on the downstream cluster directly, as in
+# atomic-reject-isolation; the namespace carries the gateway-watch label at
+# creation.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: misdirected-request
+spec:
+  concurrent: false
+  cluster: nso-upstream
+  bindings:
+    - name: downstreamGatewayClass
+      value: datum-downstream-gateway-e2e
+    - name: siteA
+      value: misdirect-a.e2e.env.datum.net
+    - name: siteB
+      value: misdirect-b.e2e.env.datum.net
+  steps:
+    - name: Two tenants' gateways sharing one certificate
+      try:
+        - create:
+            cluster: nso-downstream
+            resource:
+              apiVersion: v1
+              kind: Namespace
+              metadata:
+                name: (join('-', ['md', $namespace]))
+                labels:
+                  meta.datumapis.com/upstream-cluster-name: cluster-single
+        - apply:
+            cluster: nso-downstream
+            resource:
+              apiVersion: v1
+              kind: Namespace
+              metadata:
+                name: datum-downstream-gateway-hostnames
+        - create:
+            cluster: nso-downstream
+            resource:
+              apiVersion: cert-manager.io/v1
+              kind: Issuer
+              metadata:
+                name: md-selfsigned
+                namespace: (join('-', ['md', $namespace]))
+              spec:
+                selfSigned: {}
+        - create:
+            cluster: nso-downstream
+            resource:
+              apiVersion: cert-manager.io/v1
+              kind: Certificate
+              metadata:
+                name: md-shared
+                namespace: (join('-', ['md', $namespace]))
+              spec:
+                secretName: md-shared-tls
+                commonName: ($siteA)
+                dnsNames:
+                  - ($siteA)
+                  - ($siteB)
+                issuerRef:
+                  name: md-selfsigned
+                  kind: Issuer
+        - assert:
+            timeout: 90s
+            cluster: nso-downstream
+            resource:
+              apiVersion: cert-manager.io/v1
+              kind: Certificate
+              metadata:
+                name: md-shared
+                namespace: (join('-', ['md', $namespace]))
+              status:
+                conditions:
+                  - type: Ready
+                    status: "True"
+        - create:
+            cluster: nso-downstream
+            resource:
+              apiVersion: v1
+              kind: Pod
+              metadata:
+                name: echo-backend
+                namespace: (join('-', ['md', $namespace]))
+                labels:
+                  purpose: md-echo
+              spec:
+                containers:
+                  - name: backend
+                    image: ghcr.io/mccutchen/go-httpbin:2.18.1
+                    command: ["/bin/go-httpbin"]
+                    args: ["-host", "0.0.0.0", "-port", "8080"]
+                terminationGracePeriodSeconds: 0
+        - create:
+            cluster: nso-downstream
+            resource:
+              apiVersion: v1
+              kind: Service
+              metadata:
+                name: echo-backend
+                namespace: (join('-', ['md', $namespace]))
+              spec:
+                ports:
+                  - name: http
+                    port: 8080
+                    targetPort: 8080
+                selector:
+                  purpose: md-echo
+        - script:
+            cluster: nso-downstream
+            env:
+              - name: MD_NS
+                value: (join('-', ['md', $namespace]))
+              - name: GATEWAY_CLASS
+                value: ($downstreamGatewayClass)
+              - name: SITE_A
+                value: ($siteA)
+              - name: SITE_B
+                value: ($siteB)
+            content: |
+              set -eu
+              for site in a b; do
+                host=$SITE_A; [ "$site" = b ] && host=$SITE_B
+                cat <<EOF | kubectl -n "$MD_NS" create -f -
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: Gateway
+              metadata:
+                name: md-site-${site}
+              spec:
+                gatewayClassName: ${GATEWAY_CLASS}
+                listeners:
+                  - name: http
+                    protocol: HTTP
+                    port: 80
+                    hostname: ${host}
+                    allowedRoutes:
+                      namespaces:
+                        from: Same
+                  - name: https
+                    protocol: HTTPS
+                    port: 443
+                    hostname: ${host}
+                    allowedRoutes:
+                      namespaces:
+                        from: Same
+                    tls:
+                      mode: Terminate
+                      certificateRefs:
+                        - kind: Secret
+                          name: md-shared-tls
+              ---
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: HTTPRoute
+              metadata:
+                name: md-site-${site}
+              spec:
+                parentRefs:
+                  - name: md-site-${site}
+                rules:
+                  - backendRefs:
+                      - name: echo-backend
+                        port: 8080
+              EOF
+              done
+        - assert:
+            timeout: 120s
+            cluster: nso-downstream
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: Gateway
+              metadata:
+                name: md-site-a
+                namespace: (join('-', ['md', $namespace]))
+              status:
+                (listeners[?name == 'https'] | [0]):
+                  (conditions[?type == 'Programmed']):
+                    - status: "True"
+        - assert:
+            timeout: 120s
+            cluster: nso-downstream
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: Gateway
+              metadata:
+                name: md-site-b
+                namespace: (join('-', ['md', $namespace]))
+              status:
+                (listeners[?name == 'https'] | [0]):
+                  (conditions[?type == 'Programmed']):
+                    - status: "True"
+      catch:
+        - script:
+            cluster: nso-downstream
+            env:
+              - name: MD_NS
+                value: (join('-', ['md', $namespace]))
+            content: |
+              kubectl -n "$MD_NS" get gateway,httproute,certificate,secret -o yaml
+
+    - name: Stand up the long-lived conntest client
+      try:
+        - create:
+            cluster: nso-downstream
+            resource:
+              apiVersion: v1
+              kind: Pod
+              metadata:
+                name: conntest
+                namespace: default
+              spec:
+                containers:
+                  - name: curl
+                    image: curlimages/curl:8.11.1
+                    command: ["sleep", "infinity"]
+                    resources:
+                      requests:
+                        cpu: 50m
+                        memory: 64Mi
+                      limits:
+                        cpu: 100m
+                        memory: 128Mi
+                terminationGracePeriodSeconds: 0
+        - assert:
+            cluster: nso-downstream
+            resource:
+              apiVersion: v1
+              kind: Pod
+              metadata:
+                name: conntest
+                namespace: default
+              status:
+                phase: Running
+
+    - name: Each site serves on its own connection
+      try:
+        - script:
+            timeout: 420s
+            cluster: nso-downstream
+            env:
+              - name: OWNING_GC
+                value: ($downstreamGatewayClass)
+              - name: SITE_A
+                value: ($siteA)
+              - name: SITE_B
+                value: ($siteB)
+            content: |
+              set -eu
+              IP=$(kubectl get svc -n datum-downstream-gateway \
+                -l gateway.envoyproxy.io/owning-gatewayclass=$OWNING_GC \
+                -o jsonpath='{.items[0].spec.clusterIP}')
+              for host in "$SITE_A" "$SITE_B"; do
+                ok=""
+                for i in $(seq 1 30); do
+                  code=$(kubectl -n default exec conntest -- \
+                    curl -ksS -o /dev/null -w '%{http_code}' --max-time 10 \
+                    --resolve "${host}:443:${IP}" "https://${host}/status/200" 2>/dev/null || true)
+                  echo "attempt ${i}: ${host} -> ${code}"
+                  if [ "${code}" = "200" ]; then ok=yes; break; fi
+                  sleep 5
+                done
+                [ -n "$ok" ] || { echo "ERROR: ${host} never served 200"; exit 1; }
+              done
+
+    - name: A request for site B on site A's connection is answered 421
+      description: |
+        The verdict. TLS is negotiated for site A and the request names site B,
+        which is what a browser's reused connection carries. Before the
+        catch-all this was a 404.
+      try:
+        - script:
+            timeout: 300s
+            cluster: nso-downstream
+            env:
+              - name: OWNING_GC
+                value: ($downstreamGatewayClass)
+              - name: SITE_A
+                value: ($siteA)
+              - name: SITE_B
+                value: ($siteB)
+            content: |
+              set -eu
+              IP=$(kubectl get svc -n datum-downstream-gateway \
+                -l gateway.envoyproxy.io/owning-gatewayclass=$OWNING_GC \
+                -o jsonpath='{.items[0].spec.clusterIP}')
+              for i in $(seq 1 24); do
+                code=$(kubectl -n default exec conntest -- \
+                  curl -ksS -o /dev/null -w '%{http_code}' --max-time 10 \
+                  --resolve "${SITE_A}:443:${IP}" -H "Host: ${SITE_B}" \
+                  "https://${SITE_A}/status/200" 2>/dev/null || true)
+                echo "attempt ${i}: SNI ${SITE_A}, Host ${SITE_B} -> ${code}"
+                if [ "${code}" = "421" ]; then echo "OK: misdirected request answered 421"; exit 0; fi
+                sleep 5
+              done
+              echo "ERROR: misdirected request was not answered 421"
+              exit 1
+
+    - name: The proxy runs the configuration the extension server built
+      description: |
+        The 421 is only the guard's if the proxy carries what the extension
+        server produced, not stale or partially rejected configuration.
+      use:
+        template: ../_steps/assert-config-dump.yaml
+        with:
+          bindings:
+            - { name: envoyPodSelector, value: gateway.envoyproxy.io/owning-gatewayclass=datum-downstream-gateway-e2e }
+            - { name: envoyNamespace, value: datum-downstream-gateway }
+            - { name: extServerSelector, value: app.kubernetes.io/component=envoy-gateway-extension-server }
+            - { name: extServerNamespace, value: network-services-operator-system }
+            - { name: dataplaneCluster, value: nso-downstream }
+
+    - name: Plain HTTP is left alone
+      description: |
+        Without SNI a plaintext request cannot be misdirected, so an unknown
+        hostname on port 80 must not become a 421 a client would retry for
+        nothing.
+      try:
+        - script:
+            timeout: 120s
+            cluster: nso-downstream
+            env:
+              - name: OWNING_GC
+                value: ($downstreamGatewayClass)
+            content: |
+              set -eu
+              IP=$(kubectl get svc -n datum-downstream-gateway \
+                -l gateway.envoyproxy.io/owning-gatewayclass=$OWNING_GC \
+                -o jsonpath='{.items[0].spec.clusterIP}')
+              code=$(kubectl -n default exec conntest -- \
+                curl -sS -o /dev/null -w '%{http_code}' --max-time 10 \
+                -H "Host: nowhere.e2e.env.datum.net" "http://${IP}/" 2>/dev/null || true)
+              echo "plain HTTP, unknown host -> ${code}"
+              [ "${code}" != "421" ] || { echo "ERROR: plaintext must not answer 421"; exit 1; }
+      catch:
+        - script:
+            cluster: nso-downstream
+            env:
+              - name: OWNING_GC
+                value: ($downstreamGatewayClass)
+            content: |
+              kubectl -n datum-downstream-gateway logs -l gateway.envoyproxy.io/owning-gatewayclass=$OWNING_GC -c envoy --tail=100

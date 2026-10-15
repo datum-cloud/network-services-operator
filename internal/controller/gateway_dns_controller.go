@@ -18,10 +18,13 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
+	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
@@ -402,13 +405,14 @@ func userRecordConflict(existing []dnsv1alpha1.DNSRecordSet, recordSetName, host
 // authorityMissingMessage says why Datum DNS has no authority for a verified
 // Domain, from the most specific fact the DNSZone shows.
 func authorityMissingMessage(domain *networkingv1alpha.Domain, zone *dnsv1alpha1.DNSZone) string {
-	switch {
-	case zone == nil:
+	if zone == nil {
 		return fmt.Sprintf("Domain %q is verified but Datum DNS does not have authority", domain.Name)
-	case !apimeta.IsStatusConditionTrue(zone.Status.Conditions, conditionTypeAccepted) ||
-		!apimeta.IsStatusConditionTrue(zone.Status.Conditions, conditionTypeProgrammed):
+	}
+	inputs := dnsutil.ReadZoneInputs(zone)
+	switch {
+	case !inputs.Ready():
 		return fmt.Sprintf("DNSZone %q is not ready (waiting for Accepted and Programmed conditions)", zone.Name)
-	case len(zone.Status.Nameservers) == 0:
+	case len(inputs.Nameservers) == 0:
 		return fmt.Sprintf("DNSZone %q has no nameservers assigned yet", zone.Name)
 	default:
 		return fmt.Sprintf("Domain %q nameservers do not include DNSZone %q nameservers; update your registrar's NS records", domain.Name, zone.Name)
@@ -764,32 +768,38 @@ func operationResultVerb(result controllerutil.OperationResult) string {
 	}
 }
 
-// listGatewaysForDNSZoneFunc returns a TypedEventHandler that enqueues every
-// Gateway in the same namespace whenever a DNSZone changes. This ensures the
-// controller re-evaluates DNS record status when a zone becomes ready or is
-// deleted.
-func (r *GatewayReconciler) listGatewaysForDNSZoneFunc(clusterName multicluster.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
-	return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []mcreconcile.Request {
-		dnsZone := obj.(*dnsv1alpha1.DNSZone)
-		logger := log.FromContext(ctx)
+// watchDNSZones adds the DNSZone watch to the Gateway controller. A zone
+// change reaches the Gateways whose listener hostnames the zone covers, and
+// only when it changes something their DNS reads from the zone.
+//
+// The handler is built here and nowhere else, so the watch cannot be
+// registered without its predicate.
+func (r *GatewayReconciler) watchDNSZones(b *mcbuilder.Builder) *mcbuilder.Builder {
+	coveredGateways := func(clusterName multicluster.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
+		return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []mcreconcile.Request {
+			dnsZone := obj.(*dnsv1alpha1.DNSZone)
+			return listGatewaysCoveredByDomain(ctx, cl.GetClient(), clusterName, dnsZone.Namespace, dnsZone.Spec.DomainName)
+		})
+	}
+	return b.Watches(&dnsv1alpha1.DNSZone{}, coveredGateways, mcbuilder.WithPredicates(dnsZoneAuthorityChangedPredicate()))
+}
 
-		var gatewayList gatewayv1.GatewayList
-		if err := cl.GetClient().List(ctx, &gatewayList, client.InNamespace(dnsZone.Namespace)); err != nil {
-			logger.Error(err, "failed to list Gateways for DNSZone change")
-			return nil
-		}
-
-		var requests []mcreconcile.Request
-		for _, gw := range gatewayList.Items {
-			requests = append(requests, mcreconcile.Request{
-				ClusterName: clusterName,
-				Request: reconcile.Request{
-					NamespacedName: client.ObjectKeyFromObject(&gw),
-				},
-			})
-		}
-		return requests
-	})
+// dnsZoneAuthorityChangedPredicate passes a zone's creation and deletion, and
+// an update that changes what a Gateway's DNS reads from the zone
+// (dnsutil.ZoneInputs). The zone's record count changes with every record set
+// that references it, so passing every update re-reconciled each Gateway in
+// the namespace on each record write.
+func dnsZoneAuthorityChangedPredicate() predicate.Predicate {
+	return predicate.Funcs{
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			oldZone, okOld := e.ObjectOld.(*dnsv1alpha1.DNSZone)
+			newZone, okNew := e.ObjectNew.(*dnsv1alpha1.DNSZone)
+			if !okOld || !okNew {
+				return true
+			}
+			return !dnsutil.ReadZoneInputs(oldZone).Equal(dnsutil.ReadZoneInputs(newZone))
+		},
+	}
 }
 
 // listGatewaysForDNSRecordSetFunc returns a TypedEventHandler that enqueues

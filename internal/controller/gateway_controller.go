@@ -3221,11 +3221,7 @@ func (r *GatewayReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 		WatchesRawSource(releasedHostnameClaimSource)
 
 	if r.Config.Gateway.EnableDNSIntegration {
-		builder = builder.
-			Watches(
-				&dnsv1alpha1.DNSZone{},
-				r.listGatewaysForDNSZoneFunc,
-			).
+		builder = r.watchDNSZones(builder).
 			Watches(
 				&dnsv1alpha1.DNSRecordSet{},
 				r.listGatewaysForDNSRecordSetFunc,
@@ -3460,37 +3456,44 @@ func (r *GatewayReconciler) listGatewaysForDomainFunc(clusterName multicluster.C
 			return nil
 		}
 
-		logger := log.FromContext(ctx)
-
-		var gatewayList gatewayv1.GatewayList
-		if err := cl.GetClient().List(ctx, &gatewayList, client.InNamespace(domain.Namespace)); err != nil {
-			logger.Error(err, "failed to list Gateways")
-			return nil
-		}
-
-		var requests []mcreconcile.Request
-
-		for _, gateway := range gatewayList.Items {
-			for _, l := range gateway.Spec.Listeners {
-				if l.Hostname == nil {
-					continue
-				}
-				hostname := string(*l.Hostname)
-
-				if hostname == domain.Spec.DomainName || strings.HasSuffix(hostname, "."+domain.Spec.DomainName) {
-					requests = append(requests, mcreconcile.Request{
-						ClusterName: clusterName,
-						Request: reconcile.Request{
-							NamespacedName: client.ObjectKeyFromObject(&gateway),
-						},
-					})
-					continue
-				}
-			}
-		}
-
-		return requests
+		return listGatewaysCoveredByDomain(ctx, cl.GetClient(), clusterName, domain.Namespace, domain.Spec.DomainName)
 	})
+}
+
+// listGatewaysCoveredByDomain returns a request for each Gateway in namespace
+// with a listener hostname that domainName covers: the name itself or a name
+// under it.
+func listGatewaysCoveredByDomain(
+	ctx context.Context,
+	c client.Client,
+	clusterName multicluster.ClusterName,
+	namespace, domainName string,
+) []mcreconcile.Request {
+	var gatewayList gatewayv1.GatewayList
+	if err := c.List(ctx, &gatewayList, client.InNamespace(namespace)); err != nil {
+		log.FromContext(ctx).Error(err, "failed to list Gateways", "domain", domainName)
+		return nil
+	}
+
+	var requests []mcreconcile.Request
+	for i := range gatewayList.Items {
+		if gatewayHasHostnameUnder(&gatewayList.Items[i], domainName) {
+			requests = append(requests, mcreconcile.Request{
+				ClusterName: clusterName,
+				Request:     reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&gatewayList.Items[i])},
+			})
+		}
+	}
+	return requests
+}
+
+func gatewayHasHostnameUnder(gateway *gatewayv1.Gateway, domainName string) bool {
+	for _, l := range gateway.Spec.Listeners {
+		if l.Hostname != nil && domainCoversHostname(domainName, string(*l.Hostname)) {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *GatewayReconciler) listGatewaysForHTTPRouteFilterFunc(clusterName multicluster.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {

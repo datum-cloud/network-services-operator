@@ -9,6 +9,7 @@ import (
 	"time"
 
 	cmv1 "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
+	envoygatewayv1alpha1 "github.com/envoyproxy/gateway/api/v1alpha1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
@@ -58,6 +59,7 @@ func newClaimRig(t *testing.T, listeners func([]gatewayv1.Listener) []gatewayv1.
 	require.NoError(t, discoveryv1.AddToScheme(testScheme))
 	require.NoError(t, cmv1.AddToScheme(testScheme))
 	require.NoError(t, dnsv1alpha1.AddToScheme(testScheme))
+	require.NoError(t, envoygatewayv1alpha1.AddToScheme(testScheme))
 
 	testConfig := config.NetworkServicesOperator{Gateway: config.GatewayConfig{
 		DownstreamGatewayClassName:            "test-suite",

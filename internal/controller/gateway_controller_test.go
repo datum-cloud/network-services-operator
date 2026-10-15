@@ -53,6 +53,7 @@ func TestEnsureDownstreamGateway(t *testing.T) {
 	assert.NoError(t, discoveryv1.AddToScheme(testScheme))
 	assert.NoError(t, networkingv1alpha.AddToScheme(testScheme))
 	assert.NoError(t, cmv1.AddToScheme(testScheme))
+	assert.NoError(t, envoygatewayv1alpha1.AddToScheme(testScheme))
 
 	upstreamNamespace := &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
@@ -311,6 +312,7 @@ func TestEnsureDownstreamGatewayWildcardCert(t *testing.T) {
 	assert.NoError(t, discoveryv1.AddToScheme(testScheme))
 	assert.NoError(t, networkingv1alpha.AddToScheme(testScheme))
 	assert.NoError(t, cmv1.AddToScheme(testScheme))
+	assert.NoError(t, envoygatewayv1alpha1.AddToScheme(testScheme))
 
 	upstreamNamespace := &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
@@ -726,6 +728,7 @@ func TestListenerCertificateHealthGating(t *testing.T) {
 	require.NoError(t, discoveryv1.AddToScheme(testScheme))
 	require.NoError(t, networkingv1alpha.AddToScheme(testScheme))
 	require.NoError(t, cmv1.AddToScheme(testScheme))
+	require.NoError(t, envoygatewayv1alpha1.AddToScheme(testScheme))
 
 	upstreamNamespace := &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{Name: "test", UID: uuid.NewUUID()},

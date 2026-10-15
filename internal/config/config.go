@@ -883,6 +883,20 @@ type GatewayConfig struct {
 	// Defaults to false.
 	EnableDNSIntegration bool `json:"enableDNSIntegration,omitempty"`
 
+	// DNSAuthorityLossGracePeriod is how long Gateway DNS keeps the record set of
+	// a hostname the Gateway still claims after Datum DNS loses authority for the
+	// hostname's Domain.
+	//
+	// A Domain's nameservers are refreshed once a day, so one wrong answer from
+	// the registry can take authority away for up to about 29 hours (a day plus
+	// jitter). The record set is kept unchanged for this long, counted from the
+	// first check that found no authority, and then deleted. Authority coming
+	// back ends the wait; a hostname the Gateway no longer claims is deleted at
+	// once. Zero deletes at the first check without authority.
+	//
+	// +default="48h"
+	DNSAuthorityLossGracePeriod *metav1.Duration `json:"dnsAuthorityLossGracePeriod,omitempty"`
+
 	// DefaultListenerTLSSecretName, if provided, is the name of a
 	// pre-provisioned TLS certificate secret to use for the default HTTPS
 	// listener (named "default-https"). When set, this listener references
@@ -1020,6 +1034,15 @@ type CertificateReissuanceConfig struct {
 // secret has been configured for default HTTPS listeners.
 func (c *GatewayConfig) HasDefaultListenerTLSSecret() bool {
 	return c.DefaultListenerTLSSecretName != ""
+}
+
+// AuthorityLossGracePeriod returns DNSAuthorityLossGracePeriod, or zero when it
+// is unset, which keeps nothing.
+func (c *GatewayConfig) AuthorityLossGracePeriod() time.Duration {
+	if c.DNSAuthorityLossGracePeriod == nil {
+		return 0
+	}
+	return c.DNSAuthorityLossGracePeriod.Duration
 }
 
 // ShouldDeleteErroredChallenges returns whether the operator should automatically
@@ -1587,7 +1610,17 @@ func (c *GatewayConfig) validate() error {
 	if c.CertificateService.TrustedRootsFile != "" && !c.CertificateService.VerifyChain {
 		errs = append(errs, errors.New("certificateService.trustedRootsFile requires certificateService.verifyChain"))
 	}
+	errs = append(errs, c.validateAuthorityLossGracePeriod())
 	return errors.Join(errs...)
+}
+
+// validateAuthorityLossGracePeriod refuses a negative period, which would turn the hold off without saying so;
+// zero is the documented way to turn it off.
+func (c *GatewayConfig) validateAuthorityLossGracePeriod() error {
+	if c.DNSAuthorityLossGracePeriod != nil && c.DNSAuthorityLossGracePeriod.Duration < 0 {
+		return errors.New("dnsAuthorityLossGracePeriod must not be negative")
+	}
+	return nil
 }
 
 func (c *IrohConnectorConfig) validate() error {

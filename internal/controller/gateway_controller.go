@@ -426,7 +426,9 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 	// gateway status updates.
 	result = result.Merge(dnsResult)
 
-	hostnameStatuses, dnsProgramResult := r.ensureDNSRecordSets(
+	// The authority recheck is carried, not returned on: a kept record set must
+	// not stop the gateway's status and routes from reconciling.
+	hostnameStatuses, dnsProgramResult, dnsAuthorityRecheck := r.ensureDNSRecordSets(
 		ctx,
 		upstreamClient,
 		upstreamGateway,
@@ -474,9 +476,7 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 			break
 		}
 	}
-	if certificateServiceRequeue > 0 && (result.RequeueAfter == 0 || certificateServiceRequeue < result.RequeueAfter) {
-		result.RequeueAfter = certificateServiceRequeue
-	}
+	result.RequeueAfter = earliestRequeue(result.RequeueAfter, certificateServiceRequeue, dnsAuthorityRecheck)
 
 	addresses := make([]gatewayv1.GatewayStatusAddress, 0, len(targetDomainHostnames))
 
@@ -493,6 +493,18 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 	}
 
 	return httpRouteResult.Merge(result), downstreamGateway
+}
+
+// earliestRequeue returns the shortest positive wait among current and the
+// others, or zero when none is positive, so that every reason to check back is
+// honoured by the soonest of them.
+func earliestRequeue(current time.Duration, others ...time.Duration) time.Duration {
+	for _, wait := range others {
+		if wait > 0 && (current == 0 || wait < current) {
+			current = wait
+		}
+	}
+	return current
 }
 
 // listenerCertExpiryMargin keeps a certificate that is mid-renewal from briefly

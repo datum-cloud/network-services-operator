@@ -31,6 +31,7 @@ import (
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	"go.datum.net/network-services-operator/internal/config"
 	"go.datum.net/network-services-operator/internal/downstreamclient"
+	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 )
 
 type claimRig struct {
@@ -56,6 +57,7 @@ func newClaimRig(t *testing.T, listeners func([]gatewayv1.Listener) []gatewayv1.
 	testScheme := claimsTestScheme(t)
 	require.NoError(t, discoveryv1.AddToScheme(testScheme))
 	require.NoError(t, cmv1.AddToScheme(testScheme))
+	require.NoError(t, dnsv1alpha1.AddToScheme(testScheme))
 
 	testConfig := config.NetworkServicesOperator{Gateway: config.GatewayConfig{
 		DownstreamGatewayClassName:            "test-suite",
@@ -87,6 +89,7 @@ func newClaimRig(t *testing.T, listeners func([]gatewayv1.Listener) []gatewayv1.
 		WithScheme(testScheme).
 		WithObjects(gateway, namespace, domain, class).
 		WithStatusSubresource(gateway, domain).
+		WithIndex(&dnsv1alpha1.DNSZone{}, dnsZoneDomainNameIndex, dnsZoneDomainNames).
 		Build()
 	downstream := fake.NewClientBuilder().
 		WithScheme(testScheme).
@@ -132,17 +135,25 @@ func (r *claimRig) storeCopy(listeners []gatewayv1.Listener, annotations map[str
 
 func (r *claimRig) reconcileOnce() *gatewayv1.Gateway {
 	r.t.Helper()
+	stored, _ := r.reconcile()
+	return stored
+}
+
+// reconcile runs one pass and returns the stored downstream gateway and the
+// wait the controller is handed before it runs the gateway again.
+func (r *claimRig) reconcile() (*gatewayv1.Gateway, time.Duration) {
+	r.t.Helper()
 	var current gatewayv1.Gateway
 	require.NoError(r.t, r.upstream.Get(r.ctx, r.gateway, &current))
 	prepareUpstreamGateway(r.reconciler, &current)
 	result, downstreamGateway := r.reconciler.ensureDownstreamGateway(r.ctx, "test-suite", r.upstream, &current, r.strategy)
 	require.NoError(r.t, result.Err)
-	_, err := result.Complete(r.ctx)
+	handed, err := result.Complete(r.ctx)
 	require.NoError(r.t, err)
 
 	var stored gatewayv1.Gateway
 	require.NoError(r.t, r.downstream.Get(r.ctx, client.ObjectKeyFromObject(downstreamGateway), &stored))
-	return &stored
+	return &stored, handed.RequeueAfter
 }
 
 func TestEnsureDownstreamGateway_AwaitingMarkFollowsTheRefusal(t *testing.T) {

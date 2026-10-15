@@ -5,6 +5,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 func TestNetworkServicesOperator_Validate_IrohDisabled(t *testing.T) {
@@ -291,5 +294,17 @@ func TestCertificateServiceConfig_TrustedRoots(t *testing.T) {
 	}
 	if _, err := (&CertificateServiceConfig{VerifyChain: true, TrustedRootsFile: empty}).TrustedRoots(); err == nil {
 		t.Fatal("a roots file with no certificates should be refused")
+	}
+}
+
+// A negative authority-loss period is refused rather than silently turning the
+// hold off; zero, the documented off switch, is accepted.
+func TestGatewayConfig_ValidateAuthorityLossGracePeriod(t *testing.T) {
+	for period, wantErr := range map[time.Duration]bool{-time.Hour: true, 0: false, 48 * time.Hour: false} {
+		cfg := GatewayConfig{TargetDomain: "datumproxy.net", DNSAuthorityLossGracePeriod: &metav1.Duration{Duration: period}}
+		err := cfg.validate()
+		if (err != nil) != wantErr {
+			t.Errorf("period %s: validate() = %v, want an error: %v", period, err, wantErr)
+		}
 	}
 }

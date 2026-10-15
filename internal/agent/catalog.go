@@ -503,7 +503,8 @@ var dnsAndCertCatalog = []ReasonInfo{
 		Scope:         ScopeOneHostname,
 		Explanation: "You have proven you own this domain, but Datum is not answering DNS for it, " +
 			"so it cannot create the record. Either the domain's nameservers still point at your " +
-			"old provider, or its zone here is not finished.",
+			"old provider, or its zone here is not finished. A record Datum already wrote stays " +
+			"for a configured period (48 hours by default), until the time the status gives, and is then deleted.",
 		Remediation: "At your registrar, point the domain's nameservers at the ones Datum's zone " +
 			"gives you. If you would rather keep your own DNS, create a CNAME to this load " +
 			"balancer's generated hostname instead.",

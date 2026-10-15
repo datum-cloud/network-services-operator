@@ -450,6 +450,11 @@ func (in *GatewayConfig) DeepCopyInto(out *GatewayConfig) {
 		*out = new(bool)
 		**out = **in
 	}
+	if in.DNSAuthorityLossGracePeriod != nil {
+		in, out := &in.DNSAuthorityLossGracePeriod, &out.DNSAuthorityLossGracePeriod
+		*out = new(metav1.Duration)
+		**out = **in
+	}
 	out.CertificateReissuance = in.CertificateReissuance
 	out.CertificateService = in.CertificateService
 }

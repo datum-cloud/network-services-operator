@@ -148,17 +148,20 @@ func buildFakeUpstreamClientForDNS(s *runtime.Scheme, objects ...client.Object) 
 	return fake.NewClientBuilder().
 		WithScheme(s).
 		WithObjects(objects...).
-		WithIndex(&dnsv1alpha1.DNSZone{}, dnsZoneDomainNameIndex, func(o client.Object) []string {
-			zone, ok := o.(*dnsv1alpha1.DNSZone)
-			if !ok {
-				return nil
-			}
-			if zone.Spec.DomainName == "" {
-				return nil
-			}
-			return []string{zone.Spec.DomainName}
-		}).
+		WithIndex(&dnsv1alpha1.DNSZone{}, dnsZoneDomainNameIndex, dnsZoneDomainNames).
 		Build()
+}
+
+// dnsZoneDomainNames indexes a DNSZone by spec.domainName, as the manager does.
+func dnsZoneDomainNames(o client.Object) []string {
+	zone, ok := o.(*dnsv1alpha1.DNSZone)
+	if !ok {
+		return nil
+	}
+	if zone.Spec.DomainName == "" {
+		return nil
+	}
+	return []string{zone.Spec.DomainName}
 }
 
 // newDNSReconciler builds a GatewayReconciler with DNS integration enabled and
@@ -655,7 +658,7 @@ func TestEnsureDNSRecordSets(t *testing.T) {
 				claimed = []string{canonicalHostname}
 			}
 
-			statuses, result := reconciler.ensureDNSRecordSets(ctx, cl, gw, claimed)
+			statuses, result, _ := reconciler.ensureDNSRecordSets(ctx, cl, gw, claimed)
 
 			if tt.wantErr {
 				assert.Error(t, result.Err)
@@ -744,7 +747,7 @@ func TestEnsureDNSRecordSets_UpdateExistingRecord(t *testing.T) {
 	cl := buildFakeUpstreamClientForDNS(s, allObjects...)
 	reconciler := newDNSReconciler(testConfig)
 
-	statuses, result := reconciler.ensureDNSRecordSets(ctx, cl, gw, []string{hostname})
+	statuses, result, _ := reconciler.ensureDNSRecordSets(ctx, cl, gw, []string{hostname})
 	require.NoError(t, result.Err)
 	require.Len(t, statuses, 1)
 
@@ -830,7 +833,7 @@ func TestEnsureDNSRecordSets_SkipsGatewayAddressHostnames(t *testing.T) {
 			cl := buildFakeUpstreamClientForDNS(s, allObjects...)
 			reconciler := newDNSReconciler(testConfig)
 
-			statuses, result := reconciler.ensureDNSRecordSets(ctx, cl, gw, []string{canonical, custom, v4, v6})
+			statuses, result, _ := reconciler.ensureDNSRecordSets(ctx, cl, gw, []string{canonical, custom, v4, v6})
 			require.NoError(t, result.Err)
 
 			require.Len(t, statuses, 1, "only the custom hostname is Gateway DNS's to program")
@@ -1332,7 +1335,7 @@ func TestEnsureDNSRecordSets_DNSIntegrationDisabled(t *testing.T) {
 	cl := buildFakeUpstreamClientForDNS(s, gw, domain, zone)
 	reconciler := newDNSReconciler(testConfig)
 
-	statuses, result := reconciler.ensureDNSRecordSets(ctx, cl, gw, []string{"api.example.com"})
+	statuses, result, _ := reconciler.ensureDNSRecordSets(ctx, cl, gw, []string{"api.example.com"})
 
 	require.NoError(t, result.Err)
 	assert.Empty(t, statuses, "no statuses should be returned when DNS integration is disabled")
@@ -1371,7 +1374,7 @@ func TestEnsureDNSRecordSets_WildcardRecordType(t *testing.T) {
 			objs := []client.Object{gw, newVerifiedDNSZoneDomain(ns, "example.com", tc.apex), newDNSZone(ns, "example-com", "example.com")}
 			cl := buildFakeUpstreamClientForDNS(newDNSTestScheme(t), objs...)
 
-			_, result := newDNSReconciler(testConfig).ensureDNSRecordSets(ctx, cl, gw, []string{tc.hostname})
+			_, result, _ := newDNSReconciler(testConfig).ensureDNSRecordSets(ctx, cl, gw, []string{tc.hostname})
 			require.NoError(t, result.Err)
 
 			var rs dnsv1alpha1.DNSRecordSet
@@ -1430,7 +1433,7 @@ func TestEnsureDNSRecordSets_WildcardSwitchesExistingALIASToCNAME(t *testing.T) 
 	}
 	cl := buildFakeUpstreamClientForDNS(newDNSTestScheme(t), objs...)
 
-	_, result := newDNSReconciler(testConfig).ensureDNSRecordSets(ctx, cl, gw, []string{hostname})
+	_, result, _ := newDNSReconciler(testConfig).ensureDNSRecordSets(ctx, cl, gw, []string{hostname})
 	require.NoError(t, result.Err)
 
 	var list dnsv1alpha1.DNSRecordSetList
@@ -1461,7 +1464,7 @@ func TestWildcardRoutingRecordStatusMatchesWrittenType(t *testing.T) {
 	objs := []client.Object{gw, newVerifiedDNSZoneDomain(gw.Namespace, "example.com", true), newDNSZone(gw.Namespace, "example-com", "example.com")}
 	cl := buildFakeUpstreamClientForDNS(dnsRecordsTestScheme(t), objs...)
 
-	_, result := newDNSReconciler(testConfig).ensureDNSRecordSets(ctx, cl, gw, []string{hostname})
+	_, result, _ := newDNSReconciler(testConfig).ensureDNSRecordSets(ctx, cl, gw, []string{hostname})
 	require.NoError(t, result.Err)
 
 	var rs dnsv1alpha1.DNSRecordSet

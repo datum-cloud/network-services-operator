@@ -47,6 +47,17 @@ Two things to say plainly:
 If they would rather not move the domain, the alternative is the arrangement
 above: keep their own DNS and create a CNAME.
 
+### A hostname that worked and now reads `DNSAuthorityMissing`
+
+Datum lost authority after the record was written. Datum rereads a domain's
+nameservers once a day, and one wrong answer from the registry looks like this
+until the next reread. The existing record is kept unchanged until the time the
+status message gives ("kept until …", 48 hours after the first check by
+default), and is deleted after it. If the domain's real delegation did not
+change, the record keeps answering meanwhile, and the condition clears by
+itself when authority comes back. If the customer did move the domain away,
+the advice above applies, and the record goes at that time.
+
 ## Datum's zone is not finished
 
 `DNSZoneNotReady` means a zone exists here but is not ready to be used. That is

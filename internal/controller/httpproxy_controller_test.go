@@ -1791,6 +1791,26 @@ func TestHTTPProxyReconcile(t *testing.T) {
 				}
 			},
 		},
+		{
+			name: "HostnamesVerified moves its lastTransitionTime when the hostnames verify",
+			httpProxy: newHTTPProxy(func(h *networkingv1alpha.HTTPProxy) {
+				h.Spec.Hostnames = []gatewayv1.Hostname{"example.com"}
+				h.Status.Conditions = []metav1.Condition{{
+					Type:               networkingv1alpha.HTTPProxyConditionHostnamesVerified,
+					Status:             metav1.ConditionFalse,
+					Reason:             networkingv1alpha.UnverifiedHostnamesPresent,
+					LastTransitionTime: metav1.NewTime(time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)),
+				}}
+			}),
+			postCreateGatewayStatus: acceptGatewayListeners,
+			assert: func(t *testContext, cl client.Client, httpProxy *networkingv1alpha.HTTPProxy) {
+				verified := apimeta.FindStatusCondition(httpProxy.Status.Conditions, networkingv1alpha.HTTPProxyConditionHostnamesVerified)
+				require.NotNil(t, verified)
+				assert.Equal(t, metav1.ConditionTrue, verified.Status)
+				assert.True(t, verified.LastTransitionTime.After(time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)),
+					"lastTransitionTime kept the time of the False status: %s", verified.LastTransitionTime)
+			},
+		},
 	}
 
 	logger := zap.New(zap.UseFlagOptions(&zap.Options{Development: true}))
@@ -2350,6 +2370,21 @@ func TestSanitizeConditionMessage(t *testing.T) {
 
 	exact := strings.Repeat("a", maxConditionMessageRunes)
 	assert.Equal(t, exact, sanitizeConditionMessage(exact))
+}
+
+func acceptGatewayListeners(g *gatewayv1.Gateway) {
+	g.Status.Listeners = make([]gatewayv1.ListenerStatus, len(g.Spec.Listeners))
+	for i, listener := range g.Spec.Listeners {
+		g.Status.Listeners[i] = gatewayv1.ListenerStatus{
+			Name: listener.Name,
+			Conditions: []metav1.Condition{{
+				Type:               string(gatewayv1.ListenerConditionAccepted),
+				Status:             metav1.ConditionTrue,
+				Reason:             string(gatewayv1.ListenerReasonAccepted),
+				LastTransitionTime: metav1.Now(),
+			}},
+		}
+	}
 }
 
 func setGatewayProgrammedWithDefaultHTTPSListener(g *gatewayv1.Gateway) {

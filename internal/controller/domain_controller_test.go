@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -158,6 +159,30 @@ func TestDomainVerification(t *testing.T) {
 			assert: func(t *testing.T, domain *networkingv1alpha.Domain, result ctrl.Result) {
 				assert.True(t, apimeta.IsStatusConditionTrue(domain.Status.Conditions, networkingv1alpha.DomainConditionVerifiedHTTP))
 				assert.Nil(t, apimeta.FindStatusCondition(domain.Status.Conditions, networkingv1alpha.DomainConditionVerifiedDNS))
+			},
+		},
+		{
+			name: "a domain that verifies moves Verified's lastTransitionTime",
+			lookupTXT: func(ctx context.Context, name string) ([]string, error) {
+				return []string{"test"}, nil
+			},
+			domain: newDomain(upstreamNamespace.Name, "verified-moves-transition-time", func(domain *networkingv1alpha.Domain) {
+				domain.Status.Conditions = []metav1.Condition{{
+					Type:               networkingv1alpha.DomainConditionVerified,
+					Status:             metav1.ConditionFalse,
+					Reason:             networkingv1alpha.DomainReasonPendingVerification,
+					LastTransitionTime: metav1.NewTime(time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)),
+				}}
+				domain.Status.Verification = &networkingv1alpha.DomainVerificationStatus{
+					DNSRecord: networkingv1alpha.DNSVerificationRecord{Name: "test", Type: "TXT", Content: "test"},
+				}
+			}),
+			assert: func(t *testing.T, domain *networkingv1alpha.Domain, result ctrl.Result) {
+				verified := apimeta.FindStatusCondition(domain.Status.Conditions, networkingv1alpha.DomainConditionVerified)
+				require.NotNil(t, verified)
+				assert.Equal(t, metav1.ConditionTrue, verified.Status)
+				assert.True(t, verified.LastTransitionTime.After(time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)),
+					"lastTransitionTime kept the time of the False status: %s", verified.LastTransitionTime)
 			},
 		},
 		{
@@ -842,6 +867,67 @@ func TestVerification_RequeueImmediate_WhenWakeDueOrPast(t *testing.T) {
 
 	// With the fix, we should requeue immediately when wake time is now/past
 	assert.Equal(t, 1*time.Second, res.RequeueAfter)
+}
+
+func TestVerification_RetryScheduleCountsFromStoredTransition(t *testing.T) {
+	s := runtime.NewScheme()
+	_ = scheme.AddToScheme(s)
+	_ = networkingv1alpha.AddToScheme(s)
+
+	now := time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC)
+
+	dom := newDomain("default", "retry-from-stored-transition", func(d *networkingv1alpha.Domain) {
+		d.Status.Conditions = []metav1.Condition{{
+			Type:               networkingv1alpha.DomainConditionVerified,
+			Status:             metav1.ConditionFalse,
+			Reason:             networkingv1alpha.DomainReasonPendingVerification,
+			LastTransitionTime: metav1.NewTime(now.Add(-30 * time.Minute)),
+		}}
+		d.Status.Verification = &networkingv1alpha.DomainVerificationStatus{
+			DNSRecord: networkingv1alpha.DNSVerificationRecord{Name: "_dnsverify.example.com", Type: "TXT", Content: "token"},
+			HTTPToken: networkingv1alpha.HTTPVerificationToken{URL: "http://example.com/token", Body: "token"},
+		}
+	})
+
+	cl := fake.NewClientBuilder().
+		WithScheme(s).
+		WithIndex(newUnstructuredForGVK(dnsZoneGVK), "status.domainRef.name", dnsZoneDomainRefNameIndex).
+		WithObjects(dom).
+		WithStatusSubresource(dom).
+		Build()
+
+	operatorConfig := config.NetworkServicesOperator{
+		DomainVerification: config.DomainVerificationConfig{
+			RetryIntervals: []config.RetryInterval{
+				{Interval: metav1.Duration{Duration: 5 * time.Second}, MaxElapsed: &metav1.Duration{Duration: time.Hour}},
+				{Interval: metav1.Duration{Duration: 10 * time.Minute}},
+			},
+			RetryJitterMaxFactor: 0.25,
+		},
+		DomainRegistration: config.DomainRegistrationConfig{
+			LookupTimeout:   &metav1.Duration{Duration: 3 * time.Second},
+			RefreshInterval: &metav1.Duration{Duration: time.Hour},
+			JitterMaxFactor: 0.1,
+			RetryBackoff:    &metav1.Duration{Duration: time.Minute},
+		},
+	}
+
+	r := &DomainReconciler{
+		mgr:     &fakeMockManager{cl: cl},
+		Config:  operatorConfig,
+		timeNow: func() time.Time { return now },
+		httpGet: func(ctx context.Context, url string) ([]byte, *http.Response, error) {
+			return nil, &http.Response{StatusCode: http.StatusNotFound}, nil
+		},
+		lookupTXT:      func(ctx context.Context, name string) ([]string, error) { return nil, &net.DNSError{IsNotFound: true} },
+		registryClient: &fakeRegistryClient{},
+	}
+
+	res, err := r.Reconcile(context.Background(), mcreconcile.Request{ClusterName: "test", Request: reconcile.Request{NamespacedName: client.ObjectKeyFromObject(dom)}})
+	require.NoError(t, err)
+
+	assert.GreaterOrEqual(t, res.RequeueAfter, 5*time.Second)
+	assert.LessOrEqual(t, res.RequeueAfter, 6250*time.Millisecond)
 }
 
 func TestVerification_RequeueImmediate_WhenWakeInPast(t *testing.T) {

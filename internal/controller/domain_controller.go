@@ -279,7 +279,7 @@ func (r *DomainReconciler) reconcileVerification(ctx context.Context, reader cli
 				}
 			} else {
 				// Compute next backoff based on elapsed since last transition time
-				initialAttempt := verifiedCondition.LastTransitionTime.Time
+				initialAttempt := lastTransitionTime(domainStatus.Conditions, verifiedCondition)
 				elapsed := now.Sub(initialAttempt)
 				logger.Info("time elapsed since last transition time", "duration", elapsed)
 
@@ -350,6 +350,19 @@ func recordVerificationMethod(domainStatus *networkingv1alpha.DomainStatus, veri
 	if verifiedHTTP.Status == metav1.ConditionTrue {
 		apimeta.SetStatusCondition(&domainStatus.Conditions, *verifiedHTTP)
 	}
+}
+
+// lastTransitionTime returns when the condition last changed status. A copy
+// from conditionutil.FindStatusConditionOrDefault carries no time, so the
+// stored condition gives it.
+func lastTransitionTime(conditions []metav1.Condition, condition *metav1.Condition) time.Time {
+	if !condition.LastTransitionTime.IsZero() {
+		return condition.LastTransitionTime.Time
+	}
+	if stored := apimeta.FindStatusCondition(conditions, condition.Type); stored != nil {
+		return stored.LastTransitionTime.Time
+	}
+	return time.Time{}
 }
 
 var dnsZoneListGVK = schema.GroupVersionKind{

@@ -34,6 +34,7 @@ var inScopeAPIFiles = []string{
 var outOfScopeAPIFiles = map[string]string{
 	"edgereachability_types.go":        "hub-side record of which addresses an edge should reach; no customer-facing status",
 	"groupversion_info.go":             "scheme registration, no reasons",
+	"internetegress_types.go":          "a network's route to the internet; an instance's surface, never reached through a load balancer",
 	"locationbinding_types.go":         "placement plumbing behind a location, never named by a load balancer",
 	"network_types.go":                 "the network a service sits on; its own product surface",
 	"networkbinding_types.go":          "network attachment plumbing",

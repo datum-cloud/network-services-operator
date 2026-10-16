@@ -52,6 +52,57 @@ spec:
           spec:
             description: NetworkContextSpec defines the desired state of NetworkContext
             properties:
+              egress:
+                description: |-
+                  Egress is what the network reaches outside the platform from this
+                  location, projected from the Network. Propagation to a cell carries spec
+                  and not status, so the instruction a cell acts on lives here and the
+                  result it reports lives in status.
+
+                  A reader that finds this unset must refuse rather than assume: a context
+                  written before this field existed carries nothing, which is not the same
+                  as a network that reaches nothing.
+                properties:
+                  internet:
+                    description: Internet is the internet egress this location is
+                      instructed to provide.
+                    properties:
+                      mode:
+                        description: |-
+                          Mode is whether instances in this location reach the internet, copied
+                          from the network.
+
+                          It carries no default. A defaulted Disabled could not be told apart from
+                          a field never projected, and a reader that cannot tell those apart must
+                          refuse rather than withdraw egress a consumer asked for.
+                        enum:
+                        - Enabled
+                        - Disabled
+                        type: string
+                      reach:
+                        description: |-
+                          Reach are the destination address families this location is instructed
+                          to reach, copied from the network.
+
+                          Only IPv6 is accepted, because a projection may not carry what its
+                          source cannot declare.
+                        items:
+                          enum:
+                          - IPv4
+                          - IPv6
+                          type: string
+                        maxItems: 2
+                        minItems: 1
+                        type: array
+                        x-kubernetes-validations:
+                        - message: Only IPv6 is accepted; reaching IPv4 destinations
+                            needs a resolver and a translator sharing a prefix, and
+                            the platform pairs neither
+                          rule: self.all(f, f == 'IPv6')
+                        - message: Each address family may be listed at most once
+                          rule: self.all(f, self.exists_one(g, g == f))
+                    type: object
+                type: object
               ipFamilies:
                 description: |-
                   IP families the network carries, projected from the Network.

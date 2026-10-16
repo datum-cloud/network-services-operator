@@ -1169,11 +1169,17 @@ type DownstreamClientTrafficConfig struct {
 	// HTTP3 turns on HTTP/3 for the listeners.
 	// +optional
 	HTTP3 *envoygatewayv1alpha1.HTTP3Settings `json:"http3,omitempty"`
+
+	// ALPNProtocols lists the protocols offered in the TLS handshake. Listing h2
+	// offers HTTP/2 on managed hostnames, where Envoy Gateway otherwise offers
+	// only http/1.1.
+	// +optional
+	ALPNProtocols []envoygatewayv1alpha1.ALPNProtocol `json:"alpnProtocols,omitempty"`
 }
 
 // IsEmpty reports whether nothing is set, so no policy is written.
 func (c DownstreamClientTrafficConfig) IsEmpty() bool {
-	return c.HTTP2 == nil && c.HTTP3 == nil
+	return c.HTTP2 == nil && c.HTTP3 == nil && len(c.ALPNProtocols) == 0
 }
 
 // http2WindowMin and http2WindowMax bound an HTTP/2 window [bytes] as Envoy
@@ -1185,15 +1191,31 @@ const (
 	http2WindowMax = 2147483647
 )
 
-// validate refuses an HTTP/2 window the edge would ignore without saying so.
+// validate refuses an HTTP/2 window or ALPN protocol the edge would ignore
+// without saying so.
 func (c DownstreamClientTrafficConfig) validate() error {
+	alpnErr := validateALPNProtocols(c.ALPNProtocols)
 	if c.HTTP2 == nil {
-		return nil
+		return alpnErr
 	}
 	return errors.Join(
+		alpnErr,
 		validateHTTP2Window("initialStreamWindowSize", c.HTTP2.InitialStreamWindowSize),
 		validateHTTP2Window("initialConnectionWindowSize", c.HTTP2.InitialConnectionWindowSize),
 	)
+}
+
+func validateALPNProtocols(protocols []envoygatewayv1alpha1.ALPNProtocol) error {
+	for _, p := range protocols {
+		switch p {
+		case envoygatewayv1alpha1.HTTPProtocolVersion2,
+			envoygatewayv1alpha1.HTTPProtocolVersion1_1,
+			envoygatewayv1alpha1.HTTPProtocolVersion1_0:
+		default:
+			return fmt.Errorf("downstreamClientTraffic.alpnProtocols must each be h2, http/1.1 or http/1.0, got %q", p)
+		}
+	}
+	return nil
 }
 
 func validateHTTP2Window(field string, size *resource.Quantity) error {

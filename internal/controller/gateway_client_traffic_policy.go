@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	envoygatewayv1alpha1 "github.com/envoyproxy/gateway/api/v1alpha1"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
@@ -72,6 +73,7 @@ func ensureDownstreamClientTrafficPolicy(
 			PolicyTargetReferences: envoygatewayv1alpha1.PolicyTargetReferences{TargetRefs: targets},
 			HTTP2:                  traffic.HTTP2.DeepCopy(),
 			HTTP3:                  traffic.HTTP3.DeepCopy(),
+			TLS:                    clientTLSSettings(traffic.ALPNProtocols),
 		}
 		return controllerutil.SetControllerReference(gateway, policy, cl.Scheme())
 	})
@@ -79,6 +81,17 @@ func ensureDownstreamClientTrafficPolicy(
 		return fmt.Errorf("failed writing ClientTrafficPolicy %s/%s: %w", policy.Namespace, policy.Name, err)
 	}
 	return nil
+}
+
+// clientTLSSettings carries only the ALPN protocols. An empty list would turn
+// ALPN off, so nothing is written unless protocols are listed.
+func clientTLSSettings(protocols []envoygatewayv1alpha1.ALPNProtocol) *envoygatewayv1alpha1.ClientTLSSettings {
+	if len(protocols) == 0 {
+		return nil
+	}
+	return &envoygatewayv1alpha1.ClientTLSSettings{
+		TLSSettings: envoygatewayv1alpha1.TLSSettings{ALPNProtocols: slices.Clone(protocols)},
+	}
 }
 
 // clientTrafficPolicySuffix keeps the operator's policy name apart from the

@@ -1132,3 +1132,60 @@ func TestNetworkIsReplicatedToTheHubWithoutBeingPlaced(t *testing.T) {
 	assert.False(t, cfg.mirrorStatusToAnnotation,
 		"nothing downstream reads a Network's status")
 }
+
+func TestNetworkContextReplicationCarriesOnlyDNSIntentAnnotations(t *testing.T) {
+	configs := initReplicationResourceConfigs()
+	gvk := schema.GroupVersionKind{
+		Group: groupNetworkingDatumAPIs, Version: versionV1Alpha, Kind: KindNetworkContext,
+	}
+	cfg := configs[gvkKey(gvk)]
+	assert.ElementsMatch(t, internalDNSIntentAnnotations(), cfg.propagatedAnnotations)
+
+	upstream := &unstructured.Unstructured{}
+	upstream.SetAnnotations(map[string]string{
+		InternalDNSContextNameAnnotation: "resolver-a",
+		"example.test/untrusted":         "discard",
+	})
+	downstream := &unstructured.Unstructured{}
+	downstream.SetAnnotations(map[string]string{
+		InternalDNSContextNameAnnotation: "stale",
+		InternalDNSAccessNameAnnotation:  "removed-upstream",
+		"karmada.io/managed":             "preserve",
+	})
+
+	propagateAnnotations(upstream, downstream, cfg.propagatedAnnotations)
+	assert.Equal(t, "resolver-a", downstream.GetAnnotations()[InternalDNSContextNameAnnotation])
+	assert.NotContains(t, downstream.GetAnnotations(), InternalDNSAccessNameAnnotation)
+	assert.NotContains(t, downstream.GetAnnotations(), "example.test/untrusted")
+	assert.Equal(t, "preserve", downstream.GetAnnotations()["karmada.io/managed"])
+}
+
+func TestNetworkContextReplicationProducesUsableDNSIntent(t *testing.T) {
+	gvk := schema.GroupVersionKind{
+		Group: groupNetworkingDatumAPIs, Version: versionV1Alpha, Kind: KindNetworkContext,
+	}
+	cfg := initReplicationResourceConfigs()[gvkKey(gvk)]
+	upstream := &unstructured.Unstructured{}
+	upstream.SetAnnotations(map[string]string{
+		InternalDNSRegionAnnotation:             "us-central1",
+		InternalDNSContextNameAnnotation:        "resolver-a",
+		InternalDNSAccessNameAnnotation:         "access-a",
+		InternalDNSServiceDestinationAnnotation: "fd70:100::1",
+		InternalDNSSuffixAnnotation:             "tenant.managed.internal",
+	})
+	downstream := &unstructured.Unstructured{}
+	propagateAnnotations(upstream, downstream, cfg.propagatedAnnotations)
+
+	annotations := downstream.GetAnnotations()
+	assert.Equal(t, "us-central1", annotations[InternalDNSRegionAnnotation])
+	assert.Equal(t, "fd70:100::1", annotations[InternalDNSServiceDestinationAnnotation])
+	settings, err := internalDNSSettingsFromAnnotations(annotations, "fd53::53")
+	assert.NoError(t, err)
+	if settings == nil {
+		t.Fatal("replicated DNS intent did not produce resolver settings")
+	}
+	assert.Equal(t, "resolver-a", settings.ContextRef.Name)
+	assert.Equal(t, "access-a", settings.AccessBindingRef.Name)
+	assert.Equal(t, []string{"fd53::53"}, settings.Nameservers)
+	assert.Equal(t, []string{"tenant.managed.internal"}, settings.Searches)
+}

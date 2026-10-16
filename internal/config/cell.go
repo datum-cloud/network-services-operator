@@ -58,6 +58,10 @@ type CellControllerManager struct {
 	// This field is temporary. It goes away once no cell reports Configured for
 	// nso_cell_location_identity_source.
 	Location LocationConfig `json:"location,omitempty"`
+
+	// InternalDNS configures managed resolver access. It is disabled unless
+	// explicitly enabled.
+	InternalDNS InternalDNSConfig `json:"internalDNS,omitempty"`
 }
 
 // Validate reports whether the cell configuration can serve a cell.
@@ -67,6 +71,9 @@ func (c *CellControllerManager) Validate() error {
 	}
 	if err := c.Federation.validate(); err != nil {
 		return fmt.Errorf("federation: %w", err)
+	}
+	if err := c.InternalDNS.validate(); err != nil {
+		return fmt.Errorf("internalDNS: %w", err)
 	}
 	return nil
 }

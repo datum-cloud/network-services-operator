@@ -41,6 +41,7 @@ func projectedInterface(source *networkingv1alpha.NetworkInterface, location str
 			ReclaimPolicy:     source.Spec.ReclaimPolicy,
 		},
 		Status: networkingv1alpha.NetworkInterfaceStatus{
+			DNS:        source.Status.DNS.DeepCopy(),
 			Phase:      source.Status.Phase,
 			Conditions: append([]metav1.Condition(nil), source.Status.Conditions...),
 		},

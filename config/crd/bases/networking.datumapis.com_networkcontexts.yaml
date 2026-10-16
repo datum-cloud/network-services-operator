@@ -52,6 +52,55 @@ spec:
           spec:
             description: NetworkContextSpec defines the desired state of NetworkContext
             properties:
+              dns:
+                description: |-
+                  DNS contains resolver settings whose DNS authorization and private path
+                  have both been verified for this location.
+                properties:
+                  accessBindingRef:
+                    description: AccessBindingRef identifies the regional DNS configuration.
+                    properties:
+                      name:
+                        description: Name is the resource name in the network's namespace.
+                        minLength: 1
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  contextRef:
+                    description: ContextRef identifies the DNS serving and namespace
+                      lifetime.
+                    properties:
+                      name:
+                        description: Name is the resource name in the network's namespace.
+                        minLength: 1
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  nameservers:
+                    description: Nameservers are resolver addresses reachable from
+                      this network.
+                    items:
+                      type: string
+                    maxItems: 3
+                    minItems: 1
+                    type: array
+                    x-kubernetes-validations:
+                    - message: nameservers must contain IP addresses
+                      rule: self.all(n, isIP(n))
+                  searches:
+                    description: Searches contains DNS search suffixes allocated to
+                      this network.
+                    items:
+                      type: string
+                    maxItems: 6
+                    type: array
+                required:
+                - accessBindingRef
+                - contextRef
+                - nameservers
+                type: object
               ipFamilies:
                 description: |-
                   IP families the network carries, projected from the Network.
@@ -170,6 +219,45 @@ spec:
                   - type
                   type: object
                 type: array
+              dnsAccess:
+                description: |-
+                  DNSAccess identifies the current private path proof. DNSReady=True applies
+                  only to this exact context, binding revision, and deadline.
+                properties:
+                  accessBindingRef:
+                    description: AccessBindingRef identifies the DNS configuration
+                      used for the proof.
+                    properties:
+                      name:
+                        description: Name is the resource name in the network's namespace.
+                        minLength: 1
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  contextRef:
+                    description: ContextRef identifies the DNS context used for the
+                      proof.
+                    properties:
+                      name:
+                        description: Name is the resource name in the network's namespace.
+                        minLength: 1
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  serviceDestination:
+                    description: ServiceDestination identifies this DNS context inside
+                      the shared service.
+                    type: string
+                    x-kubernetes-validations:
+                    - message: serviceDestination must be an IP address
+                      rule: isIP(self)
+                required:
+                - accessBindingRef
+                - contextRef
+                - serviceDestination
+                type: object
               ipam:
                 description: |-
                   IPAM reports the address space IPAM holds for this network in this

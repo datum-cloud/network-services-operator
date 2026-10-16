@@ -113,6 +113,10 @@ const (
 	// interface at all. A phase of Available means no claim holds it, which is
 	// the opposite of anything being available to serve.
 	NetworkInterfaceHolderAvailable = "HolderAvailable"
+
+	// NetworkInterfaceDNSConfigured is reported by the provider after applying
+	// the current settings in spec.dns to the workload.
+	NetworkInterfaceDNSConfigured = "DNSConfigured"
 )
 
 const (
@@ -342,6 +346,9 @@ type NetworkInterfaceSpec struct {
 // claim holds it, what realizes it on the data plane, and whether programming
 // has succeeded.
 type NetworkInterfaceStatus struct {
+	// DNS contains effective resolver settings inherited from the network.
+	// +kubebuilder:validation:Optional
+	DNS *NetworkDNSResolverSettings `json:"dns,omitempty"`
 	// phase reports whether a claim holds the interface. Bound means the claim in
 	// spec.claimRef holds it. Available means it is retained and holding its
 	// addresses with no claim bound.

@@ -23,6 +23,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/validation"
@@ -1675,6 +1676,58 @@ func TestNetworkInterfaceClaimTakesMTUFromTheNetworkContext(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, int32(1500), iface.Spec.MTU,
 		"the context carries the MTU, and the network the cell cannot read carries 1440")
+}
+
+func TestNetworkInterfaceDNSIsReadOnlyAndFollowsTheNetwork(t *testing.T) {
+	s := newScenario(t, true, []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol})
+	contextObject, err := s.getNetworkContext()
+	require.NoError(t, err)
+	contextObject.Spec.DNS = &networkingv1alpha.NetworkDNSSettings{
+		ContextRef:       networkingv1alpha.NetworkDNSObjectReference{Name: "resolver"},
+		AccessBindingRef: networkingv1alpha.NetworkDNSObjectReference{Name: "access"},
+		Nameservers:      []string{"fd53::53"}, Searches: []string{"datum.internal"},
+	}
+	require.NoError(t, s.client.Update(s.ctx, contextObject))
+	claim := s.createClaim("dns-interface", networkingv1alpha.NetworkInterfaceClaimSpec{
+		InterfaceName: "eth0", IPFamilies: []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol}, ReclaimPolicy: networkingv1alpha.NetworkInterfaceReclaimPolicyDelete,
+	})
+	s.reconcile(claim)
+	iface, err := s.getInterface(claim.Name)
+	require.NoError(t, err)
+	require.Equal(t, []string{"fd53::53"}, iface.Status.DNS.Nameservers)
+	require.Equal(t, []string{"datum.internal"}, iface.Status.DNS.Searches)
+	object := &unstructured.Unstructured{}
+	object.SetGroupVersionKind(networkingv1alpha.GroupVersion.WithKind("NetworkInterface"))
+	require.NoError(t, s.client.Get(s.ctx, client.ObjectKeyFromObject(iface), object))
+	for _, field := range []string{"spec", "status"} {
+		require.NoError(t, unstructured.SetNestedMap(object.Object, map[string]any{"nameservers": []any{"fd53::54"}}, field, "dns"))
+	}
+	require.NoError(t, s.client.Update(s.ctx, object))
+	require.NoError(t, s.client.Get(s.ctx, client.ObjectKeyFromObject(iface), object))
+	_, editable, err := unstructured.NestedMap(object.Object, "spec", "dns")
+	require.NoError(t, err)
+	require.False(t, editable)
+	require.NoError(t, s.client.Get(s.ctx, client.ObjectKeyFromObject(iface), iface))
+	require.Equal(t, []string{"fd53::53"}, iface.Status.DNS.Nameservers)
+	apimeta.SetStatusCondition(&iface.Status.Conditions, metav1.Condition{Type: networkingv1alpha.NetworkInterfaceDNSConfigured, Status: metav1.ConditionTrue, Reason: "Applied", LastTransitionTime: metav1.Now()})
+	require.NoError(t, s.client.Status().Update(s.ctx, iface))
+	contextObject, err = s.getNetworkContext()
+	require.NoError(t, err)
+	contextObject.Spec.DNS.Searches = []string{"apps.internal"}
+	require.NoError(t, s.client.Update(s.ctx, contextObject))
+	s.reconcile(claim)
+	iface, err = s.getInterface(claim.Name)
+	require.NoError(t, err)
+	require.Equal(t, []string{"apps.internal"}, iface.Status.DNS.Searches)
+	require.Nil(t, apimeta.FindStatusCondition(iface.Status.Conditions, networkingv1alpha.NetworkInterfaceDNSConfigured))
+	contextObject, err = s.getNetworkContext()
+	require.NoError(t, err)
+	contextObject.Spec.DNS = nil
+	require.NoError(t, s.client.Update(s.ctx, contextObject))
+	s.reconcile(claim)
+	iface, err = s.getInterface(claim.Name)
+	require.NoError(t, err)
+	require.Nil(t, iface.Status.DNS)
 }
 
 // A network that has not reached the location is a different answer from a

@@ -93,6 +93,13 @@ NetworkSpec defines the desired state of a Network
         </td>
         <td>true</td>
       </tr><tr>
+        <td><b><a href="#networkspecdns">dns</a></b></td>
+        <td>object</td>
+        <td>
+          DNS configures private resolver access for the network.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
         <td><b>ipFamilies</b></td>
         <td>[]enum</td>
         <td>
@@ -166,6 +173,36 @@ networks created before this rule stay writable.<br/>
         <td>string</td>
         <td>
           IPv6 range to use in auto mode networks. Defaults to a /48 allocated from `fd20::/20`.<br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### Network.spec.dns
+<sup><sup>[↩ Parent](#networkspec)</sup></sup>
+
+
+
+DNS configures private resolver access for the network.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>mode</b></td>
+        <td>enum</td>
+        <td>
+          Mode controls whether network services maintain private resolver access.
+An empty value uses Managed when the Internal DNS feature is enabled.<br/>
+          <br/>
+            <i>Enum</i>: Managed, Disabled<br/>
         </td>
         <td>false</td>
       </tr></tbody>

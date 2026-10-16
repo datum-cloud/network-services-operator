@@ -367,6 +367,20 @@ func TestInterfaceReachesTheProjectControlPlane(t *testing.T) {
 	require.Equal(t, boundInterfaceName, copied.Labels[networkingv1alpha.NetworkInterfaceHolderLabel])
 }
 
+func TestProjectedInterfaceReportsDNSSettings(t *testing.T) {
+	source := &networkingv1alpha.NetworkInterface{Status: networkingv1alpha.NetworkInterfaceStatus{
+		DNS: &networkingv1alpha.NetworkDNSResolverSettings{
+			Nameservers: []string{"fd53::53"},
+			Searches:    []string{"blue.internal"},
+		},
+	}}
+
+	projection := projectedInterface(source, "ord-1")
+	require.Equal(t, source.Status.DNS, projection.Status.DNS)
+	projection.Status.DNS.Nameservers[0] = "fd53::54"
+	require.Equal(t, "fd53::53", source.Status.DNS.Nameservers[0], "the projection must own its DNS settings")
+}
+
 func TestCopyDropsWhatOnlyMeansSomethingOnTheCell(t *testing.T) {
 	v := newVisibility(t)
 	v.interfaceOnCell()

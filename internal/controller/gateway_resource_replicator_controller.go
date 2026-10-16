@@ -79,9 +79,10 @@ type reasonHandler struct {
 type conditionReasonHandlers map[string]map[string]reasonHandler
 
 type replicationResourceConfig struct {
-	statusGVK         *schema.GroupVersionKind
-	statusTransform   statusTransformFunc
-	conditionHandlers conditionReasonHandlers
+	statusGVK             *schema.GroupVersionKind
+	statusTransform       statusTransformFunc
+	conditionHandlers     conditionReasonHandlers
+	propagatedAnnotations []string
 
 	// mirrorStatusToAnnotation, when true, copies the upstream resource's full
 	// .status verbatim into the UpstreamStatusAnnotation on the downstream
@@ -197,8 +198,9 @@ func initReplicationResourceConfigs() map[string]replicationResourceConfig {
 	// The Subnet copy also carries the upstream generation: the cells' data plane
 	// reports Programmed against it, and the subnet controller reads that report
 	// off the hub copy itself rather than through a wholesale status sync.
+	networkContextGVK := schema.GroupVersionKind{Group: groupNetworkingDatumAPIs, Version: versionV1Alpha, Kind: KindNetworkContext}
 	presenceGVKs := []schema.GroupVersionKind{
-		{Group: groupNetworkingDatumAPIs, Version: versionV1Alpha, Kind: KindNetworkContext},
+		networkContextGVK,
 		{Group: groupNetworkingDatumAPIs, Version: versionV1Alpha, Kind: KindSubnet},
 	}
 	for _, gvk := range presenceGVKs {
@@ -211,6 +213,9 @@ func initReplicationResourceConfigs() map[string]replicationResourceConfig {
 			},
 		}
 	}
+	contextConfig := configs[gvkKey(networkContextGVK)]
+	contextConfig.propagatedAnnotations = internalDNSIntentAnnotations()
+	configs[gvkKey(networkContextGVK)] = contextConfig
 
 	// The network itself, mirrored onto the hub so the central allocator of a
 	// network's fabric identity can be driven by the network rather than infer
@@ -405,6 +410,7 @@ func (r *GatewayResourceReplicatorReconciler) ensureDownstreamResource(
 		}
 
 		propagateLabels(upstreamObj, downstreamObj, resource.replicationResourceConfig.propagatedLabels)
+		propagateAnnotations(upstreamObj, downstreamObj, resource.replicationResourceConfig.propagatedAnnotations)
 
 		if resource.replicationResourceConfig.stampUpstreamGeneration {
 			setUpstreamGenerationAnnotation(downstreamObj, upstreamObj)
@@ -475,6 +481,27 @@ func propagateLabels(upstreamObj, downstreamObj *unstructured.Unstructured, name
 		}
 	}
 	downstreamObj.SetLabels(downstreamLabels)
+}
+
+func propagateAnnotations(upstreamObj, downstreamObj *unstructured.Unstructured, names []string) {
+	if len(names) == 0 {
+		return
+	}
+
+	upstreamAnnotations := upstreamObj.GetAnnotations()
+	downstreamAnnotations := downstreamObj.GetAnnotations()
+	if downstreamAnnotations == nil {
+		downstreamAnnotations = map[string]string{}
+	}
+
+	for _, name := range names {
+		if value, ok := upstreamAnnotations[name]; ok {
+			downstreamAnnotations[name] = value
+		} else {
+			delete(downstreamAnnotations, name)
+		}
+	}
+	downstreamObj.SetAnnotations(downstreamAnnotations)
 }
 
 // setUpstreamGenerationAnnotation stamps the upstream object's generation on the

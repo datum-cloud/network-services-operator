@@ -150,13 +150,13 @@ func NewCommand(build BuildInfo) *cobra.Command {
 		&singletonControllersLeaderElection,
 		"singleton-controllers-leader-elect",
 		true,
-		"Enable leader election for singleton downstream controllers (Challenge and GatewayDownstreamCertificateSolver).",
+		"Enable leader election for controllers that watch the federation hub.",
 	)
 	fs.StringVar(
 		&singletonControllersLeaderElectionID,
 		"singleton-controllers-leader-election-id",
 		"",
-		"Leader election ID for singleton downstream controllers. When empty, it is derived from the enabled controller sets.",
+		"Leader election ID for controllers that watch the federation hub. When empty, it is derived from the enabled controller sets.",
 	)
 
 	opts := zap.Options{}
@@ -349,26 +349,24 @@ func NewCommand(build BuildInfo) *cobra.Command {
 				os.Exit(1)
 			}
 
-			var singletonMgr manager.Manager
-			singletonControllerMgr := mgr.GetLocalManager()
-			if enableClusterSharding {
-				singletonMgr, err = manager.New(cfg, manager.Options{
-					Scheme:                  scheme,
-					Metrics:                 metricsserver.Options{BindAddress: "0"},
-					WebhookServer:           webhook.NewServer(webhook.Options{Port: 0}),
-					HealthProbeBindAddress:  "0",
-					LeaderElection:          singletonControllersLeaderElection,
-					LeaderElectionID:        singletonControllersLeaderElectionID,
-					LeaderElectionNamespace: leaderElectionNamespace,
-					LeaseDuration:           &leaseDuration,
-					RenewDeadline:           &renewDeadline,
-					RetryPeriod:             &retryPeriod,
-				})
-				if err != nil {
-					setupLog.Error(err, "unable to create singleton controller manager")
-					os.Exit(1)
-				}
-				singletonControllerMgr = singletonMgr
+			// Hub controllers reconcile NetworkBindings and resources published by
+			// cells. Keep their cache and leader election on the federation API,
+			// alongside the authoritative copies they watch.
+			federationMgr, err := manager.New(downstreamRestConfig, manager.Options{
+				Scheme:                  scheme,
+				Metrics:                 metricsserver.Options{BindAddress: "0"},
+				WebhookServer:           webhook.NewServer(webhook.Options{Port: 0}),
+				HealthProbeBindAddress:  "0",
+				LeaderElection:          singletonControllersLeaderElection,
+				LeaderElectionID:        singletonControllersLeaderElectionID,
+				LeaderElectionNamespace: leaderElectionNamespace,
+				LeaseDuration:           &leaseDuration,
+				RenewDeadline:           &renewDeadline,
+				RetryPeriod:             &retryPeriod,
+			})
+			if err != nil {
+				setupLog.Error(err, "unable to create federation controller manager")
+				os.Exit(1)
 			}
 
 			var irohDownstream cluster.Cluster
@@ -409,15 +407,21 @@ func NewCommand(build BuildInfo) *cobra.Command {
 				setupLog.Error(err, "unable to build wildcard entitlement client")
 				os.Exit(1)
 			}
+			projectIdentities, err := newProjectIdentityResolver(serverConfig)
+			if err != nil {
+				setupLog.Error(err, "unable to build project identity client")
+				os.Exit(1)
+			}
 
 			registeredControllers, err := setupControllers(mgr, serverConfig, controllerDeps{
 				downstreamCluster:        downstreamCluster,
-				singletonManager:         singletonControllerMgr,
+				federationManager:        federationMgr,
 				irohDownstream:           irohDownstream,
 				ipamClients:              ipamClients,
 				certificateServiceReader: certificateServiceReader,
 				certificateServiceRoots:  certificateServiceRoots,
 				wildcardEntitlements:     wildcardEntitlements,
+				projectIdentities:        projectIdentities,
 			})
 			if err != nil {
 				setupLog.Error(err, "unable to set up controllers")
@@ -490,12 +494,10 @@ func NewCommand(build BuildInfo) *cobra.Command {
 				return ignoreCanceled(mgr.Start(ctx))
 			})
 
-			if singletonMgr != nil {
-				setupLog.Info("starting singleton controller manager")
-				g.Go(func() error {
-					return ignoreCanceled(singletonMgr.Start(ctx))
-				})
-			}
+			setupLog.Info("starting federation controller manager")
+			g.Go(func() error {
+				return ignoreCanceled(federationMgr.Start(ctx))
+			})
 
 			if err := g.Wait(); err != nil {
 				setupLog.Error(err, "unable to start")
@@ -591,12 +593,28 @@ func setupWebhooks(mgr mcmanager.Manager, serverConfig config.NetworkServicesOpe
 // against. Fields are only populated for the sets that need them.
 type controllerDeps struct {
 	downstreamCluster        cluster.Cluster
-	singletonManager         manager.Manager
+	federationManager        manager.Manager
 	irohDownstream           cluster.Cluster
 	ipamClients              controller.IPAMClientFactory
 	certificateServiceReader client.Reader
 	certificateServiceRoots  *x509.CertPool
 	wildcardEntitlements     controller.WildcardEntitlementChecker
+	projectIdentities        controller.ProjectIdentityResolver
+}
+
+func newProjectIdentityResolver(serverConfig config.NetworkServicesOperator) (controller.ProjectIdentityResolver, error) {
+	if !serverConfig.InternalDNS.Enabled {
+		return nil, nil
+	}
+	restConfig, err := serverConfig.Discovery.DiscoveryRestConfig()
+	if err != nil {
+		return nil, err
+	}
+	reader, err := client.New(restConfig, client.Options{Scheme: scheme})
+	if err != nil {
+		return nil, err
+	}
+	return &controller.APIProjectIdentityResolver{Reader: reader}, nil
 }
 
 // newCertificateServiceReader returns an uncached client for the cluster the
@@ -680,17 +698,14 @@ func controllerRegistrations(
 				SubnetClass: serverConfig.IPAM.Classes.Subnet,
 			}).SetupWithManager(mgr)
 		}},
-		// The deployment cluster is the hub, and the milo provider engages
-		// project control planes in the same process. The presence controller
-		// goes on the singleton manager because the sharded managers run three
-		// replicas with leader election disabled, which would reconcile every
-		// hub object three times.
+		// Bindings are authoritative on the federation hub. Project control
+		// planes are reached through the multicluster manager in the same process.
 		{"networkpresence", true, func() error {
 			return (&controller.NetworkPresenceReconciler{
 				Projects:             controller.NewProjectClusterResolver(mgr),
 				Events:               presenceEvents,
 				UnclaimedGracePeriod: serverConfig.NetworkPresence.UnclaimedGracePeriod.Duration,
-			}).SetupWithManager(deps.singletonManager)
+			}).SetupWithManager(deps.federationManager)
 		}},
 		// Everything the presence controller reads besides the binding lives in a
 		// project control plane, which only the multicluster manager watches. The
@@ -699,17 +714,26 @@ func controllerRegistrations(
 		{"networkpresencesync", true, func() error {
 			return (&controller.NetworkPresenceSyncReconciler{
 				Events: presenceEvents,
-			}).SetupWithManager(mgr, deps.singletonManager)
+			}).SetupWithManager(mgr, deps.federationManager)
 		}},
-		// The interfaces a cell publishes arrive on the hub, and only the
+		{"internaldns-project", serverConfig.InternalDNS.Enabled, func() error {
+			return (&controller.InternalDNSProjectReconciler{
+				Config:   serverConfig.InternalDNS,
+				Projects: deps.projectIdentities,
+			}).SetupWithManager(mgr)
+		}},
+		{"internaldns-readiness", serverConfig.InternalDNS.Enabled, func() error {
+			return (&controller.InternalDNSReadinessReconciler{
+				Config:   serverConfig.InternalDNS,
+				Projects: controller.NewProjectClusterResolver(mgr),
+			}).SetupWithManager(deps.federationManager)
+		}},
+		// The interfaces a cell publishes arrive on the federation hub, and the
 		// multicluster manager reaches the project control planes they are for.
-		// The projector goes on the singleton manager for the same reason the
-		// presence controller does: three replicas would project every one of
-		// them three times.
 		{"networkinterfaceprojector", true, func() error {
 			return (&controller.NetworkInterfaceProjector{
 				Projects: controller.NewProjectClusterResolver(mgr),
-			}).SetupWithManager(deps.singletonManager)
+			}).SetupWithManager(deps.federationManager)
 		}},
 		// Removing a copy is the other half, and it has to watch project control
 		// planes: a published interface that has gone says nothing about where
@@ -781,7 +805,7 @@ func controllerRegistrations(
 			return (&controller.GatewayDownstreamCertificateSolverReconciler{
 				Config:            serverConfig,
 				DownstreamCluster: deps.downstreamCluster,
-			}).SetupWithManager(deps.singletonManager)
+			}).SetupWithManager(deps.federationManager)
 		}},
 		{"domain", true, func() error {
 			return (&controller.DomainReconciler{
@@ -806,7 +830,7 @@ func controllerRegistrations(
 			return (&controller.ChallengeReconciler{
 				Config:            serverConfig,
 				DownstreamCluster: deps.downstreamCluster,
-			}).SetupWithManager(deps.singletonManager)
+			}).SetupWithManager(deps.federationManager)
 		}},
 	}
 }

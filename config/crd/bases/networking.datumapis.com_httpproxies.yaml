@@ -1723,9 +1723,9 @@ spec:
                                 type: string
                               port:
                                 description: |-
-                                  Port names a port declared in the referenced service's spec.ports, rather
-                                  than giving a number, so the reference survives a change to the port the
-                                  members answer on.
+                                  Port names a TCP port declared in the referenced service's spec.ports,
+                                  rather than giving a number, so the reference survives a change to the
+                                  port the members answer on. UDP ports cannot serve HTTPProxy traffic.
                                 maxLength: 63
                                 minLength: 1
                                 pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$

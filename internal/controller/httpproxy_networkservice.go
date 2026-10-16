@@ -36,6 +36,16 @@ type errNetworkServiceBackendNotFound struct {
 	port    string
 }
 
+type errNetworkServiceBackendUnsupportedProtocol struct {
+	service  string
+	port     string
+	protocol networkingv1alpha.NetworkServiceProtocol
+}
+
+func (e *errNetworkServiceBackendUnsupportedProtocol) Error() string {
+	return fmt.Sprintf("NetworkService %q port %q uses %s; HTTPProxy backends require TCP", e.service, e.port, e.protocol)
+}
+
 func (e *errNetworkServiceBackendNotFound) Error() string {
 	if e.port != "" {
 		return fmt.Sprintf("NetworkService %q has no port named %q", e.service, e.port)
@@ -78,6 +88,12 @@ func resolveNetworkServiceBackend(
 	})
 	if portIndex < 0 {
 		return nil, &errNetworkServiceBackendNotFound{service: ref.Name, port: ref.Port}
+	}
+	port := service.Spec.Ports[portIndex]
+	if port.Protocol != "" && port.Protocol != networkingv1alpha.NetworkServiceProtocolTCP {
+		return nil, &errNetworkServiceBackendUnsupportedProtocol{
+			service: ref.Name, port: ref.Port, protocol: port.Protocol,
+		}
 	}
 
 	selector, err := metav1.LabelSelectorAsSelector(&service.Spec.NetworkInterfaces.Selector)

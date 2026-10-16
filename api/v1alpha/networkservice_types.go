@@ -43,13 +43,15 @@ const (
 
 // NetworkServiceProtocol is the transport protocol a port carries.
 //
-// +kubebuilder:validation:Enum=TCP
+// +kubebuilder:validation:Enum=TCP;UDP
 type NetworkServiceProtocol string
 
 const (
 	// NetworkServiceProtocolTCP carries TCP, which is what every backend served
-	// through a proxy uses.
+	// through an HTTP proxy uses.
 	NetworkServiceProtocolTCP NetworkServiceProtocol = "TCP"
+	// NetworkServiceProtocolUDP carries UDP traffic.
+	NetworkServiceProtocolUDP NetworkServiceProtocol = "UDP"
 )
 
 // NetworkServiceAppProtocol is the HTTP version the edge uses to reach
@@ -136,10 +138,8 @@ type NetworkServicePort struct {
 	// +kubebuilder:validation:Maximum=65535
 	Port int32 `json:"port"`
 
-	// protocol is the transport the port carries. TCP is the only value
-	// accepted, and is what a backend served through a proxy uses. The field
-	// exists so the same service can back a Layer 4 load balancer without
-	// changing shape.
+	// protocol is the transport the port carries. HTTPProxy backends support
+	// only TCP ports.
 	//
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:default="TCP"

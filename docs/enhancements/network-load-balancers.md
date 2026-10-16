@@ -30,8 +30,9 @@ latest-milestone: "v0.x"
 A project can publish a `NetworkService` on a public TCP or UDP port through a
 `NetworkLoadBalancer`. The load balancer owns listeners and public address
 requests; a separate `NetworkLoadBalancerRoute` connects a listener to the
-service. Each selected location receives a distinct public IP. Status shows
-the allocated IP and announcement state for each location. By default, those
+service. Each selected location receives an IP per requested family and a
+generated hostname users can target with a CNAME. Status shows the hostname,
+allocated IPs, and announcement state for each location. By default, those
 locations follow the network interfaces selected by the backend services.
 Active health checks keep failed backends out of rotation. TLS listeners can
 route by SNI and either pass encryption to the backend or terminate it with a
@@ -53,6 +54,8 @@ where their service runs.
   termination for non-HTTP applications.
 - Allocate a distinct public address in every backend location by default,
   including locations added after the address request is created.
+- Issue a stable, platform-managed hostname in each selected location so users
+  can point a DNS CNAME at that location's NLB endpoint.
 - Show allocated addresses and serving locations without releasing an address
   when its backends are temporarily unavailable.
 - Use an address request shape that can later serve Application Load Balancers.
@@ -91,8 +94,8 @@ TLS API remains part of this enhancement.
 Each selected location receives one IP per requested family. Multiple edge
 nodes may announce each IP within the location. An address request sets
 `families` to one or both of `IPv4` and `IPv6`. The list is required, unique,
-and order-independent, so enabling IPv4
-later never changes an existing request implicitly. The listener references
+and order-independent, so enabling IPv4 later never changes an existing
+request implicitly. The listener references
 the request once for both families. Omitting `locations` defaults to
 `locations.from: Backends`: an address request follows the locations of the
 `NetworkService` backends on listeners using that address. `All` explicitly
@@ -100,6 +103,17 @@ selects every eligible platform location; `Names` selects only listed
 locations. Adding a backend location creates an IP for each family without
 changing existing location addresses. Separate requests remain available when
 families need different location selections or independent listener attachment.
+
+Each address request produces one stable generated hostname per selected
+location, reported as `status.endpoints[].canonicalHostname` and shared by
+its IPv4 and IPv6 addresses. Its name is derived from the load balancer
+identity, request name, and location under a Datum-managed zone;
+it is independent of the current IPs. Consumers can CNAME a location-specific
+name they own to it. Datum publishes an A or AAAA record only when that
+family's address is allocated and announced in the location. The hostname
+stays assigned during temporary health loss, even when it has no address
+records. Different requests in the same location receive different hostnames.
+DNS names do not carry a port; clients still connect to the listener's port.
 
 For an address shared by several listeners or SNI routes, `Backends` selects a
 location only when every positive-weight backend service on the effective
@@ -116,6 +130,8 @@ route, placement is pending and no location IP is allocated.
   maintaining a location list.
 - The operator adds a new region while existing regional client endpoints keep
   their addresses.
+- The operator CNAMEs `us.game.example.com` to the generated hostname for the
+  US location and `eu.game.example.com` to the EU location.
 - If a region loses its serving backends, its IP remains allocated while its
   announcement is withdrawn.
 - An operator exposes a TLS application through a TCP listener; the backend
@@ -134,8 +150,12 @@ route, placement is pending and no location IP is allocated.
 - **Reusing a public IP for another load balancer misroutes traffic.** Allocate
   every location address from a globally unique public pool.
 - **A `Backends` or `All` request can expand over time.** Expose each added
-  location and IP in status, and bound the number of locations and addresses
-  per load balancer.
+  location, hostname, and IP in status, and bound the number of locations and
+  addresses per load balancer.
+- **DNS could direct users to an unannounced IP.** Publish A and AAAA records
+  only after the corresponding VIP is announced; withdraw the DNS record when
+  that announcement is withdrawn. Short TTLs limit stale answers; clients with
+  cached IPs can still fail after withdrawal.
 - **Overlapping routes could select different backends for the same flow.** Use
   Gateway API precedence for overlapping route attachments and report the
   effective route in native status.
@@ -221,7 +241,8 @@ weight and its share is rejected, as Gateway API requires. Failed health probes
 exclude individual endpoints while healthy endpoints remain. Status
 distinguishes resolution, endpoint availability, and health.
 
-The load balancer reports one entry per requested location and allocated IP:
+The load balancer reports one endpoint per address request and location. Each
+endpoint groups its generated hostname and addresses by family:
 
 ```yaml
 status:
@@ -229,47 +250,56 @@ status:
     - name: regional
       locationSource: Backends
       resolvedLocations: [us-central-1, eu-west-1]
-  addresses:
+  endpoints:
     - requestName: regional
       location: us-central-1
-      family: IPv6
-      value: 2001:db8:100::10
-      conditions:
-        - type: Allocated
-          status: "True"
-        - type: Announced
-          status: "True"
+      canonicalHostname: nlb-7f2.regional.us-central-1.datumproxy.net
+      addresses:
+        - family: IPv6
+          value: 2001:db8:100::10
+          conditions:
+            - type: Allocated
+              status: "True"
+            - type: Announced
+              status: "True"
+            - type: DNSPublished
+              status: "True"
     - requestName: regional
       location: eu-west-1
-      family: IPv6
-      value: 2001:db8:200::11
-      conditions:
-        - type: Allocated
-          status: "True"
-        - type: Announced
-          status: "True"
+      canonicalHostname: nlb-7f2.regional.eu-west-1.datumproxy.net
+      addresses:
+        - family: IPv6
+          value: 2001:db8:200::11
+          conditions:
+            - type: Allocated
+              status: "True"
+            - type: Announced
+              status: "True"
+            - type: DNSPublished
+              status: "True"
 ```
 
-These IPs are illustrative. Status keys each allocated address by request,
-location, and family. Allocation and announcement are reported independently
-for each family; a missing IPv4 allocation does not hide a working IPv6
-address, but the request reports partial readiness until both are available.
-The first NLB release accepts only `families: [IPv6]` because Galactic's
-current public ingress packet path handles IPv6.
-The cell intent carries the public VIP family and each backend address family
-separately. A request containing IPv4 remains rejected until the IPv4 ingress
+These names and IPs are illustrative. Endpoint identity is the address request
+and location; each requested family has an address entry even while allocation
+is pending. Allocation, announcement, and DNS publication are reported
+independently for each family. A missing IPv4 allocation does not hide a
+working IPv6 address, but the request reports partial readiness until both
+are available. The first NLB release accepts only `families: [IPv6]` because
+Galactic's current public ingress packet path handles IPv6. The cell intent
+carries the public VIP family and each backend address family separately. A
+request containing IPv4 remains rejected until the IPv4 ingress
 path and its capability checks are ready. An allocation remains in status when
 a route or backend is unavailable; its announcement state changes instead.
-Load balancer conditions distinguish
-allocation and programming. Route conditions report attachment, backend
-resolution, and programming. `Ready` means at least one
-selected location serves traffic; location status identifies any that do not.
-An address is announced from a location only when every listener using it is
-ready there. Status reports the resolved locations for each address request
-and shows `Backends` as the source when `locations` is omitted. Health loss
-withdraws an announcement without releasing its IP; after the last selected
-interface leaves a location, withdraw that location's announcement before
-releasing its IP.
+Load balancer conditions distinguish allocation, programming, and DNS
+publication. Route conditions report attachment, backend resolution, and
+programming. `Ready` means at least one selected location has a serving IP
+published under its generated hostname; location status identifies any that
+do not. An address is announced from a location only when every listener using
+it is ready there. Status reports the resolved locations for each address
+request and shows `Backends` as the source when `locations` is omitted. Health loss
+withdraws an announcement and its DNS record without releasing its IP; after
+the last selected interface leaves a location, withdraw its DNS records and
+announcement before releasing its IP.
 
 NSO resolves service membership, allocates IPs, selects eligible locations,
 and reports status. Cell controllers turn resolved intent into Galactic
@@ -396,6 +426,13 @@ uses `tls.mode: Passthrough`, omits the certificate, and keeps end-to-end TLS;
 its routes do not set backend transport. Only visible SNI can be matched;
 connections without a matching visible name use the default or are rejected.
 
+A CNAME to the generated location hostname changes DNS resolution, not the
+client's TLS SNI. For TLS passthrough or termination on a customer's hostname,
+that hostname must also appear in `sniHostnames`; termination needs a covering
+certificate, while passthrough needs one on the backend. A generated hostname
+does not automatically authorize or issue a certificate for the customer's
+name.
+
 SNI inspection and TLS termination need a proxy-capable data plane; Galactic's
 current DSR rule only forwards TCP and cannot provide either. HTTP routing and
 termination remain with `HTTPProxy`. A terminating proxy opens a new backend
@@ -477,16 +514,17 @@ Start with single-location TCP and UDP with weighted backends and active probes,
 then test multi-location operation with distinct addresses. Add SNI passthrough
 before managed TLS termination. Exercise route updates, UDP flow stability,
 probe failures, loss of the last backend, location removal, TLS certificate
-issuance and rotation, and withdrawal before IP release. Existing
+issuance and rotation, CNAME resolution, A/AAAA publication, IP replacement
+without hostname change, and withdrawal before IP release. Existing
 `NetworkService` and `HTTPProxy` behavior should be unaffected.
 
 ### Monitoring Requirements
 
 Operators need counts of allocated VIPs, programmed rules, healthy backends,
-and announced locations, plus failures to allocate, probe, program, issue
-certificates, or withdraw. Consumers read load balancer and route conditions,
-backend health, TLS hostname and certificate status, and per-address
-announcement status.
+announced locations, and published DNS records, plus failures to allocate,
+probe, program, publish DNS, issue certificates, or withdraw. Consumers read
+load balancer and route conditions, backend health, generated location
+hostnames, TLS certificate status, and per-address announcement and DNS status.
 
 ### Dependencies
 
@@ -501,6 +539,9 @@ Galactic IPv4 ingress and cross-family proxy support, and a serving capability
 gate before API admission is enabled.
 SNI routing and managed TLS need a proxy-capable edge path, hostname ownership
 verification, and certificate issuance and distribution.
+NSO needs a managed DNS zone and per-location A/AAAA record lifecycle tied to
+VIP allocation and announcement; hostname assignment must remain stable across
+IP replacement and temporary health loss.
 Gateway API parity also needs an attachment/grant model, Service backend
 translation, Secret certificate references, weighted selection, wildcard SNI,
 mixed TLS modes, backend TLS validation, per-parent status, and conformance

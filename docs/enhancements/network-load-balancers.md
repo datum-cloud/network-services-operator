@@ -106,10 +106,12 @@ families need different location selections or independent listener attachment.
 
 Each address request produces one stable generated hostname per selected
 location, reported as `status.endpoints[].canonicalHostname` and shared by
-its IPv4 and IPv6 addresses. Its name is derived from the load balancer
-identity, request name, and location under a Datum-managed zone;
-it is independent of the current IPs. Consumers can CNAME a location-specific
-name they own to it. Datum publishes an A or AAAA record only when that
+its IPv4 and IPv6 addresses. Datum assigns each address request an opaque
+endpoint ID unique across the platform. The hostname is
+`<endpoint-id>.<location>.<managed-zone>`, with a recognizable location and no
+request name or IP embedded in it. The endpoint ID is reused across locations
+and stays stable while the request exists. Consumers can CNAME a name they own
+for that location to it. Datum publishes an A or AAAA record only when that
 family's address is allocated and announced in the location. The hostname
 stays assigned during temporary health loss, even when it has no address
 records. Different requests in the same location receive different hostnames.
@@ -253,7 +255,7 @@ status:
   endpoints:
     - requestName: regional
       location: us-central-1
-      canonicalHostname: nlb-7f2.regional.us-central-1.datumproxy.net
+      canonicalHostname: n-7f2k9q.us-central-1.datumproxy.net
       addresses:
         - family: IPv6
           value: 2001:db8:100::10
@@ -266,7 +268,7 @@ status:
               status: "True"
     - requestName: regional
       location: eu-west-1
-      canonicalHostname: nlb-7f2.regional.eu-west-1.datumproxy.net
+      canonicalHostname: n-7f2k9q.eu-west-1.datumproxy.net
       addresses:
         - family: IPv6
           value: 2001:db8:200::11

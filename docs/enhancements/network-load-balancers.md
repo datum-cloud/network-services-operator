@@ -88,13 +88,18 @@ Plain TCP listeners continue to carry TLS without inspecting it. The initial
 delivery can ship TCP/UDP routing and health checks before TLS listeners; the
 TLS API remains part of this enhancement.
 
-Each selected location receives its own IP. Multiple edge nodes may announce
-that IP within the location. Omitting `locations` defaults to
+Each selected location receives one IP per requested family. Multiple edge
+nodes may announce each IP within the location. An address request sets
+`families` to one or both of `IPv4` and `IPv6`. The list is required, unique,
+and order-independent, so enabling IPv4
+later never changes an existing request implicitly. The listener references
+the request once for both families. Omitting `locations` defaults to
 `locations.from: Backends`: an address request follows the locations of the
 `NetworkService` backends on listeners using that address. `All` explicitly
 selects every eligible platform location; `Names` selects only listed
-locations. Adding a backend location creates another IP without changing
-existing location addresses.
+locations. Adding a backend location creates an IP for each family without
+changing existing location addresses. Separate requests remain available when
+families need different location selections or independent listener attachment.
 
 For an address shared by several listeners or SNI routes, `Backends` selects a
 location only when every positive-weight backend service on the effective
@@ -178,7 +183,7 @@ spec:
   exposure:
     addresses:
       - name: regional
-        family: IPv6
+        families: [IPv6]
   listeners:
     - name: game
       protocol: UDP
@@ -205,7 +210,9 @@ spec:
 
 The address request omits `locations`, so it follows the `game` service's
 selected interfaces. `locations: {from: Backends}` expresses the same choice
-explicitly.
+explicitly. Once IPv4 ingress is available, changing the request to
+`families: [IPv4, IPv6]` publishes both families on the same listener and
+route.
 
 `backends` accepts multiple entries with an optional `weight` (default 1,
 zero disables selection). Weights split new connections or flows, not packets
@@ -243,13 +250,17 @@ status:
           status: "True"
 ```
 
-These IPs are illustrative. The first NLB release accepts IPv6 address
-requests because Galactic's current public ingress packet path handles IPv6.
+These IPs are illustrative. Status keys each allocated address by request,
+location, and family. Allocation and announcement are reported independently
+for each family; a missing IPv4 allocation does not hide a working IPv6
+address, but the request reports partial readiness until both are available.
+The first NLB release accepts only `families: [IPv6]` because Galactic's
+current public ingress packet path handles IPv6.
 The cell intent carries the public VIP family and each backend address family
-separately. IPv4 requests remain rejected until the IPv4 ingress path and its
-capability checks are ready. An allocation remains in status when a route or
-backend is unavailable; its announcement state changes instead. Load balancer
-conditions distinguish
+separately. A request containing IPv4 remains rejected until the IPv4 ingress
+path and its capability checks are ready. An allocation remains in status when
+a route or backend is unavailable; its announcement state changes instead.
+Load balancer conditions distinguish
 allocation and programming. Route conditions report attachment, backend
 resolution, and programming. `Ready` means at least one
 selected location serves traffic; location status identifies any that do not.
@@ -302,8 +313,8 @@ Rollout requires a public IPv4 IPAM class, family-aware cell and Galactic
 programming, and a capability signal from every serving gateway in a location.
 CI must exercise IPv4 TCP and UDP ingress to IPv6 backends and replies, two
 VIPs targeting the same backend port, backend health changes, and announcement
-withdrawal. Only then should admission accept IPv4 and allow a listener to
-reference both IPv4 and IPv6 address requests.
+withdrawal. Only then should admission accept `families` containing IPv4 and
+allow one address request to publish both families on a listener.
 
 ### Backend Health
 

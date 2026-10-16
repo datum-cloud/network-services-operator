@@ -10,4 +10,5 @@ spec:
   includedPermissions:
     - networking.datumapis.com/locationbindings.list
     - networking.datumapis.com/locationbindings.get
+    - networking.datumapis.com/locationbindings/status.get
     - networking.datumapis.com/locationbindings.watch

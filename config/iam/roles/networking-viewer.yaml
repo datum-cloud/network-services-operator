@@ -14,28 +14,37 @@ spec:
   includedPermissions:
     - networking.datumapis.com/networks.list
     - networking.datumapis.com/networks.get
+    - networking.datumapis.com/networks/status.get
     - networking.datumapis.com/networks.watch
     - networking.datumapis.com/networkbindings.list
     - networking.datumapis.com/networkbindings.get
+    - networking.datumapis.com/networkbindings/status.get
     - networking.datumapis.com/networkbindings.watch
     - networking.datumapis.com/networkcontexts.list
     - networking.datumapis.com/networkcontexts.get
+    - networking.datumapis.com/networkcontexts/status.get
     - networking.datumapis.com/networkcontexts.watch
     - networking.datumapis.com/subnets.list
     - networking.datumapis.com/subnets.get
+    - networking.datumapis.com/subnets/status.get
     - networking.datumapis.com/subnets.watch
     - networking.datumapis.com/subnetclaims.list
     - networking.datumapis.com/subnetclaims.get
+    - networking.datumapis.com/subnetclaims/status.get
     - networking.datumapis.com/subnetclaims.watch
     - networking.datumapis.com/networkpolicies.list
     - networking.datumapis.com/networkpolicies.get
+    - networking.datumapis.com/networkpolicies/status.get
     - networking.datumapis.com/networkpolicies.watch
     - networking.datumapis.com/networkinterfaces.list
     - networking.datumapis.com/networkinterfaces.get
+    - networking.datumapis.com/networkinterfaces/status.get
     - networking.datumapis.com/networkinterfaces.watch
     - networking.datumapis.com/networkinterfaceclaims.list
     - networking.datumapis.com/networkinterfaceclaims.get
+    - networking.datumapis.com/networkinterfaceclaims/status.get
     - networking.datumapis.com/networkinterfaceclaims.watch
     - networking.datumapis.com/networkservices.list
     - networking.datumapis.com/networkservices.get
+    - networking.datumapis.com/networkservices/status.get
     - networking.datumapis.com/networkservices.watch

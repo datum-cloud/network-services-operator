@@ -1955,16 +1955,20 @@ func TestExternalAttachmentStatusSurvivesNSO(t *testing.T) {
 	}
 	require.NoError(t, s.client.Status().Update(s.ctx, iface))
 
+	expectedGroup := "cloud.datumapis.com"
+	expectedProgrammed := metav1.ConditionTrue
 	requireAttachmentReported := func(stage string) {
 		t.Helper()
 		reported, err := s.getInterface("slot-0-eth0")
 		require.NoError(t, err)
-		require.Equal(t, metav1.ConditionTrue,
+		require.Equal(t, expectedProgrammed,
 			apimeta.FindStatusCondition(reported.Status.Conditions,
 				networkingv1alpha.NetworkInterfaceProgrammed).Status,
 			"%s reverted the condition the data plane owns", stage)
 		require.Equal(t, "0000000ju", reported.Status.VPC, "%s cleared status.vpc", stage)
 		require.NotNil(t, reported.Status.AttachmentRef, "%s cleared status.attachmentRef", stage)
+		require.Equal(t, expectedGroup, reported.Status.AttachmentRef.APIGroup,
+			"%s changed the data plane's attachment API group", stage)
 	}
 
 	s.reconcile(s.getClaim("slot-0-eth0"))
@@ -1973,12 +1977,42 @@ func TestExternalAttachmentStatusSurvivesNSO(t *testing.T) {
 	s.reconcileInterface("slot-0-eth0")
 	requireAttachmentReported("an interface reconcile")
 
+	// Galactic takes over the attachment under its consolidated API group.
+	// NSO must preserve the replacement reference through release and rebind.
+	iface, err = s.getInterface("slot-0-eth0")
+	require.NoError(t, err)
+	iface.Status.AttachmentRef.APIGroup = "galactic.datumapis.com"
+	apimeta.SetStatusCondition(&iface.Status.Conditions, metav1.Condition{
+		Type:    networkingv1alpha.NetworkInterfaceProgrammed,
+		Status:  metav1.ConditionUnknown,
+		Reason:  "APIGroupMigration",
+		Message: "waiting for the Galactic attachment to be programmed",
+	})
+	require.NoError(t, s.client.Status().Update(s.ctx, iface))
+	expectedGroup = "galactic.datumapis.com"
+	expectedProgrammed = metav1.ConditionUnknown
+	s.reconcile(s.getClaim("slot-0-eth0"))
+	requireAttachmentReported("a migration requeue")
+
 	// Retain unbinds the interface and a replacement claim adopts it.
 	s.deleteClaim(s.getClaim("slot-0-eth0"))
 	requireAttachmentReported("release under Retain")
 
 	s.reconcile(s.createClaim("slot-0-eth0", spec))
 	requireAttachmentReported("a rebind")
+
+	// Galactic reports success only after its new advertisement is live.
+	iface, err = s.getInterface("slot-0-eth0")
+	require.NoError(t, err)
+	apimeta.SetStatusCondition(&iface.Status.Conditions, metav1.Condition{
+		Type:   networkingv1alpha.NetworkInterfaceProgrammed,
+		Status: metav1.ConditionTrue,
+		Reason: "Advertised",
+	})
+	require.NoError(t, s.client.Status().Update(s.ctx, iface))
+	expectedProgrammed = metav1.ConditionTrue
+	s.reconcile(s.getClaim("slot-0-eth0"))
+	requireAttachmentReported("new Galactic programming")
 }
 
 // A retained interface outlives the holder that reported it, and the next claim

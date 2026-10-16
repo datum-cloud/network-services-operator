@@ -177,6 +177,36 @@ rules:
   - patch
   - update
 - apiGroups:
+  - galactic.datumapis.com
+  resources:
+  - networkfabricidentities
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - galactic.datumapis.com
+  resources:
+  - vpcattachments
+  - vpcs
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - galactic.datumapis.com
+  resources:
+  - vpcattachments/status
+  - vpcs/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
   - gateway.envoyproxy.io
   resources:
   - backends
@@ -246,6 +276,18 @@ rules:
   - get
   - patch
   - update
+- apiGroups:
+  - k8s.cni.cncf.io
+  resources:
+  - network-attachment-definitions
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
 - apiGroups:
   - locations.miloapis.com
   resources:

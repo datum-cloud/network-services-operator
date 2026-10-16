@@ -221,7 +221,7 @@ status:
   networkContextRef:
     name: default-us-central-1
   attachmentRef:
-    apiGroup: cloud.datumapis.com
+    apiGroup: galactic.datumapis.com
     kind: VPCAttachment
     name: nic-4f2a9c1e
   vpc: 3kF9qP2x
@@ -399,7 +399,7 @@ status:
 
   # The data-plane realization, once one exists.
   attachmentRef:
-    apiGroup: cloud.datumapis.com
+    apiGroup: galactic.datumapis.com
     kind: VPCAttachment
     name: nic-4f2a9c1e
 
@@ -489,12 +489,12 @@ the allocator to preserve.
 ### Reaching the data plane
 
 A `NetworkInterface` says what an interface must be. `VPCAttachment`, in the
-[cloud](https://github.com/datum-cloud/cloud) API group, is where it becomes real, and the
+`galactic.datumapis.com` API group, is where it becomes real, and the
 split is deliberate: an interface is allocated as soon as a claim exists, before an instance
 has been scheduled to any node, while what a node ends up carrying — a container ID, a host
 device, a VRF — is only knowable once the sandbox exists.
 
-The attachment is therefore **written as intent by the infrastructure provider and reported
+The attachment is therefore **written as intent by NSO's cell manager and reported
 on by the node**, not created by the node. It has to be, because the data plane reads it
 before the sandbox exists: the CNI configuration a `VPCAttachment` produces must already be
 in place when the pod's sandbox is created, so an attachment that only came into being as a
@@ -507,7 +507,7 @@ NetworkInterfaceClaim   compute's intent      created per instance, per interfac
 NetworkInterface        NSO's answer          addresses, gateway, MTU
         │  realized by
         ▼
-VPCAttachment           spec: the provider    intent, written before the pod
+VPCAttachment           spec: NSO             intent, written before the pod
         │               status: the node      node, containerID, VRF, host device
         │  attaches to
         ▼

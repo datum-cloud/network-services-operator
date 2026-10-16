@@ -31,10 +31,11 @@ A project can publish a `NetworkService` on a public TCP or UDP port through a
 `NetworkLoadBalancer`. The load balancer owns listeners and public address
 requests; a separate `NetworkLoadBalancerRoute` connects a listener to the
 service. Each selected location receives a distinct public IP. Status shows
-the allocated IP and announcement state for each location. Active health
-checks keep failed backends out of rotation. TLS listeners can route by SNI and
-either pass encryption to the backend or terminate it with a Datum-managed
-certificate.
+the allocated IP and announcement state for each location. By default, those
+locations follow the network interfaces selected by the backend services.
+Active health checks keep failed backends out of rotation. TLS listeners can
+route by SNI and either pass encryption to the backend or terminate it with a
+Datum-managed certificate.
 
 ## Motivation
 
@@ -50,8 +51,8 @@ where their service runs.
 - Actively check backend health before serving traffic.
 - Support opaque TLS over TCP, SNI-based TLS passthrough, and managed TLS
   termination for non-HTTP applications.
-- Allocate a distinct public address in each selected location, including
-  locations added after an `All` request is created.
+- Allocate a distinct public address in every backend location by default,
+  including locations added after the address request is created.
 - Show allocated addresses and serving locations without releasing an address
   when its backends are temporarily unavailable.
 - Use an address request shape that can later serve Application Load Balancers.
@@ -88,15 +89,26 @@ delivery can ship TCP/UDP routing and health checks before TLS listeners; the
 TLS API remains part of this enhancement.
 
 Each selected location receives its own IP. Multiple edge nodes may announce
-that IP within the location. `locations.from: All` follows current and future
-eligible locations; an explicit `Names` selection limits the request to listed
-locations. Adding a location to `All` creates another IP without changing the
+that IP within the location. Omitting `locations` defaults to
+`locations.from: Backends`: an address request follows the locations of the
+`NetworkService` backends on listeners using that address. `All` explicitly
+selects every eligible platform location; `Names` selects only listed
+locations. Adding a backend location creates another IP without changing
 existing location addresses.
+
+For an address shared by several listeners or SNI routes, `Backends` selects a
+location only when every positive-weight backend service on the effective
+routes has a selected, bound network interface there. This keeps every route
+on the IP usable in the same locations. Consumers can use separate address
+requests when services have different footprints. Interface presence selects
+locations; health and programming determine announcement. With no attached
+route, placement is pending and no location IP is allocated.
 
 ### User Stories
 
 - A game operator publishes the same UDP port on a different IP in each region
-  so clients can choose a region.
+  where the game service has members, so clients can choose a region without
+  maintaining a location list.
 - The operator adds a new region while existing regional client endpoints keep
   their addresses.
 - If a region loses its serving backends, its IP remains allocated while its
@@ -116,8 +128,9 @@ existing location addresses.
   prove the application answers on its port.
 - **Reusing a public IP for another load balancer misroutes traffic.** Allocate
   every location address from a globally unique public pool.
-- **An `All` request can expand over time.** Expose each added location and IP
-  in status, and bound the number of locations and addresses per load balancer.
+- **A `Backends` or `All` request can expand over time.** Expose each added
+  location and IP in status, and bound the number of locations and addresses
+  per load balancer.
 - **Overlapping routes could select different backends for the same flow.** Use
   Gateway API precedence for overlapping route attachments and report the
   effective route in native status.
@@ -166,8 +179,6 @@ spec:
     addresses:
       - name: regional
         family: IPv6
-        locations:
-          from: All
   listeners:
     - name: game
       protocol: UDP
@@ -192,6 +203,10 @@ spec:
         path: /healthz
 ```
 
+The address request omits `locations`, so it follows the `game` service's
+selected interfaces. `locations: {from: Backends}` expresses the same choice
+explicitly.
+
 `backends` accepts multiple entries with an optional `weight` (default 1,
 zero disables selection). Weights split new connections or flows, not packets
 within a flow. An unresolved backend or one with no endpoints retains its
@@ -203,6 +218,10 @@ The load balancer reports one entry per requested location and allocated IP:
 
 ```yaml
 status:
+  addressRequests:
+    - name: regional
+      locationSource: Backends
+      resolvedLocations: [us-central-1, eu-west-1]
   addresses:
     - requestName: regional
       location: us-central-1
@@ -235,13 +254,19 @@ allocation and programming. Route conditions report attachment, backend
 resolution, and programming. `Ready` means at least one
 selected location serves traffic; location status identifies any that do not.
 An address is announced from a location only when every listener using it is
-ready there.
+ready there. Status reports the resolved locations for each address request
+and shows `Backends` as the source when `locations` is omitted. Health loss
+withdraws an announcement without releasing its IP; after the last selected
+interface leaves a location, withdraw that location's announcement before
+releasing its IP.
 
 NSO resolves service membership, allocates IPs, selects eligible locations,
 and reports status. Cell controllers turn resolved intent into Galactic
 `NetworkRule` and `ServiceVIPBinding` objects. The initial route uses healthy
 backends in the ingress location. The control plane allocates one IP per
-selected location and shares that location's IP among its serving cells.
+selected location and shares that location's IP among its serving cells. It
+resolves `Backends` from actual membership, not the capped
+`NetworkService.status.locations` display list.
 
 For UDP, packets from the same client address and port select the same backend
 while the backend set is unchanged. A backend change may move that flow; the
@@ -472,10 +497,10 @@ tests against a pinned upstream release.
 
 ### Scalability
 
-Bound listeners, routes, address requests, and selected locations. An `All`
-request adds an allocation and cell configuration when a new location becomes
-eligible; reconciliation must handle those additions without changing existing
-IPs.
+Bound listeners, routes, address requests, and selected locations. A dynamic
+`Backends` or `All` request adds an allocation and cell configuration when a new
+location qualifies; reconciliation must handle those additions without
+changing existing IPs.
 
 ### Troubleshooting
 

@@ -107,14 +107,17 @@ families need different location selections or independent listener attachment.
 Each address request produces one stable generated hostname per selected
 location, reported as `status.endpoints[].canonicalHostname` and shared by
 its IPv4 and IPv6 addresses. Datum assigns each address request an opaque
-endpoint ID unique across the platform. The hostname is
-`<endpoint-id>.<location>.<managed-zone>`, with a recognizable location and no
-request name or IP embedded in it. The endpoint ID is reused across locations
-and stays stable while the request exists. Consumers can CNAME a name they own
-for that location to it. Datum publishes an A or AAAA record only when that
-family's address is allocated and announced in the location. The hostname
-stays assigned during temporary health loss, even when it has no address
-records. Different requests in the same location receive different hostnames.
+endpoint label using the proxy format: two words and five hash-derived
+characters. The label is derived from the load balancer UID and request name;
+the hostname is `<location>.<generated-label>.<managed-zone>`. The label is
+reused across locations, does not expose the request name or IP, and stays
+stable while the request exists. NSO claims each generated hostname uniquely
+and retains existing names if the generation algorithm changes. Consumers can
+CNAME a name they own for that location to it. Datum publishes an A or AAAA
+record only when that family's address is allocated and announced in the
+location. The hostname stays assigned during temporary health loss, even when
+it has no address records. Different requests in the same location receive
+different hostnames.
 DNS names do not carry a port; clients still connect to the listener's port.
 
 For an address shared by several listeners or SNI routes, `Backends` selects a
@@ -255,7 +258,7 @@ status:
   endpoints:
     - requestName: regional
       location: us-central-1
-      canonicalHostname: n-7f2k9q.us-central-1.datumproxy.net
+      canonicalHostname: us-central-1.crown-raven-m7p6g.datumproxy.net
       addresses:
         - family: IPv6
           value: 2001:db8:100::10
@@ -268,7 +271,7 @@ status:
               status: "True"
     - requestName: regional
       location: eu-west-1
-      canonicalHostname: n-7f2k9q.eu-west-1.datumproxy.net
+      canonicalHostname: eu-west-1.crown-raven-m7p6g.datumproxy.net
       addresses:
         - family: IPv6
           value: 2001:db8:200::11

@@ -454,6 +454,6 @@ func (r *NetworkInterfaceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&networkingv1alpha.NetworkInterface{}).
 		Owns(&cloudv1alpha1.VPCAttachment{}).
 		Watches(&nadv1.NetworkAttachmentDefinition{}, handler.EnqueueRequestsFromMapFunc(nadToInterface)).
-		Named("networkinterface").
+		Named("galactic-networkinterface").
 		Complete(r)
 }

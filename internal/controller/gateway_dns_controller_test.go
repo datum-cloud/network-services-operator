@@ -339,7 +339,7 @@ func TestEnsureDNSRecordSets(t *testing.T) {
 			},
 		},
 		{
-			name:             "domain exists but not verified yields DomainNotVerified",
+			name:             "domain exists but not checked yet yields Pending",
 			claimedHostnames: []string{"api.example.com"},
 			upstreamObjects: []client.Object{
 				newUnverifiedDomain(ns, "example.com"),
@@ -348,8 +348,9 @@ func TestEnsureDNSRecordSets(t *testing.T) {
 				require.Len(t, statuses, 1)
 				c := apimeta.FindStatusCondition(statuses[0].Conditions, networkingv1alpha.HostnameConditionDNSRecordProgrammed)
 				require.NotNil(t, c)
+				// The Domain controller has not checked this Domain yet, so the hostname waits on Datum.
 				assert.Equal(t, metav1.ConditionFalse, c.Status)
-				assert.Equal(t, networkingv1alpha.DNSRecordReasonDomainNotVerified, c.Reason)
+				assert.Equal(t, networkingv1alpha.DNSRecordReasonPending, c.Reason)
 			},
 			assertRecords: func(t *testing.T, cl client.Client) {
 				var list dnsv1alpha1.DNSRecordSetList

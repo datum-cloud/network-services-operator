@@ -75,24 +75,27 @@ where their service runs.
 
 ## Proposal
 
-A `NetworkLoadBalancer` requests addresses and defines TCP, UDP, or TLS
-listeners. Each listener names the address requests on which it serves. A
-`NetworkLoadBalancerRoute` attaches to a named listener and points to
+A `NetworkLoadBalancer` names an NSO `Network`, requests addresses, and defines
+TCP, UDP, or TLS listeners. Each listener names the address requests on which
+it serves. A `NetworkLoadBalancerRoute` attaches to a named listener and points to
 named ports on `NetworkService` backends. TCP and UDP listeners have one
 effective catch-all route each. If several attach, the oldest wins, breaking
 timestamp ties by namespace/name; all attachments remain Accepted, and native
 status identifies the effective route. Each route can distribute new
 connections or flows across weighted backends.
 
-The NLB has no required VPC or `Network` reference. Its public endpoint lives
-at the edge; backend interfaces belong to an NSO `Network`, which maps to the
-fabric VPC in each location. NSO derives that network from the selected
-interfaces of every positive-weight backend service on the NLB's effective
-routes. All must resolve to the same network. Until they do, the NLB reports
-`NetworkResolved=False` with `NoBackends` or `MultipleNetworks` and programs no
-traffic. A network mismatch withdraws any existing announcements while
-retaining allocated IPs. This lets users create the NLB before its workloads
-without repeating network identity in the exposure API.
+`spec.networkRef` is required and immutable. It names the NSO `Network` whose
+backends this NLB exposes; the platform resolves that network to its fabric
+VPC in each serving location. The public IP is an edge address, not a VPC
+address. A stable network reference lets users create the NLB before any
+backend exists and prevents changing service membership from silently moving
+its traffic to another network. Every effective route backend must resolve to
+interfaces on that network. A backend with no members cannot serve until
+members appear. One resolving to a different network sets
+`BackendResolved=False` with reason `NetworkMismatch` and invalidates its
+route. Existing public IP allocations are retained; listener readiness still
+controls announcements. Cross-network backends would need an explicit future
+forwarding and authorization design.
 
 A TLS listener adds `tls.mode: Passthrough` or `Terminate`. Routes attached to
 it can match SNI hostnames so several TLS services share an address and port.
@@ -213,6 +216,8 @@ kind: NetworkLoadBalancer
 metadata:
   name: game
 spec:
+  networkRef:
+    name: default
   exposure:
     addresses:
       - name: regional
@@ -303,7 +308,7 @@ carries the public VIP family and each backend address family separately. A
 request containing IPv4 remains rejected until the IPv4 ingress
 path and its capability checks are ready. An allocation remains in status when
 a route or backend is unavailable; its announcement state changes instead.
-Load balancer conditions distinguish network resolution, allocation,
+Load balancer conditions distinguish network reference resolution, allocation,
 programming, and DNS publication. Route conditions report attachment, backend
 resolution, and programming. `Ready` means at least one selected location has
 a serving IP published under its generated hostname; location status identifies
@@ -320,8 +325,10 @@ and reports status. Cell controllers turn resolved intent into Galactic
 backends in the ingress location. The control plane allocates one IP per
 selected location and shares that location's IP among its serving cells. It
 resolves `Backends` from actual membership, not the capped
-`NetworkService.status.locations` display list. Network resolution likewise
-uses actual interfaces rather than inferring identity from the display status.
+`NetworkService.status.locations` display list. Route backend validation also
+uses actual interfaces rather than inferring network identity from display
+status. NSO creates a `NetworkBinding` for the referenced network in each
+selected location before programming its cell resources.
 
 For UDP, packets from the same client address and port select the same backend
 while the backend set is unchanged. A backend change may move that flow; the
@@ -592,6 +599,9 @@ withdrawal across the cells serving its location.
   membership to public address and listener lifecycle.
 - **Put the backend on each listener.** This is compact for one backend but
   leaves no independent route lifecycle or place for future route policy.
+- **Infer the NLB network from backend membership.** This avoids a reference on
+  the NLB but makes its network identity depend on changing workload membership
+  and leaves it undefined before backends exist.
 - **Expose Gateway API directly.** It adds concepts consumers do not need for
   this use case and does not express Datum's location and address policies.
   Offer an adapter for portability while retaining the Datum API.

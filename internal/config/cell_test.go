@@ -76,6 +76,19 @@ func TestCellControllerManager_Validate(t *testing.T) {
 			mutate:  func(c *CellControllerManager) { c.Federation.KubeconfigPath = "" },
 			wantSub: "federation: kubeconfigPath is required",
 		},
+		{
+			name: "galactic enabled for hypervisor cell",
+			mutate: func(c *CellControllerManager) {
+				c.Galactic = GalacticCellConfig{Enabled: true, AttachmentMode: "Hypervisor"}
+			},
+		},
+		{
+			name: "galactic enabled without attachment mode",
+			mutate: func(c *CellControllerManager) {
+				c.Galactic.Enabled = true
+			},
+			wantSub: "galactic.attachmentMode",
+		},
 	}
 
 	for _, tt := range tests {

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 
+	nadv1 "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/apis/k8s.cni.cncf.io/v1"
 	"github.com/spf13/cobra"
 	"golang.org/x/sync/errgroup"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -22,11 +23,13 @@ import (
 	ipamv1alpha1 "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
 	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
 
+	cloudv1alpha1 "go.datum.net/galactic/api/cloud/v1alpha1"
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	networkingv1alpha1 "go.datum.net/network-services-operator/api/v1alpha1"
 	"go.datum.net/network-services-operator/internal/cmd/clusterdiscovery"
 	"go.datum.net/network-services-operator/internal/config"
 	"go.datum.net/network-services-operator/internal/controller"
+	galacticcontroller "go.datum.net/network-services-operator/internal/galactic/controller"
 	"go.datum.net/network-services-operator/internal/logging"
 )
 
@@ -46,6 +49,8 @@ func init() {
 	utilruntime.Must(locationsv1alpha1.AddToScheme(scheme))
 	utilruntime.Must(networkingv1alpha1.AddToScheme(scheme))
 	utilruntime.Must(ipamv1alpha1.AddToScheme(scheme))
+	utilruntime.Must(cloudv1alpha1.AddToScheme(scheme))
+	utilruntime.Must(nadv1.AddToScheme(scheme))
 }
 
 // NewCommand builds the cell controller manager command.
@@ -285,7 +290,28 @@ func controllerRegistrations(
 	ipamClients controller.IPAMClientFactory,
 	hubCluster cluster.Cluster,
 ) []namedSetup {
-	registrations := make([]namedSetup, 0, 5)
+	registrations := make([]namedSetup, 0, 8)
+	if serverConfig.Galactic.Enabled {
+		registrations = append(registrations,
+			namedSetup{"galactic-networkcontext", func() (bool, error) {
+				return true, (&galacticcontroller.NetworkContextReconciler{
+					Client: mgr.GetLocalManager().GetClient(), Scheme: mgr.GetLocalManager().GetScheme(),
+				}).SetupWithManager(mgr.GetLocalManager())
+			}},
+			namedSetup{"galactic-subnet", func() (bool, error) {
+				return true, (&galacticcontroller.SubnetReconciler{
+					Client: mgr.GetLocalManager().GetClient(), Scheme: mgr.GetLocalManager().GetScheme(),
+				}).SetupWithManager(mgr.GetLocalManager())
+			}},
+			namedSetup{"galactic-networkinterface", func() (bool, error) {
+				return true, (&galacticcontroller.NetworkInterfaceReconciler{
+					Client: mgr.GetLocalManager().GetClient(), Scheme: mgr.GetLocalManager().GetScheme(),
+					APIReader:      mgr.GetLocalManager().GetAPIReader(),
+					AttachmentMode: cloudv1alpha1.VPCAttachmentInterfaceMode(serverConfig.Galactic.AttachmentMode),
+				}).SetupWithManager(mgr.GetLocalManager())
+			}},
+		)
+	}
 	registrations = append(registrations,
 		namedSetup{"networkinterfaceclaim", func() (bool, error) {
 			return true, (&controller.NetworkInterfaceClaimReconciler{

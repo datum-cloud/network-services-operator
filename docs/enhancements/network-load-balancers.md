@@ -36,7 +36,7 @@ allocated IPs, and announcement state for each location. By default, those
 locations follow the network interfaces selected by the backend services.
 Active health checks keep failed backends out of rotation. TLS listeners can
 route by SNI and either pass encryption to the backend or terminate it with a
-Datum-managed certificate.
+referenced TLS Secret.
 
 ## Motivation
 
@@ -50,8 +50,8 @@ where their service runs.
 - Publish a TCP or UDP `NetworkService` through a named listener and separate
   route.
 - Actively check backend health before serving traffic.
-- Support opaque TLS over TCP, SNI-based TLS passthrough, and managed TLS
-  termination for non-HTTP applications.
+- Support opaque TLS over TCP, SNI-based TLS passthrough, and TLS termination
+  with a referenced certificate for non-HTTP applications.
 - Allocate a distinct public address in every backend location by default,
   including locations added after the address request is created.
 - Issue a stable, platform-managed hostname in each selected location so users
@@ -67,6 +67,7 @@ where their service runs.
 ### Non-Goals
 
 - HTTP routing or changing the current `HTTPProxy` API.
+- Datum-managed certificate issuance for NLB listeners in the first release.
 - Source-based matches or cross-location backend fallback in the first release.
 - Anycast or another single public IP shared across locations. A future Global
   Services Load Balancer will own global entry points and cross-location
@@ -99,7 +100,7 @@ forwarding and authorization design.
 
 A TLS listener adds `tls.mode: Passthrough` or `Terminate`. Routes attached to
 it can match SNI hostnames so several TLS services share an address and port.
-Terminate mode uses a Datum-managed certificate or a referenced TLS Secret.
+Terminate mode uses a referenced TLS Secret.
 Plain TCP listeners continue to carry TLS without inspecting it. The initial
 delivery can ship TCP/UDP routing and health checks before TLS listeners; the
 TLS API remains part of this enhancement.
@@ -156,8 +157,8 @@ route, placement is pending and no location IP is allocated.
   retains its certificate and the load balancer forwards the encrypted stream.
 - An operator routes `db.example.com` and `mq.example.com` on the same TLS
   port by SNI while each backend terminates its own TLS.
-- An operator uses a Datum-managed certificate on a TLS listener, so a
-  non-HTTP backend can receive decrypted TCP without managing that certificate.
+- An operator references a TLS Secret on a listener, so a non-HTTP backend can
+  receive decrypted TCP.
 
 ### Risks and Mitigations
 
@@ -181,9 +182,9 @@ route, placement is pending and no location IP is allocated.
   separately from an unhealthy backend and avoid making one probe runner a
   single point of failure.
 - **A TLS hostname could be served with the wrong certificate or backend.**
-  Verify domain ownership before issuing managed certificates, require route
-  hostnames to be covered by the listener's certificate in Terminate mode, and
-  apply deterministic SNI precedence.
+  Require route hostnames to be covered by the referenced certificate in
+  Terminate mode, enforce Secret reference permissions, and apply deterministic
+  SNI precedence.
 - **One unready listener can affect other ports on its IP.** BGP announces an
   address, not a port. Announce an address from a location only when all of its
   listeners are ready there; use separate address requests for independent
@@ -392,9 +393,8 @@ certificate. A TLS listener adds two explicit modes:
 - **Passthrough:** Inspect the ClientHello SNI only to choose a route, then
   forward the encrypted stream. The backend owns its certificate.
 - **Terminate:** Select a certificate and end client TLS at the load balancer.
-  `certificate.mode: Managed` uses Datum's domain verification and certificate
-  lifecycle. The route must explicitly choose plain TCP or re-encrypted TLS
-  for the backend connection.
+  Reference a TLS Secret holding the certificate. The route must explicitly
+  choose plain TCP or re-encrypted TLS for the backend connection.
 
 The proposed TLS-specific fields are:
 
@@ -408,8 +408,9 @@ spec:
       tls:
         mode: Terminate
         certificate:
-          mode: Managed
-          hostnames: [db.example.com, mq.example.com]
+          mode: SecretRef
+          secretRef:
+            name: services-tls
 ---
 # NetworkLoadBalancerRoute spec fragment
 spec:
@@ -429,17 +430,14 @@ spec:
 names use Gateway API hostname intersection and precedence rules with the
 listener's optional `hostname`. Each effective hostname belongs to one route
 on that listener; an omitted SNI match is the single default for clients
-without a matching SNI. Without a
-default, the listener rejects those connections. Terminate mode requires
-verified hostnames covered by a ready certificate before serving them. Status
-reports hostname verification and certificate readiness per listener and
-location, separately from VIP allocation. A certificate failure withdraws
-that listener's address from the affected location until it is ready;
-unrelated addresses remain available. A no-SNI client needs an explicit
-`certificate.defaultHostname` and a default route, or the connection is rejected.
-
-The terminating listener alternatively accepts
-`certificate: {mode: SecretRef, secretRef: {name: ...}}`; cross-namespace
+without a matching SNI. Without a default, the listener rejects those
+connections. Terminate mode requires a
+valid referenced certificate covering each served hostname. Status reports
+certificate readiness per listener and location, separately from VIP
+allocation. A certificate failure prevents that listener from serving and
+withdraws its address where required by shared-address readiness; unrelated
+addresses remain available. A no-SNI client needs a default route and uses the
+referenced certificate, or the connection is rejected. Cross-namespace Secret
 references require an explicit grant. The terminated route chooses backend
 transport explicitly: plain `TCP` as shown, or `TLS` with a server name and
 certificate validation (system roots or referenced CA bundle). Passthrough
@@ -476,7 +474,7 @@ tests and documenting any implementation-specific backend mapping.
 | Gateway addresses, named TCP/UDP/TLS listeners, ports and TLS mode | `NetworkLoadBalancer.exposure.addresses` and `listeners`; Datum additionally selects locations and allocates one address in each. |
 | TCPRoute and UDPRoute, listener attachment, backendRefs and weights | `NetworkLoadBalancerRoute.parentRefs` and weighted `backends`; one effective catch-all per TCP/UDP listener, with Gateway API precedence. |
 | TLSRoute SNI hostnames, wildcard matching and precedence | TLS listener `hostname` and route `sniHostnames`; passthrough and termination, including distinct TLS listeners on one port when hostnames do not conflict. |
-| TLS certificates and backend re-encryption | Listener managed certificate or Secret reference; route backend TLS with SNI and trust validation, corresponding to BackendTLSPolicy. |
+| TLS certificates and backend re-encryption | Listener Secret reference; route backend TLS with SNI and trust validation, corresponding to BackendTLSPolicy. |
 | AllowedRoutes, parentRefs, cross-namespace ReferenceGrant and status | Explicit attachment policy and grants; report Accepted, ResolvedRefs and programming per attachment, plus listener conflicts and readiness. |
 | ListenerSet and multiple parent attachments | Adapter expands these into listeners and route attachments while preserving ownership, conflict resolution and status for each source object. |
 
@@ -533,9 +531,9 @@ advertisements are gone.
 
 Start with single-location TCP and UDP with weighted backends and active probes,
 then test multi-location operation with distinct addresses. Add SNI passthrough
-before managed TLS termination. Exercise route updates, UDP flow stability,
+before Secret-backed TLS termination. Exercise route updates, UDP flow stability,
 probe failures, loss of the last backend, location removal, TLS certificate
-issuance and rotation, CNAME resolution, A/AAAA publication, IP replacement
+loading and rotation, CNAME resolution, A/AAAA publication, IP replacement
 without hostname change, and withdrawal before IP release. Existing
 `NetworkService` and `HTTPProxy` behavior should be unaffected.
 
@@ -543,7 +541,7 @@ without hostname change, and withdrawal before IP release. Existing
 
 Operators need counts of allocated VIPs, programmed rules, healthy backends,
 announced locations, and published DNS records, plus failures to allocate,
-probe, program, publish DNS, issue certificates, or withdraw. Consumers read
+probe, program, publish DNS, load certificates, or withdraw. Consumers read
 load balancer and route conditions, backend health, generated location
 hostnames, TLS certificate status, and per-address announcement and DNS status.
 
@@ -558,8 +556,8 @@ announcement state.
 IPv4 VIPs additionally need a public IPv4 pool, family-aware cell intent,
 Galactic IPv4 ingress and cross-family proxy support, and a serving capability
 gate before API admission is enabled.
-SNI routing and managed TLS need a proxy-capable edge path, hostname ownership
-verification, and certificate issuance and distribution.
+SNI routing and TLS termination need a proxy-capable edge path and secure
+Secret distribution with certificate validation.
 NSO needs a managed DNS zone and per-location A/AAAA record lifecycle tied to
 VIP allocation and announcement; hostname assignment must remain stable across
 IP replacement and temporary health loss.
@@ -610,5 +608,4 @@ withdrawal across the cells serving its location.
 
 Public VIP pools, cell-level programming and status propagation, and a
 multi-location traffic test environment are required before rollout. TLS
-listeners additionally need an edge proxy tier and managed certificate
-distribution.
+listeners additionally need an edge proxy tier and secure Secret distribution.

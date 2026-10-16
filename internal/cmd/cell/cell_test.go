@@ -22,7 +22,7 @@ func TestGalacticControllersRequireEnablement(t *testing.T) {
 				Galactic: config.GalacticCellConfig{Enabled: tt.enabled, AttachmentMode: "Hypervisor"},
 			}
 			registrations := controllerRegistrations(nil, cfg, nil, nil)
-			var names []string
+			names := make([]string, 0, len(registrations))
 			for _, registration := range registrations {
 				names = append(names, registration.name)
 			}

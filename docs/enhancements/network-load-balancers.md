@@ -261,7 +261,8 @@ exclude individual endpoints while healthy endpoints remain. Status
 distinguishes resolution, endpoint availability, and health.
 
 The load balancer reports one endpoint per address request and location. Each
-endpoint groups its generated hostname and addresses by family:
+endpoint groups its generated hostname and addresses by family. This example
+shows the status shape once dual-stack requests are enabled:
 
 ```yaml
 status:
@@ -274,34 +275,35 @@ status:
       location: us-central-1
       canonicalHostname: us-central-1.crown-raven-m7p6g.datumproxy.net
       addresses:
+        - family: IPv4
+          value: 192.0.2.10
+          announced: true
+          dnsPublished: true
         - family: IPv6
           value: 2001:db8:100::10
-          conditions:
-            - type: Allocated
-              status: "True"
-            - type: Announced
-              status: "True"
-            - type: DNSPublished
-              status: "True"
+          announced: true
+          dnsPublished: true
     - requestName: regional
       location: eu-west-1
       canonicalHostname: eu-west-1.crown-raven-m7p6g.datumproxy.net
       addresses:
+        - family: IPv4
+          value: 198.51.100.11
+          announced: true
+          dnsPublished: true
         - family: IPv6
           value: 2001:db8:200::11
-          conditions:
-            - type: Allocated
-              status: "True"
-            - type: Announced
-              status: "True"
-            - type: DNSPublished
-              status: "True"
+          announced: true
+          dnsPublished: true
 ```
 
 These names and IPs are illustrative. Endpoint identity is the address request
 and location; each requested family has an address entry even while allocation
-is pending. Allocation, announcement, and DNS publication are reported
-independently for each family. A missing IPv4 allocation does not hide a
+is pending. An absent `value` means allocation is pending; `announced` and
+`dnsPublished` report the two later steps separately. A non-ready family can
+include a short `reason` and `message` for its unmet step. Full Kubernetes
+conditions remain on the load balancer and routes, not on every family address.
+A missing IPv4 allocation does not hide a
 working IPv6 address, but the request reports partial readiness until both
 are available. The first NLB release accepts only `families: [IPv6]` because
 Galactic's current public ingress packet path handles IPv6. The cell intent

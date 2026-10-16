@@ -67,7 +67,6 @@ where their service runs.
 ### Non-Goals
 
 - HTTP routing or changing the current `HTTPProxy` API.
-- Datum-managed certificate issuance for NLB listeners in the first release.
 - Source-based matches or cross-location backend fallback in the first release.
 - Anycast or another single public IP shared across locations. A future Global
   Services Load Balancer will own global entry points and cross-location
@@ -409,10 +408,8 @@ spec:
       port: 443
       tls:
         mode: Terminate
-        certificate:
-          mode: SecretRef
-          secretRef:
-            name: services-tls
+        certificateRef:
+          name: services-tls
 ---
 # NetworkLoadBalancerRoute spec fragment
 spec:
@@ -450,9 +447,8 @@ connections without a matching visible name use the default or are rejected.
 A CNAME to the generated location hostname changes DNS resolution, not the
 client's TLS SNI. For TLS passthrough or termination on a customer's hostname,
 that hostname must also appear in `sniHostnames`; termination needs a covering
-certificate, while passthrough needs one on the backend. A generated hostname
-does not automatically authorize or issue a certificate for the customer's
-name.
+certificate in the referenced Secret, while passthrough needs one on the
+backend.
 
 SNI inspection and TLS termination need a proxy-capable data plane; Galactic's
 current DSR rule only forwards TCP and cannot provide either. HTTP routing and

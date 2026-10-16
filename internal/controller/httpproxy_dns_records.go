@@ -356,3 +356,60 @@ func domainCoversHostname(domainName, hostname string) bool {
 	}
 	return hostname == domainName || strings.HasSuffix(hostname, "."+domainName)
 }
+
+// dnsRecordsProgrammedFromGateway returns the HTTPProxy's DNSRecordsProgrammed,
+// carried from its Gateway as Accepted and Programmed are, or nil when the
+// Gateway reports none: no hostname uses Datum-managed DNS. A condition the
+// Gateway wrote for an earlier generation of itself may be about other
+// hostnames, so it is carried as Unknown.
+func dnsRecordsProgrammedFromGateway(gateway *gatewayv1.Gateway, generation int64) *metav1.Condition {
+	c := apimeta.FindStatusCondition(gateway.Status.Conditions, networkingv1alpha.HTTPProxyConditionDNSRecordsProgrammed)
+	if c == nil {
+		return nil
+	}
+	if c.ObservedGeneration != gateway.Generation {
+		return dnsRecordsPending(generation)
+	}
+	return &metav1.Condition{
+		Type:               networkingv1alpha.HTTPProxyConditionDNSRecordsProgrammed,
+		Status:             c.Status,
+		Reason:             c.Reason,
+		Message:            c.Message,
+		ObservedGeneration: generation,
+	}
+}
+
+// dnsRecordsUnread returns the DNSRecordsProgrammed an HTTPProxy keeps when a
+// reconcile ends before it reads its Gateway. A True turns Unknown, so it never
+// outlives the read it came from; anything else is kept as it was, so a
+// failure is not reported again.
+func dnsRecordsUnread(held []metav1.Condition, generation int64) *metav1.Condition {
+	c := apimeta.FindStatusCondition(held, networkingv1alpha.HTTPProxyConditionDNSRecordsProgrammed)
+	if c == nil {
+		return nil
+	}
+	if c.Status == metav1.ConditionTrue {
+		return dnsRecordsPending(generation)
+	}
+	kept := *c
+	return &kept
+}
+
+func dnsRecordsPending(generation int64) *metav1.Condition {
+	return &metav1.Condition{
+		Type:               networkingv1alpha.HTTPProxyConditionDNSRecordsProgrammed,
+		Status:             metav1.ConditionUnknown,
+		Reason:             networkingv1alpha.HTTPProxyReasonPending,
+		Message:            "Waiting for the Gateway to report DNS records for the current hostnames",
+		ObservedGeneration: generation,
+	}
+}
+
+// setDNSRecordsProgrammed sets cond, or removes the condition when cond is nil.
+func setDNSRecordsProgrammed(conditions *[]metav1.Condition, cond *metav1.Condition) {
+	if cond == nil {
+		apimeta.RemoveStatusCondition(conditions, networkingv1alpha.HTTPProxyConditionDNSRecordsProgrammed)
+		return
+	}
+	apimeta.SetStatusCondition(conditions, *cond)
+}

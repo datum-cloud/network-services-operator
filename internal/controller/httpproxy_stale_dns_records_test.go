@@ -19,8 +19,8 @@ import (
 )
 
 // TestHTTPProxyDropsAStaleDNSRecordsProgrammed checks that the HTTPProxy
-// controller removes a DNSRecordsProgrammed condition that nothing writes any
-// more, and leaves the HTTPProxy's other conditions in place.
+// controller removes a DNSRecordsProgrammed condition its Gateway does not
+// report, and leaves the HTTPProxy's other conditions in place.
 func TestHTTPProxyDropsAStaleDNSRecordsProgrammed(t *testing.T) {
 	if os.Getenv("KUBEBUILDER_ASSETS") == "" {
 		t.Skip("KUBEBUILDER_ASSETS unset; run via `make test` to exercise envtest")
@@ -36,7 +36,7 @@ func TestHTTPProxyDropsAStaleDNSRecordsProgrammed(t *testing.T) {
 	const ns = "default"
 	stale, clean := staleTestProxy(t, ctx, c, ns, "stale"), staleTestProxy(t, ctx, c, ns, "clean")
 
-	// A value an earlier build wrote and nothing will write again. It is stored
+	// A value its Gateway does not report: the Gateway here has no DNS. It is stored
 	// before the controller starts, so its first read holds it: written later, a
 	// status write from a cache that has not seen it yet could drop it, and the
 	// test would pass without the removal.

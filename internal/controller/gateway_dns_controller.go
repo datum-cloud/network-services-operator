@@ -195,38 +195,30 @@ func (r *GatewayReconciler) ensureDNSRecordSets(
 				break
 			}
 
+			cond := metav1.Condition{
+				Type:               networkingv1alpha.HostnameConditionDNSRecordProgrammed,
+				Status:             metav1.ConditionFalse,
+				ObservedGeneration: upstreamGateway.Generation,
+			}
+			var err error
 			switch {
 			case unverifiedDomain != nil:
-				apimeta.SetStatusCondition(&hs.Conditions, metav1.Condition{
-					Type:               networkingv1alpha.HostnameConditionDNSRecordProgrammed,
-					Status:             metav1.ConditionFalse,
-					Reason:             networkingv1alpha.DNSRecordReasonDomainNotVerified,
-					Message:            fmt.Sprintf("Domain %q ownership has not been verified", unverifiedDomain.Name),
-					ObservedGeneration: upstreamGateway.Generation,
-				})
+				cond.Reason, err = unverifiedDomainReason(ctx, upstreamClient, unverifiedDomain)
+				cond.Message = fmt.Sprintf("Domain %q ownership has not been verified", unverifiedDomain.Name)
 			case noAuthorityDomain != nil:
-				msg := authorityMissingMessage(noAuthorityDomain, noAuthorityZone)
-				note, err := r.keepRecordSetWithoutAuthority(ctx, upstreamClient, upstreamGateway, hostname, desiredRecordSetNames, &holdRecheck)
-				if err != nil {
-					result.Err = err
-					return nil, result, 0
-				}
-				apimeta.SetStatusCondition(&hs.Conditions, metav1.Condition{
-					Type:               networkingv1alpha.HostnameConditionDNSRecordProgrammed,
-					Status:             metav1.ConditionFalse,
-					Reason:             networkingv1alpha.DNSRecordReasonDNSAuthorityMissing,
-					Message:            msg + note,
-					ObservedGeneration: upstreamGateway.Generation,
-				})
+				var note string
+				note, err = r.keepRecordSetWithoutAuthority(ctx, upstreamClient, upstreamGateway, hostname, desiredRecordSetNames, &holdRecheck)
+				cond.Reason = authorityReason(noAuthorityDomain, noAuthorityZone)
+				cond.Message = authorityMissingMessage(noAuthorityDomain, noAuthorityZone) + note
 			default:
-				apimeta.SetStatusCondition(&hs.Conditions, metav1.Condition{
-					Type:               networkingv1alpha.HostnameConditionDNSRecordProgrammed,
-					Status:             metav1.ConditionTrue,
-					Reason:             networkingv1alpha.DNSRecordReasonNotApplicable,
-					Message:            fmt.Sprintf("No Domain or DNSZone found for hostname %q", hostname),
-					ObservedGeneration: upstreamGateway.Generation,
-				})
+				cond.Status, cond.Reason = metav1.ConditionTrue, networkingv1alpha.DNSRecordReasonNotApplicable
+				cond.Message = fmt.Sprintf("No Domain or DNSZone found for hostname %q", hostname)
 			}
+			if err != nil {
+				result.Err = err
+				return nil, result, 0
+			}
+			apimeta.SetStatusCondition(&hs.Conditions, cond)
 			hostnameStatuses = append(hostnameStatuses, hs)
 			continue
 		}
@@ -537,53 +529,82 @@ func stampAuthorityMissing(ctx context.Context, upstreamClient client.Client, rs
 
 // reconcileDNSStatus computes and applies the aggregate DNSRecordsProgrammed
 // condition on the upstream gateway from the per-hostname statuses produced by
-// ensureDNSRecordSets. Hostnames marked NotApplicable are excluded from the
-// count. The condition is removed entirely when no hostnames require
-// Datum-managed DNS records.
+// ensureDNSRecordSets. The condition is removed entirely when no hostnames
+// require Datum-managed DNS records.
 func (r *GatewayReconciler) reconcileDNSStatus(
 	upstreamClient client.Client,
 	upstreamGateway *gatewayv1.Gateway,
 	hostnameStatuses []networkingv1alpha.HostnameStatus,
 ) (result Result) {
-	needed, programmed := 0, 0
-
-	for _, hs := range hostnameStatuses {
-		c := apimeta.FindStatusCondition(hs.Conditions, networkingv1alpha.HostnameConditionDNSRecordProgrammed)
-		if c == nil {
-			continue
-		}
-		if c.Reason == networkingv1alpha.DNSRecordReasonNotApplicable {
-			continue
-		}
-		needed++
-		if c.Status == metav1.ConditionTrue {
-			programmed++
-		}
-	}
-
-	switch {
-	case needed == 0:
+	if cond := dnsRecordsProgrammed(hostnameStatuses, upstreamGateway.Generation); cond != nil {
+		apimeta.SetStatusCondition(&upstreamGateway.Status.Conditions, *cond)
+	} else {
 		apimeta.RemoveStatusCondition(&upstreamGateway.Status.Conditions, networkingv1alpha.HTTPProxyConditionDNSRecordsProgrammed)
-	case programmed == needed:
-		apimeta.SetStatusCondition(&upstreamGateway.Status.Conditions, metav1.Condition{
-			Type:               networkingv1alpha.HTTPProxyConditionDNSRecordsProgrammed,
-			Status:             metav1.ConditionTrue,
-			Reason:             networkingv1alpha.DNSRecordsProgrammedReasonAllCreated,
-			Message:            fmt.Sprintf("%d/%d hostnames have DNS records programmed", programmed, needed),
-			ObservedGeneration: upstreamGateway.Generation,
-		})
-	default:
-		apimeta.SetStatusCondition(&upstreamGateway.Status.Conditions, metav1.Condition{
-			Type:               networkingv1alpha.HTTPProxyConditionDNSRecordsProgrammed,
-			Status:             metav1.ConditionFalse,
-			Reason:             networkingv1alpha.DNSRecordsProgrammedReasonPartialFailure,
-			Message:            fmt.Sprintf("%d/%d hostnames have DNS records programmed; see per-hostname conditions for details", programmed, needed),
-			ObservedGeneration: upstreamGateway.Generation,
-		})
 	}
 
 	result.AddStatusPatch(upstreamClient, upstreamGateway, fieldOwner(gatewayControllerName))
 	return result
+}
+
+// dnsRecordsProgrammed returns the aggregate DNSRecordsProgrammed condition for
+// the hostnames, or nil when none needs a Datum DNS record. It is False with
+// reason Pending while every hostname without a record waits on Datum, and
+// False with reason PartialFailure when one has failed or waits on the
+// customer.
+func dnsRecordsProgrammed(hostnameStatuses []networkingv1alpha.HostnameStatus, generation int64) *metav1.Condition {
+	n := countDNSRecords(hostnameStatuses)
+	cond := &metav1.Condition{
+		Type:               networkingv1alpha.HTTPProxyConditionDNSRecordsProgrammed,
+		Status:             metav1.ConditionFalse,
+		Reason:             networkingv1alpha.DNSRecordsProgrammedReasonPartialFailure,
+		Message:            fmt.Sprintf("%d/%d hostnames have DNS records programmed; see per-hostname conditions for details", n.programmed, n.needed),
+		ObservedGeneration: generation,
+	}
+	switch {
+	case n.needed == 0:
+		return nil
+	case n.programmed == n.needed:
+		cond.Status, cond.Reason = metav1.ConditionTrue, networkingv1alpha.DNSRecordsProgrammedReasonAllCreated
+		cond.Message = fmt.Sprintf("%d/%d hostnames have DNS records programmed", n.programmed, n.needed)
+	case n.programmed+n.waiting == n.needed:
+		cond.Reason = networkingv1alpha.HTTPProxyReasonPending
+		cond.Message = fmt.Sprintf("%d/%d hostnames have DNS records programmed; the others wait for their DNS zone or domain to be set up", n.programmed, n.needed)
+	}
+	return cond
+}
+
+// dnsRecordCounts counts the hostnames that need a Datum DNS record, and of
+// those the ones programmed and the ones that wait on Datum.
+type dnsRecordCounts struct {
+	needed, programmed, waiting int
+}
+
+func countDNSRecords(hostnameStatuses []networkingv1alpha.HostnameStatus) dnsRecordCounts {
+	var n dnsRecordCounts
+	for _, hs := range hostnameStatuses {
+		c := neededDNSRecord(hs)
+		if c == nil {
+			continue
+		}
+		n.needed++
+		switch {
+		case c.Status == metav1.ConditionTrue:
+			n.programmed++
+		case waitsOnDatum(c.Reason):
+			n.waiting++
+		}
+	}
+	return n
+}
+
+// neededDNSRecord returns the hostname's DNSRecordProgrammed condition, or nil
+// when it has none or does not use Datum-managed DNS.
+func neededDNSRecord(hs networkingv1alpha.HostnameStatus) *metav1.Condition {
+	c := apimeta.FindStatusCondition(hs.Conditions, networkingv1alpha.HostnameConditionDNSRecordProgrammed)
+	if c == nil || c.Reason == networkingv1alpha.DNSRecordReasonNotApplicable {
+		return nil
+	}
+	return c
 }
 
 // garbageCollectDNSRecordSets deletes DNSRecordSet resources that were

@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -323,6 +324,7 @@ gateway:
       initialStreamWindowSize: 1Mi
       initialConnectionWindowSize: 16Mi
     http3: {}
+    alpnProtocols: [h2, http/1.1]
 `)
 	var cfg NetworkServicesOperator
 	decodeInto(t, data, &cfg)
@@ -340,6 +342,10 @@ gateway:
 	if traffic.HTTP3 == nil {
 		t.Error("expected http3: {} to turn HTTP/3 on")
 	}
+	want := []envoygatewayv1alpha1.ALPNProtocol{"h2", "http/1.1"}
+	if !slices.Equal(traffic.ALPNProtocols, want) {
+		t.Errorf("expected alpnProtocols %v, got %v", want, traffic.ALPNProtocols)
+	}
 }
 
 func TestDownstreamClientTrafficUnsetIsEmpty(t *testing.T) {
@@ -347,6 +353,46 @@ func TestDownstreamClientTrafficUnsetIsEmpty(t *testing.T) {
 	decodeInto(t, []byte("apiVersion: apiserver.config.datumapis.com/v1alpha1\nkind: NetworkServicesOperator\n"), &cfg)
 	if !cfg.Gateway.DownstreamClientTraffic.IsEmpty() {
 		t.Error("expected an estate that sets nothing to write no policy")
+	}
+}
+
+// ALPN alone is enough to write a policy; an empty list is not, since it would
+// turn ALPN off rather than leave the default.
+func TestDownstreamClientTrafficALPNIsEmpty(t *testing.T) {
+	alpn := DownstreamClientTrafficConfig{ALPNProtocols: []envoygatewayv1alpha1.ALPNProtocol{"h2", "http/1.1"}}
+	if alpn.IsEmpty() {
+		t.Error("expected listed ALPN protocols to write a policy")
+	}
+	if !(DownstreamClientTrafficConfig{ALPNProtocols: []envoygatewayv1alpha1.ALPNProtocol{}}).IsEmpty() {
+		t.Error("expected an empty ALPN list to write nothing")
+	}
+}
+
+// A protocol Envoy does not know is refused at start: the edge would negotiate
+// without it, and nothing the operator reads would say so.
+func TestGatewayConfig_ValidateALPNProtocols(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		alpn    []envoygatewayv1alpha1.ALPNProtocol
+		wantSub string
+	}{
+		{name: "h2 and http/1.1", alpn: []envoygatewayv1alpha1.ALPNProtocol{"h2", "http/1.1"}},
+		{name: "every known protocol", alpn: []envoygatewayv1alpha1.ALPNProtocol{"h2", "http/1.1", "http/1.0"}},
+		{name: "a typo", alpn: []envoygatewayv1alpha1.ALPNProtocol{"h2", "http1.1"}, wantSub: `"http1.1"`},
+		{name: "h3 belongs to http3", alpn: []envoygatewayv1alpha1.ALPNProtocol{"h3"}, wantSub: `"h3"`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &NetworkServicesOperator{Gateway: GatewayConfig{DownstreamClientTraffic: DownstreamClientTrafficConfig{
+				ALPNProtocols: tt.alpn,
+			}}}
+			err := cfg.Validate()
+			if tt.wantSub == "" && err != nil {
+				t.Fatalf("expected nil, got %v", err)
+			}
+			if tt.wantSub != "" && (err == nil || !strings.Contains(err.Error(), tt.wantSub)) {
+				t.Fatalf("expected an error containing %q, got %v", tt.wantSub, err)
+			}
+		})
 	}
 }
 

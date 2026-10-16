@@ -16,5 +16,7 @@ resources:
   - httpproxy-registration.yaml
   - httproute-registration.yaml
   - httproutefilter-registration.yaml
+  - networkloadbalancer-registration.yaml
+  - networkloadbalancerroute-registration.yaml
   - securitypolicy-registration.yaml
   - trafficprotectionpolicy-registration.yaml

@@ -221,7 +221,7 @@ status:
   networkContextRef:
     name: default-us-central-1
   attachmentRef:
-    apiGroup: cloud.datumapis.com
+    apiGroup: galactic.datumapis.com
     kind: VPCAttachment
     name: nic-4f2a9c1e
   vpc: 3kF9qP2x
@@ -399,7 +399,7 @@ status:
 
   # The data-plane realization, once one exists.
   attachmentRef:
-    apiGroup: cloud.datumapis.com
+    apiGroup: galactic.datumapis.com
     kind: VPCAttachment
     name: nic-4f2a9c1e
 

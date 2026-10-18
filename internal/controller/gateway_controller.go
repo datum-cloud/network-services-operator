@@ -422,10 +422,9 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 	}
 	result = result.Merge(dnsProgramResult)
 
-	if len(hostnameStatuses) > 0 {
-		dnsStatusResult := r.reconcileDNSStatus(upstreamClient, upstreamGateway, hostnameStatuses)
-		result = result.Merge(dnsStatusResult)
-	}
+	// With no hostname left for Datum DNS, this removes the condition an earlier
+	// state left.
+	result = result.Merge(r.reconcileDNSStatus(upstreamClient, upstreamGateway, hostnameStatuses))
 
 	gatewayStatusResult := r.reconcileGatewayStatus(
 		upstreamClient,

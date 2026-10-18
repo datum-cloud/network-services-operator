@@ -129,13 +129,17 @@ attempts to program the HTTPProxy.
 
 In addition to verifying ownership, hostnames must be unique across the
 platform. If a hostname is already programmed on another resource, a
-conflict will be encountered and communicated in the `HostnamesVerified`
+conflict will be encountered and communicated in the `HostnamesInUse`
 condition.
 
-Hostnames which have been programmed will be listed in the
-`status.hostnames` field. Any hostname which has not been programmed will
-be listed in the `message` field of the `HostnamesVerified` condition with
-an indication as to why it was not programmed.
+Hostnames which have been accepted will be listed in the
+`status.hostnames` field. Any hostname which has not been accepted will
+be listed in the `message` field of the `HostnamesVerified` condition.
+That condition covers ownership and acceptance only. The DNS records of
+hostnames that use Datum-managed DNS are reported in the
+`DNSRecordsProgrammed` condition. Each hostname's entry in
+`status.hostnameStatuses` says why it is not verified, or why its DNS
+record is not programmed.
 
 The system may automatically generate and associate hostnames with the
 HTTPProxy. In such cases, these will be listed in the `status.hostnames`

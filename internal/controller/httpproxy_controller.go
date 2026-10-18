@@ -653,7 +653,7 @@ func (r *HTTPProxyReconciler) reconcileHTTPProxyHostnameStatus(
 			// not been removed by the user.
 			hostnamesVerifiedCondition.Status = metav1.ConditionTrue
 			hostnamesVerifiedCondition.Reason = networkingv1alpha.HTTPProxyReasonHostnamesVerified
-			hostnamesVerifiedCondition.Message = "All hostnames have been accepted and programmed"
+			hostnamesVerifiedCondition.Message = "All hostnames have been accepted"
 		} else {
 			hostnamesVerifiedCondition.Status = metav1.ConditionFalse
 			hostnamesVerifiedCondition.Reason = networkingv1alpha.HTTPProxyReasonPending

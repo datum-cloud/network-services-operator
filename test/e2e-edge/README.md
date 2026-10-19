@@ -66,6 +66,14 @@ upgrade gate: it is green on a fail-safe version (v1.7.x, v1.9.2) and flips red 
 EG runs v1.8.x while the upstream bug is unfixed, so "green" never gets misread as
 "the upstream bug is fixed".
 
+### A site never answers for another site's connection
+Hostnames on the edge share an IP and a certificate, so a browser reuses one
+site's connection for another. A request that arrives on the wrong site's
+connection must be answered 421, which tells the browser to retry on a
+connection of its own, not 404. The test negotiates TLS for one site, asks for
+another, and expects 421, while each site still serves 200 on its own and an
+unknown hostname over plain HTTP still gets 404.
+
 ## Running them
 
 The scenarios run against the production-fidelity environment:
@@ -83,7 +91,7 @@ environment these assume.
 
 - Scenario folders (`waf-enforcement/`, `connector-offline-503/`,
   `branded-error-page/`, `atomic-reject-isolation/`,
-  `oidc-missing-secret-isolation/`) — one guarantee each.
+  `oidc-missing-secret-isolation/`, `misdirected-request/`) — one guarantee each.
 - `_steps/` — shared, reusable checks (send-a-request, confirm-configuration,
   capture-the-build-marker) so every scenario asserts behavior the same way.
 - `_fixtures/` — the supporting pieces a scenario needs (a sample backend, an

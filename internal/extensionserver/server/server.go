@@ -104,6 +104,7 @@ const ProgrammedSetEndpointPath = programmedSetEndpointPath
 //  3. ReplaceConnectorClusters    — replace online-connector clusters with
 //     STATIC internal-upstream clusters.
 //  4. ApplyConnectorRoutes        — prepend CONNECT routes, append target domains.
+//  5. GuardMisdirectedRequests    — answer 421 for requests on another site's connection.
 func (s *Server) PostTranslateModify(
 	ctx context.Context,
 	req *pb.PostTranslateModifyRequest,
@@ -299,6 +300,11 @@ func (s *Server) PostTranslateModify(
 	)
 	connRoutesSpan.End()
 
+	_, misdirectedSpan := tr.Start(mctx, "misdirected.routes")
+	misdirectedCount := mutate.GuardMisdirectedRequests(listeners, routes)
+	misdirectedSpan.SetAttributes(attribute.Int("route_configs.misdirected_guarded", misdirectedCount))
+	misdirectedSpan.End()
+
 	// --- VPC pod family (#856) ---
 	// Binds a vpcPod backend's cluster to its tenant's VRF device
 	// (SO_BINDTODEVICE) so the shared multi-tenant Envoy fleet resolves the
@@ -374,6 +380,7 @@ func (s *Server) PostTranslateModify(
 	// rate() in Prometheus / PromQL to derive per-build averages.
 	extmetrics.WAFHCMMutationsTotal.Add(float64(hcmCount))
 	extmetrics.LocalReplyMutationsTotal.Add(float64(localReplyCount))
+	extmetrics.MisdirectedGuardsTotal.Add(float64(misdirectedCount))
 	extmetrics.WAFRouteMutationsTotal.Add(float64(tppCount))
 	extmetrics.ConnectorClustersTotal.Add(float64(len(replaced)))
 	extmetrics.ConnectorRoutesTotal.Add(float64(vhCount))

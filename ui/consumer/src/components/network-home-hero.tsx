@@ -2,8 +2,6 @@ import { ApiError, useCreateNetwork, useNetwork } from '../lib/api';
 import { readyReasonToLabel } from '../schema';
 import {
   DEFAULT_MTU,
-  DEFAULT_NETWORK_NAME,
-  NetworkMtuField,
   NetworkNameField,
   networkFormSchema,
   toCreateNetworkInput,
@@ -15,7 +13,6 @@ import { ConformAdapter } from '@datum-cloud/datum-ui/form/adapters/conform';
 import { Icon } from '@datum-cloud/datum-ui/icons';
 import { cn } from '@datum-cloud/datum-ui/utils';
 import {
-  ChevronDownIcon,
   CircleCheckIcon,
   LoaderCircleIcon,
   NetworkIcon,
@@ -62,9 +59,7 @@ export default function NetworkHomeHero() {
   const { projectId } = useParams<{ projectId: string }>();
   const mutation = useCreateNetwork(projectId);
   const [createdName, setCreatedName] = useState<string>();
-  const [pendingName, setPendingName] = useState(DEFAULT_NETWORK_NAME);
-  const [advancedOpen, setAdvancedOpen] = useState(false);
-  const advancedId = useId();
+  const [pendingName, setPendingName] = useState('');
   const attachesId = useId();
 
   const handleSubmit = (data: NetworkFormValues) => {
@@ -98,13 +93,12 @@ export default function NetworkHomeHero() {
               <Form.Root
                 name="network-home-hero"
                 schema={networkFormSchema}
-                defaultValues={{ name: DEFAULT_NETWORK_NAME }}
                 onSubmit={handleSubmit}
                 isSubmitting={mutation.isPending}
                 className="flex flex-col gap-3">
                 <NetworkNameField
                   label="Network name"
-                  placeholder={DEFAULT_NETWORK_NAME}
+                  placeholder="e.g. production"
                   disabled={mutation.isPending}
                   className="max-w-xl"
                   trailing={
@@ -128,38 +122,19 @@ export default function NetworkHomeHero() {
                   </p>
                 )}
 
-                <div className="text-muted-foreground flex flex-wrap items-center gap-x-5 gap-y-1 text-xs">
-                  <span>IPv6 · address range assigned for you</span>
-                  <span>MTU {DEFAULT_MTU}</span>
-                  <button
-                    type="button"
-                    aria-expanded={advancedOpen}
-                    aria-controls={advancedId}
-                    onClick={() => setAdvancedOpen((open) => !open)}
-                    className="inline-flex items-center gap-1 font-medium hover:underline"
-                    style={ACCENT_TEXT}>
-                    Advanced
-                    <Icon
-                      icon={ChevronDownIcon}
-                      size={14}
-                      className={cn('transition-transform', advancedOpen && 'rotate-180')}
-                    />
-                  </button>
-                </div>
-
-                {advancedOpen && (
-                  <div id={advancedId} className="max-w-xs">
-                    <NetworkMtuField disabled={mutation.isPending} />
-                  </div>
-                )}
+                <p className="text-muted-foreground text-xs">
+                  IPv6 · address range assigned for you · MTU {DEFAULT_MTU}, which you can change
+                  later in the network&apos;s configuration.
+                </p>
               </Form.Root>
             </ConformAdapter>
           )}
 
           <p className="bg-muted text-muted-foreground rounded-md px-4 py-3 text-xs">
-            Prefer the CLI?{' '}
-            <code className="text-foreground font-mono">datumctl compute deploy</code> creates a
-            network named <code className="text-foreground font-mono">default</code> for you.
+            Prefer the CLI? Pass{' '}
+            <code className="text-foreground font-mono">--network &lt;name&gt;</code> to{' '}
+            <code className="text-foreground font-mono">datumctl compute deploy</code> to put
+            workloads on it.
           </p>
         </div>
 

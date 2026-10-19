@@ -1,9 +1,9 @@
-import { DEFAULT_NETWORK_NAME, NETWORK_NAME_MESSAGE, networkFormSchema, toCreateNetworkInput } from './network-form';
+import { NETWORK_NAME_MESSAGE, networkFormSchema, toCreateNetworkInput } from './network-form';
 import { describe, expect, it } from 'vitest';
 
 describe('networkFormSchema', () => {
   it.each([
-    ['the default name', { name: DEFAULT_NETWORK_NAME }],
+    ['a simple name', { name: 'default' }],
     ['a hyphenated name', { name: 'my-net-1' }],
     ['a single character', { name: 'a' }],
     ['63 characters', { name: 'a'.repeat(63) }],

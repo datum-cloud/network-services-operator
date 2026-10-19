@@ -8,7 +8,6 @@ import { z } from 'zod';
 
 export const DEFAULT_MTU = 1440;
 
-export const DEFAULT_NETWORK_NAME = 'default';
 
 export const NETWORK_NAME_MESSAGE =
   'Lowercase letters, numbers, and hyphens only. Must start and end with a letter or number.';

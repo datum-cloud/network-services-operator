@@ -54,24 +54,26 @@ afterEach(() => {
 });
 
 describe('NetworkHomeHero', () => {
-  it('prefills the name with default and lists what attaches', () => {
+  it('starts with an empty name and lists what attaches', () => {
     renderHero();
     expect(screen.getByText('Create your private network')).toBeInTheDocument();
-    expect(screen.getByLabelText(/Network name/)).toHaveValue('default');
+    expect(screen.getByLabelText(/Network name/)).toHaveValue('');
+    expect(screen.getByPlaceholderText('e.g. production')).toBeInTheDocument();
     for (const title of ['Network', 'Workloads', 'Load balancers', 'Connectors']) {
       expect(screen.getByText(title)).toBeInTheDocument();
     }
     expect(screen.getByText('datumctl compute deploy')).toBeInTheDocument();
   });
 
-  it('reveals the MTU field under Advanced', () => {
+  it('asks for a name before submitting', async () => {
+    const fetchMock = vi.fn();
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
     renderHero();
-    const toggle = screen.getByRole('button', { name: /Advanced/ });
-    expect(toggle).toHaveAttribute('aria-expanded', 'false');
-    expect(screen.queryByPlaceholderText('1440')).not.toBeInTheDocument();
-    fireEvent.click(toggle);
-    expect(toggle).toHaveAttribute('aria-expanded', 'true');
-    expect(screen.getByPlaceholderText('1440')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /Create network/ }));
+
+    expect(await screen.findByText('Name is required.')).toBeInTheDocument();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('rejects an invalid name before submitting', async () => {
@@ -92,6 +94,7 @@ describe('NetworkHomeHero', () => {
     globalThis.fetch = fetchMock as unknown as typeof fetch;
 
     renderHero();
+    fireEvent.change(screen.getByLabelText(/Network name/), { target: { value: 'default' } });
     fireEvent.click(screen.getByRole('button', { name: /Create network/ }));
 
     expect(await screen.findByRole('button', { name: /Creating default\.\.\./ })).toBeDisabled();
@@ -104,20 +107,6 @@ describe('NetworkHomeHero', () => {
     resolvePost({ ok: true, json: async () => ({}) });
     expect(await screen.findByText('Waiting for default to be ready...')).toBeInTheDocument();
     expect(useNetworkMock).toHaveBeenLastCalledWith('demo-project', 'default');
-  });
-
-  it('sends the MTU set under Advanced', async () => {
-    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) });
-    globalThis.fetch = fetchMock as unknown as typeof fetch;
-
-    renderHero();
-    fireEvent.click(screen.getByRole('button', { name: /Advanced/ }));
-    fireEvent.change(screen.getByPlaceholderText('1440'), { target: { value: '1500' } });
-    fireEvent.click(screen.getByRole('button', { name: /Create network/ }));
-
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
-    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(JSON.parse(init.body as string).spec.mtu).toBe(1500);
   });
 
   it('shows the ready state once the network reports Ready', async () => {
@@ -142,6 +131,7 @@ describe('NetworkHomeHero', () => {
     }) as unknown as typeof fetch;
 
     renderHero();
+    fireEvent.change(screen.getByLabelText(/Network name/), { target: { value: 'default' } });
     fireEvent.click(screen.getByRole('button', { name: /Create network/ }));
 
     expect(await screen.findByTestId('networking-plugin-home-hero-error')).toHaveTextContent(
@@ -162,6 +152,7 @@ describe('NetworkHomeHero', () => {
     }) as unknown as typeof fetch;
 
     renderHero();
+    fireEvent.change(screen.getByLabelText(/Network name/), { target: { value: 'prod' } });
     fireEvent.click(screen.getByRole('button', { name: /Create network/ }));
 
     expect(await screen.findByTestId('networking-plugin-home-hero-error')).toHaveTextContent(

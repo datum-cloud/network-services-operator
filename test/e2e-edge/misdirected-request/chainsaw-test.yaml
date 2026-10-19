@@ -13,6 +13,10 @@
 # them. HTTP/1.1 exercises the same route configuration a reused HTTP/2 or
 # HTTP/3 connection does: TLS is negotiated for site A, the request names site B.
 #
+# A third gateway has an HTTPS listener and no route. A request for its own
+# hostname on its own connection stays a 404, since a retry would land on the
+# same connection.
+#
 # The gateways are created on the downstream cluster directly, as in
 # atomic-reject-isolation; the namespace carries the gateway-watch label at
 # creation.
@@ -30,6 +34,8 @@ spec:
       value: misdirect-a.e2e.env.datum.net
     - name: siteB
       value: misdirect-b.e2e.env.datum.net
+    - name: siteC
+      value: misdirect-c.e2e.env.datum.net
   steps:
     - name: Two tenants' gateways sharing one certificate
       try:
@@ -73,6 +79,7 @@ spec:
                 dnsNames:
                   - ($siteA)
                   - ($siteB)
+                  - ($siteC)
                 issuerRef:
                   name: md-selfsigned
                   kind: Issuer
@@ -132,8 +139,31 @@ spec:
                 value: ($siteA)
               - name: SITE_B
                 value: ($siteB)
+              - name: SITE_C
+                value: ($siteC)
             content: |
               set -eu
+              cat <<EOF | kubectl -n "$MD_NS" create -f -
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: Gateway
+              metadata:
+                name: md-site-c
+              spec:
+                gatewayClassName: ${GATEWAY_CLASS}
+                listeners:
+                  - name: https
+                    protocol: HTTPS
+                    port: 443
+                    hostname: ${SITE_C}
+                    allowedRoutes:
+                      namespaces:
+                        from: Same
+                    tls:
+                      mode: Terminate
+                      certificateRefs:
+                        - kind: Secret
+                          name: md-shared-tls
+              EOF
               for site in a b; do
                 host=$SITE_A; [ "$site" = b ] && host=$SITE_B
                 cat <<EOF | kubectl -n "$MD_NS" create -f -
@@ -198,6 +228,19 @@ spec:
               kind: Gateway
               metadata:
                 name: md-site-b
+                namespace: (join('-', ['md', $namespace]))
+              status:
+                (listeners[?name == 'https'] | [0]):
+                  (conditions[?type == 'Programmed']):
+                    - status: "True"
+        - assert:
+            timeout: 120s
+            cluster: nso-downstream
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: Gateway
+              metadata:
+                name: md-site-c
                 namespace: (join('-', ['md', $namespace]))
               status:
                 (listeners[?name == 'https'] | [0]):
@@ -307,6 +350,37 @@ spec:
                 sleep 5
               done
               echo "ERROR: misdirected request was not answered 421"
+              exit 1
+
+    - name: A hostname with no route on its own connection is answered 404
+      description: |
+        TLS is negotiated for site C and the request names site C, which has no
+        route. A retry would land on the same connection, so this stays the
+        empty 404 it was before the catch-all.
+      try:
+        - script:
+            timeout: 300s
+            cluster: nso-downstream
+            env:
+              - name: OWNING_GC
+                value: ($downstreamGatewayClass)
+              - name: SITE_C
+                value: ($siteC)
+            content: |
+              set -eu
+              IP=$(kubectl get svc -n datum-downstream-gateway \
+                -l gateway.envoyproxy.io/owning-gatewayclass=$OWNING_GC \
+                -o jsonpath='{.items[0].spec.clusterIP}')
+              for i in $(seq 1 24); do
+                got=$(kubectl -n default exec conntest -- \
+                  curl -ksS -o /dev/null -w '%{http_code} %{size_download}' --max-time 10 \
+                  --resolve "${SITE_C}:443:${IP}" "https://${SITE_C}/" 2>/dev/null || true)
+                echo "attempt ${i}: SNI and Host ${SITE_C} -> ${got}"
+                if [ "${got}" = "404 0" ]; then echo "OK: own unrouted hostname answered an empty 404"; exit 0; fi
+                case "${got}" in 421*) echo "ERROR: own unrouted hostname answered 421"; exit 1 ;; esac
+                sleep 5
+              done
+              echo "ERROR: own unrouted hostname was not answered an empty 404"
               exit 1
 
     - name: The proxy runs the configuration the extension server built

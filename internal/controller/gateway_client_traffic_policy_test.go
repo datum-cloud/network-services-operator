@@ -68,9 +68,22 @@ func TestDownstreamClientTrafficPolicy(t *testing.T) {
 		assert.True(t, policy.Spec.HTTP2.InitialStreamWindowSize.Equal(resource.MustParse("1Mi")))
 		assert.True(t, policy.Spec.HTTP2.InitialConnectionWindowSize.Equal(resource.MustParse("16Mi")))
 		assert.Nil(t, policy.Spec.HTTP3, "http3 is not configured, so it is not written")
+		assert.Nil(t, policy.Spec.TLS, "no ALPN is configured, so TLS is left to Envoy Gateway")
 
 		require.NoError(t, ensureDownstreamClientTrafficPolicy(ctx, cl, withHTTP3, gw))
 		assert.NotNil(t, getClientTrafficPolicy(t, ctx, cl, gw).Spec.HTTP3, "staging's http3 is carried")
+	})
+
+	t.Run("CarriesOnlyTheALPNProtocols", func(t *testing.T) {
+		gw := createDownstreamGateway(t, ctx, cl, "alpn", httpsListener("https"))
+		alpn := config.DownstreamClientTrafficConfig{ALPNProtocols: []envoygatewayv1alpha1.ALPNProtocol{"h2", "http/1.1"}}
+		require.NoError(t, ensureDownstreamClientTrafficPolicy(ctx, cl, alpn, gw))
+		tls := getClientTrafficPolicy(t, ctx, cl, gw).Spec.TLS
+		require.NotNil(t, tls, "ALPN alone writes a policy")
+		assert.Equal(t, alpn.ALPNProtocols, tls.ALPNProtocols)
+		assert.Equal(t, envoygatewayv1alpha1.ClientTLSSettings{
+			TLSSettings: envoygatewayv1alpha1.TLSSettings{ALPNProtocols: alpn.ALPNProtocols},
+		}, *tls, "no other TLS setting reaches every tenant's listener")
 	})
 
 	t.Run("BelongsToTheGatewayAndCarriesItsUpstreamLabels", func(t *testing.T) {
@@ -94,9 +107,11 @@ func TestDownstreamClientTrafficPolicy(t *testing.T) {
 
 	t.Run("SecondPassWritesNothing", func(t *testing.T) {
 		gw := createDownstreamGateway(t, ctx, cl, "f", httpsListener("https"))
-		require.NoError(t, ensureDownstreamClientTrafficPolicy(ctx, cl, withHTTP3, gw))
+		everything := withHTTP3
+		everything.ALPNProtocols = []envoygatewayv1alpha1.ALPNProtocol{"h2", "http/1.1"}
+		require.NoError(t, ensureDownstreamClientTrafficPolicy(ctx, cl, everything, gw))
 		before := getClientTrafficPolicy(t, ctx, cl, gw).ResourceVersion
-		require.NoError(t, ensureDownstreamClientTrafficPolicy(ctx, cl, withHTTP3, gw))
+		require.NoError(t, ensureDownstreamClientTrafficPolicy(ctx, cl, everything, gw))
 		assert.Equal(t, before, getClientTrafficPolicy(t, ctx, cl, gw).ResourceVersion,
 			"an unchanged policy is not rewritten on every reconcile")
 	})

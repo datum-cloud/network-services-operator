@@ -1784,6 +1784,7 @@ func TestHTTPProxyReconcile(t *testing.T) {
 								hostnamesVerifiedCondition := apimeta.FindStatusCondition(updatedHttpProxy.Status.Conditions, networkingv1alpha.HTTPProxyConditionHostnamesVerified)
 								if assert.NotNil(t, hostnamesVerifiedCondition, "did not find HostnamesVerified condition on HTTPProxy") {
 									assert.Equal(t, networkingv1alpha.HTTPProxyReasonHostnamesVerified, hostnamesVerifiedCondition.Reason)
+									assert.Equal(t, "All hostnames have been accepted", hostnamesVerifiedCondition.Message)
 								}
 							}
 						}

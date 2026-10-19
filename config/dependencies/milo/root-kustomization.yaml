@@ -51,8 +51,8 @@ components:
 images:
   - name: ghcr.io/milo-os/milo
     newName: ghcr.io/milo-os/milo
-    # tag v0.32.5
-    digest: sha256:3b4f2890491220c4c79731d9e9b350881ce15dcca9de15b9f511cd7e5323f609
+    # tag v0.36.5
+    digest: sha256:6d9fda98e827731313af4add36de79d4650e603fd80bdf9df351736acf169089
 
 patches:
   - path: patches/apiserver-patch.yaml

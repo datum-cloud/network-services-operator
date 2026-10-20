@@ -148,9 +148,11 @@ type OWASPRuleExclusions struct {
 	// +kubebuilder:validation:MaxItems=100
 	Tags []OWASPTag `json:"tags,omitempty"`
 
-	// IDs is a list of specific rule IDs to disable
+	// IDs is a list of specific rule IDs to disable. A rule ID is not
+	// negative.
 	//
 	// +kubebuilder:validation:MaxItems=100
+	// +kubebuilder:validation:items:Minimum=0
 	IDs []int `json:"ids,omitempty"`
 
 	// IDRanges is a list of specific rule ID ranges to disable.

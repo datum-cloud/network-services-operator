@@ -24,6 +24,7 @@ import (
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
@@ -36,6 +37,9 @@ import (
 // envtest binaries); tests then skip rather than fail. `make test` provides the
 // assets, so CI exercises them.
 var testClient client.Client
+
+// testConfig reaches the envtest apiserver for a request the typed client cannot build, such as raw JSON.
+var testConfig *rest.Config
 
 func TestMain(m *testing.M) {
 	if os.Getenv("KUBEBUILDER_ASSETS") == "" {
@@ -54,6 +58,7 @@ func TestMain(m *testing.M) {
 		fmt.Fprintf(os.Stderr, "envtest start (installs generated CRDs): %v\n", err)
 		os.Exit(1)
 	}
+	testConfig = cfg
 
 	scheme := runtime.NewScheme()
 	if err := networkingv1alpha.AddToScheme(scheme); err != nil {

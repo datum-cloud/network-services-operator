@@ -1949,13 +1949,13 @@ func TestExternalAttachmentStatusSurvivesNSO(t *testing.T) {
 	})
 	iface.Status.VPC = "0000000ju"
 	iface.Status.AttachmentRef = &networkingv1alpha.NetworkInterfaceAttachmentRef{
-		APIGroup: "cloud.datumapis.com",
+		APIGroup: "previous.example",
 		Kind:     "VPCAttachment",
 		Name:     "slot-0-eth0",
 	}
 	require.NoError(t, s.client.Status().Update(s.ctx, iface))
 
-	expectedGroup := "cloud.datumapis.com"
+	expectedGroup := "previous.example"
 	expectedProgrammed := metav1.ConditionTrue
 	requireAttachmentReported := func(stage string) {
 		t.Helper()
@@ -1977,7 +1977,7 @@ func TestExternalAttachmentStatusSurvivesNSO(t *testing.T) {
 	s.reconcileInterface("slot-0-eth0")
 	requireAttachmentReported("an interface reconcile")
 
-	// Galactic takes over the attachment under its consolidated API group.
+	// A new data plane attachment group replaces the previous reference.
 	// NSO must preserve the replacement reference through release and rebind.
 	iface, err = s.getInterface("slot-0-eth0")
 	require.NoError(t, err)

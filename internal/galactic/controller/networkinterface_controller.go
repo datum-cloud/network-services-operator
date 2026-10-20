@@ -45,11 +45,9 @@ const (
 
 	// LabelVPCAttachment records the base62 attachment identifier a NAD holds.
 	// The NAD is the allocation record for that identifier.
-	LabelVPCAttachment       = "galactic.datumapis.com/vpc-attachment"
-	legacyLabelVPC           = "cloud.datumapis.com/vpc"
-	legacyLabelVPCAttachment = "cloud.datumapis.com/vpc-attachment"
-	legacyAttachmentKind     = "VPCAttachment"
-	reasonAPIGroupMigration  = "APIGroupMigration"
+	LabelVPCAttachment      = "galactic.datumapis.com/vpc-attachment"
+	attachmentKind          = "VPCAttachment"
+	reasonAPIGroupMigration = "APIGroupMigration"
 
 	// AnnotationHostInterface records the host device this attachment will get,
 	// on the NAD, at the moment the NAD is written. The name is derived from the
@@ -195,9 +193,6 @@ func (r *NetworkInterfaceReconciler) reconcileNAD(
 	attachmentID := ""
 	if err := r.Get(ctx, client.ObjectKeyFromObject(nad), nad); err == nil {
 		attachmentID = nad.Labels[LabelVPCAttachment]
-		if attachmentID == "" {
-			attachmentID = nad.Labels[legacyLabelVPCAttachment]
-		}
 	} else if !apierrors.IsNotFound(err) {
 		return nil, fmt.Errorf("get NetworkAttachmentDefinition %s: %w", nad.Name, err)
 	}
@@ -234,17 +229,6 @@ func (r *NetworkInterfaceReconciler) reconcileNAD(
 		}
 		nad.Annotations[AnnotationHostInterface] = galactic.HostInterfaceName(vpc.Status.VPC, attachmentID)
 		nad.Spec.Config = config
-		// The former cloud-group attachment owned this NAD. Its controller
-		// must be stopped before rollout; transfer ownership in the same write
-		// as the group/label update while retaining its stable attachment ID.
-		refs := nad.OwnerReferences[:0]
-		for _, ref := range nad.OwnerReferences {
-			if ref.APIVersion == "cloud.datumapis.com/v1alpha1" && ref.Kind == legacyAttachmentKind && ref.Name == attachment.Name {
-				continue
-			}
-			refs = append(refs, ref)
-		}
-		nad.OwnerReferences = refs
 		return controllerutil.SetControllerReference(attachment, nad, r.Scheme)
 	}); err != nil {
 		return nil, fmt.Errorf("reconcile NetworkAttachmentDefinition %s: %w", nad.Name, err)
@@ -304,17 +288,13 @@ func interfaceAddresses(networkInterface *networkingv1alpha.NetworkInterface) []
 // reissued while its BGPAdvertisement is still being garbage collected.
 func (r *NetworkInterfaceReconciler) allocateAttachmentIdentifier(ctx context.Context, vpc string) (string, error) {
 	used := make(map[string]struct{})
-	for _, label := range []string{LabelVPC, legacyLabelVPC} {
-		var nads nadv1.NetworkAttachmentDefinitionList
-		if err := r.APIReader.List(ctx, &nads, client.MatchingLabels{label: vpc}); err != nil {
-			return "", fmt.Errorf("list NetworkAttachmentDefinitions for VPC %s: %w", vpc, err)
-		}
-		for _, nad := range nads.Items {
-			for _, key := range []string{LabelVPCAttachment, legacyLabelVPCAttachment} {
-				if id := nad.Labels[key]; id != "" {
-					used[id] = struct{}{}
-				}
-			}
+	var nads nadv1.NetworkAttachmentDefinitionList
+	if err := r.APIReader.List(ctx, &nads, client.MatchingLabels{LabelVPC: vpc}); err != nil {
+		return "", fmt.Errorf("list NetworkAttachmentDefinitions for VPC %s: %w", vpc, err)
+	}
+	for _, nad := range nads.Items {
+		if id := nad.Labels[LabelVPCAttachment]; id != "" {
+			used[id] = struct{}{}
 		}
 	}
 
@@ -365,7 +345,7 @@ func (r *NetworkInterfaceReconciler) publishToInterface(
 ) error {
 	ref := &networkingv1alpha.NetworkInterfaceAttachmentRef{
 		APIGroup: cloudv1alpha1.GroupVersion.Group,
-		Kind:     legacyAttachmentKind,
+		Kind:     attachmentKind,
 		Name:     attachment.Name,
 	}
 	if old := networkInterface.Status.AttachmentRef; old != nil && old.APIGroup != ref.APIGroup {

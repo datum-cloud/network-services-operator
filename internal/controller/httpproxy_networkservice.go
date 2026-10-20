@@ -32,13 +32,17 @@ const NetworkServiceBackendLabel = "networking.datumapis.com/network-service"
 // names a NetworkService that does not exist, or a port that service does not
 // declare.
 type errNetworkServiceBackendNotFound struct {
-	service string
-	port    string
+	service    string
+	port       string
+	portNumber *int32
 }
 
 func (e *errNetworkServiceBackendNotFound) Error() string {
 	if e.port != "" {
 		return fmt.Sprintf("NetworkService %q has no port named %q", e.service, e.port)
+	}
+	if e.portNumber != nil {
+		return fmt.Sprintf("NetworkService %q has no port numbered %d", e.service, *e.portNumber)
 	}
 	return fmt.Sprintf("referenced NetworkService %q not found", e.service)
 }
@@ -51,6 +55,7 @@ type resolvedNetworkService struct {
 	addressType   discoveryv1.AddressType
 	endpoints     []discoveryv1.Endpoint
 	unaddressable []string
+	spansNetworks bool
 }
 
 // resolveNetworkServiceBackend resolves a NetworkService and the named port on
@@ -62,8 +67,6 @@ func resolveNetworkServiceBackend(
 	namespace string,
 	ref *networkingv1alpha.NetworkServiceBackendRef,
 ) (*resolvedNetworkService, error) {
-	logger := log.FromContext(ctx)
-
 	var service networkingv1alpha.NetworkService
 	key := client.ObjectKey{Namespace: namespace, Name: ref.Name}
 	if err := cl.Get(ctx, key, &service); err != nil {
@@ -79,15 +82,52 @@ func resolveNetworkServiceBackend(
 	if portIndex < 0 {
 		return nil, &errNetworkServiceBackendNotFound{service: ref.Name, port: ref.Port}
 	}
+	return resolveNetworkServiceMembers(ctx, cl, namespace, ref.Name, &service, portIndex)
+}
+
+// resolveHTTPRouteNetworkServiceBackend resolves the named service and numeric
+// port carried by Gateway API's BackendObjectReference, then evaluates the
+// service's selector directly rather than reading membership from status.
+func resolveHTTPRouteNetworkServiceBackend(
+	ctx context.Context,
+	cl client.Client,
+	namespace, name string,
+	port int32,
+) (*resolvedNetworkService, error) {
+	var service networkingv1alpha.NetworkService
+	if err := cl.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, &service); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, &errNetworkServiceBackendNotFound{service: name}
+		}
+		return nil, fmt.Errorf("failed getting network service %q: %w", name, err)
+	}
+
+	portIndex := slices.IndexFunc(service.Spec.Ports, func(p networkingv1alpha.NetworkServicePort) bool {
+		return p.Port == port
+	})
+	if portIndex < 0 {
+		return nil, &errNetworkServiceBackendNotFound{service: name, portNumber: ptr.To(port)}
+	}
+	return resolveNetworkServiceMembers(ctx, cl, namespace, name, &service, portIndex)
+}
+
+func resolveNetworkServiceMembers(
+	ctx context.Context,
+	cl client.Client,
+	namespace, serviceName string,
+	service *networkingv1alpha.NetworkService,
+	portIndex int,
+) (*resolvedNetworkService, error) {
+	logger := log.FromContext(ctx)
 
 	selector, err := metav1.LabelSelectorAsSelector(&service.Spec.NetworkInterfaces.Selector)
 	if err != nil {
-		return nil, fmt.Errorf("invalid interface selector on network service %q: %w", ref.Name, err)
+		return nil, fmt.Errorf("invalid interface selector on network service %q: %w", serviceName, err)
 	}
 
 	members, err := matchingInterfaces(ctx, cl, namespace, selector)
 	if err != nil {
-		return nil, fmt.Errorf("failed resolving the members of network service %q: %w", ref.Name, err)
+		return nil, fmt.Errorf("failed resolving the members of network service %q: %w", serviceName, err)
 	}
 
 	slices.SortFunc(members, func(a, b networkingv1alpha.NetworkInterface) int {
@@ -95,9 +135,10 @@ func resolveNetworkServiceBackend(
 	})
 
 	resolved := &resolvedNetworkService{
-		port:        service.Spec.Ports[portIndex].Port,
-		appProtocol: networkServiceAppProtocol(service.Spec.Ports[portIndex]),
-		addressType: preferredAddressType(members),
+		port:          service.Spec.Ports[portIndex].Port,
+		appProtocol:   networkServiceAppProtocol(service.Spec.Ports[portIndex]),
+		addressType:   preferredAddressType(members),
+		spansNetworks: len(memberNetworks(members)) > 1,
 	}
 
 	for i := range members {
@@ -105,7 +146,8 @@ func resolveNetworkServiceBackend(
 
 		candidates := interfaceBackhaulAddresses(member)
 		if len(candidates) == 0 {
-			logger.Info("network service member holds no address", "networkService", ref.Name, "interface", member.Name)
+			logger.Info("network service member holds no address", "networkService", serviceName, "interface", member.Name)
+			resolved.unaddressable = append(resolved.unaddressable, member.Name)
 			continue
 		}
 
@@ -113,7 +155,7 @@ func resolveNetworkServiceBackend(
 		if !ok {
 			resolved.unaddressable = append(resolved.unaddressable, member.Name)
 			logger.Info("network service member holds no address of the service's family",
-				"networkService", ref.Name, "interface", member.Name, "addressType", resolved.addressType)
+				"networkService", serviceName, "interface", member.Name, "addressType", resolved.addressType)
 			continue
 		}
 

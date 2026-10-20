@@ -252,7 +252,7 @@ func TestMissingBackendsInARuleKeepTheirShares(t *testing.T) {
 
 	condition := rig.resolvedRefs("split")
 	require.NotNil(t, condition)
-	assert.Equal(t, "EndpointSlice not found: test/gone-a, test/gone-b", condition.Message)
+	assert.Equal(t, "Unable to resolve route backend references: test/gone-a, test/gone-b", condition.Message)
 }
 
 func TestASliceThatGoesAwayBecomesUnresolved(t *testing.T) {

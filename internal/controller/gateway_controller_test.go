@@ -3264,7 +3264,10 @@ func TestProcessDownstreamHTTPRouteRulesEmptyEndpointSlice(t *testing.T) {
 			strategy,
 		)
 		require.NoError(t, err)
-		assert.Equal(t, []string{"test/test-0-0"}, unresolved)
+		assert.Equal(t, []unresolvedRouteBackend{{
+			reference: "test/test-0-0",
+			reason:    string(gatewayv1.RouteReasonBackendNotFound),
+		}}, unresolved)
 		require.Len(t, downstreamResources, 1, "only the Service is synthesized for a slice that does not exist")
 		service, ok := downstreamResources[0].(*corev1.Service)
 		require.True(t, ok, "expected a Service, got %T", downstreamResources[0])

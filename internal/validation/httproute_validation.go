@@ -166,6 +166,7 @@ func validateBackendObjectReference(route *gatewayv1.HTTPRoute, backendRef gatew
 
 	allowedKindsByGroup := map[string]sets.Set[string]{
 		"discovery.k8s.io":             sets.New("EndpointSlice"),
+		"networking.datumapis.com":     sets.New("NetworkService"),
 		envoygatewayv1alpha1.GroupName: sets.New(envoygatewayv1alpha1.KindBackend),
 	}
 
@@ -228,6 +229,9 @@ func validateBackendObjectReference(route *gatewayv1.HTTPRoute, backendRef gatew
 			if backendRef.Port == nil {
 				allErrs = append(allErrs, field.Required(fldPath.Child("port"), "port is required"))
 			}
+		}
+		if group == "networking.datumapis.com" && kind == "NetworkService" && backendRef.Port == nil {
+			allErrs = append(allErrs, field.Required(fldPath.Child("port"), "port is required"))
 		}
 	}
 

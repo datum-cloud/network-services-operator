@@ -432,3 +432,67 @@ func TestValidateHTTPRouteWithServiceBackendOptIn(t *testing.T) {
 		t.Fatalf("expected no validation errors, got %v", errs)
 	}
 }
+
+func TestValidateHTTPRouteWithNetworkServiceBackend(t *testing.T) {
+	valid := func() *gatewayv1.HTTPRoute {
+		return &gatewayv1.HTTPRoute{
+			ObjectMeta: metav1.ObjectMeta{Namespace: "tenant"},
+			Spec: gatewayv1.HTTPRouteSpec{Rules: []gatewayv1.HTTPRouteRule{{
+				BackendRefs: []gatewayv1.HTTPBackendRef{{
+					BackendRef: gatewayv1.BackendRef{
+						BackendObjectReference: gatewayv1.BackendObjectReference{
+							Group: ptr.To(gatewayv1.Group("networking.datumapis.com")),
+							Kind:  ptr.To(gatewayv1.Kind("NetworkService")),
+							Name:  gatewayv1.ObjectName("api"),
+							Port:  ptr.To(gatewayv1.PortNumber(8080)),
+						},
+					},
+				}},
+			}}},
+		}
+	}
+
+	t.Run("accepts same-namespace NetworkService with numeric port", func(t *testing.T) {
+		if errs := ValidateHTTPRoute(valid(), config.HTTPRouteValidationOptions{}); len(errs) != 0 {
+			t.Fatalf("ValidateHTTPRoute() errors = %v", errs)
+		}
+	})
+
+	t.Run("requires explicit NetworkService group and kind", func(t *testing.T) {
+		route := valid()
+		ref := &route.Spec.Rules[0].BackendRefs[0].BackendObjectReference
+		ref.Group = nil
+		ref.Kind = nil
+		errs := ValidateHTTPRoute(route, config.HTTPRouteValidationOptions{})
+		if len(errs) == 0 {
+			t.Fatal("ValidateHTTPRoute() accepted an unqualified NetworkService backend")
+		}
+	})
+
+	t.Run("requires a port", func(t *testing.T) {
+		route := valid()
+		route.Spec.Rules[0].BackendRefs[0].Port = nil
+		errs := ValidateHTTPRoute(route, config.HTTPRouteValidationOptions{})
+		if len(errs) == 0 {
+			t.Fatal("ValidateHTTPRoute() accepted a NetworkService backend without a port")
+		}
+	})
+
+	t.Run("rejects cross-namespace reference", func(t *testing.T) {
+		route := valid()
+		route.Spec.Rules[0].BackendRefs[0].Namespace = ptr.To(gatewayv1.Namespace("other"))
+		errs := ValidateHTTPRoute(route, config.HTTPRouteValidationOptions{})
+		if len(errs) == 0 {
+			t.Fatal("ValidateHTTPRoute() accepted a cross-namespace NetworkService backend")
+		}
+	})
+
+	t.Run("rejects another kind in the NetworkService group", func(t *testing.T) {
+		route := valid()
+		route.Spec.Rules[0].BackendRefs[0].Kind = ptr.To(gatewayv1.Kind("NetworkInterface"))
+		errs := ValidateHTTPRoute(route, config.HTTPRouteValidationOptions{})
+		if len(errs) == 0 {
+			t.Fatal("ValidateHTTPRoute() accepted NetworkInterface as an HTTPRoute backend")
+		}
+	})
+}

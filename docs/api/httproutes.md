@@ -68,6 +68,7 @@ namespace:
 | Group | Kind | Notes |
 | --- | --- | --- |
 | `discovery.k8s.io` | `EndpointSlice` | `port` is required. |
+| `networking.datumapis.com` | `NetworkService` | `port` is required and must match a declared numeric port. Membership comes from held NetworkInterfaces selected in the same namespace. |
 | `gateway.envoyproxy.io` | `Backend` | Envoy Gateway backend. |
 | `""` (core) | `Service` | Only when the operator runs with `allowServiceBackends` enabled. |
 
@@ -93,4 +94,15 @@ Additional constraints:
   `gateway.envoyproxy.io`.
 - A `backendRef` to a core `Service` when `allowServiceBackends` is off.
 - A `backendRef` to an `EndpointSlice` without a `port`.
+- A `backendRef` to a `NetworkService` without the explicit group, kind, or
+  numeric port.
 - Any backend in a namespace other than the route's.
+
+NetworkService references are read-only. The Gateway controller resolves the
+NetworkService's selector against held NetworkInterfaces, then synthesizes a
+headless Service and EndpointSlices for the downstream route. Changes to the
+NetworkService or selected interfaces enqueue attached Gateways. Each slice
+contains at most 100 endpoints; a route backend above 10,000 endpoints fails
+closed with `ResolvedRefs=False` (`UnsupportedValue`) rather than publishing a
+partial endpoint set. This bound is conservative and should be revisited with
+observed production service sizes.

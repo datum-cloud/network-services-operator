@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strconv"
@@ -26,6 +27,7 @@ import (
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
@@ -80,6 +82,22 @@ const KindGateway = "Gateway"
 const KindHTTPRoute = "HTTPRoute"
 const KindService = "Service"
 const KindEndpointSlice = "EndpointSlice"
+const KindNetworkService = "NetworkService"
+
+// maxNetworkServiceBackendSlices bounds one direct HTTPRoute backend to
+// 10,000 endpoints (100 Kubernetes endpoints per slice). This is a conservative
+// control-plane bound; revisit after observing real service sizes. Exceeding it
+// fails closed and reports UnsupportedValue.
+const maxNetworkServiceBackendSlices = 100
+
+type unresolvedRouteBackend struct {
+	reference string
+	reason    string
+}
+
+func networkServiceBackendExceedsLimit(endpointCount int) bool {
+	return endpointCount > maxNetworkServiceBackendSlices*maxEndpointsPerSlice
+}
 
 // VPCPodTenantIDLabel is the label galactic-cni (#854) sets on the
 // EndpointSlice it publishes for a VPC pod, identifying the owning tenant.
@@ -2480,6 +2498,12 @@ func (r *GatewayReconciler) ensureDownstreamHTTPRoute(
 				obj.Spec.Ports = ports
 			case *discoveryv1.EndpointSlice:
 				desiredEndpointSlice := desiredDownstreamResource.(*discoveryv1.EndpointSlice)
+				// Federation selects EndpointSlices for propagation by their
+				// upstream owner labels. NetworkService-backed slices have the
+				// downstream route as their source owner, so copy that route's
+				// labels on create and update while preserving service discovery
+				// labels on the slice.
+				copyUpstreamOwnerLabels(obj, downstreamRoute)
 				// Since endpointslices get duplicated for routes, add them as a controller
 				// owner in the downstream control plane.
 				if err := controllerutil.SetControllerReference(downstreamRoute, obj, downstreamClient.Scheme()); err != nil {
@@ -2585,10 +2609,18 @@ func (r *GatewayReconciler) ensureDownstreamHTTPRoute(
 
 	switch {
 	case len(unresolved) > 0:
+		reason := unresolved[0].reason
+		var unresolvedReferences []string
+		for _, issue := range unresolved {
+			unresolvedReferences = append(unresolvedReferences, issue.reference)
+			if issue.reason == string(gatewayv1.RouteReasonBackendNotFound) {
+				reason = issue.reason
+			}
+		}
 		apimeta.SetStatusCondition(&parentStatus.Conditions, metav1.Condition{
-			Message:            fmt.Sprintf("EndpointSlice not found: %s", strings.Join(unresolved, ", ")),
+			Message:            fmt.Sprintf("Unable to resolve route backend references: %s", strings.Join(unresolvedReferences, ", ")),
 			Type:               string(gatewayv1.RouteConditionResolvedRefs),
-			Reason:             string(gatewayv1.RouteReasonBackendNotFound),
+			Reason:             reason,
 			Status:             metav1.ConditionFalse,
 			ObservedGeneration: upstreamRoute.Generation,
 		})
@@ -2607,7 +2639,7 @@ func (r *GatewayReconciler) ensureDownstreamHTTPRoute(
 		})
 	default:
 		if c := apimeta.FindStatusCondition(parentStatus.Conditions, string(gatewayv1.RouteConditionResolvedRefs)); c != nil &&
-			c.Reason == string(gatewayv1.RouteReasonBackendNotFound) {
+			(c.Reason == string(gatewayv1.RouteReasonBackendNotFound) || c.Reason == string(gatewayv1.RouteReasonUnsupportedValue)) {
 			apimeta.RemoveStatusCondition(&parentStatus.Conditions, string(gatewayv1.RouteConditionResolvedRefs))
 		}
 	}
@@ -2643,7 +2675,7 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 	upstreamRoute gatewayv1.HTTPRoute,
 	downstreamGateway *gatewayv1.Gateway,
 	downstreamStrategy downstreamclient.ResourceStrategy,
-) (rules []gatewayv1.HTTPRouteRule, downstreamResources []client.Object, unresolved []string, err error) {
+) (rules []gatewayv1.HTTPRouteRule, downstreamResources []client.Object, unresolved []unresolvedRouteBackend, err error) {
 
 	// We need to create a Service for each (BackendRef, EndpointSlice)
 	// combination as different backendRefs may use different hostnames in URL
@@ -2690,7 +2722,10 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 						return nil, nil, nil, err
 					}
 					logger.V(1).Info("backend endpointslice not found", "endpointslice", sliceKey.String())
-					unresolved = append(unresolved, sliceKey.String())
+					unresolved = append(unresolved, unresolvedRouteBackend{
+						reference: sliceKey.String(),
+						reason:    string(gatewayv1.RouteReasonBackendNotFound),
+					})
 					downstreamResources = append(downstreamResources, headlessService(downstreamGateway.Namespace, resourceName, []corev1.ServicePort{
 						{Port: *backendRef.Port, Protocol: corev1.ProtocolTCP},
 					}))
@@ -2833,6 +2868,94 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 						downstreamResources = append(downstreamResources, backendTLSPolicy)
 					}
 				}
+
+			case KindNetworkService:
+				resourceName := routeBackendResourceName(&upstreamRoute, ruleIdx, backendRefIdx)
+				backendGroup := string(ptr.Deref(backendRef.Group, gatewayv1.Group("")))
+				backendNamespace := string(ptr.Deref(backendRef.Namespace, gatewayv1.Namespace(upstreamRoute.Namespace)))
+				if backendGroup != "networking.datumapis.com" || backendNamespace != upstreamRoute.Namespace {
+					unresolved = append(unresolved, unresolvedRouteBackend{
+						reference: fmt.Sprintf("NetworkService backend %s/%s has an unsupported group or namespace", backendNamespace, backendRef.Name),
+						reason:    string(gatewayv1.RouteReasonUnsupportedValue),
+					})
+					var ports []corev1.ServicePort
+					if backendRef.Port != nil {
+						ports = append(ports, corev1.ServicePort{Port: *backendRef.Port, Protocol: corev1.ProtocolTCP})
+					}
+					downstreamResources = append(downstreamResources, headlessService(downstreamGateway.Namespace, resourceName, ports))
+					backendRefs = append(backendRefs, serviceBackendRef(downstreamGateway.Namespace, resourceName, backendRef))
+					continue
+				}
+				if backendRef.Port == nil {
+					return nil, nil, nil, fmt.Errorf("no port defined in NetworkService backendRef")
+				}
+
+				const servicePortName = "backend"
+				resolved, resolveErr := resolveHTTPRouteNetworkServiceBackend(
+					ctx, upstreamClient, upstreamRoute.Namespace,
+					string(backendRef.Name), *backendRef.Port,
+				)
+				if resolveErr != nil {
+					var notFound *errNetworkServiceBackendNotFound
+					if !errors.As(resolveErr, &notFound) {
+						return nil, nil, nil, resolveErr
+					}
+					unresolved = append(unresolved, unresolvedRouteBackend{
+						reference: fmt.Sprintf("NetworkService %s/%s:%d", upstreamRoute.Namespace, backendRef.Name, *backendRef.Port),
+						reason:    string(gatewayv1.RouteReasonBackendNotFound),
+					})
+					ports := []corev1.ServicePort{{
+						Name: servicePortName, Port: *backendRef.Port, Protocol: corev1.ProtocolTCP,
+					}}
+					downstreamResources = append(downstreamResources, headlessService(downstreamGateway.Namespace, resourceName, ports))
+					backendRefs = append(backendRefs, serviceBackendRef(downstreamGateway.Namespace, resourceName, backendRef))
+					continue
+				}
+
+				ports := []corev1.ServicePort{{
+					Name: servicePortName, Port: resolved.port, Protocol: corev1.ProtocolTCP, AppProtocol: ptr.To(resolved.appProtocol),
+				}}
+				if resolved.spansNetworks {
+					unresolved = append(unresolved, unresolvedRouteBackend{
+						reference: fmt.Sprintf("NetworkService %s/%s selects interfaces on multiple networks", upstreamRoute.Namespace, backendRef.Name),
+						reason:    string(gatewayv1.RouteReasonUnsupportedValue),
+					})
+					downstreamResources = append(downstreamResources, headlessService(downstreamGateway.Namespace, resourceName, ports))
+					backendRefs = append(backendRefs, serviceBackendRef(downstreamGateway.Namespace, resourceName, backendRef))
+					continue
+				}
+				if len(resolved.unaddressable) > 0 {
+					unresolved = append(unresolved, unresolvedRouteBackend{
+						reference: fmt.Sprintf("NetworkService %s/%s has %d selected member interface(s) without a compatible address", upstreamRoute.Namespace, backendRef.Name, len(resolved.unaddressable)),
+						reason:    string(gatewayv1.RouteReasonUnsupportedValue),
+					})
+					downstreamResources = append(downstreamResources, headlessService(downstreamGateway.Namespace, resourceName, ports))
+					backendRefs = append(backendRefs, serviceBackendRef(downstreamGateway.Namespace, resourceName, backendRef))
+					continue
+				}
+				if networkServiceBackendExceedsLimit(len(resolved.endpoints)) {
+					unresolved = append(unresolved, unresolvedRouteBackend{
+						reference: fmt.Sprintf("NetworkService %s/%s:%d exceeds the supported endpoint limit", upstreamRoute.Namespace, backendRef.Name, *backendRef.Port),
+						reason:    string(gatewayv1.RouteReasonUnsupportedValue),
+					})
+					// Fail closed instead of silently dropping endpoints or retaining
+					// stale shards from an earlier, smaller membership set.
+					downstreamResources = append(downstreamResources, headlessService(downstreamGateway.Namespace, resourceName, ports))
+					backendRefs = append(backendRefs, serviceBackendRef(downstreamGateway.Namespace, resourceName, backendRef))
+					continue
+				}
+
+				shards := networkServiceEndpointSlices(upstreamRoute.Namespace, resourceName, servicePortName, string(backendRef.Name), resolved)
+				downstreamResources = append(downstreamResources, headlessService(downstreamGateway.Namespace, resourceName, ports))
+				for _, shard := range shards {
+					shard.Namespace = downstreamGateway.Namespace
+					shard.Labels[discoveryv1.LabelServiceName] = resourceName
+					shard.Labels[NetworkServiceBackendLabel] = string(backendRef.Name)
+					shard.Labels[downstreamclient.UpstreamOwnerNameLabel] = upstreamRoute.Name
+					downstreamResources = append(downstreamResources, shard)
+				}
+				backendRefs = append(backendRefs, serviceBackendRef(downstreamGateway.Namespace, resourceName, backendRef))
+				networkServiceBackend = true
 
 			case "Service":
 				fallthrough
@@ -3200,6 +3323,14 @@ func (r *GatewayReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 			r.listGatewaysForEndpointSliceFunc,
 		).
 		Watches(
+			&networkingv1alpha.NetworkService{},
+			r.listGatewaysForNetworkServiceFunc,
+		).
+		Watches(
+			&networkingv1alpha.NetworkInterface{},
+			r.listGatewaysForNetworkInterfaceFunc,
+		).
+		Watches(
 			&networkingv1alpha.Domain{},
 			r.listGatewaysForDomainFunc,
 		).
@@ -3438,6 +3569,100 @@ func (r *GatewayReconciler) listGatewaysForEndpointSliceFunc(clusterName multicl
 
 		return requests
 	})
+}
+
+// listGatewaysForNetworkServiceFunc re-resolves routes when the referenced
+// NetworkService port or selector changes. Membership changes are handled by
+// listGatewaysForNetworkInterfaceFunc below.
+func (r *GatewayReconciler) listGatewaysForNetworkServiceFunc(clusterName multicluster.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
+	return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []mcreconcile.Request {
+		service := obj.(*networkingv1alpha.NetworkService)
+		return r.listGatewaysForNetworkService(ctx, clusterName, cl.GetClient(), service.Namespace, service.Name)
+	})
+}
+
+// listGatewaysForNetworkInterfaceFunc re-resolves routes for every selected
+// NetworkService in the interface's namespace. This deliberately favors a
+// complete update over a narrower but selector-transition-prone index: both
+// old and new labels can affect membership, and delete events carry the old
+// object.
+func (r *GatewayReconciler) listGatewaysForNetworkInterfaceFunc(clusterName multicluster.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
+	return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []mcreconcile.Request {
+		iface := obj.(*networkingv1alpha.NetworkInterface)
+		var services networkingv1alpha.NetworkServiceList
+		if err := cl.GetClient().List(ctx, &services, client.InNamespace(iface.Namespace)); err != nil {
+			log.FromContext(ctx).Error(err, "failed listing NetworkServices for interface update")
+			return nil
+		}
+
+		var names []string
+		for i := range services.Items {
+			selector, err := metav1.LabelSelectorAsSelector(&services.Items[i].Spec.NetworkInterfaces.Selector)
+			if err == nil && selector.Matches(labels.Set(iface.Labels)) {
+				names = append(names, services.Items[i].Name)
+			}
+		}
+
+		var requests []mcreconcile.Request
+		for _, name := range names {
+			requests = append(requests, r.listGatewaysForNetworkService(ctx, clusterName, cl.GetClient(), iface.Namespace, name)...)
+		}
+		return deduplicateGatewayRequests(requests)
+	})
+}
+
+func (r *GatewayReconciler) listGatewaysForNetworkService(
+	ctx context.Context,
+	clusterName multicluster.ClusterName,
+	cl client.Client,
+	namespace, serviceName string,
+) []mcreconcile.Request {
+	var routes gatewayv1.HTTPRouteList
+	if err := cl.List(ctx, &routes, client.InNamespace(namespace)); err != nil {
+		log.FromContext(ctx).Error(err, "failed listing HTTPRoutes for NetworkService update")
+		return nil
+	}
+
+	var requests []mcreconcile.Request
+	for i := range routes.Items {
+		referencesService := false
+		for _, rule := range routes.Items[i].Spec.Rules {
+			for _, backend := range rule.BackendRefs {
+				if ptr.Deref(backend.Group, gatewayv1.Group("")) == "networking.datumapis.com" &&
+					ptr.Deref(backend.Kind, gatewayv1.Kind("")) == KindNetworkService && string(backend.Name) == serviceName {
+					referencesService = true
+				}
+			}
+		}
+		if referencesService {
+			for _, parent := range routes.Items[i].Spec.ParentRefs {
+				if ptr.Deref(parent.Group, gatewayv1.GroupName) == gatewayv1.GroupName && ptr.Deref(parent.Kind, KindGateway) == KindGateway {
+					requests = append(requests, mcreconcile.Request{
+						ClusterName: clusterName,
+						Request: reconcile.Request{NamespacedName: types.NamespacedName{
+							Namespace: string(ptr.Deref(parent.Namespace, gatewayv1.Namespace(routes.Items[i].Namespace))),
+							Name:      string(parent.Name),
+						}},
+					})
+				}
+			}
+		}
+	}
+	return deduplicateGatewayRequests(requests)
+}
+
+func deduplicateGatewayRequests(requests []mcreconcile.Request) []mcreconcile.Request {
+	seen := make(map[string]struct{}, len(requests))
+	unique := make([]mcreconcile.Request, 0, len(requests))
+	for _, request := range requests {
+		key := string(request.ClusterName) + "/" + request.Namespace + "/" + request.Name
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		unique = append(unique, request)
+	}
+	return unique
 }
 
 func (r *GatewayReconciler) listGatewaysForDomainFunc(clusterName multicluster.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {

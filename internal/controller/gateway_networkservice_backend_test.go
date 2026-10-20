@@ -245,7 +245,7 @@ func TestListGatewaysForNetworkService(t *testing.T) {
 	requests := reconciler.listGatewaysForNetworkService(context.Background(), multicluster.ClusterName("tenant"), cl, "tenant", "api")
 	require.Len(t, requests, 1, "duplicate parent references must not enqueue the same Gateway twice")
 	require.Equal(t, "tenant", string(requests[0].ClusterName))
-	require.Equal(t, types.NamespacedName{Namespace: "tenant", Name: "gw"}, requests[0].Request.NamespacedName)
+	require.Equal(t, types.NamespacedName{Namespace: "tenant", Name: "gw"}, requests[0].NamespacedName)
 	require.Empty(t, reconciler.listGatewaysForNetworkService(context.Background(), multicluster.ClusterName("tenant"), cl, "tenant", "other"))
 }
 
@@ -299,7 +299,8 @@ func TestEnsureDownstreamHTTPRoutePropagatesNetworkServiceSlicesAndPrunesStaleSh
 			},
 		})
 	}
-	upstreamObjects := []client.Object{upstreamNamespace, upstreamGateway, route, service}
+	upstreamObjects := make([]client.Object, 0, 4+len(interfaces))
+	upstreamObjects = append(upstreamObjects, upstreamNamespace, upstreamGateway, route, service)
 	upstreamObjects = append(upstreamObjects, interfaces...)
 	upstreamClient := fake.NewClientBuilder().WithScheme(testScheme).
 		WithObjects(upstreamObjects...).
@@ -431,7 +432,7 @@ func TestNetworkInterfaceUpdateHandlerMapsBothOldAndNewLabels(t *testing.T) {
 	require.Equal(t, 1, queue.Len(), "removing the selector label must still enqueue from the old object")
 	request, shutdown := queue.Get()
 	require.False(t, shutdown)
-	require.Equal(t, types.NamespacedName{Namespace: "tenant", Name: "gw"}, request.Request.NamespacedName)
+	require.Equal(t, types.NamespacedName{Namespace: "tenant", Name: "gw"}, request.NamespacedName)
 	queue.Done(request)
 	oldInterface, newInterface = newInterface, oldInterface
 	handler.Update(context.Background(), event.TypedUpdateEvent[client.Object]{ObjectOld: oldInterface, ObjectNew: newInterface}, queue)

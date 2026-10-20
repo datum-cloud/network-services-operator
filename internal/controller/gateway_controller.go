@@ -2880,7 +2880,7 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 					})
 					var ports []corev1.ServicePort
 					if backendRef.Port != nil {
-						ports = append(ports, corev1.ServicePort{Port: int32(*backendRef.Port), Protocol: corev1.ProtocolTCP})
+						ports = append(ports, corev1.ServicePort{Port: *backendRef.Port, Protocol: corev1.ProtocolTCP})
 					}
 					downstreamResources = append(downstreamResources, headlessService(downstreamGateway.Namespace, resourceName, ports))
 					backendRefs = append(backendRefs, serviceBackendRef(downstreamGateway.Namespace, resourceName, backendRef))
@@ -2893,7 +2893,7 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 				const servicePortName = "backend"
 				resolved, resolveErr := resolveHTTPRouteNetworkServiceBackend(
 					ctx, upstreamClient, upstreamRoute.Namespace,
-					string(backendRef.Name), int32(*backendRef.Port),
+					string(backendRef.Name), *backendRef.Port,
 				)
 				if resolveErr != nil {
 					var notFound *errNetworkServiceBackendNotFound
@@ -2905,7 +2905,7 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 						reason:    string(gatewayv1.RouteReasonBackendNotFound),
 					})
 					ports := []corev1.ServicePort{{
-						Name: servicePortName, Port: int32(*backendRef.Port), Protocol: corev1.ProtocolTCP,
+						Name: servicePortName, Port: *backendRef.Port, Protocol: corev1.ProtocolTCP,
 					}}
 					downstreamResources = append(downstreamResources, headlessService(downstreamGateway.Namespace, resourceName, ports))
 					backendRefs = append(backendRefs, serviceBackendRef(downstreamGateway.Namespace, resourceName, backendRef))
@@ -3655,7 +3655,7 @@ func deduplicateGatewayRequests(requests []mcreconcile.Request) []mcreconcile.Re
 	seen := make(map[string]struct{}, len(requests))
 	unique := make([]mcreconcile.Request, 0, len(requests))
 	for _, request := range requests {
-		key := string(request.ClusterName) + "/" + request.Request.Namespace + "/" + request.Request.Name
+		key := string(request.ClusterName) + "/" + request.Namespace + "/" + request.Name
 		if _, exists := seen[key]; exists {
 			continue
 		}

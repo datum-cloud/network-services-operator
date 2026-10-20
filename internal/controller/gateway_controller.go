@@ -2498,6 +2498,12 @@ func (r *GatewayReconciler) ensureDownstreamHTTPRoute(
 				obj.Spec.Ports = ports
 			case *discoveryv1.EndpointSlice:
 				desiredEndpointSlice := desiredDownstreamResource.(*discoveryv1.EndpointSlice)
+				// Federation selects EndpointSlices for propagation by their
+				// upstream owner labels. NetworkService-backed slices have the
+				// downstream route as their source owner, so copy that route's
+				// labels on create and update while preserving service discovery
+				// labels on the slice.
+				copyUpstreamOwnerLabels(obj, downstreamRoute)
 				// Since endpointslices get duplicated for routes, add them as a controller
 				// owner in the downstream control plane.
 				if err := controllerutil.SetControllerReference(downstreamRoute, obj, downstreamClient.Scheme()); err != nil {
@@ -2865,6 +2871,21 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 
 			case KindNetworkService:
 				resourceName := routeBackendResourceName(&upstreamRoute, ruleIdx, backendRefIdx)
+				backendGroup := string(ptr.Deref(backendRef.Group, gatewayv1.Group("")))
+				backendNamespace := string(ptr.Deref(backendRef.Namespace, gatewayv1.Namespace(upstreamRoute.Namespace)))
+				if backendGroup != "networking.datumapis.com" || backendNamespace != upstreamRoute.Namespace {
+					unresolved = append(unresolved, unresolvedRouteBackend{
+						reference: fmt.Sprintf("NetworkService backend %s/%s has an unsupported group or namespace", backendNamespace, backendRef.Name),
+						reason:    string(gatewayv1.RouteReasonUnsupportedValue),
+					})
+					var ports []corev1.ServicePort
+					if backendRef.Port != nil {
+						ports = append(ports, corev1.ServicePort{Port: int32(*backendRef.Port), Protocol: corev1.ProtocolTCP})
+					}
+					downstreamResources = append(downstreamResources, headlessService(downstreamGateway.Namespace, resourceName, ports))
+					backendRefs = append(backendRefs, serviceBackendRef(downstreamGateway.Namespace, resourceName, backendRef))
+					continue
+				}
 				if backendRef.Port == nil {
 					return nil, nil, nil, fmt.Errorf("no port defined in NetworkService backendRef")
 				}

@@ -3,8 +3,15 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+	"time"
+
+	envoygatewayv1alpha1 "github.com/envoyproxy/gateway/api/v1alpha1"
+	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 )
 
 func TestInternalDNSDefaultsRemainDisabled(t *testing.T) {
@@ -313,5 +320,131 @@ func TestCertificateServiceConfig_TrustedRoots(t *testing.T) {
 	}
 	if _, err := (&CertificateServiceConfig{VerifyChain: true, TrustedRootsFile: empty}).TrustedRoots(); err == nil {
 		t.Fatal("a roots file with no certificates should be refused")
+	}
+}
+
+// A negative authority-loss period is refused rather than silently turning the
+// hold off; zero, the documented off switch, is accepted.
+func TestGatewayConfig_ValidateAuthorityLossGracePeriod(t *testing.T) {
+	for period, wantErr := range map[time.Duration]bool{-time.Hour: true, 0: false, 48 * time.Hour: false} {
+		cfg := GatewayConfig{TargetDomain: "datumproxy.net", DNSAuthorityLossGracePeriod: &metav1.Duration{Duration: period}}
+		err := cfg.validate()
+		if (err != nil) != wantErr {
+			t.Errorf("period %s: validate() = %v, want an error: %v", period, err, wantErr)
+		}
+	}
+}
+
+// The estate's config file is decoded strictly, so the shape infra writes must
+// decode as is: quantities as Kubernetes writes them, and http3 as an empty object.
+func TestDecodeDownstreamClientTraffic(t *testing.T) {
+	data := []byte(`apiVersion: apiserver.config.datumapis.com/v1alpha1
+kind: NetworkServicesOperator
+gateway:
+  downstreamClientTraffic:
+    http2:
+      initialStreamWindowSize: 1Mi
+      initialConnectionWindowSize: 16Mi
+    http3: {}
+    alpnProtocols: [h2, http/1.1]
+`)
+	var cfg NetworkServicesOperator
+	decodeInto(t, data, &cfg)
+
+	traffic := cfg.Gateway.DownstreamClientTraffic
+	if traffic.IsEmpty() {
+		t.Fatal("expected the configured fields to decode")
+	}
+	if got := traffic.HTTP2.InitialStreamWindowSize.Value(); got != 1<<20 {
+		t.Errorf("expected a 1 MiB stream window, got %d", got)
+	}
+	if got := traffic.HTTP2.InitialConnectionWindowSize.Value(); got != 16<<20 {
+		t.Errorf("expected a 16 MiB connection window, got %d", got)
+	}
+	if traffic.HTTP3 == nil {
+		t.Error("expected http3: {} to turn HTTP/3 on")
+	}
+	want := []envoygatewayv1alpha1.ALPNProtocol{"h2", "http/1.1"}
+	if !slices.Equal(traffic.ALPNProtocols, want) {
+		t.Errorf("expected alpnProtocols %v, got %v", want, traffic.ALPNProtocols)
+	}
+}
+
+func TestDownstreamClientTrafficUnsetIsEmpty(t *testing.T) {
+	var cfg NetworkServicesOperator
+	decodeInto(t, []byte("apiVersion: apiserver.config.datumapis.com/v1alpha1\nkind: NetworkServicesOperator\n"), &cfg)
+	if !cfg.Gateway.DownstreamClientTraffic.IsEmpty() {
+		t.Error("expected an estate that sets nothing to write no policy")
+	}
+}
+
+// ALPN alone is enough to write a policy; an empty list is not, since it would
+// turn ALPN off rather than leave the default.
+func TestDownstreamClientTrafficALPNIsEmpty(t *testing.T) {
+	alpn := DownstreamClientTrafficConfig{ALPNProtocols: []envoygatewayv1alpha1.ALPNProtocol{"h2", "http/1.1"}}
+	if alpn.IsEmpty() {
+		t.Error("expected listed ALPN protocols to write a policy")
+	}
+	if !(DownstreamClientTrafficConfig{ALPNProtocols: []envoygatewayv1alpha1.ALPNProtocol{}}).IsEmpty() {
+		t.Error("expected an empty ALPN list to write nothing")
+	}
+}
+
+// A protocol Envoy does not know is refused at start: the edge would negotiate
+// without it, and nothing the operator reads would say so.
+func TestGatewayConfig_ValidateALPNProtocols(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		alpn    []envoygatewayv1alpha1.ALPNProtocol
+		wantSub string
+	}{
+		{name: "h2 and http/1.1", alpn: []envoygatewayv1alpha1.ALPNProtocol{"h2", "http/1.1"}},
+		{name: "every known protocol", alpn: []envoygatewayv1alpha1.ALPNProtocol{"h2", "http/1.1", "http/1.0"}},
+		{name: "a typo", alpn: []envoygatewayv1alpha1.ALPNProtocol{"h2", "http1.1"}, wantSub: `"http1.1"`},
+		{name: "h3 belongs to http3", alpn: []envoygatewayv1alpha1.ALPNProtocol{"h3"}, wantSub: `"h3"`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &NetworkServicesOperator{Gateway: GatewayConfig{DownstreamClientTraffic: DownstreamClientTrafficConfig{
+				ALPNProtocols: tt.alpn,
+			}}}
+			err := cfg.Validate()
+			if tt.wantSub == "" && err != nil {
+				t.Fatalf("expected nil, got %v", err)
+			}
+			if tt.wantSub != "" && (err == nil || !strings.Contains(err.Error(), tt.wantSub)) {
+				t.Fatalf("expected an error containing %q, got %v", tt.wantSub, err)
+			}
+		})
+	}
+}
+
+// An HTTP/2 window outside Envoy's range is refused at start: the edge would
+// keep its defaults, and nothing the operator reads would say so.
+func TestGatewayConfig_ValidateHTTP2Windows(t *testing.T) {
+	tests := []struct {
+		name, stream, connection, wantSub string
+	}{
+		{name: "the estate's values", stream: "1Mi", connection: "16Mi"},
+		{name: "Envoy's bounds themselves", stream: "65535", connection: "2147483647"},
+		{name: "a stream window below the bound", stream: "65534", connection: "16Mi", wantSub: "initialStreamWindowSize"},
+		{name: "a connection window above the bound", stream: "1Mi", connection: "2Gi", wantSub: "initialConnectionWindowSize"},
+		{name: "a fraction of a byte", stream: "1500m", connection: "16Mi", wantSub: "whole number of bytes"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &NetworkServicesOperator{Gateway: GatewayConfig{DownstreamClientTraffic: DownstreamClientTrafficConfig{
+				HTTP2: &envoygatewayv1alpha1.HTTP2Settings{
+					InitialStreamWindowSize:     ptr.To(resource.MustParse(tt.stream)),
+					InitialConnectionWindowSize: ptr.To(resource.MustParse(tt.connection)),
+				},
+			}}}
+			err := cfg.Validate()
+			if tt.wantSub == "" && err != nil {
+				t.Fatalf("expected nil, got %v", err)
+			}
+			if tt.wantSub != "" && (err == nil || !strings.Contains(err.Error(), tt.wantSub)) {
+				t.Fatalf("expected an error containing %q, got %v", tt.wantSub, err)
+			}
+		})
 	}
 }

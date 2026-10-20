@@ -1784,11 +1784,32 @@ func TestHTTPProxyReconcile(t *testing.T) {
 								hostnamesVerifiedCondition := apimeta.FindStatusCondition(updatedHttpProxy.Status.Conditions, networkingv1alpha.HTTPProxyConditionHostnamesVerified)
 								if assert.NotNil(t, hostnamesVerifiedCondition, "did not find HostnamesVerified condition on HTTPProxy") {
 									assert.Equal(t, networkingv1alpha.HTTPProxyReasonHostnamesVerified, hostnamesVerifiedCondition.Reason)
+									assert.Equal(t, "All hostnames have been accepted", hostnamesVerifiedCondition.Message)
 								}
 							}
 						}
 					}
 				}
+			},
+		},
+		{
+			name: "HostnamesVerified moves its lastTransitionTime when the hostnames verify",
+			httpProxy: newHTTPProxy(func(h *networkingv1alpha.HTTPProxy) {
+				h.Spec.Hostnames = []gatewayv1.Hostname{"example.com"}
+				h.Status.Conditions = []metav1.Condition{{
+					Type:               networkingv1alpha.HTTPProxyConditionHostnamesVerified,
+					Status:             metav1.ConditionFalse,
+					Reason:             networkingv1alpha.UnverifiedHostnamesPresent,
+					LastTransitionTime: metav1.NewTime(time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)),
+				}}
+			}),
+			postCreateGatewayStatus: acceptGatewayListeners,
+			assert: func(t *testContext, cl client.Client, httpProxy *networkingv1alpha.HTTPProxy) {
+				verified := apimeta.FindStatusCondition(httpProxy.Status.Conditions, networkingv1alpha.HTTPProxyConditionHostnamesVerified)
+				require.NotNil(t, verified)
+				assert.Equal(t, metav1.ConditionTrue, verified.Status)
+				assert.True(t, verified.LastTransitionTime.After(time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)),
+					"lastTransitionTime kept the time of the False status: %s", verified.LastTransitionTime)
 			},
 		},
 	}
@@ -2350,6 +2371,21 @@ func TestSanitizeConditionMessage(t *testing.T) {
 
 	exact := strings.Repeat("a", maxConditionMessageRunes)
 	assert.Equal(t, exact, sanitizeConditionMessage(exact))
+}
+
+func acceptGatewayListeners(g *gatewayv1.Gateway) {
+	g.Status.Listeners = make([]gatewayv1.ListenerStatus, len(g.Spec.Listeners))
+	for i, listener := range g.Spec.Listeners {
+		g.Status.Listeners[i] = gatewayv1.ListenerStatus{
+			Name: listener.Name,
+			Conditions: []metav1.Condition{{
+				Type:               string(gatewayv1.ListenerConditionAccepted),
+				Status:             metav1.ConditionTrue,
+				Reason:             string(gatewayv1.ListenerReasonAccepted),
+				LastTransitionTime: metav1.Now(),
+			}},
+		}
+	}
 }
 
 func setGatewayProgrammedWithDefaultHTTPSListener(g *gatewayv1.Gateway) {
@@ -3539,6 +3575,8 @@ func TestHTTPProxyCollectDesiredResourcesNetworkService(t *testing.T) {
 		require.Len(t, endpointSlice.Ports, 1)
 		assert.EqualValues(t, 8080, ptr.Deref(endpointSlice.Ports[0].Port, 0))
 		assert.Equal(t, "httpproxy-0-0", ptr.Deref(endpointSlice.Ports[0].Name, ""))
+		assert.Equal(t, SchemeHTTP, ptr.Deref(endpointSlice.Ports[0].AppProtocol, ""),
+			"a port with no appProtocol keeps the edge speaking HTTP/1.1 to members")
 
 		require.Len(t, endpointSlice.Endpoints, 3)
 
@@ -3613,6 +3651,25 @@ func TestHTTPProxyCollectDesiredResourcesNetworkService(t *testing.T) {
 			"a holder reporting itself available must take the endpoint out of draining")
 		assert.True(t, ptr.Deref(conditions.Serving, false))
 		assert.False(t, ptr.Deref(conditions.Terminating, true))
+	})
+
+	t.Run("carries the port's appProtocol onto every shard", func(t *testing.T) {
+		httpProxy := newNetworkServiceProxy()
+
+		service := newNetworkService()
+		service.Spec.Ports[0].AppProtocol = ptr.To(networkingv1alpha.NetworkServiceAppProtocolH2C)
+		objects := append(networkServiceMembers(150), service)
+
+		cl := fake.NewClientBuilder().WithScheme(testScheme).WithObjects(objects...).Build()
+
+		desiredResources, err := reconciler.collectDesiredResources(context.Background(), cl, httpProxy)
+		require.NoError(t, err)
+
+		require.Len(t, desiredResources.endpointSlices, 2)
+		for _, endpointSlice := range desiredResources.endpointSlices {
+			require.Len(t, endpointSlice.Ports, 1)
+			assert.Equal(t, "kubernetes.io/h2c", ptr.Deref(endpointSlice.Ports[0].AppProtocol, ""))
+		}
 	})
 
 	t.Run("shards members beyond the per-slice limit and reports partial programming", func(t *testing.T) {

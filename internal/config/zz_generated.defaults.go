@@ -287,6 +287,11 @@ func SetObjectDefaults_NetworkServicesOperator(in *NetworkServicesOperator) {
 		}
 	}
 	SetDefaults_GatewayResourceReplicatorConfig(&in.Gateway.ResourceReplicator)
+	if in.Gateway.DNSAuthorityLossGracePeriod == nil {
+		if err := json.Unmarshal([]byte(`"48h"`), &in.Gateway.DNSAuthorityLossGracePeriod); err != nil {
+			panic(err)
+		}
+	}
 	if in.Gateway.MaxConcurrentReconciles == 0 {
 		in.Gateway.MaxConcurrentReconciles = 5
 	}

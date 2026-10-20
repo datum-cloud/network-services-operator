@@ -12,8 +12,8 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	cloudv1alpha1 "go.datum.net/cloud/api/v1alpha1"
-	networkv1alpha1 "go.datum.net/network/api/v1alpha1"
+	cloudv1alpha1 "go.datum.net/galactic/api/cloud/v1alpha1"
+	networkv1alpha1 "go.datum.net/galactic/api/network/v1alpha1"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	"go.datum.net/network-services-operator/internal/dnsaccess"
@@ -33,7 +33,7 @@ func TestPolicyProgrammedRequiresExactCurrentNodeReports(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Namespace: "tenant", Name: "dns", UID: "endpoint-uid", Generation: 2},
 		Spec: networkv1alpha1.ServiceEndpointSpec{
 			ServiceClass: "internal-dns", Address: "fd70:100::10", Port: 53,
-			Protocol:     networkv1alpha1.NetworkRuleProtocolUDP,
+			Protocol:     networkv1alpha1.NetworkServiceProtocolUDP,
 			DeliveryMode: networkv1alpha1.ServiceEndpointDeliveryModePreferNodeLocal,
 			AttachmentSelector: &metav1.LabelSelector{MatchLabels: map[string]string{
 				"service.datum.net/internal-dns": "true",
@@ -51,7 +51,7 @@ func TestPolicyProgrammedRequiresExactCurrentNodeReports(t *testing.T) {
 				internalDNSConsumerVPCLabel: "vpc-uid",
 			}},
 			ProtocolPorts: []networkv1alpha1.ServiceRouteProtocolPort{{
-				Protocol: networkv1alpha1.NetworkRuleProtocolUDP, Port: 53,
+				Protocol: networkv1alpha1.NetworkServiceProtocolUDP, Port: 53,
 			}},
 		},
 		Status: networkv1alpha1.ServiceRoutePolicyStatus{
@@ -138,7 +138,7 @@ func consumerPath(
 		Status: networkingv1alpha.NetworkInterfaceStatus{
 			NetworkContextRef: &networkingv1alpha.LocalNetworkContextRef{Name: contextName},
 			AttachmentRef: &networkingv1alpha.NetworkInterfaceAttachmentRef{
-				APIGroup: "cloud.datumapis.com", Kind: "VPCAttachment", Name: "attachment-" + name,
+				APIGroup: "galactic.datumapis.com", Kind: "VPCAttachment", Name: "attachment-" + name,
 			},
 		},
 	}

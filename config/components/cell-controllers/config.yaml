@@ -9,8 +9,6 @@ internalDNS:
   # frontend: fd53::53
   # Allocates one stable service destination from this prefix per DNS context.
   # servicePrefix: fd70:100::/64
-  # Bounds each DNS authorization; Galactic accepts at most two minutes.
-  # accessLeaseDuration: 2m
   # Selects the shared resolver attachments that serve authorized VPCs.
   # producerAttachmentSelector:
   #   service.datum.net/internal-dns: "true"

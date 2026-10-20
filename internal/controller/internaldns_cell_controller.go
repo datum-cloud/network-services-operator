@@ -19,8 +19,8 @@ import (
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
-	cloudv1alpha1 "go.datum.net/cloud/api/v1alpha1"
-	networkv1alpha1 "go.datum.net/network/api/v1alpha1"
+	cloudv1alpha1 "go.datum.net/galactic/api/cloud/v1alpha1"
+	networkv1alpha1 "go.datum.net/galactic/api/network/v1alpha1"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	"go.datum.net/network-services-operator/internal/config"
@@ -41,10 +41,10 @@ type InternalDNSCellReconciler struct {
 
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkcontexts;networkinterfaces,verbs=get;list;watch
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkcontexts/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=cloud.datumapis.com,resources=vpcs,verbs=get;list;watch
-// +kubebuilder:rbac:groups=cloud.datumapis.com,resources=vpcattachments,verbs=get;list;watch;update;patch
-// +kubebuilder:rbac:groups=network.datumapis.com,resources=serviceendpoints;serviceroutepolicies,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=network.datumapis.com,resources=serviceroutepolicies/status,verbs=get
+// +kubebuilder:rbac:groups=galactic.datumapis.com,resources=vpcs,verbs=get;list;watch
+// +kubebuilder:rbac:groups=galactic.datumapis.com,resources=vpcattachments,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=galactic.datumapis.com,resources=serviceendpoints;serviceroutepolicies,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=galactic.datumapis.com,resources=serviceroutepolicies/status,verbs=get
 
 func (r *InternalDNSCellReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
 	cl, err := r.mgr.GetCluster(ctx, req.ClusterName)
@@ -109,8 +109,8 @@ func (r *InternalDNSCellReconciler) reconcile(
 		attachmentPointers = append(attachmentPointers, &attachments.Items[i])
 	}
 
-	for _, protocol := range []networkv1alpha1.NetworkRuleProtocol{
-		networkv1alpha1.NetworkRuleProtocolUDP, networkv1alpha1.NetworkRuleProtocolTCP,
+	for _, protocol := range []networkv1alpha1.NetworkServiceProtocol{
+		networkv1alpha1.NetworkServiceProtocolUDP, networkv1alpha1.NetworkServiceProtocolTCP,
 	} {
 		endpoint, policy, err := r.ensureServicePath(
 			ctx, cl, networkContext, vpc, protocol, serviceDestination, region,
@@ -167,7 +167,7 @@ func (r *InternalDNSCellReconciler) consumerVPC(
 	for i := range interfaces.Items {
 		iface := &interfaces.Items[i]
 		if iface.Status.NetworkContextRef == nil || iface.Status.NetworkContextRef.Name != networkContext.Name ||
-			iface.Status.AttachmentRef == nil || iface.Status.AttachmentRef.APIGroup != "cloud.datumapis.com" ||
+			iface.Status.AttachmentRef == nil || iface.Status.AttachmentRef.APIGroup != "galactic.datumapis.com" ||
 			iface.Status.AttachmentRef.Kind != "VPCAttachment" || !iface.DeletionTimestamp.IsZero() {
 			continue
 		}
@@ -201,7 +201,7 @@ func (r *InternalDNSCellReconciler) ensureServicePath(
 	cl client.Client,
 	networkContext *networkingv1alpha.NetworkContext,
 	vpc *cloudv1alpha1.VPC,
-	protocol networkv1alpha1.NetworkRuleProtocol,
+	protocol networkv1alpha1.NetworkServiceProtocol,
 	destination string,
 	region string,
 ) (*networkv1alpha1.ServiceEndpoint, *networkv1alpha1.ServiceRoutePolicy, error) {
@@ -316,7 +316,7 @@ func (r *InternalDNSCellReconciler) cleanup(
 		for i := range interfaces.Items {
 			iface := &interfaces.Items[i]
 			if iface.Status.NetworkContextRef == nil || iface.Status.NetworkContextRef.Name != networkContext.Name ||
-				iface.Status.AttachmentRef == nil || iface.Status.AttachmentRef.APIGroup != "cloud.datumapis.com" ||
+				iface.Status.AttachmentRef == nil || iface.Status.AttachmentRef.APIGroup != "galactic.datumapis.com" ||
 				iface.Status.AttachmentRef.Kind != "VPCAttachment" {
 				continue
 			}

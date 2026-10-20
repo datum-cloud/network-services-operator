@@ -121,7 +121,7 @@ func TestEnsureDNSRecordSets_HostnameRemovalReapsRecord(t *testing.T) {
 			keptRSName := dnsRecordSetName(gw.Name, tt.keptHostname)
 
 			// First reconcile pass: both hostnames are claimed.
-			statuses, result := reconciler.ensureDNSRecordSets(ctx, cl, gw, []string{tt.removedHostname, tt.keptHostname})
+			statuses, result, _ := reconciler.ensureDNSRecordSets(ctx, cl, gw, []string{tt.removedHostname, tt.keptHostname})
 			require.NoError(t, result.Err)
 			require.Len(t, statuses, 2)
 
@@ -135,7 +135,7 @@ func TestEnsureDNSRecordSets_HostnameRemovalReapsRecord(t *testing.T) {
 				"record for %q should exist after the first pass", tt.keptHostname)
 
 			// Second reconcile pass: the hostname was removed from the Gateway.
-			_, result = reconciler.ensureDNSRecordSets(ctx, cl, gw, []string{tt.keptHostname})
+			_, result, _ = reconciler.ensureDNSRecordSets(ctx, cl, gw, []string{tt.keptHostname})
 			require.NoError(t, result.Err)
 
 			err := cl.Get(ctx, client.ObjectKey{Namespace: ns, Name: removedRSName}, &dnsv1alpha1.DNSRecordSet{})

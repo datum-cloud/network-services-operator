@@ -55,7 +55,7 @@ Read the reason on the `dns-record` step:
 | Reason | What it means |
 |---|---|
 | `DomainNotVerified` | Ownership first → `domain-verification` |
-| `DNSAuthorityMissing` | Datum does not answer for this domain → `dns-delegation` |
+| `DNSAuthorityMissing` | Datum does not answer for this domain → `dns-delegation`. A record already written is kept until the time in the message, then deleted |
 | `DNSZoneNotReady` | Datum's zone for it is unfinished → `dns-delegation` |
 | `ConflictWithUserRecord` | A record already exists that Datum did not write. Remove it, or use a different hostname |
 | `RecordCreationFailed` | Datum's. Say so and say to raise it |

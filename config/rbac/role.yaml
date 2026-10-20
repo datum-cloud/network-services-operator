@@ -80,24 +80,6 @@ rules:
   verbs:
   - get
 - apiGroups:
-  - cloud.datumapis.com
-  resources:
-  - vpcattachments
-  verbs:
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - cloud.datumapis.com
-  resources:
-  - vpcs
-  verbs:
-  - get
-  - list
-  - watch
-- apiGroups:
   - coordination.k8s.io
   resources:
   - leases
@@ -197,10 +179,49 @@ rules:
   - patch
   - update
 - apiGroups:
+  - galactic.datumapis.com
+  resources:
+  - networkfabricidentities
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - galactic.datumapis.com
+  resources:
+  - serviceendpoints
+  - serviceroutepolicies
+  - vpcattachments
+  - vpcs
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - galactic.datumapis.com
+  resources:
+  - serviceroutepolicies/status
+  verbs:
+  - get
+- apiGroups:
+  - galactic.datumapis.com
+  resources:
+  - vpcattachments/status
+  - vpcs/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
   - gateway.envoyproxy.io
   resources:
   - backends
   - backendtrafficpolicies
+  - clienttrafficpolicies
   - httproutefilters
   - securitypolicies
   verbs:
@@ -266,19 +287,9 @@ rules:
   - patch
   - update
 - apiGroups:
-  - locations.miloapis.com
+  - k8s.cni.cncf.io
   resources:
-  - locations
-  - servinglocations
-  verbs:
-  - get
-  - list
-  - watch
-- apiGroups:
-  - network.datumapis.com
-  resources:
-  - serviceendpoints
-  - serviceroutepolicies
+  - network-attachment-definitions
   verbs:
   - create
   - delete
@@ -288,11 +299,14 @@ rules:
   - update
   - watch
 - apiGroups:
-  - network.datumapis.com
+  - locations.miloapis.com
   resources:
-  - serviceroutepolicies/status
+  - locations
+  - servinglocations
   verbs:
   - get
+  - list
+  - watch
 - apiGroups:
   - networking.datumapis.com
   resources:

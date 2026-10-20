@@ -62,6 +62,14 @@ type CellControllerManager struct {
 	// InternalDNS configures managed resolver access. It is disabled unless
 	// explicitly enabled.
 	InternalDNS InternalDNSConfig `json:"internalDNS,omitempty"`
+	// Galactic enables this cell to reconcile downstream Galactic VPCs and
+	// attachments once the Galactic CRDs are installed.
+	Galactic GalacticCellConfig `json:"galactic,omitempty"`
+}
+
+type GalacticCellConfig struct {
+	Enabled        bool   `json:"enabled,omitempty"`
+	AttachmentMode string `json:"attachmentMode,omitempty"`
 }
 
 // Validate reports whether the cell configuration can serve a cell.
@@ -74,6 +82,13 @@ func (c *CellControllerManager) Validate() error {
 	}
 	if err := c.InternalDNS.validate(); err != nil {
 		return fmt.Errorf("internalDNS: %w", err)
+	}
+	if c.Galactic.Enabled {
+		switch c.Galactic.AttachmentMode {
+		case "Netns", "Hypervisor", "HypervisorDeclared":
+		default:
+			return fmt.Errorf("galactic.attachmentMode must be Netns, Hypervisor, or HypervisorDeclared")
+		}
 	}
 	return nil
 }

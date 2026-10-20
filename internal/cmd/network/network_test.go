@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -256,6 +257,74 @@ func TestServiceCreateRefusesIncompleteInput(t *testing.T) {
 		r := run(t, newTestClient(t), "", args...)
 		assert.Equal(t, util.ExitUsage, r.code, "%v: %s", args, r.err)
 	}
+}
+
+func TestServiceCreateTakesTheLongPortForm(t *testing.T) {
+	c := newTestClient(t)
+	r := run(t, c, "", "service", "create", "api", "--workload", "api-backend",
+		"--port", "http:8080", "--port", "name=grpc,port=9090,app-protocol=h2c")
+	require.Zero(t, r.code, r.err)
+
+	var s networkingv1alpha.NetworkService
+	require.NoError(t, c.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: "api"}, &s))
+	assert.Equal(t, []networkingv1alpha.NetworkServicePort{
+		{Name: "http", Port: 8080},
+		{Name: "grpc", Port: 9090, AppProtocol: ptr.To(networkingv1alpha.NetworkServiceAppProtocolH2C)},
+	}, s.Spec.Ports)
+}
+
+func TestServiceCreateRefusesMalformedLongPorts(t *testing.T) {
+	for _, port := range []string{
+		"name=grpc,port=9090,app-protocol=http2",
+		"name=grpc,port=9090,proto=h2c",
+		"name=grpc,app-protocol=h2c",
+		"port=9090,app-protocol=h2c",
+		"name=grpc,port=9090,port=9091",
+		"name=grpc,port=,app-protocol=h2c",
+		"name=grpc,port=x",
+	} {
+		r := run(t, newTestClient(t), "", "service", "create", "api", "--workload", "w", "--port", port)
+		assert.Equal(t, util.ExitUsage, r.code, "%s: %s", port, r.err)
+	}
+}
+
+func TestServiceUpdateKeepsAppProtocolUnlessPortsAreReplaced(t *testing.T) {
+	svc := service("api")
+	svc.Spec.Ports[0].AppProtocol = ptr.To(networkingv1alpha.NetworkServiceAppProtocolH2C)
+	c := newTestClient(t, svc)
+
+	r := run(t, c, "", "service", "update", "api", "--workload", "api-v2")
+	require.Zero(t, r.code, r.err)
+	var s networkingv1alpha.NetworkService
+	require.NoError(t, c.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: "api"}, &s))
+	assert.Equal(t, networkingv1alpha.NetworkServiceAppProtocolH2C, ptr.Deref(s.Spec.Ports[0].AppProtocol, ""),
+		"changing the selector must not move a gRPC port back to HTTP/1.1")
+
+	r = run(t, c, "", "service", "update", "api", "--port", "http:8080")
+	require.Zero(t, r.code, r.err)
+	require.NoError(t, c.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: "api"}, &s))
+	assert.Nil(t, s.Spec.Ports[0].AppProtocol, "--port replaces the whole list, protocol included")
+}
+
+func TestServiceDescribeAndListShowAppProtocol(t *testing.T) {
+	svc := service("payments")
+	svc.Spec.Ports = append(svc.Spec.Ports, networkingv1alpha.NetworkServicePort{
+		Name: "grpc", Port: 9090, Protocol: networkingv1alpha.NetworkServiceProtocolTCP,
+		AppProtocol: ptr.To(networkingv1alpha.NetworkServiceAppProtocolH2C),
+	})
+	c := newTestClient(t, svc)
+
+	r := run(t, c, "", "service", "describe", "payments")
+	require.Zero(t, r.code, r.err)
+	assert.Contains(t, r.out, "grpc → 9090/TCP (h2c)")
+
+	r = run(t, c, "", "service", "list")
+	require.Zero(t, r.code, r.err)
+	assert.Contains(t, r.out, "http:8080, grpc:9090 (h2c)")
+
+	r = run(t, c, "", "service", "describe", "payments", "-o", "json")
+	require.Zero(t, r.code, r.err)
+	assert.Contains(t, r.out, `"appProtocol": "kubernetes.io/h2c"`)
 }
 
 func service(name string) *networkingv1alpha.NetworkService {

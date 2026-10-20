@@ -91,8 +91,8 @@ vars:
   # and with the image digest in config/dependencies/milo/root-kustomization.yaml
   # — milo-bundle fails if the artifact does not carry MILO_BUNDLE_TAG.
   MILO_BUNDLE_REPO: ghcr.io/milo-os/milo-kustomize
-  MILO_BUNDLE_TAG: v0.32.5
-  MILO_BUNDLE_DIGEST: sha256:975896513b3afda4400eb09f8a5602000c52fd35f14284258803266f5d2ee1a9
+  MILO_BUNDLE_TAG: v0.36.5
+  MILO_BUNDLE_DIGEST: sha256:3d090cd397bcd902d5b4280c14bd24ef3fa0cd2edcd1744bae40778703765035
   MILO_STAGE: '{{.TMP_DIR}}/.milo-bundle'
   # The NodePort Milo's Service publishes, mapped to the same host port by
   # config/tools/kind/upstream-cluster.yaml. The chainsaw suites run on the host
@@ -1100,7 +1100,7 @@ tasks:
     vars:
       # Scenarios authored against this env's cluster names and downstream path.
       # Older fixtures targeting the previous cluster names are excluded here.
-      DEFAULT_SCENARIOS: extension-server-smoke waf-enforcement waf-section-scoping branded-error-page connector-offline-503 atomic-reject-isolation oidc-missing-secret-isolation networkservice-endpoints
+      DEFAULT_SCENARIOS: extension-server-smoke waf-enforcement waf-section-scoping branded-error-page connector-offline-503 atomic-reject-isolation oidc-missing-secret-isolation networkservice-endpoints misdirected-request
       # CLI_ARGS (after --) wins; else SCENARIOS env; else the default set.
       SELECTED: '{{.CLI_ARGS | default .SCENARIOS | default .DEFAULT_SCENARIOS}}'
     deps:

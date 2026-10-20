@@ -18,6 +18,11 @@
 # is refused rather than silently narrowed, and an unavailable interface counts
 # as a member without counting as healthy.
 #
+# A port's appProtocol decides the HTTP version the edge speaks to members. A
+# member that refuses HTTP/1.1 is refused an HTTP/1.1 request while its port is
+# unmarked, served it once the port is marked kubernetes.io/h2c, and refused it
+# again once the mark is removed.
+#
 # What this environment does and does not stand behind:
 #
 #   * There is no compute here, so nothing runs at a member's allocated address
@@ -697,6 +702,245 @@ spec:
               sys.exit(1 if failures else 0)
               PY
               echo "OK: both healthy members served, the unavailable member served nothing"
+
+    - name: An h2c member answers at the members' addresses
+      description: |
+        A second server on the same bound addresses that refuses HTTP/1.1, so
+        the response alone says which HTTP version the edge used. See
+        ../_fixtures/network-service-h2c-member.yaml.
+      try:
+        - apply:
+            cluster: nso-downstream
+            file: ../_fixtures/network-service-h2c-member.yaml
+        - script:
+            cluster: nso-downstream
+            timeout: 300s
+            content: |
+              set -eu
+              kubectl -n default wait pod/network-service-h2c-member --for=condition=Ready --timeout=240s
+      cleanup:
+        - script:
+            cluster: nso-downstream
+            content: |
+              kubectl -n default delete pod network-service-h2c-member \
+                --ignore-not-found --force --grace-period=0 || true
+
+    - name: A second port on the service, with a proxy in front of it
+      description: |
+        The port starts without appProtocol, as every existing port does, so
+        the change below exercises updating a live service rather than creating
+        one.
+      try:
+        - script:
+            content: |
+              set -eu
+              kubectl -n "$NAMESPACE" patch networkservice nsvc --type=json \
+                -p '[{"op":"add","path":"/spec/ports/-","value":{"name":"grpc","port":19090}}]'
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: HTTPProxy
+              metadata:
+                name: nsvc-h2c
+              spec:
+                rules:
+                  - backends:
+                      - networkService:
+                          name: nsvc
+                          port: grpc
+        - script:
+            timeout: 300s
+            content: |
+              set -eu
+              for i in $(seq 1 40); do
+                H=$(kubectl -n "$NAMESPACE" get httpproxy nsvc-h2c \
+                  -o jsonpath='{.status.canonicalHostname}' 2>/dev/null || true)
+                if [ -n "${H}" ]; then echo "canonical hostname: ${H}"; exit 0; fi
+                echo "waiting for HTTPProxy canonicalHostname... ${i}" >&2
+                sleep 5
+              done
+              echo "ERROR: HTTPProxy never published a canonicalHostname" >&2
+              exit 1
+      catch:
+        - script:
+            content: |
+              kubectl -n $NAMESPACE get networkservice nsvc -o yaml
+              kubectl -n $NAMESPACE get httpproxy nsvc-h2c -o yaml
+
+    - name: Unmarked, the port reaches the member as HTTP/1.1 and is refused
+      description: |
+        The control for the step after it: the member must refuse what the edge
+        sends today, or a 200 later would prove nothing.
+      try:
+        - script:
+            skipCommandOutput: true
+            skipLogOutput: true
+            content: |
+              kubectl -n "$NAMESPACE" get httpproxy nsvc-h2c -o jsonpath='{.status.canonicalHostname}'
+            outputs:
+              - name: h2cHostname
+                value: ($stdout)
+        - script:
+            cluster: nso-downstream
+            timeout: 480s
+            env:
+              - name: HOST
+                value: ($h2cHostname)
+              - name: OWNING_GC
+                value: ($downstreamGatewayClass)
+              - name: ENVOY_NS
+                value: ($envoyNamespace)
+              - name: EXPECT_CODE
+                value: "400"
+              - name: EXPECT_BODY
+                value: Expected h2c request
+            content: |
+              set -eu
+              IP=$(kubectl get svc -n "$ENVOY_NS" \
+                -l "gateway.envoyproxy.io/owning-gatewayclass=${OWNING_GC}" \
+                -o jsonpath='{.items[0].spec.clusterIP}')
+              # The client speaks HTTP/1.1 on purpose: an h2c port must reach the
+              # member as HTTP/2 whatever the client used.
+              for i in $(seq 1 30); do
+                code=$(kubectl -n default exec nsvc-conntest -- \
+                  curl --http1.1 -sS -o /tmp/body -w '%{http_code}' --max-time 15 \
+                  --resolve "${HOST}:80:${IP}" "http://${HOST}/" 2>/dev/null || true)
+                echo "attempt ${i}: ${code}"
+                if [ "${code}" = "${EXPECT_CODE}" ] && \
+                   kubectl -n default exec nsvc-conntest -- grep -qF -- "${EXPECT_BODY}" /tmp/body; then
+                  echo "OK: ${EXPECT_CODE} with ${EXPECT_BODY}"
+                  exit 0
+                fi
+                sleep 5
+              done
+              echo "ERROR: wanted ${EXPECT_CODE} with ${EXPECT_BODY}"
+              kubectl -n default exec nsvc-conntest -- sh -c 'head -c 600 /tmp/body' || true
+              exit 1
+
+    - name: Marked h2c, the port reaches the member as HTTP/2
+      description: |
+        The verdict. The same HTTP/1.1 request must now be served, and the
+        member must report it arrived as HTTP/2.
+      try:
+        - script:
+            content: |
+              set -eu
+              kubectl -n "$NAMESPACE" patch networkservice nsvc --type=json \
+                -p '[{"op":"add","path":"/spec/ports/1/appProtocol","value":"kubernetes.io/h2c"}]'
+        - assert:
+            timeout: 120s
+            resource:
+              apiVersion: discovery.k8s.io/v1
+              kind: EndpointSlice
+              metadata:
+                name: nsvc-h2c-0-0
+              ports:
+                - appProtocol: kubernetes.io/h2c
+                  port: 19090
+        - script:
+            skipCommandOutput: true
+            skipLogOutput: true
+            content: |
+              kubectl -n "$NAMESPACE" get httpproxy nsvc-h2c -o jsonpath='{.status.canonicalHostname}'
+            outputs:
+              - name: h2cHostname
+                value: ($stdout)
+        - script:
+            cluster: nso-downstream
+            timeout: 480s
+            env:
+              - name: HOST
+                value: ($h2cHostname)
+              - name: OWNING_GC
+                value: ($downstreamGatewayClass)
+              - name: ENVOY_NS
+                value: ($envoyNamespace)
+              - name: EXPECT_CODE
+                value: "200"
+              - name: EXPECT_BODY
+                value: '"proto": "HTTP/2.0"'
+            content: |
+              set -eu
+              IP=$(kubectl get svc -n "$ENVOY_NS" \
+                -l "gateway.envoyproxy.io/owning-gatewayclass=${OWNING_GC}" \
+                -o jsonpath='{.items[0].spec.clusterIP}')
+              # The client speaks HTTP/1.1 on purpose: an h2c port must reach the
+              # member as HTTP/2 whatever the client used.
+              for i in $(seq 1 30); do
+                code=$(kubectl -n default exec nsvc-conntest -- \
+                  curl --http1.1 -sS -o /tmp/body -w '%{http_code}' --max-time 15 \
+                  --resolve "${HOST}:80:${IP}" "http://${HOST}/" 2>/dev/null || true)
+                echo "attempt ${i}: ${code}"
+                if [ "${code}" = "${EXPECT_CODE}" ] && \
+                   kubectl -n default exec nsvc-conntest -- grep -qF -- "${EXPECT_BODY}" /tmp/body; then
+                  echo "OK: ${EXPECT_CODE} with ${EXPECT_BODY}"
+                  exit 0
+                fi
+                sleep 5
+              done
+              echo "ERROR: wanted ${EXPECT_CODE} with ${EXPECT_BODY}"
+              kubectl -n default exec nsvc-conntest -- sh -c 'head -c 600 /tmp/body' || true
+              exit 1
+      catch:
+        - script:
+            content: |
+              kubectl -n $NAMESPACE get networkservice nsvc -o yaml
+              kubectl -n $NAMESPACE get endpointslice -o yaml
+
+    - name: Unmarked again, the port goes back to HTTP/1.1
+      description: |
+        Removing the field must reach the edge as well, or a port once marked
+        could never be put back.
+      try:
+        - script:
+            content: |
+              set -eu
+              kubectl -n "$NAMESPACE" patch networkservice nsvc --type=json \
+                -p '[{"op":"remove","path":"/spec/ports/1/appProtocol"}]'
+        - script:
+            skipCommandOutput: true
+            skipLogOutput: true
+            content: |
+              kubectl -n "$NAMESPACE" get httpproxy nsvc-h2c -o jsonpath='{.status.canonicalHostname}'
+            outputs:
+              - name: h2cHostname
+                value: ($stdout)
+        - script:
+            cluster: nso-downstream
+            timeout: 480s
+            env:
+              - name: HOST
+                value: ($h2cHostname)
+              - name: OWNING_GC
+                value: ($downstreamGatewayClass)
+              - name: ENVOY_NS
+                value: ($envoyNamespace)
+              - name: EXPECT_CODE
+                value: "400"
+              - name: EXPECT_BODY
+                value: Expected h2c request
+            content: |
+              set -eu
+              IP=$(kubectl get svc -n "$ENVOY_NS" \
+                -l "gateway.envoyproxy.io/owning-gatewayclass=${OWNING_GC}" \
+                -o jsonpath='{.items[0].spec.clusterIP}')
+              # The client speaks HTTP/1.1 on purpose: an h2c port must reach the
+              # member as HTTP/2 whatever the client used.
+              for i in $(seq 1 30); do
+                code=$(kubectl -n default exec nsvc-conntest -- \
+                  curl --http1.1 -sS -o /tmp/body -w '%{http_code}' --max-time 15 \
+                  --resolve "${HOST}:80:${IP}" "http://${HOST}/" 2>/dev/null || true)
+                echo "attempt ${i}: ${code}"
+                if [ "${code}" = "${EXPECT_CODE}" ] && \
+                   kubectl -n default exec nsvc-conntest -- grep -qF -- "${EXPECT_BODY}" /tmp/body; then
+                  echo "OK: ${EXPECT_CODE} with ${EXPECT_BODY}"
+                  exit 0
+                fi
+                sleep 5
+              done
+              echo "ERROR: wanted ${EXPECT_CODE} with ${EXPECT_BODY}"
+              kubectl -n default exec nsvc-conntest -- sh -c 'head -c 600 /tmp/body' || true
+              exit 1
 
     - name: A selector spanning two networks is refused
       description: |

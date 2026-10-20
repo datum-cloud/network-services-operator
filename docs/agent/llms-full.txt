@@ -63,7 +63,9 @@ for the sentence around them, never a replacement for them.
   verification, routes, origins, traffic protection, and basic auth.
 - **DNS** owns zones and the records inside them. When a cause is
   `DNSZoneNotReady` or `DNSAuthorityMissing`, name the boundary and hand off to
-  the DNS tools. Do not try to diagnose a zone from here.
+  the DNS tools. Do not try to diagnose a zone from here. A record already
+  written survives a `DNSAuthorityMissing` until the time its message gives,
+  48 hours by default, and is then deleted.
 - **Compute** owns the machines behind a network service. A network service
   with nothing behind it is answered here; why a particular machine is down is
   not.

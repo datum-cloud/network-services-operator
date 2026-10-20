@@ -32,8 +32,26 @@ const (
 var portNamePattern = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
 
 type RenderPort struct {
-	Name string `json:"name" jsonschema:"Port name, a lowercase DNS label such as \"http\". A load balancer names this, not the number, so pick something that says what it carries."`
-	Port int32  `json:"port" jsonschema:"Port number the workload's instances listen on, 1 to 65535. This is the port on the instance itself, not one Datum publishes."`
+	Name        string `json:"name" jsonschema:"Port name, a lowercase DNS label such as \"http\". A load balancer names this, not the number, so pick something that says what it carries."`
+	Port        int32  `json:"port" jsonschema:"Port number the workload's instances listen on, 1 to 65535. This is the port on the instance itself, not one Datum publishes."`
+	AppProtocol string `json:"appProtocol,omitempty" jsonschema:"Leave unset for HTTP/1.1, which suits most servers. Set h2c for servers that speak HTTP/2, such as gRPC servers. Every request on the port then reaches them as HTTP/2, so WebSockets belong on a different port."`
+}
+
+// AppProtocol returns the API value for a port's application protocol, given
+// either the short name h2c or the value the API stores. Empty means HTTP/1.1.
+func AppProtocol(value string) (string, error) {
+	switch value {
+	case "":
+		return "", nil
+	case "h2c", string(networkingv1alpha.NetworkServiceAppProtocolH2C):
+		return string(networkingv1alpha.NetworkServiceAppProtocolH2C), nil
+	}
+	return "", fmt.Errorf("app protocol %q is not supported: use h2c for HTTP/2, or leave it unset for HTTP/1.1", value)
+}
+
+// AppProtocolLabel is how a port's application protocol is shown to a person.
+func AppProtocolLabel(value string) string {
+	return strings.TrimPrefix(value, "kubernetes.io/")
 }
 
 type RenderInput struct {
@@ -164,8 +182,16 @@ func renderService(in RenderInput) (map[string]any, []string, error) {
 		if numbers[p.Port] {
 			return nil, nil, fmt.Errorf("port number %d is used twice", p.Port)
 		}
+		appProtocol, err := AppProtocol(p.AppProtocol)
+		if err != nil {
+			return nil, nil, fmt.Errorf("port %q: %w", p.Name, err)
+		}
 		names[p.Name], numbers[p.Port] = true, true
-		ports = append(ports, map[string]any{"name": p.Name, "port": p.Port})
+		port := map[string]any{"name": p.Name, "port": p.Port}
+		if appProtocol != "" {
+			port["appProtocol"] = appProtocol
+		}
+		ports = append(ports, port)
 	}
 
 	matchLabels := in.MatchLabels

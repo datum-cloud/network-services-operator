@@ -26,6 +26,13 @@ gateway:
   #
   # Default: false. Set to true in environments where dns-operator is deployed.
   enableDNSIntegration: false
+  # dnsAuthorityLossGracePeriod is how long Gateway DNS keeps the record set of a
+  # hostname the Gateway still claims after Datum DNS loses authority for its
+  # Domain, counted from the first check without authority; then the record set
+  # is deleted. Zero deletes at the first check; a negative value is refused.
+  #
+  # Default: 48h.
+  dnsAuthorityLossGracePeriod: 48h
   # errorPage configures the branded data-plane error page served by the
   # extension server for edge-generated 5xx responses on the downstream /
   # Connector data plane (e.g. an offline Connector tunnel). When enabled, the

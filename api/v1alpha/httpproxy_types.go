@@ -32,13 +32,17 @@ type HTTPProxySpec struct {
 	//
 	// In addition to verifying ownership, hostnames must be unique across the
 	// platform. If a hostname is already programmed on another resource, a
-	// conflict will be encountered and communicated in the `HostnamesVerified`
+	// conflict will be encountered and communicated in the `HostnamesInUse`
 	// condition.
 	//
-	// Hostnames which have been programmed will be listed in the
-	// `status.hostnames` field. Any hostname which has not been programmed will
-	// be listed in the `message` field of the `HostnamesVerified` condition with
-	// an indication as to why it was not programmed.
+	// Hostnames which have been accepted will be listed in the
+	// `status.hostnames` field. Any hostname which has not been accepted will
+	// be listed in the `message` field of the `HostnamesVerified` condition.
+	// That condition covers ownership and acceptance only. The DNS records of
+	// hostnames that use Datum-managed DNS are reported in the
+	// `DNSRecordsProgrammed` condition. Each hostname's entry in
+	// `status.hostnameStatuses` says why it is not verified, or why its DNS
+	// record is not programmed.
 	//
 	// The system may automatically generate and associate hostnames with the
 	// HTTPProxy. In such cases, these will be listed in the `status.hostnames`
@@ -618,7 +622,9 @@ const (
 	// HTTPProxyConditionDNSRecordsProgrammed is an aggregate condition that is
 	// True when all hostnames using Datum-managed DNS have records programmed,
 	// False when one or more hostnames failed DNS record creation, and omitted
-	// when no hostnames use Datum-managed DNS.
+	// when no hostnames use Datum-managed DNS. While every hostname without a
+	// record waits for its DNSZone or Domain to be set up, it is False with
+	// reason Pending.
 	HTTPProxyConditionDNSRecordsProgrammed = "DNSRecordsProgrammed"
 )
 
@@ -710,7 +716,7 @@ const (
 	DNSRecordReasonZoneNotFound = "DNSZoneNotFound"
 
 	// DNSRecordReasonZoneNotReady indicates a DNSZone exists but is not yet
-	// accepted and programmed.
+	// accepted and programmed, or has no nameservers yet.
 	DNSRecordReasonZoneNotReady = "DNSZoneNotReady"
 
 	// DNSRecordReasonDomainNotVerified indicates the Domain resource for this
@@ -718,10 +724,10 @@ const (
 	DNSRecordReasonDomainNotVerified = "DomainNotVerified"
 
 	// DNSRecordReasonDNSAuthorityMissing indicates the Domain is verified but
-	// Datum DNS does not have authority over the domain. This happens when:
-	// - The DNSZone is not ready (Accepted/Programmed conditions not True)
-	// - The DNSZone has no nameservers assigned yet
-	// - The domain's nameservers don't include the DNSZone's nameservers
+	// Datum DNS does not have authority over the domain, and the customer must
+	// act: the domain's nameservers don't include the DNSZone's nameservers, or
+	// the DNSZone was refused, for example because another project holds the
+	// domain.
 	DNSRecordReasonDNSAuthorityMissing = "DNSAuthorityMissing"
 
 	// DNSRecordReasonConflict indicates an existing DNSRecordSet for this

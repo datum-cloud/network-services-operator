@@ -13,27 +13,12 @@ spec:
         pricingUnit: request
         rates:
           - flat: "0.000001"
-    - name: networking.datumapis.com/gateway/egress-bytes
-      chargeType: Usage
-      currency: USD
-      displayName: ALB Egress
-      usage:
-        metricRef: networking.datumapis.com/gateway/egress-bytes
-        pricingUnit: GB
-        rates:
-          - tiered:
-              - upTo: "200"
-                rate: "0"
-              - upTo: "10240"
-                rate: "0.05"
-              - upTo: "153600"
-                rate: "0.04"
-              - rate: "0.03"
-    # egress-bytes counts bytes, and the charge above applies its per-GB
-    # tiers per byte: everything past the first 200 bytes is billed. This
-    # charge keeps the same tiers in GB and converts the usage into GB
-    # first. Published charges can't be edited, so the one above stays until
-    # every account is on the Offer that uses this one, and is removed then.
+    # egress-bytes counts bytes, and its tiers are in GB: the usage is
+    # converted into GB before they apply. This replaces the
+    # gateway/egress-bytes charge, which applied the per-GB tiers per byte
+    # (published charges can't be edited, so the fix is a new charge). Offers
+    # keep their own copy of a price, so the Offer that used the old charge
+    # still bills until its accounts move.
     - name: networking.datumapis.com/gateway/egress-gb
       chargeType: Usage
       currency: USD

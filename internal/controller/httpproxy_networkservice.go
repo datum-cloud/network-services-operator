@@ -47,6 +47,7 @@ func (e *errNetworkServiceBackendNotFound) Error() string {
 // endpoints a backend referencing it should forward to.
 type resolvedNetworkService struct {
 	port          int32
+	appProtocol   string
 	addressType   discoveryv1.AddressType
 	endpoints     []discoveryv1.Endpoint
 	unaddressable []string
@@ -95,6 +96,7 @@ func resolveNetworkServiceBackend(
 
 	resolved := &resolvedNetworkService{
 		port:        service.Spec.Ports[portIndex].Port,
+		appProtocol: networkServiceAppProtocol(service.Spec.Ports[portIndex]),
 		addressType: preferredAddressType(members),
 	}
 
@@ -119,6 +121,15 @@ func resolveNetworkServiceBackend(
 	}
 
 	return resolved, nil
+}
+
+// networkServiceAppProtocol returns the appProtocol the port's EndpointSlice
+// carries, which Envoy Gateway reads to choose the upstream HTTP version.
+func networkServiceAppProtocol(port networkingv1alpha.NetworkServicePort) string {
+	if port.AppProtocol != nil {
+		return string(*port.AppProtocol)
+	}
+	return SchemeHTTP
 }
 
 // interfaceBackhaulAddresses returns the addresses a member can be reached at.
@@ -211,7 +222,7 @@ func networkServiceEndpointSlices(
 		{
 			Name:        ptr.To(portName),
 			Protocol:    ptr.To(corev1.ProtocolTCP),
-			AppProtocol: ptr.To(SchemeHTTP),
+			AppProtocol: ptr.To(resolved.appProtocol),
 			Port:        ptr.To(resolved.port),
 		},
 	}

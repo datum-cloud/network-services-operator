@@ -112,6 +112,15 @@ var (
 		},
 	)
 
+	// MisdirectedGuardsTotal counts route configurations given the 421
+	// Misdirected Request catch-all, across all hook invocations.
+	MisdirectedGuardsTotal = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "nso_extension_misdirected_guards_total",
+			Help: "Total route configurations given the 421 Misdirected Request catch-all across all hook invocations.",
+		},
+	)
+
 	// WAFRouteMutationsTotal counts total per-route TrafficProtectionPolicy (WAF)
 	// config applications across all hook invocations.
 	WAFRouteMutationsTotal = promauto.NewCounter(

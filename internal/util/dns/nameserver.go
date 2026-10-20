@@ -4,6 +4,7 @@
 package dns
 
 import (
+	"slices"
 	"strings"
 
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
@@ -72,14 +73,15 @@ func DomainNameserversOverlapZone(domainNS []networkingv1alpha.Nameserver, zoneN
 // This is used to determine if we can safely create DNS records for a domain,
 // regardless of how the domain was originally verified (DNS TXT, HTTP, or DNSZone).
 func HasDNSAuthority(domain *networkingv1alpha.Domain, dnsZone *dnsv1alpha1.DNSZone) bool {
+	zone := ReadZoneInputs(dnsZone)
+
 	// Check if DNSZone is ready
-	if !apimeta.IsStatusConditionTrue(dnsZone.Status.Conditions, "Accepted") ||
-		!apimeta.IsStatusConditionTrue(dnsZone.Status.Conditions, "Programmed") {
+	if !zone.Ready() {
 		return false
 	}
 
 	// Check if DNSZone has nameservers
-	if len(dnsZone.Status.Nameservers) == 0 {
+	if len(zone.Nameservers) == 0 {
 		return false
 	}
 
@@ -89,5 +91,40 @@ func HasDNSAuthority(domain *networkingv1alpha.Domain, dnsZone *dnsv1alpha1.DNSZ
 	}
 
 	// Check for nameserver overlap
-	return DomainNameserversOverlapZone(domain.Status.Nameservers, dnsZone.Status.Nameservers)
+	return DomainNameserversOverlapZone(domain.Status.Nameservers, zone.Nameservers)
+}
+
+// ZoneInputs is what a Gateway's DNS reads from a DNSZone: its domain name,
+// whether it is Accepted and Programmed, and its nameservers. A zone change
+// that leaves it equal cannot change a Gateway's DNS, so the Gateway
+// controller's zone watch passes only a change to it. A new read of a zone
+// field belongs here, and the watch follows it.
+type ZoneInputs struct {
+	DomainName  string
+	Accepted    bool
+	Programmed  bool
+	Nameservers []string
+}
+
+// ReadZoneInputs returns what a Gateway's DNS reads from zone.
+func ReadZoneInputs(zone *dnsv1alpha1.DNSZone) ZoneInputs {
+	return ZoneInputs{
+		DomainName:  zone.Spec.DomainName,
+		Accepted:    apimeta.IsStatusConditionTrue(zone.Status.Conditions, "Accepted"),
+		Programmed:  apimeta.IsStatusConditionTrue(zone.Status.Conditions, "Programmed"),
+		Nameservers: zone.Status.Nameservers,
+	}
+}
+
+// Ready reports whether the zone is Accepted and Programmed.
+func (z ZoneInputs) Ready() bool {
+	return z.Accepted && z.Programmed
+}
+
+// Equal reports whether two zones give a Gateway's DNS the same inputs.
+func (z ZoneInputs) Equal(other ZoneInputs) bool {
+	return z.DomainName == other.DomainName &&
+		z.Accepted == other.Accepted &&
+		z.Programmed == other.Programmed &&
+		slices.Equal(z.Nameservers, other.Nameservers)
 }

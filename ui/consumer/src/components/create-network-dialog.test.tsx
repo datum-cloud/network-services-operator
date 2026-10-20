@@ -36,21 +36,20 @@ describe('CreateNetworkDialog', () => {
     expect(screen.getByText(/Lowercase letters, numbers, and hyphens only/)).toBeInTheDocument();
   });
 
-  it('posts an IPv6-only network by default, dual-stack when IPv4 is checked', async () => {
+  it('posts an IPv6-only network', async () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) });
     globalThis.fetch = fetchMock as unknown as typeof fetch;
 
     renderDialog();
     fireEvent.click(screen.getByRole('button', { name: 'Create network' }));
     fireEvent.change(screen.getByPlaceholderText('e.g. my-network'), { target: { value: 'my-net' } });
-    fireEvent.click(screen.getByText('Also carry IPv4 (dual-stack)'));
     fireEvent.click(await screen.findByRole('button', { name: 'Create' }));
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     const body = JSON.parse(init.body as string);
     expect(body.metadata.name).toBe('my-net');
-    expect(body.spec.ipFamilies).toEqual(['IPv4', 'IPv6']);
+    expect(body.spec.ipFamilies).toEqual(['IPv6']);
     expect(body.spec.ipam).toEqual({ mode: 'Auto' });
   });
 

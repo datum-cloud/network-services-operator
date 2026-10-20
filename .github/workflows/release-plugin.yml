@@ -32,11 +32,22 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   update-plugin-index:
-    name: Open the catalog PR
+    # One job per plugin: the catalog action downloads into a fixed path in its
+    # workspace, so a second call in the same job fails on the first's file.
+    name: Open the ${{ matrix.plugin }} catalog PR
     needs: [release-plugin]
     runs-on: ubuntu-latest
+    # Every release of a plugin updates the same open catalog PR, so two
+    # releases close together must not write its branch at once.
+    concurrency:
+      group: plugin-index-datum-cloud-datumctl-plugins-${{ matrix.plugin }}-main
+      cancel-in-progress: false
     permissions:
       contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        plugin: [alb, network]
     steps:
       - name: Mint a catalog token from the release bot app
         id: app-token
@@ -46,33 +57,10 @@ jobs:
           private-key: ${{ secrets.RELEASE_BOT_APP_PRIVATE_KEY }}
           repositories: datumctl-plugins
 
-      - name: Update the alb plugin manifest
-        uses: datum-cloud/actions/update-plugin-index@v1.21.0
+      - name: Update the ${{ matrix.plugin }} plugin manifest
+        uses: datum-cloud/actions/update-plugin-index@v1.22.0
         with:
           index-repo: datum-cloud/datumctl-plugins
-          plugin-name: alb
-          version: ${{ github.event.release.tag_name }}
-          token: ${{ steps.app-token.outputs.token }}
-
-      # The catalog update only edits a manifest that already exists, so the
-      # network plugin's first release is added to the catalog by hand. Until
-      # then this step is skipped rather than failing every release.
-      - name: Check the network plugin is in the catalog
-        id: network-listed
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: |
-          if gh api repos/datum-cloud/datumctl-plugins/contents/plugins/network.yaml --silent; then
-            echo "listed=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "listed=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Update the network plugin manifest
-        if: steps.network-listed.outputs.listed == 'true'
-        uses: datum-cloud/actions/update-plugin-index@v1.21.0
-        with:
-          index-repo: datum-cloud/datumctl-plugins
-          plugin-name: network
+          plugin-name: ${{ matrix.plugin }}
           version: ${{ github.event.release.tag_name }}
           token: ${{ steps.app-token.outputs.token }}

@@ -103,6 +103,12 @@ spec:
       - key: meta.datumapis.com/upstream-cluster-name
         operator: Exists
   - apiVersion: gateway.envoyproxy.io/v1alpha1
+    kind: ClientTrafficPolicy
+    labelSelector:
+      matchExpressions:
+      - key: meta.datumapis.com/upstream-cluster-name
+        operator: Exists
+  - apiVersion: gateway.envoyproxy.io/v1alpha1
     kind: HTTPRouteFilter
     labelSelector:
       matchExpressions:

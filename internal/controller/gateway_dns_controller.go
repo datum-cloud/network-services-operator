@@ -18,10 +18,13 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
+	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
@@ -44,6 +47,10 @@ const (
 	labelDNSSourceNS      = "dns.datumapis.com/source-namespace"
 	annotationDNSHostname = "dns.datumapis.com/hostname"
 	annotationSyncStart   = "dns.datumapis.com/sync-started-at"
+
+	// annotationDNSAuthorityMissingSince records, on a kept record set, the first
+	// check that found no Datum DNS authority for its hostname's Domain.
+	annotationDNSAuthorityMissingSince = "dns.datumapis.com/authority-missing-since"
 )
 
 // +kubebuilder:rbac:groups=dns.networking.miloapis.com,resources=dnsrecordsets,verbs=get;list;watch;create;update;patch;delete
@@ -54,16 +61,17 @@ const (
 // hostnames on the upstream gateway whose apex domains are verified via Datum
 // DNS. Hostnames whose domains are not managed by Datum DNS are skipped and
 // marked NotApplicable. It returns per-hostname DNS status entries that reflect
-// the result of each DNS programming attempt, and a Result that signals whether
-// the caller should requeue.
+// the result of each DNS programming attempt, a Result that signals whether
+// the caller should requeue, and how soon the earliest kept record set's
+// authority wait ends (zero when none is kept).
 func (r *GatewayReconciler) ensureDNSRecordSets(
 	ctx context.Context,
 	upstreamClient client.Client,
 	upstreamGateway *gatewayv1.Gateway,
 	claimedHostnames []string,
-) (hostnameStatuses []networkingv1alpha.HostnameStatus, result Result) {
+) (hostnameStatuses []networkingv1alpha.HostnameStatus, result Result, holdRecheck time.Duration) {
 	if !r.Config.Gateway.EnableDNSIntegration {
-		return nil, result
+		return nil, result, 0
 	}
 
 	logger := log.FromContext(ctx)
@@ -75,7 +83,7 @@ func (r *GatewayReconciler) ensureDNSRecordSets(
 	var domainList networkingv1alpha.DomainList
 	if err := upstreamClient.List(ctx, &domainList, client.InNamespace(upstreamGateway.Namespace)); err != nil {
 		result.Err = fmt.Errorf("failed listing domains: %w", err)
-		return nil, result
+		return nil, result, 0
 	}
 
 	// Build a set of desired DNSRecordSet names so we can garbage-collect stale ones.
@@ -128,7 +136,7 @@ func (r *GatewayReconciler) ensureDNSRecordSets(
 				client.MatchingFields{dnsZoneDomainNameIndex: zoneName},
 			); err != nil {
 				result.Err = fmt.Errorf("failed listing DNSZones for domain %q: %w", zoneName, err)
-				return nil, result
+				return nil, result, 0
 			}
 
 			if len(dnsZoneList.Items) == 0 {
@@ -187,43 +195,30 @@ func (r *GatewayReconciler) ensureDNSRecordSets(
 				break
 			}
 
+			cond := metav1.Condition{
+				Type:               networkingv1alpha.HostnameConditionDNSRecordProgrammed,
+				Status:             metav1.ConditionFalse,
+				ObservedGeneration: upstreamGateway.Generation,
+			}
+			var err error
 			switch {
 			case unverifiedDomain != nil:
-				apimeta.SetStatusCondition(&hs.Conditions, metav1.Condition{
-					Type:               networkingv1alpha.HostnameConditionDNSRecordProgrammed,
-					Status:             metav1.ConditionFalse,
-					Reason:             networkingv1alpha.DNSRecordReasonDomainNotVerified,
-					Message:            fmt.Sprintf("Domain %q ownership has not been verified", unverifiedDomain.Name),
-					ObservedGeneration: upstreamGateway.Generation,
-				})
+				cond.Reason, err = unverifiedDomainReason(ctx, upstreamClient, unverifiedDomain)
+				cond.Message = fmt.Sprintf("Domain %q ownership has not been verified", unverifiedDomain.Name)
 			case noAuthorityDomain != nil:
-				msg := fmt.Sprintf("Domain %q is verified but Datum DNS does not have authority", noAuthorityDomain.Name)
-				if noAuthorityZone != nil {
-					if !apimeta.IsStatusConditionTrue(noAuthorityZone.Status.Conditions, conditionTypeAccepted) ||
-						!apimeta.IsStatusConditionTrue(noAuthorityZone.Status.Conditions, conditionTypeProgrammed) {
-						msg = fmt.Sprintf("DNSZone %q is not ready (waiting for Accepted and Programmed conditions)", noAuthorityZone.Name)
-					} else if len(noAuthorityZone.Status.Nameservers) == 0 {
-						msg = fmt.Sprintf("DNSZone %q has no nameservers assigned yet", noAuthorityZone.Name)
-					} else {
-						msg = fmt.Sprintf("Domain %q nameservers do not include DNSZone %q nameservers; update your registrar's NS records", noAuthorityDomain.Name, noAuthorityZone.Name)
-					}
-				}
-				apimeta.SetStatusCondition(&hs.Conditions, metav1.Condition{
-					Type:               networkingv1alpha.HostnameConditionDNSRecordProgrammed,
-					Status:             metav1.ConditionFalse,
-					Reason:             networkingv1alpha.DNSRecordReasonDNSAuthorityMissing,
-					Message:            msg,
-					ObservedGeneration: upstreamGateway.Generation,
-				})
+				var note string
+				note, err = r.keepRecordSetWithoutAuthority(ctx, upstreamClient, upstreamGateway, hostname, desiredRecordSetNames, &holdRecheck)
+				cond.Reason = authorityReason(noAuthorityDomain, noAuthorityZone)
+				cond.Message = authorityMissingMessage(noAuthorityDomain, noAuthorityZone) + note
 			default:
-				apimeta.SetStatusCondition(&hs.Conditions, metav1.Condition{
-					Type:               networkingv1alpha.HostnameConditionDNSRecordProgrammed,
-					Status:             metav1.ConditionTrue,
-					Reason:             networkingv1alpha.DNSRecordReasonNotApplicable,
-					Message:            fmt.Sprintf("No Domain or DNSZone found for hostname %q", hostname),
-					ObservedGeneration: upstreamGateway.Generation,
-				})
+				cond.Status, cond.Reason = metav1.ConditionTrue, networkingv1alpha.DNSRecordReasonNotApplicable
+				cond.Message = fmt.Sprintf("No Domain or DNSZone found for hostname %q", hostname)
 			}
+			if err != nil {
+				result.Err = err
+				return nil, result, 0
+			}
+			apimeta.SetStatusCondition(&hs.Conditions, cond)
 			hostnameStatuses = append(hostnameStatuses, hs)
 			continue
 		}
@@ -251,37 +246,33 @@ func (r *GatewayReconciler) ensureDNSRecordSets(
 			client.MatchingLabels{labelDNSManaged: labelValueTrue},
 		); err != nil {
 			result.Err = fmt.Errorf("failed listing existing DNSRecordSets: %w", err)
-			return nil, result
+			return nil, result, 0
 		}
 
-		for _, existing := range existingList.Items {
-			if existing.Name == recordSetName {
-				// This is our own record; skip conflict check.
-				continue
+		if existing := userRecordConflict(existingList.Items, recordSetName, hostname, dnsZone.Name); existing != nil {
+			// Conflict: a record for this hostname exists that we don't own.
+			conflictMsg := fmt.Sprintf(
+				"Existing DNSRecordSet %q for hostname %q is managed by %q",
+				existing.Name, hostname, existing.Labels[labelManagedBy],
+			)
+			logger.Info("DNS record conflict detected",
+				"hostname", hostname,
+				"conflicting_record", existing.Name,
+				"managed_by", existing.Labels[labelManagedBy],
+			)
+			apimeta.SetStatusCondition(&hs.Conditions, metav1.Condition{
+				Type:               networkingv1alpha.HostnameConditionDNSRecordProgrammed,
+				Status:             metav1.ConditionFalse,
+				Reason:             networkingv1alpha.DNSRecordReasonConflict,
+				Message:            conflictMsg,
+				ObservedGeneration: upstreamGateway.Generation,
+			})
+			hostnameStatuses = append(hostnameStatuses, hs)
+			if err := endAuthorityHold(ctx, upstreamClient, client.ObjectKey{Namespace: upstreamGateway.Namespace, Name: recordSetName}); err != nil {
+				result.Err = err
+				return nil, result, 0
 			}
-			if existing.Annotations[annotationDNSHostname] == hostname &&
-				existing.Spec.DNSZoneRef.Name == dnsZone.Name &&
-				existing.Labels[labelManagedBy] != labelManagedByValue {
-				// Conflict: a record for this hostname exists that we don't own.
-				conflictMsg := fmt.Sprintf(
-					"Existing DNSRecordSet %q for hostname %q is managed by %q",
-					existing.Name, hostname, existing.Labels[labelManagedBy],
-				)
-				logger.Info("DNS record conflict detected",
-					"hostname", hostname,
-					"conflicting_record", existing.Name,
-					"managed_by", existing.Labels[labelManagedBy],
-				)
-				apimeta.SetStatusCondition(&hs.Conditions, metav1.Condition{
-					Type:               networkingv1alpha.HostnameConditionDNSRecordProgrammed,
-					Status:             metav1.ConditionFalse,
-					Reason:             networkingv1alpha.DNSRecordReasonConflict,
-					Message:            conflictMsg,
-					ObservedGeneration: upstreamGateway.Generation,
-				})
-				hostnameStatuses = append(hostnameStatuses, hs)
-				goto nextHostname
-			}
+			continue
 		}
 
 		{
@@ -318,6 +309,8 @@ func (r *GatewayReconciler) ensureDNSRecordSets(
 					desired.Annotations = map[string]string{}
 				}
 				desired.Annotations[annotationDNSHostname] = hostname
+				// Authority is back, so any wait it started is over.
+				delete(desired.Annotations, annotationDNSAuthorityMissingSince)
 
 				// Only write sync-started-at on creation (when creationTimestamp is zero).
 				if desired.CreationTimestamp.IsZero() {
@@ -330,7 +323,7 @@ func (r *GatewayReconciler) ensureDNSRecordSets(
 			if err != nil {
 				if apierrors.IsConflict(err) {
 					result.RequeueAfter = retryAfterConflict
-					return hostnameStatuses, result
+					return hostnameStatuses, result, 0
 				}
 				logger.Error(err, "failed to create or update DNSRecordSet",
 					"hostname", hostname,
@@ -374,67 +367,244 @@ func (r *GatewayReconciler) ensureDNSRecordSets(
 		}
 
 		hostnameStatuses = append(hostnameStatuses, hs)
-	nextHostname:
 	}
 
 	// Garbage-collect stale DNSRecordSets that are no longer needed.
 	gcResult := r.garbageCollectDNSRecordSets(ctx, upstreamClient, upstreamGateway, desiredRecordSetNames)
 	if gcResult.ShouldReturn() {
-		return hostnameStatuses, gcResult.Merge(result)
+		return hostnameStatuses, gcResult.Merge(result), holdRecheck
 	}
 
-	return hostnameStatuses, result
+	return hostnameStatuses, result, holdRecheck
+}
+
+// userRecordConflict returns a record set that another manager keeps for the
+// hostname in its zone, or nil. The gateway's own record set, recordSetName, is
+// never a conflict.
+func userRecordConflict(existing []dnsv1alpha1.DNSRecordSet, recordSetName, hostname, zoneName string) *dnsv1alpha1.DNSRecordSet {
+	for i := range existing {
+		rs := &existing[i]
+		if rs.Name != recordSetName &&
+			rs.Annotations[annotationDNSHostname] == hostname &&
+			rs.Spec.DNSZoneRef.Name == zoneName &&
+			rs.Labels[labelManagedBy] != labelManagedByValue {
+			return rs
+		}
+	}
+	return nil
+}
+
+// authorityMissingMessage says why Datum DNS has no authority for a verified
+// Domain, from the most specific fact the DNSZone shows.
+func authorityMissingMessage(domain *networkingv1alpha.Domain, zone *dnsv1alpha1.DNSZone) string {
+	if zone == nil {
+		return fmt.Sprintf("Domain %q is verified but Datum DNS does not have authority", domain.Name)
+	}
+	inputs := dnsutil.ReadZoneInputs(zone)
+	switch {
+	case !inputs.Ready():
+		return fmt.Sprintf("DNSZone %q is not ready (waiting for Accepted and Programmed conditions)", zone.Name)
+	case len(inputs.Nameservers) == 0:
+		return fmt.Sprintf("DNSZone %q has no nameservers assigned yet", zone.Name)
+	default:
+		return fmt.Sprintf("Domain %q nameservers do not include DNSZone %q nameservers; update your registrar's NS records", domain.Name, zone.Name)
+	}
+}
+
+// keepRecordSetWithoutAuthority keeps the existing record set of a claimed
+// hostname whose Domain has lost Datum DNS authority, for at most the configured
+// period, so that one wrong nameserver answer does not delete a record the
+// gateway still wants. It adds the record set to the desired set, lowers recheck
+// to when the wait ends, and returns the note the hostname's status carries.
+func (r *GatewayReconciler) keepRecordSetWithoutAuthority(
+	ctx context.Context,
+	upstreamClient client.Client,
+	upstreamGateway *gatewayv1.Gateway,
+	hostname string,
+	desired map[string]bool,
+	recheck *time.Duration,
+) (string, error) {
+	name := dnsRecordSetName(upstreamGateway.Name, hostname)
+	// One reading of the clock for the stamp, the deadline and the wait, so they cannot disagree.
+	now := time.Now()
+	until, kept, err := r.authorityHoldDeadline(ctx, upstreamClient, client.ObjectKey{Namespace: upstreamGateway.Namespace, Name: name}, now)
+	if err != nil || !kept {
+		return "", err
+	}
+	desired[name] = true
+	if wait := until.Sub(now); *recheck == 0 || wait < *recheck {
+		*recheck = wait
+	}
+	return fmt.Sprintf("; the existing record is kept until %s", until.UTC().Format(time.RFC3339)), nil
+}
+
+// authorityHoldDeadline returns when the wait on a record set without authority
+// ends, stamping the record set at the first check. The stamp lives on the
+// object rather than in memory, so a restart or a change of leader neither
+// restarts the wait nor skips it. It reports false when there is nothing to
+// keep: no record set of ours, a zero period, or a wait that is over.
+func (r *GatewayReconciler) authorityHoldDeadline(ctx context.Context, upstreamClient client.Client, key client.ObjectKey, now time.Time) (time.Time, bool, error) {
+	period := r.Config.Gateway.AuthorityLossGracePeriod()
+	if period <= 0 {
+		return time.Time{}, false, nil
+	}
+	rs, err := ownRecordSet(ctx, upstreamClient, key)
+	if rs == nil || err != nil {
+		return time.Time{}, false, err
+	}
+	since, ok := authorityMissingSince(ctx, rs)
+	if !ok {
+		since = now.UTC().Truncate(time.Second)
+		if err := stampAuthorityMissing(ctx, upstreamClient, rs, since); err != nil {
+			return time.Time{}, false, err
+		}
+	}
+	until := since.Add(period)
+	return until, now.Before(until), nil
+}
+
+// endAuthorityHold removes the stamp from a record set whose Domain has Datum
+// DNS authority again, on the path that leaves the record set otherwise as it
+// is: a record of another manager holds the hostname. A stamp left there would
+// count from the old loss at the next one. The programming path removes the
+// stamp in its own update.
+func endAuthorityHold(ctx context.Context, upstreamClient client.Client, key client.ObjectKey) error {
+	rs, err := ownRecordSet(ctx, upstreamClient, key)
+	if rs == nil || err != nil {
+		return err
+	}
+	if _, stamped := rs.Annotations[annotationDNSAuthorityMissingSince]; !stamped {
+		return nil
+	}
+	patch := client.MergeFrom(rs.DeepCopy())
+	delete(rs.Annotations, annotationDNSAuthorityMissingSince)
+	if err := upstreamClient.Patch(ctx, rs, patch); err != nil {
+		return fmt.Errorf("failed removing the authority-missing stamp from DNSRecordSet %q: %w", rs.Name, err)
+	}
+	return nil
+}
+
+// ownRecordSet reads the record set Gateway DNS manages under key. It returns
+// nil when there is none, or when another manager owns that name: the hold
+// never writes a record set it does not manage.
+func ownRecordSet(ctx context.Context, upstreamClient client.Client, key client.ObjectKey) (*dnsv1alpha1.DNSRecordSet, error) {
+	var rs dnsv1alpha1.DNSRecordSet
+	if err := upstreamClient.Get(ctx, key, &rs); err != nil {
+		return nil, client.IgnoreNotFound(err)
+	}
+	if rs.Labels[labelManagedBy] != labelManagedByValue {
+		return nil, nil
+	}
+	return &rs, nil
+}
+
+// authorityMissingSince reads a record set's stamp. An unreadable stamp is
+// treated as none: the wait restarts rather than a record set being deleted on
+// the strength of a value nothing can read.
+func authorityMissingSince(ctx context.Context, rs *dnsv1alpha1.DNSRecordSet) (time.Time, bool) {
+	stamp := rs.Annotations[annotationDNSAuthorityMissingSince]
+	if stamp == "" {
+		return time.Time{}, false
+	}
+	since, err := time.Parse(time.RFC3339, stamp)
+	if err != nil {
+		log.FromContext(ctx).Info("DNS record set carries an unreadable authority-missing-since stamp, restarting the wait",
+			"record_set_name", rs.Name, "stamp", stamp)
+		return time.Time{}, false
+	}
+	return since, true
+}
+
+func stampAuthorityMissing(ctx context.Context, upstreamClient client.Client, rs *dnsv1alpha1.DNSRecordSet, since time.Time) error {
+	patch := client.MergeFrom(rs.DeepCopy())
+	if rs.Annotations == nil {
+		rs.Annotations = map[string]string{}
+	}
+	rs.Annotations[annotationDNSAuthorityMissingSince] = since.Format(time.RFC3339)
+	if err := upstreamClient.Patch(ctx, rs, patch); err != nil {
+		return fmt.Errorf("failed recording when DNSRecordSet %q lost DNS authority: %w", rs.Name, err)
+	}
+	return nil
 }
 
 // reconcileDNSStatus computes and applies the aggregate DNSRecordsProgrammed
 // condition on the upstream gateway from the per-hostname statuses produced by
-// ensureDNSRecordSets. Hostnames marked NotApplicable are excluded from the
-// count. The condition is removed entirely when no hostnames require
-// Datum-managed DNS records.
+// ensureDNSRecordSets. The condition is removed entirely when no hostnames
+// require Datum-managed DNS records.
 func (r *GatewayReconciler) reconcileDNSStatus(
 	upstreamClient client.Client,
 	upstreamGateway *gatewayv1.Gateway,
 	hostnameStatuses []networkingv1alpha.HostnameStatus,
 ) (result Result) {
-	needed, programmed := 0, 0
-
-	for _, hs := range hostnameStatuses {
-		c := apimeta.FindStatusCondition(hs.Conditions, networkingv1alpha.HostnameConditionDNSRecordProgrammed)
-		if c == nil {
-			continue
-		}
-		if c.Reason == networkingv1alpha.DNSRecordReasonNotApplicable {
-			continue
-		}
-		needed++
-		if c.Status == metav1.ConditionTrue {
-			programmed++
-		}
-	}
-
-	switch {
-	case needed == 0:
+	if cond := dnsRecordsProgrammed(hostnameStatuses, upstreamGateway.Generation); cond != nil {
+		apimeta.SetStatusCondition(&upstreamGateway.Status.Conditions, *cond)
+	} else {
 		apimeta.RemoveStatusCondition(&upstreamGateway.Status.Conditions, networkingv1alpha.HTTPProxyConditionDNSRecordsProgrammed)
-	case programmed == needed:
-		apimeta.SetStatusCondition(&upstreamGateway.Status.Conditions, metav1.Condition{
-			Type:               networkingv1alpha.HTTPProxyConditionDNSRecordsProgrammed,
-			Status:             metav1.ConditionTrue,
-			Reason:             networkingv1alpha.DNSRecordsProgrammedReasonAllCreated,
-			Message:            fmt.Sprintf("%d/%d hostnames have DNS records programmed", programmed, needed),
-			ObservedGeneration: upstreamGateway.Generation,
-		})
-	default:
-		apimeta.SetStatusCondition(&upstreamGateway.Status.Conditions, metav1.Condition{
-			Type:               networkingv1alpha.HTTPProxyConditionDNSRecordsProgrammed,
-			Status:             metav1.ConditionFalse,
-			Reason:             networkingv1alpha.DNSRecordsProgrammedReasonPartialFailure,
-			Message:            fmt.Sprintf("%d/%d hostnames have DNS records programmed; see per-hostname conditions for details", programmed, needed),
-			ObservedGeneration: upstreamGateway.Generation,
-		})
 	}
 
 	result.AddStatusPatch(upstreamClient, upstreamGateway, fieldOwner(gatewayControllerName))
 	return result
+}
+
+// dnsRecordsProgrammed returns the aggregate DNSRecordsProgrammed condition for
+// the hostnames, or nil when none needs a Datum DNS record. It is False with
+// reason Pending while every hostname without a record waits on Datum, and
+// False with reason PartialFailure when one has failed or waits on the
+// customer.
+func dnsRecordsProgrammed(hostnameStatuses []networkingv1alpha.HostnameStatus, generation int64) *metav1.Condition {
+	n := countDNSRecords(hostnameStatuses)
+	cond := &metav1.Condition{
+		Type:               networkingv1alpha.HTTPProxyConditionDNSRecordsProgrammed,
+		Status:             metav1.ConditionFalse,
+		Reason:             networkingv1alpha.DNSRecordsProgrammedReasonPartialFailure,
+		Message:            fmt.Sprintf("%d/%d hostnames have DNS records programmed; see per-hostname conditions for details", n.programmed, n.needed),
+		ObservedGeneration: generation,
+	}
+	switch {
+	case n.needed == 0:
+		return nil
+	case n.programmed == n.needed:
+		cond.Status, cond.Reason = metav1.ConditionTrue, networkingv1alpha.DNSRecordsProgrammedReasonAllCreated
+		cond.Message = fmt.Sprintf("%d/%d hostnames have DNS records programmed", n.programmed, n.needed)
+	case n.programmed+n.waiting == n.needed:
+		cond.Reason = networkingv1alpha.HTTPProxyReasonPending
+		cond.Message = fmt.Sprintf("%d/%d hostnames have DNS records programmed; the others wait for their DNS zone or domain to be set up", n.programmed, n.needed)
+	}
+	return cond
+}
+
+// dnsRecordCounts counts the hostnames that need a Datum DNS record, and of
+// those the ones programmed and the ones that wait on Datum.
+type dnsRecordCounts struct {
+	needed, programmed, waiting int
+}
+
+func countDNSRecords(hostnameStatuses []networkingv1alpha.HostnameStatus) dnsRecordCounts {
+	var n dnsRecordCounts
+	for _, hs := range hostnameStatuses {
+		c := neededDNSRecord(hs)
+		if c == nil {
+			continue
+		}
+		n.needed++
+		switch {
+		case c.Status == metav1.ConditionTrue:
+			n.programmed++
+		case waitsOnDatum(c.Reason):
+			n.waiting++
+		}
+	}
+	return n
+}
+
+// neededDNSRecord returns the hostname's DNSRecordProgrammed condition, or nil
+// when it has none or does not use Datum-managed DNS.
+func neededDNSRecord(hs networkingv1alpha.HostnameStatus) *metav1.Condition {
+	c := apimeta.FindStatusCondition(hs.Conditions, networkingv1alpha.HostnameConditionDNSRecordProgrammed)
+	if c == nil || c.Reason == networkingv1alpha.DNSRecordReasonNotApplicable {
+		return nil
+	}
+	return c
 }
 
 // garbageCollectDNSRecordSets deletes DNSRecordSet resources that were
@@ -619,32 +789,38 @@ func operationResultVerb(result controllerutil.OperationResult) string {
 	}
 }
 
-// listGatewaysForDNSZoneFunc returns a TypedEventHandler that enqueues every
-// Gateway in the same namespace whenever a DNSZone changes. This ensures the
-// controller re-evaluates DNS record status when a zone becomes ready or is
-// deleted.
-func (r *GatewayReconciler) listGatewaysForDNSZoneFunc(clusterName multicluster.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
-	return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []mcreconcile.Request {
-		dnsZone := obj.(*dnsv1alpha1.DNSZone)
-		logger := log.FromContext(ctx)
+// watchDNSZones adds the DNSZone watch to the Gateway controller. A zone
+// change reaches the Gateways whose listener hostnames the zone covers, and
+// only when it changes something their DNS reads from the zone.
+//
+// The handler is built here and nowhere else, so the watch cannot be
+// registered without its predicate.
+func (r *GatewayReconciler) watchDNSZones(b *mcbuilder.Builder) *mcbuilder.Builder {
+	coveredGateways := func(clusterName multicluster.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
+		return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []mcreconcile.Request {
+			dnsZone := obj.(*dnsv1alpha1.DNSZone)
+			return listGatewaysCoveredByDomain(ctx, cl.GetClient(), clusterName, dnsZone.Namespace, dnsZone.Spec.DomainName)
+		})
+	}
+	return b.Watches(&dnsv1alpha1.DNSZone{}, coveredGateways, mcbuilder.WithPredicates(dnsZoneAuthorityChangedPredicate()))
+}
 
-		var gatewayList gatewayv1.GatewayList
-		if err := cl.GetClient().List(ctx, &gatewayList, client.InNamespace(dnsZone.Namespace)); err != nil {
-			logger.Error(err, "failed to list Gateways for DNSZone change")
-			return nil
-		}
-
-		var requests []mcreconcile.Request
-		for _, gw := range gatewayList.Items {
-			requests = append(requests, mcreconcile.Request{
-				ClusterName: clusterName,
-				Request: reconcile.Request{
-					NamespacedName: client.ObjectKeyFromObject(&gw),
-				},
-			})
-		}
-		return requests
-	})
+// dnsZoneAuthorityChangedPredicate passes a zone's creation and deletion, and
+// an update that changes what a Gateway's DNS reads from the zone
+// (dnsutil.ZoneInputs). The zone's record count changes with every record set
+// that references it, so passing every update re-reconciled each Gateway in
+// the namespace on each record write.
+func dnsZoneAuthorityChangedPredicate() predicate.Predicate {
+	return predicate.Funcs{
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			oldZone, okOld := e.ObjectOld.(*dnsv1alpha1.DNSZone)
+			newZone, okNew := e.ObjectNew.(*dnsv1alpha1.DNSZone)
+			if !okOld || !okNew {
+				return true
+			}
+			return !dnsutil.ReadZoneInputs(oldZone).Equal(dnsutil.ReadZoneInputs(newZone))
+		},
+	}
 }
 
 // listGatewaysForDNSRecordSetFunc returns a TypedEventHandler that enqueues

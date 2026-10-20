@@ -52,6 +52,18 @@ const (
 	NetworkServiceProtocolTCP NetworkServiceProtocol = "TCP"
 )
 
+// NetworkServiceAppProtocol is the HTTP version the edge uses to reach
+// members, named as on a Kubernetes Service port.
+//
+// +kubebuilder:validation:Enum="kubernetes.io/h2c"
+type NetworkServiceAppProtocol string
+
+const (
+	// NetworkServiceAppProtocolH2C is HTTP/2 to a member that leaves TLS to the
+	// edge, which is how gRPC servers run behind it.
+	NetworkServiceAppProtocolH2C NetworkServiceAppProtocol = "kubernetes.io/h2c"
+)
+
 // NetworkServiceTrafficDistributionStrategy is how traffic is spread across the
 // locations a service has members in.
 //
@@ -132,6 +144,20 @@ type NetworkServicePort struct {
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:default="TCP"
 	Protocol NetworkServiceProtocol `json:"protocol,omitempty"`
+
+	// appProtocol is the HTTP version the edge uses to send requests to members
+	// on this port. The edge terminates TLS, so members serve plain HTTP either
+	// way.
+	//
+	// Leave it unset for HTTP/1.1, which suits most servers.
+	//
+	// Set kubernetes.io/h2c for servers that speak HTTP/2, such as gRPC servers.
+	// Every request on the port then reaches members as HTTP/2, even when the
+	// client sent HTTP/1.1. Most servers can't take WebSockets over HTTP/2, so
+	// serve those on a different port.
+	//
+	// +kubebuilder:validation:Optional
+	AppProtocol *NetworkServiceAppProtocol `json:"appProtocol,omitempty"`
 }
 
 // NetworkServiceTrafficDistribution is how the platform spreads traffic across

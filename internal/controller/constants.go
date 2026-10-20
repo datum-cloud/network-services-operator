@@ -56,6 +56,10 @@ const (
 // operator sets on a DNSZone it holds back until its Domain is verified.
 const dnsZoneReasonPendingDomainVerification = "PendingDomainVerification"
 
+// dnsZoneReasonPending is the reason the DNS operator sets on a DNSZone
+// condition it has not settled yet.
+const dnsZoneReasonPending = "Pending"
+
 // cert-manager condition status values used when parsing unstructured Certificate objects.
 const (
 	certManagerConditionStatusTrue = "True"

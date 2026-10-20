@@ -53,6 +53,7 @@ func TestEnsureDownstreamGateway(t *testing.T) {
 	assert.NoError(t, discoveryv1.AddToScheme(testScheme))
 	assert.NoError(t, networkingv1alpha.AddToScheme(testScheme))
 	assert.NoError(t, cmv1.AddToScheme(testScheme))
+	assert.NoError(t, envoygatewayv1alpha1.AddToScheme(testScheme))
 
 	upstreamNamespace := &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
@@ -311,6 +312,7 @@ func TestEnsureDownstreamGatewayWildcardCert(t *testing.T) {
 	assert.NoError(t, discoveryv1.AddToScheme(testScheme))
 	assert.NoError(t, networkingv1alpha.AddToScheme(testScheme))
 	assert.NoError(t, cmv1.AddToScheme(testScheme))
+	assert.NoError(t, envoygatewayv1alpha1.AddToScheme(testScheme))
 
 	upstreamNamespace := &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
@@ -726,6 +728,7 @@ func TestListenerCertificateHealthGating(t *testing.T) {
 	require.NoError(t, discoveryv1.AddToScheme(testScheme))
 	require.NoError(t, networkingv1alpha.AddToScheme(testScheme))
 	require.NoError(t, cmv1.AddToScheme(testScheme))
+	require.NoError(t, envoygatewayv1alpha1.AddToScheme(testScheme))
 
 	upstreamNamespace := &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{Name: "test", UID: uuid.NewUUID()},
@@ -3397,6 +3400,30 @@ func TestProcessDownstreamHTTPRouteRulesNetworkServicePanicThreshold(t *testing.
 		resources := run(t, slice)
 
 		assert.Nil(t, findPolicy(resources), "a plain backend must not get the policy")
+	})
+
+	// Envoy Gateway reads the Service port's appProtocol to choose the upstream
+	// HTTP version, so h2c must reach it unchanged and must not be mistaken for
+	// a TLS origin.
+	t.Run("h2c reaches the downstream service port", func(t *testing.T) {
+		slice := newEndpointSlice("test-0-0", map[string]string{
+			NetworkServiceBackendLabel: "checkout",
+		})
+		slice.Ports[0].AppProtocol = ptr.To(string(networkingv1alpha.NetworkServiceAppProtocolH2C))
+
+		resources := run(t, slice)
+
+		var service *corev1.Service
+		for _, obj := range resources {
+			if s, ok := obj.(*corev1.Service); ok {
+				service = s
+			}
+			_, isTLSPolicy := obj.(*gatewayv1.BackendTLSPolicy)
+			assert.False(t, isTLSPolicy, "an h2c backend is cleartext and must not get a BackendTLSPolicy")
+		}
+		require.NotNil(t, service)
+		require.Len(t, service.Spec.Ports, 1)
+		assert.Equal(t, "kubernetes.io/h2c", ptr.Deref(service.Spec.Ports[0].AppProtocol, ""))
 	})
 }
 

@@ -142,6 +142,7 @@ type GatewayReconciler struct {
 
 // +kubebuilder:rbac:groups=gateway.envoyproxy.io,resources=backendtrafficpolicies,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=gateway.envoyproxy.io,resources=backendtrafficpolicies/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=gateway.envoyproxy.io,resources=clienttrafficpolicies,verbs=get;list;watch;create;update;patch;delete
 
 // +kubebuilder:rbac:groups=cert-manager.io,resources=certificates,verbs=get;list;watch;create;update;patch;delete
 
@@ -271,30 +272,7 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 	}
 	upstreamGatewayClassControllerName := string(upstreamGatewayClass.Spec.ControllerName)
 
-	var targetDomainHostnames []string
-	// Keep existing addresses in the status if present.
-	if len(upstreamGateway.Status.Addresses) > 0 {
-		for _, addr := range upstreamGateway.Status.Addresses {
-			if ptr.Deref(addr.Type, "") == gatewayv1.HostnameAddressType {
-				targetDomainHostnames = append(targetDomainHostnames, addr.Value)
-			}
-		}
-	} else {
-		gatewayDNSAddress := r.gatewayCanonicalHostname(upstreamGateway)
-
-		// targetDomainHostnames are default hostnames that are unique to each gateway, and
-		// will have DNS records created for them. Any custom hostnames provided in
-		// listeners WILL NOT be added to the addresses list in the gateway status.
-		targetDomainHostnames = append(targetDomainHostnames, gatewayDNSAddress)
-
-		if r.Config.Gateway.IPv4Enabled() {
-			targetDomainHostnames = append(targetDomainHostnames, fmt.Sprintf("v4.%s", gatewayDNSAddress))
-		}
-
-		if r.Config.Gateway.IPv6Enabled() {
-			targetDomainHostnames = append(targetDomainHostnames, fmt.Sprintf("v6.%s", gatewayDNSAddress))
-		}
-	}
+	targetDomainHostnames := r.targetDomainHostnames(upstreamGateway)
 
 	downstreamClient := downstreamStrategy.GetClient()
 	downstreamGatewayObjectMeta, err := downstreamStrategy.ObjectMetaFromUpstreamObject(ctx, upstreamGateway)
@@ -363,6 +341,11 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 		return result, nil
 	}
 
+	// The policy tunes how the edge serves clients, and routing does not wait
+	// on it: a failed write is retried without holding up DNS, status or routes.
+	result.Err = ensureDownstreamClientTrafficPolicy(ctx, downstreamClient,
+		r.Config.Gateway.DownstreamClientTraffic, downstreamGateway)
+
 	var certificateServiceRequeue time.Duration
 	if r.Config.Gateway.CertificateService.Enabled {
 		// The service is a dependency of issuance, not of routing: whatever it
@@ -426,7 +409,9 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 	// gateway status updates.
 	result = result.Merge(dnsResult)
 
-	hostnameStatuses, dnsProgramResult := r.ensureDNSRecordSets(
+	// The authority recheck is carried, not returned on: a kept record set must
+	// not stop the gateway's status and routes from reconciling.
+	hostnameStatuses, dnsProgramResult, dnsAuthorityRecheck := r.ensureDNSRecordSets(
 		ctx,
 		upstreamClient,
 		upstreamGateway,
@@ -437,10 +422,9 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 	}
 	result = result.Merge(dnsProgramResult)
 
-	if len(hostnameStatuses) > 0 {
-		dnsStatusResult := r.reconcileDNSStatus(upstreamClient, upstreamGateway, hostnameStatuses)
-		result = result.Merge(dnsStatusResult)
-	}
+	// With no hostname left for Datum DNS, this removes the condition an earlier
+	// state left.
+	result = result.Merge(r.reconcileDNSStatus(upstreamClient, upstreamGateway, hostnameStatuses))
 
 	gatewayStatusResult := r.reconcileGatewayStatus(
 		upstreamClient,
@@ -474,9 +458,7 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 			break
 		}
 	}
-	if certificateServiceRequeue > 0 && (result.RequeueAfter == 0 || certificateServiceRequeue < result.RequeueAfter) {
-		result.RequeueAfter = certificateServiceRequeue
-	}
+	result.RequeueAfter = earliestRequeue(result.RequeueAfter, certificateServiceRequeue, dnsAuthorityRecheck)
 
 	addresses := make([]gatewayv1.GatewayStatusAddress, 0, len(targetDomainHostnames))
 
@@ -493,6 +475,44 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 	}
 
 	return httpRouteResult.Merge(result), downstreamGateway
+}
+
+// earliestRequeue returns the shortest positive wait among current and the
+// others, or zero when none is positive, so that every reason to check back is
+// honoured by the soonest of them.
+func earliestRequeue(current time.Duration, others ...time.Duration) time.Duration {
+	for _, wait := range others {
+		if wait > 0 && (current == 0 || wait < current) {
+			current = wait
+		}
+	}
+	return current
+}
+
+// targetDomainHostnames returns the default hostnames that are unique to the
+// gateway and get DNS records. Those already in its status are kept; otherwise
+// they are its canonical hostname and, per enabled IP family, its v4. and v6.
+// forms. Custom hostnames in listeners are never added to the status addresses.
+func (r *GatewayReconciler) targetDomainHostnames(upstreamGateway *gatewayv1.Gateway) []string {
+	var hostnames []string
+	if len(upstreamGateway.Status.Addresses) > 0 {
+		for _, addr := range upstreamGateway.Status.Addresses {
+			if ptr.Deref(addr.Type, "") == gatewayv1.HostnameAddressType {
+				hostnames = append(hostnames, addr.Value)
+			}
+		}
+		return hostnames
+	}
+
+	gatewayDNSAddress := r.gatewayCanonicalHostname(upstreamGateway)
+	hostnames = append(hostnames, gatewayDNSAddress)
+	if r.Config.Gateway.IPv4Enabled() {
+		hostnames = append(hostnames, fmt.Sprintf("v4.%s", gatewayDNSAddress))
+	}
+	if r.Config.Gateway.IPv6Enabled() {
+		hostnames = append(hostnames, fmt.Sprintf("v6.%s", gatewayDNSAddress))
+	}
+	return hostnames
 }
 
 // listenerCertExpiryMargin keeps a certificate that is mid-renewal from briefly
@@ -2480,22 +2500,7 @@ func (r *GatewayReconciler) ensureDownstreamHTTPRoute(
 				// panic threshold. Copied from the downstream route here, rather
 				// than set on the desired object, so a policy created before this
 				// fix picks the labels up on its next reconcile.
-				labels := obj.GetLabels()
-				if labels == nil {
-					labels = map[string]string{}
-				}
-				for _, key := range []string{
-					downstreamclient.UpstreamOwnerClusterNameLabel,
-					downstreamclient.UpstreamOwnerGroupLabel,
-					downstreamclient.UpstreamOwnerKindLabel,
-					downstreamclient.UpstreamOwnerNameLabel,
-					downstreamclient.UpstreamOwnerNamespaceLabel,
-				} {
-					if v, ok := downstreamRoute.Labels[key]; ok {
-						labels[key] = v
-					}
-				}
-				obj.SetLabels(labels)
+				copyUpstreamOwnerLabels(obj, downstreamRoute)
 			}
 			return nil
 		})
@@ -3209,11 +3214,7 @@ func (r *GatewayReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 		WatchesRawSource(releasedHostnameClaimSource)
 
 	if r.Config.Gateway.EnableDNSIntegration {
-		builder = builder.
-			Watches(
-				&dnsv1alpha1.DNSZone{},
-				r.listGatewaysForDNSZoneFunc,
-			).
+		builder = r.watchDNSZones(builder).
 			Watches(
 				&dnsv1alpha1.DNSRecordSet{},
 				r.listGatewaysForDNSRecordSetFunc,
@@ -3448,37 +3449,44 @@ func (r *GatewayReconciler) listGatewaysForDomainFunc(clusterName multicluster.C
 			return nil
 		}
 
-		logger := log.FromContext(ctx)
-
-		var gatewayList gatewayv1.GatewayList
-		if err := cl.GetClient().List(ctx, &gatewayList, client.InNamespace(domain.Namespace)); err != nil {
-			logger.Error(err, "failed to list Gateways")
-			return nil
-		}
-
-		var requests []mcreconcile.Request
-
-		for _, gateway := range gatewayList.Items {
-			for _, l := range gateway.Spec.Listeners {
-				if l.Hostname == nil {
-					continue
-				}
-				hostname := string(*l.Hostname)
-
-				if hostname == domain.Spec.DomainName || strings.HasSuffix(hostname, "."+domain.Spec.DomainName) {
-					requests = append(requests, mcreconcile.Request{
-						ClusterName: clusterName,
-						Request: reconcile.Request{
-							NamespacedName: client.ObjectKeyFromObject(&gateway),
-						},
-					})
-					continue
-				}
-			}
-		}
-
-		return requests
+		return listGatewaysCoveredByDomain(ctx, cl.GetClient(), clusterName, domain.Namespace, domain.Spec.DomainName)
 	})
+}
+
+// listGatewaysCoveredByDomain returns a request for each Gateway in namespace
+// with a listener hostname that domainName covers: the name itself or a name
+// under it.
+func listGatewaysCoveredByDomain(
+	ctx context.Context,
+	c client.Client,
+	clusterName multicluster.ClusterName,
+	namespace, domainName string,
+) []mcreconcile.Request {
+	var gatewayList gatewayv1.GatewayList
+	if err := c.List(ctx, &gatewayList, client.InNamespace(namespace)); err != nil {
+		log.FromContext(ctx).Error(err, "failed to list Gateways", "domain", domainName)
+		return nil
+	}
+
+	var requests []mcreconcile.Request
+	for i := range gatewayList.Items {
+		if gatewayHasHostnameUnder(&gatewayList.Items[i], domainName) {
+			requests = append(requests, mcreconcile.Request{
+				ClusterName: clusterName,
+				Request:     reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&gatewayList.Items[i])},
+			})
+		}
+	}
+	return requests
+}
+
+func gatewayHasHostnameUnder(gateway *gatewayv1.Gateway, domainName string) bool {
+	for _, l := range gateway.Spec.Listeners {
+		if l.Hostname != nil && domainCoversHostname(domainName, string(*l.Hostname)) {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *GatewayReconciler) listGatewaysForHTTPRouteFilterFunc(clusterName multicluster.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {

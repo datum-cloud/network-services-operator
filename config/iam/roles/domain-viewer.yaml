@@ -10,4 +10,5 @@ spec:
   includedPermissions:
     - networking.datumapis.com/domains.list
     - networking.datumapis.com/domains.get
+    - networking.datumapis.com/domains/status.get
     - networking.datumapis.com/domains.watch

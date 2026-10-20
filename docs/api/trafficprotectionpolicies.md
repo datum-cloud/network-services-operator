@@ -294,7 +294,8 @@ positives.
         <td><b>ids</b></td>
         <td>[]integer</td>
         <td>
-          IDs is a list of specific rule IDs to disable<br/>
+          IDs is a list of specific rule IDs to disable. A rule ID is not
+negative.<br/>
         </td>
         <td>false</td>
       </tr><tr>

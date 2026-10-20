@@ -129,8 +129,11 @@ spec:
                               maxItems: 100
                               type: array
                             ids:
-                              description: IDs is a list of specific rule IDs to disable
+                              description: |-
+                                IDs is a list of specific rule IDs to disable. A rule ID is not
+                                negative.
                               items:
+                                minimum: 0
                                 type: integer
                               maxItems: 100
                               type: array

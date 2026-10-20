@@ -18,7 +18,6 @@ const schema = z.object({
     .string({ error: 'Name is required.' })
     .max(63, 'At most 63 characters.')
     .regex(/^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/, NAME_MESSAGE),
-  includeIPv4: z.boolean().optional(),
   mtu: z
     .number({ error: 'Enter a whole number.' })
     .int('Enter a whole number.')
@@ -51,7 +50,7 @@ export function CreateNetworkDialog({
     mutation.mutate(
       {
         name: data.name,
-        ipFamilies: data.includeIPv4 ? ['IPv4', 'IPv6'] : ['IPv6'],
+        ipFamilies: ['IPv6'],
         mtu: data.mtu,
       },
       {
@@ -84,7 +83,6 @@ export function CreateNetworkDialog({
           open={open}
           onOpenChange={setOpen}
           title="Create a network"
-          description="The platform addresses workloads over IPv6, so every network carries it. Add IPv4 alongside it for dual-stack."
           schema={schema}
           onSubmit={handleSubmit}
           loading={mutation.isPending}
@@ -101,9 +99,6 @@ export function CreateNetworkDialog({
               tooltip="Maximum transmission unit. Traffic between regions is encapsulated, so a larger MTU can stall connections on some paths."
               description={`Between 1300 and 8856. Defaults to ${DEFAULT_MTU}.`}>
               <Form.Input type="number" inputMode="numeric" placeholder={String(DEFAULT_MTU)} />
-            </Form.Field>
-            <Form.Field name="includeIPv4">
-              <Form.Checkbox label="Also carry IPv4 (dual-stack)" />
             </Form.Field>
           </div>
         </Form.Dialog>

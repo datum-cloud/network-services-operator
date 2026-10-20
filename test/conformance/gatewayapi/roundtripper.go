@@ -13,7 +13,6 @@ import (
 	"net/http/httputil"
 	"regexp"
 
-	"golang.org/x/net/http2"
 	"sigs.k8s.io/gateway-api/conformance/utils/config"
 	"sigs.k8s.io/gateway-api/conformance/utils/roundtripper"
 	"sigs.k8s.io/gateway-api/conformance/utils/tlog"
@@ -57,11 +56,11 @@ func (d *NodePortRoundTripper) h2cPriorKnowledgeTransport(request roundtripper.R
 		return nil, errors.New("request has configured TLS but h2 prior knowledge is not encrypted")
 	}
 
-	transport := &http2.Transport{
-		AllowHTTP: true,
-		DialTLSContext: func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
-			return d.DialContext(ctx, network, addr)
-		},
+	protocols := new(http.Protocols)
+	protocols.SetUnencryptedHTTP2(true)
+	transport := &http.Transport{
+		DialContext: d.DialContext,
+		Protocols:   protocols,
 	}
 
 	return transport, nil

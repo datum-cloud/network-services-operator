@@ -100,7 +100,7 @@ func TestHostnameRemoval_ReapsRecordInSameReconcile(t *testing.T) {
 	require.NoError(t, fakeDownstreamClient.Update(ctx, downstreamGateway))
 	require.True(t, hasListenerHostname(downstreamGateway, "www.ab.dk"), "pass 1: downstream should carry the www.ab.dk listener")
 
-	_, dnsResult1 := reconciler.ensureDNSRecordSets(ctx, fakeUpstreamClient, gw, claimed1)
+	_, dnsResult1, _ := reconciler.ensureDNSRecordSets(ctx, fakeUpstreamClient, gw, claimed1)
 	require.NoError(t, dnsResult1.Err)
 
 	var rs dnsv1alpha1.DNSRecordSet
@@ -134,7 +134,7 @@ func TestHostnameRemoval_ReapsRecordInSameReconcile(t *testing.T) {
 	require.NoError(t, fakeDownstreamClient.Update(ctx, downstreamGateway))
 	assert.False(t, hasListenerHostname(downstreamGateway, "www.ab.dk"), "pass 2: downstream listener is dropped")
 
-	_, dnsResult2 := reconciler.ensureDNSRecordSets(ctx, fakeUpstreamClient, gw, claimed2)
+	_, dnsResult2, _ := reconciler.ensureDNSRecordSets(ctx, fakeUpstreamClient, gw, claimed2)
 	require.NoError(t, dnsResult2.Err)
 
 	err = fakeUpstreamClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: rsName}, &rs)

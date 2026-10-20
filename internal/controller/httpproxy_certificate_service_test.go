@@ -29,11 +29,15 @@ import (
 func TestBuildCertificateStatusesCertificateService(t *testing.T) {
 	t.Parallel()
 
-	testScheme := runtime.NewScheme()
-	require.NoError(t, scheme.AddToScheme(testScheme))
-	require.NoError(t, gatewayv1.Install(testScheme))
-	require.NoError(t, networkingv1alpha.AddToScheme(testScheme))
-	require.NoError(t, certificatesv1alpha1.AddToScheme(testScheme))
+	newTestScheme := func(t *testing.T) *runtime.Scheme {
+		t.Helper()
+		s := runtime.NewScheme()
+		require.NoError(t, scheme.AddToScheme(s))
+		require.NoError(t, gatewayv1.Install(s))
+		require.NoError(t, networkingv1alpha.AddToScheme(s))
+		require.NoError(t, certificatesv1alpha1.AddToScheme(s))
+		return s
+	}
 
 	const wildcard = "*.shop.example.com"
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "test-ns", UID: types.UID("ns-uid")}}
@@ -209,8 +213,20 @@ func TestBuildCertificateStatusesCertificateService(t *testing.T) {
 			if tt.mutate != nil {
 				tt.mutate(tt.upstream[0].(*certificatesv1alpha1.TLSCertificate))
 			}
-			upstreamClient := fake.NewClientBuilder().WithScheme(testScheme).WithObjects(ns).WithObjects(tt.upstream...).Build()
-			downstreamClient := fake.NewClientBuilder().WithScheme(testScheme).WithObjects(tt.downstream...).Build()
+			// Fake clients may register unstructured kinds in the Scheme during
+			// reads. Give every parallel case its own Scheme and fixture objects.
+			testScheme := newTestScheme(t)
+			upstreamObjects := make([]client.Object, 0, len(tt.upstream)+1)
+			upstreamObjects = append(upstreamObjects, ns.DeepCopy())
+			for _, object := range tt.upstream {
+				upstreamObjects = append(upstreamObjects, object.DeepCopyObject().(client.Object))
+			}
+			downstreamObjects := make([]client.Object, 0, len(tt.downstream))
+			for _, object := range tt.downstream {
+				downstreamObjects = append(downstreamObjects, object.DeepCopyObject().(client.Object))
+			}
+			upstreamClient := fake.NewClientBuilder().WithScheme(testScheme).WithObjects(upstreamObjects...).Build()
+			downstreamClient := fake.NewClientBuilder().WithScheme(testScheme).WithObjects(downstreamObjects...).Build()
 
 			r := &HTTPProxyReconciler{
 				Config: config.NetworkServicesOperator{Gateway: config.GatewayConfig{

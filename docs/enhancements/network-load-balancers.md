@@ -49,7 +49,8 @@ where their service runs.
 
 - Publish a TCP or UDP `NetworkService` through a named listener and separate
   route.
-- Actively check backend health before serving traffic.
+- Actively check backend health and select healthy endpoints round robin within
+  the ingress location.
 - Support opaque TLS over TCP, SNI-based TLS passthrough, and TLS termination
   with a referenced certificate for non-HTTP applications.
 - Allocate a distinct public address in every backend location by default,
@@ -59,8 +60,8 @@ where their service runs.
 - Show allocated addresses and serving locations without releasing an address
   when its backends are temporarily unavailable.
 - Use an address request shape that can later serve Application Load Balancers.
-- Cover Gateway API's TCPRoute, UDPRoute, and TLSRoute behavior, including its
-  optional L4 features, before claiming full L4 compatibility.
+- Support unweighted TCPRoute, UDPRoute, and TLSRoute behavior through a
+  Gateway API adapter, and document unsupported optional features.
 - Leave room for common L4 traffic controls without requiring them in the first
   release.
 
@@ -72,6 +73,7 @@ where their service runs.
   Services Load Balancer will own global entry points and cross-location
   service behavior.
 - Requiring consumers to create Gateway API or Galactic resources.
+- Per-backend traffic weights.
 
 ## Proposal
 
@@ -81,8 +83,9 @@ it serves. A `NetworkLoadBalancerRoute` attaches to a named listener and points 
 named ports on `NetworkService` backends. TCP and UDP listeners have one
 effective catch-all route each. If several attach, the oldest wins, breaking
 timestamp ties by namespace/name; all attachments remain Accepted, and native
-status identifies the effective route. Each route can distribute new
-connections or flows across weighted backends.
+status identifies the effective route. Each route selects a healthy endpoint
+in the ingress location for each new TCP connection or UDP flow using round
+robin.
 
 `spec.networkRef` is required and immutable. It names the NSO `Network` whose
 backends this NLB exposes; the platform resolves that network to its fabric
@@ -134,9 +137,9 @@ different hostnames.
 DNS names do not carry a port; clients still connect to the listener's port.
 
 For an address shared by several listeners or SNI routes, `Backends` selects a
-location only when every positive-weight backend service on the effective
-routes has a selected, bound network interface there. This keeps every route
-on the IP usable in the same locations. Consumers can use separate address
+location only when every backend service on the effective routes has a
+selected, bound network interface there. This keeps every route on the IP
+usable in the same locations. Consumers can use separate address
 requests when services have different footprints. Interface presence selects
 locations; health and programming determine announcement. With no attached
 route, placement is pending and no location IP is allocated.
@@ -252,12 +255,17 @@ explicitly. Once IPv4 ingress is available, changing the request to
 `families: [IPv4, IPv6]` publishes both families on the same listener and
 route.
 
-`backends` accepts multiple entries with an optional `weight` (default 1,
-zero disables selection). Weights split new connections or flows, not packets
-within a flow. An unresolved backend or one with no endpoints retains its
-weight and its share is rejected, as Gateway API requires. Failed health probes
-exclude individual endpoints while healthy endpoints remain. Status
-distinguishes resolution, endpoint availability, and health.
+`backends` accepts multiple entries without traffic weights. In each serving
+location, the route combines their healthy endpoints into one set and assigns
+new TCP connections or UDP flows to those endpoints round robin. Each healthy
+endpoint receives an equal turn, so a service with more healthy endpoints
+receives more connections or flows. A backend with no healthy endpoints
+contributes none; the route is unready in that location only when no healthy
+endpoint remains across all its backends. Failed health probes remove
+individual endpoints from the rotation. Status distinguishes resolution,
+endpoint availability, and health.
+An existing connection or flow must keep its chosen endpoint rather than
+rotate on every packet.
 
 The load balancer reports one endpoint per address request and location. Each
 endpoint groups its generated hostname and addresses by family. This example
@@ -332,9 +340,10 @@ uses actual interfaces rather than inferring network identity from display
 status. NSO creates a `NetworkBinding` for the referenced network in each
 selected location before programming its cell resources.
 
-For UDP, packets from the same client address and port select the same backend
-while the backend set is unchanged. A backend change may move that flow; the
-first release offers no UDP session or draining guarantee.
+For UDP, packets in the same client flow keep the endpoint chosen when that
+flow began while the gateway retains its flow assignment. A backend change or
+gateway failover may move that flow; the first release offers no UDP session
+or draining guarantee.
 
 ### IPv4 Ingress Data Plane
 
@@ -381,8 +390,8 @@ and can be set on the health check.
 
 An endpoint serves only when its workload reports `HolderAvailable` and its
 active probe passes. Probes run from each serving location. The cell publishes
-one healthy backend set for all gateway nodes in that location so they make
-consistent selections. A location with no healthy backends withdraws its
+one healthy endpoint set for all gateway nodes in that location so they share
+the same endpoint eligibility. A location with no healthy backends withdraws its
 announcement but keeps its IP allocation. Status reports healthy backend
 counts and probe failures by location.
 
@@ -458,19 +467,19 @@ must be explicit to consumers.
 
 ### Gateway API L4 Compatibility
 
-The Datum API is the primary consumer experience. Its L4 behavior must cover
-[TCPRoute](https://gateway-api.sigs.k8s.io/guides/user-guides/tcp/),
-[UDPRoute](https://gateway-api.sigs.k8s.io/guides/user-guides/udp/),
-[TLSRoute](https://gateway-api.sigs.k8s.io/reference/api-types/tlsroute/),
-and their Core and Extended features. A Gateway API adapter must translate
-Kubernetes objects into the same internal intent, so users can choose either
-API. Full compatibility means passing the relevant Gateway API conformance
-tests and documenting any implementation-specific backend mapping.
+The Datum API is the primary consumer experience. A Gateway API adapter can
+translate unweighted [TCPRoute](https://gateway-api.sigs.k8s.io/guides/user-guides/tcp/),
+[UDPRoute](https://gateway-api.sigs.k8s.io/guides/user-guides/udp/), and
+[TLSRoute](https://gateway-api.sigs.k8s.io/reference/api-types/tlsroute/)
+objects into the same internal intent. The adapter must report unsupported
+optional features instead of silently changing their behavior. Claim only the
+Gateway API features that pass the relevant conformance tests, and document
+any implementation-specific backend mapping.
 
 | Gateway API capability | Datum API behavior |
 | --- | --- |
 | Gateway addresses, named TCP/UDP/TLS listeners, ports and TLS mode | `NetworkLoadBalancer.exposure.addresses` and `listeners`; Datum additionally selects locations and allocates one address in each. |
-| TCPRoute and UDPRoute, listener attachment, backendRefs and weights | `NetworkLoadBalancerRoute.parentRefs` and weighted `backends`; one effective catch-all per TCP/UDP listener, with Gateway API precedence. |
+| TCPRoute and UDPRoute, listener attachment and backendRefs | `NetworkLoadBalancerRoute.parentRefs` and unweighted `backends`; one effective catch-all per TCP/UDP listener, with Gateway API precedence. Weighted backendRefs are unsupported. |
 | TLSRoute SNI hostnames, wildcard matching and precedence | TLS listener `hostname` and route `sniHostnames`; passthrough and termination, including distinct TLS listeners on one port when hostnames do not conflict. |
 | TLS certificates and backend re-encryption | Listener Secret reference; route backend TLS with SNI and trust validation, corresponding to BackendTLSPolicy. |
 | AllowedRoutes, parentRefs, cross-namespace ReferenceGrant and status | Explicit attachment policy and grants; report Accepted, ResolvedRefs and programming per attachment, plus listener conflicts and readiness. |
@@ -481,23 +490,25 @@ listeners or load balancers, with optional listener name or port selection.
 Listener attachment policy defaults to the same namespace; cross-namespace
 attachment and backend or certificate references require grants. The adapter
 maps Kubernetes Services and their numbered ports to resolved backends;
-`NetworkService` remains the native backend type. It must preserve Gateway API
-rules for invalid backend shares, conflicting listeners and routes, hostname
-intersection, and per-parent status. TCP and UDP may share a port; TCP and TLS
-may not. Datum-only source-CIDR and locality policies cannot
-change the behavior of a Gateway API resource unless explicitly configured
-through a Datum extension.
+`NetworkService` remains the native backend type. The adapter reports
+unsupported weighted backendRefs; it must preserve Gateway API rules for
+conflicting listeners and routes, hostname intersection, and per-parent
+status. TCP and UDP may share a port; TCP and TLS may not. Datum-only
+source-CIDR and locality policies cannot change the behavior of a Gateway API
+resource unless explicitly configured through a Datum extension.
 
-The first delivery may expose a smaller native feature set, but it must not
-claim Gateway API L4 compatibility until TCPRoute, UDPRoute, TLSRoute, their
-L4 Extended features, and the adapter pass conformance. Track the target
-against a pinned Gateway API release; the upstream API can evolve independently.
+The first delivery may expose a smaller native feature set. It must not
+claim support for any Gateway API L4 feature until the adapter passes that
+feature's conformance tests. Full Extended-feature compatibility, including
+weighted backendRefs, is outside this proposal. Track the supported feature
+set against a pinned Gateway API release; the upstream API can evolve
+independently.
 
 ### Route Controls
 
 The listener selects destination IP, protocol, and port. The route selects a
 backend for each TCP connection or UDP flow. The following controls are
-candidates for later releases beyond Gateway API L4 parity:
+candidates for later releases beyond the initial NLB scope:
 
 - **Priority failover:** Use a standby backend when the preferred one lacks
   enough healthy members, with an explicit threshold.
@@ -512,9 +523,12 @@ candidates for later releases beyond Gateway API L4 parity:
 
 Connection draining, source-IP preservation, and PROXY protocol are delivery
 settings rather than route matches; they need their own data plane contracts.
-Galactic's current rule has a backend list but no weights, route matches, or
-priority policy. Weighted selection is required for Gateway API parity;
-the other controls need implementation before the API accepts them.
+Galactic currently uses a deterministic Maglev hash across backend endpoints.
+Strict round-robin assignment of new connections or flows needs a different
+selection mechanism plus affinity for subsequent packets. The design must
+specify what happens when an anycast flow reaches a different gateway node;
+per-gateway counters alone cannot preserve its chosen endpoint. Route matches
+and priority policy need implementation before the API accepts them.
 
 ## Production Readiness Review Questionnaire
 
@@ -527,9 +541,10 @@ advertisements are gone.
 
 ### Rollout, Upgrade and Rollback Planning
 
-Start with single-location TCP and UDP with weighted backends and active probes,
-then test multi-location operation with distinct addresses. Add SNI passthrough
-before Secret-backed TLS termination. Exercise route updates, UDP flow stability,
+Start with single-location TCP and UDP using round robin across healthy
+endpoints and active probes, then test multi-location operation with distinct
+addresses. Add SNI passthrough before Secret-backed TLS termination. Exercise
+route updates, round-robin selection, affinity during a flow, gateway failover,
 probe failures, loss of the last backend, location removal, TLS certificate
 loading and rotation, CNAME resolution, A/AAAA publication, IP replacement
 without hostname change, and withdrawal before IP release. Existing
@@ -549,7 +564,8 @@ IPAM must provide globally unique public IPv6 VIPs, one for each selected
 location. NSO must allow UDP `NetworkService` ports and require the route
 listener and backend port protocols to match; `HTTPProxy` must continue to
 reject UDP backends. Selected cells need a health probe runner, Galactic
-gateways, backend VIP bindings, and a way to report programming and
+gateways, backend VIP bindings, round-robin flow selection with an explicit
+affinity and gateway-failover contract, and a way to report programming and
 announcement state.
 IPv4 VIPs additionally need a public IPv4 pool, family-aware cell intent,
 Galactic IPv4 ingress and cross-family proxy support, and a serving capability
@@ -559,10 +575,10 @@ Secret distribution with certificate validation.
 NSO needs a managed DNS zone and per-location A/AAAA record lifecycle tied to
 VIP allocation and announcement; hostname assignment must remain stable across
 IP replacement and temporary health loss.
-Gateway API parity also needs an attachment/grant model, Service backend
-translation, Secret certificate references, weighted selection, wildcard SNI,
-mixed TLS modes, backend TLS validation, per-parent status, and conformance
-tests against a pinned upstream release.
+Gateway API support also needs an attachment/grant model, Service backend
+translation, Secret certificate references, wildcard SNI, mixed TLS modes,
+backend TLS validation, per-parent status, and conformance tests against a
+pinned upstream release. Weighted backendRefs remain unsupported.
 
 ### Scalability
 

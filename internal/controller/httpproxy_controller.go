@@ -125,7 +125,7 @@ func collectDesiredResourcesErrorResult(err error, programmedCondition *metav1.C
 	if errors.As(err, &unsupportedProtocol) {
 		programmedCondition.Status = metav1.ConditionFalse
 		programmedCondition.Reason = networkingv1alpha.HTTPProxyReasonUnsupportedBackendProtocol
-		programmedCondition.Message = fmt.Sprintf("The HTTPProxy cannot be programmed: %s", unsupportedProtocol.Error())
+		programmedCondition.Message = unsupportedProtocol.Error()
 		return ctrl.Result{RequeueAfter: retryAfterInvalid}, nil, true
 	}
 

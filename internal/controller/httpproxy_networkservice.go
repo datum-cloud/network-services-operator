@@ -50,7 +50,11 @@ type errNetworkServiceBackendUnsupportedProtocol struct {
 }
 
 func (e *errNetworkServiceBackendUnsupportedProtocol) Error() string {
-	return fmt.Sprintf("NetworkService %q port %q uses %s; HTTPProxy backends require TCP", e.service, e.port, e.protocol)
+	return fmt.Sprintf(
+		"NetworkService %q port %q uses %s. HTTPProxy backends require TCP. "+
+			"Update the HTTPProxy backend to reference a NetworkService port that serves HTTP over TCP.",
+		e.service, e.port, e.protocol,
+	)
 }
 
 // resolvedNetworkService is a NetworkService's membership, expressed as the

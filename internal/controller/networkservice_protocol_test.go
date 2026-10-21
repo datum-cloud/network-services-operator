@@ -30,7 +30,7 @@ func TestHTTPProxyNetworkServiceTransport(t *testing.T) {
 			resolved, err := resolveNetworkServiceBackend(context.Background(), cl, s.Namespace, &api.NetworkServiceBackendRef{Name: s.Name, Port: "service"})
 			if protocol == api.NetworkServiceProtocolUDP {
 				require.IsType(t, &errNetworkServiceBackendUnsupportedProtocol{}, err)
-				require.EqualError(t, err, `NetworkService "backend" port "service" uses UDP; HTTPProxy backends require TCP`)
+				require.EqualError(t, err, `NetworkService "backend" port "service" uses UDP. HTTPProxy backends require TCP. Update the HTTPProxy backend to reference a NetworkService port that serves HTTP over TCP.`)
 				require.Nil(t, resolved)
 			} else {
 				require.NoError(t, err)
@@ -65,7 +65,7 @@ func TestHTTPProxyUnsupportedBackendProtocolCondition(t *testing.T) {
 	require.Equal(t, retryAfterInvalid, result.RequeueAfter)
 	require.Equal(t, metav1.ConditionFalse, condition.Status)
 	require.Equal(t, api.HTTPProxyReasonUnsupportedBackendProtocol, condition.Reason)
-	require.Equal(t, `The HTTPProxy cannot be programmed: NetworkService "storefront" port "http" uses UDP; HTTPProxy backends require TCP`, condition.Message)
+	require.Equal(t, `NetworkService "storefront" port "http" uses UDP. HTTPProxy backends require TCP. Update the HTTPProxy backend to reference a NetworkService port that serves HTTP over TCP.`, condition.Message)
 }
 
 func TestHTTPProxyReportsUDPBackendAndRecoversWithTCP(t *testing.T) {
@@ -81,7 +81,7 @@ func TestHTTPProxyReportsUDPBackendAndRecoversWithTCP(t *testing.T) {
 	require.NotNil(t, condition)
 	require.Equal(t, metav1.ConditionFalse, condition.Status)
 	require.Equal(t, api.HTTPProxyReasonUnsupportedBackendProtocol, condition.Reason)
-	require.Equal(t, `The HTTPProxy cannot be programmed: NetworkService "storefront" port "http" uses UDP; HTTPProxy backends require TCP`, condition.Message)
+	require.Equal(t, `NetworkService "storefront" port "http" uses UDP. HTTPProxy backends require TCP. Update the HTTPProxy backend to reference a NetworkService port that serves HTTP over TCP.`, condition.Message)
 	var slices discoveryv1.EndpointSliceList
 	require.NoError(t, cl.List(ctx, &slices))
 	require.Empty(t, slices.Items)

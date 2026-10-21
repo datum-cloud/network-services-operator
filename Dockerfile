@@ -19,7 +19,6 @@ RUN go mod download
 COPY cmd/main.go cmd/main.go
 COPY cmd/alb-mcp/ cmd/alb-mcp/
 COPY cmd/network-mcp/ cmd/network-mcp/
-COPY cmd/public-udp-controller/ cmd/public-udp-controller/
 COPY api/ api/
 COPY internal/ internal/
 # The knowledge and skills the MCP servers serve are embedded into them, so
@@ -60,8 +59,6 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build \
       -X main.buildDate=${BUILD_DATE}" \
     -o network-mcp ./cmd/network-mcp
 
-RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -trimpath -ldflags="-s -w" -o public-udp-controller ./cmd/public-udp-controller
-
 # Use distroless as minimal base image to package the manager binary.
 # static-debian13:nonroot is explicit about the Debian variant to avoid silent
 # drift if the :nonroot alias resolves to a different Debian release in future.
@@ -74,7 +71,6 @@ WORKDIR /
 COPY --from=builder /workspace/network-services .
 COPY --from=builder /workspace/alb-mcp .
 COPY --from=builder /workspace/network-mcp .
-COPY --from=builder /workspace/public-udp-controller .
 USER 65532:65532
 
 ENTRYPOINT ["/network-services"]

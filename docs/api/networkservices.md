@@ -64,9 +64,9 @@ put behind one.
         <td><b><a href="#networkservicespec">spec</a></b></td>
         <td>object</td>
         <td>
-          NetworkServiceSpec defines the desired membership and publication.<br/>
-          <br/>
-            <i>Validations</i>:<li>!has(self.publicUDP) || (size(self.ports) == 1 && self.ports[0].protocol == 'UDP'): publicUDP requires exactly one UDP port</li><li>!has(oldSelf.publicUDP) || (has(self.publicUDP) && self.publicUDP == oldSelf.publicUDP): publicUDP is immutable once enabled; delete the service to withdraw it</li>
+          NetworkServiceSpec defines the desired state of NetworkService. It names the
+members and the ports they answer on, and nothing about where traffic should
+go: the platform decides that from where each request arrived.<br/>
         </td>
         <td>true</td>
       </tr><tr>
@@ -90,7 +90,9 @@ of silent.<br/>
 
 
 
-NetworkServiceSpec defines the desired membership and publication.
+NetworkServiceSpec defines the desired state of NetworkService. It names the
+members and the ports they answer on, and nothing about where traffic should
+go: the platform decides that from where each request arrived.
 
 <table>
     <thead>
@@ -125,14 +127,6 @@ this service names one of them.<br/>
             <i>Validations</i>:<li>self.all(p1, self.exists_one(p2, p2.name == p1.name)): Port name must be unique within the service</li><li>self.all(p1, self.exists_one(p2, p2.port == p1.port)): Port number must be unique within the service</li>
         </td>
         <td>true</td>
-      </tr><tr>
-        <td><b><a href="#networkservicespecpublicudp">publicUDP</a></b></td>
-        <td>object</td>
-        <td>
-          PublicUDP publishes a single interface and UDP port through the native fabric.
-The selected interface must hold an IPAM-assigned public address.<br/>
-        </td>
-        <td>false</td>
       </tr><tr>
         <td><b><a href="#networkservicespectrafficdistribution">trafficDistribution</a></b></td>
         <td>object</td>
@@ -345,7 +339,7 @@ Must be a DNS label and unique within the service.<br/>
         <td>integer</td>
         <td>
           port is the port number every member answers on. It is the port on the
-member itself and, for publicUDP, the public port.
+member itself, not one the platform publishes.
 
 Unique within the service.<br/>
           <br/>
@@ -376,49 +370,11 @@ serve those on a different port.<br/>
         <td><b>protocol</b></td>
         <td>enum</td>
         <td>
-          protocol is the transport the port carries. HTTPProxy backends require
-TCP. UDP ports can be published through publicUDP without terminating TLS.<br/>
+          protocol is the transport the port carries: TCP or UDP. TCP is the
+default and is required for backends served through an HTTPProxy.<br/>
           <br/>
             <i>Enum</i>: TCP, UDP<br/>
             <i>Default</i>: TCP<br/>
-        </td>
-        <td>false</td>
-      </tr></tbody>
-</table>
-
-
-### NetworkService.spec.publicUDP
-<sup><sup>[↩ Parent](#networkservicespec)</sup></sup>
-
-
-
-PublicUDP publishes a single interface and UDP port through the native fabric.
-The selected interface must hold an IPAM-assigned public address.
-
-<table>
-    <thead>
-        <tr>
-            <th>Name</th>
-            <th>Type</th>
-            <th>Description</th>
-            <th>Required</th>
-        </tr>
-    </thead>
-    <tbody><tr>
-        <td><b>location</b></td>
-        <td>string</td>
-        <td>
-          <br/>
-        </td>
-        <td>true</td>
-      </tr><tr>
-        <td><b>addressClass</b></td>
-        <td>enum</td>
-        <td>
-          <br/>
-          <br/>
-            <i>Enum</i>: public-ipv4<br/>
-            <i>Default</i>: public-ipv4<br/>
         </td>
         <td>false</td>
       </tr></tbody>
@@ -498,13 +454,6 @@ it resolved to.<br/>
         <td>
           locations report the members the service has in each location it reaches,
 how many of them are healthy, and whether the location is taking traffic.<br/>
-        </td>
-        <td>false</td>
-      </tr><tr>
-        <td><b>publicAddresses</b></td>
-        <td>[]string</td>
-        <td>
-          PublicAddresses contains the allocated VIP; PublicReady reports publication.<br/>
         </td>
         <td>false</td>
       </tr><tr>

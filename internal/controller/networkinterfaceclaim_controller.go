@@ -1366,27 +1366,6 @@ func (r *NetworkInterfaceClaimReconciler) releaseAddresses(
 	namespace string,
 	iface *networkingv1alpha.NetworkInterface,
 ) error {
-	var current networkingv1alpha.NetworkInterface
-	if err := cl.Get(ctx, client.ObjectKeyFromObject(iface), &current); err != nil {
-		return err
-	}
-	if current.UID != iface.UID {
-		return fmt.Errorf("network interface was replaced before address release")
-	}
-	if current.Annotations == nil {
-		current.Annotations = map[string]string{}
-	}
-	current.Annotations[networkingv1alpha.NetworkInterfaceAddressReleaseStarted] = "true"
-	if err := cl.Update(ctx, &current); err != nil {
-		return err
-	}
-	*iface = current
-	for _, f := range current.Finalizers {
-		if strings.HasPrefix(f, networkingv1alpha.NetworkInterfacePublicUDPHoldPrefix) {
-			return fmt.Errorf("waiting for native public UDP withdrawal before releasing addresses")
-		}
-	}
-
 	return r.releaseIPClaims(ctx, cl, namespace,
 		allocationClaimName(iface), allocationDiscriminators(iface))
 }
@@ -1404,14 +1383,6 @@ func (r *NetworkInterfaceClaimReconciler) releaseClaimAllocations(
 		return nil
 	}
 
-	var iface networkingv1alpha.NetworkInterface
-	err := cl.Get(ctx, client.ObjectKey{Namespace: claim.Namespace, Name: claim.Status.NetworkInterfaceRef.Name}, &iface)
-	if err == nil && allocationClaimName(&iface) == claim.Name {
-		return r.releaseAddresses(ctx, cl, claim.Namespace, &iface)
-	}
-	if err != nil && !apierrors.IsNotFound(err) {
-		return err
-	}
 	return r.releaseIPClaims(ctx, cl, claim.Namespace,
 		claim.Name, claimDiscriminators(claim))
 }

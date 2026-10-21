@@ -69,7 +69,10 @@ spec:
           metadata:
             type: object
           spec:
-            description: NetworkServiceSpec defines the desired membership and publication.
+            description: |-
+              NetworkServiceSpec defines the desired state of NetworkService. It names the
+              members and the ports they answer on, and nothing about where traffic should
+              go: the platform decides that from where each request arrived.
             properties:
               networkInterfaces:
                 description: |-
@@ -197,7 +200,7 @@ spec:
                     port:
                       description: |-
                         port is the port number every member answers on. It is the port on the
-                        member itself and, for publicUDP, the public port.
+                        member itself, not one the platform publishes.
 
                         Unique within the service.
                       format: int32
@@ -207,8 +210,8 @@ spec:
                     protocol:
                       default: TCP
                       description: |-
-                        protocol is the transport the port carries. HTTPProxy backends require
-                        TCP. UDP ports can be published through publicUDP without terminating TLS.
+                        protocol is the transport the port carries: TCP or UDP. TCP is the
+                        default and is required for backends served through an HTTPProxy.
                       enum:
                       - TCP
                       - UDP
@@ -217,10 +220,6 @@ spec:
                   - name
                   - port
                   type: object
-                  x-kubernetes-validations:
-                  - message: appProtocol requires TCP
-                    rule: '!has(self.appProtocol) || !has(self.protocol) || self.protocol
-                      == ''TCP'''
                 maxItems: 16
                 minItems: 1
                 type: array
@@ -229,24 +228,6 @@ spec:
                   rule: self.all(p1, self.exists_one(p2, p2.name == p1.name))
                 - message: Port number must be unique within the service
                   rule: self.all(p1, self.exists_one(p2, p2.port == p1.port))
-              publicUDP:
-                description: |-
-                  PublicUDP publishes a single interface and UDP port through the native fabric.
-                  The selected interface must hold an IPAM-assigned public address.
-                properties:
-                  addressClass:
-                    default: public-ipv4
-                    enum:
-                    - public-ipv4
-                    type: string
-                  location:
-                    maxLength: 63
-                    minLength: 1
-                    pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
-                    type: string
-                required:
-                - location
-                type: object
               trafficDistribution:
                 default:
                   strategy: Nearest
@@ -274,14 +255,6 @@ spec:
             - networkInterfaces
             - ports
             type: object
-            x-kubernetes-validations:
-            - message: publicUDP requires exactly one UDP port
-              rule: '!has(self.publicUDP) || (size(self.ports) == 1 && self.ports[0].protocol
-                == ''UDP'')'
-            - message: publicUDP is immutable once enabled; delete the service to
-                withdraw it
-              rule: '!has(oldSelf.publicUDP) || (has(self.publicUDP) && self.publicUDP
-                == oldSelf.publicUDP)'
           status:
             default:
               conditions:
@@ -404,12 +377,6 @@ spec:
                 x-kubernetes-list-map-keys:
                 - name
                 x-kubernetes-list-type: map
-              publicAddresses:
-                description: PublicAddresses contains the allocated VIP; PublicReady
-                  reports publication.
-                items:
-                  type: string
-                type: array
               summary:
                 description: summary totals the locations below.
                 properties:

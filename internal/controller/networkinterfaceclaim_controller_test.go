@@ -2268,31 +2268,3 @@ func TestASettledInterfaceIsNotRelabelled(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, first.ResourceVersion, second.ResourceVersion)
 }
-
-func TestPublicUDPWithdrawalPrecedesAddressRelease(t *testing.T) {
-	s := newScenario(t, true, []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol}, publicV4Class())
-	claim := s.createClaim("public-eth0", networkingv1alpha.NetworkInterfaceClaimSpec{
-		InterfaceName: "eth0", IPFamilies: []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol},
-		ReclaimPolicy: networkingv1alpha.NetworkInterfaceReclaimPolicyDelete,
-	})
-	s.reconcile(claim)
-	iface, err := s.getInterface(claim.Name)
-	require.NoError(t, err)
-	hold := networkingv1alpha.NetworkInterfacePublicUDPHoldPrefix + "test"
-	controllerutil.AddFinalizer(iface, hold)
-	require.NoError(t, s.client.Update(s.ctx, iface))
-	claim = s.getClaim(claim.Name)
-	require.NoError(t, s.client.Delete(s.ctx, claim))
-	_, err = s.reconciler.reconcileClaim(s.ctx, s.client, s.events, client.ObjectKeyFromObject(claim))
-	require.ErrorContains(t, err, "waiting for native public UDP withdrawal")
-	require.Empty(t, s.ipam.deleted()[testProject])
-	iface, err = s.getInterface(claim.Name)
-	require.NoError(t, err)
-	require.Equal(t, "true", iface.Annotations[networkingv1alpha.NetworkInterfaceAddressReleaseStarted])
-	controllerutil.RemoveFinalizer(iface, hold)
-	require.NoError(t, s.client.Update(s.ctx, iface))
-	s.reconcile(claim)
-	require.NotEmpty(t, s.ipam.deleted()[testProject])
-	_, err = s.getInterface(claim.Name)
-	require.True(t, apierrors.IsNotFound(err))
-}

@@ -1,6 +1,5 @@
 import { NetworkCliSections } from '../components/cli-section';
 import { CreateNetworkDialog } from '../components/create-network-dialog';
-import { NetworkStats } from '../components/network-stats';
 import { NetworkTable } from '../components/network-table';
 import { NetworkListSkeleton } from '../components/skeletons';
 import { ErrorOrRestrictedState } from '../components/states';
@@ -41,13 +40,13 @@ export default function NetworkList() {
           </BreadcrumbItem>
           <BreadcrumbSeparator />
           <BreadcrumbItem>
-            <BreadcrumbPage>Networks</BreadcrumbPage>
+            <BreadcrumbPage>VPC Networks</BreadcrumbPage>
           </BreadcrumbItem>
         </BreadcrumbList>
       </Breadcrumb>
 
       <PageTitle
-        title="Networks"
+        title="VPC Networks"
         description="The networks your workloads and load balancers run on"
         actions={
           <CreateNetworkDialog
@@ -90,10 +89,7 @@ export default function NetworkList() {
       )}
 
       {!isLoading && !error && networks && networks.length > 0 && (
-        <>
-          <NetworkStats networks={networks} />
-          <NetworkTable networks={networks} projectId={projectId} />
-        </>
+        <NetworkTable networks={networks} projectId={projectId} />
       )}
     </div>
   );

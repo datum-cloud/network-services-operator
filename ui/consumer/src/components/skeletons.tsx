@@ -153,7 +153,6 @@ export function ResourcesSkeleton() {
 export function NetworkListSkeleton() {
   return (
     <Loading kind="network-list">
-      <StatTilesSkeleton />
       <TableSkeleton columns={NETWORK_COLUMNS} />
     </Loading>
   );

@@ -60,13 +60,13 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build \
     -o network-mcp ./cmd/network-mcp
 
 # Use distroless as minimal base image to package the manager binary.
-# static-debian12:nonroot is explicit about the Debian variant to avoid silent
+# static-debian13:nonroot is explicit about the Debian variant to avoid silent
 # drift if the :nonroot alias resolves to a different Debian release in future.
 # For reproducible builds, pin to a SHA digest via:
-#   FROM gcr.io/distroless/static-debian12:nonroot@sha256:<digest>
+#   FROM gcr.io/distroless/static-debian13:nonroot@sha256:<digest>
 # and update via Dependabot or `cosign verify`.
 # Refer to https://github.com/GoogleContainerTools/distroless for more details
-FROM gcr.io/distroless/static-debian12:nonroot
+FROM gcr.io/distroless/static-debian13:nonroot
 WORKDIR /
 COPY --from=builder /workspace/network-services .
 COPY --from=builder /workspace/alb-mcp .

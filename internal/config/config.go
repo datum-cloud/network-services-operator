@@ -65,6 +65,10 @@ type NetworkServicesOperator struct {
 
 	DownstreamResourceManagement DownstreamResourceManagementConfig `json:"downstreamResourceManagement"`
 
+	// Federation selects the hub for network bindings and cell observations.
+	// An empty kubeconfigPath uses the deployment control plane.
+	Federation FederationConfig `json:"federation,omitempty"`
+
 	// Redis provides shared Redis connection settings.
 	Redis RedisConfig `json:"redis"`
 
@@ -277,12 +281,9 @@ func (c *IPAMConfig) RestConfig() (*rest.Config, error) {
 
 // +k8s:deepcopy-gen=true
 
-// FederationConfig names the federation hub a cell publishes to. It is the only
-// plane a cell and the control planes serving projects both reach.
+// FederationConfig names the hub shared by cells and project controllers.
 type FederationConfig struct {
 	// KubeconfigPath is the path to a kubeconfig file pointing at the hub.
-	// Required: a cell that cannot reach the hub cannot show a consumer the
-	// interface behind their instance.
 	KubeconfigPath string `json:"kubeconfigPath,omitempty"`
 
 	// Client configures the Kubernetes client connection to the hub.

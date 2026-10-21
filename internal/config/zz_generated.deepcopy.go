@@ -737,6 +737,7 @@ func (in *NetworkServicesOperator) DeepCopyInto(out *NetworkServicesOperator) {
 	out.Connector = in.Connector
 	out.Discovery = in.Discovery
 	out.DownstreamResourceManagement = in.DownstreamResourceManagement
+	out.Federation = in.Federation
 	in.Redis.DeepCopyInto(&out.Redis)
 	out.LeaderElection = in.LeaderElection
 	in.DomainVerification.DeepCopyInto(&out.DomainVerification)

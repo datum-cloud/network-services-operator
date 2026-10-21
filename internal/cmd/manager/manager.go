@@ -24,6 +24,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/serializer"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
@@ -352,7 +353,12 @@ func NewCommand(build BuildInfo) *cobra.Command {
 			// Hub controllers reconcile NetworkBindings and resources published by
 			// cells. Keep their cache and leader election on the federation API,
 			// alongside the authoritative copies they watch.
-			federationMgr, err := manager.New(downstreamRestConfig, manager.Options{
+			federationConfig, err := federationRESTConfig(serverConfig.Federation, cfg)
+			if err != nil {
+				setupLog.Error(err, "unable to load federation kubeconfig")
+				os.Exit(1)
+			}
+			federationMgr, err := manager.New(federationConfig, manager.Options{
 				Scheme:                  scheme,
 				Metrics:                 metricsserver.Options{BindAddress: "0"},
 				WebhookServer:           webhook.NewServer(webhook.Options{Port: 0}),
@@ -600,6 +606,13 @@ type controllerDeps struct {
 	certificateServiceRoots  *x509.CertPool
 	wildcardEntitlements     controller.WildcardEntitlementChecker
 	projectIdentities        controller.ProjectIdentityResolver
+}
+
+func federationRESTConfig(federation config.FederationConfig, deployment *rest.Config) (*rest.Config, error) {
+	if federation.KubeconfigPath == "" {
+		return rest.CopyConfig(deployment), nil
+	}
+	return federation.RestConfig()
 }
 
 func newProjectIdentityResolver(serverConfig config.NetworkServicesOperator) (controller.ProjectIdentityResolver, error) {

@@ -27,7 +27,7 @@ require (
 	github.com/spf13/cobra v1.10.2
 	github.com/stretchr/testify v1.12.1
 	go.datum.net/datumctl v0.18.1
-	go.datum.net/galactic v0.6.2-0.20261020171118-c8eca01eb84f
+	go.datum.net/galactic v0.6.3-0.20261021151056-bb0b4c057338
 	go.miloapis.com/activity v0.7.1
 	go.miloapis.com/dns-operator v0.5.1
 	go.miloapis.com/locations v0.0.1

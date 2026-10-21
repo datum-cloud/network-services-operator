@@ -687,8 +687,8 @@ github.com/zonedb/zonedb v1.0.3544 h1:u5a3xOaI338FclecJ/H6J7fiImVEZ/qZomJnVYIlTe
 github.com/zonedb/zonedb v1.0.3544/go.mod h1:h9mfHV/S6lboOkltULrbNY52cd7JZo6MbxIiqKMWPLg=
 go.datum.net/datumctl v0.18.1 h1:MP83cRkJ94aq4lYyOm5dSLU60JNnmR486LIeZnaCw8s=
 go.datum.net/datumctl v0.18.1/go.mod h1:0L0BBgFfud8ZuV9sbsSmeEBUPoK2q9g4boU5yczF92o=
-go.datum.net/galactic v0.6.2-0.20261020171118-c8eca01eb84f h1:IfnnuKo1ZpOWrLs8/RqHyrRBXQfWrqvivDotqpRk2KA=
-go.datum.net/galactic v0.6.2-0.20261020171118-c8eca01eb84f/go.mod h1:IJDvHOz3iyXb2eWRxvyH5P5Crudz10mMs4oE3WcMn4Y=
+go.datum.net/galactic v0.6.3-0.20261021151056-bb0b4c057338 h1:eK8GYG7Z2D9JThUIDuxBGSG3Ur/Jx9F3AL0rVjhdnuk=
+go.datum.net/galactic v0.6.3-0.20261021151056-bb0b4c057338/go.mod h1:IJDvHOz3iyXb2eWRxvyH5P5Crudz10mMs4oE3WcMn4Y=
 go.etcd.io/bbolt v1.4.3 h1:dEadXpI6G79deX5prL3QRNP6JB8UxVkqo4UPnHaNXJo=
 go.etcd.io/bbolt v1.4.3/go.mod h1:tKQlpPaYCVFctUIgFKFnAlvbmB3tpy1vkTnDWohtc0E=
 go.etcd.io/etcd/api/v3 v3.6.8 h1:gqb1VN92TAI6G2FiBvWcqKtHiIjr4SU2GdXxTwyexbM=

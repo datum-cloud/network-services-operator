@@ -318,6 +318,13 @@ func SetObjectDefaults_NetworkServicesOperator(in *NetworkServicesOperator) {
 		in.Connector.Iroh.TTLSeconds = 5
 	}
 	SetDefaults_DiscoveryConfig(&in.Discovery)
+	SetDefaults_ClientConnectionConfig(&in.Federation.Client)
+	if in.Federation.Client.QPS == 0 {
+		in.Federation.Client.QPS = 50
+	}
+	if in.Federation.Client.Burst == 0 {
+		in.Federation.Client.Burst = 100
+	}
 	if in.Redis.DialTimeout == nil {
 		if err := json.Unmarshal([]byte(`"5s"`), &in.Redis.DialTimeout); err != nil {
 			panic(err)

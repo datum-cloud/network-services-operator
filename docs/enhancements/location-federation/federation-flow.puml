@@ -1,0 +1,117 @@
+@startuml federation-flow
+!include ../../datum-theme-sequence.puml
+
+title Location Federation - how a location reaches the cell that is it
+
+actor "Fleet Ops" as ops
+actor "Service operator" as svcop
+participant "Milo platform\ncontrol plane" as milo
+participant "NSO manager\n(location publisher)" as pub <<new>>
+participant "services-controller\n-manager" as scm
+participant "Project control plane" as project
+participant "Karmada hub" as hub
+participant "karmada-agent\n(on the cell)" as agent
+participant "Edge cell" as cell
+participant "compute-manager\n(on the cell)" as ccell
+
+== Prerequisite: the cell declares what it is ==
+
+ops -> hub: label Cluster\ntopology.datum.net/location=us-west-1-alice
+note right of hub
+  Set at cell registration, so this
+  carries a re-registration per cell.
+  A cell claims its location; the
+  location never names its cell.
+end note
+
+ops -> cell: install ServingLocation CRD\n(NSO downstream bundle)
+note right of cell
+  Must land before any Work selects
+  the kind. Otherwise the Work sits
+  not-applied, indistinguishable from
+  a stalled agent unless the reason
+  string is surfaced.
+end note
+
+== Identity leg: publishing ==
+
+ops -> milo: create Location us-west-1-alice\n(hand-authored, hand-marked Ready)
+milo --> pub: watch event
+
+pub -> pub: validate source
+
+alt city code missing
+    pub -> pub: report linkage mismatch,\npublish nothing
+else valid
+    pub -> hub: apply ServingLocation/us-west-1-alice\n(server-side apply, own field manager)
+    pub -> hub: apply ClusterPropagationPolicy\n/location-us-west-1-alice
+end
+
+note over pub
+  Gated on the Location EXISTING,
+  not on it being healthy. An unhealthy
+  location is still a real place whose
+  workloads need to know where they are.
+end note
+
+== Delivery ==
+
+hub -> hub: ResourceBinding resolves clusterAffinity\nagainst the location label
+
+alt no cell carries the label
+    hub -> hub: resolves to 0 clusters
+    note right of hub
+      Published but undeliverable.
+      A readable state, not a silence.
+    end note
+else exactly one cell carries it
+    hub -> hub: create Work for that cell
+    agent -> hub: pull Work (agent-initiated, pull mode)
+    agent -> cell: apply ServingLocation
+    agent --> hub: report applied
+    hub -> hub: aggregate into ResourceBinding status
+end
+
+== Consumption at the cell ==
+
+ccell -> cell: watch ServingLocation
+
+alt exactly one present
+    ccell -> ccell: identity = that location
+else none delivered, or more than one
+    ccell -> ccell: fall back to configured location
+    note right of ccell
+      Never guess. With neither, report
+      the waiting state on the objects
+      that are stuck and heal on arrival.
+    end note
+end
+
+== Availability leg: existing, and independent of the above ==
+
+svcop -> milo: create ServiceAvailability\n(service, location)
+milo --> scm: watch event
+scm -> scm: evaluate gates: Service Published,\nLocation Ready, class supported
+scm -> project: write LocationBinding\nper entitled project
+
+note right of project
+  Entitlement is evaluated here and
+  never leaves. Nothing at the hub or
+  on a cell may re-answer it.
+end note
+
+== Where the two legs meet ==
+
+project -> hub: WorkloadDeployment federated\n(compute's own per-city policy)
+hub -> cell: WorkloadDeployment
+cell --> ccell: reconcile
+ccell -> ccell: resolve spec.cityCode against the\nServingLocation delivered by the identity leg
+ccell -> ccell: set Status.Location,\nthen Instance.Spec.Location
+
+note over ccell
+  Placement decided the cell.
+  Identity told the cell what it is.
+  Neither leg answers the other's question.
+end note
+
+@enduml

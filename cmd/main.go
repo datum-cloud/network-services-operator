@@ -4,7 +4,6 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
-	_ "golang.org/x/crypto/x509roots/fallback"
 
 	cellcmd "go.datum.net/network-services-operator/internal/cmd/cell"
 	managercmd "go.datum.net/network-services-operator/internal/cmd/manager"

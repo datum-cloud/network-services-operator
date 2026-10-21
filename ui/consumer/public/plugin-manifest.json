@@ -5,7 +5,9 @@
   "remoteEntry": "remoteEntry.js",
   "exposedModules": {
     "NetworkList": "./src/pages/network-list.tsx",
-    "NetworkDetail": "./src/pages/network-detail.tsx"
+    "NetworkDetail": "./src/pages/network-detail.tsx",
+    "NetworkHomeHero": "./src/components/network-home-hero.tsx",
+    "CreateNetworkDialog": "./src/components/create-network-dialog.tsx"
   },
   "extensions": [
     {
@@ -16,10 +18,7 @@
         "icon": "network",
         "path": "networks",
         "order": 10,
-        "section": "connect",
-        "children": [
-          { "title": "Networks", "path": "networks" }
-        ]
+        "section": "connect"
       }
     },
     {
@@ -49,6 +48,20 @@
           { "group": "networking.datumapis.com", "resource": "networkservices", "verb": "list" },
           { "group": "networking.datumapis.com", "resource": "networkservices", "verb": "create" },
           { "group": "networking.datumapis.com", "resource": "networkservices", "verb": "delete" }
+        ]
+      }
+    },
+    {
+      "type": "portal.hero/project-home",
+      "properties": {
+        "title": "Create your network",
+        "component": { "$codeRef": "NetworkHomeHero" },
+        "order": 10
+      },
+      "requirements": {
+        "permissions": [
+          { "group": "networking.datumapis.com", "resource": "networks", "verb": "list" },
+          { "group": "networking.datumapis.com", "resource": "networks", "verb": "create" }
         ]
       }
     }

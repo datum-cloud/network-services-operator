@@ -27,6 +27,8 @@ interface RawObjectMeta {
   namespace?: string;
   resourceVersion?: string;
   creationTimestamp?: string;
+  /** Set once deletion is requested; the object stays until its finalizers clear. */
+  deletionTimestamp?: string;
   labels?: Record<string, string>;
 }
 
@@ -106,8 +108,13 @@ export function toNetwork(raw: RawNetwork): Network {
   };
 }
 
+/**
+ * Networks still in the project. One being deleted is left out: it lingers
+ * while its finalizer runs, and listing it would bring a just-deleted network
+ * back until the next refresh after it is gone.
+ */
 export function toNetworkList(items: RawNetwork[]): Network[] {
-  return items.map(toNetwork);
+  return items.filter((item) => !item.metadata?.deletionTimestamp).map(toNetwork);
 }
 
 interface RawSubnetSpec {

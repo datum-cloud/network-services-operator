@@ -99,7 +99,7 @@ function DetailLayout() {
           <BreadcrumbSeparator />
           <BreadcrumbItem>
             <BreadcrumbLink asChild>
-              <Link to={hrefs.networks}>Networks</Link>
+              <Link to={hrefs.networks}>VPC Networks</Link>
             </BreadcrumbLink>
           </BreadcrumbItem>
           <BreadcrumbSeparator />

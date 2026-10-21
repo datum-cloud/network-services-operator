@@ -244,7 +244,7 @@ func (v *visibility) interfaceOnCellForNetwork(network string) *networkingv1alph
 	iface.Status.Phase = networkingv1alpha.NetworkInterfacePhaseBound
 	iface.Status.NetworkContextRef = &networkingv1alpha.LocalNetworkContextRef{Name: "default-" + testLocationName}
 	iface.Status.AttachmentRef = &networkingv1alpha.NetworkInterfaceAttachmentRef{
-		APIGroup: "cloud.datumapis.com",
+		APIGroup: "previous.example",
 		Kind:     "VPCAttachment",
 		Name:     name,
 	}

@@ -58,7 +58,7 @@ describe('NetworkList state machine', () => {
 
     expect(screen.getByTestId('networking-plugin-loading')).toBeInTheDocument();
     // Breadcrumb + title stay mounted through loading.
-    expect(screen.getAllByText('Networks').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('VPC Networks').length).toBeGreaterThan(0);
   });
 
   it('shows the restricted state on a 403 ApiError', () => {

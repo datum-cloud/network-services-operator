@@ -115,27 +115,26 @@ func (r *NetworkBindingReconciler) Reconcile(ctx context.Context, req mcreconcil
 		return ctrl.Result{}, fmt.Errorf("failed fetching network context: %w", err)
 	}
 
-	if networkContext.CreationTimestamp.IsZero() {
-		networkContext = networkingv1alpha.NetworkContext{
-			ObjectMeta: metav1.ObjectMeta{
-				Namespace: networkContextObjectKey.Namespace,
-				Name:      networkContextObjectKey.Name,
-			},
-			Spec: networkingv1alpha.NetworkContextSpec{
-				Network: networkingv1alpha.LocalNetworkRef{
-					Name: binding.Spec.Network.Name,
-				},
-				Location: binding.Spec.Location,
-			},
+	networkContext.Namespace = networkContextObjectKey.Namespace
+	networkContext.Name = networkContextObjectKey.Name
+	if _, err := controllerutil.CreateOrUpdate(ctx, cl.GetClient(), &networkContext, func() error {
+		if !networkContext.DeletionTimestamp.IsZero() {
+			return &networkContextTerminating{name: networkContext.Name}
 		}
-
-		if err := controllerutil.SetControllerReference(&network, &networkContext, cl.GetScheme()); err != nil {
-			return ctrl.Result{}, fmt.Errorf("failed to set controller on network context: %w", err)
+		networkContext.Spec.Network = networkingv1alpha.LocalNetworkRef{Name: network.Name}
+		networkContext.Spec.Location = binding.Spec.Location
+		networkContext.Spec.IPFamilies = append([]networkingv1alpha.IPFamily(nil), network.Spec.IPFamilies...)
+		networkContext.Spec.MTU = network.Spec.MTU
+		networkContext.Spec.NetworkGeneration = network.Generation
+		if networkContext.Labels == nil {
+			networkContext.Labels = map[string]string{}
 		}
-
-		if err := cl.GetClient().Create(ctx, &networkContext); err != nil {
-			return ctrl.Result{}, fmt.Errorf("failed creating network context: %w", err)
-		}
+		networkContext.Labels[networkingv1alpha.NetworkUIDLabel] = string(network.UID)
+		networkContext.Labels[networkingv1alpha.NetworkLabel] = network.Name
+		networkContext.Labels[networkingv1alpha.LocationLabel] = binding.Spec.Location.Name
+		return controllerutil.SetControllerReference(&network, &networkContext, cl.GetScheme())
+	}); err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed reconciling network context: %w", err)
 	}
 
 	if !apimeta.IsStatusConditionTrue(networkContext.Status.Conditions, networkingv1alpha.NetworkContextReady) {
@@ -172,6 +171,14 @@ func (r *NetworkBindingReconciler) SetupWithManager(mgr mcmanager.Manager) error
 	return mcbuilder.ControllerManagedBy(mgr).
 		For(&networkingv1alpha.NetworkBinding{},
 			mcbuilder.WithEngageWithLocalCluster(false),
+		).
+		Watches(
+			&networkingv1alpha.Network{},
+			func(clusterName multicluster.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
+				return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []mcreconcile.Request {
+					return networkBindingRequestsForNetwork(ctx, cl.GetClient(), clusterName, obj)
+				})
+			},
 		).
 		Watches(
 			&networkingv1alpha.NetworkContext{},
@@ -226,6 +233,30 @@ func networkBindingRequestsForContext(
 
 func networkContextNameForBinding(binding *networkingv1alpha.NetworkBinding) string {
 	return networkContextName(binding.Spec.Network.Name, binding.Spec.Location)
+}
+
+func networkBindingRequestsForNetwork(ctx context.Context, c client.Client, clusterName multicluster.ClusterName, obj client.Object) []mcreconcile.Request {
+	network, ok := obj.(*networkingv1alpha.Network)
+	if !ok {
+		return nil
+	}
+	var bindings networkingv1alpha.NetworkBindingList
+	if err := c.List(ctx, &bindings); err != nil {
+		log.FromContext(ctx).Error(err, "failed to list NetworkBindings for Network watch")
+		return nil
+	}
+	var requests []mcreconcile.Request
+	for i := range bindings.Items {
+		binding := &bindings.Items[i]
+		namespace := binding.Spec.Network.Namespace
+		if namespace == "" {
+			namespace = binding.Namespace
+		}
+		if namespace == network.Namespace && binding.Spec.Network.Name == network.Name {
+			requests = append(requests, mcreconcile.Request{ClusterName: clusterName, Request: ctrl.Request{NamespacedName: client.ObjectKeyFromObject(binding)}})
+		}
+	}
+	return requests
 }
 
 func networkContextName(network string, location locationsv1alpha1.LocationReference) string {

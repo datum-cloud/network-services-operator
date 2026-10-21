@@ -81,6 +81,10 @@ spec:
             port: 8081
           initialDelaySeconds: 15
           periodSeconds: 20
+          # A Milo API-server restart makes the manager list every project control plane again, and the probe can
+          # miss for about 2 minutes while it does. Readiness takes the pod out of service meanwhile; liveness waits
+          # 4 minutes, twice that, before it restarts a manager that does not answer.
+          failureThreshold: 12
         readinessProbe:
           httpGet:
             path: /readyz

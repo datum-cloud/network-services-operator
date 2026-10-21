@@ -27,6 +27,7 @@ import (
 	"os"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	_ "golang.org/x/crypto/x509roots/fallback"
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"

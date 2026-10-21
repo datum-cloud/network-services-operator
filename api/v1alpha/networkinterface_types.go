@@ -16,6 +16,9 @@ import (
 // +kubebuilder:validation:Enum=Delete;Retain
 type NetworkInterfaceReclaimPolicy string
 
+const NetworkInterfaceAddressReleaseStarted = "networking.datumapis.com/address-release-started"
+const NetworkInterfacePublicUDPHoldPrefix = "networking.datumapis.com/public-udp-withdraw-"
+
 const (
 	// NetworkInterfaceReclaimPolicyDelete deletes the interface and returns its
 	// addresses to IPAM. A workload recreated later gets new addresses.

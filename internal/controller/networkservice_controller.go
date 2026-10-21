@@ -85,7 +85,8 @@ func (r *NetworkServiceReconciler) reconcileService(
 	}
 
 	status := networkingv1alpha.NetworkServiceStatus{
-		Conditions: slices.Clone(service.Status.Conditions),
+		Conditions:      slices.Clone(service.Status.Conditions),
+		PublicAddresses: slices.Clone(service.Status.PublicAddresses),
 	}
 
 	selector, selectorErr := metav1.LabelSelectorAsSelector(&service.Spec.NetworkInterfaces.Selector)

@@ -43,13 +43,14 @@ const (
 
 // NetworkServiceProtocol is the transport protocol a port carries.
 //
-// +kubebuilder:validation:Enum=TCP
+// +kubebuilder:validation:Enum=TCP;UDP
 type NetworkServiceProtocol string
 
 const (
 	// NetworkServiceProtocolTCP carries TCP, which is what every backend served
 	// through a proxy uses.
 	NetworkServiceProtocolTCP NetworkServiceProtocol = "TCP"
+	NetworkServiceProtocolUDP NetworkServiceProtocol = "UDP"
 )
 
 // NetworkServiceAppProtocol is the HTTP version the edge uses to reach
@@ -113,6 +114,7 @@ type NetworkServiceInterfaceSelector struct {
 }
 
 // NetworkServicePort is one port the service's members answer on.
+// +kubebuilder:validation:XValidation:rule="!has(self.appProtocol) || !has(self.protocol) || self.protocol == 'TCP'",message="appProtocol requires TCP"
 type NetworkServicePort struct {
 	// name identifies the port within the service, and is what a backend
 	// referencing this service names. Naming a port rather than a number lets
@@ -127,7 +129,7 @@ type NetworkServicePort struct {
 	Name string `json:"name"`
 
 	// port is the port number every member answers on. It is the port on the
-	// member itself, not one the platform publishes.
+	// member itself and, for publicUDP, the public port.
 	//
 	// Unique within the service.
 	//
@@ -136,10 +138,8 @@ type NetworkServicePort struct {
 	// +kubebuilder:validation:Maximum=65535
 	Port int32 `json:"port"`
 
-	// protocol is the transport the port carries. TCP is the only value
-	// accepted, and is what a backend served through a proxy uses. The field
-	// exists so the same service can back a Layer 4 load balancer without
-	// changing shape.
+	// protocol is the transport the port carries. HTTPProxy backends require
+	// TCP. UDP ports can be published through publicUDP without terminating TLS.
 	//
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:default="TCP"
@@ -176,10 +176,25 @@ type NetworkServiceTrafficDistribution struct {
 	Strategy NetworkServiceTrafficDistributionStrategy `json:"strategy,omitempty"`
 }
 
-// NetworkServiceSpec defines the desired state of NetworkService. It names the
-// members and the ports they answer on, and nothing about where traffic should
-// go: the platform decides that from where each request arrived.
+// NetworkServicePublicUDP publishes one allocated interface through a native cell.
+type NetworkServicePublicUDP struct {
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
+	Location string `json:"location"`
+	// +kubebuilder:default="public-ipv4"
+	// +kubebuilder:validation:Enum="public-ipv4"
+	AddressClass string `json:"addressClass,omitempty"`
+}
+
+// NetworkServiceSpec defines the desired membership and publication.
+// +kubebuilder:validation:XValidation:rule="!has(self.publicUDP) || (size(self.ports) == 1 && self.ports[0].protocol == 'UDP')",message="publicUDP requires exactly one UDP port"
+// +kubebuilder:validation:XValidation:rule="!has(oldSelf.publicUDP) || (has(self.publicUDP) && self.publicUDP == oldSelf.publicUDP)",message="publicUDP is immutable once enabled; delete the service to withdraw it"
 type NetworkServiceSpec struct {
+	// PublicUDP publishes a single interface and UDP port through the native fabric.
+	// The selected interface must hold an IPAM-assigned public address.
+	// +optional
+	PublicUDP *NetworkServicePublicUDP `json:"publicUDP,omitempty"`
 	// networkInterfaces selects the interfaces that make up the service's
 	// membership. An interface joins when it matches and a workload holds it,
 	// and it is healthy once whatever holds it reports itself available to serve.
@@ -269,6 +284,9 @@ type NetworkServiceSummary struct {
 // rotation, which is what makes an over-broad or stale selector visible instead
 // of silent.
 type NetworkServiceStatus struct {
+	// PublicAddresses contains the allocated VIP; PublicReady reports publication.
+	// +optional
+	PublicAddresses []string `json:"publicAddresses,omitempty"`
 	// summary totals the locations below.
 	//
 	// +kubebuilder:validation:Optional

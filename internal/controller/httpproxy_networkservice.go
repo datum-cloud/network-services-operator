@@ -76,7 +76,7 @@ func resolveNetworkServiceBackend(
 	portIndex := slices.IndexFunc(service.Spec.Ports, func(p networkingv1alpha.NetworkServicePort) bool {
 		return p.Name == ref.Port
 	})
-	if portIndex < 0 {
+	if portIndex < 0 || service.Spec.Ports[portIndex].Protocol == networkingv1alpha.NetworkServiceProtocolUDP {
 		return nil, &errNetworkServiceBackendNotFound{service: ref.Name, port: ref.Port}
 	}
 

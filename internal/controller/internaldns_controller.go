@@ -82,9 +82,10 @@ func (r *APIProjectIdentityResolver) ProjectUID(ctx context.Context, name string
 }
 
 type InternalDNSProjectReconciler struct {
-	Config   config.InternalDNSConfig
-	Projects ProjectIdentityResolver
-	Now      func() time.Time
+	Config    config.InternalDNSConfig
+	Projects  ProjectIdentityResolver
+	Locations client.Reader
+	Now       func() time.Time
 
 	mgr mcmanager.Manager
 }
@@ -216,7 +217,11 @@ func (r *InternalDNSProjectReconciler) region(
 	networkContext *networkingv1alpha.NetworkContext,
 ) (string, error) {
 	location := &locationsv1alpha1.Location{}
-	if err := cl.Get(ctx, client.ObjectKey{Name: networkContext.Spec.Location.Name}, location); err != nil {
+	reader := r.Locations
+	if reader == nil {
+		reader = cl
+	}
+	if err := reader.Get(ctx, client.ObjectKey{Name: networkContext.Spec.Location.Name}, location); err != nil {
 		return "", client.IgnoreNotFound(err)
 	}
 	return location.Spec.Topology[internalDNSRegionTopologyKey], nil

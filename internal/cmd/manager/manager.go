@@ -419,6 +419,10 @@ func NewCommand(build BuildInfo) *cobra.Command {
 				os.Exit(1)
 			}
 
+			var dnsLocations client.Reader
+			if projectIdentities != nil {
+				dnsLocations = projectIdentities.Reader
+			}
 			registeredControllers, err := setupControllers(mgr, serverConfig, controllerDeps{
 				downstreamCluster:        downstreamCluster,
 				federationManager:        federationMgr,
@@ -428,6 +432,7 @@ func NewCommand(build BuildInfo) *cobra.Command {
 				certificateServiceRoots:  certificateServiceRoots,
 				wildcardEntitlements:     wildcardEntitlements,
 				projectIdentities:        projectIdentities,
+				dnsLocations:             dnsLocations,
 			})
 			if err != nil {
 				setupLog.Error(err, "unable to set up controllers")
@@ -606,6 +611,7 @@ type controllerDeps struct {
 	certificateServiceRoots  *x509.CertPool
 	wildcardEntitlements     controller.WildcardEntitlementChecker
 	projectIdentities        controller.ProjectIdentityResolver
+	dnsLocations             client.Reader
 }
 
 func federationRESTConfig(federation config.FederationConfig, deployment *rest.Config) (*rest.Config, error) {
@@ -615,7 +621,7 @@ func federationRESTConfig(federation config.FederationConfig, deployment *rest.C
 	return federation.RestConfig()
 }
 
-func newProjectIdentityResolver(serverConfig config.NetworkServicesOperator) (controller.ProjectIdentityResolver, error) {
+func newProjectIdentityResolver(serverConfig config.NetworkServicesOperator) (*controller.APIProjectIdentityResolver, error) {
 	if !serverConfig.InternalDNS.Enabled {
 		return nil, nil
 	}
@@ -731,8 +737,9 @@ func controllerRegistrations(
 		}},
 		{"internaldns-project", serverConfig.InternalDNS.Enabled, func() error {
 			return (&controller.InternalDNSProjectReconciler{
-				Config:   serverConfig.InternalDNS,
-				Projects: deps.projectIdentities,
+				Config:    serverConfig.InternalDNS,
+				Projects:  deps.projectIdentities,
+				Locations: deps.dnsLocations,
 			}).SetupWithManager(mgr)
 		}},
 		{"internaldns-readiness", serverConfig.InternalDNS.Enabled, func() error {

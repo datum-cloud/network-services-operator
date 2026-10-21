@@ -384,3 +384,24 @@ func assertUnstructuredCount(
 		t.Fatalf("%s count = %d, want %d", gvk.Kind, len(list.Items), want)
 	}
 }
+
+func TestInternalDNSUsesPlatformLocation(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := locationsv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	location := &locationsv1alpha1.Location{
+		ObjectMeta: metav1.ObjectMeta{Name: "ord-1"},
+		Spec:       locationsv1alpha1.LocationSpec{Topology: map[string]string{internalDNSRegionTopologyKey: "us-central"}},
+	}
+	platform := fake.NewClientBuilder().WithScheme(scheme).WithObjects(location).Build()
+	tenant := fake.NewClientBuilder().WithScheme(scheme).Build()
+	r := &InternalDNSProjectReconciler{Locations: platform}
+	region, err := r.region(context.Background(), tenant, testNetworkContext("test", "context"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if region != "us-central" {
+		t.Fatalf("region = %q, want us-central", region)
+	}
+}

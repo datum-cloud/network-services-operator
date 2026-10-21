@@ -121,6 +121,14 @@ func collectDesiredResourcesErrorResult(err error, programmedCondition *metav1.C
 		return ctrl.Result{RequeueAfter: retryAfterConflict}, nil, true
 	}
 
+	var unsupportedProtocol *errNetworkServiceBackendUnsupportedProtocol
+	if errors.As(err, &unsupportedProtocol) {
+		programmedCondition.Status = metav1.ConditionFalse
+		programmedCondition.Reason = networkingv1alpha.HTTPProxyReasonUnsupportedBackendProtocol
+		programmedCondition.Message = fmt.Sprintf("The HTTPProxy cannot be programmed: %s", unsupportedProtocol.Error())
+		return ctrl.Result{RequeueAfter: retryAfterInvalid}, nil, true
+	}
+
 	// The reason stays Pending rather than becoming Invalid: a collect
 	// failure can as easily be a read that succeeds on retry as a permanent
 	// configuration problem, and the reason should not claim to know which.

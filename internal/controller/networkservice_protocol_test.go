@@ -4,14 +4,18 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 	api "go.datum.net/network-services-operator/api/v1alpha"
+	discoveryv1 "k8s.io/api/discovery/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
 
 func TestHTTPProxyNetworkServiceTransport(t *testing.T) {
@@ -25,7 +29,8 @@ func TestHTTPProxyNetworkServiceTransport(t *testing.T) {
 			cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(s).Build()
 			resolved, err := resolveNetworkServiceBackend(context.Background(), cl, s.Namespace, &api.NetworkServiceBackendRef{Name: s.Name, Port: "service"})
 			if protocol == api.NetworkServiceProtocolUDP {
-				require.IsType(t, &errNetworkServiceBackendNotFound{}, err)
+				require.IsType(t, &errNetworkServiceBackendUnsupportedProtocol{}, err)
+				require.EqualError(t, err, `NetworkService "backend" port "service" uses UDP; HTTPProxy backends require TCP`)
 				require.Nil(t, resolved)
 			} else {
 				require.NoError(t, err)
@@ -49,4 +54,44 @@ func TestNetworkServiceProtocolAdmission(t *testing.T) {
 	require.Equal(t, api.NetworkServiceProtocolUDP, service.Spec.Ports[2].Protocol)
 	service.Spec.Ports[1].Protocol = "SCTP"
 	require.Error(t, s.client.Update(s.ctx, service))
+}
+
+func TestHTTPProxyUnsupportedBackendProtocolCondition(t *testing.T) {
+	condition := &metav1.Condition{Type: api.HTTPProxyConditionProgrammed, Status: metav1.ConditionTrue, Reason: api.HTTPProxyReasonProgrammed}
+	cause := &errNetworkServiceBackendUnsupportedProtocol{service: "storefront", port: "http", protocol: api.NetworkServiceProtocolUDP}
+	result, err, done := collectDesiredResourcesErrorResult(fmt.Errorf("resolve backend: %w", cause), condition)
+	require.NoError(t, err)
+	require.True(t, done)
+	require.Equal(t, retryAfterInvalid, result.RequeueAfter)
+	require.Equal(t, metav1.ConditionFalse, condition.Status)
+	require.Equal(t, api.HTTPProxyReasonUnsupportedBackendProtocol, condition.Reason)
+	require.Equal(t, `The HTTPProxy cannot be programmed: NetworkService "storefront" port "http" uses UDP; HTTPProxy backends require TCP`, condition.Message)
+}
+
+func TestHTTPProxyReportsUDPBackendAndRecoversWithTCP(t *testing.T) {
+	ctx := context.Background()
+	proxy := newNetworkServiceProxy()
+	controllerutil.AddFinalizer(proxy, httpProxyFinalizer)
+	service := newNetworkService()
+	service.Spec.Ports[0].Protocol = api.NetworkServiceProtocolUDP
+	cl := fake.NewClientBuilder().WithScheme(fullHTTPProxyTestScheme(t)).WithObjects(proxy, service).WithStatusSubresource(proxy).Build()
+	updated, err := reconcileHTTPProxyOnce(t, cl, proxy)
+	require.NoError(t, err)
+	condition := meta.FindStatusCondition(updated.Status.Conditions, api.HTTPProxyConditionProgrammed)
+	require.NotNil(t, condition)
+	require.Equal(t, metav1.ConditionFalse, condition.Status)
+	require.Equal(t, api.HTTPProxyReasonUnsupportedBackendProtocol, condition.Reason)
+	require.Equal(t, `The HTTPProxy cannot be programmed: NetworkService "storefront" port "http" uses UDP; HTTPProxy backends require TCP`, condition.Message)
+	var slices discoveryv1.EndpointSliceList
+	require.NoError(t, cl.List(ctx, &slices))
+	require.Empty(t, slices.Items)
+	service.Spec.Ports[0].Protocol = api.NetworkServiceProtocolTCP
+	require.NoError(t, cl.Update(ctx, service))
+	updated, err = reconcileHTTPProxyOnce(t, cl, proxy)
+	require.NoError(t, err)
+	condition = meta.FindStatusCondition(updated.Status.Conditions, api.HTTPProxyConditionProgrammed)
+	require.NotNil(t, condition)
+	require.NotEqual(t, api.HTTPProxyReasonUnsupportedBackendProtocol, condition.Reason)
+	require.NoError(t, cl.List(ctx, &slices))
+	require.Len(t, slices.Items, 1)
 }

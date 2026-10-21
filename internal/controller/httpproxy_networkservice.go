@@ -43,6 +43,16 @@ func (e *errNetworkServiceBackendNotFound) Error() string {
 	return fmt.Sprintf("referenced NetworkService %q not found", e.service)
 }
 
+type errNetworkServiceBackendUnsupportedProtocol struct {
+	service  string
+	port     string
+	protocol networkingv1alpha.NetworkServiceProtocol
+}
+
+func (e *errNetworkServiceBackendUnsupportedProtocol) Error() string {
+	return fmt.Sprintf("NetworkService %q port %q uses %s; HTTPProxy backends require TCP", e.service, e.port, e.protocol)
+}
+
 // resolvedNetworkService is a NetworkService's membership, expressed as the
 // endpoints a backend referencing it should forward to.
 type resolvedNetworkService struct {
@@ -76,8 +86,13 @@ func resolveNetworkServiceBackend(
 	portIndex := slices.IndexFunc(service.Spec.Ports, func(p networkingv1alpha.NetworkServicePort) bool {
 		return p.Name == ref.Port
 	})
-	if portIndex < 0 || service.Spec.Ports[portIndex].Protocol == networkingv1alpha.NetworkServiceProtocolUDP {
+	if portIndex < 0 {
 		return nil, &errNetworkServiceBackendNotFound{service: ref.Name, port: ref.Port}
+	}
+
+	protocol := service.Spec.Ports[portIndex].Protocol
+	if protocol != "" && protocol != networkingv1alpha.NetworkServiceProtocolTCP {
+		return nil, &errNetworkServiceBackendUnsupportedProtocol{service: ref.Name, port: ref.Port, protocol: protocol}
 	}
 
 	selector, err := metav1.LabelSelectorAsSelector(&service.Spec.NetworkInterfaces.Selector)

@@ -34,7 +34,7 @@ import (
 	"go.datum.net/network-services-operator/internal/galactic/galactic"
 )
 
-func TestReconcileNADTakesOverLegacyAttachment(t *testing.T) {
+func TestReconcileNADPreservesAttachmentIdentifier(t *testing.T) {
 	scheme := runtime.NewScheme()
 	if err := cloudv1alpha1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
@@ -42,11 +42,9 @@ func TestReconcileNADTakesOverLegacyAttachment(t *testing.T) {
 	if err := nadv1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
-	controller := true
 	old := &nadv1.NetworkAttachmentDefinition{ObjectMeta: metav1.ObjectMeta{
 		Name: "nic", Namespace: "tenant",
-		Labels:          map[string]string{legacyLabelVPC: "1", legacyLabelVPCAttachment: "2"},
-		OwnerReferences: []metav1.OwnerReference{{APIVersion: "cloud.datumapis.com/v1alpha1", Kind: "VPCAttachment", Name: "nic", UID: types.UID("old"), Controller: &controller}},
+		Labels: map[string]string{LabelVPC: "1", LabelVPCAttachment: "2"},
 	}}
 	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(old).Build()
 	r := &NetworkInterfaceReconciler{Client: cl, APIReader: cl, Scheme: scheme}
@@ -68,7 +66,7 @@ func TestReconcileNADTakesOverLegacyAttachment(t *testing.T) {
 	}
 }
 
-func TestPublishToInterfaceReprogramsNSOAttachmentGroup(t *testing.T) {
+func TestPublishToInterfaceInvalidatesPriorAttachmentGroup(t *testing.T) {
 	scheme := runtime.NewScheme()
 	if err := networkingv1alpha.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
@@ -84,7 +82,7 @@ func TestPublishToInterfaceReprogramsNSOAttachmentGroup(t *testing.T) {
 		{Type: networkingv1alpha.NetworkInterfaceClaimReady, Status: metav1.ConditionTrue, Reason: "OldGroupReady", LastTransitionTime: metav1.Now()},
 	}
 	iface.Status.AttachmentRef = &networkingv1alpha.NetworkInterfaceAttachmentRef{
-		APIGroup: "cloud.datumapis.com", Kind: "VPCAttachment", Name: "nic",
+		APIGroup: "previous.example", Kind: "VPCAttachment", Name: "nic",
 	}
 	iface.Status.Conditions = []metav1.Condition{{
 		Type:   networkingv1alpha.NetworkInterfaceProgrammed,

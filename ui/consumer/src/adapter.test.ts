@@ -136,6 +136,15 @@ describe('toNetworkList', () => {
   it('returns an empty array for an empty list', () => {
     expect(toNetworkList([])).toEqual([]);
   });
+
+  it('leaves out a network that is being deleted', () => {
+    const list = toNetworkList([
+      baseRaw,
+      { ...baseRaw, metadata: { name: 'going', deletionTimestamp: '2026-10-20T00:00:00Z' } },
+    ]);
+    expect(list.map((n) => n.name)).not.toContain('going');
+    expect(list).toHaveLength(1);
+  });
 });
 
 const baseRawSubnet: RawSubnet = {

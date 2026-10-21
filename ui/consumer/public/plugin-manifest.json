@@ -6,7 +6,8 @@
   "exposedModules": {
     "NetworkList": "./src/pages/network-list.tsx",
     "NetworkDetail": "./src/pages/network-detail.tsx",
-    "NetworkHomeHero": "./src/components/network-home-hero.tsx"
+    "NetworkHomeHero": "./src/components/network-home-hero.tsx",
+    "CreateNetworkDialog": "./src/components/create-network-dialog.tsx"
   },
   "extensions": [
     {
@@ -17,10 +18,7 @@
         "icon": "network",
         "path": "networks",
         "order": 10,
-        "section": "connect",
-        "children": [
-          { "title": "Networks", "path": "networks" }
-        ]
+        "section": "connect"
       }
     },
     {

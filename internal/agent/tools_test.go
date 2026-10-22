@@ -35,23 +35,22 @@ func pinClock(t *testing.T) {
 	t.Cleanup(func() { nowFunc = prev })
 }
 
-// TestToolsAreReadOnly makes "this service publishes no mutating tool" a
-// property of the types rather than a promise in a comment. Every handler
-// reaches the cluster through Reader, which has no Create, Update, Patch or
-// Delete on it, so adding a write would mean widening that interface — a
-// reviewable diff rather than a quiet change inside a handler.
-func TestToolsAreReadOnly(t *testing.T) {
+// TestReaderHasNoWrites keeps every write behind Writer. The read tools reach
+// the cluster only through Reader, which has no Create, Update, Patch or Delete
+// on it, so a read tool cannot start writing without widening that interface —
+// a reviewable diff rather than a quiet change inside a handler.
+func TestReaderHasNoWrites(t *testing.T) {
 	rt := reflect.TypeOf((*Reader)(nil)).Elem()
 	for i := 0; i < rt.NumMethod(); i++ {
 		name := rt.Method(i).Name
 		for _, verb := range []string{"Create", "Update", "Patch", "Delete", "Apply", "Write", "Set"} {
 			assert.False(t, strings.HasPrefix(name, verb),
-				"Reader.%s looks like a write; changing a load balancer belongs in the assistant's "+
-					"own plan and apply path, which holds the confirmation step", name)
+				"Reader.%s looks like a write; writes go through Writer, from a change tool that "+
+					"previews first", name)
 		}
 	}
 	assert.Equal(t, 6, rt.NumMethod(),
-		"Reader grew a method; if it is a write, it does not belong here")
+		"Reader grew a method; if it is a write, it belongs on Writer")
 }
 
 // TestGetReportsTheTrafficSplit pins that the assistant sees the same weights,
@@ -228,32 +227,45 @@ func TestReasonExplainSaysWhenAReasonIsAmbiguous(t *testing.T) {
 }
 
 // TestEveryToolIsRegisteredAndDescribed pins that a tool cannot ship without
-// telling the model what it does and that it changes nothing.
+// telling the model what it does: a read tool that it changes nothing, a change
+// tool that it previews before it writes. Both say so to the client as well.
 func TestEveryToolIsRegisteredAndDescribed(t *testing.T) {
 	s := mcp.NewServer(&mcp.Implementation{Name: "test", Version: "0"}, nil)
 	RegisterTools(s, depsFor(&fakeReader{}))
 
-	want := map[string]bool{
+	// true for a tool that changes a load balancer.
+	writes := map[string]bool{
 		ToolList: false, ToolGet: false, ToolDiagnose: false, ToolReasonExplain: false,
 		ToolTrafficSummary: false,
+		ToolUpdate:         true, ToolHeader: true, ToolHostname: true, ToolRoute: true, ToolOrigin: true,
 	}
+	found := map[string]bool{}
 	for _, tool := range serverTools(t, s) {
-		if _, ok := want[tool.Name]; !ok {
+		write, ok := writes[tool.Name]
+		if !ok {
 			t.Errorf("unexpected tool %q registered", tool.Name)
 			continue
 		}
-		want[tool.Name] = true
+		found[tool.Name] = true
 		assert.True(t, strings.HasPrefix(tool.Name, "alb_"),
 			"%s needs the alb_ prefix so it cannot collide with another service's tool", tool.Name)
+		if !assert.NotNil(t, tool.Annotations, "%s has no annotations", tool.Name) {
+			continue
+		}
+		if write {
+			assert.Contains(t, tool.Description, "dryRun true first",
+				"%s must tell the model to preview before it writes", tool.Name)
+			assert.False(t, tool.Annotations.ReadOnlyHint,
+				"%s changes a load balancer, so the client must not treat it as a free read", tool.Name)
+			continue
+		}
 		assert.Contains(t, tool.Description, "Read-only.",
 			"%s must say it changes nothing", tool.Name)
-		if assert.NotNil(t, tool.Annotations, "%s has no annotations", tool.Name) {
-			assert.True(t, tool.Annotations.ReadOnlyHint,
-				"%s must tell the client it changes nothing, not only the model", tool.Name)
-		}
+		assert.True(t, tool.Annotations.ReadOnlyHint,
+			"%s must tell the client it changes nothing, not only the model", tool.Name)
 	}
-	for name, found := range want {
-		assert.True(t, found, "%s was never registered", name)
+	for name := range writes {
+		assert.True(t, found[name], "%s was never registered", name)
 	}
 }
 

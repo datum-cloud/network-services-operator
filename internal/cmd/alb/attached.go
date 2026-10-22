@@ -149,7 +149,7 @@ func mutateProxyWithClient(
 ) error {
 	dryRun, _ := cmd.Flags().GetBool("dry-run")
 	if err := patchProxyWithRetry(cmd.Context(), c, name, mutate, dryRun); err != nil {
-		return classifyProxyPatchError(name, err)
+		return util.ClassifyProxyPatchError(name, err)
 	}
 	if dryRun {
 		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Application load balancer %q validated.\n", name)
@@ -157,20 +157,4 @@ func mutateProxyWithClient(
 	}
 	_, _ = fmt.Fprint(cmd.OutOrStdout(), success)
 	return nil
-}
-
-func classifyProxyPatchError(name string, err error) error {
-	if tooMany := tooManyBackendsError(err); tooMany != nil {
-		return tooMany
-	}
-	return util.ClassifyError(fmt.Errorf("updating application load balancer %q: %w", name, err))
-}
-
-func tooManyBackendsError(err error) *util.CLIError {
-	if !apierrors.IsInvalid(err) || !strings.Contains(err.Error(), "backends: Too many") {
-		return nil
-	}
-	return util.NewCLIError(util.ExitInvalid, "a route takes at most 16 origins").
-		WithFix("remove an origin from this route, or split the pool across routes").
-		WithCause(err)
 }

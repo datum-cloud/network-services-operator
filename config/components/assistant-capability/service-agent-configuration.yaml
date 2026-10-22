@@ -61,7 +61,17 @@ spec:
         - alb_diagnose
         - alb_reason_explain
         - alb_traffic_summary
-      mutating: []
+        - alb_update
+        - alb_header
+        - alb_hostname
+        - alb_route
+        - alb_origin
+      mutating:
+      - alb_update
+      - alb_header
+      - alb_hostname
+      - alb_route
+      - alb_origin
   skills:
   - name: alb-not-serving
     description: Triage an Application Load Balancer that is not working, from symptom to root cause and who has to act

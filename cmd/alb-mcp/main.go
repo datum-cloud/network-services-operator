@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Command alb-mcp serves networking's read-only Application Load Balancer tools
+// Command alb-mcp serves networking's Application Load Balancer tools
 // over MCP, alongside the knowledge and skills an assistant reads before calling
 // them:
 //
@@ -14,10 +14,10 @@
 // documents do not.
 //
 // The server holds no credential of its own for a customer's project: it reads
-// through a client built from the caller's own bearer token. So a tool call can
-// never see more than the person who asked, the platform's own access control
-// stays the single enforcement point, and there is no standing authority here to
-// escalate with.
+// and writes through a client built from the caller's own bearer token. So a
+// tool call can never see or change more than the person who asked, the
+// platform's own access control stays the single enforcement point, and there
+// is no standing authority here to escalate with.
 package main
 
 import (
@@ -111,6 +111,7 @@ func depsFromRequest(r *http.Request, baseConfig *rest.Config) agent.DepsFor {
 		// caller and the same project, and no second credential exists here.
 		return agent.ToolDeps{
 			Reader:    agent.NewClientReader(c),
+			Writer:    agent.NewClientWriter(c, serverName),
 			Namespace: util.ResourceNamespace,
 			Logs:      agent.NewClientLogReader(cfg),
 		}, nil

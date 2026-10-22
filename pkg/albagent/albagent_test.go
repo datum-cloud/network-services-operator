@@ -47,6 +47,11 @@ func TestRegisterToolsExposesEveryNamedTool(t *testing.T) {
 		albagent.ToolList,
 		albagent.ToolReasonExplain,
 		albagent.ToolTrafficSummary,
+		albagent.ToolUpdate,
+		albagent.ToolHeader,
+		albagent.ToolHostname,
+		albagent.ToolRoute,
+		albagent.ToolOrigin,
 	}
 	sort.Strings(want)
 	assert.Equal(t, want, got)

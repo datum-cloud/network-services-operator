@@ -34,6 +34,7 @@ var outOfScopeAPIFiles = map[string]string{
 	"edgereachability_types.go":        "hub-side record with no customer-facing status",
 	"groupversion_info.go":             "scheme registration, no reasons",
 	"httpproxy_types.go":               "load balancers; the ALB agent's",
+	"internaldns_types.go":             "internal DNS service configuration, no status reasons",
 	"locationbinding_types.go":         "which locations a project is offered; surfaces here only as LocationNotAvailable",
 	"networkpolicy_types.go":           "declares no status reasons",
 	"trafficprotectionpolicy_types.go": "load balancer protection; the ALB agent's",

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -1022,6 +1023,18 @@ func (r *NetworkInterfaceClaimReconciler) syncInterface(
 	if iface.Spec.MTU != networkContext.Spec.MTU {
 		iface.Spec.MTU = networkContext.Spec.MTU
 		changed = true
+	}
+	var dns *networkingv1alpha.NetworkDNSResolverSettings
+	if settings := networkContext.Spec.DNS; settings != nil {
+		dns = &networkingv1alpha.NetworkDNSResolverSettings{Nameservers: append([]string(nil), settings.Nameservers...), Searches: append([]string(nil), settings.Searches...)}
+	}
+	if !apiequality.Semantic.DeepEqual(iface.Status.DNS, dns) {
+		base := iface.DeepCopy()
+		iface.Status.DNS = dns
+		apimeta.RemoveStatusCondition(&iface.Status.Conditions, networkingv1alpha.NetworkInterfaceDNSConfigured)
+		if err := cl.Status().Patch(ctx, iface, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
+			return fmt.Errorf("publish interface resolver settings: %w", err)
+		}
 	}
 	// An interface adopted from before the field existed carries none.
 	if claim.Spec.AttachmentMode != "" && iface.Spec.AttachmentMode != claim.Spec.AttachmentMode {

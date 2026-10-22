@@ -14,7 +14,7 @@ spec:
               kind: Network
               metadata:
                 name: test-cascade-network
-                namespace: default
+                namespace: ipam-e2e-alpha
               spec:
                 ipam:
                   mode: Auto
@@ -35,6 +35,7 @@ spec:
               spec:
                 network:
                   name: test-cascade-network
+                  namespace: ipam-e2e-alpha
                 location:
                   name: test-location
         - assert:
@@ -43,27 +44,12 @@ spec:
               kind: NetworkContext
               metadata:
                 name: test-cascade-network-test-location
-                namespace: default
+                namespace: ipam-e2e-alpha
                 (length(ownerReferences[?kind == 'Network' && controller == `true`]) == `1`): true
-
-    - name: Mark NetworkContext as Programmed
-      description: |
-        A plugin is expected to program the context at its backend and set the
-        Programmed condition. No such plugin runs in the local harness, so the
-        condition is set directly. A kubectl command is used because Chainsaw
-        does not support updating subresources.
-        See https://github.com/kyverno/chainsaw/issues/300.
-      try:
-        - script:
-            content: |
-              kubectl -n default patch networkcontext test-cascade-network-test-location \
-                --subresource=status --type=merge \
-                -p '{"status":{"conditions":[{"type": "Programmed", "status": "True", "reason": "Test", "message": "test", "lastTransitionTime": "2025-02-24T23:59:09Z"}]}}'
 
     - name: Assert NetworkContext becomes Ready
       description: |
-        The networkcontext controller derives Ready from Programmed. This asserts
-        that transition, which no other e2e exercises.
+        The context becomes ready after its subnet is allocated from the project's address pool.
       try:
         - assert:
             timeout: 1m
@@ -72,7 +58,7 @@ spec:
               kind: NetworkContext
               metadata:
                 name: test-cascade-network-test-location
-                namespace: default
+                namespace: ipam-e2e-alpha
               status:
                 (length(conditions[?type == 'Ready' && status == 'True']) == `1`): true
 
@@ -102,11 +88,11 @@ spec:
               apiVersion: networking.datumapis.com/v1alpha
               kind: Network
               name: test-cascade-network
-              namespace: default
+              namespace: ipam-e2e-alpha
         - script:
             content: |
               set -e
-              if kubectl -n default get networkcontext test-cascade-network-test-location 2>/dev/null; then
+              if kubectl -n ipam-e2e-alpha get networkcontext test-cascade-network-test-location 2>/dev/null; then
                 echo "NetworkContext still exists after Network deletion" >&2
                 exit 1
               fi

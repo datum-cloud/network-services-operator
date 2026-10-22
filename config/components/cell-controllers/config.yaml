@@ -1,5 +1,17 @@
 apiVersion: apiserver.config.datumapis.com/v1alpha1
 kind: CellControllerManager
+# Internal DNS is an alpha network integration and remains off until the
+# shared resolver attachments are configured for this cell.
+internalDNS:
+  # Enables private resolver route programming and readiness reporting.
+  enabled: false
+  # Presents the same resolver address inside each consumer VPC.
+  # frontend: fd53::53
+  # Allocates one stable service destination from this prefix per DNS context.
+  # servicePrefix: fd70:100::/64
+  # Selects the shared resolver attachments that serve authorized VPCs.
+  # producerAttachmentSelector:
+  #   service.datum.net/internal-dns: "true"
 metricsServer:
   bindAddress: ":8443"
 ipam:

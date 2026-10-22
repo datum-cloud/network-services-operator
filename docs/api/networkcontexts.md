@@ -100,6 +100,14 @@ NetworkContextSpec defines the desired state of NetworkContext
         </td>
         <td>true</td>
       </tr><tr>
+        <td><b><a href="#networkcontextspecdns">dns</a></b></td>
+        <td>object</td>
+        <td>
+          DNS contains resolver settings whose DNS authorization and private path
+have both been verified for this location.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
         <td><b>ipFamilies</b></td>
         <td>[]enum</td>
         <td>
@@ -191,6 +199,111 @@ The attached network
 </table>
 
 
+### NetworkContext.spec.dns
+<sup><sup>[↩ Parent](#networkcontextspec)</sup></sup>
+
+
+
+DNS contains resolver settings whose DNS authorization and private path
+have both been verified for this location.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b><a href="#networkcontextspecdnsaccessbindingref">accessBindingRef</a></b></td>
+        <td>object</td>
+        <td>
+          AccessBindingRef identifies the regional DNS configuration.<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b><a href="#networkcontextspecdnscontextref">contextRef</a></b></td>
+        <td>object</td>
+        <td>
+          ContextRef identifies the DNS serving and namespace lifetime.<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>nameservers</b></td>
+        <td>[]string</td>
+        <td>
+          Nameservers are resolver addresses reachable from this network.<br/>
+          <br/>
+            <i>Validations</i>:<li>self.all(n, isIP(n)): nameservers must contain IP addresses</li>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>searches</b></td>
+        <td>[]string</td>
+        <td>
+          Searches contains DNS search suffixes allocated to this network.<br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### NetworkContext.spec.dns.accessBindingRef
+<sup><sup>[↩ Parent](#networkcontextspecdns)</sup></sup>
+
+
+
+AccessBindingRef identifies the regional DNS configuration.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>name</b></td>
+        <td>string</td>
+        <td>
+          Name is the resource name in the network's namespace.<br/>
+        </td>
+        <td>true</td>
+      </tr></tbody>
+</table>
+
+
+### NetworkContext.spec.dns.contextRef
+<sup><sup>[↩ Parent](#networkcontextspecdns)</sup></sup>
+
+
+
+ContextRef identifies the DNS serving and namespace lifetime.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>name</b></td>
+        <td>string</td>
+        <td>
+          Name is the resource name in the network's namespace.<br/>
+        </td>
+        <td>true</td>
+      </tr></tbody>
+</table>
+
+
 ### NetworkContext.status
 <sup><sup>[↩ Parent](#networkcontext)</sup></sup>
 
@@ -212,6 +325,14 @@ NetworkContextStatus defines the observed state of NetworkContext
         <td>[]object</td>
         <td>
           Represents the observations of a network context's current state.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b><a href="#networkcontextstatusdnsaccess">dnsAccess</a></b></td>
+        <td>object</td>
+        <td>
+          DNSAccess identifies the current private path proof. DNSReady=True applies
+only to this exact context, binding revision, and deadline.<br/>
         </td>
         <td>false</td>
       </tr><tr>
@@ -299,6 +420,104 @@ with respect to the current state of the instance.<br/>
             <i>Minimum</i>: 0<br/>
         </td>
         <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### NetworkContext.status.dnsAccess
+<sup><sup>[↩ Parent](#networkcontextstatus)</sup></sup>
+
+
+
+DNSAccess identifies the current private path proof. DNSReady=True applies
+only to this exact context, binding revision, and deadline.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b><a href="#networkcontextstatusdnsaccessaccessbindingref">accessBindingRef</a></b></td>
+        <td>object</td>
+        <td>
+          AccessBindingRef identifies the DNS configuration used for the proof.<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b><a href="#networkcontextstatusdnsaccesscontextref">contextRef</a></b></td>
+        <td>object</td>
+        <td>
+          ContextRef identifies the DNS context used for the proof.<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>serviceDestination</b></td>
+        <td>string</td>
+        <td>
+          ServiceDestination identifies this DNS context inside the shared service.<br/>
+          <br/>
+            <i>Validations</i>:<li>isIP(self): serviceDestination must be an IP address</li>
+        </td>
+        <td>true</td>
+      </tr></tbody>
+</table>
+
+
+### NetworkContext.status.dnsAccess.accessBindingRef
+<sup><sup>[↩ Parent](#networkcontextstatusdnsaccess)</sup></sup>
+
+
+
+AccessBindingRef identifies the DNS configuration used for the proof.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>name</b></td>
+        <td>string</td>
+        <td>
+          Name is the resource name in the network's namespace.<br/>
+        </td>
+        <td>true</td>
+      </tr></tbody>
+</table>
+
+
+### NetworkContext.status.dnsAccess.contextRef
+<sup><sup>[↩ Parent](#networkcontextstatusdnsaccess)</sup></sup>
+
+
+
+ContextRef identifies the DNS context used for the proof.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>name</b></td>
+        <td>string</td>
+        <td>
+          Name is the resource name in the network's namespace.<br/>
+        </td>
+        <td>true</td>
       </tr></tbody>
 </table>
 

@@ -14,7 +14,7 @@ spec:
               kind: Network
               metadata:
                 name: test-binding-network
-                namespace: default
+                namespace: ipam-e2e-alpha
               spec:
                 ipam:
                   mode: Auto
@@ -31,6 +31,7 @@ spec:
               spec:
                 network:
                   name: test-binding-network
+                  namespace: ipam-e2e-alpha
                 location:
                   name: some-location
         - assert:
@@ -39,16 +40,12 @@ spec:
               kind: NetworkContext
               metadata:
                 name: test-binding-network-some-location
-                namespace: default
+                namespace: ipam-e2e-alpha
                 (creationTimestamp != nil): true
 
     - name: Assert NetworkBinding is Ready
       description: |
-        This network needs no address space of its own, so its context is ready
-        as soon as it exists and the binding never passes through
-        NetworkContextNotReady. Covering that intermediate state needs a context
-        that waits on an address allocation, which needs an IPAM pool for this
-        project.
+        The binding becomes ready after its context receives a subnet from the project's address pool.
       try:
         - assert:
             timeout: 1m
@@ -60,6 +57,6 @@ spec:
                 namespace: default
               status:
                 networkContextRef:
-                  namespace: default
+                  namespace: ipam-e2e-alpha
                   name: test-binding-network-some-location
                 (length(conditions[?type == 'Ready' && status == 'True' && reason == 'NetworkContextReady']) == `1`): true

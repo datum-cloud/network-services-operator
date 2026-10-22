@@ -16,6 +16,10 @@ const (
 
 // NetworkSpec defines the desired state of a Network
 type NetworkSpec struct {
+	// DNS configures private resolver access for the network.
+	//
+	// +kubebuilder:validation:Optional
+	DNS NetworkDNSPolicy `json:"dns,omitempty"`
 
 	// IPAM settings for the network.
 	//

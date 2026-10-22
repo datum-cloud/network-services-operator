@@ -20,6 +20,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 
+	networkv1alpha1 "go.datum.net/galactic/api/network/v1alpha1"
 	ipamv1alpha1 "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
 	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
 
@@ -88,6 +89,9 @@ func NewCommand() *cobra.Command {
 				os.Exit(1)
 			}
 
+			if serverConfig.InternalDNS.Enabled {
+				utilruntime.Must(networkv1alpha1.AddToScheme(scheme))
+			}
 			setupLog.Info("server config", "config", serverConfig)
 			setupLog.Info("configured location fallback, used only until a "+
 				"ServingLocation is delivered to this cell",
@@ -345,6 +349,16 @@ func controllerRegistrations(
 	registrations = append(registrations, namedSetup{"vpcendpointslicewriteback", func() (bool, error) {
 		return true, (&controller.VPCEndpointSliceWriteBackReconciler{
 			Location:   serverConfig.Location,
+			HubCluster: hubCluster,
+		}).SetupWithManager(mgr)
+	}})
+
+	registrations = append(registrations, namedSetup{"internaldns-cell", func() (bool, error) {
+		if !serverConfig.InternalDNS.Enabled {
+			return false, nil
+		}
+		return true, (&controller.InternalDNSCellReconciler{
+			Config:     serverConfig.InternalDNS,
 			HubCluster: hubCluster,
 		}).SetupWithManager(mgr)
 	}})

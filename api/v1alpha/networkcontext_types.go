@@ -43,6 +43,12 @@ type NetworkContextSpec struct {
 	//
 	// +kubebuilder:validation:Optional
 	NetworkGeneration int64 `json:"networkGeneration,omitempty"`
+
+	// DNS contains resolver settings whose DNS authorization and private path
+	// have both been verified for this location.
+	//
+	// +kubebuilder:validation:Optional
+	DNS *NetworkDNSSettings `json:"dns,omitempty"`
 }
 
 // NetworkContextStatus defines the observed state of NetworkContext
@@ -55,6 +61,12 @@ type NetworkContextStatus struct {
 	//
 	// +kubebuilder:validation:Optional
 	IPAM *NetworkContextIPAMStatus `json:"ipam,omitempty"`
+
+	// DNSAccess identifies the current private path proof. DNSReady=True applies
+	// only to this exact context, binding revision, and deadline.
+	//
+	// +kubebuilder:validation:Optional
+	DNSAccess *NetworkDNSAccessStatus `json:"dnsAccess,omitempty"`
 }
 
 // NetworkContextIPAMStatus reports what IPAM holds for a network in one

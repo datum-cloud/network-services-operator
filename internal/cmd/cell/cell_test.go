@@ -36,3 +36,17 @@ func TestGalacticControllersRequireEnablement(t *testing.T) {
 		})
 	}
 }
+
+func TestInternalDNSDisabledNeedsNoHubOrDNSAPIs(t *testing.T) {
+	for _, registration := range controllerRegistrations(nil, config.CellControllerManager{}, nil, nil) {
+		if registration.name != "internaldns-cell" {
+			continue
+		}
+		enabled, err := registration.setup()
+		if err != nil || enabled {
+			t.Fatalf("disabled DNS setup = %t, %v", enabled, err)
+		}
+		return
+	}
+	t.Fatal("DNS registration not found")
+}

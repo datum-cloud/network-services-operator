@@ -367,6 +367,20 @@ func TestInterfaceReachesTheProjectControlPlane(t *testing.T) {
 	require.Equal(t, boundInterfaceName, copied.Labels[networkingv1alpha.NetworkInterfaceHolderLabel])
 }
 
+func TestProjectedInterfaceReportsDNSSettings(t *testing.T) {
+	source := &networkingv1alpha.NetworkInterface{Status: networkingv1alpha.NetworkInterfaceStatus{
+		DNS: &networkingv1alpha.NetworkDNSResolverSettings{
+			Nameservers: []string{"fd53::53"},
+			Searches:    []string{"blue.internal"},
+		},
+	}}
+
+	projection := projectedInterface(source, "ord-1")
+	require.Equal(t, source.Status.DNS, projection.Status.DNS)
+	projection.Status.DNS.Nameservers[0] = "fd53::54"
+	require.Equal(t, "fd53::53", source.Status.DNS.Nameservers[0], "the projection must own its DNS settings")
+}
+
 func TestCopyDropsWhatOnlyMeansSomethingOnTheCell(t *testing.T) {
 	v := newVisibility(t)
 	v.interfaceOnCell()
@@ -653,8 +667,15 @@ func TestConsumerLabelsReachTheCopy(t *testing.T) {
 		"only the allow-listed prefixes travel to a copy")
 }
 
-// A label whose source has dropped it must leave the copy. A copy is selected
-// by its labels, and a stale one keeps retired capacity a member of a service.
+func TestProjectionOmitsClaimNameThatExceedsLabelLimit(t *testing.T) {
+	source := &networkingv1alpha.NetworkInterface{Spec: networkingv1alpha.NetworkInterfaceSpec{
+		ClaimRef: &networkingv1alpha.NetworkInterfaceClaimRef{Name: strings.Repeat("a", 64)},
+	}}
+	labels := projectionLabels(source, testLocationName)
+	require.NotContains(t, labels, networkingv1alpha.NetworkInterfaceHolderLabel)
+	require.Equal(t, testLocationName, labels[networkingv1alpha.NetworkInterfaceLocationLabel])
+}
+
 func TestACopyLosesALabelItsSourceDropped(t *testing.T) {
 	v := newVisibility(t)
 	iface := v.interfaceOnCell()

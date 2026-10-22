@@ -383,6 +383,27 @@ spec:
                   - type
                   type: object
                 type: array
+              dns:
+                description: DNS contains effective resolver settings inherited from
+                  the network.
+                properties:
+                  nameservers:
+                    items:
+                      type: string
+                    maxItems: 3
+                    minItems: 1
+                    type: array
+                    x-kubernetes-validations:
+                    - message: nameservers must contain IP addresses
+                      rule: self.all(n, isIP(n))
+                  searches:
+                    items:
+                      type: string
+                    maxItems: 6
+                    type: array
+                required:
+                - nameservers
+                type: object
               networkContextRef:
                 description: |-
                   networkContextRef is the network's presence in this location, resolved or

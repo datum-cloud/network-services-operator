@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"slices"
@@ -64,6 +65,10 @@ type NetworkServicesOperator struct {
 
 	DownstreamResourceManagement DownstreamResourceManagementConfig `json:"downstreamResourceManagement"`
 
+	// Federation selects the hub for network bindings and cell observations.
+	// An empty kubeconfigPath uses the deployment control plane.
+	Federation FederationConfig `json:"federation,omitempty"`
+
 	// Redis provides shared Redis connection settings.
 	Redis RedisConfig `json:"redis"`
 
@@ -108,6 +113,10 @@ type NetworkServicesOperator struct {
 	// NetworkPresence configures how a network's presence in a location is
 	// maintained.
 	NetworkPresence NetworkPresenceConfig `json:"networkPresence,omitempty"`
+
+	// InternalDNS configures managed resolver access. It is disabled unless
+	// explicitly enabled.
+	InternalDNS InternalDNSConfig `json:"internalDNS,omitempty"`
 }
 
 // +k8s:deepcopy-gen=true
@@ -147,6 +156,50 @@ func (c *NetworkPresenceConfig) validate() error {
 }
 
 // +k8s:deepcopy-gen=true
+
+// InternalDNSConfig configures managed resolver access and private service
+// programming.
+type InternalDNSConfig struct {
+	// Enabled activates the alpha Internal DNS integration.
+	Enabled bool `json:"enabled,omitempty"`
+
+	// Frontend is the resolver address presented inside every consumer VPC.
+	Frontend string `json:"frontend,omitempty"`
+
+	// ServicePrefix allocates a stable service-side destination per DNS context.
+	ServicePrefix string `json:"servicePrefix,omitempty"`
+
+	// ProducerAttachmentSelector selects shared DNS service attachments.
+	ProducerAttachmentSelector map[string]string `json:"producerAttachmentSelector,omitempty"`
+}
+
+func SetDefaults_InternalDNSConfig(obj *InternalDNSConfig) {
+	if obj.Frontend == "" {
+		obj.Frontend = "fd53::53"
+	}
+	if obj.ServicePrefix == "" {
+		obj.ServicePrefix = "fd70:100::/64"
+	}
+
+}
+
+func (c *InternalDNSConfig) validate() error {
+	if !c.Enabled {
+		return nil
+	}
+	frontend, err := netip.ParseAddr(c.Frontend)
+	if err != nil || !frontend.Is6() {
+		return fmt.Errorf("frontend must be an IPv6 address, got %q", c.Frontend)
+	}
+	prefix, err := netip.ParsePrefix(c.ServicePrefix)
+	if err != nil || !prefix.Addr().Is6() || prefix.Bits() > 64 {
+		return fmt.Errorf("servicePrefix must be an IPv6 prefix of /64 or larger, got %q", c.ServicePrefix)
+	}
+	if len(c.ProducerAttachmentSelector) == 0 {
+		return errors.New("producerAttachmentSelector is required")
+	}
+	return nil
+}
 
 // +k8s:deepcopy-gen=true
 
@@ -228,12 +281,9 @@ func (c *IPAMConfig) RestConfig() (*rest.Config, error) {
 
 // +k8s:deepcopy-gen=true
 
-// FederationConfig names the federation hub a cell publishes to. It is the only
-// plane a cell and the control planes serving projects both reach.
+// FederationConfig names the hub shared by cells and project controllers.
 type FederationConfig struct {
 	// KubeconfigPath is the path to a kubeconfig file pointing at the hub.
-	// Required: a cell that cannot reach the hub cannot show a consumer the
-	// interface behind their instance.
 	KubeconfigPath string `json:"kubeconfigPath,omitempty"`
 
 	// Client configures the Kubernetes client connection to the hub.
@@ -1666,6 +1716,9 @@ func (c *NetworkServicesOperator) Validate() error {
 	}
 	if err := c.NetworkPresence.validate(); err != nil {
 		return fmt.Errorf("networkPresence: %w", err)
+	}
+	if err := c.InternalDNS.validate(); err != nil {
+		return fmt.Errorf("internalDNS: %w", err)
 	}
 	return nil
 }

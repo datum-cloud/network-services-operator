@@ -11,6 +11,7 @@ import (
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 
@@ -41,6 +42,7 @@ func projectedInterface(source *networkingv1alpha.NetworkInterface, location str
 			ReclaimPolicy:     source.Spec.ReclaimPolicy,
 		},
 		Status: networkingv1alpha.NetworkInterfaceStatus{
+			DNS:        source.Status.DNS.DeepCopy(),
 			Phase:      source.Status.Phase,
 			Conditions: append([]metav1.Condition(nil), source.Status.Conditions...),
 		},
@@ -63,7 +65,7 @@ func projectionLabels(source *networkingv1alpha.NetworkInterface, location strin
 	if location != "" {
 		labels[networkingv1alpha.NetworkInterfaceLocationLabel] = location
 	}
-	if ref := source.Spec.ClaimRef; ref != nil {
+	if ref := source.Spec.ClaimRef; ref != nil && len(validation.IsValidLabelValue(ref.Name)) == 0 {
 		labels[networkingv1alpha.NetworkInterfaceHolderLabel] = ref.Name
 	}
 

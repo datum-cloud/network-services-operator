@@ -14,6 +14,28 @@ import (
 	"k8s.io/utils/ptr"
 )
 
+func TestInternalDNSDefaultsRemainDisabled(t *testing.T) {
+	cfg := &NetworkServicesOperator{}
+	SetObjectDefaults_NetworkServicesOperator(cfg)
+	if cfg.InternalDNS.Enabled {
+		t.Fatal("internal DNS must require an explicit alpha feature gate")
+	}
+	if cfg.InternalDNS.Frontend != "fd53::53" || cfg.InternalDNS.ServicePrefix != "fd70:100::/64" {
+		t.Fatalf("unexpected internal DNS defaults: %#v", cfg.InternalDNS)
+	}
+}
+
+func TestInternalDNSValidation(t *testing.T) {
+	cfg := InternalDNSConfig{
+		Enabled: true, Frontend: "fd53::53", ServicePrefix: "fd70:100::/64",
+		ProducerAttachmentSelector: map[string]string{"service.datum.net/internal-dns": "true"},
+	}
+	if err := cfg.validate(); err != nil {
+		t.Fatalf("valid config rejected: %v", err)
+	}
+
+}
+
 func TestNetworkServicesOperator_Validate_IrohDisabled(t *testing.T) {
 	// When DNSEnabled is false the rest of the iroh config is allowed to
 	// be empty — nothing depends on it.

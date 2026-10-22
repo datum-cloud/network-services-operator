@@ -24,6 +24,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/serializer"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
@@ -371,6 +372,34 @@ func NewCommand(build BuildInfo) *cobra.Command {
 				singletonControllerMgr = singletonMgr
 			}
 
+			var federationMgr manager.Manager
+			federationControllerMgr := singletonControllerMgr
+			if serverConfig.InternalDNS.Enabled {
+				federationConfig, err := federationRESTConfig(serverConfig.Federation, cfg)
+				if err != nil {
+					setupLog.Error(err, "unable to load federation kubeconfig")
+					os.Exit(1)
+				}
+				federationMgr, err = manager.New(federationConfig, manager.Options{
+					Scheme:                  scheme,
+					Metrics:                 metricsserver.Options{BindAddress: "0"},
+					WebhookServer:           webhook.NewServer(webhook.Options{Port: 0}),
+					HealthProbeBindAddress:  "0",
+					LeaderElection:          singletonControllersLeaderElection,
+					LeaderElectionID:        singletonControllersLeaderElectionID + "-dns-federation",
+					LeaderElectionNamespace: leaderElectionNamespace,
+					LeaseDuration:           &leaseDuration,
+					RenewDeadline:           &renewDeadline,
+					RetryPeriod:             &retryPeriod,
+				})
+				if err != nil {
+					setupLog.Error(err, "unable to create federation controller manager")
+					os.Exit(1)
+				}
+
+				federationControllerMgr = federationMgr
+			}
+
 			var irohDownstream cluster.Cluster
 			if serverConfig.Connector.Iroh.DNSEnabled {
 				irohRestCfg, err := serverConfig.Connector.Iroh.DownstreamRestConfig()
@@ -409,15 +438,27 @@ func NewCommand(build BuildInfo) *cobra.Command {
 				setupLog.Error(err, "unable to build wildcard entitlement client")
 				os.Exit(1)
 			}
+			projectIdentities, err := newProjectIdentityResolver(serverConfig)
+			if err != nil {
+				setupLog.Error(err, "unable to build project identity client")
+				os.Exit(1)
+			}
 
+			var dnsLocations client.Reader
+			if projectIdentities != nil {
+				dnsLocations = projectIdentities.Reader
+			}
 			registeredControllers, err := setupControllers(mgr, serverConfig, controllerDeps{
 				downstreamCluster:        downstreamCluster,
+				federationManager:        federationControllerMgr,
 				singletonManager:         singletonControllerMgr,
 				irohDownstream:           irohDownstream,
 				ipamClients:              ipamClients,
 				certificateServiceReader: certificateServiceReader,
 				certificateServiceRoots:  certificateServiceRoots,
 				wildcardEntitlements:     wildcardEntitlements,
+				projectIdentities:        projectIdentities,
+				dnsLocations:             dnsLocations,
 			})
 			if err != nil {
 				setupLog.Error(err, "unable to set up controllers")
@@ -491,10 +532,10 @@ func NewCommand(build BuildInfo) *cobra.Command {
 			})
 
 			if singletonMgr != nil {
-				setupLog.Info("starting singleton controller manager")
-				g.Go(func() error {
-					return ignoreCanceled(singletonMgr.Start(ctx))
-				})
+				g.Go(func() error { return ignoreCanceled(singletonMgr.Start(ctx)) })
+			}
+			if federationMgr != nil {
+				g.Go(func() error { return ignoreCanceled(federationMgr.Start(ctx)) })
 			}
 
 			if err := g.Wait(); err != nil {
@@ -591,12 +632,37 @@ func setupWebhooks(mgr mcmanager.Manager, serverConfig config.NetworkServicesOpe
 // against. Fields are only populated for the sets that need them.
 type controllerDeps struct {
 	downstreamCluster        cluster.Cluster
+	federationManager        manager.Manager
 	singletonManager         manager.Manager
 	irohDownstream           cluster.Cluster
 	ipamClients              controller.IPAMClientFactory
 	certificateServiceReader client.Reader
 	certificateServiceRoots  *x509.CertPool
 	wildcardEntitlements     controller.WildcardEntitlementChecker
+	projectIdentities        controller.ProjectIdentityResolver
+	dnsLocations             client.Reader
+}
+
+func federationRESTConfig(federation config.FederationConfig, deployment *rest.Config) (*rest.Config, error) {
+	if federation.KubeconfigPath == "" {
+		return rest.CopyConfig(deployment), nil
+	}
+	return federation.RestConfig()
+}
+
+func newProjectIdentityResolver(serverConfig config.NetworkServicesOperator) (*controller.APIProjectIdentityResolver, error) {
+	if !serverConfig.InternalDNS.Enabled {
+		return nil, nil
+	}
+	restConfig, err := serverConfig.Discovery.DiscoveryRestConfig()
+	if err != nil {
+		return nil, err
+	}
+	reader, err := client.New(restConfig, client.Options{Scheme: scheme})
+	if err != nil {
+		return nil, err
+	}
+	return &controller.APIProjectIdentityResolver{Reader: reader}, nil
 }
 
 // newCertificateServiceReader returns an uncached client for the cluster the
@@ -672,7 +738,7 @@ func controllerRegistrations(
 			}).SetupWithManager(mgr)
 		}},
 		{"networkbinding", true, func() error {
-			return (&controller.NetworkBindingReconciler{}).SetupWithManager(mgr)
+			return (&controller.NetworkBindingReconciler{InternalDNSEnabled: serverConfig.InternalDNS.Enabled}).SetupWithManager(mgr)
 		}},
 		{"networkcontext", true, func() error {
 			return (&controller.NetworkContextReconciler{
@@ -680,17 +746,14 @@ func controllerRegistrations(
 				SubnetClass: serverConfig.IPAM.Classes.Subnet,
 			}).SetupWithManager(mgr)
 		}},
-		// The deployment cluster is the hub, and the milo provider engages
-		// project control planes in the same process. The presence controller
-		// goes on the singleton manager because the sharded managers run three
-		// replicas with leader election disabled, which would reconcile every
-		// hub object three times.
+		// Bindings are authoritative on the federation hub. Project control
+		// planes are reached through the multicluster manager in the same process.
 		{"networkpresence", true, func() error {
 			return (&controller.NetworkPresenceReconciler{
 				Projects:             controller.NewProjectClusterResolver(mgr),
 				Events:               presenceEvents,
 				UnclaimedGracePeriod: serverConfig.NetworkPresence.UnclaimedGracePeriod.Duration,
-			}).SetupWithManager(deps.singletonManager)
+			}).SetupWithManager(deps.federationManager)
 		}},
 		// Everything the presence controller reads besides the binding lives in a
 		// project control plane, which only the multicluster manager watches. The
@@ -699,17 +762,27 @@ func controllerRegistrations(
 		{"networkpresencesync", true, func() error {
 			return (&controller.NetworkPresenceSyncReconciler{
 				Events: presenceEvents,
-			}).SetupWithManager(mgr, deps.singletonManager)
+			}).SetupWithManager(mgr, deps.federationManager)
 		}},
-		// The interfaces a cell publishes arrive on the hub, and only the
+		{"internaldns-project", serverConfig.InternalDNS.Enabled, func() error {
+			return (&controller.InternalDNSProjectReconciler{
+				Config:    serverConfig.InternalDNS,
+				Projects:  deps.projectIdentities,
+				Locations: deps.dnsLocations,
+			}).SetupWithManager(mgr)
+		}},
+		{"internaldns-readiness", serverConfig.InternalDNS.Enabled, func() error {
+			return (&controller.InternalDNSReadinessReconciler{
+				Config:   serverConfig.InternalDNS,
+				Projects: controller.NewProjectClusterResolver(mgr),
+			}).SetupWithManager(deps.federationManager)
+		}},
+		// The interfaces a cell publishes arrive on the federation hub, and the
 		// multicluster manager reaches the project control planes they are for.
-		// The projector goes on the singleton manager for the same reason the
-		// presence controller does: three replicas would project every one of
-		// them three times.
 		{"networkinterfaceprojector", true, func() error {
 			return (&controller.NetworkInterfaceProjector{
 				Projects: controller.NewProjectClusterResolver(mgr),
-			}).SetupWithManager(deps.singletonManager)
+			}).SetupWithManager(deps.federationManager)
 		}},
 		// Removing a copy is the other half, and it has to watch project control
 		// planes: a published interface that has gone says nothing about where

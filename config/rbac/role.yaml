@@ -121,6 +121,8 @@ rules:
   - dns.networking.miloapis.com
   resources:
   - dnsrecordsets
+  - dnsresolveraccessbindings
+  - dnsresolvercontexts
   verbs:
   - create
   - delete
@@ -187,6 +189,8 @@ rules:
 - apiGroups:
   - galactic.datumapis.com
   resources:
+  - serviceendpoints
+  - serviceroutepolicies
   - vpcattachments
   - vpcs
   verbs:
@@ -197,6 +201,12 @@ rules:
   - patch
   - update
   - watch
+- apiGroups:
+  - galactic.datumapis.com
+  resources:
+  - serviceroutepolicies/status
+  verbs:
+  - get
 - apiGroups:
   - galactic.datumapis.com
   resources:

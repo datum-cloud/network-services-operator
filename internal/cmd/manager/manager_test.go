@@ -12,11 +12,33 @@ import (
 	"strings"
 	"testing"
 
+	"k8s.io/client-go/rest"
+
 	"go.datum.net/network-services-operator/internal/cmd/cell"
 	"go.datum.net/network-services-operator/internal/config"
 )
 
 var setupWithManagerPattern = regexp.MustCompile(`func \(\w+ \*(\w+)\) SetupWithManager\(`)
+
+func TestFederationRESTConfig(t *testing.T) {
+	deployment := &rest.Config{Host: "https://deployment.example"}
+	got, err := federationRESTConfig(config.FederationConfig{}, deployment)
+	if err != nil || got.Host != deployment.Host || got == deployment {
+		t.Fatalf("deployment hub configuration: got %v, error %v", got, err)
+	}
+	kubeconfig := filepath.Join(t.TempDir(), "hub.yaml")
+	data := []byte("apiVersion: v1\nkind: Config\nclusters:\n- name: hub\n  cluster:\n    server: https://hub.example\ncontexts:\n- name: hub\n  context:\n    cluster: hub\ncurrent-context: hub\n")
+	if err := os.WriteFile(kubeconfig, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	got, err = federationRESTConfig(config.FederationConfig{KubeconfigPath: kubeconfig}, deployment)
+	if err != nil || got.Host != "https://hub.example" {
+		t.Fatalf("explicit hub configuration: got %v, error %v", got, err)
+	}
+	if _, err := federationRESTConfig(config.FederationConfig{KubeconfigPath: kubeconfig + ".missing"}, deployment); err == nil {
+		t.Fatal("missing federation kubeconfig was accepted")
+	}
+}
 
 var reconcilerControllerNames = map[string]string{
 	"ChallengeReconciler":                          "challenge",
@@ -30,6 +52,9 @@ var reconcilerControllerNames = map[string]string{
 	"GatewayReconciler":                            "gateway",
 	"GatewayResourceReplicatorReconciler":          "gateway_resource_replicator",
 	"HTTPProxyReconciler":                          "httpproxy",
+	"InternalDNSCellReconciler":                    "internaldns-cell",
+	"InternalDNSProjectReconciler":                 "internaldns-project",
+	"InternalDNSReadinessReconciler":               "internaldns-readiness",
 	"IrohDNSReconciler":                            "iroh-dns",
 	"NetworkBindingReconciler":                     "networkbinding",
 	"NetworkContextReconciler":                     "networkcontext",
@@ -74,6 +99,8 @@ func TestControllerRegistrations_CapabilityGates(t *testing.T) {
 		"trafficprotectionpolicy",
 		"challenge",
 		"iroh-dns",
+		"internaldns-project",
+		"internaldns-readiness",
 	} {
 		if slices.Contains(got, name) {
 			t.Errorf("expected %q to stay unregistered, got %v", name, got)

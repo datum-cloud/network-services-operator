@@ -280,11 +280,11 @@ func assertServicePaths(t *testing.T, ctx context.Context, cl client.Client, nam
 	if err := cl.List(ctx, &policies, client.InNamespace("tenant")); err != nil {
 		t.Fatal(err)
 	}
-	gotEndpoints := []string{}
+	gotEndpoints := make([]string, 0, len(endpoints.Items))
 	for _, endpoint := range endpoints.Items {
 		gotEndpoints = append(gotEndpoints, endpoint.Name)
 	}
-	gotPolicies := []string{}
+	gotPolicies := make([]string, 0, len(policies.Items))
 	for _, policy := range policies.Items {
 		gotPolicies = append(gotPolicies, policy.Name)
 	}

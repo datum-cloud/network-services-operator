@@ -214,6 +214,7 @@ func initReplicationResourceConfigs() map[string]replicationResourceConfig {
 		}
 	}
 	contextConfig := configs[gvkKey(networkContextGVK)]
+	contextConfig.propagatedLabels = append(contextConfig.propagatedLabels, networkingv1alpha.NetworkUIDLabel)
 	contextConfig.propagatedAnnotations = internalDNSIntentAnnotations()
 	configs[gvkKey(networkContextGVK)] = contextConfig
 

@@ -40,6 +40,7 @@ import (
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
+	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	networkingv1alpha1 "go.datum.net/network-services-operator/api/v1alpha1"
 	"go.datum.net/network-services-operator/internal/config"
 	downstreamclient "go.datum.net/network-services-operator/internal/downstreamclient"
@@ -1131,6 +1132,22 @@ func TestNetworkIsReplicatedToTheHubWithoutBeingPlaced(t *testing.T) {
 		"the Network copy is read on the hub and is never placed onto a cell")
 	assert.False(t, cfg.mirrorStatusToAnnotation,
 		"nothing downstream reads a Network's status")
+}
+
+func TestNetworkContextReplicationPreservesNetworkIdentity(t *testing.T) {
+	gvk := schema.GroupVersionKind{Group: groupNetworkingDatumAPIs, Version: versionV1Alpha, Kind: KindNetworkContext}
+	cfg := initReplicationResourceConfigs()[gvkKey(gvk)]
+	upstream := &unstructured.Unstructured{}
+	upstream.SetLabels(map[string]string{
+		networkingv1alpha.NetworkUIDLabel: "network-a",
+		networkingv1alpha.NetworkLabel:    "private",
+		networkingv1alpha.LocationLabel:   "us-central-1",
+		"example.test/untrusted":          "discard",
+	})
+	downstream := &unstructured.Unstructured{}
+	propagateLabels(upstream, downstream, cfg.propagatedLabels)
+	assert.Equal(t, "network-a", downstream.GetLabels()[networkingv1alpha.NetworkUIDLabel])
+	assert.NotContains(t, downstream.GetLabels(), "example.test/untrusted")
 }
 
 func TestNetworkContextReplicationCarriesOnlyDNSIntentAnnotations(t *testing.T) {

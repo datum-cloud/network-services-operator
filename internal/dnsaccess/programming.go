@@ -70,10 +70,10 @@ func ProgrammingPlan(
 		}
 		key := types.NamespacedName{Namespace: attachment.Namespace, Name: attachment.Name}
 		relevant[key] = true
-		selected++
 		if attachment.DeletionTimestamp != nil || !ready[key] {
-			return plan, fmt.Errorf("consumer attachment %s is not ready", key)
+			continue
 		}
+		selected++
 		producer := chooseProducer(endpoint.Spec.DeliveryMode, attachment.Status.Node, producers)
 		if producer == nil {
 			return plan, fmt.Errorf("consumer attachment %s has no eligible producer", key)

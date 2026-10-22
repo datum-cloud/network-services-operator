@@ -1,13 +1,16 @@
 import { createReadStream, readFileSync } from "node:fs";
-import { stat } from "node:fs/promises";
+import { realpath, stat } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { createServer } from "node:https";
 import { extname, join, resolve, sep } from "node:path";
+import { pipeline } from "node:stream";
 
 const DIST_DIR = resolve(import.meta.dirname, "dist");
+const REAL_DIST_DIR = await realpath(DIST_DIR);
 const TLS_DIR = "/etc/tls";
 const PORT = 8443;
 const HOST = "0.0.0.0";
+const SHUTDOWN_DEADLINE_MS = 25_000;
 
 const MIME_TYPES: Record<string, string> = {
   ".html": "text/html;charset=utf-8",
@@ -46,7 +49,13 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     return;
   }
 
-  const info = await stat(filePath).catch(() => null);
+  const realFilePath = await realpath(filePath).catch(() => null);
+  if (realFilePath === null || !realFilePath.startsWith(REAL_DIST_DIR + sep)) {
+    notFound(res);
+    return;
+  }
+
+  const info = await stat(realFilePath).catch(() => null);
   if (!info?.isFile()) {
     notFound(res);
     return;
@@ -54,16 +63,20 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
 
   res.writeHead(200, {
     "content-type":
-      MIME_TYPES[extname(filePath).toLowerCase()] ?? "application/octet-stream",
+      MIME_TYPES[extname(realFilePath).toLowerCase()] ?? "application/octet-stream",
     "content-length": info.size,
   });
   if (req.method === "HEAD") {
     res.end();
     return;
   }
-  createReadStream(filePath)
-    .on("error", () => res.destroy())
-    .pipe(res);
+  pipeline(createReadStream(realFilePath), res, (err) => {
+    if (!err || res.headersSent) {
+      return;
+    }
+    res.writeHead(500, { "content-type": "text/plain;charset=utf-8" });
+    res.end("Internal Server Error");
+  });
 }
 
 const server = createServer(
@@ -82,11 +95,30 @@ const server = createServer(
   },
 );
 
+// Callers (the portal servers) pool connections, so do not close idle sockets
+// before them; this matches auth-ui, staff-portal and agents.datum.net.
+server.keepAliveTimeout = 75_000;
+server.headersTimeout = 76_000;
+
 server.listen(PORT, HOST, () => {
   console.log(`Serving ${DIST_DIR} on https://${HOST}:${PORT}`);
 });
 
-process.once("SIGTERM", () => {
-  server.close(() => process.exit(0));
+let shuttingDown = false;
+
+function shutdown(signal: NodeJS.Signals): void {
+  if (shuttingDown) {
+    return;
+  }
+  shuttingDown = true;
+  console.log(`${signal} received, draining connections`);
+  server.close();
   server.closeIdleConnections();
-});
+  setTimeout(() => {
+    server.closeAllConnections();
+    process.exit(0);
+  }, SHUTDOWN_DEADLINE_MS).unref();
+}
+
+process.once("SIGTERM", shutdown);
+process.once("SIGINT", shutdown);

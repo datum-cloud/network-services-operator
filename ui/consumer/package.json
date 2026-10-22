@@ -32,6 +32,7 @@
   "devDependencies": {
     "@module-federation/vite": "^1.16.16",
     "@tanstack/react-table": "^9.1.2",
+    "@types/node": "^26.6.5",
     "@tanstack/react-virtual": "^3.14.10",
     "@testing-library/jest-dom": "^6.6.3",
     "@testing-library/react": "^16.1.0",

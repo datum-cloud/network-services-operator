@@ -31,10 +31,11 @@ spec:
               kind: NetworkBinding
               metadata:
                 name: test-cascade-binding
-                namespace: ipam-e2e-alpha
+                namespace: default
               spec:
                 network:
                   name: test-cascade-network
+                  namespace: ipam-e2e-alpha
                 location:
                   name: test-location
         - assert:
@@ -67,7 +68,7 @@ spec:
             apiVersion: networking.datumapis.com/v1alpha
             kind: NetworkBinding
             name: test-cascade-binding
-            namespace: ipam-e2e-alpha
+            namespace: default
             timeout: 1m
             for:
               condition:

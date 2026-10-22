@@ -27,10 +27,11 @@ spec:
               kind: NetworkBinding
               metadata:
                 name: test-binding
-                namespace: ipam-e2e-alpha
+                namespace: default
               spec:
                 network:
                   name: test-binding-network
+                  namespace: ipam-e2e-alpha
                 location:
                   name: some-location
         - assert:
@@ -53,7 +54,7 @@ spec:
               kind: NetworkBinding
               metadata:
                 name: test-binding
-                namespace: ipam-e2e-alpha
+                namespace: default
               status:
                 networkContextRef:
                   namespace: ipam-e2e-alpha

@@ -13,6 +13,8 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
+
+	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 )
 
 func TestInternalDNSDefaultsRemainDisabled(t *testing.T) {
@@ -574,5 +576,28 @@ func TestGatewayConfig_ValidateHTTP2Windows(t *testing.T) {
 				t.Fatalf("expected an error containing %q, got %v", tt.wantSub, err)
 			}
 		})
+	}
+}
+
+func TestNetworkEgressDefaultsToEnabled(t *testing.T) {
+	cfg := &NetworkServicesOperator{}
+	SetObjectDefaults_NetworkServicesOperator(cfg)
+	if cfg.NetworkEgress.DefaultInternetMode != networkingv1alpha.NetworkInternetEgressEnabled {
+		t.Fatalf("defaultInternetMode = %q, want Enabled", cfg.NetworkEgress.DefaultInternetMode)
+	}
+}
+
+func TestNetworkEgressValidation(t *testing.T) {
+	for _, mode := range []networkingv1alpha.NetworkInternetEgressMode{
+		networkingv1alpha.NetworkInternetEgressEnabled, networkingv1alpha.NetworkInternetEgressDisabled,
+	} {
+		cfg := NetworkEgressConfig{DefaultInternetMode: mode}
+		if err := cfg.validate(); err != nil {
+			t.Fatalf("%s rejected: %v", mode, err)
+		}
+	}
+	cfg := NetworkEgressConfig{DefaultInternetMode: "Paused"}
+	if err := cfg.validate(); err == nil {
+		t.Fatal("an unknown mode must be rejected")
 	}
 }

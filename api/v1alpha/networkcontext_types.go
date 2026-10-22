@@ -49,6 +49,37 @@ type NetworkContextSpec struct {
 	//
 	// +kubebuilder:validation:Optional
 	DNS *NetworkDNSSettings `json:"dns,omitempty"`
+
+	// Egress is what the network reaches outside the platform from this
+	// location, projected from the Network. Propagation to a cell carries spec
+	// and not status, so the instruction a cell acts on lives here.
+	//
+	// +kubebuilder:validation:Optional
+	Egress *NetworkContextEgress `json:"egress,omitempty"`
+}
+
+// NetworkContextEgress is the outbound intent projected onto one location.
+type NetworkContextEgress struct {
+	// Internet is the internet access this location is instructed to provide.
+	//
+	// +kubebuilder:validation:Optional
+	Internet *NetworkContextInternetEgress `json:"internet,omitempty"`
+}
+
+// NetworkContextInternetEgress instructs one location whether instances on the
+// network reach the internet.
+type NetworkContextInternetEgress struct {
+	// Mode is whether instances in this location reach the internet. It is the
+	// network's mode, or the platform default when the network has not been
+	// stamped with one yet, so a context always carries the mode its location
+	// must enforce.
+	//
+	// It carries no default of its own. A context projected before this field
+	// existed carries nothing, and a cell reading one must keep internet access
+	// rather than withdraw it.
+	//
+	// +kubebuilder:validation:Optional
+	Mode NetworkInternetEgressMode `json:"mode,omitempty"`
 }
 
 // NetworkContextStatus defines the observed state of NetworkContext

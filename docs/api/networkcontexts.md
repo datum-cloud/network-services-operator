@@ -108,6 +108,15 @@ have both been verified for this location.<br/>
         </td>
         <td>false</td>
       </tr><tr>
+        <td><b><a href="#networkcontextspecegress">egress</a></b></td>
+        <td>object</td>
+        <td>
+          Egress is what the network reaches outside the platform from this
+location, projected from the Network. Propagation to a cell carries spec
+and not status, so the instruction a cell acts on lives here.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
         <td><b>ipFamilies</b></td>
         <td>[]enum</td>
         <td>
@@ -300,6 +309,71 @@ ContextRef identifies the DNS serving and namespace lifetime.
           Name is the resource name in the network's namespace.<br/>
         </td>
         <td>true</td>
+      </tr></tbody>
+</table>
+
+
+### NetworkContext.spec.egress
+<sup><sup>[↩ Parent](#networkcontextspec)</sup></sup>
+
+
+
+Egress is what the network reaches outside the platform from this
+location, projected from the Network. Propagation to a cell carries spec
+and not status, so the instruction a cell acts on lives here.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b><a href="#networkcontextspecegressinternet">internet</a></b></td>
+        <td>object</td>
+        <td>
+          Internet is the internet access this location is instructed to provide.<br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### NetworkContext.spec.egress.internet
+<sup><sup>[↩ Parent](#networkcontextspecegress)</sup></sup>
+
+
+
+Internet is the internet access this location is instructed to provide.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>mode</b></td>
+        <td>enum</td>
+        <td>
+          Mode is whether instances in this location reach the internet. It is the
+network's mode, or the platform default when the network has not been
+stamped with one yet, so a context always carries the mode its location
+must enforce.
+
+It carries no default of its own. A context projected before this field
+existed carries nothing, and a cell reading one must keep internet access
+rather than withdraw it.<br/>
+          <br/>
+            <i>Enum</i>: Enabled, Disabled<br/>
+        </td>
+        <td>false</td>
       </tr></tbody>
 </table>
 

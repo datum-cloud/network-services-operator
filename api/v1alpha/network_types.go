@@ -48,6 +48,58 @@ type NetworkSpec struct {
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:default=1440
 	MTU int32 `json:"mtu,omitempty"`
+
+	// Egress declares what instances on this network reach outside the
+	// platform.
+	//
+	// +kubebuilder:validation:Optional
+	Egress *NetworkEgress `json:"egress,omitempty"`
+}
+
+// NetworkEgress declares the outbound paths a network carries.
+type NetworkEgress struct {
+	// Internet declares whether instances on this network reach destinations
+	// outside the platform.
+	//
+	// +kubebuilder:validation:Optional
+	Internet *NetworkInternetEgress `json:"internet,omitempty"`
+}
+
+// NetworkInternetEgressMode is whether a network reaches the internet.
+//
+// +kubebuilder:validation:Enum=Enabled;Disabled
+type NetworkInternetEgressMode string
+
+const (
+	// NetworkInternetEgressEnabled lets instances on the network reach
+	// destinations outside the platform, both IPv6 sites and, through DNS64,
+	// IPv4 sites.
+	NetworkInternetEgressEnabled NetworkInternetEgressMode = "Enabled"
+
+	// NetworkInternetEgressDisabled limits instances on the network to the
+	// network itself and the platform's private services. Traffic through an
+	// interface's external address is not affected.
+	NetworkInternetEgressDisabled NetworkInternetEgressMode = "Disabled"
+)
+
+// NetworkInternetEgress declares internet access for every instance on a
+// network, in every location the network is used.
+type NetworkInternetEgress struct {
+	// Mode is whether instances on this network reach the internet. It covers
+	// IPv6 and IPv4 destinations alike. Disabled limits instances to the
+	// network and the platform's private services; traffic through an
+	// interface's external address is not affected.
+	//
+	// A network created without a mode is given the platform's default when it
+	// is created, so every stored network records the mode it runs with.
+	// Changing the platform default later does not change this value.
+	//
+	// Changing the mode applies to every instance on the network, including
+	// instances that are already running, not only to instances attached
+	// afterwards.
+	//
+	// +kubebuilder:validation:Optional
+	Mode NetworkInternetEgressMode `json:"mode,omitempty"`
 }
 
 type NetworkIPAMMode string

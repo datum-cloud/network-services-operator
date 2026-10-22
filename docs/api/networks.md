@@ -100,6 +100,14 @@ NetworkSpec defines the desired state of a Network
         </td>
         <td>false</td>
       </tr><tr>
+        <td><b><a href="#networkspecegress">egress</a></b></td>
+        <td>object</td>
+        <td>
+          Egress declares what instances on this network reach outside the
+platform.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
         <td><b>ipFamilies</b></td>
         <td>[]enum</td>
         <td>
@@ -203,6 +211,76 @@ DNS configures private resolver access for the network.
 An empty value uses Managed when the Internal DNS feature is enabled.<br/>
           <br/>
             <i>Enum</i>: Managed, Disabled<br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### Network.spec.egress
+<sup><sup>[↩ Parent](#networkspec)</sup></sup>
+
+
+
+Egress declares what instances on this network reach outside the
+platform.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b><a href="#networkspecegressinternet">internet</a></b></td>
+        <td>object</td>
+        <td>
+          Internet declares whether instances on this network reach destinations
+outside the platform.<br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### Network.spec.egress.internet
+<sup><sup>[↩ Parent](#networkspecegress)</sup></sup>
+
+
+
+Internet declares whether instances on this network reach destinations
+outside the platform.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>mode</b></td>
+        <td>enum</td>
+        <td>
+          Mode is whether instances on this network reach the internet. It covers
+IPv6 and IPv4 destinations alike. Disabled limits instances to the
+network and the platform's private services; traffic through an
+interface's external address is not affected.
+
+A network created without a mode is given the platform's default when it
+is created, so every stored network records the mode it runs with.
+Changing the platform default later does not change this value.
+
+Changing the mode applies to every instance on the network, including
+instances that are already running, not only to instances attached
+afterwards.<br/>
+          <br/>
+            <i>Enum</i>: Enabled, Disabled<br/>
         </td>
         <td>false</td>
       </tr></tbody>

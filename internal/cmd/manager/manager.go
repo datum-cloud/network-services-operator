@@ -747,8 +747,9 @@ func controllerRegistrations(
 	return []namedSetup{
 		{"network", true, func() error {
 			return (&controller.NetworkReconciler{
-				IPAM:        deps.ipamClients,
-				PrefixClass: serverConfig.IPAM.Classes.Network,
+				IPAM:                      deps.ipamClients,
+				PrefixClass:               serverConfig.IPAM.Classes.Network,
+				DefaultInternetEgressMode: serverConfig.NetworkEgress.DefaultInternetMode,
 			}).SetupWithManager(mgr)
 		}},
 		{"networkbinding", true, func() error {
@@ -767,6 +768,8 @@ func controllerRegistrations(
 				Projects:             controller.NewProjectClusterResolver(mgr),
 				Events:               presenceEvents,
 				UnclaimedGracePeriod: serverConfig.NetworkPresence.UnclaimedGracePeriod.Duration,
+
+				DefaultInternetEgressMode: serverConfig.NetworkEgress.DefaultInternetMode,
 			}).SetupWithManager(deps.federationManager)
 		}},
 		// Everything the presence controller reads besides the binding lives in a

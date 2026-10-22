@@ -1,0 +1,156 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: network-internet-access
+spec:
+  cluster: nso-standard
+  steps:
+    - name: Seed the project and the hub namespace
+      try:
+        - apply:
+            resource:
+              apiVersion: v1
+              kind: Namespace
+              metadata:
+                name: internet-access-project
+                labels:
+                  meta.datumapis.com/upstream-cluster-name: cluster-project-alpha
+                  meta.datumapis.com/upstream-namespace: default
+        - apply:
+            resource:
+              apiVersion: v1
+              kind: Namespace
+              metadata:
+                name: internet-access-hub
+                labels:
+                  meta.datumapis.com/upstream-cluster-name: cluster-single
+                  meta.datumapis.com/upstream-namespace: internet-access-project
+        - apply:
+            resource:
+              apiVersion: locations.miloapis.com/v1alpha1
+              kind: Location
+              metadata:
+                name: internet-access-loc
+              spec:
+                locationClassRef:
+                  name: datum-managed
+                topology:
+                  topology.datum.net/city-code: IAD
+
+    - name: A network created without a mode is stamped with the platform default
+      try:
+        - apply:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Network
+              metadata:
+                name: internet-access-net
+                namespace: internet-access-project
+              spec:
+                ipam:
+                  mode: Auto
+                ipFamilies:
+                  - IPv6
+                mtu: 1440
+        - assert:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Network
+              metadata:
+                name: internet-access-net
+                namespace: internet-access-project
+              spec:
+                egress:
+                  internet:
+                    mode: Enabled
+
+    - name: The mode reaches the location
+      try:
+        - apply:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkBinding
+              metadata:
+                name: internet-access-consumer
+                namespace: internet-access-hub
+                labels:
+                  networking.datumapis.com/network: internet-access-net
+                  networking.datumapis.com/location: internet-access-loc
+              spec:
+                network:
+                  name: internet-access-net
+                location:
+                  name: internet-access-loc
+                consumer:
+                  apiGroup: networking.datumapis.com
+                  kind: LoadBalancer
+                  name: internet-access-consumer
+        - assert:
+            timeout: 2m
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkContext
+              metadata:
+                name: internet-access-net-internet-access-loc
+                namespace: internet-access-project
+              spec:
+                egress:
+                  internet:
+                    mode: Enabled
+
+    - name: Turning internet access off reaches the location
+      try:
+        - patch:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Network
+              metadata:
+                name: internet-access-net
+                namespace: internet-access-project
+              spec:
+                egress:
+                  internet:
+                    mode: Disabled
+        - assert:
+            timeout: 2m
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkContext
+              metadata:
+                name: internet-access-net-internet-access-loc
+                namespace: internet-access-project
+              spec:
+                egress:
+                  internet:
+                    mode: Disabled
+
+    - name: An update that drops the mode keeps the stored one
+      description: |
+        Reapplying a manifest written before the field existed must not move a
+        network onto the platform default.
+      try:
+        - update:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Network
+              metadata:
+                name: internet-access-net
+                namespace: internet-access-project
+              spec:
+                ipam:
+                  mode: Auto
+                ipFamilies:
+                  - IPv6
+                mtu: 1440
+        - assert:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Network
+              metadata:
+                name: internet-access-net
+                namespace: internet-access-project
+              spec:
+                egress:
+                  internet:
+                    mode: Disabled

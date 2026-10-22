@@ -1,0 +1,45 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: networkcontext-dns-writers
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups:
+          - networking.datumapis.com
+        apiVersions:
+          - "*"
+        operations:
+          - CREATE
+          - UPDATE
+        resources:
+          - networkcontexts
+  matchConditions:
+    - name: untrusted-writer
+      expression: >-
+        !(request.userInfo.username in [
+          'system:serviceaccount:network-services-operator-system:network-services-operator-controller-manager'
+        ])
+  variables:
+    - name: hasDNS
+      expression: has(object.spec) && has(object.spec.dns)
+    - name: hadDNS
+      expression: request.operation == 'UPDATE' && has(oldObject.spec) && has(oldObject.spec.dns)
+  validations:
+    - expression: >-
+        variables.hasDNS == variables.hadDNS &&
+        (!variables.hasDNS || object.spec.dns == oldObject.spec.dns)
+      messageExpression: >-
+        'spec.dns is managed by the network services operator and cannot be changed by ' +
+        request.userInfo.username
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: networkcontext-dns-writers
+spec:
+  policyName: networkcontext-dns-writers
+  validationActions:
+    - Deny

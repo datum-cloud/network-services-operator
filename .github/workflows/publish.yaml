@@ -3,11 +3,17 @@ name: Publish Docker Image
 on:
   # Trigger on push
   push:
-  # Trigger on all pull requests
-  pull_request:
+    branches:
+      - '**'
+    tags:
+      - 'v*'
   # Trigger when a release is published
   release:
     types: ['published']
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref_type == 'branch' && github.ref_name != 'main' && !startsWith(github.ref_name, 'release/') && github.ref || github.run_id }}
+  cancel-in-progress: true
 
 jobs:
   publish-container-image:

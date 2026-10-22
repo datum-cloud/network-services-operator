@@ -25,6 +25,7 @@ import (
 	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
 
 	cloudv1alpha1 "go.datum.net/galactic/api/cloud/v1alpha1"
+	galacticv1alpha1 "go.datum.net/galactic/api/v1alpha1"
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	networkingv1alpha1 "go.datum.net/network-services-operator/api/v1alpha1"
 	"go.datum.net/network-services-operator/internal/cmd/clusterdiscovery"
@@ -51,6 +52,7 @@ func init() {
 	utilruntime.Must(networkingv1alpha1.AddToScheme(scheme))
 	utilruntime.Must(ipamv1alpha1.AddToScheme(scheme))
 	utilruntime.Must(cloudv1alpha1.AddToScheme(scheme))
+	utilruntime.Must(galacticv1alpha1.AddToScheme(scheme))
 	utilruntime.Must(nadv1.AddToScheme(scheme))
 }
 
@@ -310,8 +312,9 @@ func controllerRegistrations(
 			namedSetup{"galactic-networkinterface", func() (bool, error) {
 				return true, (&galacticcontroller.NetworkInterfaceReconciler{
 					Client: mgr.GetLocalManager().GetClient(), Scheme: mgr.GetLocalManager().GetScheme(),
-					APIReader:      mgr.GetLocalManager().GetAPIReader(),
-					AttachmentMode: cloudv1alpha1.VPCAttachmentInterfaceMode(serverConfig.Galactic.AttachmentMode),
+					APIReader:             mgr.GetLocalManager().GetAPIReader(),
+					AttachmentMode:        cloudv1alpha1.VPCAttachmentInterfaceMode(serverConfig.Galactic.AttachmentMode),
+					TrafficPolicyEnforced: serverConfig.Galactic.TrafficPolicyEnforced,
 				}).SetupWithManager(mgr.GetLocalManager())
 			}},
 		)

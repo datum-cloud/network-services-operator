@@ -34,6 +34,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 
 	cloudv1alpha1 "go.datum.net/galactic/api/cloud/v1alpha1"
+	galacticv1alpha1 "go.datum.net/galactic/api/v1alpha1"
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	"go.datum.net/network-services-operator/internal/galactic/galactic"
 	"go.datum.net/network-services-operator/internal/galactic/identifier"
@@ -89,6 +90,11 @@ type NetworkInterfaceReconciler struct {
 	// exist yet, so a cell states what it is rather than defaulting. It covers
 	// every interface that states no mode of its own.
 	AttachmentMode cloudv1alpha1.VPCAttachmentInterfaceMode
+
+	// TrafficPolicyEnforced states that the cell's nodes enforce traffic
+	// policy, which is the only way a disabled network's interfaces can be
+	// reported as blocked.
+	TrafficPolicyEnforced bool
 }
 
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkinterfaces,verbs=get;list;watch
@@ -99,6 +105,8 @@ type NetworkInterfaceReconciler struct {
 // +kubebuilder:rbac:groups=galactic.datumapis.com,resources=vpcattachments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=galactic.datumapis.com,resources=vpcattachments/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=k8s.cni.cncf.io,resources=network-attachment-definitions,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkcontexts,verbs=get;list;watch
+// +kubebuilder:rbac:groups=galactic.datumapis.com,resources=trafficpolicies;trafficpolicybindings,verbs=get;list;watch;create;update;patch;delete
 
 func (r *NetworkInterfaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var networkInterface networkingv1alpha.NetworkInterface
@@ -130,7 +138,22 @@ func (r *NetworkInterfaceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 			fmt.Sprintf("VPC %s has no identifier yet", vpc.Name))
 	}
 
+	var networkContext networkingv1alpha.NetworkContext
+	if err := r.Get(ctx, vpcKey, &networkContext); err != nil {
+		if apierrors.IsNotFound(err) {
+			return ctrl.Result{RequeueAfter: 10 * time.Second}, r.markPrepared(ctx, &networkInterface,
+				metav1.ConditionFalse, "AwaitingNetworkContext",
+				fmt.Sprintf("NetworkContext %s does not exist yet", vpcKey.Name))
+		}
+		return ctrl.Result{}, fmt.Errorf("get NetworkContext %s: %w", vpcKey, err)
+	}
+	mode := internetEgressMode(&networkContext)
+
 	attachment, err := r.reconcileAttachment(ctx, &networkInterface, &vpc)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	policies, err := r.reconcileTrafficPolicy(ctx, &networkInterface, attachment, mode)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -141,6 +164,7 @@ func (r *NetworkInterfaceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	if err := r.publishAttachmentStatus(ctx, attachment, &vpc, nad); err != nil {
 		return ctrl.Result{}, err
 	}
+	r.setInternetEgressCondition(&networkInterface, attachment, policies, mode)
 	return ctrl.Result{}, r.publishToInterface(ctx, &networkInterface, attachment, &vpc)
 }
 
@@ -398,6 +422,12 @@ func (r *NetworkInterfaceReconciler) markPrepared(
 	claimCondition := condition
 	claimCondition.ObservedGeneration = claim.Generation
 	meta.SetStatusCondition(&claim.Status.Conditions, claimCondition)
+	if internet := meta.FindStatusCondition(networkInterface.Status.Conditions,
+		networkingv1alpha.NetworkInterfaceInternetEgressReady); internet != nil {
+		claimInternet := *internet
+		claimInternet.ObservedGeneration = claim.Generation
+		meta.SetStatusCondition(&claim.Status.Conditions, claimInternet)
+	}
 	// A claim can have Programmed and Ready from the old attachment even after
 	// its interface points at Galactic. Invalidate both until the new group's
 	// advertisement reports that the replacement attachment is carrying traffic.
@@ -433,7 +463,10 @@ func (r *NetworkInterfaceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&networkingv1alpha.NetworkInterface{}).
 		Owns(&cloudv1alpha1.VPCAttachment{}).
+		Owns(&galacticv1alpha1.TrafficPolicy{}).
+		Owns(&galacticv1alpha1.TrafficPolicyBinding{}).
 		Watches(&nadv1.NetworkAttachmentDefinition{}, handler.EnqueueRequestsFromMapFunc(nadToInterface)).
+		Watches(&networkingv1alpha.NetworkContext{}, handler.EnqueueRequestsFromMapFunc(r.interfacesForNetworkContext)).
 		Named("galactic-networkinterface").
 		Complete(r)
 }

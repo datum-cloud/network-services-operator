@@ -14,6 +14,17 @@ internalDNS:
   # Selects the shared resolver attachments that serve authorized VPCs.
   # producerAttachmentSelector:
   #   service.datum.net/internal-dns: "true"
+  # Replaces frontend and producerAttachmentSelector with up to three
+  # independent resolvers, each served by its own attachments. Guests receive
+  # every frontend as a nameserver, in this order. Keep the existing resolver
+  # first, and set the same list on the manager and every cell.
+  # resolvers:
+  # - frontend: fd53::53
+  #   producerAttachmentSelector:
+  #     internal-dns.datum.net/tier: node
+  # - frontend: fd53::54
+  #   producerAttachmentSelector:
+  #     internal-dns.datum.net/tier: node-b
 gateway:
   targetDomain: example.com
   # enableDNSIntegration controls automatic DNSRecordSet creation for Gateway

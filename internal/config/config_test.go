@@ -1,6 +1,7 @@
 package config
 
 import (
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -34,6 +35,125 @@ func TestInternalDNSValidation(t *testing.T) {
 		t.Fatalf("valid config rejected: %v", err)
 	}
 
+}
+
+func TestInternalDNSResolvers(t *testing.T) {
+	primary := map[string]string{"service.datum.net/internal-dns": "true", "internal-dns.datum.net/tier": "node"}
+	secondary := map[string]string{"service.datum.net/internal-dns": "true", "internal-dns.datum.net/tier": "node-b"}
+
+	single := InternalDNSConfig{ProducerAttachmentSelector: primary}
+	SetDefaults_InternalDNSConfig(&single)
+	if got := single.EffectiveResolvers(); len(got) != 1 || got[0].Frontend != "fd53::53" || got[0].ProducerAttachmentSelector["internal-dns.datum.net/tier"] != "node" {
+		t.Fatalf("single resolver fields did not form a one-resolver list: %#v", got)
+	}
+
+	listed := InternalDNSConfig{Resolvers: []InternalDNSResolver{
+		{Frontend: "fd53::53", ProducerAttachmentSelector: primary},
+		{Frontend: "fd53::54", ProducerAttachmentSelector: secondary},
+	}}
+	SetDefaults_InternalDNSConfig(&listed)
+	if listed.Frontend != "" {
+		t.Fatalf("frontend defaulted alongside resolvers: %q", listed.Frontend)
+	}
+	if got := listed.Nameservers(); !slices.Equal(got, []string{"fd53::53", "fd53::54"}) {
+		t.Fatalf("nameservers = %v, want resolvers in configuration order", got)
+	}
+
+	resolver := func(frontend string, selector map[string]string) InternalDNSResolver {
+		return InternalDNSResolver{Frontend: frontend, ProducerAttachmentSelector: selector}
+	}
+	tests := []struct {
+		name    string
+		cfg     InternalDNSConfig
+		wantSub string
+	}{
+		{
+			name: "two resolvers",
+			cfg:  InternalDNSConfig{Resolvers: []InternalDNSResolver{resolver("fd53::53", primary), resolver("fd53::54", secondary)}},
+		},
+		{
+			name:    "resolvers with frontend",
+			cfg:     InternalDNSConfig{Frontend: "fd53::53", Resolvers: []InternalDNSResolver{resolver("fd53::54", secondary)}},
+			wantSub: "mutually exclusive",
+		},
+		{
+			name:    "resolvers with producer selector",
+			cfg:     InternalDNSConfig{ProducerAttachmentSelector: primary, Resolvers: []InternalDNSResolver{resolver("fd53::54", secondary)}},
+			wantSub: "mutually exclusive",
+		},
+		{
+			name: "more than three resolvers",
+			cfg: InternalDNSConfig{Resolvers: []InternalDNSResolver{
+				resolver("fd53::53", map[string]string{"tier": "a"}), resolver("fd53::54", map[string]string{"tier": "b"}),
+				resolver("fd53::55", map[string]string{"tier": "c"}), resolver("fd53::56", map[string]string{"tier": "d"}),
+			}},
+			wantSub: "at most 3",
+		},
+		{
+			name:    "repeated frontend in another spelling",
+			cfg:     InternalDNSConfig{Resolvers: []InternalDNSResolver{resolver("fd53::54", primary), resolver("fd53:0::54", secondary)}},
+			wantSub: "resolvers[1].frontend repeats",
+		},
+		{
+			name:    "IPv4 frontend",
+			cfg:     InternalDNSConfig{Resolvers: []InternalDNSResolver{resolver("10.0.0.53", primary)}},
+			wantSub: "resolvers[0].frontend must be an IPv6 address",
+		},
+		{
+			name:    "missing producer selector",
+			cfg:     InternalDNSConfig{Resolvers: []InternalDNSResolver{resolver("fd53::53", primary), resolver("fd53::54", nil)}},
+			wantSub: "resolvers[1].producerAttachmentSelector is required",
+		},
+		{
+			name:    "same producer selector",
+			cfg:     InternalDNSConfig{Resolvers: []InternalDNSResolver{resolver("fd53::53", primary), resolver("fd53::54", maps.Clone(primary))}},
+			wantSub: "overlaps resolvers[0]",
+		},
+		{
+			name: "producer selector contained in another",
+			cfg: InternalDNSConfig{Resolvers: []InternalDNSResolver{
+				resolver("fd53::53", primary), resolver("fd53::54", map[string]string{"service.datum.net/internal-dns": "true"}),
+			}},
+			wantSub: "overlaps resolvers[0]",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := tt.cfg
+			cfg.Enabled = true
+			cfg.ServicePrefix = "fd70:100::/64"
+			err := cfg.validate()
+			if tt.wantSub == "" && err != nil {
+				t.Fatalf("expected nil, got %v", err)
+			}
+			if tt.wantSub != "" && (err == nil || !strings.Contains(err.Error(), tt.wantSub)) {
+				t.Fatalf("expected an error containing %q, got %v", tt.wantSub, err)
+			}
+		})
+	}
+}
+
+func TestDecodeInternalDNSResolvers(t *testing.T) {
+	data := []byte(`apiVersion: apiserver.config.datumapis.com/v1alpha1
+kind: CellControllerManager
+internalDNS:
+  enabled: true
+  resolvers:
+  - frontend: fd53::53
+    producerAttachmentSelector:
+      internal-dns.datum.net/tier: node
+  - frontend: fd53::54
+    producerAttachmentSelector:
+      internal-dns.datum.net/tier: node-b
+`)
+	var cfg CellControllerManager
+	decodeInto(t, data, &cfg)
+	if got := cfg.InternalDNS.Nameservers(); !slices.Equal(got, []string{"fd53::53", "fd53::54"}) {
+		t.Fatalf("nameservers = %v", got)
+	}
+	if err := cfg.InternalDNS.validate(); err != nil {
+		t.Fatalf("decoded resolvers rejected: %v", err)
+	}
 }
 
 func TestNetworkServicesOperator_Validate_IrohDisabled(t *testing.T) {

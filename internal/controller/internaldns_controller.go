@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"slices"
 	"strings"
 	"time"
 
@@ -516,7 +517,7 @@ func (r *InternalDNSReadinessReconciler) publish(
 	projectContext *networkingv1alpha.NetworkContext,
 	hubContext *networkingv1alpha.NetworkContext,
 ) (ctrl.Result, error) {
-	intent, err := internalDNSSettingsFromAnnotations(projectContext.Annotations, r.Config.Frontend)
+	intent, err := internalDNSSettingsFromAnnotations(projectContext.Annotations, r.Config.Nameservers())
 	if err != nil {
 		return ctrl.Result{}, r.updateProject(ctx, cl, projectContext, nil, metav1.Condition{
 			Type: networkingv1alpha.NetworkContextDNSReady, Status: metav1.ConditionFalse,
@@ -528,7 +529,7 @@ func (r *InternalDNSReadinessReconciler) publish(
 	ready := apimeta.IsStatusConditionTrue(hubContext.Status.Conditions, networkingv1alpha.NetworkContextDNSReady)
 	if !ready || !dnsAccessMatches(intent, access) || access == nil || access.ServiceDestination != projectContext.Annotations[InternalDNSServiceDestinationAnnotation] {
 		settings := projectContext.Spec.DNS
-		if !equalDNSSettings(settings, intent) {
+		if !retainsDNSSettings(settings, intent) {
 			settings = nil
 		}
 		err := r.updateProject(ctx, cl, projectContext, settings, metav1.Condition{
@@ -583,7 +584,7 @@ func (r *InternalDNSReadinessReconciler) SetupWithManager(mgr manager.Manager) e
 
 func internalDNSSettingsFromAnnotations(
 	annotations map[string]string,
-	frontend string,
+	nameservers []string,
 ) (*networkingv1alpha.NetworkDNSSettings, error) {
 	contextName := annotations[InternalDNSContextNameAnnotation]
 	accessName := annotations[InternalDNSAccessNameAnnotation]
@@ -593,7 +594,7 @@ func internalDNSSettingsFromAnnotations(
 	settings := &networkingv1alpha.NetworkDNSSettings{
 		ContextRef:       networkingv1alpha.NetworkDNSObjectReference{Name: contextName},
 		AccessBindingRef: networkingv1alpha.NetworkDNSObjectReference{Name: accessName},
-		Nameservers:      []string{frontend},
+		Nameservers:      slices.Clone(nameservers),
 	}
 	if suffix := annotations[InternalDNSSuffixAnnotation]; suffix != "" {
 		settings.Searches = []string{suffix}
@@ -614,6 +615,22 @@ func equalDNSSettings(a, b *networkingv1alpha.NetworkDNSSettings) bool {
 	return a.ContextRef == b.ContextRef && a.AccessBindingRef == b.AccessBindingRef &&
 		strings.Join(a.Nameservers, "\x00") == strings.Join(b.Nameservers, "\x00") &&
 		strings.Join(a.Searches, "\x00") == strings.Join(b.Searches, "\x00")
+}
+
+func retainsDNSSettings(applied, intent *networkingv1alpha.NetworkDNSSettings) bool {
+	if applied == nil || intent == nil {
+		return false
+	}
+	if applied.ContextRef != intent.ContextRef || applied.AccessBindingRef != intent.AccessBindingRef ||
+		!slices.Equal(applied.Searches, intent.Searches) || len(applied.Nameservers) == 0 {
+		return false
+	}
+	for _, nameserver := range applied.Nameservers {
+		if !slices.Contains(intent.Nameservers, nameserver) {
+			return false
+		}
+	}
+	return true
 }
 
 func internalDNSDestination(prefixText string, uid types.UID) (string, error) {

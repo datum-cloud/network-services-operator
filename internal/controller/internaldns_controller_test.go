@@ -4,6 +4,7 @@ package controller
 
 import (
 	"context"
+	"slices"
 	"testing"
 	"time"
 
@@ -429,5 +430,73 @@ func TestInternalDNSCleanupPreservesForeignObjects(t *testing.T) {
 				t.Fatalf("owned object retained: %v", err)
 			}
 		})
+	}
+}
+
+func TestInternalDNSReadinessPublishesEveryResolver(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	scheme := runtime.NewScheme()
+	if err := networkingv1alpha.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	projectContext := testNetworkContext("context", "project-context-uid")
+	projectContext.Annotations = testDNSIntent(time.Time{})
+	projectContext.Spec.DNS = &networkingv1alpha.NetworkDNSSettings{
+		ContextRef:       networkingv1alpha.NetworkDNSObjectReference{Name: "resolver"},
+		AccessBindingRef: networkingv1alpha.NetworkDNSObjectReference{Name: "access"},
+		Nameservers:      []string{"fd53::53"},
+		Searches:         []string{"blue.internal"},
+	}
+	cl := fake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(&networkingv1alpha.NetworkContext{}).
+		WithObjects(projectContext).Build()
+	hubContext := projectContext.DeepCopy()
+	hubContext.Status.DNSAccess = &networkingv1alpha.NetworkDNSAccessStatus{
+		ContextRef:         networkingv1alpha.NetworkDNSObjectReference{Name: "resolver"},
+		AccessBindingRef:   networkingv1alpha.NetworkDNSObjectReference{Name: "access"},
+		ServiceDestination: projectContext.Annotations[InternalDNSServiceDestinationAnnotation],
+	}
+	hubContext.Status.Conditions = []metav1.Condition{{
+		Type: networkingv1alpha.NetworkContextDNSReady, Status: metav1.ConditionUnknown,
+		Reason: networkingv1alpha.NetworkContextDNSReadyReasonNetworkPathNotReady,
+	}}
+	r := &InternalDNSReadinessReconciler{Config: config.InternalDNSConfig{Resolvers: []config.InternalDNSResolver{
+		{Frontend: "fd53::53", ProducerAttachmentSelector: map[string]string{"tier": "node"}},
+		{Frontend: "fd53::54", ProducerAttachmentSelector: map[string]string{"tier": "node-b"}},
+	}}}
+
+	current := &networkingv1alpha.NetworkContext{}
+	publish := func() []string {
+		t.Helper()
+		if err := cl.Get(ctx, client.ObjectKeyFromObject(projectContext), current); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := r.publish(ctx, cl, current, hubContext); err != nil {
+			t.Fatal(err)
+		}
+		if err := cl.Get(ctx, client.ObjectKeyFromObject(projectContext), current); err != nil {
+			t.Fatal(err)
+		}
+		if current.Spec.DNS == nil {
+			return nil
+		}
+		return current.Spec.DNS.Nameservers
+	}
+
+	if got := publish(); !slices.Equal(got, []string{"fd53::53"}) {
+		t.Fatalf("adding a resolver withdrew the applied resolver while the new path is pending: %v", got)
+	}
+
+	hubContext.Status.Conditions[0].Status = metav1.ConditionTrue
+	hubContext.Status.Conditions[0].Reason = networkingv1alpha.NetworkContextDNSReadyReasonReady
+	if got := publish(); !slices.Equal(got, []string{"fd53::53", "fd53::54"}) {
+		t.Fatalf("nameservers = %v, want every resolver in configuration order", got)
+	}
+
+	hubContext.Status.Conditions[0].Status = metav1.ConditionUnknown
+	r.Config = config.InternalDNSConfig{Frontend: "fd53::55", ProducerAttachmentSelector: map[string]string{"tier": "node"}}
+	if got := publish(); got != nil {
+		t.Fatalf("settings naming a resolver that is no longer configured were retained: %v", got)
 	}
 }

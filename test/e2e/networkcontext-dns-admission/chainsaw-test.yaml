@@ -96,7 +96,6 @@ spec:
                   name: dns-admission-network
                 location:
                   name: test-location
-                  namespace: default
                 dns:
                   contextRef:
                     name: forged

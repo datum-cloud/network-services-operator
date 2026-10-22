@@ -667,8 +667,15 @@ func TestConsumerLabelsReachTheCopy(t *testing.T) {
 		"only the allow-listed prefixes travel to a copy")
 }
 
-// A label whose source has dropped it must leave the copy. A copy is selected
-// by its labels, and a stale one keeps retired capacity a member of a service.
+func TestProjectionOmitsClaimNameThatExceedsLabelLimit(t *testing.T) {
+	source := &networkingv1alpha.NetworkInterface{Spec: networkingv1alpha.NetworkInterfaceSpec{
+		ClaimRef: &networkingv1alpha.NetworkInterfaceClaimRef{Name: strings.Repeat("a", 64)},
+	}}
+	labels := projectionLabels(source, testLocationName)
+	require.NotContains(t, labels, networkingv1alpha.NetworkInterfaceHolderLabel)
+	require.Equal(t, testLocationName, labels[networkingv1alpha.NetworkInterfaceLocationLabel])
+}
+
 func TestACopyLosesALabelItsSourceDropped(t *testing.T) {
 	v := newVisibility(t)
 	iface := v.interfaceOnCell()

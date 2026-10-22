@@ -151,13 +151,13 @@ func NewCommand(build BuildInfo) *cobra.Command {
 		&singletonControllersLeaderElection,
 		"singleton-controllers-leader-elect",
 		true,
-		"Enable leader election for controllers that watch the federation hub.",
+		"Enable leader election for singleton downstream controllers (Challenge and GatewayDownstreamCertificateSolver).",
 	)
 	fs.StringVar(
 		&singletonControllersLeaderElectionID,
 		"singleton-controllers-leader-election-id",
 		"",
-		"Leader election ID for controllers that watch the federation hub. When empty, it is derived from the enabled controller sets.",
+		"Leader election ID for singleton downstream controllers. When empty, it is derived from the enabled controller sets.",
 	)
 
 	opts := zap.Options{}
@@ -350,29 +350,54 @@ func NewCommand(build BuildInfo) *cobra.Command {
 				os.Exit(1)
 			}
 
-			// Hub controllers reconcile NetworkBindings and resources published by
-			// cells. Keep their cache and leader election on the federation API,
-			// alongside the authoritative copies they watch.
-			federationConfig, err := federationRESTConfig(serverConfig.Federation, cfg)
-			if err != nil {
-				setupLog.Error(err, "unable to load federation kubeconfig")
-				os.Exit(1)
+			var singletonMgr manager.Manager
+			singletonControllerMgr := mgr.GetLocalManager()
+			if enableClusterSharding {
+				singletonMgr, err = manager.New(cfg, manager.Options{
+					Scheme:                  scheme,
+					Metrics:                 metricsserver.Options{BindAddress: "0"},
+					WebhookServer:           webhook.NewServer(webhook.Options{Port: 0}),
+					HealthProbeBindAddress:  "0",
+					LeaderElection:          singletonControllersLeaderElection,
+					LeaderElectionID:        singletonControllersLeaderElectionID,
+					LeaderElectionNamespace: leaderElectionNamespace,
+					LeaseDuration:           &leaseDuration,
+					RenewDeadline:           &renewDeadline,
+					RetryPeriod:             &retryPeriod,
+				})
+				if err != nil {
+					setupLog.Error(err, "unable to create singleton controller manager")
+					os.Exit(1)
+				}
+				singletonControllerMgr = singletonMgr
 			}
-			federationMgr, err := manager.New(federationConfig, manager.Options{
-				Scheme:                  scheme,
-				Metrics:                 metricsserver.Options{BindAddress: "0"},
-				WebhookServer:           webhook.NewServer(webhook.Options{Port: 0}),
-				HealthProbeBindAddress:  "0",
-				LeaderElection:          singletonControllersLeaderElection,
-				LeaderElectionID:        singletonControllersLeaderElectionID,
-				LeaderElectionNamespace: leaderElectionNamespace,
-				LeaseDuration:           &leaseDuration,
-				RenewDeadline:           &renewDeadline,
-				RetryPeriod:             &retryPeriod,
-			})
-			if err != nil {
-				setupLog.Error(err, "unable to create federation controller manager")
-				os.Exit(1)
+
+			var federationMgr manager.Manager
+			federationControllerMgr := singletonControllerMgr
+			if serverConfig.InternalDNS.Enabled {
+				federationConfig, err := federationRESTConfig(serverConfig.Federation, cfg)
+				if err != nil {
+					setupLog.Error(err, "unable to load federation kubeconfig")
+					os.Exit(1)
+				}
+				federationMgr, err = manager.New(federationConfig, manager.Options{
+					Scheme:                  scheme,
+					Metrics:                 metricsserver.Options{BindAddress: "0"},
+					WebhookServer:           webhook.NewServer(webhook.Options{Port: 0}),
+					HealthProbeBindAddress:  "0",
+					LeaderElection:          singletonControllersLeaderElection,
+					LeaderElectionID:        singletonControllersLeaderElectionID + "-dns-federation",
+					LeaderElectionNamespace: leaderElectionNamespace,
+					LeaseDuration:           &leaseDuration,
+					RenewDeadline:           &renewDeadline,
+					RetryPeriod:             &retryPeriod,
+				})
+				if err != nil {
+					setupLog.Error(err, "unable to create federation controller manager")
+					os.Exit(1)
+				}
+
+				federationControllerMgr = federationMgr
 			}
 
 			var irohDownstream cluster.Cluster
@@ -425,7 +450,8 @@ func NewCommand(build BuildInfo) *cobra.Command {
 			}
 			registeredControllers, err := setupControllers(mgr, serverConfig, controllerDeps{
 				downstreamCluster:        downstreamCluster,
-				federationManager:        federationMgr,
+				federationManager:        federationControllerMgr,
+				singletonManager:         singletonControllerMgr,
 				irohDownstream:           irohDownstream,
 				ipamClients:              ipamClients,
 				certificateServiceReader: certificateServiceReader,
@@ -505,10 +531,12 @@ func NewCommand(build BuildInfo) *cobra.Command {
 				return ignoreCanceled(mgr.Start(ctx))
 			})
 
-			setupLog.Info("starting federation controller manager")
-			g.Go(func() error {
-				return ignoreCanceled(federationMgr.Start(ctx))
-			})
+			if singletonMgr != nil {
+				g.Go(func() error { return ignoreCanceled(singletonMgr.Start(ctx)) })
+			}
+			if federationMgr != nil {
+				g.Go(func() error { return ignoreCanceled(federationMgr.Start(ctx)) })
+			}
 
 			if err := g.Wait(); err != nil {
 				setupLog.Error(err, "unable to start")
@@ -605,6 +633,7 @@ func setupWebhooks(mgr mcmanager.Manager, serverConfig config.NetworkServicesOpe
 type controllerDeps struct {
 	downstreamCluster        cluster.Cluster
 	federationManager        manager.Manager
+	singletonManager         manager.Manager
 	irohDownstream           cluster.Cluster
 	ipamClients              controller.IPAMClientFactory
 	certificateServiceReader client.Reader
@@ -709,7 +738,7 @@ func controllerRegistrations(
 			}).SetupWithManager(mgr)
 		}},
 		{"networkbinding", true, func() error {
-			return (&controller.NetworkBindingReconciler{}).SetupWithManager(mgr)
+			return (&controller.NetworkBindingReconciler{InternalDNSEnabled: serverConfig.InternalDNS.Enabled}).SetupWithManager(mgr)
 		}},
 		{"networkcontext", true, func() error {
 			return (&controller.NetworkContextReconciler{
@@ -825,7 +854,7 @@ func controllerRegistrations(
 			return (&controller.GatewayDownstreamCertificateSolverReconciler{
 				Config:            serverConfig,
 				DownstreamCluster: deps.downstreamCluster,
-			}).SetupWithManager(deps.federationManager)
+			}).SetupWithManager(deps.singletonManager)
 		}},
 		{"domain", true, func() error {
 			return (&controller.DomainReconciler{
@@ -850,7 +879,7 @@ func controllerRegistrations(
 			return (&controller.ChallengeReconciler{
 				Config:            serverConfig,
 				DownstreamCluster: deps.downstreamCluster,
-			}).SetupWithManager(deps.federationManager)
+			}).SetupWithManager(deps.singletonManager)
 		}},
 	}
 }

@@ -99,6 +99,8 @@ func TestControllerRegistrations_CapabilityGates(t *testing.T) {
 		"trafficprotectionpolicy",
 		"challenge",
 		"iroh-dns",
+		"internaldns-project",
+		"internaldns-readiness",
 	} {
 		if slices.Contains(got, name) {
 			t.Errorf("expected %q to stay unregistered, got %v", name, got)

@@ -354,7 +354,7 @@ func (r *InternalDNSProjectReconciler) disable(
 		errs = append(errs, err)
 	}
 	contextObj := newInternalDNSObject(internalDNSContextGVK, network.Namespace, internalDNSResourceName(network.Name, network.UID))
-	if err := cl.Delete(ctx, contextObj); err != nil && !apierrors.IsNotFound(err) {
+	if err := deleteOwnedDNSObject(ctx, cl, contextObj, string(network.UID)); err != nil {
 		errs = append(errs, err)
 	}
 	if err := r.clearIntent(ctx, cl, networkContext); err != nil {
@@ -366,6 +366,17 @@ func (r *InternalDNSProjectReconciler) disable(
 		}
 	}
 	return errors.Join(errs...)
+}
+
+func deleteOwnedDNSObject(ctx context.Context, cl client.Client, obj *unstructured.Unstructured, networkUID string) error {
+	if err := cl.Get(ctx, client.ObjectKeyFromObject(obj), obj); err != nil {
+		return client.IgnoreNotFound(err)
+	}
+	if networkUID == "" || obj.GetAnnotations()[internalDNSOwnerNetworkUIDAnnotation] != networkUID {
+		return fmt.Errorf("%s %s/%s belongs to another network lifetime", obj.GetKind(), obj.GetNamespace(), obj.GetName())
+	}
+	uid, version := obj.GetUID(), obj.GetResourceVersion()
+	return client.IgnoreNotFound(cl.Delete(ctx, obj, client.Preconditions{UID: &uid, ResourceVersion: &version}))
 }
 
 func (r *InternalDNSProjectReconciler) cleanupRegion(
@@ -402,7 +413,7 @@ func (r *InternalDNSProjectReconciler) cleanupRegion(
 		}
 	}
 	binding := newInternalDNSObject(internalDNSAccessGVK, networkContext.Namespace, internalDNSRegionalName(contextName, region))
-	if err := cl.Delete(ctx, binding); err != nil && !apierrors.IsNotFound(err) {
+	if err := deleteOwnedDNSObject(ctx, cl, binding, networkContext.Labels[networkingv1alpha.NetworkUIDLabel]); err != nil {
 		return err
 	}
 	return nil

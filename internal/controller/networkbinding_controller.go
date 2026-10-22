@@ -28,7 +28,8 @@ import (
 
 // NetworkBindingReconciler reconciles a NetworkBinding object
 type NetworkBindingReconciler struct {
-	mgr mcmanager.Manager
+	mgr                mcmanager.Manager
+	InternalDNSEnabled bool
 }
 
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkbindings,verbs=get;list;watch;create;update;patch;delete
@@ -115,26 +116,51 @@ func (r *NetworkBindingReconciler) Reconcile(ctx context.Context, req mcreconcil
 		return ctrl.Result{}, fmt.Errorf("failed fetching network context: %w", err)
 	}
 
-	networkContext.Namespace = networkContextObjectKey.Namespace
-	networkContext.Name = networkContextObjectKey.Name
-	if _, err := controllerutil.CreateOrUpdate(ctx, cl.GetClient(), &networkContext, func() error {
-		if !networkContext.DeletionTimestamp.IsZero() {
-			return &networkContextTerminating{name: networkContext.Name}
+	if !r.InternalDNSEnabled {
+		if networkContext.CreationTimestamp.IsZero() {
+			networkContext = networkingv1alpha.NetworkContext{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: networkContextObjectKey.Namespace,
+					Name:      networkContextObjectKey.Name,
+				},
+				Spec: networkingv1alpha.NetworkContextSpec{
+					Network: networkingv1alpha.LocalNetworkRef{
+						Name: binding.Spec.Network.Name,
+					},
+					Location: binding.Spec.Location,
+				},
+			}
+
+			if err := controllerutil.SetControllerReference(&network, &networkContext, cl.GetScheme()); err != nil {
+				return ctrl.Result{}, fmt.Errorf("failed to set controller on network context: %w", err)
+			}
+
+			if err := cl.GetClient().Create(ctx, &networkContext); err != nil {
+				return ctrl.Result{}, fmt.Errorf("failed creating network context: %w", err)
+			}
 		}
-		networkContext.Spec.Network = networkingv1alpha.LocalNetworkRef{Name: network.Name}
-		networkContext.Spec.Location = binding.Spec.Location
-		networkContext.Spec.IPFamilies = append([]networkingv1alpha.IPFamily(nil), network.Spec.IPFamilies...)
-		networkContext.Spec.MTU = network.Spec.MTU
-		networkContext.Spec.NetworkGeneration = network.Generation
-		if networkContext.Labels == nil {
-			networkContext.Labels = map[string]string{}
+	} else {
+		networkContext.Namespace = networkContextObjectKey.Namespace
+		networkContext.Name = networkContextObjectKey.Name
+		if _, err := controllerutil.CreateOrUpdate(ctx, cl.GetClient(), &networkContext, func() error {
+			if !networkContext.DeletionTimestamp.IsZero() {
+				return &networkContextTerminating{name: networkContext.Name}
+			}
+			networkContext.Spec.Network = networkingv1alpha.LocalNetworkRef{Name: network.Name}
+			networkContext.Spec.Location = binding.Spec.Location
+			networkContext.Spec.IPFamilies = append([]networkingv1alpha.IPFamily(nil), network.Spec.IPFamilies...)
+			networkContext.Spec.MTU = network.Spec.MTU
+			networkContext.Spec.NetworkGeneration = network.Generation
+			if networkContext.Labels == nil {
+				networkContext.Labels = map[string]string{}
+			}
+			networkContext.Labels[networkingv1alpha.NetworkUIDLabel] = string(network.UID)
+			networkContext.Labels[networkingv1alpha.NetworkLabel] = network.Name
+			networkContext.Labels[networkingv1alpha.LocationLabel] = binding.Spec.Location.Name
+			return controllerutil.SetControllerReference(&network, &networkContext, cl.GetScheme())
+		}); err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed reconciling network context: %w", err)
 		}
-		networkContext.Labels[networkingv1alpha.NetworkUIDLabel] = string(network.UID)
-		networkContext.Labels[networkingv1alpha.NetworkLabel] = network.Name
-		networkContext.Labels[networkingv1alpha.LocationLabel] = binding.Spec.Location.Name
-		return controllerutil.SetControllerReference(&network, &networkContext, cl.GetScheme())
-	}); err != nil {
-		return ctrl.Result{}, fmt.Errorf("failed reconciling network context: %w", err)
 	}
 
 	if !apimeta.IsStatusConditionTrue(networkContext.Status.Conditions, networkingv1alpha.NetworkContextReady) {
@@ -168,17 +194,9 @@ func (r *NetworkBindingReconciler) Reconcile(ctx context.Context, req mcreconcil
 // never notice the context going away, and nothing else recreates it.
 func (r *NetworkBindingReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	r.mgr = mgr
-	return mcbuilder.ControllerManagedBy(mgr).
+	builder := mcbuilder.ControllerManagedBy(mgr).
 		For(&networkingv1alpha.NetworkBinding{},
 			mcbuilder.WithEngageWithLocalCluster(false),
-		).
-		Watches(
-			&networkingv1alpha.Network{},
-			func(clusterName multicluster.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
-				return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []mcreconcile.Request {
-					return networkBindingRequestsForNetwork(ctx, cl.GetClient(), clusterName, obj)
-				})
-			},
 		).
 		Watches(
 			&networkingv1alpha.NetworkContext{},
@@ -188,8 +206,18 @@ func (r *NetworkBindingReconciler) SetupWithManager(mgr mcmanager.Manager) error
 				})
 			},
 		).
-		Named("networkbinding").
-		Complete(r)
+		Named("networkbinding")
+	if r.InternalDNSEnabled {
+		builder = builder.Watches(
+			&networkingv1alpha.Network{},
+			func(clusterName multicluster.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
+				return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []mcreconcile.Request {
+					return networkBindingRequestsForNetwork(ctx, cl.GetClient(), clusterName, obj)
+				})
+			},
+		)
+	}
+	return builder.Complete(r)
 }
 
 // networkBindingRequestsForContext maps a NetworkContext back to the bindings
@@ -209,7 +237,7 @@ func networkBindingRequestsForContext(
 	}
 
 	var bindings networkingv1alpha.NetworkBindingList
-	if err := c.List(ctx, &bindings, client.InNamespace(networkContext.Namespace)); err != nil {
+	if err := c.List(ctx, &bindings); err != nil {
 		logger.Error(err, "failed to list NetworkBindings for NetworkContext watch", "networkContext", networkContext.Name)
 		return nil
 	}
@@ -217,6 +245,13 @@ func networkBindingRequestsForContext(
 	var requests []mcreconcile.Request
 	for i := range bindings.Items {
 		binding := &bindings.Items[i]
+		networkNamespace := binding.Spec.Network.Namespace
+		if networkNamespace == "" {
+			networkNamespace = binding.Namespace
+		}
+		if networkNamespace != networkContext.Namespace {
+			continue
+		}
 		if networkContextNameForBinding(binding) != networkContext.Name {
 			continue
 		}

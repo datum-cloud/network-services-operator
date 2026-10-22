@@ -38,7 +38,7 @@ func TestProjectBindingCarriesNetworkAddressing(t *testing.T) {
 				objects = append(objects, &networkingv1alpha.NetworkContext{ObjectMeta: metav1.ObjectMeta{Name: networkContextNameForBinding(binding), Namespace: "default"}})
 			}
 			c := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&networkingv1alpha.NetworkBinding{}, &networkingv1alpha.NetworkContext{}).WithObjects(objects...).Build()
-			r := &NetworkBindingReconciler{mgr: &replicatorFakeManager{clusters: map[multicluster.ClusterName]cluster.Cluster{"project": &replicatorFakeCluster{c: c, scheme: scheme}}}}
+			r := &NetworkBindingReconciler{InternalDNSEnabled: true, mgr: &replicatorFakeManager{clusters: map[multicluster.ClusterName]cluster.Cluster{"project": &replicatorFakeCluster{c: c, scheme: scheme}}}}
 			req := mcreconcile.Request{ClusterName: "project", Request: ctrl.Request{NamespacedName: client.ObjectKeyFromObject(binding)}}
 			_, err := r.Reconcile(ctx, req)
 			require.NoError(t, err)
@@ -61,4 +61,23 @@ func TestProjectBindingCarriesNetworkAddressing(t *testing.T) {
 			require.Equal(t, network.Generation, result.Spec.NetworkGeneration)
 		})
 	}
+}
+
+func TestProjectBindingDisabledPreservesContext(t *testing.T) {
+	ctx := context.Background()
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	require.NoError(t, networkingv1alpha.AddToScheme(scheme))
+	network := &networkingv1alpha.Network{ObjectMeta: metav1.ObjectMeta{Name: "producer", Namespace: "default", UID: "network-id", Generation: 3}, Spec: networkingv1alpha.NetworkSpec{IPFamilies: []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol}, MTU: 1440}}
+	binding := networkBindingForTest("default", "presence", "producer", "us-central-1")
+	existing := &networkingv1alpha.NetworkContext{ObjectMeta: metav1.ObjectMeta{Name: networkContextNameForBinding(binding), Namespace: "default", CreationTimestamp: metav1.Now(), Labels: map[string]string{"custom": "retained"}}, Spec: networkingv1alpha.NetworkContextSpec{Network: networkingv1alpha.LocalNetworkRef{Name: network.Name}, Location: binding.Spec.Location, MTU: 1280}}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&networkingv1alpha.NetworkBinding{}, &networkingv1alpha.NetworkContext{}).WithObjects(&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "default"}}, network, binding, existing).Build()
+	var before networkingv1alpha.NetworkContext
+	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(existing), &before))
+	r := &NetworkBindingReconciler{mgr: &replicatorFakeManager{clusters: map[multicluster.ClusterName]cluster.Cluster{"project": &replicatorFakeCluster{c: c, scheme: scheme}}}}
+	_, err := r.Reconcile(ctx, mcreconcile.Request{ClusterName: "project", Request: ctrl.Request{NamespacedName: client.ObjectKeyFromObject(binding)}})
+	require.NoError(t, err)
+	var after networkingv1alpha.NetworkContext
+	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(existing), &after))
+	require.Equal(t, before, after)
 }

@@ -51,7 +51,6 @@ func init() {
 	utilruntime.Must(networkingv1alpha1.AddToScheme(scheme))
 	utilruntime.Must(ipamv1alpha1.AddToScheme(scheme))
 	utilruntime.Must(cloudv1alpha1.AddToScheme(scheme))
-	utilruntime.Must(networkv1alpha1.AddToScheme(scheme))
 	utilruntime.Must(nadv1.AddToScheme(scheme))
 }
 
@@ -90,6 +89,9 @@ func NewCommand() *cobra.Command {
 				os.Exit(1)
 			}
 
+			if serverConfig.InternalDNS.Enabled {
+				utilruntime.Must(networkv1alpha1.AddToScheme(scheme))
+			}
 			setupLog.Info("server config", "config", serverConfig)
 			setupLog.Info("configured location fallback, used only until a "+
 				"ServingLocation is delivered to this cell",

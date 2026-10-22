@@ -405,3 +405,29 @@ func TestInternalDNSUsesPlatformLocation(t *testing.T) {
 		t.Fatalf("region = %q, want us-central", region)
 	}
 }
+
+func TestInternalDNSCleanupPreservesForeignObjects(t *testing.T) {
+	for _, gvk := range []schema.GroupVersionKind{internalDNSContextGVK, internalDNSAccessGVK} {
+		t.Run(gvk.Kind, func(t *testing.T) {
+			ctx := context.Background()
+			scheme := runtime.NewScheme()
+			scheme.AddKnownTypeWithName(gvk, &unstructured.Unstructured{})
+			obj := newInternalDNSObject(gvk, "tenant", "same-name")
+			obj.SetUID("foreign-object")
+			obj.SetAnnotations(map[string]string{internalDNSOwnerNetworkUIDAnnotation: "other-network"})
+			cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(obj).Build()
+			if err := deleteOwnedDNSObject(ctx, cl, obj.DeepCopy(), "network-uid"); err == nil {
+				t.Fatal("foreign object deletion accepted")
+			}
+			if err := cl.Get(ctx, client.ObjectKeyFromObject(obj), obj); err != nil {
+				t.Fatal(err)
+			}
+			if err := deleteOwnedDNSObject(ctx, cl, obj.DeepCopy(), "other-network"); err != nil {
+				t.Fatal(err)
+			}
+			if err := cl.Get(ctx, client.ObjectKeyFromObject(obj), obj); !apierrors.IsNotFound(err) {
+				t.Fatalf("owned object retained: %v", err)
+			}
+		})
+	}
+}

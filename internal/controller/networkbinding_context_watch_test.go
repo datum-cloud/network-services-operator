@@ -71,3 +71,18 @@ func TestNetworkBindingRequestsForContextIgnoresOtherTypes(t *testing.T) {
 
 	require.Nil(t, requests)
 }
+
+func TestNetworkBindingRequestsForContextAcrossNamespaces(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, networkingv1alpha.AddToScheme(scheme))
+	binding := networkBindingForTest("default", "binding", "network", "location")
+	binding.Spec.Network.Namespace = "project-network"
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(binding).Build()
+	networkContext := &networkingv1alpha.NetworkContext{ObjectMeta: metav1.ObjectMeta{Namespace: "project-network", Name: "network-location"}}
+	requests := networkBindingRequestsForContext(context.Background(), cl, "project", networkContext)
+	require.Len(t, requests, 1)
+	require.Equal(t, "default", requests[0].Namespace)
+	require.Equal(t, binding.Name, requests[0].Name)
+	networkContext.Namespace = "unrelated"
+	require.Empty(t, networkBindingRequestsForContext(context.Background(), cl, "project", networkContext))
+}

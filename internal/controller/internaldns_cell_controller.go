@@ -343,17 +343,28 @@ func (r *InternalDNSCellReconciler) cleanup(
 		policy := &networkv1alpha1.ServiceRoutePolicy{ObjectMeta: metav1.ObjectMeta{
 			Namespace: networkContext.Namespace, Name: name,
 		}}
-		if err := cl.Delete(ctx, policy); err != nil && !apierrors.IsNotFound(err) {
+		if err := deleteOwnedDNSRoute(ctx, cl, policy, networkContext); err != nil {
 			errs = append(errs, err)
 		}
 		endpoint := &networkv1alpha1.ServiceEndpoint{ObjectMeta: metav1.ObjectMeta{
 			Namespace: networkContext.Namespace, Name: name,
 		}}
-		if err := cl.Delete(ctx, endpoint); err != nil && !apierrors.IsNotFound(err) {
+		if err := deleteOwnedDNSRoute(ctx, cl, endpoint, networkContext); err != nil {
 			errs = append(errs, err)
 		}
 	}
 	return errors.Join(errs...)
+}
+
+func deleteOwnedDNSRoute(ctx context.Context, cl client.Client, obj client.Object, owner *networkingv1alpha.NetworkContext) error {
+	if err := cl.Get(ctx, client.ObjectKeyFromObject(obj), obj); err != nil {
+		return client.IgnoreNotFound(err)
+	}
+	if !metav1.IsControlledBy(obj, owner) {
+		return fmt.Errorf("DNS route %s/%s belongs to another context lifetime", obj.GetNamespace(), obj.GetName())
+	}
+	uid, version := obj.GetUID(), obj.GetResourceVersion()
+	return client.IgnoreNotFound(cl.Delete(ctx, obj, client.Preconditions{UID: &uid, ResourceVersion: &version}))
 }
 
 func (r *InternalDNSCellReconciler) SetupWithManager(mgr mcmanager.Manager) error {

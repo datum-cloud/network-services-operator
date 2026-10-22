@@ -25,10 +25,9 @@ on:
       - main
   workflow_dispatch:
 
-# One federated run per ref; a newer push cancels an in-flight one.
 concurrency:
-  group: federated-e2e-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   federated-e2e:

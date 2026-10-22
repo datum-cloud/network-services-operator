@@ -117,12 +117,10 @@ func (r *InternalDNSProjectReconciler) reconcile(
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	region, err := r.region(ctx, cl, networkContext)
-	if err != nil {
-		return ctrl.Result{}, err
-	}
-
 	if !networkContext.DeletionTimestamp.IsZero() {
+		if err := r.reportTerminating(ctx, cl, networkContext); err != nil {
+			return ctrl.Result{}, err
+		}
 		if controllerutil.ContainsFinalizer(networkContext, internalDNSFinalizer) {
 			if err := r.cleanupRegion(ctx, cl, networkContext); err != nil {
 				return ctrl.Result{}, err
@@ -133,6 +131,11 @@ func (r *InternalDNSProjectReconciler) reconcile(
 			}
 		}
 		return ctrl.Result{}, nil
+	}
+
+	region, err := r.region(ctx, cl, networkContext)
+	if err != nil {
+		return ctrl.Result{}, err
 	}
 	previousRegion := networkContext.Annotations[InternalDNSRegionAnnotation]
 	if previousRegion != "" && previousRegion != region {
@@ -210,6 +213,23 @@ func (r *InternalDNSProjectReconciler) reconcile(
 	}
 
 	return ctrl.Result{RequeueAfter: internalDNSRetryInterval}, nil
+}
+
+func (r *InternalDNSProjectReconciler) reportTerminating(
+	ctx context.Context,
+	cl client.Client,
+	networkContext *networkingv1alpha.NetworkContext,
+) error {
+	if !apimeta.SetStatusCondition(&networkContext.Status.Conditions, metav1.Condition{
+		Type:               networkingv1alpha.NetworkContextDNSReady,
+		Status:             metav1.ConditionFalse,
+		Reason:             networkingv1alpha.NetworkContextDNSReadyReasonTerminating,
+		Message:            "NetworkContext is being deleted",
+		ObservedGeneration: networkContext.Generation,
+	}) {
+		return nil
+	}
+	return client.IgnoreNotFound(cl.Status().Update(ctx, networkContext))
 }
 
 func (r *InternalDNSProjectReconciler) region(
@@ -517,6 +537,9 @@ func (r *InternalDNSReadinessReconciler) publish(
 	projectContext *networkingv1alpha.NetworkContext,
 	hubContext *networkingv1alpha.NetworkContext,
 ) (ctrl.Result, error) {
+	if !projectContext.DeletionTimestamp.IsZero() {
+		return ctrl.Result{}, nil
+	}
 	intent, err := internalDNSSettingsFromAnnotations(projectContext.Annotations, r.Config.Nameservers())
 	if err != nil {
 		return ctrl.Result{}, r.updateProject(ctx, cl, projectContext, nil, metav1.Condition{

@@ -92,6 +92,7 @@ const (
 	NetworkContextDNSReadyReasonAccessAbsent          = "AccessAbsent"
 	NetworkContextDNSReadyReasonNetworkPathNotReady   = "NetworkPathNotReady"
 	NetworkContextDNSReadyReasonNetworkIdentityAbsent = "NetworkIdentityAbsent"
+	NetworkContextDNSReadyReasonTerminating           = "Terminating"
 
 	NetworkInterfaceDNSConfiguredReasonApplied                     = "Applied"
 	NetworkInterfaceDNSConfiguredReasonUnsupportedMultipleContexts = "UnsupportedMultipleContexts"

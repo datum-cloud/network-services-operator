@@ -512,3 +512,101 @@ func TestInternalDNSReadinessPublishesEveryResolver(t *testing.T) {
 		t.Fatalf("settings naming a resolver that is no longer configured were retained: %v", got)
 	}
 }
+
+func TestTerminatingContextReportsDNSNotReady(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	scheme := runtime.NewScheme()
+	if err := networkingv1alpha.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := locationsv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	const hold = "example.com/hold"
+	ready := []metav1.Condition{{
+		Type: networkingv1alpha.NetworkContextDNSReady, Status: metav1.ConditionTrue,
+		Reason: networkingv1alpha.NetworkContextDNSReadyReasonReady,
+	}}
+	attached := testNetworkContext("attached", "attached-uid")
+	attached.Finalizers = []string{internalDNSFinalizer, hold}
+	attached.DeletionTimestamp = &metav1.Time{Time: time.Date(2026, time.October, 22, 12, 0, 0, 0, time.UTC)}
+	attached.Status.Conditions = ready
+	unattached := testNetworkContext("unattached", "unattached-uid")
+	unattached.Finalizers = []string{hold}
+	unattached.DeletionTimestamp = attached.DeletionTimestamp
+	cl := fake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(&networkingv1alpha.NetworkContext{}).
+		WithObjects(attached, unattached).Build()
+	r := &InternalDNSProjectReconciler{Projects: fixedProjectIdentity("project-uid")}
+
+	for _, networkContext := range []*networkingv1alpha.NetworkContext{attached, unattached} {
+		if _, err := r.reconcile(ctx, cl, "project", client.ObjectKeyFromObject(networkContext)); err != nil {
+			t.Fatal(err)
+		}
+		current := &networkingv1alpha.NetworkContext{}
+		if err := cl.Get(ctx, client.ObjectKeyFromObject(networkContext), current); err != nil {
+			t.Fatal(err)
+		}
+		condition := apimeta.FindStatusCondition(current.Status.Conditions, networkingv1alpha.NetworkContextDNSReady)
+		if condition == nil || condition.Status != metav1.ConditionFalse ||
+			condition.Reason != networkingv1alpha.NetworkContextDNSReadyReasonTerminating {
+			t.Fatalf("%s DNSReady = %#v, want False/Terminating", networkContext.Name, condition)
+		}
+		if slices.Contains(current.Finalizers, internalDNSFinalizer) {
+			t.Fatalf("%s kept the internal DNS finalizer", networkContext.Name)
+		}
+	}
+}
+
+func TestInternalDNSReadinessLeavesTerminatingContext(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	scheme := runtime.NewScheme()
+	if err := networkingv1alpha.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	terminating := []metav1.Condition{{
+		Type: networkingv1alpha.NetworkContextDNSReady, Status: metav1.ConditionFalse,
+		Reason: networkingv1alpha.NetworkContextDNSReadyReasonTerminating,
+	}}
+	projectContext := testNetworkContext("context", "project-context-uid")
+	projectContext.Annotations = testDNSIntent(time.Time{})
+	projectContext.Finalizers = []string{"example.com/hold"}
+	projectContext.DeletionTimestamp = &metav1.Time{Time: time.Date(2026, time.October, 22, 12, 0, 0, 0, time.UTC)}
+	projectContext.Status.Conditions = terminating
+	cl := fake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(&networkingv1alpha.NetworkContext{}).
+		WithObjects(projectContext).Build()
+	hubContext := projectContext.DeepCopy()
+	hubContext.DeletionTimestamp = nil
+	hubContext.Status.DNSAccess = &networkingv1alpha.NetworkDNSAccessStatus{
+		ContextRef:         networkingv1alpha.NetworkDNSObjectReference{Name: "resolver"},
+		AccessBindingRef:   networkingv1alpha.NetworkDNSObjectReference{Name: "access"},
+		ServiceDestination: projectContext.Annotations[InternalDNSServiceDestinationAnnotation],
+		Nameservers:        []string{"fd53::53"},
+	}
+	hubContext.Status.Conditions = []metav1.Condition{{
+		Type: networkingv1alpha.NetworkContextDNSReady, Status: metav1.ConditionTrue,
+		Reason: networkingv1alpha.NetworkContextDNSReadyReasonReady,
+	}}
+	r := &InternalDNSReadinessReconciler{Config: config.InternalDNSConfig{Frontend: "fd53::53"}}
+
+	current := &networkingv1alpha.NetworkContext{}
+	if err := cl.Get(ctx, client.ObjectKeyFromObject(projectContext), current); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.publish(ctx, cl, current, hubContext); err != nil {
+		t.Fatal(err)
+	}
+	if err := cl.Get(ctx, client.ObjectKeyFromObject(projectContext), current); err != nil {
+		t.Fatal(err)
+	}
+	condition := apimeta.FindStatusCondition(current.Status.Conditions, networkingv1alpha.NetworkContextDNSReady)
+	if condition == nil || condition.Reason != networkingv1alpha.NetworkContextDNSReadyReasonTerminating {
+		t.Fatalf("readiness overwrote a terminating context: %#v", condition)
+	}
+	if current.Spec.DNS != nil {
+		t.Fatalf("readiness published settings to a terminating context: %#v", current.Spec.DNS)
+	}
+}

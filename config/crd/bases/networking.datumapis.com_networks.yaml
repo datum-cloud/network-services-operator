@@ -76,6 +76,36 @@ spec:
                     - Disabled
                     type: string
                 type: object
+              egress:
+                description: |-
+                  Egress declares what instances on this network reach outside the
+                  platform.
+                properties:
+                  internet:
+                    description: |-
+                      Internet declares whether instances on this network reach destinations
+                      outside the platform.
+                    properties:
+                      mode:
+                        description: |-
+                          Mode is whether instances on this network reach the internet. It covers
+                          IPv6 and IPv4 destinations alike. Disabled limits instances to the
+                          network and the platform's private services; traffic through an
+                          interface's external address is not affected.
+
+                          A network created without a mode is given the platform's default when it
+                          is created, so every stored network records the mode it runs with.
+                          Changing the platform default later does not change this value.
+
+                          Changing the mode applies to every instance on the network, including
+                          instances that are already running, not only to instances attached
+                          afterwards.
+                        enum:
+                        - Enabled
+                        - Disabled
+                        type: string
+                    type: object
+                type: object
               ipFamilies:
                 default:
                 - IPv6

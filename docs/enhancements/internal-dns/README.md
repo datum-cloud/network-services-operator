@@ -73,6 +73,7 @@ The first two names represent automatic Compute and Connect publications. The th
 - Cross-VPC disclosure: authorize the VPC lifetime and service destination before lookup; test overlapping names and forged identities.
 - Stale configuration: preserve source lifetimes and version fences through every projection; explicit withdrawal removes access.
 - Ambiguous guest routing: qualify resolver selection for workloads with multiple network interfaces before enabling that configuration.
+- Forged resolver intent: resolver intent on the `NetworkContext` has no admission protection yet; see [Protecting resolver intent](#protecting-resolver-intent).
 
 ## Design Details
 
@@ -136,9 +137,9 @@ DNS selects the context from the authorized service destination before cache loo
 
 ### API design
 
-These examples are proposed contracts. Network services fields below are additions requiring API implementation. DNS examples use the [DNS control-plane contract](https://github.com/datum-cloud/dns-operator/pull/229). UIDs and version values are illustrative; controllers write the generated objects and status.
+Network services' fields below are implemented in this repository's `networking.datumapis.com/v1alpha` API ([`internaldns_types.go`](https://github.com/datum-cloud/network-services-operator/blob/main/api/v1alpha/internaldns_types.go), [`networkcontext_types.go`](https://github.com/datum-cloud/network-services-operator/blob/main/api/v1alpha/networkcontext_types.go)) and its Internal DNS controllers. DNS owns `DNSResolverContext` and `DNSResolverAccessBinding`; their schema lives in the [dns-operator API types](https://github.com/datum-cloud/dns-operator/blob/fix/internal-dns-name-references/api/v1alpha1/internaldns_project_types.go) ([dns-operator#244](https://github.com/datum-cloud/dns-operator/pull/244)) and their contract in the [DNS architecture](https://github.com/datum-cloud/dns-operator/pull/229). This document describes what network services writes into them, not their full schema. UIDs and addresses below are illustrative.
 
-#### Network policy and DNS access
+#### Network policy
 
 ```yaml
 apiVersion: networking.datumapis.com/v1alpha
@@ -149,66 +150,77 @@ spec:
   ipam:
     mode: Auto
   dns:
-    # Proposed optional policy. Managed is the default for enabled VPCs.
-    # Disabled requests withdrawal of managed resolver access and settings.
+    # Managed is the default when the Internal DNS feature is enabled.
+    # Disabled withdraws managed resolver access; see below.
     mode: Managed
----
-apiVersion: dns.networking.miloapis.com/v1alpha1
-kind: DNSResolverContext
-metadata:
-  name: application
-spec:
-  # Network services derive this immutable identity from project UID and Network UID.
-  consumerID: "11111111-1111-4111-8111-111111111111/22222222-2222-4222-8222-222222222222"
-  managedNamespace:
-    # Request a context-specific zone for automatic product records.
-    enabled: true
-    # Network services owns the default domain policy; DNS allocates this apex.
-    domainSuffix: datum.internal
----
-apiVersion: dns.networking.miloapis.com/v1alpha1
-kind: DNSResolverAccessBinding
-metadata:
-  name: application-us-central-1
-spec:
-  # Pin the DNS context lifetime in the consumer project API.
-  contextRef:
-    name: application
-    uid: 33333333-3333-4333-8333-333333333333
-  # A trusted location mapping selects the regional shared fleet.
-  region: us-central-1
-  # Map verified VPC traffic to this service-side destination.
-  # DNS serves port 53 over UDP and TCP.
-  destinationAddress: fd70:100::10
 ```
 
-Network services create access only for an authorized network location. They coordinate the DNS binding with generic private-service intent that pins the consumer VPC lifetime and backend destination. RBAC controls who can publish network access intent. Galactic validates the pinned consumer VPC and supports persistent authorization for DNS private endpoints.
+#### DNS context and regional access
+
+For each enabled network, network services creates one `DNSResolverContext` in the network's project namespace, owned by the `Network`:
+
+- `spec.consumerID` is `<project UID>/<Network UID>`. Network services resolves the project UID from the Milo `Project` resource and reads the Network UID from the API server; neither comes from user input. DNS treats the value as opaque and immutable. Network services refuses to adopt an existing context whose `consumerID` or owner annotation belongs to another network lifetime.
+- `spec.managedNamespace` requests `enabled: true` with `domainSuffix: datum.internal`. Network services waits until DNS reports the allocated zone and suffix in status and the context is `Ready`.
+
+For each region the network is used in, network services creates one `DNSResolverAccessBinding`, owned by the context:
+
+- `spec.contextRef` pins the context's name and UID.
+- `spec.region` is the region key. Network services reads it from the `topology.datum.net/region` entry of the `NetworkContext`'s `Location`, for example `us-central-1`. DNS accepts only a region that matches one of its configured serving regions exactly, so the platform's location topology and the DNS fleet configuration must use the same keys. A location without the key gets no access; a key DNS does not serve leaves the binding `Accepted=False`.
+- `spec.destinationAddress` is the service-side address Galactic maps the VPC's resolver traffic to. Network services allocates it: the address is the configured `internalDNS.servicePrefix` (default `fd70:100::/64`) with its low 64 bits taken from a SHA-256 of the `DNSResolverContext` UID. The address is stable for the context lifetime and the same in every region. A recreated network gets a new context UID and therefore a new address.
+
+DNS does not allocate the destination; it reserves it. Before accepting a binding, DNS atomically claims the region, address, and port 53 across every project on the DNS service and rejects the binding (`Accepted=False`, reason `InvalidOrStaleAccess`) if another context lifetime holds the claim, or if the address falls inside DNS's own regional resolver pool. Claims are retained after withdrawal, so an address is never reused by a later context lifetime. Context, region, and destination are immutable per binding; network services deletes and recreates a binding whose fields no longer match.
+
+> [!NOTE]
+> Open question: a hash collision between two context UIDs leaves the second binding rejected, and network services has no fallback allocation for it. The 64-bit space makes this unlikely, but the context stays without DNS access until an operator intervenes.
+
+Network services publishes resolver settings only after DNS reports the current binding generation `Ready` and Galactic reports the corresponding policy programmed on the required nodes.
 
 #### Resolver settings delivered to workloads
 
-Network services own resolver configuration. `NetworkContext.spec.dns` carries the internal delivery configuration through federation. The interface controller reports effective addresses and search domains in `NetworkInterface.status.dns`. Consumers cannot override DNS settings on an interface. Providers apply the trusted configuration and report `DNSConfigured` through status.
+Network services carries resolver intent through federation on the `NetworkContext` and delivers effective settings on each `NetworkInterface`. Each object has one writer:
+
+1. The project controller records the DNS context name, access binding name, service destination, suffix, and region as `networking.datumapis.com/internal-dns-*` annotations on the project's `NetworkContext`. Replication carries exactly these annotations to the hub and the cell.
+2. In the cell, network services reads the annotations, programs Galactic `ServiceEndpoint` and `ServiceRoutePolicy` objects for UDP and TCP to the service destination, and reports `status.dnsAccess` and `DNSReady` once Galactic acknowledges the path.
+3. When the hub's `status.dnsAccess` matches the recorded intent and `DNSReady` is true, network services writes `NetworkContext.spec.dns` in the project. While the proof is missing or stale, it keeps settings that still match the intent and clears settings that do not, so an outage of the verification path does not reconfigure guests.
+4. The interface controller copies the nameservers and search domains from `spec.dns` into `NetworkInterface.status.dns`. Consumers cannot set DNS on an interface.
+5. The provider applies `status.dns` and reports `DNSConfigured` on the interface.
 
 ```yaml
 apiVersion: networking.datumapis.com/v1alpha
 kind: NetworkContext
 metadata:
   name: application-us-central-1
+  annotations:
+    # Written by network services in the project; replicated to hub and cell.
+    networking.datumapis.com/internal-dns-context-name: dns-application-4f1c2a9b7e01
+    networking.datumapis.com/internal-dns-access-name: dns-application-4f1c2a9b7e01-us-central-1-91d0c3aa5b27
+    networking.datumapis.com/internal-dns-service-destination: fd70:100::8c2e:41f0:9a1b:77d3
+    networking.datumapis.com/internal-dns-suffix: datum.internal
+    networking.datumapis.com/internal-dns-region: us-central-1
 spec:
   network:
     name: application
   location:
     name: us-central-1
+  # Written by network services only after the private path is verified.
   dns:
-    # Proposed desired state owned by network services, protected from consumer writes.
     contextRef:
-      name: application
-    # Identify the regional DNS configuration across control planes.
+      name: dns-application-4f1c2a9b7e01
     accessBindingRef:
-      name: application-us-central-1
-    # The private-service frontend uses this address inside the consumer VPC.
+      name: dns-application-4f1c2a9b7e01-us-central-1-91d0c3aa5b27
     nameservers: ["fd53::53"]
-    # Use the DNS-allocated managed suffix for relative names.
     searches: [datum.internal]
+status:
+  dnsAccess:
+    contextRef:
+      name: dns-application-4f1c2a9b7e01
+    accessBindingRef:
+      name: dns-application-4f1c2a9b7e01-us-central-1-91d0c3aa5b27
+    serviceDestination: fd70:100::8c2e:41f0:9a1b:77d3
+  conditions:
+    - type: DNSReady
+      status: "True"
+      reason: Ready
 ---
 apiVersion: networking.datumapis.com/v1alpha
 kind: NetworkInterface
@@ -219,12 +231,12 @@ spec:
     name: application
   interfaceName: eth0
 status:
-  # Report effective settings as read-only output.
+  # Effective settings, read-only to consumers.
   dns:
     nameservers: ["fd53::53"]
     searches: [datum.internal]
   conditions:
-    # The provider confirms application of the effective settings.
+    # Reported by the provider after applying the effective settings.
     - type: DNSConfigured
       status: "True"
       reason: Applied
@@ -232,15 +244,31 @@ status:
       lastTransitionTime: "2026-10-13T13:00:00Z"
 ```
 
-RBAC protects internal delivery resources and status writes. Interface status describes effective settings; it does not authorize provider actions. Providers use conditional status writes to confirm the settings they applied. Project routing and protected federation metadata retain the source identity across control planes.
+`DNSConfigured` uses reason `Applied` when the provider has applied the current settings and `UnsupportedMultipleContexts` when it refuses an interface set that spans more than one managed DNS context. Both reasons are defined in this repository's API; providers use the same values.
 
-Galactic private-service policies use `authorization.persistent: true` and retain
-VPC identity checks. Deletion or a confirmed change to the selected VPC withdraws
-access. Missing programming observations retain the applied path.
+#### Protecting resolver intent
 
-Publish settings only after DNS reports the current access binding generation ready and Galactic reports the corresponding policy generation programmed on required nodes. `NetworkContext` reports a proposed `DNSReady` condition separately from network readiness. Providers report `DNSConfigured` after applying current settings, reconcile updates, and reject stale revisions.
+The `NetworkContext` lives in the consumer project, and the cell trusts its replicated annotations when it programs the Galactic path. The protections today are:
 
-The initial guest contract supports one managed DNS context. A provider must reject unsupported combinations of managed contexts across interfaces rather than merge private resolver settings. A transient failure must not redirect private queries to a public resolver.
+- `consumerID`, the context and binding names, and the service destination are computed by network services from server-side identities. No user-supplied field feeds them.
+- The shipped consumer roles (`networking.datumapis.com-viewer` and `networking.datumapis.com-admin`) grant only `get`, `list`, and `watch` on `NetworkContext`. Consumers cannot write `spec.dns`, the annotations, or status through them.
+- DNS binds each destination to one context lifetime, and Galactic authorizes only the VPC the cell pins in the policy.
+
+> [!WARNING]
+> Open gap: no admission check protects these fields. The `NetworkContext` protected resource exposes `update` and `patch`, so a project member granted those permissions through a custom role could edit the annotations. Setting the service-destination annotation to another context's destination would make the cell program a path from this VPC to that context's DNS view; pointing the access-binding annotation at another binding changes which binding the readiness check compares against. Before enablement outside staging, this needs both an admission policy in the project API that rejects changes to the `internal-dns-*` annotations and `spec.dns` from any identity other than the network services controller, and a cell-side check that the destination matches the binding DNS accepted for this context instead of trusting the annotation alone.
+
+#### Disabling DNS on a network
+
+`Network.spec.dns.mode: Disabled` is accepted at any time, including while workloads are running; the API does not check for attached interfaces. Network services then deletes the region's access bindings and the `DNSResolverContext`, which removes the managed zone and its records, and clears the annotations and `spec.dns` on every context. Interfaces lose `status.dns`, and providers must remove the managed resolver from guests. Because `fd53::53` is the only resolver network services configures, a running guest loses all DNS through it, public names included; this design does not supply a fallback resolver. Re-enabling creates a new context lifetime with a new service destination, and products republish their names into the new zone.
+
+> [!NOTE]
+> Open question: whether `Disabled` should be refused while interfaces are attached, or whether providers should fall back to a public resolver after an explicit disable. A transient failure must never trigger that fallback.
+
+#### Guests and resolver availability
+
+The initial guest contract supports one managed DNS context. Interfaces on the same VPC receive identical settings. A guest whose interfaces span more than one managed VPC is unsupported: the provider reports `DNSConfigured=False` with `UnsupportedMultipleContexts` rather than merge resolver settings, and the guest receives no managed resolver until the combination is resolved.
+
+If the regional DNS fleet is unavailable, guests behind `fd53::53` get no answers for any name, private or public, until it recovers. Network services does not configure a second resolver or redirect queries to a public resolver, because that would leak private names and return wrong answers for private zones. Applied Galactic paths and interface settings stay in place through the outage, so resolution resumes without reconfiguring guests. Multi-NIC guests are affected the same way, since they have at most one managed resolver. There is no cross-region failover in the initial design.
 
 ### Publication and lifecycle
 

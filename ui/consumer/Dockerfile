@@ -1,15 +1,16 @@
-FROM oven/bun:1 AS build
+FROM node:26.12.1-alpine3.24@sha256:40cd011b55415bc894e45b02fdd5a5dfde056921b7d23a64c74f80497af48797 AS build
 WORKDIR /app
-COPY package.json bun.lock ./
-RUN bun install --frozen-lockfile
+COPY package.json package-lock.json ./
+RUN npm ci --no-audit --no-fund
 COPY . .
-RUN bun run build
+RUN npm run build
 
-FROM oven/bun:1-slim
-RUN apt-get update && apt-get install -y --no-install-recommends --only-upgrade ca-certificates && rm -rf /var/lib/apt/lists/*
+FROM node:26.12.1-alpine3.24@sha256:40cd011b55415bc894e45b02fdd5a5dfde056921b7d23a64c74f80497af48797
+RUN apk add --no-cache --upgrade 'ca-certificates>=20261020-r0'
+RUN ! grep -q MIICTjCCAdOgAwIBAgIKPPYHqWhwDtqLhDAKBggqhkjOPQQDAzBrMQswCQYDVQQG /etc/ssl/certs/ca-certificates.crt
 WORKDIR /app
 COPY --from=build /app/dist ./dist
 COPY serve.ts ./
-USER bun
+USER 1000:1000
 EXPOSE 8443
-CMD ["bun", "run", "serve.ts"]
+CMD ["node", "serve.ts"]

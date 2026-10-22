@@ -123,7 +123,8 @@ request implicitly. The listener references
 the request once for both families. Omitting `locations` defaults to
 `locations.from: Backends`: an address request follows the locations of the
 `NetworkService` backends on listeners using that address. `All` explicitly
-selects every eligible platform location; `Names` selects only listed
+selects every platform location whose `Ready` condition is `True` for its
+current generation; `Names` selects only listed
 locations. Adding a backend location creates an IP for each family without
 changing existing location addresses. Separate requests remain available when
 families need different location selections or independent listener attachment.
@@ -144,13 +145,26 @@ it has no address records. Different requests in the same location receive
 different hostnames.
 DNS names do not carry a port; clients still connect to the listener's port.
 
-For an address shared by several listeners, `Backends` selects a
-location only when every backend service on the effective routes has a
-selected, bound network interface there. This keeps every route on the IP
-usable in the same locations. Consumers can use separate address
-requests when services have different footprints. Interface presence selects
-locations; health and programming determine announcement. With no attached
-route, placement is pending and no location IP is allocated.
+For one effective listener, `Backends` selects the union of locations with a
+selected, bound interface in any of its backend services. A backend absent
+from one selected location contributes no endpoints there; that location can
+still serve through another backend. Interface presence selects locations;
+health and programming determine announcement. With no attached route,
+placement is pending and no location IP is allocated.
+
+For a future address shared by several listeners, placement must be decided
+across all listeners using that address, and announcement requires every
+listener to be ready in the location. Sharing an address across listeners and
+selecting multiple address requests on one listener are capability-gated in
+the first release, while the API retains both shapes for later support.
+
+A route without an allocated IPv6 VIP in a location owns no Galactic backend
+socket there. Once a VIP is allocated, an effective route with resolved
+backends may claim each endpoint socket in that location. Claims are assigned
+in route creation order, with a stable name tie-break; a route blocked by an
+older owner claims nothing and cannot block a later route. Route status and
+cell intent use the same ownership decision. A withdrawn or unavailable VIP
+releases its socket claim after serving intent is withdrawn.
 
 ### User Stories
 
@@ -399,8 +413,19 @@ TCP connect probe on its serving port; it may instead name a TCP, HTTP, or
 HTTPS probe on another `NetworkService` port. A UDP backend must name a TCP,
 HTTP, or HTTPS health endpoint that reports whether the UDP application can
 serve. There is no generic UDP probe with reliable success semantics. Probe
-interval, timeout, and healthy and unhealthy thresholds have platform defaults
-and can be set on the health check.
+interval, timeout, and healthy and unhealthy thresholds have platform defaults.
+The fields remain in the consumer API, but explicit values are rejected until
+the cell contract and runner can honor them.
+
+The first cell runner admits at most 64 targets per health object, evaluates
+at most eight probes concurrently, and gives each probe a two-second timeout
+after it gets a slot. A full 64-target sweep can require eight waves, or 16
+seconds. The next sweep begins five seconds after completion; five seconds is
+not a per-target interval at this capacity. Health status is published after
+each full sweep. To keep an early successful result eligible until the next
+bounded sweep publishes, its freshness window covers two maximum sweeps plus
+the pause and one probe timeout of scheduling slack (39 seconds). A delayed
+runner beyond that bound expires health closed.
 
 An endpoint serves only when its workload reports `HolderAvailable` and its
 active probe passes. Probes run from each serving location. The cell publishes

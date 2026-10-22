@@ -676,6 +676,8 @@ func TestProjectionOmitsClaimNameThatExceedsLabelLimit(t *testing.T) {
 	require.Equal(t, testLocationName, labels[networkingv1alpha.NetworkInterfaceLocationLabel])
 }
 
+// A label whose source has dropped it must leave the copy. A copy is selected
+// by its labels, and a stale one keeps retired capacity a member of a service.
 func TestACopyLosesALabelItsSourceDropped(t *testing.T) {
 	v := newVisibility(t)
 	iface := v.interfaceOnCell()

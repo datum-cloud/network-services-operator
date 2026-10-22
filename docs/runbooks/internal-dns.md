@@ -17,6 +17,12 @@ Before enabling the feature:
 - Allow only trusted network controllers to write NetworkContext specs in
   federation and cell APIs. Their resolver settings configure guest interfaces.
   Consumer roles should manage Networks in the project API instead.
+- Apply the `config/components/networkcontext-dns-admission` policy in every
+  API where the manager writes project NetworkContexts. It refuses any create
+  or update that changes `spec.dns` unless the request comes from a trusted
+  identity. The trusted list names the manager's service account as
+  `config/default` renders it. Replace it with the identity the manager
+  authenticates as to that API, or the manager's own DNS writes are refused.
 - Configure federation access, DNS service destinations, and the Galactic cell
   controllers before enabling the project and cell DNS integrations.
 

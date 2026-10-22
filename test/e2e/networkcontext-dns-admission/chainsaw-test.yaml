@@ -1,0 +1,126 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: networkcontext-dns-admission
+spec:
+  description: |
+    NetworkContext.spec.dns configures resolvers on guest interfaces, so only
+    the operator may write it. The suite runs as a cluster admin, which the
+    admission policy does not exempt.
+  cluster: nso-standard
+  steps:
+    - name: Create a NetworkContext through a binding
+      try:
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Network
+              metadata:
+                name: dns-admission-network
+                namespace: ipam-e2e-alpha
+              spec:
+                ipam:
+                  mode: Auto
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkBinding
+              metadata:
+                name: dns-admission-binding
+                namespace: default
+              spec:
+                network:
+                  name: dns-admission-network
+                  namespace: ipam-e2e-alpha
+                location:
+                  name: test-location
+        - assert:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkContext
+              metadata:
+                name: dns-admission-network-test-location
+                namespace: ipam-e2e-alpha
+
+    - name: Another writer cannot set spec.dns
+      try:
+        - script:
+            content: |
+              set -u
+              patch='{"spec":{"dns":{"contextRef":{"name":"forged"},"accessBindingRef":{"name":"forged"},"nameservers":["2001:db8::53"]}}}'
+              if out=$(kubectl -n ipam-e2e-alpha patch networkcontext dns-admission-network-test-location \
+                  --type merge -p "$patch" 2>&1); then
+                echo "spec.dns write was admitted: $out" >&2
+                exit 1
+              fi
+              if ! echo "$out" | grep -q 'spec.dns is managed by the network services operator'; then
+                echo "write refused for another reason: $out" >&2
+                exit 1
+              fi
+        - script:
+            content: |
+              set -eu
+              dns=$(kubectl -n ipam-e2e-alpha get networkcontext dns-admission-network-test-location \
+                -o jsonpath='{.spec.dns}')
+              if [ -n "$dns" ]; then
+                echo "spec.dns was written: $dns" >&2
+                exit 1
+              fi
+
+    - name: Another writer can still change other fields
+      try:
+        - patch:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkContext
+              metadata:
+                name: dns-admission-network-test-location
+                namespace: ipam-e2e-alpha
+                annotations:
+                  e2e.datumapis.com/dns-admission: unrelated
+
+    - name: Another writer cannot create a NetworkContext with spec.dns
+      try:
+        - script:
+            content: |
+              set -u
+              if out=$(kubectl apply -f - 2>&1 <<'MANIFEST'
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkContext
+              metadata:
+                name: dns-admission-forged
+                namespace: ipam-e2e-alpha
+              spec:
+                network:
+                  name: dns-admission-network
+                location:
+                  name: test-location
+                  namespace: default
+                dns:
+                  contextRef:
+                    name: forged
+                  accessBindingRef:
+                    name: forged
+                  nameservers:
+                    - 2001:db8::53
+              MANIFEST
+              ); then
+                echo "NetworkContext with spec.dns was admitted: $out" >&2
+                kubectl -n ipam-e2e-alpha delete networkcontext dns-admission-forged --wait=false
+                exit 1
+              fi
+              if ! echo "$out" | grep -q 'spec.dns is managed by the network services operator'; then
+                echo "create refused for another reason: $out" >&2
+                exit 1
+              fi
+
+    - name: Remove the network
+      try:
+        - delete:
+            timeout: 1m
+            ref:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Network
+              name: dns-admission-network
+              namespace: ipam-e2e-alpha

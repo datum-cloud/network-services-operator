@@ -12,6 +12,7 @@ components:
   - ../rbac_deployment
   - ../webhook
   - ../components/cell-controllers
+  - ../components/networkcontext-dns-admission
 
 configMapGenerator:
   - name: config

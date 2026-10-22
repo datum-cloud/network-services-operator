@@ -202,7 +202,7 @@ func (r *NetworkBindingReconciler) SetupWithManager(mgr mcmanager.Manager) error
 			&networkingv1alpha.NetworkContext{},
 			func(clusterName multicluster.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
 				return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []mcreconcile.Request {
-					return networkBindingRequestsForContext(ctx, cl.GetClient(), clusterName, obj)
+					return networkBindingRequestsForContext(ctx, cl.GetClient(), clusterName, obj, r.InternalDNSEnabled)
 				})
 			},
 		).
@@ -228,6 +228,7 @@ func networkBindingRequestsForContext(
 	c client.Client,
 	clusterName multicluster.ClusterName,
 	obj client.Object,
+	acrossNamespaces bool,
 ) []mcreconcile.Request {
 	logger := log.FromContext(ctx)
 
@@ -236,8 +237,12 @@ func networkBindingRequestsForContext(
 		return nil
 	}
 
+	var listOpts []client.ListOption
+	if !acrossNamespaces {
+		listOpts = append(listOpts, client.InNamespace(networkContext.Namespace))
+	}
 	var bindings networkingv1alpha.NetworkBindingList
-	if err := c.List(ctx, &bindings); err != nil {
+	if err := c.List(ctx, &bindings, listOpts...); err != nil {
 		logger.Error(err, "failed to list NetworkBindings for NetworkContext watch", "networkContext", networkContext.Name)
 		return nil
 	}

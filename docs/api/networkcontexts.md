@@ -464,6 +464,15 @@ only to this exact context, binding revision, and deadline.
             <i>Validations</i>:<li>isIP(self): serviceDestination must be an IP address</li>
         </td>
         <td>true</td>
+      </tr><tr>
+        <td><b>nameservers</b></td>
+        <td>[]string</td>
+        <td>
+          Nameservers lists the resolver frontends whose paths were verified.<br/>
+          <br/>
+            <i>Validations</i>:<li>self.all(n, isIP(n)): nameservers must contain IP addresses</li>
+        </td>
+        <td>false</td>
       </tr></tbody>
 </table>
 

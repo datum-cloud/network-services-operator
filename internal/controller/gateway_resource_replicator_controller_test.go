@@ -1196,7 +1196,7 @@ func TestNetworkContextReplicationProducesUsableDNSIntent(t *testing.T) {
 	annotations := downstream.GetAnnotations()
 	assert.Equal(t, "us-central1", annotations[InternalDNSRegionAnnotation])
 	assert.Equal(t, "fd70:100::1", annotations[InternalDNSServiceDestinationAnnotation])
-	settings, err := internalDNSSettingsFromAnnotations(annotations, "fd53::53")
+	settings, err := internalDNSSettingsFromAnnotations(annotations, []string{"fd53::53"})
 	assert.NoError(t, err)
 	if settings == nil {
 		t.Fatal("replicated DNS intent did not produce resolver settings")

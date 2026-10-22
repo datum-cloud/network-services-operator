@@ -32,3 +32,67 @@ API independently of the DNS setting.
 Monitor resolver access readiness, route programming conditions, and DNS queries
 from a newly created instance. Existing answers alone do not verify that new
 consumer attachments can reach the resolver.
+
+## Resolvers
+
+Guests receive one nameserver per configured resolver. With a single
+`frontend` and `producerAttachmentSelector`, that is one nameserver, and a
+rollout of the resolver behind it interrupts guest DNS. Configure `resolvers`
+instead to give guests independent resolvers, each served by its own producer
+attachments:
+
+```yaml
+internalDNS:
+  enabled: true
+  resolvers:
+  - frontend: fd53::53
+    producerAttachmentSelector:
+      service.datum.net/internal-dns: "true"
+      internal-dns.datum.net/tier: node
+  - frontend: fd53::54
+    producerAttachmentSelector:
+      service.datum.net/internal-dns: "true"
+      internal-dns.datum.net/tier: node-b
+```
+
+- `resolvers` replaces `frontend` and `producerAttachmentSelector`; setting
+  both is refused at startup. It holds at most three entries, with distinct
+  frontends.
+- Give each attachment labels that only one resolver's selector matches.
+  Startup refuses a selector that is equal to or contained in another, but
+  two different selectors that both match one attachment pass that check.
+  Galactic then rejects the service path whose selector matches two producers
+  on one node.
+- All resolvers share the network's service destination. Each gets its own
+  service endpoint and route policy per protocol.
+- Set the same list on the manager and on every cell. The manager publishes
+  the nameservers; the cells program the paths and report which frontends
+  they verified. The manager publishes a list only once the cell reports
+  that exact set, so upgrade or reconfigure cells before the manager. A
+  context whose cell reports a different set keeps its current nameservers
+  with `DNSReady` `Unknown`.
+- Never replace or reorder the first entry. Every resolver's route objects
+  are named from the first entry, so changing it recreates the routes for
+  all resolvers at once. Startup cannot check this.
+
+To add a second resolver to a running deployment:
+
+1. Deploy the second resolver's producer attachments on every node first, with
+   labels that only its selector matches.
+2. Change the configuration to `resolvers`, keeping the existing frontend and
+   selector as the first entry. The first entry's route objects keep their
+   names, so its live routes are updated in place rather than recreated.
+3. Guests keep the existing nameserver until the cell reports every path
+   programmed, then receive both. Check that `DNSReady` returns to `True` on
+   network contexts and that `status.dns.nameservers` on new interfaces lists
+   both frontends.
+
+Removing a resolver from the list deletes its endpoints and route policies on
+the next reconcile and drops its frontend from the published nameservers.
+The remaining nameservers stay published while the cell catches up.
+Guests that already applied the old list keep it until their provider reapplies
+interface settings.
+
+Interfaces carry every nameserver in `status.dns`. A compute provider that
+configures guests from its own static resolver list, rather than from
+`status.dns`, must list the new frontend as well, or guests never use it.

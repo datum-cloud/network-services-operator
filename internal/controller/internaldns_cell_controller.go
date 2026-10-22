@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/netip"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -28,8 +29,13 @@ import (
 )
 
 const (
-	internalDNSConsumerVPCLabel = "networking.datumapis.com/internal-dns-vpc-uid"
+	internalDNSConsumerVPCLabel  = "networking.datumapis.com/internal-dns-vpc-uid"
+	internalDNSRouteContextLabel = "networking.datumapis.com/internal-dns-context-uid"
 )
+
+var internalDNSServiceProtocols = []networkv1alpha1.NetworkServiceProtocol{
+	networkv1alpha1.NetworkServiceProtocolUDP, networkv1alpha1.NetworkServiceProtocolTCP,
+}
 
 type InternalDNSCellReconciler struct {
 	Config     config.InternalDNSConfig
@@ -63,7 +69,7 @@ func (r *InternalDNSCellReconciler) reconcile(
 	cl client.Client,
 	networkContext *networkingv1alpha.NetworkContext,
 ) (ctrl.Result, error) {
-	settings, err := internalDNSSettingsFromAnnotations(networkContext.Annotations, r.Config.Frontend)
+	settings, err := internalDNSSettingsFromAnnotations(networkContext.Annotations, r.Config.Nameservers())
 	serviceDestination := networkContext.Annotations[InternalDNSServiceDestinationAnnotation]
 	region := networkContext.Annotations[InternalDNSRegionAnnotation]
 	if err != nil || serviceDestination == "" || region == "" ||
@@ -109,16 +115,30 @@ func (r *InternalDNSCellReconciler) reconcile(
 		attachmentPointers = append(attachmentPointers, &attachments.Items[i])
 	}
 
-	for _, protocol := range []networkv1alpha1.NetworkServiceProtocol{
-		networkv1alpha1.NetworkServiceProtocolUDP, networkv1alpha1.NetworkServiceProtocolTCP,
-	} {
-		endpoint, policy, err := r.ensureServicePath(
-			ctx, cl, networkContext, vpc, protocol, serviceDestination, region,
-		)
-		if err != nil {
-			return ctrl.Result{}, err
+	type servicePath struct {
+		endpoint *networkv1alpha1.ServiceEndpoint
+		policy   *networkv1alpha1.ServiceRoutePolicy
+	}
+	var paths []servicePath
+	current := map[string]bool{}
+	for index, resolver := range r.Config.EffectiveResolvers() {
+		for _, protocol := range internalDNSServiceProtocols {
+			endpoint, policy, err := r.ensureServicePath(
+				ctx, cl, networkContext, vpc, index, resolver, protocol, serviceDestination, region,
+			)
+			if err != nil {
+				return ctrl.Result{}, err
+			}
+			paths = append(paths, servicePath{endpoint: endpoint, policy: policy})
+			current[endpoint.Name] = true
 		}
-		_, ready := policyProgrammed(policy, endpoint, attachmentPointers, vpc.Status.VPC, r.now())
+	}
+	if err := r.deleteServicePaths(ctx, cl, networkContext, current); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	for _, path := range paths {
+		_, ready := policyProgrammed(path.policy, path.endpoint, attachmentPointers, vpc.Status.VPC, r.now())
 		if !ready {
 			if err := r.report(ctx, networkContext, nil, metav1.Condition{
 				Type: networkingv1alpha.NetworkContextDNSReady, Status: metav1.ConditionUnknown,
@@ -135,6 +155,7 @@ func (r *InternalDNSCellReconciler) reconcile(
 		ContextRef:         settings.ContextRef,
 		AccessBindingRef:   settings.AccessBindingRef,
 		ServiceDestination: serviceDestination,
+		Nameservers:        r.Config.Nameservers(),
 	}
 	if err := r.report(ctx, networkContext, access, metav1.Condition{
 		Type: networkingv1alpha.NetworkContextDNSReady, Status: metav1.ConditionTrue,
@@ -201,19 +222,22 @@ func (r *InternalDNSCellReconciler) ensureServicePath(
 	cl client.Client,
 	networkContext *networkingv1alpha.NetworkContext,
 	vpc *cloudv1alpha1.VPC,
+	index int,
+	resolver config.InternalDNSResolver,
 	protocol networkv1alpha1.NetworkServiceProtocol,
 	destination string,
 	region string,
 ) (*networkv1alpha1.ServiceEndpoint, *networkv1alpha1.ServiceRoutePolicy, error) {
-	name := boundedDNSName(networkContext.Name+"-dns-"+string(protocol), string(networkContext.UID)+"/"+string(protocol))
+	name := internalDNSServicePathName(networkContext, index, resolver.Frontend, protocol)
 	endpoint := &networkv1alpha1.ServiceEndpoint{ObjectMeta: metav1.ObjectMeta{
 		Namespace: networkContext.Namespace, Name: name,
 	}}
 	_, err := controllerutil.CreateOrUpdate(ctx, cl, endpoint, func() error {
+		labelInternalDNSRoute(endpoint, networkContext)
 		endpoint.Spec = networkv1alpha1.ServiceEndpointSpec{
 			ServiceClass: "internal-dns", Address: destination, Port: 53, Protocol: protocol,
 			Region: region, DeliveryMode: networkv1alpha1.ServiceEndpointDeliveryModePreferNodeLocal,
-			AttachmentSelector: &metav1.LabelSelector{MatchLabels: r.Config.ProducerAttachmentSelector},
+			AttachmentSelector: &metav1.LabelSelector{MatchLabels: resolver.ProducerAttachmentSelector},
 		}
 		return controllerutil.SetControllerReference(networkContext, endpoint, cl.Scheme())
 	})
@@ -225,10 +249,11 @@ func (r *InternalDNSCellReconciler) ensureServicePath(
 		Namespace: networkContext.Namespace, Name: name,
 	}}
 	_, err = controllerutil.CreateOrUpdate(ctx, cl, policy, func() error {
+		labelInternalDNSRoute(policy, networkContext)
 		policy.Spec = networkv1alpha1.ServiceRoutePolicySpec{
 			ServiceRef:     networkv1alpha1.ServiceEndpointReference{Name: endpoint.Name},
 			ConsumerVPCRef: &networkv1alpha1.ServiceRouteVPCReference{Name: vpc.Name, UID: string(vpc.UID)},
-			Frontend:       &networkv1alpha1.ServiceRouteFrontend{Address: r.Config.Frontend},
+			Frontend:       &networkv1alpha1.ServiceRouteFrontend{Address: resolver.Frontend},
 			Authorization:  &networkv1alpha1.ServiceRouteAuthorization{Persistent: true},
 			AttachmentSelector: metav1.LabelSelector{MatchLabels: map[string]string{
 				internalDNSConsumerVPCLabel: string(vpc.UID),
@@ -242,6 +267,73 @@ func (r *InternalDNSCellReconciler) ensureServicePath(
 		return nil, nil, err
 	}
 	return endpoint, policy, nil
+}
+
+func internalDNSServicePathName(
+	networkContext *networkingv1alpha.NetworkContext,
+	index int,
+	frontend string,
+	protocol networkv1alpha1.NetworkServiceProtocol,
+) string {
+	identity := string(networkContext.UID) + "/" + string(protocol)
+	if index > 0 {
+		if address, err := netip.ParseAddr(frontend); err == nil {
+			frontend = address.String()
+		}
+		identity += "/" + frontend
+	}
+	return boundedDNSName(networkContext.Name+"-dns-"+string(protocol), identity)
+}
+
+func labelInternalDNSRoute(obj client.Object, networkContext *networkingv1alpha.NetworkContext) {
+	labels := obj.GetLabels()
+	if labels == nil {
+		labels = map[string]string{}
+	}
+	labels[internalDNSRouteContextLabel] = string(networkContext.UID)
+	obj.SetLabels(labels)
+}
+
+func (r *InternalDNSCellReconciler) deleteServicePaths(
+	ctx context.Context,
+	cl client.Client,
+	networkContext *networkingv1alpha.NetworkContext,
+	keep map[string]bool,
+) error {
+	var errs []error
+	inContext := []client.ListOption{
+		client.InNamespace(networkContext.Namespace),
+		client.MatchingLabels{internalDNSRouteContextLabel: string(networkContext.UID)},
+	}
+	var policies networkv1alpha1.ServiceRoutePolicyList
+	if err := cl.List(ctx, &policies, inContext...); err != nil {
+		errs = append(errs, err)
+	} else {
+		for i := range policies.Items {
+			policy := &policies.Items[i]
+			if keep[policy.Name] || !metav1.IsControlledBy(policy, networkContext) {
+				continue
+			}
+			if err := deleteOwnedDNSRoute(ctx, cl, policy, networkContext); err != nil {
+				errs = append(errs, err)
+			}
+		}
+	}
+	var endpoints networkv1alpha1.ServiceEndpointList
+	if err := cl.List(ctx, &endpoints, inContext...); err != nil {
+		errs = append(errs, err)
+	} else {
+		for i := range endpoints.Items {
+			endpoint := &endpoints.Items[i]
+			if keep[endpoint.Name] || !metav1.IsControlledBy(endpoint, networkContext) {
+				continue
+			}
+			if err := deleteOwnedDNSRoute(ctx, cl, endpoint, networkContext); err != nil {
+				errs = append(errs, err)
+			}
+		}
+	}
+	return errors.Join(errs...)
 }
 
 func policyProgrammed(
@@ -338,8 +430,8 @@ func (r *InternalDNSCellReconciler) cleanup(
 			}
 		}
 	}
-	for _, protocol := range []string{"udp", "tcp"} {
-		name := boundedDNSName(networkContext.Name+"-dns-"+protocol, string(networkContext.UID)+"/"+protocol)
+	for _, protocol := range internalDNSServiceProtocols {
+		name := internalDNSServicePathName(networkContext, 0, "", protocol)
 		policy := &networkv1alpha1.ServiceRoutePolicy{ObjectMeta: metav1.ObjectMeta{
 			Namespace: networkContext.Namespace, Name: name,
 		}}
@@ -352,6 +444,9 @@ func (r *InternalDNSCellReconciler) cleanup(
 		if err := deleteOwnedDNSRoute(ctx, cl, endpoint, networkContext); err != nil {
 			errs = append(errs, err)
 		}
+	}
+	if err := r.deleteServicePaths(ctx, cl, networkContext, nil); err != nil {
+		errs = append(errs, err)
 	}
 	return errors.Join(errs...)
 }

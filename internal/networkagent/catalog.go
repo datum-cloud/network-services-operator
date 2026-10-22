@@ -247,6 +247,15 @@ var networkCatalog = append(addressing(KindNetwork, ScopeNetwork, "this network"
 		Remediation: "Add IPv6 to the network's ipFamilies. Networks created today are IPv6-only.",
 		Skill:       SkillNetworkNotReady,
 	}),
+	entry(KindNetwork, networkingv1alpha.NetworkReady, networkingv1alpha.NetworkReadyReasonTerminating, ReasonInfo{
+		Actionability: ActionabilityTransient,
+		Scope:         ScopeNetwork,
+		Explanation: "The network is being deleted and is waiting to be removed from its locations. " +
+			"The message names each location it is waiting on and why.",
+		Remediation:      remediationWait,
+		Skill:            SkillNetworkDeletionStuck,
+		ExpectedDuration: windowRemoval,
+	}),
 )
 
 var locationCatalog = append(addressing(KindNetworkContext, ScopeLocation, "this network in this location"),

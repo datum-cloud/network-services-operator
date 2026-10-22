@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -96,7 +97,7 @@ func (r *NetworkReconciler) reconcileNetwork(
 			// Don't produce an error in this case and let the watch on network contexts
 			// result in another reconcile schedule.
 			logger.Info("network still has network contexts, waiting until removal")
-			return ctrl.Result{}, nil
+			return ctrl.Result{}, r.reportTerminating(ctx, cl, network)
 		} else {
 			return ctrl.Result{}, fmt.Errorf("failed to finalize: %w", err)
 		}
@@ -134,6 +135,59 @@ func (r *NetworkReconciler) reconcileNetwork(
 	}
 
 	return r.reconcilePrefix(ctx, cl, network)
+}
+
+// reportTerminating says which locations a network being deleted is still
+// waiting on, and why each has not gone yet.
+func (r *NetworkReconciler) reportTerminating(
+	ctx context.Context,
+	cl client.Client,
+	network *networkingv1alpha.Network,
+) error {
+	networkContexts, err := networkContextsOfNetwork(ctx, cl, network)
+	if err != nil {
+		return err
+	}
+
+	if !apimeta.SetStatusCondition(&network.Status.Conditions, metav1.Condition{
+		Type:               networkingv1alpha.NetworkReady,
+		Status:             metav1.ConditionFalse,
+		Reason:             networkingv1alpha.NetworkReadyReasonTerminating,
+		ObservedGeneration: network.Generation,
+		Message:            terminatingMessage(networkContexts),
+	}) {
+		return nil
+	}
+
+	if err := cl.Status().Update(ctx, network); err != nil {
+		return fmt.Errorf("failed updating network status: %w", err)
+	}
+	return nil
+}
+
+func terminatingMessage(networkContexts []networkingv1alpha.NetworkContext) string {
+	waits := make([]string, 0, len(networkContexts))
+	for i := range networkContexts {
+		networkContext := &networkContexts[i]
+		location := networkContext.Spec.Location.Name
+		if location == "" {
+			location = networkContext.Name
+		}
+
+		wait := "waiting on " + location + ": it is being removed"
+		if allocated := apimeta.FindStatusCondition(
+			networkContext.Status.Conditions, networkingv1alpha.NetworkContextIPAMAllocated,
+		); allocated != nil && allocated.Status == metav1.ConditionFalse && allocated.Message != "" {
+			wait = "waiting on " + location + ": " + allocated.Message
+		}
+		waits = append(waits, wait)
+	}
+	slices.Sort(waits)
+
+	if len(waits) == 0 {
+		return "The network is being deleted"
+	}
+	return "The network is being deleted and is " + strings.Join(waits, "; ")
 }
 
 // reportIPv6Required refuses to call a network ready that nothing can run on.

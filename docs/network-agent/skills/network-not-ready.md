@@ -34,9 +34,12 @@ space. None is fixable by the customer. Say it is Datum's, quote the reason and
 the message, and stop. Do not suggest deleting and recreating the network: it
 will hit the same thing and may lose the name.
 
-## `RangeOccupied`
+## `Terminating` and `RangeOccupied`
 
-Only seen while a network is being deleted. Load `network-deletion-stuck`.
+Only seen while a network is being deleted. `Terminating` means it is waiting
+on its locations, and the message names each one and why it has not gone.
+`RangeOccupied` means the locations are gone and the network's own range is
+still in use. Load `network-deletion-stuck` for either.
 
 ## Ready, but workloads still cannot use it
 

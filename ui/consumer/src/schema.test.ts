@@ -121,6 +121,7 @@ describe('readyReasonToLabel', () => {
     expect(readyReasonToLabel('ProjectUnresolved')).toBe('Project could not be resolved');
     expect(readyReasonToLabel('RangeOccupied')).toBe('Address range still in use');
     expect(readyReasonToLabel('RangeUnsupported')).toBe('Address range not supported');
+    expect(readyReasonToLabel('Terminating')).toBe('Deleting');
   });
 
   it('falls back to the raw reason for an unmapped value', () => {

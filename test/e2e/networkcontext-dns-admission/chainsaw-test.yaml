@@ -68,6 +68,18 @@ spec:
                 exit 1
               fi
 
+    - name: The operator identity can set and clear spec.dns
+      try:
+        - script:
+            content: |
+              set -eu
+              operator=system:serviceaccount:network-services-operator-system:network-services-operator-controller-manager
+              patch='{"spec":{"dns":{"contextRef":{"name":"trusted"},"accessBindingRef":{"name":"trusted"},"nameservers":["2001:db8::53"]}}}'
+              kubectl --as="$operator" -n ipam-e2e-alpha patch networkcontext dns-admission-network-test-location \
+                --type merge -p "$patch"
+              kubectl --as="$operator" -n ipam-e2e-alpha patch networkcontext dns-admission-network-test-location \
+                --type merge -p '{"spec":{"dns":null}}'
+
     - name: Another writer can still change other fields
       try:
         - patch:

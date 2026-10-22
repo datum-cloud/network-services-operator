@@ -23,6 +23,8 @@ Before enabling the feature:
   identity. The trusted list names the manager's service account as
   `config/default` renders it. Replace it with the identity the manager
   authenticates as to that API, or the manager's own DNS writes are refused.
+  The policy trusts that username, so anyone allowed to impersonate it can
+  also write `spec.dns`.
 - Configure federation access, DNS service destinations, and the Galactic cell
   controllers before enabling the project and cell DNS integrations.
 

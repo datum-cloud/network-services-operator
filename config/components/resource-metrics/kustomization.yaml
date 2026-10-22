@@ -1,0 +1,14 @@
+# Exports the state of this service's resources from every project through
+# Milo's resource-metrics service.
+#
+# Applied to the Milo control plane alongside ../service-catalog, and optional:
+# a ResourceMetricsPolicy only means something where the resource-metrics CRD
+# and controller run, so an overlay opts in by adding this component.
+#
+# config/resource-metrics is the older ConfigMap form read by the core control
+# plane's exporter, which cannot see project-scoped resources.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+resources:
+  - networking-metrics.yaml

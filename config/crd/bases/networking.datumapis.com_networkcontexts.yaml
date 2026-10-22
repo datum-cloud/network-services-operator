@@ -246,6 +246,16 @@ spec:
                     required:
                     - name
                     type: object
+                  nameservers:
+                    description: Nameservers lists the resolver frontends whose paths
+                      were verified.
+                    items:
+                      type: string
+                    maxItems: 3
+                    type: array
+                    x-kubernetes-validations:
+                    - message: nameservers must contain IP addresses
+                      rule: self.all(n, isIP(n))
                   serviceDestination:
                     description: ServiceDestination identifies this DNS context inside
                       the shared service.

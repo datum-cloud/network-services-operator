@@ -49,7 +49,7 @@ Users need stable names for resources whose addresses and health change. Attachi
 
 ## Proposal
 
-Network services provision one DNS context per enabled VPC and regional access wherever the network is used. The context selects the VPC's private zones. Workloads receive the well-known resolver address `fd53::53` through their network interfaces.
+Network services provision one DNS context per enabled VPC and regional access wherever the network is used. The context selects the VPC's private zones. Workloads receive the well-known resolver address `fd53::53` through their network interfaces. A deployment may configure up to three independent resolver addresses, such as `fd53::53` and `fd53::54`, each served by its own resolver instances, so that a resolver rollout does not interrupt guest DNS.
 
 Network services selects `datum.internal` as the default domain and requests a managed namespace from DNS. DNS allocates a separate zone for each context. Product services publish records in the allocated zone. Users can associate additional private zones and naming policies through the DNS API. Shared regional fleets serve many VPCs without per-VPC deployments.
 
@@ -268,7 +268,7 @@ The `NetworkContext` lives in the consumer project, and the cell trusts its repl
 
 The initial guest contract supports one managed DNS context. Interfaces on the same VPC receive identical settings. A guest whose interfaces span more than one managed VPC is unsupported: the provider reports `DNSConfigured=False` with `UnsupportedMultipleContexts` rather than merge resolver settings, and the guest receives no managed resolver until the combination is resolved.
 
-If the regional DNS fleet is unavailable, guests behind `fd53::53` get no answers for any name, private or public, until it recovers. Network services does not configure a second resolver or redirect queries to a public resolver, because that would leak private names and return wrong answers for private zones. Applied Galactic paths and interface settings stay in place through the outage, so resolution resumes without reconfiguring guests. Multi-NIC guests are affected the same way, since they have at most one managed resolver. There is no cross-region failover in the initial design.
+If the regional DNS fleet is unavailable, guests behind `fd53::53` get no answers for any name, private or public, until it recovers. Network services does not redirect queries to a public resolver, because that would leak private names and return wrong answers for private zones. Applied Galactic paths and interface settings stay in place through the outage, so resolution resumes without reconfiguring guests. Multi-NIC guests are affected the same way. Independent resolver addresses protect against the loss of one resolver instance, not against the loss of the regional fleet behind them. There is no cross-region failover in the initial design.
 
 ### Publication and lifecycle
 

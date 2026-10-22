@@ -164,17 +164,44 @@ type InternalDNSConfig struct {
 	Enabled bool `json:"enabled,omitempty"`
 
 	// Frontend is the resolver address presented inside every consumer VPC.
+	// It configures a single resolver and is mutually exclusive with
+	// Resolvers.
 	Frontend string `json:"frontend,omitempty"`
 
 	// ServicePrefix allocates a stable service-side destination per DNS context.
 	ServicePrefix string `json:"servicePrefix,omitempty"`
 
-	// ProducerAttachmentSelector selects shared DNS service attachments.
+	// ProducerAttachmentSelector selects shared DNS service attachments for the
+	// single resolver Frontend configures. Mutually exclusive with Resolvers.
 	ProducerAttachmentSelector map[string]string `json:"producerAttachmentSelector,omitempty"`
+
+	// Resolvers lists independent resolvers presented inside every consumer
+	// VPC, in the order guests receive them as nameservers. Each resolver is
+	// served by its own producer attachments, so a rollout of one leaves the
+	// others answering. Keep an existing resolver first when adding another:
+	// the first resolver's route objects keep the names a single resolver
+	// uses. At most three.
+	Resolvers []InternalDNSResolver `json:"resolvers,omitempty"`
 }
 
+// +k8s:deepcopy-gen=true
+
+// InternalDNSResolver is one resolver frontend and the producer attachments
+// that serve it.
+type InternalDNSResolver struct {
+	// Frontend is the resolver address presented inside every consumer VPC.
+	Frontend string `json:"frontend"`
+
+	// ProducerAttachmentSelector selects the shared DNS service attachments
+	// that serve this frontend. It must not select the attachments of another
+	// resolver.
+	ProducerAttachmentSelector map[string]string `json:"producerAttachmentSelector"`
+}
+
+const maxInternalDNSResolvers = 3
+
 func SetDefaults_InternalDNSConfig(obj *InternalDNSConfig) {
-	if obj.Frontend == "" {
+	if obj.Frontend == "" && len(obj.Resolvers) == 0 {
 		obj.Frontend = "fd53::53"
 	}
 	if obj.ServicePrefix == "" {
@@ -183,22 +210,76 @@ func SetDefaults_InternalDNSConfig(obj *InternalDNSConfig) {
 
 }
 
+// EffectiveResolvers returns the configured resolvers in nameserver order. The
+// single Frontend and ProducerAttachmentSelector form a one-resolver list.
+func (c *InternalDNSConfig) EffectiveResolvers() []InternalDNSResolver {
+	if len(c.Resolvers) > 0 {
+		return c.Resolvers
+	}
+	return []InternalDNSResolver{{Frontend: c.Frontend, ProducerAttachmentSelector: c.ProducerAttachmentSelector}}
+}
+
+// Nameservers returns every resolver frontend in configuration order.
+func (c *InternalDNSConfig) Nameservers() []string {
+	resolvers := c.EffectiveResolvers()
+	nameservers := make([]string, 0, len(resolvers))
+	for _, resolver := range resolvers {
+		nameservers = append(nameservers, resolver.Frontend)
+	}
+	return nameservers
+}
+
 func (c *InternalDNSConfig) validate() error {
 	if !c.Enabled {
 		return nil
-	}
-	frontend, err := netip.ParseAddr(c.Frontend)
-	if err != nil || !frontend.Is6() {
-		return fmt.Errorf("frontend must be an IPv6 address, got %q", c.Frontend)
 	}
 	prefix, err := netip.ParsePrefix(c.ServicePrefix)
 	if err != nil || !prefix.Addr().Is6() || prefix.Bits() > 64 {
 		return fmt.Errorf("servicePrefix must be an IPv6 prefix of /64 or larger, got %q", c.ServicePrefix)
 	}
-	if len(c.ProducerAttachmentSelector) == 0 {
-		return errors.New("producerAttachmentSelector is required")
+	if len(c.Resolvers) > 0 && (c.Frontend != "" || len(c.ProducerAttachmentSelector) > 0) {
+		return errors.New("resolvers is mutually exclusive with frontend and producerAttachmentSelector")
+	}
+	if len(c.Resolvers) > maxInternalDNSResolvers {
+		return fmt.Errorf("resolvers allows at most %d entries, got %d", maxInternalDNSResolvers, len(c.Resolvers))
+	}
+	resolvers := c.EffectiveResolvers()
+	frontends := map[netip.Addr]bool{}
+	for i, resolver := range resolvers {
+		field := "frontend"
+		selectorField := "producerAttachmentSelector"
+		if len(c.Resolvers) > 0 {
+			field = fmt.Sprintf("resolvers[%d].frontend", i)
+			selectorField = fmt.Sprintf("resolvers[%d].producerAttachmentSelector", i)
+		}
+		frontend, err := netip.ParseAddr(resolver.Frontend)
+		if err != nil || !frontend.Is6() || frontend.Zone() != "" {
+			return fmt.Errorf("%s must be an IPv6 address, got %q", field, resolver.Frontend)
+		}
+		if frontends[frontend] {
+			return fmt.Errorf("%s repeats frontend %s", field, frontend)
+		}
+		frontends[frontend] = true
+		if len(resolver.ProducerAttachmentSelector) == 0 {
+			return fmt.Errorf("%s is required", selectorField)
+		}
+		for j := range i {
+			if selectorContains(resolver.ProducerAttachmentSelector, resolvers[j].ProducerAttachmentSelector) ||
+				selectorContains(resolvers[j].ProducerAttachmentSelector, resolver.ProducerAttachmentSelector) {
+				return fmt.Errorf("%s overlaps resolvers[%d].producerAttachmentSelector: one matches every attachment the other does", selectorField, j)
+			}
+		}
 	}
 	return nil
+}
+
+func selectorContains(broader, narrower map[string]string) bool {
+	for key, value := range broader {
+		if other, ok := narrower[key]; !ok || other != value {
+			return false
+		}
+	}
+	return true
 }
 
 // +k8s:deepcopy-gen=true

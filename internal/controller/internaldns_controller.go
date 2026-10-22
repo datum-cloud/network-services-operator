@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"slices"
 	"strings"
 	"time"
 
@@ -516,7 +517,7 @@ func (r *InternalDNSReadinessReconciler) publish(
 	projectContext *networkingv1alpha.NetworkContext,
 	hubContext *networkingv1alpha.NetworkContext,
 ) (ctrl.Result, error) {
-	intent, err := internalDNSSettingsFromAnnotations(projectContext.Annotations, r.Config.Frontend)
+	intent, err := internalDNSSettingsFromAnnotations(projectContext.Annotations, r.Config.Nameservers())
 	if err != nil {
 		return ctrl.Result{}, r.updateProject(ctx, cl, projectContext, nil, metav1.Condition{
 			Type: networkingv1alpha.NetworkContextDNSReady, Status: metav1.ConditionFalse,
@@ -527,11 +528,7 @@ func (r *InternalDNSReadinessReconciler) publish(
 	access := hubContext.Status.DNSAccess
 	ready := apimeta.IsStatusConditionTrue(hubContext.Status.Conditions, networkingv1alpha.NetworkContextDNSReady)
 	if !ready || !dnsAccessMatches(intent, access) || access == nil || access.ServiceDestination != projectContext.Annotations[InternalDNSServiceDestinationAnnotation] {
-		settings := projectContext.Spec.DNS
-		if !equalDNSSettings(settings, intent) {
-			settings = nil
-		}
-		err := r.updateProject(ctx, cl, projectContext, settings, metav1.Condition{
+		err := r.updateProject(ctx, cl, projectContext, retainedDNSSettings(projectContext.Spec.DNS, intent), metav1.Condition{
 			Type: networkingv1alpha.NetworkContextDNSReady, Status: metav1.ConditionUnknown,
 			Reason:  networkingv1alpha.NetworkContextDNSReadyReasonNetworkPathNotReady,
 			Message: "Current network programming health is unavailable",
@@ -583,7 +580,7 @@ func (r *InternalDNSReadinessReconciler) SetupWithManager(mgr manager.Manager) e
 
 func internalDNSSettingsFromAnnotations(
 	annotations map[string]string,
-	frontend string,
+	nameservers []string,
 ) (*networkingv1alpha.NetworkDNSSettings, error) {
 	contextName := annotations[InternalDNSContextNameAnnotation]
 	accessName := annotations[InternalDNSAccessNameAnnotation]
@@ -593,7 +590,7 @@ func internalDNSSettingsFromAnnotations(
 	settings := &networkingv1alpha.NetworkDNSSettings{
 		ContextRef:       networkingv1alpha.NetworkDNSObjectReference{Name: contextName},
 		AccessBindingRef: networkingv1alpha.NetworkDNSObjectReference{Name: accessName},
-		Nameservers:      []string{frontend},
+		Nameservers:      slices.Clone(nameservers),
 	}
 	if suffix := annotations[InternalDNSSuffixAnnotation]; suffix != "" {
 		settings.Searches = []string{suffix}
@@ -604,7 +601,20 @@ func internalDNSSettingsFromAnnotations(
 func dnsAccessMatches(settings *networkingv1alpha.NetworkDNSSettings, access *networkingv1alpha.NetworkDNSAccessStatus) bool {
 	return settings != nil && access != nil &&
 		settings.ContextRef == access.ContextRef &&
-		settings.AccessBindingRef == access.AccessBindingRef
+		settings.AccessBindingRef == access.AccessBindingRef &&
+		sameNameserverSet(settings.Nameservers, access.Nameservers)
+}
+
+func sameNameserverSet(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for _, nameserver := range a {
+		if !slices.Contains(b, nameserver) {
+			return false
+		}
+	}
+	return true
 }
 
 func equalDNSSettings(a, b *networkingv1alpha.NetworkDNSSettings) bool {
@@ -614,6 +624,26 @@ func equalDNSSettings(a, b *networkingv1alpha.NetworkDNSSettings) bool {
 	return a.ContextRef == b.ContextRef && a.AccessBindingRef == b.AccessBindingRef &&
 		strings.Join(a.Nameservers, "\x00") == strings.Join(b.Nameservers, "\x00") &&
 		strings.Join(a.Searches, "\x00") == strings.Join(b.Searches, "\x00")
+}
+
+func retainedDNSSettings(applied, intent *networkingv1alpha.NetworkDNSSettings) *networkingv1alpha.NetworkDNSSettings {
+	if applied == nil || intent == nil ||
+		applied.ContextRef != intent.ContextRef || applied.AccessBindingRef != intent.AccessBindingRef ||
+		!slices.Equal(applied.Searches, intent.Searches) {
+		return nil
+	}
+	var nameservers []string
+	for _, nameserver := range applied.Nameservers {
+		if slices.Contains(intent.Nameservers, nameserver) {
+			nameservers = append(nameservers, nameserver)
+		}
+	}
+	if len(nameservers) == 0 {
+		return nil
+	}
+	retained := applied.DeepCopy()
+	retained.Nameservers = nameservers
+	return retained
 }
 
 func internalDNSDestination(prefixText string, uid types.UID) (string, error) {

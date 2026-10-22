@@ -155,6 +155,7 @@ func (r *InternalDNSCellReconciler) reconcile(
 		ContextRef:         settings.ContextRef,
 		AccessBindingRef:   settings.AccessBindingRef,
 		ServiceDestination: serviceDestination,
+		Nameservers:        r.Config.Nameservers(),
 	}
 	if err := r.report(ctx, networkContext, access, metav1.Condition{
 		Type: networkingv1alpha.NetworkContextDNSReady, Status: metav1.ConditionTrue,

@@ -74,6 +74,13 @@ type NetworkDNSAccessStatus struct {
 	//
 	// +kubebuilder:validation:XValidation:rule="isIP(self)",message="serviceDestination must be an IP address"
 	ServiceDestination string `json:"serviceDestination"`
+
+	// Nameservers lists the resolver frontends whose paths were verified.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MaxItems=3
+	// +kubebuilder:validation:XValidation:rule="self.all(n, isIP(n))",message="nameservers must contain IP addresses"
+	Nameservers []string `json:"nameservers,omitempty"`
 }
 
 const (

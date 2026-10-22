@@ -227,6 +227,7 @@ func TestInternalDNSReadinessPreservesAppliedSettings(t *testing.T) {
 		ContextRef:         networkingv1alpha.NetworkDNSObjectReference{Name: "resolver"},
 		AccessBindingRef:   networkingv1alpha.NetworkDNSObjectReference{Name: "access"},
 		ServiceDestination: projectContext.Annotations[InternalDNSServiceDestinationAnnotation],
+		Nameservers:        []string{"fd53::53"},
 	}
 	hubContext.Status.Conditions = []metav1.Condition{{
 		Type: networkingv1alpha.NetworkContextDNSReady, Status: metav1.ConditionTrue,
@@ -456,6 +457,7 @@ func TestInternalDNSReadinessPublishesEveryResolver(t *testing.T) {
 		ContextRef:         networkingv1alpha.NetworkDNSObjectReference{Name: "resolver"},
 		AccessBindingRef:   networkingv1alpha.NetworkDNSObjectReference{Name: "access"},
 		ServiceDestination: projectContext.Annotations[InternalDNSServiceDestinationAnnotation],
+		Nameservers:        []string{"fd53::53"},
 	}
 	hubContext.Status.Conditions = []metav1.Condition{{
 		Type: networkingv1alpha.NetworkContextDNSReady, Status: metav1.ConditionUnknown,
@@ -490,11 +492,21 @@ func TestInternalDNSReadinessPublishesEveryResolver(t *testing.T) {
 
 	hubContext.Status.Conditions[0].Status = metav1.ConditionTrue
 	hubContext.Status.Conditions[0].Reason = networkingv1alpha.NetworkContextDNSReadyReasonReady
+	if got := publish(); !slices.Equal(got, []string{"fd53::53"}) {
+		t.Fatalf("a ready cell that verified only the old resolver let the new one publish: %v", got)
+	}
+
+	hubContext.Status.DNSAccess.Nameservers = []string{"fd53::54", "fd53::53"}
 	if got := publish(); !slices.Equal(got, []string{"fd53::53", "fd53::54"}) {
 		t.Fatalf("nameservers = %v, want every resolver in configuration order", got)
 	}
 
 	hubContext.Status.Conditions[0].Status = metav1.ConditionUnknown
+	r.Config = config.InternalDNSConfig{Frontend: "fd53::53", ProducerAttachmentSelector: map[string]string{"tier": "node"}}
+	if got := publish(); !slices.Equal(got, []string{"fd53::53"}) {
+		t.Fatalf("removing a resolver while the cell is not ready = %v, want the remaining resolver kept", got)
+	}
+
 	r.Config = config.InternalDNSConfig{Frontend: "fd53::55", ProducerAttachmentSelector: map[string]string{"tier": "node"}}
 	if got := publish(); got != nil {
 		t.Fatalf("settings naming a resolver that is no longer configured were retained: %v", got)

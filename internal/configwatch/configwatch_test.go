@@ -109,9 +109,9 @@ func TestChangedConfigStops(t *testing.T) {
 
 func TestChangeBeforeWatchStartsStops(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
-	writeFile(t, path, "a: 2\n")
+	writeFile(t, path, "a: 1\n")
 
-	_, done := startWatcher(t, path, "a: 1\n")
+	_, done := startWatcher(t, path, "a: 2\n")
 	expectResult(t, done, ErrChanged)
 }
 

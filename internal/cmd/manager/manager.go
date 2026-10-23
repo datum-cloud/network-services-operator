@@ -603,7 +603,7 @@ func webhookRegistrations(mgr mcmanager.Manager, serverConfig config.NetworkServ
 			return networkingv1alphawebhooks.SetupDomainWebhookWithManager(mgr)
 		}},
 		{"Network", true, func() error {
-			return networkingv1alphawebhooks.SetupNetworkWebhookWithManager(mgr)
+			return networkingv1alphawebhooks.SetupNetworkWebhookWithManager(mgr, serverConfig.NetworkEgress)
 		}},
 		{"BackendTrafficPolicy", true, func() error {
 			return webhookgatewayv1alpha1.SetupBackendTrafficPolicyWebhookWithManager(mgr, serverConfig)

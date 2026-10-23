@@ -117,6 +117,45 @@ type NetworkServicesOperator struct {
 	// InternalDNS configures managed resolver access. It is disabled unless
 	// explicitly enabled.
 	InternalDNS InternalDNSConfig `json:"internalDNS,omitempty"`
+
+	// NetworkEgress configures the platform defaults for what networks reach
+	// outside the platform.
+	NetworkEgress NetworkEgressConfig `json:"networkEgress,omitempty"`
+}
+
+// +k8s:deepcopy-gen=true
+
+// NetworkEgressConfig holds the platform defaults for network egress.
+type NetworkEgressConfig struct {
+	// DefaultInternetMode is the internet access mode written into a Network
+	// created without one, and into any existing Network that has none yet.
+	// It is read when a network is stamped, so changing it affects only
+	// networks stamped afterwards; a network keeps the mode it was given.
+	//
+	// It is also the mode enforced for a network that has not been stamped
+	// yet, and any update to such a network stamps it. Keep it Enabled until
+	// the network controller has stamped every existing network; switching it
+	// to Disabled earlier cuts those networks off the internet.
+	//
+	// Defaults to Enabled.
+	DefaultInternetMode networkingv1alpha.NetworkInternetEgressMode `json:"defaultInternetMode,omitempty"`
+}
+
+func SetDefaults_NetworkEgressConfig(obj *NetworkEgressConfig) {
+	if obj.DefaultInternetMode == "" {
+		obj.DefaultInternetMode = networkingv1alpha.NetworkInternetEgressEnabled
+	}
+}
+
+func (c *NetworkEgressConfig) validate() error {
+	switch c.DefaultInternetMode {
+	case "", networkingv1alpha.NetworkInternetEgressEnabled, networkingv1alpha.NetworkInternetEgressDisabled:
+		return nil
+	default:
+		return fmt.Errorf("defaultInternetMode must be %s or %s, got %q",
+			networkingv1alpha.NetworkInternetEgressEnabled, networkingv1alpha.NetworkInternetEgressDisabled,
+			c.DefaultInternetMode)
+	}
 }
 
 // +k8s:deepcopy-gen=true
@@ -1800,6 +1839,9 @@ func (c *NetworkServicesOperator) Validate() error {
 	}
 	if err := c.InternalDNS.validate(); err != nil {
 		return fmt.Errorf("internalDNS: %w", err)
+	}
+	if err := c.NetworkEgress.validate(); err != nil {
+		return fmt.Errorf("networkEgress: %w", err)
 	}
 	return nil
 }

@@ -40,6 +40,10 @@ func TestNetworkLoadBalancerRouteCapabilityValidation(t *testing.T) {
 		NetworkService: networkingv1alpha.NetworkLoadBalancerNetworkServiceRef{Name: "game", Port: "game"},
 	}}
 	require.NoError(t, validateNetworkLoadBalancerRouteCapabilities(route))
+	interval := int32(5)
+	route.Spec.Backends[0].HealthCheck = &networkingv1alpha.NetworkLoadBalancerHealthCheck{Protocol: "TCP", IntervalSeconds: &interval}
+	require.ErrorContains(t, validateNetworkLoadBalancerRouteCapabilities(route), "custom health timing")
+	route.Spec.Backends[0].HealthCheck = nil
 	route.Spec.Backends = append(route.Spec.Backends, route.Spec.Backends[0])
 	require.ErrorContains(t, validateNetworkLoadBalancerRouteCapabilities(route), "multiple backends")
 	route.Spec.Backends = route.Spec.Backends[:1]

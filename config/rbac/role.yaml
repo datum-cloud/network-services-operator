@@ -362,6 +362,7 @@ rules:
   - networkcontexts/status
   - networkinterfaceclaims/status
   - networkinterfaces/status
+  - networkloadbalancerroutes/status
   - networkloadbalancers/status
   - networkpolicies/status
   - networks/status
@@ -377,6 +378,7 @@ rules:
   - networking.datumapis.com
   resources:
   - connectorclasses
+  - networkloadbalancerroutes
   - networkservices
   verbs:
   - get

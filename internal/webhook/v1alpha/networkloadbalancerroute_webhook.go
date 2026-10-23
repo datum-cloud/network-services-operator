@@ -71,6 +71,11 @@ func validateNetworkLoadBalancerRouteCapabilities(route *networkingv1alpha.Netwo
 	}
 	for i, backend := range route.Spec.Backends {
 		path := field.NewPath("spec", "backends").Index(i)
+		if check := backend.HealthCheck; check != nil && (check.IntervalSeconds != nil || check.TimeoutSeconds != nil ||
+			check.HealthyThreshold != nil || check.UnhealthyThreshold != nil) {
+			errs = append(errs, field.Forbidden(path.Child("healthCheck"),
+				"UnsupportedCapability: custom health timing and thresholds are not supported by serving cells"))
+		}
 		if backend.Transport != nil {
 			errs = append(errs, field.Forbidden(path.Child("transport"),
 				"UnsupportedCapability: backend TLS transport requires a proxy-capable edge path"))

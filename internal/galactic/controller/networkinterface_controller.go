@@ -20,6 +20,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -92,6 +93,12 @@ type NetworkInterfaceReconciler struct {
 	// exist yet, so a cell states what it is rather than defaulting. It covers
 	// every interface that states no mode of its own.
 	AttachmentMode cloudv1alpha1.VPCAttachmentInterfaceMode
+
+	// LabeledNamespaces are the namespaces whose interfaces carry their consumer
+	// labels onto their attachments. Attachments elsewhere keep whatever labels
+	// they have, so a tenant's claim labels never reach a selector that picks
+	// platform producers.
+	LabeledNamespaces []string
 }
 
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkinterfaces,verbs=get;list;watch
@@ -170,7 +177,9 @@ func (r *NetworkInterfaceReconciler) reconcileAttachment(
 		ObjectMeta: metav1.ObjectMeta{Name: networkInterface.Name, Namespace: networkInterface.Namespace},
 	}
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, attachment, func() error {
-		attachment.Labels = withConsumerLabels(attachment.Labels, networkInterface.Labels)
+		if slices.Contains(r.LabeledNamespaces, networkInterface.Namespace) {
+			attachment.Labels = withConsumerLabels(attachment.Labels, networkInterface.Labels)
+		}
 		attachment.Spec.VPC = cloudv1alpha1.VPCRef{Name: vpc.Name}
 		attachment.Spec.InterfaceRef = &cloudv1alpha1.NetworkInterfaceRef{Name: networkInterface.Name}
 		attachment.Spec.Interface.Name = networkInterface.Spec.InterfaceName

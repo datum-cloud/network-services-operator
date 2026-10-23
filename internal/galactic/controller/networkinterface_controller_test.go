@@ -85,7 +85,7 @@ func TestReconcileAttachmentSyncsConsumerLabels(t *testing.T) {
 		},
 	}}
 	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(existing).Build()
-	r := &NetworkInterfaceReconciler{Client: cl, APIReader: cl, Scheme: scheme}
+	r := &NetworkInterfaceReconciler{Client: cl, APIReader: cl, Scheme: scheme, LabeledNamespaces: []string{"tenant"}}
 	iface := &networkingv1alpha.NetworkInterface{ObjectMeta: metav1.ObjectMeta{
 		Name: "nic", Namespace: "tenant", UID: types.UID("iface"),
 		Labels: map[string]string{
@@ -124,7 +124,7 @@ func TestReconcileAttachmentCreatesWithConsumerLabels(t *testing.T) {
 		t.Fatal(err)
 	}
 	cl := fake.NewClientBuilder().WithScheme(scheme).Build()
-	r := &NetworkInterfaceReconciler{Client: cl, APIReader: cl, Scheme: scheme}
+	r := &NetworkInterfaceReconciler{Client: cl, APIReader: cl, Scheme: scheme, LabeledNamespaces: []string{"tenant"}}
 	iface := &networkingv1alpha.NetworkInterface{ObjectMeta: metav1.ObjectMeta{
 		Name: "nic", Namespace: "tenant", UID: types.UID("iface"),
 		Labels: map[string]string{"compute.datumapis.com/tier": "node"},
@@ -136,6 +136,35 @@ func TestReconcileAttachmentCreatesWithConsumerLabels(t *testing.T) {
 	}
 	if got.Labels["compute.datumapis.com/tier"] != "node" || len(got.Labels) != 1 {
 		t.Fatalf("labels = %v", got.Labels)
+	}
+}
+
+func TestReconcileAttachmentLeavesLabelsOutsideLabeledNamespaces(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := cloudv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := networkingv1alpha.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	existing := &cloudv1alpha1.VPCAttachment{ObjectMeta: metav1.ObjectMeta{
+		Name: "nic", Namespace: "tenant",
+		Labels: map[string]string{"compute.datumapis.com/tier": "node"},
+	}}
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(existing).Build()
+	r := &NetworkInterfaceReconciler{Client: cl, APIReader: cl, Scheme: scheme, LabeledNamespaces: []string{"internal-dns"}}
+	iface := &networkingv1alpha.NetworkInterface{ObjectMeta: metav1.ObjectMeta{
+		Name: "nic", Namespace: "tenant", UID: types.UID("iface"),
+		Labels: map[string]string{"compute.datumapis.com/internal-dns-tier": "node-b"},
+	}}
+	vpc := &cloudv1alpha1.VPC{ObjectMeta: metav1.ObjectMeta{Name: "vpc", Namespace: "tenant"}}
+	got, err := r.reconcileAttachment(context.Background(), iface, vpc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{"compute.datumapis.com/tier": "node"}
+	if !maps.Equal(got.Labels, want) {
+		t.Fatalf("labels = %v, want %v", got.Labels, want)
 	}
 }
 

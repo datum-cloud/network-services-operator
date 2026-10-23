@@ -67,9 +67,18 @@ type CellControllerManager struct {
 	Galactic GalacticCellConfig `json:"galactic,omitempty"`
 }
 
+// +k8s:deepcopy-gen=true
+
 type GalacticCellConfig struct {
 	Enabled        bool   `json:"enabled,omitempty"`
 	AttachmentMode string `json:"attachmentMode,omitempty"`
+
+	// AttachmentLabelNamespaces lists the namespaces whose interfaces carry
+	// their compute.datumapis.com/ labels onto their VPC attachments. Tenants
+	// can write those labels on their own claims, and attachment labels select
+	// platform producers such as internal DNS resolvers, so only platform
+	// namespaces belong here.
+	AttachmentLabelNamespaces []string `json:"attachmentLabelNamespaces,omitempty"`
 }
 
 // Validate reports whether the cell configuration can serve a cell.

@@ -343,6 +343,7 @@ rules:
   - networkcontexts/finalizers
   - networkinterfaceclaims/finalizers
   - networkinterfaces/finalizers
+  - networkloadbalancers/finalizers
   - networkpolicies/finalizers
   - networks/finalizers
   - subnetclaims/finalizers
@@ -361,6 +362,7 @@ rules:
   - networkcontexts/status
   - networkinterfaceclaims/status
   - networkinterfaces/status
+  - networkloadbalancers/status
   - networkpolicies/status
   - networks/status
   - networkservices/status
@@ -379,4 +381,14 @@ rules:
   verbs:
   - get
   - list
+  - watch
+- apiGroups:
+  - networking.datumapis.com
+  resources:
+  - networkloadbalancers
+  verbs:
+  - get
+  - list
+  - patch
+  - update
   - watch

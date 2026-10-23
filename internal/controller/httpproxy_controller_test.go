@@ -3826,6 +3826,30 @@ func TestHTTPProxyCollectDesiredResourcesNetworkService(t *testing.T) {
 		require.ErrorAs(t, err, &notFound)
 		assert.Contains(t, notFound.Error(), `has no port named "grpc"`)
 	})
+
+	t.Run("UDP port cannot serve HTTPProxy traffic", func(t *testing.T) {
+		httpProxy := newNetworkServiceProxy()
+		service := newNetworkService()
+		service.Spec.Ports[0].Protocol = networkingv1alpha.NetworkServiceProtocolUDP
+
+		cl := fake.NewClientBuilder().WithScheme(testScheme).WithObjects(service).Build()
+		_, err := reconciler.collectDesiredResources(context.Background(), cl, httpProxy)
+		require.Error(t, err)
+
+		var unsupported *errNetworkServiceBackendUnsupportedProtocol
+		require.ErrorAs(t, err, &unsupported)
+		assert.Contains(t, unsupported.Error(), `port "http" uses UDP; HTTPProxy backends require TCP`)
+	})
+
+	t.Run("default TCP port serves HTTPProxy traffic", func(t *testing.T) {
+		httpProxy := newNetworkServiceProxy()
+		service := newNetworkService()
+		service.Spec.Ports[0].Protocol = ""
+
+		cl := fake.NewClientBuilder().WithScheme(testScheme).WithObjects(service).Build()
+		_, err := reconciler.collectDesiredResources(context.Background(), cl, httpProxy)
+		require.NoError(t, err)
+	})
 }
 
 // TestHTTPProxyReconcileNetworkServiceBackendNotFound verifies that a
@@ -3882,6 +3906,56 @@ func TestHTTPProxyReconcileNetworkServiceBackendNotFound(t *testing.T) {
 	require.NotNil(t, programmed)
 	assert.Equal(t, metav1.ConditionFalse, programmed.Status)
 	assert.Equal(t, networkingv1alpha.HTTPProxyReasonNetworkServiceBackendNotFound, programmed.Reason)
+}
+
+func TestHTTPProxyReconcileNetworkServiceUDPBackend(t *testing.T) {
+	logger := zap.New(zap.UseFlagOptions(&zap.Options{Development: true}))
+	ctx := log.IntoContext(context.Background(), logger)
+
+	testScheme := networkServiceTestScheme(t)
+	require.NoError(t, envoygatewayv1alpha1.AddToScheme(testScheme))
+	require.NoError(t, networkingv1alpha1.AddToScheme(testScheme))
+
+	httpProxy := newNetworkServiceProxy()
+	controllerutil.AddFinalizer(httpProxy, httpProxyFinalizer)
+	service := newNetworkService()
+	service.Spec.Ports[0].Protocol = networkingv1alpha.NetworkServiceProtocolUDP
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(testScheme).
+		WithObjects(httpProxy, service).
+		WithStatusSubresource(httpProxy).
+		Build()
+
+	reconciler := &HTTPProxyReconciler{
+		mgr: &fakeMockManager{cl: fakeClient},
+		Config: config.NetworkServicesOperator{
+			HTTPProxy: config.HTTPProxyConfig{GatewayClassName: "test-gateway-class"},
+			Gateway: config.GatewayConfig{
+				ControllerName: gatewayv1.GatewayController("test-gateway-class"),
+				TargetDomain:   "example.com",
+			},
+		},
+	}
+	req := mcreconcile.Request{
+		Request:     reconcile.Request{NamespacedName: client.ObjectKeyFromObject(httpProxy)},
+		ClusterName: "test-cluster",
+	}
+
+	result, err := reconciler.Reconcile(ctx, req)
+	require.NoError(t, err)
+	assert.Equal(t, retryAfterConflict, result.RequeueAfter)
+
+	var updated networkingv1alpha.HTTPProxy
+	require.NoError(t, fakeClient.Get(ctx, client.ObjectKeyFromObject(httpProxy), &updated))
+	programmed := apimeta.FindStatusCondition(updated.Status.Conditions, networkingv1alpha.HTTPProxyConditionProgrammed)
+	require.NotNil(t, programmed)
+	assert.Equal(t, metav1.ConditionFalse, programmed.Status)
+	assert.Equal(t, networkingv1alpha.HTTPProxyReasonNetworkServiceBackendUnsupportedProtocol, programmed.Reason)
+	assert.Contains(t, programmed.Message, "HTTPProxy backends require TCP")
+
+	httpRoute := &gatewayv1.HTTPRoute{}
+	assert.True(t, apierrors.IsNotFound(fakeClient.Get(ctx, client.ObjectKeyFromObject(httpProxy), httpRoute)))
 }
 
 func TestApplyPartialProgramming(t *testing.T) {

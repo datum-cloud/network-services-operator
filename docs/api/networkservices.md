@@ -370,12 +370,10 @@ serve those on a different port.<br/>
         <td><b>protocol</b></td>
         <td>enum</td>
         <td>
-          protocol is the transport the port carries. TCP is the only value
-accepted, and is what a backend served through a proxy uses. The field
-exists so the same service can back a Layer 4 load balancer without
-changing shape.<br/>
+          protocol is the transport the port carries. HTTPProxy backends support
+only TCP ports.<br/>
           <br/>
-            <i>Enum</i>: TCP<br/>
+            <i>Enum</i>: TCP, UDP<br/>
             <i>Default</i>: TCP<br/>
         </td>
         <td>false</td>

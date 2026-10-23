@@ -2233,9 +2233,9 @@ this HTTPProxy.<br/>
         <td><b>port</b></td>
         <td>string</td>
         <td>
-          Port names a port declared in the referenced service's spec.ports, rather
-than giving a number, so the reference survives a change to the port the
-members answer on.<br/>
+          Port names a TCP port declared in the referenced service's spec.ports,
+rather than giving a number, so the reference survives a change to the
+port the members answer on. UDP ports cannot serve HTTPProxy traffic.<br/>
         </td>
         <td>true</td>
       </tr></tbody>

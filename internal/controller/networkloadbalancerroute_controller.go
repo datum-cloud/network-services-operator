@@ -53,11 +53,13 @@ type NetworkLoadBalancerRouteReconciler struct {
 }
 
 type networkLoadBalancerRouteEndpoint struct {
-	NetworkService string
-	Interface      string
-	Location       string
-	Address        string
-	Port           int32
+	NetworkService  string
+	Interface       string
+	SourceNamespace string
+	SourceUID       string
+	Location        string
+	Address         string
+	Port            int32
 }
 
 type networkLoadBalancerRouteReferenceError struct {
@@ -220,7 +222,7 @@ func reconcileRouteParent(
 		fmt.Sprintf("All backend references resolved; %d holder-available IPv6 endpoints are eligible", len(endpoints)))
 	if status.Effective && len(endpoints) == 0 {
 		setRouteParentCondition(&status, route.Generation, networkingv1alpha.NetworkLoadBalancerRouteProgrammed,
-			metav1.ConditionFalse, nlbRouteReasonNoEligibleEndpoints, "No enabled backend has a holder-available IPv6 endpoint in a selected location")
+			metav1.ConditionFalse, nlbRouteReasonNoEligibleEndpoints, "No enabled backend has a holder-available IPv6 endpoint with source identity in a selected location")
 	}
 	return status, nil
 }
@@ -493,7 +495,10 @@ func resolveNetworkLoadBalancerRouteBackends(
 		for i := range members {
 			member := &members[i]
 			location := member.Labels[networkingv1alpha.NetworkInterfaceLocationLabel]
-			if location == "" || !routeLocationSelected(parent, listener, location) || !isServiceMemberHealthy(member) {
+			sourceNamespace := member.Labels[networkingv1alpha.NetworkInterfaceSourceNamespaceLabel]
+			sourceUID := member.Labels[networkingv1alpha.NetworkInterfaceSourceUIDLabel]
+			if !isProjection(member) || sourceNamespace == "" || sourceUID == "" ||
+				location == "" || !routeLocationSelected(parent, listener, location) || !isServiceMemberHealthy(member) {
 				continue
 			}
 			address, ok := addressOfType(interfaceBackhaulAddresses(member), discoveryv1.AddressTypeIPv6)
@@ -501,11 +506,13 @@ func resolveNetworkLoadBalancerRouteBackends(
 				continue
 			}
 			endpoints = append(endpoints, networkLoadBalancerRouteEndpoint{
-				NetworkService: ref.Name,
-				Interface:      member.Name,
-				Location:       location,
-				Address:        address,
-				Port:           port.Port,
+				NetworkService:  ref.Name,
+				Interface:       member.Name,
+				SourceNamespace: sourceNamespace,
+				SourceUID:       sourceUID,
+				Location:        location,
+				Address:         address,
+				Port:            port.Port,
 			})
 		}
 	}

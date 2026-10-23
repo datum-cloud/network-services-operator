@@ -812,6 +812,11 @@ func controllerRegistrations(
 		{"networkloadbalancerroute", true, func() error {
 			return (&controller.NetworkLoadBalancerRouteReconciler{}).SetupWithManager(mgr)
 		}},
+		{"networkloadbalancercellintent", true, func() error {
+			return (&controller.NetworkLoadBalancerCellIntentReconciler{
+				HubCluster: deps.downstreamCluster,
+			}).SetupWithManager(mgr)
+		}},
 		// Which workloads are behind a proxy is only answerable in a project
 		// control plane, and only a cell can act on it. The record this writes to
 		// the hub is what carries the answer between them.

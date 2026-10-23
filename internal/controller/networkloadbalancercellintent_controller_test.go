@@ -333,3 +333,43 @@ func TestCellIntentWithholdsSameRouteSecondParentBackendClaim(t *testing.T) {
 	require.Equal(t, "edge", desired[0].Spec.Source.ParentName)
 	require.Equal(t, networkingv1alpha.NetworkLoadBalancerCellIntentValidate, desired[0].Spec.State)
 }
+
+func TestCellIntentWithholdsAllocationFromOlderGeneration(t *testing.T) {
+	ctx := context.Background()
+	route := testLoadBalancerRoute("storefront", time.Unix(10, 0))
+	parent := testRouteLoadBalancer()
+	parent.UID = types.UID("parent-1")
+	parent.Generation = 5
+	parent.Status.Endpoints = []networkingv1alpha.NetworkLoadBalancerEndpointStatus{allocatedCellIntentEndpoint("2001:db8::1", 4)}
+	cl := fake.NewClientBuilder().WithScheme(networkServiceTestScheme(t)).
+		WithObjects(route, parent, readyIntentNetwork(),
+			testRouteNetworkService(), testRouteMember("member", true, "fd00::1/128")).Build()
+	desired, err := buildNetworkLoadBalancerCellIntents(ctx, cl, "project", "hub", route)
+	require.NoError(t, err)
+	require.Empty(t, desired)
+
+	parent.Status.Endpoints[0].Addresses[0].Conditions[0].ObservedGeneration = 5
+	require.NoError(t, cl.Update(ctx, parent))
+	desired, err = buildNetworkLoadBalancerCellIntents(ctx, cl, "project", "hub", route)
+	require.NoError(t, err)
+	require.Len(t, desired, 1)
+}
+
+func TestCellIntentSkipsBackendsThatAreNotBound(t *testing.T) {
+	ctx := context.Background()
+	route := testLoadBalancerRoute("storefront", time.Unix(10, 0))
+	parent := testRouteLoadBalancer()
+	parent.UID = types.UID("parent-1")
+	parent.Generation = 5
+	parent.Status.Endpoints = []networkingv1alpha.NetworkLoadBalancerEndpointStatus{allocatedCellIntentEndpoint("2001:db8::1", 5)}
+	bound := testRouteMember("bound", true, "fd00::1/128")
+	released := testRouteMember("released", true, "fd00::2/128")
+	released.Status.Phase = networkingv1alpha.NetworkInterfacePhaseAvailable
+	cl := fake.NewClientBuilder().WithScheme(networkServiceTestScheme(t)).
+		WithObjects(route, parent, readyIntentNetwork(), testRouteNetworkService(), bound, released).Build()
+	desired, err := buildNetworkLoadBalancerCellIntents(ctx, cl, "project", "hub", route)
+	require.NoError(t, err)
+	require.Len(t, desired, 1)
+	require.Len(t, desired[0].Spec.Backends, 1)
+	require.Equal(t, "source-bound", desired[0].Spec.Backends[0].SourceUID)
+}

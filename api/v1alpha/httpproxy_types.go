@@ -803,6 +803,8 @@ const (
 	// a port name that service does not declare.
 	HTTPProxyReasonNetworkServiceBackendNotFound = "NetworkServiceBackendNotFound"
 
+	HTTPProxyReasonUnsupportedBackendProtocol = "UnsupportedBackendProtocol"
+
 	// HTTPProxyReasonNetworkServiceMembersUnreferenced indicates that a
 	// networkService backend resolved more members than a single EndpointSlice
 	// holds. Every member is published, but only the members in the referenced

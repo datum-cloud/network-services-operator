@@ -1,6 +1,6 @@
 # ALB MCP server
 
-Deployable bundle for `cmd/alb-mcp`, the read-only MCP server that lets the
+Deployable bundle for `cmd/alb-mcp`, the MCP server that lets the
 Patch assistant work with a customer's Application Load Balancers. See
 [`docs/agent/README.md`](../../../docs/agent/README.md) for what it publishes
 and why.

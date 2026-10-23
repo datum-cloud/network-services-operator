@@ -21,7 +21,7 @@ assistant owns the document schema that carries it.
 
 ## Tools
 
-`cmd/alb-mcp` publishes four read-only tools over Streamable HTTP:
+`cmd/alb-mcp` publishes these tools over Streamable HTTP. The first five read:
 
 | Tool | Answers |
 |---|---|
@@ -29,17 +29,35 @@ assistant owns the document schema that carries it.
 | `alb_get` | One load balancer assembled as the product rather than as the objects behind it |
 | `alb_diagnose` | Why one is not working, walked to a cause that names something |
 | `alb_reason_explain` | What a condition reason means, and who has to act |
+| `alb_traffic_summary` | What actually reached it |
+
+The other five change an existing load balancer, each by running the same
+`internal/cmd/alb/spec` function as the matching `datumctl alb` command:
+
+| Tool | Changes |
+|---|---|
+| `alb_update` | Display name, Force HTTPS, algorithm, passive health checks |
+| `alb_header` | A request header sent to origins, including the Host override |
+| `alb_hostname` | A custom hostname, after checking its domain is verified |
+| `alb_route` | A route and its origins |
+| `alb_origin` | One origin on a route, or its weight |
 
 Every tool is prefixed `alb_`, so an assistant can compose tools from several
 services in one conversation without names colliding; the capability document
-registers the prefixed names.
+registers the prefixed names and flags the change tools as mutating.
 
-**Networking publishes no mutating tool.** Everything else a customer needs to
-change a load balancer comes from the assistant's base tools, which it gives
-every project turn and which act as the caller: `resources_list` and
-`schema_get` to see what is there, and `resources_validate`, `resources_plan`
-and `resources_apply` for the change itself. The plan token and the confirmation
-step live there, once, for every service.
+**A change tool previews before it writes.** A call with `dryRun` has the
+platform validate the change and returns the result with a `confirm` value
+hashing the exact patch, including the resourceVersion it was computed
+against. Only a call carrying that value writes, and it refuses if the load
+balancer or the change differs, so the confirmation step holds even in a host
+that adds none of its own. See `internal/agent/change.go`. Writes go through
+`Writer`, built per request from the caller's credentials; `Reader` still has no
+write on it.
+
+Creating and deleting a load balancer, traffic protection and basic auth have no
+tool here. They come from the assistant's base tools, which act as the caller:
+`resources_validate`, `resources_plan` and `resources_apply`.
 
 ## Registration
 

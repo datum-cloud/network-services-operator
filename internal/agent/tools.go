@@ -18,11 +18,8 @@ import (
 
 // The tools this service publishes to an assistant.
 //
-// There is deliberately no mutating tool. Changing a load balancer goes through
-// the assistant's own plan and apply tools, which hold the confirmation step
-// for every service at once: the plan returns the exact manifests and a token
-// standing for them, and apply refuses if either has moved. A write tool here
-// would duplicate that and bypass the token.
+// These read. The tools that change a load balancer are in write_tools.go, and
+// each of them previews before it writes; see change.go.
 //
 // Every name carries the alb_ prefix, so an assistant can compose tools from
 // several services in one conversation without them colliding. The capability
@@ -38,7 +35,10 @@ const (
 // ToolDeps is what one request's tool calls operate over: where to read from,
 // and which namespace they are confined to.
 type ToolDeps struct {
-	Reader    Reader
+	Reader Reader
+	// Writer makes the change tools' writes, and may be nil, in which case
+	// those tools refuse rather than read as though they had worked.
+	Writer    Writer
 	Namespace string
 	// Logs reads access logs, and may be nil. A project entitled to load
 	// balancers is not necessarily entitled to observability, so its absence is
@@ -59,8 +59,14 @@ func readOnly() *mcp.ToolAnnotations {
 	return &mcp.ToolAnnotations{ReadOnlyHint: true, DestructiveHint: &notDestructive, IdempotentHint: true}
 }
 
-// RegisterTools adds every tool to an MCP server.
+// RegisterTools adds every tool to an MCP server: the ones that read, and the
+// ones that change a load balancer.
 func RegisterTools(s *mcp.Server, deps DepsFor) {
+	registerReadTools(s, deps)
+	registerWriteTools(s, deps)
+}
+
+func registerReadTools(s *mcp.Server, deps DepsFor) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        ToolList,
 		Title:       "List load balancers",

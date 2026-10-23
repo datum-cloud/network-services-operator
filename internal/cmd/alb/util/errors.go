@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"net/url"
+	"strings"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 )
@@ -202,4 +203,24 @@ func isTransportError(err error) bool {
 		return true
 	}
 	return errors.Is(err, io.ErrUnexpectedEOF)
+}
+
+// ClassifyProxyPatchError turns a failed load balancer patch into the error a
+// person reads, naming the load balancer.
+func ClassifyProxyPatchError(name string, err error) error {
+	if tooMany := TooManyBackendsError(err); tooMany != nil {
+		return tooMany
+	}
+	return ClassifyError(fmt.Errorf("updating application load balancer %q: %w", name, err))
+}
+
+// TooManyBackendsError recognises the API refusing a route with more origins
+// than it takes, or returns nil.
+func TooManyBackendsError(err error) *CLIError {
+	if !apierrors.IsInvalid(err) || !strings.Contains(err.Error(), "backends: Too many") {
+		return nil
+	}
+	return NewCLIError(ExitInvalid, "a route takes at most 16 origins").
+		WithFix("remove an origin from this route, or split the pool across routes").
+		WithCause(err)
 }

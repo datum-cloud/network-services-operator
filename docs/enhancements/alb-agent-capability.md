@@ -8,7 +8,7 @@
 
 ## Summary
 
-Networking publishes knowledge, skills and read-only tools to the Datum
+Networking publishes knowledge, skills and tools to the Datum
 assistant, so a project entitled to `networking.datumapis.com` gets an assistant
 that speaks about Application Load Balancers in product terms and can diagnose
 one that is not serving.
@@ -48,7 +48,7 @@ supposed to publish.
 |---|---|
 | Knowledge | `docs/agent/llms-full.txt` — orientation and how to read status |
 | Skills | `docs/agent/skills/*.md` — ten procedures, loaded on demand |
-| Tools | `alb_list`, `alb_get`, `alb_diagnose`, `alb_reason_explain` |
+| Tools | `alb_list`, `alb_get`, `alb_diagnose`, `alb_reason_explain`, `alb_traffic_summary`; changes: `alb_update`, `alb_header`, `alb_hostname`, `alb_route`, `alb_origin` |
 | Server | `cmd/alb-mcp`, deployed from `config/components/alb-mcp` |
 
 `internal/agent` holds the reason catalog and the diagnosis walk behind the
@@ -56,11 +56,29 @@ tools.
 
 ## Decisions
 
-**No mutating tool.** Changing a load balancer goes through the assistant's own
-plan and apply path, which holds the plan token and the one confirmation step
-every service shares. A write tool here would duplicate that and bypass the
-token. This is enforced structurally: the tools reach the cluster only through a
-`Reader` interface with no write on it.
+**Change tools that preview before they write.** This first shipped with no
+mutating tool, leaving changes to the assistant's plan and apply path. That
+left a model writing `spec.rules` by hand, and in datum-mcp, which mounts these
+tools and has no plan path, it did: on a live load balancer it put the Host
+override on the origin, where the console cannot edit it, and resent the rules
+without the Force HTTPS rule, which merge-patch semantics then deleted. The
+encoding that "Not in this change" below said to revisit once a model got it
+wrong is now published as five tools: `alb_update`, `alb_header`,
+`alb_hostname`, `alb_route` and `alb_origin`. Each runs the same `spec`
+function as its `datumctl alb` command.
+
+A write tool here was rejected because it would bypass the plan token, so each
+of these carries the same guarantee itself. A `dryRun` call has the platform
+validate the change and returns a `confirm` value hashing the exact patch,
+which includes the resourceVersion it was computed against. Only a call
+carrying that value writes, and it refuses if the load balancer or the change
+differs. That matters in the assistant too: `mcpServers[].mutating` is reported
+in traces but adds no confirmation step of its own.
+
+Writes stay structurally separate. Read tools reach the cluster only through
+`Reader`, which still has no write; change tools write only through `Writer`,
+built per request from the caller's credentials. Creating and deleting a load
+balancer, traffic protection and basic auth still go through plan and apply.
 
 **The catalog is keyed on `(conditionType, reason)`.** Reason strings are not
 unique in this API. A map keyed on the reason alone answers every `Pending` with

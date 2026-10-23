@@ -33,6 +33,14 @@ const (
 	ToolDiagnose       = agent.ToolDiagnose
 	ToolReasonExplain  = agent.ToolReasonExplain
 	ToolTrafficSummary = agent.ToolTrafficSummary
+
+	// The tools that change a load balancer. Each previews with dryRun and
+	// writes only when handed back the confirm value that preview returned.
+	ToolUpdate   = agent.ToolUpdate
+	ToolHeader   = agent.ToolHeader
+	ToolHostname = agent.ToolHostname
+	ToolRoute    = agent.ToolRoute
+	ToolOrigin   = agent.ToolOrigin
 )
 
 // Namespace is the namespace every load balancer object lives in within a
@@ -43,6 +51,9 @@ type (
 	// Reader fetches the objects a load balancer is assembled from. It has no
 	// write method, by design; see internal/agent.Reader.
 	Reader = agent.Reader
+	// Writer makes the change tools' writes. Leave ToolDeps.Writer nil and the
+	// change tools refuse.
+	Writer = agent.Writer
 	// LogReader reads a load balancer's access logs.
 	LogReader = agent.LogReader
 	// ToolDeps is what one request's tool calls read through.
@@ -52,7 +63,8 @@ type (
 	DepsFor = agent.DepsFor
 )
 
-// RegisterTools adds every read-only load balancer tool to s.
+// RegisterTools adds every load balancer tool to s: the read-only ones and the
+// ones that change a load balancer.
 func RegisterTools(s *mcp.Server, deps DepsFor) {
 	agent.RegisterTools(s, deps)
 }
@@ -61,6 +73,13 @@ func RegisterTools(s *mcp.Server, deps DepsFor) {
 // scheme from NewScheme. Every read runs with whatever credentials c carries.
 func NewClientReader(c client.Client) Reader {
 	return agent.NewClientReader(c)
+}
+
+// NewClientWriter returns a Writer backed by c that records its changes under
+// fieldManager, which should name the server. Every write runs with whatever
+// credentials c carries.
+func NewClientWriter(c client.Client, fieldManager string) Writer {
+	return agent.NewClientWriter(c, fieldManager)
 }
 
 // NewClientLogReader returns a LogReader that reads the project logs API as the

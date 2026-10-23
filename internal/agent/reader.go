@@ -20,9 +20,8 @@ import (
 // a tool call can never see more than the caller could see themselves.
 //
 // There is no Create, Update, Patch or Delete here, and adding one would be a
-// reviewable diff rather than a quiet change inside a handler. Changing a load
-// balancer goes through the assistant's own plan and apply path, which holds
-// the one confirmation step every service shares.
+// reviewable diff rather than a quiet change inside a handler. Writes go
+// through Writer alone, and only from the change tools, which preview first.
 type Reader interface {
 	// ListProxies returns every load balancer in the namespace.
 	ListProxies(ctx context.Context, namespace string) ([]networkingv1alpha.HTTPProxy, error)

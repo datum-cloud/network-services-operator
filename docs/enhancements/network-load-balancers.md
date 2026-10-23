@@ -16,6 +16,7 @@ latest-milestone: "v0.x"
 - [Design Details](#design-details)
   - [IPv4 Ingress Data Plane](#ipv4-ingress-data-plane)
   - [Backend Health](#backend-health)
+  - [Backend Trust](#backend-trust)
   - [TLS](#tls)
   - [Initial Delivery and Capability Gates](#initial-delivery-and-capability-gates)
   - [Gateway API L4 Compatibility](#gateway-api-l4-compatibility)
@@ -51,8 +52,9 @@ where their service runs.
 
 - Publish a TCP or UDP `NetworkService` through a named listener and separate
   route.
-- Actively check backend health and select healthy endpoints round robin within
-  the ingress location.
+- Actively check backend health and spread new connections and flows across
+  healthy endpoints within the ingress location, keeping each flow on one
+  endpoint.
 - Support opaque TLS over TCP initially, with an API shape for later SNI-based
   passthrough, TLS termination, and optional backend TLS.
 - Let a route refer to multiple `NetworkService` backends by named port,
@@ -103,7 +105,7 @@ backend exists and prevents changing service membership from silently moving
 its traffic to another network. Every effective route backend must resolve to
 interfaces on that network. A backend with no members cannot serve until
 members appear. One resolving to a different network sets
-`BackendResolved=False` with reason `NetworkMismatch` and invalidates its
+`ResolvedRefs=False` with reason `NetworkMismatch` and invalidates its
 route. Existing public IP allocations are retained; listener readiness still
 controls announcements. Cross-network backends would need an explicit future
 forwarding and authorization design.
@@ -202,6 +204,9 @@ releases its socket claim after serving intent is withdrawn.
 - **Overlapping routes could select different backends for the same flow.** Use
   Gateway API precedence for overlapping route attachments and report the
   effective route in native status.
+- **A forged or stale backend record could send traffic to the wrong
+  workload.** The serving location re-verifies every backend against live
+  state before programming it; see [Backend Trust](#backend-trust).
 - **Probe failure can withdraw a healthy location.** Report probe errors
   separately from an unhealthy backend and avoid making one probe runner a
   single point of failure.
@@ -279,9 +284,12 @@ route.
 
 `backends` accepts multiple entries without traffic weights. In each serving
 location, the route combines their healthy endpoints into one set and assigns
-new TCP connections or UDP flows to those endpoints round robin. Each healthy
-endpoint receives an equal turn, so a service with more healthy endpoints
-receives more connections or flows. A backend with no healthy endpoints
+new TCP connections or UDP flows to those endpoints with a consistent per-flow
+hash (Galactic's Maglev selection). Each healthy endpoint receives an equal
+share, so a service with more healthy endpoints receives more connections or
+flows. Every gateway node in a location computes the same choice, so a flow
+keeps its endpoint when it lands on a different node, and adding or removing an
+endpoint moves only a small share of flows. A backend with no healthy endpoints
 contributes none; the route is unready in that location only when no healthy
 endpoint remains across all its backends. Failed health probes remove
 individual endpoints from the rotation. Status distinguishes resolution,
@@ -434,6 +442,23 @@ the same endpoint eligibility. A location with no healthy backends withdraws its
 announcement but keeps its IP allocation. Status reports healthy backend
 counts and probe failures by location.
 
+### Backend Trust
+
+The project control plane resolves route backends from copies of cell network
+interfaces, but those copies are hints, not authorization. Each copy carries
+the UID of the cell interface it came from; the route counts only copies that
+carry it, so a deleted and recreated interface with the same name and address
+is never mistaken for the old one.
+
+Before programming an endpoint, the serving cell reads the live network
+interface and requires its UID, network, location, address and availability to
+match the intent. It then reads that interface's VPC attachment and requires
+the interface, owner, VPC and address to match, and checks that the source
+namespace belongs to the project in the intent. Matching an address alone is
+not enough, because different VPCs can reuse the same address. Any missing or
+changed field removes that endpoint from the set; the cell reports which
+endpoints it verified.
+
 ### TLS
 
 A TCP listener forwards TLS bytes unchanged to a backend that owns its
@@ -525,9 +550,8 @@ an unsupported spec. A previously valid route that becomes unprogrammable
 after membership or location changes reports a condition, keeps its allocated
 address, and withdraws affected announcements. An unsupported route is not
 partially programmed; health-driven exclusion of individual endpoints remains
-valid. Round robin and flow affinity are required before any NLB listener
-serves traffic; the first delivery must not substitute Galactic's current
-Maglev selection silently.
+valid. Consistent per-flow selection and flow affinity across gateway nodes are
+required before any NLB listener serves traffic.
 
 ### Gateway API L4 Compatibility
 
@@ -588,12 +612,11 @@ candidates for later releases beyond the initial NLB scope:
 
 Connection draining, source-IP preservation, and PROXY protocol are delivery
 settings rather than route matches; they need their own data plane contracts.
-Galactic currently uses a deterministic Maglev hash across backend endpoints.
-Strict round-robin assignment of new connections or flows needs a different
-selection mechanism plus affinity for subsequent packets. The design must
-specify what happens when an anycast flow reaches a different gateway node;
-per-gateway counters alone cannot preserve its chosen endpoint. Route matches
-and priority policy need implementation before the API accepts them.
+Endpoint selection uses Galactic's deterministic Maglev hash, which gives an
+even spread and keeps a flow on its endpoint even when anycast moves it to
+another gateway node. Strict round robin is not offered: per-node counters
+cannot preserve a flow's endpoint across nodes. Route matches and priority
+policy need implementation before the API accepts them.
 
 ## Production Readiness Review Questionnaire
 
@@ -606,12 +629,12 @@ advertisements are gone.
 
 ### Rollout, Upgrade and Rollback Planning
 
-Start with single-location TCP and UDP using round robin across healthy
-endpoints and active probes, then test multi-location operation with distinct
-addresses. Exercise route updates, round-robin selection, affinity during a
-flow, gateway failover, probe failures, loss of the last backend, location
-removal, opaque TLS over a TCP listener, CNAME resolution, A/AAAA publication,
-IP replacement without hostname change, and withdrawal before IP release.
+Start with single-location TCP and UDP using consistent per-flow selection
+across healthy endpoints and active probes, then test multi-location operation
+with distinct addresses. Exercise route updates, even flow spread, affinity
+during a flow, gateway failover, probe failures, loss of the last backend,
+location removal, opaque TLS over a TCP listener, CNAME resolution, A/AAAA
+publication, IP replacement without hostname change, and withdrawal before IP release.
 Existing `NetworkService` and `HTTPProxy` behavior should be unaffected.
 Expand the rollout to multiple backend entries and shared backend sockets only
 after their Galactic contracts are verified. Enable SNI passthrough and then
@@ -634,9 +657,8 @@ location. NSO must allow UDP `NetworkService` ports (tracked in
 [PR #683](https://github.com/datum-cloud/network-services-operator/pull/683)) and require the route
 listener and backend port protocols to match; `HTTPProxy` must continue to
 reject UDP backends. Selected cells need a health probe runner, Galactic
-gateways, backend VIP bindings, round-robin flow selection with an explicit
-affinity and gateway-failover contract, and a way to report programming and
-announcement state.
+gateways, backend VIP bindings, consistent per-flow selection that survives
+gateway failover, and a way to report programming and announcement state.
 IPv4 VIPs additionally need a public IPv4 pool, family-aware cell intent,
 Galactic's existing IPv4 feature enabled with backend bindings, and a serving
 capability gate before API admission is enabled.
